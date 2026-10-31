@@ -17,7 +17,12 @@ import * as path from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import type { ConversationSession } from '../../types';
-import { type BuildStreamOptionsDeps, buildStreamOptions } from '../claude-code/build-stream-options';
+import {
+  type BuildStreamOptionsDeps,
+  buildStreamOptions,
+  TASK_APPROVAL_HOOK_MARGIN_MS,
+  TASK_APPROVAL_HOOK_TIMEOUT_S,
+} from '../claude-code/build-stream-options';
 import { type ExecutionContext, ExecutionContextMissingError, executionContextForTask } from '../execution-context';
 
 const USER = 'U0PARITY01';
@@ -382,6 +387,19 @@ describe('#599 ⑤ — a task’s escalation waits for the dashboard approval', 
         toolInput: { command: 'rm -rf /' },
       }),
     );
+  });
+
+  // #637 R1 (fable P2) — the approver is told when the SDK will cancel this hook.
+  it('the request carries the hook’s deadline: entry time + the SDK timeout − the margin', async () => {
+    const request = vi.fn(async (_r: { deadlineAt?: number }) => ({ behavior: 'allow' as const }));
+    const { hook } = await taskHook({ request });
+    const before = Date.now();
+    await hook(escalation);
+    const after = Date.now();
+    const deadlineAt = request.mock.calls[0][0].deadlineAt as number;
+    const budget = TASK_APPROVAL_HOOK_TIMEOUT_S * 1000 - TASK_APPROVAL_HOOK_MARGIN_MS;
+    expect(deadlineAt).toBeGreaterThanOrEqual(before + budget);
+    expect(deadlineAt).toBeLessThanOrEqual(after + budget);
   });
 
   it('refused on the dashboard → denied, with the answer as the reason', async () => {

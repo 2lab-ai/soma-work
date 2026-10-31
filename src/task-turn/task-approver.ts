@@ -18,6 +18,8 @@ import type { TaskApprovalRequest, TaskApprover } from '../agent-runtime/claude-
 
 /** How long a task's approval stays open. The hook's SDK timeout sits above it. */
 export const TASK_APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
+/** Less time than this before the hook's deadline: deny without raising a prompt. */
+const MIN_APPROVAL_WINDOW_MS = 1_000;
 
 export interface TaskApproverDeps {
   store: Pick<typeof sharedStore, 'storePendingApproval' | 'waitForPermissionResponse'>;
@@ -34,8 +36,15 @@ export function createTaskApprover(deps: TaskApproverDeps): TaskApprover {
   const newId = deps.newId ?? (() => `approval_${Date.now()}_${randomBytes(6).toString('hex')}`);
   return {
     async request(req: TaskApprovalRequest): Promise<{ behavior: 'allow' | 'deny'; message?: string }> {
-      const approvalId = newId();
       const createdAt = now();
+      // The wait ends before the hook's SDK deadline (#637 R1): a prompt the
+      // owner could answer only after the SDK cancelled the hook is never raised.
+      const left = (req.deadlineAt ?? Number.POSITIVE_INFINITY) - createdAt;
+      if (left < MIN_APPROVAL_WINDOW_MS) {
+        return { behavior: 'deny', message: 'No time was left to ask for approval — it was not run.' };
+      }
+      const waitMs = Math.min(timeoutMs, left);
+      const approvalId = newId();
       const turnId = deps.getActiveTurnId(req.sessionKey);
       await deps.store.storePendingApproval(approvalId, {
         kind: PERMISSION_PROMPT_KIND,
@@ -45,14 +54,10 @@ export function createTaskApprover(deps: TaskApproverDeps): TaskApprover {
         task_key: req.sessionKey,
         ...(turnId ? { turn_id: turnId } : {}),
         created_at: createdAt,
-        expires_at: createdAt + timeoutMs,
+        expires_at: createdAt + waitMs,
         ...(req.ruleIds.length > 0 ? { rule_ids: req.ruleIds } : {}),
       });
-      const response: PermissionResponse = await deps.store.waitForPermissionResponse(
-        approvalId,
-        timeoutMs,
-        req.signal,
-      );
+      const response: PermissionResponse = await deps.store.waitForPermissionResponse(approvalId, waitMs, req.signal);
       return response.behavior === 'allow'
         ? { behavior: 'allow', ...(response.message ? { message: response.message } : {}) }
         : { behavior: 'deny', ...(response.message ? { message: response.message } : {}) };

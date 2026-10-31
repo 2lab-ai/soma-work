@@ -520,7 +520,11 @@ describe('Dashboard — permission prompts (SSOT 2026-10-24)', () => {
     });
 
     it('approve & disable rule silences the rule on the task’s own session', async () => {
-      const reg = { getSessionKey: vi.fn(() => key), disableDangerousRules: vi.fn() };
+      const reg = {
+        getSessionKey: vi.fn(() => key),
+        disableDangerousRules: vi.fn(),
+        getSessionByKey: vi.fn((k: string) => (k === taskA ? task0 : undefined)),
+      };
       dashboard.setDashboardPermissionAnswerHandler((a: any) => answerPermissionPrompt({ ...a, sessions: reg }));
       const id = await seedTask(taskA);
       const res = await answer({ approvalId: id, decision: 'approve_disable_rule' }, await signIn('U1'), taskA);

@@ -777,13 +777,24 @@ function resolveSelfActionKey(wireKey: string, reply: any): string | null {
 function resolveSelfActionKeyAndOwner(
   request: any,
   reply: any,
-  opts: { allowSlackless?: boolean } = {},
+  opts: { allowSlackless?: boolean; taskOwnerOnly?: boolean } = {},
 ): { wireKey: string; originalKey: string } | null {
   const wireKey: string = request.params?.key ?? '';
   const originalKey = resolveSelfActionKey(wireKey, reply);
   if (originalKey === null) return null;
   // Owner first: someone else's task answers 403, not a hint of what it is.
   if (!requireSessionOwner(request, reply, originalKey)) return null;
+  // #637 R1 — a task's instruction or answer runs under its owner's identity
+  // (`executionContextForTask`), so only the signed-in owner may send one: the
+  // #716 bearer and admin-mode overrides do not apply. Stop / close / trash keep
+  // them — they cannot run anything.
+  if (opts.taskOwnerOnly) {
+    const target = _getSessionsFn?.()?.get(originalKey);
+    if (target?.slackless === true && !isTaskOwner(request, target.ownerId)) {
+      reply.status(403).send({ error: 'only the task owner can instruct or answer a dashboard task' });
+      return null;
+    }
+  }
   // Fail closed (#612 review): a Slack-less task takes only the routes that opt in —
   // stop / close / trash, and `command`, which hands it to the task turn
   // controller (#598 ④c). Goal, model, effort, the queue and answers are not
@@ -1069,6 +1080,13 @@ function _hasWriteAccess(request: any, ownerId: string | undefined): boolean {
   return false;
 }
 
+/** The signed-in user is the task's owner — a user identity, never a bearer token. */
+function isTaskOwner(request: any, ownerId: string | undefined): boolean {
+  const authContext = request.authContext;
+  if (!authContext || authContext.mode === 'bearer_header' || authContext.mode === 'bearer_cookie') return false;
+  return !!authContext.userId && !!ownerId && authContext.userId === ownerId;
+}
+
 /**
  * Write-gate for kanban session actions (stop / close / trash / command /
  * answer-* / submit-recommended). Reads remain world-readable per #716.
@@ -1349,6 +1367,8 @@ type TaskAnswerHandler = (
   sessionKey: string,
   askId: string,
   answer: TaskAnswer,
+  /** The signed-in user answering — the route has checked it is the task's owner. */
+  actorUserId: string,
 ) => Promise<{ status: number; body: Record<string, unknown> }>;
 let _taskAnswerHandlerFn: TaskAnswerHandler | null = null;
 export function setDashboardTaskAnswerHandler(fn: TaskAnswerHandler | null): void {
@@ -1372,7 +1392,7 @@ async function routeTaskAnswer(request: any, reply: any, sessionKey: string, ans
     return true;
   }
   try {
-    const outcome = await _taskAnswerHandlerFn(sessionKey, askId, answer);
+    const outcome = await _taskAnswerHandlerFn(sessionKey, askId, answer, String(request.authContext?.userId ?? ''));
     reply.status(outcome.status).send(outcome.body);
   } catch (error) {
     logger.error('Error answering a dashboard task', error);
@@ -3270,7 +3290,7 @@ export async function registerDashboardRoutes(
         return;
       }
       // Only the session's owner gets their files decoded (up to the new-task limits).
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       const files = parseAttachments(attachments);
@@ -3578,7 +3598,7 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'Field length exceeded' });
         return;
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       if (await routeTaskAnswer(request, reply, originalKey, { kind: 'single', choiceId })) return;
@@ -3649,7 +3669,7 @@ export async function registerDashboardRoutes(
           return;
         }
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       if (await routeTaskAnswer(request, reply, originalKey, { kind: 'multi', selections })) return;
@@ -3808,7 +3828,7 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/submit-recommended',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       if (await routeTaskAnswer(request, reply, originalKey, { kind: 'recommended' })) return;
@@ -7280,7 +7300,9 @@ function acPermissionData(s, p) {
 // rewritten in place is another card, never the old one's answer or focus
 // (review R2 P1).
 function acQuestionId(q) {
-  return 'q|' + JSON.stringify([q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })]);
+  // A dashboard task's question names itself (#599): the same text asked twice is
+  // two questions, so a late answer to the first never resolves the second (#637 R1).
+  return (q.askId ? 'a|' + q.askId + '|' : '') + 'q|' + JSON.stringify([q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })]);
 }
 // pendingQuestion (single choice) → the card's data. The choices read as
 // before ("1. label", the recommended marker stripped); the route takes one
@@ -13359,6 +13381,17 @@ function followSessionKey(oldKey, newKey) {
 
 // ── Multi-choice form state ──
 var _mcState = Object.create(null);
+// A form's selections belong to the question that collected them (#637 R1): a
+// dashboard task's question carries an askId, and a new askId starts empty, so
+// answers picked for one ask are never sent as another's. A Slack question has
+// no askId ('' — as before).
+function mcStateFor(key) {
+  var s = _sessionCache[key];
+  var askId = (s && s.pendingQuestion && s.pendingQuestion.askId) || '';
+  var st = _mcState[key];
+  if (!st || (st.askId || '') !== askId) st = _mcState[key] = { selections: {}, activeQ: 0, askId: askId };
+  return st;
+}
 
 // faceSummary: the collapsed card's summary line — when it already reads the
 // form's title, the open card does not repeat it.
@@ -13369,7 +13402,8 @@ function renderMultiChoiceCard(s, faceSummary) {
     return '<div class="card-question"><div class="card-question-text" style="color:var(--text-secondary)">' + STRINGS.mcUnavailable + '</div></div>';
   }
   var total = q.questions.length;
-  var st = _mcState[s.key] || { selections: {}, activeQ: 0 };
+  var st = _mcState[s.key];
+  if (!st || (st.askId || '') !== (q.askId || '')) st = { selections: {}, activeQ: 0 };
   var answered = 0;
   for (var i = 0; i < q.questions.length; i++) {
     if (st.selections[q.questions[i].id]) answered++;
@@ -13395,8 +13429,7 @@ function renderMultiChoicePanel(s) {
 
   container.style.display = '';
   var key = s.key;
-  if (!_mcState[key]) { _mcState[key] = { selections: {}, activeQ: 0 }; }
-  var st = _mcState[key];
+  var st = mcStateFor(key);
   var total = q.questions.length;
   var answered = 0;
   for (var i = 0; i < total; i++) {
@@ -13533,13 +13566,12 @@ function renderMdBasic(text) {
 }
 
 function selectMc(key, qIdx, choiceId, label) {
-  if (!_mcState[key]) _mcState[key] = { selections: {}, activeQ: 0 };
   var s = _sessionCache[key];
   if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) { console.warn('selectMc: stale session data', key); return; }
   var qItem = s.pendingQuestion.questions[qIdx];
   if (!qItem) { console.warn('selectMc: invalid question index', qIdx); return; }
 
-  _mcState[key].selections[qItem.id] = { choiceId: choiceId, label: label };
+  mcStateFor(key).selections[qItem.id] = { choiceId: choiceId, label: label };
 
   // Auto-advance to next unanswered question
   var total = s.pendingQuestion.questions.length;
@@ -13562,7 +13594,7 @@ function editMc(key, qIdx) {
   if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) return;
   var qItem = s.pendingQuestion.questions[qIdx];
   if (!qItem) return;
-  delete _mcState[key].selections[qItem.id];
+  delete mcStateFor(key).selections[qItem.id];
   _mcState[key].activeQ = qIdx;
   renderMultiChoicePanel(s);
 }
@@ -13572,13 +13604,12 @@ function submitMcCustom(key, qIdx) {
   if (!input) return;
   var val = input.value.trim();
   if (!val) { input.style.borderColor = 'var(--red)'; return; }
-  if (!_mcState[key]) _mcState[key] = { selections: {}, activeQ: 0 };
   var s = _sessionCache[key];
   if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) { console.warn('submitMcCustom: stale session data', key); return; }
   var qItem = s.pendingQuestion.questions[qIdx];
   if (!qItem) { console.warn('submitMcCustom: invalid question index', qIdx); return; }
 
-  _mcState[key].selections[qItem.id] = { choiceId: '\\uC9C1\\uC811\\uC785\\uB825', label: val };
+  mcStateFor(key).selections[qItem.id] = { choiceId: '\\uC9C1\\uC811\\uC785\\uB825', label: val };
 
   // Auto-advance
   var total = s.pendingQuestion.questions.length;
@@ -13601,6 +13632,13 @@ async function submitMultiChoice(key) {
     return;
   }
   var st = _mcState[key];
+  if (st && (st.askId || '') !== (s.pendingQuestion.askId || '')) {
+    // Picked for another ask (#637 R1): never send them as this one's answers.
+    delete _mcState[key];
+    dashToast({ title: '\\uC9C8\\uBB38\\uC774 \\uBC14\\uB00C\\uC5C8\\uC5B4\\uC694 \\u2014 \\uB2E4\\uC2DC \\uC120\\uD0DD\\uD574\\uC8FC\\uC138\\uC694.', tone: 'error' });
+    renderMultiChoicePanel(s);
+    return;
+  }
   if (!st) {
     console.warn('submitMultiChoice: no selections state', key);
     dashToast({ title: '\\uC120\\uD0DD \\uC0C1\\uD0DC\\uAC00 \\uC5C6\\uC2B5\\uB2C8\\uB2E4. \\uB2E4\\uC2DC \\uC120\\uD0DD\\uD574\\uC8FC\\uC138\\uC694.', tone: 'error' });
@@ -13633,7 +13671,8 @@ async function submitMultiChoice(key) {
     if (_csrfToken) mcHeaders['X-CSRF-Token'] = _csrfToken;
     var mcUrl = '/api/dashboard/session/' + encodeURIComponent(key) + '/answer-multi-choice';
     var mcPayload = { selections: st.selections };
-    if (s.pendingQuestion.askId) mcPayload.askId = s.pendingQuestion.askId;
+    // The ask these selections were collected for (equal to the current one, checked above).
+    if (st.askId) mcPayload.askId = st.askId;
     var mcBody = JSON.stringify(mcPayload);
     var res = await fetch(mcUrl, { method: 'POST', headers: mcHeaders, body: mcBody });
     if (res.status === 403) {
@@ -13670,7 +13709,8 @@ async function submitMultiChoice(key) {
 }
 
 function resetMultiChoice(key) {
-  _mcState[key] = { selections: {}, activeQ: 0 };
+  delete _mcState[key];
+  mcStateFor(key);
   var s = _sessionCache[key];
   if (s) renderMultiChoicePanel(s);
 }

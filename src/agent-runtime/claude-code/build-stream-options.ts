@@ -166,6 +166,11 @@ export interface TaskApprovalRequest {
   toolInput: Record<string, unknown>;
   ruleIds: string[];
   signal?: AbortSignal;
+  /**
+   * When the SDK cancels this hook (epoch ms, its timeout less a margin): the
+   * approver's wait must end before it, or an approval given late is lost.
+   */
+  deadlineAt?: number;
 }
 
 export interface TaskApprover {
@@ -177,6 +182,8 @@ export interface TaskApprover {
  * the SDK's hook timeout (seconds) is set above that window.
  */
 export const TASK_APPROVAL_HOOK_TIMEOUT_S = 330;
+/** Kept between the approver's last poll and the SDK's cancellation of the hook. */
+export const TASK_APPROVAL_HOOK_MARGIN_MS = 10_000;
 
 /** A `Skill` call step 6b denied: who asked, for which environment skill, in which thread. */
 export interface EnvSkillDenial {
@@ -375,6 +382,8 @@ export async function buildStreamOptions(
       _toolUseId?: string,
       hookOptions?: { signal?: AbortSignal },
     ): Promise<HookJSONOutput> => {
+      // The SDK's clock for this hook starts now; the classifier may spend part of it.
+      const hookDeadlineAt = Date.now() + TASK_APPROVAL_HOOK_TIMEOUT_S * 1000 - TASK_APPROVAL_HOOK_MARGIN_MS;
       const toolName = (input as { tool_name?: string }).tool_name || '';
       const toolInput = (input as { tool_input?: Record<string, unknown> }).tool_input;
       // The session's directory now (a worktree switch moves it): relative targets and
@@ -480,6 +489,7 @@ export async function buildStreamOptions(
                 toolName,
                 toolInput: toolInput ?? {},
                 ruleIds: [...(result.matchedRuleIds ?? [])],
+                deadlineAt: hookDeadlineAt,
                 ...(hookOptions?.signal ? { signal: hookOptions.signal } : {}),
               })
               .catch((err: unknown) => ({

@@ -109,7 +109,11 @@ export function pendingPermissionsFor(
   return byThread.get(permissionThreadKey(channel, threadTs)) ?? [];
 }
 
-/** A changed index key as callers name it: a task's session key, or a `channel:thread` key. */
+/**
+ * A changed index key as callers name it: a task's session key, or a
+ * `channel:thread` key. The board's watcher only needs "something changed";
+ * the names are for callers (and tests) that care which session it was.
+ */
 function reportedKey(indexKey: string): string {
   if (!indexKey.startsWith(TASK_INDEX_PREFIX)) return indexKey;
   return indexKey.slice(TASK_INDEX_PREFIX.length, indexKey.lastIndexOf('#'));

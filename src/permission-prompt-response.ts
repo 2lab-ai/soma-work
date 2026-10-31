@@ -44,6 +44,21 @@ export const PERMISSION_EXPLAIN_MESSAGE =
 export interface DangerousRuleSessions {
   getSessionKey(channel: string, threadTs?: string): string;
   disableDangerousRules(sessionKey: string, ruleIds: string[]): void;
+  /**
+   * A Slack-less task's live record — its running turn (#637 R1). Without it a
+   * task's rules are never disabled (fail-closed).
+   */
+  getSessionByKey?(sessionKey: string): { activeTaskTurnId?: string } | undefined;
+}
+
+/**
+ * A task prompt's turn is still the task's running turn — read live, after the
+ * caller's awaits. A Slack prompt has no turn to check.
+ */
+function taskTurnStillRunning(pending: PendingApproval, sessions: DangerousRuleSessions | undefined): boolean {
+  if (!pending.task_key) return true;
+  const live = sessions?.getSessionByKey?.(pending.task_key)?.activeTaskTurnId;
+  return !!pending.turn_id && live === pending.turn_id;
 }
 
 export interface AnswerPermissionPromptArgs {
@@ -111,6 +126,11 @@ export async function answerPermissionPrompt(args: AnswerPermissionPromptArgs): 
   // The MCP server may have timed out between the load and the claim. The
   // claim stays, so nobody else answers it either.
   if (!(await sharedStore.getPendingApproval(approvalId))) return { ok: false, reason: 'not_found' };
+  // A task's turn may have ended during those awaits (#637 R1): its hook was
+  // the only waiter, so the answer is stale. The claim stays.
+  if (pending.task_key && sessions?.getSessionByKey && !taskTurnStillRunning(pending, sessions)) {
+    return { ok: false, reason: 'not_found' };
+  }
 
   const { response, disabledRuleIds } = responseFor(decision, pending, sessions);
   try {
@@ -121,8 +141,11 @@ export async function answerPermissionPrompt(args: AnswerPermissionPromptArgs): 
     await sharedStore.releasePermissionClaim(approvalId);
     throw error;
   }
-  // Only the winner, and only once its answer is stored: silence the rules.
+  // Only the winner, and only once its answer is stored: silence the rules —
+  // for a task, only while the turn that asked is still running (read again
+  // after the store's await, with no await before the change).
   if (sessions && disabledRuleIds.length > 0) {
+    if (!taskTurnStillRunning(pending, sessions)) return { ok: true, pending, disabledRuleIds: [] };
     const scope = ruleScopeKey(pending, sessions);
     if (scope) sessions.disableDangerousRules(scope, disabledRuleIds);
   }

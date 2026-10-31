@@ -90,6 +90,7 @@ interface AnswerClient {
   submitMultiChoice(key: string): Promise<void>;
   answerChoice(key: string, qid: string, choiceId: string): Promise<unknown>;
   acQuestionId(q: unknown): string;
+  selectMc(key: string, qIdx: number, choiceId: string, label: string): void;
 }
 
 describe('dashboard answer buttons → real server (shipped client code)', () => {
@@ -103,7 +104,15 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
   /** When set, the next request is refused 403 as csrfMiddleware does after a JWT rotation. */
   let staleCsrfOnce: boolean;
   let csrfRefreshes: number;
-  let mcState: Record<string, { selections: Record<string, { choiceId: string; label: string }>; activeQ: number }>;
+  let mcState: Record<
+    string,
+    { selections: Record<string, { choiceId: string; label: string }>; activeQ: number; askId?: string }
+  >;
+  let acState: Record<string, Record<string, unknown>>;
+  /** When set, requests ride on this signed-in user's cookie (and its real CSRF token) instead of the bearer. */
+  let authAs: { cookie: string; csrf: string } | null;
+  /** Runs once a request has reached the server, before its response is returned (a push arriving meanwhile). */
+  let beforeReply: (() => void) | null;
 
   beforeEach(async () => {
     vi.resetModules();
@@ -115,6 +124,9 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     await webServer.startWebServer({ listen: false });
 
     requests = [];
+    acState = {};
+    authAs = null;
+    beforeReply = null;
     alerts = [];
     staleCsrfOnce = false;
     csrfRefreshes = 0;
@@ -132,12 +144,18 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
         staleCsrfOnce = false;
         return { ok: false, status: 403, json: async () => ({ error: 'CSRF token validation failed' }) };
       }
+      const auth = authAs ? { cookie: authAs.cookie, 'X-CSRF-Token': authAs.csrf } : AUTH_HEADER;
       const res = await injectWebServer({
         method: init.method ?? 'GET',
         url,
-        headers: { ...(init.headers ?? {}), ...AUTH_HEADER },
+        headers: { ...(init.headers ?? {}), ...auth },
         ...(init.body !== undefined ? { payload: init.body } : {}),
       });
+      if (beforeReply) {
+        const run = beforeReply;
+        beforeReply = null;
+        run();
+      }
       return { ok: res.statusCode < 400, status: res.statusCode, json: async () => JSON.parse(res.body) };
     };
     const twoQuestions = {
@@ -166,6 +184,8 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
         'acPost',
         'acRefusal',
         'stripRecommendedMarker',
+        'mcStateFor',
+        'selectMc',
       ],
       {
         fetch: fetchBridge,
@@ -175,8 +195,9 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
         dashToast: (t: { title: string; tone?: string }) => {
           if (t.tone === 'error') alerts.push(t.title);
         },
-        _acState: {},
+        _acState: acState,
         acRepaint: () => {},
+        renderMultiChoicePanel: () => {},
         document: { querySelector: () => fakeNode(), querySelectorAll: () => [] },
         setTimeout: () => 0,
         console: { error() {}, warn() {} },
@@ -237,7 +258,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
   describe('#599 ⑤ — on a dashboard task the answer carries the question’s askId to the task handler', () => {
     const TASK = 'task:11111111-2222-4333-8444-555555555555';
     let taskHandler: ReturnType<typeof vi.fn>;
-    beforeEach(() => {
+    beforeEach(async () => {
       dashboard.setDashboardSessionAccessor(
         () =>
           new Map([
@@ -247,6 +268,13 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
       );
       taskHandler = vi.fn().mockResolvedValue({ status: 202, body: { ok: true } });
       dashboard.setDashboardTaskAnswerHandler(taskHandler as any);
+      // A task's answer is the signed-in owner's alone (#637 R1): no bearer here.
+      const { issueSlackToken } = await import('../oauth');
+      const token = issueSlackToken({ slackUserId: 'U1', email: 'U1@slack.local', name: 'U1' });
+      const sso = await injectWebServer({ method: 'GET', url: `/auth/sso?token=${encodeURIComponent(token)}` });
+      const cookie = String(sso.headers['set-cookie']).split(';')[0];
+      const me = JSON.parse((await injectWebServer({ method: 'GET', url: '/auth/me', headers: { cookie } })).body);
+      authAs = { cookie, csrf: me.csrfToken };
     });
     afterEach(() => dashboard.setDashboardTaskAnswerHandler(null));
 
@@ -254,7 +282,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
       const q = { ...single, askId: 'ask-7' };
       sessionCache[TASK] = { key: TASK, pendingQuestion: q };
       const st = await client.answerChoice(TASK, client.acQuestionId(q), '2');
-      expect(taskHandler).toHaveBeenCalledWith(TASK, 'ask-7', { kind: 'single', choiceId: '2' });
+      expect(taskHandler).toHaveBeenCalledWith(TASK, 'ask-7', { kind: 'single', choiceId: '2' }, 'U1');
       expect(st).toMatchObject({ status: 'resolved', outcome: 'answered' });
     });
 
@@ -266,12 +294,15 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
       mcState[TASK] = {
         selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } },
         activeQ: 0,
+        askId: 'ask-8',
       };
       await client.submitMultiChoice(TASK);
-      expect(taskHandler).toHaveBeenCalledWith(TASK, 'ask-8', {
-        kind: 'multi',
-        selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } },
-      });
+      expect(taskHandler).toHaveBeenCalledWith(
+        TASK,
+        'ask-8',
+        { kind: 'multi', selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } } },
+        'U1',
+      );
       expect(alerts).toEqual([]);
     });
 
@@ -281,8 +312,56 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
         pendingQuestion: { ...(sessionCache[KEY].pendingQuestion as object), askId: 'ask-9' },
       };
       await client.submitAllRecommended(TASK);
-      expect(taskHandler).toHaveBeenCalledWith(TASK, 'ask-9', { kind: 'recommended' });
+      expect(taskHandler).toHaveBeenCalledWith(TASK, 'ask-9', { kind: 'recommended' }, 'U1');
       expect(alerts).toEqual([]);
+    });
+
+    // #637 R1 (astra P1) — selections belong to the question that collected them.
+    it('form selections collected for one ask are never sent with the next ask’s id', async () => {
+      const form = sessionCache[KEY].pendingQuestion as object;
+      sessionCache[TASK] = { key: TASK, pendingQuestion: { ...form, askId: 'ask-B' } };
+      mcState[TASK] = {
+        selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } },
+        activeQ: 0,
+        askId: 'ask-A',
+      };
+      await client.submitMultiChoice(TASK);
+      expect(taskHandler).not.toHaveBeenCalled();
+      expect(requests.some((r) => r.url.endsWith('/answer-multi-choice'))).toBe(false);
+      expect(alerts.length).toBe(1);
+      expect(mcState[TASK]).toBeUndefined();
+    });
+
+    it('a new ask starts with no selections: the previous ask’s answers do not carry over', () => {
+      const form = sessionCache[KEY].pendingQuestion as object;
+      sessionCache[TASK] = { key: TASK, pendingQuestion: { ...form, askId: 'ask-A' } };
+      client.selectMc(TASK, 0, '1', 'a');
+      client.selectMc(TASK, 1, '1', 'b');
+      expect(mcState[TASK]).toMatchObject({ askId: 'ask-A', selections: { q1: {}, q2: {} } });
+      sessionCache[TASK] = { key: TASK, pendingQuestion: { ...form, askId: 'ask-B' } };
+      client.selectMc(TASK, 0, '1', 'a');
+      expect(mcState[TASK].askId).toBe('ask-B');
+      expect(Object.keys(mcState[TASK].selections)).toEqual(['q1']);
+    });
+
+    // #637 R1 (astra P2) — two asks with the same text are two questions.
+    it('the same question asked twice is two questions: a late answer to the first never resolves the second', async () => {
+      const a = { ...single, askId: 'ask-A' };
+      const b = { ...single, askId: 'ask-B' };
+      expect(client.acQuestionId(a)).not.toBe(client.acQuestionId(b));
+      sessionCache[TASK] = { key: TASK, pendingQuestion: a };
+      // The answer to A reaches the server; before its response, B is pushed.
+      beforeReply = () => {
+        sessionCache[TASK].pendingQuestion = b;
+      };
+      await client.answerChoice(TASK, client.acQuestionId(a), '2');
+      expect(acState[TASK]?.[client.acQuestionId(b)]).toBeUndefined();
+      // B is answered with its own id, by its own request.
+      taskHandler.mockClear();
+      expect(await client.answerChoice(TASK, client.acQuestionId(a), '2')).toBeNull();
+      await client.answerChoice(TASK, client.acQuestionId(b), '1');
+      expect(taskHandler).toHaveBeenCalledTimes(1);
+      expect(taskHandler).toHaveBeenCalledWith(TASK, 'ask-B', { kind: 'single', choiceId: '1' }, 'U1');
     });
   });
 

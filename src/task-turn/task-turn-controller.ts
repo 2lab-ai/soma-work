@@ -79,6 +79,8 @@ export interface TaskAnswerRequest {
   sessionKey: string;
   askId: string;
   answer: TaskAnswer;
+  /** The signed-in user answering; only the task's owner may (#637 R1). */
+  actorUserId: string;
 }
 
 export interface TaskTurnController {
@@ -132,6 +134,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
 
   function admit(
     request: TaskCommandRequest,
+    opts: { answer?: boolean } = {},
   ):
     | { ok: true; session: ConversationSession; ctx: ExecutionContext; ownerId: string; startedAt: number }
     | { ok: false; response: TaskCommandResponse } {
@@ -142,7 +145,17 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       return { ok: false, response: refuse(400, 'attachments are not supported on a dashboard task yet') };
     }
     const text = request.text.trim();
-    if (SLASH_COMMAND.test(text) || SESSION_COMMAND.test(text)) {
+    if (opts.answer) {
+      // An answer is not a command (#637 R1): `%…` is only a Slack router's
+      // prefix and runs as text. A leading `/word` would be read as a command
+      // by the SDK, so that one answer is refused with its reason.
+      if (SLASH_COMMAND.test(text)) {
+        return {
+          ok: false,
+          response: refuse(422, 'this answer would be read as a command — send it as an instruction instead'),
+        };
+      }
+    } else if (SLASH_COMMAND.test(text) || SESSION_COMMAND.test(text)) {
       return {
         ok: false,
         response: refuse(400, 'commands are not supported on a dashboard task yet — send an instruction'),
@@ -172,8 +185,12 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     return { ok: true, session, ctx, ownerId, startedAt: t };
   }
 
-  async function start(request: TaskCommandRequest): Promise<TaskCommandResponse> {
-    const admitted = admit(request);
+  function start(request: TaskCommandRequest): Promise<TaskCommandResponse> {
+    return startChain(request, {});
+  }
+
+  async function startChain(request: TaskCommandRequest, opts: { answer?: boolean }): Promise<TaskCommandResponse> {
+    const admitted = admit(request, opts);
     if (!admitted.ok) return admitted.response;
     const { session, ctx, ownerId, startedAt } = admitted;
     const { sessionKey } = request;
@@ -391,6 +408,10 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
   async function answer(request: TaskAnswerRequest): Promise<TaskCommandResponse> {
     const session = deps.getSession(request.sessionKey);
     if (!session || session.slackless !== true) return refuse(409, 'not a dashboard task');
+    // The turn runs under the owner's identity: only the owner answers (#637 R1).
+    if (!request.actorUserId || request.actorUserId !== session.ownerId) {
+      return refuse(403, 'only the task owner can answer its question');
+    }
     const question = session.actionPanel?.pendingQuestion as { askId?: string } | undefined;
     if (session.activityState !== 'waiting' || !question) {
       return refuse(409, 'the task is not waiting for an answer');
@@ -402,7 +423,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     // synchronously — before its first await — so a concurrent second answer
     // finds no open question. A refused or unsaved start leaves (or puts back)
     // the question, so the answer can be sent again.
-    return start({ sessionKey: request.sessionKey, text: built.text });
+    return startChain({ sessionKey: request.sessionKey, text: built.text }, { answer: true });
   }
 
   async function close(sessionKey: string): Promise<void> {

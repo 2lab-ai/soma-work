@@ -32,10 +32,14 @@ async function seed(overrides: Partial<PendingApproval> = {}): Promise<string> {
   return id;
 }
 
-function sessions() {
+function sessions(activeTaskTurnId: string | undefined = 't-1') {
+  const live = { activeTaskTurnId };
   return {
     getSessionKey: vi.fn((channel: string, threadTs?: string) => `${channel}-${threadTs ?? ''}`),
     disableDangerousRules: vi.fn(),
+    // The live task, as the registry has it: its running turn (#637 R1 fence).
+    getSessionByKey: vi.fn((_key: string) => live),
+    live,
   };
 }
 
@@ -259,6 +263,65 @@ describe('#599 ⑤ — a Slack-less task’s approval (keyed by task, not thread
         thread: { taskKey: TASK, turnId: '' },
       }),
     ).toMatchObject({ ok: false, reason: 'not_found' });
+  });
+
+  // #637 R1 (astra P2) — the answer is checked against the task's running turn
+  // again after every await: once that turn has ended (expiry + a new turn,
+  // or a restart) the answer neither stores anything nor changes the task's rules.
+  it('approve_disable_rule after the turn changed (before the answer is stored) stores nothing and keeps the rules', async () => {
+    const id = await taskSeed();
+    const reg = sessions('t-2');
+    const r = await answerPermissionPrompt({
+      approvalId: id,
+      actor: 'U_REQ',
+      decision: 'approve_disable_rule',
+      sessions: reg,
+      thread: { taskKey: TASK, turnId: 't-1' },
+    });
+    expect(r).toMatchObject({ ok: false, reason: 'not_found' });
+    expect(reg.disableDangerousRules).not.toHaveBeenCalled();
+    // Nothing was stored: the waiter (if any) would only time out.
+    expect(await sharedStore.waitForPermissionResponse(id, 600)).toEqual({
+      behavior: 'deny',
+      message: 'Permission request timed out',
+    });
+  });
+
+  it('approve_disable_rule whose turn ends while the answer is being stored keeps the task’s rules', async () => {
+    const id = await taskSeed();
+    const reg = sessions('t-1');
+    const store = sharedStore.storePermissionResponse.bind(sharedStore);
+    const spy = vi.spyOn(sharedStore, 'storePermissionResponse').mockImplementationOnce(async (...a) => {
+      reg.live.activeTaskTurnId = 't-2'; // the hook timed out; the next turn began
+      return store(...a);
+    });
+    try {
+      const r = await answerPermissionPrompt({
+        approvalId: id,
+        actor: 'U_REQ',
+        decision: 'approve_disable_rule',
+        sessions: reg,
+        thread: { taskKey: TASK, turnId: 't-1' },
+      });
+      expect(r).toMatchObject({ ok: true, disabledRuleIds: [] });
+      expect(reg.disableDangerousRules).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('a task’s rules are never disabled without a way to read its running turn (fail-closed)', async () => {
+    const id = await taskSeed();
+    const reg = { getSessionKey: vi.fn(), disableDangerousRules: vi.fn() };
+    const r = await answerPermissionPrompt({
+      approvalId: id,
+      actor: 'U_REQ',
+      decision: 'approve_disable_rule',
+      sessions: reg,
+      thread: { taskKey: TASK, turnId: 't-1' },
+    });
+    expect(r).toMatchObject({ ok: true, disabledRuleIds: [] });
+    expect(reg.disableDangerousRules).not.toHaveBeenCalled();
   });
 
   it('approve_disable_rule silences the rules on the task’s own key', async () => {
