@@ -9444,11 +9444,20 @@ function showMoreTree() {
   if (!host || !(host._hidden > 0) || host._growing) return false;
   _treeWindow += AT_PANEL_WINDOW;
   host._growing = true;
-  paintTreeTab();
+  // The scroller asks from its scroll handler and takes the reader's place in the next frame (its own frame,
+  // queued before this one): the tree grows a frame later, after that capture, so the scroller restores the
+  // reader's row when the growth lands (D6b review P1). A frame after the growth it hears that more still wait.
   requestAnimationFrame(function() {
-    host._growing = false;
-    if (_psec !== 'tree') return;
-    if (typeof host.prependItems === 'function') host.prependItems([], { hasMore: host._hidden > 0 });
+    if (_psec !== 'tree') {
+      host._growing = false;
+      return;
+    }
+    paintTreeTab();
+    requestAnimationFrame(function() {
+      host._growing = false;
+      if (_psec !== 'tree') return;
+      if (typeof host.prependItems === 'function') host.prependItems([], { hasMore: host._hidden > 0 });
+    });
   });
   return true;
 }
@@ -10018,13 +10027,19 @@ function renderPanelGoal() {
   // Task view T1.6: a session with no goal keeps the empty editor for 자세히.
   el.classList.toggle('is-empty', !(g && (g.current || (g.queue && g.queue.length) || (g.history && g.history.length))));
   var card = el.firstElementChild;
-  if (!card || card.tagName !== 'UI-GOAL-CARD' || el._key !== panelSessionKey) {
+  // A new card for every panel opening (SSOT 2026-10-29: each opening starts with the past goals folded — the
+  // element keeps its fold across data); reopening the same session carries the unsent add-box draft over
+  // (D6b review P2). Repaints within one opening keep the card and its fold.
+  if (!card || card.tagName !== 'UI-GOAL-CARD' || el._key !== panelSessionKey || el._gen !== _panelGen) {
+    var draft = card && card.tagName === 'UI-GOAL-CARD' && el._key === panelSessionKey && typeof card.draft === 'string' ? card.draft : '';
     el.innerHTML = '';
     card = document.createElement('ui-goal-card');
     card.setAttribute('lang', 'ko');
     card.setAttribute('data-goal-key', panelSessionKey);
     el.appendChild(card);
+    if (draft) card.draft = draft;
     el._key = panelSessionKey;
+    el._gen = _panelGen;
   }
   var d = goalCardData(s, canEdit);
   var sig = JSON.stringify(d);
@@ -16483,14 +16498,21 @@ async function openNewTask() {
 function closeNewTask() {
   var dlg = ntEl('nt-dialog');
   if (!dlg || !dlg.open || typeof dlg.hide !== 'function') return;
+  ntShowFab();
   dlg.hide();
 }
 
-// The sheet has gone — the person's Esc / scrim / ✕ or the page's closeNewTask, after the exit (the element's
-// ui-closed, 0.12.0 — D4 G6-2; a sheet reopened within its exit never sends it): the FAB comes back; a recording in
-// progress is dropped and a preview stops.
-function ntOnClosed() {
+// The FAB comes back as the close begins, not after the exit: the element gives focus back just before ui-closed,
+// and a FAB still display:none then cannot take it (focus would drop on the body).
+function ntShowFab() {
   document.body.classList.remove('nt-open');
+}
+
+// The sheet has gone — the person's Esc / scrim / ✕ or the page's closeNewTask, after the exit (the element's
+// ui-closed, 0.12.0 — D4 G6-2; a sheet reopened within its exit never sends it): a recording in progress is
+// dropped and a preview stops (the FAB is already back: ntShowFab at the close's start).
+function ntOnClosed() {
+  ntShowFab();
   ntQuietComposer();
 }
 
@@ -16808,6 +16830,12 @@ function ntInit() {
   if (!dlg) return;
   // <ui-dialog>: Esc, the scrim and ✕ ask to close (ui-close) — the element settles out and gives focus back, then
   // says so (ui-closed, after every exit, the page's hide() too): the page lets go of what it owns.
+  dlg.addEventListener('ui-close', function (e) {
+    // The person's close, once no listener turned it down (emit dispatches synchronously; read it after).
+    queueMicrotask(function () {
+      if (!e.defaultPrevented) ntShowFab();
+    });
+  });
   dlg.addEventListener('ui-closed', function () {
     ntOnClosed();
   });
