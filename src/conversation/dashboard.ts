@@ -4810,8 +4810,6 @@ ui-drawer:not(:defined) { display: none; }
 .psec-el > * { flex: 1 1 auto; min-height: 0; }
 .psec-el > ui-conversation, .psec-el > ui-work-log { padding: 4px 8px 0; }
 .cv-arts-slot .turn-arts-row { margin-top: 2px; }
-/* 요약 실패 · 다시 시도 (G-04) under the answer, until the summary lands. */
-.cv-resum { display: flex; align-items: center; gap: 8px; margin: 6px 0 0; font-size: 12.5px; color: var(--text-secondary); }
 .psec[hidden] { display: none; }
 .psec:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
 .psec-older { display: block; margin: 10px auto 2px; padding: 5px 14px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
@@ -5795,7 +5793,6 @@ var STRINGS = {
   summaryPending: '요약 만드는 중…',
   retry: '다시 시도',
   retrying: '다시 시도 중…',
-  queued: '요청함',
   titlePending: '부제 만드는 중…',
   titleFailed: '부제를 만들지 못했습니다',
   titleCooldown: '부제를 만들지 못했습니다 — 1분 뒤 다시 시도하세요',
@@ -14658,14 +14655,25 @@ function convEl() {
 }
 // What the list says without turns (G-13: in Korean, the element's own empty state).
 var CONV_EMPTY = { none: '아직 대화가 없습니다', unrecorded: '기록된 대화가 없습니다' };
-// Pure: the turn's summary — the heading of an answer that is empty or failed,
-// and Raw's 요약 view: its title and body, else that it is still being made or failed.
-function convSummaryOf(t) {
+// Pure: the turn's summary — the heading of an answer that is empty or failed, and Raw's 요약 view: its title
+// and body; else that it is still being made; else that it failed (summary.error, the alert mark) with the
+// element's Retry (summary.canRetry → ui-retry { id, what: 'summary' } → convResummarize; G-04) when the turn
+// can be asked for again — or, once asked (c.resum), that the retry is on its way until the next poll brings
+// the summary.
+function convSummaryOf(t, c) {
   var title = t && t.summaryTitle ? String(t.summaryTitle) : '';
-  var text = t && t.summaryBody ? String(t.summaryBody) : t && t.summarized ? STRINGS.summaryFailed : STRINGS.summaryPending;
   var out = {};
   if (title) out.title = title;
-  if (text) out.text = text;
+  if (t && t.summaryBody) out.text = String(t.summaryBody);
+  else if (!(t && t.summarized)) out.text = STRINGS.summaryPending;
+  else {
+    var askable = !!(c && c.cid && t.id);
+    if (askable && c.resum && c.resum[resumKey(c.cid, t.id)]) out.text = STRINGS.retrying;
+    else {
+      out.error = STRINGS.summaryFailed;
+      if (askable) out.canRetry = true;
+    }
+  }
   return out;
 }
 // Pure: a turn soma-work put there (sysTurnInfo) as the element's system turn —
@@ -14683,19 +14691,17 @@ function convSysTurn(t, info, id, at, c, notLast) {
     if (st.phase === 'live') x.progress = { startedAt: st.start, estimateMs: st.est, verb: '압축 중…' };
     else x.text = cpDoneText(info, st);
   }
-  // The files the turn carried (the message an auto-compact intercepted): a
-  // system turn has no media slot in the element (D3-GAPS G1-2) — their names.
-  var atts = Array.isArray(t.attachments) ? t.attachments.filter(function(f) { return f && f.id; }) : [];
-  if (atts.length) facts = facts.concat([['첨부 파일', atts.map(function(f) { return String(f.name || f.id); }).join(', ')]]);
   if (facts.length) x.facts = facts.map(function(f) { return [String(f[0]), String(f[1])]; });
   if (info.raw) x.raw = String(info.raw);
   return x;
 }
 // Pure: the element's turns for the main agent's turns (oldest first), and the
-// slotted children they ask for — a user's files (media-<id>) and the files an
-// answer produced (attachments-<id>: an artifact goes to the first answer whose
-// turn window holds its turn start). c: { cid, bot, now, working, answers
-// (cache key → raw), failed (cache key → why), arts, titles }.
+// slotted children they ask for — the files a turn carried (media-<id>: a
+// person's above their words; a system turn's — the message an auto-compact
+// intercepted — in its open detail) and the files an answer produced
+// (attachments-<id>: an artifact goes to the first answer whose turn window
+// holds its turn start). c: { cid, bot, now, working, answers (cache key → raw),
+// failed (cache key → why), arts, titles, resum (summary retries asked for) }.
 function convTurnsOf(list, c) {
   var turns = [];
   var slots = [];
@@ -14711,23 +14717,24 @@ function convTurnsOf(list, c) {
     if (t.role === 'user') {
       var atts = Array.isArray(t.attachments) ? t.attachments.filter(function(a) { return a && a.id; }) : [];
       var sys = sysTurnInfo(t);
-      if (sys) turns.push(convSysTurn(t, sys, id, at, c, i < list.length - 1));
+      var u;
+      if (sys) u = convSysTurn(t, sys, id, at, c, i < list.length - 1);
       else {
         var said = splitInvokedSkills(decodeSlackEntities(t.rawContent || ''));
-        var u = { id: id, role: 'user', name: String(t.userName || 'User'), text: said.text };
+        u = { id: id, role: 'user', name: String(t.userName || 'User'), text: said.text };
         if (at) u.at = at;
-        if (atts.length) {
-          u.media = true;
-          slots.push({ name: 'media-' + id, kind: 'media', list: atts, turn: t });
-        }
         if (said.skills.length) u.skills = said.skills.map(function(sk) { return { name: sk.name, tokens: sk.tokens, text: sk.body }; });
-        turns.push(u);
       }
+      if (atts.length) {
+        u.media = true;
+        slots.push({ name: 'media-' + id, kind: 'media', list: atts, turn: t });
+      }
+      turns.push(u);
     } else {
       var a = { id: id, role: 'assistant', name: c.bot };
       if (at) a.at = at;
-      var sum = convSummaryOf(t);
-      if (sum.title || sum.text) a.summary = sum;
+      var sum = convSummaryOf(t, c);
+      if (sum.title || sum.text || sum.error) a.summary = sum;
       // D11 — from the instruction to the recorded answer; an optimistic
       // instruction carries this browser's clock, not the server's: no time.
       var pts = prev ? toNum(prev.timestamp) : 0;
@@ -14746,14 +14753,9 @@ function convTurnsOf(list, c) {
       } else a.markdown = '';
       var mine = (c.arts || []).filter(function(x) { return x && !used[x.id] && artInTurn(x, start, ts); });
       mine.forEach(function(x) { used[x.id] = true; });
-      // G-04 요약 실패 · 다시 시도: the element has no summary action (D3-GAPS G1-3), so the retry rides
-      // in the turn's attachments slot until the summary arrives (the next poll drops it).
-      var resum = t.id && c.cid && t.summarized && !t.summaryBody ? { cid: c.cid, turnId: String(t.id) } : null;
-      if (mine.length || resum) {
+      if (mine.length) {
         a.attachments = true;
-        var slot = { name: 'attachments-' + id, kind: 'arts', list: mine, start: start, end: ts };
-        if (resum) slot.resum = resum;
-        slots.push(slot);
+        slots.push({ name: 'attachments-' + id, kind: 'arts', list: mine, start: start, end: ts });
       }
       turns.push(a);
     }
@@ -14769,8 +14771,7 @@ function convSlots(el, slots, cid) {
   for (var i = 0; i < slots.length; i++) {
     var sl = slots[i];
     if (sl.kind === 'media') umRegister(cid, sl.list, sl.turn);
-    want[sl.name] = sl.kind === 'media' ? renderUserMedia(cid, sl.list)
-      : (sl.list.length ? renderTurnArtifacts(sl.list, cid, sl.start, sl.end) : '') + (sl.resum ? convResumHtml(sl.resum) : '');
+    want[sl.name] = sl.kind === 'media' ? renderUserMedia(cid, sl.list) : renderTurnArtifacts(sl.list, cid, sl.start, sl.end);
   }
   var kids = Array.prototype.slice.call(el.children);
   for (var k = 0; k < kids.length; k++) {
@@ -14794,22 +14795,37 @@ function convSlots(el, slots, cid) {
     el.appendChild(d);
   }
 }
-// 요약 실패 · 다시 시도 (G-04): asks the server to summarize the turn again (POST …/resummarize/:turnId);
-// the button carries its ids as data (initConversation answers its click — no inline handler).
-function convResumHtml(r) {
-  return '<p class="cv-resum"><span class="cv-resum-note">' + esc(STRINGS.summaryFailed) + '</span> '
-    + '<button type="button" class="ui-btn is-sm" data-resum-cid="' + escAttr(r.cid) + '" data-resum-turn="' + escAttr(r.turnId) + '">' + esc(STRINGS.retry) + '</button></p>';
+// 요약 실패 · 다시 시도 (G-04): the element's Retry on a turn's summary (Raw's 요약 view) asks the server to
+// summarize the turn again (POST …/resummarize/:turnId, the page's CSRF token, one retry after a refresh). While
+// the request is out, and until the next poll brings the summary, the view reads 다시 시도 중…; a refused request
+// puts the Retry back. A subagent's turns carry no summary: only the main agent's conversation asks.
+var _resumSent = Object.create(null); // resumKey → the resummarize asked for (until the summary lands)
+function resumKey(cid, turnId) {
+  return cid + '|' + turnId;
 }
-async function resummarize(convId, turnId, btn) {
-  btn.disabled = true;
-  btn.textContent = STRINGS.retrying;
+function convResummarize(id) {
+  if (_panelAgent || id === null || id === undefined || id === '') return;
+  var cid = _panelTurnsCid || panelConvId || '';
+  if (cid) resummarize(cid, String(id));
+}
+async function resummarize(convId, turnId) {
+  var key = resumKey(convId, turnId);
+  if (_resumSent[key]) return;
+  _resumSent[key] = true;
+  convPaint();
+  var url = '/api/dashboard/session/' + encodeURIComponent(convId) + '/resummarize/' + encodeURIComponent(turnId);
+  var ok = false;
   try {
-    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(convId) + '/resummarize/' + encodeURIComponent(turnId), { method: 'POST' });
-    if (!res.ok) throw new Error('Failed');
-    btn.textContent = STRINGS.queued;
-  } catch (e) {
-    btn.disabled = false;
-    btn.textContent = STRINGS.retry;
+    var res = await fetch(url, { method: 'POST', headers: _csrfToken ? { 'X-CSRF-Token': _csrfToken } : {} });
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      res = await fetch(url, { method: 'POST', headers: _csrfToken ? { 'X-CSRF-Token': _csrfToken } : {} });
+    }
+    ok = res.ok;
+  } catch (_e) {}
+  if (!ok) {
+    delete _resumSent[key];
+    convPaint();
   }
 }
 // The element's data, written only when it changed (a poll that changes
@@ -14837,7 +14853,7 @@ function convPaint() {
   var working = s ? s.activityState === 'working' : Object.keys(_sessionCache).length === 0;
   var built = convTurnsOf(_panelTurnsList, {
     cid: cid, bot: botNameOf(s), now: Date.now(), working: working,
-    answers: _rawLoadedCache, failed: _ansFailed,
+    answers: _rawLoadedCache, failed: _ansFailed, resum: _resumSent,
     arts: cid && _artCache[cid] ? _artCache[cid].list || [] : [],
     titles: ansLinkTitles(ansSession(cid)),
   });
@@ -15042,11 +15058,6 @@ function ansPendingShow(s, convId, lastRole) {
 (function initConversation() {
   var el = convEl();
   if (!el) return;
-  // 요약 실패 · 다시 시도 in a turn's attachments slot (light DOM: the click lands here as it is).
-  el.addEventListener('click', function(e) {
-    var b = e.target && e.target.closest ? e.target.closest('button[data-resum-turn]') : null;
-    if (b && !b.disabled && el.contains(b)) resummarize(b.getAttribute('data-resum-cid'), b.getAttribute('data-resum-turn'), b);
-  });
   el.addEventListener('ui-load-older', function(e) {
     if (_panelAgent || !_panelTurnsHasMore || _panelTurnsLoading) {
       e.preventDefault();
@@ -15054,9 +15065,11 @@ function ansPendingShow(s, convId, lastRole) {
     }
     loadMorePanelTurns();
   });
+  // Try again on an answer or the list (convRetry), or on a turn's summary (what: 'summary' — G-04).
   el.addEventListener('ui-retry', function(e) {
     var d = e.detail || {};
-    convRetry(d.id);
+    if (d.what === 'summary') convResummarize(d.id);
+    else convRetry(d.id);
   });
   if (window.customElements && customElements.whenDefined) {
     customElements.whenDefined('ui-conversation').then(function() {

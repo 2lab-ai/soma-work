@@ -318,24 +318,40 @@ describe('C2 — the one-line row (<ui-conversation> system turn)', () => {
     expect(one(user('익명', { ...PERSON, userName: undefined })).name).toBe('User');
   });
 
-  it('files on a one-line turn (the message the auto-compact intercepted): their names in its facts (D3-GAPS G1-2)', () => {
-    const x = api().one(
-      user('/compact', {
-        ...SYSTEM,
-        compact: {},
-        timestamp: Date.now() - 3_600_000,
-        attachments: [
+  it('files on a one-line turn (the message the auto-compact intercepted): the media slot of its open detail (G1-2, 0.12.0)', () => {
+    const sys = user('/compact', {
+      ...SYSTEM,
+      compact: {},
+      timestamp: Date.now() - 3_600_000,
+      attachments: [
+        { id: 'F1', name: 'a.png', kind: 'image' },
+        { id: 'F2', name: 'b.pdf' },
+        { name: 'no-id.txt' },
+      ],
+    });
+    const built = api().conv([sys]);
+    const x = built.turns[0];
+    expect(x.role).toBe('system');
+    expect(x.media).toBe(true);
+    expect(JSON.stringify(x.facts ?? [])).not.toContain('첨부 파일');
+    expect(built.slots).toEqual([
+      expect.objectContaining({
+        name: 'media-u1',
+        kind: 'media',
+        list: [
           { id: 'F1', name: 'a.png', kind: 'image' },
           { id: 'F2', name: 'b.pdf' },
         ],
       }),
-    );
-    expect(x.role).toBe('system');
-    expect(x.facts).toContainEqual(['첨부 파일', 'a.png, b.pdf']);
-    // A person's files go in the media slot above their words.
-    const built = api().conv([user('보세요', { ...PERSON, attachments: [{ id: 'F1', name: 'a.png' }] })]);
-    expect(built.turns[0].media).toBe(true);
-    expect(built.slots).toEqual([expect.objectContaining({ name: 'media-u1', kind: 'media' })]);
+    ]);
+    // Without files: no slot, no media flag.
+    const bare = api().conv([user('/compact', { ...SYSTEM, compact: {}, timestamp: Date.now() - 3_600_000 })]);
+    expect(bare.turns[0]).not.toHaveProperty('media');
+    expect(bare.slots).toEqual([]);
+    // A person's files go in the same slot, above their words.
+    const person = api().conv([user('보세요', { ...PERSON, attachments: [{ id: 'F1', name: 'a.png' }] })]);
+    expect(person.turns[0].media).toBe(true);
+    expect(person.slots).toEqual([expect.objectContaining({ name: 'media-u1', kind: 'media' })]);
   });
 
   it('a restart row says so in one line', () => {

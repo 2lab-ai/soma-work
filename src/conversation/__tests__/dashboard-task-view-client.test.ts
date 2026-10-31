@@ -648,7 +648,7 @@ describe('T1.4 · an assistant turn reads as its answer; Raw sits at the bottom 
     expect(src).toContain('a.markdown = raw;');
     expect(src).toContain('else a.loading = true;');
     // Raw (요약 · 원문) is the element's, at the turn's foot: the summary and the source it is handed.
-    expect(src).toContain('if (sum.title || sum.text) a.summary = sum;');
+    expect(src).toContain('if (sum.title || sum.text || sum.error) a.summary = sum;');
     expect(clientFn('convSummaryOf')).toContain('t.summaryBody');
     expect(TEMPLATE).not.toContain('답변 전문');
   });
