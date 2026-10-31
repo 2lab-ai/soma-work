@@ -17,6 +17,7 @@
  * (the store record is removed by the MCP child once it reads the answer).
  */
 
+import * as path from 'node:path';
 import {
   MCP_GRANT_KIND,
   PERMISSION_PROMPT_KIND,
@@ -27,6 +28,7 @@ import {
 import type { AdminApproval, AdminApprovalAdapter, AdminApprovalResolution } from '../admin-approvals';
 import { notifyAdminApprovalsChanged } from '../admin-approvals';
 import { isAdminUser } from '../admin-utils';
+import { DATA_DIR } from '../env-paths';
 import { Logger } from '../logger';
 import { MAX_GRANT_DURATION_MS, mcpToolGrantStore, type PermissionLevel, parseDuration } from '../mcp-tool-grant-store';
 
@@ -55,6 +57,18 @@ export function isMcpGrantRecord(p: PendingApproval | null | undefined): p is Pe
   return p.kind !== PERMISSION_PROMPT_KIND && p.tool_name === 'request_permission';
 }
 
+/**
+ * Whether this instance owns the record. The store is shared by every
+ * instance on the host (os.tmpdir()). The dashboard (`strict`) sees only
+ * records its own child stamped; a Slack click — which only ever reaches the
+ * instance that posted the button — also accepts a record from a child that
+ * predates the stamp.
+ */
+export function isOwnMcpGrantRecord(p: PendingApproval, strict: boolean): boolean {
+  if (!p.owner) return !strict;
+  return path.resolve(p.owner) === path.resolve(DATA_DIR);
+}
+
 const resolutions = new Map<string, AdminApprovalResolution>();
 const RESOLUTION_KEEP_MS = 60 * 60 * 1000;
 
@@ -72,7 +86,7 @@ export function clearMcpGrantResolutions(): void {
 export async function decideMcpGrant(args: DecideMcpGrantArgs): Promise<McpGrantAnswer> {
   const { requestId, decision, actor, via } = args;
   const pending = await sharedStore.getPendingApproval(requestId);
-  if (!isMcpGrantRecord(pending)) {
+  if (!isMcpGrantRecord(pending) || !isOwnMcpGrantRecord(pending, via === 'dashboard')) {
     return { ok: false, reason: 'not_found', message: '⚠️ 만료되었거나 더 이상 유효하지 않은 MCP 권한 요청입니다.' };
   }
   if (!actor || !isAdminUser(actor)) {
@@ -107,38 +121,34 @@ export async function decideMcpGrant(args: DecideMcpGrantArgs): Promise<McpGrant
   // The MCP child may have timed out between the read and the claim; the claim stays.
   const current = await sharedStore.getPendingApproval(requestId);
   if (!current) {
+    // Nobody can answer it any more; the claim would only make a retry read "already handled".
+    await sharedStore.releasePermissionClaim(requestId);
     return { ok: false, reason: 'not_found', message: '⚠️ 이 MCP 권한 요청은 만료되었습니다.' };
   }
   // Read after the claim: the freshest list of admin DM copies.
   const prompts = current.prompts ?? pending.prompts ?? [];
 
-  let response: PermissionResponse;
-  let text: string;
   const where = via === 'dashboard' ? ' (대시보드에서 응답)' : '';
+  const expiresAt = new Date(now + Math.min((durationMs as number) || 0, MAX_GRANT_DURATION_MS)).toISOString();
+  const text =
+    decision === 'approve'
+      ? `✅ Permission granted by <@${actor}>: <@${userId}> → \`${server}\` (${level}, ${duration}) until ${expiresAt}${where}`
+      : `❌ Permission denied by <@${actor}>: <@${userId}> → \`${server}\` (${level})${where}`;
+  const response: PermissionResponse =
+    decision === 'approve'
+      ? { behavior: 'allow', message: `Approved by <@${actor}>`, updatedInput: { expiresAt, grantedBy: actor } }
+      : { behavior: 'deny', message: `Denied by <@${actor}>` };
+  // The line every DM copy is rewritten to — here, and again by the waiting child (which knows every copy).
+  response.promptText = text;
   try {
-    if (decision === 'approve') {
-      const expiresAt = new Date(now + Math.min(durationMs as number, MAX_GRANT_DURATION_MS)).toISOString();
-      // Written in the main process too, so the grant is live here at once (no stale cache).
-      mcpToolGrantStore.setGrant(userId, server, level, expiresAt, actor);
-      text = `✅ Permission granted by <@${actor}>: <@${userId}> → \`${server}\` (${level}, ${duration}) until ${expiresAt}${where}`;
-      response = {
-        behavior: 'allow',
-        message: `Approved by <@${actor}>`,
-        updatedInput: { expiresAt, grantedBy: actor },
-      };
-    } else {
-      text = `❌ Permission denied by <@${actor}>: <@${userId}> → \`${server}\` (${level})${where}`;
-      response = { behavior: 'deny', message: `Denied by <@${actor}>` };
-    }
-    // The copies rewritten below; the waiting MCP child rewrites any it posted after this read.
-    response.promptText = text;
-    response.promptsRewritten = prompts.map((p) => p.ts);
+    // The response first: if it cannot be written, nothing was granted and the claim goes back.
     await sharedStore.storePermissionResponse(requestId, response);
   } catch (error) {
-    // Nothing reached the MCP child: give the claim back so the request can still be answered.
     await sharedStore.releasePermissionClaim(requestId);
     throw error;
   }
+  // Then the grant, in the main process too, so it is live here at once (the child also writes it on allow).
+  if (decision === 'approve') mcpToolGrantStore.setGrant(userId, server, level, expiresAt, actor);
 
   const outcome = decision === 'approve' ? 'approved' : 'denied';
   remember(requestId, { id: `mcp_grant:${requestId}`, outcome, choiceId: decision, by: actor, via, at: now });
@@ -188,7 +198,10 @@ export function mcpGrantAdminApprovalAdapter(updateDm: DecideMcpGrantArgs['updat
     async pending(now) {
       const out: AdminApproval[] = [];
       for (const { approvalId, approval } of await sharedStore.listPendingApprovals()) {
-        if (!isMcpGrantRecord(approval) || Number(approval.expires_at) <= now) continue;
+        if (!isMcpGrantRecord(approval) || !isOwnMcpGrantRecord(approval, true)) continue;
+        if (Number(approval.expires_at) <= now) continue;
+        // Answered, the child not yet done reading it: no longer something to act on.
+        if (await sharedStore.isPermissionClaimed(approvalId)) continue;
         out.push(mcpGrantApproval(approvalId, approval));
       }
       return out;

@@ -1,33 +1,33 @@
 /**
- * The admin DM copies an MCP grant answer did not reach (#621).
+ * Close every admin DM copy of an MCP grant request once it is over (#621).
  *
  * The answering process (a Slack click or the dashboard, in the main process)
- * rewrites the copies it read from the stored request and lists their `ts` in
- * `promptsRewritten`. A copy this MCP child recorded after that read — and
- * every copy when nobody answered in time — is rewritten here, so no copy
- * keeps live Approve / Deny buttons once the request is over.
+ * rewrites the copies it read from the stored request; this child, which
+ * recorded every copy and got the answer, rewrites them all again with the same
+ * line. That covers a copy recorded after the answer read the request, a
+ * rewrite that failed there, and the timeout (nobody answered) — no copy keeps
+ * live Approve / Deny buttons once the request is over.
  */
 
-export interface LatePromptResponse {
+export interface PromptCloseResponse {
   behavior: 'allow' | 'deny';
   message?: string;
+  /** The outcome line the answering process wrote (who answered, where). */
   promptText?: string;
-  promptsRewritten?: string[];
 }
 
-export interface LatePromptSlack {
+export interface PromptCloseSlack {
   chat: {
     update(args: { channel: string; ts: string; text: string; blocks: unknown[] }): Promise<unknown>;
   };
 }
 
-export async function closeLatePrompts(
-  slack: LatePromptSlack,
+export async function closePrompts(
+  slack: PromptCloseSlack,
   prompts: ReadonlyArray<{ channel: string; ts: string }>,
-  response: LatePromptResponse,
+  response: PromptCloseResponse,
   onError: (error: unknown) => void = () => {},
 ): Promise<number> {
-  const reached = new Set(response.promptsRewritten ?? []);
   const text =
     response.promptText ??
     (response.behavior === 'allow'
@@ -35,7 +35,6 @@ export async function closeLatePrompts(
       : `⌛ ${response.message ?? 'Permission request ended'}`);
   let closed = 0;
   for (const prompt of prompts) {
-    if (reached.has(prompt.ts)) continue;
     try {
       await slack.chat.update({
         channel: prompt.channel,

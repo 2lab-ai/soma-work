@@ -80,7 +80,7 @@ type MaybePromise<T> = T | Promise<T>;
 
 export interface AdminApprovalAdapter {
   kind: AdminApprovalKind;
-  /** Pending requests of this kind. Reads only — never writes the store. May read asynchronously (a file store). */
+  /** Pending requests of this kind. Never answers or changes a request (a store may prune expired ones). May read asynchronously. */
   pending(now: number): MaybePromise<AdminApproval[]>;
   /** Requests of this kind that ended at or after `since`. */
   resolved(since: number): MaybePromise<AdminApprovalResolution[]>;

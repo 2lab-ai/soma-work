@@ -1435,13 +1435,17 @@ export function adminApprovalsForWire(snapshot: AdminApprovalSnapshot): AdminApp
 }
 
 /** Push the admin approvals to admin viewers only — never on the shared board. */
+let _adminBroadcastSeq = 0;
+let _adminBroadcastSent = 0;
 export async function broadcastAdminApprovals(): Promise<void> {
   if (![...wsClients].some((c) => c.slackAdmin)) return;
+  // The snapshot read is async: a slower, older read must never land after a newer one.
+  const seq = ++_adminBroadcastSeq;
   try {
-    const payload = JSON.stringify({
-      type: 'admin_approvals',
-      snapshot: adminApprovalsForWire(await adminApprovalSnapshot()),
-    });
+    const snapshot = await adminApprovalSnapshot();
+    if (seq < _adminBroadcastSent) return;
+    _adminBroadcastSent = seq;
+    const payload = JSON.stringify({ type: 'admin_approvals', snapshot: adminApprovalsForWire(snapshot) });
     const now = Date.now();
     for (const client of wsClients) {
       // A socket outliving its sign-in gets nothing (the expiry timer closes it; this is the backstop).
