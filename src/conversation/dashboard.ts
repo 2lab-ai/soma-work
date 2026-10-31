@@ -2279,7 +2279,11 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...(s.slackless === true ? { slackless: true as const, ...noticeFailuresOf(key) } : {}),
     ...(s.slackless === true && s.kind === 'epic' ? { kind: 'epic' as const, epic: epicBundle(s) } : {}),
     ...(s.slackless === true && s.parentTaskId
-      ? { parentTaskId: s.parentTaskId, planNodeId: s.planNodeId, ...(s.closedBy ? { closedBy: s.closedBy } : {}) }
+      ? {
+          parentTaskId: s.parentTaskId,
+          planNodeId: s.planNodeId,
+          ...(s.closedBy ? { closedBy: { by: s.closedBy.by, at: s.closedBy.at } } : {}),
+        }
       : {}),
     ...(s.slackless === true && s.lastTurnOutcome
       ? {
@@ -2384,7 +2388,7 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
       ? {
           parentTaskId: archived.parentTaskId,
           planNodeId: archived.planNodeId,
-          ...(archived.closedBy ? { closedBy: archived.closedBy } : {}),
+          ...(archived.closedBy ? { closedBy: { by: archived.closedBy.by, at: archived.closedBy.at } } : {}),
         }
       : {}),
     conversationId: archived.conversationId,

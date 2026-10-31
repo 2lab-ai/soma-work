@@ -21,6 +21,7 @@ import type { AgentRegistry } from './session/agent-registry';
 import type { TaskLedger } from './session/task-ledger';
 import type {
   ActivityState,
+  ClosedByParent,
   ConversationSession,
   EpicEvent,
   EpicPlan,
@@ -70,7 +71,7 @@ export interface ArchivedSession {
   plan?: EpicPlan;
   epicEvents?: EpicEvent[];
   /** E4 ⑦ — a child closed by its epic's close. */
-  closedBy?: { by: 'parent'; at: number };
+  closedBy?: ClosedByParent;
 
   // Owner
   ownerId: string;

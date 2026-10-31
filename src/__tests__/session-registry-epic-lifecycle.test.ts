@@ -12,7 +12,8 @@
  *      chain end; a child being closed records its end delivered; never saved.
  *   L6 `closedBy` ends with a new chain on the child, not with a hop of the
  *      chain being closed.
- *   L7 a close before a child's first hop keeps the mark through that hop.
+ *   L7 the mark names the chain the close cancelled: that chain's hops keep
+ *      it (its first hop too), another chain ends it — no clock in the rule.
  *   L8 a closing epic's dropped event logs at info, a gone one's at warn.
  *   L9 a closing epic takes no new plan.
  */
@@ -191,27 +192,79 @@ describe('SessionRegistry — an epic tree’s lifecycle (E4 ⑦)', () => {
     expect(readSaved().find((r) => r.taskId === child.taskId)?.closedBy).toBeUndefined();
   });
 
-  it('L7 — a close that lands before a child’s first hop keeps its mark through that hop (fable #703 R2 P3-1)', () => {
+  it('L7 — the mark names the chain the close cancelled: that chain’s first hop keeps it, another chain ends it (fable #703 R2 P3-1, grok #709 R1)', () => {
     const reg = new SessionRegistry();
     const epic = reg.createTask({ ...BASE, kind: 'epic' });
     const child = reg.createTask({ ...BASE, parentTaskId: epic.taskId, planNodeId: 'login' });
     const key = `task:${child.taskId}`;
-    // An earlier chain ended before the close.
+    // The child's very first chain: the close lands while its first hop still makes the conversation.
+    reg.markClosedByParent(key, 7, 'ch1');
+    expect(child.lastTurnOutcome).toBeUndefined();
+    reg.beginTaskTurn(key, 't1', 'ch1');
+    expect(child.closedBy).toEqual({ by: 'parent', at: 7, chain: 'ch1' });
+    expect(readSaved().find((r) => r.taskId === child.taskId)?.closedBy).toEqual({ by: 'parent', at: 7, chain: 'ch1' });
+    reg.commitTaskTurnOutcome(key, cancelled('t1'), 'idle', { chainId: 'ch1', ends: true });
+    expect(child.closedBy).toEqual({ by: 'parent', at: 7, chain: 'ch1' });
+    reg.beginTaskTurn(key, 't2', 'ch2');
+    expect(child.closedBy).toBeUndefined();
+  });
+
+  it('L7b — no clock in the rule: a chain that ended in the close’s own millisecond does not end the mark', () => {
+    const reg = new SessionRegistry();
+    const epic = reg.createTask({ ...BASE, kind: 'epic' });
+    const child = reg.createTask({ ...BASE, parentTaskId: epic.taskId, planNodeId: 'login' });
+    const key = `task:${child.taskId}`;
     reg.beginTaskTurn(key, 't0', 'ch0');
-    reg.commitTaskTurnOutcome(key, { ...cancelled('t0'), outcome: 'finished', at: 5 }, 'idle', {
+    reg.commitTaskTurnOutcome(key, { ...cancelled('t0'), outcome: 'completed', at: 7 }, 'idle', {
       chainId: 'ch0',
       ends: true,
     });
-    // The close marks the child while its next chain's first hop is still being set up.
-    reg.markClosedByParent(key, 7);
+    reg.markClosedByParent(key, 7, 'ch1');
     reg.beginTaskTurn(key, 't1', 'ch1');
-    expect(child.closedBy).toEqual({ by: 'parent', at: 7 });
-    expect(readSaved().find((r) => r.taskId === child.taskId)?.closedBy).toEqual({ by: 'parent', at: 7 });
-    // That chain is the one the close cancels; a chain after it starts unmarked.
-    reg.commitTaskTurnOutcome(key, cancelled('t1'), 'idle', { chainId: 'ch1', ends: true });
-    expect(child.closedBy).toEqual({ by: 'parent', at: 7 });
+    expect(child.closedBy).toEqual({ by: 'parent', at: 7, chain: 'ch1' });
+  });
+
+  it('L7c — a close whose chain hung past the close wait: the next chain starts unmarked (fable #709 R1 P3-3)', () => {
+    const reg = new SessionRegistry();
+    const epic = reg.createTask({ ...BASE, kind: 'epic' });
+    const child = reg.createTask({ ...BASE, parentTaskId: epic.taskId, planNodeId: 'login' });
+    const key = `task:${child.taskId}`;
+    reg.beginTaskTurn(key, 't1', 'ch1');
+    reg.markClosedByParent(key, 7, 'ch1');
+    // ch1 never commits (its late commit is fenced); the owner starts another chain.
     reg.beginTaskTurn(key, 't2', 'ch2');
     expect(child.closedBy).toBeUndefined();
+  });
+
+  it('L7d — the mark and its chain survive a restart; the chain after the reconciled one ends it; a bad chain is dropped, the mark kept', () => {
+    const reg = new SessionRegistry();
+    const epic = reg.createTask({ ...BASE, kind: 'epic' });
+    const child = reg.createTask({ ...BASE, parentTaskId: epic.taskId, planNodeId: 'login' });
+    const key = `task:${child.taskId}`;
+    reg.beginTaskTurn(key, 't1', 'ch1');
+    reg.markClosedByParent(key, 7, 'ch1');
+    const after = new SessionRegistry();
+    after.loadSessions();
+    const reloaded = after.getSessionByTaskId(child.taskId!)!;
+    expect(reloaded.closedBy).toEqual({ by: 'parent', at: 7, chain: 'ch1' });
+    expect(reloaded.lastTurnOutcome?.outcome).toBe('interrupted');
+    after.beginTaskTurn(key, 't2', 'ch2');
+    expect(reloaded.closedBy).toBeUndefined();
+
+    fs.writeFileSync(
+      SESSIONS_FILE,
+      JSON.stringify([
+        slacklessRecord('epic-1', { kind: 'epic', childTaskIds: ['c1'] }),
+        slacklessRecord('c1', {
+          parentTaskId: 'epic-1',
+          planNodeId: 'login',
+          closedBy: { by: 'parent', at: 3, chain: 4 },
+        }),
+      ]),
+    );
+    const third = new SessionRegistry();
+    third.loadSessions();
+    expect(third.getSessionByTaskId('c1')?.closedBy).toEqual({ by: 'parent', at: 3 });
   });
 
   it('L8 — a closing epic’s dropped event is logged at info; a gone epic’s at warn (fable #703 R2 P3-2)', () => {
@@ -233,6 +286,15 @@ describe('SessionRegistry — an epic tree’s lifecycle (E4 ⑦)', () => {
     epic.terminated = true;
     reg.beginTaskTurn(key, 't2', 'ch2');
     reg.commitTaskTurnOutcome(key, cancelled('t2'), 'idle', { chainId: 'ch2', ends: true });
+    expect(dropped(warn).map(([m]) => m)).toEqual(['Epic event dropped — the epic is gone']);
+    expect(dropped(info)).toEqual([]);
+
+    // Absent altogether (archived): gone, at warn — even if its last mark was closing (fable #709 R1 P3-5).
+    warn.mockClear();
+    epic.terminated = false;
+    (reg as any).sessionsByTaskId.delete(epic.taskId);
+    reg.beginTaskTurn(key, 't3', 'ch3');
+    reg.commitTaskTurnOutcome(key, cancelled('t3'), 'idle', { chainId: 'ch3', ends: true });
     expect(dropped(warn).map(([m]) => m)).toEqual(['Epic event dropped — the epic is gone']);
     expect(dropped(info)).toEqual([]);
   });

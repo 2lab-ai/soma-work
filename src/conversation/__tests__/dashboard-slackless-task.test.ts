@@ -401,7 +401,8 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     expect(cardOf(plain.taskId).epic).toBeUndefined();
     // E4 ⑦ — a child its epic's close cancelled says so; none, no field.
     expect(childCard.closedBy).toBeUndefined();
-    child.closedBy = { by: 'parent', at: 7 };
+    // The mark's chain is the registry's; the card says who closed it and when (grok #709 R1).
+    child.closedBy = { by: 'parent', at: 7, chain: 'ch-1' };
     const again = [...(await board()).idle] as any[];
     const after = again
       .find((c) => c.key === `task:${epic.taskId}`)
@@ -616,14 +617,15 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
       archived('11111111-2222-4333-8444-555555555555', {
         parentTaskId: 'e-1',
         planNodeId: 'login',
-        closedBy: { by: 'parent', at: 7 },
+        closedBy: { by: 'parent', at: 7, chain: 'ch-1' },
       }),
       archived('21111111-2222-4333-8444-555555555555', { kind: 'epic' }),
     ];
     setDashboardSessionAccessor(() => reg.getAllSessions());
     const b = await board();
     const [c, e] = archiveState.items.map((a) => (b.closed as any[]).find((x) => x.key.includes(a.taskId)));
-    expect(c).toMatchObject({ parentTaskId: 'e-1', planNodeId: 'login', closedBy: { by: 'parent', at: 7 } });
+    expect(c).toMatchObject({ parentTaskId: 'e-1', planNodeId: 'login' });
+    expect(c.closedBy).toEqual({ by: 'parent', at: 7 });
     expect(c.kind).toBeUndefined();
     expect(e).toMatchObject({ kind: 'epic' });
     expect(e.parentTaskId).toBeUndefined();
