@@ -178,10 +178,11 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
     expect(at('<div class="panel-scroll" id="panel-scroll">')).toBeGreaterThan(at('id="panel-body"'));
     expect(at('<section class="panel-surface" id="panel-surface"')).toBeGreaterThan(at('id="panel-scroll"'));
     expect(at('id="panel-artifacts"')).toBeGreaterThan(at('id="panel-surface"'));
-    expect(at('<div class="panel-tabs" id="panel-tabs" role="tablist"')).toBeGreaterThan(at('id="panel-artifacts"'));
-    expect(at('<section class="panel-tabpanel" id="panel-tabpanel" role="tabpanel"')).toBeGreaterThan(
-      at('id="panel-tabs"'),
+    // D4 E-19: the agent strip is <ui-tabs shared-panel>; its one panel is the section slotted into it.
+    expect(at('<ui-tabs class="panel-tabs" id="panel-tabs" shared-panel panel-focus="none">')).toBeGreaterThan(
+      at('id="panel-artifacts"'),
     );
+    expect(at('<section class="panel-tabpanel" id="panel-tabpanel">')).toBeGreaterThan(at('id="panel-tabs"'));
     expect(
       at('<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>'),
     ).toBeGreaterThan(at('id="panel-tabpanel"'));
@@ -218,8 +219,8 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
     expect(scroll).toContain('overflow-y: auto');
     expect(scroll).toContain('min-height: 0');
     expect(scroll).not.toContain('grid-row');
-    // The agent tabs stay at the top of the scroll area while the conversation scrolls.
-    const tabs = rule('.panel-tabs');
+    // The agent tabs stay at the top of the scroll area while the conversation scrolls (D4 E-19: <ui-tabs>' list part).
+    const tabs = rule('.panel-tabs::part(list)');
     expect(tabs).toContain('position: sticky');
     expect(tabs).toContain('top: 0');
   });

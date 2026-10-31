@@ -3986,6 +3986,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/task-plan.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/status-bar.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/deck-nav.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/tabs.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4652,60 +4653,21 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-surface { border-bottom: 1px solid var(--border); background: var(--surface); }
 .panel-surface > .panel-info, .panel-surface > .panel-goal, .panel-surface > .panel-permission, .panel-surface > .panel-artifacts { border-bottom: 0; }
 .panel-surface > :not([hidden]):not([style*="display:none"]):not([style*="display: none"]) + :not([hidden]) { border-top: 1px solid var(--border); }
-/* Agent tabs (T1.2): a segmented strip that scrolls sideways; Main stays at its
-   left edge, the strip at the top of the scroll area. */
-.panel-tabs {
+/* Agent tabs (T1.2, D4 E-19): @2lab.ai/ui <ui-tabs shared-panel> — the tabs, the ink underline, the
+   sideways scroll, Main pinned at the start edge with its fade (TabItem.pinned), the type as the muted
+   second label (meta), the status as the tone dot (the word in the title), arrows and Home / End are
+   the element's. Its list sticks at the top of the scroll area while the tab below it scrolls, on the
+   strip's translucent surface; the pinned tab's opaque face is the surface. */
+.panel-tabs { display: block; --ui-tabs-bg: var(--surface); }
+.panel-tabs::part(list) {
   position: sticky;
   top: 0;
   z-index: 6;
-  display: flex;
-  gap: 4px;
-  padding: 8px 16px;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scrollbar-width: none;
+  padding: 4px 12px 0;
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   -webkit-backdrop-filter: saturate(180%) blur(12px);
   backdrop-filter: saturate(180%) blur(12px);
-  border-bottom: 1px solid var(--border);
 }
-.panel-tabs::-webkit-scrollbar { display: none; }
-.panel-tab {
-  --ag-c: var(--text-tertiary);
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 220px;
-  min-height: 30px;
-  padding: 4px 12px;
-  border: 0;
-  border-radius: 999px;
-  background: none;
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-}
-.panel-tab .pt-name { overflow: hidden; text-overflow: ellipsis; }
-.panel-tab .pt-type { font-weight: 500; color: var(--text-tertiary); }
-.panel-tab .ag-icon { display: inline-grid; place-items: center; width: 14px; height: 14px; color: var(--ag-c); }
-.panel-tab .ag-icon svg { width: 12px; height: 12px; } .panel-tab .ag-icon .spinner { width: 10px; height: 10px; }
-.panel-tab.is-running { --ag-c: var(--st-run); } .panel-tab.is-completed { --ag-c: var(--st-done); } .panel-tab.is-failed { --ag-c: var(--st-fail); } .panel-tab.is-waiting { --ag-c: var(--st-wait); }
-.panel-tab[aria-selected="true"] { background: var(--ib-pill); color: var(--text); }
-.panel-tab[aria-selected="true"] .pt-type { color: var(--text-secondary); }
-.panel-tab:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-.panel-tab.is-main {
-  position: sticky;
-  left: 0;
-  z-index: 1;
-  box-shadow: 8px 0 8px -6px color-mix(in srgb, var(--surface) 90%, transparent);
-}
-.panel-tab.is-main:not([aria-selected="true"]) { background: var(--surface); }
-.panel-tabpanel { outline: none; }
 /* A section head (T1.3): title · a one-line summary · chevron. Tasks and 지시와
    답변 share it; 작업 로그 keeps its own head (same look). */
 .panel-sec-head {
@@ -4736,20 +4698,15 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   outline: none;
 }
 .panel-tasks-body { padding: 2px 0 6px; }
-/* Section tabs (SSOT 2026-10-29): 에이전트 트리 · 작업 로그 · 지시와 답변 — each its own
-   scroll box (the reader's place is per tab), sized by sizePanelSections to the rest
-   of the panel; the active one is the only one painted. */
-.panel-sections { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
-.psec-tab { flex: 1 1 0; min-width: 0; min-height: 38px; padding: 6px 8px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-secondary); font: inherit; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: color 150ms ease, border-color 150ms ease, transform var(--dur-press) var(--ease-out); }
-@media (hover: hover) and (pointer: fine) { .psec-tab:hover { color: var(--text); } }
-.psec-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--text); }
-.psec-tab:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; border-radius: 6px; }
-/* SSOT 2026-10-29 T6: Chat · 작업 로그 on the left at their own width; 에이전트 트리 at the right end. */
-.panel-sections .psec-tab { flex: 0 1 auto; padding: 6px 12px; }
-.panel-sections .psec-tab-tree { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-weight: 500; }
-.psec-tab-tree svg { width: 13px; height: 13px; flex: none; }
-.panel-sections-body { position: relative; height: 60vh; min-height: 160px; }
-.psec { position: relative; height: 100%; overflow-y: auto; scroll-behavior: auto; outline: none; overflow-anchor: none; }
+/* Section tabs (SSOT 2026-10-29, D4 E-24): @2lab.ai/ui <ui-tabs> — Chat · 작업 로그 at their own width,
+   에이전트 트리 at the strip's far end (TabItem.end, T6) with the tree glyph; each section is its own scroll
+   box slotted as its tab's panel (panel-focus="none": the box, not the element's wrapper, is the tab stop),
+   sized by sizePanelSections (--psec-h) to the rest of the panel; only the one shown holds nodes. The
+   new-items pill sits over the box from the wrapper, outside the element. */
+.panel-sections { display: block; --ui-tabs-bg: var(--surface); }
+.panel-sections::part(list) { padding: 0 12px; background: var(--surface); }
+.panel-sections-body { position: relative; }
+.psec { position: relative; height: var(--psec-h, 60vh); min-height: 160px; overflow-y: auto; scroll-behavior: auto; outline: none; overflow-anchor: none; }
 /* D3 E-25 — a section a library element draws is its own scroll box (<ui-conversation>'s
    <ui-log-scroller>: the pin, the older-page row, the kept place, the new-items pill):
    the panel's box only gives it the height. */
@@ -5029,7 +4986,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* PRESS — one rule for every button-like control: scale(.97) on --dur-press ease-out (each control's own
    transition carries the transform), pointer presses only — never a keyboard press (:focus-visible). The
    56px FAB presses to .95. */
-:is(.archives-btn, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .um-tile):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+:is(.archives-btn, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .um-tile):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
@@ -5077,7 +5034,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.archives-btn, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .um-tile):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.archives-btn, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .um-tile):active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
@@ -5091,7 +5048,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 /* ── TOUCH — coarse pointer enlargement ── */
 @media (pointer: coarse) {
-  .panel-tab, .psec-tab, .psec-older, .psec-pill, .panel-sec-head, .panel-detail-toggle { min-height: 44px; }
+  .psec-older, .psec-pill, .panel-sec-head, .panel-detail-toggle { min-height: 44px; }
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
 }
 /* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens (heights only). ── */
@@ -5629,24 +5586,25 @@ ${pageTokenAliases()}
         <!-- 산출물 (SSOT 2026-10-23 T6): what the task produced, and the files the user attached. -->
         <div class="panel-artifacts" id="panel-artifacts" style="display:none"></div>
       </section>
-      <!-- Agent tabs (task view T1.2): Main always first and pinned at the left, then every subagent in spawn order. -->
-      <div class="panel-tabs" id="panel-tabs" role="tablist" aria-label="에이전트" aria-orientation="horizontal"></div>
-      <section class="panel-tabpanel" id="panel-tabpanel" role="tabpanel" aria-labelledby="panel-tab-main" tabindex="-1">
+      <!-- Agent tabs (task view T1.2, D4 E-19): @2lab.ai/ui <ui-tabs shared-panel> — Main always first and pinned at the
+           left (TabItem.pinned), then every subagent in spawn order (renderPanelTabs: label · type as meta · status as the
+           tone dot). Every tab controls the one panel below it (the focused agent's header, Tasks, the section tabs);
+           panel-focus="none": that panel is no tab stop of its own. ui-change → selectPanelAgent. -->
+      <ui-tabs class="panel-tabs" id="panel-tabs" shared-panel panel-focus="none">
+      <section class="panel-tabpanel" id="panel-tabpanel">
         <!-- The focused agent (.prd/12 §4.3): its header; with 자세히, its path. -->
         <div class="panel-agents" id="panel-agents" style="display:none"></div>
         <!-- Tasks (task view T1.3): folded to one line by default. -->
         <div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>
-        <!-- Section tabs (SSOT 2026-10-29): only the active section is in the DOM; each
-             opens on its newest items and pages back as the reader scrolls up (a top
-             control is the keyboard path), in its own scroll box. -->
-        <!-- SSOT 2026-10-29 T6: Chat (지시와 답변) first and the default; 에이전트 트리 at the strip's right end — the bottom view's top right. -->
-        <div class="panel-sections" id="panel-sections" role="tablist" aria-label="섹션" aria-orientation="horizontal">
-          <button type="button" class="psec-tab" role="tab" id="psec-tab-conv" data-sec="conv" aria-selected="true" aria-controls="psec-conv" tabindex="0" title="지시와 답변">Chat</button>
-          <button type="button" class="psec-tab" role="tab" id="psec-tab-log" data-sec="log" aria-selected="false" aria-controls="psec-log" tabindex="-1">작업 로그</button>
-          <button type="button" class="psec-tab psec-tab-tree" role="tab" id="psec-tab-tree" data-sec="tree" aria-selected="false" aria-controls="psec-tree" tabindex="-1"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="3.5" r="1.6"/><circle cx="12" cy="8" r="1.6"/><circle cx="12" cy="12.5" r="1.6"/><path d="M4 5.1v5.4c0 1.1.9 2 2 2h4.4M4 8h6.4"/></svg>에이전트 트리</button>
-        </div>
+        <!-- Section tabs (SSOT 2026-10-29, D4 E-24): @2lab.ai/ui <ui-tabs> over the section boxes, each slotted as its
+             tab's panel (slot="<id>"); only the active section holds nodes (psecClear); each opens on its newest items
+             and pages back as the reader scrolls up (a top control is the keyboard path), in its own scroll box
+             (panel-focus="none": the box is the tab stop, not the element's wrapper). The strip's data is PSEC_TABS
+             (renderPanelSections); ui-change → selectPanelSection. -->
+        <!-- SSOT 2026-10-29 T6: Chat (지시와 답변) first and the default; 에이전트 트리 at the strip's right end (TabItem.end) — the bottom view's top right. -->
         <div class="panel-sections-body" id="panel-sections-body">
-          <div class="psec" id="psec-tree" role="tabpanel" aria-labelledby="psec-tab-tree" tabindex="0" hidden>
+          <ui-tabs class="panel-sections" id="panel-sections" panel-focus="none">
+          <div class="psec" id="psec-tree" slot="tree" tabindex="0">
             <button type="button" class="psec-older" data-sec="tree" hidden>이전 에이전트 보기</button>
             <p class="psec-start" hidden>에이전트 트리의 시작</p>
             <div class="psec-body panel-tree" id="panel-tree"></div>
@@ -5654,20 +5612,22 @@ ${pageTokenAliases()}
           <!-- 작업 로그 (D3 F-01..F-10): @2lab.ai/ui <ui-work-log> — task groups, entry rows, the raw viewer,
                child agents, its own scroll box (pages older entries in on scroll-up); the tool cards are
                this page's <ui-tool-call-card> children in each entry's tool-<seq> slot (wlPaint). -->
-          <div class="psec psec-el ui-tok" id="psec-log" role="tabpanel" aria-labelledby="psec-tab-log" hidden>
+          <div class="psec psec-el ui-tok" id="psec-log" slot="log">
             <ui-work-log class="worklog-list" id="worklog-list" lang="ko"></ui-work-log>
           </div>
           <!-- 지시와 답변 (D3 G-01..G-13, E-25): @2lab.ai/ui <ui-conversation> — its own scroll box
                (<ui-log-scroller>: follows the newest turn, keeps the place while older pages go in
                above, the "new" pill); the dashboard hands it turns (convPaint) and answers
                ui-load-older / ui-retry. The files beside a turn are its slotted children. -->
-          <div class="psec psec-el ui-tok" id="psec-conv" role="tabpanel" aria-labelledby="psec-tab-conv">
+          <div class="psec psec-el ui-tok" id="psec-conv" slot="conv">
             <ui-conversation class="panel-conv" id="panel-conv" lang="ko"></ui-conversation>
           </div>
+          </ui-tabs>
           <!-- New items while the reader is up the list: one press goes to the newest. -->
           <button type="button" class="psec-pill" id="psec-pill" hidden></button>
         </div>
       </section>
+      </ui-tabs>
     </div>
     </div>
     <!-- Command row is always visible: read-only for a viewer who is not the owner, off once the session ended. -->
@@ -8993,73 +8953,75 @@ function togglePanelDetail() {
   repaintPanelSession();
 }
 
-// Agent tabs (T1.2): Main first — always, pinned at the strip's left — then each
-// subagent in spawn order with its status. A tab scopes everything below it
-// (Tasks, the work log, 지시와 답변) to its agent; selecting one is
-// selectPanelAgent. Arrow keys move along the strip and select (automatic
-// activation, the WAI-ARIA tabs pattern); one tab holds the tab stop.
-function panelTabsHtml(s, active, mainSt) {
+// Agent tabs (T1.2, D4 E-19): @2lab.ai/ui <ui-tabs shared-panel> — Main first,
+// always, pinned at the strip's left (the element's sticky tab, its fade once the
+// others scroll under it), then each subagent in spawn order; the type is the
+// muted second label (meta), the status the tone dot with its word in the title.
+// Every tab controls the one panel below the strip (Tasks, the work log, 지시와
+// 답변), scoped to its agent; the element's arrows / Home / End move and select
+// (automatic activation) and its ui-change is selectPanelAgent.
+var PT_MAIN = 'main'; // the Main tab's id; a subagent's is 'a:' + its id
+var AGENT_TAB_TONE = { running: 'run', waiting: 'wait', resuming: 'wait', completed: 'done', failed: 'fail', stopped: 'fail' };
+function panelTabId(agentId) {
+  return agentId ? 'a:' + agentId : PT_MAIN;
+}
+function panelTabAgent(tabId) {
+  return typeof tabId === 'string' && tabId.slice(0, 2) === 'a:' ? tabId.slice(2) : '';
+}
+// Pure: the strip's data — the tabs, the selected one ('' = Main), the list's name.
+function panelTabsData(s, active, mainSt) {
   var st0 = mainSt || (s && s.activityState === 'working' ? 'running' : s && s.activityState === 'waiting' ? 'waiting' : 'idle');
-  var cur = active || '';
-  var tab = function(id, domId, st, name, type, extra) {
-    var on = id === cur;
-    return '<button type="button" class="panel-tab' + extra + ' is-' + st + '" role="tab" id="' + domId + '" data-agent-tab="' + escAttr(id) + '"'
-      + ' aria-selected="' + (on ? 'true' : 'false') + '" aria-controls="panel-tabpanel" tabindex="' + (on ? '0' : '-1') + '"'
-      + ' title="' + escAttr(name + (type ? ' ' + type : '') + ' — ' + (AGENT_STATUS_LABEL[st] || '')) + '">'
-      + '<span class="ag-icon">' + agentIconHtml(st) + '</span>'
-      + '<span class="pt-name">' + esc(name) + '</span>'
-      + (type ? '<span class="pt-type">' + esc(type) + '</span>' : '')
-      + '</button>';
+  var tab = function(id, st, name, type, pinned) {
+    var t = { id: id, label: name, tone: AGENT_TAB_TONE[st] || 'rest', title: name + (type ? ' ' + type : '') + ' — ' + (AGENT_STATUS_LABEL[st] || '') };
+    if (type) t.meta = type;
+    if (pinned) t.pinned = true;
+    return t;
   };
   var model = s && s.model ? String(s.model).replace(/^claude-/, '') : '';
-  var html = tab('', 'panel-tab-main', st0, 'Main', model, ' is-main');
+  var tabs = [tab(PT_MAIN, st0, 'Main', model, true)];
   var list = ((s && s.agents) || []).slice().sort(function(a, b) { return toNum(a.n) - toNum(b.n); });
   for (var i = 0; i < list.length; i++) {
     var a = list[i];
     if (!a || !a.id) continue;
-    html += tab(String(a.id), 'panel-tab-a' + toNum(a.n), agentStatusOf(a), 'A' + toNum(a.n), a.type || '', '');
+    tabs.push(tab(panelTabId(String(a.id)), agentStatusOf(a), 'A' + toNum(a.n), a.type || '', false));
   }
-  return html;
+  return { label: '에이전트', value: panelTabId(active || ''), tabs: tabs };
 }
+// The strip follows the session (a live update with the same data writes nothing);
+// without one it keeps Main alone, so the panel under it stays slotted.
 function renderPanelTabs() {
   var el = document.getElementById('panel-tabs');
   if (!el) return;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  if (!s) { writePanelPart(el, ''); return; }
-  writePanelPart(el, panelTabsHtml(s, _panelAgent, rootStatusOf(s, sessionColOf(panelSessionKey))));
-  var on = el.querySelector('[aria-selected="true"]');
-  var panel = document.getElementById('panel-tabpanel');
-  if (panel) panel.setAttribute('aria-labelledby', on ? on.id : 'panel-tab-main');
-  // Bring the selected tab into the strip's view — sideways only, never the panel.
-  if (on && !on.classList.contains('is-main')) {
-    var main = el.querySelector('.panel-tab.is-main');
-    var left = on.offsetLeft - (main ? main.offsetWidth + 8 : 0);
-    if (left < el.scrollLeft) el.scrollLeft = left;
-    else if (on.offsetLeft + on.offsetWidth > el.scrollLeft + el.clientWidth) el.scrollLeft = on.offsetLeft + on.offsetWidth - el.clientWidth;
-  }
+  var d = s ? panelTabsData(s, _panelAgent, rootStatusOf(s, sessionColOf(panelSessionKey))) : panelTabsData(null, '', '');
+  var sig = JSON.stringify(d);
+  if (el._sig === sig) return;
+  el._sig = sig;
+  el.data = d;
 }
-function panelTabsKey(e) {
-  var tabs = Array.prototype.slice.call(document.querySelectorAll('#panel-tabs [role="tab"]'));
-  var i = tabs.indexOf(e.target);
-  if (i < 0) return;
-  var to = e.key === 'ArrowRight' ? Math.min(tabs.length - 1, i + 1)
-    : e.key === 'ArrowLeft' ? Math.max(0, i - 1)
-    : e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : -1;
-  if (to < 0) return;
-  e.preventDefault();
-  selectPanelAgent(tabs[to].getAttribute('data-agent-tab') || '');
-  var next = document.querySelector('#panel-tabs [role="tab"][aria-selected="true"]');
-  if (next) next.focus();
+// The agent strip's height — the element's sticky list; the shared panel under it
+// is the element's too, so the panel's top against the host's is the list.
+function panelTabsHeight() {
+  var el = document.getElementById('panel-tabs');
+  var pane = document.getElementById('panel-tabpanel');
+  if (!el || !pane) return 0;
+  return Math.max(0, Math.round(pane.getBoundingClientRect().top - el.getBoundingClientRect().top));
+}
+// Focus a <ui-tabs>' selected tab (the keyboard landing on the 작업 로그 tab): the
+// element has no focus() of its own, so the tab is reached through its open shadow root.
+function uiTabsFocus(el) {
+  var tab = el && el.shadowRoot ? el.shadowRoot.querySelector('[role="tab"][aria-selected="true"]') : null;
+  if (tab && tab.focus) tab.focus({ preventScroll: true });
+  return !!tab;
 }
 function bindPanelTabs() {
   var el = document.getElementById('panel-tabs');
   if (!el || el._bound) return;
   el._bound = true;
-  el.addEventListener('click', function(e) {
-    var t = e.target && e.target.closest ? e.target.closest('[data-agent-tab]') : null;
-    if (t) selectPanelAgent(t.getAttribute('data-agent-tab') || '');
+  el.addEventListener('ui-change', function(e) {
+    selectPanelAgent(panelTabAgent(e.detail && e.detail.value));
   });
-  el.addEventListener('keydown', panelTabsKey);
+  renderPanelTabs();
 }
 
 // 지시와 답변 (T1.3; a section tab since 2026-10-29): the main agent's tab shows
@@ -9249,15 +9211,13 @@ var _treeMaxN = null; // the newest spawn number the tree showed (null: not pain
 function psecForLanding(land) {
   return land === 'worklog' ? 'log' : land === 'agent' ? 'tree' : 'conv';
 }
-// Pure: the tab a key moves to on the section tablist (-1: not a tab key). The arrows wrap.
-function psecKeyTarget(key, i, n) {
-  if (!(n > 0) || i < 0) return -1;
-  if (key === 'ArrowRight') return (i + 1) % n;
-  if (key === 'ArrowLeft') return (i - 1 + n) % n;
-  if (key === 'Home') return 0;
-  if (key === 'End') return n - 1;
-  return -1;
-}
+// The section strip's tabs (D4 E-24): Chat · 작업 로그 at the start, 에이전트 트리 at the
+// far end (TabItem.end) with the tree glyph; each one's panel is the box slotted by its id.
+var PSEC_TABS = [
+  { id: 'conv', label: 'Chat', title: '지시와 답변' },
+  { id: 'log', label: '작업 로그' },
+  { id: 'tree', label: '에이전트 트리', icon: 'tree', end: true },
+];
 // Pure: the section box height — the rest of the panel under the surface, Tasks
 // and the tabs while that is at least 45% of it (the panel does not scroll and
 // the newest item sits at its bottom), else 45%; never more than the view under
@@ -9314,19 +9274,13 @@ function psecBox(sec) {
 function psecAtBottom(box) {
   return !!box && box.scrollHeight - box.clientHeight - box.scrollTop <= 4;
 }
-// The tab strip and the panels: aria-selected, the one tab stop, the one panel shown.
+// The tab strip and the panels — <ui-tabs>: the selected tab, the one tab stop, the
+// one panel shown are its own from the data; the same section writes nothing.
 function renderPanelSections() {
-  for (var i = 0; i < PSEC_ORDER.length; i++) {
-    var sec = PSEC_ORDER[i];
-    var on = sec === _psec;
-    var tab = document.getElementById('psec-tab-' + sec);
-    if (tab) {
-      if (tab.getAttribute('aria-selected') !== String(on)) tab.setAttribute('aria-selected', String(on));
-      if (tab.getAttribute('tabindex') !== (on ? '0' : '-1')) tab.setAttribute('tabindex', on ? '0' : '-1');
-    }
-    var box = psecBox(sec);
-    if (box && box.hidden === on) box.hidden = !on;
-  }
+  var el = document.getElementById('panel-sections');
+  if (!el || el._sec === _psec) return;
+  el._sec = _psec;
+  el.data = { label: '섹션', value: _psec, tabs: PSEC_TABS };
 }
 // A section not shown holds no nodes: its DOM goes, its data stays.
 function psecClear(sec) {
@@ -9360,8 +9314,9 @@ function paintSection(sec) {
   psecSyncControls(sec);
 }
 // Show the section tab sec: the others leave the DOM; this one is painted from
-// its data and lands on its newest items. focus: the tab takes focus (keys).
-function selectPanelSection(sec, focus) {
+// its data and lands on its newest items. (A key or a click keeps the element's
+// focus on the tab it moved to.)
+function selectPanelSection(sec) {
   if (PSEC_ORDER.indexOf(sec) < 0) sec = 'conv';
   _psec = sec;
   renderPanelSections();
@@ -9369,10 +9324,6 @@ function selectPanelSection(sec, focus) {
   if (panelSessionKey) paintSection(sec);
   psecToNewest();
   psecFillSoon(sec);
-  if (focus) {
-    var tab = document.getElementById('psec-tab-' + sec);
-    if (tab) tab.focus();
-  }
 }
 // A scroll the page makes (a landing, a kept place, following the newest): the
 // box's scroll handler knows it for its own and reads no reader intent into it.
@@ -9533,7 +9484,7 @@ function psecPageDue(scrollTop, scrollHeight, clientHeight, armed) {
 // is due — so a page that still leaves the top near the view brings the next.
 function psecMaybeFill(sec) {
   var box = psecBox(sec);
-  if (!box || PSEC_EL[sec] || sec !== _psec || box.hidden) return;
+  if (!box || PSEC_EL[sec] || sec !== _psec) return;
   if (!psecPageDue(box.scrollTop, box.scrollHeight, box.clientHeight, box._armed)) return;
   if (psecOlderState(sec) === 'older') psecLoadOlder(sec);
 }
@@ -9547,20 +9498,24 @@ function psecFillSoon(sec) {
 function psecAfterRender(_el, fn) {
   requestAnimationFrame(function() { fn(); });
 }
-// The section box takes the rest of the panel (psecHeightOf) as the parts above it change.
+// The section box takes the rest of the panel (psecHeightOf) as the parts above it
+// change — its height is --psec-h on the wrapper (the box is slotted into <ui-tabs>,
+// under the element's strip: the box's top against the host's is that strip).
 function sizePanelSections() {
   var scroll = document.getElementById('panel-scroll');
   var body = document.getElementById('panel-sections-body');
-  if (!scroll || !body) return;
+  var secs = document.getElementById('panel-sections');
+  var box = psecBox();
+  if (!scroll || !body || !secs || !box) return;
   var view = scroll.clientHeight;
   if (!view) return;
-  var tabs = document.getElementById('panel-tabs');
-  var secs = document.getElementById('panel-sections');
-  var top = body.getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop;
-  var h = psecHeightOf(view, top, (tabs ? tabs.offsetHeight : 0) + (secs ? secs.offsetHeight : 0));
+  var secTop = secs.getBoundingClientRect().top;
+  var strip = Math.max(0, box.getBoundingClientRect().top - secTop);
+  var top = secTop + strip - scroll.getBoundingClientRect().top + scroll.scrollTop;
+  var h = psecHeightOf(view, top, panelTabsHeight() + strip);
   if (body._h === h) return;
   body._h = h;
-  body.style.height = h + 'px';
+  body.style.setProperty('--psec-h', h + 'px');
 }
 
 // 지시와 답변's data for this opening: the turns loaded (oldest first), the id of
@@ -9654,25 +9609,19 @@ function loadOlderWorkLog() {
     return r;
   });
 }
-// One-time wiring: the tablist (click, ←/→/Home/End with automatic activation),
-// the pill, each box's top control and sentinel, the scroll that tracks where
-// the reader is (at the newest: pinned; moving up: older pages may load), the
-// newest kept in view while content grows under a pinned reader, and the box's size.
+// One-time wiring: the tablist (<ui-tabs>: click, ←/→/Home/End with automatic
+// activation are its own; its ui-change is the choice), the pill, each box's top
+// control and sentinel, the scroll that tracks where the reader is (at the newest:
+// pinned; moving up: older pages may load), the newest kept in view while content
+// grows under a pinned reader, and the box's size.
 (function initPanelSections() {
   var strip = document.getElementById('panel-sections');
   if (!strip) return;
-  strip.addEventListener('click', function(e) {
-    var t = e.target && e.target.closest ? e.target.closest('[data-sec]') : null;
-    var sec = t ? t.getAttribute('data-sec') : '';
+  strip.addEventListener('ui-change', function(e) {
+    var sec = e.detail ? e.detail.value : '';
     if (sec && sec !== _psec) selectPanelSection(sec);
   });
-  strip.addEventListener('keydown', function(e) {
-    var tabs = Array.prototype.slice.call(strip.querySelectorAll('[role="tab"]'));
-    var to = psecKeyTarget(e.key, tabs.indexOf(e.target), tabs.length);
-    if (to < 0) return;
-    e.preventDefault();
-    selectPanelSection(tabs[to].getAttribute('data-sec'), true);
-  });
+  renderPanelSections();
   var pill = document.getElementById('psec-pill');
   if (pill) pill.addEventListener('click', psecJumpNewest);
   PSEC_ORDER.forEach(function(sec) {
@@ -9702,7 +9651,7 @@ function loadOlderWorkLog() {
         box._capture = true;
         requestAnimationFrame(function() {
           box._capture = false;
-          if (sec === _psec && !_psecPin && !box.hidden) box._anchor = psecViewAnchor(box);
+          if (sec === _psec && !_psecPin) box._anchor = psecViewAnchor(box);
         });
       }
       // The reader moving up arms the sentinel; a landing never does, nor does
@@ -9720,7 +9669,7 @@ function loadOlderWorkLog() {
   if (typeof ResizeObserver === 'function') {
     var pin = new ResizeObserver(function() {
       var box = psecBox();
-      if (!box || box.hidden) return;
+      if (!box) return;
       if (_psecPin) psecSetTop(box, box.scrollHeight);
       else if (box._anchor) psecRestoreAnchor(box, box._anchor);
     });
@@ -13806,8 +13755,7 @@ function landPanel() {
     if (sec && sec.style.display !== 'none') {
       // The reader scrolled since the last try: they stay where they are.
       if (_panelLandAt !== null && Math.abs(scrollEl.scrollTop - _panelLandAt) > 1) { _panelLanded = true; return; }
-      var tabs = _panelLand === 'goal' ? null : document.getElementById('panel-tabs');
-      var under = tabs ? tabs.offsetHeight || 0 : 0;
+      var under = _panelLand === 'goal' ? 0 : panelTabsHeight();
       var target = scrollEl.scrollTop + sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under;
       // The landing is the reader's new place: an anchor the layout coordinator
       // captured before it (layoutBeforeChange) must not pull the panel back.
@@ -13851,11 +13799,10 @@ function landPanel() {
   if (_panelLandAt !== null && Math.abs(scrollEl.scrollTop - _panelLandAt) > 1) return;
   var secs = document.getElementById('panel-sections');
   var body = document.getElementById('panel-sections-body');
-  var tabs = document.getElementById('panel-tabs');
   var top = 0;
   if (secs && body) {
     var base = scrollEl.getBoundingClientRect().top - scrollEl.scrollTop;
-    top = psecLandingTop(secs.getBoundingClientRect().top - base, body.getBoundingClientRect().bottom - base, scrollEl.clientHeight, tabs ? tabs.offsetHeight || 0 : 0);
+    top = psecLandingTop(secs.getBoundingClientRect().top - base, body.getBoundingClientRect().bottom - base, scrollEl.clientHeight, panelTabsHeight());
   }
   _panelScrollGen++;
   scrollEl.scrollTo({ top: top, behavior: 'instant' });
@@ -13871,8 +13818,7 @@ function holdPanelLanding() {
   var scrollEl = document.getElementById('panel-scroll');
   var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : 'panel-agents');
   if (!scrollEl || !sec || sec.style.display === 'none') return;
-  var tabs = _panelLand === 'goal' ? null : document.getElementById('panel-tabs');
-  var under = tabs ? tabs.offsetHeight || 0 : 0;
+  var under = _panelLand === 'goal' ? 0 : panelTabsHeight();
   var drift = sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under;
   var top = Math.max(0, Math.min(scrollEl.scrollTop + drift, scrollEl.scrollHeight - scrollEl.clientHeight));
   if (Math.abs(top - scrollEl.scrollTop) <= 1) return;
@@ -14125,7 +14071,8 @@ function focusPanelLanding() {
   if (_panelLand === 'goal') t = document.querySelector('#panel-goal .cg-add-input') || document.getElementById('panel-goal');
   else if (_panelLand === 'agent') t = document.querySelector('#panel-agents .pa-focus');
   else if (_panelLand === 'tasks') t = document.getElementById('panel-tasks');
-  else if (_panelLand === 'worklog') t = document.getElementById('psec-tab-log');
+  // The 작업 로그 tab is <ui-tabs>' own (D4 E-24): its selected tab — the one this opening chose — takes focus.
+  else if (_panelLand === 'worklog' && uiTabsFocus(document.getElementById('panel-sections'))) return;
   if (!t || t.style.display === 'none') {
     // The first approval card still waiting on an answer, itself — its focus()
     // lands on the card, not a button: Esc there still closes the panel, ⌘↵

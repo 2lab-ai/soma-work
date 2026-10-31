@@ -3186,6 +3186,10 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       getBoundingClientRect: () => ({ top: AREA_TOP, bottom: AREA_TOP + VIEW, height: VIEW }),
     });
     Object.assign(question, { getBoundingClientRect: () => ({ top: AREA_TOP - scroll.scrollTop, height: qH() }) });
+    // D4 E-19: the agent strip is <ui-tabs>' sticky list — none in this rig (its shared panel starts at its host's top).
+    for (const id of ['panel-tabs', 'panel-tabpanel']) {
+      Object.assign(el(id), { getBoundingClientRect: () => ({ top: AREA_TOP + qH() - scroll.scrollTop, height: 0 }) });
+    }
     Object.assign(el('panel-sections'), {
       getBoundingClientRect: () => ({ top: AREA_TOP + qH() - scroll.scrollTop, height: SEC_TABS }),
     });
@@ -3236,6 +3240,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'resolveRecommendedId',
         'psecForLanding',
         'psecLandingTop',
+        'panelTabsHeight',
         'landPanel',
         'ptUpsert',
         // SSOT 2026-10-29 T2: every opening puts the session's detail card in the deck.

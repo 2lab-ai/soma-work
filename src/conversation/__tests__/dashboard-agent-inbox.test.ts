@@ -342,16 +342,14 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(DASHBOARD_TS).not.toContain("openPanel(\\\\'' + escJs(s.key) + '\\\\',true,");
     // (the same quoting is live on the goal line — the check above is not vacuous)
     expect(DASHBOARD_TS).toContain("openPanel(\\\\'' + escJs(s.key) + '\\\\',\\\\'goal\\\\',");
-    expect(TEMPLATE).toContain('id="psec-tab-log" data-sec="log"');
+    expect(TEMPLATE).toContain("{ id: 'log', label: '작업 로그' },");
   });
 });
 
 describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
-  it('has a work log section tab in the panel (SSOT 2026-10-29)', () => {
-    expect(TEMPLATE).toContain('id="psec-tab-log" data-sec="log"');
-    expect(TEMPLATE).toContain(
-      '<div class="psec psec-el ui-tok" id="psec-log" role="tabpanel" aria-labelledby="psec-tab-log"',
-    );
+  it('has a work log section tab in the panel (SSOT 2026-10-29; D4 E-24: a <ui-tabs> tab over the slotted box)', () => {
+    expect(TEMPLATE).toContain("{ id: 'log', label: '작업 로그' },");
+    expect(TEMPLATE).toContain('<div class="psec psec-el ui-tok" id="psec-log" slot="log">');
     expect(TEMPLATE).toContain('작업 로그 없음');
   });
 
@@ -371,13 +369,14 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     const header = panel.indexOf('<div class="panel-header">');
     const scroll = panel.indexOf('<div class="panel-scroll" id="panel-scroll">');
     const surface = panel.indexOf('<section class="panel-surface" id="panel-surface"');
-    const tabs = panel.indexOf('<div class="panel-tabs" id="panel-tabs" role="tablist"');
-    const tabpanel = panel.indexOf('<section class="panel-tabpanel" id="panel-tabpanel" role="tabpanel"');
+    // D4 E-19 / E-24: both strips are <ui-tabs> — the agent strip's one shared panel is the section slotted into it.
+    const tabs = panel.indexOf('<ui-tabs class="panel-tabs" id="panel-tabs" shared-panel panel-focus="none">');
+    const tabpanel = panel.indexOf('<section class="panel-tabpanel" id="panel-tabpanel">');
     const tasks = panel.indexOf(
       '<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>',
     );
-    const sections = panel.indexOf('<div class="panel-sections" id="panel-sections" role="tablist"');
-    const worklog = panel.indexOf('<div class="psec psec-el ui-tok" id="psec-log" role="tabpanel"');
+    const sections = panel.indexOf('<ui-tabs class="panel-sections" id="panel-sections" panel-focus="none">');
+    const worklog = panel.indexOf('<div class="psec psec-el ui-tok" id="psec-log" slot="log">');
     const conv = panel.indexOf('<ui-conversation class="panel-conv" id="panel-conv" lang="ko">');
     const command = panel.indexOf('<div class="panel-command" id="panel-command">');
     expect(header).toBeGreaterThan(0);
@@ -399,8 +398,8 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(tasksCss).not.toMatch(/max-height|overflow|grid-row/);
     expect(TEMPLATE).toMatch(/\n\.panel-scroll \{ flex: 1 1 auto; overflow-y: auto;[^}]*\}/);
     expect(TEMPLATE).toMatch(/\n\.panel-body \{[^}]*display: flex;[^}]*flex-direction: column;/);
-    // The agent tabs stay in view while the tab scrolls.
-    expect(TEMPLATE).toMatch(/\n\.panel-tabs \{[^}]*position: sticky;[^}]*top: 0;/);
+    // The agent tabs stay in view while the tab scrolls (D4 E-19: the element's list part sticks).
+    expect(TEMPLATE).toMatch(/\n\.panel-tabs::part\(list\) \{[^}]*position: sticky;[^}]*top: 0;/);
     // Folded to one line by default (_panelTasksOpen), opened with 자세히 or a tasks landing.
     expect(TEMPLATE).toMatch(/^var _panelTasksOpen = false;/m);
     expect(fnBody('renderPanelTasks')).toContain(
