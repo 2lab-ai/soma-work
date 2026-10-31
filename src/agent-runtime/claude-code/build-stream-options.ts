@@ -779,22 +779,27 @@ export async function buildStreamOptions(
   const promptUserId = session?.ownerId || contextUser;
   const shouldRebuild = !session || !session.systemPrompt || session.compactionOccurred === true || !session.sessionId;
 
+  // The channel's context: a Slack turn's from its Slack context; a task
+  // turn's from the snapshot stored with the task (E2 ② — the same blocks,
+  // byte for byte, and still no Slack context on a task turn).
+  const channelContext = execCtx?.origin === 'task' ? session?.inputContext : slackContext;
+
   let builtSystemPrompt: string | undefined;
   if (shouldRebuild) {
     builtSystemPrompt = deps.promptBuilder.buildSystemPrompt(promptUserId, workflow, session);
 
     // Inject channel description as additional context
-    if (builtSystemPrompt && slackContext?.channelDescription) {
-      builtSystemPrompt = `${builtSystemPrompt}\n\n<channel-description source="slack">\n${slackContext.channelDescription}\n</channel-description>`;
+    if (builtSystemPrompt && channelContext?.channelDescription) {
+      builtSystemPrompt = `${builtSystemPrompt}\n\n<channel-description source="slack">\n${channelContext.channelDescription}\n</channel-description>`;
     }
 
     // Inject structured repository context from channel registry.
     // This provides explicit repo identification so the model doesn't
     // have to guess from raw description.
-    const hasRepos = slackContext?.repos && slackContext.repos.length > 0;
-    const hasConfluence = !!slackContext?.confluenceUrl;
+    const hasRepos = channelContext?.repos && channelContext.repos.length > 0;
+    const hasConfluence = !!channelContext?.confluenceUrl;
     if (builtSystemPrompt && (hasRepos || hasConfluence)) {
-      builtSystemPrompt = `${builtSystemPrompt}\n\n${buildRepoContextBlock(slackContext!.repos || [], slackContext!.confluenceUrl)}`;
+      builtSystemPrompt = `${builtSystemPrompt}\n\n${buildRepoContextBlock(channelContext!.repos || [], channelContext!.confluenceUrl)}`;
     }
 
     // Cache the freshly-built prompt on the session so subsequent turns
@@ -815,8 +820,8 @@ export async function buildStreamOptions(
       sessionId: session?.sessionId,
       model: options.model,
       promptLength: builtSystemPrompt.length,
-      hasChannelDescription: !!slackContext?.channelDescription,
-      repos: slackContext?.repos || [],
+      hasChannelDescription: !!channelContext?.channelDescription,
+      repos: channelContext?.repos || [],
     });
   } else {
     logger.warn(`\uD83D\uDE80 STARTING QUERY with NO system prompt (workflow: [${workflow}])`);

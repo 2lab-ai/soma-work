@@ -384,6 +384,27 @@ export interface SessionIncidentRequest {
   readonly summary: string;
 }
 
+/**
+ * E2 ① — where a Slack-less task's instruction came from: the channel, the
+ * thread's root (`thread_ts ?? ts`), the instruction message itself (a
+ * redelivered event is recognised by it) and, when not the main bot, the
+ * agent instance that received it.
+ */
+export interface OriginThread {
+  channel: string;
+  threadTs: string;
+  messageTs: string;
+  agent?: string;
+}
+
+/** E2 ② — a Slack-instructed task's channel context (see `ConversationSession.inputContext`). */
+export interface TaskInputContext {
+  channelName?: string;
+  channelDescription?: string;
+  repos?: string[];
+  confluenceUrl?: string;
+}
+
 export interface ConversationSession {
   ownerId: string; // User who started the session
   ownerName?: string; // Display name of owner
@@ -398,6 +419,19 @@ export interface ConversationSession {
    * is saved and on the board from creation, before any SDK session.
    */
   slackless?: boolean;
+  /**
+   * E2 ① — the Slack thread a Slack-less task was instructed from. Only a
+   * Slack-less task carries it; it is NOT a Slack binding (`channelId` /
+   * `threadTs` stay empty) and not `sourceThread` (a migrated session's
+   * back-pointer). One live task per instruction thread.
+   */
+  originThread?: OriginThread;
+  /**
+   * E2 ② — the channel a Slack-instructed task was created in, snapshotted at
+   * creation: what a Slack session there gets in its system prompt (channel
+   * description, repos, wiki). Prompt text only — never a Slack context.
+   */
+  inputContext?: TaskInputContext;
   sessionId?: string;
   isActive: boolean;
   lastActivity: Date;
