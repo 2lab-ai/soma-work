@@ -142,6 +142,7 @@ const CONV_FNS = [
   'splitInvokedSkills',
   'ansCacheKey',
   'artInTurn',
+  'resumKey',
   'convSummaryOf',
   'convSysTurn',
   'convTurnsOf',
@@ -207,47 +208,82 @@ describe('D1 · task view T1.4 — the answer is the face (<ui-conversation>’s
     expect(answerOf({ answers: { 'conv-run:t2': '' } })).toMatchObject({ markdown: '' });
   });
 
-  it('요약 실패 and 요약 만드는 중… are the summary’s words (Raw · the heading of an answer that cannot be read)', () => {
-    expect(answerOf({}, { id: 't2', role: 'assistant', timestamp: T0 + 1000, summarized: true }).summary).toEqual({
-      text: STRINGS.summaryFailed,
-    });
+  it('요약 만드는 중… is the summary’s text; 요약 실패 its error with the element’s Retry (summary.canRetry, G-04)', () => {
+    const failed = { id: 't2', role: 'assistant', timestamp: T0 + 1000, summarized: true };
+    expect(answerOf({}, failed).summary).toEqual({ error: STRINGS.summaryFailed, canRetry: true });
     expect(answerOf({}, { id: 't2', role: 'assistant', timestamp: T0 + 1000 }).summary).toEqual({
       text: STRINGS.summaryPending,
     });
+    // The title stays over the failure.
+    expect(answerOf({}, { ...failed, summaryTitle: 'Picker bars' }).summary).toEqual({
+      title: 'Picker bars',
+      error: STRINGS.summaryFailed,
+      canRetry: true,
+    });
+    // No conversation or no id to ask for: the failure without a Retry.
+    expect(convOf([INSTR, failed], ctx({ cid: '' })).turns[1].summary).toEqual({ error: STRINGS.summaryFailed });
+    expect(convOf([INSTR, { ...failed, id: '' }], ctx()).turns[1].summary).toEqual({ error: STRINGS.summaryFailed });
+    // Asked for (c.resum): 다시 시도 중… until the next poll brings the summary; no second Retry meanwhile.
+    expect(answerOf({ resum: { 'conv-run|t2': true } }, failed).summary).toEqual({ text: STRINGS.retrying });
+    // The retry no longer rides in the attachments slot (D3-GAPS G1-3 closed by 0.12.0).
+    const b = convOf([INSTR, failed], ctx());
+    expect(b.turns[1]).not.toHaveProperty('attachments');
+    expect(b.slots).toEqual([]);
+    expect(DASHBOARD_TS).not.toContain('convResumHtml');
+    expect(DASHBOARD_TS).not.toContain('data-resum');
   });
 
-  it('요약 실패 · 다시 시도 (G-04): a failed summary asks for its retry in the attachments slot until it lands', () => {
-    const failed = { id: 't2', role: 'assistant', timestamp: T0 + 1000, summarized: true };
-    const b = convOf([INSTR, failed], ctx());
-    expect(b.turns[1]).toMatchObject({ attachments: true });
-    expect(b.slots).toEqual([
-      {
-        name: 'attachments-t2',
-        kind: 'arts',
-        list: [],
-        start: T0,
-        end: T0 + 1000,
-        resum: { cid: 'conv-run', turnId: 't2' },
+  it('the element’s Retry on a summary (ui-retry what: summary) → POST …/resummarize/:turnId with the CSRF token; a refusal puts the Retry back', async () => {
+    const paints: string[] = [];
+    let token = 'tok';
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 403 })
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({ ok: false, status: 500 });
+    const m = new Function(
+      'fetch',
+      'refreshCsrfToken',
+      'getToken',
+      'convPaint',
+      `var _panelAgent = null, _panelTurnsCid = 'conv-run', panelConvId = null;
+       ${clientVar('_resumSent')}
+       ${clientFn('resumKey').replace(/_csrfToken/g, 'getToken()')}
+       ${clientFn('convResummarize')}
+       ${clientFn('resummarize').replace(/_csrfToken/g, 'getToken()')}
+       return { convResummarize, resummarize, sent: _resumSent, setAgent: function(a) { _panelAgent = a; } };`,
+    )(
+      fetch,
+      async () => {
+        token = 'fresh';
       },
-    ]);
-    // The summary landed, still being made, or no conversation to ask: no retry.
-    expect(convOf([INSTR, ANSWER], ctx()).slots).toEqual([]);
-    expect(convOf([INSTR, { ...failed, summarized: false }], ctx()).slots).toEqual([]);
-    expect(convOf([INSTR, failed], ctx({ cid: '' })).slots).toEqual([]);
-    const { convResumHtml } = load<{ convResumHtml(r: Record<string, string>): string }>(
-      ['esc', 'escAttr', 'convResumHtml'],
-      [],
-      { STRINGS },
-    );
-    const html = convResumHtml({ cid: 'c"1', turnId: 't<2>' });
-    expect(html).toContain('요약 실패');
-    expect(html).toContain('class="ui-btn is-sm"');
-    // Ids as data (escaped), no inline handler; initConversation answers the click.
-    expect(html).toContain('data-resum-cid="c&quot;1" data-resum-turn="t&lt;2&gt;"');
-    expect(html).not.toContain('onclick');
-    expect(html).toContain('>다시 시도</button>');
-    expect(DASHBOARD_TS).toContain("e.target.closest('button[data-resum-turn]')");
-    expect(clientFn('resummarize')).toContain("'/resummarize/' + encodeURIComponent(turnId), { method: 'POST' }");
+      () => token,
+      () => paints.push(JSON.stringify(Object.keys(m.sent))),
+    ) as {
+      convResummarize(id: unknown): void;
+      resummarize(cid: string, id: string): Promise<void>;
+      sent: Record<string, boolean>;
+      setAgent(a: string | null): void;
+    };
+    m.convResummarize('t2');
+    expect(paints).toEqual(['["conv-run|t2"]']); // on its way: the summary reads 다시 시도 중…
+    await flush();
+    await flush();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[0][0]).toBe('/api/dashboard/session/conv-run/resummarize/t2');
+    expect(fetch.mock.calls[0][1]).toEqual({ method: 'POST', headers: { 'X-CSRF-Token': 'tok' } });
+    expect(fetch.mock.calls[1][1]).toEqual({ method: 'POST', headers: { 'X-CSRF-Token': 'fresh' } });
+    expect(m.sent['conv-run|t2']).toBe(true); // stays until the poll brings the summary
+    m.convResummarize('t2'); // a second press while asked for: nothing
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await m.resummarize('conv-run', 't3'); // refused: the Retry comes back
+    expect(m.sent['conv-run|t3']).toBeUndefined();
+    expect(paints).toEqual(['["conv-run|t2"]', '["conv-run|t2","conv-run|t3"]', '["conv-run|t2"]']);
+    // A subagent's turns carry no summary: no ask; and the element's listener routes what: 'summary' here.
+    m.setAgent('toolu_1');
+    m.convResummarize('t9');
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(DASHBOARD_TS).toContain("if (d.what === 'summary') convResummarize(d.id);");
   });
 
   it('a turn with no answer to load (no id or no conversation) shows its summary, never loading', () => {
@@ -276,7 +312,7 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
     const el = { data: undefined };
     const m = load<{ convPaint(): void }>(
       ['botNameOf', 'ansLinkTitles', 'ansSession', 'ansPendingShow', 'convPaint'],
-      ['CONV_EMPTY'],
+      ['CONV_EMPTY', '_resumSent'],
       {
         convEl: () => el,
         _psec: 'conv',
