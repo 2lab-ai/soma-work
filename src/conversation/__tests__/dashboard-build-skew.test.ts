@@ -101,9 +101,10 @@ describe('dashboard build skew — T1: the server build reaches the tab', () => 
     expect(dashboard.resolveDashboardBuildId({ commitHash: '' }, 'proc-x')).toBe('proc-x');
     // One process, one build: the id never changes under a running server.
     const id = dashboard.dashboardBuildId();
-    expect(typeof id).toBe('string');
-    expect(id.length).toBeGreaterThan(0);
     expect(dashboard.dashboardBuildId()).toBe(id);
+    // Without version.json the build is the code (this module's mtime), not the process: a restart of the same
+    // code — a crash loop — does not reload every tab (review P2, fable).
+    expect(id).toMatch(/^(file-[0-9a-z]+|[0-9a-f]{7,}@.+)$/);
   });
 
   it('the page carries the build it was rendered by (PAGE_BUILD)', async () => {
@@ -141,10 +142,27 @@ describe('dashboard build skew — T2: a tab on another build reloads', () => {
   type Api = {
     buildSkewed: (b: unknown) => boolean;
     hasUnsentInput: () => boolean;
-    onServerBuild: (b: unknown) => void;
+    onServerBuild: (b: unknown) => boolean;
   };
 
-  function fakeEnv(opts: { composer?: any; ntComposer?: any; ntOpen?: boolean; fields?: any[] } = {}) {
+  /** A root as the client queries it: its fields, its open-or-shut dialogs, its elements (a shadow host among them). */
+  function root(opts: { fields?: any[]; dialogs?: any[]; elements?: any[] } = {}) {
+    return {
+      querySelectorAll: (sel: string) =>
+        sel === 'ui-dialog, dialog' ? (opts.dialogs ?? []) : sel === '*' ? (opts.elements ?? []) : (opts.fields ?? []),
+    };
+  }
+
+  function fakeEnv(
+    opts: {
+      composer?: any;
+      ntComposer?: any;
+      ntOpen?: boolean;
+      fields?: any[];
+      dialogs?: any[];
+      elements?: any[];
+    } = {},
+  ) {
     const els: Record<string, any> = {
       'pc-composer': opts.composer ?? { value: '', files: [] },
       'nt-composer': opts.ntComposer ?? { value: '', files: [] },
@@ -157,7 +175,7 @@ describe('dashboard build skew — T2: a tab on another build reloads', () => {
       toastActions: [] as Array<() => void>,
       document: {
         getElementById: (id: string) => els[id] ?? null,
-        querySelectorAll: () => opts.fields ?? [],
+        ...root({ fields: opts.fields, dialogs: opts.dialogs, elements: opts.elements }),
       },
       location: {
         reload: () => {
@@ -175,7 +193,7 @@ describe('dashboard build skew — T2: a tab on another build reloads', () => {
 
   function api(env: ReturnType<typeof fakeEnv>, pageBuild = 'build-A'): Api {
     return load<Api>(
-      ['buildSkewed', 'hasUnsentInput', 'buildReload', 'onServerBuild'],
+      ['buildSkewed', 'hasUnsentInput', 'filledField', 'buildReload', 'onServerBuild'],
       {
         PAGE_BUILD: pageBuild,
         document: env.document,
@@ -229,13 +247,27 @@ describe('dashboard build skew — T2: a tab on another build reloads', () => {
     expect(env.reloads).toBe(2);
   });
 
-  it('unsent text, files, an open new-task dialog or a filled field hold the reload: one toast, reload on its action', () => {
+  it('two builds answering in turn behind one origin stop after two reloads (review P2, fable)', () => {
+    const env = fakeEnv();
+    expect(api(env, 'build-A').onServerBuild('build-B')).toBe(true); // A hears B
+    expect(api(env, 'build-B').onServerBuild('build-A')).toBe(true); // the reloaded page is B; it hears A
+    expect(api(env, 'build-A').onServerBuild('build-B')).toBe(false); // A again, hears B: no third reload
+    expect(env.reloads).toBe(2);
+    expect(env.toasts).toHaveLength(1);
+  });
+
+  it('unsent input holds the reload — composers, any open dialog, a filled field in the page or in an open shadow root', () => {
+    const shadowHost = (field: any) => ({ shadowRoot: root({ fields: [field] }) });
     const cases = [
       fakeEnv({ composer: { value: '머지 완료 됐어?', files: [] } }),
       fakeEnv({ composer: { value: '  ', files: [{ name: 'a.png' }] } }),
       fakeEnv({ ntComposer: { value: 'new task', files: [] } }),
       fakeEnv({ ntOpen: true }),
       fakeEnv({ fields: [{ value: '' }, { value: 'goal draft' }] }),
+      // The admin lifecycle dialog (number fields) — any open dialog holds it (review P3, grok · fable).
+      fakeEnv({ dialogs: [{ open: false }, { open: true }] }),
+      // A choice form's typed answer before Enter / a queued note being edited: in the element's shadow root (P2, grok).
+      fakeEnv({ elements: [{ shadowRoot: null }, shadowHost({ value: '직접 입력한 답' })] }),
     ];
     for (const env of cases) {
       const a = api(env);
@@ -253,6 +285,8 @@ describe('dashboard build skew — T2: a tab on another build reloads', () => {
   it('an empty page has nothing unsent', () => {
     expect(api(fakeEnv()).hasUnsentInput()).toBe(false);
     expect(api(fakeEnv({ fields: [{ value: '  ' }] })).hasUnsentInput()).toBe(false);
+    expect(api(fakeEnv({ dialogs: [{ open: false }] })).hasUnsentInput()).toBe(false);
+    expect(api(fakeEnv({ elements: [{ shadowRoot: { querySelectorAll: () => [] } }] })).hasUnsentInput()).toBe(false);
   });
 });
 
@@ -279,6 +313,48 @@ describe('dashboard build skew — T1/T2 wiring: the socket and the poll hand th
     connectWs();
     sock.onmessage({ data: JSON.stringify({ type: 'hello', build: 'build-B' }) });
     expect(seen).toEqual(['build-B']);
+  });
+
+  function pollWith(reloading: boolean) {
+    const seen: unknown[] = [];
+    const rendered: unknown[] = [];
+    const { loadSessions } = load<{ loadSessions: () => Promise<void> }>(['loadSessions'], {
+      _sessionsInflight: null,
+      currentUserId: '',
+      _boardLoad: 'ready',
+      BOARD_LOAD_TIMEOUT_MS: 1000,
+      AbortController,
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        headers: { get: (h: string) => (h.toLowerCase() === 'x-dashboard-build' ? 'build-B' : null) },
+        json: async () => ({ board: { working: [], waiting: [], idle: [], closed: [] } }),
+      }),
+      _heldWsBoard: null,
+      _lastPolledBoard: null,
+      _lifecycle: null,
+      renderBoard: (b: unknown) => rendered.push(b),
+      setBoardLoad: () => {},
+      panelOpen: false,
+      panelSessionKey: null,
+      _sessionCache: {},
+      repaintPanelSession: () => {},
+      onServerBuild: (b: unknown) => {
+        seen.push(b);
+        return reloading;
+      },
+    });
+    return { loadSessions, seen, rendered };
+  }
+
+  it('a poll that set off a reload draws nothing more (review P3, fable)', async () => {
+    const reloading = pollWith(true);
+    await reloading.loadSessions();
+    expect(reloading.seen).toEqual(['build-B']);
+    expect(reloading.rendered).toEqual([]);
+    const same = pollWith(false);
+    await same.loadSessions();
+    expect(same.rendered).toHaveLength(1);
   });
 
   it("a board poll's x-dashboard-build reaches onServerBuild", async () => {
