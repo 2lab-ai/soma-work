@@ -72,7 +72,8 @@ export type AdminApprovalAnswer =
   | { ok: true; outcome: 'approved' | 'denied' }
   | {
       ok: false;
-      reason: 'not_found' | 'already_answered' | 'invalid' | 'forbidden';
+      /** `busy`: another answer is still being carried out (a delete in flight) — retry shortly. */
+      reason: 'not_found' | 'already_answered' | 'invalid' | 'forbidden' | 'busy';
       resolution?: AdminApprovalResolution;
     };
 
