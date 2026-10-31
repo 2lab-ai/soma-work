@@ -387,3 +387,54 @@ export function resolveEpicApprovals(
     e.outcome === 'needs-input' && !e.resolvedAt && match(e) ? { ...e, resolvedAt: at, state: 'delivered' } : e,
   );
 }
+
+/** E4 ⑥ (D7) — the word a chain end wakes its epic with. An approval (`needs-input`) and a close never wake. */
+const WAKE_WORD: Partial<Record<EpicEvent['outcome'], string>> = {
+  completed: 'finished',
+  failed: 'failed',
+  cancelled: 'cancelled',
+  waiting: 'needs-input',
+  interrupted: 'interrupted',
+};
+
+/**
+ * E4 ⑥ (D7) — the events that wake an epic: its pending chain ends, in the order they came
+ * (an approval is `needs-input` and a close `closed` — neither has a wake word).
+ */
+export function wakeableEpicEvents(events: EpicEvent[] | undefined): EpicEvent[] {
+  return (events ?? []).filter((e) => e.state === 'pending' && WAKE_WORD[e.outcome] !== undefined);
+}
+
+/**
+ * E4 ⑥ (D7) — the wake instruction, a fixed template: a count, node ids and
+ * outcome words only. No title, question, reason or final — the details are
+ * `child_status`'s. It never starts with `/` or `%`.
+ */
+export function epicWakeText(events: EpicEvent[]): string {
+  const n = events.length;
+  const items = events.map((e) => `${EPIC_NODE_ID.test(e.planNodeId) ? e.planNodeId : 'node'}:${WAKE_WORD[e.outcome]}`);
+  return `Epic wake: ${n} event${n === 1 ? '' : 's'} — ${items.join(', ')}. Read details with child_status.`;
+}
+
+/** E4 ⑥ (D7) — the events with those `ids` still pending marked delivered to the chain `chainId`. */
+export function consumeEpicEvents(
+  events: EpicEvent[] | undefined,
+  ids: readonly string[],
+  chainId: string,
+): EpicEvent[] | undefined {
+  const take = new Set(ids);
+  if (!events?.some((e) => take.has(e.id) && e.state === 'pending')) return events;
+  return events.map((e) =>
+    take.has(e.id) && e.state === 'pending' ? { ...e, state: 'delivered', consumedBy: chainId } : e,
+  );
+}
+
+/** E4 ⑥ (D7) — a consuming chain reconciled `interrupted`: its events are pending again (they wake once more). */
+export function releaseEpicEvents(events: EpicEvent[] | undefined, chainId: string): EpicEvent[] | undefined {
+  if (!events?.some((e) => e.consumedBy === chainId)) return events;
+  return events.map((e) => {
+    if (e.consumedBy !== chainId) return e;
+    const { consumedBy: _consumed, ...rest } = e;
+    return { ...rest, state: 'pending' };
+  });
+}
