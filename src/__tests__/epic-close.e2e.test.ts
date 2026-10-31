@@ -57,11 +57,14 @@ function rig() {
   const child = reg.createTask({ ...BASE, parentTaskId: epic.taskId, planNodeId: 'login' });
   const other = reg.createTask({ ...BASE, parentTaskId: epic.taskId, planNodeId: 'docs' });
   const inputs: RunTaskTurnInput[] = [];
+  // A task whose first hop is still making its conversation: held before its start is saved.
+  const holdBegin = new Map<string, Promise<void>>();
   let n = 0;
   // A turn runs until it is aborted (a real one would be talking to the model).
   const runTaskTurn = vi.fn(async (input: RunTaskTurnInput): Promise<RunTaskTurnResult> => {
     inputs.push(input);
     const turnId = `t${++n}`;
+    await holdBegin.get(input.sessionKey);
     reg.beginTaskTurn(input.sessionKey, turnId, input.chain?.id, input.consume);
     input.onStarted?.();
     const signal = (input.params?.abortController as AbortController).signal;
@@ -96,7 +99,8 @@ function rig() {
     ledgerUnreadable: () => false,
     getChildTasks: (id) => reg.getChildTasks(id),
     isRunning: (k) => controller.isRunning(k),
-    markClosedByParent: (k) => reg.markClosedByParent(k),
+    // As index.ts wires it: the chain the close cancels names the mark.
+    markClosedByParent: (k) => reg.markClosedByParent(k, Date.now(), controller.runningChain(k)),
     recordChildClosed: (k) => reg.recordEpicChildClosed(k),
     markClosing: (k, c) => reg.markClosing(k, c),
     logger,
@@ -108,7 +112,7 @@ function rig() {
     expect(controller.isRunning(key)).toBe(true);
   };
   const epicTurns = () => inputs.filter((i) => i.sessionKey === epicKey);
-  return { reg, epic, epicKey, child, other, controller, close, start, epicTurns };
+  return { reg, epic, epicKey, child, other, controller, close, start, epicTurns, inputs, holdBegin };
 }
 
 describe('E4 ⑦ — a close never wakes the epic it closes (fable #703 R1 P1)', () => {
@@ -141,6 +145,37 @@ describe('E4 ⑦ — a close never wakes the epic it closes (fable #703 R1 P1)',
       expect(c.closedBy?.by).toBe('parent');
       expect(c.lastTurnOutcome?.outcome).toBe('cancelled');
     }
+  });
+
+  it('a close that lands while a child’s first hop makes its conversation keeps the mark on that chain (fable #703 R2 P3-1)', async () => {
+    const t = rig();
+    const childKey = `task:${t.child.taskId}`;
+    let release!: () => void;
+    t.holdBegin.set(
+      childKey,
+      new Promise<void>((r) => {
+        release = r;
+      }),
+    );
+    // The start answers once its first hop is saved — the close lands before that.
+    const started = t.controller.start({ sessionKey: childKey, text: 'go', actorUserId: 'U1', initiator: 'host' });
+    await flush();
+    expect(t.controller.isRunning(childKey)).toBe(true);
+    expect(t.reg.getSessionByKey(childKey)!.openChain).toBeUndefined();
+
+    const closing = t.close(t.epicKey);
+    await flush();
+    const chainId = t.inputs.find((i) => i.sessionKey === childKey)!.chain!.id;
+    expect(t.reg.getSessionByKey(childKey)!.closedBy).toMatchObject({ by: 'parent', chain: chainId });
+    release();
+    expect((await started).status).toBe(202);
+    await closing;
+    for (let i = 0; i < 5; i++) await flush();
+
+    const c = t.reg.getSessionByKey(childKey)!;
+    expect(c.lastTurnOutcome?.outcome).toBe('cancelled');
+    expect(c.closedBy).toMatchObject({ by: 'parent', chain: chainId });
+    expect(t.epicTurns()).toEqual([]);
   });
 
   it('closing a running child records its close and starts no turn on its idle epic', async () => {

@@ -355,6 +355,19 @@ describe('L4–L6 — the lane’s boxes, its cards, the cache and the push', ()
     expect(h.lane.hidden).toBe(true);
   });
 
+  it('L4c — two groups leaving side by side move no box after them (fable #709 R1 P3-4)', () => {
+    const h = laneHarness();
+    const g = (k: string) => epicCard(k, 'running', [child(`${k}1`, { activityState: 'working' })]);
+    h.m.renderEpicLane({ working: [g('task:a'), g('task:x'), g('task:y'), g('task:c')] });
+    const c = h.lane.children[3];
+    moves.count = 0;
+    h.m.renderEpicLane({ working: [g('task:a'), g('task:c')] });
+    expect(moves.count).toBe(0);
+    expect(h.lane.children[3]).toBe(c);
+    for (const t of h.timers) t();
+    expect(h.lane.children.map((b) => b.attrs['data-epic'])).toEqual(['task:a', 'task:c']);
+  });
+
   it('L4b — a group that leaves from the middle moves no box after it while it fades (fable #706 R2 P3)', () => {
     const h = laneHarness();
     const g = (k: string) => epicCard(k, 'running', [child(`${k}1`, { activityState: 'working' })]);

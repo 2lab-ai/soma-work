@@ -110,7 +110,12 @@ function instructionProblem(instruction: string): ToolResult | undefined {
   return undefined;
 }
 
-/** `child_status()` — the plan tree with each node's status and verdict, and every child the epic made. */
+/**
+ * `child_status()` — the plan tree with each node's status and verdict, and every child the epic made.
+ * Node status here is the records' (D5). The board overlays what it shows (D11 — a running node whose
+ * child sits on a permission prompt reads needs-input there); the epic cannot act on an approval (D6 c),
+ * so the two differ by design.
+ */
 function treeStatus(h: EpicHost, epic: ConversationSession) {
   const live = liveChildrenOf(h, epic);
   const byId = new Map(live.map((c) => [c.taskId, c]));
