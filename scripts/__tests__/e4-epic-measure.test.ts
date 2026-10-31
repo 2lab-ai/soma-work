@@ -376,6 +376,21 @@ describe('scripts/e4-epic-measure.mjs (E4 ⑩, .prd/19 §5 ⑩)', () => {
     expect(r.counters.extraWakeTurns).toBe(1);
     expect(r.epics[0].chainsWithoutWakeTurn).toBe(1);
 
+    // A released wake is released even when an owner instruction consumed the same node earlier
+    // (fable #712 R2 P3-1): only unmatched wake turns name released events.
+    const released = epicRecord();
+    const ev = released.epicEvents as Array<Record<string, unknown>>;
+    ev[1].consumedBy = 'owner-chain';
+    ev[2].consumedBy = 'owner-chain';
+    ev.push({ id: 'c2:ch9', childTaskId: 'c2', planNodeId: 'docs', outcome: 'completed', state: 'pending', at: 9 });
+    delete (released.plan as any).done;
+    delete (released.plan.nodes[1] as any).accepted;
+    write([released, child(1), child(2), child(3)], [['login:finished'], ['docs:finished']]);
+    r = run();
+    expect(r.counters.missedWakes).toBe(0);
+    expect(r.epics[0].releasedPending).toBe(1);
+    expect(r.counters.extraWakeTurns).toBe(1);
+
     // Only the owner's (user) turns are wake turns: an assistant quoting one is not.
     write([epicRecord(), child(1), child(2), child(3)], ONE_WAKE_EACH);
     const conv = path.join(data, 'conversations', 'conv-e1.json');

@@ -100,7 +100,14 @@ export function logFiles(logDir, sinceMs) {
     return [];
   }
   return names
-    .filter((f) => f === 'stdout.log' || f === 'stderr.log' || fs.statSync(path.join(logDir, f)).mtimeMs >= sinceMs)
+    .filter((f) => {
+      if (f === 'stdout.log' || f === 'stderr.log') return true;
+      try {
+        return fs.statSync(path.join(logDir, f)).mtimeMs >= sinceMs;
+      } catch {
+        return false; // rotated away (gzip-then-remove) between the listing and the stat
+      }
+    })
     .sort()
     .map((f) => path.join(logDir, f));
 }
@@ -155,37 +162,40 @@ export function measure(dataDir, logPaths) {
       const liveHere = live.filter((c) => !offPlan(c) && c.planNodeId === node.id).length;
       return n + Math.max(respawnedOverLive, liveHere - 1, 0);
     }, 0);
-    const pending = ends.filter((e) => e.state === 'pending');
-    // A restart that cut a wake turn put its events back to pending (and cleared consumedBy); the
-    // boot scan wakes the epic for them again. Until it has, a pending end that a recorded wake
-    // turn named beyond what the consumed ends account for is that released wake, not a missed one.
-    const named = new Map();
-    for (const item of wakes.flat()) named.set(item, (named.get(item) ?? 0) + 1);
-    for (const e of ends) if (e.consumedBy) named.set(wakeItem(e), (named.get(wakeItem(e)) ?? 0) - 1);
-    let released = 0;
-    const unnamed = pending.filter((e) => {
-      const left = named.get(wakeItem(e)) ?? 0;
-      if (left <= 0) return true;
-      named.set(wakeItem(e), left - 1);
-      released++;
-      return false;
-    });
-    const idle = (epic.activityState ?? 'idle') === 'idle';
-    const missed = !epic.archived && !epic.terminated && idle && !done ? unnamed.length : 0;
     // Each committed wake turn names exactly the events its chain consumed. Match turns to chains by
     // those items: a turn with no chain is a restart's released wake, or a duplicate. An owner's
-    // instruction also consumes events (D9 e), but it is no wake turn, so it cannot hide one.
+    // instruction also consumes events (D9 e) but is no wake turn; it can absorb a duplicate wake
+    // only if it consumed exactly the same node:word items (rare).
     const chainItems = new Map();
     for (const e of ends) if (e.consumedBy) chainItems.set(e.consumedBy, [...(chainItems.get(e.consumedBy) ?? []), wakeItem(e)]);
     const keyOf = (items) => [...items].sort().join(',');
     const chains = new Map();
     for (const items of chainItems.values()) chains.set(keyOf(items), (chains.get(keyOf(items)) ?? 0) + 1);
     let extra = 0;
+    const unmatchedItems = new Map();
     for (const items of wakes) {
       const left = chains.get(keyOf(items)) ?? 0;
-      if (left > 0) chains.set(keyOf(items), left - 1);
-      else extra++;
+      if (left > 0) {
+        chains.set(keyOf(items), left - 1);
+        continue;
+      }
+      extra++;
+      for (const item of items) unmatchedItems.set(item, (unmatchedItems.get(item) ?? 0) + 1);
     }
+    // A restart that cut a wake turn put its events back to pending (and cleared consumedBy); the
+    // boot scan wakes the epic for them again. Until it has, a pending end that an unmatched wake
+    // turn named is that released wake, not a missed one.
+    const pending = ends.filter((e) => e.state === 'pending');
+    let released = 0;
+    const unnamed = pending.filter((e) => {
+      const left = unmatchedItems.get(wakeItem(e)) ?? 0;
+      if (left <= 0) return true;
+      unmatchedItems.set(wakeItem(e), left - 1);
+      released++;
+      return false;
+    });
+    const idle = (epic.activityState ?? 'idle') === 'idle';
+    const missed = !epic.archived && !epic.terminated && idle && !done ? unnamed.length : 0;
     const unwokenChains = [...chains.values()].reduce((n, k) => n + k, 0);
     counters.wrongStarts += wrong;
     counters.duplicateChildren += dup;
@@ -231,7 +241,7 @@ export function format(report) {
     out.push(`  spawned per node: ${e.nodes.map((n) => `${n.id}=${n.spawned}`).join(' ')}`);
     out.push(`  events: ${JSON.stringify(e.events.byState)} ${JSON.stringify(e.events.byOutcome)}`);
     out.push(
-      `  wake turns=${e.wakes.length} consuming chains=${e.consumingChains} (owner instructions, no wake turn: ${e.chainsWithoutWakeTurn}) released, waiting to wake=${e.releasedPending}`,
+      `  wake turns=${e.wakes.length} consuming chains=${e.consumingChains} (chains with no wake turn — owner instructions, or a wake whose turn was not recorded: ${e.chainsWithoutWakeTurn}) released, waiting to wake=${e.releasedPending}`,
     );
     e.wakes.forEach((items, i) => {
       out.push(`    wake ${i + 1}: ${items.join(', ')}`);
