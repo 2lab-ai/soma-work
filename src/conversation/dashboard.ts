@@ -4185,6 +4185,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/deck-nav.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/tabs.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/goal-card.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/log-scroller.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4509,7 +4510,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    frame that scrolls past a dozen rows (a wide fan-out stays a card, not a
    page); the element draws the rows, the folds, the bar and the roll-up. */
 .ag-tree { display: block; margin: 12px 0 2px; padding: 10px 12px 6px; border: 1px solid var(--ib-card-border); border-radius: 10px; background: var(--ib-card); }
-.ag-tree > ui-agent-tree, .pa-tree > ui-agent-tree { display: block; min-width: 0; }
+.ag-tree > ui-agent-tree, ui-agent-tree.pa-tree { display: block; min-width: 0; }
 .ag-tree > ui-agent-tree { max-height: 420px; overflow-y: auto; overscroll-behavior: contain; }
 .at-fallback { display: block; padding: 4px 0; font-size: 12px; color: var(--ib-muted); }
 .ag-icon { grid-column: 2; grid-row: 1; width: 16px; height: 16px; display: grid; place-items: center; color: var(--ag-c); }
@@ -4745,7 +4746,6 @@ ui-drawer:not(:defined) { display: none; }
 .pa-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 14px; line-height: 1.35; }
 .pa-name .ag-type { font-weight: 650; }
 .pa-name .ag-id { font-size: 12px; }
-.pa-tree { display: block; }
 .pa-sum { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 7px; margin-top: 4px; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .pa-dot { color: var(--text-tertiary); }
 .pa-desc { margin-top: 2px; font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -4797,31 +4797,18 @@ ui-drawer:not(:defined) { display: none; }
 /* Section tabs (SSOT 2026-10-29, D4 E-24): @2lab.ai/ui <ui-tabs> — Chat · 작업 로그 at their own width,
    에이전트 트리 at the strip's far end (TabItem.end, T6) with the tree glyph; each section is its own scroll
    box slotted as its tab's panel (panel-focus="none": the box, not the element's wrapper, is the tab stop),
-   sized by sizePanelSections (--psec-h) to the rest of the panel; only the one shown holds nodes. The
-   new-items pill sits over the box from the wrapper, outside the element. */
+   sized by sizePanelSections (--psec-h) to the rest of the panel; only the one shown holds nodes. */
 .panel-sections { display: block; --ui-tabs-bg: var(--surface); }
 .panel-sections::part(list) { padding: 0 12px; background: var(--surface); }
 .panel-sections-body { position: relative; }
-.psec { position: relative; height: var(--psec-h, 60vh); min-height: 160px; overflow-y: auto; scroll-behavior: auto; outline: none; overflow-anchor: none; }
-/* D3 E-25 — a section a library element draws is its own scroll box (<ui-conversation>'s
-   <ui-log-scroller>: the pin, the older-page row, the kept place, the new-items pill):
-   the panel's box only gives it the height. */
+.psec { position: relative; height: var(--psec-h, 60vh); min-height: 160px; }
+/* D3 E-25 — every section is a library element's own scroll box (<ui-log-scroller>: the pin, the
+   older-page row, the kept place, the new-items pill): the panel's box only gives it the height. */
 .psec.psec-el { overflow: hidden; display: flex; flex-direction: column; }
 .psec-el > * { flex: 1 1 auto; min-height: 0; }
-.psec-el > ui-conversation, .psec-el > ui-work-log { padding: 4px 8px 0; }
+.psec-el > ui-conversation, .psec-el > ui-work-log, .psec-el > ui-log-scroller { padding: 4px 8px 0; }
 .cv-arts-slot .turn-arts-row { margin-top: 2px; }
 .psec[hidden] { display: none; }
-.psec:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
-.psec-older { display: block; margin: 10px auto 2px; padding: 5px 14px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
-@media (hover: hover) and (pointer: fine) { .psec-older:hover { color: var(--text); border-color: var(--text-tertiary); } }
-.psec-older:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-.psec-older[aria-busy="true"] { cursor: progress; font-style: italic; color: var(--text-tertiary); }
-.psec-start { margin: 12px 0 2px; text-align: center; font-size: 11.5px; color: var(--text-tertiary); }
-.psec-older[hidden], .psec-start[hidden], .psec-pill[hidden] { display: none; }
-.psec-empty { margin: 24px 16px; text-align: center; font-size: 12px; color: var(--text-tertiary); }
-.psec-pill { position: absolute; left: 50%; bottom: 12px; z-index: 4; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 4px 14px; border: 1px solid var(--ib-text); border-radius: 999px; background: var(--ib-text); color: var(--ib-card); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: var(--ib-shadow-raised); }
-.psec-pill:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-.panel-tree { padding: 6px 16px 12px; }
 /* 자세히 (T1.6) — a button that behaves like a toggle (HIG Toggles: outside a list,
    not a switch; the background tells the state); the panel's class gates the
    detail-only parts. */
@@ -5125,7 +5112,7 @@ ui-drawer:not(:defined) { display: none; }
 }
 /* ── TOUCH — coarse pointer enlargement ── */
 @media (pointer: coarse) {
-  .psec-older, .psec-pill, .panel-detail-toggle { min-height: 44px; }
+  .panel-detail-toggle { min-height: 44px; }
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
 }
 /* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens (heights only). ── */
@@ -5694,10 +5681,12 @@ ${pageTokenAliases()}
         <!-- SSOT 2026-10-29 T6: Chat (지시와 답변) first and the default; 에이전트 트리 at the strip's right end (TabItem.end) — the bottom view's top right. -->
         <div class="panel-sections-body" id="panel-sections-body">
           <ui-tabs class="panel-sections" id="panel-sections" panel-focus="none">
-          <div class="psec" id="psec-tree" slot="tree" tabindex="0">
-            <button type="button" class="psec-older" data-sec="tree" hidden>이전 에이전트 보기</button>
-            <p class="psec-start" hidden>에이전트 트리의 시작</p>
-            <div class="psec-body panel-tree" id="panel-tree"></div>
+          <!-- 에이전트 트리 (E-25, D3 G1-1 → D6b): @2lab.ai/ui <ui-log-scroller> around the one <ui-agent-tree> —
+               it lands on the newest agents, pages older ones in on scroll-up (ui-load-older → showMoreTree) and
+               holds the reader's row while the tree grows above it (the rows' data-anchor in the tree's shadow
+               root), the "new" pill for a live arrival; the page keeps the window (atWindowOf, paintTreeTab). -->
+          <div class="psec psec-el ui-tok" id="psec-tree" slot="tree">
+            <ui-log-scroller class="panel-tree" id="panel-tree" lang="ko"></ui-log-scroller>
           </div>
           <!-- 작업 로그 (D3 F-01..F-10): @2lab.ai/ui <ui-work-log> — task groups, entry rows, the raw viewer,
                child agents, its own scroll box (pages older entries in on scroll-up); the tool cards are
@@ -5713,8 +5702,6 @@ ${pageTokenAliases()}
             <ui-conversation class="panel-conv" id="panel-conv" lang="ko"></ui-conversation>
           </div>
           </ui-tabs>
-          <!-- New items while the reader is up the list: one press goes to the newest. -->
-          <button type="button" class="psec-pill" id="psec-pill" hidden></button>
         </div>
       </section>
       </ui-tabs>
@@ -9466,24 +9453,20 @@ function renderAgentConv() {
   });
 }
 // ── Section tabs (SSOT 2026-10-29) — 에이전트 트리 · 작업 로그 · 지시와 답변 ──
-// Inside the focused agent's tab, three section tabs, each with its own scroll
-// box (the reader's place is per tab). Only the active one is in the DOM: the
-// others keep their data (the work-log state, the turns, the agents) and are
-// painted from it when they are opened. Each opens on its newest items, at its
-// bottom; scrolling up pages back — a sentinel (the top control) within one box
-// height of the view, the control itself the keyboard path — and the reader
-// keeps their place. A new item at the bottom follows a reader who is there; one
-// reading higher keeps their place and gets a pill that jumps to the newest.
+// Inside the focused agent's tab, three section tabs, each a library element in
+// its own scroll box (<ui-log-scroller>: the reader's place is per tab). Only the
+// active one is in the DOM: the others keep their data (the work-log state, the
+// turns, the agents) and are painted from it when they are opened. Each opens on
+// its newest items, at its bottom; scrolling up pages back (the element's top row
+// is the keyboard path; ui-load-older → this page's loader) and the reader keeps
+// their place. A new item at the bottom follows a reader who is there; one
+// reading higher keeps their place and gets the element's pill to the newest.
 var PSEC_ORDER = ['conv', 'log', 'tree'];
-var PSEC_TEXT = {
-  tree: { older: '이전 에이전트 보기', loading: '이전 에이전트 보기', start: '에이전트 트리의 시작' },
-};
-// The sections a library element draws as its own scroll box — it lands on the
-// newest item, follows it, pages older ones in on scroll-up (ui-load-older →
-// this page's loader), keeps the reader's place and says what arrived below:
-// 지시와 답변 (<ui-conversation>), 작업 로그 (<ui-work-log>). 에이전트 트리 is this
-// page's box (psecBox; D3-GAPS G1-1).
-var PSEC_EL = { conv: 'panel-conv', log: 'worklog-list' };
+// The element that draws each section as its own scroll box: 지시와 답변
+// (<ui-conversation>), 작업 로그 (<ui-work-log>), 에이전트 트리 (<ui-log-scroller>
+// around the one <ui-agent-tree> — D3-GAPS G1-1, closed by 0.12.0: the scroller
+// holds the reader's row through the tree's open shadow root).
+var PSEC_EL = { conv: 'panel-conv', log: 'worklog-list', tree: 'panel-tree' };
 function psecEl(sec) {
   var id = PSEC_EL[sec || _psec];
   return id ? document.getElementById(id) : null;
@@ -9491,8 +9474,6 @@ function psecEl(sec) {
 var PANEL_TURNS_PAGE = 20; // turns per page of 지시와 답변
 var AT_PANEL_WINDOW = 20; // agents per step of 에이전트 트리
 var _psec = 'conv'; // the section tab shown
-var _psecPin = true; // the reader is at the newest (the bottom) of the section shown
-var _psecNew = 0; // items that arrived below a reader reading higher up
 var _treeWindow = AT_PANEL_WINDOW; // how many of the newest agents the tree shows (this opening)
 var _treeMaxN = null; // the newest spawn number the tree showed (null: not painted yet)
 
@@ -9561,9 +9542,6 @@ function atWindowOf(anchor, n, pin, after) {
 function psecBox(sec) {
   return document.getElementById('psec-' + (sec || _psec));
 }
-function psecAtBottom(box) {
-  return !!box && box.scrollHeight - box.clientHeight - box.scrollTop <= 4;
-}
 // The tab strip and the panels — <ui-tabs>: the selected tab, the one tab stop, the
 // one panel shown are its own from the data; the same section writes nothing.
 function renderPanelSections() {
@@ -9587,21 +9565,20 @@ function psecClear(sec) {
   } else if (sec === 'tree') {
     var tree = document.getElementById('panel-tree');
     if (tree) {
-      if (tree.firstChild) tree.innerHTML = '';
-      tree._html = '';
+      if (typeof tree.clearItems === 'function') tree.clearItems();
+      else if (tree.firstChild) tree.innerHTML = '';
       tree._tree = null;
       tree._hidden = 0;
       tree._growing = false;
+      tree._sig = '';
     }
     _treeMaxN = null;
   }
-  psecSyncControls(sec);
 }
 function paintSection(sec) {
   if (sec === 'conv') convPaint();
   else if (sec === 'log') wlPaint();
   else paintTreeTab();
-  psecSyncControls(sec);
 }
 // Show the section tab sec: the others leave the DOM; this one is painted from
 // its data and lands on its newest items. (A key or a click keeps the element's
@@ -9613,180 +9590,11 @@ function selectPanelSection(sec) {
   for (var i = 0; i < PSEC_ORDER.length; i++) if (PSEC_ORDER[i] !== sec) psecClear(PSEC_ORDER[i]);
   if (panelSessionKey) paintSection(sec);
   psecToNewest();
-  psecFillSoon(sec);
 }
-// A scroll the page makes (a landing, a kept place, following the newest): the
-// box's scroll handler knows it for its own and reads no reader intent into it.
-function psecSetTop(box, top) {
-  if (Math.abs(box.scrollTop - top) >= 1) box.scrollTop = top;
-  box._lastTop = box.scrollTop;
-}
-// The section shown, at its newest item; a later scroll up is the reader's.
+// The section shown, at its newest item (the element's); a later scroll up is the reader's.
 function psecToNewest() {
-  var box = psecBox();
-  _psecPin = true;
-  psecSetNew(0);
   var el = psecEl();
-  if (el) {
-    if (typeof el.scrollToLatest === 'function') el.scrollToLatest({ smooth: false });
-    return;
-  }
-  if (!box) return;
-  psecSetTop(box, box.scrollHeight);
-  box._armed = false;
-  box._anchor = null;
-}
-function psecJumpNewest() {
-  psecToNewest();
-  var box = psecBox();
-  if (box && box.focus) box.focus({ preventScroll: true });
-}
-function psecSetNew(n) {
-  _psecNew = Math.max(0, n);
-  var pill = document.getElementById('psec-pill');
-  if (!pill) return;
-  var show = _psecNew > 0;
-  if (show) setTextIfChanged(pill, '새 항목 ' + _psecNew + '개 ↓');
-  if (pill.hidden === show) pill.hidden = !show;
-}
-// n new items landed at the bottom of the section shown: a reader who was at the
-// newest (pinned) stays there; one reading higher keeps their place and is told.
-function psecOnAppended(n, pinned) {
-  var box = psecBox();
-  if (!box || !(n > 0)) return;
-  if (pinned) {
-    psecSetTop(box, box.scrollHeight);
-    _psecPin = true;
-    return;
-  }
-  // Not followed (reading higher, or an entry's detail open): growth no longer pins.
-  _psecPin = false;
-  psecSetNew(_psecNew + n);
-}
-// Older items went in above the reader: measured from the bottom, their place stays.
-function psecKeepPlace(box, fromBottom) {
-  if (box) psecSetTop(box, box.scrollHeight - fromBottom);
-}
-// The items the reader is on — the first few agent-tree rows in view, those
-// wholly below the top edge first (the one the edge cuts may still grow), top
-// first — and how far below the box top each sits (null: none in view). Several:
-// a step of older agents can take one away.
-var PSEC_ANCHOR_MAX = 6;
-// The 에이전트 트리 tab's rows live in <ui-agent-tree>'s (open) shadow root.
-function psecTreeRoot(box) {
-  var tree = box.querySelector('ui-agent-tree');
-  return tree && tree.shadowRoot ? tree.shadowRoot : null;
-}
-function psecViewAnchor(box) {
-  var tr = psecTreeRoot(box);
-  if (!tr) return null;
-  var top = box.getBoundingClientRect().top;
-  var bottom = top + box.clientHeight;
-  var out = [];
-  var cut = [];
-  var rows = tr.querySelectorAll('[role="treeitem"][data-id]');
-  for (var i = 0; i < rows.length && out.length < PSEC_ANCHOR_MAX; i++) {
-    // A tree item holds its own row, then its children: the row is where it is.
-    var row = rows[i].firstElementChild;
-    if (!row) continue;
-    var r = row.getBoundingClientRect();
-    if (!r.height || r.bottom <= top) continue;
-    if (r.top >= bottom) break;
-    var v = rows[i].getAttribute('data-id') || '';
-    var key = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(v) : v;
-    (r.top >= top ? out : cut).push({ sel: '[role="treeitem"][data-id="' + key + '"]', at: r.top - top });
-  }
-  out = out.concat(cut).slice(0, PSEC_ANCHOR_MAX);
-  return out.length ? out : null;
-}
-// Where an anchor row is now (its tree item shown), else null.
-function psecAnchorEl(box, c) {
-  var tr = psecTreeRoot(box);
-  var item = tr ? tr.querySelector(c.sel) : null;
-  var el = item ? item.firstElementChild : null;
-  return el && el.getClientRects().length ? el : null;
-}
-// The first of those rows still shown back where it was (false: all are gone).
-function psecRestoreAnchor(box, a) {
-  if (!a || !a.length) return false;
-  for (var i = 0; i < a.length; i++) {
-    var el = psecAnchorEl(box, a[i]);
-    if (!el) continue;
-    var shift = el.getBoundingClientRect().top - box.getBoundingClientRect().top - a[i].at;
-    if (Math.abs(shift) >= 1) psecSetTop(box, box.scrollTop + shift);
-    return true;
-  }
-  return false;
-}
-// A page went in above the reader: their item goes back where it was — and is
-// held there while what was added settles (answers and cards render after it),
-// until the reader moves on. Without an item in view, measured from the bottom.
-// (The boxes have no native scroll anchoring: the place is this page's to keep.)
-function psecHoldPlace(box, anchor, fromBottom) {
-  if (!box) return;
-  if (psecRestoreAnchor(box, anchor)) {
-    box._anchor = anchor;
-  } else {
-    box._anchor = null;
-    psecKeepPlace(box, fromBottom);
-  }
-}
-// What the top of a section shows: 'older' (a control: older items exist),
-// 'loading' (the control says the page is on its way), 'start' (everything is
-// shown), or '' (nothing — loading, empty, a section an element draws).
-function psecOlderState(sec) {
-  if (PSEC_EL[sec]) return '';
-  var host = document.getElementById('panel-tree');
-  if (!host || !host._tree) return '';
-  if (host._growing) return 'loading';
-  return host._hidden > 0 ? 'older' : 'start';
-}
-function psecSyncControls(sec) {
-  var box = psecBox(sec);
-  if (!box) return;
-  var btn = box.querySelector('.psec-older');
-  var start = box.querySelector('.psec-start');
-  var st = sec === _psec && panelSessionKey ? psecOlderState(sec) : '';
-  if (btn) {
-    var show = st === 'older' || st === 'loading';
-    if (btn.hidden === show) btn.hidden = !show;
-    if (show) setTextIfChanged(btn, PSEC_TEXT[sec][st === 'loading' ? 'loading' : 'older']);
-    if (st === 'loading') btn.setAttribute('aria-busy', 'true');
-    else if (btn.hasAttribute('aria-busy')) btn.removeAttribute('aria-busy');
-  }
-  if (start && start.hidden === (st === 'start')) start.hidden = st !== 'start';
-}
-// The page before the oldest item shown — for the control, the sentinel and the
-// scroll; one at a time, nothing at the start.
-function psecLoadOlder(sec) {
-  if (sec !== _psec || psecOlderState(sec) !== 'older') return;
-  showMoreTree();
-}
-// Pure: whether the next older page is due — the box cannot scroll (the reader
-// would otherwise have only the control), or the reader moved up since the
-// landing (armed) and the top (the sentinel) is within one box height of the view.
-function psecPageDue(scrollTop, scrollHeight, clientHeight, armed) {
-  if (!(clientHeight > 0)) return false;
-  if (scrollHeight <= clientHeight + 1) return true;
-  return !!armed && scrollTop <= clientHeight;
-}
-// After a landing, a page, a scroll or the sentinel: the next older page when it
-// is due — so a page that still leaves the top near the view brings the next.
-function psecMaybeFill(sec) {
-  var box = psecBox(sec);
-  if (!box || PSEC_EL[sec] || sec !== _psec) return;
-  if (!psecPageDue(box.scrollTop, box.scrollHeight, box.clientHeight, box._armed)) return;
-  if (psecOlderState(sec) === 'older') psecLoadOlder(sec);
-}
-// psecMaybeFill once the section's elements have rendered (<ui-tool-call-card>,
-// <ui-agent-tree> render on the next microtask): their height decides.
-function psecFillSoon(sec) {
-  requestAnimationFrame(function() { psecMaybeFill(sec); });
-}
-// After a <ui-agent-tree> renders new data: one frame (the library's elements
-// expose no update promise — an UiElement renders on the next microtask).
-function psecAfterRender(_el, fn) {
-  requestAnimationFrame(function() { fn(); });
+  if (el && typeof el.scrollToLatest === 'function') el.scrollToLatest({ smooth: false });
 }
 // The section box takes the rest of the panel (psecHeightOf) as the parts above it
 // change — its height is --psec-h on the wrapper (the box is slotted into <ui-tabs>,
@@ -9832,9 +9640,20 @@ function ptUpsert(list, turn, replaceId) {
 }
 // 에이전트 트리: the session's agents in <ui-agent-tree> (rich — a card per agent on
 // one waterfall axis, every branch's spend rolled up), the main agent at its
-// root and the focused one selected — the newest _treeWindow agents with what
-// connects them (atWindowOf); scrolling up shows AT_PANEL_WINDOW more of the
-// agents already loaded. A live arrival below a reader reading higher is counted.
+// root and the focused one selected — the one item of the tab's <ui-log-scroller>
+// (the tree itself, so the scroller reads the rows' data-anchor through its open
+// shadow root): the newest _treeWindow agents with what connects them
+// (atWindowOf); the scroller's older row / a scroll-up asks for AT_PANEL_WINDOW
+// more of the agents already loaded (ui-load-older → showMoreTree). A live
+// arrival below a reader reading higher is counted on the scroller's pill.
+var TREE_SCROLLER = { label: '에이전트 트리', startText: '에이전트 트리의 시작', emptyText: '이 세션에는 하위 에이전트가 없습니다' };
+function treeScrollerData(host, hasMore) {
+  var d = { label: TREE_SCROLLER.label, startText: TREE_SCROLLER.startText, emptyText: TREE_SCROLLER.emptyText, hasMore: !!hasMore };
+  var sig = JSON.stringify(d);
+  if (host._sig === sig) return;
+  host._sig = sig;
+  host.data = d;
+}
 function paintTreeTab() {
   var host = document.getElementById('panel-tree');
   if (!host || _psec !== 'tree') return;
@@ -9843,8 +9662,11 @@ function paintTreeTab() {
   if (!root || !root.children.length) {
     host._tree = null;
     host._hidden = 0;
-    writePanelPart(host, s ? '<p class="psec-empty">이 세션에는 하위 에이전트가 없습니다</p>' : '');
-    psecSyncControls('tree');
+    if (host.querySelector('ui-agent-tree')) {
+      if (typeof host.clearItems === 'function') host.clearItems();
+      else host.innerHTML = '';
+    }
+    treeScrollerData(host, false);
     return;
   }
   var ns = 'p|' + panelSessionKey;
@@ -9855,35 +9677,39 @@ function paintTreeTab() {
   _treeMaxN = win.maxN;
   host._tree = d;
   host._hidden = win.hidden;
-  var pinned = psecAtBottom(psecBox('tree'));
-  writePanelPart(host, atSlotHtml('pa-tree', ns, '에이전트 트리'));
-  atPaint(host.querySelector('ui-agent-tree'), d, JSON.stringify(d));
-  psecSyncControls('tree');
-  if (newer) psecOnAppended(newer, pinned);
+  var tree = host.querySelector('ui-agent-tree');
+  if (!tree) {
+    // The element is the item (data-item): made once per opening, given data from then on.
+    tree = document.createElement('ui-agent-tree');
+    tree.className = 'pa-tree';
+    tree.setAttribute('lang', 'ko');
+    tree.setAttribute('data-item', 'tree');
+    tree.innerHTML = '<span class="at-fallback">에이전트 트리</span>';
+    if (typeof host.upsertItem === 'function') host.upsertItem('tree', tree, { animate: false });
+    else host.appendChild(tree);
+  }
+  if (tree.getAttribute('data-at-ns') !== ns) tree.setAttribute('data-at-ns', ns);
+  atPaint(tree, d, JSON.stringify(d));
+  treeScrollerData(host, win.hidden > 0);
+  if (newer && typeof host.noteUnread === 'function') host.noteUnread(newer);
 }
+// The scroller asked for older agents (ui-load-older): AT_PANEL_WINDOW more of the
+// agents already loaded go in where they belong in the tree (above the reader, or
+// inside a branch they are reading — the scroller holds their row). One step at a
+// time: the next waits for this one's render (a frame — the element renders on the
+// next microtask), then the scroller hears the page landed and whether more wait.
 function showMoreTree() {
-  var box = psecBox('tree');
   var host = document.getElementById('panel-tree');
-  if (!box || !host || !(host._hidden > 0)) return;
-  // The older agents go in where they belong in the tree (above the reader, or
-  // inside a branch they are reading): the row they are on keeps its place.
-  var fromBottom = box.scrollHeight - box.scrollTop;
-  var anchor = psecViewAnchor(box);
+  if (!host || !(host._hidden > 0) || host._growing) return false;
   _treeWindow += AT_PANEL_WINDOW;
-  paintTreeTab();
-  // One step at a time: the next waits for this one's render (its height).
   host._growing = true;
-  psecAfterRender(host.querySelector('ui-agent-tree'), function() {
+  paintTreeTab();
+  requestAnimationFrame(function() {
     host._growing = false;
     if (_psec !== 'tree') return;
-    psecHoldPlace(box, anchor, fromBottom);
-    psecSyncControls('tree');
-    // The root and the branches stay at the top (older agents go in inside them),
-    // so the reader is still there: the next step waits for them to scroll up again
-    // (or the control) — unless the box is still too short to scroll.
-    box._armed = false;
-    psecMaybeFill('tree');
+    if (typeof host.prependItems === 'function') host.prependItems([], { hasMore: host._hidden > 0 });
   });
+  return true;
 }
 // The work log's older page — <ui-work-log> asks for it (ui-load-older) as the
 // reader scrolls up, or to fill a box too short to scroll. The element shows
@@ -9900,10 +9726,8 @@ function loadOlderWorkLog() {
   });
 }
 // One-time wiring: the tablist (<ui-tabs>: click, ←/→/Home/End with automatic
-// activation are its own; its ui-change is the choice), the pill, each box's top
-// control and sentinel, the scroll that tracks where the reader is (at the newest:
-// pinned; moving up: older pages may load), the newest kept in view while content
-// grows under a pinned reader, and the box's size.
+// activation are its own; its ui-change is the choice), the tree's older page
+// (the scroller's ui-load-older), and the boxes' size.
 (function initPanelSections() {
   var strip = document.getElementById('panel-sections');
   if (!strip) return;
@@ -9912,63 +9736,13 @@ function loadOlderWorkLog() {
     if (sec && sec !== _psec) selectPanelSection(sec);
   });
   renderPanelSections();
-  var pill = document.getElementById('psec-pill');
-  if (pill) pill.addEventListener('click', psecJumpNewest);
-  PSEC_ORDER.forEach(function(sec) {
-    var box = document.getElementById('psec-' + sec);
-    if (!box || PSEC_EL[sec]) return;
-    var btn = box.querySelector('.psec-older');
-    if (btn) btn.addEventListener('click', function() { psecLoadOlder(sec); });
-    // The reader acting on a row (an entry's detail, a Raw, a fold) changes the
-    // list by their own hand: nothing is held against it.
-    ['pointerdown', 'keydown'].forEach(function(type) {
-      box.addEventListener(type, function() { box._anchor = null; }, { passive: true });
+  var tree = document.getElementById('panel-tree');
+  if (tree) {
+    tree.addEventListener('ui-load-older', function(e) {
+      if (!showMoreTree()) e.preventDefault();
     });
-    box._lastTop = 0;
-    box.addEventListener('scroll', function() {
-      if (sec !== _psec) return;
-      var top = box.scrollTop;
-      // The page's own scroll (psecSetTop) — or none: no reader intent in it.
-      if (Math.abs(top - box._lastTop) < 1) return;
-      var up = top < box._lastTop;
-      box._lastTop = top;
-      _psecPin = psecAtBottom(box);
-      if (_psecPin && _psecNew) psecSetNew(0);
-      // The reader's own place now: the rows they see, read once a frame — what
-      // changes above them later (an answer, a card rendering) does not move them.
-      box._anchor = null;
-      if (!_psecPin && !box._capture) {
-        box._capture = true;
-        requestAnimationFrame(function() {
-          box._capture = false;
-          if (sec === _psec && !_psecPin) box._anchor = psecViewAnchor(box);
-        });
-      }
-      // The reader moving up arms the sentinel; a landing never does, nor does
-      // the box shrinking under a reader at the newest (they stay there).
-      if (up && !_psecPin) box._armed = true;
-      psecMaybeFill(sec);
-    }, { passive: true });
-    // The sentinel: the top control, observed within one box height above the view.
-    if (btn && typeof IntersectionObserver === 'function') {
-      new IntersectionObserver(function(entries) {
-        for (var i = 0; i < entries.length; i++) if (entries[i].isIntersecting) psecMaybeFill(sec);
-      }, { root: box, rootMargin: '100% 0px 0px 0px' }).observe(btn);
-    }
-  });
+  }
   if (typeof ResizeObserver === 'function') {
-    var pin = new ResizeObserver(function() {
-      var box = psecBox();
-      if (!box) return;
-      if (_psecPin) psecSetTop(box, box.scrollHeight);
-      else if (box._anchor) psecRestoreAnchor(box, box._anchor);
-    });
-    PSEC_ORDER.forEach(function(sec) {
-      var box = PSEC_EL[sec] ? null : document.getElementById('psec-' + sec);
-      var body = box ? box.querySelector('.psec-body') : null;
-      if (body) pin.observe(body);
-      if (box) pin.observe(box);
-    });
     var size = new ResizeObserver(function() { sizePanelSections(); syncPanelArtVariant(); });
     ['panel-scroll', 'panel-surface', 'panel-tabs', 'panel-agents', 'panel-tasks', 'panel-sections'].forEach(function(id) {
       var el = document.getElementById(id);
@@ -15184,7 +14958,6 @@ function closePanel() {
   resetWorkLog(null);
   // A closed panel holds no section nodes.
   for (var si = 0; si < PSEC_ORDER.length; si++) psecClear(PSEC_ORDER[si]);
-  psecSetNew(0);
   _panelLand = '';
   _panelLanded = false;
   _panelHold = false;

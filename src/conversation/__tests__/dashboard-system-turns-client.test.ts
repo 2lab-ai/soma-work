@@ -323,11 +323,7 @@ describe('C2 — the one-line row (<ui-conversation> system turn)', () => {
       ...SYSTEM,
       compact: {},
       timestamp: Date.now() - 3_600_000,
-      attachments: [
-        { id: 'F1', name: 'a.png', kind: 'image' },
-        { id: 'F2', name: 'b.pdf' },
-        { name: 'no-id.txt' },
-      ],
+      attachments: [{ id: 'F1', name: 'a.png', kind: 'image' }, { id: 'F2', name: 'b.pdf' }, { name: 'no-id.txt' }],
     });
     const built = api().conv([sys]);
     const x = built.turns[0];
