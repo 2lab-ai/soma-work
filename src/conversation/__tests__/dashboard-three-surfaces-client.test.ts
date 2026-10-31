@@ -184,7 +184,15 @@ const TREE_FNS = [
   'cardTaskRow',
   'atCardData',
 ];
-const TREE_VARS = ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AT_ROOT', 'AT_STATUS', 'AT_ROOT_STATUS', '_anOpen'];
+const TREE_VARS = [
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'AT_ROOT',
+  'AT_STATUS',
+  'AT_ROOT_STATUS',
+  '_anOpen',
+];
 type TreeNode = Record<string, unknown> & { id: string; status: string };
 type TreeData = { nodes: TreeNode[]; density: string; title: string; expanded: string[] };
 
@@ -668,7 +676,7 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
         'panelDetailsHtml',
         'panelInfoHtml',
       ],
-      ['PI_CHEV_SVG', '_cw'],
+      ['_cw'],
       {
         formatTokens: (n: number) => `${n}`,
         formatNmSSs: (n: number) => `${n}ms`,
@@ -679,8 +687,8 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
 
   it('collapsed: owner · workflow · tokens · cost · context · last activity (live), and the links stay in view', () => {
     const html = info(card(), false);
-    expect(html).toContain('aria-expanded="false"');
-    const sum = html.slice(html.indexOf('class="pi-sum"'), html.indexOf('</button>'));
+    expect(html).toContain('<ui-disclosure class="pi-dc" flush>');
+    const sum = html.slice(html.indexOf('class="pi-sum"'), html.indexOf('</ui-disclosure>'));
     for (const want of ['Zhuge', 'zwork', '9591000 tok', '$12.40', 'ctx 31%', 'class="rel-time"'])
       expect(sum, want).toContain(want);
     expect(html).toContain('PROJ-1 &mdash; Dashboard surfaces');
@@ -693,7 +701,7 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
   // (dashboard-affectui-context-window-client.test.ts); the token rows say they are session totals.
   it('open: every token kind (cumulative), cost, Σ · compactions · sessions, merge — no old context bar', () => {
     const html = info(card(), true);
-    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('<ui-disclosure class="pi-dc" flush open>');
     const b = html.slice(html.indexOf('class="pi-body"'));
     for (const want of [
       '입력',
@@ -730,8 +738,10 @@ describe('panel goal — the full editor moved here, its draft safe across live 
 
   it('goal writes re-render the panel goal (not only the card) and read the live form from it', () => {
     expect(clientFn('setGoalError')).toContain('renderPanelGoal()');
-    // The 완료된 goal toggle lives in the panel now: it must repaint the panel's goal.
-    expect(clientFn('toggleGoalHistory')).toContain('renderPanelGoal()');
+    // The 완료된 goal toggle lives in the panel now: its choice (the disclosure's ui-toggle) must repaint the panel's
+    // goal — on the way open, and again once the fold settled (D4 K-06).
+    expect(clientFn('goalHistoryToggle')).toContain('renderPanelGoal()');
+    expect(clientFn('goalHistoryFolded')).toContain('renderPanelGoal()');
     // After the await, only this session's form — never another session's draft.
     expect(clientFn('addGoalFromCard')).toContain(
       "panelSessionKey === key ? document.getElementById('panel-goal') : null",
@@ -843,10 +853,13 @@ describe('landing follows the opening intent (executed)', () => {
       },
     });
     const tasks = section('panel-tasks', !opts.tasksHidden);
+    // D4 E-19: the agent strip is <ui-tabs>' sticky list; its height is the shared panel's top against the host's.
+    const tabsAt = (y: number) => ({ getBoundingClientRect: (): Rect => ({ top: y, bottom: y, height: 0 }) });
     const els: Record<string, unknown> = {
       'panel-scroll': scroll,
       'panel-tasks': tasks,
-      'panel-tabs': opts.tabs === undefined ? null : { offsetHeight: opts.tabs },
+      'panel-tabs': opts.tabs === undefined ? null : tabsAt(500),
+      'panel-tabpanel': opts.tabs === undefined ? null : tabsAt(500 + opts.tabs),
       'panel-goal': section('panel-goal'),
       'panel-agents': section('panel-agents'),
       'panel-sections': section('panel-sections'),
@@ -861,7 +874,7 @@ describe('landing follows the opening intent (executed)', () => {
       'panel-question': section('panel-question', !!opts.question),
     };
     const m = load<{ landPanel(): void; state(): { landed: boolean } }>(
-      ['psecLandingTop', 'landPanel'],
+      ['psecLandingTop', 'panelTabsHeight', 'landPanel'],
       ['_panelOnQuestion'],
       { document: { getElementById: (id: string) => els[id] ?? null } },
       [
@@ -936,7 +949,7 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
   it('Escape / × from inside the panel → the opener; gone or inert → the open card’s 작업 로그, else the heading; focus elsewhere → untouched', () => {
     const run = (o: { inPanel: boolean; present: boolean; inert?: boolean; cardOpen?: boolean }) => {
       const focused: string[] = [];
-      const panel = { classList: { remove() {} } };
+      const panel = { hide() {} };
       // focus() moves document.activeElement, except into an inert (folded) card.
       const el = (name: string, inert = false) => {
         const node: Record<string, unknown> = {
@@ -951,7 +964,7 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
       };
       const heading = el('heading');
       const doc: Record<string, unknown> = {
-        getElementById: (id: string) => (id === 'slide-panel' || id === 'panel-overlay' ? panel : null),
+        getElementById: (id: string) => (id === 'slide-panel' ? panel : null),
         querySelector: (sel: string) => (sel === '.board-title, h1, h2' ? heading : null),
       };
       const opener = el('opener', !!o.inert);
@@ -1001,6 +1014,55 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
     expect(run({ inPanel: true, present: true, inert: true })).toEqual(['opener', 'worklog']); // inside a folded card
     expect(run({ inPanel: true, present: false, cardOpen: false })).toEqual(['heading']); // the card is closed
     expect(run({ inPanel: false, present: true })).toEqual([]); // the reader already moved on
+  });
+
+  // D4 K-06: the 산출물 part is written through writePanelPart (a morph; nothing when the html is what it last
+  // wrote). A close empties the part directly, so it must also forget what it wrote — else the same card
+  // reopened finds its strip "unchanged" and stays empty.
+  it('a closed panel forgets the 산출물 part it wrote, so the same card reopened paints its strip again', () => {
+    const arts = { innerHTML: '', style: { display: '' } };
+    const panel = { hide() {} };
+    const doc = {
+      getElementById: (id: string) => (id === 'slide-panel' ? panel : id === 'panel-artifacts' ? arts : null),
+      querySelector: () => null,
+      body: { contains: () => false },
+      activeElement: { closest: () => null },
+    };
+    const m = load<{ closePanel(): void; writePanelPart(el: unknown, html: string): boolean }>(
+      ['deckRemove', 'closePanel', 'writePanelPart'],
+      [],
+      {
+        document: doc,
+        renderDeckNav: () => {},
+        layoutBeforeChange: () => {},
+        resetWorkLog: () => {},
+        _cardBodies: {},
+        pcReset: () => {},
+        _ansIo: null,
+        psecClear: () => {},
+        psecSetNew: () => {},
+        morphInnerHtml: (e: { innerHTML: string }, h: string) => {
+          e.innerHTML = h;
+        },
+        updateTimersIn: () => {},
+      },
+      [
+        'var panelOpen = true, panelSessionKey = "k", panelConvId = "c", _panelAgent = "", _panelAgentsHtml = "", _rawLoadedCache = {}, _panelGen = 0;',
+        'var _panelTurnsHasMore = false, _panelTurnsLoading = false, _panelTurnsOldestId = null, _panelLand = "", _panelLanded = false;',
+        'var _panelTurnsList = [], _panelTurnsMsg = "", PSEC_ORDER = ["conv", "log", "tree"], _panelHold = false;',
+        'var _panelOnQuestion = false, _panelReturnFocus = null, _ansFailed = {}, _panelOlderWhy = "", _panelTurnsWhy = "";',
+        'var _deck = ["k"];',
+      ],
+    );
+    const strip = '<div class="art-strip-panel">report.html</div>';
+    expect(m.writePanelPart(arts, strip)).toBe(true);
+    expect(arts.innerHTML).toBe(strip);
+    m.closePanel();
+    expect(arts.innerHTML).toBe('');
+    expect(arts.style.display).toBe('none');
+    // The card reopened: the same strip is written again, not skipped as unchanged.
+    expect(m.writePanelPart(arts, strip)).toBe(true);
+    expect(arts.innerHTML).toBe(strip);
   });
 });
 
@@ -1104,7 +1166,7 @@ describe('the detail deck — open cards and their detail cards move together (S
         scheduleLayoutRefresh: () => {},
         placeCard: () => {},
         inboxPaint: () => {},
-        openArtifactModal: () => {},
+        openArtifactViewer: () => {},
         renderDeckNav: (dir: number) => nav.push(dir),
       },
       [
@@ -1250,7 +1312,7 @@ describe('the detail deck — open cards and their detail cards move together (S
     // Escape (outside the viewer and the cron drawer) closes the front detail card, folding its card.
     expect(TEMPLATE).toContain(
       // D1 (C-05): <ui-drawer> takes the key (preventDefault) before the page's listener; the panel leaves it be.
-      "if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();",
+      "if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artViewerIsOpen() && !_cronDrawerKey) closeDetailCard();",
     );
     // A cron run opens its session's detail card on its default (Chat), not on the 작업 로그.
     expect(TEMPLATE).toContain('closeCronDrawer(function() { openPanel(k); }); }');
@@ -1520,8 +1582,8 @@ describe('focus inside the goal section after its goal left (executed)', () => {
     m.renderPanelGoal();
     expect(doc.activeElement).toBe(el);
     expect(classes.has('is-empty')).toBe(false); // the session has a current goal
-    // A card switch starts the composer clean: a fresh <ui-agent-steering> and no files.
-    expect(clientFn('openPanel')).toMatch(/if \(!sameSession\) \{\s*pcFreshSteer\(\);\s*pcReset\(\);/);
+    // A card switch starts the composer clean: a fresh <ui-agent-steering> with a fresh composer (no text, no files).
+    expect(clientFn('openPanel')).toMatch(/if \(!sameSession\) \{\s*pcFreshSteer\(\);\s*\/\//);
   });
 });
 
@@ -1538,37 +1600,27 @@ describe('the composer follows the session live (executed)', () => {
       set: (d: Record<string, unknown>) => writes.push(d),
     });
     const host: Record<string, unknown> = {};
-    // Task view T1.5: the composer's tools (attach, image, voice) follow the field.
-    const tools = { 'pc-attach': { disabled: false }, 'pc-image': { disabled: false }, 'pc-mic': { disabled: false } };
-    const els: Record<string, unknown> = { 'panel-command': host, 'cmd-steer': el, ...tools };
+    // D4 E-30: the field, tools and files are the slotted <ui-composer>'s — the steering turns it off with its own
+    // field (library: agent-steering.test.ts 'read-only or ended: the composer is off with the steering’s words').
+    const els: Record<string, unknown> = { 'panel-command': host, 'cmd-steer': el };
     let resets = 0;
-    let held = 0;
     const m = load<{ renderPanelComposer(s: unknown, force?: boolean): void }>(
       ['renderPanelComposer', 'pcModeOf', 'steeringData'],
       ['STEER_STATE'],
       {
         document: { getElementById: (id: string) => els[id] ?? null },
         currentUserId: 'U1',
-        pcHeldFiles: () => held,
         pcReset: () => {
           resets++;
         },
       },
     );
-    const toolsDisabled = () => Object.values(tools).map((t) => t.disabled);
     const last = () => writes[writes.length - 1];
     m.renderPanelComposer({ ownerId: 'U1', activityState: 'working' }, true);
-    expect(last()).toEqual({ running: true, canAct: true, disabled: false, items: [], attachments: 0 });
-    expect(toolsDisabled()).toEqual([false, false, false]);
+    expect(last()).toEqual({ running: true, canAct: true, disabled: false, items: [] });
     expect(resets).toBe(0);
-    // A file chip added: the element learns the page holds one (an empty note may then go).
-    held = 1;
-    m.renderPanelComposer({ ownerId: 'U1', activityState: 'working' });
-    expect(last()?.attachments).toBe(1);
-    held = 0;
     m.renderPanelComposer({ ownerId: 'U1', terminated: true });
     expect(last()).toMatchObject({ running: false, disabled: true, canAct: true });
-    expect(toolsDisabled()).toEqual([true, true, true]);
     expect(resets).toBe(1); // the files and any recording were for the open session
     // The same state again writes nothing (the field's text and an IME composition are the element's).
     const n = writes.length;
@@ -1580,7 +1632,6 @@ describe('the composer follows the session live (executed)', () => {
     // Someone else's session: read-only — the queue shows, nothing can be done (like Stop).
     m.renderPanelComposer({ ownerId: 'U2', activityState: 'working' });
     expect(last()).toMatchObject({ canAct: false, disabled: false });
-    expect(toolsDisabled()).toEqual([true, true, true]);
     m.renderPanelComposer({ activityState: 'working' }); // no ownerId: fail closed
     expect(last()).toMatchObject({ canAct: false });
     expect(clientFn('repaintPanelSession')).toContain('renderPanelComposer(s);');
@@ -1611,9 +1662,9 @@ describe('the model menu closes on Escape before the panel does (executed)', () 
     expect(send).toContain('el.data = Object.assign({}, el.data, { disabled: true });');
     expect(send).toContain("if (cmdHost) cmdHost._mode = '';");
     const esc = TEMPLATE.slice(
-      TEMPLATE.indexOf("if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artModalIsOpen()"),
+      TEMPLATE.indexOf("if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artViewerIsOpen()"),
     );
-    expect(esc.slice(0, 200)).toContain('!artModalIsOpen() && !_cronDrawerKey');
+    expect(esc.slice(0, 200)).toContain('!artViewerIsOpen() && !_cronDrawerKey');
   });
 });
 
@@ -1694,8 +1745,8 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
       [
         'AGENT_STATUS_LABEL',
         'AGENT_STATUS_TONE',
+        'AGENT_STATUS_GLYPH',
         'TASK_FATE_LABEL',
-        'PI_CHEV_SVG',
         'TASK_RUNS_SHOWN',
         'TASK_RUN_STATUS',
         '_panelTaskOpen',
@@ -1735,8 +1786,9 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
 
   it('folded by default (task view T1.3): one head — the runs in one line, no rows (SSOT 2026-10-29 T5)', () => {
     const { innerHTML: html } = rig(false);
+    // D4 K-06: the head is <ui-disclosure>'s row (closed: no open attribute, its region empty).
     expect(html).toContain(
-      '<button type="button" class="panel-sec-head panel-tasks-header" aria-expanded="false" onclick="togglePanelTasks()">',
+      '<ui-disclosure class="panel-tasks-dc" flush><span slot="summary" class="panel-tasks-header">',
     );
     // What runs now, then how many ran and completed (the earlier list's run counts), then
     // how many a new plan dropped before they ran.
@@ -1752,7 +1804,7 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
   it("opened, the earlier list's run is among the runs in start order; the never-run task sits in the plan's earlier fold (SSOT 2026-10-29 T5)", () => {
     const r = rig(true);
     const html = r.innerHTML;
-    expect(html).toContain('aria-expanded="true" aria-controls="panel-tasks-body"');
+    expect(html).toContain('<ui-disclosure class="panel-tasks-dc" flush open>');
     expect(html).toContain('<div class="panel-tasks-body ui-tok" id="panel-tasks-body">');
     // The earlier list's completed task ran first: it comes first.
     expect(r.runs?.runs.map((x: { title: string }) => x.title)).toEqual(['old one', 'now']);
@@ -1823,8 +1875,11 @@ describe('interaction state survives live renders on both surfaces', () => {
       /class="ui-icon-btn is-bordered panel-close"[^>]*aria-label="작업 카드 닫기"[^>]*onclick="closeDetailCard\(\)"/,
     );
     expect(header).not.toContain('onclick="closePanel()"');
-    // The overlay (the sheet's backdrop) does the same.
-    expect(PAGE).toContain('<div class="slide-panel-overlay" id="panel-overlay" onclick="closeDetailCard()"></div>');
+    // The drawer's scrim and Esc (its cancelable ui-close, D4 E-02) do the same.
+    expect(TEMPLATE).toContain(
+      "d.addEventListener('ui-close', function(e) { e.preventDefault(); closeDetailCard(); })",
+    );
+    expect(PAGE).not.toContain('slide-panel-overlay');
   });
 });
 
@@ -1861,7 +1916,14 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = [
+  'PR_STATE_LABEL',
+  'PR_STATE_TONE',
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'OWNER_BADGE_HUES',
+];
 const FACE_ENV = {
   dhShow: () => true,
   dhTruncate: () => null,

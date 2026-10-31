@@ -803,7 +803,7 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     expect(c.html()).not.toContain('<ui-disclosure class="io-sys" data-cid="' + CID + '" open');
     // The element's ui-toggle is answered once, on the document: the reader's choice by its card's conversation.
     expect(TEMPLATE).toContain(
-      "if (t && t.classList && t.classList.contains('io-sys')) ioSysToggle(t.getAttribute('data-cid') || '', e.detail && e.detail.open);",
+      "if (t.classList.contains('io-sys')) ioSysToggle(t.getAttribute('data-cid') || '', open);",
     );
   });
 
@@ -1130,10 +1130,10 @@ describe('C7 — the work log (작업 로그, <ui-work-log>): an instruction ent
   });
 });
 
-// D1-GAPS G4-4: @2lab.ai/ui 0.5.0 <ui-disclosure> toggles only on a click whose target is inside its own head; a
-// click on slotted summary content (the System row's words, a card's instruction badge) did nothing. The page
-// toggles it with the element's toggle() — once, and never on top of a release that toggles by itself.
-describe('D1 — a click on a disclosure’s summary content opens it (G4-4)', () => {
+// D4 K-06: <ui-disclosure> toggles by itself — since 0.8.0 a click on the slotted summary's words counts too, so
+// D1's click workaround (G4-4) is gone. The page keeps each choice from the element's ui-toggle and, for a region
+// it paints only while open, paints it on the way open and drops its nodes once ui-toggled says the fold settled.
+describe('D4 — the page keeps a disclosure’s choice and paints its region around the element’s motion (K-06)', () => {
   const INIT = (() => {
     const start = TEMPLATE.indexOf('(function initDisclosures() {');
     const end = TEMPLATE.indexOf('\n})();', start);
@@ -1141,73 +1141,91 @@ describe('D1 — a click on a disclosure’s summary content opens it (G4-4)', (
     return cook(TEMPLATE.slice(start, end + 6));
   })();
   type Fn = (e: unknown) => void;
+  type Choice = boolean | 'folding';
   function setup() {
-    const bubble: Record<string, Fn[]> = {};
-    const capture: Record<string, Fn[]> = {};
+    const on: Record<string, Fn[]> = {};
     const document = {
-      addEventListener: (type: string, fn: Fn, cap?: boolean) => {
-        const at = cap ? capture : bubble;
-        at[type] = [...(at[type] ?? []), fn];
+      addEventListener: (type: string, fn: Fn) => {
+        on[type] = [...(on[type] ?? []), fn];
       },
     };
-    const ioSysToggle = vi.fn();
-    const { dcSummaryHost } = load<{ dcSummaryHost(t: unknown): unknown }>(['dcSummaryHost'], []);
-    new Function('document', 'ioSysToggle', 'dcSummaryHost', INIT)(document, ioSysToggle, dcSummaryHost);
-    const host = {
+    const calls: string[] = [];
+    const state = new Function(
+      'document',
+      'ioSysToggle',
+      'goalHistoryToggle',
+      'goalHistoryFolded',
+      'renderPanelInfo',
+      'repaintPanelTasks',
+      'renderPanelArtifactsSection',
+      `var _panelInfoOpen = false; var _panelTasksOpen = false; var _umPanelOpen = false;\n${INIT}\nreturn { get: function() { return { info: _panelInfoOpen, tasks: _panelTasksOpen, um: _umPanelOpen }; } };`,
+    )(
+      document,
+      (cid: string, open: boolean) => calls.push(`io ${cid} ${open}`),
+      (key: string, open: boolean) => calls.push(`goal ${key} ${open}`),
+      (key: string) => calls.push(`goal-folded ${key}`),
+      () => calls.push('info'),
+      () => calls.push('tasks'),
+      () => calls.push('arts'),
+    ) as { get(): { info: Choice; tasks: Choice; um: Choice } };
+    const el = (cls: string, attrs: Record<string, string> = {}) => ({
       tagName: 'UI-DISCLOSURE',
-      isConnected: true,
-      open: false,
-      classList: { contains: (c: string) => c === 'io-sys' },
-      getAttribute: () => 'conv-1',
-      closest: () => null,
-      // The element's public toggle(): its ui-toggle (heard on the document), then the change.
-      toggle: vi.fn(() => {
-        for (const fn of bubble['ui-toggle'] ?? []) fn({ target: host, detail: { open: !host.open } });
-        host.open = !host.open;
-      }),
+      classList: { contains: (c: string) => c === cls },
+      getAttribute: (n: string) => attrs[n] ?? null,
+    });
+    const fire = (type: string, target: unknown, open: boolean) => {
+      for (const fn of on[type] ?? []) fn({ target, detail: { open } });
     };
-    const summary = { parentElement: host };
-    const words = { closest: (sel: string) => (sel === '[slot="summary"]' ? summary : null) };
-    const region = { closest: () => null };
-    /** One click: the document's capture listener, the element's own handler (selfToggles), the bubble listener. */
-    const click = (target: unknown, selfToggles: boolean) => {
-      for (const fn of capture.click ?? []) fn({ target });
-      if (selfToggles) host.toggle();
-      for (const fn of bubble.click ?? []) fn({ target });
-    };
-    return { host, words, region, click, ioSysToggle };
+    return { state, calls, el, fire };
   }
 
-  it('0.5.0: a click on the summary’s words opens it once, through toggle(); the card keeps the choice', () => {
-    const s = setup();
-    s.click(s.words, false);
-    expect(s.host.toggle).toHaveBeenCalledTimes(1);
-    expect(s.host.open).toBe(true);
-    expect(s.ioSysToggle).toHaveBeenCalledWith('conv-1', true);
-    s.click(s.words, false);
-    expect(s.host.open).toBe(false);
+  it('the page no longer toggles a disclosure itself: the 0.5.0 click workaround is gone', () => {
+    expect(INIT).not.toContain("addEventListener('click'");
+    expect(INIT).not.toContain('.toggle()');
+    expect(TEMPLATE).not.toContain('function dcSummaryHost(');
   });
 
-  it('a release that toggles by itself is not toggled a second time', () => {
+  it('a card’s system instruction keeps its choice; the completed goals keep theirs and hear the fold settle', () => {
     const s = setup();
-    s.click(s.words, true);
-    expect(s.host.toggle).toHaveBeenCalledTimes(1);
-    expect(s.host.open).toBe(true);
+    s.fire('ui-toggle', s.el('io-sys', { 'data-cid': 'conv-1' }), true);
+    s.fire('ui-toggle', s.el('cg-hx', { 'data-hx': 'k1' }), false);
+    s.fire('ui-toggled', s.el('cg-hx', { 'data-hx': 'k1' }), false);
+    expect(s.calls).toEqual(['io conv-1 true', 'goal k1 false', 'goal-folded k1']);
   });
 
-  it('the head (the host, retargeted) and the region are left to the element', () => {
+  it('세션 정보 / Tasks / 지시 첨부: painted on the way open, kept as folding through the close, dropped once settled', () => {
     const s = setup();
-    s.click(s.host, true);
-    s.click(s.region, false);
-    expect(s.host.toggle).toHaveBeenCalledTimes(1);
-    expect(s.host.open).toBe(true);
-  });
-
-  it('only a ui-disclosure’s own summary slot counts', () => {
-    const { dcSummaryHost } = load<{ dcSummaryHost(t: unknown): unknown }>(['dcSummaryHost'], []);
-    const other = { tagName: 'DIV' };
-    expect(dcSummaryHost({ closest: () => ({ parentElement: other }) })).toBe(null);
-    expect(dcSummaryHost(null)).toBe(null);
-    expect(dcSummaryHost({})).toBe(null);
+    s.fire('ui-toggle', s.el('pi-dc'), true);
+    expect(s.state.get().info).toBe(true);
+    expect(s.calls).toEqual(['info']);
+    s.fire('ui-toggle', s.el('pi-dc'), false);
+    expect(s.state.get().info).toBe('folding');
+    expect(s.calls).toEqual(['info']); // nothing dropped while the region folds
+    s.fire('ui-toggled', s.el('pi-dc'), true); // an open that settled: nothing to drop
+    expect(s.calls).toEqual(['info']);
+    s.fire('ui-toggled', s.el('pi-dc'), false);
+    expect(s.state.get().info).toBe(false);
+    expect(s.calls).toEqual(['info', 'info']);
+    s.fire('ui-toggle', s.el('panel-tasks-dc'), true);
+    s.fire('ui-toggle', s.el('panel-um-dc'), true);
+    expect(s.state.get()).toEqual({ info: false, tasks: true, um: true });
+    expect(s.calls.slice(2)).toEqual(['tasks', 'arts']);
+    s.fire('ui-toggle', s.el('panel-tasks-dc'), false);
+    s.fire('ui-toggled', s.el('panel-tasks-dc'), false);
+    s.fire('ui-toggle', s.el('panel-um-dc'), false);
+    s.fire('ui-toggled', s.el('panel-um-dc'), false);
+    expect(s.state.get()).toEqual({ info: false, tasks: false, um: false });
+    expect(s.calls.slice(4)).toEqual(['tasks', 'arts']);
+    // A close that settled without a fold asked for here (a repaint closed it): nothing to drop again.
+    s.fire('ui-toggled', s.el('panel-tasks-dc'), false);
+    expect(s.calls).toHaveLength(6);
+    // Another element's ui-toggle is not a disclosure's.
+    s.fire(
+      'ui-toggle',
+      { tagName: 'UI-AGENT-TREE', classList: { contains: () => true }, getAttribute: () => null },
+      true,
+    );
+    expect(s.calls).toHaveLength(6);
+    expect(s.state.get()).toEqual({ info: false, tasks: false, um: false });
   });
 });

@@ -7,10 +7,13 @@
  *       artifacts, drawn by <ui-agent-inbox>, a chip opens the viewer);
  *       expanded card: a "산출물" strip of thumbnails, audio playable in place
  *   T6  right panel: a pinned artifact strip, and the files each answer produced
- *   T2  hover → minimap preview (html rendered without scripts, no autoplay)
- *   T3  click → full-size modal (html sandboxed, image, markdown rendered)
- *   T8  html / png / wav: viewable and playable immediately
- *   T1  markdown final answers render as documents, safely
+ *   T2  hover → a peek: @2lab.ai/ui <ui-hovercard> (D4 I-05), one card for every tile, filled by the page
+ *       (html rendered without scripts, no autoplay, a document's first lines)
+ *   T3  click → the viewer: @2lab.ai/ui <ui-artifact-viewer tiles="none"> (D4 I-06 / I-07) opened over the
+ *       page's own cards with open(items, index, opener); the page hands it the items (url, kind word, the
+ *       Slack action, a document's text) and its own body for the model's HTML (scripts on) and PDFs
+ *   T8  html / png / wav: viewable at once; audio plays in place on its <ui-file-card playable>
+ *   T1  markdown final answers are the viewer's document (the library's renderer; the page keeps none)
  */
 
 import { readFileSync } from 'node:fs';
@@ -163,7 +166,14 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = [
+  'PR_STATE_LABEL',
+  'PR_STATE_TONE',
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'OWNER_BADGE_HUES',
+];
 
 describe('T5 — collapsed card face: artifacts visible on the board itself', () => {
   const { cardOf } = load<{ cardOf(s: unknown, col: string): Record<string, unknown> }>(CARD_OF_FNS, CARD_OF_VARS, {
@@ -231,7 +241,7 @@ describe('T5 — collapsed card face: artifacts visible on the board itself', ()
       scheduleLayoutRefresh: () => {},
       placeCard: () => {},
       inboxPaint: () => {},
-      openArtifactModal: (...args: unknown[]) => opened.push(args),
+      openArtifactViewer: (...args: unknown[]) => opened.push(args),
       // SSOT 2026-10-29 T2: the opened card's detail card opens with it (covered in
       // dashboard-affectui-agent-inbox-client.test.ts) — a chip opens the viewer, never that.
       openPanel: (k: string) => panels.push(k),
@@ -258,9 +268,9 @@ describe('T5 — collapsed card face: artifacts visible on the board itself', ()
 describe('T5 — expanded card: the 산출물 strip', () => {
   const body = (cache: Record<string, unknown> = {}) =>
     load<{ renderCardArtifacts(s: unknown): string }>(
-      [...BASE_FNS, 'artSortForDisplay', 'artAudioPlaying', 'artTile', 'artListFor', 'renderCardArtifacts'],
+      [...BASE_FNS, 'artSortForDisplay', 'artTile', 'artListFor', 'renderCardArtifacts'],
       BASE_VARS,
-      { _artCache: cache, _artAudio: { el: null, key: null } },
+      { _artCache: cache },
     );
 
   it('lists the full cached list: files newest first, then answers; image tiles are real thumbnails', () => {
@@ -275,7 +285,7 @@ describe('T5 — expanded card: the 산출물 strip', () => {
     // D2 (I-01..I-03): each tile is @2lab.ai/ui <ui-file-card>, keyed for the page's hydration; the element draws
     // the thumbnail (an image's url), the kind's glyph and wash, the name and the meta.
     expect(out).toContain(
-      '<ui-file-card class="art-card" variant="tile" lang="ko" data-art-cid="conv-1" data-art-id="A2"',
+      '<ui-file-card class="art-card" variant="tile" playable lang="ko" data-art-cid="conv-1" data-art-id="A2"',
     );
     expect(out).not.toContain('<img');
   });
@@ -296,28 +306,27 @@ describe('T5 — expanded card: the 산출물 strip', () => {
     expect(api.artFileItem('c', bigMov)).not.toHaveProperty('url');
   });
 
-  it('T8 — an audio tile carries an inline play button; a file without bytes says it is on Slack', () => {
+  it('T8 — every tile is playable: the card draws the play / pause toggle on audio (one clip at a time); a file without bytes says it is on Slack', () => {
     const out = body({ c: { state: 'ok', list: [wav, bigMov] } }).renderCardArtifacts({
       conversationId: 'c',
       artifacts: { count: 2, recent: [] },
     });
-    expect(out).toMatch(/data-art-play="1"[^>]*data-art-id="A3"|data-art-id="A3"[^>]*data-art-play="1"/);
+    // D4 (I-01 / T8): the element's `playable` — the page keeps no play button, no shared <audio>, no marking.
+    expect(out).toMatch(
+      /<ui-file-card class="art-card" variant="tile" playable lang="ko" data-art-cid="c" data-art-id="A3"/,
+    );
+    expect(out).not.toContain('data-art-play');
+    for (const gone of [
+      'function toggleArtAudio(',
+      'function artAudioMark(',
+      'function artAudioPlaying(',
+      'var _artAudio',
+    ]) {
+      expect(TEMPLATE, gone).not.toContain(gone);
+    }
+    expect(TEMPLATE).not.toMatch(/\.art-play\b/);
     // The remote file's tile is marked; its card's meta line says 'Slack에만 있음' (artFileItem).
     expect(out).toContain('<div class="art-tile is-remote">');
-  });
-
-  it('T8 — a live re-render keeps a playing clip marked playing (the card body is morphed on every push)', () => {
-    const playing = (key: string | null, paused: boolean) =>
-      load<{ renderCardArtifacts(s: unknown): string }>(
-        [...BASE_FNS, 'artSortForDisplay', 'artAudioPlaying', 'artTile', 'artListFor', 'renderCardArtifacts'],
-        BASE_VARS,
-        { _artCache: { c: { state: 'ok', list: [wav] } }, _artAudio: { el: { paused }, key } },
-      ).renderCardArtifacts({ conversationId: 'c', artifacts: { count: 1, recent: [] } });
-    const btn = (out: string) => out.match(/<button[^>]*data-art-play="1"[^>]*>/)?.[0] ?? '';
-    expect(btn(playing('c|A3', false))).toMatch(/class="art-play is-playing"/);
-    expect(btn(playing('c|A3', false))).toContain('aria-pressed="true"');
-    expect(btn(playing('c|A3', true))).not.toContain('is-playing');
-    expect(btn(playing('other|A3', false))).toContain('aria-pressed="false"');
   });
 
   it('before the list loads, the summary shows; with no artifacts the section is absent', () => {
@@ -363,12 +372,15 @@ describe('D2 — the tiles and chips are @2lab.ai/ui <ui-file-card>, answered by
     expect(TEMPLATE).toContain("attributeFilter: ['data-art-v']");
     expect(TEMPLATE).toContain("if (node.matches('ui-file-card[data-art-id]')) fcHydrate(node);");
     expect(TEMPLATE).toContain("document.addEventListener('ui-open', function(e) {");
-    expect(TEMPLATE).toContain("openArtifactModal(t.getAttribute('data-art-cid'), t.getAttribute('data-art-id'), t);");
-    // Focus goes back to the card's button (the card itself takes no focus).
-    expect(TEMPLATE).toContain(
-      "var inner = opener && opener.shadowRoot ? opener.shadowRoot.querySelector('button') : null;",
+    expect(TEMPLATE).toContain("openArtifactViewer(t.getAttribute('data-art-cid'), t.getAttribute('data-art-id'), t);");
+    // The card is the viewer's opener: focus comes back to it (0.10.0 card.focus() reaches its button itself).
+    expect(clientFn('openArtifactViewer')).toContain(
+      "v.open(artViewerItems(cid, list), at, opener && typeof opener.focus === 'function' ? opener : null);",
     );
-    expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/file-card.js?v=${UI_LIB_VERSION}"></script>');
+    expect(TEMPLATE).not.toContain("opener.shadowRoot.querySelector('button')");
+    for (const mod of ['file-card', 'hovercard', 'artifact-viewer']) {
+      expect(TEMPLATE).toContain(`<script type="module" src="/dashboard/ui/${mod}.js?v=\${UI_LIB_VERSION}"></script>`);
+    }
   });
 });
 
@@ -378,17 +390,8 @@ describe('T6 — right panel: pinned strip and per-answer attachments', () => {
       renderPanelArtifacts(list: unknown[], cid: string): string;
       renderTurnArtifacts(list: unknown[], cid: string, startTs: number, endTs: number): string;
     }>(
-      [
-        ...BASE_FNS,
-        'artSortForDisplay',
-        'artAudioPlaying',
-        'artTile',
-        'artInTurn',
-        'renderPanelArtifacts',
-        'renderTurnArtifacts',
-      ],
+      [...BASE_FNS, 'artSortForDisplay', 'artTile', 'artInTurn', 'renderPanelArtifacts', 'renderTurnArtifacts'],
       BASE_VARS,
-      { _artAudio: { el: null, key: null } },
     );
 
   it('the strip has a count header and every artifact', () => {
@@ -417,9 +420,81 @@ describe('T6 — right panel: pinned strip and per-answer attachments', () => {
   });
 });
 
-describe('T2 — hover minimap', () => {
+type FakeEl = {
+  getAttribute(k: string): string | null;
+  hasAttribute(k: string): boolean;
+};
+const fakeEl = (attrs: Record<string, string>): FakeEl => ({
+  getAttribute: (k) => attrs[k] ?? null,
+  hasAttribute: (k) => k in attrs,
+});
+
+describe('T2 — hover peek: @2lab.ai/ui <ui-hovercard>, one card for every tile, filled by the page (D4 I-05)', () => {
   const peek = () =>
     load<{ renderArtPeekBody(cid: string, a: unknown): string }>([...BASE_FNS, 'renderArtPeekBody'], BASE_VARS);
+
+  it('is one element whose `for` reaches every trigger: file cards, the face chips in the inbox, user image tiles', () => {
+    expect(TEMPLATE).toContain(
+      '<ui-hovercard id="art-peek" for="ui-file-card[data-art-id], .ib-chip[data-art], .um-tile[data-art-id]" width="360"></ui-hovercard>',
+    );
+    // The element owns the hover intent, the grace, the swap, keyboard focus, Esc, a press, the scroll-away and
+    // the placement: the page keeps no timers, no positioning and no listeners of its own for the peek.
+    for (const gone of [
+      'ART_PEEK_DELAY_MS',
+      'ART_PEEK_CLOSE_MS',
+      'function showArtPeek(',
+      'function hideArtPeek(',
+      'function artHandleKey(',
+      'var _artPeek',
+      'role="tooltip"',
+    ]) {
+      expect(TEMPLATE, gone).not.toContain(gone);
+    }
+    expect(TEMPLATE).not.toMatch(/\.art-peek \{/);
+    expect(TEMPLATE).toContain('#art-peek { --ui-hovercard-z: 1000; }');
+    expect(TEMPLATE).toContain("peek.addEventListener('ui-open', onArtPeekOpen);");
+    expect(TEMPLATE).toContain("peek.addEventListener('ui-closed', onArtPeekClosed);");
+  });
+
+  it('resolves the trigger to its file: a keyed card / tile, or a face chip by its data-key through the session', () => {
+    const files: Record<string, Art> = { A1: html, A2: png };
+    const { artPeekTarget } = load<{ artPeekTarget(t: unknown): { cid: string; a: Art } | null }>(
+      ['artPeekTarget'],
+      [],
+      {
+        artFind: (cid: string, id: string) => (cid === 'conv-1' ? (files[id] ?? null) : null),
+        _sessionCache: { 'inst::work:C1:1.2': { conversationId: 'conv-1' } },
+      },
+    );
+    expect(artPeekTarget(fakeEl({ 'data-art-cid': 'conv-1', 'data-art-id': 'A2' }))).toEqual({ cid: 'conv-1', a: png });
+    // The inbox's chip: data-art is the file, data-key "art:<session key>:<file>" names the session (keys carry ':').
+    expect(artPeekTarget(fakeEl({ 'data-art': 'A1', 'data-key': 'art:inst::work:C1:1.2:A1' }))).toEqual({
+      cid: 'conv-1',
+      a: html,
+    });
+    expect(artPeekTarget(fakeEl({ 'data-art': 'A1', 'data-key': 'art:unknown:A1' }))).toBeNull();
+    expect(artPeekTarget(fakeEl({ 'data-art-cid': 'conv-1', 'data-art-id': 'nope' }))).toBeNull();
+    expect(artPeekTarget(null)).toBeNull();
+  });
+
+  it('ui-open fills the card for the trigger (and fetches a document head); an unknown file refuses the card', () => {
+    const filled: string[] = [];
+    const { onArtPeekOpen } = load<{ onArtPeekOpen(e: unknown): void }>(['onArtPeekOpen'], [], {
+      artPeekTarget: (t: FakeEl | null) => (t && t.getAttribute('data-art-id') === 'A2' ? { cid: 'c', a: png } : null),
+      renderArtPeekBody: (cid: string, a: Art) => `<peek ${cid} ${a.id}>`,
+      artPeekFillDoc: (el: { innerHTML: string }) => filled.push(el.innerHTML),
+    });
+    const card = { innerHTML: '' };
+    let prevented = 0;
+    const ev = (t: FakeEl) => ({ target: card, detail: { trigger: t }, preventDefault: () => prevented++ });
+    onArtPeekOpen(ev(fakeEl({ 'data-art-id': 'A2' })));
+    expect(card.innerHTML).toBe('<peek c A2>');
+    expect(filled).toEqual(['<peek c A2>']);
+    onArtPeekOpen(ev(fakeEl({ 'data-art-id': 'nope' })));
+    expect(prevented).toBe(1);
+    // ui-closed drops the preview (a playing clip, the iframe).
+    expect(clientFn('onArtPeekClosed')).toContain("e.target.innerHTML = '';");
+  });
 
   it('html renders live but without scripts (sandbox with no tokens)', () => {
     const out = peek().renderArtPeekBody('c', html);
@@ -443,99 +518,233 @@ describe('T2 — hover minimap', () => {
     expect(out).toContain('huge.mov');
   });
 
-  it('peek element exists and hover is delayed (not instant), dismissable with Escape', () => {
-    expect(TEMPLATE).toContain('id="art-peek"');
-    expect(TEMPLATE).toMatch(/var ART_PEEK_DELAY_MS = (3|4)\d\d;/);
-    expect(clientFn('artHandleKey')).toContain("'Escape'");
+  it('a markdown answer shows its first lines, plain: the first 64 KB of the file, 24 lines', () => {
+    expect(peek().renderArtPeekBody('c', answer)).toContain('<pre class="art-peek-pre" data-art-doc="c|A4">');
+    const fill = clientFn('artPeekFillDoc');
+    expect(fill).toContain("Range: 'bytes=0-65535'");
+    expect(fill).toContain('slice(0, ART_PEEK_LINES)');
+    expect(clientVar('ART_PEEK_LINES')).toBe('var ART_PEEK_LINES = 24;');
   });
 });
 
-describe('T3 — full-size modal', () => {
-  const modal = () =>
-    load<{ renderArtModalBody(cid: string, a: unknown): string }>([...BASE_FNS, 'renderArtModalBody'], BASE_VARS);
+describe('T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles="none"> over the page\'s own cards (D4 I-06 / I-07)', () => {
+  const api = (docs: Record<string, string> = {}) =>
+    load<{
+      artViewItem(cid: string, a: Art): Record<string, unknown>;
+      artViewerPreview(cid: string, a: Art): string;
+    }>([...BASE_FNS, 'umMissingReason', 'artViewItem', 'artViewerPreview'], BASE_VARS, { _artDocCache: docs });
 
-  it('html runs sandboxed: scripts only, never same-origin', () => {
-    const out = modal().renderArtModalBody('c', html);
+  it('is one element with no tiles of its own; the page keeps no dialog, no body renderer, no keys', () => {
+    expect(TEMPLATE).toContain('<ui-artifact-viewer id="art-viewer" tiles="none" lang="ko"></ui-artifact-viewer>');
+    for (const gone of [
+      '<dialog id="art-modal"',
+      'function renderArtModalBody(',
+      'function renderArtModal(',
+      'function artModalStep(',
+      'function closeArtifactModal(',
+      'function artModalClosed(',
+      'function openArtifactModal(',
+      'function dialogCloseSoftly(',
+      'function dialogKeep(',
+      'var _artModal',
+    ]) {
+      expect(TEMPLATE, gone).not.toContain(gone);
+    }
+    expect(TEMPLATE).not.toMatch(/\.art-modal\b|\.art-full-(img|imgwrap|audio|video|meta|doc)\b/);
+  });
+
+  it('the item the viewer pages: url, size, time; a final answer keeps its kind word 답변; a document carries its text once fetched', () => {
+    expect(api().artViewItem('c', png)).toEqual({
+      id: 'A2',
+      name: 'chart.png',
+      kind: 'image',
+      size: 2048,
+      time: 1792733001000,
+      url: '/api/dashboard/session/c/artifacts/A2/content',
+    });
+    expect(api().artViewItem('c', answer)).toMatchObject({ id: 'A4', kind: 'markdown', kindLabel: '답변' });
+    expect(api().artViewItem('c', answer)).not.toHaveProperty('text');
+    expect(api({ 'c|A4': '# 결과\n\n배포 완료' }).artViewItem('c', answer)).toMatchObject({
+      text: '# 결과\n\n배포 완료',
+    });
+  });
+
+  it('a file only Slack has: no url, why, and the Slack permalink as the viewer action (https only)', () => {
+    const item = api().artViewItem('c', bigMov);
+    expect(item).not.toHaveProperty('url');
+    expect(item.meta).toContain('사본이 없습니다');
+    expect(item.actions).toEqual([
+      { id: 'slack', label: 'Slack에서 열기', href: 'https://example.slack.com/files/U/F5/huge.mov' },
+    ]);
+    expect(api().artViewItem('c', { ...bigMov, permalink: 'javascript:alert(1)' })).not.toHaveProperty('actions');
+    // A stored file with a permalink gets the action beside the element's 새 탭 / 다운로드.
+    expect(
+      api().artViewItem('c', { ...png, permalink: 'https://example.slack.com/files/U/F2/chart.png' }).actions,
+    ).toHaveLength(1);
+  });
+
+  it("the page's own body (slot=\"preview\"): the model's html runs its scripts — never same-origin; a pdf opens inline; the rest is the element's", () => {
+    const out = api().artViewerPreview('c', html);
     expect(out).toMatch(/<iframe[^>]*sandbox="allow-scripts"/);
     expect(out).not.toContain('allow-same-origin');
-  });
-
-  it('png full size, wav plays at once, a big video plays with controls', () => {
-    expect(modal().renderArtModalBody('c', png)).toMatch(/<img[^>]*class="art-full-img"/);
-    expect(modal().renderArtModalBody('c', wav)).toMatch(
-      /<audio[^>]*controls[^>]*autoplay|<audio[^>]*autoplay[^>]*controls/,
+    expect(api().artViewerPreview('c', { ...html, source: 'user_upload' })).toBe('');
+    expect(api().artViewerPreview('c', { id: 'P', name: 'a.pdf', kind: 'pdf', stored: true })).toMatch(
+      /<iframe class="art-full-frame" src="\/api\/dashboard\/session\/c\/artifacts\/P\/content"/,
     );
-    expect(modal().renderArtModalBody('c', { ...bigMov, stored: true })).toMatch(/<video[^>]*controls/);
+    for (const a of [png, wav, answer, bigMov, { ...bigMov, stored: true }])
+      expect(api().artViewerPreview('c', a)).toBe('');
+    // Swapped on ui-view; a document without its text is fetched and the list handed back.
+    const sync = clientFn('syncArtViewer');
+    expect(sync).toContain('artViewerSlot(v, cid, a);');
+    expect(sync).toContain('artDocText(cid, a.id)');
+    expect(TEMPLATE).toContain("viewer.addEventListener('ui-view', function(e) { syncArtViewer(e.detail); });");
+    expect(clientFn('artDocText')).toContain('t.length > 2000000');
   });
 
-  it('markdown is fetched and rendered into a document container', () => {
-    expect(modal().renderArtModalBody('c', answer)).toContain('data-art-doc="c|A4"');
+  it('the slot child: put in for a file the page draws, swapped for another, taken out for one the element draws (or none)', () => {
+    const kids: Array<{
+      slot: string;
+      className: string;
+      attrs: Record<string, string>;
+      innerHTML: string;
+      removed: boolean;
+    }> = [];
+    const viewer = {
+      querySelector: (sel: string) => (sel === '[slot="preview"]' ? (kids.find((k) => !k.removed) ?? null) : null),
+      appendChild: (k: (typeof kids)[number]) => kids.push(k),
+    };
+    const fakeDocument = {
+      createElement: () => {
+        const el = {
+          slot: '',
+          className: '',
+          attrs: {} as Record<string, string>,
+          innerHTML: '',
+          removed: false,
+          setAttribute(k: string, v: string) {
+            el.attrs[k] = v;
+          },
+          getAttribute(k: string) {
+            return el.attrs[k] ?? null;
+          },
+          remove() {
+            el.removed = true;
+          },
+        };
+        return el;
+      },
+    };
+    const { artViewerSlot } = load<{ artViewerSlot(v: unknown, cid: string, a: unknown): void }>(
+      [...BASE_FNS, 'artViewerPreview', 'artViewerSlot'],
+      BASE_VARS,
+      { document: fakeDocument },
+    );
+    artViewerSlot(viewer, 'c', html);
+    expect(kids).toHaveLength(1);
+    expect(kids[0].attrs).toMatchObject({ slot: 'preview', 'data-art-for': 'c|A1' });
+    expect(kids[0].className).toBe('art-viewer-preview');
+    expect(kids[0].innerHTML).toMatch(
+      /<iframe class="art-full-frame" sandbox="allow-scripts" src="\/api\/dashboard\/session\/c\/artifacts\/A1\/content"/,
+    );
+    // The same file again: nothing is rewritten (the frame keeps its page).
+    const before = kids[0].innerHTML;
+    kids[0].innerHTML = `${before}<!--kept-->`;
+    artViewerSlot(viewer, 'c', html);
+    expect(kids[0].innerHTML).toContain('<!--kept-->');
+    // Another file the page draws: the one child is refilled.
+    artViewerSlot(viewer, 'c', { id: 'P', name: 'a.pdf', kind: 'pdf', stored: true });
+    expect(kids).toHaveLength(1);
+    expect(kids[0].attrs['data-art-for']).toBe('c|P');
+    expect(kids[0].innerHTML).not.toContain('allow-scripts');
+    // A file the element draws itself: the child goes, the stage is the element's.
+    artViewerSlot(viewer, 'c', png);
+    expect(kids[0].removed).toBe(true);
+    artViewerSlot(viewer, 'c', null);
+    expect(kids).toHaveLength(1);
   });
 
-  it('the dialog exists; Escape in the modal does not also close the slide panel', () => {
-    expect(TEMPLATE).toMatch(/<dialog id="art-modal"/);
+  it('opens over the conversation (files newest first, then answers) at the file, with the opener; a file not yet listed joins; the list is fetched', () => {
+    const opened: unknown[] = [];
+    const fetched: string[] = [];
+    const paused: number[] = [];
+    const order: string[] = [];
+    const viewer = {
+      index: -1,
+      open: (...a: unknown[]) => {
+        opened.push(a);
+        order.push('open');
+      },
+    };
+    const run = (cache: Record<string, unknown>, id: string, opener: unknown = { focus() {} }) => {
+      const m = load<{ openArtifactViewer(cid: string, id: string, opener: unknown): void }>(
+        [
+          ...BASE_FNS,
+          'umSiblings',
+          'umMissingReason',
+          'artSortForDisplay',
+          'artViewItem',
+          'artViewerItems',
+          'openArtifactViewer',
+        ],
+        [...BASE_VARS, '_artDocCache', '_artViewer'],
+        {
+          artViewerEl: () => viewer,
+          _artCache: cache,
+          artFind: (_cid: string, fid: string) => ({ A1: html, A2: png, A9: { ...wav, id: 'A9' } })[fid] ?? null,
+          ensureArtifacts: (cid: string) => fetched.push(cid),
+          pauseArtCards: () => paused.push(1),
+          artViewerSlot: (v: unknown, cid: string, a: { id: string } | undefined) =>
+            order.push(`slot ${v === viewer ? cid : '?'}|${a ? a.id : '-'}`),
+        },
+      );
+      m.openArtifactViewer('c', id, opener);
+    };
+    const opener = { focus() {} };
+    run({ c: { state: 'ok', list: [html, answer, png] } }, 'A2', opener);
+    expect(opened).toHaveLength(1);
+    const [items, at, who] = opened[0] as [Array<{ id: string }>, number, unknown];
+    expect(items.map((i) => i.id)).toEqual(['A2', 'A1', 'A4']);
+    expect(at).toBe(0);
+    expect(who).toBe(opener);
+    expect(fetched).toEqual([]);
+    expect(paused).toEqual([1]);
+    // The page's body for the first file is slotted before open(): the element reads the slot as it renders.
+    expect(order).toEqual(['slot c|A2', 'open']);
+    // Not in the cached list (a face chip before the fetch): it joins the page list; the full list is fetched.
+    run({ c: { state: 'loading', list: [html] } }, 'A9');
+    expect((opened[1] as [Array<{ id: string }>])[0].map((i) => i.id)).toEqual(['A9', 'A1']);
+    expect(fetched).toEqual(['c']);
+    // An opener that cannot take focus is not handed over.
+    run({ c: { state: 'ok', list: [png] } }, 'A2', {});
+    expect((opened[2] as unknown[])[2]).toBeNull();
+    // Nothing the page knows: no open.
+    run({}, 'zzz');
+    expect(opened).toHaveLength(3);
+  });
+
+  it('Escape in the viewer does not also close the slide panel', () => {
     // The cron drawer over a docked panel takes Escape first too (SSOT 2026-10-24, trinity R4).
     // SSOT 2026-10-29 T2: what Escape closes is the front detail card (closeDetailCard folds its card too).
-    // D1: an element on top (menu, <ui-dialog>, <ui-drawer>) that took the Escape (defaultPrevented) keeps it.
+    // D1: an element on top (menu, <ui-dialog>, <ui-drawer>) that took the Escape (defaultPrevented) keeps it;
+    // D4: the viewer's own <ui-dialog> is one of them, and artViewerIsOpen() reads the element's index.
     expect(TEMPLATE).toMatch(
-      /if \(e\.key === 'Escape' && !e\.defaultPrevented && panelOpen && !artModalIsOpen\(\) && !_cronDrawerKey\) closeDetailCard\(\);/,
+      /if \(e\.key === 'Escape' && !e\.defaultPrevented && panelOpen && !artViewerIsOpen\(\) && !_cronDrawerKey\) closeDetailCard\(\);/,
+    );
+    expect(clientFn('artViewerIsOpen')).toContain("typeof v.index === 'number' && v.index >= 0");
+    // N (the New task key) does nothing while the viewer is up.
+    expect(clientFn('ntIsTypingTarget')).toContain(
+      "document.querySelector('dialog[open], ui-dialog[open]') || artViewerIsOpen()",
     );
   });
 });
 
-describe('T1 — markdown answers render as documents, safely', () => {
-  const md = () =>
-    load<{ renderMarkdownDoc(src: string): string }>(
-      ['esc', 'escAttr', 'safeHref', 'mdInline', 'renderMarkdownDoc'],
-      [],
-    );
-
-  it('headings, lists, tables, code, quotes, links', () => {
-    const out = md().renderMarkdownDoc(
-      [
-        '# 결과',
-        '',
-        '배포가 **끝났습니다**. `npm test` 통과.',
-        '',
-        '- 하나',
-        '- 둘',
-        '',
-        '1. 첫째',
-        '2. 둘째',
-        '',
-        '| 항목 | 상태 |',
-        '|---|---|',
-        '| 배포 | 완료 |',
-        '',
-        '> 인용',
-        '',
-        '```ts',
-        'const a = 1 < 2;',
-        '```',
-        '',
-        '[PR](https://github.com/x/y/pull/1)',
-      ].join('\n'),
-    );
-    expect(out).toContain('<h1>결과</h1>');
-    expect(out).toContain('<strong>끝났습니다</strong>');
-    expect(out).toContain('<code>npm test</code>');
-    expect(out).toMatch(/<ul>\s*<li>하나<\/li>\s*<li>둘<\/li>\s*<\/ul>/);
-    expect(out).toMatch(/<ol>\s*<li>첫째<\/li>/);
-    expect(out).toContain('<table>');
-    expect(out).toContain('<th>항목</th>');
-    expect(out).toContain('<td>완료</td>');
-    expect(out).toContain('<blockquote>');
-    expect(out).toContain('const a = 1 &lt; 2;');
-    expect(out).toContain('href="https://github.com/x/y/pull/1"');
-  });
-
-  it('raw html and javascript: links never come through', () => {
-    const out = md().renderMarkdownDoc(
-      '<script>alert(1)</script>\n\n[x](javascript:alert(1))\n\n<img src=x onerror=alert(1)>',
-    );
-    expect(out).not.toContain('<script');
-    expect(out).not.toContain('<img');
-    expect(out).not.toContain('href="javascript');
+describe("T1 — markdown answers are the viewer's document: one renderer, the library's", () => {
+  it('the page keeps no markdown renderer or document styles of its own for artifacts', () => {
+    for (const gone of ['function renderMarkdownDoc(', 'function mdInline(', 'function fillArtDocs(']) {
+      expect(TEMPLATE, gone).not.toContain(gone);
+    }
+    expect(TEMPLATE).not.toMatch(/\.md-doc\b/);
+    expect(TEMPLATE).not.toMatch(/\.art-text\b/);
   });
 });
 
@@ -582,28 +791,35 @@ describe('T5/T6 — a new artifact reaches the open card and panel at once (revi
   });
 });
 
-describe('review gate — viewer keys and minimap fetch', () => {
-  it('← / → page the viewer, but not while a media control has focus (seeking stays native)', () => {
-    const steps: number[] = [];
-    const { artHandleKey } = load<{ artHandleKey(e: unknown): void }>(['artHandleKey'], [], {
-      artModalIsOpen: () => true,
-      artModalStep: (d: number) => steps.push(d),
-      hideArtPeek: () => {},
-      _artPeek: { anchor: null },
+describe('review gate — the open viewer follows the list', () => {
+  function settle(scope: string, cache: Record<string, unknown>) {
+    const fake: { data?: { items: unknown[] } } = {};
+    const live = { cid: 'c1', scope, list: [] as unknown[] };
+    const { artSettle } = load<{ artSettle(cid: string): void }>(['toNum', 'artSettle', 'artSortForDisplay'], [], {
+      _expanded: new Set<string>(),
+      _sessionCache: {},
+      refreshCard: () => {},
+      panelOpen: false,
+      panelConvId: null,
+      renderPanelArtifactsSection: () => {},
+      _artCache: cache,
+      _artViewer: live,
+      artViewerIsOpen: () => true,
+      artViewerEl: () => fake,
+      artViewerItems: (_cid: string, list: Art[]) => list.map((a) => a.id),
     });
-    const ev = (tag: string, key: string) => ({
-      key,
-      target: { tagName: tag },
-      preventDefault() {},
-      stopPropagation() {},
-    });
-    artHandleKey(ev('BUTTON', 'ArrowRight'));
-    artHandleKey(ev('AUDIO', 'ArrowRight'));
-    artHandleKey(ev('VIDEO', 'ArrowLeft'));
-    expect(steps).toEqual([1]);
+    artSettle('c1');
+    return { fake, live };
+  }
+
+  it('a new list (a push, the fetch after a face chip opened it) is handed to the viewer, sorted; the element keeps the shown file', () => {
+    const { fake, live } = settle('conversation', { c1: { state: 'ok', list: [answer, html, png] } });
+    expect(fake.data).toEqual({ items: ['A2', 'A1', 'A4'] });
+    expect((live.list as Art[]).map((a) => a.id)).toEqual(['A2', 'A1', 'A4']);
   });
 
-  it('the minimap asks for the first 64 KB of a text artifact, not the whole file', () => {
-    expect(clientFn('fillArtDocs')).toContain("Range: 'bytes=0-65535'");
+  it("an instruction's attachments are not the conversation's list: left alone", () => {
+    const { fake } = settle('attachments', { c1: { state: 'ok', list: [png] } });
+    expect(fake.data).toBeUndefined();
   });
 });

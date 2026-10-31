@@ -91,7 +91,7 @@ describe('agent inbox board — layout (§3.1)', () => {
     // (hidden and inert while closed, 0fr ↔ 1fr), and the page's detail is its default slot.
     const host = main.indexOf('<ui-stat-strip id="stats-strip" lang="ko">', strip);
     const detailAt = main.indexOf('<div class="stats-detail" id="stats-detail">', host);
-    const close = main.indexOf('</ui-stat-strip>', detailAt);
+    const close = main.indexOf('</ui-stat-strip>\n    </section>', detailAt);
     const board = main.indexOf('<section class="inbox ui-tok" id="inbox"');
     expect(strip).toBeGreaterThan(0);
     expect(host).toBeGreaterThan(strip);
@@ -108,19 +108,17 @@ describe('agent inbox board — layout (§3.1)', () => {
     ]) {
       expect(TEMPLATE, gone).not.toContain(gone);
     }
-    // Behind 자세히: the remaining cards and the charts, same ids as before.
+    // Behind 자세히: the remaining cards and the charts. The cards are a second <ui-stat-strip> in layout 'cards'
+    // (D4, B-07): 턴 · PR 생성 · PR 머지 are its figures, 머지 코드 and 워크플로우 the page's slotted spans.
     const detail = main.slice(detailAt, close);
-    for (const id of [
-      'stats-grid',
-      'stat-turns',
-      'stat-prs',
-      'stat-merged',
-      'stat-merge-lines',
-      'stat-workflows',
-      'chart-row',
-    ]) {
+    for (const id of ['stats-grid', 'stat-merge-lines', 'stat-workflows', 'chart-row']) {
       expect(detail, id).toContain(`id="${id}"`);
     }
+    expect(detail).toContain('<ui-stat-strip id="stats-grid" class="stats-grid" lang="ko">');
+    const cards = fnBody('statCardsData');
+    expect(cards).toContain("layout: 'cards',");
+    for (const label of ['턴 사용', 'PR 생성', 'PR 머지', '머지 코드', '워크플로우'])
+      expect(cards, label).toContain(`label: '${label}'`);
   });
 
   it('D2 — the stats strip is answered, not drawn: period · figures · 자세히 in, ui-period / ui-more answered', () => {
@@ -131,13 +129,13 @@ describe('agent inbox board — layout (§3.1)', () => {
     const data = fnBody('statsStripData');
     expect(data).toContain("period: { label: '기간', value: currentPeriod, options: PERIOD_OPTIONS },");
     expect(data).toContain(
-      "{ key: 'sessions', label: '세션', value: _strip.sessions.value, format: 'int', loading: _strip.sessions.loading },",
+      "{ key: 'sessions', label: '세션', value: _strip.sessions.value, format: 'int', loading: _strip.sessions.loading, from: 'last' },",
     );
     expect(data).toContain(
-      "var tokens = { key: 'tokens', label: '토큰', value: _strip.tokens.value, format: 'tokens', loading: _strip.tokens.loading };",
+      "var tokens = { key: 'tokens', label: '토큰', value: _strip.tokens.value, format: 'tokens', loading: _strip.tokens.loading, from: 'last' };",
     );
     expect(data).toContain(
-      "{ key: 'cost', label: '비용', value: _strip.cost.value, format: 'usd', loading: _strip.cost.loading },",
+      "{ key: 'cost', label: '비용', value: _strip.cost.value, format: 'usd', loading: _strip.cost.loading, from: 'last' },",
     );
     expect(data).toContain("more: { label: '자세히', open: _statsDetailOpen },");
     expect(fnBody('paintStatsStrip')).toContain('if (el) el.data = statsStripData();');
@@ -218,13 +216,10 @@ describe('agent inbox board — drag and drop removed (§3.1-5)', () => {
   it('has no draggable cards, drag listeners, or confirm() prompts', () => {
     expect(TEMPLATE).not.toContain('draggable=');
     expect(TEMPLATE).not.toContain("'dragstart'");
-    // Task view T1.5: the one 'drop' listener is the session composer's file
-    // drop (#panel-command, files only) — never a board card or column.
-    expect(TEMPLATE.match(/'drop'/g) ?? []).toHaveLength(1);
-    const pc = fnBody('pcInit');
-    expect(pc).toContain("var host = document.getElementById('panel-command');");
-    expect(pc).toContain("host.addEventListener('drop', function(e) {");
-    expect(pc).toContain("Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0");
+    // Task view T1.5 / D4 E-30: a file dropped on the session composer is the slotted <ui-composer>'s own drop —
+    // the page listens for no 'drop' at all, so never on a board card or column.
+    expect(TEMPLATE).not.toContain("'drop'");
+    expect(TEMPLATE).toContain('<ui-composer id="pc-composer" slot="composer" lang="ko"></ui-composer>');
     expect(TEMPLATE).not.toContain('confirm(');
   });
 });
@@ -347,16 +342,14 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(DASHBOARD_TS).not.toContain("openPanel(\\\\'' + escJs(s.key) + '\\\\',true,");
     // (the same quoting is live on the goal line — the check above is not vacuous)
     expect(DASHBOARD_TS).toContain("openPanel(\\\\'' + escJs(s.key) + '\\\\',\\\\'goal\\\\',");
-    expect(TEMPLATE).toContain('id="psec-tab-log" data-sec="log"');
+    expect(TEMPLATE).toContain("{ id: 'log', label: '작업 로그' },");
   });
 });
 
 describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
-  it('has a work log section tab in the panel (SSOT 2026-10-29)', () => {
-    expect(TEMPLATE).toContain('id="psec-tab-log" data-sec="log"');
-    expect(TEMPLATE).toContain(
-      '<div class="psec psec-el ui-tok" id="psec-log" role="tabpanel" aria-labelledby="psec-tab-log"',
-    );
+  it('has a work log section tab in the panel (SSOT 2026-10-29; D4 E-24: a <ui-tabs> tab over the slotted box)', () => {
+    expect(TEMPLATE).toContain("{ id: 'log', label: '작업 로그' },");
+    expect(TEMPLATE).toContain('<div class="psec psec-el ui-tok" id="psec-log" slot="log">');
     expect(TEMPLATE).toContain('작업 로그 없음');
   });
 
@@ -370,19 +363,20 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
 
   it('Tasks sit in the focused tab after the agent tabs, inside the one scroll area — no pinned block (task view T1)', () => {
     // SSOT 2026-10-29 T2: the panel carries the deck's depth (data-deck) from the start.
-    const panelAt = TEMPLATE.indexOf('<div class="slide-panel" id="slide-panel" data-deck="0">');
+    const panelAt = TEMPLATE.indexOf('<ui-drawer class="slide-panel" id="slide-panel" data-deck="0"');
     expect(panelAt).toBeGreaterThan(0);
     const panel = TEMPLATE.slice(panelAt);
     const header = panel.indexOf('<div class="panel-header">');
     const scroll = panel.indexOf('<div class="panel-scroll" id="panel-scroll">');
     const surface = panel.indexOf('<section class="panel-surface" id="panel-surface"');
-    const tabs = panel.indexOf('<div class="panel-tabs" id="panel-tabs" role="tablist"');
-    const tabpanel = panel.indexOf('<section class="panel-tabpanel" id="panel-tabpanel" role="tabpanel"');
+    // D4 E-19 / E-24: both strips are <ui-tabs> — the agent strip's one shared panel is the section slotted into it.
+    const tabs = panel.indexOf('<ui-tabs class="panel-tabs" id="panel-tabs" shared-panel panel-focus="none">');
+    const tabpanel = panel.indexOf('<section class="panel-tabpanel" id="panel-tabpanel">');
     const tasks = panel.indexOf(
       '<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>',
     );
-    const sections = panel.indexOf('<div class="panel-sections" id="panel-sections" role="tablist"');
-    const worklog = panel.indexOf('<div class="psec psec-el ui-tok" id="psec-log" role="tabpanel"');
+    const sections = panel.indexOf('<ui-tabs class="panel-sections" id="panel-sections" panel-focus="none">');
+    const worklog = panel.indexOf('<div class="psec psec-el ui-tok" id="psec-log" slot="log">');
     const conv = panel.indexOf('<ui-conversation class="panel-conv" id="panel-conv" lang="ko">');
     const command = panel.indexOf('<div class="panel-command" id="panel-command">');
     expect(header).toBeGreaterThan(0);
@@ -404,12 +398,13 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(tasksCss).not.toMatch(/max-height|overflow|grid-row/);
     expect(TEMPLATE).toMatch(/\n\.panel-scroll \{ flex: 1 1 auto; overflow-y: auto;[^}]*\}/);
     expect(TEMPLATE).toMatch(/\n\.panel-body \{[^}]*display: flex;[^}]*flex-direction: column;/);
-    // The agent tabs stay in view while the tab scrolls.
-    expect(TEMPLATE).toMatch(/\n\.panel-tabs \{[^}]*position: sticky;[^}]*top: 0;/);
-    // Folded to one line by default (_panelTasksOpen), opened with 자세히 or a tasks landing.
+    // The agent tabs stay in view while the tab scrolls (D4 E-19: the element's list part sticks).
+    expect(TEMPLATE).toMatch(/\n\.panel-tabs::part\(list\) \{[^}]*position: sticky;[^}]*top: 0;/);
+    // Folded to one line by default (_panelTasksOpen), opened with 자세히 or a tasks landing; the head is a
+    // <ui-disclosure> (D4 K-06) whose region is empty while closed (and painted through its fold: 'folding').
     expect(TEMPLATE).toMatch(/^var _panelTasksOpen = false;/m);
     expect(fnBody('renderPanelTasks')).toContain(
-      'if (!_panelTasksOpen) { writePanelTasks(container, head + live); return; }',
+      "if (!open && _panelTasksOpen !== 'folding') { writePanelTasks(container, head + '</ui-disclosure>' + live); return; }",
     );
     // The panel's own anchor: the question, Tasks (now in the scroll area) and the section tabs —
     // the turns and log rows are their section box's (psecViewAnchor).
@@ -573,19 +568,21 @@ describe('tone pass P7 — surfaces and elevation', () => {
   };
 
   it('stat cards and charts are 12px cards on --ib-shadow; menus, dialogs, the peek, the viewer and tooltips are raised', () => {
-    for (const sel of ['.stat-card']) {
-      expect(rule(sel), sel).toContain('border-radius: 12px;');
-      expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow);');
-    }
+    // D4 (B-07): the stat cards are <ui-stat-strip layout: 'cards'> tiles (12px, hairline + resting shadow).
+    expect(TEMPLATE).not.toContain('.stat-card');
     // D2 (B-08): the charts are @2lab.ai/ui <ui-bar-chart> — each element draws its own 12px card on
     // --ib-shadow; the page only lays the two side by side.
     expect(TEMPLATE).toContain(
       '<div class="chart-row" id="chart-row"><ui-bar-chart id="chart-sessions" lang="ko"></ui-bar-chart><ui-bar-chart id="chart-merge" lang="ko"></ui-bar-chart></div>',
     );
     expect(TEMPLATE).not.toContain('.chart-container');
-    for (const sel of ['.nt-dialog', '.art-peek', '.art-modal']) {
-      expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow-raised)');
-    }
+    // D4 (H-01, I-05, I-06): the New task dialog, the peek and the viewer are @2lab.ai/ui elements — their raised
+    // panels are the library's; the page keeps no box, shadow or scrim rule for them.
+    expect(TEMPLATE).toContain('<ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" lang="ko">');
+    expect(TEMPLATE).not.toMatch(/\.nt-dialog \{/);
+    expect(TEMPLATE).toContain('<ui-hovercard id="art-peek"');
+    expect(TEMPLATE).toContain('<ui-artifact-viewer id="art-viewer" tiles="none"');
+    expect(TEMPLATE).not.toMatch(/\.art-peek \{|\.art-modal \{/);
     // D2 (B-04, B-08): the token breakdown is <ui-stat-strip>'s card tooltip (data.metrics[].breakdown) and the bar
     // values are <ui-bar-chart>'s own tooltip — the elements draw their surfaces; the page keeps no tooltip rule
     // and no <ui-tooltip> of its own.

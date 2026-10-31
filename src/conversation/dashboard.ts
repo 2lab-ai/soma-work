@@ -36,6 +36,15 @@ import { sumLiveUsage } from '@soma/slack/live-usage';
 import { livePendingModelSwitch } from '@soma/slack/model-switch';
 import type { FastifyInstance } from 'fastify';
 import type { CronExecutionRecord, CronJob } from 'somalib/cron/cron-storage';
+import {
+  type AdminApprovalSnapshot,
+  adminApprovalSnapshot,
+  answerAdminApproval,
+  onAdminApprovalsChanged,
+  startAdminApprovalWatch,
+  stopAdminApprovalWatch,
+} from '../admin-approvals';
+import { isAdminUser } from '../admin-utils';
 import type { LlmuxStatus } from '../auth/llmux-client';
 import type { LlmuxTierId } from '../auth/llmux-tiers';
 import { config } from '../config';
@@ -112,6 +121,7 @@ import {
   parseNewTaskSubmission,
 } from './new-task';
 import type { NewTaskLaunchResult } from './new-task-launcher';
+import { verifyDashboardTokenRaw } from './oauth';
 import {
   type DashboardPermissionRequest,
   pendingPermissionsFor,
@@ -1390,6 +1400,82 @@ export function stopDashboardPermissionWatch(): void {
   stopPermissionPromptWatch();
 }
 
+// ── Admin approvals (#620) — the admins' Slack DM requests, as approval cards ──
+
+/**
+ * Who may see the admin approvals: a Slack-signed-in admin. A viewer token or
+ * a deployment without auth reads as `isAdmin` elsewhere, but carries no
+ * identity — the requests (who asked, where, which skill) are not shown there.
+ */
+function isSlackAdmin(auth: { mode?: string; userId?: string; isAdmin?: boolean } | undefined): boolean {
+  return !!auth && auth.mode === 'oauth_jwt' && !!auth.userId && auth.isAdmin === true && isAdminUser(auth.userId);
+}
+
+/**
+ * When a dashboard socket's sign-in stops being valid: a session JWT's expiry,
+ * or its absolute lifetime if that comes first. Viewer-token and no-auth
+ * sockets carry no expiring credential (`undefined`).
+ */
+export function wsAuthDeadline(mode: string | undefined, cookieHeader: string | undefined): number | undefined {
+  if (mode !== 'oauth_jwt') return undefined;
+  const m = (cookieHeader || '').match(/soma_dash_token=([^;]+)/);
+  const payload = m ? verifyDashboardTokenRaw(decodeURIComponent(m[1])) : null;
+  if (!payload) return Date.now();
+  const originalIat = (payload as { originalIat?: number }).originalIat || payload.iat || 0;
+  const absoluteEnd = (originalIat + Math.max(config.oauth.jwtExpiresIn * 4, 30 * 86400)) * 1000;
+  return Math.min(payload.exp * 1000, absoluteEnd);
+}
+
+/** The snapshot as admin viewers receive it: ids carry this instance's prefix (#814), like card keys. */
+export function adminApprovalsForWire(snapshot: AdminApprovalSnapshot): AdminApprovalSnapshot {
+  return {
+    pending: snapshot.pending.map((a) => ({ ...a, id: composeSessionKey(a.id) })),
+    resolved: snapshot.resolved.map((r) => ({ ...r, id: composeSessionKey(r.id) })),
+  };
+}
+
+/** Push the admin approvals to admin viewers only — never on the shared board. */
+let _adminBroadcastSeq = 0;
+let _adminBroadcastSent = 0;
+export async function broadcastAdminApprovals(): Promise<void> {
+  if (![...wsClients].some((c) => c.slackAdmin)) return;
+  // The snapshot read is async: a slower, older read must never land after a newer one.
+  const seq = ++_adminBroadcastSeq;
+  try {
+    const snapshot = await adminApprovalSnapshot();
+    if (seq < _adminBroadcastSent) return;
+    _adminBroadcastSent = seq;
+    const payload = JSON.stringify({ type: 'admin_approvals', snapshot: adminApprovalsForWire(snapshot) });
+    const now = Date.now();
+    for (const client of wsClients) {
+      // A socket outliving its sign-in gets nothing (the expiry timer closes it; this is the backstop).
+      if (!client.slackAdmin || (client.authUntil !== undefined && client.authUntil <= now)) continue;
+      try {
+        client.send(payload);
+      } catch {
+        wsClients.delete(client);
+      }
+    }
+  } catch (error) {
+    logger.error('Failed to broadcast admin approvals', error);
+  }
+}
+
+let _adminApprovalUnsub: (() => void) | null = null;
+
+/** Follow the admin approval stores while the web server listens; push admins on a change. */
+export function startDashboardAdminApprovalWatch(): void {
+  stopDashboardAdminApprovalWatch();
+  _adminApprovalUnsub = onAdminApprovalsChanged(() => void broadcastAdminApprovals());
+  startAdminApprovalWatch();
+}
+
+export function stopDashboardAdminApprovalWatch(): void {
+  stopAdminApprovalWatch();
+  _adminApprovalUnsub?.();
+  _adminApprovalUnsub = null;
+}
+
 // Hero "Submit All Recommended" handler (group-only). The dashboard does not
 // pass selections — the implementation derives them from session.pendingQuestion
 // recommendations. Returns rejected promise on validation failure for
@@ -2347,7 +2433,16 @@ function getDateRangeFrom(date: string, period: 'day' | 'week' | 'month'): { sta
 
 // ── WebSocket broadcast ────────────────────────────────────────────
 
-type WsClient = { send: (data: string) => void; close: () => void; userId?: string; isAdmin?: boolean };
+type WsClient = {
+  send: (data: string) => void;
+  close: () => void;
+  userId?: string;
+  isAdmin?: boolean;
+  /** A Slack-signed-in admin (ADMIN_USERS) — the only audience of admin approvals (#620). */
+  slackAdmin?: boolean;
+  /** Epoch ms the connection's sign-in stops being valid (JWT expiry / absolute lifetime). */
+  authUntil?: number;
+};
 const wsClients = new Set<WsClient>();
 
 /** Broadcast session state update to all connected WebSocket clients */
@@ -3372,6 +3467,92 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── Admin approvals (#620): read for admins, answer for admins in admin mode ──
+
+  server.get('/api/dashboard/admin-approvals', { preHandler: [authMiddleware] }, async (request, reply) => {
+    if (
+      !isSlackAdmin((request as { authContext?: { mode?: string; userId?: string; isAdmin?: boolean } }).authContext)
+    ) {
+      reply.status(403).send({ error: 'Slack 계정으로 로그인한 관리자만 볼 수 있습니다' });
+      return;
+    }
+    reply.header('Cache-Control', 'no-store').send(adminApprovalsForWire(await adminApprovalSnapshot()));
+  });
+
+  server.post<{ Body: { id?: unknown; choiceId?: unknown } }>(
+    '/api/dashboard/admin-approvals/answer',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { id, choiceId } = request.body || {};
+      if (
+        typeof id !== 'string' ||
+        !id ||
+        id.length > 300 ||
+        typeof choiceId !== 'string' ||
+        !choiceId ||
+        choiceId.length > 64
+      ) {
+        reply.status(400).send({ error: 'id and choiceId are required' });
+        return;
+      }
+      // An admin approval is answered by a signed-in admin (a Slack identity —
+      // the DM rewrites name who answered) with admin mode on. A bearer token
+      // carries no identity, and the owner shortcut of _hasWriteAccess does not apply.
+      const auth = (request as { authContext?: { mode?: string; userId?: string; isAdmin?: boolean } }).authContext;
+      const actor = auth?.userId;
+      const modeHeader = request.headers?.['x-admin-mode'];
+      const adminModeOn = Array.isArray(modeHeader) ? modeHeader[0] === 'on' : modeHeader === 'on';
+      // The same gate as the reads (GET, WebSocket): one definition, so the two cannot drift.
+      if (!actor || !isSlackAdmin(auth)) {
+        reply.status(403).send({ error: 'Slack 계정으로 로그인한 관리자만 응답할 수 있습니다' });
+        return;
+      }
+      if (!adminModeOn) {
+        reply.status(403).send({ error: '관리자 모드를 켜야 응답할 수 있습니다' });
+        return;
+      }
+      const localId = stripSelfInstancePrefix(id);
+      if (localId === null) {
+        reply.status(409).send({ error: '다른 인스턴스의 요청입니다 — 그 인스턴스의 대시보드에서 응답하세요', id });
+        return;
+      }
+      try {
+        const result = await answerAdminApproval(localId, choiceId, actor);
+        // Every admin viewer sees the outcome at once (the store watch would see it within a second).
+        void broadcastAdminApprovals();
+        if (result.ok) {
+          logger.info('Admin approval answered from the dashboard', { id: localId, choiceId, actor });
+          reply.send({ ok: true, outcome: result.outcome });
+          return;
+        }
+        if (result.reason === 'already_answered') {
+          reply.status(409).send({
+            error: '이미 다른 곳에서 응답한 요청입니다',
+            ...(result.resolution ? { resolution: { ...result.resolution, id } } : {}),
+          });
+          return;
+        }
+        if (result.reason === 'invalid') {
+          reply.status(400).send({ error: '이 요청에 없는 선택지입니다' });
+          return;
+        }
+        if (result.reason === 'forbidden') {
+          reply.status(403).send({ error: '관리자만 응답할 수 있습니다' });
+          return;
+        }
+        if (result.reason === 'busy') {
+          // Not a decision: the card stays answerable (the client offers a retry).
+          reply.status(423).send({ error: '다른 관리자의 응답을 처리하는 중입니다 — 잠시 후 다시 시도하세요' });
+          return;
+        }
+        reply.status(404).send({ error: '만료되었거나 더 이상 없는 요청입니다' });
+      } catch (error) {
+        logger.error('Error answering an admin approval from the dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
   // ── Goal cap decision (the owner-DM "Goal 계속 진행할까요?", as an approval card) ──
 
   server.post<{ Params: { key: string }; Body: { goalId?: unknown; decisionId?: unknown; decision?: unknown } }>(
@@ -3885,13 +4066,33 @@ export async function registerDashboardRoutes(
         return;
       }
       const authContext = request?.authContext;
+      const authUntil = wsAuthDeadline(authContext?.mode, request?.headers?.cookie);
       const client: WsClient = {
         send: (data: string) => socket.send(data),
         close: () => socket.close(),
         userId: authContext?.userId,
         isAdmin: authContext?.isAdmin,
+        slackAdmin: isSlackAdmin(authContext),
+        ...(authUntil !== undefined ? { authUntil } : {}),
       };
       wsClients.add(client);
+      // The sign-in this socket was opened with ends: close it. The page reconnects with its
+      // current (rotated) cookie, or stops receiving if it no longer has a valid one.
+      let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+      if (authUntil !== undefined) {
+        expiryTimer = setTimeout(
+          () => {
+            wsClients.delete(client);
+            try {
+              socket.close(4401, 'Sign-in expired');
+            } catch {
+              /* already closed */
+            }
+          },
+          Math.min(Math.max(authUntil - Date.now(), 0), 2_147_000_000),
+        );
+        expiryTimer.unref?.();
+      }
       logger.debug('WebSocket client connected', { total: wsClients.size });
 
       // Send initial state
@@ -3903,6 +4104,7 @@ export async function registerDashboardRoutes(
       }
 
       socket.on('close', () => {
+        if (expiryTimer) clearTimeout(expiryTimer);
         wsClients.delete(client);
         logger.debug('WebSocket client disconnected', { total: wsClients.size });
       });
@@ -3976,6 +4178,8 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/stat-strip.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/bar-chart.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/file-card.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/hovercard.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/artifact-viewer.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/composer.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/conversation.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/work-log.js?v=${UI_LIB_VERSION}"></script>
@@ -3984,6 +4188,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/task-plan.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/status-bar.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/deck-nav.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/tabs.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4059,13 +4264,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 /* ── TOPBAR — @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14) ──
    The bar is the library's: 56px (52 on phones), translucent over the page, one hairline;
-   brand · 대화 · 설정 · 기억 · actions · status · account · speaker · theme, the links folded into 메뉴
-   whenever the bar is short of room. The header around it stays at the top while the board
-   scrolls (SSOT 2026-10-29 T3; the docked drawer sits under it: --topbar-b). The page's own
-   controls are the bar's actions — the scope group (default model / effort, the board's user,
-   admin write mode) and 새 작업. Below 1280px the scope group takes the row under the bar
-   (#topbar-sub, placeTopbarScope) and wraps there instead of crowding the one-row bar. No
-   control cuts its label; only the selected user's name ends in an ellipsis (full name in title). */
+   brand (the page's h1) · 대화 · 설정 · 기억 · toolbar · actions · status · account · speaker · theme, the
+   links folded into 메뉴 whenever the bar is short of room. The header around it stays at the top
+   while the board scrolls (SSOT 2026-10-29 T3; the docked drawer sits under it: --topbar-b). The
+   page's own controls: the scope group (default model / effort, the board's user, admin write
+   mode) is the bar's toolbar — inline while it fits, the bar's own wrapping row under it below
+   toolbarAt (1280px) or when it would overflow (0.10.0, D2-GAPS G1-1) — and 새 작업 its action.
+   No control cuts its label; only the selected user's name ends in an ellipsis (full name in title). */
 .topbar {
   position: sticky;
   top: 0;
@@ -4075,25 +4280,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* Until the element is defined: its height, none of the raw controls. */
 ui-app-bar:not(:defined) { display: block; height: 56px; }
 ui-app-bar:not(:defined) > * { visibility: hidden; }
-/* The row under the bar: the bar's own surface (86% page colour over a blur, one hairline). */
-.topbar-sub {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  padding: 8px 20px;
-  background: color-mix(in srgb, var(--bg) 86%, transparent);
-  -webkit-backdrop-filter: saturate(1.4) blur(10px);
-  backdrop-filter: saturate(1.4) blur(10px);
-  border-bottom: 1px solid var(--border);
-}
-.topbar-sub[hidden] { display: none; }
-@media (prefers-reduced-transparency: reduce) {
-  .topbar-sub { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
-}
 .topbar-scope { display: flex; align-items: center; gap: 6px; min-width: 0; flex: none; }
-.topbar-sub .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; }
-/* The row under the bar is the user select's cap: only a name wider than it ends in an ellipsis. */
-.topbar-sub .user-select { max-inline-size: 100%; }
+/* In the bar's row under it (toolbar-row) the scope group wraps, and the row is the user select's cap:
+   only a name wider than it ends in an ellipsis. */
+ui-app-bar[toolbar-row] .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; }
+ui-app-bar[toolbar-row] .user-select { max-inline-size: 100%; }
 /* 새 작업 in the bar: the ink kit button; its word steps aside on a narrow bar (the + and title stay). */
 ui-app-bar[narrow] .nt-btn-label { display: none; }
 /* SSOT 2026-10-23 T6 — the owner's default model / effort, one click from the top. */
@@ -4209,6 +4400,14 @@ ui-app-bar[narrow] .nt-btn-label { display: none; }
   color: var(--tint-fail-fg);
 }
 @media (hover: hover) and (pointer: fine) { .topbar .admin-toggle[aria-pressed="true"]:hover { background: var(--tint-fail-bg-2); color: var(--tint-fail-fg); } }
+/* Admin approvals (#620): the admins' Slack DM requests, counted in the top bar, answered in a sheet. */
+.topbar .admin-inbox-btn { gap: 6px; }
+.topbar .admin-inbox-btn svg { width: 14px; height: 14px; }
+.topbar .admin-inbox-btn .aib-count { min-width: 18px; padding: 0 5px; border-radius: 9px; font-size: 11px; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; background: var(--ib-card-dim); color: var(--ib-muted); }
+.topbar .admin-inbox-btn.has-pending .aib-count { background: var(--st-wait, var(--orange)); color: #fff; }
+.admin-inbox-head { font-weight: 600; outline: none; }
+.admin-inbox-body { display: flex; flex-direction: column; gap: 12px; padding: 6px 0 16px; }
+.admin-inbox-empty { color: var(--text-secondary); font-size: 13px; padding: 12px 0; }
 /* ── MAIN — stats strip, then the board; capped at 1280px and centred (.prd/10 §3.1-2, §5) ── */
 .main { flex: 1; padding: 20px; width: 100%; max-width: 1280px; margin: 0 auto; min-width: 0; }
 
@@ -4222,56 +4421,22 @@ ui-stat-strip:not(:defined) { min-height: 44px; }
 ui-stat-strip:not(:defined) > * { display: none; }
 .stats-detail { padding-top: 12px; }
 
-/* ── EXPAND / COLLAPSE (P6) — the library disclosure recipe for 세션 정보 (.panel-info) and the completed goals
-   (.cg-hx): the region is the last row of its host's grid and that row goes 0fr ↔ 1fr on --dur-expand (ease-out)
-   with an opacity fade. Closed, the region is
-   [hidden] + inert but still painted at 0 rows, so it leaves the way it came (세션 정보, drawn only while
-   open, folds first: .xp-shut). It clips only while the row moves (.xp-moving, xpMove), so focus rings
-   inside are whole once it has settled. The panel's ResizeObserver re-measures the sections on every frame
-   of it (sizePanelSections). ── */
-.cg-hx, .panel-info { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; align-content: start; transition: grid-template-rows var(--dur-expand) var(--ease-out); }
-.cg-hx { grid-template-rows: 1fr; }
-.panel-info:has(> .pi-links) { grid-template-rows: auto auto 1fr; }
-.panel-info.xp-shut { grid-template-rows: auto 0fr; }
-.panel-info.xp-shut:has(> .pi-links) { grid-template-rows: auto auto 0fr; }
-.cg-hx:has(> .cg-hx-in[hidden]), .cg-hx.xp-shut { grid-template-rows: 0fr; }
-.cg-hx-in, .panel-info > .pi-body { min-height: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s; }
-.cg-hx-in[hidden] { display: block; }
-.cg-hx-in[hidden], .cg-hx.xp-shut > .cg-hx-in, .panel-info.xp-shut > .pi-body { opacity: 0; visibility: hidden; overflow: hidden; margin-top: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s linear var(--dur-expand); }
-.xp-moving > .cg-hx-in, .xp-moving > .pi-body { overflow: hidden; }
+/* ── EXPAND / COLLAPSE (P6, D4 K-06) — @2lab.ai/ui <ui-disclosure> for 세션 정보 (.pi-dc), Tasks (.panel-tasks-dc),
+   지시 첨부 (.panel-um-dc) and the completed goals (.cg-hx, trigger="external": the goal head's own button opens
+   it): the summary row (or the external trigger's aria), the region's 0fr ↔ 1fr grow with its fade, inert while
+   closed, the keyboard and the settle notice (ui-toggled — the page drops a closed region's nodes then) are the
+   element's. flush: the page's own padding under the row. In the panel the row's press surface bleeds 8px past
+   the text so the words line up with the rows around it. ── */
+.pi-dc, .panel-tasks-dc, .panel-um-dc, .cg-hx { display: block; }
+.pi-dc::part(summary), .panel-tasks-dc::part(summary), .panel-um-dc::part(summary) { width: calc(100% + 16px); margin: 0 -8px; }
 .usage-cb-wrap { max-width: 440px; margin-bottom: 12px; }
 
-/* ── STATS GRID — the cards behind 자세히: 5 columns, 2 below 1100px ── */
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 8px;
-  margin-bottom: 16px;
-}
-.stat-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: var(--ib-shadow);
-  padding: 12px 16px;
-  transition: border-color 150ms ease;
-}
-.stat-card .label {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-tertiary);
-  margin-bottom: 4px;
-}
-.stat-card .value {
-  font-size: 22px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  font-variant-numeric: tabular-nums;
-}
-/* Dim placeholder values */
-.stat-card .value.no-data { color: var(--text-tertiary); opacity: 0.3; font-size: 18px; }
-.stat-card .delta { font-size: 12px; color: var(--green); margin-top: 2px; font-weight: 600; }
-.stat-card .delta.negative { color: var(--red); }
+/* ── STAT CARDS — the cards behind 자세히 (B-07): <ui-stat-strip id="stats-grid"> in layout 'cards' draws the
+   tiles (12px cards on the resting shadow, as many 140px+ columns as fit, 워크플로우 wide). The page only
+   writes the two slotted figures: 머지 코드 (+a / -d) and 워크플로우 (name: n, wrapping). ── */
+.stats-grid { display: block; margin-bottom: 16px; }
+.stat-wf { display: inline-flex; flex-wrap: wrap; gap: 2px 10px; font-size: 0.8em; }
+.stat-wf b { font-weight: 600; }
 
 /* ═══ AGENT INBOX BOARD (.prd/10 §3.1) ═══
    NEEDS YOU (waiting) · RUNNING (working) · DONE (idle, then closed) — the
@@ -4312,14 +4477,7 @@ ui-stat-strip:not(:defined) > * { display: none; }
 .archives-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
 .archives-btn[aria-pressed="true"] { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
 /* Session lifecycle dialog (admin, J-01) — @2lab.ai/ui <ui-dialog size="sm">: the element draws the panel, the
-   scrim, the enter / exit motion and the phone sheet; the page keeps only its form's rules.
-   The artifact viewer comes and goes the same way (P6): opacity + scale(.97) on --dur-expand, its scrim a 180ms
-   fade; closing, both leave in 180ms (.is-closing, dialogCloseSoftly) before close(). */
-.art-modal[open]::backdrop { animation: scrim-in var(--dur-fade) var(--ease-out); }
-.art-modal.is-closing { opacity: 0; transform: scale(0.98); transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out); }
-.art-modal.is-closing::backdrop { opacity: 0; transition: opacity var(--dur-fade) var(--ease-out); }
-@keyframes dlg-in { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
-@keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
+   scrim, the enter / exit motion and the phone sheet; the page keeps only its form's rules. */
 .lifecycle-dialog .lc-note { margin: 0 0 12px; font-size: 12px; color: var(--ib-muted); }
 .lifecycle-dialog label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; font-size: 13px; margin-bottom: 10px; }
 .lifecycle-dialog label input { grid-column: 1 / -1; font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--ib-seg); color: var(--ib-text); }
@@ -4344,9 +4502,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .sk { background: var(--ib-pill); border-radius: 6px; animation: sk-pulse 1.6s ease-in-out infinite; }
 .board-error { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 12px; padding: 12px 16px; border-radius: 12px; background: var(--ib-col); color: var(--ib-text-2); font-size: 13px; }
 .board-error[hidden] { display: none; }
-/* Stats values: a bar where the number will be. */
-.stat-card .value.is-loading { display: inline-block; vertical-align: middle; width: 3.2em; height: 0.9em; border-radius: 6px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
-.stat-card .value.is-loading { width: 64px; height: 22px; }
 .io-row.io-skel { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
 .io-skel .sk-line { height: 10px; }
 .io-skel + .io-skel .sk { animation-delay: 120ms; }
@@ -4620,44 +4775,19 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .chart-row > ui-bar-chart { display: block; flex: 1; min-width: 0; }
 .chart-row > ui-bar-chart:not(:defined) { min-height: 214px; border-radius: 12px; background: var(--ib-pill); }
 
-/* ── SLIDE PANEL — flat, structured, resizable ── */
-/* SSOT 2026-10-24 — a full-screen sheet below 840px, docked beside the board from
-   840px (the Drawer media blocks below). Hidden by a transform, so its width is
-   CSS-only: JS stores a width preference (--panel-w-pref) and never writes the
-   width or the right offset. It follows the visual viewport (--pv-h / --pv-t,
-   syncPanelViewport) so the composer stays above the on-screen keyboard. */
-.slide-panel {
-  position: fixed;
-  top: var(--pv-t, 0px); right: 0;
-  width: var(--panel-w, 440px);
-  height: 100vh;
-  height: var(--pv-h, 100dvh);
-  padding-right: env(safe-area-inset-right, 0px);
-  background: var(--surface);
-  border-left: 1px solid var(--border);
-  z-index: 100;
-  transform: translateX(100%);
-  visibility: hidden;
-  transition: transform var(--dur-move) var(--ease-out), visibility 0s linear var(--dur-move);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.slide-panel.open { transform: none; visibility: visible; transition: transform var(--dur-move) var(--ease-out); }
-.slide-panel.resizing { transition: none; user-select: none; }
-/* Resize handle — left edge */
-.panel-resize-handle {
-  position: absolute;
-  top: 0; left: 0;
-  width: 8px; height: 100%;
-  cursor: col-resize;
-  touch-action: none;
-  z-index: 101;
-  background: transparent;
-  transition: background-color 150ms ease, opacity 150ms ease;
-}
-.panel-resize-handle.active { background: var(--ib-muted); opacity: 0.35; }
-@media (hover: hover) and (pointer: fine) { .panel-resize-handle:hover { background: var(--ib-muted); opacity: 0.35; } }
+/* ── SLIDE PANEL — @2lab.ai/ui <ui-drawer id="slide-panel"> (D4 E-01, E-02) ── */
+/* SSOT 2026-10-24 — a full-screen sheet below 840px (modal, over the element's scrim), docked beside the board
+   from 840px (dock-at="840": no scrim, the board stays live). The slide on the drawer curve both ways, the sheet ↔
+   dock switch in place while open (the same nodes — the composer's draft and every scroll place stay — its box
+   morphing 320ms), the resize from its inner edge (resizable: pointer or arrows, ui-resize), Esc / the scrim
+   (ui-close) and the visual viewport (its box ends above the soft keyboard in both modes) are the element's. The
+   page keeps its own head, body and composer in the default slot (hide-close and no heading: the element's own
+   head is out), the dock's top under the sticky top bar (--ui-drawer-top), its layer under the bar (--ui-drawer-z)
+   and the saved width (initPanelResize: the width attribute; --panel-w for the board beside it). */
+ui-drawer:not(:defined) { display: none; }
+.slide-panel { --ui-drawer-top: var(--topbar-b, 0px); --ui-drawer-z: 100; }
+.slide-panel::part(panel) { background: var(--surface); color: var(--text); padding-right: env(safe-area-inset-right, 0px); }
+.slide-panel::part(body) { display: flex; flex-direction: column; min-height: 0; padding: 0; overflow: hidden; font-size: 14px; line-height: 1.45; color: var(--text); overflow-wrap: normal; }
 /* Panel tasks (.prd/10 §3.1-6) — pinned between the token badges and the
    scroll area: always shown (an empty line when there are none yet), with its
    own scroll so a long list never pushes the work log and turns away. */
@@ -4699,104 +4829,41 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-surface { border-bottom: 1px solid var(--border); background: var(--surface); }
 .panel-surface > .panel-info, .panel-surface > .panel-goal, .panel-surface > .panel-permission, .panel-surface > .panel-artifacts { border-bottom: 0; }
 .panel-surface > :not([hidden]):not([style*="display:none"]):not([style*="display: none"]) + :not([hidden]) { border-top: 1px solid var(--border); }
-/* Agent tabs (T1.2): a segmented strip that scrolls sideways; Main stays at its
-   left edge, the strip at the top of the scroll area. */
-.panel-tabs {
+/* Agent tabs (T1.2, D4 E-19): @2lab.ai/ui <ui-tabs shared-panel> — the tabs, the ink underline, the
+   sideways scroll, Main pinned at the start edge with its fade (TabItem.pinned), the type as the muted
+   second label (meta), the status as the tone dot (the word in the title), arrows and Home / End are
+   the element's. Its list sticks at the top of the scroll area while the tab below it scrolls, on the
+   strip's translucent surface; the pinned tab's opaque face is the surface. */
+.panel-tabs { display: block; --ui-tabs-bg: var(--surface); }
+.panel-tabs::part(list) {
   position: sticky;
   top: 0;
   z-index: 6;
-  display: flex;
-  gap: 4px;
-  padding: 8px 16px;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scrollbar-width: none;
+  padding: 4px 12px 0;
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   -webkit-backdrop-filter: saturate(180%) blur(12px);
   backdrop-filter: saturate(180%) blur(12px);
-  border-bottom: 1px solid var(--border);
 }
-.panel-tabs::-webkit-scrollbar { display: none; }
-.panel-tab {
-  --ag-c: var(--text-tertiary);
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 220px;
-  min-height: 30px;
-  padding: 4px 12px;
-  border: 0;
-  border-radius: 999px;
-  background: none;
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-}
-.panel-tab .pt-name { overflow: hidden; text-overflow: ellipsis; }
-.panel-tab .pt-type { font-weight: 500; color: var(--text-tertiary); }
-.panel-tab .ag-icon { display: inline-grid; place-items: center; width: 14px; height: 14px; color: var(--ag-c); }
-.panel-tab .ag-icon svg { width: 12px; height: 12px; } .panel-tab .ag-icon .spinner { width: 10px; height: 10px; }
-.panel-tab.is-running { --ag-c: var(--st-run); } .panel-tab.is-completed { --ag-c: var(--st-done); } .panel-tab.is-failed { --ag-c: var(--st-fail); } .panel-tab.is-waiting { --ag-c: var(--st-wait); }
-.panel-tab[aria-selected="true"] { background: var(--ib-pill); color: var(--text); }
-.panel-tab[aria-selected="true"] .pt-type { color: var(--text-secondary); }
-.panel-tab:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-.panel-tab.is-main {
-  position: sticky;
-  left: 0;
-  z-index: 1;
-  box-shadow: 8px 0 8px -6px color-mix(in srgb, var(--surface) 90%, transparent);
-}
-.panel-tab.is-main:not([aria-selected="true"]) { background: var(--surface); }
-.panel-tabpanel { outline: none; }
-/* A section head (T1.3): title · a one-line summary · chevron. Tasks and 지시와
-   답변 share it; 작업 로그 keeps its own head (same look). */
-.panel-sec-head {
-  font: inherit;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 36px;
-  padding: 4px 0;
-  border: 0;
-  background: none;
-  color: var(--text-secondary);
-  text-align: left;
-  cursor: pointer;
-}
+/* The Tasks head (T1.3, D4 K-06): the summary slotted into <ui-disclosure> — title · a one-line summary. */
 .ps-sec-title { flex: none; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
-.ps-sec-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.ps-sec-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 400; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .ps-sec-now { display: inline-flex; align-items: center; gap: 4px; color: var(--text); font-weight: 600; }
 .ps-sec-now .spinner { width: 10px; height: 10px; }
-.panel-sec-head .pi-chev { flex: none; width: 12px; height: 12px; transition: transform var(--dur-expand) var(--ease-out); }
-.panel-sec-head[aria-expanded="true"] .pi-chev { transform: rotate(180deg); }
-@media (hover: hover) and (pointer: fine) { .panel-sec-head:hover .ps-sec-title { color: var(--text); } }
-.panel-sec-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; border-radius: 6px; }
 .panel-tasks {
   padding: 4px 16px;
   border-bottom: 1px solid var(--border);
   outline: none;
 }
 .panel-tasks-body { padding: 2px 0 6px; }
-/* Section tabs (SSOT 2026-10-29): 에이전트 트리 · 작업 로그 · 지시와 답변 — each its own
-   scroll box (the reader's place is per tab), sized by sizePanelSections to the rest
-   of the panel; the active one is the only one painted. */
-.panel-sections { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
-.psec-tab { flex: 1 1 0; min-width: 0; min-height: 38px; padding: 6px 8px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-secondary); font: inherit; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: color 150ms ease, border-color 150ms ease, transform var(--dur-press) var(--ease-out); }
-@media (hover: hover) and (pointer: fine) { .psec-tab:hover { color: var(--text); } }
-.psec-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--text); }
-.psec-tab:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; border-radius: 6px; }
-/* SSOT 2026-10-29 T6: Chat · 작업 로그 on the left at their own width; 에이전트 트리 at the right end. */
-.panel-sections .psec-tab { flex: 0 1 auto; padding: 6px 12px; }
-.panel-sections .psec-tab-tree { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-weight: 500; }
-.psec-tab-tree svg { width: 13px; height: 13px; flex: none; }
-.panel-sections-body { position: relative; height: 60vh; min-height: 160px; }
-.psec { position: relative; height: 100%; overflow-y: auto; scroll-behavior: auto; outline: none; overflow-anchor: none; }
+/* Section tabs (SSOT 2026-10-29, D4 E-24): @2lab.ai/ui <ui-tabs> — Chat · 작업 로그 at their own width,
+   에이전트 트리 at the strip's far end (TabItem.end, T6) with the tree glyph; each section is its own scroll
+   box slotted as its tab's panel (panel-focus="none": the box, not the element's wrapper, is the tab stop),
+   sized by sizePanelSections (--psec-h) to the rest of the panel; only the one shown holds nodes. The
+   new-items pill sits over the box from the wrapper, outside the element. */
+.panel-sections { display: block; --ui-tabs-bg: var(--surface); }
+.panel-sections::part(list) { padding: 0 12px; background: var(--surface); }
+.panel-sections-body { position: relative; }
+.psec { position: relative; height: var(--psec-h, 60vh); min-height: 160px; overflow-y: auto; scroll-behavior: auto; outline: none; overflow-anchor: none; }
 /* D3 E-25 — a section a library element draws is its own scroll box (<ui-conversation>'s
    <ui-log-scroller>: the pin, the older-page row, the kept place, the new-items pill):
    the panel's box only gives it the height. */
@@ -4850,10 +4917,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   font-size: 12px;
   font-weight: 600;
   color: var(--text-secondary);
-  margin-bottom: 6px;
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 .panel-tasks-toggle {
   display: inline-flex;
@@ -4914,18 +4981,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   font-family: var(--mono); font-size: 11.5px; color: var(--text-secondary);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.slide-panel-overlay {
-  position: fixed;
-  top: 0; left: 0;
-  width: 100vw; height: 100vh;
-  background: var(--scrim);
-  z-index: 99;
-  display: none;
-  opacity: 0;
-  transition: opacity var(--dur-fade) var(--ease-out), display var(--dur-fade) allow-discrete;
-}
-.slide-panel-overlay.open { display: block; opacity: 1; }
-@starting-style { .slide-panel-overlay.open { opacity: 0; } }
 .panel-header {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
@@ -4969,13 +5024,11 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* ── 세션 정보 — one summary line + the links; opened, every number (spec 13) ── */
 .panel-info { padding: 6px 16px 8px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); }
 .panel-info:empty { display: none; }
-.pi-head { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 2px 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+/* The 세션 정보 row (D4 K-06): the summary slotted into <ui-disclosure> — title · the one-line summary. */
+.pi-head { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; }
 .pi-title { flex-shrink: 0; font-size: 12px; font-weight: 600; color: var(--text-tertiary); }
-.pi-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+.pi-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
 .pi-dot { margin: 0 5px; color: var(--text-tertiary); }
-.pi-chev { flex-shrink: 0; width: 14px; height: 14px; color: var(--text-tertiary); transition: transform var(--dur-press) var(--ease-out); }
-.pi-head[aria-expanded="true"] .pi-chev { transform: rotate(180deg); }
-.pi-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; border-radius: 6px; }
 .pi-links { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 2px; }
 .pi-links a { font-weight: 600; color: var(--accent); text-decoration: none; min-height: 24px; display: inline-flex; align-items: center; min-width: 0; overflow-wrap: anywhere; }
 .pi-links a:focus-visible { text-decoration: underline; }
@@ -5066,17 +5119,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   background: var(--surface);
   flex-shrink: 0;
 }
-/* The composer is <ui-agent-steering> (batch 2): its field, Send, queue and key
-   hints are the element's; these are the page's slotted tools and chips. A file
-   dragged over the composer outlines it. */
+/* The composer is <ui-agent-steering> (batch 2) with a <ui-composer slot="composer"> as its field (E-30): the
+   field, tools, chips, recorder, drop outline, Send, queue and key hints are the elements'. */
 .pc-steer-wrap { display: block; min-width: 0; border-radius: 12px; }
-.panel-command.is-drag .pc-steer-wrap { outline: 2px dashed var(--accent); outline-offset: 2px; }
-.pc-tools { display: flex; align-items: center; gap: 2px; flex: none; }
-.pc-tool-mic[aria-pressed="true"] { color: var(--st-fail); }
-.pc-attachments { display: flex; gap: 8px; overflow-x: auto; padding: 0 0 8px; }
-.pc-attachments:empty { display: none; }
-.pc-recorder { margin: 0 0 8px; }
-.pc-error { margin: 0 0 6px; font-size: 12px; color: var(--st-fail); }
 
 
 /* ── PRESS — buttons and segments give 0.97 feedback (§4-5), pointer presses only:
@@ -5084,7 +5129,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* PRESS — one rule for every button-like control: scale(.97) on --dur-press ease-out (each control's own
    transition carries the transform), pointer presses only — never a keyboard press (:focus-visible). The
    56px FAB presses to .95. */
-:is(.archives-btn, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .nt-rec-btn, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+:is(.archives-btn, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .um-tile):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
@@ -5110,11 +5155,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .slide-panel:not([data-deck="0"]) .panel-detail-toggle { width: 44px; padding: 0; justify-content: center; }
   .slide-panel:not([data-deck="0"]) .pdt-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
-  /* Top bar (the app bar narrows itself: the status dot, the account's initials, 메뉴):
-     the row under it keeps the bar's 12px sides, and the user select fills what the
-     chips leave of its line (it wraps rather than overflow). Labels stay whole. */
-  .topbar-sub { padding: 8px 12px; }
-  .topbar-sub .user-select { flex: 1 1 auto; }
+  /* Top bar (the app bar narrows itself: the status dot, the account's initials, 메뉴; its
+     toolbar row keeps 12px sides): the user select fills what the chips leave of its line
+     (it wraps rather than overflow). Labels stay whole. */
+  ui-app-bar[toolbar-row] .user-select { flex: 1 1 auto; }
   .topbar .admin-toggle { padding: 4px 10px; }
   .inbox-head { margin-bottom: 12px; flex-wrap: wrap; row-gap: 8px; }
   /* The tools take the row under the breadcrumb; on the narrowest screens
@@ -5124,16 +5168,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
-@media (max-width: 1100px) {
-  .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  /* Workflows — the widest value — takes the last row on its own. */
-  .stats-grid .stat-card:last-child { grid-column: 1 / -1; }
-}
 @media (max-width: 680px) {
-  .stats-grid { gap: 6px; margin-bottom: 12px; }
-  .stat-card { padding: 8px 12px; }
-  .stat-card .value { font-size: 18px; }
-  .stat-card .label { font-size: 11.5px; }
+  .stats-grid { margin-bottom: 12px; }
   .chart-row { flex-direction: column; }
 }
 @media (hover: hover) and (pointer: fine) {
@@ -5141,7 +5177,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.archives-btn, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .nt-rec-btn, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.archives-btn, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .um-tile):active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
@@ -5155,7 +5191,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 /* ── TOUCH — coarse pointer enlargement ── */
 @media (pointer: coarse) {
-  .panel-tab, .psec-tab, .psec-older, .psec-pill, .panel-sec-head, .panel-detail-toggle { min-height: 44px; }
+  .psec-older, .psec-pill, .panel-detail-toggle { min-height: 44px; }
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
 }
 /* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens (heights only). ── */
@@ -5176,7 +5212,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .topbar .user-select, .topbar .admin-toggle, .topbar .td-chip { min-height: 44px; }
   .inbox-head .archives-btn { min-height: 44px; }
   .card-body .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
-  .pi-links a, .pi-head, .panel-tasks-toggle { min-height: 44px; }
+  .pi-links a, .panel-tasks-toggle { min-height: 44px; }
   .cgl-go, .card-more-link, .tl-toggle { min-height: 44px; }
 }
 
@@ -5279,29 +5315,12 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    is-floating rule. */
 body.nt-open .new-task-fab { display: none !important; }
 
-.nt-dialog {
-  width: min(720px, calc(100vw - 48px));
-  max-height: min(86vh, 880px);
-  margin: auto;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: var(--ib-shadow-raised);
-  overflow: hidden;
-  opacity: 0;
-  transform: translateY(10px) scale(0.97);
-  transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out);
-}
-.nt-dialog.is-shown { opacity: 1; transform: none; transition-duration: var(--dur-expand); }
-.nt-dialog::backdrop { background: var(--scrim); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); opacity: 0; transition: opacity var(--dur-fade) var(--ease-out); }
-.nt-dialog.is-shown::backdrop { opacity: 1; }
-.nt-form { display: flex; flex-direction: column; max-height: inherit; height: 100%; }
-.nt-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 4px; }
-.nt-head h2 { flex: 1; margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
-.nt-head-hint { font-size: 11px; color: var(--text-tertiary); border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px; }
-.nt-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; padding: 10px 16px 14px; overscroll-behavior: contain; }
+/* New task (H-01) is @2lab.ai/ui <ui-dialog size="lg">: the element draws the 720px panel, its heading and ✕, the
+   scrim, the rise / settle, the focus trap and, on phones, the bottom sheet that follows the visual viewport (above
+   the soft keyboard). The page keeps its form whole inside and pads it itself (the element's body padding is off). */
+.nt-dialog::part(body) { padding: 0; }
+.nt-form { display: flex; flex-direction: column; color: var(--text); font-size: 13px; line-height: 1.45; }
+.nt-body { display: flex; flex-direction: column; gap: 12px; padding: 4px 20px 16px; }
 .nt-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 .nt-config { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -5352,24 +5371,6 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-toggle-note { font-size: 11px; font-weight: 500; color: var(--text-tertiary); }
 
 
-.nt-att { position: relative; flex: none; display: flex; align-items: center; gap: 8px; height: 58px; max-width: 230px; padding: 0 32px 0 6px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); scroll-snap-align: start; animation: nt-att-in 240ms var(--ease-out) both; }
-.nt-att-thumb { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border-radius: 8px; background: var(--bg); color: var(--text-secondary); object-fit: cover; overflow: hidden; }
-.nt-att-thumb svg { width: 20px; height: 20px; }
-.nt-att-text { display: flex; flex-direction: column; min-width: 0; }
-.nt-att-name { font-size: 12px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.nt-att-meta { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
-.nt-att-remove { position: absolute; top: 4px; right: 4px; display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 50%; background: var(--media-scrim); color: var(--on-media); cursor: pointer; }
-.nt-att-remove svg { width: 10px; height: 10px; }
-.nt-att-play { display: grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 8px; background: var(--bg); color: var(--text); cursor: pointer; flex: none; }
-.nt-att-play svg { width: 18px; height: 18px; }
-
-.nt-recorder { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 12px; border: 1px solid var(--tint-fail-line); border-radius: 12px; background: var(--tint-fail-bg); font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
-.nt-recorder[hidden] { display: none; }
-.nt-rec-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--red); animation: nt-rec 1.2s ease-in-out infinite; }
-.nt-rec-meter { flex: 1; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
-.nt-rec-level { display: block; width: 0; height: 100%; border-radius: 3px; background: var(--red); transition: width 80ms linear; }
-.nt-rec-btn { height: 32px; padding: 0 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; transition: transform var(--dur-press) var(--ease-out); }
-.nt-rec-btn.is-primary { border-color: transparent; background: var(--red); color: var(--surface); }
 .nt-error { margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--tint-fail-bg); color: var(--tint-fail-fg); font-size: 12.5px; }
 .nt-error[hidden] { display: none; }
 .nt-empty { margin: 0; color: var(--text-secondary); font-size: 12.5px; }
@@ -5382,55 +5383,34 @@ body.nt-open .new-task-fab { display: none !important; }
 
 /* The FAB arrives: opacity + scale from 0.95 (never from nothing), 240ms ease-out — once. */
 @keyframes nt-fab-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: none; } }
-@keyframes nt-att-in { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: none; } }
-@keyframes nt-rec { 50% { opacity: 0.35; transform: scale(0.8); } }
 @keyframes nt-blink { 50% { opacity: 0.45; } }
 @keyframes nt-spin { to { rotate: 360deg; } }
 
 @media (max-width: 639px) {
-  /* New task — phones: the floating button replaces the top-bar one, and the
-     composer is a full-screen sheet that follows the visual viewport (the
-     keyboard) and the safe areas. */
+  /* New task — phones: the floating button replaces the top-bar one; the composer is <ui-dialog>'s bottom sheet,
+     which follows the visual viewport (the keyboard) itself — the page keeps the form clear of the home indicator. */
   .new-task-btn { display: none; }
   .new-task-fab { display: inline-flex; }
-  .nt-dialog {
-    position: fixed;
-    inset: auto 0 auto 0;
-    top: var(--nt-vvt, 0px);
-    width: 100vw;
-    max-width: 100vw;
-    height: var(--nt-vvh, 100dvh);
-    max-height: none;
-    margin: 0;
-    border: 0;
-    border-radius: 0;
-    opacity: 1;
-    transform: translateY(100%);
-    transition: transform var(--dur-move) var(--ease-out);
-  }
-  .nt-dialog.is-shown { transform: none; }
-  .nt-head { padding: calc(8px + env(safe-area-inset-top, 0px)) 12px 4px; }
-  .nt-body { padding: 8px 14px 10px; gap: 10px; }
+  .nt-body { padding: 4px 14px 10px; gap: 10px; }
   .nt-config { flex-wrap: nowrap; overflow-x: auto; margin: 0 -14px; padding: 0 14px 2px; scrollbar-width: none; }
   .nt-config::-webkit-scrollbar { display: none; }
   .nt-chip select { max-width: 150px; }
   .nt-body { padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
-  .nt-submit-hint, .nt-head-hint { display: none; }
+  .nt-submit-hint { display: none; }
 }
 @media (pointer: coarse) {
-  /* New task — touch: 44px targets, 16px text (iOS does not zoom into it),
-     and the camera button (capture="environment" opens the camera directly). */
-  .nt-battery-btn, .nt-toggle, .nt-chip, .nt-rec-btn { min-height: 44px; min-width: 44px; }
-  .nt-att-remove { width: 28px; height: 28px; }
+  /* New task — touch: 44px targets, 16px text (iOS does not zoom into it). The composer's own tools, chips and
+     camera are 44px on touch by its rules. */
+  .nt-battery-btn, .nt-toggle, .nt-chip { min-height: 44px; min-width: 44px; }
   .nt-chip select { font-size: 16px; }
-  .nt-kbd, .nt-submit-hint, .nt-head-hint { display: none; }
+  .nt-kbd, .nt-submit-hint { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  /* New task — no arrival, slide or scale; changes are instant. */
-  .new-task-btn, .new-task-fab, .nt-dialog, .nt-att,
-  .nt-rec-dot, .nt-battery-fill, .nt-fab-label, .nt-fab-icon { animation: none !important; transition: none !important; }
+  /* New task — no arrival, slide or scale; changes are instant (the dialog's own motion is the element's). */
+  .new-task-btn, .new-task-fab,
+  .nt-battery-fill, .nt-fab-label, .nt-fab-icon { animation: none !important; transition: none !important; }
 }
-/* ── Session artifacts (SSOT 2026-10-23): face chips, strips, minimap, viewer ── */
+/* ── Session artifacts (SSOT 2026-10-23): face chips, strips, the peek's inside, the viewer's slot ── */
 .art-glyph { width: 14px; height: 14px; flex-shrink: 0; }
 .art-k-image { --art-tint: var(--green); }
 .art-k-html { --art-tint: var(--orange); }
@@ -5448,15 +5428,7 @@ body.nt-open .new-task-fab { display: none !important; }
    thumbnail, name and meta, its own hover, press and 44px chip on touch. The audio play button (T8) sits on the
    thumbnail's lower right: 4px card inset + the 16:10 thumbnail of a (--fc-tile-w − 8px) wide box. */
 .art-tile > ui-file-card { display: block; }
-.art-play { position: absolute; right: 10px; top: calc(4px + (var(--fc-tile-w) - 8px) * 0.625 - 36px); display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: none; border-radius: 50%; background: var(--purple); color: var(--surface); box-shadow: var(--ib-shadow); cursor: pointer; transition: transform var(--dur-press) var(--ease-out); }
-.art-play svg { width: 14px; height: 14px; }
-/* A chip tile (the panel's minimal row, artPanelVariant): the play button inline after the chip. */
-.art-tile:has(> ui-file-card[variant="chip"]) { display: flex; align-items: center; gap: 6px; max-width: 240px; }
-.art-tile:has(> ui-file-card[variant="chip"]) > ui-file-card { min-width: 0; }
-.art-tile:has(> ui-file-card[variant="chip"]) .art-play { position: static; flex: none; width: 32px; height: 32px; }
-.art-play .ic-pause, .art-play.is-playing .ic-play { display: none; }
-.art-play.is-playing .ic-pause { display: block; }
-.art-play.is-playing { box-shadow: 0 0 0 4px color-mix(in srgb, var(--purple) 30%, transparent); }
+.art-tile:has(> ui-file-card[variant="chip"]) { max-width: 240px; }
 .panel-artifacts { padding: 10px 16px 4px; border-bottom: 1px solid var(--border); min-height: 44px; }
 .panel-arts-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--text); }
 .panel-arts-hint { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--text-tertiary); }
@@ -5472,53 +5444,44 @@ body.nt-open .new-task-fab { display: none !important; }
 .um-tile img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .um-single .um-tile { width: 280px; max-width: 100%; height: 200px; background: var(--bg); }
 .um-single .um-tile img { object-fit: contain; }
-.um-tile:focus-visible, .um-open:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.um-tile:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .um-more { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--media-scrim); color: var(--on-media); font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .um-tile.is-broken img { display: none; }
 .um-tile.is-broken::after { content: '미리보기 불가'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 4px; font-size: 10.5px; color: var(--ib-muted); text-align: center; }
 .um-files { display: flex; flex-wrap: wrap; gap: 6px; }
-.um-file { position: relative; display: flex; align-items: center; min-width: 0; width: 240px; max-width: 100%; height: 52px; border: 1px solid var(--ib-card-border); border-radius: 10px; background: var(--surface); transition: border-color 150ms ease; }
-.um-open { display: flex; align-items: center; gap: 10px; flex: 1 1 auto; min-width: 0; height: 100%; padding: 0 10px; border: none; border-radius: 10px; background: none; color: var(--ib-text); font: inherit; text-align: left; cursor: zoom-in; transition: transform var(--dur-press) var(--ease-out); }
-.um-open .art-glyph { width: 26px; height: 26px; color: var(--art-tint, var(--text-secondary)); }
-.um-file-text { display: flex; flex-direction: column; min-width: 0; }
-.um-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
-.um-file-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--ib-muted); }
-.um-file.is-remote { border-style: dashed; }
-.um-file.is-remote .art-glyph { opacity: 0.55; }
-.um-file .um-play { position: static; flex: 0 0 auto; margin-right: 10px; }
+/* A non-image attachment is a <ui-file-card variant="row" playable> (D4 I-09): the card draws the glyph, the name,
+   the kind · size · age line and the voice note's play toggle; the page sizes the box. */
+.um-file { display: flex; min-width: 0; width: 240px; max-width: 100%; }
+.um-file > ui-file-card { display: block; flex: 1 1 auto; min-width: 0; }
+.um-file.is-remote { opacity: 0.8; }
 .um-compact .um-tile { width: 40px; height: 40px; border-radius: 6px; }
 .um-compact .um-more { font-size: 12px; }
-.um-compact .um-file { width: auto; max-width: 200px; height: 30px; border-radius: 999px; }
-.um-compact .um-open { gap: 6px; padding: 0 10px; }
-.um-compact .um-open .art-glyph { width: 14px; height: 14px; }
-.um-compact .um-file .um-play { width: 24px; height: 24px; margin-right: 4px; }
+.um-compact .um-file { width: auto; max-width: 200px; }
 .io-row .um-media { margin: 4px 0 6px; }
-.panel-user-media { margin-bottom: 6px; }
-.panel-um-head { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px; padding: 2px 0; border: none; background: none; color: var(--text); font: inherit; font-size: 12px; font-weight: 600; text-align: left; cursor: pointer; }
-.panel-um-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; border-radius: 6px; }
-.panel-um-head .um-chevron { width: 14px; height: 14px; flex-shrink: 0; color: var(--text-tertiary); transition: transform var(--dur-press) var(--ease-out); }
-.panel-um-head[aria-expanded="true"] .um-chevron { transform: rotate(180deg); }
+/* A row of its own above the 산출물 (the section lays its head and chips out as one flex row in the minimal
+   view and on a short body: this one wraps onto a full line of its own there). */
+.panel-user-media { flex: 1 1 100%; margin-bottom: 6px; }
+/* The 지시 첨부 row (D4 K-06): the summary slotted into <ui-disclosure> — glyph · 지시 첨부 · count · hint. */
+.panel-um-head { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text); font-size: 12px; font-weight: 600; }
 .panel-um-body { padding: 4px 0 2px; }
 .panel-um-body .um-media { margin: 0; }
 @media (hover: hover) and (pointer: fine) {
-  .um-tile:hover, .um-file:hover { border-color: var(--ib-muted); }
+  .um-tile:hover { border-color: var(--ib-muted); }
 }
 @media (pointer: coarse) {
   .um-compact .um-tile { width: 44px; height: 44px; }
-  .um-compact .um-file { height: 44px; }
-  .panel-um-head { min-height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .um-tile, .um-open, .panel-um-head .um-chevron { transition: none; }
+  .um-tile { transition: none; }
 }
-.art-peek { position: fixed; z-index: 1000; left: 0; top: 0; width: 360px; max-width: calc(100vw - 16px); overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); box-shadow: var(--ib-shadow-raised); opacity: 0; visibility: hidden; transform: translateY(4px) scale(0.98); transform-origin: top left; pointer-events: none; transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out), visibility 0s linear var(--dur-fade); }
-.art-peek.open { opacity: 1; visibility: visible; transform: none; pointer-events: auto; transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out); }
+/* The peek (I-05) is <ui-hovercard id="art-peek">: the element draws the raised card beside its trigger (360px —
+   its width attribute) and runs the hover / focus / Esc / press rules; the page fills it — a media box, a foot line. */
+#art-peek { --ui-hovercard-z: 1000; }
 .art-peek-media { position: relative; display: flex; align-items: center; justify-content: center; height: 225px; overflow: hidden; background: var(--bg); cursor: zoom-in; color: var(--art-tint, var(--text-secondary)); }
 .art-peek-img, .art-peek-video { max-width: 100%; max-height: 100%; object-fit: contain; }
 .art-peek-frame { position: absolute; inset: 0; overflow: hidden; background: var(--media-paper); }
 .art-peek-frame iframe { width: 1280px; height: 800px; border: 0; transform: scale(0.28125); transform-origin: 0 0; pointer-events: none; }
-.art-peek-doc { align-self: stretch; width: 100%; padding: 10px 14px; overflow: hidden; color: var(--text); font-size: 11px; line-height: 1.5; -webkit-mask-image: linear-gradient(var(--media-black) 70%, transparent); mask-image: linear-gradient(var(--media-black) 70%, transparent); }
-.art-peek-doc .md-doc h1, .art-peek-doc .md-doc h2, .art-peek-doc .md-doc h3 { font-size: 13px; margin: 4px 0; }
+.art-peek-pre { align-self: stretch; width: 100%; margin: 0; padding: 10px 14px; overflow: hidden; color: var(--text); font: 11px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; text-align: left; -webkit-mask-image: linear-gradient(var(--media-black) 70%, transparent); mask-image: linear-gradient(var(--media-black) 70%, transparent); }
 .art-peek-audio { display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; padding: 0 16px; }
 .art-peek-audio .art-glyph { width: 48px; height: 48px; }
 .art-peek-audio audio { width: 100%; }
@@ -5529,60 +5492,11 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-peek-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; color: var(--text); }
 .art-peek-info { font-size: 11px; color: var(--text-tertiary); }
 .art-doc-loading { color: var(--text-tertiary); font-size: 12px; }
-.art-modal { width: min(1240px, 94vw); height: 90vh; max-width: none; max-height: none; margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: var(--ib-shadow-raised); }
-.art-modal[open] { display: flex; flex-direction: column; animation: dlg-in var(--dur-expand) var(--ease-out); }
-.art-modal::backdrop { background: var(--scrim); }
-.art-modal-head { display: flex; align-items: center; gap: 12px; flex-shrink: 0; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--border); }
-.art-modal-kind { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; padding: 3px 9px; border-radius: 999px; background: var(--ib-pill); color: var(--text-secondary); font-size: 11px; font-weight: 700; }
-.art-modal-title { flex: 1; min-width: 0; }
-.art-modal-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
-.art-modal-meta { font-size: 11.5px; color: var(--text-tertiary); }
-.art-modal-nav, .art-modal-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.art-modal-pos { min-width: 40px; font-size: 12px; color: var(--text-secondary); text-align: center; font-variant-numeric: tabular-nums; }
-.art-modal-actions .ui-btn[hidden] { display: none; }
-.art-modal-body { position: relative; display: flex; flex: 1; min-height: 0; align-items: center; justify-content: center; overflow: auto; background: var(--bg); }
-.art-full-imgwrap { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: auto; }
-.art-full-img { max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in; }
-.art-full-imgwrap.is-zoomed { display: block; }
-.art-full-imgwrap.is-zoomed .art-full-img { max-width: none; max-height: none; cursor: zoom-out; }
-.art-full-frame { width: 100%; height: 100%; border: 0; background: var(--media-paper); }
-.art-full-video { max-width: 100%; max-height: 100%; background: var(--media-black); }
-.art-full-audio { display: flex; flex-direction: column; align-items: center; gap: 18px; width: min(560px, 90%); color: var(--purple); }
-.art-full-audio .art-glyph { width: 72px; height: 72px; }
-.art-full-audio audio { width: 100%; }
-.art-full-meta { display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: 460px; padding: 24px; text-align: center; color: var(--text-secondary); }
-.art-full-meta .art-glyph { width: 56px; height: 56px; }
-.art-full-meta-name { font-size: 15px; font-weight: 600; color: var(--text); word-break: break-all; }
-.art-full-meta-sub { font-size: 12px; color: var(--text-tertiary); }
-.art-full-doc { align-self: stretch; width: 100%; max-width: 880px; height: max-content; margin: 0 auto; padding: 28px 32px 56px; }
-.art-text { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12.5px/1.6 var(--mono); }
-.md-doc { font-size: 14px; line-height: 1.65; color: var(--text); word-break: break-word; }
-.md-doc h1, .md-doc h2, .md-doc h3, .md-doc h4, .md-doc h5, .md-doc h6 { margin: 1.3em 0 0.5em; line-height: 1.3; letter-spacing: -0.01em; }
-.md-doc h1 { font-size: 1.6em; } .md-doc h2 { font-size: 1.3em; } .md-doc h3 { font-size: 1.12em; } .md-doc h4, .md-doc h5, .md-doc h6 { font-size: 1em; }
-.md-doc > :first-child { margin-top: 0; }
-.md-doc p, .md-doc ul, .md-doc ol, .md-doc blockquote, .md-doc pre, .md-doc .md-table { margin: 0 0 0.9em; }
-.md-doc ul, .md-doc ol { padding-left: 1.4em; }
-.md-doc li + li { margin-top: 0.2em; }
-.md-doc code { padding: 0.1em 0.35em; border-radius: 6px; background: var(--ib-pill); font: 0.88em var(--mono); }
-.md-doc pre { padding: 12px 14px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--ib-col); }
-.md-doc pre code { padding: 0; background: none; font-size: 12.5px; line-height: 1.55; }
-.md-doc blockquote { padding: 2px 0 2px 12px; border-left: 3px solid var(--border-focus); color: var(--text-secondary); }
-.md-doc hr { margin: 1.4em 0; border: 0; border-top: 1px solid var(--border); }
-.md-doc a { color: var(--accent); }
-.md-doc .md-table { overflow-x: auto; }
-.md-doc table { border-collapse: collapse; font-size: 0.93em; }
-.md-doc th, .md-doc td { padding: 6px 10px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
-.md-doc th { background: var(--ib-col); font-weight: 600; }
-@media (prefers-reduced-motion: reduce) {
-  .art-play, .art-peek, .art-peek.open { transition: none; }
-  .art-modal[open] { animation: none; }
-  /* Gentler, not zero: a dialog's scrim still fades (opacity only, ≤ 180ms). */
-  .art-modal[open] { animation: none; }
-  .art-modal[open]::backdrop { animation: scrim-in 120ms ease both !important; }
-}
-@media (hover: none) {
-  .art-play { width: 40px; height: 40px; top: calc(4px + (var(--fc-tile-w) - 8px) * 0.625 - 44px); }
-}
+/* The viewer (I-06, I-07) is <ui-artifact-viewer tiles="none">: its <ui-dialog size="xl"> draws the panel, the head
+   (kind badge · name · meta · ✕), the body and the foot (‹ n / m › · 새 탭 · 다운로드 · Slack). The page's own
+   body (slot="preview": the model's HTML with scripts, a PDF) is a frame that fills the stage. */
+.art-viewer-preview { display: flex; min-height: 0; background: var(--media-paper); }
+.art-viewer-preview .art-full-frame { flex: 1 1 auto; width: 100%; min-height: 0; border: 0; }
 
 /* ═══ Device-responsive layout (SSOT 2026-10-24) ═══
    Targets: iPhone Duo (folded 382×580, unfolded 951×543), iPhone 18 Pro Max
@@ -5592,32 +5506,28 @@ body.nt-open .new-task-fab { display: none !important; }
    fold, unfold and rotation of those devices crosses one boundary and
    runLayoutCheck animates it. */
 @media (max-width: 839px) {
-  /* Drawer — a full-screen sheet: the saved desktop width never applies, there is
-     no resize handle, the top-bar chips stay under it, and its header and
-     composer keep clear of the notch and the home indicator. */
-  .slide-panel { width: 100%; }
+  /* Drawer — a full-screen sheet (the element's modal sheet: the top-bar chips stay under it): the saved
+     desktop width never applies, there is no resize handle, and its header keeps clear of the notch (the
+     element's panel keeps the composer clear of the home indicator). */
+  .slide-panel::part(panel) { width: 100%; }
+  .slide-panel::part(handle) { display: none; }
   .slide-panel .panel-header, .slide-panel .panel-body, .slide-panel .panel-command { margin-left: env(safe-area-inset-left, 0px); }
-  .panel-resize-handle { display: none; }
   .slide-panel .panel-header { padding-top: max(12px, env(safe-area-inset-top, 0px)); }
-  .slide-panel .panel-command { padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
-  .topbar .topbar-defaults { z-index: auto; }
-  .slide-panel.open ~ .new-task-fab { display: none !important; }
+  .slide-panel[open] ~ .new-task-fab { display: none !important; }
 }
 @media (min-width: 840px) {
   /* Drawer — docked beside the board (unfolded Duo / Fold8, tablets, PC): no dim,
      the board stays live, the drawer sits under the top bar until it scrolls
-     away (--topbar-b, syncTopbarBottom), and the page narrows to what is left
-     with its 1280px column centred there (never margin-right over width:100%). */
-  :root { --panel-w: min(var(--panel-w-pref, 440px), 50vw); }
+     away (--topbar-b → --ui-drawer-top, syncTopbarBottom), and the page narrows to what is left
+     with its 1280px column centred there (never margin-right over width:100%). --panel-w is the
+     drawer's own clamped width (syncPanelWidth writes it on the root from the element). */
   .topbar { z-index: 101; }
-  .slide-panel { width: var(--panel-w); top: calc(var(--pv-t, 0px) + var(--topbar-b, 0px)); height: calc(var(--pv-h, 100dvh) - var(--topbar-b, 0px)); }
-  .slide-panel-overlay.open { display: none; }
-  .app:has(> .slide-panel.open) > .main {
-    max-width: min(1280px, calc(100% - var(--panel-w)));
-    margin-left: max(0px, calc((100% - var(--panel-w) - 1280px) / 2));
+  .app:has(> .slide-panel[open]) > .main {
+    max-width: min(1280px, calc(100% - var(--panel-w, 440px)));
+    margin-left: max(0px, calc((100% - var(--panel-w, 440px) - 1280px) / 2));
     margin-right: auto;
   }
-  .slide-panel.open ~ .new-task-fab { right: calc(var(--panel-w) + 16px); }
+  .slide-panel[open] ~ .new-task-fab { right: calc(var(--panel-w, 440px) + 16px); }
 }
 /* A short docked screen (a phone held sideways, an unfolded Duo) keeps the drawer
    under the top bar too (SSOT 2026-10-29 T3: the top bar is always visible). */
@@ -5627,12 +5537,9 @@ body.nt-open .new-task-fab { display: none !important; }
 }
 @media (max-width: 639px) {
   /* Responsive (SSOT 2026-10-24) — phones: the last card clears the FAB (a board
-     with cards only — an empty page must not turn scrollable), the
-     defaults menu spans the bar instead of running off the edge, and the
-     artifact viewer takes the whole screen. */
+     with cards only — an empty page must not turn scrollable); the defaults
+     menu and the artifact viewer are the elements' own sheets. */
   .inbox.has-cards { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
-  .art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
-  .art-modal-head { flex-wrap: wrap; row-gap: 6px; }
 }
 /* The cron run drawer (#374) on every device: the visible viewport, not 100vh
    behind the Safari toolbar, and clear of the insets that viewport-fit=cover
@@ -5644,7 +5551,7 @@ body.nt-open .new-task-fab { display: none !important; }
 /* Task view (T1.6): minimal — the artifacts are one row of name chips, like a
    short panel body below; 자세히 shows them as thumbnails. The chips are the file cards' chip variant
    (artPanelVariant); this row only lays them out. */
-.slide-panel:not(.is-detail) .panel-artifacts { display: flex; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
+.slide-panel:not(.is-detail) .panel-artifacts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
 .slide-panel:not(.is-detail) .panel-arts-head { flex: none; margin-bottom: 0; }
 .slide-panel:not(.is-detail) .panel-arts-hint { display: none; }
 .slide-panel:not(.is-detail) .art-strip-panel { flex: 1 1 auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; }
@@ -5653,7 +5560,7 @@ body.nt-open .new-task-fab { display: none !important; }
    rows): artifacts become name chips with the play button inline, so the
    pinned strip stays one short row; every tile is still reachable sideways. */
 @container pbody (max-height: 560px) {
-  .panel-artifacts { display: flex; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
+  .panel-artifacts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
   .panel-arts-head { flex: none; margin-bottom: 0; }
   .panel-arts-hint { display: none; }
   .art-strip-panel { flex: 1 1 auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; }
@@ -5670,15 +5577,14 @@ ${pageTokenAliases()}
 </head>
 <body>
 <div class="app">
-  <!-- The top bar is @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14): brand, the 대화 · 설정 · 기억 links
-       (folded into 메뉴 when the bar is short of room), the live-update status, the signed-in account and the
-       theme toggle are its data (paintAppBar); the page's own controls are its actions — the scope group
-       (default model / effort, the board's user, admin write mode) and 새 작업. Below TOPBAR_SCOPE_MIN the
-       scope group leaves the bar for the row under it (#topbar-sub, placeTopbarScope): the bar is one row. -->
+  <!-- The top bar is @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14): brand (the page's h1), the 대화 · 설정 ·
+       기억 links with their titles (folded into 메뉴 when the bar is short of room), the live-update status, the
+       signed-in account and the theme toggle are its data (paintAppBar). The page's own controls: the scope group
+       (default model / effort, the board's user, admin write mode) is its toolbar — the bar's own row under it
+       below toolbarAt or when it would overflow — and 새 작업 its action. -->
   <header class="topbar" id="topbar">
-    <h1 class="ar-vh">soma-work</h1>
     <ui-app-bar id="app-bar" lang="ko">
-    <div class="topbar-scope" id="topbar-scope" slot="actions">
+    <div class="topbar-scope" id="topbar-scope" slot="toolbar">
     <div class="topbar-defaults" id="topbar-defaults" hidden>
       <button type="button" class="td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
       <button type="button" class="td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
@@ -5688,6 +5594,16 @@ ${pageTokenAliases()}
     <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">모든 사용자</span><select id="user-select" title="모든 사용자" aria-label="보드에 보일 사용자" onchange="selectUser(this.value)">
       <option value="">모든 사용자</option>
     </select></span>
+    <button
+      id="admin-inbox-btn"
+      type="button"
+      class="admin-toggle admin-inbox-btn"
+      style="display:none"
+      aria-haspopup="dialog"
+      aria-label="관리자 승인 0건 대기"
+      title="관리자 승인 — Slack DM으로 오는 승인 요청을 여기서도 보고 답합니다"
+      onclick="openAdminInbox()"
+    ><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2l4.8 1.9v3.5c0 2.9-2 5.1-4.8 6.2-2.8-1.1-4.8-3.3-4.8-6.2V4.1z"/><path d="M5.9 8.1l1.5 1.5 2.8-2.9"/></svg><span>승인</span><span class="aib-count" id="admin-inbox-count" aria-hidden="true">0</span></button>
     <button
       id="admin-mode-toggle"
       type="button"
@@ -5700,27 +5616,20 @@ ${pageTokenAliases()}
     </div>
     <button type="button" class="ui-btn is-primary new-task-btn" id="new-task-btn" slot="actions" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><i data-ui-icon="plus"></i><span class="nt-btn-label">새 작업</span><kbd class="ui-kbd nt-kbd" aria-hidden="true">N</kbd></button>
     </ui-app-bar>
-    <div class="topbar-sub" id="topbar-sub" hidden></div>
   </header>
 
   <div class="main">
     <!-- Stats strip (.prd/10 §3.1-2) leads; the agent inbox board follows it. It is @2lab.ai/ui
          <ui-stat-strip id="stats-strip"> (B-01..B-05, B-09): period · 세션 · 토큰 · 비용 + 자세히 are its
          data (paintStatsStrip) — the figures roll, a loading figure pulses, 토큰 carries the per-instance
-         breakdown as its tooltip. 자세히 opens the element's own region: the other cards and the charts
-         below (its default slot; the choice is kept in localStorage). -->
+         breakdown as its tooltip. 자세히 opens the element's own region: the other cards (B-07, a second
+         <ui-stat-strip> in layout 'cards': 턴 · PR 생성 · PR 머지 roll, 머지 코드 and 워크플로우 are slotted
+         figures) and the charts below (its default slot; the choice is kept in localStorage). -->
     <section class="stats" id="stats">
       <ui-stat-strip id="stats-strip" lang="ko">
       <div class="stats-detail" id="stats-detail">
         <div class="ui-tok usage-cb-wrap"><ui-compact-breakdown id="usage-cb" lang="ko"></ui-compact-breakdown></div>
-        <div class="stats-grid" id="stats-grid">
-          <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value is-loading" id="stat-turns"></div></div>
-          <div class="stat-card"><div class="label">PR &#xC0DD;&#xC131;</div><div class="value is-loading" id="stat-prs"></div></div>
-          <div class="stat-card"><div class="label">PR &#xBA38;&#xC9C0;</div><div class="value is-loading" id="stat-merged"></div></div>
-          <div class="stat-card"><div class="label">&#xBA38;&#xC9C0; &#xCF54;&#xB4DC;</div><div class="value is-loading" id="stat-merge-lines"></div></div>
-          <div class="stat-card"><div class="label">&#xC6CC;&#xD06C;&#xD50C;&#xB85C;&#xC6B0;</div><div class="value is-loading" id="stat-workflows" style="font-size:0.85em"></div></div>
-        </div>
-        <div style="display:none" id="stat-commits-hidden"></div>
+        <ui-stat-strip id="stats-grid" class="stats-grid" lang="ko"><span id="stat-merge-lines"></span><span id="stat-workflows" class="stat-wf"></span></ui-stat-strip>
         <div class="chart-row" id="chart-row"><ui-bar-chart id="chart-sessions" lang="ko"></ui-bar-chart><ui-bar-chart id="chart-merge" lang="ko"></ui-bar-chart></div>
       </div>
       </ui-stat-strip>
@@ -5740,7 +5649,7 @@ ${pageTokenAliases()}
       <div class="inbox-head">
         <nav class="crumbs" aria-label="위치"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
         <div class="inbox-tools">
-          <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="3" rx="0.8"/><path d="M3 6v6.2c0 .5.4.8.8.8h8.4c.4 0 .8-.3.8-.8V6M6.5 8.6h3"/></svg><span id="archives-label">보관함</span></button>
+          <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><i data-ui-icon="archive"></i><span id="archives-label">보관함</span></button>
           <button type="button" class="archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">휴면</span></button>
           <button type="button" class="archives-btn" id="lifecycle-btn" style="display:none" title="세션 수명 주기 (관리자)" onclick="openLifecycleDialog()"><i data-ui-icon="clock"></i><span>수명 주기</span></button>
           <ui-segmented class="view-seg" id="view-seg"></ui-segmented>
@@ -5782,12 +5691,20 @@ ${pageTokenAliases()}
     <div class="cron-drawer-body" id="cron-drawer-body"></div>
   </ui-drawer>
 
-  <!-- Slide panel: the detail card -->
-  <div class="slide-panel-overlay" id="panel-overlay" onclick="closeDetailCard()"></div>
-  <div class="slide-panel" id="slide-panel" data-deck="0">
+  <!-- Admin approvals (#620): the requests the admins get by Slack DM, answerable here too. -->
+  <ui-drawer class="cron-drawer" id="admin-inbox-drawer" mode="sheet" width="480" max-width="480" lang="ko">
+    <span slot="header" class="admin-inbox-head" id="admin-inbox-head" tabindex="-1">관리자 승인</span>
+    <div class="admin-inbox-body" id="admin-inbox-body"></div>
+  </ui-drawer>
+  <p class="ar-vh" id="admin-inbox-status" role="status" aria-live="polite"></p>
+
+  <!-- Slide panel: the detail card — @2lab.ai/ui <ui-drawer> (D4 E-01, E-02): a modal sheet over its own scrim below
+       840px, docked beside the board from 840px (dock-at), switched in place while open; resizable from its inner edge
+       (the saved width: initPanelResize); Esc and the scrim arrive as ui-close (→ closeDetailCard, as the ✕ below). Its
+       own head is out (hide-close, no heading): the page's header, body and composer fill it. -->
+  <ui-drawer class="slide-panel" id="slide-panel" data-deck="0" dock-at="840" width="440" min-width="320" resizable hide-close label="작업 카드" lang="ko">
     <!-- Detail deck (SSOT 2026-10-29 T2): the edges of the open cards' other detail cards, waiting behind this one. -->
     <div class="panel-deck-peek" id="panel-deck-peek" aria-hidden="true"><span></span><span></span></div>
-    <div class="panel-resize-handle" id="panel-resize-handle"></div>
     <div class="panel-header">
       <div style="flex:1;min-width:0">
         <h3 id="panel-title" tabindex="-1">작업 카드</h3>
@@ -5825,24 +5742,25 @@ ${pageTokenAliases()}
         <!-- 산출물 (SSOT 2026-10-23 T6): what the task produced, and the files the user attached. -->
         <div class="panel-artifacts" id="panel-artifacts" style="display:none"></div>
       </section>
-      <!-- Agent tabs (task view T1.2): Main always first and pinned at the left, then every subagent in spawn order. -->
-      <div class="panel-tabs" id="panel-tabs" role="tablist" aria-label="에이전트" aria-orientation="horizontal"></div>
-      <section class="panel-tabpanel" id="panel-tabpanel" role="tabpanel" aria-labelledby="panel-tab-main" tabindex="-1">
+      <!-- Agent tabs (task view T1.2, D4 E-19): @2lab.ai/ui <ui-tabs shared-panel> — Main always first and pinned at the
+           left (TabItem.pinned), then every subagent in spawn order (renderPanelTabs: label · type as meta · status as the
+           tone dot). Every tab controls the one panel below it (the focused agent's header, Tasks, the section tabs);
+           panel-focus="none": that panel is no tab stop of its own. ui-change → selectPanelAgent. -->
+      <ui-tabs class="panel-tabs" id="panel-tabs" shared-panel panel-focus="none">
+      <section class="panel-tabpanel" id="panel-tabpanel">
         <!-- The focused agent (.prd/12 §4.3): its header; with 자세히, its path. -->
         <div class="panel-agents" id="panel-agents" style="display:none"></div>
         <!-- Tasks (task view T1.3): folded to one line by default. -->
         <div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>
-        <!-- Section tabs (SSOT 2026-10-29): only the active section is in the DOM; each
-             opens on its newest items and pages back as the reader scrolls up (a top
-             control is the keyboard path), in its own scroll box. -->
-        <!-- SSOT 2026-10-29 T6: Chat (지시와 답변) first and the default; 에이전트 트리 at the strip's right end — the bottom view's top right. -->
-        <div class="panel-sections" id="panel-sections" role="tablist" aria-label="섹션" aria-orientation="horizontal">
-          <button type="button" class="psec-tab" role="tab" id="psec-tab-conv" data-sec="conv" aria-selected="true" aria-controls="psec-conv" tabindex="0" title="지시와 답변">Chat</button>
-          <button type="button" class="psec-tab" role="tab" id="psec-tab-log" data-sec="log" aria-selected="false" aria-controls="psec-log" tabindex="-1">작업 로그</button>
-          <button type="button" class="psec-tab psec-tab-tree" role="tab" id="psec-tab-tree" data-sec="tree" aria-selected="false" aria-controls="psec-tree" tabindex="-1"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="3.5" r="1.6"/><circle cx="12" cy="8" r="1.6"/><circle cx="12" cy="12.5" r="1.6"/><path d="M4 5.1v5.4c0 1.1.9 2 2 2h4.4M4 8h6.4"/></svg>에이전트 트리</button>
-        </div>
+        <!-- Section tabs (SSOT 2026-10-29, D4 E-24): @2lab.ai/ui <ui-tabs> over the section boxes, each slotted as its
+             tab's panel (slot="<id>"); only the active section holds nodes (psecClear); each opens on its newest items
+             and pages back as the reader scrolls up (a top control is the keyboard path), in its own scroll box
+             (panel-focus="none": the box is the tab stop, not the element's wrapper). The strip's data is PSEC_TABS
+             (renderPanelSections); ui-change → selectPanelSection. -->
+        <!-- SSOT 2026-10-29 T6: Chat (지시와 답변) first and the default; 에이전트 트리 at the strip's right end (TabItem.end) — the bottom view's top right. -->
         <div class="panel-sections-body" id="panel-sections-body">
-          <div class="psec" id="psec-tree" role="tabpanel" aria-labelledby="psec-tab-tree" tabindex="0" hidden>
+          <ui-tabs class="panel-sections" id="panel-sections" panel-focus="none">
+          <div class="psec" id="psec-tree" slot="tree" tabindex="0">
             <button type="button" class="psec-older" data-sec="tree" hidden>이전 에이전트 보기</button>
             <p class="psec-start" hidden>에이전트 트리의 시작</p>
             <div class="psec-body panel-tree" id="panel-tree"></div>
@@ -5850,59 +5768,47 @@ ${pageTokenAliases()}
           <!-- 작업 로그 (D3 F-01..F-10): @2lab.ai/ui <ui-work-log> — task groups, entry rows, the raw viewer,
                child agents, its own scroll box (pages older entries in on scroll-up); the tool cards are
                this page's <ui-tool-call-card> children in each entry's tool-<seq> slot (wlPaint). -->
-          <div class="psec psec-el ui-tok" id="psec-log" role="tabpanel" aria-labelledby="psec-tab-log" hidden>
+          <div class="psec psec-el ui-tok" id="psec-log" slot="log">
             <ui-work-log class="worklog-list" id="worklog-list" lang="ko"></ui-work-log>
           </div>
           <!-- 지시와 답변 (D3 G-01..G-13, E-25): @2lab.ai/ui <ui-conversation> — its own scroll box
                (<ui-log-scroller>: follows the newest turn, keeps the place while older pages go in
                above, the "new" pill); the dashboard hands it turns (convPaint) and answers
                ui-load-older / ui-retry. The files beside a turn are its slotted children. -->
-          <div class="psec psec-el ui-tok" id="psec-conv" role="tabpanel" aria-labelledby="psec-tab-conv">
+          <div class="psec psec-el ui-tok" id="psec-conv" slot="conv">
             <ui-conversation class="panel-conv" id="panel-conv" lang="ko"></ui-conversation>
           </div>
+          </ui-tabs>
           <!-- New items while the reader is up the list: one press goes to the newest. -->
           <button type="button" class="psec-pill" id="psec-pill" hidden></button>
         </div>
       </section>
+      </ui-tabs>
     </div>
     </div>
     <!-- Command row is always visible: read-only for a viewer who is not the owner, off once the session ended. -->
     <div class="panel-command" id="panel-command">
       <!-- Model · effort beside the composer (spec 13): their own container — the input is never morphed. -->
       <div class="panel-controls" id="panel-controls" aria-label="이 세션의 모델과 effort"></div>
-      <!-- The composer and the session's follow-up queue — @2lab.ai/ui <ui-agent-steering> (dashboard batch 2):
-           multiline; images by paste, drop or picker; files; voice. Its slots hold this page's tools and file chips.
-           The token wrapper (.ui-tok) hands it the dashboard tokens; renderPanelComposer gives it its data. -->
+      <!-- The composer and the session's follow-up queue — @2lab.ai/ui <ui-agent-steering> (dashboard batch 2) with
+           a <ui-composer slot="composer"> as its field (E-30, 0.10.0): multiline; files, images (paste, drop, picker)
+           and voice, their chips, the limits and the error line are the composer's; Enter queues, ⌘/Ctrl+Enter
+           steers. The token wrapper (.ui-tok) hands them the dashboard tokens; renderPanelComposer gives the
+           steering its data, pcComposerData the composer its limits. -->
       <div class="ui-tok pc-steer-wrap">
-        <ui-agent-steering id="cmd-steer" lang="ko">
-          <div slot="attachments" class="pc-top">
-            <div class="pc-attachments" id="pc-attachments" aria-live="polite" aria-label="첨부 파일"></div>
-            <div class="nt-recorder pc-recorder" id="pc-recorder" role="status" aria-label="녹음 중" hidden><span class="nt-rec-dot" aria-hidden="true"></span><span id="pc-rec-time">0:00</span><span class="nt-rec-meter" aria-hidden="true"><span class="nt-rec-level" id="pc-rec-level"></span></span><button type="button" class="nt-rec-btn" onclick="pcStopRecording(false)">취소</button><button type="button" class="nt-rec-btn is-primary" onclick="pcStopRecording(true)">완료</button></div>
-            <p class="pc-error" id="pc-error" role="alert" hidden></p>
-          </div>
-          <span slot="tools" class="pc-tools">
-            <button type="button" class="ui-icon-btn pc-tool" id="pc-attach" aria-label="파일 첨부" title="파일 첨부" onclick="document.getElementById('pc-file-input').click()"><i data-ui-icon="attach"></i></button>
-            <button type="button" class="ui-icon-btn pc-tool" id="pc-image" aria-label="이미지 첨부" title="이미지 첨부 (붙여넣기·끌어놓기도 됩니다)" onclick="document.getElementById('pc-image-input').click()"><i data-ui-icon="image"></i></button>
-            <button type="button" class="ui-icon-btn pc-tool pc-tool-mic" id="pc-mic" aria-label="음성 녹음" aria-pressed="false" title="음성 녹음" onclick="pcToggleRecording()"><i data-ui-icon="mic"></i></button>
-            <input type="file" id="pc-file-input" multiple hidden onchange="pcAddFiles(this.files); this.value = ''">
-            <input type="file" id="pc-image-input" accept="image/*" multiple hidden onchange="pcAddFiles(this.files); this.value = ''">
-            <input type="file" id="pc-audio-input" accept="audio/*" capture hidden onchange="pcAddFiles(this.files); this.value = ''">
-          </span>
-        </ui-agent-steering>
+        <ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"></ui-composer></ui-agent-steering>
       </div>
     </div>
-  </div>
+  </ui-drawer>
 
   <!-- New task (SSOT 2026-10-23): floating button (phones, and PC once the top-bar
        button scrolls away), the composer dialog, and the launch toast. -->
   <button type="button" class="new-task-fab" id="new-task-fab" aria-label="새 작업 시작" onclick="openNewTask()"><i data-ui-icon="plus" class="nt-fab-icon"></i><span class="nt-fab-label">새 작업</span></button>
-  <dialog id="nt-dialog" class="nt-dialog" aria-labelledby="nt-title" onclose="ntOnClosed()">
+  <!-- The composer dialog is @2lab.ai/ui <ui-dialog> (D4 H-01): its heading and ✕, scrim, focus trap, Esc / scrim
+       close (ui-close → ntOnClosed), focus return to the opener, and on phones its bottom sheet above the soft
+       keyboard. The page's form stays whole inside it; ui-submit from the composer posts as before. -->
+  <ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" lang="ko">
     <form id="nt-form" class="nt-form" onsubmit="event.preventDefault()" novalidate>
-      <header class="nt-head">
-        <button type="button" class="ui-icon-btn nt-close" aria-label="닫기" onclick="closeNewTask()"><i data-ui-icon="close"></i></button>
-        <h2 id="nt-title">새 작업</h2>
-        <span class="nt-head-hint" aria-hidden="true">Esc</span>
-      </header>
       <div class="nt-body" id="nt-body">
         <div class="nt-config" role="group" aria-label="작업 설정">
           <div class="nt-chip nt-chip-model"><label for="nt-model">모델</label><select id="nt-model" onchange="ntOnModelChange()"></select><button type="button" class="nt-battery-btn nt-batt-unknown" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><span class="nt-battery" id="nt-battery" role="img" aria-label="잔여량 미확인"><span class="nt-battery-fill" id="nt-battery-fill"></span></span><span class="nt-battery-pct" id="nt-battery-pct">?</span></button></div>
@@ -5916,46 +5822,32 @@ ${pageTokenAliases()}
           <span class="nt-toggle-note">이 작업에만 적용 · 설정은 그대로</span>
         </div>
         <!-- The instruction, its files and the voice note — @2lab.ai/ui <ui-composer> (D2 H-05..H-09): the field grows
-             with its text, drop / paste / attach / record, chips with thumbnails and play, 작업 시작. ⌘/Ctrl+Enter
-             sends; a plain Enter is a new line (ntInit). The page answers ui-submit (it posts), ui-input (the draft),
-             ui-files (the total size), ui-tool (카메라 on touch: the native camera input below). -->
+             with its text, drop / paste / attach / record / phone camera, chips with thumbnails and play, 작업 시작.
+             ⌘/Ctrl+Enter sends; a plain Enter is a new line (enter: 'newline'); the files are capped each and
+             together (maxTotalBytes). The page answers ui-submit (it posts) and ui-input (the draft). -->
         <ui-composer id="nt-composer" class="nt-composer" lang="ko"></ui-composer>
-        <input type="file" id="nt-camera-input" accept="image/*" capture="environment" hidden onchange="ntAddCamera(this.files); this.value = ''">
         <p class="nt-error" id="nt-error" role="alert" hidden></p>
         <p class="nt-foot"><span class="nt-status" id="nt-status" role="status" aria-live="polite"></span><span class="nt-submit-hint" aria-hidden="true">⌘↵</span></p>
       </div>
     </form>
   </dialog>
 </div>
-<!-- Artifacts (SSOT 2026-10-23): hover minimap + full-size viewer, shared by board and panel. -->
-<div id="art-peek" class="art-peek" role="tooltip" aria-hidden="true"></div>
-<dialog id="art-modal" class="art-modal" aria-labelledby="art-modal-name">
-  <div class="art-modal-head">
-    <span class="art-modal-kind" id="art-modal-kind"></span>
-    <div class="art-modal-title"><div class="art-modal-name" id="art-modal-name"></div><div class="art-modal-meta" id="art-modal-meta"></div></div>
-    <div class="art-modal-nav">
-      <button type="button" class="ui-icon-btn is-bordered" id="art-modal-prev" aria-label="이전 산출물" onclick="artModalStep(-1)"><i data-ui-icon="chevron-left"></i></button>
-      <span class="art-modal-pos" id="art-modal-pos"></span>
-      <button type="button" class="ui-icon-btn is-bordered" id="art-modal-next" aria-label="다음 산출물" onclick="artModalStep(1)"><i data-ui-icon="chevron-right"></i></button>
-    </div>
-    <div class="art-modal-actions">
-      <a class="ui-btn is-sm" id="art-modal-open" target="_blank" rel="noopener">새 탭</a>
-      <a class="ui-btn is-sm" id="art-modal-download">다운로드</a>
-      <a class="ui-btn is-sm" id="art-modal-slack" target="_blank" rel="noopener">Slack</a>
-      <button type="button" class="ui-icon-btn" aria-label="닫기" onclick="closeArtifactModal()"><i data-ui-icon="close"></i></button>
-    </div>
-  </div>
-  <div class="art-modal-body" id="art-modal-body"></div>
-</dialog>
+<!-- Artifacts (SSOT 2026-10-23): the peek and the viewer, shared by the board, the open cards and the panel —
+     @2lab.ai/ui <ui-hovercard> (I-05: one card for every tile, filled on ui-open) and <ui-artifact-viewer
+     tiles="none"> (I-06 / I-07: opened over the page's own cards with open(items, index, opener)). -->
+<ui-hovercard id="art-peek" for="ui-file-card[data-art-id], .ib-chip[data-art], .um-tile[data-art-id]" width="360"></ui-hovercard>
+<ui-artifact-viewer id="art-viewer" tiles="none" lang="ko"></ui-artifact-viewer>
 
 <script>
 const INIT_USER = ${initUser};
 // The page chrome's words, in one place and one language (the library's STRINGS pattern, lang="ko"):
 // sentence case, "…" not "...", the library's short status vocabulary.
 var STRINGS = {
-  // The live-update status in the app bar (a tone dot and these words; narrow, the dot alone).
+  // The live-update status in the app bar (a tone dot and these words; narrow, the dot alone), read after
+  // what it is about: "실시간 업데이트: 연결됨" (its description — visually hidden, and its hover title).
+  wsAbout: '실시간 업데이트',
   wsConnecting: '연결 중…',
-  wsLive: '실시간 연결됨',
+  wsLive: '연결됨',
   wsReconnecting: '다시 연결 중…',
   on: '켬',
   off: '끔',
@@ -6045,22 +5937,27 @@ let _viewerUserId = ''; // the signed-in user (/auth/me) — not currentUserId, 
 // The page hands the bar its data — brand, the three page links, the live-update status, the signed-in
 // account, the current theme and the sound choice — and answers its events: ui-theme-change (the page
 // owns the theme and its storage), ui-sound-change (the head's sound script, somaSoundBindBar),
-// ui-navigate / ui-account (not cancelled: the links are real links). The bar draws and
-// folds them; the page's own controls ride in its actions slot (placeTopbarScope).
+// ui-navigate / ui-account (not cancelled: the links are real links). The bar draws and folds them; the
+// page's own controls ride in its toolbar (the scope group) and actions (새 작업) slots. The brand is the
+// page's h1; each link's title says what the page is for (its hover title, and the folded menu row's
+// second line); the status says what it is about before its word.
 var APP_BAR_NAV = [
-  { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat' },
-  { id: 'settings', label: '설정', href: '/dashboard/settings', icon: 'gear' },
-  { id: 'memory', label: '기억', href: '/dashboard/settings#memory', icon: 'brain' },
+  { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat', title: '지난 대화를 모두 봅니다' },
+  { id: 'settings', label: '설정', href: '/dashboard/settings', icon: 'gear', title: 'Slack 명령으로 바꾸던 설정을 여기서 확인하고 바꿉니다' },
+  { id: 'memory', label: '기억', href: '/dashboard/settings#memory', icon: 'brain', title: '에이전트가 기억하는 개인 메모리와 관찰 기록을 보고 고칩니다' },
 ];
-var _appBarStatus = { tone: 'run', label: STRINGS.wsConnecting, live: true };
+// The scope group takes the bar's row under it below this bar width (it may also when the bar would overflow).
+var APP_BAR_TOOLBAR_AT = 1280;
+var _appBarStatus = { tone: 'run', label: STRINGS.wsConnecting, live: true, description: STRINGS.wsAbout };
 var _appBarAccount = null; // { name, href, role? } once /auth/me resolves; null = no pill
 function paintAppBar() {
   var bar = document.getElementById('app-bar');
   if (!bar) return;
   var data = {
-    brand: { label: 'soma-work', mark: true },
+    brand: { label: 'soma-work', mark: true, heading: true },
     nav: APP_BAR_NAV,
     navLabel: '주 메뉴',
+    toolbarAt: APP_BAR_TOOLBAR_AT,
     status: _appBarStatus,
     theme: document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
     // The speaker before the theme toggle (interface sound, #614): the head script's choice; its
@@ -6109,87 +6006,39 @@ window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', fu
     if (t === 'light' || t === 'dark') setTheme(t);
   });
 })();
-// The scope group (default model / effort · the board's user · admin write mode) rides in the bar's
-// actions on a wide screen; below TOPBAR_SCOPE_MIN it takes the row under the bar, where it may wrap —
-// the bar is one 56px row and folds only its own links. Moved as a whole, so its state goes with it.
-var TOPBAR_SCOPE_MIN = 1280;
-function placeTopbarScope() {
-  var bar = document.getElementById('app-bar');
-  var sub = document.getElementById('topbar-sub');
-  var scope = document.getElementById('topbar-scope');
-  if (!bar || !sub || !scope) return;
-  var wide = !window.matchMedia || window.matchMedia('(min-width: ' + TOPBAR_SCOPE_MIN + 'px)').matches;
-  if (wide) {
-    if (scope.parentElement !== bar) {
-      closeDefaultsMenu();
-      scope.slot = 'actions';
-      bar.insertBefore(scope, document.getElementById('new-task-btn'));
-    }
-    sub.hidden = true;
-  } else {
-    if (scope.parentElement !== sub) {
-      closeDefaultsMenu();
-      scope.removeAttribute('slot');
-      sub.appendChild(scope);
-    }
-    sub.hidden = false;
-  }
-}
-placeTopbarScope();
-if (window.matchMedia) {
-  var _topbarScopeMq = window.matchMedia('(min-width: ' + TOPBAR_SCOPE_MIN + 'px)');
-  if (_topbarScopeMq.addEventListener) _topbarScopeMq.addEventListener('change', placeTopbarScope);
-}
-
-// ── Panel resize — drag the left edge of the docked drawer (SSOT 2026-10-24) ──
-// The drag stores a width preference (--panel-w-pref, localStorage); CSS decides
-// the applied width — the whole screen as a sheet (<840px), min(preference, 50vw)
-// docked. JS never writes the drawer's width or right offset, so a width chosen on
-// a wide screen can never push the drawer past a folded phone.
+// ── Panel width — the docked drawer's inner edge (SSOT 2026-10-24, D4 E-01) ──
+// The drag and the handle's arrow keys are <ui-drawer resizable>'s: it clamps the width to
+// [min-width, min(max-width, viewport − 48)] and says ui-resize. The page keeps the saved
+// preference (localStorage) as the element's width attribute, caps it at half the window
+// (max-width follows a resize) and writes the drawer's own clamped width as --panel-w on the
+// root for the board beside it. JS never writes the drawer's width or right offset itself:
+// the sheet below 840px is the whole screen whatever was saved on a wide one.
 (function initPanelResize() {
   var panel = document.getElementById('slide-panel');
-  var handle = document.getElementById('panel-resize-handle');
+  if (!panel) return;
   var STORAGE_KEY = 'soma-panel-width';
   var MIN_W = 320, MAX_W = 1600;
-  var root = document.documentElement;
-  function applyPref(w) { root.style.setProperty('--panel-w-pref', w + 'px'); }
-
   var saved = NaN;
   try { saved = parseInt(localStorage.getItem(STORAGE_KEY) || '', 10); } catch (_e) {}
-  if (saved >= MIN_W && saved <= MAX_W) applyPref(saved);
-
-  var dragging = false;
-  var pref = 0;
-  handle.addEventListener('pointerdown', function(e) {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    dragging = true;
-    pref = 0;
-    try { handle.setPointerCapture(e.pointerId); } catch (_e) {}
-    panel.classList.add('resizing');
-    handle.classList.add('active');
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
+  if (saved >= MIN_W && saved <= MAX_W) panel.setAttribute('width', String(saved));
+  panel.addEventListener('ui-resize', function(e) {
+    var w = e.detail && e.detail.width;
+    if (w >= MIN_W) { try { localStorage.setItem(STORAGE_KEY, String(w)); } catch (_e) {} }
+    syncPanelWidth();
   });
-  handle.addEventListener('pointermove', function(e) {
-    if (!dragging) return;
-    pref = Math.round(Math.min(Math.max(window.innerWidth - e.clientX, MIN_W), window.innerWidth * 0.5));
-    applyPref(pref);
-  });
-  function endDrag() {
-    if (!dragging) return;
-    dragging = false;
-    panel.classList.remove('resizing');
-    handle.classList.remove('active');
-    document.body.style.cursor = '';
-    document.body.style.userSelect = '';
-    if (pref >= MIN_W) {
-      try { localStorage.setItem(STORAGE_KEY, String(pref)); } catch (_e) {}
-    }
-  }
-  handle.addEventListener('pointerup', endDrag);
-  handle.addEventListener('pointercancel', endDrag);
+  window.addEventListener('resize', syncPanelWidth, { passive: true });
+  syncPanelWidth();
 })();
+// The cap (half the window, never under the drawer's minimum) and --panel-w: the element's clamped width
+// — the saved width capped the same way until the element is defined.
+function syncPanelWidth() {
+  var panel = document.getElementById('slide-panel');
+  if (!panel) return;
+  var half = Math.max(320, Math.round(window.innerWidth / 2));
+  if (panel.getAttribute('max-width') !== String(half)) panel.setAttribute('max-width', String(half));
+  var w = typeof panel.width === 'number' ? panel.width : Math.min(parseInt(panel.getAttribute('width') || '', 10) || 440, half);
+  document.documentElement.style.setProperty('--panel-w', w + 'px');
+}
 
 // ── Panel tasks rendering ──
 function formatDuration(ms) {
@@ -6413,6 +6262,7 @@ function acPrefetch(s, col) {
 
 // What one slot's element shows now, from the session it belongs to.
 function acDataFor(el) {
+  if (el.getAttribute('data-ac-kind') === 'admin') return adminApprovalData(el.getAttribute('data-ac-id'));
   var s = _sessionCache[el.getAttribute('data-ac-key')];
   if (!s) return null;
   if (el.getAttribute('data-ac-kind') === 'question') {
@@ -6456,8 +6306,10 @@ function acRepaint(key) {
 // The answers leave the element as composed events, retargeted to it here.
 document.addEventListener('ui-decide', function(e) {
   var el = e.target;
-  if (!el || !el.getAttribute || !e.detail || el.getAttribute('data-ac-kind') !== 'perm') return;
-  answerPermission(el.getAttribute('data-ac-key'), String(e.detail.id), String(e.detail.decision));
+  if (!el || !el.getAttribute || !e.detail) return;
+  var kind = el.getAttribute('data-ac-kind');
+  if (kind === 'perm') answerPermission(el.getAttribute('data-ac-key'), String(e.detail.id), String(e.detail.decision));
+  else if (kind === 'admin') answerAdminApproval(String(e.detail.id), String(e.detail.decision));
 });
 document.addEventListener('ui-answer', function(e) {
   var el = e.target;
@@ -6466,6 +6318,7 @@ document.addEventListener('ui-answer', function(e) {
   var choice = e.detail.choiceId === undefined ? '' : String(e.detail.choiceId);
   if (kind === 'question') answerChoice(el.getAttribute('data-ac-key'), String(e.detail.id), choice);
   else if (kind === 'goal') answerGoalDecision(el.getAttribute('data-ac-key'), String(e.detail.id), choice);
+  else if (kind === 'admin') answerAdminApproval(String(e.detail.id), choice);
 });
 
 // The pending question in the panel: the single-choice question is an
@@ -6760,6 +6613,250 @@ async function answerGoalDecision(key, decisionId, choiceId) {
   return st;
 }
 
+// ── Admin approvals (#620) — @2lab.ai/ui <ui-approval-card> in a sheet ──
+// The requests that reach the admins by Slack DM (an environment skill run, an
+// MCP tool grant, a new user, a bot-message delete), for admins signed in here:
+// a count in the top bar, a toast when one arrives, the cards in a sheet. An
+// answer here runs the same decision as the Slack button (every admin's DM is
+// rewritten); a Slack answer takes the card away. Admin viewers get them over the
+// WebSocket (admin_approvals) and from GET /api/dashboard/admin-approvals on load
+// and on every reconnect.
+var _adminApprovals = { pending: [], resolved: [] };
+var _adminKnown = null; // pending ids seen so far — the first load is the baseline (no toast)
+var _adminLast = Object.create(null); // id → the last record seen, for the row it becomes
+var _adminKeep = Object.create(null); // ids that ended while the sheet is open — shown until it closes
+var _adminState = Object.create(null); // id → this page's answer (sending · error · resolved)
+var _adminInboxOpen = false;
+var _adminPushSeq = 0; // WebSocket snapshots seen — a GET that started before a push is older than it
+var _adminInboxReturn = null;
+var ADMIN_KIND_LABEL = { env_skill: '환경 스킬', mcp_grant: 'MCP 권한', new_user: '새 사용자', bot_delete: '메시지 삭제' };
+
+function adminInboxLoad() {
+  if (!_viewerIsAdmin || !_viewerUserId) return;
+  var seq = _adminPushSeq;
+  fetch('/api/dashboard/admin-approvals')
+    .then(function(res) { return res.ok ? res.json() : null; })
+    // A push that landed while this GET was in flight is newer: the GET's snapshot is dropped.
+    .then(function(snap) { if (snap && seq === _adminPushSeq) applyAdminApprovals(snap); })
+    .catch(function() {});
+}
+// A name for a Slack user id: the owner name a board card carries, else the id.
+function adminUserName(id) {
+  if (!id) return '';
+  for (var k in _sessionCache) {
+    var s = _sessionCache[k];
+    if (s && s.ownerId === id && s.ownerName && s.ownerName !== id) return s.ownerName;
+  }
+  return id;
+}
+function adminApprovalTitle(a) {
+  return (ADMIN_KIND_LABEL[a.kind] || '승인') + ' — ' + String(a.title || '');
+}
+function applyAdminApprovals(snap) {
+  var pending = (snap && snap.pending) || [];
+  var resolved = (snap && snap.resolved) || [];
+  var ids = Object.create(null);
+  var arrivals = [];
+  for (var i = 0; i < pending.length; i++) {
+    var a = pending[i];
+    ids[a.id] = true;
+    if (_adminKnown && !_adminKnown[a.id]) arrivals.push(a);
+    _adminLast[a.id] = a;
+  }
+  if (_adminInboxOpen && _adminKnown) {
+    for (var gone in _adminKnown) if (!ids[gone] && _adminLast[gone]) _adminKeep[gone] = true;
+  }
+  _adminKnown = ids;
+  _adminApprovals = { pending: pending, resolved: resolved };
+  for (var sid in _adminState) if (!ids[sid] && !_adminKeep[sid]) delete _adminState[sid];
+  paintAdminInboxButton();
+  if (_adminInboxOpen) paintAdminInbox();
+  if (!arrivals.length) return;
+  if (_adminInboxOpen) {
+    adminInboxAnnounce('새 승인 요청 — ' + adminApprovalTitle(arrivals[0]));
+    return;
+  }
+  var first = arrivals[0];
+  dashToast({
+    title: '관리자 승인 요청' + (arrivals.length > 1 ? ' ' + arrivals.length + '건' : ''),
+    description: adminApprovalTitle(first) + ' · ' + adminUserName(first.requesterId),
+    action: { id: 'open' },
+  }, function() { openAdminInbox(first.id); });
+}
+function paintAdminInboxButton() {
+  var btn = document.getElementById('admin-inbox-btn');
+  if (!btn) return;
+  var n = _adminApprovals.pending.length;
+  var c = document.getElementById('admin-inbox-count');
+  if (c && c.textContent !== String(n)) c.textContent = String(n);
+  btn.classList.toggle('has-pending', n > 0);
+  btn.setAttribute('aria-label', '관리자 승인 ' + n + '건 대기');
+}
+function adminInboxAnnounce(msg) {
+  var el = document.getElementById('admin-inbox-status');
+  if (el) el.textContent = msg;
+}
+// Who may answer here: a Slack-signed-in admin with admin mode on (the server checks again).
+function adminApprovalLock() {
+  if (!_viewerUserId) return 'Slack 계정으로 로그인한 관리자만 응답할 수 있습니다';
+  if (!_isAdminModeOn()) return '관리자 모드를 켜면 응답할 수 있습니다';
+  return '';
+}
+function adminResolutionOf(id) {
+  var list = _adminApprovals.resolved || [];
+  for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+  return null;
+}
+// The resolved row of a request that ended elsewhere: the real outcome and who answered, when known.
+function adminResolvedState(a, r) {
+  if (!r) return { status: 'resolved', outcome: 'elsewhere' };
+  var st = { status: 'resolved', at: toNum(r.at) || Date.now() };
+  if (a.card === 'question') {
+    // The stored outcome is the truth: a grant choice that ended as a denial (the skill left the host) shows denied.
+    if (r.outcome === 'denied' && !(r.choiceId && /deny/.test(String(r.choiceId)))) st.outcome = 'denied';
+    else {
+      st.outcome = 'answered';
+      if (r.choiceId) st.choiceId = String(r.choiceId);
+    }
+  } else st.outcome = r.outcome === 'denied' ? 'denied' : 'approved';
+  if (r.by) st.by = adminUserName(r.by) + (r.via === 'dashboard' ? ' · 대시보드' : r.via === 'slack' ? ' · Slack' : '');
+  return st;
+}
+// One request → the card's data.
+function adminApprovalData(id) {
+  var a = _adminLast[id];
+  if (!a) return null;
+  var d = {
+    id: String(a.id),
+    label: (ADMIN_KIND_LABEL[a.kind] || '승인') + ' · ' + adminUserName(a.requesterId) + ' 요청',
+  };
+  var created = toNum(a.createdAt);
+  if (created > 0) d.createdAt = created;
+  var until = toNum(a.expiresAt);
+  if (until > 0) d.expiresAt = until;
+  if (a.card === 'question') {
+    d.kind = 'question';
+    d.question = String(a.title || '');
+    var place = a.place && a.place.channel ? '요청 위치: #' + a.place.channel + (a.place.threadTs ? ' 스레드 ' + a.place.threadTs : '') : '';
+    var desc = [a.description || '', place].filter(Boolean).join('\\n');
+    if (desc) d.description = desc;
+    d.choices = (a.choices || []).map(function(c) { return { id: String(c.id), label: String(c.label) }; });
+    d.allowOther = false;
+    if (a.recommendedId) d.recommendedId = String(a.recommendedId);
+  } else {
+    d.kind = 'permission';
+    d.tool = String(a.tool || 'approval');
+    d.title = String(a.title || '');
+    if (a.description) d.description = String(a.description);
+    if (a.rows) d.input = a.rows;
+    if (a.risk) d.risk = a.risk;
+    d.canExplain = false;
+    d.canDisableRule = false;
+  }
+  var lock = adminApprovalLock();
+  if (lock) d.canAnswer = lock;
+  var st = _adminState[id];
+  var open = !!(_adminKnown && _adminKnown[id]);
+  if (!open) d.state = st && st.status === 'resolved' ? st : adminResolvedState(a, adminResolutionOf(id));
+  else if (st) d.state = st;
+  return d;
+}
+function paintAdminInbox() {
+  var body = document.getElementById('admin-inbox-body');
+  if (!body) return;
+  var ids = _adminApprovals.pending.map(function(a) { return a.id; });
+  for (var k in _adminKeep) if (ids.indexOf(k) < 0) ids.push(k);
+  var html = ids.length
+    ? ids.map(function(id) {
+        var a = _adminLast[id];
+        return acSlotHtml('admin', 'admin', 'a|' + id, id, adminApprovalTitle(a) + ' — 응답 대기');
+      }).join('')
+    : '<p class="admin-inbox-empty">대기 중인 승인 요청이 없습니다.</p>';
+  var ae = document.activeElement;
+  var had = !!(ae && body.contains(ae));
+  if (body._html !== html) {
+    morphInnerHtml(body, html);
+    body._html = html;
+  }
+  acHydrate(body);
+  if (had && !body.contains(document.activeElement)) {
+    var head = document.getElementById('admin-inbox-head');
+    if (head && head.focus) head.focus({ preventScroll: true });
+  }
+}
+function openAdminInbox(focusId) {
+  _adminInboxReturn = document.activeElement;
+  _adminInboxOpen = true;
+  _adminKeep = Object.create(null);
+  paintAdminInbox();
+  var d = document.getElementById('admin-inbox-drawer');
+  if (d && typeof d.show === 'function') d.show();
+  adminInboxLoad();
+  requestAnimationFrame(function() {
+    var body = document.getElementById('admin-inbox-body');
+    var els = body ? body.querySelectorAll('ui-approval-card[data-ac-id]') : [];
+    var to = null;
+    for (var i = 0; i < els.length && !to; i++) if (focusId && els[i].getAttribute('data-ac-id') === focusId) to = els[i];
+    to = to || acFirstOpen(body);
+    if (to && to.focus) to.focus({ preventScroll: true });
+  });
+}
+function closeAdminInbox() {
+  _adminInboxOpen = false;
+  _adminKeep = Object.create(null);
+  var d = document.getElementById('admin-inbox-drawer');
+  if (d && typeof d.hide === 'function') d.hide();
+  var back = _adminInboxReturn;
+  _adminInboxReturn = null;
+  var btn = document.getElementById('admin-inbox-btn');
+  var to = back && back.isConnected ? back : btn;
+  if (to && to.focus) setTimeout(function() { to.focus({ preventScroll: true }); }, 0);
+}
+// One answer per request: in flight, then the row; a refusal stays on the card
+// (answered elsewhere → its real outcome, no Retry).
+async function answerAdminApproval(id, choiceId) {
+  var a = _adminLast[id];
+  if (!a) return null;
+  var cur = _adminState[id];
+  if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
+  _adminState[id] = a.card === 'question' ? { status: 'sending', choiceId: choiceId } : { status: 'sending', decision: choiceId };
+  paintAdminInbox();
+  var st;
+  try {
+    var res = await acPost('/api/dashboard/admin-approvals/answer', JSON.stringify({ id: id, choiceId: choiceId }));
+    if (res.ok) {
+      var done = {};
+      try { done = await res.json(); } catch (_e) {}
+      // The server's outcome is the truth: a grant can end as a denial (the skill left the host).
+      var deniedInstead = done && done.outcome === 'denied' && !/deny/.test(choiceId);
+      st = deniedInstead
+        ? { status: 'resolved', outcome: 'denied', at: Date.now() }
+        : a.card === 'question'
+          ? { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() }
+          : { status: 'resolved', outcome: choiceId === 'deny' ? 'denied' : 'approved', at: Date.now() };
+      dashToast(deniedInstead
+        ? { title: '거부로 처리됐어요', description: adminApprovalTitle(a) + ' — 서버가 요청을 거부했습니다', tone: 'warning' }
+        : { title: '응답을 보냈어요', description: adminApprovalTitle(a) + ' — 관리자들의 Slack DM도 같은 결과로 바뀝니다', tone: 'success' });
+    } else if (res.status === 409) {
+      var data = {};
+      try { data = await res.json(); } catch (_e) {}
+      st = adminResolvedState(a, data && data.resolution);
+    } else st = await acRefusal(res);
+  } catch (e) {
+    console.error('Admin approval answer error', e);
+    st = { status: 'error', message: '네트워크 오류 — 다시 시도하세요', retry: true };
+  }
+  _adminState[id] = st;
+  if (st.status === 'resolved' && _adminInboxOpen) _adminKeep[id] = true;
+  paintAdminInbox();
+  adminInboxLoad();
+  return st;
+}
+(function initAdminInbox() {
+  var d = document.getElementById('admin-inbox-drawer');
+  if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeAdminInbox(); });
+})();
+
 // The single-choice answer, from the card or the panel (the same element): the
 // choice travels with its label and the question, as the route wants. Same
 // states as a prompt; a question that changed meanwhile takes no answer.
@@ -6828,13 +6925,15 @@ function renderPanelTasks(tasks, scopeLabel, earlier, outside) {
   container._planScope = scope;
   container._planSeen = now;
 
-  var head = '<button type="button" class="panel-sec-head panel-tasks-header" aria-expanded="' + (_panelTasksOpen ? 'true' : 'false') + '"'
-    + (_panelTasksOpen ? ' aria-controls="panel-tasks-body"' : '') + ' onclick="togglePanelTasks()">'
+  // The head is <ui-disclosure>'s row (D4 K-06): the title and the one-line summary slotted in; the body is its
+  // region, painted only while open and through the fold ('folding') — the choice is _panelTasksOpen.
+  var open = _panelTasksOpen === true;
+  var head = '<ui-disclosure class="panel-tasks-dc" flush' + (open ? ' open' : '') + '>'
+    + '<span slot="summary" class="panel-tasks-header">'
     + '<span class="ps-sec-title">' + title + '</span>'
-    + '<span class="ps-sec-sum">' + planSummaryHtml(list, prev) + '</span>'
-    + PI_CHEV_SVG + '</button>';
+    + '<span class="ps-sec-sum">' + planSummaryHtml(list, prev) + '</span></span>';
   var live = '<span class="ar-vh pl-live" role="status" aria-live="polite">' + esc(said.join('. ')) + '</span>';
-  if (!_panelTasksOpen) { writePanelTasks(container, head + live); return; }
+  if (!open && _panelTasksOpen !== 'folding') { writePanelTasks(container, head + '</ui-disclosure>' + live); return; }
 
   // SSOT 2026-10-29 T5, D3 E-22/E-23: the tasks that actually ran, in the order
   // they ran — @2lab.ai/ui <ui-task-runs>: a row per run (status, start, run
@@ -6857,7 +6956,7 @@ function renderPanelTasks(tasks, scopeLabel, earlier, outside) {
   if (runs.ran.length) body += '<ui-task-runs class="panel-task-runs" id="panel-task-runs" lang="ko"></ui-task-runs>';
   if (runs.plan.length || runs.skipped.length || !runs.ran.length) body += '<ui-task-plan class="panel-task-plan" id="panel-task-plan" lang="ko"></ui-task-plan>';
   var html = head + '<div class="panel-tasks-body ui-tok" id="panel-tasks-body">' + body
-    + (runs.ran.length || outside ? taskTotalsHtml(runs.ran, outside) : '') + '</div>' + live;
+    + (runs.ran.length || outside ? taskTotalsHtml(runs.ran, outside) : '') + '</div></ui-disclosure>' + live;
   writePanelTasks(container, html);
   var runsEl = document.getElementById('panel-task-runs');
   if (runsEl) {
@@ -6881,10 +6980,6 @@ function taskElData(el, d) {
   if (el._taskSig === sig) return;
   el._taskSig = sig;
   el.data = d;
-}
-function togglePanelTasks() {
-  _panelTasksOpen = !_panelTasksOpen;
-  repaintPanelTasks();
 }
 // The folded head's one line (SSOT 2026-10-29 T5): the step in progress (its
 // activeForm), then how many tasks ran and completed, what is left of the plan,
@@ -7130,6 +7225,12 @@ function _applyUserPill(data) {
   _viewerUserId = (data && data.user && data.user.slackUserId) || '';
   const lifecycleBtn = document.getElementById('lifecycle-btn');
   if (lifecycleBtn) lifecycleBtn.style.display = isAdminCapable ? 'inline-flex' : 'none';
+  // Admin approvals (#620): a Slack-signed-in admin only (a viewer token names nobody — the
+  // server refuses it the requests). The button stays visible at zero so the bar does not shift.
+  const seesApprovals = isAdminCapable && !!_viewerUserId;
+  const inboxBtn = document.getElementById('admin-inbox-btn');
+  if (inboxBtn) inboxBtn.style.display = seesApprovals ? 'inline-flex' : 'none';
+  if (seesApprovals) adminInboxLoad();
   const toggle = document.getElementById('admin-mode-toggle');
   if (toggle) {
     if (isAdminCapable) {
@@ -7178,6 +7279,8 @@ function _renderAdminModeButton() {
 function toggleAdminMode() {
   _setAdminMode(!_isAdminModeOn());
   _renderAdminModeButton();
+  // The admin approval cards lock and unlock with admin mode.
+  if (_adminInboxOpen) paintAdminInbox();
 }
 
 // #716: monkey-patch fetch ONCE at boot so every state-mutating request
@@ -7579,7 +7682,8 @@ function selectUser(userId) {
 // ── Stats strip — @2lab.ai/ui <ui-stat-strip id="stats-strip"> (B-01..B-05, B-09) ──
 // The page hands it the period, the three figures (null = no data "—"; loading = a pulsing bar where the
 // figure will be) and 자세히. The element rolls a changed figure (620ms ease-out quart; first paint and
-// reduced motion jump), shows 토큰's per-instance breakdown as the figure's tooltip (hover, focus, a press —
+// reduced motion jump) — from: 'last' keeps a figure's value under its loading bar, so a load's answer rolls
+// from the previous period's — shows 토큰's per-instance breakdown as the figure's tooltip (hover, focus, a press —
 // touch too) and opens 자세히's region over its default slot (.stats-detail). It sends ui-period (the page
 // loads that period) and ui-more (the page keeps the choice in localStorage['soma-stats-detail']).
 var PERIOD_OPTIONS = [{ value: 'day', label: '오늘' }, { value: 'week', label: '지난 7일' }, { value: 'month', label: '지난 30일' }];
@@ -7590,36 +7694,16 @@ var _statsDetailOpen = false;
 function setStripFigure(key, value, loading) {
   _strip[key] = { value: typeof value === 'number' && isFinite(value) ? value : null, loading: !!loading };
 }
-// A load's answer lands on the strip. <ui-stat-strip> forgets a figure under its loading bar, so the answer would
-// jump (D2-GAPS G2-1); as before the swap, a figure that had a value rolls from it: the strip gets that value back
-// first and, once it has drawn it (its render is a microtask), the new one.
-function landStripFigures(vals) {
-  var from = {};
-  Object.keys(vals).forEach(function(k) {
-    var was = _strip[k];
-    setStripFigure(k, vals[k], false);
-    if (was.loading && was.value !== null && _strip[k].value !== null && was.value !== _strip[k].value) from[k] = was.value;
-  });
-  var keys = Object.keys(from);
-  var to = {};
-  keys.forEach(function(k) { to[k] = _strip[k].value; _strip[k].value = from[k]; });
-  paintStatsStrip();
-  if (!keys.length) return;
-  queueMicrotask(function() {
-    keys.forEach(function(k) { if (!_strip[k].loading && _strip[k].value === from[k]) _strip[k].value = to[k]; });
-    paintStatsStrip();
-  });
-}
 function statsStripData() {
-  var tokens = { key: 'tokens', label: '토큰', value: _strip.tokens.value, format: 'tokens', loading: _strip.tokens.loading };
+  var tokens = { key: 'tokens', label: '토큰', value: _strip.tokens.value, format: 'tokens', loading: _strip.tokens.loading, from: 'last' };
   if (_tokenBreakdown) tokens.breakdown = _tokenBreakdown;
   return {
     label: '사용량',
     period: { label: '기간', value: currentPeriod, options: PERIOD_OPTIONS },
     metrics: [
-      { key: 'sessions', label: '세션', value: _strip.sessions.value, format: 'int', loading: _strip.sessions.loading },
+      { key: 'sessions', label: '세션', value: _strip.sessions.value, format: 'int', loading: _strip.sessions.loading, from: 'last' },
       tokens,
-      { key: 'cost', label: '비용', value: _strip.cost.value, format: 'usd', loading: _strip.cost.loading },
+      { key: 'cost', label: '비용', value: _strip.cost.value, format: 'usd', loading: _strip.cost.loading, from: 'last' },
     ],
     more: { label: '자세히', open: _statsDetailOpen },
   };
@@ -7628,50 +7712,46 @@ function paintStatsStrip() {
   var el = document.getElementById('stats-strip');
   if (el) el.data = statsStripData();
 }
+// The cards behind 자세히 (B-07) — <ui-stat-strip id="stats-grid"> in layout 'cards': 턴 사용 · PR 생성 · PR 머지
+// roll like the strip's figures (from: 'last'); 머지 코드 and 워크플로우 are free-form figures in its slots (the
+// page's #stat-merge-lines / #stat-workflows). A slotted figure without data leaves its slot, so the element
+// shows its own "—".
+var _statCards = { turns: null, prs: null, merged: null, loading: true };
+function statCardsData() {
+  var c = _statCards;
+  return {
+    layout: 'cards',
+    label: '세부 사용량',
+    metrics: [
+      { key: 'turns', label: '턴 사용', value: c.turns, format: 'int', loading: c.loading, from: 'last' },
+      { key: 'prs', label: 'PR 생성', value: c.prs, format: 'int', loading: c.loading, from: 'last' },
+      { key: 'merged', label: 'PR 머지', value: c.merged, format: 'int', loading: c.loading, from: 'last' },
+      { key: 'lines', label: '머지 코드', slot: 'lines', loading: c.loading },
+      { key: 'wf', label: '워크플로우', slot: 'wf', wide: true, loading: c.loading },
+    ],
+  };
+}
+function paintStatCards() {
+  var el = document.getElementById('stats-grid');
+  if (el) el.data = statCardsData();
+}
+function fillStatSlot(id, slot, html) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = html;
+  if (html) el.setAttribute('slot', slot);
+  else el.removeAttribute('slot');
+}
 function setPeriod(period) {
   currentPeriod = period;
   paintStatsStrip();
   loadStats();
 }
 
-// ── Expand / collapse (P6, the library disclosure recipe — CSS "EXPAND / COLLAPSE") ──
-// xpMove: the host's region clips while its row moves, then not (focus rings stay whole).
-// xpEnter / xpLeave: a region drawn only while open (세션 정보) enters from 0 rows, and folds to 0
-// rows before it is dropped (done). Reduced motion: the sheet's global rule makes both instant.
-var XP_MS = 240;
-function xpMove(host) {
-  if (!host || !host.classList) return;
-  host.classList.add('xp-moving');
-  clearTimeout(host._xpMoveT);
-  host._xpMoveT = setTimeout(function() { host.classList.remove('xp-moving'); }, XP_MS + 40);
-}
-function xpEnter(host) {
-  if (!host || !host.classList) return;
-  host.classList.add('xp-shut');
-  void host.offsetHeight;
-  host.classList.remove('xp-shut');
-  xpMove(host);
-}
-function xpLeave(host, done) {
-  if (!host || !host.classList || reduceMotion()) { done(); return; }
-  host.classList.add('xp-shut');
-  xpMove(host);
-  clearTimeout(host._xpLeaveT);
-  host._xpLeaveT = setTimeout(function() {
-    host._xpLeaveT = 0;
-    done();
-    host.classList.remove('xp-shut');
-  }, XP_MS);
-}
-// A fold in progress is undone (the reader opened it again): true when there was one.
-function xpStay(host) {
-  if (!host || !host._xpLeaveT) return false;
-  clearTimeout(host._xpLeaveT);
-  host._xpLeaveT = 0;
-  host.classList.remove('xp-shut');
-  xpMove(host);
-  return true;
-}
+// ── Expand / collapse (P6, D4 K-06) — @2lab.ai/ui <ui-disclosure> (initDisclosures) ──
+// A region the page paints only while open (세션 정보, Tasks, 지시 첨부, the completed goals) keeps its
+// choice in one value: true (open), 'folding' (closing — the nodes stay for the element's fold until
+// ui-toggled), else closed.
 
 // ── Session cache ──
 // Keyed by session key — prototype-free so any key string is just a key.
@@ -7792,18 +7872,8 @@ var BOARD_STRINGS = {
   artOpen: function(name, kind) { return (ART_KIND_LABEL[kind] || '파일') + ' ' + name + ' — 크게 보기'; },
   // The sentence is the counts only, never "<title>: <word>." first.
   changed: function() { return ''; },
-  // A run's clock in Korean (the table's is 7m 12s).
-  duration: function(ms) { return fmtRunKo(ms); },
+  // A running card's clock is the ko table's own (12초 · 3분 7초 · 2시간 3분 — 0.10.0, D2-GAPS G6-1).
 };
-// 12초 · 7분 05초 · 2시간 3분 — a running card's clock.
-function fmtRunKo(ms) {
-  var sec = Math.max(0, Math.floor(toNum(ms) / 1000));
-  if (sec < 60) return sec + '초';
-  var m = Math.floor(sec / 60);
-  var r = sec % 60;
-  if (m < 60) return m + '분 ' + (r < 10 ? '0' + r : r) + '초';
-  return Math.floor(m / 60) + '시간 ' + (m % 60) + '분';
-}
 
 // Motion tokens come from the CSS custom properties so CSS transitions and
 // WAAPI share one source of truth (§4 table).
@@ -8175,7 +8245,7 @@ function wireInbox(host) {
     var s = _sessionCache[String(e.detail.cardId)];
     if (!s || !s.conversationId) return;
     var chip = inboxChipOf(host, String(e.detail.cardId), String(e.detail.artifactId));
-    openArtifactModal(s.conversationId, String(e.detail.artifactId), chip || host);
+    openArtifactViewer(s.conversationId, String(e.detail.artifactId), chip || host);
   });
 }
 // The file chip the reader pressed. The element emits ui-artifact on itself
@@ -8608,8 +8678,11 @@ function renderTimeline(s) {
 // A card is the main agent; s.agents are the subagents it (or another
 // subagent) started, in spawn order. Each has its own tasks and its own work
 // log (entries with its agentId). Status always shows as an icon AND a word.
-// The kit status (.ui-status) tone per agent status; the rest read as the muted dot.
-var AGENT_STATUS_TONE = { running: 'run', waiting: 'wait', resuming: 'wait', completed: 'done', failed: 'fail' };
+// The kit status (.ui-status) tone per agent status: stopped / unknown / sleeping / archived take the muted
+// hollow dot (idle tone); idle — alive, between turns — keeps the plain muted dot. Sleeping and archived
+// show their glyph in place of the dot (a leading svg in .ui-status), so the chip keeps the board's cue.
+var AGENT_STATUS_TONE = { running: 'run', waiting: 'wait', resuming: 'wait', completed: 'done', failed: 'fail', stopped: 'idle', unknown: 'idle', sleeping: 'idle', archived: 'idle' };
+var AGENT_STATUS_GLYPH = { sleeping: '<i data-ui-icon="moon"></i>', archived: '<i data-ui-icon="archive"></i>' };
 var AGENT_STATUS_LABEL = { running: '실행 중', completed: '완료', failed: '실패', stopped: '중단', unknown: '확인 불가', waiting: '입력 대기', idle: '대기', resuming: '재개 대기', sleeping: '휴면', archived: '보관' };
 var _anOpen = Object.create(null); // tree namespace|node id → a fold the user chose (absent = the default)
 var _panelAgent = ''; // the node the open panel shows ('' = the root, the main agent)
@@ -8639,10 +8712,10 @@ function agentIconHtml(st) {
   if (st === 'stopped') return '<i data-ui-icon="stop"></i>';
   if (st === 'waiting') return '<i data-ui-icon="clock"></i>';
   if (st === 'resuming') return '<i data-ui-icon="refresh"></i>';
-  if (st === 'idle') return '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="8" cy="8" r="3"/></svg>';
+  if (st === 'idle') return '<i data-ui-icon="dot"></i>';
   if (st === 'sleeping') return '<i data-ui-icon="moon"></i>';
-  if (st === 'archived') return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="3.5" width="11" height="3" rx="0.8"/><path d="M3.5 6.5v6h9v-6M6.5 9h3"/></svg>';
-  return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="8" cy="8" r="4.5" stroke-dasharray="2.2 2"/></svg>';
+  if (st === 'archived') return '<i data-ui-icon="archive"></i>';
+  return '<i data-ui-icon="circle-dashed"></i>';
 }
 // A node's time: the root's active time (live while it runs, by the 1 Hz
 // tick), a running subagent's elapsed, else its run time.
@@ -9114,7 +9187,7 @@ function renderAgentFocus(node, s) {
   // The root's status and active time are the session's — the head chip shows
   // them (spec 13); its accessible name still says them. A subagent keeps its own.
   if (!node.root) {
-    bits.push('<span class="ui-status pa-st"' + (AGENT_STATUS_TONE[st] ? ' data-tone="' + AGENT_STATUS_TONE[st] + '"' : '') + (st === 'running' ? ' data-live' : '') + '>' + esc(AGENT_STATUS_LABEL[st] || '') + '</span>');
+    bits.push('<span class="ui-status pa-st"' + (AGENT_STATUS_TONE[st] ? ' data-tone="' + AGENT_STATUS_TONE[st] + '"' : '') + (st === 'running' ? ' data-live' : '') + '>' + (AGENT_STATUS_GLYPH[st] || '') + esc(AGENT_STATUS_LABEL[st] || '') + '</span>');
     var time = agentTimeHtml(node);
     if (time) bits.push(time);
   }
@@ -9240,73 +9313,75 @@ function togglePanelDetail() {
   repaintPanelSession();
 }
 
-// Agent tabs (T1.2): Main first — always, pinned at the strip's left — then each
-// subagent in spawn order with its status. A tab scopes everything below it
-// (Tasks, the work log, 지시와 답변) to its agent; selecting one is
-// selectPanelAgent. Arrow keys move along the strip and select (automatic
-// activation, the WAI-ARIA tabs pattern); one tab holds the tab stop.
-function panelTabsHtml(s, active, mainSt) {
+// Agent tabs (T1.2, D4 E-19): @2lab.ai/ui <ui-tabs shared-panel> — Main first,
+// always, pinned at the strip's left (the element's sticky tab, its fade once the
+// others scroll under it), then each subagent in spawn order; the type is the
+// muted second label (meta), the status the tone dot with its word in the title.
+// Every tab controls the one panel below the strip (Tasks, the work log, 지시와
+// 답변), scoped to its agent; the element's arrows / Home / End move and select
+// (automatic activation) and its ui-change is selectPanelAgent.
+var PT_MAIN = 'main'; // the Main tab's id; a subagent's is 'a:' + its id
+var AGENT_TAB_TONE = { running: 'run', waiting: 'wait', resuming: 'wait', completed: 'done', failed: 'fail', stopped: 'fail' };
+function panelTabId(agentId) {
+  return agentId ? 'a:' + agentId : PT_MAIN;
+}
+function panelTabAgent(tabId) {
+  return typeof tabId === 'string' && tabId.slice(0, 2) === 'a:' ? tabId.slice(2) : '';
+}
+// Pure: the strip's data — the tabs, the selected one ('' = Main), the list's name.
+function panelTabsData(s, active, mainSt) {
   var st0 = mainSt || (s && s.activityState === 'working' ? 'running' : s && s.activityState === 'waiting' ? 'waiting' : 'idle');
-  var cur = active || '';
-  var tab = function(id, domId, st, name, type, extra) {
-    var on = id === cur;
-    return '<button type="button" class="panel-tab' + extra + ' is-' + st + '" role="tab" id="' + domId + '" data-agent-tab="' + escAttr(id) + '"'
-      + ' aria-selected="' + (on ? 'true' : 'false') + '" aria-controls="panel-tabpanel" tabindex="' + (on ? '0' : '-1') + '"'
-      + ' title="' + escAttr(name + (type ? ' ' + type : '') + ' — ' + (AGENT_STATUS_LABEL[st] || '')) + '">'
-      + '<span class="ag-icon">' + agentIconHtml(st) + '</span>'
-      + '<span class="pt-name">' + esc(name) + '</span>'
-      + (type ? '<span class="pt-type">' + esc(type) + '</span>' : '')
-      + '</button>';
+  var tab = function(id, st, name, type, pinned) {
+    var t = { id: id, label: name, tone: AGENT_TAB_TONE[st] || 'rest', title: name + (type ? ' ' + type : '') + ' — ' + (AGENT_STATUS_LABEL[st] || '') };
+    if (type) t.meta = type;
+    if (pinned) t.pinned = true;
+    return t;
   };
   var model = s && s.model ? String(s.model).replace(/^claude-/, '') : '';
-  var html = tab('', 'panel-tab-main', st0, 'Main', model, ' is-main');
+  var tabs = [tab(PT_MAIN, st0, 'Main', model, true)];
   var list = ((s && s.agents) || []).slice().sort(function(a, b) { return toNum(a.n) - toNum(b.n); });
   for (var i = 0; i < list.length; i++) {
     var a = list[i];
     if (!a || !a.id) continue;
-    html += tab(String(a.id), 'panel-tab-a' + toNum(a.n), agentStatusOf(a), 'A' + toNum(a.n), a.type || '', '');
+    tabs.push(tab(panelTabId(String(a.id)), agentStatusOf(a), 'A' + toNum(a.n), a.type || '', false));
   }
-  return html;
+  return { label: '에이전트', value: panelTabId(active || ''), tabs: tabs };
 }
+// The strip follows the session (a live update with the same data writes nothing);
+// without one it keeps Main alone, so the panel under it stays slotted.
 function renderPanelTabs() {
   var el = document.getElementById('panel-tabs');
   if (!el) return;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  if (!s) { writePanelPart(el, ''); return; }
-  writePanelPart(el, panelTabsHtml(s, _panelAgent, rootStatusOf(s, sessionColOf(panelSessionKey))));
-  var on = el.querySelector('[aria-selected="true"]');
-  var panel = document.getElementById('panel-tabpanel');
-  if (panel) panel.setAttribute('aria-labelledby', on ? on.id : 'panel-tab-main');
-  // Bring the selected tab into the strip's view — sideways only, never the panel.
-  if (on && !on.classList.contains('is-main')) {
-    var main = el.querySelector('.panel-tab.is-main');
-    var left = on.offsetLeft - (main ? main.offsetWidth + 8 : 0);
-    if (left < el.scrollLeft) el.scrollLeft = left;
-    else if (on.offsetLeft + on.offsetWidth > el.scrollLeft + el.clientWidth) el.scrollLeft = on.offsetLeft + on.offsetWidth - el.clientWidth;
-  }
+  var d = s ? panelTabsData(s, _panelAgent, rootStatusOf(s, sessionColOf(panelSessionKey))) : panelTabsData(null, '', '');
+  var sig = JSON.stringify(d);
+  if (el._sig === sig) return;
+  el._sig = sig;
+  el.data = d;
 }
-function panelTabsKey(e) {
-  var tabs = Array.prototype.slice.call(document.querySelectorAll('#panel-tabs [role="tab"]'));
-  var i = tabs.indexOf(e.target);
-  if (i < 0) return;
-  var to = e.key === 'ArrowRight' ? Math.min(tabs.length - 1, i + 1)
-    : e.key === 'ArrowLeft' ? Math.max(0, i - 1)
-    : e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : -1;
-  if (to < 0) return;
-  e.preventDefault();
-  selectPanelAgent(tabs[to].getAttribute('data-agent-tab') || '');
-  var next = document.querySelector('#panel-tabs [role="tab"][aria-selected="true"]');
-  if (next) next.focus();
+// The agent strip's height — the element's sticky list; the shared panel under it
+// is the element's too, so the panel's top against the host's is the list.
+function panelTabsHeight() {
+  var el = document.getElementById('panel-tabs');
+  var pane = document.getElementById('panel-tabpanel');
+  if (!el || !pane) return 0;
+  return Math.max(0, Math.round(pane.getBoundingClientRect().top - el.getBoundingClientRect().top));
+}
+// Focus a <ui-tabs>' selected tab (the keyboard landing on the 작업 로그 tab): the
+// element has no focus() of its own, so the tab is reached through its open shadow root.
+function uiTabsFocus(el) {
+  var tab = el && el.shadowRoot ? el.shadowRoot.querySelector('[role="tab"][aria-selected="true"]') : null;
+  if (tab && tab.focus) tab.focus({ preventScroll: true });
+  return !!tab;
 }
 function bindPanelTabs() {
   var el = document.getElementById('panel-tabs');
   if (!el || el._bound) return;
   el._bound = true;
-  el.addEventListener('click', function(e) {
-    var t = e.target && e.target.closest ? e.target.closest('[data-agent-tab]') : null;
-    if (t) selectPanelAgent(t.getAttribute('data-agent-tab') || '');
+  el.addEventListener('ui-change', function(e) {
+    selectPanelAgent(panelTabAgent(e.detail && e.detail.value));
   });
-  el.addEventListener('keydown', panelTabsKey);
+  renderPanelTabs();
 }
 
 // 지시와 답변 (T1.3; a section tab since 2026-10-29): the main agent's tab shows
@@ -9496,15 +9571,13 @@ var _treeMaxN = null; // the newest spawn number the tree showed (null: not pain
 function psecForLanding(land) {
   return land === 'worklog' ? 'log' : land === 'agent' ? 'tree' : 'conv';
 }
-// Pure: the tab a key moves to on the section tablist (-1: not a tab key). The arrows wrap.
-function psecKeyTarget(key, i, n) {
-  if (!(n > 0) || i < 0) return -1;
-  if (key === 'ArrowRight') return (i + 1) % n;
-  if (key === 'ArrowLeft') return (i - 1 + n) % n;
-  if (key === 'Home') return 0;
-  if (key === 'End') return n - 1;
-  return -1;
-}
+// The section strip's tabs (D4 E-24): Chat · 작업 로그 at the start, 에이전트 트리 at the
+// far end (TabItem.end) with the tree glyph; each one's panel is the box slotted by its id.
+var PSEC_TABS = [
+  { id: 'conv', label: 'Chat', title: '지시와 답변' },
+  { id: 'log', label: '작업 로그' },
+  { id: 'tree', label: '에이전트 트리', icon: 'tree', end: true },
+];
 // Pure: the section box height — the rest of the panel under the surface, Tasks
 // and the tabs while that is at least 45% of it (the panel does not scroll and
 // the newest item sits at its bottom), else 45%; never more than the view under
@@ -9561,19 +9634,13 @@ function psecBox(sec) {
 function psecAtBottom(box) {
   return !!box && box.scrollHeight - box.clientHeight - box.scrollTop <= 4;
 }
-// The tab strip and the panels: aria-selected, the one tab stop, the one panel shown.
+// The tab strip and the panels — <ui-tabs>: the selected tab, the one tab stop, the
+// one panel shown are its own from the data; the same section writes nothing.
 function renderPanelSections() {
-  for (var i = 0; i < PSEC_ORDER.length; i++) {
-    var sec = PSEC_ORDER[i];
-    var on = sec === _psec;
-    var tab = document.getElementById('psec-tab-' + sec);
-    if (tab) {
-      if (tab.getAttribute('aria-selected') !== String(on)) tab.setAttribute('aria-selected', String(on));
-      if (tab.getAttribute('tabindex') !== (on ? '0' : '-1')) tab.setAttribute('tabindex', on ? '0' : '-1');
-    }
-    var box = psecBox(sec);
-    if (box && box.hidden === on) box.hidden = !on;
-  }
+  var el = document.getElementById('panel-sections');
+  if (!el || el._sec === _psec) return;
+  el._sec = _psec;
+  el.data = { label: '섹션', value: _psec, tabs: PSEC_TABS };
 }
 // A section not shown holds no nodes: its DOM goes, its data stays.
 function psecClear(sec) {
@@ -9607,8 +9674,9 @@ function paintSection(sec) {
   psecSyncControls(sec);
 }
 // Show the section tab sec: the others leave the DOM; this one is painted from
-// its data and lands on its newest items. focus: the tab takes focus (keys).
-function selectPanelSection(sec, focus) {
+// its data and lands on its newest items. (A key or a click keeps the element's
+// focus on the tab it moved to.)
+function selectPanelSection(sec) {
   if (PSEC_ORDER.indexOf(sec) < 0) sec = 'conv';
   _psec = sec;
   renderPanelSections();
@@ -9616,10 +9684,6 @@ function selectPanelSection(sec, focus) {
   if (panelSessionKey) paintSection(sec);
   psecToNewest();
   psecFillSoon(sec);
-  if (focus) {
-    var tab = document.getElementById('psec-tab-' + sec);
-    if (tab) tab.focus();
-  }
 }
 // A scroll the page makes (a landing, a kept place, following the newest): the
 // box's scroll handler knows it for its own and reads no reader intent into it.
@@ -9780,7 +9844,7 @@ function psecPageDue(scrollTop, scrollHeight, clientHeight, armed) {
 // is due — so a page that still leaves the top near the view brings the next.
 function psecMaybeFill(sec) {
   var box = psecBox(sec);
-  if (!box || PSEC_EL[sec] || sec !== _psec || box.hidden) return;
+  if (!box || PSEC_EL[sec] || sec !== _psec) return;
   if (!psecPageDue(box.scrollTop, box.scrollHeight, box.clientHeight, box._armed)) return;
   if (psecOlderState(sec) === 'older') psecLoadOlder(sec);
 }
@@ -9794,20 +9858,24 @@ function psecFillSoon(sec) {
 function psecAfterRender(_el, fn) {
   requestAnimationFrame(function() { fn(); });
 }
-// The section box takes the rest of the panel (psecHeightOf) as the parts above it change.
+// The section box takes the rest of the panel (psecHeightOf) as the parts above it
+// change — its height is --psec-h on the wrapper (the box is slotted into <ui-tabs>,
+// under the element's strip: the box's top against the host's is that strip).
 function sizePanelSections() {
   var scroll = document.getElementById('panel-scroll');
   var body = document.getElementById('panel-sections-body');
-  if (!scroll || !body) return;
+  var secs = document.getElementById('panel-sections');
+  var box = psecBox();
+  if (!scroll || !body || !secs || !box) return;
   var view = scroll.clientHeight;
   if (!view) return;
-  var tabs = document.getElementById('panel-tabs');
-  var secs = document.getElementById('panel-sections');
-  var top = body.getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop;
-  var h = psecHeightOf(view, top, (tabs ? tabs.offsetHeight : 0) + (secs ? secs.offsetHeight : 0));
+  var secTop = secs.getBoundingClientRect().top;
+  var strip = Math.max(0, box.getBoundingClientRect().top - secTop);
+  var top = secTop + strip - scroll.getBoundingClientRect().top + scroll.scrollTop;
+  var h = psecHeightOf(view, top, panelTabsHeight() + strip);
   if (body._h === h) return;
   body._h = h;
-  body.style.height = h + 'px';
+  body.style.setProperty('--psec-h', h + 'px');
 }
 
 // 지시와 답변's data for this opening: the turns loaded (oldest first), the id of
@@ -9901,25 +9969,19 @@ function loadOlderWorkLog() {
     return r;
   });
 }
-// One-time wiring: the tablist (click, ←/→/Home/End with automatic activation),
-// the pill, each box's top control and sentinel, the scroll that tracks where
-// the reader is (at the newest: pinned; moving up: older pages may load), the
-// newest kept in view while content grows under a pinned reader, and the box's size.
+// One-time wiring: the tablist (<ui-tabs>: click, ←/→/Home/End with automatic
+// activation are its own; its ui-change is the choice), the pill, each box's top
+// control and sentinel, the scroll that tracks where the reader is (at the newest:
+// pinned; moving up: older pages may load), the newest kept in view while content
+// grows under a pinned reader, and the box's size.
 (function initPanelSections() {
   var strip = document.getElementById('panel-sections');
   if (!strip) return;
-  strip.addEventListener('click', function(e) {
-    var t = e.target && e.target.closest ? e.target.closest('[data-sec]') : null;
-    var sec = t ? t.getAttribute('data-sec') : '';
+  strip.addEventListener('ui-change', function(e) {
+    var sec = e.detail ? e.detail.value : '';
     if (sec && sec !== _psec) selectPanelSection(sec);
   });
-  strip.addEventListener('keydown', function(e) {
-    var tabs = Array.prototype.slice.call(strip.querySelectorAll('[role="tab"]'));
-    var to = psecKeyTarget(e.key, tabs.indexOf(e.target), tabs.length);
-    if (to < 0) return;
-    e.preventDefault();
-    selectPanelSection(tabs[to].getAttribute('data-sec'), true);
-  });
+  renderPanelSections();
   var pill = document.getElementById('psec-pill');
   if (pill) pill.addEventListener('click', psecJumpNewest);
   PSEC_ORDER.forEach(function(sec) {
@@ -9949,7 +10011,7 @@ function loadOlderWorkLog() {
         box._capture = true;
         requestAnimationFrame(function() {
           box._capture = false;
-          if (sec === _psec && !_psecPin && !box.hidden) box._anchor = psecViewAnchor(box);
+          if (sec === _psec && !_psecPin) box._anchor = psecViewAnchor(box);
         });
       }
       // The reader moving up arms the sentinel; a landing never does, nor does
@@ -9967,7 +10029,7 @@ function loadOlderWorkLog() {
   if (typeof ResizeObserver === 'function') {
     var pin = new ResizeObserver(function() {
       var box = psecBox();
-      if (!box || box.hidden) return;
+      if (!box) return;
       if (_psecPin) psecSetTop(box, box.scrollHeight);
       else if (box._anchor) psecRestoreAnchor(box, box._anchor);
     });
@@ -10045,8 +10107,9 @@ function writePanelPart(el, html) {
 // Close can end the session it shows). Non-owner takes precedence over closed
 // (read-only: the queue shows, nothing can be done — like Stop); fail closed on a
 // missing ownerId. The element keeps the text being typed (an IME composition
-// too) across every update, so its data is written whenever it changed; a change
-// of mode also switches the page's own tools and drops its files.
+// too) across every update, so its data is written whenever it changed. It turns
+// its slotted composer off with its field (tools too, a recording discarded); a
+// change of mode away from open also drops the composer's files.
 function renderPanelComposer(s, force) {
   var host = document.getElementById('panel-command');
   var el = document.getElementById('cmd-steer');
@@ -10054,14 +10117,9 @@ function renderPanelComposer(s, force) {
   var mode = pcModeOf(s);
   if (force || host._mode !== mode) {
     host._mode = mode;
-    // Task view T1.5: the composer's tools follow the field.
-    ['pc-attach', 'pc-image', 'pc-mic'].forEach(function(id) {
-      var tool = document.getElementById(id);
-      if (tool) tool.disabled = mode !== 'open';
-    });
     if (mode !== 'open') pcReset();
   }
-  var data = steeringData(s, mode, pcHeldFiles());
+  var data = steeringData(s, mode);
   var sig = JSON.stringify(data);
   if (!force && el._sig === sig) return;
   el._sig = sig;
@@ -10078,9 +10136,9 @@ function pcModeOf(s) {
 var STEER_STATE = { queued: 'queued', paused: 'queued', steered: 'steered', reserved: 'sending', claimed: 'sending', dispatched: 'sending', failed: 'failed', uncertain: 'failed' };
 // The element's data from the session payload (KanbanSession.followups): running
 // while a turn works (Enter then queues for the next step), canAct for the owner
-// only, Edit only where the server offers it, and the files this page holds for
-// the next message (a recording counts — the send files it first).
-function steeringData(s, mode, files) {
+// only, Edit only where the server offers it. The files of the next message are
+// the slotted composer's (a note leaves with them).
+function steeringData(s, mode) {
   var list = (s.followups && s.followups.items) || [];
   var items = [];
   for (var i = 0; i < list.length; i++) {
@@ -10094,7 +10152,7 @@ function steeringData(s, mode, files) {
     if (f.files && f.files.length) it.files = f.files.map(String);
     items.push(it);
   }
-  return { running: mode !== 'closed' && s.activityState === 'working', canAct: mode !== 'readonly', disabled: mode === 'closed', items: items, attachments: files || 0 };
+  return { running: mode !== 'closed' && s.activityState === 'working', canAct: mode !== 'readonly', disabled: mode === 'closed', items: items };
 }
 // The note the element names (its host id) as the payload has it: the generation
 // an action on it carries. A local row (a send that failed) is not in the queue.
@@ -10168,13 +10226,13 @@ function onPanelHeadAction(e) {
   else if (id === 'stop' || id === 'close' || id === 'trash') doAction(key, id);
 }
 
-// 세션 정보: a disclosure whose button is the one-line summary (owner ·
-// workflow · tokens · cost · context · last activity, live); the links stay in
-// view under it; opened, every number of the session. The panel is the
-// complete record: the card header's dhShow gates do not apply here.
+// 세션 정보: a <ui-disclosure> (D4 K-06) whose row is the one-line summary (owner ·
+// workflow · tokens · cost · context · last activity, live); opened, every number
+// of the session in its region (painted only while open — keep: through the fold);
+// the links stay in view under it. The panel is the complete record: the card
+// header's dhShow gates do not apply here. _panelInfoOpen: true · 'folding' · false.
 var _panelInfoOpen = false;
-var PI_CHEV_SVG = '<i data-ui-icon="chevron-down" class="pi-chev"></i>';
-function panelInfoHtml(s, open, col) {
+function panelInfoHtml(s, open, col, keep) {
   var u = s.tokenUsage || null;
   var ctx = u ? toNum(u.contextUsagePercent) : 0;
   var sum = [];
@@ -10186,15 +10244,14 @@ function panelInfoHtml(s, open, col) {
     sum.push('<span class="pi-cs' + (ctxCls ? ' ' + ctxCls : '') + '">ctx ' + ctxPercent(ctx) + '%</span>');
   }
   sum.push('<span class="rel-time" data-ts="' + (new Date(s.lastActivity).getTime() || 0) + '"></span>');
-  var html = '<button type="button" class="pi-head" aria-expanded="' + (open ? 'true' : 'false') + '"' + (open ? ' aria-controls="panel-info-body"' : '') + ' onclick="togglePanelInfo()">'
-    + '<span class="pi-title">세션 정보</span><span class="pi-sum">' + sum.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</span>'
-    + PI_CHEV_SVG + '</button>';
+  var html = '<ui-disclosure class="pi-dc" flush' + (open ? ' open' : '') + '>'
+    + '<span slot="summary" class="pi-head"><span class="pi-title">세션 정보</span><span class="pi-sum">' + sum.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</span></span>';
   var links = [];
   if (s.issueUrl) links.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener">' + esc(s.issueLabel || s.issueShortRef || 'Issue') + (s.issueTitle ? ' &mdash; ' + esc(String(s.issueTitle).slice(0, 60)) : '') + '</a>');
   if (s.prUrl) links.push('<a href="' + safeHref(s.prUrl) + '" target="_blank" rel="noopener">' + esc(s.prLabel || s.prShortRef || 'PR') + (s.prTitle ? ' &mdash; ' + esc(String(s.prTitle).slice(0, 60)) : '') + '</a>');
   if (s.conversationId) links.push('<a href="/conversations/' + escAttr(s.conversationId) + '" target="_blank" rel="noopener">전체 대화</a>');
-  if (links.length) html += '<div class="pi-links">' + links.join('') + '</div>';
-  if (!open) return html;
+  var foot = '</ui-disclosure>' + (links.length ? '<div class="pi-links">' + links.join('') + '</div>' : '');
+  if (!open && !keep) return html + foot;
   var rows = [];
   if (u) {
     rows.push(['누적 입력', formatTokens(u.totalInputTokens)]);
@@ -10213,7 +10270,7 @@ function panelInfoHtml(s, open, col) {
   if (s.mergeStats) thread.push('+' + toNum(s.mergeStats.totalLinesAdded) + ' / -' + toNum(s.mergeStats.totalLinesDeleted));
   body += '<div class="pi-thread">' + thread.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</div>';
   if (s.autoResume && s.autoResume.reason) body += '<div class="pi-resume">오류: ' + esc(s.autoResume.reason) + '</div>';
-  return html + '<div class="pi-body" id="panel-info-body">' + cwSlotHtml(s) + body + '</div>';
+  return html + '<div class="pi-body" id="panel-info-body">' + cwSlotHtml(s) + body + '</div>' + foot;
 }
 // 세부 (re-agent-run D19) — who ran it, with what, how much, at what cost:
 // 에이전트 (the model) · 시작한 사람 · 도구 호출 (the main agent's every call —
@@ -10249,30 +10306,8 @@ function renderPanelInfo() {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var now = Date.now();
   if (s) cwObserve(s, now);
-  writePanelPart(el, s ? panelInfoHtml(s, _panelInfoOpen, sessionColOf(panelSessionKey)) : '');
+  writePanelPart(el, s ? panelInfoHtml(s, _panelInfoOpen === true, sessionColOf(panelSessionKey), _panelInfoOpen === 'folding') : '');
   if (s) cwPaint(el.querySelector('ui-context-window'), s, now);
-}
-function togglePanelInfo() {
-  var el = document.getElementById('panel-info');
-  // Opened again while it folds: it stays.
-  if (xpStay(el)) {
-    var h = el.querySelector('.pi-head');
-    if (h) h.setAttribute('aria-expanded', 'true');
-    return;
-  }
-  // Closing: the body folds to 0 rows first, then the part is written without it.
-  if (_panelInfoOpen && el && el.querySelector('.pi-body')) {
-    var head = el.querySelector('.pi-head');
-    if (head) head.setAttribute('aria-expanded', 'false');
-    xpLeave(el, function() {
-      _panelInfoOpen = false;
-      renderPanelInfo();
-    });
-    return;
-  }
-  _panelInfoOpen = !_panelInfoOpen;
-  renderPanelInfo();
-  if (_panelInfoOpen) xpEnter(el);
 }
 
 // ── 컨텍스트 — @2lab.ai/ui <ui-context-window> (.prd/affectui/re-context-window.md D5–D20) ──
@@ -11451,36 +11486,19 @@ function renderGoalHistory(history) {
   }).join('');
   return '<ol class="cg-history">' + items + '</ol>';
 }
-// The completed-goal regions of one card (its face and the panel's goal editor).
-function goalHxHosts(key) {
-  var all = document.querySelectorAll ? document.querySelectorAll('.cg-hx') : [];
-  var out = [];
-  for (var i = 0; i < all.length; i++) if (all[i].getAttribute('data-hx') === key) out.push(all[i]);
-  return out;
-}
-function toggleGoalHistory(key, folded) {
-  var hosts = goalHxHosts(key);
-  // Closing (P6): the open history folds to 0 rows first, then the card and the panel are drawn without it.
-  if (!folded && _goalHistoryOpen[key] && hosts.length && !reduceMotion()) {
-    if (hosts[0]._xpLeaveT) return;
-    for (var j = 0; j < hosts.length; j++) {
-      hosts[j].classList.add('xp-shut');
-      xpMove(hosts[j]);
-    }
-    hosts[0]._xpLeaveT = setTimeout(function() {
-      hosts[0]._xpLeaveT = 0;
-      toggleGoalHistory(key, true);
-    }, XP_MS);
-    return;
-  }
-  if (_goalHistoryOpen[key]) delete _goalHistoryOpen[key];
-  else _goalHistoryOpen[key] = true;
-  refreshCard(key);
-  // The goal editor's home is the panel (spec 13): its 완료된 goal toggle opens there.
+// The completed goals' choice (T6, D4 K-06): <ui-disclosure class="cg-hx" trigger="external"> under the goal's
+// queue, opened by the head row's 완료된 goal N개 button (for=); the element's ui-toggle keeps the choice here
+// (initDisclosures), and the panel's goal editor — the goal's home (spec 13) — paints the list on the way open
+// and drops it once the region has folded (ui-toggled).
+function goalHistoryToggle(key, open) {
+  if (open) _goalHistoryOpen[key] = true;
+  else if (_goalHistoryOpen[key]) _goalHistoryOpen[key] = 'folding';
   if (panelOpen && panelSessionKey === key) renderPanelGoal();
-  // After the (morphing) re-render: the history's row clips while it moves.
-  hosts = goalHxHosts(key);
-  for (var i = 0; i < hosts.length; i++) xpMove(hosts[i]);
+}
+function goalHistoryFolded(key) {
+  if (_goalHistoryOpen[key] !== 'folding') return;
+  delete _goalHistoryOpen[key];
+  if (panelOpen && panelSessionKey === key) renderPanelGoal();
 }
 var _goalErrors = Object.create(null); // card key -> last refused goal action (shown until the next success)
 
@@ -11502,12 +11520,13 @@ function renderCardGoal(s, col, canEdit, open) {
       html += '<span class="cg-progress" title="자동 이어하기 횟수 / 상한">' + toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) + '</span>';
     }
   }
-  // T6: the completed goals open from the head (any viewer, any column).
+  // T6: the completed goals open from the head (any viewer, any column) — the external trigger of the
+  // <ui-disclosure> under the queue (D4 K-06); the element keeps its aria-expanded / aria-controls current.
   var doneCount = g ? toNum(g.completedCount) : 0;
-  var historyOpen = doneCount > 0 && !!_goalHistoryOpen[s.key];
+  var historyOpen = doneCount > 0 && _goalHistoryOpen[s.key] === true;
+  var historyPainted = historyOpen || (doneCount > 0 && _goalHistoryOpen[s.key] === 'folding');
   if (doneCount > 0) {
-    html += '<button type="button" class="cg-history-toggle" aria-expanded="' + (historyOpen ? 'true' : 'false') + '"'
-      + ' onclick="event.stopPropagation();toggleGoalHistory(\\'' + key + '\\')">완료된 goal ' + doneCount + '개'
+    html += '<button type="button" class="cg-history-toggle" id="cg-history-toggle" aria-expanded="' + (historyOpen ? 'true' : 'false') + '">완료된 goal ' + doneCount + '개'
       + '<span class="chev" aria-hidden="true"></span></button>';
   }
   html += '</div>';
@@ -11537,11 +11556,13 @@ function renderCardGoal(s, col, canEdit, open) {
     }
     html += '</ol>';
   }
-  // The completed goals open under the current goal and its queue (T6), in a region that unfolds in place
-  // (P6: its row 0fr → 1fr); closed it is empty, hidden and inert.
+  // The completed goals open under the current goal and its queue (T6) in <ui-disclosure>'s region (its grow in
+  // place, inert while closed); the list is painted while open and through the fold, else the region is empty. Its
+  // id is the page's (the trigger's aria-controls): the morph keys an unkeyed node by tag + id + class, and an id
+  // the element gave itself would make every repaint a new element (no fold, no ui-toggled).
   if (doneCount > 0) {
-    html += '<div class="cg-hx" data-hx="' + escAttr(s.key) + '"><div class="cg-hx-in"'
-      + (historyOpen ? '><div class="cg-queue-title">완료된 goal</div>' + renderGoalHistory(g.history) : ' hidden inert>') + '</div></div>';
+    html += '<ui-disclosure class="cg-hx" id="cg-history" trigger="external" for="cg-history-toggle" data-hx="' + escAttr(s.key) + '"' + (historyOpen ? ' open' : '') + '>'
+      + (historyPainted ? '<div class="cg-queue-title">완료된 goal</div>' + renderGoalHistory(g.history) : '') + '</ui-disclosure>';
   }
   if (editable) {
     html += '<form class="cg-add" onsubmit="event.preventDefault();event.stopPropagation();addGoalFromCard(\\'' + key + '\\',this)">'
@@ -11720,7 +11741,6 @@ var _layoutRefreshTimer = null;
 var _layoutCheckFrame = null; // document.timeline time of the frame the last check ran in
 var _panelAnchor = null;
 var _panelScrollGen = 0; // bumped by the reader's own input in the panel
-var _layoutPanelW = 0; // the open drawer's width when the cache was taken
 function currentLayoutMode() {
   var inbox = document.getElementById('inbox');
   var panel = document.getElementById('slide-panel');
@@ -11728,7 +11748,7 @@ function currentLayoutMode() {
   var m = layoutModeOf(
     window.innerWidth,
     inbox ? inbox.getBoundingClientRect().width : 0,
-    !!(panel && panel.classList.contains('open')),
+    !!(panel && panel.hasAttribute('open')),
     kb ? kb.getAttribute('view') : ''
   );
   // The secondary sections above the board (capacity, CRON lane) move it too.
@@ -11773,7 +11793,6 @@ function measureLayout() {
   _lastScroll = _layoutScroll;
   _layoutModeKey = layoutModeKey(currentLayoutMode());
   _panelAnchor = capturePanelAnchor();
-  _layoutPanelW = panelOpen ? document.getElementById('slide-panel').getBoundingClientRect().width : 0;
 }
 // A reader's Board/List switch (setBoardView with an event) glides in the
 // element; the coordinator takes it as the new layout once it has landed.
@@ -11839,26 +11858,9 @@ function runLayoutCheck() {
     }
   }
   if (animate && reduce) kb.animate([{ opacity: 0 }, { opacity: 1 }], { duration: MOTION.fade, easing: 'linear' });
-  // The open drawer's own width (sheet ↔ dock) animates with the cards: from its
-  // visible width (mid-flight, the running animation's) to the new one. Only here —
-  // a CSS width transition would trail every desktop window drag.
-  var panel = document.getElementById('slide-panel');
-  var toW = 0;
-  if (panel && panelOpen) {
-    // Only a sheet ↔ dock change (or retargeting that same animation) — a drag of
-    // the drawer's own edge that happens to cross 840px must follow the pointer.
-    var prevPanel = _layoutModeKey.split('|')[1];
-    var retarget = !!panel._wflip;
-    var fromW = retarget ? panel.getBoundingClientRect().width : _layoutPanelW;
-    if (panel._wflip) { panel._wflip.cancel(); panel._wflip = null; }
-    toW = panel.getBoundingClientRect().width;
-    var reshape = (prevPanel !== mode.panel || retarget) && !panel.classList.contains('resizing');
-    if (reshape && fromW && animate && !reduce && Math.abs(fromW - toW) > 1) {
-      panel._wflip = panel.animate([{ width: fromW + 'px' }, { width: toW + 'px' }], { duration: MOTION.move, easing: MOTION.easeOut });
-      panel._wflip.onfinish = function() { panel._wflip = null; };
-    }
-  }
-  _layoutPanelW = toW;
+  // The open drawer's own box (sheet ↔ dock) morphs with the cards: <ui-drawer>'s in-place switch
+  // (D4 E-01) — 320ms on the drawer curve from where it was drawn, retargeting a morph still running,
+  // none under reduced motion. The page animates nothing of it.
   _layoutModeKey = layoutModeKey(mode);
   restorePanelAnchor(anchor);
   _layoutShiftUntil = Date.now() + MOTION.move;
@@ -11984,26 +11986,6 @@ function openLifecycleDialog() {
 function closeLifecycleDialog() {
   var dlg = document.getElementById('lifecycle-dialog');
   if (dlg && typeof dlg.hide === 'function') dlg.hide();
-}
-// A dialog leaves the way it came (P6): its box and scrim fade out in 180ms (.is-closing), then close() —
-// at once under reduced motion. Opening it again meanwhile keeps it (dialogKeep).
-var DIALOG_EXIT_MS = 180;
-function dialogCloseSoftly(dlg) {
-  if (!dlg || !dlg.open) return;
-  if (dlg._closeT) return;
-  if (reduceMotion()) { dlg.close(); return; }
-  dlg.classList.add('is-closing');
-  dlg._closeT = setTimeout(function() {
-    dlg._closeT = 0;
-    dlg.classList.remove('is-closing');
-    if (dlg.open) dlg.close();
-  }, DIALOG_EXIT_MS);
-}
-function dialogKeep(dlg) {
-  if (!dlg || !dlg._closeT) return;
-  clearTimeout(dlg._closeT);
-  dlg._closeT = 0;
-  dlg.classList.remove('is-closing');
 }
 function setLifecycleStatus(text, isError) {
   var el = document.getElementById('lifecycle-status');
@@ -12692,76 +12674,30 @@ function statsJson(url) {
   });
 }
 
-var STAT_IDS = ['stat-turns', 'stat-prs', 'stat-merged', 'stat-merge-lines', 'stat-workflows'];
 function markStatsLoading() {
-  // The page keeps each strip figure's last value under its loading bar, so the answer rolls from it
-  // (landStripFigures).
+  // Each figure keeps its last value under its loading bar (from: 'last'), so the answer rolls from it.
   ['sessions', 'tokens', 'cost'].forEach(function(k) { setStripFigure(k, _strip[k].value, true); });
   paintStatsStrip();
-  STAT_IDS.forEach(function(id) {
-    var el = document.getElementById(id);
-    if (!el) return;
-    stopStatRoll(el);
-    el.textContent = '';
-    el.classList.remove('no-data');
-    el.classList.add('is-loading');
-  });
+  _statCards.loading = true;
+  paintStatCards();
   paintCharts(_chartDays, true);
 }
 
-// A failed load shows a dash rather than the previous period's number.
-// With a value and its format (the counted cards behind 자세히), the figure rolls from the one it
-// showed to the new one — the library's rolling figure, 620ms ease-out quart (the strip's own figures
-// roll in <ui-stat-strip>).
-// The first paint, a change from or to a dash and reduced motion jump; a new load stops a roll.
-var STAT_ROLL_MS = 620;
-function stopStatRoll(el) {
-  if (el._roll) { cancelAnimationFrame(el._roll); el._roll = 0; }
-}
-function setStat(id, text, value, fmt) {
-  var el = document.getElementById(id);
-  if (!el) return;
-  stopStatRoll(el);
-  var from = el._shown;
-  el._shown = typeof value === 'number' && isFinite(value) ? value : undefined;
-  el.classList.remove('is-loading');
-  el.classList.toggle('no-data', text === '\\u2014');
-  if (!fmt || typeof from !== 'number' || el._shown === undefined || from === value || reduceMotion() || typeof requestAnimationFrame !== 'function') {
-    el.textContent = text;
-    return;
-  }
-  var t0 = 0;
-  var step = function(now) {
-    if (!t0) t0 = now;
-    var p = Math.min(1, (now - t0) / STAT_ROLL_MS);
-    var k = 1 - Math.pow(1 - p, 4);
-    var v = from + (value - from) * k;
-    el._shown = p < 1 ? v : value;
-    el.textContent = p < 1 ? fmt(v) : text;
-    el._roll = p < 1 ? requestAnimationFrame(step) : 0;
-  };
-  el.textContent = fmt(from);
-  el._roll = requestAnimationFrame(step);
-}
-function fmtCount(n) { return String(Math.round(n)); }
-
+// A failed load (null) is a dash rather than the previous period's number.
 function paintStats(data) {
   var t = data && data.totals;
-  var dash = '\\u2014';
-  landStripFigures({ sessions: t ? toNum(t.sessionsCreated) : null });
-  setStat('stat-turns', t ? String(toNum(t.turnsUsed)) : dash, t ? toNum(t.turnsUsed) : null, fmtCount);
-  setStat('stat-prs', t ? String(toNum(t.prsCreated)) : dash, t ? toNum(t.prsCreated) : null, fmtCount);
-  setStat('stat-merged', t ? String(toNum(t.prsMerged)) : dash, t ? toNum(t.prsMerged) : null, fmtCount);
-  setStat('stat-commits-hidden', t ? String(toNum(t.commitsCreated)) : dash);
-  setStat('stat-merge-lines', t ? '+' + toNum(t.mergeLinesAdded) + ' / -' + toNum(t.mergeLinesDeleted) : dash);
+  setStripFigure('sessions', t ? toNum(t.sessionsCreated) : null, false);
+  paintStatsStrip();
+  _statCards = {
+    turns: t ? toNum(t.turnsUsed) : null,
+    prs: t ? toNum(t.prsCreated) : null,
+    merged: t ? toNum(t.prsMerged) : null,
+    loading: false,
+  };
+  fillStatSlot('stat-merge-lines', 'lines', t ? '+' + toNum(t.mergeLinesAdded) + ' / -' + toNum(t.mergeLinesDeleted) : '');
   var wfEntries = Object.entries((t && t.workflowCounts) || {}).sort(function(a, b) { return toNum(b[1]) - toNum(a[1]); });
-  var wfEl = document.getElementById('stat-workflows');
-  if (wfEl) {
-    wfEl.classList.remove('is-loading');
-    wfEl.innerHTML = wfEntries.length
-      ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + toNum(e[1]) + '</b></span>'; }).join('')
-      : '<span style="color:var(--text-secondary)">-</span>';
-  }
+  fillStatSlot('stat-workflows', 'wf', wfEntries.map(function(e) { return '<span>' + esc(e[0]) + ': <b>' + toNum(e[1]) + '</b></span>'; }).join(''));
+  paintStatCards();
   _chartDays = data ? (Array.isArray(data.days) ? data.days : []) : null;
   paintCharts(_chartDays, false);
 }
@@ -12816,10 +12752,9 @@ function paintUsage(report) {
   _usageReport = report || null;
   paintUsageBreakdown();
   var t = report && report.totals;
-  landStripFigures({
-    tokens: t ? toNum(t.totalInputTokens) + toNum(t.totalOutputTokens) : null,
-    cost: t ? toNum(t.totalCostUsd) : null,
-  });
+  setStripFigure('tokens', t ? toNum(t.totalInputTokens) + toNum(t.totalOutputTokens) : null, false);
+  setStripFigure('cost', t ? toNum(t.totalCostUsd) : null, false);
+  paintStatsStrip();
 }
 
 // ── Charts — @2lab.ai/ui <ui-bar-chart> (B-08) ──
@@ -12861,14 +12796,16 @@ function connectWs() {
 
   // The app bar's status (role=status, polite): a tone dot and a word; the dot pulses while live.
   ws.onopen = function() {
-    _appBarStatus = { tone: 'done', label: STRINGS.wsLive, live: true };
+    _appBarStatus = { tone: 'done', label: STRINGS.wsLive, live: true, description: STRINGS.wsAbout };
     paintAppBar();
     // Reconnect: recover the work-log entries broadcast while we were offline
     // (from the HTTP cursor; afterSeq=0 when the log was still empty).
     if (panelOpen && _wl) recoverWorkLog();
+    // Admin approvals that arrived or ended while we were offline.
+    if (_viewerIsAdmin && _viewerUserId) adminInboxLoad();
   };
   ws.onclose = function() {
-    _appBarStatus = { tone: 'wait', label: STRINGS.wsReconnecting, live: true };
+    _appBarStatus = { tone: 'wait', label: STRINGS.wsReconnecting, live: true, description: STRINGS.wsAbout };
     paintAppBar();
     setTimeout(connectWs, 3000);
   };
@@ -12876,6 +12813,11 @@ function connectWs() {
   ws.onmessage = function(ev) {
     try {
       const msg = JSON.parse(ev.data);
+      if (msg.type === 'admin_approvals') {
+        _adminPushSeq++;
+        applyAdminApprovals(msg.snapshot);
+        return;
+      }
       if (msg.type === 'session_update') {
         if (currentUserId) {
           msg.board.working = (msg.board.working || []).filter(function(s) { return s.ownerId === currentUserId; });
@@ -14124,8 +14066,7 @@ function landPanel() {
     if (sec && sec.style.display !== 'none') {
       // The reader scrolled since the last try: they stay where they are.
       if (_panelLandAt !== null && Math.abs(scrollEl.scrollTop - _panelLandAt) > 1) { _panelLanded = true; return; }
-      var tabs = _panelLand === 'goal' ? null : document.getElementById('panel-tabs');
-      var under = tabs ? tabs.offsetHeight || 0 : 0;
+      var under = _panelLand === 'goal' ? 0 : panelTabsHeight();
       var target = scrollEl.scrollTop + sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under;
       // The landing is the reader's new place: an anchor the layout coordinator
       // captured before it (layoutBeforeChange) must not pull the panel back.
@@ -14169,11 +14110,10 @@ function landPanel() {
   if (_panelLandAt !== null && Math.abs(scrollEl.scrollTop - _panelLandAt) > 1) return;
   var secs = document.getElementById('panel-sections');
   var body = document.getElementById('panel-sections-body');
-  var tabs = document.getElementById('panel-tabs');
   var top = 0;
   if (secs && body) {
     var base = scrollEl.getBoundingClientRect().top - scrollEl.scrollTop;
-    top = psecLandingTop(secs.getBoundingClientRect().top - base, body.getBoundingClientRect().bottom - base, scrollEl.clientHeight, tabs ? tabs.offsetHeight || 0 : 0);
+    top = psecLandingTop(secs.getBoundingClientRect().top - base, body.getBoundingClientRect().bottom - base, scrollEl.clientHeight, panelTabsHeight());
   }
   _panelScrollGen++;
   scrollEl.scrollTo({ top: top, behavior: 'instant' });
@@ -14189,8 +14129,7 @@ function holdPanelLanding() {
   var scrollEl = document.getElementById('panel-scroll');
   var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : 'panel-agents');
   if (!scrollEl || !sec || sec.style.display === 'none') return;
-  var tabs = _panelLand === 'goal' ? null : document.getElementById('panel-tabs');
-  var under = tabs ? tabs.offsetHeight || 0 : 0;
+  var under = _panelLand === 'goal' ? 0 : panelTabsHeight();
   var drift = sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under;
   var top = Math.max(0, Math.min(scrollEl.scrollTop + drift, scrollEl.scrollHeight - scrollEl.clientHeight));
   if (Math.abs(top - scrollEl.scrollTop) <= 1) return;
@@ -14202,7 +14141,23 @@ function holdPanelLanding() {
 // focusWorkLog = opened from a card's 작업 로그 button or a ?session= deep link:
 // the panel opens on its 작업 로그 tab (true), or names another landing
 // ('answer', 'agent', 'goal', 'tasks' — psecForLanding picks the section tab).
+// An opening asked for before <ui-drawer> is defined (a deep link or a fast first click on a cold load: the
+// drawer's module is one of the last): its arguments, opened once the element is — one wait, the latest asked.
+var _panelOpenWaiting = null;
 function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
+  var drawerEl = document.getElementById('slide-panel');
+  if (drawerEl && typeof drawerEl.show !== 'function' && typeof customElements !== 'undefined') {
+    var waiting = _panelOpenWaiting;
+    _panelOpenWaiting = [sessionKey, focusWorkLog, agentId, byKey];
+    if (!waiting) {
+      customElements.whenDefined('ui-drawer').then(function() {
+        var args = _panelOpenWaiting;
+        _panelOpenWaiting = null;
+        if (args) openPanel(args[0], args[1], args[2], args[3]);
+      });
+    }
+    return;
+  }
   const s = _sessionCache[sessionKey];
   if (!s) return;
   // The detail deck (SSOT 2026-10-29 T2): this session's detail card joins it
@@ -14225,15 +14180,15 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // Spec 12 §4.3: the agent whose tasks and work log the panel shows ('' = main).
   _panelAgent = agentId ? String(agentId) : '';
 
-  // A card switch starts the composer clean: a fresh <ui-agent-steering> (the
-  // old one's text, notes in flight and failed sends were that session's) and no
-  // files. A send still in flight completes in the background without touching
-  // this card. Re-landing on the session already open (관리 →, 전체 task →, a tree
-  // item) keeps the message being typed and a send in flight (spec 13).
+  // A card switch starts the composer clean: a fresh <ui-agent-steering> with a
+  // fresh composer (the old one's text, files, notes in flight and failed sends
+  // were that session's). A send still in flight completes in the background
+  // without touching this card. Re-landing on the session already open (관리 →,
+  // 전체 task →, a tree item) keeps the message being typed and a send in flight
+  // (spec 13).
   var sameSession = panelOpen && panelSessionKey === sessionKey;
   if (!sameSession) {
     pcFreshSteer();
-    pcReset();
     // Another session's task ids (T1 …) are other tasks: no run's detail carries over.
     _panelTaskOpen = Object.create(null);
   }
@@ -14301,6 +14256,16 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   renderPanelQuestion(s);
 
 
+  // The drawer opens here (D4 E-01: a closed <dialog> has no layout — the sections below are sized and
+  // the landing scrolled on the open one; its slide-in starts after this task, the content painted). Docked
+  // (≥840px) the open drawer narrows the board: animate that shift too. A card switch keeps it open.
+  var panel = document.getElementById('slide-panel');
+  layoutBeforeChange();
+  panel.show();
+  panelOpen = true;
+  panel.setAttribute('label', document.getElementById('panel-title').textContent);
+  syncPanelWidth();
+
   // The section tab of this opening, painted from its data (지시와 답변: the
   // skeleton while the turns load) and landed on its newest items.
   selectPanelSection(_psec);
@@ -14315,12 +14280,6 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   document.getElementById('panel-command').style.display = '';
   // A re-landing on the open session leaves a send in flight alone (only a change of state writes).
   renderPanelComposer(s, !sameSession);
-
-  // Docked (≥840px) the open drawer narrows the board: animate that shift too.
-  layoutBeforeChange();
-  document.getElementById('slide-panel').classList.add('open');
-  document.getElementById('panel-overlay').classList.add('open');
-  panelOpen = true;
 
   if (panelConvId) loadWorkLog();
   sizePanelSections();
@@ -14443,7 +14402,8 @@ function focusPanelLanding() {
   if (_panelLand === 'goal') t = document.querySelector('#panel-goal .cg-add-input') || document.getElementById('panel-goal');
   else if (_panelLand === 'agent') t = document.querySelector('#panel-agents .pa-focus');
   else if (_panelLand === 'tasks') t = document.getElementById('panel-tasks');
-  else if (_panelLand === 'worklog') t = document.getElementById('psec-tab-log');
+  // The 작업 로그 tab is <ui-tabs>' own (D4 E-24): its selected tab — the one this opening chose — takes focus.
+  else if (_panelLand === 'worklog' && uiTabsFocus(document.getElementById('panel-sections'))) return;
   if (!t || t.style.display === 'none') {
     // The first approval card still waiting on an answer, itself — its focus()
     // lands on the card, not a button: Esc there still closes the panel, ⌘↵
@@ -15384,13 +15344,17 @@ function closePanel() {
   pcReset();
   if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
   layoutBeforeChange();
-  document.getElementById('slide-panel').classList.remove('open');
-  document.getElementById('panel-overlay').classList.remove('open');
+  // An opening still waiting for the element is dropped; a drawer not yet defined has nothing open to close.
+  _panelOpenWaiting = null;
+  var drawerEl = document.getElementById('slide-panel');
+  if (drawerEl && typeof drawerEl.hide === 'function') drawerEl.hide();
   panelOpen = false;
   panelSessionKey = null;
   panelConvId = null;
+  // The 산출물 part is written through writePanelPart (nothing when unchanged): emptied here, it forgets what it
+  // last wrote too, so the same card reopened paints its strip again (D4 K-06 review).
   var panelArts = document.getElementById('panel-artifacts');
-  if (panelArts) { panelArts.innerHTML = ''; panelArts.style.display = 'none'; }
+  if (panelArts) { panelArts.innerHTML = ''; panelArts._html = ''; panelArts.style.display = 'none'; }
   _panelAgent = '';
   _panelAgentsHtml = '';
   _rawLoadedCache = Object.create(null);
@@ -15437,11 +15401,17 @@ function closePanel() {
 }
 
 document.addEventListener('keydown', function(e) {
-  // Escape in the artifact viewer closes the viewer only (the dialog's own cancel).
+  // Escape in the artifact viewer closes the viewer only (its dialog's own).
   // The cron drawer opens over a docked panel: Escape closes only that, the topmost. An element on top that
   // took the key (the drawer, the defaults menu, a dialog: preventDefault) keeps it from the panel too.
-  if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();
+  if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artViewerIsOpen() && !_cronDrawerKey) closeDetailCard();
 });
+// Esc inside the drawer and a press on its scrim arrive as <ui-drawer>'s cancelable ui-close (D4 E-01, E-02): the
+// page closes the detail card itself (the card folds, the deck moves on — closeDetailCard, as the panel's own ✕).
+(function initPanelDrawer() {
+  var d = document.getElementById('slide-panel');
+  if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeDetailCard(); });
+})();
 
 // The panel's own scroll (bound once): a held section landing goes back under
 // the tabs while the panel settles, until the reader acts; a section landing the
@@ -15480,14 +15450,17 @@ let _lastSentContent = '';
 let _lastSentTime = 0;
 
 // A note from the composer — Enter, ⌘/Ctrl+Enter, Send, or Retry on a failed one
-// (<ui-agent-steering> ui-submit: text, ref) — to the session's command route, the
-// one path a dashboard instruction takes: while a turn runs the server queues it
-// (and steers it into that turn when it can — the host decides, so ⌘/Ctrl+Enter
-// goes the same way), idle it starts the next turn. The element shows the note at
-// once (running: as a row until the queue lists it); idle, the turn shows in the
-// transcript. A send that cannot go out puts the text back; one the server refuses
-// is marked failed on its row (Retry) and said in a toast.
-async function sendCommand(text, ref) {
+// (<ui-agent-steering> ui-submit: text, ref, and the slotted composer's files) — to
+// the session's command route, the one path a dashboard instruction takes: while a
+// turn runs the server queues it (and steers it into that turn when it can — the
+// host decides, so ⌘/Ctrl+Enter goes the same way), idle it starts the next turn.
+// The element shows the note at once (running: as a row until the queue lists it);
+// idle, the turn shows in the transcript. A voice note being recorded is filed by
+// the composer before the note leaves (#488). A send that cannot go out puts the
+// text and files back; one the server refuses is marked failed on its row (Retry,
+// which re-emits the ref without files: they are kept by ref) and said in a toast.
+var _pcNoteFiles = Object.create(null); // a note's ref → its File list, until it went out
+async function sendCommand(text, ref, files) {
   var el = document.getElementById('cmd-steer');
   if (!panelSessionKey || !el) return;
   // Capture the session this send belongs to — before any wait: an instruction
@@ -15495,38 +15468,24 @@ async function sendCommand(text, ref) {
   const sendingSessionKey = panelSessionKey;
   var running = !!(el.data && el.data.running);
   var msg = String(text || '').trim();
-  var files;
+  var list = files && files.length ? Array.prototype.slice.call(files) : (ref && _pcNoteFiles[ref]) || [];
+  if (ref && list.length) _pcNoteFiles[ref] = list;
+  var attachments;
   _pcSending = true;
   try {
-    // Task view T1.5: a recording in progress is the user's last words — filed first.
-    // A recording running now, or stopped but not filed yet (a send that timed out before).
-    var filing = _pcRec ? pcStopRecording(true) : _pcFiling;
-    if (filing) {
-      var filed = await Promise.race([
-        filing.then(function() { return true; }),
-        new Promise(function(resolve) { setTimeout(function() { resolve(false); }, 3000); }),
-      ]);
-      // #488: never send without the voice note the user just recorded — it is
-      // filed as a chip when the recorder catches up; the text stays for a resend.
-      if (!filed) {
-        pcSetError('음성 녹음을 아직 마무리하는 중입니다 — 잠시 후 다시 보내 주세요');
-        pcGiveBack(el, ref, msg, sendingSessionKey);
-        return;
-      }
-    }
-    files = _pcFiles.slice();
-    if (!pcCanSend(msg, files)) { pcGiveBack(el, ref, msg, sendingSessionKey); return; }
-    // Every file read in full (a failed read removes its chip and says so).
+    if (!pcCanSend(msg, list)) { pcGiveBack(el, ref, msg, sendingSessionKey); return; }
+    // Every file read in full (base64, as the command route takes them).
     try {
-      await Promise.all(files.map(function(f) { return f.ready; }));
-    } catch (_e) {
+      attachments = await Promise.all(list.map(ntReadFile));
+    } catch (readErr) {
+      dashToast({ title: '파일을 읽지 못했어요', description: String((readErr && readErr.message) || '').slice(5), tone: 'error' });
       pcGiveBack(el, ref, msg, sendingSessionKey);
       return;
     }
   } finally {
     _pcSending = false;
   }
-  // The card changed while the files were read: this instruction was for the other one (its files went with pcReset).
+  // The card changed while the files were read: this instruction was for the other one.
   if (panelSessionKey !== sendingSessionKey) return;
 
   // Optimistic, idle only: the turn this starts shows in the transcript at once
@@ -15534,7 +15493,7 @@ async function sendCommand(text, ref) {
   // while a turn runs shows in the queue instead.
   var optimisticId = '';
   if (!running) {
-    const shown = msg + (files.length ? (msg ? '\\n' : '') + '📎 ' + files.map(function(f) { return f.name; }).join(', ') : '');
+    const shown = msg + (list.length ? (msg ? '\\n' : '') + '📎 ' + list.map(function(f) { return f.name; }).join(', ') : '');
     _lastSentContent = msg;
     _lastSentTime = Date.now();
     optimisticId = 'optimistic-' + Date.now();
@@ -15552,7 +15511,7 @@ async function sendCommand(text, ref) {
   var why = '';
   try {
     const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
-    const res = await acPost(cmdUrl, JSON.stringify(pcCommandBody(msg, files)));
+    const res = await acPost(cmdUrl, JSON.stringify(pcCommandBody(msg, attachments)));
     if (!res.ok) {
       var data = {};
       try { data = await res.json(); } catch (_e) {}
@@ -15561,6 +15520,8 @@ async function sendCommand(text, ref) {
   } catch (e) {
     why = (e && e.message) || '네트워크 오류';
   }
+  // Sent: its files went with it. Failed: they stay kept by ref for the Retry.
+  if (!why && ref) delete _pcNoteFiles[ref];
   // Only the card that sent it changes: a late answer never touches the card opened meanwhile.
   if (panelSessionKey !== sendingSessionKey) return;
   // The session left the board meanwhile (archived, a folded day): fail closed. The next live
@@ -15571,11 +15532,7 @@ async function sendCommand(text, ref) {
     el._sig = '';
     el.data = Object.assign({}, el.data, { disabled: true });
   }
-  if (!why) {
-    // Sent: the files went with it. Failed: they stay attached for the retry.
-    files.forEach(function(f) { pcRemoveFile(f.id); });
-    return;
-  }
+  if (!why) return;
   // Not sent: the note's row says so with Retry (the element's), and the
   // optimistic turn leaves the transcript — found by its own id, not by being the
   // list's last child (the 응답 작성 중 row may follow it, re-ai-answer D12).
@@ -15583,12 +15540,16 @@ async function sendCommand(text, ref) {
   if (ref) el.setItemState(ref, 'failed', why.trim());
   dashToast({ title: '메시지를 보내지 못했어요', description: why.trim(), tone: 'error' });
 }
-// A note that did not go out at all (a recording still being filed, a file that
-// could not be read): its row goes and its text returns to the field — unless the
-// user has typed something new there, or moved to another card.
+// A note that did not go out at all (a file that could not be read): its row goes
+// and its text and files return to the composer — unless the user has typed or
+// attached something new there, or moved to another card.
 function pcGiveBack(el, ref, msg, key) {
-  if (ref) el.setItemState(ref, 'cancelled');
-  if (msg && panelSessionKey === key && !el.value) el.value = msg;
+  var files = (ref && _pcNoteFiles[ref]) || [];
+  if (ref) { delete _pcNoteFiles[ref]; el.setItemState(ref, 'cancelled'); }
+  if (panelSessionKey !== key) return;
+  if (msg && !el.value) el.value = msg;
+  var c = document.getElementById('pc-composer');
+  if (files.length && c && typeof c.addFiles === 'function' && !c.files.length) c.addFiles(files);
 }
 
 // Send now (Retry on a failed note), Cancel and Edit on a queued note → the
@@ -16300,18 +16261,14 @@ async function loadCapacity() {
 // its markdown final answers. The card face shows glyph chips (no image is
 // fetched for the board), the open card a thumbnail strip, the panel a pinned
 // strip plus the files each answer turn produced. Hover (or keyboard focus) →
-// minimap preview in #art-peek; click → full-size viewer in <dialog #art-modal>.
+// a peek in <ui-hovercard #art-peek>; click → <ui-artifact-viewer #art-viewer>.
 // Every render function here is pure; the DOM work sits in the functions after
-// renderArtModalBody and in initArtifactInteractions.
+// artViewerPreview and in initArtifactInteractions.
 var ART_KIND_LABEL = { image: '이미지', audio: '오디오', video: '비디오', html: 'HTML', markdown: '답변', pdf: 'PDF', text: '텍스트', file: '파일' };
 var ART_GLYPH = { image: '<i data-ui-icon="file-image" class="art-glyph"></i>', audio: '<i data-ui-icon="file-audio" class="art-glyph"></i>', video: '<i data-ui-icon="file-video" class="art-glyph"></i>', html: '<i data-ui-icon="file-code" class="art-glyph"></i>', markdown: '<i data-ui-icon="file-text" class="art-glyph"></i>', pdf: '<i data-ui-icon="file-text" class="art-glyph"></i>', text: '<i data-ui-icon="file-text" class="art-glyph"></i>', file: '<i data-ui-icon="file" class="art-glyph"></i>' };
-var ART_PEEK_DELAY_MS = 350; // hover intent before the minimap opens (300–500 ms keeps a sweep across chips quiet)
-var ART_PEEK_CLOSE_MS = 200; // grace to move the pointer into the minimap (WCAG 1.4.13: hoverable)
 var _artCache = Object.create(null); // conversationId → { state: 'loading'|'ok'|'error', list, promise }
 var _artDocCache = Object.create(null); // 'cid|id' → text of a markdown / text artifact
-var _artPeek = { anchor: null, openTimer: null, closeTimer: null };
-var _artModal = { cid: null, list: [], idx: 0, opener: null };
-var _artAudio = { el: null, key: null };
+var _artViewer = { cid: null, scope: 'conversation', list: [] }; // what the open viewer pages through
 
 function artUrl(cid, id, download) {
   // A user's attachment (SSOT 2026-10-25) shares the viewer, not the route.
@@ -16366,41 +16323,18 @@ function umSiblings(cid, id, all) {
   return out;
 }
 
-// "very-long-design-guide-v3.pdf" → "very-long-de…v3.pdf": the extension stays visible.
-function umMiddleName(name, max) {
-  var str = String(name || '');
-  max = max || 28;
-  if (str.length <= max) return str;
-  var dot = str.lastIndexOf('.');
-  var tail = dot > 0 && str.length - dot <= 8 ? str.slice(dot - 3) : str.slice(-6);
-  return str.slice(0, Math.max(1, max - tail.length - 1)) + '…' + tail;
-}
-
-// One attachment: an image tile, or a file card (glyph, name, kind · size).
-// pos / total name the action ("이미지 열기 2/5: login.png"); more > 0 puts "+more" on the tile.
+// One attachment: an image tile (page markup — a fixed box, "+N" past four, named by its action: "이미지 열기 2/5:
+// login.png"), or a <ui-file-card> (a row; a name chip in the compact row) that plays a voice note in place.
 function umTile(cid, a, pos, total, more, compact) {
-  var attrs = ' data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id) + '"';
-  var label = (a.kind === 'image' ? '이미지' : artKindLabel(a)) + ' 열기 ' + pos + '/' + total + ': ' + a.name + (more > 0 ? ' 외 ' + more + '개' : '');
   if (a.kind === 'image' && a.stored) {
-    return '<button type="button" class="um-tile um-img"' + attrs + ' aria-label="' + escAttr(label) + '" title="' + escAttr(a.name) + '">'
+    var label = '이미지 열기 ' + pos + '/' + total + ': ' + a.name + (more > 0 ? ' 외 ' + more + '개' : '');
+    return '<button type="button" class="um-tile um-img" data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id) + '" aria-label="' + escAttr(label) + '" title="' + escAttr(a.name) + '">'
       + '<img src="' + escAttr(umUrl(cid, a.id)) + '" alt="" loading="lazy" decoding="async" onerror="this.parentNode.classList.add(\\'is-broken\\')">'
       + (more > 0 ? '<span class="um-more" aria-hidden="true">+' + more + '</span>' : '')
       + '</button>';
   }
-  var meta = [artKindLabel(a)];
-  if (toNum(a.size) > 0) meta.push(artFormatSize(a.size));
-  if (!a.stored) meta.push(a.unavailable === 'too_large' ? '50 MB 초과 · Slack에만 있음' : 'Slack에만 있음');
-  var play = (a.kind === 'audio' && a.stored)
-    ? '<button type="button" class="art-play um-play" data-art-play="1"' + attrs + ' aria-pressed="false" aria-label="' + escAttr(a.name + ' 재생/일시정지') + '" title="재생">'
-      + '<svg class="ic-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5v9l7.5-4.5z" fill="currentColor"/></svg>'
-      + '<svg class="ic-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3.5h2.5v9H4.5zM9 3.5h2.5v9H9z" fill="currentColor"/></svg></button>'
-    : '';
   return '<div class="um-file art-k-' + escAttr(a.kind || 'file') + (a.stored ? '' : ' is-remote') + (compact ? ' um-file-compact' : '') + '">'
-    + '<button type="button" class="um-open"' + attrs + ' aria-label="' + escAttr(label) + '" title="' + escAttr(a.name) + '">'
-    + artGlyph(a.kind)
-    + '<span class="um-file-text"><span class="um-file-name">' + esc(umMiddleName(a.name, compact ? 20 : 30)) + '</span>'
-    + (compact ? '' : '<span class="um-file-meta">' + esc(meta.join(' · ')) + '</span>') + '</span>'
-    + '</button>' + play + '</div>';
+    + artCard(cid, a, compact ? 'chip' : 'row', true) + '</div>';
 }
 
 // The files of one instruction: images first as a grid of tiles (one image on
@@ -16435,22 +16369,16 @@ function umMissingReason(a) {
   return '이 파일은 대시보드에 사본이 없습니다. Slack에서 열 수 있습니다.';
 }
 
-// Pinned row of the panel: "지시 첨부 N", collapsed by default so it costs one
-// line; opened, the session's files in a compact strip. Nothing when none.
-function renderPanelUserMedia(list, cid, open) {
+// Pinned row of the panel: "지시 첨부 N" — a <ui-disclosure> (D4 K-06) collapsed by default so it costs one
+// line; opened, the session's files in a compact strip in its region (painted while open — keep: through
+// the fold). Nothing when none.
+function renderPanelUserMedia(list, cid, open, keep) {
   if (!cid || !list || !list.length) return '';
-  var head = '<button type="button" class="panel-um-head" aria-expanded="' + (open ? 'true' : 'false') + '" aria-controls="panel-um-body" onclick="togglePanelUserMedia()">'
-    + '<i data-ui-icon="attach" class="art-glyph"></i>'
+  var head = '<ui-disclosure class="panel-um-dc" flush' + (open ? ' open' : '') + '>'
+    + '<span slot="summary" class="panel-um-head"><i data-ui-icon="attach" class="art-glyph"></i>'
     + '<span>지시 첨부</span><span class="art-count">' + list.length + '</span>'
-    + '<span class="panel-arts-hint">유저가 지시와 함께 보낸 파일</span>'
-    + '<i data-ui-icon="chevron-down" class="um-chevron"></i>'
-    + '</button>';
-  return head + (open ? '<div class="panel-um-body" id="panel-um-body">' + renderUserMedia(cid, list, { compact: true }) + '</div>' : '');
-}
-
-function togglePanelUserMedia() {
-  _umPanelOpen = !_umPanelOpen;
-  renderPanelArtifactsSection();
+    + '<span class="panel-arts-hint">유저가 지시와 함께 보낸 파일</span></span>';
+  return head + (open || keep ? '<div class="panel-um-body" id="panel-um-body">' + renderUserMedia(cid, list, { compact: true }) + '</div>' : '') + '</ui-disclosure>';
 }
 
 // The session's attachments for the pinned row, fetched when the card says it has some.
@@ -16508,7 +16436,8 @@ function artMeta(a) {
 
 // A file as @2lab.ai/ui <ui-file-card> (D2 I-01..I-03): the page renders the element keyed by data-art-cid /
 // data-art-id, with data-art-v (what it shows) so a re-render that changes the file re-hands it; initFileCards
-// gives it artFileItem. Its ui-open opens the page's viewer, its hover / focus the page's minimap.
+// gives it artFileItem. Its ui-open opens the viewer; the hovercard's for= reaches it for the peek; playable: a
+// play / pause toggle on audio (and video tiles), one clip at a time.
 function artFileItem(cid, a) {
   var item = { id: String(a.id), name: String(a.name || ''), kind: a.kind || 'file' };
   if (toNum(a.size) > 0) item.size = toNum(a.size);
@@ -16517,9 +16446,9 @@ function artFileItem(cid, a) {
   else item.meta = 'Slack에만 있음';
   return item;
 }
-function artCard(cid, a, variant) {
+function artCard(cid, a, variant, playable) {
   var v = [a.name, a.kind, toNum(a.size), toNum(a.createdAt), a.stored ? 1 : 0].join('|');
-  return '<ui-file-card class="art-card" variant="' + variant + '" lang="ko" data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id)
+  return '<ui-file-card class="art-card" variant="' + variant + '"' + (playable ? ' playable' : '') + ' lang="ko" data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id)
     + '" data-art-v="' + escAttr(v) + '"></ui-file-card>';
 }
 // One chip (an answer turn's files).
@@ -16537,22 +16466,10 @@ function artSortForDisplay(list) {
   return files.sort(newest).concat(answers.sort(newest));
 }
 
-// Is this clip the one the shared inline player is playing right now?
-function artAudioPlaying(cid, id) {
-  return !!(_artAudio.el && !_artAudio.el.paused && _artAudio.key === cid + '|' + id);
-}
-
-// A strip tile: the file card (thumbnail, name, meta) + a play button for audio (T8); variant 'chip' in the
-// panel's minimal row. The play state is part of the markup: a live card body is morphed to it on every push.
+// A strip tile: the file card (thumbnail, name, meta; a play / pause toggle on audio — T8 — and video tiles, one
+// clip at a time across the page: playable); variant 'chip' in the panel's minimal row.
 function artTile(cid, a, variant) {
-  var attrs = ' data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id) + '"';
-  var on = a.kind === 'audio' && a.stored && artAudioPlaying(cid, a.id);
-  var play = (a.kind === 'audio' && a.stored)
-    ? '<button type="button" class="art-play' + (on ? ' is-playing' : '') + '" data-art-play="1"' + attrs + ' aria-pressed="' + (on ? 'true' : 'false') + '" aria-label="' + escAttr(a.name + ' 재생/일시정지') + '" title="재생">'
-      + '<svg class="ic-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5v9l7.5-4.5z" fill="currentColor"/></svg>'
-      + '<svg class="ic-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3.5h2.5v9H4.5zM9 3.5h2.5v9H9z" fill="currentColor"/></svg></button>'
-    : '';
-  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, variant || 'tile') + play + '</div>';
+  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, variant || 'tile', true) + '</div>';
 }
 
 // The full list once fetched, else the card's summary (the newest few).
@@ -16603,8 +16520,9 @@ function renderTurnArtifacts(list, cid, startTs, endTs) {
   return '<div class="turn-arts-row">' + hits.map(function(a) { return artChip(cid, a); }).join('') + '</div>';
 }
 
-// Hover minimap (T2). html renders live but WITHOUT scripts (sandbox=""), media
-// never autoplays, markdown/text are fetched and drawn small.
+// Hover peek (T2): what the page fills @2lab.ai/ui <ui-hovercard id="art-peek"> with for one tile — html renders
+// live but WITHOUT scripts (sandbox=""), media never autoplays, a markdown / text answer shows its first lines
+// (the viewer draws the document).
 function renderArtPeekBody(cid, a) {
   var url = escAttr(artUrl(cid, a.id));
   var media;
@@ -16619,7 +16537,7 @@ function renderArtPeekBody(cid, a) {
   } else if (a.kind === 'video') {
     media = '<video class="art-peek-video" preload="metadata" muted playsinline src="' + url + '#t=0.1"></video>';
   } else if (a.kind === 'markdown' || a.kind === 'text') {
-    media = '<div class="art-peek-doc" data-art-doc="' + escAttr(cid + '|' + a.id) + '" data-art-doc-kind="' + escAttr(a.kind) + '"><span class="art-doc-loading">불러오는 중…</span></div>';
+    media = '<pre class="art-peek-pre" data-art-doc="' + escAttr(cid + '|' + a.id) + '"><span class="art-doc-loading">불러오는 중…</span></pre>';
   } else {
     media = '<div class="art-peek-meta">' + artGlyph(a.kind) + '<span class="art-peek-sub">' + esc(a.name) + '</span></div>';
   }
@@ -16628,139 +16546,20 @@ function renderArtPeekBody(cid, a) {
     + '<span class="art-peek-info">' + esc(artMeta(a)) + ' · 클릭하면 크게</span></div>';
 }
 
-// Full-size viewer body (T3/T8). html: scripts only — never same-origin, no
-// popups (the header's buttons open a tab or download). Audio and video start at once.
-function renderArtModalBody(cid, a) {
+// The viewer body the page draws itself (<ui-artifact-viewer>'s slot="preview") where the element's own would not
+// do: the model's HTML runs its scripts (sandbox="allow-scripts" — never same-origin, no popups; the element keeps
+// scripts off), a PDF opens in the browser's own viewer. A user's upload never runs (the element's sandbox=""
+// frame; the route serves it inert as well). '' hands the body back to the element.
+function artViewerPreview(cid, a) {
+  if (!a || !a.stored) return '';
   var url = escAttr(artUrl(cid, a.id));
   var title = escAttr(a.name);
-  if (!a.stored) {
-    var link = /^https:\\/\\//i.test(String(a.permalink || '')) ? '<a class="ui-btn is-primary" href="' + escAttr(a.permalink) + '" target="_blank" rel="noopener">Slack에서 열기</a>' : '';
-    return '<div class="art-full-meta">' + artGlyph(a.kind) + '<div class="art-full-meta-name">' + esc(a.name) + '</div>'
-      + '<div class="art-full-meta-sub">' + esc(artMeta(a)) + '</div>'
-      + '<p>' + (a.source === 'user_upload' ? umMissingReason(a) : '이 파일은 대시보드에 사본이 없습니다 (100 MB 초과이거나 업로드 전에 지워졌습니다).') + '</p>' + link + '</div>';
-  }
-  if (a.kind === 'image') return '<div class="art-full-imgwrap"><img class="art-full-img" src="' + url + '" alt="' + title + '" data-art-zoom="1"></div>';
-  // A user's own upload never runs (the route serves it inert as well).
-  if (a.kind === 'html') return '<iframe class="art-full-frame" sandbox="' + (a.source === 'user_upload' ? '' : 'allow-scripts') + '" src="' + url + '" title="' + title + '" referrerpolicy="no-referrer"></iframe>';
+  if (a.kind === 'html' && a.source !== 'user_upload') return '<iframe class="art-full-frame" sandbox="allow-scripts" src="' + url + '" title="' + title + '" referrerpolicy="no-referrer"></iframe>';
   if (a.kind === 'pdf') return '<iframe class="art-full-frame" src="' + url + '" title="' + title + '"></iframe>';
-  if (a.kind === 'audio') return '<div class="art-full-audio">' + artGlyph('audio') + '<div class="art-full-meta-name">' + esc(a.name) + '</div><audio controls autoplay preload="auto" src="' + url + '"></audio></div>';
-  if (a.kind === 'video') return '<video class="art-full-video" controls autoplay playsinline preload="metadata" src="' + url + '"></video>';
-  if (a.kind === 'markdown' || a.kind === 'text') {
-    return '<div class="art-full-doc" data-art-doc="' + escAttr(cid + '|' + a.id) + '" data-art-doc-kind="' + escAttr(a.kind) + '"><span class="art-doc-loading">불러오는 중…</span></div>';
-  }
-  return '<div class="art-full-meta">' + artGlyph(a.kind) + '<div class="art-full-meta-name">' + esc(a.name) + '</div>'
-    + '<div class="art-full-meta-sub">' + esc(artMeta(a)) + '</div>'
-    + '<a class="ui-btn is-primary" href="' + escAttr(artUrl(cid, a.id, true)) + '">다운로드</a></div>';
+  return '';
 }
 
-// Inline marks on one line: escape first, then code spans, links (http(s) only),
-// bold, italic, strike. Raw HTML never survives.
-function mdInline(s) {
-  var codes = [];
-  var t = String(s == null ? '' : s).replace(/\\x60([^\\x60]+)\\x60/g, function(_m, c) {
-    codes.push('<code>' + esc(c) + '</code>');
-    return '\\u0000' + (codes.length - 1) + '\\u0000';
-  });
-  t = esc(t);
-  t = t.replace(/!?\\[([^\\]]+)\\]\\(([^)\\s]+)\\)/g, function(_m, label, href) {
-    var h = safeHref(href.replace(/&amp;/g, '&'));
-    return h === '#' ? label : '<a href="' + h + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
-  });
-  t = t.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
-  t = t.replace(/(^|[^*\\w])\\*([^*\\s][^*]*?)\\*(?!\\w)/g, '$1<em>$2</em>');
-  t = t.replace(/~~([^~]+)~~/g, '<del>$1</del>');
-  return t.replace(/\\u0000(\\d+)\\u0000/g, function(_m, i) { return codes[Number(i)] || ''; });
-}
-
-// Markdown answers as documents (T1): headings, paragraphs, lists (nested),
-// tables, fenced code, quotes, rules. Everything is escaped before it is marked up.
-function renderMarkdownDoc(src) {
-  var lines = String(src == null ? '' : src).replace(/\\r\\n?/g, '\\n').split('\\n');
-  var out = [];
-  var para = [];
-  var i = 0;
-  var flush = function() {
-    if (para.length) out.push('<p>' + para.map(mdInline).join('<br>') + '</p>');
-    para = [];
-  };
-  var cells = function(l) {
-    return l.trim().replace(/^\\|/, '').replace(/\\|$/, '').split('|').map(function(c) { return c.trim(); });
-  };
-  var listRe = /^(\\s*)([-*+]|\\d{1,3}[.)])\\s+(.*)$/;
-  while (i < lines.length) {
-    var line = lines[i];
-    var fence = line.match(/^\\s{0,3}(\\x60{3,}|~{3,})\\s*([\\w+#.-]*)/);
-    if (fence) {
-      flush();
-      var code = [];
-      i++;
-      while (i < lines.length && lines[i].trim().indexOf(fence[1]) !== 0) { code.push(lines[i]); i++; }
-      i++;
-      out.push('<pre class="md-code"><code' + (fence[2] ? ' data-lang="' + escAttr(fence[2]) + '"' : '') + '>' + esc(code.join('\\n')) + '</code></pre>');
-      continue;
-    }
-    if (!line.trim()) { flush(); i++; continue; }
-    var h = line.match(/^\\s{0,3}(#{1,6})\\s+(.*?)\\s*#*\\s*$/);
-    if (h) {
-      flush();
-      out.push('<h' + h[1].length + '>' + mdInline(h[2]) + '</h' + h[1].length + '>');
-      i++;
-      continue;
-    }
-    if (/^\\s{0,3}([-*_])(\\s*\\1){2,}\\s*$/.test(line)) { flush(); out.push('<hr>'); i++; continue; }
-    if (/^\\s{0,3}>/.test(line)) {
-      flush();
-      var quote = [];
-      while (i < lines.length && /^\\s{0,3}>/.test(lines[i])) { quote.push(lines[i].replace(/^\\s{0,3}>\\s?/, '')); i++; }
-      out.push('<blockquote>' + renderMarkdownDoc(quote.join('\\n')) + '</blockquote>');
-      continue;
-    }
-    if (line.indexOf('|') >= 0 && i + 1 < lines.length && /^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)*\\|?\\s*$/.test(lines[i + 1])) {
-      flush();
-      var head = cells(line);
-      var rows = [];
-      i += 2;
-      while (i < lines.length && lines[i].indexOf('|') >= 0 && lines[i].trim()) { rows.push(cells(lines[i])); i++; }
-      out.push('<div class="md-table"><table><thead><tr>' + head.map(function(c) { return '<th>' + mdInline(c) + '</th>'; }).join('') + '</tr></thead><tbody>'
-        + rows.map(function(r) { return '<tr>' + head.map(function(_c, k) { return '<td>' + mdInline(r[k] || '') + '</td>'; }).join('') + '</tr>'; }).join('')
-        + '</tbody></table></div>');
-      continue;
-    }
-    if (listRe.test(line)) {
-      flush();
-      var items = [];
-      while (i < lines.length) {
-        var m = lines[i].match(listRe);
-        if (m) { items.push({ indent: m[1].replace(/\\t/g, '    ').length, ordered: /\\d/.test(m[2]), text: m[3] }); i++; continue; }
-        if (items.length && /^\\s{2,}\\S/.test(lines[i])) { items[items.length - 1].text += ' ' + lines[i].trim(); i++; continue; }
-        break;
-      }
-      var html = '';
-      var stack = [];
-      items.forEach(function(it) {
-        while (stack.length > 1 && it.indent < stack[stack.length - 1].indent) html += '</li></' + stack.pop().tag + '>';
-        var top = stack[stack.length - 1];
-        if (!top || it.indent > top.indent) {
-          var tag = it.ordered ? 'ol' : 'ul';
-          stack.push({ indent: it.indent, tag: tag });
-          html += '<' + tag + '><li>';
-        } else {
-          html += '</li><li>';
-        }
-        html += mdInline(it.text);
-      });
-      while (stack.length) html += '</li></' + stack.pop().tag + '>';
-      out.push(html);
-      continue;
-    }
-    para.push(line.trim());
-    i++;
-  }
-  flush();
-  return out.join('\\n');
-}
-
-// ── Artifact DOM: fetch, settle, peek, viewer, inline audio ──
+// ── Artifact DOM: fetch, settle, the peek and the viewer ──
 
 function artFind(cid, id) {
   var c = _artCache[cid];
@@ -16804,13 +16603,12 @@ function artSettle(cid) {
     if (s && s.conversationId === cid) refreshCard(key);
   });
   if (panelOpen && panelConvId === cid) renderPanelArtifactsSection();
-  if (artModalIsOpen() && _artModal.cid === cid) {
-    var cur = _artModal.list[_artModal.idx];
-    var list = artSortForDisplay((_artCache[cid] && _artCache[cid].list) || []);
-    var at = cur ? list.findIndex(function(a) { return a.id === cur.id; }) : -1;
-    if (at >= 0) { _artModal.list = list; _artModal.idx = at; renderArtModal(true); }
+  // The open viewer pages through the conversation's files: the new list is handed over (the element keeps showing
+  // the same file wherever it moved). An instruction's attachments (umSiblings) are not this list.
+  if (_artViewer.cid === cid && _artViewer.scope === 'conversation' && artViewerIsOpen()) {
+    _artViewer.list = artSortForDisplay((_artCache[cid] && _artCache[cid].list) || []);
+    artViewerEl().data = { items: artViewerItems(cid, _artViewer.list) };
   }
-  artAudioMark(_artAudio.el && !_artAudio.el.paused ? _artAudio.key : null);
 }
 
 // WS artifact_update: a new file or answer landed in a conversation.
@@ -16840,9 +16638,10 @@ function renderPanelArtifactsSection() {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var list = c && c.list ? c.list : ((s && s.artifacts && s.artifacts.recent) || []);
   // The user's files (지시 첨부) first, one collapsed line; then the model's 산출물.
-  var umHtml = cid ? renderPanelUserMedia(_umList[cid] || [], cid, _umPanelOpen) : '';
+  var umHtml = cid ? renderPanelUserMedia(_umList[cid] || [], cid, _umPanelOpen === true, _umPanelOpen === 'folding') : '';
   var html = cid ? (umHtml ? '<div class="panel-user-media" id="panel-user-media">' + umHtml + '</div>' : '') + renderPanelArtifacts(list, cid, artPanelVariant()) : '';
-  el.innerHTML = html;
+  // Morphed (D4 K-06): the 지시 첨부 disclosure keeps its node across a repaint, so its open grows in place.
+  writePanelPart(el, html);
   el.style.display = html ? '' : 'none';
   // The files each answer produced go under it (convTurnsOf: an artifact goes to
   // the first answer whose turn window holds its turn start).
@@ -16863,215 +16662,177 @@ function syncPanelArtVariant() {
   for (var i = 0; i < cards.length; i++) if (cards[i].getAttribute('variant') !== v) cards[i].setAttribute('variant', v);
 }
 
-function artPeekEl() {
-  return document.getElementById('art-peek');
+// ── The peek (I-05) is @2lab.ai/ui <ui-hovercard id="art-peek">: one card for every tile — the board's face chips
+// (inside <ui-agent-inbox>), the open card's and the panel's <ui-file-card>s, an answer's chips, a user's
+// attachments. The element owns the hover intent, the grace, the quick swap, keyboard focus, Esc, a press, the
+// scroll-away and the placement; the page fills it on ui-open and empties it on ui-closed.
+
+// The file a peek trigger stands for: a keyed card / tile (data-art-cid + data-art-id), or a face chip
+// (data-key="art:<session key>:<file id>" in the inbox's shadow root — the conversation is that session's).
+function artPeekTarget(t) {
+  if (!t || !t.getAttribute) return null;
+  var cid = t.getAttribute('data-art-cid');
+  var id = t.getAttribute('data-art-id');
+  if (!cid && t.hasAttribute('data-art')) {
+    id = String(t.getAttribute('data-art') || '');
+    var key = String(t.getAttribute('data-key') || '');
+    var tail = ':' + id;
+    var sk = id && key.indexOf('art:') === 0 && key.slice(-tail.length) === tail ? key.slice(4, key.length - tail.length) : '';
+    var s = sk ? _sessionCache[sk] : null;
+    cid = s ? s.conversationId : null;
+  }
+  if (!cid || !id) return null;
+  var a = artFind(cid, id);
+  return a ? { cid: cid, a: a } : null;
 }
 
-function showArtPeek(anchor) {
-  var el = artPeekEl();
-  if (!el || !anchor || !anchor.isConnected) return;
-  var cid = anchor.getAttribute('data-art-cid');
-  var a = artFind(cid, anchor.getAttribute('data-art-id'));
-  if (!a) return;
-  clearTimeout(_artPeek.closeTimer);
-  if (_artPeek.anchor === anchor && el.classList.contains('open')) return;
-  _artPeek.anchor = anchor;
-  el.innerHTML = renderArtPeekBody(cid, a);
-  el.classList.add('open');
-  el.setAttribute('aria-hidden', 'false');
-  // Beside the trigger, inside the viewport; never following the pointer.
-  var r = anchor.getBoundingClientRect();
-  var w = el.offsetWidth || 360;
-  var h = el.offsetHeight || 270;
-  var left = Math.min(Math.max(8, r.left), window.innerWidth - w - 8);
-  var top = r.bottom + 8;
-  if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 8);
-  el.style.left = left + 'px';
-  el.style.top = top + 'px';
-  fillArtDocs(el);
+// ui-open: the card is filled for this trigger (or refused: a file the page does not know); a document's head is fetched.
+function onArtPeekOpen(e) {
+  var hit = artPeekTarget(e.detail && e.detail.trigger);
+  if (!hit) { e.preventDefault(); return; }
+  e.target.innerHTML = renderArtPeekBody(hit.cid, hit.a);
+  artPeekFillDoc(e.target);
 }
 
-function hideArtPeek(now) {
-  clearTimeout(_artPeek.openTimer);
-  clearTimeout(_artPeek.closeTimer);
-  var done = function() {
-    var el = artPeekEl();
-    _artPeek.anchor = null;
-    if (!el) return;
-    el.classList.remove('open');
-    el.setAttribute('aria-hidden', 'true');
-    el.innerHTML = ''; // stops a playing preview and drops the iframe
+// ui-closed: the preview goes (a playing clip, the iframe) once the exit has played.
+function onArtPeekClosed(e) {
+  e.target.innerHTML = '';
+}
+
+// The first lines of a markdown / text answer in the peek ([data-art-doc]): the first 64 KB (the route serves
+// ranges), as plain text — the viewer draws the whole document.
+var ART_PEEK_LINES = 24;
+function artPeekFillDoc(root) {
+  var n = root ? root.querySelector('[data-art-doc]') : null;
+  if (!n) return;
+  var key = n.getAttribute('data-art-doc') || '';
+  var sep = key.indexOf('|');
+  if (sep < 0) return;
+  var paint = function(text) {
+    if (n.isConnected) n.textContent = String(text).replace(/\\r\\n?/g, '\\n').split('\\n').slice(0, ART_PEEK_LINES).join('\\n');
   };
-  if (now) done();
-  else _artPeek.closeTimer = setTimeout(done, ART_PEEK_CLOSE_MS);
+  if (_artDocCache[key] != null) { paint(_artDocCache[key]); return; }
+  fetch(artUrl(key.slice(0, sep), key.slice(sep + 1)), { headers: { Range: 'bytes=0-65535' } })
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+    .then(paint)
+    .catch(function() { if (n.isConnected) n.innerHTML = '<span class="art-doc-loading">불러오지 못했습니다</span>'; });
 }
 
-// Fill markdown / text containers ([data-art-doc]) from the content route.
-function fillArtDocs(root) {
-  if (!root) return;
-  Array.prototype.forEach.call(root.querySelectorAll('[data-art-doc]'), function(n) {
-    var key = n.getAttribute('data-art-doc') || '';
-    var kind = n.getAttribute('data-art-doc-kind');
-    var sep = key.indexOf('|');
-    if (sep < 0) return;
-    var paint = function(text) {
-      if (!n.isConnected) return;
-      var src = n.closest('#art-peek') ? text.slice(0, 6000) : text;
-      n.innerHTML = kind === 'markdown' ? '<div class="md-doc">' + renderMarkdownDoc(src) + '</div>' : '<pre class="art-text">' + esc(src) + '</pre>';
-    };
-    if (_artDocCache[key] != null) { paint(_artDocCache[key]); return; }
-    // The minimap needs the head only: ask for the first 64 KB (the route serves
-    // ranges); the viewer fetches, and caches, the whole document.
-    var peek = !!n.closest('#art-peek');
-    fetch(artUrl(key.slice(0, sep), key.slice(sep + 1)), peek ? { headers: { Range: 'bytes=0-65535' } } : undefined)
-      .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
-      .then(function(t) {
-        if (peek) { paint(t); return; }
-        _artDocCache[key] = t.length > 2000000 ? t.slice(0, 2000000) : t;
-        paint(_artDocCache[key]);
-      })
-      .catch(function() { if (n.isConnected) n.innerHTML = '<span class="art-doc-loading">불러오지 못했습니다</span>'; });
-  });
+// The whole text of a markdown / text artifact for the viewer, fetched once (2 MB at most).
+function artDocText(cid, id) {
+  var key = cid + '|' + id;
+  if (_artDocCache[key] != null) return Promise.resolve(_artDocCache[key]);
+  return fetch(artUrl(cid, id))
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+    .then(function(t) {
+      _artDocCache[key] = t.length > 2000000 ? t.slice(0, 2000000) : t;
+      return _artDocCache[key];
+    });
 }
 
-function artModalIsOpen() {
-  var d = document.getElementById('art-modal');
-  return !!(d && (d.open || d.hasAttribute('open')));
+// ── The viewer (I-06, I-07) is @2lab.ai/ui <ui-artifact-viewer id="art-viewer" tiles="none" lang="ko">: no tiles
+// of its own — open(items, index, opener) over the page's cards, chips and tiles, paging through the whole
+// conversation (files newest first, then answers) or an instruction's attachments. The element draws the kind
+// badge, the name and meta, ‹ n / m ›, ← / → / Home / End, the image (zoom), the markdown document, text, audio,
+// video and the calm card of a file only Slack has; 새 탭 / 다운로드 from the url, Slack from items[].actions;
+// Esc / the scrim / ✕ close it and focus goes back to the opener.
+function artViewerEl() {
+  return document.getElementById('art-viewer');
 }
 
-function openArtifactModal(cid, id, opener) {
-  var dlg = document.getElementById('art-modal');
-  if (!dlg || !cid || !id) return;
+function artViewerIsOpen() {
+  var v = artViewerEl();
+  return !!(v && typeof v.index === 'number' && v.index >= 0);
+}
+
+// The file as the viewer pages it: the card's item (artFileItem) plus the page's kind word for a final answer, the
+// title of a user's attachment, why a file has no copy, the Slack permalink as an action, and a document's text
+// once fetched (the element never fetches). The element escapes every string.
+function artViewItem(cid, a) {
+  var item = artFileItem(cid, a);
+  if (a.source === 'final_answer') item.kindLabel = ART_KIND_LABEL.markdown;
+  var notes = [];
+  if (a.title && a.title !== a.name) notes.push(String(a.title));
+  if (!a.stored) notes.push(a.source === 'user_upload' ? umMissingReason(a) : '이 파일은 대시보드에 사본이 없습니다 (100 MB 초과이거나 업로드 전에 지워졌습니다).');
+  if (notes.length) item.meta = notes.join(' · ');
+  if (/^https:\\/\\//i.test(String(a.permalink || ''))) item.actions = [{ id: 'slack', label: 'Slack에서 열기', href: String(a.permalink) }];
+  var text = _artDocCache[cid + '|' + a.id];
+  if ((a.kind === 'markdown' || a.kind === 'text') && a.stored && text != null) item.text = text;
+  return item;
+}
+
+function artViewerItems(cid, list) {
+  return list.map(function(a) { return artViewItem(cid, a); });
+}
+
+// Open the viewer at a file, over the conversation's files — or, for a user's attachment, over the files of its
+// own instruction (from the pinned 지시 첨부 row: every attachment of the session). A tile's clip stops first; the
+// opener (a card, a chip, a tile) takes focus back when the viewer closes.
+function openArtifactViewer(cid, id, opener) {
+  var v = artViewerEl();
+  if (!v || !cid || !id || typeof v.open !== 'function') return;
   var c = _artCache[cid];
   var list = artSortForDisplay((c && c.list) || []);
+  var scope = 'conversation';
   if (umGet(cid, id)) {
-    // A user's attachment pages through the files of its own instruction — or,
-    // opened from the pinned 지시 첨부 row, through every file of the session.
+    scope = 'attachments';
     list = umSiblings(cid, id, !!(opener && opener.closest && opener.closest('#panel-user-media')));
   } else if (!list.some(function(a) { return a.id === id; })) {
     var one = artFind(cid, id);
     if (!one) return;
     list = artSortForDisplay(list.concat([one]));
   }
-  if (_artAudio.el) _artAudio.el.pause();
-  _artModal.cid = cid;
-  _artModal.list = list;
-  _artModal.idx = Math.max(0, list.findIndex(function(a) { return a.id === id; }));
-  _artModal.opener = opener || null;
-  renderArtModal(false);
-  dialogKeep(dlg);
-  if (!artModalIsOpen()) {
-    if (typeof dlg.showModal === 'function') dlg.showModal();
-    else dlg.setAttribute('open', '');
-  }
-  if (!c || c.state !== 'ok') ensureArtifacts(cid);
+  pauseArtCards();
+  _artViewer = { cid: cid, scope: scope, list: list };
+  var at = Math.max(0, list.findIndex(function(a) { return a.id === id; }));
+  // The page's body goes in before the element draws the file: it reads the slot as it renders, so its own frame
+  // for the model's HTML (sandbox="", the url) never loads first.
+  artViewerSlot(v, cid, list[at]);
+  v.open(artViewerItems(cid, list), at, opener && typeof opener.focus === 'function' ? opener : null);
+  if (scope === 'conversation' && (!c || c.state !== 'ok')) ensureArtifacts(cid);
 }
 
-function renderArtModal(headerOnly) {
-  var a = _artModal.list[_artModal.idx];
-  if (!a) return;
-  var cid = _artModal.cid;
-  var n = _artModal.list.length;
-  document.getElementById('art-modal-kind').innerHTML = artGlyph(a.kind) + esc(artKindLabel(a));
-  document.getElementById('art-modal-name').textContent = a.title && a.title !== a.name ? a.title + ' — ' + a.name : a.name;
-  document.getElementById('art-modal-meta').textContent = artMeta(a);
-  document.getElementById('art-modal-pos').textContent = n > 1 ? (_artModal.idx + 1) + ' / ' + n : '';
-  document.getElementById('art-modal-prev').disabled = _artModal.idx <= 0;
-  document.getElementById('art-modal-next').disabled = _artModal.idx >= n - 1;
-  var openA = document.getElementById('art-modal-open');
-  var dlA = document.getElementById('art-modal-download');
-  var slackA = document.getElementById('art-modal-slack');
-  openA.hidden = !a.stored;
-  dlA.hidden = !a.stored;
-  if (a.stored) {
-    openA.href = artUrl(cid, a.id);
-    dlA.href = artUrl(cid, a.id, true);
-  }
-  var slackOk = /^https:\\/\\//i.test(String(a.permalink || ''));
-  slackA.hidden = !slackOk;
-  if (slackOk) slackA.href = a.permalink;
-  if (headerOnly) return;
-  var body = document.getElementById('art-modal-body');
-  body.innerHTML = renderArtModalBody(cid, a);
-  body.scrollTop = 0;
-  fillArtDocs(body);
-  // Start audio / video now: the autoplay attribute alone is not honoured for
-  // markup inserted after load in every browser.
-  var media = body.querySelector('audio, video');
-  if (media && typeof media.play === 'function') {
-    var started = media.play();
-    if (started && typeof started.catch === 'function') started.catch(function() {});
-  }
-}
-
-function artModalStep(delta) {
-  var next = _artModal.idx + delta;
-  if (next < 0 || next >= _artModal.list.length) return;
-  _artModal.idx = next;
-  renderArtModal(false);
-}
-
-function closeArtifactModal() {
-  var dlg = document.getElementById('art-modal');
-  if (!dlg) return;
-  if (typeof dlg.close === 'function' && dlg.open) dialogCloseSoftly(dlg);
-  else { dlg.removeAttribute('open'); artModalClosed(); }
-}
-
-// Runs on every close (button, Escape, backdrop): stop media, give focus back.
-function artModalClosed() {
-  var body = document.getElementById('art-modal-body');
-  if (body) body.innerHTML = '';
-  var opener = _artModal.opener;
-  _artModal.opener = null;
-  // A file card is not focusable itself: focus goes back to its button.
-  var inner = opener && opener.shadowRoot ? opener.shadowRoot.querySelector('button') : null;
-  if (inner) opener = inner;
-  if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus({ preventScroll: true });
-}
-
-// Inline audio (T8): one shared player; ▶ on a tile plays, again pauses.
-function toggleArtAudio(btn) {
-  var cid = btn.getAttribute('data-art-cid');
-  var id = btn.getAttribute('data-art-id');
-  var key = cid + '|' + id;
-  if (!_artAudio.el) {
-    _artAudio.el = new Audio();
-    _artAudio.el.preload = 'auto';
-    _artAudio.el.addEventListener('play', function() { artAudioMark(_artAudio.key); });
-    _artAudio.el.addEventListener('pause', function() { artAudioMark(null); });
-    _artAudio.el.addEventListener('ended', function() { artAudioMark(null); });
-  }
-  var au = _artAudio.el;
-  if (_artAudio.key === key && !au.paused) { au.pause(); return; }
-  _artAudio.key = key;
-  au.src = artUrl(cid, id);
-  au.play().catch(function() { artAudioMark(null); });
-}
-
-function artAudioMark(key) {
-  Array.prototype.forEach.call(document.querySelectorAll('[data-art-play]'), function(b) {
-    var on = !!key && b.getAttribute('data-art-cid') + '|' + b.getAttribute('data-art-id') === key;
-    b.classList.toggle('is-playing', on);
-    b.setAttribute('aria-pressed', on ? 'true' : 'false');
-  });
-}
-
-// Keys, in the capture phase so they are seen before the panel's Escape: the
-// viewer pages with ← / →; Escape with only the minimap open closes the minimap.
-function artHandleKey(e) {
-  if (artModalIsOpen()) {
-    // A focused audio / video / field keeps its own arrow keys (seeking, caret).
-    var tag = e.target && e.target.tagName ? String(e.target.tagName).toUpperCase() : '';
-    if (tag === 'AUDIO' || tag === 'VIDEO' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-    if (e.key === 'ArrowRight') { e.preventDefault(); artModalStep(1); }
-    else if (e.key === 'ArrowLeft') { e.preventDefault(); artModalStep(-1); }
+// The page's body for a file (artViewerPreview) as the viewer's slot="preview" child — put in, swapped for another
+// file's, or taken out (null, or a file the element draws itself: the slot's absence hands the stage back to it).
+function artViewerSlot(v, cid, a) {
+  var html = a ? artViewerPreview(cid, a) : '';
+  var slot = v.querySelector('[slot="preview"]');
+  if (!html) {
+    if (slot) slot.remove();
     return;
   }
-  if (e.key === 'Escape' && _artPeek.anchor) {
-    e.stopPropagation();
-    hideArtPeek(true);
+  if (!slot) {
+    slot = document.createElement('div');
+    slot.setAttribute('slot', 'preview');
+    slot.className = 'art-viewer-preview';
+    v.appendChild(slot);
   }
+  var mark = cid + '|' + a.id;
+  if (slot.getAttribute('data-art-for') !== mark) {
+    slot.setAttribute('data-art-for', mark);
+    slot.innerHTML = html;
+  }
+}
+
+// ui-view: the shown file — the page's body for it when it has one (artViewerSlot), else the element's; a markdown
+// / text document without its text yet is fetched and the list handed back with it.
+function syncArtViewer(detail) {
+  var v = artViewerEl();
+  var cid = _artViewer.cid;
+  var a = detail && cid ? _artViewer.list.find(function(x) { return x.id === detail.id; }) : null;
+  if (!v || !a) return;
+  artViewerSlot(v, cid, a);
+  if ((a.kind === 'markdown' || a.kind === 'text') && a.stored && _artDocCache[cid + '|' + a.id] == null) {
+    artDocText(cid, a.id)
+      .then(function() { if (_artViewer.cid === cid && artViewerIsOpen()) v.data = { items: artViewerItems(cid, _artViewer.list) }; })
+      .catch(function() {});
+  }
+}
+
+// Every <ui-file-card playable> stops: the viewer opens over the page.
+function pauseArtCards() {
+  var cards = document.querySelectorAll('ui-file-card[playable]');
+  for (var i = 0; i < cards.length; i++) if (cards[i].playing && typeof cards[i].pause === 'function') cards[i].pause();
 }
 
 // Every <ui-file-card data-art-id> a render puts in the document — the open card (morphed on every push), the
@@ -17106,79 +16867,49 @@ function fcHydrateIn(node) {
 })();
 
 (function initArtifactInteractions() {
-  var canHover = !!(window.matchMedia && window.matchMedia('(hover: hover)').matches);
-  var trigger = function(t) { return t && t.closest ? t.closest('[data-art-id]:not([data-art-play])') : null; };
-  document.addEventListener('pointerover', function(e) {
-    if (!canHover || e.pointerType === 'touch') return;
-    var t = trigger(e.target);
-    if (t) {
-      clearTimeout(_artPeek.closeTimer);
-      if (_artPeek.anchor === t) return;
-      clearTimeout(_artPeek.openTimer);
-      // Moving between chips while a minimap is open swaps it quickly.
-      var warm = !!_artPeek.anchor;
-      _artPeek.openTimer = setTimeout(function() { showArtPeek(t); }, warm ? 90 : ART_PEEK_DELAY_MS);
-    } else if (e.target.closest && e.target.closest('#art-peek')) {
-      clearTimeout(_artPeek.closeTimer);
-    }
-  });
-  document.addEventListener('pointerout', function(e) {
-    var from = e.target.closest ? (trigger(e.target) || e.target.closest('#art-peek')) : null;
-    if (!from) return;
-    var to = e.relatedTarget;
-    if (to && to.closest && (to.closest('#art-peek') || trigger(to) === from)) return;
-    clearTimeout(_artPeek.openTimer);
-    if (_artPeek.anchor) hideArtPeek(false);
-  });
-  // A file card's button is in its shadow root: the event comes from the card, the focus ring is inside it.
-  var focusVisible = function(t) {
-    var inner = t.shadowRoot && t.shadowRoot.activeElement;
-    return (inner || t).matches(':focus-visible');
-  };
-  document.addEventListener('focusin', function(e) {
-    var t = trigger(e.target);
-    if (t && !t.closest('#art-modal') && focusVisible(t)) { clearTimeout(_artPeek.openTimer); showArtPeek(t); }
-  });
-  // <ui-file-card> asks to open its file (ui-open): the page's viewer, at it, over the conversation's files.
+  // <ui-file-card> asks to open its file (ui-open): the viewer, at it, over the conversation's files. (The
+  // hovercard's ui-open — its detail a trigger — is answered on the card below.)
   document.addEventListener('ui-open', function(e) {
     var t = e.target;
     if (!t || t.localName !== 'ui-file-card' || !t.hasAttribute('data-art-id')) return;
-    hideArtPeek(true);
-    openArtifactModal(t.getAttribute('data-art-cid'), t.getAttribute('data-art-id'), t);
+    openArtifactViewer(t.getAttribute('data-art-cid'), t.getAttribute('data-art-id'), t);
   });
-  document.addEventListener('focusout', function(e) {
-    if (trigger(e.target)) hideArtPeek(false);
-  });
+  // A user's image tile (page markup), or the peek itself (its audio controls excepted): the same viewer.
   document.addEventListener('click', function(e) {
-    var play = e.target.closest ? e.target.closest('[data-art-play]') : null;
-    if (play) { e.preventDefault(); toggleArtAudio(play); return; }
-    var t = trigger(e.target);
-    if (t && t.localName === 'ui-file-card') return; // its ui-open answers
-    if (t && !t.closest('#art-modal')) {
+    if (!e.target.closest) return;
+    var tile = e.target.closest('.um-tile[data-art-id]');
+    if (tile) {
       e.preventDefault();
-      hideArtPeek(true);
-      openArtifactModal(t.getAttribute('data-art-cid'), t.getAttribute('data-art-id'), t);
+      openArtifactViewer(tile.getAttribute('data-art-cid'), tile.getAttribute('data-art-id'), tile);
       return;
     }
-    // A click on the minimap itself opens the same artifact full size (its audio controls excepted).
-    if (e.target.closest && e.target.closest('#art-peek .art-peek-media') && !e.target.closest('audio') && _artPeek.anchor) {
-      var anchor = _artPeek.anchor;
-      hideArtPeek(true);
-      openArtifactModal(anchor.getAttribute('data-art-cid'), anchor.getAttribute('data-art-id'), anchor);
-      return;
+    var peek = document.getElementById('art-peek');
+    if (peek && e.target.closest('#art-peek .art-peek-media') && !e.target.closest('audio')) {
+      var anchor = peek.trigger;
+      var hit = artPeekTarget(anchor);
+      peek.hide();
+      if (hit) openArtifactViewer(hit.cid, hit.a.id, anchor);
     }
-    var zoom = e.target.closest ? e.target.closest('.art-full-img') : null;
-    if (zoom) zoom.parentNode.classList.toggle('is-zoomed');
   });
-  window.addEventListener('keydown', artHandleKey, true);
-  window.addEventListener('scroll', function() { if (_artPeek.anchor) hideArtPeek(true); }, true);
-  var dlg = document.getElementById('art-modal');
-  if (dlg) {
-    dlg.addEventListener('close', artModalClosed);
-    // Escape leaves the same way as the close button (the 180ms fade, then close()).
-    dlg.addEventListener('cancel', function(e) { e.preventDefault(); closeArtifactModal(); });
-    // A click on the backdrop (the dialog element itself, outside its box) closes.
-    dlg.addEventListener('click', function(e) { if (e.target === dlg) closeArtifactModal(); });
+  var peek = document.getElementById('art-peek');
+  if (peek) {
+    peek.addEventListener('ui-open', onArtPeekOpen);
+    peek.addEventListener('ui-closed', onArtPeekClosed);
+  }
+  var viewer = artViewerEl();
+  if (viewer) {
+    // The page's own body (model HTML with its scripts, a PDF) goes in before the element draws a step's body
+    // (ui-before-view, 0.12.0) — so a page is never loaded twice; ui-view keeps the slot in step after it.
+    viewer.addEventListener('ui-before-view', function(e) { syncArtViewer(e.detail); });
+    viewer.addEventListener('ui-view', function(e) { syncArtViewer(e.detail); });
+    // Closed by the person (Esc, the scrim, ✕): the page's body leaves once the exit has played.
+    viewer.addEventListener('ui-close', function() {
+      _artViewer = { cid: null, scope: 'conversation', list: [] };
+      setTimeout(function() {
+        var slot = viewer.querySelector('[slot="preview"]');
+        if (slot && !artViewerIsOpen()) slot.remove();
+      }, 240);
+    });
   }
 })();
 
@@ -17221,6 +16952,7 @@ function fcHydrateIn(node) {
   try { saved = localStorage.getItem(STATS_DETAIL_KEY); } catch (_e) {}
   _statsDetailOpen = saved === 'open';
   paintStatsStrip();
+  paintStatCards();
   var el = document.getElementById('stats-strip');
   if (!el) return;
   el.addEventListener('ui-period', function(e) {
@@ -17231,30 +16963,31 @@ function fcHydrateIn(node) {
     try { localStorage.setItem(STATS_DETAIL_KEY, _statsDetailOpen ? 'open' : 'closed'); } catch (_e) {}
   });
 })();
-// <ui-disclosure> (K-06): Raw, a system turn and a card's system instruction open and close by
-// themselves; the page only keeps a card's choice across its morph re-render (_ioOpen).
-// @2lab.ai/ui 0.5.0 toggles a <ui-disclosure> only when the click's target is inside its own head, and a click on
-// slotted summary content (a System row's words and badge, a card's instruction line) keeps the light-DOM span as
-// its target — so it did nothing (D1-GAPS G4-4). The page toggles it then, with the element's toggle() (its
-// cancelable ui-toggle, its motion) — unless the element already toggled itself in that click (a fixed release).
-// Pure: the disclosure whose slotted summary a click target sits in, or null.
-function dcSummaryHost(t) {
-  var s = t && t.closest ? t.closest('[slot="summary"]') : null;
-  var d = s ? s.parentElement : null;
-  return d && d.tagName === 'UI-DISCLOSURE' ? d : null;
-}
+// <ui-disclosure> (K-06): Raw, a system turn and a card's system instruction (D1), and — D4 — 세션 정보, Tasks,
+// 지시 첨부 and the completed goals open and close by themselves (the row or the external trigger, Enter / Space,
+// the grow and the fold, inert while closed; a click on the slotted summary's words counts since 0.8.0). The page
+// keeps each choice (_ioOpen, _panelInfoOpen, _panelTasksOpen, _umPanelOpen, _goalHistoryOpen) from the element's
+// cancelable ui-toggle; a region it paints only while open is painted on the way open (so the element grows
+// around it) and, as 'folding', kept through the fold until the element's ui-toggled says the region has settled —
+// then its nodes go.
 (function initDisclosures() {
-  var pending = null; // the disclosure a click on its summary content is passing through
-  document.addEventListener('click', function(e) { pending = dcSummaryHost(e.target); }, true);
   document.addEventListener('ui-toggle', function(e) {
     var t = e.target;
-    if (t === pending) pending = null;
-    if (t && t.classList && t.classList.contains('io-sys')) ioSysToggle(t.getAttribute('data-cid') || '', e.detail && e.detail.open);
+    if (!t || !t.classList || t.tagName !== 'UI-DISCLOSURE') return;
+    var open = !!(e.detail && e.detail.open);
+    if (t.classList.contains('io-sys')) ioSysToggle(t.getAttribute('data-cid') || '', open);
+    else if (t.classList.contains('cg-hx')) goalHistoryToggle(t.getAttribute('data-hx') || '', open);
+    else if (t.classList.contains('pi-dc')) { _panelInfoOpen = open || 'folding'; if (open) renderPanelInfo(); }
+    else if (t.classList.contains('panel-tasks-dc')) { _panelTasksOpen = open || 'folding'; if (open) repaintPanelTasks(); }
+    else if (t.classList.contains('panel-um-dc')) { _umPanelOpen = open || 'folding'; if (open) renderPanelArtifactsSection(); }
   });
-  document.addEventListener('click', function() {
-    var d = pending;
-    pending = null;
-    if (d && d.isConnected && typeof d.toggle === 'function') d.toggle();
+  document.addEventListener('ui-toggled', function(e) {
+    var t = e.target;
+    if (!t || !t.classList || t.tagName !== 'UI-DISCLOSURE' || (e.detail && e.detail.open)) return;
+    if (t.classList.contains('cg-hx')) goalHistoryFolded(t.getAttribute('data-hx') || '');
+    else if (t.classList.contains('pi-dc') && _panelInfoOpen === 'folding') { _panelInfoOpen = false; renderPanelInfo(); }
+    else if (t.classList.contains('panel-tasks-dc') && _panelTasksOpen === 'folding') { _panelTasksOpen = false; repaintPanelTasks(); }
+    else if (t.classList.contains('panel-um-dc') && _umPanelOpen === 'folding') { _umPanelOpen = false; renderPanelArtifactsSection(); }
   });
 })();
 // Spec 12 §4.3 — the panel's agent section: a path step drills into that node
@@ -17280,9 +17013,6 @@ function dcSummaryHost(t) {
 // The task then runs in the chosen Slack channel; its card arrives over the
 // WebSocket like any other session.
 var NT_DRAFT_KEY = 'soma-nt-draft';
-var NT_MAX_RECORD_SEC = 600;
-var NT_ICON_X = '<i data-ui-icon="close"></i>';
-var NT_ICON_FILE = '<i data-ui-icon="file"></i>';
 var _ntCtx = null;
 var _ntState = null;
 var _ntBusy = false;
@@ -17337,47 +17067,6 @@ function ntCanSubmit(state, attachments) {
   return String(state.prompt || '').trim().length > 0 || (attachments || []).length > 0;
 }
 
-function ntPickRecorderMime(isSupported) {
-  // MP4/AAC first (Safari, Chrome, Edge), then Ogg/Opus (Firefox). WebM last:
-  // a .webm file reads as video and would skip transcription.
-  var candidates = ['audio/mp4', 'audio/ogg;codecs=opus', 'audio/webm;codecs=opus', 'audio/webm'];
-  for (var i = 0; i < candidates.length; i++) {
-    try {
-      if (isSupported(candidates[i])) return candidates[i];
-    } catch (e) {}
-  }
-  return '';
-}
-
-function ntExtForMime(m) {
-  var t = String(m || '').toLowerCase();
-  if (t.indexOf('audio/mp4') === 0 || t.indexOf('audio/aac') === 0 || t.indexOf('audio/x-m4a') === 0) return 'm4a';
-  if (t.indexOf('ogg') >= 0) return 'ogg';
-  if (t.indexOf('webm') >= 0) return 'webm';
-  if (t.indexOf('mpeg') >= 0) return 'mp3';
-  if (t.indexOf('wav') >= 0) return 'wav';
-  return 'bin';
-}
-
-function ntFormatBytes(n) {
-  if (n < 1024) return n + ' B';
-  if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
-  return Math.round((n / 1024 / 1024) * 10) / 10 + ' MB';
-}
-
-function ntFormatDuration(sec) {
-  var s = Math.max(0, Math.floor(sec));
-  var r = s % 60;
-  return Math.floor(s / 60) + ':' + (r < 10 ? '0' : '') + r;
-}
-
-function ntStamp(d) {
-  var p = function (n) {
-    return (n < 10 ? '0' : '') + n;
-  };
-  return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
-}
-
 function ntEl(id) {
   return document.getElementById(id);
 }
@@ -17392,7 +17081,8 @@ function ntIsTouch() {
 }
 
 function ntIsTypingTarget(t) {
-  if (document.querySelector('dialog[open]')) return true;
+  // A dialog on top (the page's, a <ui-dialog>, the artifact viewer's) keeps the key.
+  if (document.querySelector('dialog[open], ui-dialog[open]') || artViewerIsOpen()) return true;
   if (!t) return false;
   var tag = String(t.tagName || '').toUpperCase();
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || !!t.isContentEditable;
@@ -17427,15 +17117,12 @@ function ntSetError(text) {
 
 async function openNewTask() {
   var dlg = ntEl('nt-dialog');
-  if (!dlg || dlg.open) return;
+  if (!dlg || dlg.open || typeof dlg.show !== 'function') return;
   document.body.classList.add('nt-open');
   ntSetError('');
-  if (typeof dlg.showModal === 'function') dlg.showModal();
-  else dlg.setAttribute('open', '');
-  ntSyncViewport();
-  requestAnimationFrame(function () {
-    dlg.classList.add('is-shown');
-  });
+  // <ui-dialog> (H-01): show() opens it modal at once — the scrim, the rise, the focus trap, the phone sheet that
+  // follows the visual viewport (above the soft keyboard) and the focus return to the opener are the element's.
+  dlg.show();
   if (!_ntRequestId) _ntRequestId = ntNewRequestId();
   if (_ntState) ntRender();
   else paintNtComposer();
@@ -17449,22 +17136,20 @@ async function openNewTask() {
   await ntLoadContext();
 }
 
+// The page closes it (a launched task, the FAB's second press): hide() runs the element's exit (settle out, 180ms;
+// a fade under reduced motion) and gives focus back; what the page owns leaves at once (ntOnClosed).
 function closeNewTask() {
   var dlg = ntEl('nt-dialog');
   if (!dlg || !dlg.open) return;
-  ntQuietComposer();
-  dlg.classList.remove('is-shown');
-  var reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-  setTimeout(function () {
-    if (dlg.open) dlg.close();
-  }, reduce ? 0 : 180);
+  ntOnClosed();
+  if (typeof dlg.hide === 'function') dlg.hide();
 }
 
+// The sheet is going — the person's Esc / scrim / ✕ (the element's ui-close) or the page's closeNewTask: the FAB
+// comes back; a recording in progress is dropped and a preview stops.
 function ntOnClosed() {
   document.body.classList.remove('nt-open');
   ntQuietComposer();
-  var dlg = ntEl('nt-dialog');
-  if (dlg) dlg.classList.remove('is-shown');
 }
 
 async function ntLoadContext() {
@@ -17543,7 +17228,10 @@ function ntRender() {
 }
 
 // <ui-composer id="nt-composer">: the instruction field, attachments, voice and 작업 시작. The limits come from the
-// context (before it: the element's defaults); 카메라 is a tool on touch screens only (PC has drop and paste).
+// context (before it: the element's defaults) — maxTotalBytes is the server's cap on all files together (the
+// element rejects the file that crosses it and says so). A plain Enter is a new line, ⌘/Ctrl+Enter starts the task
+// (enter: 'newline', with its key hint on desktop); 카메라 is the element's own tool on touch screens (the back
+// camera; PC has drop and paste).
 function ntComposerData() {
   if (_ntValue === null) {
     var draft = ntReadDraft();
@@ -17558,13 +17246,16 @@ function ntComposerData() {
     busy: _ntBusy,
     minRows: 6,
     maxRows: 14,
-    tools: ntIsTouch() ? [{ id: 'camera', label: '카메라', showLabel: true }] : [],
+    enter: 'newline',
+    hint: true,
+    camera: 'environment',
   };
   var lim = _ntCtx && _ntCtx.limits;
   if (lim) {
     d.maxLength = lim.maxPromptChars;
     d.maxFiles = lim.maxFiles;
     d.maxFileSize = lim.maxFileBytes;
+    d.maxTotalBytes = lim.maxTotalBytes;
   }
   return d;
 }
@@ -17572,13 +17263,12 @@ function paintNtComposer() {
   var el = ntEl('nt-composer');
   if (el) el.data = ntComposerData();
 }
-// Closing the sheet discards a recording in progress: the composer drops it when it turns read-only.
+// Closing the sheet discards a recording in progress and stops a voice note's preview (the text and files stay).
 function ntQuietComposer() {
   var el = ntEl('nt-composer');
-  if (!el || !el.data) return;
-  var d = el.data;
-  el.data = Object.assign({}, d, { disabled: true });
-  el.data = d;
+  if (!el || typeof el.cancelRecording !== 'function') return;
+  el.cancelRecording();
+  el.pause();
 }
 
 function ntRenderBattery() {
@@ -17630,27 +17320,6 @@ function ntToggle(which) {
       navigator.vibrate(8);
     } catch (e) {}
   }
-}
-
-function ntKindOf(mime) {
-  var t = String(mime || '');
-  if (t.indexOf('image/') === 0) return 'image';
-  if (t.indexOf('audio/') === 0) return 'audio';
-  if (t.indexOf('video/') === 0) return 'video';
-  return 'file';
-}
-
-// 카메라 (touch): the native camera input; a photo is named for when it was taken, then handed to the composer.
-function ntAddCamera(list) {
-  var el = ntEl('nt-composer');
-  if (!el || !list || !list.length) return;
-  var files = Array.prototype.slice.call(list).map(function (f) {
-    var type = f.type || 'image/jpeg';
-    if (ntKindOf(type) !== 'image') return f;
-    var ext = (String(f.name || '').split('.').pop() || 'jpg').toLowerCase();
-    return new File([f], 'photo-' + ntStamp(new Date()) + '.' + ext, { type: type, lastModified: f.lastModified });
-  });
-  el.addFiles(files);
 }
 
 // The composer's files as the request's attachments (base64, as the server takes them).
@@ -17794,58 +17463,26 @@ async function ntOpenLaunched(launch) {
   else if (launch.permalink) window.open(launch.permalink, '_blank', 'noopener');
 }
 
-function ntSyncViewport() {
-  var vv = window.visualViewport;
-  var dlg = ntEl('nt-dialog');
-  if (!vv || !dlg) return;
-  dlg.style.setProperty('--nt-vvh', Math.round(vv.height) + 'px');
-  dlg.style.setProperty('--nt-vvt', Math.round(vv.offsetTop) + 'px');
-}
-
 function ntInit() {
   var dlg = ntEl('nt-dialog');
   if (!dlg) return;
-  // Esc closes with the same animation as the close button.
-  dlg.addEventListener('cancel', function (e) {
-    e.preventDefault();
-    closeNewTask();
-  });
-  dlg.addEventListener('click', function (e) {
-    if (e.target === dlg) closeNewTask();
+  // <ui-dialog>: Esc, the scrim and ✕ ask to close (ui-close) — the element then settles out and gives focus back;
+  // the page lets go of what it owns.
+  dlg.addEventListener('ui-close', function () {
+    ntOnClosed();
   });
   // <ui-composer id="nt-composer"> (D2 H-05..H-09): it takes drops and pasted screenshots itself (named
-  // screenshot-…), records the voice note, and sends on ⌘/Ctrl+Enter.
+  // screenshot-…), records the voice note, opens the phone camera, caps the files (each and together) and sends
+  // on ⌘/Ctrl+Enter (enter: 'newline').
   var composer = ntEl('nt-composer');
-  // A plain Enter is a new line here (a long instruction; ⌘/Ctrl+Enter starts the task): the event stops at the
-  // element before its own Enter-sends rule, and the field still takes the line break.
-  composer.addEventListener(
-    'keydown',
-    function (e) {
-      if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) e.stopPropagation();
-    },
-    true,
-  );
   composer.addEventListener('ui-input', function (e) {
     var v = e.detail ? String(e.detail.value || '') : '';
     if (_ntState) _ntState.prompt = v;
     ntSaveDraft(v);
   });
-  // The server also caps the files together: the one that crosses it goes back out, with the reason.
-  composer.addEventListener('ui-files', function (e) {
-    var files = (e.detail && e.detail.files) || [];
-    var max = _ntCtx ? _ntCtx.limits.maxTotalBytes : 0;
-    var total = files.reduce(function (sum, f) { return sum + (f.size || 0); }, 0);
-    if (max && total > max && files.length) {
-      composer.removeFile(files.length - 1);
-      ntSetError('첨부는 모두 합쳐 ' + ntFormatBytes(max) + '까지입니다');
-    }
-  });
   composer.addEventListener('ui-submit', function (e) {
     e.preventDefault();
     submitNewTask(e.detail);
-  });
-  composer.addEventListener('ui-tool', function (e) {
-    if (e.detail && e.detail.id === 'camera') ntEl('nt-camera-input').click();
   });
   paintNtComposer();
   // N opens the composer from anywhere outside a text field.
@@ -17876,11 +17513,6 @@ function ntInit() {
       fab.classList.toggle('is-floating', !entries[0].isIntersecting);
     }).observe(topBtn);
   }
-  // Phones: keep the sheet (and its toolbar) above the on-screen keyboard.
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', ntSyncViewport);
-    window.visualViewport.addEventListener('scroll', ntSyncViewport);
-  }
   var isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
   var hint = ntEl('nt-submit-hint');
   if (hint) hint.textContent = isMac ? '⌘↵' : 'Ctrl+↵';
@@ -17889,16 +17521,10 @@ function ntInit() {
 }
 
 // ── Drawer geometry (SSOT 2026-10-24) ──
-// The drawer follows the visual viewport, so its composer stays above the
-// on-screen keyboard (the new-task sheet's ntSyncViewport, for the drawer).
-function syncPanelViewport() {
-  var vv = window.visualViewport;
-  var panel = document.getElementById('slide-panel');
-  if (!vv || !panel) return;
-  panel.style.setProperty('--pv-h', Math.round(vv.height) + 'px');
-  panel.style.setProperty('--pv-t', Math.round(vv.offsetTop) + 'px');
-}
-// Docked, the drawer sits under the top bar (sticky, SSOT 2026-10-29 T3 — always on screen).
+// The drawer follows the visual viewport by itself (<ui-drawer>, D4 E-01: its box ends above the
+// on-screen keyboard in both modes — the New task <ui-dialog> does the same). The page only says
+// where the sticky top bar ends, so the docked drawer sits under it (--topbar-b → --ui-drawer-top;
+// SSOT 2026-10-29 T3 — the bar is always on screen).
 function syncTopbarBottom() {
   var bar = document.querySelector('.topbar');
   if (!bar) return;
@@ -17906,11 +17532,6 @@ function syncTopbarBottom() {
   document.documentElement.style.setProperty('--topbar-b', b + 'px');
 }
 (function initPanelViewport() {
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', syncPanelViewport);
-    window.visualViewport.addEventListener('scroll', syncPanelViewport);
-  }
-  syncPanelViewport();
   var queued = false;
   function queueTopbar() {
     if (queued) return;
@@ -17953,23 +17574,19 @@ loadUsers();
 loadSessions();
 loadStats();
 connectWs();
-// ── Steering composer (task view T1.5; dashboard batch 2) ──
-// The panel's composer is <ui-agent-steering>: a multiline instruction to the
-// session above its follow-up queue. The element owns the field — Enter, Shift+
-// Enter, ⌘/Ctrl+Enter, an IME composition (한글) that never sends, a phone's Enter
-// as a line break, the field's growth — and the queue's rows; this page owns what
-// goes in its slots: images (pasted, dropped or picked), files and voice notes.
-// The files ride in the command body as base64 (pcCommandBody) under the new-task
-// limits; the server puts them in the session's Slack thread like files the user
-// attached there. The pure helpers of the new-task composer are shared (ntKindOf,
-// ntStamp, ntFormatBytes, ntFormatDuration, ntPickRecorderMime, ntExtForMime).
+// ── Steering composer (task view T1.5; dashboard batch 2; E-30 0.10.0) ──
+// The panel's composer is <ui-agent-steering> with a <ui-composer slot="composer">
+// as its field: a multiline instruction to the session above its follow-up queue.
+// The steering owns the queue, the modes (Enter queues, ⌘/Ctrl+Enter steers) and
+// the composer's words and state; the composer owns the field — an IME composition
+// (한글) that never sends, a phone's Enter as a line break, its growth — and the
+// files: images (pasted, dropped or picked), files and voice notes, their chips,
+// the new-task limits and its error line. A note leaves as the steering's ui-submit
+// with the composer's File objects; the page reads them as base64 into the command
+// body (pcCommandBody), and the server puts them in the session's Slack thread like
+// files the user attached there.
 var PC_LIMITS = { maxFiles: 10, maxFileBytes: 20971520, maxTotalBytes: 31457280 };
-var _pcFiles = [];
-var _pcSeq = 0;
-var _pcRec = null;
-var _pcRecGen = 0; // bumped by pcReset: a recording (or a pending mic permission) from before belongs to no one
-var _pcFiling = null; // a stopped recording not filed yet (its done promise) — every send waits on it (#488)
-var _pcSending = false; // one send at a time, from the first wait on
+var _pcSending = false; // one send at a time, while its files are read
 function pcCanSend(message, files) {
   return String(message || '').trim().length > 0 || (files || []).length > 0;
 }
@@ -17981,242 +17598,55 @@ function pcCommandBody(message, files) {
     attachments: list.map(function(f) { return { name: f.name, mimetype: f.mimetype, data: f.data }; }),
   };
 }
-// What this page holds for the next message: its files, and a recording still
-// running (the send files it first) — the element lets a note with no text go then.
-function pcHeldFiles() {
-  return (_pcFiles ? _pcFiles.length : 0) + (_pcRec ? 1 : 0);
+// The composer's own data: the limits (the steering sets its placeholder, name and
+// off state, and turns its hint off — the steering's key hints stay below it).
+function pcComposerData() {
+  return { maxFiles: PC_LIMITS.maxFiles, maxFileSize: PC_LIMITS.maxFileBytes, maxTotalBytes: PC_LIMITS.maxTotalBytes, minRows: 1, maxRows: 8 };
 }
-// The held files changed: the element's data follows (attachments).
-function pcSyncSteer() {
-  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  if (s) renderPanelComposer(s);
+function pcComposerSetup(c) {
+  if (c) c.data = Object.assign({}, c.data || {}, pcComposerData());
 }
 // A fresh element for another session: what the old one showed — the text being
-// typed, notes in flight, a failed send's Retry — was the other session's. The
-// page's slotted tools and chips move across; the listeners sit on #panel-command.
+// typed, its files, notes in flight, a failed send's Retry — was the other
+// session's. The listeners sit on #panel-command.
 function pcFreshSteer() {
   var old = document.getElementById('cmd-steer');
   if (!old) return;
   var el = document.createElement('ui-agent-steering');
   el.id = 'cmd-steer';
   el.setAttribute('lang', 'ko');
-  while (old.firstChild) el.appendChild(old.firstChild);
+  var c = document.createElement('ui-composer');
+  c.id = 'pc-composer';
+  c.slot = 'composer';
+  c.setAttribute('lang', 'ko');
+  pcComposerSetup(c);
+  el.appendChild(c);
   old.replaceWith(el);
+  _pcNoteFiles = Object.create(null);
 }
-function pcSetError(text) {
-  var el = document.getElementById('pc-error');
-  if (!el) return;
-  el.textContent = text || '';
-  el.hidden = !text;
-}
-function pcAddFiles(list) {
-  Array.prototype.slice.call(list || []).forEach(function(f) {
-    pcAddBlob(f, f.name || 'file', f.type || 'application/octet-stream');
-  });
-}
-function pcAddBlob(blob, name, mimetype, extra) {
-  if (_pcFiles.length >= PC_LIMITS.maxFiles) { pcSetError('첨부는 최대 ' + PC_LIMITS.maxFiles + '개까지 가능합니다'); return; }
-  if (!blob.size) { pcSetError(name + ' — 빈 파일은 첨부할 수 없습니다'); return; }
-  if (blob.size > PC_LIMITS.maxFileBytes) { pcSetError(name + ' — 파일 하나는 ' + ntFormatBytes(PC_LIMITS.maxFileBytes) + '까지 첨부할 수 있습니다'); return; }
-  var total = _pcFiles.reduce(function(sum, f) { return sum + f.size; }, 0);
-  if (total + blob.size > PC_LIMITS.maxTotalBytes) { pcSetError('첨부는 모두 합쳐 ' + ntFormatBytes(PC_LIMITS.maxTotalBytes) + '까지입니다'); return; }
-  pcSetError('');
-  var entry = { id: ++_pcSeq, name: name, mimetype: mimetype, size: blob.size, kind: ntKindOf(mimetype), data: null, url: null, duration: extra && extra.duration ? extra.duration : 0 };
-  if (entry.kind === 'image' || entry.kind === 'audio') {
-    try { entry.url = URL.createObjectURL(blob); } catch (_e) {}
-  }
-  entry.ready = new Promise(function(resolve, reject) {
-    var reader = new FileReader();
-    reader.onload = function() {
-      var str = String(reader.result || '');
-      var comma = str.indexOf(',');
-      entry.data = comma >= 0 ? str.slice(comma + 1) : '';
-      resolve();
-    };
-    reader.onerror = function() { reject(new Error(name)); };
-    reader.readAsDataURL(blob);
-  });
-  entry.ready.catch(function() {
-    pcRemoveFile(entry.id);
-    pcSetError(name + ' — 파일을 읽지 못했습니다');
-  });
-  _pcFiles.push(entry);
-  pcRenderFiles();
-}
-function pcRemoveFile(id) {
-  _pcFiles = _pcFiles.filter(function(f) {
-    if (f.id === id && f.url) { try { URL.revokeObjectURL(f.url); } catch (_e) {} }
-    return f.id !== id;
-  });
-  pcRenderFiles();
-}
-// The chips of the new-task composer (.nt-att), with this composer's remove.
-function pcRenderFiles() {
-  var box = document.getElementById('pc-attachments');
-  if (!box) return;
-  box.innerHTML = _pcFiles.map(function(f) {
-    var thumb = f.kind === 'image' && f.url
-      ? '<img class="nt-att-thumb" src="' + escAttr(f.url) + '" alt="">'
-      : '<span class="nt-att-thumb" aria-hidden="true">' + NT_ICON_FILE + '</span>';
-    var meta = (f.duration ? ntFormatDuration(f.duration) + ' · ' : '') + ntFormatBytes(f.size);
-    return '<div class="nt-att" data-id="' + f.id + '">' + thumb
-      + '<span class="nt-att-text"><span class="nt-att-name" title="' + escAttr(f.name) + '">' + esc(f.name) + '</span>'
-      + '<span class="nt-att-meta">' + esc(meta) + '</span></span>'
-      + '<button type="button" class="nt-att-remove" aria-label="' + escAttr(f.name) + ' 삭제" onclick="pcRemoveFile(' + f.id + ')">' + NT_ICON_X + '</button></div>';
-  }).join('');
-  box.scrollLeft = box.scrollWidth;
-  pcSyncSteer();
-}
-// Every file and any recording go with the session they were added for.
+// The panel closed, or its session is no longer open to this viewer: no recording
+// (discarded) and no files go on; the text stays in the field.
 function pcReset() {
-  _pcRecGen++;
-  _pcFiling = null;
-  if (_pcRec) pcStopRecording(false);
-  _pcFiles.forEach(function(f) { if (f.url) { try { URL.revokeObjectURL(f.url); } catch (_e) {} } });
-  _pcFiles = [];
-  pcRenderFiles();
-  pcSetError('');
+  var c = document.getElementById('pc-composer');
+  if (!c || typeof c.cancelRecording !== 'function') return;
+  c.cancelRecording();
+  if (typeof c.pause === 'function') c.pause();
+  for (var i = (c.files || []).length - 1; i >= 0; i--) c.removeFile(i);
 }
-// A recording belongs to the session it was started for (gen + key): a mic
-// permission granted, or a recorder that stops, after the panel closed or moved
-// to another card attaches nothing and releases the mic.
-function pcRecCurrent(gen, key) {
-  return gen === _pcRecGen && key === panelSessionKey && !!panelOpen;
-}
-async function pcToggleRecording() {
-  if (_pcRec) { pcStopRecording(true); return; }
-  var canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
-  if (!canRecord) { document.getElementById('pc-audio-input').click(); return; }
-  var gen = _pcRecGen;
-  var key = panelSessionKey;
-  var stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (e) {
-    if (!pcRecCurrent(gen, key)) return;
-    pcSetError('마이크를 쓸 수 없습니다 (' + (e && e.name ? e.name : '권한 거부') + ') — 기기 녹음기로 녹음해 첨부해 주세요');
-    document.getElementById('pc-audio-input').click();
-    return;
-  }
-  if (!pcRecCurrent(gen, key) || _pcRec) {
-    stream.getTracks().forEach(function(t) { t.stop(); });
-    return;
-  }
-  var mime = ntPickRecorderMime(function(t) { return MediaRecorder.isTypeSupported(t); });
-  var recorder;
-  try { recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream); } catch (_e) { recorder = new MediaRecorder(stream); }
-  var state = { recorder: recorder, stream: stream, chunks: [], started: Date.now(), mime: recorder.mimeType || mime || 'audio/mp4', keep: true, finished: false, timer: 0, raf: 0, audioCtx: null, gen: gen, key: key };
-  state.done = new Promise(function(resolve) { state.resolve = resolve; });
-  _pcRec = state;
-  recorder.ondataavailable = function(ev) { if (ev.data && ev.data.size) state.chunks.push(ev.data); };
-  recorder.onstop = function() { pcFinishRecording(state); };
-  recorder.start(1000);
-  try {
-    var AC = window.AudioContext || window.webkitAudioContext;
-    state.audioCtx = new AC();
-    var analyser = state.audioCtx.createAnalyser();
-    analyser.fftSize = 512;
-    state.audioCtx.createMediaStreamSource(stream).connect(analyser);
-    var buf = new Uint8Array(analyser.fftSize);
-    var tick = function() {
-      if (_pcRec !== state) return;
-      analyser.getByteTimeDomainData(buf);
-      var peak = 0;
-      for (var i = 0; i < buf.length; i++) { var v = Math.abs(buf[i] - 128); if (v > peak) peak = v; }
-      document.getElementById('pc-rec-level').style.width = Math.min(100, Math.round((peak / 128) * 160)) + '%';
-      state.raf = requestAnimationFrame(tick);
-    };
-    tick();
-  } catch (_e) {}
-  document.getElementById('pc-recorder').hidden = false;
-  document.getElementById('pc-rec-time').textContent = '0:00';
-  var mic = document.getElementById('pc-mic');
-  mic.setAttribute('aria-pressed', 'true');
-  mic.setAttribute('aria-label', '녹음 완료');
-  pcSyncSteer();
-  state.timer = setInterval(function() {
-    var sec = Math.floor((Date.now() - state.started) / 1000);
-    document.getElementById('pc-rec-time').textContent = ntFormatDuration(sec);
-    if (sec >= NT_MAX_RECORD_SEC) pcStopRecording(true);
-  }, 250);
-}
-// Resolves once the recording is filed (or dropped) — the send waits on it.
-function pcStopRecording(keep) {
-  var state = _pcRec;
-  if (!state) return Promise.resolve();
-  _pcRec = null;
-  state.keep = keep;
-  state.stoppedAt = Date.now();
-  clearInterval(state.timer);
-  cancelAnimationFrame(state.raf);
-  try {
-    if (state.recorder.state !== 'inactive') state.recorder.stop();
-    else pcFinishRecording(state);
-  } catch (_e) { pcFinishRecording(state); }
-  state.stream.getTracks().forEach(function(t) { t.stop(); });
-  if (state.audioCtx) { try { state.audioCtx.close(); } catch (_e) {} }
-  document.getElementById('pc-recorder').hidden = true;
-  var mic = document.getElementById('pc-mic');
-  mic.setAttribute('aria-pressed', 'false');
-  mic.setAttribute('aria-label', '음성 녹음');
-  pcSyncSteer();
-  // Kept and not filed yet: a send right now (or after a timed-out one) waits on
-  // it. A dropped one (a reset, a cancel) leaves nothing to wait on.
-  if (keep) {
-    _pcFiling = state.done;
-    state.done.then(function() { if (_pcFiling === state.done) _pcFiling = null; });
-  }
-  return state.done;
-}
-function pcFinishRecording(state) {
-  if (state.finished) return;
-  state.finished = true;
-  // Kept, and still this card's: the panel did not close or move on meanwhile.
-  if (state.keep && state.chunks.length && pcRecCurrent(state.gen, state.key)) {
-    var type = String(state.mime).split(';')[0] || 'audio/mp4';
-    var blob = new Blob(state.chunks, { type: type });
-    var sec = Math.max(1, Math.round(((state.stoppedAt || Date.now()) - state.started) / 1000));
-    pcAddBlob(blob, 'voice-' + ntStamp(new Date()) + '.' + ntExtForMime(type), type, { duration: sec });
-  }
-  if (state.resolve) state.resolve();
-}
-// Paste an image (a screenshot) into the field; drop files on the composer. The
-// element's events reach #panel-command (they bubble and are composed), so they
-// keep working when pcFreshSteer swaps the element.
+// The element's events reach #panel-command (they bubble and are composed), so they
+// keep working when pcFreshSteer swaps the element. The composer takes paste and
+// drop itself.
 function pcInit() {
   var host = document.getElementById('panel-command');
   if (!host) return;
-  var open = function() { return host._mode === 'open'; };
-  host.addEventListener('paste', function(e) {
-    var files = e.clipboardData && e.clipboardData.files ? Array.prototype.slice.call(e.clipboardData.files) : [];
-    if (!files.length || !open()) return;
-    if (!e.clipboardData.getData('text/plain')) e.preventDefault();
-    files.forEach(function(f) {
-      var type = f.type || 'application/octet-stream';
-      var generic = !f.name || f.name === 'image.png' || f.name === 'image.jpeg';
-      pcAddBlob(f, generic ? 'screenshot-' + ntStamp(new Date()) + '.' + (type.split('/')[1] || 'png') : f.name, type);
-    });
-  });
-  var hasFiles = function(e) {
-    return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0) && open();
-  };
-  host.addEventListener('dragover', function(e) {
-    if (!hasFiles(e)) return;
-    e.preventDefault();
-    host.classList.add('is-drag');
-  });
-  host.addEventListener('dragleave', function(e) {
-    if (!e.relatedTarget || !host.contains(e.relatedTarget)) host.classList.remove('is-drag');
-  });
-  host.addEventListener('drop', function(e) {
-    host.classList.remove('is-drag');
-    if (!hasFiles(e) || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
-    e.preventDefault();
-    pcAddFiles(e.dataTransfer.files);
-  });
+  pcComposerSetup(document.getElementById('pc-composer'));
   host.addEventListener('ui-submit', pcOnSubmit);
   host.addEventListener('ui-promote', function(e) { if (e.detail) steerAct('promote', String(e.detail.id)); });
-  host.addEventListener('ui-cancel', function(e) { if (e.detail) steerAct('cancel', String(e.detail.id)); });
+  host.addEventListener('ui-cancel', function(e) {
+    if (!e.detail) return;
+    delete _pcNoteFiles[String(e.detail.id)];
+    steerAct('cancel', String(e.detail.id));
+  });
   host.addEventListener('ui-edit', function(e) { if (e.detail) steerAct('edit', String(e.detail.id), String(e.detail.text || '')); });
 }
 // ui-submit: a send already reading its files (or a card with no open composer)
@@ -18228,7 +17658,7 @@ function pcOnSubmit(e) {
     e.preventDefault();
     return;
   }
-  sendCommand(d.text || '', d.ref || '');
+  sendCommand(d.text || '', d.ref || '', d.files || []);
 }
 ntInit();
 pcInit();
