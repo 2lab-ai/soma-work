@@ -16775,14 +16775,21 @@ async function openNewTask() {
 function closeNewTask() {
   var dlg = ntEl('nt-dialog');
   if (!dlg || !dlg.open || typeof dlg.hide !== 'function') return;
+  ntShowFab();
   dlg.hide();
 }
 
-// The sheet has gone — the person's Esc / scrim / ✕ or the page's closeNewTask, after the exit (the element's
-// ui-closed, 0.12.0 — D4 G6-2; a sheet reopened within its exit never sends it): the FAB comes back; a recording in
-// progress is dropped and a preview stops.
-function ntOnClosed() {
+// The FAB comes back as the close begins, not after the exit: the element gives focus back just before ui-closed,
+// and a FAB still display:none then cannot take it (focus would drop on the body).
+function ntShowFab() {
   document.body.classList.remove('nt-open');
+}
+
+// The sheet has gone — the person's Esc / scrim / ✕ or the page's closeNewTask, after the exit (the element's
+// ui-closed, 0.12.0 — D4 G6-2; a sheet reopened within its exit never sends it): a recording in progress is
+// dropped and a preview stops (the FAB is already back: ntShowFab at the close's start).
+function ntOnClosed() {
+  ntShowFab();
   ntQuietComposer();
 }
 
@@ -17102,6 +17109,12 @@ function ntInit() {
   if (!dlg) return;
   // <ui-dialog>: Esc, the scrim and ✕ ask to close (ui-close) — the element settles out and gives focus back, then
   // says so (ui-closed, after every exit, the page's hide() too): the page lets go of what it owns.
+  dlg.addEventListener('ui-close', function (e) {
+    // The person's close, once no listener turned it down (emit dispatches synchronously; read it after).
+    queueMicrotask(function () {
+      if (!e.defaultPrevented) ntShowFab();
+    });
+  });
   dlg.addEventListener('ui-closed', function () {
     ntOnClosed();
   });
