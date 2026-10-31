@@ -574,10 +574,10 @@ describe('tone pass P7 — surfaces and elevation', () => {
       '<div class="chart-row" id="chart-row"><ui-bar-chart id="chart-sessions" lang="ko"></ui-bar-chart><ui-bar-chart id="chart-merge" lang="ko"></ui-bar-chart></div>',
     );
     expect(TEMPLATE).not.toContain('.chart-container');
-    for (const sel of ['.nt-dialog']) {
-      expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow-raised)');
-    }
-    // D4 (I-05, I-06): the peek and the viewer are @2lab.ai/ui elements — their raised cards are the library's.
+    // D4 (H-01, I-05, I-06): the New task dialog, the peek and the viewer are @2lab.ai/ui elements — their raised
+    // panels are the library's; the page keeps no box, shadow or scrim rule for them.
+    expect(TEMPLATE).toContain('<ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" lang="ko">');
+    expect(TEMPLATE).not.toMatch(/\.nt-dialog \{/);
     expect(TEMPLATE).toContain('<ui-hovercard id="art-peek"');
     expect(TEMPLATE).toContain('<ui-artifact-viewer id="art-viewer" tiles="none"');
     expect(TEMPLATE).not.toMatch(/\.art-peek \{|\.art-modal \{/);
