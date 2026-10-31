@@ -4759,20 +4759,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-body .card-refs a:focus-visible { text-decoration: underline; }
 .card-body .card-refs .ref-sep { color: var(--ib-muted); opacity: 0.6; }
 
-/* ── ENV BADGE — multi-instance origin tag (#814) ── */
-.card-body .card-refs .env-badge {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: 6px;
-  font-size: 0.78em;
-  font-weight: 600;
-  /* The tone (--env-tone) is set inline from getEnvBadgeColor() because we hash
-     the instanceName at render time; the chip is its 14% tint and the word the
-     tone 70% toward the ink (≥ 4.5:1 in both themes for every palette tone). */
-  background: color-mix(in srgb, var(--env-tone, var(--ib-muted)) 14%, var(--ib-card));
-  color: color-mix(in srgb, var(--env-tone, var(--ib-muted)) 70%, var(--ib-text));
-  vertical-align: baseline;
-}
+/* ── ENV BADGE — multi-instance origin tag (#814): the kit's toned chip (.ui-chip.is-toned.is-sm, D8b D-15) — its
+   --ui-tone set inline from getEnvBadgeColor() (ENV_BADGE_PALETTE); the kit draws the 14% tint, the word 70%
+   toward the ink and the 28% border. ── */
 
 /* ── TASK WINDOW — @2lab.ai/ui <ui-task-plan max foot="none"> (D8b D-12): the card's few rows of the plan, flush
    (no box of its own inside the card), and its "+N개 더 · 전체 task N개 →" line; the page's link when the window
@@ -7710,7 +7699,7 @@ let _sessionCache = Object.create(null);
 // instanceName mod 4. Two unrelated names hashing to the same slot is
 // noise we can live with on a 4-instance host (operators rarely run more
 // than 2-3 instances per box).
-// Tones from the token palette (tinted in CSS: .env-badge) — not status colours, so no red / amber.
+// Tones from the token palette (the kit's .ui-chip.is-toned tints them) — not status colours, so no red / amber.
 var ENV_BADGE_PALETTE = ['var(--st-run)', 'var(--green)', 'var(--purple)', 'var(--orange)'];
 
 // _envIndex caches a deterministic palette-slot per instanceName so two
@@ -10880,7 +10869,7 @@ function renderCardBody(s, col) {
     var instName = s.environment.instanceName;
     var envColor = getEnvBadgeColor(instName);
     var envHostPort = (s.environment.host || '') + ':' + (s.environment.port || '');
-    envHtml = '<span class="env-badge" style="--env-tone:' + envColor + '" title="' + escAttr(instName + ' (' + envHostPort + ')') + '">' + esc(instName) + '</span>';
+    envHtml = '<span class="ui-chip is-toned is-sm" style="--ui-tone:' + envColor + '" title="' + escAttr(instName + ' (' + envHostPort + ')') + '">' + esc(instName) + '</span>';
   }
   // Short refs (PROJ-123 · PR-123), gated by ui.dashboardheader 'links'. The
   // titled links and the conversation are the panel's (세션 정보).
