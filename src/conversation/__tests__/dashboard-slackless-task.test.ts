@@ -276,7 +276,7 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
       });
       expect(accepted.statusCode).toBe(202);
       expect(JSON.parse(accepted.body)).toEqual({ ok: true });
-      expect(taskHandler).toHaveBeenCalledWith(`task:${task.taskId}`, 'raise the timeout', []);
+      expect(taskHandler).toHaveBeenCalledWith(`task:${task.taskId}`, 'raise the timeout', [], 'U1');
       expect(slackHandler).not.toHaveBeenCalled();
 
       taskHandler.mockResolvedValueOnce({ status: 429, body: { error: 'one dashboard task runs at a time' } } as any);

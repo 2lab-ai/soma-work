@@ -111,7 +111,7 @@ describe('T10 — a dashboard instruction runs a Slack-less task’s turn end to
   it('accepted once started, runs to the end, commits completed, writes the work log — zero Slack calls', async () => {
     const h = setup();
     const { task, key } = h.newTask('A');
-    const r = await h.controller.start({ sessionKey: key, text: 'raise the request timeout' });
+    const r = await h.controller.start({ actorUserId: OWNER, sessionKey: key, text: 'raise the request timeout' });
     expect(r.status).toBe(202);
     await r.done;
 
@@ -139,7 +139,7 @@ describe('T10 — a dashboard instruction runs a Slack-less task’s turn end to
         throw err;
       })(),
     );
-    const r = await h.controller.start({ sessionKey: key, text: 'raise the request timeout' });
+    const r = await h.controller.start({ actorUserId: OWNER, sessionKey: key, text: 'raise the request timeout' });
     expect(r.status).toBe(202);
     await r.done;
 
@@ -162,7 +162,7 @@ describe('T10 — a dashboard instruction runs a Slack-less task’s turn end to
         yield { type: 'result', stopReason: 'end_turn', finalText: 'done' };
       })(),
     );
-    const r = await h.controller.start({ sessionKey: key, text: 'long job' });
+    const r = await h.controller.start({ actorUserId: OWNER, sessionKey: key, text: 'long job' });
     expect(r.status).toBe(202);
     const runningTurn = h.registry.getSessionByKey(key)?.activeTaskTurnId;
     expect(runningTurn).toBeTruthy();
@@ -196,14 +196,14 @@ describe('T10 — a dashboard instruction runs a Slack-less task’s turn end to
         yield { type: 'result', stopReason: 'end_turn', finalText: 'ok' };
       })(),
     );
-    const r = await h.controller.start({ sessionKey: first.key, text: 'one' });
+    const r = await h.controller.start({ actorUserId: OWNER, sessionKey: first.key, text: 'one' });
     expect(r.status).toBe(202);
-    expect((await h.controller.start({ sessionKey: second.key, text: 'two' })).status).toBe(429);
-    expect((await h.controller.start({ sessionKey: first.key, text: 'again' })).status).toBe(409);
+    expect((await h.controller.start({ actorUserId: OWNER, sessionKey: second.key, text: 'two' })).status).toBe(429);
+    expect((await h.controller.start({ actorUserId: OWNER, sessionKey: first.key, text: 'again' })).status).toBe(409);
     release();
     await r.done;
     h.useStream(answerTurn);
-    const later = await h.controller.start({ sessionKey: second.key, text: 'two' });
+    const later = await h.controller.start({ actorUserId: OWNER, sessionKey: second.key, text: 'two' });
     expect(later.status).toBe(202);
     await later.done;
     expect(h.executor.slackCalls).toEqual([]);
@@ -230,7 +230,7 @@ describe('T11 — a dashboard task’s question answered from the dashboard (#59
     const h = setup();
     const { key } = h.newTask('Q');
     h.useStream(askingTurn);
-    const first = await h.controller.start({ sessionKey: key, text: 'raise the timeout' });
+    const first = await h.controller.start({ actorUserId: OWNER, sessionKey: key, text: 'raise the timeout' });
     await first.done;
     const asked = h.registry.getSessionByKey(key)!;
     expect(asked.activityState).toBe('waiting');

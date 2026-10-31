@@ -86,11 +86,11 @@ const KEY = 'C1:t1';
 const AUTH_HEADER = { Authorization: 'Bearer test-token' };
 
 interface AnswerClient {
-  submitAllRecommended(key: string): Promise<void>;
-  submitMultiChoice(key: string): Promise<void>;
+  submitAllRecommended(key: string, askId?: string): Promise<void>;
+  submitMultiChoice(key: string, askId?: string): Promise<void>;
   answerChoice(key: string, qid: string, choiceId: string): Promise<unknown>;
   acQuestionId(q: unknown): string;
-  selectMc(key: string, qIdx: number, choiceId: string, label: string): void;
+  selectMc(key: string, qIdx: number, choiceId: string, label: string, askId?: string): void;
 }
 
 describe('dashboard answer buttons → real server (shipped client code)', () => {
@@ -185,6 +185,8 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
         'acRefusal',
         'stripRecommendedMarker',
         'mcStateFor',
+        'mcAskShown',
+        'mcAskChanged',
         'selectMc',
       ],
       {
@@ -296,7 +298,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
         activeQ: 0,
         askId: 'ask-8',
       };
-      await client.submitMultiChoice(TASK);
+      await client.submitMultiChoice(TASK, 'ask-8');
       expect(taskHandler).toHaveBeenCalledWith(
         TASK,
         'ask-8',
@@ -311,7 +313,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
         key: TASK,
         pendingQuestion: { ...(sessionCache[KEY].pendingQuestion as object), askId: 'ask-9' },
       };
-      await client.submitAllRecommended(TASK);
+      await client.submitAllRecommended(TASK, 'ask-9');
       expect(taskHandler).toHaveBeenCalledWith(TASK, 'ask-9', { kind: 'recommended' }, 'U1');
       expect(alerts).toEqual([]);
     });
@@ -325,7 +327,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
         activeQ: 0,
         askId: 'ask-A',
       };
-      await client.submitMultiChoice(TASK);
+      await client.submitMultiChoice(TASK, 'ask-B');
       expect(taskHandler).not.toHaveBeenCalled();
       expect(requests.some((r) => r.url.endsWith('/answer-multi-choice'))).toBe(false);
       expect(alerts.length).toBe(1);
@@ -335,13 +337,57 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     it('a new ask starts with no selections: the previous ask’s answers do not carry over', () => {
       const form = sessionCache[KEY].pendingQuestion as object;
       sessionCache[TASK] = { key: TASK, pendingQuestion: { ...form, askId: 'ask-A' } };
-      client.selectMc(TASK, 0, '1', 'a');
-      client.selectMc(TASK, 1, '1', 'b');
+      client.selectMc(TASK, 0, '1', 'a', 'ask-A');
+      client.selectMc(TASK, 1, '1', 'b', 'ask-A');
       expect(mcState[TASK]).toMatchObject({ askId: 'ask-A', selections: { q1: {}, q2: {} } });
       sessionCache[TASK] = { key: TASK, pendingQuestion: { ...form, askId: 'ask-B' } };
-      client.selectMc(TASK, 0, '1', 'a');
+      client.selectMc(TASK, 0, '1', 'a', 'ask-B');
       expect(mcState[TASK].askId).toBe('ask-B');
       expect(Object.keys(mcState[TASK].selections)).toEqual(['q1']);
+    });
+
+    // #637 R2 (astra P1) — an action belongs to the form on screen: the ask it
+    // shows travels with it. When the cache already holds the next ask (a push
+    // the panel has not painted), the action is refused instead of answering it.
+    it('actions from a form showing ask A never answer or fill ask B', async () => {
+      const form = sessionCache[KEY].pendingQuestion as object;
+      sessionCache[TASK] = { key: TASK, pendingQuestion: { ...form, askId: 'ask-B' } };
+      await client.submitAllRecommended(TASK, 'ask-A');
+      client.selectMc(TASK, 0, '1', 'a', 'ask-A');
+      expect(mcState[TASK]?.selections ?? {}).toEqual({});
+      mcState[TASK] = {
+        selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } },
+        activeQ: 0,
+        askId: 'ask-B',
+      };
+      await client.submitMultiChoice(TASK, 'ask-A');
+      expect(taskHandler).not.toHaveBeenCalled();
+      expect(requests.length).toBe(0);
+      expect(alerts.length).toBe(3);
+    });
+
+    // #637 R2 (astra P2) — a late success for ask A leaves ask B's selections alone.
+    it('a late success for one ask does not erase the next ask’s selections', async () => {
+      const form = sessionCache[KEY].pendingQuestion as object;
+      const bState = () => ({ selections: { q1: { choiceId: '1', label: 'a' } }, activeQ: 1, askId: 'ask-B' });
+      for (const submit of [
+        () => client.submitMultiChoice(TASK, 'ask-A'),
+        () => client.submitAllRecommended(TASK, 'ask-A'),
+      ]) {
+        sessionCache[TASK] = { key: TASK, pendingQuestion: { ...form, askId: 'ask-A' } };
+        mcState[TASK] = {
+          selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } },
+          activeQ: 0,
+          askId: 'ask-A',
+        };
+        // A is accepted; before its response lands, B is pushed and the owner starts on it.
+        beforeReply = () => {
+          sessionCache[TASK].pendingQuestion = { ...form, askId: 'ask-B' };
+          mcState[TASK] = bState();
+        };
+        await submit();
+        expect(mcState[TASK]).toEqual(bState());
+      }
     });
 
     // #637 R1 (astra P2) — two asks with the same text are two questions.

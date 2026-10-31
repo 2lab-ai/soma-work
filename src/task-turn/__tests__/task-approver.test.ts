@@ -94,6 +94,7 @@ describe('createTaskApprover (#599 ⑤)', () => {
         waits.push(ms);
         return { behavior: 'deny' as const, message: 'Permission request timed out' };
       },
+      cleanup: async () => {},
     };
     await approver({ store: store as never, now: () => t0 }).request({ ...REQ, deadlineAt: t0 + 2_000 });
     expect(waits).toEqual([2_000]);
@@ -101,6 +102,35 @@ describe('createTaskApprover (#599 ⑤)', () => {
     expect(approval.expires_at).toBe(t0 + 2_000);
     await approver({ store: store as never, now: () => t0 }).request({ ...REQ, deadlineAt: t0 + 10 * 60_000 });
     expect(waits[1]).toBe(TASK_APPROVAL_TIMEOUT_MS);
+  });
+
+  // #637 R2 (astra P2) — the wait is measured against the recorded expiry
+  // after the prompt is stored: a slow write shortens the wait, it never
+  // pushes it past the hook's deadline.
+  it('a slow store write shortens the wait to the recorded expiry; one that used it all up denies and cleans up', async () => {
+    let clock = 1_000_000;
+    const waits: number[] = [];
+    const cleaned: string[] = [];
+    const store = (writeMs: number) => ({
+      storePendingApproval: async () => {
+        clock += writeMs;
+      },
+      waitForPermissionResponse: async (_id: string, ms: number) => {
+        waits.push(ms);
+        return { behavior: 'deny' as const, message: 'Permission request timed out' };
+      },
+      cleanup: async (id: string) => {
+        cleaned.push(id);
+      },
+    });
+    const now = () => clock;
+    await approver({ store: store(15_000) as never, now }).request({ ...REQ, deadlineAt: clock + 270_000 });
+    expect(waits).toEqual([255_000]);
+    expect(cleaned).toEqual([]);
+    const r = await approver({ store: store(300_000) as never, now }).request({ ...REQ, deadlineAt: clock + 270_000 });
+    expect(r.behavior).toBe('deny');
+    expect(waits).toEqual([255_000]); // no second wait
+    expect(cleaned.length).toBe(1); // the expired prompt is removed from the board
   });
 
   it('with no time left before the hook’s deadline it denies without raising a prompt', async () => {
@@ -111,6 +141,7 @@ describe('createTaskApprover (#599 ⑤)', () => {
         stored.push(id);
       },
       waitForPermissionResponse: async () => ({ behavior: 'allow' as const }),
+      cleanup: async () => {},
     };
     const r = await approver({ store: store as never, now: () => t0 }).request({ ...REQ, deadlineAt: t0 + 500 });
     expect(r.behavior).toBe('deny');
@@ -129,6 +160,7 @@ describe('createTaskApprover (#599 ⑤)', () => {
         throw new Error('ENOSPC');
       },
       waitForPermissionResponse: sharedStore.waitForPermissionResponse.bind(sharedStore),
+      cleanup: sharedStore.cleanup.bind(sharedStore),
     };
     await expect(approver({ store: broken as never }).request(REQ)).rejects.toThrow('ENOSPC');
   });

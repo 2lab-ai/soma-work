@@ -1169,6 +1169,8 @@ type TaskCommandHandler = (
   sessionKey: string,
   message: string,
   files: NewTaskAttachment[],
+  /** The signed-in user sending it — the route has checked it is the task's owner (#637 R2). */
+  actorUserId: string,
 ) => Promise<{ status: number; body: Record<string, unknown> }>;
 
 let _stopHandlerFn: StopHandler | null = null;
@@ -3306,7 +3308,12 @@ export async function registerDashboardRoutes(
           return;
         }
         try {
-          const outcome = await _taskCommandHandlerFn(originalKey, message, files.value);
+          const outcome = await _taskCommandHandlerFn(
+            originalKey,
+            message,
+            files.value,
+            String((request as { authContext?: { userId?: string } }).authContext?.userId ?? ''),
+          );
           reply.status(outcome.status).send(outcome.body);
         } catch (error) {
           logger.error('Error starting a dashboard task turn', error);
@@ -8395,7 +8402,7 @@ document.addEventListener('click', function(e) {
   var btn = e.target && e.target.closest ? e.target.closest('button[data-choice-id][data-mc-index]') : null;
   if (!btn || btn.disabled) return;
   var d = btn.dataset;
-  selectMc(d.choiceKey, Number(d.mcIndex), d.choiceId, d.choiceLabel);
+  selectMc(d.choiceKey, Number(d.mcIndex), d.choiceId, d.choiceLabel, d.mcAsk);
 });
 // Only http(s) URLs become links; anything else (javascript:, data:) is inert.
 function safeHref(u) {
@@ -13251,6 +13258,8 @@ async function loadSessions() {
       // Without the WebSocket (or for a sibling instance) the poll is the only
       // update: the whole panel follows it (spec 13).
       repaintPanelSession();
+      // …its question too: a form must show the ask its actions answer (#637 R2).
+      renderPanelQuestion(_sessionCache[panelSessionKey]);
     }
   } catch (e) {
     clearTimeout(timer);
@@ -13392,6 +13401,19 @@ function mcStateFor(key) {
   if (!st || (st.askId || '') !== askId) st = _mcState[key] = { selections: {}, activeQ: 0, askId: askId };
   return st;
 }
+// Every form action carries the ask its form showed (#637 R2): when the cache
+// already holds another ask (a push the panel has not painted yet), the action
+// is refused and the question repainted — it never answers or fills the other.
+function mcAskShown(key, askId) {
+  var s = _sessionCache[key];
+  var cur = (s && s.pendingQuestion && s.pendingQuestion.askId) || '';
+  return cur === (askId || '');
+}
+function mcAskChanged(key) {
+  dashToast({ title: '\\uC9C8\\uBB38\\uC774 \\uBC14\\uB00C\\uC5C8\\uC5B4\\uC694 \\u2014 \\uB2E4\\uC2DC \\uD655\\uC778\\uD574\\uC8FC\\uC138\\uC694.', tone: 'error' });
+  var s = _sessionCache[key];
+  if (s && panelOpen && panelSessionKey === key) renderPanelQuestion(s);
+}
 
 // faceSummary: the collapsed card's summary line — when it already reads the
 // form's title, the open card does not repeat it.
@@ -13430,6 +13452,7 @@ function renderMultiChoicePanel(s) {
   container.style.display = '';
   var key = s.key;
   var st = mcStateFor(key);
+  var mcAsk = q.askId || '';
   var total = q.questions.length;
   var answered = 0;
   for (var i = 0; i < total; i++) {
@@ -13458,7 +13481,7 @@ function renderMultiChoicePanel(s) {
   }
   if (heroN > 0) {
     if (heroN === heroM) {
-      html += '<button class="btn-hero-recommended" onclick="event.stopPropagation();submitAllRecommended(\\'' + escJs(key) + '\\')">'
+      html += '<button class="btn-hero-recommended" onclick="event.stopPropagation();submitAllRecommended(\\'' + escJs(key) + '\\',\\'' + escJs(mcAsk) + '\\')">'
         + '\\uCD94\\uCC9C\\uB300\\uB85C \\uBAA8\\uB450 \\uC120\\uD0DD</button>';
     } else {
       html += '<button class="btn-hero-recommended" disabled aria-disabled="true" aria-label="\\uCD94\\uCC9C\\uC774 ' + heroN + '/' + heroM + '\\uAC1C\\uB9CC \\uC788\\uC5B4 \\uC77C\\uAD04 \\uCC98\\uB9AC \\uBD88\\uAC00">'
@@ -13499,7 +13522,7 @@ function renderMultiChoicePanel(s) {
       html += '<div class="mc-q-selected">'
         + '<span class="mc-sel-mark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-6.5"/></svg></span>'
         + '<span class="mc-sel-label">' + esc(sel.label) + '</span>'
-        + '<button class="mc-q-edit-btn" onclick="event.stopPropagation();editMc(\\'' + escJs(key) + '\\',' + qi + ')">' + STRINGS.mcChange + '</button>'
+        + '<button class="mc-q-edit-btn" onclick="event.stopPropagation();editMc(\\'' + escJs(key) + '\\',' + qi + ',\\'' + escJs(mcAsk) + '\\')">' + STRINGS.mcChange + '</button>'
         + '</div>';
     } else {
       // Show choice buttons, recommended first
@@ -13520,14 +13543,14 @@ function renderMultiChoicePanel(s) {
         var chLbl = stripRecommendedMarker(ch.label);
         var desc = ch.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(ch.description) + '</span>' : '';
         var isRecBtn = mcRecId && ch.id === mcRecId;
-        html += '<button class="btn-choice' + (isRecBtn ? ' btn-choice-recommended' : '') + '"' + choiceDataAttrs(key, ch.id, chLbl, '') + ' data-mc-index="' + qi + '">'
+        html += '<button class="btn-choice' + (isRecBtn ? ' btn-choice-recommended' : '') + '"' + choiceDataAttrs(key, ch.id, chLbl, '') + ' data-mc-index="' + qi + '" data-mc-ask="' + escAttr(mcAsk) + '">'
           + esc(ch.id) + '. ' + esc(chLbl) + desc + '</button>';
       }
       html += '</div>';
       // Custom input
       html += '<div class="mc-custom-input">'
-        + '<input type="text" id="mc-custom-' + qi + '" placeholder="' + STRINGS.mcCustomPlaceholder + '" onclick="event.stopPropagation()" onkeydown="if(event.key===\\'Enter\\'){event.stopPropagation();submitMcCustom(\\'' + escJs(key) + '\\',' + qi + ')}">'
-        + '<button onclick="event.stopPropagation();submitMcCustom(\\'' + escJs(key) + '\\',' + qi + ')">\\uC785\\uB825</button>'
+        + '<input type="text" id="mc-custom-' + qi + '" placeholder="' + STRINGS.mcCustomPlaceholder + '" onclick="event.stopPropagation()" onkeydown="if(event.key===\\'Enter\\'){event.stopPropagation();submitMcCustom(\\'' + escJs(key) + '\\',' + qi + ',\\'' + escJs(mcAsk) + '\\')}">'
+        + '<button onclick="event.stopPropagation();submitMcCustom(\\'' + escJs(key) + '\\',' + qi + ',\\'' + escJs(mcAsk) + '\\')">\\uC785\\uB825</button>'
         + '</div>';
     }
 
@@ -13539,7 +13562,7 @@ function renderMultiChoicePanel(s) {
   var allAnswered = answered === total;
   html += '<div class="mc-actions">';
   html += '<button class="mc-btn-reset" onclick="event.stopPropagation();resetMultiChoice(\\'' + escJs(key) + '\\')">\\uCD08\\uAE30\\uD654</button>';
-  html += '<button class="mc-btn-submit" onclick="event.stopPropagation();submitMultiChoice(\\'' + escJs(key) + '\\')"' + (allAnswered ? '' : ' disabled') + '>\\uC81C\\uCD9C\\uD558\\uAE30 (' + answered + '/' + total + ')</button>';
+  html += '<button class="mc-btn-submit" onclick="event.stopPropagation();submitMultiChoice(\\'' + escJs(key) + '\\',\\'' + escJs(mcAsk) + '\\')"' + (allAnswered ? '' : ' disabled') + '>\\uC81C\\uCD9C\\uD558\\uAE30 (' + answered + '/' + total + ')</button>';
   html += '</div>';
 
   html += '</div>';
@@ -13565,7 +13588,8 @@ function renderMdBasic(text) {
   return s;
 }
 
-function selectMc(key, qIdx, choiceId, label) {
+function selectMc(key, qIdx, choiceId, label, askId) {
+  if (!mcAskShown(key, askId)) { mcAskChanged(key); return; }
   var s = _sessionCache[key];
   if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) { console.warn('selectMc: stale session data', key); return; }
   var qItem = s.pendingQuestion.questions[qIdx];
@@ -13588,7 +13612,8 @@ function selectMc(key, qIdx, choiceId, label) {
   renderMultiChoicePanel(s);
 }
 
-function editMc(key, qIdx) {
+function editMc(key, qIdx, askId) {
+  if (!mcAskShown(key, askId)) { mcAskChanged(key); return; }
   if (!_mcState[key]) return;
   var s = _sessionCache[key];
   if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) return;
@@ -13599,7 +13624,8 @@ function editMc(key, qIdx) {
   renderMultiChoicePanel(s);
 }
 
-function submitMcCustom(key, qIdx) {
+function submitMcCustom(key, qIdx, askId) {
+  if (!mcAskShown(key, askId)) { mcAskChanged(key); return; }
   var input = document.getElementById('mc-custom-' + qIdx);
   if (!input) return;
   var val = input.value.trim();
@@ -13624,7 +13650,8 @@ function submitMcCustom(key, qIdx) {
   renderMultiChoicePanel(s);
 }
 
-async function submitMultiChoice(key) {
+async function submitMultiChoice(key, askId) {
+  if (!mcAskShown(key, askId)) { mcAskChanged(key); return; }
   var s = _sessionCache[key];
   if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) {
     console.warn('submitMultiChoice: session data unavailable', key);
@@ -13693,8 +13720,8 @@ async function submitMultiChoice(key) {
         mcForm.querySelectorAll('button').forEach(function(b) { b.disabled = false; });
       }
     } else {
-      // Success — clear state; WebSocket will re-render
-      delete _mcState[key];
+      // Success — clear this ask's state (a newer ask's selections stay); WebSocket will re-render
+      if (_mcState[key] === st) delete _mcState[key];
     }
   } catch (e) {
     console.error('submitMultiChoice error', e);
@@ -13719,14 +13746,15 @@ function resetMultiChoice(key) {
 // pattern used by submitMultiChoice. Server derives selections from session
 // state, so the request has no body — and therefore no Content-Type, like
 // doAction: Fastify refuses a JSON Content-Type with an empty body (400).
-async function submitAllRecommended(key) {
+async function submitAllRecommended(key, askId) {
+  if (!mcAskShown(key, askId)) { mcAskChanged(key); return; }
   var heroBtn = document.querySelector('.btn-hero-recommended');
   if (heroBtn) { heroBtn.disabled = true; heroBtn.setAttribute('aria-disabled', 'true'); }
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/submit-recommended';
   // #599 — a dashboard task's question names itself: send its id (as JSON). A Slack
   // session's request stays body-less, with no Content-Type (Fastify refuses an empty JSON body).
-  var srs = _sessionCache[key];
-  var srAskId = srs && srs.pendingQuestion && srs.pendingQuestion.askId;
+  // The ask the form showed (equal to the cached one, checked above).
+  var srAskId = askId || '';
   var srBody = srAskId ? JSON.stringify({ askId: srAskId }) : undefined;
   function srInit() {
     var h = {};
@@ -13747,8 +13775,8 @@ async function submitAllRecommended(key) {
       dashToast({ title: errMsg, tone: 'error' });
       if (heroBtn) { heroBtn.disabled = false; heroBtn.removeAttribute('aria-disabled'); }
     } else {
-      // Success — clear local state; WebSocket will re-render.
-      delete _mcState[key];
+      // Success — clear this ask's local state (a newer ask's stays); WebSocket will re-render.
+      if (_mcState[key] && (_mcState[key].askId || '') === srAskId) delete _mcState[key];
     }
   } catch (e) {
     console.error('submitAllRecommended error', e);
@@ -14076,6 +14104,7 @@ function connectWs() {
         if (_cardHost[updatedKey]) refreshCard(updatedKey);
         if (panelOpen && panelSessionKey === updatedKey) {
           renderPanelPermission(msg.session);
+          renderPanelQuestion(msg.session); // the form shows the ask its actions answer (#637 R2)
           var pt2 = document.getElementById('panel-title');
           if (pt2) pt2.textContent = msg.session.displayHeadline || msg.session.summaryTitle || msg.session.title || 'Untitled';
           // Spec 12: the agent tree moved (spawn, status, tool count, a node's tasks);

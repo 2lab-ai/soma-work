@@ -22,7 +22,7 @@ export const TASK_APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 const MIN_APPROVAL_WINDOW_MS = 1_000;
 
 export interface TaskApproverDeps {
-  store: Pick<typeof sharedStore, 'storePendingApproval' | 'waitForPermissionResponse'>;
+  store: Pick<typeof sharedStore, 'storePendingApproval' | 'waitForPermissionResponse' | 'cleanup'>;
   /** The turn the task is running (its saved `activeTaskTurnId`). */
   getActiveTurnId(sessionKey: string): string | undefined;
   timeoutMs?: number;
@@ -43,7 +43,7 @@ export function createTaskApprover(deps: TaskApproverDeps): TaskApprover {
       if (left < MIN_APPROVAL_WINDOW_MS) {
         return { behavior: 'deny', message: 'No time was left to ask for approval — it was not run.' };
       }
-      const waitMs = Math.min(timeoutMs, left);
+      const expiresAt = createdAt + Math.min(timeoutMs, left);
       const approvalId = newId();
       const turnId = deps.getActiveTurnId(req.sessionKey);
       await deps.store.storePendingApproval(approvalId, {
@@ -54,10 +54,21 @@ export function createTaskApprover(deps: TaskApproverDeps): TaskApprover {
         task_key: req.sessionKey,
         ...(turnId ? { turn_id: turnId } : {}),
         created_at: createdAt,
-        expires_at: createdAt + waitMs,
+        expires_at: expiresAt,
         ...(req.ruleIds.length > 0 ? { rule_ids: req.ruleIds } : {}),
       });
-      const response: PermissionResponse = await deps.store.waitForPermissionResponse(approvalId, waitMs, req.signal);
+      // The write took time (#637 R2): wait only until the recorded expiry, so the
+      // store's own timeout still lands before the SDK cancels the hook.
+      const remaining = expiresAt - now();
+      if (remaining <= 0) {
+        await deps.store.cleanup(approvalId);
+        return { behavior: 'deny', message: 'The approval window closed before it could be asked — it was not run.' };
+      }
+      const response: PermissionResponse = await deps.store.waitForPermissionResponse(
+        approvalId,
+        remaining,
+        req.signal,
+      );
       return response.behavior === 'allow'
         ? { behavior: 'allow', ...(response.message ? { message: response.message } : {}) }
         : { behavior: 'deny', ...(response.message ? { message: response.message } : {}) };
