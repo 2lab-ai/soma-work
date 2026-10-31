@@ -168,9 +168,25 @@ describe('T1 — the New task entry is always in reach, calm', () => {
 });
 
 describe('T3–T11 — the composer, in the order of the sketch', () => {
-  it('is one native dialog with a form', () => {
-    expect(html).toMatch(/<dialog[^>]*id="nt-dialog"[^>]*class="nt-dialog"/);
+  it('is one @2lab.ai/ui <ui-dialog> (D4 H-01) with the form kept whole inside; the page keeps no dialog of its own', () => {
+    expect(html).toContain('<ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" lang="ko">');
     expect(html).toMatch(/<form[^>]*id="nt-form"/);
+    // The form is the dialog's body: the element draws the heading and ✕, so the page's head row is gone.
+    expect(html).not.toMatch(/<dialog[^>]*id="nt-dialog"/);
+    expect(html).not.toContain('class="nt-head"');
+    expect(html).not.toContain('nt-head-hint');
+    // show() / hide() open and close it; Esc, the scrim and ✕ arrive as ui-close; no native showModal, no soft-close
+    // timer, no is-shown class of the page's.
+    const open = clientFn('openNewTask');
+    expect(open).toContain('dlg.show();');
+    expect(open).not.toContain('showModal');
+    expect(clientFn('closeNewTask')).toContain('dlg.hide();');
+    expect(script).toContain("dlg.addEventListener('ui-close', function () {");
+    for (const gone of ['is-shown', "dlg.addEventListener('cancel'", 'ntSyncViewport', '--nt-vvh', '--nt-vvt']) {
+      expect(script, gone).not.toContain(gone);
+    }
+    // N does nothing while a <ui-dialog> is up.
+    expect(clientFn('ntIsTypingTarget')).toContain("document.querySelector('dialog[open], ui-dialog[open]')");
   });
 
   it('row 1: model (with the battery), effort and channel selectors', () => {
@@ -278,7 +294,9 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
   });
 
   it("closing the sheet discards a recording in progress and stops a preview — the element's cancelRecording / pause", () => {
-    expect(clientFn('closeNewTask')).toContain('ntQuietComposer();');
+    // The page's close and the element's ui-close both pass through ntOnClosed (the FAB back, the composer quiet).
+    expect(clientFn('closeNewTask')).toContain('ntOnClosed();');
+    expect(clientFn('ntOnClosed')).toContain("document.body.classList.remove('nt-open');");
     expect(clientFn('ntOnClosed')).toContain('ntQuietComposer();');
     const quiet = clientFn('ntQuietComposer');
     expect(quiet).toContain('el.cancelRecording();');
@@ -294,15 +312,22 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
 });
 
 describe('T12 — PC and phone layouts are designed separately', () => {
-  it('PC: a centered dialog of bounded width', () => {
-    expect(css).toMatch(/\.nt-dialog\s*\{[^}]*width:\s*min\(720px/);
+  it("PC: a centered dialog of bounded width — the element's size=\"lg\" (720px); the page keeps no box rule", () => {
+    expect(html).toMatch(/<ui-dialog id="nt-dialog"[^>]* size="lg"/);
+    expect(css).not.toMatch(/\.nt-dialog\s*\{/);
+    expect(css).not.toMatch(/\.nt-dialog::backdrop/);
+    // The form pads itself; the element's body padding is off so the two do not add up.
+    expect(css).toContain('.nt-dialog::part(body) { padding: 0; }');
   });
 
-  it('phones: a full-screen sheet that follows the visual viewport (keyboard) and the safe areas', () => {
+  it("phones: the element's bottom sheet follows the visual viewport (keyboard); the page keeps the form clear of the safe area", () => {
     const phone = mediaBlock('@media (max-width: 639px) {\n  /* New task');
-    expect(phone).toMatch(/\.nt-dialog\s*\{[^}]*height:\s*var\(--nt-vvh,\s*100dvh\)/);
+    // sheet="auto" and viewport="visual" are the element's defaults: nothing on the page pins the box or writes
+    // --nt-vvh / --nt-vvt any more.
+    expect(html).not.toMatch(/<ui-dialog id="nt-dialog"[^>]*(sheet="never"|viewport="layout")/);
+    expect(phone).not.toContain('.nt-dialog');
     expect(phone).toMatch(/env\(safe-area-inset-bottom/);
-    expect(script).toContain('visualViewport');
+    expect(script).not.toContain('ntSyncViewport');
   });
 
   it('touch: 44px targets and 16px text in the instruction field (no iOS zoom)', () => {

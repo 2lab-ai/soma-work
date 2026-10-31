@@ -5591,29 +5591,12 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    is-floating rule. */
 body.nt-open .new-task-fab { display: none !important; }
 
-.nt-dialog {
-  width: min(720px, calc(100vw - 48px));
-  max-height: min(86vh, 880px);
-  margin: auto;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: var(--ib-shadow-raised);
-  overflow: hidden;
-  opacity: 0;
-  transform: translateY(10px) scale(0.97);
-  transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out);
-}
-.nt-dialog.is-shown { opacity: 1; transform: none; transition-duration: var(--dur-expand); }
-.nt-dialog::backdrop { background: var(--scrim); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); opacity: 0; transition: opacity var(--dur-fade) var(--ease-out); }
-.nt-dialog.is-shown::backdrop { opacity: 1; }
-.nt-form { display: flex; flex-direction: column; max-height: inherit; height: 100%; }
-.nt-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 4px; }
-.nt-head h2 { flex: 1; margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
-.nt-head-hint { font-size: 11px; color: var(--text-tertiary); border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px; }
-.nt-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; padding: 10px 16px 14px; overscroll-behavior: contain; }
+/* New task (H-01) is @2lab.ai/ui <ui-dialog size="lg">: the element draws the 720px panel, its heading and ✕, the
+   scrim, the rise / settle, the focus trap and, on phones, the bottom sheet that follows the visual viewport (above
+   the soft keyboard). The page keeps its form whole inside and pads it itself (the element's body padding is off). */
+.nt-dialog::part(body) { padding: 0; }
+.nt-form { display: flex; flex-direction: column; color: var(--text); font-size: 13px; line-height: 1.45; }
+.nt-body { display: flex; flex-direction: column; gap: 12px; padding: 4px 20px 16px; }
 .nt-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 .nt-config { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -5680,45 +5663,27 @@ body.nt-open .new-task-fab { display: none !important; }
 @keyframes nt-spin { to { rotate: 360deg; } }
 
 @media (max-width: 639px) {
-  /* New task — phones: the floating button replaces the top-bar one, and the
-     composer is a full-screen sheet that follows the visual viewport (the
-     keyboard) and the safe areas. */
+  /* New task — phones: the floating button replaces the top-bar one; the composer is <ui-dialog>'s bottom sheet,
+     which follows the visual viewport (the keyboard) itself — the page keeps the form clear of the home indicator. */
   .new-task-btn { display: none; }
   .new-task-fab { display: inline-flex; }
-  .nt-dialog {
-    position: fixed;
-    inset: auto 0 auto 0;
-    top: var(--nt-vvt, 0px);
-    width: 100vw;
-    max-width: 100vw;
-    height: var(--nt-vvh, 100dvh);
-    max-height: none;
-    margin: 0;
-    border: 0;
-    border-radius: 0;
-    opacity: 1;
-    transform: translateY(100%);
-    transition: transform var(--dur-move) var(--ease-out);
-  }
-  .nt-dialog.is-shown { transform: none; }
-  .nt-head { padding: calc(8px + env(safe-area-inset-top, 0px)) 12px 4px; }
-  .nt-body { padding: 8px 14px 10px; gap: 10px; }
+  .nt-body { padding: 4px 14px 10px; gap: 10px; }
   .nt-config { flex-wrap: nowrap; overflow-x: auto; margin: 0 -14px; padding: 0 14px 2px; scrollbar-width: none; }
   .nt-config::-webkit-scrollbar { display: none; }
   .nt-chip select { max-width: 150px; }
   .nt-body { padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
-  .nt-submit-hint, .nt-head-hint { display: none; }
+  .nt-submit-hint { display: none; }
 }
 @media (pointer: coarse) {
   /* New task — touch: 44px targets, 16px text (iOS does not zoom into it). The composer's own tools, chips and
      camera are 44px on touch by its rules. */
   .nt-battery-btn, .nt-toggle, .nt-chip { min-height: 44px; min-width: 44px; }
   .nt-chip select { font-size: 16px; }
-  .nt-kbd, .nt-submit-hint, .nt-head-hint { display: none; }
+  .nt-kbd, .nt-submit-hint { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  /* New task — no arrival, slide or scale; changes are instant. */
-  .new-task-btn, .new-task-fab, .nt-dialog,
+  /* New task — no arrival, slide or scale; changes are instant (the dialog's own motion is the element's). */
+  .new-task-btn, .new-task-fab,
   .nt-battery-fill, .nt-fab-label, .nt-fab-icon { animation: none !important; transition: none !important; }
 }
 /* ── Session artifacts (SSOT 2026-10-23): face chips, strips, the peek's inside, the viewer's slot ── */
@@ -6108,13 +6073,11 @@ ${pageTokenAliases()}
   <!-- New task (SSOT 2026-10-23): floating button (phones, and PC once the top-bar
        button scrolls away), the composer dialog, and the launch toast. -->
   <button type="button" class="new-task-fab" id="new-task-fab" aria-label="새 작업 시작" onclick="openNewTask()"><i data-ui-icon="plus" class="nt-fab-icon"></i><span class="nt-fab-label">새 작업</span></button>
-  <dialog id="nt-dialog" class="nt-dialog" aria-labelledby="nt-title" onclose="ntOnClosed()">
+  <!-- The composer dialog is @2lab.ai/ui <ui-dialog> (D4 H-01): its heading and ✕, scrim, focus trap, Esc / scrim
+       close (ui-close → ntOnClosed), focus return to the opener, and on phones its bottom sheet above the soft
+       keyboard. The page's form stays whole inside it; ui-submit from the composer posts as before. -->
+  <ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" lang="ko">
     <form id="nt-form" class="nt-form" onsubmit="event.preventDefault()" novalidate>
-      <header class="nt-head">
-        <button type="button" class="ui-icon-btn nt-close" aria-label="닫기" onclick="closeNewTask()"><i data-ui-icon="close"></i></button>
-        <h2 id="nt-title">새 작업</h2>
-        <span class="nt-head-hint" aria-hidden="true">Esc</span>
-      </header>
       <div class="nt-body" id="nt-body">
         <div class="nt-config" role="group" aria-label="작업 설정">
           <div class="nt-chip nt-chip-model"><label for="nt-model">모델</label><select id="nt-model" onchange="ntOnModelChange()"></select><button type="button" class="nt-battery-btn nt-batt-unknown" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><span class="nt-battery" id="nt-battery" role="img" aria-label="잔여량 미확인"><span class="nt-battery-fill" id="nt-battery-fill"></span></span><span class="nt-battery-pct" id="nt-battery-pct">?</span></button></div>
@@ -17660,15 +17623,12 @@ function ntSetError(text) {
 
 async function openNewTask() {
   var dlg = ntEl('nt-dialog');
-  if (!dlg || dlg.open) return;
+  if (!dlg || dlg.open || typeof dlg.show !== 'function') return;
   document.body.classList.add('nt-open');
   ntSetError('');
-  if (typeof dlg.showModal === 'function') dlg.showModal();
-  else dlg.setAttribute('open', '');
-  ntSyncViewport();
-  requestAnimationFrame(function () {
-    dlg.classList.add('is-shown');
-  });
+  // <ui-dialog> (H-01): show() opens it modal at once — the scrim, the rise, the focus trap, the phone sheet that
+  // follows the visual viewport (above the soft keyboard) and the focus return to the opener are the element's.
+  dlg.show();
   if (!_ntRequestId) _ntRequestId = ntNewRequestId();
   if (_ntState) ntRender();
   else paintNtComposer();
@@ -17682,22 +17642,20 @@ async function openNewTask() {
   await ntLoadContext();
 }
 
+// The page closes it (a launched task, the FAB's second press): hide() runs the element's exit (settle out, 180ms;
+// a fade under reduced motion) and gives focus back; what the page owns leaves at once (ntOnClosed).
 function closeNewTask() {
   var dlg = ntEl('nt-dialog');
   if (!dlg || !dlg.open) return;
-  ntQuietComposer();
-  dlg.classList.remove('is-shown');
-  var reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-  setTimeout(function () {
-    if (dlg.open) dlg.close();
-  }, reduce ? 0 : 180);
+  ntOnClosed();
+  if (typeof dlg.hide === 'function') dlg.hide();
 }
 
+// The sheet is going — the person's Esc / scrim / ✕ (the element's ui-close) or the page's closeNewTask: the FAB
+// comes back; a recording in progress is dropped and a preview stops.
 function ntOnClosed() {
   document.body.classList.remove('nt-open');
   ntQuietComposer();
-  var dlg = ntEl('nt-dialog');
-  if (dlg) dlg.classList.remove('is-shown');
 }
 
 async function ntLoadContext() {
@@ -18011,24 +17969,13 @@ async function ntOpenLaunched(launch) {
   else if (launch.permalink) window.open(launch.permalink, '_blank', 'noopener');
 }
 
-function ntSyncViewport() {
-  var vv = window.visualViewport;
-  var dlg = ntEl('nt-dialog');
-  if (!vv || !dlg) return;
-  dlg.style.setProperty('--nt-vvh', Math.round(vv.height) + 'px');
-  dlg.style.setProperty('--nt-vvt', Math.round(vv.offsetTop) + 'px');
-}
-
 function ntInit() {
   var dlg = ntEl('nt-dialog');
   if (!dlg) return;
-  // Esc closes with the same animation as the close button.
-  dlg.addEventListener('cancel', function (e) {
-    e.preventDefault();
-    closeNewTask();
-  });
-  dlg.addEventListener('click', function (e) {
-    if (e.target === dlg) closeNewTask();
+  // <ui-dialog>: Esc, the scrim and ✕ ask to close (ui-close) — the element then settles out and gives focus back;
+  // the page lets go of what it owns.
+  dlg.addEventListener('ui-close', function () {
+    ntOnClosed();
   });
   // <ui-composer id="nt-composer"> (D2 H-05..H-09): it takes drops and pasted screenshots itself (named
   // screenshot-…), records the voice note, opens the phone camera, caps the files (each and together) and sends
@@ -18072,11 +18019,6 @@ function ntInit() {
       fab.classList.toggle('is-floating', !entries[0].isIntersecting);
     }).observe(topBtn);
   }
-  // Phones: keep the sheet (and its toolbar) above the on-screen keyboard.
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', ntSyncViewport);
-    window.visualViewport.addEventListener('scroll', ntSyncViewport);
-  }
   var isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
   var hint = ntEl('nt-submit-hint');
   if (hint) hint.textContent = isMac ? '⌘↵' : 'Ctrl+↵';
@@ -18086,7 +18028,7 @@ function ntInit() {
 
 // ── Drawer geometry (SSOT 2026-10-24) ──
 // The drawer follows the visual viewport, so its composer stays above the
-// on-screen keyboard (the new-task sheet's ntSyncViewport, for the drawer).
+// on-screen keyboard (the New task <ui-dialog> does the same by itself).
 function syncPanelViewport() {
   var vv = window.visualViewport;
   var panel = document.getElementById('slide-panel');
