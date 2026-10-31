@@ -11160,10 +11160,12 @@ function renderPanelComposer(s, force) {
   var mode = pcModeOf(s);
   if (force || host._mode !== mode) {
     host._mode = mode;
-    // Task view T1.5: the composer's tools follow the field.
+    // Task view T1.5: the composer's tools follow the field — and so do a paste
+    // and a drop, which read _takesFiles (a dashboard task takes none, #640 R2).
+    host._takesFiles = pcToolsOpen(s, mode);
     ['pc-attach', 'pc-image', 'pc-mic'].forEach(function(id) {
       var tool = document.getElementById(id);
-      if (tool) tool.disabled = !pcToolsOpen(s, mode);
+      if (tool) tool.disabled = !host._takesFiles;
     });
     if (mode !== 'open') pcReset();
   }
@@ -17090,7 +17092,10 @@ async function sendCommand(text, ref) {
   // render that finds it again re-applies its real state (the mode cache is cleared).
   if (!_sessionCache[sendingSessionKey]) {
     var cmdHost = document.getElementById('panel-command');
-    if (cmdHost) cmdHost._mode = '';
+    if (cmdHost) {
+      cmdHost._mode = '';
+      cmdHost._takesFiles = false;
+    }
     el._sig = '';
     el.data = Object.assign({}, el.data, { disabled: true });
   }
@@ -19993,10 +19998,10 @@ function pcFinishRecording(state) {
 function pcInit() {
   var host = document.getElementById('panel-command');
   if (!host) return;
-  var open = function() { return host._mode === 'open'; };
+  var takesFiles = function() { return host._takesFiles === true; };
   host.addEventListener('paste', function(e) {
     var files = e.clipboardData && e.clipboardData.files ? Array.prototype.slice.call(e.clipboardData.files) : [];
-    if (!files.length || !open()) return;
+    if (!files.length || !takesFiles()) return;
     if (!e.clipboardData.getData('text/plain')) e.preventDefault();
     files.forEach(function(f) {
       var type = f.type || 'application/octet-stream';
@@ -20005,7 +20010,7 @@ function pcInit() {
     });
   });
   var hasFiles = function(e) {
-    return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0) && open();
+    return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0) && takesFiles();
   };
   host.addEventListener('dragover', function(e) {
     if (!hasFiles(e)) return;

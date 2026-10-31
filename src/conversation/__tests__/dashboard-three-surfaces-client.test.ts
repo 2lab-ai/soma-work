@@ -1500,6 +1500,33 @@ describe('the composer follows the session live (executed)', () => {
     expect(last()).toMatchObject({ canAct: false });
     expect(clientFn('repaintPanelSession')).toContain('renderPanelComposer(s);');
   });
+
+  // #640 R2 (astra): a dashboard task takes no attachments (D8) — not by the
+  // buttons, and not by a paste or a drop on the composer either.
+  it('a dashboard task’s composer takes no files: the host says so, and paste / drop read it', () => {
+    const el: Record<string, unknown> = {};
+    const host: Record<string, unknown> = {};
+    const tools = { 'pc-attach': { disabled: false }, 'pc-image': { disabled: false }, 'pc-mic': { disabled: false } };
+    const els: Record<string, unknown> = { 'panel-command': host, 'cmd-steer': el, ...tools };
+    const m = load<{ renderPanelComposer(s: unknown, force?: boolean): void }>(
+      ['renderPanelComposer', 'pcModeOf', 'pcToolsOpen', 'steeringData'],
+      ['STEER_STATE'],
+      {
+        document: { getElementById: (id: string) => els[id] ?? null },
+        currentUserId: 'U1',
+        pcHeldFiles: () => 0,
+        pcReset: () => {},
+      },
+    );
+    m.renderPanelComposer({ ownerId: 'U1', activityState: 'idle' }, true);
+    expect(host._takesFiles).toBe(true);
+    m.renderPanelComposer({ ownerId: 'U1', activityState: 'idle', slackless: true }, true); // another card: forced
+    expect(host._mode).toBe('open');
+    expect(host._takesFiles).toBe(false);
+    const init = clientFn('pcInit');
+    expect(init).toContain('var takesFiles = function() { return host._takesFiles === true; };');
+    expect(init).not.toContain("host._mode === 'open'");
+  });
 });
 
 describe('the model menu closes on Escape before the panel does (executed)', () => {
