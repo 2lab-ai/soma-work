@@ -173,6 +173,7 @@ import { notifyStartup } from './startup-notifier';
 import { ensureChildFolder } from './task-turn/epic-child-folder';
 import { archivedCostUsd, epicTreeCostUsd } from './task-turn/epic-cost';
 import { setEpicHost } from './task-turn/epic-server';
+import { createEpicWaker } from './task-turn/epic-wake';
 import { composeTaskApprovalListeners } from './task-turn/task-approver';
 import { createDashboardCloseHandler } from './task-turn/task-close';
 import { createTaskLauncher } from './task-turn/task-launcher';
@@ -1211,6 +1212,11 @@ async function start() {
         });
       },
       epicCostLimitUsd: (ownerId) => userSettingsStore.getUserEpicCostLimitUsd(ownerId),
+      // E4 ⑥ — once a chain that started has ended, an epic left with pending events may wake
+      // (grok #702 R1); one that never started is the waker's own retry to make (fable #702 R2).
+      onChainEnd: (key, { started }) => {
+        if (started) epicWaker.wake(key);
+      },
     });
     taskTurnController = taskController;
     // E4 ④a (.prd/19 D3) — the host the epic's tools call: registry reads, the plan writer,
@@ -1230,6 +1236,16 @@ async function start() {
       ensureDirectory: ensureChildFolder,
       controller: taskController,
     });
+    // E4 ⑥ (.prd/19 D7) — an epic with pending events wakes when it is idle: when a chain
+    // of its ends (the controller's onChainEnd, above — the post-drain idle hook fires inside
+    // the epic's own commit, before its chain is released, so it is not used), right after
+    // an event, and at boot (below). Never the cron path.
+    const epicWaker = createEpicWaker({
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      controller: taskController,
+      logger: new Logger('EpicWaker'),
+    });
+    claudeHandler.getSessionRegistry().setEpicEventListener((key) => epicWaker.wake(key));
     setDashboardTaskCommandHandler((sessionKey, message, attachments, actorUserId) =>
       taskController.start({ sessionKey, text: message, attachments, actorUserId }),
     );
@@ -1528,6 +1544,11 @@ async function start() {
       timing('Conversation viewer web server started');
     } catch (error) {
       logger.warn('Failed to start conversation viewer (non-critical)', error);
+    }
+
+    // E4 ⑥ (D7) — boot scan, with the dashboard up: an epic left with pending events wakes.
+    for (const [key, session] of claudeHandler.getAllSessions()) {
+      if (session.slackless === true && session.kind === 'epic') epicWaker.wake(key);
     }
 
     // E2 ⑤ / D13 — after the load and its reconciliation save, and with the
