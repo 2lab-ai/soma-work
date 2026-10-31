@@ -19080,8 +19080,17 @@ function ntOnEffortChange() {
 function ntSetDestination(dest) {
   if (!_ntState || !_ntCtx) return;
   _ntState.destination = dest === 'task' && _ntCtx.taskFolders ? 'task' : 'slack';
-  ntSetError('');
+  ntSetError(ntBlockedHint(_ntState, _ntFiles));
   ntRender();
+}
+
+// Why the dialog cannot start what it holds, said before a submit: the button is
+// disabled then, so a click never reaches submitNewTask (#640 R2).
+function ntBlockedHint(state, attachments) {
+  if (state && state.destination === 'task' && (attachments || []).length > 0) {
+    return '대시보드 작업은 아직 첨부를 받지 않아요 — 첨부를 빼거나 Slack 채널로 보내 주세요';
+  }
+  return '';
 }
 
 function ntOnFolderChange() {
@@ -19226,6 +19235,7 @@ function ntRemoveFile(id) {
   });
   if (_ntPlayingId === id && _ntAudio) _ntAudio.pause();
   ntRenderFiles();
+  if (_ntState && _ntState.destination === 'task') ntSetError(ntBlockedHint(_ntState, _ntFiles));
   ntUpdateSubmit();
 }
 
@@ -19413,9 +19423,7 @@ async function submitNewTask(ev) {
   if (!ntCanSubmit(_ntState, _ntFiles)) {
     ntSetError(
       _ntState.destination === 'task'
-        ? _ntFiles.length
-          ? '대시보드 작업은 아직 첨부를 받지 않아요 — 첨부를 빼거나 Slack 채널로 보내 주세요'
-          : '작업 지시를 써 주세요'
+        ? ntBlockedHint(_ntState, _ntFiles) || '작업 지시를 써 주세요'
         : _ntState.channelId
           ? '작업 지시를 쓰거나 파일을 첨부해 주세요'
           : '작업을 올릴 채널을 골라 주세요',
