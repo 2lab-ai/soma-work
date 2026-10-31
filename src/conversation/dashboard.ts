@@ -768,11 +768,12 @@ function resolveSelfActionKeyAndOwner(
   if (originalKey === null) return null;
   // Owner first: someone else's task answers 403, not a hint of what it is.
   if (!requireSessionOwner(request, reply, originalKey)) return null;
-  // Fail closed (#612 review): a Slack-less task cannot run or be steered until its
-  // execution context exists (#597/#598). Only routes that do not start a turn
-  // (stop / close / trash) opt in.
+  // Fail closed (#612 review): a Slack-less task takes only the routes that opt in —
+  // stop / close / trash, and `command`, which hands it to the task turn
+  // controller (#598 ④c). Goal, model, effort, the queue and answers are not
+  // supported on a task yet (answers: ⑤ #599).
   if (!opts.allowSlackless && _getSessionsFn?.()?.get(originalKey)?.slackless === true) {
-    reply.status(409).send({ error: 'task not runnable yet' });
+    reply.status(409).send({ error: 'not supported on a dashboard task yet' });
     return null;
   }
   return { wireKey, originalKey };
@@ -1126,11 +1127,21 @@ type TrashHandler = (sessionKey: string) => Promise<void>;
  * attached or recorded — decoded and held to the new-task limits.
  */
 type CommandHandler = (sessionKey: string, message: string, files: NewTaskAttachment[]) => Promise<void>;
+/**
+ * #598 ④c — a Slack-less task's instruction: the task turn controller refuses
+ * (D8, D9) or accepts it, and the route answers with its status and body.
+ */
+type TaskCommandHandler = (
+  sessionKey: string,
+  message: string,
+  files: NewTaskAttachment[],
+) => Promise<{ status: number; body: Record<string, unknown> }>;
 
 let _stopHandlerFn: StopHandler | null = null;
 let _closeHandlerFn: CloseHandler | null = null;
 let _trashHandlerFn: TrashHandler | null = null;
 let _commandHandlerFn: CommandHandler | null = null;
+let _taskCommandHandlerFn: TaskCommandHandler | null = null;
 
 export function setDashboardStopHandler(fn: StopHandler): void {
   _stopHandlerFn = fn;
@@ -1143,6 +1154,9 @@ export function setDashboardTrashHandler(fn: TrashHandler): void {
 }
 export function setDashboardCommandHandler(fn: CommandHandler): void {
   _commandHandlerFn = fn;
+}
+export function setDashboardTaskCommandHandler(fn: TaskCommandHandler | null): void {
+  _taskCommandHandlerFn = fn;
 }
 
 /**
@@ -3175,12 +3189,28 @@ export async function registerDashboardRoutes(
         return;
       }
       // Only the session's owner gets their files decoded (up to the new-task limits).
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       const files = parseAttachments(attachments);
       if (!files.ok) {
         reply.status(400).send({ error: files.error });
+        return;
+      }
+      // #598 ④c — a Slack-less task's instruction runs through the task turn
+      // controller, which answers 202 once the turn's start is saved.
+      if (_getSessionsFn?.()?.get(originalKey)?.slackless === true) {
+        if (!_taskCommandHandlerFn) {
+          reply.status(501).send({ error: 'Task turn handler not configured' });
+          return;
+        }
+        try {
+          const outcome = await _taskCommandHandlerFn(originalKey, message, files.value);
+          reply.status(outcome.status).send(outcome.body);
+        } catch (error) {
+          logger.error('Error starting a dashboard task turn', error);
+          reply.status(500).send({ error: 'Internal Server Error' });
+        }
         return;
       }
       try {

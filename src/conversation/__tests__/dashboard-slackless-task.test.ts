@@ -145,7 +145,7 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     expect(cardB?.threadTotalActiveMs).toBe(2_000);
   });
 
-  it('#612 R1 — routes that run or steer a turn refuse a Slack-less task with 409; close is still allowed', async () => {
+  it('#612 R1 / #598 ④c — routes not yet supported on a task refuse with 409; command goes to the task handler (501 unwired); close is allowed', async () => {
     const reg = new SessionRegistry();
     const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
     setDashboardSessionAccessor(() => reg.getAllSessions());
@@ -158,13 +158,15 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
       payload: JSON.stringify({ action: 'add', objective: 'do it' }),
     });
     expect(goal.statusCode).toBe(409);
+    expect(JSON.parse(goal.body).error).toBe('not supported on a dashboard task yet');
     const command = await injectWebServer({
       method: 'POST',
       url: `/api/dashboard/session/${key}/command`,
       headers,
       payload: JSON.stringify({ message: 'hello' }),
     });
-    expect(command.statusCode).toBe(409);
+    // #598 ④c — no longer refused: it goes to the task handler, not wired here.
+    expect(command.statusCode).toBe(501);
     // No handler is wired in this test: without the guard these answer 501.
     const model = await injectWebServer({
       method: 'POST',
@@ -221,13 +223,13 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
       expect(back?.slackless).toBe(true);
       expect(back?.channelId).toBe('');
 
-      const command = await injectWebServer({
+      const goal = await injectWebServer({
         method: 'POST',
-        url: `/api/dashboard/session/${encodeURIComponent(`task:${taskId}`)}/command`,
+        url: `/api/dashboard/session/${encodeURIComponent(`task:${taskId}`)}/goal`,
         headers,
-        payload: JSON.stringify({ message: 'hello' }),
+        payload: JSON.stringify({ action: 'add', objective: 'do it' }),
       });
-      expect(command.statusCode).toBe(409);
+      expect(goal.statusCode).toBe(409);
     } finally {
       dashboard.setDashboardLifecycleHandler(null);
     }
@@ -240,5 +242,56 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     const b = await board();
     const all = [...b.working, ...b.waiting, ...b.idle, ...b.closed];
     expect(all.find((c) => c.key === 'work:C1:500.001')).toBeUndefined();
+  });
+
+  it('#598 ④c — a Slack-less task’s command goes to the task handler, whose status and body the route returns', async () => {
+    const dashboard = await import('../dashboard');
+    const reg = new SessionRegistry();
+    const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
+    const slack = reg.createSession('U1', 'Alice', 'C1', '500.002');
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const taskHandler = vi.fn(async () => ({ status: 202, body: { ok: true } }));
+    const slackHandler = vi.fn(async () => {});
+    dashboard.setDashboardTaskCommandHandler(taskHandler);
+    dashboard.setDashboardCommandHandler(slackHandler);
+    const headers = { ...AUTH_HEADER, 'X-Admin-Mode': 'on', 'content-type': 'application/json' };
+    try {
+      const accepted = await injectWebServer({
+        method: 'POST',
+        url: `/api/dashboard/session/${encodeURIComponent(`task:${task.taskId}`)}/command`,
+        headers,
+        payload: JSON.stringify({ message: 'raise the timeout' }),
+      });
+      expect(accepted.statusCode).toBe(202);
+      expect(JSON.parse(accepted.body)).toEqual({ ok: true });
+      expect(taskHandler).toHaveBeenCalledWith(`task:${task.taskId}`, 'raise the timeout', []);
+      expect(slackHandler).not.toHaveBeenCalled();
+
+      taskHandler.mockResolvedValueOnce({ status: 429, body: { error: 'one dashboard task runs at a time' } } as any);
+      const capped = await injectWebServer({
+        method: 'POST',
+        url: `/api/dashboard/session/${encodeURIComponent(`task:${task.taskId}`)}/command`,
+        headers,
+        payload: JSON.stringify({ message: 'again' }),
+      });
+      expect(capped.statusCode).toBe(429);
+      expect(JSON.parse(capped.body).error).toMatch(/one dashboard task/);
+
+      // A Slack session's command is unchanged: the Slack handler, never the task handler.
+      taskHandler.mockClear();
+      void slack;
+      const slackCmd = await injectWebServer({
+        method: 'POST',
+        url: `/api/dashboard/session/${encodeURIComponent('work:C1:500.002')}/command`,
+        headers,
+        payload: JSON.stringify({ message: 'hi' }),
+      });
+      expect(slackCmd.statusCode).toBe(200);
+      expect(slackHandler).toHaveBeenCalledTimes(1);
+      expect(taskHandler).not.toHaveBeenCalled();
+    } finally {
+      dashboard.setDashboardTaskCommandHandler(null);
+      dashboard.setDashboardCommandHandler(null as any);
+    }
   });
 });

@@ -45,6 +45,7 @@ import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
 import { getClaudeChildProcessRegistry } from './agent-runtime/claude-child-process-registry';
+import { executionContextForTask } from './agent-runtime/execution-context';
 import { initAuthRuntimeDefault } from './auth/auth-runtime';
 import { isLlmuxUp } from './auth/llmux-client';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
@@ -80,6 +81,7 @@ import {
   setDashboardStopHandler,
   setDashboardSubmitRecommendedHandler,
   setDashboardTaskAccessor,
+  setDashboardTaskCommandHandler,
   setDashboardTrashHandler,
   setOAuthDirectoryLookup,
   setOAuthUserLookup,
@@ -92,9 +94,10 @@ import {
 import { getArtifactStore } from './conversation/artifacts';
 import type { NewTaskAttachment } from './conversation/new-task';
 import { createNewTaskProvider, createSlackSteerUploader } from './conversation/new-task-provider';
+import { createConversationDurable } from './conversation/recorder';
+import { createSessionWorkLogAppender } from './conversation/session-work-log';
 import { setSettingsRegistry } from './conversation/settings-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
-import { createSessionWorkLogAppender } from './conversation/session-work-log';
 import { flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
@@ -107,6 +110,7 @@ import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
 import { Logger } from './logger';
+import { mcpCallTracker } from './mcp-call-tracker';
 import { McpManager } from './mcp-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
 import { calculateTokenCost, hasModelPricing } from './metrics/model-registry';
@@ -145,6 +149,8 @@ import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
+import { createTaskTurnController, type TaskTurnController } from './task-turn/task-turn-controller';
+import { createTaskTurnExecutor } from './task-turn/task-turn-executor';
 import { getTokenManager } from './token-manager';
 import type { ConversationSession } from './types';
 import { productionSettingsRegistry } from './user-settings-registry-production';
@@ -762,8 +768,17 @@ async function start() {
       logger.info('Dashboard: stopped session', { sessionKey });
     });
 
+    // #598 ④c — the caller of Slack-less tasks' turns, built below once the
+    // work-log appender exists; Close and shutdown reach it through here.
+    let taskTurnController: TaskTurnController | undefined;
+
     // Connect dashboard: close handler (terminate session)
     setDashboardCloseHandler(async (sessionKey: string) => {
+      // A task's running chain ends `cancelled` (session-close) and commits its
+      // outcome before the task is archived and removed (598c v2 a2).
+      if (claudeHandler.getSessionRegistry().getSessionByKey(sessionKey)?.slackless === true) {
+        await taskTurnController?.close(sessionKey);
+      }
       claudeHandler.terminateSession(sessionKey);
       logger.info('Dashboard: closed session', { sessionKey });
     });
@@ -1124,6 +1139,31 @@ async function start() {
       scheduleLiveSessionUpdate,
       refreshAgentSpend,
     });
+
+    // #598 ④c — a Slack-less task's instruction from the dashboard runs on the
+    // task executor (its own output graph: dashboard panel, work log, a
+    // fail-closed Slack API) through the controller (D8 refusals, D9 cap,
+    // fallback-compaction re-entry, one chain-level abort on the shared
+    // request coordinator so Stop / shutdown reach it).
+    const taskTurnExecutor = createTaskTurnExecutor({
+      claudeHandler,
+      requestCoordinator: slackHandler.getRequestCoordinator(),
+      mcpCallTracker,
+      todoManager: slackHandler.getTodoManager(),
+      appendSessionWorkLog,
+      createConversation: (s) => createConversationDurable('', '', s.ownerId, s.ownerName ?? '', s.title),
+    });
+    const taskController = createTaskTurnController({
+      runner: taskTurnExecutor,
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      coordinator: slackHandler.getRequestCoordinator(),
+      buildExecutionContext: executionContextForTask,
+      logger: new Logger('TaskTurnController'),
+    });
+    taskTurnController = taskController;
+    setDashboardTaskCommandHandler((sessionKey, message, attachments) =>
+      taskController.start({ sessionKey, text: message, attachments }),
+    );
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
       recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => void;
@@ -1624,6 +1664,10 @@ async function start() {
         // into a queue we are freezing. It throws on a store failure, which is
         // why it belongs INSIDE this try, immediately before the sweep.
         slackHandler.prepareFollowupShutdown();
+        // #598 ④c — no new dashboard task chain starts once shutdown begins; a
+        // running one ends through `clearAll()`'s `shutdown` abort, stays
+        // `working` on disk, and restart reconciliation records it.
+        taskTurnController?.stopAccepting();
         slackHandler.getRequestCoordinator().clearAll();
       } catch (error) {
         // `prepare` may have SUCCEEDED and `clearAll` refused afterwards, in
