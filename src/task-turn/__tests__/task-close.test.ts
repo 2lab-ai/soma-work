@@ -18,7 +18,7 @@ function rig(session: any, ledgerUnreadable: boolean) {
       order.push('terminate');
     }),
     ledgerUnreadable: () => ledgerUnreadable,
-    logger: { info: vi.fn() },
+    logger: { info: vi.fn(), warn: vi.fn() },
   };
   return { close: createDashboardCloseHandler(deps), deps, order };
 }
@@ -37,6 +37,10 @@ describe('dashboard close of a task', () => {
     await expect(r.close('task:t1')).rejects.toBeInstanceOf(SessionDeleteRefusedError);
     expect(r.deps.closeTask).not.toHaveBeenCalled();
     expect(r.deps.terminate).not.toHaveBeenCalled();
+    // The cause is in the log (fable #672 P3-3).
+    expect(r.deps.logger.warn).toHaveBeenCalledWith(expect.stringContaining('ledger is unreadable'), {
+      sessionKey: 'task:t1',
+    });
   });
 
   it('no ledger but the task owes nothing: closes as usual', async () => {

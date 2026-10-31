@@ -23,7 +23,7 @@ export interface DashboardCloseDeps {
   terminate(sessionKey: string): unknown;
   /** The notice ledger could not be read at boot. */
   ledgerUnreadable(): boolean;
-  logger: { info(msg: string, meta?: unknown): void };
+  logger: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void };
 }
 
 export function createDashboardCloseHandler(deps: DashboardCloseDeps): (sessionKey: string) => Promise<void> {
@@ -31,6 +31,9 @@ export function createDashboardCloseHandler(deps: DashboardCloseDeps): (sessionK
     const closing = deps.getSession(sessionKey);
     if (closing?.slackless === true) {
       if (deps.ledgerUnreadable() && owesInstructionThread(closing)) {
+        deps.logger.warn('Dashboard close refused: the notice ledger is unreadable and the task owes its thread', {
+          sessionKey,
+        });
         throw new SessionDeleteRefusedError(
           sessionKey,
           'terminated',

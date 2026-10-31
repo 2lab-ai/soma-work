@@ -975,3 +975,59 @@ describe('task notice deliverer — claim failures count in a row (E2 ⑨)', () 
     }
   });
 });
+
+describe('task notice deliverer — spent claim failures (fable #672)', () => {
+  it('a spent entry that had a failed post sets no more retry timers (P3-1)', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({ maxAttempts: 2, retryDelayMs: 1_000 });
+      h.session.notices = [result];
+      h.deliverer.enqueue(h.session, KEY);
+      const claim = h.ledger.claim.bind(h.ledger);
+      vi.spyOn(h.ledger, 'claim')
+        .mockImplementationOnce(claim) // claimed; the post below fails → pending, attempts 1
+        .mockImplementation(() => {
+          throw new Error('ENOSPC');
+        });
+      (h.deps.post as any).mockImplementationOnce(async () => {
+        throw new Error('ratelimited');
+      });
+      await h.deliverer.deliver();
+      await vi.advanceTimersByTimeAsync(1_000); // claim fails (1)
+      await vi.advanceTimersByTimeAsync(1_000); // claim fails (2) — spent
+      expect(h.deliverer.failures(KEY)).toEqual([{ kind: 'result', error: 'notice_not_recorded' }]);
+      expect(vi.getTimerCount()).toBe(0);
+      await h.deliverer.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a close (no longer wanted) that cannot be saved is never shown on the card as undelivered (P3-2)', async () => {
+    vi.useFakeTimers();
+    try {
+      const question = {
+        id: `${TASK_ID}:c1:question:ask-7`,
+        kind: 'question',
+        askId: 'ask-7',
+        outcome: 'waiting',
+        at: 5,
+      };
+      const h = harness({ maxAttempts: 2, retryDelayMs: 1_000 }, task({ activityState: 'idle' }));
+      h.session.notices = [question];
+      h.deliverer.enqueue(h.session, KEY);
+      vi.spyOn(h.ledger, 'close').mockImplementation(() => {
+        throw new Error('ENOSPC');
+      });
+      await h.deliverer.deliver();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(h.ledger.close).toHaveBeenCalledTimes(2);
+      expect(h.posts).toHaveLength(0);
+      expect(h.deliverer.failures(KEY)).toEqual([]);
+      expect(vi.getTimerCount()).toBe(0);
+      await h.deliverer.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

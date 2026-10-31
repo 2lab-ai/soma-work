@@ -86,6 +86,14 @@ export interface TaskNoticeDeliverer {
 const NO_FINAL = '답변 기록 없음 — 카드에서 확인';
 const FINAL_UNREADABLE = '결과를 읽지 못했어요 — 카드에서 확인';
 const MORE_ON_CARD = '…(이하 카드에서)';
+/** A `close` of a notice no longer wanted (answered, replaced) that could not be saved. */
+class NoticeCloseError extends Error {
+  constructor(cause: unknown) {
+    super((cause as Error)?.message ?? String(cause));
+    this.name = 'NoticeCloseError';
+  }
+}
+
 /** A notice whose ledger write kept failing before any post: what its card shows. */
 const UNRECORDED = 'notice_not_recorded';
 /** Slack's per-message block cap, kept with room for the link context. */
@@ -107,7 +115,7 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
    */
   const unclaimable = new Map<
     string,
-    { count: number; error: string; sessionKey?: string; kind: TaskNotificationLedgerEntry['kind'] }
+    { count: number; error: string; sessionKey?: string; kind: TaskNotificationLedgerEntry['kind']; closing: boolean }
   >();
   /**
    * Posted, but the mark could not be saved: still `unknown` on disk. Not
@@ -256,6 +264,9 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
           error: UNRECORDED,
           sessionKey: entry.intent.sessionKey,
           kind: entry.kind,
+          // A close (answered or replaced) that could not be saved is not a
+          // notice the thread missed: never on the card (fable #672 P3-2).
+          closing: error instanceof NoticeCloseError,
         });
         deps.logger.error('Task notice not delivered', { id: entry.id, attempt: count, error: message });
         if (count < maxAttempts) scheduleRetry();
@@ -266,7 +277,10 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
       }
     }
     // A post that failed with attempts left is retried by a later pass.
-    if (deps.ledger.owed().some((e) => e.state === 'pending' && e.attempts > 0)) scheduleRetry();
+    // Spent claim failures are left alone until the boot pass: no timer for them (fable #672 P3-1).
+    const retryable = (e: TaskNotificationLedgerEntry) =>
+      e.state === 'pending' && e.attempts > 0 && (unclaimable.get(e.id)?.count ?? 0) < maxAttempts;
+    if (deps.ledger.owed().some(retryable)) scheduleRetry();
   }
 
   function scheduleRetry(): void {
@@ -303,7 +317,11 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
     const current = deps.ledger.get(entry.id) ?? entry;
     const verdict = stillWanted(current);
     if (verdict !== 'send') {
-      deps.ledger.close(entry.id, verdict);
+      try {
+        deps.ledger.close(entry.id, verdict);
+      } catch (error) {
+        throw new NoticeCloseError(error);
+      }
       settle(entry);
       return;
     }
@@ -467,7 +485,9 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
       .filter((e) => e.state === 'failed' && e.intent.sessionKey === sessionKey)
       .map((e) => ({ kind: e.kind, error: e.error ?? 'unknown error' }));
     for (const u of unclaimable.values()) {
-      if (u.count >= maxAttempts && u.sessionKey === sessionKey) failed.push({ kind: u.kind, error: u.error });
+      if (u.count >= maxAttempts && !u.closing && u.sessionKey === sessionKey) {
+        failed.push({ kind: u.kind, error: u.error });
+      }
     }
     return failed;
   }

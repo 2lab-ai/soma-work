@@ -2880,11 +2880,12 @@ export const scheduleLiveSessionUpdate = createLiveUpdateThrottle((key) => broad
 
 /** Broadcast session action feedback to all connected WebSocket clients */
 /**
- * A close the registry refused: the task still owes its Slack instruction
- * thread notices that could not be handed over (E2 ⑤, D6). Shown on the card.
+ * A close the registry refused: something the session still owes could not be
+ * handed over — a task's instruction-thread notices (E2 ⑤, D6) or parked
+ * follow-ups whose store failed. Cause-neutral (fable #672 P2-1); shown on the card.
  */
 export const CLOSE_REFUSED_TEXT =
-  '슬랙 스레드에 보낼 알림을 넘기지 못해 닫지 않았어요 — 잠시 뒤 다시 시도하거나 관리자에게 알려 주세요.';
+  '남은 처리(슬랙 스레드 알림이나 대기 중인 후속 메시지)를 넘기지 못해 닫지 않았어요 — 잠시 뒤 다시 시도하거나 관리자에게 알려 주세요.';
 
 function broadcastSessionAction(sessionKey: string, action: 'stop' | 'close' | 'trash'): void {
   if (wsClients.size === 0) return;
