@@ -414,9 +414,39 @@ describe('StreamExecutor — a Slack-less task turn writes to the dashboard (#59
     expect(kinds).toEqual(expect.arrayContaining(['instruction', 'tool', 'tool_result', 'final']));
     for (const c of deps.workLog.mock.calls) {
       expect(c[0]).toBe(TASK_BINDING);
-      expect(c[1].turnId).toBeDefined();
+      // One id for the turn's work log, its question and its committed outcome (#626 R1).
+      expect(c[1].turnId).toBe(TASK_BINDING.turnId);
     }
     expect(appendWorkLog).not.toHaveBeenCalled();
+  });
+
+  it('a task turn with a follow-up turn epoch is refused before the model runs (#626 R1)', async () => {
+    const deps = taskDeps();
+    await expect(new StreamExecutor(deps).execute({ ...taskParams(), followupTurnEpoch: 3 })).rejects.toThrow(
+      /follow-up turn epoch/,
+    );
+    expect(deps.claudeHandler.streamAgentEvents).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['stall-timeout', /응답 없음/],
+    ['ghost-session', /세션이 종료/],
+  ] as const)('an abort for %s carries its explanation as the reason — posted nowhere (#626 R1)', async (reason, text) => {
+    const controller = new AbortController();
+    const stalled = () =>
+      (async function* () {
+        yield { type: 'assistant_delta', text: 'working' };
+        controller.abort(reason);
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        throw err;
+      })();
+    const deps = taskDeps(stalled);
+    const params = { ...taskParams(), abortController: controller };
+    const result = await new StreamExecutor(deps).execute(params);
+    expect(result.terminal).toMatchObject({ exit: 'error', abortReason: reason, thrownError: false });
+    expect(result.terminal?.reasonText).toMatch(text);
+    expect(params.say).not.toHaveBeenCalled();
   });
 
   it('a caller-supplied say is never called on a task turn', async () => {
@@ -552,10 +582,11 @@ describe('StreamExecutor — a Slack-less task turn writes to the dashboard (#59
     expect(result.terminal?.choiceStillOpen?.()).toBe(true);
     // The waiting outcome's reason is the question (#626 R1).
     expect(result.terminal?.questionTitle).toBe('Which DB?');
-    const narration = deps.workLog.mock.calls
-      .filter((c: any[]) => c[1].kind === 'narration')
-      .map((c: any[]) => c[1].text);
-    expect(narration.join(' ')).toContain('Before I continue');
+    // The preface is recorded once — in the turn's final entry — not again as narration (#626 R1).
+    const texts = (kind: string) =>
+      deps.workLog.mock.calls.filter((c: any[]) => c[1].kind === kind).map((c: any[]) => String(c[1].text));
+    expect(texts('final').join(' ')).toContain('Before I continue');
+    expect(texts('narration').join(' ')).not.toContain('Before I continue');
     expect(params.say).not.toHaveBeenCalled();
   });
 });

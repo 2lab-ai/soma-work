@@ -40,13 +40,21 @@ export interface TaskTurnReceipts {
 export interface TaskTurnRunnerDeps {
   registry: {
     getSessionByKey(sessionKey: string): ConversationSession | undefined;
-    persistSessionStrict(sessionKey: string): void;
+    /** Outcome + end activity in one strict save; restores both and throws on failure. */
+    commitTaskTurnOutcome(sessionKey: string, outcome: TaskTurnOutcomeRecord, activity: 'waiting' | 'idle'): void;
     setActivityStateByKey(sessionKey: string, state: 'working' | 'waiting' | 'idle'): void;
   };
   /** The task executor's `execute` (built by `createTaskTurnExecutor`). */
   execute(params: Record<string, unknown>): Promise<TaskExecuteResult>;
   createConversation(session: ConversationSession): Promise<string>;
   receipts: TaskTurnReceipts;
+  /**
+   * The caller runs the next turn of a continuation and the `/compact`
+   * re-entry of a fallback compaction (④c). Without it such a return is
+   * committed as `interrupted` ("re-entry not wired") so a task never sits in
+   * `working` with nobody to resume it (design 598b v5 §9).
+   */
+  supportsReentry?: boolean;
   logger: {
     warn(msg: string, meta?: unknown): void;
     error(msg: string, meta?: unknown): void;
@@ -62,10 +70,15 @@ export interface RunTaskTurnInput {
   params?: Record<string, unknown>;
 }
 
+/** Why a turn ended without an outcome — what the caller (④c) must do next. */
+export type TaskTurnNonTerminal = 'continuation' | 'fallbackCompact' | 'supersede' | 'user-interrupted' | 'shutdown';
+
 export interface RunTaskTurnResult {
   turnId: string;
   /** The committed outcome, or null for a non-terminal return. */
   outcome: TaskTurnOutcomeRecord | null;
+  /** Set when `outcome` is null and the turn was not fenced. */
+  nonTerminal?: TaskTurnNonTerminal;
   continuation?: unknown;
   /** A newer turn took the session while this one ran; nothing was committed. */
   fenced?: boolean;
@@ -76,6 +89,8 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
   const pendingRecordFailures = new Map<string, string>();
   /** The turn that currently owns each task (the fence). In memory only. */
   const activeTurn = new Map<string, string>();
+  /** A first turn's conversation creation, shared by a concurrent second turn. */
+  const conversationCreation = new Map<string, Promise<string>>();
 
   async function commit(
     sessionKey: string,
@@ -91,13 +106,12 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
       });
       return { turnId, outcome: null, fenced: true };
     }
-    const previous = session.lastTurnOutcome;
     const record: TaskTurnOutcomeRecord = { ...decided, turnId, at: Date.now() };
-    session.lastTurnOutcome = record;
     try {
-      deps.registry.persistSessionStrict(sessionKey);
+      // One strict save of the outcome and the end activity (the registry
+      // restores both on failure); idle hooks run after it, seeing the outcome.
+      deps.registry.commitTaskTurnOutcome(sessionKey, record, record.outcome === 'waiting' ? 'waiting' : 'idle');
     } catch (error) {
-      session.lastTurnOutcome = previous;
       deps.logger.error('Task turn outcome not saved — rolled back', {
         sessionKey,
         turnId,
@@ -105,7 +119,6 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
       });
       throw error;
     }
-    deps.registry.setActivityStateByKey(sessionKey, record.outcome === 'waiting' ? 'waiting' : 'idle');
     return { turnId, outcome: record };
   }
 
@@ -120,7 +133,13 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
 
     if (!session.conversationId) {
       try {
-        session.conversationId = await deps.createConversation(session);
+        let creating = conversationCreation.get(sessionKey);
+        if (!creating) {
+          creating = deps.createConversation(session);
+          conversationCreation.set(sessionKey, creating);
+          creating.finally(() => conversationCreation.delete(sessionKey)).catch(() => {});
+        }
+        session.conversationId ??= await creating;
       } catch (error) {
         deps.logger.error('Task conversation not created', { sessionKey, error: (error as Error)?.message });
         return commit(sessionKey, session, turnId, {
@@ -160,11 +179,24 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
 
     const decided = result.terminal ? deriveTaskTurnOutcome(result.terminal, failure) : null;
     if (!decided) {
+      const nonTerminal = classifyNonTerminal(result);
+      const needsReentry = nonTerminal === 'continuation' || nonTerminal === 'fallbackCompact';
+      if (!nonTerminal || (needsReentry && !deps.supportsReentry)) {
+        // Nobody will resume it: commit it as interrupted rather than leave it working.
+        pendingRecordFailures.delete(sessionKey);
+        return commit(sessionKey, session, turnId, {
+          outcome: 'interrupted',
+          category: 'Exception',
+          reason: nonTerminal ? 're-entry not wired' : 'turn ended without an outcome',
+          ...(failure ? { recordFailure: failure } : {}),
+        });
+      }
       // Keep the first failure: a later one must not replace it (#626 R1).
       if (recordFailure && !pendingRecordFailures.has(sessionKey)) pendingRecordFailures.set(sessionKey, recordFailure);
       return {
         turnId,
         outcome: null,
+        nonTerminal,
         ...(result.continuation !== undefined ? { continuation: result.continuation } : {}),
       };
     }
@@ -173,4 +205,14 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
   }
 
   return { runTaskTurn };
+}
+
+const NO_TERMINAL_ABORTS: ReadonlySet<string> = new Set(['supersede', 'user-interrupted', 'shutdown']);
+
+function classifyNonTerminal(result: TaskExecuteResult): TaskTurnNonTerminal | undefined {
+  if (result.continuation !== undefined) return 'continuation';
+  if (result.terminal?.fallbackCompact) return 'fallbackCompact';
+  const reason = result.terminal?.abortReason;
+  if (reason && NO_TERMINAL_ABORTS.has(reason)) return reason as TaskTurnNonTerminal;
+  return undefined;
 }

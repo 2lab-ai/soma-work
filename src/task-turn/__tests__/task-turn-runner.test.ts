@@ -1,9 +1,10 @@
 /**
  * #598 ④b1 — the task runner's commit (design 598b v5 §8, §9, §14.1): one
  * terminalizer per turn. Order: drain the turn's work-log receipts → decide
- * (question re-read at decision time) → current-turn fence → write
- * `lastTurnOutcome` → strict save (rolled back on failure) → the only
- * idle/waiting transition.
+ * (question re-read at decision time) → current-turn fence → one strict
+ * commit of the outcome and the end activity (`commitTaskTurnOutcome`, which
+ * restores both and throws on failure; idle hooks run after the write).
+ * A non-terminal return nobody will resume is committed as `interrupted`.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { createTaskTurnRunner, type TaskTurnRunnerDeps } from '../task-turn-runner';
@@ -15,8 +16,10 @@ function harness(over: Partial<TaskTurnRunnerDeps> = {}) {
   const events: string[] = [];
   const registry = {
     getSessionByKey: vi.fn((k: string) => (k === KEY ? session : undefined)),
-    persistSessionStrict: vi.fn(() => {
-      events.push(`save:${session.lastTurnOutcome?.outcome}`);
+    commitTaskTurnOutcome: vi.fn((_k: string, record: any, activity: string) => {
+      session.lastTurnOutcome = record;
+      session.activityState = activity;
+      events.push(`commit:${record.outcome}:${activity}`);
     }),
     setActivityStateByKey: vi.fn((_k: string, state: string) => {
       events.push(`activity:${state}:${session.lastTurnOutcome?.outcome}`);
@@ -40,11 +43,11 @@ function harness(over: Partial<TaskTurnRunnerDeps> = {}) {
 }
 
 describe('createTaskTurnRunner (#598 ④b1)', () => {
-  it('commits in order: outcome → strict save → idle; idle hooks see the new outcome', async () => {
+  it('commits once: working, then outcome + idle in one strict commit', async () => {
     const h = harness();
     const r = await h.runner.runTaskTurn(h.input);
     expect(r.outcome?.outcome).toBe('completed');
-    expect(h.events).toEqual(['activity:working:undefined', 'save:completed', 'activity:idle:completed']);
+    expect(h.events).toEqual(['activity:working:undefined', 'commit:completed:idle']);
     expect(h.session.lastTurnOutcome).toMatchObject({ outcome: 'completed', category: 'WorkflowComplete' });
     expect(typeof h.session.lastTurnOutcome.turnId).toBe('string');
   });
@@ -83,7 +86,7 @@ describe('createTaskTurnRunner (#598 ④b1)', () => {
       ),
     });
     await h.runner.runTaskTurn(h.input);
-    expect(h.events[h.events.length - 1]).toBe('activity:waiting:waiting');
+    expect(h.events[h.events.length - 1]).toBe('commit:waiting:waiting');
   });
 
   it('the question is re-read after the receipt drain — an answer during the drain completes the turn', async () => {
@@ -124,30 +127,26 @@ describe('createTaskTurnRunner (#598 ④b1)', () => {
     const h = harness({
       execute: vi.fn(async () => results.shift() as any),
       receipts: { open: vi.fn(), drain: vi.fn(async () => drains.shift()) },
+      supportsReentry: true,
     });
     const first = await h.runner.runTaskTurn(h.input);
     expect(first.outcome).toBeNull();
+    expect(first.nonTerminal).toBe('continuation');
     expect(first.continuation).toEqual({ prompt: 'next' });
-    expect(h.registry.persistSessionStrict).not.toHaveBeenCalled();
+    expect(h.registry.commitTaskTurnOutcome).not.toHaveBeenCalled();
     expect(h.events).toEqual(['activity:working:undefined']);
     const second = await h.runner.runTaskTurn(h.input);
     expect(second.outcome).toMatchObject({ outcome: 'failed', reason: 'record: EIO' });
   });
 
-  it('a strict-save failure restores the previous outcome, sends no idle, and reaches the caller', async () => {
+  it('a commit failure reaches the caller and is logged; nothing else moves activity', async () => {
     const h = harness();
-    h.session.lastTurnOutcome = { turnId: 'old', outcome: 'completed', category: 'WorkflowComplete', at: 1 };
-    h.registry.persistSessionStrict.mockImplementationOnce(() => {
+    h.registry.commitTaskTurnOutcome.mockImplementationOnce(() => {
       throw new Error('ENOSPC');
     });
     await expect(h.runner.runTaskTurn(h.input)).rejects.toThrow('ENOSPC');
-    expect(h.session.lastTurnOutcome).toEqual({
-      turnId: 'old',
-      outcome: 'completed',
-      category: 'WorkflowComplete',
-      at: 1,
-    });
-    expect(h.events.filter((e) => e.startsWith('activity:idle'))).toEqual([]);
+    expect(h.deps.logger.error).toHaveBeenCalledWith('Task turn outcome not saved — rolled back', expect.anything());
+    expect(h.events).toEqual(['activity:working:undefined']);
   });
 
   it('an older turn’s late commit is fenced out — it never writes the outcome or moves activity', async () => {
@@ -171,7 +170,7 @@ describe('createTaskTurnRunner (#598 ④b1)', () => {
     expect(second.outcome?.outcome).toBe('completed');
     expect(firstResult.fenced).toBe(true);
     expect(h.session.lastTurnOutcome.turnId).toBe(second.turnId);
-    expect(h.registry.persistSessionStrict).toHaveBeenCalledTimes(1);
+    expect(h.registry.commitTaskTurnOutcome).toHaveBeenCalledTimes(1);
   });
 
   it('a session that is not a Slack-less task is refused', async () => {
@@ -191,10 +190,72 @@ describe('createTaskTurnRunner (#598 ④b1)', () => {
     const h = harness({
       execute: vi.fn(async () => results.shift() as any),
       receipts: { open: vi.fn(), drain: vi.fn(async () => drains.shift()) },
+      supportsReentry: true,
     });
     await h.runner.runTaskTurn(h.input);
     await h.runner.runTaskTurn(h.input);
     const last = await h.runner.runTaskTurn(h.input);
     expect(last.outcome).toMatchObject({ outcome: 'failed', reason: 'record: EIO-first' });
+  });
+
+  it('a continuation with no re-entry wired is committed as interrupted — never left working (#626 R1, §9)', async () => {
+    const h = harness({
+      execute: vi.fn(async () => ({ success: true, messageCount: 1, continuation: { prompt: 'next' } }) as any),
+      receipts: { open: vi.fn(), drain: vi.fn(async () => 'EIO') },
+    });
+    const r = await h.runner.runTaskTurn(h.input);
+    expect(r.outcome).toMatchObject({ outcome: 'interrupted', reason: 're-entry not wired', recordFailure: 'EIO' });
+    expect(h.events).toEqual(['activity:working:undefined', 'commit:interrupted:idle']);
+  });
+
+  it('a fallback compaction is a non-terminal return the caller re-enters with /compact (#626 R1)', async () => {
+    const terminal = { exit: 'success', endTurnInfoPresent: false, fallbackCompact: true };
+    const wired = harness({
+      execute: vi.fn(async () => ({ success: true, messageCount: 1, terminal }) as any),
+      supportsReentry: true,
+    });
+    const r = await wired.runner.runTaskTurn(wired.input);
+    expect(r).toMatchObject({ outcome: null, nonTerminal: 'fallbackCompact' });
+    expect(wired.registry.commitTaskTurnOutcome).not.toHaveBeenCalled();
+
+    const unwired = harness({ execute: vi.fn(async () => ({ success: true, messageCount: 1, terminal }) as any) });
+    const u = await unwired.runner.runTaskTurn(unwired.input);
+    expect(u.outcome).toMatchObject({ outcome: 'interrupted', reason: 're-entry not wired' });
+  });
+
+  it('a no-terminal abort (supersede) commits nothing and names why', async () => {
+    const h = harness({
+      execute: vi.fn(
+        async () => ({ success: false, messageCount: 0, terminal: { exit: 'abort', abortReason: 'supersede' } }) as any,
+      ),
+    });
+    const r = await h.runner.runTaskTurn(h.input);
+    expect(r).toMatchObject({ outcome: null, nonTerminal: 'supersede' });
+    expect(h.registry.commitTaskTurnOutcome).not.toHaveBeenCalled();
+  });
+
+  it('a return with neither terminal signals nor a continuation is committed as interrupted', async () => {
+    const h = harness({ execute: vi.fn(async () => ({ success: true, messageCount: 1 }) as any) });
+    const r = await h.runner.runTaskTurn(h.input);
+    expect(r.outcome).toMatchObject({ outcome: 'interrupted', reason: 'turn ended without an outcome' });
+  });
+
+  it('two concurrent first turns create one conversation (#626 R1)', async () => {
+    let release!: (id: string) => void;
+    const createConversation = vi.fn(
+      () =>
+        new Promise<string>((r) => {
+          release = r;
+        }),
+    );
+    const h = harness({ createConversation });
+    const a = h.runner.runTaskTurn(h.input);
+    const b = h.runner.runTaskTurn(h.input);
+    await Promise.resolve();
+    release('conv-once');
+    await Promise.all([a, b]);
+    expect(createConversation).toHaveBeenCalledTimes(1);
+    expect(h.session.conversationId).toBe('conv-once');
+    for (const call of h.execute.mock.calls) expect(call[0].taskBinding.conversationId).toBe('conv-once');
   });
 });
