@@ -39,16 +39,6 @@ vi.mock('../../session-archive', () => ({
 }));
 vi.mock('../../admin-utils', () => ({ isAdminUser: (id: string) => id === 'U_ADMIN' }));
 
-/** The models the new-task context offers (#640 R1: a task's model is one of these, by nickname). */
-const OFFERED = {
-  models: [
-    { nickname: 'opus', model: 'claude-opus-5-5[1m]', label: 'Opus' },
-    { nickname: 'fable', model: 'claude-fable-1', label: 'Fable' },
-  ],
-  efforts: [],
-  channels: [],
-};
-
 describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () => {
   let injectWebServer: any;
   let stopWebServer: any;
@@ -63,7 +53,7 @@ describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () 
     injectWebServer = webServer.injectWebServer;
     stopWebServer = webServer.stopWebServer;
     dashboard = await import('../dashboard');
-    slackProvider = { context: vi.fn(async () => OFFERED), start: vi.fn() };
+    slackProvider = { context: vi.fn(), start: vi.fn() };
     dashboard.setDashboardNewTaskProvider(slackProvider);
     launcher = vi.fn(async () => ({ status: 200, body: { sessionKey: 'task:abc', status: 'running' } }));
     folders = vi.fn(() => [{ name: 'repo-a', mtimeMs: 2 }]);
@@ -113,28 +103,18 @@ describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () 
       ownerName: 'Plain Name',
       prompt: 'Fix the flaky test',
       folder: 'repo-a',
-      model: 'claude-opus-5-5[1m]', // the offered model the nickname names (#640 R1)
+      model: 'opus', // a nickname: the launcher resolves it against the offered models (#640 R1)
     });
+    // A dashboard task never waits on Slack: not the Slack provider's context (channel
+    // membership), not its start (#640 R2).
+    expect(slackProvider.context).not.toHaveBeenCalled();
     expect(slackProvider.start).not.toHaveBeenCalled();
   });
 
-  // #640 R1 (fable P2): the model is one the dialog offers, named by nickname —
-  // never an arbitrary id string from the body.
-  it.each([
-    ['a raw model id', 'claude-opus-5-5[1m]'],
-    ['a model the dialog does not offer', 'haiku'],
-  ])('400 for %s — nothing launched', async (_label, model) => {
-    const res = await post(await signIn(), task({ model }));
-    expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.body).error).toMatch(/model/);
-    expect(launcher).not.toHaveBeenCalled();
-  });
-
-  it('no model: the task takes the default — the context is not needed', async () => {
+  it('no model: the task takes the default', async () => {
     const res = await post(await signIn(), task());
     expect(res.statusCode).toBe(200);
     expect(launcher.mock.calls[0][0]).not.toHaveProperty('model');
-    expect(slackProvider.context).not.toHaveBeenCalled();
   });
 
   // #640 R1: the task's owner is the signed-in user — admin mode and body fields do not retarget it.
@@ -210,6 +190,25 @@ describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () 
 
   // #640 R1: through the real launcher, a folder is a name in the signed-in user's own root —
   // a path, a parent step or another user's root is refused before anything is created.
+  it('the real launcher refuses a model it does not offer (400), nothing created', async () => {
+    const { createTaskLauncher } = await import('../../task-turn/task-launcher');
+    const createTask = vi.fn(() => ({ taskId: 'never' }));
+    const controller = { canStart: vi.fn(() => null), start: vi.fn() };
+    dashboard.setDashboardTaskLauncher(
+      createTaskLauncher({
+        controller: controller as never,
+        createTask,
+        createFreshDirectory: () => undefined,
+        listModels: () => [{ nickname: 'opus', model: 'claude-opus-5-5[1m]' }],
+      }),
+    );
+    const res = await post(await signIn(), task({ model: 'claude-opus-5-5[1m]' }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/model/);
+    expect(createTask).not.toHaveBeenCalled();
+    expect(slackProvider.context).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['an absolute path', '/etc'],
     ['a parent step into another root', '../U_OTHER'],

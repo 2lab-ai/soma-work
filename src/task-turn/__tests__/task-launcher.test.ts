@@ -60,9 +60,16 @@ function harness(over: { canStart?: unknown; startStatus?: number } = {}) {
       fs.mkdirSync(dir, { recursive: true });
       return dir;
     },
+    listModels: () => MODELS,
   });
   return { launcher, controller, calls, created };
 }
+
+/** The models the dialog offers the owner (nickname → id). */
+const MODELS = [
+  { nickname: 'opus', model: 'claude-opus-5-5[1m]' },
+  { nickname: 'fable', model: 'claude-fable-1' },
+];
 
 const REQ = { ownerId: OWNER, ownerName: 'Owner', prompt: 'Fix the flaky test\nand explain why' };
 
@@ -91,7 +98,21 @@ describe('createTaskLauncher (#600 ⑥)', () => {
     const h = harness();
     const r = await h.launcher.launch({ ...REQ, folder: EXISTING, model: 'opus' });
     expect(r.status).toBe(200);
-    expect(h.created[0]).toMatchObject({ workingDirectory: path.join(ROOT, EXISTING), model: 'opus' });
+    expect(h.created[0]).toMatchObject({ workingDirectory: path.join(ROOT, EXISTING), model: 'claude-opus-5-5[1m]' });
+  });
+
+  // #640 R1/R2: the model is a nickname the dialog offers the owner, resolved here —
+  // from the model catalog alone, not the Slack-dependent new-task context.
+  it.each([
+    ['a raw model id', 'claude-opus-5-5[1m]'],
+    ['a model not offered', 'haiku'],
+  ])('%s is 400 and nothing is created or started', async (_label, model) => {
+    const h = harness();
+    const r = await h.launcher.launch({ ...REQ, model });
+    expect(r).toEqual({ status: 400, body: { error: 'model must be one of the models the dialog offers' } });
+    expect(h.calls).not.toContain('fresh');
+    expect(h.calls).not.toContain('createTask');
+    expect(h.controller.start).not.toHaveBeenCalled();
   });
 
   it.each([

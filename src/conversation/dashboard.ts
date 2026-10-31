@@ -3596,15 +3596,10 @@ export async function registerDashboardRoutes(
         const ownerName = (request as { authContext?: { name?: string } }).authContext?.name || userId;
         try {
           const result = await _newTaskGate.run(userId, parsed.value.requestId, async () => {
-            const { requestId: _rid, model: nickname, ...rest } = parsed.value;
-            // The model is one the dialog offers, by nickname — never an id from the body (#640 R1).
-            let model: string | undefined;
-            if (nickname !== undefined) {
-              const offered = _newTaskProvider ? (await _newTaskProvider.context(userId)).models : [];
-              model = offered.find((m) => m.nickname === nickname)?.model;
-              if (!model) throw new NewTaskError(400, 'model must be one of the models the dialog offers');
-            }
-            const outcome = await launcher.launch({ ownerId: userId, ownerName, ...rest, ...(model ? { model } : {}) });
+            const { requestId: _rid, ...rest } = parsed.value;
+            // The model nickname is resolved by the launcher from the model catalog —
+            // never through the Slack-dependent new-task context (#640 R2).
+            const outcome = await launcher.launch({ ownerId: userId, ownerName, ...rest });
             // A refusal is not remembered by the gate, so the same request may be retried.
             if (outcome.status >= 400) {
               throw new NewTaskError(outcome.status, String(outcome.body.error ?? 'refused'));
@@ -19432,17 +19427,21 @@ async function submitNewTask(ev) {
   }
   _ntBusy = true;
   ntSetError('');
+  // What was submitted is what is sent: a switch of the destination while the
+  // files are read does not change this launch (#640 R2).
+  var submitted = Object.assign({}, _ntState);
+  var files = _ntFiles.slice();
   var btn = ntEl('nt-submit');
   btn.classList.add('is-busy');
   ntUpdateSubmit();
   try {
-    if (_ntFiles.length) ntSetStatus('첨부 준비 중…');
+    if (files.length) ntSetStatus('첨부 준비 중…');
     await Promise.all(
-      _ntFiles.map(function (f) {
+      files.map(function (f) {
         return f.ready;
       }),
     );
-    var body = JSON.stringify(ntBuildPayload(_ntState, _ntFiles, _ntRequestId));
+    var body = JSON.stringify(ntBuildPayload(submitted, files, _ntRequestId));
     ntSetStatus('작업을 올리는 중…');
     var res = await ntPostTask(body);
     // Only a stale CSRF token is worth one retry (not "no Slack identity").
@@ -19456,7 +19455,7 @@ async function submitNewTask(ev) {
       ntSetError(data.error || '작업을 시작하지 못했습니다 (' + res.status + ')');
       return;
     }
-    ntOnLaunched(data);
+    ntOnLaunched(data, submitted);
   } catch (e) {
     ntSetStatus('');
     ntSetError('작업을 시작하지 못했습니다 — 네트워크를 확인하고 다시 눌러 주세요 (같은 요청은 두 번 실행되지 않습니다)');
@@ -19495,7 +19494,7 @@ function ntPostTask(body) {
   });
 }
 
-function ntOnLaunched(data) {
+function ntOnLaunched(data, submitted) {
   // The next task starts clean: a new idempotency key, no text, no files;
   // the channel just used stays selected.
   _ntRequestId = ntNewRequestId();
@@ -19507,7 +19506,7 @@ function ntOnLaunched(data) {
     }
   });
   _ntFiles = [];
-  _ntState = ntStateAfterLaunch(_ntState, data, _ntCtx);
+  _ntState = ntStateAfterLaunch(submitted || _ntState, data, _ntCtx);
   // A task that did not start keeps its instruction — in the dialog and its draft (#640 R1).
   if (data.status !== 'not-started') {
     try {

@@ -36,6 +36,12 @@ function clientFn(name: string): string {
 function load<T>(fns: string[]): T {
   return new Function(`${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`)() as T;
 }
+/** `load` with the page globals the functions read, given as values. */
+function loadWith<T>(fns: string[], globals: Record<string, unknown>): T {
+  const names = Object.keys(globals);
+  const body = `${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
+  return new Function(...names, body)(...names.map((n) => globals[n])) as T;
+}
 
 // ── Served page ──────────────────────────────────────────────────────
 
@@ -467,6 +473,62 @@ describe('ntBlockedHint (#640 R2)', () => {
   it('is shown on switching to a dashboard task and refreshed when a file is removed', () => {
     expect(clientFn('ntSetDestination')).toContain('ntSetError(ntBlockedHint(_ntState, _ntFiles));');
     expect(clientFn('ntRemoveFile')).toContain('ntSetError(ntBlockedHint(_ntState, _ntFiles));');
+  });
+});
+
+// #640 R2 (astra): what the user submitted is what is sent — a switch of the
+// destination while attachments are still being read does not turn a Slack
+// launch with files into a dashboard task without them.
+describe('submitNewTask — the submitted state is the one sent (#640 R2)', () => {
+  it('switching to a dashboard task while the files are read does not drop them', async () => {
+    let release!: () => void;
+    const ready = new Promise<void>((r) => {
+      release = r;
+    });
+    const state = {
+      destination: 'slack',
+      channelId: 'C1',
+      prompt: '',
+      model: 'opus',
+      effort: 'xhigh',
+      autogoal: false,
+      autoz: false,
+      folder: '',
+    };
+    const posted: string[] = [];
+    const launched: unknown[][] = [];
+    const el = { classList: { add() {}, remove() {} }, disabled: false, value: '사진 봐줘' };
+    const { submitNewTask } = loadWith<{ submitNewTask(): Promise<void> }>(
+      ['submitNewTask', 'ntCanSubmit', 'ntBlockedHint', 'ntBuildPayload'],
+      {
+        _ntBusy: false,
+        _ntCtx: {},
+        _ntState: state,
+        _ntRec: null,
+        _ntFiles: [{ name: 'a.png', mimetype: 'image/png', data: 'AA', ready }],
+        _ntRequestId: 'req-0123456789',
+        ntEl: () => el,
+        ntSetError: () => {},
+        ntSetStatus: () => {},
+        ntUpdateSubmit: () => {},
+        ntStopRecording: () => {},
+        refreshCsrfToken: async () => {},
+        ntPostTask: async (b: string) => {
+          posted.push(b);
+          return { status: 200, data: { ok: true, channel: 'C1', status: 'running' } };
+        },
+        ntOnLaunched: (...args: unknown[]) => launched.push(args),
+      },
+    );
+    const run = submitNewTask();
+    state.destination = 'task'; // the user switches while the files are read
+    release();
+    await run;
+    const body = JSON.parse(posted[0]);
+    expect(body).toMatchObject({ channelId: 'C1', prompt: '사진 봐줘', attachments: [{ name: 'a.png' }] });
+    expect(body.destination).toBeUndefined();
+    // What follows the launch reads the submitted state, too.
+    expect(launched[0][1]).toMatchObject({ destination: 'slack', prompt: '사진 봐줘' });
   });
 });
 
