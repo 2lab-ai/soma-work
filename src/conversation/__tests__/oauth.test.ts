@@ -498,12 +498,22 @@ describe('OAuth module', () => {
       expect(logWarn).toHaveBeenCalledWith('OAuth login: no Slack user matched for email', { email: 'dana@x.com' });
     });
 
-    it('login page explains google_unverified and ambiguous_email', async () => {
+    it('login page explains google_unverified and ambiguous_email — drawn by the server, so with JavaScript off too', async () => {
       await startServer('google');
-      const res = await app().inject({ method: 'GET', url: '/login' });
-      expect(res.statusCode).toBe(200);
-      expect(res.body).toMatch(/'google_unverified': '[^']*not verified[^']*'/);
-      expect(res.body).toMatch(/'ambiguous_email': '[^']*Several Slack users[^']*\/z email[^']*'/);
+      const plain = await app().inject({ method: 'GET', url: '/login' });
+      expect(plain.statusCode).toBe(200);
+      expect(plain.body).not.toContain('role="alert"');
+      expect(plain.body).not.toContain("'google_unverified'"); // no client-side error table any more (M-09)
+      const unverified = await app().inject({ method: 'GET', url: '/login?error=google_unverified&email=a%40x.com' });
+      expect(unverified.statusCode).toBe(200);
+      expect(unverified.body).toMatch(
+        /<div class="ac-error" role="alert">[\s\S]*?Your Google email address is not verified/,
+      );
+      const ambiguous = await app().inject({ method: 'GET', url: '/login?error=ambiguous_email&email=a%40x.com' });
+      expect(ambiguous.body).toMatch(/role="alert">[\s\S]*?Several Slack users registered this email via \/z email/);
+      const noMatch = await app().inject({ method: 'GET', url: '/login?error=no_match&email=%3Cb%3Ea%40x.com' });
+      expect(noMatch.body).toContain('No matching Slack account found for &lt;b&gt;a@x.com');
+      expect(noMatch.body).not.toContain('<b>a@x.com');
     });
   });
 
