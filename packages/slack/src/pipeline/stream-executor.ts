@@ -1221,6 +1221,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     if (taskTurn && (!taskBinding || !this.deps.workLog || session.conversationId !== taskBinding.conversationId)) {
       throw new Error('Slack-less task turn refused: no turn binding, no work-log writer, or a different conversation');
     }
+    // The follow-up turn epoch belongs to the Slack follow-up queue; a task turn's
+    // panel has no epoch source, so an epoch would silently drop its status writes (#626 R1).
+    if (taskTurn && params.followupTurnEpoch !== undefined) {
+      throw new Error('Slack-less task turn refused: a follow-up turn epoch is not supported');
+    }
     const say: SayFn = taskTurn ? createTaskSay(taskBinding!, this.deps.workLog!) : callerSay;
     // The user-facing terminal text a task turn would have posted (SDK result
     // error, handleError's posts) — carried in the outcome's reason instead.
@@ -1320,7 +1325,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // the supersede branch in TurnSurface.begin (which compares prior vs new
     // turnId) would silently skip — leaving the second turn without an open
     // B1 stream.
-    const turnId = `${sessionKey}:${requestStartedAt.getTime()}:${randomUUID()}`;
+    // A task turn uses its runner's turn id, so its work log, its question and its
+    // committed outcome share one id (#626 R1).
+    const turnId = taskTurn ? taskBinding!.turnId : `${sessionKey}:${requestStartedAt.getTime()}:${randomUUID()}`;
     // The SDK session this turn resumes (none → a new one starts). Read before
     // the stream: the turn's `system`/`init` frame overwrites `session.sessionId`.
     const resumedSdkSessionId: string | undefined = session.sessionId;
@@ -2243,7 +2250,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         ...(taskTurn
           ? {
               onQuestionAsked: async ({ question, preface }: { question: unknown; preface: string }) => {
-                if (preface.trim()) emitWorkLog({ kind: 'narration', text: preface });
+                // The preface is already in the turn's held text (recorded as its
+                // final entry); recording it again would show it twice (#626 R1).
+                void preface;
                 const askId = randomUUID();
                 if (!session.actionPanel) session.actionPanel = { channelId: '', userId: session.ownerId };
                 session.actionPanel.pendingQuestion = {
@@ -3896,6 +3905,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         : unknownAbort
           ? '턴이 알 수 없는 이유로 중단되었습니다.'
           : coalesceErrorMessage(error);
+
+    // A task turn's terminal explanation is its outcome's reason (the notifier
+    // it has posts nothing); `say` here only captures it (#626 R1).
+    if (session.slackless === true && (shouldNotifyException || notifyWorthyAbort)) {
+      await say({ text: abortDisplayMessage, thread_ts: threadTs });
+    }
 
     // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a
     if (shouldNotifyException && this.deps.turnNotifier) {

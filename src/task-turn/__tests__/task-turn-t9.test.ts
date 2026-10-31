@@ -63,7 +63,34 @@ function claudeHandlerOver(registry: SessionRegistry, stream: Stream) {
   });
 }
 
-async function setup(stream: Stream) {
+const QUESTION = {
+  type: 'user_choice',
+  question: 'Raise it to 60s or 90s?',
+  choices: [
+    { id: '60', label: '60s' },
+    { id: '90', label: '90s' },
+  ],
+};
+
+const askingTurn: Stream = () =>
+  (async function* () {
+    const text = ['Two options:', '```json', JSON.stringify(QUESTION), '```'].join('\n');
+    yield { type: 'assistant_delta', text };
+    yield { type: 'result', stopReason: 'end_turn', finalText: text };
+  })();
+
+function stoppedTurn(controller: AbortController): Stream {
+  return () =>
+    (async function* () {
+      yield { type: 'assistant_delta', text: 'Reading the config…' };
+      controller.abort('user-stop');
+      const err = new Error('aborted');
+      err.name = 'AbortError';
+      throw err;
+    })();
+}
+
+async function setup(stream: Stream, abortController = new AbortController()) {
   const registry = new SessionRegistry();
   const task = registry.createTask({
     ownerId: 'U0T9OWNER',
@@ -102,7 +129,7 @@ async function setup(stream: Stream) {
       params: {
         userName: 'T9',
         workingDirectory: '/tmp/U0T9OWNER/session_t9',
-        abortController: new AbortController(),
+        abortController,
         processedFiles: [],
         isUserInput: true,
         say: vi.fn(),
@@ -139,5 +166,33 @@ describe('T9 — a Slack-less task turn through the real task executor (#598 ④
     expect(result.outcome).toMatchObject({ outcome: 'failed', category: 'Exception' });
     const page = await readWorkLog(task.conversationId!);
     expect(page.entries.filter((e) => e.kind === 'error')).toHaveLength(1);
+  });
+
+  it('a turn that asks ends waiting — the question is on the task with the turn’s id, and waiting survives a restart (#626 R1)', async () => {
+    const { registry, task, sessionKey, executor, run } = await setup(askingTurn);
+    const result = await run();
+
+    expect(executor.slackCalls).toEqual([]);
+    expect(result.outcome).toMatchObject({ outcome: 'waiting', category: 'UIUserAskQuestion' });
+    const live = registry.getSessionByKey(sessionKey)!;
+    expect(live.activityState).toBe('waiting');
+    expect(live.actionPanel?.pendingQuestion).toMatchObject({ turnId: result.turnId });
+    expect(typeof (live.actionPanel?.pendingQuestion as { askId?: unknown } | undefined)?.askId).toBe('string');
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const reloaded = reader.getSessionByTaskId(task.taskId!);
+    expect(reloaded?.lastTurnOutcome?.outcome).toBe('waiting');
+    expect(reloaded?.activityState).toBe('waiting');
+  });
+
+  it('a turn the user stops is cancelled, posts nothing, and leaves the task idle (#626 R1)', async () => {
+    const controller = new AbortController();
+    const { registry, sessionKey, executor, run } = await setup(stoppedTurn(controller), controller);
+    const result = await run();
+
+    expect(executor.slackCalls).toEqual([]);
+    expect(result.outcome).toMatchObject({ outcome: 'cancelled' });
+    expect(registry.getSessionByKey(sessionKey)?.activityState).toBe('idle');
   });
 });

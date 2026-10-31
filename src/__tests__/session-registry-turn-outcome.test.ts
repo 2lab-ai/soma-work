@@ -45,15 +45,18 @@ describe('SessionRegistry — a task turn’s outcome (#598 ④b1)', () => {
     if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true });
   });
 
-  it('lastTurnOutcome is saved and comes back after a restart', () => {
+  it('commitTaskTurnOutcome saves the outcome and the activity together — a waiting task is waiting after a restart (#626 R1)', () => {
     const reg = new SessionRegistry();
     const task = reg.createTask(TASK_INPUT);
-    task.lastTurnOutcome = { ...OUTCOME, reason: 'done' };
-    reg.persistSessionStrict(`task:${task.taskId}`);
+    const key = `task:${task.taskId}`;
+    reg.setActivityStateByKey(key, 'working');
+    reg.commitTaskTurnOutcome(key, { ...OUTCOME, outcome: 'waiting', category: 'UIUserAskQuestion' }, 'waiting');
 
     const reader = new SessionRegistry();
     reader.loadSessions();
-    expect(reader.getSessionByTaskId(task.taskId!)?.lastTurnOutcome).toEqual({ ...OUTCOME, reason: 'done' });
+    const back = reader.getSessionByTaskId(task.taskId!);
+    expect(back?.lastTurnOutcome).toMatchObject({ outcome: 'waiting', turnId: 'turn-1' });
+    expect(back?.activityState).toBe('waiting');
   });
 
   it('a malformed lastTurnOutcome on disk is dropped, not trusted', () => {
@@ -68,39 +71,53 @@ describe('SessionRegistry — a task turn’s outcome (#598 ④b1)', () => {
     expect(reader.getSessionByTaskId(task.taskId!)?.lastTurnOutcome).toBeUndefined();
   });
 
-  it('persistSessionStrict broadcasts only after the write lands', () => {
+  it('commit to idle: broadcasts and fires the idle hooks only after the write landed, with the new outcome visible', () => {
     const reg = new SessionRegistry();
     const broadcast = vi.fn();
     reg.setActivityStateChangeCallback(broadcast);
     const task = reg.createTask(TASK_INPUT);
+    const key = `task:${task.taskId}`;
+    reg.setActivityStateByKey(key, 'working');
     broadcast.mockClear();
-    task.lastTurnOutcome = { ...OUTCOME };
-    reg.persistSessionStrict(`task:${task.taskId}`);
+    const seen: unknown[] = [];
+    reg.setOnIdleAfterDrainHook((k) => seen.push(reg.getSessionByKey(k)?.lastTurnOutcome?.turnId));
+    reg.commitTaskTurnOutcome(key, { ...OUTCOME }, 'idle');
     expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual(['turn-1']);
     expect(fs.readFileSync(SESSIONS_FILE, 'utf8')).toContain('"lastTurnOutcome"');
   });
 
-  it('persistSessionStrict throws on a failed write and does not broadcast', () => {
+  it('a failed write restores both the outcome and the activity, broadcasts nothing, fires no idle hook, and throws', () => {
     const reg = new SessionRegistry();
     const broadcast = vi.fn();
     reg.setActivityStateChangeCallback(broadcast);
     const task = reg.createTask(TASK_INPUT);
+    const key = `task:${task.taskId}`;
+    reg.setActivityStateByKey(key, 'working');
+    task.lastTurnOutcome = { ...OUTCOME, turnId: 'old' };
     broadcast.mockClear();
+    const hook = vi.fn();
+    reg.setOnIdleAfterDrainHook(hook);
     const spy = vi.spyOn(fs, 'writeFileSync').mockImplementation((() => {
       throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
     }) as typeof fs.writeFileSync);
     syncBuiltinESMExports();
     try {
-      expect(() => reg.persistSessionStrict(`task:${task.taskId}`)).toThrow(/ENOSPC/);
+      expect(() => reg.commitTaskTurnOutcome(key, { ...OUTCOME, turnId: 'new' }, 'idle')).toThrow(/ENOSPC/);
     } finally {
       spy.mockRestore();
       syncBuiltinESMExports();
     }
+    expect(task.lastTurnOutcome?.turnId).toBe('old');
+    expect(task.activityState).toBe('working');
     expect(broadcast).not.toHaveBeenCalled();
+    expect(hook).not.toHaveBeenCalled();
   });
 
-  it('persistSessionStrict refuses an unknown key', () => {
+  it('commitTaskTurnOutcome refuses an unknown key', () => {
     const reg = new SessionRegistry();
-    expect(() => reg.persistSessionStrict('task:22222222-2222-4222-8222-222222222222')).toThrow(/not found/);
+    expect(() =>
+      reg.commitTaskTurnOutcome('task:22222222-2222-4222-8222-222222222222', { ...OUTCOME }, 'idle'),
+    ).toThrow(/not found/);
   });
 });

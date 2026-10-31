@@ -528,22 +528,46 @@ export class SessionRegistry {
    * targeted broadcasts). The underlying broadcast API is global today.
    */
   /**
-   * #598 ④b — save now and fail loudly: the write goes through
-   * `writeSessionsFile(true)` and a failure is rethrown, then (only after the
-   * write landed) the dashboard is told. The task runner commits a turn's
-   * outcome through this; `persistAndBroadcast` logs a failed write and carries
-   * on, which would show an outcome that a restart then loses.
+   * #598 ④b — commit a Slack-less task turn's outcome and its end activity in
+   * one strict save. Both are set in memory, written through
+   * `writeSessionsFile(true)`; a failed write restores both and rethrows (the
+   * caller sees it, nothing is broadcast, no idle hook runs). Only after the
+   * write landed: the dashboard is told, and on a move to `idle` the idle
+   * callbacks and the post-drain hook run — so they read the new outcome, and a
+   * restart finds the same outcome and activity the dashboard showed.
    */
-  public persistSessionStrict(sessionKey: string): void {
-    if (!this.getSessionByKey(sessionKey)) throw new Error(`persistSessionStrict: session not found (${sessionKey})`);
-    this.writeSessionsFile(true);
+  public commitTaskTurnOutcome(sessionKey: string, outcome: TaskTurnOutcomeRecord, activity: 'waiting' | 'idle'): void {
+    const key = normalizeSessionKey(sessionKey);
+    const session = this.getSessionByKey(key);
+    if (!session) throw new Error(`commitTaskTurnOutcome: session not found (${key})`);
+    const previous = {
+      outcome: session.lastTurnOutcome,
+      activity: session.activityState,
+      changedAt: session.activityStateChangedAt,
+    };
+    const changed = session.activityState !== activity;
+    session.lastTurnOutcome = outcome;
+    session.activityState = activity;
+    if (changed) session.activityStateChangedAt = Date.now();
+    try {
+      this.writeSessionsFile(true);
+    } catch (error) {
+      session.lastTurnOutcome = previous.outcome;
+      session.activityState = previous.activity;
+      session.activityStateChangedAt = previous.changedAt;
+      throw error;
+    }
     try {
       this.onActivityStateChangeCallback?.();
     } catch (err) {
-      this.logger.warn('persistSessionStrict: broadcast callback raised', {
-        sessionKey,
+      this.logger.warn('commitTaskTurnOutcome: broadcast callback raised', {
+        sessionKey: key,
         error: (err as Error)?.message ?? String(err),
       });
+    }
+    if (activity === 'idle' && changed) {
+      this.drainOnIdleCallbacks(key);
+      this.fireOnIdleAfterDrainHook(key);
     }
   }
 
