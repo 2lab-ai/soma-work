@@ -110,6 +110,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
   const chains = new Map<string, Chain>();
   const ownerChain = new Map<string, string>();
   const starts = new Map<string, number[]>();
+  /** Turns a shutdown abort left `working` (restart reconciliation's to record — unless the shutdown is refused). */
+  const shutdownStranded = new Map<string, string>();
   let accepting = true;
 
   const refuse = (status: number, error: string): TaskCommandResponse => ({ status, body: { error } });
@@ -245,6 +247,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
           // `working`. A shutdown leaves it for restart reconciliation.
           const reason = chainAbort.signal.reason;
           if (reason !== 'shutdown') await endPending(abandonOutcome(reason));
+          else if (pendingTurnId) shutdownStranded.set(sessionKey, pendingTurnId);
           return;
         }
         const last = dispatch === maxDispatches;
@@ -310,6 +313,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
           }
           return;
         }
+        if (!result.fenced && result.nonTerminal === 'shutdown') shutdownStranded.set(sessionKey, result.turnId);
         if (result.fenced || result.nonTerminal !== 'fallbackCompact') return;
         pendingTurnId = result.turnId;
         // The stash is nulled at the compaction boundary: take it now.
@@ -357,6 +361,24 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     },
     resumeAccepting: () => {
       accepting = true;
+      // The shutdown was refused and the process stays up: nobody will reconcile
+      // the turns its abort left `working` — end them now (#634 R1).
+      for (const [sessionKey, turnId] of shutdownStranded) {
+        shutdownStranded.delete(sessionKey);
+        void deps.runner
+          .abandonTurn(sessionKey, turnId, {
+            outcome: 'interrupted',
+            category: 'Exception',
+            reason: 'service shutdown was cancelled',
+          })
+          .catch((error) =>
+            deps.logger.error('A turn stranded by a cancelled shutdown could not be ended', {
+              sessionKey,
+              turnId,
+              error: (error as Error)?.message,
+            }),
+          );
+      }
     },
     isRunning: (sessionKey) => chains.has(sessionKey),
   };
