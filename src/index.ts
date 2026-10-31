@@ -1162,8 +1162,8 @@ async function start() {
       logger: new Logger('TaskTurnController'),
     });
     taskTurnController = taskController;
-    setDashboardTaskCommandHandler((sessionKey, message, attachments) =>
-      taskController.start({ sessionKey, text: message, attachments }),
+    setDashboardTaskCommandHandler((sessionKey, message, attachments, actorUserId) =>
+      taskController.start({ sessionKey, text: message, attachments, actorUserId }),
     );
     // #599 ⑤ — an answer to a task's open question runs as its next instruction.
     setDashboardTaskAnswerHandler((sessionKey, askId, answer, actorUserId) =>

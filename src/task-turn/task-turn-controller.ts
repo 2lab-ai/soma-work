@@ -29,6 +29,8 @@ export interface TaskCommandRequest {
   sessionKey: string;
   text: string;
   attachments?: readonly unknown[];
+  /** The signed-in user sending it; the turn runs as the owner, so only the owner may (#637 R2). */
+  actorUserId: string;
 }
 
 export interface TaskCommandResponse {
@@ -141,6 +143,11 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     if (!accepting) return { ok: false, response: refuse(503, 'the service is shutting down — try again shortly') };
     const session = deps.getSession(request.sessionKey);
     if (!session || session.slackless !== true) return { ok: false, response: refuse(409, 'not a dashboard task') };
+    // The turn runs under the owner's identity: only the owner starts one — an
+    // instruction or an answer alike (#637 R2).
+    if (!request.actorUserId || request.actorUserId !== session.ownerId) {
+      return { ok: false, response: refuse(403, 'only the task owner can instruct or answer a dashboard task') };
+    }
     if (request.attachments && request.attachments.length > 0) {
       return { ok: false, response: refuse(400, 'attachments are not supported on a dashboard task yet') };
     }
@@ -152,7 +159,10 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       if (SLASH_COMMAND.test(text)) {
         return {
           ok: false,
-          response: refuse(422, 'this answer would be read as a command — send it as an instruction instead'),
+          response: refuse(
+            422,
+            'this answer would be read as a command — rephrase it as a free-form instruction that does not start with /',
+          ),
         };
       }
     } else if (SLASH_COMMAND.test(text) || SESSION_COMMAND.test(text)) {
@@ -408,7 +418,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
   async function answer(request: TaskAnswerRequest): Promise<TaskCommandResponse> {
     const session = deps.getSession(request.sessionKey);
     if (!session || session.slackless !== true) return refuse(409, 'not a dashboard task');
-    // The turn runs under the owner's identity: only the owner answers (#637 R1).
+    // The turn runs under the owner's identity: only the owner answers (#637 R1;
+    // admission checks it again for every start).
     if (!request.actorUserId || request.actorUserId !== session.ownerId) {
       return refuse(403, 'only the task owner can answer its question');
     }
@@ -423,7 +434,10 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     // synchronously — before its first await — so a concurrent second answer
     // finds no open question. A refused or unsaved start leaves (or puts back)
     // the question, so the answer can be sent again.
-    return startChain({ sessionKey: request.sessionKey, text: built.text }, { answer: true });
+    return startChain(
+      { sessionKey: request.sessionKey, text: built.text, actorUserId: request.actorUserId },
+      { answer: true },
+    );
   }
 
   async function close(sessionKey: string): Promise<void> {

@@ -1158,9 +1158,25 @@ describe('Dashboard API', () => {
     // label / id travel in attribute-escaped data-choice-* attributes read by
     // one delegated click handler, because escJs() inside a double-quoted
     // onclick could not carry " or newlines safely (.prd/10 round-2 review).
-    expect(actionClosings!.length).toBe(8);
+    // #637 R2: submitAllRecommended and submitMultiChoice also pass the form's
+    // askId (+2) — a host-minted randomUUID (stream-executor), never model text.
+    expect(actionClosings!.length).toBe(10);
     expect(script).not.toMatch(/answerChoice\(\\'/);
     expect(script).not.toMatch(/selectMc\(\\'/);
+  });
+
+  // #637 R2 (astra P1) — a form's actions carry the ask the form shows, and the
+  // question is repainted on every cache update (poll and single-session push).
+  it('form actions carry the shown askId; the panel question follows every cache update', async () => {
+    const res = await injectWebServer({ method: 'GET', url: '/dashboard', headers: AUTH_HEADER });
+    const script = (res.body as string).match(/<script>([\s\S]*?)<\/script>/)![1];
+    expect(script).toContain('data-mc-ask="');
+    expect(script).toContain('selectMc(d.choiceKey, Number(d.mcIndex), d.choiceId, d.choiceLabel, d.mcAsk)');
+    for (const fn of ['submitAllRecommended', 'submitMultiChoice', 'submitMcCustom', 'editMc', 'selectMc']) {
+      expect(script).toMatch(new RegExp(`function ${fn}\\([^)]*askId\\) \\{\\n  if \\(!mcAskShown\\(key, askId\\)\\)`));
+    }
+    expect(script).toContain('renderPanelQuestion(_sessionCache[panelSessionKey]);');
+    expect(script).toContain('renderPanelQuestion(msg.session); // the form shows the ask');
   });
 
   // ── Guard: detect unescaped inline handlers if new ones are added ──
