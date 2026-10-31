@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Logger } from '../logger';
 import type { EffortLevel } from '../user-settings-store';
+import { retireGoalCapDecision } from './goal-cap-decision';
 
 const logger = new Logger('GoalEval');
 
@@ -238,8 +239,8 @@ export function applyGoalEvalSuccess(goal: import('../types').SessionGoal, now: 
   goal.completedVia = 'eval-model';
   goal.pendingEval = undefined;
   goal.lastEvalReason = undefined;
-  // A completed goal resolves any pending cap-decision DM (S3 dedup guard).
-  goal.capDmPendingAt = undefined;
+  // A completed goal ends any pending cap decision (S3) — its DM too.
+  retireGoalCapDecision(goal);
   goal.evalAttemptCount = (goal.evalAttemptCount ?? 0) + 1;
   goal.updatedAt = now;
 }

@@ -91,6 +91,7 @@ import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch
 import { requestEnvSkillPermission } from './slack/env-skill-permission-request';
 import { mintEventTs } from './slack/event-ts';
 import { type FollowupReactionRole, FollowupReactionSurface, rolesForFollowupState } from './slack/followup-reactions';
+import { retireGoalCapDecision } from './slack/goal-cap-decision';
 import { bumpGoalEpoch, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from './slack/goal-host-actions';
 import {
@@ -6958,7 +6959,7 @@ export class SlackHandler {
     if (!found) return;
     const { session, goal } = found;
     goal.status = 'paused';
-    goal.capDmPendingAt = undefined;
+    retireGoalCapDecision(goal);
     goal.updatedAt = Date.now();
     this.persistHostGoalMutation(session);
     void this.deleteGoalOfCancelledOpening(sessionKey, goal.goalId, clicker, session);
