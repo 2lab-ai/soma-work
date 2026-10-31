@@ -121,6 +121,7 @@ import {
   stopPermissionPromptWatch,
 } from './permission-prompts';
 import { getConversation, resummarizeTurn } from './recorder';
+import { soundClientJs } from './sound-client';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
 import {
   fillUiIcons,
@@ -3868,6 +3869,8 @@ function renderDashboardPage(userId?: string): string {
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
 </script>
+<!-- Interface sound (@2lab.ai/ui/sound, sound-cuelume): off until the speaker beside the theme switch turns it on. -->
+<script data-sound>${soundClientJs(UI_LIB_VERSION)}</script>
 <!-- @2lab.ai/ui kit (ui-kit.css): the light-DOM button, icon button, chip, status, kbd … classes on the
      --ui-* tokens below. Before the page sheet, so a page rule that places a kit control wins. -->
 <style id="ui-kit">
@@ -3937,7 +3940,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 /* ── TOPBAR — @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14) ──
    The bar is the library's: 56px (52 on phones), translucent over the page, one hairline;
-   brand · 대화 · 설정 · 기억 · actions · status · account · theme, the links folded into 메뉴
+   brand · 대화 · 설정 · 기억 · actions · status · account · speaker · theme, the links folded into 메뉴
    whenever the bar is short of room. The header around it stays at the top while the board
    scrolls (SSOT 2026-10-29 T3; the docked drawer sits under it: --topbar-b). The page's own
    controls are the bar's actions — the scope group (default model / effort, the board's user,
@@ -5917,8 +5920,9 @@ let _viewerUserId = ''; // the signed-in user (/auth/me) — not currentUserId, 
 
 // ── Top bar — @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14) ──
 // The page hands the bar its data — brand, the three page links, the live-update status, the signed-in
-// account and the current theme — and answers its events: ui-theme-change (the page owns the theme and
-// its storage), ui-navigate / ui-account (not cancelled: the links are real links). The bar draws and
+// account, the current theme and the sound choice — and answers its events: ui-theme-change (the page
+// owns the theme and its storage), ui-sound-change (the head's sound script, somaSoundBindBar),
+// ui-navigate / ui-account (not cancelled: the links are real links). The bar draws and
 // folds them; the page's own controls ride in its actions slot (placeTopbarScope).
 var APP_BAR_NAV = [
   { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat' },
@@ -5936,6 +5940,9 @@ function paintAppBar() {
     navLabel: '주 메뉴',
     status: _appBarStatus,
     theme: document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
+    // The speaker before the theme toggle (interface sound, #614): the head script's choice; its
+    // ui-sound-change is answered there (somaSoundBindBar), which also re-hands the bar its state.
+    sound: typeof _somaOn !== 'undefined' && !!_somaOn,
   };
   if (_appBarAccount) data.account = _appBarAccount;
   bar.data = data;
