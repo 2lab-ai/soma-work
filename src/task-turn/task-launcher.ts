@@ -195,7 +195,13 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
       if (!task.taskId) throw new Error('createTask returned a task without an id');
       const sessionKey = buildTaskSessionKey(task.taskId);
 
-      const started = await deps.controller.start({ sessionKey, text: request.prompt, actorUserId: ownerId });
+      // E4 ③ — the first start of a task it just made (a new epic counts against A0's window).
+      const started = await deps.controller.start({
+        sessionKey,
+        text: request.prompt,
+        actorUserId: ownerId,
+        newTask: true,
+      });
       if (started.status === 202) return { status: 200, body: { sessionKey, status: 'running' } };
       return {
         status: 200,
