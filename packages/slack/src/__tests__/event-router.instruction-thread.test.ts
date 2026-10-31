@@ -42,9 +42,13 @@ function harness(guard?: EventRouterDeps['guardInstructionThread']) {
   return {
     router,
     messageHandler,
-    mention: (over: Record<string, unknown>) => mention({ event: { type: 'app_mention', ...base, ...over }, say: vi.fn() }),
+    mention: (over: Record<string, unknown>) =>
+      mention({ event: { type: 'app_mention', ...base, ...over }, say: vi.fn() }),
     upload: (over: Record<string, unknown>) =>
-      router.handleFileUpload({ type: 'message', subtype: 'file_share', ...base, files: [{ id: 'F1' }], ...over }, vi.fn()),
+      router.handleFileUpload(
+        { type: 'message', subtype: 'file_share', ...base, files: [{ id: 'F1' }], ...over },
+        vi.fn(),
+      ),
   };
 }
 
@@ -53,7 +57,10 @@ describe('app_mention — a task’s instruction thread (E2 ⑧)', () => {
     const guard = vi.fn(async () => true);
     const h = harness(guard);
     await h.mention({ text: '<@U_BOT> 이것도 해줘' });
-    expect(guard).toHaveBeenCalledWith(expect.objectContaining({ channel: 'C1', ts: '1700.000200' }), expect.any(Function));
+    expect(guard).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: 'C1', ts: '1700.000200' }),
+      expect.any(Function),
+    );
     expect(h.messageHandler).not.toHaveBeenCalled();
   });
 
