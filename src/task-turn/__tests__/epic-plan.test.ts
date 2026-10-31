@@ -105,7 +105,7 @@ describe('applyPlanWrite (D2)', () => {
       nodes: [issue('a'), issue('z')],
       retired: Array.from({ length: EPIC_RETIRED_MAX }, (_, i) => `r${i}`),
     };
-    expect(code(() => applyPlanWrite(full, { nodes: [issue('a')] }, ctx()))).toBe('too-many-nodes');
+    expect(code(() => applyPlanWrite(full, { nodes: [issue('a')] }, ctx()))).toBe('too-many-retired');
     expect(applyPlanWrite(full, { nodes: [issue('a'), issue('z')] }, ctx()).retired).toHaveLength(EPIC_RETIRED_MAX);
   });
 
@@ -170,21 +170,26 @@ describe('epicNodeStatus (D5)', () => {
     expect(epicNodeStatus({ ...node, spawned: ['c0'] }, [], [])).toBe('closed');
   });
 
-  it('a running child: an open approval makes it needs-input, otherwise running', () => {
-    expect(epicNodeStatus(node, [child({ activityState: 'working' })], [])).toBe('running');
+  it('a running child: an open approval of its current chain makes it needs-input, otherwise running', () => {
+    const running = child({ activityState: 'working', openChain: 'ch1' });
+    expect(epicNodeStatus(node, [running], [])).toBe('running');
     const open = {
       id: 'e1',
       childTaskId: 'c1',
       planNodeId: 'a',
       outcome: 'needs-input',
       approvalId: 'p1',
+      chainId: 'ch1',
       at: 1,
       state: 'pending',
     };
-    expect(epicNodeStatus(node, [child({ activityState: 'working' })], [open as any])).toBe('needs-input');
-    expect(epicNodeStatus(node, [child({ activityState: 'working' })], [{ ...open, resolvedAt: 2 } as any])).toBe(
-      'running',
-    );
+    expect(epicNodeStatus(node, [running], [open as any])).toBe('needs-input');
+    expect(epicNodeStatus(node, [running], [{ ...open, resolvedAt: 2 } as any])).toBe('running');
+    // An approval an earlier chain left open (a crash) is not this run's; nor one with no chain.
+    expect(epicNodeStatus(node, [running], [{ ...open, chainId: 'ch0' } as any])).toBe('running');
+    expect(epicNodeStatus(node, [running], [{ ...open, chainId: undefined } as any])).toBe('running');
+    // Another child's approval does not count.
+    expect(epicNodeStatus(node, [running], [{ ...open, childTaskId: 'c9' } as any])).toBe('running');
   });
 
   it('a child that is not running: its last chain result decides', () => {
@@ -195,6 +200,28 @@ describe('epicNodeStatus (D5)', () => {
     expect(epicNodeStatus(node, [child(outcome('interrupted'))], [])).toBe('interrupted');
     // Made, not started yet: nothing to report.
     expect(epicNodeStatus(node, [child()], [])).toBe('none');
+    // D6: when the child is not running, its chain result decides (its chain's end closed any approval).
+    const stale = {
+      id: 'e9',
+      childTaskId: 'c1',
+      planNodeId: 'a',
+      outcome: 'needs-input',
+      approvalId: 'p',
+      at: 1,
+      state: 'pending',
+    };
+    expect(epicNodeStatus(node, [child(outcome('completed'))], [stale as any])).toBe('finished');
+  });
+
+  it('several live children for one node: the running one speaks, then a waiting one, then the newest', () => {
+    const idle = child({ taskId: 'c2' });
+    expect(epicNodeStatus(node, [child({ activityState: 'working' }), idle], [])).toBe('running');
+    expect(epicNodeStatus(node, [child({ activityState: 'waiting', ...outcome('waiting') }), idle], [])).toBe(
+      'needs-input',
+    );
+    expect(epicNodeStatus(node, [child(outcome('failed')), child({ taskId: 'c2', ...outcome('completed') })], [])).toBe(
+      'finished',
+    );
   });
 
   it('only the children of this node count', () => {
@@ -217,6 +244,25 @@ describe('sanitizeEpicPlan / sanitizeEpicEvents (load)', () => {
     expect(plan?.nodes[0].spawned).toEqual(['c1']);
     expect(plan?.done).toBeUndefined();
     expect(sanitizeEpicPlan('x')).toBeUndefined();
+    // Load keeps what a write would accept (one node check): over 50 nodes, an over-long title or
+    // body, an issue with a parent are dropped — and a dropped node's id is retired, never reused.
+    const loaded = sanitizeEpicPlan({
+      nodes: [
+        { ...issue('long-title'), title: 'x'.repeat(201) },
+        issue('long-body', { body: 'y'.repeat(2001) }),
+        issue('has-parent', { parent: 'x' }),
+        ...Array.from({ length: 50 }, (_, i) => issue(`n${i}`)),
+      ],
+    })!;
+    expect(loaded.nodes.map((n) => n.id)).toEqual(Array.from({ length: 47 }, (_, i) => `n${i}`));
+    expect(loaded.retired).toEqual(['long-title', 'long-body', 'has-parent']);
+    expect(code(() => applyPlanWrite(loaded, { nodes: [...loaded.nodes, issue('long-body')] as any }, ctx()))).toBe(
+      'id-reused',
+    );
+    // A blank title is no title, on load as on write.
+    expect(sanitizeEpicPlan({ nodes: [{ ...issue('a'), title: '   ' }, issue('b')] })?.nodes.map((n) => n.id)).toEqual([
+      'b',
+    ]);
     // Retired ids: slugs only, de-duplicated, never one a node still uses.
     expect(sanitizeEpicPlan({ nodes: [issue('a')], retired: ['b', 'b', 'Bad Id', 7, 'a'] })?.retired).toEqual(['b']);
   });
@@ -241,6 +287,17 @@ describe('sanitizeEpicPlan / sanitizeEpicEvents (load)', () => {
       ...Array.from({ length: EPIC_EVENTS_MAX }, (_, i) => ev(i)),
       ...Array.from({ length: 10 }, (_, i) => ev(1000 + i, { state: 'delivered' })),
     ];
+    // Every field a later step relies on survives a reload (⑥ reverts `consumedBy`, ⑤ closes by `approvalId`).
+    const full = ev(7, {
+      chainId: 'ch',
+      turnId: 'tu',
+      approvalId: 'ap',
+      consumedBy: 'pc',
+      resolvedAt: 9,
+      outcome: 'needs-input',
+      state: 'delivered',
+    });
+    expect(sanitizeEpicEvents([full])).toEqual([full]);
     const kept = sanitizeEpicEvents(many)!;
     expect(kept).toHaveLength(EPIC_EVENTS_MAX);
     expect(kept.every((e) => e.state === 'pending')).toBe(true);
@@ -255,5 +312,11 @@ describe('sanitizeEpicPlan / sanitizeEpicEvents (load)', () => {
     const fair = sanitizeEpicEvents([lonely, ...crowd])!;
     expect(fair).toHaveLength(EPIC_EVENTS_MAX);
     expect(fair.some((e) => e.id === 'lonely')).toBe(true);
+    // More children than the cap, one pending event each: still at most EPIC_EVENTS_MAX, the oldest gone.
+    const crowded = sanitizeEpicEvents(
+      Array.from({ length: EPIC_EVENTS_MAX + 1 }, (_, i) => ({ ...ev(i), childTaskId: `kid${i}` })),
+    )!;
+    expect(crowded).toHaveLength(EPIC_EVENTS_MAX);
+    expect(crowded.some((e) => e.id === 'e0')).toBe(false);
   });
 });

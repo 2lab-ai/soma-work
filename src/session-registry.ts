@@ -42,7 +42,13 @@ import {
   migrateLegacyGoalArray,
   stampActiveLegGoalOwner,
 } from './slack/session-goal-lifecycle';
-import { applyPlanWrite, type PlanWriteInput, sanitizeEpicEvents, sanitizeEpicPlan } from './task-turn/epic-plan';
+import {
+  applyPlanWrite,
+  EPIC_NODE_ID,
+  type PlanWriteInput,
+  sanitizeEpicEvents,
+  sanitizeEpicPlan,
+} from './task-turn/epic-plan';
 import type {
   ActionPanelState,
   ActivityState,
@@ -303,8 +309,8 @@ export interface CreateTaskInput {
   planNodeId?: string;
 }
 
-/** E4 ① — a plan node id: a short slug, unique within its epic. */
-export const PLAN_NODE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/** E4 ① — a plan node id: a short slug, unique within its epic (one rule with the plan's, E4 ②). */
+export const PLAN_NODE_ID = EPIC_NODE_ID;
 
 /** E4 ① ② — the epic relation fields as stored on a record (plan and events on an epic only). */
 export interface EpicRelation {
@@ -1136,7 +1142,7 @@ export class SessionRegistry {
     for (const { session: child, claimed } of reminted) {
       if (!child.taskId || !child.parentTaskId) continue;
       const live = this.sessionsByTaskId.get(child.parentTaskId);
-      const epic: { childTaskIds?: unknown; taskId?: unknown; plan?: unknown } | undefined =
+      const epic: { childTaskIds?: unknown; taskId?: unknown; plan?: unknown; epicEvents?: unknown } | undefined =
         live && live.slackless === true && live.kind === 'epic'
           ? live
           : archiving.find((r) => r.taskId === child.parentTaskId && r.kind === 'epic');
@@ -1146,16 +1152,24 @@ export class SessionRegistry {
       // Renamed in place; appended if the list lacks it (a damaged list heals here only for a
       // re-minted child — elsewhere the list is append-only through createTask).
       epic.childTaskIds = list.includes(claimed) ? list.map((id) => (id === claimed ? taskId : id)) : [...list, taskId];
-      // E4 ② — and so does the plan node it was made for (an archiving record's plan is read
-      // through its sanitizer, as its archive will be).
-      const plan = sanitizeEpicPlan(epic.plan);
-      if (plan) {
+      // E4 ② — and so does the plan node it was made for. Only `spawned` changes: the plan is
+      // otherwise left as it was (an archiving record's raw plan is sanitized when archived).
+      const plan = epic.plan as { nodes?: unknown } | undefined;
+      if (plan && typeof plan === 'object' && Array.isArray(plan.nodes)) {
         epic.plan = {
           ...plan,
-          nodes: plan.nodes.map((n) =>
-            n.spawned?.includes(claimed) ? { ...n, spawned: n.spawned.map((id) => (id === claimed ? taskId : id)) } : n,
+          nodes: plan.nodes.map((n: { spawned?: unknown }) =>
+            n && typeof n === 'object' && Array.isArray(n.spawned) && n.spawned.includes(claimed)
+              ? { ...n, spawned: n.spawned.map((id) => (id === claimed ? taskId : id)) }
+              : n,
           ),
         };
+      }
+      // Its events name it by id too.
+      if (Array.isArray(epic.epicEvents)) {
+        epic.epicEvents = epic.epicEvents.map((e: { childTaskId?: unknown }) =>
+          e && typeof e === 'object' && e.childTaskId === claimed ? { ...e, childTaskId: taskId } : e,
+        );
       }
       moved++;
       this.logger.warn("Child task id re-minted on load; its epic's list names the new id", {
