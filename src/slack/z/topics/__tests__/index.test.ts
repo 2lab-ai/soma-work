@@ -14,6 +14,7 @@ const EXPECTED_TOPICS = [
   'notify',
   'persona',
   'sandbox',
+  'taskentry',
   'theme',
   'usage',
   'verbosity',

@@ -41,6 +41,7 @@ import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import type { AgentTreeEvent } from '@soma/slack/agent-tree';
 import type { LiveUsageCall } from '@soma/slack/live-usage';
+import { runNewUserGate } from '@soma/slack/pipeline/session-initializer';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
@@ -49,7 +50,8 @@ import { executionContextForTask } from './agent-runtime/execution-context';
 import { initAuthRuntimeDefault } from './auth/auth-runtime';
 import { isLlmuxUp } from './auth/llmux-client';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
-import { scanChannels } from './channel-registry';
+import { getChannelDescription } from './channel-description-cache';
+import { getChannel, scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
 import { config, getIncidentTrustedSource, runPreflightChecks, validateConfig } from './config';
 import { loadConfig } from './config-loader';
@@ -62,6 +64,7 @@ import {
   broadcastWorkLog,
   getDashboardSessionUrl,
   initRecorder,
+  isDashboardListening,
   matchSlackUsersByEmail,
   scheduleLiveSessionUpdate,
   setDashboardBotName,
@@ -157,14 +160,17 @@ import {
 } from './slack/goal-cap-decision';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
+import { createPendingUserRequest, notifyAdminsNewUser } from './slack/new-user-decision';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
 import { setGoalCapDecisionRetirer } from './slack/session-goal';
 import { setUiSurfacesConfig } from './slack/surface-config';
+import { createSlackTaskEntry } from './slack/task-entry';
 import { setThreadHeaderProviders } from './slack/thread-header-builder';
 import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
+import { createDashboardCloseHandler } from './task-turn/task-close';
 import { createTaskLauncher } from './task-turn/task-launcher';
 import {
   createTaskNoticeDeliverer,
@@ -796,17 +802,21 @@ async function start() {
     // #598 ④c — the caller of Slack-less tasks' turns, built below once the
     // work-log appender exists; Close and shutdown reach it through here.
     let taskTurnController: TaskTurnController | undefined;
+    /** E2 ⑤ — the notice ledger could not be read: tasks that owe their thread are kept (D6). */
+    let taskNoticeLedgerUnreadable = false;
 
-    // Connect dashboard: close handler (terminate session)
-    setDashboardCloseHandler(async (sessionKey: string) => {
-      // A task's running chain ends `cancelled` (session-close) and commits its
-      // outcome before the task is archived and removed (598c v2 a2).
-      if (claudeHandler.getSessionRegistry().getSessionByKey(sessionKey)?.slackless === true) {
-        await taskTurnController?.close(sessionKey);
-      }
-      claudeHandler.terminateSession(sessionKey);
-      logger.info('Dashboard: closed session', { sessionKey });
-    });
+    // Connect dashboard: close handler (terminate session). A task's running
+    // chain is cancelled and committed first; with no notice ledger a task that
+    // owes its thread is refused before that (E2 ⑨).
+    setDashboardCloseHandler(
+      createDashboardCloseHandler({
+        getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+        closeTask: async (key) => taskTurnController?.close(key),
+        terminate: (key) => claudeHandler.terminateSession(key),
+        ledgerUnreadable: () => taskNoticeLedgerUnreadable,
+        logger,
+      }),
+    );
 
     // Connect dashboard: trash handler (hide session from dashboard)
     setDashboardTrashHandler(async (sessionKey: string) => {
@@ -1247,12 +1257,56 @@ async function start() {
         // E2 ⑥ — a task approval asked is told to the thread at once; an expiry once.
         claudeHandler.setTaskApprovalListener((event) => deliverer.approval(event));
         taskNoticeDeliverer = deliverer;
+        // E2 ⑧ — a plain instruction from a user who turned it on becomes a
+        // dashboard task (.prd/18 D1 · D2 · D11 · D12). Only with a deliverer:
+        // without one the thread would never get its link or results.
+        const slackApi = slackHandler.getSlackApi();
+        slackHandler.setTaskEntry(
+          createSlackTaskEntry({
+            isEnabled: (userId) => userSettingsStore.getUserSlackTaskEntry(userId),
+            isDashboardListening,
+            newUserGate: (at) =>
+              runNewUserGate(
+                {
+                  getUserSettings: (u) => userSettingsStore.getUserSettings(u),
+                  createPendingUser: (u, n) => createPendingUserRequest(u, n),
+                  notifyAdmins: (u, n) => notifyAdminsNewUser(slackApi, u, n),
+                  postMessage: (c, text, options) => slackApi.postMessage(c, text, options),
+                  logger: new Logger('TaskEntryGate'),
+                },
+                at,
+              ),
+            getUserName: (userId) => slackApi.getUserName(userId),
+            canStart: (ownerId, text) => taskController.canStart(ownerId, text),
+            launch: (request) => taskLauncher.launch(request),
+            getTaskByKey: (sessionKey) => registry.getSessionByKey(sessionKey),
+            getTaskByOriginThread: (channel, threadTs) => registry.getTaskByOriginThread(channel, threadTs),
+            notStarted: (session, sessionKey, reason) => deliverer.notStarted(session, sessionKey, reason),
+            cardUrl: (ownerId, sessionKey) => getDashboardSessionUrl(ownerId, sessionKey),
+            inputContext: async (channel) => {
+              const info = getChannel(channel);
+              const channelDescription = await getChannelDescription(slackApi.getClient(), channel);
+              return {
+                ...(info?.name ? { channelName: info.name } : {}),
+                ...(channelDescription ? { channelDescription } : {}),
+                ...(info?.repos?.length ? { repos: info.repos } : {}),
+                ...(info?.confluenceUrl ? { confluenceUrl: info.confluenceUrl } : {}),
+              };
+            },
+            reactions: {
+              remove: (channel, ts, name) => slackApi.removeReaction(channel, ts, name),
+              add: (channel, ts, name) => slackApi.addReaction(channel, ts, name),
+            },
+            logger: new Logger('SlackTaskEntry'),
+          }),
+        );
       } catch (error) {
         logger.error('Task notice ledger unreadable — task thread notices stay on their tasks, undelivered', {
           error: (error as Error)?.message,
         });
         // Fail closed (D6): a task that still owes its thread is not deleted while
         // there is no ledger to hand that to (fable #668 P2-1).
+        taskNoticeLedgerUnreadable = true;
         slackHandler.setTaskNoticeHandoff((sessionKey, session) => {
           if (owesInstructionThread(session)) {
             throw new Error(`task notice ledger unreadable — ${sessionKey} kept until its notices can be handed over`);
@@ -1883,8 +1937,21 @@ async function start() {
         logger.info('GitHub App auto-refresh stopped');
       }
 
-      // E2 ⑤ — no new task notice pass or retry once shutting down (grok #668 P3).
-      taskNoticeDeliverer?.stop();
+      // E2 ⑤ — no new task notice pass or retry once shutting down (grok #668 P3);
+      // wait, bounded, for a post under way so its mark is saved — a post cut
+      // by the exit is sent again at boot (fable #668 P3-3).
+      if (taskNoticeDeliverer) {
+        let stopTimer: NodeJS.Timeout | undefined;
+        const ended = await Promise.race([
+          taskNoticeDeliverer.stop().then(() => true),
+          new Promise<false>((resolve) => {
+            stopTimer = setTimeout(() => resolve(false), 3000);
+            stopTimer.unref?.();
+          }),
+        ]);
+        clearTimeout(stopTimer);
+        if (!ended) logger.warn('Task notice post still under way at shutdown — it may be sent again at boot');
+      }
 
       // Stop conversation viewer
       try {
