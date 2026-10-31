@@ -148,7 +148,6 @@ import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './
 import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from './session/task-usage-reconcile';
 import { resolveArchivedResume } from './session-archive';
 import { buildTaskSessionKey } from './session-identity';
-import { SessionDeleteRefusedError } from './session-registry';
 import { applySummaryTitle } from './session-title-policy';
 import {
   answerGoalCapDecision,
@@ -166,6 +165,7 @@ import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
+import { createDashboardCloseHandler } from './task-turn/task-close';
 import { createTaskLauncher } from './task-turn/task-launcher';
 import {
   createTaskNoticeDeliverer,
@@ -800,27 +800,18 @@ async function start() {
     /** E2 ⑤ — the notice ledger could not be read: tasks that owe their thread are kept (D6). */
     let taskNoticeLedgerUnreadable = false;
 
-    // Connect dashboard: close handler (terminate session)
-    setDashboardCloseHandler(async (sessionKey: string) => {
-      // A task's running chain ends `cancelled` (session-close) and commits its
-      // outcome before the task is archived and removed (598c v2 a2).
-      const closing = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
-      if (closing?.slackless === true) {
-        // Refused before its chain is cancelled: with no ledger the deletion
-        // would be refused anyway, and the work must not stop for nothing
-        // (fable #668 P3-4).
-        if (taskNoticeLedgerUnreadable && owesInstructionThread(closing)) {
-          throw new SessionDeleteRefusedError(
-            sessionKey,
-            'terminated',
-            new Error('task notice ledger unreadable — kept until its notices can be handed over'),
-          );
-        }
-        await taskTurnController?.close(sessionKey);
-      }
-      claudeHandler.terminateSession(sessionKey);
-      logger.info('Dashboard: closed session', { sessionKey });
-    });
+    // Connect dashboard: close handler (terminate session). A task's running
+    // chain is cancelled and committed first; with no notice ledger a task that
+    // owes its thread is refused before that (E2 ⑨).
+    setDashboardCloseHandler(
+      createDashboardCloseHandler({
+        getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+        closeTask: async (key) => taskTurnController?.close(key),
+        terminate: (key) => claudeHandler.terminateSession(key),
+        ledgerUnreadable: () => taskNoticeLedgerUnreadable,
+        logger,
+      }),
+    );
 
     // Connect dashboard: trash handler (hide session from dashboard)
     setDashboardTrashHandler(async (sessionKey: string) => {
@@ -1907,6 +1898,7 @@ async function start() {
           taskNoticeDeliverer.stop().then(() => true),
           new Promise<false>((resolve) => {
             stopTimer = setTimeout(() => resolve(false), 3000);
+            stopTimer.unref?.();
           }),
         ]);
         clearTimeout(stopTimer);

@@ -86,6 +86,8 @@ export interface TaskNoticeDeliverer {
 const NO_FINAL = '답변 기록 없음 — 카드에서 확인';
 const FINAL_UNREADABLE = '결과를 읽지 못했어요 — 카드에서 확인';
 const MORE_ON_CARD = '…(이하 카드에서)';
+/** A notice whose ledger write kept failing before any post: what its card shows. */
+const UNRECORDED = 'notice_not_recorded';
 /** Slack's per-message block cap, kept with room for the link context. */
 const MAX_BLOCKS = 48;
 
@@ -248,7 +250,13 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
         // later, up to `maxAttempts` in this process (fable #668 P3-5).
         const message = (error as Error)?.message ?? String(error);
         const count = (unclaimable.get(entry.id)?.count ?? 0) + 1;
-        unclaimable.set(entry.id, { count, error: message, sessionKey: entry.intent.sessionKey, kind: entry.kind });
+        // The card gets a code, not the write error (it can carry a path — grok #672 P3-3).
+        unclaimable.set(entry.id, {
+          count,
+          error: UNRECORDED,
+          sessionKey: entry.intent.sessionKey,
+          kind: entry.kind,
+        });
         deps.logger.error('Task notice not delivered', { id: entry.id, attempt: count, error: message });
         if (count < maxAttempts) scheduleRetry();
       }
