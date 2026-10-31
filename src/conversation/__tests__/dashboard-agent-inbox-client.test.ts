@@ -1316,6 +1316,7 @@ describe('model-controlled values in card markup (shipped renderers)', () => {
       'formatDuration',
       // Task view T2: the meta and the 전체 task count read each task's fate.
       'taskFateOf',
+      'elapsedHtml',
       'renderTaskMeta',
       'renderTimelineItem',
       'renderTimeline',
@@ -1526,24 +1527,23 @@ describe('top-bar user names keep their full text (shipped syncUserSelectLabel +
     return { document, select, label, nameEl };
   }
 
-  it('the label over the select shows the selected option; the select title carries it in full', () => {
+  it('the select (a kit select chip, D7 A-11) carries the selected name in full in its title; no label of the page’s', () => {
     const d = dom();
-    const { syncUserSelectLabel } = load<{ syncUserSelectLabel(): void }>(['syncUserSelectLabel'], [], {
+    const { syncUserSelectTitle } = load<{ syncUserSelectTitle(): void }>(['syncUserSelectTitle'], [], {
       document: d.document,
     });
     d.select.selectedIndex = 1;
-    syncUserSelectLabel();
-    expect(d.label.textContent).toBe(LONG);
+    syncUserSelectTitle();
     expect(d.select.title).toBe(LONG);
+    expect(d.label.textContent).toBe('All Users'); // untouched: the page has no label over the select any more
     d.select.selectedIndex = 0;
-    syncUserSelectLabel();
-    expect(d.label.textContent).toBe('All Users');
+    syncUserSelectTitle();
     expect(d.select.title).toBe('All Users');
   });
 
-  it('selectUser and loadUsers keep the label in sync', () => {
-    expect(clientFn('selectUser')).toMatch(/^function selectUser\(userId\) \{\n {2}syncUserSelectLabel\(\);/);
-    expect(clientFn('loadUsers')).toMatch(/\n {2}syncUserSelectLabel\(\);\n\}$/);
+  it('selectUser and loadUsers keep the title in sync', () => {
+    expect(clientFn('selectUser')).toMatch(/^function selectUser\(userId\) \{\n {2}syncUserSelectTitle\(\);/);
+    expect(clientFn('loadUsers')).toMatch(/\n {2}syncUserSelectTitle\(\);\n\}$/);
   });
 
   it('the account pill gets the full name (the app bar ellipsizes it and names the pill with it in full)', () => {
@@ -2341,7 +2341,7 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
   // D4 K-06: the head is <ui-disclosure>'s row (the title and the summary slotted in); the body is its region.
   const head = (expanded: boolean) =>
     `<ui-disclosure class="panel-tasks-dc" flush${expanded ? ' open' : ''}><span slot="summary" class="panel-tasks-header"><span class="ps-sec-title">Tasks</span><span class="ps-sec-sum">목록 없음</span></span>`;
-  const LIVE = '<span class="ar-vh pl-live" role="status" aria-live="polite"></span>';
+  const LIVE = '<span class="ui-sr-only pl-live" role="status" aria-live="polite"></span>';
 
   it("zero or missing tasks show the header (folded: 목록 없음) and, opened, the plan element's empty state", () => {
     for (const open of [false, true]) {

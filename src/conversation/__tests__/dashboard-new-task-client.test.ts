@@ -119,16 +119,26 @@ describe('T1 — the New task entry is always in reach, calm', () => {
     expect(bar).toMatch(/id="new-task-btn"[^>]*onclick="openNewTask\(\)"/);
   });
 
-  it('phones: a floating action button, clear of the home indicator', () => {
-    expect(html).toMatch(/<button[^>]*id="new-task-fab"[^>]*aria-label="[^"]+"/);
-    expect(css).toMatch(/\.new-task-fab\s*\{[^}]*position:\s*fixed/);
-    expect(css).toMatch(/\.new-task-fab\s*\{[^}]*env\(safe-area-inset-bottom/);
+  it('phones: the kit’s extended FAB (D7 H-10), clear of the home indicator; it folds to the round button on a scroll down', () => {
+    // The glyph slot (<i data-ui-icon="plus">) is filled with the icon set's svg as the page is served.
+    expect(html).toMatch(
+      /<button type="button" class="ui-fab is-extended new-task-fab" id="new-task-fab" aria-label="[^"]+" onclick="openNewTask\(\)"><svg[^>]*>[\s\S]*?<\/svg><span>새 작업<\/span><\/button>/,
+    );
+    expect(kit).toMatch(/\.ui-fab \{[^}]*position: fixed;[^}]*env\(safe-area-inset-bottom\)/);
+    expect(kit).toContain('.ui-fab.is-extended.is-folded > span { max-width: 0; opacity: 0; }');
+    // The page keeps only when it shows (phones; PC once the bar's button scrolled away) and its layer.
+    expect(css).toContain('.new-task-fab.ui-fab { display: none; z-index: 60; }');
+    expect(css).toContain('.new-task-fab.is-floating { display: inline-flex; }');
+    expect(script).toContain("fab.classList.toggle('is-folded', y > lastY && y > 80);");
+    expect(script).toContain("fab.classList.toggle('is-floating', !entries[0].isIntersecting);");
+    for (const gone of ['is-compact', 'nt-fab-icon', 'nt-fab-label', 'nt-fab-in'])
+      expect(html, gone).not.toContain(gone);
   });
 
   it('below 640px the top-bar button gives way to the floating button', () => {
     const phone = mediaBlock('@media (max-width: 639px) {\n  /* New task');
     expect(phone).toMatch(/\.new-task-btn\s*\{[^}]*display:\s*none/);
-    expect(phone).toMatch(/\.new-task-fab\s*\{[^}]*display:\s*inline-flex/);
+    expect(phone).toContain('.new-task-fab.ui-fab { display: inline-flex; }');
   });
 
   // Tone pass P3 (ui.2lab.ai: one calm ink primary, no decorative motion): the entry no longer
@@ -150,21 +160,18 @@ describe('T1 — the New task entry is always in reach, calm', () => {
     expect(kit).toMatch(
       /\.ui-btn\.is-primary \{ background: var\(--ui-ib-text\); border-color: var\(--ui-ib-text\); color: var\(--ui-ib-card\); \}/,
     );
-    expect(css).toMatch(
-      /\.new-task-fab\s*\{[^}]*background: var\(--ib-text\);[^}]*animation: nt-fab-in 240ms var\(--ease-out\) both;/,
-    );
-    expect(css).toContain(
-      '@keyframes nt-fab-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: none; } }',
-    );
+    // D7 (H-10): the FAB is the kit's — its ink face and its one arrival are ui-kit.css's.
+    expect(kit).toMatch(/\.ui-fab \{[^}]*background: var\(--ui-ib-text\);[^}]*animation: ui-fab-in /);
+    expect(kit).toContain('@keyframes ui-fab-in');
+    expect(css).not.toContain('nt-fab-in');
     // D2: 작업 시작 is <ui-composer>'s send button (its ink primary, data.submitLabel).
     expect(script).toContain("submitLabel: '작업 시작',");
     expect(html).toMatch(
       /id="new-task-btn"[^>]*>[\s\S]*?<kbd class="ui-kbd nt-kbd" aria-hidden="true">N<\/kbd><\/button>/,
     );
-    const reduced = mediaBlock('@media (prefers-reduced-motion: reduce) {\n  /* New task');
-    expect(reduced).toMatch(/\.new-task-btn/);
-    expect(reduced).toMatch(/\.new-task-fab/);
-    expect(reduced).toMatch(/animation:\s*none/);
+    // Reduced motion: the FAB's arrival and fold are stilled by the kit's own rule; the page's block is gone.
+    expect(css).not.toContain('@media (prefers-reduced-motion: reduce) {\n  /* New task');
+    expect(kit).toContain('.ui-fab.is-extended, .ui-fab.is-extended > span { transition: none; }');
   });
 
   it('pressing N (outside a text field) or the buttons opens the composer', () => {
@@ -200,19 +207,45 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(clientFn('ntIsTypingTarget')).toContain("document.querySelector('dialog[open], ui-dialog[open]')");
   });
 
-  it('row 1: model (with the battery), effort and channel selectors', () => {
+  it('row 1: model (with the battery), effort and channel are kit select chips; the battery is <ui-meter shape="battery">', () => {
     const row = html.slice(html.indexOf('class="nt-config"'), html.indexOf('class="nt-toggles"'));
     const order = ['id="nt-model"', 'id="nt-battery"', 'id="nt-effort"', 'id="nt-channel"'].map((id) =>
       row.indexOf(id),
     );
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
-    expect(html).toMatch(/id="nt-battery"[^>]*role="img"/);
+    // D7 (H-02): <label class="ui-select-chip"><span>word</span><select> — the kit sizes the select to its option.
+    expect(row).toContain(
+      '<label class="ui-select-chip"><span>모델</span><select id="nt-model" onchange="ntOnModelChange()"></select></label>',
+    );
+    // effort / channel / folder carry the classes main's task mode hides and shows them by (#605: a dashboard task has
+    // no channel or effort; it has a folder).
+    expect(row).toContain(
+      '<label class="ui-select-chip nt-chip-effort"><span>effort</span><select id="nt-effort" onchange="ntOnEffortChange()"></select></label>',
+    );
+    expect(row).toContain(
+      '<label class="ui-select-chip nt-chip-folder" id="nt-folder-chip" hidden><span>폴더</span><select id="nt-folder" onchange="ntOnFolderChange()"></select></label>',
+    );
+    expect(row).toContain(
+      '<label class="ui-select-chip nt-chip-channel"><span>채널</span><select id="nt-channel" onchange="ntOnChannelChange()"></select></label>',
+    );
+    expect(kit).toContain('field-sizing: content;');
+    expect(css).not.toContain('.nt-chip');
+    // D7 (H-03): the meter — role="meter" with the percent, "?" when unknown — in the button that opens the usage line.
+    expect(row).toContain(
+      '<button type="button" class="nt-battery-btn" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><ui-meter id="nt-battery" shape="battery" low="0.2" high="0.5" label="모델 잔여량" lang="ko"></ui-meter></button>',
+    );
+    expect(html).toContain('<script type="module" src="/dashboard/ui/meter.js?v=');
+    expect(script).toContain(
+      "ntEl('nt-battery').data = { value: v.value, low: 0.2, high: 0.5, label: '모델 잔여량' };",
+    );
+    for (const gone of ['nt-battery-fill', 'nt-batt-', 'nt-blink']) expect(html, gone).not.toContain(gone);
   });
 
   it('#600 ⑥ — where the task goes: a Slack channel or a dashboard task, with a folder for the latter', () => {
-    expect(html).toContain('id="nt-dest-slack"');
-    expect(html).toContain('id="nt-dest-task"');
+    // The two destinations are kit chips that say their state (button.ui-chip[aria-pressed], D7).
+    expect(html).toMatch(/<button type="button" class="ui-chip" id="nt-dest-slack" aria-pressed="true"/);
+    expect(html).toMatch(/<button type="button" class="ui-chip" id="nt-dest-task" aria-pressed="false"/);
     expect(html).toMatch(/<select id="nt-folder"[^>]*onchange="ntOnFolderChange\(\)"/);
     expect(script).toContain('function ntSetDestination(');
     // Task mode hides the autogoal / autoz row, never the destination row (both are .nt-toggles).
@@ -225,11 +258,20 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(html).toContain('.nt-dialog [hidden] { display: none !important; }');
   });
 
-  it('row 2: autogoal and autoz toggles; autoz starts off; autogoal says it is for this task only', () => {
-    expect(html).toMatch(/<button[^>]*id="nt-autogoal"[^>]*aria-pressed=/);
-    expect(html).toMatch(/<button[^>]*id="nt-autoz"[^>]*aria-pressed="false"/);
-    // Per task, the opening instruction; the user's setting itself is untouched.
-    expect(html).toMatch(/id="nt-autogoal"[^>]*title="[^"]*이 작업의 첫 지시에만[^"]*설정 자체는 바뀌지 않습니다/);
+  it('row 2: autogoal and autoz toggles are kit switches; autoz starts off; autogoal says it is for this task only', () => {
+    // D7 (H-04): <label class="ui-switch"><input type="checkbox" role="switch"> — the kit draws the knob; the page
+    // reads the switch (ntToggle) and sets it from the draft (checked) when the dialog opens.
+    expect(html).toMatch(
+      /<label class="ui-switch" title="[^"]*이 작업의 첫 지시에만[^"]*설정 자체는 바뀌지 않습니다"><input type="checkbox" role="switch" id="nt-autogoal" onchange="ntToggle\('autogoal'\)"><span>autogoal<\/span><\/label>/,
+    );
+    expect(html).toMatch(
+      /<label class="ui-switch" title="[^"]+"><input type="checkbox" role="switch" id="nt-autoz" onchange="ntToggle\('autoz'\)"><span>autoz<\/span><\/label>/,
+    );
+    expect(html).not.toMatch(/id="nt-autoz"[^>]*checked/);
+    expect(css).not.toContain('.nt-switch');
+    expect(css).not.toMatch(/^\.nt-toggle \{/m);
+    expect(clientFn('ntToggle')).toContain('_ntState[which] = !!(sw && sw.checked);');
+    expect(script).toContain("ntEl('nt-autogoal').checked = !!_ntState.autogoal;");
   });
 
   it('D2 (H-05..H-09) — the instruction, files, voice and 작업 시작 are one @2lab.ai/ui <ui-composer>', () => {
@@ -389,8 +431,11 @@ describe('T12 — PC and phone layouts are designed separately', () => {
 
   it('touch: 44px targets and 16px text in the instruction field (no iOS zoom)', () => {
     const coarse = mediaBlock('@media (pointer: coarse) {\n  /* New task');
-    // The composer's tools, send, chips and field are 44px / 16px on touch by its own rules; the page's selects too.
-    expect(coarse).toMatch(/\.nt-chip select[^{]*\{[^}]*font-size:\s*16px/);
+    // The composer's tools, send, chips and field are 44px / 16px on touch by its own rules; the select chips by the
+    // kit's (D7 H-02); the battery button is the page's.
+    expect(kit).toContain('select.ui-select-chip, .ui-select-chip > select { font-size: 16px; }');
+    expect(kit).toMatch(/\.ui-select-chip \{ min-height: 44px; \}/);
+    expect(coarse).toContain('.nt-battery-btn { min-height: 44px; min-width: 44px; }');
     expect(coarse).not.toContain('.nt-prompt');
   });
 
@@ -414,7 +459,7 @@ interface Battery {
   accounts: { measured: number; total: number; available: number };
 }
 
-describe('ntBatteryView — T3 the battery', () => {
+describe('ntBatteryView — T3 the battery (its reading for <ui-meter>, D7 H-03)', () => {
   const { ntBatteryView } = load<{ ntBatteryView(b: Battery | null): any }>(['ntBatteryView']);
   const battery = (level: number | null): Battery => ({
     level,
@@ -426,15 +471,15 @@ describe('ntBatteryView — T3 the battery', () => {
     accounts: { measured: 2, total: 2, available: 2 },
   });
 
-  it('fills to the level and picks a colour band', () => {
-    expect(ntBatteryView(battery(0.72))).toMatchObject({ cls: 'nt-batt-high', pct: '72%', fill: 72 });
-    expect(ntBatteryView(battery(0.35))).toMatchObject({ cls: 'nt-batt-mid', pct: '35%' });
-    expect(ntBatteryView(battery(0.1))).toMatchObject({ cls: 'nt-batt-low', pct: '10%' });
+  it('hands the level to the meter (the fill and the tone — good from a half, fair from a fifth — are the element’s)', () => {
+    expect(ntBatteryView(battery(0.72))).toMatchObject({ value: 0.72 });
+    expect(ntBatteryView(battery(0.35))).toMatchObject({ value: 0.35 });
+    expect(ntBatteryView(battery(0.1))).toMatchObject({ value: 0.1 });
   });
 
-  it('unknown is shown as unknown, never as full', () => {
-    expect(ntBatteryView(battery(null))).toMatchObject({ cls: 'nt-batt-unknown', pct: '?', fill: 0 });
-    expect(ntBatteryView(null)).toMatchObject({ cls: 'nt-batt-unknown', pct: '?', fill: 0 });
+  it('unknown is handed as null (the meter draws "?" with no fill), never as full', () => {
+    expect(ntBatteryView(battery(null))).toMatchObject({ value: null });
+    expect(ntBatteryView(null)).toMatchObject({ value: null, label: '잔여량 미확인 · 공유 풀 추정' });
   });
 
   it('its label says it is a shared-pool estimate and breaks the windows down', () => {

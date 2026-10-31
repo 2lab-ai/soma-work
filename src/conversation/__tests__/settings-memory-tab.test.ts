@@ -549,7 +549,8 @@ describe('개인 메모리 — loads around writes (review R12, R13)', () => {
 // The elements' list, search, editor, drafts kept across updates, the switch guard, the conflict's Reload /
 // Overwrite, the two-press delete, the day filter and the note box are pinned by the library's
 // knowledge-pages.test.ts and episode-log.test.ts. Here: the data each is handed, where each write event goes
-// (route, revision), one memory write at a time, 409s, and the raw-markdown box for a page the form cannot hold.
+// (route, revision), one memory write at a time, 409s, and the element's source mode (the whole markdown) for a page
+// the form cannot hold (D7 M-05).
 const KP_FNS = [
   'kpHistoryIn',
   'kpHistoryOut',
@@ -562,14 +563,6 @@ const KP_FNS = [
   'kpConflict',
   'kpDelete',
   'kpDeleteWrite',
-  'pageRawMode',
-  'renderPageRaw',
-  'keepRawDraft',
-  'setRawDisabled',
-  'savePageRaw',
-  'overwritePageRaw',
-  'discardPageRaw',
-  'deletePageRaw',
   'refreshPageIndex',
 ];
 const EP_FNS = [
@@ -585,7 +578,7 @@ const EP_FNS = [
   'epTakeDay',
   'epAdd',
 ];
-const MEM_FNS = ['memStatus', 'memHold', 'memRecover', 'paintRecover', 'esc', 'escAttr', ...KP_FNS, ...EP_FNS];
+const MEM_FNS = ['memStatus', 'memHold', 'esc', 'escAttr', ...KP_FNS, ...EP_FNS];
 const MEM_VARS = ['PAGE_GROUPS', 'KP_EVENTS', 'KP_GROUPS', '_kp', 'EP_EVENTS', '_ep'];
 
 const INDEX = [
@@ -630,11 +623,7 @@ function memEnv(
   const els: Record<string, any> = {
     'kp-panel': kp,
     'ep-log': ep,
-    'kp-tools': { hidden: true },
-    'kp-raw': { hidden: true, innerHTML: '' },
-    'pg-raw': { value: '', disabled: false },
     'mem-status': { textContent: '', className: '', setAttribute: vi.fn() },
-    'mem-recover': { innerHTML: '' },
   };
   const mem = opts.mem ?? { l1: {}, pages: INDEX.slice(), episodicDates: ['2026-10-30', '2026-10-29'] };
   const days = opts.epDays ?? {
@@ -689,7 +678,10 @@ describe('지식 페이지 — the data <ui-knowledge-pages> is given', () => {
       current: 'Read the diff first.',
       revision: 'r1',
     });
-    expect(kp.data.readOnly).toBe(false);
+    // D7 (M-05): every page carries its whole markdown for the element's source mode; a form-sized page is not sourceOnly.
+    expect(kp.data.page.source).toBe('# 리뷰\n');
+    expect(kp.data.page.sourceOnly).toBeUndefined();
+    expect(kp.data.readOnly).toBeUndefined();
   });
 
   it('History lines are the store’s "YYYY-MM-DD: text" bullets, both ways, byte for byte', () => {
@@ -900,7 +892,7 @@ describe('지식 페이지 — writes', () => {
   });
 });
 
-describe('지식 페이지 — raw markdown for a page the form cannot hold (review R3)', () => {
+describe('지식 페이지 — the element’s source mode for the whole markdown; a page the form cannot hold opens that way (review R3, D7 M-05)', () => {
   const rawFetch = (answers: unknown[]) => {
     let n = 0;
     return fakeFetch((url) =>
@@ -910,83 +902,100 @@ describe('지식 페이지 — raw markdown for a page the form cannot hold (rev
     );
   };
   const odd = pageAnswer({}, { raw: '# 리뷰\n\n## Extra\n', representable: false });
+  const saveSource = (source: string, over: Record<string, unknown> = {}) => ({
+    id: 'agent/review',
+    title: '리뷰',
+    aliases: ['review'],
+    group: 'agent',
+    current: 'Read the diff first.',
+    history: [],
+    revision: 'r1',
+    source,
+    ...over,
+  });
 
-  it('opens read-only in the element with the raw box under it; saved through /page/raw with its revision', async () => {
+  it('a page the form cannot hold is handed as sourceOnly with its markdown (the element opens it as source, no form); a source save goes through /page/raw with its revision', async () => {
     const apiWrite = vi.fn(async () => ({
       ok: true,
       status: 200,
       data: { ok: true, ...odd, revision: 'r2', raw: 'NEW' },
     }));
-    const { fns, kp, els } = memEnv({ fetch: rawFetch([odd]), apiWrite });
+    const { kp } = memEnv({ fetch: rawFetch([odd]), apiWrite });
     kp.fire('ui-select', { id: 'agent/review' });
     await tick();
-    expect(kp.data.readOnly).toBe(true); // a form save would drop what it cannot show
-    expect(els['kp-raw'].hidden).toBe(false);
-    expect(els['kp-tools'].hidden).toBe(true);
-    expect(els['kp-raw'].innerHTML).toContain('편집 양식에 담기지 않는 내용');
-    expect(els['kp-raw'].innerHTML).toContain('## Extra');
-    expect(els['kp-raw'].innerHTML).not.toContain('양식으로 돌아가기');
-    els['pg-raw'].value = 'NEW';
-    await fns.savePageRaw();
+    expect(kp.data.page).toMatchObject({
+      id: 'agent/review',
+      source: '# 리뷰\n\n## Extra\n',
+      sourceOnly: true,
+      revision: 'r1',
+    });
+    expect(kp.data.readOnly).toBeUndefined(); // the element edits the source; nothing of the page's sits under it
+    // The element's ui-save from source mode carries the whole text: written as it is, never through the form route.
+    kp.fire('ui-save', saveSource('NEW'));
+    await tick();
     expect(apiWrite).toHaveBeenCalledWith('PUT', '/api/memory/page/raw', {
       id: 'agent/review',
       raw: 'NEW',
       revision: 'r1',
     });
-    expect(kp.data.page.revision).toBe('r2');
-    expect(kp.data.readOnly).toBe(true);
+    expect(kp.data.page).toMatchObject({ revision: 'r2', source: 'NEW', sourceOnly: true });
+    expect(kp.data.status).toBe('저장했습니다');
   });
 
-  it('a raw 409 keeps the typed text in the box and offers overwrite with the newer revision (review P1, R4)', async () => {
+  it('a source 409 hands the element the conflict (its draft stays in it); Overwrite writes over the newer revision (review P1, R4)', async () => {
     const newer = { ...odd, revision: 'r5', raw: 'THEIRS' };
     const apiWrite = vi
       .fn()
       .mockResolvedValueOnce({ ok: false, status: 409, error: 'changed' })
       .mockResolvedValueOnce({ ok: true, status: 200, data: { ok: true, ...newer, revision: 'r6', raw: 'MINE' } });
-    const { fns, kp, els, status } = memEnv({ fetch: rawFetch([odd, newer]), apiWrite });
+    const { fns, kp } = memEnv({ fetch: rawFetch([odd, newer]), apiWrite });
     kp.fire('ui-select', { id: 'agent/review' });
     await tick();
-    els['pg-raw'].value = 'MINE';
-    await fns.savePageRaw();
+    kp.fire('ui-save', saveSource('MINE'));
+    await tick();
     expect(fns.memHold.at).toBe(0);
-    expect(els['pg-raw'].value).toBe('MINE');
-    expect(els['kp-raw'].innerHTML).toContain('내 수정본으로 덮어쓰기');
-    expect(status.textContent).toContain('그사이 이 페이지가 바뀌었습니다');
-    await fns.overwritePageRaw();
+    expect(kp.data.conflict).toContain('다른 곳(에이전트·Slack)에서 이 페이지를 고쳤습니다');
+    expect(kp.data.page.source).toBe('# 리뷰\n\n## Extra\n'); // the loaded page stands; the draft is the element's
+    kp.fire('ui-save', saveSource('MINE', { overwrite: true }));
+    await tick();
     expect(apiWrite.mock.calls[1][2]).toEqual({ id: 'agent/review', raw: 'MINE', revision: 'r5' });
-    expect(els['kp-raw'].innerHTML).not.toContain('내 수정본으로 덮어쓰기');
+    expect(kp.data.conflict).toBe('');
+    expect(kp.data.page).toMatchObject({ revision: 'r6', source: 'MINE' });
   });
 
-  it('any page can be opened as raw markdown; leaving the box with unsaved text keeps it in the recovery box', async () => {
-    const { fns, kp, els } = memEnv({ fetch: rawFetch([pageAnswer(), pageAnswer({ id: 'concepts/tokens' })]) });
+  it('every page carries its source for the element’s 원문 mode; the tab keeps no box, toggle or recovery box of its own', async () => {
+    const { kp } = memEnv({ fetch: rawFetch([pageAnswer()]) });
     kp.fire('ui-select', { id: 'agent/review' });
     await tick();
-    expect(els['kp-tools'].hidden).toBe(false);
-    fns.pageRawMode(true);
-    expect(kp.data.readOnly).toBe(true);
-    expect(els['kp-raw'].innerHTML).toContain('양식으로 돌아가기');
-    els['pg-raw'].value = '# 리뷰\nunsaved';
-    kp.fire('ui-select', { id: 'concepts/tokens' });
-    expect(els['mem-recover'].innerHTML).toContain('agent/review 원문 수정본');
-    expect(els['mem-recover'].innerHTML).toContain('unsaved');
-    await tick();
-    expect(kp.data.readOnly).toBe(false);
+    expect(kp.data.page).toMatchObject({ source: '# 리뷰\n' });
+    expect(kp.data.page.sourceOnly).toBeUndefined();
+    for (const gone of [
+      'pageRawMode',
+      'renderPageRaw',
+      'keepRawDraft',
+      'savePageRaw',
+      'overwritePageRaw',
+      'deletePageRaw',
+      'kp-raw',
+      'kp-tools',
+      'pg-raw',
+      'memRecover',
+      'mem-recover',
+      'readOnly',
+    ])
+      expect(MEMORY_CLIENT_JS, gone).not.toContain(gone);
+    expect(renderSettingsPage()).not.toMatch(/kp-raw|kp-tools|mem-recover/);
   });
 
-  it('a raw page is deleted only after its dialog, with the revision the dialog was about', async () => {
+  it('a source page is deleted through the element’s ui-delete (its two presses) with the revision it was loaded with', async () => {
     const apiWrite = vi.fn(async () => ({ ok: true, status: 200, data: { ok: true } }));
-    const { fns, kp, confirmDialog } = memEnv({ fetch: rawFetch([odd]), apiWrite, confirm: false });
+    const { kp } = memEnv({ fetch: rawFetch([odd]), apiWrite });
     kp.fire('ui-select', { id: 'agent/review' });
     await tick();
-    await fns.deletePageRaw();
-    expect(confirmDialog).toHaveBeenCalledTimes(1);
-    expect(apiWrite).not.toHaveBeenCalled();
-    const ok = memEnv({ fetch: rawFetch([odd]), apiWrite });
-    ok.kp.fire('ui-select', { id: 'agent/review' });
+    kp.fire('ui-delete', { id: 'agent/review', revision: 'r1' });
     await tick();
-    await ok.fns.deletePageRaw();
     expect(apiWrite).toHaveBeenCalledWith('DELETE', '/api/memory/page', { id: 'agent/review', revision: 'r1' });
-    expect(ok.kp.data).toMatchObject({ selected: null, readOnly: false });
+    expect(kp.data).toMatchObject({ selected: null, page: null });
   });
 });
 
