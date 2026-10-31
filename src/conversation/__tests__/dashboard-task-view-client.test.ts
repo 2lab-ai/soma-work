@@ -92,6 +92,7 @@ describe('T2 · a dropped task never reads as running or waiting', () => {
       'taskRunsOf',
       'taskRunsData',
       'taskPlanData',
+      'elapsedHtml',
       'renderTaskMeta',
     ],
     BASE_VARS,
@@ -145,7 +146,7 @@ describe('T2 · a dropped task never reads as running or waiting', () => {
       toolCalls: 1,
       dropped: 'started',
     });
-    expect(meta).not.toContain('task-elapsed');
+    expect(meta).not.toContain('<ui-elapsed');
     expect(meta).toContain('교체됨 5s');
     expect(meta).not.toContain('중단');
   });
@@ -349,7 +350,7 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
     env.renderPanelTasks(current, '', earlier);
     expect(el.innerHTML).toContain('<ui-disclosure class="panel-tasks-dc" flush>');
     expect(el.innerHTML).toContain(
-      '<span class="ps-sec-now"><span class="spinner ag-spinner" aria-hidden="true"></span>ledger 수정 중</span>',
+      '<span class="ps-sec-now"><span class="ui-spinner is-sm" aria-hidden="true"></span>ledger 수정 중</span>',
     );
     // Four ran (two completed), one is left of the plan, two were dropped before they ran.
     expect(text(el.innerHTML)).toContain('ledger 수정 중·실행 4 · 완료 2·남은 1·빠짐 2');
@@ -502,8 +503,9 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
 
   it('T1.6 · the head carries the 자세히 switch, off by default', () => {
     const head = panel.slice(at('<div class="panel-header">'), at('<div class="panel-body"'));
+    // D7 (E-06): the kit chip (.ui-chip[aria-pressed]).
     expect(head).toMatch(
-      /<button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false"/,
+      /<button type="button" class="ui-chip panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false"/,
     );
     expect(head).toContain('자세히');
   });
@@ -1117,14 +1119,14 @@ describe('browser receipt · a section landing cut short by a short body lands o
 describe('T1.6 · HIG: outside a list the 자세히 toggle is a button that behaves like a toggle, not a switch', () => {
   it('a pressed-state button whose background changes — no switch knob in the panel head', () => {
     expect(PAGE).toMatch(
-      /<button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false"[^>]*><i data-ui-icon="list" class="pdt-icon"><\/i>/,
+      /<button type="button" class="ui-chip panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false"[^>]*><i data-ui-icon="list"><\/i>/,
     );
     expect(PAGE).not.toContain('pdt-switch');
-    // Tone pass P2: "pressed" is the neutral chip (--ib-pill, a --ib-muted edge), not an accent fill —
-    // the accent is for links, focus and progress only.
-    expect(CSS).toMatch(
-      /\.panel-detail-toggle\[aria-pressed="true"\] \{ background: var\(--ib-pill\); border-color: var\(--ib-muted\); color: var\(--text\); \}/,
-    );
+    // Tone pass P2 / D7 (E-06): "pressed" is the kit chip's raised neutral "on" (ui-kit.css
+    // .ui-chip[aria-pressed="true"]), not an accent fill — the page keeps no look of its own for it.
+    expect(CSS).not.toMatch(/\.panel-detail-toggle\[aria-pressed="true"\]/);
+    expect(CSS).not.toMatch(/^\.panel-detail-toggle \{/m);
+    expect(CSS).not.toContain('.pdt-icon');
   });
 });
 

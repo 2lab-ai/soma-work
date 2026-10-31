@@ -13,12 +13,14 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { pageTokenAliases, uiLibTokensCss } from '../ui-lib';
+import { pageTokenAliases, uiLibKitCss, uiLibTokensCss } from '../ui-lib';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 // Only the page template — server code above it must not satisfy (or trip)
 // these assertions by accident.
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
+// The kit (ui-kit.css) the page inlines: the chips' press, hover and 44px targets are its rules.
+const KIT = uiLibKitCss();
 
 /** Body of a top-level client function: from its declaration to the first `\n}\n`. */
 function fnBody(name: string): string {
@@ -167,9 +169,12 @@ describe('agent inbox board — layout (§3.1)', () => {
 
   it('Show archives sits in the board header next to Board | List, hidden until there are archives (§3.1-1)', () => {
     const head = TEMPLATE.slice(TEMPLATE.indexOf('<div class="inbox-head">'), TEMPLATE.indexOf('<div class="kanban"'));
+    // D7 (D-03): the board tools are kit chips (.ui-chip[aria-pressed]); the page keeps only [hidden].
     const btn = head.indexOf(
-      '<button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()">',
+      '<button type="button" class="ui-chip archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()">',
     );
+    expect(TEMPLATE).toContain('.archives-btn[hidden] { display: none; }');
+    expect(TEMPLATE).not.toMatch(/^\.archives-btn \{/m);
     expect(btn).toBeGreaterThan(0);
     // Tone pass P8: the group's name and its two buttons are Korean (보드 · 목록).
     // D1 (D-02): Board | List is <ui-segmented>; the page hands it the group name and the two choices.
@@ -731,7 +736,12 @@ describe('agent inbox board — motion contract (§4)', () => {
 
   it('presses scale to 0.97 — pointer presses only, never keyboard activation (§4-5, §4-9)', () => {
     const rules = TEMPLATE.match(/^[^\n{]*:active[^\n{]*\{[^}]*transform: scale\(0\.97\)[^}]*\}/gm) ?? [];
-    expect(rules.length).toBeGreaterThan(0);
+    // D7: every pressable control of the page is a kit class or an element now — the page keeps no press rule of
+    // its own; the kit's excludes keyboard presses the same way.
+    expect(rules).toEqual([]);
+    expect(KIT).toContain(
+      ':is(.ui-btn, .ui-icon-btn, button.ui-chip, a.ui-chip):active:not(:disabled):not([aria-disabled="true"]):not(:focus-visible) { transform: scale(0.97); }',
+    );
     // Tone pass P6: one shared press rule lists its controls in :is(…) — split on top-level commas only,
     // so each selector (the whole :is(…):active… one included) must still exclude keyboard presses.
     const topLevel = (list: string) => {
@@ -752,22 +762,44 @@ describe('agent inbox board — motion contract (§4)', () => {
       const selectors = topLevel(rule.slice(0, rule.indexOf('{')));
       for (const sel of selectors) expect(sel, sel).toContain(':not(:focus-visible)');
     }
-    expect(TEMPLATE).toMatch(
-      /:is\([^)]*\.panel-detail-toggle[^)]*\):active:not\(:disabled\):not\(:focus-visible\) \{ transform: scale\(0\.97\); \}/,
+    // D7: the chips (defaults, admin, 보관함 · 휴면, 자세히) are kit chips — the press is ui-kit.css's
+    // (button.ui-chip:active:not(:focus-visible) → scale(.97)); the user-media tiles are <ui-media-grid>'s (I-09).
+    expect(TEMPLATE).not.toContain('.um-tile');
+    expect(TEMPLATE).not.toMatch(/:is\([^)]*\.panel-detail-toggle[^)]*\):active/);
+    expect(KIT).toMatch(
+      /:is\(\.ui-btn, \.ui-icon-btn, button\.ui-chip, a\.ui-chip\):active:not\(:disabled\):not\(\[aria-disabled="true"\]\):not\(:focus-visible\) \{ transform: scale\(0\.97\); \}/,
     );
   });
 
-  it('reduced motion stops the spinner and shows a static working indicator (§4-8)', () => {
-    // Every reduced-motion block (SSOT 2026-10-29 T2 added the detail deck's own, earlier in the sheet).
-    const reduced = (TEMPLATE.match(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\n\}/g) ?? []).join('\n');
-    expect(reduced).toContain('.spinner, .spin { animation: none !important; }');
-    expect(reduced).toMatch(/\.spinner \{ border-color: var\(--st-run\); background: radial-gradient/);
+  it('the working ring is the kit spinner; reduced motion stills it as a ring with a dot (§4-8, D7 K-01)', () => {
+    // The page draws no ring of its own any more: the Tasks head's running step is .ui-spinner.is-sm.
+    for (const gone of ['.spinner', '.spin {', '@keyframes spin', 'ag-spinner'])
+      expect(TEMPLATE, gone).not.toContain(gone);
+    expect(TEMPLATE).toContain(
+      `if (st === 'running') return '<span class="ui-spinner is-sm" aria-hidden="true"></span>';`,
+    );
+    expect(KIT).toMatch(/\.ui-spinner \{[^}]*animation: ui-spin 0\.9s linear infinite;/);
+    expect(KIT).toContain(
+      '.ui-spinner { animation: none; border-color: color-mix(in srgb, var(--ui-tone) 25%, transparent); }',
+    );
+    expect(KIT).toMatch(/\.ui-spinner::after \{[^}]*border-radius: 50%; background: var\(--ui-tone\); \}/);
   });
 
-  it('the context fill animates transform scaleX, not width', () => {
-    expect(TEMPLATE).toMatch(
-      /\.card-body \.context-bar-fill \{[^}]*transform-origin: left center;[^}]*transition: transform/,
-    );
+  it('the page draws no context bar of its own (the card face’s is the element’s; the panel’s is <ui-context-window>)', () => {
+    // D7 (D-20): the pre-library board rules are gone — the context bar, the column spark, the Slack link and PR
+    // badges, the earlier-plan lines, the show-older button, the empty composer line.
+    for (const gone of [
+      '.context-bar',
+      '.col-spark',
+      '.slack-link',
+      '.pr-badge',
+      '.tl-earlier',
+      '.show-older-btn',
+      '.nt-empty',
+      '.cb-ac {',
+      '.io-muted',
+    ])
+      expect(TEMPLATE, gone).not.toContain(gone);
     // The panel's 세션 정보 shows the context as <ui-context-window>'s field of cells now (re-context-window D5/D18), not a bar.
     expect(fnBody('cwSlotHtml')).toContain('<ui-context-window lang="ko"');
     expect(fnBody('panelInfoHtml')).not.toContain('transform:scaleX(');
@@ -821,7 +853,13 @@ describe('agent inbox board — responsive (§5)', () => {
     expect(block).not.toContain('.stats-more');
     // The app bar's links, account and theme toggle are 44px on coarse pointers by the element's own rule;
     // the page's controls in its actions are the page's.
-    expect(block).toContain('.topbar .user-select, .topbar .admin-toggle, .topbar .td-chip { min-height: 44px; }');
+    // D7 (A-11): the user select is a kit select chip — 44px on touch / narrow is ui-kit.css's rule.
+    expect(block).not.toContain('.user-select');
+    expect(KIT).toContain('.ui-select-chip { min-height: 44px; }');
+    // D7: the bar's chips, 보관함 · 휴면 and 자세히 are kit chips — 44px on touch / narrow is ui-kit.css's rule.
+    expect(block).not.toContain('.admin-toggle');
+    expect(block).not.toContain('.archives-btn');
+    expect(KIT).toContain(":is(button.ui-chip, a.ui-chip)::after { content: ''; position: absolute; inset: -10px 0; }");
     expect(block).not.toContain('#theme-toggle');
     // The subtitle's regenerate is the kit's small icon button (44px on touch / narrow: ui-kit.css).
     expect(TEMPLATE).toContain('id="panel-title-sub-regen" class="ui-icon-btn is-sm"');
