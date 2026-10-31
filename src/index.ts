@@ -1211,6 +1211,8 @@ async function start() {
         });
       },
       epicCostLimitUsd: (ownerId) => userSettingsStore.getUserEpicCostLimitUsd(ownerId),
+      // E4 ⑥ — however a chain ended, an epic left with pending events may wake (grok #702 R1).
+      onChainEnd: (key) => epicWaker.wake(key),
     });
     taskTurnController = taskController;
     // E4 ④a (.prd/19 D3) — the host the epic's tools call: registry reads, the plan writer,

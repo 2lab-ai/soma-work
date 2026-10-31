@@ -106,6 +106,12 @@ export interface TaskTurnControllerDeps {
    */
   closeWaitMs?: number;
   now?: () => number;
+  /**
+   * E4 ⑥ — told each chain's end, however it ended (an outcome, a start that
+   * was never saved, a throw), after the task is free again: an epic woken for
+   * events that came while it ran (grok #702 R1). Never throws into the chain.
+   */
+  onChainEnd?: (sessionKey: string) => void;
 }
 
 /** #599 ⑤ — a dashboard answer to the task's open question, bound to its `askId`. */
@@ -415,6 +421,11 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       deps.coordinator.removeController(sessionKey, abort);
       if (chains.get(sessionKey) === chain) chains.delete(sessionKey);
       releaseSlot(chain, sessionKey);
+      try {
+        deps.onChainEnd?.(sessionKey);
+      } catch (error) {
+        deps.logger.warn('onChainEnd raised', { sessionKey, error: (error as Error)?.message });
+      }
     });
 
     const first = await Promise.race([started, finished.then(() => 'ended' as const)]);
