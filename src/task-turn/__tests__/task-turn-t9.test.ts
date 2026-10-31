@@ -1,0 +1,143 @@
+/**
+ * T9 (#598 ④b1, .prd/17): a Slack-less task's tool-using turn runs to the
+ * end through the real task executor — the real registry, conversation store
+ * and work-log store, with only the agent stream faked — and makes **zero
+ * Slack calls**. Its outcome is committed once on the task and survives a
+ * restart; its work log holds the instruction, the tool call and result, and
+ * the final answer.
+ *
+ * Variants beyond the core path (compaction, directives, background work, MCP
+ * status, …) are ④b2's; each will turn a recorded call here into zero.
+ */
+import { describe, expect, it, vi } from 'vitest';
+import { createConversationDurable } from '../../conversation/recorder';
+import { createSessionWorkLogAppender } from '../../conversation/session-work-log';
+import { readWorkLog } from '../../conversation/work-log';
+import { mcpCallTracker } from '../../mcp-call-tracker';
+import { SessionRegistry } from '../../session-registry';
+import { RequestCoordinator } from '../../slack';
+import { TodoManager } from '../../todo-manager';
+import { createTaskTurnExecutor } from '../task-turn-executor';
+
+const FINAL = 'The timeout is 30s; I raised it to 60s.';
+
+type Stream = () => AsyncGenerator<unknown>;
+
+const toolTurn: Stream = () =>
+  (async function* () {
+    yield { type: 'assistant_delta', text: 'Let me read the config first.' };
+    yield { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: { file_path: '/repo/config.ts' } };
+    yield { type: 'tool_result', toolCallId: 'tu_1', content: [{ type: 'text', text: 'timeout = 30' }] };
+    yield { type: 'assistant_delta', text: FINAL };
+    yield { type: 'result', stopReason: 'end_turn', finalText: FINAL };
+  })();
+
+const failingTurn: Stream = () =>
+  // biome-ignore lint/correctness/useYield: it fails before its first event
+  (async function* () {
+    throw new Error('upstream exploded');
+  })();
+
+/** The host's ClaudeHandler as the executor uses it on a task turn — over a real registry. */
+function claudeHandlerOver(registry: SessionRegistry, stream: Stream) {
+  const known: Record<string, unknown> = {
+    getSessionRegistry: () => registry,
+    getAllSessions: () => registry.getAllSessions(),
+    getSessionByKey: (k: string) => registry.getSessionByKey(k),
+    setActivityStateByKey: (k: string, s: 'working' | 'waiting' | 'idle') => registry.setActivityStateByKey(k, s),
+    clearSessionIdByKey: (k: string) => registry.clearSessionIdByKey(k),
+    setSessionLinksByKey: (k: string, l: never) => registry.setSessionLinksByKey(k, l),
+    setSessionTitleByKey: (k: string, t: string) => registry.setSessionTitleByKey(k, t),
+    addSourceWorkingDirByKey: (k: string, d: string) => registry.addSourceWorkingDirByKey(k, d),
+    addMergeStatsByKey: (k: string, n: number, a: number, d: number) => registry.addMergeStatsByKey(k, n, a, d),
+    streamAgentEvents: vi.fn(stream),
+  };
+  return new Proxy(known, {
+    get(target, prop) {
+      if (typeof prop === 'symbol' || prop in target) return target[prop as string];
+      // A channel/thread form or anything this harness does not model: fail loudly.
+      return () => {
+        throw new Error(`unexpected claudeHandler.${String(prop)} on a task turn`);
+      };
+    },
+  });
+}
+
+async function setup(stream: Stream) {
+  const registry = new SessionRegistry();
+  const task = registry.createTask({
+    ownerId: 'U0T9OWNER',
+    ownerName: 'T9',
+    workingDirectory: '/tmp/U0T9OWNER/session_t9',
+    title: 'T9',
+  });
+  const sessionKey = `task:${task.taskId}`;
+  const claudeHandler = claudeHandlerOver(registry, stream);
+  const executor = createTaskTurnExecutor({
+    claudeHandler,
+    requestCoordinator: new RequestCoordinator(),
+    mcpCallTracker,
+    todoManager: new TodoManager(),
+    appendSessionWorkLog: createSessionWorkLogAppender({
+      getAllSessions: () => registry.getAllSessions(),
+      scheduleLiveSessionUpdate: () => {},
+      refreshAgentSpend: () => {},
+    }),
+    createConversation: (s) => createConversationDurable('', '', s.ownerId, s.ownerName ?? '', s.title),
+  });
+  const executionContext = {
+    origin: 'task',
+    userId: 'U0T9OWNER',
+    isAdmin: false,
+    permissionMode: 'auto',
+    sessionKey,
+    taskId: task.taskId,
+    workingDirectory: '/tmp/U0T9OWNER/session_t9',
+  } as never;
+  const run = () =>
+    executor.runTaskTurn({
+      sessionKey,
+      executionContext,
+      text: 'raise the request timeout',
+      params: {
+        userName: 'T9',
+        workingDirectory: '/tmp/U0T9OWNER/session_t9',
+        abortController: new AbortController(),
+        processedFiles: [],
+        isUserInput: true,
+        say: vi.fn(),
+      },
+    });
+  return { registry, task, sessionKey, executor, run };
+}
+
+describe('T9 — a Slack-less task turn through the real task executor (#598 ④b1)', () => {
+  it('runs a tool-using turn to the end with zero Slack calls; the outcome is committed once and the work log is complete', async () => {
+    const { registry, task, sessionKey, executor, run } = await setup(toolTurn);
+    const result = await run();
+
+    expect(executor.slackCalls).toEqual([]);
+    expect(result.outcome).toMatchObject({ outcome: 'completed', category: 'WorkflowComplete' });
+    expect(registry.getSessionByKey(sessionKey)?.lastTurnOutcome?.turnId).toBe(result.turnId);
+    expect(registry.getSessionByKey(sessionKey)?.activityState).toBe('idle');
+
+    const page = await readWorkLog(task.conversationId!);
+    const kinds = page.entries.map((e) => e.kind);
+    expect(kinds).toEqual(expect.arrayContaining(['instruction', 'tool', 'tool_result', 'final']));
+    expect(page.entries.find((e) => e.kind === 'final')?.text).toContain('60s');
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    expect(reader.getSessionByTaskId(task.taskId!)?.lastTurnOutcome?.outcome).toBe('completed');
+  });
+
+  it('a failing turn is recorded as failed with one error entry, and still makes zero Slack calls', async () => {
+    const { task, executor, run } = await setup(failingTurn);
+    const result = await run();
+
+    expect(executor.slackCalls).toEqual([]);
+    expect(result.outcome).toMatchObject({ outcome: 'failed', category: 'Exception' });
+    const page = await readWorkLog(task.conversationId!);
+    expect(page.entries.filter((e) => e.kind === 'error')).toHaveLength(1);
+  });
+});
