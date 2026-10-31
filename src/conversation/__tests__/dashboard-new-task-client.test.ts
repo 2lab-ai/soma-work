@@ -125,7 +125,8 @@ describe('T1 — the New task entry is always in reach, calm', () => {
     expect(css).toContain('.new-task-fab.is-floating { display: inline-flex; }');
     expect(script).toContain("fab.classList.toggle('is-folded', y > lastY && y > 80);");
     expect(script).toContain("fab.classList.toggle('is-floating', !entries[0].isIntersecting);");
-    for (const gone of ['is-compact', 'nt-fab-icon', 'nt-fab-label', 'nt-fab-in']) expect(html, gone).not.toContain(gone);
+    for (const gone of ['is-compact', 'nt-fab-icon', 'nt-fab-label', 'nt-fab-in'])
+      expect(html, gone).not.toContain(gone);
   });
 
   it('below 640px the top-bar button gives way to the floating button', () => {
@@ -208,15 +209,25 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     // D7 (H-02): <label class="ui-select-chip"><span>word</span><select> — the kit sizes the select to its option.
-    expect(row).toContain('<label class="ui-select-chip"><span>모델</span><select id="nt-model" onchange="ntOnModelChange()"></select></label>');
-    expect(row).toContain('<label class="ui-select-chip"><span>effort</span><select id="nt-effort" onchange="ntOnEffortChange()"></select></label>');
-    expect(row).toContain('<label class="ui-select-chip"><span>채널</span><select id="nt-channel" onchange="ntOnChannelChange()"></select></label>');
+    expect(row).toContain(
+      '<label class="ui-select-chip"><span>모델</span><select id="nt-model" onchange="ntOnModelChange()"></select></label>',
+    );
+    expect(row).toContain(
+      '<label class="ui-select-chip"><span>effort</span><select id="nt-effort" onchange="ntOnEffortChange()"></select></label>',
+    );
+    expect(row).toContain(
+      '<label class="ui-select-chip"><span>채널</span><select id="nt-channel" onchange="ntOnChannelChange()"></select></label>',
+    );
     expect(kit).toContain('field-sizing: content;');
     expect(css).not.toContain('.nt-chip');
     // D7 (H-03): the meter — role="meter" with the percent, "?" when unknown — in the button that opens the usage line.
-    expect(row).toContain('<button type="button" class="nt-battery-btn" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><ui-meter id="nt-battery" shape="battery" low="0.2" high="0.5" label="모델 잔여량" lang="ko"></ui-meter></button>');
+    expect(row).toContain(
+      '<button type="button" class="nt-battery-btn" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><ui-meter id="nt-battery" shape="battery" low="0.2" high="0.5" label="모델 잔여량" lang="ko"></ui-meter></button>',
+    );
     expect(html).toContain('<script type="module" src="/dashboard/ui/meter.js?v=');
-    expect(script).toContain("ntEl('nt-battery').data = { value: v.value, low: 0.2, high: 0.5, label: '모델 잔여량' };");
+    expect(script).toContain(
+      "ntEl('nt-battery').data = { value: v.value, low: 0.2, high: 0.5, label: '모델 잔여량' };",
+    );
     for (const gone of ['nt-battery-fill', 'nt-batt-', 'nt-blink']) expect(html, gone).not.toContain(gone);
   });
 

@@ -358,7 +358,9 @@ describe('D2 — the tiles and chips are @2lab.ai/ui <ui-file-card>, answered by
     expect(TEMPLATE).toContain("attributeFilter: ['data-art-v', 'data-um']");
     expect(TEMPLATE).toContain("var FC_HYDRATE_SEL = 'ui-file-card[data-art-id], ui-media-grid[data-um]';");
     expect(TEMPLATE).toContain('if (node.matches(FC_HYDRATE_SEL)) fcHydrate(node);');
-    expect(TEMPLATE).toContain("} else if (t.localName === 'ui-media-grid' && t.hasAttribute('data-art-cid') && e.detail && e.detail.id) {");
+    expect(TEMPLATE).toContain(
+      "} else if (t.localName === 'ui-media-grid' && t.hasAttribute('data-art-cid') && e.detail && e.detail.id) {",
+    );
     expect(TEMPLATE).toContain("document.addEventListener('ui-open', function(e) {");
     expect(TEMPLATE).toContain("openArtifactViewer(t.getAttribute('data-art-cid'), t.getAttribute('data-art-id'), t);");
     // The card is the viewer's opener: focus comes back to it (0.10.0 card.focus() reaches its button itself).
@@ -518,7 +520,11 @@ describe('T2 — hover peek: @2lab.ai/ui <ui-hovercard>, one card for every tile
     expect(artPeekTarget(fakeEl({ 'data-art': 'A1', 'data-key': 'art:unknown:A1' }))).toBeNull();
     // D7 (I-09): a tile in <ui-media-grid>'s shadow root — the grid (its host) carries the conversation, the tile its id.
     const grid = fakeEl({ 'data-art-cid': 'conv-1' });
-    const tile = { ...fakeEl({ 'data-mk': 'A2' }), classList: { contains: (c: string) => c === 'mg-tile' }, getRootNode: () => ({ host: grid }) };
+    const tile = {
+      ...fakeEl({ 'data-mk': 'A2' }),
+      classList: { contains: (c: string) => c === 'mg-tile' },
+      getRootNode: () => ({ host: grid }),
+    };
     expect(artPeekTarget(tile)).toEqual({ cid: 'conv-1', a: png });
     expect(artPeekTarget(fakeEl({ 'data-art-cid': 'conv-1', 'data-art-id': 'nope' }))).toBeNull();
     expect(artPeekTarget(null)).toBeNull();

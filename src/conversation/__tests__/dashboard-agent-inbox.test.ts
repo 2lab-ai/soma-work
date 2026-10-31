@@ -739,7 +739,9 @@ describe('agent inbox board — motion contract (§4)', () => {
     // D7: every pressable control of the page is a kit class or an element now — the page keeps no press rule of
     // its own; the kit's excludes keyboard presses the same way.
     expect(rules).toEqual([]);
-    expect(KIT).toContain(':is(.ui-btn, .ui-icon-btn, button.ui-chip, a.ui-chip):active:not(:disabled):not([aria-disabled="true"]):not(:focus-visible) { transform: scale(0.97); }');
+    expect(KIT).toContain(
+      ':is(.ui-btn, .ui-icon-btn, button.ui-chip, a.ui-chip):active:not(:disabled):not([aria-disabled="true"]):not(:focus-visible) { transform: scale(0.97); }',
+    );
     // Tone pass P6: one shared press rule lists its controls in :is(…) — split on top-level commas only,
     // so each selector (the whole :is(…):active… one included) must still exclude keyboard presses.
     const topLevel = (list: string) => {
@@ -771,17 +773,32 @@ describe('agent inbox board — motion contract (§4)', () => {
 
   it('the working ring is the kit spinner; reduced motion stills it as a ring with a dot (§4-8, D7 K-01)', () => {
     // The page draws no ring of its own any more: the Tasks head's running step is .ui-spinner.is-sm.
-    for (const gone of ['.spinner', '.spin {', '@keyframes spin', 'ag-spinner']) expect(TEMPLATE, gone).not.toContain(gone);
-    expect(TEMPLATE).toContain(`if (st === 'running') return '<span class="ui-spinner is-sm" aria-hidden="true"></span>';`);
+    for (const gone of ['.spinner', '.spin {', '@keyframes spin', 'ag-spinner'])
+      expect(TEMPLATE, gone).not.toContain(gone);
+    expect(TEMPLATE).toContain(
+      `if (st === 'running') return '<span class="ui-spinner is-sm" aria-hidden="true"></span>';`,
+    );
     expect(KIT).toMatch(/\.ui-spinner \{[^}]*animation: ui-spin 0\.9s linear infinite;/);
-    expect(KIT).toContain('.ui-spinner { animation: none; border-color: color-mix(in srgb, var(--ui-tone) 25%, transparent); }');
+    expect(KIT).toContain(
+      '.ui-spinner { animation: none; border-color: color-mix(in srgb, var(--ui-tone) 25%, transparent); }',
+    );
     expect(KIT).toMatch(/\.ui-spinner::after \{[^}]*border-radius: 50%; background: var\(--ui-tone\); \}/);
   });
 
   it('the page draws no context bar of its own (the card face’s is the element’s; the panel’s is <ui-context-window>)', () => {
     // D7 (D-20): the pre-library board rules are gone — the context bar, the column spark, the Slack link and PR
     // badges, the earlier-plan lines, the show-older button, the empty composer line.
-    for (const gone of ['.context-bar', '.col-spark', '.slack-link', '.pr-badge', '.tl-earlier', '.show-older-btn', '.nt-empty', '.cb-ac {', '.io-muted'])
+    for (const gone of [
+      '.context-bar',
+      '.col-spark',
+      '.slack-link',
+      '.pr-badge',
+      '.tl-earlier',
+      '.show-older-btn',
+      '.nt-empty',
+      '.cb-ac {',
+      '.io-muted',
+    ])
       expect(TEMPLATE, gone).not.toContain(gone);
     // The panel's 세션 정보 shows the context as <ui-context-window>'s field of cells now (re-context-window D5/D18), not a bar.
     expect(fnBody('cwSlotHtml')).toContain('<ui-context-window lang="ko"');
