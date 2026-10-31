@@ -153,7 +153,11 @@ describe('the waker (K2, K3)', () => {
 });
 
 /** The real controller over one epic, with a runner that records its inputs. */
-function realController(session: any, steps: Array<(input: RunTaskTurnInput) => Promise<RunTaskTurnResult>> = []) {
+function realController(
+  session: any,
+  steps: Array<(input: RunTaskTurnInput) => Promise<RunTaskTurnResult>> = [],
+  onChainEnd?: (sessionKey: string) => void,
+) {
   const inputs: RunTaskTurnInput[] = [];
   let release!: () => void;
   const held = new Promise<void>((r) => {
@@ -174,6 +178,7 @@ function realController(session: any, steps: Array<(input: RunTaskTurnInput) => 
     buildExecutionContext: () => CTX,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     treeCostUsd: () => 0,
+    ...(onChainEnd ? { onChainEnd } : {}),
   });
   return { controller, inputs, runTaskTurn, release };
 }
@@ -227,5 +232,36 @@ describe('wake through the real controller (K4, K5)', () => {
     expect(p.status).toBe(202);
     expect(plain.inputs[0].consume).toBeUndefined();
     plain.release();
+  });
+
+  it('K6 — an event that came while a chain ran, whose start was never saved, still wakes it when the chain ends (grok #702 R1)', async () => {
+    const epic = epicSession({ epicEvents: [ev('a')] });
+    let waker!: ReturnType<typeof createEpicWaker>;
+    const h = realController(
+      epic,
+      [
+        // The first hop's conversation is not created: an outcome before its start, nothing consumed.
+        async () => {
+          epic.epicEvents = [...epic.epicEvents, ev('late', { planNodeId: 'docs', outcome: 'failed' })];
+          // The late event's own wake meets the running chain (409) and gives up.
+          waker.wake(KEY);
+          await flush();
+          return { turnId: 't1', outcome: { turnId: 't1', outcome: 'failed', category: 'Exception', at: 1 } };
+        },
+      ],
+      (key) => waker.wake(key),
+    );
+    waker = createEpicWaker({
+      getSession: () => epic,
+      controller: h.controller,
+      logger: { info: vi.fn(), warn: vi.fn() },
+    });
+    waker.wake(KEY);
+    for (let i = 0; i < 6; i++) await flush();
+    // Woken again once the first chain ended, with both events (none was consumed).
+    expect(h.runTaskTurn).toHaveBeenCalledTimes(2);
+    expect(h.inputs[1].consume).toEqual(['a', 'late']);
+    expect(h.inputs[1].text).toBe('Epic wake: 2 events — login:finished, docs:failed. Read details with child_status.');
+    h.release();
   });
 });
