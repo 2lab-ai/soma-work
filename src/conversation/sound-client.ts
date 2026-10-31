@@ -29,6 +29,9 @@ function somaSoundShow(on) {
   document.documentElement.setAttribute('data-sound', on ? 'on' : 'off');
   var b = document.getElementById('sound-toggle');
   if (b) b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  // The dashboard's <ui-app-bar> draws its own speaker from data.sound (pressed while on).
+  var bar = document.getElementById('app-bar');
+  if (bar && bar.data && bar.data.sound !== on) bar.data = Object.assign({}, bar.data, { sound: on });
 }
 function somaSoundImport(url) {
   return import(url);
@@ -75,7 +78,8 @@ function somaSoundArm(m) {
 }
 // inGesture: still inside the click's task — unlock and confirm now. Otherwise (the player arrived after the
 // gesture) try, and leave the start to the next gesture: outside one, WebKit's resume() may never settle.
-function somaSoundApply(m, on, fromClick, inGesture) {
+// quiet: the control confirms with its own cue (<ui-app-bar>'s speaker sounds its toggle once its listeners ran).
+function somaSoundApply(m, on, fromClick, inGesture, quiet) {
   m.sound.setSound(on ? { player: m.cuelume.cuelumeSound, enabled: true } : { enabled: false });
   if (!on || !fromClick) return on;
   var started = m.cuelume.unlockSound();
@@ -83,7 +87,7 @@ function somaSoundApply(m, on, fromClick, inGesture) {
     somaSoundArm(m);
     return on;
   }
-  m.sound.playSound('toggle', { direction: 'forward' });
+  if (!quiet) m.sound.playSound('toggle', { direction: 'forward' });
   started.then(function (ok) { if (!ok) somaSoundArm(m); });
   return on;
 }
@@ -92,15 +96,15 @@ function somaSoundKeep(on) {
   _somaOn = on;
   try { localStorage.setItem('soma-sound', on ? 'on' : 'off'); } catch (_e) {}
 }
-function somaSetSound(on, fromClick) {
+function somaSetSound(on, fromClick, quiet) {
   somaSoundKeep(on);
   somaSoundShow(on);
   // Loaded: no await between the click and the unlock (some browsers start audio only inside the gesture).
-  if (_somaSoundMods) return Promise.resolve(somaSoundApply(_somaSoundMods, on, fromClick, fromClick));
+  if (_somaSoundMods) return Promise.resolve(somaSoundApply(_somaSoundMods, on, fromClick, fromClick, quiet));
   if (!on && !_somaSoundLib) return Promise.resolve(false);
   return somaSoundLoad().then(function (m) {
     // The latest choice wins: turned off while loading stays off.
-    return somaSoundApply(m, _somaOn, fromClick, false);
+    return somaSoundApply(m, _somaOn, fromClick, false, quiet);
   }, function () {
     // The player could not load: say off. A click's choice becomes off; a saved one is kept for the next page.
     if (fromClick) somaSoundKeep(false);
@@ -112,9 +116,29 @@ function somaSetSound(on, fromClick) {
 function toggleSound() {
   return somaSetSound(!_somaOn, true);
 }
+// <ui-app-bar>'s speaker (the dashboard): ui-sound-change carries the new choice inside the click's task, so the
+// unlock happens there; the bar plays its own toggle cue after this listener, so the page stays quiet. The player
+// warms on the way to the speaker (inside the bar's shadow root: the event's first target is the button).
+function somaSoundBindBar(bar) {
+  if (!bar || bar._somaSound) return;
+  bar._somaSound = true;
+  bar.addEventListener('ui-sound-change', function (e) {
+    somaSetSound(!!(e.detail && e.detail.sound), true, true);
+  });
+  var warm = function (e) {
+    var t = e.composedPath ? e.composedPath()[0] : e.target;
+    if (t && t.closest && t.closest('.ab-sound')) somaSoundWarm();
+  };
+  bar.addEventListener('pointerover', warm);
+  bar.addEventListener('focusin', warm);
+  bar.addEventListener('pointerdown', warm);
+}
 somaSoundShow(_somaOn);
 if (_somaOn) somaSetSound(true, false);
-document.addEventListener('DOMContentLoaded', function () { somaSoundShow(_somaOn); });
+document.addEventListener('DOMContentLoaded', function () {
+  somaSoundBindBar(document.getElementById('app-bar'));
+  somaSoundShow(_somaOn);
+});
 `;
 
 /** The page script, its module URLs pinned to the installed @2lab.ai/ui version (cache-busting, like the elements). */

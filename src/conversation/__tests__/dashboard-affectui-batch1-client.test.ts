@@ -250,13 +250,15 @@ describe('ntOnLaunched — a launched task is a toast with 카드 열기 and the
   function launch() {
     const toasts: Array<[Toast, (() => void) | undefined]> = [];
     const opened: unknown[] = [];
+    const cleared: number[] = [];
     const m = load<{ ntOnLaunched(d: unknown): void }>(['ntOnLaunched'], [], {
       dashToast: (t: Toast, fn?: () => void) => toasts.push([t, fn]),
       ntOpenLaunched: (d: unknown) => opened.push(d),
       _ntRequestId: '',
       ntNewRequestId: () => 'r2',
-      _ntFiles: [],
-      URL: { revokeObjectURL() {} },
+      // D2: the next task starts clean — <ui-composer id="nt-composer"> is cleared (text, files, recording).
+      ntEl: (id: string) => (id === 'nt-composer' ? { clear: () => cleared.push(1) } : null),
+      _ntValue: null,
       _ntState: {},
       ntDefaultState: () => ({}),
       _ntCtx: { channels: [{ id: 'C1', name: 'dev' }] },
@@ -268,7 +270,7 @@ describe('ntOnLaunched — a launched task is a toast with 카드 열기 and the
       loadSessions: () => {},
       setTimeout: () => 0,
     });
-    return { run: m.ntOnLaunched, toasts, opened };
+    return { run: m.ntOnLaunched, toasts, opened, cleared };
   }
 
   it('running vs queued, the channel name, the card action, the link only when there is one, 12 s on screen', () => {
@@ -277,6 +279,7 @@ describe('ntOnLaunched — a launched task is a toast with 카드 열기 and the
     const second = { status: 'queued', channel: 'C9', sessionKey: 'k2' };
     l.run(first);
     l.run(second);
+    expect(l.cleared).toHaveLength(2);
     expect(l.toasts.map((t) => t[0])).toEqual([
       {
         title: '작업을 시작했어요',
@@ -377,11 +380,11 @@ describe('<ui-compact-breakdown> — where the usage goes: by model for everyone
         addEventListener: (ev: string, fn: Listener) => (listeners[ev] = fn),
       },
       _viewerIsAdmin: false,
-      setStat: () => {},
+      landStripFigures: () => {}, // 토큰 · 비용 go to <ui-stat-strip> (D2)
       formatTokens: String,
     };
     const m = load<{ paintUsage(r: unknown): void; paintUsageBreakdown(): void }>(
-      ['toNum', 'fmtUsd', 'usageBreakdownData', 'paintUsageBreakdown', 'paintUsage'],
+      ['toNum', 'usageBreakdownData', 'paintUsageBreakdown', 'paintUsage'],
       ['_usageView', '_usageReport', 'USAGE_VIEWS'],
       env,
       [clientListener('ui-change')],
@@ -397,7 +400,7 @@ describe('<ui-compact-breakdown> — where the usage goes: by model for everyone
   });
 
   it('the page: the breakdown in the stats detail, in a token wrapper', () => {
-    const detail = PAGE.slice(PAGE.indexOf('<div class="stats-detail" id="stats-detail" hidden inert>'));
+    const detail = PAGE.slice(PAGE.indexOf('<div class="stats-detail" id="stats-detail">'));
     expect(
       detail.indexOf(
         '<div class="ui-tok usage-cb-wrap"><ui-compact-breakdown id="usage-cb" lang="ko"></ui-compact-breakdown></div>',

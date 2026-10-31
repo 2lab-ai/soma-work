@@ -1259,7 +1259,7 @@ describe('Dashboard API', () => {
 
   // Tone pass P4: the theme toggle is the site's 34px icon button — the sun / moon are 16-grid SVGs
   // (no emoji, no ::before content), the visible one chosen by data-theme in CSS; Korean label.
-  it('should have theme toggle button with aria-label and no hardcoded emoji', async () => {
+  it("the theme toggle is the app bar's (sun / moon glyph, action-named label); the page answers ui-theme-change", async () => {
     const res = await injectWebServer({
       method: 'GET',
       url: '/dashboard',
@@ -1267,31 +1267,12 @@ describe('Dashboard API', () => {
     });
 
     const html: string = res.body;
-    // Button must exist with aria-label
-    expect(html).toContain('id="theme-toggle"');
-    expect(html).toContain('aria-label="테마 전환"');
-    // Button content: the two SVG glyphs, no text and no emoji
-    const btnMatch = html.match(/<button[^>]*id="theme-toggle"[^>]*>(.*?)<\/button>/);
-    expect(btnMatch).not.toBeNull();
-    expect(btnMatch![1]).toMatch(
-      /^<svg [^>]*data-icon="sun" class="ic-sun"[^>]*aria-hidden="true">.*<\/svg><svg [^>]*data-icon="moon" class="ic-moon"[^>]*aria-hidden="true">.*<\/svg>$/,
-    );
-    expect(btnMatch![1].replace(/<[^>]+>/g, '').trim()).toBe('');
+    // D2 (A-14): <ui-app-bar> draws the toggle from data.theme and asks with ui-theme-change.
+    expect(html).toContain('<ui-app-bar id="app-bar" lang="ko">');
+    expect(html).not.toContain('id="theme-toggle"');
+    expect(html).not.toContain('#theme-toggle');
+    expect(html).toContain("bar.addEventListener('ui-theme-change', function(e) {");
     expect(html).not.toContain('\\1F319');
-  });
-
-  it('should have CSS rules that pick the theme icon by data-theme', async () => {
-    const res = await injectWebServer({
-      method: 'GET',
-      url: '/dashboard',
-      headers: AUTH_HEADER,
-    });
-
-    const html: string = res.body;
-    // CSS shows the sun in the dark theme and the moon in the light one; no ::before glyph is left
-    expect(html).toContain('#theme-toggle .ic-moon, [data-theme="light"] #theme-toggle .ic-sun { display: none; }');
-    expect(html).toContain('[data-theme="light"] #theme-toggle .ic-moon { display: block; }');
-    expect(html).not.toContain('#theme-toggle::before');
   });
 
   it('should have theme JS functions in inline script', async () => {
@@ -1341,11 +1322,13 @@ describe('Dashboard API', () => {
     const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
     expect(scriptMatch).not.toBeNull();
     const script = scriptMatch![1];
-    // toggleTheme must contain removeItem for auto-clear logic
-    const toggleFn = script.match(/function toggleTheme\(\)\s*\{([\s\S]*?)\n\}/);
-    expect(toggleFn).not.toBeNull();
-    expect(toggleFn![1]).toContain('removeItem');
-    expect(toggleFn![1]).toContain('osTheme');
+    // setTheme (the bar's ui-theme-change and toggleTheme both go through it) clears the stored theme
+    // when it matches the OS
+    const setFn = script.match(/function setTheme\(next\)\s*\{([\s\S]*?)\n\}/);
+    expect(setFn).not.toBeNull();
+    expect(setFn![1]).toContain('removeItem');
+    expect(setFn![1]).toContain('osTheme');
+    expect(script).toMatch(/function toggleTheme\(\) \{[\s\S]*?setTheme\(/);
   });
 
   // ── Hero "Submit All Recommended" endpoint (#581) ──
