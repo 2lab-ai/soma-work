@@ -226,7 +226,7 @@ describe('dashboard goal cap decision — board, route, shipped client (T1/T2)',
 
   it('T1 — the card shows the DM content: the budget, the objective, the latest reason, 계속 / 취소', async () => {
     const c = await card();
-    const client = load({ currentUserId: 'U1', isSiblingSession: () => false });
+    const client = load({ _viewerUserId: 'U1', isSiblingSession: () => false });
     const d = client.acGoalDecisionData(c, c.pendingGoalDecision);
     expect(d).toMatchObject({ kind: 'question', id: live.goal.capDecisionId, allowOther: false });
     expect(d.recommendedId).toBeUndefined();
@@ -256,7 +256,7 @@ describe('dashboard goal cap decision — board, route, shipped client (T1/T2)',
     // The slot is bound by attributes (no inline handler).
     expect(client.acGoalDecisionHtml(c)).toContain(`data-ac-kind="goal" data-ac-id="${live.goal.capDecisionId}"`);
     // Another viewer reads it locked.
-    const other = load({ currentUserId: 'U2', isSiblingSession: () => false }).acGoalDecisionData(
+    const other = load({ _viewerUserId: 'U2', isSiblingSession: () => false }).acGoalDecisionData(
       c,
       c.pendingGoalDecision,
     );
@@ -310,6 +310,13 @@ describe('dashboard goal cap decision — board, route, shipped client (T1/T2)',
     expect(live.goal.status).toBe('paused');
   });
 
+  it('the goal creator answers even when another user owns the session (review gate P2)', async () => {
+    live.ownerId = 'U9';
+    const res = await post({ goalId: 'g1', decisionId: live.goal.capDecisionId, decision: 'continue' });
+    expect(res.statusCode).toBe(200);
+    expect(live.goal.capDmPendingAt).toBeUndefined();
+  });
+
   it('refuses a non-owner (403) and a malformed answer (400)', async () => {
     const id = live.goal.capDecisionId;
     expect((await post({ goalId: 'g1', decisionId: id, decision: 'maybe' })).statusCode).toBe(400);
@@ -326,7 +333,7 @@ describe('dashboard goal cap decision — board, route, shipped client (T1/T2)',
     const calls: Array<{ url: string; body: any }> = [];
     const repaint = vi.fn();
     const client = load({
-      currentUserId: 'U1',
+      _viewerUserId: 'U1',
       isSiblingSession: () => false,
       console: { error() {} },
       _csrfToken: signedIn.csrf,

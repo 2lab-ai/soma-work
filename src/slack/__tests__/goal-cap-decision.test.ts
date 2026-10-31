@@ -12,6 +12,17 @@ import { DATA_DIR } from '../../env-paths';
 import type { ConversationSession, SessionGoal } from '../../types';
 
 vi.mock('../goal-loop-resume', () => ({ resumeGoalLoop: vi.fn() }));
+const io = vi.hoisted(() => ({ failJournalWrites: false }));
+vi.mock('@soma/common/atomic-json', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@soma/common/atomic-json')>();
+  return {
+    ...actual,
+    atomicWriteJson: (file: string, value: unknown, options?: unknown) => {
+      if (io.failJournalWrites) throw new Error('disk full');
+      return actual.atomicWriteJson(file, value, options as never);
+    },
+  };
+});
 
 import {
   answerGoalCapDecision,
@@ -75,6 +86,7 @@ beforeEach(() => {
   updates = [];
   broadcasts = 0;
   failNextUpdates = 0;
+  io.failJournalWrites = false;
   fs.rmSync(path.join(DATA_DIR, 'goal-cap-dm-sync.json'), { force: true });
   fs.rmSync(path.join(DATA_DIR, 'goal-cap-dm-sync.json.bak'), { force: true });
   reloadGoalCapDmRewrites();
@@ -389,7 +401,9 @@ describe('DM sync durability (review gate P1)', () => {
     failNextUpdates = 10;
     retireGoalCapDecision(g);
     // Synchronously on disk — a crash right now still leaves it for the next process.
-    expect(rewritesOnDisk()).toEqual([{ ...DM, text: GOAL_CAP_DECISION_SUPERSEDED_TEXT }]);
+    expect(rewritesOnDisk()).toEqual([
+      { ...DM, text: GOAL_CAP_DECISION_SUPERSEDED_TEXT, decisionId: expect.any(String) },
+    ]);
   });
 
   it('a late DM (answered on the dashboard while the post was in flight) is on disk too', () => {
@@ -399,7 +413,9 @@ describe('DM sync durability (review gate P1)', () => {
     retireGoalCapDecision(g);
     failNextUpdates = 10;
     expect(recordGoalCapDm(g, round, DM)).toBe('late');
-    expect(rewritesOnDisk()).toEqual([{ ...DM, text: GOAL_CAP_DECISION_SUPERSEDED_TEXT }]);
+    expect(rewritesOnDisk()).toEqual([
+      { ...DM, text: GOAL_CAP_DECISION_SUPERSEDED_TEXT, decisionId: expect.any(String) },
+    ]);
   });
 
   it("a newer round's rewrite never overwrites an older DM's pending rewrite — both reach Slack", async () => {
@@ -436,5 +452,92 @@ describe('DM sync durability (review gate P1)', () => {
     s.goal = undefined; // the goal is gone (deleted / archived)
     reloadGoalCapDmRewrites();
     expect(pendingGoalCapDmRewrites()).toEqual([expect.objectContaining(DM)]);
+  });
+});
+
+describe('journal before the session (review gate round 2 P1)', () => {
+  it('the DM rewrite is on disk BEFORE the decision is saved', () => {
+    const g = pendingGoal();
+    let journalAtSave: unknown[] = [];
+    answerGoalCapDecision({
+      session: session(g),
+      sessionKey: KEY,
+      goalId: 'goal-1',
+      decisionId: g.capDecisionId,
+      actor: 'U-owner',
+      decision: 'continue',
+      surface: 'dashboard',
+      save: () => {
+        journalAtSave = rewritesOnDisk();
+      },
+    });
+    expect(journalAtSave).toEqual([expect.objectContaining({ ...DM, decisionId: expect.any(String) })]);
+  });
+
+  it('restart with the round still open on disk: the journalled rewrite is dropped, not sent', async () => {
+    const g = pendingGoal();
+    const round = g.capDecisionId as string;
+    failNextUpdates = 10;
+    answerGoalCapDecision({
+      session: session(g),
+      sessionKey: KEY,
+      goalId: 'goal-1',
+      decisionId: round,
+      actor: 'U-owner',
+      decision: 'cancel',
+      surface: 'dashboard',
+      save: () => {},
+    });
+    // The process died before the session save landed: on disk the round is still open.
+    reloadGoalCapDmRewrites();
+    failNextUpdates = 0;
+    updates = [];
+    expect(flushGoalCapDmSync((id) => id === round)).toBe(0);
+    await flush();
+    expect(updates).toEqual([]);
+    expect(rewritesOnDisk()).toEqual([]);
+  });
+
+  it('restart with the round ended on disk: the rewrite is sent', async () => {
+    const g = pendingGoal();
+    failNextUpdates = 10;
+    answerGoalCapDecision({
+      session: session(g),
+      sessionKey: KEY,
+      goalId: 'goal-1',
+      decisionId: g.capDecisionId,
+      actor: 'U-owner',
+      decision: 'cancel',
+      surface: 'dashboard',
+      save: () => {},
+    });
+    reloadGoalCapDmRewrites();
+    failNextUpdates = 0;
+    updates = [];
+    expect(flushGoalCapDmSync(() => false)).toBe(1);
+    await flush();
+    expect(updates).toEqual([{ ref: DM, text: goalCapDecisionResolvedText('cancel', 'dashboard') }]);
+  });
+
+  it('a journal that cannot be written refuses the answer — nothing is decided, nothing resumes', () => {
+    const g = pendingGoal();
+    io.failJournalWrites = true;
+    const save = vi.fn();
+    const result = answerGoalCapDecision({
+      session: session(g),
+      sessionKey: KEY,
+      goalId: 'goal-1',
+      decisionId: g.capDecisionId,
+      actor: 'U-owner',
+      decision: 'continue',
+      surface: 'dashboard',
+      save,
+    });
+    expect(result).toEqual({ ok: false, reason: 'unavailable' });
+    expect(g.capDmPendingAt).toBe(1000);
+    expect(g.continuationCount).toBe(10);
+    expect(save).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
+    expect(pendingGoalCapDmRewrites()).toEqual([]);
   });
 });
