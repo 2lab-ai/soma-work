@@ -14,6 +14,7 @@
  *   T7 shutting down: 503.
  *   T8 canStart takes the tree: a dry run of the same admission, counting nothing.
  *   T9 a tree start answered 500 does not use up the tree's window, and holds no slot.
+ *   T10 the refund finds its start in the window even after another start replaced the array.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { createTaskTurnController, type TaskTurnControllerDeps } from '../task-turn-controller';
@@ -274,6 +275,8 @@ describe('TaskTurnController — the epic tree slot (E4 ③, .prd/19 §2.1)', ()
     // A new epic (no root yet) while another tree runs: 429; a child of the running tree: allowed.
     expect(h.controller.canStart(OWNER, 'go', { role: 'root' })?.status).toBe(429);
     expect(h.controller.canStart(OWNER, 'go', { role: 'child', root: EPIC })).toBeNull();
+    // The running root itself: the start's own 409.
+    expect(h.controller.canStart(OWNER, 'go', { role: 'root', root: EPIC })?.status).toBe(409);
     // An ordinary task's dry run is A0's, and the tree does not hold it.
     expect(h.controller.canStart(OWNER, 'go')).toBeNull();
     // Dry runs used nothing: three children still start.
@@ -304,5 +307,27 @@ describe('TaskTurnController — the epic tree slot (E4 ③, .prd/19 §2.1)', ()
     const ok = await h.controller.start({ sessionKey: child(1), text: 'go', actorUserId: OWNER });
     expect(status(ok)).toBe(202);
     await ok.done;
+  });
+
+  it('T10 — two starts at once, the first not started: its refund still frees its window place', async () => {
+    const h = harness({ maxTreeStartsPerWindow: 2 });
+    let fail!: (e: Error) => void;
+    h.runTaskTurn.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        }),
+    );
+    // A is admitted (window: [a]); B is admitted while A has not started (window replaced: [a, b]).
+    const a = h.controller.start({ sessionKey: child(1), text: 'a', actorUserId: OWNER });
+    const b = await h.run(child(2));
+    expect(status(b)).toBe(202);
+    fail(new Error('ENOSPC'));
+    expect(status(await a)).toBe(500);
+    // A's place is refunded from the array the window holds now: one more start fits.
+    const c = await h.run(child(3));
+    expect(status(c)).toBe(202);
+    await h.release(child(2), b.done);
+    await h.release(child(3), c.done);
   });
 });

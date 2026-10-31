@@ -79,7 +79,7 @@ describe('epic cost (E4 ③, D9 e)', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     });
 
-    it('reads the latest snapshot; none, or a file naming another key, reads as 0', () => {
+    it('reads the newest snapshot of exactly this key; none reads as 0; a foreign or unreadable file is skipped', () => {
       const store = new SessionArchiveStore(dir);
       const key = 'task:c1';
       expect(store.latest(key)).toBeNull();
@@ -95,15 +95,26 @@ describe('epic cost (E4 ③, D9 e)', () => {
       expect(archivedCostUsd(store.latest(key))).toBe(3);
       // Before the task had a total: the runtime one.
       expect(archivedCostUsd({ usage: { totalCostUsd: 5 } } as any)).toBe(5);
-      // A newest file that names another session is not this key's.
+      // Another key that extends this one (`task:c1_x` → `task-c1_x_…`) is not this key's file.
+      fs.writeFileSync(
+        path.join(dir, 'task-c1_x_9000.json'),
+        JSON.stringify({ sessionKey: 'task:c1_x', archivedAt: 9000, taskUsage: usage(99) }),
+      );
+      expect(store.latest(key)?.archivedAt).toBe(2000);
+      // A newer file that names another session, or cannot be read, is skipped: the older snapshot stands.
       fs.writeFileSync(
         path.join(dir, 'task-c1_3000.json'),
         JSON.stringify({ sessionKey: 'task:other', archivedAt: 3000 }),
       );
-      expect(store.latest(key)).toBeNull();
-      // An unreadable newest file reads as none, not a throw.
       fs.writeFileSync(path.join(dir, 'task-c1_4000.json'), '{not json');
-      expect(store.latest(key)).toBeNull();
+      expect(store.latest(key)?.archivedAt).toBe(2000);
+      expect(archivedCostUsd(store.latest(key))).toBe(3);
+      // Newest by number, not by text: a longer timestamp is newer.
+      fs.writeFileSync(
+        path.join(dir, 'task-c1_10000.json'),
+        JSON.stringify({ sessionKey: key, archivedAt: 10000, taskUsage: usage(4) }),
+      );
+      expect(archivedCostUsd(store.latest(key))).toBe(4);
     });
 
     it('a real archive of a closed task carries its spend', () => {

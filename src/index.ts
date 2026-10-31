@@ -1200,7 +1200,8 @@ async function start() {
       treeCostUsd: (rootKey) => {
         const registry = claudeHandler.getSessionRegistry();
         const epic = registry.getSessionByKey(rootKey);
-        if (!epic) return 0;
+        // No epic to price (gone, or never one): a host start in its name is not admitted.
+        if (!epic) return Number.POSITIVE_INFINITY;
         return epicTreeCostUsd(epic, {
           live: (taskId) => registry.getSessionByTaskId(taskId),
           archived: (taskId) => archivedCostUsd(getArchiveStore().latest(buildTaskSessionKey(taskId))),
