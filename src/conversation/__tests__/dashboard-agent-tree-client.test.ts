@@ -82,7 +82,7 @@ function fnBody(name: string): string {
   return clientFn(name);
 }
 
-const BASE_FNS = ['esc', 'escAttr', 'escJs', 'toNum', 'formatDuration'];
+const BASE_FNS = ['esc', 'escAttr', 'escJs', 'toNum', 'formatDuration', 'formatNmSSs', 'elapsedHtml', 'activeTimeHtml'];
 // One node type (recursive UI): the main agent is the root node and goes
 // through the same functions as every subagent.
 const NODE_FNS = [
@@ -2243,7 +2243,7 @@ describe('task total on the face and in 세션 정보 (SSOT T3)', () => {
   it('세션 정보 lists the subagents’ share and, for a partial total, since when it counts', () => {
     // The token grid's rows; 세부 (cost) and the context block are their own renderers.
     const f = load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
-      ['esc', 'escAttr', 'toNum', 'cardTotalTokens', 'spendTotal', 'spendText', 'ctxLevel', 'panelInfoHtml'],
+      ['esc', 'escAttr', 'toNum', 'cardTotalTokens', 'spendTotal', 'spendText', 'ctxLevel', 'agoHtml', 'panelInfoHtml'],
       [],
       {
         formatNmSSs: () => '0s',
@@ -2262,6 +2262,6 @@ describe('task total on the face and in 세션 정보 (SSOT T3)', () => {
       true,
     );
     expect(partial).toContain('<dt>집계 시작</dt>');
-    expect(partial).toContain('data-ts="1700000000000"');
+    expect(partial).toContain('<ui-elapsed since="1700000000000" format="ago"></ui-elapsed> (그 전 지출 미포함)');
   });
 });

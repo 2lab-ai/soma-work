@@ -92,6 +92,7 @@ describe('T2 · a dropped task never reads as running or waiting', () => {
       'taskRunsOf',
       'taskRunsData',
       'taskPlanData',
+      'elapsedHtml',
       'renderTaskMeta',
     ],
     BASE_VARS,
@@ -145,7 +146,7 @@ describe('T2 · a dropped task never reads as running or waiting', () => {
       toolCalls: 1,
       dropped: 'started',
     });
-    expect(meta).not.toContain('task-elapsed');
+    expect(meta).not.toContain('<ui-elapsed');
     expect(meta).toContain('교체됨 5s');
     expect(meta).not.toContain('중단');
   });

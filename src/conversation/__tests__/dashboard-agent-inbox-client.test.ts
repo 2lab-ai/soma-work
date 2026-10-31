@@ -1316,6 +1316,7 @@ describe('model-controlled values in card markup (shipped renderers)', () => {
       'formatDuration',
       // Task view T2: the meta and the 전체 task count read each task's fate.
       'taskFateOf',
+      'elapsedHtml',
       'renderTaskMeta',
       'renderTimelineItem',
       'renderTimeline',
