@@ -317,4 +317,88 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
       at: 1_793_000_000_000,
     });
   });
+
+  it('#599 ⑤ — a task’s open question carries its askId on the card; a Slack session’s does not', async () => {
+    const reg = new SessionRegistry();
+    const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
+    task.activityState = 'waiting';
+    task.actionPanel = {
+      waitingForChoice: true,
+      pendingQuestion: {
+        type: 'user_choice',
+        question: 'Which DB?',
+        choices: [{ id: 'pg', label: 'PG' }],
+        askId: 'ask-9',
+      },
+    } as any;
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const b = await board();
+    const card = [...b.working, ...b.waiting, ...b.idle].find((c) => c.key === `task:${task.taskId}`) as any;
+    expect(card?.pendingQuestion?.askId).toBe('ask-9');
+  });
+
+  it('#599 ⑤ — a task’s answers go to the task answer handler bound to the askId; without one they are 400', async () => {
+    const dashboard = await import('../dashboard');
+    const reg = new SessionRegistry();
+    const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const handler = vi.fn(async () => ({ status: 202, body: { ok: true } }));
+    const slackChoice = vi.fn(async () => {});
+    dashboard.setDashboardTaskAnswerHandler(handler);
+    dashboard.setDashboardChoiceAnswerHandler(slackChoice);
+    const headers = { ...AUTH_HEADER, 'X-Admin-Mode': 'on', 'content-type': 'application/json' };
+    const base = `/api/dashboard/session/${encodeURIComponent(`task:${task.taskId}`)}`;
+    try {
+      const single = await injectWebServer({
+        method: 'POST',
+        url: `${base}/answer-choice`,
+        headers,
+        payload: JSON.stringify({ choiceId: 'pg', label: 'PG', question: 'Which DB?', askId: 'ask-9' }),
+      });
+      expect(single.statusCode).toBe(202);
+      expect(handler).toHaveBeenLastCalledWith(`task:${task.taskId}`, 'ask-9', { kind: 'single', choiceId: 'pg' });
+      expect(slackChoice).not.toHaveBeenCalled();
+
+      const noAsk = await injectWebServer({
+        method: 'POST',
+        url: `${base}/answer-choice`,
+        headers,
+        payload: JSON.stringify({ choiceId: 'pg', label: 'PG', question: 'Which DB?' }),
+      });
+      expect(noAsk.statusCode).toBe(400);
+
+      const multi = await injectWebServer({
+        method: 'POST',
+        url: `${base}/answer-multi-choice`,
+        headers,
+        payload: JSON.stringify({ selections: { q1: { choiceId: 'node', label: 'Node' } }, askId: 'ask-9' }),
+      });
+      expect(multi.statusCode).toBe(202);
+      expect(handler).toHaveBeenLastCalledWith(`task:${task.taskId}`, 'ask-9', {
+        kind: 'multi',
+        selections: { q1: { choiceId: 'node', label: 'Node' } },
+      });
+
+      const rec = await injectWebServer({
+        method: 'POST',
+        url: `${base}/submit-recommended`,
+        headers,
+        payload: JSON.stringify({ askId: 'ask-9' }),
+      });
+      expect(rec.statusCode).toBe(202);
+      expect(handler).toHaveBeenLastCalledWith(`task:${task.taskId}`, 'ask-9', { kind: 'recommended' });
+
+      handler.mockResolvedValueOnce({ status: 409, body: { error: 'the question has changed — reload' } } as any);
+      const stale = await injectWebServer({
+        method: 'POST',
+        url: `${base}/answer-choice`,
+        headers,
+        payload: JSON.stringify({ choiceId: 'pg', label: 'PG', question: 'Which DB?', askId: 'ask-8' }),
+      });
+      expect(stale.statusCode).toBe(409);
+    } finally {
+      dashboard.setDashboardTaskAnswerHandler(null);
+      dashboard.setDashboardChoiceAnswerHandler(null as any);
+    }
+  });
 });
