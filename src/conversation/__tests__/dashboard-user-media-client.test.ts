@@ -71,6 +71,9 @@ const BASE_FNS = [
   'artFileItem',
   'artCard',
   'umTile',
+  'umGridHtml',
+  'umGridItems',
+  'mgHydrate',
   'renderUserMedia',
   'umMissingReason',
   'artViewItem',
@@ -82,6 +85,8 @@ type Api = {
   umGet(cid: string, id: string): any;
   artUrl(cid: string, id: string, download?: boolean): string;
   renderUserMedia(cid: string, list: unknown[], opts?: unknown): string;
+  umGridItems(cid: string, ids: string[]): Array<Record<string, string>>;
+  mgHydrate(el: unknown): void;
   artFileItem(cid: string, a: unknown): Record<string, unknown>;
   artViewItem(cid: string, a: unknown): Record<string, unknown>;
 };
@@ -108,18 +113,26 @@ const remote = {
 const turn = { id: 'u1', role: 'user', timestamp: 1792900000000, userName: 'Zhuge' };
 
 describe('C1 — panel user turn: the instruction with its files', () => {
-  it('images become 80px tiles named by their action; other files become cards', () => {
+  it('images become one <ui-media-grid> (its 80px tiles named by their action); other files become cards', () => {
     const api = load<Api>(BASE_FNS, BASE_VARS);
     const list = [img('I1', 'login.png'), img('I2'), pdf, voice];
     api.umRegister('c1', list, turn);
     const out = api.renderUserMedia('c1', list);
     expect(out).toContain('class="um-media');
-    expect((out.match(/class="um-tile um-img/g) ?? []).length).toBe(2);
-    expect(out).toContain('/api/dashboard/session/c1/media/I1/content');
-    expect(out).toContain('loading="lazy"');
-    // A button named by what it does — the image itself carries no alt from its file name.
-    expect(out).toMatch(/aria-label="이미지 열기 1\/4: login\.png"/);
-    expect(out).toContain('alt=""');
+    // D7 (I-09): the pictures are the element's, keyed by the conversation and the stored image ids; its items
+    // (id, name, the media route) reach it once it is in the document (mgHydrate, with the file cards).
+    expect(out).toContain('<ui-media-grid class="um-grid" lang="ko" max="4" data-art-cid="c1" data-um="I1,I2"></ui-media-grid>');
+    expect(out).not.toContain('um-tile');
+    expect(api.umGridItems('c1', ['I1', 'I2', 'nope'])).toEqual([
+      { id: 'I1', name: 'login.png', url: '/api/dashboard/session/c1/media/I1/content' },
+      { id: 'I2', name: 'I2.png', url: '/api/dashboard/session/c1/media/I2/content' },
+    ]);
+    const grid: Record<string, unknown> = { getAttribute: (k: string) => ({ 'data-art-cid': 'c1', 'data-um': 'I1,I2' })[k] ?? null };
+    api.mgHydrate(grid);
+    expect(grid.data).toEqual({ items: api.umGridItems('c1', ['I1', 'I2']) });
+    const once = grid.data;
+    api.mgHydrate(grid); // the same ids: the element is not written again
+    expect(grid.data).toBe(once);
     // D4: the other files are <ui-file-card variant="row" playable> in the page's box — the card draws the name,
     // "PDF · 2.1 MB" (artFileItem's size) and the voice note's play toggle; the page keeps no play button.
     expect(out).toMatch(
@@ -137,21 +150,21 @@ describe('C1 — panel user turn: the instruction with its files', () => {
     );
   });
 
-  it('one image shows on its own in a fixed box (no layout shift)', () => {
+  it('one image shows on its own in a fixed box (no layout shift) — the element’s default when not compact', () => {
     const api = load<Api>(BASE_FNS, BASE_VARS);
     api.umRegister('c1', [img('S1')], turn);
     const out = api.renderUserMedia('c1', [img('S1')]);
-    expect(out).toContain('um-single');
+    expect(out).toContain('data-um="S1"');
+    expect(out).not.toContain('size="compact"');
   });
 
-  it('more than four images: four tiles, "+N" on the fourth, which still opens the viewer', () => {
+  it('more than four images: the element shows four, "+N" on the fourth (max="4"); every id still reaches it', () => {
     const api = load<Api>(BASE_FNS, BASE_VARS);
     const list = ['A', 'B', 'C', 'D', 'E', 'F'].map((x) => img(x));
     api.umRegister('c1', list, turn);
     const out = api.renderUserMedia('c1', list);
-    expect((out.match(/class="um-tile um-img/g) ?? []).length).toBe(4);
-    expect(out).toContain('+2');
-    expect(out).toMatch(/data-art-id="D"[^>]*aria-label="[^"]*외 2개/);
+    expect(out).toContain('max="4" data-art-cid="c1" data-um="A,B,C,D,E,F"');
+    expect(api.umGridItems('c1', ['A', 'B', 'C', 'D', 'E', 'F'])).toHaveLength(6);
   });
 
   it('a turn’s files go in <ui-conversation>’s media slot (shown above the words); registered for the viewer', () => {
@@ -182,7 +195,7 @@ describe('C2 — open card 지시 row', () => {
     fns.umRegister('c2', [img('I9'), pdf], turn);
     const out = fns.renderCardIo({ conversationId: 'c2', activityState: 'idle' });
     expect(out).toContain('um-compact');
-    expect(out).toContain('/api/dashboard/session/c2/media/I9/content');
+    expect(out).toContain('<ui-media-grid class="um-grid" lang="ko" size="compact" max="4" data-art-cid="c2" data-um="I9"></ui-media-grid>');
     expect(out).not.toContain('기록된 지시 없음');
     expect(out).toContain('첨부 2개');
   });
@@ -326,10 +339,10 @@ describe('pinned 지시 첨부 row', () => {
     const closed = renderPanelUserMedia(list, 'c6', false);
     expect(closed).toContain('지시 첨부');
     expect(closed).toContain('<ui-disclosure class="panel-um-dc" flush>');
-    expect(closed).not.toContain('um-tile');
+    expect(closed).not.toContain('ui-media-grid');
     const opened = renderPanelUserMedia(list, 'c6', true);
     expect(opened).toContain('<ui-disclosure class="panel-um-dc" flush open>');
-    expect(opened).toContain('um-tile');
+    expect(opened).toContain('<ui-media-grid class="um-grid" lang="ko" size="compact" max="4" data-art-cid="c6" data-um="A">');
   });
 });
 

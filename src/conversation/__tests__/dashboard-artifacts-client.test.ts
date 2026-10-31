@@ -354,8 +354,11 @@ describe('D2 — the tiles and chips are @2lab.ai/ui <ui-file-card>, answered by
   });
 
   it('every card in the document is hydrated (added, or its data-art-v changed); ui-open opens the viewer at it', () => {
-    expect(TEMPLATE).toContain("attributeFilter: ['data-art-v']");
-    expect(TEMPLATE).toContain("if (node.matches('ui-file-card[data-art-id]')) fcHydrate(node);");
+    // D7 (I-09): the same observer hands <ui-media-grid data-um> its pictures (and again when its ids change).
+    expect(TEMPLATE).toContain("attributeFilter: ['data-art-v', 'data-um']");
+    expect(TEMPLATE).toContain("var FC_HYDRATE_SEL = 'ui-file-card[data-art-id], ui-media-grid[data-um]';");
+    expect(TEMPLATE).toContain('if (node.matches(FC_HYDRATE_SEL)) fcHydrate(node);');
+    expect(TEMPLATE).toContain("} else if (t.localName === 'ui-media-grid' && t.hasAttribute('data-art-cid') && e.detail && e.detail.id) {");
     expect(TEMPLATE).toContain("document.addEventListener('ui-open', function(e) {");
     expect(TEMPLATE).toContain("openArtifactViewer(t.getAttribute('data-art-cid'), t.getAttribute('data-art-id'), t);");
     // The card is the viewer's opener: focus comes back to it (0.10.0 card.focus() reaches its button itself).
@@ -446,7 +449,7 @@ describe('T2 — hover peek: @2lab.ai/ui <ui-hovercard>, one card for every tile
 
   it('is one element whose `for` reaches every trigger: file cards, the face chips in the inbox, user image tiles', () => {
     expect(TEMPLATE).toContain(
-      '<ui-hovercard id="art-peek" for="ui-file-card[data-art-id], .ib-chip[data-art], .um-tile[data-art-id]" width="360"></ui-hovercard>',
+      '<ui-hovercard id="art-peek" for="ui-file-card[data-art-id], .ib-chip[data-art], .mg-tile[data-mk]" width="360"></ui-hovercard>',
     );
     // The element owns the hover intent, the grace, the swap, keyboard focus, Esc, a press, the scroll-away and
     // the placement: the page keeps no timers, no positioning and no listeners of its own for the peek — and, since
@@ -513,6 +516,10 @@ describe('T2 — hover peek: @2lab.ai/ui <ui-hovercard>, one card for every tile
       a: html,
     });
     expect(artPeekTarget(fakeEl({ 'data-art': 'A1', 'data-key': 'art:unknown:A1' }))).toBeNull();
+    // D7 (I-09): a tile in <ui-media-grid>'s shadow root — the grid (its host) carries the conversation, the tile its id.
+    const grid = fakeEl({ 'data-art-cid': 'conv-1' });
+    const tile = { ...fakeEl({ 'data-mk': 'A2' }), classList: { contains: (c: string) => c === 'mg-tile' }, getRootNode: () => ({ host: grid }) };
+    expect(artPeekTarget(tile)).toEqual({ cid: 'conv-1', a: png });
     expect(artPeekTarget(fakeEl({ 'data-art-cid': 'conv-1', 'data-art-id': 'nope' }))).toBeNull();
     expect(artPeekTarget(null)).toBeNull();
   });
