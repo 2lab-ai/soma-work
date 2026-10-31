@@ -91,6 +91,16 @@ describe('epicBoardView (E4 ⑧)', () => {
     expect(epicBoardView(epic(extra), children as any).state).toBe(state);
   });
 
+  it('a child’s activity is what the board shows for it: a permission prompt waits, an armed resume works (R1)', () => {
+    const working = child('c1', 'login', { activityState: 'working' });
+    const idle = child('c2', 'docs');
+    expect(epicBoardView(epic(), [working], { activityOf: () => 'waiting' }).state).toBe('needs-input');
+    expect(epicBoardView(epic(), [idle]).state).toBe('idle');
+    expect(epicBoardView(epic(), [idle], { activityOf: () => 'working' }).state).toBe('running');
+    // Absent from the lookup: the record's own.
+    expect(epicBoardView(epic(), [working], { activityOf: () => undefined }).state).toBe('running');
+  });
+
   it('a running child outranks done', () => {
     const done = { plan: { nodes: [{ id: 'login', title: 'L', kind: 'issue' }], done: { by: 'epic', at: 1 } } };
     expect(epicBoardView(epic(done), [child('c1', 'login', { activityState: 'working' })]).state).toBe('running');

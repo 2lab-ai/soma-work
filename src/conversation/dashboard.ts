@@ -92,7 +92,7 @@ import {
   type TaskWork,
 } from '../session/task-ledger';
 import { type ArchivedSession, getArchiveStore, type SessionLifecycleOutcome } from '../session-archive';
-import { buildWorkSessionKey, normalizeSessionKey } from '../session-identity';
+import { buildTaskSessionKey, buildWorkSessionKey, normalizeSessionKey } from '../session-identity';
 import {
   countLifecycleTransitions,
   getSessionLifecyclePolicy,
@@ -2275,9 +2275,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     userMedia: cardUserMedia(s.conversationId),
     followups: followupsOf(key, s.ownerId),
     ...(s.slackless === true ? { slackless: true as const, ...noticeFailuresOf(key) } : {}),
-    ...(s.slackless === true && s.kind === 'epic'
-      ? { kind: 'epic' as const, epic: { ...epicBoardView(s, liveChildrenOf(s)), children: [] } }
-      : {}),
+    ...(s.slackless === true && s.kind === 'epic' ? { kind: 'epic' as const, epic: epicBundle(s) } : {}),
     ...(s.slackless === true && s.parentTaskId
       ? { parentTaskId: s.parentTaskId, planNodeId: s.planNodeId, ...(s.closedBy ? { closedBy: s.closedBy } : {}) }
       : {}),
@@ -2378,6 +2376,11 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
     activityState: 'idle', // Archived sessions are not active
     sessionState: archived.archiveReason === 'sleep_expired' ? 'SLEEPING' : 'TERMINATED',
     terminated: true,
+    // E4 ⑧ — a closed epic or child keeps its relation: it stays in CLOSED, tagged (D1, D10 b).
+    ...(archived.slackless === true && archived.kind === 'epic' ? { kind: 'epic' as const } : {}),
+    ...(archived.slackless === true && archived.parentTaskId
+      ? { parentTaskId: archived.parentTaskId, planNodeId: archived.planNodeId }
+      : {}),
     conversationId: archived.conversationId,
     lastActivity: archived.lastActivity,
     issueUrl: archived.links?.issue?.url,
@@ -2484,41 +2487,86 @@ function placeOnBoard(board: KanbanBoard, kanban: KanbanSession, session: { stat
   }
 }
 
-/** E4 ⑧ — an epic's live children (Slack-less tasks under it). */
-function liveChildrenOf(epic: { taskId?: string }): ConversationSession[] {
+/**
+ * E4 ⑧ — the children an epic's bundle shows, the one predicate for its view and
+ * its cards: live Slack-less tasks under it, of its own owner, not trashed or
+ * terminated. Anything else under its id keeps a column of its own.
+ */
+function bundledChildrenOf(epic: { taskId?: string; ownerId?: string }): Array<[string, ConversationSession]> {
   if (!epic.taskId) return [];
-  const out: ConversationSession[] = [];
-  for (const [, s] of getAllSessions()) {
-    if (s.slackless === true && s.parentTaskId === epic.taskId && !s.terminated) out.push(s);
+  const out: Array<[string, ConversationSession]> = [];
+  for (const [key, s] of getAllSessions()) {
+    if (
+      s.slackless === true &&
+      s.parentTaskId === epic.taskId &&
+      s.ownerId === epic.ownerId &&
+      s.trashed !== true &&
+      !s.terminated
+    ) {
+      out.push([key, s]);
+    }
   }
   return out;
+}
+
+/** What the board shows a card doing: an idle card with an armed automatic resume is at work. */
+function shownActivity(card: KanbanSession): ConversationSession['activityState'] {
+  return card.activityState === 'idle' && card.autoResume ? 'working' : card.activityState;
+}
+
+/** E4 ⑧ (D11) — an epic's bundle: its view and its children's cards (every card of an epic carries it). */
+function epicBundle(epic: ConversationSession): NonNullable<KanbanSession['epic']> {
+  const entries = bundledChildrenOf(epic);
+  const cards = new Map(entries.map(([key, child]) => [child, sessionToKanban(key, child)]));
+  const view = epicBoardView(
+    epic,
+    entries.map(([, child]) => child),
+    { activityOf: (child) => shownActivity(cards.get(child) as KanbanSession) },
+  );
+  return { ...view, children: [...cards.values()] };
+}
+
+/** E4 ⑧ — the epic whose bundle carries this child's card, if any. */
+function bundlingEpicOf(child: ConversationSession): [string, ConversationSession] | undefined {
+  if (child.slackless !== true || !child.parentTaskId || child.trashed === true || child.terminated) return undefined;
+  const key = buildTaskSessionKey(child.parentTaskId);
+  const epic = getAllSessions().get(key);
+  if (
+    !epic ||
+    epic.slackless !== true ||
+    epic.kind !== 'epic' ||
+    epic.trashed === true ||
+    epic.ownerId !== child.ownerId
+  ) {
+    return undefined;
+  }
+  return [key, epic];
 }
 
 function buildKanbanBoard(userId?: string): KanbanBoard {
   const sessions = getAllSessions();
   const board: KanbanBoard = { working: [], waiting: [], idle: [], closed: [] };
   // E4 ⑧ (D11) — a child whose epic is on this board is in that epic's bundle, not a column.
-  const epicCards = new Map<string, KanbanSession>();
-  const childCards: Array<{ parentTaskId: string; kanban: KanbanSession; session: ConversationSession }> = [];
+  const bundled = new Set<string>();
+  const children: Array<[string, ConversationSession]> = [];
 
   for (const [key, session] of sessions.entries()) {
     if (!onBoard(session)) continue;
     if (userId && session.ownerId !== userId) continue;
     if (session.trashed === true) continue;
 
-    const kanban = sessionToKanban(key, session);
-    if (kanban.epic && session.taskId) epicCards.set(session.taskId, kanban);
     if (session.slackless === true && session.parentTaskId) {
-      childCards.push({ parentTaskId: session.parentTaskId, kanban, session });
+      children.push([key, session]);
       continue;
     }
+    const kanban = sessionToKanban(key, session);
+    for (const child of kanban.epic?.children ?? []) bundled.add(child.key);
     placeOnBoard(board, kanban, session);
   }
-  for (const { parentTaskId, kanban, session } of childCards) {
-    const epic = epicCards.get(parentTaskId)?.epic;
-    // An epic not on this board (trashed, another owner's view): the child keeps its own column.
-    if (epic) epic.children.push(kanban);
-    else placeOnBoard(board, kanban, session);
+  // A child no epic on this board carries (its epic trashed or not in this view, or not
+  // its owner's): it keeps its own column.
+  for (const [key, session] of children) {
+    if (!bundled.has(composeSessionKey(key))) placeOnBoard(board, sessionToKanban(key, session), session);
   }
 
   // Add recently archived sessions to closed column (#401)
@@ -2889,7 +2937,9 @@ export function broadcastSingleSessionUpdate(sessionKey: string): void {
   try {
     const session = _getSessionsFn?.().get(sessionKey);
     if (!session || !onBoard(session)) return;
-    const kanban = sessionToKanban(sessionKey, session);
+    // E4 ⑧ — a child's card lives in its epic's bundle: push the epic's card, which carries it.
+    const [key, shown] = bundlingEpicOf(session) ?? [sessionKey, session];
+    const kanban = sessionToKanban(key, shown);
     const payload = JSON.stringify({ type: 'sessionUpdated', session: kanban });
     for (const client of wsClients) {
       try {
