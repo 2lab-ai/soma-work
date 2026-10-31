@@ -330,6 +330,8 @@ export interface DashboardTaskSubmission {
   folder?: string;
   /** The nickname of a model the dialog offers; the task launcher resolves it (#640 R1). */
   model?: string;
+  /** E4 ④a-2 (.prd/19 D12) — make an epic; the launcher checks the user's `epicTasks` flag. */
+  kind?: 'epic';
 }
 
 const MODEL_NAME = /^[A-Za-z0-9._:[\]-]{1,100}$/;
@@ -362,6 +364,7 @@ export function parseDashboardTaskSubmission(
   if (b.model !== undefined && (typeof b.model !== 'string' || !MODEL_NAME.test(b.model))) {
     return { ok: false, error: 'model must be a model name' };
   }
+  if (b.kind !== undefined && b.kind !== 'epic') return { ok: false, error: "kind must be 'epic' or absent" };
   return {
     ok: true,
     value: {
@@ -369,6 +372,7 @@ export function parseDashboardTaskSubmission(
       prompt,
       ...(typeof b.folder === 'string' ? { folder: b.folder } : {}),
       ...(typeof b.model === 'string' ? { model: b.model } : {}),
+      ...(b.kind === 'epic' ? { kind: 'epic' as const } : {}),
     },
   };
 }

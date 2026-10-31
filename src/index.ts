@@ -149,7 +149,7 @@ import { productionModelCatalogDeps } from './session/model-catalog-deps';
 import { switchSessionModel } from './session/model-switch';
 import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './session/task-ledger';
 import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from './session/task-usage-reconcile';
-import { resolveArchivedResume } from './session-archive';
+import { getArchiveStore, resolveArchivedResume } from './session-archive';
 import { buildTaskSessionKey } from './session-identity';
 import { applySummaryTitle } from './session-title-policy';
 import {
@@ -170,6 +170,11 @@ import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
+import { ensureChildFolder } from './task-turn/epic-child-folder';
+import { archivedCostUsd, epicTreeCostUsd } from './task-turn/epic-cost';
+import { setEpicHost } from './task-turn/epic-server';
+import { createEpicWaker } from './task-turn/epic-wake';
+import { composeTaskApprovalListeners } from './task-turn/task-approver';
 import { createDashboardCloseHandler } from './task-turn/task-close';
 import { createTaskLauncher } from './task-turn/task-launcher';
 import {
@@ -814,6 +819,14 @@ async function start() {
         closeTask: async (key) => taskTurnController?.close(key),
         terminate: (key) => claudeHandler.terminateSession(key),
         ledgerUnreadable: () => taskNoticeLedgerUnreadable,
+        // E4 ⑦ (D10 b · c) — an epic's close cancels its running children first; a child's close is its epic's event.
+        getChildTasks: (parentTaskId) => claudeHandler.getSessionRegistry().getChildTasks(parentTaskId),
+        isRunning: (key) => taskTurnController?.isRunning(key) ?? false,
+        // The chain the close cancels names the mark (E4 ⑦, grok #709 R1).
+        markClosedByParent: (key) =>
+          claudeHandler.getSessionRegistry().markClosedByParent(key, Date.now(), taskTurnController?.runningChain(key)),
+        recordChildClosed: (key) => claudeHandler.getSessionRegistry().recordEpicChildClosed(key),
+        markClosing: (key, closing) => claudeHandler.getSessionRegistry().markClosing(key, closing),
         logger,
       }),
     );
@@ -1194,8 +1207,53 @@ async function start() {
       coordinator: slackHandler.getRequestCoordinator(),
       buildExecutionContext: executionContextForTask,
       logger: new Logger('TaskTurnController'),
+      // E4 ③ (D9 e) — an epic tree's spend: the epic, its live children, and the
+      // closed ones from their latest archive; the owner's limit.
+      treeCostUsd: (rootKey) => {
+        const registry = claudeHandler.getSessionRegistry();
+        const epic = registry.getSessionByKey(rootKey);
+        // No epic to price (gone, or never one): a host start in its name is not admitted.
+        if (!epic) return Number.POSITIVE_INFINITY;
+        return epicTreeCostUsd(epic, {
+          live: (taskId) => registry.getSessionByTaskId(taskId),
+          archived: (taskId) => archivedCostUsd(getArchiveStore().latest(buildTaskSessionKey(taskId))),
+        });
+      },
+      epicCostLimitUsd: (ownerId) => userSettingsStore.getUserEpicCostLimitUsd(ownerId),
+      // E4 ⑥ — once a chain that started has ended, an epic left with pending events may wake
+      // (grok #702 R1); one that never started is the waker's own retry to make (fable #702 R2).
+      onChainEnd: (key, { started }) => {
+        if (started) epicWaker.wake(key);
+      },
     });
     taskTurnController = taskController;
+    // E4 ④a (.prd/19 D3) — the host the epic's tools call: registry reads, the plan writer,
+    // a child's last final from its work log. Set here, not imported there (no cycle).
+    setEpicHost({
+      getTask: (taskId) => claudeHandler.getSessionRegistry().getSessionByTaskId(taskId),
+      getChildTasks: (parentTaskId) => claudeHandler.getSessionRegistry().getChildTasks(parentTaskId),
+      setEpicPlan: (taskId, input, by) => claudeHandler.getSessionRegistry().setEpicPlan(taskId, input, by),
+      readChildFinal: async (child) => {
+        const turnId = child.lastTurnOutcome?.turnId;
+        if (!child.conversationId || !turnId) return undefined;
+        return readTurnFinal(readWorkLog, child.conversationId, turnId);
+      },
+      // E4 ④b — making and starting children (D4 · D8 · D9).
+      createTask: (input) => claudeHandler.createTask(input),
+      createFreshDirectory: (ownerId) => new WorkingDirectoryManager().createSessionBaseDir(ownerId),
+      ensureDirectory: ensureChildFolder,
+      controller: taskController,
+    });
+    // E4 ⑥ (.prd/19 D7) — an epic with pending events wakes when it is idle: when a chain
+    // of its ends (the controller's onChainEnd, above — the post-drain idle hook fires inside
+    // the epic's own commit, before its chain is released, so it is not used), right after
+    // an event, and at boot (below). Never the cron path.
+    const epicWaker = createEpicWaker({
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      controller: taskController,
+      logger: new Logger('EpicWaker'),
+    });
+    claudeHandler.getSessionRegistry().setEpicEventListener((key) => epicWaker.wake(key));
     setDashboardTaskCommandHandler((sessionKey, message, attachments, actorUserId) =>
       taskController.start({ sessionKey, text: message, attachments, actorUserId }),
     );
@@ -1211,6 +1269,8 @@ async function start() {
       listModels: (ownerId) => offeredNewTaskModels(ownerId),
       cleanupSessions: () =>
         [...claudeHandler.getAllSessions()].map(([key, s]) => ({ key, sourceWorkingDirs: s.sourceWorkingDirs })),
+      // E4 ④a-2 (.prd/19 D12) — epics only for an owner who turned them on.
+      epicTasksEnabled: (ownerId) => userSettingsStore.getUserEpicTasks(ownerId),
     });
     setDashboardTaskLauncher(taskLauncher);
     // E2 ⑤ — the one poster of a Slack-less task's notices to its instruction
@@ -1254,8 +1314,6 @@ async function start() {
           void deliverer.deliver();
         });
         setTaskNoticeFailureProvider((sessionKey) => deliverer.failures(sessionKey));
-        // E2 ⑥ — a task approval asked is told to the thread at once; an expiry once.
-        claudeHandler.setTaskApprovalListener((event) => deliverer.approval(event));
         taskNoticeDeliverer = deliverer;
         // E2 ⑧ — a plain instruction from a user who turned it on becomes a
         // dashboard task (.prd/18 D1 · D2 · D11 · D12). Only with a deliverer:
@@ -1313,6 +1371,17 @@ async function start() {
           }
         });
       }
+    }
+    {
+      // One approval listener, two hearers: the thread is told at once, an expiry once (E2 ⑥),
+      // and a child's epic records it as needs-input (E4 ⑤, D6 c) — with or without a deliverer.
+      const deliverer = taskNoticeDeliverer;
+      const registry = claudeHandler.getSessionRegistry();
+      claudeHandler.setTaskApprovalListener(
+        composeTaskApprovalListeners(deliverer ? (event) => deliverer.approval(event) : undefined, (event) =>
+          registry.recordEpicApproval(event),
+        ),
+      );
     }
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
@@ -1483,6 +1552,11 @@ async function start() {
       timing('Conversation viewer web server started');
     } catch (error) {
       logger.warn('Failed to start conversation viewer (non-critical)', error);
+    }
+
+    // E4 ⑥ (D7) — boot scan, with the dashboard up: an epic left with pending events wakes.
+    for (const [key, session] of claudeHandler.getAllSessions()) {
+      if (session.slackless === true && session.kind === 'epic') epicWaker.wake(key);
     }
 
     // E2 ⑤ / D13 — after the load and its reconciliation save, and with the

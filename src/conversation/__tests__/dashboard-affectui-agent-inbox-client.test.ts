@@ -379,11 +379,22 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       'planCronLane',
       'cardBodyShown',
       'placeCard',
+      'minimalCard',
+      'viewCardOf',
       'inboxPaint',
       'syncHasCards',
       'renderBoard',
     ],
-    ['BOARD_LABELS', '_cardHost', '_cardCol', '_cardData', '_cardDrawn', '_cardClosing', '_boardRenders'],
+    [
+      'BOARD_LABELS',
+      '_cardHost',
+      '_cardCol',
+      '_cardData',
+      '_cardDrawn',
+      '_cardClosing',
+      '_boardRenders',
+      'MINIMAL_CARD_KEYS',
+    ],
     {
       document: { getElementById: (id: string) => (id === 'kanban' ? kanban : id === 'inbox' ? inbox : null) },
       _boardLoad: opts.boardLoad ?? 'ready',
@@ -401,6 +412,7 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       syncCronLane: () => {},
       cronLaneSlots: () => [],
       paintCronLaneCards: () => {},
+      renderEpicLane: () => {},
       showArchives: false,
       showSleeping: true,
       _revealedKey: null,
@@ -408,6 +420,8 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       _expanded: expanded,
       BOARD_STRINGS: {},
       cardOf: (s: { key: string }, col: string) => ({ id: s.key, title: s.key, status: col, bodyMode: 'slot' }),
+      // View mode (SSOT 2026-11-01): the board maps each card through the mode — this harness is 어드밴스드.
+      isAdvanced: () => true,
       acPrefetch: () => {},
       releaseCardIoTimer: (cid: unknown) => calls.released.push(cid),
       syncCardBodies: () => {},
@@ -567,6 +581,7 @@ function bodyHarness() {
     _cardBodies: Object.create(null) as Record<string, { el: FakeEl; html: string | null }>,
     document: { createElement: fakeEl },
     renderCardBody: (s: { key: string }, col: string) => `<div class="card-body">${s.key}|${col}</div>`,
+    isAdvanced: () => true,
     isPickingModel: () => false,
     morphInnerHtml: (el: FakeEl, html: string) => {
       el.innerHTML = html;
@@ -703,6 +718,7 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
       scheduleLayoutRefresh: () => {},
       MOTION: { move: 320, expand: 240 },
       cardOf: (s: { key: string }, col: string) => ({ id: s.key, title: s.key, status: col }),
+      isAdvanced: () => true,
       cardBodyShown: () => false,
       acPrefetch: () => {},
       openArtifactViewer: (...a: unknown[]) => calls.modal.push(a),
@@ -710,8 +726,8 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
       deckDrop: (...a: unknown[]) => calls.order.push(`deckDrop(${a.join(',')})`),
     };
     const { wireInbox } = load<{ wireInbox(h: unknown): void }>(
-      ['placeCard', 'inboxPaint', 'inboxChipOf', 'syncHasCards', 'wireInbox'],
-      [],
+      ['placeCard', 'minimalCard', 'viewCardOf', 'inboxPaint', 'inboxChipOf', 'syncHasCards', 'wireInbox'],
+      ['MINIMAL_CARD_KEYS'],
       env,
     );
     wireInbox(host);

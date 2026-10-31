@@ -202,7 +202,14 @@ describe('paintAppBar — the data the page hands the bar', () => {
     const m = load<{ _applyUserPill(d: unknown): void; paintAppBar(): void; account(): unknown }>(
       ['_applyUserPill', 'paintAppBar'],
       ['APP_BAR_NAV', 'APP_BAR_TOOLBAR_AT', '_appBarStatus', '_appBarAccount'],
-      { document: h.document, STRINGS, localStorage: { removeItem() {} }, adminInboxLoad: () => {} },
+      {
+        document: h.document,
+        STRINGS,
+        localStorage: { removeItem() {} },
+        adminInboxLoad: () => {},
+        // View mode (SSOT 2026-11-01): learning the viewer re-says whose board this is (none in this harness).
+        syncBoardScope: () => {},
+      },
       ['function account() { return _appBarAccount; }'],
     );
     m._applyUserPill({ user: { name: LONG } });

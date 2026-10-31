@@ -35,6 +35,8 @@ export interface TaskLaunchRequest {
   originThread?: OriginThread;
   /** E2 ⑧ — the instruction channel's name, description and repos, copied onto the task (D4). */
   inputContext?: TaskInputContext;
+  /** E4 ④a-2 (.prd/19 D12) — make an epic: only for an owner whose `epicTasks` flag is on. */
+  kind?: 'epic';
 }
 
 export interface TaskLauncherDeps {
@@ -53,12 +55,16 @@ export interface TaskLauncherDeps {
    * refused and not listed (#640 R2); read once per list or launch (#640 R3).
    */
   cleanupSessions?(): Iterable<{ key: string; sourceWorkingDirs?: string[] }>;
+  /** E4 ④a-2 — may this owner make epic tasks (`/z epictasks`). Absent → no epic is made. */
+  epicTasksEnabled?(ownerId: string): boolean;
 }
 
 export interface TaskLauncher {
   launch(request: TaskLaunchRequest): Promise<TaskCommandResponse>;
   /** The folders the owner may name (`listTaskFolders`). */
   folders(ownerId: string): Array<{ name: string; mtimeMs: number }>;
+  /** E4 ⑨b — whether the owner may make an epic (their flag): the composer offers "에픽" only then. */
+  epicTasks?(ownerId: string): boolean;
 }
 
 /** A folder name: no separators, no leading dot (so no `.`, `..` or hidden folders). */
@@ -126,13 +132,21 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
 
   return {
     // Not offered: a folder another session's cleanup would remove (#640 R2).
+    epicTasks: (ownerId: string) => deps.epicTasksEnabled?.(ownerId) === true,
     folders: (ownerId: string) => {
       const sessions = [...(deps.cleanupSessions?.() ?? [])];
       return listTaskFolders(ownerId).filter((f) => !cleanupOwnerOf(path.join('/tmp', ownerId, f.name), sessions));
     },
     async launch(request: TaskLaunchRequest): Promise<TaskCommandResponse> {
       const { ownerId } = request;
-      const refused = deps.controller.canStart(ownerId, request.prompt);
+      // E4 ④a-2 — an epic only behind the owner's flag; its first start is a new tree's root.
+      const epic = request.kind === 'epic';
+      if (epic && deps.epicTasksEnabled?.(ownerId) !== true) {
+        return launchRefusal(403, 'epic tasks are off for you — turn them on with `/z epictasks on`');
+      }
+      const refused = epic
+        ? deps.controller.canStart(ownerId, request.prompt, { role: 'root' })
+        : deps.controller.canStart(ownerId, request.prompt);
       if (refused) return refused;
       // The model is one the dialog offers, by nickname — never an id from the body (#640 R1).
       let model: string | undefined;
@@ -186,6 +200,7 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
           ...(model ? { model } : {}),
           ...(request.originThread ? { originThread: request.originThread } : {}),
           ...(request.inputContext ? { inputContext: request.inputContext } : {}),
+          ...(epic ? { kind: 'epic' as const } : {}),
         });
       } catch (error) {
         // A fresh folder no task was made for is not left behind (#640 R1). A named one is the owner's.
@@ -195,7 +210,13 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
       if (!task.taskId) throw new Error('createTask returned a task without an id');
       const sessionKey = buildTaskSessionKey(task.taskId);
 
-      const started = await deps.controller.start({ sessionKey, text: request.prompt, actorUserId: ownerId });
+      // E4 ③ — the first start of a task it just made (a new epic counts against A0's window).
+      const started = await deps.controller.start({
+        sessionKey,
+        text: request.prompt,
+        actorUserId: ownerId,
+        newTask: true,
+      });
       if (started.status === 202) return { status: 200, body: { sessionKey, status: 'running' } };
       return {
         status: 200,

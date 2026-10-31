@@ -111,6 +111,19 @@ describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () 
     expect(slackProvider.start).not.toHaveBeenCalled();
   });
 
+  it('E4 ④a-2 — kind: epic reaches the launcher (which checks the flag); any other kind is 400', async () => {
+    const res = await post(await signIn(), task({ kind: 'epic' }));
+    expect(res.statusCode).toBe(200);
+    expect(launcher.mock.calls[0][0]).toMatchObject({ kind: 'epic' });
+    launcher.mockClear();
+    const bad = await post(await signIn(), task({ kind: 'story', requestId: 'req-task-0123457' }));
+    expect(bad.statusCode).toBe(400);
+    expect(launcher).not.toHaveBeenCalled();
+    // No kind: none is passed.
+    await post(await signIn(), task({ requestId: 'req-task-0123458' }));
+    expect(launcher.mock.calls[0][0]).not.toHaveProperty('kind');
+  });
+
   it('no model: the task takes the default', async () => {
     const res = await post(await signIn(), task());
     expect(res.statusCode).toBe(200);
@@ -186,6 +199,30 @@ describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () 
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).context.taskFolders).toEqual([{ name: 'repo-a' }]);
     expect(folders).toHaveBeenCalledWith('U_PLAIN');
+  });
+
+  it('E4 ⑨b — the context says the user may make an epic only when their flag is on (and tasks are wired)', async () => {
+    slackProvider.context.mockResolvedValue({ models: [], efforts: [], channels: [] });
+    const auth = await signIn();
+    const get = async () =>
+      JSON.parse(
+        (
+          await injectWebServer({
+            method: 'GET',
+            url: '/api/dashboard/new-task/context',
+            headers: { cookie: auth.cookie },
+          })
+        ).body,
+      ).context;
+    const epicTasks = vi.fn(() => true);
+    dashboard.setDashboardTaskLauncher({ launch: launcher, folders, epicTasks });
+    expect((await get()).epicTasks).toBe(true);
+    expect(epicTasks).toHaveBeenCalledWith('U_PLAIN');
+    epicTasks.mockReturnValue(false);
+    expect((await get()).epicTasks).toBeUndefined();
+    // A launcher without the question: no epic.
+    dashboard.setDashboardTaskLauncher({ launch: launcher, folders });
+    expect((await get()).epicTasks).toBeUndefined();
   });
 
   // #640 R1: through the real launcher, a folder is a name in the signed-in user's own root —

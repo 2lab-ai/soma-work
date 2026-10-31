@@ -278,6 +278,13 @@ export function createSlackTaskEntry(deps: SlackTaskEntryDeps): SlackTaskEntry {
           sessionKey,
           reason,
         });
+      } else if (session.lastTurnOutcome) {
+        // Its first chain already ended before its start (conversation not created): that end
+        // owes the thread its own failure notice (E4 ⑤, D6 b) — not a second one (fable #701 R1).
+        deps.logger.info('Task entry: made, and its first chain already ended — its own notice covers it', {
+          sessionKey,
+          reason,
+        });
       } else {
         try {
           deps.notStarted(session, sessionKey, reason);
