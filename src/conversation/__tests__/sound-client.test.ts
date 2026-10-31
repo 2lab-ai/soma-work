@@ -1,14 +1,14 @@
 /**
  * Interface sound on the dashboard and the settings page (@2lab.ai/ui/sound + sound-cuelume): the speaker beside the
- * theme switch, the choice kept in this browser (`soma-sound`, like `soma-theme`), Cuelume loaded only once sound is
- * on, audio unlocked inside the click that turned it on. The page script runs here as shipped, with a fake page and
- * a fake module loader.
+ * theme switch (<ui-app-bar>'s own on both pages), the choice kept in this browser (`soma-sound`, like `soma-theme`),
+ * Cuelume loaded only once sound is on, audio unlocked inside the click that turned it on. The page script runs here
+ * as shipped, with a fake page and a fake module loader.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { renderSettingsPage } from '../settings-page';
-import { SOUND_STORAGE_KEY, soundClientJs, soundToggleHtml } from '../sound-client';
+import { SOUND_STORAGE_KEY, soundClientJs } from '../sound-client';
 import { UI_LIB_VERSION, uiLibDistDir } from '../ui-lib';
 
 interface FakeButton {
@@ -327,22 +327,6 @@ describe('the page script (soundClientJs)', () => {
   });
 });
 
-describe('the speaker button', () => {
-  it('is a labelled icon toggle with both glyphs from @2lab.ai/ui (sound, sound-off)', () => {
-    const html = soundToggleHtml();
-    expect(html).toMatch(/^<button type="button" id="sound-toggle"[^>]*onclick="toggleSound\(\)"/);
-    // The player starts loading on the way to the click (hover, focus, press), so the click can unlock audio itself.
-    expect(html).toContain('onpointerenter="somaSoundWarm()"');
-    expect(html).toContain('onfocus="somaSoundWarm()"');
-    expect(html).toContain('onpointerdown="somaSoundWarm()"');
-    expect(html).toContain('aria-pressed="false"');
-    expect(html).toContain('aria-label="인터페이스 소리"');
-    expect(html).toMatch(/<svg [^>]*data-icon="sound" class="ic-sound"/);
-    expect(html).toMatch(/<svg [^>]*data-icon="sound-off" class="ic-sound-off"/);
-    expect(html.replace(/<[^>]+>/g, '').trim()).toBe('');
-  });
-});
-
 describe('@2lab.ai/ui ships the sound modules the pages load', () => {
   it('dist/sound.js and dist/sound-cuelume.js exist in the installed package (served by /dashboard/ui/:file)', () => {
     const dir = uiLibDistDir();
@@ -374,19 +358,23 @@ describe('the dashboard', () => {
 });
 
 describe('the settings page', () => {
-  it('its own controls sound through bindSound: options select, switches toggle, save taps', () => {
-    const js = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
-    expect(js).toContain(`'" data-ui-sound="' + soundCue(row, 'select') + '" onchange="onChoice(this)"><span>'`);
-    expect(js).toContain(
-      `'<select id="f-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '" data-ui-sound="' + soundCue(row, 'select') + '"`,
+  const SETTINGS_TS = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
+
+  it('its own controls (kit .ui-input / .ui-switch in the <ui-setting-row> slots) sound through bindSound: options select, switches toggle, save taps', () => {
+    expect(SETTINGS_TS).toContain(
+      `'" data-ui-sound="' + soundCue(row, 'select') + '" onchange="onChoice(this)"><span>'`,
     );
-    expect(js).toContain(`role="switch" data-ui-sound="' + soundCue(row, 'toggle') + '"`);
-    expect(js).toContain(`class="btn primary" data-ui-sound data-key=`);
+    expect(SETTINGS_TS).toContain(
+      `'<select class="ui-input" id="f-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '" data-ui-sound="' + soundCue(row, 'select') + '"`,
+    );
+    expect(SETTINGS_TS).toContain(
+      `'<label class="ui-switch"><input type="checkbox" role="switch" data-ui-sound="' + soundCue(row, 'toggle') + '"`,
+    );
+    expect(SETTINGS_TS).toContain(`class="btn primary" data-ui-sound data-key=`);
   });
 
   it('a setting that asks first stays silent: its change fires before the dialog, so a cancel would still sound', () => {
-    const js = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
-    const src = js.match(/function soundCue\(row, cue\) \{[\s\S]*?\n\}/)?.[0];
+    const src = SETTINGS_TS.match(/function soundCue\(row, cue\) \{[\s\S]*?\n\}/)?.[0];
     expect(src).toBeDefined();
     const soundCue = new Function(`${src}; return soundCue;`)() as (row: { danger?: boolean }, cue: string) => string;
     expect(soundCue({ danger: true }, 'toggle')).toBe('off');
@@ -394,13 +382,19 @@ describe('the settings page', () => {
     expect(soundCue({ danger: false }, 'select')).toBe('select');
   });
 
-  it('has the same speaker before its theme button, and the same script in <head>', () => {
+  it('the speaker is <ui-app-bar id="app-bar">\'s own, as on the dashboard: the page hands it the choice, no button of its own, the same script in <head>', () => {
     const html = renderSettingsPage();
     const head = html.slice(0, html.indexOf('</head>'));
+    // In <head>, before the bar's module: paintAppBar reads the head script's choice (_somaOn) into data.sound.
     expect(head).toContain(soundClientJs(UI_LIB_VERSION));
-    const account = html.slice(html.indexOf('<div class="account">'));
-    const speaker = account.indexOf('id="sound-toggle"');
-    expect(speaker).toBeGreaterThan(0);
-    expect(account.indexOf('class="theme"')).toBeGreaterThan(speaker);
+    // The bar the head script binds at DOMContentLoaded (somaSoundBindBar(document.getElementById('app-bar'))).
+    const body = html.slice(html.indexOf('</head>'));
+    expect(body).toContain('<ui-app-bar id="app-bar" lang="ko"></ui-app-bar>');
+    expect(body).not.toContain('id="sound-toggle"');
+    expect(body).not.toContain('toggleSound()');
+    expect(html).not.toContain('#sound-toggle');
+    expect(html).not.toContain('.topbar .sound');
+    const paint = SETTINGS_TS.slice(SETTINGS_TS.indexOf('function paintAppBar()'));
+    expect(paint.slice(0, paint.indexOf('\n}\n'))).toContain("sound: typeof _somaOn !== 'undefined' && !!_somaOn,");
   });
 });

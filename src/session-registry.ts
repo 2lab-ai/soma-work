@@ -2116,6 +2116,27 @@ export class SessionRegistry {
    */
   saveSessions(): void {
     try {
+      this.writeSessionsFile();
+    } catch (error) {
+      this.logger.error('Failed to save sessions', error);
+    }
+  }
+
+  /**
+   * The same write, but a failure throws — for a caller that must not confirm
+   * a decision whose state did not reach disk (the goal cap decision).
+   */
+  saveSessionsOrThrow(): void {
+    try {
+      this.writeSessionsFile();
+    } catch (error) {
+      this.logger.error('Failed to save sessions', error);
+      throw error;
+    }
+  }
+
+  private writeSessionsFile(): void {
+    {
       // Ensure data directory exists
       if (!fs.existsSync(DATA_DIR)) {
         fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -2268,8 +2289,6 @@ export class SessionRegistry {
 
       fs.writeFileSync(SESSIONS_FILE, JSON.stringify(sessionsArray, null, 2));
       this.logger.info(`Saved ${sessionsArray.length} sessions to file`);
-    } catch (error) {
-      this.logger.error('Failed to save sessions', error);
     }
   }
 

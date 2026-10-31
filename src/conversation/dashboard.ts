@@ -388,6 +388,13 @@ export interface KanbanSession {
    * `GET /api/dashboard/session/:key/permission/:approvalId`.
    */
   pendingPermissions?: DashboardPermissionRequest[];
+  /**
+   * The goal's open cap decision ("Goal 계속 진행할까요?") — the same request
+   * the owner's DM asks, answered on either surface
+   * (`POST /api/dashboard/session/:key/goal-decision`). While it is open the
+   * card reads `activityState: 'waiting'`.
+   */
+  pendingGoalDecision?: KanbanGoalDecision;
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -555,6 +562,21 @@ export interface KanbanGoal {
   completedCount: number;
   /** SSOT 2026-10-22 T6 — completed goals with their details, newest first. */
   history: KanbanGoalHistoryItem[];
+}
+
+/** The goal's open cap decision as the card shows it — what the owner's DM says. */
+export interface KanbanGoalDecision {
+  /** The round's id; the answer names it, so an answer never lands on a later round. */
+  decisionId: string;
+  goalId: string;
+  objective: string;
+  maxContinuations: number;
+  /** The completion eval's latest "not yet" reason (the DM's "Latest reason"). */
+  reason?: string;
+  /** Epoch ms the decision opened. */
+  askedAt: number;
+  /** Slack user id of the goal's owner — the only one who may answer. */
+  ownerId: string;
 }
 
 /** One completed goal as the card lists it (SSOT 2026-10-22 T6). */
@@ -1282,6 +1304,25 @@ export function setDashboardGoalHandler(fn: GoalActionHandler): void {
 }
 
 /**
+ * The goal's cap decision answered from its approval card. Wired in
+ * src/index.ts to `answerGoalCapDecision` (slack/goal-cap-decision.ts) — the
+ * same path as the owner-DM buttons, so an answer here rewrites the DM.
+ */
+export type GoalDecisionAnswerResult =
+  | { ok: true; decision: 'continue' | 'cancel' }
+  | { ok: false; reason: 'invalid' | 'stale' | 'not_owner' | 'unavailable' };
+type GoalDecisionHandler = (
+  sessionKey: string,
+  answer: { goalId: string; decisionId: string; decision: 'continue' | 'cancel' },
+  actorUserId: string | undefined,
+) => GoalDecisionAnswerResult;
+let _goalDecisionHandlerFn: GoalDecisionHandler | null = null;
+
+export function setDashboardGoalDecisionHandler(fn: GoalDecisionHandler | null): void {
+  _goalDecisionHandlerFn = fn;
+}
+
+/**
  * SSOT 2026-10-22 T4/T5 — switch a session to a representative model
  * (`session/model-switch.ts` `switchSessionModel`). Throws `ModelSwitchError`
  * for every refusal, whose `statusCode` the route answers with.
@@ -1575,6 +1616,23 @@ export function sessionHasCurrentTask(s: any, autoResume: KanbanAutoResume | und
   return state === 'working' || state === 'waiting' || autoResume !== undefined;
 }
 
+/** The live goal's open cap decision (`KanbanSession.pendingGoalDecision`); undefined when none is open. */
+export function goalDecisionToKanban(s: any): KanbanGoalDecision | undefined {
+  const goal = s?.goal;
+  if (!goal || goal.status !== 'active' || typeof goal.goalId !== 'string') return undefined;
+  const askedAt = finiteNumber(goal.capDmPendingAt);
+  if (askedAt === undefined || typeof goal.capDecisionId !== 'string' || !goal.capDecisionId) return undefined;
+  return {
+    decisionId: goal.capDecisionId,
+    goalId: goal.goalId,
+    objective: String(goal.objective ?? ''),
+    maxContinuations: Number(goal.maxContinuations) || 0,
+    ...(typeof goal.lastEvalReason === 'string' && goal.lastEvalReason ? { reason: goal.lastEvalReason } : {}),
+    askedAt,
+    ownerId: String(goal.createdBy ?? ''),
+  };
+}
+
 /** The goal list of a live session, shaped for the card (`KanbanSession.goal`). */
 function goalToKanban(s: any): KanbanGoal | undefined {
   const goal = s.goal;
@@ -1840,6 +1898,9 @@ function sessionToKanban(key: string, s: any): KanbanSession {
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
   const headline = displayTitle(s);
   const permissions = pendingPermissionsFor(s.channelId, s.threadTs);
+  const goalDecision = goalDecisionToKanban(s);
+  // What the session waits on its user for: its permission prompts and the goal's cap decision.
+  const asks = goalDecision ? [...permissions, { createdAt: goalDecision.askedAt }] : permissions;
   return {
     // #814 Wire-format key includes the local instance prefix so sibling
     // instances can never collide on the client cache.
@@ -1859,7 +1920,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     threadTs: s.threadTs,
     // A turn blocked on a permission prompt waits for its user (projection
     // only — the session's own activityState is untouched).
-    activityState: permissions.length > 0 ? 'waiting' : s.activityState || 'idle',
+    activityState: asks.length > 0 ? 'waiting' : s.activityState || 'idle',
     sessionState: s.state || 'MAIN',
     terminated: s.terminated === true,
     trashed: s.trashed === true,
@@ -1867,6 +1928,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     conversationId: s.conversationId,
     lastActivity: s.lastActivity instanceof Date ? s.lastActivity.toISOString() : String(s.lastActivity),
     ...(permissions.length > 0 ? { pendingPermissions: permissions } : {}),
+    ...(goalDecision ? { pendingGoalDecision: goalDecision } : {}),
     issueUrl: s.links?.issue?.url,
     issueLabel: s.links?.issue?.label,
     issueTitle: s.links?.issue?.title,
@@ -1882,7 +1944,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
       : undefined,
     tokenUsage: tokenUsageOf(s),
     doneAt: liveDoneAt(s),
-    waitingSince: liveWaitingSince(s, permissions),
+    waitingSince: liveWaitingSince(s, asks),
     finishedAt: liveFinishedAt(s),
     ...modelFields(s),
     ...contextFields(s),
@@ -3305,6 +3367,63 @@ export async function registerDashboardRoutes(
           return;
         }
         logger.error('Error applying goal action from dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  // ── Goal cap decision (the owner-DM "Goal 계속 진행할까요?", as an approval card) ──
+
+  server.post<{ Params: { key: string }; Body: { goalId?: unknown; decisionId?: unknown; decision?: unknown } }>(
+    '/api/dashboard/session/:key/goal-decision',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { goalId, decisionId, decision } = request.body || {};
+      if (
+        typeof goalId !== 'string' ||
+        !goalId ||
+        goalId.length > 200 ||
+        typeof decisionId !== 'string' ||
+        !decisionId ||
+        decisionId.length > 100 ||
+        (decision !== 'continue' && decision !== 'cancel')
+      ) {
+        reply.status(400).send({ error: "goalId, decisionId and decision ('continue' | 'cancel') are required" });
+        return;
+      }
+      // The goal's creator answers — who may is the decision's own check (the
+      // creator can differ from the session owner), so only the instance is resolved here.
+      const originalKey = resolveSelfActionKey(String(request.params?.key ?? ''), reply);
+      if (originalKey === null) return;
+      const resolved = { originalKey };
+      if (!_goalDecisionHandlerFn) {
+        reply.status(501).send({ error: 'Goal decision handler not configured' });
+        return;
+      }
+      try {
+        // Only the goal's owner answers: a bearer client or an admin carries no
+        // owner identity here and is refused by the handler.
+        const actor = (request as { authContext?: { userId?: string } }).authContext?.userId;
+        const result = _goalDecisionHandlerFn(resolved.originalKey, { goalId, decisionId, decision }, actor);
+        if (result.ok) {
+          logger.info('Goal cap decision answered from the dashboard', {
+            sessionKey: resolved.originalKey,
+            decision,
+          });
+          reply.send({ ok: true, decision: result.decision });
+          return;
+        }
+        if (result.reason === 'stale') {
+          reply.status(409).send({ error: '이미 처리되었거나 더 이상 유효하지 않은 요청입니다' });
+          return;
+        }
+        if (result.reason === 'unavailable') {
+          reply.status(503).send({ error: '지금은 처리할 수 없습니다 — 잠시 후 다시 시도하세요' });
+          return;
+        }
+        reply.status(403).send({ error: 'goal 소유자만 응답할 수 있습니다' });
+      } catch (error) {
+        logger.error('Error answering a goal cap decision from the dashboard', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
     },
@@ -6217,6 +6336,8 @@ function acEvict(key, s) {
   for (var i = 0; i < list.length; i++) keep['p|' + list[i].approvalId] = true;
   var q = s && s.pendingQuestion;
   if (q && q.type === 'user_choice' && q.choices) keep[acQuestionId(q)] = true;
+  var gd = s && s.pendingGoalDecision;
+  if (gd && gd.decisionId) keep['g|' + gd.decisionId] = true;
   var left = 0;
   for (var id in states) {
     if (keep[id]) left++;
@@ -6242,6 +6363,43 @@ function acPermissionsHtml(s) {
 function acQuestionHtml(s, q) {
   return acSlotHtml(s.key, 'question', acQuestionId(q), '', '질문 — ' + String(q.question || ''));
 }
+// The goal's cap decision — the owner's DM "Goal 계속 진행할까요?" as the same
+// card: the question, the objective and the latest reason, 계속 / 취소 (no
+// recommended choice, as the DM has none). The owner answers here or in the
+// DM; either answer resolves both (the server rewrites the DM, the push takes
+// the card away).
+var GOAL_DECISION_CHOICES = [{ id: 'continue', label: '✅ 계속' }, { id: 'cancel', label: '🛑 취소' }];
+var GOAL_DECISION_SENT = { continue: '계속 진행을 보냈어요', cancel: '취소를 보냈어요' };
+function acGoalDecisionLock(s, d) {
+  if (isSiblingSession(s)) return AC_SIBLING;
+  return d.ownerId && d.ownerId === _viewerUserId ? '' : 'goal 소유자만 응답할 수 있습니다';
+}
+function acGoalDecisionData(s, d) {
+  var n = toNum(d.maxContinuations);
+  var context = ['Objective: ' + String(d.objective || '')];
+  if (d.reason) context.push('Latest reason: ' + String(d.reason));
+  var data = {
+    kind: 'question',
+    id: String(d.decisionId),
+    label: 'Goal 자동 진행 ' + n + '/' + n,
+    question: '⏳ Goal auto-continuation reached its ' + n + '-turn budget.\\n계속 진행할까요?',
+    description: context.join('\\n'),
+    choices: GOAL_DECISION_CHOICES.map(function(c) { return { id: c.id, label: c.label }; }),
+    allowOther: false,
+  };
+  var asked = toNum(d.askedAt);
+  if (asked > 0) data.createdAt = asked;
+  var lock = acGoalDecisionLock(s, d);
+  if (lock) data.canAnswer = lock;
+  var st = _acState[s.key] && _acState[s.key]['g|' + d.decisionId];
+  if (st) data.state = st;
+  return data;
+}
+function acGoalDecisionHtml(s) {
+  var d = s && s.pendingGoalDecision;
+  if (!d || !d.decisionId) return '';
+  return acSlotHtml(s.key, 'goal', 'g|' + d.decisionId, String(d.decisionId), 'Goal 계속 진행할까요? — 응답 대기');
+}
 // A collapsed card paints no approval card (placeCard), but the requester's
 // input is still fetched as the card's would be (acPermissionData), so opening
 // the card shows it at once.
@@ -6260,6 +6418,10 @@ function acDataFor(el) {
   if (el.getAttribute('data-ac-kind') === 'question') {
     var q = s.pendingQuestion;
     return q && q.type === 'user_choice' && q.choices ? acQuestionData(s, q) : null;
+  }
+  if (el.getAttribute('data-ac-kind') === 'goal') {
+    var gd = s.pendingGoalDecision;
+    return gd && String(gd.decisionId) === el.getAttribute('data-ac-id') ? acGoalDecisionData(s, gd) : null;
   }
   var id = el.getAttribute('data-ac-id');
   var list = s.pendingPermissions || [];
@@ -6299,8 +6461,11 @@ document.addEventListener('ui-decide', function(e) {
 });
 document.addEventListener('ui-answer', function(e) {
   var el = e.target;
-  if (!el || !el.getAttribute || !e.detail || el.getAttribute('data-ac-kind') !== 'question') return;
-  answerChoice(el.getAttribute('data-ac-key'), String(e.detail.id), e.detail.choiceId === undefined ? '' : String(e.detail.choiceId));
+  if (!el || !el.getAttribute || !e.detail) return;
+  var kind = el.getAttribute('data-ac-kind');
+  var choice = e.detail.choiceId === undefined ? '' : String(e.detail.choiceId);
+  if (kind === 'question') answerChoice(el.getAttribute('data-ac-key'), String(e.detail.id), choice);
+  else if (kind === 'goal') answerGoalDecision(el.getAttribute('data-ac-key'), String(e.detail.id), choice);
 });
 
 // The pending question in the panel: the single-choice question is an
@@ -6353,10 +6518,15 @@ function renderPanelPermission(s) {
     ids[list[i].approvalId] = true;
     if (seen && !seen[list[i].approvalId]) said.push('승인 요청 — ' + (list[i].toolName || 'tool'));
   }
+  var gd = s && s.pendingGoalDecision;
+  if (gd && gd.decisionId) {
+    ids['g|' + gd.decisionId] = true;
+    if (seen && !seen['g|' + gd.decisionId]) said.push('Goal 계속 진행할까요?');
+  }
   container._seenKey = key;
   container._seen = ids;
   renderPanelNeedsHead(s);
-  var html = s ? acPermissionsHtml(s) : '';
+  var html = s ? acPermissionsHtml(s) + acGoalDecisionHtml(s) : '';
   var ae = document.activeElement;
   var had = !!(ae && container.contains(ae));
   if (!html) {
@@ -6396,7 +6566,7 @@ function panelQuestionShown(s) {
 function renderPanelNeedsHead(s) {
   var head = document.getElementById('panel-needs-head');
   if (!head) return;
-  var n = s ? ((s.pendingPermissions || []).length + (panelQuestionShown(s) ? 1 : 0)) : 0;
+  var n = s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (panelQuestionShown(s) ? 1 : 0)) : 0;
   head.hidden = n === 0;
   var count = document.getElementById('panel-needs-count');
   if (count && count.textContent !== String(n)) count.textContent = String(n);
@@ -6557,6 +6727,37 @@ function acDrop(key, id) {
   delete states[id];
   for (var k in states) return;
   delete _acState[key];
+}
+
+// The goal's cap decision from its card: one answer per round. The server
+// rewrites the owner's DM and the push takes the card away; a refusal (409:
+// answered in the DM meanwhile, 403: not the owner) stays on the card.
+async function answerGoalDecision(key, decisionId, choiceId) {
+  var s = _sessionCache[key];
+  var d = s && s.pendingGoalDecision;
+  if (!d || String(d.decisionId) !== decisionId || !GOAL_DECISION_SENT[choiceId]) return null;
+  var sk = 'g|' + decisionId;
+  var states = _acState[key] || (_acState[key] = Object.create(null));
+  var cur = states[sk];
+  if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
+  states[sk] = { status: 'sending', choiceId: choiceId };
+  acRepaint(key);
+  var st;
+  try {
+    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/goal-decision', JSON.stringify({ goalId: d.goalId, decisionId: decisionId, decision: choiceId }));
+    if (res.ok) {
+      st = { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() };
+      dashToast({ title: GOAL_DECISION_SENT[choiceId], description: 'Slack DM도 같은 결과로 바뀝니다', tone: 'success' });
+    } else st = await acRefusal(res);
+  } catch (e) {
+    console.error('Goal decision answer error', e);
+    st = { status: 'error', message: '네트워크 오류 — 다시 시도하세요', retry: true };
+  }
+  var now = _sessionCache[key] && _sessionCache[key].pendingGoalDecision;
+  if (now && String(now.decisionId) === decisionId) (_acState[key] || (_acState[key] = Object.create(null)))[sk] = st;
+  else acDrop(key, sk);
+  acRepaint(key);
+  return st;
 }
 
 // The single-choice answer, from the card or the panel (the same element): the
@@ -8077,6 +8278,7 @@ function refreshCard(key) {
 function cardSummary(s, col, headline) {
   var current = cardCurrentTask(s);
   if (col !== 'closed' && s.pendingPermissions && s.pendingPermissions.length) return permissionSummary(s);
+  if (col !== 'closed' && s.pendingGoalDecision) return 'Goal 계속 진행할까요? — 응답 대기';
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return q.question || q.title;
   // Waiting out a retry: the error behind it is what this card is "doing".
@@ -10900,7 +11102,8 @@ function renderCardBody(s, col) {
 
   // The permission prompts the turn is blocked on (SSOT 2026-10-24): one
   // <ui-approval-card> each (acPermissionsHtml), as in the panel.
-  const permissionHtml = col === 'closed' ? '' : acPermissionsHtml(s);
+  // The goal's cap decision sits with them: the same card as the owner's DM.
+  const permissionHtml = col === 'closed' ? '' : acPermissionsHtml(s) + acGoalDecisionHtml(s);
 
   const ioHtml = isSiblingSession(s) ? '' : renderCardIo(s);
   // Artifacts live on this instance's disk: a sibling instance's card links nowhere here.
