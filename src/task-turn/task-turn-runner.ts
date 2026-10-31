@@ -160,7 +160,8 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
 
     const decided = result.terminal ? deriveTaskTurnOutcome(result.terminal, failure) : null;
     if (!decided) {
-      if (recordFailure) pendingRecordFailures.set(sessionKey, recordFailure);
+      // Keep the first failure: a later one must not replace it (#626 R1).
+      if (recordFailure && !pendingRecordFailures.has(sessionKey)) pendingRecordFailures.set(sessionKey, recordFailure);
       return {
         turnId,
         outcome: null,

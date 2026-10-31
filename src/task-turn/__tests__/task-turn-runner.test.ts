@@ -180,4 +180,21 @@ describe('createTaskTurnRunner (#598 ④b1)', () => {
     await expect(h.runner.runTaskTurn(h.input)).rejects.toThrow(/not a Slack-less task/);
     expect(h.execute).not.toHaveBeenCalled();
   });
+
+  it('two failing non-terminal returns: the first recording failure is the one reported (#626 R1)', async () => {
+    const results = [
+      { success: true, messageCount: 1, continuation: { prompt: 'a' } },
+      { success: true, messageCount: 1, continuation: { prompt: 'b' } },
+      { success: true, messageCount: 1, terminal: { exit: 'success', endTurnInfoPresent: true } },
+    ];
+    const drains = ['EIO-first', 'EIO-second', undefined];
+    const h = harness({
+      execute: vi.fn(async () => results.shift() as any),
+      receipts: { open: vi.fn(), drain: vi.fn(async () => drains.shift()) },
+    });
+    await h.runner.runTaskTurn(h.input);
+    await h.runner.runTaskTurn(h.input);
+    const last = await h.runner.runTaskTurn(h.input);
+    expect(last.outcome).toMatchObject({ outcome: 'failed', reason: 'record: EIO-first' });
+  });
 });
