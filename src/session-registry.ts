@@ -1287,8 +1287,17 @@ export class SessionRegistry {
       }
       // Its events name it by id too.
       if (Array.isArray(epic.epicEvents)) {
-        epic.epicEvents = epic.epicEvents.map((e: { childTaskId?: unknown }) =>
-          e && typeof e === 'object' && e.childTaskId === claimed ? { ...e, childTaskId: taskId } : e,
+        epic.epicEvents = epic.epicEvents.map((e: { childTaskId?: unknown; id?: unknown }) =>
+          e && typeof e === 'object' && e.childTaskId === claimed
+            ? {
+                ...e,
+                childTaskId: taskId,
+                // The id keeps its `<child>:<…>` shape (fable #701 R1).
+                ...(typeof e.id === 'string' && e.id.startsWith(`${claimed}:`)
+                  ? { id: `${taskId}${e.id.slice(claimed.length)}` }
+                  : {}),
+              }
+            : e,
         );
       }
       moved++;

@@ -351,3 +351,48 @@ describe('withEpicEvent / resolveEpicApprovals (E4 ⑤, D6)', () => {
     expect(resolveEpicApprovals(undefined, () => true, 7)).toBeUndefined();
   });
 });
+
+describe('E4 ⑤ R1 — the readers agree (fable #701)', () => {
+  const node = { id: 'n', title: 'N', kind: 'issue' } as any;
+  const child = (outcome: string, turnId = 't2') =>
+    ({ taskId: 'c1', planNodeId: 'n', activityState: 'idle', lastTurnOutcome: { turnId, outcome } }) as any;
+  const end = (extra: Record<string, unknown>) =>
+    ({
+      id: 'c1:x',
+      childTaskId: 'c1',
+      planNodeId: 'n',
+      outcome: 'failed',
+      turnId: 't2',
+      at: 2,
+      state: 'pending',
+      ...extra,
+    }) as any;
+
+  it('a node reads the chain end recorded for the child’s last outcome; with none, the outcome itself', () => {
+    // A `/compact` end with nothing re-run: the hop completed, the chain failed.
+    expect(epicNodeStatus(node, [child('completed')], [end({})])).toBe('failed');
+    // An end of an earlier turn, an approval or a close never speaks for the last outcome.
+    expect(epicNodeStatus(node, [child('completed')], [end({ turnId: 't1' })])).toBe('finished');
+    expect(epicNodeStatus(node, [child('completed')], [end({ approvalId: 'a', outcome: 'needs-input' })])).toBe(
+      'finished',
+    );
+    expect(epicNodeStatus(node, [child('completed')], [end({ outcome: 'closed' })])).toBe('finished');
+    expect(epicNodeStatus(node, [child('completed')], [end({ childTaskId: 'c9' })])).toBe('finished');
+    expect(epicNodeStatus(node, [child('completed')], [])).toBe('finished');
+  });
+
+  it('a closed approval is delivered, so the cap drops it before a pending chain end', () => {
+    const chainEnd = end({ id: 'c1:chain-1', outcome: 'completed', at: 1 });
+    let events = [chainEnd];
+    for (let i = 0; i < EPIC_EVENTS_MAX; i++) {
+      events = withEpicEvent(
+        events,
+        end({ id: `c1:ap${i}`, outcome: 'needs-input', approvalId: `ap${i}`, at: 10 + i }),
+      );
+      events = resolveEpicApprovals(events, (e) => e.approvalId === `ap${i}`, 10 + i)!;
+    }
+    expect(events.find((e) => e.approvalId === 'ap0')).toBeUndefined();
+    expect(events.some((e) => e.id === 'c1:chain-1')).toBe(true);
+    expect(events.filter((e) => e.approvalId).every((e) => e.state === 'delivered' && e.resolvedAt)).toBe(true);
+  });
+});
