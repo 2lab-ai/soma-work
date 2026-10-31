@@ -115,6 +115,12 @@ function validateFile(raw: unknown): LedgerFile {
     if (typeof e.taskId !== 'string' || typeof e.channel !== 'string' || typeof e.threadTs !== 'string') {
       throw new Error(`entry ${e.id}: bad target`);
     }
+    if (![e.attempts, e.createdAt, e.updatedAt].every((n) => typeof n === 'number' && Number.isFinite(n))) {
+      throw new Error(`entry ${e.id}: bad counts or times`);
+    }
+    if (typeof e.intent !== 'object' || e.intent === null || Array.isArray(e.intent)) {
+      throw new Error(`entry ${e.id}: bad intent`);
+    }
   }
   return v as LedgerFile;
 }
@@ -123,16 +129,24 @@ const logger = new Logger('task-notification-ledger');
 
 export class TaskNotificationLedger {
   private entries = new Map<string, TaskNotificationLedgerEntry>();
+  /** Writes wait for the file to be read: a write before it would replace the live file with less. */
+  private loaded = false;
 
   constructor(
     private readonly filePath: string = path.join(DATA_DIR, TASK_NOTIFICATION_LEDGER_FILENAME),
     private readonly now: () => number = Date.now,
   ) {}
 
-  /** Read the file (falling back to its backup). No file is an empty ledger; an unusable one throws. */
+  /**
+   * Read the file (falling back to its backup), once, before any write. No
+   * file is an empty ledger; an unusable one throws, and the ledger stays
+   * unwritable rather than start empty and lose or re-send what it owed.
+   */
   load(): void {
+    if (this.loaded) throw new Error('task notification ledger: already loaded');
     const file = readJsonWithBackup(this.filePath, validateFile, { warn: (m) => logger.warn(m) });
     this.entries = new Map((file?.entries ?? []).map((e) => [e.id, e]));
+    this.loaded = true;
   }
 
   get(id: string): TaskNotificationLedgerEntry | undefined {
@@ -160,12 +174,23 @@ export class TaskNotificationLedger {
     return entry;
   }
 
-  /** Before the post: `pending` or `unknown` → `unknown`, one more attempt. */
+  /**
+   * Before the post: `pending`, `unknown` or `failed` → `unknown`, one more
+   * attempt. `failed` is still owed (D7, D13): the deliverer leaves it alone
+   * within a process and claims it again after a restart.
+   */
   claim(id: string): TaskNotificationLedgerEntry {
-    return this.transition(id, ['pending', 'unknown'], 'unknown', (e) => ({ ...e, attempts: e.attempts + 1 }));
+    return this.transition(id, ['pending', 'unknown', 'failed'], 'unknown', (e) => ({
+      ...e,
+      attempts: e.attempts + 1,
+    }));
   }
 
-  /** Slack has it: `unknown` → `posted` with its message ts. */
+  /**
+   * Slack has it: `unknown` → `posted` with its message ts. Refused if the
+   * entry was closed while its post was in flight — the message is in Slack,
+   * its ts is not kept (the caller logs it; it is not a failed post).
+   */
   markPosted(id: string, messageTs: string): TaskNotificationLedgerEntry {
     return this.transition(id, ['unknown'], 'posted', (e) => ({ ...e, messageTs, error: undefined }));
   }
@@ -182,24 +207,17 @@ export class TaskNotificationLedger {
 
   /** What is still owed — pending, unknown or failed — a task's link first, then by creation. */
   owed(): TaskNotificationLedgerEntry[] {
-    return [...this.entries.values()]
-      .filter((e) => OWED.includes(e.state))
-      .sort((a, b) => {
-        if (a.taskId !== b.taskId) {
-          // Tasks in the order their first owed entry was created.
-          return this.firstOwedAt(a.taskId) - this.firstOwedAt(b.taskId) || a.taskId.localeCompare(b.taskId);
-        }
-        const link = Number(b.kind === 'link') - Number(a.kind === 'link');
-        return link || a.createdAt - b.createdAt || a.id.localeCompare(b.id);
-      });
-  }
-
-  private firstOwedAt(taskId: string): number {
-    let first = Number.POSITIVE_INFINITY;
-    for (const e of this.entries.values()) {
-      if (e.taskId === taskId && OWED.includes(e.state) && e.createdAt < first) first = e.createdAt;
-    }
-    return first;
+    const owed = [...this.entries.values()].filter((e) => OWED.includes(e.state));
+    // Tasks in the order their first owed entry was created.
+    const firstAt = new Map<string, number>();
+    for (const e of owed) firstAt.set(e.taskId, Math.min(firstAt.get(e.taskId) ?? e.createdAt, e.createdAt));
+    return owed.sort((a, b) => {
+      if (a.taskId !== b.taskId) {
+        return (firstAt.get(a.taskId) ?? 0) - (firstAt.get(b.taskId) ?? 0) || a.taskId.localeCompare(b.taskId);
+      }
+      const link = Number(b.kind === 'link') - Number(a.kind === 'link');
+      return link || a.createdAt - b.createdAt || a.id.localeCompare(b.id);
+    });
   }
 
   private transition(
@@ -218,6 +236,7 @@ export class TaskNotificationLedger {
 
   /** One atomic write with `entry` in place; on failure memory is put back and the error thrown. */
   private commit(id: string, entry: TaskNotificationLedgerEntry): void {
+    if (!this.loaded) throw new Error('task notification ledger: written before it was loaded');
     const previous = this.entries.get(id);
     this.entries.set(id, entry);
     try {
