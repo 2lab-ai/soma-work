@@ -122,7 +122,15 @@ const TREE_FNS = [
   'renderAgentTree',
 ];
 const AGENT_FNS = [...TREE_FNS, 'agentCounts', 'agentDotOf'];
-const AGENT_VARS = ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH', 'AT_ROOT', 'AT_STATUS', 'AT_ROOT_STATUS', '_anOpen'];
+const AGENT_VARS = [
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'AT_ROOT',
+  'AT_STATUS',
+  'AT_ROOT_STATUS',
+  '_anOpen',
+];
 
 type Agent = Record<string, unknown>;
 type Node = Record<string, any> & { id: string; children: Node[] };
@@ -176,7 +184,14 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = [
+  'PR_STATE_LABEL',
+  'PR_STATE_TONE',
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'OWNER_BADGE_HUES',
+];
 type FaceCard = Record<string, unknown> & { titles?: Record<string, string> };
 const face = load<{ cardOf(s: unknown, col: string): FaceCard }>(CARD_OF_FNS, CARD_OF_VARS, {
   dhShow: () => true,
@@ -2096,7 +2111,8 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
         ],
         [
           'AGENT_STATUS_LABEL',
-          'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH',
+          'AGENT_STATUS_TONE',
+          'AGENT_STATUS_GLYPH',
           'TASK_FATE_LABEL',
           'TASK_PAUSE_SVG',
           'TASK_STOP_SVG',

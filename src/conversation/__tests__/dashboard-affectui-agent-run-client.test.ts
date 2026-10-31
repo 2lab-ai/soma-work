@@ -149,7 +149,8 @@ function plan(opts: { expanded?: boolean; earlier?: boolean; open?: boolean } = 
     ],
     [
       'AGENT_STATUS_LABEL',
-      'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH',
+      'AGENT_STATUS_TONE',
+      'AGENT_STATUS_GLYPH',
       'TASK_FATE_LABEL',
       'TASK_PAUSE_SVG',
       'TASK_STOP_SVG',
@@ -1685,7 +1686,14 @@ describe('panel head (D18)', () => {
         'sessionActionHtml',
         'panelHeadHtml',
       ],
-      ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH', 'SESSION_ACTION_ARIA', 'SESSION_ACTION_TONE', '_busy'],
+      [
+        'AGENT_STATUS_LABEL',
+        'AGENT_STATUS_TONE',
+        'AGENT_STATUS_GLYPH',
+        'SESSION_ACTION_ARIA',
+        'SESSION_ACTION_TONE',
+        '_busy',
+      ],
       {
         currentUserId: 'U1',
         SELF_INSTANCE_NAME: '',

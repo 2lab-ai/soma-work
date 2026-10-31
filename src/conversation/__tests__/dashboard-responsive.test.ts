@@ -284,7 +284,7 @@ describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs o
     );
   });
 
-  it('below 640px the page clears the FAB, the defaults menu spans the bar, the artifact viewer is the element\'s sheet', () => {
+  it("below 640px the page clears the FAB, the defaults menu spans the bar, the artifact viewer is the element's sheet", () => {
     const phone = cssBlock(PHONE);
     expect(phone).not.toBe('');
     // Only a board with cards gets the clearance: an empty page must not turn scrollable. The cards

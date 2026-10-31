@@ -312,7 +312,7 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
 });
 
 describe('T12 — PC and phone layouts are designed separately', () => {
-  it("PC: a centered dialog of bounded width — the element's size=\"lg\" (720px); the page keeps no box rule", () => {
+  it('PC: a centered dialog of bounded width — the element\'s size="lg" (720px); the page keeps no box rule', () => {
     expect(html).toMatch(/<ui-dialog id="nt-dialog"[^>]* size="lg"/);
     expect(css).not.toMatch(/\.nt-dialog\s*\{/);
     expect(css).not.toMatch(/\.nt-dialog::backdrop/);

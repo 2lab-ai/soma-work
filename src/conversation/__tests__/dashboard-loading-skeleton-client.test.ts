@@ -816,12 +816,26 @@ describe('[T3] first load is bounded; partial data is never announced as the boa
 describe('[T2] stats strip — skeleton bars, started in parallel with the board', () => {
   // 세션 · 토큰 · 비용 are <ui-stat-strip id="stats-strip">'s data (D2); the cards behind 자세히 are a second
   // <ui-stat-strip id="stats-grid"> in layout 'cards' (D4, B-07). Both roll from the value under the loading bar.
-  const STRIP_FNS = ['setStripFigure', 'statsStripData', 'paintStatsStrip', 'statCardsData', 'paintStatCards', 'fillStatSlot'];
+  const STRIP_FNS = [
+    'setStripFigure',
+    'statsStripData',
+    'paintStatsStrip',
+    'statCardsData',
+    'paintStatCards',
+    'fillStatSlot',
+  ];
   const STRIP_VARS = ['_strip', '_tokenBreakdown', '_statsDetailOpen', 'PERIOD_OPTIONS', '_statCards'];
   // The two <ui-bar-chart>s (B-08): CHARTS spans lines, so it travels as extra source.
   const CHART_FNS = ['toNum', 'chartDayTitle', 'chartData', 'paintCharts'];
   const CHARTS_SRC = cook(`${between(TEMPLATE, 'var CHARTS = [', '\n];')}\n];`);
-  type StripMetric = { key: string; value: number | null; loading: boolean; from?: string; slot?: string; wide?: boolean };
+  type StripMetric = {
+    key: string;
+    value: number | null;
+    loading: boolean;
+    from?: string;
+    slot?: string;
+    wide?: boolean;
+  };
   const figures = (strip: FakeEl) =>
     ((strip.data as unknown as { metrics: StripMetric[] }).metrics ?? []).map((x) => ({
       key: x.key,
@@ -833,14 +847,19 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
     expect(PAGE).toContain(
       '<ui-stat-strip id="stats-grid" class="stats-grid" lang="ko"><span id="stat-merge-lines"></span><span id="stat-workflows" class="stat-wf"></span></ui-stat-strip>',
     );
-    for (const gone of ['class="stat-card"', 'id="stat-turns"', 'id="stat-prs"', 'id="stat-merged"', 'stat-commits-hidden']) {
+    for (const gone of [
+      'class="stat-card"',
+      'id="stat-turns"',
+      'id="stat-prs"',
+      'id="stat-merged"',
+      'stat-commits-hidden',
+    ]) {
       expect(PAGE, gone).not.toContain(gone);
     }
-    const m = load<{ statsStripData(): { metrics: StripMetric[] }; statCardsData(): { layout: string; metrics: StripMetric[] } }>(
-      ['statsStripData', 'statCardsData'],
-      STRIP_VARS,
-      { currentPeriod: 'day' },
-    );
+    const m = load<{
+      statsStripData(): { metrics: StripMetric[] };
+      statCardsData(): { layout: string; metrics: StripMetric[] };
+    }>(['statsStripData', 'statCardsData'], STRIP_VARS, { currentPeriod: 'day' });
     expect(m.statsStripData().metrics.map((x) => [x.key, x.value, x.loading, x.from])).toEqual([
       ['sessions', null, true, 'last'],
       ['tokens', null, true, 'last'],
@@ -888,7 +907,15 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
     const sessions = () => writes.map((w) => w.find((x) => x.key === 'sessions'));
     const at = <T>(list: T[], i: number): T | undefined => list[list.length - 1 - i];
     const totals = (n: number) => ({
-      totals: { sessionsCreated: n, turnsUsed: 7, prsCreated: 2, prsMerged: 1, mergeLinesAdded: 30, mergeLinesDeleted: 4, workflowCounts: { autoz: 1, z: 3 } },
+      totals: {
+        sessionsCreated: n,
+        turnsUsed: 7,
+        prsCreated: 2,
+        prsMerged: 1,
+        mergeLinesAdded: 30,
+        mergeLinesDeleted: 4,
+        workflowCounts: { autoz: 1, z: 3 },
+      },
       days: [],
     });
     m.paintStats(totals(10));
@@ -918,7 +945,11 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
     m.markStatsLoading();
     m.paintStats(null);
     expect(at(sessions(), 0)).toEqual({ key: 'sessions', value: null, loading: false });
-    expect(figures(d.byId['stats-grid']).slice(0, 3).map((x) => x.value)).toEqual([null, null, null]);
+    expect(
+      figures(d.byId['stats-grid'])
+        .slice(0, 3)
+        .map((x) => x.value),
+    ).toEqual([null, null, null]);
     expect(d.byId['stat-merge-lines'].attrs.slot).toBeUndefined();
     expect(d.byId['stat-workflows'].attrs.slot).toBeUndefined();
     // 토큰 · 비용 land from the usage answer the same way.
