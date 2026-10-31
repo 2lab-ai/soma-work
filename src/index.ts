@@ -91,6 +91,7 @@ import {
   setOnSummaryGeneratedCallback,
   setOnTurnRecordedCallback,
   setSessionTitleBridge,
+  setTaskNoticeFailureProvider,
   startWebServer,
   stopWebServer,
 } from './conversation';
@@ -105,7 +106,7 @@ import { createConversationDurable } from './conversation/recorder';
 import { createSessionWorkLogAppender } from './conversation/session-work-log';
 import { setSettingsRegistry } from './conversation/settings-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
-import { flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
+import { flushWorkLog, readWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
 import { GPT_5_6_UPSTREAM_SLUG, syncLlmuxCodexModel } from './deploy/llmux-codex-model-sync';
@@ -146,6 +147,7 @@ import { switchSessionModel } from './session/model-switch';
 import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './session/task-ledger';
 import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from './session/task-usage-reconcile';
 import { resolveArchivedResume } from './session-archive';
+import { buildTaskSessionKey } from './session-identity';
 import { applySummaryTitle } from './session-title-policy';
 import {
   answerGoalCapDecision,
@@ -164,8 +166,15 @@ import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
 import { createTaskLauncher } from './task-turn/task-launcher';
+import {
+  createTaskNoticeDeliverer,
+  owesInstructionThread,
+  type TaskNoticeDeliverer,
+} from './task-turn/task-notice-deliverer';
+import { TASK_NOTIFICATION_LEDGER_FILENAME, TaskNotificationLedger } from './task-turn/task-notification-ledger';
 import { createTaskTurnController, type TaskTurnController } from './task-turn/task-turn-controller';
 import { createTaskTurnExecutor } from './task-turn/task-turn-executor';
+import { readTurnFinal } from './task-turn/task-turn-final';
 import { getTokenManager } from './token-manager';
 import type { ConversationSession } from './types';
 import { productionSettingsRegistry } from './user-settings-registry-production';
@@ -1194,6 +1203,60 @@ async function start() {
         [...claudeHandler.getAllSessions()].map(([key, s]) => ({ key, sourceWorkingDirs: s.sourceWorkingDirs })),
     });
     setDashboardTaskLauncher(taskLauncher);
+    // E2 ⑤ — the one poster of a Slack-less task's notices to its instruction
+    // thread (.prd/18 D6 · D7 · D10). Its ledger is loaded before anything
+    // registers; a ledger that cannot be read leaves the deliverer off (the
+    // notices stay on their task records) rather than start empty and re-post.
+    let taskNoticeDeliverer: TaskNoticeDeliverer | undefined;
+    {
+      const registry = claudeHandler.getSessionRegistry();
+      const ledger = new TaskNotificationLedger(path.join(DATA_DIR, TASK_NOTIFICATION_LEDGER_FILENAME));
+      try {
+        ledger.load();
+        const deliverer = createTaskNoticeDeliverer({
+          ledger,
+          post: async (target, message) => {
+            const res = await slackClient.chat.postMessage({
+              channel: target.channel,
+              thread_ts: target.threadTs,
+              text: message.text,
+              ...(message.blocks ? { blocks: message.blocks as any[] } : {}),
+              unfurl_links: false,
+            });
+            return { ts: res.ts };
+          },
+          readFinal: (conversationId, turnId) => readTurnFinal(readWorkLog, conversationId, turnId),
+          cardUrl: (ownerId, sessionKey) => getDashboardSessionUrl(ownerId, sessionKey),
+          getTask: (taskId) => {
+            const session = registry.getSessionByTaskId(taskId);
+            return session ? { session, sessionKey: buildTaskSessionKey(taskId) } : undefined;
+          },
+          settled: (taskId, noticeId) => registry.pruneTaskNotice(taskId, noticeId),
+          logger: new Logger('TaskNoticeDeliverer'),
+        });
+        registry.setTaskNoticeListener((session, sessionKey) => {
+          deliverer.enqueue(session, sessionKey);
+          void deliverer.deliver();
+        });
+        slackHandler.setTaskNoticeHandoff((sessionKey, session) => {
+          deliverer.handoff(session, sessionKey);
+          void deliverer.deliver();
+        });
+        setTaskNoticeFailureProvider((sessionKey) => deliverer.failures(sessionKey));
+        taskNoticeDeliverer = deliverer;
+      } catch (error) {
+        logger.error('Task notice ledger unreadable — task thread notices stay on their tasks, undelivered', {
+          error: (error as Error)?.message,
+        });
+        // Fail closed (D6): a task that still owes its thread is not deleted while
+        // there is no ledger to hand that to (fable #668 P2-1).
+        slackHandler.setTaskNoticeHandoff((sessionKey, session) => {
+          if (owesInstructionThread(session)) {
+            throw new Error(`task notice ledger unreadable — ${sessionKey} kept until its notices can be handed over`);
+          }
+        });
+      }
+    }
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
       recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => void;
@@ -1363,6 +1426,23 @@ async function start() {
       timing('Conversation viewer web server started');
     } catch (error) {
       logger.warn('Failed to start conversation viewer (non-critical)', error);
+    }
+
+    // E2 ⑤ / D13 — after the load and its reconciliation save, and with the
+    // dashboard up (the card links): register what live tasks owe their
+    // threads, then post everything the ledger has not posted.
+    if (taskNoticeDeliverer) {
+      for (const [key, session] of claudeHandler.getAllSessions()) {
+        if (session.slackless !== true || !session.notices?.length) continue;
+        try {
+          taskNoticeDeliverer.enqueue(session, key);
+        } catch (error) {
+          logger.error('Task notices not registered at boot', { key, error: (error as Error)?.message });
+        }
+      }
+      // A notice that had failed is tried once more after a restart (D13).
+      void taskNoticeDeliverer.deliver({ retryFailed: true });
+      timing('Task notice deliverer: boot scan started');
     }
 
     // Start the app
@@ -1799,6 +1879,9 @@ async function start() {
         githubAuth.stopAutoRefresh();
         logger.info('GitHub App auto-refresh stopped');
       }
+
+      // E2 ⑤ — no new task notice pass or retry once shutting down (grok #668 P3).
+      taskNoticeDeliverer?.stop();
 
       // Stop conversation viewer
       try {

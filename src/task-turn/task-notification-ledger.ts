@@ -40,6 +40,10 @@ export type TaskNotificationLedgerIntent = Partial<Omit<TaskNoticeIntent, 'id' |
   approvalId?: string;
   toolName?: string;
   expiresAt?: number;
+  /** E2 ⑤ — what rendering needs after the task may be gone: its conversation, owner and key. */
+  conversationId?: string;
+  ownerId?: string;
+  sessionKey?: string;
 };
 
 export interface TaskNotificationLedgerEntry {
@@ -198,6 +202,11 @@ export class TaskNotificationLedger {
   /** The post failed: back to `pending` to retry, or `failed` when retries are spent. */
   markFailed(id: string, error: string, options: { final: boolean }): TaskNotificationLedgerEntry {
     return this.transition(id, ['unknown'], options.final ? 'failed' : 'pending', (e) => ({ ...e, error }));
+  }
+
+  /** Every entry, in no particular order. */
+  list(): TaskNotificationLedgerEntry[] {
+    return [...this.entries.values()];
   }
 
   /** No longer worth sending (answered, expired, replaced). */
