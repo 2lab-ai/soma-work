@@ -112,7 +112,7 @@ describe('pairing a result with its call (shipped wlPairTools)', () => {
 describe('what each card shows (shipped wlCardData)', () => {
   function make(session: Record<string, unknown> | null) {
     return load<{
-      wlCardData(st: unknown, key: number, stop?: boolean): Record<string, unknown> | null;
+      wlCardData(st: unknown, key: number): Record<string, unknown> | null;
       wlCardSig(d: unknown): string;
     }>([...PAIR_FNS, 'wlEntryBySeq', 'wlToolSummary', 'wlCallLive', 'wlCardData', 'wlCardSig'], [], {
       panelSessionKey: session ? 'S1' : null,
@@ -127,7 +127,6 @@ describe('what each card shows (shipped wlCardData)', () => {
       name: 'Read',
       summary: 'src/app.ts',
       status: 'success',
-      focusable: false,
       open: false,
       at: 1000,
       startedAt: 1000,
@@ -161,10 +160,10 @@ describe('what each card shows (shipped wlCardData)', () => {
 
   it('a result on its own (its call is not loaded) is a card of its own', () => {
     const st = { entries: [{ seq: 9, ts: 2000, kind: 'tool_result', tool: 'Glob', ok: true }] };
-    expect(make(null).wlCardData(st, 9)).toEqual({ name: 'Glob', status: 'success', focusable: false, open: false });
+    expect(make(null).wlCardData(st, 9)).toEqual({ name: 'Glob', status: 'success', open: false });
   });
 
-  it('open state, the roving stop and the fetched detail come from the list', () => {
+  it('open state and the fetched detail come from the list; no focusable flag — the log roves the card (D3-GAPS G2-3)', () => {
     const st = {
       entries: [call],
       open: new Set([1]),
@@ -177,9 +176,10 @@ describe('what each card shows (shipped wlCardData)', () => {
         },
       },
     };
-    expect(make(null).wlCardData(st, 1, true)).toMatchObject({
+    const d = make(null).wlCardData(st, 1);
+    expect(d).not.toHaveProperty('focusable');
+    expect(d).toMatchObject({
       open: true,
-      focusable: true,
       args: '{"file_path":"a"}',
       note: '결과: 원본 출력이 저장되어 있지 않습니다',
       detailError: 'x',
@@ -346,14 +346,13 @@ describe('a live result fills its call card instead of adding a row (shipped wlL
         'wlCardData',
         'wlGroupOf',
         'wlGroupOpen',
-        'wlRunTitle',
         'wlGroupsOf',
         'wlToolSummary',
         'wlEntryOf',
         'wlLogData',
         'decodeSlackEntities',
       ],
-      ['WL_LABELS', 'WL_RUN_TITLE', 'WL_EMPTY_MSG', 'WL_FORBIDDEN_MSG'],
+      ['WL_LABELS', 'WL_EMPTY_MSG', 'WL_FORBIDDEN_MSG'],
       {
         _panelAgent: '',
         panelSessionKey: null,
@@ -376,10 +375,40 @@ describe('a live result fills its call card instead of adding a row (shipped wlL
   });
 });
 
-describe('a card is a tab stop of its own; it handles its own Enter / Space (shipped wlCardSlots, initWorkLog)', () => {
-  it('each card is created with data-stop (its header button takes tabindex 0 through its data; D3-GAPS G2-3)', () => {
-    expect(clientFn('wlCardSlots')).toContain("c.setAttribute('data-stop', '1');");
-    expect(clientFn('wlPaintCard')).toContain("var d = wlCardData(state, key, el.getAttribute('data-stop') === '1');");
+describe('a task group’s meta line (shipped wlTaskMeta; D3-GAPS G2-2 — the element’s WorkGroup.meta)', () => {
+  const m = load<{ wlTaskMeta(t: Record<string, unknown>): unknown[] }>(
+    ['toNum', 'formatDuration', 'taskFateOf', 'wlTaskMeta'],
+    ['TASK_FATE_LABEL'],
+  );
+  it('done: its time and 툴 N회; running / paused / replaced: the fate word (no live clock in a head); pending: nothing', () => {
+    expect(m.wlTaskMeta({ status: 'completed', startedAt: 1000, completedAt: 181000, toolCalls: 3.4 })).toEqual([
+      '3m 0s 만에 완료',
+      { label: '툴', value: '3회' },
+    ]);
+    expect(m.wlTaskMeta({ status: 'completed', toolCalls: 0 })).toEqual(['완료', { label: '툴', value: '0회' }]);
+    expect(m.wlTaskMeta({ status: 'in_progress', startedAt: 1000, toolCalls: 2 })).toEqual([
+      '진행 중',
+      { label: '툴', value: '2회' },
+    ]);
+    expect(m.wlTaskMeta({ status: 'pending', startedAt: 1000, toolCalls: 1 })).toEqual([
+      '멈춤',
+      { label: '툴', value: '1회' },
+    ]);
+    expect(m.wlTaskMeta({ dropped: 'started', startedAt: 1000, removedAt: 61000, toolCalls: 5 })).toEqual([
+      '교체됨 1m 0s',
+      { label: '툴', value: '5회' },
+    ]);
+    expect(m.wlTaskMeta({ status: 'pending' })).toEqual([]);
+    expect(m.wlTaskMeta({ dropped: 'unstarted' })).toEqual(['실행 안 됨']);
+  });
+});
+describe('a slotted card is a row on the log’s arrow path (0.12.0 head-tabindex); it handles its own Enter / Space (shipped wlCardSlots, initWorkLog)', () => {
+  it('no card is made a stop of its own: no data-stop, no focusable in its data (D3-GAPS G2-3 closed)', () => {
+    expect(clientFn('wlCardSlots')).not.toContain('data-stop');
+    expect(clientFn('wlPaintCard')).toContain('var d = wlCardData(state, key);');
+    expect(clientFn('wlCardData')).not.toContain('focusable');
+    expect(clientFn('wlCardSig')).not.toContain('focusable');
+    expect(TEMPLATE).not.toContain('data-stop');
   });
 
   it('the page answers a card’s ui-toggle (its open state and detail) and ui-reload; the rest is the element’s', () => {

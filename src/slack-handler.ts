@@ -6337,6 +6337,8 @@ export class SlackHandler {
     let repaired = 0;
     let retriesClaimed = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
+      // A Slack-less task cannot run a turn yet (#597/#598) — never re-arm its goal (#612 review).
+      if (session.slackless) continue;
       // Repair a stranded queue (defense for the eval-complete crash window):
       // if the current goal is genuinely closed (completed) or absent but goals
       // are still queued, promote the next one so the queue can't be orphaned.
@@ -6414,6 +6416,8 @@ export class SlackHandler {
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       const dueAt = session.pendingRetryAt;
       if (dueAt === undefined) continue;
+      // A Slack-less task has no execution context yet (#597): never resumed (#612 R2).
+      if (session.slackless) continue;
       // Already armed in this process (e.g. a crash-recovery resume that failed
       // again and scheduled a fresh retry) — arming again would fire it twice.
       if (session.pendingRetryTimer) continue;

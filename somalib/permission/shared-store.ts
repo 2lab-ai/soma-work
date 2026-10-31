@@ -39,6 +39,12 @@ export interface PendingApproval {
   channel?: string;
   thread_ts?: string;
   user?: string;
+  /**
+   * #599 ⑤ — a Slack-less task's prompt is bound to the task (its session key)
+   * and the turn that raised it, not to a Slack thread (it has none).
+   */
+  task_key?: string;
+  turn_id?: string;
   created_at: number;
   expires_at: number;
   /**
