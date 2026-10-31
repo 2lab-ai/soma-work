@@ -49,14 +49,24 @@ function fakeHost(over: Partial<EpicHost> = {}) {
       return epic.plan;
     }),
     readChildFinal: vi.fn(async () => ({ text: 'the end of its answer', clipped: true })),
+    createTask: vi.fn(() => {
+      throw new Error('not in this test');
+    }),
+    createFreshDirectory: vi.fn(() => undefined),
+    ensureDirectory: vi.fn(),
+    controller: {
+      canStart: vi.fn(() => null),
+      start: vi.fn(async () => ({ status: 202, body: {} })),
+      isRunning: vi.fn(() => false),
+    },
     ...over,
   };
   return { host, epic, children };
 }
 
 const tools = () => {
-  const [planWrite, childStatus] = epicTools(ctx());
-  return { planWrite, childStatus };
+  const [planWrite, childStatus, spawnChild, instructChild] = epicTools(ctx());
+  return { planWrite, childStatus, spawnChild, instructChild };
 };
 const parse = (r: any) => JSON.parse(r.content[0].text);
 
@@ -230,10 +240,15 @@ describe('the epic server (E4 ④a, D3 · D8)', () => {
     });
   });
 
-  it('S6 — the server is `epic` and carries both tools', () => {
+  it('S6 — the server is `epic` and carries its four tools', () => {
     const server: any = buildEpicServer(ctx());
     expect(server.name).toBe('epic');
-    expect(server.config.tools.map((t: any) => t.name)).toEqual(['plan_write', 'child_status']);
+    expect(server.config.tools.map((t: any) => t.name)).toEqual([
+      'plan_write',
+      'child_status',
+      'spawn_child',
+      'instruct_child',
+    ]);
   });
 
   it('S5 — every call re-reads the epic: no host yet, or an epic closed meanwhile, is refused', async () => {
