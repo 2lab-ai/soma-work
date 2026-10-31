@@ -7,7 +7,7 @@
  * input — and nothing a listener does changes the approval's answer.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { createTaskApprover, type TaskApprovalEvent } from '../task-approver';
+import { composeTaskApprovalListeners, createTaskApprover, type TaskApprovalEvent } from '../task-approver';
 
 const TASK = 'task:11111111-2222-4333-8444-555555555555';
 const REQ = {
@@ -123,5 +123,23 @@ describe('task approver events (E2 ⑥)', () => {
       },
     });
     expect((await approver.request(REQ)).behavior).toBe('allow');
+  });
+});
+
+describe('composeTaskApprovalListeners (E4 ⑤)', () => {
+  const EVENT: TaskApprovalEvent = { type: 'requested', approvalId: 'ap-1', sessionKey: 'task:x', toolName: 'Bash' };
+
+  it('every hearer hears each event in order; one that throws does not keep the next from hearing', () => {
+    const heard: string[] = [];
+    const listener = composeTaskApprovalListeners(
+      (e) => heard.push(`notice:${e.approvalId}`),
+      () => {
+        throw new Error('epic save down');
+      },
+      undefined,
+      (e) => heard.push(`epic:${e.type}`),
+    );
+    expect(() => listener(EVENT)).not.toThrow();
+    expect(heard).toEqual(['notice:ap-1', 'epic:requested']);
   });
 });
