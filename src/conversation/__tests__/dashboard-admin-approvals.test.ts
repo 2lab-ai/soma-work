@@ -65,6 +65,7 @@ function clientVar(name: string): string {
 
 const FNS = [
   'toNum',
+  'adminInboxLoad',
   'adminUserName',
   'adminApprovalTitle',
   'adminApprovalLock',
@@ -305,7 +306,6 @@ describe('dashboard admin approvals (#620)', () => {
         _isAdminModeOn: () => true,
         dashToast: (t: any, fn?: () => void) => toasts.push({ t, fn }),
         paintAdminInbox: () => {},
-        adminInboxLoad: () => {},
         console: { error() {} },
         _csrfToken: 'x',
         refreshCsrfToken: async () => {},
@@ -339,6 +339,18 @@ describe('dashboard admin approvals (#620)', () => {
       const bearer = client({ _viewerUserId: '' }).c;
       bearer.applyAdminApprovals({ pending: [ENV_REQUEST], resolved: [] });
       expect(bearer.adminApprovalData('env_skill:req-1').canAnswer).toContain('Slack 계정');
+    });
+
+    it('only a Slack-signed-in admin asks for the requests (the server refuses a viewer token)', () => {
+      const urls: string[] = [];
+      const fetch = async (url: string) => {
+        urls.push(url);
+        return { ok: true, json: async () => ({ pending: [], resolved: [] }) };
+      };
+      client({ fetch }).c.adminInboxLoad();
+      client({ fetch, _viewerUserId: '' }).c.adminInboxLoad();
+      client({ fetch, _viewerIsAdmin: false }).c.adminInboxLoad();
+      expect(urls).toEqual(['/api/dashboard/admin-approvals']);
     });
 
     it('T4 — the first load is quiet; a later arrival toasts with 열기', () => {
