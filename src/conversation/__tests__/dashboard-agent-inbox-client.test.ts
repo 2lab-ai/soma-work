@@ -3147,6 +3147,20 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       els[id] ??= Object.assign(fakeEl({ id }), { classList: { add() {}, remove() {} } });
       return els[id];
     };
+    // D4 E-01: the panel is <ui-drawer> — openPanel opens it with the element's show() (closePanel: hide());
+    // its open state is the element's own property and attribute, as the host contract says.
+    const drawer = el('slide-panel');
+    Object.assign(drawer, {
+      open: false,
+      show() {
+        drawer.open = true;
+        drawer.setAttribute('open', '');
+      },
+      hide() {
+        drawer.open = false;
+        drawer.removeAttribute('open');
+      },
+    });
     const question = el('panel-question');
     question.style.display = 'none';
     // D3 E-15: the form is a <ui-choice-form> the page creates in the box.
@@ -3323,6 +3337,9 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         _panelTasksEarlier: false,
         // SSOT 2026-10-24: openPanel marks the layout before the drawer changes it (layout-shift FLIP).
         layoutBeforeChange: () => {},
+        // D4 E-01: the open drawer's width goes to the board beside it (--panel-w on the root: the window's
+        // concern, covered in dashboard-responsive.test.ts — no window in this rig).
+        syncPanelWidth: () => {},
         renderPanelAgents: () => {},
         panelAgentTasks: () => [],
         panelAgentLabel: () => '',
@@ -3369,7 +3386,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         throw new Error('openPanel took its failure path on a successful load: the harness is missing a dependency');
       return msg;
     };
-    return { m, scroll, question, cache, clickAnswer, formInView, settled, release: () => release(), bottom: max };
+    return { m, scroll, question, cache, drawer, clickAnswer, formInView, settled, release: () => release(), bottom: max };
   }
 
   it('lands on the answer form, not on the newest turns, and stays there while the panel settles', async () => {
@@ -3377,6 +3394,9 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     p.clickAnswer();
     await flush();
     await flush();
+    // D4 E-01: the opening is the drawer's show() — it is open, labelled with the panel's title.
+    expect(p.drawer.open).toBe(true);
+    expect(p.drawer.getAttribute('open')).toBe('');
     expect(p.formInView()).toBe(true);
     expect(p.scroll.scrollTop).toBe(0);
     // 답변하기 opens on 지시와 답변, its turns held as its data (the box holds their scroll).
