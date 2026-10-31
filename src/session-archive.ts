@@ -59,6 +59,11 @@ export interface ArchivedSession {
   originThread?: OriginThread;
   /** E2 ② — a Slack-instructed task's channel context. */
   inputContext?: TaskInputContext;
+  /** E4 ① — the epic relation (validated on revive). */
+  kind?: 'epic';
+  parentTaskId?: string;
+  planNodeId?: string;
+  childTaskIds?: string[];
 
   // Owner
   ownerId: string;
@@ -171,6 +176,10 @@ function sessionToArchive(
     slackless: session.slackless === true ? true : undefined,
     originThread: session.originThread,
     inputContext: session.inputContext,
+    kind: session.kind,
+    parentTaskId: session.parentTaskId,
+    planNodeId: session.planNodeId,
+    childTaskIds: session.childTaskIds,
 
     ownerId: session.ownerId,
     ownerName: session.ownerName,

@@ -359,6 +359,36 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     });
   });
 
+  it('E4 ① — an epic card says it is an epic; a child card names its epic and node; a plain task card has neither', async () => {
+    const reg = new SessionRegistry();
+    const epic = reg.createTask({
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      workingDirectory: '/work/U1/e',
+      title: 'E',
+      kind: 'epic',
+    });
+    const child = reg.createTask({
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      workingDirectory: '/work/U1/c',
+      title: 'C',
+      parentTaskId: epic.taskId,
+      planNodeId: 'node-a',
+    });
+    const plain = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/p', title: 'P' });
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const b = await board();
+    const all = [...b.working, ...b.waiting, ...b.idle] as any[];
+    const cardOf = (id?: string) => all.find((c) => c.key === `task:${id}`);
+    expect(cardOf(epic.taskId)).toMatchObject({ kind: 'epic' });
+    expect(cardOf(epic.taskId).parentTaskId).toBeUndefined();
+    expect(cardOf(child.taskId)).toMatchObject({ parentTaskId: epic.taskId, planNodeId: 'node-a' });
+    expect(cardOf(child.taskId).kind).toBeUndefined();
+    expect(cardOf(plain.taskId).kind).toBeUndefined();
+    expect(cardOf(plain.taskId).parentTaskId).toBeUndefined();
+  });
+
   it('E2 ⑤ — a task’s card carries the thread notices that could not be posted; none, no field', async () => {
     const dashboard = await import('../dashboard');
     const reg = new SessionRegistry();

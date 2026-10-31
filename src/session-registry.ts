@@ -203,6 +203,11 @@ interface SerializedSession {
   originThread?: unknown;
   /** E2 ② — a Slack-instructed task's channel context; validated on load. */
   inputContext?: unknown;
+  /** E4 ① — the epic relation; validated on load (`sanitizeEpicRelation`). */
+  kind?: unknown;
+  parentTaskId?: unknown;
+  planNodeId?: unknown;
+  childTaskIds?: unknown;
   /** E2 ③ — the open chain and owed notices of a Slack-less task; validated on load. */
   openChain?: unknown;
   notices?: unknown;
@@ -286,6 +291,42 @@ export interface CreateTaskInput {
   originThread?: OriginThread;
   /** E2 ② — the channel's description, repos and wiki at creation; copied, not referenced. */
   inputContext?: TaskInputContext;
+  /** E4 ① — an epic task. Host only: never from model input or a request body as given. */
+  kind?: 'epic';
+  /** E4 ① — a child task: its live epic (same owner) and the plan node it was made for. */
+  parentTaskId?: string;
+  planNodeId?: string;
+}
+
+/** E4 ① — a plan node id: a short slug, unique within its epic. */
+export const PLAN_NODE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/** E4 ① — the epic relation fields as stored on a record. */
+export interface EpicRelation {
+  kind?: 'epic';
+  parentTaskId?: string;
+  planNodeId?: string;
+  childTaskIds?: string[];
+}
+
+/**
+ * E4 ① — keep only a well-formed epic relation, on a Slack-less record only.
+ * A child (`parentTaskId` + `planNodeId`) is never an epic and has no
+ * children; a node id without a parent is dropped; `childTaskIds` is kept on
+ * an epic only, de-duplicated, non-empty strings. Every field it drops is
+ * dropped on its own — a bad `kind` does not cost the record its parent.
+ */
+export function sanitizeEpicRelation(value: Record<string, unknown>, slackless: boolean): EpicRelation {
+  if (!slackless) return {};
+  const nonEmpty = (x: unknown): x is string => typeof x === 'string' && x !== '';
+  // A child: a parent and a well-formed node, nothing else.
+  if (nonEmpty(value.parentTaskId) && typeof value.planNodeId === 'string' && PLAN_NODE_ID.test(value.planNodeId)) {
+    return { parentTaskId: value.parentTaskId, planNodeId: value.planNodeId };
+  }
+  if (value.kind !== 'epic') return {};
+  const children = Array.isArray(value.childTaskIds) ? value.childTaskIds.filter(nonEmpty) : [];
+  const childTaskIds = [...new Set(children)];
+  return { kind: 'epic', ...(childTaskIds.length > 0 ? { childTaskIds } : {}) };
 }
 
 /** E2 ① — `createTask` refused: a live task already holds this instruction thread. */
@@ -508,6 +549,8 @@ export class SessionRegistry {
   private sessionsByTaskId: Map<string, ConversationSession> = new Map();
   /** E2 ① — live Slack-less tasks by instruction thread (`channel:threadTs`); rebuilt from the records on load. */
   private tasksByOriginThread: Map<string, ConversationSession> = new Map();
+  /** E4 ① — live child tasks by their epic's task id; rebuilt from the records on load. */
+  private childrenByParent: Map<string, Set<ConversationSession>> = new Map();
   private logger = new Logger('SessionRegistry');
   private expiryCallbacks?: SessionExpiryCallbacks;
   private beforeSessionDelete?: BeforeSessionDeleteCallback;
@@ -955,6 +998,20 @@ export class SessionRegistry {
     if (session.taskId) this.sessionsByTaskId.set(session.taskId, session);
     // E2 ② — only a Slack-less task carries an input context.
     if (session.inputContext && session.slackless !== true) session.inputContext = undefined;
+    // E4 ① — only a Slack-less task carries the epic relation.
+    if (session.slackless !== true) {
+      session.kind = undefined;
+      session.parentTaskId = undefined;
+      session.planNodeId = undefined;
+      session.childTaskIds = undefined;
+    } else if (session.parentTaskId) {
+      let siblings = this.childrenByParent.get(session.parentTaskId);
+      if (!siblings) {
+        siblings = new Set();
+        this.childrenByParent.set(session.parentTaskId, siblings);
+      }
+      siblings.add(session);
+    }
     if (session.originThread) {
       const originKey = originThreadKey(session.originThread);
       const holder = this.tasksByOriginThread.get(originKey);
@@ -988,6 +1045,15 @@ export class SessionRegistry {
       const originKey = originThreadKey(session.originThread);
       if (this.tasksByOriginThread.get(originKey) === session) this.tasksByOriginThread.delete(originKey);
     }
+    if (session.parentTaskId) {
+      const siblings = this.childrenByParent.get(session.parentTaskId);
+      if (siblings?.delete(session) && siblings.size === 0) this.childrenByParent.delete(session.parentTaskId);
+    }
+  }
+
+  /** E4 ① — an epic's live child tasks, in no particular order (archived children are not live). */
+  getChildTasks(parentTaskId: string): ConversationSession[] {
+    return [...(this.childrenByParent.get(parentTaskId) ?? [])];
   }
 
   /**
@@ -1160,6 +1226,8 @@ export class SessionRegistry {
   createTask(input: CreateTaskInput): ConversationSession {
     if (!input.ownerId) throw new Error('createTask: ownerId is required');
     if (!input.workingDirectory) throw new Error('createTask: workingDirectory is required');
+    // E4 ① — the relation is checked before anything exists or is saved.
+    const parent = this.checkEpicRelation(input);
     let originThread: OriginThread | undefined;
     if (input.originThread !== undefined) {
       originThread = sanitizeOriginThread(input.originThread);
@@ -1178,6 +1246,11 @@ export class SessionRegistry {
       // The thread is owed the card's link, in this first strict save (D6).
       this.addTaskNotice(session, { id: `${session.taskId}:create:link`, kind: 'link', at: Date.now() });
     }
+    if (input.kind === 'epic') session.kind = 'epic';
+    if (parent) {
+      session.parentTaskId = parent.taskId;
+      session.planNodeId = input.planNodeId;
+    }
     const inputContext = sanitizeTaskInputContext(input.inputContext);
     if (inputContext) session.inputContext = inputContext;
     // A caller passed a context and nothing usable was left: the task runs
@@ -1189,17 +1262,51 @@ export class SessionRegistry {
     }
 
     const key = buildTaskSessionKey(session.taskId);
+    // E4 ① — the parent counts the child in the same save that creates it.
+    const parentChildren = parent?.childTaskIds;
+    if (parent) parent.childTaskIds = [...(parentChildren ?? []), session.taskId];
     this.putSession(key, session);
     try {
       this.saveSessionsOrThrow();
     } catch (error) {
       this.removeSession(key);
+      if (parent) parent.childTaskIds = parentChildren;
       this.logger.error('Task not created: saving it failed', { taskId: session.taskId });
       throw error;
     }
-    this.logger.info('Slack-less task created', { taskId: session.taskId, ownerId: session.ownerId });
+    this.logger.info('Slack-less task created', {
+      taskId: session.taskId,
+      ownerId: session.ownerId,
+      ...(session.kind ? { kind: session.kind } : {}),
+      ...(session.parentTaskId ? { parentTaskId: session.parentTaskId, planNodeId: session.planNodeId } : {}),
+    });
     if (session.notices) this.fireTaskNotices(key, session);
     return session;
+  }
+
+  /**
+   * E4 ① — the epic relation a `createTask` asks for, checked before anything
+   * is made: only `'epic'` is a kind; an epic has no parent (depth 1); a child
+   * needs a plan node id and a live epic of the same owner; a node id needs a
+   * parent. Returns the parent of a child.
+   */
+  private checkEpicRelation(input: CreateTaskInput): ConversationSession | undefined {
+    if (input.kind !== undefined && input.kind !== 'epic')
+      throw new Error(`createTask: unknown kind ${String(input.kind)}`);
+    if (input.parentTaskId === undefined) {
+      if (input.planNodeId !== undefined) throw new Error('createTask: a plan node needs a parent epic');
+      return undefined;
+    }
+    if (input.kind === 'epic') throw new Error('createTask: an epic cannot have a parent (depth 1)');
+    if (typeof input.planNodeId !== 'string' || !PLAN_NODE_ID.test(input.planNodeId)) {
+      throw new Error('createTask: a child needs a plan node id (a short lowercase slug)');
+    }
+    const parent = this.sessionsByTaskId.get(input.parentTaskId);
+    if (!parent || parent.slackless !== true || parent.kind !== 'epic') {
+      throw new Error(`createTask: parent ${input.parentTaskId} is not a live epic`);
+    }
+    if (parent.ownerId !== input.ownerId) throw new Error("createTask: a child is owned by its epic's owner");
+    return parent;
   }
 
   /** A fresh session object with every default a new session starts with (not yet registered). */
@@ -1463,6 +1570,7 @@ export class SessionRegistry {
       // E2 ① — back while it is free; `putSession` drops it if a live task holds the thread now.
       originThread: sanitizeOriginThread(archived.originThread),
       inputContext: sanitizeTaskInputContext(archived.inputContext),
+      ...sanitizeEpicRelation(archived as unknown as Record<string, unknown>, slackless),
       // A task runs in its own directory: the one its transcript proves it ran in (#612 R4).
       ...(slackless ? { workingDirectory: cwd } : {}),
       sessionId: archived.sessionId,
@@ -2932,6 +3040,10 @@ export class SessionRegistry {
             inputContext: session.inputContext,
             openChain: session.openChain,
             notices: session.notices,
+            kind: session.kind,
+            parentTaskId: session.parentTaskId,
+            planNodeId: session.planNodeId,
+            childTaskIds: session.childTaskIds,
             // Merge code change stats
             mergeStats: session.mergeStats,
             // User SSOT instructions (persisted)
@@ -3070,6 +3182,7 @@ export class SessionRegistry {
         slackless: serialized.slackless === true ? true : undefined,
         originThread: sanitizeOriginThread(serialized.originThread),
         inputContext: sanitizeTaskInputContext(serialized.inputContext),
+        ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, serialized.slackless === true),
         lastTurnOutcome: sanitizeTaskTurnOutcome(serialized.lastTurnOutcome),
         sessionId: serialized.sessionId,
         isActive: false,
@@ -3296,6 +3409,7 @@ export class SessionRegistry {
           // E2 ① — a malformed instruction thread is dropped; `putSession` drops one on a Slack session.
           originThread: sanitizeOriginThread(serialized.originThread),
           inputContext: sanitizeTaskInputContext(serialized.inputContext),
+          ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, slackless),
           openChain:
             slackless && typeof serialized.openChain === 'string' && serialized.openChain !== ''
               ? serialized.openChain
