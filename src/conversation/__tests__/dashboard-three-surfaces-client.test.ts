@@ -43,7 +43,12 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
+/** The page's chrome words (STRINGS), as served: the board's Korean words live there (D2 group 6). */
+const PAGE_STRINGS = new Function(
+  `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
+)();
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, extra: string[] = []): T {
+  inject = { STRINGS: PAGE_STRINGS, ...inject };
   const names = Object.keys(inject);
   const extraNames = extra.map((src) => /^function (\w+)/.exec(src)?.[1] ?? '').filter(Boolean);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${extra.join('\n')}\nreturn { ${[...fns, ...extraNames].join(', ')} };`;
@@ -179,7 +184,15 @@ const TREE_FNS = [
   'cardTaskRow',
   'atCardData',
 ];
-const TREE_VARS = ['AGENT_STATUS_LABEL', 'AT_ROOT', 'AT_STATUS', 'AT_ROOT_STATUS', '_anOpen'];
+const TREE_VARS = [
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'AT_ROOT',
+  'AT_STATUS',
+  'AT_ROOT_STATUS',
+  '_anOpen',
+];
 type TreeNode = Record<string, unknown> & { id: string; status: string };
 type TreeData = { nodes: TreeNode[]; density: string; title: string; expanded: string[] };
 
@@ -282,6 +295,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     renderTimeline: () => '[TASKS]',
     // affectUI batch 1: the prompts and the single-choice question are <ui-approval-card> slots.
     acPermissionsHtml: () => '',
+    acGoalDecisionHtml: () => '',
     acQuestionHtml: () => '[Q]',
     renderMultiChoiceCard: () => '[MC]',
     renderModelNote: () => '',
@@ -307,12 +321,14 @@ describe('expanded body — face + delta, sections keyed on state', () => {
         'cardSummary',
         'cardCurrentTask',
         'renderCardResume',
+        'taskOutcomeHtml',
         'isBusy',
+        'sessionActionsOf',
         'sessionActionHtml',
         'cardGoalLine',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_SVG', 'SESSION_ACTION_ARIA', '_busy'],
+      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy'],
       { ...STUBS, ...inject },
     ).renderCardBody(s, col);
 
@@ -349,7 +365,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(html).not.toContain('[ARTS]');
-    expect(html).toContain('btn-stop');
+    expect(html).toContain('data-action="stop"');
   });
 
   it('needs you: the ask first, then the latest exchange and the evidence (artifacts), then the work', () => {
@@ -358,7 +374,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     const order = ['[Q]', '[IO]', '[ARTS]', '[TASKS]', '[AGENTS]'].map((m) => html.indexOf(m));
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
-    expect(html).toContain('btn-close');
+    expect(html).toContain('data-action="close"');
   });
 
   it('a permission prompt heads the body whatever the column; an armed resume heads a running card', () => {
@@ -373,8 +389,8 @@ describe('expanded body — face + delta, sections keyed on state', () => {
       'working',
     );
     expect(resume.indexOf('class="card-resume"')).toBeLessThan(resume.indexOf('[TASKS]'));
-    expect(resume).toContain('btn-close');
-    expect(resume).not.toContain('btn-stop');
+    expect(resume).toContain('data-action="close"');
+    expect(resume).not.toContain('data-action="stop"');
   });
 
   it('done (idle / closed): the outcome — latest exchange, artifacts, agents, goal — no task window', () => {
@@ -402,10 +418,10 @@ describe('expanded body — face + delta, sections keyed on state', () => {
       true,
     );
     const bar = html.slice(0, html.indexOf('</span></div>') + '</span></div>'.length);
-    expect(bar).toContain('btn-stop');
+    expect(bar).toContain('data-action="stop"');
     expect(bar).toContain('href="https://slack/x"');
     // The bar is above the work: the task window, the agents, the latest exchange.
-    expect(html.indexOf('btn-stop')).toBeLessThan(html.indexOf('[TASKS]'));
+    expect(html.indexOf('data-action="stop"')).toBeLessThan(html.indexOf('[TASKS]'));
     expect(html).not.toContain('작업 로그</button>');
     const foot = html.slice(html.indexOf('class="card-foot-bar"'));
     expect(foot).toBe('class="card-foot-bar"><span class="cfb-model">[MODEL]</span></div></div>');
@@ -415,7 +431,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     const read = body(card(), 'working', { currentUserId: 'U2' });
     expect(read.slice(read.indexOf('class="card-foot-bar"'))).toContain('[MODEL][EFFORT]');
     // A reader's state action is in the bar too (disabled, read-only), never in the foot.
-    expect(read.slice(read.indexOf('class="card-foot-bar"'))).not.toContain('btn-stop');
+    expect(read.slice(read.indexOf('class="card-foot-bar"'))).not.toContain('data-action="stop"');
     // The switch is not the body's first line.
     expect(html.indexOf('[MODEL]')).toBeGreaterThan(html.indexOf('[IO]'));
   });
@@ -512,9 +528,26 @@ describe('task window on the card — the full ledger is the panel', () => {
 });
 
 // ── 3. The panel: understand and steer ──
-describe('panel header — the session chip and its one action', () => {
-  const head = (s: Record<string, unknown>, col: string, inject: Record<string, unknown> = {}) =>
-    load<{ panelHeadHtml(s: unknown, col: string): string }>(
+// D3 E-08: the head is <ui-status-bar>; the page hands it data (panelHeadData) and an armed
+// resume as a note in its slot (panelHeadNoteHtml), and answers its ui-action (onPanelHeadAction).
+type BarData = {
+  status: string;
+  words: Record<string, string>;
+  startedAt?: number;
+  activeMs?: number;
+  link?: { id: string; href: string; label: string };
+  actions: Array<{
+    id: string;
+    label: string;
+    tone?: string;
+    icon?: string;
+    disabled?: string | boolean;
+    busy?: boolean;
+  }>;
+};
+describe('panel header — <ui-status-bar>: the session status, its time and its actions', () => {
+  const page = (inject: Record<string, unknown> = {}) =>
+    load<{ panelHeadData(s: unknown, col: string): BarData; panelHeadNoteHtml(s: unknown, col: string): string }>(
       [
         'esc',
         'escAttr',
@@ -524,63 +557,106 @@ describe('panel header — the session chip and its one action', () => {
         'pendingAutoResume',
         'autoResumeLabel',
         'rootStatusOf',
-        'agentIconHtml',
         'isBusy',
-        'sessionActionHtml',
-        'panelHeadHtml',
+        'sessionActionsOf',
+        'panelHeadData',
+        'panelHeadNoteHtml',
       ],
-      ['AGENT_STATUS_LABEL', 'SESSION_ACTION_ARIA', '_busy'],
+      ['AGENT_STATUS_LABEL', 'PS_BAR_STATUS'],
       {
         currentUserId: 'U1',
         SELF_INSTANCE_NAME: '',
         READ_ONLY_MSG: 'read only',
-        safeHref: (u: string) => u,
-        isSiblingSession: () => false,
+        _busy: Object.create(null),
         ...inject,
       },
-    ).panelHeadHtml(s, col);
+    );
+  const head = (s: Record<string, unknown>, col: string, inject: Record<string, unknown> = {}) =>
+    page(inject).panelHeadData(s, col);
 
-  it('a running session: 세션 · 실행 중 (announced), 시작 HH:MM · this turn’s live time, Slack, and Stop', () => {
-    const html = head(card(), 'working');
-    expect(html).toContain('class="ps-chip is-running"');
-    expect(html).toContain('<span class="ps-label">세션</span>');
-    expect(html).toContain('<span class="ps-word" role="status">실행 중</span>');
+  it('a running session: 실행 중, this turn’s start (the bar ticks its elapsed time), Slack, and Stop (two presses)', () => {
+    const d = head(card(), 'working');
+    expect(d.status).toBe('running');
+    expect(d.words.running).toBe('실행 중');
     // re-agent-run D18: the head times this turn from its start; the session's Σ active time is in 세부 (D19).
-    expect(html).toContain('시작 ');
-    expect(html).toContain('class="card-timer-live" data-leg-started="' + T0 + '" data-accumulated="0"');
-    expect(html).toContain('href="https://slack/x"');
-    expect(html).toContain('btn-stop');
-    // The accessible name keeps the visible label first (WCAG 2.5.3).
-    expect(html).toContain('aria-label="Stop — 세션 중지"');
+    expect(d.startedAt).toBe(T0);
+    expect(d.activeMs).toBeUndefined();
+    expect(d.link).toEqual({ id: 'slack', href: 'https://slack/x', label: 'Slack' });
+    const stop = d.actions.find((a) => a.id === 'stop');
+    expect(stop).toMatchObject({ label: 'Stop', tone: 'danger', icon: 'stop' });
+    expect(stop?.disabled).toBeUndefined();
+    expect(d.actions.map((a) => a.id)).toEqual(['star', 'stop']);
+  });
+
+  it('not running: the session’s total active time instead of a clock', () => {
+    const d = head(card({ activityState: 'idle' }), 'idle');
+    expect(d.startedAt).toBeUndefined();
+    expect(d.activeMs).toBe(65_000);
   });
 
   it('idle → Close, archived → Trash, sleeping → Close; the words follow the root vocabulary', () => {
-    expect(head(card({ activityState: 'idle' }), 'idle')).toContain('aria-label="Close — 세션 종료"');
+    const idle = head(card({ activityState: 'idle' }), 'idle');
+    expect(idle.status).toBe('idle');
+    expect(idle.words.idle).toBe('대기');
+    expect(idle.actions.map((a) => a.id)).toEqual(['star', 'close']);
+    expect(idle.actions[1].tone).toBeUndefined();
     const archived = head(card({ activityState: 'idle', terminated: true }), 'closed');
-    expect(archived).toContain('btn-trash');
-    expect(archived).toContain('>보관</span>');
-    expect(head(card({ activityState: 'idle' }), 'closed')).toContain('>휴면</span>');
+    expect(archived.actions.map((a) => a.id)).toEqual(['star', 'revive', 'trash']);
+    expect(archived.words.idle).toBe('보관');
+    const sleeping = head(card({ activityState: 'idle' }), 'closed');
+    expect(sleeping.words.idle).toBe('휴면');
+    expect(sleeping.actions.map((a) => a.id)).toEqual(['star', 'revive', 'close']);
   });
 
-  it('an armed resume says when, which attempt and why', () => {
-    const html = head(
-      card({
-        activityState: 'idle',
-        autoResume: { kind: 'error-retry', at: T0, attempt: 2, maxAttempts: 3, reason: '429 rate limit' },
-      }),
-      'working',
-    );
-    expect(html).toContain('>재개 대기</span>');
-    expect(html).toContain('class="ps-resume" title="429 rate limit"');
-    expect(html).toContain('자동 재개 · 시도 2/3');
+  it('an armed resume reads 재개 대기 and says when, which attempt and why in the bar’s slot', () => {
+    const s = card({
+      activityState: 'idle',
+      autoResume: { kind: 'error-retry', at: T0, attempt: 2, maxAttempts: 3, reason: '429 rate limit' },
+    });
+    const m = page();
+    const d = m.panelHeadData(s, 'working');
+    expect(d.status).toBe('waiting');
+    expect(d.words.waiting).toBe('재개 대기');
+    expect(d.startedAt).toBeUndefined();
+    expect(d.actions.map((a) => a.id)).toEqual(['star', 'close']);
+    const note = m.panelHeadNoteHtml(s, 'working');
+    expect(note).toContain('class="ps-resume" title="429 rate limit"');
+    expect(note).toContain('자동 재개 · 시도 2/3');
+    expect(m.panelHeadNoteHtml(card(), 'working')).toBe('');
   });
 
-  it('a reader who does not own it, or a sibling instance, gets a disabled action', () => {
-    expect(head(card({ ownerId: 'U9' }), 'working')).toMatch(/btn-stop"[^>]* disabled/);
+  it('a reader who does not own it, or a sibling instance, gets a locked action that says why', () => {
+    const ro = head(card({ ownerId: 'U9' }), 'working');
+    for (const a of ro.actions) expect(a.disabled, a.id).toBe('read only');
     const sib = head(card({ environment: { instanceName: 'other', host: 'h', port: 1 } }), 'working', {
       SELF_INSTANCE_NAME: 'me',
     });
-    expect(sib).toMatch(/btn-stop" disabled/);
+    expect(sib.actions).toHaveLength(1);
+    expect(sib.actions[0].label).toBe('Stop \u2192 other');
+    expect(sib.actions[0].disabled).toBe('Open other (h:1) to act on this session');
+    expect(sib.actions[0].tone).toBeUndefined();
+  });
+
+  it('a write in flight is busy in the bar (Stop / Close / Trash; Star and 살리기 together)', () => {
+    const d = head(card(), 'working', { _busy: { 'inst::C1:t1|action': true, 'inst::C1:t1|life': true } });
+    for (const a of d.actions) expect(a.busy, a.id).toBe(true);
+  });
+
+  it('the page wires the bar: one listener, the session it was drawn for, the Slack link left to the browser', () => {
+    const src = clientFn('renderPanelHead');
+    expect(src).toContain("el.addEventListener('ui-action', onPanelHeadAction)");
+    expect(src).toContain('el._key = key;');
+    // Equal data is not handed again: an armed Stop and its pending busy survive live repaints.
+    expect(src).toContain('if (el._sig === sig) return;');
+    const on = clientFn('onPanelHeadAction');
+    expect(on).toContain("id === 'slack'");
+    expect(on).toContain('doStar(key, s.starred !== true)');
+    expect(on).toContain('doRevive(key)');
+    expect(on).toContain('doAction(key, id)');
+    expect(PAGE).toContain('<ui-status-bar class="panel-status" id="panel-status" lang="ko"></ui-status-bar>');
+    expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/status-bar.js?v=');
+    expect(TEMPLATE).not.toMatch(/\.ps-(row|chip|label|word|time|clock|dot|actions|slack) /);
+    expect(TEMPLATE).not.toMatch(/\.panel-status:empty/);
   });
 });
 
@@ -601,7 +677,7 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
         'panelDetailsHtml',
         'panelInfoHtml',
       ],
-      ['PI_CHEV_SVG', '_cw'],
+      ['_cw'],
       {
         formatTokens: (n: number) => `${n}`,
         formatNmSSs: (n: number) => `${n}ms`,
@@ -612,8 +688,8 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
 
   it('collapsed: owner · workflow · tokens · cost · context · last activity (live), and the links stay in view', () => {
     const html = info(card(), false);
-    expect(html).toContain('aria-expanded="false"');
-    const sum = html.slice(html.indexOf('class="pi-sum"'), html.indexOf('</button>'));
+    expect(html).toContain('<ui-disclosure class="pi-dc" flush>');
+    const sum = html.slice(html.indexOf('class="pi-sum"'), html.indexOf('</ui-disclosure>'));
     for (const want of ['Zhuge', 'zwork', '9591000 tok', '$12.40', 'ctx 31%', 'class="rel-time"'])
       expect(sum, want).toContain(want);
     expect(html).toContain('PROJ-1 &mdash; Dashboard surfaces');
@@ -626,7 +702,7 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
   // (dashboard-affectui-context-window-client.test.ts); the token rows say they are session totals.
   it('open: every token kind (cumulative), cost, Σ · compactions · sessions, merge — no old context bar', () => {
     const html = info(card(), true);
-    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('<ui-disclosure class="pi-dc" flush open>');
     const b = html.slice(html.indexOf('class="pi-body"'));
     for (const want of [
       '입력',
@@ -663,8 +739,10 @@ describe('panel goal — the full editor moved here, its draft safe across live 
 
   it('goal writes re-render the panel goal (not only the card) and read the live form from it', () => {
     expect(clientFn('setGoalError')).toContain('renderPanelGoal()');
-    // The 완료된 goal toggle lives in the panel now: it must repaint the panel's goal.
-    expect(clientFn('toggleGoalHistory')).toContain('renderPanelGoal()');
+    // The 완료된 goal toggle lives in the panel now: its choice (the disclosure's ui-toggle) must repaint the panel's
+    // goal — on the way open, and again once the fold settled (D4 K-06).
+    expect(clientFn('goalHistoryToggle')).toContain('renderPanelGoal()');
+    expect(clientFn('goalHistoryFolded')).toContain('renderPanelGoal()');
     // After the await, only this session's form — never another session's draft.
     expect(clientFn('addGoalFromCard')).toContain(
       "panelSessionKey === key ? document.getElementById('panel-goal') : null",
@@ -731,7 +809,7 @@ describe('one live path for the whole panel', () => {
       'psec-log',
       'worklog-list',
       'psec-conv',
-      'panel-turns',
+      'panel-conv',
     ];
     const at = ids.map((id) => scroll.indexOf(`id="${id}"`));
     expect(at.every((i) => i > 0)).toBe(true);
@@ -776,10 +854,13 @@ describe('landing follows the opening intent (executed)', () => {
       },
     });
     const tasks = section('panel-tasks', !opts.tasksHidden);
+    // D4 E-19: the agent strip is <ui-tabs>' sticky list; its height is the shared panel's top against the host's.
+    const tabsAt = (y: number) => ({ getBoundingClientRect: (): Rect => ({ top: y, bottom: y, height: 0 }) });
     const els: Record<string, unknown> = {
       'panel-scroll': scroll,
       'panel-tasks': tasks,
-      'panel-tabs': opts.tabs === undefined ? null : { offsetHeight: opts.tabs },
+      'panel-tabs': opts.tabs === undefined ? null : tabsAt(500),
+      'panel-tabpanel': opts.tabs === undefined ? null : tabsAt(500 + opts.tabs),
       'panel-goal': section('panel-goal'),
       'panel-agents': section('panel-agents'),
       'panel-sections': section('panel-sections'),
@@ -794,7 +875,7 @@ describe('landing follows the opening intent (executed)', () => {
       'panel-question': section('panel-question', !!opts.question),
     };
     const m = load<{ landPanel(): void; state(): { landed: boolean } }>(
-      ['psecLandingTop', 'landPanel'],
+      ['psecLandingTop', 'panelTabsHeight', 'landPanel'],
       ['_panelOnQuestion'],
       { document: { getElementById: (id: string) => els[id] ?? null } },
       [
@@ -869,7 +950,7 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
   it('Escape / × from inside the panel → the opener; gone or inert → the open card’s 작업 로그, else the heading; focus elsewhere → untouched', () => {
     const run = (o: { inPanel: boolean; present: boolean; inert?: boolean; cardOpen?: boolean }) => {
       const focused: string[] = [];
-      const panel = { classList: { remove() {} } };
+      const panel = { hide() {} };
       // focus() moves document.activeElement, except into an inert (folded) card.
       const el = (name: string, inert = false) => {
         const node: Record<string, unknown> = {
@@ -884,7 +965,7 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
       };
       const heading = el('heading');
       const doc: Record<string, unknown> = {
-        getElementById: (id: string) => (id === 'slide-panel' || id === 'panel-overlay' ? panel : null),
+        getElementById: (id: string) => (id === 'slide-panel' ? panel : null),
         querySelector: (sel: string) => (sel === '.board-title, h1, h2' ? heading : null),
       };
       const opener = el('opener', !!o.inert);
@@ -935,6 +1016,55 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
     expect(run({ inPanel: true, present: false, cardOpen: false })).toEqual(['heading']); // the card is closed
     expect(run({ inPanel: false, present: true })).toEqual([]); // the reader already moved on
   });
+
+  // D4 K-06: the 산출물 part is written through writePanelPart (a morph; nothing when the html is what it last
+  // wrote). A close empties the part directly, so it must also forget what it wrote — else the same card
+  // reopened finds its strip "unchanged" and stays empty.
+  it('a closed panel forgets the 산출물 part it wrote, so the same card reopened paints its strip again', () => {
+    const arts = { innerHTML: '', style: { display: '' } };
+    const panel = { hide() {} };
+    const doc = {
+      getElementById: (id: string) => (id === 'slide-panel' ? panel : id === 'panel-artifacts' ? arts : null),
+      querySelector: () => null,
+      body: { contains: () => false },
+      activeElement: { closest: () => null },
+    };
+    const m = load<{ closePanel(): void; writePanelPart(el: unknown, html: string): boolean }>(
+      ['deckRemove', 'closePanel', 'writePanelPart'],
+      [],
+      {
+        document: doc,
+        renderDeckNav: () => {},
+        layoutBeforeChange: () => {},
+        resetWorkLog: () => {},
+        _cardBodies: {},
+        pcReset: () => {},
+        _ansIo: null,
+        psecClear: () => {},
+        psecSetNew: () => {},
+        morphInnerHtml: (e: { innerHTML: string }, h: string) => {
+          e.innerHTML = h;
+        },
+        updateTimersIn: () => {},
+      },
+      [
+        'var panelOpen = true, panelSessionKey = "k", panelConvId = "c", _panelAgent = "", _panelAgentsHtml = "", _rawLoadedCache = {}, _panelGen = 0;',
+        'var _panelTurnsHasMore = false, _panelTurnsLoading = false, _panelTurnsOldestId = null, _panelLand = "", _panelLanded = false;',
+        'var _panelTurnsList = [], _panelTurnsMsg = "", PSEC_ORDER = ["conv", "log", "tree"], _panelHold = false;',
+        'var _panelOnQuestion = false, _panelReturnFocus = null, _ansFailed = {}, _panelOlderWhy = "", _panelTurnsWhy = "";',
+        'var _deck = ["k"];',
+      ],
+    );
+    const strip = '<div class="art-strip-panel">report.html</div>';
+    expect(m.writePanelPart(arts, strip)).toBe(true);
+    expect(arts.innerHTML).toBe(strip);
+    m.closePanel();
+    expect(arts.innerHTML).toBe('');
+    expect(arts.style.display).toBe('none');
+    // The card reopened: the same strip is written again, not skipped as unchanged.
+    expect(m.writePanelPart(arts, strip)).toBe(true);
+    expect(arts.innerHTML).toBe(strip);
+  });
 });
 
 // SSOT 2026-10-29 T2 — the detail deck: an open card always has its detail card beside the
@@ -946,8 +1076,7 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
 describe('the detail deck — open cards and their detail cards move together (SSOT 2026-10-29 T2)', () => {
   const pure = load<{
     deckNextAfter(deck: string[], key: string): string | null;
-    deckStep(deck: string[], key: string | null, dir: number): string | null;
-  }>(['deckNextAfter', 'deckStep'], []);
+  }>(['deckNextAfter'], []);
 
   it('deckNextAfter (pure): the next card, else the one before; null when it was the last', () => {
     const deck = ['a', 'b', 'c'];
@@ -961,17 +1090,6 @@ describe('the detail deck — open cards and their detail cards move together (S
     expect(deck).toEqual(['a', 'b', 'c']); // it never changes the deck
   });
 
-  it('deckStep (pure): one step either way, wrapping round; a key not in the deck starts at the first', () => {
-    const deck = ['a', 'b', 'c'];
-    expect(pure.deckStep(deck, 'a', 1)).toBe('b');
-    expect(pure.deckStep(deck, 'c', 1)).toBe('a');
-    expect(pure.deckStep(deck, 'a', -1)).toBe('c');
-    expect(pure.deckStep(deck, 'b', -1)).toBe('a');
-    expect(pure.deckStep(['a'], 'a', 1)).toBe('a');
-    expect(pure.deckStep(deck, null, 1)).toBe('a');
-    expect(pure.deckStep([], 'a', 1)).toBeNull();
-  });
-
   // The real wireInbox, cardFaceOf, closeDetailCard and deck functions against a fake board
   // element: its cards are <li class="ib-card" data-card> in a shadow root, each with a face
   // (.ib-face[role="button"]) whose click toggles the card and fires ui-toggle, as the element
@@ -979,7 +1097,7 @@ describe('the detail deck — open cards and their detail cards move together (S
   // the shipped source below).
   type Deck = {
     wireInbox(host: unknown): void;
-    deckGo(dir: number): void;
+    onDeckPage(e: unknown): void;
     deckDrop(key: string): void;
     closeDetailCard(): void;
     cardFaceOf(key: string): unknown;
@@ -1025,8 +1143,7 @@ describe('the detail deck — open cards and their detail cards move together (S
         'deckAdd',
         'deckRemove',
         'deckNextAfter',
-        'deckStep',
-        'deckGo',
+        'onDeckPage',
         'deckDrop',
         'cardFaceOf',
         'closeDetailCard',
@@ -1050,7 +1167,7 @@ describe('the detail deck — open cards and their detail cards move together (S
         scheduleLayoutRefresh: () => {},
         placeCard: () => {},
         inboxPaint: () => {},
-        openArtifactModal: () => {},
+        openArtifactViewer: () => {},
         renderDeckNav: (dir: number) => nav.push(dir),
       },
       [
@@ -1061,7 +1178,11 @@ describe('the detail deck — open cards and their detail cards move together (S
       ],
     );
     m.wireInbox(host);
-    return { m, log, nav, clicked, toggle, cache, cardHost, host };
+    // <ui-deck-nav>'s ui-page (D3 E-05): the place it moved to, in the deck it was drawn for (renderDeckNav
+    // hands it the keys with the data); the element steps and wraps round itself (its wrap attribute).
+    const page = (index: number, keys = m.state().deck) =>
+      m.onDeckPage({ currentTarget: { _keys: keys }, detail: { index, from: 0 } });
+    return { m, log, nav, clicked, toggle, cache, cardHost, host, page };
   };
 
   it('ui-toggle: opening a card opens its detail card in front; the deck keeps the opening order', () => {
@@ -1144,25 +1265,34 @@ describe('the detail deck — open cards and their detail cards move together (S
     w.toggle('A');
     w.toggle('B');
     w.toggle('C');
-    w.m.deckGo(-1); // B in front, C behind it
+    w.page(1); // B in front, C behind it
     expect(w.m.state().front).toBe('B');
     delete w.cache.C; // C left the board
     w.toggle('B'); // B folds: its next would be C — gone, so A comes forward
     expect(w.m.state()).toMatchObject({ deck: ['A'], front: 'A' });
   });
 
-  it('deckGo: ‹ › go round the deck in opening order', () => {
+  it('ui-page: ‹ › (round the end — the element wraps) bring the card at that place in the deck to the front', () => {
     const w = world();
     for (const k of ['A', 'B', 'C']) w.toggle(k);
     expect(w.m.state().front).toBe('C');
-    w.m.deckGo(1);
+    w.page(0); // › from the last: round to the first
     expect(w.m.state().front).toBe('A');
-    w.m.deckGo(-1);
+    w.page(2); // ‹ from the first: round to the last
     expect(w.m.state().front).toBe('C');
-    w.m.deckGo(-1);
+    w.page(1);
     expect(w.m.state().front).toBe('B');
     // Going round never changes the deck or which cards are open.
     expect(w.m.state()).toMatchObject({ deck: ['A', 'B', 'C'], expanded: ['A', 'B', 'C'] });
+    // The front card again, a place past the end, or a session gone since the nav was drawn: nothing opens.
+    const opened = w.log.length;
+    w.page(1);
+    w.page(7);
+    delete w.cache.A;
+    w.page(0);
+    expect(w.log).toHaveLength(opened);
+    expect(PAGE).toContain('<ui-deck-nav class="panel-deck" id="panel-deck" lang="ko" wrap hidden></ui-deck-nav>');
+    expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/deck-nav.js?v=');
   });
 
   it('the shipped openPanel / closePanel / wireInbox / Escape / cron drawer do their part of the deck', () => {
@@ -1182,10 +1312,11 @@ describe('the detail deck — open cards and their detail cards move together (S
     expect(wire).not.toContain('panelSessionKey');
     // Escape (outside the viewer and the cron drawer) closes the front detail card, folding its card.
     expect(TEMPLATE).toContain(
-      "if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();",
+      // D1 (C-05): <ui-drawer> takes the key (preventDefault) before the page's listener; the panel leaves it be.
+      "if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artViewerIsOpen() && !_cronDrawerKey) closeDetailCard();",
     );
     // A cron run opens its session's detail card on its default (Chat), not on the 작업 로그.
-    expect(TEMPLATE).toContain('closeCronDrawer(); openPanel(k); }');
+    expect(TEMPLATE).toContain('closeCronDrawer(function() { openPanel(k); }); }');
     expect(TEMPLATE).not.toContain('closeCronDrawer(); openPanel(k, true);');
   });
 
@@ -1212,10 +1343,11 @@ describe('the detail deck — open cards and their detail cards move together (S
         return parts;
       },
     };
-    for (const id of ['panel-deck', 'panel-deck-pos', 'panel-deck-prev', 'panel-deck-next']) els[id] = {};
+    const listeners: string[] = [];
+    els['panel-deck'] = { addEventListener: (n: string) => listeners.push(n) };
     const rig = (deck: string[], front: string) =>
       load<{ renderDeckNav(dir: number): void; deckNow(): string[] }>(
-        ['renderDeckNav', 'deckStep', 'deckSlide'],
+        ['renderDeckNav', 'onDeckPage', 'deckSlide'],
         ['DECK_SLIDE_MS'],
         {
           document: { getElementById: (id: string) => els[id] ?? null },
@@ -1237,9 +1369,18 @@ describe('the detail deck — open cards and their detail cards move together (S
     expect(r.deckNow()).toEqual(['A', 'B', 'C']);
     expect(attrs['data-deck']).toBe('2');
     expect(els['panel-deck'].hidden).toBe(false);
-    expect(els['panel-deck-pos'].textContent).toBe('2 / 3');
-    expect(els['panel-deck-prev'].title).toBe('이전: Alpha');
-    expect(els['panel-deck-next'].title).toBe('다음: Gamma');
+    // <ui-deck-nav> draws ‹ 2 / 3 › and titles its buttons 이전: Alpha / 다음: Gamma from these.
+    expect(els['panel-deck'].data).toEqual({
+      count: 3,
+      index: 1,
+      titles: ['Alpha', 'Beta', 'Gamma'],
+      label: '열린 작업 카드',
+    });
+    expect(els['panel-deck']._keys).toEqual(['A', 'B', 'C']);
+    const handed = els['panel-deck'].data;
+    r.renderDeckNav(0);
+    expect(els['panel-deck'].data).toBe(handed); // the same deck is not handed again
+    expect(listeners).toEqual(['ui-page']); // one listener, however often it paints
     expect(selector).toBe('.panel-header, .panel-body');
     expect(slides.map((x) => x.part)).toEqual(['header', 'header', 'body', 'body']);
     const [move, fade] = slides;
@@ -1384,7 +1525,15 @@ describe('a live goal update never rebinds a focused control to another goal (ex
         'isBusy',
         'renderCardGoal',
       ],
-      ['GOAL_STATUS_LABELS', 'GOAL_SVG', 'GOAL_VIA_LABELS', '_goalHistoryOpen', '_goalErrors', '_busy'],
+      [
+        'GOAL_STATUS_LABELS',
+        'GOAL_STATUS_TONE',
+        'GOAL_SVG',
+        'GOAL_VIA_LABELS',
+        '_goalHistoryOpen',
+        '_goalErrors',
+        '_busy',
+      ],
     );
     const html = goal.renderCardGoal(card(), 'working', true);
     expect(html).toContain('data-mk="goal:g1"');
@@ -1434,8 +1583,8 @@ describe('focus inside the goal section after its goal left (executed)', () => {
     m.renderPanelGoal();
     expect(doc.activeElement).toBe(el);
     expect(classes.has('is-empty')).toBe(false); // the session has a current goal
-    // A card switch starts the composer clean: a fresh <ui-agent-steering> and no files.
-    expect(clientFn('openPanel')).toMatch(/if \(!sameSession\) \{\s*pcFreshSteer\(\);\s*pcReset\(\);/);
+    // A card switch starts the composer clean: a fresh <ui-agent-steering> with a fresh composer (no text, no files).
+    expect(clientFn('openPanel')).toMatch(/if \(!sameSession\) \{\s*pcFreshSteer\(\);\s*\/\//);
   });
 });
 
@@ -1452,37 +1601,28 @@ describe('the composer follows the session live (executed)', () => {
       set: (d: Record<string, unknown>) => writes.push(d),
     });
     const host: Record<string, unknown> = {};
-    // Task view T1.5: the composer's tools (attach, image, voice) follow the field.
-    const tools = { 'pc-attach': { disabled: false }, 'pc-image': { disabled: false }, 'pc-mic': { disabled: false } };
-    const els: Record<string, unknown> = { 'panel-command': host, 'cmd-steer': el, ...tools };
+    // D4 E-30: the field, tools and files are the slotted <ui-composer>'s — the steering turns it off with its own
+    // field (library: agent-steering.test.ts 'read-only or ended: the composer is off with the steering’s words').
+    const els: Record<string, unknown> = { 'panel-command': host, 'cmd-steer': el };
     let resets = 0;
-    let held = 0;
     const m = load<{ renderPanelComposer(s: unknown, force?: boolean): void }>(
-      ['renderPanelComposer', 'pcModeOf', 'steeringData'],
-      ['STEER_STATE'],
+      // #640 R2: the pass also applies the composer's file rule (no composer in this harness).
+      ['renderPanelComposer', 'pcModeOf', 'pcToolsOpen', 'steeringData', 'pcComposerSetup', 'pcComposerData'],
+      ['STEER_STATE', 'PC_LIMITS', 'PC_NO_FILES'],
       {
         document: { getElementById: (id: string) => els[id] ?? null },
         currentUserId: 'U1',
-        pcHeldFiles: () => held,
         pcReset: () => {
           resets++;
         },
       },
     );
-    const toolsDisabled = () => Object.values(tools).map((t) => t.disabled);
     const last = () => writes[writes.length - 1];
     m.renderPanelComposer({ ownerId: 'U1', activityState: 'working' }, true);
-    expect(last()).toEqual({ running: true, canAct: true, disabled: false, items: [], attachments: 0 });
-    expect(toolsDisabled()).toEqual([false, false, false]);
+    expect(last()).toEqual({ running: true, canAct: true, disabled: false, items: [] });
     expect(resets).toBe(0);
-    // A file chip added: the element learns the page holds one (an empty note may then go).
-    held = 1;
-    m.renderPanelComposer({ ownerId: 'U1', activityState: 'working' });
-    expect(last()?.attachments).toBe(1);
-    held = 0;
     m.renderPanelComposer({ ownerId: 'U1', terminated: true });
     expect(last()).toMatchObject({ running: false, disabled: true, canAct: true });
-    expect(toolsDisabled()).toEqual([true, true, true]);
     expect(resets).toBe(1); // the files and any recording were for the open session
     // The same state again writes nothing (the field's text and an IME composition are the element's).
     const n = writes.length;
@@ -1494,10 +1634,46 @@ describe('the composer follows the session live (executed)', () => {
     // Someone else's session: read-only — the queue shows, nothing can be done (like Stop).
     m.renderPanelComposer({ ownerId: 'U2', activityState: 'working' });
     expect(last()).toMatchObject({ canAct: false, disabled: false });
-    expect(toolsDisabled()).toEqual([true, true, true]);
     m.renderPanelComposer({ activityState: 'working' }); // no ownerId: fail closed
     expect(last()).toMatchObject({ canAct: false });
     expect(clientFn('repaintPanelSession')).toContain('renderPanelComposer(s);');
+  });
+
+  // #640 R2 (astra): a dashboard task takes no attachments (D8) — not by the
+  // composer's tools, and not by a paste or a drop on it either (the composer
+  // takes those itself: its accept refuses every file).
+  it('a dashboard task’s composer takes no files: no attach / image / voice tools, every file refused by type', () => {
+    const el: Record<string, unknown> = {};
+    const host: Record<string, unknown> = {};
+    const composer: { data?: Record<string, unknown> } = {};
+    const els: Record<string, unknown> = { 'panel-command': host, 'cmd-steer': el, 'pc-composer': composer };
+    const m = load<{ renderPanelComposer(s: unknown, force?: boolean): void }>(
+      ['renderPanelComposer', 'pcModeOf', 'pcToolsOpen', 'steeringData', 'pcComposerSetup', 'pcComposerData'],
+      ['STEER_STATE', 'PC_LIMITS', 'PC_NO_FILES'],
+      {
+        document: { getElementById: (id: string) => els[id] ?? null },
+        currentUserId: 'U1',
+        pcReset: () => {},
+      },
+    );
+    m.renderPanelComposer({ ownerId: 'U1', activityState: 'idle' }, true);
+    expect(host._takesFiles).toBe(true);
+    expect(composer.data).not.toHaveProperty('accept'); // the element's defaults: every tool, any file
+    expect(composer.data).not.toHaveProperty('attach');
+    m.renderPanelComposer({ ownerId: 'U1', activityState: 'idle', slackless: true }, true); // another card: forced
+    expect(host._mode).toBe('open');
+    expect(host._takesFiles).toBe(false);
+    expect(composer.data).toMatchObject({
+      attach: false,
+      image: false,
+      voice: false,
+      accept: 'application/x-soma-no-attachments',
+    });
+    // Back on a Slack session: the tools and every file type return (the task keys are dropped).
+    m.renderPanelComposer({ ownerId: 'U1', activityState: 'idle' }, true);
+    expect(composer.data).not.toHaveProperty('accept');
+    expect(composer.data).not.toHaveProperty('attach');
+    expect(composer.data).toMatchObject({ maxFiles: 10 });
   });
 });
 
@@ -1523,9 +1699,12 @@ describe('the model menu closes on Escape before the panel does (executed)', () 
     expect(clientFn('openPanel')).toContain('renderPanelComposer(s, !sameSession);');
     const send = clientFn('sendCommand');
     expect(send).toContain('el.data = Object.assign({}, el.data, { disabled: true });');
-    expect(send).toContain("if (cmdHost) cmdHost._mode = '';");
-    const esc = TEMPLATE.slice(TEMPLATE.indexOf("if (e.key === 'Escape' && panelOpen && !artModalIsOpen()"));
-    expect(esc.slice(0, 200)).toContain('!artModalIsOpen() && !_cronDrawerKey');
+    expect(send).toContain("cmdHost._mode = '';");
+    expect(send).toContain('cmdHost._takesFiles = false;'); // and no file is taken there either (#640 R2)
+    const esc = TEMPLATE.slice(
+      TEMPLATE.indexOf("if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artViewerIsOpen()"),
+    );
+    expect(esc.slice(0, 200)).toContain('!artViewerIsOpen() && !_cronDrawerKey');
   });
 });
 
@@ -1575,8 +1754,11 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
   // SSOT 2026-10-29 T5: the earlier lists are not a separate "이전 계획" block any more. Every
   // task that ran — the current list's and the earlier lists' alike — is one run in the order
   // it ran; a task a new plan dropped before it ran folds under 실행 전에 계획에서 빠짐.
+  // D3 E-22/E-23: opened, the runs are <ui-task-runs>' data and the plan left <ui-task-plan>'s.
   const rig = (open: boolean) => {
     const el = { style: {} as Record<string, string>, _html: '', innerHTML: '' };
+    const runsEl: { data?: Record<string, any> } = {};
+    const planEl: { data?: Record<string, any> } = {};
     const m = load<{ renderPanelTasks(tasks: unknown[], label: string, earlier: unknown[]): void }>(
       [
         'esc',
@@ -1587,34 +1769,41 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
         'formatTaskTime',
         'agentIconHtml',
         'taskFateOf',
-        'renderPanelTaskItem',
         'taskIdNum',
         'taskRunStart',
         'taskRunEnd',
         'taskTokTotal',
-        'formatTaskClock',
-        'taskCount',
-        'taskRunNumbers',
-        'taskRunDetailHtml',
-        'renderTaskRun',
         'taskRunsOf',
-        'taskSkippedHtml',
         'taskTotalsHtml',
+        'taskElData',
+        'taskRunsData',
+        'taskPlanData',
+        'taskRunsRestore',
         'planSummaryHtml',
         'renderPanelTasks',
       ],
       [
         'AGENT_STATUS_LABEL',
+        'AGENT_STATUS_TONE',
+        'AGENT_STATUS_GLYPH',
         'TASK_FATE_LABEL',
-        'TASK_PAUSE_SVG',
-        'TASK_STOP_SVG',
-        'TASK_SKIP_SVG',
-        'PI_CHEV_SVG',
         'TASK_RUNS_SHOWN',
+        'TASK_RUN_STATUS',
         '_panelTaskOpen',
       ],
       {
-        document: { getElementById: () => el },
+        document: {
+          getElementById: (id: string) =>
+            id === 'panel-task-runs'
+              ? el.innerHTML.includes(id)
+                ? runsEl
+                : null
+              : id === 'panel-task-plan'
+                ? el.innerHTML.includes(id)
+                  ? planEl
+                  : null
+                : el,
+        },
         _panelTasksOpen: open,
         _panelTasksExpanded: true,
         _panelTasksEarlier: true,
@@ -1622,7 +1811,6 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
         morphInnerHtml: (e: { innerHTML: string }, h: string) => {
           e.innerHTML = h;
         },
-        updateTimersIn: () => {},
       },
     );
     m.renderPanelTasks(
@@ -1633,13 +1821,14 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
         { id: 'T2', content: 'never ran', status: 'pending', dropped: 'unstarted' },
       ],
     );
-    return el;
+    return { innerHTML: el.innerHTML, runs: runsEl.data, plan: planEl.data };
   };
 
   it('folded by default (task view T1.3): one head — the runs in one line, no rows (SSOT 2026-10-29 T5)', () => {
-    const html = rig(false).innerHTML;
+    const { innerHTML: html } = rig(false);
+    // D4 K-06: the head is <ui-disclosure>'s row (closed: no open attribute, its region empty).
     expect(html).toContain(
-      '<button type="button" class="panel-sec-head panel-tasks-header" aria-expanded="false" onclick="togglePanelTasks()">',
+      '<ui-disclosure class="panel-tasks-dc" flush><span slot="summary" class="panel-tasks-header">',
     );
     // What runs now, then how many ran and completed (the earlier list's run counts), then
     // how many a new plan dropped before they ran.
@@ -1652,23 +1841,19 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
     expect(html).not.toContain('old one');
   });
 
-  it("opened, the earlier list's run is among the runs in start order; the never-run task sits in the skipped toggle (SSOT 2026-10-29 T5)", () => {
-    const html = rig(true).innerHTML;
-    expect(html).toContain('aria-expanded="true" aria-controls="panel-tasks-body"');
-    expect(html).toContain('<div class="panel-tasks-body" id="panel-tasks-body">');
-    expect(html).toContain('<div class="tr-head">실행된 태스크 <span class="tr-count">2</span></div>');
+  it("opened, the earlier list's run is among the runs in start order; the never-run task sits in the plan's earlier fold (SSOT 2026-10-29 T5)", () => {
+    const r = rig(true);
+    const html = r.innerHTML;
+    expect(html).toContain('<ui-disclosure class="panel-tasks-dc" flush open>');
+    expect(html).toContain('<div class="panel-tasks-body ui-tok" id="panel-tasks-body">');
     // The earlier list's completed task ran first: it comes first.
-    expect(html.indexOf('old one')).toBeGreaterThan(-1);
-    expect(html.indexOf('old one')).toBeLessThan(html.indexOf('>now<'));
-    const runs = html.slice(html.indexOf('<ol class="pl-list tr-list"'), html.indexOf('</ol>'));
-    expect(runs).not.toContain('never ran');
-    // Nothing of the plan is left to run.
-    expect(html).not.toContain('남은 계획');
-    // The never-run task: one toggle (open here), its row reads 실행 안 됨.
-    expect(html).toContain('실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">1</span>');
-    const skipped = html.slice(html.indexOf('<ol class="pl-list pl-earlier"'));
-    expect(skipped).toContain('never ran');
-    expect(skipped).toContain('<span class="pl-fate">실행 안 됨</span>');
+    expect(r.runs?.runs.map((x: { title: string }) => x.title)).toEqual(['old one', 'now']);
+    // Nothing of the plan is left to run; the never-run task is the plan's earlier fold, dropped.
+    expect(r.plan?.steps).toEqual([]);
+    expect(r.plan?.earlier[0].steps).toEqual([
+      { id: 'skipped:T2', ref: '#T2', label: 'never ran', status: 'pending', fate: 'dropped' },
+    ]);
+    expect(JSON.stringify(r.runs)).not.toContain('never ran');
     // The foot sums the runs.
     expect(html).toContain('<div class="tr-total"><span class="tr-total-k">합계</span>툴 4</div>');
     expect(html).not.toContain('이전 계획');
@@ -1703,18 +1888,18 @@ describe('interaction state survives live renders on both surfaces', () => {
     expect(clientFn('mpData')).toContain("isBusy(s.key, 'model')");
     expect(clientFn('mpData')).toContain("isBusy(s.key, 'effort')");
     expect(clientFn('renderCardGoal')).toContain("isBusy(s.key, 'goal')");
-    expect(clientFn('sessionActionHtml')).toContain("isBusy(s.key, 'action')");
+    expect(clientFn('sessionActionsOf')).toContain("isBusy(s.key, 'action')");
   });
 
   it('a busy action renders disabled and aria-busy, whoever renders it', () => {
     const m = load<{ sessionActionHtml(s: unknown, col: string, where: string): string }>(
-      ['esc', 'escAttr', 'escJs', 'toNum', 'pendingAutoResume', 'isBusy', 'sessionActionHtml'],
-      ['SESSION_ACTION_ARIA'],
+      ['esc', 'escAttr', 'escJs', 'toNum', 'pendingAutoResume', 'isBusy', 'sessionActionsOf', 'sessionActionHtml'],
+      ['SESSION_ACTION_TONE'],
       { _busy: { 'inst::C1:t1|action': true }, currentUserId: 'U1', SELF_INSTANCE_NAME: '', READ_ONLY_MSG: 'ro' },
     );
     const html = m.sessionActionHtml(card(), 'working', 'panel');
     expect(html).toContain('aria-busy="true"');
-    expect(html).toMatch(/btn-stop"[^>]* disabled/);
+    expect(html).toMatch(/data-action="stop"[^>]* disabled/);
   });
 
   it('a live repaint keeps the reader where they were reading', () => {
@@ -1726,10 +1911,15 @@ describe('interaction state survives live renders on both surfaces', () => {
   it('closing the panel and ending the session are different names', () => {
     const header = PAGE.slice(PAGE.indexOf('<div class="panel-header">'), PAGE.indexOf('<div class="panel-body"'));
     // SSOT 2026-10-29 T2: ✕ closes this session's detail card (and folds its card) — not "the panel".
-    expect(header).toMatch(/class="panel-close"[^>]*aria-label="작업 카드 닫기"[^>]*onclick="closeDetailCard\(\)"/);
+    expect(header).toMatch(
+      /class="ui-icon-btn is-bordered panel-close"[^>]*aria-label="작업 카드 닫기"[^>]*onclick="closeDetailCard\(\)"/,
+    );
     expect(header).not.toContain('onclick="closePanel()"');
-    // The overlay (the sheet's backdrop) does the same.
-    expect(PAGE).toContain('<div class="slide-panel-overlay" id="panel-overlay" onclick="closeDetailCard()"></div>');
+    // The drawer's scrim and Esc (its cancelable ui-close, D4 E-02) do the same.
+    expect(TEMPLATE).toContain(
+      "d.addEventListener('ui-close', function(e) { e.preventDefault(); closeDetailCard(); })",
+    );
+    expect(PAGE).not.toContain('slide-panel-overlay');
   });
 });
 
@@ -1766,7 +1956,14 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = [
+  'PR_STATE_LABEL',
+  'PR_STATE_TONE',
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'OWNER_BADGE_HUES',
+];
 const FACE_ENV = {
   dhShow: () => true,
   dhTruncate: () => null,

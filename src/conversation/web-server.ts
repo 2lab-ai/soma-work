@@ -21,7 +21,9 @@ import { registerArtifactRoutes } from './artifact-routes';
 import {
   registerDashboardRoutes,
   setSelfInstanceEnv,
+  startDashboardAdminApprovalWatch,
   startDashboardPermissionWatch,
+  stopDashboardAdminApprovalWatch,
   stopDashboardPermissionWatch,
 } from './dashboard';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
@@ -555,7 +557,12 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
           reply.status(404).send('Conversation not found');
           return;
         }
-        const html = renderConversationViewPage(record);
+        // The list beside it (M-08, the archive page); a list that fails to load leaves the conversation alone.
+        const conversations = await listConversations().catch((error) => {
+          logger.warn('Conversation list unavailable beside a conversation', error);
+          return undefined;
+        });
+        const html = renderConversationViewPage(record, conversations);
         reply.type('text/html; charset=utf-8').send(html);
       } catch (error) {
         logger.error('Error rendering conversation', error);
@@ -771,6 +778,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
       // Permission prompts waiting in the shared store → cards (SSOT 2026-10-24).
       startDashboardPermissionWatch();
+      startDashboardAdminApprovalWatch();
 
       return;
     } catch (error) {
@@ -793,6 +801,7 @@ export async function stopWebServer(): Promise<void> {
   listening = false;
   stopPublicUrlCheck();
   stopDashboardPermissionWatch();
+  stopDashboardAdminApprovalWatch();
   if (server) {
     // Flush hook state before closing
     try {

@@ -10,6 +10,8 @@
 import { Logger } from '@soma/common/logger';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LOG_MINIMAL } from '../../output-flags';
+import { createDashboardTurnPanel } from '../../task-turn/dashboard-turn-panel';
+import { TaskTurnRefusedError } from '../../task-turn/task-turn-refused';
 import type { WorkLogInput } from '../../work-log';
 import { StreamExecutor, setStreamExecutorProviders } from '../stream-executor';
 
@@ -260,8 +262,13 @@ function taskDeps(stream: () => AsyncGenerator<unknown> = toolTurn()) {
     addSourceWorkingDirByKey: vi.fn(),
     addMergeStatsByKey: vi.fn(),
   });
+  // #598 ④b — a task turn writes through its own work-log writer, to the dashboard panel.
+  deps.workLog = vi.fn(async () => {});
+  deps.threadPanel = createDashboardTurnPanel({ persistAndBroadcast: vi.fn() });
   return deps;
 }
+
+const TASK_BINDING = { sessionKey: TASK_KEY, conversationId: 'conv-1', turnId: 'turn-task-1' };
 
 function taskParams(extra: Record<string, unknown> = {}): any {
   const session = createSession(LOG_MINIMAL, { slackless: true, taskId: TASK_ID, channelId: '', ...extra });
@@ -271,6 +278,7 @@ function taskParams(extra: Record<string, unknown> = {}): any {
     channel: '',
     threadTs: undefined,
     executionContext: TASK_CONTEXT,
+    taskBinding: TASK_BINDING,
   };
 }
 
@@ -294,16 +302,16 @@ describe('StreamExecutor — a Slack-less task turn, registry and runtime half (
     expect(deps.claudeHandler.setActivityState).not.toHaveBeenCalled();
     const states = deps.claudeHandler.setActivityStateByKey.mock.calls.map((c: unknown[]) => c);
     expect(states[0]).toEqual([TASK_KEY, 'working']);
-    expect(states.at(-1)?.[0]).toBe(TASK_KEY);
-    expect(['idle', 'waiting']).toContain(states.at(-1)?.[1]);
+    // #598 ④b — the idle/waiting transition is the task runner's, after the outcome commit.
+    expect(states.every((c: unknown[]) => c[0] === TASK_KEY && c[1] === 'working')).toBe(true);
   });
 
-  it('a task with no conversation record gets one, so its turns are recorded', async () => {
+  it('a task turn whose session is not on its binding’s conversation is refused (#598 ④b — the runner creates it durably)', async () => {
     const deps = taskDeps();
     const params = taskParams({ conversationId: undefined });
-    await new StreamExecutor(deps).execute(params);
-    expect(createConversation).toHaveBeenCalledTimes(1);
-    expect(params.session.conversationId).toBe('conv-task');
+    await expect(new StreamExecutor(deps).execute(params)).rejects.toThrow(/binding/);
+    expect(createConversation).not.toHaveBeenCalled();
+    expect(deps.claudeHandler.streamAgentEvents).not.toHaveBeenCalled();
   });
 
   it('a Slack session still uses its channel/thread forms (unchanged)', async () => {
@@ -393,5 +401,250 @@ describe('StreamExecutor — a Slack-less task turn, registry and runtime half (
     } finally {
       setStreamExecutorProviders({ getChannelDescription: async () => '' });
     }
+  });
+});
+
+describe('StreamExecutor — a Slack-less task turn writes to the dashboard (#598 ④b1)', () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it('work-log entries go through the turn’s writer, bound to its binding — never the process-wide provider', async () => {
+    const deps = taskDeps();
+    await new StreamExecutor(deps).execute(taskParams());
+    const kinds = deps.workLog.mock.calls.map((c: any[]) => c[1].kind);
+    expect(kinds).toEqual(expect.arrayContaining(['instruction', 'tool', 'tool_result', 'final']));
+    for (const c of deps.workLog.mock.calls) {
+      expect(c[0]).toBe(TASK_BINDING);
+      // One id for the turn's work log, its question and its committed outcome (#626 R1).
+      expect(c[1].turnId).toBe(TASK_BINDING.turnId);
+    }
+    expect(appendWorkLog).not.toHaveBeenCalled();
+  });
+
+  it('a task turn with a follow-up turn epoch is refused before the model runs (#626 R1)', async () => {
+    const deps = taskDeps();
+    await expect(new StreamExecutor(deps).execute({ ...taskParams(), followupTurnEpoch: 3 })).rejects.toThrow(
+      /follow-up turn epoch/,
+    );
+    expect(deps.claudeHandler.streamAgentEvents).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['stall-timeout', /응답 없음/],
+    ['ghost-session', /세션이 종료/],
+  ] as const)('an abort for %s carries its explanation as the reason — posted nowhere (#626 R1)', async (reason, text) => {
+    const controller = new AbortController();
+    const stalled = () =>
+      (async function* () {
+        yield { type: 'assistant_delta', text: 'working' };
+        controller.abort(reason);
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        throw err;
+      })();
+    const deps = taskDeps(stalled);
+    const params = { ...taskParams(), abortController: controller };
+    const result = await new StreamExecutor(deps).execute(params);
+    expect(result.terminal).toMatchObject({ exit: 'error', abortReason: reason, thrownError: false });
+    expect(result.terminal?.reasonText).toMatch(text);
+    expect(params.say).not.toHaveBeenCalled();
+  });
+
+  it('a caller-supplied say is never called on a task turn', async () => {
+    const deps = taskDeps();
+    const params = taskParams();
+    await new StreamExecutor(deps).execute(params);
+    expect(params.say).not.toHaveBeenCalled();
+  });
+
+  it('any say fallback goes to the task say (a work-log notice), never the caller say', async () => {
+    const deps = taskDeps();
+    // A panel that declines text forces the processor onto its say fallback.
+    deps.threadPanel = { ...deps.threadPanel, appendText: vi.fn(async () => false) };
+    const params = taskParams();
+    await new StreamExecutor(deps).execute(params);
+    expect(params.say).not.toHaveBeenCalled();
+    const notices = deps.workLog.mock.calls.filter((c: any[]) => c[1].kind === 'notice').map((c: any[]) => c[1].text);
+    expect(notices.join('\n')).toContain(FINAL);
+  });
+
+  it('no Slack identity, email gate or bot id on a task turn', async () => {
+    setStreamExecutorProviders({
+      userSettingsStore: {
+        getUserSessionTheme: () => 'D',
+        getUserEmail: () => undefined,
+        setUserEmail: () => {},
+        ensureUserExists: () => {},
+        setUserSlackDisplayName: () => {},
+        shouldRefreshSlackIdentity: () => true,
+        getUserJiraAccountId: () => undefined,
+        getUserJiraName: () => undefined,
+        getUserBypassPermission: () => false,
+        getUserDefaultLogVerbosity: () => 'minimal',
+        getUserLogVerbosityFlags: () => LOG_MINIMAL,
+        getUserSettings: () => undefined,
+        getUserPersona: () => 'default',
+        getUserDefaultModel: () => 'claude-opus-4-6',
+        setUserDefaultModel: () => {},
+        getUserDefaultEffort: () => 'high',
+        getUserShowThinking: () => true,
+        getUserRating: () => 5,
+        setUserRating: () => {},
+        consumePendingRatingChange: () => null,
+        setPendingRatingChange: () => {},
+      } as any,
+    });
+    try {
+      const deps = taskDeps();
+      const result = await new StreamExecutor(deps).execute(taskParams());
+      expect(result.success).toBe(true);
+      expect(deps.slackApi.getUserProfile).not.toHaveBeenCalled();
+      expect(deps.slackApi.getBotUserId).not.toHaveBeenCalled();
+      expect(deps.claudeHandler.streamAgentEvents).toHaveBeenCalledTimes(1);
+    } finally {
+      setStreamExecutorProviders({
+        userSettingsStore: {
+          getUserSessionTheme: () => 'D',
+          getUserEmail: () => 'user@example.com',
+          setUserEmail: () => {},
+          ensureUserExists: () => {},
+          setUserSlackDisplayName: () => {},
+          shouldRefreshSlackIdentity: () => false,
+          getUserJiraAccountId: () => undefined,
+          getUserJiraName: () => undefined,
+          getUserBypassPermission: () => false,
+          getUserDefaultLogVerbosity: () => 'minimal',
+          getUserLogVerbosityFlags: () => LOG_MINIMAL,
+          getUserSettings: () => undefined,
+          getUserPersona: () => 'default',
+          getUserDefaultModel: () => 'claude-opus-4-6',
+          setUserDefaultModel: () => {},
+          getUserDefaultEffort: () => 'high',
+          getUserShowThinking: () => true,
+          getUserRating: () => 5,
+          setUserRating: () => {},
+          consumePendingRatingChange: () => null,
+          setPendingRatingChange: () => {},
+        } as any,
+      });
+    }
+  });
+
+  it('a success return carries terminal signals; a Slack turn carries none', async () => {
+    const result = await new StreamExecutor(taskDeps()).execute(taskParams());
+    expect(result.terminal).toMatchObject({ exit: 'success', hasSdkError: false, endTurnInfoPresent: true });
+    expect(typeof result.terminal?.choiceStillOpen).toBe('function');
+    const slack = await new StreamExecutor(taskDeps()).execute(createParams(createSession(LOG_MINIMAL)));
+    expect(slack.terminal).toBeUndefined();
+  });
+
+  it('a thrown error returns error signals with the would-be posted text as the reason, and posts nothing', async () => {
+    const deps = taskDeps(invalidResumeTurn());
+    const params = taskParams();
+    const result = await new StreamExecutor(deps).execute(params);
+    expect(result.terminal).toMatchObject({ exit: 'error', thrownError: true, abortLike: false });
+    expect(typeof result.terminal?.reasonText).toBe('string');
+    // The concise first capture is kept — not a later Slack mrkdwn block (fable #626 R2).
+    expect(result.terminal?.reasonText).not.toMatch(/&gt;|\*Type:\*/);
+    expect(params.say).not.toHaveBeenCalled();
+    const errors = deps.workLog.mock.calls.filter((c: any[]) => c[1].kind === 'error');
+    expect(errors).toHaveLength(1);
+  });
+
+  it('a stream that ends without a result reports it (no endTurnInfo)', async () => {
+    const noResult = () =>
+      (async function* () {
+        yield { type: 'assistant_delta', text: 'partial' };
+      })();
+    const result = await new StreamExecutor(taskDeps(noResult)).execute(taskParams());
+    expect(result.terminal).toMatchObject({ exit: 'success', endTurnInfoPresent: false });
+  });
+
+  it('a text-JSON question is registered once, structured, with a host id — no Slack rendering path', async () => {
+    const question = {
+      type: 'user_choice',
+      question: 'Which DB?',
+      choices: [
+        { id: 'a', label: 'pg' },
+        { id: 'b', label: 'my' },
+      ],
+    };
+    const text = ['Before I continue:', '```json', JSON.stringify(question), '```'].join('\n');
+    const askTurn = () =>
+      (async function* () {
+        yield { type: 'assistant_delta', text };
+        yield { type: 'result', stopReason: 'end_turn', finalText: text };
+      })();
+    const deps = taskDeps(askTurn);
+    const params = taskParams();
+    const result = await new StreamExecutor(deps).execute(params);
+    const pq = params.session.actionPanel?.pendingQuestion;
+    expect(pq).toMatchObject({ question: 'Which DB?', turnId: expect.any(String) });
+    expect(typeof pq.askId).toBe('string');
+    expect(params.session.actionPanel.waitingForChoice).toBe(true);
+    expect(result.terminal?.choiceStillOpen?.()).toBe(true);
+    // The waiting outcome's reason is the question (#626 R1).
+    expect(result.terminal?.questionTitle).toBe('Which DB?');
+    // The preface is recorded once — in the turn's final entry — not again as narration (#626 R1).
+    const texts = (kind: string) =>
+      deps.workLog.mock.calls.filter((c: any[]) => c[1].kind === kind).map((c: any[]) => String(c[1].text));
+    expect(texts('final').join(' ')).toContain('Before I continue');
+    expect(texts('narration').join(' ')).not.toContain('Before I continue');
+    expect(params.say).not.toHaveBeenCalled();
+  });
+});
+
+describe('StreamExecutor — ④b2 R1 review (#629)', () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it('a turn with no SDK session id still schedules its tool cleanup, keyed by the session (no leaked tool mappings)', async () => {
+    const deps = taskDeps();
+    const params = taskParams();
+    params.session.sessionId = undefined;
+    await new StreamExecutor(deps).execute(params);
+    expect(deps.toolTracker.scheduleCleanup).toHaveBeenCalledWith(expect.any(Number), expect.any(Function), TASK_KEY);
+  });
+
+  it('a task turn does not drive the Slack context emoji, even at the most verbose setting', async () => {
+    const usageTurn = () =>
+      (async function* () {
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 10, outputTokens: 5, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+        };
+        yield { type: 'result', stopReason: 'end_turn', finalText: 'ok' };
+      })();
+    const deps = taskDeps(usageTurn);
+    const params = taskParams({ logVerbosity: 0x7fffffff });
+    await new StreamExecutor(deps).execute(params);
+    expect(deps.contextWindowManager.updateContextEmoji).not.toHaveBeenCalled();
+  });
+});
+
+describe('StreamExecutor — a refused task turn is a typed error (#598 ④c)', () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  const refusal = async (params: any) => {
+    const deps = taskDeps();
+    const error = await new StreamExecutor(deps).execute(params).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(deps.claudeHandler.streamAgentEvents).not.toHaveBeenCalled();
+    return error as TaskTurnRefusedError;
+  };
+
+  it('each entry guard throws TaskTurnRefusedError with its code', async () => {
+    const noContext = taskParams();
+    noContext.executionContext = undefined;
+    expect(await refusal(noContext)).toBeInstanceOf(TaskTurnRefusedError);
+    expect((await refusal(noContext)).code).toBe('no-execution-context');
+    expect((await refusal({ ...createParams(createSession(LOG_MINIMAL)), executionContext: TASK_CONTEXT })).code).toBe(
+      'context-on-slack-session',
+    );
+    expect((await refusal(taskParams({ conversationId: undefined }))).code).toBe('no-binding');
+    expect((await refusal({ ...taskParams(), followupTurnEpoch: 3 })).code).toBe('followup-epoch');
   });
 });
