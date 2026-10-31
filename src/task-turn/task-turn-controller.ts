@@ -252,7 +252,12 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
   function canStart(ownerId: string, text?: string, tree?: TreeStart): TaskCommandResponse | null {
     if (!accepting) return refuse(503, 'the service is shutting down — try again shortly');
     if (text !== undefined && isCommand(text.trim())) return refuse(400, COMMAND_REFUSED);
-    return tree ? treeAdmission(ownerId, tree, now(), tree.root === undefined) : ownerAdmission(ownerId, now());
+    if (!tree) return ownerAdmission(ownerId, now());
+    // §2.1: the root of a running tree starts again only once its own chain ended (the start's 409).
+    if (tree.role === 'root' && tree.root !== undefined && chains.has(tree.root)) {
+      return refuse(409, 'a turn is already running on this task');
+    }
+    return treeAdmission(ownerId, tree, now(), tree.root === undefined);
   }
 
   /** E4 ③ — free a tree member's place only while this chain holds it; the tree goes when it is empty. */
@@ -280,7 +285,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
         ownerId: string;
         startedAt: number;
         tree?: string;
-        window: number[];
+        /** The window this start counted in (A0's or its tree's), by map and key — read again to refund. */
+        window: { map: Map<string, number[]>; key: string };
       }
     | { ok: false; response: TaskCommandResponse } {
     if (!accepting) return { ok: false, response: refuse(503, 'the service is shutting down — try again shortly') };
@@ -334,7 +340,15 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     const recent = (windows.get(windowKey) ?? []).filter((at) => t - at < windowMs);
     recent.push(t);
     windows.set(windowKey, recent);
-    return { ok: true, session, ctx, ownerId, startedAt: t, tree: tree?.root, window: recent };
+    return {
+      ok: true,
+      session,
+      ctx,
+      ownerId,
+      startedAt: t,
+      tree: tree?.root,
+      window: { map: windows, key: windowKey },
+    };
   }
 
   function start(request: TaskCommandRequest): Promise<TaskCommandResponse> {
@@ -393,8 +407,10 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     const first = await Promise.race([started, finished.then(() => 'ended' as const)]);
     if (first === 'started') return { status: 202, body: { ok: true }, done: finished };
     // Not started: this start does not count against its window (#634 R1) — A0's or the tree's.
-    const at = window.lastIndexOf(startedAt);
-    if (at >= 0) window.splice(at, 1);
+    // The window is read again: another start in the meantime replaced its array (fable #695 R1).
+    const counted = window.map.get(window.key);
+    const at = counted?.lastIndexOf(startedAt) ?? -1;
+    if (counted && at >= 0) counted.splice(at, 1);
     // A chain that already committed an outcome (conversation not created) saved the
     // cleared panel with it: putting the question back in memory would diverge from disk.
     if (panel && openQuestion && !progress.committedBeforeStart) {
