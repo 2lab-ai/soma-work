@@ -434,6 +434,24 @@ describe('UserSettingsStore.getUserCompactThreshold / clearUserCompactThreshold 
   });
 });
 
+describe('Slack instruction → dashboard task flag (E2 ⑦, D1)', () => {
+  it('is off by default, per user, and set values are read back', () => {
+    const store = makeStore();
+    expect(store.getUserSlackTaskEntry('U1')).toBe(false);
+    store.setUserSlackTaskEntry('U1', true);
+    expect(store.getUserSlackTaskEntry('U1')).toBe(true);
+    expect(store.getUserSlackTaskEntry('U2')).toBe(false);
+    store.setUserSlackTaskEntry('U1', false);
+    expect(store.getUserSlackTaskEntry('U1')).toBe(false);
+  });
+
+  it('survives a reload from disk', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uss-task-entry-'));
+    new UserSettingsStore(dir).setUserSlackTaskEntry('U1', true);
+    expect(new UserSettingsStore(dir).getUserSlackTaskEntry('U1')).toBe(true);
+  });
+});
+
 describe('autogoal mode (S2) + goal max-continuations (S4)', () => {
   it('autogoal defaults to false and toggles per-user', () => {
     const store = makeStore();

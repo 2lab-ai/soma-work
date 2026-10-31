@@ -298,6 +298,28 @@ export interface EventRouterDeps {
 /**
  * Slack 이벤트 라우팅 및 등록을 담당하는 클래스
  */
+/**
+ * E2 ⑦ — a mention that may become a dashboard task (.prd/18 D2 (1)): a plain
+ * instruction with words, as the user wrote it. Not a candidate: a synthetic
+ * event, a DM, a file mention, a `/` command (the `/z` surface included), a
+ * `%` directive, a `!` steer, `new <text>`. The incident ingress and the
+ * file_share path never reach the marking. The host re-checks its own
+ * allow-list before acting on it (⑧).
+ */
+export function isTaskEntryCandidate(
+  event: { channel?: string; channel_type?: string; synthetic?: boolean; files?: unknown[] },
+  text: string,
+): boolean {
+  const words = text.trim();
+  if (!words) return false;
+  if (event.synthetic) return false;
+  if ((event.files?.length ?? 0) > 0) return false;
+  if (event.channel_type === 'im' || event.channel?.startsWith('D')) return false;
+  if (/^[/%!]/.test(words)) return false;
+  if (CommandParser.isNewCommand(words)) return false;
+  return true;
+}
+
 export class EventRouter {
   private logger = new Logger('EventRouter');
   private cleanupIntervalId: NodeJS.Timeout | null = null;
@@ -756,9 +778,15 @@ export class EventRouter {
       }
       // `/z goal <objective>`: the objective is the user's words — mark it so
       // the pipeline never parses it as a command again.
-      const routeContext = routedViaZ.verbatimPrompt
+      const baseRouteContext = routedViaZ.verbatimPrompt
         ? { ...(event as MessageEvent).routeContext, verbatimPrompt: true }
         : (event as MessageEvent).routeContext;
+      // E2 ⑦ — decided on the original mention's words (before any rewrite):
+      // a plain instruction may become a dashboard task (⑧ reads it).
+      const routeContext =
+        routedViaZ.continueWithPrompt === undefined && isTaskEntryCandidate(event as MessageEvent, text)
+          ? { ...baseRouteContext, taskEntryCandidate: true }
+          : baseRouteContext;
 
       // Source thread re-mention: if mentioned in a thread that has a linked bot session,
       // respond with that session's status instead of creating a new session.
