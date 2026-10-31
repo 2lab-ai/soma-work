@@ -7,9 +7,13 @@
  * events (`beginTaskTurn(…, consume)`), so a refused start leaves them
  * pending, and a wake chain reconciled `interrupted` on restart puts them back.
  *
- * Callers (index.ts): the post-drain idle hook (the epic's chain ended), the
- * registry's event listener (an event was just added), and a boot scan after
- * the web server is up. A wake runs off the commit path (`queueMicrotask`).
+ * Callers (index.ts): the controller's chain end (`onChainEnd`, after the task
+ * is free), the post-drain idle hook, the registry's event listener (an event
+ * was just added), and a boot scan after the web server is up. A wake runs off
+ * the commit path (`queueMicrotask`). A start refused for now (429 — the tree's
+ * window or slot; 503 — shutting down) arms one timed retry per epic, so a
+ * window that later frees does not leave the events waiting for the next
+ * event (fable #702 R1 P2).
  * Two that overlap start once: the controller admits one chain per task
  * before its first await, and the other's events stay pending for the next.
  * Never the cron path or `wakeFromSleep`.
@@ -22,6 +26,8 @@ export interface EpicWakerDeps {
   getSession(sessionKey: string): ConversationSession | undefined;
   controller: Pick<TaskTurnController, 'start'>;
   logger: { info(message: string, meta?: object): void; warn(message: string, meta?: object): void };
+  /** The delay of the one retry after a 429 or 503 (default one minute). */
+  retryMs?: number;
 }
 
 export interface EpicWaker {
@@ -30,6 +36,20 @@ export interface EpicWaker {
 }
 
 export function createEpicWaker(deps: EpicWakerDeps): EpicWaker {
+  const retryMs = deps.retryMs ?? 60_000;
+  /** One armed retry per epic at most. */
+  const retries = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function retryLater(sessionKey: string): void {
+    if (retries.has(sessionKey)) return;
+    const timer = setTimeout(() => {
+      retries.delete(sessionKey);
+      wake(sessionKey);
+    }, retryMs);
+    timer.unref?.();
+    retries.set(sessionKey, timer);
+  }
+
   async function drain(sessionKey: string): Promise<void> {
     const epic = deps.getSession(sessionKey);
     if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated) return;
@@ -48,19 +68,20 @@ export function createEpicWaker(deps: EpicWakerDeps): EpicWaker {
         status: started.status,
         error: started.body.error,
       });
+      if (started.status === 429 || started.status === 503) retryLater(sessionKey);
     }
   }
 
-  return {
-    wake(sessionKey) {
-      queueMicrotask(() => {
-        drain(sessionKey).catch((error) => {
-          deps.logger.warn('Epic wake failed — its events stay pending', {
-            sessionKey,
-            error: (error as Error)?.message ?? String(error),
-          });
+  function wake(sessionKey: string): void {
+    queueMicrotask(() => {
+      drain(sessionKey).catch((error) => {
+        deps.logger.warn('Epic wake failed — its events stay pending', {
+          sessionKey,
+          error: (error as Error)?.message ?? String(error),
         });
       });
-    },
-  };
+    });
+  }
+
+  return { wake };
 }

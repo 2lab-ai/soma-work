@@ -152,6 +152,52 @@ describe('the waker (K2, K3)', () => {
   });
 });
 
+describe('a start refused for now is tried once more (fable #702 R1 P2)', () => {
+  it('429 or 503 arms one retry per epic; another refusal waits for an event', async () => {
+    vi.useFakeTimers();
+    try {
+      const epic = epicSession();
+      const statuses = [429, 429, 202];
+      const controller = {
+        start: vi.fn(async () => {
+          const status = statuses.shift() ?? 202;
+          return { status, body: status === 202 ? { ok: true } : { error: 'tree window' } };
+        }),
+      };
+      const waker = createEpicWaker({
+        getSession: () => epic,
+        controller: controller as any,
+        logger: { info: vi.fn(), warn: vi.fn() },
+        retryMs: 1000,
+      });
+      waker.wake(KEY);
+      waker.wake(KEY);
+      await vi.advanceTimersByTimeAsync(0);
+      // Two refusals, one retry armed.
+      expect(controller.start).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(controller.start).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(controller.start).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(controller.start).toHaveBeenCalledTimes(3);
+
+      // Any other refusal (409: it runs) arms nothing.
+      const busy = { start: vi.fn(async () => ({ status: 409, body: { error: 'running' } })) };
+      createEpicWaker({
+        getSession: () => epic,
+        controller: busy as any,
+        logger: { info: vi.fn(), warn: vi.fn() },
+        retryMs: 1000,
+      }).wake(KEY);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(busy.start).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 /** The real controller over one epic, with a runner that records its inputs. */
 function realController(
   session: any,
