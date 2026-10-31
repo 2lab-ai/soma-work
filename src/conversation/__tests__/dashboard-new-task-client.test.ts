@@ -473,6 +473,8 @@ describe('ntBlockedHint (#640 R2)', () => {
   it('is shown on switching to a dashboard task and refreshed when a file is removed', () => {
     expect(clientFn('ntSetDestination')).toContain('ntSetError(ntBlockedHint(_ntState, _ntFiles));');
     expect(clientFn('ntRemoveFile')).toContain('ntSetError(ntBlockedHint(_ntState, _ntFiles));');
+    // …and when a file is added in task mode (a paste or a drop), fable #640 R3.
+    expect(clientFn('ntAddBlob')).toContain('ntSetError(ntBlockedHint(_ntState, _ntFiles));');
   });
 });
 
