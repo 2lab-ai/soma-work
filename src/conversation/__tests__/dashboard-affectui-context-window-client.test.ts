@@ -48,14 +48,19 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
+/** The page's chrome words (STRINGS), as served: the board's Korean words live there (D2 group 6). */
+const PAGE_STRINGS = new Function(
+  `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
+)();
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, extra: string[] = []): T {
+  inject = { STRINGS: PAGE_STRINGS, ...inject };
   const names = Object.keys(inject);
   const extraNames = extra.map((src) => /^function (\w+)/.exec(src)?.[1] ?? '').filter(Boolean);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${extra.join('\n')}\nreturn { ${[...fns, ...extraNames].join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 /** The page's CSS as written in the template (the <style> block). */
-const CSS = TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>'));
+const CSS = TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>', TEMPLATE.indexOf('<style>')));
 const HEAD = TEMPLATE.slice(0, TEMPLATE.indexOf('<style>'));
 
 const NOW = 1_800_000_000_000;
@@ -162,7 +167,9 @@ describe('D5 — the slot: <ui-context-window> first in the open 세션 정보, 
     const at = (n: string) => src.indexOf(n);
     expect(at('if (s) cwObserve(s, now);')).toBeGreaterThan(0);
     expect(
-      at("writePanelPart(el, s ? panelInfoHtml(s, _panelInfoOpen, sessionColOf(panelSessionKey)) : '');"),
+      at(
+        "writePanelPart(el, s ? panelInfoHtml(s, _panelInfoOpen === true, sessionColOf(panelSessionKey), _panelInfoOpen === 'folding') : '');",
+      ),
     ).toBeGreaterThan(at('cwObserve('));
     expect(at("if (s) cwPaint(el.querySelector('ui-context-window'), s, now);")).toBeGreaterThan(at('writePanelPart('));
   });
@@ -745,7 +752,14 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = [
+  'PR_STATE_LABEL',
+  'PR_STATE_TONE',
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'OWNER_BADGE_HUES',
+];
 const CARD_ENV = {
   dhShow: () => true,
   dhTruncate: () => null,
@@ -803,7 +817,7 @@ describe('D16 — the face ctx metric and the summary line use the same level an
     expect(ctx(104.6, 1_000_000, { autoCompactTokens: 900_000 })[1]).toBe('컨텍스트 100% · 자동 압축 지점을 넘음');
     const info = load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
       [...CW_FNS, 'ctxLevel', 'ctxPercent', 'pendingAutoResume', 'rootStatusOf', 'panelDetailsHtml', 'panelInfoHtml'],
-      [...CW_VARS, 'PI_CHEV_SVG'],
+      [...CW_VARS],
       { ...ENV, formatNmSSs: (n: number) => `${n}ms`, cardTotalTokens: () => 1, safeHref: (u: string) => u },
     ).panelInfoHtml;
     const over = sess({ tokenUsage: { totalInputTokens: 1, contextUsagePercent: 104.6 }, lastActivity: NOW });
@@ -814,7 +828,7 @@ describe('D16 — the face ctx metric and the summary line use the same level an
   it('세션 정보 summary: ctx N% carries the same class; the open grid says the totals are cumulative (D17)', () => {
     const info = load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
       [...CW_FNS, 'ctxLevel', 'ctxPercent', 'pendingAutoResume', 'rootStatusOf', 'panelDetailsHtml', 'panelInfoHtml'],
-      [...CW_VARS, 'PI_CHEV_SVG'],
+      [...CW_VARS],
       { ...ENV, formatNmSSs: (n: number) => `${n}ms`, cardTotalTokens: () => 1, safeHref: (u: string) => u },
     ).panelInfoHtml;
     const s = sess({
@@ -826,7 +840,7 @@ describe('D16 — the face ctx metric and the summary line use the same level an
     const open = info(s, true);
     const body = open.slice(open.indexOf('class="pi-body"'));
     expect(body.indexOf('<div class="ui-tok cw-slot"')).toBeGreaterThan(0);
-    expect(body.indexOf('<div class="ui-tok cw-slot"')).toBeLessThan(body.indexOf('class="pi-grid"'));
+    expect(body.indexOf('<div class="ui-tok cw-slot"')).toBeLessThan(body.indexOf('class="ui-dl pi-grid"'));
     for (const label of ['누적 입력', '누적 출력', '누적 캐시 읽기', '누적 캐시 쓰기'])
       expect(body).toContain(`<dt>${label}</dt>`);
   });

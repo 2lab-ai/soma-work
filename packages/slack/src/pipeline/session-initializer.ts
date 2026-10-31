@@ -126,6 +126,12 @@ export interface SessionInitializerProviders {
   getDispatchService?: () => DispatchServiceLike;
   getUserSettings?: (userId: string) => any;
   createPendingUser?: (userId: string, userName: string) => void;
+  /**
+   * Ask the admins to accept a new user. The composition root supplies the one
+   * that records where each DM landed (so the dashboard and every admin's copy
+   * stay in sync, #622); without it, the DMs are posted here.
+   */
+  notifyAdminsNewUser?: ((slackApi: any, userId: string, userName: string) => Promise<unknown>) | null;
   getUserSessionTheme?: (userId: string) => any;
   buildChannelRouteBlocks?: (params: ChannelRouteBlockParams) => { text: string; blocks: any[] };
   getDefaultUpdateChannel?: () => string | undefined;
@@ -158,6 +164,7 @@ const providers: Required<SessionInitializerProviders> = {
   getDispatchService: () => missingProvider('getDispatchService'),
   getUserSettings: () => undefined,
   createPendingUser: () => undefined,
+  notifyAdminsNewUser: null,
   getUserSessionTheme: () => undefined,
   buildChannelRouteBlocks: () => missingProvider('buildChannelRouteBlocks'),
   getDefaultUpdateChannel: () => undefined,
@@ -181,6 +188,7 @@ export function setSessionInitializerProviders(next: SessionInitializerProviders
   if (next.getDispatchService) providers.getDispatchService = next.getDispatchService;
   if (next.getUserSettings) providers.getUserSettings = next.getUserSettings;
   if (next.createPendingUser) providers.createPendingUser = next.createPendingUser;
+  if (next.notifyAdminsNewUser) providers.notifyAdminsNewUser = next.notifyAdminsNewUser;
   if (next.getUserSessionTheme) providers.getUserSessionTheme = next.getUserSessionTheme;
   if (next.buildChannelRouteBlocks) providers.buildChannelRouteBlocks = next.buildChannelRouteBlocks;
   if (next.getDefaultUpdateChannel) providers.getDefaultUpdateChannel = next.getDefaultUpdateChannel;
@@ -457,13 +465,19 @@ export class SessionInitializer {
       if (!userSettings) {
         // New user: create pending record + notify admins
         this.logger.info('New user detected, creating pending record', { sessionKey, user, userName });
-        providers.createPendingUser(user, userName);
-        await this.deps.slackApi.postMessage(channel, '⏳ 승인 대기 중입니다. 관리자에게 요청이 전달되었습니다.', {
-          threadTs,
-        });
-        await this.notifyAdminsNewUser(user, userName);
-        // Terminate the just-created session so next message also triggers gate
-        this.deps.claudeHandler.terminateSession(sessionKey);
+        try {
+          providers.createPendingUser(user, userName);
+          await this.deps.slackApi.postMessage(channel, '⏳ 승인 대기 중입니다. 관리자에게 요청이 전달되었습니다.', {
+            threadTs,
+          });
+          await this.notifyAdminsNewUser(user, userName);
+        } catch (error) {
+          this.logger.error('New user gate: notifying failed — the session is closed anyway', { user, error });
+        } finally {
+          // Terminate the just-created session so the next message also hits the gate — always:
+          // a session left behind would skip the new-session-only acceptance check.
+          this.deps.claudeHandler.terminateSession(sessionKey);
+        }
         return {
           session,
           sessionKey,
@@ -1489,6 +1503,10 @@ export class SessionInitializer {
    * Send admin DM notifications with Accept/Deny buttons for a new user.
    */
   private async notifyAdminsNewUser(userId: string, userName: string): Promise<void> {
+    if (providers.notifyAdminsNewUser) {
+      await providers.notifyAdminsNewUser(this.deps.slackApi, userId, userName);
+      return;
+    }
     const adminUsers = providers.getAdminUsers();
     if (adminUsers.size === 0) {
       this.logger.warn('No admin users configured, cannot notify about new user', { userId });

@@ -55,7 +55,12 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
+/** The page's chrome words (STRINGS), as served: the board's Korean words live there (D2 group 6). */
+const PAGE_STRINGS = new Function(
+  `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
+)();
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, extra: string[] = []): T {
+  inject = { STRINGS: PAGE_STRINGS, ...inject };
   const names = Object.keys(inject);
   const extraNames = extra.map((src) => /^function (\w+)/.exec(src)?.[1] ?? '').filter(Boolean);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${extra.join('\n')}\nreturn { ${[...fns, ...extraNames].join(', ')}, get _state() { return { ${vars.join(', ')} }; } };`;
@@ -64,7 +69,9 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
 /** The page markup as served (between <body> and the first <script>). */
 const PAGE = cook(TEMPLATE.slice(TEMPLATE.indexOf('<body'), TEMPLATE.indexOf('<script>', TEMPLATE.indexOf('<body'))));
 /** The page CSS as served (the first <style> block). */
-const CSS = cook(TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>')));
+const CSS = cook(
+  TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>', TEMPLATE.indexOf('<style>'))),
+);
 
 function between(src: string, from: string, to: string): string {
   const a = src.indexOf(from);
@@ -147,6 +154,7 @@ function serve(kanban: FakeEl, wired: unknown[] = []): void {
     savedBoardView: () => null,
     applySectionState: () => {},
     window: { innerWidth: 1280 },
+    STRINGS: PAGE_STRINGS,
     ...paintEnv(),
   };
   const names = Object.keys(env);
@@ -251,7 +259,7 @@ const flowBoard = () => {
 describe('[T2] board — skeleton until the first board paints', () => {
   it('the served board starts loading: the element is handed load "loading", three empty columns, no announcement', () => {
     const inbox = between(PAGE, '<section class="inbox ui-tok" id="inbox"', '</section>');
-    expect(inbox).toContain('<ui-agent-inbox id="kanban" class="kanban" view="board"></ui-agent-inbox>');
+    expect(inbox).toContain('<ui-agent-inbox id="kanban" class="kanban" view="board" lang="ko"></ui-agent-inbox>');
     // Skeleton cards, counts and empty hints are the element's: the page serves none of its own.
     for (const gone of ['class="col-skel"', 'class="sk-card"', 'id="count-', 'class="col-empty"']) {
       expect(inbox, gone).not.toContain(gone);
@@ -264,9 +272,9 @@ describe('[T2] board — skeleton until the first board paints', () => {
     expect(kanban.data?.load).toBe('loading');
     expect(kanban.data?.announce).toBe(false);
     expect(kanban.data?.columns.map((c) => [c.id, c.label, c.cards])).toEqual([
-      ['waiting', 'NEEDS YOU', []],
-      ['working', 'RUNNING', []],
-      ['done', 'DONE', []],
+      ['waiting', '응답 필요', []],
+      ['working', '실행 중', []],
+      ['done', '완료', []],
     ]);
   });
 
@@ -806,120 +814,207 @@ describe('[T3] first load is bounded; partial data is never announced as the boa
 });
 
 describe('[T2] stats strip — skeleton bars, started in parallel with the board', () => {
-  const STAT_IDS = [
-    'stat-sessions',
-    'stat-tokens',
-    'stat-cost',
-    'stat-turns',
-    'stat-prs',
-    'stat-merged',
-    'stat-merge-lines',
+  // 세션 · 토큰 · 비용 are <ui-stat-strip id="stats-strip">'s data (D2); the cards behind 자세히 are a second
+  // <ui-stat-strip id="stats-grid"> in layout 'cards' (D4, B-07). Both roll from the value under the loading bar.
+  const STRIP_FNS = [
+    'setStripFigure',
+    'statsStripData',
+    'paintStatsStrip',
+    'statCardsData',
+    'paintStatCards',
+    'fillStatSlot',
   ];
+  const STRIP_VARS = ['_strip', '_tokenBreakdown', '_statsDetailOpen', 'PERIOD_OPTIONS', '_statCards'];
+  // The two <ui-bar-chart>s (B-08): CHARTS spans lines, so it travels as extra source.
+  const CHART_FNS = ['toNum', 'chartDayTitle', 'chartData', 'paintCharts'];
+  const CHARTS_SRC = cook(`${between(TEMPLATE, 'var CHARTS = [', '\n];')}\n];`);
+  type StripMetric = {
+    key: string;
+    value: number | null;
+    loading: boolean;
+    from?: string;
+    slot?: string;
+    wide?: boolean;
+  };
+  const figures = (strip: FakeEl) =>
+    ((strip.data as unknown as { metrics: StripMetric[] }).metrics ?? []).map((x) => ({
+      key: x.key,
+      value: x.value,
+      loading: x.loading,
+    }));
 
-  it('every stat value is served loading, without a "-" placeholder', () => {
-    for (const id of STAT_IDS) {
-      const m = PAGE.match(new RegExp(`<[^>]*id="${id}"[^>]*>([^<]*)<`));
-      expect(m, id).not.toBeNull();
-      expect(m?.[0], id).toContain('is-loading');
-      expect(m?.[1], id).toBe('');
-    }
-    expect(PAGE).toMatch(
-      /id="stat-workflows"[^>]*class="[^"]*is-loading|class="[^"]*is-loading[^"]*"[^>]*id="stat-workflows"/,
+  it('every figure is served loading: the strip and the cards start as skeleton bars, each rolling from its last value', () => {
+    expect(PAGE).toContain(
+      '<ui-stat-strip id="stats-grid" class="stats-grid" lang="ko"><span id="stat-merge-lines"></span><span id="stat-workflows" class="stat-wf"></span></ui-stat-strip>',
     );
-  });
-
-  it('setStat ends the loading bar for that value', () => {
-    const d = fakeDocument(['stat-sessions']);
-    d.byId['stat-sessions'].classes.add('is-loading');
-    const m = load<{ setStat(id: string, t: string): void }>(['setStat', 'stopStatRoll'], [], { document: d.document });
-    m.setStat('stat-sessions', '12');
-    expect(d.byId['stat-sessions'].textContent).toBe('12');
-    expect(d.byId['stat-sessions'].classes.has('is-loading')).toBe(false);
-  });
-
-  it('a strip figure rolls from the one it showed (620ms ease-out quart); first paint, dashes and reduced motion jump', () => {
-    const d = fakeDocument(['stat-sessions']);
-    const target = d.byId['stat-sessions'];
-    const frames: Array<(now: number) => void> = [];
-    const cancelled: number[] = [];
-    let reduce = false;
+    for (const gone of [
+      'class="stat-card"',
+      'id="stat-turns"',
+      'id="stat-prs"',
+      'id="stat-merged"',
+      'stat-commits-hidden',
+    ]) {
+      expect(PAGE, gone).not.toContain(gone);
+    }
     const m = load<{
-      setStat(id: string, t: string, v?: number | null, f?: (n: number) => string): void;
-      markStatsLoading(): void;
-      fmtCount(n: number): string;
-    }>(['setStat', 'stopStatRoll', 'fmtCount', 'markStatsLoading'], ['STAT_ROLL_MS', 'STAT_IDS'], {
-      document: d.document,
-      reduceMotion: () => reduce,
-      requestAnimationFrame: (cb: (now: number) => void) => frames.push(cb),
-      cancelAnimationFrame: (id: number) => cancelled.push(id),
+      statsStripData(): { metrics: StripMetric[] };
+      statCardsData(): { layout: string; metrics: StripMetric[] };
+    }>(['statsStripData', 'statCardsData'], STRIP_VARS, { currentPeriod: 'day' });
+    expect(m.statsStripData().metrics.map((x) => [x.key, x.value, x.loading, x.from])).toEqual([
+      ['sessions', null, true, 'last'],
+      ['tokens', null, true, 'last'],
+      ['cost', null, true, 'last'],
+    ]);
+    const cards = m.statCardsData();
+    expect(cards.layout).toBe('cards');
+    expect(cards.metrics.map((x) => [x.key, x.loading, x.from ?? x.slot])).toEqual([
+      ['turns', true, 'last'],
+      ['prs', true, 'last'],
+      ['merged', true, 'last'],
+      ['lines', true, 'lines'],
+      ['wf', true, 'wf'],
+    ]);
+    expect(cards.metrics[4].wide).toBe(true);
+  });
+
+  it('a load: the bar over the kept value, then one write with the answer — the element rolls (from: last), no hand-off', () => {
+    // 0.10.0 keeps a figure's value under its loading bar (metrics[].from: 'last'), so the page no longer hands
+    // the old value back first (D2-GAPS G2-1's landStripFigures is gone).
+    expect(TEMPLATE).not.toContain('landStripFigures');
+    const d = fakeDocument(['stats-strip', 'stats-grid', 'stat-merge-lines', 'stat-workflows']);
+    const strip = d.byId['stats-strip'];
+    const writes: StripMetric[][] = [];
+    let data: unknown;
+    Object.defineProperty(strip, 'data', {
+      get: () => data,
+      set: (v) => {
+        data = v;
+        writes.push(figures(strip));
+      },
     });
-    const fmt = (n: number) => m.fmtCount(n);
-    const run = (now: number) => frames.splice(0).forEach((cb) => cb(now));
-    // First paint: no figure was shown, so it jumps.
-    m.setStat('stat-sessions', '10', 10, fmt);
-    expect(target.textContent).toBe('10');
-    expect(frames).toHaveLength(0);
-    // A change rolls: it starts on the old figure, is past halfway at a quarter of the time
-    // (ease-out quart: 1 - 0.75^4 ≈ 0.68), and lands on the served text.
-    m.setStat('stat-sessions', '110', 110, fmt);
-    expect(target.textContent).toBe('10');
-    run(1000);
-    run(1000 + 155);
-    expect(Number(target.textContent)).toBeGreaterThan(70);
-    expect(Number(target.textContent)).toBeLessThan(110);
-    run(1000 + 620);
-    expect(target.textContent).toBe('110');
-    expect(frames).toHaveLength(0);
-    // A new load stops a roll in flight: the bar shows, not a number drawn over it.
-    m.setStat('stat-sessions', '20', 20, fmt);
-    expect(frames).toHaveLength(1);
+    const m = load<{ markStatsLoading(): void; paintStats(d: unknown): void; paintUsage(r: unknown): void }>(
+      ['markStatsLoading', 'paintStats', 'paintUsage', 'esc', 'toNum', ...STRIP_FNS],
+      STRIP_VARS,
+      {
+        document: d.document,
+        currentPeriod: 'day',
+        paintCharts: () => {},
+        paintUsageBreakdown: () => {},
+        _chartDays: [],
+        _usageReport: null,
+      },
+    );
+    const sessions = () => writes.map((w) => w.find((x) => x.key === 'sessions'));
+    const at = <T>(list: T[], i: number): T | undefined => list[list.length - 1 - i];
+    const totals = (n: number) => ({
+      totals: {
+        sessionsCreated: n,
+        turnsUsed: 7,
+        prsCreated: 2,
+        prsMerged: 1,
+        mergeLinesAdded: 30,
+        mergeLinesDeleted: 4,
+        workflowCounts: { autoz: 1, z: 3 },
+      },
+      days: [],
+    });
+    m.paintStats(totals(10));
+    expect(at(sessions(), 0)).toEqual({ key: 'sessions', value: 10, loading: false });
+    // A new load: the bar, with the last value kept under it.
     m.markStatsLoading();
-    expect(cancelled).toHaveLength(1);
-    expect(target.textContent).toBe('');
-    expect(target.classes.has('is-loading')).toBe(true);
-    // A dash jumps, and the figure after a dash jumps too.
-    frames.length = 0;
-    m.setStat('stat-sessions', '\u2014', null, fmt);
-    expect(target.textContent).toBe('\u2014');
-    m.setStat('stat-sessions', '30', 30, fmt);
-    expect(target.textContent).toBe('30');
-    expect(frames).toHaveLength(0);
-    // Reduced motion jumps.
-    reduce = true;
-    m.setStat('stat-sessions', '40', 40, fmt);
-    expect(target.textContent).toBe('40');
-    expect(frames).toHaveLength(0);
+    expect(at(writes, 0)?.map((x) => x.loading)).toEqual([true, true, true]);
+    expect(at(sessions(), 0)).toEqual({ key: 'sessions', value: 10, loading: true });
+    expect(figures(d.byId['stats-grid']).map((x) => x.loading)).toEqual([true, true, true, true, true]);
+    // Its answer: one write with the new value.
+    writes.length = 0;
+    m.paintStats(totals(25));
+    expect(sessions()).toEqual([{ key: 'sessions', value: 25, loading: false }]);
+    expect(figures(d.byId['stats-grid'])).toEqual([
+      { key: 'turns', value: 7, loading: false },
+      { key: 'prs', value: 2, loading: false },
+      { key: 'merged', value: 1, loading: false },
+      { key: 'lines', value: undefined, loading: false },
+      { key: 'wf', value: undefined, loading: false },
+    ]);
+    // The free-form figures go into their slots, the most-run workflow first.
+    expect(d.byId['stat-merge-lines'].innerHTML).toBe('+30 / -4');
+    expect(d.byId['stat-merge-lines'].attrs.slot).toBe('lines');
+    expect(d.byId['stat-workflows'].innerHTML).toBe('<span>z: <b>3</b></span><span>autoz: <b>1</b></span>');
+    expect(d.byId['stat-workflows'].attrs.slot).toBe('wf');
+    // A failed answer is a dash: null figures, and the slotted figures leave their slots (the element's "—").
+    m.markStatsLoading();
+    m.paintStats(null);
+    expect(at(sessions(), 0)).toEqual({ key: 'sessions', value: null, loading: false });
+    expect(
+      figures(d.byId['stats-grid'])
+        .slice(0, 3)
+        .map((x) => x.value),
+    ).toEqual([null, null, null]);
+    expect(d.byId['stat-merge-lines'].attrs.slot).toBeUndefined();
+    expect(d.byId['stat-workflows'].attrs.slot).toBeUndefined();
+    // 토큰 · 비용 land from the usage answer the same way.
+    m.paintUsage({ totals: { totalInputTokens: 5, totalOutputTokens: 6, totalCostUsd: 1.5 } });
+    expect(at(writes, 0)?.filter((x) => x.key !== 'sessions')).toEqual([
+      { key: 'tokens', value: 11, loading: false },
+      { key: 'cost', value: 1.5, loading: false },
+    ]);
   });
 
   it('every stats load (first load, period, user) shows bars until its answer lands', () => {
     const body = clientFn('loadStats');
     expect(body).toContain('markStatsLoading();');
     expect(body.indexOf('markStatsLoading();')).toBeLessThan(body.indexOf('statsJson('));
-    const d = fakeDocument([
-      'stat-sessions',
-      'stat-tokens',
-      'stat-cost',
-      'stat-turns',
-      'stat-prs',
-      'stat-merged',
-      'stat-merge-lines',
-      'stat-workflows',
-      'chart-row',
-    ]);
-    const m = load<{ markStatsLoading(): void }>(['markStatsLoading', 'stopStatRoll'], ['STAT_IDS'], {
-      document: d.document,
-    });
+    const d = fakeDocument(['chart-sessions', 'chart-merge', 'stats-strip', 'stats-grid']);
+    const m = load<{ markStatsLoading(): void }>(
+      ['markStatsLoading', ...STRIP_FNS, ...CHART_FNS],
+      ['_chartDays', ...STRIP_VARS],
+      { document: d.document, currentPeriod: 'week' },
+      [CHARTS_SRC],
+    );
     m.markStatsLoading();
-    for (const id of [...STAT_IDS, 'stat-workflows']) {
-      expect(d.byId[id].classes.has('is-loading'), id).toBe(true);
-      expect(d.byId[id].textContent, id).toBe('');
+    expect(figures(d.byId['stats-strip']).map((x) => x.loading)).toEqual([true, true, true]);
+    expect(figures(d.byId['stats-grid']).map((x) => x.loading)).toEqual([true, true, true, true, true]);
+    expect((d.byId['stats-strip'].data as unknown as { period: { value: string } }).period.value).toBe('week');
+    // The charts: skeleton bars before the first answer (the element dims the last bars after it).
+    for (const id of ['chart-sessions', 'chart-merge']) {
+      expect(d.byId[id].data, id).toMatchObject({ loading: true, bars: [] });
     }
   });
 
-  it('paintStats ends the workflows and chart bars', () => {
+  it('paintStats ends the cards and chart bars', () => {
     const body = clientFn('paintStats');
-    expect(body).toMatch(/stat-workflows'\);[\s\S]*classList\.remove\('is-loading'\)/);
-    expect(body).toMatch(/chart-row[\s\S]*classList\.remove\('is-loading'\)/);
+    expect(body).toMatch(/fillStatSlot\('stat-workflows', 'wf'[\s\S]*paintStatCards\(\);/);
+    // D2 (B-08): each <ui-bar-chart> gets the days — label the day of the month, title 'M월 D일', the day's value —
+    // and loading: false; a failed load (null) says so in the plot.
+    expect(body).toContain('paintCharts(_chartDays, false);');
+    const d = fakeDocument(['chart-sessions', 'chart-merge']);
+    const m = load<{ paintCharts(days: unknown[] | null, loading: boolean): void }>(
+      CHART_FNS,
+      [],
+      { document: d.document },
+      [CHARTS_SRC],
+    );
+    const days = [
+      { date: '2026-10-05', sessionsCreated: 3, mergeLinesAdded: 10, mergeLinesDeleted: 4 },
+      { date: '2026-10-06', sessionsCreated: 0, mergeLinesAdded: 0, mergeLinesDeleted: 0 },
+    ];
+    m.paintCharts(days, false);
+    expect(d.byId['chart-sessions'].data).toEqual({
+      title: '세션',
+      unit: '세션',
+      bars: [
+        { key: '2026-10-05', label: '5', title: '10월 5일', value: 3 },
+        { key: '2026-10-06', label: '6', title: '10월 6일', value: 0 },
+      ],
+      empty: '이 기간에 데이터가 없습니다',
+      loading: false,
+    });
+    expect(d.byId['chart-merge'].data).toMatchObject({
+      title: '코드 변경 (머지)',
+      bars: [{ value: 14 }, { value: 0 }],
+    });
+    m.paintCharts(null, false);
+    expect(d.byId['chart-merge'].data).toMatchObject({ bars: [], empty: '통계를 불러오지 못했어요', loading: false });
   });
 
   it('stats no longer wait for the board: both start at init', () => {
@@ -930,76 +1025,70 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
 });
 
 describe('[T3] session panel — turn-shaped skeleton instead of "Loading..."', () => {
-  it('openPanel no longer prints "Loading..."; 지시와 답변 shows turn skeletons and marks the list busy until the turns land', () => {
+  it('openPanel no longer prints "Loading..."; 지시와 답변 is handed loading (the element’s turn skeletons, busy) until the turns land', () => {
     const body = clientFn('openPanel');
     expect(body).not.toContain('Loading...');
-    // SSOT 2026-10-29: the opening marks 지시와 답변's data as loading; the tab paints from it (paintConvTab).
+    // SSOT 2026-10-29: the opening marks 지시와 답변's data as loading; the tab paints from it (convPaint).
     expect(body).toContain("_panelTurnsMsg = s.conversationId ? 'loading' : 'unrecorded';");
-    const attrs: Record<string, string> = {};
-    const turnsEl = {
-      innerHTML: '',
-      hidden: false,
-      firstChild: null,
-      setAttribute: (k: string, v: string) => {
-        attrs[k] = v;
-      },
-      removeAttribute: (k: string) => {
-        delete attrs[k];
-      },
-    };
-    const host = { innerHTML: '', firstChild: null, hidden: false, _html: '' };
-    const m = load<{ paintConvTab(): void; __set(n: string, v: unknown): void }>(
-      ['turnsSkeletonHtml', 'paintConvTab'],
-      ['PANEL_TURNS_MSG'],
+    const sets: Record<string, unknown>[] = [];
+    const m = load<{ convPaint(): void; __set(n: string, v: unknown): void }>(
+      ['convPaint'],
+      ['CONV_EMPTY'],
       {
-        document: {
-          getElementById: (id: string) => (id === 'panel-turns' ? turnsEl : id === 'panel-agent-conv' ? host : null),
-        },
+        convEl: () => ({}),
         _psec: 'conv',
         _panelAgent: '',
-        _ansIo: null,
-        _panelTurnsList: [] as unknown[],
+        panelSessionKey: null,
+        _sessionCache: {},
+        panelConvId: 'c',
         _panelTurnsCid: 'c',
+        _panelTurnsList: [] as unknown[],
         _panelTurnsMsg: 'loading',
-        esc: (x: string) => x,
-        renderTurn: (t: { id: string }) => `<div class="turn" data-turn-id="${t.id}"></div>`,
-        attachRawToggleHandlers: () => {},
-        decoratePanelTurns: () => {},
+        _panelTurnsHasMore: false,
+        _panelTurnsLoading: true,
+        _panelTurnsWhy: '',
+        _panelOlderWhy: '',
+        _panelDetail: false,
+        _rawLoadedCache: {},
+        _ansFailed: {},
+        _artCache: {},
+        botNameOf: () => 'Soma',
+        ansLinkTitles: () => ({}),
+        ansSession: () => null,
+        ansPendingShow: () => false,
+        convTurnsOf: (list: { id: string }[]) => ({ turns: list.map((t) => ({ id: t.id, role: 'user' })), slots: [] }),
+        convSlots: () => {},
+        convSetData: (_el: unknown, d: Record<string, unknown>) => sets.push(d),
       },
       ['function __set(n, v) { eval(n + " = v"); }'],
     );
-    m.paintConvTab();
-    expect(turnsEl.innerHTML).toContain('sk-turn');
-    expect(attrs['aria-busy']).toBe('true');
+    const last = () => sets[sets.length - 1];
+    m.convPaint();
+    // No turns and loading: <ui-conversation> draws its three turn-shaped skeletons and is aria-busy.
+    expect(last()).toMatchObject({ turns: [], loading: true });
     // Every way out of the load clears the busy state: a failure, no turns, the turns.
+    m.__set('_panelTurnsLoading', false);
     m.__set('_panelTurnsMsg', 'failed');
-    m.paintConvTab();
-    expect(turnsEl.innerHTML).toContain('Failed to load conversation');
-    expect(attrs['aria-busy']).toBeUndefined();
-    m.__set('_panelTurnsMsg', 'loading');
-    m.paintConvTab();
+    m.__set('_panelTurnsWhy', 'HTTP 500');
+    m.convPaint();
+    expect(last()).toMatchObject({ loading: false, error: 'HTTP 500' });
     m.__set('_panelTurnsMsg', 'none');
-    m.paintConvTab();
-    expect(turnsEl.innerHTML).toContain('No conversation turns');
-    expect(attrs['aria-busy']).toBeUndefined();
-    m.__set('_panelTurnsMsg', 'loading');
-    m.paintConvTab();
+    m.convPaint();
+    expect(last()).toMatchObject({ loading: false, emptyText: '아직 대화가 없습니다' });
+    expect(last()).not.toHaveProperty('error');
     m.__set('_panelTurnsList', [{ id: 't1' }, { id: 't2' }]);
     m.__set('_panelTurnsMsg', '');
-    m.paintConvTab();
-    expect(turnsEl.innerHTML).toBe(
-      '<div class="turn" data-turn-id="t1"></div><div class="turn" data-turn-id="t2"></div>',
-    );
-    expect(attrs['aria-busy']).toBeUndefined();
-  });
-
-  it('turnsSkeletonHtml: aria-hidden rows shaped like user / assistant turns', () => {
-    const m = load<{ turnsSkeletonHtml(): string }>(['turnsSkeletonHtml'], []);
-    const html = m.turnsSkeletonHtml();
-    expect(html).toContain('aria-hidden="true"');
-    expect((html.match(/class="sk-turn( |")/g) ?? []).length).toBeGreaterThanOrEqual(3);
-    expect(html).toContain('sk-turn user');
-    expect(html).toContain('sk-turn assistant');
+    m.convPaint();
+    expect(last()).toMatchObject({
+      loading: false,
+      turns: [
+        { id: 't1', role: 'user' },
+        { id: 't2', role: 'user' },
+      ],
+    });
+    // The inline skeleton renderer and its styles are gone (the element's own skeleton turns).
+    expect(TEMPLATE).not.toMatch(/\nfunction turnsSkeletonHtml\(/);
+    expect(TEMPLATE).not.toContain('.sk-turn');
   });
 });
 
