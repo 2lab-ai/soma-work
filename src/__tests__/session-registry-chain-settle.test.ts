@@ -159,6 +159,26 @@ describe('SessionRegistry — a task chain’s settle and notice intents (E2 ③
     ]);
   });
 
+  it('S3b — a settle may name its notice: a completed /compact hop with nothing re-run owes a failure, not a result', () => {
+    const reg = new SessionRegistry();
+    const task = originTask(reg);
+    const key = `task:${task.taskId}`;
+    reg.beginTaskTurn(key, 't1', CHAIN);
+    reg.commitTaskTurnOutcome(key, outcome('completed', 't1', { reason: 'compacted' }), 'idle', {
+      chainId: CHAIN,
+      ends: true,
+      notice: { kind: 'failure', reason: 'nothing re-run' },
+    });
+    expect(task.notices).toEqual([
+      expect.objectContaining({
+        id: `${task.taskId}:${CHAIN}:failure`,
+        kind: 'failure',
+        outcome: 'completed',
+        reason: 'nothing re-run',
+      }),
+    ]);
+  });
+
   it('S4 — a dashboard task (no instruction thread) tracks its chain but gets no intents', () => {
     const reg = new SessionRegistry();
     const task = reg.createTask(TASK_INPUT);

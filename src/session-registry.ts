@@ -720,7 +720,8 @@ export class SessionRegistry {
     // in this same write; a hop the chain re-runs after keeps it open, silent.
     if (settle?.ends) {
       session.openChain = undefined;
-      const kind = noticeKindFor(outcome.outcome);
+      const kind = settle.notice?.kind ?? noticeKindFor(outcome.outcome);
+      const reason = settle.notice?.reason ?? outcome.reason;
       const askId =
         kind === 'question'
           ? (session.actionPanel?.pendingQuestion as { askId?: unknown } | undefined)?.askId
@@ -733,7 +734,7 @@ export class SessionRegistry {
         turnId: outcome.turnId,
         ...(ask ? { askId: ask } : {}),
         outcome: outcome.outcome,
-        ...(outcome.reason ? { reason: outcome.reason } : {}),
+        ...(reason ? { reason } : {}),
         at: outcome.at,
       });
     }

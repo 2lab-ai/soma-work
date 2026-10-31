@@ -70,11 +70,15 @@ describe('task turn runner — chain settle (E2 ③b)', () => {
 
   it('a hop that would continue but did not complete ends the chain', async () => {
     const h = runnerHarness({
-      execute: vi.fn(async () => ({ success: false, messageCount: 0, terminal: { exit: 'error', error: 'x' } }) as any),
+      execute: vi.fn(async () => {
+        throw new Error('model crashed');
+      }),
     });
-    await h.runner.runTaskTurn({ ...h.input, chain: { id: 'c1', continuesIfCompleted: true } });
+    await expect(h.runner.runTaskTurn({ ...h.input, chain: { id: 'c1', continuesIfCompleted: true } })).rejects.toThrow(
+      /model crashed/,
+    );
     const [, record, , settle] = h.registry.commitTaskTurnOutcome.mock.calls[0];
-    expect(record.outcome).not.toBe('completed');
+    expect(record.outcome).toBe('failed');
     expect(settle).toEqual({ chainId: 'c1', ends: true });
   });
 
@@ -121,16 +125,17 @@ describe('task turn runner — chain settle (E2 ③b)', () => {
 
   it('abandoning a turn ends its chain', async () => {
     const h = runnerHarness({
-      execute: vi.fn(async () => ({ success: true, messageCount: 1, terminal: undefined, nonTerminal: 'shutdown' }) as any),
+      execute: vi.fn(
+        async () => ({ success: false, messageCount: 0, terminal: { exit: 'abort', abortReason: 'supersede' } }) as any,
+      ),
     });
     const r = await h.runner.runTaskTurn({
       ...h.input,
       chain: { id: 'c1', continuesIfCompleted: false },
-      resumable: ['shutdown'],
     });
     expect(r.outcome).toBeNull();
     await h.runner.abandonTurn(KEY, r.turnId, { outcome: 'interrupted', category: 'Exception', reason: 'x' }, 'c1');
-    expect(h.registry.commitTaskTurnOutcome.mock.calls.at(-1)?.[3]).toEqual({ chainId: 'c1', ends: true });
+    expect(h.registry.commitTaskTurnOutcome.mock.calls.slice(-1)[0]?.[3]).toEqual({ chainId: 'c1', ends: true });
   });
 });
 
@@ -140,17 +145,26 @@ const completed = (turnId = 't'): RunTaskTurnResult => ({
   turnId,
   outcome: { turnId, outcome: 'completed', category: 'WorkflowComplete', at: 1 },
 });
-const fallbackCompact = (turnId = 'tc'): RunTaskTurnResult => ({ turnId, outcome: null, nonTerminal: 'fallbackCompact' });
+const fallbackCompact = (turnId = 'tc'): RunTaskTurnResult => ({
+  turnId,
+  outcome: null,
+  nonTerminal: 'fallbackCompact',
+});
 
-function controllerHarness(steps: Array<RunTaskTurnResult | ((i: RunTaskTurnInput) => Promise<RunTaskTurnResult>)>, session: any = {}) {
+function controllerHarness(
+  steps: Array<RunTaskTurnResult | ((i: RunTaskTurnInput) => Promise<RunTaskTurnResult>)>,
+  session: any = {},
+) {
   const s = { slackless: true, ownerId: 'UOWNER', ownerName: 'Owner', taskId: 'a', ...session };
   const inputs: RunTaskTurnInput[] = [];
   const queue = [...steps];
   const runTaskTurn = vi.fn(async (input: RunTaskTurnInput) => {
     inputs.push(input);
     const next = queue.shift() ?? completed();
+    // A function step decides for itself whether its start was saved.
+    if (typeof next === 'function') return next(input);
     input.onStarted?.();
-    return typeof next === 'function' ? next(input) : next;
+    return next;
   });
   const abandonTurn = vi.fn(async (_k: string, turnId: string, decided: any) => ({
     turnId,
@@ -225,10 +239,15 @@ describe('task turn controller — one chain id per chain, and when a completed 
       },
     ]);
     // The second hop never starts: its start throws before onStarted.
-    const runTaskTurn = (h.controller as any);
+    const runTaskTurn = h.controller as any;
     void runTaskTurn;
     const r = await h.controller.start({ sessionKey: KEY, text: 'go', actorUserId: 'UOWNER' } as any);
     await (r as any).done;
-    expect(h.abandonTurn).toHaveBeenCalledWith(KEY, 'tc', expect.objectContaining({ outcome: 'interrupted' }), h.inputs[0].chain?.id);
+    expect(h.abandonTurn).toHaveBeenCalledWith(
+      KEY,
+      'tc',
+      expect.objectContaining({ outcome: 'interrupted' }),
+      h.inputs[0].chain?.id,
+    );
   });
 });

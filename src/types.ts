@@ -421,6 +421,11 @@ export interface TaskChainSettle {
   chainId: string;
   /** False only for a completed `/compact` hop the chain re-runs after. */
   ends: boolean;
+  /**
+   * The notice this end owes, when not the outcome's own — a completed
+   * `/compact` hop with nothing to re-run is a failure, never a result.
+   */
+  notice?: { kind: TaskNoticeKind; reason: string };
 }
 
 /** E2 ② — a Slack-instructed task's channel context (see `ConversationSession.inputContext`). */
