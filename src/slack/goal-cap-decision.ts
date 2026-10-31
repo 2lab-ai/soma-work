@@ -14,9 +14,12 @@
  *
  * DM rewrites (resolved / superseded) that have not reached Slack yet live in
  * their own store, `DATA_DIR/goal-cap-dm-sync.json`: one entry per DM, apart
- * from the goal, so they survive the goal completing or being deleted. An
- * entry is written before its first attempt, retried in the background and
- * again after a restart ({@link flushGoalCapDmSync}).
+ * from the goal, so they survive the goal completing or being deleted. The
+ * store is a journal written BEFORE the session: an answer journals its DM
+ * rewrite (tagged with the round id) first and is refused when that write
+ * fails; after a restart an entry whose round is still open — the session
+ * save never happened — is dropped instead of sent
+ * ({@link flushGoalCapDmSync}). Entries are retried in the background too.
  *
  * Exactly once: Slack buttons and the dashboard route run in the same daemon
  * process against the same in-memory session, so {@link answerGoalCapDecision}
@@ -47,6 +50,8 @@ export interface GoalCapDmRef {
 /** A DM rewrite waiting to reach Slack. */
 export interface GoalCapDmSync extends GoalCapDmRef {
   text: string;
+  /** The round whose end this rewrite announces. */
+  decisionId?: string;
 }
 
 /** The host side effects a decision needs. Wired once in `index.ts`. */
@@ -112,7 +117,7 @@ export function recordGoalCapDm(goal: SessionGoal, decisionId: string, ref: Goal
     goal.capDmRef = ref;
     return 'recorded';
   }
-  queueDmSync(ref, GOAL_CAP_DECISION_SUPERSEDED_TEXT);
+  queueDmSyncBestEffort(ref, GOAL_CAP_DECISION_SUPERSEDED_TEXT, decisionId);
   return 'late';
 }
 
@@ -126,7 +131,7 @@ export function dmRefOf(posted: unknown): GoalCapDmRef | undefined {
 
 export type GoalCapDecisionAnswer =
   | { ok: true; decision: GoalCapDecision; goal: SessionGoal }
-  | { ok: false; reason: 'invalid' | 'stale' | 'not_owner' };
+  | { ok: false; reason: 'invalid' | 'stale' | 'not_owner' | 'unavailable' };
 
 export interface AnswerGoalCapDecisionArgs {
   session: Pick<ConversationSession, 'goal' | 'systemPrompt'> | undefined;
@@ -165,6 +170,21 @@ export function answerGoalCapDecision(args: AnswerGoalCapDecisionArgs): GoalCapD
 
   // Synchronous from here to the save: no other answer can interleave.
   const ref = goal.capDmRef;
+  // Journal the DM rewrite BEFORE the decision is saved: a crash between the
+  // two saves leaves an entry whose round is still open on disk, which the
+  // restart drops. When the journal cannot be written nothing is decided.
+  let rewrite: GoalCapDmSync | undefined;
+  if (ref) {
+    try {
+      rewrite = journalDmSync(ref, goalCapDecisionResolvedText(decision, surface), goal.capDecisionId);
+    } catch (error) {
+      logger.error('Goal cap decision refused — the DM rewrite could not be journalled', {
+        sessionKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { ok: false, reason: 'unavailable' };
+    }
+  }
   endDecision(goal);
   if (decision === 'continue') {
     goal.continuationCount = 0;
@@ -180,9 +200,9 @@ export function answerGoalCapDecision(args: AnswerGoalCapDecisionArgs): GoalCapD
   session.systemPrompt = undefined;
   args.save();
 
-  // Every answer rewrites the round's DM through the durable queue — a Slack
-  // click also replaces its own message (respond), but that reply can fail.
-  if (ref) queueDmSync(ref, goalCapDecisionResolvedText(decision, surface));
+  // Every answer rewrites the round's DM through the journal — a Slack click
+  // also replaces its own message (respond), but that reply can fail.
+  if (rewrite) runDmSync(rewrite);
   if (decision === 'continue') resumeGoalLoop(sessionKey);
   surfaces.broadcast?.();
   return { ok: true, decision, goal };
@@ -197,8 +217,9 @@ export function retireGoalCapDecision(goal: SessionGoal | undefined): void {
   if (!goal) return;
   const wasPending = goal.capDmPendingAt !== undefined;
   const ref = goal.capDmRef;
+  const round = goal.capDecisionId;
   endDecision(goal);
-  if (ref) queueDmSync(ref, GOAL_CAP_DECISION_SUPERSEDED_TEXT);
+  if (ref) queueDmSyncBestEffort(ref, GOAL_CAP_DECISION_SUPERSEDED_TEXT, round);
   // Deferred: the caller is mid-mutation and persists right after.
   if (wasPending && surfaces.broadcast) queueMicrotask(() => surfaces.broadcast?.());
 }
@@ -238,9 +259,15 @@ function loadRewrites(): GoalCapDmSync[] {
   return rewrites;
 }
 
+/** Write the journal. Throws when it cannot be written — callers decide what that refuses. */
 function saveRewrites(): void {
+  atomicWriteJson(storeFile(), loadRewrites());
+}
+
+/** Write the journal after a delivery changed it; a failure only delays the cleanup. */
+function saveRewritesQuietly(): void {
   try {
-    atomicWriteJson(storeFile(), loadRewrites());
+    saveRewrites();
   } catch (error) {
     logger.warn('Goal cap DM rewrite store write failed', {
       error: error instanceof Error ? error.message : String(error),
@@ -259,16 +286,40 @@ export function reloadGoalCapDmRewrites(): void {
 }
 
 /**
- * Queue a DM rewrite: one entry per DM (a newer rewrite replaces only the same
- * DM's), written to the store before the first attempt, then sent.
+ * Journal a DM rewrite: one entry per DM (a newer rewrite replaces only the
+ * same DM's), written to disk now. Throws (and leaves the journal as it was)
+ * when the write fails.
  */
-function queueDmSync(ref: GoalCapDmRef, text: string): void {
-  const entry: GoalCapDmSync = { channel: ref.channel, ts: ref.ts, text };
+function journalDmSync(ref: GoalCapDmRef, text: string, decisionId: string | undefined): GoalCapDmSync {
+  const entry: GoalCapDmSync = { channel: ref.channel, ts: ref.ts, text, ...(decisionId ? { decisionId } : {}) };
   const list = loadRewrites();
+  const before = [...list];
   const at = list.findIndex((e) => e.channel === ref.channel && e.ts === ref.ts);
   if (at >= 0) list[at] = entry;
   else list.push(entry);
-  saveRewrites();
+  try {
+    saveRewrites();
+  } catch (error) {
+    list.splice(0, list.length, ...before);
+    throw error;
+  }
+  return entry;
+}
+
+/**
+ * A round that ended without an answer (a message, pause, done…) cannot be
+ * refused, so its rewrite is journalled when possible and sent either way.
+ */
+function queueDmSyncBestEffort(ref: GoalCapDmRef, text: string, decisionId: string | undefined): void {
+  let entry: GoalCapDmSync;
+  try {
+    entry = journalDmSync(ref, text, decisionId);
+  } catch (error) {
+    logger.error('Goal cap DM rewrite could not be journalled — sending once without a retry record', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    entry = { channel: ref.channel, ts: ref.ts, text, ...(decisionId ? { decisionId } : {}) };
+  }
   runDmSync(entry);
 }
 
@@ -285,7 +336,7 @@ function runDmSync(entry: GoalCapDmSync, attempt = 0): void {
       const at = list.indexOf(entry);
       if (at < 0) return;
       list.splice(at, 1);
-      saveRewrites();
+      saveRewritesQuietly();
     },
     (error: unknown) => {
       if (!loadRewrites().includes(entry)) return;
@@ -303,9 +354,20 @@ function runDmSync(entry: GoalCapDmSync, attempt = 0): void {
   );
 }
 
-/** After a restart: send every DM rewrite the previous process could not deliver. */
-export function flushGoalCapDmSync(): number {
+/**
+ * After a restart: send every DM rewrite the previous process could not
+ * deliver. `isRoundOpen` reports whether a round is still pending in the
+ * loaded sessions — its rewrite was journalled but the session save that would
+ * have ended it never happened, so the DM keeps its buttons and the entry is
+ * dropped. Returns how many rewrites were sent.
+ */
+export function flushGoalCapDmSync(isRoundOpen: (decisionId: string) => boolean = () => false): number {
   const list = loadRewrites();
+  const kept = list.filter((e) => !(e.decisionId && isRoundOpen(e.decisionId)));
+  if (kept.length !== list.length) {
+    list.splice(0, list.length, ...kept);
+    saveRewritesQuietly();
+  }
   for (const entry of [...list]) runDmSync(entry);
   return list.length;
 }

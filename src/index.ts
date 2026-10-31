@@ -1576,7 +1576,11 @@ async function start() {
         }),
       );
       // DM rewrites the previous process could not deliver.
-      flushGoalCapDmSync();
+      flushGoalCapDmSync((decisionId) =>
+        [...registry.getAllSessions().values()].some(
+          (s) => s.goal?.capDecisionId === decisionId && s.goal.capDmPendingAt !== undefined,
+        ),
+      );
       timing('Goal turn-settled driver installed');
     } catch (error) {
       logger.warn('Failed to install goal turn-settled driver (non-critical)', error);

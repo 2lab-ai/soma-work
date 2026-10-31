@@ -279,7 +279,12 @@ export class GoalActionHandler {
       await respond({
         response_type: 'ephemeral',
         replace_original: false,
-        text: result.reason === 'not_owner' ? '❌ goal 소유자만 응답할 수 있습니다.' : '❌ 요청을 처리할 수 없습니다.',
+        text:
+          result.reason === 'not_owner'
+            ? '❌ goal 소유자만 응답할 수 있습니다.'
+            : result.reason === 'unavailable'
+              ? '❌ 지금은 처리할 수 없습니다. 잠시 후 다시 눌러주세요.'
+              : '❌ 요청을 처리할 수 없습니다.',
       });
     } catch (error) {
       this.logger.error(`Error processing goal ${decision} DM`, error);

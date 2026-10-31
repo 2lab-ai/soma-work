@@ -1310,7 +1310,7 @@ export function setDashboardGoalHandler(fn: GoalActionHandler): void {
  */
 export type GoalDecisionAnswerResult =
   | { ok: true; decision: 'continue' | 'cancel' }
-  | { ok: false; reason: 'invalid' | 'stale' | 'not_owner' };
+  | { ok: false; reason: 'invalid' | 'stale' | 'not_owner' | 'unavailable' };
 type GoalDecisionHandler = (
   sessionKey: string,
   answer: { goalId: string; decisionId: string; decision: 'continue' | 'cancel' },
@@ -3391,8 +3391,11 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: "goalId, decisionId and decision ('continue' | 'cancel') are required" });
         return;
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
-      if (!resolved) return;
+      // The goal's creator answers — who may is the decision's own check (the
+      // creator can differ from the session owner), so only the instance is resolved here.
+      const originalKey = resolveSelfActionKey(String(request.params?.key ?? ''), reply);
+      if (originalKey === null) return;
+      const resolved = { originalKey };
       if (!_goalDecisionHandlerFn) {
         reply.status(501).send({ error: 'Goal decision handler not configured' });
         return;
@@ -3412,6 +3415,10 @@ export async function registerDashboardRoutes(
         }
         if (result.reason === 'stale') {
           reply.status(409).send({ error: '이미 처리되었거나 더 이상 유효하지 않은 요청입니다' });
+          return;
+        }
+        if (result.reason === 'unavailable') {
+          reply.status(503).send({ error: '지금은 처리할 수 없습니다 — 잠시 후 다시 시도하세요' });
           return;
         }
         reply.status(403).send({ error: 'goal 소유자만 응답할 수 있습니다' });
@@ -7091,7 +7098,7 @@ var GOAL_DECISION_CHOICES = [{ id: 'continue', label: '✅ 계속' }, { id: 'can
 var GOAL_DECISION_SENT = { continue: '계속 진행을 보냈어요', cancel: '취소를 보냈어요' };
 function acGoalDecisionLock(s, d) {
   if (isSiblingSession(s)) return AC_SIBLING;
-  return d.ownerId && d.ownerId === currentUserId ? '' : 'goal 소유자만 응답할 수 있습니다';
+  return d.ownerId && d.ownerId === _viewerUserId ? '' : 'goal 소유자만 응답할 수 있습니다';
 }
 function acGoalDecisionData(s, d) {
   var n = toNum(d.maxContinuations);
