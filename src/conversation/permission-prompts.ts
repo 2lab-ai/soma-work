@@ -47,6 +47,24 @@ export function permissionThreadKey(channel: string | undefined, threadTs: strin
   return `${channel ?? ''}:${threadTs ?? ''}`;
 }
 
+const TASK_INDEX_PREFIX = 'task-key:';
+
+/**
+ * The index key of one prompt: a Slack-less task's (#599 ⑤b) is its own
+ * session key and the turn that raised it, which no `channel:thread` key can
+ * equal; a Slack prompt's is its thread. A task has no channel or thread, so
+ * keying it by thread would put every channel-less prompt on every task's card.
+ */
+function promptIndexKey(approval: PendingApproval): string {
+  return approval.task_key
+    ? taskIndexKey(approval.task_key, approval.turn_id ?? '')
+    : permissionThreadKey(approval.channel, approval.thread_ts);
+}
+
+function taskIndexKey(taskKey: string, turnId: string): string {
+  return `${TASK_INDEX_PREFIX}${taskKey}#${turnId}`;
+}
+
 function toRequest(approvalId: string, approval: PendingApproval): DashboardPermissionRequest {
   const rules = overridableRulesByIds(approval.rule_ids ?? []).map((r) => ({
     id: r.id,
@@ -91,11 +109,27 @@ export function pendingPermissionsFor(
   return byThread.get(permissionThreadKey(channel, threadTs)) ?? [];
 }
 
+/** A changed index key as callers name it: a task's session key, or a `channel:thread` key. */
+function reportedKey(indexKey: string): string {
+  if (!indexKey.startsWith(TASK_INDEX_PREFIX)) return indexKey;
+  return indexKey.slice(TASK_INDEX_PREFIX.length, indexKey.lastIndexOf('#'));
+}
+
+/**
+ * Prompts pending for one Slack-less task (#599 ⑤b) raised by the turn it is
+ * running (`activeTaskTurnId`); empty when none or when no turn runs — a
+ * prompt of an ended turn has no waiter left.
+ */
+export function pendingTaskPermissionsFor(taskKey: string, turnId: string | undefined): DashboardPermissionRequest[] {
+  if (!turnId) return [];
+  return byThread.get(taskIndexKey(taskKey, turnId)) ?? [];
+}
+
 async function readAndDiff(): Promise<string[]> {
   const next = new Map<string, DashboardPermissionRequest[]>();
   for (const { approvalId, approval } of await sharedStore.listPendingApprovals()) {
     if (approval.kind !== PERMISSION_PROMPT_KIND) continue;
-    const key = permissionThreadKey(approval.channel, approval.thread_ts);
+    const key = promptIndexKey(approval);
     const list = next.get(key) ?? [];
     list.push(toRequest(approvalId, approval));
     next.set(key, list);
@@ -108,7 +142,7 @@ async function readAndDiff(): Promise<string[]> {
   }
   const changed: string[] = [];
   for (const key of new Set([...signatures.keys(), ...nextSignatures.keys()])) {
-    if (signatures.get(key) !== nextSignatures.get(key)) changed.push(key);
+    if (signatures.get(key) !== nextSignatures.get(key)) changed.push(reportedKey(key));
   }
   byThread = next;
   signatures = nextSignatures;
@@ -116,7 +150,8 @@ async function readAndDiff(): Promise<string[]> {
 }
 
 /**
- * Re-read the store. Returns the thread keys whose prompts appeared, changed
+ * Re-read the store. Returns the thread keys (a task's session key for a
+ * Slack-less task) whose prompts appeared, changed
  * or went away since the previous read. Calls run one after another, each on
  * a fresh read.
  */

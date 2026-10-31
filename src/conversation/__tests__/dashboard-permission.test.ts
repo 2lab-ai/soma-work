@@ -373,4 +373,160 @@ describe('Dashboard — permission prompts (SSOT 2026-10-24)', () => {
       expect((await answer({ approvalId: id, decision: 'approve' }, await signIn('U1'))).statusCode).toBe(501);
     });
   });
+
+  // #599 ⑤b — a Slack-less task (#596) has no channel or thread: its tool
+  // approvals are keyed by the task's session key (`task_key`), shown on that
+  // task's card only, and answered by the requester under that key.
+  describe('#599 ⑤b — a Slack-less task’s approval', () => {
+    let taskA: string;
+    let taskB: string;
+    let task0: Record<string, unknown>;
+
+    function taskSession(sessionId: string, taskId: string) {
+      return {
+        sessionId,
+        taskId,
+        slackless: true,
+        ownerId: 'U1',
+        ownerName: 'Alice',
+        channelId: '',
+        activityState: 'working',
+        activeTaskTurnId: 'turn-1',
+        state: 'MAIN',
+        lastActivity: new Date('2026-10-31T00:00:00Z'),
+      };
+    }
+
+    function taskCard(b: any, k: string) {
+      for (const col of ['working', 'waiting', 'idle', 'closed']) {
+        const hit = (b[col] || []).find((c: any) => c.key === k);
+        if (hit) return { col, card: hit };
+      }
+      return null;
+    }
+
+    beforeEach(() => {
+      const suffix = Math.random().toString(36).slice(2, 10);
+      taskA = `task:dp-a-${suffix}`;
+      taskB = `task:dp-b-${suffix}`;
+      task0 = taskSession('sidA', taskA.slice('task:'.length));
+      dashboard.setDashboardSessionAccessor(
+        () =>
+          new Map<string, unknown>([
+            [
+              key,
+              {
+                sessionId: 'sid1',
+                ownerId: 'U1',
+                ownerName: 'Alice',
+                channelId: channel,
+                threadTs: 't1',
+                activityState: 'working',
+                state: 'MAIN',
+                lastActivity: new Date('2026-10-24T00:00:00Z'),
+              },
+            ],
+            [taskA, task0],
+            [taskB, taskSession('sidB', taskB.slice('task:'.length))],
+          ]),
+      );
+    });
+
+    const seedTask = (k: string, overrides: Record<string, unknown> = {}) =>
+      seed({ channel: undefined, thread_ts: undefined, task_key: k, turn_id: 'turn-1', ...overrides });
+
+    it('is on its own task’s card in NEEDS YOU — not on another task’s, not on a Slack card', async () => {
+      const id = await seedTask(taskA);
+      expect(await dashboard.refreshPendingPermissions()).toContain(taskA);
+
+      const { raw, board: b } = await board();
+      const a = taskCard(b, taskA);
+      expect(a?.col).toBe('waiting');
+      expect(a?.card.activityState).toBe('waiting');
+      expect(a?.card.pendingPermissions).toEqual([expect.objectContaining({ approvalId: id, requesterId: 'U1' })]);
+      expect(taskCard(b, taskB)?.card.pendingPermissions).toBeUndefined();
+      expect(taskCard(b, taskB)?.col).toBe('working');
+      expect(card(b)?.card.pendingPermissions).toBeUndefined();
+      expect(raw).not.toContain(SECRET);
+    });
+
+    it('a Slack prompt with no thread never lands on a task card', async () => {
+      await seed({ channel: undefined, thread_ts: undefined });
+      await dashboard.refreshPendingPermissions();
+      const b = (await board()).board;
+      expect(taskCard(b, taskA)?.card.pendingPermissions).toBeUndefined();
+      expect(taskCard(b, taskB)?.card.pendingPermissions).toBeUndefined();
+    });
+
+    it('the requester reads it under the task’s key; another user is 403; another task or a Slack key is 404', async () => {
+      const id = await seedTask(taskA);
+      const u1 = await signIn('U1');
+      const res = await detail(id, u1, taskA);
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).input).toContain(SECRET);
+      expect((await detail(id, await signIn('U2'), taskA)).statusCode).toBe(403);
+      expect((await detail(id, u1, taskB)).statusCode).toBe(404);
+      expect((await detail(id, u1, key)).statusCode).toBe(404);
+    });
+
+    // The waiter lives in the turn that raised the prompt: once that turn has
+    // ended (its outcome committed, or a restart reconciled it), nobody waits.
+    it('a prompt of a turn that is no longer running is off the card and 404', async () => {
+      const id = await seedTask(taskA, { turn_id: 'turn-0' });
+      expect(await dashboard.refreshPendingPermissions()).toContain(taskA);
+      const b = (await board()).board;
+      expect(taskCard(b, taskA)?.card.pendingPermissions).toBeUndefined();
+      expect(taskCard(b, taskA)?.col).toBe('working');
+      const u1 = await signIn('U1');
+      expect((await detail(id, u1, taskA)).statusCode).toBe(404);
+      dashboard.setDashboardPermissionAnswerHandler((a: any) => answerPermissionPrompt(a));
+      expect((await answer({ approvalId: id, decision: 'approve' }, u1, taskA)).statusCode).toBe(404);
+      expect(await sharedStore.claimPermissionResponse(id)).toBe(true); // nobody answered it
+    });
+
+    it('a prompt raised by no turn never shows — even on a task whose turn id is blank', async () => {
+      task0.activeTaskTurnId = '';
+      await seedTask(taskA, { turn_id: undefined });
+      await dashboard.refreshPendingPermissions();
+      expect(taskCard((await board()).board, taskA)?.card.pendingPermissions).toBeUndefined();
+    });
+
+    it('a Slack thread’s prompt is 404 under a task’s key', async () => {
+      const id = await seed();
+      expect((await detail(id, await signIn('U1'), taskA)).statusCode).toBe(404);
+    });
+
+    it('the answer goes to the host with the task as its target and reaches the waiting hook', async () => {
+      const calls: any[] = [];
+      dashboard.setDashboardPermissionAnswerHandler((a: any) => {
+        calls.push(a);
+        return answerPermissionPrompt(a);
+      });
+      const id = await seedTask(taskA);
+      const u1 = await signIn('U1');
+      expect((await answer({ approvalId: id, decision: 'approve' }, u1, taskB)).statusCode).toBe(404);
+      expect((await answer({ approvalId: id, decision: 'approve' }, await signIn('U2'), taskA)).statusCode).toBe(403);
+      const res = await answer({ approvalId: id, decision: 'approve' }, u1, taskA);
+      expect(res.statusCode).toBe(200);
+      expect(calls[calls.length - 1]).toEqual({
+        approvalId: id,
+        actor: 'U1',
+        decision: 'approve',
+        thread: { taskKey: taskA, turnId: 'turn-1' },
+      });
+      // One-shot: the claim refuses a second answer while the hook has not consumed it yet.
+      expect((await answer({ approvalId: id, decision: 'deny' }, u1, taskA)).statusCode).toBe(409);
+      expect(await sharedStore.waitForPermissionResponse(id, 1500)).toMatchObject({ behavior: 'allow' });
+    });
+
+    it('approve & disable rule silences the rule on the task’s own session', async () => {
+      const reg = { getSessionKey: vi.fn(() => key), disableDangerousRules: vi.fn() };
+      dashboard.setDashboardPermissionAnswerHandler((a: any) => answerPermissionPrompt({ ...a, sessions: reg }));
+      const id = await seedTask(taskA);
+      const res = await answer({ approvalId: id, decision: 'approve_disable_rule' }, await signIn('U1'), taskA);
+      expect(res.statusCode).toBe(200);
+      expect(reg.disableDangerousRules).toHaveBeenCalledWith(taskA, ['pipe-to-interpreter']);
+      expect(reg.getSessionKey).not.toHaveBeenCalled();
+    });
+  });
 });

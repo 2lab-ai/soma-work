@@ -134,6 +134,14 @@ export interface BuildStreamOptionsDeps {
    */
   safetyClassifier?: SafetyClassifier;
   /**
+   * #599 ⑤ — the dashboard approver of a Slack-less task's escalations. A
+   * `classify` call the classifier did not allow waits here for the task
+   * owner's answer on the dashboard (bound to the task, its turn and the
+   * request). Absent → the escalation is denied (no approver). Any failure —
+   * expiry, abort, a store error — is a deny: nothing runs unapproved.
+   */
+  taskApprover?: TaskApprover;
+  /**
    * Operator config for the incident evidence collector (`rules/config.md` owns
    * the getter's name; this dep only needs the value). Consulted **only** on the
    * incident path. Absent there is fatal, not a fallback — see
@@ -149,6 +157,26 @@ export interface BuildStreamOptionsDeps {
    */
   onIncidentEvidence?: (request: IncidentRequestLike, evidence: IncidentEvidence) => void;
 }
+
+/** #599 ⑤ — what a task's escalation asks the dashboard approver for. */
+export interface TaskApprovalRequest {
+  sessionKey: string;
+  userId: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  ruleIds: string[];
+  signal?: AbortSignal;
+}
+
+export interface TaskApprover {
+  request(req: TaskApprovalRequest): Promise<{ behavior: 'allow' | 'deny'; message?: string }>;
+}
+
+/**
+ * A task turn's PreToolUse hook may wait for a dashboard approval (5 min):
+ * the SDK's hook timeout (seconds) is set above that window.
+ */
+export const TASK_APPROVAL_HOOK_TIMEOUT_S = 330;
 
 /** A `Skill` call step 6b denied: who asked, for which environment skill, in which thread. */
 export interface EnvSkillDenial {
@@ -333,6 +361,8 @@ export async function buildStreamOptions(
     const cachedPermConfig = CONFIG_FILE ? loadMcpToolPermissions(CONFIG_FILE) : {};
     const gatedServerNames = getPermissionGatedServers(cachedPermConfig);
     const hookSessionKey = execCtx.sessionKey;
+    // Only a Slack-less task's escalation waits for the dashboard (#599 ⑤).
+    const taskApprover = execCtx.origin === 'task' && !slackContext ? deps.taskApprover : undefined;
     // A Slack thread grant applies to its thread; a task's scope is its own key,
     // which no Slack thread grant can match (the user's standing grants still apply).
     const envSkillScope = slackContext
@@ -340,7 +370,11 @@ export async function buildStreamOptions(
       : { channel: execCtx.sessionKey };
     const envRegistry = deps.getEnvSkillRegistry?.();
 
-    const policyHook = async (input: HookInput): Promise<HookJSONOutput> => {
+    const policyHook = async (
+      input: HookInput,
+      _toolUseId?: string,
+      hookOptions?: { signal?: AbortSignal },
+    ): Promise<HookJSONOutput> => {
       const toolName = (input as { tool_name?: string }).tool_name || '';
       const toolInput = (input as { tool_input?: Record<string, unknown> }).tool_input;
       // The session's directory now (a worktree switch moves it): relative targets and
@@ -431,10 +465,43 @@ export async function buildStreamOptions(
             });
             return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
           }
+          if (taskApprover) {
+            // #599 ⑤ — the same escalation a Slack turn would ask about waits for
+            // the task owner's answer on the dashboard. Fail closed on anything else.
+            logger.warn('Escalation waiting for the dashboard approval (#599)', {
+              tool: toolName,
+              user: policyUser,
+              rule: result.reason,
+            });
+            const answer = await taskApprover
+              .request({
+                sessionKey: hookSessionKey,
+                userId: policyUser,
+                toolName,
+                toolInput: toolInput ?? {},
+                ruleIds: [...(result.matchedRuleIds ?? [])],
+                ...(hookOptions?.signal ? { signal: hookOptions.signal } : {}),
+              })
+              .catch((err: unknown) => ({
+                behavior: 'deny' as const,
+                message: `The approval could not be completed (${err instanceof Error ? err.message : String(err)}) — it was not run.`,
+              }));
+            if (answer.behavior === 'allow') {
+              return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
+            }
+            return {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'deny',
+                permissionDecisionReason:
+                  answer.message || 'The task owner did not approve this call — it was not run.',
+              },
+            };
+          }
           if (!slackContext) {
             // The same escalation a Slack turn would ask the user about. A task has
-            // no approver until the dashboard approval lands (#599): deny, explicitly.
-            logger.warn('Escalation denied: a Slack-less task has no approver yet (#599)', {
+            // no approver wired: deny, explicitly.
+            logger.warn('Escalation denied: a Slack-less task has no approver (#599)', {
               tool: toolName,
               user: policyUser,
               rule: result.reason,
@@ -466,7 +533,12 @@ export async function buildStreamOptions(
 
     options.hooks = {
       ...options.hooks,
-      PreToolUse: TOOL_POLICY_MATCHERS.map((matcher) => ({ matcher, hooks: [policyHook] })),
+      PreToolUse: TOOL_POLICY_MATCHERS.map((matcher) => ({
+        matcher,
+        hooks: [policyHook],
+        // A task's escalation may wait for the dashboard approval (#599 ⑤).
+        ...(taskApprover ? { timeout: TASK_APPROVAL_HOOK_TIMEOUT_S } : {}),
+      })),
     };
 
     // Compaction Tracking (#617): register PreCompact / PostCompact /

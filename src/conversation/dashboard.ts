@@ -51,6 +51,7 @@ import {
   isPermissionPromptDecision,
   loadPermissionPrompt,
   type PermissionPromptAnswer,
+  type PermissionPromptTarget,
   promptBelongsToThread,
 } from '../permission-prompt-response';
 import {
@@ -116,6 +117,7 @@ import type { NewTaskLaunchResult } from './new-task-launcher';
 import {
   type DashboardPermissionRequest,
   pendingPermissionsFor,
+  pendingTaskPermissionsFor,
   permissionPromptDetail,
   refreshPendingPermissions,
   startPermissionPromptWatch,
@@ -1916,7 +1918,12 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     Date.now(),
   );
   const headline = displayTitle(s);
-  const permissions = pendingPermissionsFor(s.channelId, s.threadTs);
+  // A Slack-less task's (#599 ⑤b) prompts are keyed by its own session key: it
+  // has no thread, and a thread lookup ('' : '') would match every task.
+  const permissions =
+    s.slackless === true
+      ? pendingTaskPermissionsFor(key, s.activeTaskTurnId)
+      : pendingPermissionsFor(s.channelId, s.threadTs);
   return {
     // #814 Wire-format key includes the local instance prefix so sibling
     // instances can never collide on the client cache.
@@ -3690,17 +3697,23 @@ export async function registerDashboardRoutes(
     approvalId: string,
   ): Promise<{
     originalKey: string;
-    thread: { channel: string; threadTs?: string };
+    thread: PermissionPromptTarget;
     pending: NonNullable<Awaited<ReturnType<typeof loadPermissionPrompt>>>;
   } | null> {
     const originalKey = resolveSelfActionKey(request.params?.key ?? '', reply);
     if (originalKey === null) return null;
     const session = getAllSessions().get(originalKey);
-    if (!session || !session.channelId) {
+    // A Slack-less task (#599 ⑤b) answers its own prompts, keyed by its session key.
+    const slackless = session?.slackless === true;
+    if (!session || (!slackless && !session.channelId)) {
       reply.status(404).send({ error: 'Session not found' });
       return null;
     }
-    const thread = { channel: String(session.channelId), threadTs: session.threadTs || undefined };
+    // A task's prompt is answerable only while the turn that raised it runs:
+    // that turn's hook is its only waiter.
+    const thread: PermissionPromptTarget = slackless
+      ? { taskKey: originalKey, turnId: String(session.activeTaskTurnId ?? '') }
+      : { channel: String(session.channelId), threadTs: session.threadTs || undefined };
     const pending = await loadPermissionPrompt(approvalId);
     if (!pending || !promptBelongsToThread(pending, thread)) {
       reply.status(404).send({ error: 'Permission request not found or expired' });
