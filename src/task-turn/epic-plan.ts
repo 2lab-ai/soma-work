@@ -438,3 +438,30 @@ export function releaseEpicEvents(events: EpicEvent[] | undefined, chainId: stri
     return { ...rest, state: 'pending' };
   });
 }
+
+/**
+ * E4 ⑦ (D10 a) — the task ids of the epic trees not archived while asleep: an
+ * epic not done yet, or with a child running or waiting, and its children.
+ * Over raw records (load reads the file before anything is put back).
+ */
+export function exemptEpicTreeTaskIds(
+  records: ReadonlyArray<{
+    taskId?: unknown;
+    slackless?: unknown;
+    kind?: unknown;
+    parentTaskId?: unknown;
+    plan?: unknown;
+    activityState?: unknown;
+  }>,
+): Set<string> {
+  const exempt = new Set<string>();
+  for (const epic of records) {
+    if (epic.slackless !== true || epic.kind !== 'epic' || typeof epic.taskId !== 'string') continue;
+    const children = records.filter((r) => r.slackless === true && r.parentTaskId === epic.taskId);
+    const busy = children.some((c) => c.activityState === 'working' || c.activityState === 'waiting');
+    if (isEpicDone(sanitizeEpicPlan(epic.plan)) && !busy) continue;
+    exempt.add(epic.taskId);
+    for (const c of children) if (typeof c.taskId === 'string') exempt.add(c.taskId);
+  }
+  return exempt;
+}
