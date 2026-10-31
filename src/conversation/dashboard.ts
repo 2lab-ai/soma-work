@@ -17697,6 +17697,13 @@ function ntComposerFiles() {
   return (el && el.files) || [];
 }
 
+// <ui-composer> refused a file: on a dashboard task its accept matches no type, so
+// a type refusal is the attachment rule — said as such (merge review P3).
+function ntOnReject(e) {
+  if (!_ntState || _ntState.destination !== 'task' || !e.detail || e.detail.reason !== 'type') return;
+  ntSetError(ntBlockedHint(_ntState, [e.detail.file]));
+}
+
 // Why the dialog cannot start what it holds, said before a submit: on the switch,
 // and whenever its files change (#640 R2).
 function ntBlockedHint(state, attachments) {
@@ -17934,6 +17941,8 @@ function ntInit() {
     e.preventDefault();
     submitNewTask(e.detail);
   });
+  // A file the task composer refused (no type matches): why, not only "unsupported type".
+  composer.addEventListener('ui-reject', ntOnReject);
   // A file added or removed while a dashboard task is chosen: the reason it cannot start, or none (#640 R2).
   composer.addEventListener('ui-files', function (e) {
     if (!_ntState || _ntState.destination !== 'task') return;
@@ -18114,6 +18123,7 @@ function pcInit() {
   var host = document.getElementById('panel-command');
   if (!host) return;
   pcComposerSetup(document.getElementById('pc-composer'));
+  host.addEventListener('ui-reject', pcOnReject);
   host.addEventListener('ui-submit', pcOnSubmit);
   host.addEventListener('ui-promote', function(e) { if (e.detail) steerAct('promote', String(e.detail.id)); });
   host.addEventListener('ui-cancel', function(e) {
@@ -18122,6 +18132,13 @@ function pcInit() {
     steerAct('cancel', String(e.detail.id));
   });
   host.addEventListener('ui-edit', function(e) { if (e.detail) steerAct('edit', String(e.detail.id), String(e.detail.text || '')); });
+}
+// The composer refused a file: on a dashboard task's card every type is refused
+// (pcComposerData), so say why — the element's own line reads "unsupported type".
+function pcOnReject(e) {
+  var host = document.getElementById('panel-command');
+  if (!host || host._takesFiles !== false || !e.detail || e.detail.reason !== 'type') return;
+  dashToast({ title: '\uB300\uC2DC\uBCF4\uB4DC \uC791\uC5C5\uC740 \uC544\uC9C1 \uCCA8\uBD80\uB97C \uBC1B\uC9C0 \uC54A\uC544\uC694', tone: 'error' });
 }
 // ui-submit: a send already reading its files (or a card with no open composer)
 // takes nothing — cancelled, the text stays in the field.
