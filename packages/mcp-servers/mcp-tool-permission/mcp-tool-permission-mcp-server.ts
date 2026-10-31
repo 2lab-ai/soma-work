@@ -314,6 +314,8 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
     const server = args.server as string | undefined;
     const userId = this.slackContext.user;
 
+    // The main process writes grants: read the file as it is now, not the map loaded at start.
+    this.grantStore.reload();
     const allGrants = this.grantStore.getGrants(userId);
     const now = Date.now();
 

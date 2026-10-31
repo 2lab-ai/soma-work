@@ -30,7 +30,13 @@ import { notifyAdminApprovalsChanged } from '../admin-approvals';
 import { isAdminUser } from '../admin-utils';
 import { DATA_DIR } from '../env-paths';
 import { Logger } from '../logger';
-import { MAX_GRANT_DURATION_MS, mcpToolGrantStore, type PermissionLevel, parseDuration } from '../mcp-tool-grant-store';
+import {
+  type GrantEntry,
+  MAX_GRANT_DURATION_MS,
+  mcpToolGrantStore,
+  type PermissionLevel,
+  parseDuration,
+} from '../mcp-tool-grant-store';
 
 const logger = new Logger('McpGrantDecision');
 
@@ -140,15 +146,32 @@ export async function decideMcpGrant(args: DecideMcpGrantArgs): Promise<McpGrant
       : { behavior: 'deny', message: `Denied by <@${actor}>` };
   // The line every DM copy is rewritten to — here, and again by the waiting child (which knows every copy).
   response.promptText = text;
+  // The grant first, then the answer the child waits on: the child only ever reads "allow" for a
+  // grant already on disk. A grant that cannot be written grants nothing and gives the claim back;
+  // an answer that cannot be written takes the grant back and gives the claim back.
+  let replaced: GrantEntry | null = null;
   try {
-    // The response first: if it cannot be written, nothing was granted and the claim goes back.
-    await sharedStore.storePermissionResponse(requestId, response);
+    if (decision === 'approve') replaced = mcpToolGrantStore.setGrant(userId, server, level, expiresAt, actor);
   } catch (error) {
     await sharedStore.releasePermissionClaim(requestId);
     throw error;
   }
-  // Then the grant, in the main process too, so it is live here at once (the child also writes it on allow).
-  if (decision === 'approve') mcpToolGrantStore.setGrant(userId, server, level, expiresAt, actor);
+  try {
+    await sharedStore.storePermissionResponse(requestId, response);
+  } catch (error) {
+    if (decision === 'approve') {
+      try {
+        mcpToolGrantStore.restoreGrant(userId, server, level, replaced);
+      } catch (restoreError) {
+        logger.error('MCP grant: could not take back a grant whose answer was not delivered', {
+          requestId,
+          restoreError,
+        });
+      }
+    }
+    await sharedStore.releasePermissionClaim(requestId);
+    throw error;
+  }
 
   const outcome = decision === 'approve' ? 'approved' : 'denied';
   remember(requestId, { id: `mcp_grant:${requestId}`, outcome, choiceId: decision, by: actor, via, at: now });

@@ -14,14 +14,18 @@ import {
 } from 'somalib/permission/shared-store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ admins: new Set<string>(['UADMIN1', 'UADMIN2']), setGrant: vi.fn() }));
+const h = vi.hoisted(() => ({
+  admins: new Set<string>(['UADMIN1', 'UADMIN2']),
+  setGrant: vi.fn((): unknown => null),
+  restoreGrant: vi.fn(),
+}));
 vi.mock('../../admin-utils', () => ({
   isAdminUser: (u: string) => h.admins.has(u),
   getAdminUsers: () => h.admins,
 }));
 vi.mock('../../mcp-tool-grant-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../mcp-tool-grant-store')>();
-  return { ...actual, mcpToolGrantStore: { setGrant: h.setGrant } };
+  return { ...actual, mcpToolGrantStore: { setGrant: h.setGrant, restoreGrant: h.restoreGrant } };
 });
 
 import { DATA_DIR } from '../../env-paths';
@@ -67,6 +71,8 @@ describe('MCP grant requests as one decision, Slack + dashboard (#621)', () => {
 
   beforeEach(() => {
     h.setGrant.mockReset();
+    h.setGrant.mockImplementation(() => null);
+    h.restoreGrant.mockReset();
     clearMcpGrantResolutions();
     updateDm = vi.fn<UpdateDm>(async () => undefined);
   });
@@ -187,20 +193,34 @@ describe('MCP grant requests as one decision, Slack + dashboard (#621)', () => {
     expect((await adapter.pending(Date.now())).some((c) => c.id === `mcp_grant:${id}`)).toBe(true);
   });
 
-  it('the response cannot be written: nothing granted, the claim goes back for another answer', async () => {
+  it('the grant cannot be written: no answer reaches the child, the claim goes back', async () => {
     const id = await makeRequest();
-    const spy = vi.spyOn(sharedStore, 'storePermissionResponse').mockRejectedValueOnce(new Error('ENOSPC'));
+    h.setGrant.mockImplementationOnce(() => {
+      throw new Error('ENOSPC');
+    });
     await expect(
       decideMcpGrant({ requestId: id, decision: 'approve', actor: 'UADMIN1', via: 'dashboard', updateDm }),
     ).rejects.toThrow('ENOSPC');
-    expect(h.setGrant).not.toHaveBeenCalled();
+    expect(await responseOf(id)).toBeNull();
+    expect(updateDm).not.toHaveBeenCalled();
+    expect(
+      await decideMcpGrant({ requestId: id, decision: 'deny', actor: 'UADMIN2', via: 'slack', updateDm }),
+    ).toMatchObject({ ok: true, outcome: 'denied' });
+  });
+
+  it('the answer cannot be written: the grant is taken back (the earlier one restored), the claim goes back', async () => {
+    const id = await makeRequest();
+    const earlier = { grantedAt: 'g', expiresAt: 'e', grantedBy: 'UOLD' };
+    h.setGrant.mockImplementationOnce(() => earlier);
+    const spy = vi.spyOn(sharedStore, 'storePermissionResponse').mockRejectedValueOnce(new Error('EACCES'));
+    await expect(
+      decideMcpGrant({ requestId: id, decision: 'approve', actor: 'UADMIN1', via: 'dashboard', updateDm }),
+    ).rejects.toThrow('EACCES');
+    expect(h.restoreGrant).toHaveBeenCalledWith('U1', 'server-tools', 'write', earlier);
     spy.mockRestore();
     expect(
       await decideMcpGrant({ requestId: id, decision: 'deny', actor: 'UADMIN2', via: 'slack', updateDm }),
-    ).toMatchObject({
-      ok: true,
-      outcome: 'denied',
-    });
+    ).toMatchObject({ ok: true, outcome: 'denied' });
   });
 
   it('the MCP child timed out between the read and the claim: not found, nothing granted', async () => {
