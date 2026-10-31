@@ -412,6 +412,7 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       syncCronLane: () => {},
       cronLaneSlots: () => [],
       paintCronLaneCards: () => {},
+      renderEpicLane: () => {},
       showArchives: false,
       showSleeping: true,
       _revealedKey: null,
