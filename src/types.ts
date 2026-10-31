@@ -397,6 +397,37 @@ export interface OriginThread {
   agent?: string;
 }
 
+/** E2 ③ — what a notice to the instruction thread is about. */
+export type TaskNoticeKind = 'link' | 'result' | 'question' | 'failure' | 'interrupted';
+
+/**
+ * E2 ③ — one notice owed to a task's instruction thread. Its id is
+ * deterministic (`<taskId>:<chain or turn>:<kind>[:<askId>]`), so producing
+ * it twice is one notice.
+ */
+export interface TaskNoticeIntent {
+  id: string;
+  kind: TaskNoticeKind;
+  chainId?: string;
+  turnId?: string;
+  askId?: string;
+  outcome?: TaskTurnOutcomeRecord['outcome'];
+  reason?: string;
+  at: number;
+}
+
+/** E2 ③ — how a turn's outcome commit relates to its chain. */
+export interface TaskChainSettle {
+  chainId: string;
+  /** False only for a completed `/compact` hop the chain re-runs after. */
+  ends: boolean;
+  /**
+   * The notice this end owes, when not the outcome's own — a completed
+   * `/compact` hop with nothing to re-run is a failure, never a result.
+   */
+  notice?: { kind: TaskNoticeKind; reason: string };
+}
+
 /** E2 ② — a Slack-instructed task's channel context (see `ConversationSession.inputContext`). */
 export interface TaskInputContext {
   channelName?: string;
@@ -432,6 +463,19 @@ export interface ConversationSession {
    * description, repos, wiki). Prompt text only — never a Slack context.
    */
   inputContext?: TaskInputContext;
+  /**
+   * E2 ③ — the chain a Slack-less task is running (its id), saved by the
+   * chain's first turn start and kept across `/compact` hops; cleared by the
+   * chain's last outcome commit or by restart reconciliation. A task still
+   * holding one after a restart lost its chain: it is reconciled `interrupted`.
+   */
+  openChain?: string;
+  /**
+   * E2 ③ — notices owed to the task's instruction thread, written in the same
+   * strict save as the state they describe (only a task with `originThread`).
+   * Delivery state lives in the notification ledger, not here.
+   */
+  notices?: TaskNoticeIntent[];
   sessionId?: string;
   isActive: boolean;
   lastActivity: Date;
