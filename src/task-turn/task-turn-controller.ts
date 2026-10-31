@@ -247,7 +247,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
           // `working`. A shutdown leaves it for restart reconciliation.
           const reason = chainAbort.signal.reason;
           if (reason !== 'shutdown') await endPending(abandonOutcome(reason));
-          else if (pendingTurnId) shutdownStranded.set(sessionKey, pendingTurnId);
+          else if (pendingTurnId) strand(sessionKey, pendingTurnId);
           return;
         }
         const last = dispatch === maxDispatches;
@@ -313,7 +313,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
           }
           return;
         }
-        if (!result.fenced && result.nonTerminal === 'shutdown') shutdownStranded.set(sessionKey, result.turnId);
+        if (!result.fenced && result.nonTerminal === 'shutdown') strand(sessionKey, result.turnId);
         if (result.fenced || result.nonTerminal !== 'fallbackCompact') return;
         pendingTurnId = result.turnId;
         // The stash is nulled at the compaction boundary: take it now.
@@ -335,6 +335,36 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     }
   }
 
+  /**
+   * A turn a `shutdown` abort left `working`. While shutting down, restart
+   * reconciliation records it; once the shutdown was refused (admission
+   * re-opened) — even if this turn finished unwinding only after that — it is
+   * ended here, since the process stays up (astra #634).
+   */
+  function strand(sessionKey: string, turnId: string): void {
+    if (!accepting) {
+      shutdownStranded.set(sessionKey, turnId);
+      return;
+    }
+    endStranded(sessionKey, turnId);
+  }
+
+  function endStranded(sessionKey: string, turnId: string): void {
+    void deps.runner
+      .abandonTurn(sessionKey, turnId, {
+        outcome: 'interrupted',
+        category: 'Exception',
+        reason: 'service shutdown was cancelled',
+      })
+      .catch((error) =>
+        deps.logger.error('A turn stranded by a cancelled shutdown could not be ended', {
+          sessionKey,
+          turnId,
+          error: (error as Error)?.message,
+        }),
+      );
+  }
+
   async function close(sessionKey: string): Promise<void> {
     const chain = chains.get(sessionKey);
     if (!chain) return;
@@ -346,6 +376,13 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       new Promise<void>((resolve) => {
         timer = setTimeout(() => {
           deps.logger.warn('Task chain did not end before close — closing anyway', { sessionKey });
+          // The chain was aborted and its task is about to be removed: release
+          // the task and the owner's slot now, or a hung chain would lock the
+          // owner out for good (astra #634). Its late results are fenced by the
+          // removed session.
+          if (chains.get(sessionKey) === chain) chains.delete(sessionKey);
+          if (ownerChain.get(chain.ownerId) === sessionKey) ownerChain.delete(chain.ownerId);
+          deps.coordinator.removeController(sessionKey, chain.abort);
           resolve();
         }, waitMs);
       }),
@@ -365,19 +402,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       // the turns its abort left `working` — end them now (#634 R1).
       for (const [sessionKey, turnId] of shutdownStranded) {
         shutdownStranded.delete(sessionKey);
-        void deps.runner
-          .abandonTurn(sessionKey, turnId, {
-            outcome: 'interrupted',
-            category: 'Exception',
-            reason: 'service shutdown was cancelled',
-          })
-          .catch((error) =>
-            deps.logger.error('A turn stranded by a cancelled shutdown could not be ended', {
-              sessionKey,
-              turnId,
-              error: (error as Error)?.message,
-            }),
-          );
+        endStranded(sessionKey, turnId);
       }
     },
     isRunning: (sessionKey) => chains.has(sessionKey),
