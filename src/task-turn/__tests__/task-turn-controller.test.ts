@@ -562,4 +562,34 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
     const next = await h.controller.start({ sessionKey: KEY2, text: 'other task' });
     expect(next.status).toBe(202);
   });
+
+  it('Close waits for a refused shutdown’s ending of the stranded turn before the task is removed (astra #634 R2)', async () => {
+    let releaseAbandon!: () => void;
+    const abandonGate = new Promise<void>((r) => {
+      releaseAbandon = r;
+    });
+    const h = harness({}, [
+      async (input) => {
+        input.onStarted?.();
+        h.controller.stopAccepting();
+        return { turnId: 'a', outcome: null, nonTerminal: 'shutdown' };
+      },
+    ]);
+    const order: string[] = [];
+    h.abandonTurn.mockImplementationOnce(async (_k: string, turnId: string, decided: any) => {
+      await abandonGate; // the outcome save is retrying
+      order.push('abandoned');
+      return { turnId, outcome: { ...decided, turnId, at: 1 } };
+    });
+    const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
+    await r.done;
+    h.controller.resumeAccepting(); // the shutdown was refused: the stranded turn is being ended
+    const closing = h.controller.close(KEY).then(() => order.push('closed'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(order).toEqual([]);
+    releaseAbandon();
+    await closing;
+    expect(order).toEqual(['abandoned', 'closed']);
+  });
 });
