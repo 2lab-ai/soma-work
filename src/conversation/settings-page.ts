@@ -23,6 +23,7 @@
  */
 
 import { MEMORY_CLIENT_JS, MEMORY_TAB_CSS, MEMORY_TAB_HTML } from './settings-memory-tab';
+import { soundClientJs, soundToggleHtml } from './sound-client';
 import { pageTokenAliases, UI_LIB_VERSION, uiLibTokensCss } from './ui-lib';
 
 export interface SettingsPageTab {
@@ -94,6 +95,14 @@ code { font-family: var(--mono); font-size: 12px; }
 .topbar .theme svg { width: 16px; height: 16px; }
 .topbar .theme .ic-moon, [data-theme="light"] .topbar .theme .ic-sun { display: none; }
 [data-theme="light"] .topbar .theme .ic-moon { display: block; }
+/* The speaker beside it (interface sound, the dashboard's): the same icon button; sound-off while off. */
+.topbar .sound { display: inline-grid; place-items: center; flex: none; width: 34px; height: 34px; padding: 0; background: var(--ib-card); border: 1px solid var(--ib-card-border); border-radius: 10px; color: var(--ib-text-2); cursor: pointer; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
+.topbar .sound svg { width: 16px; height: 16px; }
+.topbar .sound .ic-sound, :root[data-sound="on"] .topbar .sound .ic-sound-off { display: none; }
+:root[data-sound="on"] .topbar .sound .ic-sound { display: block; }
+.topbar .sound:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+.topbar .sound:active:not(:focus-visible) { transform: scale(0.97); }
+@media (hover: hover) and (pointer: fine) { .topbar .sound:hover { background: var(--ib-pill); color: var(--text); } }
 .topbar .back:focus-visible, .tabs a:focus-visible, .topbar .theme:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .page { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; max-width: 1080px; margin: 0 auto; padding: 24px 20px 64px; }
 /* An author display beats the UA [hidden] rule — tabs are switched with the hidden attribute. */
@@ -203,10 +212,11 @@ dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
   /* 44px targets, as on the dashboard's bar. */
   .topbar .back, .tabs a { min-height: 44px; }
   .topbar .theme { width: 44px; height: 44px; }
+  .topbar .sound { width: 44px; height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.btn, .topbar .back, .tabs a, .topbar .theme, .side nav .navbtn, .chip button, .pages-list .pg):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.btn, .topbar .back, .tabs a, .topbar .theme, .topbar .sound, .side nav .navbtn, .chip button, .pages-list .pg):active:not(:disabled):not(:focus-visible) { transform: none; }
 }
 `;
 
@@ -272,6 +282,11 @@ function valueText(row, value) {
 function sameValue(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
+// The interface-sound cue a row's control plays through bindSound. A setting that asks first (danger) stays
+// silent: its change fires before the confirm dialog, so a cancelled change would still have sounded.
+function soundCue(row, cue) {
+  return row && row.danger ? 'off' : cue;
+}
 function renderSegmented(row) {
   var name = 'seg-' + row.key;
   var html = '<fieldset class="seg"><legend>' + esc(row.label) + '</legend>';
@@ -279,12 +294,12 @@ function renderSegmented(row) {
   for (var i = 0; i < opts.length; i++) {
     var o = opts[i];
     html += '<label title="' + escAttr(o.description || o.label) + '"><input type="radio" name="' + escAttr(name) + '" value="' + escAttr(o.value) + '"'
-      + (o.value === row.value ? ' checked' : '') + ' data-key="' + escAttr(row.key) + '" onchange="onChoice(this)"><span>' + esc(o.label) + '</span></label>';
+      + (o.value === row.value ? ' checked' : '') + ' data-key="' + escAttr(row.key) + '" data-ui-sound="' + soundCue(row, 'select') + '" onchange="onChoice(this)"><span>' + esc(o.label) + '</span></label>';
   }
   return html + '</fieldset>';
 }
 function renderSelect(row) {
-  var html = '<select id="f-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '" onchange="onChoice(this)">';
+  var html = '<select id="f-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '" data-ui-sound="' + soundCue(row, 'select') + '" onchange="onChoice(this)">';
   var opts = row.options || [];
   for (var i = 0; i < opts.length; i++) {
     var o = opts[i];
@@ -308,7 +323,7 @@ function renderControl(row) {
     return (row.options || []).length <= 5 && !row.allowCustom ? renderSegmented(row) : renderSelect(row);
   }
   if (row.kind === 'toggle') {
-    return '<label class="switch"><input type="checkbox" role="switch" id="f-' + k + '" data-key="' + k + '"' + (row.value ? ' checked' : '')
+    return '<label class="switch"><input type="checkbox" role="switch" data-ui-sound="' + soundCue(row, 'toggle') + '" id="f-' + k + '" data-key="' + k + '"' + (row.value ? ' checked' : '')
       + ' onchange="onToggle(this)"><span>' + (row.value ? '켜짐' : '꺼짐') + '</span></label>';
   }
   if (row.kind === 'text' || row.kind === 'number') {
@@ -316,7 +331,7 @@ function renderControl(row) {
     var bounds = row.kind === 'number' ? ' min="' + row.min + '" max="' + row.max + '" step="1"' : '';
     return '<div class="line"><input type="' + type + '" id="f-' + k + '" data-key="' + k + '" value="' + escAttr(row.value) + '"' + bounds
       + ' onkeydown="if(event.key===\'Enter\')saveTyped(this.getAttribute(\'data-key\'))">'
-      + '<button type="button" class="btn primary" data-key="' + k + '" onclick="saveTyped(this.getAttribute(\'data-key\'))">저장</button>'
+      + '<button type="button" class="btn primary" data-ui-sound data-key="' + k + '" onclick="saveTyped(this.getAttribute(\'data-key\'))">저장</button>'
       + (row.kind === 'text' && row.value ? '<button type="button" class="btn" data-key="' + k + '" onclick="clearTyped(this.getAttribute(\'data-key\'))">지우기</button>' : '')
       + '</div>';
   }
@@ -583,6 +598,7 @@ export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS): str
 <script data-fouc>
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
 </script>
+<script data-sound>${soundClientJs(UI_LIB_VERSION)}</script>
 <style>${SETTINGS_PAGE_CSS}${MEMORY_TAB_CSS}</style>
 <!-- Tokens — @2lab.ai/ui is the single source, as on the dashboard (P10, P9): its tokens.css puts every
      --ui-* on :root and [data-theme="light|dark"], and the page's names are aliases of them. -->
@@ -600,6 +616,7 @@ ${pageTokenAliases()}
   </div>
   <div class="account">
     <span class="who"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.5" r="2.75"/><path d="M2.75 13.75a5.25 5.25 0 0 1 10.5 0"/></svg><span id="who"></span></span>
+    ${soundToggleHtml()}
     <button type="button" class="theme" onclick="toggleTheme()" aria-label="테마 바꾸기"><svg class="ic-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5V3M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.05 1.05M11.55 11.55l1.05 1.05M3.4 12.6l1.05-1.05M11.55 4.45l1.05-1.05"/></svg><svg class="ic-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"/></svg></button>
   </div>
 </div>

@@ -268,7 +268,7 @@ describe('board columns follow the inbox width, not the viewport', () => {
   });
 
   it('no viewport media query decides the board columns any more', () => {
-    expect(cssBlock('@media (max-width: 1023px) {')).not.toContain('.kanban');
+    expect(cssBlock('@media (max-width: 1199px) {')).not.toContain('.kanban');
     expect(cssBlock('@media (max-width: 639px) {')).not.toContain('.kanban[data-view="board"] { grid-template-columns');
   });
 });
