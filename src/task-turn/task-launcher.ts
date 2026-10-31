@@ -55,7 +55,7 @@ export function taskTitleOf(prompt: string): string {
 }
 
 export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
-  const refuse = (status: number, error: string): TaskCommandResponse => ({ status, body: { error } });
+  const launchRefusal = (status: number, error: string): TaskCommandResponse => ({ status, body: { error } });
 
   return {
     async launch(request: TaskLaunchRequest): Promise<TaskCommandResponse> {
@@ -66,20 +66,21 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
       let folder: string;
       if (request.folder !== undefined) {
         if (!FOLDER_NAME.test(request.folder)) {
-          return refuse(422, 'the folder must be the name of a folder in your /tmp directory');
+          return launchRefusal(422, 'the folder must be the name of a folder in your /tmp directory');
         }
         folder = path.join('/tmp', ownerId, request.folder);
-        if (!isDirectory(folder)) return refuse(422, `no folder named ${request.folder} in your /tmp directory`);
+        if (!isExistingTaskFolder(folder))
+          return launchRefusal(422, `no folder named ${request.folder} in your /tmp directory`);
       } else {
         const fresh = deps.createFreshDirectory(ownerId);
-        if (!fresh) return refuse(500, 'a folder for the task could not be created');
+        if (!fresh) return launchRefusal(500, 'a folder for the task could not be created');
         folder = fresh;
       }
       let workingDirectory: string;
       try {
         workingDirectory = taskDirectoryFor(ownerId, folder);
       } catch (error) {
-        return refuse(422, `the task cannot work in that folder: ${(error as Error).message}`);
+        return launchRefusal(422, `the task cannot work in that folder: ${(error as Error).message}`);
       }
 
       const task = deps.createTask({
@@ -103,7 +104,7 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
 }
 
 /** An existing directory that is not itself a link (a link is judged by `taskDirectoryFor`'s real path). */
-function isDirectory(p: string): boolean {
+function isExistingTaskFolder(p: string): boolean {
   try {
     const st = fs.lstatSync(p);
     return st.isDirectory() || st.isSymbolicLink();
