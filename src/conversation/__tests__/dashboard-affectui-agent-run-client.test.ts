@@ -1752,7 +1752,17 @@ describe('panel head (D18) — <ui-status-bar>', () => {
 describe('세부 — Details inside 세션 정보 (D19)', () => {
   const details = (s: Record<string, unknown>) =>
     load<{ panelDetailsHtml(s: unknown): string }>(
-      ['esc', 'escAttr', 'toNum', 'formatNmSSs', 'elapsedHtml', 'activeTimeHtml', 'pendingAutoResume', 'rootStatusOf', 'panelDetailsHtml'],
+      [
+        'esc',
+        'escAttr',
+        'toNum',
+        'formatNmSSs',
+        'elapsedHtml',
+        'activeTimeHtml',
+        'pendingAutoResume',
+        'rootStatusOf',
+        'panelDetailsHtml',
+      ],
       [],
     ).panelDetailsHtml(s);
   const row = (html: string, label: string) => new RegExp(`<div><dt>${label}</dt><dd>(.*?)</dd></div>`).exec(html)?.[1];
@@ -1777,7 +1787,9 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
     expect(row(details(CARD({ activityState: 'idle' })), '활성 시간')).toBe('<span>1m 05s</span>');
     expect(row(details(CARD({ agentRoot: undefined, agents: undefined })), '도구 호출')).toBeUndefined();
     // The head's status (rootStatusOf): a waiting session's leg counts, as on the chip.
-    expect(row(details(CARD({ activityState: 'waiting' })), '활성 시간')).toContain(`<ui-elapsed since="${T0 - 65000}"`);
+    expect(row(details(CARD({ activityState: 'waiting' })), '활성 시간')).toContain(
+      `<ui-elapsed since="${T0 - 65000}"`,
+    );
     expect(clientFn('panelDetailsHtml')).toContain('var st = rootStatusOf(s, col);');
     expect(clientFn('renderPanelInfo')).toContain(
       "panelInfoHtml(s, _panelInfoOpen === true, sessionColOf(panelSessionKey), _panelInfoOpen === 'folding')",

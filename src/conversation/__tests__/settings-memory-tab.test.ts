@@ -923,12 +923,21 @@ describe('지식 페이지 — the element’s source mode for the whole markdow
     const { kp } = memEnv({ fetch: rawFetch([odd]), apiWrite });
     kp.fire('ui-select', { id: 'agent/review' });
     await tick();
-    expect(kp.data.page).toMatchObject({ id: 'agent/review', source: '# 리뷰\n\n## Extra\n', sourceOnly: true, revision: 'r1' });
+    expect(kp.data.page).toMatchObject({
+      id: 'agent/review',
+      source: '# 리뷰\n\n## Extra\n',
+      sourceOnly: true,
+      revision: 'r1',
+    });
     expect(kp.data.readOnly).toBeUndefined(); // the element edits the source; nothing of the page's sits under it
     // The element's ui-save from source mode carries the whole text: written as it is, never through the form route.
     kp.fire('ui-save', saveSource('NEW'));
     await tick();
-    expect(apiWrite).toHaveBeenCalledWith('PUT', '/api/memory/page/raw', { id: 'agent/review', raw: 'NEW', revision: 'r1' });
+    expect(apiWrite).toHaveBeenCalledWith('PUT', '/api/memory/page/raw', {
+      id: 'agent/review',
+      raw: 'NEW',
+      revision: 'r1',
+    });
     expect(kp.data.page).toMatchObject({ revision: 'r2', source: 'NEW', sourceOnly: true });
     expect(kp.data.status).toBe('저장했습니다');
   });
@@ -960,7 +969,20 @@ describe('지식 페이지 — the element’s source mode for the whole markdow
     await tick();
     expect(kp.data.page).toMatchObject({ source: '# 리뷰\n' });
     expect(kp.data.page.sourceOnly).toBeUndefined();
-    for (const gone of ['pageRawMode', 'renderPageRaw', 'keepRawDraft', 'savePageRaw', 'overwritePageRaw', 'deletePageRaw', 'kp-raw', 'kp-tools', 'pg-raw', 'memRecover', 'mem-recover', 'readOnly'])
+    for (const gone of [
+      'pageRawMode',
+      'renderPageRaw',
+      'keepRawDraft',
+      'savePageRaw',
+      'overwritePageRaw',
+      'deletePageRaw',
+      'kp-raw',
+      'kp-tools',
+      'pg-raw',
+      'memRecover',
+      'mem-recover',
+      'readOnly',
+    ])
       expect(MEMORY_CLIENT_JS, gone).not.toContain(gone);
     expect(renderSettingsPage()).not.toMatch(/kp-raw|kp-tools|mem-recover/);
   });

@@ -121,13 +121,17 @@ describe('C1 — panel user turn: the instruction with its files', () => {
     expect(out).toContain('class="um-media');
     // D7 (I-09): the pictures are the element's, keyed by the conversation and the stored image ids; its items
     // (id, name, the media route) reach it once it is in the document (mgHydrate, with the file cards).
-    expect(out).toContain('<ui-media-grid class="um-grid" lang="ko" max="4" data-art-cid="c1" data-um="I1,I2"></ui-media-grid>');
+    expect(out).toContain(
+      '<ui-media-grid class="um-grid" lang="ko" max="4" data-art-cid="c1" data-um="I1,I2"></ui-media-grid>',
+    );
     expect(out).not.toContain('um-tile');
     expect(api.umGridItems('c1', ['I1', 'I2', 'nope'])).toEqual([
       { id: 'I1', name: 'login.png', url: '/api/dashboard/session/c1/media/I1/content' },
       { id: 'I2', name: 'I2.png', url: '/api/dashboard/session/c1/media/I2/content' },
     ]);
-    const grid: Record<string, unknown> = { getAttribute: (k: string) => ({ 'data-art-cid': 'c1', 'data-um': 'I1,I2' })[k] ?? null };
+    const grid: Record<string, unknown> = {
+      getAttribute: (k: string) => ({ 'data-art-cid': 'c1', 'data-um': 'I1,I2' })[k] ?? null,
+    };
     api.mgHydrate(grid);
     expect(grid.data).toEqual({ items: api.umGridItems('c1', ['I1', 'I2']) });
     const once = grid.data;
@@ -195,7 +199,9 @@ describe('C2 — open card 지시 row', () => {
     fns.umRegister('c2', [img('I9'), pdf], turn);
     const out = fns.renderCardIo({ conversationId: 'c2', activityState: 'idle' });
     expect(out).toContain('um-compact');
-    expect(out).toContain('<ui-media-grid class="um-grid" lang="ko" size="compact" max="4" data-art-cid="c2" data-um="I9"></ui-media-grid>');
+    expect(out).toContain(
+      '<ui-media-grid class="um-grid" lang="ko" size="compact" max="4" data-art-cid="c2" data-um="I9"></ui-media-grid>',
+    );
     expect(out).not.toContain('기록된 지시 없음');
     expect(out).toContain('첨부 2개');
   });
@@ -342,7 +348,9 @@ describe('pinned 지시 첨부 row', () => {
     expect(closed).not.toContain('ui-media-grid');
     const opened = renderPanelUserMedia(list, 'c6', true);
     expect(opened).toContain('<ui-disclosure class="panel-um-dc" flush open>');
-    expect(opened).toContain('<ui-media-grid class="um-grid" lang="ko" size="compact" max="4" data-art-cid="c6" data-um="A">');
+    expect(opened).toContain(
+      '<ui-media-grid class="um-grid" lang="ko" size="compact" max="4" data-art-cid="c6" data-um="A">',
+    );
   });
 });
 

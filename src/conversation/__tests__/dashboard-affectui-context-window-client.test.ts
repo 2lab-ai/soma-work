@@ -816,7 +816,18 @@ describe('D16 — the face ctx metric and the summary line use the same level an
     for (const fn of ['cardCtxTitle', 'panelInfoHtml']) expect(clientFn(fn), fn).toContain('ctxPercent(');
     expect(ctx(104.6, 1_000_000, { autoCompactTokens: 900_000 })[1]).toBe('컨텍스트 100% · 자동 압축 지점을 넘음');
     const info = load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
-      [...CW_FNS, 'ctxLevel', 'ctxPercent', 'pendingAutoResume', 'rootStatusOf', 'elapsedHtml', 'activeTimeHtml', 'agoHtml', 'panelDetailsHtml', 'panelInfoHtml'],
+      [
+        ...CW_FNS,
+        'ctxLevel',
+        'ctxPercent',
+        'pendingAutoResume',
+        'rootStatusOf',
+        'elapsedHtml',
+        'activeTimeHtml',
+        'agoHtml',
+        'panelDetailsHtml',
+        'panelInfoHtml',
+      ],
       [...CW_VARS],
       { ...ENV, formatNmSSs: (n: number) => `${n}ms`, cardTotalTokens: () => 1, safeHref: (u: string) => u },
     ).panelInfoHtml;
@@ -827,7 +838,18 @@ describe('D16 — the face ctx metric and the summary line use the same level an
 
   it('세션 정보 summary: ctx N% carries the same class; the open grid says the totals are cumulative (D17)', () => {
     const info = load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
-      [...CW_FNS, 'ctxLevel', 'ctxPercent', 'pendingAutoResume', 'rootStatusOf', 'elapsedHtml', 'activeTimeHtml', 'agoHtml', 'panelDetailsHtml', 'panelInfoHtml'],
+      [
+        ...CW_FNS,
+        'ctxLevel',
+        'ctxPercent',
+        'pendingAutoResume',
+        'rootStatusOf',
+        'elapsedHtml',
+        'activeTimeHtml',
+        'agoHtml',
+        'panelDetailsHtml',
+        'panelInfoHtml',
+      ],
       [...CW_VARS],
       { ...ENV, formatNmSSs: (n: number) => `${n}ms`, cardTotalTokens: () => 1, safeHref: (u: string) => u },
     ).panelInfoHtml;

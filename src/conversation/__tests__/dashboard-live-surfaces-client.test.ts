@@ -227,7 +227,14 @@ describe('live times are <ui-elapsed> (D7 K-03)', () => {
   it('the page loads @2lab.ai/ui/elapsed; its own tick keeps only the cron countdown — no clock loop, no Date.now() in markup', () => {
     expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/elapsed.js?v=${UI_LIB_VERSION}"></script>');
     expect(TEMPLATE).toContain('function updateTimers() { aqTick(); }');
-    for (const gone of ['updateTimersIn', 'card-timer-live', 'rel-time', 'task-elapsed', 'data-leg-started', 'function timeAgo'])
+    for (const gone of [
+      'updateTimersIn',
+      'card-timer-live',
+      'rel-time',
+      'task-elapsed',
+      'data-leg-started',
+      'function timeAgo',
+    ])
       expect(TEMPLATE, gone).not.toContain(gone);
     const h = load<{
       elapsedHtml(since: number, title?: string): string;
@@ -246,7 +253,18 @@ describe('live times are <ui-elapsed> (D7 K-03)', () => {
 describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
   // Task view T2: the meta and the 전체 task count read each task's fate.
   const tl = load<{ renderTimeline(s: unknown): string }>(
-    ['esc', 'escAttr', 'escJs', 'toNum', 'formatDuration', 'taskFateOf', 'elapsedHtml', 'renderTaskMeta', 'renderTimelineItem', 'renderTimeline'],
+    [
+      'esc',
+      'escAttr',
+      'escJs',
+      'toNum',
+      'formatDuration',
+      'taskFateOf',
+      'elapsedHtml',
+      'renderTaskMeta',
+      'renderTimelineItem',
+      'renderTimeline',
+    ],
     ['TASK_FATE_LABEL'],
     { ...SHOW_ALL },
   );
