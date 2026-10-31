@@ -28,50 +28,107 @@ export interface TaskApproverDeps {
   timeoutMs?: number;
   now?: () => number;
   newId?: () => string;
+  /** E2 ⑥ — told when an approval is asked and how it ended. A throw here changes nothing. */
+  onEvent?: (event: TaskApprovalEvent) => void;
 }
 
-export function createTaskApprover(deps: TaskApproverDeps): TaskApprover {
+/** How an approval ended (D9). `expired` is judged against the approver's own deadline. */
+export type TaskApprovalResolution = 'allow' | 'deny' | 'expired' | 'aborted' | 'no-window' | 'error';
+
+/**
+ * E2 ⑥ — an approval's lifecycle, for the instruction thread's notices
+ * (.prd/18 D9): no tool input, only what a notice may say.
+ */
+export type TaskApprovalEvent = {
+  approvalId: string;
+  sessionKey: string;
+  turnId?: string;
+  toolName: string;
+  expiresAt?: number;
+} & ({ type: 'requested' } | { type: 'resolved'; resolution: TaskApprovalResolution });
+
+export interface TaskApproverWithState extends TaskApprover {
+  /** The approval was asked and has not ended yet. */
+  isOpen(approvalId: string): boolean;
+}
+
+export function createTaskApprover(deps: TaskApproverDeps): TaskApproverWithState {
   const timeoutMs = deps.timeoutMs ?? TASK_APPROVAL_TIMEOUT_MS;
   const now = deps.now ?? Date.now;
   const newId = deps.newId ?? (() => `approval_${Date.now()}_${randomBytes(6).toString('hex')}`);
+  const open = new Set<string>();
+  const emit = (event: TaskApprovalEvent): void => {
+    try {
+      deps.onEvent?.(event);
+    } catch {
+      // A notice is never worth an approval: the answer stands.
+    }
+  };
   return {
+    isOpen: (approvalId) => open.has(approvalId),
     async request(req: TaskApprovalRequest): Promise<{ behavior: 'allow' | 'deny'; message?: string }> {
       const createdAt = now();
+      const approvalId = newId();
+      const turnId = deps.getActiveTurnId(req.sessionKey);
+      const about = {
+        approvalId,
+        sessionKey: req.sessionKey,
+        ...(turnId ? { turnId } : {}),
+        toolName: req.toolName,
+      };
       // The wait ends before the hook's SDK deadline (#637 R1): a prompt the
       // owner could answer only after the SDK cancelled the hook is never raised.
       const left = (req.deadlineAt ?? Number.POSITIVE_INFINITY) - createdAt;
       if (left < MIN_APPROVAL_WINDOW_MS) {
+        emit({ ...about, type: 'resolved', resolution: 'no-window' });
         return { behavior: 'deny', message: 'No time was left to ask for approval — it was not run.' };
       }
       const expiresAt = createdAt + Math.min(timeoutMs, left);
-      const approvalId = newId();
-      const turnId = deps.getActiveTurnId(req.sessionKey);
-      await deps.store.storePendingApproval(approvalId, {
-        kind: PERMISSION_PROMPT_KIND,
-        tool_name: req.toolName,
-        input: req.toolInput,
-        user: req.userId,
-        task_key: req.sessionKey,
-        ...(turnId ? { turn_id: turnId } : {}),
-        created_at: createdAt,
-        expires_at: expiresAt,
-        ...(req.ruleIds.length > 0 ? { rule_ids: req.ruleIds } : {}),
-      });
+      const event = { ...about, expiresAt };
+      const resolved = (resolution: TaskApprovalResolution) => {
+        open.delete(approvalId);
+        emit({ ...event, type: 'resolved', resolution });
+      };
+      try {
+        await deps.store.storePendingApproval(approvalId, {
+          kind: PERMISSION_PROMPT_KIND,
+          tool_name: req.toolName,
+          input: req.toolInput,
+          user: req.userId,
+          task_key: req.sessionKey,
+          ...(turnId ? { turn_id: turnId } : {}),
+          created_at: createdAt,
+          expires_at: expiresAt,
+          ...(req.ruleIds.length > 0 ? { rule_ids: req.ruleIds } : {}),
+        });
+      } catch (error) {
+        resolved('error');
+        throw error;
+      }
+      open.add(approvalId);
+      emit({ ...event, type: 'requested' });
       // The write took time (#637 R2): wait only until the recorded expiry, so the
       // store's own timeout still lands before the SDK cancels the hook.
       const remaining = expiresAt - now();
       if (remaining <= 0) {
+        resolved('no-window');
         await deps.store.cleanup(approvalId);
         return { behavior: 'deny', message: 'The approval window closed before it could be asked — it was not run.' };
       }
-      const response: PermissionResponse = await deps.store.waitForPermissionResponse(
-        approvalId,
-        remaining,
-        req.signal,
-      );
-      return response.behavior === 'allow'
-        ? { behavior: 'allow', ...(response.message ? { message: response.message } : {}) }
-        : { behavior: 'deny', ...(response.message ? { message: response.message } : {}) };
+      let response: PermissionResponse;
+      try {
+        response = await deps.store.waitForPermissionResponse(approvalId, remaining, req.signal);
+      } catch (error) {
+        resolved(req.signal?.aborted ? 'aborted' : 'error');
+        throw error;
+      }
+      if (response.behavior === 'allow') {
+        resolved('allow');
+        return { behavior: 'allow', ...(response.message ? { message: response.message } : {}) };
+      }
+      // The store's answer carries no reason: a deny at or past our own deadline is the expiry.
+      resolved(now() >= expiresAt ? 'expired' : 'deny');
+      return { behavior: 'deny', ...(response.message ? { message: response.message } : {}) };
     },
   };
 }
