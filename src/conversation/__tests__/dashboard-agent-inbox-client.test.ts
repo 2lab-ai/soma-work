@@ -1557,7 +1557,8 @@ describe('top-bar user names keep their full text (shipped syncUserSelectLabel +
     const m = load<{ _applyUserPill(data: unknown): void; account(): unknown }>(
       ['_applyUserPill'],
       ['_appBarAccount'],
-      { document: d.document, paintAppBar: () => {} },
+      // View mode (SSOT 2026-11-01): learning the viewer re-says whose board this is (none in this harness).
+      { document: d.document, paintAppBar: () => {}, syncBoardScope: () => {} },
       ['function account() { return _appBarAccount; }'],
     );
     m._applyUserPill({ user: { name: LONG } });

@@ -114,21 +114,32 @@ describe('T2 — the top bar carries the 어드밴스드 toggle, saved per user'
   it('the toggle flips the mode, keeps the device copy, and saves the user’s setting when there is a Slack user', async () => {
     const calls: unknown[] = [];
     const stored: Record<string, string> = {};
+    let saveOk = true;
     const env = load<{ toggleViewMode(): Promise<void>; __set(n: string, v: unknown): void }>(
-      ['viewModeFrom', 'isAdvanced', 'setViewMode', 'toggleViewMode'],
-      ['VIEW_MODE_KEY', '_viewMode', '_viewModeOnServer'],
+      ['viewModeFrom', 'isAdvanced', 'setViewMode', 'saveViewMode', 'toggleViewMode'],
+      [
+        'VIEW_MODE_KEY',
+        '_viewMode',
+        '_viewModeOnServer',
+        '_viewModeChosen',
+        '_viewModeSaving',
+        '_viewModeResave',
+        '_viewModeSeq',
+      ],
       {
         localStorage: { setItem: (k: string, v: string) => (stored[k] = v) },
         applyViewMode: () => calls.push('apply'),
         rerenderForViewMode: () => calls.push('rerender'),
         patchSetting: async (k: string, v: unknown) => {
           calls.push(['patch', k, v]);
-          return { ok: true };
+          return saveOk ? { ok: true } : { ok: false, error: 'HTTP 500' };
         },
+        dashToast: (t: { title: string; tone: string }) => calls.push(['toast', t.title, t.tone]),
         console,
       },
     );
-    // A viewer without a Slack user: the device only.
+    // Before the settings answer (or a viewer without a Slack user): the device only — the choice is marked
+    // so the settings answer keeps it and saves it.
     await env.toggleViewMode();
     expect(calls).toEqual(['apply', 'rerender']);
     expect(Object.values(stored)).toEqual(['advanced']);
@@ -138,6 +149,26 @@ describe('T2 — the top bar carries the 어드밴스드 toggle, saved per user'
     await env.toggleViewMode();
     expect(calls).toEqual(['apply', 'rerender', ['patch', 'dashboardMode', 'minimal']]);
     expect(Object.values(stored)).toEqual(['minimal']);
+    // A save that fails says so (review R1, fable P3) — the page keeps the choice on this device.
+    calls.length = 0;
+    saveOk = false;
+    await env.toggleViewMode();
+    expect(calls).toEqual([
+      'apply',
+      'rerender',
+      ['patch', 'dashboardMode', 'advanced'],
+      ['toast', '화면 모드를 저장하지 못했어요', 'error'],
+    ]);
+  });
+
+  it('a toggle before the settings answer is kept and saved, not undone by the answer (review R1, fable P2)', () => {
+    const toggle = clientFn('toggleViewMode');
+    expect(toggle).toContain('if (!_viewModeOnServer) { _viewModeChosen = true; return; }');
+    const load = clientFn('loadMyDefaults');
+    const chosen = load.indexOf('if (_viewModeChosen) {');
+    expect(chosen).toBeGreaterThan(-1);
+    expect(load.indexOf('if (_viewModeOnServer && vm !== _viewMode) saveViewMode();')).toBeGreaterThan(chosen);
+    expect(load.indexOf('} else if (seq === _viewModeSeq')).toBeGreaterThan(chosen);
   });
 
   it('the settings load applies the user’s mode before the defaults’ acceptance gate', () => {
@@ -352,6 +383,11 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
     expect(env.psecForMode('worklog')).toBe('log');
     expect(env.psecForMode('agent')).toBe('tree');
     expect(clientFn('openPanel')).toContain('_psec = psecForMode(_panelLand);');
+    // …and on the main agent: minimal has no agent tab strip to lead back from a subagent (review R1, grok P1).
+    const open = clientFn('openPanel');
+    const agentAt = open.indexOf("_panelAgent = agentId ? String(agentId) : '';");
+    expect(agentAt).toBeGreaterThan(-1);
+    expect(open.indexOf("if (!isAdvanced()) _panelAgent = '';")).toBeGreaterThan(agentAt);
     // Switching to minimal with a subagent or another section shown brings the main agent's chat back.
     const re = clientFn('rerenderForViewMode');
     expect(re).toContain("if (_panelAgent) selectPanelAgent('');");
@@ -363,7 +399,7 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
     new RegExp(`body\\[data-view-mode="minimal"\\] ${sel.replace(/[.*+?^${}()|[\]\\#]/g, '\\$&')}[,\\s{]`);
 
   it('the page’s extras step aside: stats, capacity, the CRON lane, the defaults, the user picker, admin write mode', () => {
-    for (const sel of ['#stats', '#capacity', '#cron-lane', '#topbar-defaults', '#user-select', '#admin-mode-toggle'])
+    for (const sel of ['#stats', '#capacity', '#cron-lane', '#topbar-defaults'])
       expect(CSS, sel).toMatch(minimalRule(sel));
   });
 
@@ -382,5 +418,114 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
     // What needs the user is never hidden by the mode.
     for (const sel of ['#panel-permission', '#panel-question', '#panel-needs-head', '#panel-status', '#pc-composer'])
       expect(CSS, sel).not.toMatch(minimalRule(sel));
+  });
+});
+
+describe('T5 — minimal keeps every session that needs the user in reach (review R1)', () => {
+  const cron = (key: string, activityState: string) => ({
+    key,
+    activityState,
+    cronJob: { id: 'j1', name: 'nightly' },
+    lastActivity: new Date(T0).toISOString(),
+  });
+  const board = () => ({
+    waiting: [cron('cw', 'waiting')],
+    working: [cron('cr', 'working')],
+    idle: [cron('ci', 'idle')],
+    closed: [],
+  });
+  const env = load<{ planCronLane(b: unknown, jobs: unknown[], reveal: string | null, live?: boolean): any }>(
+    ['isCronCard', 'cronGroupKey', 'cronCardTime', 'planCronLane'],
+    [],
+  );
+  const keys = (arr: Array<{ key: string }>) => arr.map((x) => x.key);
+
+  it('minimal hides the CRON lane, so a cron run that waits or runs stays on the board (fable P1)', () => {
+    const live = env.planCronLane(board(), [], null, true);
+    expect(keys(live.board.waiting)).toEqual(['cw']);
+    expect(keys(live.board.working)).toEqual(['cr']);
+    expect(keys(live.board.idle)).toEqual([]);
+    expect(live.groups[0].cards.map((c: { key: string }) => c.key)).toEqual(['ci']);
+    // 어드밴스드: every cron run is the lane's, as before.
+    const lane = env.planCronLane(board(), [], null);
+    expect(keys(lane.board.waiting)).toEqual([]);
+    expect(keys(lane.board.working)).toEqual([]);
+    expect(clientFn('renderBoard')).toContain('planCronLane(board, _cronJobs, _cronRevealKey, !isAdvanced());');
+  });
+
+  it('the picker hides only on the viewer’s own board — elsewhere the owner acts after picking themselves (astra P1)', () => {
+    expect(CSS).toContain('body[data-view-mode="minimal"][data-board-mine] #user-select,');
+    expect(CSS).not.toMatch(/body\[data-view-mode="minimal"\] #user-select[,\s{]/);
+    const attrs: Record<string, boolean> = {};
+    const env = load<{ syncBoardScope(): void; __set(n: string, v: unknown): void }>(['syncBoardScope'], [], {
+      currentUserId: '',
+      _viewerUserId: 'U1',
+      document: { body: { toggleAttribute: (n: string, on: boolean) => (attrs[n] = on) } },
+    });
+    env.syncBoardScope(); // All Users (/dashboard)
+    expect(attrs['data-board-mine']).toBe(false);
+    env.__set('currentUserId', 'U2'); // another user's board
+    env.syncBoardScope();
+    expect(attrs['data-board-mine']).toBe(false);
+    env.__set('currentUserId', 'U1'); // the viewer's own board
+    env.syncBoardScope();
+    expect(attrs['data-board-mine']).toBe(true);
+    env.__set('_viewerUserId', ''); // a viewer without a Slack user owns no board
+    env.syncBoardScope();
+    expect(attrs['data-board-mine']).toBe(false);
+    // Every scope change says it: picking a user, learning who the viewer is, and the first paint.
+    expect(clientFn('selectUser')).toContain('syncBoardScope();');
+    expect(clientFn('_applyUserPill')).toContain('syncBoardScope();');
+    expect(TEMPLATE).toMatch(/^applyViewMode\(\);\nsyncBoardScope\(\);/m);
+  });
+
+  it('admin write mode is never hidden by the mode — answering an admin approval needs it on (fable P2, astra R1)', () => {
+    expect(CSS).not.toMatch(/body\[data-view-mode="minimal"\][^{]*#admin-mode-toggle/);
+    expect(clientFn('adminApprovalLock')).toContain("return '관리자 모드를 켜면 응답할 수 있습니다';");
+  });
+
+  it('saves run one at a time and the last switch is the one saved (astra R1)', async () => {
+    const patches: Array<{ v: unknown; done: (r: unknown) => void }> = [];
+    const env = load<{ toggleViewMode(): Promise<void>; __set(n: string, v: unknown): void }>(
+      ['viewModeFrom', 'isAdvanced', 'setViewMode', 'saveViewMode', 'toggleViewMode'],
+      [
+        'VIEW_MODE_KEY',
+        '_viewMode',
+        '_viewModeOnServer',
+        '_viewModeChosen',
+        '_viewModeSaving',
+        '_viewModeResave',
+        '_viewModeSeq',
+      ],
+      {
+        localStorage: { setItem: () => {} },
+        applyViewMode: () => {},
+        rerenderForViewMode: () => {},
+        patchSetting: (_k: string, v: unknown) => new Promise((done) => patches.push({ v, done })),
+        dashToast: () => {},
+        console,
+      },
+    );
+    env.__set('_viewModeOnServer', true);
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    const first = env.toggleViewMode(); // advanced — saving
+    void env.toggleViewMode(); // minimal — waits
+    void env.toggleViewMode(); // advanced — waits
+    expect(patches.map((p) => p.v)).toEqual(['advanced']);
+    patches[0].done({ ok: true });
+    await flush();
+    // One more write, with the latest choice — never a stale one landing last.
+    expect(patches.map((p) => p.v)).toEqual(['advanced', 'advanced']);
+    patches[1].done({ ok: true });
+    await first;
+    expect(patches).toHaveLength(2);
+  });
+
+  it('a settings answer asked for before a switch, or landing during a save, is not applied (astra R1)', () => {
+    expect(clientFn('toggleViewMode')).toContain('_viewModeSeq++;');
+    const loadFn = clientFn('loadMyDefaults');
+    expect(loadFn.indexOf('var seq = _viewModeSeq;')).toBeGreaterThan(-1);
+    expect(loadFn.indexOf('var seq = _viewModeSeq;')).toBeLessThan(loadFn.indexOf("await fetch('/api/settings')"));
+    expect(loadFn).toContain('} else if (seq === _viewModeSeq && !_viewModeSaving && vm !== _viewMode) {');
   });
 });

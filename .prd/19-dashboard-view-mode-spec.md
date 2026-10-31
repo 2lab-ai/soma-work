@@ -26,9 +26,11 @@ Status: 구현 · Date: 2026-11-01
 - 저장은 기존 개인 설정 경로(`/api/settings`)를 쓴다. 인증 · CSRF · 관리자 승인 확인이 이미 있다. 이 설정만 Slack 명령이 없다(`slackCommand` 없음, 그룹 `dashboard`).
 - `setUserDashboardMode`는 프롬프트 캐시를 버리지 않는다. 화면 모드는 어떤 프롬프트에도 들어가지 않는다.
 - 미니멀은 숨김이지 삭제가 아니다. 데이터 경로와 폴링은 그대로다.
+- 미니멀에서도 할 일은 손이 닿는다(리뷰 R1). 답을 기다리거나 실행 중인 크론 실행은 CRON 줄 대신 보드에 남는다(`planCronLane(…, liveOnBoard)`). 미니멀은 서브에이전트를 열지 않는다(`openPanel`은 메인 에이전트). All Users 화면(`/dashboard`)에서는 사용자 선택이 보인다 — 거기서는 자기를 골라야 소유자 조작이 열린다(`data-board-all`). 관리자 쓰기 모드 토글은 숨기지 않는다 — 관리자 승인에 답하려면 켜야 한다.
+- 서버 응답 전에 누른 토글은 응답이 와도 되돌리지 않고 그때 저장한다. 저장 중에 온 설정 응답은 적용하지 않는다. 저장 실패는 알림으로 말한다.
 - 20%는 고정 비율이 아니라 상한이다. 1280×860에서 위쪽은 804px 중 130px(16%), 390×844에서 844px 중 154px(18%)다. 변경 전 1280에서는 약 33%였고 채팅은 298px였다(지금 398px)(`scripts/screenshot-view-mode.ts`).
 
 ## 3. 검증
 
 - 단위: `src/conversation/__tests__/dashboard-view-mode-client.test.ts`, `src/__tests__/user-settings-registry.test.ts`, `src/__tests__/user-settings-store.test.ts`.
-- 브라우저: `scripts/screenshot-view-mode.ts` — 1280 라이트/다크, 390 라이트에서 66개 확인(기본 미니멀, 숨김, 카드 면, 상세 카드 20%, 질문 카드, 토글 저장과 새로고침 유지, 어드밴스드 복원, 가로 넘침 없음).
+- 브라우저: `scripts/screenshot-view-mode.ts` — 1280 라이트/다크, 390 라이트에서 69개 확인(기본 미니멀, 대기 크론 실행이 보드에 남음, 숨김, 카드 면, 상세 카드 20%, 질문 카드, 토글 저장과 새로고침 유지, 어드밴스드 복원, 가로 넘침 없음).

@@ -5065,16 +5065,15 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
 }
 .panel-header { flex-wrap: wrap; row-gap: 8px; }
 /* ── VIEW MODE (SSOT 2026-11-01) — 미니멀, the default: the board, and in a detail card the task list and the
-   chat. The page's extras (stats, capacity, the CRON lane, the defaults, the board's user picker, admin write mode)
-   step aside; the detail card's top keeps its header (title · status · Slack · Stop) and what needs the user
+   chat. The page's extras (stats, capacity, the CRON lane, the defaults, the board's user picker on the viewer's
+   own board) step aside — admin write mode stays: answering an admin approval needs it; the detail card's top keeps its header (title · status · Slack · Stop) and what needs the user
    (approvals, the question), and gives the rest to the task list and the chat. Hidden here, never removed:
    어드밴스드 (body[data-view-mode="advanced"]) shows all of it again. ── */
 body[data-view-mode="minimal"] #stats,
 body[data-view-mode="minimal"] #capacity,
 body[data-view-mode="minimal"] #cron-lane,
 body[data-view-mode="minimal"] #topbar-defaults,
-body[data-view-mode="minimal"] #user-select,
-body[data-view-mode="minimal"] #admin-mode-toggle,
+body[data-view-mode="minimal"][data-board-mine] #user-select,
 body[data-view-mode="minimal"] #lifecycle-btn { display: none !important; }
 body[data-view-mode="minimal"] #panel-title-sub,
 body[data-view-mode="minimal"] #panel-info,
@@ -7008,8 +7007,9 @@ function repaintPanelTasks() {
   if (!isAdvanced()) { renderPanelTaskList(panelAgentTasks()); return; }
   renderPanelTasks(panelAgentTasks(), panelAgentLabel(), panelAgentEarlier(), panelAgentOutside());
 }
-// 미니멀's task list (SSOT 2026-11-01): the current list, whole, as one checklist (<ui-task-plan>: each task's
-// state, its time) under a head that says how far it is — no runs table, no earlier plans, no tool counts.
+// 미니멀's task list (SSOT 2026-11-01): the current list as one checklist (<ui-task-plan>: each task's state, its
+// time; the element folds the earliest completed steps past three behind one line) under a head that says how far
+// it is — no runs table, no earlier plans, no tool counts.
 function renderPanelTaskList(tasks) {
   var container = document.getElementById('panel-tasks');
   if (!container) return;
@@ -7258,6 +7258,7 @@ function _applyUserPill(data) {
   _viewerIsAdmin = isAdminCapable;
   if (typeof paintUsageBreakdown === 'function') paintUsageBreakdown(); // the by-user view is an admin's
   _viewerUserId = (data && data.user && data.user.slackUserId) || '';
+  syncBoardScope();
   const lifecycleBtn = document.getElementById('lifecycle-btn');
   if (lifecycleBtn) lifecycleBtn.style.display = isAdminCapable ? 'inline-flex' : 'none';
   // Admin approvals (#620): a Slack-signed-in admin only (a viewer token names nobody — the
@@ -7370,6 +7371,7 @@ async function loadMyDefaults() {
   var box = document.getElementById('topbar-defaults');
   if (!box) return;
   try {
+    var seq = _viewModeSeq;
     var res = await fetch('/api/settings');
     if (!res.ok) { box.hidden = true; return; }
     var data = await res.json();
@@ -7378,7 +7380,14 @@ async function loadMyDefaults() {
     var vm = viewModeOfSettings(data);
     if (vm !== null) {
       _viewModeOnServer = !(data && data.accepted === false);
-      if (vm !== _viewMode) setViewMode(vm);
+      if (_viewModeChosen) {
+        // The reader switched before the server was known: keep their choice and save it now.
+        _viewModeChosen = false;
+        if (_viewModeOnServer && vm !== _viewMode) saveViewMode();
+      } else if (seq === _viewModeSeq && !_viewModeSaving && vm !== _viewMode) {
+        // An answer asked for before a switch, or landing while a save runs, may predate the save: not applied.
+        setViewMode(vm);
+      }
     }
     // Without admin acceptance the server refuses every settings write.
     if (data && data.accepted === false) { box.hidden = true; return; }
@@ -7696,9 +7705,16 @@ function syncUserSelectTitle() {
   select.title = opt ? opt.textContent : '';
 }
 
+// 미니멀 hides the board's user picker only on the viewer's own board. Anywhere else — All Users (/dashboard),
+// another user's board — the owner's controls (approve, answer, Stop, the composer) wait until the reader picks
+// themselves, so the picker stays.
+function syncBoardScope() {
+  document.body.toggleAttribute('data-board-mine', !!currentUserId && currentUserId === _viewerUserId);
+}
 function selectUser(userId) {
   syncUserSelectTitle();
   currentUserId = userId;
+  syncBoardScope();
   history.replaceState(null, '', userId ? '/dashboard/' + userId : '/dashboard');
   paintTrail();
   loadSessions();
@@ -8053,7 +8069,7 @@ function renderBoard(board, partial) {
   _lastBoardData = board;
   // Cron runs leave the columns for the CRON lane, one group per job (SSOT
   // 2026-10-23 T4); the lane sections exist before their elements are filled.
-  var cronPlan = planCronLane(board, _cronJobs, _cronRevealKey);
+  var cronPlan = planCronLane(board, _cronJobs, _cronRevealKey, !isAdvanced());
   _cronPlan = cronPlan;
   syncCronLane(cronPlan);
   var rest = cronPlan.board;
@@ -9356,6 +9372,10 @@ function repaintPanelScope() {
 var VIEW_MODE_KEY = 'soma-view-mode';
 var _viewMode = 'minimal';
 var _viewModeOnServer = false; // the settings answered with this user's dashboardMode row
+var _viewModeChosen = false; // the reader toggled before the settings answered: their choice wins and is saved then
+var _viewModeSaving = false; // a save is in flight (one at a time; a switch meanwhile is saved after it)
+var _viewModeResave = false; // the reader switched while a save was in flight
+var _viewModeSeq = 0; // switches so far: a settings answer asked for before a switch is not applied
 function viewModeFrom(v) {
   return v === 'advanced' ? 'advanced' : 'minimal';
 }
@@ -9390,12 +9410,25 @@ function setViewMode(mode) {
 // keeps the page's choice; the next settings load tells the truth).
 async function toggleViewMode() {
   var next = isAdvanced() ? 'minimal' : 'advanced';
+  _viewModeSeq++;
   setViewMode(next);
-  if (!_viewModeOnServer) return;
+  if (!_viewModeOnServer) { _viewModeChosen = true; return; }
+  await saveViewMode();
+}
+// Saves the page's current mode — one write at a time, so the last switch is the one saved.
+async function saveViewMode() {
+  if (_viewModeSaving) { _viewModeResave = true; return; }
+  _viewModeSaving = true;
+  var why = '';
   try {
-    var r = await patchSetting('dashboardMode', next);
-    if (!r.ok) console.warn('dashboardMode not saved', r.error);
-  } catch (e) { console.warn('dashboardMode not saved', e); }
+    do {
+      _viewModeResave = false;
+      var r = await patchSetting('dashboardMode', _viewMode);
+      if (!r.ok) { why = r.error || 'HTTP'; break; }
+    } while (_viewModeResave);
+  } catch (e) { why = String((e && e.message) || e); }
+  finally { _viewModeSaving = false; }
+  if (why) dashToast({ title: '화면 모드를 저장하지 못했어요', description: '이 기기에서만 바뀌었습니다 — ' + why, tone: 'error' });
 }
 // What a switch redraws: the cards (their face and open bodies) and the open
 // detail card. Minimal shows one agent (the main one) and one section (the chat).
@@ -14215,6 +14248,9 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   if (opener && opener !== document.body && !(opener.closest && opener.closest('#slide-panel'))) _panelReturnFocus = document.activeElement;
   // Spec 12 §4.3: the agent whose tasks and work log the panel shows ('' = main).
   _panelAgent = agentId ? String(agentId) : '';
+  // 미니멀 (SSOT 2026-11-01) shows one agent, the main one — it has no tab strip to lead back from another (a deep
+  // link or a tree that named a subagent opens the session on the main agent's chat).
+  if (!isAdvanced()) _panelAgent = '';
 
   // A card switch starts the composer clean: a fresh <ui-agent-steering> with a
   // fresh composer (the old one's text, files, notes in flight and failed sends
@@ -15754,7 +15790,9 @@ function cronCardTime(s) {
 // this instance has a group even with no card on the board; a card whose job is
 // not here (a sibling instance) groups by its stamp, without schedule data. A
 // job waiting on the user leads the lane, then running ones, then the newest.
-function planCronLane(board, jobs, revealKey) {
+// liveOnBoard (미니멀, SSOT 2026-11-01): the lane is hidden, so a cron run that waits on the user or runs now stays
+// on the board, where its question, approval and Stop are — never out of reach.
+function planCronLane(board, jobs, revealKey, liveOnBoard) {
   var out = { working: [], waiting: [], idle: [], closed: [] };
   var groups = Object.create(null);
   var order = [];
@@ -15770,6 +15808,7 @@ function planCronLane(board, jobs, revealKey) {
     (board[col] || []).forEach(function(s) {
       // A starred cron run stays on the board, on top (SSOT 2026-10-30 T2).
       if (!isCronCard(s) || s.starred === true) { out[col].push(s); return; }
+      if (liveOnBoard && (col === 'waiting' || col === 'working')) { out[col].push(s); return; }
       var g = group(cronGroupKey(s), s.cronJob.id, s.cronJob.name);
       g.cards.push(s);
       g.colOf[s.key] = col;
@@ -17869,6 +17908,7 @@ pcInit();
 // View mode: the device's copy first (the user's setting answers in loadMyDefaults); the agent tabs answer clicks and arrows.
 _viewMode = readViewMode();
 applyViewMode();
+syncBoardScope();
 bindPanelTabs();
 setInterval(loadSessions, 30000);
 // CRON lane jobs and the llmux capacity view poll on their own cadence (the

@@ -52,6 +52,7 @@ const NOW = Date.now();
 const M = 60_000;
 const KEY_A = 'mock-inst::work:C201:1700000000.000100';
 const KEY_Q = 'mock-inst::work:C202:1700000000.000200';
+const KEY_CRON = 'mock-inst::work:C203:1700000000.000300';
 
 type Todo = { content: string; status: 'pending' | 'in_progress' | 'completed'; activeForm?: string };
 function buildLedger(): ReturnType<typeof ledgerTasks> {
@@ -200,7 +201,19 @@ function makeBoard(view: ReturnType<typeof ledgerTasks>) {
       ],
     },
   };
-  return { waiting: [waiting], working: [session(KEY_A, '대시보드 미니멀 모드', 'C201', view)], idle };
+  // A cron run waiting on an approval: the CRON lane is hidden in minimal, so it must stay on the board.
+  const cronWaiting = {
+    ...session(KEY_CRON, '야간 점검', 'C203', null),
+    activityState: 'waiting',
+    waitingSince: NOW - 2 * M,
+    cronJob: { id: 'job-nightly', name: 'nightly' },
+    pendingPermissions: [{ approvalId: 'ap-cron', toolName: 'Bash', requesterId: 'U001' }],
+  };
+  return {
+    waiting: [waiting, cronWaiting],
+    working: [session(KEY_A, '대시보드 미니멀 모드', 'C201', view)],
+    idle,
+  };
 }
 
 const PAGE_HELPERS = [
@@ -440,6 +453,8 @@ async function scenario(
     p0.toggle,
   );
   check(!p0.stats && !p0.cron, `${tag} M2 minimal hides the stats strip and the CRON lane`, p0);
+  const cronOnBoard = await page.evaluate((k) => !!(window as any).__card(k), KEY_CRON);
+  check(cronOnBoard, `${tag} M2 a cron run waiting on the user stays on the board (the lane is hidden)`);
 
   // M3 — the face: what matters only.
   const fA = await faceOf(page, KEY_A);
