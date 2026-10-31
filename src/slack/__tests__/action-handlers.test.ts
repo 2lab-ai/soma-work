@@ -129,6 +129,7 @@ describe('ActionHandlers', () => {
           'cct',
           'cwd',
           'email',
+          'epictasks',
           'goal',
           'memory',
           'model',

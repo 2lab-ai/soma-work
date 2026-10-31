@@ -15,6 +15,7 @@ import { createBypassTopicBinding } from './bypass-topic';
 import { createCctTopicBinding } from './cct-topic';
 import { createCwdTopicBinding } from './cwd-topic';
 import { createEmailTopicBinding } from './email-topic';
+import { createEpicTasksTopicBinding } from './epictasks-topic';
 import { createGoalTopicBinding } from './goal-topic';
 import { createMemoryTopicBinding } from './memory-topic';
 import { createModelTopicBinding } from './model-topic';
@@ -45,6 +46,7 @@ export function registerAllTopics(registry: ZTopicRegistry): void {
   registry.register(createPersonaTopicBinding());
   registry.register(createSandboxTopicBinding());
   registry.register(createTaskEntryTopicBinding());
+  registry.register(createEpicTasksTopicBinding());
   registry.register(createThemeTopicBinding());
   registry.register(createUsageTopicBinding());
   registry.register(createVerbosityTopicBinding());
