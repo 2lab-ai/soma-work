@@ -84,6 +84,13 @@ describe('epic cost (E4 ③, D9 e)', () => {
       const key = 'task:c1';
       expect(store.latest(key)).toBeNull();
       expect(archivedCostUsd(store.latest(key))).toBe(0);
+      // A key that only extends this one has no archive of this key (`exists` matches exactly too).
+      fs.writeFileSync(
+        path.join(dir, 'task-c1_x_500.json'),
+        JSON.stringify({ sessionKey: 'task:c1_x', archivedAt: 500 }),
+      );
+      expect(store.exists(key)).toBe(false);
+      expect(store.exists('task:c1_x')).toBe(true);
       const write = (at: number, body: Record<string, unknown>) =>
         fs.writeFileSync(
           path.join(dir, `task-c1_${at}.json`),
