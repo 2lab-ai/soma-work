@@ -3461,8 +3461,9 @@ export class SessionRegistry {
           // turn with the process: record that turn `interrupted` and never re-run
           // it (#598 ④c, D10). A `waiting` task keeps its question.
           // E2 ③ — so did a chain still open: a `/compact` hop committed
-          // `completed` and the process died before the re-run's start.
-          if (serialized.activityState === 'working' || session.openChain) {
+          // `completed` and the process died before the re-run's start. A task
+          // saved `waiting` keeps its question even then (grok #666).
+          if (serialized.activityState === 'working' || (session.openChain && serialized.activityState !== 'waiting')) {
             const now = Date.now();
             const turnId = session.activeTaskTurnId ?? `restart:${now}`;
             session.lastTurnOutcome = {
