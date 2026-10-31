@@ -1687,6 +1687,8 @@ interface DashboardTaskLauncher {
     prompt: string;
     folder?: string;
     model?: string;
+    /** E4 ④a-2 — an epic (the launcher checks the user's flag). */
+    kind?: 'epic';
   }): Promise<{ status: number; body: Record<string, unknown> }>;
   /** The folders a user may name for a task (`listTaskFolders`). */
   folders(ownerId: string): Array<{ name: string }>;

@@ -58,6 +58,10 @@ function memoryStore(): SettingsStoreLike & { data: Record<string, any> } {
     },
     getUserPermissionMode: (id) => u(id).mode ?? 'auto',
     getUserSlackTaskEntry: (id) => !!u(id).slackTaskEntry,
+    getUserEpicTasks: (id) => !!u(id).epicTasks,
+    setUserEpicTasks: (id, v) => {
+      u(id).epicTasks = v;
+    },
     setUserSlackTaskEntry: (id, v) => {
       u(id).slackTaskEntry = v;
     },
@@ -158,6 +162,7 @@ describe('settings registry — read', () => {
       'rating',
       'workingDirectory',
       'slackTaskEntry',
+      'epicTasks',
       'permissionMode',
       'sandbox',
       'sandboxNetwork',
@@ -273,6 +278,17 @@ describe('settings registry — write', () => {
     expect(store.data.U1.slackTaskEntry).toBe(true);
     expect(v).toMatchObject({ value: true, modified: true });
     await refused(registry.write('U1', 'slackTaskEntry', 'on'), 400);
+  });
+
+  it('epicTasks (E4 ④a-2): off by default, a toggle in account, written through the store setter', async () => {
+    const { registry, store } = setup();
+    const row = registry.read('U1').settings.find((s) => s.key === 'epicTasks')!;
+    expect(row).toMatchObject({ kind: 'toggle', group: 'account', value: false, modified: false, editable: true });
+    expect(row.slackCommand).toBe('epictasks on|off');
+    const v = await registry.write('U1', 'epicTasks', true);
+    expect(store.data.U1.epicTasks).toBe(true);
+    expect(v).toMatchObject({ value: true, modified: true });
+    await refused(registry.write('U1', 'epicTasks', 'on'), 400);
   });
 
   it('read-only and unknown keys are refused; wrong value types are 400', async () => {

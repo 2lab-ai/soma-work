@@ -240,6 +240,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z mcp [list\|reload]` | List MCP servers / reload config |
 | `/z bypass [set on\|off]` | Toggle permission bypass |
 | `/z taskentry [set on\|off]` | A plain channel instruction becomes a dashboard task (per user, off by default; naked `taskentry on\|off` also accepted) |
+| `/z epictasks [set on\|off]` | Allow making epic tasks on the dashboard (`kind: 'epic'` on the new-task API; per user, off by default, experimental; naked `epictasks on\|off` also accepted) |
 | `/z persona [set <name>\|list]` | Switch persona |
 | `/z model [set <name>\|list]` | Switch model (sonnet, opus, haiku) |
 | `/z verbosity [set <level>]` | Set output verbosity (`minimal` · `compact` · `detail` · `verbose`). The default is `minimal`: the thread shows the task list (the main agent's — a subagent's own list lives on its dashboard entry), questions/approvals, the final answer and errors; the model's running narration, tool calls, compaction notices and skill banners (`$skill` and autoskill included) go to the dashboard work log |

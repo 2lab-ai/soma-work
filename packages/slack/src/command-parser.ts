@@ -1314,6 +1314,8 @@ export class CommandParser {
     'webhook',
     // Slack instructions → dashboard tasks (E2 ⑧)
     'taskentry',
+    // Epic tasks on the dashboard (E4 ④a-2)
+    'epictasks',
     // Report
     'report',
     // Skills
@@ -1443,6 +1445,7 @@ export class CommandParser {
       '*Dashboard Tasks:*',
       '• `taskentry` - Show whether your channel instructions become dashboard tasks',
       '• `taskentry on|off` - Turn it on/off (per user, off by default)',
+      '• `epictasks on|off` - Allow making epic tasks on the dashboard (per user, off by default)',
       '',
       '*MCP Servers:*',
       '• `mcp` or `/mcp` - Show MCP server status',
