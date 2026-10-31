@@ -121,6 +121,7 @@ import {
   parseNewTaskSubmission,
 } from './new-task';
 import type { NewTaskLaunchResult } from './new-task-launcher';
+import { verifyDashboardTokenRaw } from './oauth';
 import {
   type DashboardPermissionRequest,
   pendingPermissionsFor,
@@ -1410,6 +1411,21 @@ function isSlackAdmin(auth: { mode?: string; userId?: string; isAdmin?: boolean 
   return !!auth && auth.mode === 'oauth_jwt' && !!auth.userId && auth.isAdmin === true && isAdminUser(auth.userId);
 }
 
+/**
+ * When a dashboard socket's sign-in stops being valid: a session JWT's expiry,
+ * or its absolute lifetime if that comes first. Viewer-token and no-auth
+ * sockets carry no expiring credential (`undefined`).
+ */
+export function wsAuthDeadline(mode: string | undefined, cookieHeader: string | undefined): number | undefined {
+  if (mode !== 'oauth_jwt') return undefined;
+  const m = (cookieHeader || '').match(/soma_dash_token=([^;]+)/);
+  const payload = m ? verifyDashboardTokenRaw(decodeURIComponent(m[1])) : null;
+  if (!payload) return Date.now();
+  const originalIat = (payload as { originalIat?: number }).originalIat || payload.iat || 0;
+  const absoluteEnd = (originalIat + Math.max(config.oauth.jwtExpiresIn * 4, 30 * 86400)) * 1000;
+  return Math.min(payload.exp * 1000, absoluteEnd);
+}
+
 /** The snapshot as admin viewers receive it: ids carry this instance's prefix (#814), like card keys. */
 export function adminApprovalsForWire(
   snapshot: AdminApprovalSnapshot = adminApprovalSnapshot(),
@@ -1425,8 +1441,10 @@ export function broadcastAdminApprovals(): void {
   if (wsClients.size === 0) return;
   try {
     const payload = JSON.stringify({ type: 'admin_approvals', snapshot: adminApprovalsForWire() });
+    const now = Date.now();
     for (const client of wsClients) {
-      if (!client.slackAdmin) continue;
+      // A socket outliving its sign-in gets nothing (the expiry timer closes it; this is the backstop).
+      if (!client.slackAdmin || (client.authUntil !== undefined && client.authUntil <= now)) continue;
       try {
         client.send(payload);
       } catch {
@@ -2417,6 +2435,8 @@ type WsClient = {
   isAdmin?: boolean;
   /** A Slack-signed-in admin (ADMIN_USERS) — the only audience of admin approvals (#620). */
   slackAdmin?: boolean;
+  /** Epoch ms the connection's sign-in stops being valid (JWT expiry / absolute lifetime). */
+  authUntil?: number;
 };
 const wsClients = new Set<WsClient>();
 
@@ -4036,14 +4056,33 @@ export async function registerDashboardRoutes(
         return;
       }
       const authContext = request?.authContext;
+      const authUntil = wsAuthDeadline(authContext?.mode, request?.headers?.cookie);
       const client: WsClient = {
         send: (data: string) => socket.send(data),
         close: () => socket.close(),
         userId: authContext?.userId,
         isAdmin: authContext?.isAdmin,
         slackAdmin: isSlackAdmin(authContext),
+        ...(authUntil !== undefined ? { authUntil } : {}),
       };
       wsClients.add(client);
+      // The sign-in this socket was opened with ends: close it. The page reconnects with its
+      // current (rotated) cookie, or stops receiving if it no longer has a valid one.
+      let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+      if (authUntil !== undefined) {
+        expiryTimer = setTimeout(
+          () => {
+            wsClients.delete(client);
+            try {
+              socket.close(4401, 'Sign-in expired');
+            } catch {
+              /* already closed */
+            }
+          },
+          Math.min(Math.max(authUntil - Date.now(), 0), 2_147_000_000),
+        );
+        expiryTimer.unref?.();
+      }
       logger.debug('WebSocket client connected', { total: wsClients.size });
 
       // Send initial state
@@ -4055,6 +4094,7 @@ export async function registerDashboardRoutes(
       }
 
       socket.on('close', () => {
+        if (expiryTimer) clearTimeout(expiryTimer);
         wsClients.delete(client);
         logger.debug('WebSocket client disconnected', { total: wsClients.size });
       });
@@ -7464,14 +7504,17 @@ var _adminLast = Object.create(null); // id → the last record seen, for the ro
 var _adminKeep = Object.create(null); // ids that ended while the sheet is open — shown until it closes
 var _adminState = Object.create(null); // id → this page's answer (sending · error · resolved)
 var _adminInboxOpen = false;
+var _adminPushSeq = 0; // WebSocket snapshots seen — a GET that started before a push is older than it
 var _adminInboxReturn = null;
 var ADMIN_KIND_LABEL = { env_skill: '환경 스킬', mcp_grant: 'MCP 권한', new_user: '새 사용자', bot_delete: '메시지 삭제' };
 
 function adminInboxLoad() {
   if (!_viewerIsAdmin || !_viewerUserId) return;
+  var seq = _adminPushSeq;
   fetch('/api/dashboard/admin-approvals')
     .then(function(res) { return res.ok ? res.json() : null; })
-    .then(function(snap) { if (snap) applyAdminApprovals(snap); })
+    // A push that landed while this GET was in flight is newer: the GET's snapshot is dropped.
+    .then(function(snap) { if (snap && seq === _adminPushSeq) applyAdminApprovals(snap); })
     .catch(function() {});
 }
 // A name for a Slack user id: the owner name a board card carries, else the id.
@@ -7546,8 +7589,12 @@ function adminResolvedState(a, r) {
   if (!r) return { status: 'resolved', outcome: 'elsewhere' };
   var st = { status: 'resolved', at: toNum(r.at) || Date.now() };
   if (a.card === 'question') {
-    st.outcome = 'answered';
-    if (r.choiceId) st.choiceId = String(r.choiceId);
+    // The stored outcome is the truth: a grant choice that ended as a denial (the skill left the host) shows denied.
+    if (r.outcome === 'denied' && !(r.choiceId && /deny/.test(String(r.choiceId)))) st.outcome = 'denied';
+    else {
+      st.outcome = 'answered';
+      if (r.choiceId) st.choiceId = String(r.choiceId);
+    }
   } else st.outcome = r.outcome === 'denied' ? 'denied' : 'approved';
   if (r.by) st.by = adminUserName(r.by) + (r.via === 'dashboard' ? ' · 대시보드' : r.via === 'slack' ? ' · Slack' : '');
   return st;
@@ -13994,6 +14041,7 @@ function connectWs() {
     try {
       const msg = JSON.parse(ev.data);
       if (msg.type === 'admin_approvals') {
+        _adminPushSeq++;
         applyAdminApprovals(msg.snapshot);
         return;
       }

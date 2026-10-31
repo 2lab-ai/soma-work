@@ -89,8 +89,9 @@ var _adminLast = Object.create(null);
 var _adminKeep = Object.create(null);
 var _adminState = Object.create(null);
 var _adminInboxOpen = false;
+var _adminPushSeq = 0;
 ${FNS.map(clientFn).join('\n')}
-return { ${FNS.join(', ')}, state: function() { return { _adminState: _adminState, _adminApprovals: _adminApprovals }; } };`;
+return { ${FNS.join(', ')}, pushed: function() { _adminPushSeq++; }, state: function() { return { _adminState: _adminState, _adminApprovals: _adminApprovals }; } };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as any;
 }
 
@@ -261,6 +262,39 @@ describe('dashboard admin approvals (#620)', () => {
     expect(JSON.parse(res.body).resolution).toMatchObject({ outcome: 'denied', by: 'UOTHER', via: 'slack' });
   });
 
+  it('a socket stops at the end of the sign-in it was opened with (JWT expiry)', async () => {
+    const saved = mockConfig.oauth.jwtExpiresIn;
+    mockConfig.oauth.jwtExpiresIn = 1;
+    try {
+      const admin = await signIn('UADMIN');
+      const deadline = dashboard.wsAuthDeadline('oauth_jwt', admin.cookie);
+      expect(deadline).toBeLessThanOrEqual(Date.now() + 1_000);
+      const msgs: any[] = [];
+      sockets.push(
+        await injectWebServerWS('/ws/dashboard', { headers: { cookie: admin.cookie } }, (s: any) =>
+          s.on('message', (d: any) => msgs.push(JSON.parse(d.toString()))),
+        ),
+      );
+      await dashboard.broadcastAdminApprovals();
+      await vi.waitFor(() => expect(msgs.some((m) => m.type === 'admin_approvals')).toBe(true));
+      // Past the token's expiry the server has dropped (and closed) the socket: nothing more reaches it.
+      await new Promise((r) => setTimeout(r, Math.max(deadline - Date.now(), 0) + 150));
+      const before = msgs.length;
+      await dashboard.broadcastAdminApprovals();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(msgs.length).toBe(before);
+    } finally {
+      mockConfig.oauth.jwtExpiresIn = saved;
+    }
+  });
+
+  it('only a session JWT expires a socket: a viewer token or no auth has no deadline', () => {
+    expect(dashboard.wsAuthDeadline('bearer_header', undefined)).toBeUndefined();
+    expect(dashboard.wsAuthDeadline('none', undefined)).toBeUndefined();
+    // An unreadable session cookie is already over.
+    expect(dashboard.wsAuthDeadline('oauth_jwt', 'soma_dash_token=garbage')).toBeLessThanOrEqual(Date.now());
+  });
+
   it('T4 — the WebSocket pushes the requests to Slack-signed-in admins only, live on a change', async () => {
     const adminMsgs: any[] = [];
     const userMsgs: any[] = [];
@@ -418,6 +452,38 @@ describe('dashboard admin approvals (#620)', () => {
         choiceId: 'env_skill_deny',
         by: '박지은 · Slack',
       });
+    });
+
+    it('answered elsewhere as a denial of a grant choice: the card shows denied, not the attempted choice', () => {
+      const { c } = client();
+      c.applyAdminApprovals({ pending: [ENV_REQUEST], resolved: [] });
+      c.applyAdminApprovals({
+        pending: [],
+        resolved: [
+          { id: 'env_skill:req-1', outcome: 'denied', choiceId: 'env_skill_once', by: 'UOTHER', via: 'slack', at: 9 },
+        ],
+      });
+      const st = c.adminApprovalData('env_skill:req-1').state;
+      expect(st).toMatchObject({ status: 'resolved', outcome: 'denied', by: '박지은 · Slack' });
+      expect(st.choiceId).toBeUndefined();
+    });
+
+    it('a GET that started before a WebSocket push is older than it — its snapshot is dropped', async () => {
+      let release: (v: unknown) => void = () => {};
+      const { c } = client({
+        fetch: () =>
+          new Promise((r) => {
+            release = r;
+          }),
+      });
+      c.applyAdminApprovals({ pending: [], resolved: [] });
+      c.adminInboxLoad();
+      // The push: the request was answered in Slack.
+      c.pushed();
+      c.applyAdminApprovals({ pending: [], resolved: [{ id: 'env_skill:req-1', outcome: 'approved', at: 2 }] });
+      release({ ok: true, json: async () => ({ pending: [ENV_REQUEST], resolved: [] }) });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(c.state()._adminApprovals.pending).toEqual([]);
     });
 
     it('the server outcome wins: a grant the server turned into a denial shows as denied', async () => {
