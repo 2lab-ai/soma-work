@@ -182,6 +182,30 @@ describe('a start refused for now is tried once more (fable #702 R1 P2)', () => 
       await vi.advanceTimersByTimeAsync(5000);
       expect(controller.start).toHaveBeenCalledTimes(3);
 
+      // A cost cap refuses every time: the one retry is spent, no knock every minute (grok #702 R2).
+      const capped = { start: vi.fn(async () => ({ status: 429, body: { error: 'cost cap' } })) };
+      const cappedWaker = createEpicWaker({
+        getSession: () => epic,
+        controller: capped as any,
+        logger: { info: vi.fn(), warn: vi.fn() },
+        retryMs: 1000,
+      });
+      cappedWaker.wake(KEY);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(capped.start).toHaveBeenCalledTimes(2);
+      // A new event wakes it as before; still no new retry while spent.
+      cappedWaker.wake(KEY);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(capped.start).toHaveBeenCalledTimes(3);
+      // Once a wake is admitted, a later refusal may arm its one retry again.
+      capped.start.mockResolvedValueOnce({ status: 202, body: { ok: true } } as any);
+      cappedWaker.wake(KEY);
+      await vi.advanceTimersByTimeAsync(0);
+      cappedWaker.wake(KEY);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(capped.start).toHaveBeenCalledTimes(6);
+
       // Any other refusal (409: it runs) arms nothing.
       const busy = { start: vi.fn(async () => ({ status: 409, body: { error: 'running' } })) };
       createEpicWaker({

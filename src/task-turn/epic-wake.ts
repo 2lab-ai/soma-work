@@ -11,9 +11,11 @@
  * is free), the post-drain idle hook, the registry's event listener (an event
  * was just added), and a boot scan after the web server is up. A wake runs off
  * the commit path (`queueMicrotask`). A start refused for now (429 — the tree's
- * window or slot; 503 — shutting down) arms one timed retry per epic, so a
- * window that later frees does not leave the events waiting for the next
- * event (fable #702 R1 P2).
+ * window, slot or cost cap; 503 — shutting down) arms one timed retry per
+ * epic, so a window that later frees does not leave the events waiting for
+ * the next event (fable #702 R1 P2). Only one: a refusal of that retry arms
+ * nothing more until a wake is admitted or nothing waits (grok #702 R2) — a
+ * cost-capped epic is not knocked on every minute.
  * Two that overlap start once: the controller admits one chain per task
  * before its first await, and the other's events stay pending for the next.
  * Never the cron path or `wakeFromSleep`.
@@ -39,11 +41,14 @@ export function createEpicWaker(deps: EpicWakerDeps): EpicWaker {
   const retryMs = deps.retryMs ?? 60_000;
   /** One armed retry per epic at most. */
   const retries = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Epics whose retry has fired: no other until a wake is admitted or nothing waits. */
+  const spent = new Set<string>();
 
   function retryLater(sessionKey: string): void {
-    if (retries.has(sessionKey)) return;
+    if (retries.has(sessionKey) || spent.has(sessionKey)) return;
     const timer = setTimeout(() => {
       retries.delete(sessionKey);
+      spent.add(sessionKey);
       wake(sessionKey);
     }, retryMs);
     timer.unref?.();
@@ -52,24 +57,32 @@ export function createEpicWaker(deps: EpicWakerDeps): EpicWaker {
 
   async function drain(sessionKey: string): Promise<void> {
     const epic = deps.getSession(sessionKey);
-    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated) return;
+    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated) {
+      spent.delete(sessionKey);
+      return;
+    }
     if ((epic.activityState ?? 'idle') !== 'idle' || isEpicDone(epic.plan)) return;
     const events = wakeableEpicEvents(epic.epicEvents);
-    if (events.length === 0) return;
+    if (events.length === 0) {
+      spent.delete(sessionKey);
+      return;
+    }
     const started = await deps.controller.start({
       sessionKey,
       text: epicWakeText(events),
       actorUserId: epic.ownerId,
       initiator: 'host',
     });
-    if (started.status !== 202) {
-      deps.logger.info('Epic wake not started — its events stay pending', {
-        sessionKey,
-        status: started.status,
-        error: started.body.error,
-      });
-      if (started.status === 429 || started.status === 503) retryLater(sessionKey);
+    if (started.status === 202) {
+      spent.delete(sessionKey);
+      return;
     }
+    deps.logger.info('Epic wake not started — its events stay pending', {
+      sessionKey,
+      status: started.status,
+      error: started.body.error,
+    });
+    if (started.status === 429 || started.status === 503) retryLater(sessionKey);
   }
 
   function wake(sessionKey: string): void {
