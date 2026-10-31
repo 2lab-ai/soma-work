@@ -1,0 +1,312 @@
+/**
+ * A dashboard tab outlives the server that served it (2026-10-31, a dev deployment): a tab
+ * opened before a deploy kept running the old page script against the new
+ * server. The new server projected a goal's 10/10 "keep going?" decision as a
+ * waiting card (`activityState: 'waiting'` + `pendingGoalDecision`, #624); the
+ * old script drew "Waiting for you · 2h ago" and had no code for the decision,
+ * so the card asked for an answer and offered none.
+ *
+ * The contract pinned here: every page, socket and board answer carries the
+ * server's build; a tab whose build differs reloads itself (or, holding unsent
+ * input, says a new version is out and reloads on request) — never a loop.
+ *
+ *   T1 — the server's build reaches the tab: page (PAGE_BUILD), socket (hello), board poll (x-dashboard-build)
+ *   T2 — a skewed tab reloads; with unsent input it asks instead; one reload per server build
+ */
+
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mockConfig = {
+  conversation: {
+    summaryModel: 'claude-haiku-4-20250414',
+    viewerHost: '127.0.0.1',
+    viewerPort: 0,
+    viewerUrl: '',
+    viewerToken: 'test-token',
+  },
+  oauth: {
+    google: { clientId: '', clientSecret: '' },
+    microsoft: { clientId: '', clientSecret: '' },
+    jwtSecret: '',
+    jwtExpiresIn: 604800,
+  },
+};
+
+vi.mock('../../config', () => ({ config: mockConfig }));
+vi.mock('../../env-paths', () => ({ IS_DEV: true, DATA_DIR: '/tmp/test-data' }));
+vi.mock('../recorder', () => ({
+  listConversations: vi.fn().mockResolvedValue([]),
+  getConversation: vi.fn().mockResolvedValue(null),
+  getTurnRawContent: vi.fn().mockResolvedValue(null),
+}));
+vi.mock('../viewer', () => ({
+  renderConversationListPage: vi.fn().mockReturnValue('<html></html>'),
+  renderConversationViewPage: vi.fn().mockReturnValue('<html></html>'),
+}));
+vi.mock('../../session-archive', () => ({
+  getArchiveStore: () => ({ listRecent: () => [] }),
+}));
+
+const AUTH_HEADER = { Authorization: 'Bearer test-token' };
+
+// ── The shipped client code, cut out of renderDashboardPage()'s template literal ──
+const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
+const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
+
+function cook(fragment: string): string {
+  if (fragment.includes('`') || fragment.includes('${')) throw new Error('fragment is not a plain template slice');
+  return new Function(`return \`${fragment}\`;`)() as string;
+}
+function clientFn(name: string): string {
+  let start = TEMPLATE.indexOf(`\nfunction ${name}(`);
+  if (start < 0) start = TEMPLATE.indexOf(`\nasync function ${name}(`);
+  if (start < 0) throw new Error(`client function ${name} not found`);
+  const end = TEMPLATE.indexOf('\n}\n', start);
+  return cook(TEMPLATE.slice(start + 1, end + 2));
+}
+function clientVar(name: string): string {
+  const m = TEMPLATE.match(new RegExp(`^(var ${name} = .*?;)(?:\\s*//.*)?$`, 'm'));
+  if (!m) throw new Error(`client var ${name} not found`);
+  return cook(m[1]);
+}
+function load<T>(fns: string[], inject: Record<string, unknown>, vars: string[] = []): T {
+  const names = Object.keys(inject);
+  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
+  return new Function(...names, body)(...names.map((n) => inject[n])) as T;
+}
+
+describe('dashboard build skew — T1: the server build reaches the tab', () => {
+  let webServer: any;
+  let dashboard: any;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    webServer = await import('../web-server');
+    dashboard = await import('../dashboard');
+    await webServer.startWebServer({ listen: false });
+    dashboard.setDashboardSessionAccessor(() => new Map());
+  });
+
+  afterEach(async () => {
+    await webServer.stopWebServer();
+  });
+
+  it('names a deployed build by its commit and build time, else a per-process id', () => {
+    expect(
+      dashboard.resolveDashboardBuildId({ commitHash: 'ac3a27db74de', buildTime: '2026-10-31T04:16:34Z' }, 'proc-x'),
+    ).toBe('ac3a27db74de@2026-10-31T04:16:34Z');
+    expect(dashboard.resolveDashboardBuildId(null, 'proc-x')).toBe('proc-x');
+    expect(dashboard.resolveDashboardBuildId({ commitHash: '' }, 'proc-x')).toBe('proc-x');
+    // One process, one build: the id never changes under a running server.
+    const id = dashboard.dashboardBuildId();
+    expect(typeof id).toBe('string');
+    expect(id.length).toBeGreaterThan(0);
+    expect(dashboard.dashboardBuildId()).toBe(id);
+  });
+
+  it('the page carries the build it was rendered by (PAGE_BUILD)', async () => {
+    const res = await webServer.injectWebServer({ method: 'GET', url: '/dashboard/U1', headers: AUTH_HEADER });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain(`const PAGE_BUILD = ${JSON.stringify(dashboard.dashboardBuildId())};`);
+  });
+
+  it('every board poll answers with the server build (x-dashboard-build)', async () => {
+    const res = await webServer.injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/sessions',
+      headers: AUTH_HEADER,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['x-dashboard-build']).toBe(dashboard.dashboardBuildId());
+  });
+
+  it('a socket hears the server build first (hello), before the board', async () => {
+    const messages: any[] = [];
+    const headers = { cookie: `soma_dash_token=${encodeURIComponent('bearer:test-token')}` };
+    const ws = await webServer.injectWebServerWS('/ws/dashboard', { headers }, (socket: any) => {
+      socket.on('message', (data: any) => messages.push(JSON.parse(data.toString())));
+    });
+    try {
+      await vi.waitFor(() => expect(messages.some((m) => m.type === 'session_update')).toBe(true));
+    } finally {
+      ws.terminate();
+    }
+    expect(messages[0]).toEqual({ type: 'hello', build: dashboard.dashboardBuildId() });
+  });
+});
+
+describe('dashboard build skew — T2: a tab on another build reloads', () => {
+  type Api = {
+    buildSkewed: (b: unknown) => boolean;
+    hasUnsentInput: () => boolean;
+    onServerBuild: (b: unknown) => void;
+  };
+
+  function fakeEnv(opts: { composer?: any; ntComposer?: any; ntOpen?: boolean; fields?: any[] } = {}) {
+    const els: Record<string, any> = {
+      'pc-composer': opts.composer ?? { value: '', files: [] },
+      'nt-composer': opts.ntComposer ?? { value: '', files: [] },
+      'nt-dialog': { open: !!opts.ntOpen },
+    };
+    const store = new Map<string, string>();
+    const env = {
+      reloads: 0,
+      toasts: [] as any[],
+      toastActions: [] as Array<() => void>,
+      document: {
+        getElementById: (id: string) => els[id] ?? null,
+        querySelectorAll: () => opts.fields ?? [],
+      },
+      location: {
+        reload: () => {
+          env.reloads++;
+        },
+      },
+      sessionStorage: {
+        getItem: (k: string) => (store.has(k) ? store.get(k) : null),
+        setItem: (k: string, v: string) => store.set(k, v),
+      },
+      store,
+    };
+    return env;
+  }
+
+  function api(env: ReturnType<typeof fakeEnv>, pageBuild = 'build-A'): Api {
+    return load<Api>(
+      ['buildSkewed', 'hasUnsentInput', 'buildReload', 'onServerBuild'],
+      {
+        PAGE_BUILD: pageBuild,
+        document: env.document,
+        location: env.location,
+        sessionStorage: env.sessionStorage,
+        dashToast: (input: any, onAction?: () => void) => {
+          env.toasts.push(input);
+          if (onAction) env.toastActions.push(onAction);
+          return 't';
+        },
+      },
+      ['_buildSkewToast'],
+    );
+  }
+
+  it('the same build, or none, is no skew', () => {
+    const env = fakeEnv();
+    const a = api(env);
+    expect(a.buildSkewed('build-A')).toBe(false);
+    expect(a.buildSkewed('')).toBe(false);
+    expect(a.buildSkewed(null)).toBe(false);
+    expect(a.buildSkewed(undefined)).toBe(false);
+    expect(a.buildSkewed('build-B')).toBe(true);
+    // A page rendered without a build (an old server) never decides on its own.
+    expect(api(env, '').buildSkewed('build-B')).toBe(false);
+    a.onServerBuild('build-A');
+    a.onServerBuild(null);
+    expect(env.reloads).toBe(0);
+    expect(env.toasts).toEqual([]);
+  });
+
+  it('a skewed tab with nothing unsent reloads at once', () => {
+    const env = fakeEnv();
+    api(env).onServerBuild('build-B');
+    expect(env.reloads).toBe(1);
+    expect(env.toasts).toEqual([]);
+  });
+
+  it('reloads once per server build — a page that is still skewed after it asks instead of looping', () => {
+    const env = fakeEnv();
+    api(env).onServerBuild('build-B');
+    expect(env.reloads).toBe(1);
+    // The reloaded page (a proxy served the old HTML again) hears the same build.
+    const again = api(env);
+    again.onServerBuild('build-B');
+    expect(env.reloads).toBe(1);
+    expect(env.toasts).toHaveLength(1);
+    expect(env.toasts[0]).toMatchObject({ id: 'build-skew', tone: 'warning', duration: 0 });
+    // A later deploy is a new build: one more reload for it.
+    again.onServerBuild('build-C');
+    expect(env.reloads).toBe(2);
+  });
+
+  it('unsent text, files, an open new-task dialog or a filled field hold the reload: one toast, reload on its action', () => {
+    const cases = [
+      fakeEnv({ composer: { value: '머지 완료 됐어?', files: [] } }),
+      fakeEnv({ composer: { value: '  ', files: [{ name: 'a.png' }] } }),
+      fakeEnv({ ntComposer: { value: 'new task', files: [] } }),
+      fakeEnv({ ntOpen: true }),
+      fakeEnv({ fields: [{ value: '' }, { value: 'goal draft' }] }),
+    ];
+    for (const env of cases) {
+      const a = api(env);
+      expect(a.hasUnsentInput()).toBe(true);
+      a.onServerBuild('build-B');
+      a.onServerBuild('build-B'); // the next poll: still one toast
+      expect(env.reloads).toBe(0);
+      expect(env.toasts).toHaveLength(1);
+      expect(env.toasts[0]).toMatchObject({ id: 'build-skew', tone: 'warning', duration: 0, action: { id: 'reload' } });
+      env.toastActions[0]();
+      expect(env.reloads).toBe(1);
+    }
+  });
+
+  it('an empty page has nothing unsent', () => {
+    expect(api(fakeEnv()).hasUnsentInput()).toBe(false);
+    expect(api(fakeEnv({ fields: [{ value: '  ' }] })).hasUnsentInput()).toBe(false);
+  });
+});
+
+describe('dashboard build skew — T1/T2 wiring: the socket and the poll hand the build to onServerBuild', () => {
+  it("the socket's hello reaches onServerBuild", () => {
+    const seen: unknown[] = [];
+    let sock: any = null;
+    class FakeWebSocket {
+      onopen: any;
+      onclose: any;
+      onerror: any;
+      onmessage: any;
+      constructor() {
+        sock = this;
+      }
+      close() {}
+    }
+    const { connectWs } = load<{ connectWs: () => void }>(['connectWs'], {
+      WebSocket: FakeWebSocket,
+      location: { protocol: 'https:', host: 'x' },
+      ws: null,
+      onServerBuild: (b: unknown) => seen.push(b),
+    });
+    connectWs();
+    sock.onmessage({ data: JSON.stringify({ type: 'hello', build: 'build-B' }) });
+    expect(seen).toEqual(['build-B']);
+  });
+
+  it("a board poll's x-dashboard-build reaches onServerBuild", async () => {
+    const seen: unknown[] = [];
+    const { loadSessions } = load<{ loadSessions: () => Promise<void> }>(['loadSessions'], {
+      _sessionsInflight: null,
+      currentUserId: '',
+      _boardLoad: 'ready',
+      BOARD_LOAD_TIMEOUT_MS: 1000,
+      AbortController,
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        headers: { get: (h: string) => (h.toLowerCase() === 'x-dashboard-build' ? 'build-B' : null) },
+        json: async () => ({ board: { working: [], waiting: [], idle: [], closed: [] } }),
+      }),
+      _heldWsBoard: null,
+      _lastPolledBoard: null,
+      _lifecycle: null,
+      renderBoard: () => {},
+      setBoardLoad: () => {},
+      panelOpen: false,
+      panelSessionKey: null,
+      _sessionCache: {},
+      repaintPanelSession: () => {},
+      onServerBuild: (b: unknown) => seen.push(b),
+    });
+    await loadSessions();
+    expect(seen).toEqual(['build-B']);
+  });
+});
