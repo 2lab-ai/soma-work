@@ -550,6 +550,8 @@ describe('StreamExecutor — a Slack-less task turn writes to the dashboard (#59
     expect(typeof pq.askId).toBe('string');
     expect(params.session.actionPanel.waitingForChoice).toBe(true);
     expect(result.terminal?.choiceStillOpen?.()).toBe(true);
+    // The waiting outcome's reason is the question (#626 R1).
+    expect(result.terminal?.questionTitle).toBe('Which DB?');
     const narration = deps.workLog.mock.calls
       .filter((c: any[]) => c[1].kind === 'narration')
       .map((c: any[]) => c[1].text);

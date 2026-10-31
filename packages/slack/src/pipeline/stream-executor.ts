@@ -480,6 +480,19 @@ export function resetWorkLogDropWarningsForTests(): void {
  * sessionKey when it has one, error), throttled process-wide to one warning
  * per `WORK_LOG_DROP_WARN_INTERVAL_MS`.
  */
+/**
+ * The title of a pending question — a single choice's `question`, a form's
+ * `title` (or its first question) — for a waiting task outcome's reason (#626 R1).
+ */
+function pendingQuestionTitle(q: unknown): string | undefined {
+  if (!q || typeof q !== 'object') return undefined;
+  const r = q as { question?: unknown; title?: unknown; questions?: Array<{ question?: unknown }> };
+  if (typeof r.question === 'string' && r.question) return r.question;
+  if (typeof r.title === 'string' && r.title) return r.title;
+  const first = r.questions?.[0]?.question;
+  return typeof first === 'string' && first ? first : undefined;
+}
+
 export function recordConversationWorkLog(
   conversationId: string,
   entry: WorkLogInput,
@@ -3204,6 +3217,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
                 renewFailed,
                 endTurnInfoPresent: Boolean(streamResult.endTurnInfo),
                 choiceStillOpen,
+                ...(pendingQuestionTitle(session.actionPanel?.pendingQuestion)
+                  ? { questionTitle: pendingQuestionTitle(session.actionPanel?.pendingQuestion) }
+                  : {}),
                 ...(taskTerminalReason ? { reasonText: taskTerminalReason } : {}),
               },
             }
