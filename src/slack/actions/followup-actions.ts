@@ -1,5 +1,5 @@
 import type { App } from '@slack/bolt';
-import type { SendNowResult } from '@soma/slack/followup-dispatcher';
+import type { RunReport, SendNowResult } from '@soma/slack/followup-dispatcher';
 import type { FollowupItem, FollowupItemState, FollowupOpResult } from '@soma/slack/followup-queue';
 import {
   FOLLOWUP_CANCEL_ACTION_ID,
@@ -196,8 +196,13 @@ export interface FollowupActionsDeps {
   canInterrupt(sessionKey: string, clicker: string): boolean | Promise<boolean>;
   /** Re-render the queue surface. `page` is only passed by the pagination controls. */
   refresh(sessionKey: string, page?: number): void | Promise<void>;
-  /** The HOST's drain loop. This module never re-enters the dispatcher itself. */
-  runDrain(sessionKey: string): void | Promise<void>;
+  /**
+   * The HOST's drain loop. This module never re-enters the dispatcher itself.
+   * `settled` is the report of the run this click started (`Send now`), when
+   * there is one: the drain is a boundary, and how that run ended decides what
+   * the host does after it (an `auto-compact` stop hands its work on).
+   */
+  runDrain(sessionKey: string, settled?: RunReport): void | Promise<void>;
   /**
    * The host's end-of-turn sweep of rows still sitting in `steered` — the one
    * state whose exit depends on a receipt no one can produce once the turn is
@@ -470,7 +475,7 @@ export async function handleSendNow(
         announceProcessed(deps, sessionKey, value.itemId);
         // Only a `safe` outcome opens the next boundary — a blocked/failed turn
         // must not be followed by an automatic drain (A16).
-        if (settled.canDrain) await deps.runDrain(sessionKey);
+        if (settled.canDrain) await deps.runDrain(sessionKey, settled);
       } finally {
         await safeRefresh(deps, sessionKey);
       }

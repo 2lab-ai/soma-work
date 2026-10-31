@@ -614,6 +614,74 @@ describe('TaskTurnController.start — only the task’s owner starts it (#637 R
   });
 });
 
+// #600 ⑥ — the new-task launcher asks before it creates anything: the same
+// owner-level admission a start would meet (shutdown, the owner's running
+// task, the start window), with no side effect.
+describe('TaskTurnController.canStart — a dry run of admission (#600 ⑥)', () => {
+  it('null while the owner may start; the start’s own refusal otherwise — and it counts nothing', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const h = harness({ maxStartsPerWindow: 2 } as never, [
+      async (input) => {
+        input.onStarted?.();
+        await gate;
+        return completed('first');
+      },
+    ]);
+    expect(h.controller.canStart('UOWNER')).toBeNull();
+    expect(h.controller.canStart('UOWNER')).toBeNull(); // no window entry taken
+    const first = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
+    expect(first.status).toBe(202);
+    expect(h.controller.canStart('UOWNER')).toMatchObject({ status: 429 });
+    expect(h.controller.canStart('U_SOMEONE_ELSE')).toBeNull();
+    release();
+    await first.done;
+    expect(h.controller.canStart('UOWNER')).toBeNull();
+    h.controller.stopAccepting();
+    expect(h.controller.canStart('UOWNER')).toMatchObject({ status: 503 });
+  });
+
+  // #640 R1 (fable, astra): a first instruction the start would refuse as a
+  // command is refused before a task exists — never a card that cannot start.
+  it.each([
+    ['/compact'],
+    ['/model opus'],
+    ['%model'],
+    ['/zworkflow:using-ssot'], // a plugin's namespaced command (#640 R2)
+    ['/plugin:skill do it'],
+  ])('refuses a command-shaped first instruction (%s) with the start’s own 400', (text) => {
+    const h = harness();
+    expect(h.controller.canStart('UOWNER', text)).toEqual({
+      status: 400,
+      body: { error: 'commands are not supported on a dashboard task yet — send an instruction' },
+    });
+  });
+
+  it('refuses with the window’s own 429 once the owner’s starts fill it, before anything is made', async () => {
+    const h = harness({ maxStartsPerWindow: 1 } as never, [
+      async (input) => {
+        input.onStarted?.();
+        return completed('only');
+      },
+    ]);
+    const first = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
+    expect(first.status).toBe(202);
+    await first.done;
+    expect(h.controller.canStart('UOWNER', 'again')).toEqual({
+      status: 429,
+      body: { error: 'too many dashboard task starts — try again shortly' },
+    });
+  });
+
+  it('lets an instruction that only mentions a path or a slash through', () => {
+    const h = harness();
+    expect(h.controller.canStart('UOWNER', 'clean /tmp/build and explain 2/3 of it')).toBeNull();
+    expect(h.controller.canStart('UOWNER', '  fix the flaky test')).toBeNull();
+  });
+});
+
 describe('TaskTurnController.answer — a dashboard answer to a task’s question (#599 ⑤)', () => {
   const QUESTION = {
     type: 'user_choice',
