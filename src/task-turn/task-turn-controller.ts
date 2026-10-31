@@ -22,12 +22,15 @@
  */
 import type { ExecutionContext } from '../agent-runtime/execution-context';
 import type { ConversationSession, TaskTurnOutcomeRecord } from '../types';
+import { buildTaskAnswerText, type TaskAnswer } from './task-answer';
 import type { RunTaskTurnInput, RunTaskTurnResult, TaskTurnNonTerminal } from './task-turn-runner';
 
 export interface TaskCommandRequest {
   sessionKey: string;
   text: string;
   attachments?: readonly unknown[];
+  /** The signed-in user sending it; the turn runs as the owner, so only the owner may (#637 R2). */
+  actorUserId: string;
 }
 
 export interface TaskCommandResponse {
@@ -73,8 +76,31 @@ export interface TaskTurnControllerDeps {
   now?: () => number;
 }
 
+/** #599 ⑤ — a dashboard answer to the task's open question, bound to its `askId`. */
+export interface TaskAnswerRequest {
+  sessionKey: string;
+  askId: string;
+  answer: TaskAnswer;
+  /** The signed-in user answering; only the task's owner may (#637 R1). */
+  actorUserId: string;
+}
+
 export interface TaskTurnController {
   start(request: TaskCommandRequest): Promise<TaskCommandResponse>;
+  /**
+   * Answer the task's open question (#599 ⑤): bound to its `askId`, one answer
+   * per question, run as the next instruction through the same admission as
+   * `start`. A refusal at any point leaves the question open.
+   */
+  answer(request: TaskAnswerRequest): Promise<TaskCommandResponse>;
+  /**
+   * A dry run of the owner-level admission a start would meet (shutdown, the
+   * owner's running task, the start window): null when it may start, else the
+   * refusal. Takes nothing — #600 ⑥ asks before it creates a task. With the
+   * first instruction, it also refuses a command the start would refuse (#640 R1),
+   * so a task is never created that its own first instruction cannot start.
+   */
+  canStart(ownerId: string, text?: string): TaskCommandResponse | null;
   /** Abort the task's chain with `session-close` and wait (bounded) for it to end. */
   close(sessionKey: string): Promise<void>;
   /** Shutdown: refuse new starts (503). Running chains end through the coordinator's `shutdown` abort. */
@@ -87,12 +113,18 @@ export interface TaskTurnController {
 const COMPACT = '/compact';
 /**
  * A slash command's shape (`/model x`, `/compact`) — not a path (`/work/x`) or
- * a fraction (`2/3`). Every command is refused on a task in A0 (D8), `/compact`
+ * a fraction (`2/3`); a plugin's namespaced command (`/plugin:skill`) included
+ * (#640 R2). Every command is refused on a task in A0 (D8), `/compact`
  * included: a task turn has no signal that proves a manual compaction happened
  * (#634 R1). Automatic and fallback compaction still run.
  */
-const SLASH_COMMAND = /^\/[A-Za-z][\w-]*(?:\s|$)/;
+const SLASH_COMMAND = /^\/[A-Za-z][\w-]*(?::[\w-]+)*(?:\s|$)/;
 const SESSION_COMMAND = /^%[A-Za-z]/;
+const COMMAND_REFUSED = 'commands are not supported on a dashboard task yet — send an instruction';
+/** An instruction (trimmed) a task start refuses as a command: `/word` or `%word`. */
+function isCommand(text: string): boolean {
+  return SLASH_COMMAND.test(text) || SESSION_COMMAND.test(text);
+}
 const CONTINUATION_REFUSED = 'continuation not supported on a dashboard task yet';
 const BUDGET_SPENT = 're-entry limit reached';
 
@@ -116,23 +148,53 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
 
   const refuse = (status: number, error: string): TaskCommandResponse => ({ status, body: { error } });
 
+  /** The owner-level part of admission (D9): no side effect. */
+  function ownerAdmission(ownerId: string, t: number): TaskCommandResponse | null {
+    if (ownerChain.has(ownerId)) return refuse(429, 'one dashboard task runs at a time — wait for it to finish');
+    const recent = (starts.get(ownerId) ?? []).filter((at) => t - at < windowMs);
+    if (recent.length >= maxStarts) return refuse(429, 'too many dashboard task starts — try again shortly');
+    return null;
+  }
+
+  function canStart(ownerId: string, text?: string): TaskCommandResponse | null {
+    if (!accepting) return refuse(503, 'the service is shutting down — try again shortly');
+    if (text !== undefined && isCommand(text.trim())) return refuse(400, COMMAND_REFUSED);
+    return ownerAdmission(ownerId, now());
+  }
+
   function admit(
     request: TaskCommandRequest,
+    opts: { answer?: boolean } = {},
   ):
     | { ok: true; session: ConversationSession; ctx: ExecutionContext; ownerId: string; startedAt: number }
     | { ok: false; response: TaskCommandResponse } {
     if (!accepting) return { ok: false, response: refuse(503, 'the service is shutting down — try again shortly') };
     const session = deps.getSession(request.sessionKey);
     if (!session || session.slackless !== true) return { ok: false, response: refuse(409, 'not a dashboard task') };
+    // The turn runs under the owner's identity: only the owner starts one — an
+    // instruction or an answer alike (#637 R2).
+    if (!request.actorUserId || request.actorUserId !== session.ownerId) {
+      return { ok: false, response: refuse(403, 'only the task owner can instruct or answer a dashboard task') };
+    }
     if (request.attachments && request.attachments.length > 0) {
       return { ok: false, response: refuse(400, 'attachments are not supported on a dashboard task yet') };
     }
     const text = request.text.trim();
-    if (SLASH_COMMAND.test(text) || SESSION_COMMAND.test(text)) {
-      return {
-        ok: false,
-        response: refuse(400, 'commands are not supported on a dashboard task yet — send an instruction'),
-      };
+    if (opts.answer) {
+      // An answer is not a command (#637 R1): `%…` is only a Slack router's
+      // prefix and runs as text. A leading `/word` would be read as a command
+      // by the SDK, so that one answer is refused with its reason.
+      if (SLASH_COMMAND.test(text)) {
+        return {
+          ok: false,
+          response: refuse(
+            422,
+            'this answer would be read as a command — rephrase it as a free-form instruction that does not start with /',
+          ),
+        };
+      }
+    } else if (isCommand(text)) {
+      return { ok: false, response: refuse(400, COMMAND_REFUSED) };
     }
     let ctx: ExecutionContext;
     try {
@@ -144,22 +206,21 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       return { ok: false, response: refuse(409, 'a turn is already running on this task') };
     }
     const ownerId = ctx.userId;
-    if (ownerChain.has(ownerId)) {
-      return { ok: false, response: refuse(429, 'one dashboard task runs at a time — wait for it to finish') };
-    }
     const t = now();
+    const ownerRefusal = ownerAdmission(ownerId, t);
+    if (ownerRefusal) return { ok: false, response: ownerRefusal };
     const recent = (starts.get(ownerId) ?? []).filter((at) => t - at < windowMs);
-    if (recent.length >= maxStarts) {
-      starts.set(ownerId, recent);
-      return { ok: false, response: refuse(429, 'too many dashboard task starts — try again shortly') };
-    }
     recent.push(t);
     starts.set(ownerId, recent);
     return { ok: true, session, ctx, ownerId, startedAt: t };
   }
 
-  async function start(request: TaskCommandRequest): Promise<TaskCommandResponse> {
-    const admitted = admit(request);
+  function start(request: TaskCommandRequest): Promise<TaskCommandResponse> {
+    return startChain(request, {});
+  }
+
+  async function startChain(request: TaskCommandRequest, opts: { answer?: boolean }): Promise<TaskCommandResponse> {
+    const admitted = admit(request, opts);
     if (!admitted.ok) return admitted.response;
     const { session, ctx, ownerId, startedAt } = admitted;
     const { sessionKey } = request;
@@ -374,6 +435,31 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     endings.set(sessionKey, ending);
   }
 
+  async function answer(request: TaskAnswerRequest): Promise<TaskCommandResponse> {
+    const session = deps.getSession(request.sessionKey);
+    if (!session || session.slackless !== true) return refuse(409, 'not a dashboard task');
+    // The turn runs under the owner's identity: only the owner answers (#637 R1;
+    // admission checks it again for every start).
+    if (!request.actorUserId || request.actorUserId !== session.ownerId) {
+      return refuse(403, 'only the task owner can answer its question');
+    }
+    const question = session.actionPanel?.pendingQuestion as { askId?: string } | undefined;
+    if (session.activityState !== 'waiting' || !question) {
+      return refuse(409, 'the task is not waiting for an answer');
+    }
+    if (question.askId !== request.askId) return refuse(409, 'the question has changed — reload');
+    const built = buildTaskAnswerText(question, request.answer);
+    if (!built.ok) return refuse(built.status, built.error);
+    // One answer per question (D4): `start` admits and clears the question
+    // synchronously — before its first await — so a concurrent second answer
+    // finds no open question. A refused or unsaved start leaves (or puts back)
+    // the question, so the answer can be sent again.
+    return startChain(
+      { sessionKey: request.sessionKey, text: built.text, actorUserId: request.actorUserId },
+      { answer: true },
+    );
+  }
+
   async function close(sessionKey: string): Promise<void> {
     const chain = chains.get(sessionKey);
     const waitMs = deps.closeWaitMs ?? 60_000;
@@ -421,6 +507,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
 
   return {
     start,
+    answer,
+    canStart,
     close,
     stopAccepting: () => {
       accepting = false;

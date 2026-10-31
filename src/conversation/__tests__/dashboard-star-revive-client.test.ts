@@ -39,7 +39,12 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
+/** The page's chrome words (STRINGS), as served: the board's Korean words live there (D2 group 6). */
+const PAGE_STRINGS = new Function(
+  `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
+)();
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+  inject = { STRINGS: PAGE_STRINGS, ...inject };
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
@@ -175,15 +180,15 @@ describe('T1.3 — the card leads with ★', () => {
 
 describe('T1.3 / T4.3 — Star and 살리기 on the open card and in the panel head', () => {
   const m = load<{ sessionActionHtml(s: unknown, col: string, where: string): string }>(
-    ['esc', 'escAttr', 'escJs', 'toNum', 'pendingAutoResume', 'isBusy', 'sessionActionHtml'],
-    ['SESSION_ACTION_ARIA'],
+    ['esc', 'escAttr', 'escJs', 'toNum', 'pendingAutoResume', 'isBusy', 'sessionActionsOf', 'sessionActionHtml'],
+    ['SESSION_ACTION_TONE'],
     { _busy: Object.create(null), currentUserId: 'U1', SELF_INSTANCE_NAME: '', READ_ONLY_MSG: 'ro' },
   );
   const s = (over: Record<string, unknown> = {}) => ({ key: 'C1:t1', ownerId: 'U1', sessionState: 'MAIN', ...over });
 
   it('the owner gets a Star toggle that says whether it is on', () => {
     const off = m.sessionActionHtml(s(), 'idle', 'card');
-    expect(off).toContain('btn-star');
+    expect(off).toContain('data-action="star"');
     expect(off).toContain('aria-pressed="false"');
     expect(off).toContain("doStar('C1:t1',true)");
     const on = m.sessionActionHtml(s({ starred: true }), 'idle', 'panel');
@@ -193,7 +198,7 @@ describe('T1.3 / T4.3 — Star and 살리기 on the open card and in the panel h
 
   it('someone else reads the star but cannot press it', () => {
     const html = m.sessionActionHtml(s({ ownerId: 'U2', starred: true }), 'idle', 'card');
-    expect(html).toMatch(/btn-star[^>]* disabled/);
+    expect(html).toMatch(/data-action="star"[^>]* disabled/);
   });
 
   it('a sleeping or archived card offers 살리기; a live one does not', () => {
@@ -207,8 +212,8 @@ describe('T1.3 / T4.3 — Star and 살리기 on the open card and in the panel h
 
   it('a sibling instance’s card gets no star and no revive here', () => {
     const sib = load<{ sessionActionHtml(s: unknown, col: string, where: string): string }>(
-      ['esc', 'escAttr', 'escJs', 'toNum', 'pendingAutoResume', 'isBusy', 'sessionActionHtml'],
-      ['SESSION_ACTION_ARIA'],
+      ['esc', 'escAttr', 'escJs', 'toNum', 'pendingAutoResume', 'isBusy', 'sessionActionsOf', 'sessionActionHtml'],
+      ['SESSION_ACTION_TONE'],
       { _busy: Object.create(null), currentUserId: 'U1', SELF_INSTANCE_NAME: 'me', READ_ONLY_MSG: 'ro' },
     );
     const html = sib.sessionActionHtml(

@@ -494,6 +494,14 @@ Deploy 스텝은 이 스크립트를 두 번 부른다:
   하나씩 `<plugin>:post-deploy repo=<owner/repo> target=<branch> before=<sha> after=<sha>` — 같은 세션에서 배포 후 QA를
   끝까지 하고 최종 리포트를 그 스레드에 올린다. QA를 안 한 repo는 이유를 한 줄씩 적는다. 스킬이 오류로 끝나거나 최종
   리포트 없이 끝나면 워크플로우가 직접 `deployed, QA incomplete`를 보고한다(재실행 인자는 관리자용 참고 한 줄).
+- 사전 조건 게이트(`deploy-qa` 5.5단계): 대상 이슈를 모두 `qa-issue --plan`으로 계획하고 사전 조건(계정·테스트 데이터·
+  쓰기 권한·설정·외부 시스템·시간 제어)을 읽기 전용으로 확인한다. 부족한 것이 있으면 미충족 표를 스레드에 올리고 잠금을
+  풀고 요청자에게 질문을 한 번 한 뒤 `deployed, QA incomplete: waiting for precondition confirmation`으로 끝난다. 이것은
+  실패가 아니다. 요청자가 스레드에서 답하면 그 세션이 답을 게이트 파일(`<lockDir>/gates/…json`)에 기록하고 같은 인자에
+  `decisions=<게이트 파일>`을 붙여 다시 부른다. 답 전에는 케이스 실행·트래커 쓰기가 없다. 도구 문제(어댑터·스크린샷
+  폴더·lockDir)는 이 질문에 넣지 않고 축소 모드로 처리한다. 프로필에 `qaEnv.accounts`(역할 → 계정 참조),
+  `qaEnv.writes`(`allowed`/`forbidden`), `qaEnv.seed`(허용된 준비 동작과 정리), `qaEnv.logs`(서버 오류 로그 읽는 법)를
+  적으면 그만큼 질문이 줄어든다. 없는 필드는 오류가 아니라 그 사전 조건이 `missing`이라는 뜻이다.
 - 스킬 본문은 그 호스트의 적용표·프로필(`## Environment`)·정책(`## Policy`)을 들고, 절차는
   soma-work 번들 `zworkflow` 스킬 `deploy-qa` / `qa-issue` / `qa-report`를 호출한다.
 - 이 스킬이 없는 호스트에서는 배포가 `ℹ️ no post-deploy QA on this host` 한 줄을 남기고 QA 없이 진행한다.
