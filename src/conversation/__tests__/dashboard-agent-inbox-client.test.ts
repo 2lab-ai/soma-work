@@ -1557,7 +1557,8 @@ describe('top-bar user names keep their full text (shipped syncUserSelectLabel +
     const m = load<{ _applyUserPill(data: unknown): void; account(): unknown }>(
       ['_applyUserPill'],
       ['_appBarAccount'],
-      { document: d.document, paintAppBar: () => {} },
+      // View mode (SSOT 2026-11-01): learning the viewer re-says whose board this is (none in this harness).
+      { document: d.document, paintAppBar: () => {}, syncBoardScope: () => {} },
       ['function account() { return _appBarAccount; }'],
     );
     m._applyUserPill({ user: { name: LONG } });
@@ -3179,6 +3180,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'stripRecommendedMarker',
         'resolveRecommendedId',
         'psecForLanding',
+        // View mode (SSOT 2026-11-01): an opening's section goes through the mode — this harness is 어드밴스드.
+        'psecForMode',
         'psecLandingTop',
         'panelTabsHeight',
         'landPanel',
@@ -3245,6 +3248,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         psecToNewest: () => {},
         psecMaybeFill: () => {},
         _panelDetail: !!opts.detail,
+        isAdvanced: () => true,
         _panelTasksOpen: false,
         _agentConvRaw: null,
         _agentConvFailed: null,
