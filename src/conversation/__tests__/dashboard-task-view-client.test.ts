@@ -81,7 +81,7 @@ describe('T2 · a dropped task never reads as running or waiting', () => {
     taskRunsData(ran: Task[]): Array<Record<string, any>>;
     taskPlanData(runs: unknown): Record<string, any>;
     taskRunsOf(current: Task[], earlier: Task[]): unknown;
-    renderTaskMeta(t: Task): string;
+    cardTaskStep(t: Task, i: number): Record<string, unknown>;
   }>(
     [
       ...BASE_FNS,
@@ -92,10 +92,9 @@ describe('T2 · a dropped task never reads as running or waiting', () => {
       'taskRunsOf',
       'taskRunsData',
       'taskPlanData',
-      'elapsedHtml',
-      'renderTaskMeta',
+      'cardTaskStep',
     ],
-    BASE_VARS,
+    [...BASE_VARS, 'CARD_TASK_STATUS'],
   );
 
   it('names every fate: done · running · paused · waiting · replaced (dropped after it ran) · not run (dropped before)', () => {
@@ -138,17 +137,19 @@ describe('T2 · a dropped task never reads as running or waiting', () => {
     expect('endedAt' in run).toBe(false);
   });
 
-  it('the work-log group head of a replaced task carries no live clock and reads 교체됨 (SSOT 2026-10-29 T5)', () => {
-    const meta = plan.renderTaskMeta({
-      status: 'in_progress',
+  it('a task a later plan replaced is a dropped step on the card: its run time, never a running clock (SSOT 2026-10-29 T5)', () => {
+    const step = plan.cardTaskStep(
+      { status: 'in_progress', startedAt: T0, removedAt: T0 + 5000, toolCalls: 1, dropped: 'started' } as Task,
+      0,
+    );
+    expect(step).toEqual({
+      id: 'step0',
+      label: '',
+      status: 'dropped',
       startedAt: T0,
-      removedAt: T0 + 5000,
+      endedAt: T0 + 5000,
       toolCalls: 1,
-      dropped: 'started',
     });
-    expect(meta).not.toContain('<ui-elapsed');
-    expect(meta).toContain('교체됨 5초');
-    expect(meta).not.toContain('중단');
   });
 });
 

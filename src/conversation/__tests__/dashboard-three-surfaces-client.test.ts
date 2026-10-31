@@ -292,7 +292,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     renderCardIo: () => '[IO]',
     renderCardArtifacts: () => '[ARTS]',
     renderAgentTree: () => '[AGENTS]',
-    renderTimeline: () => '[TASKS]',
+    renderCardTasks: () => '[TASKS]',
     // affectUI batch 1: the prompts and the single-choice question are <ui-approval-card> slots.
     acPermissionsHtml: () => '',
     acGoalDecisionHtml: () => '',
@@ -484,34 +484,36 @@ describe('expanded body — face + delta, sections keyed on state', () => {
 });
 
 describe('task window on the card — the full ledger is the panel', () => {
-  const tl = (s: Record<string, unknown>) =>
-    load<{ renderTimeline(s: unknown): string }>(
-      [
-        'esc',
-        'escAttr',
-        'escJs',
-        'toNum',
-        'formatDuration',
-        'taskFateOf',
-        'elapsedHtml',
-        'renderTaskMeta',
-        'renderTimelineItem',
-        'renderTimeline',
-      ],
-      ['TASK_FATE_LABEL'],
-      {
-        dhShow: () => true,
-        dhMax: (_k: string, d: number) => d,
-      },
-    ).renderTimeline(s);
+  const tw = load<{
+    renderCardTasks(s: unknown): string;
+    cardTaskPlanData(s: unknown): { steps: Array<Record<string, unknown>>; more?: string };
+  }>(
+    [
+      'esc',
+      'escAttr',
+      'escJs',
+      'toNum',
+      'taskFateOf',
+      'cardTaskStep',
+      'cardTaskHidden',
+      'cardTasksRan',
+      'cardTaskPlanData',
+      'renderCardTasks',
+    ],
+    ['CARD_TASK_ROWS', 'CARD_TASK_STATUS'],
+    {
+      dhShow: () => true,
+      dhMax: (_k: string, d: number) => d,
+    },
+  );
 
-  it('shows the window and opens the panel Tasks for everything else (earlier lists included)', () => {
+  it('shows the window (D8b D-12: <ui-task-plan max>) and opens the panel Tasks for everything else (earlier lists included)', () => {
     const tasks = Array.from({ length: 9 }, (_, i) => ({
       id: `T${i + 1}`,
       content: `t${i + 1}`,
       status: i < 6 ? 'completed' : i === 6 ? 'in_progress' : 'pending',
     }));
-    const html = tl({
+    const s = {
       key: 'k1',
       tasks,
       earlierTasks: [
@@ -519,14 +521,22 @@ describe('task window on the card — the full ledger is the panel', () => {
         // Task view T2: a step a new plan dropped before it ran was never work — not counted.
         { id: 'Tx', content: 'never ran', status: 'pending', dropped: 'unstarted' },
       ],
-    });
-    expect(html.match(/class="tl-item/g)).toHaveLength(5);
-    expect(html).toContain("openPanel('k1','tasks',");
-    expect(html).toContain('전체 task 10개 &rarr;');
+    };
+    const html = tw.renderCardTasks(s);
+    expect(html).toBe(
+      '<ui-task-plan class="card-task-plan" lang="ko" flush max="5" foot="none" data-tp-key="k1"></ui-task-plan>',
+    );
+    const d = tw.cardTaskPlanData(s);
+    expect(d.steps).toHaveLength(9);
+    expect(d.steps[6]).toMatchObject({ status: 'running' });
+    // Five rows of nine: four leave the window; the earlier run is in the panel too.
+    expect(d.more).toBe('+5개 더 · 전체 task 10개 →');
     expect(html).not.toContain('toggleCardTasks');
     expect(html).not.toContain('tl-earlier');
     // Only skipped earlier steps and no current list: nothing to open.
-    expect(tl({ key: 'k1', tasks: [], earlierTasks: [{ id: 'Tx', content: 'x', dropped: 'unstarted' }] })).toBe('');
+    expect(
+      tw.renderCardTasks({ key: 'k1', tasks: [], earlierTasks: [{ id: 'Tx', content: 'x', dropped: 'unstarted' }] }),
+    ).toBe('');
   });
 });
 

@@ -252,40 +252,71 @@ describe('live times are <ui-elapsed> (D7 K-03)', () => {
   });
 });
 
-describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
-  // Task view T2: the meta and the 전체 task count read each task's fate.
-  const tl = load<{ renderTimeline(s: unknown): string }>(
+describe('task window on the card is <ui-task-plan max foot="none"> (T7/T8, D8b D-12)', () => {
+  // Task view T2: the steps and the 전체 task count read each task's fate.
+  type Step = Record<string, unknown>;
+  const tw = load<{
+    renderCardTasks(s: unknown): string;
+    cardTaskPlanData(s: unknown): { title: string; steps: Step[]; more?: string };
+    cardTaskStep(t: unknown, i: number): Step;
+  }>(
     [
       'esc',
       'escAttr',
       'escJs',
       'toNum',
-      'formatDuration',
       'taskFateOf',
-      'elapsedHtml',
-      'renderTaskMeta',
-      'renderTimelineItem',
-      'renderTimeline',
+      'cardTaskStep',
+      'cardTaskHidden',
+      'cardTasksRan',
+      'cardTaskPlanData',
+      'renderCardTasks',
     ],
-    ['TASK_FATE_LABEL'],
+    ['CARD_TASK_ROWS', 'CARD_TASK_STATUS'],
     { ...SHOW_ALL },
   );
 
-  it('each task shows its id; a completed task its elapsed time and tool calls', () => {
-    const html = tl.renderTimeline(workingCard());
-    expect(html).toContain('<span class="tl-id">#T1</span>');
-    expect(html).toContain('1분 00초');
-    expect(html).toContain('툴 7회');
-    // D7 K-03: the running task's live time is <ui-elapsed> (its own tick), never a page clock.
-    expect(html).toContain('<ui-elapsed since="61000" lang="ko"></ui-elapsed>');
-    expect(html).toContain('툴 3회');
-    // A pending task has neither time nor tool calls.
-    expect(html).toMatch(/#T3<\/span><span class="tl-text">Ship it<\/span><\/li>/);
+  it('the window is the element: dhMax rows, no phase foot, flush in the card, keyed to its session; its data where it changed', () => {
+    expect(tw.renderCardTasks(workingCard())).toBe(
+      '<ui-task-plan class="card-task-plan" lang="ko" flush max="5" foot="none" data-tp-key="inst::C1:t1"></ui-task-plan>',
+    );
+    expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/task-plan.js?v=${UI_LIB_VERSION}"></script>');
+    expect(clientFn('paintCardBody')).toContain('cardTaskPlanHydrate(b.el);');
+    expect(clientFn('cardTaskPlanHydrate')).toContain("querySelectorAll('ui-task-plan[data-tp-key]')");
+    expect(clientFn('cardTaskPlanHydrate')).toContain('taskElData(els[i], cardTaskPlanData(s));');
+    // The page's own timeline is gone: no rows, no fold line, no link of its own in the window.
+    for (const gone of ['.tl-item', 'tl-toggle', 'tl-wrap', 'function renderTimeline', 'function renderTaskMeta'])
+      expect(TEMPLATE, gone).not.toContain(gone);
+  });
+
+  it('each step carries its id (the ref), a completed one its times and tool calls, the running one its start — the element ticks it — and a pending one neither', () => {
+    const d = tw.cardTaskPlanData(workingCard());
+    expect(d.title).toBe('');
+    expect(d.steps[0]).toEqual({
+      id: 'T1',
+      ref: '#T1',
+      label: 'Explore code',
+      status: 'done',
+      startedAt: 1000,
+      endedAt: 61_000,
+      toolCalls: 7,
+    });
+    expect(d.steps[1]).toEqual({
+      id: 'T2',
+      ref: '#T2',
+      label: 'Write the parser',
+      status: 'running',
+      startedAt: 61_000,
+      toolCalls: 3,
+    });
+    expect(d.steps[2]).toEqual({ id: 'T3', ref: '#T3', label: 'Ship it', status: 'pending' });
+    // Three rows fit the window of five: no "+N" line.
+    expect(d.more).toBeUndefined();
   });
 
   // Spec 13: the open card is a window; every task of the list and the earlier
-  // lists are the panel's Tasks — 전체 task N개 → opens them there (T7 reachability kept).
-  it('completed tasks beyond the budget and earlier tasks are one click away, in the panel', () => {
+  // lists are the panel's Tasks — the element's "+N" line (ui-more) opens them there (T7 reachability kept).
+  it('completed tasks beyond the budget and earlier tasks are one press away, in the panel', () => {
     const many = workingCard({
       tasks: Array.from({ length: 8 }, (_, i) => ({
         id: `T${i + 1}`,
@@ -299,17 +330,27 @@ describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
         { id: 'T0', content: 'old plan', status: 'completed', startedAt: 1, completedAt: 2, toolCalls: 4 },
       ],
     });
-    const html = tl.renderTimeline(many);
-    expect(html).not.toContain('old plan');
-    expect(html).toContain('전체 task 9개 &rarr;');
-    expect(html).toContain("openPanel('" + many.key + "','tasks',");
+    const d = tw.cardTaskPlanData(many);
+    expect(d.steps.map((s) => s.label)).not.toContain('old plan');
+    // Three of the eight leave the window, the earlier run is the panel's too.
+    expect(d.more).toBe('+4개 더 · 전체 task 9개 →');
+    const html = tw.renderCardTasks(many);
+    expect(html).toContain('max="5" foot="none"');
+    expect(html).not.toContain('card-more-link');
+    // ui-more → the panel's Tasks: the same call the page's link makes, focus landing by keyboard.
+    const onMore = TEMPLATE.slice(TEMPLATE.indexOf("document.addEventListener('ui-more', function(e) {"));
+    expect(onMore.slice(0, onMore.indexOf('\n});'))).toContain(
+      "openPanel(el.getAttribute('data-tp-key') || '', 'tasks', '', _atKeyed);",
+    );
   });
 
-  it('a session with only earlier tasks still offers them', () => {
-    const html = tl.renderTimeline(
+  it('the window hides nothing but earlier lists ran: the page’s own 전체 task N개 → (the element draws its line for its own rows only)', () => {
+    const html = tw.renderCardTasks(
       workingCard({ tasks: [], earlierTasks: [{ id: 'T9', content: 'x', status: 'completed', toolCalls: 1 }] }),
     );
+    expect(html).not.toContain('<ui-task-plan');
     expect(html).toContain('전체 task 1개 &rarr;');
+    expect(html).toContain("openPanel('inst::C1:t1','tasks',");
   });
 
   it('task view T2: earlier steps a new plan dropped before they ran are not counted; one that ran is', () => {
@@ -323,25 +364,36 @@ describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
       removedAt: 9000,
       toolCalls: 2,
     };
-    expect(tl.renderTimeline(workingCard({ earlierTasks: [skipped, stopped] }))).toContain('전체 task 4개 &rarr;');
+    const html = tw.renderCardTasks(workingCard({ earlierTasks: [skipped, stopped] }));
+    expect(html).toContain('<ui-task-plan');
+    expect(html).toContain('전체 task 4개 &rarr;');
     // Only never-run steps behind an empty list: nothing to open.
-    expect(tl.renderTimeline(workingCard({ tasks: [], earlierTasks: [skipped] }))).toBe('');
+    expect(tw.renderCardTasks(workingCard({ tasks: [], earlierTasks: [skipped] }))).toBe('');
   });
 
-  it('task view T2: a paused step says 멈춤 with its tools and never ticks; the pending one stays bare', () => {
-    const html = tl.renderTimeline(
-      workingCard({
-        tasks: [
-          { id: 'T1', content: 'Was running', status: 'pending', startedAt: 1000, toolCalls: 4 },
-          { id: 'T2', content: 'Next', status: 'pending' },
-        ],
-      }),
-    );
-    expect(html).toContain(
-      '<span class="tl-time">멈춤 &middot; <span class="tl-tools" title="툴 호출 수">툴 4회</span></span>',
-    );
-    expect(html).not.toContain('<ui-elapsed');
-    expect(html).toMatch(/#T2<\/span><span class="tl-text">Next<\/span><\/li>/);
+  it('task view T2: a paused step is paused with its start and tools and no end (never ticks); the pending one stays bare', () => {
+    expect(
+      tw.cardTaskStep({ id: 'T1', content: 'Was running', status: 'pending', startedAt: 1000, toolCalls: 4 }, 0),
+    ).toEqual({
+      id: 'T1',
+      ref: '#T1',
+      label: 'Was running',
+      status: 'paused',
+      startedAt: 1000,
+      toolCalls: 4,
+    });
+    expect(tw.cardTaskStep({ id: 'T2', content: 'Next', status: 'pending' }, 1)).toEqual({
+      id: 'T2',
+      ref: '#T2',
+      label: 'Next',
+      status: 'pending',
+    });
+    // A step without an id is keyed by its place; no ref.
+    expect(tw.cardTaskStep({ content: 'x', status: 'pending' }, 3)).toEqual({
+      id: 'step3',
+      label: 'x',
+      status: 'pending',
+    });
   });
 });
 

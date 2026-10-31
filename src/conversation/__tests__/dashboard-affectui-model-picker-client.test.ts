@@ -391,6 +391,7 @@ describe('mpHydrate — every picker under a root takes its session’s data, on
       morphInnerHtml: (_e: unknown, h: string) => morphs.push(h),
       updateTimersIn: () => {},
       acHydrate: () => {},
+      cardTaskPlanHydrate: () => {},
       mpHydrate: (root: unknown) => hydrated.push(root),
       atCardData: () => null,
       atHydrate: () => {},
