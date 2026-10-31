@@ -229,6 +229,22 @@ describe('TaskNotificationLedger (E2 ④)', () => {
     expect(after.claim('bad')).toMatchObject({ state: 'unknown', attempts: 2 });
   });
 
+  it('L7 — annotate adds to an entry’s intent in any state, saved; list returns every entry', () => {
+    const ledger = open();
+    reg(ledger, 'n1');
+    ledger.claim('n1');
+    ledger.markPosted('n1', 'ts');
+    expect(ledger.annotate('n1', { resolution: 'allow' })).toMatchObject({
+      state: 'posted',
+      intent: { outcome: 'completed', reason: 'done', resolution: 'allow' },
+    });
+    const after = new TaskNotificationLedger(file);
+    after.load();
+    expect(after.get('n1')?.intent.resolution).toBe('allow');
+    expect(after.list().map((e) => e.id)).toEqual(['n1']);
+    expect(() => ledger.annotate('missing', {})).toThrow(LedgerTransitionError);
+  });
+
   it('L6 — no file is an empty ledger; a corrupt live file falls back to its backup', () => {
     const fresh = new TaskNotificationLedger(file);
     fresh.load();
