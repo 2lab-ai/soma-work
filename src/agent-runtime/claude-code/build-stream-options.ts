@@ -783,18 +783,23 @@ export async function buildStreamOptions(
   if (shouldRebuild) {
     builtSystemPrompt = deps.promptBuilder.buildSystemPrompt(promptUserId, workflow, session);
 
+    // The channel's context: a Slack turn's from its Slack context; a task
+    // turn's from the snapshot stored with the task (E2 ② — the same blocks,
+    // byte for byte, and still no Slack context on a task turn).
+    const channelContext = execCtx?.origin === 'task' ? session?.inputContext : slackContext;
+
     // Inject channel description as additional context
-    if (builtSystemPrompt && slackContext?.channelDescription) {
-      builtSystemPrompt = `${builtSystemPrompt}\n\n<channel-description source="slack">\n${slackContext.channelDescription}\n</channel-description>`;
+    if (builtSystemPrompt && channelContext?.channelDescription) {
+      builtSystemPrompt = `${builtSystemPrompt}\n\n<channel-description source="slack">\n${channelContext.channelDescription}\n</channel-description>`;
     }
 
     // Inject structured repository context from channel registry.
     // This provides explicit repo identification so the model doesn't
     // have to guess from raw description.
-    const hasRepos = slackContext?.repos && slackContext.repos.length > 0;
-    const hasConfluence = !!slackContext?.confluenceUrl;
+    const hasRepos = channelContext?.repos && channelContext.repos.length > 0;
+    const hasConfluence = !!channelContext?.confluenceUrl;
     if (builtSystemPrompt && (hasRepos || hasConfluence)) {
-      builtSystemPrompt = `${builtSystemPrompt}\n\n${buildRepoContextBlock(slackContext!.repos || [], slackContext!.confluenceUrl)}`;
+      builtSystemPrompt = `${builtSystemPrompt}\n\n${buildRepoContextBlock(channelContext!.repos || [], channelContext!.confluenceUrl)}`;
     }
 
     // Cache the freshly-built prompt on the session so subsequent turns
