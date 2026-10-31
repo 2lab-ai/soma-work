@@ -413,6 +413,11 @@ export interface KanbanSession {
   pendingGoalDecision?: KanbanGoalDecision;
   /** #600 ⑥ — a Slack-less dashboard task (the client gates task-only UI on it). Absent for Slack sessions. */
   slackless?: true;
+  /** E4 ① (.prd/19 D1) — an epic task. Absent otherwise. */
+  kind?: 'epic';
+  /** E4 ① — a child task's epic (task id) and plan node. Absent otherwise. */
+  parentTaskId?: string;
+  planNodeId?: string;
   /**
    * #598 ④c — a Slack-less task's last turn outcome (D10): what the last turn
    * ended as, why, and whether recording it failed. Absent for Slack sessions.
@@ -2262,6 +2267,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     userMedia: cardUserMedia(s.conversationId),
     followups: followupsOf(key, s.ownerId),
     ...(s.slackless === true ? { slackless: true as const, ...noticeFailuresOf(key) } : {}),
+    ...(s.slackless === true && s.kind === 'epic' ? { kind: 'epic' as const } : {}),
+    ...(s.slackless === true && s.parentTaskId ? { parentTaskId: s.parentTaskId, planNodeId: s.planNodeId } : {}),
     ...(s.slackless === true && s.lastTurnOutcome
       ? {
           lastTurnOutcome: {
