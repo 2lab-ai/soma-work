@@ -260,12 +260,13 @@ describe('top-bar chips stay clickable while a session panel is open (T6, review
     return z ? Number(z[1]) : Number.NaN;
   }
 
-  it('the defaults group is positioned above the full-screen overlay and the panel', () => {
-    const overlay = zIndexOf('.slide-panel-overlay');
-    const panel = zIndexOf('.slide-panel');
+  it('the defaults group is positioned above the docked drawer (its layer: --ui-drawer-z); the sheet is the element’s modal, over everything by design', () => {
+    const block = /^\.slide-panel\s*\{([^}]*)\}/m.exec(DASHBOARD_TS)?.[1] ?? '';
+    const panel = Number(/--ui-drawer-z:\s*(\d+)/.exec(block)?.[1]);
     const chips = zIndexOf('.topbar .topbar-defaults');
-    expect(overlay).toBe(99);
-    expect(chips).toBeGreaterThan(Math.max(overlay, panel));
+    expect(panel).toBe(100);
+    expect(chips).toBeGreaterThan(panel);
+    expect(DASHBOARD_TS).not.toContain('.slide-panel-overlay');
   });
 
   it('the model scope box is offered only for a model the session switch accepts (a representative nickname)', () => {

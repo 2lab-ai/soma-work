@@ -385,7 +385,8 @@ describe('<ui-compact-breakdown> — where the usage goes: by model for everyone
         addEventListener: (ev: string, fn: Listener) => (listeners[ev] = fn),
       },
       _viewerIsAdmin: false,
-      landStripFigures: () => {}, // 토큰 · 비용 go to <ui-stat-strip> (D2)
+      setStripFigure: () => {}, // 토큰 · 비용 go to <ui-stat-strip> (D2)
+      paintStatsStrip: () => {},
       formatTokens: String,
     };
     const m = load<{ paintUsage(r: unknown): void; paintUsageBreakdown(): void }>(

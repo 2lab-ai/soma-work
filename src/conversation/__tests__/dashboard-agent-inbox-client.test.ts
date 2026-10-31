@@ -1289,7 +1289,14 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = [
+  'PR_STATE_LABEL',
+  'PR_STATE_TONE',
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'OWNER_BADGE_HUES',
+];
 type CardData = Record<string, unknown> & {
   badge?: { text: string; hue: number; title: string };
   since?: number;
@@ -2357,7 +2364,7 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
         'taskRunsRestore',
         'renderPanelTasks',
       ],
-      ['TASK_FATE_LABEL', 'PI_CHEV_SVG', 'TASK_RUNS_SHOWN', 'TASK_RUN_STATUS'],
+      ['TASK_FATE_LABEL', 'TASK_RUNS_SHOWN', 'TASK_RUN_STATUS'],
       {
         document: {
           getElementById: (id: string) =>
@@ -2379,15 +2386,12 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
     );
     return { container, renderPanelTasks, planEl };
   };
-  const CHEV = new Function(`${clientVar('PI_CHEV_SVG')}\nreturn PI_CHEV_SVG;`)() as string;
+  // D4 K-06: the head is <ui-disclosure>'s row (the title and the summary slotted in); the body is its region.
   const head = (expanded: boolean) =>
-    `<button type="button" class="panel-sec-head panel-tasks-header" aria-expanded="${expanded}"` +
-    (expanded ? ' aria-controls="panel-tasks-body"' : '') +
-    ` onclick="togglePanelTasks()"><span class="ps-sec-title">Tasks</span><span class="ps-sec-sum">목록 없음</span>${CHEV}</button>`;
+    `<ui-disclosure class="panel-tasks-dc" flush${expanded ? ' open' : ''}><span slot="summary" class="panel-tasks-header"><span class="ps-sec-title">Tasks</span><span class="ps-sec-sum">목록 없음</span></span>`;
   const LIVE = '<span class="ar-vh pl-live" role="status" aria-live="polite"></span>';
 
   it("zero or missing tasks show the header (folded: 목록 없음) and, opened, the plan element's empty state", () => {
-    expect(CHEV).toContain('<i data-ui-icon="chevron-down" class="pi-chev"></i>');
     for (const open of [false, true]) {
       const { container, renderPanelTasks, planEl } = tasksSection(open);
       for (const t of [[], undefined, null]) {
@@ -2397,8 +2401,8 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
         expect(container.style.display).toBe('');
         expect(container.innerHTML).toBe(
           open
-            ? `${head(true)}<div class="panel-tasks-body ui-tok" id="panel-tasks-body"><ui-task-plan class="panel-task-plan" id="panel-task-plan" lang="ko"></ui-task-plan></div>${LIVE}`
-            : `${head(false)}${LIVE}`,
+            ? `${head(true)}<div class="panel-tasks-body ui-tok" id="panel-tasks-body"><ui-task-plan class="panel-task-plan" id="panel-task-plan" lang="ko"></ui-task-plan></div></ui-disclosure>${LIVE}`
+            : `${head(false)}</ui-disclosure>${LIVE}`,
         );
         if (open) expect(planEl.data).toEqual({ title: '계획', steps: [] });
       }
@@ -2421,7 +2425,7 @@ describe('stats: only the latest period / user selection paints (shipped loadSta
     const painted: string[] = [];
     const m = load<{ loadStats(): Promise<void>; select(p: string, u: string): void }>(
       ['statsJson', 'loadStats', 'markStatsLoading'],
-      ['_statsGen', 'STAT_IDS'],
+      ['_statsGen'],
       {
         fetch,
         // The loading bars (markStatsLoading) find no elements in this harness; the strip and the charts
@@ -2429,6 +2433,8 @@ describe('stats: only the latest period / user selection paints (shipped loadSta
         document: { getElementById: () => null },
         setStripFigure: () => {},
         paintStatsStrip: () => {},
+        paintStatCards: () => {},
+        _statCards: {},
         paintCharts: () => {},
         _strip: { sessions: { value: null }, tokens: { value: null }, cost: { value: null } },
         _chartDays: [],
@@ -3141,6 +3147,20 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       els[id] ??= Object.assign(fakeEl({ id }), { classList: { add() {}, remove() {} } });
       return els[id];
     };
+    // D4 E-01: the panel is <ui-drawer> — openPanel opens it with the element's show() (closePanel: hide());
+    // its open state is the element's own property and attribute, as the host contract says.
+    const drawer = el('slide-panel');
+    Object.assign(drawer, {
+      open: false,
+      show() {
+        drawer.open = true;
+        drawer.setAttribute('open', '');
+      },
+      hide() {
+        drawer.open = false;
+        drawer.removeAttribute('open');
+      },
+    });
     const question = el('panel-question');
     question.style.display = 'none';
     // D3 E-15: the form is a <ui-choice-form> the page creates in the box.
@@ -3177,6 +3197,10 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       getBoundingClientRect: () => ({ top: AREA_TOP, bottom: AREA_TOP + VIEW, height: VIEW }),
     });
     Object.assign(question, { getBoundingClientRect: () => ({ top: AREA_TOP - scroll.scrollTop, height: qH() }) });
+    // D4 E-19: the agent strip is <ui-tabs>' sticky list — none in this rig (its shared panel starts at its host's top).
+    for (const id of ['panel-tabs', 'panel-tabpanel']) {
+      Object.assign(el(id), { getBoundingClientRect: () => ({ top: AREA_TOP + qH() - scroll.scrollTop, height: 0 }) });
+    }
     Object.assign(el('panel-sections'), {
       getBoundingClientRect: () => ({ top: AREA_TOP + qH() - scroll.scrollTop, height: SEC_TABS }),
     });
@@ -3227,6 +3251,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'resolveRecommendedId',
         'psecForLanding',
         'psecLandingTop',
+        'panelTabsHeight',
         'landPanel',
         'ptUpsert',
         // SSOT 2026-10-29 T2: every opening puts the session's detail card in the deck.
@@ -3312,6 +3337,9 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         _panelTasksEarlier: false,
         // SSOT 2026-10-24: openPanel marks the layout before the drawer changes it (layout-shift FLIP).
         layoutBeforeChange: () => {},
+        // D4 E-01: the open drawer's width goes to the board beside it (--panel-w on the root: the window's
+        // concern, covered in dashboard-responsive.test.ts — no window in this rig).
+        syncPanelWidth: () => {},
         renderPanelAgents: () => {},
         panelAgentTasks: () => [],
         panelAgentLabel: () => '',
@@ -3358,7 +3386,18 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         throw new Error('openPanel took its failure path on a successful load: the harness is missing a dependency');
       return msg;
     };
-    return { m, scroll, question, cache, clickAnswer, formInView, settled, release: () => release(), bottom: max };
+    return {
+      m,
+      scroll,
+      question,
+      cache,
+      drawer,
+      clickAnswer,
+      formInView,
+      settled,
+      release: () => release(),
+      bottom: max,
+    };
   }
 
   it('lands on the answer form, not on the newest turns, and stays there while the panel settles', async () => {
@@ -3366,6 +3405,9 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     p.clickAnswer();
     await flush();
     await flush();
+    // D4 E-01: the opening is the drawer's show() — it is open, labelled with the panel's title.
+    expect(p.drawer.open).toBe(true);
+    expect(p.drawer.getAttribute('open')).toBe('');
     expect(p.formInView()).toBe(true);
     expect(p.scroll.scrollTop).toBe(0);
     // 답변하기 opens on 지시와 답변, its turns held as its data (the box holds their scroll).
@@ -3516,5 +3558,61 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     expect(tall.scroll.scrollTop).toBe(tall.bottom());
     expect(tall.scroll.scrollTop).toBeGreaterThan(0);
     expect(tall.m.section()).toBe('log');
+  });
+});
+
+describe('D4 review (P1): an opening asked for before <ui-drawer> is defined waits for the element', () => {
+  it('a deep link or a fast click on a cold load: one wait for ui-drawer, the latest opening runs once it is defined', async () => {
+    let resolve: (() => void) | null = null;
+    const asked: string[] = [];
+    const drawer: Record<string, unknown> = { id: 'slide-panel' };
+    const document = { getElementById: (id: string) => (id === 'slide-panel' ? drawer : null) };
+    // Past the guard the opening reads the session first: record which one (none in this rig, so it stops there).
+    const looked: string[] = [];
+    const _sessionCache = new Proxy(
+      {},
+      {
+        get: (_t, k) => {
+          looked.push(String(k));
+          return undefined;
+        },
+      },
+    );
+    const customElements = {
+      whenDefined: (name: string) => {
+        asked.push(name);
+        return new Promise<void>((r) => {
+          resolve = r;
+        });
+      },
+    };
+    // Only the guard runs while the element is undefined: anything else openPanel needs is not injected here,
+    // so reaching past the guard would throw.
+    const m = load<{ openPanel(k: string, w?: boolean, a?: string, b?: boolean): void; waiting(): unknown }>(
+      ['openPanel'],
+      ['_panelOpenWaiting'],
+      { document, customElements, _sessionCache },
+      ['function waiting() { return _panelOpenWaiting; }'],
+    );
+    m.openPanel('k1');
+    m.openPanel('k2', true, 'a1', true);
+    expect(asked).toEqual(['ui-drawer']);
+    expect(m.waiting()).toEqual(['k2', true, 'a1', true]);
+    expect(looked).toEqual([]);
+    // Defined: the drawer has its methods now; the opening runs once, with the latest arguments.
+    drawer.show = () => {};
+    expect(resolve).not.toBeNull();
+    (resolve as unknown as () => void)();
+    await flush();
+    expect(m.waiting()).toBe(null);
+    expect(looked).toEqual(['k2']);
+  });
+
+  it('closePanel drops a waiting opening and never calls hide on an element not yet defined', () => {
+    const src = clientFn('closePanel');
+    expect(src).toContain('_panelOpenWaiting = null;');
+    expect(src).toContain("if (drawerEl && typeof drawerEl.hide === 'function') drawerEl.hide();");
+    // The artifact viewer slots the page's body before the element draws a step (no page loaded twice).
+    expect(TEMPLATE).toContain("viewer.addEventListener('ui-before-view', function(e) { syncArtViewer(e.detail); });");
   });
 });

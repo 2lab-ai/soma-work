@@ -167,7 +167,9 @@ describe('D5 — the slot: <ui-context-window> first in the open 세션 정보, 
     const at = (n: string) => src.indexOf(n);
     expect(at('if (s) cwObserve(s, now);')).toBeGreaterThan(0);
     expect(
-      at("writePanelPart(el, s ? panelInfoHtml(s, _panelInfoOpen, sessionColOf(panelSessionKey)) : '');"),
+      at(
+        "writePanelPart(el, s ? panelInfoHtml(s, _panelInfoOpen === true, sessionColOf(panelSessionKey), _panelInfoOpen === 'folding') : '');",
+      ),
     ).toBeGreaterThan(at('cwObserve('));
     expect(at("if (s) cwPaint(el.querySelector('ui-context-window'), s, now);")).toBeGreaterThan(at('writePanelPart('));
   });
@@ -750,7 +752,14 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = [
+  'PR_STATE_LABEL',
+  'PR_STATE_TONE',
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'OWNER_BADGE_HUES',
+];
 const CARD_ENV = {
   dhShow: () => true,
   dhTruncate: () => null,
@@ -808,7 +817,7 @@ describe('D16 — the face ctx metric and the summary line use the same level an
     expect(ctx(104.6, 1_000_000, { autoCompactTokens: 900_000 })[1]).toBe('컨텍스트 100% · 자동 압축 지점을 넘음');
     const info = load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
       [...CW_FNS, 'ctxLevel', 'ctxPercent', 'pendingAutoResume', 'rootStatusOf', 'panelDetailsHtml', 'panelInfoHtml'],
-      [...CW_VARS, 'PI_CHEV_SVG'],
+      [...CW_VARS],
       { ...ENV, formatNmSSs: (n: number) => `${n}ms`, cardTotalTokens: () => 1, safeHref: (u: string) => u },
     ).panelInfoHtml;
     const over = sess({ tokenUsage: { totalInputTokens: 1, contextUsagePercent: 104.6 }, lastActivity: NOW });
@@ -819,7 +828,7 @@ describe('D16 — the face ctx metric and the summary line use the same level an
   it('세션 정보 summary: ctx N% carries the same class; the open grid says the totals are cumulative (D17)', () => {
     const info = load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
       [...CW_FNS, 'ctxLevel', 'ctxPercent', 'pendingAutoResume', 'rootStatusOf', 'panelDetailsHtml', 'panelInfoHtml'],
-      [...CW_VARS, 'PI_CHEV_SVG'],
+      [...CW_VARS],
       { ...ENV, formatNmSSs: (n: number) => `${n}ms`, cardTotalTokens: () => 1, safeHref: (u: string) => u },
     ).panelInfoHtml;
     const s = sess({

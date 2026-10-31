@@ -122,7 +122,15 @@ const TREE_FNS = [
   'renderAgentTree',
 ];
 const AGENT_FNS = [...TREE_FNS, 'agentCounts', 'agentDotOf'];
-const AGENT_VARS = ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AT_ROOT', 'AT_STATUS', 'AT_ROOT_STATUS', '_anOpen'];
+const AGENT_VARS = [
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'AT_ROOT',
+  'AT_STATUS',
+  'AT_ROOT_STATUS',
+  '_anOpen',
+];
 
 type Agent = Record<string, unknown>;
 type Node = Record<string, any> & { id: string; children: Node[] };
@@ -176,7 +184,14 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = [
+  'PR_STATE_LABEL',
+  'PR_STATE_TONE',
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'OWNER_BADGE_HUES',
+];
 type FaceCard = Record<string, unknown> & { titles?: Record<string, string> };
 const face = load<{ cardOf(s: unknown, col: string): FaceCard }>(CARD_OF_FNS, CARD_OF_VARS, {
   dhShow: () => true,
@@ -878,7 +893,7 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
       ensureArtifacts: () => {},
       isSiblingSession: () => false,
       scheduleLayoutRefresh: () => {},
-      openArtifactModal: () => {},
+      openArtifactViewer: () => {},
       openPanel: (k: string) => calls.deck.push(`open ${k}`),
       deckDrop: (k: string) => calls.deck.push(`drop ${k}`),
     };
@@ -1155,7 +1170,7 @@ describe('panel scope (§4.3)', () => {
   function scope(agent: string, cardAgents: Agent[] = AGENTS) {
     const m = load<{ wlScopeEntries(e: unknown[]): any[] }>(
       ['agentStatusOf', 'panelAgentOf', 'wlScopeEntry', 'wlScopeEntries'],
-      ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE'],
+      ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH'],
       {
         _panelAgent: agent,
         panelSessionKey: 'k',
@@ -1206,7 +1221,7 @@ describe('panel scope (§4.3)', () => {
     const failed = { ...LOG[4], ok: false };
     const m = load<{ wlScopeEntries(e: unknown[]): any[] }>(
       ['agentStatusOf', 'panelAgentOf', 'wlScopeEntry', 'wlScopeEntries'],
-      ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE'],
+      ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH'],
       {
         _panelAgent: 'toolu_explore',
         panelSessionKey: 'k',
@@ -2089,8 +2104,8 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
         [
           'AGENT_STATUS_LABEL',
           'AGENT_STATUS_TONE',
+          'AGENT_STATUS_GLYPH',
           'TASK_FATE_LABEL',
-          'PI_CHEV_SVG',
           'TASK_RUNS_SHOWN',
           'TASK_RUN_STATUS',
           '_panelTaskOpen',
@@ -2188,7 +2203,7 @@ describe('task total on the face and in 세션 정보 (SSOT T3)', () => {
     // The token grid's rows; 세부 (cost) and the context block are their own renderers.
     const f = load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
       ['esc', 'escAttr', 'toNum', 'cardTotalTokens', 'spendTotal', 'spendText', 'ctxLevel', 'panelInfoHtml'],
-      ['PI_CHEV_SVG'],
+      [],
       {
         formatNmSSs: () => '0s',
         safeHref: (h: string) => h,
