@@ -24,6 +24,7 @@ import { hostPricing } from './metrics/host-pricing-catalog';
 import { resolveContextWindow } from './metrics/model-registry';
 import { normalizeTmpPath } from './path-utils';
 import { loseRunningAgents, sanitizeAgentRegistry } from './session/agent-registry';
+import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
 import { sanitizeCronJob } from './session/cron-job';
 import { closeTaskList, sanitizeTaskLedger } from './session/task-ledger';
 import { type ArchivedSession, getArchiveStore, type SessionLifecycleOutcome } from './session-archive';
@@ -532,7 +533,7 @@ export class SessionRegistry {
   /**
    * #598 ④b — commit a Slack-less task turn's outcome and its end activity in
    * one strict save. Both are set in memory, written through
-   * `writeSessionsFile(true)`; a failed write restores both and rethrows (the
+   * `saveSessionsOrThrow()`; a failed write restores both and rethrows (the
    * caller sees it, nothing is broadcast, no idle hook runs). Only after the
    * write landed: the dashboard is told, and on a move to `idle` the idle
    * callbacks and the post-drain hook run — so they read the new outcome, and a
@@ -580,7 +581,7 @@ export class SessionRegistry {
     if (changed) session.activityStateChangedAt = Date.now();
     if (durable) {
       try {
-        this.writeSessionsFile(true);
+        this.saveSessionsOrThrow();
       } catch (error) {
         session.lastTurnOutcome = previous.outcome;
         session.activityState = previous.activity;
@@ -632,7 +633,7 @@ export class SessionRegistry {
     session.activityState = 'working';
     session.activeTaskTurnId = turnId;
     try {
-      this.writeSessionsFile(true);
+      this.saveSessionsOrThrow();
     } catch (error) {
       session.activityState = previous.activity;
       session.activityStateChangedAt = previous.changedAt;
@@ -928,7 +929,7 @@ export class SessionRegistry {
     const key = buildTaskSessionKey(session.taskId);
     this.putSession(key, session);
     try {
-      this.writeSessionsFile(true);
+      this.saveSessionsOrThrow();
     } catch (error) {
       this.removeSession(key);
       this.logger.error('Task not created: saving it failed', { taskId: session.taskId });
@@ -2513,15 +2514,33 @@ export class SessionRegistry {
 
   /**
    * Save all sessions to file for persistence across restarts. A failure is
-   * logged, not thrown — a caller that must know (createTask) uses writeSessionsFile.
+   * logged, not thrown — a caller that must know uses saveSessionsOrThrow.
    */
   saveSessions(): void {
-    this.writeSessionsFile(false);
+    try {
+      this.writeSessionsFile();
+    } catch (error) {
+      this.logger.error('Failed to save sessions', error);
+    }
   }
 
-  /** Write sessions.json now. `throwOnError`: rethrow a failed write after logging it. */
-  private writeSessionsFile(throwOnError: boolean): void {
+  /**
+   * The same write, but a failure throws — for a caller that must not confirm
+   * a decision whose state did not reach disk (the goal cap decision, a task's
+   * creation and its turn's start / outcome — #596, #634).
+   */
+  saveSessionsOrThrow(): void {
     try {
+      this.writeSessionsFile();
+    } catch (error) {
+      this.logger.error('Failed to save sessions', error);
+      throw error;
+    }
+  }
+
+  /** Write sessions.json now; a failed write throws. */
+  private writeSessionsFile(): void {
+    {
       // Ensure data directory exists
       if (!fs.existsSync(DATA_DIR)) {
         fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -2726,9 +2745,6 @@ export class SessionRegistry {
         throw writeError;
       }
       this.logger.info(`Saved ${sessionsArray.length} sessions to file`);
-    } catch (error) {
-      this.logger.error('Failed to save sessions', error);
-      if (throwOnError) throw error;
     }
   }
 
@@ -3055,8 +3071,8 @@ export class SessionRegistry {
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,
           // The context fill, its window and the session totals, as saved (sanitized).
-          // Nothing re-arms auto-compact here: `autoCompactPending` is reset
-          // below and the threshold is only checked at a turn's end.
+          // `autoCompactPending` is reset below and re-armed from this occupancy
+          // after the record is built (`restoredOverAutoCompact`).
           usage: restoreSessionUsage(serialized.usage, model),
           // Repriced: llmux models moved from the SDK's default rate to the host table (`metrics/host-pricing.ts`).
           sdkUsageBaseline: repriceBaseline(sanitizeSdkUsageBaseline(serialized.sdkUsageBaseline), hostPricing),
@@ -3113,6 +3129,19 @@ export class SessionRegistry {
           this.logger.info('Auto fallback compact: restored original model on session reload', {
             key: serialized.key,
             restoredModel: session.model,
+          });
+        }
+        // The pending flag is not saved, and automatic compaction has one
+        // authority — the threshold check. A restored occupancy at or over the
+        // threshold re-arms it, so the session's next turn (a goal resume
+        // included) compacts first instead of resuming the full transcript
+        // (a dev deployment 2026-10-30: three restarts resumed one goal at 528k, 701k
+        // and 950k with nothing scheduled; at 975k the API refused it).
+        if (restoredOverAutoCompact(session)) {
+          session.autoCompactPending = true;
+          this.logger.info('Auto-compact re-armed on reload — restored occupancy is over the threshold', {
+            key: serialized.key,
+            model: session.model,
           });
         }
         // Orphan sweep: if process crashed while a turn was active, fold the elapsed
@@ -3298,6 +3327,23 @@ export class SessionRegistry {
       this.logger.info(`Backfilled ${count} session conversationIds`);
     }
     return count;
+  }
+}
+
+/**
+ * Whether a loaded session's saved occupancy is at or over its auto-compact
+ * threshold. Only a session with an SDK session to resume — a reset one starts
+ * empty — and never on a guess: no usage, no reading.
+ */
+function restoredOverAutoCompact(session: ConversationSession): boolean {
+  const u = session.usage;
+  if (!session.sessionId || !u) return false;
+  const used = u.currentInputTokens + u.currentOutputTokens + u.currentCacheReadTokens + u.currentCacheCreateTokens;
+  if (!(used > 0)) return false;
+  try {
+    return used >= resolveEffectiveAutoCompact(session, session.ownerId, userSettingsStore).tokens;
+  } catch {
+    return false;
   }
 }
 

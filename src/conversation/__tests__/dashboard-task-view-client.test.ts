@@ -62,29 +62,40 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
 }
 /** The page markup as served (the template between <body> and the first <script>). */
 const PAGE = cook(TEMPLATE.slice(TEMPLATE.indexOf('<body'), TEMPLATE.indexOf('<script>', TEMPLATE.indexOf('<body'))));
-const CSS = cook(TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>')));
+const CSS = cook(
+  TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>', TEMPLATE.indexOf('<style>'))),
+);
 
 const T0 = 1_700_000_000_000;
 const BASE_FNS = ['esc', 'escAttr', 'toNum', 'formatDuration', 'formatTaskTime', 'agentIconHtml'];
-const BASE_VARS = [
-  'AGENT_STATUS_LABEL',
-  'TASK_FATE_LABEL',
-  'TASK_PAUSE_SVG',
-  'TASK_STOP_SVG',
-  'TASK_SKIP_SVG',
-  'PI_CHEV_SVG',
-];
+const BASE_VARS = ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'TASK_FATE_LABEL', 'TASK_RUN_STATUS'];
 
 type Task = Record<string, unknown>;
 const text = (html: string) => html.replace(/<[^>]+>/g, '').replace(/&middot;/g, '·');
 
 // ── T2 — what a later list did to a task ──
+// D3 E-22/E-23: a run is <ui-task-runs>' and a plan step <ui-task-plan>'s; the page hands each its fate as data.
 describe('T2 · a dropped task never reads as running or waiting', () => {
   const plan = load<{
     taskFateOf(t: Task): string;
-    renderPanelTaskItem(t: Task, pop?: boolean): string;
+    taskRunsData(ran: Task[]): Array<Record<string, any>>;
+    taskPlanData(runs: unknown): Record<string, any>;
+    taskRunsOf(current: Task[], earlier: Task[]): unknown;
     renderTaskMeta(t: Task): string;
-  }>([...BASE_FNS, 'taskFateOf', 'renderPanelTaskItem', 'renderTaskMeta'], BASE_VARS);
+  }>(
+    [
+      ...BASE_FNS,
+      'taskFateOf',
+      'taskIdNum',
+      'taskRunStart',
+      'taskRunEnd',
+      'taskRunsOf',
+      'taskRunsData',
+      'taskPlanData',
+      'renderTaskMeta',
+    ],
+    BASE_VARS,
+  );
 
   it('names every fate: done · running · paused · waiting · replaced (dropped after it ran) · not run (dropped before)', () => {
     expect(plan.taskFateOf({ status: 'completed' })).toBe('done');
@@ -97,49 +108,33 @@ describe('T2 · a dropped task never reads as running or waiting', () => {
 
   // SSOT 2026-10-29 T5: a task a new plan replaced after it ran reads 교체됨 (was 중단) — it
   // was not stopped, a new list took its place, and its work stays counted on it.
-  it('a task a new plan replaced while it ran reads 교체됨 (SSOT 2026-10-29 T5) with no spinner and no live clock', () => {
-    const html = plan.renderPanelTaskItem({
-      id: 'T2',
-      content: 'RED 테스트',
-      status: 'in_progress',
-      startedAt: T0,
-      removedAt: T0 + 90_000,
-      toolCalls: 3,
-      dropped: 'started',
-    });
-    expect(html).toContain('data-step="dropped"');
-    expect(html).toContain('<span class="pl-fate">교체됨</span>');
-    expect(html).not.toContain('중단');
-    expect(html).not.toContain('task-elapsed');
-    expect(html).not.toContain('spinner');
-    expect(html).not.toContain('aria-current');
-    expect(html).toContain('1m 30s');
+  it('a task a new plan replaced while it ran is a dropped run (SSOT 2026-10-29 T5): ended when it left — no clock, never running', () => {
+    const [run] = plan.taskRunsData([
+      {
+        id: 'T2',
+        content: 'RED 테스트',
+        status: 'in_progress',
+        startedAt: T0,
+        removedAt: T0 + 90_000,
+        toolCalls: 3,
+        dropped: 'started',
+      },
+    ]);
+    expect(run).toMatchObject({ status: 'dropped', startedAt: T0, endedAt: T0 + 90_000, toolCalls: 3 });
   });
 
-  it('a task dropped before it ran reads 실행 안 됨, never 대기', () => {
-    const html = plan.renderPanelTaskItem({
-      id: 'T3',
-      content: '구현',
-      status: 'pending',
-      toolCalls: 0,
-      dropped: 'unstarted',
-    });
-    expect(html).toContain('data-step="skipped"');
-    expect(html).toContain('실행 안 됨');
-    expect(html).not.toContain('대기');
+  it('a task dropped before it ran is a dropped step of the plan’s earlier fold, never a waiting step', () => {
+    const d = plan.taskPlanData(
+      plan.taskRunsOf([], [{ id: 'T3', content: '구현', status: 'pending', toolCalls: 0, dropped: 'unstarted' }]),
+    );
+    expect(d.steps).toEqual([]);
+    expect(d.earlier[0].steps[0]).toMatchObject({ ref: '#T3', label: '구현', fate: 'dropped' });
   });
 
-  it('a task the session stopped on reads 멈춤 (it had started), not 대기', () => {
-    const html = plan.renderPanelTaskItem({
-      id: 'T4',
-      content: '검증',
-      status: 'pending',
-      startedAt: T0,
-      toolCalls: 2,
-    });
-    expect(html).toContain('data-step="paused"');
-    expect(html).toContain('멈춤');
-    expect(html).not.toContain('task-elapsed');
+  it('a task the session stopped on is a paused run (it had started), not a waiting step — no end, so no clock', () => {
+    const [run] = plan.taskRunsData([{ id: 'T4', content: '검증', status: 'pending', startedAt: T0, toolCalls: 2 }]);
+    expect(run).toMatchObject({ status: 'paused', startedAt: T0 });
+    expect('endedAt' in run).toBe(false);
   });
 
   it('the work-log group head of a replaced task carries no live clock and reads 교체됨 (SSOT 2026-10-29 T5)', () => {
@@ -234,23 +229,25 @@ describe('SSOT 2026-10-29 T5 · taskRunsOf: the runs, the plan left and the skip
 });
 
 describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left, the skipped folded, the totals', () => {
-  function container() {
-    return {
-      style: { display: '' },
-      _html: '',
-      innerHTML: '',
-      _planScope: null as unknown,
-      _planSeen: null as unknown,
-    };
-  }
-  const el = container();
-  // toggleTaskRun repaints through repaintPanelTasks (the focused agent's lists): here, this test's lists.
-  let repaint = () => {};
+  // D3 E-22/E-23: the open section is <ui-task-runs> + <ui-task-plan>; these fakes keep the data each is handed.
+  type Fake = { data?: Record<string, any>; opened: string[]; setOpen(id: string, open: boolean): void };
+  const fake = (): Fake => ({
+    opened: [],
+    setOpen(id: string, o: boolean) {
+      if (o) this.opened.push(id);
+    },
+  });
+  const el = {
+    style: { display: '' },
+    _html: '',
+    innerHTML: '',
+    _planScope: null as unknown,
+    _planSeen: null as unknown,
+  };
+  let runsEl = fake();
+  let planEl = fake();
   const env = load<{
     renderPanelTasks(tasks: Task[] | undefined, scope: string, earlier: Task[], outside?: unknown): void;
-    toggleTaskRun(id: string): void;
-    formatTaskClock(ts: number): string;
-    formatTaskStamp(ts: number): string;
     __set(n: string, v: unknown): void;
   }>(
     [
@@ -258,32 +255,34 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
       'escJs',
       'formatTokens',
       'taskFateOf',
-      'renderPanelTaskItem',
       'taskIdNum',
       'taskRunStart',
       'taskRunEnd',
       'taskRunsOf',
       'taskTokTotal',
-      'formatTaskClock',
-      'formatTaskStamp',
-      'taskCount',
-      'taskRunNumbers',
-      'toggleTaskRun',
-      'renderTaskRun',
-      'taskRunDetailHtml',
-      'taskSkippedHtml',
       'taskTotalsHtml',
+      'taskElData',
+      'taskRunsData',
+      'taskPlanData',
+      'taskRunsRestore',
       'planSummaryHtml',
       'renderPanelTasks',
     ],
     [...BASE_VARS, '_panelTasksOpen', '_panelTasksExpanded', '_panelTasksEarlier', 'TASK_RUNS_SHOWN', '_panelTaskOpen'],
     {
-      document: { getElementById: (id: string) => (id === 'panel-tasks' ? el : null) },
+      document: {
+        getElementById: (id: string) =>
+          id === 'panel-tasks'
+            ? el
+            : id === 'panel-task-runs' && el.innerHTML.includes(id)
+              ? runsEl
+              : id === 'panel-task-plan' && el.innerHTML.includes(id)
+                ? planEl
+                : null,
+      },
       morphInnerHtml: (target: { innerHTML: string }, html: string) => {
         target.innerHTML = html;
       },
-      updateTimersIn: () => {},
-      repaintPanelTasks: () => repaint(),
     },
   );
   const current: Task[] = [
@@ -330,31 +329,27 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
       toolCalls: 5,
     },
   ];
-  // A row ends with its aside (an open detail may hold a nested list).
-  const runRows = (html: string) =>
-    [
-      ...html.matchAll(
-        /<li class="panel-task-item pl-step tr-run[^"]*"[^>]*>[\s\S]*?<span class="pl-aside">(?:<span class="task-elapsed"[^>]*><\/span>|[^<]*)<\/span><\/li>/g,
-      ),
-    ].map((m) => m[0]);
-  const runIds = (html: string) => runRows(html).map((x) => /<span class="task-id">#(T\d+)<\/span>/.exec(x)?.[1]);
-  const open = (o: { earlier?: boolean } = {}) => {
+  const runIds = () => (runsEl.data?.runs ?? []).map((r: { id: string }) => r.id);
+  const open = (taskOpen: Record<string, boolean> = {}) => {
     env.__set('_panelTasksOpen', true);
     env.__set('_panelTasksExpanded', false);
-    env.__set('_panelTasksEarlier', !!o.earlier);
-    env.__set('_panelTaskOpen', Object.create(null));
+    env.__set('_panelTasksEarlier', false);
+    env.__set('_panelTaskOpen', taskOpen);
+    runsEl = fake();
+    planEl = fake();
+    el._html = '';
   };
 
-  it('folds by default: one head — the running step, 실행 N · 완료 d, 남은 p, 빠짐 s — no list', () => {
+  it('folds by default: one head — the running step, 실행 N · 완료 d, 남은 p, 빠짐 s — no elements', () => {
     env.__set('_panelTasksOpen', false);
     env.renderPanelTasks(current, '', earlier);
-    expect(el.innerHTML).toContain('aria-expanded="false"');
+    expect(el.innerHTML).toContain('<ui-disclosure class="panel-tasks-dc" flush>');
     expect(el.innerHTML).toContain(
       '<span class="ps-sec-now"><span class="spinner ag-spinner" aria-hidden="true"></span>ledger 수정 중</span>',
     );
     // Four ran (two completed), one is left of the plan, two were dropped before they ran.
     expect(text(el.innerHTML)).toContain('ledger 수정 중·실행 4 · 완료 2·남은 1·빠짐 2');
-    expect(el.innerHTML).not.toContain('pl-list');
+    expect(el.innerHTML).not.toContain('ui-task-');
     // No list at all: 목록 없음 (still counting what a new plan dropped).
     env.renderPanelTasks([], '', []);
     expect(text(el.innerHTML)).toContain('목록 없음');
@@ -362,87 +357,72 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
     expect(text(el.innerHTML)).toContain('목록 없음·빠짐 2');
   });
 
-  it('opened: 실행된 태스크 in the order they started, then 남은 계획, then the skipped toggle, then the totals', () => {
+  it('opened: 실행된 태스크 in the order they started, then 남은 계획 (the skipped in its earlier fold), then the totals', () => {
     open();
     env.renderPanelTasks(current, '', earlier);
     const html = el.innerHTML;
-    expect(html).toContain('aria-expanded="true"');
-    expect(html).toContain(
-      '<div class="tr-head">실행된 태스크 <span class="tr-count">4</span></div><ol class="pl-list tr-list" aria-label="실행된 태스크">',
-    );
-    expect(runIds(html)).toEqual(['T1', 'T2', 'T8', 'T5']);
-    expect(html).toContain(
-      '<div class="tr-head">남은 계획 <span class="tr-count">1</span></div><ol class="pl-list tr-plan" aria-label="남은 계획">',
-    );
-    const at = ['pl-list tr-list', 'pl-list tr-plan', '실행 전에 계획에서 빠짐', 'class="tr-total"'].map((n) =>
-      html.indexOf(n),
-    );
+    expect(html).toContain('<ui-disclosure class="panel-tasks-dc" flush open>');
+    expect(runsEl.data).toMatchObject({ title: '실행된 태스크', totals: false });
+    expect(runIds()).toEqual(['T1', 'T2', 'T8', 'T5']);
+    expect(planEl.data?.title).toBe('남은 계획');
+    // The plan left is a waiting step: no clock, no tools yet.
+    expect(planEl.data?.steps).toEqual([{ id: 'T6', ref: '#T6', label: '화면 수정', status: 'pending' }]);
+    const at = ['<ui-task-runs', '<ui-task-plan', 'class="tr-total"'].map((n) => html.indexOf(n));
     expect(at.every((i) => i > -1)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
-    // The plan left is the plan step it was (renderPanelTaskItem): waiting, no clock, no tools yet.
-    const plan = html.slice(html.indexOf('class="pl-list tr-plan"'), html.indexOf('</ol>', html.indexOf('tr-plan')));
-    expect(plan).toContain('data-step="pending"');
-    expect(plan).toContain('#T6');
-    // Only the running task spins and is the current step.
-    expect(html.match(/data-step="active"/g)?.length).toBe(1);
-    expect(html.match(/aria-current="step"/g)?.length).toBe(1);
+    // Only the running task runs.
+    expect(
+      runsEl.data?.runs.filter((r: { status: string }) => r.status === 'running').map((r: { id: string }) => r.id),
+    ).toEqual(['T5']);
   });
 
-  it('a task a new plan replaced after it ran is a run: 교체됨, its tools and how long it ran — never a clock', () => {
+  it('a task a new plan replaced after it ran is a run: dropped, its tools and how long it ran — never a clock', () => {
     open();
     env.renderPanelTasks(current, '', earlier);
-    const t2 = runRows(el.innerHTML).find((r) => r.includes('#T2')) ?? '';
-    expect(t2).toContain('data-step="dropped"');
-    expect(t2).toContain('<span class="task-text">RED</span><span class="pl-fate">교체됨</span>');
-    expect(t2).toContain('<span class="ar-vh">, 교체됨</span>');
-    expect(t2).toContain(
-      `<span class="tr-meta">${env.formatTaskClock(T0 - 90_000)} → ${env.formatTaskClock(T0 - 30_000)}<span class="pi-dot" aria-hidden="true">&middot;</span>툴 4 · 토큰 기록 없음</span>`,
-    );
-    expect(t2).toContain('<span class="pl-aside">1m 0s</span>');
-    expect(t2).not.toContain('task-elapsed');
-    expect(t2).not.toContain('spinner');
+    const t2 = runsEl.data?.runs.find((r: { id: string }) => r.id === 'T2');
+    expect(t2).toEqual({
+      id: 'T2',
+      ref: '#T2',
+      title: 'RED',
+      status: 'dropped',
+      startedAt: T0 - 90_000,
+      endedAt: T0 - 30_000,
+      tools: [{ name: '메인', count: 4 }],
+      toolCalls: 4,
+    });
   });
 
-  it('a task a new plan dropped before it ran is never a run: it waits behind 실행 전에 계획에서 빠짐 N', () => {
+  it('a task a new plan dropped before it ran is never a run: it waits in the plan’s earlier fold, in the list’s order', () => {
     open();
     env.renderPanelTasks(current, '', earlier);
-    expect(runIds(el.innerHTML)).not.toContain('T3');
-    expect(runIds(el.innerHTML)).not.toContain('T4');
-    expect(el.innerHTML).toContain(
-      '<button type="button" class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="false" onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()"><span class="chev" aria-hidden="true"></span>실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">2</span></button>',
-    );
-    expect(el.innerHTML).not.toContain('#T3');
-    open({ earlier: true });
-    env.renderPanelTasks(current, '', earlier);
-    const skipped = el.innerHTML.slice(el.innerHTML.indexOf('<ol class="pl-list pl-earlier"'));
-    expect(skipped).toMatch(/^<ol class="pl-list pl-earlier" aria-label="실행 전에 계획에서 빠진 태스크">/);
-    expect(skipped.match(/data-step="skipped"/g)?.length).toBe(2);
-    expect(skipped.indexOf('#T4')).toBeLessThan(skipped.indexOf('#T3'));
-    expect(runIds(el.innerHTML)).toEqual(['T1', 'T2', 'T8', 'T5']);
+    expect(runIds()).not.toContain('T3');
+    expect(runIds()).not.toContain('T4');
+    expect(planEl.data?.earlier).toEqual([
+      {
+        id: 'skipped',
+        title: '실행 전에 계획에서 빠진 태스크',
+        steps: [
+          { id: 'skipped:T4', ref: '#T4', label: 'PR', status: 'pending', fate: 'dropped' },
+          { id: 'skipped:T3', ref: '#T3', label: '구현', status: 'pending', fate: 'dropped' },
+        ],
+      },
+    ]);
   });
 
-  it("the row is a button: its onclick toggleTaskRun('T2') opens the run's detail under it, and closes it again", () => {
-    open();
-    repaint = () => env.renderPanelTasks(current, '', earlier);
-    repaint();
-    const row = runRows(el.innerHTML).find((r) => r.includes('#T2')) ?? '';
-    const onclick = /<button type="button" class="tr-row" aria-expanded="false" onclick="([^"]+)">/.exec(row)?.[1];
-    expect(onclick).toBe("toggleTaskRun('T2')");
-    new Function('toggleTaskRun', onclick ?? '')(env.toggleTaskRun);
-    const opened = runRows(el.innerHTML).find((r) => r.includes('#T2')) ?? '';
-    expect(opened).toContain('pl-step tr-run dropped is-open');
-    expect(opened).toContain('<button type="button" class="tr-row" aria-expanded="true"');
-    expect(opened).toContain(
-      `<dl class="tr-detail"><dt>시작</dt><dd>${env.formatTaskStamp(T0 - 90_000)}</dd>` +
-        `<dt>종료</dt><dd>${env.formatTaskStamp(T0 - 30_000)} (새 계획으로 교체)</dd>` +
-        '<dt>소요</dt><dd>1m 0s</dd><dt>도구</dt><dd>메인 4회</dd>' +
-        '<dt>토큰</dt><dd>기록 없음 (태스크별 집계 이전에 실행됨)</dd></dl>',
-    );
-    // Only that run opened.
-    expect(el.innerHTML.match(/class="tr-detail"/g)?.length).toBe(1);
-    new Function('toggleTaskRun', onclick ?? '')(env.toggleTaskRun);
-    expect(el.innerHTML).not.toContain('tr-detail');
-    repaint = () => {};
+  it('a run’s detail is the element’s; the runs the reader opened open again in a new element (setOpen)', () => {
+    open({ T2: true });
+    env.renderPanelTasks(current, '', earlier);
+    expect(runsEl.opened).toEqual(['T2']);
+    // T8's detail: the main agent's and the subagents' tool calls, tokens with the cache, cost.
+    expect(runsEl.data?.runs.find((r: { id: string }) => r.id === 'T8')).toMatchObject({
+      tools: [
+        { name: '메인', count: 1 },
+        { name: '서브에이전트', count: 3 },
+      ],
+      toolCalls: 4,
+      tokens: { input: 1000, output: 500, cacheRead: 0, cacheWrite: 0 },
+      costUsd: 0.05,
+    });
   });
 
   it('an opened run’s detail is keyed by task id, so it never carries to another session or another agent’s tab', () => {
@@ -473,12 +453,13 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
       [],
     );
     expect(el.innerHTML).toContain('<div class="tr-total"><span class="tr-total-k">합계</span>툴 2</div>');
-    // Nothing ran yet: no totals.
+    // Nothing ran yet: no totals, no runs element.
     env.renderPanelTasks([{ id: 'T1', content: 'a', status: 'pending' }], '', []);
     expect(el.innerHTML).not.toContain('tr-total');
-    expect(el.innerHTML).not.toContain('실행된 태스크');
+    expect(el.innerHTML).not.toContain('ui-task-runs');
+    // No list: the plan element's empty state.
     env.renderPanelTasks([], '', []);
-    expect(el.innerHTML).toContain('<div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>');
+    expect(planEl.data).toEqual({ title: '계획', steps: [] });
   });
 });
 
@@ -502,7 +483,10 @@ describe('T2 · a subagent tab shows its own earlier plans too', () => {
 // ── T1 — the panel layout ──
 describe('T1 · the panel: a common surface, agent tabs, three sections per tab', () => {
   // The panel's open tag carries the detail deck's depth now (SSOT 2026-10-29 T2: data-deck).
-  const panel = PAGE.slice(PAGE.indexOf('<div class="slide-panel" id="slide-panel"'), PAGE.indexOf('<!-- New task'));
+  const panel = PAGE.slice(
+    PAGE.indexOf('<ui-drawer class="slide-panel" id="slide-panel"'),
+    PAGE.indexOf('<!-- New task'),
+  );
   const at = (needle: string) => {
     const i = panel.indexOf(needle);
     if (i < 0) throw new Error(`missing ${needle}`);
@@ -527,51 +511,54 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
     expect(at('id="panel-tabs"')).toBeGreaterThan(at('id="panel-artifacts"'));
   });
 
-  it('T1.2/T1.3 · the tab list, then one tab panel: Tasks, then the section tabs Chat · 작업 로그 · 에이전트 트리 (SSOT 2026-10-29 T6)', () => {
-    expect(panel).toMatch(/<div class="panel-tabs" id="panel-tabs" role="tablist" aria-label="에이전트"/);
+  it('T1.2/T1.3 · the tab list, then one tab panel: Tasks, then the section tabs Chat · 작업 로그 · 에이전트 트리 (SSOT 2026-10-29 T6; D4 E-19 / E-24: both <ui-tabs>)', () => {
+    // The agent strip: <ui-tabs shared-panel> — one panel every tab controls (the section slotted into it), no
+    // tab stop of its own (panel-focus="none"); the tabs come from the data (panelTabsData).
+    expect(panel).toContain('<ui-tabs class="panel-tabs" id="panel-tabs" shared-panel panel-focus="none">');
     const tabpanel = at('id="panel-tabpanel"');
-    expect(panel).toMatch(/<section class="panel-tabpanel" id="panel-tabpanel" role="tabpanel"/);
+    expect(panel).toContain('<section class="panel-tabpanel" id="panel-tabpanel">');
     expect(tabpanel).toBeGreaterThan(at('id="panel-tabs"'));
     expect(at('id="panel-tasks"')).toBeGreaterThan(tabpanel);
-    expect(panel).toMatch(
-      /<div class="panel-sections" id="panel-sections" role="tablist" aria-label="섹션" aria-orientation="horizontal">/,
-    );
+    // The section strip: <ui-tabs> over the boxes slotted by tab id; the boxes are the tab stops (panel-focus="none").
+    expect(panel).toContain('<ui-tabs class="panel-sections" id="panel-sections" panel-focus="none">');
     expect(at('id="panel-sections"')).toBeGreaterThan(at('id="panel-tasks"'));
-    // The tabs in order, each controlling its own tab panel (its own scroll box). SSOT 2026-10-29 T6:
-    // Chat (지시와 답변) first, then 작업 로그, and 에이전트 트리 at the strip's right end.
-    expect(at('id="psec-tab-conv"')).toBeGreaterThan(at('id="panel-sections"'));
-    expect(at('id="psec-tab-log"')).toBeGreaterThan(at('id="psec-tab-conv"'));
-    expect(at('id="psec-tab-tree"')).toBeGreaterThan(at('id="psec-tab-log"'));
-    expect(panel).toContain('title="지시와 답변">Chat</button>');
-    expect(panel).toContain('class="psec-tab psec-tab-tree" role="tab" id="psec-tab-tree"');
-    for (const sec of ['tree', 'log', 'conv']) {
-      expect(panel).toMatch(
-        new RegExp(`id="psec-tab-${sec}" data-sec="${sec}" aria-selected="(true|false)" aria-controls="psec-${sec}"`),
-      );
-      expect(panel).toMatch(
-        new RegExp(`<div class="psec" id="psec-${sec}" role="tabpanel" aria-labelledby="psec-tab-${sec}" tabindex="0"`),
-      );
-    }
+    // The tabs in order (the strip's data), each controlling its own tab panel (its own scroll box). SSOT 2026-10-29
+    // T6: Chat (지시와 답변) first, then 작업 로그, and 에이전트 트리 at the strip's far end (TabItem.end, the tree glyph).
+    const tabs = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nvar PSEC_TABS = ['),
+      TEMPLATE.indexOf('\n];', TEMPLATE.indexOf('\nvar PSEC_TABS = [')),
+    );
+    expect(tabs).toContain("{ id: 'conv', label: 'Chat', title: '지시와 답변' },");
+    expect(tabs).toContain("{ id: 'log', label: '작업 로그' },");
+    expect(tabs).toContain("{ id: 'tree', label: '에이전트 트리', icon: 'tree', end: true },");
+    expect(tabs.indexOf("id: 'log'")).toBeGreaterThan(tabs.indexOf("id: 'conv'"));
+    expect(tabs.indexOf("id: 'tree'")).toBeGreaterThan(tabs.indexOf("id: 'log'"));
+    expect(clientFn('renderPanelSections')).toContain("el.data = { label: '섹션', value: _psec, tabs: PSEC_TABS };");
+    expect(panel).toMatch(/<div class="psec" id="psec-tree" slot="tree" tabindex="0">/);
+    // D3: 작업 로그 is <ui-work-log>'s own scroll box (its viewport is the tab stop).
+    expect(panel).toContain('<div class="psec psec-el ui-tok" id="psec-log" slot="log">');
+    // D3 E-25: 지시와 답변's box is <ui-conversation>'s own scroller (its viewport is the one tab stop).
+    expect(panel).toContain('<div class="psec psec-el ui-tok" id="psec-conv" slot="conv">');
     expect(at('id="psec-tree"')).toBeGreaterThan(at('id="panel-sections-body"'));
     expect(at('id="worklog-list"')).toBeGreaterThan(at('id="psec-log"'));
     expect(at('id="panel-conv"')).toBeGreaterThan(at('id="psec-conv"'));
-    expect(at('id="panel-turns"')).toBeGreaterThan(at('id="panel-conv"'));
-    // Chat (지시와 답변) is the default tab: selected, the one tab stop, its panel the one shown.
-    expect(panel).toContain(
-      'id="psec-tab-conv" data-sec="conv" aria-selected="true" aria-controls="psec-conv" tabindex="0"',
-    );
-    expect(panel).toContain(
-      'id="psec-tab-log" data-sec="log" aria-selected="false" aria-controls="psec-log" tabindex="-1"',
-    );
-    expect(panel).toMatch(/id="psec-log" role="tabpanel"[^>]* hidden>/);
-    expect(panel).toMatch(/id="psec-conv" role="tabpanel"[^>]*tabindex="0">/);
+    expect(panel).not.toContain('id="panel-turns"');
+    // Chat (지시와 답변) is the default tab (the element selects it, shows its panel and hides the others).
+    expect(TEMPLATE).toMatch(/^var _psec = 'conv';/m);
+    expect(panel).toMatch(/id="psec-conv" slot="conv">\s*<ui-conversation /);
+    // The page draws no tab of its own any more; the strip's choice arrives as ui-change.
+    expect(panel).not.toMatch(/role="tab"|role="tablist"|role="tabpanel"|class="psec-tab/);
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelSections() {'));
+    expect(init.slice(0, init.indexOf('\n})();'))).toContain("strip.addEventListener('ui-change', function(e) {");
+    expect(TEMPLATE).not.toMatch(/function psecKeyTarget\(|function panelTabsKey\(/);
     // No disclosure heads for these sections any more.
     expect(panel).not.toMatch(/id="(conv|worklog)-toggle"/);
   });
 
-  it('T1.2 · the tab list sticks while the conversation scrolls, Main sticks at its left', () => {
-    expect(CSS).toMatch(/\.panel-tabs \{[^}]*position: sticky;[^}]*top: 0;/);
-    expect(CSS).toMatch(/\.panel-tab\.is-main \{[^}]*position: sticky;[^}]*left: 0;/);
+  it('T1.2 · the tab list sticks while the conversation scrolls, Main sticks at its left (the element’s pinned tab)', () => {
+    expect(CSS).toMatch(/\.panel-tabs::part\(list\) \{[^}]*position: sticky;[^}]*top: 0;/);
+    expect(CSS).not.toMatch(/\.panel-tab\.is-main/);
+    expect(clientFn('panelTabsData')).toContain("var tabs = [tab(PT_MAIN, st0, 'Main', model, true)];");
   });
 
   it('T1.6 · minimal by default: the agent path only with 자세히; the subtree is the 에이전트 트리 tab', () => {
@@ -583,10 +570,17 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
   });
 });
 
+// D4 E-19: the strip is <ui-tabs shared-panel>; the page hands it the tabs as data (TabItem: label, meta, tone,
+// pinned, title) and reads its choice back from ui-change (panelTabAgent).
 describe('T1.2 · the agent tabs', () => {
-  const env = load<{ panelTabsHtml(s: unknown, active: string): string }>(
-    [...BASE_FNS, 'agentStatusOf', 'agentName', 'panelTabsHtml'],
-    BASE_VARS,
+  type Tab = { id: string; label: string; meta?: string; tone: string; pinned?: boolean; title: string };
+  const env = load<{
+    panelTabsData(s: unknown, active: string, mainSt?: string): { label: string; value: string; tabs: Tab[] };
+    panelTabId(agentId: string): string;
+    panelTabAgent(tabId: unknown): string;
+  }>(
+    [...BASE_FNS, 'agentStatusOf', 'agentName', 'panelTabId', 'panelTabAgent', 'panelTabsData'],
+    [...BASE_VARS, 'PT_MAIN', 'AGENT_TAB_TONE'],
   );
   const s = {
     model: 'claude-opus-5-5',
@@ -597,72 +591,66 @@ describe('T1.2 · the agent tabs', () => {
     ],
   };
 
-  it('Main is always the first tab, the subagents follow in spawn order', () => {
-    const html = env.panelTabsHtml(s, '');
-    const ids = [...html.matchAll(/data-agent-tab="([^"]*)"/g)].map((m) => m[1]);
-    expect(ids).toEqual(['', 'toolu_a', 'toolu_b']);
-    expect(html).toMatch(/class="panel-tab is-main[^"]*"[^>]*role="tab"/);
-    expect(html).toContain('Main');
-    expect(html).toContain('A1');
-    expect(html).toContain('Explore');
+  it('Main is always the first tab, pinned; the subagents follow in spawn order with the type as the muted label', () => {
+    const d = env.panelTabsData(s, '');
+    expect(d.label).toBe('에이전트');
+    expect(d.tabs.map((t) => t.id)).toEqual(['main', 'a:toolu_a', 'a:toolu_b']);
+    expect(d.tabs.map((t) => t.label)).toEqual(['Main', 'A1', 'A2']);
+    expect(d.tabs.map((t) => t.meta)).toEqual(['opus-5-5', 'Explore', 'Plan']);
+    expect(d.tabs.map((t) => !!t.pinned)).toEqual([true, false, false]);
+    // The status is the tone dot; its word stays in the title.
+    expect(d.tabs.map((t) => t.tone)).toEqual(['run', 'run', 'done']);
+    expect(d.tabs[1].title).toBe('A1 Explore — 실행 중');
+    expect(d.tabs[2].title).toBe('A2 Plan — 완료');
   });
 
-  it('one tab is selected and holds the tab stop', () => {
-    const html = env.panelTabsHtml(s, 'toolu_b');
-    expect(html.match(/aria-selected="true"/g)?.length).toBe(1);
-    expect(html.match(/tabindex="0"/g)?.length).toBe(1);
-    expect(html).toMatch(
-      /data-agent-tab="toolu_b"[^>]*aria-selected="true"|aria-selected="true"[^>]*data-agent-tab="toolu_b"/,
-    );
+  it('one tab is selected: the value names it; the choice comes back as the agent id', () => {
+    expect(env.panelTabsData(s, 'toolu_b').value).toBe('a:toolu_b');
+    expect(env.panelTabsData(s, '').value).toBe('main');
+    expect(env.panelTabAgent('a:toolu_b')).toBe('toolu_b');
+    expect(env.panelTabAgent('main')).toBe('');
+    expect(env.panelTabAgent(undefined)).toBe('');
+    expect(env.panelTabId('')).toBe('main');
   });
 
-  it('a session with no subagent still shows Main', () => {
-    const html = env.panelTabsHtml({ model: 'x' }, '');
-    expect(html).toContain('data-agent-tab=""');
-    expect(html).toContain('aria-selected="true"');
+  it('a session with no subagent still shows Main — and so does no session at all (the panel stays slotted)', () => {
+    const d = env.panelTabsData({ model: 'x' }, '');
+    expect(d.tabs.map((t) => t.id)).toEqual(['main']);
+    expect(d.value).toBe('main');
+    expect(d.tabs[0]).toMatchObject({ meta: 'x', tone: 'rest', pinned: true, title: 'Main x — 대기' });
+    const none = env.panelTabsData(null, '');
+    expect(none.tabs.map((t) => t.id)).toEqual(['main']);
+    expect(none.tabs[0].meta).toBeUndefined();
+    // A stopped or failed agent reads as fail; a waiting one as wait; the rest as rest.
+    const states = {
+      agents: [
+        { id: 'x', n: 1, status: 'stopped' },
+        { id: 'y', n: 2, status: 'waiting' },
+        { id: 'z', n: 3, status: 'unknown' },
+      ],
+    };
+    expect(env.panelTabsData(states, '', 'idle').tabs.map((t) => t.tone)).toEqual(['rest', 'fail', 'wait', 'rest']);
+  });
+
+  it('the strip is handed its data once per change, and its choice is selectPanelAgent', () => {
+    expect(clientFn('renderPanelTabs')).toContain('if (el._sig === sig) return;');
+    expect(clientFn('renderPanelTabs')).toContain('el.data = d;');
+    expect(clientFn('bindPanelTabs')).toContain("el.addEventListener('ui-change', function(e) {");
+    expect(clientFn('bindPanelTabs')).toContain('selectPanelAgent(panelTabAgent(e.detail && e.detail.value));');
   });
 });
 
 // ── T1.4 — the answer first, the raw record at its foot ──
-describe('T1.4 · an assistant turn reads as its answer; Raw sits at the bottom', () => {
-  const env = load<{ renderTurn(t: unknown, i?: number, arr?: unknown[], convId?: string): string }>(
-    ['esc', 'escAttr', 'escJs', 'toNum', 'decodeSlackEntities', 'ansSlotHtml', 'botNameOf', 'renderTurn'],
-    ['BOT_AVATAR_SVG'],
-    {
-      // SSOT 2026-10-29 T8: the answer's name is the session's Slack bot (none resolved here: Assistant).
-      BOT_NAME: null,
-      panelSessionKey: null,
-      _sessionCache: {},
-      panelConvId: 'conv-1',
-      _artCache: {},
-      umRegister: () => {},
-      renderUserMedia: () => '',
-      renderTurnArtifacts: () => '',
-    },
-  );
-  const html = env.renderTurn(
-    { id: 't2', role: 'assistant', timestamp: T0, summaryTitle: '요약 제목', summaryBody: '요약 본문' },
-    0,
-    [],
-    'conv-1',
-  );
-
-  it('the answer card is shown by default (not behind a closed disclosure)', () => {
-    expect(html).toContain(
-      '<div class="turn-answer ui-tok" data-conv="conv-1" data-turn="t2"><ui-ai-answer flat lang="ko">',
-    );
-    const answer = html.indexOf('class="turn-answer');
-    const raw = html.indexOf('<details class="turn-raw"');
-    expect(answer).toBeGreaterThan(-1);
-    expect(raw).toBeGreaterThan(answer);
-  });
-
-  it('Raw holds the summary and the source — at the foot of the turn', () => {
-    const raw = html.slice(html.indexOf('<details class="turn-raw"'));
-    expect(raw).toContain('Raw');
-    expect(raw).toContain('요약 본문');
-    expect(raw).toContain('turn-raw-src');
-    expect(html).not.toContain('답변 전문');
+describe('T1.4 · an assistant turn reads as its answer; Raw sits at the bottom (<ui-conversation>)', () => {
+  it('the turn hands the element its answer (loading until fetched) and the summary for Raw — never a closed disclosure', () => {
+    const src = clientFn('convTurnsOf');
+    // The answer is the turn's face: markdown once loaded, loading before.
+    expect(src).toContain('a.markdown = raw;');
+    expect(src).toContain('else a.loading = true;');
+    // Raw (요약 · 원문) is the element's, at the turn's foot: the summary and the source it is handed.
+    expect(src).toContain('if (sum.title || sum.text) a.summary = sum;');
+    expect(clientFn('convSummaryOf')).toContain('t.summaryBody');
+    expect(TEMPLATE).not.toContain('답변 전문');
   });
 });
 
@@ -670,25 +658,16 @@ describe('T1.4 · an assistant turn reads as its answer; Raw sits at the bottom'
 describe('T1.5 · the steering composer: multiline, images, files, voice', () => {
   const cmd = PAGE.slice(PAGE.indexOf('<div class="panel-command" id="panel-command">'), PAGE.indexOf('<!-- New task'));
 
-  // Dashboard batch 2: the field is <ui-agent-steering>'s (multiline, grows with its text); the page's tools sit in
-  // its slot="tools" and the chips, the recorder and the error in slot="attachments".
-  it('is <ui-agent-steering> with the attach / image / mic tools in its field', () => {
-    expect(cmd).toContain('<ui-agent-steering id="cmd-steer" lang="ko">');
-    expect(cmd).not.toMatch(/<textarea|id="cmd-input"|id="cmd-send"/);
-    const tools = cmd.slice(cmd.indexOf('<span slot="tools" class="pc-tools">'), cmd.indexOf('</ui-agent-steering>'));
-    expect(tools).toContain('id="pc-attach"');
-    expect(tools).toContain('id="pc-mic"');
-    const top = cmd.slice(cmd.indexOf('<div slot="attachments" class="pc-top">'), cmd.indexOf('<span slot="tools"'));
-    expect(top).toContain('id="pc-attachments"');
-    expect(top).toContain('id="pc-recorder"');
-    expect(top).toContain('id="pc-error"');
-    expect(cmd).toContain('id="pc-attach"');
-    expect(cmd).toContain('id="pc-image"');
-    expect(cmd).toMatch(/id="pc-mic"[^>]*aria-pressed="false"/);
-    expect(cmd).toContain('id="pc-attachments"');
-    expect(cmd).toContain('id="pc-recorder"');
-    expect(cmd).toMatch(/<input type="file" id="pc-file-input" multiple hidden/);
-    expect(cmd).toMatch(/<input type="file" id="pc-image-input" accept="image\/\*"/);
+  // D4 E-30 (@2lab.ai/ui 0.10.0): the field is a <ui-composer slot="composer"> inside <ui-agent-steering> — attach,
+  // image, voice, their chips, the recorder, the limits and the error line are the composer's (library:
+  // agent-steering.test.ts 'the composer is the field: the built-in one, attachments and tools step aside').
+  it('is <ui-agent-steering> with a <ui-composer slot="composer"> as its field', () => {
+    expect(cmd).toContain(
+      '<ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"></ui-composer></ui-agent-steering>',
+    );
+    expect(cmd).not.toMatch(/<textarea|id="cmd-input"|id="cmd-send"|slot="tools"|slot="attachments"|type="file"/);
+    for (const id of ['pc-attach', 'pc-image', 'pc-mic', 'pc-attachments', 'pc-recorder', 'pc-error'])
+      expect(cmd, id).not.toContain(`id="${id}"`);
     // Model · effort sit above the composer.
     expect(cmd.indexOf('id="panel-controls"')).toBeLessThan(cmd.indexOf('id="cmd-steer"'));
   });
@@ -746,68 +725,65 @@ describe('review r1 · a subagent tab never shows a background start acknowledge
   });
 });
 
+// D4 E-30: the recording is the slotted composer's. A card switch puts a fresh steering with a fresh composer in —
+// the old one disconnects, which discards its recording and releases the microphone (a prompt still pending too):
+// library composer.test.ts 'disabling the composer discards a recording; disconnecting does too'. Closing the panel
+// or a session closing to this viewer resets it (pcReset).
 describe('review r1 · a recording belongs to the card it was started for', () => {
-  type Rec = Record<string, unknown>;
-  function harness() {
-    const added: string[] = [];
-    const env = load<{
-      pcRecCurrent(gen: number, key: string): boolean;
-      pcFinishRecording(state: Rec): void;
-      __set(n: string, v: unknown): void;
-    }>(['pcRecCurrent', 'pcFinishRecording'], [], {
-      _pcRecGen: 0,
-      panelSessionKey: 'A',
-      panelOpen: true,
-      Blob: class {
-        constructor(
-          public parts: unknown[],
-          public opts: unknown,
-        ) {}
+  type Node = Record<string, any>;
+  function fakeDoc(old: Node | null, composer: Node | null) {
+    const made: Node[] = [];
+    const document = {
+      getElementById: (id: string) => (id === 'cmd-steer' ? old : id === 'pc-composer' ? composer : null),
+      createElement: (tag: string) => {
+        const n: Node = { tag, attrs: {}, children: [] as Node[] };
+        n.setAttribute = (k: string, v: string) => (n.attrs[k] = v);
+        n.appendChild = (c: Node) => n.children.push(c);
+        made.push(n);
+        return n;
       },
-      ntStamp: () => 'stamp',
-      ntExtForMime: () => 'm4a',
-      pcAddBlob: (_b: unknown, name: string) => added.push(name),
-    });
-    return { env, added };
+    };
+    return { document, made };
   }
-  const state = (o: Rec = {}) => ({
-    keep: true,
-    finished: false,
-    chunks: [1],
-    mime: 'audio/mp4',
-    started: 0,
-    stoppedAt: 2000,
-    gen: 0,
-    key: 'A',
-    resolve: () => {},
-    ...o,
+  it('a card switch: a fresh steering holding a fresh composer with the limits; the files kept for Retry go', () => {
+    const replaced: Node[] = [];
+    const old: Node = { replaceWith: (n: Node) => replaced.push(n) };
+    const { document } = fakeDoc(old, null);
+    const env = load<{ pcFreshSteer(): void; __set(n: string, v: unknown): void }>(
+      ['pcComposerData', 'pcComposerSetup', 'pcFreshSteer'],
+      ['PC_LIMITS', '_pcNoteFiles'],
+      { document },
+    );
+    env.__set('_pcNoteFiles', { 'as-1': ['a.png'] });
+    env.pcFreshSteer();
+    expect(replaced).toHaveLength(1);
+    const el = replaced[0];
+    expect([el.tag, el.id, el.attrs.lang]).toEqual(['ui-agent-steering', 'cmd-steer', 'ko']);
+    expect(el.children).toHaveLength(1);
+    const c = el.children[0];
+    expect([c.tag, c.id, c.slot, c.attrs.lang]).toEqual(['ui-composer', 'pc-composer', 'composer', 'ko']);
+    expect(c.data).toEqual({ maxFiles: 10, maxFileSize: 20971520, maxTotalBytes: 31457280, minRows: 1, maxRows: 8 });
+    expect(TEMPLATE).toMatch(/_pcNoteFiles = Object\.create\(null\);\n\}/);
   });
-
-  it('files the voice note on the card it was recorded for', () => {
-    const { env, added } = harness();
-    env.pcFinishRecording(state());
-    expect(added).toEqual(['voice-stamp.m4a']);
-  });
-  it('a recorder that stops after the panel moved to another card, or closed, attaches nothing', () => {
-    const moved = harness();
-    moved.env.__set('panelSessionKey', 'B');
-    moved.env.pcFinishRecording(state());
-    expect(moved.added).toEqual([]);
-    const closed = harness();
-    closed.env.__set('panelOpen', false);
-    closed.env.pcFinishRecording(state());
-    expect(closed.added).toEqual([]);
-    const reset = harness();
-    reset.env.__set('_pcRecGen', 1);
-    reset.env.pcFinishRecording(state());
-    expect(reset.added).toEqual([]);
-  });
-  it('the send waits on the recording itself — the done promise settles either way', () => {
-    const { env } = harness();
-    let settled = 0;
-    env.__set('panelSessionKey', 'B');
-    env.pcFinishRecording(state({ resolve: () => settled++ }));
-    expect(settled).toBe(1);
+  it('pcReset discards a recording (or a pending prompt), stops a preview and drops every file; the text stays', () => {
+    const calls: string[] = [];
+    const composer: Node = {
+      value: '쓰던 글',
+      files: ['a', 'b', 'c'],
+      cancelRecording: () => calls.push('cancel'),
+      pause: () => calls.push('pause'),
+      removeFile: (i: number) => {
+        calls.push(`remove ${i}`);
+        composer.files.splice(i, 1);
+      },
+    };
+    const { document } = fakeDoc(null, composer);
+    load<{ pcReset(): void }>(['pcReset'], [], { document }).pcReset();
+    expect(calls).toEqual(['cancel', 'pause', 'remove 2', 'remove 1', 'remove 0']);
+    expect(composer.files).toEqual([]);
+    expect(composer.value).toBe('쓰던 글');
+    // Not upgraded yet (no methods): nothing to reset, nothing throws.
+    expect(() => load<{ pcReset(): void }>(['pcReset'], [], fakeDoc(null, {})).pcReset()).not.toThrow();
   });
   it('closing the panel resets the composer (mic, files) and stops watching answers', () => {
     const close = TEMPLATE.slice(
@@ -816,11 +792,8 @@ describe('review r1 · a recording belongs to the card it was started for', () =
     );
     expect(close).toContain('pcReset();');
     expect(close).toMatch(/_ansIo\.disconnect\(\)/);
-    const reset = TEMPLATE.slice(
-      TEMPLATE.indexOf('\nfunction pcReset('),
-      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction pcReset(')),
-    );
-    expect(reset).toContain('_pcRecGen++');
+    // A mode away from open (ended, read-only) resets it too.
+    expect(TEMPLATE).toContain("if (mode !== 'open') pcReset();");
   });
 });
 
@@ -867,15 +840,18 @@ describe('browser receipt · a section landing is not undone by the layout coord
 });
 
 // ── #488 (review P2/P3, closed in this PR) ──
+// #488 (D4 E-30): a send while recording is the composer's — it files the voice note first, then emits ui-submit with
+// the text and the note together (library composer.test.ts 'sending while recording files the note first, then
+// submits text and note together'). The page has no recorder to wait on.
 describe('#488 · a voice note that is not filed in time stops the send instead of dropping it', () => {
   const send = TEMPLATE.slice(
     TEMPLATE.indexOf('\nasync function sendCommand('),
     TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nasync function sendCommand(')),
   );
-  it('a recording that does not settle within the wait aborts with a message; text and chips stay', () => {
-    expect(send).toMatch(/if \(!filed\) \{[^}]*pcSetError\([^}]*pcGiveBack\(el, ref, msg, sendingSessionKey\);/);
-    // Nothing is posted before it: the command route is reached only after the wait.
-    expect(send.indexOf('if (!filed)')).toBeLessThan(send.indexOf('acPost('));
+  it('the page waits on no recording of its own: the files arrive with the note, read before anything is posted', () => {
+    expect(send).not.toMatch(/_pcRec|_pcFiling|pcStopRecording|filing/);
+    expect(send).toContain('attachments = await Promise.all(list.map(ntReadFile));');
+    expect(send.indexOf('Promise.all(list.map(ntReadFile))')).toBeLessThan(send.indexOf('acPost('));
   });
 });
 
@@ -891,13 +867,35 @@ describe('#488 · a subagent raw that failed to load is tried again later', () =
 });
 
 describe('#488 · answers replaced in the list are no longer observed', () => {
-  const fn = TEMPLATE.slice(
-    TEMPLATE.indexOf('\nfunction updateTurnInPanel('),
-    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction updateTurnInPanel(')),
-  );
-  it('updateTurnInPanel unobserves the old answer before replacing it', () => {
-    expect(fn).toMatch(/_ansIo\.unobserve\(/);
-    expect(fn.indexOf('_ansIo.unobserve(')).toBeLessThan(fn.indexOf('existingEl.replaceWith('));
+  it('a turn the element rebuilt (its node replaced) or dropped is unobserved on the next watch', () => {
+    const watched: unknown[] = [];
+    const dropped: unknown[] = [];
+    class IO {
+      observe(n: unknown) {
+        watched.push(n);
+      }
+      unobserve(n: unknown) {
+        dropped.push(n);
+      }
+    }
+    const old = { isConnected: true };
+    const fresh = { isConnected: true };
+    let node: Record<string, unknown> = old;
+    const el = { data: { turns: [{ id: 't2', loading: true }] }, turnElement: () => node };
+    const m = load<{ convWatchAnswers(el: unknown): void }>(['convViewport', 'convWatchAnswers'], ['_ansIo'], {
+      IntersectionObserver: IO,
+      _psec: 'conv',
+      _panelAgent: '',
+      _panelTurnsCid: 'c',
+      panelConvId: 'c',
+      convLoadAnswer: () => {},
+    });
+    m.convWatchAnswers(el);
+    old.isConnected = false; // the element replaced the turn's node (its summary landed)
+    node = fresh;
+    m.convWatchAnswers(el);
+    expect(watched).toEqual([old, fresh]);
+    expect(dropped).toEqual([old]);
   });
 });
 
@@ -912,28 +910,6 @@ describe('#488 · every landing scroll starts a new panel scroll generation', ()
     for (let i = 0; i < calls.length - 1; i++) expect(calls[i].slice(-200)).toContain('_panelScrollGen++');
     // 작업 로그 has no landing of its own: it is the section tab the opening selects.
     expect(TEMPLATE).not.toContain('function scrollPanelToWorkLog(');
-  });
-});
-
-describe('#488 r4 (astra) · a send right after a recording timed out still waits for that recording', () => {
-  const send = TEMPLATE.slice(
-    TEMPLATE.indexOf('\nasync function sendCommand('),
-    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nasync function sendCommand(')),
-  );
-  const stop = TEMPLATE.slice(
-    TEMPLATE.indexOf('\nfunction pcStopRecording('),
-    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction pcStopRecording(')),
-  );
-  const reset = TEMPLATE.slice(
-    TEMPLATE.indexOf('\nfunction pcReset('),
-    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction pcReset(')),
-  );
-  it('a stopping recording stays pending (_pcFiling) until filed; every send waits on it; a reset forgets it', () => {
-    expect(stop).toMatch(/_pcFiling = state\.done/);
-    expect(send).toMatch(/var filing = _pcRec \? pcStopRecording\(true\) : _pcFiling;/);
-    expect(reset).toMatch(/_pcFiling = null/);
-    // r4 (fable P3): a dropped recording (keep = false, a reset) leaves nothing for the next send to wait on.
-    expect(stop).toMatch(/if \(keep\) \{\s*_pcFiling = state\.done;/);
   });
 });
 
@@ -968,13 +944,18 @@ describe('T1.1 / T1.6 · an opening lands with the section tabs in view: the top
       'panel-permission': hidden,
       'panel-question': hidden,
       'panel-needs-head': { hidden: true, offsetHeight: 0 },
-      'panel-sections': at(boxBottom - 300, 40),
-      'panel-sections-body': at(boxBottom - 260, 260),
-      'panel-tabs': { offsetHeight: 44 },
+      // D4 E-24: the strip is <ui-tabs> (its host's top is the strip's); the wrapper ends where the box ends.
+      'panel-sections': at(boxBottom - 300, 300),
+      'panel-sections-body': at(boxBottom - 300, 300),
+      // D4 E-19: the agent strip is <ui-tabs>' sticky list — 44px between its host's top and its shared panel's.
+      'panel-tabs': at(boxBottom - 400, 400),
+      'panel-tabpanel': at(boxBottom - 356, 356),
     };
-    const m = load<{ landPanel(): void; __set(n: string, v: unknown): void }>(['psecLandingTop', 'landPanel'], [], {
-      document: { getElementById: (id: string) => els[id] ?? null },
-    });
+    const m = load<{ landPanel(): void; __set(n: string, v: unknown): void }>(
+      ['psecLandingTop', 'panelTabsHeight', 'landPanel'],
+      [],
+      { document: { getElementById: (id: string) => els[id] ?? null } },
+    );
     m.__set('_panelLand', intent);
     m.__set('_panelLanded', false);
     m.__set('_panelLandAt', null);
@@ -1033,81 +1014,43 @@ describe('T1.1 / T1.6 · an opening lands with the section tabs in view: the top
 });
 
 describe('T1.3 / SSOT 2026-10-29 · 지시와 답변 opens on its latest turns; scrolling up loads the ones before', () => {
-  /** psecSyncControls over a fake 지시와 답변 box: its top control and start marker. */
-  function rig(o: { turns: number; hasMore: boolean; loading?: boolean; agent?: string; shown?: string }) {
-    const attrs: Record<string, string> = {};
-    const btn = {
-      hidden: true,
-      textContent: '',
-      setAttribute: (k: string, v: string) => (attrs[k] = v),
-      removeAttribute: (k: string) => delete attrs[k],
-      hasAttribute: (k: string) => k in attrs,
-    };
-    const start = { hidden: true };
-    const box = { querySelector: (q: string) => (q === '.psec-older' ? btn : q === '.psec-start' ? start : null) };
-    const m = load<{ psecSyncControls(sec: string): void; psecOlderState(sec: string): string }>(
-      ['psecBox', 'setTextIfChanged', 'psecOlderState', 'psecSyncControls'],
-      ['PSEC_TEXT'],
-      {
-        document: { getElementById: (id: string) => (id === 'psec-conv' ? box : null) },
-        _psec: o.shown ?? 'conv',
-        panelSessionKey: 'k',
-        _panelAgent: o.agent ?? '',
-        _panelTurnsList: Array.from({ length: o.turns }, (_, i) => ({ id: `t${i}` })),
-        _panelTurnsLoading: !!o.loading,
-        _panelTurnsHasMore: o.hasMore,
-      },
-    );
-    return { m, btn, start, attrs };
-  }
-
-  it('older turns on the server: a visible, focusable control at the top — 이전 대화 불러오기', () => {
-    const r = rig({ turns: 20, hasMore: true });
-    r.m.psecSyncControls('conv');
-    expect(r.btn.hidden).toBe(false);
-    expect(r.btn.textContent).toBe('이전 대화 불러오기');
-    expect(r.start.hidden).toBe(true);
-    expect(r.attrs['aria-busy']).toBeUndefined();
+  // D3 E-25: the box, its top row (이전 항목 불러오기 / busy / 대화의 시작), the sentinel and the kept place are
+  // <ui-conversation>'s <ui-log-scroller> (the library's suite owns them); the page hands it hasMore / loading and
+  // answers its ui-load-older with the existing loader.
+  it('the element’s top row follows the page’s paging state; the page’s own controls stay out of 지시와 답변', () => {
+    const paint = clientFn('convPaint');
+    expect(paint).toContain('hasMore: !!_panelTurnsHasMore,');
+    expect(paint).toContain("loading: msg === 'loading' || !!_panelTurnsLoading,");
+    expect(paint).toContain("startText: '대화의 시작',");
+    const m = load<{ psecOlderState(sec: string): string }>(['psecOlderState'], ['PSEC_EL'], {});
+    expect(m.psecOlderState('conv')).toBe('');
   });
 
-  it('while the page loads the control says so (aria-busy); at the start it gives way to 대화의 시작', () => {
-    const busy = rig({ turns: 20, hasMore: true, loading: true });
-    busy.m.psecSyncControls('conv');
-    expect(busy.btn.textContent).toBe('이전 대화 불러오는 중…');
-    expect(busy.attrs['aria-busy']).toBe('true');
-    const all = rig({ turns: 12, hasMore: false });
-    all.m.psecSyncControls('conv');
-    expect(all.btn.hidden).toBe(true);
-    expect(all.start.hidden).toBe(false);
-  });
-
-  it('no turns yet, a subagent tab, or another section shown: neither control nor marker', () => {
-    for (const o of [
-      { turns: 0, hasMore: true },
-      { turns: 5, hasMore: true, agent: 'toolu_a' },
-      { turns: 5, hasMore: true, shown: 'log' },
-    ]) {
-      const r = rig(o);
-      r.m.psecSyncControls('conv');
-      expect(r.btn.hidden).toBe(true);
-      expect(r.start.hidden).toBe(true);
-    }
-  });
-
-  it('the markup and the style: the control and the marker above the turns, in the conv box; no turn hidden by CSS', () => {
+  it('the markup: the element in the conv box, no page-drawn control or marker there; no turn hidden by CSS', () => {
     expect(PAGE).toMatch(
-      /<div class="psec" id="psec-conv"[^>]*>\s*<button type="button" class="psec-older" data-sec="conv" hidden>이전 대화 불러오기<\/button>\s*<p class="psec-start" hidden>대화의 시작<\/p>\s*<div class="psec-body panel-conv" id="panel-conv">/,
+      /<div class="psec psec-el ui-tok" id="psec-conv"[^>]*>\s*<ui-conversation class="panel-conv" id="panel-conv" lang="ko"><\/ui-conversation>\s*<\/div>/,
     );
+    expect(PAGE).not.toContain('data-sec="conv" hidden>이전 대화 불러오기');
     expect(CSS).not.toContain('#panel-turns:not(.is-all)');
     expect(CSS).not.toContain('.conv-earlier');
-    expect(CSS).toMatch(/\.psec-older\[aria-busy="true"\] \{/);
+    expect(CSS).toMatch(/\.psec\.psec-el \{ overflow: hidden;/);
   });
 
   it('minimal shows the artifacts as one row of name chips; 자세히 keeps the thumbnails', () => {
-    expect(CSS).toContain(
-      '.slide-panel:not(.is-detail) .art-strip-panel .art-thumb, .slide-panel:not(.is-detail) .art-strip-panel .art-tile-meta { display: none; }',
-    );
+    // D2: the chips are the file cards' chip variant — minimal (자세히 off) is chips, 자세히 thumbnails; 자세히
+    // re-chooses it (applyPanelDetail → syncPanelArtVariant). This row only lays them out.
+    expect(TEMPLATE).toContain("return !_panelDetail || (h > 0 && h <= ART_PANEL_SHORT_PX) ? 'chip' : 'tile';");
+    expect(TEMPLATE).toMatch(/function applyPanelDetail\(\) \{[\s\S]*?syncPanelArtVariant\(\);\n\}/);
+    expect(TEMPLATE).toContain('renderPanelArtifacts(list, cid, artPanelVariant())');
     expect(CSS).toContain('.slide-panel:not(.is-detail) .panel-artifacts { display: flex;');
+    // D4 K-06 review: the pinned 지시 첨부 row (the section's first child) is a row of its own above the chips —
+    // the chip row wraps and that row takes the whole width, in the minimal view and on a short body alike
+    // (else the disclosure is squeezed beside the chips, its label one character per line).
+    expect(CSS).toContain('.slide-panel:not(.is-detail) .panel-artifacts { display: flex; flex-wrap: wrap;');
+    expect(CSS).toMatch(
+      /@container pbody \(max-height: 560px\) \{\n  \.panel-artifacts \{ display: flex; flex-wrap: wrap;/,
+    );
+    expect(CSS).toMatch(/^\.panel-user-media \{ flex: 1 1 100%; margin-bottom: 6px; \}/m);
   });
 
   it('every opening loads the latest 20 turns; each older page is the 20 before the oldest held', () => {
@@ -1116,18 +1059,14 @@ describe('T1.3 / SSOT 2026-10-29 · 지시와 답변 opens on its latest turns; 
       TEMPLATE.indexOf('\nfunction openPanel('),
       TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction openPanel(')),
     );
-    expect(open).toContain("'?limit=' + PANEL_TURNS_PAGE)");
     expect(open).toContain('_panelTurnsList = [];');
-    const more = TEMPLATE.slice(
-      TEMPLATE.indexOf('\nasync function loadMorePanelTurns('),
-      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nasync function loadMorePanelTurns(')),
-    );
+    expect(open).toContain('loadPanelTurns(true);');
+    expect(clientFn('loadPanelTurns')).toContain("'?limit=' + PANEL_TURNS_PAGE)");
+    const more = clientFn('loadMorePanelTurns');
     expect(more).toContain("'?limit=' + PANEL_TURNS_PAGE + '&before=' + encodeURIComponent(requestOldestId)");
-    // The page goes in above the reader, who keeps their place: the turn they were on stays put.
-    expect(more.indexOf('var anchor = psecViewAnchor(box);')).toBeLessThan(
-      more.indexOf("insertAdjacentHTML('afterbegin'"),
-    );
-    expect(more).toContain('psecHoldPlace(box, anchor, fromBottom);');
+    // The page goes in above the reader through the data: the element prepends it and keeps the rows they were on.
+    expect(more).toContain('_panelTurnsList = turns.concat(_panelTurnsList);');
+    expect(more).not.toContain('insertAdjacentHTML');
   });
 
   it('a page is due only for a reader who scrolled up near the top — or a box too short to scroll; never on a landing', () => {
@@ -1173,7 +1112,7 @@ describe('browser receipt · a section landing cut short by a short body lands o
 describe('T1.6 · HIG: outside a list the 자세히 toggle is a button that behaves like a toggle, not a switch', () => {
   it('a pressed-state button whose background changes — no switch knob in the panel head', () => {
     expect(PAGE).toMatch(
-      /<button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false"[^>]*><svg class="pdt-icon"/,
+      /<button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false"[^>]*><i data-ui-icon="list" class="pdt-icon"><\/i>/,
     );
     expect(PAGE).not.toContain('pdt-switch');
     // Tone pass P2: "pressed" is the neutral chip (--ib-pill, a --ib-muted edge), not an accent fill —
@@ -1262,26 +1201,16 @@ describe('browser receipt · a section landing is held while the panel settles, 
 });
 
 describe('R7 review (fable P2/P3) · the 이전 대화 control belongs to the main conversation; the hold is a settle window', () => {
-  function rig(o: { agent?: string; hasMore?: boolean; turns?: number } = {}) {
-    const m = load<{ psecOlderState(sec: string): string }>(['psecOlderState'], [], {
-      _panelAgent: o.agent ?? '',
-      _panelTurnsList: Array.from({ length: o.turns ?? 0 }, (_, i) => ({ id: `t${i}` })),
-      _panelTurnsLoading: false,
-      _panelTurnsHasMore: !!o.hasMore,
-    });
-    return { m };
-  }
-
   it("a subagent tab never offers the main conversation's older turns", () => {
-    expect(rig({ turns: 3, hasMore: true }).m.psecOlderState('conv')).toBe('older');
-    expect(rig({ turns: 3, hasMore: true, agent: 'toolu_lib' }).m.psecOlderState('conv')).toBe('');
+    // The element is handed the subagent's two turns with no hasMore, and refuses a page while one is shown.
+    expect(clientFn('renderAgentConv')).not.toContain('hasMore: true');
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initConversation() {'));
+    expect(init.slice(0, init.indexOf('})();'))).toContain(
+      'if (_panelAgent || !_panelTurnsHasMore || _panelTurnsLoading) {',
+    );
   });
 
-  it('no turns yet (loading, none recorded, a failed load): no control, whatever the last session left', () => {
-    expect(rig({ hasMore: true }).m.psecOlderState('conv')).toBe('');
-  });
-
-  it('switching agent tabs and replacing the turns re-sync the control', () => {
+  it('switching agent tabs and replacing the turns re-paint the element', () => {
     const sel = TEMPLATE.slice(
       TEMPLATE.indexOf('\nfunction selectPanelAgent('),
       TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction selectPanelAgent(')),
@@ -1291,13 +1220,9 @@ describe('R7 review (fable P2/P3) · the 이전 대화 control belongs to the ma
       TEMPLATE.indexOf('\nfunction paintSection('),
       TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction paintSection(')),
     );
-    expect(paint).toContain('psecSyncControls(sec);');
-    const open = TEMPLATE.slice(
-      TEMPLATE.indexOf('\nfunction openPanel('),
-      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction openPanel(')),
-    );
-    // The turns arriving (or failing) re-sync it.
-    expect(open.split("psecSyncControls('conv');").length - 1).toBeGreaterThanOrEqual(2);
+    expect(paint).toContain("if (sec === 'conv') convPaint();");
+    // The turns arriving (or failing) paint it again.
+    expect(clientFn('loadPanelTurns').split('convPaint();').length - 1).toBeGreaterThanOrEqual(2);
   });
 
   it('the hold lets go after the settle window, and a mouse press lets go at once', () => {
@@ -1404,57 +1329,33 @@ describe('R8 review (fable P3) · input symmetry and a short body read at its to
     expect(gen.slice(0, 200)).toContain("['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart']");
   });
 
-  it('a new turn follows the newest only for a reader who is there — else their place stays and the pill counts it', () => {
+  it('a new turn goes into the data; the element follows a reader at the newest (else counts it on its pill); one’s own instruction goes to it', () => {
     type T = { role: string; id?: string };
-    const run = (scrollTop: number, o: { own?: boolean; shown?: string } = {}) => {
-      const box = { scrollTop, scrollHeight: 1000, clientHeight: 600, _lastTop: scrollTop };
-      const turns = {
-        insertAdjacentHTML: () => {
-          box.scrollHeight += 400;
-        },
-      };
-      const pill = { hidden: true, textContent: '' };
-      const m = load<{ appendTurnToPanel(t: T, own?: boolean): void; __set(n: string, v: unknown): void }>(
-        [
-          'psecBox',
-          'psecAtBottom',
-          'psecSetTop',
-          'setTextIfChanged',
-          'psecSetNew',
-          'psecOnAppended',
-          'ptUpsert',
-          'appendTurnToPanel',
-        ],
+    const run = (o: { own?: boolean; shown?: string; agent?: string } = {}) => {
+      const list: T[] = [{ role: 'user', id: 'a' }];
+      const calls: string[] = [];
+      const el = { scrollToLatest: () => calls.push('latest') };
+      const m = load<{ appendTurnToPanel(t: T, own?: boolean, replaceId?: string): void }>(
+        ['ptUpsert', 'appendTurnToPanel'],
         [],
         {
-          document: {
-            getElementById: (id: string) =>
-              id === 'psec-conv' ? box : id === 'panel-turns' ? turns : id === 'psec-pill' ? pill : null,
-          },
-          renderTurn: () => '<div class="turn user"></div>',
-          attachRawToggleHandlers: () => {},
-          decoratePanelTurns: () => {},
-          paintConvTab: () => {},
-          psecSyncControls: () => {},
-          psecToNewest: () => {},
+          _panelTurnsList: list,
+          _panelTurnsMsg: '',
+          _psec: o.shown ?? 'conv',
+          _panelAgent: o.agent ?? '',
+          convPaint: () => calls.push('paint'),
+          convEl: () => el,
         },
       );
-      m.__set('_psec', o.shown ?? 'conv');
-      m.__set('_panelAgent', '');
-      m.__set('_panelTurnsList', [{ id: 'a' }]);
-      m.__set('_panelTurnsMsg', '');
-      m.__set('_psecPin', true);
-      m.__set('_psecNew', 0);
       m.appendTurnToPanel({ role: 'user', id: 'b' }, o.own);
-      return { top: box.scrollTop, pill };
+      m.appendTurnToPanel({ role: 'assistant', id: 'b' }); // the same id: in place
+      return { ids: list.map((t) => `${t.role}:${t.id}`), calls };
     };
-    expect(run(400).top).toBe(1400); // at the newest: follows the new turn
-    const reading = run(100); // reading higher up: stays, and is told
-    expect(reading.top).toBe(100);
-    expect(reading.pill.hidden).toBe(false);
-    expect(reading.pill.textContent).toBe('새 항목 1개 ↓');
-    expect(run(100, { own: true }).top).toBe(1400); // the reader's own instruction: goes to it
-    expect(run(100, { shown: 'log' }).top).toBe(100); // 지시와 답변 not shown: data only, nothing moves
+    expect(run()).toEqual({ ids: ['user:a', 'assistant:b'], calls: ['paint', 'paint'] });
+    expect(run({ own: true }).calls).toEqual(['paint', 'latest', 'paint']);
+    // 지시와 답변 not shown (another section, a subagent's tab): data only, nothing painted.
+    expect(run({ shown: 'log' })).toEqual({ ids: ['user:a', 'assistant:b'], calls: [] });
+    expect(run({ agent: 'a1' }).calls).toEqual([]);
   });
 });
 

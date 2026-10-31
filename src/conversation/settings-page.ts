@@ -23,17 +23,20 @@
  */
 
 import { MEMORY_CLIENT_JS, MEMORY_TAB_CSS, MEMORY_TAB_HTML } from './settings-memory-tab';
-import { pageTokenAliases, UI_LIB_VERSION, uiLibTokensCss } from './ui-lib';
+import { soundClientJs } from './sound-client';
+import { pageTokenAliases, UI_LIB_VERSION, uiLibKitCss, uiLibTokensCss } from './ui-lib';
 
 export interface SettingsPageTab {
   id: string;
   label: string;
+  /** A glyph of @2lab.ai/ui's icon set before the label. */
+  icon?: string;
 }
 
 /** Tabs that exist on this build. Later areas append here. */
 export const SETTINGS_TABS: SettingsPageTab[] = [
-  { id: 'preferences', label: '개인 설정' },
-  { id: 'memory', label: '기억' },
+  { id: 'preferences', label: '개인 설정', icon: 'gear' },
+  { id: 'memory', label: '기억', icon: 'brain' },
 ];
 
 export const SETTINGS_PAGE_CSS = String.raw`
@@ -69,66 +72,50 @@ html, body { background: var(--bg); color: var(--text); font-family: var(--font)
 }
 a { color: var(--accent); }
 code { font-family: var(--mono); font-size: 12px; }
-/* ── App bar — ui.2lab.ai's, as on the dashboard (P4): the page colour at 86% over what scrolls under it,
-   blurred, one hairline; opaque when the reader asks for less transparency. Chip links (no box at rest,
-   the --ib-pill chip on hover and for the current tab), a neutral user pill, the 34px theme icon button. ── */
-.topbar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px; min-height: var(--topbar-h); padding: 0 20px; background: color-mix(in srgb, var(--bg) 86%, transparent); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-@media (prefers-reduced-transparency: reduce) {
-  .topbar { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
-}
-.topbar h1 { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; white-space: nowrap; flex: none; }
-.topbar h1 .brand-mark { width: 22px; height: 22px; flex: none; }
-.brand-mark .bm-bg { fill: var(--text); }
-.brand-mark .bm-cell { fill: var(--surface); }
-.topbar-nav { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.tabs { display: flex; gap: 2px; }
-.topbar .back, .tabs a { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 6px 10px; border-radius: 8px; font-size: 13px; font-weight: 500; color: var(--text-secondary); text-decoration: none; white-space: nowrap; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
-.topbar .back svg { width: 15px; height: 15px; flex: none; }
-.tabs a[aria-current="page"] { background: var(--ib-pill); color: var(--text); }
-.topbar .account { margin-left: auto; display: flex; gap: 6px; align-items: center; min-width: 0; }
-.topbar .who { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 260px; min-height: 32px; padding: 5px 12px 5px 8px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; font-weight: 500; line-height: 1; color: var(--text); white-space: nowrap; }
-.topbar .who svg { width: 15px; height: 15px; flex: none; color: var(--text-tertiary); }
-.topbar .who #who { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.topbar .who:has(#who:empty) { display: none; }
-.topbar .theme { display: inline-grid; place-items: center; flex: none; width: 34px; height: 34px; padding: 0; background: var(--ib-card); border: 1px solid var(--ib-card-border); border-radius: 10px; color: var(--ib-text-2); cursor: pointer; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
-.topbar .theme svg { width: 16px; height: 16px; }
-.topbar .theme .ic-moon, [data-theme="light"] .topbar .theme .ic-sun { display: none; }
-[data-theme="light"] .topbar .theme .ic-moon { display: block; }
-.topbar .back:focus-visible, .tabs a:focus-visible, .topbar .theme:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+/* ── App bar and tabs (M-01) — @2lab.ai/ui <ui-app-bar id="app-bar">, as on the dashboard: brand, the page
+   links (folded into 메뉴 when the bar is short of room), the signed-in account, the speaker (interface sound,
+   its ui-sound-change answered by the head's sound script) and the theme toggle are its data (paintAppBar);
+   translucent over the page, one hairline, opaque under reduced transparency — all the
+   element's own. Under it the tab list 개인 설정 · 기억 is <ui-tabs id="settings-tabs"> over the two tab pages
+   (each a slotted panel); the location hash still picks the tab, so /dashboard/settings#memory opens 기억. ── */
+.topbar { position: sticky; top: 0; z-index: 20; min-width: 0; }
+/* Until the elements are defined: the bar's height and none of the raw content. */
+ui-app-bar:not(:defined) { display: block; height: var(--topbar-h); }
+ui-tabs:not(:defined) { display: block; }
+/* The tab list lines up with the page column under it. */
+/* (width: the tabs' column is a flex box, where auto margins alone would shrink the list to its tabs) */
+.settings-tabs::part(list) { box-sizing: border-box; width: 100%; max-width: 1080px; margin: 0 auto; padding: 8px 20px 0; }
 .page { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; max-width: 1080px; margin: 0 auto; padding: 24px 20px 64px; }
 /* An author display beats the UA [hidden] rule — tabs are switched with the hidden attribute. */
 .page[hidden] { display: none; }
 .side { position: sticky; top: calc(var(--topbar-h) + 16px); align-self: start; display: flex; flex-direction: column; gap: 12px; }
-.side input[type="search"] { width: 100%; font: inherit; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
-.side .only-modified { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--text-secondary); }
-.side .only-modified input { accent-color: var(--ib-text); }
 .side nav { display: flex; flex-direction: column; gap: 2px; }
 .side nav a { font-size: 13px; text-decoration: none; color: var(--text-secondary); padding: 6px 10px; border-radius: 8px; }
 .side nav .navbtn { font: inherit; font-size: 13px; text-align: left; color: var(--text-secondary); background: none; border: 0; padding: 6px 10px; border-radius: 8px; cursor: pointer; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
 .side nav .navbtn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-.side nav a:focus-visible, .side input:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+.side nav a:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .intro { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
 .notice { font-size: 13px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .notice.is-error { border-color: var(--tint-fail-line); background: var(--tint-fail-soft); color: var(--tint-fail-fg); }
-/* Groups are the library's 12px cards with the whisper shadow; a section link lands below the sticky bar. */
+/* 개인 설정 groups are kit cards (.ui-card, .is-danger for 권한) of <ui-setting-row>s (M-02): the row owns its
+   label, hints, Modified dot, save state and lock; the page only places the control in the row's slot. A section
+   link lands below the sticky bar. The 기억 tab's sections keep the same card look as section.group. */
+#pref-body > .ui-card { margin-bottom: 20px; scroll-margin-top: calc(var(--topbar-h) + 16px); }
+#pref-body > .ui-card[hidden] { display: none; }
+#pref-body .ui-notice { margin-bottom: 16px; }
+ui-setting-row[hidden] { display: none; }
+ui-setting-row .line { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+ui-setting-row .line .ui-input[type="text"] { flex: 1 1 220px; }
+ui-setting-row .ui-input[type="number"] { width: 110px; }
+ui-setting-row > select.ui-input { max-width: 100%; }
+/* The row's slot is a wrapping flex row: a field line and the chip list take a whole line of it. */
+ui-setting-row > :is(.line, .chips) { flex: 1 1 100%; }
+.side ui-settings-nav [slot="notice"][hidden] { display: none; }
 section.group { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--ib-shadow); margin-bottom: 20px; scroll-margin-top: calc(var(--topbar-h) + 16px); }
 section.group.danger { border-color: var(--tint-fail-line); background: var(--tint-fail-soft); }
 section.group > header { padding: 14px 16px 10px; border-bottom: 1px solid var(--border); }
 section.group > header h2 { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
 section.group > header p { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
-.row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 8px 20px; padding: 14px 16px; border-top: 1px solid var(--border); }
-.row:first-of-type { border-top: 0; }
-.row.is-modified::before { content: ''; position: absolute; left: 0; top: 12px; bottom: 12px; width: 3px; border-radius: 999px; background: var(--accent); }
-.row[hidden] { display: none; }
-.row .meta label, .row .meta .label { font-weight: 600; font-size: 13px; }
-.row .meta p { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
-.row .meta .hint { font-size: 11px; color: var(--text-tertiary); margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.row .control { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.row .control .line { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-.row input[type="text"], .row input[type="number"], .row select { font: inherit; font-size: 13px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; min-height: 34px; min-width: 0; }
-.row input[type="text"] { flex: 1 1 220px; }
-.row input[type="number"] { width: 110px; font-variant-numeric: tabular-nums; }
-.row select { max-width: 100%; }
 /* Buttons are the library kit's (.ui-btn): a hairline card button, the ink primary — the one decision of
    its row or dialog — and the destructive confirm in the fail tone. One press rule: scale(.97). */
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font: inherit; font-size: 13px; font-weight: 500; line-height: 1.2; color: var(--ib-text); background: var(--ib-card); border: 1px solid var(--ib-card-border); border-radius: 8px; padding: 6px 12px; min-height: 34px; white-space: nowrap; cursor: pointer; transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, opacity 150ms ease, transform var(--dur-press) var(--ease-out); }
@@ -136,8 +123,8 @@ section.group > header p { font-size: 12px; color: var(--text-secondary); margin
 .btn.link { background: none; border: 0; padding: 0; min-height: 0; color: var(--accent); font-weight: 500; }
 .btn.danger { background: var(--st-fail); border-color: var(--st-fail); color: var(--ib-card); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-:is(.btn, .topbar .back, .tabs a, .topbar .theme, .side nav .navbtn, .chip button, .pages-list .pg):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
-.btn:focus-visible, .row input:focus-visible, .row select:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+:is(.btn, .side nav .navbtn, .chip button):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+.btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 /* The library segmented control: a recessed track, the selected option a raised chip. */
 fieldset.seg { border: 0; display: inline-flex; flex-wrap: wrap; background: var(--ib-seg); border-radius: 10px; padding: 3px; gap: 2px; }
 fieldset.seg legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
@@ -146,16 +133,12 @@ fieldset.seg input { position: absolute; opacity: 0; inset: 0; cursor: pointer; 
 fieldset.seg span { display: inline-flex; align-items: center; font-size: 12.5px; font-weight: 500; padding: 5px 10px; border-radius: 8px; color: var(--ib-text-2); min-height: 28px; transition: background-color 150ms ease, color 150ms ease; }
 fieldset.seg input:checked + span { background: var(--ib-seg-on); color: var(--ib-text); font-weight: 600; box-shadow: var(--ib-shadow); }
 fieldset.seg input:focus-visible + span { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-.switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
-.switch input { width: 36px; height: 20px; accent-color: var(--ib-text); cursor: pointer; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; font-weight: 500; color: var(--ib-text); background: var(--ib-pill); border: 1px solid var(--ib-card-border); border-radius: 999px; padding: 2px 2px 2px 10px; }
 .chip button { display: inline-grid; place-items: center; width: 22px; height: 22px; font: inherit; background: none; border: 0; color: var(--ib-muted); cursor: pointer; padding: 0; border-radius: 999px; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
 .chip button svg { width: 12px; height: 12px; }
-.readonly { font-size: 13px; color: var(--text-secondary); display: flex; gap: 6px; align-items: center; }
+.readonly { font-size: 13px; color: var(--text-secondary); }
 .lock { font-size: 12px; color: var(--text-tertiary); }
-.lock-glyph { display: inline-flex; color: var(--text-tertiary); }
-.lock-glyph svg { width: 14px; height: 14px; }
 .status { font-size: 12px; min-height: 18px; color: var(--text-secondary); }
 .status.is-ok { color: var(--tint-done-fg); }
 .status.is-error { color: var(--tint-fail-fg); }
@@ -173,7 +156,7 @@ dialog p { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
 dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
 /* Hover is a fine-pointer affordance only, and it never moves anything: a neutral border or the pill. */
 @media (hover: hover) and (pointer: fine) {
-  .topbar .back:hover, .tabs a:hover, .topbar .theme:hover, .side nav .navbtn:hover { background: var(--ib-pill); color: var(--text); }
+  .side nav .navbtn:hover { background: var(--ib-pill); color: var(--text); }
   .btn:hover:not(:disabled) { border-color: var(--ib-muted); }
   .btn.primary:hover:not(:disabled), .btn.danger:hover:not(:disabled) { opacity: 0.88; }
   .btn.primary:hover:not(:disabled) { border-color: var(--ib-text); }
@@ -182,31 +165,27 @@ dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
   fieldset.seg input:not(:checked):hover + span { color: var(--text); }
   .chip button:hover { background: var(--ib-card); color: var(--ib-text); }
 }
-@media (max-width: 760px) {
+/* Below 840px <ui-settings-nav> is a filter row over a row of chips (its layout="auto"): one column. */
+@media (max-width: 839px) {
   .page { grid-template-columns: minmax(0, 1fr); }
   .side { position: static; }
   .side nav { flex-direction: row; overflow-x: auto; }
-  .row { grid-template-columns: minmax(0, 1fr); }
 }
-/* Phones: brand and account on the first row, 대시보드 and the tabs on their own row under them. */
+/* Phones: the bar is one 52px row (its links fold into 메뉴); the tab list keeps the page's narrower gutter. */
 @media (max-width: 640px) {
-  .topbar { padding: 0 12px; row-gap: 0; }
-  .topbar-nav { order: 3; flex-basis: 100%; padding-bottom: 8px; margin-left: -4px; }
-  .topbar h1, .topbar .account { min-height: 52px; }
-  section.group { scroll-margin-top: 112px; }
+  .settings-tabs::part(list) { padding: 4px 12px 0; }
 }
 @media (pointer: coarse) {
   /* Touch screens (SSOT 2026-10-24): 16px text, so iOS does not zoom into a focused field.
      Every tab's fields — the memory tab's CSS comes after this sheet, hence !important. */
-  .side input[type="search"], .row input[type="text"], .row input[type="number"], .row select { font-size: 16px; }
+  .ui-input { font-size: 16px; }
   input[type="text"], input[type="search"], input[type="number"], select, textarea { font-size: 16px !important; }
-  /* 44px targets, as on the dashboard's bar. */
-  .topbar .back, .tabs a { min-height: 44px; }
-  .topbar .theme { width: 44px; height: 44px; }
+  /* 44px targets, as on the dashboard's bar (the bar's own controls size themselves). */
+  .settings-tabs::part(tab) { min-height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.btn, .topbar .back, .tabs a, .topbar .theme, .side nav .navbtn, .chip button, .pages-list .pg):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.btn, .side nav .navbtn, .chip button):active:not(:disabled):not(:focus-visible) { transform: none; }
 }
 `;
 
@@ -230,8 +209,11 @@ async function refreshCsrfToken() {
     if (res.ok) {
       var data = await res.json();
       _csrfToken = data.csrfToken || '';
-      var who = document.getElementById('who');
-      if (who && data.user && data.user.name) who.textContent = data.user.name + (data.isAdmin ? ' · 관리자' : '');
+      if (data.user && data.user.name) {
+        _appBarAccount = { name: data.user.name, href: '/login' };
+        if (data.isAdmin) _appBarAccount.role = '관리자';
+        paintAppBar();
+      }
     }
   } catch (_e) {}
 }
@@ -272,6 +254,11 @@ function valueText(row, value) {
 function sameValue(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
+// The interface-sound cue a row's control plays through bindSound. A setting that asks first (danger) stays
+// silent: its change fires before the confirm dialog, so a cancelled change would still have sounded.
+function soundCue(row, cue) {
+  return row && row.danger ? 'off' : cue;
+}
 function renderSegmented(row) {
   var name = 'seg-' + row.key;
   var html = '<fieldset class="seg"><legend>' + esc(row.label) + '</legend>';
@@ -279,12 +266,12 @@ function renderSegmented(row) {
   for (var i = 0; i < opts.length; i++) {
     var o = opts[i];
     html += '<label title="' + escAttr(o.description || o.label) + '"><input type="radio" name="' + escAttr(name) + '" value="' + escAttr(o.value) + '"'
-      + (o.value === row.value ? ' checked' : '') + ' data-key="' + escAttr(row.key) + '" onchange="onChoice(this)"><span>' + esc(o.label) + '</span></label>';
+      + (o.value === row.value ? ' checked' : '') + ' data-key="' + escAttr(row.key) + '" data-ui-sound="' + soundCue(row, 'select') + '" onchange="onChoice(this)"><span>' + esc(o.label) + '</span></label>';
   }
   return html + '</fieldset>';
 }
 function renderSelect(row) {
-  var html = '<select id="f-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '" onchange="onChoice(this)">';
+  var html = '<select class="ui-input" id="f-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '" data-ui-sound="' + soundCue(row, 'select') + '" onchange="onChoice(this)">';
   var opts = row.options || [];
   for (var i = 0; i < opts.length; i++) {
     var o = opts[i];
@@ -292,31 +279,30 @@ function renderSelect(row) {
   }
   html += '</select>';
   if (row.allowCustom) {
-    html += '<div class="line"><input type="text" id="c-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '" placeholder="다른 모델 ID 또는 별칭" aria-label="' + escAttr(row.label + ' 직접 입력') + '"'
+    html += '<div class="line"><input type="text" class="ui-input" id="c-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '" placeholder="다른 모델 ID 또는 별칭" aria-label="' + escAttr(row.label + ' 직접 입력') + '"'
       + ' onkeydown="if(event.key===\'Enter\')saveCustom(this.getAttribute(\'data-key\'))">'
       + '<button type="button" class="btn" data-key="' + escAttr(row.key) + '" onclick="saveCustom(this.getAttribute(\'data-key\'))">저장</button></div>';
   }
   return html;
 }
 function renderControl(row) {
-  if (!row.editable) {
-    return '<div class="readonly"><span>' + esc(valueText(row, row.value)) + '</span>'
-      + (row.lockedReason ? '<span class="lock-glyph" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.25" y="7" width="9.5" height="6.75" rx="1.75"/><path d="M5.5 7V5.25a2.5 2.5 0 0 1 5 0V7"/></svg></span><span class="lock">' + esc(row.lockedReason) + '</span>' : '') + '</div>';
-  }
+  // A locked row has no control: <ui-setting-row> shows its value with the lock glyph and the reason (rowData).
+  if (!row.editable) return '';
   var k = escAttr(row.key);
   if (row.kind === 'choice') {
     return (row.options || []).length <= 5 && !row.allowCustom ? renderSegmented(row) : renderSelect(row);
   }
   if (row.kind === 'toggle') {
-    return '<label class="switch"><input type="checkbox" role="switch" id="f-' + k + '" data-key="' + k + '"' + (row.value ? ' checked' : '')
-      + ' onchange="onToggle(this)"><span>' + (row.value ? '켜짐' : '꺼짐') + '</span></label>';
+    // The state word is aria-hidden: the row names the switch, role="switch" reads on / off.
+    return '<label class="ui-switch"><input type="checkbox" role="switch" data-ui-sound="' + soundCue(row, 'toggle') + '" id="f-' + k + '" data-key="' + k + '"' + (row.value ? ' checked' : '')
+      + ' onchange="onToggle(this)"><span aria-hidden="true">' + (row.value ? '켜짐' : '꺼짐') + '</span></label>';
   }
   if (row.kind === 'text' || row.kind === 'number') {
     var type = row.kind === 'number' ? 'number' : 'text';
     var bounds = row.kind === 'number' ? ' min="' + row.min + '" max="' + row.max + '" step="1"' : '';
-    return '<div class="line"><input type="' + type + '" id="f-' + k + '" data-key="' + k + '" value="' + escAttr(row.value) + '"' + bounds
+    return '<div class="line"><input type="' + type + '" class="ui-input" id="f-' + k + '" data-key="' + k + '" value="' + escAttr(row.value) + '"' + bounds
       + ' onkeydown="if(event.key===\'Enter\')saveTyped(this.getAttribute(\'data-key\'))">'
-      + '<button type="button" class="btn primary" data-key="' + k + '" onclick="saveTyped(this.getAttribute(\'data-key\'))">저장</button>'
+      + '<button type="button" class="btn primary" data-ui-sound data-key="' + k + '" onclick="saveTyped(this.getAttribute(\'data-key\'))">저장</button>'
       + (row.kind === 'text' && row.value ? '<button type="button" class="btn" data-key="' + k + '" onclick="clearTyped(this.getAttribute(\'data-key\'))">지우기</button>' : '')
       + '</div>';
   }
@@ -334,66 +320,87 @@ function renderControl(row) {
     }
     var full = row.maxItems && list.length >= row.maxItems;
     return '<div class="chips">' + (chips || '<span class="lock">없음</span>') + '</div>'
-      + '<div class="line"><select id="f-' + k + '" aria-label="' + escAttr(row.label + ' 추가') + '"' + (full ? ' disabled' : '') + '><option value="">스킬 선택…</option>' + opts + '</select>'
+      + '<div class="line"><select class="ui-input" id="f-' + k + '" aria-label="' + escAttr(row.label + ' 추가') + '"' + (full ? ' disabled' : '') + '><option value="">스킬 선택…</option>' + opts + '</select>'
       + '<button type="button" class="btn" data-key="' + k + '" onclick="addListItem(this.getAttribute(\'data-key\'))"' + (full ? ' disabled' : '') + '>추가</button></div>';
   }
   return '<div class="readonly">' + esc(valueText(row, row.value)) + '</div>';
 }
+// One <ui-setting-row> per preference (M-02): the row draws the label, description, the Slack command,
+// the default, Modified with its reset, the save state, and a locked row's value with the reason (rowData);
+// the control is page markup in its slot (renderControl). The data is a property: set after insertion.
 function renderRow(row) {
-  var st = _rowStatus[row.key];
-  var reset = row.modified && row.editable && row.defaultValue !== undefined && row.kind !== 'list'
-    ? '<button type="button" class="btn link" data-key="' + escAttr(row.key) + '" onclick="resetRow(this.getAttribute(\'data-key\'))">기본값으로</button>' : '';
-  var def = row.defaultValue !== undefined && row.kind !== 'readonly' ? '<span>기본값: ' + esc(valueText(row, row.defaultValue)) + '</span>' : '';
-  return '<div class="row' + (row.modified ? ' is-modified' : '') + '" id="row-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '"'
-    + ' data-search="' + escAttr((row.label + ' ' + row.description + ' ' + row.slackCommand + ' ' + row.key).toLowerCase()) + '" data-modified="' + (row.modified ? '1' : '0') + '">'
-    + '<div class="meta"><div class="label">' + esc(row.label) + (row.adminOnly ? ' <span class="lock">(관리자)</span>' : '') + '</div>'
-    + '<p>' + esc(row.description) + '</p>'
-    + '<div class="hint"><span>Slack: <code>' + esc(row.slackCommand) + '</code></span>' + def + reset + '</div></div>'
-    + '<div class="control">' + renderControl(row)
-    + '<div class="status' + (st ? (st.error ? ' is-error' : ' is-ok') : '') + '" id="st-' + escAttr(row.key) + '"' + (st && st.error ? ' role="alert"' : ' role="status" aria-live="polite"') + '>' + (st ? esc(st.text) : '') + '</div>'
-    + '</div></div>';
+  return '<ui-setting-row lang="ko" id="row-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '">' + renderControl(row) + '</ui-setting-row>';
 }
+function rowData(row) {
+  var st = _rowStatus[row.key];
+  var d = {
+    key: row.key,
+    label: row.label,
+    description: row.description || '',
+    hints: row.slackCommand ? [{ label: 'Slack:', code: row.slackCommand }] : [],
+    modified: !!row.modified,
+    canReset: !!(row.modified && row.editable && row.defaultValue !== undefined && row.kind !== 'list'),
+    status: st ? { state: st.state, text: st.text } : null,
+    locked: row.editable ? null : { reason: row.lockedReason || '', value: valueText(row, row.value) },
+  };
+  if (row.defaultValue !== undefined && row.kind !== 'readonly') d.defaultText = valueText(row, row.defaultValue);
+  if (row.adminOnly) d.badge = '관리자';
+  return d;
+}
+function paintRowData(key) {
+  var row = findRow(key);
+  var el = document.getElementById('row-' + key);
+  if (row && el) el.data = rowData(row);
+}
+// One kit card per settings group; the nav lists the groups that have rows.
 function renderPreferences(snapshot) {
   var groups = snapshot.groups || [];
   var rows = snapshot.settings || [];
-  var nav = '';
+  var sections = [];
   var body = '';
   for (var g = 0; g < groups.length; g++) {
     var grp = groups[g];
     var inGroup = rows.filter(function (r) { return r.group === grp.id; });
     if (!inGroup.length) continue;
-    nav += '<button type="button" class="navbtn" data-target="g-' + escAttr(grp.id) + '" onclick="jumpTo(this.getAttribute(\'data-target\'))">' + esc(grp.label) + '</button>';
-    body += '<section class="group' + (grp.id === 'permissions' ? ' danger' : '') + '" id="g-' + escAttr(grp.id) + '" aria-labelledby="h-' + escAttr(grp.id) + '">'
+    sections.push({ id: 'g-' + grp.id, label: grp.label, keys: inGroup.map(function (r) { return r.key; }) });
+    body += '<section class="ui-card group' + (grp.id === 'permissions' ? ' is-danger' : '') + '" id="g-' + escAttr(grp.id) + '" aria-labelledby="h-' + escAttr(grp.id) + '">'
       + '<header><h2 id="h-' + escAttr(grp.id) + '">' + esc(grp.label) + '</h2><p>' + esc(grp.description) + '</p></header>'
       + inGroup.map(renderRow).join('') + '</section>';
   }
-  return { nav: nav, body: body };
-}
-// Section links scroll; they never touch location.hash (that selects tabs).
-function jumpTo(id) {
-  var el = document.getElementById(id);
-  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  return { sections: sections, body: body };
 }
 function findRow(key) {
   var rows = (_snapshot && _snapshot.settings) || [];
   for (var i = 0; i < rows.length; i++) if (rows[i].key === key) return rows[i];
   return null;
 }
+var _prefSections = []; // [{ id, label, keys }] of the groups on screen
 function paintPreferences() {
   if (!_snapshot) return;
   var out = renderPreferences(_snapshot);
-  document.getElementById('pref-nav').innerHTML = out.nav;
+  _prefSections = out.sections;
   document.getElementById('pref-body').innerHTML = out.body;
+  var rows = _snapshot.settings || [];
+  for (var i = 0; i < rows.length; i++) paintRowData(rows[i].key);
+  paintPrefNotice();
   applyFilter();
 }
+// A saved row keeps its element (and the row's save message): the control is re-rendered in its slot.
 function repaintRow(key) {
   var row = findRow(key);
   var el = document.getElementById('row-' + key);
   if (!row || !el) return;
-  var tmp = document.createElement('div');
-  tmp.innerHTML = renderRow(row);
-  el.replaceWith(tmp.firstChild);
+  el.innerHTML = renderControl(row);
+  el.data = rowData(row);
   applyFilter();
+}
+// Page-wide notices sit in the nav's notice slot (M-03): rows locked until an admin accepts.
+function paintPrefNotice() {
+  var box = document.getElementById('pref-notice');
+  if (!box) return;
+  var locked = !!(_snapshot && _snapshot.accepted === false);
+  box.hidden = !locked;
+  box.textContent = locked ? '관리자 승인 전에는 바꿀 수 없습니다. 지금은 값만 볼 수 있습니다.' : '';
 }
 async function loadPreferences() {
   var body = document.getElementById('pref-body');
@@ -402,13 +409,13 @@ async function loadPreferences() {
     var data = null;
     try { data = await res.json(); } catch (_e) {}
     if (!res.ok) {
-      body.innerHTML = '<div class="notice is-error" role="alert">' + esc((data && data.error) || ('설정을 불러오지 못했습니다 (HTTP ' + res.status + ')')) + '</div>';
+      body.innerHTML = '<div class="ui-notice" data-tone="fail" role="alert">' + esc((data && data.error) || ('설정을 불러오지 못했습니다 (HTTP ' + res.status + ')')) + '</div>';
       return;
     }
     _snapshot = lockIfNotAccepted(data);
     paintPreferences();
   } catch (e) {
-    body.innerHTML = '<div class="notice is-error" role="alert">설정을 불러오지 못했습니다. 다시 시도하세요.</div>';
+    body.innerHTML = '<div class="ui-notice" data-tone="fail" role="alert">설정을 불러오지 못했습니다. 다시 시도하세요.</div>';
   }
 }
 // Without admin acceptance the server refuses every write: show the rows read-only, with why.
@@ -445,19 +452,18 @@ async function saveSetting(key, value) {
   var row = findRow(key);
   var c = needsConfirm(row, value);
   if (c && !(await confirmDialog(c))) { repaintRow(key); return false; }
-  _rowStatus[key] = { text: '저장 중…', error: false };
-  var stEl = document.getElementById('st-' + key);
-  if (stEl) { stEl.textContent = '저장 중…'; stEl.className = 'status'; }
+  _rowStatus[key] = { state: 'pending', text: '저장 중…' };
+  paintRowData(key);
   var r;
   try { r = await apiWrite('PATCH', '/api/settings/' + encodeURIComponent(key), { value: value }); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
   if (!r.ok) {
-    _rowStatus[key] = { text: '저장하지 못했습니다: ' + r.error, error: true };
+    _rowStatus[key] = { state: 'error', text: '저장하지 못했습니다: ' + r.error };
     repaintRow(key);
     return false;
   }
   var rows = _snapshot.settings;
   for (var i = 0; i < rows.length; i++) if (rows[i].key === key) rows[i] = r.data.setting;
-  _rowStatus[key] = { text: '저장됨 — ' + valueText(r.data.setting, r.data.setting.value), error: false };
+  _rowStatus[key] = { state: 'saved', text: '저장됨 — ' + valueText(r.data.setting, r.data.setting.value) };
   repaintRow(key);
   return true;
 }
@@ -500,21 +506,98 @@ function removeListItem(btn) {
   if (!row) return;
   return saveSetting(key, (row.value || []).filter(function (x) { return x !== item; }));
 }
+// ── Side nav + filter (M-03) — @2lab.ai/ui <ui-settings-nav id="pref-nav"> ──
+// The nav draws the section links (following the scroll), the search box, 바꾼 것만 and the notice slot; its
+// ui-filter is applied with the library's applySettingsFilter (label, description, Slack command, key) — loaded
+// by the page's module script as window.applySettingsFilter — and the nav gets the counts back. Only the
+// 개인 설정 rows: the helper runs on #pref-body (other tabs have no setting rows, review P1).
+var _prefFilter = { query: '', modifiedOnly: false };
 function applyFilter() {
-  var q = ((document.getElementById('pref-filter') || {}).value || '').toLowerCase().trim();
-  var onlyMod = !!(document.getElementById('pref-modified') || {}).checked;
-  // Only the 개인 설정 tab: other tabs have sections without setting rows (review P1).
-  var rows = document.querySelectorAll('[data-tab="preferences"] .row[data-key]');
-  for (var i = 0; i < rows.length; i++) {
-    var r = rows[i];
-    var hit = (!q || r.getAttribute('data-search').indexOf(q) >= 0) && (!onlyMod || r.getAttribute('data-modified') === '1');
-    r.hidden = !hit;
+  var body = document.getElementById('pref-body');
+  var result = body && typeof applySettingsFilter === 'function' ? applySettingsFilter(body, _prefFilter) : null;
+  paintNav(result);
+}
+function paintNav(result) {
+  var nav = document.getElementById('pref-nav');
+  if (!nav) return;
+  var filtering = !!String(_prefFilter.query || '').trim() || !!_prefFilter.modifiedOnly;
+  var sections = [];
+  for (var i = 0; i < _prefSections.length; i++) {
+    var s = _prefSections[i];
+    var modified = 0;
+    for (var k = 0; k < s.keys.length; k++) { var row = findRow(s.keys[k]); if (row && row.modified) modified++; }
+    var item = { id: s.id, label: s.label, modified: modified };
+    if (filtering && result) item.count = result.sections[s.id] || 0;
+    sections.push(item);
   }
-  var groups = document.querySelectorAll('[data-tab="preferences"] section.group');
-  for (var g = 0; g < groups.length; g++) groups[g].hidden = !groups[g].querySelector('.row:not([hidden])');
+  nav.data = {
+    sections: sections,
+    query: _prefFilter.query,
+    modifiedOnly: _prefFilter.modifiedOnly,
+    empty: !!(filtering && result && result.shown === 0),
+    label: '개인 설정 섹션',
+    placeholder: '설정 검색 (이름 · 설명 · Slack 명령)',
+  };
+}
+function initPreferences() {
+  var nav = document.getElementById('pref-nav');
+  if (nav) nav.addEventListener('ui-filter', function (e) {
+    var d = e.detail || {};
+    _prefFilter = { query: String(d.query || ''), modifiedOnly: !!d.modifiedOnly };
+    applyFilter();
+  });
+  var body = document.getElementById('pref-body');
+  if (body) body.addEventListener('ui-reset', function (e) {
+    var key = e.detail && e.detail.key;
+    if (key) resetRow(key);
+  });
 }
 
-// ── Tabs + theme ──
+// ── App bar (M-01) — @2lab.ai/ui <ui-app-bar id="app-bar"> ──
+// The page hands the bar its data — brand, the page links, the signed-in account, the current theme and the
+// sound choice — and answers ui-theme-change (the page owns the theme and its storage). The speaker is the
+// bar's own: its ui-sound-change is answered by the head's sound script (somaSoundBindBar, bound to #app-bar
+// at DOMContentLoaded), which keeps the choice and re-hands the bar its state. Links are real links:
+// ui-navigate is not cancelled.
+var APP_BAR_NAV = [
+  { id: 'dashboard', label: '대시보드', href: '/dashboard', icon: 'board' },
+  { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat' },
+  { id: 'settings', label: '설정', href: '/dashboard/settings', icon: 'gear', current: true },
+];
+var _appBarAccount = null; // { name, href, role? } once /auth/me answers
+function currentTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+}
+function paintAppBar() {
+  var bar = document.getElementById('app-bar');
+  if (!bar) return;
+  var data = {
+    brand: { label: 'soma-work', mark: true, href: '/dashboard' },
+    nav: APP_BAR_NAV,
+    navLabel: '주 메뉴',
+    theme: currentTheme(),
+    // The speaker before the theme toggle (interface sound, #614): the head script's choice (_somaOn).
+    sound: typeof _somaOn !== 'undefined' && !!_somaOn,
+  };
+  if (_appBarAccount) data.account = _appBarAccount;
+  bar.data = data;
+}
+function setTheme(next) {
+  document.documentElement.setAttribute('data-theme', next);
+  try { localStorage.setItem('soma-theme', next); } catch (_e) {}
+  paintAppBar();
+}
+function toggleTheme() {
+  setTheme(currentTheme() === 'light' ? 'dark' : 'light');
+}
+
+// ── Tabs — @2lab.ai/ui <ui-tabs id="settings-tabs"> over the tab pages (each a slotted [data-tab] panel) ──
+// The hash picks the tab (links such as /dashboard/settings#memory); choosing a tab writes the hash. Until the
+// element is defined, the hidden attribute keeps the other tab page out of sight.
+function settingsTabs() {
+  var el = document.getElementById('settings-tabs-data');
+  try { return (el && JSON.parse(el.textContent || '[]')) || []; } catch (_e) { return []; }
+}
 function showTab(id) {
   var tabs = document.querySelectorAll('[data-tab]');
   var found = false;
@@ -524,43 +607,51 @@ function showTab(id) {
     var on = tabs[j].getAttribute('data-tab') === id;
     tabs[j].hidden = !on;
   }
-  var links = document.querySelectorAll('.tabs a');
-  for (var k = 0; k < links.length; k++) {
-    if (links[k].getAttribute('href') === '#' + id) links[k].setAttribute('aria-current', 'page');
-    else links[k].removeAttribute('aria-current');
-  }
-  if (typeof onTabShown === 'function') onTabShown(id);
+  var el = document.getElementById('settings-tabs');
+  if (el) el.data = { tabs: settingsTabs(), value: id, label: '설정 영역' };
+  var changed = showTab.current !== id;
+  showTab.current = id;
+  if (changed && typeof onTabShown === 'function') onTabShown(id);
 }
-function toggleTheme() {
-  var cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
-  var next = cur === 'light' ? 'dark' : 'light';
-  document.documentElement.setAttribute('data-theme', next);
-  try { localStorage.setItem('soma-theme', next); } catch (_e) {}
+function initShell() {
+  var tabsEl = document.getElementById('settings-tabs');
+  if (tabsEl) tabsEl.addEventListener('ui-change', function (e) {
+    var v = e.detail && e.detail.value;
+    if (!v) return;
+    showTab(v);
+    if (location.hash.slice(1) !== v) location.hash = v;
+  });
+  var bar = document.getElementById('app-bar');
+  if (bar) bar.addEventListener('ui-theme-change', function (e) {
+    var t = e.detail && e.detail.theme;
+    if (t === 'light' || t === 'dark') setTheme(t);
+  });
+  paintAppBar();
 }
 window.addEventListener('hashchange', function () { showTab(location.hash.slice(1)); });
+initShell();
 // Settings changed in Slack show up when the tab comes back — rows being edited stay as typed.
 document.addEventListener('visibilitychange', function () {
   if (document.hidden || !_snapshot) return;
   var a = document.activeElement;
-  if (a && a.closest && a.closest('.row')) return;
+  if (a && a.closest && a.closest('ui-setting-row')) return;
   loadPreferences();
 });
 refreshCsrfToken();
+initPreferences();
 showTab(location.hash.slice(1) || 'preferences');
 loadPreferences();
 `;
 
 /** Markup of the 개인 설정 tab. */
 function preferencesTab(): string {
-  return `<div data-tab="preferences" class="page">
-  <aside class="side" aria-label="개인 설정 섹션">
-    <input type="search" id="pref-filter" placeholder="설정 검색 (이름 · 설명 · Slack 명령)" aria-label="설정 검색" oninput="applyFilter()">
-    <label class="only-modified"><input type="checkbox" id="pref-modified" onchange="applyFilter()"> 기본값과 다른 것만</label>
-    <nav id="pref-nav"></nav>
+  return `<div slot="preferences" data-tab="preferences" class="page">
+  <aside class="side">
+    <ui-settings-nav id="pref-nav" lang="ko"><div slot="notice" id="pref-notice" class="ui-notice" data-tone="wait" role="status" hidden></div></ui-settings-nav>
   </aside>
   <main>
     <p class="intro">Slack 명령으로 바꿀 수 있는 개인 설정을 여기서 모두 보고 바꿉니다. 선택하는 항목은 바로 저장되고, 직접 입력하는 항목은 저장을 눌러야 저장됩니다. 각 항목 아래에 같은 일을 하는 Slack 명령이 있습니다.</p>
-    <div id="pref-body"><div class="notice">불러오는 중…</div></div>
+    <div id="pref-body"><div class="ui-notice" role="status">불러오는 중…</div></div>
   </main>
 </div>`;
 }
@@ -573,7 +664,11 @@ function onTabShown(id) {
 `;
 
 export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS): string {
-  const tabLinks = tabs.map((t) => `<a href="#${t.id}">${t.label}</a>`).join('');
+  // The tab list's data, read by the page script (showTab): JSON with every < escaped, inert in a data script.
+  const tabsJson = JSON.stringify(tabs.map((t) => ({ id: t.id, label: t.label, icon: t.icon }))).replace(
+    /</g,
+    '\\u003c',
+  );
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -583,6 +678,14 @@ export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS): str
 <script data-fouc>
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
 </script>
+<!-- Interface sound (@2lab.ai/ui/sound, sound-cuelume): off until the app bar's speaker turns it on; the script
+     binds the bar's ui-sound-change (somaSoundBindBar) and the page's own data-ui-sound controls (bindSound). -->
+<script data-sound>${soundClientJs(UI_LIB_VERSION)}</script>
+<!-- @2lab.ai/ui kit (ui-kit.css): the light-DOM classes (.ui-btn, .ui-input, .ui-switch, .ui-card, .ui-notice,
+     .ui-sr-only …) on the --ui-* tokens below. Before the page sheet, so a page rule that places a kit control wins. -->
+<style id="ui-kit">
+${uiLibKitCss()}
+</style>
 <style>${SETTINGS_PAGE_CSS}${MEMORY_TAB_CSS}</style>
 <!-- Tokens — @2lab.ai/ui is the single source, as on the dashboard (P10, P9): its tokens.css puts every
      --ui-* on :root and [data-theme="light|dark"], and the page's names are aliases of them. -->
@@ -592,19 +695,15 @@ ${pageTokenAliases()}
 </style>
 </head>
 <body>
-<div class="topbar">
-  <h1><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect class="bm-bg" width="32" height="32" rx="8"/><rect class="bm-cell" x="7" y="7" width="7" height="7" rx="1.5"/><rect class="bm-cell" x="18" y="7" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="7" y="18" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="18" y="18" width="7" height="7" rx="1.5" opacity=".25"/></svg>soma-work</h1>
-  <div class="topbar-nav">
-    <a class="back" href="/dashboard"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 8H3M7.25 3.75L3 8l4.25 4.25"/></svg>대시보드</a>
-    <nav class="tabs" aria-label="설정 영역">${tabLinks}</nav>
-  </div>
-  <div class="account">
-    <span class="who"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.5" r="2.75"/><path d="M2.75 13.75a5.25 5.25 0 0 1 10.5 0"/></svg><span id="who"></span></span>
-    <button type="button" class="theme" onclick="toggleTheme()" aria-label="테마 바꾸기"><svg class="ic-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5V3M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.05 1.05M11.55 11.55l1.05 1.05M3.4 12.6l1.05-1.05M11.55 4.45l1.05-1.05"/></svg><svg class="ic-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"/></svg></button>
-  </div>
-</div>
+<header class="topbar" id="topbar">
+  <h1 class="ui-sr-only">soma-work 설정</h1>
+  <ui-app-bar id="app-bar" lang="ko"></ui-app-bar>
+</header>
+<ui-tabs id="settings-tabs" class="settings-tabs" panel-focus="none">
 ${preferencesTab()}
 ${MEMORY_TAB_HTML}
+</ui-tabs>
+<script type="application/json" id="settings-tabs-data">${tabsJson}</script>
 <dialog id="confirm" aria-labelledby="confirm-title">
   <form method="dialog">
     <h3 id="confirm-title"></h3>
@@ -616,7 +715,18 @@ ${MEMORY_TAB_HTML}
   </form>
 </dialog>
 <script>${MEMORY_CLIENT_JS}${TAB_HOOKS_JS}${SETTINGS_CLIENT_JS}</script>
+<script type="module" src="/dashboard/ui/app-bar.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/setting-row.js?v=${UI_LIB_VERSION}"></script>
+<!-- <ui-settings-nav> and the library's own row filter (applySettingsFilter) for the page script's applyFilter. -->
+<script type="module">
+import { applySettingsFilter } from '/dashboard/ui/settings-nav.js?v=${UI_LIB_VERSION}';
+window.applySettingsFilter = applySettingsFilter;
+if (typeof applyFilter === 'function') applyFilter();
+</script>
+<script type="module" src="/dashboard/ui/tabs.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/memory-panel.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/knowledge-pages.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/episode-log.js?v=${UI_LIB_VERSION}"></script>
 </body>
 </html>`;
 }

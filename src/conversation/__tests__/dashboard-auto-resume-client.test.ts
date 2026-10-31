@@ -33,7 +33,12 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
+/** The page's chrome words (STRINGS), as served: the board's Korean words live there (D2 group 6). */
+const PAGE_STRINGS = new Function(
+  `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
+)();
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+  inject = { STRINGS: PAGE_STRINGS, ...inject };
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
@@ -66,7 +71,14 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = [
+  'PR_STATE_LABEL',
+  'PR_STATE_TONE',
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'OWNER_BADGE_HUES',
+];
 
 interface Card {
   pendingAutoResume(s: unknown, col: string): unknown;
@@ -191,11 +203,12 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
         'renderCardResume',
         'taskOutcomeHtml',
         'isBusy',
+        'sessionActionsOf',
         'sessionActionHtml',
         'cardGoalLine',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'SESSION_ACTION_ARIA', 'GOAL_STATUS_LABELS', 'GOAL_SVG', '_busy'],
+      ['RESUME_SVG', 'SESSION_ACTION_TONE', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', '_busy'],
       {
         effortLabel: (e: string) => e,
         dhShow: () => false,
@@ -210,6 +223,7 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
         renderAgentTree: () => '',
         renderMultiChoiceCard: () => '',
         acPermissionsHtml: () => '',
+        acGoalDecisionHtml: () => '',
         acQuestionHtml: () => '',
         renderCardGoal: () => '',
         renderTimeline: () => '',
@@ -229,12 +243,12 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
       lastActivity: '2026-10-22T09:24:00Z',
     };
     const waitingHtml = body.renderCardBody(waiting, 'working');
-    expect(waitingHtml).toContain('btn-close');
-    expect(waitingHtml).not.toContain('btn-stop');
+    expect(waitingHtml).toContain('data-action="close"');
+    expect(waitingHtml).not.toContain('data-action="stop"');
     expect(waitingHtml).toContain('class="card-resume"');
 
     const runningHtml = body.renderCardBody({ ...waiting, activityState: 'working' }, 'working');
-    expect(runningHtml).toContain('btn-stop');
+    expect(runningHtml).toContain('data-action="stop"');
     expect(runningHtml).not.toContain('class="card-resume"');
   });
 

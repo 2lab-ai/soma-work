@@ -12,7 +12,11 @@
  * - Row status per key = the caller's `outcomes[KEY].outcome` when present, otherwise derived from the
  *   qa-issue verdict (a pass with an unverified transition is "pass (not moved)", not a pass). It is
  *   injected as `data.status`, and every count below uses it.
- * - Prints one JSON line: { html, png, keys, pass, fail, other, missingFields, masked, shots, shotProblems }.
+ * - Preconditions (the input's top-level `preconditions[]`, each with its `key`, plus every qa-issue JSON's own
+ *   `preconditions[]`, which wins for the same key and id) are merged into `data.preconditions` and rendered
+ *   first. A precondition is open while its status is not `met` / `provisionable`.
+ * - Prints one JSON line: { html, png, keys, pass, fail, other, missingFields, masked, shots, shotProblems,
+ *   preconditions, preconditionsOpen }.
  *
  * Exit codes: 0 written · 1 usage or input error.
  */
@@ -96,6 +100,18 @@ if (dup.length) fail(`duplicate keys: ${[...new Set(dup)].join(', ')} (each key 
 const outcomes = input.outcomes && typeof input.outcomes === 'object' && !Array.isArray(input.outcomes) ? input.outcomes : {};
 const stray = Object.keys(outcomes).filter((k) => !keys.includes(k));
 if (stray.length) fail(`outcomes for keys with no row: ${stray.join(', ')} (add them to issues or nonQa)`);
+// Preconditions: the caller's run-level list, overridden per key and id by each qa-issue JSON's own list.
+const preMap = new Map();
+const addPre = (key, p) => {
+  if (!p || typeof p !== 'object' || !key || p.id == null || p.id === '') fail('a precondition needs a key and an id');
+  preMap.set(`${key}\u0000${p.id}`, { ...p, key });
+};
+for (const p of Array.isArray(input.preconditions) ? input.preconditions : []) addPre(p && p.key, p);
+for (const d of issues) for (const p of Array.isArray(d.preconditions) ? d.preconditions : []) addPre(d.key, p);
+const preStray = [...new Set([...preMap.values()].map((p) => p.key).filter((k) => !keys.includes(k)))];
+if (preStray.length) fail(`preconditions for keys with no row: ${preStray.join(', ')} (add them to issues or nonQa)`);
+input.preconditions = [...preMap.values()];
+const preOpen = input.preconditions.filter((p) => p.status !== 'met' && p.status !== 'provisionable').length;
 const outcomeOf = (k) => (outcomes[k] && typeof outcomes[k].outcome === 'string' ? outcomes[k].outcome : '');
 // Row status per key: the caller's closeout outcome when given, otherwise derived.
 const status = {};
@@ -143,5 +159,5 @@ const missingFields = issues
   .flatMap((d) => d.cases || [])
   .reduce((n, c) => n + [typeof c.auth === 'string' ? c.auth : c.auth?.accountRef, c.steps, c.expected, c.actual].filter(empty).length, 0);
 process.stdout.write(
-  `${JSON.stringify({ html: out, png: out.replace(/\.html$/, '.png'), keys: statuses.length, pass, fail: failCount, other: statuses.length - pass - failCount, missingFields, masked, shots, shotProblems })}\n`,
+  `${JSON.stringify({ html: out, png: out.replace(/\.html$/, '.png'), keys: statuses.length, pass, fail: failCount, other: statuses.length - pass - failCount, missingFields, masked, shots, shotProblems, preconditions: input.preconditions.length, preconditionsOpen: preOpen })}\n`,
 );
