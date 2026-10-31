@@ -61,6 +61,7 @@ import type {
   SessionResourceUpdateRequest,
   SessionResourceUpdateResult,
   SessionState,
+  TaskInputContext,
   TaskTurnOutcomeRecord,
   WorkflowType,
 } from './types';
@@ -197,6 +198,8 @@ interface SerializedSession {
   slackless?: boolean;
   /** E2 ① — a Slack-less task's instruction thread; validated on load. */
   originThread?: unknown;
+  /** E2 ② — a Slack-instructed task's channel context; validated on load. */
+  inputContext?: unknown;
   // Merge code change stats
   mergeStats?: {
     totalLinesAdded: number;
@@ -275,6 +278,8 @@ export interface CreateTaskInput {
   model?: string;
   /** E2 ① — the Slack thread the task was instructed from; saved with the task's first strict save. */
   originThread?: OriginThread;
+  /** E2 ② — the channel's description, repos and wiki at creation; copied, not referenced. */
+  inputContext?: TaskInputContext;
 }
 
 /** E2 ① — `createTask` refused: a live task already holds this instruction thread. */
@@ -304,6 +309,26 @@ export function sanitizeOriginThread(value: unknown): OriginThread | undefined {
     messageTs: v.messageTs,
     ...(v.agent !== undefined ? { agent: v.agent as string } : {}),
   };
+}
+
+/**
+ * E2 ② — a stored task input context, or undefined: only its non-empty string
+ * fields and the non-empty strings of `repos` are kept (a fresh copy); nothing
+ * left means none.
+ */
+export function sanitizeTaskInputContext(value: unknown): TaskInputContext | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const v = value as Record<string, unknown>;
+  const out: TaskInputContext = {};
+  for (const field of ['channelName', 'channelDescription', 'confluenceUrl'] as const) {
+    const x = v[field];
+    if (typeof x === 'string' && x !== '') out[field] = x;
+  }
+  if (Array.isArray(v.repos)) {
+    const repos = v.repos.filter((r): r is string => typeof r === 'string' && r !== '');
+    if (repos.length > 0) out.repos = repos;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function originThreadKey(origin: OriginThread): string {
@@ -789,6 +814,8 @@ export class SessionRegistry {
     if (previous && previous !== session) this.unindexTask(previous);
     this.sessions.set(key, session);
     if (session.taskId) this.sessionsByTaskId.set(session.taskId, session);
+    // E2 ② — only a Slack-less task carries an input context.
+    if (session.inputContext && session.slackless !== true) session.inputContext = undefined;
     if (session.originThread) {
       const originKey = originThreadKey(session.originThread);
       const holder = this.tasksByOriginThread.get(originKey);
@@ -1008,6 +1035,15 @@ export class SessionRegistry {
     session.workingDirectory = input.workingDirectory;
     if (input.title) session.title = input.title;
     if (originThread) session.originThread = originThread;
+    const inputContext = sanitizeTaskInputContext(input.inputContext);
+    if (inputContext) session.inputContext = inputContext;
+    // A caller passed a context and nothing usable was left: the task runs
+    // without its channel's repos — say so rather than drop it silently.
+    else if (input.inputContext !== undefined) {
+      this.logger.warn('createTask: the input context had no usable field; the task has none', {
+        taskId: session.taskId,
+      });
+    }
 
     const key = buildTaskSessionKey(session.taskId);
     this.putSession(key, session);
@@ -1282,6 +1318,7 @@ export class SessionRegistry {
       slackless: slackless ? true : undefined,
       // E2 ① — back while it is free; `putSession` drops it if a live task holds the thread now.
       originThread: sanitizeOriginThread(archived.originThread),
+      inputContext: sanitizeTaskInputContext(archived.inputContext),
       // A task runs in its own directory: the one its transcript proves it ran in (#612 R4).
       ...(slackless ? { workingDirectory: cwd } : {}),
       sessionId: archived.sessionId,
@@ -2748,6 +2785,7 @@ export class SessionRegistry {
             taskId: session.taskId,
             slackless: session.slackless === true ? true : undefined,
             originThread: session.originThread,
+            inputContext: session.inputContext,
             // Merge code change stats
             mergeStats: session.mergeStats,
             // User SSOT instructions (persisted)
@@ -2885,6 +2923,7 @@ export class SessionRegistry {
         threadTs: serialized.threadTs,
         slackless: serialized.slackless === true ? true : undefined,
         originThread: sanitizeOriginThread(serialized.originThread),
+        inputContext: sanitizeTaskInputContext(serialized.inputContext),
         lastTurnOutcome: sanitizeTaskTurnOutcome(serialized.lastTurnOutcome),
         sessionId: serialized.sessionId,
         isActive: false,
@@ -3110,6 +3149,7 @@ export class SessionRegistry {
           slackless: slackless ? true : undefined,
           // E2 ① — a malformed instruction thread is dropped; `putSession` drops one on a Slack session.
           originThread: sanitizeOriginThread(serialized.originThread),
+          inputContext: sanitizeTaskInputContext(serialized.inputContext),
           // Incident ownership is restored verbatim and never repaired: any
           // present value keeps the session restricted (fail closed).
           incidentRequest:

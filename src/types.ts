@@ -397,6 +397,14 @@ export interface OriginThread {
   agent?: string;
 }
 
+/** E2 ② — a Slack-instructed task's channel context (see `ConversationSession.inputContext`). */
+export interface TaskInputContext {
+  channelName?: string;
+  channelDescription?: string;
+  repos?: string[];
+  confluenceUrl?: string;
+}
+
 export interface ConversationSession {
   ownerId: string; // User who started the session
   ownerName?: string; // Display name of owner
@@ -418,6 +426,12 @@ export interface ConversationSession {
    * back-pointer). One live task per instruction thread.
    */
   originThread?: OriginThread;
+  /**
+   * E2 ② — the channel a Slack-instructed task was created in, snapshotted at
+   * creation: what a Slack session there gets in its system prompt (channel
+   * description, repos, wiki). Prompt text only — never a Slack context.
+   */
+  inputContext?: TaskInputContext;
   sessionId?: string;
   isActive: boolean;
   lastActivity: Date;
