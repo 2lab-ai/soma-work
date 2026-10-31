@@ -325,7 +325,8 @@ export interface EpicRelation {
  */
 export function sanitizeEpicRelation(value: Record<string, unknown>, slackless: boolean): EpicRelation {
   if (!slackless) return {};
-  const nonEmpty = (x: unknown): x is string => typeof x === 'string' && x !== '';
+  // An id is a non-blank string other than the record's own (a task is not its own parent or child).
+  const nonEmpty = (x: unknown): x is string => typeof x === 'string' && x.trim() !== '' && x !== value.taskId;
   // A child: a parent and a well-formed node, nothing else.
   if (nonEmpty(value.parentTaskId) && typeof value.planNodeId === 'string' && PLAN_NODE_ID.test(value.planNodeId)) {
     return { parentTaskId: value.parentTaskId, planNodeId: value.planNodeId };
@@ -1098,6 +1099,58 @@ export class SessionRegistry {
   }
 
   /**
+   * E4 ① — load gave a Slack-less task a new id because a Slack session held
+   * the one it claimed. The relation follows the new id: a re-minted epic's
+   * children point at it, and a re-minted child is named by its new id in its
+   * epic's list (the cap counts that list). The claimed id now belongs to a
+   * Slack session, which never carries the relation, so these links are the
+   * re-minted task's alone. Returns how many links moved.
+   */
+  private relinkRemintedEpicIds(reminted: Array<{ session: ConversationSession; claimed: string }>): number {
+    let moved = 0;
+    for (const { session: epic, claimed } of reminted) {
+      const children = this.childrenByParent.get(claimed);
+      if (epic.kind !== 'epic' || !epic.taskId || !children) continue;
+      this.childrenByParent.delete(claimed);
+      const siblings = this.childrenByParent.get(epic.taskId) ?? new Set<ConversationSession>();
+      for (const child of children) {
+        child.parentTaskId = epic.taskId;
+        siblings.add(child);
+      }
+      this.childrenByParent.set(epic.taskId, siblings);
+      moved += children.size;
+      this.logger.warn('Epic task id re-minted on load; its children now point at the new id', {
+        claimed,
+        taskId: epic.taskId,
+        children: children.size,
+      });
+    }
+    for (const { session: child, claimed } of reminted) {
+      const epic = child.parentTaskId ? this.sessionsByTaskId.get(child.parentTaskId) : undefined;
+      if (!child.taskId || !epic || epic.slackless !== true || epic.kind !== 'epic') continue;
+      const list = epic.childTaskIds ?? [];
+      const taskId = child.taskId;
+      epic.childTaskIds = list.includes(claimed) ? list.map((id) => (id === claimed ? taskId : id)) : [...list, taskId];
+      // E4 ② — and so does the plan node it was made for.
+      if (epic.plan) {
+        epic.plan = {
+          ...epic.plan,
+          nodes: epic.plan.nodes.map((n) =>
+            n.spawned?.includes(claimed) ? { ...n, spawned: n.spawned.map((id) => (id === claimed ? taskId : id)) } : n,
+          ),
+        };
+      }
+      moved++;
+      this.logger.warn("Child task id re-minted on load; its epic's list names the new id", {
+        claimed,
+        taskId,
+        parentTaskId: epic.taskId,
+      });
+    }
+    return moved;
+  }
+
+  /**
    * Move a task id onto the live session at `sessionKey` — the same task now
    * lives in that session (bot-thread migration, after the original is gone).
    * Refuses (returns false) while another live session still holds the id, so
@@ -1358,7 +1411,7 @@ export class SessionRegistry {
       throw new Error('createTask: a child needs a plan node id (a short lowercase slug)');
     }
     const parent = this.sessionsByTaskId.get(input.parentTaskId);
-    if (!parent || parent.slackless !== true || parent.kind !== 'epic') {
+    if (!parent || parent.slackless !== true || parent.kind !== 'epic' || parent.terminated) {
       throw new Error(`createTask: parent ${input.parentTaskId} is not a live epic`);
     }
     if (parent.ownerId !== input.ownerId) throw new Error("createTask: a child is owned by its epic's owner");
@@ -3311,6 +3364,7 @@ export class SessionRegistry {
       const applyLifecycle = !isSessionLifecyclePolicyDegraded();
       let sleptOnLoadCount = 0;
       let mintedTaskIdCount = 0;
+      const remintedSlackless: Array<{ session: ConversationSession; claimed: string }> = [];
       let reconciledTaskTurnCount = 0;
       // Task keys taken by a Slack-less record earlier in THIS load pass (a reload of the
       // same registry is not a duplicate; a second record with one task id in one file is).
@@ -3652,6 +3706,10 @@ export class SessionRegistry {
           slacklessKeysThisLoad.add(derivedKey);
         }
         if (restored.minted) mintedTaskIdCount++;
+        // E4 ① — a Slack-less task that lost its claimed id takes its epic links along (after the loop).
+        if (slackless && restored.minted && typeof serialized.taskId === 'string' && serialized.taskId !== '') {
+          remintedSlackless.push({ session, claimed: serialized.taskId });
+        }
         this.putSession(derivedKey, session);
         loaded++;
 
@@ -3740,6 +3798,8 @@ export class SessionRegistry {
       if (sleptOnLoadCount > 0) {
         this.logger.info(`Put ${sleptOnLoadCount} stale session(s) to sleep on load`);
       }
+      // E4 ① — the epic links of a re-minted task follow its new id; the write-back below saves them.
+      this.relinkRemintedEpicIds(remintedSlackless);
       // A task id minted here (a file from before task ids, or a duplicate)
       // is written back now: the next restart must find the same task.
       if (mintedTaskIdCount > 0) {
