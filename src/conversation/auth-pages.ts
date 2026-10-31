@@ -1,252 +1,15 @@
 /**
  * The pages a browser sees before the dashboard (M-09, M-10): sign in (`/login`, also the account page of a
  * signed-in browser) and the session-switch confirm (`GET /auth/sso`). Each is @2lab.ai/ui's `<ui-auth-card>`
- * rendered on the server — a declarative shadow root holding the card, so the provider buttons (real links) and
- * the confirm (a real `<form>`) work before, and without, the script — in a page that carries only the library's
- * tokens.css (the dashboard's single colour source) and loads `/dashboard/ui/auth-card.js` to take the card over.
- *
- * The library's `authCardHtml` cannot be imported here: the package is ESM-only (an `import`-only export map)
- * and its module defines a custom element. So `authCardHtml` below draws the same markup from the card's
- * documented contract — the glyphs from the library's glyph table (uiIcon) and the shadow sheet read from its
- * build (uiLibShadowCss) — and a test pins it to the library's own `authCardHtml` string for string.
+ * rendered on the server by the library's own `authCardHtml` (`@2lab.ai/ui/server` — no element in it, so the
+ * server never runs element code): a declarative shadow root holding the card, so the provider buttons (real
+ * links) and the confirm (a real `<form>`) work before, and without, the script — in a page that carries only
+ * the library's tokens.css (the dashboard's single colour source) and loads `/dashboard/ui/auth-card.js` to
+ * take the card over in place.
  */
 
-import { UI_LIB_VERSION, uiIcon, uiLibShadowCss, uiLibTokensCss } from './ui-lib';
-
-// ── <ui-auth-card> markup (the library's auth-card.ts, on the server) ──
-
-export type AuthLang = 'en' | 'ko';
-
-export interface AuthProvider {
-  id: string;
-  label: string;
-  href: string;
-  /** A glyph of @2lab.ai/ui's icon set. */
-  icon?: string;
-  logo?: string;
-}
-
-export interface AuthAccount {
-  name: string;
-  meta?: string;
-  initials?: string;
-}
-
-export interface AuthLink {
-  href?: string;
-  label?: string;
-}
-
-export interface AuthSignedIn extends AuthAccount {
-  continue?: AuthLink;
-  signOut?: AuthLink;
-}
-
-export interface AuthConfirm {
-  from?: AuthAccount;
-  to: AuthAccount;
-  action: string;
-  method?: 'post' | 'get';
-  fields?: Record<string, string>;
-  confirmLabel?: string;
-  cancelLabel?: string;
-  cancelHref?: string;
-}
-
-export interface AuthCardData {
-  brand?: { label: string; mark?: boolean | string; href?: string };
-  title?: string;
-  text?: string;
-  error?: string;
-  account?: AuthSignedIn;
-  providers?: AuthProvider[];
-  switchLabel?: string;
-  hint?: string;
-  confirm?: AuthConfirm;
-  finePrint?: string;
-}
-
-const STRINGS = {
-  en: {
-    signedInAs: 'Signed in as',
-    continue: 'Continue',
-    signOut: 'Sign out',
-    or: 'or',
-    useDifferent: 'Use a different account',
-    redirecting: 'Redirecting…',
-    leaving: 'Signed in now',
-    next: 'New session',
-    cancel: 'Cancel',
-    continueAs: (name: string) => `Continue as ${name}`,
-    switching: 'Switching…',
-  },
-  ko: {
-    signedInAs: '로그인한 계정',
-    continue: '계속',
-    signOut: '로그아웃',
-    or: '또는',
-    useDifferent: '다른 계정 사용',
-    redirecting: '이동 중…',
-    leaving: '지금 로그인한 계정',
-    next: '새 세션',
-    cancel: '취소',
-    continueAs: (name: string) => `${name}(으)로 계속`,
-    switching: '전환 중…',
-  },
-};
-type AuthStrings = (typeof STRINGS)['en'];
-
-const authStrings = (lang: unknown): AuthStrings => (lang === 'ko' ? STRINGS.ko : STRINGS.en);
-
-// The library's core/html escapes: text escapes & < >, an attribute also " and '.
-const esc = (value: unknown): string =>
-  String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-const escAttr = (value: unknown): string => esc(value).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-const SAFE_SCHEMES = /^(https?:|mailto:)/i;
-const SCHEME = /^[a-z][a-z\d+.-]*:/i;
-/** A link that cannot run script: http(s), mailto or same-site; anything else is `#`. */
-function safeLink(url: unknown): string {
-  const s = String(url ?? '').trim();
-  if (!s) return '#';
-  if (SAFE_SCHEMES.test(s)) return escAttr(s);
-  if (/^[\\/]{2}/.test(s) || Array.from(s).some((c) => c.charCodeAt(0) < 32)) return '#';
-  return SCHEME.test(s) ? '#' : escAttr(s);
-}
-const SAFE_DATA_IMAGE = /^data:image\/(png|jpe?g|gif|webp|avif|bmp);base64,[a-z\d+/=\s]+$/i;
-function safeSrc(url: unknown): string {
-  const s = String(url ?? '').trim();
-  if (!s) return '';
-  if (/^https?:/i.test(s) || /^blob:/i.test(s) || SAFE_DATA_IMAGE.test(s)) return escAttr(s);
-  const link = safeLink(s);
-  return link === '#' || /^mailto:/i.test(s) ? '' : link;
-}
-
-/** Avatar letters: the first letter of up to two words of the name (an email's part before @). "?" for none. */
-export function authInitials(name: unknown): string {
-  let s = String(name ?? '').trim();
-  const at = s.indexOf('@');
-  if (at > 0) s = s.slice(0, at);
-  const words = s.split(/[\s._+-]+/).filter(Boolean);
-  const letters = words.slice(0, 2).map((w) => Array.from(w)[0] ?? '');
-  return letters.join('').toUpperCase() || '?';
-}
-
-/** Plain text with `code` spans: everything escaped, backtick pairs become <code>. */
-function authInline(text: unknown): string {
-  return String(text ?? '')
-    .split(/(`[^`\n]+`)/)
-    .map((part) => (/^`[^`\n]+`$/.test(part) ? `<code>${esc(part.slice(1, -1))}</code>` : esc(part)))
-    .join('');
-}
-
-function avatar(a: AuthAccount, small = false): string {
-  const letters = String(a.initials ?? '').trim() || authInitials(a.name);
-  return `<span class="ac-av${small ? ' is-sm' : ''}" aria-hidden="true">${esc(letters)}</span>`;
-}
-
-function who(a: AuthAccount): string {
-  return `<div class="ac-who-text"><p class="ac-name">${esc(a.name)}</p>${a.meta ? `<p class="ac-meta">${esc(a.meta)}</p>` : ''}</div>`;
-}
-
-function spinner(t: string): string {
-  return `<span class="ac-spin" aria-hidden="true"></span><span class="ac-wait">${esc(t)}</span>`;
-}
-
-function providerIcon(p: AuthProvider): string {
-  const id = String(p.id ?? '');
-  const src = p.logo ? safeSrc(p.logo) : '';
-  const own = src ? `<img src="${src}" alt="" width="18" height="18" />` : p.icon ? uiIcon(p.icon, { size: 18 }) : '';
-  return `<span class="ac-ico"><slot name="logo-${escAttr(id)}">${own}</slot></span>`;
-}
-
-function providersHtml(list: AuthProvider[], t: AuthStrings): string {
-  return list
-    .map(
-      (p) =>
-        `<a class="ac-btn ac-provider" href="${safeLink(p.href)}" data-act="provider" data-id="${escAttr(p.id)}" data-key="p:${escAttr(p.id)}">${providerIcon(p)}<span class="ac-label">${esc(p.label)}</span>${spinner(t.redirecting)}</a>`,
-    )
-    .join('');
-}
-
-function confirmHtml(c: AuthConfirm, t: AuthStrings): string {
-  const fields = Object.entries(c.fields ?? {})
-    .map(([k, v]) => `<input type="hidden" name="${escAttr(k)}" value="${escAttr(v)}" />`)
-    .join('');
-  const method = c.method === 'get' ? 'get' : 'post';
-  const sessions = `<ul class="ac-sessions">${
-    c.from
-      ? `<li class="ac-session">${avatar(c.from, true)}<div class="ac-who-text"><p class="ac-label-sm">${esc(t.leaving)}</p><p class="ac-name">${esc(c.from.name)}</p>${c.from.meta ? `<p class="ac-meta">${esc(c.from.meta)}</p>` : ''}</div></li>`
-      : ''
-  }<li class="ac-session is-next">${avatar(c.to, true)}<div class="ac-who-text"><p class="ac-label-sm">${esc(t.next)}</p><p class="ac-name">${esc(c.to.name)}</p>${c.to.meta ? `<p class="ac-meta">${esc(c.to.meta)}</p>` : ''}</div>${uiIcon('arrow-right', { size: 14, class: 'ac-arrow' })}</li></ul>`;
-  const cancelLabel = c.cancelLabel || t.cancel;
-  const cancel = c.cancelHref
-    ? `<a class="ac-btn" href="${safeLink(c.cancelHref)}" data-act="cancel" data-key="cancel">${esc(cancelLabel)}</a>`
-    : `<button type="button" class="ac-btn" data-act="cancel" data-key="cancel">${esc(cancelLabel)}</button>`;
-  const label = c.confirmLabel || t.continueAs(c.to.name);
-  return `${sessions}<form class="ac-form" method="${method}" action="${safeLink(c.action)}">${fields}<div class="ac-actions">${cancel}<button type="submit" class="ac-btn is-primary" data-key="confirm"><span class="ac-label">${esc(label)}</span>${spinner(t.switching)}</button></div></form>`;
-}
-
-function authCardMarkup(data: AuthCardData | undefined, lang: unknown): string {
-  const d = data ?? {};
-  const t = authStrings(lang);
-  let brand = '<slot name="brand"></slot>';
-  if (d.brand?.label) {
-    const mark = d.brand.mark
-      ? `<span class="ac-mark" aria-hidden="true">${uiIcon(d.brand.mark === true ? 'brand' : d.brand.mark, { size: 16 })}</span>`
-      : '';
-    const inner = `${mark}<span>${esc(d.brand.label)}</span>`;
-    brand = d.brand.href
-      ? `<a class="ac-brand" href="${safeLink(d.brand.href)}" data-act="brand" data-key="brand">${inner}</a>`
-      : `<span class="ac-brand">${inner}</span>`;
-  }
-  const head =
-    d.title || d.text
-      ? `<header class="ac-head">${d.title ? `<h1 class="ac-title">${esc(d.title)}</h1>` : ''}${d.text ? `<p class="ac-text">${authInline(d.text)}</p>` : ''}<slot name="body"></slot></header>`
-      : '<slot name="body"></slot>';
-  const error = d.error
-    ? `<div class="ac-error" role="alert">${uiIcon('alert', { size: 14 })}<span>${esc(d.error)}</span></div>`
-    : '';
-  let body: string;
-  if (d.confirm) {
-    body = confirmHtml(d.confirm, t);
-  } else {
-    const providers = Array.isArray(d.providers) ? d.providers.filter((p) => p?.id) : [];
-    const hint = d.hint ? `<p class="ac-hint">${authInline(d.hint)}</p>` : '';
-    const signIn = providers.length
-      ? `${providersHtml(providers, t)}${hint ? `<div class="ac-divider"><span>${esc(t.or)}</span></div>${hint}` : ''}`
-      : hint;
-    if (d.account) {
-      const a = d.account;
-      const cont = `<a class="ac-btn is-primary" href="${safeLink(a.continue?.href ?? '/')}" data-act="continue" data-key="continue">${esc(a.continue?.label || t.continue)}</a>`;
-      const out = a.signOut
-        ? `<a class="ac-btn is-quiet" href="${safeLink(a.signOut.href ?? '#')}" data-act="sign-out" data-key="sign-out">${esc(a.signOut.label || t.signOut)}</a>`
-        : '';
-      body = `<section class="ac-account" aria-label="${escAttr(t.signedInAs)}"><p class="ac-label-sm">${esc(t.signedInAs)}</p><div class="ac-who">${avatar(a)}${who(a)}</div>${cont}${out}</section>${
-        signIn ? `<div class="ac-divider"><span>${esc(d.switchLabel || t.useDifferent)}</span></div>${signIn}` : ''
-      }`;
-    } else body = signIn;
-  }
-  const fine = d.finePrint ? `<p class="ac-fine">${authInline(d.finePrint)}</p>` : '';
-  return `<div class="ac">${brand}<div class="ac-card">${head}${error}${body}<slot></slot></div>${fine}<slot name="fine-print"></slot></div>`;
-}
-
-/**
- * `authCardHtml` of @2lab.ai/ui/auth-card: `<ui-auth-card>` with a declarative shadow root (the sheet and the
- * card) and its data as JSON (`<` escaped, so the script cannot be closed early) for the element to take over.
- */
-export function authCardHtml(
-  data: AuthCardData,
-  opts: { lang?: AuthLang; page?: boolean; theme?: 'light' | 'dark' } = {},
-): string {
-  const lang = opts.lang === 'ko' ? 'ko' : 'en';
-  const theme = opts.theme === 'dark' || opts.theme === 'light' ? opts.theme : '';
-  const hostAttrs = `lang="${lang}"${opts.page ? ' page' : ''}${theme ? ` theme="${theme}"` : ''}`;
-  const json = JSON.stringify(data).replace(/</g, '\\u003c');
-  return `<ui-auth-card ${hostAttrs}><template shadowrootmode="open"><style>${uiLibShadowCss('auth-card.js')}</style><div part="root" class="ui-root">${authCardMarkup(data, lang)}</div></template><script type="application/json" data-auth-state>${json}</script></ui-auth-card>`;
-}
+import { type AuthCardData, type AuthProvider, authCardHtml, esc } from '@2lab.ai/ui/server';
+import { UI_LIB_VERSION, uiLibTokensCss } from './ui-lib';
 
 // ── The page around the card ──
 
@@ -258,7 +21,9 @@ function withSlotted(card: string, slotted: string): string {
 /**
  * The page: the dashboard's theme choice (soma-theme, else the OS) on <html>, @2lab.ai/ui's tokens.css as the
  * only palette, the server-rendered card filling the viewport, and the element script. With JavaScript off the
- * tokens follow the OS theme and the card is the same one.
+ * tokens follow the OS theme and the card is the same one. A Korean page breaks its prose between words:
+ * `word-break` inherits into the card, whose own keep-all is keyed on its `lang` attribute (en — its strings
+ * are English — with the Slack hint in Korean).
  */
 function authPage(opts: { lang: 'ko' | 'en'; title: string; card: string }): string {
   return `<!DOCTYPE html>
@@ -273,7 +38,7 @@ function authPage(opts: { lang: 'ko' | 'en'; title: string; card: string }): str
 <style id="ui-tokens">
 ${uiLibTokensCss()}
 </style>
-<style>html, body { margin: 0; background: var(--ui-bg); }</style>
+<style>html, body { margin: 0; background: var(--ui-bg); } html:lang(ko) { word-break: keep-all; }</style>
 </head>
 <body>
 <main>
@@ -393,9 +158,10 @@ export function renderLoginPage(opts: {
 
 /**
  * The session-switch confirm of `GET /auth/sso` when the browser already holds another user's session:
- * "Continue as <name>" POSTs the exchange token to `/auth/sso/confirm` (which consumes the jti and swaps the
- * cookie); Cancel goes back to the dashboard and keeps the session — no token is consumed. The token is signed,
- * expiring and single-use, so the form needs no separate CSRF token.
+ * "Continue as <name>" (the card's own label; its primary grows and wraps, so a long name never cuts off) POSTs
+ * the exchange token to `/auth/sso/confirm` (which consumes the jti and swaps the cookie); Cancel goes back to
+ * the dashboard and keeps the session — no token is consumed. The token is signed, expiring and single-use, so
+ * the form needs no separate CSRF token.
  */
 export function renderSsoConfirmPage(
   token: string,
@@ -416,8 +182,6 @@ export function renderSsoConfirmPage(
       action: '/auth/sso/confirm',
       method: 'post',
       fields: { token },
-      // The card names the new session above; "Continue as <name>" would be cut off on a phone.
-      confirmLabel: 'Switch',
       cancelHref: '/dashboard',
     },
   };
