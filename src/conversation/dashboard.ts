@@ -424,6 +424,11 @@ export interface KanbanSession {
     recordFailure?: string;
     at: number;
   };
+  /**
+   * E2 ⑤ — notices this task owed its instruction thread that could not be
+   * posted (attempts spent). Absent when there are none, and for Slack sessions.
+   */
+  noticeFailures?: Array<{ kind: string; error: string }>;
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -1362,6 +1367,22 @@ const FOLLOWUP_SHOWN_FAILED = 5;
 /** A reason that only repeats the state (`steered`) says nothing the state does not. */
 const FOLLOWUP_STATE_ECHO = new Set<string>(['steered', 'consumed']);
 
+/** E2 ⑤ — a task card's undelivered thread notices (the notice deliverer, when wired). */
+let _taskNoticeFailures: ((sessionKey: string) => Array<{ kind: string; error: string }>) | null = null;
+export function setTaskNoticeFailureProvider(
+  provider: ((sessionKey: string) => Array<{ kind: string; error: string }>) | null,
+): void {
+  _taskNoticeFailures = provider;
+}
+function noticeFailuresOf(sessionKey: string): { noticeFailures?: Array<{ kind: string; error: string }> } {
+  try {
+    const failures = _taskNoticeFailures?.(sessionKey) ?? [];
+    return failures.length > 0 ? { noticeFailures: failures } : {};
+  } catch {
+    return {};
+  }
+}
+
 /** The session payload's queue: what the panel lists, oldest first (the queue's arrival order). */
 export function followupsOf(sessionKey: string, ownerId: string | undefined): DashboardFollowups | undefined {
   const view = _followupHandler?.view(sessionKey);
@@ -2240,7 +2261,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     artifacts: cardArtifacts(s.conversationId),
     userMedia: cardUserMedia(s.conversationId),
     followups: followupsOf(key, s.ownerId),
-    ...(s.slackless === true ? { slackless: true as const } : {}),
+    ...(s.slackless === true ? { slackless: true as const, ...noticeFailuresOf(key) } : {}),
     ...(s.slackless === true && s.lastTurnOutcome
       ? {
           lastTurnOutcome: {
@@ -11231,6 +11252,7 @@ function renderCardBody(s, col) {
     + permissionHtml
     + renderCardResume(s, col)
     + taskOutcomeHtml(s)
+    + taskNoticeFailHtml(s)
     + questionHtml
     + middle
     + cardGoalLine(s, col, isOwner && !isSibling)
@@ -11250,6 +11272,19 @@ function taskOutcomeHtml(s) {
     + '<span class="cto-label">마지막 턴 · ' + esc(TASK_OUTCOME_LABEL[kind] || kind) + '</span>'
     + (o.reason ? '<span class="cto-reason">' + esc(o.reason) + '</span>' : '')
     + (o.recordFailure ? '<span class="cto-warn" role="alert">기록하지 못함 · ' + esc(o.recordFailure) + '</span>' : '')
+    + '</div>';
+}
+
+// E2 ⑤ — a notice the task owed its Slack instruction thread that could not be
+// posted: the card says which and why (the thread will not get it).
+var TASK_NOTICE_LABEL = { link: '카드 링크', result: '결과', question: '질문', approval: '승인 요청', failure: '실패 알림', interrupted: '중단 알림' };
+function taskNoticeFailHtml(s) {
+  var f = s && s.slackless && s.noticeFailures;
+  if (!f || !f.length) return '';
+  return '<div class="card-task-outcome" data-outcome="notice-failed">'
+    + f.map(function (n) {
+      return '<span class="cto-warn" role="alert">슬랙 스레드에 못 보냄 · ' + esc(TASK_NOTICE_LABEL[n.kind] || n.kind) + ' · ' + esc(n.error) + '</span>';
+    }).join('')
     + '</div>';
 }
 
