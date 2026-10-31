@@ -50,7 +50,11 @@ export type RequestAbortReason =
   | 'shutdown'
   | 'stall-timeout'
   | 'user-interrupted'
-  | 'ghost-session';
+  | 'ghost-session'
+  // auto-compact — the running turn crossed the auto-compact threshold: it is
+  // stopped so a `/compact` turn can run before the context hits the hard
+  // limit, and the work continues after it. Quiet; not a stop.
+  | 'auto-compact';
 
 /**
  * The abort reasons that mean "this session is being STOPPED", as opposed to

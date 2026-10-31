@@ -317,6 +317,27 @@ describe('ActionHandlers', () => {
     });
   });
 
+  describe('dm_delete_approve / dm_delete_reject (#623 — one decision with the dashboard)', () => {
+    it("an admin approval deletes once; a second admin's click is refused instead of deleting again", async () => {
+      const { resetAdminUsersCache } = await import('../../admin-utils');
+      process.env.ADMIN_USERS = 'U_ADMIN,U_ADMIN2';
+      resetAdminUsersCache();
+      const api = { ...createMockSlackApi(), openDmChannel: vi.fn(async (u: string) => `D-${u}`) };
+      const h2 = new ActionHandlers({ ...ctx, slackApi: api as unknown as SlackApiHelper });
+      const mockApp = { action: vi.fn(), view: vi.fn() };
+      h2.registerHandlers(mockApp as any);
+      const approve = mockApp.action.mock.calls.find((c) => c[0] === 'dm_delete_approve')![1];
+      const value = JSON.stringify({ requesterId: 'U_REQ', targetChannel: 'C77', targetTs: `${Date.now()}.1` });
+      const first = vi.fn();
+      await approve({ ack: vi.fn(), body: { user: { id: 'U_ADMIN' }, actions: [{ value }] }, respond: first });
+      const second = vi.fn();
+      await approve({ ack: vi.fn(), body: { user: { id: 'U_ADMIN2' }, actions: [{ value }] }, respond: second });
+      expect(api.deleteMessage).toHaveBeenCalledTimes(1);
+      expect(first).toHaveBeenCalledWith(expect.objectContaining({ replace_original: true }));
+      expect(second).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
+    });
+  });
+
   describe('dm_delete_thread (full thread wipe)', () => {
     const threadValue = {
       requesterId: 'U_ADMIN',
