@@ -226,7 +226,7 @@ describe('a start refused for now is tried once more (fable #702 R1 P2)', () => 
 function realController(
   session: any,
   steps: Array<(input: RunTaskTurnInput) => Promise<RunTaskTurnResult>> = [],
-  onChainEnd?: (sessionKey: string) => void,
+  onChainEnd?: (sessionKey: string, info: { started: boolean }) => void,
 ) {
   const inputs: RunTaskTurnInput[] = [];
   let release!: () => void;
@@ -304,9 +304,10 @@ describe('wake through the real controller (K4, K5)', () => {
     plain.release();
   });
 
-  it('K6 — an event that came while a chain ran, whose start was never saved, still wakes it when the chain ends (grok #702 R1)', async () => {
+  it('K6 — a late event on a chain that never started is picked up by the waker’s one retry after its 500 (grok #702 R1, fable R2)', async () => {
     const epic = epicSession({ epicEvents: [ev('a')] });
     let waker!: ReturnType<typeof createEpicWaker>;
+    const ends: boolean[] = [];
     const h = realController(
       epic,
       [
@@ -319,19 +320,70 @@ describe('wake through the real controller (K4, K5)', () => {
           return { turnId: 't1', outcome: { turnId: 't1', outcome: 'failed', category: 'Exception', at: 1 } };
         },
       ],
-      (key) => waker.wake(key),
+      // Wired as index.ts: a chain that never started wakes no one.
+      (key, { started }) => {
+        ends.push(started);
+        if (started) waker.wake(key);
+      },
     );
     waker = createEpicWaker({
       getSession: () => epic,
       controller: h.controller,
       logger: { info: vi.fn(), warn: vi.fn() },
+      retryMs: 80,
     });
     waker.wake(KEY);
     for (let i = 0; i < 6; i++) await flush();
-    // Woken again once the first chain ended, with both events (none was consumed).
+    expect(ends[0]).toBe(false);
+    expect(h.runTaskTurn).toHaveBeenCalledTimes(1);
+    await new Promise((r) => setTimeout(r, 150));
+    // The retry: both events, none consumed before.
     expect(h.runTaskTurn).toHaveBeenCalledTimes(2);
     expect(h.inputs[1].consume).toEqual(['a', 'late']);
     expect(h.inputs[1].text).toBe('Epic wake: 2 events — login:finished, docs:failed. Read details with child_status.');
     h.release();
+  });
+
+  it('K7 — a start that keeps failing is tried at most twice, never in a loop (fable #702 R2 P1)', async () => {
+    const epic = epicSession();
+    let waker!: ReturnType<typeof createEpicWaker>;
+    const notStarted = async (): Promise<RunTaskTurnResult> => ({
+      turnId: 't',
+      outcome: { turnId: 't', outcome: 'failed', category: 'Exception', at: 1 },
+    });
+    const h = realController(epic, [notStarted, notStarted, notStarted, notStarted], (key, { started }) => {
+      if (started) waker.wake(key);
+    });
+    waker = createEpicWaker({
+      getSession: () => epic,
+      controller: h.controller,
+      logger: { info: vi.fn(), warn: vi.fn() },
+      retryMs: 5,
+    });
+    waker.wake(KEY);
+    await new Promise((r) => setTimeout(r, 60));
+    expect(h.runTaskTurn).toHaveBeenCalledTimes(2);
+  });
+
+  it('K8 — onChainEnd says whether the chain started', async () => {
+    const ends: boolean[] = [];
+    const epic = epicSession();
+    const h = realController(
+      epic,
+      [
+        async () => ({ turnId: 't', outcome: { turnId: 't', outcome: 'failed', category: 'Exception', at: 1 } }),
+        async (input) => {
+          input.onStarted?.();
+          return { turnId: 'u', outcome: { turnId: 'u', outcome: 'completed', category: 'WorkflowComplete', at: 1 } };
+        },
+      ],
+      (_key, { started }) => ends.push(started),
+    );
+    await h.controller.start({ sessionKey: KEY, text: 'go', actorUserId: 'UOWNER' });
+    await flush();
+    const r = await h.controller.start({ sessionKey: KEY, text: 'go', actorUserId: 'UOWNER' });
+    await (r as any).done;
+    await flush();
+    expect(ends).toEqual([false, true]);
   });
 });

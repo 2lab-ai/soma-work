@@ -608,10 +608,10 @@ export class SessionRegistry {
 
   /**
    * Optional single-slot hook fired after `drainOnIdleCallbacks` for a session
-   * that just transitioned to idle. E4 ⑥ (.prd/19 D7) holds it: `index.ts`
-   * wakes an epic with pending events. It fires inside the epic's own commit,
-   * before its chain is released, so that wake can meet the running chain —
-   * the controller's `onChainEnd` is the wake that lands (fable #702 R1).
+   * that just transitioned to idle — synchronously, inside that session's own
+   * commit. No production caller holds it: E4 ⑥ wakes an epic from the task
+   * controller's `onChainEnd` instead, after the chain is released (a wake from
+   * here would meet the epic's still-running chain — fable #702 R1).
    * Kept out of cron-scheduler state (`registerOnIdle`).
    */
   private onIdleAfterDrainHook?: (sessionKey: string) => void;
