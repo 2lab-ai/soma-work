@@ -48,11 +48,6 @@ export interface TaskTurnExecutorHost {
   appendSessionWorkLog: SessionWorkLogAppender;
   createConversation(session: ConversationSession): Promise<string>;
   receiptDrainTimeoutMs?: number;
-  /**
-   * Set by the caller that re-enters continuations and fallback compactions
-   * (④c). Unset, such a turn is committed as `interrupted` (design §9).
-   */
-  supportsReentry?: boolean;
 }
 
 export interface TaskTurnExecutor {
@@ -142,7 +137,6 @@ export function createTaskTurnExecutor(host: TaskTurnExecutorHost): TaskTurnExec
     execute: (params) => executor.execute(params as never),
     createConversation: host.createConversation,
     receipts,
-    supportsReentry: host.supportsReentry,
     logger,
   });
 
