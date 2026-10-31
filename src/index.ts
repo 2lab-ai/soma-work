@@ -819,6 +819,12 @@ async function start() {
         closeTask: async (key) => taskTurnController?.close(key),
         terminate: (key) => claudeHandler.terminateSession(key),
         ledgerUnreadable: () => taskNoticeLedgerUnreadable,
+        // E4 ⑦ (D10 b · c) — an epic's close cancels its running children first; a child's close is its epic's event.
+        getChildTasks: (parentTaskId) => claudeHandler.getSessionRegistry().getChildTasks(parentTaskId),
+        isRunning: (key) => taskTurnController?.isRunning(key) ?? false,
+        markClosedByParent: (key) => claudeHandler.getSessionRegistry().markClosedByParent(key),
+        recordChildClosed: (key) => claudeHandler.getSessionRegistry().recordEpicChildClosed(key),
+        markClosing: (key, closing) => claudeHandler.getSessionRegistry().markClosing(key, closing),
         logger,
       }),
     );

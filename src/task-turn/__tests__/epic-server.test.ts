@@ -261,6 +261,12 @@ describe('the epic server (E4 ④a, D3 · D8)', () => {
     expect(parse(await planWrite.handler({ nodes: [] } as any, {}))).toMatchObject({ code: 'not-an-epic' });
     expect(host.setEpicPlan).not.toHaveBeenCalled();
     epic.terminated = undefined;
+    // Being closed from the dashboard (E4 ⑦, fable #703 R1): no tool call either.
+    epic.closing = true;
+    expect(parse(await planWrite.handler({ nodes: [] } as any, {}))).toMatchObject({ code: 'not-an-epic' });
+    expect(parse(await childStatus.handler({} as any, {}))).toMatchObject({ code: 'not-an-epic' });
+    expect(host.setEpicPlan).not.toHaveBeenCalled();
+    epic.closing = undefined;
     epic.kind = undefined;
     expect(parse(await childStatus.handler({} as any, {}))).toMatchObject({ code: 'not-an-epic' });
   });

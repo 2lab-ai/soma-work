@@ -387,6 +387,14 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     expect(cardOf(child.taskId).kind).toBeUndefined();
     expect(cardOf(plain.taskId).kind).toBeUndefined();
     expect(cardOf(plain.taskId).parentTaskId).toBeUndefined();
+    // E4 ⑦ — a child its epic's close cancelled says so; none, no field.
+    expect(cardOf(child.taskId).closedBy).toBeUndefined();
+    child.closedBy = { by: 'parent', at: 7 };
+    const again = await board();
+    const after = [...again.working, ...again.waiting, ...again.idle].find(
+      (c: any) => c.key === `task:${child.taskId}`,
+    );
+    expect((after as any).closedBy).toEqual({ by: 'parent', at: 7 });
   });
 
   it('E2 ⑤ — a task’s card carries the thread notices that could not be posted; none, no field', async () => {
