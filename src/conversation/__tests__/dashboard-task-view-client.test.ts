@@ -1043,6 +1043,12 @@ describe('T1.3 / SSOT 2026-10-29 · 지시와 답변 opens on its latest turns; 
     expect(TEMPLATE).toMatch(/function applyPanelDetail\(\) \{[\s\S]*?syncPanelArtVariant\(\);\n\}/);
     expect(TEMPLATE).toContain('renderPanelArtifacts(list, cid, artPanelVariant())');
     expect(CSS).toContain('.slide-panel:not(.is-detail) .panel-artifacts { display: flex;');
+    // D4 K-06 review: the pinned 지시 첨부 row (the section's first child) is a row of its own above the chips —
+    // the chip row wraps and that row takes the whole width, in the minimal view and on a short body alike
+    // (else the disclosure is squeezed beside the chips, its label one character per line).
+    expect(CSS).toContain('.slide-panel:not(.is-detail) .panel-artifacts { display: flex; flex-wrap: wrap;');
+    expect(CSS).toMatch(/@container pbody \(max-height: 560px\) \{\n  \.panel-artifacts \{ display: flex; flex-wrap: wrap;/);
+    expect(CSS).toMatch(/^\.panel-user-media \{ flex: 1 1 100%; margin-bottom: 6px; \}/m);
   });
 
   it('every opening loads the latest 20 turns; each older page is the 20 before the oldest held', () => {

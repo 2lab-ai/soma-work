@@ -5248,7 +5248,9 @@ body.nt-open .new-task-fab { display: none !important; }
 .um-compact .um-more { font-size: 12px; }
 .um-compact .um-file { width: auto; max-width: 200px; }
 .io-row .um-media { margin: 4px 0 6px; }
-.panel-user-media { margin-bottom: 6px; }
+/* A row of its own above the 산출물 (the section lays its head and chips out as one flex row in the minimal
+   view and on a short body: this one wraps onto a full line of its own there). */
+.panel-user-media { flex: 1 1 100%; margin-bottom: 6px; }
 /* The 지시 첨부 row (D4 K-06): the summary slotted into <ui-disclosure> — glyph · 지시 첨부 · count · hint. */
 .panel-um-head { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text); font-size: 12px; font-weight: 600; }
 .panel-um-body { padding: 4px 0 2px; }
@@ -5339,7 +5341,7 @@ body.nt-open .new-task-fab { display: none !important; }
 /* Task view (T1.6): minimal — the artifacts are one row of name chips, like a
    short panel body below; 자세히 shows them as thumbnails. The chips are the file cards' chip variant
    (artPanelVariant); this row only lays them out. */
-.slide-panel:not(.is-detail) .panel-artifacts { display: flex; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
+.slide-panel:not(.is-detail) .panel-artifacts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
 .slide-panel:not(.is-detail) .panel-arts-head { flex: none; margin-bottom: 0; }
 .slide-panel:not(.is-detail) .panel-arts-hint { display: none; }
 .slide-panel:not(.is-detail) .art-strip-panel { flex: 1 1 auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; }
@@ -5348,7 +5350,7 @@ body.nt-open .new-task-fab { display: none !important; }
    rows): artifacts become name chips with the play button inline, so the
    pinned strip stays one short row; every tile is still reachable sideways. */
 @container pbody (max-height: 560px) {
-  .panel-artifacts { display: flex; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
+  .panel-artifacts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
   .panel-arts-head { flex: none; margin-bottom: 0; }
   .panel-arts-hint { display: none; }
   .art-strip-panel { flex: 1 1 auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; }
