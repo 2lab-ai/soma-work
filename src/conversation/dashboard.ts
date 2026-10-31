@@ -13098,7 +13098,7 @@ function wlEntryOf(st, e) {
   var text = String(e.text || '');
   var tool = e.tool ? String(e.tool) : '';
   if ((kind === 'tool' || kind === 'tool_result') && !e._role) {
-    var card = wlCardData(st, seq, false);
+    var card = wlCardData(st, seq);
     x.kind = 'tool';
     x.tool = { name: tool || '툴', status: card ? card.status : 'interrupted' };
     var sum = kind === 'tool' ? wlToolSummary(tool, text) : e.ok === false ? '실패' : '완료';
@@ -13143,18 +13143,29 @@ function wlEntryOf(st, e) {
   if (st.open && st.open.has(seq)) x.raw = wlRawView(st, e);
   return x;
 }
-// Pure: a run of entries outside any task — what its head says (the kind of
-// its first entry; an instruction's first line of words).
-var WL_RUN_TITLE = { instruction: '지시', narration: '진행', final: '응답', notice: '알림', error: '오류', tool: '도구 호출', system: '시스템' };
-function wlRunTitle(first) {
-  var t = WL_RUN_TITLE[first.kind] || '진행';
-  if (first.kind === 'system' && first.system) return first.system.label || t;
-  var line = first.kind === 'instruction' ? String(first.text || '').split('\\n')[0].trim() : '';
-  return line ? t + ' · ' + line : t;
+// Pure: a task group's ledger meta — the element's quiet line under the head's
+// title (D3-GAPS G2-2, 0.12.0 WorkGroup.meta): how the task ended (its time
+// when done, the fate word else — a running one says so, no live clock in a
+// head), and 툴 N회 once it ran. The words are the task list's (renderTaskMeta).
+function wlTaskMeta(t) {
+  var started = Number(t.startedAt) || 0;
+  var completed = Number(t.completedAt) || 0;
+  var removed = Number(t.removedAt) || 0;
+  var fate = taskFateOf(t);
+  var parts = [];
+  if (fate === 'done') {
+    var took = started && completed ? formatDuration(completed - started) || '0s' : '';
+    parts.push(took ? took + ' 만에 완료' : TASK_FATE_LABEL.done);
+  } else if (fate === 'active' || fate === 'paused' || fate === 'dropped' || fate === 'skipped') {
+    parts.push(TASK_FATE_LABEL[fate] + (fate === 'dropped' && started && removed > started ? ' ' + formatDuration(removed - started) : ''));
+  }
+  // SSOT 2026-10-29 T5: a count shared by tasks that ran together is fractional — a whole number on screen.
+  if (fate !== 'pending' && fate !== 'skipped') parts.push({ label: '툴', value: Math.round(toNum(t.toolCalls)) + '회' });
+  return parts;
 }
-// Open state of a group: the reader's choice (the element's ui-toggle, kept
+// Open state of a task group: the reader's choice (the element's ui-toggle, kept
 // across repaints and tab switches), else open when it is the newest task
-// group at first sight — a run outside any task is open.
+// group at first sight. (A run outside any task has no head to fold: headless.)
 function wlGroupOpen(state, id, newest) {
   var map = state.groupOpen || (state.groupOpen = Object.create(null));
   if (!(id in map)) map[id] = !!newest;
@@ -13174,11 +13185,13 @@ function wlGroupOf(e) {
 }
 // SSOT 2026-10-22 T10 — an entry made while a task was in progress carries
 // that task (taskId / taskTitle): one group per task, at the place of its
-// first entry, titled by the ledger (else its latest entry's title); the
-// entries outside a task in runs, each its own group in line. A folded group
-// is handed its count, not its entries: a long log's DOM stays the size of
-// what is open — and the element's scroller never holds the reader's place on
-// rows clipped inside a folded group (D3-GAPS G2-1).
+// first entry, titled by the ledger (else its latest entry's title) with the
+// ledger's meta under it; the entries outside a task (the instruction that
+// starts a turn, the response that ends it) in runs, each a headless group in
+// line — no head, always shown (D3-GAPS G2-2, 0.12.0). A folded task group is
+// handed its count, not its entries: a long log's DOM stays the size of what
+// is open — and the element's scroller never holds the reader's place on rows
+// clipped inside a folded group (D3-GAPS G2-1).
 function wlGroupsOf(st, entries) {
   var rows = [];
   var byTask = Object.create(null);
@@ -13208,16 +13221,16 @@ function wlGroupsOf(st, entries) {
   return rows.map(function(r) {
     var out = { id: r.id };
     if (typeof r.at === 'number' && isFinite(r.at)) out.at = r.at;
-    if (r.taskId) {
-      var task = wlTaskInfo(r.taskId);
-      out.ref = '#' + r.taskId;
-      out.title = (task && task.content) || r.title || '';
-      out.open = wlGroupOpen(st, r.id, r.id === newest);
-    } else {
-      out.ref = '';
-      out.title = wlRunTitle(wlEntryOf(st, r.list[0]));
-      out.open = wlGroupOpen(st, r.id, true);
+    if (!r.taskId) {
+      out.headless = true;
+      out.entries = r.list.map(function(e) { return wlEntryOf(st, e); });
+      return out;
     }
+    var task = wlTaskInfo(r.taskId);
+    out.ref = '#' + r.taskId;
+    out.title = (task && task.content) || r.title || '';
+    if (task) out.meta = wlTaskMeta(task);
+    out.open = wlGroupOpen(st, r.id, r.id === newest);
     out.count = r.list.length;
     out.entries = out.open ? r.list.map(function(e) { return wlEntryOf(st, e); }) : [];
     return out;
@@ -13259,9 +13272,8 @@ function wlCardSlots(el, d) {
     c.setAttribute('lang', 'ko');
     c.setAttribute('slot', 'tool-' + k);
     c.setAttribute('data-key', k);
-    // Each card's header is its own tab stop: the element's rows rove inside it,
-    // a slotted card cannot join that (D3-GAPS G2-3).
-    c.setAttribute('data-stop', '1');
+    // The card is a row on the log's arrow path: the element sets its head-tabindex
+    // (one tab stop across rows and cards — D3-GAPS G2-3, 0.12.0).
     // Light-DOM text: shown until the element is defined (its shadow root has no slot).
     c.innerHTML = '<span class="wl-card-fallback"><span class="wl-tool-name">' + esc(want[k].tool.name) + '</span> ' + esc(want[k].tool.summary || '') + '</span>';
     el.appendChild(c);
@@ -13425,14 +13437,14 @@ function wlCallLive(state, call) {
   return true;
 }
 // The card's data for the entry that carries it (a call, or a result on its own).
-function wlCardData(state, key, stop) {
+function wlCardData(state, key) {
   var carrier = wlEntryBySeq(state, key);
   if (!carrier) return null;
   var call = carrier.kind === 'tool' ? carrier : null;
   var res = call ? wlPairsOf(state).resultOf[call.seq] || null : carrier;
   var tool = String((call && call.tool) || (res && res.tool) || '');
   var status = res ? (res.ok === false ? 'error' : 'success') : wlCallLive(state, call) ? 'running' : 'interrupted';
-  var d = { name: tool || '툴', status: status, focusable: !!stop, open: !!(state.open && state.open.has(key)) };
+  var d = { name: tool || '툴', status: status, open: !!(state.open && state.open.has(key)) };
   var summary = call ? wlToolSummary(tool, call.text) : '';
   if (summary) d.summary = summary;
   if (call && typeof call.ts === 'number' && isFinite(call.ts)) {
@@ -13461,7 +13473,7 @@ function wlCardData(state, key, stop) {
 // load gets a new one), not by content: hashing 256 KiB on every push costs.
 function wlCardSig(d, rev) {
   if (!d) return '';
-  var keys = ['name', 'summary', 'status', 'focusable', 'open', 'at', 'duration', 'loading', 'note', 'detailError', 'error'];
+  var keys = ['name', 'summary', 'status', 'open', 'at', 'duration', 'loading', 'note', 'detailError', 'error'];
   var out = [];
   for (var i = 0; i < keys.length; i++) out.push(d[keys[i]]);
   out.push(d.args === undefined ? -1 : 1, d.result === undefined ? -1 : 1, rev || 0);
@@ -13470,7 +13482,7 @@ function wlCardSig(d, rev) {
 function wlPaintCard(state, el) {
   if (!el || !state) return;
   var key = Math.floor(Number(el.getAttribute('data-key')) || 0);
-  var d = wlCardData(state, key, el.getAttribute('data-stop') === '1');
+  var d = wlCardData(state, key);
   if (!d) return;
   var det = state.cardDetail && state.cardDetail[key];
   // Open without its input / output (a re-pairing dropped them, a fresh render): fetch them.

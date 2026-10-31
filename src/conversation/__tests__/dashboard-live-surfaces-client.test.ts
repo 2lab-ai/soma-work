@@ -706,20 +706,27 @@ describe('work log: the latest window on opening, older pages as the reader scro
 });
 
 describe('work log folds under the task each entry was made in (T10; <ui-work-log> groups)', () => {
-  type Group = { id: string; ref: string; title: string; open: boolean; count: number; entries: Array<{ id: string }> };
+  type Group = {
+    id: string;
+    ref?: string;
+    title?: string;
+    open?: boolean;
+    count?: number;
+    headless?: boolean;
+    meta?: unknown[];
+    entries: Array<{ id: string }>;
+  };
   const groupsOf = (entries: unknown[], tasks: Record<string, unknown> = {}, st: Record<string, unknown> = {}) =>
-    load<{ wlGroupsOf(st: unknown, entries: unknown[]): Group[] }>(
-      ['wlGroupOf', 'wlGroupOpen', 'wlRunTitle', 'wlGroupsOf'],
-      ['WL_RUN_TITLE'],
-      {
-        wlTaskInfo: (id: string) => tasks[id] ?? null,
-        wlEntryOf: (_st: unknown, e: { seq: number; kind: string; text: string }) => ({
-          id: String(e.seq),
-          kind: e.kind,
-          text: e.text,
-        }),
-      },
-    ).wlGroupsOf({ entries, ...st }, entries);
+    load<{ wlGroupsOf(st: unknown, entries: unknown[]): Group[] }>(['wlGroupOf', 'wlGroupOpen', 'wlGroupsOf'], [], {
+      wlTaskMeta: (t: Record<string, unknown>) =>
+        t.toolCalls === undefined ? [] : [{ label: '툴', value: `${t.toolCalls}회` }],
+      wlTaskInfo: (id: string) => tasks[id] ?? null,
+      wlEntryOf: (_st: unknown, e: { seq: number; kind: string; text: string }) => ({
+        id: String(e.seq),
+        kind: e.kind,
+        text: e.text,
+      }),
+    }).wlGroupsOf({ entries, ...st }, entries);
   const E = (seq: number, taskId?: string, taskTitle?: string, kind = 'tool') => ({
     seq,
     ts: 0,
@@ -728,7 +735,7 @@ describe('work log folds under the task each entry was made in (T10; <ui-work-lo
     ...(taskId ? { taskId, taskTitle } : {}),
   });
 
-  it('entries of one task gather under it, at its first entry; entries outside any task are runs in line', () => {
+  it('entries of one task gather under it, at its first entry; entries outside any task are headless runs in line (D3-GAPS G2-2)', () => {
     const g = groupsOf(
       [
         E(1, undefined, undefined, 'instruction'),
@@ -747,12 +754,21 @@ describe('work log folds under the task each entry was made in (T10; <ui-work-lo
       'task:T2:',
       'run:5:5',
     ]);
-    // The group is titled by its latest entry (no ledger task); the newest task is open at first sight.
+    // The group is titled by its latest entry (no ledger task, so no meta); the newest task is open at first sight.
     expect(g[1]).toMatchObject({ ref: '#T1', title: 'Explore again', count: 3, open: true });
+    expect(g[1].meta).toBeUndefined();
     expect(g[2]).toMatchObject({ ref: '#T2', title: 'Build', count: 1, open: false });
+    // A run outside any task: no head (nothing to title, count, fold or open) — its entries always in line.
+    expect(g[0]).toEqual({
+      id: 'run:1',
+      at: 0,
+      headless: true,
+      entries: [{ id: '1', kind: 'instruction', text: 'e1' }],
+    });
+    expect(g[3]).toEqual({ id: 'run:5', at: 0, headless: true, entries: [{ id: '5', kind: 'final', text: 'e5' }] });
   });
 
-  it('a group head: #id, the ledger’s title, the count; a folded group holds no entries until it is opened (DOM size)', () => {
+  it('a group head: #id, the ledger’s title and meta, the count; a folded group holds no entries until it is opened (DOM size)', () => {
     const tasks = { T1: { id: 'T1', content: 'Explore (ledger)', status: 'completed', toolCalls: 2 } };
     const closed = groupsOf([E(2, 'T1', 'Explore'), E(3, 'T1', 'Explore'), E(4, 'T2', 'Build')], tasks);
     expect(closed[0]).toEqual({
@@ -760,6 +776,7 @@ describe('work log folds under the task each entry was made in (T10; <ui-work-lo
       at: 0,
       ref: '#T1',
       title: 'Explore (ledger)',
+      meta: [{ label: '툴', value: '2회' }],
       open: false,
       count: 2,
       entries: [],
