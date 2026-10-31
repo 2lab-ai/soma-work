@@ -5974,14 +5974,18 @@ function syncPanelWidth() {
 }
 
 // ── Panel tasks rendering ──
+// D8: a settled span (a task's, a compaction's, a goal's time) in the very words <ui-elapsed lang="ko"> says for
+// a live one — @2lab.ai/ui fmtSpan(ms, 'ko'): 42초 · 9분 22초 · 2시간 15분 (two-digit seconds and minutes past the
+// first unit). Mirrored here because the page's script is plain and the element's helpers are a module;
+// dashboard-ko-time-words.test.ts pins the two together. '' for nothing — callers put their own 0초 there.
 function formatDuration(ms) {
-  if (!ms || ms <= 0) return '';
-  var sec = Math.floor(ms / 1000);
-  if (sec < 60) return sec + 's';
-  var min = Math.floor(sec / 60);
-  if (min < 60) return min + 'm ' + (sec % 60) + 's';
-  var hr = Math.floor(min / 60);
-  return hr + 'h ' + (min % 60) + 'm';
+  if (!(ms > 0)) return '';
+  var s = Math.floor(Number(ms) / 1000);
+  if (s < 60) return s + '초';
+  var m = Math.floor(s / 60);
+  if (m < 60) return m + '분 ' + (s % 60 < 10 ? '0' : '') + (s % 60) + '초';
+  var h = Math.floor(m / 60);
+  return h + '시간 ' + (m % 60 < 10 ? '0' : '') + (m % 60) + '분';
 }
 
 function formatTaskTime(ts) {
@@ -7569,25 +7573,31 @@ function spendTitle(sp) {
   if (sp.unpricedModels && sp.unpricedModels.length) t += ' · 단가표에 없는 모델(' + sp.unpricedModels.join(', ') + ')은 기본 단가로 추정';
   return t;
 }
-// Dashboard v2.1 — \`Nm SSs\` for a settled total (the thread's Σ, a closed 활성 시간). Mirrors
-// packages/common/src/format/duration.ts; the same words <ui-elapsed> says for a span past a minute.
+// A settled total that is never empty (the thread's Σ, a closed 활성 시간): formatDuration's words, 0초 for nothing
+// — fmtSpan(ms, 'ko') for every value.
 function formatNmSSs(ms) {
-  if (!ms || ms < 0 || isNaN(ms)) return '0m 00s';
-  var totalSec = Math.floor(ms / 1000);
-  var m = Math.floor(totalSec / 60);
-  var s = totalSec % 60;
-  return m + 'm ' + (s < 10 ? '0' + s : s) + 's';
+  return formatDuration(ms) || '0초';
+}
+// How long ago, settled — fmtSince(ms, 'ko'): 방금 · 5분 전 · 3시간 전 · 2일 전 (dashboard-ko-time-words.test.ts pins it).
+function formatSince(ms) {
+  var s = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  if (s < 45) return '방금';
+  var m = Math.floor(s / 60);
+  if (m < 60) return Math.max(1, m) + '분 전';
+  var h = Math.floor(m / 60);
+  if (h < 48) return h + '시간 전';
+  return Math.floor(h / 24) + '일 전';
 }
 // Every live time on the page is @2lab.ai/ui <ui-elapsed> (D7 K-03): the root's active time (a leg under way:
 // since = the leg's start less what ran before it), a running task's or subagent's elapsed (since), the session's
 // last activity (format="ago"). The element ticks them on its own shared whole-second timer, changes the text in
 // place and stops by itself; a morph keeps it (its attributes are the data, never Date.now() — a clock in the
-// markup would make every poll look like a change). The words are the page's own short form (1m 05s · 6m ago),
-// beside formatDuration / formatNmSSs; a closed total is plain text. (The card faces' clocks are <ui-agent-inbox>'s
-// own tick; an approval card's expiry <ui-approval-card>'s.) The page's 1 Hz tick keeps one job: the cron
-// drawer's 다음 실행 countdown (aqTick — its "곧 … 후" words are the page's).
+// markup would make every poll look like a change). It reads its own lang (not the page's), so every one is
+// written lang="ko" (D8): 1분 05초 · 6분 전 — the words formatNmSSs / formatSince say for a settled time.
+// (The card faces' clocks are <ui-agent-inbox>'s own tick; an approval card's expiry <ui-approval-card>'s.) The
+// page's 1 Hz tick keeps one job: the cron drawer's 다음 실행 countdown (aqTick — its "곧 … 후" words are the page's).
 function elapsedHtml(sinceMs, title) {
-  return '<ui-elapsed since="' + Math.round(Number(sinceMs) || 0) + '"' + (title ? ' title="' + escAttr(title) + '"' : '') + '></ui-elapsed>';
+  return '<ui-elapsed since="' + Math.round(Number(sinceMs) || 0) + '" lang="ko"' + (title ? ' title="' + escAttr(title) + '"' : '') + '></ui-elapsed>';
 }
 function activeTimeHtml(legStartedMs, accumulatedMs, title) {
   var leg = Number(legStartedMs) || 0;
@@ -7596,7 +7606,7 @@ function activeTimeHtml(legStartedMs, accumulatedMs, title) {
   return '<span' + (title ? ' title="' + escAttr(title) + '"' : '') + '>' + formatNmSSs(acc) + '</span>';
 }
 function agoHtml(atMs) {
-  return '<ui-elapsed since="' + Math.round(Number(atMs) || 0) + '" format="ago"></ui-elapsed>';
+  return '<ui-elapsed since="' + Math.round(Number(atMs) || 0) + '" format="ago" lang="ko"></ui-elapsed>';
 }
 function updateTimers() { aqTick(); }
 var _timerTick = setInterval(updateTimers, 1000);
@@ -8582,7 +8592,7 @@ function renderTaskMeta(t) {
   // Task view T2: a task a later plan dropped says so — never a running clock.
   var fate = taskFateOf(t);
   var parts = [];
-  if (fate === 'done' && started && completed) parts.push(formatDuration(completed - started) || '0s');
+  if (fate === 'done' && started && completed) parts.push(formatDuration(completed - started) || '0초');
   else if (fate === 'active' && started) parts.push(elapsedHtml(started));
   else if (fate === 'dropped' || fate === 'skipped' || fate === 'paused') {
     parts.push(TASK_FATE_LABEL[fate] + (fate === 'dropped' && started && removed > started ? ' ' + formatDuration(removed - started) : ''));
@@ -8686,7 +8696,7 @@ function agentTimeHtml(a) {
   var started = Number(a.startedAt) || 0;
   if (agentStatusOf(a) === 'running') return started ? elapsedHtml(started) : '';
   var ms = toNum(a.durationMs) || (Number(a.endedAt) && started ? Number(a.endedAt) - started : 0);
-  return ms > 0 ? (formatDuration(ms) || '0s') : '';
+  return ms > 0 ? (formatDuration(ms) || '0초') : '';
 }
 // The line under a node: its task in progress, else the SDK's summary, else its last tool.
 function agentActivity(a) {
@@ -13398,7 +13408,7 @@ function wlTaskMeta(t) {
   var fate = taskFateOf(t);
   var parts = [];
   if (fate === 'done') {
-    var took = started && completed ? formatDuration(completed - started) || '0s' : '';
+    var took = started && completed ? formatDuration(completed - started) || '0초' : '';
     parts.push(took ? took + ' 만에 완료' : TASK_FATE_LABEL.done);
   } else if (fate === 'active' || fate === 'paused' || fate === 'dropped' || fate === 'skipped') {
     parts.push(TASK_FATE_LABEL[fate] + (fate === 'dropped' && started && removed > started ? ' ' + formatDuration(removed - started) : ''));
@@ -15670,7 +15680,7 @@ function cronScheduleLabel(expr, nextRunAt) {
   return raw;
 }
 function cronAgo(ms, nowMs) {
-  return capCountdown((nowMs - ms) / 1000) + ' 전';
+  return formatSince(nowMs - ms);
 }
 function cronRunWhen(ms, nowMs) {
   return capClockLabel(ms / 1000, nowMs) + ' · ' + cronAgo(ms, nowMs);
@@ -15853,8 +15863,8 @@ function renderCronRunRow(run, g, nowMs) {
   var bits = [];
   bits.push('<time datetime="' + escAttr(new Date(run.executedAt).toISOString()) + '">' + esc(cronRunWhen(run.executedAt, nowMs)) + '</time>');
   bits.push(esc(run.triggeredBy ? '수동 실행 (' + run.triggeredBy + ')' : '예약 실행'));
-  if (s && s.activeMs) bits.push(esc('소요 ' + capCountdown(s.activeMs / 1000)));
-  if (s && typeof s.tokens === 'number' && s.tokens > 0) bits.push(esc(formatTokens(s.tokens) + ' tok'));
+  if (s && s.activeMs) bits.push(esc('소요 ' + formatNmSSs(s.activeMs)));
+  if (s && typeof s.tokens === 'number' && s.tokens > 0) bits.push(esc(formatTokens(s.tokens) + ' 토큰'));
   if (s && typeof s.costUsd === 'number' && s.costUsd > 0) bits.push(esc('$' + s.costUsd.toFixed(2)));
   if (!s && run.status === 'success' && run.executionPath !== 'dm' && run.executionPath !== 'thread_reply') bits.push(esc('세션 연결 없음'));
   var actions = [];
@@ -16018,16 +16028,6 @@ function aqTick() {
 // <ui-agent-queue> with providers only. The server (capacity-view.ts) counts each provider in
 // max accounts' worth (tier-weighted) and replays every account's resets in time order, in
 // epoch SECONDS: the element is told so (timeUnit 's') and converts once. capData maps the
-// Floor to the minute and keep the minutes: 3h59m never reads "3h".
-function capCountdown(secs) {
-  var s = Math.max(0, Math.floor(Number(secs) || 0));
-  if (s < 60) return '<1m';
-  var m = Math.floor(s / 60);
-  if (m < 60) return m + 'm';
-  var h = Math.floor(m / 60);
-  if (h < 24) return h + 'h ' + (m % 60) + 'm';
-  return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
-}
 // view; the element draws the folded chips, the bars, the disclosure line, the account marks
 // and their card, the 7-day timeline, ticks every countdown, and speaks a pool's change.
 var CAP_TIERS = { 'claude-max-5x': { short: 'x5', label: 'Max x5' }, 'claude-max-20x': { short: 'x20', label: 'Max x20' }, 'chatgpt-pro-200': { short: '$200', label: 'Pro ($200)' }, 'chatgpt-pro-500': { short: '$500', label: 'Pro ($500)' } };
