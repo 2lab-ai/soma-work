@@ -736,7 +736,10 @@ describe('agent inbox board — motion contract (§4)', () => {
 
   it('presses scale to 0.97 — pointer presses only, never keyboard activation (§4-5, §4-9)', () => {
     const rules = TEMPLATE.match(/^[^\n{]*:active[^\n{]*\{[^}]*transform: scale\(0\.97\)[^}]*\}/gm) ?? [];
-    expect(rules.length).toBeGreaterThan(0);
+    // D7: every pressable control of the page is a kit class or an element now — the page keeps no press rule of
+    // its own; the kit's excludes keyboard presses the same way.
+    expect(rules).toEqual([]);
+    expect(KIT).toContain(':is(.ui-btn, .ui-icon-btn, button.ui-chip, a.ui-chip):active:not(:disabled):not([aria-disabled="true"]):not(:focus-visible) { transform: scale(0.97); }');
     // Tone pass P6: one shared press rule lists its controls in :is(…) — split on top-level commas only,
     // so each selector (the whole :is(…):active… one included) must still exclude keyboard presses.
     const topLevel = (list: string) => {
@@ -758,8 +761,8 @@ describe('agent inbox board — motion contract (§4)', () => {
       for (const sel of selectors) expect(sel, sel).toContain(':not(:focus-visible)');
     }
     // D7: the chips (defaults, admin, 보관함 · 휴면, 자세히) are kit chips — the press is ui-kit.css's
-    // (button.ui-chip:active:not(:focus-visible) → scale(.97)); the page keeps the rule for its own tiles only.
-    expect(TEMPLATE).toContain('.um-tile:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }');
+    // (button.ui-chip:active:not(:focus-visible) → scale(.97)); the user-media tiles are <ui-media-grid>'s (I-09).
+    expect(TEMPLATE).not.toContain('.um-tile');
     expect(TEMPLATE).not.toMatch(/:is\([^)]*\.panel-detail-toggle[^)]*\):active/);
     expect(KIT).toMatch(
       /:is\(\.ui-btn, \.ui-icon-btn, button\.ui-chip, a\.ui-chip\):active:not\(:disabled\):not\(\[aria-disabled="true"\]\):not\(:focus-visible\) \{ transform: scale\(0\.97\); \}/,

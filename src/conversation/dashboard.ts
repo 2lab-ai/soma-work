@@ -4204,6 +4204,7 @@ window.uiPeek = { html: peekHtml, kind: fileItemKind };
 <script type="module" src="/dashboard/ui/log-scroller.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/elapsed.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/meter.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/media-grid.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4918,7 +4919,6 @@ ui-drawer:not(:defined) { display: none; }
 /* PRESS — one rule for every button-like control: scale(.97) on --dur-press ease-out (each control's own
    transition carries the transform), pointer presses only — never a keyboard press (:focus-visible). The
    56px FAB presses to .95. */
-.um-tile:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
@@ -4964,7 +4964,6 @@ ui-drawer:not(:defined) { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  .um-tile:active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Loading skeletons hold still (the kit's .ui-skeleton stills itself; the kit's spinner stands as a ring with a dot). */
   .is-loading { animation: none !important; }
 }
@@ -5119,27 +5118,18 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-strip-panel .art-tile { --fc-tile-w: 152px; }
 .turn-arts-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 /* ── User media (SSOT 2026-10-25): the files a user attached to an instruction ──
-   Above the words, as chat apps show an attachment with its message. Fixed boxes
-   (no layout shift once an image loads), 80px tiles, "+N" on the 4th past four,
-   44px targets on touch, no motion beyond the shared press scale. */
+   Above the words, as chat apps show an attachment with its message. The pictures are @2lab.ai/ui <ui-media-grid>
+   (D7 I-09 / I-11): fixed 80px tiles (one picture alone in a wide box that shows it whole), "+N" on the last tile
+   past four, 40px tiles in the compact size (44px on touch), each tile a button named by its action that asks to
+   open (ui-open → the artifact viewer); the other files are cards. */
 .um-media { display: grid; gap: 6px; margin: 2px 0 6px; min-width: 0; }
-.um-grid { display: flex; flex-wrap: wrap; gap: 4px; }
-.um-tile { position: relative; flex: 0 0 auto; width: 80px; height: 80px; padding: 0; overflow: hidden; border: 1px solid var(--ib-card-border); border-radius: 8px; background: var(--ib-col); cursor: zoom-in; transition: border-color 150ms ease, transform var(--dur-press) var(--ease-out); }
-.um-tile img { display: block; width: 100%; height: 100%; object-fit: cover; }
-.um-single .um-tile { width: 280px; max-width: 100%; height: 200px; background: var(--bg); }
-.um-single .um-tile img { object-fit: contain; }
-.um-tile:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-.um-more { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--media-scrim); color: var(--on-media); font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.um-tile.is-broken img { display: none; }
-.um-tile.is-broken::after { content: '미리보기 불가'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 4px; font-size: 10.5px; color: var(--ib-muted); text-align: center; }
+.um-media > ui-media-grid { display: block; min-width: 0; }
 .um-files { display: flex; flex-wrap: wrap; gap: 6px; }
 /* A non-image attachment is a <ui-file-card variant="row" playable> (D4 I-09): the card draws the glyph, the name,
    the kind · size · age line and the voice note's play toggle; the page sizes the box. */
 .um-file { display: flex; min-width: 0; width: 240px; max-width: 100%; }
 .um-file > ui-file-card { display: block; flex: 1 1 auto; min-width: 0; }
 .um-file.is-remote { opacity: 0.8; }
-.um-compact .um-tile { width: 40px; height: 40px; border-radius: 6px; }
-.um-compact .um-more { font-size: 12px; }
 .um-compact .um-file { width: auto; max-width: 200px; }
 .io-row .um-media { margin: 4px 0 6px; }
 /* A row of its own above the 산출물 (the section lays its head and chips out as one flex row in the minimal
@@ -5149,15 +5139,6 @@ body.nt-open .new-task-fab { display: none !important; }
 .panel-um-head { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text); font-size: 12px; font-weight: 600; }
 .panel-um-body { padding: 4px 0 2px; }
 .panel-um-body .um-media { margin: 0; }
-@media (hover: hover) and (pointer: fine) {
-  .um-tile:hover { border-color: var(--ib-muted); }
-}
-@media (pointer: coarse) {
-  .um-compact .um-tile { width: 44px; height: 44px; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .um-tile { transition: none; }
-}
 /* The peek (I-05) is <ui-hovercard id="art-peek">: the element draws the raised card beside its trigger (360px —
    its width attribute) and runs the hover / focus / Esc / press rules; its inside is the library's peekHtml (the
    media box — an image, a document head, the page scaled, the kind's glyph — then name · kind · meta) under
@@ -5517,7 +5498,7 @@ ${pageTokenAliases()}
 <!-- Artifacts (SSOT 2026-10-23): the peek and the viewer, shared by the board, the open cards and the panel —
      @2lab.ai/ui <ui-hovercard> (I-05: one card for every tile, filled on ui-open) and <ui-artifact-viewer
      tiles="none"> (I-06 / I-07: opened over the page's own cards with open(items, index, opener)). -->
-<ui-hovercard id="art-peek" for="ui-file-card[data-art-id], .ib-chip[data-art], .um-tile[data-art-id]" width="360"></ui-hovercard>
+<ui-hovercard id="art-peek" for="ui-file-card[data-art-id], .ib-chip[data-art], .mg-tile[data-mk]" width="360"></ui-hovercard>
 <ui-artifact-viewer id="art-viewer" tiles="none" lang="ko"></ui-artifact-viewer>
 
 <script>
@@ -15746,41 +15727,55 @@ function umSiblings(cid, id, all) {
   return out;
 }
 
-// One attachment: an image tile (page markup — a fixed box, "+N" past four, named by its action: "이미지 열기 2/5:
-// login.png"), or a <ui-file-card> (a row; a name chip in the compact row) that plays a voice note in place.
-function umTile(cid, a, pos, total, more, compact) {
-  if (a.kind === 'image' && a.stored) {
-    var label = '이미지 열기 ' + pos + '/' + total + ': ' + a.name + (more > 0 ? ' 외 ' + more + '개' : '');
-    return '<button type="button" class="um-tile um-img" data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id) + '" aria-label="' + escAttr(label) + '" title="' + escAttr(a.name) + '">'
-      + '<img src="' + escAttr(umUrl(cid, a.id)) + '" alt="" loading="lazy" decoding="async" onerror="this.parentNode.classList.add(\\'is-broken\\')">'
-      + (more > 0 ? '<span class="um-more" aria-hidden="true">+' + more + '</span>' : '')
-      + '</button>';
-  }
+// A non-image attachment: a <ui-file-card> (a row; a name chip in the compact row) that plays a voice note in place.
+function umTile(cid, a, compact) {
   return '<div class="um-file art-k-' + escAttr(a.kind || 'file') + (a.stored ? '' : ' is-remote') + (compact ? ' um-file-compact' : '') + '">'
     + artCard(cid, a, compact ? 'chip' : 'row', true) + '</div>';
 }
+// The pictures of one instruction: @2lab.ai/ui <ui-media-grid> (D7 I-09 / I-11), keyed by the conversation and the
+// stored image ids (data-um); it gets its items once it is in the document (mgHydrate — the markup is static per
+// render, so equal data still renders equal strings). Four tiles, "+N" on the last; one picture alone in a wide
+// box; size="compact" in the open card's 지시 row and the pinned row.
+function umGridHtml(cid, imgs, compact) {
+  return '<ui-media-grid class="um-grid" lang="ko"' + (compact ? ' size="compact"' : '') + ' max="' + UM_GRID_MAX + '" data-art-cid="' + escAttr(cid) + '" data-um="' + escAttr(imgs.map(function(a) { return a.id; }).join(',')) + '"></ui-media-grid>';
+}
+// The grid's items: the pictures it names, as the element reads them (id, name, url — the media route; alt when
+// the file carries one), in the viewer's shape so the same list opens it.
+function umGridItems(cid, ids) {
+  var out = [];
+  for (var i = 0; i < ids.length; i++) {
+    var a = umGet(cid, ids[i]);
+    if (!a) continue;
+    var item = { id: String(a.id), name: String(a.name || ''), url: umUrl(cid, a.id) };
+    if (a.alt) item.alt = String(a.alt);
+    out.push(item);
+  }
+  return out;
+}
+function mgHydrate(el) {
+  if (!el || !el.getAttribute) return;
+  var cid = el.getAttribute('data-art-cid') || '';
+  var ids = String(el.getAttribute('data-um') || '').split(',').filter(Boolean);
+  var items = umGridItems(cid, ids);
+  var sig = JSON.stringify(items);
+  if (el._mgSig === sig) return;
+  el._mgSig = sig;
+  el.data = { items: items };
+}
 
-// The files of one instruction: images first as a grid of tiles (one image on
-// its own in a fixed box), then the other files as cards. opts.compact: the
-// open card's 지시 row and the pinned row — small tiles, name-only chips.
+// The files of one instruction: images first as the grid (one image on its own in a wide box), then the other
+// files as cards. opts.compact: the open card's 지시 row and the pinned row — small tiles, name-only chips.
 function renderUserMedia(cid, list, opts) {
   var items = (list || []).filter(function(a) { return a && a.id; });
   if (!cid || !items.length) return '';
   var compact = !!(opts && opts.compact);
-  var total = items.length;
   var imgs = [];
   var files = [];
-  items.forEach(function(a, i) { (a.kind === 'image' && a.stored ? imgs : files).push({ a: a, pos: i + 1 }); });
+  items.forEach(function(a) { (a.kind === 'image' && a.stored ? imgs : files).push(a); });
   var html = '';
-  if (imgs.length) {
-    var shown = imgs.slice(0, UM_GRID_MAX);
-    var more = imgs.length - shown.length;
-    html += '<div class="um-grid' + (imgs.length === 1 && !compact ? ' um-single' : '') + '">'
-      + shown.map(function(x, k) { return umTile(cid, x.a, x.pos, total, k === shown.length - 1 ? more : 0, compact); }).join('')
-      + '</div>';
-  }
+  if (imgs.length) html += umGridHtml(cid, imgs, compact);
   if (files.length) {
-    html += '<div class="um-files">' + files.map(function(x) { return umTile(cid, x.a, x.pos, total, 0, compact); }).join('') + '</div>';
+    html += '<div class="um-files">' + files.map(function(a) { return umTile(cid, a, compact); }).join('') + '</div>';
   }
   return '<div class="um-media' + (compact ? ' um-compact' : '') + '">' + html + '</div>';
 }
@@ -16046,12 +16041,19 @@ function syncPanelArtVariant() {
 // attachments. The element owns the hover intent, the grace, the quick swap, keyboard focus, Esc, a press, the
 // scroll-away and the placement; the page fills it on ui-open and empties it on ui-closed.
 
-// The file a peek trigger stands for: a keyed card / tile (data-art-cid + data-art-id), or a face chip
-// (data-key="art:<session key>:<file id>" in the inbox's shadow root — the conversation is that session's).
+// The file a peek trigger stands for: a keyed card (data-art-cid + data-art-id), a tile in a <ui-media-grid>
+// (.mg-tile[data-mk] in the grid's shadow root — the grid carries the conversation, the tile its file id), or a
+// face chip (data-key="art:<session key>:<file id>" in the inbox's shadow root — the conversation is that session's).
 function artPeekTarget(t) {
   if (!t || !t.getAttribute) return null;
   var cid = t.getAttribute('data-art-cid');
   var id = t.getAttribute('data-art-id');
+  if (!cid && t.hasAttribute('data-mk') && t.classList.contains('mg-tile')) {
+    var root = t.getRootNode && t.getRootNode();
+    var grid = root && root.host;
+    cid = grid && grid.getAttribute ? grid.getAttribute('data-art-cid') : null;
+    id = String(t.getAttribute('data-mk') || '');
+  }
   if (!cid && t.hasAttribute('data-art')) {
     id = String(t.getAttribute('data-art') || '');
     var key = String(t.getAttribute('data-key') || '');
@@ -16199,8 +16201,10 @@ function pauseArtCards() {
 }
 
 // Every <ui-file-card data-art-id> a render puts in the document — the open card (morphed on every push), the
-// panel strip, an answer's row — gets its file once it is in, and again when its data-art-v changes.
+// panel strip, an answer's row — gets its file once it is in, and again when its data-art-v changes; every
+// <ui-media-grid data-um> its pictures the same way (again when its ids change).
 function fcHydrate(el) {
+  if (el && el.localName === 'ui-media-grid') return mgHydrate(el);
   if (!el || !el.getAttribute) return;
   var cid = el.getAttribute('data-art-cid') || '';
   var a = artFind(cid, el.getAttribute('data-art-id') || '');
@@ -16211,10 +16215,11 @@ function fcHydrate(el) {
   el._fcSig = sig;
   el.data = d;
 }
+var FC_HYDRATE_SEL = 'ui-file-card[data-art-id], ui-media-grid[data-um]';
 function fcHydrateIn(node) {
   if (!node || node.nodeType !== 1) return;
-  if (node.matches('ui-file-card[data-art-id]')) fcHydrate(node);
-  var inner = node.querySelectorAll('ui-file-card[data-art-id]');
+  if (node.matches(FC_HYDRATE_SEL)) fcHydrate(node);
+  var inner = node.querySelectorAll(FC_HYDRATE_SEL);
   for (var i = 0; i < inner.length; i++) fcHydrate(inner[i]);
 }
 (function initFileCards() {
@@ -16225,27 +16230,26 @@ function fcHydrateIn(node) {
       if (m.type === 'attributes') fcHydrate(m.target);
       else for (var j = 0; j < m.addedNodes.length; j++) fcHydrateIn(m.addedNodes[j]);
     }
-  }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-art-v'] });
+  }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-art-v', 'data-um'] });
   fcHydrateIn(document.body);
 })();
 
 (function initArtifactInteractions() {
-  // <ui-file-card> asks to open its file (ui-open): the viewer, at it, over the conversation's files. (The
-  // hovercard's ui-open — its detail a trigger — is answered on the card below.)
+  // <ui-file-card> asks to open its file, <ui-media-grid> one of its pictures (ui-open): the viewer, at it, over the
+  // conversation's files; the viewer returns focus to the card / the grid's tile. (The hovercard's ui-open — its
+  // detail a trigger — is answered on the card below.)
   document.addEventListener('ui-open', function(e) {
     var t = e.target;
-    if (!t || t.localName !== 'ui-file-card' || !t.hasAttribute('data-art-id')) return;
-    openArtifactViewer(t.getAttribute('data-art-cid'), t.getAttribute('data-art-id'), t);
+    if (!t || !t.getAttribute) return;
+    if (t.localName === 'ui-file-card' && t.hasAttribute('data-art-id')) {
+      openArtifactViewer(t.getAttribute('data-art-cid'), t.getAttribute('data-art-id'), t);
+    } else if (t.localName === 'ui-media-grid' && t.hasAttribute('data-art-cid') && e.detail && e.detail.id) {
+      openArtifactViewer(t.getAttribute('data-art-cid'), String(e.detail.id), t);
+    }
   });
-  // A user's image tile (page markup), or the peek itself (its audio controls excepted): the same viewer.
+  // The peek itself (its audio controls excepted): the same viewer.
   document.addEventListener('click', function(e) {
     if (!e.target.closest) return;
-    var tile = e.target.closest('.um-tile[data-art-id]');
-    if (tile) {
-      e.preventDefault();
-      openArtifactViewer(tile.getAttribute('data-art-cid'), tile.getAttribute('data-art-id'), tile);
-      return;
-    }
     var peek = document.getElementById('art-peek');
     if (peek && e.target.closest('#art-peek .av-pk-media') && !e.target.closest('audio')) {
       var anchor = peek.trigger;
