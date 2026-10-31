@@ -8,7 +8,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ExecutionContextMissingError, taskDirectoryFor } from '../../agent-runtime/execution-context';
-import { createTaskLauncher, listTaskFolders, taskTitleOf } from '../task-launcher';
+import { cleanupOwnerOf, createTaskLauncher, listTaskFolders, taskTitleOf } from '../task-launcher';
 
 const OWNER = 'U0T600OWNER';
 const ROOT = `/tmp/${OWNER}`;
@@ -31,7 +31,9 @@ afterAll(() => {
 
 const TASK_ID = '60060060-0600-4600-8600-600600600600';
 
-function harness(over: { canStart?: unknown; startStatus?: number } = {}) {
+function harness(
+  over: { canStart?: unknown; startStatus?: number; cleanupOwner?: (dir: string) => string | undefined } = {},
+) {
   const calls: string[] = [];
   const created: Array<Record<string, unknown>> = [];
   const controller = {
@@ -61,6 +63,7 @@ function harness(over: { canStart?: unknown; startStatus?: number } = {}) {
       return dir;
     },
     listModels: () => MODELS,
+    cleanupOwnerOf: over.cleanupOwner,
   });
   return { launcher, controller, calls, created };
 }
@@ -128,6 +131,34 @@ describe('createTaskLauncher (#600 ⑥)', () => {
     expect(r.status).toBe(422);
     expect(h.calls).not.toContain('createTask');
     expect(h.controller.start).not.toHaveBeenCalled();
+  });
+
+  // #640 R2 (astra P1): a folder another session's cleanup removes (its session_* folder,
+  // a clone inside it) would take the task's work with it when that session ends or sleeps.
+  it('a named folder another session will clean up is 409, and nothing is created', async () => {
+    const owned = path.join(ROOT, EXISTING);
+    const h = harness({ cleanupOwner: (dir) => (dir === owned ? 'C1:1700000000.000100' : undefined) });
+    const r = await h.launcher.launch({ ...REQ, folder: EXISTING });
+    expect(r).toEqual({
+      status: 409,
+      body: {
+        error: `the folder ${EXISTING} belongs to another session, which removes it when it ends — pick another folder or a new one`,
+      },
+    });
+    expect(h.calls).not.toContain('createTask');
+    expect(h.controller.start).not.toHaveBeenCalled();
+  });
+
+  it('the folder list leaves out folders another session will clean up', () => {
+    const owned = path.join(ROOT, EXISTING);
+    const h = harness({ cleanupOwner: (dir) => (dir === owned ? 'C1:1' : undefined) });
+    const names = h.launcher.folders(OWNER).map((f) => f.name);
+    expect(names).not.toContain(EXISTING);
+    expect(
+      harness()
+        .launcher.folders(OWNER)
+        .map((f) => f.name),
+    ).toContain(EXISTING);
   });
 
   it('a dry run that refuses (the owner’s other task runs) creates nothing', async () => {
@@ -278,6 +309,24 @@ describe('listTaskFolders (#600 ⑥)', () => {
     expect(listTaskFolders(OWNER, 1)).toHaveLength(1);
     expect(listTaskFolders('U0T600NOROOT_' + RUN)).toEqual([]);
     expect(listTaskFolders('../etc')).toEqual([]);
+  });
+});
+
+describe('cleanupOwnerOf (#640 R2)', () => {
+  const sessions = [
+    { key: 'C1:1', sourceWorkingDirs: ['/private/tmp/U1/session_a'] },
+    { key: 'C2:2', sourceWorkingDirs: ['/tmp/U1/session_b/clone'] },
+    { key: 'task:x', sourceWorkingDirs: undefined },
+  ];
+  it('names the session whose cleanup removes the folder, a part of it, or a folder holding it', () => {
+    expect(cleanupOwnerOf('/tmp/U1/session_a', sessions)).toBe('C1:1'); // the same folder (/private/tmp form)
+    expect(cleanupOwnerOf('/tmp/U1/session_b', sessions)).toBe('C2:2'); // a clone inside the folder
+    expect(cleanupOwnerOf('/tmp/U1/session_a/sub', sessions)).toBe('C1:1'); // inside a cleaned folder
+    expect(cleanupOwnerOf('/private/tmp/U1/session_b', sessions)).toBe('C2:2'); // either side in /private/tmp form
+  });
+  it('is undefined for a folder nobody cleans, and for a mere name prefix', () => {
+    expect(cleanupOwnerOf('/tmp/U1/repo', sessions)).toBeUndefined();
+    expect(cleanupOwnerOf('/tmp/U1/session_a2', sessions)).toBeUndefined();
   });
 });
 

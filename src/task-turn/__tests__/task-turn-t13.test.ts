@@ -100,10 +100,6 @@ describe('T13 — a dashboard task from the new-task dialog to its result, acros
 
     const registry = new SessionRegistry();
     const coordinator = new RequestCoordinator();
-    let releaseStop!: () => void;
-    const stopped = new Promise<void>((r) => {
-      releaseStop = r;
-    });
     let prompts: string[] = [];
     const claudeHandler = new Proxy(
       {
@@ -116,11 +112,18 @@ describe('T13 — a dashboard task from the new-task dialog to its result, acros
         setSessionTitleByKey: (k: string, t: string) => registry.setSessionTitleByKey(k, t),
         addSourceWorkingDirByKey: (k: string, d: string) => registry.addSourceWorkingDirByKey(k, d),
         addMergeStatsByKey: (k: string, n: number, a: number, d: number) => registry.addMergeStatsByKey(k, n, a, d),
-        streamAgentEvents: vi.fn((prompt: string) => {
+        streamAgentEvents: vi.fn((prompt: string, _session: unknown, abortController?: AbortController) => {
           prompts = [...prompts, prompt];
+          // The run ends only through the controller the turn hands the agent: a Stop that
+          // does not reach it leaves this stream running and the test times out (#640 R2).
+          if (!abortController) throw new Error('no abort controller reached the agent stream');
+          const aborted = new Promise<void>((r) => {
+            if (abortController.signal.aborted) r();
+            else abortController.signal.addEventListener('abort', () => r(), { once: true });
+          });
           return (async function* () {
             yield { type: 'assistant_delta', text: 'Reading the test…' };
-            await stopped; // the dashboard's Stop lands meanwhile
+            await aborted; // the dashboard's Stop lands meanwhile
             const err = new Error('aborted');
             err.name = 'AbortError';
             throw err;
@@ -203,7 +206,6 @@ describe('T13 — a dashboard task from the new-task dialog to its result, acros
       headers: noBody,
     });
     expect(stop.statusCode).toBe(200);
-    releaseStop();
     await vi.waitFor(() => expect(registry.getSessionByKey(key)?.lastTurnOutcome?.outcome).toBe('cancelled'), {
       timeout: 10_000,
     });
