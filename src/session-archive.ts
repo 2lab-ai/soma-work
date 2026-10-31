@@ -32,6 +32,7 @@ import type {
   SessionLinks,
   SessionState,
   SessionUsage,
+  TaskInputContext,
   WorkflowType,
 } from './types';
 
@@ -56,6 +57,8 @@ export interface ArchivedSession {
   slackless?: true;
   /** E2 ① — the instruction thread of a Slack-less task; a revive brings it back while it is free. */
   originThread?: OriginThread;
+  /** E2 ② — a Slack-instructed task's channel context. */
+  inputContext?: TaskInputContext;
 
   // Owner
   ownerId: string;
@@ -167,6 +170,7 @@ function sessionToArchive(
     taskId: session.taskId,
     slackless: session.slackless === true ? true : undefined,
     originThread: session.originThread,
+    inputContext: session.inputContext,
 
     ownerId: session.ownerId,
     ownerName: session.ownerName,
