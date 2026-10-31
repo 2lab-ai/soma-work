@@ -18,7 +18,7 @@ vi.mock('../env-paths', () => ({
 
 import { getArchiveStore } from '../session-archive';
 import { SessionRegistry } from '../session-registry';
-import { canApplySummaryTitle } from '../session-title-policy';
+import { applySummaryTitle, canApplySummaryTitle } from '../session-title-policy';
 
 const TEST_DATA_DIR = '/tmp/soma-work-cron-session-title-test';
 
@@ -124,5 +124,46 @@ describe('canApplySummaryTitle — the turn-summary title writer (src/index.ts)'
   it('refuses a deliberate title', () => {
     expect(canApplySummaryTitle({ title: 'Direct (skipDispatch)', conversationId: 'c' })).toBe(false);
     expect(canApplySummaryTitle({ title: 'Human chosen', titleProvisional: false, conversationId: 'c' })).toBe(false);
+  });
+});
+
+describe('applySummaryTitle — by registry key, so a Slack-less task works too (#615 R1)', () => {
+  function registryWith(entries: Array<[string, Record<string, unknown>]>) {
+    const sessions = new Map(entries);
+    return {
+      getAllSessions: () => sessions,
+      updateSessionTitleByKey: vi.fn((key: string, title: string) => {
+        const s = sessions.get(key);
+        if (s) s.title = title;
+      }),
+    };
+  }
+
+  it('a task: written by its task key, no Slack thread render', () => {
+    const task = { conversationId: 'conv-t', slackless: true, channelId: '' };
+    const registry = registryWith([['task:abc', task]]);
+    const hooks = { renderThread: vi.fn(), scheduleLiveUpdate: vi.fn() };
+    const out = applySummaryTitle(registry, 'conv-t', 'Summarized', hooks);
+    expect(out).toMatchObject({ outcome: 'applied', sessionKey: 'task:abc' });
+    expect(registry.updateSessionTitleByKey).toHaveBeenCalledWith('task:abc', 'Summarized');
+    expect(hooks.renderThread).not.toHaveBeenCalled();
+    expect(hooks.scheduleLiveUpdate).toHaveBeenCalledWith('task:abc');
+  });
+
+  it('a Slack session: written by its key and its thread re-rendered (as before)', () => {
+    const slack = { conversationId: 'conv-s', channelId: 'C1', threadTs: '1.1' };
+    const registry = registryWith([['work:C1:1.1', slack]]);
+    const hooks = { renderThread: vi.fn(), scheduleLiveUpdate: vi.fn() };
+    expect(applySummaryTitle(registry, 'conv-s', 'Summarized', hooks).outcome).toBe('applied');
+    expect(registry.updateSessionTitleByKey).toHaveBeenCalledWith('work:C1:1.1', 'Summarized');
+    expect(hooks.renderThread).toHaveBeenCalledWith(slack);
+  });
+
+  it('a deliberate title is kept; an unknown conversation is reported', () => {
+    const registry = registryWith([['task:abc', { conversationId: 'conv-t', title: 'Chosen' }]]);
+    const hooks = { renderThread: vi.fn(), scheduleLiveUpdate: vi.fn() };
+    expect(applySummaryTitle(registry, 'conv-t', 'Summarized', hooks).outcome).toBe('kept');
+    expect(applySummaryTitle(registry, 'conv-x', 'Summarized', hooks).outcome).toBe('no-session');
+    expect(registry.updateSessionTitleByKey).not.toHaveBeenCalled();
   });
 });

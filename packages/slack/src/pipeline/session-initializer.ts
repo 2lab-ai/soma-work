@@ -1286,6 +1286,10 @@ export class SessionInitializer {
       return undefined;
     }
 
+    // Same task, new thread (#595): the task id moves to the bot-thread session
+    // only after the original is terminated below — a refused termination must
+    // leave the id (and the task-id lookup) on the still-live original.
+    const inheritedTaskId: string | undefined = session.taskId;
     const botSession = this.deps.claudeHandler.createSession(user, userName, channel, rootResult.ts, session.model);
     botSession.threadModel = 'bot-initiated';
     botSession.threadRootTs = rootResult.ts;
@@ -1323,6 +1327,15 @@ export class SessionInitializer {
 
     const origSessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
     this.deps.claudeHandler.terminateSession(origSessionKey);
+    if (inheritedTaskId) {
+      const adopted = this.deps.claudeHandler.adoptTaskId(
+        this.deps.claudeHandler.getSessionKey(channel, rootResult.ts),
+        inheritedTaskId,
+      );
+      if (!adopted) {
+        this.logger.warn('🧵 Task id not moved to the bot-thread session', { channel, taskId: inheritedTaskId });
+      }
+    }
 
     // 1. Clean up only the init clutter we posted (dispatch status, conversation-history link).
     //    Deleting all bot-authored messages here would also wipe prior model replies

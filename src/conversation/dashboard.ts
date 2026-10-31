@@ -60,6 +60,7 @@ import {
   isPermissionPromptDecision,
   loadPermissionPrompt,
   type PermissionPromptAnswer,
+  type PermissionPromptTarget,
   promptBelongsToThread,
 } from '../permission-prompt-response';
 import {
@@ -101,6 +102,7 @@ import {
 import { GOAL_EVAL_DISPATCH_MAX_RETRIES } from '../slack/goal-completion-evaluator';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from '../slack/goal-host-actions';
 import { getSurfaceLines } from '../slack/surface-config';
+import type { TaskAnswer } from '../task-turn/task-answer';
 import { buildThreadPermalink } from '../turn-notifier';
 import { coerceEffort, EFFORT_LEVELS, type EffortLevel, userSettingsStore } from '../user-settings-store';
 import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggregate } from './aggregator';
@@ -118,6 +120,7 @@ import {
   NewTaskError,
   type NewTaskSubmission,
   parseAttachments,
+  parseDashboardTaskSubmission,
   parseNewTaskSubmission,
 } from './new-task';
 import type { NewTaskLaunchResult } from './new-task-launcher';
@@ -125,6 +128,7 @@ import { verifyDashboardTokenRaw } from './oauth';
 import {
   type DashboardPermissionRequest,
   pendingPermissionsFor,
+  pendingTaskPermissionsFor,
   permissionPromptDetail,
   refreshPendingPermissions,
   startPermissionPromptWatch,
@@ -405,9 +409,24 @@ export interface KanbanSession {
    * card reads `activityState: 'waiting'`.
    */
   pendingGoalDecision?: KanbanGoalDecision;
+  /** #600 ⑥ — a Slack-less dashboard task (the client gates task-only UI on it). Absent for Slack sessions. */
+  slackless?: true;
+  /**
+   * #598 ④c — a Slack-less task's last turn outcome (D10): what the last turn
+   * ended as, why, and whether recording it failed. Absent for Slack sessions.
+   */
+  lastTurnOutcome?: {
+    outcome: 'completed' | 'failed' | 'cancelled' | 'waiting' | 'interrupted';
+    category: string;
+    reason?: string;
+    recordFailure?: string;
+    at: number;
+  };
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
+    /** #599 ⑤ — a Slack-less task's question id, sent back with the answer. */
+    askId?: string;
     question: string;
     choices?: Array<{ id: string; label: string; description?: string }>;
     /** ID of the recommended choice (single-choice) */
@@ -799,11 +818,35 @@ function resolveSelfActionKey(wireKey: string, reply: any): string | null {
  * endpoint shares. Returns null if either check failed (the reply has
  * already been sent).
  */
-function resolveSelfActionKeyAndOwner(request: any, reply: any): { wireKey: string; originalKey: string } | null {
+function resolveSelfActionKeyAndOwner(
+  request: any,
+  reply: any,
+  opts: { allowSlackless?: boolean; taskOwnerOnly?: boolean } = {},
+): { wireKey: string; originalKey: string } | null {
   const wireKey: string = request.params?.key ?? '';
   const originalKey = resolveSelfActionKey(wireKey, reply);
   if (originalKey === null) return null;
+  // Owner first: someone else's task answers 403, not a hint of what it is.
   if (!requireSessionOwner(request, reply, originalKey)) return null;
+  // #637 R1 — a task's instruction or answer runs under its owner's identity
+  // (`executionContextForTask`), so only the signed-in owner may send one: the
+  // #716 bearer and admin-mode overrides do not apply. Stop / close / trash keep
+  // them — they cannot run anything.
+  if (opts.taskOwnerOnly) {
+    const target = _getSessionsFn?.()?.get(originalKey);
+    if (target?.slackless === true && !isTaskOwner(request, target.ownerId)) {
+      reply.status(403).send({ error: 'only the task owner can instruct or answer a dashboard task' });
+      return null;
+    }
+  }
+  // Fail closed (#612 review): a Slack-less task takes only the routes that opt in —
+  // stop / close / trash, and `command`, which hands it to the task turn
+  // controller (#598 ④c). Goal, model, effort, the queue and answers are not
+  // supported on a task yet (answers: ⑤ #599).
+  if (!opts.allowSlackless && _getSessionsFn?.()?.get(originalKey)?.slackless === true) {
+    reply.status(409).send({ error: 'not supported on a dashboard task yet' });
+    return null;
+  }
   return { wireKey, originalKey };
 }
 
@@ -1081,6 +1124,13 @@ function _hasWriteAccess(request: any, ownerId: string | undefined): boolean {
   return false;
 }
 
+/** The signed-in user is the task's owner — a user identity, never a bearer token. */
+function isTaskOwner(request: any, ownerId: string | undefined): boolean {
+  const authContext = request.authContext;
+  if (!authContext || authContext.mode === 'bearer_header' || authContext.mode === 'bearer_cookie') return false;
+  return !!authContext.userId && !!ownerId && authContext.userId === ownerId;
+}
+
 /**
  * Write-gate for kanban session actions (stop / close / trash / command /
  * answer-* / submit-recommended). Reads remain world-readable per #716.
@@ -1155,11 +1205,23 @@ type TrashHandler = (sessionKey: string) => Promise<void>;
  * attached or recorded — decoded and held to the new-task limits.
  */
 type CommandHandler = (sessionKey: string, message: string, files: NewTaskAttachment[]) => Promise<void>;
+/**
+ * #598 ④c — a Slack-less task's instruction: the task turn controller refuses
+ * (D8, D9) or accepts it, and the route answers with its status and body.
+ */
+type TaskCommandHandler = (
+  sessionKey: string,
+  message: string,
+  files: NewTaskAttachment[],
+  /** The signed-in user sending it — the route has checked it is the task's owner (#637 R2). */
+  actorUserId: string,
+) => Promise<{ status: number; body: Record<string, unknown> }>;
 
 let _stopHandlerFn: StopHandler | null = null;
 let _closeHandlerFn: CloseHandler | null = null;
 let _trashHandlerFn: TrashHandler | null = null;
 let _commandHandlerFn: CommandHandler | null = null;
+let _taskCommandHandlerFn: TaskCommandHandler | null = null;
 
 export function setDashboardStopHandler(fn: StopHandler): void {
   _stopHandlerFn = fn;
@@ -1172,6 +1234,9 @@ export function setDashboardTrashHandler(fn: TrashHandler): void {
 }
 export function setDashboardCommandHandler(fn: CommandHandler): void {
   _commandHandlerFn = fn;
+}
+export function setDashboardTaskCommandHandler(fn: TaskCommandHandler | null): void {
+  _taskCommandHandlerFn = fn;
 }
 
 /**
@@ -1359,6 +1424,47 @@ export function setDashboardEffortHandler(fn: EffortSwitchHandler): void {
 
 type ChoiceAnswerHandler = (sessionKey: string, choiceId: string, label: string, question: string) => Promise<void>;
 let _choiceAnswerHandlerFn: ChoiceAnswerHandler | null = null;
+/**
+ * #599 ⑤ — a Slack-less task's answer, bound to the question's `askId`; the
+ * task turn controller answers with the route's status and body.
+ */
+type TaskAnswerHandler = (
+  sessionKey: string,
+  askId: string,
+  answer: TaskAnswer,
+  /** The signed-in user answering — the route has checked it is the task's owner. */
+  actorUserId: string,
+) => Promise<{ status: number; body: Record<string, unknown> }>;
+let _taskAnswerHandlerFn: TaskAnswerHandler | null = null;
+export function setDashboardTaskAnswerHandler(fn: TaskAnswerHandler | null): void {
+  _taskAnswerHandlerFn = fn;
+}
+
+/**
+ * #599 ⑤ — on a Slack-less task, an answer route hands the answer to the task
+ * answer handler (askId required) and returns true; on a Slack session it
+ * returns false and the route goes on as before.
+ */
+async function routeTaskAnswer(request: any, reply: any, sessionKey: string, answer: TaskAnswer): Promise<boolean> {
+  if (_getSessionsFn?.()?.get(sessionKey)?.slackless !== true) return false;
+  const askId = (request.body as { askId?: unknown } | undefined)?.askId;
+  if (typeof askId !== 'string' || !askId || askId.length > 200) {
+    reply.status(400).send({ error: 'askId is required to answer a dashboard task' });
+    return true;
+  }
+  if (!_taskAnswerHandlerFn) {
+    reply.status(501).send({ error: 'Task answer handler not configured' });
+    return true;
+  }
+  try {
+    const outcome = await _taskAnswerHandlerFn(sessionKey, askId, answer, String(request.authContext?.userId ?? ''));
+    reply.status(outcome.status).send(outcome.body);
+  } catch (error) {
+    logger.error('Error answering a dashboard task', error);
+    reply.status(500).send({ error: 'Internal Server Error' });
+  }
+  return true;
+}
 
 export function setDashboardChoiceAnswerHandler(fn: ChoiceAnswerHandler): void {
   _choiceAnswerHandlerFn = fn;
@@ -1503,6 +1609,23 @@ const _newTaskGate = createNewTaskGate();
 
 export function setDashboardNewTaskProvider(provider: DashboardNewTaskProvider | null): void {
   _newTaskProvider = provider;
+}
+
+/** #600 ⑥ — makes and starts a Slack-less dashboard task (`createTaskLauncher`), and lists its folders. */
+interface DashboardTaskLauncher {
+  launch(request: {
+    ownerId: string;
+    ownerName: string;
+    prompt: string;
+    folder?: string;
+    model?: string;
+  }): Promise<{ status: number; body: Record<string, unknown> }>;
+  /** The folders a user may name for a task (`listTaskFolders`). */
+  folders(ownerId: string): Array<{ name: string }>;
+}
+let _taskLauncher: DashboardTaskLauncher | null = null;
+export function setDashboardTaskLauncher(launcher: DashboardTaskLauncher | null): void {
+  _taskLauncher = launcher;
 }
 
 /** The signed-in Slack user a task runs as — never a body field, never the admin-mode target. */
@@ -1981,9 +2104,21 @@ export function broadcastArtifactUpdate(artifact: SessionArtifact): void {
 function sessionToKanban(key: string, s: any): KanbanSession {
   const autoResume = deriveAutoResume(s, Date.now());
   const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
-  const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
+  // A Slack-less task (#596) has no thread to share: its aggregate is its own,
+  // not that of every other task with no channel either.
+  const aggregate = computeThreadAggregate(
+    s.channelId,
+    s.threadTs,
+    s.slackless === true ? new Map([[key, s]]) : getAllSessions(),
+    Date.now(),
+  );
   const headline = displayTitle(s);
-  const permissions = pendingPermissionsFor(s.channelId, s.threadTs);
+  // A Slack-less task's (#599 ⑤b) prompts are keyed by its own session key: it
+  // has no thread, and a thread lookup ('' : '') would match every task.
+  const permissions =
+    s.slackless === true
+      ? pendingTaskPermissionsFor(key, s.activeTaskTurnId)
+      : pendingPermissionsFor(s.channelId, s.threadTs);
   const goalDecision = goalDecisionToKanban(s);
   // What the session waits on its user for: its permission prompts and the goal's cap decision.
   const asks = goalDecision ? [...permissions, { createdAt: goalDecision.askedAt }] : permissions;
@@ -2064,6 +2199,18 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     artifacts: cardArtifacts(s.conversationId),
     userMedia: cardUserMedia(s.conversationId),
     followups: followupsOf(key, s.ownerId),
+    ...(s.slackless === true ? { slackless: true as const } : {}),
+    ...(s.slackless === true && s.lastTurnOutcome
+      ? {
+          lastTurnOutcome: {
+            outcome: s.lastTurnOutcome.outcome,
+            category: s.lastTurnOutcome.category,
+            ...(s.lastTurnOutcome.reason ? { reason: s.lastTurnOutcome.reason } : {}),
+            ...(s.lastTurnOutcome.recordFailure ? { recordFailure: s.lastTurnOutcome.recordFailure } : {}),
+            at: s.lastTurnOutcome.at,
+          },
+        }
+      : {}),
     pendingQuestion: s.actionPanel?.pendingQuestion
       ? s.actionPanel.pendingQuestion.type === 'user_choice'
         ? {
@@ -2077,6 +2224,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
             ...(s.actionPanel.pendingQuestion.recommendedChoiceId
               ? { recommendedChoiceId: s.actionPanel.pendingQuestion.recommendedChoiceId }
               : {}),
+            ...taskAskId(s),
           }
         : s.actionPanel.pendingQuestion.type === 'user_choices'
           ? {
@@ -2096,10 +2244,19 @@ function sessionToKanban(key: string, s: any): KanbanSession {
                 context: q.context,
                 ...(q.recommendedChoiceId ? { recommendedChoiceId: q.recommendedChoiceId } : {}),
               })),
+              ...taskAskId(s),
             }
           : undefined // Unknown question type — skip
       : undefined,
   };
+}
+
+/** #599 ⑤ — a Slack-less task's question carries its `askId`; the panel echoes it with the answer. */
+function taskAskId(s: { slackless?: boolean; actionPanel?: { pendingQuestion?: { askId?: unknown } } }): {
+  askId?: string;
+} {
+  const askId = s.actionPanel?.pendingQuestion?.askId;
+  return s.slackless === true && typeof askId === 'string' && askId ? { askId } : {};
 }
 
 /** The task ledger an archive kept (T7/T8), as the card carries it. */
@@ -2208,10 +2365,11 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
 /**
  * A session the board shows: one that has run an SDK session — or, after a
  * `/new` cleared that, one whose task has already spent (SSOT 2026-10-26 T3:
- * the task total outlives the reset, so the card does too).
+ * the task total outlives the reset, so the card does too) — or a Slack-less
+ * task, from its creation on, before it has run (#596).
  */
-function onBoard(s: { sessionId?: string; taskUsage?: unknown }): boolean {
-  return !!s.sessionId || !!s.taskUsage;
+function onBoard(s: { sessionId?: string; taskUsage?: unknown; slackless?: boolean }): boolean {
+  return !!s.sessionId || !!s.taskUsage || s.slackless === true;
 }
 
 function buildKanbanBoard(userId?: string): KanbanBoard {
@@ -3141,7 +3299,7 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/stop',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
       if (!resolved) return;
       const { wireKey: key, originalKey } = resolved;
       try {
@@ -3163,7 +3321,7 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/close',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
       if (!resolved) return;
       const { wireKey: key, originalKey } = resolved;
       try {
@@ -3184,7 +3342,7 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/trash',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
       if (!resolved) return;
       const { wireKey: key, originalKey } = resolved;
       // A starred session is pinned on top of the board; hiding it would
@@ -3321,12 +3479,33 @@ export async function registerDashboardRoutes(
         return;
       }
       // Only the session's owner gets their files decoded (up to the new-task limits).
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       const files = parseAttachments(attachments);
       if (!files.ok) {
         reply.status(400).send({ error: files.error });
+        return;
+      }
+      // #598 ④c — a Slack-less task's instruction runs through the task turn
+      // controller, which answers 202 once the turn's start is saved.
+      if (_getSessionsFn?.()?.get(originalKey)?.slackless === true) {
+        if (!_taskCommandHandlerFn) {
+          reply.status(501).send({ error: 'Task turn handler not configured' });
+          return;
+        }
+        try {
+          const outcome = await _taskCommandHandlerFn(
+            originalKey,
+            message,
+            files.value,
+            String((request as { authContext?: { userId?: string } }).authContext?.userId ?? ''),
+          );
+          reply.status(outcome.status).send(outcome.body);
+        } catch (error) {
+          logger.error('Error starting a dashboard task turn', error);
+          reply.status(500).send({ error: 'Internal Server Error' });
+        }
         return;
       }
       try {
@@ -3686,7 +3865,10 @@ export async function registerDashboardRoutes(
       return;
     }
     try {
-      reply.send({ context: await _newTaskProvider.context(userId) });
+      const context = await _newTaskProvider.context(userId);
+      // #600 ⑥ — with dashboard tasks wired, the folders a task may name (names only).
+      const taskFolders = _taskLauncher?.folders(userId).map((f) => ({ name: f.name }));
+      reply.send({ context: taskFolders ? { ...context, taskFolders } : context });
     } catch (error) {
       logger.error('Error building the new-task context', error);
       reply.status(500).send({ error: 'Internal Server Error' });
@@ -3707,12 +3889,48 @@ export async function registerDashboardRoutes(
         reply.status(403).send({ error: 'Slack 계정으로 로그인해야 새 작업을 시작할 수 있습니다' });
         return;
       }
+      const requestId = (request.body as { requestId?: unknown } | null)?.requestId;
+      // #600 ⑥ — a Slack-less dashboard task: no channel, no Slack provider.
+      if ((request.body as { destination?: unknown } | null)?.destination === 'task') {
+        const launcher = _taskLauncher;
+        if (!launcher) {
+          reply.status(501).send({ error: 'Dashboard tasks are not configured' });
+          return;
+        }
+        const parsed = parseDashboardTaskSubmission(request.body);
+        if (!parsed.ok) {
+          reply.status(400).send({ error: parsed.error });
+          return;
+        }
+        const ownerName = (request as { authContext?: { name?: string } }).authContext?.name || userId;
+        try {
+          const result = await _newTaskGate.run(userId, parsed.value.requestId, async () => {
+            const { requestId: _rid, ...rest } = parsed.value;
+            // The model nickname is resolved by the launcher from the model catalog —
+            // never through the Slack-dependent new-task context (#640 R2).
+            const outcome = await launcher.launch({ ownerId: userId, ownerName, ...rest });
+            // A refusal is not remembered by the gate, so the same request may be retried.
+            if (outcome.status >= 400) {
+              throw new NewTaskError(outcome.status, String(outcome.body.error ?? 'refused'));
+            }
+            return outcome.body;
+          });
+          reply.send({ ok: true, ...result });
+        } catch (error) {
+          if (error instanceof NewTaskError) {
+            reply.status(error.statusCode).send({ error: error.message });
+            return;
+          }
+          logger.error('Error starting a dashboard task', error);
+          reply.status(500).send({ error: 'Internal Server Error' });
+        }
+        return;
+      }
       const provider = _newTaskProvider;
       if (!provider) {
         reply.status(501).send({ error: 'New task is not configured' });
         return;
       }
-      const requestId = (request.body as { requestId?: unknown } | null)?.requestId;
       try {
         const result = await _newTaskGate.run(userId, typeof requestId === 'string' ? requestId : '', async () => {
           // Authorize against a FRESH context: membership is re-checked right
@@ -3756,9 +3974,10 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'Field length exceeded' });
         return;
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
       if (!resolved) return;
       const { originalKey } = resolved;
+      if (await routeTaskAnswer(request, reply, originalKey, { kind: 'single', choiceId })) return;
       try {
         if (_choiceAnswerHandlerFn) {
           await _choiceAnswerHandlerFn(originalKey, choiceId, label, question);
@@ -3826,9 +4045,10 @@ export async function registerDashboardRoutes(
           return;
         }
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
       if (!resolved) return;
       const { originalKey } = resolved;
+      if (await routeTaskAnswer(request, reply, originalKey, { kind: 'multi', selections })) return;
       try {
         if (_multiChoiceAnswerHandlerFn) {
           await _multiChoiceAnswerHandlerFn(originalKey, selections);
@@ -3873,17 +4093,23 @@ export async function registerDashboardRoutes(
     approvalId: string,
   ): Promise<{
     originalKey: string;
-    thread: { channel: string; threadTs?: string };
+    thread: PermissionPromptTarget;
     pending: NonNullable<Awaited<ReturnType<typeof loadPermissionPrompt>>>;
   } | null> {
     const originalKey = resolveSelfActionKey(request.params?.key ?? '', reply);
     if (originalKey === null) return null;
     const session = getAllSessions().get(originalKey);
-    if (!session || !session.channelId) {
+    // A Slack-less task (#599 ⑤b) answers its own prompts, keyed by its session key.
+    const slackless = session?.slackless === true;
+    if (!session || (!slackless && !session.channelId)) {
       reply.status(404).send({ error: 'Session not found' });
       return null;
     }
-    const thread = { channel: String(session.channelId), threadTs: session.threadTs || undefined };
+    // A task's prompt is answerable only while the turn that raised it runs:
+    // that turn's hook is its only waiter.
+    const thread: PermissionPromptTarget = slackless
+      ? { taskKey: originalKey, turnId: String(session.activeTaskTurnId ?? '') }
+      : { channel: String(session.channelId), threadTs: session.threadTs || undefined };
     const pending = await loadPermissionPrompt(approvalId);
     if (!pending || !promptBelongsToThread(pending, thread)) {
       reply.status(404).send({ error: 'Permission request not found or expired' });
@@ -3978,9 +4204,10 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/submit-recommended',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
       if (!resolved) return;
       const { originalKey } = resolved;
+      if (await routeTaskAnswer(request, reply, originalKey, { kind: 'recommended' })) return;
       try {
         if (!_submitRecommendedHandlerFn) {
           reply.status(501).send({ error: 'Submit-recommended handler not configured' });
@@ -4551,6 +4778,11 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-foot-bar .card-actions { margin: 0 0 0 auto; }
 /* SSOT 2026-10-29 T1: the open card's actions (Stop · Close · Slack) — first row under the face. */
 .card-actions-bar { display: flex; justify-content: flex-end; margin: 0 0 10px; padding-bottom: 10px; border-bottom: 1px dashed var(--ib-card-border); }
+/* #600 ⑥ — a dashboard task's last turn on its card */
+.card-task-outcome { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 0 0 8px; font-size: 12px; color: var(--text-secondary); }
+.card-task-outcome .cto-label { font-weight: 600; }
+.card-task-outcome[data-outcome="failed"] .cto-label, .card-task-outcome[data-outcome="interrupted"] .cto-label { color: var(--red); }
+.card-task-outcome .cto-warn { color: var(--red); font-weight: 600; }
 .card-actions-bar .card-actions { margin: 0; }
 .cfb-model { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; min-width: 0; color: var(--ib-muted); font-size: 13px; }
 .card-foot-bar + .cb-model-note { margin-top: 6px; }
@@ -5307,6 +5539,8 @@ body.nt-open .new-task-fab { display: none !important; }
 
 .nt-error { margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--tint-fail-bg); color: var(--tint-fail-fg); font-size: 12.5px; }
 .nt-error[hidden] { display: none; }
+/* #640 R1: chips and rows set display, which beats the hidden attribute's UA style. */
+.nt-dialog [hidden] { display: none !important; }
 .nt-empty { margin: 0; color: var(--text-secondary); font-size: 12.5px; }
 
 .nt-composer { display: block; }
@@ -5740,9 +5974,14 @@ ${pageTokenAliases()}
   <ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" size-phone="full" lang="ko">
     <form id="nt-form" class="nt-form" onsubmit="event.preventDefault()" novalidate>
       <div class="nt-body" id="nt-body">
+        <div class="nt-toggles nt-dest" id="nt-dest" role="group" aria-label="어디서 할까요" hidden>
+          <button type="button" class="nt-toggle" id="nt-dest-slack" aria-pressed="true" onclick="ntSetDestination('slack')"><span>Slack 채널</span></button>
+          <button type="button" class="nt-toggle" id="nt-dest-task" aria-pressed="false" title="슬랙 스레드 없이 대시보드에서만 진행하는 작업" onclick="ntSetDestination('task')"><span>대시보드 작업</span></button>
+        </div>
         <div class="nt-config" role="group" aria-label="작업 설정">
           <div class="nt-chip nt-chip-model"><label for="nt-model">모델</label><select id="nt-model" onchange="ntOnModelChange()"></select><button type="button" class="nt-battery-btn nt-batt-unknown" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><span class="nt-battery" id="nt-battery" role="img" aria-label="잔여량 미확인"><span class="nt-battery-fill" id="nt-battery-fill"></span></span><span class="nt-battery-pct" id="nt-battery-pct">?</span></button></div>
-          <div class="nt-chip"><label for="nt-effort">effort</label><select id="nt-effort" onchange="ntOnEffortChange()"></select></div>
+          <div class="nt-chip nt-chip-effort"><label for="nt-effort">effort</label><select id="nt-effort" onchange="ntOnEffortChange()"></select></div>
+          <div class="nt-chip nt-chip-folder" id="nt-folder-chip" hidden><label for="nt-folder">폴더</label><select id="nt-folder" onchange="ntOnFolderChange()"></select></div>
           <div class="nt-chip nt-chip-channel"><label for="nt-channel">채널</label><select id="nt-channel" onchange="ntOnChannelChange()"></select></div>
         </div>
         <p class="nt-usage" id="nt-usage" hidden></p>
@@ -6075,7 +6314,9 @@ function acPermissionData(s, p) {
 // rewritten in place is another card, never the old one's answer or focus
 // (review R2 P1).
 function acQuestionId(q) {
-  return 'q|' + JSON.stringify([q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })]);
+  // A dashboard task's question names itself (#599): the same text asked twice is
+  // two questions, so a late answer to the first never resolves the second (#637 R1).
+  return (q.askId ? 'a|' + q.askId + '|' : '') + 'q|' + JSON.stringify([q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })]);
 }
 // pendingQuestion (single choice) → the card's data. The choices read as
 // before ("1. label", the recommended marker stripped); the route takes one
@@ -6804,7 +7045,10 @@ async function answerChoice(key, qid, choiceId) {
   var label = stripRecommendedMarker(c.label);
   var st;
   try {
-    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice', JSON.stringify({ choiceId: choiceId, label: label, question: q.question }));
+    var acBody = { choiceId: choiceId, label: label, question: q.question };
+    // #599 — a dashboard task's question names itself; the answer carries its id back.
+    if (q.askId) acBody.askId = q.askId;
+    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice', JSON.stringify(acBody));
     if (res.ok) {
       st = { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() };
       dashToast({ title: '답을 보냈어요', description: label, tone: 'success' });
@@ -9877,6 +10121,10 @@ function renderPanelComposer(s, force) {
   var mode = pcModeOf(s);
   if (force || host._mode !== mode) {
     host._mode = mode;
+    // A dashboard task takes no attachments yet (D8, #600 ⑥): the composer's
+    // tools are off and a pasted or dropped file is refused (#640 R2).
+    host._takesFiles = pcToolsOpen(s, mode);
+    pcComposerSetup(document.getElementById('pc-composer'), host._takesFiles);
     if (mode !== 'open') pcReset();
   }
   var data = steeringData(s, mode);
@@ -9884,6 +10132,11 @@ function renderPanelComposer(s, force) {
   if (!force && el._sig === sig) return;
   el._sig = sig;
   el.data = data;
+}
+// The composer's attach / image / mic: an open session's — but not a dashboard
+// task's, which takes no attachments yet (D8, #600 ⑥).
+function pcToolsOpen(s, mode) {
+  return mode === 'open' && !(s && s.slackless);
 }
 function pcModeOf(s) {
   var isOwnerPanel = !!s.ownerId && s.ownerId === currentUserId;
@@ -10113,6 +10366,8 @@ function cwPhase(s, now) {
 // Closed is the composer's rule: terminated or sleeping (a press would wake it).
 function cwCanCompact(s) {
   if (!s || s.terminated || s.sessionState === 'SLEEPING') return '종료된 세션';
+  // A task turn refuses commands (D8): "compact now" would run as an instruction (#600 ⑥).
+  if (s.slackless) return '대시보드 작업에서는 아직 지원하지 않아요';
   var env = s.environment;
   if (isSiblingSession(s)) return 'Open ' + env.instanceName + ' (' + (env.host || '') + ':' + (env.port || '') + ') to act on this session';
   if (!s.ownerId || s.ownerId !== currentUserId) return READ_ONLY_MSG;
@@ -10925,11 +11180,26 @@ function renderCardBody(s, col) {
     + actionsHtml
     + permissionHtml
     + renderCardResume(s, col)
+    + taskOutcomeHtml(s)
     + questionHtml
     + middle
     + cardGoalLine(s, col, isOwner && !isSibling)
     + refsHtml
     + footHtml
+    + '</div>';
+}
+
+// #600 ⑥ — a dashboard task's last turn as its card says it: how it ended, why,
+// and a recording failure (the outcome was not saved).
+var TASK_OUTCOME_LABEL = { completed: '완료', failed: '실패', cancelled: '중지됨', interrupted: '중단됨', waiting: '입력 대기' };
+function taskOutcomeHtml(s) {
+  var o = s && s.slackless && s.lastTurnOutcome;
+  if (!o) return '';
+  var kind = String(o.outcome || '');
+  return '<div class="card-task-outcome" data-outcome="' + escAttr(kind) + '">'
+    + '<span class="cto-label">마지막 턴 · ' + esc(TASK_OUTCOME_LABEL[kind] || kind) + '</span>'
+    + (o.reason ? '<span class="cto-reason">' + esc(o.reason) + '</span>' : '')
+    + (o.recordFailure ? '<span class="cto-warn" role="alert">기록하지 못함 · ' + esc(o.recordFailure) + '</span>' : '')
     + '</div>';
 }
 
@@ -11908,6 +12178,8 @@ async function loadSessions() {
       // Without the WebSocket (or for a sibling instance) the poll is the only
       // update: the whole panel follows it (spec 13).
       repaintPanelSession();
+      // …its question too: a form must show the ask its actions answer (#637 R2).
+      renderPanelQuestion(_sessionCache[panelSessionKey]);
     }
   } catch (e) {
     clearTimeout(timer);
@@ -12054,8 +12326,21 @@ function followSessionKey(oldKey, newKey) {
 var _mcState = Object.create(null);
 var MC_CUSTOM_ID = '\\uC9C1\\uC811\\uC785\\uB825';
 // The form's identity: a different question (or another session) starts clean.
+// A dashboard task's question carries its askId (#599 ⑤): a new ask is a new
+// form, even when it reads the same — picks for one ask never carry to the next.
 function mcFormId(s, q) {
-  return 'mc|' + s.key + '|' + JSON.stringify([q.title || q.question || '', (q.questions || []).map(function(x) { return [x.id, x.question]; })]);
+  return 'mc|' + s.key + '|' + (q.askId ? 'a|' + q.askId + '|' : '')
+    + JSON.stringify([q.title || q.question || '', (q.questions || []).map(function(x) { return [x.id, x.question]; })]);
+}
+// The ask a form was drawn for (#637 R2): an action from a form whose ask is no
+// longer the session's (a push the panel has not painted yet) answers nothing.
+function mcAskShown(el, q) {
+  return (el.getAttribute('data-mc-ask') || '') === ((q && q.askId) || '');
+}
+function mcAskChanged(key) {
+  dashToast({ title: '\uC9C8\uBB38\uC774 \uBC14\uB00C\uC5C8\uC5B4\uC694 \u2014 \uB2E4\uC2DC \uD655\uC778\uD574\uC8FC\uC138\uC694.', tone: 'error' });
+  var s = _sessionCache[key];
+  if (s && mcFormEl(key)) renderMultiChoicePanel(s);
 }
 // The session's form state, reset when its question is another one.
 function mcStateOf(s, q) {
@@ -12192,6 +12477,7 @@ function renderMultiChoicePanel(s) {
     container.appendChild(el);
   }
   el.setAttribute('data-mc-key', s.key);
+  el.setAttribute('data-mc-ask', q.askId || '');
   var d = mcFormData(s, q);
   var sig = JSON.stringify(d);
   if (el._mcSig !== sig) {
@@ -12215,16 +12501,16 @@ function mcSettle(key, err) {
 
 // The element's answers: the working ones kept (ui-change), a send (ui-submit —
 // not cancelled: the element locks until the page hands it the outcome).
-document.addEventListener('ui-change', function(e) {
+function mcOnChange(e) {
   var el = e.target;
   if (!el || el.tagName !== 'UI-CHOICE-FORM' || !e.detail) return;
   var s = _sessionCache[el.getAttribute('data-mc-key')];
   var q = s && s.pendingQuestion;
-  if (!q || !q.questions) return;
+  if (!q || !q.questions || !mcAskShown(el, q)) return;
   mcStateOf(s, q).answers = mcAnswersIn(e.detail.answers);
   refreshCard(s.key);
-});
-document.addEventListener('ui-submit', function(e) {
+}
+function mcOnSubmit(e) {
   var el = e.target;
   if (!el || el.tagName !== 'UI-CHOICE-FORM' || !e.detail) return;
   var key = el.getAttribute('data-mc-key');
@@ -12232,6 +12518,11 @@ document.addEventListener('ui-submit', function(e) {
   var q = s && s.pendingQuestion;
   if (!q || !q.questions) {
     e.preventDefault();
+    return;
+  }
+  if (!mcAskShown(el, q)) {
+    e.preventDefault();
+    mcAskChanged(key);
     return;
   }
   var list = e.detail.answers || [];
@@ -12244,7 +12535,9 @@ document.addEventListener('ui-submit', function(e) {
     && list.every(function(a) { return a.recommended === true; });
   if (allRec) submitAllRecommended(key);
   else submitMultiChoice(key, mcSelectionsOf(s, list));
-});
+}
+document.addEventListener('ui-change', mcOnChange);
+document.addEventListener('ui-submit', mcOnSubmit);
 
 // The POST with the page's CSRF retry: one refresh and one retry after a 403
 // (a rotated token). A body-less POST sends no Content-Type (Fastify refuses a
@@ -12304,12 +12597,19 @@ function submitMultiChoice(key, selections) {
   }
   var sel = selections || {};
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/answer-multi-choice';
-  return mcSend(key, url, JSON.stringify({ selections: sel }));
+  // A dashboard task's answer names its ask (#599 ⑤); a Slack session's has none.
+  var askId = s.pendingQuestion.askId;
+  return mcSend(key, url, JSON.stringify(askId ? { selections: sel, askId: askId } : { selections: sel }));
 }
 // 추천대로 모두 제출 (group-only one-click): the server derives the selections
 // from the session, so the request has no body.
 function submitAllRecommended(key) {
-  return mcSend(key, '/api/dashboard/session/' + encodeURIComponent(key) + '/submit-recommended', undefined);
+  var s = _sessionCache[key];
+  var askId = s && s.pendingQuestion && s.pendingQuestion.askId;
+  // A dashboard task's question names itself (#599 ⑤): its id as JSON. A Slack
+  // session's request stays body-less (mcPost sends no Content-Type then).
+  var body = askId ? JSON.stringify({ askId: askId }) : undefined;
+  return mcSend(key, '/api/dashboard/session/' + encodeURIComponent(key) + '/submit-recommended', body);
 }
 
 // ── Stats ──
@@ -12584,6 +12884,7 @@ function connectWs() {
         if (_cardHost[updatedKey]) refreshCard(updatedKey);
         if (panelOpen && panelSessionKey === updatedKey) {
           renderPanelPermission(msg.session);
+          renderPanelQuestion(msg.session); // the form shows the ask its actions answer (#637 R2)
           var pt2 = document.getElementById('panel-title');
           if (pt2) pt2.textContent = msg.session.displayHeadline || msg.session.summaryTitle || msg.session.title || 'Untitled';
           // Spec 12: the agent tree moved (spawn, status, tool count, a node's tasks);
@@ -15228,7 +15529,10 @@ async function sendCommand(text, ref, files) {
   // render that finds it again re-applies its real state (the mode cache is cleared).
   if (!_sessionCache[sendingSessionKey]) {
     var cmdHost = document.getElementById('panel-command');
-    if (cmdHost) cmdHost._mode = '';
+    if (cmdHost) {
+      cmdHost._mode = '';
+      cmdHost._takesFiles = false;
+    }
     el._sig = '';
     el.data = Object.assign({}, el.data, { disabled: true });
   }
@@ -16654,6 +16958,8 @@ var _ntRequestId = null;
 // The text handed to <ui-composer> (a saved draft at first, '' after a launch): it applies a value only when it
 // differs from the last one, so a repaint while someone types never resets the field.
 var _ntValue = null;
+// The files a dashboard task's dialog refuses (#600 ⑥): no type matches.
+var NT_NO_FILES = 'application/x-soma-no-attachments';
 
 function ntBatteryView(b) {
   if (!b || typeof b.level !== 'number') {
@@ -16678,10 +16984,22 @@ function ntDefaultState(ctx, draft) {
     autogoal: !!ctx.autogoalDefault,
     autoz: false,
     prompt: draft && typeof draft.prompt === 'string' ? draft.prompt : '',
+    // #600 ⑥: a Slack channel (the default) or a dashboard task, and its folder by name ('' = a new folder).
+    destination: 'slack',
+    folder: '',
   };
 }
 
 function ntBuildPayload(state, attachments, requestId) {
+  if (state.destination === 'task') {
+    // A dashboard task (#600 ⑥): no channel, no autogoal / autoz, no attachments (D8);
+    // the chosen model's nickname (the server resolves it against the models it
+    // offers, #640 R1), and the folder by name ('' = a new folder).
+    var body = { requestId: requestId, destination: 'task', prompt: state.prompt };
+    if (state.model) body.model = state.model;
+    if (state.folder) body.folder = state.folder;
+    return body;
+  }
   return {
     requestId: requestId,
     prompt: state.prompt,
@@ -16697,6 +17015,10 @@ function ntBuildPayload(state, attachments, requestId) {
 }
 
 function ntCanSubmit(state, attachments) {
+  if (state && state.destination === 'task') {
+    // A task takes no attachments yet (D8): files attached before switching are not dropped silently (#640 R1).
+    return String(state.prompt || '').trim().length > 0 && (attachments || []).length === 0;
+  }
   if (!state || !state.channelId) return false;
   return String(state.prompt || '').trim().length > 0 || (attachments || []).length > 0;
 }
@@ -16816,16 +17138,26 @@ async function ntLoadContext() {
 }
 
 function ntReconcileState() {
+  ntReconcile(_ntState, _ntCtx);
+}
+
+function ntReconcile(state, ctx) {
   // A choice that is no longer offered falls back to the default.
-  var hasModel = _ntCtx.models.some(function (m) {
-    return m.nickname === _ntState.model;
+  var hasModel = ctx.models.some(function (m) {
+    return m.nickname === state.model;
   });
-  if (!hasModel) _ntState.model = _ntCtx.defaultModel;
-  if (_ntCtx.efforts.indexOf(_ntState.effort) < 0) _ntState.effort = _ntCtx.defaultEffort;
-  var hasChannel = _ntCtx.channels.some(function (c) {
-    return c.id === _ntState.channelId;
+  if (!hasModel) state.model = ctx.defaultModel;
+  if (ctx.efforts.indexOf(state.effort) < 0) state.effort = ctx.defaultEffort;
+  var hasChannel = ctx.channels.some(function (c) {
+    return c.id === state.channelId;
   });
-  if (!hasChannel) _ntState.channelId = _ntCtx.defaultChannelId || null;
+  if (!hasChannel) state.channelId = ctx.defaultChannelId || null;
+  // A dashboard task, or a folder, that is no longer offered (#640 R1).
+  if (!ctx.taskFolders) state.destination = 'slack';
+  var hasFolder = (ctx.taskFolders || []).some(function (f) {
+    return f.name === state.folder;
+  });
+  if (!hasFolder) state.folder = '';
 }
 
 function ntRender() {
@@ -16841,8 +17173,36 @@ function ntRender() {
       return '<option value="' + escAttr(e) + '"' + (e === _ntState.effort ? ' selected' : '') + '>' + esc(e) + '</option>';
     })
     .join('');
+  // #600 ⑥ — where the task goes: offered when the context lists task folders.
+  var isTask = _ntState.destination === 'task';
+  var dest = ntEl('nt-dest');
+  if (dest) dest.hidden = !_ntCtx.taskFolders;
+  var dSlack = ntEl('nt-dest-slack');
+  var dTask = ntEl('nt-dest-task');
+  if (dSlack) dSlack.setAttribute('aria-pressed', isTask ? 'false' : 'true');
+  if (dTask) dTask.setAttribute('aria-pressed', isTask ? 'true' : 'false');
+  var folderChip = ntEl('nt-folder-chip');
+  if (folderChip) folderChip.hidden = !isTask;
+  var folderSel = ntEl('nt-folder');
+  if (folderSel && isTask) {
+    folderSel.innerHTML =
+      '<option value="">새 폴더</option>' +
+      (_ntCtx.taskFolders || [])
+        .map(function (f) {
+          return '<option value="' + escAttr(f.name) + '"' + (f.name === _ntState.folder ? ' selected' : '') + '>' + esc(f.name) + '</option>';
+        })
+        .join('');
+  }
+  // A dashboard task has no channel, effort or autogoal / autoz (D8). The destination
+  // row is an .nt-toggles too: hide the autogoal / autoz row, not it.
+  ['.nt-chip-channel', '.nt-chip-effort', '.nt-toggles:not(.nt-dest)'].forEach(function (sel) {
+    var el = document.querySelector(sel);
+    if (el) el.hidden = isTask;
+  });
   var channel = ntEl('nt-channel');
-  if (_ntCtx.channels.length) {
+  if (isTask) {
+    // A dashboard task has no channel: no channel list, no channel error.
+  } else if (_ntCtx.channels.length) {
     channel.innerHTML = _ntCtx.channels
       .map(function (c) {
         var repos = (c.repos || []).map(function (r) {
@@ -16891,6 +17251,14 @@ function ntComposerData() {
     hint: true,
     camera: 'environment',
   };
+  // A dashboard task takes no attachments yet (D8, #600 ⑥): no attach / voice /
+  // camera tools, and a pasted or dropped file is refused by its type (#640 R2).
+  if (_ntState && _ntState.destination === 'task') {
+    d.attach = false;
+    d.voice = false;
+    d.camera = false;
+    d.accept = NT_NO_FILES;
+  }
   var lim = _ntCtx && _ntCtx.limits;
   if (lim) {
     d.maxLength = lim.maxPromptChars;
@@ -16952,6 +17320,33 @@ function ntOnChannelChange() {
   _ntState.channelId = ntEl('nt-channel').value || null;
 }
 
+// #600 ⑥ — the destination: a Slack channel or a dashboard task (only when offered).
+function ntSetDestination(dest) {
+  if (!_ntState || !_ntCtx) return;
+  _ntState.destination = dest === 'task' && _ntCtx.taskFolders ? 'task' : 'slack';
+  ntSetError(ntBlockedHint(_ntState, ntComposerFiles()));
+  ntRender();
+}
+
+function ntOnFolderChange() {
+  _ntState.folder = ntEl('nt-folder').value || '';
+}
+
+// The files the dialog's composer holds now.
+function ntComposerFiles() {
+  var el = ntEl('nt-composer');
+  return (el && el.files) || [];
+}
+
+// Why the dialog cannot start what it holds, said before a submit: on the switch,
+// and whenever its files change (#640 R2).
+function ntBlockedHint(state, attachments) {
+  if (state && state.destination === 'task' && (attachments || []).length > 0) {
+    return '대시보드 작업은 아직 첨부를 받지 않아요 — 첨부를 빼거나 Slack 채널로 보내 주세요';
+  }
+  return '';
+}
+
 function ntToggle(which) {
   if (!_ntState) return;
   _ntState[which] = !_ntState[which];
@@ -16986,9 +17381,18 @@ async function submitNewTask(detail) {
   var files = (detail && detail.files) || el.files || [];
   _ntState.prompt = detail ? String(detail.text || '') : el.value;
   if (!ntCanSubmit(_ntState, files)) {
-    ntSetError(_ntState.channelId ? '작업 지시를 쓰거나 파일을 첨부해 주세요' : '작업을 올릴 채널을 골라 주세요');
+    ntSetError(
+      _ntState.destination === 'task'
+        ? ntBlockedHint(_ntState, files) || '작업 지시를 써 주세요'
+        : _ntState.channelId
+          ? '작업 지시를 쓰거나 파일을 첨부해 주세요'
+          : '작업을 올릴 채널을 골라 주세요',
+    );
     return;
   }
+  // What was submitted is what is sent: a switch of the destination while the
+  // files are read does not change this launch (#640 R2).
+  var submitted = Object.assign({}, _ntState);
   _ntBusy = true;
   ntSetError('');
   paintNtComposer();
@@ -16996,13 +17400,13 @@ async function submitNewTask(detail) {
     if (files.length) ntSetStatus('첨부 준비 중…');
     var attachments;
     try {
-      attachments = await Promise.all(files.map(ntReadFile));
+      attachments = submitted.destination === 'task' ? [] : await Promise.all(files.map(ntReadFile));
     } catch (readErr) {
       ntSetStatus('');
       ntSetError(String(readErr.message || '').slice(5) + ' — 파일을 읽지 못했습니다');
       return;
     }
-    var body = JSON.stringify(ntBuildPayload(_ntState, attachments, _ntRequestId));
+    var body = JSON.stringify(ntBuildPayload(submitted, attachments, _ntRequestId));
     ntSetStatus('작업을 올리는 중…');
     var res = await ntPostTask(body);
     // Only a stale CSRF token is worth one retry (not "no Slack identity").
@@ -17016,7 +17420,7 @@ async function submitNewTask(detail) {
       ntSetError(data.error || '작업을 시작하지 못했습니다 (' + res.status + ')');
       return;
     }
-    ntOnLaunched(data);
+    ntOnLaunched(data, submitted);
   } catch (e) {
     ntSetStatus('');
     ntSetError('작업을 시작하지 못했습니다 — 네트워크를 확인하고 다시 눌러 주세요 (같은 요청은 두 번 실행되지 않습니다)');
@@ -17038,7 +17442,7 @@ function ntPostTask(body) {
       }
     };
     xhr.upload.onload = function () {
-      ntSetStatus('Slack에 작업을 올리는 중…');
+      ntSetStatus(_ntState && _ntState.destination === 'task' ? '작업을 만드는 중…' : 'Slack에 작업을 올리는 중…');
     };
     xhr.onload = function () {
       var data = null;
@@ -17054,36 +17458,82 @@ function ntPostTask(body) {
   });
 }
 
-function ntOnLaunched(data) {
-  // The next task starts clean: a new idempotency key, no text, no files;
-  // the channel just used stays selected.
+function ntOnLaunched(data, submitted) {
+  // The next task starts clean: a new idempotency key, no text, no files; the
+  // channel just used stays selected, a dashboard task stays a dashboard task.
+  // A task created but not started keeps its instruction (#640 R1): the text,
+  // the folder, the model and the draft.
   _ntRequestId = ntNewRequestId();
-  var composer = ntEl('nt-composer');
-  if (composer && typeof composer.clear === 'function') composer.clear();
-  _ntValue = '';
-  _ntState = ntDefaultState(_ntCtx, null);
-  _ntState.channelId = data.channel || _ntState.channelId;
-  try {
-    localStorage.removeItem(NT_DRAFT_KEY);
-  } catch (e) {}
+  var keep = data.status === 'not-started';
+  _ntState = ntStateAfterLaunch(submitted || _ntState, data, _ntCtx);
+  if (!keep) {
+    var composer = ntEl('nt-composer');
+    if (composer && typeof composer.clear === 'function') composer.clear();
+    _ntValue = '';
+    try {
+      localStorage.removeItem(NT_DRAFT_KEY);
+    } catch (e) {}
+  }
   ntSetStatus('');
   ntRender();
   closeNewTask();
-  var channel = _ntCtx.channels.find(function (c) {
-    return c.id === data.channel;
-  });
+  var channel = data.channel
+    ? _ntCtx.channels.find(function (c) {
+        return c.id === data.channel;
+      })
+    : null;
   // A toast on the page's <ui-toaster>: 카드 열기 opens this launch's card
   // (not a later launch's), Slack에서 보기 its thread.
+  dashToast(ntLaunchToast(data, channel ? channel.name : null), function () { ntOpenLaunched(data); });
+  if (typeof loadSessions === 'function') setTimeout(loadSessions, 800);
+}
+
+// What the dialog holds after a launch: a started task starts the next one clean
+// (the channel just used stays selected, a dashboard task stays a dashboard task);
+// a task created but not started keeps its instruction, folder and model (#640 R1).
+function ntStateAfterLaunch(prev, data, ctx) {
+  var next = ntDefaultState(ctx, null);
+  next.channelId = data.channel || next.channelId;
+  if (prev && prev.destination === 'task' && ctx.taskFolders) next.destination = 'task';
+  if (prev && data.status === 'not-started') {
+    next.prompt = prev.prompt;
+    next.folder = prev.folder;
+    next.model = prev.model;
+  }
+  return next;
+}
+
+// The launch toast: a Slack launch names its channel and links its thread; a
+// dashboard task (#600 ⑥, no channel) opens its card, and one that was created
+// but not started says why.
+function ntLaunchToast(data, channelName) {
+  if (!data.channel) {
+    if (data.status === 'not-started') {
+      return {
+        title: '작업을 만들었지만 아직 시작하지 못했어요',
+        description: String(data.reason || '') + ' — 지시는 새 작업 창에 남겨 두었어요',
+        tone: 'warning',
+        action: { id: 'open', label: '카드 열기' },
+        duration: 12000,
+      };
+    }
+    return {
+      title: '대시보드 작업을 시작했어요',
+      description: '카드에서 진행을 볼 수 있어요',
+      tone: 'success',
+      action: { id: 'open', label: '카드 열기' },
+      duration: 12000,
+    };
+  }
   var toast = {
     title: data.status === 'running' ? '작업을 시작했어요' : '작업을 접수했어요',
-    description: '#' + (channel ? channel.name : data.channel),
+    description: '#' + (channelName || data.channel),
     tone: 'success',
     action: { id: 'open', label: '카드 열기' },
     duration: 12000,
   };
   if (data.permalink) toast.link = { label: 'Slack에서 보기', href: String(data.permalink) };
-  dashToast(toast, function () { ntOpenLaunched(data); });
-  if (typeof loadSessions === 'function') setTimeout(loadSessions, 800);
+  return toast;
 }
 
 async function ntOpenLaunched(launch) {
@@ -17130,6 +17580,11 @@ function ntInit() {
   composer.addEventListener('ui-submit', function (e) {
     e.preventDefault();
     submitNewTask(e.detail);
+  });
+  // A file added or removed while a dashboard task is chosen: the reason it cannot start, or none (#640 R2).
+  composer.addEventListener('ui-files', function (e) {
+    if (!_ntState || _ntState.destination !== 'task') return;
+    ntSetError(ntBlockedHint(_ntState, (e.detail && e.detail.files) || ntComposerFiles()));
   });
   paintNtComposer();
   // N opens the composer from anywhere outside a text field.
@@ -17247,11 +17702,30 @@ function pcCommandBody(message, files) {
 }
 // The composer's own data: the limits (the steering sets its placeholder, name and
 // off state, and turns its hint off — the steering's key hints stay below it).
-function pcComposerData() {
-  return { maxFiles: PC_LIMITS.maxFiles, maxFileSize: PC_LIMITS.maxFileBytes, maxTotalBytes: PC_LIMITS.maxTotalBytes, minRows: 1, maxRows: 8 };
+// The files a dashboard task's composer refuses (#600 ⑥, #640 R2): no type matches.
+var PC_NO_FILES = 'application/x-soma-no-attachments';
+function pcComposerData(takesFiles) {
+  var d = { maxFiles: PC_LIMITS.maxFiles, maxFileSize: PC_LIMITS.maxFileBytes, maxTotalBytes: PC_LIMITS.maxTotalBytes, minRows: 1, maxRows: 8 };
+  // A dashboard task takes no attachments yet (D8): no attach / image / voice
+  // tools, and a pasted or dropped file is refused by its type.
+  if (takesFiles === false) {
+    d.attach = false;
+    d.image = false;
+    d.voice = false;
+    d.accept = PC_NO_FILES;
+  }
+  return d;
 }
-function pcComposerSetup(c) {
-  if (c) c.data = Object.assign({}, c.data || {}, pcComposerData());
+// The composer's data with the page's part (re)applied: a session that takes
+// files gets the element's defaults back (the task keys are dropped, not kept).
+function pcComposerSetup(c, takesFiles) {
+  if (!c) return;
+  var d = Object.assign({}, c.data || {});
+  delete d.attach;
+  delete d.image;
+  delete d.voice;
+  delete d.accept;
+  c.data = Object.assign(d, pcComposerData(takesFiles));
 }
 // A fresh element for another session: what the old one showed — the text being
 // typed, its files, notes in flight, a failed send's Retry — was the other
