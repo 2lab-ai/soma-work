@@ -267,6 +267,8 @@ describe('SessionRegistry — an epic plan and its events (E4 ②)', () => {
         { id: 'login-test', title: 'Test', kind: 'sub', parent: 'login' },
         { id: 'forged', title: 'x', kind: 'issue' },
       ],
+      // The orphan sub load dropped is retired (its id is never reused); a bad slug never was an id.
+      retired: ['stray'],
     });
     expect(epic.epicEvents).toEqual([event('e1')]);
     for (const id of [childId, plainId, slackId]) {
@@ -318,7 +320,12 @@ describe('SessionRegistry — an epic plan and its events (E4 ②)', () => {
           state: 'MAIN',
           activityState: 'idle',
         },
-        slacklessRecord(epicId, { kind: 'epic', childTaskIds: [childId], plan }),
+        slacklessRecord(epicId, {
+          kind: 'epic',
+          childTaskIds: [childId],
+          plan,
+          epicEvents: [event('ev1', { childTaskId: childId, planNodeId: 'login' })],
+        }),
         slacklessRecord(childId, { parentTaskId: epicId, planNodeId: 'login' }),
       ]),
     );
@@ -328,6 +335,8 @@ describe('SessionRegistry — an epic plan and its events (E4 ②)', () => {
     expect(child.taskId).not.toBe(childId);
     const epic = reg.getSessionByTaskId(epicId)!;
     expect(epic.plan!.nodes[0].spawned).toEqual([child.taskId]);
+    // Its events name it by the new id too.
+    expect(epic.epicEvents!.map((e) => e.childTaskId)).toEqual([child.taskId]);
     expect(savedOf(epicId)?.plan.nodes[0].spawned).toEqual([child.taskId]);
   });
 

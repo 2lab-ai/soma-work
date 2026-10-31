@@ -22,8 +22,12 @@ export const EPIC_NODE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 export const EPIC_PLAN_MAX_NODES = 50;
 export const EPIC_NODE_TITLE_MAX = 200;
 export const EPIC_NODE_BODY_MAX = 2000;
-/** A plan remembers at most this many removed node ids (D2: an id is never reused). */
-export const EPIC_RETIRED_MAX = 200;
+/**
+ * A plan remembers at most this many removed node ids (D2: an id is never
+ * reused). Forgetting one would make it reusable, so past this a removal is
+ * refused with its own code (`too-many-retired`).
+ */
+export const EPIC_RETIRED_MAX = 1000;
 /** An epic keeps at most this many events (D6). */
 export const EPIC_EVENTS_MAX = 100;
 
@@ -43,6 +47,7 @@ export type EpicPlanErrorCode =
   | 'bad-id'
   | 'duplicate-id'
   | 'id-reused'
+  | 'too-many-retired'
   | 'bad-title'
   | 'bad-body'
   | 'bad-kind'
@@ -90,6 +95,32 @@ const verdictOf = (v: unknown): EpicPlanNode['accepted'] =>
     : undefined;
 
 /**
+ * The one node check (D2: the sanitizer is the validator — load and write
+ * share it): the code a write refuses a node with, or null. A sub's parent is
+ * checked against the whole plan by the caller.
+ */
+function nodeProblem(raw: Record<string, unknown>): { code: EpicPlanErrorCode; message: string } | null {
+  const id = String(raw.id);
+  if (typeof raw.id !== 'string' || !EPIC_NODE_ID.test(raw.id)) {
+    return { code: 'bad-id', message: `node id ${id} is not a short lowercase slug` };
+  }
+  if (typeof raw.title !== 'string' || raw.title.trim() === '' || raw.title.length > EPIC_NODE_TITLE_MAX) {
+    return { code: 'bad-title', message: `node ${id}: a title of 1–${EPIC_NODE_TITLE_MAX} characters` };
+  }
+  if (raw.body !== undefined && (typeof raw.body !== 'string' || raw.body.length > EPIC_NODE_BODY_MAX)) {
+    return { code: 'bad-body', message: `node ${id}: a body of at most ${EPIC_NODE_BODY_MAX} characters` };
+  }
+  if (raw.kind !== 'issue' && raw.kind !== 'sub') return { code: 'bad-kind', message: `node ${id}: issue or sub` };
+  if (raw.kind === 'issue' && raw.parent !== undefined) {
+    return { code: 'bad-parent', message: `node ${id}: an issue has no parent` };
+  }
+  if (raw.kind === 'sub' && typeof raw.parent !== 'string') {
+    return { code: 'bad-parent', message: `node ${id}: a sub hangs under an issue of this plan` };
+  }
+  return null;
+}
+
+/**
  * The plan after a write, or `EpicPlanError` (nothing changed). Rules:
  * at most 50 nodes; slug ids, unique; a non-empty title ≤ 200; a body ≤ 2,000;
  * an issue has no parent, a sub's parent is an issue of the same write; a node
@@ -107,26 +138,16 @@ export function applyPlanWrite(current: EpicPlan | undefined, input: PlanWriteIn
   const ids = new Set<string>();
   for (const raw of input.nodes as unknown[]) {
     if (!isObject(raw)) throw new EpicPlanError('bad-input', 'a node must be an object');
-    if (typeof raw.id !== 'string' || !EPIC_NODE_ID.test(raw.id)) {
-      throw new EpicPlanError('bad-id', `node id ${String(raw.id)} is not a short lowercase slug`);
-    }
-    if (ids.has(raw.id)) throw new EpicPlanError('duplicate-id', `node id ${raw.id} is used twice`);
-    if (retired.has(raw.id)) throw new EpicPlanError('id-reused', `node id ${raw.id} was removed and cannot be reused`);
-    ids.add(raw.id);
+    const problem = nodeProblem(raw);
+    if (problem) throw new EpicPlanError(problem.code, problem.message);
+    const id = raw.id as string;
+    if (ids.has(id)) throw new EpicPlanError('duplicate-id', `node id ${id} is used twice`);
+    if (retired.has(id)) throw new EpicPlanError('id-reused', `node id ${id} was removed and cannot be reused`);
+    ids.add(id);
   }
   const kinds = new Map<string, unknown>(input.nodes.map((n) => [n.id, n.kind]));
   const nodes: EpicPlanNode[] = input.nodes.map((raw) => {
-    if (typeof raw.title !== 'string' || raw.title.trim() === '' || raw.title.length > EPIC_NODE_TITLE_MAX) {
-      throw new EpicPlanError('bad-title', `node ${raw.id}: a title of 1–${EPIC_NODE_TITLE_MAX} characters`);
-    }
-    if (raw.body !== undefined && (typeof raw.body !== 'string' || raw.body.length > EPIC_NODE_BODY_MAX)) {
-      throw new EpicPlanError('bad-body', `node ${raw.id}: a body of at most ${EPIC_NODE_BODY_MAX} characters`);
-    }
-    if (raw.kind !== 'issue' && raw.kind !== 'sub') throw new EpicPlanError('bad-kind', `node ${raw.id}: issue or sub`);
-    if (raw.kind === 'issue' && raw.parent !== undefined) {
-      throw new EpicPlanError('bad-parent', `node ${raw.id}: an issue has no parent`);
-    }
-    if (raw.kind === 'sub' && (typeof raw.parent !== 'string' || kinds.get(raw.parent) !== 'issue')) {
+    if (raw.kind === 'sub' && kinds.get(raw.parent as string) !== 'issue') {
       throw new EpicPlanError('bad-parent', `node ${raw.id}: a sub hangs under an issue of this plan`);
     }
     const before = previous.get(raw.id);
@@ -153,7 +174,7 @@ export function applyPlanWrite(current: EpicPlan | undefined, input: PlanWriteIn
     retired.add(gone.id);
   }
   if (retired.size > EPIC_RETIRED_MAX) {
-    throw new EpicPlanError('too-many-nodes', `a plan removes at most ${EPIC_RETIRED_MAX} node ids`);
+    throw new EpicPlanError('too-many-retired', `a plan removes at most ${EPIC_RETIRED_MAX} node ids in its life`);
   }
   let done = current?.done;
   if (input.done === true) {
@@ -182,16 +203,29 @@ export function isEpicDone(plan: EpicPlan | undefined): boolean {
  */
 export function epicNodeStatus(
   node: EpicPlanNode,
-  liveChildren: Array<Pick<ConversationSession, 'taskId' | 'planNodeId' | 'activityState' | 'lastTurnOutcome'>>,
+  liveChildren: Array<
+    Pick<ConversationSession, 'taskId' | 'planNodeId' | 'activityState' | 'lastTurnOutcome' | 'openChain'>
+  >,
   events: EpicEvent[],
 ): EpicNodeStatus {
   const mine = liveChildren.filter((c) => c.planNodeId === node.id);
-  const child = mine[mine.length - 1];
+  // One live child per node is the rule (spawn_child is idempotent per node); if there are
+  // more, the one running speaks for the node, then one waiting, then the newest.
+  const child =
+    mine.find((c) => c.activityState === 'working') ??
+    mine.find((c) => c.activityState === 'waiting') ??
+    mine[mine.length - 1];
   if (!child) return (node.spawned?.length ?? 0) > 0 ? 'closed' : 'none';
   if (child.activityState === 'working') {
     const openApproval = events.some(
       (e) =>
-        e.childTaskId === child.taskId && e.outcome === 'needs-input' && e.approvalId !== undefined && !e.resolvedAt,
+        e.childTaskId === child.taskId &&
+        e.outcome === 'needs-input' &&
+        e.approvalId !== undefined &&
+        !e.resolvedAt &&
+        // An approval of an earlier chain (one a crash left open) is not this run's.
+        e.chainId !== undefined &&
+        e.chainId === child.openChain,
     );
     return openApproval ? 'needs-input' : 'running';
   }
@@ -216,11 +250,17 @@ export function sanitizeEpicPlan(value: unknown): EpicPlan | undefined {
   if (!isObject(value) || !Array.isArray(value.nodes)) return undefined;
   const nodes: EpicPlanNode[] = [];
   const seen = new Set<string>();
+  /** Slug ids of nodes this load dropped: retired, so a later write cannot hand them to another node. */
+  const dropped = new Set<string>();
   for (const raw of value.nodes.slice(0, EPIC_PLAN_MAX_NODES)) {
-    if (!isObject(raw) || typeof raw.id !== 'string' || !EPIC_NODE_ID.test(raw.id) || seen.has(raw.id)) continue;
-    if (typeof raw.title !== 'string' || raw.title === '' || raw.title.length > EPIC_NODE_TITLE_MAX) continue;
-    if (raw.kind !== 'issue' && raw.kind !== 'sub') continue;
-    if (raw.body !== undefined && (typeof raw.body !== 'string' || raw.body.length > EPIC_NODE_BODY_MAX)) continue;
+    if (!isObject(raw) || seen.has(String(raw.id))) continue;
+    if (nodeProblem(raw)) {
+      if (typeof raw.id === 'string' && EPIC_NODE_ID.test(raw.id)) dropped.add(raw.id);
+      continue;
+    }
+    if (typeof raw.id !== 'string' || typeof raw.title !== 'string' || (raw.kind !== 'issue' && raw.kind !== 'sub')) {
+      continue;
+    }
     const spawned = Array.isArray(raw.spawned)
       ? [...new Set(raw.spawned.filter((x): x is string => typeof x === 'string' && x !== ''))]
       : [];
@@ -230,7 +270,7 @@ export function sanitizeEpicPlan(value: unknown): EpicPlan | undefined {
       id: raw.id,
       title: raw.title,
       kind: raw.kind,
-      ...(raw.kind === 'sub' && typeof raw.parent === 'string' ? { parent: raw.parent } : {}),
+      ...(raw.kind === 'sub' ? { parent: raw.parent as string } : {}),
       ...(typeof raw.body === 'string' && raw.body ? { body: raw.body } : {}),
       ...(accepted ? { accepted } : {}),
       ...(spawned.length ? { spawned } : {}),
@@ -238,15 +278,15 @@ export function sanitizeEpicPlan(value: unknown): EpicPlan | undefined {
   }
   const issues = new Set(nodes.filter((n) => n.kind === 'issue').map((n) => n.id));
   const kept = nodes.filter((n) => n.kind === 'issue' || (n.parent !== undefined && issues.has(n.parent)));
+  for (const n of nodes) if (!kept.includes(n)) dropped.add(n.id);
   const done = verdictOf(value.done);
   const live = new Set(kept.map((n) => n.id));
-  const retired = Array.isArray(value.retired)
-    ? [
-        ...new Set(
-          value.retired.filter((x): x is string => typeof x === 'string' && EPIC_NODE_ID.test(x) && !live.has(x)),
-        ),
-      ].slice(0, EPIC_RETIRED_MAX)
-    : [];
+  const stored = Array.isArray(value.retired) ? value.retired : [];
+  const retired = [
+    ...new Set(
+      [...stored, ...dropped].filter((x): x is string => typeof x === 'string' && EPIC_NODE_ID.test(x) && !live.has(x)),
+    ),
+  ].slice(0, EPIC_RETIRED_MAX);
   return { nodes: kept, ...(done ? { done } : {}), ...(retired.length ? { retired } : {}) };
 }
 
@@ -302,6 +342,11 @@ export function capEpicEvents(events: EpicEvent[]): EpicEvent[] {
   for (const e of byAge) {
     if (kept.length - drop.size <= EPIC_EVENTS_MAX) break;
     if (!protectedIds.has(e.id)) drop.add(e.id);
+  }
+  // More children than the cap (none under the 7-child limit): the oldest go anyway — a cap is a cap.
+  for (const e of byAge) {
+    if (kept.length - drop.size <= EPIC_EVENTS_MAX) break;
+    drop.add(e.id);
   }
   return kept.filter((e) => !drop.has(e.id));
 }
