@@ -14141,7 +14141,23 @@ function holdPanelLanding() {
 // focusWorkLog = opened from a card's 작업 로그 button or a ?session= deep link:
 // the panel opens on its 작업 로그 tab (true), or names another landing
 // ('answer', 'agent', 'goal', 'tasks' — psecForLanding picks the section tab).
+// An opening asked for before <ui-drawer> is defined (a deep link or a fast first click on a cold load: the
+// drawer's module is one of the last): its arguments, opened once the element is — one wait, the latest asked.
+var _panelOpenWaiting = null;
 function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
+  var drawerEl = document.getElementById('slide-panel');
+  if (drawerEl && typeof drawerEl.show !== 'function' && typeof customElements !== 'undefined') {
+    var waiting = _panelOpenWaiting;
+    _panelOpenWaiting = [sessionKey, focusWorkLog, agentId, byKey];
+    if (!waiting) {
+      customElements.whenDefined('ui-drawer').then(function() {
+        var args = _panelOpenWaiting;
+        _panelOpenWaiting = null;
+        if (args) openPanel(args[0], args[1], args[2], args[3]);
+      });
+    }
+    return;
+  }
   const s = _sessionCache[sessionKey];
   if (!s) return;
   // The detail deck (SSOT 2026-10-29 T2): this session's detail card joins it
@@ -15328,7 +15344,10 @@ function closePanel() {
   pcReset();
   if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
   layoutBeforeChange();
-  document.getElementById('slide-panel').hide();
+  // An opening still waiting for the element is dropped; a drawer not yet defined has nothing open to close.
+  _panelOpenWaiting = null;
+  var drawerEl = document.getElementById('slide-panel');
+  if (drawerEl && typeof drawerEl.hide === 'function') drawerEl.hide();
   panelOpen = false;
   panelSessionKey = null;
   panelConvId = null;
@@ -16879,6 +16898,9 @@ function fcHydrateIn(node) {
   }
   var viewer = artViewerEl();
   if (viewer) {
+    // The page's own body (model HTML with its scripts, a PDF) goes in before the element draws a step's body
+    // (ui-before-view, 0.12.0) — so a page is never loaded twice; ui-view keeps the slot in step after it.
+    viewer.addEventListener('ui-before-view', function(e) { syncArtViewer(e.detail); });
     viewer.addEventListener('ui-view', function(e) { syncArtViewer(e.detail); });
     // Closed by the person (Esc, the scrim, ✕): the page's body leaves once the exit has played.
     viewer.addEventListener('ui-close', function() {

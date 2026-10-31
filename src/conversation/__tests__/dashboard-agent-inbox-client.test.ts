@@ -3560,3 +3560,59 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     expect(tall.m.section()).toBe('log');
   });
 });
+
+describe('D4 review (P1): an opening asked for before <ui-drawer> is defined waits for the element', () => {
+  it('a deep link or a fast click on a cold load: one wait for ui-drawer, the latest opening runs once it is defined', async () => {
+    let resolve: (() => void) | null = null;
+    const asked: string[] = [];
+    const drawer: Record<string, unknown> = { id: 'slide-panel' };
+    const document = { getElementById: (id: string) => (id === 'slide-panel' ? drawer : null) };
+    // Past the guard the opening reads the session first: record which one (none in this rig, so it stops there).
+    const looked: string[] = [];
+    const _sessionCache = new Proxy(
+      {},
+      {
+        get: (_t, k) => {
+          looked.push(String(k));
+          return undefined;
+        },
+      },
+    );
+    const customElements = {
+      whenDefined: (name: string) => {
+        asked.push(name);
+        return new Promise<void>((r) => {
+          resolve = r;
+        });
+      },
+    };
+    // Only the guard runs while the element is undefined: anything else openPanel needs is not injected here,
+    // so reaching past the guard would throw.
+    const m = load<{ openPanel(k: string, w?: boolean, a?: string, b?: boolean): void; waiting(): unknown }>(
+      ['openPanel'],
+      ['_panelOpenWaiting'],
+      { document, customElements, _sessionCache },
+      ['function waiting() { return _panelOpenWaiting; }'],
+    );
+    m.openPanel('k1');
+    m.openPanel('k2', true, 'a1', true);
+    expect(asked).toEqual(['ui-drawer']);
+    expect(m.waiting()).toEqual(['k2', true, 'a1', true]);
+    expect(looked).toEqual([]);
+    // Defined: the drawer has its methods now; the opening runs once, with the latest arguments.
+    drawer.show = () => {};
+    expect(resolve).not.toBeNull();
+    (resolve as unknown as () => void)();
+    await flush();
+    expect(m.waiting()).toBe(null);
+    expect(looked).toEqual(['k2']);
+  });
+
+  it('closePanel drops a waiting opening and never calls hide on an element not yet defined', () => {
+    const src = clientFn('closePanel');
+    expect(src).toContain('_panelOpenWaiting = null;');
+    expect(src).toContain("if (drawerEl && typeof drawerEl.hide === 'function') drawerEl.hide();");
+    // The artifact viewer slots the page's body before the element draws a step (no page loaded twice).
+    expect(TEMPLATE).toContain("viewer.addEventListener('ui-before-view', function(e) { syncArtViewer(e.detail); });");
+  });
+});
