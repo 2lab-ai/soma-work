@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyPlanWrite,
   EPIC_EVENTS_MAX,
+  EPIC_RETIRED_MAX,
   EpicPlanError,
   epicNodeStatus,
   isEpicDone,
@@ -89,6 +90,23 @@ describe('applyPlanWrite (D2)', () => {
     const kept = applyPlanWrite(current, { nodes: [issue('a')] }, ctx());
     expect(kept.nodes.map((n) => n.id)).toEqual(['a']);
     expect(kept.nodes[0].spawned).toEqual(['t1']);
+    // The removed id is retired: it never names another node, in this write or any later one.
+    expect(kept.retired).toEqual(['b']);
+    expect(code(() => applyPlanWrite(kept, { nodes: [issue('a'), issue('b')] }, ctx()))).toBe('id-reused');
+    const later = applyPlanWrite(kept, { nodes: [issue('a'), issue('c')] }, ctx());
+    expect(later.retired).toEqual(['b']);
+    expect(code(() => applyPlanWrite(later, { nodes: [issue('a'), sub('b', 'a')] }, ctx()))).toBe('id-reused');
+    // `retired` is the host's: a writer cannot clear it.
+    expect(applyPlanWrite(later, { nodes: [issue('a'), issue('c')], retired: [] } as any, ctx()).retired).toEqual([
+      'b',
+    ]);
+    // At most EPIC_RETIRED_MAX ids are remembered: past that, removing a node is refused.
+    const full = {
+      nodes: [issue('a'), issue('z')],
+      retired: Array.from({ length: EPIC_RETIRED_MAX }, (_, i) => `r${i}`),
+    };
+    expect(code(() => applyPlanWrite(full, { nodes: [issue('a')] }, ctx()))).toBe('too-many-nodes');
+    expect(applyPlanWrite(full, { nodes: [issue('a'), issue('z')] }, ctx()).retired).toHaveLength(EPIC_RETIRED_MAX);
   });
 
   it('accepted: true sets it (by and when), omitted keeps it, false clears it; spawned is not writable', () => {
@@ -199,6 +217,8 @@ describe('sanitizeEpicPlan / sanitizeEpicEvents (load)', () => {
     expect(plan?.nodes[0].spawned).toEqual(['c1']);
     expect(plan?.done).toBeUndefined();
     expect(sanitizeEpicPlan('x')).toBeUndefined();
+    // Retired ids: slugs only, de-duplicated, never one a node still uses.
+    expect(sanitizeEpicPlan({ nodes: [issue('a')], retired: ['b', 'b', 'Bad Id', 7, 'a'] })?.retired).toEqual(['b']);
   });
 
   it('events: well-formed only, at most EPIC_EVENTS_MAX — delivered dropped first, then the oldest of a child', () => {

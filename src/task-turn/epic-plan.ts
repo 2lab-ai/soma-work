@@ -5,7 +5,9 @@
  *
  * - The plan is the epic's own record (`plan`): issue nodes, sub nodes under
  *   an issue, written only through `applyPlanWrite` — a checked replacement,
- *   not a free overwrite. The sanitizer for load keeps what is well formed.
+ *   not a free overwrite. A removed node's id is retired for good, so an
+ *   event or child naming it can never land on a different node. The
+ *   sanitizer for load keeps what is well formed.
  * - A node's status is never stored: it is computed from the live children
  *   the server recorded (`epicNodeStatus`), so a child's own words cannot
  *   move it. `accepted` is the epic's verdict on a node; `done` is the
@@ -20,6 +22,8 @@ export const EPIC_NODE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 export const EPIC_PLAN_MAX_NODES = 50;
 export const EPIC_NODE_TITLE_MAX = 200;
 export const EPIC_NODE_BODY_MAX = 2000;
+/** A plan remembers at most this many removed node ids (D2: an id is never reused). */
+export const EPIC_RETIRED_MAX = 200;
 /** An epic keeps at most this many events (D6). */
 export const EPIC_EVENTS_MAX = 100;
 
@@ -38,6 +42,7 @@ export type EpicPlanErrorCode =
   | 'too-many-nodes'
   | 'bad-id'
   | 'duplicate-id'
+  | 'id-reused'
   | 'bad-title'
   | 'bad-body'
   | 'bad-kind'
@@ -88,8 +93,9 @@ const verdictOf = (v: unknown): EpicPlanNode['accepted'] =>
  * The plan after a write, or `EpicPlanError` (nothing changed). Rules:
  * at most 50 nodes; slug ids, unique; a non-empty title ≤ 200; a body ≤ 2,000;
  * an issue has no parent, a sub's parent is an issue of the same write; a node
- * that has (or had) a child cannot be removed; `accepted` survives a write
- * that keeps the node id; `spawned` is the host's, never the writer's.
+ * that has (or had) a child cannot be removed; a removed node's id is retired
+ * and never names another node; `accepted` survives a write that keeps the
+ * node id; `spawned` and `retired` are the host's, never the writer's.
  */
 export function applyPlanWrite(current: EpicPlan | undefined, input: PlanWriteInput, ctx: PlanWriteContext): EpicPlan {
   if (!isObject(input) || !Array.isArray(input.nodes)) throw new EpicPlanError('bad-input', 'nodes must be a list');
@@ -97,6 +103,7 @@ export function applyPlanWrite(current: EpicPlan | undefined, input: PlanWriteIn
     throw new EpicPlanError('too-many-nodes', `a plan has at most ${EPIC_PLAN_MAX_NODES} nodes`);
   }
   const previous = new Map((current?.nodes ?? []).map((n) => [n.id, n]));
+  const retired = new Set(current?.retired ?? []);
   const ids = new Set<string>();
   for (const raw of input.nodes as unknown[]) {
     if (!isObject(raw)) throw new EpicPlanError('bad-input', 'a node must be an object');
@@ -104,6 +111,7 @@ export function applyPlanWrite(current: EpicPlan | undefined, input: PlanWriteIn
       throw new EpicPlanError('bad-id', `node id ${String(raw.id)} is not a short lowercase slug`);
     }
     if (ids.has(raw.id)) throw new EpicPlanError('duplicate-id', `node id ${raw.id} is used twice`);
+    if (retired.has(raw.id)) throw new EpicPlanError('id-reused', `node id ${raw.id} was removed and cannot be reused`);
     ids.add(raw.id);
   }
   const kinds = new Map<string, unknown>(input.nodes.map((n) => [n.id, n.kind]));
@@ -142,6 +150,10 @@ export function applyPlanWrite(current: EpicPlan | undefined, input: PlanWriteIn
     if (ids.has(gone.id)) continue;
     const hasChild = (gone.spawned?.length ?? 0) > 0 || ctx.children.some((c) => c.planNodeId === gone.id);
     if (hasChild) throw new EpicPlanError('node-has-children', `node ${gone.id} has a child and cannot be removed`);
+    retired.add(gone.id);
+  }
+  if (retired.size > EPIC_RETIRED_MAX) {
+    throw new EpicPlanError('too-many-nodes', `a plan removes at most ${EPIC_RETIRED_MAX} node ids`);
   }
   let done = current?.done;
   if (input.done === true) {
@@ -152,7 +164,7 @@ export function applyPlanWrite(current: EpicPlan | undefined, input: PlanWriteIn
   } else if (input.done === false) {
     done = undefined;
   }
-  return { nodes, ...(done ? { done } : {}) };
+  return { nodes, ...(done ? { done } : {}), ...(retired.size ? { retired: [...retired] } : {}) };
 }
 
 /** The epic is done: marked so, or at least one node and every node accepted (D10 a). */
@@ -227,7 +239,15 @@ export function sanitizeEpicPlan(value: unknown): EpicPlan | undefined {
   const issues = new Set(nodes.filter((n) => n.kind === 'issue').map((n) => n.id));
   const kept = nodes.filter((n) => n.kind === 'issue' || (n.parent !== undefined && issues.has(n.parent)));
   const done = verdictOf(value.done);
-  return { nodes: kept, ...(done ? { done } : {}) };
+  const live = new Set(kept.map((n) => n.id));
+  const retired = Array.isArray(value.retired)
+    ? [
+        ...new Set(
+          value.retired.filter((x): x is string => typeof x === 'string' && EPIC_NODE_ID.test(x) && !live.has(x)),
+        ),
+      ].slice(0, EPIC_RETIRED_MAX)
+    : [];
+  return { nodes: kept, ...(done ? { done } : {}), ...(retired.length ? { retired } : {}) };
 }
 
 const EVENT_OUTCOMES = new Set(['completed', 'failed', 'cancelled', 'waiting', 'interrupted', 'needs-input', 'closed']);
