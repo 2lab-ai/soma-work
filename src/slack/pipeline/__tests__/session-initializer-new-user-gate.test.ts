@@ -216,4 +216,59 @@ describe('SessionInitializer - new-user gate teardown', () => {
     expect(mockClaudeHandler.terminateSession).toHaveBeenCalledWith('C123:thread123');
     expect((result as any).halted).toBe(true);
   });
+
+  /**
+   * E2 ⑦ — the gate is now `runNewUserGate`; the pending-user path keeps its
+   * result through `initialize`: told to wait, session closed, halted — and a
+   * post that fails propagates with the session left as it was.
+   */
+  it('a user still pending is told to wait, the session closed, the turn halted', async () => {
+    const { userSettingsStore } = await import('../../../user-settings-store');
+    vi.mocked(userSettingsStore.getUserSettings).mockReturnValueOnce({ accepted: false } as any);
+    const result = await sessionInitializer.initialize(
+      { user: 'U123', channel: 'C123', thread_ts: undefined, ts: 'thread123', text: 'hello' } as any,
+      '/test/dir',
+    );
+    expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
+      'C123',
+      '⏳ 아직 승인 대기 중입니다. 관리자의 승인을 기다려주세요.',
+      {
+        threadTs: 'thread123',
+      },
+    );
+    expect(create).not.toHaveBeenCalled();
+    expect(mockClaudeHandler.terminateSession).toHaveBeenCalledWith('C123:thread123');
+    expect((result as any).halted).toBe(true);
+  });
+
+  it('…and when telling them fails, the error propagates and the session is not closed', async () => {
+    const { userSettingsStore } = await import('../../../user-settings-store');
+    vi.mocked(userSettingsStore.getUserSettings).mockReturnValueOnce({ accepted: false } as any);
+    mockSlackApi.postMessage.mockImplementation(async (_c: string, text: string) => {
+      if (text.startsWith('⏳')) throw new Error('channel_not_found');
+      return { ts: 'msg123' };
+    });
+    await expect(
+      sessionInitializer.initialize(
+        { user: 'U123', channel: 'C123', thread_ts: undefined, ts: 'thread123', text: 'hello' } as any,
+        '/test/dir',
+      ),
+    ).rejects.toThrow('channel_not_found');
+    expect(mockClaudeHandler.terminateSession).not.toHaveBeenCalled();
+  });
+
+  it('a new user is told to wait, with the same words as before', async () => {
+    notify.mockImplementationOnce(async () => undefined as never);
+    await sessionInitializer.initialize(
+      { user: 'U123', channel: 'C123', thread_ts: undefined, ts: 'thread123', text: 'hello' } as any,
+      '/test/dir',
+    );
+    expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
+      'C123',
+      '⏳ 승인 대기 중입니다. 관리자에게 요청이 전달되었습니다.',
+      {
+        threadTs: 'thread123',
+      },
+    );
+  });
 });

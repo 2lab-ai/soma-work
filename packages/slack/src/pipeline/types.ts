@@ -157,6 +157,12 @@ export interface MessageEvent {
      * body cannot forge it. `SessionInitializer` copies it onto the session.
      */
     incidentRequest?: IncidentRequest;
+    /**
+     * E2 ⑦ — set by the router on an original app_mention whose words are a
+     * plain instruction (`isTaskEntryCandidate`): such a mention may become a
+     * dashboard task (⑧). Absent everywhere else. Survives the follow-up queue.
+     */
+    taskEntryCandidate?: boolean;
   };
   files?: Array<{
     id: string;
