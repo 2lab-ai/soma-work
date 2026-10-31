@@ -46,6 +46,13 @@ vi.mock('../viewer', () => ({
 }));
 // A tiny in-memory archive: the board lists it, a revive loads from it.
 const archiveState = vi.hoisted(() => ({ items: [] as Array<Record<string, any>> }));
+// E4 ⑧ — a task's pending permission prompts, by task key (none unless a test sets one).
+const taskPrompts = vi.hoisted(() => new Map<string, Array<Record<string, any>>>());
+vi.mock('../permission-prompts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../permission-prompts')>()),
+  pendingTaskPermissionsFor: (taskKey: string, turnId: string | undefined) =>
+    turnId ? (taskPrompts.get(taskKey) ?? []) : [],
+}));
 vi.mock('../../session-archive', () => ({
   getArchiveStore: () => ({
     listRecent: () => archiveState.items,
@@ -99,6 +106,7 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
       fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
     archiveState.items = [];
+    taskPrompts.clear();
   });
 
   /** A signed-in dashboard user: the session cookie and its CSRF token. */
@@ -473,6 +481,141 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     epic.trashed = true;
     b = await board();
     expect(keys(b.idle)).toEqual(expect.arrayContaining([`task:${c1.taskId}`, `task:${c2.taskId}`]));
+  });
+
+  function epicTree() {
+    const reg = new SessionRegistry();
+    const base = { ownerId: 'U1', ownerName: 'Alice' };
+    const epic = reg.createTask({ ...base, workingDirectory: '/work/U1/e', title: 'E', kind: 'epic' });
+    reg.setEpicPlan(epic.taskId!, { nodes: [{ id: 'login', title: 'Fix login', kind: 'issue' }] }, 'epic');
+    const child = reg.createTask({
+      ...base,
+      workingDirectory: '/work/U1/c',
+      title: 'C',
+      parentTaskId: epic.taskId,
+      planNodeId: 'login',
+    });
+    return { reg, epic, child };
+  }
+  const columns = (b: Board) => [...b.working, ...b.waiting, ...b.idle, ...b.closed] as any[];
+
+  it('E4 ⑧ R1 — a child of another owner under this epic’s id is not in its bundle: it keeps its own column (grok P1)', async () => {
+    const { reg, epic, child } = epicTree();
+    // A corrupt record: createTask refuses this, a hand-edited sessions.json does not.
+    child.ownerId = 'U2';
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const b = await board();
+    const epicCard = columns(b).find((c) => c.key === `task:${epic.taskId}`);
+    expect(epicCard.epic.children).toEqual([]);
+    expect(epicCard.epic.nodes[0].childTaskIds).toEqual([]);
+    expect(columns(b).map((c) => c.key)).toContain(`task:${child.taskId}`);
+  });
+
+  it('E4 ⑧ R1 — a child stored before its epic is still bundled, once', async () => {
+    const { reg, epic, child } = epicTree();
+    const all = reg.getAllSessions();
+    const childFirst = new Map([...all].sort(([a]) => (a === `task:${child.taskId}` ? -1 : 1)));
+    expect([...childFirst.keys()][0]).toBe(`task:${child.taskId}`);
+    setDashboardSessionAccessor(() => childFirst);
+    const b = await board();
+    expect(columns(b).map((c) => c.key)).not.toContain(`task:${child.taskId}`);
+    const epicCard = columns(b).find((c) => c.key === `task:${epic.taskId}`);
+    expect(epicCard.epic.children.map((c: any) => c.key)).toEqual([`task:${child.taskId}`]);
+  });
+
+  it('E4 ⑧ R1 — a running child blocked on a permission prompt puts its epic in WAITING (grok P2)', async () => {
+    const { reg, epic, child } = epicTree();
+    child.activityState = 'working';
+    child.activeTaskTurnId = 'turn-1';
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    let b = await board();
+    expect(b.working.map((c) => c.key)).toEqual([`task:${epic.taskId}`]);
+    taskPrompts.set(`task:${child.taskId}`, [{ approvalId: 'ap-1', toolName: 'Bash', createdAt: 1 }]);
+    b = await board();
+    expect(b.waiting.map((c) => c.key)).toEqual([`task:${epic.taskId}`]);
+    expect((b.waiting[0] as any).epic.state).toBe('needs-input');
+    expect((b.waiting[0] as any).epic.children[0].activityState).toBe('waiting');
+  });
+
+  it('E4 ⑧ R1 — an idle child with an armed resume keeps its epic in RUNNING; a trashed child is in no bundle and no column', async () => {
+    const { reg, epic, child } = epicTree();
+    child.goal = { status: 'active', pendingEval: {} } as any;
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    let b = await board();
+    expect(b.working.map((c) => c.key)).toEqual([`task:${epic.taskId}`]);
+    expect((b.working[0] as any).epic.state).toBe('running');
+
+    child.goal = undefined;
+    child.trashed = true;
+    b = await board();
+    const epicCard = columns(b).find((c) => c.key === `task:${epic.taskId}`);
+    expect(epicCard.epic.children).toEqual([]);
+    expect(columns(b).map((c) => c.key)).not.toContain(`task:${child.taskId}`);
+  });
+
+  it('E4 ⑧ R1 — the single-session push carries the bundle; a child’s push is its epic’s card (fable P2-1)', async () => {
+    const { reg, epic, child } = epicTree();
+    child.activityState = 'working';
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const webServer = await import('../web-server');
+    const dashboard = await import('../dashboard');
+    const messages: any[] = [];
+    const ws = await (webServer as any).injectWebServerWS(
+      '/ws/dashboard',
+      { headers: { authorization: 'Bearer test-token' } },
+      (sock: any) => sock.on('message', (data: any) => messages.push(JSON.parse(data.toString()))),
+    );
+    try {
+      const pushed = () => messages.filter((m) => m.type === 'sessionUpdated').map((m) => m.session);
+      dashboard.broadcastSingleSessionUpdate(`task:${epic.taskId}`);
+      await vi.waitFor(() => expect(pushed()).toHaveLength(1));
+      expect(pushed()[0].key).toBe(`task:${epic.taskId}`);
+      expect(pushed()[0].epic.state).toBe('running');
+      expect(pushed()[0].epic.children.map((c: any) => c.key)).toEqual([`task:${child.taskId}`]);
+
+      dashboard.broadcastSingleSessionUpdate(`task:${child.taskId}`);
+      await vi.waitFor(() => expect(pushed()).toHaveLength(2));
+      expect(pushed()[1].key).toBe(`task:${epic.taskId}`);
+      expect(pushed()[1].epic.children.map((c: any) => c.key)).toEqual([`task:${child.taskId}`]);
+
+      // An orphan child (its epic trashed) pushes its own card.
+      epic.trashed = true;
+      dashboard.broadcastSingleSessionUpdate(`task:${child.taskId}`);
+      await vi.waitFor(() => expect(pushed()).toHaveLength(3));
+      expect(pushed()[2].key).toBe(`task:${child.taskId}`);
+    } finally {
+      ws.terminate();
+    }
+  });
+
+  it('E4 ⑧ R1 — a closed child’s archive card stays in CLOSED, tagged with its epic and node; a closed epic says epic (fable P2-2)', async () => {
+    const reg = new SessionRegistry();
+    const at = Date.now() - 60_000;
+    const archived = (taskId: string, extra: Record<string, unknown>) => ({
+      archivedAt: at,
+      archiveReason: 'user_close',
+      sessionKey: `task:${taskId}`,
+      taskId,
+      slackless: true,
+      sessionId: 'sdk-1',
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      channelId: '',
+      title: taskId,
+      lastActivity: new Date(at).toISOString(),
+      ...extra,
+    });
+    archiveState.items = [
+      archived('11111111-2222-4333-8444-555555555555', { parentTaskId: 'e-1', planNodeId: 'login' }),
+      archived('21111111-2222-4333-8444-555555555555', { kind: 'epic' }),
+    ];
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const b = await board();
+    const [c, e] = archiveState.items.map((a) => (b.closed as any[]).find((x) => x.key.includes(a.taskId)));
+    expect(c).toMatchObject({ parentTaskId: 'e-1', planNodeId: 'login' });
+    expect(c.kind).toBeUndefined();
+    expect(e).toMatchObject({ kind: 'epic' });
+    expect(e.parentTaskId).toBeUndefined();
   });
 
   it('E2 ⑤ — a task’s card carries the thread notices that could not be posted; none, no field', async () => {
