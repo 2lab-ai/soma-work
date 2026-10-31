@@ -166,18 +166,35 @@ export interface NewTaskContextInput {
   usageFetchedAt: number | null;
 }
 
-export function buildNewTaskContext(input: NewTaskContextInput): NewTaskContext {
-  // Models: the representative set; the user's own default first when it is not one of them.
-  const options = input.representativeModels.map((m) => ({ nickname: m.nickname, model: m.model, label: m.label }));
-  let defaultModel = options.find((m) => m.model === input.userDefaultModel)?.nickname;
+/**
+ * The models the new-task dialog offers: the representative set, with the
+ * user's own default first when it is not one of them. Shared by the context
+ * and the dashboard-task launcher, which resolves a nickname with it (#640 R2).
+ */
+export function newTaskModelOptions(
+  representativeModels: Array<{ nickname: string; model: string; label: string }>,
+  userDefaultModel: string,
+  userDefaultModelLabel: string,
+): { options: Array<{ nickname: string; model: string; label: string }>; defaultModel: string } {
+  const options = representativeModels.map((m) => ({ nickname: m.nickname, model: m.model, label: m.label }));
+  let defaultModel = options.find((m) => m.model === userDefaultModel)?.nickname;
   if (!defaultModel) {
     options.unshift({
-      nickname: input.userDefaultModel,
-      model: input.userDefaultModel,
-      label: input.userDefaultModelLabel || input.userDefaultModel,
+      nickname: userDefaultModel,
+      model: userDefaultModel,
+      label: userDefaultModelLabel || userDefaultModel,
     });
-    defaultModel = input.userDefaultModel;
+    defaultModel = userDefaultModel;
   }
+  return { options, defaultModel };
+}
+
+export function buildNewTaskContext(input: NewTaskContextInput): NewTaskContext {
+  const { options, defaultModel } = newTaskModelOptions(
+    input.representativeModels,
+    input.userDefaultModel,
+    input.userDefaultModelLabel,
+  );
   const models = options.map((m) => ({ ...m, battery: computeModelBattery(m.model, input.usageAccounts) }));
 
   // Channels: repo-mapped channels the user is a member of — never inferred from history.
@@ -311,7 +328,7 @@ export interface DashboardTaskSubmission {
   prompt: string;
   /** An existing folder's name in the user's `/tmp/<user>/`; the launcher validates it. */
   folder?: string;
-  /** The nickname of a model the dialog offers; the route resolves it (#640 R1). */
+  /** The nickname of a model the dialog offers; the task launcher resolves it (#640 R1). */
   model?: string;
 }
 

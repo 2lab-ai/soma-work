@@ -25,7 +25,13 @@ import { listRepresentativeModels } from '../session/model-switch';
 import { getTokenManager } from '../token-manager';
 import { EFFORT_LEVELS, userSettingsStore } from '../user-settings-store';
 import type { DashboardNewTaskProvider } from './dashboard';
-import { buildNewTaskContext, isSlackFileUrl, type NewTaskAttachment, type UsageAccountView } from './new-task';
+import {
+  buildNewTaskContext,
+  isSlackFileUrl,
+  type NewTaskAttachment,
+  newTaskModelOptions,
+  type UsageAccountView,
+} from './new-task';
 import {
   launchNewTask,
   type NewTaskEvent,
@@ -148,6 +154,26 @@ export function createSlackSteerUploader(client: WebClient, opts?: SteerUploader
     },
     opts,
   );
+}
+
+/**
+ * The models the dialog offers `userId` (nickname → id), from the model catalog
+ * and the user's settings alone — no Slack call, no usage fetch. A dashboard
+ * task resolves its model with this (#640 R2).
+ */
+export function offeredNewTaskModels(userId: string): Array<{ nickname: string; model: string }> {
+  let representativeModels: Array<{ nickname: string; model: string; label: string }> = [];
+  try {
+    representativeModels = listRepresentativeModels(productionModelCatalogDeps(), userId);
+  } catch (error) {
+    logger.warn('New task: representative models unavailable', { error: String(error) });
+  }
+  const userDefaultModel = userSettingsStore.getUserDefaultModel(userId);
+  return newTaskModelOptions(
+    representativeModels,
+    userDefaultModel,
+    userSettingsStore.getModelDisplayName(userDefaultModel),
+  ).options.map((m) => ({ nickname: m.nickname, model: m.model }));
 }
 
 export function createNewTaskProvider(deps: NewTaskProviderDeps): DashboardNewTaskProvider {

@@ -90,11 +90,11 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
 
   afterAll(async () => {
     await stopWebServer?.();
-    if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   });
 
   beforeEach(() => {
-    if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
     archiveState.items = [];
   });

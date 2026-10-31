@@ -28,6 +28,7 @@ export interface TaskLaunchRequest {
   prompt: string;
   /** An existing folder's name directly inside `/tmp/<owner>/`; absent → a fresh folder. */
   folder?: string;
+  /** The nickname of a model the dialog offers (`listModels`); absent → the default. */
   model?: string;
 }
 
@@ -36,6 +37,11 @@ export interface TaskLauncherDeps {
   createTask(input: CreateTaskInput): { taskId?: string };
   /** A fresh `session_*` folder under `/tmp/<owner>/` (WorkingDirectoryManager.createSessionBaseDir). */
   createFreshDirectory(ownerId: string): string | undefined;
+  /**
+   * The models the dialog offers the owner (`offeredNewTaskModels`): a request's
+   * model is one of their nicknames, resolved here (#640 R1/R2). Absent → no model is accepted.
+   */
+  listModels?(ownerId: string): Array<{ nickname: string; model: string }>;
 }
 
 export interface TaskLauncher {
@@ -94,6 +100,12 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
       const { ownerId } = request;
       const refused = deps.controller.canStart(ownerId, request.prompt);
       if (refused) return refused;
+      // The model is one the dialog offers, by nickname — never an id from the body (#640 R1).
+      let model: string | undefined;
+      if (request.model !== undefined) {
+        model = deps.listModels?.(ownerId).find((m) => m.nickname === request.model)?.model;
+        if (!model) return launchRefusal(400, 'model must be one of the models the dialog offers');
+      }
       // The owner's root itself must be a plain folder: a root that is a link
       // would list, create and name inside whatever it leads to (#640 R1).
       const root = ownerRootState(ownerId);
@@ -129,7 +141,7 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
           ownerName: request.ownerName,
           workingDirectory,
           title: taskTitleOf(request.prompt),
-          ...(request.model ? { model: request.model } : {}),
+          ...(model ? { model } : {}),
         });
       } catch (error) {
         // A fresh folder no task was made for is not left behind (#640 R1). A named one is the owner's.
