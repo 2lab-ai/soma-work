@@ -501,6 +501,13 @@ export interface ConversationSession {
    * `idle` reads this.
    */
   lastTurnOutcome?: TaskTurnOutcomeRecord;
+  /**
+   * #598 ④c — the turn a Slack-less task is running, saved when it starts
+   * (`SessionRegistry.beginTaskTurn`) and cleared by its outcome's commit. A
+   * task loaded `working` names the turn the process lost (restart
+   * reconciliation records it `interrupted`).
+   */
+  activeTaskTurnId?: string;
   // Sleep mode
   sleepStartedAt?: Date;
   // Conversation history recording ID

@@ -106,6 +106,8 @@ interface SerializedSession {
   starClearedAt?: number;
   /** #598 ④b — a Slack-less task's latest turn outcome; validated on load. */
   lastTurnOutcome?: unknown;
+  /** #598 ④c — the turn a Slack-less task was running when saved. */
+  activeTaskTurnId?: unknown;
   /**
    * Incident ownership survives restarts: dropping it would silently promote a
    * restricted session back to an ordinary one.
@@ -544,10 +546,12 @@ export class SessionRegistry {
       outcome: session.lastTurnOutcome,
       activity: session.activityState,
       changedAt: session.activityStateChangedAt,
+      activeTurnId: session.activeTaskTurnId,
     };
     const changed = session.activityState !== activity;
     session.lastTurnOutcome = outcome;
     session.activityState = activity;
+    session.activeTaskTurnId = undefined;
     if (changed) session.activityStateChangedAt = Date.now();
     try {
       this.writeSessionsFile(true);
@@ -555,6 +559,7 @@ export class SessionRegistry {
       session.lastTurnOutcome = previous.outcome;
       session.activityState = previous.activity;
       session.activityStateChangedAt = previous.changedAt;
+      session.activeTaskTurnId = previous.activeTurnId;
       throw error;
     }
     try {
@@ -568,6 +573,43 @@ export class SessionRegistry {
     if (activity === 'idle' && changed) {
       this.drainOnIdleCallbacks(key);
       this.fireOnIdleAfterDrainHook(key);
+    }
+  }
+
+  /**
+   * #598 ④c — a Slack-less task's turn starts: `working` and the turn's id are
+   * saved strictly, so a process that dies before the outcome's commit leaves
+   * the lost turn on disk for restart reconciliation (design 598c §6). A failed
+   * write restores both and throws — the turn does not run.
+   */
+  public beginTaskTurn(sessionKey: string, turnId: string): void {
+    const key = normalizeSessionKey(sessionKey);
+    const session = this.getSessionByKey(key);
+    if (!session) throw new Error(`beginTaskTurn: session not found (${key})`);
+    if (session.slackless !== true) throw new Error(`beginTaskTurn: ${key} is not a Slack-less task`);
+    const previous = {
+      activity: session.activityState,
+      changedAt: session.activityStateChangedAt,
+      activeTurnId: session.activeTaskTurnId,
+    };
+    if (session.activityState !== 'working') session.activityStateChangedAt = Date.now();
+    session.activityState = 'working';
+    session.activeTaskTurnId = turnId;
+    try {
+      this.writeSessionsFile(true);
+    } catch (error) {
+      session.activityState = previous.activity;
+      session.activityStateChangedAt = previous.changedAt;
+      session.activeTaskTurnId = previous.activeTurnId;
+      throw error;
+    }
+    try {
+      this.onActivityStateChangeCallback?.();
+    } catch (err) {
+      this.logger.warn('beginTaskTurn: broadcast callback raised', {
+        sessionKey: key,
+        error: (err as Error)?.message ?? String(err),
+      });
     }
   }
 
@@ -2592,6 +2634,7 @@ export class SessionRegistry {
             starred: session.starred === true ? true : undefined,
             starClearedAt: session.starClearedAt,
             lastTurnOutcome: session.lastTurnOutcome,
+            activeTaskTurnId: session.activeTaskTurnId,
             incidentAttemptFinishedId: session.incidentAttemptFinishedId,
             // Session-scoped `/autocompact` token override (persisted verbatim).
             autoCompactTokens: session.autoCompactTokens,
@@ -2756,6 +2799,7 @@ export class SessionRegistry {
       const applyLifecycle = !isSessionLifecyclePolicyDegraded();
       let sleptOnLoadCount = 0;
       let mintedTaskIdCount = 0;
+      let reconciledTaskTurnCount = 0;
       // Task keys taken by a Slack-less record earlier in THIS load pass (a reload of the
       // same registry is not a duplicate; a second record with one task id in one file is).
       const slacklessKeysThisLoad = new Set<string>();
@@ -2923,6 +2967,10 @@ export class SessionRegistry {
           starred: starred ? true : undefined,
           starClearedAt: finiteStamp(serialized.starClearedAt),
           lastTurnOutcome: sanitizeTaskTurnOutcome(serialized.lastTurnOutcome),
+          activeTaskTurnId:
+            typeof serialized.activeTaskTurnId === 'string' && serialized.activeTaskTurnId
+              ? serialized.activeTaskTurnId
+              : undefined,
           // Merge code change stats
           mergeStats: serialized.mergeStats,
           // User SSOT instructions (restored from disk).
@@ -3091,8 +3139,23 @@ export class SessionRegistry {
         // A session that went to sleep while the process was down is not resumed:
         // it still gets the restart notice it was promised (symmetry), never an auto-resume.
         if (slackless) {
-          // No Slack thread to resume or notify — a Slack-less task never enters
-          // crash recovery until it can run (#597/#598, #612 review).
+          // No Slack thread to resume or notify. A task saved `working` lost its
+          // turn with the process: record that turn `interrupted` and never re-run
+          // it (#598 ④c, D10). A `waiting` task keeps its question.
+          if (serialized.activityState === 'working') {
+            const now = Date.now();
+            session.lastTurnOutcome = {
+              turnId: session.activeTaskTurnId ?? `restart:${now}`,
+              outcome: 'interrupted',
+              category: 'Exception',
+              reason: 'process ended before the outcome was recorded',
+              at: now,
+            };
+            session.activityState = 'idle';
+            session.activityStateChangedAt = now;
+            session.activeTaskTurnId = undefined;
+            reconciledTaskTurnCount++;
+          }
         } else if (serialized.shutdownNotificationSent) {
           this._crashRecoveredSessions.push({
             channelId: serialized.channelId,
@@ -3131,7 +3194,10 @@ export class SessionRegistry {
       if (mintedTaskIdCount > 0) {
         this.logger.info(`Assigned task ids to ${mintedTaskIdCount} loaded session(s)`);
       }
-      if (sleptOnLoadCount > 0 || mintedTaskIdCount > 0) {
+      if (reconciledTaskTurnCount > 0) {
+        this.logger.warn(`Recorded ${reconciledTaskTurnCount} lost task turn(s) as interrupted on load`);
+      }
+      if (sleptOnLoadCount > 0 || mintedTaskIdCount > 0 || reconciledTaskTurnCount > 0) {
         this.saveSessions();
       }
 

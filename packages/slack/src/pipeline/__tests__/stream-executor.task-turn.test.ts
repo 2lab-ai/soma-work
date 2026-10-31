@@ -11,6 +11,7 @@ import { Logger } from '@soma/common/logger';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LOG_MINIMAL } from '../../output-flags';
 import { createDashboardTurnPanel } from '../../task-turn/dashboard-turn-panel';
+import { TaskTurnRefusedError } from '../../task-turn/task-turn-refused';
 import type { WorkLogInput } from '../../work-log';
 import { StreamExecutor, setStreamExecutorProviders } from '../stream-executor';
 
@@ -543,6 +544,8 @@ describe('StreamExecutor — a Slack-less task turn writes to the dashboard (#59
     const result = await new StreamExecutor(deps).execute(params);
     expect(result.terminal).toMatchObject({ exit: 'error', thrownError: true, abortLike: false });
     expect(typeof result.terminal?.reasonText).toBe('string');
+    // The concise first capture is kept — not a later Slack mrkdwn block (fable #626 R2).
+    expect(result.terminal?.reasonText).not.toMatch(/&gt;|\*Type:\*/);
     expect(params.say).not.toHaveBeenCalled();
     const errors = deps.workLog.mock.calls.filter((c: any[]) => c[1].kind === 'error');
     expect(errors).toHaveLength(1);
@@ -616,5 +619,32 @@ describe('StreamExecutor — ④b2 R1 review (#629)', () => {
     const params = taskParams({ logVerbosity: 0x7fffffff });
     await new StreamExecutor(deps).execute(params);
     expect(deps.contextWindowManager.updateContextEmoji).not.toHaveBeenCalled();
+  });
+});
+
+describe('StreamExecutor — a refused task turn is a typed error (#598 ④c)', () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  const refusal = async (params: any) => {
+    const deps = taskDeps();
+    const error = await new StreamExecutor(deps).execute(params).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(deps.claudeHandler.streamAgentEvents).not.toHaveBeenCalled();
+    return error as TaskTurnRefusedError;
+  };
+
+  it('each entry guard throws TaskTurnRefusedError with its code', async () => {
+    const noContext = taskParams();
+    noContext.executionContext = undefined;
+    expect(await refusal(noContext)).toBeInstanceOf(TaskTurnRefusedError);
+    expect((await refusal(noContext)).code).toBe('no-execution-context');
+    expect((await refusal({ ...createParams(createSession(LOG_MINIMAL)), executionContext: TASK_CONTEXT })).code).toBe(
+      'context-on-slack-session',
+    );
+    expect((await refusal(taskParams({ conversationId: undefined }))).code).toBe('no-binding');
+    expect((await refusal({ ...taskParams(), followupTurnEpoch: 3 })).code).toBe('followup-epoch');
   });
 });

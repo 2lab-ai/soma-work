@@ -81,6 +81,7 @@ import type { TurnPanelPort } from '../turn-panel-port';
 import { NO_POST_SLACK } from '../task-turn/no-post-slack';
 import { createTaskSay, type TaskTurnBinding, type TaskWorkLogWrite } from '../task-turn/task-say';
 import type { TaskTurnTerminalSignals } from '../task-turn/task-turn-outcome';
+import { TaskTurnRefusedError } from '../task-turn/task-turn-refused';
 import type { TodoDisplayManager } from '../todo-display-manager';
 import type { ToolEventProcessor } from '../tool-event-processor';
 import type { ToolTracker } from '../tool-tracker';
@@ -1210,22 +1211,29 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // before anything runs rather than half-run a Slack path with an empty channel.
     const taskTurn = session.slackless === true;
     if (taskTurn !== (params.executionContext !== undefined)) {
-      throw new Error(
-        taskTurn
-          ? 'Slack-less task turn refused: no execution context'
-          : 'Slack turn refused: an execution context is only for a Slack-less task',
-      );
+      throw taskTurn
+        ? new TaskTurnRefusedError('no-execution-context', 'Slack-less task turn refused: no execution context')
+        : new TaskTurnRefusedError(
+            'context-on-slack-session',
+            'Slack turn refused: an execution context is only for a Slack-less task',
+          );
     }
     // #598 ④b — a task turn writes only to its own conversation, through the
     // writer the task runner tracks; its output never goes through a Slack `say`.
     const taskBinding = params.taskBinding;
     if (taskTurn && (!taskBinding || !this.deps.workLog || session.conversationId !== taskBinding.conversationId)) {
-      throw new Error('Slack-less task turn refused: no turn binding, no work-log writer, or a different conversation');
+      throw new TaskTurnRefusedError(
+        'no-binding',
+        'Slack-less task turn refused: no turn binding, no work-log writer, or a different conversation',
+      );
     }
     // The follow-up turn epoch belongs to the Slack follow-up queue; a task turn's
     // panel has no epoch source, so an epoch would silently drop its status writes (#626 R1).
     if (taskTurn && params.followupTurnEpoch !== undefined) {
-      throw new Error('Slack-less task turn refused: a follow-up turn epoch is not supported');
+      throw new TaskTurnRefusedError(
+        'followup-epoch',
+        'Slack-less task turn refused: a follow-up turn epoch is not supported',
+      );
     }
     const say: SayFn = taskTurn ? createTaskSay(taskBinding!, this.deps.workLog!) : callerSay;
     // The user-facing terminal text a task turn would have posted (SDK result
@@ -3357,7 +3365,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // below — and carried in the outcome's reason, not posted (#598 ④b).
         const errorSay: SayFn = taskTurn
           ? async (args) => {
-              if (args.text?.trim()) taskTerminalReason = args.text;
+              // The first capture is the concise one (handleError's own); a later
+              // formatted block must not replace it (fable #626 R2).
+              if (args.text?.trim() && taskTerminalReason === undefined) taskTerminalReason = args.text;
               return {};
             }
           : say;
