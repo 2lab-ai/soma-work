@@ -14,6 +14,7 @@
  *   R7 a task that is neither epic nor child saves exactly what it did before.
  *   R8 load re-mints a colliding id: the relation follows the new id, both ways.
  *   R9 a record archived on load keeps the relation.
+ *   R10 a relative archived in the same load as a re-mint gets the new id too.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -326,6 +327,49 @@ describe('SessionRegistry — epic and child tasks (E4 ①)', () => {
     const archives = fs.readdirSync(dir).map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
     expect(archives.find((a) => a.taskId === epicId)).toMatchObject({ kind: 'epic', childTaskIds: [childId] });
     expect(archives.find((a) => a.taskId === childId)).toMatchObject({ parentTaskId: epicId, planNodeId: 'node-a' });
+  });
+
+  it('R10 — a relative archived in the same load as a re-mint gets the new id in its archive', () => {
+    const epicId = '11111111-1111-4111-8111-111111111111';
+    const childId = '22222222-2222-4222-8222-222222222222';
+    const epic2Id = '33333333-3333-4333-8333-333333333333';
+    const child2Id = '44444444-4444-4444-8444-444444444444';
+    const slack = (ts: string, taskId: string) => ({
+      key: `work:C1:${ts}`,
+      ownerId: 'U1',
+      userId: 'U1',
+      channelId: 'C1',
+      threadTs: ts,
+      taskId,
+      isActive: true,
+      lastActivity: new Date().toISOString(),
+      state: 'MAIN',
+      activityState: 'idle',
+    });
+    fs.writeFileSync(
+      SESSIONS_FILE,
+      JSON.stringify([
+        slack('1.1', childId),
+        slack('2.2', epic2Id),
+        // (a) the epic is archived on load; its live child is re-minted.
+        slacklessRecord(epicId, { kind: 'epic', childTaskIds: [childId], state: 'SLEEPING' }),
+        slacklessRecord(childId, { parentTaskId: epicId, planNodeId: 'node-a' }),
+        // (b) the epic is re-minted; its child is archived on load.
+        slacklessRecord(epic2Id, { kind: 'epic', childTaskIds: [child2Id] }),
+        slacklessRecord(child2Id, { parentTaskId: epic2Id, planNodeId: 'node-b', state: 'SLEEPING' }),
+      ]),
+    );
+    const reg = new SessionRegistry();
+    reg.loadSessions();
+    const all = [...reg.getAllSessions().values()];
+    const child = all.find((s) => s.planNodeId === 'node-a')!;
+    const epic2 = all.find((s) => s.kind === 'epic')!;
+    expect(child.taskId).not.toBe(childId);
+    expect(epic2.taskId).not.toBe(epic2Id);
+    const dir = path.join(TEST_DATA_DIR, 'archives');
+    const archives = fs.readdirSync(dir).map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
+    expect(archives.find((a) => a.taskId === epicId)?.childTaskIds).toEqual([child.taskId]);
+    expect(archives.find((a) => a.taskId === child2Id)?.parentTaskId).toBe(epic2.taskId);
   });
 
   it('R7 — a task that is neither an epic nor a child saves no relation fields', () => {

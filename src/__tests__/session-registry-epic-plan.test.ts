@@ -331,6 +331,43 @@ describe('SessionRegistry — an epic plan and its events (E4 ②)', () => {
     expect(savedOf(epicId)?.plan.nodes[0].spawned).toEqual([child.taskId]);
   });
 
+  it("P9b — an epic archived in the same load gets its re-minted child's new id in the archived plan", () => {
+    const epicId = '11111111-1111-4111-8111-111111111111';
+    const childId = '22222222-2222-4222-8222-222222222222';
+    const plan = { nodes: [{ id: 'login', title: 'Fix login', kind: 'issue', spawned: [childId] }] };
+    fs.writeFileSync(
+      SESSIONS_FILE,
+      JSON.stringify([
+        {
+          key: 'work:C1:1.1',
+          ownerId: 'U1',
+          userId: 'U1',
+          channelId: 'C1',
+          threadTs: '1.1',
+          taskId: childId,
+          isActive: true,
+          lastActivity: new Date().toISOString(),
+          state: 'MAIN',
+          activityState: 'idle',
+        },
+        // Asleep past the archive age: archived on load.
+        slacklessRecord(epicId, { kind: 'epic', childTaskIds: [childId], plan, state: 'SLEEPING' }),
+        slacklessRecord(childId, { parentTaskId: epicId, planNodeId: 'login' }),
+      ]),
+    );
+    const reg = new SessionRegistry();
+    reg.loadSessions();
+    const child = [...reg.getAllSessions().values()].find((s) => s.planNodeId === 'login')!;
+    expect(child.taskId).not.toBe(childId);
+    const dir = path.join(TEST_DATA_DIR, 'archives');
+    const archived = fs
+      .readdirSync(dir)
+      .map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')))
+      .find((a) => a.taskId === epicId);
+    expect(archived.childTaskIds).toEqual([child.taskId]);
+    expect(archived.plan.nodes[0].spawned).toEqual([child.taskId]);
+  });
+
   it('P8 — an ordinary task and a child save no plan fields', () => {
     const reg = new SessionRegistry();
     const epic = reg.createTask({ ...BASE, kind: 'epic' });
