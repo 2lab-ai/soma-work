@@ -70,10 +70,14 @@ function childView(id: string, live: ConversationSession | undefined) {
   };
 }
 
+/** The epic's live children: only those of its own owner count (a child is its epic's owner's, D4). */
+function liveChildrenOf(h: EpicHost, epic: ConversationSession): ConversationSession[] {
+  return h.getChildTasks(epic.taskId as string).filter((c) => c.ownerId === epic.ownerId);
+}
+
 /** `child_status()` — the plan tree with each node's status and verdict, and every child the epic made. */
 function treeStatus(h: EpicHost, epic: ConversationSession) {
-  const taskId = epic.taskId as string;
-  const live = h.getChildTasks(taskId);
+  const live = liveChildrenOf(h, epic);
   const byId = new Map(live.map((c) => [c.taskId, c]));
   const plan = epic.plan ?? { nodes: [] };
   return {
@@ -149,7 +153,7 @@ export function epicTools(ctx: TaskExecutionContext) {
       if (!(epic.childTaskIds ?? []).includes(args.childId)) {
         return refuse('not-a-child', `${args.childId} is not a child of this epic`);
       }
-      const live = h.getChildTasks(taskId).find((c) => c.taskId === args.childId);
+      const live = liveChildrenOf(h, epic).find((c) => c.taskId === args.childId);
       const view = childView(args.childId, live);
       if (!live) return reply({ ok: true, child: view });
       let final: { text: string; clipped: boolean } | undefined;
