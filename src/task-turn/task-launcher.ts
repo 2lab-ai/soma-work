@@ -63,6 +63,8 @@ export interface TaskLauncher {
   launch(request: TaskLaunchRequest): Promise<TaskCommandResponse>;
   /** The folders the owner may name (`listTaskFolders`). */
   folders(ownerId: string): Array<{ name: string; mtimeMs: number }>;
+  /** E4 ⑨b — whether the owner may make an epic (their flag): the composer offers "에픽" only then. */
+  epicTasks?(ownerId: string): boolean;
 }
 
 /** A folder name: no separators, no leading dot (so no `.`, `..` or hidden folders). */
@@ -130,6 +132,7 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
 
   return {
     // Not offered: a folder another session's cleanup would remove (#640 R2).
+    epicTasks: (ownerId: string) => deps.epicTasksEnabled?.(ownerId) === true,
     folders: (ownerId: string) => {
       const sessions = [...(deps.cleanupSessions?.() ?? [])];
       return listTaskFolders(ownerId).filter((f) => !cleanupOwnerOf(path.join('/tmp', ownerId, f.name), sessions));

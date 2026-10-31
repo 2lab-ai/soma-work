@@ -1702,6 +1702,8 @@ interface DashboardTaskLauncher {
   }): Promise<{ status: number; body: Record<string, unknown> }>;
   /** The folders a user may name for a task (`listTaskFolders`). */
   folders(ownerId: string): Array<{ name: string }>;
+  /** E4 ⑨b — whether the user may make an epic (their flag). */
+  epicTasks?(ownerId: string): boolean;
 }
 let _taskLauncher: DashboardTaskLauncher | null = null;
 export function setDashboardTaskLauncher(launcher: DashboardTaskLauncher | null): void {
@@ -4055,7 +4057,11 @@ export async function registerDashboardRoutes(
       const context = await _newTaskProvider.context(userId);
       // #600 ⑥ — with dashboard tasks wired, the folders a task may name (names only).
       const taskFolders = _taskLauncher?.folders(userId).map((f) => ({ name: f.name }));
-      reply.send({ context: taskFolders ? { ...context, taskFolders } : context });
+      // E4 ⑨b — and whether this user may make an epic (their flag): the composer offers "에픽" then.
+      const epicTasks = taskFolders !== undefined && _taskLauncher?.epicTasks?.(userId) === true;
+      reply.send({
+        context: taskFolders ? { ...context, taskFolders, ...(epicTasks ? { epicTasks: true } : {}) } : context,
+      });
     } catch (error) {
       logger.error('Error building the new-task context', error);
       reply.status(500).send({ error: 'Internal Server Error' });
@@ -5417,6 +5423,10 @@ body[data-view-mode="minimal"] .panel-tasks { max-height: 34cqh; overflow-y: aut
 .epic-cards { display: flex; flex-direction: column; gap: 8px; position: relative; }
 /* The lane sets display, which beats the UA [hidden] rule: hide it explicitly (grok #706 R1). */
 .epic-lane[hidden] { display: none; }
+.epic-plan { display: block; margin-bottom: 8px; }
+.epic-plan[hidden] { display: none; }
+.epic-bar { position: relative; width: 72px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; flex: none; }
+.epic-bar-fill { position: absolute; inset: 0 auto 0 0; background: var(--st-done); border-radius: 3px; }
 .capacity-host[hidden], .cron-lane[hidden] { display: none; }
 .capacity-host > ui-agent-queue, .cron-lane > ui-agent-queue { display: block; min-width: 0; }
 .cron-cards { display: flex; flex-direction: column; gap: 8px; position: relative; }
@@ -5889,6 +5899,7 @@ ${pageTokenAliases()}
         <div class="nt-toggles nt-dest" id="nt-dest" role="group" aria-label="어디서 할까요" hidden>
           <button type="button" class="ui-chip" id="nt-dest-slack" aria-pressed="true" onclick="ntSetDestination('slack')"><span>Slack 채널</span></button>
           <button type="button" class="ui-chip" id="nt-dest-task" aria-pressed="false" title="슬랙 스레드 없이 대시보드에서만 진행하는 작업" onclick="ntSetDestination('task')"><span>대시보드 작업</span></button>
+          <button type="button" class="ui-chip" id="nt-kind-epic" aria-pressed="false" hidden title="계획을 쓰고 자식 작업을 만들어 끝까지 모는 에픽" onclick="ntToggleEpic()"><span>에픽</span></button>
         </div>
         <div class="nt-config" role="group" aria-label="작업 설정">
           <!-- Kit select chips (.ui-select-chip, D7 H-02): the word, then the native select sized to its option; the model's
@@ -15944,6 +15955,8 @@ var _epicGroupEls = Object.create(null); // epic card key → its group box in t
 var EPIC_STATE_LABEL = { 'needs-input': '입력 필요', running: '자식 실행 중', done: '완료', idle: '대기' };
 var EPIC_STATE_TONE = { 'needs-input': 'var(--st-wait)', running: 'var(--accent)', done: 'var(--st-done)', idle: 'var(--text-tertiary)' };
 var EPIC_STATE_RANK = { 'needs-input': 0, running: 1, idle: 2, done: 3 };
+var EPIC_NODE_STEP = { none: 'pending', running: 'running', 'needs-input': 'paused', finished: 'paused', failed: 'failed', cancelled: 'dropped', interrupted: 'paused', closed: 'skipped' };
+var EPIC_NODE_NOTE = { 'needs-input': '입력 필요', finished: '판정 대기', interrupted: '끊김', closed: '닫힘' };
 var _cronDrawerKey = null;   // group key the drawer shows, null when closed
 var _cronRevealKey = null;   // a deep-linked cron run shown as its job's card
 
@@ -16285,9 +16298,47 @@ function epicLaneHeadHtml(s) {
   var html = '<span class="epic-title">' + esc(title) + '</span>';
   html += '<span class="ui-chip is-toned is-sm epic-state" data-state="' + escAttr(state) + '" style="--ui-tone:' + EPIC_STATE_TONE[state] + '">' + esc(EPIC_STATE_LABEL[state]) + '</span>';
   if (toNum(p.total) > 0) {
+    html += epicProgressHtml(p);
     html += '<span class="epic-progress" title="받아들인 노드 / 전체 노드">' + toNum(p.accepted) + '/' + toNum(p.total) + '</span>';
   }
   return html;
+}
+// E4 ⑨b — the epic's plan as <ui-task-plan> data: an issue node is a step, its sub nodes nested under it.
+// An accepted node is done; otherwise the node's status (D5) as a step status, with a short note where
+// the step status alone does not say it (입력 필요 · 판정 대기 · 끊김 · 닫힘).
+function epicPlanStep(n) {
+  // Own keys only: a prototype key ('constructor', …) is no status the page knows.
+  var known = typeof n.status === 'string' && Object.prototype.hasOwnProperty.call(EPIC_NODE_STEP, n.status);
+  var step = { id: String(n.id), label: String(n.title || n.id), status: n.accepted ? 'done' : known ? EPIC_NODE_STEP[n.status] : 'pending' };
+  if (!n.accepted && known && Object.prototype.hasOwnProperty.call(EPIC_NODE_NOTE, n.status)) step.note = EPIC_NODE_NOTE[n.status];
+  return step;
+}
+function epicPlanData(s) {
+  var nodes = (s && s.epic && Array.isArray(s.epic.nodes)) ? s.epic.nodes : [];
+  var steps = [];
+  var byId = Object.create(null);
+  nodes.forEach(function(n) {
+    if (n.parent) return;
+    var step = epicPlanStep(n);
+    byId[n.id] = step;
+    steps.push(step);
+  });
+  nodes.forEach(function(n) {
+    if (!n.parent) return;
+    var parent = byId[n.parent];
+    var step = epicPlanStep(n);
+    if (!parent) { steps.push(step); return; }
+    (parent.steps = parent.steps || []).push(step);
+  });
+  return { steps: steps };
+}
+// The progress bar in a group's head: accepted of all nodes, as a bar the screen reader reads.
+function epicProgressHtml(p) {
+  var total = toNum(p && p.total);
+  if (total <= 0) return '';
+  var accepted = Math.min(toNum(p.accepted), total);
+  var pct = Math.round((accepted / total) * 100);
+  return '<span class="epic-bar" role="progressbar" aria-label="받아들인 노드" aria-valuemin="0" aria-valuemax="' + total + '" aria-valuenow="' + accepted + '"><span class="epic-bar-fill" style="width:' + pct + '%"></span></span>';
 }
 // One persistent box per epic group in #epic-lane: its head and its card box.
 function syncEpicLane(groups) {
@@ -16306,11 +16357,19 @@ function syncEpicLane(groups) {
       box.setAttribute('data-epic', g.key);
       var head = document.createElement('div');
       head.className = 'epic-head';
+      // E4 ⑨b — the plan tree, between the head and the children's cards.
+      var plan = document.createElement('ui-task-plan');
+      plan.className = 'epic-plan';
+      plan.setAttribute('lang', 'ko');
+      plan.setAttribute('flush', '');
+      plan.setAttribute('foot', 'none');
       var cards = document.createElement('div');
       cards.className = 'cards epic-cards';
       box.appendChild(head);
+      box.appendChild(plan);
       box.appendChild(cards);
       box._head = head;
+      box._plan = plan;
       box._cards = cards;
       _epicGroupEls[g.key] = box;
     }
@@ -16319,6 +16378,9 @@ function syncEpicLane(groups) {
       box._head.innerHTML = headHtml;
       box._headHtml = headHtml;
     }
+    var planData = epicPlanData(g.epic);
+    box._plan.hidden = planData.steps.length === 0;
+    if (planData.steps.length) taskElData(box._plan, planData);
     // In order, moving a box only when it is not already in its place: a DOM move disconnects the
     // box's subtree (its inbox, the open bodies, focus, scroll) — fable #706 R1 P1.
     var place = prevBox ? prevBox.nextSibling : lane.firstChild;
@@ -17447,6 +17509,8 @@ function ntBuildPayload(state, attachments, requestId) {
     var body = { requestId: requestId, destination: 'task', prompt: state.prompt };
     if (state.model) body.model = state.model;
     if (state.folder) body.folder = state.folder;
+    // E4 ⑨b — an epic (offered only behind the user's flag; the server checks it again).
+    if (state.kind === 'epic') body.kind = 'epic';
     return body;
   }
   return {
@@ -17632,6 +17696,12 @@ function ntRender() {
   if (dTask) dTask.setAttribute('aria-pressed', isTask ? 'true' : 'false');
   var folderChip = ntEl('nt-folder-chip');
   if (folderChip) folderChip.hidden = !isTask;
+  // E4 ⑨b — "에픽" only for a dashboard task, and only when the user may make one.
+  var epicChip = ntEl('nt-kind-epic');
+  if (epicChip) {
+    epicChip.hidden = !(isTask && _ntCtx.epicTasks);
+    epicChip.setAttribute('aria-pressed', isTask && _ntCtx.epicTasks && _ntState.kind === 'epic' ? 'true' : 'false');
+  }
   var folderSel = ntEl('nt-folder');
   if (folderSel && isTask) {
     folderSel.innerHTML =
@@ -17767,9 +17837,18 @@ function ntOnChannelChange() {
 }
 
 // #600 ⑥ — the destination: a Slack channel or a dashboard task (only when offered).
+// E4 ⑨b — the composer's "에픽": a dashboard task that writes a plan and drives children, offered when the
+// context says the user may make one (their epicTasks flag).
+function ntToggleEpic() {
+  if (!_ntState || !_ntCtx || !_ntCtx.epicTasks || _ntState.destination !== 'task') return;
+  _ntState.kind = _ntState.kind === 'epic' ? '' : 'epic';
+  ntRender();
+}
 function ntSetDestination(dest) {
   if (!_ntState || !_ntCtx) return;
   _ntState.destination = dest === 'task' && _ntCtx.taskFolders ? 'task' : 'slack';
+  // An epic is a dashboard task: leaving the task destination drops it.
+  if (_ntState.destination !== 'task') _ntState.kind = '';
   ntSetError(ntBlockedHint(_ntState, ntComposerFiles()));
   ntRender();
 }
@@ -17953,6 +18032,7 @@ function ntStateAfterLaunch(prev, data, ctx) {
     next.prompt = prev.prompt;
     next.folder = prev.folder;
     next.model = prev.model;
+    if (prev.kind === 'epic' && next.destination === 'task') next.kind = 'epic';
   }
   return next;
 }

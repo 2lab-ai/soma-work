@@ -52,7 +52,7 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
-const LANE_VARS = ['EPIC_STATE_LABEL', 'EPIC_STATE_TONE', 'EPIC_STATE_RANK'];
+const LANE_VARS = ['EPIC_STATE_LABEL', 'EPIC_STATE_TONE', 'EPIC_STATE_RANK', 'EPIC_NODE_STEP', 'EPIC_NODE_NOTE'];
 const ESC = ['esc', 'escAttr', 'toNum'];
 
 const child = (key: string, over: Record<string, unknown> = {}) => ({
@@ -76,7 +76,21 @@ describe('L1–L3 — the lane’s plan, a child’s column, a group’s head', 
     planEpicLane(board: unknown): Array<{ key: string; children: Array<{ key: string }> }>;
     epicChildCol(c: unknown): string;
     epicLaneHeadHtml(s: unknown): string;
-  }>([...ESC, 'epicStateOf', 'planEpicLane', 'epicChildCol', 'epicLaneHeadHtml'], LANE_VARS);
+    epicPlanData(s: unknown): { steps: Array<Record<string, any>> };
+    epicProgressHtml(p: unknown): string;
+  }>(
+    [
+      ...ESC,
+      'epicStateOf',
+      'planEpicLane',
+      'epicChildCol',
+      'epicProgressHtml',
+      'epicLaneHeadHtml',
+      'epicPlanStep',
+      'epicPlanData',
+    ],
+    LANE_VARS,
+  );
 
   it('L1 — one group per epic with children, from any column, waiting first; nothing else', () => {
     const board = {
@@ -136,7 +150,9 @@ type FakeEl = {
   parentNode: FakeEl | null;
   _ibPlan?: { cols: Array<{ id: string; bare?: boolean; keys: string[] }>; load: string; announce: unknown };
   _head?: FakeEl;
+  _plan?: FakeEl;
   _cards?: FakeEl;
+  data?: unknown;
   _inbox?: FakeEl;
   setAttribute(k: string, v: string): void;
   appendChild(c: FakeEl): FakeEl;
@@ -219,9 +235,13 @@ function laneHarness() {
     [
       ...ESC,
       'epicStateOf',
+      'taskElData',
       'planEpicLane',
       'epicChildCol',
+      'epicProgressHtml',
       'epicLaneHeadHtml',
+      'epicPlanStep',
+      'epicPlanData',
       'syncEpicLane',
       'paintEpicLaneCards',
       'renderEpicLane',
@@ -376,6 +396,96 @@ describe('L4–L6 — the lane’s boxes, its cards, the cache and the push', ()
     expect(h.m.epicChildOf(pushed, 'task:c2')).toMatchObject({ key: 'task:c2' });
     expect(h.m.epicChildOf(pushed, 'task:none')).toBeNull();
     expect(h.m.epicChildOf({ key: 'task:p' }, 'task:c2')).toBeNull();
+  });
+});
+
+describe('L9–L11 (⑨b) — the plan tree and the progress bar', () => {
+  const m = load<{
+    epicPlanData(s: unknown): { steps: Array<Record<string, any>> };
+    epicProgressHtml(p: unknown): string;
+  }>([...ESC, 'epicPlanStep', 'epicPlanData', 'epicProgressHtml'], LANE_VARS);
+  const node = (id: string, status: string, over: Record<string, unknown> = {}) => ({
+    id,
+    title: `T ${id}`,
+    kind: 'issue',
+    status,
+    accepted: false,
+    childTaskIds: [],
+    ...over,
+  });
+
+  it('L9 — issues are steps, subs nest under their issue; accepted is done; each status as a step with a short note', () => {
+    const data = m.epicPlanData({
+      epic: {
+        nodes: [
+          node('login', 'running'),
+          node('login-test', 'finished', { kind: 'sub', parent: 'login' }),
+          node('docs', 'finished', { accepted: true }),
+          node('api', 'needs-input'),
+          node('ops', 'failed'),
+          node('old', 'cancelled'),
+          node('net', 'interrupted'),
+          node('gone', 'closed'),
+          node('next', 'none'),
+          node('lost-sub', 'none', { kind: 'sub', parent: 'missing' }),
+        ],
+      },
+    });
+    expect(data.steps.map((st) => [st.id, st.status, st.note])).toEqual([
+      ['login', 'running', undefined],
+      ['docs', 'done', undefined],
+      ['api', 'paused', '입력 필요'],
+      ['ops', 'failed', undefined],
+      ['old', 'dropped', undefined],
+      ['net', 'paused', '끊김'],
+      ['gone', 'skipped', '닫힘'],
+      ['next', 'pending', undefined],
+      // A sub whose issue is gone still shows, at the top.
+      ['lost-sub', 'pending', undefined],
+    ]);
+    expect(data.steps[0].steps).toEqual([
+      { id: 'login-test', label: 'T login-test', status: 'paused', note: '판정 대기' },
+    ]);
+    expect(data.steps[0].label).toBe('T login');
+    expect(m.epicPlanData({ epic: { state: 'idle' } })).toEqual({ steps: [] });
+    expect(m.epicPlanData({ epic: { nodes: [node('x', 'bogus')] } }).steps[0].status).toBe('pending');
+    expect(m.epicPlanData({ epic: { nodes: [node('x', 'constructor')] } }).steps[0]).toEqual({
+      id: 'x',
+      label: 'T x',
+      status: 'pending',
+    });
+  });
+
+  it('L10 — the bar: accepted of all, read by a screen reader; none for an empty plan; never past full', () => {
+    const html = m.epicProgressHtml({ accepted: 1, total: 4 });
+    expect(html).toContain('role="progressbar"');
+    expect(html).toContain('aria-valuemax="4" aria-valuenow="1"');
+    expect(html).toContain('style="width:25%"');
+    expect(m.epicProgressHtml({ accepted: 0, total: 0 })).toBe('');
+    expect(m.epicProgressHtml(undefined)).toBe('');
+    expect(m.epicProgressHtml({ accepted: 9, total: 3 })).toContain('style="width:100%"');
+  });
+
+  it('L11 — the group box holds the plan between its head and its cards; no plan, hidden; the data set only when it changed', () => {
+    const h = laneHarness();
+    const withPlan = epicCard('task:e', 'running', [child('task:c1')]);
+    (withPlan.epic as any).nodes = [node('login', 'running')];
+    h.m.renderEpicLane({ working: [withPlan] });
+    const box = h.lane.children[0];
+    expect(box.children.map((c) => c.className)).toEqual(['epic-head', 'epic-plan', 'cards epic-cards']);
+    const plan = box._plan as FakeEl;
+    expect(plan.tag).toBe('ui-task-plan');
+    expect(plan.attrs).toMatchObject({ lang: 'ko', flush: '', foot: 'none' });
+    expect(plan.hidden).toBe(false);
+    expect(plan.data).toEqual({ steps: [{ id: 'login', label: 'T login', status: 'running' }] });
+    expect(box._head?.innerHTML).toContain('role="progressbar"');
+    const first = plan.data;
+    h.m.renderEpicLane({ working: [withPlan] });
+    expect(plan.data).toBe(first);
+    h.m.renderEpicLane({ working: [epicCard('task:e', 'running', [child('task:c1')])] });
+    expect(plan.hidden).toBe(true);
+    // display: block beats the UA [hidden] rule: the plan's own rule hides it.
+    expect(DASHBOARD_TS).toContain('.epic-plan[hidden] { display: none; }');
   });
 });
 
