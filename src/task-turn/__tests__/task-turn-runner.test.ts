@@ -23,6 +23,11 @@ function harness(over: Partial<TaskTurnRunnerDeps> = {}) {
       session.activityState = activity;
       events.push(`commit:${record.outcome}:${activity}`);
     }),
+    holdUnsavedTaskTurnOutcome: vi.fn((_k: string, record: any, activity: string) => {
+      session.lastTurnOutcome = record;
+      session.activityState = activity;
+      events.push(`hold:${record.outcome}:${activity}`);
+    }),
     beginTaskTurn: vi.fn((_k: string, turnId: string) => {
       session.activityState = 'working';
       session.activeTaskTurnId = turnId;
@@ -39,6 +44,7 @@ function harness(over: Partial<TaskTurnRunnerDeps> = {}) {
     createConversation: vi.fn(async () => 'conv-1'),
     receipts: { open: vi.fn(), drain: vi.fn(async () => undefined) },
     logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+    commitRetryDelaysMs: [0, 0, 0],
     ...over,
   };
   const runner = createTaskTurnRunner(deps);
@@ -142,14 +148,31 @@ describe('createTaskTurnRunner (#598 ④b1)', () => {
     expect(second.outcome).toMatchObject({ outcome: 'failed', reason: 'record: EIO' });
   });
 
-  it('a commit failure reaches the caller and is logged; nothing else moves activity', async () => {
+  it('a commit that keeps failing is retried (persistence only), then held in memory as unsaved — never re-run', async () => {
     const h = harness();
-    h.registry.commitTaskTurnOutcome.mockImplementationOnce(() => {
+    h.registry.commitTaskTurnOutcome.mockImplementation(() => {
       throw new Error('ENOSPC');
     });
-    await expect(h.runner.runTaskTurn(h.input)).rejects.toThrow('ENOSPC');
-    expect(h.deps.logger.error).toHaveBeenCalledWith('Task turn outcome not saved — rolled back', expect.anything());
-    expect(h.events).toEqual(['begin']);
+    const r = await h.runner.runTaskTurn(h.input);
+    expect(h.registry.commitTaskTurnOutcome).toHaveBeenCalledTimes(4); // first try + 3 retries
+    expect(h.execute).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({
+      unsaved: true,
+      outcome: { outcome: 'completed', recordFailure: 'outcome not saved: ENOSPC' },
+    });
+    expect(h.registry.holdUnsavedTaskTurnOutcome).toHaveBeenCalledWith(KEY, r.outcome, 'idle');
+    expect(h.deps.logger.error).toHaveBeenCalled();
+  });
+
+  it('a commit that fails once and then lands is committed normally', async () => {
+    const h = harness();
+    h.registry.commitTaskTurnOutcome.mockImplementationOnce(() => {
+      throw new Error('EAGAIN');
+    });
+    const r = await h.runner.runTaskTurn(h.input);
+    expect(r.unsaved).toBeUndefined();
+    expect(h.events).toEqual(['begin', 'commit:completed:idle']);
+    expect(h.registry.holdUnsavedTaskTurnOutcome).not.toHaveBeenCalled();
   });
 
   it('an older turn’s late commit is fenced out — it never writes the outcome or moves activity', async () => {
@@ -293,8 +316,12 @@ describe('createTaskTurnRunner (#598 ④b1)', () => {
             ({ success: false, messageCount: 0, terminal: { exit: 'error', abortReason: 'supersede' } }) as any,
         ),
       });
-      const r = await h.runner.runTaskTurn({ ...h.input, resumable: ['continuation'], notResumedReason: 'superseded' });
-      expect(r.outcome).toMatchObject({ outcome: 'interrupted', reason: 'superseded' });
+      const r = await h.runner.runTaskTurn({
+        ...h.input,
+        resumable: ['fallbackCompact'],
+        notResumedReasons: { supersede: 'superseded by another run' },
+      });
+      expect(r.outcome).toMatchObject({ outcome: 'interrupted', reason: 'superseded by another run' });
     });
 
     it('with no resumable list, a supersede stays non-terminal (④b1 behaviour) and a continuation is not wired', async () => {
@@ -360,6 +387,90 @@ describe('createTaskTurnRunner (#598 ④b1)', () => {
       });
       await expect(h.runner.runTaskTurn(h.input)).rejects.toThrow('boom');
       expect(h.session.lastTurnOutcome).toMatchObject({ outcome: 'failed', reason: 'turn threw: boom' });
+    });
+  });
+
+  describe('④c v2 — compaction proof, start signal, fenced non-terminal', () => {
+    it('onStarted fires after the start is saved and before the model runs; never when the start fails', async () => {
+      const order: string[] = [];
+      const h = harness();
+      h.registry.beginTaskTurn.mockImplementation(() => {
+        order.push('begin');
+      });
+      h.execute.mockImplementation(async () => {
+        order.push('execute');
+        return { success: true, messageCount: 1, terminal: { exit: 'success', endTurnInfoPresent: true } } as any;
+      });
+      await h.runner.runTaskTurn({ ...h.input, onStarted: () => order.push('started') });
+      expect(order).toEqual(['begin', 'started', 'execute']);
+
+      const f = harness();
+      f.registry.beginTaskTurn.mockImplementation(() => {
+        throw new Error('ENOSPC');
+      });
+      const started = vi.fn();
+      await expect(f.runner.runTaskTurn({ ...f.input, onStarted: started })).rejects.toThrow('ENOSPC');
+      expect(started).not.toHaveBeenCalled();
+    });
+
+    it('a compact hop that "completed" with the fallback still armed did not compact: failed, and the session is disarmed', async () => {
+      const h = harness();
+      Object.assign(h.session, {
+        model: 'opus[1m]',
+        fallbackCompactActive: true,
+        fallbackCompactOriginalModel: 'sonnet',
+      });
+      const r = await h.runner.runTaskTurn({ ...h.input, text: '/compact', compactHop: true });
+      expect(r.outcome).toMatchObject({
+        outcome: 'failed',
+        category: 'Exception',
+        reason: 'compaction did not complete',
+      });
+      expect(h.session).toMatchObject({ model: 'sonnet', fallbackCompactActive: false });
+    });
+
+    it('a compact hop whose boundary disarmed the session stays completed', async () => {
+      const h = harness();
+      h.execute.mockImplementation(async () => {
+        Object.assign(h.session, { fallbackCompactActive: false });
+        return { success: true, messageCount: 1, terminal: { exit: 'success', endTurnInfoPresent: true } } as any;
+      });
+      Object.assign(h.session, { fallbackCompactActive: true, fallbackCompactOriginalModel: 'sonnet' });
+      const r = await h.runner.runTaskTurn({ ...h.input, text: '/compact', compactHop: true });
+      expect(r.outcome?.outcome).toBe('completed');
+    });
+
+    it('an old turn’s non-terminal return after a newer turn started is fenced — no hop, no carried failure', async () => {
+      let releaseFirst!: () => void;
+      const gate = new Promise<void>((r) => {
+        releaseFirst = r;
+      });
+      let call = 0;
+      let oldTurnId = '';
+      const h = harness({
+        execute: vi.fn(async (params: any) => {
+          call += 1;
+          if (call === 1) {
+            oldTurnId = params.taskBinding.turnId;
+            await gate;
+            return { success: false, messageCount: 0, terminal: { exit: 'error', fallbackCompact: true } } as any;
+          }
+          return { success: true, messageCount: 1, terminal: { exit: 'success', endTurnInfoPresent: true } } as any;
+        }),
+        // Only the old turn's work log failed to record.
+        receipts: { open: vi.fn(), drain: vi.fn(async (b: any) => (b.turnId === oldTurnId ? 'EIO-old' : undefined)) },
+      });
+      const first = h.runner.runTaskTurn({ ...h.input, resumable: ['fallbackCompact'] });
+      await Promise.resolve();
+      await Promise.resolve();
+      const second = await h.runner.runTaskTurn(h.input);
+      releaseFirst();
+      const old = await first;
+      expect(old).toMatchObject({ outcome: null, fenced: true });
+      expect(old.nonTerminal).toBeUndefined();
+      expect(second.outcome?.outcome).toBe('completed');
+      const third = await h.runner.runTaskTurn(h.input);
+      expect(third.outcome?.recordFailure).toBeUndefined();
     });
   });
 });

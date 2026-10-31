@@ -52,11 +52,19 @@ export interface TaskTurnRunnerDeps {
     beginTaskTurn(sessionKey: string, turnId: string): void;
     /** Outcome + end activity in one strict save; restores both and throws on failure. */
     commitTaskTurnOutcome(sessionKey: string, outcome: TaskTurnOutcomeRecord, activity: 'waiting' | 'idle'): void;
+    /**
+     * The outcome could not be saved after every retry: apply it in memory
+     * only (the dashboard shows the truth; disk still says `working`, so a
+     * restart records the turn `interrupted`). Never re-runs anything.
+     */
+    holdUnsavedTaskTurnOutcome(sessionKey: string, outcome: TaskTurnOutcomeRecord, activity: 'waiting' | 'idle'): void;
   };
   /** The task executor's `execute` (built by `createTaskTurnExecutor`). */
   execute(params: Record<string, unknown>): Promise<TaskExecuteResult>;
   createConversation(session: ConversationSession): Promise<string>;
   receipts: TaskTurnReceipts;
+  /** Persistence-only retries of a failed outcome commit (598c v2 a3). Default 1 s, 5 s, 30 s. */
+  commitRetryDelaysMs?: readonly number[];
   logger: {
     warn(msg: string, meta?: unknown): void;
     error(msg: string, meta?: unknown): void;
@@ -77,9 +85,26 @@ export interface RunTaskTurnInput {
    * reconciliation); a continuation or fallback compaction is then not resumed.
    */
   resumable?: readonly TaskTurnNonTerminal[];
-  /** The reason committed for a non-terminal kind not in `resumable`. Default `re-entry not wired`. */
-  notResumedReason?: string;
+  /** The reason committed for each non-terminal kind not in `resumable` (defaults below). */
+  notResumedReasons?: Partial<Record<TaskTurnNonTerminal, string>>;
+  /**
+   * This turn is the `/compact` re-entry of a fallback compaction. Its
+   * `completed` stands only if the compaction boundary disarmed the session;
+   * otherwise it is `failed` ("compaction did not complete") and the session
+   * is disarmed (598c v2 a4).
+   */
+  compactHop?: boolean;
+  /** Called once the turn's start is saved, before the model runs (the caller's acceptance point). */
+  onStarted?: () => void;
 }
+
+const NOT_RESUMED_REASONS: Record<TaskTurnNonTerminal, string> = {
+  continuation: 're-entry not wired',
+  fallbackCompact: 're-entry not wired',
+  supersede: 'superseded',
+  'user-interrupted': 'interrupted by the user',
+  shutdown: 'service shut down',
+};
 
 const DEFAULT_RESUMABLE: readonly TaskTurnNonTerminal[] = ['supersede', 'user-interrupted', 'shutdown'];
 
@@ -88,6 +113,8 @@ export type TaskTurnNonTerminal = 'continuation' | 'fallbackCompact' | 'supersed
 
 export interface RunTaskTurnResult {
   turnId: string;
+  /** The outcome is held in memory only: every save failed (598c v2 a3). */
+  unsaved?: boolean;
   /** The committed outcome, or null for a non-terminal return. */
   outcome: TaskTurnOutcomeRecord | null;
   /** Set when `outcome` is null and the turn was not fenced. */
@@ -120,19 +147,37 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
       return { turnId, outcome: null, fenced: true };
     }
     const record: TaskTurnOutcomeRecord = { ...decided, turnId, at: Date.now() };
-    try {
-      // One strict save of the outcome and the end activity (the registry
-      // restores both on failure); idle hooks run after it, seeing the outcome.
-      deps.registry.commitTaskTurnOutcome(sessionKey, record, record.outcome === 'waiting' ? 'waiting' : 'idle');
-    } catch (error) {
-      deps.logger.error('Task turn outcome not saved — rolled back', {
-        sessionKey,
-        turnId,
-        error: (error as Error)?.message,
-      });
-      throw error;
+    const activity = record.outcome === 'waiting' ? 'waiting' : 'idle';
+    const delays = deps.commitRetryDelaysMs ?? [1_000, 5_000, 30_000];
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= delays.length; attempt++) {
+      if (attempt > 0) {
+        await sleep(delays[attempt - 1]);
+        // Only this turn's outcome is retried, and only while it still owns the task.
+        if (activeTurn.get(sessionKey) !== turnId) return { turnId, outcome: null, fenced: true };
+      }
+      try {
+        // One strict save of the outcome and the end activity (the registry
+        // restores both on failure); idle hooks run after it, seeing the outcome.
+        deps.registry.commitTaskTurnOutcome(sessionKey, record, activity);
+        return { turnId, outcome: record };
+      } catch (error) {
+        lastError = error;
+        deps.logger.warn('Task turn outcome not saved — rolled back; retrying the save only', {
+          sessionKey,
+          turnId,
+          attempt,
+          error: (error as Error)?.message,
+        });
+      }
     }
-    return { turnId, outcome: record };
+    const held: TaskTurnOutcomeRecord = {
+      ...record,
+      recordFailure: `outcome not saved: ${(lastError as Error)?.message ?? String(lastError)}`,
+    };
+    deps.logger.error('Task turn outcome held in memory — every save failed', { sessionKey, turnId });
+    deps.registry.holdUnsavedTaskTurnOutcome(sessionKey, held, activity);
+    return { turnId, outcome: held, unsaved: true };
   }
 
   async function runTaskTurn(input: RunTaskTurnInput): Promise<RunTaskTurnResult> {
@@ -167,6 +212,7 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
     // Saved before anything runs: a process that dies mid-turn leaves this turn
     // on disk for restart reconciliation. A failed save runs nothing.
     deps.registry.beginTaskTurn(sessionKey, turnId);
+    input.onStarted?.();
     deps.receipts.open(binding);
 
     let result: TaskExecuteResult;
@@ -212,9 +258,25 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
     const carried = pendingRecordFailures.get(sessionKey);
     const failure = recordFailure ?? carried;
 
-    const decided = result.terminal ? deriveTaskTurnOutcome(result.terminal, failure) : null;
+    let decided = result.terminal ? deriveTaskTurnOutcome(result.terminal, failure) : null;
+    if (input.compactHop && session.fallbackCompactActive) {
+      // No boundary disarmed it: whatever the turn said, nothing was compacted.
+      disarmFallbackCompact(session);
+      if (!decided || decided.outcome === 'completed') {
+        decided = { outcome: 'failed', category: 'Exception', reason: 'compaction did not complete' };
+      }
+    }
     if (!decided) {
       const nonTerminal = classifyNonTerminal(result);
+      if (activeTurn.get(sessionKey) !== turnId) {
+        // A newer turn owns the task: this one neither commits nor asks for a hop.
+        deps.logger.info('Task turn non-terminal return fenced out by a newer turn', {
+          sessionKey,
+          turnId,
+          nonTerminal,
+        });
+        return { turnId, outcome: null, fenced: true };
+      }
       const resumable = input.resumable ?? DEFAULT_RESUMABLE;
       if (!nonTerminal || !resumable.includes(nonTerminal)) {
         // Nobody will resume it: commit it as interrupted rather than leave it working.
@@ -223,7 +285,9 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
         return commit(sessionKey, session, turnId, {
           outcome: 'interrupted',
           category: 'Exception',
-          reason: nonTerminal ? (input.notResumedReason ?? 're-entry not wired') : 'turn ended without an outcome',
+          reason: nonTerminal
+            ? (input.notResumedReasons?.[nonTerminal] ?? NOT_RESUMED_REASONS[nonTerminal])
+            : 'turn ended without an outcome',
           ...(failure ? { recordFailure: failure } : {}),
         });
       }
@@ -263,4 +327,8 @@ function classifyNonTerminal(result: TaskExecuteResult): TaskTurnNonTerminal | u
   const reason = result.terminal?.abortReason;
   if (reason && NO_TERMINAL_ABORTS.has(reason)) return reason as TaskTurnNonTerminal;
   return undefined;
+}
+
+function sleep(ms: number): Promise<void> {
+  return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
 }

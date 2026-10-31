@@ -539,9 +539,34 @@ export class SessionRegistry {
    * restart finds the same outcome and activity the dashboard showed.
    */
   public commitTaskTurnOutcome(sessionKey: string, outcome: TaskTurnOutcomeRecord, activity: 'waiting' | 'idle'): void {
+    this.applyTaskTurnOutcome('commitTaskTurnOutcome', sessionKey, outcome, activity, true);
+  }
+
+  /**
+   * #598 ④c — every strict save of a turn's outcome failed (the runner retried
+   * the save only). Apply it in memory: the dashboard shows the turn ended and
+   * its `recordFailure`, idle hooks run. Disk still holds `working` and the
+   * turn id, so a restart records the turn `interrupted` — the outcome was
+   * never durable. Any later successful save writes the held outcome.
+   */
+  public holdUnsavedTaskTurnOutcome(
+    sessionKey: string,
+    outcome: TaskTurnOutcomeRecord,
+    activity: 'waiting' | 'idle',
+  ): void {
+    this.applyTaskTurnOutcome('holdUnsavedTaskTurnOutcome', sessionKey, outcome, activity, false);
+  }
+
+  private applyTaskTurnOutcome(
+    caller: string,
+    sessionKey: string,
+    outcome: TaskTurnOutcomeRecord,
+    activity: 'waiting' | 'idle',
+    durable: boolean,
+  ): void {
     const key = normalizeSessionKey(sessionKey);
     const session = this.getSessionByKey(key);
-    if (!session) throw new Error(`commitTaskTurnOutcome: session not found (${key})`);
+    if (!session) throw new Error(`${caller}: session not found (${key})`);
     const previous = {
       outcome: session.lastTurnOutcome,
       activity: session.activityState,
@@ -553,19 +578,21 @@ export class SessionRegistry {
     session.activityState = activity;
     session.activeTaskTurnId = undefined;
     if (changed) session.activityStateChangedAt = Date.now();
-    try {
-      this.writeSessionsFile(true);
-    } catch (error) {
-      session.lastTurnOutcome = previous.outcome;
-      session.activityState = previous.activity;
-      session.activityStateChangedAt = previous.changedAt;
-      session.activeTaskTurnId = previous.activeTurnId;
-      throw error;
+    if (durable) {
+      try {
+        this.writeSessionsFile(true);
+      } catch (error) {
+        session.lastTurnOutcome = previous.outcome;
+        session.activityState = previous.activity;
+        session.activityStateChangedAt = previous.changedAt;
+        session.activeTaskTurnId = previous.activeTurnId;
+        throw error;
+      }
     }
     try {
       this.onActivityStateChangeCallback?.();
     } catch (err) {
-      this.logger.warn('commitTaskTurnOutcome: broadcast callback raised', {
+      this.logger.warn(`${caller}: broadcast callback raised`, {
         sessionKey: key,
         error: (err as Error)?.message ?? String(err),
       });

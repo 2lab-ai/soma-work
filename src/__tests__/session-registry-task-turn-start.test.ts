@@ -160,4 +160,41 @@ describe('SessionRegistry — a task turn’s start and restart reconciliation (
     expect(back.activityState).toBe('waiting');
     expect(back.lastTurnOutcome).toMatchObject({ turnId: 'turn-Q', outcome: 'waiting' });
   });
+
+  it('holdUnsavedTaskTurnOutcome applies the outcome in memory only: broadcast and idle hooks run, the disk keeps working', () => {
+    const reg = new SessionRegistry();
+    const broadcast = vi.fn();
+    reg.setActivityStateChangeCallback(broadcast);
+    const task = reg.createTask(TASK_INPUT);
+    const key = `task:${task.taskId}`;
+    reg.beginTaskTurn(key, 'turn-H');
+    broadcast.mockClear();
+    const hook = vi.fn();
+    reg.setOnIdleAfterDrainHook(hook);
+    const writes = vi.spyOn(fs, 'writeFileSync');
+    syncBuiltinESMExports();
+    try {
+      reg.holdUnsavedTaskTurnOutcome(
+        key,
+        {
+          turnId: 'turn-H',
+          outcome: 'completed',
+          category: 'WorkflowComplete',
+          at: 1,
+          recordFailure: 'outcome not saved: x',
+        },
+        'idle',
+      );
+      expect(writes).not.toHaveBeenCalled();
+    } finally {
+      writes.mockRestore();
+      syncBuiltinESMExports();
+    }
+    expect(task).toMatchObject({ activityState: 'idle', activeTaskTurnId: undefined });
+    expect(task.lastTurnOutcome?.recordFailure).toBe('outcome not saved: x');
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(hook).toHaveBeenCalledWith(key);
+    const disk = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8')) as Array<Record<string, unknown>>;
+    expect(disk[0]).toMatchObject({ activityState: 'working', activeTaskTurnId: 'turn-H' });
+  });
 });
