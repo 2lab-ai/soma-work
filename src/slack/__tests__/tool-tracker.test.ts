@@ -178,4 +178,39 @@ describe('ToolTracker', () => {
       expect(callbackCalled).toBe(false);
     });
   });
+
+  describe('per-session cleanup (#598 ④b2)', () => {
+    it('one session scheduling its cleanup does not cancel another session’s', () => {
+      const a = vi.fn();
+      const b = vi.fn();
+      tracker.scheduleCleanup(1000, a, 'task:a');
+      tracker.scheduleCleanup(1000, b, 'task:b');
+      vi.advanceTimersByTime(1000);
+      expect(a).toHaveBeenCalledTimes(1);
+      expect(b).toHaveBeenCalledTimes(1);
+    });
+
+    it('a session’s cleanup removes only the tool uses tracked for it', () => {
+      tracker.trackToolUse('tu_a', 'Read', 'task:a');
+      tracker.trackMcpCall('tu_a', 'call_a', 'task:a');
+      tracker.trackToolUse('tu_b', 'Bash', 'task:b');
+      tracker.trackMcpCall('tu_b', 'call_b', 'task:b');
+      tracker.scheduleCleanup(1000, undefined, 'task:a');
+      vi.advanceTimersByTime(1000);
+      expect(tracker.getToolName('tu_a')).toBeUndefined();
+      expect(tracker.getMcpCallId('tu_a')).toBeUndefined();
+      expect(tracker.getToolName('tu_b')).toBe('Bash');
+      expect(tracker.getMcpCallId('tu_b')).toBe('call_b');
+    });
+
+    it('re-scheduling the same session replaces only its own timer', () => {
+      const first = vi.fn();
+      const second = vi.fn();
+      tracker.scheduleCleanup(1000, first, 'task:a');
+      tracker.scheduleCleanup(1000, second, 'task:a');
+      vi.advanceTimersByTime(1000);
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledTimes(1);
+    });
+  });
 });

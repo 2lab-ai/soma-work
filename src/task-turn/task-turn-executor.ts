@@ -24,8 +24,8 @@ import type { McpCallTracker } from '../mcp-call-tracker';
 import {
   AssistantStatusManager,
   ContextWindowManager,
-  McpHealthMonitor,
-  McpStatusDisplay,
+  type McpHealthMonitor,
+  type McpStatusDisplay,
   ReactionManager,
   type RequestCoordinator,
   StatusReporter,
@@ -84,8 +84,18 @@ export function createTaskTurnExecutor(host: TaskTurnExecutorHost): TaskTurnExec
   const toolTracker = new ToolTracker();
   const reactionManager = new ReactionManager(slackApi);
   const assistantStatusManager = new AssistantStatusManager(slackApi);
-  const mcpStatusDisplay = new McpStatusDisplay(slackApi, host.mcpCallTracker);
-  const mcpHealthMonitor = new McpHealthMonitor(slackApi, { reloadConfiguration: () => undefined });
+  // MCP progress and health alerts are Slack posts (a status message in the
+  // thread, an ops alert to the channel). A task's tool calls already reach the
+  // dashboard as `tool` / `tool_result` work-log entries, so neither is built
+  // for a task (#598 ④b2) — at the most verbose setting the status display
+  // would otherwise post.
+  const mcpStatusDisplay = {
+    registerCall: () => {},
+    completeCall: () => {},
+    flushSession: async () => {},
+    cleanupSession: () => {},
+  } as unknown as McpStatusDisplay;
+  const mcpHealthMonitor = { recordResult: async () => {} } as unknown as McpHealthMonitor;
   const todoDisplayManager = new TodoDisplayManager(slackApi, host.todoManager, reactionManager);
   // The todo ledger reaches the dashboard through the manager itself; the plan
   // render has no Slack surface on a task.
