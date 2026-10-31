@@ -4685,6 +4685,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .psec-el > * { flex: 1 1 auto; min-height: 0; }
 .psec-el > ui-conversation, .psec-el > ui-work-log { padding: 4px 8px 0; }
 .cv-arts-slot .turn-arts-row { margin-top: 2px; }
+/* 요약 실패 · 다시 시도 (G-04) under the answer, until the summary lands. */
+.cv-resum { display: flex; align-items: center; gap: 8px; margin: 6px 0 0; font-size: 12.5px; color: var(--text-secondary); }
 .psec[hidden] { display: none; }
 .psec:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
 .psec-older { display: block; margin: 10px auto 2px; padding: 5px 14px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
@@ -5845,6 +5847,8 @@ var STRINGS = {
   summaryFailed: '요약 실패',
   summaryPending: '요약 만드는 중…',
   retry: '다시 시도',
+  retrying: '다시 시도 중…',
+  queued: '요청함',
   titlePending: '부제 만드는 중…',
   titleFailed: '부제를 만들지 못했습니다',
   titleCooldown: '부제를 만들지 못했습니다 — 1분 뒤 다시 시도하세요',
@@ -14775,9 +14779,14 @@ function convTurnsOf(list, c) {
       } else a.markdown = '';
       var mine = (c.arts || []).filter(function(x) { return x && !used[x.id] && artInTurn(x, start, ts); });
       mine.forEach(function(x) { used[x.id] = true; });
-      if (mine.length) {
+      // G-04 요약 실패 · 다시 시도: the element has no summary action (D3-GAPS G1-3), so the retry rides
+      // in the turn's attachments slot until the summary arrives (the next poll drops it).
+      var resum = t.id && c.cid && t.summarized && !t.summaryBody ? { cid: c.cid, turnId: String(t.id) } : null;
+      if (mine.length || resum) {
         a.attachments = true;
-        slots.push({ name: 'attachments-' + id, kind: 'arts', list: mine, start: start, end: ts });
+        var slot = { name: 'attachments-' + id, kind: 'arts', list: mine, start: start, end: ts };
+        if (resum) slot.resum = resum;
+        slots.push(slot);
       }
       turns.push(a);
     }
@@ -14793,7 +14802,8 @@ function convSlots(el, slots, cid) {
   for (var i = 0; i < slots.length; i++) {
     var sl = slots[i];
     if (sl.kind === 'media') umRegister(cid, sl.list, sl.turn);
-    want[sl.name] = sl.kind === 'media' ? renderUserMedia(cid, sl.list) : renderTurnArtifacts(sl.list, cid, sl.start, sl.end);
+    want[sl.name] = sl.kind === 'media' ? renderUserMedia(cid, sl.list)
+      : (sl.list.length ? renderTurnArtifacts(sl.list, cid, sl.start, sl.end) : '') + (sl.resum ? convResumHtml(sl.resum) : '');
   }
   var kids = Array.prototype.slice.call(el.children);
   for (var k = 0; k < kids.length; k++) {
@@ -14815,6 +14825,24 @@ function convSlots(el, slots, cid) {
     d.innerHTML = want[n];
     d._html = want[n];
     el.appendChild(d);
+  }
+}
+// 요약 실패 · 다시 시도 (G-04): asks the server to summarize the turn again (POST …/resummarize/:turnId);
+// the button carries its ids as data (initConversation answers its click — no inline handler).
+function convResumHtml(r) {
+  return '<p class="cv-resum"><span class="cv-resum-note">' + esc(STRINGS.summaryFailed) + '</span> '
+    + '<button type="button" class="ui-btn is-sm" data-resum-cid="' + escAttr(r.cid) + '" data-resum-turn="' + escAttr(r.turnId) + '">' + esc(STRINGS.retry) + '</button></p>';
+}
+async function resummarize(convId, turnId, btn) {
+  btn.disabled = true;
+  btn.textContent = STRINGS.retrying;
+  try {
+    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(convId) + '/resummarize/' + encodeURIComponent(turnId), { method: 'POST' });
+    if (!res.ok) throw new Error('Failed');
+    btn.textContent = STRINGS.queued;
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = STRINGS.retry;
   }
 }
 // The element's data, written only when it changed (a poll that changes
@@ -14908,6 +14936,11 @@ var _ansFailed = Object.create(null);
 // Task view T1.4 — every answer loads as its turn nears the view (one fetch per
 // answer, then the cache); an answer already cached is in the turn at once.
 var _ansIo = null;
+// The element's scroll viewport (<ui-conversation> → <ui-log-scroller> → .ls-vp, open shadow roots), or null.
+function convViewport(el) {
+  var sc = el && el.shadowRoot ? el.shadowRoot.querySelector('ui-log-scroller') : null;
+  return (sc && sc.shadowRoot && sc.shadowRoot.querySelector('.ls-vp')) || null;
+}
 function convWatchAnswers(el) {
   if (!el || typeof el.turnElement !== 'function' || _psec !== 'conv' || _panelAgent) return;
   var d = el.data;
@@ -14919,6 +14952,14 @@ function convWatchAnswers(el) {
     _ansIo.unobserve(n);
     return false;
   });
+  // The box that clips the turns is the element's own viewport (inside <ui-log-scroller>'s shadow
+  // root): the 800px lead counts against it, not the page. A new viewport starts a new observer.
+  var vp = convViewport(el);
+  if (_ansIo && _ansIo._root !== vp) {
+    _ansIo.disconnect();
+    _ansIo._nodes.forEach(function(n) { n._ansWatched = false; });
+    _ansIo = null;
+  }
   for (var i = 0; i < turns.length; i++) {
     if (!turns[i].loading) continue;
     var node = el.turnElement(turns[i].id);
@@ -14933,8 +14974,9 @@ function convWatchAnswers(el) {
           _ansIo._nodes = _ansIo._nodes.filter(function(n) { return n !== en.target; });
           convLoadAnswer(en.target._ansCid, en.target.getAttribute('data-item'));
         });
-      }, { rootMargin: '800px 0px' });
+      }, vp ? { root: vp, rootMargin: '800px 0px' } : { rootMargin: '800px 0px' });
       _ansIo._nodes = [];
+      _ansIo._root = vp;
     }
     if (_ansIo) {
       _ansIo.observe(node);
@@ -15033,6 +15075,11 @@ function ansPendingShow(s, convId, lastRole) {
 (function initConversation() {
   var el = convEl();
   if (!el) return;
+  // 요약 실패 · 다시 시도 in a turn's attachments slot (light DOM: the click lands here as it is).
+  el.addEventListener('click', function(e) {
+    var b = e.target && e.target.closest ? e.target.closest('button[data-resum-turn]') : null;
+    if (b && !b.disabled && el.contains(b)) resummarize(b.getAttribute('data-resum-cid'), b.getAttribute('data-resum-turn'), b);
+  });
   el.addEventListener('ui-load-older', function(e) {
     if (_panelAgent || !_panelTurnsHasMore || _panelTurnsLoading) {
       e.preventDefault();

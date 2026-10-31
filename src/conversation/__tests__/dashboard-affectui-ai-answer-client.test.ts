@@ -216,6 +216,40 @@ describe('D1 · task view T1.4 — the answer is the face (<ui-conversation>’s
     });
   });
 
+  it('요약 실패 · 다시 시도 (G-04): a failed summary asks for its retry in the attachments slot until it lands', () => {
+    const failed = { id: 't2', role: 'assistant', timestamp: T0 + 1000, summarized: true };
+    const b = convOf([INSTR, failed], ctx());
+    expect(b.turns[1]).toMatchObject({ attachments: true });
+    expect(b.slots).toEqual([
+      {
+        name: 'attachments-t2',
+        kind: 'arts',
+        list: [],
+        start: T0,
+        end: T0 + 1000,
+        resum: { cid: 'conv-run', turnId: 't2' },
+      },
+    ]);
+    // The summary landed, still being made, or no conversation to ask: no retry.
+    expect(convOf([INSTR, ANSWER], ctx()).slots).toEqual([]);
+    expect(convOf([INSTR, { ...failed, summarized: false }], ctx()).slots).toEqual([]);
+    expect(convOf([INSTR, failed], ctx({ cid: '' })).slots).toEqual([]);
+    const { convResumHtml } = load<{ convResumHtml(r: Record<string, string>): string }>(
+      ['esc', 'escAttr', 'convResumHtml'],
+      [],
+      { STRINGS },
+    );
+    const html = convResumHtml({ cid: 'c"1', turnId: 't<2>' });
+    expect(html).toContain('요약 실패');
+    expect(html).toContain('class="ui-btn is-sm"');
+    // Ids as data (escaped), no inline handler; initConversation answers the click.
+    expect(html).toContain('data-resum-cid="c&quot;1" data-resum-turn="t&lt;2&gt;"');
+    expect(html).not.toContain('onclick');
+    expect(html).toContain('>다시 시도</button>');
+    expect(DASHBOARD_TS).toContain("e.target.closest('button[data-resum-turn]')");
+    expect(clientFn('resummarize')).toContain("'/resummarize/' + encodeURIComponent(turnId), { method: 'POST' }");
+  });
+
   it('a turn with no answer to load (no id or no conversation) shows its summary, never loading', () => {
     const noCid = convOf([ANSWER], ctx({ cid: '' })).turns[0];
     expect(noCid).toMatchObject({ markdown: '', summary: { title: 'Picker bars' } });
@@ -508,7 +542,7 @@ describe('D13 · review R1 — an answer lands only where it is still current (c
       turnElement: (id: string) => nodes[id] ?? null,
     };
     const m = (io: unknown) =>
-      load<{ convWatchAnswers(el: unknown): void }>(['convWatchAnswers'], ['_ansIo'], {
+      load<{ convWatchAnswers(el: unknown): void }>(['convViewport', 'convWatchAnswers'], ['_ansIo'], {
         IntersectionObserver: io,
         _psec: 'conv',
         _panelAgent: '',
@@ -525,6 +559,18 @@ describe('D13 · review R1 — an answer lands only where it is still current (c
     for (const n of Object.values(nodes)) delete n._ansWatched;
     m(undefined).convWatchAnswers(el);
     expect(loaded).toEqual(['conv-run:t2', 'conv-run:t4']);
+    // Rendered: the 800px lead counts against the element's own scroll box (.ls-vp in <ui-log-scroller>).
+    for (const n of Object.values(nodes)) delete n._ansWatched;
+    observed.length = 0;
+    const vp = { box: 'ls-vp' };
+    const scroller = { shadowRoot: { querySelector: (q: string) => (q === '.ls-vp' ? vp : null) } };
+    const rendered = {
+      ...el,
+      shadowRoot: { querySelector: (q: string) => (q === 'ui-log-scroller' ? scroller : null) },
+    };
+    m(IO).convWatchAnswers(rendered);
+    expect(opts).toEqual({ root: vp, rootMargin: '800px 0px' });
+    expect(observed).toEqual([nodes.t2, nodes.t4]);
   });
 });
 

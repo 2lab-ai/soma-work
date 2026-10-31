@@ -866,7 +866,7 @@ describe('#488 · answers replaced in the list are no longer observed', () => {
     const fresh = { isConnected: true };
     let node: Record<string, unknown> = old;
     const el = { data: { turns: [{ id: 't2', loading: true }] }, turnElement: () => node };
-    const m = load<{ convWatchAnswers(el: unknown): void }>(['convWatchAnswers'], ['_ansIo'], {
+    const m = load<{ convWatchAnswers(el: unknown): void }>(['convViewport', 'convWatchAnswers'], ['_ansIo'], {
       IntersectionObserver: IO,
       _psec: 'conv',
       _panelAgent: '',

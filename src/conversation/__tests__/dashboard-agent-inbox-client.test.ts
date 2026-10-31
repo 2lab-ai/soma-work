@@ -1665,9 +1665,11 @@ describe('escaping order and inline-handler escaping in the template', () => {
   it('text is sliced before it is escaped (an entity is never cut in half)', () => {
     expect(TEMPLATE).not.toMatch(/esc\([^()]*\)\.slice\(/);
   });
-  it('no inline handler string carries a turn’s ids any more (D3: the summary is <ui-conversation> data, not a button)', () => {
+  it('no inline handler string carries a turn’s ids (요약 다시 시도 carries them as escaped data; initConversation answers its click)', () => {
     expect(TEMPLATE).not.toContain('resummarize(\\\\');
-    expect(TEMPLATE).not.toMatch(/\nasync function resummarize\(/);
+    expect(TEMPLATE).not.toContain('onclick="resummarize');
+    expect(TEMPLATE).toContain(`data-resum-cid="' + escAttr(r.cid) + '" data-resum-turn="' + escAttr(r.turnId) + '"`);
+    expect(TEMPLATE).toContain("resummarize(b.getAttribute('data-resum-cid'), b.getAttribute('data-resum-turn'), b);");
   });
 });
 
