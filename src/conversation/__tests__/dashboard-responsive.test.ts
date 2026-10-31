@@ -521,9 +521,9 @@ describe('layout transition — one coordinator', () => {
     expect(open.indexOf('layoutBeforeChange()')).toBeLessThan(open.indexOf('panel.show();'));
     const close = clientFn('closePanel');
     expect(close.indexOf('layoutBeforeChange()')).toBeGreaterThan(-1);
-    expect(close.indexOf('layoutBeforeChange()')).toBeLessThan(
-      close.indexOf("document.getElementById('slide-panel').hide();"),
-    );
+    // (D4 review: hide() only on a defined drawer — the call is the guarded one.)
+    expect(close.indexOf('layoutBeforeChange()')).toBeLessThan(close.indexOf('drawerEl.hide();'));
+    expect(close.indexOf('drawerEl.hide();')).toBeGreaterThan(-1);
   });
 
   it('the default view at load comes from the same helper (List below 640px)', () => {
