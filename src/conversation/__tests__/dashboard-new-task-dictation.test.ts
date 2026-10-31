@@ -115,7 +115,33 @@ type Page = {
   __peek(k: string): any;
 };
 
-function page(opts: { engine?: unknown; value?: string; destination?: string } = {}) {
+const UA = {
+  iphone:
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+  iphoneChrome:
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/142.0 Mobile/15E148 Safari/604.1',
+  macSafari:
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15',
+  galaxy:
+    'Mozilla/5.0 (Linux; Android 14; SM-S928N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0 Mobile Safari/537.36',
+  samsung:
+    'Mozilla/5.0 (Linux; Android 14; SM-S928N) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/28.0 Chrome/130.0 Mobile Safari/537.36',
+  chromeMac:
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0 Safari/537.36',
+};
+
+function page(
+  opts: {
+    engine?: unknown;
+    value?: string;
+    destination?: string;
+    ua?: string;
+    remoteOk?: boolean;
+    busy?: boolean;
+  } = {},
+) {
+  const store = new Map<string, string>();
+  if (opts.remoteOk) store.set('soma-nt-dictation-remote', 'ok');
   const composer = { value: opts.value ?? '', files: [] as unknown[] };
   const env = {
     composer,
@@ -124,7 +150,8 @@ function page(opts: { engine?: unknown; value?: string; destination?: string } =
     paints: 0,
     state: { destination: opts.destination ?? 'slack', prompt: '' },
   };
-  const win: Record<string, unknown> = {};
+  // An iPhone by default: Apple's engine, on the device, no question asked.
+  const win: Record<string, unknown> = { navigator: { userAgent: opts.ua ?? UA.iphone } };
   if (opts.engine !== undefined) win.webkitSpeechRecognition = opts.engine;
   const api = loadWith<Page>(
     [
@@ -137,6 +164,9 @@ function page(opts: { engine?: unknown; value?: string; destination?: string } =
       'ntWithin',
       'ntDictationLocal',
       'ntDictationStatus',
+      'ntIsAppleSpeech',
+      'ntDictationRemoteOk',
+      'ntDictationOffDevice',
       'ntDictateStart',
       'ntDictationHeard',
       'ntDictationEnded',
@@ -149,14 +179,19 @@ function page(opts: { engine?: unknown; value?: string; destination?: string } =
     {
       window: win,
       _ntDictation: null,
+      _ntDictationAsked: false,
       NT_DICTATION_LANG: 'ko-KR',
+      NT_DICTATION_REMOTE_KEY: 'soma-nt-dictation-remote',
       _ntValue: '',
-      _ntBusy: false,
+      _ntBusy: !!opts.busy,
       _ntCtx: null,
       _ntState: env.state,
       NT_NO_FILES: 'application/x-soma-no-attachments',
       NT_DRAFT_KEY: 'k',
-      localStorage: { getItem: () => null },
+      localStorage: {
+        getItem: (k: string) => (store.has(k) ? store.get(k) : null),
+        setItem: (k: string, v: string) => store.set(k, v),
+      },
       ntEl: (id: string) => (id === 'nt-composer' ? composer : null),
       ntSetStatus: (t: string) => env.statuses.push(t || ''),
       ntSaveDraft: (t: string) => env.drafts.push(t),
@@ -165,7 +200,7 @@ function page(opts: { engine?: unknown; value?: string; destination?: string } =
       },
     },
   );
-  return { api, env };
+  return { api, env, store };
 }
 
 // ── Pure pieces ──────────────────────────────────────────────────────
@@ -188,8 +223,11 @@ describe('I2.1 — the engine is the browser’s own recogniser (Web Speech API)
 });
 
 describe('I1.1 — what is heard becomes the field’s text', () => {
-  const read = (results: Result[]) =>
-    new Function(`${clientFn('ntJoinSpoken')}\n${clientFn('ntDictationRead')}; return ntDictationRead;`)()(results);
+  const read = (results: Result[], cumulative = false) =>
+    new Function(`${clientFn('ntJoinSpoken')}\n${clientFn('ntDictationRead')}; return ntDictationRead;`)()(
+      results,
+      cumulative,
+    );
   const text = (base: string, finals: string, heard: string) =>
     new Function(`${clientFn('ntJoinSpoken')}\n${clientFn('ntDictationText')}; return ntDictationText;`)()(
       base,
@@ -214,11 +252,18 @@ describe('I1.1 — what is heard becomes the field’s text', () => {
     expect(read([final('새 작업에서'), final('음성을')]).finals).toBe('새 작업에서 음성을');
   });
 
-  it('Android Chrome repeats what it already settled (continuous mode): the longer copy replaces it, once', () => {
-    expect(read([final('대시보드'), final('대시보드 받아쓰기'), interim('대시보드 받아쓰기 고쳐')])).toEqual({
+  it('Android Chrome repeats what it already settled (continuous mode): there the longer copy replaces it, once', () => {
+    expect(read([final('대시보드'), final('대시보드 받아쓰기'), interim('대시보드 받아쓰기 고쳐')], true)).toEqual({
       finals: '대시보드 받아쓰기',
       interim: ' 고쳐',
     });
+  });
+
+  it('elsewhere results are separate segments: a phrase said twice, or a word that begins the next one, stays', () => {
+    // astra review R1: "아니, 아니요 그건 지우지 마세요" lost its first "아니" when the Android fold ran everywhere.
+    expect(read([final('아니'), final(' 아니요 그건 지우지 마세요')]).finals).toBe('아니 아니요 그건 지우지 마세요');
+    expect(read([final('아니'), interim(' 아니요 그건')])).toEqual({ finals: '아니', interim: ' 아니요 그건' });
+    expect(read([final('반복'), final(' 반복')]).finals).toBe('반복 반복');
   });
 });
 
@@ -357,6 +402,41 @@ describe('I1.1 / I3.1 — pressing 받아쓰기 streams the words into the field
     expect(last(env.statuses)).toContain('마이크');
   });
 
+  it('a recogniser that never confirms a stop (Edge) does not hold the tool: it is let go after 3 s', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      const { api, env } = page({ engine: Rec });
+      await api.ntDictateStart();
+      const rec = FakeRec.made[0];
+      api.ntDictateStop(false);
+      expect(api.__peek('_ntDictation')).not.toBeNull(); // waiting for the last words
+      await vi.advanceTimersByTimeAsync(3100);
+      expect(api.__peek('_ntDictation')).toBeNull();
+      expect(rec.aborts).toBe(1);
+      expect(last(env.statuses)).toBe('');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('pressed again while the last words are still settling: a new dictation starts at once', async () => {
+    const Rec = recClass(null);
+    const { api, env } = page({ engine: Rec, value: '' });
+    await api.ntDictateStart();
+    const first = FakeRec.made[0];
+    first.say([interim('하나')]);
+    api.ntOnComposerTool({ detail: { id: 'dictate', pressed: false } });
+    api.ntOnComposerTool({ detail: { id: 'dictate', pressed: true } });
+    await Promise.resolve();
+    expect(first.aborts).toBe(1);
+    expect(FakeRec.made).toHaveLength(2);
+    FakeRec.made[1].say([interim('둘')]);
+    expect(env.composer.value).toBe('하나 둘');
+    first.say([final('하나 늦게')]); // the first one's late words are dropped
+    expect(env.composer.value).toBe('하나 둘');
+  });
+
   it('a restart refused after the first session (iOS) is not called a missing permission', async () => {
     const Rec = recClass(null);
     const { api, env } = page({ engine: Rec });
@@ -369,6 +449,13 @@ describe('I1.1 / I3.1 — pressing 받아쓰기 streams the words into the field
     expect(api.__peek('_ntDictation')).toBeNull();
     expect(last(env.statuses)).toContain('다시 누르면 이어서');
     expect(env.composer.value).toBe('첫 문장');
+  });
+
+  it('not while the task is being sent (fable review R1, P3)', async () => {
+    const Rec = recClass(null);
+    const { api } = page({ engine: Rec, busy: true });
+    await api.ntDictateStart();
+    expect(FakeRec.made).toHaveLength(0);
   });
 
   it('other tools are not dictation', async () => {
@@ -403,7 +490,7 @@ describe('I2.1 — on the device when the browser says it can (Chrome’s availa
     vi.useFakeTimers();
     try {
       const Rec = recClass('downloadable', () => new Promise<boolean>(() => {}));
-      const { api, env } = page({ engine: Rec });
+      const { api, env } = page({ engine: Rec, ua: UA.chromeMac, remoteOk: true });
       const run = api.ntDictateStart();
       await vi.advanceTimersByTimeAsync(1600);
       await run;
@@ -415,27 +502,89 @@ describe('I2.1 — on the device when the browser says it can (Chrome’s availa
       vi.useRealTimers();
     }
   });
-  it('unavailable, downloading, or an install that says no: the browser’s service, said as such', async () => {
+  it('unavailable, downloading, or an install that says no: the browser’s service, said as such (once allowed)', async () => {
     for (const [a, inst] of [
       ['unavailable', undefined],
       ['downloading', undefined],
       ['downloadable', () => Promise.resolve(false)],
     ] as Array<[string, (() => Promise<boolean>) | undefined]>) {
       const Rec = recClass(a, inst);
-      const { api, env } = page({ engine: Rec });
+      const { api, env } = page({ engine: Rec, ua: UA.chromeMac, remoteOk: true });
       await api.ntDictateStart();
       expect(FakeRec.made[0].processLocally).not.toBe(true);
       expect(FakeRec.made[0].starts).toBe(1);
       expect(last(env.statuses)).toContain('브라우저의 음성 서비스로 처리합니다');
     }
   });
-  it('no available() (Safari — Apple’s engine, on the device for Korean; Android): no question asked', async () => {
+  it('no available() on an Apple device (Safari, iPhone Chrome = WebKit): Apple’s engine on the device, at once', async () => {
+    for (const ua of [UA.iphone, UA.iphoneChrome, UA.macSafari]) {
+      const Rec = recClass(null);
+      const { api, env } = page({ engine: Rec, ua });
+      const run = api.ntDictateStart();
+      // No await before start(): Safari keeps the press (user activation) for the microphone.
+      expect(FakeRec.made[0]?.starts).toBe(1);
+      await run;
+      expect(FakeRec.asked).toHaveLength(0);
+      expect(FakeRec.made[0].processLocally).toBeUndefined();
+      expect(last(env.statuses)).toContain('이 기기의 Apple 음성 인식으로 처리합니다');
+    }
+  });
+});
+
+describe('I2 — the voice leaves the device only when the person has said yes (astra review R1, P1)', () => {
+  it('Galaxy (Chrome or Samsung Internet — Google’s service): the first press says so and starts nothing', async () => {
+    for (const ua of [UA.galaxy, UA.samsung]) {
+      const Rec = recClass(null);
+      const { api, env, store } = page({ engine: Rec, ua });
+      await api.ntDictateStart();
+      expect(FakeRec.made).toHaveLength(0);
+      expect(api.__peek('_ntDictation')).toBeNull();
+      expect(last(env.statuses)).toContain('기기 밖');
+      expect(last(env.statuses)).toContain('키보드의 마이크');
+      expect(store.has('soma-nt-dictation-remote')).toBe(false);
+    }
+  });
+  it('the second press is the yes: it starts (in that press), and the device remembers it', async () => {
     const Rec = recClass(null);
-    const { api, env } = page({ engine: Rec });
+    const { api, env, store } = page({ engine: Rec, ua: UA.galaxy });
     await api.ntDictateStart();
-    expect(FakeRec.asked).toHaveLength(0);
-    expect(FakeRec.made[0].processLocally).toBeUndefined();
-    expect(last(env.statuses)).toContain('말하는 대로 적힙니다');
+    await api.ntDictateStart();
+    expect(FakeRec.made).toHaveLength(1);
+    expect(FakeRec.made[0].starts).toBe(1);
+    expect(store.get('soma-nt-dictation-remote')).toBe('ok');
+    expect(last(env.statuses)).toContain('기기 밖');
+    expect(last(env.statuses)).toContain('다시 누르면 멈춥니다');
+  });
+  it('remembered: it starts on the first press', async () => {
+    const Rec = recClass(null);
+    const { api } = page({ engine: Rec, ua: UA.galaxy, remoteOk: true });
+    await api.ntDictateStart();
+    expect(FakeRec.made[0].starts).toBe(1);
+  });
+  it('desktop Chrome without Korean on the device asks the same way; with Korean on it, it never asks', async () => {
+    let Rec = recClass('unavailable');
+    let p = page({ engine: Rec, ua: UA.chromeMac });
+    await p.api.ntDictateStart();
+    expect(FakeRec.made).toHaveLength(0);
+    expect(last(p.env.statuses)).toContain('기기 밖');
+    Rec = recClass('available');
+    p = page({ engine: Rec, ua: UA.chromeMac });
+    await p.api.ntDictateStart();
+    expect(FakeRec.made[0].processLocally).toBe(true);
+  });
+  it('a Korean model still downloading: the first press says it will be on the device once it is in', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass('downloadable', () => new Promise<boolean>(() => {}));
+      const { api, env } = page({ engine: Rec, ua: UA.chromeMac });
+      const run = api.ntDictateStart();
+      await vi.advanceTimersByTimeAsync(1600);
+      await run;
+      expect(FakeRec.made).toHaveLength(0);
+      expect(last(env.statuses)).toContain('내려받는 중');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

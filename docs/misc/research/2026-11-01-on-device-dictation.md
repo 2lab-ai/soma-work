@@ -39,10 +39,12 @@ Each means a download of 80 to 240 MB per device with weaker Korean than the bui
 
 1. The mic becomes 받아쓰기 wherever a recogniser exists, for both destinations. The audio voice note tool is hidden there.
 2. The recogniser listens with `lang = 'ko-KR'`, `interimResults = true`, `continuous = true`. The field shows what was there, the settled words, then the words still being heard.
-3. Android's repeated phrases are folded: a final result that starts with the settled words replaces them.
+3. Android's repeated phrases are folded: a final result that starts with the settled words replaces them (on Android only — see 7).
 4. When the recogniser ends by itself it listens again. Three silent sessions in a row end the dictation.
 5. In Chrome with `available()`, the page asks for on-device processing, calls `install()` on downloadable, and says in the status line where the words are processed.
-6. Firefox and an iPhone Home Screen web app keep the audio voice note.
+6. The voice leaves the device only on a yes. Where it would (Chrome on Android, Samsung Internet, Chrome without Korean on the device), the first press says so and points to the keyboard's mic. The second press is the yes, kept on that device. Safari and iPhone browsers use Apple's engine and start at once.
+7. Android's repeated phrases are folded on Android only, so a phrase said twice elsewhere stays.
+8. Firefox and an iPhone Home Screen web app keep the audio voice note.
 
 ## Follow-up candidates
 
