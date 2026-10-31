@@ -37,7 +37,7 @@ export function resolveChildFolder(ownerId: string, epicDir: string, folder: str
   if (parts.some((p) => p === '' || p === '.' || p === '..')) {
     throw new ChildFolderError(
       'bad-folder',
-      'folder must be a relative path inside the epic’s folder, without . or ..',
+      'folder must be a relative path inside the epic’s folder — no leading or trailing /, no empty part, no . or ..',
     );
   }
   let epicReal: string;
@@ -54,9 +54,27 @@ export function resolveChildFolder(ownerId: string, epicDir: string, folder: str
   return real;
 }
 
-/** Make a resolved child folder (and its parents) if it is not there yet. */
-export function ensureChildFolder(dir: string): void {
-  fs.mkdirSync(dir, { recursive: true });
+/** Make a resolved child folder (and its parents) if it is not there yet; the first folder made, if any. */
+export function ensureChildFolder(dir: string): string | undefined {
+  return fs.mkdirSync(dir, { recursive: true });
+}
+
+/**
+ * Undo a folder a refused spawn made: `dir`, then each parent up to `first`
+ * (the first folder that call made), while they are empty. A folder that is
+ * not empty, or is gone, is left as it is.
+ */
+export function removeMadeFolders(dir: string, first: string): void {
+  let current = dir;
+  for (;;) {
+    try {
+      fs.rmdirSync(current);
+    } catch {
+      return;
+    }
+    if (current === first || path.dirname(current) === current) return;
+    current = path.dirname(current);
+  }
 }
 
 /** The same folder, or one holding the other — compared by whole path segments. */
