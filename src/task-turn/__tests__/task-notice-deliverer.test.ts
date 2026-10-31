@@ -14,7 +14,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createTaskNoticeDeliverer, type TaskNoticeDelivererDeps } from '../task-notice-deliverer';
+import {
+  createTaskNoticeDeliverer,
+  owesInstructionThread,
+  type TaskNoticeDelivererDeps,
+} from '../task-notice-deliverer';
 import { TaskNotificationLedger } from '../task-notification-ledger';
 
 const ORIGIN = { channel: 'C123', threadTs: '1700000000.000100', messageTs: '1700000000.000100' };
@@ -429,5 +433,186 @@ describe('task notice deliverer — restart re-send and a mark that cannot be sa
     expect(h.posts.filter((p) => p.text.includes('대시보드 작업'))).toHaveLength(1);
     expect(settled).toHaveBeenCalledTimes(1);
     expect(h.deps.logger.error).toHaveBeenCalled();
+  });
+});
+
+describe('task notice deliverer — never rejects, says what it drops, stops (grok #668)', () => {
+  it('a final that cannot be read still posts the result, saying so; deliver never rejects', async () => {
+    const h = harness({
+      readFinal: vi.fn(async () => {
+        throw new Error('EIO');
+      }),
+    });
+    h.session.notices = [result];
+    h.deliverer.enqueue(h.session, KEY);
+    await expect(h.deliverer.deliver()).resolves.toBeUndefined();
+    expect(h.posts).toHaveLength(1);
+    expect(h.posts[0].text).toContain('결과를 읽지 못했어요');
+    expect(h.ledger.get(result.id)?.state).toBe('posted');
+  });
+
+  it('an unexpected throw in a pass rejects no caller — the one who joined it included', async () => {
+    const h = harness();
+    h.session.notices = [link];
+    h.deliverer.enqueue(h.session, KEY);
+    const owed = vi.spyOn(h.ledger, 'owed').mockImplementationOnce(() => {
+      throw new Error('boom');
+    });
+    const first = h.deliverer.deliver();
+    const joined = h.deliverer.deliver();
+    await expect(first).resolves.toBeUndefined();
+    await expect(joined).resolves.toBeUndefined();
+    expect(h.deps.logger.error).toHaveBeenCalled();
+    owed.mockRestore();
+    // The coalesced pass still ran: the link went out.
+    expect(h.ledger.get(link.id)?.state).toBe('posted');
+  });
+
+  it('notices on a task that lost its instruction thread are logged, not silently dropped', () => {
+    const h = harness({}, task({ originThread: undefined }));
+    h.session.notices = [result];
+    h.deliverer.enqueue(h.session, KEY);
+    expect(h.ledger.owed()).toHaveLength(0);
+    expect(h.deps.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('no instruction thread'),
+      expect.anything(),
+    );
+  });
+
+  it('after stop() no pass runs and no retry fires', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({
+        retryDelayMs: 1_000,
+        post: vi.fn(async () => {
+          throw new Error('ratelimited');
+        }),
+      });
+      h.session.notices = [result];
+      h.deliverer.enqueue(h.session, KEY);
+      await h.deliverer.deliver();
+      expect(h.deps.post).toHaveBeenCalledTimes(1);
+      h.deliverer.stop();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await h.deliverer.deliver();
+      expect(h.deps.post).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('task notice deliverer — coverage from the reviews (fable #668)', () => {
+  it('a link that has failed for good does not hold the task’s result back', async () => {
+    let n = 0;
+    const h = harness({
+      maxAttempts: 1,
+      post: vi.fn(async () => {
+        if (++n === 1) throw new Error('channel_not_found');
+        return { ts: '1700000099.000002' };
+      }),
+    });
+    h.session.notices = [link, result];
+    h.deliverer.enqueue(h.session, KEY);
+    await h.deliverer.deliver();
+    expect(h.ledger.get(link.id)?.state).toBe('failed');
+    expect(h.ledger.get(result.id)?.state).toBe('posted');
+    h.deliverer.stop();
+  });
+
+  it('one notice that throws does not stop the others; it is retried later', async () => {
+    vi.useFakeTimers();
+    try {
+      const other = { ...result, id: `${TASK_ID}:c2:result`, chainId: 'c2', turnId: 't2', at: 3 };
+      const h = harness({ retryDelayMs: 1_000 });
+      h.session.notices = [result, other];
+      h.deliverer.enqueue(h.session, KEY);
+      const claim = h.ledger.claim.bind(h.ledger);
+      const spy = vi.spyOn(h.ledger, 'claim').mockImplementationOnce(() => {
+        throw new Error('EIO');
+      });
+      await h.deliverer.deliver();
+      expect(h.ledger.get(result.id)?.state).toBe('pending');
+      expect(h.ledger.get(other.id)?.state).toBe('posted');
+      spy.mockImplementation(claim);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(h.ledger.get(result.id)?.state).toBe('posted');
+      h.deliverer.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a notice failed for good sets no retry timer', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({
+        maxAttempts: 1,
+        retryDelayMs: 1_000,
+        post: vi.fn(async () => {
+          throw new Error('channel_not_found');
+        }),
+      });
+      h.session.notices = [result];
+      h.deliverer.enqueue(h.session, KEY);
+      await h.deliverer.deliver();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the link without a dashboard says it started and what comes back — no card link', async () => {
+    const h = harness({ cardUrl: vi.fn(() => undefined) });
+    h.session.notices = [link];
+    h.deliverer.enqueue(h.session, KEY);
+    await h.deliverer.deliver();
+    expect(h.posts[0].text).toContain('대시보드 작업으로 시작했어요');
+    expect(h.posts[0].text).toContain('결과와 입력 요청이 이 스레드에 올라옵니다');
+    expect(h.posts[0].text).not.toContain('http');
+  });
+
+  it('a question handed off by a task that is gone is closed, not sent', async () => {
+    const h = harness({}, task({ activityState: 'waiting' }));
+    const question = {
+      id: `${TASK_ID}:c1:question:ask1`,
+      kind: 'question',
+      chainId: 'c1',
+      turnId: 't1',
+      askId: 'ask1',
+      outcome: 'waiting',
+      at: 2,
+    };
+    h.session.notices = [question];
+    h.deliverer.handoff(h.session, KEY);
+    (h.deps.getTask as any).mockImplementation(() => undefined);
+    await h.deliverer.deliver();
+    expect(h.posts).toHaveLength(0);
+    expect(h.ledger.get(question.id)?.state).toBe('resolved');
+  });
+
+  it('after stop() no new pass reads the ledger; a pass under way stops after its current post', async () => {
+    const h = harness();
+    const second = { ...result, id: `${TASK_ID}:c2:result`, chainId: 'c2', turnId: 't2', at: 3 };
+    h.session.notices = [link, result, second];
+    h.deliverer.enqueue(h.session, KEY);
+    (h.deps.post as any).mockImplementationOnce(async () => {
+      h.deliverer.stop();
+      return { ts: '1700000099.000001' };
+    });
+    await h.deliverer.deliver();
+    expect(h.deps.post).toHaveBeenCalledTimes(1);
+    const owed = vi.spyOn(h.ledger, 'owed');
+    await h.deliverer.deliver();
+    expect(owed).not.toHaveBeenCalled();
+  });
+
+  it('what a task still owes its thread, with no ledger to hand it to (deletion must be refused)', () => {
+    expect(owesInstructionThread(task({ notices: [result] }))).toBe(true);
+    expect(owesInstructionThread(task({ openChain: 'c1' }))).toBe(true);
+    expect(owesInstructionThread(task({ activityState: 'working' }))).toBe(true);
+    expect(owesInstructionThread(task())).toBe(false);
+    expect(owesInstructionThread(task({ originThread: undefined, notices: [result] }))).toBe(false);
+    expect(owesInstructionThread(task({ slackless: false, notices: [result] }))).toBe(false);
   });
 });

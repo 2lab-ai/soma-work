@@ -22,7 +22,10 @@ import type { TaskNotificationLedger, TaskNotificationLedgerEntry } from './task
  */
 
 export interface TaskNoticeDelivererDeps {
-  ledger: Pick<TaskNotificationLedger, 'register' | 'claim' | 'markPosted' | 'markFailed' | 'close' | 'owed' | 'get'>;
+  ledger: Pick<
+    TaskNotificationLedger,
+    'register' | 'claim' | 'markPosted' | 'markFailed' | 'close' | 'owed' | 'get' | 'list'
+  >;
   /** Post one message in the instruction thread. */
   post(
     target: { channel: string; threadTs: string },
@@ -63,11 +66,12 @@ export interface TaskNoticeDeliverer {
   deliver(options?: { retryFailed?: boolean }): Promise<void>;
   /** Notices of this task card that could not be delivered (spent attempts). */
   failures(sessionKey: string): Array<{ kind: TaskNotificationLedgerEntry['kind']; error: string }>;
-  /** Cancel a scheduled retry. */
+  /** Shutdown: no new pass and no retry from now on. */
   stop(): void;
 }
 
 const NO_FINAL = '답변 기록 없음 — 카드에서 확인';
+const FINAL_UNREADABLE = '결과를 읽지 못했어요 — 카드에서 확인';
 const MORE_ON_CARD = '…(이하 카드에서)';
 /** Slack's per-message block cap, kept with room for the link context. */
 const MAX_BLOCKS = 48;
@@ -79,6 +83,7 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
   let again = false;
   let retry: ReturnType<typeof setTimeout> | null = null;
   let retryFailedNext = false;
+  let stopped = false;
   /**
    * Posted, but the mark could not be saved: still `unknown` on disk. Not
    * posted again in this process (a full disk would re-post on every pass);
@@ -87,6 +92,14 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
   const markLost = new Set<string>();
 
   function enqueue(session: ConversationSession, sessionKey: string): void {
+    if (session.slackless === true && !session.originThread && (session.notices?.length ?? 0) > 0) {
+      // Its thread went to another task (a load collision): these cannot be delivered.
+      deps.logger.warn('Task notices with no instruction thread — not deliverable', {
+        sessionKey,
+        notices: session.notices?.map((n) => n.id),
+      });
+      return;
+    }
     register(session, sessionKey, session.notices ?? []);
   }
 
@@ -103,7 +116,7 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
         ...(session.openChain ? { chainId: session.openChain } : {}),
         ...(session.activeTaskTurnId ? { turnId: session.activeTaskTurnId } : {}),
         outcome: 'interrupted',
-        reason: 'the task was closed before its turn ended',
+        reason: '턴이 끝나기 전에 작업이 닫혔어요',
         at: Date.now(),
       });
     }
@@ -126,6 +139,7 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
   }
 
   function deliver(options?: { retryFailed?: boolean }): Promise<void> {
+    if (stopped) return Promise.resolve();
     if (options?.retryFailed) retryFailedNext = true;
     if (running) {
       again = true;
@@ -135,8 +149,13 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
       try {
         do {
           again = false;
-          await pass();
-        } while (again);
+          try {
+            await pass();
+          } catch (error) {
+            // Never a rejection for a caller that joined this pass: what is owed stays in the ledger.
+            deps.logger.error('Task notice pass failed', { error: (error as Error)?.message });
+          }
+        } while (again && !stopped);
       } finally {
         running = null;
       }
@@ -147,14 +166,24 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
   async function pass(): Promise<void> {
     const retryFailed = retryFailedNext;
     retryFailedNext = false;
-    for (const entry of deps.ledger.owed()) {
+    const owed = deps.ledger.owed();
+    // Tasks whose link is still to be posted: their other notices wait (one scan per pass).
+    const linkPending = new Set(owed.filter((e) => isOwedLink(e)).map((e) => e.taskId));
+    for (const entry of owed) {
+      if (stopped) return;
       if (markLost.has(entry.id)) continue;
       if (entry.state === 'failed' && !retryFailed) continue;
-      if (entry.kind !== 'link' && linkOwed(entry.taskId)) continue;
+      if (entry.kind !== 'link' && linkPending.has(entry.taskId)) continue;
       try {
         await deliverOne(entry);
       } catch (error) {
+        // Before the claim (a write that failed): still owed, tried again later.
         deps.logger.error('Task notice not delivered', { id: entry.id, error: (error as Error)?.message });
+        scheduleRetry();
+      }
+      if (entry.kind === 'link') {
+        const now = deps.ledger.get(entry.id);
+        if (!now || !isOwedLink(now)) linkPending.delete(entry.taskId);
       }
     }
     // A post that failed with attempts left is retried by a later pass.
@@ -181,17 +210,9 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
     }
   }
 
-  /** The task's link is registered and still owed (not yet posted, not given up). */
-  function linkOwed(taskId: string): boolean {
-    return deps.ledger
-      .owed()
-      .some(
-        (e) =>
-          e.taskId === taskId &&
-          e.kind === 'link' &&
-          !markLost.has(e.id) &&
-          (e.state === 'pending' || e.state === 'unknown'),
-      );
+  /** A link still to be posted (not posted, not given up, not posted-with-a-lost-mark). */
+  function isOwedLink(e: TaskNotificationLedgerEntry): boolean {
+    return e.kind === 'link' && !markLost.has(e.id) && (e.state === 'pending' || e.state === 'unknown');
   }
 
   async function deliverOne(entry: TaskNotificationLedgerEntry): Promise<void> {
@@ -272,10 +293,18 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
     url: string | undefined,
   ): Promise<{ text: string; blocks?: unknown[] }> {
     const { conversationId, turnId } = entry.intent;
-    const final = conversationId && turnId ? await deps.readFinal(conversationId, turnId) : undefined;
+    let final: { text: string; clipped: boolean } | undefined;
+    try {
+      final = conversationId && turnId ? await deps.readFinal(conversationId, turnId) : undefined;
+    } catch (error) {
+      // The result is still owed: post that it ended, and where to read it.
+      deps.logger.warn('Task result final not readable', { id: entry.id, error: (error as Error)?.message });
+      return { text: withLink(FINAL_UNREADABLE, url) };
+    }
     if (!final || final.text.trim() === '') return { text: withLink(NO_FINAL, url) };
     const { blocks, fallbackText, overflow } = markdownToBlocks(final.text);
-    if (blocks.length === 0) return { text: withLink(final.text, url) };
+    // Conversion failed: the Slack-session renderer's plain text (§6.3), not raw markdown.
+    if (blocks.length === 0) return { text: withLink(fallbackText || final.text, url) };
     const kept = blocks.slice(0, MAX_BLOCKS);
     const cut = final.clipped || overflow.length > 0 || kept.length < blocks.length;
     const tail = [cut ? MORE_ON_CARD : '', url ? `<${url}|카드에서 전체 보기>` : ''].filter(Boolean).join(' ');
@@ -285,17 +314,29 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
 
   function failures(sessionKey: string): Array<{ kind: TaskNotificationLedgerEntry['kind']; error: string }> {
     return deps.ledger
-      .owed()
+      .list()
       .filter((e) => e.state === 'failed' && e.intent.sessionKey === sessionKey)
       .map((e) => ({ kind: e.kind, error: e.error ?? 'unknown error' }));
   }
 
+  /** Shutdown: no new pass, no retry; a pass under way ends after its current post. */
   function stop(): void {
+    stopped = true;
     if (retry) clearTimeout(retry);
     retry = null;
   }
 
   return { enqueue, handoff, deliver, failures, stop };
+}
+
+/**
+ * The task still owes its instruction thread something — saved notices, or a
+ * chain/turn whose end would owe one. With no ledger to hand it to, deleting
+ * the task must be refused (D6 fail-closed).
+ */
+export function owesInstructionThread(session: ConversationSession): boolean {
+  if (session.slackless !== true || !session.originThread) return false;
+  return (session.notices?.length ?? 0) > 0 || !!session.openChain || session.activityState === 'working';
 }
 
 function intentOf(notice: TaskNoticeIntent, session: ConversationSession, sessionKey: string) {

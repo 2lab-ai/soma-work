@@ -951,7 +951,9 @@ export class SlackHandler {
       | { setBeforeSessionDelete?: (cb: (key: string, session: ConversationSession, reason: string) => void) => void }
       | undefined;
     if (typeof registry?.setBeforeSessionDelete !== 'function') {
-      this.logger.warn('Follow-up cancellation on session delete NOT wired — registry seam unavailable');
+      this.logger.warn(
+        'Follow-up cancellation and task notice handoff on session delete NOT wired — registry seam unavailable',
+      );
       return;
     }
 

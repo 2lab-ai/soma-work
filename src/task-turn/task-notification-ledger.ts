@@ -204,6 +204,11 @@ export class TaskNotificationLedger {
     return this.transition(id, ['unknown'], options.final ? 'failed' : 'pending', (e) => ({ ...e, error }));
   }
 
+  /** Every entry, in no particular order. */
+  list(): TaskNotificationLedgerEntry[] {
+    return [...this.entries.values()];
+  }
+
   /** No longer worth sending (answered, expired, replaced). */
   close(id: string, as: 'resolved' | 'superseded'): TaskNotificationLedgerEntry {
     return this.transition(id, CLOSABLE, as, (e) => e);
