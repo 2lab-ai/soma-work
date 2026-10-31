@@ -3535,7 +3535,47 @@ describe('D4 review (P1): an opening asked for before <ui-drawer> is defined wai
     const src = clientFn('closePanel');
     expect(src).toContain('_panelOpenWaiting = null;');
     expect(src).toContain("if (drawerEl && typeof drawerEl.hide === 'function') drawerEl.hide();");
-    // The artifact viewer slots the page's body before the element draws a step (no page loaded twice).
-    expect(TEMPLATE).toContain("viewer.addEventListener('ui-before-view', function(e) { syncArtViewer(e.detail); });");
+    // D6b group 6: the artifact viewer draws every body itself (items[].scripts / frame) — the page slots nothing
+    // before a step, so it listens on ui-view alone (one listener, one document fetch).
+    expect(TEMPLATE).not.toContain('ui-before-view');
+    expect(TEMPLATE).toContain("viewer.addEventListener('ui-view', function(e) { syncArtViewer(e.detail); });");
+  });
+
+  it('P3: a waiting opening for a card that leaves the deck is dropped with it; one for an archived key follows the live key', () => {
+    const opened: string[] = [];
+    const m = load<{
+      deckDrop(key: string): void;
+      followSessionKey(oldKey: string, newKey: string): void;
+      setWaiting(v: unknown): void;
+      waiting(): unknown;
+    }>(
+      ['deckRemove', 'deckNextAfter', 'deckDrop', 'followSessionKey'],
+      ['_deck', '_panelOpenWaiting'],
+      {
+        _sessionCache: { k1: {}, k2: {}, live: {} },
+        panelOpen: false,
+        panelSessionKey: null,
+        renderDeckNav: () => {},
+        openPanel: (k: string) => opened.push(k),
+        closePanel: () => opened.push('close'),
+      },
+      ['function setWaiting(v) { _panelOpenWaiting = v; }', 'function waiting() { return _panelOpenWaiting; }'],
+    );
+    // The waiting card folds (its ui-toggle → deckDrop): the opening would reopen a card the reader closed.
+    m.setWaiting(['k1', false, undefined, undefined]);
+    m.deckDrop('k1');
+    expect(m.waiting()).toBe(null);
+    // Another card leaving the deck leaves the wait alone.
+    m.setWaiting(['k2', true, 'a1', true]);
+    m.deckDrop('k1');
+    expect(m.waiting()).toEqual(['k2', true, 'a1', true]);
+    // The waiting key was an archive that came back live under another key: the opening lands on the live one.
+    m.setWaiting(['k2', true, 'a1', true]);
+    m.followSessionKey('k2', 'live');
+    expect(m.waiting()).toEqual(['live', true, 'a1', true]);
+    m.followSessionKey('k1', 'live');
+    expect(m.waiting()).toEqual(['live', true, 'a1', true]);
+    // Nothing was open: the panel was neither opened nor closed by either.
+    expect(opened).toEqual([]);
   });
 });

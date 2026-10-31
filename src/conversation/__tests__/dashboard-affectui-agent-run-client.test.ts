@@ -1009,6 +1009,7 @@ describe('approval keyboard (D14) — the element’s own', () => {
       deckDropRef = f;
     };
     const body = [
+      'var _panelOpenWaiting = null;',
       clientFn('closeDetailCard'),
       clientFn('cardFaceOf'),
       clientFn('deckDrop'),

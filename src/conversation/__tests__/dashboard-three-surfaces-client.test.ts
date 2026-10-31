@@ -1181,7 +1181,7 @@ describe('the detail deck — open cards and their detail cards move together (S
         'closeDetailCard',
         'wireInbox',
       ],
-      ['_deck'],
+      ['_deck', '_panelOpenWaiting'],
       {
         log,
         _sessionCache: cache,
