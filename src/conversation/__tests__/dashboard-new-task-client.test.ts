@@ -175,6 +175,15 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(html).toMatch(/id="nt-battery"[^>]*role="img"/);
   });
 
+  it('#600 ⑥ — where the task goes: a Slack channel or a dashboard task, with a folder for the latter', () => {
+    expect(html).toContain('id="nt-dest-slack"');
+    expect(html).toContain('id="nt-dest-task"');
+    expect(html).toMatch(/<select id="nt-folder"[^>]*onchange="ntOnFolderChange\(\)"/);
+    expect(script).toContain('function ntSetDestination(');
+    // Task mode hides the autogoal / autoz row, never the destination row (both are .nt-toggles).
+    expect(script).toContain("'.nt-toggles:not(.nt-dest)'");
+  });
+
   it('row 2: autogoal and autoz toggles; autoz starts off; autogoal says it is for this task only', () => {
     expect(html).toMatch(/<button[^>]*id="nt-autogoal"[^>]*aria-pressed=/);
     expect(html).toMatch(/<button[^>]*id="nt-autoz"[^>]*aria-pressed="false"/);
@@ -304,9 +313,10 @@ describe('ntBatteryView — T3 the battery', () => {
 describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
   const fns = load<{
     ntDefaultState(ctx: any, draft: any): any;
-    ntBuildPayload(state: any, attachments: any[], requestId: string): any;
+    ntBuildPayload(state: any, attachments: any[], requestId: string, models?: any[]): any;
     ntCanSubmit(state: any, attachments: any[]): boolean;
-  }>(['ntDefaultState', 'ntBuildPayload', 'ntCanSubmit']);
+    ntLaunchToast(data: any, channelName: string | null): any;
+  }>(['ntDefaultState', 'ntBuildPayload', 'ntCanSubmit', 'ntLaunchToast']);
   const ctx = {
     defaultModel: 'opus[1m]',
     defaultEffort: 'xhigh',
@@ -322,6 +332,8 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
       autogoal: true,
       autoz: false,
       prompt: '',
+      destination: 'slack',
+      folder: '',
     });
   });
 
@@ -358,6 +370,73 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
     expect(fns.ntCanSubmit({ ...base, prompt: 'go' }, [])).toBe(true);
     expect(fns.ntCanSubmit(base, [{ name: 'a' }])).toBe(true);
     expect(fns.ntCanSubmit({ ...base, prompt: 'go', channelId: null }, [])).toBe(false);
+  });
+
+  // #600 ⑥ — "대시보드 작업" (dashboard task): no channel, no Slack thread.
+  describe('a dashboard task (#600 ⑥)', () => {
+    const models = [{ nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]' }];
+    const task = () => ({ ...fns.ntDefaultState(ctx, null), destination: 'task', prompt: '고쳐줘', channelId: null });
+
+    it('builds the task body: destination, prompt, the chosen model’s id, the folder name — never attachments', () => {
+      expect(
+        fns.ntBuildPayload({ ...task(), folder: 'repo-a' }, [{ name: 'a.png', data: 'AA' }], 'req-0123456789', models),
+      ).toEqual({
+        requestId: 'req-0123456789',
+        destination: 'task',
+        prompt: '고쳐줘',
+        model: 'claude-opus-5-5[1m]',
+        folder: 'repo-a',
+      });
+      // A new folder (the default) sends no folder.
+      expect(fns.ntBuildPayload(task(), [], 'req-0123456789', models)).toEqual({
+        requestId: 'req-0123456789',
+        destination: 'task',
+        prompt: '고쳐줘',
+        model: 'claude-opus-5-5[1m]',
+      });
+    });
+
+    it('needs no channel, but needs an instruction (a task takes no attachments)', () => {
+      expect(fns.ntCanSubmit(task(), [])).toBe(true);
+      expect(fns.ntCanSubmit({ ...task(), prompt: ' ' }, [{ name: 'a' }])).toBe(false);
+    });
+
+    it('the launch toast opens the task card — no channel, no Slack link; a task that did not start says why', () => {
+      expect(fns.ntLaunchToast({ sessionKey: 'task:x', status: 'running' }, null)).toEqual({
+        title: '대시보드 작업을 시작했어요',
+        description: '카드에서 진행을 볼 수 있어요',
+        tone: 'success',
+        action: { id: 'open', label: '카드 열기' },
+        duration: 12000,
+      });
+      expect(
+        fns.ntLaunchToast(
+          { sessionKey: 'task:x', status: 'not-started', reason: 'one dashboard task runs at a time' },
+          null,
+        ),
+      ).toMatchObject({
+        title: '작업을 만들었지만 아직 시작하지 못했어요',
+        description: 'one dashboard task runs at a time',
+        tone: 'warning',
+        action: { id: 'open', label: '카드 열기' },
+      });
+    });
+
+    it('a Slack launch toast is as before: the channel, and the thread link', () => {
+      expect(
+        fns.ntLaunchToast(
+          { channel: 'C_ALPHA', status: 'running', permalink: 'https://slack.example/p1' },
+          'workspace-alpha',
+        ),
+      ).toEqual({
+        title: '작업을 시작했어요',
+        description: '#workspace-alpha',
+        tone: 'success',
+        action: { id: 'open', label: '카드 열기' },
+        duration: 12000,
+        link: { label: 'Slack에서 보기', href: 'https://slack.example/p1' },
+      });
+    });
   });
 });
 

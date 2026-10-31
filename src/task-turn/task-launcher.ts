@@ -16,6 +16,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { taskDirectoryFor } from '../agent-runtime/execution-context';
+import { isSafePathSegment } from '../path-utils';
 import { buildTaskSessionKey } from '../session-identity';
 import type { CreateTaskInput } from '../session-registry';
 import type { TaskCommandResponse, TaskTurnController } from './task-turn-controller';
@@ -39,11 +40,40 @@ export interface TaskLauncherDeps {
 
 export interface TaskLauncher {
   launch(request: TaskLaunchRequest): Promise<TaskCommandResponse>;
+  /** The folders the owner may name (`listTaskFolders`). */
+  folders(ownerId: string): Array<{ name: string; mtimeMs: number }>;
 }
 
 /** A folder name: no separators, no leading dot (so no `.`, `..` or hidden folders). */
 const FOLDER_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const TITLE_MAX = 80;
+
+const MAX_LISTED_FOLDERS = 50;
+
+/**
+ * The folders a task of `ownerId` may name: real directories (not links, not
+ * hidden) directly inside `/tmp/<owner>/`, newest first, at most `limit`.
+ */
+export function listTaskFolders(ownerId: string, limit = MAX_LISTED_FOLDERS): Array<{ name: string; mtimeMs: number }> {
+  if (!ownerId || !isSafePathSegment(ownerId)) return [];
+  const root = path.join('/tmp', ownerId);
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const folders: Array<{ name: string; mtimeMs: number }> = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !FOLDER_NAME.test(entry.name)) continue;
+    try {
+      folders.push({ name: entry.name, mtimeMs: fs.statSync(path.join(root, entry.name)).mtimeMs });
+    } catch {
+      // gone meanwhile
+    }
+  }
+  return folders.sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, limit);
+}
 
 /** The card's first title: the prompt's first non-empty line, cut at 80 characters. */
 export function taskTitleOf(prompt: string): string {
@@ -58,6 +88,7 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
   const launchRefusal = (status: number, error: string): TaskCommandResponse => ({ status, body: { error } });
 
   return {
+    folders: (ownerId: string) => listTaskFolders(ownerId),
     async launch(request: TaskLaunchRequest): Promise<TaskCommandResponse> {
       const { ownerId } = request;
       const refused = deps.controller.canStart(ownerId);

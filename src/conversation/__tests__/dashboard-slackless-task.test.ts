@@ -330,6 +330,19 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     });
   });
 
+  // #600 ⑥ — the client gates task-only UI on a field, not on the key's shape.
+  it('#600 ⑥ — a task’s card says it is Slack-less; a Slack session’s card does not', async () => {
+    const reg = new SessionRegistry();
+    const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
+    const slack = reg.createSession('U1', 'Alice', 'C1', '500.009');
+    slack.sessionId = 'sdk-9';
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const b = await board();
+    const all = [...b.working, ...b.waiting, ...b.idle] as any[];
+    expect(all.find((c) => c.key === `task:${task.taskId}`)?.slackless).toBe(true);
+    expect(all.find((c) => c.key === 'work:C1:500.009')?.slackless).toBeUndefined();
+  });
+
   it('#599 ⑤ — a task’s open question carries its askId on the card; a Slack session’s does not', async () => {
     const reg = new SessionRegistry();
     const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });

@@ -1178,7 +1178,7 @@ async function start() {
       createTask: (input) => claudeHandler.createTask(input),
       createFreshDirectory: (ownerId) => new WorkingDirectoryManager().createSessionBaseDir(ownerId),
     });
-    setDashboardTaskLauncher((request) => taskLauncher.launch(request));
+    setDashboardTaskLauncher(taskLauncher);
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
       recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => void;
