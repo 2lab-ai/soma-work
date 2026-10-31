@@ -187,6 +187,7 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
       throw new Error(`runTaskTurn refused: ${sessionKey} is not a Slack-less task`);
     }
     const turnId = `${sessionKey}:${Date.now()}:${randomUUID()}`;
+    const previousTurn = activeTurn.get(sessionKey);
     activeTurn.set(sessionKey, turnId);
 
     if (!session.conversationId) {
@@ -211,7 +212,17 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
     const binding: TaskTurnBinding = { sessionKey, conversationId: session.conversationId, turnId };
     // Saved before anything runs: a process that dies mid-turn leaves this turn
     // on disk for restart reconciliation. A failed save runs nothing.
-    deps.registry.beginTaskTurn(sessionKey, turnId);
+    try {
+      deps.registry.beginTaskTurn(sessionKey, turnId);
+    } catch (error) {
+      // Nothing ran: the turn that owned the task still does (#634 R1), so its
+      // caller can still end it.
+      if (activeTurn.get(sessionKey) === turnId) {
+        if (previousTurn === undefined) activeTurn.delete(sessionKey);
+        else activeTurn.set(sessionKey, previousTurn);
+      }
+      throw error;
+    }
     input.onStarted?.();
     deps.receipts.open(binding);
 
@@ -304,7 +315,26 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
     return commit(sessionKey, session, turnId, decided);
   }
 
-  return { runTaskTurn };
+  /**
+   * End a turn that returned non-terminal and will not be resumed after all —
+   * the chain was stopped, or its next hop could not start (#634 R1). An armed
+   * fallback compaction is disarmed; the turn is committed with the caller's
+   * outcome and any carried recording failure. Fenced if a newer turn owns the task.
+   */
+  async function abandonTurn(
+    sessionKey: string,
+    turnId: string,
+    decided: Omit<TaskTurnOutcomeRecord, 'turnId' | 'at'>,
+  ): Promise<RunTaskTurnResult> {
+    const session = deps.registry.getSessionByKey(sessionKey);
+    if (!session || activeTurn.get(sessionKey) !== turnId) return { turnId, outcome: null, fenced: true };
+    disarmFallbackCompact(session);
+    const carried = pendingRecordFailures.get(sessionKey);
+    pendingRecordFailures.delete(sessionKey);
+    return commit(sessionKey, session, turnId, { ...decided, ...(carried ? { recordFailure: carried } : {}) });
+  }
+
+  return { runTaskTurn, abandonTurn };
 }
 
 /**
