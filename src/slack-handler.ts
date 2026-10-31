@@ -7,6 +7,7 @@ import {
   type DispatchOutcome,
   type DispatchRequest,
   FollowupDispatcher,
+  isAutoCompactStop,
   type RunReport,
 } from '@soma/slack/followup-dispatcher';
 import {
@@ -82,6 +83,7 @@ import {
 } from './slack/actions/followup-actions';
 import { createAssistantContainer } from './slack/assistant-container';
 import { buildAutoskillFire } from './slack/autoskill-fire';
+import { requestBotDelete } from './slack/bot-delete-decision';
 import { CommandParser } from './slack/command-parser';
 import type { GoalOpeningAdmission } from './slack/commands/types';
 import { CompletionMessageTracker } from './slack/completion-message-tracker';
@@ -90,6 +92,7 @@ import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch
 import { requestEnvSkillPermission } from './slack/env-skill-permission-request';
 import { mintEventTs } from './slack/event-ts';
 import { type FollowupReactionRole, FollowupReactionSurface, rolesForFollowupState } from './slack/followup-reactions';
+import { retireGoalCapDecision } from './slack/goal-cap-decision';
 import { bumpGoalEpoch, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from './slack/goal-host-actions';
 import {
@@ -129,14 +132,6 @@ interface SlackPermalinkTarget {
    * thread permalink. Present when the link points at a message inside a
    * thread (reply or root). Undefined for plain top-level channel messages.
    */
-  threadTs?: string;
-}
-
-interface DmDeleteActionValue {
-  requesterId: string;
-  targetChannel: string;
-  targetTs: string;
-  /** Root ts when the target lives inside a thread (reply or root). */
   threadTs?: string;
 }
 
@@ -439,7 +434,13 @@ export class SlackHandler {
     // all. The closure reads the queue as a runtime field: it is built later in
     // this constructor, and a stop cannot occur before then.
     this.requestCoordinator = new RequestCoordinator({
-      beforeAbort: (sessionKey, reason) => this.freezeFollowupOnStop(sessionKey, reason),
+      beforeAbort: (sessionKey, reason) => {
+        this.freezeFollowupOnStop(sessionKey, reason);
+        // After the freeze (a refused freeze refuses the stop): the stop is
+        // recorded even with an empty queue, where the freeze records nothing,
+        // so a pending auto-compact continuation can see it.
+        this.noteSessionStop(sessionKey);
+      },
     });
     this.toolTracker = new ToolTracker();
     this.reactionManager = new ReactionManager(this.slackApi);
@@ -888,8 +889,12 @@ export class SlackHandler {
       refresh: (sessionKey) => this.refreshFollowupSurface(sessionKey),
       // The host owns the drain loop; the action module never re-enters the
       // dispatcher itself.
-      runDrain: (sessionKey) =>
+      runDrain: (sessionKey, settled) =>
         this.runFollowupDrainLoop(sessionKey).then((last) => {
+          // The other boundary a dispatcher run settles into (`Send now`,
+          // Resume, Retry): an auto-compact stop — the click's own run, or the
+          // drain's last — hands its work on here exactly as in `drainFollowups`.
+          this.resumeIfAutoCompactStop(sessionKey, last ?? settled);
           // A human-driven drain (Resume / Retry) is a boundary too: release
           // the §3.6 deferral it may just have cleared instead of waiting for
           // a turn end that a deferred loop would never produce.
@@ -5063,7 +5068,74 @@ export class SlackHandler {
     // `queued` would have the drain below deliver them a second time (§3.2).
     await this.sweepSteerBucketsIfIdle(sessionKey);
     const last = report.canDrain ? await this.runFollowupDrainLoop(sessionKey) : undefined;
-    this.releaseDeferredGoalDriver(sessionKey, last ?? report);
+    const final = last ?? report;
+    this.resumeIfAutoCompactStop(sessionKey, final);
+    this.releaseDeferredGoalDriver(sessionKey, final);
+  }
+
+  /**
+   * At a drain boundary: if the last run settled there was stopped by
+   * `auto-compact`, resume its work. Every boundary a dispatcher run settles
+   * into calls this — `drainFollowups` and the action controls' `runDrain`.
+   */
+  private resumeIfAutoCompactStop(sessionKey: string, final: RunReport | undefined): void {
+    if (final && isAutoCompactStop(final.outcome)) this.resumeAfterAutoCompactStop(sessionKey);
+  }
+
+  /** Record a stop-class abort on the session (`beforeAbort`). */
+  private noteSessionStop(sessionKey: string): void {
+    const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
+    if (session) session.lastStopAtMs = Date.now();
+  }
+
+  /** The host turn that resumes the work an `auto-compact` stop interrupted. */
+  static readonly AUTO_COMPACT_CONTINUATION_TEXT =
+    '[auto-compact] The context reached the auto-compact threshold mid-turn, so the turn was stopped and the conversation compacted. Continue the interrupted work from where it stopped.';
+
+  /**
+   * Resume the work of a turn stopped by `auto-compact`, now that its slot is
+   * closed and the queue had nothing left to run. A synthetic host turn enters
+   * through `handleMessage` like the goal loop's continuation: the busy fence
+   * drops it if anything took the session meanwhile, and the armed flag turns
+   * it into `/compact` and replays it after the compaction. A goal session gets
+   * its continuation from the goal loop instead — a second one would race it.
+   */
+  private resumeAfterAutoCompactStop(sessionKey: string): void {
+    const session = this.claudeHandler.getSessionByKey?.(sessionKey);
+    if (!session || session.terminated) return;
+    if ((session.goal as { status?: string } | undefined)?.status === 'active') return;
+    if (this.followupDispatcher?.isBusy(sessionKey)) return;
+    // The user stopped the session after the auto-compact stop: theirs is the
+    // last word. No automatic continuation — the armed flag still compacts
+    // their next message first.
+    const stoppedAt = session.autoCompactStoppedAtMs;
+    if (session.lastStopAtMs !== undefined && stoppedAt !== undefined && session.lastStopAtMs >= stoppedAt) {
+      this.logger.info('Auto-compact stop: not resuming — the session was stopped after it', { sessionKey });
+      return;
+    }
+    const user = session.ownerId;
+    if (!session.channelId || !session.threadTs || !user) return;
+    const event = {
+      type: 'message',
+      user,
+      channel: session.channelId,
+      thread_ts: session.threadTs,
+      ts: `${Date.now() / 1000}`,
+      text: SlackHandler.AUTO_COMPACT_CONTINUATION_TEXT,
+      synthetic: true,
+      skipDispatch: true,
+      routeContext: { skipAutoBotThread: true, hostTurn: true },
+    };
+    this.logger.info('Auto-compact stop: resuming the work (compacts first)', { sessionKey });
+    void this.handleMessage(
+      event as unknown as MessageEvent,
+      this.threadSay(session.channelId, session.threadTs),
+    ).catch((err: unknown) => {
+      this.logger.warn('Auto-compact stop: resume failed — the next message will compact', {
+        sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    });
   }
 
   /**
@@ -5779,7 +5851,8 @@ export class SlackHandler {
     }
 
     // Non-admin users: send delete request to admins for approval
-    await this.sendAdminDeleteApproval(event, target, say);
+    const preview = typeof targetMessage.text === 'string' ? targetMessage.text : undefined;
+    await this.sendAdminDeleteApproval(event, target, say, preview);
     return true;
   }
 
@@ -5883,7 +5956,12 @@ export class SlackHandler {
    * Send a delete approval request to admin users via DM.
    * Non-admin users cannot delete bot messages directly.
    */
-  private async sendAdminDeleteApproval(event: MessageEvent, target: SlackPermalinkTarget, say: any): Promise<void> {
+  private async sendAdminDeleteApproval(
+    event: MessageEvent,
+    target: SlackPermalinkTarget,
+    say: any,
+    preview?: string,
+  ): Promise<void> {
     const adminUserIds = getAdminUsers();
     if (adminUserIds.size === 0) {
       this.logger.warn('No admin users configured for DM delete approval');
@@ -5891,55 +5969,22 @@ export class SlackHandler {
       return;
     }
 
-    const value: DmDeleteActionValue = {
-      requesterId: event.user,
-      targetChannel: target.channelId,
-      targetTs: target.messageTs,
-    };
+    // The request is recorded with where each admin's DM landed, so a dashboard answer (#623)
+    // and a click both rewrite every copy, and only one of them acts.
+    const notified = await requestBotDelete(
+      this.slackApi,
+      {
+        requesterId: event.user,
+        targetChannel: target.channelId,
+        targetTs: target.messageTs,
+        ...(preview ? { preview } : {}),
+      },
+      adminUserIds,
+    );
 
-    const permalink = `https://slack.com/archives/${target.channelId}/p${target.messageTs.replace('.', '')}`;
-
-    // Notify each admin
-    let notified = 0;
-    for (const adminId of adminUserIds) {
-      try {
-        const adminDmChannel = await this.slackApi.openDmChannel(adminId);
-        await this.slackApi.postMessage(adminDmChannel, '봇 메시지 삭제 요청', {
-          blocks: [
-            {
-              type: 'section',
-              text: {
-                type: 'mrkdwn',
-                text: `<@${event.user}>님이 봇 메시지 삭제를 요청했습니다.\n<${permalink}|메시지 보기>`,
-              },
-            },
-            {
-              type: 'actions',
-              elements: [
-                {
-                  type: 'button',
-                  action_id: 'dm_delete_reject',
-                  text: { type: 'plain_text', text: '거절', emoji: true },
-                  value: JSON.stringify(value),
-                },
-                {
-                  type: 'button',
-                  action_id: 'dm_delete_approve',
-                  text: { type: 'plain_text', text: '승인', emoji: true },
-                  style: 'danger',
-                  value: JSON.stringify(value),
-                },
-              ],
-            },
-          ],
-        });
-        notified++;
-      } catch (error) {
-        this.logger.warn('Failed to send delete approval request to admin', { adminId, error });
-      }
-    }
-
-    if (notified > 0) {
+    if (notified === 'alreadyApproved') {
+      await say({ text: '✅ 이 메시지의 삭제는 이미 어드민이 승인했습니다.' });
+    } else if (notified > 0) {
       await say({ text: '📨 어드민에게 삭제 요청을 보냈습니다. 승인 후 삭제됩니다.' });
       this.logger.info('DM cleanup approval sent to admins', {
         requesterId: event.user,
@@ -6292,6 +6337,8 @@ export class SlackHandler {
     let repaired = 0;
     let retriesClaimed = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
+      // A Slack-less task cannot run a turn yet (#597/#598) — never re-arm its goal (#612 review).
+      if (session.slackless) continue;
       // Repair a stranded queue (defense for the eval-complete crash window):
       // if the current goal is genuinely closed (completed) or absent but goals
       // are still queued, promote the next one so the queue can't be orphaned.
@@ -6369,6 +6416,8 @@ export class SlackHandler {
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       const dueAt = session.pendingRetryAt;
       if (dueAt === undefined) continue;
+      // A Slack-less task has no execution context yet (#597): never resumed (#612 R2).
+      if (session.slackless) continue;
       // Already armed in this process (e.g. a crash-recovery resume that failed
       // again and scheduled a fresh retry) — arming again would fire it twice.
       if (session.pendingRetryTimer) continue;
@@ -6880,7 +6929,7 @@ export class SlackHandler {
     if (!found) return;
     const { session, goal } = found;
     goal.status = 'paused';
-    goal.capDmPendingAt = undefined;
+    retireGoalCapDecision(goal);
     goal.updatedAt = Date.now();
     this.persistHostGoalMutation(session);
     void this.deleteGoalOfCancelledOpening(sessionKey, goal.goalId, clicker, session);

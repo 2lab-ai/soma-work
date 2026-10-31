@@ -51,6 +51,8 @@ export interface ArchivedSession {
   conversationId?: string; // → conversations/{id}.json
   /** Task id (#595) — a revive brings it back. Absent in archives written before it existed. */
   taskId?: string;
+  /** A Slack-less task (#596): no channel/thread to revive into — keyed `task:<taskId>`. */
+  slackless?: true;
 
   // Owner
   ownerId: string;
@@ -160,6 +162,7 @@ function sessionToArchive(
     sessionId: session.sessionId,
     conversationId: session.conversationId,
     taskId: session.taskId,
+    slackless: session.slackless === true ? true : undefined,
 
     ownerId: session.ownerId,
     ownerName: session.ownerName,

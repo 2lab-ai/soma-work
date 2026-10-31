@@ -11,7 +11,8 @@ import { createPermissionPromptHandler, type PermissionRequestContext } from '@s
 import type { ModelCommandContext } from 'somalib/model-commands/types';
 import { z } from 'zod';
 import { isAdminUser } from './admin-utils';
-import type { PermissionMode } from './agent-runtime/policy/permission-mode';
+import type { ExecutionContext } from './agent-runtime/execution-context';
+import { NO_CONTEXT_PERMISSION_MODE, type PermissionMode } from './agent-runtime/policy/permission-mode';
 import { substituteEnvVars } from './config-env-substitution';
 import { CONFIG_FILE, DATA_DIR } from './env-paths';
 import { NATIVE_BYPASS_TOOLS } from './hooks/bypass-permission-guard';
@@ -125,13 +126,22 @@ export class McpConfigBuilder {
   /**
    * Build MCP configuration for a query
    */
-  async buildConfig(slackContext?: SlackContext, modelCommandContext?: ModelCommandContext): Promise<McpConfig> {
-    // Resolve the user's permission mode (auto | bypass | legacy). Without a
-    // Slack context (non-interactive callers) there is no human to prompt, so
-    // we run in `bypass` — matching the historical "!slackContext → bypass" path.
-    const somaPermissionMode: PermissionMode = slackContext?.user
-      ? userSettingsStore.getUserPermissionMode(slackContext.user)
-      : 'bypass';
+  async buildConfig(
+    slackContext?: SlackContext,
+    modelCommandContext?: ModelCommandContext,
+    executionContext?: ExecutionContext,
+  ): Promise<McpConfig> {
+    // Whose turn this is (#597): the execution context when there is one (a
+    // Slack-less task, or a Slack turn's context), else the Slack event user.
+    const contextUser = executionContext?.userId ?? (slackContext?.user || undefined);
+    // Resolve the permission mode (auto | bypass | legacy). With no user at all
+    // there is nobody to vouch for the turn: fail closed (NO_CONTEXT_PERMISSION_MODE,
+    // the SDK's own checks, no skip) — never the old "no Slack context → bypass".
+    const somaPermissionMode: PermissionMode = executionContext
+      ? executionContext.permissionMode
+      : contextUser
+        ? userSettingsStore.getUserPermissionMode(contextUser)
+        : NO_CONTEXT_PERMISSION_MODE;
 
     // `legacy` → SDK prompts the user for every tool (the old accept/reject).
     // `auto` / `bypass` → the SDK runs without its own prompt; the unified
@@ -215,8 +225,8 @@ export class McpConfigBuilder {
     }
 
     // Restrict filesystem MCP to user's /tmp/{slackId} directory
-    if (slackContext?.user && config.mcpServers?.filesystem) {
-      const userId = slackContext.user;
+    if (contextUser && config.mcpServers?.filesystem) {
+      const userId = contextUser;
       // Defense-in-depth: validate userId has no path traversal characters
       if (!isSafePathSegment(userId)) {
         this.logger.warn('slackContext.user contains path traversal characters, skipping filesystem restriction', {
@@ -249,7 +259,7 @@ export class McpConfigBuilder {
     // EnterPlanMode/ExitPlanMode, bypass allow-list), so it must not depend on
     // whether any MCP server happened to be registered (the retired `llm`
     // server used to make that condition unconditionally true).
-    config.allowedTools = this.buildAllowedTools(slackContext, userBypass);
+    config.allowedTools = this.buildAllowedTools(slackContext, userBypass, contextUser, !!executionContext);
 
     this.logger.debug('Added MCP configuration', {
       serverCount: Object.keys(config.mcpServers ?? {}).length,
@@ -263,7 +273,8 @@ export class McpConfigBuilder {
     // Disallow native interactive tools and SDK cron tools in Slack context
     // Interactive tools expect terminal input; cron tools conflict with soma's CronScheduler
     // Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 1
-    if (slackContext) {
+    // A Slack-less task has neither a terminal nor a Slack thread, so the same holds.
+    if (slackContext || executionContext) {
       config.disallowedTools = [...NATIVE_INTERACTIVE_TOOLS, ...NATIVE_CRON_TOOLS];
     }
 
@@ -436,7 +447,12 @@ export class McpConfigBuilder {
    * Admin users bypass all permission checks.
    * Trace: docs/current/plans/mcp-tool-permission/trace.md, S2/S3/S5
    */
-  private buildAllowedTools(slackContext?: SlackContext, userBypass?: boolean): string[] {
+  private buildAllowedTools(
+    slackContext: SlackContext | undefined,
+    userBypass: boolean,
+    contextUser: string | undefined,
+    hasExecutionContext: boolean,
+  ): string[] {
     const allowedTools = this.mcpManager.getDefaultAllowedTools();
 
     // Add Skill tool for local plugins
@@ -475,7 +491,7 @@ export class McpConfigBuilder {
     // Iterates every gated server (not just server-tools) and applies the same logic:
     //   admin → blanket allow | non-admin with grant → per-tool filter | no grant → blocked
     // Trace: docs/current/plans/mcp-tool-permission/trace.md, S2/S3/S5
-    this.applyPermissionGating(allowedTools, slackContext);
+    this.applyPermissionGating(allowedTools, contextUser);
 
     // Auto-approve plan mode tools (no terminal interaction needed)
     allowedTools.push('EnterPlanMode');
@@ -503,7 +519,9 @@ export class McpConfigBuilder {
     // `Bash` is intentionally excluded — its bypass-Bash-gate hook emits
     // `'ask'` for dangerous commands, which would be defeated by an
     // unconditional allowlist entry.
-    if (slackContext && userBypass) {
+    // A Slack-less task in auto/bypass mode gets the same short-circuit: its
+    // policy hook runs first and still denies (deny > allow), as for Slack.
+    if ((slackContext || hasExecutionContext) && userBypass) {
       allowedTools.push(...NATIVE_BYPASS_TOOLS);
     }
 
@@ -513,11 +531,11 @@ export class McpConfigBuilder {
   /**
    * Apply per-tool permission gating for ALL MCP servers that have a `permission` key in config.json.
    * For each gated server:
-   *  - Admin or no user context → blanket allow (mcp__{serverName})
+   *  - Admin → blanket allow (mcp__{serverName}); no user at all → blocked (#597, fail closed)
    *  - Non-admin with matching grant → per-tool filtering based on level
    *  - Non-admin without grant → server entirely blocked
    */
-  private applyPermissionGating(allowedTools: string[], slackContext?: SlackContext): void {
+  private applyPermissionGating(allowedTools: string[], userId: string | undefined): void {
     const toolPermConfig = this.loadToolPermissions();
     const gatedServers = getPermissionGatedServers(toolPermConfig);
 
@@ -528,8 +546,6 @@ export class McpConfigBuilder {
       }
       return;
     }
-
-    const userId = slackContext?.user;
 
     // Reload grants once before iterating servers (not per-server)
     if (userId && !isAdminUser(userId)) {
@@ -544,8 +560,12 @@ export class McpConfigBuilder {
       // (server-tools has its own hasServerToolsConfig check; other servers checked via raw config)
       if (serverName === 'server-tools' && !this.hasServerToolsConfig()) continue;
 
-      if (!userId || isAdminUser(userId)) {
-        // Admin or no user context → full access
+      if (!userId) {
+        // No user to check a grant for → blocked (#597: no context never means full access)
+        continue;
+      }
+      if (isAdminUser(userId)) {
+        // Admin → full access
         allowedTools.push(mcpPrefix);
         continue;
       }
@@ -693,6 +713,8 @@ export class McpConfigBuilder {
         SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN || '',
         SLACK_CONTEXT: JSON.stringify(slackContext),
         SOMA_CONFIG_FILE: CONFIG_FILE,
+        // One grants file: the child resolves DATA_DIR from SOMA_DATA_DIR, like cron and model-command.
+        SOMA_DATA_DIR: DATA_DIR,
       },
     };
   }
