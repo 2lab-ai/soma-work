@@ -4449,6 +4449,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/dialog.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/drawer.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/app-bar.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/breadcrumbs.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/stat-strip.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/bar-chart.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/file-card.js?v=${UI_LIB_VERSION}"></script>
@@ -4648,9 +4649,9 @@ ui-stat-strip:not(:defined) > * { display: none; }
    drawer narrows it, so the column layout follows its width, not the viewport. */
 .inbox { margin-bottom: 28px; container: inbox / inline-size; }
 .inbox-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 16px; min-width: 0; }
-.crumbs { display: flex; align-items: baseline; gap: 10px; font-size: 17px; line-height: 1.3; min-width: 0; white-space: nowrap; overflow: hidden; }
-.crumbs .crumb-root, .crumbs .crumb-sep { color: var(--ib-muted); }
-.crumbs .crumb-cur { color: var(--ib-text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+/* The trail (soma-work › 에이전트 인박스) is @2lab.ai/ui <ui-breadcrumbs> (D8b A-16): it draws the crumbs, the
+   separators and the current page; it takes the row's room and gives way to the tools. */
+ui-breadcrumbs.crumbs { flex: 1 1 auto; min-width: 0; }
 .view-seg { flex-shrink: 0; }
 /* Board header tools: Show archives, then Board | List. Below 640px the tools
    take their own row under the breadcrumb. */
@@ -4887,12 +4888,12 @@ ui-drawer:not(:defined) { display: none; }
    path to the focused node, its header (the root's too), its subtree. */
 .panel-agents { flex: none; padding: 6px 16px 8px; border-bottom: 1px solid var(--border); }
 .pa-bar { display: flex; align-items: center; gap: 8px; min-height: 32px; min-width: 0; }
-.pa-path { display: flex; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 13px; }
-.pa-crumb { min-width: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 6px; border: 0; border-radius: 6px; background: none; color: var(--text-secondary); font: inherit; cursor: pointer; }
-.pa-crumb:first-child { flex-shrink: 0; }
-.pa-crumb[aria-current="page"] { color: var(--text); font-weight: 600; cursor: default; }
-.pa-crumb:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-.pa-sep { flex-shrink: 0; color: var(--text-tertiary); }
+/* The path (메인 › A1 Explore › A3 general-purpose) is @2lab.ai/ui <ui-breadcrumbs size="sm"> (D8b E-20): a button per
+   step (ui-select → selectPanelAgent), the focused node the current page, the middle folded behind "…" when the row
+   is narrow; the focused node's status chip (.ui-status.pa-st) sits in its end slot. The chip the header draws is
+   for the minimal view, where the path is hidden (T1.6): with 자세히 the path's chip says it once. */
+ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
+.slide-panel.is-detail .pa-focus .pa-st { display: none; }
 .pa-focus { --ag-c: var(--text-tertiary); margin-top: 2px; border-radius: 6px; outline: none; }
 .pa-focus:focus-visible { box-shadow: 0 0 0 2px var(--border-focus); }
 .pa-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 14px; line-height: 1.35; }
@@ -5185,10 +5186,6 @@ ui-drawer:not(:defined) { display: none; }
   .topbar .td-prefix, .topbar .td-status { display: none; }
   .main { padding: 14px 12px; }
   .ag-tree { padding: 8px 8px 4px; }
-  .pa-crumb { min-height: 44px; }
-  /* The path shrinks to "‹ parent › here". */
-  .pa-crumb.is-far, .pa-sep.is-far { display: none; }
-  .pa-crumb.is-up::before { content: '\\2039\\00a0'; }
   /* Panel head with the deck shown: <ui-deck-nav>'s 44px targets left the title ~85px, so 자세히 is its
      icon alone (the word stays its accessible name) and the title gets the word's width back. */
   .slide-panel:not([data-deck="0"]) .panel-detail-toggle { width: 44px; padding: 0; justify-content: center; }
@@ -5202,16 +5199,12 @@ ui-drawer:not(:defined) { display: none; }
   /* The tools take the row under the breadcrumb; on the narrowest screens
      (320px) Show archives sits above Board | List instead of overflowing. */
   .inbox-tools { flex: 1 1 auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; row-gap: 8px; }
-  .crumbs { font-size: 15px; gap: 7px; }
 }
 
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
 @media (max-width: 680px) {
   .stats-grid { margin-bottom: 12px; }
   .chart-row { flex-direction: column; }
-}
-@media (hover: hover) and (pointer: fine) {
-  .pa-crumb:not([aria-current="page"]):hover { background: var(--surface-raised); color: var(--text); }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
@@ -5557,7 +5550,7 @@ ${pageTokenAliases()}
          wrapper (.ui-tok) hands them the dashboard tokens. -->
     <section class="inbox ui-tok" id="inbox" aria-label="에이전트 인박스">
       <div class="inbox-head">
-        <nav class="crumbs" aria-label="위치"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">에이전트 인박스</span></nav>
+        <ui-breadcrumbs class="crumbs" id="inbox-trail" lang="ko"></ui-breadcrumbs>
         <div class="inbox-tools">
           <button type="button" class="ui-chip archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><i data-ui-icon="archive"></i><span id="archives-label">보관함</span></button>
           <button type="button" class="ui-chip archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">휴면</span></button>
@@ -8852,13 +8845,12 @@ function agentNodeAria(node, desc) {
 // Spec 12: bring a live node in line with freshly rendered markup, keeping
 // every node whose place did not change — so focus, a list's scroll and a
 // running spinner's animation survive a live update. Children pair up in
-// order; an agent's path crumb pairs only with the crumb of the same agent.
+// order; a keyed row pairs only with the row of the same record.
 function domKeyOf(n) {
   if (n.nodeType !== 1) return '#' + n.nodeType;
-  var k = n.getAttribute('data-agent-select');
-  // data-mk: any row that stands for one record (a goal) pairs only with that record's row,
+  // data-mk: any row that stands for one record (a goal, an agent) pairs only with that record's row,
   // so a focused control is never rebound to the record that took its place.
-  if (k === null) k = n.getAttribute('data-mk');
+  var k = n.getAttribute('data-mk');
   if (k !== null) return n.tagName + '|@' + k;
   // Unkeyed: tag + id + the base class (the first token — state classes come
   // after it), so a section inserted before others does not shift them onto
@@ -9156,6 +9148,11 @@ function sessionColOf(key) {
 // Spend (SSOT 2026-10-26 T2/T3): the root's is the task total — main agent and
 // every subagent — with the subagents' share beside it (both summed by the
 // server); a subagent's is its own API calls. Nothing is summed here.
+// A node's status as the kit chip (.ui-status, tone + glyph + word — never colour alone); attrs adds to it
+// (the path's slot="end").
+function agentStatusChipHtml(st, attrs) {
+  return '<span' + (attrs || '') + ' class="ui-status pa-st"' + (AGENT_STATUS_TONE[st] ? ' data-tone="' + AGENT_STATUS_TONE[st] + '"' : '') + (st === 'running' ? ' data-live' : '') + '>' + (AGENT_STATUS_GLYPH[st] || '') + esc(AGENT_STATUS_LABEL[st] || '') + '</span>';
+}
 function renderAgentFocus(node, s) {
   var st = node.status;
   var desc = anDesc(node);
@@ -9163,7 +9160,7 @@ function renderAgentFocus(node, s) {
   // The root's status and active time are the session's — the head chip shows
   // them (spec 13); its accessible name still says them. A subagent keeps its own.
   if (!node.root) {
-    bits.push('<span class="ui-status pa-st"' + (AGENT_STATUS_TONE[st] ? ' data-tone="' + AGENT_STATUS_TONE[st] + '"' : '') + (st === 'running' ? ' data-live' : '') + '>' + (AGENT_STATUS_GLYPH[st] || '') + esc(AGENT_STATUS_LABEL[st] || '') + '</span>');
+    bits.push(agentStatusChipHtml(st, ''));
     var time = agentTimeHtml(node);
     if (time) bits.push(time);
   }
@@ -9189,6 +9186,15 @@ function renderAgentFocus(node, s) {
     + (line || act ? '<div class="pa-desc">' + esc(line) + (line && act ? ' — ' : '') + (act ? '<span class="pa-act">' + esc(act) + '</span>' : '') + '</div>' : '')
     + '</div>';
 }
+// Pure: the agent path as <ui-breadcrumbs> takes it — the focused node's chain from the root, a step per node
+// (its id: '' is the main agent) and the focused node last, the current page; an agent the tree does not know
+// (log only) is the last crumb by its id.
+function panelPathData(chain, node, agentId) {
+  var items = [];
+  for (var c = 0; c < chain.length; c++) items.push({ id: String(chain[c].id || ''), label: agentNodeName(chain[c]) });
+  if (!node) items.push({ label: '에이전트 ' + String(agentId || '').slice(-6) });
+  return { label: '에이전트 경로', items: items };
+}
 // The panel's agent section (§4.3), a drill-down over the same tree: the path
 // (the focused node's chain from the root) and the focused node's header. Its
 // subtree is the 에이전트 트리 section tab (paintTreeTab).
@@ -9213,27 +9219,22 @@ function renderPanelAgents() {
     chain.unshift(cur);
     cur = cur.root ? null : root.byId[cur.parentId];
   }
-  var path = '';
-  for (var c = 0; c < chain.length; c++) {
-    var far = c < chain.length - 2;
-    var isCur = !!node && c === chain.length - 1;
-    // On a phone only "‹ parent › here" shows: a step's separator goes with the step before it.
-    path += (c ? '<span class="pa-sep' + (c - 1 < chain.length - 2 ? ' is-far' : '') + '" aria-hidden="true">&rsaquo;</span>' : '')
-      + '<button type="button" class="pa-crumb' + (far ? ' is-far' : c === chain.length - 2 ? ' is-up' : '') + '"'
-      + (isCur ? ' aria-current="page"' : '') + ' data-agent-select="' + escAttr(chain[c].id) + '">' + esc(agentNodeName(chain[c])) + '</button>';
-  }
-  if (!node) path += '<span class="pa-sep" aria-hidden="true">&rsaquo;</span><span class="pa-crumb" aria-current="page">에이전트 ' + esc(String(_panelAgent).slice(-6)) + '</span>';
-  // The path shows where the focused node sits; the root has nothing above it.
-  var html = chain.length > 1 || !node ? '<div class="pa-bar"><nav class="pa-path" aria-label="에이전트 경로">' + path + '</nav></div>' : '';
+  // The path shows where the focused node sits; the root has nothing above it. Its crumbs are the element's
+  // data (panelPathData, set below); the focused node's status chip rides in its end slot.
+  var html = chain.length > 1 || !node
+    ? '<div class="pa-bar"><ui-breadcrumbs class="pa-path" size="sm" lang="ko">' + (node && !node.root ? agentStatusChipHtml(node.status, ' slot="end"') : '') + '</ui-breadcrumbs></div>'
+    : '';
   if (node) html += renderAgentFocus(node, s);
-  else html += '<div class="pa-focus is-unknown"><div class="pa-sum">카드 목록 밖의 에이전트 — 작업 로그만 있어요</div></div>';
+  else html += '<div class="pa-focus is-unknown" tabindex="-1"><div class="pa-sum">카드 목록 밖의 에이전트 — 작업 로그만 있어요</div></div>';
   // A live update (sessionUpdated, a board push) with the same markup writes
-  // nothing; a changed section is morphed, so a focused crumb stays.
+  // nothing; a changed section is morphed, so the path element (its fold, a focused crumb) stays.
   if (html !== _panelAgentsHtml || el.style.display !== '') {
     el.style.display = '';
     morphInnerHtml(el, html);
     _panelAgentsHtml = html;
   }
+  var path = el.querySelector('ui-breadcrumbs.pa-path');
+  if (path) taskElData(path, panelPathData(chain, node, _panelAgent));
 }
 // Everything in the panel that follows the focused node, after any live
 // update — whichever node it is (no main-only or subagent-only gate). Each part
@@ -10409,8 +10410,7 @@ function selectPanelAgent(agentId) {
   var after = document.activeElement;
   if (focusInPanel && (!after || after === document.body || !document.body.contains(after))) {
     // The chosen node's header — the same landing as Enter on a card item.
-    var here = document.querySelector('#panel-agents .pa-focus')
-      || document.querySelector('#panel-agents .pa-crumb[aria-current="page"]');
+    var here = document.querySelector('#panel-agents .pa-focus');
     if (here && here.focus) here.focus();
   }
 }
@@ -16844,17 +16844,21 @@ function fcHydrateIn(node) {
     else if (t.classList.contains('panel-um-dc') && _umPanelOpen === 'folding') { _umPanelOpen = false; renderPanelArtifactsSection(); }
   });
 })();
-// Spec 12 §4.3 — the panel's agent section: a path step drills into that node
-// (a subtree row is <ui-agent-tree>'s ui-select).
+// Spec 12 §4.3 — the panel's agent section: a path step (<ui-breadcrumbs>' ui-select, its id the node's; '' the
+// main agent) drills into that node (a subtree row is <ui-agent-tree>'s ui-select).
 (function initPanelAgentInteractions() {
   var bar = document.getElementById('panel-agents');
   if (!bar) return;
-  bar.addEventListener('click', function(e) {
-    var pick = e.target.closest('.pa-crumb[data-agent-select]');
-    if (pick && bar.contains(pick) && pick.getAttribute('aria-current') !== 'page') {
-      selectPanelAgent(pick.getAttribute('data-agent-select') || '');
-    }
+  bar.addEventListener('ui-select', function(e) {
+    var el = e.target;
+    if (!el || el.localName !== 'ui-breadcrumbs' || !e.detail) return;
+    selectPanelAgent(String(e.detail.id || ''));
   });
+})();
+// The page trail over the inbox (A-16): the product's root (the dashboard) and this page.
+(function initTrail() {
+  var el = document.getElementById('inbox-trail');
+  if (el) el.data = { items: [{ label: 'soma-work', href: '/dashboard' }, { label: '에이전트 인박스' }] };
 })();
 
 // ── New task (SSOT 2026-10-23) ──
