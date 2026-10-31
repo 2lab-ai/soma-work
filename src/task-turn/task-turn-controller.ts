@@ -21,7 +21,7 @@
  * chain's; the executor's CAS removal of a hop controller leaves the chain's.
  */
 import type { ExecutionContext } from '../agent-runtime/execution-context';
-import type { ConversationSession } from '../types';
+import type { ConversationSession, TaskTurnOutcomeRecord } from '../types';
 import type { RunTaskTurnInput, RunTaskTurnResult, TaskTurnNonTerminal } from './task-turn-runner';
 
 export interface TaskCommandRequest {
@@ -38,7 +38,15 @@ export interface TaskCommandResponse {
 }
 
 export interface TaskTurnControllerDeps {
-  runner: { runTaskTurn(input: RunTaskTurnInput): Promise<RunTaskTurnResult> };
+  runner: {
+    runTaskTurn(input: RunTaskTurnInput): Promise<RunTaskTurnResult>;
+    /** End a pending non-terminal turn that will not be resumed (stop, or the next hop could not start). */
+    abandonTurn(
+      sessionKey: string,
+      turnId: string,
+      decided: Omit<TaskTurnOutcomeRecord, 'turnId' | 'at'>,
+    ): Promise<RunTaskTurnResult>;
+  };
   getSession(sessionKey: string): ConversationSession | undefined;
   coordinator: {
     setController(sessionKey: string, controller: AbortController): void;
@@ -56,7 +64,11 @@ export interface TaskTurnControllerDeps {
   /** D9 window: starts per owner per window. Default 10 per 10 minutes. */
   maxStartsPerWindow?: number;
   windowMs?: number;
-  /** How long close() waits for a chain to end. Default 30 s. */
+  /**
+   * How long close() waits for a chain to end. Default 60 s — longer than the
+   * runner's save retries (1 + 5 + 30 s) plus the receipt drain, so a closed
+   * task is not removed while its outcome is still being saved (#634 R1).
+   */
   closeWaitMs?: number;
   now?: () => number;
 }
@@ -67,11 +79,18 @@ export interface TaskTurnController {
   close(sessionKey: string): Promise<void>;
   /** Shutdown: refuse new starts (503). Running chains end through the coordinator's `shutdown` abort. */
   stopAccepting(): void;
+  /** A refused shutdown (the bot stays up): accept starts again (#634 R1). */
+  resumeAccepting(): void;
   isRunning(sessionKey: string): boolean;
 }
 
 const COMPACT = '/compact';
-/** A slash command's shape (`/model x`, `/compact focus`) — not a path (`/work/x`) or a fraction (`2/3`). */
+/**
+ * A slash command's shape (`/model x`, `/compact`) — not a path (`/work/x`) or
+ * a fraction (`2/3`). Every command is refused on a task in A0 (D8), `/compact`
+ * included: a task turn has no signal that proves a manual compaction happened
+ * (#634 R1). Automatic and fallback compaction still run.
+ */
 const SLASH_COMMAND = /^\/[A-Za-z][\w-]*(?:\s|$)/;
 const SESSION_COMMAND = /^%[A-Za-z]/;
 const CONTINUATION_REFUSED = 'continuation not supported on a dashboard task yet';
@@ -98,7 +117,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
   function admit(
     request: TaskCommandRequest,
   ):
-    | { ok: true; session: ConversationSession; ctx: ExecutionContext; ownerId: string }
+    | { ok: true; session: ConversationSession; ctx: ExecutionContext; ownerId: string; startedAt: number }
     | { ok: false; response: TaskCommandResponse } {
     if (!accepting) return { ok: false, response: refuse(503, 'the service is shutting down — try again shortly') };
     const session = deps.getSession(request.sessionKey);
@@ -107,7 +126,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       return { ok: false, response: refuse(400, 'attachments are not supported on a dashboard task yet') };
     }
     const text = request.text.trim();
-    if (text !== COMPACT && (SLASH_COMMAND.test(text) || SESSION_COMMAND.test(text))) {
+    if (SLASH_COMMAND.test(text) || SESSION_COMMAND.test(text)) {
       return {
         ok: false,
         response: refuse(400, 'commands are not supported on a dashboard task yet — send an instruction'),
@@ -134,13 +153,13 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     }
     recent.push(t);
     starts.set(ownerId, recent);
-    return { ok: true, session, ctx, ownerId };
+    return { ok: true, session, ctx, ownerId, startedAt: t };
   }
 
   async function start(request: TaskCommandRequest): Promise<TaskCommandResponse> {
     const admitted = admit(request);
     if (!admitted.ok) return admitted.response;
-    const { session, ctx, ownerId } = admitted;
+    const { session, ctx, ownerId, startedAt } = admitted;
     const { sessionKey } = request;
 
     // A new instruction supersedes an open question, as a new Slack message
@@ -162,7 +181,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     const started = new Promise<'started'>((resolve) => {
       markStarted = () => resolve('started');
     });
-    const done = runChain(sessionKey, session, ctx, request.text.trim(), abort, markStarted);
+    const progress = { committedBeforeStart: false };
+    const done = runChain(sessionKey, session, ctx, request.text.trim(), abort, markStarted, progress);
     const chain: Chain = { ownerId, abort, done };
     chains.set(sessionKey, chain);
     ownerChain.set(ownerId, sessionKey);
@@ -174,7 +194,13 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
 
     const first = await Promise.race([started, finished.then(() => 'ended' as const)]);
     if (first === 'started') return { status: 202, body: { ok: true }, done: finished };
-    if (panel && openQuestion) {
+    // Not started: this start does not count against the owner's window (#634 R1).
+    const window = starts.get(ownerId);
+    const at = window?.lastIndexOf(startedAt) ?? -1;
+    if (window && at >= 0) window.splice(at, 1);
+    // A chain that already committed an outcome (conversation not created) saved the
+    // cleared panel with it: putting the question back in memory would diverge from disk.
+    if (panel && openQuestion && !progress.committedBeforeStart) {
       panel.pendingQuestion = openQuestion.pendingQuestion;
       panel.pendingChoice = openQuestion.pendingChoice;
       panel.waitingForChoice = openQuestion.waiting;
@@ -189,15 +215,54 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     instruction: string,
     chainAbort: AbortController,
     markStarted: () => void,
+    progress: { committedBeforeStart: boolean },
   ): Promise<void> {
     let text = instruction;
     let compactHop = false;
     let isUserInput = true;
     let replay: string | null = null;
+    /** A turn that returned non-terminal for a re-entry not yet started: it owns the task (#634 R1). */
+    let pendingTurnId: string | null = null;
+    let hopStarted = false;
+    const endPending = async (decided: Omit<TaskTurnOutcomeRecord, 'turnId' | 'at'>) => {
+      if (!pendingTurnId) return;
+      const turnId = pendingTurnId;
+      pendingTurnId = null;
+      try {
+        await deps.runner.abandonTurn(sessionKey, turnId, decided);
+      } catch (error) {
+        deps.logger.error('A pending task turn could not be ended', {
+          sessionKey,
+          turnId,
+          error: (error as Error)?.message,
+        });
+      }
+    };
     try {
       for (let dispatch = 1; dispatch <= maxDispatches; dispatch++) {
-        if (chainAbort.signal.aborted) return;
+        if (chainAbort.signal.aborted) {
+          // Stopped between hops: the pending turn ends here, not on the 1M model in
+          // `working`. A shutdown leaves it for restart reconciliation.
+          const reason = chainAbort.signal.reason;
+          if (reason !== 'shutdown') await endPending(abandonOutcome(reason));
+          return;
+        }
         const last = dispatch === maxDispatches;
+        hopStarted = false;
+        if (dispatch > 1) {
+          // The context is per turn, never cached (execution-context.ts): rebuilt
+          // for every hop, so a revoked owner or moved directory stops the chain.
+          try {
+            ctx = deps.buildExecutionContext(session);
+          } catch (error) {
+            await endPending({
+              outcome: 'interrupted',
+              category: 'Exception',
+              reason: `task cannot run: ${(error as Error)?.message ?? String(error)}`,
+            });
+            return;
+          }
+        }
         const hop = new AbortController();
         const forward = () => hop.abort(chainAbort.signal.reason);
         chainAbort.signal.addEventListener('abort', forward, { once: true });
@@ -221,12 +286,18 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
               ...(last ? { fallbackCompact: BUDGET_SPENT } : {}),
             } satisfies Partial<Record<TaskTurnNonTerminal, string>>,
             ...(compactHop ? { compactHop: true } : {}),
-            onStarted: markStarted,
+            onStarted: () => {
+              hopStarted = true;
+              // The new hop's saved start took the task from the pending turn.
+              pendingTurnId = null;
+              markStarted();
+            },
           });
         } finally {
           chainAbort.signal.removeEventListener('abort', forward);
         }
 
+        if (result.outcome && !hopStarted) progress.committedBeforeStart = true;
         if (result.outcome) {
           // A compaction that the boundary proved, with budget left: run the
           // instruction it was stashed for. Nothing else is ever re-run (D10).
@@ -240,6 +311,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
           return;
         }
         if (result.fenced || result.nonTerminal !== 'fallbackCompact') return;
+        pendingTurnId = result.turnId;
         // The stash is nulled at the compaction boundary: take it now.
         replay = session.fallbackCompactPendingUserText ?? null;
         text = COMPACT;
@@ -248,6 +320,14 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       }
     } catch (error) {
       deps.logger.error('Task turn chain ended by a throw', { sessionKey, error: (error as Error)?.message });
+      // A hop that never started leaves the pending turn owning the task: end it.
+      if (!hopStarted) {
+        await endPending({
+          outcome: 'interrupted',
+          category: 'Exception',
+          reason: `turn start not saved: ${(error as Error)?.message ?? String(error)}`,
+        });
+      }
     }
   }
 
@@ -255,7 +335,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     const chain = chains.get(sessionKey);
     if (!chain) return;
     chain.abort.abort('session-close');
-    const waitMs = deps.closeWaitMs ?? 30_000;
+    const waitMs = deps.closeWaitMs ?? 60_000;
     let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       chain.done,
@@ -275,6 +355,15 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     stopAccepting: () => {
       accepting = false;
     },
+    resumeAccepting: () => {
+      accepting = true;
+    },
     isRunning: (sessionKey) => chains.has(sessionKey),
   };
+}
+
+function abandonOutcome(reason: unknown): Omit<TaskTurnOutcomeRecord, 'turnId' | 'at'> {
+  if (reason === 'user-stop') return { outcome: 'cancelled', category: 'Exception', reason: 'stopped by user' };
+  if (reason === 'session-close') return { outcome: 'cancelled', category: 'Exception', reason: 'task closed' };
+  return { outcome: 'interrupted', category: 'Exception', reason: `stopped between steps (${String(reason)})` };
 }

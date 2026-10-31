@@ -1675,6 +1675,7 @@ async function start() {
         // the shutdown guard: a bot that stays up but silently refuses every
         // message is a worse outage than the shutdown we just declined.
         slackHandler.cancelFollowupShutdownPreparation();
+        taskTurnController?.resumeAccepting();
         // Wording matters operationally: `clearAll()` aborts session-by-session,
         // so a refusal partway through leaves a MIX — earlier sessions already
         // stopped, the refused one (and any after it) still live. Claiming

@@ -473,4 +473,66 @@ describe('createTaskTurnRunner (#598 ④b1)', () => {
       expect(third.outcome?.recordFailure).toBeUndefined();
     });
   });
+
+  describe('#634 R1 — abandoning a pending non-terminal turn', () => {
+    it('abandonTurn disarms an armed fallback and commits the turn with the caller’s outcome and the carried failure', async () => {
+      const h = harness({
+        execute: vi.fn(async () => {
+          Object.assign(h.session, {
+            model: 'opus[1m]',
+            fallbackCompactActive: true,
+            fallbackCompactOriginalModel: 'sonnet',
+          });
+          return { success: false, messageCount: 0, terminal: { exit: 'error', fallbackCompact: true } } as any;
+        }),
+        receipts: { open: vi.fn(), drain: vi.fn(async () => 'EIO') },
+      });
+      const first = await h.runner.runTaskTurn({ ...h.input, resumable: ['fallbackCompact'] });
+      expect(first.nonTerminal).toBe('fallbackCompact');
+      const r = await h.runner.abandonTurn(KEY, first.turnId, {
+        outcome: 'cancelled',
+        category: 'Exception',
+        reason: 'stopped by user',
+      });
+      expect(r.outcome).toMatchObject({ outcome: 'cancelled', reason: 'stopped by user', recordFailure: 'EIO' });
+      expect(h.session).toMatchObject({ model: 'sonnet', fallbackCompactActive: false });
+      expect(h.events[h.events.length - 1]).toBe('commit:cancelled:idle');
+    });
+
+    it('a later turn whose start was not saved does not take the fence — the earlier pending turn can still be abandoned', async () => {
+      const h = harness({
+        execute: vi.fn(
+          async () => ({ success: false, messageCount: 0, terminal: { exit: 'error', fallbackCompact: true } }) as any,
+        ),
+      });
+      const first = await h.runner.runTaskTurn({ ...h.input, resumable: ['fallbackCompact'] });
+      h.registry.beginTaskTurn.mockImplementationOnce(() => {
+        throw new Error('ENOSPC');
+      });
+      await expect(h.runner.runTaskTurn(h.input)).rejects.toThrow('ENOSPC');
+      const r = await h.runner.abandonTurn(KEY, first.turnId, {
+        outcome: 'interrupted',
+        category: 'Exception',
+        reason: 'turn start not saved',
+      });
+      expect(r.fenced).toBeUndefined();
+      expect(r.outcome).toMatchObject({ outcome: 'interrupted', reason: 'turn start not saved' });
+    });
+
+    it('abandoning a turn that a newer turn replaced is fenced', async () => {
+      const h = harness({
+        execute: vi.fn(
+          async () => ({ success: false, messageCount: 0, terminal: { exit: 'error', fallbackCompact: true } }) as any,
+        ),
+      });
+      const first = await h.runner.runTaskTurn({ ...h.input, resumable: ['fallbackCompact'] });
+      h.execute.mockImplementationOnce(
+        async () =>
+          ({ success: true, messageCount: 1, terminal: { exit: 'success', endTurnInfoPresent: true } }) as any,
+      );
+      await h.runner.runTaskTurn(h.input);
+      const r = await h.runner.abandonTurn(KEY, first.turnId, { outcome: 'cancelled', category: 'Exception' });
+      expect(r).toMatchObject({ outcome: null, fenced: true });
+    });
+  });
 });

@@ -57,8 +57,12 @@ function harness(over: Partial<TaskTurnControllerDeps> = {}, steps: Step[] = [])
     return next;
   });
   const coordinator = fakeCoordinator();
+  const abandonTurn = vi.fn(async (_key: string, turnId: string, decided: any) => ({
+    turnId,
+    outcome: { ...decided, turnId, at: 1 },
+  }));
   const deps: TaskTurnControllerDeps = {
-    runner: { runTaskTurn },
+    runner: { runTaskTurn, abandonTurn },
     getSession: (k) => sessions.get(k),
     coordinator,
     buildExecutionContext: vi.fn(() => CTX),
@@ -66,7 +70,7 @@ function harness(over: Partial<TaskTurnControllerDeps> = {}, steps: Step[] = [])
     ...over,
   };
   const controller = createTaskTurnController(deps);
-  return { controller, sessions, inputs, runTaskTurn, coordinator, deps };
+  return { controller, sessions, inputs, runTaskTurn, abandonTurn, coordinator, deps };
 }
 
 describe('TaskTurnController — refusals (598c §1)', () => {
@@ -74,6 +78,12 @@ describe('TaskTurnController — refusals (598c §1)', () => {
     ['attachments', { text: 'go', attachments: [{ name: 'a.png' }] }, 400, /attachments/],
     ['a slash command', { text: '/model opus' }, 400, /commands are not supported/],
     ['/compact with arguments', { text: '/compact focus on tests' }, 400, /commands are not supported/],
+    [
+      '/compact (no boundary signal to prove it on a task — #634 R1)',
+      { text: '/compact' },
+      400,
+      /commands are not supported/,
+    ],
     ['a session command', { text: '%effort high' }, 400, /commands are not supported/],
   ])('refuses %s before anything runs', async (_name, req, status, error) => {
     const h = harness();
@@ -92,14 +102,6 @@ describe('TaskTurnController — refusals (598c §1)', () => {
     const r = await h.controller.start({ sessionKey: KEY, text: text.replace('/tmp-like path first: ', '') });
     expect(r.status).toBe(202);
     await r.done;
-  });
-
-  it('allows exactly /compact', async () => {
-    const h = harness();
-    const r = await h.controller.start({ sessionKey: KEY, text: '/compact' });
-    expect(r.status).toBe(202);
-    await r.done;
-    expect(h.inputs[0].text).toBe('/compact');
   });
 
   it('refuses a session that is not a Slack-less task', async () => {
@@ -124,10 +126,14 @@ describe('TaskTurnController — refusals (598c §1)', () => {
     expect(h.runTaskTurn).not.toHaveBeenCalled();
   });
 
-  it('after stopAccepting (shutdown) a start answers 503', async () => {
+  it('after stopAccepting (shutdown) a start answers 503; resumeAccepting (a refused shutdown) re-opens it', async () => {
     const h = harness();
     h.controller.stopAccepting();
     expect((await h.controller.start({ sessionKey: KEY, text: 'go' })).status).toBe(503);
+    h.controller.resumeAccepting();
+    const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
+    expect(r.status).toBe(202);
+    await r.done;
   });
 });
 
@@ -165,6 +171,21 @@ describe('TaskTurnController — D9 and the busy task (598c §2)', () => {
     expect((await h.controller.start({ sessionKey: KEY, text: 'n10' })).status).toBe(429);
     t += 10 * 60_000;
     expect((await h.controller.start({ sessionKey: KEY, text: 'later' })).status).toBe(202);
+  });
+
+  it('a start answered 500 does not use up the owner’s start window (#634 R1)', async () => {
+    let t = 0;
+    const h = harness({ now: () => t, maxStartsPerWindow: 2 });
+    for (let i = 0; i < 3; i++) {
+      h.runTaskTurn.mockImplementationOnce(async () => {
+        throw new Error('ENOSPC');
+      });
+      expect((await h.controller.start({ sessionKey: KEY, text: `n${i}` })).status).toBe(500);
+      t += 1000;
+    }
+    const ok = await h.controller.start({ sessionKey: KEY, text: 'now it saves' });
+    expect(ok.status).toBe(202);
+    await ok.done;
   });
 
   it('the cap is released after a chain that throws after acceptance', async () => {
@@ -242,6 +263,43 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
     const r = await h.controller.start({ sessionKey: KEY, text: 'big' });
     await r.done;
     expect(h.runTaskTurn).toHaveBeenCalledTimes(1);
+    // The pending fallback turn is ended — cancelled — not left working on the 1M model (#634 R1).
+    expect(h.abandonTurn).toHaveBeenCalledWith(KEY, 'a', expect.objectContaining({ outcome: 'cancelled' }));
+  });
+
+  it('a later hop whose start is not saved ends the pending fallback turn interrupted (#634 R1)', async () => {
+    const h = harness({}, [
+      async (input) => {
+        input.onStarted?.();
+        h.sessions.get(KEY).fallbackCompactPendingUserText = 'big';
+        return { turnId: 'a', outcome: null, nonTerminal: 'fallbackCompact' };
+      },
+      async () => {
+        throw new Error('ENOSPC');
+      },
+    ]);
+    const r = await h.controller.start({ sessionKey: KEY, text: 'big' });
+    expect(r.status).toBe(202);
+    await r.done;
+    expect(h.abandonTurn).toHaveBeenCalledWith(
+      KEY,
+      'a',
+      expect.objectContaining({ outcome: 'interrupted', reason: 'turn start not saved: ENOSPC' }),
+    );
+  });
+
+  it('a shutdown between hops leaves the pending turn for restart reconciliation (no abandon)', async () => {
+    const h = harness({}, [
+      async (input) => {
+        input.onStarted?.();
+        h.coordinator.abortSession(KEY, 'shutdown');
+        return { turnId: 'a', outcome: null, nonTerminal: 'fallbackCompact' };
+      },
+    ]);
+    const r = await h.controller.start({ sessionKey: KEY, text: 'big' });
+    await r.done;
+    expect(h.runTaskTurn).toHaveBeenCalledTimes(1);
+    expect(h.abandonTurn).not.toHaveBeenCalled();
   });
 
   it('Stop during a hop aborts that hop’s controller with the stop reason', async () => {
@@ -282,6 +340,29 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
     await h.controller.close(KEY);
     expect(reason).toBe('session-close');
     await r.done;
+  });
+
+  it('a chain that committed an outcome before its start (conversation not created) does not put the question back', async () => {
+    const h = harness({}, [
+      {
+        turnId: 'a',
+        outcome: {
+          turnId: 'a',
+          outcome: 'failed',
+          category: 'Exception',
+          at: 1,
+          reason: 'record: conversation not created',
+        },
+      },
+    ]);
+    h.runTaskTurn.mockImplementationOnce(async (input: RunTaskTurnInput) => {
+      h.inputs.push(input);
+      return { turnId: 'a', outcome: { turnId: 'a', outcome: 'failed', category: 'Exception', at: 1 } };
+    });
+    h.sessions.get(KEY).actionPanel = { waitingForChoice: true, pendingQuestion: { question: 'Q?' } };
+    const r = await h.controller.start({ sessionKey: KEY, text: 'do X' });
+    expect(r.status).toBe(500);
+    expect(h.sessions.get(KEY).actionPanel.pendingQuestion).toBeUndefined();
   });
 
   it('a start that is not saved leaves the open question where it was (the 500 means nothing happened)', async () => {
@@ -388,5 +469,34 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
     const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
     await r.done;
     expect(h.runTaskTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it('the execution context is rebuilt for every hop; a hop whose context fails ends the pending turn (#634 R1)', async () => {
+    let builds = 0;
+    const h = harness(
+      {
+        buildExecutionContext: () => {
+          builds += 1;
+          if (builds === 2) throw new Error('owner lost access');
+          return CTX;
+        },
+      },
+      [
+        async (input) => {
+          input.onStarted?.();
+          h.sessions.get(KEY).fallbackCompactPendingUserText = 'big';
+          return { turnId: 'a', outcome: null, nonTerminal: 'fallbackCompact' };
+        },
+      ],
+    );
+    const r = await h.controller.start({ sessionKey: KEY, text: 'big' });
+    await r.done;
+    expect(builds).toBe(2);
+    expect(h.runTaskTurn).toHaveBeenCalledTimes(1);
+    expect(h.abandonTurn).toHaveBeenCalledWith(
+      KEY,
+      'a',
+      expect.objectContaining({ outcome: 'interrupted', reason: 'task cannot run: owner lost access' }),
+    );
   });
 });

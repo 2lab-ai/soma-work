@@ -197,4 +197,19 @@ describe('SessionRegistry — a task turn’s start and restart reconciliation (
     const disk = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8')) as Array<Record<string, unknown>>;
     expect(disk[0]).toMatchObject({ activityState: 'working', activeTaskTurnId: 'turn-H' });
   });
+
+  it('beginTaskTurn wakes a sleeping task (as a Slack message would) and restores the sleep on a failed save (#634 R1)', () => {
+    const reg = new SessionRegistry();
+    const task = reg.createTask(TASK_INPUT);
+    const key = `task:${task.taskId}`;
+    const slept = new Date(Date.now() - 60_000);
+    Object.assign(task, { state: 'SLEEPING', sleepStartedAt: slept, lastActivity: slept });
+    expect(() => failWrites(() => reg.beginTaskTurn(key, 'turn-X'))).toThrow(/ENOSPC/);
+    expect(task).toMatchObject({ state: 'SLEEPING', sleepStartedAt: slept, lastActivity: slept });
+
+    reg.beginTaskTurn(key, 'turn-W');
+    expect(task.state).toBe('MAIN');
+    expect(task.sleepStartedAt).toBeUndefined();
+    expect(task.lastActivity!.getTime()).toBeGreaterThan(slept.getTime());
+  });
 });

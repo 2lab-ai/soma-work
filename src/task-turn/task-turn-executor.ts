@@ -52,6 +52,8 @@ export interface TaskTurnExecutorHost {
 
 export interface TaskTurnExecutor {
   runTaskTurn(input: RunTaskTurnInput): Promise<RunTaskTurnResult>;
+  /** End a pending non-terminal turn that will not be resumed (#634 R1). */
+  abandonTurn: ReturnType<typeof createTaskTurnRunner>['abandonTurn'];
   /** Every Slack call a task turn attempted — must stay empty (T9). */
   slackCalls: RecordedSlackCall[];
 }
@@ -140,5 +142,5 @@ export function createTaskTurnExecutor(host: TaskTurnExecutorHost): TaskTurnExec
     logger,
   });
 
-  return { runTaskTurn: runner.runTaskTurn, slackCalls: failClosed.calls };
+  return { runTaskTurn: runner.runTaskTurn, abandonTurn: runner.abandonTurn, slackCalls: failClosed.calls };
 }

@@ -618,7 +618,16 @@ export class SessionRegistry {
       activity: session.activityState,
       changedAt: session.activityStateChangedAt,
       activeTurnId: session.activeTaskTurnId,
+      state: session.state,
+      sleepStartedAt: session.sleepStartedAt,
+      lastActivity: session.lastActivity,
+      warningMessageTs: session.warningMessageTs,
+      lastWarningSentAt: session.lastWarningSentAt,
     };
+    // An instruction wakes a sleeping task, as a Slack message wakes its thread,
+    // so the inactivity sweep cannot archive it mid-turn (#634 R1).
+    if (session.state === 'SLEEPING') this.wakeSession(session);
+    else session.lastActivity = new Date();
     if (session.activityState !== 'working') session.activityStateChangedAt = Date.now();
     session.activityState = 'working';
     session.activeTaskTurnId = turnId;
@@ -628,6 +637,11 @@ export class SessionRegistry {
       session.activityState = previous.activity;
       session.activityStateChangedAt = previous.changedAt;
       session.activeTaskTurnId = previous.activeTurnId;
+      session.state = previous.state;
+      session.sleepStartedAt = previous.sleepStartedAt;
+      session.lastActivity = previous.lastActivity;
+      session.warningMessageTs = previous.warningMessageTs;
+      session.lastWarningSentAt = previous.lastWarningSentAt;
       throw error;
     }
     try {
