@@ -3540,6 +3540,11 @@ export async function registerDashboardRoutes(
           reply.status(403).send({ error: '관리자만 응답할 수 있습니다' });
           return;
         }
+        if (result.reason === 'busy') {
+          // Not a decision: the card stays answerable (the client offers a retry).
+          reply.status(423).send({ error: '다른 관리자의 응답을 처리하는 중입니다 — 잠시 후 다시 시도하세요' });
+          return;
+        }
         reply.status(404).send({ error: '만료되었거나 더 이상 없는 요청입니다' });
       } catch (error) {
         logger.error('Error answering an admin approval from the dashboard', error);
