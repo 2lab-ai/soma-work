@@ -126,6 +126,8 @@ export async function notifyAdminsNewUser(
     requesterId: userId,
     data: { userName },
     ttlMs: NEW_USER_REQUEST_TTL_MS,
+    // A new pending record is a new ask: a new round, so no earlier round's button can decide it.
+    fresh: true,
   });
   notifyAdminApprovalsChanged();
   const blocks = newUserPromptBlocks(userId, userName, round.createdAt);

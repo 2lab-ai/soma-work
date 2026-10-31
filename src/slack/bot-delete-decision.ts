@@ -50,7 +50,7 @@ export interface BotDeleteTarget {
 
 export type BotDeleteAnswer =
   | { ok: true; outcome: 'approved' | 'denied'; text: string; effects: Promise<void> }
-  | { ok: false; reason: 'not_found' | 'not_admin' | 'already_answered' | 'failed'; message: string };
+  | { ok: false; reason: 'not_found' | 'not_admin' | 'already_answered' | 'busy' | 'failed'; message: string };
 
 export function botDeleteRequestId(targetChannel: string, targetTs: string): string {
   return `${targetChannel}/${targetTs}`;
@@ -215,6 +215,14 @@ export async function decideBotDelete(args: {
   );
   if (!marked) {
     const r = getAdminRequest('bot_delete', requestId, now)?.resolution;
+    if (r?.settled === false) {
+      // Another admin's approval is still deleting: not a decision yet — answer again shortly.
+      return {
+        ok: false,
+        reason: 'busy',
+        message: '⏳ 다른 어드민의 삭제 승인을 처리하는 중입니다. 잠시 후 다시 시도하세요.',
+      };
+    }
     return {
       ok: false,
       reason: 'already_answered',
@@ -231,7 +239,15 @@ export async function decideBotDelete(args: {
         return { ok: false, reason: 'failed', message: '⚠️ 메시지 삭제에 실패했습니다. 다시 시도할 수 있습니다.' };
       }
     }
-    settleAdminRequest('bot_delete', requestId, resolution);
+    if (!settleAdminRequest('bot_delete', requestId, resolution)) {
+      // Not our answer on record any more (cannot happen while this process holds the claim; only a
+      // restart in between). Another decision stands: this one neither settles nor rewrites anything.
+      logger.error('Bot message delete finished but another answer is on record — leaving it', {
+        requestId,
+        by: actor,
+      });
+      return { ok: true, outcome: 'approved', text: outcomeText(resolution), effects: Promise.resolve() };
+    }
   }
   const text = outcomeText(resolution);
   logger.info('Bot message delete request answered', { requestId, outcome: resolution.outcome, by: actor, via });

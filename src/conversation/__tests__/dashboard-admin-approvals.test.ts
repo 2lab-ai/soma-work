@@ -245,6 +245,14 @@ describe('dashboard admin approvals (#620)', () => {
     expect(read.slice(0, 400)).toContain('isSlackAdmin(');
   });
 
+  it('another answer still being carried out (busy) is a retryable 423, not a decision', async () => {
+    answer.mockImplementationOnce(async () => ({ ok: false, reason: 'busy' }));
+    const admin = await signIn('UADMIN');
+    const res = await post(admin, { id: 'env_skill:req-1', choiceId: 'env_skill_once' });
+    expect(res.statusCode).toBe(423);
+    expect(JSON.parse(res.body).resolution).toBeUndefined();
+  });
+
   it('an adapter that refuses the actor is a 403, not a bad request', async () => {
     answer.mockImplementationOnce(async () => ({ ok: false, reason: 'forbidden' }));
     const admin = await signIn('UADMIN');
@@ -542,6 +550,17 @@ describe('dashboard admin approvals (#620)', () => {
       release({ ok: true, json: async () => ({ pending: [ENV_REQUEST], resolved: [] }) });
       await new Promise((r) => setTimeout(r, 10));
       expect(c.state()._adminApprovals.pending).toEqual([]);
+    });
+
+    it('busy (423): the card is not resolved — it offers a retry', async () => {
+      const { c } = client({
+        fetch: async () => ({ ok: false, status: 423, json: async () => ({ error: '처리하는 중입니다' }) }),
+      });
+      c.applyAdminApprovals({ pending: [ENV_REQUEST], resolved: [] });
+      expect(await c.answerAdminApproval('env_skill:req-1', 'env_skill_once')).toMatchObject({
+        status: 'error',
+        retry: true,
+      });
     });
 
     it('the server outcome wins: a grant the server turned into a denial shows as denied', async () => {

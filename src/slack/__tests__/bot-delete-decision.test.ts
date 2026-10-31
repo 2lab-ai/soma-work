@@ -163,7 +163,7 @@ describe('bot-message delete requests as one decision (#623)', () => {
       await decideBotDelete({ requestId: ID, decision: 'reject', actor: 'UADMIN2', via: 'slack', slackApi: api }),
     ).toMatchObject({
       ok: false,
-      reason: 'already_answered',
+      reason: 'busy',
     });
     finish();
     expect(await inFlight).toMatchObject({ ok: true, outcome: 'approved' });
@@ -263,6 +263,68 @@ describe('bot-message delete requests as one decision (#623)', () => {
     expect(
       (await botDeleteAdminApprovalAdapter(api).pending(Date.now())).some((c) => c.id === `bot_delete:${ID}`),
     ).toBe(true);
+  });
+
+  it('a delete this process is still carrying out never lapses: a second answer is told to retry (busy), not decided', async () => {
+    await requestBotDelete(api, TARGET);
+    let finish: () => void = () => {};
+    api.deleteMessage.mockImplementationOnce(
+      () =>
+        new Promise<undefined>((r) => {
+          finish = () => r(undefined);
+        }),
+    );
+    // A's claim is far older than the lapse window (Slack held the delete for minutes).
+    const a = decideBotDelete({
+      requestId: ID,
+      decision: 'approve',
+      actor: 'UADMIN1',
+      via: 'dashboard',
+      slackApi: api,
+      now: Date.now() - 10 * 60 * 1000,
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(
+      await decideBotDelete({ requestId: ID, decision: 'reject', actor: 'UADMIN2', via: 'slack', slackApi: api }),
+    ).toMatchObject({
+      ok: false,
+      reason: 'busy',
+    });
+    const adapter = botDeleteAdminApprovalAdapter(api);
+    expect(await adapter.answer(ID, 'deny', 'UADMIN2')).toEqual({ ok: false, reason: 'busy' });
+    finish();
+    expect(await a).toMatchObject({ ok: true, outcome: 'approved' });
+    expect((await adapter.resolved(0)).find((r) => r.id === `bot_delete:${ID}`)).toMatchObject({
+      outcome: 'approved',
+      by: 'UADMIN1',
+    });
+    expect(api.postMessage).not.toHaveBeenCalledWith('D-U1', expect.stringContaining('거절'));
+  });
+
+  it('a claim left by a process that died lapses: the request is answerable again', async () => {
+    await requestBotDelete(api, TARGET);
+    // What a dead process leaves: an unsettled claim on disk, nobody carrying it out.
+    const file = path.join(DATA_DIR, 'admin-requests.json');
+    const all = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    all[`bot_delete:${ID}`].handled = true;
+    all[`bot_delete:${ID}`].resolution = {
+      by: 'UADMIN1',
+      choiceId: 'approve',
+      outcome: 'approved',
+      via: 'slack',
+      at: Date.now() - 10 * 60 * 1000,
+      settled: false,
+    };
+    fs.writeFileSync(file, JSON.stringify(all));
+    expect(
+      (await botDeleteAdminApprovalAdapter(api).pending(Date.now())).some((c) => c.id === `bot_delete:${ID}`),
+    ).toBe(true);
+    expect(
+      await decideBotDelete({ requestId: ID, decision: 'reject', actor: 'UADMIN2', via: 'slack', slackApi: api }),
+    ).toMatchObject({
+      ok: true,
+      outcome: 'denied',
+    });
   });
 
   it('refused: a non-admin, an unknown choice, a missing request', async () => {
