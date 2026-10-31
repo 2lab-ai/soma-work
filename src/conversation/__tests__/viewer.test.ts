@@ -207,11 +207,11 @@ describe('one conversation (M-08)', () => {
   const html = renderConversationViewPage(record, metas);
   const data = pageData(html);
 
-  it('is <ui-conversation lang="ko"> with conversation.js and dialog.js, the list beside it with the open one current', () => {
+  it('is <ui-conversation lang="ko"> with conversation.js (no dialog any more), the list beside it with the open one current', () => {
     expect(html).toContain('<body data-view="detail">');
     expect(html).toContain('<ui-conversation id="conv" lang="ko">');
     expect(html).toContain(`<script type="module" src="/dashboard/ui/conversation.js?v=${UI_LIB_VERSION}"></script>`);
-    expect(html).toContain(`<script type="module" src="/dashboard/ui/dialog.js?v=${UI_LIB_VERSION}"></script>`);
+    expect(html).not.toContain('/dashboard/ui/dialog.js');
     expect(html).toContain('<a class="ui-row" href="/conversations/c1" aria-current="page">');
     expect(html).not.toContain('href="/conversations/c3" aria-current');
     expect(html).toContain('<a class="ui-icon-btn vw-back" href="/conversations" aria-label="모든 대화">');
@@ -269,36 +269,28 @@ describe('one conversation (M-08)', () => {
     expect(JSON.parse(block).turns[0].text).toBe('</script><script>alert(1)</script>');
   });
 
-  it('every answer has a raw-output button in its attachments-<id> slot (a summarised one says the summary stands in); user media sits in media-<id>', () => {
+  it('answers slot nothing (D6b: a not-yet-loaded answer is the element’s deferred state — G5-2); user media sits in media-<id>', () => {
     expect(html).toContain('<div slot="media-t1" class="vw-media">');
-    const t2 = html.slice(
-      html.indexOf('<div slot="attachments-t2" class="vw-raw">'),
-      html.indexOf('<div slot="media-', html.indexOf('slot="attachments-t2"') + 1),
-    );
-    expect(t2).toContain('<p class="vw-raw-note">위 내용은 요약입니다.</p>');
-    expect(t2).toContain('<button type="button" class="ui-btn is-sm is-quiet" data-raw="t2">');
-    expect(t2).toContain('원본 응답 보기');
-    const t4 = html.slice(
-      html.indexOf('<div slot="attachments-t4" class="vw-raw">'),
-      html.indexOf('slot="attachments-t5"'),
-    );
-    expect(t4).not.toContain('vw-raw-note');
-    expect(t4).toContain('data-raw="t4"');
+    expect(html).not.toContain('slot="attachments-');
+    expect(html).not.toContain('data-raw=');
+    expect(html).not.toContain('원본 응답 보기');
     expect(html).not.toContain('<details class="raw-details"');
   });
 
-  it('export (G5-1): a <ui-dialog> with every turn checked, opened by the 내보내기 button; no turns → the button is disabled', () => {
+  it('export (G5-1, D6b): the 내보내기 button turns the element selectable; a bar above it counts the chosen turns — no dialog, no checklist', () => {
     expect(html).toContain('<button type="button" class="ui-btn is-sm" id="export-open" onclick="openExport()">');
-    expect(html).toContain('<ui-dialog id="export-dialog" heading="Markdown으로 내보내기" size="md" lang="ko">');
-    expect(html.match(/class="turn-checkbox" data-turn-id="t\d" checked/g)).toHaveLength(5);
+    expect(html).toContain('<div class="vw-sel" id="export-sel" role="group" aria-label="내보낼 턴 선택" hidden>');
     expect(html).toContain('<span id="selectedCount" role="status">5개 선택</span>');
-    expect(html).toContain('<strong>Zhuge Hyuk · 사용자</strong>');
-    expect(html).toContain('<span class="vw-x-ex">Write the release notes.</span>');
-    expect(html).toContain('<span class="vw-x-ex">Drafted the 2.4 notes</span>');
-    expect(html).toContain('<span class="vw-x-ex">요약 전</span>');
-    expect(html).toContain('<span class="vw-x-ex">요약 없음</span>');
-    expect(html).toContain('<div slot="footer" class="vw-x-foot">');
+    expect(html).toContain('id="selectAllBtn" onclick="toggleSelectAll()">전체 해제</button>');
+    expect(html).toContain('onclick="closeExport()">취소</button>');
+    expect(html).toContain(
+      '<button type="button" class="ui-btn is-sm is-primary" id="exportBtn" onclick="exportSelected()">',
+    );
     expect(html).toContain('<p class="ui-notice" data-tone="fail" id="export-error" role="alert" hidden></p>');
+    expect(html.indexOf('id="export-sel"')).toBeLessThan(html.indexOf('<ui-conversation id="conv"'));
+    expect(html).not.toContain('<ui-dialog');
+    expect(html).not.toContain('turn-checkbox');
+    expect(html).not.toContain('vw-x-');
     const none = renderConversationViewPage({ ...record, turns: [] });
     expect(none).toContain('id="export-open" onclick="openExport()" disabled>');
     expect(none).toContain('<span id="selectedCount" role="status">0개 선택</span>');
@@ -346,7 +338,7 @@ describe('client: what <ui-conversation> is shown (viewTurn)', () => {
     expect(viewTurn(t)).toBe(t);
   });
 
-  it('an answer not loaded yet shows its summary as the answer (bold title, text), no Raw source, and the slot button', () => {
+  it('an answer not loaded yet is deferred (D6b, G5-2): its summary heads it; a failed summary says so; a pending one has none', () => {
     expect(
       viewTurn({
         id: 'a',
@@ -361,30 +353,39 @@ describe('client: what <ui-conversation> is shown (viewTurn)', () => {
       role: 'assistant',
       at: 1,
       responseMs: 90,
-      markdown: '**T**\n\nbody',
-      source: '',
-      attachments: true,
+      summary: { title: ' T ', text: 'body' },
+      deferred: true,
     });
-    expect(viewTurn({ id: 'a', role: 'assistant', at: 1, summaryState: 'failed' }).markdown).toBe(
-      '*요약하지 못했습니다.*',
-    );
-    expect(viewTurn({ id: 'a', role: 'assistant', at: 1, summaryState: 'pending' }).markdown).toBe(
-      '*요약을 만드는 중입니다.*',
-    );
+    expect(viewTurn({ id: 'a', role: 'assistant', at: 1, summaryState: 'failed' })).toEqual({
+      id: 'a',
+      role: 'assistant',
+      at: 1,
+      summary: { error: '요약하지 못했습니다' },
+      deferred: true,
+    });
+    expect(viewTurn({ id: 'a', role: 'assistant', at: 1, summaryState: 'pending' })).toEqual({
+      id: 'a',
+      role: 'assistant',
+      at: 1,
+      deferred: true,
+    });
+    for (const gone of ['markdown', 'source', 'attachments'])
+      expect(viewTurn({ id: 'a', role: 'assistant', at: 1, summaryState: 'pending' })).not.toHaveProperty(gone);
   });
 
-  it('while it loads: loading; after a failure: the error with Try again', () => {
+  it('while it loads: loading; after a failure: the error with Try again (both over deferred — the element’s rule)', () => {
     expect(viewTurn({ id: 'a', role: 'assistant', at: 1, summaryState: 'pending', loading: true })).toMatchObject({
       loading: true,
-      attachments: true,
+      deferred: true,
     });
     expect(viewTurn({ id: 'a', role: 'assistant', at: 1, summaryState: 'pending', error: 'HTTP 404' })).toMatchObject({
       error: 'HTTP 404',
       canRetry: true,
+      deferred: true,
     });
   });
 
-  it('a loaded answer: the raw output as the answer, the summary in Raw, and no slot', () => {
+  it('a loaded answer: the raw output as the answer, the summary in Raw, deferred no more', () => {
     const v = viewTurn({
       id: 'a',
       role: 'assistant',
@@ -405,39 +406,36 @@ describe('client: the raw output on request (G5-2, loadRaw)', () => {
       { id: 'a', role: 'assistant', at: 2, summary: { title: 'T' }, summaryState: 'done' },
     ];
     const conv: Record<string, any> = {};
-    const slot = { parentNode: { removeChild: vi.fn() } };
-    const btn: Record<string, any> = {
-      disabled: false,
-      setAttribute: vi.fn(),
-      removeAttribute: vi.fn(),
-      closest: () => slot,
-    };
     const fetch = vi.fn(fetchImpl);
     const api = load<{ loadRaw: (id: string) => Promise<void> }>(
       VIEWER_CLIENT_JS,
-      ['viewTurn', 'paintConversation', 'turnById', 'replaceTurn', 'loadRaw'],
+      ['viewTurn', 'convEl', 'paintConversation', 'turnById', 'replaceTurn', 'loadRaw'],
       {
         _turns: turns,
         CONVERSATION_ID: 'c/1',
         window: {},
         fetch,
-        document: {
-          getElementById: (id: string) => (id === 'conv' ? conv : null),
-          querySelector: (sel: string) => (sel === '[data-raw="a"]' ? btn : null),
-        },
+        document: { getElementById: (id: string) => (id === 'conv' ? conv : null) },
       },
     );
-    return { api, turns, conv, slot, btn, fetch };
+    return { api, turns, conv, fetch };
   }
 
-  it('fetches /api/conversations/:id/turns/:turnId/raw, shows the answer loading meanwhile, then the raw output; the slot button goes', async () => {
+  it('the element’s 답변 불러오기 (ui-load-answer) and Try again (ui-retry, not a summary’s) both run loadRaw; a choice is counted (ui-select)', () => {
+    const init = VIEWER_CLIENT_JS.slice(VIEWER_CLIENT_JS.indexOf('(function () {\n  var el = convEl();'));
+    expect(init).toContain("el.addEventListener('ui-load-answer', function (e) {");
+    expect(init).toContain("if (id && !(e.detail && e.detail.what === 'summary')) loadRaw(id);");
+    expect(init).toContain("el.addEventListener('ui-select', function () { updateSelectedCount(); });");
+    expect(VIEWER_CLIENT_JS).not.toContain('data-raw');
+  });
+
+  it('fetches /api/conversations/:id/turns/:turnId/raw, shows the answer loading meanwhile, then the raw output (deferred no more)', async () => {
     let resolve!: (v: any) => void;
     const h = harness(() => new Promise((r) => (resolve = r)));
     const p = h.api.loadRaw('a');
     await Promise.resolve();
     expect(h.fetch).toHaveBeenCalledWith('/api/conversations/c%2F1/turns/a/raw');
-    expect(h.conv.data.turns[1]).toMatchObject({ loading: true, attachments: true });
-    expect(h.btn.disabled).toBe(true);
+    expect(h.conv.data.turns[1]).toMatchObject({ loading: true, deferred: true });
     resolve({ ok: true, status: 200, json: async () => ({ raw: '# Full answer' }) });
     await p;
     expect(h.conv.data.turns[1]).toEqual({
@@ -447,18 +445,15 @@ describe('client: the raw output on request (G5-2, loadRaw)', () => {
       markdown: '# Full answer',
       summary: { title: 'T' },
     });
-    expect(h.slot.parentNode.removeChild).toHaveBeenCalledWith(h.slot);
     expect(h.conv.data.startText).toBe('대화의 시작');
   });
 
-  it('a failed fetch: the error (with the status) and Try again, the button usable again; a second press while loading is ignored', async () => {
+  it('a failed fetch: the error (with the status) and Try again; a second press while loading is ignored', async () => {
     const h = harness(async () => ({ ok: false, status: 404, json: async () => ({ error: 'Turn not found' }) }));
     await h.api.loadRaw('a');
-    expect(h.conv.data.turns[1]).toMatchObject({ error: 'HTTP 404', canRetry: true });
+    expect(h.conv.data.turns[1]).toMatchObject({ error: 'HTTP 404', canRetry: true, deferred: true });
     expect(h.conv.data.turns[1]).not.toHaveProperty('loading');
     expect(h.turns[1].loading).toBe(false);
-    expect(h.btn.disabled).toBe(false);
-    expect(h.btn.removeAttribute).toHaveBeenCalledWith('aria-busy');
     const net = harness(async () => {
       throw new Error('offline');
     });
@@ -472,21 +467,39 @@ describe('client: the raw output on request (G5-2, loadRaw)', () => {
   });
 });
 
-describe('client: export as Markdown (G5-1)', () => {
-  function harness(responses: Array<{ status: number; body: string }>) {
-    const boxes = [
-      { checked: true, dataset: { turnId: 't1' } },
-      { checked: false, dataset: { turnId: 't2' } },
-      { checked: true, dataset: { turnId: 't3' } },
-    ];
+describe('client: export as Markdown (G5-1, D6b: <ui-conversation selectable>)', () => {
+  function harness(responses: Array<{ status: number; body: string }>, turnCount = 3) {
+    const attrs: Record<string, string> = {};
+    let selected: string[] = [];
+    const conv: Record<string, any> = {
+      get selectedIds() {
+        return selected;
+      },
+      selectAll: vi.fn(() => {
+        selected = ['t1', 't2', 't3'].slice(0, turnCount);
+      }),
+      clearSelection: vi.fn(() => {
+        selected = [];
+      }),
+      setAttribute: (k: string, v: string) => {
+        attrs[k] = v;
+      },
+      removeAttribute: (k: string) => {
+        delete attrs[k];
+      },
+      hasAttribute: (k: string) => k in attrs,
+    };
     const els: Record<string, any> = {
-      exportBtn: { disabled: false, setAttribute: vi.fn(), removeAttribute: vi.fn() },
+      conv,
+      exportBtn: { disabled: false, setAttribute: vi.fn(), removeAttribute: vi.fn(), focus: vi.fn() },
       selectAllBtn: { textContent: '' },
       selectedCount: { textContent: '' },
       'export-error': { textContent: '', hidden: true },
-      'export-dialog': { hide: vi.fn(), show: vi.fn() },
+      'export-sel': { hidden: true },
+      'export-open': { hidden: false, focus: vi.fn() },
     };
     const anchor = { href: '', download: '', click: vi.fn() };
+    const win: Record<string, unknown> = {};
     const fetch = vi.fn(async () => {
       const r = responses.shift() ?? { status: 500, body: '' };
       return { ok: r.status < 400, status: r.status, text: async () => r.body };
@@ -501,8 +514,9 @@ describe('client: export as Markdown (G5-1)', () => {
     }>(
       VIEWER_CLIENT_JS,
       [
-        'exportDialog',
+        'convEl',
         'setExportError',
+        'selectedIds',
         'openExport',
         'closeExport',
         'updateSelectedCount',
@@ -511,9 +525,11 @@ describe('client: export as Markdown (G5-1)', () => {
       ],
       {
         CONVERSATION_ID: 'c1a2b3c4d5',
+        _turns: ['t1', 't2', 't3'].slice(0, turnCount).map((id) => ({ id })),
         _csrfToken: 'csrf-1',
         refreshCsrfToken,
         fetch,
+        window: win,
         Blob: class {
           parts: unknown[];
           constructor(parts: unknown[]) {
@@ -523,18 +539,64 @@ describe('client: export as Markdown (G5-1)', () => {
         URL: { createObjectURL: () => 'blob:x', revokeObjectURL: vi.fn() },
         document: {
           getElementById: (id: string) => els[id] ?? null,
-          querySelectorAll: (sel: string) =>
-            sel === '.turn-checkbox:checked' ? boxes.filter((b) => b.checked) : boxes,
           createElement: () => anchor,
           body: { appendChild: vi.fn(), removeChild: vi.fn() },
         },
       },
     );
-    return { api, boxes, els, anchor, fetch, refreshCsrfToken };
+    return { api, conv, attrs, els, anchor, fetch, refreshCsrfToken, win, pick: (ids: string[]) => (selected = ids) };
   }
 
-  it('posts the checked turn ids with the CSRF token and downloads the Markdown; the dialog closes', async () => {
+  it('내보내기: the element goes selectable with every turn checked; the bar shows, the button hides; 취소 undoes it', () => {
+    const h = harness([]);
+    h.els['export-error'].textContent = 'old';
+    h.els['export-error'].hidden = false;
+    h.api.openExport();
+    expect(h.attrs).toEqual({ selectable: '' });
+    expect(h.conv.selectAll).toHaveBeenCalledTimes(1);
+    expect(h.els['export-sel'].hidden).toBe(false);
+    expect(h.els['export-open'].hidden).toBe(true);
+    expect(h.els['export-error']).toEqual({ textContent: '', hidden: true });
+    expect(h.els.selectedCount.textContent).toBe('3개 선택');
+    expect(h.els.selectAllBtn.textContent).toBe('전체 해제');
+    expect(h.els.exportBtn.focus).toHaveBeenCalled();
+    h.api.closeExport();
+    expect(h.attrs).toEqual({});
+    expect(h.conv.clearSelection).toHaveBeenCalledTimes(1);
+    expect(h.els['export-sel'].hidden).toBe(true);
+    expect(h.els['export-open'].hidden).toBe(false);
+    expect(h.els['export-open'].focus).toHaveBeenCalled();
+  });
+
+  it('before the element is defined: the attribute waits on it, selectAll once it upgrades', async () => {
+    const h = harness([]);
+    let resolve!: () => void;
+    const whenDefined = vi.fn(() => new Promise<void>((r) => (resolve = r)));
+    const selectAll = h.conv.selectAll;
+    delete h.conv.selectAll;
+    h.win.customElements = { whenDefined };
+    (globalThis as any).customElements = h.win.customElements;
+    try {
+      h.api.openExport();
+      expect(h.attrs).toEqual({ selectable: '' });
+      expect(whenDefined).toHaveBeenCalledWith('ui-conversation');
+      expect(h.els.selectedCount.textContent).toBe('0개 선택');
+      expect(h.els.exportBtn.disabled).toBe(true);
+      h.conv.selectAll = selectAll;
+      resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(selectAll).toHaveBeenCalledTimes(1);
+      expect(h.els.selectedCount.textContent).toBe('3개 선택');
+    } finally {
+      delete (globalThis as any).customElements;
+    }
+  });
+
+  it('posts the selected turn ids with the CSRF token and downloads the Markdown; the selection ends', async () => {
     const h = harness([{ status: 200, body: '# md' }]);
+    h.api.openExport();
+    h.pick(['t1', 't3']);
     await h.api.exportSelected();
     expect(h.fetch).toHaveBeenCalledTimes(1);
     const [url, init] = h.fetch.mock.calls[0] as unknown as [string, RequestInit];
@@ -544,53 +606,48 @@ describe('client: export as Markdown (G5-1)', () => {
     expect(JSON.parse(init.body as string)).toEqual({ turnIds: ['t1', 't3'] });
     expect(h.anchor.download).toBe('conversation-c1a2b3c4.md');
     expect(h.anchor.click).toHaveBeenCalled();
-    expect(h.els['export-dialog'].hide).toHaveBeenCalled();
+    expect(h.attrs).toEqual({});
+    expect(h.els['export-sel'].hidden).toBe(true);
     expect(h.els['export-error'].hidden).toBe(true);
+    // Nothing chosen: nothing sent.
+    const none = harness([]);
+    await none.api.exportSelected();
+    expect(none.fetch).not.toHaveBeenCalled();
   });
 
-  it('a 403 refreshes the CSRF token and retries once; a failure is a notice in the dialog, not an alert', async () => {
+  it('a 403 refreshes the CSRF token and retries once; a failure is a notice over the conversation, the selection kept', async () => {
     const h = harness([
       { status: 403, body: '' },
       { status: 200, body: '# md' },
     ]);
+    h.api.openExport();
     await h.api.exportSelected();
     expect(h.refreshCsrfToken).toHaveBeenCalledTimes(1);
     expect(h.fetch).toHaveBeenCalledTimes(2);
     const bad = harness([{ status: 500, body: '' }]);
+    bad.api.openExport();
     await bad.api.exportSelected();
     expect(bad.els['export-error']).toEqual({ textContent: '내보내지 못했습니다: HTTP 500', hidden: false });
-    expect(bad.els['export-dialog'].hide).not.toHaveBeenCalled();
+    expect(bad.attrs).toEqual({ selectable: '' });
+    expect(bad.els['export-sel'].hidden).toBe(false);
     expect(bad.els.exportBtn.removeAttribute).toHaveBeenCalledWith('aria-busy');
+    expect(bad.els.exportBtn.disabled).toBe(false);
     expect(VIEWER_CLIENT_JS).not.toContain('alert(');
   });
 
-  it('the count and the select-all button follow the boxes; export is disabled with none checked', () => {
+  it('the count and the select-all button follow the element’s selection; export is disabled with none chosen', () => {
     const h = harness([]);
+    h.pick(['t1', 't3']);
     h.api.updateSelectedCount();
     expect(h.els.selectedCount.textContent).toBe('2개 선택');
     expect(h.els.selectAllBtn.textContent).toBe('전체 선택');
     expect(h.els.exportBtn.disabled).toBe(false);
-    h.api.toggleSelectAll(); // not all checked → check all
-    expect(h.boxes.every((b) => b.checked)).toBe(true);
+    h.api.toggleSelectAll(); // not all chosen → select all
+    expect(h.conv.selectAll).toHaveBeenCalledTimes(1);
     expect(h.els.selectAllBtn.textContent).toBe('전체 해제');
-    h.api.toggleSelectAll(); // all checked → clear
-    expect(h.boxes.some((b) => b.checked)).toBe(false);
+    h.api.toggleSelectAll(); // all chosen → clear
+    expect(h.conv.clearSelection).toHaveBeenCalledTimes(1);
     expect(h.els.exportBtn.disabled).toBe(true);
     expect(h.els.selectedCount.textContent).toBe('0개 선택');
-  });
-
-  it('opening clears an old error and uses show(); before the element is defined, the open attribute', () => {
-    const h = harness([]);
-    h.els['export-error'].textContent = 'old';
-    h.els['export-error'].hidden = false;
-    h.api.openExport();
-    expect(h.els['export-dialog'].show).toHaveBeenCalled();
-    expect(h.els['export-error']).toEqual({ textContent: '', hidden: true });
-    const raw = { setAttribute: vi.fn(), removeAttribute: vi.fn() };
-    h.els['export-dialog'] = raw;
-    h.api.openExport();
-    expect(raw.setAttribute).toHaveBeenCalledWith('open', '');
-    h.api.closeExport();
-    expect(raw.removeAttribute).toHaveBeenCalledWith('open');
   });
 });

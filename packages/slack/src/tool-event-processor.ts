@@ -343,7 +343,7 @@ export class ToolEventProcessor {
       );
 
       // Track tool use ID to name mapping
-      this.toolTracker.trackToolUse(toolUse.id, toolUse.name);
+      this.toolTracker.trackToolUse(toolUse.id, toolUse.name, context.sessionKey);
 
       // Start MCP call tracking for MCP tools
       if (toolUse.name.startsWith('mcp__')) {
@@ -375,7 +375,7 @@ export class ToolEventProcessor {
 
     // Start call tracking
     const callId = this.mcpCallTracker.startCall(serverName, actualToolName);
-    this.toolTracker.trackMcpCall(toolUse.id, callId);
+    this.toolTracker.trackMcpCall(toolUse.id, callId, context.sessionKey);
     if (context.turnId) this.addTurnCallId(context.turnId, callId);
 
     // Set hourglass reaction for MCP pending
@@ -423,7 +423,7 @@ export class ToolEventProcessor {
 
     // Start call tracking with virtual server name
     const callId = this.mcpCallTracker.startCall('_subagent', subagentName);
-    this.toolTracker.trackMcpCall(toolUse.id, callId);
+    this.toolTracker.trackMcpCall(toolUse.id, callId, context.sessionKey);
     this.subagentCallIds.add(callId);
     if (context.turnId) this.addTurnCallId(context.turnId, callId);
 
@@ -463,7 +463,7 @@ export class ToolEventProcessor {
     const cmdPrefix = ToolFormatter.truncateString(rawCommand, 80);
 
     const callId = this.mcpCallTracker.startCall('_bash_bg', 'bash');
-    this.toolTracker.trackMcpCall(toolUse.id, callId);
+    this.toolTracker.trackMcpCall(toolUse.id, callId, context.sessionKey);
     if (context.turnId) this.addTurnCallId(context.turnId, callId);
 
     const unregister =

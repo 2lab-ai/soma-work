@@ -1033,7 +1033,7 @@ describe('[T3] session panel — turn-shaped skeleton instead of "Loading..."', 
     const sets: Record<string, unknown>[] = [];
     const m = load<{ convPaint(): void; __set(n: string, v: unknown): void }>(
       ['convPaint'],
-      ['CONV_EMPTY'],
+      ['CONV_EMPTY', '_resumSent'],
       {
         convEl: () => ({}),
         _psec: 'conv',

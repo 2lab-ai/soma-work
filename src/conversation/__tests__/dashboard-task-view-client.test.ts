@@ -260,7 +260,11 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
       'taskRunEnd',
       'taskRunsOf',
       'taskTokTotal',
-      'taskTotalsHtml',
+      'taskTotalsOf',
+      'taskOutsideText',
+      'taskOutsideNote',
+      'taskOutsideHtml',
+      'taskPlanRestore',
       'taskElData',
       'taskRunsData',
       'taskPlanData',
@@ -362,14 +366,16 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
     env.renderPanelTasks(current, '', earlier);
     const html = el.innerHTML;
     expect(html).toContain('<ui-disclosure class="panel-tasks-dc" flush open>');
-    expect(runsEl.data).toMatchObject({ title: '실행된 태스크', totals: false });
+    // The sums are the element's totals row, over every run (D3-GAPS G5-2).
+    expect(runsEl.data).toMatchObject({ title: '실행된 태스크', totals: { runs: 4, tools: 15 } });
     expect(runIds()).toEqual(['T1', 'T2', 'T8', 'T5']);
     expect(planEl.data?.title).toBe('남은 계획');
     // The plan left is a waiting step: no clock, no tools yet.
     expect(planEl.data?.steps).toEqual([{ id: 'T6', ref: '#T6', label: '화면 수정', status: 'pending' }]);
-    const at = ['<ui-task-runs', '<ui-task-plan', 'class="tr-total"'].map((n) => html.indexOf(n));
+    const at = ['<ui-task-runs', '<ui-task-plan'].map((n) => html.indexOf(n));
     expect(at.every((i) => i > -1)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
+    expect(html).not.toContain('tr-total');
     // Only the running task runs.
     expect(
       runsEl.data?.runs.filter((r: { status: string }) => r.status === 'running').map((r: { id: string }) => r.id),
@@ -432,28 +438,29 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
     expect(clientFn('selectPanelAgent')).toContain('if (next !== _panelAgent) _panelTaskOpen = Object.create(null);');
   });
 
-  it('the totals: 합계 sums every run (tools, +서브, tokens, cost); 태스크 밖 is the work no task got', () => {
+  it('the totals are the runs element’s (D3-GAPS G5-2): every run (tools with +서브, tokens, cost); 태스크 밖 an extra row', () => {
     open();
     const outside = { toolCalls: 3, agentToolCalls: 1, tokens: { input: 800, output: 200 } };
     env.renderPanelTasks(current, '', earlier, outside);
-    // 5 + 4 + 1 + 2 tools, T8's 3 subagent calls; tokens 1.5K + 3.5K, $0.05 + $0.10 (the runs that recorded them).
-    expect(el.innerHTML).toContain(
-      '<div class="tr-total"><span class="tr-total-k">합계</span>툴 12 (+서브 3) · 5.0K tok · $0.15</div>',
-    );
-    expect(el.innerHTML).toContain(
-      '<div class="tr-total tr-outside"><span class="tr-total-k">태스크 밖</span>툴 3 (+서브 1) · 1.0K tok</div>',
-    );
+    // 5 + 4 + 1 + 2 tools + T8's 3 subagent calls; tokens 1.5K + 3.5K, $0.05 + $0.10 (the runs that recorded them).
+    expect(runsEl.data?.totals).toEqual({ runs: 4, tools: 15, tokens: 5000, costUsd: 0.15000000000000002 });
+    expect(runsEl.data?.extraTotals).toEqual([{ label: '태스크 밖', value: '툴 3 (+서브 1) · 1.0K tok' }]);
+    expect(el.innerHTML).not.toContain('tr-total');
     // Nothing outside the tasks: no 태스크 밖 row.
     env.renderPanelTasks(current, '', earlier, { toolCalls: 0, tokens: {} });
-    expect(el.innerHTML).not.toContain('tr-outside');
+    expect(runsEl.data?.extraTotals).toBeUndefined();
     // No run recorded tokens: the tools alone.
     env.renderPanelTasks(
       [{ id: 'T1', content: 'a', status: 'completed', startedAt: T0, completedAt: T0 + 1, toolCalls: 2 }],
       '',
       [],
     );
-    expect(el.innerHTML).toContain('<div class="tr-total"><span class="tr-total-k">합계</span>툴 2</div>');
-    // Nothing ran yet: no totals, no runs element.
+    expect(runsEl.data?.totals).toEqual({ runs: 1, tools: 2 });
+    // Nothing ran yet: no runs element; work outside any task is the page's one line (nothing to sit under).
+    env.renderPanelTasks([{ id: 'T1', content: 'a', status: 'pending' }], '', [], outside);
+    expect(el.innerHTML).toContain(
+      '<div class="tr-total tr-outside"><span class="tr-total-k">태스크 밖</span>툴 3 (+서브 1) · 1.0K tok</div>',
+    );
     env.renderPanelTasks([{ id: 'T1', content: 'a', status: 'pending' }], '', []);
     expect(el.innerHTML).not.toContain('tr-total');
     expect(el.innerHTML).not.toContain('ui-task-runs');
@@ -534,7 +541,10 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
     expect(tabs.indexOf("id: 'log'")).toBeGreaterThan(tabs.indexOf("id: 'conv'"));
     expect(tabs.indexOf("id: 'tree'")).toBeGreaterThan(tabs.indexOf("id: 'log'"));
     expect(clientFn('renderPanelSections')).toContain("el.data = { label: '섹션', value: _psec, tabs: PSEC_TABS };");
-    expect(panel).toMatch(/<div class="psec" id="psec-tree" slot="tree" tabindex="0">/);
+    // D6b (D3 G1-1): 에이전트 트리's box is <ui-log-scroller>'s own too (the tree its one item).
+    expect(panel).toMatch(
+      /<div class="psec psec-el ui-tok" id="psec-tree" slot="tree">\s*<ui-log-scroller class="panel-tree" id="panel-tree" lang="ko"><\/ui-log-scroller>\s*<\/div>/,
+    );
     // D3: 작업 로그 is <ui-work-log>'s own scroll box (its viewport is the tab stop).
     expect(panel).toContain('<div class="psec psec-el ui-tok" id="psec-log" slot="log">');
     // D3 E-25: 지시와 답변's box is <ui-conversation>'s own scroller (its viewport is the one tab stop).
@@ -565,8 +575,8 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
     expect(CSS).toMatch(/\.slide-panel:not\(\.is-detail\) \.pa-bar/);
     // The tree is a section tab of its own now: never hidden by the minimal view, never capped.
     expect(CSS).not.toMatch(/\.slide-panel:not\(\.is-detail\) \.pa-tree/);
-    expect(CSS).toContain('.pa-tree { display: block; }');
-    expect(PAGE).toContain('<div class="psec-body panel-tree" id="panel-tree"></div>');
+    expect(CSS).toContain('ui-agent-tree.pa-tree { display: block; min-width: 0; }');
+    expect(PAGE).toContain('<ui-log-scroller class="panel-tree" id="panel-tree" lang="ko"></ui-log-scroller>');
   });
 });
 
@@ -648,7 +658,7 @@ describe('T1.4 · an assistant turn reads as its answer; Raw sits at the bottom 
     expect(src).toContain('a.markdown = raw;');
     expect(src).toContain('else a.loading = true;');
     // Raw (요약 · 원문) is the element's, at the turn's foot: the summary and the source it is handed.
-    expect(src).toContain('if (sum.title || sum.text) a.summary = sum;');
+    expect(src).toContain('if (sum.title || sum.text || sum.error) a.summary = sum;');
     expect(clientFn('convSummaryOf')).toContain('t.summaryBody');
     expect(TEMPLATE).not.toContain('답변 전문');
   });
@@ -1022,8 +1032,6 @@ describe('T1.3 / SSOT 2026-10-29 · 지시와 답변 opens on its latest turns; 
     expect(paint).toContain('hasMore: !!_panelTurnsHasMore,');
     expect(paint).toContain("loading: msg === 'loading' || !!_panelTurnsLoading,");
     expect(paint).toContain("startText: '대화의 시작',");
-    const m = load<{ psecOlderState(sec: string): string }>(['psecOlderState'], ['PSEC_EL'], {});
-    expect(m.psecOlderState('conv')).toBe('');
   });
 
   it('the markup: the element in the conv box, no page-drawn control or marker there; no turn hidden by CSS', () => {
@@ -1069,29 +1077,26 @@ describe('T1.3 / SSOT 2026-10-29 · 지시와 답변 opens on its latest turns; 
     expect(more).not.toContain('insertAdjacentHTML');
   });
 
-  it('a page is due only for a reader who scrolled up near the top — or a box too short to scroll; never on a landing', () => {
-    const m = load<{ psecPageDue(top: number, sh: number, ch: number, armed: boolean): boolean }>(['psecPageDue'], []);
-    expect(m.psecPageDue(4000, 4600, 600, false)).toBe(false); // landed at the newest
-    expect(m.psecPageDue(300, 4600, 600, false)).toBe(false); // near the top, but no reader scrolled
-    expect(m.psecPageDue(300, 4600, 600, true)).toBe(true); // the reader scrolled up within one box height
-    expect(m.psecPageDue(601, 4600, 600, true)).toBe(false); // more than one box height away
-    expect(m.psecPageDue(0, 500, 600, false)).toBe(true); // too short to scroll: fill it
-    expect(m.psecPageDue(0, 0, 0, true)).toBe(false); // a hidden box (no height) loads nothing
-  });
-
-  it("the reader's rows stay put while what is above them settles: no native scroll anchoring, the page holds the rows it read last (browser receipt)", () => {
-    // Native anchoring and the page's own correction fought: a late answer above moved the reader by its height.
-    expect(CSS).toMatch(/\n\.psec \{[^}]*overflow-anchor: none;/);
+  it("the reader's rows are the element's to hold (D6b): every section is a <ui-log-scroller>; the page keeps no scroll handler, anchor, pill or page-due rule of its own", () => {
+    // 0.12.0 reads [data-anchor] rows through an element item's open shadow root (D3-GAPS G1-1): the tree's rows.
+    expect(CSS).toMatch(/\n\.psec \{ position: relative; height: var\(--psec-h, 60vh\); min-height: 160px; \}/);
+    expect(CSS).not.toContain('overflow-anchor');
     const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelSections() {'));
     const body = init.slice(0, init.indexOf('\n})();'));
-    // A reader's scroll reads the rows in view once a frame (not at the newest: that is pinned).
-    expect(body).toMatch(/if \(!_psecPin && !box\._capture\) \{[\s\S]*?box\._anchor = psecViewAnchor\(box\);/);
-    // A reader acting on a row (an entry's detail, a Raw) is not held against.
-    expect(body).toContain("['pointerdown', 'keydown'].forEach(function(type) {");
-    expect(body).toContain('box.addEventListener(type, function() { box._anchor = null; }, { passive: true });');
-    // Any size change: pinned → the newest; else the held rows back in place (no time limit).
-    expect(body).toContain('if (_psecPin) psecSetTop(box, box.scrollHeight);');
-    expect(body).toContain('else if (box._anchor) psecRestoreAnchor(box, box._anchor);');
+    expect(body).not.toContain("addEventListener('scroll'");
+    expect(body).not.toContain('_anchor');
+    for (const gone of [
+      'psecViewAnchor',
+      'psecRestoreAnchor',
+      'psecPageDue',
+      'psecMaybeFill',
+      'psecOlderState',
+      'psecSetTop',
+      '_psecPin',
+      'psec-pill',
+    ]) {
+      expect(TEMPLATE, gone).not.toContain(gone);
+    }
     expect(TEMPLATE).not.toContain('_anchorUntil');
   });
 });

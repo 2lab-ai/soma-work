@@ -31,6 +31,14 @@ export type PermissionMode = 'auto' | 'bypass' | 'legacy';
 export const DEFAULT_PERMISSION_MODE: PermissionMode = 'auto';
 
 /**
+ * The mode when there is no user at all to vouch for a turn (#597): `legacy`,
+ * i.e. the SDK's own permission checks with no skip. It used to be `bypass`
+ * ("no Slack context → bypass"); a turn with no context is now refused before
+ * this is ever read, so this is only the fail-closed floor for a direct caller.
+ */
+export const NO_CONTEXT_PERMISSION_MODE: PermissionMode = 'legacy';
+
+/**
  * Modes a user may pick in the `/z perm` (a.k.a. `/z bypass`) UI. `legacy` is
  * intentionally excluded — it is reachable only via an explicit stored value /
  * migration, never offered as a button.

@@ -473,6 +473,7 @@ describe('buildStreamOptions — a non-admin session with the sandbox on', () =>
   it('leaves native writes unconfined when an admin turned the sandbox off, as its Bash is', async () => {
     const spy = vi.spyOn(await import('../../user-settings-store'), 'userSettingsStore', 'get').mockReturnValue({
       getUserDefaultModel: () => 'm',
+      getUserPermissionMode: () => 'auto', // the execution context reads the mode (#597)
       getUserThinkingEnabled: () => true,
       getUserShowThinking: () => false,
       getUserSandboxDisabled: () => true,

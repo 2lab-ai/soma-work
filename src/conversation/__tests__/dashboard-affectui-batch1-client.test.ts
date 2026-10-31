@@ -256,7 +256,7 @@ describe('ntOnLaunched — a launched task is a toast with 카드 열기 and the
     const toasts: Array<[Toast, (() => void) | undefined]> = [];
     const opened: unknown[] = [];
     const cleared: number[] = [];
-    const m = load<{ ntOnLaunched(d: unknown): void }>(['ntOnLaunched'], [], {
+    const m = load<{ ntOnLaunched(d: unknown): void }>(['ntOnLaunched', 'ntLaunchToast', 'ntStateAfterLaunch'], [], {
       dashToast: (t: Toast, fn?: () => void) => toasts.push([t, fn]),
       ntOpenLaunched: (d: unknown) => opened.push(d),
       _ntRequestId: '',
@@ -306,6 +306,18 @@ describe('ntOnLaunched — a launched task is a toast with 카드 열기 and the
     l.toasts[0][1]?.();
     expect(l.opened).toEqual([first]);
     expect(clientFn('ntOpenLaunched')).toContain('var key = launch && launch.sessionKey;');
+  });
+
+  // #640 R1 (astra P2): a dashboard task created but not started keeps its instruction —
+  // the composer is not cleared (its text) and the toast says so.
+  it('a dashboard task that did not start keeps the composer and says why', () => {
+    const l = launch();
+    l.run({ sessionKey: 'task:x', status: 'not-started', reason: 'busy' });
+    expect(l.cleared).toHaveLength(0);
+    expect(l.toasts[0][0]).toMatchObject({ title: '작업을 만들었지만 아직 시작하지 못했어요', tone: 'warning' });
+    l.run({ sessionKey: 'task:y', status: 'running' });
+    expect(l.cleared).toHaveLength(1);
+    expect(l.toasts[1][0]).toMatchObject({ title: '대시보드 작업을 시작했어요' });
   });
 });
 
