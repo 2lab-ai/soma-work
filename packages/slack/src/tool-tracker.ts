@@ -85,6 +85,18 @@ export class ToolTracker {
     return Array.from(this.toolUseIdToCallId.values());
   }
 
+  /** The tool uses no session owns (tracked without a session key). */
+  private cleanupUnowned(): void {
+    for (const toolUseId of [...this.toolUseIdToName.keys()]) {
+      if (this.toolUseIdToSession.has(toolUseId)) continue;
+      this.toolUseIdToName.delete(toolUseId);
+      this.toolUseIdToCallId.delete(toolUseId);
+    }
+    for (const toolUseId of [...this.toolUseIdToCallId.keys()]) {
+      if (!this.toolUseIdToSession.has(toolUseId)) this.toolUseIdToCallId.delete(toolUseId);
+    }
+  }
+
   /**
    * Clear all tracking data immediately
    */
@@ -113,7 +125,10 @@ export class ToolTracker {
     if (this.cleanupTimer) clearTimeout(this.cleanupTimer);
 
     this.cleanupTimer = setTimeout(() => {
-      this.cleanup();
+      // A delayed global sweep removes only tool uses no session owns, and never
+      // cancels a session's own timer — that session's cleanup removes its own
+      // (#629 R2 astra). `cleanup()` stays the explicit clear-everything.
+      this.cleanupUnowned();
       this.cleanupTimer = null;
       callback?.();
     }, delayMs);
