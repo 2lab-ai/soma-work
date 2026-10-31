@@ -56,6 +56,8 @@ import { Logger } from '../logger';
 import type { McpManager } from '../mcp-manager';
 
 const SESSION_KEY = 'C123:1700000000.1';
+// A turn runs only under an execution context (#597): these turns are Slack turns.
+const TEST_SLACK_CONTEXT = { user: 'U_TEST', channel: 'C123', threadTs: '1700000000.1' } as never;
 
 const INIT = { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-test', tools: [] };
 
@@ -221,7 +223,7 @@ async function collect<T>(it: AsyncIterator<T>): Promise<T[]> {
 
 function startTurn(handler: ClaudeHandler): AsyncIterator<unknown> {
   return handler
-    .streamQuery('ping', undefined, undefined, undefined, undefined, SESSION_KEY)
+    .streamQuery('ping', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
     [Symbol.asyncIterator]() as AsyncIterator<unknown>;
 }
 
@@ -385,7 +387,7 @@ describe('ClaudeHandler turn-result attribution (#257)', () => {
 
     const events = await collect(
       newHandler()
-        .streamAgentEvents('ping', undefined, undefined, undefined, undefined, SESSION_KEY)
+        .streamAgentEvents('ping', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
         [Symbol.asyncIterator](),
     );
 
@@ -638,7 +640,7 @@ describe('ClaudeHandler turn-result attribution (#257)', () => {
       });
       // The generator itself (not a bare AsyncIterator): `return()` is the
       // consumer action under test.
-      const it = newHandler().streamQuery('ping', undefined, undefined, undefined, undefined, SESSION_KEY);
+      const it = newHandler().streamQuery('ping', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY);
 
       const pending = it.next();
       await cli.pulledPastOrphan; // the bound is armed now
@@ -678,7 +680,7 @@ describe('ClaudeHandler turn-result attribution (#257)', () => {
       const timersBeforeTurn = vi.getTimerCount();
       // The generator itself (not a bare AsyncIterator): `return()` is the
       // consumer action under test.
-      const it = newHandler().streamQuery('ping', undefined, undefined, undefined, undefined, SESSION_KEY);
+      const it = newHandler().streamQuery('ping', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY);
 
       // The handler is suspended at the metadata frame's yield, bound armed.
       expect((await it.next()).value).toEqual(TASK_PROGRESS);

@@ -16,7 +16,12 @@ import { adoptSdkSessionId } from '@soma/slack/session-usage-math';
 import * as fs from 'fs';
 import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShotText } from './agent-runtime';
 import { liveAgentIds } from './agent-runtime/background-keepalive';
-import { buildStreamOptions, type EnvSkillDenial } from './agent-runtime/claude-code/build-stream-options';
+import {
+  buildStreamOptions,
+  type EnvSkillDenial,
+  type TaskApprover,
+} from './agent-runtime/claude-code/build-stream-options';
+import { type ExecutionContext, ExecutionContextMissingError } from './agent-runtime/execution-context';
 import type { SafetyClassifier } from './agent-runtime/policy/safety-classifier';
 import { buildSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
 import { readUuidList, STEER_SETTLEMENT_SUBTYPE } from './agent-runtime/steer-settlement';
@@ -57,6 +62,7 @@ import {
 } from './metrics/model-registry';
 import { BUNDLED_PLUGINS_DIR } from './plugin/bundled';
 import type { SdkPluginPath } from './plugin/types';
+import { createTaskApprover } from './task-turn/task-approver';
 import type {
   ActivityState,
   ConversationSession,
@@ -80,6 +86,7 @@ import {
   textIndicatesUsageLimit,
 } from '@soma/common/rate-limit';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
+import { sharedStore } from 'somalib/permission/shared-store';
 import { getBgKeepaliveMaxMs } from './config';
 import { sendCredentialAlert } from './credential-alert';
 import {
@@ -747,12 +754,39 @@ export class ClaudeHandler implements TurnSteeringPort {
     this.sessionRegistry.setActivityStateByKey(sessionKey, state);
   }
 
+  // By-key forms of the calls a turn makes (#598 ④a): a Slack-less task has no
+  // channel/thread to build a Slack key from.
+  clearSessionIdByKey(sessionKey: string): void {
+    this.sessionRegistry.clearSessionIdByKey(sessionKey);
+  }
+
+  setSessionLinksByKey(sessionKey: string, links: SessionLinks): void {
+    this.sessionRegistry.setSessionLinksByKey(sessionKey, links);
+  }
+
+  setSessionTitleByKey(sessionKey: string, title: string): void {
+    this.sessionRegistry.setSessionTitleByKey(sessionKey, title);
+  }
+
+  addSourceWorkingDirByKey(sessionKey: string, dirPath: string): boolean {
+    return this.sessionRegistry.addSourceWorkingDirByKey(sessionKey, dirPath);
+  }
+
+  addMergeStatsByKey(sessionKey: string, prNumber: number, linesAdded: number, linesDeleted: number): void {
+    this.sessionRegistry.addMergeStatsByKey(sessionKey, prNumber, linesAdded, linesDeleted);
+  }
+
   async cleanupInactiveSessions(maxAge?: number): Promise<void> {
     return this.sessionRegistry.cleanupInactiveSessions(maxAge);
   }
 
   saveSessions(): void {
     this.sessionRegistry.saveSessions();
+  }
+
+  /** {@link SessionRegistry.saveSessionsOrThrow}: a failed write throws. */
+  saveSessionsOrThrow(): void {
+    this.sessionRegistry.saveSessionsOrThrow();
   }
 
   loadSessions(): number {
@@ -771,6 +805,23 @@ export class ClaudeHandler implements TurnSteeringPort {
 
   /** Lazily-built auto-mode safety classifier (guardian). */
   private safetyClassifierCache?: SafetyClassifier;
+
+  /** Lazily-built dashboard approver of a Slack-less task's escalations (#599 ⑤). */
+  private taskApproverCache?: TaskApprover;
+
+  /**
+   * The approver writes the prompt to the shared approval store bound to the
+   * task and the turn it is running, and waits for its owner's dashboard answer.
+   */
+  private getTaskApprover(): TaskApprover {
+    if (!this.taskApproverCache) {
+      this.taskApproverCache = createTaskApprover({
+        store: sharedStore,
+        getActiveTurnId: (sessionKey) => this.sessionRegistry.getSessionByKey(sessionKey)?.activeTaskTurnId,
+      });
+    }
+    return this.taskApproverCache;
+  }
 
   /**
    * Build (once) the auto-mode safety classifier, backed by the SAME one-shot
@@ -1141,6 +1192,7 @@ export class ClaudeHandler implements TurnSteeringPort {
     workingDirectory?: string,
     slackContext?: SlackContext,
     sessionKey?: string,
+    executionContext?: ExecutionContext,
   ): AsyncGenerator<SDKMessage, void, unknown> {
     const incidentRequest = session?.incidentRequest;
     if (session && incidentRequest) {
@@ -1154,7 +1206,43 @@ export class ClaudeHandler implements TurnSteeringPort {
       );
       return;
     }
-    yield* this.streamSdkQuery(prompt, session, abortController, workingDirectory, slackContext, sessionKey);
+    // #597 (.prd/17 D2): a turn runs only under a context the server vouches
+    // for — the Slack event's user, or a Slack-less task's execution context.
+    // Refused here, before a slot lease or the SDK; never the old "no Slack
+    // context → bypass" options. (Incident attempts above run on their own
+    // isolated, deny-by-default options.)
+    if (!executionContext && !slackContext?.user) {
+      throw new ExecutionContextMissingError('no Slack user and no task context');
+    }
+    // A task's context is bound to the task it runs (#613 R2): the session and
+    // key handed in must be that task's, owned by the context's user, and a task
+    // turn carries no Slack thread — so permissions, cwd, prompt and usage can
+    // never come from two different tasks.
+    if (executionContext?.origin === 'task') {
+      if (slackContext) throw new ExecutionContextMissingError('a task turn carries no Slack context');
+      // Both are required (#613 R3): an omitted session or key is not a match.
+      if (!sessionKey || sessionKey !== executionContext.sessionKey) {
+        throw new ExecutionContextMissingError('session key is not the task’s');
+      }
+      if (
+        !session ||
+        session.slackless !== true ||
+        session.taskId !== executionContext.taskId ||
+        session.ownerId !== executionContext.userId
+      ) {
+        throw new ExecutionContextMissingError('session is not the task’s');
+      }
+    }
+    yield* this.streamSdkQuery(
+      prompt,
+      session,
+      abortController,
+      workingDirectory,
+      slackContext,
+      sessionKey,
+      undefined,
+      executionContext,
+    );
   }
 
   /**
@@ -1177,6 +1265,7 @@ export class ClaudeHandler implements TurnSteeringPort {
     slackContext?: SlackContext,
     sessionKey?: string,
     incident?: IncidentStreamWiring,
+    executionContext?: ExecutionContext,
   ): AsyncGenerator<SDKMessage, void, unknown> {
     // Acquire a lease on the active CCT slot. Held for the lifetime of the
     // Claude CLI streaming call, released in the outer finally below.
@@ -1216,11 +1305,15 @@ export class ClaudeHandler implements TurnSteeringPort {
       // unavailable / ccp mode) falls back to the shared key = legacy tenant.
       // The lease carries the daemon it belongs to, so an llmux switch during
       // issuance cannot pair this key with a different daemon's URL.
-      const tenantUserId = session?.currentInitiatorId || session?.userId || slackContext?.user;
+      // A task's usage is its owner's — the user its execution context names.
+      const tenantUserId =
+        executionContext?.origin === 'task'
+          ? executionContext.userId
+          : session?.currentInitiatorId || session?.userId || slackContext?.user;
       const llmuxTenant = tenantUserId ? await ensureTenantKey(tenantUserId, tenantKeyProfile(tenantUserId)) : null;
       const { env: queryEnv } = buildQueryEnv(lease, { llmuxTenant });
       const { options, getStderrBuffer } = await buildStreamOptions(
-        { queryEnv, session, abortController, workingDirectory, slackContext },
+        { queryEnv, session, abortController, workingDirectory, slackContext, executionContext },
         {
           logger: this.logger,
           getEffectivePluginPaths: () => this.getEffectivePluginPaths(),
@@ -1233,6 +1326,8 @@ export class ClaudeHandler implements TurnSteeringPort {
           getEnvSkillRegistry: () => envSkillRegistry(this.mcpManager.getPluginManager()),
           onEnvSkillDenied: this.envSkillPermissionRequester,
           safetyClassifier: this.getSafetyClassifier(),
+          // Consulted only by a Slack-less task's escalation (#599 ⑤).
+          taskApprover: this.getTaskApprover(),
           // Consulted only on the incident branch of the builder; passing them
           // unconditionally would be harmless, but keeping them absent makes the
           // ordinary path provably unchanged.
@@ -2045,9 +2140,10 @@ export class ClaudeHandler implements TurnSteeringPort {
     workingDirectory?: string,
     slackContext?: SlackContext,
     sessionKey?: string,
+    executionContext?: ExecutionContext,
   ): AsyncIterable<AgentStreamEvent> {
     return runAgentStream(
-      this.streamQuery(prompt, session, abortController, workingDirectory, slackContext, sessionKey),
+      this.streamQuery(prompt, session, abortController, workingDirectory, slackContext, sessionKey, executionContext),
       { calculateTokenCost: hostPricing.calculateTokenCost, hostPriced: hostPricing.hostPriced },
     );
   }

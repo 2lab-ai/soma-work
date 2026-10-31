@@ -160,7 +160,12 @@ describe('settings routes (SSOT 2026-10-23 T2)', () => {
 
   it('the dashboard top bar links to the settings page', async () => {
     const res = await injectWebServer({ method: 'GET', url: '/dashboard', headers: await signIn('U1') });
-    expect(res.body).toContain('<a href="/dashboard/settings" id="settings-link"');
+    // D2 group 1: the top bar is @2lab.ai/ui <ui-app-bar>; its links are data (설정 → /dashboard/settings).
+    // D4 group 4 (D2-GAPS G1-2): the link carries its title — the element draws it as the tooltip.
+    expect(res.body).toContain('<ui-app-bar id="app-bar" lang="ko">');
+    expect(res.body).toMatch(
+      /\{ id: 'settings', label: '설정', href: '\/dashboard\/settings', icon: 'gear', title: '[^']+' \},/,
+    );
   });
 
   it('503 when no registry is wired', async () => {

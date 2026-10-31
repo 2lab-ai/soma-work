@@ -32,7 +32,12 @@ function clientVar(name: string): string {
   return cook(m[1]);
 }
 
-const CSS = cook(TEMPLATE.slice(TEMPLATE.indexOf('<style>') + '<style>'.length, TEMPLATE.indexOf('</style>')));
+const CSS = cook(
+  TEMPLATE.slice(
+    TEMPLATE.indexOf('<style>') + '<style>'.length,
+    TEMPLATE.indexOf('</style>', TEMPLATE.indexOf('<style>')),
+  ),
+);
 const FNS = [
   'esc',
   'escAttr',
@@ -58,6 +63,7 @@ const FNS = [
 ];
 const VARS = [
   'GOAL_STATUS_LABELS',
+  'GOAL_STATUS_TONE',
   'GOAL_SVG',
   'GOAL_VIA_LABELS',
   '_goalHistoryOpen',
@@ -97,9 +103,11 @@ function pageHtml(objective: string): string {
       completedCount: 1,
     },
   };
-  // The open panel's real nesting: .slide-panel.open > .panel-body > .panel-scroll > .panel-surface > #panel-goal.
+  // The open panel's real nesting: the <ui-drawer> (D4 E-01) — its panel box and body are a flex column the page's
+  // header, body and composer fill (here a fixed column of the drawer's width stands in for the element's box) >
+  // .panel-body > .panel-scroll > .panel-surface > #panel-goal.
   return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><style>${CSS}</style></head><body>
-<div class="slide-panel open" id="slide-panel" style="--panel-w: 440px">
+<div class="slide-panel" id="slide-panel" open style="--panel-w: 440px; position: fixed; top: 0; right: 0; width: var(--panel-w); height: 100vh; display: flex; flex-direction: column; overflow: hidden">
   <div class="panel-body" id="panel-body"><div class="panel-scroll" id="panel-scroll">
     <section class="panel-surface" id="panel-surface" aria-label="작업 정보">
       <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="Goal" style="display:none"></div>

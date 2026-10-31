@@ -4,6 +4,8 @@
  * that reaches the browser unchanged) with stubbed fetch / DOM.
  */
 
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { renderSettingsPage, SETTINGS_CLIENT_JS } from '../settings-page';
 
@@ -20,7 +22,16 @@ function load<T>(fns: string[], inject: Record<string, unknown> = {}): T {
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
-const RENDER = ['esc', 'escAttr', 'valueText', 'renderSegmented', 'renderSelect', 'renderControl', 'renderRow'];
+const RENDER = [
+  'esc',
+  'escAttr',
+  'valueText',
+  'soundCue',
+  'renderSegmented',
+  'renderSelect',
+  'renderControl',
+  'renderRow',
+];
 
 function row(over: Record<string, unknown> = {}) {
   return {
@@ -44,9 +55,111 @@ describe('settings page shell', () => {
     const html = renderSettingsPage();
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1]; // the page script (the library elements load as modules after it)
     expect(() => new Function(script)).not.toThrow();
-    expect(html).toContain('<a class="back" href="/dashboard">');
-    expect(html).toContain('<a href="#preferences">개인 설정</a>');
     expect(html).toContain('<dialog id="confirm"');
+  });
+
+  it('M-01: the shell is @2lab.ai/ui — <ui-app-bar> on top, <ui-tabs> over the slotted tab pages, both from /dashboard/ui', async () => {
+    const html = renderSettingsPage();
+    const { UI_LIB_VERSION, uiLibDistDir } = await import('../ui-lib');
+    expect(html).toContain('<header class="topbar" id="topbar">');
+    expect(html).toContain('<ui-app-bar id="app-bar" lang="ko"></ui-app-bar>');
+    expect(html).toContain('<ui-tabs id="settings-tabs" class="settings-tabs" panel-focus="none">');
+    expect(html).toContain('<div slot="preferences" data-tab="preferences" class="page">');
+    expect(html).toContain('<div slot="memory" data-tab="memory" class="page" hidden>');
+    for (const file of ['app-bar.js', 'tabs.js', 'memory-panel.js']) {
+      expect(html).toContain(`<script type="module" src="/dashboard/ui/${file}?v=${UI_LIB_VERSION}"></script>`);
+      expect(existsSync(join(uiLibDistDir() as string, file)), file).toBe(true);
+    }
+    // the tab list's data: an inert JSON script the page script reads (no < can close it)
+    const json = /<script type="application\/json" id="settings-tabs-data">([^<]*)<\/script>/.exec(html)![1];
+    expect(JSON.parse(json)).toEqual([
+      { id: 'preferences', label: '개인 설정', icon: 'gear' },
+      { id: 'memory', label: '기억', icon: 'brain' },
+    ]);
+    expect(renderSettingsPage([{ id: 'x', label: '</script><b>' }])).toContain('"label":"\\u003c/script>\\u003cb>"');
+    // the kit sheet comes before the page sheet, the tokens after it
+    expect(html.indexOf('<style id="ui-kit">')).toBeLessThan(html.indexOf('<style>'));
+    expect(html.indexOf('<style>')).toBeLessThan(html.indexOf('<style id="ui-tokens">'));
+    // the old hand-made bar is gone
+    expect(html).not.toMatch(/class="(back|theme|who|tabs|brand-mark)"/);
+  });
+
+  it('the app bar gets brand, links (설정 current), account, theme and the sound choice; ui-theme-change sets and stores the theme', () => {
+    const set = vi.fn();
+    const html = {
+      attr: 'dark',
+      getAttribute: () => html.attr,
+      setAttribute: (_n: string, v: string) => (html.attr = v),
+    };
+    const bar: { data?: Record<string, unknown> } = {};
+    const document = { documentElement: html, getElementById: (id: string) => (id === 'app-bar' ? bar : null) };
+    const api = load<{ paintAppBar: () => void; setTheme: (t: string) => void; toggleTheme: () => void }>(
+      ['currentTheme', 'paintAppBar', 'setTheme', 'toggleTheme'],
+      {
+        document,
+        localStorage: { setItem: set },
+        APP_BAR_NAV: [{ id: 'settings', label: '설정', href: '/dashboard/settings', current: true }],
+        _appBarAccount: { name: '민아', href: '/login', role: '관리자' },
+      },
+    );
+    api.paintAppBar();
+    expect(bar.data).toEqual({
+      brand: { label: 'soma-work', mark: true, href: '/dashboard' },
+      nav: [{ id: 'settings', label: '설정', href: '/dashboard/settings', current: true }],
+      navLabel: '주 메뉴',
+      theme: 'dark',
+      // The speaker (interface sound, #614) is the bar's own: without the head's sound script, off.
+      sound: false,
+      account: { name: '민아', href: '/login', role: '관리자' },
+    });
+    api.toggleTheme();
+    expect(html.attr).toBe('light');
+    expect(set).toHaveBeenCalledWith('soma-theme', 'light');
+    expect(bar.data?.theme).toBe('light');
+    // The head script's choice (_somaOn, read from soma-sound before paint) is handed to the bar: pressed while on.
+    const withSound = load<{ paintAppBar: () => void }>(['currentTheme', 'paintAppBar'], {
+      document,
+      APP_BAR_NAV: [],
+      _appBarAccount: null,
+      _somaOn: true,
+    });
+    withSound.paintAppBar();
+    expect(bar.data?.sound).toBe(true);
+  });
+
+  it('the hash picks the tab: <ui-tabs> gets the tabs and the value, the other tab page keeps hidden, the tab hook runs once', () => {
+    const pages = [
+      { id: 'preferences', hidden: false, getAttribute: () => 'preferences' },
+      { id: 'memory', hidden: true, getAttribute: () => 'memory' },
+    ];
+    const tabsEl: { data?: Record<string, unknown> } = {};
+    const shown: string[] = [];
+    const api = load<{ showTab: (id: string) => void }>(['settingsTabs', 'showTab'], {
+      document: {
+        querySelectorAll: () => pages,
+        getElementById: (id: string) =>
+          id === 'settings-tabs'
+            ? tabsEl
+            : id === 'settings-tabs-data'
+              ? { textContent: '[{"id":"preferences","label":"개인 설정"},{"id":"memory","label":"기억"}]' }
+              : null,
+      },
+      onTabShown: (id: string) => shown.push(id),
+    });
+    api.showTab('memory');
+    expect(pages.map((p) => p.hidden)).toEqual([true, false]);
+    expect(tabsEl.data).toEqual({
+      tabs: [
+        { id: 'preferences', label: '개인 설정' },
+        { id: 'memory', label: '기억' },
+      ],
+      value: 'memory',
+      label: '설정 영역',
+    });
+    api.showTab('memory'); // the hashchange after a tab press: no second load
+    api.showTab('nope'); // an unknown hash falls back to 개인 설정
+    expect(tabsEl.data?.value).toBe('preferences');
+    expect(shown).toEqual(['memory', 'preferences']);
   });
 
   it('a hidden tab is really hidden: no author rule may give [hidden] tab pages a display (review P1)', () => {
@@ -73,20 +186,15 @@ describe('tone pass P9 — the settings page speaks the dashboard language', () 
     return at < 0 ? '' : css.slice(at + 1, css.indexOf('}', at) + 1);
   };
 
-  it('the app bar is the dashboard one: brand mark and sentence case, chip links, SVG sun / moon, no emoji', () => {
-    expect(html).toContain('<h1><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">');
-    expect(html).toContain('</svg>soma-work</h1>');
+  it('no emoji or hand-drawn glyph entities in the shell; the bar and its theme toggle are the element', () => {
     expect(html).not.toContain('&#x26A1;');
     expect(html).not.toMatch(/&larr;|&#x1F512;|&#x2715;/);
     expect(SETTINGS_CLIENT_JS).not.toMatch(/&#x1F512;|&#x2715;/);
-    expect(html).toMatch(
-      /<button type="button" class="theme"[^>]*><svg class="ic-sun"[^>]*>[\s\S]*?<svg class="ic-moon"/,
+    expect(css).not.toContain('.topbar h1');
+    expect(css).toContain('ui-app-bar:not(:defined) { display: block; height: var(--topbar-h); }');
+    expect(css).toContain(
+      '.settings-tabs::part(list) { box-sizing: border-box; width: 100%; max-width: 1080px; margin: 0 auto; padding: 8px 20px 0; }',
     );
-    const h1 = rule('.topbar h1');
-    expect(h1).toContain('font-weight: 650;');
-    expect(h1).not.toContain('uppercase');
-    expect(rule('.topbar')).toContain('backdrop-filter: blur(10px);');
-    expect(css).toContain('.tabs a[aria-current="page"] { background: var(--ib-pill); color: var(--text); }');
   });
 
   it('one ink primary; hover is neutral and fine-pointer only; one press rule', () => {
@@ -109,77 +217,91 @@ describe('tone pass P9 — the settings page speaks the dashboard language', () 
     expect(css).toContain('@starting-style { dialog[open] { opacity: 0; transform: scale(0.97); } }');
   });
 
-  it('기억 tab: the page id keeps 4.5:1 on the pill chip; its own fields get the page focus ring', () => {
-    // --text-tertiary on --ib-pill is 4.27 (light) / 4.36 (dark); --text-secondary is 5.54 / 5.63
-    expect(css).toContain('.pages-list .pg[aria-current="true"] .lock { color: var(--text-secondary); }');
-    expect(css).toContain('.pages-list .pg:hover .lock { color: var(--text-secondary); }');
-    expect(css).toMatch(
-      /\.pages-detail \.field input\[type="text"\], \.pages-detail \.field select \{[^}]*border-radius: 8px;/,
-    );
-    for (const sel of [
-      '.pages-list .pg:focus-visible',
-      '.pages-detail .field select:focus-visible',
-      '.ep-bar select:focus-visible',
-    ]) {
-      expect(css, sel).toMatch(
-        new RegExp(`${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^{]*\\{ outline: 2px solid var\\(--border-focus\\);`),
-      );
-    }
+  it('기억 tab: no page-list, field or day-view styles of its own — <ui-knowledge-pages> and <ui-episode-log> draw them', () => {
+    for (const gone of ['.pages-list', '.pages-detail', '.ep-bar', '.ep-entry', '.ep-add'])
+      expect(css, gone).not.toContain(gone);
   });
 });
 
-describe('개인 설정 rows', () => {
-  const r = load<{ renderRow(row: any): string }>(RENDER, { _rowStatus: {} });
+describe('개인 설정 rows — <ui-setting-row> (M-02)', () => {
+  const r = load<{ renderRow(row: any): string; rowData(row: any): any }>([...RENDER, 'rowData'], {
+    _rowStatus: { defaultModel: { state: 'error', text: '저장하지 못했습니다: 없음' } },
+  });
 
-  it('a short choice is a native radio group that saves on change, with the Slack command beside it', () => {
+  it('a row is the element with its control in the slot; a short choice is a native radio group that saves on change', () => {
     const html = r.renderRow(row());
+    expect(html.startsWith('<ui-setting-row lang="ko" id="row-defaultEffort" data-key="defaultEffort">')).toBe(true);
+    expect(html.endsWith('</ui-setting-row>')).toBe(true);
     expect(html).toContain('<fieldset class="seg"><legend>기본 effort</legend>');
     expect(html.match(/type="radio"/g)).toHaveLength(5);
     expect(html).toContain('value="xhigh" checked');
     expect(html).toContain('onchange="onChoice(this)"');
-    expect(html).toContain('Slack: <code>effort &lt;level&gt;</code>');
-    expect(html).not.toContain('기본값으로');
+    // label, description, hints, default, reset and status are the element's data, not markup
+    expect(html).not.toMatch(/기본값|Slack:|class="(meta|hint|status)"/);
   });
 
-  it('a modified row is marked and offers a reset; a long list is a select with a custom entry', () => {
-    const html = r.renderRow(
+  it('rowData: label, description, the Slack command as a hint, the default, Modified with reset, the badge, the status', () => {
+    expect(r.rowData(row())).toEqual({
+      key: 'defaultEffort',
+      label: '기본 effort',
+      description: '새 세션의 추론 강도',
+      hints: [{ label: 'Slack:', code: 'effort <level>' }],
+      modified: false,
+      canReset: false,
+      status: null,
+      locked: null,
+      defaultText: 'XHIGH',
+    });
+    const mod = r.rowData(
       row({
         key: 'defaultModel',
         label: '기본 모델',
         value: 'grok[1m]',
-        defaultValue: 'claude-opus-5-5[1m]',
+        defaultValue: 'XHIGH'.toLowerCase(),
         modified: true,
-        allowCustom: true,
-      }),
-    );
-    expect(html).toContain('class="row is-modified"');
-    expect(html).toContain('onclick="resetRow(this.getAttribute(\'data-key\'))">기본값으로</button>');
-    expect(html).toContain('<select id="f-defaultModel"');
-    expect(html).toContain('id="c-defaultModel" data-key="defaultModel"');
-  });
-
-  it('an admin-only row for a non-admin is read-only with its reason, and no control', () => {
-    const html = r.renderRow(
-      row({
-        key: 'sandbox',
-        kind: 'toggle',
-        value: true,
-        defaultValue: true,
-        editable: false,
         adminOnly: true,
-        lockedReason: '관리자만 바꿀 수 있습니다.',
       }),
     );
-    expect(html).toContain('(관리자)');
-    expect(html).toContain('관리자만 바꿀 수 있습니다.');
-    expect(html).not.toContain('<input');
+    expect(mod).toMatchObject({ modified: true, canReset: true, badge: '관리자' });
+    expect(mod.status).toEqual({ state: 'error', text: '저장하지 못했습니다: 없음' });
+    // a list row is changed item by item: no reset to default
+    expect(r.rowData(row({ kind: 'list', value: ['a'], defaultValue: [], modified: true })).canReset).toBe(false);
   });
 
-  it('toggle, typed and list rows', () => {
-    expect(r.renderRow(row({ key: 'autoGoal', kind: 'toggle', value: false, options: undefined }))).toContain(
-      'role="switch"',
+  it('a long list is a kit select with a custom entry', () => {
+    const html = r.renderRow(row({ key: 'defaultModel', label: '기본 모델', value: 'grok[1m]', allowCustom: true }));
+    expect(html).toContain('<select class="ui-input" id="f-defaultModel"');
+    expect(html).toContain('<input type="text" class="ui-input" id="c-defaultModel" data-key="defaultModel"');
+  });
+
+  it('an admin-only row for a non-admin is locked: no control, the value and the reason are the row data', () => {
+    const locked = row({
+      key: 'sandbox',
+      kind: 'toggle',
+      value: true,
+      defaultValue: true,
+      editable: false,
+      adminOnly: true,
+      lockedReason: '관리자만 바꿀 수 있습니다.',
+      options: undefined,
+    });
+    expect(r.renderRow(locked)).toBe('<ui-setting-row lang="ko" id="row-sandbox" data-key="sandbox"></ui-setting-row>');
+    expect(r.rowData(locked)).toMatchObject({
+      badge: '관리자',
+      canReset: false,
+      locked: { reason: '관리자만 바꿀 수 있습니다.', value: '켬' },
+    });
+  });
+
+  it('toggle (kit switch, the row names it), typed (kit input) and list rows', () => {
+    const toggle = r.renderRow(row({ key: 'autoGoal', kind: 'toggle', value: false, options: undefined }));
+    // data-ui-sound="toggle": the switch sounds through bindSound (#614); a danger row's would be "off".
+    expect(toggle).toContain(
+      '<label class="ui-switch"><input type="checkbox" role="switch" data-ui-sound="toggle" id="f-autoGoal"',
     );
+    expect(toggle).toContain('<span aria-hidden="true">꺼짐</span>');
     const typed = r.renderRow(row({ key: 'email', kind: 'text', value: 'a@b.co', options: undefined }));
+    expect(typed).toContain('<input type="text" class="ui-input" id="f-email"');
     expect(typed).toContain('value="a@b.co"');
     expect(typed).toContain('>저장</button>');
     expect(typed).toContain('>지우기</button>');
@@ -197,17 +319,17 @@ describe('개인 설정 rows', () => {
       }),
     );
     expect(list).toContain('data-item="local:z"');
+    expect(list).toContain('<select class="ui-input" id="f-autoskills"');
     expect(list).toContain('<option value="local:autoz">');
     expect(list).not.toContain('<option value="local:z">');
   });
 
-  it('without admin acceptance every row is read-only with the reason (the server refuses writes)', () => {
+  it('without admin acceptance every row is locked with the reason (the server refuses writes)', () => {
     const { lockIfNotAccepted } = load<{ lockIfNotAccepted(d: any): any }>(['lockIfNotAccepted']);
     const snap = lockIfNotAccepted({ accepted: false, settings: [row(), row({ key: 'email', kind: 'text' })] });
     expect(snap.settings.every((s: any) => s.editable === false && s.lockedReason.includes('승인'))).toBe(true);
-    const html = r.renderRow(snap.settings[0]);
-    expect(html).not.toContain('<input');
-    expect(html).toContain('관리자 승인 전에는 바꿀 수 없습니다.');
+    expect(r.renderRow(snap.settings[0])).not.toContain('<input');
+    expect(r.rowData(snap.settings[0]).locked.reason).toBe('관리자 승인 전에는 바꿀 수 없습니다.');
     const ok = lockIfNotAccepted({ accepted: true, settings: [row()] });
     expect(ok.settings[0].editable).toBe(true);
   });
@@ -217,24 +339,64 @@ describe('개인 설정 rows', () => {
       row({ key: 'email', kind: 'text', value: '"><img src=x onerror=alert(1)>', options: undefined }),
     );
     expect(html).not.toContain('<img');
+    expect(r.renderRow(row({ key: '"><img src=x>' }))).not.toContain('<img');
   });
 });
 
-describe('filter', () => {
-  it('touches only the 개인 설정 tab — sections of other tabs have no setting rows (review P1)', () => {
-    const selectors: string[] = [];
-    const { applyFilter } = load<{ applyFilter(): void }>(['applyFilter'], {
-      document: {
-        getElementById: () => ({ value: '', checked: false }),
-        querySelectorAll: (sel: string) => {
-          selectors.push(sel);
-          return [];
-        },
-      },
+describe('side nav and filter — <ui-settings-nav> (M-03)', () => {
+  it('ui-filter runs the library applySettingsFilter on the 개인 설정 rows only, and the nav gets the counts back', () => {
+    const body = { id: 'pref-body' };
+    const nav: { data?: any } = {};
+    const applySettingsFilter = vi.fn(() => ({ shown: 0, total: 3, sections: { 'g-model': 0, 'g-permissions': 0 } }));
+    const api = load<{ applyFilter(): void; paintNav(r: any): void }>(['findRow', 'applyFilter', 'paintNav'], {
+      document: { getElementById: (id: string) => (id === 'pref-body' ? body : id === 'pref-nav' ? nav : null) },
+      applySettingsFilter,
+      _prefFilter: { query: 'zz', modifiedOnly: false },
+      _prefSections: [
+        { id: 'g-model', label: '모델', keys: ['defaultEffort', 'defaultModel'] },
+        { id: 'g-permissions', label: '권한', keys: ['permissionMode'] },
+      ],
+      _snapshot: { settings: [row(), row({ key: 'defaultModel', modified: true }), row({ key: 'permissionMode' })] },
     });
-    applyFilter();
-    expect(selectors).toHaveLength(2);
-    for (const sel of selectors) expect(sel.startsWith('[data-tab="preferences"] ')).toBe(true);
+    api.applyFilter();
+    expect(applySettingsFilter).toHaveBeenCalledWith(body, { query: 'zz', modifiedOnly: false });
+    expect(nav.data).toEqual({
+      sections: [
+        { id: 'g-model', label: '모델', modified: 1, count: 0 },
+        { id: 'g-permissions', label: '권한', modified: 0, count: 0 },
+      ],
+      query: 'zz',
+      modifiedOnly: false,
+      empty: true,
+      label: '개인 설정 섹션',
+      placeholder: '설정 검색 (이름 · 설명 · Slack 명령)',
+    });
+  });
+
+  it('before the library module has loaded, the nav is still painted (no counts) and nothing throws', () => {
+    const nav: { data?: any } = {};
+    const api = load<{ applyFilter(): void }>(['findRow', 'applyFilter', 'paintNav'], {
+      document: { getElementById: (id: string) => (id === 'pref-nav' ? nav : { id }) },
+      applySettingsFilter: undefined,
+      _prefFilter: { query: '', modifiedOnly: false },
+      _prefSections: [{ id: 'g-model', label: '모델', keys: [] }],
+      _snapshot: { settings: [] },
+    });
+    api.applyFilter();
+    expect(nav.data.sections).toEqual([{ id: 'g-model', label: '모델', modified: 0 }]);
+    expect(nav.data.empty).toBe(false);
+  });
+
+  it('the page markup: the nav with its notice slot, the kit loading notice, the filter module from /dashboard/ui', async () => {
+    const html = renderSettingsPage();
+    const { UI_LIB_VERSION } = await import('../ui-lib');
+    expect(html).toContain(
+      '<ui-settings-nav id="pref-nav" lang="ko"><div slot="notice" id="pref-notice" class="ui-notice" data-tone="wait" role="status" hidden></div></ui-settings-nav>',
+    );
+    expect(html).toContain('<div id="pref-body"><div class="ui-notice" role="status">불러오는 중…</div></div>');
+    expect(html).toContain(`import { applySettingsFilter } from '/dashboard/ui/settings-nav.js?v=${UI_LIB_VERSION}';`);
+    expect(html).toContain(`<script type="module" src="/dashboard/ui/setting-row.js?v=${UI_LIB_VERSION}"></script>`);
+    expect(html).not.toMatch(/id="pref-filter"|id="pref-modified"|class="row/);
   });
 });
 
@@ -253,6 +415,7 @@ describe('saving', () => {
       })),
       confirmDialog: vi.fn(async () => true),
       repaintRow: vi.fn(),
+      paintRowData: vi.fn(),
       ...over,
     };
     const fns = load<{ saveSetting(key: string, value: unknown): Promise<boolean> }>(
@@ -267,7 +430,8 @@ describe('saving', () => {
     expect(await saveSetting('defaultEffort', 'high')).toBe(true);
     expect(deps.apiWrite).toHaveBeenCalledWith('PATCH', '/api/settings/defaultEffort', { value: 'high' });
     expect(snapshot.settings[0].value).toBe('high');
-    expect(deps._rowStatus.defaultEffort).toEqual({ text: '저장됨 — HIGH', error: false });
+    expect(deps._rowStatus.defaultEffort).toEqual({ state: 'saved', text: '저장됨 — HIGH' });
+    expect(deps.paintRowData).toHaveBeenCalledWith('defaultEffort'); // the row says 저장 중… while the PATCH is out
     expect(deps.repaintRow).toHaveBeenCalledWith('defaultEffort');
   });
 
@@ -278,8 +442,8 @@ describe('saving', () => {
     expect(await saveSetting('defaultEffort', 'turbo')).toBe(false);
     expect(snapshot.settings[0].value).toBe('xhigh');
     expect(deps._rowStatus.defaultEffort).toEqual({
+      state: 'error',
       text: '저장하지 못했습니다: effort는 … 중 하나여야 합니다',
-      error: true,
     });
   });
 
