@@ -48,14 +48,19 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
+/** The page's chrome words (STRINGS), as served: the board's Korean words live there (D2 group 6). */
+const PAGE_STRINGS = new Function(
+  `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
+)();
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, extra: string[] = []): T {
+  inject = { STRINGS: PAGE_STRINGS, ...inject };
   const names = Object.keys(inject);
   const extraNames = extra.map((src) => /^function (\w+)/.exec(src)?.[1] ?? '').filter(Boolean);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${extra.join('\n')}\nreturn { ${[...fns, ...extraNames].join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 /** The page's CSS as written in the template (the <style> block). */
-const CSS = TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>'));
+const CSS = TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>', TEMPLATE.indexOf('<style>')));
 const HEAD = TEMPLATE.slice(0, TEMPLATE.indexOf('<style>'));
 
 const NOW = 1_800_000_000_000;
@@ -745,7 +750,7 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'OWNER_BADGE_HUES'];
 const CARD_ENV = {
   dhShow: () => true,
   dhTruncate: () => null,
@@ -826,7 +831,7 @@ describe('D16 — the face ctx metric and the summary line use the same level an
     const open = info(s, true);
     const body = open.slice(open.indexOf('class="pi-body"'));
     expect(body.indexOf('<div class="ui-tok cw-slot"')).toBeGreaterThan(0);
-    expect(body.indexOf('<div class="ui-tok cw-slot"')).toBeLessThan(body.indexOf('class="pi-grid"'));
+    expect(body.indexOf('<div class="ui-tok cw-slot"')).toBeLessThan(body.indexOf('class="ui-dl pi-grid"'));
     for (const label of ['누적 입력', '누적 출력', '누적 캐시 읽기', '누적 캐시 쓰기'])
       expect(body).toContain(`<dt>${label}</dt>`);
   });

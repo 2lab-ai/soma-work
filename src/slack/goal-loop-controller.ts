@@ -44,6 +44,7 @@ import { retryReasonLine } from '../retry-reason';
 import type { ConversationSession, SessionGoal } from '../types';
 import type { EffortLevel } from '../user-settings-store';
 import { buildCapDecisionDmBlocks } from './goal-blocks';
+import { dmRefOf, openGoalCapDecision, recordGoalCapDm } from './goal-cap-decision';
 import {
   applyGoalEvalDispatchFailure,
   decideGoalEvalOutcome,
@@ -137,8 +138,9 @@ export interface GoalLoopControllerDeps {
   /**
    * DMs the goal owner a Block Kit message (S3). Used when the
    * auto-continuation budget is exhausted to ask "keep going?" with
-   * Continue/Cancel buttons. Optional — when unset the loop falls back to the
-   * in-thread pause notice only.
+   * Continue/Cancel buttons. Resolves to the posted message (`{ channel, ts }`)
+   * so an answer on the dashboard can rewrite it. Optional — when unset the
+   * decision is asked on the dashboard card only.
    */
   postOwnerDm?: (userId: string, text: string, blocks: unknown[]) => Promise<unknown>;
   logger: GoalLoopLogger;
@@ -430,50 +432,65 @@ export class GoalLoopController {
         continuationCount: activeGoal.continuationCount,
         maxContinuations: activeGoal.maxContinuations,
       });
-      // S3: instead of silently pausing, DM the owner a "keep going?" decision
-      // with Continue/Cancel buttons. `capDmPendingAt` dedups so exactly one DM
-      // is sent per cap event (it's cleared on a Continue/Cancel answer or any
-      // real user message via resetGoalContinuationOnUserMessage).
-      const alreadyAsked = activeGoal.capDmPendingAt !== undefined;
-      if (this.deps.postOwnerDm && !alreadyAsked) {
+      // S3: instead of silently pausing, ask the owner "keep going?". The
+      // decision is ONE request answered from the DM or the dashboard's
+      // approval card (`goal-cap-decision.ts`); it opens here whether or not
+      // the DM gets through, so the card shows even when Slack is down.
+      const opened = openGoalCapDecision(activeGoal, this.now());
+      if (opened) {
+        this.persist();
+        this.deps.registry.broadcastSessionUpdate?.();
+      }
+      const decisionId = activeGoal.capDecisionId as string;
+      // The DM goes out once per round: a round whose DM never landed (no ref)
+      // retries it on the next cap trigger (codex review #1).
+      let dmSent = false;
+      let dmFailed = false;
+      if (this.deps.postOwnerDm && !activeGoal.capDmRef) {
         const blocks = buildCapDecisionDmBlocks({
           value: {
             sessionKey,
             goalId: activeGoal.goalId,
             channel: session.channelId,
             threadTs: session.threadTs,
+            decisionId,
           },
           objective: activeGoal.objective,
           maxContinuations: activeGoal.maxContinuations,
           reason: verdict.reason,
           formatObjective: formatGoalObjectiveForSlack,
         });
-        // Send the DM FIRST; only stamp the dedup guard on success so a failed
-        // send never leaves the goal flagged-but-undecided with no retry path
-        // (codex review #1). On failure, fall through to the in-thread notice;
-        // a later cap trigger can retry the DM since the flag was never set.
-        let dmSent = false;
         try {
-          await this.deps.postOwnerDm(activeGoal.createdBy, '⏳ Goal 계속 진행할까요?', blocks);
+          const posted = await this.deps.postOwnerDm(activeGoal.createdBy, '⏳ Goal 계속 진행할까요?', blocks);
           dmSent = true;
+          const ref = dmRefOf(posted);
+          // The answer may have come from the dashboard while the post was in
+          // flight: a late DM is rewritten at once instead of offering buttons.
+          if (ref && recordGoalCapDm(activeGoal, decisionId, ref) === 'recorded') this.persist();
         } catch (err: unknown) {
-          logger.warn('Failed to DM goal owner the cap decision — falling back to thread notice', {
+          dmFailed = true;
+          logger.warn('Failed to DM goal owner the cap decision — the dashboard card still asks', {
             sessionKey,
             error: err instanceof Error ? err.message : String(err),
           });
         }
-        if (dmSent) {
-          activeGoal.capDmPendingAt = this.now();
-          this.persist();
-          await this.postResultNotice(
-            session,
-            `⏸️ Goal auto-continuation reached its ${activeGoal.maxContinuations}-turn budget. Asked the owner via DM whether to keep going.`,
-          );
-          return;
-        }
       }
-      // Fallback (no DM transport, already asked, or DM send failed): keep the
-      // original in-thread pause notice.
+      if (dmSent) {
+        await this.postResultNotice(
+          session,
+          `⏸️ Goal auto-continuation reached its ${activeGoal.maxContinuations}-turn budget. Asked the owner via DM and the dashboard whether to keep going.`,
+        );
+        return;
+      }
+      if (opened && dmFailed) {
+        await this.postResultNotice(
+          session,
+          `⏸️ Goal auto-continuation reached its ${activeGoal.maxContinuations}-turn budget. Asked the owner on the dashboard whether to keep going (the DM could not be sent).\n*Latest reason:* ${verdict.reason}\nSend a message in this thread to resume.`,
+        );
+        return;
+      }
+      // Already asked this round, or no DM transport (the dashboard card asks):
+      // keep the original in-thread pause notice.
       await this.postResultNotice(
         session,
         `⏹️ Goal auto-continuation paused after ${activeGoal.maxContinuations} turns.\n*Latest reason:* ${verdict.reason}\nSend a message in this thread to resume.`,

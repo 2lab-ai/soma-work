@@ -70,6 +70,7 @@ import {
   setDashboardCronSource,
   setDashboardEffortHandler,
   setDashboardFollowupHandler,
+  setDashboardGoalDecisionHandler,
   setDashboardGoalHandler,
   setDashboardLifecycleHandler,
   setDashboardModelHandler,
@@ -136,9 +137,16 @@ import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './
 import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from './session/task-usage-reconcile';
 import { resolveArchivedResume } from './session-archive';
 import { canApplySummaryTitle } from './session-title-policy';
+import {
+  answerGoalCapDecision,
+  flushGoalCapDmSync,
+  retireGoalCapDecision,
+  setGoalCapDecisionSurfaces,
+} from './slack/goal-cap-decision';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
+import { setGoalCapDecisionRetirer } from './slack/session-goal';
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { setThreadHeaderProviders } from './slack/thread-header-builder';
 import { SlackHandler } from './slack-handler';
@@ -1545,6 +1553,33 @@ async function start() {
       // ONE host path for goal-list changes (opening turn through the fence).
       setHostGoalActionHandler((sessionKey, action, actorUserId) =>
         slackHandler.handleHostGoalAction(sessionKey, action, actorUserId),
+      );
+      // The cap decision ("Goal 계속 진행할까요?") is one request with two
+      // surfaces — the owner's DM and the dashboard's approval card. An answer
+      // or a retirement on either side rewrites the DM and pushes the board.
+      setGoalCapDecisionSurfaces({
+        updateDm: (ref, text) =>
+          goalSlackApi.updateMessage(ref.channel, ref.ts, text, [{ type: 'section', text: { type: 'mrkdwn', text } }]),
+        broadcast: () => registry.broadcastSessionUpdate(),
+      });
+      setGoalCapDecisionRetirer(retireGoalCapDecision);
+      setDashboardGoalDecisionHandler((sessionKey, answer, actorUserId) =>
+        answerGoalCapDecision({
+          session: registry.getSessionByKey(sessionKey),
+          sessionKey,
+          goalId: answer.goalId,
+          decisionId: answer.decisionId,
+          actor: actorUserId,
+          decision: answer.decision,
+          surface: 'dashboard',
+          save: () => registry.saveSessionsOrThrow(),
+        }),
+      );
+      // DM rewrites the previous process could not deliver.
+      flushGoalCapDmSync((decisionId) =>
+        [...registry.getAllSessions().values()].some(
+          (s) => s.goal?.capDecisionId === decisionId && s.goal.capDmPendingAt !== undefined,
+        ),
       );
       timing('Goal turn-settled driver installed');
     } catch (error) {

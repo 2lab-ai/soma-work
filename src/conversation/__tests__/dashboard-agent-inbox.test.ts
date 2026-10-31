@@ -39,8 +39,10 @@ function stripHoverBlocks(css: string): string {
 describe('agent inbox board — layout (§3.1)', () => {
   it('has the breadcrumb and the Board | List segmented control', () => {
     expect(TEMPLATE).toContain('Agent inbox');
-    expect(TEMPLATE).toContain('data-view="board"');
-    expect(TEMPLATE).toContain('data-view="list"');
+    expect(TEMPLATE).toContain('<ui-segmented class="view-seg" id="view-seg"></ui-segmented>');
+    expect(TEMPLATE).toContain(
+      "{ value: 'board', label: '보드', icon: 'board' }, { value: 'list', label: '목록', icon: 'list' }",
+    );
   });
 
   it('persists the view in localStorage and defaults to List below 640px', () => {
@@ -49,7 +51,13 @@ describe('agent inbox board — layout (§3.1)', () => {
   });
 
   it('renders three columns in order NEEDS YOU → RUNNING → DONE (the element draws them from renderBoard’s plan)', () => {
-    expect(TEMPLATE).toContain("var BOARD_LABELS = { waiting: 'NEEDS YOU', working: 'RUNNING', done: 'DONE' };");
+    // D2 group 6: the heads are the page's STRINGS, in Korean like <ui-agent-inbox lang="ko">.
+    expect(TEMPLATE).toContain(
+      'var BOARD_LABELS = { waiting: STRINGS.boardNeeds, working: STRINGS.boardRunning, done: STRINGS.boardDone };',
+    );
+    expect(TEMPLATE).toContain("boardNeeds: '응답 필요',");
+    expect(TEMPLATE).toContain("boardRunning: '실행 중',");
+    expect(TEMPLATE).toContain("boardDone: '완료',");
     const body = fnBody('renderBoard');
     const waiting = body.indexOf("{ id: 'waiting', label: BOARD_LABELS.waiting");
     const working = body.indexOf("{ id: 'working', label: BOARD_LABELS.working");
@@ -58,7 +66,7 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(working).toBeGreaterThan(waiting);
     expect(done).toBeGreaterThan(working);
     // "Nothing here" is the element's own empty text (lang="en").
-    expect(TEMPLATE).toContain('<ui-agent-inbox id="kanban" class="kanban" view="board"></ui-agent-inbox>');
+    expect(TEMPLATE).toContain('<ui-agent-inbox id="kanban" class="kanban" view="board" lang="ko"></ui-agent-inbox>');
   });
 
   it('drops the old 4-column idle/closed containers', () => {
@@ -79,22 +87,29 @@ describe('agent inbox board — layout (§3.1)', () => {
   it('the stats strip leads the page and the board follows it (§3.1-2)', () => {
     const main = TEMPLATE.slice(TEMPLATE.indexOf('<div class="main">'));
     const strip = main.indexOf('<section class="stats" id="stats"');
-    // Tone pass P6: closed, 자세히's region is hidden and inert (it folds to 0 rows).
-    const detailAt = main.indexOf('<div class="stats-detail" id="stats-detail" hidden inert>');
+    // D2 (B-01..B-05, B-09): the strip is @2lab.ai/ui <ui-stat-strip>; 자세히's region is the element's own
+    // (hidden and inert while closed, 0fr ↔ 1fr), and the page's detail is its default slot.
+    const host = main.indexOf('<ui-stat-strip id="stats-strip" lang="ko">', strip);
+    const detailAt = main.indexOf('<div class="stats-detail" id="stats-detail">', host);
+    const close = main.indexOf('</ui-stat-strip>', detailAt);
     const board = main.indexOf('<section class="inbox ui-tok" id="inbox"');
     expect(strip).toBeGreaterThan(0);
-    expect(detailAt).toBeGreaterThan(strip);
-    expect(board).toBeGreaterThan(detailAt);
-    // Collapsed: the period control, 세션 · 토큰 · 비용 and the 자세히 toggle.
-    const row = main.slice(strip, detailAt);
-    // Tone pass P2: the period control is the page's one segmented control (.seg), not a second style.
-    expect(row).toContain('class="period-bar seg"');
-    for (const id of ['stat-sessions', 'stat-tokens-wrap', 'stat-tokens', 'stat-tokens-tooltip', 'stat-cost']) {
-      expect(row, id).toContain(`id="${id}"`);
+    expect(host).toBeGreaterThan(strip);
+    expect(detailAt).toBeGreaterThan(host);
+    expect(close).toBeGreaterThan(detailAt);
+    expect(board).toBeGreaterThan(close);
+    // The old inline row is gone: the period, 세션 · 토큰 · 비용 and 자세히 are the element's data.
+    for (const gone of [
+      'id="period-seg"',
+      'id="stat-sessions"',
+      'id="stat-tokens',
+      'id="stat-cost"',
+      'id="stats-more"',
+    ]) {
+      expect(TEMPLATE, gone).not.toContain(gone);
     }
-    expect(row).toContain('id="stats-more" aria-expanded="false" aria-controls="stats-detail"');
     // Behind 자세히: the remaining cards and the charts, same ids as before.
-    const detail = main.slice(detailAt, board);
+    const detail = main.slice(detailAt, close);
     for (const id of [
       'stats-grid',
       'stat-turns',
@@ -108,10 +123,48 @@ describe('agent inbox board — layout (§3.1)', () => {
     }
   });
 
+  it('D2 — the stats strip is answered, not drawn: period · figures · 자세히 in, ui-period / ui-more answered', () => {
+    expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/stat-strip.js?v=${UI_LIB_VERSION}"></script>');
+    expect(TEMPLATE).toContain(
+      "var PERIOD_OPTIONS = [{ value: 'day', label: '오늘' }, { value: 'week', label: '지난 7일' }, { value: 'month', label: '지난 30일' }];",
+    );
+    const data = fnBody('statsStripData');
+    expect(data).toContain("period: { label: '기간', value: currentPeriod, options: PERIOD_OPTIONS },");
+    expect(data).toContain(
+      "{ key: 'sessions', label: '세션', value: _strip.sessions.value, format: 'int', loading: _strip.sessions.loading },",
+    );
+    expect(data).toContain(
+      "var tokens = { key: 'tokens', label: '토큰', value: _strip.tokens.value, format: 'tokens', loading: _strip.tokens.loading };",
+    );
+    expect(data).toContain(
+      "{ key: 'cost', label: '비용', value: _strip.cost.value, format: 'usd', loading: _strip.cost.loading },",
+    );
+    expect(data).toContain("more: { label: '자세히', open: _statsDetailOpen },");
+    expect(fnBody('paintStatsStrip')).toContain('if (el) el.data = statsStripData();');
+    expect(fnBody('setPeriod')).toContain('paintStatsStrip();');
+    // The element moves its chip and sends ui-period; the page loads that period.
+    expect(TEMPLATE).toContain("el.addEventListener('ui-period', function(e) {");
+    expect(TEMPLATE).toContain('if (e.detail && e.detail.value) setPeriod(String(e.detail.value));');
+    // Board | List stays the page's <ui-segmented>.
+    expect(TEMPLATE).toContain(
+      "viewSeg.addEventListener('ui-change', function(e) { setBoardView(e.detail.value, e); });",
+    );
+    // The inline strip and segmented rules are gone (the element draws its row, chip, toggle, 44px rows and reduced motion).
+    expect(TEMPLATE).not.toMatch(/\n\.seg \{|\.seg-btn|\.stats-strip \{|\.strip-num|\.stats-more/);
+    expect(TEMPLATE).not.toContain('function paintPeriodSeg(');
+    expect(TEMPLATE).not.toContain('function toggleStatsDetail(');
+  });
+
   it('the 자세히 choice persists in localStorage and starts collapsed (§3.1-2)', () => {
     expect(TEMPLATE).toContain("var STATS_DETAIL_KEY = 'soma-stats-detail';");
-    expect(fnBody('toggleStatsDetail')).toContain('localStorage.setItem(STATS_DETAIL_KEY');
-    expect(TEMPLATE).toContain("setStatsDetail(saved === 'open');");
+    expect(TEMPLATE).toContain('var _statsDetailOpen = false;');
+    // Start: the saved choice (anything but 'open' is closed), handed in as data.more.open.
+    expect(TEMPLATE).toContain("_statsDetailOpen = saved === 'open';");
+    // A reader's toggle arrives as ui-more (the element has already moved): the page remembers it.
+    expect(TEMPLATE).toContain("el.addEventListener('ui-more', function(e) {");
+    expect(TEMPLATE).toContain(
+      "try { localStorage.setItem(STATS_DETAIL_KEY, _statsDetailOpen ? 'open' : 'closed'); } catch (_e) {}",
+    );
   });
 
   it('Show archives sits in the board header next to Board | List, hidden until there are archives (§3.1-1)', () => {
@@ -121,14 +174,18 @@ describe('agent inbox board — layout (§3.1)', () => {
     );
     expect(btn).toBeGreaterThan(0);
     // Tone pass P8: the group's name and its two buttons are Korean (보드 · 목록).
-    expect(head.indexOf('class="seg" role="group" aria-label="보드 보기"')).toBeGreaterThan(btn);
-    expect(head).toContain('<span>보드</span></button>');
-    expect(head).toContain('<span>목록</span></button>');
+    // D1 (D-02): Board | List is <ui-segmented>; the page hands it the group name and the two choices.
+    expect(head.indexOf('<ui-segmented class="view-seg" id="view-seg"></ui-segmented>')).toBeGreaterThan(btn);
+    expect(TEMPLATE).toContain(
+      "var VIEW_OPTIONS = [{ value: 'board', label: '보드', icon: 'board' }, { value: 'list', label: '목록', icon: 'list' }];",
+    );
+    expect(fnBody('setBoardView')).toContain("label: '보드 보기'");
     expect(TEMPLATE).toContain("var SHOW_ARCHIVES_KEY = 'soma-show-archives';");
     expect(TEMPLATE).toContain('var showArchives = readShowArchives();');
     const toggle = fnBody('renderArchivesToggle');
     // A toggle button: the label stays "Archives (N)", aria-pressed carries the state.
-    expect(toggle).toContain("'Archives (' + archivedCount + ')'");
+    expect(toggle).toContain("STRINGS.archives + ' (' + archivedCount + ')'");
+    expect(TEMPLATE).toContain("archives: '보관함',");
     expect(toggle).not.toContain('Show archives');
     expect(toggle).not.toContain('Hide archives');
     expect(toggle).toContain('archivedCount === 0');
@@ -242,13 +299,15 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(toggle.indexOf('openPanel(key);')).toBeLessThan(toggle.indexOf('deckDrop(key);'));
     // SSOT 2026-10-29 T1: the actions (Stop · Close · Trash) + Slack are the body's first row.
     expect(body).toContain(
-      `const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col, 'card') + slackBtn + '</span></div>';`,
+      `const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col) + slackBtn + '</span></div>';`,
     );
     expect(body).toMatch(/return '<div class="card-body">'\s*\+ actionsHtml\s*\+ permissionHtml/);
     expect(TEMPLATE).toContain("var WL_EMPTY_MSG = '작업 로그 없음';");
     // SSOT 2026-10-29: no conversation → no work-log state; the 작업 로그 tab reads 작업 로그 없음.
     expect(fnBody('resetWorkLog')).toContain('_wl = convId ? wlNewState(convId) : null;');
-    expect(fnBody('paintLogTab')).toContain('var msg = !st ? WL_EMPTY_MSG');
+    // D3: <ui-work-log> says it (wlLogData's emptyText without a state).
+    expect(fnBody('wlLogData')).toContain('if (!st) return Object.assign(d, { groups: [] });');
+    expect(fnBody('wlLogData')).toContain('emptyText: WL_EMPTY_MSG');
     expect(fnBody('openPanel')).toContain('resetWorkLog(panelConvId);');
   });
 
@@ -259,14 +318,13 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(fnBody('loadSessions')).toContain('_lastPolledBoard = data.board;');
   });
 
-  it('older panel turns keep the reading position (anchored on the first turn in view of the 지시와 답변 box)', () => {
+  it('older panel turns keep the reading position (D3: <ui-conversation> prepends the page above the rows in view)', () => {
     const body = fnBody('loadMorePanelTurns');
-    // SSOT 2026-10-29: the box's first turn in view, captured before the page goes in, held after.
-    const anchor = body.indexOf('var anchor = psecViewAnchor(box);');
-    const insert = body.indexOf("turnsEl.insertAdjacentHTML('afterbegin'");
-    expect(anchor).toBeGreaterThan(-1);
-    expect(insert).toBeGreaterThan(anchor);
-    expect(body.indexOf('psecHoldPlace(box, anchor, fromBottom);')).toBeGreaterThan(insert);
+    // The page goes into the data, oldest first; the element's log scroller holds the rows the reader was on.
+    expect(body).toContain('_panelTurnsList = turns.concat(_panelTurnsList);');
+    expect(body).toContain('convPaint();');
+    expect(body).not.toContain('insertAdjacentHTML');
+    // The boxes this page still draws (작업 로그, 에이전트 트리) keep their own anchor.
     expect(fnBody('psecRestoreAnchor')).toContain(
       'el.getBoundingClientRect().top - box.getBoundingClientRect().top - a[i].at',
     );
@@ -296,7 +354,9 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
 describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
   it('has a work log section tab in the panel (SSOT 2026-10-29)', () => {
     expect(TEMPLATE).toContain('id="psec-tab-log" data-sec="log"');
-    expect(TEMPLATE).toContain('<div class="psec" id="psec-log" role="tabpanel" aria-labelledby="psec-tab-log"');
+    expect(TEMPLATE).toContain(
+      '<div class="psec psec-el ui-tok" id="psec-log" role="tabpanel" aria-labelledby="psec-tab-log"',
+    );
     expect(TEMPLATE).toContain('작업 로그 없음');
   });
 
@@ -322,8 +382,8 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
       '<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>',
     );
     const sections = panel.indexOf('<div class="panel-sections" id="panel-sections" role="tablist"');
-    const worklog = panel.indexOf('<div class="psec" id="psec-log" role="tabpanel"');
-    const conv = panel.indexOf('<div class="psec-body panel-conv" id="panel-conv">');
+    const worklog = panel.indexOf('<div class="psec psec-el ui-tok" id="psec-log" role="tabpanel"');
+    const conv = panel.indexOf('<ui-conversation class="panel-conv" id="panel-conv" lang="ko">');
     const command = panel.indexOf('<div class="panel-command" id="panel-command">');
     expect(header).toBeGreaterThan(0);
     expect(scroll).toBeGreaterThan(header);
@@ -357,14 +417,13 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
   });
 
   it('the work log is a section tab with its own scroll box — no disclosure header, never hidden-but-rendered (§3.1-6, SSOT 2026-10-29)', () => {
-    expect(TEMPLATE).toContain(
-      '<div class="psec-body worklog-list" id="worklog-list" role="log" aria-label="작업 로그"></div>',
-    );
+    // D3 F-01: the list is <ui-work-log>, its own scroll box (its <ui-log-scroller>, role=log inside).
+    expect(TEMPLATE).toContain('<ui-work-log class="worklog-list" id="worklog-list" lang="ko"></ui-work-log>');
     expect(TEMPLATE).not.toContain('id="worklog-toggle"');
     expect(TEMPLATE).not.toContain('.worklog-list[hidden]');
-    // The box scrolls, not the list: the list has no height cap of its own.
-    expect(TEMPLATE).toMatch(/\n\.psec \{ position: relative; height: 100%; overflow-y: auto;/);
-    expect(/\n\.worklog-list \{[^}]*\}/.exec(TEMPLATE)?.[0] ?? '').not.toMatch(/max-height|overflow/);
+    // The panel's box gives the element its height; the element scrolls.
+    expect(TEMPLATE).toMatch(/\n\.psec\.psec-el \{ overflow: hidden; display: flex; flex-direction: column; \}/);
+    expect(TEMPLATE).not.toMatch(/\n\.worklog-list \{/);
   });
 
   it('an opening names its section tab — 작업 로그 / ?session= open on the work log; the list is painted only while it is shown (§3.1-6, §3.1-7)', () => {
@@ -379,8 +438,8 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     // 자세히 no longer opens the work log: it is a tab of its own.
     expect(fnBody('togglePanelDetail')).not.toMatch(/worklog|WorkLog/);
     // A batch is painted only while 작업 로그 is shown; else the tab paints from the state when opened.
-    expect(fnBody('paintWorkLog')).toContain("if (_psec !== 'log' || !list || !box) {");
-    expect(fnBody('paintLogTab')).toContain('wlRenderList(st, list);');
+    expect(fnBody('paintWorkLog')).toContain("if (_psec !== 'log') {");
+    expect(fnBody('paintSection')).toContain("else if (sec === 'log') wlPaint();");
   });
 
   it('a section opens on its newest items; any reader input ends the settle hold (§3.1-6)', () => {
@@ -401,17 +460,17 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(fnBody('psecPageDue')).toContain('return !!armed && scrollTop <= clientHeight;');
   });
 
-  it('entry rows toggle on click, Enter and Space; detail buttons do not toggle (§3.1-6)', () => {
-    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initWorkLogInteractions() {'));
-    expect(init).toContain("e.target.closest('.wl-detail')");
-    expect(init).toContain("e.key === 'Enter' || e.key === ' '");
-    expect(init).toContain('toggleWorkLogEntry(');
-    // Roving tabindex: one stop in the list; the arrows, Home and End move it.
-    expect(init).toContain('wlRovingIndex(e.key, rows.indexOf(row), rows.length)');
-    expect(init).toContain("addEventListener('focusin'");
-    expect(fnBody('paintWorkLog')).toContain('wlEnsureTabStop(list)');
-    expect(TEMPLATE).toContain("act === 'retry'");
-    expect(TEMPLATE).toContain("act === 'copy'");
+  it('entry rows toggle on click, Enter and Space (the element’s rows, one roving stop); the page answers its requests (§3.1-6)', () => {
+    // D3 F-03 / F-06: click, Enter / Space and the roving stop are <ui-work-log>'s; 복사 is its raw viewer's.
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initWorkLog() {'));
+    const body = init.slice(0, init.indexOf('\n})();'));
+    expect(body).toContain("el.addEventListener('ui-toggle'");
+    expect(body).toContain("} else if (d.kind === 'entry') {");
+    expect(body).toContain('wlRawFetch(st, seq);');
+    expect(body).toContain("el.addEventListener('ui-retry'");
+    expect(body).toContain("el.addEventListener('ui-open'");
+    expect(body).toContain("el.addEventListener('ui-load-older'");
+    expect(TEMPLATE).not.toMatch(/\n\(function initWorkLogInteractions\(\)/);
   });
 
   it('live-appends work_log WS entries through the seq merge', () => {
@@ -514,33 +573,34 @@ describe('tone pass P7 — surfaces and elevation', () => {
   };
 
   it('stat cards and charts are 12px cards on --ib-shadow; menus, dialogs, the peek, the viewer and tooltips are raised', () => {
-    for (const sel of ['.stat-card', '.chart-container']) {
+    for (const sel of ['.stat-card']) {
       expect(rule(sel), sel).toContain('border-radius: 12px;');
       expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow);');
     }
-    for (const sel of [
-      '.td-menu',
-      '.nt-dialog',
-      '.art-peek',
-      '.art-modal',
-      '#stat-tokens-tooltip',
-      '.bar .bar-tooltip',
-    ]) {
+    // D2 (B-08): the charts are @2lab.ai/ui <ui-bar-chart> — each element draws its own 12px card on
+    // --ib-shadow; the page only lays the two side by side.
+    expect(TEMPLATE).toContain(
+      '<div class="chart-row" id="chart-row"><ui-bar-chart id="chart-sessions" lang="ko"></ui-bar-chart><ui-bar-chart id="chart-merge" lang="ko"></ui-bar-chart></div>',
+    );
+    expect(TEMPLATE).not.toContain('.chart-container');
+    for (const sel of ['.nt-dialog', '.art-peek', '.art-modal']) {
       expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow-raised)');
     }
+    // D2 (B-04, B-08): the token breakdown is <ui-stat-strip>'s card tooltip (data.metrics[].breakdown) and the bar
+    // values are <ui-bar-chart>'s own tooltip — the elements draw their surfaces; the page keeps no tooltip rule
+    // and no <ui-tooltip> of its own.
+    expect(TEMPLATE).toContain('if (_tokenBreakdown) tokens.breakdown = _tokenBreakdown;');
+    expect(TEMPLATE).not.toContain('<ui-tooltip');
+    expect(TEMPLATE).not.toMatch(/\.bar \{|\.bar-chart \{|\.bar-labels/);
+    expect(TEMPLATE).not.toContain('bar-tooltip');
+    expect(TEMPLATE).not.toContain('tooltip-open');
   });
 
-  it('turns carry no colour rail; who spoke is a neutral 24px glyph tile with a hairline — the bot an SVG', () => {
+  it('turns carry no colour rail and no emoji avatar (D3: the turn chrome is <ui-conversation>’s own — neutral tiles, the icon set’s bot)', () => {
     expect(TEMPLATE).not.toMatch(/\.turn\.(user|assistant|is-sys) \{[^}]*border-left/);
-    const tile = rule('.turn-avatar');
-    expect(tile).toContain('width: 24px; height: 24px;');
-    expect(tile).toContain('box-shadow: inset 0 0 0 1px var(--border);');
-    expect(tile).not.toMatch(/var\(--(accent|purple)\)/);
-    expect(TEMPLATE).not.toMatch(/\.(user|bot)-avatar \{[^}]*var\(--(accent|purple)\)/);
+    expect(TEMPLATE).not.toContain('.turn-avatar');
     expect(TEMPLATE).not.toContain('&#x1F916;');
-    expect(
-      TEMPLATE.match(/<div class="turn-avatar bot-avatar" aria-hidden="true">' \+ BOT_AVATAR_SVG \+ '<\/div>/g),
-    ).toHaveLength(3);
+    expect(TEMPLATE).not.toContain('BOT_AVATAR_SVG');
   });
 
   it('the goal mark is the target glyph, not the bullseye emoji', () => {
@@ -570,16 +630,17 @@ describe('tone pass P8 — copy and glyphs', () => {
       expect(TEMPLATE, s).not.toContain(s);
     }
     // One chevron: the icon set's, drawn as a mask in currentColor, turned by aria-expanded.
-    expect(TEMPLATE).toMatch(
-      /\n\.chev, \.turn-raw summary\.turn-expand-btn::before \{[^}]*mask: var\(--chev\) center \/ contain no-repeat;/,
-    );
+    expect(TEMPLATE).toMatch(/\n\.chev \{[^}]*mask: var\(--chev\) center \/ contain no-repeat;/);
     expect(TEMPLATE).toContain('.chev.is-up, [aria-expanded="true"] > .chev { transform: rotate(180deg); }');
-    expect(TEMPLATE).toContain(`<span class="wl-g-chev chev is-right" aria-hidden="true"></span>`);
+    // (A work-log group's chevron is <ui-work-log>'s, from the same icon set.)
     // The close buttons and the subtitle's regenerate are SVGs with a name.
+    // D1: the glyphs are @2lab.ai/ui's icon set, named in an icon slot the server fills (fillUiIcons).
     expect(TEMPLATE).toMatch(
-      /class="panel-close"[^>]*>\s*<svg viewBox="0 0 16 16"[^>]*><path d="M4 4l8 8M12 4l-8 8"\/><\/svg><\/button>/,
+      /class="ui-icon-btn is-bordered panel-close"[^>]*><i data-ui-icon="close"><\/i><\/button>/,
     );
-    expect(TEMPLATE).toMatch(/id="panel-title-sub-regen"[^>]*aria-label="부제 다시 만들기"[^>]*><svg /);
+    expect(TEMPLATE).toMatch(
+      /id="panel-title-sub-regen"[^>]*aria-label="부제 다시 만들기"[^>]*><i data-ui-icon="refresh"><\/i>/,
+    );
   });
 
   it('Korean chrome with "…": the panel, the lifecycle dialog and the board tools; the panel copy comes from STRINGS', () => {
@@ -594,7 +655,16 @@ describe('tone pass P8 — copy and glyphs', () => {
       expect(TEMPLATE, s).not.toContain(s);
     }
     expect(TEMPLATE).toContain('<h3 id="panel-title" tabindex="-1">작업 카드</h3>');
-    expect(TEMPLATE).toContain('<h3 id="lifecycle-title">세션 수명 주기</h3>');
+    // D1 (J-01): the lifecycle dialog is @2lab.ai/ui <ui-dialog>; its Korean title is the element's heading.
+    expect(TEMPLATE).toContain(
+      '<ui-dialog id="lifecycle-dialog" class="lifecycle-dialog" heading="세션 수명 주기" size="sm" lang="ko">',
+    );
+    // Its two buttons are the footer; 저장 still submits the form (form="lifecycle-form").
+    expect(TEMPLATE).toContain(
+      '<button type="submit" form="lifecycle-form" class="ui-btn is-primary lc-save" id="lifecycle-save">저장</button>',
+    );
+    expect(fnBody('openLifecycleDialog')).toContain('dlg.show();');
+    expect(fnBody('closeLifecycleDialog')).toContain('dlg.hide();');
     for (const s of [
       "'Retrying...'",
       'Generating summary...',
@@ -614,7 +684,6 @@ describe('tone pass P8 — copy and glyphs', () => {
       'summaryFailed',
       'summaryPending',
       'retry',
-      'retrying',
       'titlePending',
       'titleFailed',
       'error',
@@ -679,7 +748,7 @@ describe('agent inbox board — motion contract (§4)', () => {
       for (const sel of selectors) expect(sel, sel).toContain(':not(:focus-visible)');
     }
     expect(TEMPLATE).toMatch(
-      /:is\([^)]*\.stats-more[^)]*\):active:not\(:disabled\):not\(:focus-visible\) \{ transform: scale\(0\.97\); \}/,
+      /:is\([^)]*\.panel-detail-toggle[^)]*\):active:not\(:disabled\):not\(:focus-visible\) \{ transform: scale\(0\.97\); \}/,
     );
   });
 
@@ -703,23 +772,19 @@ describe('agent inbox board — motion contract (§4)', () => {
     // affectUI batch 1: the card's single-choice question is a <ui-approval-card>, which lists the
     // recommended choice first, tagged and preselected (library: approval-card.test.ts "lists the
     // recommended choice first and preselected; Submit sends it"). The card's star / ink overrides went
-    // with the old buttons; the panel's multi-question form keeps the shared .btn-choice-recommended —
-    // tone pass P2: tagged 추천 (a neutral tag, like the library's approval card), no star, no green.
-    expect(TEMPLATE).not.toMatch(/\.card \.btn-choice-recommended|\.card \.btn-choice\.btn-choice-recommended/);
-    expect(TEMPLATE).toMatch(/\n\.btn-choice-recommended::after \{ content: "추천";/);
+    // with the old buttons; the panel's multi-question form is <ui-choice-form> (D3 E-15), which lists its
+    // recommended choice first and tags it 추천 itself — no star, no green, no page rule.
+    expect(TEMPLATE).not.toMatch(/\.btn-choice-recommended/);
+    expect(TEMPLATE).toContain(
+      '<script type="module" src="/dashboard/ui/choice-form.js?v=${UI_LIB_VERSION}"></script>',
+    );
     expect(TEMPLATE).not.toContain('2B50');
   });
 
   it('board hover effects live only inside (hover: hover) and (pointer: fine)', () => {
     expect(TEMPLATE).toContain('@media (hover: hover) and (pointer: fine) {');
     const outside = stripHoverBlocks(TEMPLATE);
-    for (const sel of [
-      '.card:hover',
-      '.card-face:hover',
-      '.seg-btn:hover',
-      '.btn-action:hover',
-      '.show-older-btn:hover',
-    ]) {
+    for (const sel of ['.card:hover', '.card-face:hover', '.show-older-btn:hover']) {
       expect(outside, sel).not.toContain(sel);
     }
   });
@@ -743,14 +808,18 @@ describe('agent inbox board — responsive (§5)', () => {
 
   it('every remaining control is 44px on narrow or touch screens (panel, topbar, period tabs)', () => {
     const block = TEMPLATE.match(/@media \(max-width: 639px\), \(pointer: coarse\) \{[\s\S]*?\n\}/)?.[0] ?? '';
-    expect(block).toContain('.panel-close { width: 44px; height: 44px; }');
-    expect(block).toContain('.period-btn { min-height: 44px; }');
-    expect(block).toContain('.stats-more { min-height: 44px; }');
-    expect(block).toContain(
-      '.topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }',
-    );
-    expect(block).toContain('#theme-toggle { min-block-size: 44px; position: relative; }');
-    expect(block).toContain('#panel-title-sub-regen { min-width: 44px; min-height: 44px; }');
+    // The panel's ✕ is the kit's icon button: 44px on touch / narrow screens is the kit's own rule.
+    expect(TEMPLATE).toMatch(/<button type="button" class="ui-icon-btn is-bordered panel-close"/);
+    // The period tabs are <ui-segmented>: 44px on touch / narrow screens is the element's own rule.
+    expect(TEMPLATE).not.toContain('.period-btn');
+    // 자세히 on the stats strip is <ui-stat-strip>'s: 44px on touch / narrow screens is the element's own rule.
+    expect(block).not.toContain('.stats-more');
+    // The app bar's links, account and theme toggle are 44px on coarse pointers by the element's own rule;
+    // the page's controls in its actions are the page's.
+    expect(block).toContain('.topbar .user-select, .topbar .admin-toggle, .topbar .td-chip { min-height: 44px; }');
+    expect(block).not.toContain('#theme-toggle');
+    // The subtitle's regenerate is the kit's small icon button (44px on touch / narrow: ui-kit.css).
+    expect(TEMPLATE).toContain('id="panel-title-sub-regen" class="ui-icon-btn is-sm"');
     // Must follow the #800 coarse blocks so it wins the cascade.
     expect(TEMPLATE.indexOf('@media (max-width: 639px), (pointer: coarse)')).toBeGreaterThan(
       TEMPLATE.indexOf('@media (max-width: 480px) and (pointer: coarse)'),

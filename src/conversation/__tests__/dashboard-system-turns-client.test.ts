@@ -8,10 +8,10 @@
  *       restart resume, error retry, goal continuation (Goal #n/m), cron,
  *       /renew save + load, any other host turn — each producer's wording
  *       pinned against its source; a turn a person sent is never one of them
- *   C2  the one-line row: who · when · badge · what it did, opening to its
- *       facts and the raw prompt
- *   C3  /compact: progress (elapsed / estimate, %) while it runs, its numbers
- *       once done; cpTick keeps it live only while it is the latest turn of a
+ *   C2  the one-line row: <ui-conversation>'s system turn — who · when · badge ·
+ *       what it did, opening to its facts and the raw prompt (convTurnsOf)
+ *   C3  /compact: the element's progress while it runs (it ticks in place),
+ *       its numbers once done; live only while it is the latest turn of a
  *       working session
  *   C4  skills: the <invoked_skills> block becomes badges (name · estimated
  *       tokens) that open the skill body, written on first open
@@ -102,12 +102,18 @@ const SYS_FNS = [
   'cpLineHtml',
   'cpFacts',
   'sysFactsHtml',
-  'renderSysTurn',
+  'cpDoneText',
   'cpEnsureTicker',
   'cpTick',
   'estimateTokens',
   'splitInvokedSkills',
   'skillBadgesHtml',
+  // D3: 지시와 답변's turns are <ui-conversation>'s — the page hands it data.
+  'ansCacheKey',
+  'artInTurn',
+  'convSummaryOf',
+  'convSysTurn',
+  'convTurnsOf',
 ];
 const SYS_VARS = [
   'SYS_RESTART_HEADS',
@@ -118,32 +124,39 @@ const SYS_VARS = [
   '_cpTimer',
   '_skillBodies',
   '_skillSeq',
-  // SSOT 2026-10-29 T7: the harness's row has its own avatar (a neutral gear), never the user's initial.
-  'SYS_AVATAR_SVG',
-  'BOT_AVATAR_SVG',
 ];
 
 type Info = { kind: string; label: string; line: string; raw: string; facts: [string, string][] } | null;
+type Turn = Record<string, unknown> & { id: string; role: string };
+type Built = { turns: Turn[]; slots: { name: string; kind: string; list: unknown[] }[] };
 type Api = {
   sysTurnInfo(t: unknown): Info;
-  renderTurn(t: unknown, i?: number, arr?: unknown[], cid?: string): string;
+  convTurnsOf(list: unknown[], c: Record<string, unknown>): Built;
   splitInvokedSkills(raw: string): { text: string; skills: { name: string; body: string; tokens: number }[] };
   estimateTokens(s: string): number;
 };
 
 function api(extra: Record<string, unknown> = {}) {
   const setInterval = vi.fn(() => 7);
-  const a = load<Api>([...SYS_FNS, 'renderTurn'], SYS_VARS, {
-    panelConvId: 'conv-sys',
-    _artCache: {},
-    renderTurnArtifacts: () => '',
-    umRegister: () => {},
-    renderUserMedia: () => '',
-    ansSlotHtml: () => '',
+  const a = load<Api>(SYS_FNS, SYS_VARS, {
+    STRINGS: { summaryFailed: '요약 실패', summaryPending: '요약 만드는 중…' },
     setInterval,
     ...extra,
   });
-  return { ...a, setInterval };
+  // The element's turns for a list (convPaint's context: a working session unless said otherwise).
+  const conv = (list: unknown[], c: Record<string, unknown> = {}) =>
+    a.convTurnsOf(list, {
+      cid: 'conv-sys',
+      bot: 'Soma',
+      now: Date.now(),
+      working: true,
+      answers: {},
+      failed: {},
+      arts: [],
+      ...c,
+    });
+  const one = (t: unknown, c: Record<string, unknown> = {}) => conv([t], c).turns[0];
+  return { ...a, setInterval, conv, one };
 }
 const user = (rawContent: string, extra: Record<string, unknown> = {}) => ({
   id: 'u1',
@@ -273,90 +286,62 @@ describe('C1 — what soma-work injected, by its own wording', () => {
   });
 });
 
-describe('C2 — the one-line row', () => {
-  it('who · when · badge · line, opening to the facts and the raw prompt (escaped)', () => {
-    const { renderTurn } = api();
+describe('C2 — the one-line row (<ui-conversation> system turn)', () => {
+  it('who · when · badge · line, opening to the facts and the raw prompt (data the element escapes)', () => {
     const raw = `${goalPrompt(2, 10, 'needs <evidence> & tests')}`;
-    const out = renderTurn(user(raw, SYSTEM));
-    expect(out).toMatch(/^<div class="turn user is-sys" data-sys="goal" data-turn-id="u1" data-ts="\d+">/);
-    // SSOT 2026-10-29 T7: the harness sent it — System, with its own avatar; the
-    // user's name only says whose session it ran in (the name's title).
-    expect(out).toContain(
-      `<div class="turn-avatar sys-avatar" aria-hidden="true">${clientVarValue('SYS_AVATAR_SVG')}</div>`,
-    );
-    expect(out).toContain('<details class="sys-turn"><summary class="sys-row"><span class="sys-row-in">');
-    expect(out).toContain('<span class="turn-name sys-name" title="하네스가 보낸 입력 — Z의 세션">System</span>');
-    expect(out).not.toContain('user-avatar');
-    expect(out).not.toContain('<span class="turn-name">Z</span>');
-    expect(out).toContain('<span class="sys-badge" data-kind="goal">Goal #2/10</span>');
-    expect(out).toContain('<span class="sys-line">직전 평가: needs &lt;evidence&gt; &amp; tests</span>');
-    expect(out).toContain('<dt>회차</dt><dd>2 / 10</dd>');
-    expect(out).toContain(
-      '<div class="sys-raw-h">원본 프롬프트</div><pre class="sys-raw">[goal-continuation] Continue working',
-    );
-    expect(out).toContain('&lt;previous-eval-reason&gt;');
-    expect(out).not.toContain('turn-content'); // never the raw prompt as the face
+    const t = api().one(user(raw, SYSTEM));
+    // SSOT 2026-10-29 T7: the harness sent it — System (the element draws its gear avatar).
+    expect(t).toMatchObject({ id: 'u1', role: 'system', name: 'System', kind: 'goal', label: 'Goal #2/10' });
+    expect(t.text).toBe('직전 평가: needs <evidence> & tests');
+    expect(t.facts).toContainEqual(['회차', '2 / 10']);
+    expect(String(t.raw)).toMatch(/^\[goal-continuation\] Continue working/);
+    expect(String(t.raw)).toContain('<previous-eval-reason>');
+    expect(t.at).toEqual(expect.any(Number));
+    expect(t).not.toHaveProperty('media');
   });
 
-  it('SSOT 2026-10-29 T7 — a harness turn is System (gear avatar, never the user’s initial or name); a person’s turn keeps them', () => {
-    const { renderTurn } = api();
-    // The avatar is a drawn icon (no letter that could read as someone's initial).
-    const svg = String(clientVarValue('SYS_AVATAR_SVG'));
-    expect(svg).toMatch(/^<svg [^>]*viewBox="0 0 16 16"[^>]*>[\s\S]*<\/svg>$/);
-    const sysAvatar = `<div class="turn-avatar sys-avatar" aria-hidden="true">${svg}</div>`;
+  it('SSOT 2026-10-29 T7 — a harness turn is System (never the user’s name); a person’s turn keeps theirs', () => {
+    const { one } = api();
     for (const t of [
       user(RESTART_PROMPT, SYSTEM),
       user('/compact', { ...SYSTEM, compact: {} }),
       user(goalPrompt(1, 3), SYSTEM),
     ]) {
-      const out = renderTurn(t);
-      expect(out).toContain('class="turn user is-sys"'); // still the user side of the conversation
-      expect(out).toContain(sysAvatar);
-      expect(out).toContain('>System</span>');
-      expect(out).not.toContain('user-avatar');
-      expect(out).not.toMatch(/<span class="turn-name[^"]*"[^>]*>Z<\/span>/);
+      const x = one(t);
+      expect(x.role).toBe('system');
+      expect(x.name).toBe('System');
+      expect(JSON.stringify(x)).not.toContain('"name":"Z"');
     }
-    // No recorded user: System with no title at all (never "User").
-    const anon = renderTurn(user(RESTART_PROMPT, { ...SYSTEM, userName: undefined }));
-    expect(anon).toContain('<span class="turn-name sys-name">System</span>');
-    expect(anon).not.toContain('>User<');
-    // The user's name lives only in the title, attribute-escaped (a quote cannot end it).
-    const odd = renderTurn(user(RESTART_PROMPT, { ...SYSTEM, userName: 'Z" onmouseover="x' }));
-    expect(odd).toContain(
-      '<span class="turn-name sys-name" title="하네스가 보낸 입력 — Z&quot; onmouseover=&quot;x의 세션">System</span>',
-    );
-    // A person's turn is theirs: their initial on the avatar, their name on the header.
-    const mine = renderTurn(user('배포까지 진행', PERSON));
-    expect(mine).toContain('<div class="turn user" data-turn-id="u1"');
-    expect(mine).toContain('<div class="turn-avatar user-avatar">Z</div>');
-    expect(mine).toContain('<span class="turn-name">Z</span>');
-    expect(mine).not.toContain('sys-avatar');
-    expect(mine).not.toContain('System');
+    expect(one(user(RESTART_PROMPT, { ...SYSTEM, userName: undefined })).name).toBe('System');
+    const mine = one(user('배포까지 진행', PERSON));
+    expect(mine).toEqual({ id: 'u1', role: 'user', name: 'Z', at: expect.any(Number), text: '배포까지 진행' });
+    expect(one(user('익명', { ...PERSON, userName: undefined })).name).toBe('User');
   });
 
-  it('files on a one-line turn (the message the auto-compact intercepted) open with it', () => {
-    const registered: unknown[] = [];
-    const out = api({
-      renderUserMedia: () => '<div class="um-media">FILES</div>',
-      umRegister: (_cid: string, list: unknown[]) => registered.push(list),
-    }).renderTurn(
+  it('files on a one-line turn (the message the auto-compact intercepted): their names in its facts (D3-GAPS G1-2)', () => {
+    const x = api().one(
       user('/compact', {
         ...SYSTEM,
         compact: {},
         timestamp: Date.now() - 3_600_000,
-        attachments: [{ id: 'F1', name: 'a.png', kind: 'image' }],
+        attachments: [
+          { id: 'F1', name: 'a.png', kind: 'image' },
+          { id: 'F2', name: 'b.pdf' },
+        ],
       }),
     );
-    expect(out).toContain('is-sys');
-    expect(out).toContain('<div class="sys-detail"><div class="um-media">FILES</div>');
-    expect(registered).toHaveLength(1); // the viewer can page through them
+    expect(x.role).toBe('system');
+    expect(x.facts).toContainEqual(['첨부 파일', 'a.png, b.pdf']);
+    // A person's files go in the media slot above their words.
+    const built = api().conv([user('보세요', { ...PERSON, attachments: [{ id: 'F1', name: 'a.png' }] })]);
+    expect(built.turns[0].media).toBe(true);
+    expect(built.slots).toEqual([expect.objectContaining({ name: 'media-u1', kind: 'media' })]);
   });
 
   it('a restart row says so in one line', () => {
-    const out = api().renderTurn(user(RESTART_PROMPT, SYSTEM));
-    expect(out).toContain('<span class="sys-badge" data-kind="restart">시스템 재시작</span>');
-    expect(out).toContain('<span class="sys-line">중단된 작업 자동 재개</span>');
-    expect(out).toContain('<pre class="sys-raw">The service was restarted and the previous task was interrupted.');
+    const x = api().one(user(RESTART_PROMPT, SYSTEM));
+    expect(x).toMatchObject({ kind: 'restart', label: '시스템 재시작', text: '중단된 작업 자동 재개' });
+    expect(String(x.raw)).toMatch(/^The service was restarted and the previous task was interrupted\./);
   });
 
   it('a turn sent from the composer is the server turn once echoed (a later /compact result finds it)', () => {
@@ -364,8 +349,9 @@ describe('C2 — the one-line row', () => {
       TEMPLATE.indexOf("msg.type === 'conversation_update'"),
       TEMPLATE.indexOf("msg.type === 'session_action'"),
     );
-    expect(ws).toContain('[data-turn-id^="optimistic-"]');
-    expect(ws).toContain('updateTurnInPanel(optEl, msg.turn)');
+    // The optimistic turn is found in 지시와 답변's data and replaced there by the server's.
+    expect(ws).toContain("String(ot.id || '').indexOf('optimistic-') === 0");
+    expect(ws).toContain('appendTurnToPanel(msg.turn, false, optId)');
     // affectUI batch 2b: the composer (<ui-agent-steering>) draws the optimistic turn only when no turn is running;
     // a note sent mid-turn is a queued note in the steering list instead (dashboard-steering-client).
     const from = TEMPLATE.indexOf("optimisticId = 'optimistic-' + Date.now();");
@@ -375,52 +361,41 @@ describe('C2 — the one-line row', () => {
     expect(send).toContain("origin: { by: 'user' }");
   });
 
-  it('an open row stays open when its turn re-renders (a /compact result landing)', () => {
-    const src = clientFn('updateTurnInPanel');
-    expect(src).toContain(".querySelector('.sys-turn[open]')");
-    expect(src).toContain('sysEl.open = true');
+  it('an open row stays open when its turn changes (a /compact result landing): the element keys turns by id', () => {
+    // appendTurnToPanel updates the turn in place in the data (ptUpsert); <ui-conversation> rebuilds that turn's
+    // node only and keeps what the reader opened on it (its per-id state).
+    const src = clientFn('appendTurnToPanel');
+    expect(src).toContain('ptUpsert(_panelTurnsList, turn, replaceId)');
+    expect(src).toContain('convPaint()');
   });
 });
 
 describe('C3 — /compact: progress while it runs, its numbers once done', () => {
-  it('running: elapsed / default estimate, %, a progressbar — and the ticker starts', () => {
-    const a = api();
-    const out = a.renderTurn(user('/compact', { ...SYSTEM, compact: {}, timestamp: Date.now() - 42_000 }));
-    expect(out).toContain('<span class="sys-badge" data-kind="compact">자동 압축</span>');
-    expect(out).toContain('data-cp-live="1"');
-    expect(out).toContain('data-cp-est="150000"');
-    expect(out).toContain('<span class="cp-time"><span class="cp-verb">압축 중 · </span>0:42 / 약 2:30</span>');
-    // Inside <summary> (a button) a progressbar role is dropped by AT: the bar is
-    // decoration, the line's text carries the numbers.
-    expect(out).toContain('<span class="cp-bar" aria-hidden="true"><i style="width:28%"></i></span>');
-    expect(out).not.toContain('role="progressbar"');
-    expect(out).toContain('<span class="cp-pct">28%</span>');
-    expect(out).toContain('<dt>상태</dt><dd class="cp-state">진행 중</dd>');
-    expect(out).toContain('<dt>예상 시간</dt><dd>2m 30s (기본값)</dd>');
-    expect(a.setInterval).toHaveBeenCalledTimes(1);
+  it('running: the element’s progress (elapsed / default estimate ticks in place); the facts say 진행 중', () => {
+    const start = Date.now() - 42_000;
+    const x = api().one(user('/compact', { ...SYSTEM, compact: {}, timestamp: start }));
+    expect(x).toMatchObject({ role: 'system', kind: 'compact', label: '자동 압축' });
+    expect(x.progress).toEqual({ startedAt: start, estimateMs: 150_000, verb: '압축 중…' });
+    expect(x.facts).toContainEqual(['상태', '진행 중']);
+    expect(x.facts).toContainEqual(['예상 시간', '2m 30s (기본값)']);
   });
 
   it('the estimate is the conversation’s previous compaction when the turn carries one', () => {
-    const out = api().renderTurn(
+    const x = api().one(
       user('/compact', { ...SYSTEM, timestamp: Date.now() - 45_000, compact: { estimateMs: 90_000 } }),
     );
-    expect(out).toContain('<span class="cp-time"><span class="cp-verb">압축 중 · </span>0:45 / 약 1:30</span>');
-    expect(out).toContain('<i style="width:50%"></i>');
-    expect(out).toContain('<dd>1m 30s (직전 압축 기준)</dd>');
+    expect(x.progress).toMatchObject({ estimateMs: 90_000 });
+    expect(x.facts).toContainEqual(['예상 시간', '1m 30s (직전 압축 기준)']);
   });
 
-  it('past the estimate: no false percentage — "예상보다 오래 걸리는 중" and a moving bar', () => {
-    const out = api().renderTurn(user('/compact', { ...SYSTEM, compact: {}, timestamp: Date.now() - 200_000 }));
-    expect(out).toContain(
-      '<span class="cp-time"><span class="cp-verb">압축 중 · </span>3:20 / 약 2:30</span><span class="cp-over"> · 예상보다 오래 걸리는 중</span>',
-    );
-    expect(out).toContain('class="cp-bar is-over"');
-    expect(out).not.toContain('cp-pct');
+  it('past the estimate it is still running (the element draws the over-run sweep, no false percentage)', () => {
+    const x = api().one(user('/compact', { ...SYSTEM, compact: {}, timestamp: Date.now() - 200_000 }));
+    expect(x.progress).toMatchObject({ estimateMs: 150_000 });
   });
 
   it('done: the badge, "자동 압축 처리" with before → after and the time; the facts in full', () => {
     const t0 = Date.now() - 3_600_000;
-    const out = api().renderTurn(
+    const x = api().one(
       user('/compact', {
         ...SYSTEM,
         timestamp: t0,
@@ -434,168 +409,75 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
         },
       }),
     );
-    expect(out).not.toContain('data-cp-live');
-    expect(out).toContain('<span class="sys-badge" data-kind="compact">자동 압축</span>');
-    expect(out).toContain('<span class="sys-line">자동 압축 처리 · 182.3K → 31.0K 토큰 · 2m 14s</span>');
-    expect(out).toContain('<dt>상태</dt><dd class="cp-state">완료</dd>');
-    expect(out).toContain('<dt>압축 전 → 후</dt><dd>182,340 → 31,020 토큰 (−83%)</dd>');
-    expect(out).toContain('<dt>걸린 시간</dt><dd>2m 14s</dd>');
-    expect(out).toContain('<dt>예상 시간</dt><dd>2m 0s (직전 압축 기준)</dd>');
-    expect(out).toContain('<dt>SDK trigger</dt><dd>manual</dd>');
-    expect(out).toContain('<dt>실행</dt><dd>soma-work — 컨텍스트가 자동 압축 지점을 넘어 /compact 실행</dd>');
-    expect(out).toContain('<pre class="sys-raw">/compact</pre>');
+    expect(x).not.toHaveProperty('progress');
+    expect(x).toMatchObject({
+      kind: 'compact',
+      label: '자동 압축',
+      text: '자동 압축 처리 · 182.3K → 31.0K 토큰 · 2m 14s',
+    });
+    expect(x.facts).toEqual(
+      expect.arrayContaining([
+        ['상태', '완료'],
+        ['압축 전 → 후', '182,340 → 31,020 토큰 (−83%)'],
+        ['걸린 시간', '2m 14s'],
+        ['예상 시간', '2m 0s (직전 압축 기준)'],
+        ['SDK trigger', 'manual'],
+        ['실행', 'soma-work — 컨텍스트가 자동 압축 지점을 넘어 /compact 실행'],
+      ]),
+    );
+    expect(x.raw).toBe('/compact');
   });
 
-  it('a /compact with a later turn after it is not live at render time (no first-frame flash)', () => {
+  it('a /compact with a later turn after it is not running (no first-frame flash)', () => {
     const t = user('/compact', { ...SYSTEM, compact: {}, timestamp: Date.now() - 30_000 });
     const next = user('다음 지시', { id: 'u2' });
-    const out = api().renderTurn(t, 0, [t, next], 'conv-sys');
-    expect(out).not.toContain('data-cp-live');
-    expect(out).toContain('<span class="sys-line">자동 압축 처리</span>');
-    expect(out).toContain('<dd class="cp-state">결과 기록 없음</dd>');
-    // The last of a batch (or a pushed turn, no batch) is still live.
-    expect(api().renderTurn(t, 1, [next, t], 'conv-sys')).toContain('data-cp-live="1"');
+    const x = api().conv([t, next]).turns[0];
+    expect(x).not.toHaveProperty('progress');
+    expect(x.text).toBe('자동 압축 처리');
+    expect(x.facts).toContainEqual(['상태', '결과 기록 없음']);
+    // The last of the list is still live.
+    expect(api().conv([next, t]).turns[1].progress).toBeTruthy();
   });
 
   it('no result and older than a compaction can run: "압축 처리", 결과 기록 없음', () => {
-    const out = api().renderTurn(user('/compact', { timestamp: Date.now() - 3_600_000 }));
-    expect(out).toContain('<span class="sys-line">압축 처리</span>');
-    expect(out).toContain('<dt>상태</dt><dd class="cp-state">결과 기록 없음</dd>');
-    expect(out).not.toContain('data-cp-live');
+    const x = api().one(user('/compact', { timestamp: Date.now() - 3_600_000 }));
+    expect(x.text).toBe('압축 처리');
+    expect(x.facts).toContainEqual(['상태', '결과 기록 없음']);
+    expect(x).not.toHaveProperty('progress');
   });
 
-  // A minimal DOM for cpTick: nodes with attributes and a .cp-slot / .sys-badge.
-  function fakeTurn(start: number, live = true) {
-    const attrs: Record<string, string> = { 'data-cp-start': String(start), 'data-cp-est': '150000' };
-    if (live) attrs['data-cp-live'] = '1';
-    const slot = { innerHTML: '' };
-    const state = { textContent: '진행 중' };
-    return {
-      slot,
-      state,
-      getAttribute: (k: string) => attrs[k] ?? null,
-      removeAttribute: (k: string) => {
-        delete attrs[k];
-      },
-      hasLive: () => 'data-cp-live' in attrs,
-      querySelector: (sel: string) =>
-        sel === '.cp-slot'
-          ? slot
-          : sel === '.cp-state'
-            ? state
-            : sel === '.sys-badge'
-              ? { textContent: '자동 압축' }
-              : null,
-    };
-  }
-  const NOW = 1_792_900_000_000;
-  function tick(
-    turns: ReturnType<typeof fakeTurn>[],
-    session: Record<string, unknown> | null,
-    others: Record<string, unknown> = {},
-  ) {
-    const clearInterval = vi.fn();
-    const document = {
-      // The 응답 작성 중 row (.ans-pending, no data-ts) is always the list's last
-      // child while the session works after a user turn — a /compact included.
-      querySelectorAll: (sel: string) =>
-        sel === '#panel-turns .turn[data-cp-live]'
-          ? turns.filter((t) => t.hasLive())
-          : sel === '#panel-turns > .turn[data-ts]'
-            ? turns
-            : sel === '#panel-turns > .turn'
-              ? [...turns, { pending: true }]
-              : [],
-    };
-    const { cpTick } = load<{ cpTick(): void }>(
-      ['esc', 'toNum', 'cpClock', 'cpProgressHtml', 'cpTick'],
-      ['CP_DEFAULT_EST_MS', 'CP_MAX_MS', '_cpTimer'],
-      {
-        document,
-        clearInterval,
-        Date: { now: () => NOW },
-        panelSessionKey: 'k',
-        _sessionCache: session ? { k: session, ...others } : { ...others },
-      },
+  it('the session stopped working → no longer running, no result kept (convPaint’s working rule)', () => {
+    const t = user('/compact', { ...SYSTEM, compact: {}, timestamp: Date.now() - 30_000 });
+    const idle = api().one(t, { working: false });
+    expect(idle).not.toHaveProperty('progress');
+    expect(idle.facts).toContainEqual(['상태', '결과 기록 없음']);
+    expect(api().one(t, { working: true }).progress).toBeTruthy();
+    // A session missing from a loaded board is not running; before the board loads it is undecided.
+    expect(clientFn('convPaint')).toContain(
+      "var working = s ? s.activityState === 'working' : Object.keys(_sessionCache).length === 0;",
     );
-    cpTick();
-    return { clearInterval };
-  }
-
-  it('cpTick: the latest turn of a working session keeps ticking', () => {
-    const t = fakeTurn(NOW - 75_000);
-    tick([t], { activityState: 'working' });
-    expect(t.hasLive()).toBe(true);
-    expect(t.slot.innerHTML).toContain('<span class="cp-verb">압축 중 · </span>1:15 / 약 2:30');
-    expect(t.slot.innerHTML).toContain('<i style="width:50%"></i>');
-  });
-
-  it('cpTick: a later turn landed, or the session stopped working → no longer live, no result kept', () => {
-    const compact = fakeTurn(NOW - 30_000);
-    const next = fakeTurn(NOW, false);
-    tick([compact, next], { activityState: 'working' });
-    expect(compact.hasLive()).toBe(false);
-    // The same line and 상태 a fresh render of a result-less /compact shows.
-    expect(compact.slot.innerHTML).toBe('<span class="sys-line">자동 압축 처리</span>');
-    expect(compact.state.textContent).toBe('결과 기록 없음');
-
-    const idle = fakeTurn(NOW - 30_000);
-    tick([idle], { activityState: 'idle' });
-    expect(idle.hasLive()).toBe(false);
-  });
-
-  it('cpTick: a session missing from a loaded board is not running; before the board loads it is undecided', () => {
-    const gone = fakeTurn(NOW - 30_000);
-    tick([gone], null, { other: { activityState: 'working' } });
-    expect(gone.hasLive()).toBe(false);
-
-    const early = fakeTurn(NOW - 30_000);
-    tick([early], null);
-    expect(early.hasLive()).toBe(true);
-    expect(early.slot.innerHTML).toContain('</span>0:30 / 약 2:30');
-  });
-
-  it('cpTick: nothing live → the timer stops', () => {
-    const { clearInterval } = tick([fakeTurn(NOW - 1000, false)], { activityState: 'working' });
-    expect(clearInterval).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('C3b — on a narrow panel the row never overflows; the bar gives way first', () => {
-  // Measured in Chromium (shipped CSS + renderer) at 320 / 400px panels: no
-  // horizontal overflow, overdue or not, short or long names. A no-shrink rule on
-  // the line would overflow (it holds the overdue suffix too).
+describe('C3b — the card’s /compact line on a narrow card never overflows; the bar gives way first', () => {
+  // (지시와 답변's system row is <ui-conversation>'s own layout now; the open card's 응답 keeps this line.)
   it('the bar shrinks first (high shrink weight), then the line truncates from its end', () => {
     expect(TEMPLATE).toMatch(/\.cp-bar \{ flex: 0 1000 120px; min-width: 0; max-width: 120px;/);
     expect(TEMPLATE).not.toContain('.cp-slot > .sys-line { flex-shrink: 0; }');
-    // Priority by weight ratio (bar 1000 : line 1). Every weight stays
-    // ≥ 1: below 1 the flex algorithm hands out only that fraction of the space
-    // to shrink, and the row overflows.
     expect(TEMPLATE).not.toMatch(/flex-shrink: 0\.\d/);
-  });
-  it('the name never shrinks (a long one is capped with an ellipsis); the time never wraps', () => {
-    expect(TEMPLATE).toContain('.sys-row-in .turn-time { flex: none; white-space: nowrap; }');
-    expect(TEMPLATE).toMatch(
-      /\.sys-row-in \.turn-name \{ flex: none; max-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; \}/,
-    );
-  });
-  it('a narrow row drops what is said elsewhere — the default desktop drawer keeps the name', () => {
-    expect(TEMPLATE).toMatch(/\.sys-turn \{ container: sysrow \/ inline-size; \}/);
-    // ≤ 420px (the default 440px drawer's row is ~355px): "압축 중" goes, the name stays.
-    expect(TEMPLATE).toMatch(/@container sysrow \(max-width: 420px\) \{ \.cp-verb \{ display: none; \} \}/);
-    // ≤ 340px (phones): the name goes too — the avatar shows it.
-    expect(TEMPLATE).toMatch(
-      /@container sysrow \(max-width: 340px\) \{ \.sys-row-in \.turn-name \{ display: none; \} \}/,
-    );
   });
 
   it('a running line never cuts its times: only the overdue words take the ellipsis', () => {
-    expect(TEMPLATE).toContain('.turn[data-cp-live] .cp-slot > .sys-line { display: contents; }');
     expect(TEMPLATE).toContain('.cp-time { flex: none; white-space: nowrap; }');
     expect(TEMPLATE).toContain(
       '.cp-over { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
     );
-    expect(TEMPLATE).toMatch(/@container sysrow \(max-width: 280px\) \{ \.cp-pct \{ display: none; \} \}/);
+  });
+
+  it('the old inline system row is gone (no renderer, no rules)', () => {
+    expect(TEMPLATE).not.toMatch(/\nfunction renderSysTurn\(/);
+    expect(TEMPLATE).not.toContain('.sys-row-in');
+    expect(TEMPLATE).not.toContain('container: sysrow');
   });
 
   it('the overdue words sit after the times, so the ellipsis cuts them first', () => {
@@ -699,9 +581,8 @@ describe('C4 — the skills an instruction invoked, as badges', () => {
     expect(estimateTokens('')).toBe(0);
   });
 
-  it('renderTurn: the words, then one badge per skill (name · ≈tokens); bodies not written yet', () => {
-    const { renderTurn } = api();
-    const out = renderTurn(
+  it('convTurnsOf: the words, then one chip per skill (name · ≈tokens · its text for the pane)', () => {
+    const x = api().one(
       user(
         invoked('예측 시장 관련 개발 리포트 시각화', [
           ['local:using-ssot', SSOT_BODY],
@@ -709,26 +590,21 @@ describe('C4 — the skills an instruction invoked, as badges', () => {
         ]),
       ),
     );
-    expect(out).toContain('<div class="turn user" data-turn-id="u1"');
-    // Task view T1.3 (#486): the instruction is the whole text, folded to 12 lines until clicked.
-    expect(out).toMatch(
-      /<div class="turn-content turn-instr" role="button"[^>]*>예측 시장 관련 개발 리포트 시각화<\/div>/,
-    );
-    expect(out).not.toContain('invoked_skills');
-    expect(out).not.toContain('Base directory');
-    expect(out).toContain('<div class="skill-badges" role="group" aria-label="활성화된 스킬 2개">');
-    expect(out).toMatch(
-      /<button type="button" class="skill-badge" aria-expanded="false" aria-controls="skd-u1-0" data-skill="skd-u1-0" onclick="skillToggle\(this\)"[^>]*><span class="skill-name">local:using-ssot<\/span><span class="skill-tok">≈\d+ tokens<\/span><\/button>/,
-    );
-    expect(out).toContain('<span class="skill-name">local:autoz</span>');
-    expect(out).toContain('<div class="skill-detail" id="skd-u1-0" hidden></div>');
-    expect(out).toContain('<div class="skill-detail" id="skd-u1-1" hidden></div>');
+    expect(x.role).toBe('user');
+    // Task view T1.3 (#486): the whole instruction — the element folds it to 12 lines (clampLines).
+    expect(x.text).toBe('예측 시장 관련 개발 리포트 시각화');
+    expect(JSON.stringify(x.text)).not.toContain('invoked_skills');
+    expect(x.skills).toEqual([
+      { name: 'local:using-ssot', tokens: expect.any(Number), text: expect.stringContaining('') },
+      { name: 'local:autoz', tokens: expect.any(Number), text: expect.any(String) },
+    ]);
+    expect((x.skills as { tokens: number }[])[0].tokens).toBeGreaterThan(0);
   });
 
-  it('skills only (no words): badges, no empty text block', () => {
-    const out = api().renderTurn(user(invoked('', [['local:autoz', AUTOZ_BODY]])));
-    expect(out).not.toContain('turn-content');
-    expect(out).toContain('local:autoz');
+  it('skills only (no words): chips, no text', () => {
+    const x = api().one(user(invoked('', [['local:autoz', AUTOZ_BODY]])));
+    expect(x.text).toBe('');
+    expect(x.skills).toEqual([expect.objectContaining({ name: 'local:autoz' })]);
   });
 
   it('skillToggle opens that skill (body written once, escaped), closes the one open, and closes again', () => {
@@ -821,10 +697,9 @@ describe('C5 — background-work-resume reads as its own badge', () => {
     expect(api().sysTurnInfo(user(one, PERSON))).toBeNull();
   });
 
-  it('renderTurn: one line with its badge', () => {
-    const out = api().renderTurn(user(one, SYSTEM));
-    expect(out).toContain('data-sys="bgwork"');
-    expect(out).toContain('<span class="sys-badge" data-kind="bgwork">백그라운드 재개 #1/6</span>');
+  it('convTurnsOf: one line with its badge (the element’s background kind)', () => {
+    const x = api().one(user(one, SYSTEM));
+    expect(x).toMatchObject({ role: 'system', kind: 'background', label: '백그라운드 재개 #1/6' });
   });
 });
 
@@ -841,7 +716,7 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     `${text}\n\n<invoked_skills>\n${skills.map(([k, c]) => `<${k}>\n${c}\n</${k}>`).join('\n')}\n</invoked_skills>`;
   type CardApi = {
     renderCardIo(s: unknown): string;
-    ioSysToggle(el: { open: boolean }, cid: string): void;
+    ioSysToggle(cid: string, open: boolean): void;
     ioSkillToggle(cid: string, i: number): void;
     fetchCardIo(cid: string): Promise<{ instruction: { turn: Record<string, unknown> }; response: unknown }>;
   };
@@ -900,8 +775,10 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     // SSOT 2026-10-29 T7: the harness sent it — the 지시 is System's, not the user's name.
     expect(out).toContain('<div class="io-label">지시<span class="io-who is-sys">System</span></div>');
     expect(out).not.toContain('<span class="io-who">Z</span>');
-    expect(out).toContain(`<details class="io-sys" ontoggle="ioSysToggle(this,'${CID}')">`);
-    expect(out).toContain('<span class="sys-badge" data-kind="goal">Goal #2/10</span>');
+    expect(out).toContain(
+      `<ui-disclosure class="io-sys" data-cid="${CID}" flush><span slot="summary" class="io-sys-row">`,
+    );
+    expect(out).toContain('<span class="ui-chip sys-badge" data-kind="goal">Goal #2/10</span>');
     expect(out).toContain('<span class="sys-line">직전 평가: No evidence: no files, diffs, or tests.</span>');
     expect(out).toContain('<dt>회차</dt><dd>2 / 10</dd>');
     expect(out).toContain('<pre class="sys-raw">[goal-continuation] Continue working');
@@ -911,19 +788,23 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
 
   it('restart (recorded before origins were kept) and background-work-resume read the same way', () => {
     const r = card(user(`${RESTART_PROMPT}\n\n--- 중단 시점 컨텍스트 ---\n세션 제목: 대시보드`)).html();
-    expect(r).toContain('<span class="sys-badge" data-kind="restart">시스템 재시작</span>');
+    expect(r).toContain('<span class="ui-chip sys-badge" data-kind="restart">시스템 재시작</span>');
     expect(r).toContain('<span class="sys-line">중단된 작업 자동 재개 · 대시보드</span>');
     const b = card(user(buildBackgroundWaitPrompt({ count: 1, labels: ['local_bash'] } as never, 2, 6), SYSTEM)).html();
-    expect(b).toContain('<span class="sys-badge" data-kind="bgwork">백그라운드 재개 #2/6</span>');
+    expect(b).toContain('<span class="ui-chip sys-badge" data-kind="bgwork">백그라운드 재개 #2/6</span>');
   });
 
   it('the row stays open across the card re-render (the morph drops attributes the markup lacks)', () => {
     const c = card(user(goalPrompt(2, 10), SYSTEM));
-    expect(c.html()).not.toContain('<details class="io-sys" open');
-    c.ioSysToggle({ open: true }, CID);
-    expect(c.html()).toContain(`<details class="io-sys" open ontoggle="ioSysToggle(this,'${CID}')">`);
-    c.ioSysToggle({ open: false }, CID);
-    expect(c.html()).not.toContain('<details class="io-sys" open');
+    expect(c.html()).not.toContain('<ui-disclosure class="io-sys" data-cid="' + CID + '" open');
+    c.ioSysToggle(CID, true);
+    expect(c.html()).toContain(`<ui-disclosure class="io-sys" data-cid="${CID}" open flush>`);
+    c.ioSysToggle(CID, false);
+    expect(c.html()).not.toContain('<ui-disclosure class="io-sys" data-cid="' + CID + '" open');
+    // The element's ui-toggle is answered once, on the document: the reader's choice by its card's conversation.
+    expect(TEMPLATE).toContain(
+      "if (t && t.classList && t.classList.contains('io-sys')) ioSysToggle(t.getAttribute('data-cid') || '', e.detail && e.detail.open);",
+    );
   });
 
   it('a person typed it: the words as before', () => {
@@ -991,7 +872,7 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
       working: true,
     });
     const out = c.html();
-    expect(out).toContain('<span class="sys-badge" data-kind="compact">자동 압축</span>');
+    expect(out).toContain('<span class="ui-chip sys-badge" data-kind="compact">자동 압축</span>');
     expect(out).toContain('<span class="sys-line">컨텍스트 압축 (/compact)</span>');
     expect(out).toContain(
       `<div class="io-cp" data-cp-live="1" data-cp-start="${NOW - 30_000}" data-cp-est="120000" data-cp-label="자동 압축">`,
@@ -1106,20 +987,22 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
   });
 });
 
-describe('C7 — the work log (작업 로그): an instruction entry reads like the conversation', () => {
+describe('C7 — the work log (작업 로그, <ui-work-log>): an instruction entry reads like the conversation', () => {
   const invoked = (text: string, skills: [string, string][]) =>
     `${text}\n\n<invoked_skills>\n${skills.map(([k, c]) => `<${k}>\n${c}\n</${k}>`).join('\n')}\n</invoked_skills>`;
+  type Entry = Record<string, unknown> & { kind: string; text?: string; skills?: Record<string, unknown>[] };
   type WlApi = {
-    renderWorkLogEntry(e: Record<string, unknown>): string;
-    wlEntryFactsHtml(e: Record<string, unknown>): string;
+    wlEntryOf(st: unknown, e: Record<string, unknown>): Entry;
+    wlEntryFactsText(e: Record<string, unknown>): string;
   };
   function wl() {
     return load<WlApi>(
-      [...SYS_FNS, 'wlInstructionTurn', 'wlEntryFactsHtml', 'wlCutSkills', 'wlCutSkillsHtml', 'renderWorkLogEntry'],
-      [...SYS_VARS, 'WL_LABELS'],
+      [...SYS_FNS, 'wlInstructionTurn', 'wlEntryFactsText', 'wlCutSkills', 'wlFullText', 'wlRawView', 'wlEntryOf'],
+      [...SYS_VARS, 'WL_LABELS', 'WL_RAW_MISSING_MSG', 'WL_RAW_ERROR_MSG', 'WL_RAW_DAMAGED_MSG', 'WL_FORBIDDEN_MSG'],
       { setInterval: vi.fn(() => 7) },
     );
   }
+  const ST = { entries: [] };
   const entry = (text: string, extra: Record<string, unknown> = {}) => ({
     seq: 5,
     ts: 1_792_900_000_000,
@@ -1128,49 +1011,49 @@ describe('C7 — the work log (작업 로그): an instruction entry reads like t
     ...extra,
   });
 
-  it('a turn soma-work sent: one line — badge, what it did, time — on the row that opens the raw', () => {
-    const out = wl().renderWorkLogEntry(
-      entry(goalPrompt(2, 10, 'No evidence: no files, diffs, or tests.'), { by: 'system' }),
-    );
-    expect(out).toContain('<div class="wl-entry wl-instruction is-sys" data-seq="5">');
-    expect(out).toContain(
-      '<div class="wl-row" role="button" tabindex="-1" aria-expanded="false" aria-controls="wl-detail-5">',
-    );
-    expect(out).toMatch(
-      /<div class="wl-head"><span class="sys-badge" data-kind="goal">Goal #2\/10<\/span><span class="wl-sys-line">직전 평가: No evidence: no files, diffs, or tests\.<\/span><span class="wl-time">/,
-    );
-    expect(out).not.toContain('[goal-continuation]');
-    expect(out).not.toContain('<span class="wl-label">지시</span>');
+  it('a turn soma-work sent: one line — badge, what it did, time — on a row that opens the raw', () => {
+    const x = wl().wlEntryOf(ST, entry(goalPrompt(2, 10, 'No evidence: no files, diffs, or tests.'), { by: 'system' }));
+    expect(x).toEqual({
+      id: '5',
+      at: 1_792_900_000_000,
+      kind: 'system',
+      system: { kind: 'goal', label: 'Goal #2/10' },
+      text: '직전 평가: No evidence: no files, diffs, or tests.',
+      hasRaw: true,
+    });
   });
 
   it('entries written before origins were kept are read from their text (goal, background resume, restart)', () => {
     const a = wl();
-    expect(a.renderWorkLogEntry(entry(goalPrompt(3, 10)))).toContain('data-kind="goal">Goal #3/10</span>');
+    expect(a.wlEntryOf(ST, entry(goalPrompt(3, 10))).system).toEqual({ kind: 'goal', label: 'Goal #3/10' });
     expect(
-      a.renderWorkLogEntry(entry(buildBackgroundWaitPrompt({ count: 1, labels: ['local_bash'] } as never, 1, 6))),
-    ).toContain('data-kind="bgwork">백그라운드 재개 #1/6</span>');
-    expect(
-      a.renderWorkLogEntry(entry(`${RESTART_PROMPT}\n\n--- 중단 시점 컨텍스트 ---\n세션 제목: 대시보드`)),
-    ).toContain(
-      'data-kind="restart">시스템 재시작</span><span class="wl-sys-line">중단된 작업 자동 재개 · 대시보드</span>',
-    );
+      a.wlEntryOf(ST, entry(buildBackgroundWaitPrompt({ count: 1, labels: ['local_bash'] } as never, 1, 6))).system,
+    ).toEqual({ kind: 'background', label: '백그라운드 재개 #1/6' });
+    const restart = a.wlEntryOf(ST, entry(`${RESTART_PROMPT}\n\n--- 중단 시점 컨텍스트 ---\n세션 제목: 대시보드`));
+    expect(restart.system).toEqual({ kind: 'restart', label: '시스템 재시작' });
+    expect(restart.text).toBe('중단된 작업 자동 재개 · 대시보드');
   });
 
   it('/compact: 자동 압축 when soma-work ran it, 압축 when a person did; a goal objective starting with /compact is words', () => {
     const a = wl();
-    expect(a.renderWorkLogEntry(entry('/compact', { by: 'system', compactTurn: true }))).toContain(
-      'data-kind="compact">자동 압축</span><span class="wl-sys-line">컨텍스트 압축 (/compact)</span>',
-    );
-    expect(a.renderWorkLogEntry(entry('/compact', { by: 'user', compactTurn: true }))).toContain(
-      'data-kind="compact">압축</span>',
-    );
-    const literal = a.renderWorkLogEntry(entry('/compact 명령의 버그를 고쳐라', { by: 'user' }));
-    expect(literal).not.toContain('sys-badge');
-    expect(literal).toContain('<div class="wl-text">/compact 명령의 버그를 고쳐라</div>');
+    const auto = a.wlEntryOf(ST, entry('/compact', { by: 'system', compactTurn: true }));
+    expect(auto).toMatchObject({
+      kind: 'system',
+      system: { kind: 'compact', label: '자동 압축' },
+      text: '컨텍스트 압축 (/compact)',
+    });
+    expect(a.wlEntryOf(ST, entry('/compact', { by: 'user', compactTurn: true })).system).toEqual({
+      kind: 'compact',
+      label: '압축',
+    });
+    const literal = a.wlEntryOf(ST, entry('/compact 명령의 버그를 고쳐라', { by: 'user' }));
+    expect(literal).toMatchObject({ kind: 'instruction', text: '/compact 명령의 버그를 고쳐라' });
+    expect(literal).not.toHaveProperty('system');
   });
 
-  it('a person’s instruction: the words on the row, skill badges beside it (never inside the row button)', () => {
-    const out = wl().renderWorkLogEntry(
+  it('a person’s instruction: the words, and a chip per skill it invoked (name, tokens, its text for the pane)', () => {
+    const x = wl().wlEntryOf(
+      ST,
       entry(
         invoked('예측 시장 리포트', [
           ['local:using-ssot', 'ssot body'],
@@ -1179,116 +1062,152 @@ describe('C7 — the work log (작업 로그): an instruction entry reads like t
         { by: 'user' },
       ),
     );
-    expect(out).toContain('<span class="wl-label">지시</span>');
-    expect(out).toContain(
-      '<div class="wl-text">예측 시장 리포트</div></div><div class="skill-badges" role="group" aria-label="활성화된 스킬 2개">',
-    );
-    expect(out).toContain('aria-controls="skd-wl5-0" data-skill="skd-wl5-0" onclick="skillToggle(this)"');
-    expect(out).not.toContain('invoked_skills');
-    expect(out).not.toContain('ssot body');
-    expect(out.indexOf('skill-badges')).toBeLessThan(out.indexOf('wl-detail-5" aria-live'));
+    expect(x).toMatchObject({ kind: 'instruction', text: '예측 시장 리포트' });
+    expect(x.skills).toEqual([
+      { name: 'local:using-ssot', tokens: expect.any(Number), text: 'ssot body' },
+      { name: 'local:autoz', tokens: expect.any(Number), text: 'autoz body' },
+    ]);
+    expect(JSON.stringify(x.text)).not.toContain('invoked_skills');
   });
 
-  it('a stored text cut inside the skill block (4,000 characters): the words, and a badge per readable skill name — no skill text', () => {
+  it('a stored text cut inside the skill block (4,000 characters): the words, and a chip per readable skill name — no cut text', () => {
     const cut = `예측 시장 리포트\n\n<invoked_skills>\n<local:using-ssot>\nssot body\n</local:using-ssot>\n<local:autoz>\n${'x'.repeat(3000)}`;
-    const out = wl().renderWorkLogEntry(entry(cut, { by: 'user', rawBytes: 51_998 }));
-    expect(out).toContain(
-      '<div class="wl-text">예측 시장 리포트</div></div><div class="skill-badges" role="group" aria-label="활성화된 스킬">',
-    );
-    expect(out).toContain(
-      '<button type="button" class="skill-badge" aria-expanded="false" data-wl-seq="5" data-wl-skill="local:using-ssot" onclick="wlSkillOpen(this)"',
-    );
-    expect(out).toContain('data-wl-skill="local:autoz" onclick="wlSkillOpen(this)"');
-    // Past the cut more may follow: one badge says so.
-    expect(out).toContain('data-wl-skill="" onclick="wlSkillOpen(this)"');
-    expect(out).not.toContain('xxxxxxxxxx');
-    expect(out).not.toContain('ssot body');
-    expect(out).not.toContain('invoked_skills');
+    const x = wl().wlEntryOf(ST, entry(cut, { by: 'user', rawBytes: 51_998 }));
+    expect(x.text).toBe('예측 시장 리포트');
+    expect(x.skills).toEqual([{ name: 'local:using-ssot' }, { name: 'local:autoz' }]);
+    expect(JSON.stringify(x)).not.toContain('xxxxxxxxxx');
+    expect(JSON.stringify(x)).not.toContain('ssot body');
+    // wlPaint loads the stored original for such a row (its chips then carry the text and tokens).
+    expect(clientFn('wlPaint')).toContain('wlRawFetch(st, Number(x.id))');
   });
 
-  it('two blocks (autoskill closed, the $skill one cut): one row of badges for both, no skill text on the row', () => {
-    const two = `리포트\n\n<invoked_skills>\n<local:using-ssot>\nssot body\n</local:using-ssot>\n</invoked_skills>\n\n<invoked_skills>\n<local:autoz>\n${'y'.repeat(3000)}`;
-    const out = wl().renderWorkLogEntry(entry(two, { by: 'user', rawBytes: 40_000 }));
-    expect(out).toContain(
-      '<div class="wl-text">리포트</div></div><div class="skill-badges" role="group" aria-label="활성화된 스킬">',
-    );
-    expect(out).toContain('data-wl-skill="local:using-ssot"');
-    expect(out).toContain('data-wl-skill="local:autoz"');
-    expect(out).not.toContain('yyyyyyyyyy');
-    expect(out).not.toContain('ssot body');
-    expect(out).not.toContain('invoked_skills');
-  });
-
-  it('a text that was not cut (no stored original) and only mentions the tag is words, never badges', () => {
-    const out = wl().renderWorkLogEntry(entry('예시: <invoked_skills>\n<foo> 처럼 쓰면 된다', { by: 'user' }));
-    expect(out).not.toContain('skill-badge');
-    expect(out).toContain('<div class="wl-text">예시: &lt;invoked_skills&gt;');
-  });
-
-  it('wlSkillOpen: loads the stored original, redraws the badges with every skill and its tokens, opens the one clicked', async () => {
+  it('the stored original loaded: every skill with its text and tokens', () => {
     const full = invoked('예측 시장 리포트', [
       ['local:using-ssot', 'ssot body'],
       ['local:autoz', 'autoz body'],
     ]);
-    const skillToggle = vi.fn();
-    const named = (name: string) => ({ querySelector: () => ({ textContent: name }) });
-    const fresh = [named('local:using-ssot'), named('local:autoz')];
-    const document = { querySelectorAll: vi.fn((sel: string) => (sel === '[data-skill^="skd-wl5-"]' ? fresh : [])) };
-    const state = { convId: 'c1', closed: false };
-    const a = load<{ wlSkillOpen(btn: unknown): Promise<void> }>(
-      [
-        'esc',
-        'escAttr',
-        'toNum',
-        'formatTokens',
-        'decodeSlackEntities',
-        'estimateTokens',
-        'splitInvokedSkills',
-        'skillBadgesHtml',
-        'wlSkillOpen',
-      ],
-      ['_skillBodies', '_skillSeq'],
-      {
-        _wl: state,
-        document,
-        skillToggle,
-        wlFetchJson: vi.fn(),
-        wlRawLoad: vi.fn(async () => ({ status: 'ok', raw: full })),
-      },
-    );
-    const group: { outerHTML: string } = { outerHTML: '' };
-    const attrs: Record<string, string> = { 'data-wl-seq': '5', 'data-wl-skill': 'local:autoz' };
-    const btn = {
-      parentNode: group,
-      getAttribute: (k: string) => attrs[k] ?? null,
-      setAttribute: (k: string, v: string) => {
-        attrs[k] = v;
-      },
-      removeAttribute: (k: string) => {
-        delete attrs[k];
-      },
-    };
-    await a.wlSkillOpen(btn);
-    expect(group.outerHTML).toContain('<div class="skill-badges" role="group" aria-label="활성화된 스킬 2개">');
-    expect(group.outerHTML).toMatch(
-      /aria-controls="skd-wl5-1" data-skill="skd-wl5-1" onclick="skillToggle\(this\)"[^>]*><span class="skill-name">local:autoz<\/span><span class="skill-tok">≈\d+ tokens<\/span>/,
-    );
-    expect(skillToggle).toHaveBeenCalledWith(fresh[1]);
+    const cut = `예측 시장 리포트\n\n<invoked_skills>\n<local:using-ssot>\nssot body\n</local:using-ssot>\n<local:autoz>\n${'x'.repeat(3000)}`;
+    const st = { entries: [], rawDone: { 5: { status: 'ok', raw: full } } };
+    const x = wl().wlEntryOf(st, entry(cut, { by: 'user', rawBytes: 51_998 }));
+    expect(x.skills).toEqual([
+      { name: 'local:using-ssot', tokens: expect.any(Number), text: 'ssot body' },
+      { name: 'local:autoz', tokens: expect.any(Number), text: 'autoz body' },
+    ]);
+  });
+
+  it('two blocks (autoskill closed, the $skill one cut): one row of chips for both, no skill text', () => {
+    const two = `리포트\n\n<invoked_skills>\n<local:using-ssot>\nssot body\n</local:using-ssot>\n</invoked_skills>\n\n<invoked_skills>\n<local:autoz>\n${'y'.repeat(3000)}`;
+    const x = wl().wlEntryOf(ST, entry(two, { by: 'user', rawBytes: 40_000 }));
+    expect(x.text).toBe('리포트');
+    expect((x.skills ?? []).map((k) => k.name)).toEqual(['local:using-ssot', 'local:autoz']);
+    expect(JSON.stringify(x)).not.toContain('yyyyyyyyyy');
+  });
+
+  it('a text that was not cut (no stored original) and only mentions the tag is words, never chips', () => {
+    const x = wl().wlEntryOf(ST, entry('예시: <invoked_skills>\n<foo> 처럼 쓰면 된다', { by: 'user' }));
+    expect(x).not.toHaveProperty('skills');
+    expect(x.text).toBe('예시: <invoked_skills>\n<foo> 처럼 쓰면 된다');
   });
 
   it('a plain instruction is unchanged', () => {
-    const out = wl().renderWorkLogEntry(entry('대시보드 고쳐줘', { by: 'user' }));
-    expect(out).toContain('<div class="wl-head"><span class="wl-label">지시</span>');
-    expect(out).toContain('<div class="wl-text">대시보드 고쳐줘</div>');
-    expect(out).not.toContain('sys-badge');
+    const x = wl().wlEntryOf(ST, entry('대시보드 고쳐줘', { by: 'user' }));
+    expect(x).toEqual({ id: '5', at: 1_792_900_000_000, kind: 'instruction', text: '대시보드 고쳐줘', hasRaw: true });
   });
 
-  it('the opened row shows the facts above the raw prompt; a person’s row has none', () => {
+  it('the opened row shows the facts with the raw prompt (the viewer’s note); a person’s row has none', () => {
     const a = wl();
-    expect(a.wlEntryFactsHtml(entry(goalPrompt(2, 10, 'gap'), { by: 'system' }))).toBe(
-      '<dl class="sys-facts"><dt>회차</dt><dd>2 / 10</dd><dt>직전 평가에서 남은 일</dt><dd>gap</dd></dl>',
+    expect(a.wlEntryFactsText(entry(goalPrompt(2, 10, 'gap'), { by: 'system' }))).toBe(
+      '회차: 2 / 10 · 직전 평가에서 남은 일: gap',
     );
-    expect(a.wlEntryFactsHtml(entry('대시보드 고쳐줘', { by: 'user' }))).toBe('');
-    expect(a.wlEntryFactsHtml({ seq: 6, kind: 'narration', text: goalPrompt(2, 10) })).toBe('');
+    expect(a.wlEntryFactsText(entry('대시보드 고쳐줘', { by: 'user' }))).toBe('');
+    expect(a.wlEntryFactsText({ seq: 6, kind: 'narration', text: goalPrompt(2, 10) })).toBe('');
+    const open = a.wlEntryOf({ entries: [], open: new Set([5]) }, entry(goalPrompt(2, 10, 'gap'), { by: 'system' }));
+    expect(open.raw).toEqual({
+      state: 'ready',
+      text: expect.stringContaining('[goal-continuation]'),
+      note: '회차: 2 / 10 · 직전 평가에서 남은 일: gap',
+    });
+  });
+});
+
+// D1-GAPS G4-4: @2lab.ai/ui 0.5.0 <ui-disclosure> toggles only on a click whose target is inside its own head; a
+// click on slotted summary content (the System row's words, a card's instruction badge) did nothing. The page
+// toggles it with the element's toggle() — once, and never on top of a release that toggles by itself.
+describe('D1 — a click on a disclosure’s summary content opens it (G4-4)', () => {
+  const INIT = (() => {
+    const start = TEMPLATE.indexOf('(function initDisclosures() {');
+    const end = TEMPLATE.indexOf('\n})();', start);
+    if (start < 0 || end < 0) throw new Error('initDisclosures not found');
+    return cook(TEMPLATE.slice(start, end + 6));
+  })();
+  type Fn = (e: unknown) => void;
+  function setup() {
+    const bubble: Record<string, Fn[]> = {};
+    const capture: Record<string, Fn[]> = {};
+    const document = {
+      addEventListener: (type: string, fn: Fn, cap?: boolean) => {
+        const at = cap ? capture : bubble;
+        at[type] = [...(at[type] ?? []), fn];
+      },
+    };
+    const ioSysToggle = vi.fn();
+    const { dcSummaryHost } = load<{ dcSummaryHost(t: unknown): unknown }>(['dcSummaryHost'], []);
+    new Function('document', 'ioSysToggle', 'dcSummaryHost', INIT)(document, ioSysToggle, dcSummaryHost);
+    const host = {
+      tagName: 'UI-DISCLOSURE',
+      isConnected: true,
+      open: false,
+      classList: { contains: (c: string) => c === 'io-sys' },
+      getAttribute: () => 'conv-1',
+      closest: () => null,
+      // The element's public toggle(): its ui-toggle (heard on the document), then the change.
+      toggle: vi.fn(() => {
+        for (const fn of bubble['ui-toggle'] ?? []) fn({ target: host, detail: { open: !host.open } });
+        host.open = !host.open;
+      }),
+    };
+    const summary = { parentElement: host };
+    const words = { closest: (sel: string) => (sel === '[slot="summary"]' ? summary : null) };
+    const region = { closest: () => null };
+    /** One click: the document's capture listener, the element's own handler (selfToggles), the bubble listener. */
+    const click = (target: unknown, selfToggles: boolean) => {
+      for (const fn of capture.click ?? []) fn({ target });
+      if (selfToggles) host.toggle();
+      for (const fn of bubble.click ?? []) fn({ target });
+    };
+    return { host, words, region, click, ioSysToggle };
+  }
+
+  it('0.5.0: a click on the summary’s words opens it once, through toggle(); the card keeps the choice', () => {
+    const s = setup();
+    s.click(s.words, false);
+    expect(s.host.toggle).toHaveBeenCalledTimes(1);
+    expect(s.host.open).toBe(true);
+    expect(s.ioSysToggle).toHaveBeenCalledWith('conv-1', true);
+    s.click(s.words, false);
+    expect(s.host.open).toBe(false);
+  });
+
+  it('a release that toggles by itself is not toggled a second time', () => {
+    const s = setup();
+    s.click(s.words, true);
+    expect(s.host.toggle).toHaveBeenCalledTimes(1);
+    expect(s.host.open).toBe(true);
+  });
+
+  it('the head (the host, retargeted) and the region are left to the element', () => {
+    const s = setup();
+    s.click(s.host, true);
+    s.click(s.region, false);
+    expect(s.host.toggle).toHaveBeenCalledTimes(1);
+    expect(s.host.open).toBe(true);
+  });
+
+  it('only a ui-disclosure’s own summary slot counts', () => {
+    const { dcSummaryHost } = load<{ dcSummaryHost(t: unknown): unknown }>(['dcSummaryHost'], []);
+    const other = { tagName: 'DIV' };
+    expect(dcSummaryHost({ closest: () => ({ parentElement: other }) })).toBe(null);
+    expect(dcSummaryHost(null)).toBe(null);
+    expect(dcSummaryHost({})).toBe(null);
   });
 });
