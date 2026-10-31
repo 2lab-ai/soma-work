@@ -1063,32 +1063,47 @@ export class SessionRegistry {
    * children point at it, and a re-minted child is named by its new id in its
    * epic's list (the cap counts that list). The claimed id now belongs to a
    * Slack session, which never carries the relation, so these links are the
-   * re-minted task's alone. Returns how many links moved.
+   * re-minted task's alone. A relative archived in the same load (`archiving`,
+   * not yet written — an archived record is never re-minted) is patched the
+   * same way before its archive is written. Returns how many links moved.
    */
-  private relinkRemintedEpicIds(reminted: Array<{ session: ConversationSession; claimed: string }>): number {
+  private relinkRemintedEpicIds(
+    reminted: Array<{ session: ConversationSession; claimed: string }>,
+    archiving: SerializedSession[] = [],
+  ): number {
     let moved = 0;
     for (const { session: epic, claimed } of reminted) {
-      const children = this.childrenByParent.get(claimed);
-      if (epic.kind !== 'epic' || !epic.taskId || !children) continue;
+      if (epic.kind !== 'epic' || !epic.taskId) continue;
+      const children = this.childrenByParent.get(claimed) ?? new Set<ConversationSession>();
+      const archivedChildren = archiving.filter((r) => r.parentTaskId === claimed);
+      if (children.size === 0 && archivedChildren.length === 0) continue;
       this.childrenByParent.delete(claimed);
       const siblings = this.childrenByParent.get(epic.taskId) ?? new Set<ConversationSession>();
       for (const child of children) {
         child.parentTaskId = epic.taskId;
         siblings.add(child);
       }
-      this.childrenByParent.set(epic.taskId, siblings);
-      moved += children.size;
+      if (siblings.size > 0) this.childrenByParent.set(epic.taskId, siblings);
+      for (const record of archivedChildren) record.parentTaskId = epic.taskId;
+      moved += children.size + archivedChildren.length;
       this.logger.warn('Epic task id re-minted on load; its children now point at the new id', {
         claimed,
         taskId: epic.taskId,
-        children: children.size,
+        children: children.size + archivedChildren.length,
       });
     }
     for (const { session: child, claimed } of reminted) {
-      const epic = child.parentTaskId ? this.sessionsByTaskId.get(child.parentTaskId) : undefined;
-      if (!child.taskId || !epic || epic.slackless !== true || epic.kind !== 'epic') continue;
-      const list = epic.childTaskIds ?? [];
+      if (!child.taskId || !child.parentTaskId) continue;
+      const live = this.sessionsByTaskId.get(child.parentTaskId);
+      const epic: { childTaskIds?: unknown; taskId?: unknown } | undefined =
+        live && live.slackless === true && live.kind === 'epic'
+          ? live
+          : archiving.find((r) => r.taskId === child.parentTaskId && r.kind === 'epic');
+      if (!epic) continue;
+      const list = Array.isArray(epic.childTaskIds) ? (epic.childTaskIds as unknown[]) : [];
       const taskId = child.taskId;
+      // Renamed in place; appended if the list lacks it (a damaged list heals here only for a
+      // re-minted child — elsewhere the list is append-only through createTask).
       epic.childTaskIds = list.includes(claimed) ? list.map((id) => (id === claimed ? taskId : id)) : [...list, taskId];
       moved++;
       this.logger.warn("Child task id re-minted on load; its epic's list names the new id", {
@@ -3298,6 +3313,7 @@ export class SessionRegistry {
       let sleptOnLoadCount = 0;
       let mintedTaskIdCount = 0;
       const remintedSlackless: Array<{ session: ConversationSession; claimed: string }> = [];
+      const archivedRelatives: Array<{ serialized: SerializedSession; lastActivity: Date }> = [];
       let reconciledTaskTurnCount = 0;
       // Task keys taken by a Slack-less record earlier in THIS load pass (a reload of the
       // same registry is not a duplicate; a second record with one task id in one file is).
@@ -3322,7 +3338,13 @@ export class SessionRegistry {
           const sleepAge = sleepStartedAt ? now - sleepStartedAt.getTime() : archiveAfterMs + 1;
           if (sleepAge >= archiveAfterMs) {
             // Archive expired session before discarding (#401)
-            this.archiveSerializedOnLoad(serialized, lastActivity, 'sleep_expired');
+            // E4 ① — an epic or child is archived after the relink below, so a
+            // re-minted relative's new id reaches its archive too.
+            if (Object.keys(sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, slackless)).length) {
+              archivedRelatives.push({ serialized, lastActivity });
+            } else {
+              this.archiveSerializedOnLoad(serialized, lastActivity, 'sleep_expired');
+            }
             serialized.sourceWorkingDirs?.forEach((dir) => this.safeRemoveSourceDir(dir));
             continue;
           }
@@ -3732,7 +3754,13 @@ export class SessionRegistry {
         this.logger.info(`Put ${sleptOnLoadCount} stale session(s) to sleep on load`);
       }
       // E4 ① — the epic links of a re-minted task follow its new id; the write-back below saves them.
-      this.relinkRemintedEpicIds(remintedSlackless);
+      this.relinkRemintedEpicIds(
+        remintedSlackless,
+        archivedRelatives.map((a) => a.serialized),
+      );
+      for (const { serialized, lastActivity } of archivedRelatives) {
+        this.archiveSerializedOnLoad(serialized, lastActivity, 'sleep_expired');
+      }
       // A task id minted here (a file from before task ids, or a duplicate)
       // is written back now: the next restart must find the same task.
       if (mintedTaskIdCount > 0) {
