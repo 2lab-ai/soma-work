@@ -574,9 +574,13 @@ describe('tone pass P7 — surfaces and elevation', () => {
       '<div class="chart-row" id="chart-row"><ui-bar-chart id="chart-sessions" lang="ko"></ui-bar-chart><ui-bar-chart id="chart-merge" lang="ko"></ui-bar-chart></div>',
     );
     expect(TEMPLATE).not.toContain('.chart-container');
-    for (const sel of ['.nt-dialog', '.art-peek', '.art-modal']) {
+    for (const sel of ['.nt-dialog']) {
       expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow-raised)');
     }
+    // D4 (I-05, I-06): the peek and the viewer are @2lab.ai/ui elements — their raised cards are the library's.
+    expect(TEMPLATE).toContain('<ui-hovercard id="art-peek"');
+    expect(TEMPLATE).toContain('<ui-artifact-viewer id="art-viewer" tiles="none"');
+    expect(TEMPLATE).not.toMatch(/\.art-peek \{|\.art-modal \{/);
     // D2 (B-04, B-08): the token breakdown is <ui-stat-strip>'s card tooltip (data.metrics[].breakdown) and the bar
     // values are <ui-bar-chart>'s own tooltip — the elements draw their surfaces; the page keeps no tooltip rule
     // and no <ui-tooltip> of its own.

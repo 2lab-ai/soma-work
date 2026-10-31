@@ -11,9 +11,11 @@
  *   C3  the card face: a paperclip count only (no image is fetched on the board) —
  *       a host metric in cardOf's data, drawn by <ui-agent-inbox>
  *   C4  the viewer reuse: an id registered as user media resolves to the media
- *       content route; the viewer pages within the same instruction; html never
- *       gets scripts in the viewer
+ *       content route; the viewer (@2lab.ai/ui <ui-artifact-viewer>, D4) pages within
+ *       the same instruction; a user's html never gets scripts in it
  *   C5  a file without a kept copy says so and links to Slack (https only)
+ *   D4  a non-image attachment is a <ui-file-card variant="row" playable> (a chip in
+ *       the compact row): the card draws the glyph, name, meta and the voice note's play
  */
 
 import { readFileSync } from 'node:fs';
@@ -70,18 +72,24 @@ const BASE_FNS = [
   'artKindLabel',
   'artGlyph',
   'artMeta',
-  'umMiddleName',
+  'artFileItem',
+  'artCard',
   'umTile',
   'renderUserMedia',
   'umMissingReason',
+  'artViewItem',
+  'artViewerPreview',
 ];
-const BASE_VARS = ['ART_KIND_LABEL', 'ART_GLYPH', '_userMedia', 'UM_GRID_MAX'];
+const BASE_VARS = ['ART_KIND_LABEL', 'ART_GLYPH', '_userMedia', 'UM_GRID_MAX', '_artDocCache'];
 
 type Api = {
   umRegister(cid: string, list: unknown[], turn: unknown): void;
   umGet(cid: string, id: string): any;
   artUrl(cid: string, id: string, download?: boolean): string;
   renderUserMedia(cid: string, list: unknown[], opts?: unknown): string;
+  artFileItem(cid: string, a: unknown): Record<string, unknown>;
+  artViewItem(cid: string, a: unknown): Record<string, unknown>;
+  artViewerPreview(cid: string, a: unknown): string;
 };
 
 const img = (id: string, name = `${id}.png`) => ({
@@ -118,9 +126,15 @@ describe('C1 — panel user turn: the instruction with its files', () => {
     // A button named by what it does — the image itself carries no alt from its file name.
     expect(out).toMatch(/aria-label="이미지 열기 1\/4: login\.png"/);
     expect(out).toContain('alt=""');
-    expect(out).toContain('design-guide.pdf');
-    expect(out).toContain('PDF · 2.1 MB');
-    expect(out).toContain('data-art-play="1"'); // the voice note plays in place
+    // D4: the other files are <ui-file-card variant="row" playable> in the page's box — the card draws the name,
+    // "PDF · 2.1 MB" (artFileItem's size) and the voice note's play toggle; the page keeps no play button.
+    expect(out).toMatch(/<div class="um-file art-k-pdf"><ui-file-card class="art-card" variant="row" playable lang="ko" data-art-cid="c1" data-art-id="P1"/);
+    expect(out).toMatch(/<div class="um-file art-k-audio"><ui-file-card class="art-card" variant="row" playable lang="ko" data-art-cid="c1" data-art-id="V1"/);
+    expect(api.artFileItem('c1', pdf)).toMatchObject({ name: 'design-guide.pdf', kind: 'pdf', size: 2_200_000 });
+    expect(out).not.toContain('data-art-play');
+    expect(out).not.toContain('um-open');
+    // The compact row (the open card's 지시 row, the pinned row): name chips.
+    expect(api.renderUserMedia('c1', [pdf], { compact: true })).toMatch(/<div class="um-file art-k-pdf um-file-compact"><ui-file-card class="art-card" variant="chip" playable/);
   });
 
   it('one image shows on its own in a fixed box (no layout shift)', () => {
@@ -244,7 +258,7 @@ describe('C4 — viewer reuse', () => {
     api.umRegister('c4', [img('U1'), pdf], turn);
     const a = api.umGet('c4', 'P1');
     expect(a).toMatchObject({ source: 'user_upload', turnId: 'u1', title: '지시 첨부 · Zhuge' });
-    const open = clientFn('openArtifactModal');
+    const open = clientFn('openArtifactViewer');
     expect(open).toContain('umSiblings(');
   });
 
@@ -252,11 +266,8 @@ describe('C4 — viewer reuse', () => {
     expect(clientFn('artFind')).toContain('umGet(');
   });
 
-  it('a user html file never gets scripts in the viewer', () => {
-    const { renderArtModalBody } = load<{ renderArtModalBody(cid: string, a: unknown): string }>(
-      [...BASE_FNS, 'renderArtModalBody'],
-      BASE_VARS,
-    );
+  it("a user html file never gets scripts in the viewer: the element's sandbox=\"\" frame, not the page's body", () => {
+    const api = load<Api>(BASE_FNS, BASE_VARS);
     const page = {
       id: 'H1',
       name: 'page.html',
@@ -266,9 +277,10 @@ describe('C4 — viewer reuse', () => {
       stored: true,
       source: 'user_upload',
     };
-    const out = renderArtModalBody('c4', page);
-    expect(out).toContain('sandbox=""');
-    expect(out).not.toContain('allow-scripts');
+    // No page body (the viewer draws its own sandbox="" frame from the url); the model's html gets the scripted one.
+    expect(api.artViewerPreview('c4', page)).toBe('');
+    expect(api.artViewItem('c4', page)).not.toHaveProperty('text');
+    expect(api.artViewerPreview('c4', { ...page, source: 'slack_upload' })).toContain('sandbox="allow-scripts"');
   });
 });
 
@@ -279,8 +291,11 @@ describe('C5 — a file without a kept copy', () => {
     api.umRegister('c5', [remote, bad], turn);
     const out = api.renderUserMedia('c5', [remote, bad]);
     expect(out).toContain('is-remote');
-    expect(out).toContain('Slack에만 있음');
     expect(out).not.toContain('javascript:');
+    // The card's meta line says so (artFileItem); the viewer's Slack action takes https only (artViewItem).
+    expect(api.artFileItem('c5', remote)).toMatchObject({ meta: 'Slack에만 있음' });
+    expect(api.artViewItem('c5', remote).actions).toEqual([{ id: 'slack', label: 'Slack에서 열기', href: 'https://x.slack.com/files/U/F/demo.mov' }]);
+    expect(api.artViewItem('c5', bad)).not.toHaveProperty('actions');
   });
 });
 
@@ -305,44 +320,36 @@ describe('pinned 지시 첨부 row', () => {
 });
 
 describe('review gate P3 — the viewer says why a user file has no copy', () => {
-  it('names the user-media reason, not the artifact one', () => {
-    const { renderArtModalBody } = load<{ renderArtModalBody(cid: string, a: unknown): string }>(
-      [...BASE_FNS, 'renderArtModalBody'],
-      BASE_VARS,
-    );
+  it('names the user-media reason, not the artifact one (the item\'s meta line on the viewer\'s card)', () => {
+    const api = load<Api>(BASE_FNS, BASE_VARS);
     const big = { ...img('B1'), stored: false, unavailable: 'too_large', source: 'user_upload' };
     const video = { ...remote, source: 'user_upload' };
-    expect(renderArtModalBody('c7', big)).toContain('50 MB');
-    expect(renderArtModalBody('c7', big)).not.toContain('100 MB');
-    // A video is downloaded like any file now: without a copy it gets the generic reason.
-    expect(renderArtModalBody('c7', video)).toContain('사본이 없습니다');
-    expect(renderArtModalBody('c7', video)).toContain('href="https://x.slack.com/files/U/F/demo.mov"');
+    expect(String(api.artViewItem('c7', big).meta)).toContain('50 MB');
+    expect(String(api.artViewItem('c7', big).meta)).not.toContain('100 MB');
+    expect(api.artViewItem('c7', big)).not.toHaveProperty('url');
+    // A video is downloaded like any file now: without a copy it gets the generic reason, and the Slack action.
+    expect(String(api.artViewItem('c7', video).meta)).toContain('사본이 없습니다');
+    expect(api.artViewItem('c7', video).actions).toEqual([{ id: 'slack', label: 'Slack에서 열기', href: 'https://x.slack.com/files/U/F/demo.mov' }]);
   });
 });
 
 describe('goal gap — a user video or voice note with a copy plays in the dashboard', () => {
-  const fns = () =>
-    load<{
-      renderArtModalBody(cid: string, a: unknown): string;
-      umRegister: Api['umRegister'];
-      renderUserMedia: Api['renderUserMedia'];
-    }>([...BASE_FNS, 'renderArtModalBody'], BASE_VARS);
+  const fns = () => load<Api>(BASE_FNS, BASE_VARS);
 
-  it('a stored video opens in the viewer as a player on the media route', () => {
+  it("a stored video opens in the viewer as a player on the media route (the element's own <video>)", () => {
     const api = fns();
     const clip = { id: 'VD1', name: 'repro.mp4', kind: 'video', mime: 'video/mp4', size: 4_000_000, stored: true };
     api.umRegister('c8', [clip], turn);
     expect(api.renderUserMedia('c8', [clip])).toContain('data-art-id="VD1"');
-    const body = api.renderArtModalBody('c8', clip);
-    expect(body).toMatch(
-      /<video class="art-full-video" controls[^>]*src="\/api\/dashboard\/session\/c8\/media\/VD1\/content"/,
-    );
+    expect(api.artViewItem('c8', clip)).toMatchObject({ kind: 'video', url: '/api/dashboard/session/c8/media/VD1/content' });
+    expect(api.artViewerPreview('c8', clip)).toBe('');
   });
 
-  it('a stored voice note plays in place on its tile', () => {
+  it("a stored voice note plays in place on its card (<ui-file-card playable>'s toggle)", () => {
     const api = fns();
     const memo = { id: 'AU1', name: 'memo.ogg', kind: 'audio', mime: 'audio/ogg', size: 9000, stored: true };
     api.umRegister('c8', [memo], turn);
-    expect(api.renderUserMedia('c8', [memo])).toMatch(/data-art-play="1" data-art-cid="c8" data-art-id="AU1"/);
+    expect(api.renderUserMedia('c8', [memo])).toMatch(/<ui-file-card class="art-card" variant="row" playable lang="ko" data-art-cid="c8" data-art-id="AU1"/);
+    expect(api.artFileItem('c8', memo)).toMatchObject({ kind: 'audio', url: '/api/dashboard/session/c8/media/AU1/content' });
   });
 });

@@ -878,7 +878,7 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
       ensureArtifacts: () => {},
       isSiblingSession: () => false,
       scheduleLayoutRefresh: () => {},
-      openArtifactModal: () => {},
+      openArtifactViewer: () => {},
       openPanel: (k: string) => calls.deck.push(`open ${k}`),
       deckDrop: (k: string) => calls.deck.push(`drop ${k}`),
     };

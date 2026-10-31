@@ -700,7 +700,7 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
       cardOf: (s: { key: string }, col: string) => ({ id: s.key, title: s.key, status: col }),
       cardBodyShown: () => false,
       acPrefetch: () => {},
-      openArtifactModal: (...a: unknown[]) => calls.modal.push(a),
+      openArtifactViewer: (...a: unknown[]) => calls.modal.push(a),
       openPanel: (...a: unknown[]) => calls.order.push(`openPanel(${a.join(',')})`),
       deckDrop: (...a: unknown[]) => calls.order.push(`deckDrop(${a.join(',')})`),
     };
