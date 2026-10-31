@@ -4816,6 +4816,7 @@ ui-breadcrumbs.crumbs { flex: 1 1 auto; min-width: 0; }
    and narrow / list layouts are the element's, drawn with the dashboard tokens through .ui-tok (#inbox).
    An open card's body is light DOM in the card's slot (.card-slot > .card-body), styled here. */
 ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0; }
+ui-agent-inbox.epic-inbox { display: block; min-width: 0; }
 
 /* ── Loading skeletons — the shape of what is coming, never a false "0 · Nothing here". The board shows the
    element's until its first answer (data-load="loading"); the open card's 지시 / 응답 lines are the kit's
@@ -5407,6 +5408,13 @@ body[data-view-mode="minimal"] .panel-tasks { max-height: 34cqh; overflow-y: aut
    are board cards in each job's box (.cron-cards, slot="job:<group key>"), light DOM. */
 .capacity-host { margin-bottom: 18px; }
 .cron-lane { margin-bottom: 12px; }
+/* E4 ⑨a — the EPIC lane: one group per epic with children (head, then the children's cards). */
+.epic-lane { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
+.epic-group { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--surface); }
+.epic-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; min-width: 0; }
+.epic-head .epic-title { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.epic-head .epic-progress { margin-left: auto; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.epic-cards { display: flex; flex-direction: column; gap: 8px; position: relative; }
 .capacity-host[hidden], .cron-lane[hidden] { display: none; }
 .capacity-host > ui-agent-queue, .cron-lane > ui-agent-queue { display: block; min-width: 0; }
 .cron-cards { display: flex; flex-direction: column; gap: 8px; position: relative; }
@@ -5738,6 +5746,7 @@ ${pageTokenAliases()}
            (syncCronLane gives it its data); each job's latest run is its board card — a one-column
            <ui-agent-inbox> (paintCronLaneCards) in the job's slot box (slot="job:<group key>"). -->
       <div class="cron-lane ui-tok" id="cron-lane" hidden><ui-agent-queue id="cron-aq" lang="ko"></ui-agent-queue></div>
+      <div class="epic-lane ui-tok" id="epic-lane" aria-label="에픽" hidden></div>
       <!-- Until the first board answer the columns show skeleton cards, not
            "0 · Nothing here" (a false empty board). A first load that fails says so
            here and offers a retry; the 30 s poll keeps retrying on its own. -->
@@ -8240,6 +8249,8 @@ function renderBoard(board, partial) {
   }
   // The CRON lane (Option A): each job's lead run in its own one-column element.
   paintCronLaneCards(cronLaneSlots(cronPlan));
+  // The EPIC lane (E4 ⑨a): each epic's children, which are in no column.
+  renderEpicLane(board);
   // Cards that left every element: closed for good (a card that comes back
   // comes back closed), their bodies and retry timers released.
   for (var gone in prevHost) {
@@ -8762,6 +8773,14 @@ function cardOf(s, col) {
   if (metrics.length) card.metrics = metrics;
   // A cron run leads with the CRON badge instead of the spark (SSOT 2026-10-23 T3).
   if (s.cronJob && s.cronJob.name) card.lead = { text: 'CRON', glyph: 'clock', title: '크론 잡: ' + s.cronJob.name };
+  // An epic (E4 ⑨a) leads with EPIC and says its state; its progress is accepted nodes of all.
+  if (s.kind === 'epic' && s.epic) {
+    var epicLabel = EPIC_STATE_LABEL[s.epic.state] || EPIC_STATE_LABEL.idle;
+    card.lead = { text: 'EPIC', glyph: 'tasks', title: '에픽 — ' + epicLabel };
+    if (s.epic.state === 'running' || s.epic.state === 'needs-input') card.statusText = epicLabel;
+    var ep = s.epic.progress || {};
+    if (toNum(ep.total) > 0) card.steps = { done: toNum(ep.accepted), total: toNum(ep.total) };
+  }
   // A starred card leads with ★ (SSOT 2026-10-30 T1.3); a starred cron run reads ★ CRON.
   if (s.starred === true) {
     var starTitle = '즐겨찾기 — 항상 맨 위, 자동 sleep·보관 안 함';
@@ -11724,6 +11743,11 @@ function boardHosts() {
   if (kb) out.push(kb);
   var lane = document.querySelectorAll('ui-agent-inbox.cron-inbox');
   for (var i = 0; i < lane.length; i++) if (lane[i].isConnected && lane[i].getClientRects().length) out.push(lane[i]);
+  // E4 ⑨a — the EPIC lane's children lists.
+  var epics = document.querySelectorAll('ui-agent-inbox.epic-inbox');
+  for (var j = 0; j < epics.length; j++) {
+    if (out.indexOf(epics[j]) < 0 && epics[j].isConnected && epics[j].getClientRects().length) out.push(epics[j]);
+  }
   return out;
 }
 
@@ -13094,6 +13118,15 @@ function connectWs() {
         acEvict(updatedKey, msg.session);
         patchLastBoard(msg.session);
         if (_cardHost[updatedKey]) refreshCard(updatedKey);
+        // E4 ⑨a — an epic's push carries its children (a child's push arrives as its epic's card).
+        applyEpicPush(msg.session);
+        // A panel open on one of those children follows it (its cache entry was refreshed above).
+        var panelChild = panelOpen && panelSessionKey !== updatedKey ? epicChildOf(msg.session, panelSessionKey) : null;
+        if (panelChild) {
+          renderPanelPermission(panelChild);
+          renderPanelQuestion(panelChild);
+          repaintPanelSession();
+        }
         if (panelOpen && panelSessionKey === updatedKey) {
           renderPanelPermission(msg.session);
           renderPanelQuestion(msg.session); // the form shows the ask its actions answer (#637 R2)
@@ -15901,6 +15934,10 @@ var _cronJobs = [];          // GET /api/dashboard/cron — this instance's jobs
 var _cronJobsRev = 0;        // bumped by every jobs fetch (laneSig)
 var _cronPlan = null;        // last planCronLane() result
 var _cronGroupEls = Object.create(null); // group key → the job's persistent card box (its slot)
+var _epicGroupEls = Object.create(null); // epic card key → its group box in the EPIC lane (E4 ⑨a)
+var EPIC_STATE_LABEL = { 'needs-input': '입력 필요', running: '자식 실행 중', done: '완료', idle: '대기' };
+var EPIC_STATE_TONE = { 'needs-input': 'var(--st-wait)', running: 'var(--accent)', done: 'var(--st-done)', idle: 'var(--text-tertiary)' };
+var EPIC_STATE_RANK = { 'needs-input': 0, running: 1, idle: 2, done: 3 };
 var _cronDrawerKey = null;   // group key the drawer shows, null when closed
 var _cronRevealKey = null;   // a deep-linked cron run shown as its job's card
 
@@ -16195,6 +16232,148 @@ function cronLaneSlots(plan) {
     var show = g.lead && !(folded && !g.waiting);
     return { container: _cronGroupEls[g.key] || null, items: show ? [{ s: g.lead, col: g.colOf[g.lead.key] }] : [] };
   });
+}
+
+// ── E4 ⑨a (.prd/19 D11) — the EPIC lane ──
+// The server takes an epic's live children out of the columns and sends their cards
+// in the epic's bundle (card.epic.children). The lane shows one group per epic that
+// has children: its title, state and progress, then the children's cards — the same
+// card as on the board (cardOf), its body in the same slot. The epic's own card stays
+// in its column (RUNNING / WAITING by its state). Waiting groups first, then running.
+function planEpicLane(board) {
+  var groups = [];
+  ['waiting', 'working', 'idle', 'closed'].forEach(function(col) {
+    var arr = (board && board[col]) || [];
+    for (var i = 0; i < arr.length; i++) {
+      var s = arr[i];
+      if (!s || s.kind !== 'epic' || !s.epic) continue;
+      var children = Array.isArray(s.epic.children) ? s.epic.children : [];
+      if (!children.length) continue;
+      groups.push({ key: s.key, epic: s, children: children });
+    }
+  });
+  function rank(g) {
+    var r = EPIC_STATE_RANK[g.epic.epic.state];
+    return typeof r === 'number' ? r : 4;
+  }
+  groups.sort(function(a, b) { return rank(a) - rank(b); });
+  return groups;
+}
+// The column a child's card reads as: its own activity (the server already shows a
+// permission prompt as waiting), a sleeping child as closed.
+function epicChildCol(c) {
+  if (c.sessionState === 'SLEEPING') return 'closed';
+  if (c.activityState === 'waiting') return 'waiting';
+  if (c.activityState === 'working') return 'working';
+  return 'idle';
+}
+// A group's head: the epic's title, its state chip and its progress (accepted of all nodes).
+function epicLaneHeadHtml(s) {
+  var e = s.epic || {};
+  var state = EPIC_STATE_LABEL[e.state] ? e.state : 'idle';
+  var p = e.progress || {};
+  var title = s.displayHeadline || s.summaryTitle || s.title || '에픽';
+  var html = '<span class="epic-title">' + esc(title) + '</span>';
+  html += '<span class="ui-chip is-toned is-sm epic-state" data-state="' + escAttr(state) + '" style="--ui-tone:' + EPIC_STATE_TONE[state] + '">' + esc(EPIC_STATE_LABEL[state]) + '</span>';
+  if (toNum(p.total) > 0) {
+    html += '<span class="epic-progress" title="받아들인 노드 / 전체 노드">' + toNum(p.accepted) + '/' + toNum(p.total) + '</span>';
+  }
+  return html;
+}
+// One persistent box per epic group in #epic-lane: its head and its card box.
+function syncEpicLane(groups) {
+  var lane = document.getElementById('epic-lane');
+  if (!lane) return;
+  lane.hidden = groups.length === 0;
+  var keep = Object.create(null);
+  for (var i = 0; i < groups.length; i++) {
+    var g = groups[i];
+    keep[g.key] = true;
+    var box = _epicGroupEls[g.key];
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'epic-group';
+      box.setAttribute('data-epic', g.key);
+      var head = document.createElement('div');
+      head.className = 'epic-head';
+      var cards = document.createElement('div');
+      cards.className = 'cards epic-cards';
+      box.appendChild(head);
+      box.appendChild(cards);
+      box._head = head;
+      box._cards = cards;
+      _epicGroupEls[g.key] = box;
+    }
+    var headHtml = epicLaneHeadHtml(g.epic);
+    if (box._headHtml !== headHtml) {
+      box._head.innerHTML = headHtml;
+      box._headHtml = headHtml;
+    }
+    // In order: append moves an existing box to the end.
+    lane.appendChild(box);
+  }
+  for (var key in _epicGroupEls) {
+    if (keep[key]) continue;
+    var old = _epicGroupEls[key];
+    delete _epicGroupEls[key];
+    setTimeout(function(node) { return function() { if (node.parentNode) node.parentNode.removeChild(node); }; }(old), MOTION.fade + 40);
+  }
+}
+// Each group's children in its own <ui-agent-inbox view="list"> with one bare column.
+function paintEpicLaneCards(groups) {
+  for (var i = 0; i < groups.length; i++) {
+    var g = groups[i];
+    var box = _epicGroupEls[g.key];
+    if (!box) continue;
+    var el = box._inbox;
+    if (!el) {
+      el = document.createElement('ui-agent-inbox');
+      el.className = 'epic-inbox';
+      el.setAttribute('view', 'list');
+      el.setAttribute('lang', 'ko');
+      wireInbox(el);
+      box._inbox = el;
+    }
+    if (el.parentNode !== box._cards) box._cards.appendChild(el);
+    el._ibPlan = {
+      cols: [{
+        id: 'epic',
+        label: String(g.epic.displayHeadline || g.epic.title || ''),
+        bare: true,
+        keys: g.children.map(function(c) { placeCard(c, epicChildCol(c), el, true); return c.key; }),
+      }],
+      load: 'ready',
+      announce: false,
+    };
+    inboxPaint(el);
+  }
+}
+// The lane for a board: cache the children (a card opens only from the cache), sync, paint.
+function renderEpicLane(board) {
+  var groups = planEpicLane(board);
+  for (var i = 0; i < groups.length; i++) {
+    for (var j = 0; j < groups[i].children.length; j++) _sessionCache[groups[i].children[j].key] = groups[i].children[j];
+  }
+  syncEpicLane(groups);
+  paintEpicLaneCards(groups);
+  return groups;
+}
+// A child's card inside an epic's pushed card, by key.
+function epicChildOf(s, key) {
+  var children = (s && s.epic && Array.isArray(s.epic.children)) ? s.epic.children : [];
+  for (var i = 0; i < children.length; i++) if (children[i] && children[i].key === key) return children[i];
+  return null;
+}
+// A single-session push of an epic (its bundle; a child's push arrives as its epic's
+// card): the lane is redrawn from the patched board and each drawn child card refreshed.
+function applyEpicPush(s) {
+  if (!s || !s.epic || !_lastBoardData) return;
+  renderEpicLane(_lastBoardData);
+  var children = Array.isArray(s.epic.children) ? s.epic.children : [];
+  for (var i = 0; i < children.length; i++) {
+    var c = children[i];
+    if (c && c.key && _cardHost[c.key]) refreshCard(c.key);
+  }
 }
 
 function renderCronRunRow(run, g, nowMs) {
