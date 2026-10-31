@@ -201,6 +201,30 @@ describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () 
     expect(folders).toHaveBeenCalledWith('U_PLAIN');
   });
 
+  it('E4 ⑨b — the context says the user may make an epic only when their flag is on (and tasks are wired)', async () => {
+    slackProvider.context.mockResolvedValue({ models: [], efforts: [], channels: [] });
+    const auth = await signIn();
+    const get = async () =>
+      JSON.parse(
+        (
+          await injectWebServer({
+            method: 'GET',
+            url: '/api/dashboard/new-task/context',
+            headers: { cookie: auth.cookie },
+          })
+        ).body,
+      ).context;
+    const epicTasks = vi.fn(() => true);
+    dashboard.setDashboardTaskLauncher({ launch: launcher, folders, epicTasks });
+    expect((await get()).epicTasks).toBe(true);
+    expect(epicTasks).toHaveBeenCalledWith('U_PLAIN');
+    epicTasks.mockReturnValue(false);
+    expect((await get()).epicTasks).toBeUndefined();
+    // A launcher without the question: no epic.
+    dashboard.setDashboardTaskLauncher({ launch: launcher, folders });
+    expect((await get()).epicTasks).toBeUndefined();
+  });
+
   // #640 R1: through the real launcher, a folder is a name in the signed-in user's own root —
   // a path, a parent step or another user's root is refused before anything is created.
   it('the real launcher refuses a model it does not offer (400), nothing created', async () => {
