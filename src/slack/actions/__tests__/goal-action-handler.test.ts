@@ -64,6 +64,7 @@ function makeHandler(session?: ConversationSession) {
     claudeHandler: {
       getSessionByKey: vi.fn().mockReturnValue(session),
       saveSessions,
+      saveSessionsOrThrow: saveSessions,
     } as any,
   });
   return { handler, saveSessions };

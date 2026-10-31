@@ -740,6 +740,11 @@ export class ClaudeHandler implements TurnSteeringPort {
     this.sessionRegistry.saveSessions();
   }
 
+  /** {@link SessionRegistry.saveSessionsOrThrow}: a failed write throws. */
+  saveSessionsOrThrow(): void {
+    this.sessionRegistry.saveSessionsOrThrow();
+  }
+
   loadSessions(): number {
     return this.sessionRegistry.loadSessions();
   }
