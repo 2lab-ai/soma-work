@@ -50,8 +50,6 @@ export interface SessionGoalState {
   capDecisionId?: string;
   /** Where the round's DM landed (stored after a successful post). */
   capDmRef?: { channel: string; ts: string };
-  /** A DM rewrite that has not reached Slack yet. */
-  capDmSync?: { channel: string; ts: string; text: string };
   /**
    * The goal's opening turn was admitted but has not reached the model yet
    * (set by the host when it admits the opening, cleared right before the

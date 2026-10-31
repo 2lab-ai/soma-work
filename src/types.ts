@@ -274,8 +274,6 @@ export interface SessionGoal {
   capDecisionId?: string;
   /** Where the round's DM landed; stored only after the post succeeded (absent ⇒ the DM is retried). */
   capDmRef?: { channel: string; ts: string };
-  /** A DM rewrite (resolved / superseded) that has not reached Slack yet — retried, also after a restart. */
-  capDmSync?: { channel: string; ts: string; text: string };
 
   /**
    * The goal's opening turn was admitted but has not reached the model yet

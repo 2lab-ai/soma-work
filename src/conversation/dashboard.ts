@@ -7466,7 +7466,7 @@ async function answerGoalDecision(key, decisionId, choiceId) {
     var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/goal-decision', JSON.stringify({ goalId: d.goalId, decisionId: decisionId, decision: choiceId }));
     if (res.ok) {
       st = { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() };
-      dashToast({ title: GOAL_DECISION_SENT[choiceId], description: 'Slack DM에도 반영됐어요', tone: 'success' });
+      dashToast({ title: GOAL_DECISION_SENT[choiceId], description: 'Slack DM도 같은 결과로 바뀝니다', tone: 'success' });
     } else st = await acRefusal(res);
   } catch (e) {
     console.error('Goal decision answer error', e);

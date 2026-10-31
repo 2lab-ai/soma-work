@@ -7,6 +7,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import type { ConversationSession, SessionGoal } from '../../types';
+import { pendingGoalCapDmRewrites } from '../goal-cap-decision';
 import { GoalLoopController, type GoalLoopControllerDeps } from '../goal-loop-controller';
 
 const SESSION_KEY = 'C1:T1';
@@ -157,6 +158,6 @@ describe('GoalLoopController — cap-reached owner DM (S3)', () => {
     await h.controller.settled(SESSION_KEY);
 
     expect(h.goal.capDmRef).toBeUndefined();
-    expect(h.goal.capDmSync?.channel).toBe('D-owner');
+    expect(pendingGoalCapDmRewrites().map((e) => e.channel)).toContain('D-owner');
   });
 });
