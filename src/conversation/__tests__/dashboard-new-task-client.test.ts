@@ -655,6 +655,38 @@ describe('ntComposerData — a dashboard task takes no files (#640 R2)', () => {
   });
 });
 
+// fable merge review P3: a file the task composer refuses (its accept matches no
+// type) says why — a dashboard task takes no attachments — not only "unsupported type".
+describe('a refused file on a dashboard task says why (merge review P3)', () => {
+  const HINT = '대시보드 작업은 아직 첨부를 받지 않아요 — 첨부를 빼거나 Slack 채널로 보내 주세요';
+  it('the dialog: a type refusal in task mode is the attachment hint; elsewhere nothing', () => {
+    const errors: string[] = [];
+    const run = (destination: string, reason: string) =>
+      loadWith<{ ntOnReject(e: unknown): void }>(['ntOnReject', 'ntBlockedHint'], {
+        _ntState: { destination },
+        ntSetError: (t: string) => errors.push(t),
+      }).ntOnReject({ detail: { reason, file: { name: 'a.png' } } });
+    run('task', 'type');
+    run('task', 'size'); // too large is the element's own words
+    run('slack', 'type');
+    expect(errors).toEqual([HINT]);
+    expect(clientFn('ntInit')).toContain("composer.addEventListener('ui-reject', ntOnReject);");
+  });
+  it('the panel: a type refusal on a task card is a toast with the same reason', () => {
+    const toasts: Array<{ title: string; tone?: string }> = [];
+    const run = (takesFiles: boolean, reason: string) =>
+      loadWith<{ pcOnReject(e: unknown): void }>(['pcOnReject'], {
+        document: { getElementById: () => ({ _takesFiles: takesFiles }) },
+        dashToast: (t: { title: string; tone?: string }) => toasts.push(t),
+      }).pcOnReject({ detail: { reason, file: { name: 'a.png' } } });
+    run(false, 'type');
+    run(false, 'count');
+    run(true, 'type');
+    expect(toasts).toEqual([{ title: '대시보드 작업은 아직 첨부를 받지 않아요', tone: 'error' }]);
+    expect(clientFn('pcInit')).toContain("host.addEventListener('ui-reject', pcOnReject);");
+  });
+});
+
 describe('ntReconcile / ntStateAfterLaunch (#640 R1)', () => {
   const fns = load<{
     ntDefaultState(ctx: any, draft: any): any;
