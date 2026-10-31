@@ -19,6 +19,9 @@ import { RequestCoordinator } from '../../slack';
 import { TodoManager } from '../../todo-manager';
 import { createTaskTurnExecutor } from '../task-turn-executor';
 
+/** Every output flag on — the most verbose a user can make a session. */
+const ALL_OUTPUT = 0x7fffffff;
+
 const FINAL = 'The timeout is 30s; I raised it to 60s.';
 
 type Stream = () => AsyncGenerator<unknown>;
@@ -194,5 +197,158 @@ describe('T9 — a Slack-less task turn through the real task executor (#598 ④
     expect(executor.slackCalls).toEqual([]);
     expect(result.outcome).toMatchObject({ outcome: 'cancelled' });
     expect(registry.getSessionByKey(sessionKey)?.activityState).toBe('idle');
+  });
+});
+
+/** ④b2 — the remaining Slack-bound branches: each must record zero Slack calls on a task turn. */
+describe('T9 — remaining branches (#598 ④b2)', () => {
+  const variant =
+    (events: unknown[]): Stream =>
+    () =>
+      (async function* () {
+        for (const e of events) yield e;
+        yield { type: 'result', stopReason: 'end_turn', finalText: 'done' };
+      })();
+
+  it('a channel_message directive is not posted to Slack, and the task records that it was not', async () => {
+    const text = ['done', '```json', JSON.stringify({ type: 'channel_message', text: 'hello channel' }), '```'].join(
+      '\n',
+    );
+    const { executor, task, run } = await setup(variant([{ type: 'assistant_delta', text }]));
+    await run();
+    expect(executor.slackCalls).toEqual([]);
+    const page = await readWorkLog(task.conversationId!);
+    expect(page.entries.some((e) => e.kind === 'notice' && /channel message/i.test(e.text))).toBe(true);
+  });
+
+  it('a release_notes directive is not posted to Slack, and the task records that it was not', async () => {
+    const directive = {
+      type: 'release_notes',
+      repo: 'acme/app',
+      target: 'deploy/staging',
+      version: '0.2.58 (c8a026e)',
+      tldr: ['one'],
+      text: 'notes',
+    };
+    const text = ['done', '```json', JSON.stringify(directive), '```'].join('\n');
+    const { executor, task, run } = await setup(variant([{ type: 'assistant_delta', text }]));
+    await run();
+    expect(executor.slackCalls).toEqual([]);
+    const page = await readWorkLog(task.conversationId!);
+    expect(page.entries.some((e) => e.kind === 'notice' && /release notes/i.test(e.text))).toBe(true);
+  });
+
+  it('a compaction (status compacting + compact_boundary) posts nothing to Slack', async () => {
+    const { executor, run } = await setup(
+      variant([
+        { type: 'status', status: 'compacting' },
+        { type: 'compact_boundary', metadata: { trigger: 'auto', preTokens: 100000 } },
+        { type: 'status', status: 'compact_done' },
+        { type: 'assistant_delta', text: 'continuing' },
+      ]),
+    );
+    await run();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(executor.slackCalls).toEqual([]);
+  });
+
+  it('an MCP tool call posts no status to Slack', async () => {
+    const { executor, run } = await setup(
+      variant([
+        { type: 'tool_call', toolCallId: 'mcp_1', name: 'mcp__github__get_issue', input: { n: 1 } },
+        { type: 'tool_result', toolCallId: 'mcp_1', content: [{ type: 'text', text: 'ok' }] },
+      ]),
+    );
+    await run();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(executor.slackCalls).toEqual([]);
+  });
+
+  it('a background Bash and a subagent task post nothing to Slack', async () => {
+    const { executor, run } = await setup(
+      variant([
+        {
+          type: 'tool_call',
+          toolCallId: 'bash_1',
+          name: 'Bash',
+          input: { command: 'sleep 1', run_in_background: true },
+        },
+        {
+          type: 'tool_result',
+          toolCallId: 'bash_1',
+          content: [{ type: 'text', text: 'Command running in background with ID: bg-1' }],
+        },
+        {
+          type: 'agent_task_lifecycle',
+          phase: 'started',
+          taskId: 'bg-1',
+          taskType: 'bash',
+          toolUseId: 'bash_1',
+          background: true,
+        },
+        {
+          type: 'tool_call',
+          toolCallId: 'task_1',
+          name: 'Task',
+          input: { description: 'explore', prompt: 'look', subagent_type: 'Explore' },
+        },
+        {
+          type: 'agent_task_lifecycle',
+          phase: 'started',
+          taskId: 'sub-1',
+          taskType: 'local_agent',
+          toolUseId: 'task_1',
+          subagentType: 'Explore',
+          description: 'explore',
+        },
+        { type: 'agent_task_lifecycle', phase: 'settled', taskId: 'sub-1', status: 'completed', toolUseId: 'task_1' },
+        { type: 'tool_result', toolCallId: 'task_1', content: [{ type: 'text', text: 'found it' }] },
+        { type: 'agent_task_lifecycle', phase: 'settled', taskId: 'bg-1', status: 'completed', toolUseId: 'bash_1' },
+      ]),
+    );
+    await run();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(executor.slackCalls).toEqual([]);
+  });
+
+  it('crossing the auto-compact threshold schedules compaction without a Slack announcement', async () => {
+    const { executor, registry, sessionKey, run } = await setup(
+      variant([{ type: 'assistant_delta', text: 'working' }]),
+    );
+    const task = registry.getSessionByKey(sessionKey)!;
+    task.usage = {
+      currentInputTokens: 190_000,
+      currentCacheReadTokens: 0,
+      currentCacheCreateTokens: 0,
+      currentOutputTokens: 5_000,
+      contextWindow: 200_000,
+      totalInputTokens: 190_000,
+      totalOutputTokens: 5_000,
+      totalCostUsd: 0,
+    } as never;
+    // The most verbose setting, so every Slack-bound announcement would be attempted.
+    task.logVerbosity = ALL_OUTPUT;
+    await run();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(executor.slackCalls).toEqual([]);
+  });
+
+  it('at the most verbose setting, a tool-using turn, an MCP call and a compaction still make zero Slack calls', async () => {
+    const { executor, registry, sessionKey, run } = await setup(
+      variant([
+        { type: 'assistant_delta', text: 'reading' },
+        { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: { file_path: '/repo/a.ts' } },
+        { type: 'tool_result', toolCallId: 'tu_1', content: [{ type: 'text', text: 'x' }] },
+        { type: 'tool_call', toolCallId: 'mcp_1', name: 'mcp__github__get_issue', input: { n: 1 } },
+        { type: 'tool_result', toolCallId: 'mcp_1', content: [{ type: 'text', text: 'ok' }] },
+        { type: 'status', status: 'compacting' },
+        { type: 'compact_boundary', metadata: { trigger: 'auto', preTokens: 100000 } },
+        { type: 'status', status: 'compact_done' },
+      ]),
+    );
+    registry.getSessionByKey(sessionKey)!.logVerbosity = ALL_OUTPUT;
+    await run();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(executor.slackCalls).toEqual([]);
   });
 });

@@ -78,6 +78,7 @@ import type { SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer';
 import type { TurnAddress, TurnContext, TurnEndReason } from '../thread-panel';
 import type { TurnPanelPort } from '../turn-panel-port';
+import { NO_POST_SLACK } from '../task-turn/no-post-slack';
 import { createTaskSay, type TaskTurnBinding, type TaskWorkLogWrite } from '../task-turn/task-say';
 import type { TaskTurnTerminalSignals } from '../task-turn/task-turn-outcome';
 import type { TodoDisplayManager } from '../todo-display-manager';
@@ -1230,6 +1231,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // The user-facing terminal text a task turn would have posted (SDK result
     // error, handleError's posts) — carried in the outcome's reason instead.
     let taskTerminalReason: string | undefined;
+    // The compaction helpers post into the thread; a task has none. They keep
+    // their bookkeeping and work-log notices; their posts go nowhere (#598 ④b2).
+    const compactSlackApi = taskTurn ? NO_POST_SLACK : this.deps.slackApi;
 
     // Issue #688 — capture per-turn status epoch. Every clearStatus call
     // emitted by this execute() carries `expectedEpoch: epoch` so that a
@@ -2144,6 +2148,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         },
         onChannelMessageDetected: async (messageText) => {
+          // A task has no channel (D8): the directive is refused visibly, never posted (#598 ④b2).
+          if (taskTurn) {
+            emitWorkLog({ kind: 'notice', text: 'A channel message is not supported for a dashboard task; it was not posted.' });
+            return;
+          }
           try {
             await this.deps.slackApi.postMessage(channel, messageText, {});
             this.logger.info('Channel root message posted from model directive', {
@@ -2160,6 +2169,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         },
         onReleaseNotesDetected: async (payload) => {
+          // Release notes post to Slack only; a task records that it did not (D8, #598 ④b2).
+          if (taskTurn) {
+            emitWorkLog({
+              kind: 'notice',
+              text: `Release notes for ${payload.repo} were not posted: Slack posting is not supported for a dashboard task.`,
+            });
+            return;
+          }
           // Cross-channel posting is a deploy-workflow privilege: any other
           // session echoing the directive stays in its own channel.
           const routing =
@@ -2446,7 +2463,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
                   session,
                   channel,
                   threadTs,
-                  slackApi: this.deps.slackApi,
+                  slackApi: compactSlackApi,
                   eventRouter: this.deps.dispatchPendingUserMessage
                     ? ({ dispatchPendingUserMessage: this.deps.dispatchPendingUserMessage } as any)
                     : undefined,
@@ -2474,7 +2491,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             void (async () => {
               try {
                 await postCompactStartingIfNeeded(
-                  { session, channel, threadTs, slackApi: this.deps.slackApi },
+                  { session, channel, threadTs, slackApi: compactSlackApi },
                   'unknown (fallback)',
                 );
               } catch (err) {
@@ -3473,7 +3490,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         channel,
         threadTs,
         userSettings: userSettingsStore,
-        slackApi: this.deps.slackApi,
+        slackApi: compactSlackApi,
         logger: this.logger,
         workLog: emitWorkLog,
       }).catch((err: unknown) => {
@@ -4870,12 +4887,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
     // Schedule cleanup for todo tracking
     if (session?.sessionId) {
-      this.deps.toolTracker.scheduleCleanup(5 * 60 * 1000, () => {
-        this.deps.todoDisplayManager.cleanupSession(session.sessionId!);
-        this.deps.todoDisplayManager.cleanup(sessionKey);
-        this.deps.reactionManager.cleanup(sessionKey);
-        this.deps.contextWindowManager.cleanup(sessionKey);
-      });
+      // Per session (#598 ④b2): another session's later turn must neither cancel
+      // this callback nor have its live tool mappings cleared by it.
+      this.deps.toolTracker.scheduleCleanup(
+        5 * 60 * 1000,
+        () => {
+          this.deps.todoDisplayManager.cleanupSession(session.sessionId!);
+          this.deps.todoDisplayManager.cleanup(sessionKey);
+          this.deps.reactionManager.cleanup(sessionKey);
+          this.deps.contextWindowManager.cleanup(sessionKey);
+        },
+        sessionKey,
+      );
     }
   }
 

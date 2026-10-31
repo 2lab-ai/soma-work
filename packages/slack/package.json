@@ -95,6 +95,7 @@
     "./task-turn/task-say": "./dist/task-turn/task-say.js",
     "./turn-panel-port": "./dist/turn-panel-port.js",
     "./task-turn/task-turn-outcome": "./dist/task-turn/task-turn-outcome.js",
+    "./task-turn/no-post-slack": "./dist/task-turn/no-post-slack.js",
     "./*": "./dist/*.js"
   },
   "typesVersions": {
@@ -356,6 +357,9 @@
       ],
       "task-turn/task-turn-outcome": [
         "dist/task-turn/task-turn-outcome.d.ts"
+      ],
+      "task-turn/no-post-slack": [
+        "dist/task-turn/no-post-slack.d.ts"
       ]
     }
   },
