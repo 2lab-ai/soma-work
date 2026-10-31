@@ -1306,7 +1306,8 @@ type CardData = Record<string, unknown> & {
 
 describe('model-controlled values in card markup (shipped renderers)', () => {
   const cards = load<{
-    renderTimeline(s: unknown): string;
+    renderCardTasks(s: unknown): string;
+    cardTaskPlanData(s: unknown): { steps: Array<Record<string, unknown>> };
     cardOf(s: unknown, col: string): CardData;
   }>(
     [
@@ -1314,15 +1315,16 @@ describe('model-controlled values in card markup (shipped renderers)', () => {
       'escAttr',
       'escJs',
       'formatDuration',
-      // Task view T2: the meta and the 전체 task count read each task's fate.
+      // Task view T2: the steps and the 전체 task count read each task's fate.
       'taskFateOf',
-      'elapsedHtml',
-      'renderTaskMeta',
-      'renderTimelineItem',
-      'renderTimeline',
+      'cardTaskStep',
+      'cardTaskHidden',
+      'cardTasksRan',
+      'cardTaskPlanData',
+      'renderCardTasks',
       ...CARD_OF_FNS,
     ],
-    ['TASK_FATE_LABEL', ...CARD_OF_VARS],
+    ['CARD_TASK_ROWS', 'CARD_TASK_STATUS', ...CARD_OF_VARS],
     {
       dhShow: () => true,
       dhTruncate: () => null,
@@ -1334,20 +1336,24 @@ describe('model-controlled values in card markup (shipped renderers)', () => {
   );
   const tags = (html: string) => (html.match(/<([a-z0-9]+)/gi) ?? []).map((t) => t.slice(1).toLowerCase());
 
-  it('a string startedAt / completedAt cannot open a tag or an attribute in the task timeline', () => {
+  it('a string startedAt / completedAt never reaches the task window: the steps carry numbers or nothing; a hostile key is an attribute, escaped', () => {
     for (const bad of HOSTILE) {
-      const html = cards.renderTimeline({
+      const d = cards.cardTaskPlanData({
+        key: bad,
         tasks: [
           { content: 'running', status: 'in_progress', startedAt: bad },
           { content: 'done', status: 'completed', startedAt: bad, completedAt: bad },
         ],
       });
-      expect(
-        tags(html).every((t) => ['div', 'ul', 'li', 'span'].includes(t)),
-        html,
-      ).toBe(true);
-      expect(html).not.toMatch(/onerror|onmouseover/);
-      for (const m of html.matchAll(/data-since="([^"]*)"/g)) expect(m[1]).toMatch(/^\d+$/);
+      for (const step of d.steps)
+        for (const k of ['startedAt', 'endedAt'])
+          expect(step[k] === undefined || Number.isFinite(step[k]), `${k}=${String(step[k])}`).toBe(true);
+      const html = cards.renderCardTasks({ key: bad, tasks: [{ content: 'x', status: 'pending' }] });
+      // The key is one attribute value, escaped: no tag of the key's own, no attribute it closes.
+      expect((html.match(/<([a-z0-9-]+)/gi) ?? []).map((t) => t.slice(1))).toEqual(['ui-task-plan']);
+      expect(html).toContain(
+        `data-tp-key="${bad.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}"`,
+      );
     }
   });
 
@@ -2340,7 +2346,7 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
   };
   // D4 K-06: the head is <ui-disclosure>'s row (the title and the summary slotted in); the body is its region.
   const head = (expanded: boolean) =>
-    `<ui-disclosure class="panel-tasks-dc" flush${expanded ? ' open' : ''}><span slot="summary" class="panel-tasks-header"><span class="ps-sec-title">Tasks</span><span class="ps-sec-sum">목록 없음</span></span>`;
+    `<ui-disclosure class="panel-tasks-dc" flush${expanded ? ' open' : ''}><span slot="summary" class="panel-tasks-header"><span class="ps-sec-title">작업</span><span class="ps-sec-sum">목록 없음</span></span>`;
   const LIVE = '<span class="ui-sr-only pl-live" role="status" aria-live="polite"></span>';
 
   it("zero or missing tasks show the header (folded: 목록 없음) and, opened, the plan element's empty state", () => {

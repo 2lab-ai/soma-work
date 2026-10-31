@@ -221,7 +221,7 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     // effort / channel / folder carry the classes main's task mode hides and shows them by (#605: a dashboard task has
     // no channel or effort; it has a folder).
     expect(row).toContain(
-      '<label class="ui-select-chip nt-chip-effort"><span>effort</span><select id="nt-effort" onchange="ntOnEffortChange()"></select></label>',
+      '<label class="ui-select-chip nt-chip-effort"><span>추론</span><select id="nt-effort" onchange="ntOnEffortChange()"></select></label>',
     );
     expect(row).toContain(
       '<label class="ui-select-chip nt-chip-folder" id="nt-folder-chip" hidden><span>폴더</span><select id="nt-folder" onchange="ntOnFolderChange()"></select></label>',
