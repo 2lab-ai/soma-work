@@ -50,8 +50,18 @@ function outcome(o: TaskTurnOutcomeRecord['outcome'], turnId = 't1', extra: Part
   return { turnId, outcome: o, category, at: 1_700_000_000_000, ...extra } as TaskTurnOutcomeRecord;
 }
 
+/**
+ * A task from an instruction thread whose link was already delivered (E2 ⑤):
+ * these tests are about the chain's notices, not the link created with it.
+ */
+function delivered<T extends { taskId?: string }>(reg: SessionRegistry, task: T): T {
+  reg.pruneTaskNotice(task.taskId!, `${task.taskId}:create:link`);
+  reg.saveSessionsOrThrow();
+  return task;
+}
+
 function originTask(reg: SessionRegistry) {
-  return reg.createTask({ ...TASK_INPUT, originThread: ORIGIN });
+  return delivered(reg, reg.createTask({ ...TASK_INPUT, originThread: ORIGIN }));
 }
 
 function failNextWrite(): () => void {
@@ -264,7 +274,10 @@ describe('SessionRegistry — a task chain’s settle and notice intents (E2 ③
     const reg = new SessionRegistry();
     const a = originTask(reg);
     reg.beginTaskTurn(`task:${a.taskId}`, 'ta', CHAIN);
-    const b = reg.createTask({ ...TASK_INPUT, originThread: { ...ORIGIN, threadTs: '1700000001.000100' } });
+    const b = delivered(
+      reg,
+      reg.createTask({ ...TASK_INPUT, originThread: { ...ORIGIN, threadTs: '1700000001.000100' } }),
+    );
     reg.beginTaskTurn(`task:${b.taskId}`, 'tb');
 
     const after = new SessionRegistry();

@@ -33,6 +33,7 @@ function clientVar(name: string): string {
 
 type Fns = {
   taskOutcomeHtml(s: unknown): string;
+  taskNoticeFailHtml(s: unknown): string;
   cwCanCompact(s: unknown): string;
   pcToolsOpen(s: unknown, mode: string): boolean;
 };
@@ -40,9 +41,16 @@ const fns = new Function(
   'currentUserId',
   'isSiblingSession',
   'READ_ONLY_MSG',
-  `${clientVar('TASK_OUTCOME_LABEL')}\n${['esc', 'escAttr', 'taskOutcomeHtml', 'cwCanCompact', 'pcToolsOpen']
+  `${clientVar('TASK_OUTCOME_LABEL')}\n${clientVar('TASK_NOTICE_LABEL')}\n${[
+    'esc',
+    'escAttr',
+    'taskOutcomeHtml',
+    'taskNoticeFailHtml',
+    'cwCanCompact',
+    'pcToolsOpen',
+  ]
     .map(clientFn)
-    .join('\n')}\nreturn { taskOutcomeHtml, cwCanCompact, pcToolsOpen };`,
+    .join('\n')}\nreturn { taskOutcomeHtml, taskNoticeFailHtml, cwCanCompact, pcToolsOpen };`,
 )('U1', () => false, 'read only') as Fns;
 
 const task = (over: Record<string, unknown> = {}) => ({ key: 'task:a', slackless: true, ownerId: 'U1', ...over });
@@ -79,6 +87,21 @@ describe('a task card’s last turn (#600 ⑥)', () => {
   it('nothing for a Slack session or a task that has not run', () => {
     expect(fns.taskOutcomeHtml({ key: 'work:C1:1', lastTurnOutcome: { outcome: 'completed', at: 1 } })).toBe('');
     expect(fns.taskOutcomeHtml(task())).toBe('');
+  });
+});
+
+describe('a task card’s undelivered thread notices (E2 ⑤)', () => {
+  it('says which notice the Slack thread did not get, and why — escaped', () => {
+    const html = fns.taskNoticeFailHtml(task({ noticeFailures: [{ kind: 'result', error: 'channel_not_found <b>' }] }));
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('결과');
+    expect(html).toContain('channel_not_found &lt;b&gt;');
+  });
+
+  it('nothing when every notice got through, or for a Slack session', () => {
+    expect(fns.taskNoticeFailHtml(task())).toBe('');
+    expect(fns.taskNoticeFailHtml(task({ noticeFailures: [] }))).toBe('');
+    expect(fns.taskNoticeFailHtml({ key: 'work:C1:1', noticeFailures: [{ kind: 'result', error: 'x' }] })).toBe('');
   });
 });
 
