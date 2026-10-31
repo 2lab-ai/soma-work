@@ -138,7 +138,9 @@ function taskEl(withSetOpen = true): TaskEl {
   return el;
 }
 // `open: false` is the folded default (the head only).
-function plan(opts: { expanded?: boolean; open?: boolean; taskOpen?: Record<string, boolean> } = {}) {
+function plan(
+  opts: { expanded?: boolean; open?: boolean; earlier?: boolean; taskOpen?: Record<string, boolean> } = {},
+) {
   const el = box();
   const runsEl = taskEl();
   const planEl = taskEl();
@@ -159,7 +161,11 @@ function plan(opts: { expanded?: boolean; open?: boolean; taskOpen?: Record<stri
       'taskRunEnd',
       'taskRunsOf',
       'taskTokTotal',
-      'taskTotalsHtml',
+      'taskTotalsOf',
+      'taskOutsideText',
+      'taskOutsideNote',
+      'taskOutsideHtml',
+      'taskPlanRestore',
       'planSummaryHtml',
       'taskElData',
       'taskRunsData',
@@ -181,6 +187,7 @@ function plan(opts: { expanded?: boolean; open?: boolean; taskOpen?: Record<stri
       },
       _panelTasksOpen: opts.open !== false,
       _panelTasksExpanded: !!opts.expanded,
+      _panelTasksEarlier: !!opts.earlier,
       _panelTaskOpen: opts.taskOpen ?? {},
       morphInnerHtml: (e: El, h: string) => {
         writes++;
@@ -250,7 +257,7 @@ describe('plan — the Tasks section of the tab: the tasks that ran, in the orde
     // Two runs and the one step left of the plan; the head keeps the activeForm while open.
     expect(open.runs()).toHaveLength(2);
     expect(open.steps()).toHaveLength(1);
-    expect(open.runsEl.data).toMatchObject({ title: '실행된 태스크', totals: false });
+    expect(open.runsEl.data).toMatchObject({ title: '실행된 태스크', totals: { runs: 2 } });
     expect(open.planEl.data).toMatchObject({ title: '남은 계획' });
     expect(open.el.innerHTML).toContain(
       '<span class="ps-sec-now"><span class="spinner ag-spinner" aria-hidden="true"></span>Rendering the bars</span>',
@@ -537,6 +544,21 @@ describe('the run list folds past TASK_RUNS_SHOWN; replaced and skipped tasks; t
     expect(text(p.el.innerHTML)).not.toContain('never ran');
   });
 
+  it('D6b (D3-GAPS G5-3): 자세히 opens the plan’s earlier fold on the element (setOpen); a plain opening leaves it folded', () => {
+    const dropped: Task[] = [{ id: 'T9', content: 'never ran', status: 'pending', dropped: 'unstarted' }];
+    const detail = plan({ earlier: true });
+    detail.render(TASKS, '', dropped);
+    expect(detail.planEl.opened).toEqual(['earlier-plans']);
+    const plain = plan();
+    plain.render(TASKS, '', dropped);
+    expect(plain.planEl.opened).toEqual([]);
+    // Wired once the element is defined too (a plan painted before the module landed).
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelTasks() {'));
+    expect(init.slice(0, init.indexOf('\n})();'))).toContain(
+      "customElements.whenDefined('ui-task-plan').then(function() { taskPlanRestore(document.getElementById('panel-task-plan')); });",
+    );
+  });
+
   it('no list at all: the plan element’s empty state (계획, no steps)', () => {
     const p = plan();
     p.render([]);
@@ -544,7 +566,7 @@ describe('the run list folds past TASK_RUNS_SHOWN; replaced and skipped tasks; t
     expect(p.planEl.data).toEqual({ title: '계획', steps: [] });
   });
 
-  it('the foot: 합계 of every run — tool calls (+서브), tokens, cost — and 태스크 밖, the work no task got', () => {
+  it('the sums are the element’s totals row (D3-GAPS G5-2): over every run, +서브 folded into the tool calls; 태스크 밖 an extra row', () => {
     const p = plan();
     const ran: Task[] = [
       {
@@ -564,30 +586,41 @@ describe('the run list folds past TASK_RUNS_SHOWN; replaced and skipped tasks; t
       TASKS[2],
     ];
     p.render(ran, '', [], { toolCalls: 0, tokens: { input: 1500, output: 500 } });
-    const html = p.el.innerHTML;
     // Shares add up to whole calls (2.5 + 2.5); 0.4 subagent calls are none. The plan left counts nothing.
-    expect(html).toContain('<div class="tr-total"><span class="tr-total-k">합계</span>툴 5 · 5.0K tok · $0.15</div>');
-    // Work outside every task, tokens alone are enough to show it.
-    expect(html).toContain(
-      '<div class="tr-total tr-outside"><span class="tr-total-k">태스크 밖</span>툴 0 · 2.0K tok</div>',
-    );
-    // The foot closes the body, after the runs and the plan (the element's own totals are off: it sees only the newest).
-    expect(html.indexOf('class="tr-total"')).toBeGreaterThan(html.indexOf('</ui-task-plan>'));
-    expect(html.indexOf('class="tr-total"')).toBeLessThan(
-      html.indexOf('</div></ui-disclosure><span class="ar-vh pl-live"'),
-    );
+    expect(p.runsEl.data?.totals).toEqual({ runs: 2, tools: 5, tokens: 5000, costUsd: 0.15000000000000002 });
+    // Work outside every task, tokens alone are enough to show it — a row under the totals.
+    expect(p.runsEl.data?.extraTotals).toEqual([{ label: '태스크 밖', value: '툴 0 · 2.0K tok' }]);
+    expect(p.runsEl.data?.hidden).toBeUndefined();
+    // No page row while runs exist.
+    expect(p.el.innerHTML).not.toContain('tr-total');
+    // The subagents' calls count with the main agent's (the rows count a run's calls so): 8 + 11 + 7.
     p.render([TASKS[0], { ...TASKS[1], agentToolCalls: 7 }], '', [], { toolCalls: 4, agentToolCalls: 2 });
-    expect(p.el.innerHTML).toContain('<span class="tr-total-k">합계</span>툴 19 (+서브 7)</div>');
-    expect(p.el.innerHTML).toContain('<span class="tr-total-k">태스크 밖</span>툴 4 (+서브 2)');
-    // Nothing outside the tasks: no row for it. Nothing ran: no foot at all.
+    expect(p.runsEl.data?.totals).toEqual({ runs: 2, tools: 26 });
+    expect(p.runsEl.data?.extraTotals).toEqual([{ label: '태스크 밖', value: '툴 4 (+서브 2) · 0 tok' }]);
+    // Nothing outside the tasks: no extra row.
     p.render(TASKS, '', [], null);
-    expect(p.el.innerHTML).not.toContain('tr-outside');
-    // Nothing ran yet but work was done (before the first list): only the 태스크 밖 row (review R1).
+    expect(p.runsEl.data?.extraTotals).toBeUndefined();
+    // Nothing ran yet but work was done (before the first list): no runs element — the 태스크 밖 line is the page's (review R1).
     p.render([TASKS[2]], '', [], { toolCalls: 9 });
-    expect(p.el.innerHTML).not.toContain('<span class="tr-total-k">합계</span>');
-    expect(p.el.innerHTML).toContain('<span class="tr-total-k">태스크 밖</span>툴 9');
+    expect(p.el.innerHTML).not.toContain('ui-task-runs');
+    expect(p.el.innerHTML).toContain(
+      '<div class="tr-total tr-outside"><span class="tr-total-k">태스크 밖</span>툴 9 · 0 tok</div>',
+    );
     p.render([TASKS[2]], '', [], null);
     expect(p.el.innerHTML).not.toContain('tr-total');
+    // The runs past the fold are counted on the totals row ("15개 중 12개 표시" — the element's words).
+    const many: Task[] = Array.from({ length: 15 }, (_, i) => ({
+      id: `T${i + 1}`,
+      content: `t${i + 1}`,
+      status: 'completed',
+      startedAt: T0 + i,
+      completedAt: T0 + i + 1,
+      toolCalls: 1,
+    }));
+    p.render(many, '', []);
+    expect(p.runsEl.data?.runs).toHaveLength(12);
+    expect(p.runsEl.data?.hidden).toBe(3);
+    expect(p.runsEl.data?.totals).toEqual({ runs: 15, tools: 15 });
     // The old plan footer is gone (its phase line is the head now).
     expect(declarationCount('planFootHtml')).toBe(0);
   });
@@ -1677,7 +1710,7 @@ describe('panel head (D18) — <ui-status-bar>', () => {
   const head = (s: Record<string, unknown>, col: string) =>
     load<{ panelHeadData(s: unknown, col: string): Record<string, unknown> }>(
       ['toNum', 'pendingAutoResume', 'rootStatusOf', 'isBusy', 'sessionActionsOf', 'panelHeadData'],
-      ['AGENT_STATUS_LABEL', 'PS_BAR_STATUS', '_busy'],
+      ['AGENT_STATUS_LABEL', 'PS_BAR_STATUS', 'SESSION_ACTION_ARIA', '_busy'],
       { currentUserId: 'U1', SELF_INSTANCE_NAME: '', READ_ONLY_MSG: 'read only' },
     ).panelHeadData(s, col);
 
@@ -1685,7 +1718,13 @@ describe('panel head (D18) — <ui-status-bar>', () => {
     const d = head(CARD(), 'working');
     expect(d).toMatchObject({ status: 'running', words: { running: '실행 중' }, startedAt: T0 });
     expect(d.activeMs).toBeUndefined();
-    expect(d.actions).toContainEqual({ id: 'stop', label: 'Stop', tone: 'danger', icon: 'stop' });
+    expect(d.actions).toContainEqual({
+      id: 'stop',
+      label: 'Stop',
+      ariaLabel: 'Stop — 세션 중지',
+      tone: 'danger',
+      icon: 'stop',
+    });
   });
 
   it('not running: the total active time (the bar labels it 활성)', () => {
@@ -1788,6 +1827,14 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
     // The collapsed summary is unchanged (spec 13).
     const sum = info(CARD(), false);
     expect(sum).not.toContain('pi-details');
+    // D6b (D3-GAPS G6-2): the links that stay in view while folded are the disclosure's links slot — inside the element.
+    const linked = info(CARD({ prUrl: 'https://github.com/x/y/pull/1', prLabel: 'PR #1' }), false);
+    const links = /<div slot="links" class="pi-links">[\s\S]*?<\/div>/.exec(linked)?.[0] ?? '';
+    expect(links).toContain('<a href="https://github.com/x/y/pull/1" target="_blank" rel="noopener">PR #1</a>');
+    expect(links).toContain('>전체 대화</a>');
+    expect(linked.indexOf('slot="links"')).toBeLessThan(linked.indexOf('</ui-disclosure>'));
+    expect(linked.endsWith('</ui-disclosure>')).toBe(true);
+    expect(linked).not.toContain('</ui-disclosure><div class="pi-links">');
     expect(sum.slice(sum.indexOf('class="pi-sum"'), sum.indexOf('</button>'))).toContain('$12.40');
   });
 });
@@ -1802,7 +1849,11 @@ describe('template hygiene', () => {
       'taskRunStart',
       'taskRunEnd',
       'taskTokTotal',
-      'taskTotalsHtml',
+      'taskTotalsOf',
+      'taskOutsideText',
+      'taskOutsideNote',
+      'taskOutsideHtml',
+      'taskPlanRestore',
       'taskElData',
       'taskRunsData',
       'taskPlanData',
@@ -1880,9 +1931,9 @@ describe('template hygiene', () => {
       'AP_KBD_APPROVE',
       'AP_ANSWERED',
       'AP_SENT',
-      // D3 E-08 / E-05: the chip row and the deck's own ‹ › stepping are the elements'.
+      // D3 E-08 / E-05: the chip row and the deck's own ‹ › stepping are the elements'
+      // (SESSION_ACTION_ARIA is back as the bar's ariaLabel — D6b, 0.12.0).
       'panelHeadHtml',
-      'SESSION_ACTION_ARIA',
       'deckGo',
       'deckStep',
     ]) {

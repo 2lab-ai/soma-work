@@ -329,6 +329,24 @@ describe('panel task runs carry id, times and tool calls (T7/T8)', () => {
       toolCalls: 12,
     });
   });
+  it('D6b (D3-GAPS G5-1): a share (ran together with other tasks) or an inferred start reads ≈ (approx) with a note saying why', () => {
+    const run = (over: Record<string, unknown>) =>
+      taskRunsData([
+        { id: 'T1', content: 'a', status: 'completed', startedAt: 1, completedAt: 2, toolCalls: 2.5, ...over },
+      ])[0];
+    expect(run({ shared: 2 })).toMatchObject({
+      approx: true,
+      notes: [{ label: '분배', value: '2개 태스크가 함께 진행 — 수치는 그 몫(1/2)' }],
+    });
+    expect(run({ startEstimated: true })).toMatchObject({
+      approx: true,
+      notes: [{ label: '시작', value: '진행 중 표시 없이 완료 — 직전 목록의 시각', approx: true }],
+    });
+    expect(run({ shared: 3, startEstimated: true }).notes).toHaveLength(2);
+    const plain = run({ shared: 1 });
+    expect(plain.approx).toBeUndefined();
+    expect(plain.notes).toBeUndefined();
+  });
   it('task view T2: a step a later plan dropped after it ran keeps its tools and time; one that never ran has neither', () => {
     const [dropped] = taskRunsData([
       {
