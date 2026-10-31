@@ -160,6 +160,36 @@ describe('C4 — after a launch', () => {
   });
 });
 
+describe('C6 — reconcile: an epic only while it is offered (grok, fable #707 R1)', () => {
+  const m = load<{ ntDefaultState(c: unknown, d: unknown): any; ntReconcile(s: any, c: any): void }>([
+    'ntDefaultState',
+    'ntReconcile',
+  ]);
+  const offered = {
+    ...ctx,
+    models: [{ nickname: 'opus' }],
+    efforts: ['high'],
+    channels: [{ id: 'C1' }],
+    taskFolders: [],
+    epicTasks: true,
+  };
+  const epicTask = () => ({ ...m.ntDefaultState(offered, null), destination: 'task', kind: 'epic' });
+  it('kept while the flag is on and the destination is a dashboard task', () => {
+    const s = epicTask();
+    m.ntReconcile(s, offered);
+    expect(s.kind).toBe('epic');
+  });
+  it('dropped when the flag is gone, or the dashboard task is no longer offered', () => {
+    const noFlag = epicTask();
+    m.ntReconcile(noFlag, { ...offered, epicTasks: undefined });
+    expect(noFlag.kind).toBe('');
+    const noTasks = epicTask();
+    m.ntReconcile(noTasks, { ...offered, taskFolders: undefined });
+    expect(noTasks.destination).toBe('slack');
+    expect(noTasks.kind).toBe('');
+  });
+});
+
 describe('C5 — the markup', () => {
   it('the chip sits in the destination row, hidden until offered', () => {
     const row = TEMPLATE.slice(TEMPLATE.indexOf('id="nt-dest"'), TEMPLATE.indexOf('id="nt-dest"') + 1200);
