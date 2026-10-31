@@ -95,7 +95,11 @@ import {
 } from './conversation';
 import { getArtifactStore } from './conversation/artifacts';
 import type { NewTaskAttachment } from './conversation/new-task';
-import { createNewTaskProvider, createSlackSteerUploader } from './conversation/new-task-provider';
+import {
+  createNewTaskProvider,
+  createSlackSteerUploader,
+  offeredNewTaskModels,
+} from './conversation/new-task-provider';
 import { createConversationDurable } from './conversation/recorder';
 import { createSessionWorkLogAppender } from './conversation/session-work-log';
 import { setSettingsRegistry } from './conversation/settings-routes';
@@ -1177,6 +1181,7 @@ async function start() {
       controller: taskController,
       createTask: (input) => claudeHandler.createTask(input),
       createFreshDirectory: (ownerId) => new WorkingDirectoryManager().createSessionBaseDir(ownerId),
+      listModels: (ownerId) => offeredNewTaskModels(ownerId),
     });
     setDashboardTaskLauncher(taskLauncher);
     const workLogProviders: StreamExecutorProviders & {
