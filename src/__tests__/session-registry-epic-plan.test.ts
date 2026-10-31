@@ -12,6 +12,7 @@
  *   P6 load keeps a well-formed plan and events on an epic only.
  *   P7 archive and revive keep the plan and events.
  *   P8 an ordinary task saves no plan fields.
+ *   P9 a child whose id load re-mints is renamed in its node's `spawned` too.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -287,6 +288,39 @@ describe('SessionRegistry — an epic plan and its events (E4 ②)', () => {
     const back = reg.getSessionByTaskId(epic.taskId!)!;
     expect(back.plan).toEqual(plan);
     expect(back.epicEvents).toEqual([event('e1')]);
+  });
+
+  it("P9 — a child whose id load re-mints is renamed in its node's spawned list too", () => {
+    const epicId = '11111111-1111-4111-8111-111111111111';
+    const childId = '22222222-2222-4222-8222-222222222222';
+    const plan = { nodes: [{ id: 'login', title: 'Fix login', kind: 'issue', spawned: [childId] }] };
+    fs.writeFileSync(
+      SESSIONS_FILE,
+      JSON.stringify([
+        // A Slack session earlier in the file holds the child's id.
+        {
+          key: 'work:C1:1.1',
+          ownerId: 'U1',
+          userId: 'U1',
+          channelId: 'C1',
+          threadTs: '1.1',
+          taskId: childId,
+          isActive: true,
+          lastActivity: new Date().toISOString(),
+          state: 'MAIN',
+          activityState: 'idle',
+        },
+        slacklessRecord(epicId, { kind: 'epic', childTaskIds: [childId], plan }),
+        slacklessRecord(childId, { parentTaskId: epicId, planNodeId: 'login' }),
+      ]),
+    );
+    const reg = new SessionRegistry();
+    reg.loadSessions();
+    const child = [...reg.getAllSessions().values()].find((s) => s.planNodeId === 'login')!;
+    expect(child.taskId).not.toBe(childId);
+    const epic = reg.getSessionByTaskId(epicId)!;
+    expect(epic.plan!.nodes[0].spawned).toEqual([child.taskId]);
+    expect(savedOf(epicId)?.plan.nodes[0].spawned).toEqual([child.taskId]);
   });
 
   it('P8 — an ordinary task and a child save no plan fields', () => {

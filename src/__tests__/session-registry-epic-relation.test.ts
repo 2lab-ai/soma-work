@@ -12,6 +12,8 @@
  *      child cannot be an epic; only an epic has children.
  *   R6 archive and revive keep the relation.
  *   R7 a task that is neither epic nor child saves exactly what it did before.
+ *   R8 load re-mints a colliding id: the relation follows the new id, both ways.
+ *   R9 a record archived on load keeps the relation.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -127,6 +129,10 @@ describe('SessionRegistry — epic and child tasks (E4 ①)', () => {
     for (const [label, extra] of attempts) {
       expect(() => reg.createTask({ ...BASE, ...(extra as any) }), label).toThrow();
     }
+    // A closing epic (flagged while its close is awaited) takes no new child.
+    epic.terminated = true;
+    expect(() => reg.createTask({ ...BASE, parentTaskId: epic.taskId, planNodeId: 'a' })).toThrow(/not a live epic/);
+    epic.terminated = undefined;
     expect(fs.readFileSync(SESSIONS_FILE, 'utf8')).toBe(before);
     expect(epic.childTaskIds ?? []).toEqual([]);
   });
@@ -202,6 +208,14 @@ describe('SessionRegistry — epic and child tasks (E4 ①)', () => {
     expect(sanitizeEpicRelation({ planNodeId: 'node-a' }, true)).toEqual({});
     expect(sanitizeEpicRelation({ parentTaskId: 'p1', planNodeId: 'Bad Node' }, true)).toEqual({});
     expect(sanitizeEpicRelation({ kind: 'epic', planNodeId: 'node-a' }, true)).toEqual({ kind: 'epic' });
+    // A task is not its own parent or child; a blank id is no id; a child has no children.
+    expect(sanitizeEpicRelation({ taskId: 't1', parentTaskId: 't1', planNodeId: 'node-a' }, true)).toEqual({});
+    expect(sanitizeEpicRelation({ parentTaskId: '   ', planNodeId: 'node-a' }, true)).toEqual({});
+    expect(sanitizeEpicRelation({ taskId: 't1', kind: 'epic', childTaskIds: ['t1', ' ', 'c1'] }, true)).toEqual({
+      kind: 'epic',
+      childTaskIds: ['c1'],
+    });
+    expect(sanitizeEpicRelation({ ...child, childTaskIds: ['c9'] }, true)).toEqual(child);
   });
 
   it('R6 — archive and revive keep the relation', () => {
@@ -227,6 +241,91 @@ describe('SessionRegistry — epic and child tasks (E4 ①)', () => {
     const back = reg.getSessionByTaskId(child.taskId!)!;
     expect(back).toMatchObject({ parentTaskId: epic.taskId, planNodeId: 'a' });
     expect(reg.getChildTasks(epic.taskId!)).toEqual([back]);
+
+    // The epic itself: archived and revived, it is still an epic with its list.
+    reg.terminateSession(`task:${epic.taskId}`);
+    const epicFile = fs
+      .readdirSync(dir)
+      .map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')))
+      .find((a) => a.taskId === epic.taskId);
+    expect(epicFile).toMatchObject({ kind: 'epic', childTaskIds: [child.taskId] });
+    expect(reg.restoreArchivedSession(epicFile, BASE.workingDirectory)).toMatchObject({ ok: true });
+    const epicBack = reg.getSessionByTaskId(epic.taskId!)!;
+    expect(epicBack).toMatchObject({ kind: 'epic', childTaskIds: [child.taskId] });
+    expect(reg.getChildTasks(epicBack.taskId!)).toEqual([back]);
+  });
+
+  it('R8 — load re-mints an id a Slack session holds: the relation follows the new id, both ways', () => {
+    const epicId = '11111111-1111-4111-8111-111111111111';
+    const childId = '22222222-2222-4222-8222-222222222222';
+    const otherId = '33333333-3333-4333-8333-333333333333';
+    const slack = (ts: string, taskId: string) => ({
+      key: `work:C1:${ts}`,
+      ownerId: 'U1',
+      userId: 'U1',
+      channelId: 'C1',
+      threadTs: ts,
+      taskId,
+      isActive: true,
+      lastActivity: new Date().toISOString(),
+      state: 'MAIN',
+      activityState: 'idle',
+    });
+    fs.writeFileSync(
+      SESSIONS_FILE,
+      JSON.stringify([
+        // Slack sessions earlier in the file hold the epic's and the first child's ids.
+        slack('1.1', epicId),
+        slack('2.2', childId),
+        slacklessRecord(childId, { parentTaskId: epicId, planNodeId: 'node-a' }),
+        slacklessRecord(epicId, { kind: 'epic', childTaskIds: [childId, otherId] }),
+        slacklessRecord(otherId, { parentTaskId: epicId, planNodeId: 'node-b' }),
+      ]),
+    );
+    const reg = new SessionRegistry();
+    reg.loadSessions();
+    const epic = [...reg.getAllSessions().values()].find((s) => s.kind === 'epic')!;
+    const child = [...reg.getAllSessions().values()].find((s) => s.planNodeId === 'node-a')!;
+    const other = reg.getSessionByTaskId(otherId)!;
+    expect(epic.taskId).not.toBe(epicId);
+    expect(child.taskId).not.toBe(childId);
+    expect(child.parentTaskId).toBe(epic.taskId);
+    expect(other.parentTaskId).toBe(epic.taskId);
+    expect(epic.childTaskIds).toEqual([child.taskId, otherId]);
+    expect(
+      reg
+        .getChildTasks(epic.taskId!)
+        .map((s) => s.taskId)
+        .sort(),
+    ).toEqual([child.taskId, otherId].sort());
+    expect(reg.getChildTasks(epicId)).toEqual([]);
+    // The write-back saved it: the next restart finds the same links.
+    expect(savedOf(epic.taskId!)?.childTaskIds).toEqual([child.taskId, otherId]);
+    expect(savedOf(child.taskId!)?.parentTaskId).toBe(epic.taskId);
+    const after = new SessionRegistry();
+    after.loadSessions();
+    expect(after.getSessionByTaskId(epic.taskId!)?.childTaskIds).toEqual([child.taskId, otherId]);
+    expect(after.getChildTasks(epic.taskId!).length).toBe(2);
+  });
+
+  it('R9 — a record archived on load keeps the relation', () => {
+    const epicId = '11111111-1111-4111-8111-111111111111';
+    const childId = '22222222-2222-4222-8222-222222222222';
+    // Asleep with no sleep start: past the archive age, so load archives them.
+    fs.writeFileSync(
+      SESSIONS_FILE,
+      JSON.stringify([
+        slacklessRecord(epicId, { kind: 'epic', childTaskIds: [childId], state: 'SLEEPING' }),
+        slacklessRecord(childId, { parentTaskId: epicId, planNodeId: 'node-a', state: 'SLEEPING' }),
+      ]),
+    );
+    const reg = new SessionRegistry();
+    reg.loadSessions();
+    expect(reg.getSessionByTaskId(epicId)).toBeUndefined();
+    const dir = path.join(TEST_DATA_DIR, 'archives');
+    const archives = fs.readdirSync(dir).map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
+    expect(archives.find((a) => a.taskId === epicId)).toMatchObject({ kind: 'epic', childTaskIds: [childId] });
+    expect(archives.find((a) => a.taskId === childId)).toMatchObject({ parentTaskId: epicId, planNodeId: 'node-a' });
   });
 
   it('R7 — a task that is neither an epic nor a child saves no relation fields', () => {
