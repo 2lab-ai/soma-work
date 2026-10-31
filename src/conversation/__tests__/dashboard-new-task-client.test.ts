@@ -586,9 +586,9 @@ describe('ntReconcile / ntStateAfterLaunch (#640 R1)', () => {
 
   // #640 R1 (astra P2): a task created but not started keeps its instruction — it was never run.
   it('after a task that did not start, the instruction, folder and model are kept', () => {
-    const prev = taskState({ model: 'opus[1m]' });
+    const prev = taskState({ model: 'fable' }); // not the default, so keeping it is observable
     const next = fns.ntStateAfterLaunch(prev, { sessionKey: 'task:x', status: 'not-started', reason: 'busy' }, ctx());
-    expect(next).toMatchObject({ destination: 'task', prompt: '고쳐줘', folder: 'repo-a', model: 'opus[1m]' });
+    expect(next).toMatchObject({ destination: 'task', prompt: '고쳐줘', folder: 'repo-a', model: 'fable' });
   });
 
   it('a Slack launch keeps the channel it used', () => {

@@ -649,11 +649,29 @@ describe('TaskTurnController.canStart — a dry run of admission (#600 ⑥)', ()
     ['/compact'],
     ['/model opus'],
     ['%model'],
+    ['/zworkflow:using-ssot'], // a plugin's namespaced command (#640 R2)
+    ['/plugin:skill do it'],
   ])('refuses a command-shaped first instruction (%s) with the start’s own 400', (text) => {
     const h = harness();
     expect(h.controller.canStart('UOWNER', text)).toEqual({
       status: 400,
       body: { error: 'commands are not supported on a dashboard task yet — send an instruction' },
+    });
+  });
+
+  it('refuses with the window’s own 429 once the owner’s starts fill it, before anything is made', async () => {
+    const h = harness({ maxStartsPerWindow: 1 } as never, [
+      async (input) => {
+        input.onStarted?.();
+        return completed('only');
+      },
+    ]);
+    const first = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
+    expect(first.status).toBe(202);
+    await first.done;
+    expect(h.controller.canStart('UOWNER', 'again')).toEqual({
+      status: 429,
+      body: { error: 'too many dashboard task starts — try again shortly' },
     });
   });
 

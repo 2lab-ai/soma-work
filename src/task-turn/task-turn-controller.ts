@@ -113,11 +113,12 @@ export interface TaskTurnController {
 const COMPACT = '/compact';
 /**
  * A slash command's shape (`/model x`, `/compact`) — not a path (`/work/x`) or
- * a fraction (`2/3`). Every command is refused on a task in A0 (D8), `/compact`
+ * a fraction (`2/3`); a plugin's namespaced command (`/plugin:skill`) included
+ * (#640 R2). Every command is refused on a task in A0 (D8), `/compact`
  * included: a task turn has no signal that proves a manual compaction happened
  * (#634 R1). Automatic and fallback compaction still run.
  */
-const SLASH_COMMAND = /^\/[A-Za-z][\w-]*(?:\s|$)/;
+const SLASH_COMMAND = /^\/[A-Za-z][\w-]*(?::[\w-]+)*(?:\s|$)/;
 const SESSION_COMMAND = /^%[A-Za-z]/;
 const COMMAND_REFUSED = 'commands are not supported on a dashboard task yet — send an instruction';
 /** An instruction (trimmed) a task start refuses as a command: `/word` or `%word`. */
