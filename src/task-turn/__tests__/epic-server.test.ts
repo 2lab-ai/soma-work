@@ -13,9 +13,15 @@
  *   S5 every call re-reads the epic: one closed meanwhile, or no host yet, is refused.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+// The real server, but its config is kept so the tools it carries can be read.
+vi.mock('@anthropic-ai/claude-agent-sdk', async (original) => {
+  const actual: any = await original();
+  return { ...actual, createSdkMcpServer: vi.fn((config: any) => ({ type: 'sdk', name: config.name, config })) };
+});
 import type { TaskExecutionContext } from '../../agent-runtime/execution-context';
 import { applyPlanWrite, EpicPlanError } from '../epic-plan';
-import { attachesEpicServer, type EpicHost, epicTools, setEpicHost } from '../epic-server';
+import { attachesEpicServer, buildEpicServer, type EpicHost, epicTools, setEpicHost } from '../epic-server';
 
 const EPIC_ID = 'e1';
 const ctx = (extra: Record<string, unknown> = {}) =>
@@ -32,7 +38,7 @@ const ctx = (extra: Record<string, unknown> = {}) =>
   }) as unknown as TaskExecutionContext;
 
 function fakeHost(over: Partial<EpicHost> = {}) {
-  const epic: any = { taskId: EPIC_ID, slackless: true, kind: 'epic', childTaskIds: [] };
+  const epic: any = { taskId: EPIC_ID, ownerId: 'U1', slackless: true, kind: 'epic', childTaskIds: [] };
   const children: any[] = [];
   const host: EpicHost = {
     getTask: vi.fn((id: string) => (id === EPIC_ID ? epic : children.find((c) => c.taskId === id))),
@@ -134,6 +140,7 @@ describe('the epic server (E4 ④a, D3 · D8)', () => {
     epic.childTaskIds = ['c1', 'c-gone'];
     children.push({
       taskId: 'c1',
+      ownerId: 'U1',
       planNodeId: 'login',
       activityState: 'idle',
       lastTurnOutcome: { turnId: 't', outcome: 'completed', category: 'WorkflowComplete', at: 1, reason: 'secret' },
@@ -159,6 +166,8 @@ describe('the epic server (E4 ④a, D3 · D8)', () => {
     epic.plan.nodes[1].accepted = undefined;
 
     const one = parse(await childStatus.handler({ childId: 'c1' } as any, {}));
+    // The final read is the child's own record.
+    expect(host.readChildFinal).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'c1' }));
     expect(one).toEqual({
       ok: true,
       child: {
@@ -180,6 +189,50 @@ describe('the epic server (E4 ④a, D3 · D8)', () => {
     // A final that cannot be read leaves it out, not the status.
     (host.readChildFinal as any).mockRejectedValueOnce(new Error('disk'));
     expect(parse(await childStatus.handler({ childId: 'c1' } as any, {})).child.final).toBeUndefined();
+  });
+
+  it('S4b — a running child with an open approval of its chain reads needs-input; another owner’s “child” does not count', async () => {
+    const { childStatus } = tools();
+    const { host, epic, children } = fakeHost();
+    setEpicHost(host);
+    epic.plan = applyPlanWrite(
+      undefined,
+      { nodes: [{ id: 'login', title: 'Fix login', kind: 'issue' }] },
+      {
+        now: 1,
+        by: 'epic',
+        children: [],
+      },
+    );
+    epic.childTaskIds = ['c1', 'cx'];
+    children.push({ taskId: 'c1', ownerId: 'U1', planNodeId: 'login', activityState: 'working', openChain: 'ch1' });
+    epic.epicEvents = [
+      {
+        id: 'e1',
+        childTaskId: 'c1',
+        planNodeId: 'login',
+        outcome: 'needs-input',
+        approvalId: 'p',
+        chainId: 'ch1',
+        at: 1,
+        state: 'pending',
+      },
+    ];
+    expect(parse(await childStatus.handler({} as any, {})).nodes[0].status).toBe('needs-input');
+    // A record under this epic that belongs to someone else is not its live child.
+    children.push({ taskId: 'cx', ownerId: 'U2', planNodeId: 'login', activityState: 'working' });
+    const tree = parse(await childStatus.handler({} as any, {}));
+    expect(tree.children).toContainEqual({ taskId: 'cx', closed: true });
+    expect(parse(await childStatus.handler({ childId: 'cx' } as any, {})).child).toEqual({
+      taskId: 'cx',
+      closed: true,
+    });
+  });
+
+  it('S6 — the server is `epic` and carries both tools', () => {
+    const server: any = buildEpicServer(ctx());
+    expect(server.name).toBe('epic');
+    expect(server.config.tools.map((t: any) => t.name)).toEqual(['plan_write', 'child_status']);
   });
 
   it('S5 — every call re-reads the epic: no host yet, or an epic closed meanwhile, is refused', async () => {
