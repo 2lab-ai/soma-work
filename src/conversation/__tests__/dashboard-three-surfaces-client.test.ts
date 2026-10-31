@@ -538,6 +538,9 @@ type BarData = {
   actions: Array<{
     id: string;
     label: string;
+    ariaLabel?: string;
+    title?: string;
+    pressed?: boolean;
     tone?: string;
     icon?: string;
     disabled?: string | boolean;
@@ -561,7 +564,7 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
         'panelHeadData',
         'panelHeadNoteHtml',
       ],
-      ['AGENT_STATUS_LABEL', 'PS_BAR_STATUS'],
+      ['AGENT_STATUS_LABEL', 'PS_BAR_STATUS', 'SESSION_ACTION_ARIA'],
       {
         currentUserId: 'U1',
         SELF_INSTANCE_NAME: '',
@@ -639,6 +642,40 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
   it('a write in flight is busy in the bar (Stop / Close / Trash; Star and 살리기 together)', () => {
     const d = head(card(), 'working', { _busy: { 'inst::C1:t1|action': true, 'inst::C1:t1|life': true } });
     for (const a of d.actions) expect(a.busy, a.id).toBe(true);
+  });
+
+  it('D6b (D3-GAPS G6-1): the actions are named for what they do to the session; Star carries its pressed state and tooltip; Trash is quiet', () => {
+    const d = head(card({ activityState: 'idle', starred: true }), 'idle');
+    expect(d.actions.find((a) => a.id === 'star')).toEqual({
+      id: 'star',
+      label: '\u2605 Starred',
+      pressed: true,
+      title: '즐겨찾기 해제 — 다시 자동 sleep·보관 대상이 돼요',
+    });
+    expect(d.actions.find((a) => a.id === 'close')).toEqual({
+      id: 'close',
+      label: 'Close',
+      ariaLabel: 'Close — 세션 종료',
+    });
+    expect(head(card(), 'working').actions.find((a) => a.id === 'stop')?.ariaLabel).toBe('Stop — 세션 중지');
+    const closed = head(card({ activityState: 'idle', terminated: true }), 'closed');
+    expect(closed.actions.find((a) => a.id === 'trash')).toEqual({
+      id: 'trash',
+      label: 'Trash',
+      ariaLabel: 'Trash — 세션 휴지통으로',
+      tone: 'quiet',
+    });
+    expect(closed.actions.find((a) => a.id === 'star')).toMatchObject({
+      pressed: false,
+      title: expect.stringContaining('(지금 살려요)'),
+    });
+    expect(closed.actions.find((a) => a.id === 'revive')?.title).toContain('세션을 살려요');
+    // A sibling instance's pointer keeps its own words (the lock says where to go): no name over them.
+    const sib = head(card({ environment: { instanceName: 'other', host: 'h', port: 1 } }), 'working', {
+      SELF_INSTANCE_NAME: 'me',
+    });
+    expect(sib.actions[0].ariaLabel).toBeUndefined();
+    expect(sib.actions[0].pressed).toBeUndefined();
   });
 
   it('the page wires the bar: one listener, the session it was drawn for, the Slack link left to the browser', () => {
@@ -1340,6 +1377,7 @@ describe('the detail deck — open cards and their detail cards move together (S
     };
     const listeners: string[] = [];
     els['panel-deck'] = { addEventListener: (n: string) => listeners.push(n) };
+    els['panel-deck-peek'] = {};
     const rig = (deck: string[], front: string) =>
       load<{ renderDeckNav(dir: number): void; deckNow(): string[] }>(
         ['renderDeckNav', 'onDeckPage', 'deckSlide'],
@@ -1373,8 +1411,15 @@ describe('the detail deck — open cards and their detail cards move together (S
     });
     expect(els['panel-deck']._keys).toEqual(['A', 'B', 'C']);
     const handed = els['panel-deck'].data;
+    // D6b (D3-GAPS G6-3): the edges above the header are <ui-deck-nav peek="only"> fed the same data.
+    expect(els['panel-deck-peek'].data).toBe(handed);
+    expect(TEMPLATE).toContain(
+      '<ui-deck-nav class="panel-deck-peek" id="panel-deck-peek" peek="only" lang="ko" aria-hidden="true"></ui-deck-nav>',
+    );
+    expect(TEMPLATE).not.toContain('.panel-deck-peek span');
     r.renderDeckNav(0);
     expect(els['panel-deck'].data).toBe(handed); // the same deck is not handed again
+    expect(els['panel-deck-peek'].data).toBe(handed);
     expect(listeners).toEqual(['ui-page']); // one listener, however often it paints
     expect(selector).toBe('.panel-header, .panel-body');
     expect(slides.map((x) => x.part)).toEqual(['header', 'header', 'body', 'body']);
@@ -1662,7 +1707,11 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
         'taskRunEnd',
         'taskTokTotal',
         'taskRunsOf',
-        'taskTotalsHtml',
+        'taskTotalsOf',
+        'taskOutsideText',
+        'taskOutsideNote',
+        'taskOutsideHtml',
+        'taskPlanRestore',
         'taskElData',
         'taskRunsData',
         'taskPlanData',
@@ -1743,7 +1792,9 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
     ]);
     expect(JSON.stringify(r.runs)).not.toContain('never ran');
     // The foot sums the runs.
-    expect(html).toContain('<div class="tr-total"><span class="tr-total-k">합계</span>툴 4</div>');
+    // The sums are the runs element's totals row (D3-GAPS G5-2): no page row.
+    expect(html).not.toContain('tr-total');
+    expect(r.runs?.totals).toEqual({ runs: 2, tools: 4 });
     expect(html).not.toContain('이전 계획');
   });
 });

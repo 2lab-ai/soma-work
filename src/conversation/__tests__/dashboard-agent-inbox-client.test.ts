@@ -1394,7 +1394,7 @@ describe('pending-question choices reach the form as data and come back exactly 
       'resolveRecommendedId',
     ],
     ['_mcState', 'MC_CUSTOM_ID'],
-    { STRINGS: { mcCustomPlaceholder: '직접 입력…' } },
+    { STRINGS: { mcCustomPlaceholder: '직접 입력…' }, acQuestionLock: () => '' },
   );
   const session = (v: string): McSession => ({
     key: `C1:t1'\\${v}`,
@@ -1443,6 +1443,19 @@ describe('pending-question choices reach the form as data and come back exactly 
       },
     };
     expect(m.mcFormData(s, s.pendingQuestion).questions[0].choices[0].recommended).toBeUndefined();
+  });
+
+  it('D6b (D3-GAPS G3-1): a reader who cannot answer here gets the form locked with the reason (canAnswer); the owner gets none', () => {
+    const locked = load<{ mcFormData(s: McSession, q: McSession['pendingQuestion']): McData & { canAnswer?: string } }>(
+      ['mcFormId', 'mcStateOf', 'mcFormData', 'stripRecommendedMarker', 'resolveRecommendedId'],
+      ['_mcState', 'MC_CUSTOM_ID'],
+      { STRINGS: { mcCustomPlaceholder: '직접 입력…' }, acQuestionLock: () => '세션 소유자만 답할 수 있어요' },
+    );
+    const s = session('x');
+    expect(locked.mcFormData(s, s.pendingQuestion).canAnswer).toBe('세션 소유자만 답할 수 있어요');
+    expect('canAnswer' in m.mcFormData(s, s.pendingQuestion)).toBe(false);
+    // The same lock as the single-choice card's (the owner, on this instance; the server re-checks).
+    expect(clientFn('mcFormData')).toContain('var lock = acQuestionLock(s);');
   });
 
   it('no answerChoice / selectMc call is built as an inline JS string any more', () => {
@@ -2292,7 +2305,11 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
         'taskRunStart',
         'taskRunsOf',
         'planSummaryHtml',
-        'taskTotalsHtml',
+        'taskTotalsOf',
+        'taskOutsideText',
+        'taskOutsideNote',
+        'taskOutsideHtml',
+        'taskPlanRestore',
         'taskElData',
         'taskRunsData',
         'taskPlanData',
@@ -3147,6 +3164,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'renderMultiChoicePanel',
         'renderMultiChoiceCard',
         'mcFormData',
+        'acQuestionLock',
         'mcStateOf',
         'esc',
         'escAttr',

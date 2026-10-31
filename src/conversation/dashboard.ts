@@ -4866,7 +4866,6 @@ ui-drawer:not(:defined) { display: none; }
 .panel-tasks-body > ui-task-runs, .panel-tasks-body > ui-task-plan { display: block; min-width: 0; }
 .panel-tasks-body > ui-task-runs + ui-task-plan { margin-top: 10px; }
 .tr-total { display: flex; gap: 8px; align-items: baseline; margin: 6px 0 2px; padding-top: 6px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.tr-total + .tr-total { margin-top: 0; padding-top: 0; border-top: 0; }
 .tr-total-k { flex: none; font-weight: 600; color: var(--text-tertiary); }
 .pl-fold { padding: 0 0 4px; }
 /* Panel work log (.prd/10 §3.1-6, §3.3) — what the agent did, in order: the
@@ -4922,17 +4921,14 @@ ui-drawer:not(:defined) { display: none; }
 }
 .panel-header { flex-wrap: wrap; row-gap: 8px; }
 /* ── DETAIL DECK (SSOT 2026-10-29 T2) — every open card's detail card; the ones
-   waiting behind the front card show their top edges above it, and ‹ n / m ›
-   in the top right go through them. ── */
-.panel-deck-peek { display: none; flex: none; flex-direction: column; align-items: center; padding-top: 8px; background: var(--bg); }
-.slide-panel:not([data-deck="0"]) .panel-deck-peek { display: flex; }
-.panel-deck-peek span { display: block; height: 7px; border: 1px solid color-mix(in srgb, var(--text-tertiary) 45%, var(--border)); border-bottom: 0; border-radius: 10px 10px 0 0; background: color-mix(in srgb, var(--surface) 70%, var(--bg)); }
-.panel-deck-peek span:first-child { width: calc(100% - 48px); opacity: 0.75; }
-.panel-deck-peek span:last-child { width: calc(100% - 24px); }
-.slide-panel[data-deck="1"] .panel-deck-peek span:first-child { display: none; }
+   waiting behind the front card show their top edges above it (<ui-deck-nav peek="only">
+   above the header, full width — D3 G6-3, 0.12.0), and ‹ n / m › in the top right go
+   through them. The element draws the edges (one or two, by its data); the page gives
+   the strip its place and hides it while nothing waits behind. ── */
+.panel-deck-peek { display: none; flex: none; padding-top: 8px; background: var(--bg); }
+.slide-panel:not([data-deck="0"]) .panel-deck-peek { display: block; }
 .slide-panel:not([data-deck="0"]) .panel-header { border-top: 1px solid color-mix(in srgb, var(--text-tertiary) 45%, var(--border)); border-radius: 10px 10px 0 0; background: var(--surface); box-shadow: 0 -4px 10px -6px var(--scrim); }
-/* D3 E-05: ‹ n / m › is <ui-deck-nav> (its own pill, 44px on coarse pointers); the edges behind stay the page's
-   (.panel-deck-peek above the header — the element's peek sits under its own nav). */
+/* D3 E-05: ‹ n / m › is <ui-deck-nav> (its own pill, 44px on coarse pointers). */
 .panel-deck { flex: none; }
 .panel-deck[hidden] { display: none; }
 /* The subtitle is one line that ellipsizes: squeezed beside the nav it stacked one or two characters a line
@@ -4953,7 +4949,7 @@ ui-drawer:not(:defined) { display: none; }
 .pi-title { flex-shrink: 0; font-size: 12px; font-weight: 600; color: var(--text-tertiary); }
 .pi-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
 .pi-dot { margin: 0 5px; color: var(--text-tertiary); }
-.pi-links { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 2px; }
+.pi-links { display: flex; flex-wrap: wrap; gap: 4px 12px; }
 .pi-links a { font-weight: 600; color: var(--accent); text-decoration: none; min-height: 24px; display: inline-flex; align-items: center; min-width: 0; overflow-wrap: anywhere; }
 .pi-links a:focus-visible { text-decoration: underline; }
 @media (hover: hover) and (pointer: fine) { .pi-links a:hover { text-decoration: underline; } }
@@ -5624,8 +5620,9 @@ ${pageTokenAliases()}
        (the saved width: initPanelResize); Esc and the scrim arrive as ui-close (→ closeDetailCard, as the ✕ below). Its
        own head is out (hide-close, no heading): the page's header, body and composer fill it. -->
   <ui-drawer class="slide-panel" id="slide-panel" data-deck="0" dock-at="840" width="440" min-width="320" resizable hide-close label="작업 카드" lang="ko">
-    <!-- Detail deck (SSOT 2026-10-29 T2): the edges of the open cards' other detail cards, waiting behind this one. -->
-    <div class="panel-deck-peek" id="panel-deck-peek" aria-hidden="true"><span></span><span></span></div>
+    <!-- Detail deck (SSOT 2026-10-29 T2, D3 G6-3 → D6b): the edges of the open cards' other detail cards, waiting behind
+         this one — <ui-deck-nav peek="only">, the edges alone from the same data as the ‹ n / m › in the header. -->
+    <ui-deck-nav class="panel-deck-peek" id="panel-deck-peek" peek="only" lang="ko" aria-hidden="true"></ui-deck-nav>
     <div class="panel-header">
       <div style="flex:1;min-width:0">
         <h3 id="panel-title" tabindex="-1">작업 카드</h3>
@@ -6875,16 +6872,25 @@ function renderPanelTasks(tasks, scopeLabel, earlier, outside) {
   }
   if (runs.ran.length) body += '<ui-task-runs class="panel-task-runs" id="panel-task-runs" lang="ko"></ui-task-runs>';
   if (runs.plan.length || runs.skipped.length || !runs.ran.length) body += '<ui-task-plan class="panel-task-plan" id="panel-task-plan" lang="ko"></ui-task-plan>';
+  // The sums are the runs element's totals row (over every run, shown or not — D3-GAPS G5-2): with
+  // nothing run yet (work before the first list), the work outside any task is the page's one line.
   var html = head + '<div class="panel-tasks-body ui-tok" id="panel-tasks-body">' + body
-    + (runs.ran.length || outside ? taskTotalsHtml(runs.ran, outside) : '') + '</div></ui-disclosure>' + live;
+    + (!runs.ran.length && outside ? taskOutsideHtml(outside) : '') + '</div></ui-disclosure>' + live;
   writePanelTasks(container, html);
   var runsEl = document.getElementById('panel-task-runs');
   if (runsEl) {
-    taskElData(runsEl, { title: '실행된 태스크', runs: taskRunsData(runs.ran.slice(hiddenRuns)), totals: false });
+    var rd = { title: '실행된 태스크', runs: taskRunsData(runs.ran.slice(hiddenRuns)), totals: taskTotalsOf(runs.ran) };
+    if (hiddenRuns) rd.hidden = hiddenRuns;
+    var ex = taskOutsideNote(outside);
+    if (ex) rd.extraTotals = [ex];
+    taskElData(runsEl, rd);
     taskRunsRestore(runsEl);
   }
   var planEl = document.getElementById('panel-task-plan');
-  if (planEl) taskElData(planEl, taskPlanData(runs));
+  if (planEl) {
+    taskElData(planEl, taskPlanData(runs));
+    taskPlanRestore(planEl);
+  }
   // Same data (a session push while a subagent is shown) writes nothing; a
   // change is morphed, so the focused toggle, a row and each element stay.
   function writePanelTasks(el, markup) {
@@ -7018,6 +7024,16 @@ function taskRunsData(ran) {
     if (sub) tools.push({ name: '서브에이전트', count: sub });
     if (tools.length) r.tools = tools;
     r.toolCalls = main + sub;
+    // Its numbers are a share (it ran together with other tasks) or its start was inferred (it went from
+    // waiting straight to completed): ≈ on the row and the detail, and a note saying why (D3-GAPS G5-1).
+    var shared = Math.round(toNum(t.shared));
+    var notes = [];
+    if (shared > 1) notes.push({ label: '분배', value: shared + '개 태스크가 함께 진행 — 수치는 그 몫(1/' + shared + ')' });
+    if (t.startEstimated) notes.push({ label: '시작', value: '진행 중 표시 없이 완료 — 직전 목록의 시각', approx: true });
+    if (notes.length) {
+      r.approx = true;
+      r.notes = notes;
+    }
     if (t.tokens) {
       r.tokens = { input: toNum(t.tokens.input), output: toNum(t.tokens.output), cacheRead: toNum(t.tokens.cacheRead), cacheWrite: toNum(t.tokens.cacheCreate) };
       r.costUsd = toNum(t.tokens.costUsd);
@@ -7064,6 +7080,13 @@ function taskRunsRestore(el) {
   el._trRestored = true;
   for (var id in _panelTaskOpen) if (_panelTaskOpen[id]) el.setOpen(id, true);
 }
+// The plan's earlier fold (the tasks a new plan dropped before they ran) opens with 자세히
+// (resetPanelSections → _panelTasksEarlier) — on the element once it is defined (D3-GAPS G5-3,
+// 0.12.0 setOpen); the reader's own toggle is kept the same way (ui-toggle).
+function taskPlanRestore(el) {
+  if (!el || typeof el.setOpen !== 'function') return;
+  el.setOpen('earlier-plans', !!_panelTasksEarlier);
+}
 // The elements' reports: a run's detail opened / closed (kept for the next
 // element), the dropped-before-running fold opened / closed.
 (function initPanelTasks() {
@@ -7081,30 +7104,42 @@ function taskRunsRestore(el) {
   });
   if (window.customElements && customElements.whenDefined) {
     customElements.whenDefined('ui-task-runs').then(function() { taskRunsRestore(document.getElementById('panel-task-runs')); });
+    customElements.whenDefined('ui-task-plan').then(function() { taskPlanRestore(document.getElementById('panel-task-plan')); });
   }
 })();
-// The foot: the runs' sums (tool calls, tokens, cost) and the work no task got.
-function taskTotalsHtml(ran, outside) {
+// The runs' sums over every run (shown or not) as the element's totals row (D3-GAPS G5-2):
+// how many ran, the tool calls (the main agent's and the subagents' together — the rows
+// count them so), the tokens and cost of the runs that recorded them.
+function taskTotalsOf(ran) {
   var tools = 0;
-  var sub = 0;
   var tok = 0;
   var cost = 0;
   var known = false;
   for (var i = 0; i < ran.length; i++) {
-    tools += toNum(ran[i].toolCalls);
-    sub += toNum(ran[i].agentToolCalls);
+    tools += toNum(ran[i].toolCalls) + toNum(ran[i].agentToolCalls);
     if (ran[i].tokens) { known = true; tok += taskTokTotal(ran[i].tokens); cost += toNum(ran[i].tokens.costUsd); }
   }
-  var bits = ['툴 ' + Math.round(tools) + (sub >= 0.5 ? ' (+서브 ' + Math.round(sub) + ')' : '')];
-  if (known) bits.push(formatTokens(tok) + ' tok', '$' + cost.toFixed(2));
-  // Nothing ran yet (work before the first list): no sum, only the work outside any task.
-  var html = ran.length ? '<div class="tr-total"><span class="tr-total-k">합계</span>' + esc(bits.join(' · ')) + '</div>' : '';
-  if (outside && (toNum(outside.toolCalls) || toNum(outside.agentToolCalls) || taskTokTotal(outside.tokens))) {
-    html += '<div class="tr-total tr-outside"><span class="tr-total-k">태스크 밖</span>' + esc('툴 ' + Math.round(toNum(outside.toolCalls))
-      + (toNum(outside.agentToolCalls) >= 0.5 ? ' (+서브 ' + Math.round(toNum(outside.agentToolCalls)) + ')' : '')
-      + ' · ' + formatTokens(taskTokTotal(outside.tokens)) + ' tok') + '</div>';
-  }
-  return html;
+  // Shares add up to whole calls; a whole number on screen.
+  var out = { runs: ran.length, tools: Math.round(tools) };
+  if (known) { out.tokens = tok; out.costUsd = cost; }
+  return out;
+}
+// The work no task got (태스크 밖): its words — tool calls (+서브), tokens; '' when there is none.
+function taskOutsideText(outside) {
+  if (!outside || !(toNum(outside.toolCalls) || toNum(outside.agentToolCalls) || taskTokTotal(outside.tokens))) return '';
+  return '툴 ' + Math.round(toNum(outside.toolCalls))
+    + (toNum(outside.agentToolCalls) >= 0.5 ? ' (+서브 ' + Math.round(toNum(outside.agentToolCalls)) + ')' : '')
+    + ' · ' + formatTokens(taskTokTotal(outside.tokens)) + ' tok';
+}
+// … as a row under the element's totals (extraTotals), or null.
+function taskOutsideNote(outside) {
+  var text = taskOutsideText(outside);
+  return text ? { label: '태스크 밖', value: text } : null;
+}
+// … as the page's one line while nothing ran yet (no runs element, so no totals row to sit under).
+function taskOutsideHtml(outside) {
+  var text = taskOutsideText(outside);
+  return text ? '<div class="tr-total tr-outside"><span class="tr-total-k">태스크 밖</span>' + esc(text) + '</div>' : '';
 }
 
 let _csrfToken = '';
@@ -9874,6 +9909,9 @@ function steerItemOf(s, id) {
 // actions (sessionActionsOf — Stop takes the bar's two presses, then is busy until the next
 // data). An armed resume's when / attempt / why is a note in the bar's slot.
 var PS_BAR_STATUS = { running: 'running', waiting: 'waiting', resuming: 'waiting', idle: 'idle', sleeping: 'idle', archived: 'idle' };
+// The bar's buttons named for what they do to the session (D3-GAPS G6-1, 0.12.0 ariaLabel): Close is never
+// taken for the panel's ✕ (작업 카드 닫기). Star carries its pressed state and its tooltip; Trash the quiet tone.
+var SESSION_ACTION_ARIA = { stop: 'Stop — 세션 중지', close: 'Close — 세션 종료', trash: 'Trash — 세션 휴지통으로' };
 function panelHeadData(s, col) {
   var st = rootStatusOf(s, col);
   var bar = PS_BAR_STATUS[st] || 'idle';
@@ -9887,7 +9925,11 @@ function panelHeadData(s, col) {
   if (s.slackThreadUrl) d.link = { id: 'slack', href: String(s.slackThreadUrl), label: 'Slack' };
   d.actions = sessionActionsOf(s, col).map(function(a) {
     var x = { id: a.id, label: a.label };
+    if (SESSION_ACTION_ARIA[a.id] && !a.sibling) x.ariaLabel = SESSION_ACTION_ARIA[a.id];
     if (a.id === 'stop' && !a.sibling) { x.tone = 'danger'; x.icon = 'stop'; }
+    if (a.id === 'trash') x.tone = 'quiet';
+    if (a.id === 'star') x.pressed = !!a.pressed;
+    if (a.tip) x.title = a.tip;
     if (a.lock) x.disabled = a.lock;
     if (a.busy) x.busy = true;
     return x;
@@ -9954,7 +9996,9 @@ function panelInfoHtml(s, open, col, keep) {
   if (s.issueUrl) links.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener">' + esc(s.issueLabel || s.issueShortRef || 'Issue') + (s.issueTitle ? ' &mdash; ' + esc(String(s.issueTitle).slice(0, 60)) : '') + '</a>');
   if (s.prUrl) links.push('<a href="' + safeHref(s.prUrl) + '" target="_blank" rel="noopener">' + esc(s.prLabel || s.prShortRef || 'PR') + (s.prTitle ? ' &mdash; ' + esc(String(s.prTitle).slice(0, 60)) : '') + '</a>');
   if (s.conversationId) links.push('<a href="/conversations/' + escAttr(s.conversationId) + '" target="_blank" rel="noopener">전체 대화</a>');
-  var foot = '</ui-disclosure>' + (links.length ? '<div class="pi-links">' + links.join('') + '</div>' : '');
+  // The links stay in view under the summary while the record is folded: the element's links slot (D3-GAPS G6-2, 0.12.0).
+  if (links.length) html += '<div slot="links" class="pi-links">' + links.join('') + '</div>';
+  var foot = '</ui-disclosure>';
   if (!open && !keep) return html + foot;
   var rows = [];
   if (u) {
@@ -12028,6 +12072,10 @@ function mcFormData(s, q) {
   if (st.sending) d.submitting = true;
   if (st.sent) d.submitted = true;
   if (st.error) d.error = st.error;
+  // Who may answer here (the session's owner, on this instance — the server re-checks):
+  // else the element holds every control and says why (D3-GAPS G3-1, 0.12.0 canAnswer).
+  var lock = acQuestionLock(s);
+  if (lock) d.canAnswer = lock;
   return d;
 }
 // A push: the form state of every session that no longer asks that form goes
@@ -13932,11 +13980,13 @@ function cardFaceOf(key) {
 // The deck's controls and the edges behind the panel; dir = the side a new front card came from.
 // <ui-deck-nav> (D3 E-05) takes the deck as data — how many, which is in front, their names
 // (its ‹ › title "이전: <name>", its position said once) — and asks with ui-page; the page
-// opens that card, which repaints this with the new front.
+// opens that card, which repaints this with the new front. The peek strip above the header
+// (<ui-deck-nav peek="only">) draws the edges of the cards behind from the same data.
 function renderDeckNav(dir) {
   _deck = _deck.filter(function(k) { return !!_sessionCache[k]; });
   var panel = document.getElementById('slide-panel');
   var nav = document.getElementById('panel-deck');
+  var peek = document.getElementById('panel-deck-peek');
   if (!panel || !nav) return;
   var n = _deck.length;
   var i = _deck.indexOf(panelSessionKey);
@@ -13955,6 +14005,7 @@ function renderDeckNav(dir) {
       nav._sig = sig;
       nav._keys = _deck.slice();
       nav.data = data;
+      if (peek) peek.data = data;
     }
   }
   if (dir && !reduceMotion()) deckSlide(panel, dir);

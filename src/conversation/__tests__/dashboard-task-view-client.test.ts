@@ -260,7 +260,11 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
       'taskRunEnd',
       'taskRunsOf',
       'taskTokTotal',
-      'taskTotalsHtml',
+      'taskTotalsOf',
+      'taskOutsideText',
+      'taskOutsideNote',
+      'taskOutsideHtml',
+      'taskPlanRestore',
       'taskElData',
       'taskRunsData',
       'taskPlanData',
@@ -362,14 +366,16 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
     env.renderPanelTasks(current, '', earlier);
     const html = el.innerHTML;
     expect(html).toContain('<ui-disclosure class="panel-tasks-dc" flush open>');
-    expect(runsEl.data).toMatchObject({ title: '실행된 태스크', totals: false });
+    // The sums are the element's totals row, over every run (D3-GAPS G5-2).
+    expect(runsEl.data).toMatchObject({ title: '실행된 태스크', totals: { runs: 4, tools: 15 } });
     expect(runIds()).toEqual(['T1', 'T2', 'T8', 'T5']);
     expect(planEl.data?.title).toBe('남은 계획');
     // The plan left is a waiting step: no clock, no tools yet.
     expect(planEl.data?.steps).toEqual([{ id: 'T6', ref: '#T6', label: '화면 수정', status: 'pending' }]);
-    const at = ['<ui-task-runs', '<ui-task-plan', 'class="tr-total"'].map((n) => html.indexOf(n));
+    const at = ['<ui-task-runs', '<ui-task-plan'].map((n) => html.indexOf(n));
     expect(at.every((i) => i > -1)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
+    expect(html).not.toContain('tr-total');
     // Only the running task runs.
     expect(
       runsEl.data?.runs.filter((r: { status: string }) => r.status === 'running').map((r: { id: string }) => r.id),
@@ -432,28 +438,29 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
     expect(clientFn('selectPanelAgent')).toContain('if (next !== _panelAgent) _panelTaskOpen = Object.create(null);');
   });
 
-  it('the totals: 합계 sums every run (tools, +서브, tokens, cost); 태스크 밖 is the work no task got', () => {
+  it('the totals are the runs element’s (D3-GAPS G5-2): every run (tools with +서브, tokens, cost); 태스크 밖 an extra row', () => {
     open();
     const outside = { toolCalls: 3, agentToolCalls: 1, tokens: { input: 800, output: 200 } };
     env.renderPanelTasks(current, '', earlier, outside);
-    // 5 + 4 + 1 + 2 tools, T8's 3 subagent calls; tokens 1.5K + 3.5K, $0.05 + $0.10 (the runs that recorded them).
-    expect(el.innerHTML).toContain(
-      '<div class="tr-total"><span class="tr-total-k">합계</span>툴 12 (+서브 3) · 5.0K tok · $0.15</div>',
-    );
-    expect(el.innerHTML).toContain(
-      '<div class="tr-total tr-outside"><span class="tr-total-k">태스크 밖</span>툴 3 (+서브 1) · 1.0K tok</div>',
-    );
+    // 5 + 4 + 1 + 2 tools + T8's 3 subagent calls; tokens 1.5K + 3.5K, $0.05 + $0.10 (the runs that recorded them).
+    expect(runsEl.data?.totals).toEqual({ runs: 4, tools: 15, tokens: 5000, costUsd: 0.15000000000000002 });
+    expect(runsEl.data?.extraTotals).toEqual([{ label: '태스크 밖', value: '툴 3 (+서브 1) · 1.0K tok' }]);
+    expect(el.innerHTML).not.toContain('tr-total');
     // Nothing outside the tasks: no 태스크 밖 row.
     env.renderPanelTasks(current, '', earlier, { toolCalls: 0, tokens: {} });
-    expect(el.innerHTML).not.toContain('tr-outside');
+    expect(runsEl.data?.extraTotals).toBeUndefined();
     // No run recorded tokens: the tools alone.
     env.renderPanelTasks(
       [{ id: 'T1', content: 'a', status: 'completed', startedAt: T0, completedAt: T0 + 1, toolCalls: 2 }],
       '',
       [],
     );
-    expect(el.innerHTML).toContain('<div class="tr-total"><span class="tr-total-k">합계</span>툴 2</div>');
-    // Nothing ran yet: no totals, no runs element.
+    expect(runsEl.data?.totals).toEqual({ runs: 1, tools: 2 });
+    // Nothing ran yet: no runs element; work outside any task is the page's one line (nothing to sit under).
+    env.renderPanelTasks([{ id: 'T1', content: 'a', status: 'pending' }], '', [], outside);
+    expect(el.innerHTML).toContain(
+      '<div class="tr-total tr-outside"><span class="tr-total-k">태스크 밖</span>툴 3 (+서브 1) · 1.0K tok</div>',
+    );
     env.renderPanelTasks([{ id: 'T1', content: 'a', status: 'pending' }], '', []);
     expect(el.innerHTML).not.toContain('tr-total');
     expect(el.innerHTML).not.toContain('ui-task-runs');
