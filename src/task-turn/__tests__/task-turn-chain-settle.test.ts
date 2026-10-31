@@ -181,7 +181,7 @@ function controllerHarness(
     buildExecutionContext: vi.fn(() => CTX),
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   };
-  return { controller: createTaskTurnController(deps), inputs, abandonTurn, session: s, controllers };
+  return { controller: createTaskTurnController(deps), inputs, abandonTurn, session: s, controllers, deps };
 }
 
 async function startAndSettle(h: ReturnType<typeof controllerHarness>) {
@@ -229,6 +229,64 @@ describe('task turn controller — one chain id per chain, and when a completed 
     await startAndSettle(h);
     await startAndSettle(h);
     expect(h.inputs[0].chain?.id).not.toBe(h.inputs[1].chain?.id);
+  });
+
+  it('a completed /compact hop the chain continues past, whose re-run cannot start, is ended interrupted with the chain id (fable #666 P1)', async () => {
+    const h = controllerHarness(
+      [
+        fallbackCompact(),
+        completed('tcompact'),
+        async () => {
+          throw new Error('start not saved');
+        },
+      ],
+      { fallbackCompactPendingUserText: 'the original instruction' },
+    );
+    const r = await h.controller.start({ sessionKey: KEY, text: 'go', actorUserId: 'UOWNER' } as any);
+    await (r as any).done;
+    expect(h.abandonTurn).toHaveBeenCalledWith(
+      KEY,
+      'tcompact',
+      expect.objectContaining({ outcome: 'interrupted' }),
+      h.inputs[0].chain?.id,
+    );
+  });
+
+  it('…and when the re-run’s execution context cannot be built, the same', async () => {
+    let calls = 0;
+    const failing = controllerHarness([fallbackCompact(), completed('tcompact')], {
+      fallbackCompactPendingUserText: 'the original instruction',
+    });
+    // The same controller, with a context builder that fails for the re-run:
+    // built once by start, again for the /compact hop, a third time for the re-run.
+    const ctxFail = vi.fn(() => {
+      calls++;
+      if (calls >= 3) throw new Error('owner lost access');
+      return CTX;
+    });
+    const controller = createTaskTurnController({
+      ...(failing as any).deps,
+      buildExecutionContext: ctxFail,
+    });
+    const r = await controller.start({ sessionKey: KEY, text: 'go', actorUserId: 'UOWNER' } as any);
+    await (r as any).done;
+    expect(failing.abandonTurn).toHaveBeenCalledWith(
+      KEY,
+      'tcompact',
+      expect.objectContaining({ outcome: 'interrupted' }),
+      failing.inputs[0].chain?.id,
+    );
+  });
+
+  it('an empty stash is nothing to re-run: the /compact hop ends the chain as a failure (fable #666 P2)', async () => {
+    const h = controllerHarness([fallbackCompact(), completed('tcompact')], { fallbackCompactPendingUserText: '' });
+    await startAndSettle(h);
+    expect(h.inputs).toHaveLength(2);
+    expect(h.inputs[1].chain).toEqual({
+      id: h.inputs[0].chain?.id,
+      continuesIfCompleted: false,
+      completedFailsWith: expect.any(String),
+    });
   });
 
   it('a pending turn the chain abandons is ended with the chain id', async () => {
