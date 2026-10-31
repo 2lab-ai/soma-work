@@ -326,12 +326,14 @@ describe('pinned 지시 첨부 row', () => {
       { ...img('A'), turnId: 'u1', turnTs: 1 },
       { ...pdf, turnId: 'u2', turnTs: 2 },
     ];
+    // D4 K-06: the row is <ui-disclosure> (its own aria-expanded on its head): closed, the element without
+    // `open` and no region nodes; opened, `open` with the tiles in its region.
     const closed = renderPanelUserMedia(list, 'c6', false);
     expect(closed).toContain('지시 첨부');
-    expect(closed).toContain('aria-expanded="false"');
+    expect(closed).toContain('<ui-disclosure class="panel-um-dc" flush>');
     expect(closed).not.toContain('um-tile');
     const opened = renderPanelUserMedia(list, 'c6', true);
-    expect(opened).toContain('aria-expanded="true"');
+    expect(opened).toContain('<ui-disclosure class="panel-um-dc" flush open>');
     expect(opened).toContain('um-tile');
   });
 });
