@@ -14840,8 +14840,10 @@ function closePanel() {
   panelOpen = false;
   panelSessionKey = null;
   panelConvId = null;
+  // The 산출물 part is written through writePanelPart (nothing when unchanged): emptied here, it forgets what it
+  // last wrote too, so the same card reopened paints its strip again (D4 K-06 review).
   var panelArts = document.getElementById('panel-artifacts');
-  if (panelArts) { panelArts.innerHTML = ''; panelArts.style.display = 'none'; }
+  if (panelArts) { panelArts.innerHTML = ''; panelArts._html = ''; panelArts.style.display = 'none'; }
   _panelAgent = '';
   _panelAgentsHtml = '';
   _rawLoadedCache = Object.create(null);

@@ -1015,6 +1015,55 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
     expect(run({ inPanel: true, present: false, cardOpen: false })).toEqual(['heading']); // the card is closed
     expect(run({ inPanel: false, present: true })).toEqual([]); // the reader already moved on
   });
+
+  // D4 K-06: the 산출물 part is written through writePanelPart (a morph; nothing when the html is what it last
+  // wrote). A close empties the part directly, so it must also forget what it wrote — else the same card
+  // reopened finds its strip "unchanged" and stays empty.
+  it('a closed panel forgets the 산출물 part it wrote, so the same card reopened paints its strip again', () => {
+    const arts = { innerHTML: '', style: { display: '' } };
+    const panel = { hide() {} };
+    const doc = {
+      getElementById: (id: string) => (id === 'slide-panel' ? panel : id === 'panel-artifacts' ? arts : null),
+      querySelector: () => null,
+      body: { contains: () => false },
+      activeElement: { closest: () => null },
+    };
+    const m = load<{ closePanel(): void; writePanelPart(el: unknown, html: string): boolean }>(
+      ['deckRemove', 'closePanel', 'writePanelPart'],
+      [],
+      {
+        document: doc,
+        renderDeckNav: () => {},
+        layoutBeforeChange: () => {},
+        resetWorkLog: () => {},
+        _cardBodies: {},
+        pcReset: () => {},
+        _ansIo: null,
+        psecClear: () => {},
+        psecSetNew: () => {},
+        morphInnerHtml: (e: { innerHTML: string }, h: string) => {
+          e.innerHTML = h;
+        },
+        updateTimersIn: () => {},
+      },
+      [
+        'var panelOpen = true, panelSessionKey = "k", panelConvId = "c", _panelAgent = "", _panelAgentsHtml = "", _rawLoadedCache = {}, _panelGen = 0;',
+        'var _panelTurnsHasMore = false, _panelTurnsLoading = false, _panelTurnsOldestId = null, _panelLand = "", _panelLanded = false;',
+        'var _panelTurnsList = [], _panelTurnsMsg = "", PSEC_ORDER = ["conv", "log", "tree"], _panelHold = false;',
+        'var _panelOnQuestion = false, _panelReturnFocus = null, _ansFailed = {}, _panelOlderWhy = "", _panelTurnsWhy = "";',
+        'var _deck = ["k"];',
+      ],
+    );
+    const strip = '<div class="art-strip-panel">report.html</div>';
+    expect(m.writePanelPart(arts, strip)).toBe(true);
+    expect(arts.innerHTML).toBe(strip);
+    m.closePanel();
+    expect(arts.innerHTML).toBe('');
+    expect(arts.style.display).toBe('none');
+    // The card reopened: the same strip is written again, not skipped as unchanged.
+    expect(m.writePanelPart(arts, strip)).toBe(true);
+    expect(arts.innerHTML).toBe(strip);
+  });
 });
 
 // SSOT 2026-10-29 T2 — the detail deck: an open card always has its detail card beside the
