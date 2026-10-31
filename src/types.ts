@@ -464,6 +464,22 @@ export interface ConversationSession {
    */
   inputContext?: TaskInputContext;
   /**
+   * E4 ① (.prd/19 D1) — `'epic'` on an epic task; absent on every other
+   * session. Set by the host at creation only and never changed. A child is
+   * never an epic (depth 1).
+   */
+  kind?: 'epic';
+  /** E4 ① — a child task's epic (its task id). Slack-less tasks only. */
+  parentTaskId?: string;
+  /** E4 ① — the plan node a child task was made for (a short slug). Set with `parentTaskId`. */
+  planNodeId?: string;
+  /**
+   * E4 ① — an epic's children, by task id, in creation order. Append-only:
+   * written in the same strict save that creates the child, never shortened,
+   * so a closed or archived child still counts toward the cap.
+   */
+  childTaskIds?: string[];
+  /**
    * E2 ③ — the chain a Slack-less task is running (its id), saved by the
    * chain's first turn start and kept across `/compact` hops; cleared by the
    * chain's last outcome commit or by restart reconciliation. A task still
