@@ -994,9 +994,9 @@ describe('Dashboard API', () => {
     // NOT '' (empty string concat) which was the bug before PR #280
     // Check doAction onclick builders have properly escaped quotes
     expect(script).toContain("doAction(\\''");
-    // Spec 13: one builder (sessionActionHtml) serves the card and the panel head;
-    // the action name is a closed set (stop · close · trash) joined in escaped quotes.
-    expect(script).toContain("\\',\\'' + kind + '\\')");
+    // Spec 13: one decision (sessionActionsOf) serves the card and the panel head; the
+    // card's builder joins the action name — a closed set (stop · close · trash) — in escaped quotes.
+    expect(script).toContain("\\',\\'' + a.id + '\\')");
     expect(script).toContain("var kind = running ? 'stop' : (col === 'closed' && s.terminated ? 'trash' : 'close');");
     // Check openPanel onclick builder
     expect(script).toContain("openPanel(\\''");
@@ -1153,14 +1153,15 @@ describe('Dashboard API', () => {
     // Count action closings — each doAction has 2 escaped quote pairs (key + action)
     const actionClosings = script.match(/\\',\\'/g);
     expect(actionClosings).not.toBeNull();
-    // 1 doAction builder + 1 resummarize + the intent of 전체 task (2), the goal line (2) and the
-    // artifacts link (2) — every argument of every builder closes in escaped quotes = 8.
-    // The 4 answerChoice sites (card/panel × recommended/other) and the selectMc
-    // site no longer build inline JS strings: their model-written question /
-    // label / id travel in attribute-escaped data-choice-* attributes read by
-    // one delegated click handler, because escJs() inside a double-quoted
+    // 1 doAction builder + the intent of 전체 task (2), the goal line (2) and the artifacts link (2) —
+    // every argument of every builder closes in escaped quotes = 7 (D3: the turn's resummarize button went
+    // with the inline turn renderer; 지시와 답변 is <ui-conversation> data).
+    // The answerChoice sites and the multi-question form build no inline JS
+    // strings: the single choice is <ui-approval-card> (ui-answer) and the form
+    // <ui-choice-form> (ui-submit, D3 E-15) — model-written question / label /
+    // id travel as element data, because escJs() inside a double-quoted
     // onclick could not carry " or newlines safely (.prd/10 round-2 review).
-    expect(actionClosings!.length).toBe(8);
+    expect(actionClosings!.length).toBe(7);
     expect(script).not.toMatch(/answerChoice\(\\'/);
     expect(script).not.toMatch(/selectMc\(\\'/);
   });
@@ -1500,7 +1501,9 @@ describe('Dashboard API', () => {
   // ── Hero button render (Test 10) ──
 
   describe('renderMultiChoicePanel hero button', () => {
-    it('Test 10 — inline JS includes submitAllRecommended function and hero button branches', async () => {
+    // D3 E-15: the form is <ui-choice-form>; its hero (추천대로 모두 제출) is the element's. The page answers
+    // its ui-submit: source 'recommended' with every answer the recommended one → the one-click route.
+    it('Test 10 — the hero press reaches submitAllRecommended (CSRF header, the 직접입력 sentinel never recommended)', async () => {
       const res = await injectWebServer({
         method: 'GET',
         url: '/dashboard',
@@ -1513,25 +1516,18 @@ describe('Dashboard API', () => {
       expect(scriptMatch).not.toBeNull();
       const script = scriptMatch![1];
 
-      // submitAllRecommended function exists
       expect(script).toContain('function submitAllRecommended');
-      // POSTs to the new endpoint
       expect(script).toContain('/submit-recommended');
-      // CSRF header is set in the action
       expect(script).toContain('X-CSRF-Token');
-      // Active branch button class + onclick wiring
-      expect(script).toContain('btn-hero-recommended');
-      // Active branch label (escaped Unicode for 추천대로 모두 선택) — tone pass P2: no star (the
-      // hero is the form's ink primary; no emoji in labels)
-      expect(script).toContain('\\uCD94\\uCC9C\\uB300\\uB85C \\uBAA8\\uB450 \\uC120\\uD0DD');
-      expect(script).not.toContain('\\u2B50');
-      // Blocked branch label sentinel (추천 부족), no lock emoji
-      expect(script).toContain('\\uCD94\\uCC9C \\uBD80\\uC871');
-      expect(script).not.toContain('\\uD83D\\uDD12');
-      // Skips 직접입력 sentinel when counting
+      expect(script).toContain("e.detail.source === 'recommended'");
+      expect(script).toContain('if (allRec) submitAllRecommended(key);');
+      // The 직접입력 sentinel (escaped Unicode) is never a recommendation.
       expect(script).toContain('\\uC9C1\\uC811\\uC785\\uB825');
-      // CSS class definition is present in the page (style tag)
-      expect(html).toContain('.btn-hero-recommended');
+      expect(script).toContain('if (rec === MC_CUSTOM_ID) rec = null;');
+      expect(script).not.toContain('\\u2B50');
+      // The element is loaded; the page's own hero is gone.
+      expect(html).toContain('/dashboard/ui/choice-form.js');
+      expect(html).not.toContain('btn-hero-recommended');
     });
   });
 });

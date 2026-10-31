@@ -388,6 +388,13 @@ export interface KanbanSession {
    * `GET /api/dashboard/session/:key/permission/:approvalId`.
    */
   pendingPermissions?: DashboardPermissionRequest[];
+  /**
+   * The goal's open cap decision ("Goal 계속 진행할까요?") — the same request
+   * the owner's DM asks, answered on either surface
+   * (`POST /api/dashboard/session/:key/goal-decision`). While it is open the
+   * card reads `activityState: 'waiting'`.
+   */
+  pendingGoalDecision?: KanbanGoalDecision;
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -555,6 +562,21 @@ export interface KanbanGoal {
   completedCount: number;
   /** SSOT 2026-10-22 T6 — completed goals with their details, newest first. */
   history: KanbanGoalHistoryItem[];
+}
+
+/** The goal's open cap decision as the card shows it — what the owner's DM says. */
+export interface KanbanGoalDecision {
+  /** The round's id; the answer names it, so an answer never lands on a later round. */
+  decisionId: string;
+  goalId: string;
+  objective: string;
+  maxContinuations: number;
+  /** The completion eval's latest "not yet" reason (the DM's "Latest reason"). */
+  reason?: string;
+  /** Epoch ms the decision opened. */
+  askedAt: number;
+  /** Slack user id of the goal's owner — the only one who may answer. */
+  ownerId: string;
 }
 
 /** One completed goal as the card lists it (SSOT 2026-10-22 T6). */
@@ -1282,6 +1304,25 @@ export function setDashboardGoalHandler(fn: GoalActionHandler): void {
 }
 
 /**
+ * The goal's cap decision answered from its approval card. Wired in
+ * src/index.ts to `answerGoalCapDecision` (slack/goal-cap-decision.ts) — the
+ * same path as the owner-DM buttons, so an answer here rewrites the DM.
+ */
+export type GoalDecisionAnswerResult =
+  | { ok: true; decision: 'continue' | 'cancel' }
+  | { ok: false; reason: 'invalid' | 'stale' | 'not_owner' | 'unavailable' };
+type GoalDecisionHandler = (
+  sessionKey: string,
+  answer: { goalId: string; decisionId: string; decision: 'continue' | 'cancel' },
+  actorUserId: string | undefined,
+) => GoalDecisionAnswerResult;
+let _goalDecisionHandlerFn: GoalDecisionHandler | null = null;
+
+export function setDashboardGoalDecisionHandler(fn: GoalDecisionHandler | null): void {
+  _goalDecisionHandlerFn = fn;
+}
+
+/**
  * SSOT 2026-10-22 T4/T5 — switch a session to a representative model
  * (`session/model-switch.ts` `switchSessionModel`). Throws `ModelSwitchError`
  * for every refusal, whose `statusCode` the route answers with.
@@ -1575,6 +1616,23 @@ export function sessionHasCurrentTask(s: any, autoResume: KanbanAutoResume | und
   return state === 'working' || state === 'waiting' || autoResume !== undefined;
 }
 
+/** The live goal's open cap decision (`KanbanSession.pendingGoalDecision`); undefined when none is open. */
+export function goalDecisionToKanban(s: any): KanbanGoalDecision | undefined {
+  const goal = s?.goal;
+  if (!goal || goal.status !== 'active' || typeof goal.goalId !== 'string') return undefined;
+  const askedAt = finiteNumber(goal.capDmPendingAt);
+  if (askedAt === undefined || typeof goal.capDecisionId !== 'string' || !goal.capDecisionId) return undefined;
+  return {
+    decisionId: goal.capDecisionId,
+    goalId: goal.goalId,
+    objective: String(goal.objective ?? ''),
+    maxContinuations: Number(goal.maxContinuations) || 0,
+    ...(typeof goal.lastEvalReason === 'string' && goal.lastEvalReason ? { reason: goal.lastEvalReason } : {}),
+    askedAt,
+    ownerId: String(goal.createdBy ?? ''),
+  };
+}
+
 /** The goal list of a live session, shaped for the card (`KanbanSession.goal`). */
 function goalToKanban(s: any): KanbanGoal | undefined {
   const goal = s.goal;
@@ -1840,6 +1898,9 @@ function sessionToKanban(key: string, s: any): KanbanSession {
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
   const headline = displayTitle(s);
   const permissions = pendingPermissionsFor(s.channelId, s.threadTs);
+  const goalDecision = goalDecisionToKanban(s);
+  // What the session waits on its user for: its permission prompts and the goal's cap decision.
+  const asks = goalDecision ? [...permissions, { createdAt: goalDecision.askedAt }] : permissions;
   return {
     // #814 Wire-format key includes the local instance prefix so sibling
     // instances can never collide on the client cache.
@@ -1859,7 +1920,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     threadTs: s.threadTs,
     // A turn blocked on a permission prompt waits for its user (projection
     // only — the session's own activityState is untouched).
-    activityState: permissions.length > 0 ? 'waiting' : s.activityState || 'idle',
+    activityState: asks.length > 0 ? 'waiting' : s.activityState || 'idle',
     sessionState: s.state || 'MAIN',
     terminated: s.terminated === true,
     trashed: s.trashed === true,
@@ -1867,6 +1928,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     conversationId: s.conversationId,
     lastActivity: s.lastActivity instanceof Date ? s.lastActivity.toISOString() : String(s.lastActivity),
     ...(permissions.length > 0 ? { pendingPermissions: permissions } : {}),
+    ...(goalDecision ? { pendingGoalDecision: goalDecision } : {}),
     issueUrl: s.links?.issue?.url,
     issueLabel: s.links?.issue?.label,
     issueTitle: s.links?.issue?.title,
@@ -1882,7 +1944,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
       : undefined,
     tokenUsage: tokenUsageOf(s),
     doneAt: liveDoneAt(s),
-    waitingSince: liveWaitingSince(s, permissions),
+    waitingSince: liveWaitingSince(s, asks),
     finishedAt: liveFinishedAt(s),
     ...modelFields(s),
     ...contextFields(s),
@@ -3310,6 +3372,63 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── Goal cap decision (the owner-DM "Goal 계속 진행할까요?", as an approval card) ──
+
+  server.post<{ Params: { key: string }; Body: { goalId?: unknown; decisionId?: unknown; decision?: unknown } }>(
+    '/api/dashboard/session/:key/goal-decision',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { goalId, decisionId, decision } = request.body || {};
+      if (
+        typeof goalId !== 'string' ||
+        !goalId ||
+        goalId.length > 200 ||
+        typeof decisionId !== 'string' ||
+        !decisionId ||
+        decisionId.length > 100 ||
+        (decision !== 'continue' && decision !== 'cancel')
+      ) {
+        reply.status(400).send({ error: "goalId, decisionId and decision ('continue' | 'cancel') are required" });
+        return;
+      }
+      // The goal's creator answers — who may is the decision's own check (the
+      // creator can differ from the session owner), so only the instance is resolved here.
+      const originalKey = resolveSelfActionKey(String(request.params?.key ?? ''), reply);
+      if (originalKey === null) return;
+      const resolved = { originalKey };
+      if (!_goalDecisionHandlerFn) {
+        reply.status(501).send({ error: 'Goal decision handler not configured' });
+        return;
+      }
+      try {
+        // Only the goal's owner answers: a bearer client or an admin carries no
+        // owner identity here and is refused by the handler.
+        const actor = (request as { authContext?: { userId?: string } }).authContext?.userId;
+        const result = _goalDecisionHandlerFn(resolved.originalKey, { goalId, decisionId, decision }, actor);
+        if (result.ok) {
+          logger.info('Goal cap decision answered from the dashboard', {
+            sessionKey: resolved.originalKey,
+            decision,
+          });
+          reply.send({ ok: true, decision: result.decision });
+          return;
+        }
+        if (result.reason === 'stale') {
+          reply.status(409).send({ error: '이미 처리되었거나 더 이상 유효하지 않은 요청입니다' });
+          return;
+        }
+        if (result.reason === 'unavailable') {
+          reply.status(503).send({ error: '지금은 처리할 수 없습니다 — 잠시 후 다시 시도하세요' });
+          return;
+        }
+        reply.status(403).send({ error: 'goal 소유자만 응답할 수 있습니다' });
+      } catch (error) {
+        logger.error('Error answering a goal cap decision from the dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
   // ── Model switch (SSOT 2026-10-22 T4/T5) ──
 
   server.post<{ Params: { key: string }; Body: { model?: unknown } }>(
@@ -3858,6 +3977,13 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/bar-chart.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/file-card.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/composer.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/conversation.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/work-log.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/choice-form.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/task-runs.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/task-plan.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/status-bar.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/deck-nav.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4096,24 +4222,23 @@ ui-stat-strip:not(:defined) { min-height: 44px; }
 ui-stat-strip:not(:defined) > * { display: none; }
 .stats-detail { padding-top: 12px; }
 
-/* ── EXPAND / COLLAPSE (P6) — the library disclosure recipe for 세션 정보 (.panel-info), a
-   work-log task group (.wl-group) and the completed goals (.cg-hx): the region is the last row of its host's
-   grid and that row goes 0fr ↔ 1fr on --dur-expand (ease-out) with an opacity fade. Closed, the region is
+/* ── EXPAND / COLLAPSE (P6) — the library disclosure recipe for 세션 정보 (.panel-info) and the completed goals
+   (.cg-hx): the region is the last row of its host's grid and that row goes 0fr ↔ 1fr on --dur-expand (ease-out)
+   with an opacity fade. Closed, the region is
    [hidden] + inert but still painted at 0 rows, so it leaves the way it came (세션 정보, drawn only while
    open, folds first: .xp-shut). It clips only while the row moves (.xp-moving, xpMove), so focus rings
    inside are whole once it has settled. The panel's ResizeObserver re-measures the sections on every frame
    of it (sizePanelSections). ── */
-.wl-group, .cg-hx, .panel-info { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; align-content: start; transition: grid-template-rows var(--dur-expand) var(--ease-out); }
+.cg-hx, .panel-info { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; align-content: start; transition: grid-template-rows var(--dur-expand) var(--ease-out); }
 .cg-hx { grid-template-rows: 1fr; }
 .panel-info:has(> .pi-links) { grid-template-rows: auto auto 1fr; }
-.wl-group:has(> .wl-group-body[hidden]), .panel-info.xp-shut { grid-template-rows: auto 0fr; }
+.panel-info.xp-shut { grid-template-rows: auto 0fr; }
 .panel-info.xp-shut:has(> .pi-links) { grid-template-rows: auto auto 0fr; }
 .cg-hx:has(> .cg-hx-in[hidden]), .cg-hx.xp-shut { grid-template-rows: 0fr; }
-.wl-group-body, .cg-hx-in, .panel-info > .pi-body { min-height: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s; }
+.cg-hx-in, .panel-info > .pi-body { min-height: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s; }
 .cg-hx-in[hidden] { display: block; }
-.wl-group-body[hidden] { display: flex; }
-.wl-group-body[hidden], .cg-hx-in[hidden], .cg-hx.xp-shut > .cg-hx-in, .panel-info.xp-shut > .pi-body { opacity: 0; visibility: hidden; overflow: hidden; margin-top: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s linear var(--dur-expand); }
-.xp-moving > .wl-group-body, .xp-moving > .cg-hx-in, .xp-moving > .pi-body { overflow: hidden; }
+.cg-hx-in[hidden], .cg-hx.xp-shut > .cg-hx-in, .panel-info.xp-shut > .pi-body { opacity: 0; visibility: hidden; overflow: hidden; margin-top: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s linear var(--dur-expand); }
+.xp-moving > .cg-hx-in, .xp-moving > .pi-body { overflow: hidden; }
 .usage-cb-wrap { max-width: 440px; margin-bottom: 12px; }
 
 /* ── STATS GRID — the cards behind 자세히: 5 columns, 2 below 1100px ── */
@@ -4222,17 +4347,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* Stats values: a bar where the number will be. */
 .stat-card .value.is-loading { display: inline-block; vertical-align: middle; width: 3.2em; height: 0.9em; border-radius: 6px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
 .stat-card .value.is-loading { width: 64px; height: 22px; }
-/* Panel turns: rows shaped like a user / assistant turn. */
-.sk-turn { margin-bottom: 8px; padding: 8px 10px; border-radius: 10px; display: flex; gap: 10px; align-items: flex-start; border-left: 3px solid var(--ib-pill); }
-.sk-turn.user { background: var(--surface-raised); }
-.sk-turn .sk-avatar { width: 32px; height: 32px; border-radius: 6px; flex-shrink: 0; }
-.sk-turn-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding-top: 2px; }
-.sk-turn .sk-line { height: 10px; }
 .io-row.io-skel { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
 .io-skel .sk-line { height: 10px; }
 .io-skel + .io-skel .sk { animation-delay: 120ms; }
-.sk-turn:nth-child(2) .sk { animation-delay: 120ms; }
-.sk-turn:nth-child(3) .sk { animation-delay: 240ms; }
 
 /* The working ring (the agent tree's running icons, the panel). */
 .spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--ib-pill); border-top-color: var(--st-run); border-right-color: var(--st-run); display: inline-block; animation: spin 0.9s linear infinite; }
@@ -4363,6 +4480,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .io-row { border-radius: 8px; padding: 8px 10px; background: var(--ib-col); min-width: 0; }
 .io-label { font-size: 11px; font-weight: 600; color: var(--ib-muted); margin-bottom: 3px; display: flex; gap: 6px; align-items: baseline; }
 .io-label .io-who { font-weight: 500; letter-spacing: 0; }
+.io-label .io-who.is-sys { color: var(--text-tertiary); }
 .io-text { font-size: 13px; line-height: 1.45; color: var(--ib-text); white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden; }
 .io-text .io-title { font-weight: 600; }
 .io-text.is-muted, .io-muted { color: var(--ib-muted); }
@@ -4451,48 +4569,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   align-items: center;
   gap: 4px;
 }
-.btn-choice {
-  font-size: 0.72em;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text);
-  cursor: pointer;
-  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-  font-family: inherit;
-  line-height: 1.3;
-}
-.btn-choice:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-/* The recommended choice: tagged, not coloured (library approval card) — the ink is the form's
-   one primary (추천대로 모두 선택 / 제출하기). */
-.btn-choice-recommended { border-color: var(--ib-muted); }
-.btn-choice-recommended::after { content: "추천"; display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px; background: var(--ib-pill); color: var(--text-secondary); font-size: 11px; font-weight: 600; line-height: 18px; vertical-align: 1px; }
-/* Hero "Submit All Recommended" — group-only, top of multi-choice panel */
-.btn-hero-recommended {
-  display: block;
-  width: 100%;
-  padding: 10px 12px;
-  font: inherit;
-  font-size: 14px;
-  background: var(--ib-text);
-  color: var(--ib-card);
-  border: 1px solid var(--ib-text);
-  border-radius: 8px;
-  font-weight: 600;
-  margin-bottom: 12px;
-  cursor: pointer;
-  transition: opacity 150ms ease, transform var(--dur-press) var(--ease-out);
-}
-@media (hover: hover) and (pointer: fine) { .btn-hero-recommended:hover:not(:disabled) { opacity: 0.88; } }
-.btn-hero-recommended:disabled,
-.btn-hero-recommended[aria-disabled="true"] {
-  opacity: 0.7;
-  cursor: not-allowed;
-}
 .card-question-multi {
   font-size: 0.72em;
   color: var(--text-secondary);
@@ -4510,243 +4586,32 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-body .card-question { margin-top: 12px; padding: 10px 12px; background: var(--ib-col); border: 0; border-radius: 8px; }
 .card-body .card-question-text { font-size: 13px; color: var(--ib-text); margin-bottom: 8px; }
 .card-body .card-question-multi { font-size: 12px; color: var(--ib-muted); }
-.card-body .btn-choice { font-size: 13px; padding: 5px 12px; min-height: 32px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); text-align: left; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
-/* D10: one primary per open card — the owner's 답변하기 on this instance is ink.
-   Doubled classes beat the shared card / hover rules later in the sheet. */
-.card-body .btn-choice.btn-choice-primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
-@media (hover: hover) and (pointer: fine) {
-  .card-body .btn-choice.btn-choice-primary:hover:not(:disabled) { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
-}
+/* D10: one primary per open card — the owner's 답변하기 on this instance is the kit's ink button. */
+.card-body .card-mc-go { width: 100%; margin-top: 8px; }
+.card-question-na { color: var(--text-secondary); }
 
 /* ── PANEL PENDING QUESTION ── */
 .panel-permission { padding: 0 16px 12px; border-bottom: 1px solid var(--border); }
-.panel-question {
-  padding: 12px 16px;
-  background: var(--tint-wait-soft);
-  border-bottom: 1px solid var(--tint-wait-line);
-}
-.panel-question-text {
-  font-size: 0.88em;
-  color: var(--tint-wait-fg);
-  font-weight: 600;
-  margin-bottom: 8px;
-}
-.panel-question-choices {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.panel-question .btn-choice {
-  font-size: 0.82em;
-  padding: 6px 14px;
-}
+/* The question under 입력 필요: a <ui-approval-card> (data-ap="card") or the
+   <ui-choice-form> (data-ap="form") — each draws its own card. */
+.panel-question { padding: 0 16px 12px; border-bottom: 1px solid var(--border); }
+.panel-question .mc-failed { padding: 8px 0; color: var(--st-fail-text); font-size: 13px; }
 
 /* ── 입력 필요 (re-agent-run D8–D17) ──
    A head with the count; each prompt (and the single-choice question) is a
    <ui-approval-card> in its slot (.ac-slot) — the card's own look is the
    library's. No new tokens. */
 .ar-vh { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
-.panel-needs-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px 8px; font-size: 13px; font-weight: 650; color: var(--text); }
+/* D3 E-13: the head is the kit's section head (.ui-section-head) with its count badge (.ui-count, wait tone,
+   the arrival pop on [data-pop]); the page adds its padding and keeps the focus ring inside the scroll box. */
+.panel-needs-head { padding: 12px 16px 8px; }
 .panel-needs-head[hidden] { display: none; }
-.panel-needs-head:focus { outline: none; }
-.panel-needs-head:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
-.pn-count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: color-mix(in srgb, var(--st-wait) 24%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-wait) 55%, transparent); color: var(--text); font-size: 11px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; animation: pn-pop var(--dur-move) var(--ease-out) both; }
-@keyframes pn-pop { from { opacity: 0; transform: scale(0.6); } }
-.panel-question[data-ap="card"] { padding: 0 16px 12px; background: none; border-bottom: 1px solid var(--border); }
+.panel-needs-head:focus-visible { outline-offset: -2px; }
 /* One section: no rule between a prompt and the question card under it. */
 .panel-permission:has(+ .panel-question[data-ap="card"]:not([style*="none"])) { border-bottom: 0; }
 /* The <ui-approval-card> slots (batch 1): a gap between two prompts, and the open card's off what follows. */
 .ac-slot + .ac-slot { margin-top: 10px; }
 .card-body > .ac-slot { margin-bottom: 10px; }
-
-/* ── MULTI-CHOICE FORM (dashboard) ── */
-.mc-form {
-  padding: 12px;
-}
-.mc-header {
-  margin-bottom: 10px;
-}
-.mc-header h4 {
-  font-size: 13px;
-  font-weight: 650;
-  color: var(--tint-wait-fg);
-  margin-bottom: 4px;
-}
-.mc-header p {
-  font-size: 12px;
-  color: var(--text-secondary);
-  line-height: 1.4;
-}
-.mc-progress {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: 10px;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  font-weight: 600;
-}
-.mc-progress-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--border);
-  transition: background-color 150ms ease, box-shadow 150ms ease;
-}
-.mc-progress-dot.filled {
-  background: var(--st-done);
-}
-.mc-progress-dot.active {
-  background: var(--st-wait);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--st-wait) 30%, transparent);
-}
-.mc-progress-text {
-  margin-left: 6px;
-  font-variant-numeric: tabular-nums;
-}
-.mc-questions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.mc-question {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px;
-  transition: border-color 150ms ease, background-color 150ms ease;
-}
-.mc-question.selected {
-  background: var(--tint-done-soft);
-  border-color: var(--tint-done-line);
-}
-.mc-question.active {
-  border-color: var(--tint-wait-line);
-  background: var(--tint-wait-soft);
-}
-.mc-q-header {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
-  margin-bottom: 6px;
-  line-height: 1.4;
-}
-.mc-q-header .mc-q-num {
-  color: var(--tint-wait-fg);
-  margin-right: 4px;
-  font-variant-numeric: tabular-nums;
-}
-.mc-q-context {
-  font-size: 11px;
-  color: var(--text-secondary);
-  line-height: 1.5;
-  margin-bottom: 8px;
-  padding: 6px 8px;
-  background: var(--surface-raised);
-  border-radius: 6px;
-}
-.mc-q-context code {
-  background: var(--ib-pill);
-  padding: 1px 4px;
-  border-radius: 6px;
-  font-family: var(--mono);
-  font-size: 0.92em;
-}
-.mc-q-context strong { color: var(--text); }
-.mc-q-context em { font-style: italic; color: var(--text-secondary); }
-.mc-q-context a { color: var(--accent); text-decoration: none; }
-@media (hover: hover) and (pointer: fine) { .mc-q-context a:hover { text-decoration: underline; } }
-.mc-q-choices {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.mc-q-choices .btn-choice {
-  text-align: left;
-  width: 100%;
-  display: block;
-}
-.mc-q-selected {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--tint-done-fg);
-  font-weight: 600;
-}
-.mc-q-selected .mc-sel-mark { display: inline-flex; flex-shrink: 0; color: var(--st-done); }
-.mc-q-selected .mc-sel-mark svg { width: 14px; height: 14px; }
-.mc-q-selected .mc-sel-label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.mc-q-edit-btn {
-  font-size: 11px;
-  padding: 2px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-  font-family: inherit;
-  flex-shrink: 0;
-}
-@media (hover: hover) and (pointer: fine) {
-  .mc-q-edit-btn:hover {
-    border-color: var(--ib-muted);
-    color: var(--text);
-  }
-}
-.mc-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 12px;
-  justify-content: flex-end;
-}
-.mc-custom-input {
-  width: 100%;
-  margin-top: 4px;
-  display: flex;
-  gap: 4px;
-}
-.mc-custom-input input {
-  flex: 1;
-  background: var(--surface-raised);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  font-size: 12px;
-  padding: 4px 8px;
-  outline: none;
-  font-family: inherit;
-  min-height: 28px;
-  transition: border-color 150ms ease;
-}
-.mc-custom-input input:focus { border-color: var(--border-focus); }
-.mc-custom-input input::placeholder { color: var(--text-tertiary); }
-.mc-custom-input button {
-  font-size: 11px;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text);
-  cursor: pointer;
-  transition: border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-  font-family: inherit;
-  flex-shrink: 0;
-  min-height: 28px;
-}
-@media (hover: hover) and (pointer: fine) {
-  .mc-custom-input button:hover {
-    border-color: var(--ib-muted);
-    background: var(--surface-raised);
-  }
-}
 
 /* ── CHARTS — @2lab.ai/ui <ui-bar-chart> (B-08): 세션 and 코드 변경 (머지) per day, side by side behind 자세히.
    Each element is its own 12px card on the resting shadow, with dashed gridlines, a tooltip that follows the hot
@@ -4817,21 +4682,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .pa-desc { margin-top: 2px; font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pa-desc .pa-act { color: var(--text-tertiary); }
 .tasks-scope { font-weight: 600; color: var(--text); }
-.wl-role { flex-shrink: 0; font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 6px; background: var(--ib-pill); color: var(--text); }
-.wl-agent-io .wl-row { background: var(--ib-pill); }
-.wl-agent-link { display: block; margin: 0 0 4px 22px; padding: 2px 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; }
-.wl-agent-link:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; border-radius: 6px; }
 /* A child's block in its parent's log: the same node at row density. */
-.wl-child { --ag-c: var(--text-tertiary); font-family: var(--font); line-height: 1.45; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; column-gap: 8px; row-gap: 2px; align-items: center; width: calc(100% - 22px); margin: 2px 0 6px 22px; padding: 7px 10px; border: 1px solid var(--ib-card-border); border-radius: 8px; background: var(--ib-card); color: var(--text); font-size: 12.5px; text-align: left; }
-.wl-child.is-running { --ag-c: var(--st-run); border-color: color-mix(in srgb, var(--st-run) 35%, var(--ib-card-border)); }
-.wl-child.is-completed { --ag-c: var(--st-done); }
-.wl-child.is-failed { --ag-c: var(--st-fail); }
-.wl-child .ag-icon { grid-column: 1; grid-row: 1; }
-.wc-name { grid-column: 2; grid-row: 1; display: flex; align-items: baseline; gap: 6px; min-width: 0; }
-.wc-meta { grid-column: 3; grid-row: 1; display: inline-flex; align-items: baseline; gap: 7px; font-size: 12px; color: var(--text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.wc-act { grid-column: 2 / 4; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-tertiary); }
-.wc-open { grid-column: 2 / 4; font-size: 12px; color: var(--accent); }
-.wl-legacy { margin: 4px 0 6px; padding: 6px 10px; border-radius: 6px; background: var(--ib-pill); color: var(--text-secondary); font-size: 12px; }
 /* Panel body (task view, SSOT 2026-10-27): one scroll area between the head and
    the composer — the task's common surface, then the agent tabs (sticky at its
    top while the conversation scrolls) and the focused agent's tab. Nothing is
@@ -4946,6 +4797,15 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .psec-tab-tree svg { width: 13px; height: 13px; flex: none; }
 .panel-sections-body { position: relative; height: 60vh; min-height: 160px; }
 .psec { position: relative; height: 100%; overflow-y: auto; scroll-behavior: auto; outline: none; overflow-anchor: none; }
+/* D3 E-25 — a section a library element draws is its own scroll box (<ui-conversation>'s
+   <ui-log-scroller>: the pin, the older-page row, the kept place, the new-items pill):
+   the panel's box only gives it the height. */
+.psec.psec-el { overflow: hidden; display: flex; flex-direction: column; }
+.psec-el > * { flex: 1 1 auto; min-height: 0; }
+.psec-el > ui-conversation, .psec-el > ui-work-log { padding: 4px 8px 0; }
+.cv-arts-slot .turn-arts-row { margin-top: 2px; }
+/* 요약 실패 · 다시 시도 (G-04) under the answer, until the summary lands. */
+.cv-resum { display: flex; align-items: center; gap: 8px; margin: 6px 0 0; font-size: 12.5px; color: var(--text-secondary); }
 .psec[hidden] { display: none; }
 .psec:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
 .psec-older { display: block; margin: 10px auto 2px; padding: 5px 14px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
@@ -4958,8 +4818,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .psec-pill { position: absolute; left: 50%; bottom: 12px; z-index: 4; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 4px 14px; border: 1px solid var(--ib-text); border-radius: 999px; background: var(--ib-text); color: var(--ib-card); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: var(--ib-shadow-raised); }
 .psec-pill:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .panel-tree { padding: 6px 16px 12px; }
-.panel-conv { padding: 0; }
-.panel-agent-conv { padding: 6px 16px 10px; }
 /* 자세히 (T1.6) — a button that behaves like a toggle (HIG Toggles: outside a list,
    not a switch; the background tells the state); the panel's class gates the
    detail-only parts. */
@@ -4988,7 +4846,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .slide-panel:not(.is-detail) .panel-agents.is-main { display: none !important; }
 .slide-panel:not(.is-detail) .panel-arts-hint { display: none; }
 .slide-panel:not(.is-detail) .panel-goal.is-empty { display: none !important; }
-.panel-tasks-empty { font-size: 12px; color: var(--text-tertiary); padding: 2px 0 4px; }
 .panel-tasks-header {
   font-size: 12px;
   font-weight: 600;
@@ -4997,33 +4854,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
-}
-.panel-tasks-header .tasks-progress {
-  font-weight: 600;
-  color: var(--accent);
-  font-size: 11px;
-}
-.panel-task-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 3px 0;
-  font-size: 12px;
-  line-height: 1.4;
-}
-.panel-task-item .task-icon { flex-shrink: 0; font-size: 12px; }
-.panel-task-item .task-text { flex: 1; min-width: 0; }
-.panel-task-item .task-id { flex-shrink: 0; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
-.panel-task-item.completed .task-text { color: var(--text-tertiary); opacity: 0.6; }
-.panel-task-item.in_progress .task-text { color: var(--text); font-weight: 600; }
-.panel-task-item.pending .task-text { color: var(--text-secondary); }
-.panel-task-item .task-time {
-  flex-shrink: 0;
-  font-size: 10px;
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  min-width: 50px;
 }
 .panel-tasks-toggle {
   display: inline-flex;
@@ -5039,141 +4869,21 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   font-weight: 600;
 }
 @media (hover: hover) and (pointer: fine) { .panel-tasks-toggle:hover { text-decoration: underline; } }
-.panel-tasks-toggle + .panel-tasks-earlier-toggle { margin-left: 14px; }
-/* ── PLAN — the panel's Tasks as a plan (re-agent-run D1–D7): a marker per step
-   (check · spinner · empty ring) on one rail, the time on the right, a sticky
-   footer with the phase. The .panel-tasks box itself is unchanged. */
-.pl-list { position: relative; margin: 0; padding: 0; list-style: none; }
-.pl-step { position: relative; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; column-gap: 10px; align-items: start; padding: 5px 0; font-size: 12.5px; line-height: 18px; }
-.pl-marker { position: relative; z-index: 1; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--surface); box-shadow: inset 0 0 0 1px var(--ib-card-border); color: var(--text-secondary); }
-.pl-step[data-step="done"] .pl-marker { background: var(--ib-pill); box-shadow: none; color: var(--text); }
-.pl-step[data-step="active"] .pl-marker { box-shadow: none; color: var(--st-run); }
-/* Task fates (task view T2): paused (it had started; the session stopped), and the
-   two ways a later plan dropped a task — stopped after it ran, never run. None spins. */
-.pl-step[data-step="paused"] .pl-marker { box-shadow: inset 0 0 0 1px var(--st-wait); color: var(--st-wait); }
-.pl-step[data-step="dropped"] .pl-marker { box-shadow: none; color: var(--st-fail); }
-.pl-step[data-step="skipped"] .pl-marker { box-shadow: inset 0 0 0 1px var(--ib-card-border); color: var(--text-tertiary); }
-.pl-marker > svg { width: 10px; height: 10px; }
-.pl-step[data-step="skipped"] .task-text { color: var(--text-tertiary); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--text-tertiary) 60%, transparent); }
-.pl-step[data-step="dropped"] .task-text { color: var(--text-secondary); }
-.pl-fate { flex: none; margin-left: 6px; padding: 0 6px; border-radius: 6px; font-size: 10.5px; font-weight: 700; background: var(--ib-pill); color: var(--text-secondary); }
-.pl-step[data-step="dropped"] .pl-fate { color: var(--st-fail); background: color-mix(in srgb, var(--st-fail) 12%, transparent); }
-.pl-step[data-step="paused"] .pl-fate { color: var(--st-wait); background: color-mix(in srgb, var(--st-wait) 12%, transparent); }
-.pl-earlier-counts { font-weight: 500; color: var(--text-tertiary); }
-.pl-earlier-group { margin-top: 6px; }
-.pl-earlier-when { margin: 4px 0 2px; font-size: 11px; font-weight: 600; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
-.pl-marker svg { width: 10px; height: 10px; }
-.pl-marker .spinner { width: 11px; height: 11px; }
-.pl-step.pl-pop .pl-marker > * { animation: pl-pop var(--dur-move) var(--ease-out) both; }
-@keyframes pl-pop { from { opacity: 0; transform: scale(0.6); } }
-.pl-list > .pl-step:not(:last-child)::before { content: ""; position: absolute; left: 8.5px; top: 25px; bottom: -3px; width: 1px; background: var(--ib-card-border); }
-.pl-list > .pl-step:not(:last-child)::after { content: ""; position: absolute; left: 8.5px; top: 25px; bottom: -3px; width: 1px; background: var(--text-tertiary); transform: scaleY(0); transform-origin: top; transition: transform var(--dur-move) var(--ease-out); }
-.pl-list > .pl-step[data-step="done"]:not(:last-child)::after { transform: none; }
-.pl-earlier > .pl-step::before, .pl-earlier > .pl-step::after { content: none; }
-.pl-main { min-width: 0; }
-.pl-line { display: block; overflow-wrap: anywhere; }
-.pl-line .task-id { margin-right: 6px; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
-.pl-step.completed .task-text { color: var(--text-secondary); opacity: 1; }
-.pl-step.in_progress .task-text { color: var(--text); font-weight: 600; }
-.pl-step.pending .task-text { color: var(--text-secondary); }
-.pl-chip { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px; background: var(--ib-pill); color: var(--text-secondary); font-size: 11px; line-height: 16px; white-space: nowrap; font-variant-numeric: tabular-nums; vertical-align: 1px; }
-.pl-sub { display: block; margin-top: 1px; font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pl-aside { min-height: 18px; font-size: 12px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.pl-step[data-step="active"] .pl-aside { color: var(--text); }
-/* ── TASK RUNS (SSOT 2026-10-29 T5) — the tasks that ran: a row is a button
-   (title · start → end · tools · tokens · cost) opening its detail beneath. ── */
-.tr-head { display: flex; align-items: center; gap: 6px; margin: 6px 0 2px; font-size: 11px; font-weight: 600; color: var(--text-tertiary); }
-.tr-head + .pl-list { margin-bottom: 4px; }
-.tr-count { padding: 0 6px; border-radius: 99px; background: var(--ib-pill); color: var(--text-secondary); font-weight: 600; font-variant-numeric: tabular-nums; }
-.tr-row { display: block; width: 100%; margin: -3px -6px; padding: 3px 6px; border: 0; border-radius: 6px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-@media (hover: hover) and (pointer: fine) { .tr-row:hover { background: var(--ib-pill); } }
-.tr-row:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 0; }
-.tr-meta { display: block; margin-top: 1px; font-size: 11.5px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.tr-run.is-open .tr-row { background: var(--ib-pill); }
-.tr-detail { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 12px; row-gap: 3px; margin: 6px 0 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); font-size: 12px; line-height: 17px; }
-.tr-detail dt { color: var(--text-tertiary); font-weight: 600; }
-.tr-detail dd { margin: 0; color: var(--text-secondary); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.tr-revs { margin: 0; padding-left: 16px; }
-.tr-revs li { margin: 1px 0; }
-.tr-rev-at { color: var(--text-tertiary); font-variant-numeric: tabular-nums; margin-right: 4px; }
+/* ── PLAN + RUNS (D3 E-22/E-23) — the open Tasks section: <ui-task-runs> (the tasks that ran) and
+   <ui-task-plan> (the plan left, the tasks dropped before they ran) draw themselves; the page keeps the
+   older-runs toggle and the sums under them. ── */
+.panel-tasks-body > ui-task-runs, .panel-tasks-body > ui-task-plan { display: block; min-width: 0; }
+.panel-tasks-body > ui-task-runs + ui-task-plan { margin-top: 10px; }
 .tr-total { display: flex; gap: 8px; align-items: baseline; margin: 6px 0 2px; padding-top: 6px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .tr-total + .tr-total { margin-top: 0; padding-top: 0; border-top: 0; }
 .tr-total-k { flex: none; font-weight: 600; color: var(--text-tertiary); }
-.pl-fold { padding: 2px 0 2px 28px; }
-.pl-earlier { opacity: 0.85; }
+.pl-fold { padding: 0 0 4px; }
 /* Panel work log (.prd/10 §3.1-6, §3.3) — what the agent did, in order: the
    작업 로그 section tab, scrolled by its section box (newest at the bottom). */
-.worklog-list { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; line-height: 1.45; padding: 4px 16px 12px; }
-.wl-empty { color: var(--text-tertiary); font-size: 12px; padding: 6px 0; }
-.wl-entry { color: var(--text); min-width: 0; }
 /* SSOT 2026-10-22 T10 — entries folded under the task they were made in. */
-.wl-group { min-width: 0; }
-.wl-group-head { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px 6px; border-radius: 6px; background: var(--surface-raised); cursor: pointer; font-weight: 600; }
-.wl-group-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-.wl-group-head .wl-g-chev { color: var(--text-tertiary); }
-.wl-group-head[aria-expanded="true"] .wl-g-chev { transform: none; }
-.wl-group-head .wl-g-id { flex-shrink: 0; color: var(--text-tertiary); font-variant-numeric: tabular-nums; font-weight: 500; }
-.wl-group-head .wl-g-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wl-group-head .wl-g-count { flex-shrink: 0; background: var(--surface); border-radius: 6px; padding: 0 6px; font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.wl-group-head .wl-g-meta { flex-shrink: 0; font-size: 11px; font-weight: 500; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.wl-group-body { display: flex; flex-direction: column; gap: 4px; padding-left: 12px; border-left: 2px solid var(--border); margin-left: 6px; margin-top: 4px; }
-.wl-head { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--text-tertiary); }
-.wl-label { font-weight: 600; }
-.wl-head .wl-time { margin-left: auto; }
-.wl-time { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 /* Each entry = a row (role=button: click, Enter or Space opens its raw output
    below it) + its detail block. */
-.wl-row { border-radius: 6px; cursor: pointer; min-width: 0; }
-.wl-row:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-.wl-row[aria-expanded="true"] { background: var(--surface-raised); }
-.wl-row > .wl-text { white-space: pre-wrap; overflow-wrap: anywhere; }
-.wl-line { display: flex; align-items: baseline; gap: 8px; }
-.wl-line > .wl-text { flex: 1; min-width: 0; }
-.wl-narration .wl-text { color: var(--text-secondary); }
-.wl-detail { margin: 4px 0 6px; min-width: 0; font-family: var(--font); }
-.wl-detail-bar { display: flex; justify-content: flex-end; gap: 6px; margin-bottom: 4px; }
-.wl-detail-btn { font: inherit; font-size: 11px; font-weight: 600; color: var(--text-secondary); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 3px 10px; min-height: 26px; cursor: pointer; }
-.wl-detail-msg { font-size: 12px; color: var(--text-tertiary); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.wl-detail-note { font-size: 11px; color: var(--yellow); margin-bottom: 4px; }
-.wl-raw {
-  margin: 0;
-  padding: 8px 10px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 11.5px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: min(36vh, 320px);
-  overflow: auto;
-}
-.wl-instruction { background: var(--tint-accent-soft); border-left: 2px solid var(--accent); border-radius: 6px; padding: 6px 8px; margin: 4px 0; }
-.wl-instruction .wl-label { color: var(--tint-accent-fg); }
-.wl-instruction.is-sys { background: transparent; border-left-color: var(--border); padding: 3px 8px; }
-.wl-instruction.is-sys .wl-head { align-items: center; gap: 8px; min-width: 0; font-size: 12px; }
-.wl-sys-line { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
-.wl-entry > .skill-badges { margin: 4px 0 2px; }
-.wl-detail > .sys-facts { margin: 6px 0 8px; }
-.wl-final { border-left: 2px solid var(--green); padding: 4px 8px; margin: 4px 0; }
-.wl-final .wl-label { color: var(--green); }
-.wl-notice .wl-row > .wl-text { color: var(--text-tertiary); font-style: italic; }
-.wl-error { border-left: 2px solid var(--red); padding: 4px 8px; }
-.wl-error .wl-label, .wl-error .wl-row > .wl-text { color: var(--red); }
-.wl-tool, .wl-tool_result {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--text-secondary);
-  min-width: 0;
-}
-.wl-tool > .wl-row, .wl-tool_result > .wl-row { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
-.wl-tool .wl-text, .wl-tool_result .wl-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wl-tool-name { color: var(--text); font-weight: 600; flex-shrink: 0; }
-.wl-mark { flex-shrink: 0; width: 1em; text-align: center; color: var(--text-tertiary); }
-.wl-tool_result .wl-mark { color: var(--green); }
-.wl-tool_result.is-fail .wl-mark, .wl-tool_result.is-fail .wl-tool-name { color: var(--red); }
 /* A tool call and its result: one @2lab.ai/ui <ui-tool-call-card>, drawn with
    the dashboard's own tokens: each --ui-* the element reads is set here, on the
    wrapper, from the same-named dashboard token. Not on the element itself — its
@@ -5182,7 +4892,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    the values arrive already resolved and follow the theme switch. The same
    mapping serves every other library element's wrapper (.ui-tok: the approval
    cards, the toaster, the usage breakdown). */
-.wl-toolcall, .ui-tok {
+.ui-tok {
   --ui-bg: var(--bg); --ui-surface: var(--surface); --ui-surface-raised: var(--surface-raised);
   --ui-border: var(--border); --ui-border-focus: var(--border-focus); --ui-text: var(--text);
   --ui-text-secondary: var(--text-secondary); --ui-text-tertiary: var(--text-tertiary); --ui-accent: var(--accent);
@@ -5198,7 +4908,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   --ui-dur-move: var(--dur-move); --ui-dur-fade: var(--dur-fade); --ui-radius: var(--radius);
   --ui-font: var(--font); --ui-mono: var(--mono);
 }
-.wl-toolcall { display: grid; gap: 4px; min-width: 0; }
 .worklog-list ui-tool-call-card { display: block; min-width: 0; }
 .wl-card-fallback {
   display: block; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
@@ -5243,27 +4952,20 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-deck-peek span:last-child { width: calc(100% - 24px); }
 .slide-panel[data-deck="1"] .panel-deck-peek span:first-child { display: none; }
 .slide-panel:not([data-deck="0"]) .panel-header { border-top: 1px solid color-mix(in srgb, var(--text-tertiary) 45%, var(--border)); border-radius: 10px 10px 0 0; background: var(--surface); box-shadow: 0 -4px 10px -6px var(--scrim); }
-.panel-deck { display: inline-flex; align-items: center; gap: 2px; flex: none; height: 32px; padding: 0 2px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); }
+/* D3 E-05: ‹ n / m › is <ui-deck-nav> (its own pill, 44px on coarse pointers); the edges behind stay the page's
+   (.panel-deck-peek above the header — the element's peek sits under its own nav). */
+.panel-deck { flex: none; }
 .panel-deck[hidden] { display: none; }
-.panel-deck .pd-pos { min-width: 34px; text-align: center; font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+/* The subtitle is one line that ellipsizes: squeezed beside the nav it stacked one or two characters a line
+   (phones also drop 자세히's word while the deck is shown — the phone block below). */
+#panel-title-sub-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The deck switch (renderDeckNav → deckSlide) is WAAPI, not keyframes: the header and body glide in from
    the side the new front card came from, added onto whatever is still running — a quick second switch
    retargets from where they are drawn instead of restarting. Under reduced motion there is no slide. */
-/* ── SESSION CHIP — the panel head (spec 13): status · active time · retry · Slack · the one action ── */
+/* ── SESSION HEAD — the panel head (spec 13, D3 E-08): <ui-status-bar> draws status · time · Slack · actions
+   (44px targets on coarse pointers, reduced motion); the page adds only an armed resume in its slot. ── */
 .panel-status { flex-basis: 100%; min-width: 0; }
-.panel-status:empty { display: none; }
-.ps-row { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12.5px; color: var(--text-secondary); }
-/* re-agent-run D18: the session's status is the kit's tinted status pill (.ui-status.is-pill). */
-.ps-label { font-size: 11px; font-weight: 600; color: var(--text-tertiary); }
-.ps-time { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.ps-clock { flex: none; width: 13px; height: 13px; color: var(--text-tertiary); }
-.ps-dot { color: var(--text-tertiary); }
-.ps-actions { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
-.ps-actions .ui-btn { min-height: 30px; padding: 3px 12px; font-size: 12.5px; }
-.ps-slack { display: inline-flex; align-items: center; min-height: 30px; padding: 0 8px; border-radius: 8px; font-size: 12.5px; font-weight: 600; color: var(--accent); text-decoration: none; }
-.ps-slack:focus-visible { text-decoration: underline; }
-@media (hover: hover) and (pointer: fine) { .ps-slack:hover { text-decoration: underline; } }
-.ps-resume { margin-top: 4px; font-size: 12px; color: var(--st-wait); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-resume { min-width: 0; font-size: 12px; color: var(--st-wait); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* ── 세션 정보 — one summary line + the links; opened, every number (spec 13) ── */
 .panel-info { padding: 6px 16px 8px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); }
 .panel-info:empty { display: none; }
@@ -5279,16 +4981,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .pi-links a:focus-visible { text-decoration: underline; }
 @media (hover: hover) and (pointer: fine) { .pi-links a:hover { text-decoration: underline; } }
 .pi-body { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
-.pi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px 12px; margin: 0; }
-.pi-grid > div { min-width: 0; }
-.pi-grid dt { font-size: 11px; font-weight: 500; color: var(--text-tertiary); }
-.pi-grid dd { margin: 1px 0 0; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .pi-muted { color: var(--text-tertiary); font-weight: 400; }
 /* 세부 (re-agent-run D19): label left, value right. */
-.pi-details { display: grid; gap: 7px; margin: 0; }
-.pi-details > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
-.pi-details dt { flex: none; color: var(--text-tertiary); font-size: 12px; }
-.pi-details dd { min-width: 0; margin: 0; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
+/* 세부 and the token rows are the kit's fact list (.ui-dl, D3 E-10 — the disclosure itself stays: see D3-GAPS G6-2). */
 .pi-thread { font-variant-numeric: tabular-nums; }
 .pi-resume { color: var(--st-wait); overflow-wrap: anywhere; }
 /* The summary line's ctx % carries the context level (re-context-window D16). */
@@ -5309,42 +5004,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-goal .card-goal .cg-objective { -webkit-line-clamp: 3; line-height: 1.45; }
 .panel-goal .card-goal.is-open .cg-objective { display: block; -webkit-line-clamp: unset; overflow: visible; }
 .panel-goal:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
-.panel-tasks-earlier { opacity: 0.85; }
 /* Scroll container: the common surface (large UIAskQ choices included), the
    agent tabs, Tasks and the section tabs scroll together; each section scrolls
    in its own box inside it, and .panel-command stays pinned below. */
 .panel-scroll { flex: 1 1 auto; overflow-y: auto; scroll-behavior: smooth; min-height: 0; }
-.panel-turns { padding: 10px 16px; }
-/* Slack-style turns — no colour rails (P7): the instruction sits on a raised tint, the answer on the
-   panel, and who spoke is a neutral 24px glyph tile with a hairline: the user's initial, the bot glyph. */
-.turn { margin-bottom: 8px; padding: 8px 10px; border-radius: 10px; display: flex; gap: 10px; align-items: flex-start; }
-.turn.user { background: var(--surface-raised); }
-.turn.assistant { background: transparent; }
-.turn-avatar { width: 24px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 600; flex-shrink: 0; background: var(--ib-pill); color: var(--text-secondary); box-shadow: inset 0 0 0 1px var(--border); }
-.turn-avatar svg { width: 14px; height: 14px; }
-.user-avatar { color: var(--text); }
-/* SSOT 2026-10-29 T7: the harness's turns — a neutral gear, never the user's colour or initial. */
-.sys-avatar { background: transparent; }
-.turn-name.sys-name { color: var(--text-secondary); font-weight: 600; }
-.io-label .io-who.is-sys { color: var(--text-tertiary); }
-.turn-body { flex: 1; min-width: 0; }
-.turn-header { font-size: 12px; color: var(--text-tertiary); margin-bottom: 4px; display: flex; gap: 8px; align-items: baseline; }
-.turn-name { font-weight: 600; color: var(--text); font-size: 13px; }
-.turn-time { font-size: 11px; color: var(--text-tertiary); }
-.turn-content { font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
-.turn-instr { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 12; overflow: hidden; cursor: pointer; }
-.turn-instr.is-full, .slide-panel.is-detail .turn-instr { display: block; -webkit-line-clamp: unset; overflow: visible; }
-.turn-summary-title { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
-.turn-summary-body { font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
-/* An assistant turn (task view T1.4): the answer itself — @2lab.ai/ui
-   <ui-ai-answer flat> in the token wrapper (.ui-tok), the turn being its card —
-   then Raw at its foot: the turn's summary and the answer's source as written.
-   .ans-lite is the element's light-DOM line until the library has loaded. */
-.turn-answer { margin-top: 4px; }
-.ans-lite { font-size: 12px; color: var(--text-tertiary); }
-.turn-raw { margin-top: 6px; }
-/* Raw — @2lab.ai/ui <ui-disclosure> (K-06): a quiet row; the element turns the chevron and grows the region. */
-.turn-raw::part(summary) { width: auto; padding: 2px 6px 2px 2px; font-size: 11.5px; font-weight: 500; color: var(--text-tertiary); }
 /* P8: the text triangles are the icon set's chevron (16 grid, 1.5 stroke, round caps), drawn as a mask so
    it takes currentColor; .chev points down, .is-up / .is-right turn it, and a toggle's aria-expanded
    turns it open. */
@@ -5352,32 +5015,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .chev { display: inline-block; flex-shrink: 0; width: 12px; height: 12px; vertical-align: -2px; background: currentColor; -webkit-mask: var(--chev) center / contain no-repeat; mask: var(--chev) center / contain no-repeat; transition: transform var(--dur-press) var(--ease-out); }
 .chev.is-up, [aria-expanded="true"] > .chev { transform: rotate(180deg); }
 .chev.is-right { transform: rotate(-90deg); }
-.turn-raw-body { margin-top: 4px; padding: 8px 10px; border-radius: 8px; background: var(--surface-raised); font-size: 12px; color: var(--text-secondary); }
-.turn-raw-label { font-size: 11px; font-weight: 600; color: var(--text-tertiary); margin: 6px 0 2px; }
-.turn-raw-label:first-child { margin-top: 0; }
-.turn-raw-src { margin: 0; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 11.5px/1.5 var(--mono); color: var(--text-secondary); }
-.turn-raw-src:empty::before { content: '답변이 열리면 원문이 여기에 표시됩니다'; color: var(--text-tertiary); font-family: inherit; }
-/* The answer's response time sits in the turn header (host; the element's own foot time is not used). */
-.turn-header .ans-took { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
-.turn-header .ans-took:empty { display: none; }
-/* SSOT 2026-10-27 — a turn soma-work put there (compact, restart, retry, goal,
-   cron, renew): one quiet line — who · when · badge · what it did — that opens
-   (native disclosure) to its facts and the raw prompt. */
-.turn.is-sys { padding: 3px 10px; background: transparent; }
-.turn.is-sys .turn-avatar { width: 20px; height: 20px; margin-top: 2px; font-size: 11px; border-radius: 6px; }
-.sys-turn { container: sysrow / inline-size; }
-/* A narrow row drops what is said elsewhere, so elapsed / estimate stay whole:
-   "압축 중" (the badge says it) at ≤ 420px — the default 440px drawer's row is
-   ~355px and keeps the name — and the name too (the avatar shows it) at
-   ≤ 340px, a phone's full-width panel. */
-@container sysrow (max-width: 420px) { .cp-verb { display: none; } }
-@container sysrow (max-width: 340px) { .sys-row-in .turn-name { display: none; } }
-@container sysrow (max-width: 280px) { .cp-pct { display: none; } }
-.sys-turn::part(summary) { padding: 2px 6px; font-size: 12px; font-weight: 400; color: var(--text-tertiary); }
-.sys-row-in { display: flex; align-items: center; gap: 8px; min-height: 24px; min-width: 0; font-size: 12px; color: var(--text-tertiary); }
-.sys-row-in .turn-name { font-size: 12px; }
-.sys-row-in .turn-time { flex: none; white-space: nowrap; }
-.sys-row-in .turn-name { flex: none; max-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The kit chip (.ui-chip) with its kind's colour on the word and the hairline. */
 .sys-badge { flex: none; }
 .sys-badge[data-kind="compact"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
@@ -5391,9 +5028,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    so the bar gives way first, then the line truncates from its end. Weights
    stay ≥ 1: below 1 the flex algorithm hands out only that fraction of the
    space and the row would overflow. */
-/* A running line's parts are the row's own flex items: the times never shrink
-   (no sub-pixel ellipsis); only the overdue words take the ellipsis. */
-.turn[data-cp-live] .cp-slot > .sys-line { display: contents; }
 .cp-time { flex: none; white-space: nowrap; }
 .cp-over { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-bar { flex: 0 1000 120px; min-width: 0; max-width: 120px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
@@ -5416,7 +5050,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .skill-tok { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .skill-detail { margin-top: 6px; }
 .skill-detail-h { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; font-size: 12px; }
-@media (pointer: coarse) { .turn.is-sys .turn-avatar { margin-top: 12px; } .skill-badge { min-height: 44px; } }
+@media (pointer: coarse) { .skill-badge { min-height: 44px; } }
 /* Slack link on cards */
 .slack-link { color: var(--accent); text-decoration: none; font-size: 0.85em; margin-left: 4px; opacity: 0.7; }
 @media (hover: hover) and (pointer: fine) { .slack-link:hover { text-decoration: underline; opacity: 1; } }
@@ -5450,16 +5084,12 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* PRESS — one rule for every button-like control: scale(.97) on --dur-press ease-out (each control's own
    transition carries the transform), pointer presses only — never a keyboard press (:focus-visible). The
    56px FAB presses to .95. */
-:is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+:is(.archives-btn, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .nt-rec-btn, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
   .archives-btn:hover { color: var(--ib-text); }
-  .wl-row:hover { background: var(--surface-raised); }
-  .wl-detail-btn:hover { color: var(--text); border-color: var(--text-tertiary); }
   .card-body .card-refs a:hover { text-decoration: underline; }
-  .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--surface-raised); color: var(--text); }
-  .card-body .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--ib-card); color: var(--ib-text); }
 }
 
 /* ── BOARD RESPONSIVE (.prd/10 §5, SSOT 2026-10-24) ──
@@ -5475,8 +5105,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   /* The path shrinks to "‹ parent › here". */
   .pa-crumb.is-far, .pa-sep.is-far { display: none; }
   .pa-crumb.is-up::before { content: '\\2039\\00a0'; }
-  .wl-child { grid-template-columns: 16px minmax(0, 1fr); }
-  .wc-meta { grid-column: 2; grid-row: auto; flex-wrap: wrap; }
+  /* Panel head with the deck shown: <ui-deck-nav>'s 44px targets left the title ~85px, so 자세히 is its
+     icon alone (the word stays its accessible name) and the title gets the word's width back. */
+  .slide-panel:not([data-deck="0"]) .panel-detail-toggle { width: 44px; padding: 0; justify-content: center; }
+  .slide-panel:not([data-deck="0"]) .pdt-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
   /* Top bar (the app bar narrows itself: the status dot, the account's initials, 메뉴):
      the row under it keeps the bar's 12px sides, and the user select fills what the
@@ -5489,8 +5121,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
      (320px) Show archives sits above Board | List instead of overflowing. */
   .inbox-tools { flex: 1 1 auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; row-gap: 8px; }
   .crumbs { font-size: 15px; gap: 7px; }
-  /* Selectors carry an extra class so they beat the later @media (pointer: coarse) 40px rules. */
-  .card-body .btn-choice { min-height: 44px; }
 }
 
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
@@ -5507,18 +5137,15 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .chart-row { flex-direction: column; }
 }
 @media (hover: hover) and (pointer: fine) {
-  .wl-child:hover { border-color: var(--ib-muted); }
   .pa-crumb:not([aria-current="page"]):hover { background: var(--surface-raised); color: var(--text); }
-  .wl-agent-link:not(.wl-child):hover { text-decoration: underline; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.archives-btn, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .nt-rec-btn, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
   .sk, .is-loading { animation: none !important; }
-  .wl-group-head .wl-g-chev { transition: none; }
   .spinner { border-color: var(--st-run); background: radial-gradient(circle, var(--st-run) 0 2px, transparent 2.5px); }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -5547,16 +5174,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 @media (max-width: 639px), (pointer: coarse) {
   .topbar .user-select, .topbar .admin-toggle, .topbar .td-chip { min-height: 44px; }
-  .card-body .btn-choice { min-height: 44px; }
   .inbox-head .archives-btn { min-height: 44px; }
   .card-body .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
   .pi-links a, .pi-head, .panel-tasks-toggle { min-height: 44px; }
-  .ps-actions .ui-btn, .ps-slack, .cgl-go, .card-more-link, .tl-toggle { min-height: 44px; }
-  .wl-detail-btn { min-height: 44px; }
-  .worklog-list .wl-row { min-height: 44px; display: flex; flex-direction: column; justify-content: center; }
-  .wl-tool > .wl-row, .wl-tool_result > .wl-row, .worklog-list .wl-row.wl-line { flex-direction: row; align-items: center; }
-  .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn { min-height: 44px; }
-  .mc-custom-input input, .mc-custom-input button { min-height: 44px; }
+  .cgl-go, .card-more-link, .tl-toggle { min-height: 44px; }
 }
 
 /* ── CRON badge · lane · drawer (SSOT 2026-10-23 T3/T4/T5) ── */
@@ -6004,11 +5625,6 @@ body.nt-open .new-task-fab { display: none !important; }
 @media (max-height: 560px) {
   .slide-panel:not(.is-detail) #panel-title-sub { display: none !important; }
 }
-@media (pointer: coarse) {
-  /* Responsive (SSOT 2026-10-24) — 16px text: iOS does not zoom into a focused input. */
-  .mc-custom-input input { font-size: 16px; }
-  /* The merged cron drawer (#374): 44px touch targets (the lane's are <ui-agent-queue>'s own). */
-}
 @media (max-width: 639px) {
   /* Responsive (SSOT 2026-10-24) — phones: the last card clears the FAB (a board
      with cards only — an empty page must not turn scrollable), the
@@ -6180,17 +5796,13 @@ ${pageTokenAliases()}
           <button type="button" id="panel-title-sub-regen" class="ui-icon-btn is-sm" style="display:none" aria-label="부제 다시 만들기" title="부제 다시 만들기" onclick="event.stopPropagation();generateTitleSub(panelConvId, !!_panelTitleSub)"><i data-ui-icon="refresh"></i></button>
         </div>
       </div>
-      <!-- Detail deck (SSOT 2026-10-29 T2): every open card has its detail card here; ‹ › go through them. -->
-      <div class="panel-deck" id="panel-deck" role="group" aria-label="열린 작업 카드" hidden>
-        <button type="button" class="ui-icon-btn is-sm" id="panel-deck-prev" aria-label="이전 작업 카드" onclick="deckGo(-1)"><i data-ui-icon="chevron-left"></i></button>
-        <span class="pd-pos" id="panel-deck-pos" aria-live="polite"></span>
-        <button type="button" class="ui-icon-btn is-sm" id="panel-deck-next" aria-label="다음 작업 카드" onclick="deckGo(1)"><i data-ui-icon="chevron-right"></i></button>
-      </div>
+      <!-- Detail deck (SSOT 2026-10-29 T2, D3 E-05): every open card has its detail card here; <ui-deck-nav>'s ‹ n / m › (and ←/→ on it) go through them, round the end. -->
+      <ui-deck-nav class="panel-deck" id="panel-deck" lang="ko" wrap hidden></ui-deck-nav>
       <!-- 자세히 (task view T1.6): the panel shows what matters by default; on, every detail of every section. Saved per device. -->
       <button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false" title="모든 세부 정보 보기" onclick="togglePanelDetail()"><i data-ui-icon="list" class="pdt-icon"></i><span class="pdt-label">자세히</span></button>
       <button type="button" class="ui-icon-btn is-bordered panel-close" aria-label="작업 카드 닫기" title="작업 카드 닫기 (카드도 접힘)" onclick="closeDetailCard()"><i data-ui-icon="close"></i></button>
-      <!-- Session chip (spec 13): status · active time · retry · Slack · the session's one action. -->
-      <div class="panel-status" id="panel-status"></div>
+      <!-- Session head (spec 13, D3 E-08): <ui-status-bar> — status · this turn's time · Slack · the session's actions; an armed resume in its slot. -->
+      <ui-status-bar class="panel-status" id="panel-status" lang="ko"></ui-status-bar>
     </div>
     <!-- Body (task view, SSOT 2026-10-27; section tabs 2026-10-29): one scroll area — the
          task's common surface on top, then the agent tabs (sticky) and the focused
@@ -6203,10 +5815,10 @@ ${pageTokenAliases()}
         <div class="panel-info" id="panel-info"></div>
         <!-- Goal (spec 13): the editor's home — current, queue, add / delete, completed goals. -->
         <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="Goal" style="display:none"></div>
-        <!-- 입력 필요 (re-agent-run D8–D17): a head with the count, approval cards for the
+        <!-- 입력 필요 (re-agent-run D8–D17): a head with the count (kit section head + count, D3 E-13), approval cards for the
              permission prompts and the question; one polite status line says arrivals and
              answers (the cards themselves are not a live region — their expiry clock ticks). -->
-        <div class="panel-needs-head" id="panel-needs-head" tabindex="-1" hidden><span class="pn-title">입력 필요</span><span class="pn-count" id="panel-needs-count"></span></div>
+        <div class="ui-section-head panel-needs-head" id="panel-needs-head" tabindex="-1" hidden><h4>입력 필요</h4><span class="ui-count" id="panel-needs-count" data-tone="wait" data-pop></span></div>
         <div class="panel-permission" id="panel-permission" style="display:none"></div>
         <div class="panel-question" id="panel-question" style="display:none"></div>
         <p class="ar-vh" id="panel-needs-status" role="status" aria-live="polite"></p>
@@ -6235,18 +5847,18 @@ ${pageTokenAliases()}
             <p class="psec-start" hidden>에이전트 트리의 시작</p>
             <div class="psec-body panel-tree" id="panel-tree"></div>
           </div>
-          <div class="psec" id="psec-log" role="tabpanel" aria-labelledby="psec-tab-log" tabindex="0" hidden>
-            <button type="button" class="psec-older" data-sec="log" hidden>이전 로그 불러오기</button>
-            <p class="psec-start" hidden>작업 로그의 시작</p>
-            <div class="psec-body worklog-list" id="worklog-list" role="log" aria-label="작업 로그"></div>
+          <!-- 작업 로그 (D3 F-01..F-10): @2lab.ai/ui <ui-work-log> — task groups, entry rows, the raw viewer,
+               child agents, its own scroll box (pages older entries in on scroll-up); the tool cards are
+               this page's <ui-tool-call-card> children in each entry's tool-<seq> slot (wlPaint). -->
+          <div class="psec psec-el ui-tok" id="psec-log" role="tabpanel" aria-labelledby="psec-tab-log" hidden>
+            <ui-work-log class="worklog-list" id="worklog-list" lang="ko"></ui-work-log>
           </div>
-          <div class="psec" id="psec-conv" role="tabpanel" aria-labelledby="psec-tab-conv" tabindex="0">
-            <button type="button" class="psec-older" data-sec="conv" hidden>이전 대화 불러오기</button>
-            <p class="psec-start" hidden>대화의 시작</p>
-            <div class="psec-body panel-conv" id="panel-conv">
-              <div class="panel-agent-conv" id="panel-agent-conv" hidden></div>
-              <div class="panel-turns" id="panel-turns"></div>
-            </div>
+          <!-- 지시와 답변 (D3 G-01..G-13, E-25): @2lab.ai/ui <ui-conversation> — its own scroll box
+               (<ui-log-scroller>: follows the newest turn, keeps the place while older pages go in
+               above, the "new" pill); the dashboard hands it turns (convPaint) and answers
+               ui-load-older / ui-retry. The files beside a turn are its slotted children. -->
+          <div class="psec psec-el ui-tok" id="psec-conv" role="tabpanel" aria-labelledby="psec-tab-conv">
+            <ui-conversation class="panel-conv" id="panel-conv" lang="ko"></ui-conversation>
           </div>
           <!-- New items while the reader is up the list: one press goes to the newest. -->
           <button type="button" class="psec-pill" id="psec-pill" hidden></button>
@@ -6363,9 +5975,7 @@ var STRINGS = {
   error: '오류',
   mcUnavailable: '복수 질문 데이터를 불러올 수 없습니다',
   mcLoadFailed: '복수 질문을 불러오지 못했습니다. 새로고침해 보세요.',
-  mcChange: '변경',
   mcCustomPlaceholder: '직접 입력…',
-  mcSubmitting: '제출 중…',
   effortTitle: '추론 강도',
   // The board (D2 group 6) in the language of <ui-agent-inbox lang="ko">, whose own words (입력 대기 · 비어 있음 ·
   // 완료 · …) match: the column heads, the finish-day heads, the status words the page sets, the two toggles.
@@ -6726,6 +6336,8 @@ function acEvict(key, s) {
   for (var i = 0; i < list.length; i++) keep['p|' + list[i].approvalId] = true;
   var q = s && s.pendingQuestion;
   if (q && q.type === 'user_choice' && q.choices) keep[acQuestionId(q)] = true;
+  var gd = s && s.pendingGoalDecision;
+  if (gd && gd.decisionId) keep['g|' + gd.decisionId] = true;
   var left = 0;
   for (var id in states) {
     if (keep[id]) left++;
@@ -6751,6 +6363,43 @@ function acPermissionsHtml(s) {
 function acQuestionHtml(s, q) {
   return acSlotHtml(s.key, 'question', acQuestionId(q), '', '질문 — ' + String(q.question || ''));
 }
+// The goal's cap decision — the owner's DM "Goal 계속 진행할까요?" as the same
+// card: the question, the objective and the latest reason, 계속 / 취소 (no
+// recommended choice, as the DM has none). The owner answers here or in the
+// DM; either answer resolves both (the server rewrites the DM, the push takes
+// the card away).
+var GOAL_DECISION_CHOICES = [{ id: 'continue', label: '✅ 계속' }, { id: 'cancel', label: '🛑 취소' }];
+var GOAL_DECISION_SENT = { continue: '계속 진행을 보냈어요', cancel: '취소를 보냈어요' };
+function acGoalDecisionLock(s, d) {
+  if (isSiblingSession(s)) return AC_SIBLING;
+  return d.ownerId && d.ownerId === _viewerUserId ? '' : 'goal 소유자만 응답할 수 있습니다';
+}
+function acGoalDecisionData(s, d) {
+  var n = toNum(d.maxContinuations);
+  var context = ['Objective: ' + String(d.objective || '')];
+  if (d.reason) context.push('Latest reason: ' + String(d.reason));
+  var data = {
+    kind: 'question',
+    id: String(d.decisionId),
+    label: 'Goal 자동 진행 ' + n + '/' + n,
+    question: '⏳ Goal auto-continuation reached its ' + n + '-turn budget.\\n계속 진행할까요?',
+    description: context.join('\\n'),
+    choices: GOAL_DECISION_CHOICES.map(function(c) { return { id: c.id, label: c.label }; }),
+    allowOther: false,
+  };
+  var asked = toNum(d.askedAt);
+  if (asked > 0) data.createdAt = asked;
+  var lock = acGoalDecisionLock(s, d);
+  if (lock) data.canAnswer = lock;
+  var st = _acState[s.key] && _acState[s.key]['g|' + d.decisionId];
+  if (st) data.state = st;
+  return data;
+}
+function acGoalDecisionHtml(s) {
+  var d = s && s.pendingGoalDecision;
+  if (!d || !d.decisionId) return '';
+  return acSlotHtml(s.key, 'goal', 'g|' + d.decisionId, String(d.decisionId), 'Goal 계속 진행할까요? — 응답 대기');
+}
 // A collapsed card paints no approval card (placeCard), but the requester's
 // input is still fetched as the card's would be (acPermissionData), so opening
 // the card shows it at once.
@@ -6769,6 +6418,10 @@ function acDataFor(el) {
   if (el.getAttribute('data-ac-kind') === 'question') {
     var q = s.pendingQuestion;
     return q && q.type === 'user_choice' && q.choices ? acQuestionData(s, q) : null;
+  }
+  if (el.getAttribute('data-ac-kind') === 'goal') {
+    var gd = s.pendingGoalDecision;
+    return gd && String(gd.decisionId) === el.getAttribute('data-ac-id') ? acGoalDecisionData(s, gd) : null;
   }
   var id = el.getAttribute('data-ac-id');
   var list = s.pendingPermissions || [];
@@ -6808,8 +6461,11 @@ document.addEventListener('ui-decide', function(e) {
 });
 document.addEventListener('ui-answer', function(e) {
   var el = e.target;
-  if (!el || !el.getAttribute || !e.detail || el.getAttribute('data-ac-kind') !== 'question') return;
-  answerChoice(el.getAttribute('data-ac-key'), String(e.detail.id), e.detail.choiceId === undefined ? '' : String(e.detail.choiceId));
+  if (!el || !el.getAttribute || !e.detail) return;
+  var kind = el.getAttribute('data-ac-kind');
+  var choice = e.detail.choiceId === undefined ? '' : String(e.detail.choiceId);
+  if (kind === 'question') answerChoice(el.getAttribute('data-ac-key'), String(e.detail.id), choice);
+  else if (kind === 'goal') answerGoalDecision(el.getAttribute('data-ac-key'), String(e.detail.id), choice);
 });
 
 // The pending question in the panel: the single-choice question is an
@@ -6862,10 +6518,15 @@ function renderPanelPermission(s) {
     ids[list[i].approvalId] = true;
     if (seen && !seen[list[i].approvalId]) said.push('승인 요청 — ' + (list[i].toolName || 'tool'));
   }
+  var gd = s && s.pendingGoalDecision;
+  if (gd && gd.decisionId) {
+    ids['g|' + gd.decisionId] = true;
+    if (seen && !seen['g|' + gd.decisionId]) said.push('Goal 계속 진행할까요?');
+  }
   container._seenKey = key;
   container._seen = ids;
   renderPanelNeedsHead(s);
-  var html = s ? acPermissionsHtml(s) : '';
+  var html = s ? acPermissionsHtml(s) + acGoalDecisionHtml(s) : '';
   var ae = document.activeElement;
   var had = !!(ae && container.contains(ae));
   if (!html) {
@@ -6905,7 +6566,7 @@ function panelQuestionShown(s) {
 function renderPanelNeedsHead(s) {
   var head = document.getElementById('panel-needs-head');
   if (!head) return;
-  var n = s ? ((s.pendingPermissions || []).length + (panelQuestionShown(s) ? 1 : 0)) : 0;
+  var n = s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (panelQuestionShown(s) ? 1 : 0)) : 0;
   head.hidden = n === 0;
   var count = document.getElementById('panel-needs-count');
   if (count && count.textContent !== String(n)) count.textContent = String(n);
@@ -7068,6 +6729,37 @@ function acDrop(key, id) {
   delete _acState[key];
 }
 
+// The goal's cap decision from its card: one answer per round. The server
+// rewrites the owner's DM and the push takes the card away; a refusal (409:
+// answered in the DM meanwhile, 403: not the owner) stays on the card.
+async function answerGoalDecision(key, decisionId, choiceId) {
+  var s = _sessionCache[key];
+  var d = s && s.pendingGoalDecision;
+  if (!d || String(d.decisionId) !== decisionId || !GOAL_DECISION_SENT[choiceId]) return null;
+  var sk = 'g|' + decisionId;
+  var states = _acState[key] || (_acState[key] = Object.create(null));
+  var cur = states[sk];
+  if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
+  states[sk] = { status: 'sending', choiceId: choiceId };
+  acRepaint(key);
+  var st;
+  try {
+    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/goal-decision', JSON.stringify({ goalId: d.goalId, decisionId: decisionId, decision: choiceId }));
+    if (res.ok) {
+      st = { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() };
+      dashToast({ title: GOAL_DECISION_SENT[choiceId], description: 'Slack DM도 같은 결과로 바뀝니다', tone: 'success' });
+    } else st = await acRefusal(res);
+  } catch (e) {
+    console.error('Goal decision answer error', e);
+    st = { status: 'error', message: '네트워크 오류 — 다시 시도하세요', retry: true };
+  }
+  var now = _sessionCache[key] && _sessionCache[key].pendingGoalDecision;
+  if (now && String(now.decisionId) === decisionId) (_acState[key] || (_acState[key] = Object.create(null)))[sk] = st;
+  else acDrop(key, sk);
+  acRepaint(key);
+  return st;
+}
+
 // The single-choice answer, from the card or the panel (the same element): the
 // choice travels with its label and the question, as the route wants. Same
 // states as a prompt; a question that changed meanwhile takes no answer.
@@ -7122,20 +6814,16 @@ function renderPanelTasks(tasks, scopeLabel, earlier, outside) {
   // Spec 12: a subagent's own tasks are labelled with that agent.
   var title = 'Tasks' + (scopeLabel ? ' <span class="tasks-scope">&middot; ' + esc(scopeLabel) + '</span>' : '');
 
-  // D7: what changed since the last render of this scope (none on its first).
-  // An empty list is a baseline as well: the next list's steps are new, not changed.
+  // D7: a step that completed since the last render of this scope is announced
+  // (none on its first). An empty list is a baseline as well.
   var scope = scopeLabel || '';
   var seen = container._planScope === scope ? container._planSeen : null;
   var now = Object.create(null);
-  var changed = Object.create(null);
   var said = [];
   for (var i = 0; i < list.length; i++) {
     var t = list[i];
     now[t.id] = t.status;
-    if (seen && seen[t.id] && seen[t.id] !== t.status) {
-      changed[t.id] = true;
-      if (t.status === 'completed') said.push(t.id + ' 완료: ' + t.content);
-    }
+    if (seen && seen[t.id] && seen[t.id] !== t.status && t.status === 'completed') said.push(t.id + ' 완료: ' + t.content);
   }
   container._planScope = scope;
   container._planSeen = now;
@@ -7148,46 +6836,51 @@ function renderPanelTasks(tasks, scopeLabel, earlier, outside) {
   var live = '<span class="ar-vh pl-live" role="status" aria-live="polite">' + esc(said.join('. ')) + '</span>';
   if (!_panelTasksOpen) { writePanelTasks(container, head + live); return; }
 
-  // SSOT 2026-10-29 T5: the tasks that actually ran, in the order they ran —
-  // each with its start, end, tool calls and tokens (a row opens its detail) —
-  // then what is left of the plan; tasks a new plan dropped before they ran fold
-  // under one toggle. The model rewrites its list as it goes: the ledger keeps a
-  // rewritten task as one task (its earlier texts in the detail).
+  // SSOT 2026-10-29 T5, D3 E-22/E-23: the tasks that actually ran, in the order
+  // they ran — @2lab.ai/ui <ui-task-runs>: a row per run (status, start, run
+  // time, tokens, tool calls) that opens its detail in place (start / end,
+  // tokens in / out / cache, the tool calls of the main agent and of its
+  // subagents, cost, the task's earlier texts) — past TASK_RUNS_SHOWN only the
+  // newest, the older behind one toggle; then what is left of the plan —
+  // <ui-task-plan>, the tasks a new plan dropped before they ran in its earlier
+  // fold, its empty state while there is no list — then the sums (the runs' and
+  // the work no task got). The model rewrites its list as it goes: the ledger
+  // keeps a rewritten task as one task (its earlier texts in the detail).
   var runs = taskRunsOf(list, prev);
+  var hiddenRuns = _panelTasksExpanded ? 0 : Math.max(0, runs.ran.length - TASK_RUNS_SHOWN);
   var body = '';
-  if (!runs.ran.length && !runs.plan.length) {
-    body = '<div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>';
-  } else {
-    if (runs.ran.length) {
-      // Past TASK_RUNS_SHOWN the oldest runs fold behind one toggle at the top.
-      var hiddenRuns = _panelTasksExpanded ? 0 : Math.max(0, runs.ran.length - TASK_RUNS_SHOWN);
-      var rows = '';
-      if (runs.ran.length > TASK_RUNS_SHOWN) {
-        rows += '<li class="pl-fold">' + (_panelTasksExpanded
-          ? '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()"><span class="chev is-up" aria-hidden="true"></span>최근 ' + TASK_RUNS_SHOWN + '개만 보기</button>'
-          : '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()"><span class="chev" aria-hidden="true"></span>이전 실행 ' + hiddenRuns + '개 보기</button>') + '</li>';
-      }
-      for (var r = hiddenRuns; r < runs.ran.length; r++) rows += renderTaskRun(runs.ran[r], !!changed[runs.ran[r].id]);
-      body += '<div class="tr-head">실행된 태스크 <span class="tr-count">' + runs.ran.length + '</span></div>'
-        + '<ol class="pl-list tr-list" aria-label="실행된 태스크">' + rows + '</ol>';
-    }
-    if (runs.plan.length) {
-      body += '<div class="tr-head">남은 계획 <span class="tr-count">' + runs.plan.length + '</span></div>'
-        + '<ol class="pl-list tr-plan" aria-label="남은 계획">' + runs.plan.map(function(t) { return renderPanelTaskItem(t, !!changed[t.id]); }).join('') + '</ol>';
-    }
+  if (runs.ran.length > TASK_RUNS_SHOWN) {
+    body += '<div class="pl-fold">' + (_panelTasksExpanded
+      ? '<button type="button" class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()"><span class="chev is-up" aria-hidden="true"></span>최근 ' + TASK_RUNS_SHOWN + '개만 보기</button>'
+      : '<button type="button" class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()"><span class="chev" aria-hidden="true"></span>이전 실행 ' + hiddenRuns + '개 보기</button>') + '</div>';
   }
-  var html = head + '<div class="panel-tasks-body" id="panel-tasks-body">' + body + taskSkippedHtml(runs.skipped)
+  if (runs.ran.length) body += '<ui-task-runs class="panel-task-runs" id="panel-task-runs" lang="ko"></ui-task-runs>';
+  if (runs.plan.length || runs.skipped.length || !runs.ran.length) body += '<ui-task-plan class="panel-task-plan" id="panel-task-plan" lang="ko"></ui-task-plan>';
+  var html = head + '<div class="panel-tasks-body ui-tok" id="panel-tasks-body">' + body
     + (runs.ran.length || outside ? taskTotalsHtml(runs.ran, outside) : '') + '</div>' + live;
-  // The clocks are filled at once (the 1 Hz tick keeps them going).
-  if (writePanelTasks(container, html)) updateTimersIn(container);
+  writePanelTasks(container, html);
+  var runsEl = document.getElementById('panel-task-runs');
+  if (runsEl) {
+    taskElData(runsEl, { title: '실행된 태스크', runs: taskRunsData(runs.ran.slice(hiddenRuns)), totals: false });
+    taskRunsRestore(runsEl);
+  }
+  var planEl = document.getElementById('panel-task-plan');
+  if (planEl) taskElData(planEl, taskPlanData(runs));
   // Same data (a session push while a subagent is shown) writes nothing; a
-  // change is morphed, so the focused toggle or task row stays.
+  // change is morphed, so the focused toggle, a row and each element stay.
   function writePanelTasks(el, markup) {
     if (el._html === markup) return false;
     morphInnerHtml(el, markup);
     el._html = markup;
     return true;
   }
+}
+// An element's data, set only when it changed (an unchanged push re-renders nothing).
+function taskElData(el, d) {
+  var sig = JSON.stringify(d);
+  if (el._taskSig === sig) return;
+  el._taskSig = sig;
+  el.data = d;
 }
 function togglePanelTasks() {
   _panelTasksOpen = !_panelTasksOpen;
@@ -7235,9 +6928,6 @@ function taskFateOf(t) {
   // It ran (and went back to waiting): paused — its run and numbers stay (review R1).
   return toNum(t.startedAt) > 0 || toNum(t.firstStartedAt) > 0 ? 'paused' : 'pending';
 }
-var TASK_PAUSE_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5 4h2v8H5zM9 4h2v8H9z"/></svg>';
-var TASK_STOP_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M4.5 11.5l7-7"/></svg>';
-var TASK_SKIP_SVG = '<i data-ui-icon="minus"></i>';
 // The focused node's earlier task lists: the main agent's (s.earlierTasks) or
 // the focused subagent's own.
 function panelAgentEarlier() {
@@ -7290,100 +6980,94 @@ function taskRunEnd(t) {
 function taskTokTotal(tk) {
   return tk ? toNum(tk.input) + toNum(tk.output) + toNum(tk.cacheRead) + toNum(tk.cacheCreate) : 0;
 }
-// A clock time with seconds (the run's start and end).
-function formatTaskClock(ts) {
-  if (!ts) return '';
-  return new Date(ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+// A run as <ui-task-runs> takes it. Ids are the ledger's (T1 …), kept unique
+// across the lists (a repeated id gets its place as a suffix).
+var TASK_RUN_STATUS = { done: 'done', active: 'running', paused: 'paused', dropped: 'dropped' };
+function taskRunsData(ran) {
+  var used = Object.create(null);
+  return ran.map(function(t, i) {
+    var id = t.id ? String(t.id) : 'run' + i;
+    if (used[id]) id = id + '~' + i;
+    used[id] = true;
+    var r = { id: id, title: String(t.content || ''), status: TASK_RUN_STATUS[taskFateOf(t)] || 'paused' };
+    if (t.id) r.ref = '#' + t.id;
+    var start = taskRunStart(t);
+    var end = taskRunEnd(t);
+    if (start) r.startedAt = start;
+    if (end) r.endedAt = end;
+    // A count shared by tasks that ran together is fractional — a whole number on screen.
+    var main = Math.round(toNum(t.toolCalls));
+    var sub = Math.round(toNum(t.agentToolCalls));
+    var tools = [];
+    if (main) tools.push({ name: '메인', count: main });
+    if (sub) tools.push({ name: '서브에이전트', count: sub });
+    if (tools.length) r.tools = tools;
+    r.toolCalls = main + sub;
+    if (t.tokens) {
+      r.tokens = { input: toNum(t.tokens.input), output: toNum(t.tokens.output), cacheRead: toNum(t.tokens.cacheRead), cacheWrite: toNum(t.tokens.cacheCreate) };
+      r.costUsd = toNum(t.tokens.costUsd);
+    }
+    if (t.revisions && t.revisions.length) {
+      r.revisions = t.revisions.map(function(v) {
+        var o = { note: String(v.content || '') };
+        if (toNum(v.at)) o.at = toNum(v.at);
+        return o;
+      });
+    }
+    return r;
+  });
 }
-function formatTaskStamp(ts) {
-  if (!ts) return '';
-  var d = new Date(ts);
-  return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + formatTaskClock(ts);
-}
-// A count that may be a share (tasks that ran together split their work): a whole number.
-function taskCount(n) { return Math.round(toNum(n)); }
-// The run's numbers in one line: tool calls (the subagents' apart), tokens, cost.
-function taskRunNumbers(t) {
-  var bits = [];
-  var approx = toNum(t.shared) > 1 ? '≈' : '';
-  bits.push('툴 ' + approx + taskCount(t.toolCalls) + (toNum(t.agentToolCalls) >= 0.5 ? ' (+서브 ' + approx + taskCount(t.agentToolCalls) + ')' : ''));
-  if (t.tokens) {
-    bits.push(approx + formatTokens(taskTokTotal(t.tokens)) + ' tok');
-    if (toNum(t.tokens.costUsd) >= 0.005) bits.push(approx + '$' + toNum(t.tokens.costUsd).toFixed(2));
-  } else bits.push('토큰 기록 없음');
-  return bits;
-}
-function toggleTaskRun(id) {
-  _panelTaskOpen[id] = !_panelTaskOpen[id];
-  repaintPanelTasks();
-}
-// One run: marker · #id title [fate] — start → end · tool calls · tokens · cost — duration.
-// The row is a button: it opens the run's detail under it.
-function renderTaskRun(t, pop) {
-  var st = taskFateOf(t);
-  var cls = st === 'done' ? 'completed' : st === 'active' ? 'in_progress' : st;
-  var marker = st === 'done' ? agentIconHtml('completed')
-    : st === 'active' ? agentIconHtml('running')
-    : st === 'paused' ? TASK_PAUSE_SVG
-    : TASK_STOP_SVG;
-  var start = taskRunStart(t);
-  var end = taskRunEnd(t);
-  var aside = st === 'active' && start ? '<span class="task-elapsed" data-since="' + start + '"></span>'
-    : start && end > start ? esc(formatDuration(end - start)) : '';
-  var when = (t.startEstimated ? '≈' : '') + formatTaskClock(start) + (end ? ' → ' + formatTaskClock(end) : st === 'active' ? ' → 진행 중' : '');
-  var fate = st === 'done' || st === 'active' ? '' : '<span class="pl-fate">' + TASK_FATE_LABEL[st] + '</span>';
-  var open = !!_panelTaskOpen[t.id];
-  var id = t.id ? String(t.id) : '';
-  return '<li class="panel-task-item pl-step tr-run ' + cls + (pop ? ' pl-pop' : '') + (open ? ' is-open' : '') + '" data-step="' + st + '"'
-    + (st === 'active' ? ' aria-current="step"' : '') + '>'
-    + '<span class="pl-marker" aria-hidden="true">' + marker + '</span>'
-    + '<span class="pl-main">'
-    + '<button type="button" class="tr-row" aria-expanded="' + (open ? 'true' : 'false') + '"'
-    + (id ? ' onclick="toggleTaskRun(\\'' + escJs(id) + '\\')"' : '') + '>'
-    + '<span class="pl-line">' + (id ? '<span class="task-id">#' + esc(id) + '</span>' : '')
-    + '<span class="task-text">' + esc(t.content) + '</span>' + fate + '</span>'
-    + '<span class="tr-meta">' + esc(when) + '<span class="pi-dot" aria-hidden="true">&middot;</span>' + esc(taskRunNumbers(t).join(' · ')) + '</span>'
-    + '<span class="ar-vh">, ' + TASK_FATE_LABEL[st] + '</span>'
-    + '</button>'
-    + (open ? taskRunDetailHtml(t, st) : '')
-    + '</span>'
-    + '<span class="pl-aside">' + aside + '</span>'
-    + '</li>';
-}
-// A run's detail: when it started and ended (and how that is known), the work
-// counted on it, its earlier texts and the tasks folded into it.
-function taskRunDetailHtml(t, st) {
-  var rows = [];
-  var start = taskRunStart(t);
-  var end = taskRunEnd(t);
-  rows.push(['시작', start ? formatTaskStamp(start) + (t.startEstimated ? ' (≈ 진행 중 표시 없이 완료 — 직전 목록 시각)' : '') : '—']);
-  rows.push(['종료', st === 'active' ? '진행 중' : st === 'paused' ? '멈춤 (세션이 멈춤)' : end ? formatTaskStamp(end) + (st === 'dropped' ? ' (새 계획으로 교체)' : '') : '—']);
-  if (start && end > start) rows.push(['소요', formatDuration(end - start)]);
-  rows.push(['도구', '메인 ' + taskCount(t.toolCalls) + '회' + (toNum(t.agentToolCalls) >= 0.5 ? ' · 서브에이전트 ' + taskCount(t.agentToolCalls) + '회' : '')]);
-  if (t.tokens) {
-    var tk = t.tokens;
-    rows.push(['토큰', formatTokens(taskTokTotal(tk)) + ' — 입력 ' + formatTokens(tk.input) + ' · 출력 ' + formatTokens(tk.output)
-      + ' · 캐시 읽기 ' + formatTokens(tk.cacheRead) + ' · 캐시 쓰기 ' + formatTokens(tk.cacheCreate)]);
-    rows.push(['비용', 'API 환산 $' + toNum(tk.costUsd).toFixed(2)]);
-  } else rows.push(['토큰', '기록 없음 (태스크별 집계 이전에 실행됨)']);
-  if (toNum(t.shared) > 1) rows.push(['분배', toNum(t.shared) + '개 태스크가 함께 진행 — 수치는 그 몫(1/' + toNum(t.shared) + ')']);
-  var html = '<dl class="tr-detail">' + rows.map(function(r) { return '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>'; }).join('');
-  if (t.revisions && t.revisions.length) {
-    html += '<dt>문구 변경</dt><dd><ol class="tr-revs">' + t.revisions.map(function(r) {
-      return '<li><span class="tr-rev-at">' + esc(formatTaskClock(r.at)) + '</span> ' + esc(r.content) + '</li>';
-    }).join('') + '</ol></dd>';
+// What is left of the plan (the current list's tasks that never started) as
+// <ui-task-plan> steps; the tasks a new plan dropped before they ran are its
+// earlier fold (each one dropped). No list at all: the element's empty state.
+function taskPlanData(runs) {
+  var step = function(t, i) {
+    var s = { id: t.id ? String(t.id) : 'step' + i, label: String(t.content || ''), status: 'pending' };
+    if (t.id) s.ref = '#' + t.id;
+    return s;
+  };
+  var d = { title: runs.ran.length || runs.plan.length ? '남은 계획' : '계획', steps: runs.plan.map(step) };
+  if (runs.skipped.length) {
+    d.earlier = [{
+      id: 'skipped',
+      title: '실행 전에 계획에서 빠진 태스크',
+      steps: runs.skipped.map(function(t, i) {
+        var s = step(t, i);
+        s.id = 'skipped:' + s.id;
+        s.fate = 'dropped';
+        return s;
+      }),
+    }];
   }
-  return html + '</dl>';
+  return d;
 }
-// Tasks a new plan dropped before they ran: never work — one folded toggle.
-function taskSkippedHtml(skipped) {
-  if (!skipped || !skipped.length) return '';
-  var html = '<button type="button" class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="' + (_panelTasksEarlier ? 'true' : 'false') + '"'
-    + ' onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()">'
-    + '<span class="chev" aria-hidden="true"></span>실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">' + skipped.length + '</span></button>';
-  if (!_panelTasksEarlier) return html;
-  return html + '<ol class="pl-list pl-earlier" aria-label="실행 전에 계획에서 빠진 태스크">' + skipped.map(function(t) { return renderPanelTaskItem(t); }).join('') + '</ol>';
+// The runs whose detail the reader opened stay open across a repaint that
+// re-creates the element (the section folded and opened, another agent's tab
+// and back is a new scope: selectPanelAgent clears them).
+function taskRunsRestore(el) {
+  if (!el || el._trRestored || typeof el.setOpen !== 'function') return;
+  el._trRestored = true;
+  for (var id in _panelTaskOpen) if (_panelTaskOpen[id]) el.setOpen(id, true);
 }
+// The elements' reports: a run's detail opened / closed (kept for the next
+// element), the dropped-before-running fold opened / closed.
+(function initPanelTasks() {
+  var host = document.getElementById('panel-tasks');
+  if (!host) return;
+  host.addEventListener('ui-toggle', function(e) {
+    var el = e.target;
+    if (!el || !e.detail) return;
+    if (el.tagName === 'UI-TASK-RUNS') {
+      if (e.detail.open) _panelTaskOpen[String(e.detail.id)] = true;
+      else delete _panelTaskOpen[String(e.detail.id)];
+    } else if (el.tagName === 'UI-TASK-PLAN' && e.detail.id === 'earlier-plans') {
+      _panelTasksEarlier = !!e.detail.open;
+    }
+  });
+  if (window.customElements && customElements.whenDefined) {
+    customElements.whenDefined('ui-task-runs').then(function() { taskRunsRestore(document.getElementById('panel-task-runs')); });
+  }
+})();
 // The foot: the runs' sums (tool calls, tokens, cost) and the work no task got.
 function taskTotalsHtml(ran, outside) {
   var tools = 0;
@@ -7408,42 +7092,6 @@ function taskTotalsHtml(ran, outside) {
   return html;
 }
 
-// One plan step (D1–D5): marker · #id title [툴 N회] (+ what it is doing now) ·
-// its time — the duration once done (or until it was stopped), a 1 Hz clock
-// while it runs (no clock in the markup, so equal data renders equal HTML).
-// pop = its state just changed.
-function renderPanelTaskItem(t, pop) {
-  var st = taskFateOf(t);
-  var cls = st === 'done' ? 'completed' : st === 'active' ? 'in_progress' : st;
-  var marker = st === 'done' ? agentIconHtml('completed')
-    : st === 'active' ? agentIconHtml('running')
-    : st === 'paused' ? TASK_PAUSE_SVG
-    : st === 'dropped' ? TASK_STOP_SVG
-    : st === 'skipped' ? TASK_SKIP_SVG : '';
-  // SSOT 2026-10-22 T7: tool calls made while the task ran.
-  var chip = st !== 'pending' && st !== 'skipped' && t.toolCalls !== undefined ? '<span class="pl-chip">툴 ' + Math.round(toNum(t.toolCalls)) + '회</span>' : '';
-  var sub = st === 'active' && t.activeForm && t.activeForm !== t.content ? '<span class="pl-sub">' + esc(t.activeForm) + '</span>' : '';
-  var fate = st === 'dropped' || st === 'skipped' || st === 'paused' ? '<span class="pl-fate">' + TASK_FATE_LABEL[st] + '</span>' : '';
-  var aside = '';
-  if (st === 'done' && t.startedAt && t.completedAt) aside = esc(formatDuration(t.completedAt - t.startedAt));
-  else if (st === 'active' && t.startedAt) aside = '<span class="task-elapsed" data-since="' + toNum(t.startedAt) + '"></span>';
-  else if (st === 'dropped' && t.startedAt && t.removedAt > t.startedAt) aside = esc(formatDuration(t.removedAt - t.startedAt));
-  var times = [];
-  if (t.startedAt) times.push(formatTaskTime(t.startedAt));
-  if (t.completedAt) times.push(formatTaskTime(t.completedAt));
-  else if (t.removedAt && (st === 'dropped' || st === 'skipped')) times.push(formatTaskTime(t.removedAt) + ' 계획에서 빠짐');
-  return '<li class="panel-task-item pl-step ' + cls + (pop ? ' pl-pop' : '') + '" data-step="' + st + '"'
-    + (st === 'active' ? ' aria-current="step"' : '')
-    + (times.length ? ' title="' + escAttr(times.join(' → ')) + '"' : '') + '>'
-    + '<span class="pl-marker" aria-hidden="true">' + marker + '</span>'
-    + '<span class="pl-main"><span class="pl-line">'
-    + (t.id ? '<span class="task-id">#' + esc(t.id) + '</span>' : '')
-    + '<span class="task-text">' + esc(t.content) + '</span>' + fate + chip + '</span>'
-    + sub
-    + '<span class="ar-vh">, ' + TASK_FATE_LABEL[st] + '</span></span>'
-    + '<span class="pl-aside">' + aside + '</span>'
-    + '</li>';
-}
 let _csrfToken = '';
 
 /*
@@ -7760,21 +7408,6 @@ function esc(s) {
 function escAttr(s) {
   return esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
-// Pending-question choice buttons carry their values as attribute-escaped data
-// attributes (read back through dataset by one delegated click handler), so a
-// model-written question or label with quotes, backslashes, < or newlines can
-// neither break nor extend the markup the way an inline JS string could.
-function choiceDataAttrs(key, id, label, question) {
-  return ' data-choice-key="' + escAttr(key) + '" data-choice-id="' + escAttr(id)
-    + '" data-choice-label="' + escAttr(label) + '" data-choice-question="' + escAttr(question) + '"';
-}
-// (The single-choice question is an approval card: its answer is ui-answer.)
-document.addEventListener('click', function(e) {
-  var btn = e.target && e.target.closest ? e.target.closest('button[data-choice-id][data-mc-index]') : null;
-  if (!btn || btn.disabled) return;
-  var d = btn.dataset;
-  selectMc(d.choiceKey, Number(d.mcIndex), d.choiceId, d.choiceLabel);
-});
 // Only http(s) URLs become links; anything else (javascript:, data:) is inert.
 function safeHref(u) {
   return /^https?:\\/\\//i.test(String(u || '')) ? escAttr(u) : '#';
@@ -7795,18 +7428,6 @@ function resolveRecommendedId(explicitId, options) {
   if (explicitId && (options || []).some(function(o) { return o.id === explicitId; })) return explicitId;
   var legacy = (options || []).find(function(o) { return /\\(Recommended(?:\\s*·\\s*\\d+\\/\\d+)?\\)\\s*$/i.test(o.label || ''); });
   return legacy ? legacy.id : null;
-}
-async function resummarize(convId, turnId, btn) {
-  btn.disabled = true;
-  btn.textContent = STRINGS.retrying;
-  try {
-    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(convId) + '/resummarize/' + encodeURIComponent(turnId), { method: 'POST' });
-    if (!res.ok) throw new Error('Failed');
-    btn.textContent = STRINGS.queued;
-  } catch(e) {
-    btn.disabled = false;
-    btn.textContent = STRINGS.retry;
-  }
 }
 function timeAgo(iso) {
   const ms = Date.now() - new Date(iso).getTime();
@@ -8657,6 +8278,7 @@ function refreshCard(key) {
 function cardSummary(s, col, headline) {
   var current = cardCurrentTask(s);
   if (col !== 'closed' && s.pendingPermissions && s.pendingPermissions.length) return permissionSummary(s);
+  if (col !== 'closed' && s.pendingGoalDecision) return 'Goal 계속 진행할까요? — 응답 대기';
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return q.question || q.title;
   // Waiting out a retry: the error behind it is what this card is "doing".
@@ -9573,13 +9195,11 @@ function repaintPanelScope() {
   renderPanelAgents();
   repaintPanelTasks();
   renderPanelSections();
-  // The section tab shown: the tree follows the agents; the work log's heads,
-  // child blocks and cards their data; a subagent's 지시와 답변 its log. The
-  // others are painted when they are opened.
+  // The section tab shown: the tree follows the agents; the work log's group
+  // heads (the task ledger), child agents and cards their data; a subagent's
+  // 지시와 답변 its log. The others are painted when they are opened.
   if (_psec === 'tree') paintTreeTab();
-  wlRefreshGroupHeads();
-  wlRefreshChildBlocks();
-  wlRefreshCards();
+  wlPaint();
   renderAgentConv();
 }
 // ── Task view (SSOT 2026-10-27) — 자세히, agent tabs, 지시와 답변 ──
@@ -9690,7 +9310,7 @@ function bindPanelTabs() {
 }
 
 // 지시와 답변 (T1.3; a section tab since 2026-10-29): the main agent's tab shows
-// the session's turns (paintConvTab); a subagent's tab shows what it was told
+// the session's turns (convPaint); a subagent's tab shows what it was told
 // and what it answered (renderAgentConv).
 // Pure: a subagent's instruction (the call that started it) and its result,
 // from the work log — the latest of each.
@@ -9757,39 +9377,41 @@ function agentConvRetry(seq) {
   delete _agentConvRaw[key];
   renderAgentConv();
 }
-function agentConvHtml(a, io, prompt, answer) {
+// Pure: a subagent's 지시와 답변 as the element's turns — the instruction Main
+// sent (the prompt as sent; its one-line preview when the raw cannot be read)
+// and the answer (ad: agentAnswerData); while it runs with no result, the
+// writing row; without one at all, the agent's own one-line summary.
+function agentConvTurns(agentId, a, io, prompt, answer, ad) {
+  var base = 'agent:' + String(agentId || '');
   var name = a ? agentName(a) : '에이전트';
-  var st = a ? agentStatusOf(a) : 'unknown';
-  var html = '';
+  var turns = [];
   if (io.spawn || (a && a.description)) {
-    // The prompt as sent; its one-line preview when the raw cannot be read (not stored, not this viewer's).
     var said = prompt || (io.spawn ? String(io.spawn.text || '') : '');
-    html += '<div class="turn user"><div class="turn-avatar user-avatar">M</div><div class="turn-body">'
-      + '<div class="turn-header"><span class="turn-name">지시 · Main</span>'
-      + (io.spawn && io.spawn.ts ? '<span class="turn-time">' + esc(formatTaskTime(io.spawn.ts)) + '</span>' : '') + '</div>'
-      + (a && a.description ? '<div class="turn-summary-title">' + esc(a.description) + '</div>' : '')
-      + (said ? '<div class="turn-content agent-prompt">' + esc(said) + '</div>' : '')
-      + '</div></div>';
+    var desc = a && a.description ? String(a.description) : '';
+    var u = { id: base + ':spawn', role: 'user', name: '지시 · Main', text: desc && said && said.indexOf(desc) !== 0 ? desc + '\\n\\n' + said : said || desc };
+    if (io.spawn && toNum(io.spawn.ts) > 0) u.at = toNum(io.spawn.ts);
+    turns.push(u);
   }
-  var body;
+  var r = { id: base + ':result', role: 'assistant', name: name };
+  if (a && a.summary) r.summary = { text: String(a.summary) };
   if (io.result) {
-    // The answer is <ui-ai-answer flat> (its data: agentAnswerData); one read from
-    // its raw names the work-log entry (data-seq: 다시 시도 → agentConvRetry).
-    var seq = io.result.rawBytes ? ' data-seq="' + Math.floor(Number(io.result.seq) || 0) + '"' : '';
-    body = '<div class="turn-answer ui-tok"' + seq + '>' + ansSlotHtml('불러오는 중…') + '</div>';
-    body += '<ui-disclosure class="turn-raw" summary="Raw" flush><div class="turn-raw-body">'
-      + (a && a.summary ? '<div class="turn-raw-label">요약</div><div>' + esc(a.summary) + '</div>' : '')
-      + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src">' + esc(answer || '') + '</pre></div></ui-disclosure>';
-  } else if (st === 'running') {
-    body = '<div class="ui-tok">' + ansSlotHtml('응답 작성 중') + '</div>';
-  } else {
-    body = '<div class="turn-summary-body" style="color:var(--text-tertiary)">' + esc(a && a.summary ? a.summary : '작업 로그에 결과가 없습니다') + '</div>';
+    if (toNum(io.result.ts) > 0) r.at = toNum(io.result.ts);
+    r.markdown = String(ad.markdown || '');
+    if (ad.loading) r.loading = true;
+    if (ad.error) {
+      r.error = String(ad.error);
+      r.canRetry = true;
+    }
+    if (ad.linkTitles && Object.keys(ad.linkTitles).length) r.linkTitles = ad.linkTitles;
+    if (typeof answer === 'string' && answer) r.source = answer;
+    turns.push(r);
+    return { turns: turns, pending: false };
   }
-  html += '<div class="turn assistant"><div class="turn-avatar bot-avatar" aria-hidden="true">' + BOT_AVATAR_SVG + '</div><div class="turn-body">'
-    + '<div class="turn-header"><span class="turn-name">' + esc(name) + '</span>'
-    + '<span class="turn-time">' + esc(AGENT_STATUS_LABEL[st] || '') + '</span></div>'
-    + body + '</div></div>';
-  return html;
+  if (a && agentStatusOf(a) === 'running') return { turns: turns, pending: true };
+  r.markdown = '';
+  if (!r.summary) r.summary = { text: '작업 로그에 결과가 없습니다' };
+  turns.push(r);
+  return { turns: turns, pending: false };
 }
 // Pure: what a subagent's answer element shows — the writing row while it runs
 // (no result yet), loading while its raw is fetched, then the answer (a result
@@ -9809,13 +9431,13 @@ function agentAnswerData(a, io, answer, s, failed) {
   return { markdown: String(shown), linkTitles: ansLinkTitles(s), animate: false };
 }
 // A subagent's 지시와 답변 — painted only while it is the section shown (the main
-// agent's turns are paintConvTab's). Its instruction is the spawn call in the
-// work log: a log window that does not reach back to it yet pages back for it
-// (wlSeekAgentSpawn), so the tab fills without the reader opening 작업 로그.
+// agent's turns are convPaint's), in the same <ui-conversation>. Its instruction
+// is the spawn call in the work log: a log window that does not reach back to it
+// yet pages back for it (wlSeekAgentSpawn), so the tab fills without the reader
+// opening 작업 로그. 다시 시도 on its answer reloads the raw (agentConvRetry).
 function renderAgentConv() {
-  var host = document.getElementById('panel-agent-conv');
-  if (!host || !_panelAgent || _psec !== 'conv') return;
-  host.hidden = false;
+  var el = convEl();
+  if (!el || !_panelAgent || _psec !== 'conv') return;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var a = panelAgentOf(s);
   var io = agentConvEntries(_wl && _wl.entries, _panelAgent, !!(a && a.background));
@@ -9823,10 +9445,20 @@ function renderAgentConv() {
   var prompt = io.spawn && io.spawn.rawBytes ? agentConvRawOf(io.spawn.seq) : null;
   var answer = io.result ? (io.result.rawBytes ? agentConvRawOf(io.result.seq) : String(io.result.text || '')) : null;
   var failed = io.result && io.result.rawBytes ? agentConvFailure(io.result.seq) : '';
-  var html = io.spawn || io.result || a ? agentConvHtml(a, io, prompt != null ? agentPromptOf(prompt) : null, answer) : '<p class="panel-tasks-empty">이 에이전트의 지시와 결과를 찾지 못했습니다</p>';
-  writePanelPart(host, html);
-  var el = host.querySelector('ui-ai-answer');
-  if (el) ansSetData(el, agentAnswerData(a, io, answer, s, failed));
+  var built = io.spawn || io.result || a
+    ? agentConvTurns(_panelAgent, a, io, prompt != null ? agentPromptOf(prompt) : null, answer, agentAnswerData(a, io, answer, s, failed))
+    : { turns: [], pending: false };
+  el._agentSeq = io.result && io.result.rawBytes ? Math.floor(Number(io.result.seq) || 0) : null;
+  convSlots(el, [], '');
+  convSetData(el, {
+    turns: built.turns,
+    pending: built.pending,
+    assistantName: a ? agentName(a) : '에이전트',
+    clampLines: _panelDetail ? 200 : 12,
+    label: '지시와 답변',
+    emptyText: '이 에이전트의 지시와 결과를 찾지 못했습니다',
+    startText: '',
+  });
 }
 // ── Section tabs (SSOT 2026-10-29) — 에이전트 트리 · 작업 로그 · 지시와 답변 ──
 // Inside the focused agent's tab, three section tabs, each with its own scroll
@@ -9840,9 +9472,17 @@ function renderAgentConv() {
 var PSEC_ORDER = ['conv', 'log', 'tree'];
 var PSEC_TEXT = {
   tree: { older: '이전 에이전트 보기', loading: '이전 에이전트 보기', start: '에이전트 트리의 시작' },
-  log: { older: '이전 로그 불러오기', loading: '이전 로그 불러오는 중…', start: '작업 로그의 시작' },
-  conv: { older: '이전 대화 불러오기', loading: '이전 대화 불러오는 중…', start: '대화의 시작' },
 };
+// The sections a library element draws as its own scroll box — it lands on the
+// newest item, follows it, pages older ones in on scroll-up (ui-load-older →
+// this page's loader), keeps the reader's place and says what arrived below:
+// 지시와 답변 (<ui-conversation>), 작업 로그 (<ui-work-log>). 에이전트 트리 is this
+// page's box (psecBox; D3-GAPS G1-1).
+var PSEC_EL = { conv: 'panel-conv', log: 'worklog-list' };
+function psecEl(sec) {
+  var id = PSEC_EL[sec || _psec];
+  return id ? document.getElementById(id) : null;
+}
 var PANEL_TURNS_PAGE = 20; // turns per page of 지시와 답변
 var AT_PANEL_WINDOW = 20; // agents per step of 에이전트 트리
 var _psec = 'conv'; // the section tab shown
@@ -9939,17 +9579,13 @@ function renderPanelSections() {
 function psecClear(sec) {
   if (sec === 'conv') {
     if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
-    var turns = document.getElementById('panel-turns');
-    var host = document.getElementById('panel-agent-conv');
-    if (turns && turns.firstChild) turns.innerHTML = '';
-    if (host) {
-      if (host.firstChild) host.innerHTML = '';
-      host._html = '';
-      host.hidden = true;
+    var conv = convEl();
+    if (conv) {
+      convSlots(conv, [], '');
+      convSetData(conv, { turns: [] });
     }
   } else if (sec === 'log') {
-    var list = document.getElementById('worklog-list');
-    if (list && list.firstChild) list.innerHTML = '';
+    wlClear();
     if (_wl) _wl.painted = false;
   } else if (sec === 'tree') {
     var tree = document.getElementById('panel-tree');
@@ -9965,8 +9601,8 @@ function psecClear(sec) {
   psecSyncControls(sec);
 }
 function paintSection(sec) {
-  if (sec === 'conv') paintConvTab();
-  else if (sec === 'log') paintLogTab();
+  if (sec === 'conv') convPaint();
+  else if (sec === 'log') wlPaint();
   else paintTreeTab();
   psecSyncControls(sec);
 }
@@ -9996,6 +9632,11 @@ function psecToNewest() {
   var box = psecBox();
   _psecPin = true;
   psecSetNew(0);
+  var el = psecEl();
+  if (el) {
+    if (typeof el.scrollToLatest === 'function') el.scrollToLatest({ smooth: false });
+    return;
+  }
   if (!box) return;
   psecSetTop(box, box.scrollHeight);
   box._armed = false;
@@ -10032,12 +9673,10 @@ function psecOnAppended(n, pinned) {
 function psecKeepPlace(box, fromBottom) {
   if (box) psecSetTop(box, box.scrollHeight - fromBottom);
 }
-// The items the reader is on — the first few turns, work-log entries (else task
-// groups) or agent-tree rows in view, those wholly below the top edge first (the
-// one the edge cuts may still grow: an answer loading), top first — and how far
-// below the box top each sits (null: none in view). Several: a page can take one
-// away (a loose result paired into its call's card, an entry folded into its group).
-var PSEC_ANCHORS = [['.turn', 'data-turn-id'], ['.wl-entry', 'data-seq'], ['.wl-group', 'data-task-id']];
+// The items the reader is on — the first few agent-tree rows in view, those
+// wholly below the top edge first (the one the edge cuts may still grow), top
+// first — and how far below the box top each sits (null: none in view). Several:
+// a step of older agents can take one away.
 var PSEC_ANCHOR_MAX = 6;
 // The 에이전트 트리 tab's rows live in <ui-agent-tree>'s (open) shadow root.
 function psecTreeRoot(box) {
@@ -10045,55 +9684,43 @@ function psecTreeRoot(box) {
   return tree && tree.shadowRoot ? tree.shadowRoot : null;
 }
 function psecViewAnchor(box) {
+  var tr = psecTreeRoot(box);
+  if (!tr) return null;
   var top = box.getBoundingClientRect().top;
   var bottom = top + box.clientHeight;
   var out = [];
   var cut = [];
-  function take(base, attr, tree, root) {
-    var rows = root.querySelectorAll(base + '[' + attr + ']');
-    for (var i = 0; i < rows.length && out.length < PSEC_ANCHOR_MAX; i++) {
-      // A tree item holds its own row, then its children: the row is where it is.
-      var row = tree ? rows[i].firstElementChild : rows[i];
-      if (!row) continue;
-      var r = row.getBoundingClientRect();
-      if (!r.height || r.bottom <= top) continue;
-      if (r.top >= bottom) break;
-      var v = rows[i].getAttribute(attr) || '';
-      var key = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(v) : v;
-      (r.top >= top ? out : cut).push({ sel: base + '[' + attr + '="' + key + '"]', at: r.top - top, tree: tree });
-    }
+  var rows = tr.querySelectorAll('[role="treeitem"][data-id]');
+  for (var i = 0; i < rows.length && out.length < PSEC_ANCHOR_MAX; i++) {
+    // A tree item holds its own row, then its children: the row is where it is.
+    var row = rows[i].firstElementChild;
+    if (!row) continue;
+    var r = row.getBoundingClientRect();
+    if (!r.height || r.bottom <= top) continue;
+    if (r.top >= bottom) break;
+    var v = rows[i].getAttribute('data-id') || '';
+    var key = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(v) : v;
+    (r.top >= top ? out : cut).push({ sel: '[role="treeitem"][data-id="' + key + '"]', at: r.top - top });
   }
-  var tr = psecTreeRoot(box);
-  if (tr) take('[role="treeitem"]', 'data-id', true, tr);
-  for (var k = 0; k < PSEC_ANCHORS.length && !out.length && !cut.length; k++) take(PSEC_ANCHORS[k][0], PSEC_ANCHORS[k][1], false, box);
   out = out.concat(cut).slice(0, PSEC_ANCHOR_MAX);
   return out.length ? out : null;
 }
-// Where an anchor item is now: its element shown (fold: an entry folded into its
-// task group since is represented by the group's head), else null.
-function psecAnchorEl(box, c, fold) {
-  var el = null;
-  if (c.tree) {
-    var tr = psecTreeRoot(box);
-    var item = tr ? tr.querySelector(c.sel) : null;
-    el = item ? item.firstElementChild : null;
-  } else {
-    el = box.querySelector(c.sel);
-    if (el && fold && !el.getClientRects().length) el = el.closest ? el.closest('.wl-group') : null;
-  }
+// Where an anchor row is now (its tree item shown), else null.
+function psecAnchorEl(box, c) {
+  var tr = psecTreeRoot(box);
+  var item = tr ? tr.querySelector(c.sel) : null;
+  var el = item ? item.firstElementChild : null;
   return el && el.getClientRects().length ? el : null;
 }
-// The first of those items still shown back where it was (false: all are gone).
+// The first of those rows still shown back where it was (false: all are gone).
 function psecRestoreAnchor(box, a) {
   if (!a || !a.length) return false;
-  for (var pass = 0; pass < 2; pass++) {
-    for (var i = 0; i < a.length; i++) {
-      var el = psecAnchorEl(box, a[i], pass === 1);
-      if (!el) continue;
-      var shift = el.getBoundingClientRect().top - box.getBoundingClientRect().top - a[i].at;
-      if (Math.abs(shift) >= 1) psecSetTop(box, box.scrollTop + shift);
-      return true;
-    }
+  for (var i = 0; i < a.length; i++) {
+    var el = psecAnchorEl(box, a[i]);
+    if (!el) continue;
+    var shift = el.getBoundingClientRect().top - box.getBoundingClientRect().top - a[i].at;
+    if (Math.abs(shift) >= 1) psecSetTop(box, box.scrollTop + shift);
+    return true;
   }
   return false;
 }
@@ -10112,20 +9739,9 @@ function psecHoldPlace(box, anchor, fromBottom) {
 }
 // What the top of a section shows: 'older' (a control: older items exist),
 // 'loading' (the control says the page is on its way), 'start' (everything is
-// shown), or '' (nothing — loading, empty, a subagent's 지시와 답변).
+// shown), or '' (nothing — loading, empty, a section an element draws).
 function psecOlderState(sec) {
-  if (sec === 'conv') {
-    if (_panelAgent || !_panelTurnsList.length) return '';
-    if (_panelTurnsLoading) return 'loading';
-    return _panelTurnsHasMore ? 'older' : 'start';
-  }
-  if (sec === 'log') {
-    var st = _wl;
-    if (!st || !st.loaded || !st.latestOk || st.denied) return '';
-    if (st.olderLoading) return 'loading';
-    if (st.olderPending) return 'older';
-    return wlScopeEntries(st.entries).length ? 'start' : '';
-  }
+  if (PSEC_EL[sec]) return '';
   var host = document.getElementById('panel-tree');
   if (!host || !host._tree) return '';
   if (host._growing) return 'loading';
@@ -10150,9 +9766,7 @@ function psecSyncControls(sec) {
 // scroll; one at a time, nothing at the start.
 function psecLoadOlder(sec) {
   if (sec !== _psec || psecOlderState(sec) !== 'older') return;
-  if (sec === 'conv') loadMorePanelTurns();
-  else if (sec === 'log') loadOlderWorkLog();
-  else showMoreTree();
+  showMoreTree();
 }
 // Pure: whether the next older page is due — the box cannot scroll (the reader
 // would otherwise have only the control), or the reader moved up since the
@@ -10166,7 +9780,7 @@ function psecPageDue(scrollTop, scrollHeight, clientHeight, armed) {
 // is due — so a page that still leaves the top near the view brings the next.
 function psecMaybeFill(sec) {
   var box = psecBox(sec);
-  if (!box || sec !== _psec || box.hidden) return;
+  if (!box || PSEC_EL[sec] || sec !== _psec || box.hidden) return;
   if (!psecPageDue(box.scrollTop, box.scrollHeight, box.clientHeight, box._armed)) return;
   if (psecOlderState(sec) === 'older') psecLoadOlder(sec);
 }
@@ -10201,7 +9815,8 @@ function sizePanelSections() {
 var _panelTurnsList = [];
 var _panelTurnsCid = '';
 var _panelTurnsMsg = ''; // 'loading' | 'none' | 'failed' | 'unrecorded' | '' (the turns)
-var PANEL_TURNS_MSG = { none: 'No conversation turns', failed: 'Failed to load conversation', unrecorded: 'No conversation recorded' };
+var _panelTurnsWhy = ''; // why the first page failed (the element's error)
+var _panelOlderWhy = ''; // why the last older page failed ('' = it did not)
 // Pure: a turn into the list — in place of the one with its id (or replaceId:
 // an optimistic turn the server's took over), else at the end.
 function ptUpsert(list, turn, replaceId) {
@@ -10216,58 +9831,6 @@ function ptUpsert(list, turn, replaceId) {
   }
   list.push(turn);
   return 'append';
-}
-// 지시와 답변 painted from its data: the main agent's turns, or a subagent's
-// instruction and answer (renderAgentConv).
-function paintConvTab() {
-  var turnsEl = document.getElementById('panel-turns');
-  var host = document.getElementById('panel-agent-conv');
-  if (!turnsEl || !host || _psec !== 'conv') return;
-  if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
-  if (_panelAgent) {
-    if (turnsEl.firstChild) turnsEl.innerHTML = '';
-    turnsEl.removeAttribute('aria-busy');
-    turnsEl.hidden = true;
-    renderAgentConv();
-    return;
-  }
-  if (host.firstChild) host.innerHTML = '';
-  host._html = '';
-  host.hidden = true;
-  turnsEl.hidden = false;
-  if (_panelTurnsMsg === 'loading') {
-    turnsEl.innerHTML = turnsSkeletonHtml();
-    turnsEl.setAttribute('aria-busy', 'true');
-    return;
-  }
-  turnsEl.removeAttribute('aria-busy');
-  if (!_panelTurnsList.length) {
-    turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">' + esc(PANEL_TURNS_MSG[_panelTurnsMsg] || PANEL_TURNS_MSG.none) + '</p>';
-    return;
-  }
-  var list = _panelTurnsList;
-  var cid = _panelTurnsCid;
-  turnsEl.innerHTML = list.map(function(t, i) { return renderTurn(t, i, list, cid); }).join('');
-  attachRawToggleHandlers();
-  decoratePanelTurns();
-}
-// 작업 로그 painted from the work-log state — the entries loaded (the latest
-// window and the older pages the reader scrolled up to) — or what it says without them.
-function paintLogTab() {
-  var list = document.getElementById('worklog-list');
-  if (!list || _psec !== 'log') return;
-  var st = _wl;
-  if (!st || st.denied || !st.entries.length) {
-    var msg = !st ? WL_EMPTY_MSG : st.denied ? WL_FORBIDDEN_MSG : st.loaded ? WL_EMPTY_MSG : '불러오는 중…';
-    list.innerHTML = '<div class="wl-empty">' + esc(msg) + '</div>';
-    if (st) st.painted = false;
-    return;
-  }
-  wlRenderList(st, list);
-  updateTimersIn(list);
-  wlEnsureTabStop(list);
-  if (!wlScopeEntries(st.entries).length) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
-  st.painted = true;
 }
 // 에이전트 트리: the session's agents in <ui-agent-tree> (rich — a card per agent on
 // one waterfall axis, every branch's spend rolled up), the main agent at its
@@ -10324,17 +9887,17 @@ function showMoreTree() {
     psecMaybeFill('tree');
   });
 }
-// The work log's older page (the reader scrolling up, or the fill of a short box).
+// The work log's older page — <ui-work-log> asks for it (ui-load-older) as the
+// reader scrolls up, or to fill a box too short to scroll. The element shows
+// the page on its way and keeps the reader's place when it lands; a failure or
+// an empty page settles its loading row and waits for the reader.
 function loadOlderWorkLog() {
   var st = _wl;
   if (!st) return Promise.resolve(null);
   var run = wlLoadOlderPage(st, wlFetchJson, paintWorkLog);
-  psecSyncControls('log');
+  wlPaint();
   return run.then(function(r) {
-    if (st !== _wl) return r;
-    psecSyncControls('log');
-    // The next page when the top is still near the view; a failure or an empty page waits for the reader.
-    if (r === 'ok') psecFillSoon('log');
+    if (st === _wl) wlPaint();
     return r;
   });
 }
@@ -10361,7 +9924,7 @@ function loadOlderWorkLog() {
   if (pill) pill.addEventListener('click', psecJumpNewest);
   PSEC_ORDER.forEach(function(sec) {
     var box = document.getElementById('psec-' + sec);
-    if (!box) return;
+    if (!box || PSEC_EL[sec]) return;
     var btn = box.querySelector('.psec-older');
     if (btn) btn.addEventListener('click', function() { psecLoadOlder(sec); });
     // The reader acting on a row (an entry's detail, a Raw, a fold) changes the
@@ -10409,7 +9972,7 @@ function loadOlderWorkLog() {
       else if (box._anchor) psecRestoreAnchor(box, box._anchor);
     });
     PSEC_ORDER.forEach(function(sec) {
-      var box = document.getElementById('psec-' + sec);
+      var box = PSEC_EL[sec] ? null : document.getElementById('psec-' + sec);
       var body = box ? box.querySelector('.psec-body') : null;
       if (body) pin.observe(body);
       if (box) pin.observe(box);
@@ -10438,7 +10001,7 @@ function repaintPanelSession() {
   renderPanelControls(s);
   renderPanelComposer(s);
   repaintPanelScope();
-  syncAnsPending(); // re-ai-answer D12 — the 응답 작성 중 row follows the session state
+  convPaint(); // re-ai-answer D12 — the 응답 작성 중 row (and a /compact's progress) follow the session state
   restorePanelLiveAnchor(anchor);
 }
 // The reader's place across a live repaint: the anchor a layout shift keeps
@@ -10541,41 +10104,68 @@ function steerItemOf(s, id) {
   return null;
 }
 
-// The head chip: the session's status in the root vocabulary (only the icon
-// and the word are announced, never the ticking clock), its live active time,
-// an armed resume's when / attempt / why, Slack, and the session's one action.
-function panelHeadHtml(s, col) {
+// The panel head (spec 13) — @2lab.ai/ui <ui-status-bar> (D3 E-08): the session's status
+// in the root vocabulary (rootStatusOf onto the bar's six states, the page's words — 재개
+// 대기 / 휴면 / 보관 keep theirs; the bar announces a change, never the ticking clock);
+// a turn in flight reads 시작 HH:MM · its own elapsed time, ticking in place (re-agent-run
+// D18), otherwise the session's total 활성 time (also in 세부 — D19); Slack; the session's
+// actions (sessionActionsOf — Stop takes the bar's two presses, then is busy until the next
+// data). An armed resume's when / attempt / why is a note in the bar's slot.
+var PS_BAR_STATUS = { running: 'running', waiting: 'waiting', resuming: 'waiting', idle: 'idle', sleeping: 'idle', archived: 'idle' };
+function panelHeadData(s, col) {
   var st = rootStatusOf(s, col);
-  var acc = toNum(s.activeAccumulatedMs);
+  var bar = PS_BAR_STATUS[st] || 'idle';
+  var words = {};
+  words[bar] = AGENT_STATUS_LABEL[st] || '';
+  var d = { status: bar, words: words };
   var leg = st === 'running' || st === 'waiting' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
-  // re-agent-run D18: a turn in flight reads 시작 HH:MM · its own elapsed time;
-  // otherwise the session's total active time (also in 세부 — D19).
-  var timer = '';
-  if (leg) {
-    timer = '<span class="ps-time" title="이번 턴 시작 · 경과">'
-      + '<i data-ui-icon="clock" class="ps-clock"></i>'
-      + '시작 ' + esc(formatTaskTime(leg)) + '<span class="ps-dot" aria-hidden="true">&middot;</span>'
-      + '<span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="0"></span></span>';
-  } else if (acc) {
-    timer = '<span class="ps-time" title="활성 시간">활성 <span class="card-timer-live" data-leg-started="0" data-accumulated="' + acc + '"></span></span>';
-  }
+  var acc = toNum(s.activeAccumulatedMs);
+  if (leg) d.startedAt = leg;
+  else if (acc) d.activeMs = acc;
+  if (s.slackThreadUrl) d.link = { id: 'slack', href: String(s.slackThreadUrl), label: 'Slack' };
+  d.actions = sessionActionsOf(s, col).map(function(a) {
+    var x = { id: a.id, label: a.label };
+    if (a.id === 'stop' && !a.sibling) { x.tone = 'danger'; x.icon = 'stop'; }
+    if (a.lock) x.disabled = a.lock;
+    if (a.busy) x.busy = true;
+    return x;
+  });
+  return d;
+}
+// The bar's slot: an armed resume (what starts the session again, when, which attempt; why on hover).
+function panelHeadNoteHtml(s, col) {
   var resume = pendingAutoResume(s, col);
-  var slack = s.slackThreadUrl
-    ? '<a class="ps-slack" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener" aria-label="Slack 스레드 열기" title="Slack 스레드">Slack</a>'
-    : '';
-  return '<div class="ps-row">'
-    + '<span class="ui-status is-pill ps-chip"' + (AGENT_STATUS_TONE[st] ? ' data-tone="' + AGENT_STATUS_TONE[st] + '"' : '') + (st === 'running' ? ' data-live' : '') + '>'
-    + '<span class="ps-label">세션</span><span class="ps-word" role="status">' + esc(AGENT_STATUS_LABEL[st] || '') + '</span></span>'
-    + timer
-    + '<span class="ps-actions">' + slack + sessionActionHtml(s, col, 'panel') + '</span>'
-    + '</div>'
-    + (resume ? '<div class="ps-resume" title="' + escAttr(resume.reason || '') + '">' + esc(autoResumeLabel(resume)) + '</div>' : '');
+  return resume ? '<span class="ps-resume" title="' + escAttr(resume.reason || '') + '">' + esc(autoResumeLabel(resume)) + '</span>' : '';
 }
 function renderPanelHead() {
   var el = document.getElementById('panel-status');
   if (!el) return;
-  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  writePanelPart(el, s ? panelHeadHtml(s, sessionColOf(panelSessionKey)) : '');
+  var key = panelSessionKey;
+  var s = key ? _sessionCache[key] : null;
+  if (!el._wired) {
+    el._wired = true;
+    el.addEventListener('ui-action', onPanelHeadAction);
+  }
+  var col = s ? sessionColOf(key) : '';
+  writePanelPart(el, s ? panelHeadNoteHtml(s, col) : '');
+  var data = s ? panelHeadData(s, col) : null;
+  var sig = JSON.stringify(data);
+  el._key = key;
+  // Same data, same object: the bar keeps an armed Stop and its pending busy across live repaints.
+  if (el._sig === sig) return;
+  el._sig = sig;
+  el.data = data;
+}
+// The bar's ui-action: the session it was drawn for (the deck may have moved on since). The
+// Slack link opens in a new tab by itself.
+function onPanelHeadAction(e) {
+  var id = e.detail && e.detail.id;
+  var key = e.currentTarget && e.currentTarget._key;
+  var s = key ? _sessionCache[key] : null;
+  if (!s || !id || id === 'slack') return;
+  if (id === 'star') doStar(key, s.starred !== true);
+  else if (id === 'revive') doRevive(key);
+  else if (id === 'stop' || id === 'close' || id === 'trash') doAction(key, id);
 }
 
 // 세션 정보: a disclosure whose button is the one-line summary (owner ·
@@ -10618,7 +10208,7 @@ function panelInfoHtml(s, open, col) {
     if (toNum(u.partialSince) > 0) rows.push(['집계 시작', '<span class="rel-time" data-ts="' + toNum(u.partialSince) + '"></span> (그 전 지출 미포함)']);
   }
   // Open body order (re-agent-run D19 · re-context-window D5): the context block (cwSlotHtml, prepended on return) → 세부 → token grid → thread.
-  var body = panelDetailsHtml(s, col) + '<dl class="pi-grid">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
+  var body = panelDetailsHtml(s, col) + '<dl class="ui-dl pi-grid">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
   var thread = ['&Sigma; ' + formatNmSSs(toNum(s.threadTotalActiveMs)), '압축 ' + toNum(s.compactionCount), '세션 ' + toNum(s.threadSessionCount)];
   if (s.mergeStats) thread.push('+' + toNum(s.mergeStats.totalLinesAdded) + ' / -' + toNum(s.mergeStats.totalLinesDeleted));
   body += '<div class="pi-thread">' + thread.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</div>';
@@ -10651,7 +10241,7 @@ function panelDetailsHtml(s, col) {
   if (acc || leg) rows.push(['활성 시간', '<span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="' + acc + '"></span>']);
   if (s.workflow) rows.push(['워크플로', esc(s.workflow)]);
   if (s.environment && s.environment.instanceName) rows.push(['환경', esc(s.environment.instanceName) + ' <span class="pi-muted">' + esc((s.environment.host || '') + ':' + (s.environment.port || '')) + '</span>']);
-  return '<dl class="pi-details">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
+  return '<dl class="ui-dl pi-details">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
 }
 function renderPanelInfo() {
   var el = document.getElementById('panel-info');
@@ -11355,53 +10945,57 @@ function renderCardResume(s, col) {
     + '</div></div>';
 }
 
-// The session's one state action — the same on the open card and in the
-// panel head (spec 13): Stop while a turn runs, else Close; Trash once
-// archived. Owner-gated (the server's requireSessionOwner is the guard; this
-// is UX, fail closed on a missing ownerId); a sibling instance's session is a
-// disabled pointer to that instance (#814 — posting here would fail server-side);
-// a write in flight renders busy on both surfaces. In the panel the button is
-// named for what it does to the session, never confused with closing the panel.
-var SESSION_ACTION_ARIA = { stop: '세션 중지', close: '세션 종료', trash: '세션 휴지통으로' };
-// The kit button per action: Stop reads as the danger tone, Trash as a quiet one.
-var SESSION_ACTION_TONE = { stop: ' is-danger', close: '', trash: ' is-quiet' };
-function sessionActionHtml(s, col, where) {
+// The session's actions (spec 13) as data — the same on the open card (kit buttons,
+// sessionActionHtml) and in the panel head (<ui-status-bar>, panelHeadData): ★ Star
+// (pinned on top, kept alive — starring a sleeping or archived card brings it back),
+// 살리기 on a sleeping or archived card (the conversation continues), then the state
+// action — Stop while a turn runs, else Close; Trash once archived. Owner-gated (the
+// server's requireSessionOwner is the guard; this is UX, fail closed on a missing
+// ownerId): lock says why it cannot be pressed here ('' = it can). A sibling
+// instance's session is one locked pointer to that instance (#814 — posting here
+// would fail server-side). A write in flight is busy on both surfaces (Stop / Close /
+// Trash: 'action'; Star and 살리기 share 'life' — SSOT 2026-10-30).
+function sessionActionsOf(s, col) {
   var running = col === 'working' && !pendingAutoResume(s, col);
   var kind = running ? 'stop' : (col === 'closed' && s.terminated ? 'trash' : 'close');
   var label = kind === 'stop' ? 'Stop' : (kind === 'trash' ? 'Trash' : 'Close');
-  // The accessible name keeps the visible label first (WCAG 2.5.3), then says what it does to the session.
-  var aria = where === 'panel' ? ' aria-label="' + label + ' — ' + SESSION_ACTION_ARIA[kind] + '"' : '';
   var env = s.environment;
   if (SELF_INSTANCE_NAME && env && env.instanceName && env.instanceName !== SELF_INSTANCE_NAME) {
-    return '<button class="ui-btn' + SESSION_ACTION_TONE[kind] + '" data-action="' + kind + '" disabled' + aria
-      + ' title="' + escAttr('Open ' + env.instanceName + ' (' + (env.host || '') + ':' + (env.port || '') + ') to act on this session') + '">'
-      + label + ' \u2192 ' + esc(env.instanceName) + '</button>';
+    return [{ id: kind, label: label + ' \\u2192 ' + env.instanceName, busy: false, sibling: true,
+      lock: 'Open ' + env.instanceName + ' (' + (env.host || '') + ':' + (env.port || '') + ') to act on this session' }];
   }
   var isOwner = !!s.ownerId && s.ownerId === currentUserId;
-  var busy = isBusy(s.key, 'action');
-  // SSOT 2026-10-30: ★ Star (pinned on top, kept alive — starring a sleeping or
-  // archived card brings it back) and 살리기 on a sleeping or archived card (the
-  // conversation continues), before the state action. One write in flight per
-  // session for both ('life').
+  var lock = isOwner ? '' : READ_ONLY_MSG;
   var lifeBusy = isBusy(s.key, 'life');
   var starred = s.starred === true;
   var closed = col === 'closed' || s.terminated === true || s.sessionState === 'SLEEPING';
-  var lifeOff = isOwner && !lifeBusy ? '' : ' disabled';
-  var starTip = !isOwner ? READ_ONLY_MSG
-    : starred ? '즐겨찾기 해제 — 다시 자동 sleep·보관 대상이 돼요'
-    : '즐겨찾기 — 항상 맨 위, 자동 sleep·보관 안 함' + (closed ? ' (지금 살려요)' : '');
-  var starBtn = '<button type="button" class="ui-btn" data-action="star" aria-pressed="' + starred + '"' + lifeOff
-    + (lifeBusy ? ' aria-busy="true"' : '') + ' title="' + escAttr(starTip) + '"'
-    + ' onclick="event.stopPropagation();doStar(\\'' + escJs(s.key) + '\\',' + !starred + ')">'
-    + (starred ? '&#x2605; Starred' : '&#x2606; Star') + '</button>';
-  var reviveBtn = closed
-    ? '<button type="button" class="ui-btn" data-action="revive"' + lifeOff + (lifeBusy ? ' aria-busy="true"' : '')
-      + ' title="' + escAttr(isOwner ? '대화를 이어갈 수 있게 세션을 살려요 (작업 폴더 파일은 복구되지 않아요)' : READ_ONLY_MSG) + '"'
-      + ' onclick="event.stopPropagation();doRevive(\\'' + escJs(s.key) + '\\')">살리기</button>'
-    : '';
-  return starBtn + reviveBtn + '<button class="ui-btn' + SESSION_ACTION_TONE[kind] + '" data-action="' + kind + '"' + (isOwner && !busy ? '' : ' disabled') + (busy ? ' aria-busy="true"' : '') + aria
-    + (isOwner ? '' : ' title="' + escAttr(READ_ONLY_MSG) + '"')
-    + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'' + kind + '\\')">' + label + '</button>';
+  var out = [{ id: 'star', label: starred ? '\\u2605 Starred' : '\\u2606 Star', pressed: starred, lock: lock, busy: lifeBusy,
+    tip: !isOwner ? READ_ONLY_MSG
+      : starred ? '즐겨찾기 해제 — 다시 자동 sleep·보관 대상이 돼요'
+      : '즐겨찾기 — 항상 맨 위, 자동 sleep·보관 안 함' + (closed ? ' (지금 살려요)' : '') }];
+  if (closed) out.push({ id: 'revive', label: '살리기', lock: lock, busy: lifeBusy,
+    tip: isOwner ? '대화를 이어갈 수 있게 세션을 살려요 (작업 폴더 파일은 복구되지 않아요)' : READ_ONLY_MSG });
+  out.push({ id: kind, label: label, lock: lock, busy: isBusy(s.key, 'action') });
+  return out;
+}
+// The open card's action buttons (kit .ui-btn): Stop reads as the danger tone, Trash as a quiet one.
+var SESSION_ACTION_TONE = { stop: ' is-danger', close: '', trash: ' is-quiet' };
+function sessionActionHtml(s, col) {
+  var key = escJs(s.key);
+  return sessionActionsOf(s, col).map(function(a) {
+    var off = (a.lock || a.busy ? ' disabled' : '') + (a.busy ? ' aria-busy="true"' : '');
+    if (a.sibling) return '<button class="ui-btn' + SESSION_ACTION_TONE[a.id] + '" data-action="' + a.id + '" disabled title="' + escAttr(a.lock) + '">' + esc(a.label) + '</button>';
+    if (a.id === 'star') {
+      return '<button type="button" class="ui-btn" data-action="star" aria-pressed="' + a.pressed + '"' + off + ' title="' + escAttr(a.tip) + '"'
+        + ' onclick="event.stopPropagation();doStar(\\'' + key + '\\',' + !a.pressed + ')">' + esc(a.label) + '</button>';
+    }
+    if (a.id === 'revive') {
+      return '<button type="button" class="ui-btn" data-action="revive"' + off + ' title="' + escAttr(a.tip) + '"'
+        + ' onclick="event.stopPropagation();doRevive(\\'' + key + '\\')">' + esc(a.label) + '</button>';
+    }
+    return '<button class="ui-btn' + SESSION_ACTION_TONE[a.id] + '" data-action="' + a.id + '"' + off + (a.lock ? ' title="' + escAttr(a.lock) + '"' : '')
+      + ' onclick="event.stopPropagation();doAction(\\'' + key + '\\',\\'' + a.id + '\\')">' + esc(a.label) + '</button>';
+  }).join('');
 }
 
 // The goal on the open card (spec 13): one line — objective · status · n/max ·
@@ -11508,7 +11102,8 @@ function renderCardBody(s, col) {
 
   // The permission prompts the turn is blocked on (SSOT 2026-10-24): one
   // <ui-approval-card> each (acPermissionsHtml), as in the panel.
-  const permissionHtml = col === 'closed' ? '' : acPermissionsHtml(s);
+  // The goal's cap decision sits with them: the same card as the owner's DM.
+  const permissionHtml = col === 'closed' ? '' : acPermissionsHtml(s) + acGoalDecisionHtml(s);
 
   const ioHtml = isSiblingSession(s) ? '' : renderCardIo(s);
   // Artifacts live on this instance's disk: a sibling instance's card links nowhere here.
@@ -11527,7 +11122,7 @@ function renderCardBody(s, col) {
   const slackBtn = (dhShow('links') && s.slackThreadUrl)
     ? '<a class="ui-btn" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
     : '';
-  const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col, 'card') + slackBtn + '</span></div>';
+  const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col) + slackBtn + '</span></div>';
   const footHtml = modelHtml ? '<div class="card-foot-bar">' + modelHtml + '</div>' + modelNote : modelNote;
 
   return '<div class="card-body">'
@@ -12793,355 +12388,274 @@ function followSessionKey(oldKey, newKey) {
   if (showing) openPanel(newKey, false);
 }
 
-// ── Multi-choice form state ──
+// ── 여러 질문 — @2lab.ai/ui <ui-choice-form> (D3 E-15/E-16) ──
+// The panel's multi-question form (UIAskUserQuestion with several questions) is
+// the library element: numbered question cards (title, markdown context, the
+// choices with the recommended one first and tagged 추천, an own answer), the
+// progress dots, 추천대로 모두 제출, 초기화 and one ink 제출. A pick folds the card
+// into the answer (+ 변경) and moves to the next open question; digits pick.
+// The page keeps, per session (_mcState[key]): the working answers the element
+// reports (ui-change — they seed a redrawn form: the panel switching sessions
+// and back), and the send: sending → the element's submitting, a refusal →
+// its error line, success → its read-only summary until the push that clears
+// the question. Same routes: /answer-multi-choice (selections by question id;
+// an own answer is the 직접입력 choice with its text) and the one-click
+// /submit-recommended.
 var _mcState = Object.create(null);
+var MC_CUSTOM_ID = '\\uC9C1\\uC811\\uC785\\uB825';
+// The form's identity: a different question (or another session) starts clean.
+function mcFormId(s, q) {
+  return 'mc|' + s.key + '|' + JSON.stringify([q.title || q.question || '', (q.questions || []).map(function(x) { return [x.id, x.question]; })]);
+}
+// The session's form state, reset when its question is another one.
+function mcStateOf(s, q) {
+  var id = mcFormId(s, q);
+  var st = _mcState[s.key];
+  if (!st || st.id !== id) st = _mcState[s.key] = { id: id, answers: {} };
+  return st;
+}
+// pendingQuestion (user_choices) → the element's data. A choice reads as its
+// label (the recommended marker stripped) — the element numbers the choices
+// itself, in the order it shows them (the recommended one first), so the id's
+// "N. " would contradict its key badge; the recommendation is the explicit id,
+// else the legacy "(Recommended)" label — never the 직접입력 sentinel. Every
+// question takes an own answer, as before.
+function mcFormData(s, q) {
+  var st = mcStateOf(s, q);
+  var d = {
+    id: st.id,
+    title: String(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38'),
+    questions: (q.questions || []).map(function(item) {
+      var rec = resolveRecommendedId(item.recommendedChoiceId, item.choices);
+      if (rec === MC_CUSTOM_ID) rec = null;
+      var out = {
+        id: String(item.id),
+        title: String(item.question || ''),
+        choices: (item.choices || []).map(function(c) {
+          var o = { id: String(c.id), label: stripRecommendedMarker(c.label) };
+          if (c.description) o.description = String(c.description);
+          if (rec && c.id === rec) o.recommended = true;
+          return o;
+        }),
+        allowCustom: true,
+        customPlaceholder: STRINGS.mcCustomPlaceholder,
+      };
+      if (item.context) out.context = String(item.context);
+      return out;
+    }),
+    answers: st.answers,
+    // Several questions: 제출 sends (a pick never does).
+    submitOnPick: false,
+  };
+  if (q.description) d.description = String(q.description);
+  if (st.sending) d.submitting = true;
+  if (st.sent) d.submitted = true;
+  if (st.error) d.error = st.error;
+  return d;
+}
+// A push: the form state of every session that no longer asks that form goes
+// (answered, cleared, or another question in its place).
+function mcEvict() {
+  for (var key in _mcState) {
+    var s = _sessionCache[key];
+    var q = s && s.pendingQuestion;
+    if (!q || q.type !== 'user_choices' || !q.questions || _mcState[key].id !== mcFormId(s, q)) delete _mcState[key];
+  }
+}
+// The answers as the element reports them → the seed it is handed back.
+function mcAnswersIn(list) {
+  var out = {};
+  (list || []).forEach(function(a) {
+    if (!a || !a.questionId) return;
+    out[a.questionId] = a.choiceId !== undefined ? { choiceId: String(a.choiceId) } : { custom: String(a.custom || a.label || '') };
+  });
+  return out;
+}
+// The answers as the route takes them: by question id, the choice and its label
+// (the recommended marker stripped), an own answer as 직접입력 + its text.
+function mcSelectionsOf(s, list) {
+  var q = s && s.pendingQuestion;
+  var byQ = Object.create(null);
+  ((q && q.questions) || []).forEach(function(x) { byQ[x.id] = x; });
+  var out = {};
+  (list || []).forEach(function(a) {
+    if (!a || !a.questionId) return;
+    if (a.choiceId === undefined) {
+      out[a.questionId] = { choiceId: MC_CUSTOM_ID, label: String(a.custom || a.label || '') };
+      return;
+    }
+    var item = byQ[a.questionId];
+    var ch = item && (item.choices || []).find(function(c) { return String(c.id) === String(a.choiceId); });
+    out[a.questionId] = { choiceId: String(a.choiceId), label: ch ? stripRecommendedMarker(ch.label) : String(a.label || '') };
+  });
+  return out;
+}
 
 // faceSummary: the collapsed card's summary line — when it already reads the
-// form's title, the open card does not repeat it.
+// form's title, the open card does not repeat it. 답변하기 opens the panel on
+// the form (the card's one primary for its owner on this instance).
 function renderMultiChoiceCard(s, faceSummary) {
   var q = s.pendingQuestion;
   if (!q || !q.questions) {
     console.warn('renderMultiChoiceCard: missing questions data for session', s.key);
-    return '<div class="card-question"><div class="card-question-text" style="color:var(--text-secondary)">' + STRINGS.mcUnavailable + '</div></div>';
+    return '<div class="card-question"><div class="card-question-text card-question-na">' + STRINGS.mcUnavailable + '</div></div>';
   }
   var total = q.questions.length;
-  var st = _mcState[s.key] || { selections: {}, activeQ: 0 };
+  var st = _mcState[s.key];
+  var answers = st && st.id === mcFormId(s, q) ? st.answers : {};
   var answered = 0;
-  for (var i = 0; i < q.questions.length; i++) {
-    if (st.selections[q.questions[i].id]) answered++;
+  for (var i = 0; i < total; i++) {
+    if (answers[q.questions[i].id]) answered++;
   }
   var progressText = answered + '/' + total + ' \\uC644\\uB8CC';
+  var primary = s.ownerId && s.ownerId === currentUserId && !isSiblingSession(s);
   return '<div class="card-question">'
     + ((q.title || q.question) && (q.title || q.question) === faceSummary ? '' : '<div class="card-question-text">' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>')
     + '<div class="card-question-multi">' + total + '\\uAC1C \\uC9C8\\uBB38 \\u00B7 ' + progressText + '</div>'
-    + '<div style="margin-top:6px"><button class="btn-choice' + (s.ownerId && s.ownerId === currentUserId && !isSiblingSession(s) ? ' btn-choice-primary' : '') + '" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')" style="width:100%;text-align:center;font-weight:700">\\uB2F5\\uBCC0\\uD558\\uAE30</button></div>'
+    + '<button type="button" class="ui-btn' + (primary ? ' is-primary' : '') + ' card-mc-go" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')">\\uB2F5\\uBCC0\\uD558\\uAE30</button>'
     + '</div>';
 }
 
+// The form in the panel's 입력 필요: one <ui-choice-form> (created once per
+// question, handed data only when it changed — the element morphs in place, so
+// focus stays where it is).
 function renderMultiChoicePanel(s) {
   var container = document.getElementById('panel-question');
   if (!container) return;
   var q = s.pendingQuestion;
+  container.style.display = '';
   if (!q || !q.questions) {
     console.warn('renderMultiChoicePanel: missing questions data for session', s.key);
-    container.style.display = '';
-    container.innerHTML = '<div class="mc-form"><p style="color:var(--red);padding:12px">' + STRINGS.mcLoadFailed + '</p></div>';
+    container.innerHTML = '<p class="mc-failed" role="alert">' + STRINGS.mcLoadFailed + '</p>';
     return;
   }
-
-  container.style.display = '';
-  var key = s.key;
-  if (!_mcState[key]) { _mcState[key] = { selections: {}, activeQ: 0 }; }
-  var st = _mcState[key];
-  var total = q.questions.length;
-  var answered = 0;
-  for (var i = 0; i < total; i++) {
-    if (st.selections[q.questions[i].id]) answered++;
+  var el = container.firstElementChild;
+  if (!el || el.tagName !== 'UI-CHOICE-FORM') {
+    container.innerHTML = '';
+    el = document.createElement('ui-choice-form');
+    el.className = 'mc-form';
+    el.setAttribute('lang', 'ko');
+    container.appendChild(el);
   }
-
-  var html = '<div class="mc-form">';
-
-  // Header
-  html += '<div class="mc-header">';
-  html += '<h4>' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</h4>';
-  if (q.description) {
-    html += '<p>' + renderMdBasic(q.description) + '</p>';
+  el.setAttribute('data-mc-key', s.key);
+  var d = mcFormData(s, q);
+  var sig = JSON.stringify(d);
+  if (el._mcSig !== sig) {
+    el._mcSig = sig;
+    el.data = d;
   }
-  html += '</div>';
-
-  // Hero "Submit All Recommended" — group-only one-click. N=count of questions
-  // with a resolvable recommendation (excluding 직접입력 sentinel); M=total.
-  // States: N==M primary | 0<N<M blocked sentinel | N==0 omitted.
-  var heroM = total;
-  var heroN = 0;
-  for (var hi = 0; hi < total; hi++) {
-    var hq = q.questions[hi];
-    var rid = resolveRecommendedId(hq.recommendedChoiceId, hq.choices);
-    if (rid && rid !== '\\uC9C1\\uC811\\uC785\\uB825') heroN++;
-  }
-  if (heroN > 0) {
-    if (heroN === heroM) {
-      html += '<button class="btn-hero-recommended" onclick="event.stopPropagation();submitAllRecommended(\\'' + escJs(key) + '\\')">'
-        + '\\uCD94\\uCC9C\\uB300\\uB85C \\uBAA8\\uB450 \\uC120\\uD0DD</button>';
-    } else {
-      html += '<button class="btn-hero-recommended" disabled aria-disabled="true" aria-label="\\uCD94\\uCC9C\\uC774 ' + heroN + '/' + heroM + '\\uAC1C\\uB9CC \\uC788\\uC5B4 \\uC77C\\uAD04 \\uCC98\\uB9AC \\uBD88\\uAC00">'
-        + '\\uCD94\\uCC9C \\uBD80\\uC871 (' + heroN + '/' + heroM + ')</button>';
-    }
-  }
-
-  // Progress dots
-  html += '<div class="mc-progress">';
-  for (var d = 0; d < total; d++) {
-    var dotCls = 'mc-progress-dot';
-    if (st.selections[q.questions[d].id]) dotCls += ' filled';
-    else if (d === st.activeQ) dotCls += ' active';
-    html += '<span class="' + dotCls + '"></span>';
-  }
-  html += '<span class="mc-progress-text">' + answered + '/' + total + ' \\uC644\\uB8CC</span>';
-  html += '</div>';
-
-  // Questions
-  html += '<div class="mc-questions">';
-  for (var qi = 0; qi < total; qi++) {
-    var qItem = q.questions[qi];
-    var sel = st.selections[qItem.id];
-    var qCls = 'mc-question';
-    if (sel) qCls += ' selected';
-    if (qi === st.activeQ && !sel) qCls += ' active';
-
-    html += '<div class="' + qCls + '">';
-    html += '<div class="mc-q-header"><span class="mc-q-num">Q' + (qi + 1) + '.</span> ' + esc(qItem.question) + '</div>';
-
-    // Context (rich text)
-    if (qItem.context) {
-      html += '<div class="mc-q-context">' + renderMdBasic(qItem.context) + '</div>';
-    }
-
-    if (sel) {
-      // Show selected answer with edit button
-      html += '<div class="mc-q-selected">'
-        + '<span class="mc-sel-mark" aria-hidden="true"><i data-ui-icon="check"></i></span>'
-        + '<span class="mc-sel-label">' + esc(sel.label) + '</span>'
-        + '<button class="mc-q-edit-btn" onclick="event.stopPropagation();editMc(\\'' + escJs(key) + '\\',' + qi + ')">' + STRINGS.mcChange + '</button>'
-        + '</div>';
-    } else {
-      // Show choice buttons, recommended first
-      html += '<div class="mc-q-choices">';
-      var mcRecId = resolveRecommendedId(qItem.recommendedChoiceId, qItem.choices);
-      var orderedChoices = [];
-      if (mcRecId) {
-        var mcRec = qItem.choices.find(function(c) { return c.id === mcRecId; });
-        if (mcRec) orderedChoices.push(mcRec);
-        for (var oi = 0; oi < qItem.choices.length; oi++) {
-          if (qItem.choices[oi].id !== mcRecId) orderedChoices.push(qItem.choices[oi]);
-        }
-      } else {
-        orderedChoices = qItem.choices.slice();
-      }
-      for (var ci = 0; ci < orderedChoices.length; ci++) {
-        var ch = orderedChoices[ci];
-        var chLbl = stripRecommendedMarker(ch.label);
-        var desc = ch.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(ch.description) + '</span>' : '';
-        var isRecBtn = mcRecId && ch.id === mcRecId;
-        html += '<button class="btn-choice' + (isRecBtn ? ' btn-choice-recommended' : '') + '"' + choiceDataAttrs(key, ch.id, chLbl, '') + ' data-mc-index="' + qi + '">'
-          + esc(ch.id) + '. ' + esc(chLbl) + desc + '</button>';
-      }
-      html += '</div>';
-      // Custom input
-      html += '<div class="mc-custom-input">'
-        + '<input type="text" id="mc-custom-' + qi + '" placeholder="' + STRINGS.mcCustomPlaceholder + '" onclick="event.stopPropagation()" onkeydown="if(event.key===\\'Enter\\'){event.stopPropagation();submitMcCustom(\\'' + escJs(key) + '\\',' + qi + ')}">'
-        + '<button onclick="event.stopPropagation();submitMcCustom(\\'' + escJs(key) + '\\',' + qi + ')">\\uC785\\uB825</button>'
-        + '</div>';
-    }
-
-    html += '</div>';
-  }
-  html += '</div>';
-
-  // Action buttons
-  var allAnswered = answered === total;
-  html += '<div class="mc-actions">';
-  html += '<button type="button" class="ui-btn" onclick="event.stopPropagation();resetMultiChoice(\\'' + escJs(key) + '\\')">\\uCD08\\uAE30\\uD654</button>';
-  html += '<button type="button" class="ui-btn is-primary mc-btn-submit" onclick="event.stopPropagation();submitMultiChoice(\\'' + escJs(key) + '\\')"' + (allAnswered ? '' : ' disabled') + '>\\uC81C\\uCD9C\\uD558\\uAE30 (' + answered + '/' + total + ')</button>';
-  html += '</div>';
-
-  html += '</div>';
-  container.innerHTML = html;
 }
-
-function renderMdBasic(text) {
-  if (!text) return '';
-  // Escape HTML first
-  var s = esc(text);
-  // Bold: **text**
-  s = s.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
-  // Italic: *text*
-  s = s.replace(/\\*(.+?)\\*/g, '<em>$1</em>');
-  // Inline code: \`code\`
-  s = s.replace(/\`([^\`]+)\`/g, '<code>$1</code>');
-  // Links: [text](url) — only allow http(s) protocol; escAttr on URL to prevent attribute injection
-  s = s.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^)]+)\\)/g, function(_, text, url) {
-    return '<a href="' + escAttr(url) + '" target="_blank" rel="noopener">' + text + '</a>';
-  });
-  // Newlines
-  s = s.replace(/\\n/g, '<br>');
-  return s;
+// The form of session key, when the panel shows it.
+function mcFormEl(key) {
+  var c = document.getElementById('panel-question');
+  var el = c && c.firstElementChild;
+  return el && el.tagName === 'UI-CHOICE-FORM' && el.getAttribute('data-mc-key') === key ? el : null;
 }
-
-function selectMc(key, qIdx, choiceId, label) {
-  if (!_mcState[key]) _mcState[key] = { selections: {}, activeQ: 0 };
+// After a send changed the state: the form shows it — or, with the panel on
+// something else, a refusal is a toast.
+function mcSettle(key, err) {
   var s = _sessionCache[key];
-  if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) { console.warn('selectMc: stale session data', key); return; }
-  var qItem = s.pendingQuestion.questions[qIdx];
-  if (!qItem) { console.warn('selectMc: invalid question index', qIdx); return; }
-
-  _mcState[key].selections[qItem.id] = { choiceId: choiceId, label: label };
-
-  // Auto-advance to next unanswered question
-  var total = s.pendingQuestion.questions.length;
-  var nextQ = -1;
-  for (var i = 1; i <= total; i++) {
-    var idx = (qIdx + i) % total;
-    var qId = s.pendingQuestion.questions[idx].id;
-    if (!_mcState[key].selections[qId]) { nextQ = idx; break; }
-  }
-  if (nextQ >= 0) {
-    _mcState[key].activeQ = nextQ;
-  }
-
-  renderMultiChoicePanel(s);
+  if (s && mcFormEl(key)) renderMultiChoicePanel(s);
+  else if (err) dashToast({ title: '\\uC81C\\uCD9C \\uC2E4\\uD328: ' + err, tone: 'error' });
 }
 
-function editMc(key, qIdx) {
-  if (!_mcState[key]) return;
+// The element's answers: the working ones kept (ui-change), a send (ui-submit —
+// not cancelled: the element locks until the page hands it the outcome).
+document.addEventListener('ui-change', function(e) {
+  var el = e.target;
+  if (!el || el.tagName !== 'UI-CHOICE-FORM' || !e.detail) return;
+  var s = _sessionCache[el.getAttribute('data-mc-key')];
+  var q = s && s.pendingQuestion;
+  if (!q || !q.questions) return;
+  mcStateOf(s, q).answers = mcAnswersIn(e.detail.answers);
+  refreshCard(s.key);
+});
+document.addEventListener('ui-submit', function(e) {
+  var el = e.target;
+  if (!el || el.tagName !== 'UI-CHOICE-FORM' || !e.detail) return;
+  var key = el.getAttribute('data-mc-key');
   var s = _sessionCache[key];
-  if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) return;
-  var qItem = s.pendingQuestion.questions[qIdx];
-  if (!qItem) return;
-  delete _mcState[key].selections[qItem.id];
-  _mcState[key].activeQ = qIdx;
-  renderMultiChoicePanel(s);
-}
-
-function submitMcCustom(key, qIdx) {
-  var input = document.getElementById('mc-custom-' + qIdx);
-  if (!input) return;
-  var val = input.value.trim();
-  if (!val) { input.style.borderColor = 'var(--red)'; return; }
-  if (!_mcState[key]) _mcState[key] = { selections: {}, activeQ: 0 };
-  var s = _sessionCache[key];
-  if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) { console.warn('submitMcCustom: stale session data', key); return; }
-  var qItem = s.pendingQuestion.questions[qIdx];
-  if (!qItem) { console.warn('submitMcCustom: invalid question index', qIdx); return; }
-
-  _mcState[key].selections[qItem.id] = { choiceId: '\\uC9C1\\uC811\\uC785\\uB825', label: val };
-
-  // Auto-advance
-  var total = s.pendingQuestion.questions.length;
-  var nextQ = -1;
-  for (var i = 1; i <= total; i++) {
-    var idx = (qIdx + i) % total;
-    var qId = s.pendingQuestion.questions[idx].id;
-    if (!_mcState[key].selections[qId]) { nextQ = idx; break; }
+  var q = s && s.pendingQuestion;
+  if (!q || !q.questions) {
+    e.preventDefault();
+    return;
   }
-  if (nextQ >= 0) _mcState[key].activeQ = nextQ;
+  var list = e.detail.answers || [];
+  var st = mcStateOf(s, q);
+  st.answers = mcAnswersIn(list);
+  // 추천대로 모두 제출 where every answer is the recommended one: the server's
+  // one-click path (it derives the same answers). The person's own picks kept
+  // by the hero are a form submit.
+  var allRec = e.detail.source === 'recommended' && list.length === q.questions.length
+    && list.every(function(a) { return a.recommended === true; });
+  if (allRec) submitAllRecommended(key);
+  else submitMultiChoice(key, mcSelectionsOf(s, list));
+});
 
-  renderMultiChoicePanel(s);
+// The POST with the page's CSRF retry: one refresh and one retry after a 403
+// (a rotated token). A body-less POST sends no Content-Type (Fastify refuses a
+// JSON Content-Type with an empty body: 400). Resolves to the error text, or ''.
+async function mcPost(url, body) {
+  function headers() {
+    var h = body === undefined ? {} : { 'Content-Type': 'application/json' };
+    if (_csrfToken) h['X-CSRF-Token'] = _csrfToken;
+    return h;
+  }
+  try {
+    var init = { method: 'POST', headers: headers() };
+    if (body !== undefined) init.body = body;
+    var res = await fetch(url, init);
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      init = { method: 'POST', headers: headers() };
+      if (body !== undefined) init.body = body;
+      res = await fetch(url, init);
+    }
+    if (res.ok) return '';
+    var errData = {};
+    try { errData = await res.json(); } catch (_) {}
+    return String(errData.error || ('Failed (status ' + res.status + ')'));
+  } catch (e) {
+    console.error('multi-choice answer error', e);
+    return '\\uB124\\uD2B8\\uC6CC\\uD06C \\uC624\\uB958: ' + (e && e.message ? e.message : e);
+  }
 }
-
-async function submitMultiChoice(key) {
+// One send of session key's form: sending while the request is out, then the
+// summary (the push clears the question) or the refusal on the form.
+async function mcSend(key, url, body) {
+  var s = _sessionCache[key];
+  var q = s && s.pendingQuestion;
+  var st = q && q.questions ? mcStateOf(s, q) : null;
+  if (st) {
+    if (st.sending || st.sent) return;
+    st.sending = true;
+    st.error = '';
+    mcSettle(key, '');
+  }
+  var err = await mcPost(url, body);
+  if (st && _mcState[key] === st) {
+    st.sending = false;
+    if (err) st.error = err;
+    else st.sent = true;
+  }
+  mcSettle(key, err);
+}
+// 제출: every selection (by question id) — the element's, else the ones kept.
+function submitMultiChoice(key, selections) {
   var s = _sessionCache[key];
   if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) {
     console.warn('submitMultiChoice: session data unavailable', key);
     dashToast({ title: '\\uC138\\uC158 \\uB370\\uC774\\uD130\\uB97C \\uBD88\\uB7EC\\uC62C \\uC218 \\uC5C6\\uC2B5\\uB2C8\\uB2E4. \\uD398\\uC774\\uC9C0\\uB97C \\uC0C8\\uB85C\\uACE0\\uCE68\\uD574\\uC8FC\\uC138\\uC694.', tone: 'error' });
-    return;
+    return Promise.resolve();
   }
-  var st = _mcState[key];
-  if (!st) {
-    console.warn('submitMultiChoice: no selections state', key);
-    dashToast({ title: '\\uC120\\uD0DD \\uC0C1\\uD0DC\\uAC00 \\uC5C6\\uC2B5\\uB2C8\\uB2E4. \\uB2E4\\uC2DC \\uC120\\uD0DD\\uD574\\uC8FC\\uC138\\uC694.', tone: 'error' });
-    return;
-  }
-
-  // Validate all answered
-  var total = s.pendingQuestion.questions.length;
-  var answered = 0;
-  for (var i = 0; i < total; i++) {
-    if (st.selections[s.pendingQuestion.questions[i].id]) answered++;
-  }
-  if (answered < total) {
-    dashToast({ title: '\\uBAA8\\uB4E0 \\uC9C8\\uBB38\\uC5D0 \\uB2F5\\uBCC0\\uD574\\uC8FC\\uC138\\uC694. (' + answered + '/' + total + ')', tone: 'error' });
-    return;
-  }
-
-  // Disable ALL interactive elements in the multi-choice form to prevent further clicks
-  var btns = document.querySelectorAll('.mc-btn-submit');
-  btns.forEach(function(b) { b.disabled = true; b.textContent = STRINGS.mcSubmitting; });
-  var mcForm = document.querySelector('.mc-form');
-  if (mcForm) {
-    mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = true; });
-    mcForm.querySelectorAll('input').forEach(function(inp) { inp.disabled = true; });
-    mcForm.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
-  }
-
-  try {
-    var mcHeaders = { 'Content-Type': 'application/json' };
-    if (_csrfToken) mcHeaders['X-CSRF-Token'] = _csrfToken;
-    var mcUrl = '/api/dashboard/session/' + encodeURIComponent(key) + '/answer-multi-choice';
-    var mcBody = JSON.stringify({ selections: st.selections });
-    var res = await fetch(mcUrl, { method: 'POST', headers: mcHeaders, body: mcBody });
-    if (res.status === 403) {
-      await refreshCsrfToken();
-      var mcRetryHeaders = { 'Content-Type': 'application/json' };
-      if (_csrfToken) mcRetryHeaders['X-CSRF-Token'] = _csrfToken;
-      res = await fetch(mcUrl, { method: 'POST', headers: mcRetryHeaders, body: mcBody });
-    }
-    if (!res.ok) {
-      var errData = {};
-      try { errData = await res.json(); } catch(_) {}
-      var errMsg = errData.error || 'Failed (status ' + res.status + ')';
-      dashToast({ title: '\\uC81C\\uCD9C \\uC2E4\\uD328: ' + errMsg, tone: 'error' });
-      btns.forEach(function(b) { b.disabled = false; b.textContent = '\\uC81C\\uCD9C\\uD558\\uAE30 (' + total + '/' + total + ')'; });
-      if (mcForm) {
-        mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
-        mcForm.querySelectorAll('input').forEach(function(inp) { inp.disabled = false; });
-        mcForm.querySelectorAll('button').forEach(function(b) { b.disabled = false; });
-      }
-    } else {
-      // Success — clear state; WebSocket will re-render
-      delete _mcState[key];
-    }
-  } catch (e) {
-    console.error('submitMultiChoice error', e);
-    dashToast({ title: '\\uB124\\uD2B8\\uC6CC\\uD06C \\uC624\\uB958: ' + e.message, tone: 'error' });
-    btns.forEach(function(b) { b.disabled = false; b.textContent = '\\uC81C\\uCD9C\\uD558\\uAE30 (' + total + '/' + total + ')'; });
-    if (mcForm) {
-      mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
-      mcForm.querySelectorAll('input').forEach(function(inp) { inp.disabled = false; });
-      mcForm.querySelectorAll('button').forEach(function(b) { b.disabled = false; });
-    }
-  }
+  var sel = selections || {};
+  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/answer-multi-choice';
+  return mcSend(key, url, JSON.stringify({ selections: sel }));
 }
-
-function resetMultiChoice(key) {
-  _mcState[key] = { selections: {}, activeQ: 0 };
-  var s = _sessionCache[key];
-  if (s) renderMultiChoicePanel(s);
-}
-
-// Hero "Submit All Recommended" — group-only one-click. Mirrors the CSRF retry
-// pattern used by submitMultiChoice. Server derives selections from session
-// state, so the request has no body — and therefore no Content-Type, like
-// doAction: Fastify refuses a JSON Content-Type with an empty body (400).
-async function submitAllRecommended(key) {
-  var heroBtn = document.querySelector('.btn-hero-recommended');
-  if (heroBtn) { heroBtn.disabled = true; heroBtn.setAttribute('aria-disabled', 'true'); }
-  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/submit-recommended';
-  try {
-    var headers = {};
-    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
-    var res = await fetch(url, { method: 'POST', headers: headers });
-    if (res.status === 403) {
-      await refreshCsrfToken();
-      var retryHeaders = {};
-      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
-      res = await fetch(url, { method: 'POST', headers: retryHeaders });
-    }
-    if (!res.ok) {
-      var errData = {};
-      try { errData = await res.json(); } catch(_) {}
-      var errMsg = errData.error || ('Failed (status ' + res.status + ')');
-      dashToast({ title: errMsg, tone: 'error' });
-      if (heroBtn) { heroBtn.disabled = false; heroBtn.removeAttribute('aria-disabled'); }
-    } else {
-      // Success — clear local state; WebSocket will re-render.
-      delete _mcState[key];
-    }
-  } catch (e) {
-    console.error('submitAllRecommended error', e);
-    dashToast({ title: e.message, tone: 'error' });
-    if (heroBtn) { heroBtn.disabled = false; heroBtn.removeAttribute('aria-disabled'); }
-  }
+// 추천대로 모두 제출 (group-only one-click): the server derives the selections
+// from the session, so the request has no body.
+function submitAllRecommended(key) {
+  return mcSend(key, '/api/dashboard/session/' + encodeURIComponent(key) + '/submit-recommended', undefined);
 }
 
 // ── Stats ──
@@ -13380,11 +12894,9 @@ function connectWs() {
           // whichever node the panel shows (spec 12); the head chip, 세션 정보,
           // the goal and the model · effort follow the same push (spec 13).
           repaintPanelSession();
-          // If session no longer has pending multi-choice, clear mc state
-          if (!panelS.pendingQuestion || panelS.pendingQuestion.type !== 'user_choices') {
-            if (_mcState[panelSessionKey]) delete _mcState[panelSessionKey];
-          }
         }
+        // A form whose session no longer asks it: its answers and outcome go.
+        mcEvict();
       } else if (msg.type === 'task_update') {
         // Update cached session tasks and re-render
         if (_sessionCache[msg.sessionKey]) {
@@ -13408,33 +12920,20 @@ function connectWs() {
               && (msg.turn.rawContent || '').trim() === _lastSentContent.trim()) {
             _lastSentContent = '';
             _lastSentTime = 0;
-            // Remove pending style from optimistic turn if present
-            var pending = document.querySelector('.turn.user[style*="opacity"]');
-            if (pending) pending.style.opacity = '';
             // The server's turn takes over the optimistic one, so a later push for
-            // it (a /compact result, SSOT 2026-10-27) finds it by its real id —
-            // on the list, or in 지시와 답변's data while another section is shown.
-            var opts = document.querySelectorAll('#panel-turns .turn.user[data-turn-id^="optimistic-"]');
-            var optEl = opts.length ? opts[opts.length - 1] : null;
-            if (optEl && msg.turn.id) updateTurnInPanel(optEl, msg.turn);
-            else if (msg.turn.id) {
+            // it (a /compact result, SSOT 2026-10-27) finds it by its real id.
+            if (msg.turn.id) {
               var optId = '';
               for (var oi = _panelTurnsList.length - 1; oi >= 0 && !optId; oi--) {
                 var ot = _panelTurnsList[oi];
                 if (ot && ot._optimistic && String(ot.id || '').indexOf('optimistic-') === 0) optId = ot.id;
               }
-              if (optId) ptUpsert(_panelTurnsList, msg.turn, optId);
+              if (optId) appendTurnToPanel(msg.turn, false, optId);
             }
           } else {
-            // Check if this turn already exists (e.g., summary update for existing assistant turn).
-            // If so, replace in-place instead of appending a duplicate (appendTurnToPanel
-            // updates 지시와 답변's data in place for a turn not on the list).
-            var existingTurn = msg.turn.id ? document.querySelector('[data-turn-id="' + CSS.escape(msg.turn.id) + '"]') : null;
-            if (existingTurn) {
-              updateTurnInPanel(existingTurn, msg.turn);
-            } else {
-              appendTurnToPanel(msg.turn);
-            }
+            // A turn already held (a summary landing on its answer) is updated in
+            // place in 지시와 답변's data; a new one goes at the end.
+            appendTurnToPanel(msg.turn);
           }
         }
       } else if (msg.type === 'session_action') {
@@ -13858,26 +13357,6 @@ function formatBytes(n) {
   if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MiB';
   return (n / 1073741824).toFixed(1) + ' GiB';
 }
-// The detail block under an open entry: the full output in a <pre> (with a
-// copy button), or the line for a load in flight / not stored / owner-only /
-// a damaged log / any other failure (the only one with 다시 시도).
-function renderWorkLogDetail(r) {
-  if (r.status === 'loading') return '<div class="wl-detail-msg is-loading">원본 출력 불러오는 중…</div>';
-  if (r.status === 'missing') return '<div class="wl-detail-msg">' + esc(WL_RAW_MISSING_MSG) + '</div>';
-  if (r.status === 'denied') return '<div class="wl-detail-msg">' + esc(WL_FORBIDDEN_MSG) + '</div>';
-  if (r.status === 'damaged') return '<div class="wl-detail-msg">' + esc(WL_RAW_DAMAGED_MSG) + '</div>';
-  if (r.status === 'error') {
-    return '<div class="wl-detail-msg">' + esc(WL_RAW_ERROR_MSG)
-      + '<button type="button" class="wl-detail-btn" data-wl-act="retry">다시 시도</button></div>';
-  }
-  var note = r.truncated
-    ? '<div class="wl-detail-note">저장된 앞 256 KiB만 표시 — 원본 ' + formatBytes(r.bytes) + '</div>'
-    : '';
-  return note
-    + '<div class="wl-detail-bar"><button type="button" class="wl-detail-btn" data-wl-act="copy">복사</button></div>'
-    + '<pre class="wl-raw">' + esc(r.raw) + '</pre>';
-}
-
 // ── DOM side ──
 // A failed answer rejects with err.status and err.code — the error string of a
 // JSON error body ({ error: 'unavailable' }), or null for anything else (an
@@ -13898,13 +13377,22 @@ function wlFetchJson(url) {
 
 // A new work-log state for the conversation the panel opens (none: the panel
 // closed, or a session without a conversation — 작업 로그 reads "작업 로그 없음").
-// The list itself is the 작업 로그 tab's (paintLogTab).
+// The list itself is the 작업 로그 tab's (wlPaint).
 function resetWorkLog(convId) {
   if (_wl) _wl.closed = true; // late responses for the previous conversation are dropped
   _wl = convId ? wlNewState(convId) : null;
   if (_wl) _wl.onDenied = showWorkLogDenied;
-  var list = document.getElementById('worklog-list');
-  if (list && list.firstChild) list.innerHTML = '';
+  wlClear();
+}
+// The log element holds nothing (another section shown, another conversation):
+// no groups, no cards; it lands on the newest again when painted.
+function wlClear() {
+  var el = wlEl();
+  if (!el) return;
+  var cards = el.querySelectorAll('ui-tool-call-card.wl-card');
+  for (var i = 0; i < cards.length; i++) cards[i].remove();
+  el._wlSig = '';
+  el.data = { groups: [] };
 }
 
 // The latest window only (SSOT 2026-10-29): older pages wait for the reader to
@@ -13914,10 +13402,9 @@ function loadWorkLog() {
   if (!st) return;
   wlLoadLatest(st, wlFetchJson, paintWorkLog).then(function(result) {
     if (st.closed) return;
-    // 'denied' was already shown by showWorkLogDenied (state.onDenied).
-    if (result !== 'denied' && !st.entries.length && _psec === 'log') paintLogTab();
-    psecSyncControls('log');
-    psecFillSoon('log');
+    // 'denied' was already shown by showWorkLogDenied (state.onDenied); an
+    // empty or failed first page ends the element's loading state.
+    if (result !== 'denied') wlPaint();
     // Spec 12: agents that wrote to the log but are not on the card get a place in the agent bar.
     if (result === 'ok') renderPanelAgents();
     if (result === 'ok' && _psec === 'tree') paintTreeTab();
@@ -13943,21 +13430,26 @@ function wlNamesNewAgent(added) {
   return false;
 }
 
-// One entry's detail (§3.1-6): a click on its row opens the full output under
-// it, a second click closes it. state.open = the seqs open now.
-function wlDetailOpen(state) {
-  return !!(state && state.open && state.open.size);
-}
-function wlEntryEl(seq) {
-  var list = document.getElementById('worklog-list');
-  return list ? list.querySelector('.wl-entry[data-seq="' + Math.floor(Number(seq) || 0) + '"]') : null;
+// ── 작업 로그 — @2lab.ai/ui <ui-work-log> (D3: F-01..F-10) ──
+// The section is the library element: groups (a task: #id · title · count ·
+// time, the newest open; a run of entries outside any task: its own group,
+// open), entry rows (an instruction with the skills it invoked, progress, a
+// response, a notice, an error, a turn soma-work sent as its one line), tool
+// calls (this page's <ui-tool-call-card> in the entry's tool-<seq> slot),
+// child agents (열기 → that agent's tab), the raw viewer (size, 복사, 다시
+// 시도), the owner-only / empty / legacy states — and the scroll box (its
+// <ui-log-scroller>: it follows the newest entry, pages older ones in on
+// scroll-up — ui-load-older → loadOlderWorkLog — and keeps the reader's place).
+// The page keeps the data layer (merged entries, paging, live WS, the raw
+// cache) and hands the element data built from it (wlPaint).
+function wlEl() {
+  return document.getElementById('worklog-list');
 }
 function wlEntryBySeq(state, seq) {
   var list = (state && state.entries) || [];
   for (var i = 0; i < list.length; i++) if (list[i].seq === seq) return list[i];
   return null;
 }
-// What the row stands for, in full — for an entry without stored raw output.
 // An instruction entry as the conversation's turn: who sent it (by, kept
 // since SSOT 2026-10-28) and a compaction turn; older entries carry neither
 // and are read from their text.
@@ -13969,12 +13461,13 @@ function wlInstructionTurn(e, text) {
     compact: e.compactTurn === true ? {} : undefined,
   };
 }
-// The facts an opened instruction row shows above its raw prompt — '' for a
-// person's instruction and every other entry.
-function wlEntryFactsHtml(e) {
+// The facts an opened instruction row shows with its raw prompt (one line:
+// the element's raw viewer note) — '' for a person's instruction and every
+// other entry.
+function wlEntryFactsText(e) {
   if (!e || e.kind !== 'instruction') return '';
   var info = sysTurnInfo(wlInstructionTurn(e, decodeSlackEntities(String(e.text || ''))));
-  return info ? sysFactsHtml(info.facts) : '';
+  return info ? info.facts.map(function(f) { return f[0] + ': ' + f[1]; }).join(' · ') : '';
 }
 // An instruction text cut inside its <invoked_skills> block: the words before
 // it, the names of the skills that start before the cut (in order, the last
@@ -13996,147 +13489,139 @@ function wlCutSkills(text) {
   if (!names.length) return null;
   return { words: text.slice(0, at), names: names, more: !/^\\s*<\\/invoked_skills>/.test(inner.slice(i)) };
 }
-function wlCutSkillsHtml(seq, cut) {
-  var badge = function(name, label) {
-    return '<button type="button" class="skill-badge" aria-expanded="false" data-wl-seq="' + seq + '" data-wl-skill="' + escAttr(name) + '" onclick="wlSkillOpen(this)"'
-      + ' title="원본에서 스킬 본문과 토큰 수를 불러옵니다"><span class="skill-name">' + label + '</span></button>';
-  };
-  var html = '';
-  for (var i = 0; i < cut.names.length; i++) html += badge(cut.names[i], esc(cut.names[i]));
-  if (cut.more) html += badge('', '…');
-  return '<div class="skill-badges" role="group" aria-label="활성화된 스킬">' + html + '</div>';
-}
-// A badge of a cut entry: load the stored original once, redraw the badges
-// with every skill and its estimated tokens, and open the one clicked.
-function wlSkillOpen(btn) {
-  var st = _wl;
-  if (!st || st.closed || !btn) return Promise.resolve();
-  var seq = Math.floor(Number(btn.getAttribute('data-wl-seq')) || 0);
-  var want = btn.getAttribute('data-wl-skill') || '';
-  var group = btn.parentNode;
-  btn.setAttribute('aria-busy', 'true');
-  return wlRawLoad(st, seq, wlFetchJson).then(function(r) {
-    btn.removeAttribute('aria-busy');
-    if (st !== _wl) return;
-    var skills = r && r.status === 'ok' ? splitInvokedSkills(decodeSlackEntities(r.raw)).skills : [];
-    if (!skills.length) {
-      btn.setAttribute('title', '원본을 불러오지 못했습니다');
-      return;
-    }
-    if (group) group.outerHTML = skillBadgesHtml('wl' + seq, skills);
-    var list = document.querySelectorAll('[data-skill^="skd-wl' + seq + '-"]');
-    for (var i = 0; i < list.length; i++) {
-      var n = list[i].querySelector('.skill-name');
-      if (want && n && n.textContent === want) {
-        skillToggle(list[i]);
-        break;
-      }
-    }
-  });
-}
+// What the row stands for, in full — for an entry without stored raw output.
 function wlFullText(e) {
   var text = String(e.text || '');
   return e.kind === 'instruction' ? decodeSlackEntities(text) : text;
 }
-// Paints only while that entry is still open in the conversation still shown —
-// a late answer for a closed row or a previous conversation is dropped.
-function paintWorkLogDetail(state, seq, result) {
-  if (state !== _wl || state.closed || !state.open || !state.open.has(seq)) return;
-  var el = wlEntryEl(seq);
-  var detail = el && el.querySelector('.wl-detail');
-  if (detail) detail.innerHTML = wlEntryFactsHtml(wlEntryBySeq(state, seq)) + renderWorkLogDetail(result);
-}
-function loadWorkLogDetail(state, seq) {
-  var entry = wlEntryBySeq(state, seq);
-  if (!entry) return;
-  if (!(toNum(entry.rawBytes) > 0)) {
-    paintWorkLogDetail(state, seq, { status: 'ok', raw: wlFullText(entry), bytes: 0, truncated: false });
-    return;
-  }
-  paintWorkLogDetail(state, seq, { status: 'loading' });
-  wlRawLoad(state, seq, wlFetchJson).then(function(result) {
-    paintWorkLogDetail(state, seq, result);
+// The stored original of one entry: loaded once (wlRawLoad caches the promise
+// on the state), its outcome kept on the state for the element's data
+// (st.rawDone[seq]) and the log painted again when it lands.
+function wlRawFetch(st, seq) {
+  if (!st || st.closed) return;
+  var done = st.rawDone || (st.rawDone = Object.create(null));
+  if (done[seq] && done[seq].status !== 'error') return;
+  var e = wlEntryBySeq(st, seq);
+  if (!e || !(toNum(e.rawBytes) > 0)) return;
+  wlRawLoad(st, seq, wlFetchJson).then(function(r) {
+    if (st !== _wl || st.closed) return;
+    done[seq] = r;
+    wlPaintSoon();
   });
 }
-function toggleWorkLogEntry(seq) {
-  var st = _wl;
-  if (!st || st.closed) return;
-  var el = wlEntryEl(seq);
-  var row = el && el.querySelector('.wl-row');
-  var detail = el && el.querySelector('.wl-detail');
-  if (!row || !detail) return;
-  var open = st.open || (st.open = new Set());
-  if (open.has(seq)) {
-    open.delete(seq);
-    row.setAttribute('aria-expanded', 'false');
-    detail.hidden = true;
-    detail.innerHTML = '';
-    return;
+// An entry's raw output as the element's viewer shows it (only while its row
+// is open): the stored original, or the entry's own text when nothing is
+// stored; the facts of a turn soma-work sent as the viewer's note.
+function wlRawView(st, e) {
+  var facts = wlEntryFactsText(e);
+  var v;
+  if (!(toNum(e.rawBytes) > 0)) v = { state: 'ready', text: wlFullText(e) };
+  else {
+    var r = st.rawDone && st.rawDone[e.seq];
+    if (!r) return { state: 'loading' };
+    if (r.status === 'missing') return { state: 'missing', note: WL_RAW_MISSING_MSG };
+    if (r.status === 'denied') return { state: 'denied', note: WL_FORBIDDEN_MSG };
+    if (r.status === 'damaged') return { state: 'error', note: WL_RAW_DAMAGED_MSG, canRetry: false };
+    if (r.status !== 'ok') return { state: 'error', note: WL_RAW_ERROR_MSG, canRetry: true };
+    v = { state: 'ready', text: String(r.raw), bytes: toNum(r.bytes) };
+    if (r.truncated) v.truncated = true;
   }
-  open.add(seq);
-  row.setAttribute('aria-expanded', 'true');
-  detail.hidden = false;
-  loadWorkLogDetail(st, seq);
+  if (facts) v.note = facts;
+  return v;
 }
-function retryWorkLogDetail(seq) {
-  if (_wl && _wl.open && _wl.open.has(seq)) loadWorkLogDetail(_wl, seq);
+// A child agent the entry started, as the element's row (status, name, time,
+// tools, what it does now; 열기). One that has not reached the card yet reads
+// 확인 불가 until it does.
+var WL_AGENT_STATUS = { running: 'running', waiting: 'waiting', completed: 'done', failed: 'failed', stopped: 'stopped' };
+function wlAgentOf(id) {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var list = (s && s.agents) || [];
+  var a = null;
+  for (var i = 0; i < list.length; i++) if (list[i] && list[i].id === id) { a = list[i]; break; }
+  var node = a ? agentNodeOf(a) : { id: String(id), status: 'unknown', logOnly: true, toolCalls: 0, children: [] };
+  var out = { id: String(id), name: agentNodeName(node), status: WL_AGENT_STATUS[node.status] || 'unknown', tools: Math.round(toNum(node.toolCalls)) };
+  var started = Number(node.startedAt) || 0;
+  if (started) out.startedAt = started;
+  var ms = toNum(node.durationMs) || (Number(node.endedAt) && started ? Number(node.endedAt) - started : 0);
+  if (ms > 0) out.duration = ms;
+  var act = agentActivity(node);
+  if (act) out.activity = act;
+  return out;
 }
-// Copies the text the <pre> shows. Without clipboard access (plain http, a
-// denied permission) the text is selected instead, so the user can copy it.
-function copyWorkLogDetail(seq, btn) {
-  var el = wlEntryEl(seq);
-  var pre = el && el.querySelector('.wl-raw');
-  if (!pre) return;
-  function say(label) {
-    if (!btn) return;
-    btn.textContent = label;
-    setTimeout(function() { btn.textContent = '복사'; }, 1500);
+// One entry as the element's data. A tool call is a card (this page's, in its
+// tool-<seq> slot; a result whose call is on screen lives in the call's card
+// and is not here — wlVisible); a spawn call carries its child's row. Spec 12:
+// a subagent scope's 지시 / 결과 rows stay rows. Every other row opens to its
+// raw output (raw only while open: the element keeps which rows are open).
+function wlEntryOf(st, e) {
+  var seq = Math.floor(Number(e.seq) || 0);
+  var kind = Object.prototype.hasOwnProperty.call(WL_LABELS, e.kind) ? e.kind : 'narration';
+  var x = { id: String(seq) };
+  if (typeof e.ts === 'number' && isFinite(e.ts)) x.at = e.ts;
+  var text = String(e.text || '');
+  var tool = e.tool ? String(e.tool) : '';
+  if ((kind === 'tool' || kind === 'tool_result') && !e._role) {
+    var card = wlCardData(st, seq, false);
+    x.kind = 'tool';
+    x.tool = { name: tool || '툴', status: card ? card.status : 'interrupted' };
+    var sum = kind === 'tool' ? wlToolSummary(tool, text) : e.ok === false ? '실패' : '완료';
+    if (sum) x.tool.summary = sum;
+    if (kind === 'tool' && e.agentRef) x.agent = wlAgentOf(String(e.agentRef));
+    return x;
   }
-  function selectIt() {
-    try {
-      var range = document.createRange();
-      range.selectNodeContents(pre);
-      var sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-    } catch (_e) {}
-    say('선택됨');
-  }
-  try {
-    if (!navigator.clipboard || !navigator.clipboard.writeText) { selectIt(); return; }
-    navigator.clipboard.writeText(pre.textContent || '').then(function() { say('복사됨'); }, selectIt);
-  } catch (_e) { selectIt(); }
-}
-
-// ── Work log under its tasks (SSOT 2026-10-22 T10) ──
-// An entry made while a task was in progress carries that task (taskId /
-// taskTitle). The list shows such entries folded under one header per task —
-// at the place of the task's first entry, titled by its latest — and every
-// other entry (instructions, final answers, anything outside a task) in line.
-// A header is a row button: it opens / closes its entries. A task's group
-// starts open when it is the newest group the list has seen, closed otherwise;
-// the reader's choice then stays (state.groupOpen).
-function wlGroupOf(e) {
-  return e && typeof e.taskId === 'string' && e.taskId ? e.taskId : '';
-}
-// Pure: the list as rows, in seq order of first appearance.
-function wlBuildRows(entries) {
-  var rows = [];
-  var groups = Object.create(null);
-  var list = entries || [];
-  for (var i = 0; i < list.length; i++) {
-    var e = list[i];
-    var g = wlGroupOf(e);
-    if (!g) { rows.push({ entry: e }); continue; }
-    var grp = groups[g];
-    if (!grp) {
-      grp = groups[g] = { taskId: g, title: '', entries: [] };
-      rows.push({ group: grp });
+  if (kind === 'tool' || kind === 'tool_result') {
+    x.kind = e._role === 'spawn' ? 'instruction' : e._role === 'ack' ? 'notice' : kind === 'tool_result' && e.ok === false ? 'error' : 'final';
+    x.label = e._role === 'spawn' ? '지시' : e._role === 'result' ? '결과' : '배경 실행 시작';
+    var shown = tool && text === tool ? '' : tool && text.indexOf(tool + ' ') === 0 ? text.slice(tool.length + 1) : text;
+    x.text = (tool ? tool + ' ' : '') + shown;
+  } else if (kind === 'instruction') {
+    var words = decodeSlackEntities(text);
+    // A turn soma-work sent reads as the conversation's one line (SSOT 2026-10-28): badge, what it did, time.
+    var info = sysTurnInfo(wlInstructionTurn(e, words));
+    if (info) {
+      x.kind = 'system';
+      x.system = { kind: info.kind === 'bgwork' ? 'background' : info.kind, label: info.label };
+      x.text = info.kind === 'compact' ? '컨텍스트 압축 (/compact)' : info.line;
+    } else {
+      // A person's: the words, and the skills it invoked as chips. The stored
+      // text is cut at 4,000 characters, so a skill block is usually cut too:
+      // the names readable before the cut until the original (loaded with the
+      // log, wlPaint) gives every skill its text and tokens.
+      var split = splitInvokedSkills(words);
+      var cut = toNum(e.rawBytes) > 0 ? wlCutSkills(split.text) : null;
+      var full = cut && st.rawDone && st.rawDone[seq] && st.rawDone[seq].status === 'ok'
+        ? splitInvokedSkills(decodeSlackEntities(String(st.rawDone[seq].raw))).skills : null;
+      x.kind = 'instruction';
+      x.text = (cut ? cut.words : split.text).replace(/\\s+$/, '');
+      var skills = full && full.length ? full : split.skills;
+      var chips = skills.map(function(sk) { return { name: sk.name, tokens: sk.tokens, text: sk.body }; });
+      if (cut && !(full && full.length)) chips = chips.concat(cut.names.map(function(n) { return { name: n }; }));
+      if (chips.length) x.skills = chips;
     }
-    grp.entries.push(e);
-    if (e.taskTitle) grp.title = String(e.taskTitle);
+  } else {
+    x.kind = kind;
+    x.text = text;
   }
-  return rows;
+  x.hasRaw = true;
+  if (st.open && st.open.has(seq)) x.raw = wlRawView(st, e);
+  return x;
+}
+// Pure: a run of entries outside any task — what its head says (the kind of
+// its first entry; an instruction's first line of words).
+var WL_RUN_TITLE = { instruction: '지시', narration: '진행', final: '응답', notice: '알림', error: '오류', tool: '도구 호출', system: '시스템' };
+function wlRunTitle(first) {
+  var t = WL_RUN_TITLE[first.kind] || '진행';
+  if (first.kind === 'system' && first.system) return first.system.label || t;
+  var line = first.kind === 'instruction' ? String(first.text || '').split('\\n')[0].trim() : '';
+  return line ? t + ' · ' + line : t;
+}
+// Open state of a group: the reader's choice (the element's ui-toggle, kept
+// across repaints and tab switches), else open when it is the newest task
+// group at first sight — a run outside any task is open.
+function wlGroupOpen(state, id, newest) {
+  var map = state.groupOpen || (state.groupOpen = Object.create(null));
+  if (!(id in map)) map[id] = !!newest;
+  return map[id];
 }
 // The task behind a group, from the open session's task ledger (status, time, tool calls).
 function wlTaskInfo(taskId) {
@@ -14147,176 +13632,139 @@ function wlTaskInfo(taskId) {
   for (var i = 0; i < all.length; i++) if (all[i] && all[i].id === taskId) return all[i];
   return null;
 }
-function renderWorkLogGroupHead(grp, open, task) {
-  var meta = task ? renderTaskMeta(task) : '';
-  var title = (task && task.content) || grp.title || '';
-  return '<div class="wl-group-head" role="button" tabindex="-1" aria-expanded="' + (open ? 'true' : 'false') + '">'
-    + '<span class="wl-g-chev chev is-right" aria-hidden="true"></span>'
-    + '<span class="wl-g-id">#' + esc(grp.taskId) + '</span>'
-    + '<span class="wl-g-title">' + esc(title) + '</span>'
-    + '<span class="wl-g-count">' + grp.entries.length + '</span>'
-    + (meta ? '<span class="wl-g-meta">' + meta + '</span>' : '')
-    + '</div>';
+function wlGroupOf(e) {
+  return e && typeof e.taskId === 'string' && e.taskId ? e.taskId : '';
 }
-// A closed group holds no entry nodes: its entries are rendered when it opens
-// (wlFillGroupBody), so a long log's DOM stays the size of what is open.
-function renderWorkLogGroup(grp, open, task) {
-  return '<div class="wl-group" data-task-id="' + escAttr(grp.taskId) + '">'
-    + renderWorkLogGroupHead(grp, open, task)
-    + (open
-      ? '<div class="wl-group-body" data-filled="1">' + grp.entries.map(renderWorkLogEntry).join('') + '</div>'
-      : '<div class="wl-group-body" hidden inert></div>')
-    + '</div>';
-}
-// Render a group's entries into its (empty) body; open details come back open.
-function wlFillGroupBody(state, grpEl, taskId) {
-  var body = grpEl.querySelector('.wl-group-body');
-  if (!body || body.getAttribute('data-filled') === '1') return;
-  var entries = wlVisible(state, wlScopeEntries(state.entries)).filter(function(x) { return wlGroupOf(x) === taskId; });
-  body.innerHTML = entries.map(renderWorkLogEntry).join('');
-  body.setAttribute('data-filled', '1');
-  wlHydrateCards(body);
+// SSOT 2026-10-22 T10 — an entry made while a task was in progress carries
+// that task (taskId / taskTitle): one group per task, at the place of its
+// first entry, titled by the ledger (else its latest entry's title); the
+// entries outside a task in runs, each its own group in line. A folded group
+// is handed its count, not its entries: a long log's DOM stays the size of
+// what is open — and the element's scroller never holds the reader's place on
+// rows clipped inside a folded group (D3-GAPS G2-1).
+function wlGroupsOf(st, entries) {
+  var rows = [];
+  var byTask = Object.create(null);
+  var run = null;
+  var newest = '';
   for (var i = 0; i < entries.length; i++) {
-    var seq = entries[i].seq;
-    if (!state.open || !state.open.has(seq)) continue;
-    var el = wlEntryEl(seq);
-    var row = el && el.querySelector('.wl-row');
-    var detail = el && el.querySelector('.wl-detail');
-    if (!row || !detail) continue;
-    row.setAttribute('aria-expanded', 'true');
-    detail.hidden = false;
-    loadWorkLogDetail(state, seq);
+    var e = entries[i];
+    var g = wlGroupOf(e);
+    if (g) {
+      run = null;
+      var grp = byTask[g];
+      if (!grp) {
+        grp = byTask[g] = { id: 'task:' + g, taskId: g, title: '', at: e.ts, list: [] };
+        rows.push(grp);
+      }
+      grp.list.push(e);
+      if (e.taskTitle) grp.title = String(e.taskTitle);
+      newest = grp.id;
+      continue;
+    }
+    if (!run) {
+      run = { id: 'run:' + Math.floor(Number(e.seq) || 0), at: e.ts, list: [] };
+      rows.push(run);
+    }
+    run.list.push(e);
   }
-  updateTimersIn(body);
+  return rows.map(function(r) {
+    var out = { id: r.id };
+    if (typeof r.at === 'number' && isFinite(r.at)) out.at = r.at;
+    if (r.taskId) {
+      var task = wlTaskInfo(r.taskId);
+      out.ref = '#' + r.taskId;
+      out.title = (task && task.content) || r.title || '';
+      out.open = wlGroupOpen(st, r.id, r.id === newest);
+    } else {
+      out.ref = '';
+      out.title = wlRunTitle(wlEntryOf(st, r.list[0]));
+      out.open = wlGroupOpen(st, r.id, true);
+    }
+    out.count = r.list.length;
+    out.entries = out.open ? r.list.map(function(e) { return wlEntryOf(st, e); }) : [];
+    return out;
+  });
 }
-// Open state of a group: the reader's choice, else open when it is the newest group.
-function wlGroupOpen(state, taskId, newest) {
-  var map = state.groupOpen || (state.groupOpen = Object.create(null));
-  if (!(taskId in map)) map[taskId] = !!newest;
-  return map[taskId];
-}
-function wlGroupEl(list, taskId) {
-  var groups = list.querySelectorAll('.wl-group');
-  for (var i = 0; i < groups.length; i++) if (groups[i].getAttribute('data-task-id') === taskId) return groups[i];
-  return null;
-}
-// The whole list from state.entries; open details are re-opened (raw output is cached on the state).
-function wlRenderList(state, list) {
-  // Spec 12: only the agent the panel shows (the main agent by default).
-  var rows = wlBuildRows(wlVisible(state, wlScopeEntries(state.entries)));
-  var newest = null;
-  for (var i = rows.length - 1; i >= 0; i--) if (rows[i].group) { newest = rows[i].group; break; }
+// The element's data for the log the panel shows: its groups, paging, and what
+// it says without entries (owner-only, none, none for this agent, loading).
+function wlLogData(st) {
+  var d = { label: '작업 로그', startText: '작업 로그의 시작', emptyText: WL_EMPTY_MSG };
+  if (!st) return Object.assign(d, { groups: [] });
+  if (st.denied) return Object.assign(d, { groups: [], denied: WL_FORBIDDEN_MSG });
+  var scoped = wlScopeEntries(st.entries);
+  if (st.entries.length && !scoped.length) d.emptyText = '이 에이전트의 작업 로그 없음';
+  d.groups = wlGroupsOf(st, wlVisible(st, scoped));
+  d.hasMore = !!(st.loaded && st.latestOk && st.olderPending);
+  d.loading = !st.loaded || !!st.olderLoading;
   // A log from before agent attribution that started subagents: its "main"
   // entries may be a subagent's — say so instead of claiming they are main's.
-  var legacy = !_panelAgent && wlLegacyMixed(state.entries)
-    ? '<div class="wl-legacy" role="note">이전 통합 로그 — 메인/서브 귀속 미확인</div>'
-    : '';
-  list.innerHTML = legacy + rows.map(function(r) {
-    if (r.entry) return renderWorkLogEntry(r.entry);
-    return renderWorkLogGroup(r.group, wlGroupOpen(state, r.group.taskId, r.group === newest), wlTaskInfo(r.group.taskId));
-  }).join('');
-  if (state.open) state.open.forEach(function(seq) {
-    var el = wlEntryEl(seq);
-    var row = el && el.querySelector('.wl-row');
-    var detail = el && el.querySelector('.wl-detail');
-    if (!row || !detail) return;
-    row.setAttribute('aria-expanded', 'true');
-    detail.hidden = false;
-    loadWorkLogDetail(state, seq);
+  if (!_panelAgent && wlLegacyMixed(st.entries)) d.legacy = '이전 통합 로그 — 메인/서브 귀속 미확인';
+  return d;
+}
+// The cards the tool entries ask for: this page's <ui-tool-call-card> in each
+// entry's tool-<seq> slot (created once, removed when its entry leaves),
+// hydrated with their data (wlHydrateCards).
+function wlCardSlots(el, d) {
+  var want = Object.create(null);
+  (d.groups || []).forEach(function(g) {
+    (g.entries || []).forEach(function(x) { if (x.kind === 'tool') want[x.id] = x; });
   });
-  wlHydrateCards(list);
-}
-// Live entries at the end of the log: append in place (a task's entry into its
-// group, a new task as a new — open — group at the end).
-function wlAppendTail(state, list, added) {
-  var tmp = document.createElement('div');
-  var scoped = wlScopeEntries(added.map(function(a) { return a.entry; }));
-  for (var i = 0; i < scoped.length; i++) {
-    var e = scoped[i];
-    var g = wlGroupOf(e);
-    if (wlCardHidden(state, e)) {
-      wlOnToolResult(state, e);
-      if (g) {
-        var ownGrp = wlGroupEl(list, g);
-        if (ownGrp) wlRefreshGroupHead(state, ownGrp, g);
-      }
-      continue;
-    }
-    if (!g) {
-      tmp.innerHTML = renderWorkLogEntry(e);
-      if (tmp.firstElementChild) list.appendChild(tmp.firstElementChild);
-      continue;
-    }
-    var grpEl = wlGroupEl(list, g);
-    if (!grpEl) {
-      var grp = { taskId: g, title: e.taskTitle ? String(e.taskTitle) : '', entries: [e] };
-      tmp.innerHTML = renderWorkLogGroup(grp, wlGroupOpen(state, g, true), wlTaskInfo(g));
-      if (tmp.firstElementChild) list.appendChild(tmp.firstElementChild);
-      continue;
-    }
-    var body = grpEl.querySelector('.wl-group-body');
-    // A closed group renders its entries when it opens; only its head changes now.
-    if (body && body.getAttribute('data-filled') === '1') {
-      tmp.innerHTML = renderWorkLogEntry(e);
-      if (tmp.firstElementChild) body.appendChild(tmp.firstElementChild);
-    }
-    wlRefreshGroupHead(state, grpEl, g);
+  var cards = el.querySelectorAll('ui-tool-call-card.wl-card');
+  for (var i = 0; i < cards.length; i++) {
+    var key = cards[i].getAttribute('data-key') || '';
+    if (want[key]) delete want[key];
+    else cards[i].remove();
   }
-  wlHydrateCards(list);
+  for (var k in want) {
+    var c = document.createElement('ui-tool-call-card');
+    c.className = 'wl-card';
+    c.setAttribute('lang', 'ko');
+    c.setAttribute('slot', 'tool-' + k);
+    c.setAttribute('data-key', k);
+    // Each card's header is its own tab stop: the element's rows rove inside it,
+    // a slotted card cannot join that (D3-GAPS G2-3).
+    c.setAttribute('data-stop', '1');
+    // Light-DOM text: shown until the element is defined (its shadow root has no slot).
+    c.innerHTML = '<span class="wl-card-fallback"><span class="wl-tool-name">' + esc(want[k].tool.name) + '</span> ' + esc(want[k].tool.summary || '') + '</span>';
+    el.appendChild(c);
+  }
 }
-function wlRefreshGroupHead(state, grpEl, taskId) {
-  var head = grpEl.querySelector('.wl-group-head');
-  if (!head) return;
-  var entries = wlVisible(state, wlScopeEntries(state.entries)).filter(function(x) { return wlGroupOf(x) === taskId; });
-  var title = '';
-  for (var i = 0; i < entries.length; i++) if (entries[i].taskTitle) title = String(entries[i].taskTitle);
-  var html = renderWorkLogGroupHead({ taskId: taskId, title: title, entries: entries }, head.getAttribute('aria-expanded') === 'true', wlTaskInfo(taskId));
-  if (head._html === html) return; // same data → the head (and its focus) is left alone
-  var tmp = document.createElement('div');
-  tmp.innerHTML = html;
-  var fresh = tmp.firstElementChild;
-  if (!fresh) return;
-  fresh.setAttribute('tabindex', head.getAttribute('tabindex') === '0' ? '0' : '-1');
-  // Morphed, not replaced: a reader whose focus is on the head keeps it (Spec 12 —
-  // a subagent scope refreshes its heads on every session push).
-  domMorph(head, fresh);
-  head._html = html;
-  updateTimersIn(head);
-}
-// Task status / time / tool calls changed (task_update): refresh every group head.
-function wlRefreshGroupHeads() {
-  var list = document.getElementById('worklog-list');
-  if (!list || !_wl) return;
-  var groups = list.querySelectorAll('.wl-group');
-  for (var i = 0; i < groups.length; i++) wlRefreshGroupHead(_wl, groups[i], groups[i].getAttribute('data-task-id'));
-}
-function toggleWorkLogGroup(taskId) {
+// 작업 로그 painted from the work-log state — only while it is the section
+// shown (the others hold no nodes; it is painted again when it opens). A cut
+// instruction's original is loaded so its skill chips get their text.
+function wlPaint() {
+  var el = wlEl();
+  if (!el || _psec !== 'log') return;
   var st = _wl;
-  var list = document.getElementById('worklog-list');
-  if (!st || st.closed || !list) return;
-  var grpEl = wlGroupEl(list, taskId);
-  if (!grpEl) return;
-  var head = grpEl.querySelector('.wl-group-head');
-  var body = grpEl.querySelector('.wl-group-body');
-  var open = !(head && head.getAttribute('aria-expanded') === 'true');
-  (st.groupOpen || (st.groupOpen = Object.create(null)))[taskId] = open;
-  if (open) wlFillGroupBody(st, grpEl, taskId);
-  if (head) head.setAttribute('aria-expanded', open ? 'true' : 'false');
-  xpMove(grpEl);
-  if (body) {
-    body.hidden = !open;
-    body.inert = !open;
+  var d = wlLogData(st);
+  wlCardSlots(el, d);
+  var sig = JSON.stringify(d);
+  if (el._wlSig !== sig) {
+    el._wlSig = sig;
+    el.data = d;
   }
+  if (!st) return;
+  st.painted = true;
+  wlHydrateCards(el);
+  (d.groups || []).forEach(function(g) {
+    (g.entries || []).forEach(function(x) {
+      if (x.kind === 'instruction' && x.skills && x.skills.some(function(sk) { return sk.text === undefined; })) wlRawFetch(st, Number(x.id));
+    });
+  });
 }
-
-// Paint merged entries — only while 작업 로그 is the section shown (else the tab
-// is painted from the state when it opens). Live entries at the end are
-// appended in place; any other batch (an older page, a backfill) re-renders the
-// list from state.entries, which keeps seq order and the task groups exact, and
-// keeps the reader's place: the row they were on goes back where it was, held
-// there while the new cards render (psecHoldPlace).
-// At the newest the reader follows the tail — unless an entry's detail is open —
-// else the pill counts what arrived.
+var _wlPaintQueued = false;
+function wlPaintSoon() {
+  if (_wlPaintQueued) return;
+  _wlPaintQueued = true;
+  requestAnimationFrame(function() {
+    _wlPaintQueued = false;
+    wlPaint();
+  });
+}
+// Merged entries (a live entry, an older page, a backfill): the agents they
+// name, a subagent's 지시와 답변, a card whose result arrived — then the log.
+// The element keeps the reader's place and follows a reader at the newest.
 function paintWorkLog(state, added) {
   if (state !== _wl || !added.length) return;
   // Spec 12: entries that name an agent the bar does not show yet.
@@ -14327,47 +13775,23 @@ function paintWorkLog(state, added) {
   // Task view T1.3: a subagent tab's 지시와 답변 comes from these entries — the
   // tab may have opened (or the result may land) before they did.
   if (_panelAgent) renderAgentConv();
-  var list = document.getElementById('worklog-list');
-  var box = psecBox('log');
-  if (_psec !== 'log' || !list || !box) {
+  if (_psec !== 'log') {
     state.painted = false;
     return;
   }
-  var pinned = psecAtBottom(box);
-  var fromBottom = box.scrollHeight - box.scrollTop;
-  var n = state.entries.length;
-  var tail = state.painted;
-  for (var i = 0; tail && i < added.length; i++) if (added[i].index !== n - added.length + i) tail = false;
-  var anchor = !tail && state.painted && !pinned ? psecViewAnchor(box) : null;
-  var placeholder = list.querySelector('.wl-empty');
-  if (placeholder) placeholder.remove();
-  if (tail) wlAppendTail(state, list, added);
-  else wlRenderList(state, list);
-  updateTimersIn(list);
-  // Spec 12: entries of another agent arrived while this agent's log is empty — keep the empty line.
-  if (!wlScopeEntries(state.entries).length) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
-  wlEnsureTabStop(list);
-  psecSyncControls('log');
-  var first = !state.painted;
-  state.painted = true;
-  if (first) psecToNewest();
-  else if (!tail && pinned) psecSetTop(box, box.scrollHeight);
-  else if (!tail) psecHoldPlace(box, anchor, fromBottom);
-  else if (pinned && !wlDetailOpen(state)) psecOnAppended(1, true);
-  else psecOnAppended(wlVisible(state, wlScopeEntries(added.map(function(a) { return a.entry; }))).length, false);
+  // A result for a call whose card is open: the card fetches its output.
+  for (var i = 0; i < added.length; i++) {
+    var e = added[i] && added[i].entry;
+    if (e && wlCardHidden(state, e)) wlOnToolResult(state, e);
+  }
+  wlPaint();
 }
-
 // Owner-only log (403 on any path) — only for the conversation still open.
 function showWorkLogDenied(state) {
   if (state !== _wl || state.closed) return;
   // Live entries painted before the 403 go too: the log is owner-only.
   state.entries = [];
-  if (_psec === 'log') paintLogTab();
-  psecSyncControls('log');
-}
-function showWorkLogEmpty(message) {
-  var list = document.getElementById('worklog-list');
-  if (list && !list.querySelector('.wl-entry')) list.innerHTML = '<div class="wl-empty">' + esc(message || WL_EMPTY_MSG) + '</div>';
+  wlPaint();
 }
 
 // ── Tool calls as cards (@2lab.ai/ui <ui-tool-call-card>) ──
@@ -14545,10 +13969,6 @@ function wlHydrateCards(root) {
   }
   for (var i = 0; i < cards.length; i++) wlPaintCard(_wl, cards[i]);
 }
-// Session pushes: a running call whose session stopped reads 결과 없음.
-function wlRefreshCards() {
-  wlHydrateCards(document.getElementById('worklog-list'));
-}
 // A stored raw → the card's text for that part (args / result) and its note.
 function wlPartLoad(state, e) {
   if (!e) return Promise.resolve(null);
@@ -14611,274 +14031,67 @@ function wlOnToolResult(state, e) {
   else if (el) wlPaintCard(state, el);
   return true;
 }
-function renderWorkLogEntry(e) {
-  var kind = Object.prototype.hasOwnProperty.call(WL_LABELS, e.kind) ? e.kind : 'narration';
-  var time = typeof e.ts === 'number' && isFinite(e.ts)
-    ? new Date(e.ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
-    : '';
-  var timeHtml = time ? '<span class="wl-time">' + time + '</span>' : '';
-  var seq = Math.floor(Number(e.seq) || 0);
-  var seqAttr = ' data-seq="' + seq + '"';
-  // One root per entry: the row (role=button, out of the tab order — the list
-  // keeps one roving stop) and its detail block (§3.1-6).
-  function rowOpen(extra) {
-    return '<div class="wl-row' + (extra || '') + '" role="button" tabindex="-1" aria-expanded="false" aria-controls="wl-detail-' + seq + '">';
-  }
-  // aria-live="off": the list is role=log (polite), and an opened raw output
-  // of up to 256 KiB must not be read out in full.
-  var detailHtml = '<div class="wl-detail" id="wl-detail-' + seq + '" aria-live="off" hidden></div>';
-  var text = String(e.text || '');
-  // A tool call is one card (@2lab.ai/ui <ui-tool-call-card>, hydrated by
-  // wlHydrateCards): the call's entry carries it, its result fills it. A result
-  // whose call is on screen is never rendered on its own (wlCardHidden); one
-  // whose call is not (an older page, a log cut short) is its own card.
-  // Spec 12's 지시 / 결과 rows of a subagent scope stay rows.
-  if ((kind === 'tool' || kind === 'tool_result') && !e._role) {
-    var cardLink = kind === 'tool' && e.agentRef ? wlChildBlock(String(e.agentRef)) : '';
-    // Light-DOM text: shown until the element is defined — and for good if its
-    // module never loads (the card's shadow root has no slot, so it hides it).
-    var fbTool = e.tool ? String(e.tool) : '';
-    var fbText = kind === 'tool' ? wlToolSummary(fbTool, text) : (e.ok === false ? '실패' : '완료');
-    return '<div class="wl-entry wl-toolcall' + (kind === 'tool_result' ? ' is-orphan' : '') + '"' + seqAttr + '>'
-      + '<ui-tool-call-card class="wl-card" lang="ko" data-key="' + seq + '">'
-      + '<span class="wl-card-fallback"><span class="wl-tool-name">' + esc(fbTool) + '</span> ' + esc(fbText) + '</span>'
-      + '</ui-tool-call-card>'
-      + cardLink + '</div>';
-  }
-  if (kind === 'tool' || kind === 'tool_result') {
-    var fail = kind === 'tool_result' && e.ok === false;
-    var mark = kind === 'tool' ? '&#x25B8;' : (fail ? '&#x2717;' : '&#x2713;');
-    // The emitter's text starts with the tool name ("Read {...}", "Glob ok");
-    // the name already has its own span, so the text shows only what follows.
-    var shown = text;
-    var tool = e.tool ? String(e.tool) : '';
-    if (tool && text === tool) shown = '';
-    else if (tool && text.indexOf(tool + ' ') === 0) shown = text.slice(tool.length + 1);
-    // Spec 12: in a subagent's scope the call that started it reads 지시 and
-    // its result 결과 (a background start: 배경 실행 시작); elsewhere a spawn
-    // call carries the child's live block (wlChildBlock).
-    var role = e._role === 'spawn' ? '지시' : e._role === 'result' ? '결과' : e._role === 'ack' ? '배경 실행 시작' : '';
-    var link = kind === 'tool' && e.agentRef && !e._role ? wlChildBlock(String(e.agentRef)) : '';
-    return '<div class="wl-entry wl-' + kind + (fail ? ' is-fail' : '') + (role ? ' wl-agent-io' : '') + '"' + seqAttr + '>' + rowOpen()
-      + '<span class="wl-mark">' + mark + '</span>'
-      + (role ? '<span class="wl-role">' + role + '</span>' : '')
-      + (tool ? '<span class="wl-tool-name">' + esc(tool) + '</span>' : '')
-      + '<span class="wl-text" title="' + escAttr(text) + '">' + esc(shown) + '</span>'
-      + timeHtml + '</div>' + link + detailHtml + '</div>';
-  }
-  if (kind === 'instruction') {
-    text = decodeSlackEntities(text);
-    // A turn soma-work sent reads as the conversation's one line (SSOT
-    // 2026-10-28): badge, what it did, time. The row opens to its facts and
-    // the raw prompt (wlEntryFactsHtml + the stored original).
-    var info = sysTurnInfo(wlInstructionTurn(e, text));
-    if (info) {
-      return '<div class="wl-entry wl-instruction is-sys"' + seqAttr + '>' + rowOpen()
-        + '<div class="wl-head"><span class="ui-chip sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>'
-        + '<span class="wl-sys-line">' + esc(info.kind === 'compact' ? '컨텍스트 압축 (/compact)' : info.line) + '</span>' + timeHtml + '</div>'
-        + '</div>' + detailHtml + '</div>';
-    }
-    // A person's: the words on the row, the skills it invoked as badges beside
-    // it — outside the row, whose click opens the original.
-    var split = splitInvokedSkills(text);
-    // The stored text is cut at 4,000 characters, so a skill block is usually
-    // cut too: the words, and the skill names readable before the cut; the
-    // badges load the stored original (wlSkillOpen).
-    // Only a text that was cut (its original stored apart) can hold a cut
-    // block; a short one that merely mentions the tag is words. A first turn's
-    // two blocks: the closed one and the cut one read as one row of badges.
-    var cut = toNum(e.rawBytes) > 0 ? wlCutSkills(split.text) : null;
-    if (cut && split.skills.length) cut.names = split.skills.map(function(sk) { return sk.name; }).concat(cut.names);
-    if (split.skills.length || cut) {
-      var words = cut ? cut.words : split.text;
-      return '<div class="wl-entry wl-instruction"' + seqAttr + '>' + rowOpen()
-        + '<div class="wl-head"><span class="wl-label">' + WL_LABELS.instruction + '</span>' + timeHtml + '</div>'
-        + (words.trim() ? '<div class="wl-text">' + esc(words.replace(/\\s+$/, '')) + '</div>' : '')
-        + '</div>' + (cut ? wlCutSkillsHtml(seq, cut) : skillBadgesHtml('wl' + seq, split.skills)) + detailHtml + '</div>';
-    }
-  }
-  var label = WL_LABELS[kind];
-  if (!label) {
-    // Narration: the text with its time on the right of the same line.
-    return '<div class="wl-entry wl-' + kind + '"' + seqAttr + '>' + rowOpen(' wl-line') + '<div class="wl-text">' + esc(text) + '</div>' + timeHtml + '</div>' + detailHtml + '</div>';
-  }
-  return '<div class="wl-entry wl-' + kind + '"' + seqAttr + '>' + rowOpen()
-    + '<div class="wl-head"><span class="wl-label">' + label + '</span>' + timeHtml + '</div>'
-    + '<div class="wl-text">' + esc(text) + '</div>'
-    + '</div>' + detailHtml + '</div>';
-}
-
-// Spec 12 (recursive): in a parent's log the call that started a child carries
-// the child's block — the same node at row density: status in words, time,
-// tools, its current activity, 열기. It sits beside the entry's row (never
-// inside the row's button) and is the arrow path's stop for that child. A
-// child that has not reached the card yet reads 확인 불가 until it does.
-function wlChildBlock(id) {
-  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  var list = (s && s.agents) || [];
-  var a = null;
-  for (var i = 0; i < list.length; i++) if (list[i] && list[i].id === id) { a = list[i]; break; }
-  var node = a ? agentNodeOf(a) : { id: String(id), status: 'unknown', logOnly: true, toolCalls: 0, children: [] };
-  var st = node.status;
-  var time = agentTimeHtml(node);
-  var act = agentActivity(node);
-  var label = agentNodeName(node) + ' 열기 — ' + (AGENT_STATUS_LABEL[st] || '') + ', 툴 ' + toNum(node.toolCalls);
-  return '<button type="button" class="wl-agent-link wl-child is-' + st + '" tabindex="-1" data-agent="' + escAttr(id) + '" data-agent-block="' + escAttr(id) + '" aria-label="' + escAttr(label) + '">'
-    + '<span class="ag-icon">' + agentIconHtml(st) + '</span>'
-    + '<span class="wc-name">' + agentNodeLine(node) + '</span>'
-    + '<span class="wc-meta"><span class="ag-st">' + esc(AGENT_STATUS_LABEL[st] || '') + '</span>'
-    + (time ? '<span class="ag-time">' + time + '</span>' : '')
-    + '<span class="ag-tools">툴 ' + toNum(node.toolCalls) + '</span></span>'
-    + (act ? '<span class="wc-act">' + esc(act) + '</span>' : '')
-    + '<span class="wc-open">열기 &rarr;</span></button>';
-}
-// A live update (sessionUpdated, a board push) morphs every child block on
-// screen in place — same button, same roving stop, new status / time / tools.
-function wlRefreshChildBlocks() {
-  var list = document.getElementById('worklog-list');
-  if (!list) return;
-  var els = list.querySelectorAll('[data-agent-block]');
-  for (var i = 0; i < els.length; i++) {
-    var el = els[i];
-    var html = wlChildBlock(el.getAttribute('data-agent-block') || '');
-    if (el._html === html) continue;
-    var tmp = document.createElement('div');
-    tmp.innerHTML = html;
-    var fresh = tmp.firstChild;
-    if (!fresh) continue;
-    fresh.setAttribute('tabindex', el.getAttribute('tabindex') || '-1');
-    domMorph(el, fresh);
-    el._html = html;
-    updateTimersIn(el);
-  }
-}
-
-// Roving tabindex (§3.1-6): the list is one tab stop. The first paint puts it
-// on the newest row (where the tail-followed list is looking); focusing a row
-// (click, arrows) moves it there. ArrowUp / ArrowDown step, Home / End jump.
-function wlRovingIndex(key, i, n) {
-  if (n <= 0) return -1;
-  if (key === 'ArrowDown') return Math.min(n - 1, i + 1);
-  if (key === 'ArrowUp') return Math.max(0, i - 1);
-  if (key === 'Home') return 0;
-  if (key === 'End') return n - 1;
-  return -1;
-}
-// The rows the arrows move between: entry rows, task-group heads and a spawn
-// row's 서브에이전트 열기 (Spec 12) that are on screen (a closed group's are not).
-function wlNavRows(list) {
-  var all = list.querySelectorAll('.wl-group-head, .wl-row, .wl-agent-link, ui-tool-call-card.wl-card');
-  var out = [];
-  for (var i = 0; i < all.length; i++) {
-    var body = all[i].closest ? all[i].closest('.wl-group-body') : null;
-    if (body && body.hidden) continue;
-    out.push(all[i]);
-  }
-  return out;
-}
-var WL_STOP_SEL = '.wl-row[tabindex="0"], .wl-group-head[tabindex="0"], .wl-agent-link[tabindex="0"], ui-tool-call-card[data-stop="1"]';
 function wlIsCard(el) {
   return !!(el && el.tagName === 'UI-TOOL-CALL-CARD');
 }
-// A card is a stop through its header button: data-stop marks it, and its
-// data turns the button's tabindex to 0 (focusable).
-function wlMarkStop(el, on) {
-  if (wlIsCard(el)) {
-    if (on) el.setAttribute('data-stop', '1');
-    else el.removeAttribute('data-stop');
-    if (_wl) wlPaintCard(_wl, el);
-    return;
-  }
-  el.setAttribute('tabindex', on ? '0' : '-1');
-}
-function wlEnsureTabStop(list) {
-  if (!list || !list.querySelector || list.querySelector(WL_STOP_SEL)) return;
-  var rows = wlNavRows(list);
-  if (rows.length) wlMarkStop(rows[rows.length - 1], true);
-}
-function wlSetTabStop(list, row) {
-  var old = list.querySelectorAll(WL_STOP_SEL);
-  for (var i = 0; i < old.length; i++) if (old[i] !== row) wlMarkStop(old[i], false);
-  if (wlIsCard(row) ? row.getAttribute('data-stop') !== '1' : row.getAttribute('tabindex') !== '0') wlMarkStop(row, true);
-}
-
-// Rows open / close their detail on click, Enter or Space; clicks inside an
-// open detail (the <pre>, 복사, 다시 시도) never toggle it.
-(function initWorkLogInteractions() {
-  var list = document.getElementById('worklog-list');
-  if (!list) return;
-  function seqOf(node) {
-    var entry = node && node.closest('.wl-entry');
-    return entry ? Math.floor(Number(entry.getAttribute('data-seq')) || 0) : 0;
-  }
-  list.addEventListener('click', function(e) {
-    // Spec 12: a spawn row's 열기 → switches the panel to that subagent.
-    var agentLink = e.target.closest('.wl-agent-link');
-    if (agentLink && list.contains(agentLink)) {
-      selectPanelAgent(agentLink.getAttribute('data-agent') || '');
+// The element's requests: a group or a row opened / closed (the page keeps
+// which; a row's raw output loads when it opens), 다시 시도 on a raw output,
+// 열기 on a child agent (Spec 12: the panel switches to it), the page before the
+// oldest entry; and a card's own open / close and 다시 시도 (wlToggleCard).
+(function initWorkLog() {
+  var el = wlEl();
+  if (!el) return;
+  el.addEventListener('ui-toggle', function(e) {
+    var st = _wl;
+    if (wlIsCard(e.target)) {
+      e.preventDefault();
+      wlToggleCard(st, e.target, !!(e.detail && e.detail.open));
       return;
     }
-    var btn = e.target.closest('.wl-detail-btn');
-    if (btn && list.contains(btn)) {
-      var act = btn.getAttribute('data-wl-act');
-      if (act === 'retry') retryWorkLogDetail(seqOf(btn));
-      else if (act === 'copy') copyWorkLogDetail(seqOf(btn), btn);
-      return;
+    if (e.target !== el || !st || st.closed) return;
+    var d = e.detail || {};
+    if (d.kind === 'group') {
+      (st.groupOpen || (st.groupOpen = Object.create(null)))[d.id] = !!d.open;
+    } else if (d.kind === 'entry') {
+      var seq = Math.floor(Number(d.id) || 0);
+      var open = st.open || (st.open = new Set());
+      if (d.open) {
+        open.add(seq);
+        wlRawFetch(st, seq);
+      } else open.delete(seq);
     }
-    if (e.target.closest('.wl-detail')) return;
-    var head = e.target.closest('.wl-group-head');
-    if (head && list.contains(head)) {
-      var grp = head.closest('.wl-group');
-      if (grp) toggleWorkLogGroup(grp.getAttribute('data-task-id'));
-      return;
-    }
-    var row = e.target.closest('.wl-row');
-    if (!row || !list.contains(row)) return;
-    // Finishing a text selection inside the row is not a toggle.
-    if (window.getSelection && String(window.getSelection())) return;
-    toggleWorkLogEntry(seqOf(row));
+    wlPaint();
   });
-  // A card says it opened / closed: the list keeps that (state.open) and
-  // fetches its input and output; 다시 시도 fetches them again.
-  list.addEventListener('ui-toggle', function(e) {
-    if (!wlIsCard(e.target)) return;
-    e.preventDefault();
-    wlToggleCard(_wl, e.target, !!(e.detail && e.detail.open));
+  el.addEventListener('ui-retry', function(e) {
+    var st = _wl;
+    if (e.target !== el || !st || st.closed) return;
+    var seq = Math.floor(Number(e.detail && e.detail.id) || 0);
+    if (st.rawDone) delete st.rawDone[seq];
+    wlRawFetch(st, seq);
   });
-  list.addEventListener('ui-reload', function(e) {
+  el.addEventListener('ui-open', function(e) {
+    if (e.target !== el) return;
+    var id = e.detail && e.detail.id;
+    if (id) selectPanelAgent(String(id));
+  });
+  el.addEventListener('ui-load-older', function(e) {
+    var st = _wl;
+    if (!st || st.closed || st.denied || !st.latestOk || !st.olderPending || st.olderLoading) {
+      e.preventDefault();
+      return;
+    }
+    loadOlderWorkLog();
+  });
+  el.addEventListener('ui-reload', function(e) {
     if (!wlIsCard(e.target) || !_wl || _wl.closed) return;
     wlLoadCardDetail(_wl, Math.floor(Number(e.target.getAttribute('data-key')) || 0));
   });
-  list.addEventListener('keydown', function(e) {
-    var row = e.target;
-    var isHead = !!(row.classList && row.classList.contains('wl-group-head'));
-    var isLink = !!(row.classList && row.classList.contains('wl-agent-link'));
-    var isCard = wlIsCard(row);
-    if (!row.classList || (!isHead && !isLink && !isCard && !row.classList.contains('wl-row'))) return;
-    // A card's header is a real button: Enter / Space are its own (ui-toggle).
-    if (isCard && (e.key === 'Enter' || e.key === ' ')) return;
-    // 서브에이전트 열기 is a real button: Enter / Space click it (the delegated handler opens the agent).
-    if (isLink && (e.key === 'Enter' || e.key === ' ')) return;
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      if (isHead) {
-        var grp = row.closest('.wl-group');
-        if (grp) toggleWorkLogGroup(grp.getAttribute('data-task-id'));
-      } else {
-        toggleWorkLogEntry(seqOf(row));
-      }
-      return;
-    }
-    var rows = wlNavRows(list);
-    var j = wlRovingIndex(e.key, rows.indexOf(row), rows.length);
-    if (j < 0) return;
-    e.preventDefault();
-    rows[j].focus(); // focusin moves the tab stop
-  });
-  list.addEventListener('focusin', function(e) {
-    var row = e.target;
-    if (row && row.classList && (row.classList.contains('wl-row') || row.classList.contains('wl-group-head') || row.classList.contains('wl-agent-link') || wlIsCard(row))) wlSetTabStop(list, row);
-  });
+  if (window.customElements && customElements.whenDefined) {
+    customElements.whenDefined('ui-work-log').then(function() {
+      el._wlSig = '';
+      wlPaint();
+    });
+  }
 })();
 
 // Where an opening lands (§3.1-6, spec 13) — on open, and again once the
@@ -15035,6 +14248,8 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   _panelTurnsList = [];
   _panelTurnsCid = '';
   _panelTurnsMsg = s.conversationId ? 'loading' : 'unrecorded';
+  _panelTurnsWhy = '';
+  _panelOlderWhy = '';
 
   panelSessionKey = sessionKey;
   panelConvId = s.conversationId || null;
@@ -15048,6 +14263,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   resetPanelSections();
   _agentConvRaw = Object.create(null);
   _agentConvFailed = Object.create(null);
+  _ansFailed = Object.create(null);
   // The previous opening's answers are gone from the list: stop watching them.
   if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
   _panelOnQuestion = false;
@@ -15092,56 +14308,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   landPanel(); // the answer form is in view while the turns load
 
   // 지시와 답변: the latest PANEL_TURNS_PAGE turns; older pages as the reader scrolls up.
-  if (s.conversationId) {
-    _panelTurnsLoading = true;
-    var loadingConvId = s.conversationId;
-    var loadingGen = _panelGen;
-    fetch('/api/dashboard/session/' + encodeURIComponent(loadingConvId) + '?limit=' + PANEL_TURNS_PAGE)
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        // If the panel was switched, closed or reopened while loading, discard this result.
-        if (loadingGen !== _panelGen) return;
-
-        // Handle titleSub
-        var tSubText = document.getElementById('panel-title-sub-text');
-        var tSubBtn = document.getElementById('panel-title-sub-regen');
-        if (data.titleSub) {
-          _panelTitleSub = data.titleSub;
-          tSubText.textContent = data.titleSub;
-          tSubBtn.style.display = panelTitleSubCanRegen() ? 'inline-block' : 'none';
-        } else if (loadingConvId) {
-          generateTitleSub(loadingConvId, false); // fill: allowed for every signed-in viewer
-        }
-
-        var turns = (data && data.turns) || [];
-        // A turn pushed while the page loaded (WS) and not in it stays, after it.
-        var pushed = _panelTurnsList;
-        _panelTurnsList = turns.slice();
-        for (var i = 0; i < pushed.length; i++) ptUpsert(_panelTurnsList, pushed[i]);
-        _panelTurnsCid = data.id || loadingConvId;
-        _panelTurnsHasMore = turns.length > 0 && !!data.hasMore;
-        _panelTurnsOldestId = turns.length ? turns[0].id : null;
-        _panelTurnsMsg = _panelTurnsList.length ? '' : 'none';
-        _panelTurnsLoading = false;
-        if (_psec === 'conv') {
-          paintConvTab();
-          psecSyncControls('conv');
-          psecToNewest();
-          psecMaybeFill('conv');
-        }
-        landPanel();
-      })
-      .catch(function() {
-        if (loadingGen !== _panelGen) return;
-        _panelTurnsLoading = false;
-        _panelTurnsMsg = _panelTurnsList.length ? '' : 'failed';
-        if (_psec === 'conv') {
-          paintConvTab();
-          psecSyncControls('conv');
-        }
-        landPanel();
-      });
-  }
+  loadPanelTurns(true);
 
   // Command input — always visible; disabled + hint for terminated / sleeping
   // sessions, or when viewer is not the session owner (#708 read-only mode).
@@ -15183,18 +14350,6 @@ function deckNextAfter(deck, key) {
   if (i < 0) return deck.length ? deck[deck.length - 1] : null;
   return deck[i + 1] || deck[i - 1] || null;
 }
-// Pure: the card one step (dir ±1) from key, wrapping round the deck.
-function deckStep(deck, key, dir) {
-  var n = deck.length;
-  if (!n) return null;
-  var i = deck.indexOf(key);
-  if (i < 0) return deck[0];
-  return deck[(((i + dir) % n) + n) % n];
-}
-function deckGo(dir) {
-  var k = deckStep(_deck, panelSessionKey, dir);
-  if (k && k !== panelSessionKey) openPanel(k);
-}
 // The detail card of key leaves the deck: the next one comes to the front, or the panel closes.
 function deckDrop(key) {
   // A session gone from the board since it joined the deck is no next card (review R1).
@@ -15229,6 +14384,9 @@ function cardFaceOf(key) {
   return null;
 }
 // The deck's controls and the edges behind the panel; dir = the side a new front card came from.
+// <ui-deck-nav> (D3 E-05) takes the deck as data — how many, which is in front, their names
+// (its ‹ › title "이전: <name>", its position said once) — and asks with ui-page; the page
+// opens that card, which repaints this with the new front.
 function renderDeckNav(dir) {
   _deck = _deck.filter(function(k) { return !!_sessionCache[k]; });
   var panel = document.getElementById('slide-panel');
@@ -15239,16 +14397,27 @@ function renderDeckNav(dir) {
   var behind = panelOpen && i >= 0 ? Math.min(n - 1, 2) : 0;
   panel.setAttribute('data-deck', String(behind));
   nav.hidden = !(panelOpen && n > 1 && i >= 0);
+  if (!nav._wired) {
+    nav._wired = true;
+    nav.addEventListener('ui-page', onDeckPage);
+  }
   if (!nav.hidden) {
-    var pos = document.getElementById('panel-deck-pos');
-    if (pos) pos.textContent = (i + 1) + ' / ' + n;
-    var nameOf = function(k) { var x = _sessionCache[k]; return x ? (x.displayHeadline || x.summaryTitle || x.title || '') : ''; };
-    var prev = document.getElementById('panel-deck-prev');
-    var next = document.getElementById('panel-deck-next');
-    if (prev) prev.title = '이전: ' + nameOf(deckStep(_deck, panelSessionKey, -1));
-    if (next) next.title = '다음: ' + nameOf(deckStep(_deck, panelSessionKey, 1));
+    var titles = _deck.map(function(k) { var x = _sessionCache[k]; return x ? String(x.displayHeadline || x.summaryTitle || x.title || '') : ''; });
+    var data = { count: n, index: i, titles: titles, label: '열린 작업 카드' };
+    var sig = JSON.stringify(data);
+    if (nav._sig !== sig) {
+      nav._sig = sig;
+      nav._keys = _deck.slice();
+      nav.data = data;
+    }
   }
   if (dir && !reduceMotion()) deckSlide(panel, dir);
+}
+// ‹ / › (or ←/→ on the nav): the card at that place in the deck the nav was drawn for comes to the front.
+function onDeckPage(e) {
+  var keys = (e.currentTarget && e.currentTarget._keys) || [];
+  var k = e.detail ? keys[e.detail.index] : null;
+  if (k && k !== panelSessionKey && _sessionCache[k]) openPanel(k);
 }
 // The deck switch (P6): the header and body glide 18px in from the side the new front card came from,
 // on --dur-move ease-out. The offset is composited ('add') onto any slide still running, so a quick
@@ -15286,6 +14455,62 @@ function focusPanelLanding() {
   if (t && t.focus) t.focus({ preventScroll: true });
 }
 
+// 지시와 답변's first page: the latest PANEL_TURNS_PAGE turns of the open
+// session (older pages come as the reader scrolls up). land: the panel lands
+// once they are in (an opening); a Try again on a failed load does not.
+function loadPanelTurns(land) {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  if (!s || !s.conversationId) return;
+  _panelTurnsLoading = true;
+  _panelTurnsWhy = '';
+  var loadingConvId = s.conversationId;
+  var loadingGen = _panelGen;
+  fetch('/api/dashboard/session/' + encodeURIComponent(loadingConvId) + '?limit=' + PANEL_TURNS_PAGE)
+    .then(function(r) {
+      if (r && r.ok === false) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data) {
+      // If the panel was switched, closed or reopened while loading, discard this result.
+      if (loadingGen !== _panelGen) return;
+
+      // Handle titleSub
+      var tSubText = document.getElementById('panel-title-sub-text');
+      var tSubBtn = document.getElementById('panel-title-sub-regen');
+      if (data.titleSub) {
+        _panelTitleSub = data.titleSub;
+        tSubText.textContent = data.titleSub;
+        tSubBtn.style.display = panelTitleSubCanRegen() ? 'inline-block' : 'none';
+      } else if (loadingConvId) {
+        generateTitleSub(loadingConvId, false); // fill: allowed for every signed-in viewer
+      }
+
+      var turns = (data && data.turns) || [];
+      // A turn pushed while the page loaded (WS) and not in it stays, after it.
+      var pushed = _panelTurnsList;
+      _panelTurnsList = turns.slice();
+      for (var i = 0; i < pushed.length; i++) ptUpsert(_panelTurnsList, pushed[i]);
+      _panelTurnsCid = data.id || loadingConvId;
+      _panelTurnsHasMore = turns.length > 0 && !!data.hasMore;
+      _panelTurnsOldestId = turns.length ? turns[0].id : null;
+      _panelTurnsMsg = _panelTurnsList.length ? '' : 'none';
+      _panelTurnsLoading = false;
+      if (_psec === 'conv') {
+        convPaint();
+        psecToNewest();
+      }
+      if (land) landPanel();
+    })
+    .catch(function(err) {
+      if (loadingGen !== _panelGen) return;
+      _panelTurnsLoading = false;
+      _panelTurnsMsg = _panelTurnsList.length ? '' : 'failed';
+      _panelTurnsWhy = String((err && err.message) || '네트워크 오류');
+      if (_psec === 'conv') convPaint();
+      if (land) landPanel();
+    });
+}
+
 // ── Pagination state for 지시와 답변 (recent-first; older pages on scroll up) ──
 var _panelTurnsHasMore = false;
 var _panelTurnsLoading = false;
@@ -15304,69 +14529,46 @@ function panelScrollAnchor(scrollEl) {
   return null;
 }
 
-// The page of turns before the oldest one held — the reader scrolling up in
-// 지시와 답변 (or its top control). The turns go in above the reader, who keeps
-// their place (measured from the bottom of the box).
+// The page of turns before the oldest one held — the element asks for it as the
+// reader scrolls up in 지시와 답변 (ui-load-older; its top row is the keyboard
+// path). The turns go in above the reader, who keeps their place (the element
+// holds the rows they were on); a page that fails says so above the turns with
+// 다시 시도, and the element waits for the reader before asking again.
 async function loadMorePanelTurns() {
   if (_panelTurnsLoading || !_panelTurnsHasMore || !panelConvId || !_panelTurnsOldestId) return;
   _panelTurnsLoading = true;
+  _panelOlderWhy = '';
   var requestConvId = panelConvId;
   var requestGen = _panelGen; // this panel opening; any switch/close/reopen makes it stale
   var requestOldestId = _panelTurnsOldestId;
-  psecSyncControls('conv'); // 이전 대화 불러오는 중…
-  var ok = false;
+  convPaint(); // 이전 대화 불러오는 중…
   try {
     var url = '/api/dashboard/session/' + encodeURIComponent(requestConvId)
       + '?limit=' + PANEL_TURNS_PAGE + '&before=' + encodeURIComponent(requestOldestId);
     var r = await fetch(url);
+    if (r && r.ok === false) throw new Error('HTTP ' + r.status);
     var data = await r.json();
     // Discard a stale response: the panel was switched, closed or reopened
     // (same session included) while this request was in flight.
     if (requestGen !== _panelGen) return;
-    ok = true;
     var turns = (data && data.turns) || [];
     _panelTurnsHasMore = turns.length > 0 && !!data.hasMore;
     if (turns.length) {
       _panelTurnsOldestId = turns[0].id;
       _panelTurnsList = turns.concat(_panelTurnsList);
     }
-    _panelTurnsLoading = false;
-    var box = psecBox('conv');
-    var turnsEl = document.getElementById('panel-turns');
-    if (turns.length && _psec === 'conv' && !_panelAgent && box && turnsEl) {
-      var fromBottom = box.scrollHeight - box.scrollTop;
-      var anchor = psecViewAnchor(box);
-      var cid = data.id || requestConvId;
-      turnsEl.insertAdjacentHTML('afterbegin', turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join(''));
-      attachRawToggleHandlers();
-      decoratePanelTurns();
-      psecSyncControls('conv');
-      psecHoldPlace(box, anchor, fromBottom);
-    }
   } catch (err) {
     if (requestGen !== _panelGen) return;
+    _panelOlderWhy = String((err && err.message) || '네트워크 오류');
     console.error('loadMorePanelTurns failed', err);
   } finally {
     // Only the current generation owns the in-flight flag; a stale request
     // settling must not clear the flag of the load that replaced it.
     if (requestGen === _panelGen) {
       _panelTurnsLoading = false;
-      psecSyncControls('conv');
-      // A box still too short to scroll takes the next page; a failure waits for the reader.
-      if (ok) psecMaybeFill('conv');
+      convPaint();
     }
   }
-}
-
-// The turns while they load: rows shaped like a user / assistant / user turn
-// (spec: skeletons, not a "Loading..." line). Decorative — the list carries
-// aria-busy while it loads.
-function turnsSkeletonHtml() {
-  function row(role, a, b) {
-    return '<div class="sk-turn ' + role + '"><div class="sk sk-avatar"></div><div class="sk-turn-body">'
-      + '<div class="sk sk-line" style="width:' + a + '%"></div><div class="sk sk-line" style="width:' + b + '%"></div></div></div>';
-  }
-  return '<div class="sk-turns" aria-hidden="true">' + row('user', 38, 72) + row('assistant', 46, 88) + row('user', 30, 64) + '</div>';
 }
 
 // ── Turns the user did not type (SSOT 2026-10-27 T1–T5) ──
@@ -15506,11 +14708,15 @@ function cpProgressHtml(elapsed, est) {
 // The one line of a /compact turn: progress while it runs, its numbers once done.
 function cpLineHtml(info, st, now) {
   if (st.phase === 'live') return cpProgressHtml((now || Date.now()) - st.start, st.est);
+  return '<span class="sys-line">' + esc(cpDoneText(info, st)) + '</span>';
+}
+// Pure: a /compact that is not running, in words — its numbers once done.
+function cpDoneText(info, st) {
   var parts = [info.label + ' 처리'];
   var c = st.c;
   if (st.phase === 'done' && c.preTokens != null && c.postTokens != null) parts.push(formatTokens(c.preTokens) + ' → ' + formatTokens(c.postTokens) + ' 토큰');
   if (st.phase === 'done' && toNum(c.durationMs) > 0) parts.push(formatDuration(c.durationMs));
-  return '<span class="sys-line">' + esc(parts.join(' · ')) + '</span>';
+  return parts.join(' · ');
 }
 function cpFacts(st) {
   var c = st.c;
@@ -15532,72 +14738,23 @@ function sysFactsHtml(facts) {
     return '<dt>' + esc(f[0]) + '</dt><dd' + (f[2] ? ' class="' + f[2] + '"' : '') + '>' + esc(f[1]) + '</dd>';
   }).join('') + '</dl>';
 }
-// One line: who · when · badge · what it did. Opens (a native disclosure) to its
-// facts and the raw prompt.
-// SSOT 2026-10-29 T7: a turn the harness sent (goal continuation, background
-// resume, cron, restart, auto-compact …) is not the user's — it reads as System,
-// with its own avatar, never the user's name and initial.
-// P7: the 2lab icon set's bot and target glyphs (16 grid, 1.5 stroke, round caps, currentColor) — the
-// answer tile and the goal mark, in place of the robot and bullseye emoji.
-var BOT_AVATAR_SVG = '<i data-ui-icon="bot"></i>';
-var SYS_AVATAR_SVG = '<i data-ui-icon="gear"></i>';
-function renderSysTurn(t, info, attrs, time, initial, now, notLast, mediaHtml) {
-  var st = info.kind === 'compact' ? cpState(t, now, notLast) : null;
-  var live = st && st.phase === 'live';
-  var facts = st ? info.facts.concat(cpFacts(st)) : info.facts;
-  var line = st ? '<span class="cp-slot">' + cpLineHtml(info, st, now) + '</span>' : '<span class="sys-line">' + esc(info.line) + '</span>';
-  if (live) cpEnsureTicker();
-  return '<div class="turn user is-sys" data-sys="' + info.kind + '"' + attrs
-    + (live ? ' data-cp-live="1" data-cp-start="' + st.start + '" data-cp-est="' + st.est + '"' : '') + '>'
-    + '<div class="turn-avatar sys-avatar" aria-hidden="true">' + SYS_AVATAR_SVG + '</div>'
-    + '<div class="turn-body"><ui-disclosure class="sys-turn" flush><span slot="summary" class="sys-row-in">'
-    + '<span class="turn-name sys-name"' + (t.userName ? ' title="' + escAttr('하네스가 보낸 입력 — ' + t.userName + '의 세션') + '"' : '') + '>System</span><span class="turn-time">' + esc(time) + '</span>'
-    + '<span class="ui-chip sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>' + line
-    + '</span><div class="sys-detail">' + (mediaHtml || '') + sysFactsHtml(facts)
-    + '<div class="sys-raw-h">원본 프롬프트</div><pre class="sys-raw">' + esc(info.raw) + '</pre></div></ui-disclosure></div></div>';
-}
 function cpEnsureTicker() {
   if (_cpTimer || typeof setInterval !== 'function') return;
   _cpTimer = setInterval(cpTick, 1000);
 }
-// Every second while a compaction runs in the open panel: its elapsed time and
-// progress. It stops being live once a later turn landed, the session stopped
-// working, or it outlived any compaction — then it says no result was kept.
+// Every second while a compaction runs in an open card: its elapsed time and
+// progress. It stops being live once the session stopped working, or it
+// outlived any compaction — then it says no result was kept.
 function cpTick() {
-  var nodes = document.querySelectorAll('#panel-turns .turn[data-cp-live]');
   // An open inbox card's 응답 (ioCompactOutHtml): live while its session works.
+  // (지시와 답변's own /compact row ticks inside <ui-conversation>.)
   var cardNodes = document.querySelectorAll('.card-io [data-cp-live]');
-  if (!nodes.length && !cardNodes.length) {
+  if (!cardNodes.length) {
     clearInterval(_cpTimer);
     _cpTimer = 0;
     return;
   }
-  // Turns only: the 응답 작성 중 row (.ans-pending, no data-ts) follows a running
-  // /compact as the list's last child (syncAnsPending reads turns the same way).
-  var all = document.querySelectorAll('#panel-turns > .turn[data-ts]');
-  var last = all.length ? all[all.length - 1] : null;
-  // The board refills the cache in one pass: a session missing from a loaded
-  // board is not running; before the board's first load it is undecided.
-  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  var boardLoaded = Object.keys(_sessionCache).length > 0;
-  var working = s ? s.activityState === 'working' : !boardLoaded;
   var now = Date.now();
-  for (var i = 0; i < nodes.length; i++) {
-    var node = nodes[i];
-    var start = toNum(node.getAttribute('data-cp-start'));
-    var est = toNum(node.getAttribute('data-cp-est')) || CP_DEFAULT_EST_MS;
-    var slot = node.querySelector('.cp-slot');
-    if (node === last && working && now - start < CP_MAX_MS) {
-      if (slot) slot.innerHTML = cpProgressHtml(now - start, est);
-      continue;
-    }
-    // Ended without a result: the line and 상태 a fresh render of it shows.
-    node.removeAttribute('data-cp-live');
-    var badge = node.querySelector('.sys-badge');
-    var state = node.querySelector('.cp-state');
-    if (slot) slot.innerHTML = '<span class="sys-line">' + esc((badge ? badge.textContent : '압축') + ' 처리') + '</span>';
-    if (state) state.textContent = '결과 기록 없음';
-  }
   for (var j = 0; j < cardNodes.length; j++) {
     var cn = cardNodes[j];
     var card = cn.closest ? cn.closest('.card-slot[data-session-key]') : null;
@@ -15719,169 +14876,321 @@ function skillPaneHtml(sk) {
 function botNameOf(s) {
   return (s && s.botName) || BOT_NAME || 'Assistant';
 }
-function renderTurn(t, _idx, _arr, convId) {
-  const time = new Date(t.timestamp).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit' });
-  const initial = (t.userName || 'U').charAt(0).toUpperCase();
-  var turnIdAttr = (t.id ? ' data-turn-id="' + esc(t.id) + '"' : '') + ' data-ts="' + toNum(t.timestamp) + '"';
-  if (t.role === 'user') {
-    // User media (SSOT 2026-10-25): the files sit above the words, as chat apps
-    // show an attachment with its message; a files-only turn has no empty text.
-    var umCid = convId || panelConvId;
-    var atts = Array.isArray(t.attachments) ? t.attachments : [];
-    if (atts.length) umRegister(umCid, atts, t);
-    var mediaHtml = atts.length ? renderUserMedia(umCid, atts) : '';
-    // SSOT 2026-10-27 T1 — a turn soma-work put there reads as one line; its
-    // files (the message the auto-compact intercepted) open with it. A batch
-    // tells whether a later turn follows (then a /compact is not running).
-    var sys = sysTurnInfo(t);
-    if (sys) return renderSysTurn(t, sys, turnIdAttr, time, initial, 0, !!(_arr && typeof _idx === 'number' && _idx < _arr.length - 1), mediaHtml);
-    // T5 — an <invoked_skills> block becomes badges under the words.
-    var said = splitInvokedSkills(decodeSlackEntities(t.rawContent || ''));
-    // Task view T1.3: the whole instruction — a long one folds to 12 lines until
-    // clicked (자세히 shows it whole).
-    var textHtml = said.text
-      ? '<div class="turn-content turn-instr" role="button" tabindex="0" title="눌러서 펼치기 · 접기" onclick="this.classList.toggle(\\'is-full\\')" onkeydown="if(event.key===\\'Enter\\'||event.key===\\' \\'){event.preventDefault();this.classList.toggle(\\'is-full\\')}">' + esc(said.text) + '</div>'
-      : '';
-    return '<div class="turn user"' + turnIdAttr + '>'
-      + '<div class="turn-avatar user-avatar">' + esc(initial) + '</div>'
-      + '<div class="turn-body">'
-      + '<div class="turn-header"><span class="turn-name">' + esc(t.userName || 'User') + '</span><span class="turn-time">' + time + '</span></div>'
-      + mediaHtml + textHtml + skillBadgesHtml(t.id, said.skills)
-      + '</div></div>';
-  } else {
-    const title = t.summaryTitle ? '<div class="turn-summary-title">' + esc(t.summaryTitle) + '</div>' : '';
-    var body;
-    if (t.summaryBody) {
-      body = '<div class="turn-summary-body">' + esc(t.summaryBody) + '</div>';
-    } else if (t.summarized) {
-      body = '<div class="turn-summary-body" style="color:var(--text-tertiary);font-style:italic">' + STRINGS.summaryFailed + ' <button type="button" class="ui-btn is-sm" style="margin-left:8px" onclick="event.stopPropagation();resummarize(\\'' + escJs(convId || panelConvId) + '\\',\\'' + escJs(t.id) + '\\',this)">' + STRINGS.retry + '</button></div>';
+// ── 지시와 답변 — @2lab.ai/ui <ui-conversation> (D3: G-01..G-13, E-25) ──
+// The section's turns are the library element's: the instruction (clamped,
+// the media above it, the skills it invoked as chips), the answer (a nested
+// <ui-ai-answer flat>, its response time in the head, Raw: summary · source),
+// a turn soma-work put there (one line + badge that opens to its facts and the
+// raw prompt; a running /compact's progress ticking in place), the writing row,
+// and the scroll box itself (<ui-log-scroller>: it follows the newest turn,
+// keeps the reader's place while an older page goes in above, and counts what
+// arrived below). The dashboard keeps the data — the pages it fetched
+// (_panelTurnsList), the answers it loaded (_rawLoadedCache), the files of each
+// turn — hands the element turns built from it (convPaint), and answers its
+// requests: ui-load-older → loadMorePanelTurns, ui-retry → the answer (or the
+// page) again.
+function convEl() {
+  return document.getElementById('panel-conv');
+}
+// What the list says without turns (G-13: in Korean, the element's own empty state).
+var CONV_EMPTY = { none: '아직 대화가 없습니다', unrecorded: '기록된 대화가 없습니다' };
+// Pure: the turn's summary — the heading of an answer that is empty or failed,
+// and Raw's 요약 view: its title and body, else that it is still being made or failed.
+function convSummaryOf(t) {
+  var title = t && t.summaryTitle ? String(t.summaryTitle) : '';
+  var text = t && t.summaryBody ? String(t.summaryBody) : t && t.summarized ? STRINGS.summaryFailed : STRINGS.summaryPending;
+  var out = {};
+  if (title) out.title = title;
+  if (text) out.text = text;
+  return out;
+}
+// Pure: a turn soma-work put there (sysTurnInfo) as the element's system turn —
+// its badge (kind + label), one line, the facts and the raw prompt. A /compact
+// still running (the latest turn of a working session, younger than a
+// compaction can run) carries its progress; once done, its numbers.
+function convSysTurn(t, info, id, at, c, notLast) {
+  var x = { id: id, role: 'system', name: 'System', kind: info.kind === 'bgwork' ? 'background' : info.kind, label: info.label, text: info.line };
+  if (at) x.at = at;
+  var facts = info.facts;
+  if (info.kind === 'compact') {
+    var st = cpState(t, c.now, notLast);
+    if (st.phase === 'live' && !c.working) st.phase = 'unknown';
+    facts = facts.concat(cpFacts(st));
+    if (st.phase === 'live') x.progress = { startedAt: st.start, estimateMs: st.est, verb: '압축 중…' };
+    else x.text = cpDoneText(info, st);
+  }
+  // The files the turn carried (the message an auto-compact intercepted): a
+  // system turn has no media slot in the element (D3-GAPS G1-2) — their names.
+  var atts = Array.isArray(t.attachments) ? t.attachments.filter(function(f) { return f && f.id; }) : [];
+  if (atts.length) facts = facts.concat([['첨부 파일', atts.map(function(f) { return String(f.name || f.id); }).join(', ')]]);
+  if (facts.length) x.facts = facts.map(function(f) { return [String(f[0]), String(f[1])]; });
+  if (info.raw) x.raw = String(info.raw);
+  return x;
+}
+// Pure: the element's turns for the main agent's turns (oldest first), and the
+// slotted children they ask for — a user's files (media-<id>) and the files an
+// answer produced (attachments-<id>: an artifact goes to the first answer whose
+// turn window holds its turn start). c: { cid, bot, now, working, answers
+// (cache key → raw), failed (cache key → why), arts, titles }.
+function convTurnsOf(list, c) {
+  var turns = [];
+  var slots = [];
+  var used = Object.create(null);
+  var start = 0;
+  for (var i = 0; i < list.length; i++) {
+    var t = list[i];
+    if (!t) continue;
+    var ts = toNum(t.timestamp);
+    var id = String(t.id || (t.role + ':' + ts + ':' + i));
+    var at = ts > 0 ? ts : 0;
+    var prev = i > 0 ? list[i - 1] : null;
+    if (t.role === 'user') {
+      var atts = Array.isArray(t.attachments) ? t.attachments.filter(function(a) { return a && a.id; }) : [];
+      var sys = sysTurnInfo(t);
+      if (sys) turns.push(convSysTurn(t, sys, id, at, c, i < list.length - 1));
+      else {
+        var said = splitInvokedSkills(decodeSlackEntities(t.rawContent || ''));
+        var u = { id: id, role: 'user', name: String(t.userName || 'User'), text: said.text };
+        if (at) u.at = at;
+        if (atts.length) {
+          u.media = true;
+          slots.push({ name: 'media-' + id, kind: 'media', list: atts, turn: t });
+        }
+        if (said.skills.length) u.skills = said.skills.map(function(sk) { return { name: sk.name, tokens: sk.tokens, text: sk.body }; });
+        turns.push(u);
+      }
     } else {
-      body = '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">' + STRINGS.summaryPending + '</div>';
+      var a = { id: id, role: 'assistant', name: c.bot };
+      if (at) a.at = at;
+      var sum = convSummaryOf(t);
+      if (sum.title || sum.text) a.summary = sum;
+      // D11 — from the instruction to the recorded answer; an optimistic
+      // instruction carries this browser's clock, not the server's: no time.
+      var pts = prev ? toNum(prev.timestamp) : 0;
+      if (prev && prev.role === 'user' && pts > 0 && ts > pts && String(prev.id || '').indexOf('optimistic-') !== 0) a.responseMs = ts - pts;
+      if (t.id && c.cid) {
+        var key = ansCacheKey(c.cid, t.id);
+        var raw = c.answers[key];
+        if (typeof raw === 'string') {
+          a.markdown = raw;
+          if (c.titles && Object.keys(c.titles).length) a.linkTitles = c.titles;
+        } else if (c.failed[key]) {
+          a.markdown = '';
+          a.error = String(c.failed[key]);
+          a.canRetry = true;
+        } else a.loading = true;
+      } else a.markdown = '';
+      var mine = (c.arts || []).filter(function(x) { return x && !used[x.id] && artInTurn(x, start, ts); });
+      mine.forEach(function(x) { used[x.id] = true; });
+      // G-04 요약 실패 · 다시 시도: the element has no summary action (D3-GAPS G1-3), so the retry rides
+      // in the turn's attachments slot until the summary arrives (the next poll drops it).
+      var resum = t.id && c.cid && t.summarized && !t.summaryBody ? { cid: c.cid, turnId: String(t.id) } : null;
+      if (mine.length || resum) {
+        a.attachments = true;
+        var slot = { name: 'attachments-' + id, kind: 'arts', list: mine, start: start, end: ts };
+        if (resum) slot.resum = resum;
+        slots.push(slot);
+      }
+      turns.push(a);
     }
-    // AI answer (task view T1.4, re-ai-answer D1): the answer itself is the
-    // turn — <ui-ai-answer flat>, loaded as it nears the view
-    // (attachRawToggleHandlers) — and Raw at its foot holds the turn's summary
-    // and the answer's source as written. A turn with no recorded answer to
-    // load shows its summary.
-    var answer = title + body;
-    var raw = '';
-    var cid = convId || panelConvId;
-    if (t.id && cid) {
-      answer = '<div class="turn-answer ui-tok" data-conv="' + esc(cid) + '" data-turn="' + esc(t.id) + '">' + ansSlotHtml('불러오는 중…') + '</div>';
-      raw = '<ui-disclosure class="turn-raw" summary="Raw" flush><div class="turn-raw-body">'
-        + '<div class="turn-raw-label">요약</div><div class="turn-raw-summary">' + title + body + '</div>'
-        + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src"></pre></div></ui-disclosure>';
+    start = ts;
+  }
+  return { turns: turns, slots: slots };
+}
+// The slotted children the turns ask for: written when their markup changed,
+// removed when no turn asks for them (the files keep the page's own handlers:
+// the viewer, the hover preview — they stay in the light DOM).
+function convSlots(el, slots, cid) {
+  var want = Object.create(null);
+  for (var i = 0; i < slots.length; i++) {
+    var sl = slots[i];
+    if (sl.kind === 'media') umRegister(cid, sl.list, sl.turn);
+    want[sl.name] = sl.kind === 'media' ? renderUserMedia(cid, sl.list)
+      : (sl.list.length ? renderTurnArtifacts(sl.list, cid, sl.start, sl.end) : '') + (sl.resum ? convResumHtml(sl.resum) : '');
+  }
+  var kids = Array.prototype.slice.call(el.children);
+  for (var k = 0; k < kids.length; k++) {
+    var name = kids[k].getAttribute('slot') || '';
+    if (!(name in want)) {
+      kids[k].remove();
+      continue;
     }
-    // SSOT 2026-10-23 T6 — the files and markdown answer this turn produced, under
-    // it. decoratePanelTurns() re-files them whenever turns or artifacts change.
-    var artsStart = 0;
-    if (_arr && typeof _idx === 'number' && _idx > 0 && _arr[_idx - 1]) artsStart = toNum(_arr[_idx - 1].timestamp);
-    var artCached = cid ? _artCache[cid] : null;
-    var turnArts = '<div class="turn-arts">' + (artCached && artCached.list ? renderTurnArtifacts(artCached.list, cid, artsStart, toNum(t.timestamp)) : '') + '</div>';
-    return '<div class="turn assistant"' + turnIdAttr + '>'
-      + '<div class="turn-avatar bot-avatar" aria-hidden="true">' + BOT_AVATAR_SVG + '</div>'
-      + '<div class="turn-body">'
-      + '<div class="turn-header"><span class="turn-name">' + esc(botNameOf(panelSessionKey ? _sessionCache[panelSessionKey] : null)) + '</span><span class="turn-time">' + time + '</span><span class="ans-took"></span></div>'
-      + answer + turnArts + raw
-      + '</div></div>';
+    if (kids[k]._html !== want[name]) {
+      kids[k].innerHTML = want[name];
+      kids[k]._html = want[name];
+    }
+    delete want[name];
+  }
+  for (var n in want) {
+    var d = document.createElement('div');
+    d.slot = n;
+    d.className = n.indexOf('media-') === 0 ? 'cv-media-slot' : 'cv-arts-slot';
+    d.innerHTML = want[n];
+    d._html = want[n];
+    el.appendChild(d);
   }
 }
-
-// A new turn (a WS push, or this browser's own instruction — own: the reader
-// goes to it): into 지시와 답변's data, and onto the list when that is shown —
-// followed by a reader at the newest, else counted on the pill. A turn the
-// list already holds (by id) is updated in place instead.
-function appendTurnToPanel(turn, own) {
-  var had = _panelTurnsList.length;
-  if (ptUpsert(_panelTurnsList, turn) === 'update') return;
-  if (_panelTurnsMsg !== 'loading') _panelTurnsMsg = '';
-  if (_psec !== 'conv' || _panelAgent || _panelTurnsMsg === 'loading') return;
-  var turnsEl = document.getElementById('panel-turns');
-  var box = psecBox('conv');
-  if (!turnsEl || !box) return;
-  if (!had) {
-    paintConvTab();
-    psecSyncControls('conv');
-    psecToNewest();
+// 요약 실패 · 다시 시도 (G-04): asks the server to summarize the turn again (POST …/resummarize/:turnId);
+// the button carries its ids as data (initConversation answers its click — no inline handler).
+function convResumHtml(r) {
+  return '<p class="cv-resum"><span class="cv-resum-note">' + esc(STRINGS.summaryFailed) + '</span> '
+    + '<button type="button" class="ui-btn is-sm" data-resum-cid="' + escAttr(r.cid) + '" data-resum-turn="' + escAttr(r.turnId) + '">' + esc(STRINGS.retry) + '</button></p>';
+}
+async function resummarize(convId, turnId, btn) {
+  btn.disabled = true;
+  btn.textContent = STRINGS.retrying;
+  try {
+    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(convId) + '/resummarize/' + encodeURIComponent(turnId), { method: 'POST' });
+    if (!res.ok) throw new Error('Failed');
+    btn.textContent = STRINGS.queued;
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = STRINGS.retry;
+  }
+}
+// The element's data, written only when it changed (a poll that changes
+// nothing re-renders nothing); the turns still loading their answer are
+// watched once the element has rendered them.
+function convSetData(el, d) {
+  var sig = JSON.stringify(d);
+  if (el._convSig === sig) return;
+  el._convSig = sig;
+  el.data = d;
+  queueMicrotask(function() { convWatchAnswers(el); });
+}
+// The section's data now: the main agent's turns, or a subagent's 지시와 답변.
+function convPaint() {
+  var el = convEl();
+  if (!el || _psec !== 'conv') return;
+  if (_panelAgent) {
+    renderAgentConv();
     return;
   }
-  var pinned = !!own || psecAtBottom(box);
-  turnsEl.insertAdjacentHTML('beforeend', renderTurn(turn));
-  attachRawToggleHandlers();
-  decoratePanelTurns();
-  psecOnAppended(1, pinned);
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var cid = _panelTurnsCid || panelConvId || '';
+  // The board refills the cache in one pass: a session missing from a loaded
+  // board is not running; before the board's first load it is undecided.
+  var working = s ? s.activityState === 'working' : Object.keys(_sessionCache).length === 0;
+  var built = convTurnsOf(_panelTurnsList, {
+    cid: cid, bot: botNameOf(s), now: Date.now(), working: working,
+    answers: _rawLoadedCache, failed: _ansFailed,
+    arts: cid && _artCache[cid] ? _artCache[cid].list || [] : [],
+    titles: ansLinkTitles(ansSession(cid)),
+  });
+  var last = _panelTurnsList.length ? _panelTurnsList[_panelTurnsList.length - 1] : null;
+  var msg = _panelTurnsMsg;
+  var d = {
+    turns: built.turns,
+    hasMore: !!_panelTurnsHasMore,
+    loading: msg === 'loading' || !!_panelTurnsLoading,
+    // D12 — the writing row: the session works and the latest turn is the instruction.
+    pending: ansPendingShow(s, panelConvId, last ? last.role : ''),
+    assistantName: botNameOf(s),
+    // T1.3 — a long instruction folds to 12 lines; 자세히 shows it whole.
+    clampLines: _panelDetail ? 200 : 12,
+    label: '지시와 답변',
+    emptyText: CONV_EMPTY[msg] || CONV_EMPTY.none,
+    startText: '대화의 시작',
+  };
+  var why = msg === 'failed' ? _panelTurnsWhy || '네트워크 오류' : _panelOlderWhy;
+  if (why) d.error = why;
+  convSlots(el, built.slots, cid);
+  convSetData(el, d);
 }
-
-/** Replace an existing turn element in-place (e.g., when summary arrives for an assistant turn). */
-function updateTurnInPanel(existingEl, turn) {
-  // 지시와 답변's data first (an optimistic turn is taken over by the server's).
-  ptUpsert(_panelTurnsList, turn, existingEl.getAttribute('data-turn-id') || turn.id);
-  var tmp = document.createElement('div');
-  tmp.innerHTML = renderTurn(turn);
-  var newEl = tmp.firstElementChild;
-  if (newEl) {
-    // re-ai-answer D14 — the answer stays (painted again from the cache), and so
-    // does an open Raw.
-    var rawOpen = !!existingEl.querySelector('.turn-raw[open]');
-    // #488: the old answer leaves the list — stop watching it.
-    var oldAnswer = existingEl.querySelector('.turn-answer');
-    if (_ansIo && oldAnswer) _ansIo.unobserve(oldAnswer);
-    // SSOT 2026-10-27 — so does a one-line row (a /compact result landing).
-    var sysOpen = !!existingEl.querySelector('.sys-turn[open]');
-    existingEl.replaceWith(newEl);
-    var rawEl = rawOpen ? newEl.querySelector('.turn-raw') : null;
-    if (rawEl) rawEl.setAttribute('open', '');
-    var sysEl = sysOpen ? newEl.querySelector('.sys-turn') : null;
-    if (sysEl) sysEl.setAttribute('open', '');
-    attachRawToggleHandlers();
-    decoratePanelTurns();
-  } else {
-    console.warn('updateTurnInPanel: no element for turn', turn.id);
+// Several answers land in one frame: one paint.
+var _convPaintQueued = false;
+function convPaintSoon() {
+  if (_convPaintQueued) return;
+  _convPaintQueued = true;
+  requestAnimationFrame(function() {
+    _convPaintQueued = false;
+    convPaint();
+  });
+}
+// A new turn (a WS push, or this browser's own instruction — own: the reader
+// goes to it) into 지시와 답변's data, in place of the one with its id
+// (replaceId: the optimistic turn the server's took over), else at the end.
+// The element follows a reader at the newest and counts it for one higher up.
+function appendTurnToPanel(turn, own, replaceId) {
+  if (!turn) return;
+  ptUpsert(_panelTurnsList, turn, replaceId);
+  if (_panelTurnsMsg !== 'loading') _panelTurnsMsg = '';
+  if (_psec !== 'conv' || _panelAgent || _panelTurnsMsg === 'loading') return;
+  convPaint();
+  var el = convEl();
+  if (own && el && typeof el.scrollToLatest === 'function') el.scrollToLatest();
+}
+// A turn leaves the data (an instruction that could not be sent).
+function dropTurnFromPanel(id) {
+  for (var i = _panelTurnsList.length - 1; i >= 0; i--) {
+    if (_panelTurnsList[i] && _panelTurnsList[i].id === id) {
+      _panelTurnsList.splice(i, 1);
+      convPaint();
+      return true;
+    }
   }
+  return false;
 }
 
 var _rawLoadedCache = Object.create(null);
-// Task view T1.4 — every answer in the turns list loads as it nears the view
-// (one fetch per answer, then the cache); an answer already cached paints at once.
+// Cache key → why its answer could not be had (this panel opening): the answer
+// says so with 다시 시도 (the element's ui-retry with the turn id).
+var _ansFailed = Object.create(null);
+// Task view T1.4 — every answer loads as its turn nears the view (one fetch per
+// answer, then the cache); an answer already cached is in the turn at once.
 var _ansIo = null;
-function attachRawToggleHandlers() {
-  var turnsEl = document.getElementById('panel-turns');
-  if (!turnsEl) return;
-  var els = turnsEl.querySelectorAll('.turn-answer[data-turn]');
-  for (var i = 0; i < els.length; i++) {
-    var el = els[i];
-    if (el._ansObserved) continue;
-    el._ansObserved = true;
-    var cached = typeof _rawLoadedCache[ansCacheKey(el.dataset.conv, el.dataset.turn)] === 'string';
-    if (!cached && !_ansIo && typeof IntersectionObserver === 'function') {
+// The element's scroll viewport (<ui-conversation> → <ui-log-scroller> → .ls-vp, open shadow roots), or null.
+function convViewport(el) {
+  var sc = el && el.shadowRoot ? el.shadowRoot.querySelector('ui-log-scroller') : null;
+  return (sc && sc.shadowRoot && sc.shadowRoot.querySelector('.ls-vp')) || null;
+}
+function convWatchAnswers(el) {
+  if (!el || typeof el.turnElement !== 'function' || _psec !== 'conv' || _panelAgent) return;
+  var d = el.data;
+  var turns = d && d.turns ? d.turns : [];
+  var cid = _panelTurnsCid || panelConvId || '';
+  // #488 — a turn rebuilt (or gone) is a new node: the one it replaced is no longer watched.
+  if (_ansIo) _ansIo._nodes = _ansIo._nodes.filter(function(n) {
+    if (n.isConnected) return true;
+    _ansIo.unobserve(n);
+    return false;
+  });
+  // The box that clips the turns is the element's own viewport (inside <ui-log-scroller>'s shadow
+  // root): the 800px lead counts against it, not the page. A new viewport starts a new observer.
+  var vp = convViewport(el);
+  if (_ansIo && _ansIo._root !== vp) {
+    _ansIo.disconnect();
+    _ansIo._nodes.forEach(function(n) { n._ansWatched = false; });
+    _ansIo = null;
+  }
+  for (var i = 0; i < turns.length; i++) {
+    if (!turns[i].loading) continue;
+    var node = el.turnElement(turns[i].id);
+    if (!node || node._ansWatched) continue;
+    node._ansWatched = true;
+    node._ansCid = cid;
+    if (!_ansIo && typeof IntersectionObserver === 'function') {
       _ansIo = new IntersectionObserver(function(entries) {
         entries.forEach(function(en) {
           if (!en.isIntersecting) return;
           _ansIo.unobserve(en.target);
-          ansLoad(en.target);
+          _ansIo._nodes = _ansIo._nodes.filter(function(n) { return n !== en.target; });
+          convLoadAnswer(en.target._ansCid, en.target.getAttribute('data-item'));
         });
-      }, { root: document.getElementById('psec-conv'), rootMargin: '800px 0px' });
+      }, vp ? { root: vp, rootMargin: '800px 0px' } : { rootMargin: '800px 0px' });
+      _ansIo._nodes = [];
+      _ansIo._root = vp;
     }
-    if (cached || !_ansIo) ansLoad(el);
-    else _ansIo.observe(el);
+    if (_ansIo) {
+      _ansIo.observe(node);
+      _ansIo._nodes.push(node);
+    } else convLoadAnswer(cid, turns[i].id);
   }
 }
-
-// ── AI answer (.prd/affectui/re-ai-answer.md) — @2lab.ai/ui <ui-ai-answer> ──
-// An assistant turn's face is its answer, drawn by the library element (flat:
-// the turn is its card): the markdown rendered safely, the links it holds as
-// numbered link cards and chips that light each other (links the answer
-// contains — not proven sources, so never called 출처/인용), Copy (the answer
-// and its numbered links), the loading / empty / failed states and the
-// 응답 작성 중 row. The dashboard fetches and caches the answer (ansLoad), titles
-// the links it knows (the session's PR and issue), draws the turn's summary
-// above an answer that is empty or failed, fills Raw, times the answer in the
-// turn header and keeps the writing row last.
-
-// The element, and its light-DOM line until the library has loaded.
-function ansSlotHtml(lite) {
-  return '<ui-ai-answer flat lang="ko"><span class="ans-lite">' + esc(lite) + '</span></ui-ai-answer>';
-}
+// ── AI answer (.prd/affectui/re-ai-answer.md) ──
+// The dashboard fetches and caches each answer (convLoadAnswer), titles the
+// links it knows (the session's PR and issue), and hands the element the turn
+// with the answer, loading, or why it failed (다시 시도 → ui-retry).
 // Pure (D5): the link titles the dashboard already knows — the session's PR and
 // issue (the PR's wins when both are one URL).
 function ansLinkTitles(s) {
@@ -15890,195 +15199,108 @@ function ansLinkTitles(s) {
   if (s && s.prUrl && s.prTitle) t[String(s.prUrl)] = String(s.prTitle);
   return t;
 }
-// An element's data, written only when it changed (a poll that changes
-// nothing re-renders nothing). Data set before the element is defined is
-// picked up when it upgrades.
-function ansSetData(el, d) {
-  var sig = JSON.stringify(d);
-  if (el._ansSig === sig) return;
-  el._ansSig = sig;
-  el.data = d;
-}
 // The panel's session, when it is the one this conversation belongs to (D5 titles).
 function ansSession(cid) {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   return s && s.conversationId === cid ? s : null;
 }
-// Task view T1.4 — the turn's summary (kept in its Raw) as one line of text:
-// the heading (the element's title) of an answer that cannot be read (none
-// recorded, or not this viewer's to read). Its title, then its body's own
-// words — not a button's (Summary failed's 🔄 Retry works in Raw).
-function ansSummaryTitle(details) {
-  var body = details.parentNode;
-  var sum = body && body.querySelector ? body.querySelector('.turn-raw-summary') : null;
-  if (!sum) return '';
-  var head = sum.querySelector('.turn-summary-title');
-  var text = sum.querySelector('.turn-summary-body');
-  var words = text ? String(text.textContent || '') : '';
-  var btn = text && text.querySelector ? text.querySelector('button') : null;
-  if (btn) words = words.replace(String(btn.textContent || ''), '');
-  return [head ? String(head.textContent || '') : '', words]
-    .map(function(x) { return x.replace(/\\s+/g, ' ').trim(); })
-    .filter(Boolean)
-    .join(' — ');
-}
-// D1 · D13 — one answer's face: loading, failed (다시 시도 → ui-retry), or the
-// answer from the cache — filled into Raw as written too. An empty or failed
-// answer is headed by the turn's summary (the element's title: nothing is
-// inserted beside it). Entry motion (D15) only for an answer that just
-// arrived: one painted again from the cache (the turn re-rendered when its
-// summary landed, D14) does not replay it.
-function ansPaint(details, state, detail, animate) {
-  var el = details.querySelector('ui-ai-answer');
-  if (!el) return;
-  var raw = state === 'ok' ? _rawLoadedCache[ansCacheKey(details.dataset.conv, details.dataset.turn)] : '';
-  raw = typeof raw === 'string' ? raw : '';
-  if (state === 'ok') {
-    var src = details.parentNode && details.parentNode.querySelector ? details.parentNode.querySelector('.turn-raw-src') : null;
-    if (src && src.textContent !== raw) src.textContent = raw;
-  }
-  var d = state === 'loading' ? { markdown: '', loading: true }
-    : state === 'error' ? { markdown: '', error: String(detail || 'Error'), canRetry: true }
-    : { markdown: raw, linkTitles: ansLinkTitles(ansSession(details.dataset.conv)), animate: !!animate };
-  var title = state !== 'loading' && !raw.trim() ? ansSummaryTitle(details) : '';
-  if (title) d.title = title;
-  ansSetData(el, d);
-}
 // Turn ids are unique per conversation only: the raw cache is keyed by both.
 function ansCacheKey(convId, turnId) {
   return String(convId || '') + ':' + String(turnId || '');
 }
-// The request in flight per cache key and panel opening — a disclosure re-rendered
-// mid-fetch (D14) joins it instead of asking again.
+// The request in flight per cache key and panel opening — a turn rebuilt
+// mid-fetch joins it instead of asking again.
 var _ansInflight = Object.create(null);
-// D1 · D13 — first open fetches; later opens use the cache. A response lands only
-// while it is current (review R1): it fills the cache only for this panel opening
-// (_panelGen) and if no newer request replaced it, and paints only a disclosure
-// that is still in the turns list.
-function ansLoad(details) {
-  var key = ansCacheKey(details.dataset.conv, details.dataset.turn);
-  if (typeof _rawLoadedCache[key] === 'string') {
-    if (!details._ansPainted) ansPaint(details, 'ok', '', false);
-    details._ansPainted = true;
-    return;
-  }
-  if (details._ansLoading) return;
-  details._ansLoading = true;
-  ansPaint(details, 'loading');
+// D1 · D13 — the first time a turn nears the view its answer is fetched; later
+// paints use the cache. A response lands only while it is current (review R1):
+// for this panel opening (_panelGen) and if no newer request replaced it.
+function convLoadAnswer(cid, id) {
+  if (!cid || !id) return;
+  var key = ansCacheKey(cid, id);
+  if (typeof _rawLoadedCache[key] === 'string' || _ansFailed[key]) return;
   var gen = _panelGen;
   var req = _ansInflight[key];
-  if (!req || req.gen !== gen) {
-    req = { gen: gen };
-    req.promise = fetch('/api/conversations/' + encodeURIComponent(details.dataset.conv) + '/turns/' + encodeURIComponent(details.dataset.turn) + '/raw')
-      .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-      .then(function(data) {
-        var newest = _ansInflight[key] === req;
-        if (newest) delete _ansInflight[key];
-        if (newest && req.gen === _panelGen) _rawLoadedCache[key] = data && typeof data.raw === 'string' ? data.raw : '';
-      }, function(err) {
-        if (_ansInflight[key] === req) delete _ansInflight[key];
-        throw err;
-      });
-    _ansInflight[key] = req;
-  }
-  var shown = function() {
-    var turnsEl = document.getElementById('panel-turns');
-    return gen === _panelGen && !!turnsEl && turnsEl.contains(details);
-  };
-  req.promise.then(function() {
-    details._ansLoading = false;
-    if (typeof _rawLoadedCache[key] !== 'string' || !shown()) return;
-    details._ansPainted = true;
-    ansPaint(details, 'ok', '', true);
-  }, function(err) {
-    details._ansLoading = false;
-    if (!shown()) return;
-    ansPaint(details, 'error', err && (err.message || err.name));
-  });
+  if (req && req.gen === gen) return;
+  req = { gen: gen };
+  _ansInflight[key] = req;
+  fetch('/api/conversations/' + encodeURIComponent(cid) + '/turns/' + encodeURIComponent(id) + '/raw')
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(data) {
+      if (_ansInflight[key] !== req) return;
+      delete _ansInflight[key];
+      if (req.gen !== _panelGen) return;
+      _rawLoadedCache[key] = data && typeof data.raw === 'string' ? data.raw : '';
+      convPaintSoon();
+    }, function(err) {
+      if (_ansInflight[key] !== req) return;
+      delete _ansInflight[key];
+      if (req.gen !== _panelGen) return;
+      _ansFailed[key] = String((err && (err.message || err.name)) || 'Error');
+      convPaintSoon();
+    });
 }
-// D13 — 다시 시도 on a failed answer fetches it again (only the answer element's
-// ui-retry: other library elements send one too).
-document.addEventListener('ui-retry', function(e) {
-  var el = e.target;
-  if (!el || el.tagName !== 'UI-AI-ANSWER' || !el.closest) return;
-  var details = el.closest('.turn-answer[data-turn]');
-  if (details) {
-    ansLoad(details);
+// D13 — 다시 시도: on an answer (the turn's id) fetches it again; on the list
+// (id null) the page that failed — the first, or the older one.
+function convRetry(id) {
+  if (id === null || id === undefined) {
+    if (_panelAgent) return;
+    if (_panelTurnsMsg === 'failed') {
+      _panelTurnsMsg = 'loading';
+      _panelTurnsWhy = '';
+      convPaint();
+      loadPanelTurns();
+    } else if (_panelOlderWhy) {
+      _panelOlderWhy = '';
+      convPaint();
+      loadMorePanelTurns();
+    }
     return;
   }
-  // A subagent's answer: its raw is a work-log entry's, named by seq.
-  var sub = el.closest('.turn-answer[data-seq]');
-  if (sub) agentConvRetry(sub.getAttribute('data-seq'));
-});
-// D11 — "응답 4분 12초": from the instruction to the recorded answer (queue and
-// tools included — the answer is recorded when its turn ends).
-function ansTookLabel(ms) {
-  var v = Number(ms);
-  if (!isFinite(v) || v <= 0) return '';
-  if (v < 1000) return '응답 1초 미만';
-  var sec = Math.floor(v / 1000);
-  if (sec < 60) return '응답 ' + sec + '초';
-  var min = Math.floor(sec / 60);
-  if (min < 60) return '응답 ' + min + '분 ' + (sec % 60) + '초';
-  return '응답 ' + Math.floor(min / 60) + '시간 ' + (min % 60) + '분';
-}
-function ansTookFor(prevRole, prevTs, ts) {
-  return prevRole === 'user' && toNum(prevTs) > 0 ? ansTookLabel(toNum(ts) - toNum(prevTs)) : '';
-}
-// D11 · D12 — walk the turns in DOM order (every insert path ends here via
-// decoratePanelTurns): fill each answer's time, then the writing row.
-function decorateAnswerTurns() {
-  var turnsEl = document.getElementById('panel-turns');
-  if (!turnsEl) return;
-  var nodes = turnsEl.querySelectorAll('.turn[data-ts]');
-  for (var i = 0; i < nodes.length; i++) {
-    var took = nodes[i].classList.contains('assistant') ? nodes[i].querySelector('.ans-took') : null;
-    if (!took) continue;
-    var prev = i > 0 ? nodes[i - 1] : null;
-    var prevTs = prev ? toNum(prev.getAttribute('data-ts')) : 0;
-    var ts = toNum(nodes[i].getAttribute('data-ts'));
-    // An optimistic instruction carries this browser's clock, not the server's: no time.
-    var optimistic = prev && /^optimistic-/.test(prev.getAttribute('data-turn-id') || '');
-    var label = prev && !optimistic ? ansTookFor(prev.classList.contains('user') ? 'user' : 'assistant', prevTs, ts) : '';
-    if (took.textContent !== label) took.textContent = label;
-    if (label) took.setAttribute('title', '지시 ' + formatTaskTime(prevTs) + ' → 응답 ' + formatTaskTime(ts));
-    else took.removeAttribute('title');
+  if (_panelAgent) {
+    var el = convEl();
+    if (el && el._agentSeq != null) agentConvRetry(el._agentSeq);
+    return;
   }
-  syncAnsPending();
+  var cid = _panelTurnsCid || panelConvId || '';
+  var key = ansCacheKey(cid, id);
+  if (!_ansFailed[key]) return;
+  delete _ansFailed[key];
+  convPaint();
+  convLoadAnswer(cid, id);
 }
 // D12 — the same rule the card's 응답 row uses (renderCardIo): the session is
 // working and the latest turn is the instruction.
 function ansPendingShow(s, convId, lastRole) {
   return !!(s && convId && s.conversationId === convId && s.activityState === 'working' && lastRole === 'user');
 }
-function ansPendingHtml() {
-  return '<div class="turn assistant ans-pending" aria-busy="true">'
-    + '<div class="turn-avatar bot-avatar" aria-hidden="true">' + BOT_AVATAR_SVG + '</div>'
-    + '<div class="turn-body"><div class="turn-header"><span class="turn-name">' + esc(botNameOf(panelSessionKey ? _sessionCache[panelSessionKey] : null)) + '</span></div>'
-    + '<div class="ui-tok">' + ansSlotHtml('응답 작성 중') + '</div>'
-    + '</div></div>';
-}
-// The writing row is always the list's last child — or absent. Its element
-// shows only the writing row (streaming, no text yet).
-function syncAnsPending() {
-  var turnsEl = document.getElementById('panel-turns');
-  if (!turnsEl) return;
-  var s = panelOpen && panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  var turns = turnsEl.querySelectorAll('.turn[data-ts]');
-  var last = turns.length ? turns[turns.length - 1] : null;
-  var lastRole = last ? (last.classList.contains('user') ? 'user' : 'assistant') : '';
-  var row = turnsEl.querySelector('.ans-pending');
-  if (!ansPendingShow(s, panelConvId, lastRole)) {
-    if (row) row.remove();
-    return;
+// One-time wiring: the element's requests (older page, try again) and, once its
+// module has loaded, a paint of what it was handed before it could render.
+(function initConversation() {
+  var el = convEl();
+  if (!el) return;
+  // 요약 실패 · 다시 시도 in a turn's attachments slot (light DOM: the click lands here as it is).
+  el.addEventListener('click', function(e) {
+    var b = e.target && e.target.closest ? e.target.closest('button[data-resum-turn]') : null;
+    if (b && !b.disabled && el.contains(b)) resummarize(b.getAttribute('data-resum-cid'), b.getAttribute('data-resum-turn'), b);
+  });
+  el.addEventListener('ui-load-older', function(e) {
+    if (_panelAgent || !_panelTurnsHasMore || _panelTurnsLoading) {
+      e.preventDefault();
+      return;
+    }
+    loadMorePanelTurns();
+  });
+  el.addEventListener('ui-retry', function(e) {
+    var d = e.detail || {};
+    convRetry(d.id);
+  });
+  if (window.customElements && customElements.whenDefined) {
+    customElements.whenDefined('ui-conversation').then(function() {
+      el._convSig = '';
+      convPaint();
+    });
   }
-  if (!row) {
-    turnsEl.insertAdjacentHTML('beforeend', ansPendingHtml());
-    row = turnsEl.lastElementChild;
-  } else if (row !== turnsEl.lastElementChild) turnsEl.appendChild(row);
-  var el = row.querySelector('ui-ai-answer');
-  if (el) ansSetData(el, { markdown: '', streaming: true });
-}
+})();
 
 // Panel subtitle (titleSub). Reads are open to every signed-in viewer (#716);
 // so is filling a MISSING subtitle (POST ensure-title — it never overwrites).
@@ -16172,6 +15394,9 @@ function closePanel() {
   _panelAgent = '';
   _panelAgentsHtml = '';
   _rawLoadedCache = Object.create(null);
+  _ansFailed = Object.create(null);
+  _panelOlderWhy = '';
+  _panelTurnsWhy = '';
   _panelGen++;
   _panelTurnsHasMore = false;
   _panelTurnsLoading = false;
@@ -16354,10 +15579,7 @@ async function sendCommand(text, ref) {
   // Not sent: the note's row says so with Retry (the element's), and the
   // optimistic turn leaves the transcript — found by its own id, not by being the
   // list's last child (the 응답 작성 중 row may follow it, re-ai-answer D12).
-  if (optimisticId) {
-    var turn = document.querySelector('.turn.user[data-turn-id="' + optimisticId + '"]');
-    if (turn) turn.remove();
-  }
+  if (optimisticId) dropTurnFromPanel(optimisticId);
   if (ref) el.setItemState(ref, 'failed', why.trim());
   dashToast({ title: '메시지를 보내지 못했어요', description: why.trim(), tone: 'error' });
 }
@@ -17622,7 +16844,9 @@ function renderPanelArtifactsSection() {
   var html = cid ? (umHtml ? '<div class="panel-user-media" id="panel-user-media">' + umHtml + '</div>' : '') + renderPanelArtifacts(list, cid, artPanelVariant()) : '';
   el.innerHTML = html;
   el.style.display = html ? '' : 'none';
-  decoratePanelTurns();
+  // The files each answer produced go under it (convTurnsOf: an artifact goes to
+  // the first answer whose turn window holds its turn start).
+  convPaint();
 }
 
 // The panel's strip is a row of name chips in the minimal view (자세히 off) or on a short panel body (≤ 560px:
@@ -17637,30 +16861,6 @@ function syncPanelArtVariant() {
   var v = artPanelVariant();
   var cards = document.querySelectorAll('#panel-artifacts .art-strip-panel ui-file-card');
   for (var i = 0; i < cards.length; i++) if (cards[i].getAttribute('variant') !== v) cards[i].setAttribute('variant', v);
-}
-
-// Files each answer produced, under that answer: walk the turns in order; an
-// artifact goes to the first answer whose turn window holds its turn start.
-function decoratePanelTurns() {
-  var turnsEl = document.getElementById('panel-turns');
-  var cid = panelConvId;
-  if (!turnsEl || !cid) return;
-  var c = _artCache[cid];
-  var list = (c && c.list) || [];
-  var used = Object.create(null);
-  var start = 0;
-  var nodes = turnsEl.querySelectorAll('.turn[data-ts]');
-  for (var i = 0; i < nodes.length; i++) {
-    var ts = toNum(nodes[i].getAttribute('data-ts'));
-    var slot = nodes[i].querySelector('.turn-arts');
-    if (slot) {
-      var mine = list.filter(function(a) { return !used[a.id] && artInTurn(a, start, ts); });
-      mine.forEach(function(a) { used[a.id] = true; });
-      slot.innerHTML = renderTurnArtifacts(mine, cid, start, ts);
-    }
-    start = ts;
-  }
-  decorateAnswerTurns(); // re-ai-answer D11 · D12
 }
 
 function artPeekEl() {

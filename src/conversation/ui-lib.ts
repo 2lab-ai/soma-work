@@ -193,6 +193,83 @@ export function uiIcon(name: string, opts: Parameters<UiIconFn>[1] = {}): string
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="${stroke}" stroke-linecap="round" stroke-linejoin="round" focusable="false" data-icon="${key}"${cls} ${a11y}>${title}${body}</svg>`;
 }
 
+/** The raw text of `const NAME = \`…\`;` in `src`: null when absent, or when it holds a backslash or a backtick. */
+function readCssLiteral(src: string, name: string): string | null {
+  const open = `const ${name} = \``;
+  const head = src.indexOf(open);
+  if (head < 0) return null;
+  const from = head + open.length;
+  const close = src.indexOf('`', from);
+  if (close < 0 || src[close + 1] !== ';') return null;
+  const text = src.slice(from, close);
+  return text.includes('\\') ? null : text;
+}
+
+/** `"key": "…"` / `"key": '…'` — one entry of a one-line token object (`const light = { … };`). */
+const TOKEN_ENTRY = /"([a-z][a-z0-9-]*)": (?:"([^"\\]*)"|'([^'\\]*)')(?:, |$)/y;
+
+/** The entries of the one-line `const NAME = { … };` in `src`, or null when it is not a flat object of strings. */
+function readTokenObject(src: string, name: string): Array<[string, string]> | null {
+  const m = new RegExp(`^const ${name} = \\{ (.*) \\};$`, 'm').exec(src);
+  if (!m) return null;
+  const body = m[1];
+  const entries: Array<[string, string]> = [];
+  TOKEN_ENTRY.lastIndex = 0;
+  while (TOKEN_ENTRY.lastIndex < body.length) {
+    const e = TOKEN_ENTRY.exec(body);
+    if (!e) return null;
+    entries.push([e[1], e[2] ?? e[3]]);
+  }
+  return entries.length ? entries : null;
+}
+
+const UNSAFE_IN_STYLE = /<\/?\s*style|<!--|<script/i;
+const shadowCss = new Map<string, string>();
+/**
+ * The shadow-root sheet one @2lab.ai/ui element's server renderer writes (`${baseCss}\n${styles}`, as in
+ * `authCardHtml`), READ from the package's build — the module is never run. `styles` is a plain template
+ * literal of `dist/<file>`; `baseCss` sits in the shared chunk that file imports it from, and its only
+ * interpolations are `${hostVars(SHARED|LIGHT|DARK)}` over that chunk's one-line token objects, filled here
+ * the way the library fills them. '' (logged once) when the package is missing or the build is not that shape.
+ */
+export function uiLibShadowCss(file: string): string {
+  const cached = shadowCss.get(file);
+  if (cached !== undefined) return cached;
+  let css = '';
+  const dir = uiLibDistDir();
+  if (dir && UI_LIB_FILE.test(file)) {
+    try {
+      const src = readFileSync(join(dir, file), 'utf8');
+      const styles = readCssLiteral(src, 'styles');
+      const chunk = /^import \{[^}]*\b[A-Za-z_$][\w$]* as baseCss\b[^}]*\} from "\.\/([A-Za-z0-9_-]+\.js)";$/m.exec(
+        src,
+      )?.[1];
+      const chunkSrc = chunk ? readFileSync(join(dir, chunk), 'utf8') : '';
+      const base = readCssLiteral(chunkSrc, 'baseCss');
+      const sets = new Map(
+        ['SHARED', 'LIGHT', 'DARK'].map((set) => [set, readTokenObject(chunkSrc, set.toLowerCase())]),
+      );
+      let shapeOk = styles !== null && !styles.includes('${') && base !== null;
+      const filled = (base ?? '').replace(/\$\{([^}]*)\}/g, (_all, expr: string) => {
+        const entries = sets.get(/^hostVars\(([A-Z]+)\)$/.exec(expr)?.[1] ?? '');
+        if (!entries) {
+          shapeOk = false;
+          return '';
+        }
+        return entries.map(([k, v]) => `--${k}: var(--ui-${k}, ${v});`).join(' ');
+      });
+      const out = `${filled}\n${styles}`;
+      if (!shapeOk || UNSAFE_IN_STYLE.test(out))
+        logger.error(`@2lab.ai/ui ${file} does not carry a plain shadow sheet — drawn unstyled`);
+      else css = out;
+    } catch (err) {
+      logger.error(`@2lab.ai/ui ${file} is missing — its server-rendered markup is unstyled`, err);
+    }
+  }
+  shadowCss.set(file, css);
+  return css;
+}
+
 /** `<i data-ui-icon="name"></i>` or `<i data-ui-icon="name" class="a b"></i>` — an icon slot in a page template. */
 const UI_ICON_SLOT = /<i data-ui-icon="([a-z][a-z0-9-]*)"(?: class="([A-Za-z0-9 _-]+)")?><\/i>/g;
 const missingIcons = new Set<string>();

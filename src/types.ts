@@ -263,12 +263,17 @@ export interface SessionGoal {
   /** ms epoch of the last continuation injection. */
   lastContinuationAt?: number;
   /**
-   * Set to the ms epoch when a cap-reached "continue?" DM was sent to the
-   * goal owner (S3). Acts as a dedup guard so the loop sends exactly one DM
-   * per cap event; cleared when the owner answers (continue/cancel) or any
-   * real user message resets the loop. Undefined ⇒ no decision pending.
+   * Set to the ms epoch when the cap-reached "continue?" decision opened
+   * (S3). The decision is answered from the owner's DM or the dashboard's
+   * approval card (`slack/goal-cap-decision.ts`); cleared when the owner
+   * answers, or when any real user message / pause / done / completion ends
+   * it. Undefined ⇒ no decision pending.
    */
   capDmPendingAt?: number;
+  /** The pending decision's round id — carried by the DM buttons and the dashboard card, checked on every answer. */
+  capDecisionId?: string;
+  /** Where the round's DM landed; stored only after the post succeeded (absent ⇒ the DM is retried). */
+  capDmRef?: { channel: string; ts: string };
 
   /**
    * The goal's opening turn was admitted but has not reached the model yet
