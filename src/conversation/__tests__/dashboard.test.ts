@@ -1130,8 +1130,9 @@ describe('Dashboard API', () => {
     expect(correctOpenPanel!.length).toBe(4);
     expect(script.match(/\\',\\'\\',event\.detail===0\)/g)?.length).toBe(3);
     expect(script).not.toContain("',true,\\'\\',event.detail===0)");
-    // The panel's ✕ and backdrop close the front detail card (and fold its card): no string arguments.
-    expect(html).toContain('<div class="slide-panel-overlay" id="panel-overlay" onclick="closeDetailCard()"></div>');
+    // The panel's ✕ and the drawer's scrim / Esc (ui-close) close the front detail card (and fold its card): no string arguments.
+    expect(html).toContain("d.addEventListener('ui-close', function(e) { e.preventDefault(); closeDetailCard(); })");
+    expect(html).not.toContain('slide-panel-overlay');
     expect(html).toMatch(
       /<button type="button" class="ui-icon-btn is-bordered panel-close"[^>]*onclick="closeDetailCard\(\)">/,
     );

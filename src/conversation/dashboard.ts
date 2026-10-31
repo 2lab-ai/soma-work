@@ -4565,44 +4565,19 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .chart-row > ui-bar-chart { display: block; flex: 1; min-width: 0; }
 .chart-row > ui-bar-chart:not(:defined) { min-height: 214px; border-radius: 12px; background: var(--ib-pill); }
 
-/* ── SLIDE PANEL — flat, structured, resizable ── */
-/* SSOT 2026-10-24 — a full-screen sheet below 840px, docked beside the board from
-   840px (the Drawer media blocks below). Hidden by a transform, so its width is
-   CSS-only: JS stores a width preference (--panel-w-pref) and never writes the
-   width or the right offset. It follows the visual viewport (--pv-h / --pv-t,
-   syncPanelViewport) so the composer stays above the on-screen keyboard. */
-.slide-panel {
-  position: fixed;
-  top: var(--pv-t, 0px); right: 0;
-  width: var(--panel-w, 440px);
-  height: 100vh;
-  height: var(--pv-h, 100dvh);
-  padding-right: env(safe-area-inset-right, 0px);
-  background: var(--surface);
-  border-left: 1px solid var(--border);
-  z-index: 100;
-  transform: translateX(100%);
-  visibility: hidden;
-  transition: transform var(--dur-move) var(--ease-out), visibility 0s linear var(--dur-move);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.slide-panel.open { transform: none; visibility: visible; transition: transform var(--dur-move) var(--ease-out); }
-.slide-panel.resizing { transition: none; user-select: none; }
-/* Resize handle — left edge */
-.panel-resize-handle {
-  position: absolute;
-  top: 0; left: 0;
-  width: 8px; height: 100%;
-  cursor: col-resize;
-  touch-action: none;
-  z-index: 101;
-  background: transparent;
-  transition: background-color 150ms ease, opacity 150ms ease;
-}
-.panel-resize-handle.active { background: var(--ib-muted); opacity: 0.35; }
-@media (hover: hover) and (pointer: fine) { .panel-resize-handle:hover { background: var(--ib-muted); opacity: 0.35; } }
+/* ── SLIDE PANEL — @2lab.ai/ui <ui-drawer id="slide-panel"> (D4 E-01, E-02) ── */
+/* SSOT 2026-10-24 — a full-screen sheet below 840px (modal, over the element's scrim), docked beside the board
+   from 840px (dock-at="840": no scrim, the board stays live). The slide on the drawer curve both ways, the sheet ↔
+   dock switch in place while open (the same nodes — the composer's draft and every scroll place stay — its box
+   morphing 320ms), the resize from its inner edge (resizable: pointer or arrows, ui-resize), Esc / the scrim
+   (ui-close) and the visual viewport (its box ends above the soft keyboard in both modes) are the element's. The
+   page keeps its own head, body and composer in the default slot (hide-close and no heading: the element's own
+   head is out), the dock's top under the sticky top bar (--ui-drawer-top), its layer under the bar (--ui-drawer-z)
+   and the saved width (initPanelResize: the width attribute; --panel-w for the board beside it). */
+ui-drawer:not(:defined) { display: none; }
+.slide-panel { --ui-drawer-top: var(--topbar-b, 0px); --ui-drawer-z: 100; }
+.slide-panel::part(panel) { background: var(--surface); color: var(--text); padding-right: env(safe-area-inset-right, 0px); }
+.slide-panel::part(body) { display: flex; flex-direction: column; min-height: 0; padding: 0; overflow: hidden; font-size: 14px; line-height: 1.45; color: var(--text); overflow-wrap: normal; }
 /* Panel tasks (.prd/10 §3.1-6) — pinned between the token badges and the
    scroll area: always shown (an empty line when there are none yet), with its
    own scroll so a long list never pushes the work log and turns away. */
@@ -4796,18 +4771,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   font-family: var(--mono); font-size: 11.5px; color: var(--text-secondary);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.slide-panel-overlay {
-  position: fixed;
-  top: 0; left: 0;
-  width: 100vw; height: 100vh;
-  background: var(--scrim);
-  z-index: 99;
-  display: none;
-  opacity: 0;
-  transition: opacity var(--dur-fade) var(--ease-out), display var(--dur-fade) allow-discrete;
-}
-.slide-panel-overlay.open { display: block; opacity: 1; }
-@starting-style { .slide-panel-overlay.open { opacity: 0; } }
 .panel-header {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
@@ -5331,32 +5294,28 @@ body.nt-open .new-task-fab { display: none !important; }
    fold, unfold and rotation of those devices crosses one boundary and
    runLayoutCheck animates it. */
 @media (max-width: 839px) {
-  /* Drawer — a full-screen sheet: the saved desktop width never applies, there is
-     no resize handle, the top-bar chips stay under it, and its header and
-     composer keep clear of the notch and the home indicator. */
-  .slide-panel { width: 100%; }
+  /* Drawer — a full-screen sheet (the element's modal sheet: the top-bar chips stay under it): the saved
+     desktop width never applies, there is no resize handle, and its header keeps clear of the notch (the
+     element's panel keeps the composer clear of the home indicator). */
+  .slide-panel::part(panel) { width: 100%; }
+  .slide-panel::part(handle) { display: none; }
   .slide-panel .panel-header, .slide-panel .panel-body, .slide-panel .panel-command { margin-left: env(safe-area-inset-left, 0px); }
-  .panel-resize-handle { display: none; }
   .slide-panel .panel-header { padding-top: max(12px, env(safe-area-inset-top, 0px)); }
-  .slide-panel .panel-command { padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
-  .topbar .topbar-defaults { z-index: auto; }
-  .slide-panel.open ~ .new-task-fab { display: none !important; }
+  .slide-panel[open] ~ .new-task-fab { display: none !important; }
 }
 @media (min-width: 840px) {
   /* Drawer — docked beside the board (unfolded Duo / Fold8, tablets, PC): no dim,
      the board stays live, the drawer sits under the top bar until it scrolls
-     away (--topbar-b, syncTopbarBottom), and the page narrows to what is left
-     with its 1280px column centred there (never margin-right over width:100%). */
-  :root { --panel-w: min(var(--panel-w-pref, 440px), 50vw); }
+     away (--topbar-b → --ui-drawer-top, syncTopbarBottom), and the page narrows to what is left
+     with its 1280px column centred there (never margin-right over width:100%). --panel-w is the
+     drawer's own clamped width (syncPanelWidth writes it on the root from the element). */
   .topbar { z-index: 101; }
-  .slide-panel { width: var(--panel-w); top: calc(var(--pv-t, 0px) + var(--topbar-b, 0px)); height: calc(var(--pv-h, 100dvh) - var(--topbar-b, 0px)); }
-  .slide-panel-overlay.open { display: none; }
-  .app:has(> .slide-panel.open) > .main {
-    max-width: min(1280px, calc(100% - var(--panel-w)));
-    margin-left: max(0px, calc((100% - var(--panel-w) - 1280px) / 2));
+  .app:has(> .slide-panel[open]) > .main {
+    max-width: min(1280px, calc(100% - var(--panel-w, 440px)));
+    margin-left: max(0px, calc((100% - var(--panel-w, 440px) - 1280px) / 2));
     margin-right: auto;
   }
-  .slide-panel.open ~ .new-task-fab { right: calc(var(--panel-w) + 16px); }
+  .slide-panel[open] ~ .new-task-fab { right: calc(var(--panel-w, 440px) + 16px); }
 }
 /* A short docked screen (a phone held sideways, an unfolded Duo) keeps the drawer
    under the top bar too (SSOT 2026-10-29 T3: the top bar is always visible). */
@@ -5510,12 +5469,13 @@ ${pageTokenAliases()}
     <div class="cron-drawer-body" id="cron-drawer-body"></div>
   </ui-drawer>
 
-  <!-- Slide panel: the detail card -->
-  <div class="slide-panel-overlay" id="panel-overlay" onclick="closeDetailCard()"></div>
-  <div class="slide-panel" id="slide-panel" data-deck="0">
+  <!-- Slide panel: the detail card — @2lab.ai/ui <ui-drawer> (D4 E-01, E-02): a modal sheet over its own scrim below
+       840px, docked beside the board from 840px (dock-at), switched in place while open; resizable from its inner edge
+       (the saved width: initPanelResize); Esc and the scrim arrive as ui-close (→ closeDetailCard, as the ✕ below). Its
+       own head is out (hide-close, no heading): the page's header, body and composer fill it. -->
+  <ui-drawer class="slide-panel" id="slide-panel" data-deck="0" dock-at="840" width="440" min-width="320" resizable hide-close label="작업 카드" lang="ko">
     <!-- Detail deck (SSOT 2026-10-29 T2): the edges of the open cards' other detail cards, waiting behind this one. -->
     <div class="panel-deck-peek" id="panel-deck-peek" aria-hidden="true"><span></span><span></span></div>
-    <div class="panel-resize-handle" id="panel-resize-handle"></div>
     <div class="panel-header">
       <div style="flex:1;min-width:0">
         <h3 id="panel-title" tabindex="-1">작업 카드</h3>
@@ -5610,7 +5570,7 @@ ${pageTokenAliases()}
         <ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"></ui-composer></ui-agent-steering>
       </div>
     </div>
-  </div>
+  </ui-drawer>
 
   <!-- New task (SSOT 2026-10-23): floating button (phones, and PC once the top-bar
        button scrolls away), the composer dialog, and the launch toast. -->
@@ -5817,55 +5777,39 @@ window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', fu
     if (t === 'light' || t === 'dark') setTheme(t);
   });
 })();
-// ── Panel resize — drag the left edge of the docked drawer (SSOT 2026-10-24) ──
-// The drag stores a width preference (--panel-w-pref, localStorage); CSS decides
-// the applied width — the whole screen as a sheet (<840px), min(preference, 50vw)
-// docked. JS never writes the drawer's width or right offset, so a width chosen on
-// a wide screen can never push the drawer past a folded phone.
+// ── Panel width — the docked drawer's inner edge (SSOT 2026-10-24, D4 E-01) ──
+// The drag and the handle's arrow keys are <ui-drawer resizable>'s: it clamps the width to
+// [min-width, min(max-width, viewport − 48)] and says ui-resize. The page keeps the saved
+// preference (localStorage) as the element's width attribute, caps it at half the window
+// (max-width follows a resize) and writes the drawer's own clamped width as --panel-w on the
+// root for the board beside it. JS never writes the drawer's width or right offset itself:
+// the sheet below 840px is the whole screen whatever was saved on a wide one.
 (function initPanelResize() {
   var panel = document.getElementById('slide-panel');
-  var handle = document.getElementById('panel-resize-handle');
+  if (!panel) return;
   var STORAGE_KEY = 'soma-panel-width';
   var MIN_W = 320, MAX_W = 1600;
-  var root = document.documentElement;
-  function applyPref(w) { root.style.setProperty('--panel-w-pref', w + 'px'); }
-
   var saved = NaN;
   try { saved = parseInt(localStorage.getItem(STORAGE_KEY) || '', 10); } catch (_e) {}
-  if (saved >= MIN_W && saved <= MAX_W) applyPref(saved);
-
-  var dragging = false;
-  var pref = 0;
-  handle.addEventListener('pointerdown', function(e) {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    dragging = true;
-    pref = 0;
-    try { handle.setPointerCapture(e.pointerId); } catch (_e) {}
-    panel.classList.add('resizing');
-    handle.classList.add('active');
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
+  if (saved >= MIN_W && saved <= MAX_W) panel.setAttribute('width', String(saved));
+  panel.addEventListener('ui-resize', function(e) {
+    var w = e.detail && e.detail.width;
+    if (w >= MIN_W) { try { localStorage.setItem(STORAGE_KEY, String(w)); } catch (_e) {} }
+    syncPanelWidth();
   });
-  handle.addEventListener('pointermove', function(e) {
-    if (!dragging) return;
-    pref = Math.round(Math.min(Math.max(window.innerWidth - e.clientX, MIN_W), window.innerWidth * 0.5));
-    applyPref(pref);
-  });
-  function endDrag() {
-    if (!dragging) return;
-    dragging = false;
-    panel.classList.remove('resizing');
-    handle.classList.remove('active');
-    document.body.style.cursor = '';
-    document.body.style.userSelect = '';
-    if (pref >= MIN_W) {
-      try { localStorage.setItem(STORAGE_KEY, String(pref)); } catch (_e) {}
-    }
-  }
-  handle.addEventListener('pointerup', endDrag);
-  handle.addEventListener('pointercancel', endDrag);
+  window.addEventListener('resize', syncPanelWidth, { passive: true });
+  syncPanelWidth();
 })();
+// The cap (half the window, never under the drawer's minimum) and --panel-w: the element's clamped width
+// — the saved width capped the same way until the element is defined.
+function syncPanelWidth() {
+  var panel = document.getElementById('slide-panel');
+  if (!panel) return;
+  var half = Math.max(320, Math.round(window.innerWidth / 2));
+  if (panel.getAttribute('max-width') !== String(half)) panel.setAttribute('max-width', String(half));
+  var w = typeof panel.width === 'number' ? panel.width : Math.min(parseInt(panel.getAttribute('width') || '', 10) || 440, half);
+  document.documentElement.style.setProperty('--panel-w', w + 'px');
+}
 
 // ── Panel tasks rendering ──
 function formatDuration(ms) {
@@ -11310,7 +11254,6 @@ var _layoutRefreshTimer = null;
 var _layoutCheckFrame = null; // document.timeline time of the frame the last check ran in
 var _panelAnchor = null;
 var _panelScrollGen = 0; // bumped by the reader's own input in the panel
-var _layoutPanelW = 0; // the open drawer's width when the cache was taken
 function currentLayoutMode() {
   var inbox = document.getElementById('inbox');
   var panel = document.getElementById('slide-panel');
@@ -11318,7 +11261,7 @@ function currentLayoutMode() {
   var m = layoutModeOf(
     window.innerWidth,
     inbox ? inbox.getBoundingClientRect().width : 0,
-    !!(panel && panel.classList.contains('open')),
+    !!(panel && panel.hasAttribute('open')),
     kb ? kb.getAttribute('view') : ''
   );
   // The secondary sections above the board (capacity, CRON lane) move it too.
@@ -11363,7 +11306,6 @@ function measureLayout() {
   _lastScroll = _layoutScroll;
   _layoutModeKey = layoutModeKey(currentLayoutMode());
   _panelAnchor = capturePanelAnchor();
-  _layoutPanelW = panelOpen ? document.getElementById('slide-panel').getBoundingClientRect().width : 0;
 }
 // A reader's Board/List switch (setBoardView with an event) glides in the
 // element; the coordinator takes it as the new layout once it has landed.
@@ -11429,26 +11371,9 @@ function runLayoutCheck() {
     }
   }
   if (animate && reduce) kb.animate([{ opacity: 0 }, { opacity: 1 }], { duration: MOTION.fade, easing: 'linear' });
-  // The open drawer's own width (sheet ↔ dock) animates with the cards: from its
-  // visible width (mid-flight, the running animation's) to the new one. Only here —
-  // a CSS width transition would trail every desktop window drag.
-  var panel = document.getElementById('slide-panel');
-  var toW = 0;
-  if (panel && panelOpen) {
-    // Only a sheet ↔ dock change (or retargeting that same animation) — a drag of
-    // the drawer's own edge that happens to cross 840px must follow the pointer.
-    var prevPanel = _layoutModeKey.split('|')[1];
-    var retarget = !!panel._wflip;
-    var fromW = retarget ? panel.getBoundingClientRect().width : _layoutPanelW;
-    if (panel._wflip) { panel._wflip.cancel(); panel._wflip = null; }
-    toW = panel.getBoundingClientRect().width;
-    var reshape = (prevPanel !== mode.panel || retarget) && !panel.classList.contains('resizing');
-    if (reshape && fromW && animate && !reduce && Math.abs(fromW - toW) > 1) {
-      panel._wflip = panel.animate([{ width: fromW + 'px' }, { width: toW + 'px' }], { duration: MOTION.move, easing: MOTION.easeOut });
-      panel._wflip.onfinish = function() { panel._wflip = null; };
-    }
-  }
-  _layoutPanelW = toW;
+  // The open drawer's own box (sheet ↔ dock) morphs with the cards: <ui-drawer>'s in-place switch
+  // (D4 E-01) — 320ms on the drawer curve from where it was drawn, retargeting a morph still running,
+  // none under reduced motion. The page animates nothing of it.
   _layoutModeKey = layoutModeKey(mode);
   restorePanelAnchor(anchor);
   _layoutShiftUntil = Date.now() + MOTION.move;
@@ -13821,6 +13746,16 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   renderPanelQuestion(s);
 
 
+  // The drawer opens here (D4 E-01: a closed <dialog> has no layout — the sections below are sized and
+  // the landing scrolled on the open one; its slide-in starts after this task, the content painted). Docked
+  // (≥840px) the open drawer narrows the board: animate that shift too. A card switch keeps it open.
+  var panel = document.getElementById('slide-panel');
+  layoutBeforeChange();
+  panel.show();
+  panelOpen = true;
+  panel.setAttribute('label', document.getElementById('panel-title').textContent);
+  syncPanelWidth();
+
   // The section tab of this opening, painted from its data (지시와 답변: the
   // skeleton while the turns load) and landed on its newest items.
   selectPanelSection(_psec);
@@ -13835,12 +13770,6 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   document.getElementById('panel-command').style.display = '';
   // A re-landing on the open session leaves a send in flight alone (only a change of state writes).
   renderPanelComposer(s, !sameSession);
-
-  // Docked (≥840px) the open drawer narrows the board: animate that shift too.
-  layoutBeforeChange();
-  document.getElementById('slide-panel').classList.add('open');
-  document.getElementById('panel-overlay').classList.add('open');
-  panelOpen = true;
 
   if (panelConvId) loadWorkLog();
   sizePanelSections();
@@ -14905,8 +14834,7 @@ function closePanel() {
   pcReset();
   if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
   layoutBeforeChange();
-  document.getElementById('slide-panel').classList.remove('open');
-  document.getElementById('panel-overlay').classList.remove('open');
+  document.getElementById('slide-panel').hide();
   panelOpen = false;
   panelSessionKey = null;
   panelConvId = null;
@@ -14963,6 +14891,12 @@ document.addEventListener('keydown', function(e) {
   // took the key (the drawer, the defaults menu, a dialog: preventDefault) keeps it from the panel too.
   if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artViewerIsOpen() && !_cronDrawerKey) closeDetailCard();
 });
+// Esc inside the drawer and a press on its scrim arrive as <ui-drawer>'s cancelable ui-close (D4 E-01, E-02): the
+// page closes the detail card itself (the card folds, the deck moves on — closeDetailCard, as the panel's own ✕).
+(function initPanelDrawer() {
+  var d = document.getElementById('slide-panel');
+  if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeDetailCard(); });
+})();
 
 // The panel's own scroll (bound once): a held section landing goes back under
 // the tabs while the panel settles, until the reader acts; a section landing the
@@ -17069,16 +17003,10 @@ function ntInit() {
 }
 
 // ── Drawer geometry (SSOT 2026-10-24) ──
-// The drawer follows the visual viewport, so its composer stays above the
-// on-screen keyboard (the New task <ui-dialog> does the same by itself).
-function syncPanelViewport() {
-  var vv = window.visualViewport;
-  var panel = document.getElementById('slide-panel');
-  if (!vv || !panel) return;
-  panel.style.setProperty('--pv-h', Math.round(vv.height) + 'px');
-  panel.style.setProperty('--pv-t', Math.round(vv.offsetTop) + 'px');
-}
-// Docked, the drawer sits under the top bar (sticky, SSOT 2026-10-29 T3 — always on screen).
+// The drawer follows the visual viewport by itself (<ui-drawer>, D4 E-01: its box ends above the
+// on-screen keyboard in both modes — the New task <ui-dialog> does the same). The page only says
+// where the sticky top bar ends, so the docked drawer sits under it (--topbar-b → --ui-drawer-top;
+// SSOT 2026-10-29 T3 — the bar is always on screen).
 function syncTopbarBottom() {
   var bar = document.querySelector('.topbar');
   if (!bar) return;
@@ -17086,11 +17014,6 @@ function syncTopbarBottom() {
   document.documentElement.style.setProperty('--topbar-b', b + 'px');
 }
 (function initPanelViewport() {
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', syncPanelViewport);
-    window.visualViewport.addEventListener('scroll', syncPanelViewport);
-  }
-  syncPanelViewport();
   var queued = false;
   function queueTopbar() {
     if (queued) return;
