@@ -136,14 +136,25 @@ describe('SessionRegistry — an epic tree’s lifecycle (E4 ⑦)', () => {
           activityState: 'waiting',
           ...asleep,
         }),
+        // Done, and its child died with the process (saved working): reconciled idle on this load,
+        // so the tree follows the normal clock (grok #703 R1).
+        slacklessRecord('epic-4', { kind: 'epic', childTaskIds: ['child-4'], plan: DONE_PLAN, ...asleep }),
+        slacklessRecord('child-4', {
+          parentTaskId: 'epic-4',
+          planNodeId: 'login',
+          activityState: 'working',
+          ...asleep,
+        }),
         slacklessRecord('plain-1', asleep),
       ]),
     );
     const reg = new SessionRegistry();
     reg.loadSessions();
     for (const id of ['epic-1', 'child-1', 'epic-3', 'child-3']) expect(reg.getSessionByTaskId(id), id).toBeDefined();
-    for (const id of ['epic-2', 'child-2', 'plain-1']) expect(reg.getSessionByTaskId(id), id).toBeUndefined();
-    expect(archivedIds().sort()).toEqual(['child-2', 'epic-2', 'plain-1']);
+    for (const id of ['epic-2', 'child-2', 'epic-4', 'child-4', 'plain-1']) {
+      expect(reg.getSessionByTaskId(id), id).toBeUndefined();
+    }
+    expect(archivedIds().sort()).toEqual(['child-2', 'child-4', 'epic-2', 'epic-4', 'plain-1']);
   });
 
   it('L3 — closedBy: parent is saved now, put back on a failed save, and carried through restart and archive', () => {
