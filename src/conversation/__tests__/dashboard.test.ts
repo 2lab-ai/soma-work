@@ -1162,9 +1162,25 @@ describe('Dashboard API', () => {
     // <ui-choice-form> (ui-submit, D3 E-15) — model-written question / label /
     // id travel as element data, because escJs() inside a double-quoted
     // onclick could not carry " or newlines safely (.prd/10 round-2 review).
+    // (#637's askId rides as element data — data-mc-ask — not as an inline argument.)
     expect(actionClosings!.length).toBe(7);
     expect(script).not.toMatch(/answerChoice\(\\'/);
     expect(script).not.toMatch(/selectMc\(\\'/);
+  });
+
+  // #637 R2 (astra P1) — a form's actions carry the ask the form shows, and the
+  // question is repainted on every cache update (poll and single-session push).
+  it('form actions carry the shown askId; the panel question follows every cache update', async () => {
+    const res = await injectWebServer({ method: 'GET', url: '/dashboard', headers: AUTH_HEADER });
+    const script = (res.body as string).match(/<script>([\s\S]*?)<\/script>/)![1];
+    // The <ui-choice-form> carries the ask it was drawn for; its picks and its submit are refused for another.
+    expect(script).toContain("el.setAttribute('data-mc-ask', q.askId || '');");
+    expect(script).toContain('if (!q || !q.questions || !mcAskShown(el, q)) return;');
+    expect(script).toContain('if (!mcAskShown(el, q)) {\n    e.preventDefault();\n    mcAskChanged(key);');
+    // A new ask is a new form (its own answers), even when it reads the same.
+    expect(script).toContain("(q.askId ? 'a|' + q.askId + '|' : '')");
+    expect(script).toContain('renderPanelQuestion(_sessionCache[panelSessionKey]);');
+    expect(script).toContain('renderPanelQuestion(msg.session); // the form shows the ask');
   });
 
   // ── Guard: detect unescaped inline handlers if new ones are added ──

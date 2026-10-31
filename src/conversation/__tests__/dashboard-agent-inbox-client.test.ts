@@ -715,7 +715,8 @@ describe('work-log entries are <ui-work-log> data (the element escapes them); th
     });
     expect(made).toHaveLength(1);
     expect(made[0].tag).toBe('ui-tool-call-card');
-    expect(made[0].attrs).toEqual({ lang: 'ko', slot: 'tool-7', 'data-key': '7', 'data-stop': '1' });
+    // No data-stop: the log sets the card's head-tabindex itself (one tab stop across rows and cards — D3-GAPS G2-3).
+    expect(made[0].attrs).toEqual({ lang: 'ko', slot: 'tool-7', 'data-key': '7' });
     expect(made[0].innerHTML).toBe(
       '<span class="wl-card-fallback"><span class="wl-tool-name">&lt;img src=x&gt;</span> &quot;&gt;&lt;script&gt;</span>',
     );
@@ -1393,7 +1394,7 @@ describe('pending-question choices reach the form as data and come back exactly 
       'resolveRecommendedId',
     ],
     ['_mcState', 'MC_CUSTOM_ID'],
-    { STRINGS: { mcCustomPlaceholder: '직접 입력…' } },
+    { STRINGS: { mcCustomPlaceholder: '직접 입력…' }, acQuestionLock: () => '' },
   );
   const session = (v: string): McSession => ({
     key: `C1:t1'\\${v}`,
@@ -1442,6 +1443,19 @@ describe('pending-question choices reach the form as data and come back exactly 
       },
     };
     expect(m.mcFormData(s, s.pendingQuestion).questions[0].choices[0].recommended).toBeUndefined();
+  });
+
+  it('D6b (D3-GAPS G3-1): a reader who cannot answer here gets the form locked with the reason (canAnswer); the owner gets none', () => {
+    const locked = load<{ mcFormData(s: McSession, q: McSession['pendingQuestion']): McData & { canAnswer?: string } }>(
+      ['mcFormId', 'mcStateOf', 'mcFormData', 'stripRecommendedMarker', 'resolveRecommendedId'],
+      ['_mcState', 'MC_CUSTOM_ID'],
+      { STRINGS: { mcCustomPlaceholder: '직접 입력…' }, acQuestionLock: () => '세션 소유자만 답할 수 있어요' },
+    );
+    const s = session('x');
+    expect(locked.mcFormData(s, s.pendingQuestion).canAnswer).toBe('세션 소유자만 답할 수 있어요');
+    expect('canAnswer' in m.mcFormData(s, s.pendingQuestion)).toBe(false);
+    // The same lock as the single-choice card's (the owner, on this instance; the server re-checks).
+    expect(clientFn('mcFormData')).toContain('var lock = acQuestionLock(s);');
   });
 
   it('no answerChoice / selectMc call is built as an inline JS string any more', () => {
@@ -1672,11 +1686,11 @@ describe('escaping order and inline-handler escaping in the template', () => {
   it('text is sliced before it is escaped (an entity is never cut in half)', () => {
     expect(TEMPLATE).not.toMatch(/esc\([^()]*\)\.slice\(/);
   });
-  it('no inline handler string carries a turn’s ids (요약 다시 시도 carries them as escaped data; initConversation answers its click)', () => {
+  it('no inline handler string carries a turn’s ids (요약 다시 시도 is <ui-conversation>’s Retry: ui-retry what: summary → convResummarize)', () => {
     expect(TEMPLATE).not.toContain('resummarize(\\\\');
     expect(TEMPLATE).not.toContain('onclick="resummarize');
-    expect(TEMPLATE).toContain(`data-resum-cid="' + escAttr(r.cid) + '" data-resum-turn="' + escAttr(r.turnId) + '"`);
-    expect(TEMPLATE).toContain("resummarize(b.getAttribute('data-resum-cid'), b.getAttribute('data-resum-turn'), b);");
+    expect(TEMPLATE).not.toContain('data-resum');
+    expect(TEMPLATE).toContain("if (d.what === 'summary') convResummarize(d.id);");
   });
 });
 
@@ -2127,11 +2141,11 @@ describe('work-log rows open their raw output in place (shipped initWorkLog list
   });
 });
 describe('work-log rows rove inside <ui-work-log> (one tab stop, arrows); the page keeps no roving code of its own', () => {
-  it('the page’s roving helpers are gone; each slotted card is its own stop (D3-GAPS G2-3)', () => {
+  it('the page’s roving helpers are gone; the slotted cards rove with the rows (D3-GAPS G2-3 closed by 0.12.0)', () => {
     for (const gone of ['wlRovingIndex', 'wlNavRows', 'wlMarkStop', 'wlEnsureTabStop', 'wlSetTabStop', 'WL_STOP_SEL']) {
       expect(TEMPLATE, gone).not.toMatch(new RegExp(`^(?:function|var) ${gone}\\b`, 'm'));
     }
-    expect(clientFn('wlCardSlots')).toContain("c.setAttribute('data-stop', '1');");
+    expect(clientFn('wlCardSlots')).not.toContain('data-stop');
   });
 });
 describe('작업 로그 is a section tab: painted only while shown; <ui-work-log> follows the newest and counts the rest (shipped paintWorkLog, wlLogData; SSOT 2026-10-29)', () => {
@@ -2209,13 +2223,14 @@ describe('작업 로그 is a section tab: painted only while shown; <ui-work-log
     ];
     const st: Record<string, unknown> = { entries, loaded: true, latestOk: true, olderPending: true };
     const m = load<{ wlLogData(st: unknown): Record<string, unknown> & { groups: Record<string, unknown>[] } }>(
-      ['wlGroupOf', 'wlGroupOpen', 'wlRunTitle', 'wlGroupsOf', 'wlLogData'],
-      ['WL_RUN_TITLE', 'WL_EMPTY_MSG', 'WL_FORBIDDEN_MSG'],
+      ['wlGroupOf', 'wlGroupOpen', 'wlGroupsOf', 'wlLogData'],
+      ['WL_EMPTY_MSG', 'WL_FORBIDDEN_MSG'],
       {
         _panelAgent: '',
         wlScopeEntries: (list: unknown[]) => list,
         wlVisible: (_st: unknown, list: unknown[]) => list,
         wlLegacyMixed: () => false,
+        wlTaskMeta: () => ['3m 만에 완료', { label: '툴', value: '4회' }],
         wlTaskInfo: (id: string) => (id === 'T2' ? { content: '고치기 (ledger)' } : null),
         wlEntryOf: (_st: unknown, e: { seq: number; kind: string; text: string }) => ({
           id: String(e.seq),
@@ -2226,11 +2241,15 @@ describe('작업 로그 is a section tab: painted only while shown; <ui-work-log
     );
     const d = m.wlLogData(st);
     expect(d).toMatchObject({ label: '작업 로그', startText: '작업 로그의 시작', hasMore: true, loading: false });
-    expect(d.groups.map((g) => [g.id, g.ref, g.title, g.open, g.count, (g.entries as unknown[]).length])).toEqual([
-      ['run:1', '', '지시 · 첫 지시', true, 1, 1],
-      ['task:T1', '#T1', '읽기', false, 2, 0],
-      ['run:4', '', '응답', true, 1, 1],
-      ['task:T2', '#T2', '고치기 (ledger)', true, 2, 2],
+    // Runs outside a task are headless groups (no head to title or fold; always in line); a task the ledger knows
+    // carries its meta line (D3-GAPS G2-2).
+    expect(
+      d.groups.map((g) => [g.id, g.ref, g.title, g.open, g.count, g.headless, g.meta, (g.entries as unknown[]).length]),
+    ).toEqual([
+      ['run:1', undefined, undefined, undefined, undefined, true, undefined, 1],
+      ['task:T1', '#T1', '읽기', false, 2, undefined, undefined, 0],
+      ['run:4', undefined, undefined, undefined, undefined, true, undefined, 1],
+      ['task:T2', '#T2', '고치기 (ledger)', true, 2, undefined, ['3m 만에 완료', { label: '툴', value: '4회' }], 2],
     ]);
     // The reader's choice (ui-toggle) sticks.
     (st.groupOpen as Record<string, boolean>)['task:T1'] = true;
@@ -2251,90 +2270,19 @@ describe('작업 로그 is a section tab: painted only while shown; <ui-work-log
   });
 });
 
-describe("older agents keep the reader's tree row in place — several rows in view are kept, the first still shown wins (shipped psecViewAnchor / psecRestoreAnchor; 에이전트 트리, the page's own box — D3-GAPS G1-1)", () => {
-  // A box at viewport y=100, 300px tall; tree rows at content offsets (y), 40px each, in <ui-agent-tree>'s shadow root.
-  type Item = {
-    id: string;
-    y: number;
-    shown: boolean;
-    inDom: boolean;
-    firstElementChild: unknown;
-    getAttribute(n: string): string | null;
-  };
-  function world(ids: string[]) {
-    const items: Item[] = [];
-    const box = {
-      scrollTop: 0,
-      clientHeight: 300,
-      _lastTop: 0,
-      getBoundingClientRect: () => ({ top: 100 }),
-      querySelector: (sel: string) => (sel === 'ui-agent-tree' ? tree : null),
-    };
-    const root = {
-      querySelectorAll: (sel: string) => (sel === '[role="treeitem"][data-id]' ? items.filter((i) => i.inDom) : []),
-      querySelector: (sel: string) => {
-        const m = /^\[role="treeitem"\]\[data-id="([^"]*)"\]$/.exec(sel);
-        return m ? (items.find((i) => i.inDom && i.id === m[1]) ?? null) : null;
-      },
-    };
-    const tree = { shadowRoot: root };
-    ids.forEach((id, n) => {
-      const it: Item = {
-        id,
-        y: n * 40,
-        shown: true,
-        inDom: true,
-        firstElementChild: null,
-        getAttribute: (k) => (k === 'data-id' ? it.id : null),
-      };
-      it.firstElementChild = {
-        getBoundingClientRect: () => {
-          const top = 100 + it.y - box.scrollTop;
-          return it.shown ? { top, bottom: top + 40, height: 40 } : { top: 0, bottom: 0, height: 0 };
-        },
-        getClientRects: () => (it.shown ? [{}] : []),
-      };
-      items.push(it);
-    });
-    const m = load<{
-      psecViewAnchor(b: unknown): unknown[] | null;
-      psecRestoreAnchor(b: unknown, a: unknown): boolean;
-    }>(['psecSetTop', 'psecTreeRoot', 'psecViewAnchor', 'psecAnchorEl', 'psecRestoreAnchor'], ['PSEC_ANCHOR_MAX']);
-    return { m, box, items };
-  }
-  const sel = (id: string) => `[role="treeitem"][data-id="${id}"]`;
-
-  it('the rows in view, top first (those wholly below the top edge before the one it cuts), at most six; a row above the box is not one', () => {
-    const w = world(['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8']);
-    w.box.scrollTop = 20; // a0 is half above the top: the edge cuts it — it comes last
-    expect(w.m.psecViewAnchor(w.box)).toEqual([
-      { sel: sel('a1'), at: 20 },
-      { sel: sel('a2'), at: 60 },
-      { sel: sel('a3'), at: 100 },
-      { sel: sel('a4'), at: 140 },
-      { sel: sel('a5'), at: 180 },
-      { sel: sel('a6'), at: 220 },
-    ]);
-    const tall = world(['a0']);
-    tall.box.scrollTop = 20;
-    expect(tall.m.psecViewAnchor(tall.box)).toEqual([{ sel: sel('a0'), at: -20 }]);
-  });
-
-  it('older agents went in above and the top row is gone: the next row keeps the place', () => {
-    const w = world(['a0', 'a1', 'a2', 'a3']);
-    const a = w.m.psecViewAnchor(w.box);
-    for (const it of w.items) it.y += 500;
-    w.items[0].inDom = false;
-    expect(w.m.psecRestoreAnchor(w.box, a)).toBe(true);
-    expect(w.box.scrollTop).toBe(500);
-  });
-
-  it('nothing left at all: the caller falls back to the distance from the bottom', () => {
-    const gone = world(['a0']);
-    const b = gone.m.psecViewAnchor(gone.box);
-    gone.items[0].inDom = false;
-    expect(gone.m.psecRestoreAnchor(gone.box, b)).toBe(false);
-    expect(gone.m.psecRestoreAnchor(gone.box, null)).toBe(false);
+describe("older agents keep the reader's tree row in place — <ui-log-scroller>'s own (D3-GAPS G1-1 closed by 0.12.0; shipped paintTreeTab / showMoreTree)", () => {
+  it('the tree is the scroller’s one item (its rows carry data-anchor in its shadow root); a page lands with prependItems, a live arrival is noteUnread', () => {
+    const paint = clientFn('paintTreeTab');
+    expect(paint).toContain("host.upsertItem('tree', tree, { animate: false })");
+    expect(paint).toContain("tree.setAttribute('data-item', 'tree');");
+    expect(paint).toContain('host.noteUnread(newer)');
+    expect(paint).toContain('treeScrollerData(host, win.hidden > 0);');
+    const more = clientFn('showMoreTree');
+    expect(more).toContain('host.prependItems([], { hasMore: host._hidden > 0 })');
+    expect(more).toContain('_treeWindow += AT_PANEL_WINDOW;');
+    for (const gone of ['psecViewAnchor', 'psecRestoreAnchor', 'psecTreeRoot', 'PSEC_ANCHOR_MAX', 'psecHoldPlace']) {
+      expect(TEMPLATE, gone).not.toContain(gone);
+    }
   });
 });
 
@@ -2357,7 +2305,11 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
         'taskRunStart',
         'taskRunsOf',
         'planSummaryHtml',
-        'taskTotalsHtml',
+        'taskTotalsOf',
+        'taskOutsideText',
+        'taskOutsideNote',
+        'taskOutsideHtml',
+        'taskPlanRestore',
         'taskElData',
         'taskRunsData',
         'taskPlanData',
@@ -2526,11 +2478,10 @@ describe('stats: only the latest period / user selection paints (shipped loadSta
   });
 });
 
-describe('panel landing and older-page loading (shipped psecLandingTop + psecPageDue + psecMaybeFill; SSOT 2026-10-29)', () => {
+describe('panel landing (shipped psecLandingTop; SSOT 2026-10-29) — the older pages are each element’s own (ui-load-older)', () => {
   const m = load<{
     psecLandingTop(secTop: number, boxBottom: number, view: number, under: number): number;
-    psecPageDue(scrollTop: number, scrollHeight: number, clientHeight: number, armed: boolean): boolean;
-  }>(['psecLandingTop', 'psecPageDue'], []);
+  }>(['psecLandingTop'], []);
 
   it('작업 로그 / ?session= land at the top when the section box ends in view, else on the section tabs under the agent tabs', () => {
     expect(m.psecLandingTop(80, 560, 600, 44)).toBe(0); // no question: the tabs and the box fit
@@ -2538,39 +2489,10 @@ describe('panel landing and older-page loading (shipped psecLandingTop + psecPag
     expect(m.psecLandingTop(520, 1100, 600, 44)).toBe(476); // a tall question: bring the tabs up
   });
 
-  it('the top of the section within one box height of the view is the load-older zone — for a reader who scrolled up', () => {
-    expect(m.psecPageDue(0, 5000, 600, true)).toBe(true);
-    expect(m.psecPageDue(600, 5000, 600, true)).toBe(true);
-    expect(m.psecPageDue(601, 5000, 600, true)).toBe(false);
-    expect(m.psecPageDue(4400, 5000, 600, true)).toBe(false); // far below: reading newer items
-  });
-
-  it('a landing never loads; the reader moving up arms it; a page that leaves the top in the zone brings the next', () => {
-    // Landed at the newest of a long box: not armed, nothing due — even at the top.
-    expect(m.psecPageDue(4400, 5000, 600, false)).toBe(false);
-    expect(m.psecPageDue(0, 5000, 600, false)).toBe(false);
-    // The reader scrolls up into the zone (armed): one page.
-    expect(m.psecPageDue(200, 5000, 600, true)).toBe(true);
-    // The page went in above (place kept: +2000px) — out of the zone: no more.
-    expect(m.psecPageDue(2200, 7000, 600, true)).toBe(false);
-    // A short page left the top in the zone: the next one is due.
-    expect(m.psecPageDue(500, 5300, 600, true)).toBe(true);
-    // A box too short to scroll fills page by page, armed or not.
-    expect(m.psecPageDue(0, 400, 600, false)).toBe(true);
-  });
-
-  it('one page at a time: the wiring loads through psecMaybeFill, which asks only while the section says older', () => {
-    const fill = TEMPLATE.slice(
-      TEMPLATE.indexOf('\nfunction psecMaybeFill('),
-      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction psecMaybeFill(')),
-    );
-    expect(fill).toContain('psecPageDue(box.scrollTop, box.scrollHeight, box.clientHeight, box._armed)');
-    expect(fill).toContain("if (psecOlderState(sec) === 'older') psecLoadOlder(sec);");
-    const load1 = TEMPLATE.slice(
-      TEMPLATE.indexOf('\nfunction psecLoadOlder('),
-      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction psecLoadOlder(')),
-    );
-    expect(load1).toContain("if (sec !== _psec || psecOlderState(sec) !== 'older') return;");
+  it('the page keeps no page-due rule or sentinel of its own (the scroller asks: ui-load-older → loadMorePanelTurns / loadOlderWorkLog / showMoreTree)', () => {
+    for (const gone of ['psecPageDue', 'psecMaybeFill', 'psecLoadOlder', 'psecOlderState', 'psecFillSoon']) {
+      expect(TEMPLATE, gone).not.toContain(gone);
+    }
   });
 });
 
@@ -3242,6 +3164,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'renderMultiChoicePanel',
         'renderMultiChoiceCard',
         'mcFormData',
+        'acQuestionLock',
         'mcStateOf',
         'esc',
         'escAttr',
@@ -3612,7 +3535,47 @@ describe('D4 review (P1): an opening asked for before <ui-drawer> is defined wai
     const src = clientFn('closePanel');
     expect(src).toContain('_panelOpenWaiting = null;');
     expect(src).toContain("if (drawerEl && typeof drawerEl.hide === 'function') drawerEl.hide();");
-    // The artifact viewer slots the page's body before the element draws a step (no page loaded twice).
-    expect(TEMPLATE).toContain("viewer.addEventListener('ui-before-view', function(e) { syncArtViewer(e.detail); });");
+    // D6b group 6: the artifact viewer draws every body itself (items[].scripts / frame) — the page slots nothing
+    // before a step, so it listens on ui-view alone (one listener, one document fetch).
+    expect(TEMPLATE).not.toContain('ui-before-view');
+    expect(TEMPLATE).toContain("viewer.addEventListener('ui-view', function(e) { syncArtViewer(e.detail); });");
+  });
+
+  it('P3: a waiting opening for a card that leaves the deck is dropped with it; one for an archived key follows the live key', () => {
+    const opened: string[] = [];
+    const m = load<{
+      deckDrop(key: string): void;
+      followSessionKey(oldKey: string, newKey: string): void;
+      setWaiting(v: unknown): void;
+      waiting(): unknown;
+    }>(
+      ['deckRemove', 'deckNextAfter', 'deckDrop', 'followSessionKey'],
+      ['_deck', '_panelOpenWaiting'],
+      {
+        _sessionCache: { k1: {}, k2: {}, live: {} },
+        panelOpen: false,
+        panelSessionKey: null,
+        renderDeckNav: () => {},
+        openPanel: (k: string) => opened.push(k),
+        closePanel: () => opened.push('close'),
+      },
+      ['function setWaiting(v) { _panelOpenWaiting = v; }', 'function waiting() { return _panelOpenWaiting; }'],
+    );
+    // The waiting card folds (its ui-toggle → deckDrop): the opening would reopen a card the reader closed.
+    m.setWaiting(['k1', false, undefined, undefined]);
+    m.deckDrop('k1');
+    expect(m.waiting()).toBe(null);
+    // Another card leaving the deck leaves the wait alone.
+    m.setWaiting(['k2', true, 'a1', true]);
+    m.deckDrop('k1');
+    expect(m.waiting()).toEqual(['k2', true, 'a1', true]);
+    // The waiting key was an archive that came back live under another key: the opening lands on the live one.
+    m.setWaiting(['k2', true, 'a1', true]);
+    m.followSessionKey('k2', 'live');
+    expect(m.waiting()).toEqual(['live', true, 'a1', true]);
+    m.followSessionKey('k1', 'live');
+    expect(m.waiting()).toEqual(['live', true, 'a1', true]);
+    // Nothing was open: the panel was neither opened nor closed by either.
+    expect(opened).toEqual([]);
   });
 });
