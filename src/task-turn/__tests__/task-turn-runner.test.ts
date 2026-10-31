@@ -160,7 +160,8 @@ describe('createTaskTurnRunner (#598 ④b1)', () => {
       unsaved: true,
       outcome: { outcome: 'completed', recordFailure: 'outcome not saved: ENOSPC' },
     });
-    expect(h.registry.holdUnsavedTaskTurnOutcome).toHaveBeenCalledWith(KEY, r.outcome, 'idle');
+    // No chain on this input: nothing to settle (E2 ③).
+    expect(h.registry.holdUnsavedTaskTurnOutcome).toHaveBeenCalledWith(KEY, r.outcome, 'idle', undefined);
     expect(h.deps.logger.error).toHaveBeenCalled();
   });
 
