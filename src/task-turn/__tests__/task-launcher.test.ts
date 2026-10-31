@@ -96,6 +96,7 @@ describe('createTaskLauncher (#600 ⑥)', () => {
       sessionKey: `task:${TASK_ID}`,
       text: REQ.prompt,
       actorUserId: OWNER,
+      newTask: true,
     });
     // #640 R1: the dry run sees the instruction, so a command is refused before a task exists.
     expect(h.controller.canStart).toHaveBeenCalledWith(OWNER, REQ.prompt);
