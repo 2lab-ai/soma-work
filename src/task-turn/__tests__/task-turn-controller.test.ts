@@ -530,7 +530,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
       KEY,
       'a',
       expect.objectContaining({ outcome: 'interrupted', reason: 'service shutdown was cancelled' }),
-      expect.any(String), // the chain it ends (E2 ③)
+      h.runTaskTurn.mock.calls[0][0].chain?.id, // the chain it ends (E2 ③)
     );
   });
 
@@ -557,7 +557,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
       KEY,
       'a',
       expect.objectContaining({ outcome: 'interrupted', reason: 'service shutdown was cancelled' }),
-      expect.any(String), // the chain it ends (E2 ③)
+      h.runTaskTurn.mock.calls[0][0].chain?.id, // the chain it ends (E2 ③)
     );
   });
 

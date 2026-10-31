@@ -335,6 +335,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
             return;
           }
         }
+        /** This hop is a `/compact` whose completion re-runs the stashed instruction — one predicate for the settle and the re-run. */
+        const continues = compactHop && replay !== null && !last;
         const hop = new AbortController();
         const forward = () => hop.abort(chainAbort.signal.reason);
         chainAbort.signal.addEventListener('abort', forward, { once: true });
@@ -359,12 +361,12 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
             } satisfies Partial<Record<TaskTurnNonTerminal, string>>,
             ...(compactHop ? { compactHop: true } : {}),
             // A completed `/compact` hop continues the chain only when there is
-            // an instruction to re-run and budget left (below); with nothing to
-            // re-run it ends the chain as a failure, never a result.
+            // an instruction to re-run and budget left (`continues`, below); with
+            // nothing to re-run it ends the chain as a failure, never a result.
             chain: {
               id: chainId,
-              continuesIfCompleted: compactHop && replay !== null && !last,
-              ...(compactHop && (replay === null || last) ? { completedFailsWith: COMPACT_NOT_RERUN } : {}),
+              continuesIfCompleted: continues,
+              ...(compactHop && !continues ? { completedFailsWith: COMPACT_NOT_RERUN } : {}),
             },
             onStarted: () => {
               hopStarted = true;
@@ -381,7 +383,10 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
         if (result.outcome) {
           // A compaction that the boundary proved, with budget left: run the
           // instruction it was stashed for. Nothing else is ever re-run (D10).
-          if (compactHop && replay && result.outcome.outcome === 'completed' && !last) {
+          if (continues && replay !== null && result.outcome.outcome === 'completed') {
+            // The completed compaction owns the task until the re-run's start is
+            // saved: a re-run that cannot start ends it, and the chain, here (fable #666).
+            pendingTurnId = result.turnId;
             text = replay;
             replay = null;
             compactHop = false;
@@ -394,7 +399,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
         if (result.fenced || result.nonTerminal !== 'fallbackCompact') return;
         pendingTurnId = result.turnId;
         // The stash is nulled at the compaction boundary: take it now.
-        replay = session.fallbackCompactPendingUserText ?? null;
+        // An empty stash is nothing to re-run (fable #666 P2).
+        replay = session.fallbackCompactPendingUserText || null;
         text = COMPACT;
         compactHop = true;
         isUserInput = false;

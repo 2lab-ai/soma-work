@@ -289,6 +289,38 @@ describe('SessionRegistry — a task chain’s settle and notice intents (E2 ③
     expect(back.notices).toBeUndefined();
   });
 
+  it('S7d — restart: a task saved waiting keeps its question even if a chain id is still on the record (grok #666 P1)', () => {
+    const taskId = '77777777-7777-4777-8777-777777777777';
+    fs.writeFileSync(
+      SESSIONS_FILE,
+      JSON.stringify([
+        {
+          key: `task:${taskId}`,
+          ownerId: 'U1',
+          ownerName: 'User',
+          userId: 'U1',
+          channelId: '',
+          slackless: true,
+          taskId,
+          isActive: true,
+          lastActivity: new Date().toISOString(),
+          workingDirectory: '/work/U1/session_1',
+          state: 'MAIN',
+          activityState: 'waiting',
+          originThread: ORIGIN,
+          openChain: CHAIN,
+          lastTurnOutcome: { turnId: 't1', outcome: 'waiting', category: 'UIUserAskQuestion', at: 1 },
+        },
+      ]),
+    );
+    const reg = new SessionRegistry();
+    expect(reg.loadSessions()).toBe(1);
+    const back = reg.getSessionByTaskId(taskId)!;
+    expect(back.activityState).toBe('waiting');
+    expect(back.lastTurnOutcome?.outcome).toBe('waiting');
+    expect(back.notices).toBeUndefined();
+  });
+
   it('S8 — an intent id is written once', () => {
     const reg = new SessionRegistry();
     const task = originTask(reg);
