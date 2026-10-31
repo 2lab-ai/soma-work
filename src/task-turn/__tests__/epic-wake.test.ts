@@ -98,6 +98,7 @@ describe('the waker (K2, K3)', () => {
     ['running', { activityState: 'working' }],
     ['waiting on its owner', { activityState: 'waiting' }],
     ['closing', { terminated: true }],
+    ['being closed from the dashboard (fable #703 R1)', { closing: true }],
     ['done', { plan: { nodes: [{ id: 'login', title: 'L', kind: 'issue' }], done: { by: 'epic', at: 1 } } }],
     [
       'done by every node accepted',

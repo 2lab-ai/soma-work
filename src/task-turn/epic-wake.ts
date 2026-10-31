@@ -58,7 +58,7 @@ export function createEpicWaker(deps: EpicWakerDeps): EpicWaker {
 
   async function drain(sessionKey: string): Promise<void> {
     const epic = deps.getSession(sessionKey);
-    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated) {
+    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated || epic.closing) {
       spent.delete(sessionKey);
       return;
     }
