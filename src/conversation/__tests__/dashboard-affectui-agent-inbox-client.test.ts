@@ -62,6 +62,10 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
+/** The page's chrome words (STRINGS), as served: the board's Korean words live there (D2 group 6). */
+const PAGE_STRINGS = new Function(
+  `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
+)();
 /** A multi-line `var NAME = [ … ];` (clientVar only matches one line). */
 function clientArrayVar(name: string): string {
   const start = TEMPLATE.indexOf(`\nvar ${name} = [`);
@@ -70,6 +74,7 @@ function clientArrayVar(name: string): string {
   return cook(TEMPLATE.slice(start + 1, end + 4));
 }
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+  inject = { STRINGS: PAGE_STRINGS, ...inject };
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
@@ -144,17 +149,17 @@ describe('D1 — the status the element tints: run · wait · done · rest (the 
       since: T0,
     });
     const idle = cardOf(faceCard({ activeAccumulatedMs: 0 }), 'idle');
-    expect(idle).toMatchObject({ status: 'done', statusText: 'Idle' });
+    expect(idle).toMatchObject({ status: 'done', statusText: '대기' });
     expect(idle.since).toBeUndefined(); // only the exact finish stamp, never lastActivity
   });
 
   it('closed → the rest tone, Sleeping or Archived', () => {
     expect(cardOf(faceCard({ sessionState: 'SLEEPING', finishedAt: T0 }), 'closed')).toMatchObject({
       status: 'idle',
-      statusText: 'Sleeping',
+      statusText: '휴면',
       since: T0,
     });
-    expect(cardOf(faceCard({ terminated: true }), 'closed')).toMatchObject({ status: 'idle', statusText: 'Archived' });
+    expect(cardOf(faceCard({ terminated: true }), 'closed')).toMatchObject({ status: 'idle', statusText: '보관됨' });
   });
 
   it('an armed automatic resume in RUNNING waits: the wait tone, its label, no clock; the reason leads the summary', () => {
@@ -300,36 +305,34 @@ describe('the face extras the board keeps (cardOf → lead, badge, metrics, titl
   });
 });
 
-describe('the board’s wording (data.strings over lang="en")', () => {
+describe('the board’s wording (lang="ko" + data.strings, D2 group 6)', () => {
   const src = TEMPLATE.slice(TEMPLATE.indexOf('var BOARD_STRINGS = {'));
   const strings = new Function(
-    'timeAgo',
-    'formatNmSSs',
     'ART_KIND_LABEL',
-    `${cook(src.slice(0, src.indexOf('\n};\n') + 4))}\nreturn BOARD_STRINGS;`,
-  )(
-    () => '6m ago',
-    (ms: number) => `${Math.floor(ms / 60000)}m ${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}s`,
-    { image: '이미지' },
-  );
-  it('Korean sub-agents, file chips and announcement; the board’s clock and age; no "<title>: <word>." lead', () => {
-    expect(strings.agents).toBe('서브에이전트');
-    expect(strings.agentsRunning(2)).toBe('실행 2');
-    expect(strings.agentsFailed(1)).toBe('실패 1');
-    expect(strings.arts).toBe('모델이 만든 산출물');
+    'toNum',
+    `${cook(src.slice(0, src.indexOf('\n};\n') + 4))}\n${clientFn('fmtRunKo')}\nreturn BOARD_STRINGS;`,
+  )({ image: '이미지' }, (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0));
+  it('the element’s Korean table (status words, sub-agents, announcement, age); the page’s file chips, clock and no lead', () => {
+    // Both boards (the kanban and every CRON lane) speak Korean: the element's own words.
+    expect(TEMPLATE).toContain('<ui-agent-inbox id="kanban" class="kanban" view="board" lang="ko"></ui-agent-inbox>');
+    expect(TEMPLATE).toContain("el.setAttribute('lang', 'ko');");
+    // What the ko table already says is not repeated; the English age (timeAgo) is gone.
+    for (const k of ['agents', 'agentsRunning', 'agentsFailed', 'arts', 'announce', 'ago', 'status']) {
+      expect(strings[k], k).toBeUndefined();
+    }
     expect(strings.artOpen('a.png', 'image')).toBe('이미지 a.png — 크게 보기');
     expect(strings.artOpen('x.bin', 'file')).toBe('파일 x.bin — 크게 보기');
-    expect(strings.announce(3, 8)).toBe('응답이 필요한 세션 3개, 실행 중 8개');
-    expect(strings.changed('Deploy', 'Running')).toBe('');
-    expect(strings.duration(187_000)).toBe('3m 07s');
-    expect(strings.ago(T0)).toBe('6m ago');
-    // English status words stay the element's own (Waiting for you, Running, Done in …).
-    expect(strings.status).toBeUndefined();
+    expect(strings.changed('Deploy', '실행 중')).toBe('');
+    // A running card's clock in Korean (was 3m 07s).
+    expect(strings.duration(12_000)).toBe('12초');
+    expect(strings.duration(187_000)).toBe('3분 07초');
+    expect(strings.duration(7_380_000)).toBe('2시간 3분');
   });
 });
 
 // load() returns only the named functions: the state seam is a shipped-scope function compiled in the same body.
 function loadWithState<T>(fns: string[], vars: string[], inject: Record<string, unknown>, seam: string): T {
+  inject = { STRINGS: PAGE_STRINGS, ...inject };
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${seam}\nreturn { ${[...fns, /^function (\w+)/.exec(seam)?.[1]].join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
@@ -438,9 +441,9 @@ describe('renderBoard → the board element: NEEDS YOU · RUNNING · DONE by fin
     h.m.renderBoard(board(), false);
     const plan = h.kanban._ibPlan as Plan;
     expect(plan.cols.map((c) => [c.id, c.label, c.keys])).toEqual([
-      ['waiting', 'NEEDS YOU', ['w1']],
-      ['working', 'RUNNING', ['r1', 'r2']],
-      ['done', 'DONE', []],
+      ['waiting', '응답 필요', ['w1']],
+      ['working', '실행 중', ['r1', 'r2']],
+      ['done', '완료', []],
     ]);
     const cols = h.kanban.data?.columns ?? [];
     expect((cols[0].cards as Card[]).map((c) => [c.id, c.status])).toEqual([['w1', 'waiting']]);
@@ -454,7 +457,7 @@ describe('renderBoard → the board element: NEEDS YOU · RUNNING · DONE by fin
       groups: Array<{ id: string; label: string; open: boolean; cards: Card[] }>;
     };
     expect(done.groups.map((g) => [g.label, g.open, g.cards.map((c) => c.id)])).toEqual([
-      ['Today', true, ['d-today', 'z']],
+      ['오늘', true, ['d-today', 'z']],
       [expect.any(String), false, ['d-old']],
     ]);
     const st = h.m.state();
@@ -647,7 +650,7 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
         cols: [
           {
             id: 'done',
-            label: 'DONE',
+            label: '완료',
             keys: [],
             groups: [{ id: '2026-10-20', label: '10월 20일 (화)', open: false, keys: ['d1'] }],
           },
