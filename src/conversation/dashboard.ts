@@ -5264,7 +5264,6 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
    are kit rows (.ui-row in the run's tone, D7 C-08) and no run yet the kit's empty state (.ui-empty, D7 C-09). */
 .cron-drawer-meta { padding: 0 0 4px; }
 .cron-drawer-body { padding: 6px 0 0; }
-.aq-left { font-variant-numeric: tabular-nums; } /* the drawer's 다음 실행 countdown (aqTime) */
 
 
 /* ═══ New task (SSOT 2026-10-23) — entry button, floating button, composer ═══
@@ -7573,12 +7572,13 @@ function formatSince(ms) {
 }
 // Every live time on the page is @2lab.ai/ui <ui-elapsed> (D7 K-03): the root's active time (a leg under way:
 // since = the leg's start less what ran before it), a running task's or subagent's elapsed (since), the session's
-// last activity (format="ago"). The element ticks them on its own shared whole-second timer, changes the text in
-// place and stops by itself; a morph keeps it (its attributes are the data, never Date.now() — a clock in the
-// markup would make every poll look like a change). It reads its own lang (not the page's), so every one is
-// written lang="ko" (D8): 1분 05초 · 6분 전 — the words formatNmSSs / formatSince say for a settled time.
+// last activity (format="ago") and — D8b — the cron drawer's 다음 실행 countdown (format="countdown", its 후 / 곧
+// words the element's: cronCountdownHtml). The element ticks them on its own shared whole-second timer, changes
+// the text in place and stops by itself; a morph keeps it (its attributes are the data, never Date.now() — a
+// clock in the markup would make every poll look like a change). It reads its own lang (not the page's), so every
+// one is written lang="ko" (D8): 1분 05초 · 6분 전 — the words formatNmSSs / formatSince say for a settled time.
 // (The card faces' clocks are <ui-agent-inbox>'s own tick; an approval card's expiry <ui-approval-card>'s.) The
-// page's 1 Hz tick keeps one job: the cron drawer's 다음 실행 countdown (aqTick — its "곧 … 후" words are the page's).
+// page keeps no tick of its own.
 function elapsedHtml(sinceMs, title) {
   return '<ui-elapsed since="' + Math.round(Number(sinceMs) || 0) + '" lang="ko"' + (title ? ' title="' + escAttr(title) + '"' : '') + '></ui-elapsed>';
 }
@@ -7591,9 +7591,6 @@ function activeTimeHtml(legStartedMs, accumulatedMs, title) {
 function agoHtml(atMs) {
   return '<ui-elapsed since="' + Math.round(Number(atMs) || 0) + '" format="ago" lang="ko"></ui-elapsed>';
 }
-function updateTimers() { aqTick(); }
-var _timerTick = setInterval(updateTimers, 1000);
-
 // ── User list ──
 async function loadUsers() {
   try {
@@ -15899,7 +15896,7 @@ function renderCronDrawerMeta(g, nowMs) {
   // The kit's fact list (.ui-dl). Values are markup (escaped here): 다음 실행 counts down live like the tile (#444 review R1).
   var rows = [
     ['스케줄', esc(cronScheduleLabel(j.expression, j.nextRunAt) + ' · ' + j.expression + ' (UTC)')],
-    ['다음 실행', j.nextRunAt ? esc(capClockLabel(j.nextRunAt / 1000, nowMs)) + ' (' + aqTime(j.nextRunAt, nowMs, ' 후') + ')' : '8일 안에 없음'],
+    ['다음 실행', j.nextRunAt ? esc(capClockLabel(j.nextRunAt / 1000, nowMs)) + ' (' + cronCountdownHtml(j.nextRunAt) + ')' : '8일 안에 없음'],
     ['실행 방식', esc((j.mode === 'fastlane' ? '항상 새 스레드' : '세션이 쉬면 주입, 없으면 새 스레드') + ' · 출력 ' + j.target + ' · 모델 ' + j.model)],
     ['실행 기록', esc('잡마다 최근 ' + (j.historyCap || 20) + '회까지 보관')],
   ];
@@ -15967,6 +15964,8 @@ function closeCronDrawer(after) {
 (function initCronDrawer() {
   var d = document.getElementById('cron-drawer');
   if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeCronDrawer(); });
+  // The 다음 실행 countdown reached zero: the job is due — fetch the jobs, so the facts and the lane say the next one.
+  if (d) d.addEventListener('ui-end', function(e) { if (e.target && e.target.localName === 'ui-elapsed') loadCronJobs(); });
 })();
 document.addEventListener('click', function(e) {
   var t = e.target && e.target.closest ? e.target : null;
@@ -15993,45 +15992,15 @@ async function loadCronJobs() {
   } catch (e) { console.error('Failed to load cron jobs', e); }
 }
 
-// ── The drawer's live countdowns (the Agent Queue grammar, #444 D3) ──
-// <ui-agent-queue> ticks its own; the drawer's 다음 실행 rides the page's 1 Hz tick.
-// Time left, floored (spec 12 T9): 1일 5시간 · 1시간 20분 · 24분 · 42초 · 곧 (D3).
-function aqLeft(atMs, nowMs) {
-  var s = Math.floor((Number(atMs) - Number(nowMs)) / 1000);
-  if (!(s > 0)) return '곧';
-  if (s < 60) return s + '초';
-  var m = Math.floor(s / 60);
-  var h = Math.floor(m / 60);
-  if (h >= 24) return Math.floor(h / 24) + '일 ' + (h % 24) + '시간';
-  if (h) return h + '시간 ' + (m % 60) + '분';
-  return m + '분';
-}
-// Time left with what follows it: ' 후 복귀' reads "24분 후 복귀", and at zero "곧 복귀" — never
-// "곧 후" (PR review R1). sfx starts with ' 후' when it says "after".
-function aqLeftSfx(atMs, nowMs, sfx) {
-  var t = aqLeft(atMs, nowMs);
-  var tail = String(sfx || '');
-  return t === '곧' ? t + tail.replace(/^ 후/, '') : t + tail;
-}
-// A countdown aqTick keeps live, its suffix inside it (data-aq-sfx); role=timer is never read
-// out on each tick.
-function aqTime(atMs, nowMs, sfx) {
+// ── The drawer's live countdown (the Agent Queue grammar, #444 D3) ──
+// <ui-agent-queue> ticks its own; the drawer's 다음 실행 is @2lab.ai/ui <ui-elapsed format="countdown"> (D8b
+// K-03): the loose form, floored (spec 12 T9: 1일 5시간 · 1시간 20분 · 24분 · 42초 — precision="minute"), "후" after
+// it and "곧" from the moment it would read 0초 — never "곧 후" (PR review R1: at-zero leaves "after" off). It
+// ticks on the library's shared timer and says ui-end once at zero (the drawer reloads the jobs then).
+function cronCountdownHtml(atMs) {
   var at = Math.round(Number(atMs));
   if (!isFinite(at)) return '';
-  return '<time class="aq-left" role="timer" datetime="' + new Date(at).toISOString() + '" data-aq-at="' + at + '"' + (sfx ? ' data-aq-sfx="' + escAttr(sfx) + '"' : '') + '>' + aqLeftSfx(at, nowMs, sfx) + '</time>';
-}
-// The drawer's countdowns ride the shared 1 Hz tick (updateTimers → aqTick).
-function aqTickIn(root, nowMs) {
-  if (!root) return;
-  var els = root.querySelectorAll('[data-aq-at]');
-  for (var i = 0; i < els.length; i++) {
-    var t = aqLeftSfx(Number(els[i].getAttribute('data-aq-at')) || 0, nowMs, els[i].getAttribute('data-aq-sfx') || '');
-    if (els[i].textContent !== t) els[i].textContent = t;
-  }
-}
-function aqTick() {
-  if (document.hidden) return;
-  aqTickIn(document.getElementById('cron-drawer'), Date.now());
+  return '<ui-elapsed until="' + at + '" format="countdown" precision="minute" after="후" at-zero="곧" lang="ko"></ui-elapsed>';
 }
 
 // ── LLM capacity v2 (2026-10-25) and its accounts as workers (#444 D8–D14) — @2lab.ai/ui

@@ -224,10 +224,11 @@ describe('collapsed card: the task in progress (T3)', () => {
 // row; the count-up itself has no library test yet.
 
 describe('live times are <ui-elapsed> (D7 K-03)', () => {
-  it('the page loads @2lab.ai/ui/elapsed; its own tick keeps only the cron countdown — no clock loop, no Date.now() in markup', () => {
+  it('the page loads @2lab.ai/ui/elapsed and keeps no tick of its own (D8b: the cron countdown is the element’s too) — no clock loop, no Date.now() in markup', () => {
     expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/elapsed.js?v=${UI_LIB_VERSION}"></script>');
-    expect(TEMPLATE).toContain('function updateTimers() { aqTick(); }');
     for (const gone of [
+      'function updateTimers',
+      'aqTick',
       'updateTimersIn',
       'card-timer-live',
       'rel-time',
