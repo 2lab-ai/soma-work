@@ -27,8 +27,8 @@ export interface TaskNoticeDelivererDeps {
     TaskNotificationLedger,
     'register' | 'claim' | 'markPosted' | 'markFailed' | 'close' | 'owed' | 'get' | 'annotate' | 'list'
   >;
-  /** E2 ⑥ — the approval is still being asked (the approver's own state). */
-  isApprovalOpen?(approvalId: string): boolean;
+  /** E2 ⑥ — the approval is still being asked (the approver's own state). Required: absent would close every request unsent. */
+  isApprovalOpen(approvalId: string): boolean;
   /** Post one message in the instruction thread. */
   post(
     target: { channel: string; threadTs: string },
@@ -311,7 +311,7 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
     if (entry.kind === 'approval' && entry.intent.approval === 'request') {
       // Answered → resolved; no longer asked (a restart) → superseded.
       if (entry.intent.resolution) return 'resolved';
-      return deps.isApprovalOpen?.(entry.intent.approvalId ?? '') === true ? 'send' : 'superseded';
+      return deps.isApprovalOpen(entry.intent.approvalId ?? '') ? 'send' : 'superseded';
     }
     return 'send';
   }
@@ -405,16 +405,16 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
   function approvalLeftWaiting(entry: TaskNotificationLedgerEntry): string | undefined {
     const turnId = entry.intent.turnId;
     if (!turnId) return undefined;
-    const waiting = deps.ledger
-      .list()
-      .find(
-        (e) =>
-          e.taskId === entry.taskId &&
-          e.kind === 'approval' &&
-          e.intent.approval === 'request' &&
-          e.intent.turnId === turnId &&
-          !e.intent.resolution,
-      );
+    const waiting = deps.ledger.list().find(
+      (e) =>
+        e.taskId === entry.taskId &&
+        e.kind === 'approval' &&
+        e.intent.approval === 'request' &&
+        e.intent.turnId === turnId &&
+        // Never answered — or its wait was cut by the same stop: a graceful
+        // shutdown aborts the hook, so `aborted` is how "waiting" ends there (fable #669 P2-1).
+        (!e.intent.resolution || e.intent.resolution === 'aborted'),
+    );
     return waiting ? (waiting.intent.toolName ?? '도구') : undefined;
   }
 
