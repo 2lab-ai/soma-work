@@ -499,4 +499,19 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
       expect.objectContaining({ outcome: 'interrupted', reason: 'task cannot run: owner lost access' }),
     );
   });
+
+  it('a refused shutdown (resumeAccepting) ends the turns a shutdown abort left working (#634 R1)', async () => {
+    const h = harness({}, [{ turnId: 'a', outcome: null, nonTerminal: 'shutdown' }]);
+    const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
+    await r.done;
+    expect(h.abandonTurn).not.toHaveBeenCalled();
+    h.controller.stopAccepting();
+    h.controller.resumeAccepting();
+    await Promise.resolve();
+    expect(h.abandonTurn).toHaveBeenCalledWith(
+      KEY,
+      'a',
+      expect.objectContaining({ outcome: 'interrupted', reason: 'service shutdown was cancelled' }),
+    );
+  });
 });

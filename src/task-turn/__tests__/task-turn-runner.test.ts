@@ -535,4 +535,72 @@ describe('createTaskTurnRunner (#598 ④b1)', () => {
       expect(r).toMatchObject({ outcome: null, fenced: true });
     });
   });
+
+  describe('#626 R2 astra / #634 — a fenced turn touches nothing; the first recording failure wins', () => {
+    const terminalOk = { success: true, messageCount: 1, terminal: { exit: 'success', endTurnInfoPresent: true } };
+
+    it('carried + a failing terminal drain: the carried (first) failure is reported', async () => {
+      const results = [{ success: true, messageCount: 1, continuation: { prompt: 'a' } }, terminalOk];
+      const drains = ['EIO-first', 'EIO-second'];
+      const h = harness({
+        execute: vi.fn(async () => results.shift() as any),
+        receipts: { open: vi.fn(), drain: vi.fn(async () => drains.shift()) },
+      });
+      await h.runner.runTaskTurn({ ...h.input, resumable: ['continuation'] });
+      const last = await h.runner.runTaskTurn(h.input);
+      expect(last.outcome).toMatchObject({ outcome: 'failed', reason: 'record: EIO-first' });
+    });
+
+    it('an older turn released after a newer one took the task neither consumes its carried failure nor disarms its fallback', async () => {
+      let releaseOld!: () => void;
+      const gate = new Promise<void>((r) => {
+        releaseOld = r;
+      });
+      let call = 0;
+      const h = harness({
+        execute: vi.fn(async () => {
+          call += 1;
+          if (call === 1) {
+            await gate;
+            return terminalOk as any; // the old compact hop "completes" late
+          }
+          // The newer turn overflows: fallback armed, its recording failed.
+          Object.assign(h.session, {
+            model: 'opus[1m]',
+            fallbackCompactActive: true,
+            fallbackCompactOriginalModel: 'sonnet',
+          });
+          return { success: false, messageCount: 0, terminal: { exit: 'error', fallbackCompact: true } } as any;
+        }),
+      });
+      const old = h.runner.runTaskTurn({ ...h.input, text: '/compact', compactHop: true });
+      await Promise.resolve();
+      await Promise.resolve();
+      const newer = await h.runner.runTaskTurn({ ...h.input, resumable: ['fallbackCompact'] });
+      expect(newer.nonTerminal).toBe('fallbackCompact');
+      releaseOld();
+      const oldResult = await old;
+      expect(oldResult).toMatchObject({ outcome: null, fenced: true });
+      // The newer turn's armed fallback is untouched by the old compact hop.
+      expect(h.session).toMatchObject({ fallbackCompactActive: true, model: 'opus[1m]' });
+    });
+
+    it('a throw out of execute keeps the carried failure of an earlier hop', async () => {
+      const h = harness();
+      h.execute
+        .mockImplementationOnce(async () => ({ success: true, messageCount: 1, continuation: { prompt: 'a' } }) as any)
+        .mockImplementationOnce(async () => {
+          throw new Error('boom');
+        });
+      h.deps.receipts.drain = vi.fn().mockResolvedValueOnce('EIO-hop1').mockResolvedValueOnce(undefined);
+      const runner2 = (await import('../task-turn-runner')).createTaskTurnRunner(h.deps);
+      await runner2.runTaskTurn({ ...h.input, resumable: ['continuation'] });
+      await expect(runner2.runTaskTurn(h.input)).rejects.toThrow('boom');
+      expect(h.session.lastTurnOutcome).toMatchObject({
+        outcome: 'failed',
+        reason: 'turn threw: boom',
+        recordFailure: 'EIO-hop1',
+      });
+    });
+  });
 });

@@ -294,4 +294,27 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
       dashboard.setDashboardCommandHandler(null as any);
     }
   });
+
+  it('#598 ④c — a Slack-less task’s card carries its last turn outcome (reason and recording failure included)', async () => {
+    const reg = new SessionRegistry();
+    const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
+    task.lastTurnOutcome = {
+      turnId: 't-1',
+      outcome: 'interrupted',
+      category: 'Exception',
+      reason: 'process ended before the outcome was recorded',
+      recordFailure: 'outcome not saved: ENOSPC',
+      at: 1_793_000_000_000,
+    };
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const b = await board();
+    const card = [...b.working, ...b.waiting, ...b.idle].find((c) => c.key === `task:${task.taskId}`) as any;
+    expect(card?.lastTurnOutcome).toEqual({
+      outcome: 'interrupted',
+      category: 'Exception',
+      reason: 'process ended before the outcome was recorded',
+      recordFailure: 'outcome not saved: ENOSPC',
+      at: 1_793_000_000_000,
+    });
+  });
 });

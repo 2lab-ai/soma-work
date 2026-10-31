@@ -243,7 +243,13 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
       // A throw out of execute is a refused turn (a caller bug) or an escape
       // from its own catch: drain what was written, end the turn `failed` so
       // the task never stays `working`, then let the caller see the throw.
-      const recordFailure = await deps.receipts.drain(binding);
+      const drained = await deps.receipts.drain(binding);
+      if (activeTurn.get(sessionKey) !== turnId) {
+        // A newer turn owns the task: this one records nothing (#626 R2).
+        throw error;
+      }
+      // The first recording failure wins — an earlier hop's carried one included.
+      const recordFailure = pendingRecordFailures.get(sessionKey) ?? drained;
       pendingRecordFailures.delete(sessionKey);
       const reason =
         error instanceof TaskTurnRefusedError
@@ -266,8 +272,16 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
       throw error;
     }
     const recordFailure = await deps.receipts.drain(binding);
+    if (activeTurn.get(sessionKey) !== turnId) {
+      // A newer turn owns the task: this one neither commits, nor asks for a
+      // hop, nor touches the session it now shares — not the carried failure,
+      // not an armed fallback (#626 R2 astra).
+      deps.logger.info('Task turn fenced out by a newer turn', { sessionKey, turnId });
+      return { turnId, outcome: null, fenced: true };
+    }
+    // The first recording failure wins: a carried one before this drain's (#626 R2).
     const carried = pendingRecordFailures.get(sessionKey);
-    const failure = recordFailure ?? carried;
+    const failure = carried ?? recordFailure;
 
     let decided = result.terminal ? deriveTaskTurnOutcome(result.terminal, failure) : null;
     if (input.compactHop && session.fallbackCompactActive) {
@@ -279,15 +293,6 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
     }
     if (!decided) {
       const nonTerminal = classifyNonTerminal(result);
-      if (activeTurn.get(sessionKey) !== turnId) {
-        // A newer turn owns the task: this one neither commits nor asks for a hop.
-        deps.logger.info('Task turn non-terminal return fenced out by a newer turn', {
-          sessionKey,
-          turnId,
-          nonTerminal,
-        });
-        return { turnId, outcome: null, fenced: true };
-      }
       const resumable = input.resumable ?? DEFAULT_RESUMABLE;
       if (!nonTerminal || !resumable.includes(nonTerminal)) {
         // Nobody will resume it: commit it as interrupted rather than leave it working.

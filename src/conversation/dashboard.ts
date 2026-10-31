@@ -379,6 +379,17 @@ export interface KanbanSession {
    * `GET /api/dashboard/session/:key/permission/:approvalId`.
    */
   pendingPermissions?: DashboardPermissionRequest[];
+  /**
+   * #598 ④c — a Slack-less task's last turn outcome (D10): what the last turn
+   * ended as, why, and whether recording it failed. Absent for Slack sessions.
+   */
+  lastTurnOutcome?: {
+    outcome: 'completed' | 'failed' | 'cancelled' | 'waiting' | 'interrupted';
+    category: string;
+    reason?: string;
+    recordFailure?: string;
+    at: number;
+  };
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -1940,6 +1951,17 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     artifacts: cardArtifacts(s.conversationId),
     userMedia: cardUserMedia(s.conversationId),
     followups: followupsOf(key, s.ownerId),
+    ...(s.slackless === true && s.lastTurnOutcome
+      ? {
+          lastTurnOutcome: {
+            outcome: s.lastTurnOutcome.outcome,
+            category: s.lastTurnOutcome.category,
+            ...(s.lastTurnOutcome.reason ? { reason: s.lastTurnOutcome.reason } : {}),
+            ...(s.lastTurnOutcome.recordFailure ? { recordFailure: s.lastTurnOutcome.recordFailure } : {}),
+            at: s.lastTurnOutcome.at,
+          },
+        }
+      : {}),
     pendingQuestion: s.actionPanel?.pendingQuestion
       ? s.actionPanel.pendingQuestion.type === 'user_choice'
         ? {
