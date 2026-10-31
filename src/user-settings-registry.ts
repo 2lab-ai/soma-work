@@ -35,6 +35,7 @@ export type SettingKey =
   | 'email'
   | 'rating'
   | 'workingDirectory'
+  | 'slackTaskEntry'
   | 'permissionMode'
   | 'sandbox'
   | 'sandboxNetwork';
@@ -140,6 +141,8 @@ export interface SettingsStoreLike {
   getUserRating(userId: string): number;
   changeUserRating(userId: string, rating: number): { from: number; to: number };
   getUserPermissionMode(userId: string): PermissionMode;
+  getUserSlackTaskEntry(userId: string): boolean;
+  setUserSlackTaskEntry(userId: string, enabled: boolean): void;
   getUserSandboxDisabled(userId: string): boolean;
   getUserNetworkDisabled(userId: string): boolean;
 }
@@ -223,6 +226,7 @@ export const SLACK_SETTER_COVERAGE: Readonly<Record<string, SettingKey | { exclu
   setPendingRatingChange: 'rating',
   changeUserRating: 'rating',
   setUserPermissionMode: 'permissionMode',
+  setUserSlackTaskEntry: 'slackTaskEntry',
   setUserSandboxDisabled: 'sandbox',
   setUserNetworkDisabled: 'sandboxNetwork',
   clearUserCompactThreshold: {
@@ -406,6 +410,22 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
           slackCommand: 'webhook register <url> | webhook remove',
         };
       }
+      case 'slackTaskEntry': {
+        const value = store.getUserSlackTaskEntry(userId);
+        return {
+          key,
+          group: 'account',
+          label: 'Slack 지시 → 대시보드 작업',
+          description:
+            '채널에서 봇에게 보낸 지시가 대시보드 작업이 됩니다. 스레드에는 카드 링크, 결과, 답이 필요한 질문만 남깁니다. 진행 중인 슬랙 세션은 그대로입니다.',
+          kind: 'toggle',
+          value,
+          defaultValue: false,
+          modified: value,
+          editable: true,
+          slackCommand: 'taskentry on|off',
+        };
+      }
       case 'autoGoal': {
         const value = store.getUserAutoGoalEnabled(userId);
         return {
@@ -582,6 +602,7 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
     'email',
     'rating',
     'workingDirectory',
+    'slackTaskEntry',
     'permissionMode',
     'sandbox',
     'sandboxNetwork',
@@ -640,6 +661,9 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
       }
       case 'autoGoal':
         store.setUserAutoGoalEnabled(userId, expectBoolean(value, key));
+        return;
+      case 'slackTaskEntry':
+        store.setUserSlackTaskEntry(userId, expectBoolean(value, key));
         return;
       case 'goalMaxContinuations': {
         let n: number;

@@ -19,6 +19,7 @@ import { taskDirectoryFor } from '../agent-runtime/execution-context';
 import { isSafePathSegment, normalizeTmpPath } from '../path-utils';
 import { buildTaskSessionKey } from '../session-identity';
 import type { CreateTaskInput } from '../session-registry';
+import type { OriginThread, TaskInputContext } from '../types';
 import type { TaskCommandResponse, TaskTurnController } from './task-turn-controller';
 
 export interface TaskLaunchRequest {
@@ -30,6 +31,10 @@ export interface TaskLaunchRequest {
   folder?: string;
   /** The nickname of a model the dialog offers (`listModels`); absent → the default. */
   model?: string;
+  /** E2 ⑧ — a Slack instruction's thread: the task's notices go there (D3). Absent for a dashboard launch. */
+  originThread?: OriginThread;
+  /** E2 ⑧ — the instruction channel's name, description and repos, copied onto the task (D4). */
+  inputContext?: TaskInputContext;
 }
 
 export interface TaskLauncherDeps {
@@ -179,6 +184,8 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
           workingDirectory,
           title: taskTitleOf(request.prompt),
           ...(model ? { model } : {}),
+          ...(request.originThread ? { originThread: request.originThread } : {}),
+          ...(request.inputContext ? { inputContext: request.inputContext } : {}),
         });
       } catch (error) {
         // A fresh folder no task was made for is not left behind (#640 R1). A named one is the owner's.

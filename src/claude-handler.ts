@@ -614,6 +614,11 @@ export class ClaudeHandler implements TurnSteeringPort {
     return this.sessionRegistry.findSessionBySourceThread(channel, threadTs);
   }
 
+  /** E2 ⑧ — the live Slack-less task whose instruction thread this is (D3: one per thread). */
+  getTaskByOriginThread(channel: string, threadTs: string): ConversationSession | undefined {
+    return this.sessionRegistry.getTaskByOriginThread(channel, threadTs);
+  }
+
   getAllSessions(): Map<string, ConversationSession> {
     return this.sessionRegistry.getAllSessions();
   }
