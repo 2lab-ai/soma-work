@@ -239,6 +239,7 @@ describe('T11 — a dashboard task’s question answered from the dashboard (#59
 
     // A stale id is refused and changes nothing.
     const stale = await h.controller.answer({
+      actorUserId: OWNER,
       sessionKey: key,
       askId: 'ask-stale',
       answer: { kind: 'single', choiceId: '90' },
@@ -248,6 +249,7 @@ describe('T11 — a dashboard task’s question answered from the dashboard (#59
 
     h.useStream(answerTurn);
     const answered = await h.controller.answer({
+      actorUserId: OWNER,
       sessionKey: key,
       askId: askId!,
       answer: { kind: 'single', choiceId: '90' },
@@ -263,8 +265,14 @@ describe('T11 — a dashboard task’s question answered from the dashboard (#59
     expect(done.actionPanel?.pendingQuestion).toBeUndefined();
     // The same answer again is refused: the question is gone.
     expect(
-      (await h.controller.answer({ sessionKey: key, askId: askId!, answer: { kind: 'single', choiceId: '90' } }))
-        .status,
+      (
+        await h.controller.answer({
+          actorUserId: OWNER,
+          sessionKey: key,
+          askId: askId!,
+          answer: { kind: 'single', choiceId: '90' },
+        })
+      ).status,
     ).toBe(409);
     expect(h.executor.slackCalls).toEqual([]);
   });

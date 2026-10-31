@@ -1166,7 +1166,9 @@ async function start() {
       taskController.start({ sessionKey, text: message, attachments }),
     );
     // #599 ⑤ — an answer to a task's open question runs as its next instruction.
-    setDashboardTaskAnswerHandler((sessionKey, askId, answer) => taskController.answer({ sessionKey, askId, answer }));
+    setDashboardTaskAnswerHandler((sessionKey, askId, answer, actorUserId) =>
+      taskController.answer({ sessionKey, askId, answer, actorUserId }),
+    );
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
       recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => void;

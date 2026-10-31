@@ -616,6 +616,7 @@ describe('TaskTurnController.answer — a dashboard answer to a task’s questio
     const h = harness();
     waiting(h);
     const r = await h.controller.answer({
+      actorUserId: 'UOWNER',
       sessionKey: KEY,
       askId: 'ask-1',
       answer: { kind: 'single', choiceId: 'pg' },
@@ -631,6 +632,7 @@ describe('TaskTurnController.answer — a dashboard answer to a task’s questio
     const h = harness();
     waiting(h);
     const r = await h.controller.answer({
+      actorUserId: 'UOWNER',
       sessionKey: KEY,
       askId: 'ask-0',
       answer: { kind: 'single', choiceId: 'pg' },
@@ -645,8 +647,14 @@ describe('TaskTurnController.answer — a dashboard answer to a task’s questio
     const s = waiting(h);
     s.activityState = 'idle';
     expect(
-      (await h.controller.answer({ sessionKey: KEY, askId: 'ask-1', answer: { kind: 'single', choiceId: 'pg' } }))
-        .status,
+      (
+        await h.controller.answer({
+          actorUserId: 'UOWNER',
+          sessionKey: KEY,
+          askId: 'ask-1',
+          answer: { kind: 'single', choiceId: 'pg' },
+        })
+      ).status,
     ).toBe(409);
     expect(h.runTaskTurn).not.toHaveBeenCalled();
   });
@@ -655,6 +663,7 @@ describe('TaskTurnController.answer — a dashboard answer to a task’s questio
     const h = harness();
     waiting(h);
     const r = await h.controller.answer({
+      actorUserId: 'UOWNER',
       sessionKey: KEY,
       askId: 'ask-1',
       answer: { kind: 'single', choiceId: 'oracle' },
@@ -670,13 +679,77 @@ describe('TaskTurnController.answer — a dashboard answer to a task’s questio
   it('one answer only: a concurrent second answer to the same question is refused', async () => {
     const h = harness();
     waiting(h);
-    const a = h.controller.answer({ sessionKey: KEY, askId: 'ask-1', answer: { kind: 'single', choiceId: 'pg' } });
-    const b = h.controller.answer({ sessionKey: KEY, askId: 'ask-1', answer: { kind: 'single', choiceId: 'my' } });
+    const a = h.controller.answer({
+      actorUserId: 'UOWNER',
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'single', choiceId: 'pg' },
+    });
+    const b = h.controller.answer({
+      actorUserId: 'UOWNER',
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'single', choiceId: 'my' },
+    });
     const [ra, rb] = await Promise.all([a, b]);
     expect([ra.status, rb.status].sort()).toEqual([202, 409]);
     await ra.done;
     await rb.done;
     expect(h.runTaskTurn).toHaveBeenCalledTimes(1);
+  });
+
+  // #637 R1 (astra P1) — the answer runs under the owner's identity: the route
+  // checks the signed-in owner, and the controller refuses anyone else again.
+  it('an answer from anyone but the task’s owner is 403 and changes nothing', async () => {
+    const h = harness();
+    waiting(h);
+    for (const actorUserId of ['U_OTHER', '']) {
+      const r = await h.controller.answer({
+        actorUserId,
+        sessionKey: KEY,
+        askId: 'ask-1',
+        answer: { kind: 'single', choiceId: 'pg' },
+      });
+      expect(r).toMatchObject({ status: 403 });
+    }
+    expect(h.runTaskTurn).not.toHaveBeenCalled();
+    expect(h.sessions.get(KEY).actionPanel.pendingQuestion.askId).toBe('ask-1');
+  });
+
+  // #637 R1 (fable P3) — an answer is not a command: a form whose question
+  // starts with `%` is answered. One that would start with `/` is refused with
+  // its reason (the SDK reads a leading `/word` as a command) and stays open.
+  it('an answer starting with % runs; one that would start with /word is 422 with its reason and the question stays', async () => {
+    const h = harness();
+    const s = waiting(h);
+    s.actionPanel.pendingQuestion = {
+      type: 'user_choices',
+      questions: [{ id: 'q1', question: '%CPU threshold?', choices: [{ id: '80', label: '80%' }] }],
+      askId: 'ask-1',
+    };
+    const ok = await h.controller.answer({
+      actorUserId: 'UOWNER',
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'multi', selections: { q1: { choiceId: '80', label: '80%' } } },
+    });
+    expect(ok.status).toBe(202);
+    await ok.done;
+    expect(h.inputs[0]).toMatchObject({ text: '%CPU threshold?: 80. 80%' });
+
+    const h2 = harness();
+    const s2 = waiting(h2);
+    s2.actionPanel.pendingQuestion = { ...QUESTION, choices: [{ id: '/compact', label: 'compact' }] };
+    const refused = await h2.controller.answer({
+      actorUserId: 'UOWNER',
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'single', choiceId: '/compact' },
+    });
+    expect(refused.status).toBe(422);
+    expect(String(refused.body.error)).toMatch(/would be read as a command/);
+    expect(h2.runTaskTurn).not.toHaveBeenCalled();
+    expect(h2.sessions.get(KEY).actionPanel.pendingQuestion.askId).toBe('ask-1');
   });
 
   it('an answer refused at admission (the owner’s other task runs) keeps the question, and can be sent again later', async () => {
@@ -694,6 +767,7 @@ describe('TaskTurnController.answer — a dashboard answer to a task’s questio
     const other = await h.controller.start({ sessionKey: KEY2, text: 'other work' });
     waiting(h);
     const refused = await h.controller.answer({
+      actorUserId: 'UOWNER',
       sessionKey: KEY,
       askId: 'ask-1',
       answer: { kind: 'single', choiceId: 'pg' },
@@ -706,6 +780,7 @@ describe('TaskTurnController.answer — a dashboard answer to a task’s questio
     release();
     await other.done;
     const again = await h.controller.answer({
+      actorUserId: 'UOWNER',
       sessionKey: KEY,
       askId: 'ask-1',
       answer: { kind: 'single', choiceId: 'pg' },

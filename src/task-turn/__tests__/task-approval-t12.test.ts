@@ -53,7 +53,8 @@ vi.mock('../../session-archive', () => ({
 }));
 
 const OWNER = 'U0T12OWNER';
-const WORK_DIR = `/tmp/${OWNER}/session_t12`;
+// Unique per run: two runs of this file must not remove each other's directory (#637 R1).
+const WORK_DIR = `/tmp/${OWNER}/session_t12_${process.pid}_${Math.random().toString(36).slice(2, 8)}`;
 const TASK_ID = '12121212-3434-4545-8656-787878787878';
 const TASK_KEY = `task:${TASK_ID}`;
 fs.mkdirSync(WORK_DIR, { recursive: true });
@@ -72,6 +73,13 @@ describe('T12 — a task’s tool call that needs approval, answered on the dash
   let sharedStore: typeof import('somalib/permission/shared-store').sharedStore;
   let task: Record<string, unknown>;
   const ids: string[] = [];
+  /** Every waiting hook's turn: aborted after each test, so no 5-minute poll outlives it (#637 R1). */
+  const turns: AbortController[] = [];
+  const turnSignal = () => {
+    const ac = new AbortController();
+    turns.push(ac);
+    return ac.signal;
+  };
 
   async function signIn(slackUserId: string) {
     const { issueSlackToken } = await import('../../conversation/oauth');
@@ -197,13 +205,14 @@ describe('T12 — a task’s tool call that needs approval, answered on the dash
   }, 30_000);
 
   afterEach(async () => {
+    for (const ac of turns.splice(0)) ac.abort(new Error('test ended'));
     for (const id of ids.splice(0)) await sharedStore?.cleanup(id);
     await stopWebServer?.();
   });
 
   it('approve on the dashboard → the waiting call is allowed; the card shows NEEDS YOU until then', async () => {
     const hook = await taskTurnHook();
-    const decided = hook(escalation, 'tu-1', { signal: new AbortController().signal });
+    const decided = hook(escalation, 'tu-1', { signal: turnSignal() });
     const approvalId = await promptOnCard();
     expect((await taskCard())?.col).toBe('waiting');
 
@@ -219,7 +228,7 @@ describe('T12 — a task’s tool call that needs approval, answered on the dash
 
   it('deny on the dashboard → the waiting call is denied with the answer as its reason', async () => {
     const hook = await taskTurnHook();
-    const decided = hook(escalation, 'tu-2', { signal: new AbortController().signal });
+    const decided = hook(escalation, 'tu-2', { signal: turnSignal() });
     const approvalId = await promptOnCard();
     expect((await answer(approvalId, 'deny', await signIn(OWNER))).statusCode).toBe(200);
     const out = await decided;
@@ -247,7 +256,7 @@ describe('T12 — a task’s tool call that needs approval, answered on the dash
 
   it('a prompt left by a dead process (no waiter, record still on disk) is refused after the restart', async () => {
     const hook = await taskTurnHook();
-    void hook(escalation, 'tu-4', { signal: new AbortController().signal }).catch(() => {});
+    void hook(escalation, 'tu-4', { signal: turnSignal() }).catch(() => {});
     const approvalId = await promptOnCard();
     // The restart: the old turn is gone; a new turn of the same task runs.
     task.activeTaskTurnId = 'turn-after-restart';

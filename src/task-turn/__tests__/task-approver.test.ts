@@ -6,7 +6,11 @@
  */
 import { type PendingApproval, sharedStore } from 'somalib/permission/shared-store';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createTaskApprover } from '../task-approver';
+import {
+  TASK_APPROVAL_HOOK_MARGIN_MS,
+  TASK_APPROVAL_HOOK_TIMEOUT_S,
+} from '../../agent-runtime/claude-code/build-stream-options';
+import { createTaskApprover, TASK_APPROVAL_TIMEOUT_MS } from '../task-approver';
 
 const TASK = 'task:11111111-2222-4333-8444-555555555555';
 const created: string[] = [];
@@ -76,6 +80,47 @@ describe('createTaskApprover (#599 ⑤)', () => {
     await pendingRecord();
     ac.abort('user-stop');
     await expect(waiting).rejects.toBeDefined();
+  });
+
+  // #637 R1 (fable P2) — the wait fits inside the hook's SDK deadline: the
+  // classifier may have used part of it, and the CLI cancels a hook at its
+  // timeout (a deny that would drop an approval the owner gave late).
+  it('waits no longer than the hook’s deadline, and the prompt expires with it', async () => {
+    const t0 = Date.now();
+    const waits: number[] = [];
+    const store = {
+      storePendingApproval: sharedStore.storePendingApproval.bind(sharedStore),
+      waitForPermissionResponse: async (_id: string, ms: number) => {
+        waits.push(ms);
+        return { behavior: 'deny' as const, message: 'Permission request timed out' };
+      },
+    };
+    await approver({ store: store as never, now: () => t0 }).request({ ...REQ, deadlineAt: t0 + 2_000 });
+    expect(waits).toEqual([2_000]);
+    const { approval } = await pendingRecord();
+    expect(approval.expires_at).toBe(t0 + 2_000);
+    await approver({ store: store as never, now: () => t0 }).request({ ...REQ, deadlineAt: t0 + 10 * 60_000 });
+    expect(waits[1]).toBe(TASK_APPROVAL_TIMEOUT_MS);
+  });
+
+  it('with no time left before the hook’s deadline it denies without raising a prompt', async () => {
+    const t0 = Date.now();
+    const stored: string[] = [];
+    const store = {
+      storePendingApproval: async (id: string) => {
+        stored.push(id);
+      },
+      waitForPermissionResponse: async () => ({ behavior: 'allow' as const }),
+    };
+    const r = await approver({ store: store as never, now: () => t0 }).request({ ...REQ, deadlineAt: t0 + 500 });
+    expect(r.behavior).toBe('deny');
+    expect(stored).toEqual([]);
+  });
+
+  it('the hook’s SDK budget covers a full approval window plus its margin', () => {
+    expect(TASK_APPROVAL_HOOK_TIMEOUT_S * 1000 - TASK_APPROVAL_HOOK_MARGIN_MS).toBeGreaterThanOrEqual(
+      TASK_APPROVAL_TIMEOUT_MS,
+    );
   });
 
   it('a store that cannot write the prompt rejects (never an allow)', async () => {

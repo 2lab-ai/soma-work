@@ -3132,6 +3132,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'panelQuestionShown',
         'renderMultiChoicePanel',
         'renderMultiChoiceCard',
+        // #637 R1: a form's selections are bound to the question's askId.
+        'mcStateFor',
         'esc',
         'escAttr',
         'escJs',
