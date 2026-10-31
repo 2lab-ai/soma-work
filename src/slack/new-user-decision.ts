@@ -111,7 +111,8 @@ async function rewritePrompts(
  * pending, only this round's buttons and card can decide them.
  */
 export function createPendingUserRequest(userId: string, userName: string): void {
-  userSettingsStore.createPendingUser(userId, userName);
+  // The round first: if it cannot be written, no pending user exists (the next message asks again),
+  // so a pending user is never exposed under an earlier round.
   openAdminRequest({
     kind: 'new_user',
     requestId: userId,
@@ -120,6 +121,7 @@ export function createPendingUserRequest(userId: string, userName: string): void
     ttlMs: NEW_USER_REQUEST_TTL_MS,
     fresh: true,
   });
+  userSettingsStore.createPendingUser(userId, userName);
   notifyAdminApprovalsChanged();
 }
 

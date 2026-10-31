@@ -22,6 +22,7 @@ import {
   listOrphanedClaims,
   markAdminRequest,
   openAdminRequest,
+  releaseLiveClaim,
   reopenAdminRequest,
   setAdminRequestPrompts,
   settleAdminRequest,
@@ -163,9 +164,30 @@ export async function requestBotDelete(
   return prompts.length;
 }
 
-function isMessageGone(error: unknown): boolean {
-  const code = (error as { data?: { error?: string } })?.data?.error ?? (error as Error)?.message;
-  return typeof code === 'string' && code.includes('message_not_found');
+/** Slack answered, but only "try later": it says nothing about whether the delete happened. */
+const TRANSIENT_SLACK_ERRORS = new Set([
+  'ratelimited',
+  'internal_error',
+  'fatal_error',
+  'service_unavailable',
+  'request_timeout',
+  'timeout',
+]);
+
+/**
+ * What a failed `chat.delete` proves about the message: `gone` (already
+ * deleted — counts as done), `stillThere` (Slack refused it with a definite
+ * error — the delete did not happen), or `unknown` (a transport failure or a
+ * transient error — it may have happened).
+ */
+function deleteFailure(error: unknown): 'gone' | 'stillThere' | 'unknown' {
+  const code = (error as { data?: { error?: unknown } })?.data?.error;
+  if (typeof code !== 'string') {
+    const message = (error as Error)?.message;
+    return typeof message === 'string' && message.includes('message_not_found') ? 'gone' : 'unknown';
+  }
+  if (code === 'message_not_found') return 'gone';
+  return TRANSIENT_SLACK_ERRORS.has(code) ? 'unknown' : 'stillThere';
 }
 
 /**
@@ -252,10 +274,22 @@ export async function decideBotDelete(args: {
     try {
       await slackApi.deleteMessage(target.targetChannel, target.targetTs);
     } catch (error) {
-      if (!isMessageGone(error)) {
+      const proved = deleteFailure(error);
+      if (proved === 'stillThere') {
         reopenAdminRequest('bot_delete', requestId, resolution);
         logger.warn('Failed to delete message after admin approval', { requestId, error });
         return { ok: false, reason: 'failed', message: '⚠️ 메시지 삭제에 실패했습니다. 다시 시도할 수 있습니다.' };
+      }
+      if (proved === 'unknown') {
+        // It may have been deleted: the approval stays claimed (no contradicting answer is admitted);
+        // the next answer, or the next start, redoes the delete to find out.
+        releaseLiveClaim('bot_delete', requestId);
+        logger.warn('Bot message delete outcome unknown — kept claimed for a redo', { requestId, error });
+        return {
+          ok: false,
+          reason: 'failed',
+          message: '⚠️ 삭제 결과를 확인하지 못했습니다. 다시 누르면 삭제를 다시 시도합니다.',
+        };
       }
     }
     if (!settleAdminRequest('bot_delete', requestId, resolution)) {
@@ -298,7 +332,7 @@ export async function decideBotDelete(args: {
 export async function finishOrphanedDelete(
   slackApi: BotDeleteSlackApi,
   req: AdminRequest,
-): Promise<'settled' | 'reopened' | 'busy'> {
+): Promise<'settled' | 'reopened' | 'busy' | 'superseded'> {
   const original = req.resolution;
   if (!original || original.settled !== false) return 'settled';
   if (!adoptOrphanedClaim('bot_delete', req.requestId)) return 'busy';
@@ -306,21 +340,39 @@ export async function finishOrphanedDelete(
   try {
     await slackApi.deleteMessage(targetChannel, targetTs);
   } catch (error) {
-    if (!isMessageGone(error)) {
+    const proved = deleteFailure(error);
+    if (proved === 'stillThere') {
       reopenAdminRequest('bot_delete', req.requestId, original);
-      logger.warn('Orphaned bot-message delete could not be redone — the request is open again', {
+      logger.warn('Orphaned bot-message delete was refused — the message is there; the request is open again', {
         requestId: req.requestId,
         error,
       });
       notifyAdminApprovalsChanged();
       return 'reopened';
     }
+    if (proved === 'unknown') {
+      // Slack unreachable proves nothing: the approval stays claimed until a redo gets an answer.
+      releaseLiveClaim('bot_delete', req.requestId);
+      logger.warn('Orphaned bot-message delete outcome still unknown — kept claimed', {
+        requestId: req.requestId,
+        error,
+      });
+      return 'busy';
+    }
   }
   const settled = settleAdminRequest('bot_delete', req.requestId, original);
+  if (!settled) {
+    // Another answer is on record by now: it stands. Nothing is rewritten and nobody is told.
+    logger.warn('Orphaned bot-message delete finished but another answer is on record — leaving it', {
+      requestId: req.requestId,
+    });
+    notifyAdminApprovalsChanged();
+    return 'superseded';
+  }
   logger.info('Orphaned bot-message delete finished', { requestId: req.requestId, by: original.by });
   notifyAdminApprovalsChanged();
   const text = outcomeText(original);
-  await rewritePrompts(slackApi, settled?.prompts ?? req.prompts, text);
+  await rewritePrompts(slackApi, settled.prompts, text);
   try {
     const dm = await slackApi.openDmChannel(req.requesterId);
     await slackApi.postMessage(dm, '✅ 어드민이 삭제 요청을 승인했습니다. 메시지가 삭제되었습니다.');

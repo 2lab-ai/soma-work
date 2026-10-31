@@ -119,7 +119,7 @@ describe('bot-message delete requests as one decision (#623)', () => {
     await requestBotDelete(api, TARGET);
     const adapter = botDeleteAdminApprovalAdapter(api);
     api.deleteMessage.mockRejectedValueOnce(
-      Object.assign(new Error('ratelimited'), { data: { error: 'ratelimited' } }),
+      Object.assign(new Error('cant_delete_message'), { data: { error: 'cant_delete_message' } }),
     );
     await expect(adapter.answer(ID, 'approve', 'UADMIN1')).rejects.toThrow('삭제에 실패');
     expect((await adapter.pending(Date.now())).some((c) => c.id === `bot_delete:${ID}`)).toBe(true);
@@ -176,7 +176,7 @@ describe('bot-message delete requests as one decision (#623)', () => {
     api.deleteMessage.mockImplementationOnce(
       () =>
         new Promise((_r, reject) => {
-          fail = () => reject(Object.assign(new Error('timeout'), { data: { error: 'timeout' } }));
+          fail = () => reject(Object.assign(new Error('x'), { data: { error: 'cant_delete_message' } }));
         }),
     );
     const first = decideBotDelete({
@@ -210,7 +210,7 @@ describe('bot-message delete requests as one decision (#623)', () => {
       () =>
         new Promise<undefined>((resolve, reject) => {
           finish = (ok) =>
-            ok ? resolve(undefined) : reject(Object.assign(new Error('x'), { data: { error: 'timeout' } }));
+            ok ? resolve(undefined) : reject(Object.assign(new Error('x'), { data: { error: 'cant_delete_message' } }));
         }),
     );
     // The first admin DM goes out; then the dashboard approves while the second is still being posted.
@@ -247,7 +247,7 @@ describe('bot-message delete requests as one decision (#623)', () => {
     api.deleteMessage.mockImplementationOnce(
       () =>
         new Promise((_r, reject) => {
-          fail = () => reject(Object.assign(new Error('x'), { data: { error: 'timeout' } }));
+          fail = () => reject(Object.assign(new Error('x'), { data: { error: 'cant_delete_message' } }));
         }),
     );
     const first = decideBotDelete({
@@ -349,6 +349,75 @@ describe('bot-message delete requests as one decision (#623)', () => {
       ok: true,
       outcome: 'denied',
     });
+  });
+
+  it('an orphan whose redo finishes after another answer was recorded: that answer stands, nothing is announced', async () => {
+    await requestBotDelete(api, TARGET);
+    leaveOrphan();
+    const file = path.join(DATA_DIR, 'admin-requests.json');
+    api.deleteMessage.mockImplementationOnce(async () => {
+      // While the redo runs, another answer lands on record (a denial).
+      const all = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      all[`bot_delete:${ID}`].resolution = {
+        by: 'UADMIN2',
+        choiceId: 'reject',
+        outcome: 'denied',
+        via: 'slack',
+        at: Date.now(),
+      };
+      fs.writeFileSync(file, JSON.stringify(all));
+      throw Object.assign(new Error('gone'), { data: { error: 'message_not_found' } });
+    });
+    expect(await reconcileBotDeletes(api)).toBe(0);
+    expect(api.updateMessage).not.toHaveBeenCalled();
+    expect(api.postMessage).not.toHaveBeenCalledWith('D-U1', expect.stringContaining('삭제되었습니다'));
+    expect(
+      (await botDeleteAdminApprovalAdapter(api).resolved(0)).find((r) => r.id === `bot_delete:${ID}`),
+    ).toMatchObject({
+      outcome: 'denied',
+      by: 'UADMIN2',
+    });
+  });
+
+  it('a delete whose outcome is unknown (timeout): the approval stays claimed; the next answer redoes it, not overrides it', async () => {
+    await requestBotDelete(api, TARGET);
+    // The request timed out — Slack may have deleted the message.
+    api.deleteMessage.mockRejectedValueOnce(new Error('socket hang up'));
+    expect(
+      await decideBotDelete({ requestId: ID, decision: 'approve', actor: 'UADMIN1', via: 'slack', slackApi: api }),
+    ).toMatchObject({
+      ok: false,
+      reason: 'failed',
+    });
+    // A competing reject: the redo runs first and finds the message gone — the approval stands.
+    api.deleteMessage.mockRejectedValueOnce(Object.assign(new Error('gone'), { data: { error: 'message_not_found' } }));
+    expect(
+      await decideBotDelete({ requestId: ID, decision: 'reject', actor: 'UADMIN2', via: 'slack', slackApi: api }),
+    ).toMatchObject({
+      ok: false,
+      reason: 'already_answered',
+    });
+    expect(
+      (await botDeleteAdminApprovalAdapter(api).resolved(0)).find((r) => r.id === `bot_delete:${ID}`),
+    ).toMatchObject({
+      outcome: 'approved',
+      by: 'UADMIN1',
+    });
+  });
+
+  it('an orphan whose redo cannot reach Slack stays claimed: a competing answer is told to retry', async () => {
+    await requestBotDelete(api, TARGET);
+    leaveOrphan();
+    api.deleteMessage.mockRejectedValueOnce(Object.assign(new Error('x'), { data: { error: 'ratelimited' } }));
+    expect(
+      await decideBotDelete({ requestId: ID, decision: 'reject', actor: 'UADMIN2', via: 'slack', slackApi: api }),
+    ).toMatchObject({
+      ok: false,
+      reason: 'busy',
+    });
+    const held = (await botDeleteAdminApprovalAdapter(api).resolved(0)).find((r) => r.id === `bot_delete:${ID}`);
+    expect(held).toBeUndefined(); // still an unsettled approval, not a decision
+    expect(api.postMessage).not.toHaveBeenCalledWith('D-U1', expect.stringContaining('거절'));
   });
 
   it('at startup every orphaned approval is finished', async () => {

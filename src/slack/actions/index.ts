@@ -1,6 +1,7 @@
 import { setActionHandlersProviders } from '@soma/slack/actions';
 import { registerAdminApprovalAdapter } from '../../admin-approvals';
 import { isAdminUser } from '../../admin-utils';
+import { Logger } from '../../logger';
 import { getTokenManager } from '../../token-manager';
 import { registerAuthActions } from '../auth/actions';
 import { botDeleteAdminApprovalAdapter, reconcileBotDeletes } from '../bot-delete-decision';
@@ -98,7 +99,9 @@ setActionHandlersProviders({
     registerAdminApprovalAdapter(newUserAdminApprovalAdapter(ctx.slackApi as any));
     registerAdminApprovalAdapter(botDeleteAdminApprovalAdapter(ctx.slackApi as any));
     // Approvals a previous process died while carrying out: finish them (redo the delete) first.
-    void reconcileBotDeletes(ctx.slackApi as any).catch(() => undefined);
+    void reconcileBotDeletes(ctx.slackApi as any).catch((error: unknown) =>
+      new Logger('AdminApprovals').warn('Reconciling orphaned bot-message deletes failed', error),
+    );
 
     const zTopicRegistry = buildDefaultTopicRegistry();
 
