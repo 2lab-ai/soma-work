@@ -14,14 +14,15 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { TaskExecutionContext } from '../../agent-runtime/execution-context';
+import { applyPlanWrite, EpicPlanError } from '../epic-plan';
+import { attachesEpicServer, buildEpicServer, type EpicHost, epicTools, setEpicHost } from '../epic-server';
+
 // The real server, but its config is kept so the tools it carries can be read.
 vi.mock('@anthropic-ai/claude-agent-sdk', async (original) => {
   const actual: any = await original();
   return { ...actual, createSdkMcpServer: vi.fn((config: any) => ({ type: 'sdk', name: config.name, config })) };
 });
-import type { TaskExecutionContext } from '../../agent-runtime/execution-context';
-import { applyPlanWrite, EpicPlanError } from '../epic-plan';
-import { attachesEpicServer, buildEpicServer, type EpicHost, epicTools, setEpicHost } from '../epic-server';
 
 const EPIC_ID = 'e1';
 const ctx = (extra: Record<string, unknown> = {}) =>
