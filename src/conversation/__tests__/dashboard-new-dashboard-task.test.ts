@@ -225,6 +225,8 @@ describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () 
     dashboard.setDashboardTaskLauncher(real);
     const res = await post(await signIn(), task({ folder }));
     expect(res.statusCode).toBe(422);
+    // Refused as a name, before any lookup on disk (not merely "no such folder").
+    expect(JSON.parse(res.body).error).toBe('the folder must be the name of a folder in your /tmp directory');
     expect(createTask).not.toHaveBeenCalled();
     expect(controller.start).not.toHaveBeenCalled();
   });
