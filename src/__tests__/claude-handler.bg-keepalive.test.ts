@@ -62,6 +62,8 @@ import { Logger } from '../logger';
 import type { McpManager } from '../mcp-manager';
 
 const SESSION_KEY = 'C123:1700000000.1';
+// A turn runs only under an execution context (#597): these turns are Slack turns.
+const TEST_SLACK_CONTEXT = { user: 'U_TEST', channel: 'C123', threadTs: '1700000000.1' } as never;
 const KEEPALIVE_ENV = 'SOMA_BG_KEEPALIVE_MAX_MS';
 /** A cap set through the env, so the cases also prove the knob is read. */
 const CAP_MS = 5 * 60_000;
@@ -279,7 +281,7 @@ async function collect<T>(it: AsyncIterator<T>): Promise<T[]> {
 
 function startTurn(handler: ClaudeHandler): AsyncIterator<unknown> {
   return handler
-    .streamQuery('ping', undefined, undefined, undefined, undefined, SESSION_KEY)
+    .streamQuery('ping', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
     [Symbol.asyncIterator]() as AsyncIterator<unknown>;
 }
 
@@ -496,7 +498,7 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
     install(newFakeCli(), []);
     const events = await collect(
       newHandler()
-        .streamAgentEvents('ping', undefined, undefined, undefined, undefined, SESSION_KEY)
+        .streamAgentEvents('ping', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
         [Symbol.asyncIterator](),
     );
     const usageEvents = events.filter((e) => typeOf(e) === 'usage');
@@ -640,7 +642,7 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
     install(newFakeCli());
     const events = await collect(
       newHandler()
-        .streamAgentEvents('ping', undefined, undefined, undefined, undefined, SESSION_KEY)
+        .streamAgentEvents('ping', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
         [Symbol.asyncIterator](),
     );
     const usageEvents = events.filter((e) => typeOf(e) === 'usage');
@@ -1216,7 +1218,7 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
       });
       const timersBeforeTurn = vi.getTimerCount();
       // The generator itself: `return()` is the consumer action under test.
-      const it = newHandler().streamQuery('ping', undefined, undefined, undefined, undefined, SESSION_KEY);
+      const it = newHandler().streamQuery('ping', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY);
 
       // Pull until the handler sits at the subagent frame's yield, turn held.
       for (;;) {

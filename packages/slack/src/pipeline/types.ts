@@ -22,6 +22,8 @@ export interface ProcessedFile {
 export interface ConversationSession {
   channelId: string;
   threadTs?: string;
+  /** A task with no Slack thread (#596): `channelId` is '' and its registry key is `task:<taskId>`. */
+  slackless?: boolean;
   threadRootTs?: string;
   /**
    * Set once, at session init, from `routeContext.incidentRequest` of a

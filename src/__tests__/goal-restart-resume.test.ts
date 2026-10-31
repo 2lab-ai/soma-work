@@ -56,6 +56,20 @@ function createHandler(sessions: Map<string, ConversationSession>) {
 describe('resumeActiveGoals (T1)', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('skips a Slack-less task (#612 R1): it is not runnable before the execution context exists', () => {
+    const sessions = new Map<string, ConversationSession>([
+      [
+        'task:t1',
+        activeGoalSession({ channelId: '', threadTs: undefined, slackless: true } as Partial<ConversationSession>),
+      ],
+    ]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+    expect(handler.resumeActiveGoals()).toBe(0);
+    expect(settled).not.toHaveBeenCalled();
+  });
+
   it('triggers the goal loop for each active-goal session', () => {
     const sessions = new Map<string, ConversationSession>([
       ['C1-T1', activeGoalSession()],
