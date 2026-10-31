@@ -4,12 +4,13 @@
  * on the left, the open one in <ui-conversation>. Narrow, `/conversations` is the list and `/conversations/:id`
  * the conversation with a back link. The list is plain links (it works without JavaScript).
  *
- * Two things the library does not cover yet are the page's own (research/D5-GAPS.md G5-1, G5-2):
- *   - an answer's raw output is loaded only when asked: a "원본 응답 보기" button in the turn's
- *     `attachments-<id>` slot fetches `/api/conversations/:id/turns/:turnId/raw` and hands the answer to the
- *     element as `markdown` (loading → the element's skeleton; failure → its error with Try again → `ui-retry`);
- *   - choosing turns to export as Markdown: <ui-dialog> with a checklist, `POST /api/conversations/:id/export`
- *     (CSRF, one retry after a token refresh), downloaded as a .md file.
+ * Two things 0.12.0 closed (research/D5-GAPS.md G5-1, G5-2 — D6b), the page keeping only the server side:
+ *   - an answer's raw output is loaded only when asked: the turn is `deferred` (the element shows its summary and
+ *     답변 불러오기 → `ui-load-answer`), the page fetches `/api/conversations/:id/turns/:turnId/raw` and hands the
+ *     answer back as `markdown` (loading → the element's skeleton; failure → its error with Try again → `ui-retry`);
+ *   - choosing turns to export as Markdown: 내보내기 turns the element `selectable` (a checkbox leads every turn,
+ *     all checked) with a bar above it (count, 전체 선택 / 해제, 취소, 내보내기); `selectedIds` go to
+ *     `POST /api/conversations/:id/export` (CSRF, one retry after a token refresh), downloaded as a .md file.
  *
  * Tokens and kit classes are the library's own sheets (tokens.css, ui-kit.css) — no palette here.
  * Client scripts: String.raw, no `${…}` and no backticks (they ship byte for byte); the page data is JSON.
@@ -97,23 +98,12 @@ ui-conversation:not(:defined) > * { display: none; }
 .att-meta { color: var(--ui-ib-muted); font-size: 11.5px; }
 a.att:focus-visible { outline: 2px solid var(--ui-border-focus); outline-offset: 1px; }
 @media (hover: hover) and (pointer: fine) { a.att:hover { border-color: var(--ui-ib-muted); } }
-/* An answer's raw output on request (slot attachments-<id>). */
-.vw-raw { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.vw-raw-note { margin: 0; font-size: 12.5px; color: var(--ui-ib-muted); }
-/* Export: the turns to put in the Markdown file. */
-.vw-x-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 8px; }
-#selectedCount { font-size: 12.5px; color: var(--ui-ib-muted); font-variant-numeric: tabular-nums; }
-.vw-x-list { margin: 0; padding: 0; list-style: none; border: 1px solid var(--ui-ib-card-border); border-radius: 10px; max-height: min(52dvh, 420px); overflow: auto; }
-.vw-x-list li + li { border-top: 1px solid var(--ui-ib-card-border); }
-.vw-x-turn { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; padding: 10px 12px; font-size: 13px; cursor: pointer; }
-.vw-x-turn input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--ui-accent); cursor: pointer; }
-.vw-x-turn input:focus-visible { outline: 2px solid var(--ui-border-focus); outline-offset: 2px; }
-.vw-x-turn strong { font-weight: 600; }
-.vw-x-turn small { margin-left: 6px; font-size: 12px; color: var(--ui-ib-muted); font-variant-numeric: tabular-nums; }
-.vw-x-ex { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ui-ib-text-2); }
-#export-error { margin: 10px 0 0; }
+/* Export: the selection bar over the conversation while turns are being chosen (<ui-conversation selectable>). */
+.vw-sel { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; padding: 8px 10px; border: 1px solid var(--ui-ib-card-border); border-radius: 10px; background: var(--ui-ib-card); }
+.vw-sel[hidden] { display: none; }
+#selectedCount { flex: 1 1 auto; font-size: 12.5px; color: var(--ui-ib-muted); font-variant-numeric: tabular-nums; }
+#export-error { margin: 0 0 10px; }
 #export-error[hidden] { display: none; }
-.vw-x-foot { display: flex; justify-content: flex-end; gap: 8px; }
 /* Narrow: the list, or the conversation with a back link — one at a time. */
 @media (max-width: 720px) {
   .vw-body { grid-template-columns: minmax(0, 1fr); }
@@ -121,7 +111,7 @@ a.att:focus-visible { outline: 2px solid var(--ui-border-focus); outline-offset:
   body[data-view="detail"] .vw-side, body[data-view="list"] .vw-main { display: none; }
   .vw-back { display: inline-grid; }
   .vw-main { padding: 12px 12px 8px; }
-  .vw-x-turn { padding: 12px; }
+  .vw-sel .ui-btn { min-height: 44px; }
 }
 `;
 
@@ -298,14 +288,6 @@ function renderTurnAttachments(turn: ConversationTurn, conversationId: string): 
   return `<div slot="media-${escapeHtml(turn.id)}" class="vw-media">${items.join('')}</div>`;
 }
 
-/** An answer's raw-output button (slot `attachments-<id>`); over it, until then, the summary stands in. */
-function renderRawLoader(turn: ConversationTurn): string {
-  const note = turn.summarized && turn.summaryTitle ? '<p class="vw-raw-note">위 내용은 요약입니다.</p>' : '';
-  return `<div slot="attachments-${escapeHtml(turn.id)}" class="vw-raw">${note}<button type="button" class="ui-btn is-sm is-quiet" data-raw="${escapeHtml(
-    turn.id,
-  )}">${uiIcon('file-text')}원본 응답 보기</button></div>`;
-}
-
 /**
  * A turn as the page script keeps it; the script hands <ui-conversation> its view of it (viewTurn). An answer's
  * raw output stays on the server until asked for: `summaryState` says what stands in for it meanwhile.
@@ -347,26 +329,6 @@ export function viewerTurns(turns: ConversationTurn[]): ViewerTurn[] {
   });
 }
 
-/** The export checklist: every turn, checked (the whole conversation is the usual export). */
-function exportList(turns: ConversationTurn[]): string {
-  return turns
-    .map((t) => {
-      const who = t.role === 'user' ? `${t.userName || '사용자'} · 사용자` : '응답';
-      const firstLine = (t.rawContent || '').split('\n').find((l) => l.trim()) || '';
-      const files = Array.isArray(t.attachments) && t.attachments.length ? `파일 ${t.attachments.length}개` : '';
-      const excerpt =
-        t.role === 'user'
-          ? firstLine.slice(0, 160) || files
-          : t.summaryTitle || (t.summarized ? '요약 없음' : '요약 전');
-      return `<li><label class="vw-x-turn"><input type="checkbox" class="turn-checkbox" data-turn-id="${escapeHtml(
-        t.id,
-      )}" checked onchange="updateSelectedCount()"><span><strong>${escapeHtml(who)}</strong><small>${escapeHtml(
-        formatTime(t.timestamp),
-      )}</small><span class="vw-x-ex">${escapeHtml(excerpt)}</span></span></label></li>`;
-    })
-    .join('');
-}
-
 /**
  * Render a single conversation view page. `conversations` (optional) is the list beside it; without it the page
  * is the conversation alone with a link back to the list.
@@ -374,9 +336,7 @@ function exportList(turns: ConversationTurn[]): string {
 export function renderConversationViewPage(record: ConversationRecord, conversations?: ConversationMeta[]): string {
   const title = titleOf(record);
   const turns = Array.isArray(record.turns) ? record.turns : [];
-  const slotted = turns
-    .map((t) => (t.role === 'user' ? renderTurnAttachments(t, record.id) : renderRawLoader(t)))
-    .join('');
+  const slotted = turns.map((t) => (t.role === 'user' ? renderTurnAttachments(t, record.id) : '')).join('');
   const solo = !Array.isArray(conversations);
   const data = { id: record.id, turns: viewerTurns(turns) };
   const created = Number.isFinite(record.createdAt)
@@ -397,22 +357,21 @@ ${solo ? '' : sideList(conversations, record.id)}
     </div>
     <button type="button" class="ui-btn is-sm" id="export-open" onclick="openExport()"${turns.length ? '' : ' disabled'}>${uiIcon('download')}내보내기</button>
   </div>
+  <!-- Export (D5-GAPS G5-1 → D6b): the element is selectable while this bar shows; the chosen turns become a Markdown file. -->
+  <div class="vw-sel" id="export-sel" role="group" aria-label="내보낼 턴 선택" hidden>
+    <span id="selectedCount" role="status">${turns.length}개 선택</span>
+    <button type="button" class="ui-btn is-sm is-quiet" id="selectAllBtn" onclick="toggleSelectAll()">전체 해제</button>
+    <button type="button" class="ui-btn is-sm" onclick="closeExport()">취소</button>
+    <button type="button" class="ui-btn is-sm is-primary" id="exportBtn" onclick="exportSelected()">${uiIcon('download')}내보내기 (.md)</button>
+  </div>
+  <p class="ui-notice" data-tone="fail" id="export-error" role="alert" hidden></p>
   <ui-conversation id="conv" lang="ko">${slotted}</ui-conversation>
   <noscript><p class="ui-notice">대화 내용을 보려면 JavaScript를 켜 주세요.</p></noscript>
 </main>
-</div>
-<ui-dialog id="export-dialog" heading="Markdown으로 내보내기" size="md" lang="ko">
-  <div class="vw-x-bar"><button type="button" class="ui-btn is-sm is-quiet" id="selectAllBtn" onclick="toggleSelectAll()">전체 해제</button><span id="selectedCount" role="status">${turns.length}개 선택</span></div>
-  <ul class="vw-x-list">${exportList(turns)}</ul>
-  <p class="ui-notice" data-tone="fail" id="export-error" role="alert" hidden></p>
-  <div slot="footer" class="vw-x-foot"><button type="button" class="ui-btn" onclick="closeExport()">취소</button><button type="button" class="ui-btn is-primary" id="exportBtn" onclick="exportSelected()">${uiIcon(
-    'download',
-  )}내보내기 (.md)</button></div>
-</ui-dialog>`,
+</div>`,
     scripts: `<script type="application/json" id="conv-data">${scriptJson(data)}</script>
 <script>${VIEWER_CLIENT_JS}</script>
-<script type="module" src="/dashboard/ui/conversation.js?v=${UI_LIB_VERSION}"></script>
-<script type="module" src="/dashboard/ui/dialog.js?v=${UI_LIB_VERSION}"></script>`,
+<script type="module" src="/dashboard/ui/conversation.js?v=${UI_LIB_VERSION}"></script>`,
   });
 }
 
@@ -427,9 +386,9 @@ var _cv = (function () {
 var CONVERSATION_ID = _cv.id || '';
 var _turns = Array.isArray(_cv.turns) ? _cv.turns : [];
 
-// What the element shows of a turn. An answer whose raw output is not loaded yet (no markdown) shows its summary
-// (or what became of it) as the answer, with no Raw source — the element would say "no recorded answer" for an
-// empty one (G5-2) — and the raw-output button in its attachments slot. Loaded: the answer, Raw = summary + source.
+// What the element shows of a turn. An answer whose raw output is not loaded yet (no markdown) is deferred: the
+// element heads it with its summary (none while one is still being made; a failed one says so) and offers
+// 답변 불러오기 (ui-load-answer → loadRaw). Loaded: the answer, Raw = summary + source.
 function viewTurn(t) {
   if (t.role !== 'assistant') return t;
   var v = { id: t.id, role: 'assistant', at: t.at };
@@ -439,18 +398,16 @@ function viewTurn(t) {
     if (t.summary) v.summary = t.summary;
     return v;
   }
-  var s = t.summary || {};
-  v.markdown = t.summaryState === 'done'
-    ? '**' + String(s.title || '').trim() + '**' + (s.text ? '\n\n' + String(s.text).trim() : '')
-    : t.summaryState === 'failed' ? '*요약하지 못했습니다.*' : '*요약을 만드는 중입니다.*';
-  v.source = '';
-  v.attachments = true;
+  if (t.summaryState === 'done' && t.summary) v.summary = t.summary;
+  else if (t.summaryState === 'failed') v.summary = { error: '요약하지 못했습니다' };
+  v.deferred = true;
   if (t.loading) v.loading = true;
   if (t.error) { v.error = t.error; v.canRetry = true; }
   return v;
 }
+function convEl() { return document.getElementById('conv'); }
 function paintConversation() {
-  var el = document.getElementById('conv');
+  var el = convEl();
   if (!el) return;
   el.data = { turns: _turns.map(viewTurn), startText: '대화의 시작', emptyText: '이 대화에는 아직 턴이 없습니다.' };
 }
@@ -460,7 +417,7 @@ function turnById(id) {
 }
 
 // ── 원본 응답 — loaded only when asked (G5-2) ──
-// The button in the answer's attachments-<id> slot fetches the raw output; while it is out the element shows the
+// The element's 답변 불러오기 (ui-load-answer) fetches the raw output; while it is out the element shows the
 // answer loading, then the answer itself (markdown, with Raw's summary / source). A failure is the element's
 // error with Try again (ui-retry → the same fetch).
 async function loadRaw(id) {
@@ -469,8 +426,6 @@ async function loadRaw(id) {
   var t = Object.assign({}, cur, { loading: true });
   delete t.error;
   replaceTurn(t);
-  var btn = document.querySelector('[data-raw="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
-  if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); }
   var res = null;
   var data = null;
   try {
@@ -478,15 +433,9 @@ async function loadRaw(id) {
     try { data = await res.json(); } catch (_e) {}
   } catch (_e) {}
   var next = Object.assign({}, turnById(id), { loading: false });
-  if (res && res.ok && data && typeof data.raw === 'string') {
-    next.markdown = data.raw;
-    var slot = btn && btn.closest ? btn.closest('[slot]') : null;
-    if (slot && slot.parentNode) slot.parentNode.removeChild(slot);
-  } else {
-    // The element says "답변을 불러오지 못했습니다 (…)" around this: only the cause goes in.
-    next.error = res ? 'HTTP ' + res.status : '네트워크 오류';
-    if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); }
-  }
+  if (res && res.ok && data && typeof data.raw === 'string') next.markdown = data.raw;
+  // The element says "답변을 불러오지 못했습니다 (…)" around this: only the cause goes in.
+  else next.error = res ? 'HTTP ' + res.status : '네트워크 오류';
   replaceTurn(next);
 }
 function replaceTurn(t) {
@@ -494,48 +443,69 @@ function replaceTurn(t) {
   paintConversation();
 }
 
-// ── Export as Markdown — turns chosen in the dialog (G5-1) ──
-function exportDialog() { return document.getElementById('export-dialog'); }
+// ── Export as Markdown — the turns chosen on the element (G5-1: <ui-conversation selectable>) ──
 function setExportError(text) {
   var el = document.getElementById('export-error');
   if (!el) return;
   el.textContent = text || '';
   el.hidden = !text;
 }
-// show() / hide() once <ui-dialog> is defined; before that its observed open attribute (read on upgrade).
-function openExport() {
-  var d = exportDialog();
-  if (!d) return;
-  setExportError('');
-  updateSelectedCount();
-  if (typeof d.show === 'function') d.show();
-  else d.setAttribute('open', '');
+function selectedIds() {
+  var el = convEl();
+  return el && Array.isArray(el.selectedIds) ? el.selectedIds : [];
 }
+// 내보내기: a checkbox leads every turn, all checked; the bar above counts them. Before the element is defined
+// the attribute waits on it (selectAll once it upgrades).
+function openExport() {
+  var el = convEl();
+  var bar = document.getElementById('export-sel');
+  if (!el || !bar) return;
+  setExportError('');
+  el.setAttribute('selectable', '');
+  if (typeof el.selectAll === 'function') el.selectAll();
+  else if (window.customElements && customElements.whenDefined) {
+    customElements.whenDefined('ui-conversation').then(function () {
+      if (el.hasAttribute('selectable') && typeof el.selectAll === 'function') { el.selectAll(); updateSelectedCount(); }
+    });
+  }
+  bar.hidden = false;
+  var open = document.getElementById('export-open');
+  if (open) open.hidden = true;
+  updateSelectedCount();
+  var btn = document.getElementById('exportBtn');
+  if (btn && btn.focus) btn.focus();
+}
+// 취소, or the file downloaded: the checkboxes go, the selection is dropped.
 function closeExport() {
-  var d = exportDialog();
-  if (!d) return;
-  if (typeof d.hide === 'function') d.hide();
-  else d.removeAttribute('open');
+  var el = convEl();
+  var bar = document.getElementById('export-sel');
+  if (el) {
+    el.removeAttribute('selectable');
+    if (typeof el.clearSelection === 'function') el.clearSelection();
+  }
+  if (bar) bar.hidden = true;
+  var open = document.getElementById('export-open');
+  if (open) { open.hidden = false; if (open.focus) open.focus(); }
 }
 function updateSelectedCount() {
-  var boxes = document.querySelectorAll('.turn-checkbox');
-  var checked = document.querySelectorAll('.turn-checkbox:checked');
+  var n = selectedIds().length;
+  var all = _turns.length;
   var countEl = document.getElementById('selectedCount');
   var exportBtn = document.getElementById('exportBtn');
   var allBtn = document.getElementById('selectAllBtn');
-  if (countEl) countEl.textContent = checked.length + '개 선택';
-  if (exportBtn) exportBtn.disabled = checked.length === 0;
-  if (allBtn) allBtn.textContent = boxes.length && checked.length === boxes.length ? '전체 해제' : '전체 선택';
+  if (countEl) countEl.textContent = n + '개 선택';
+  if (exportBtn) exportBtn.disabled = n === 0;
+  if (allBtn) allBtn.textContent = all && n === all ? '전체 해제' : '전체 선택';
 }
 function toggleSelectAll() {
-  var checkboxes = document.querySelectorAll('.turn-checkbox');
-  var allChecked = Array.from(checkboxes).every(function (cb) { return cb.checked; });
-  checkboxes.forEach(function (cb) { cb.checked = !allChecked; });
+  var el = convEl();
+  if (!el || typeof el.selectAll !== 'function') return;
+  if (_turns.length && selectedIds().length === _turns.length) el.clearSelection();
+  else el.selectAll();
   updateSelectedCount();
 }
 async function exportSelected() {
-  var checked = document.querySelectorAll('.turn-checkbox:checked');
-  var turnIds = Array.from(checked).map(function (cb) { return cb.dataset.turnId; });
+  var turnIds = selectedIds();
   if (!turnIds.length) return;
   var exportBtn = document.getElementById('exportBtn');
   if (exportBtn) { exportBtn.disabled = true; exportBtn.setAttribute('aria-busy', 'true'); }
@@ -575,16 +545,17 @@ async function exportSelected() {
 }
 
 (function () {
-  var el = document.getElementById('conv');
+  var el = convEl();
   if (el) {
-    el.addEventListener('click', function (e) {
-      var b = e.target && e.target.closest ? e.target.closest('[data-raw]') : null;
-      if (b && !b.disabled) loadRaw(b.getAttribute('data-raw'));
-    });
-    el.addEventListener('ui-retry', function (e) {
+    el.addEventListener('ui-load-answer', function (e) {
       var id = e.detail && e.detail.id;
       if (id) loadRaw(id);
     });
+    el.addEventListener('ui-retry', function (e) {
+      var id = e.detail && e.detail.id;
+      if (id && !(e.detail && e.detail.what === 'summary')) loadRaw(id);
+    });
+    el.addEventListener('ui-select', function () { updateSelectedCount(); });
   }
   paintConversation();
 })();
