@@ -607,15 +607,12 @@ export class SessionRegistry {
   private onIdleCallbacks: Map<string, Array<() => void>> = new Map();
 
   /**
-   * Optional hook fired after `drainOnIdleCallbacks` resolves for a
-   * session that just transitioned to idle. Used by the ralph-loop
-   * (auto-continuation) driver to decide whether to inject the next
-   * synthetic continuation turn. Mirrors codex `goals.rs:1270`
-   * (`maybe_continue_goal_if_idle_runtime`) — a thin host hook that the
-   * goal subsystem owns, deliberately kept out of cron-scheduler state.
-   *
-   * Wired up in `src/index.ts` next to the existing cron-scheduler
-   * setup so messageInjector / dependencies are colocated.
+   * Optional single-slot hook fired after `drainOnIdleCallbacks` for a session
+   * that just transitioned to idle. E4 ⑥ (.prd/19 D7) holds it: `index.ts`
+   * wakes an epic with pending events. It fires inside the epic's own commit,
+   * before its chain is released, so that wake can meet the running chain —
+   * the controller's `onChainEnd` is the wake that lands (fable #702 R1).
+   * Kept out of cron-scheduler state (`registerOnIdle`).
    */
   private onIdleAfterDrainHook?: (sessionKey: string) => void;
 
