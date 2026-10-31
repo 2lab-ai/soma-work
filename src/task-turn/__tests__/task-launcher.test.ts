@@ -32,7 +32,11 @@ afterAll(() => {
 const TASK_ID = '60060060-0600-4600-8600-600600600600';
 
 function harness(
-  over: { canStart?: unknown; startStatus?: number; cleanupOwner?: (dir: string) => string | undefined } = {},
+  over: {
+    canStart?: unknown;
+    startStatus?: number;
+    cleanupSessions?: () => Array<{ key: string; sourceWorkingDirs?: string[] }>;
+  } = {},
 ) {
   const calls: string[] = [];
   const created: Array<Record<string, unknown>> = [];
@@ -63,7 +67,7 @@ function harness(
       return dir;
     },
     listModels: () => MODELS,
-    cleanupOwnerOf: over.cleanupOwner,
+    cleanupSessions: over.cleanupSessions,
   });
   return { launcher, controller, calls, created };
 }
@@ -137,7 +141,7 @@ describe('createTaskLauncher (#600 ⑥)', () => {
   // a clone inside it) would take the task's work with it when that session ends or sleeps.
   it('a named folder another session will clean up is 409, and nothing is created', async () => {
     const owned = path.join(ROOT, EXISTING);
-    const h = harness({ cleanupOwner: (dir) => (dir === owned ? 'C1:1700000000.000100' : undefined) });
+    const h = harness({ cleanupSessions: () => [{ key: 'C1:1700000000.000100', sourceWorkingDirs: [owned] }] });
     const r = await h.launcher.launch({ ...REQ, folder: EXISTING });
     expect(r).toEqual({
       status: 409,
@@ -151,9 +155,16 @@ describe('createTaskLauncher (#600 ⑥)', () => {
 
   it('the folder list leaves out folders another session will clean up', () => {
     const owned = path.join(ROOT, EXISTING);
-    const h = harness({ cleanupOwner: (dir) => (dir === owned ? 'C1:1' : undefined) });
+    let snapshots = 0;
+    const h = harness({
+      cleanupSessions: () => {
+        snapshots += 1;
+        return [{ key: 'C1:1', sourceWorkingDirs: [owned] }];
+      },
+    });
     const names = h.launcher.folders(OWNER).map((f) => f.name);
     expect(names).not.toContain(EXISTING);
+    expect(snapshots).toBe(1); // one snapshot of the sessions per list, not one per folder (#640 R3)
     expect(
       harness()
         .launcher.folders(OWNER)

@@ -19219,6 +19219,7 @@ function ntAddBlob(blob, name, mimetype, source, extra) {
   });
   _ntFiles.push(entry);
   ntRenderFiles();
+  if (_ntState && _ntState.destination === 'task') ntSetError(ntBlockedHint(_ntState, _ntFiles));
   ntUpdateSubmit();
   var box = ntEl('nt-attachments');
   if (box) box.scrollLeft = box.scrollWidth;

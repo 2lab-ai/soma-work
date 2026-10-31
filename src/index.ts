@@ -155,7 +155,7 @@ import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
-import { cleanupOwnerOf, createTaskLauncher } from './task-turn/task-launcher';
+import { createTaskLauncher } from './task-turn/task-launcher';
 import { createTaskTurnController, type TaskTurnController } from './task-turn/task-turn-controller';
 import { createTaskTurnExecutor } from './task-turn/task-turn-executor';
 import { getTokenManager } from './token-manager';
@@ -1182,11 +1182,8 @@ async function start() {
       createTask: (input) => claudeHandler.createTask(input),
       createFreshDirectory: (ownerId) => new WorkingDirectoryManager().createSessionBaseDir(ownerId),
       listModels: (ownerId) => offeredNewTaskModels(ownerId),
-      cleanupOwnerOf: (dir) =>
-        cleanupOwnerOf(
-          dir,
-          [...claudeHandler.getAllSessions()].map(([key, s]) => ({ key, sourceWorkingDirs: s.sourceWorkingDirs })),
-        ),
+      cleanupSessions: () =>
+        [...claudeHandler.getAllSessions()].map(([key, s]) => ({ key, sourceWorkingDirs: s.sourceWorkingDirs })),
     });
     setDashboardTaskLauncher(taskLauncher);
     const workLogProviders: StreamExecutorProviders & {
