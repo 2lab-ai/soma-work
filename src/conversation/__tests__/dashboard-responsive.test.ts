@@ -245,9 +245,9 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
     expect(DASHBOARD_TS).toContain(
       'var size = new ResizeObserver(function() { sizePanelSections(); syncPanelArtVariant(); });',
     );
-    expect(DASHBOARD_TS).toContain(
-      '.art-tile:has(> ui-file-card[variant="chip"]) .art-play { position: static; flex: none; width: 32px; height: 32px; }',
-    );
+    // D4 (T8): the play toggle is the card's own (playable) — the chip wrapper only bounds the width.
+    expect(DASHBOARD_TS).toContain('.art-tile:has(> ui-file-card[variant="chip"]) { max-width: 240px; }');
+    expect(DASHBOARD_TS).not.toMatch(/\.art-play\b/);
     expect(rule('.art-strip')).toContain('overflow-x: auto');
   });
 });
@@ -284,7 +284,7 @@ describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs o
     );
   });
 
-  it('below 640px the page clears the FAB, the defaults menu spans the bar, the artifact viewer is full screen', () => {
+  it('below 640px the page clears the FAB, the defaults menu spans the bar, the artifact viewer is the element\'s sheet', () => {
     const phone = cssBlock(PHONE);
     expect(phone).not.toBe('');
     // Only a board with cards gets the clearance: an empty page must not turn scrollable. The cards
@@ -299,7 +299,9 @@ describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs o
     expect(clientFn('wireInbox')).toContain('syncHasCards();');
     // D1 (A-07): the defaults menu is <ui-menu> — fixed, kept inside the viewport by the element on any width.
     expect(TEMPLATE).not.toContain('.td-menu');
-    expect(phone).toContain('.art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }');
+    // D4 (I-06): the viewer is <ui-artifact-viewer>'s own <ui-dialog> — its phone sheet, no page rule.
+    expect(phone).not.toContain('.art-modal');
+    expect(TEMPLATE).not.toMatch(/\.art-modal\b/);
   });
 });
 
@@ -720,7 +722,7 @@ describe('merged views — trinity code review R4 follow-ups', () => {
     // SSOT 2026-10-29 T2: without the drawer, Escape closes the front detail card (closeDetailCard).
     expect(TEMPLATE).toContain(
       // D1 (C-05): <ui-drawer> takes the key (preventDefault) before the page's listener; the panel leaves it be.
-      "if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();",
+      "if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artViewerIsOpen() && !_cronDrawerKey) closeDetailCard();",
     );
   });
 

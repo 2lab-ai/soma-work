@@ -3856,6 +3856,8 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/stat-strip.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/bar-chart.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/file-card.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/hovercard.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/artifact-viewer.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/composer.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
@@ -4145,14 +4147,7 @@ ui-stat-strip:not(:defined) > * { display: none; }
 .archives-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
 .archives-btn[aria-pressed="true"] { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
 /* Session lifecycle dialog (admin, J-01) — @2lab.ai/ui <ui-dialog size="sm">: the element draws the panel, the
-   scrim, the enter / exit motion and the phone sheet; the page keeps only its form's rules.
-   The artifact viewer comes and goes the same way (P6): opacity + scale(.97) on --dur-expand, its scrim a 180ms
-   fade; closing, both leave in 180ms (.is-closing, dialogCloseSoftly) before close(). */
-.art-modal[open]::backdrop { animation: scrim-in var(--dur-fade) var(--ease-out); }
-.art-modal.is-closing { opacity: 0; transform: scale(0.98); transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out); }
-.art-modal.is-closing::backdrop { opacity: 0; transition: opacity var(--dur-fade) var(--ease-out); }
-@keyframes dlg-in { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
-@keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
+   scrim, the enter / exit motion and the phone sheet; the page keeps only its form's rules. */
 .lifecycle-dialog .lc-note { margin: 0 0 12px; font-size: 12px; color: var(--ib-muted); }
 .lifecycle-dialog label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; font-size: 13px; margin-bottom: 10px; }
 .lifecycle-dialog label input { grid-column: 1 / -1; font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--ib-seg); color: var(--ib-text); }
@@ -5397,7 +5392,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* PRESS — one rule for every button-like control: scale(.97) on --dur-press ease-out (each control's own
    transition carries the transform), pointer presses only — never a keyboard press (:focus-visible). The
    56px FAB presses to .95. */
-:is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+:is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .um-tile):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
@@ -5451,7 +5446,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .um-tile):active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
@@ -5726,7 +5721,7 @@ body.nt-open .new-task-fab { display: none !important; }
   .new-task-btn, .new-task-fab, .nt-dialog,
   .nt-battery-fill, .nt-fab-label, .nt-fab-icon { animation: none !important; transition: none !important; }
 }
-/* ── Session artifacts (SSOT 2026-10-23): face chips, strips, minimap, viewer ── */
+/* ── Session artifacts (SSOT 2026-10-23): face chips, strips, the peek's inside, the viewer's slot ── */
 .art-glyph { width: 14px; height: 14px; flex-shrink: 0; }
 .art-k-image { --art-tint: var(--green); }
 .art-k-html { --art-tint: var(--orange); }
@@ -5744,15 +5739,7 @@ body.nt-open .new-task-fab { display: none !important; }
    thumbnail, name and meta, its own hover, press and 44px chip on touch. The audio play button (T8) sits on the
    thumbnail's lower right: 4px card inset + the 16:10 thumbnail of a (--fc-tile-w − 8px) wide box. */
 .art-tile > ui-file-card { display: block; }
-.art-play { position: absolute; right: 10px; top: calc(4px + (var(--fc-tile-w) - 8px) * 0.625 - 36px); display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: none; border-radius: 50%; background: var(--purple); color: var(--surface); box-shadow: var(--ib-shadow); cursor: pointer; transition: transform var(--dur-press) var(--ease-out); }
-.art-play svg { width: 14px; height: 14px; }
-/* A chip tile (the panel's minimal row, artPanelVariant): the play button inline after the chip. */
-.art-tile:has(> ui-file-card[variant="chip"]) { display: flex; align-items: center; gap: 6px; max-width: 240px; }
-.art-tile:has(> ui-file-card[variant="chip"]) > ui-file-card { min-width: 0; }
-.art-tile:has(> ui-file-card[variant="chip"]) .art-play { position: static; flex: none; width: 32px; height: 32px; }
-.art-play .ic-pause, .art-play.is-playing .ic-play { display: none; }
-.art-play.is-playing .ic-pause { display: block; }
-.art-play.is-playing { box-shadow: 0 0 0 4px color-mix(in srgb, var(--purple) 30%, transparent); }
+.art-tile:has(> ui-file-card[variant="chip"]) { max-width: 240px; }
 .panel-artifacts { padding: 10px 16px 4px; border-bottom: 1px solid var(--border); min-height: 44px; }
 .panel-arts-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--text); }
 .panel-arts-hint { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--text-tertiary); }
@@ -5768,26 +5755,19 @@ body.nt-open .new-task-fab { display: none !important; }
 .um-tile img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .um-single .um-tile { width: 280px; max-width: 100%; height: 200px; background: var(--bg); }
 .um-single .um-tile img { object-fit: contain; }
-.um-tile:focus-visible, .um-open:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.um-tile:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .um-more { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--media-scrim); color: var(--on-media); font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .um-tile.is-broken img { display: none; }
 .um-tile.is-broken::after { content: '미리보기 불가'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 4px; font-size: 10.5px; color: var(--ib-muted); text-align: center; }
 .um-files { display: flex; flex-wrap: wrap; gap: 6px; }
-.um-file { position: relative; display: flex; align-items: center; min-width: 0; width: 240px; max-width: 100%; height: 52px; border: 1px solid var(--ib-card-border); border-radius: 10px; background: var(--surface); transition: border-color 150ms ease; }
-.um-open { display: flex; align-items: center; gap: 10px; flex: 1 1 auto; min-width: 0; height: 100%; padding: 0 10px; border: none; border-radius: 10px; background: none; color: var(--ib-text); font: inherit; text-align: left; cursor: zoom-in; transition: transform var(--dur-press) var(--ease-out); }
-.um-open .art-glyph { width: 26px; height: 26px; color: var(--art-tint, var(--text-secondary)); }
-.um-file-text { display: flex; flex-direction: column; min-width: 0; }
-.um-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
-.um-file-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--ib-muted); }
-.um-file.is-remote { border-style: dashed; }
-.um-file.is-remote .art-glyph { opacity: 0.55; }
-.um-file .um-play { position: static; flex: 0 0 auto; margin-right: 10px; }
+/* A non-image attachment is a <ui-file-card variant="row" playable> (D4 I-09): the card draws the glyph, the name,
+   the kind · size · age line and the voice note's play toggle; the page sizes the box. */
+.um-file { display: flex; min-width: 0; width: 240px; max-width: 100%; }
+.um-file > ui-file-card { display: block; flex: 1 1 auto; min-width: 0; }
+.um-file.is-remote { opacity: 0.8; }
 .um-compact .um-tile { width: 40px; height: 40px; border-radius: 6px; }
 .um-compact .um-more { font-size: 12px; }
-.um-compact .um-file { width: auto; max-width: 200px; height: 30px; border-radius: 999px; }
-.um-compact .um-open { gap: 6px; padding: 0 10px; }
-.um-compact .um-open .art-glyph { width: 14px; height: 14px; }
-.um-compact .um-file .um-play { width: 24px; height: 24px; margin-right: 4px; }
+.um-compact .um-file { width: auto; max-width: 200px; }
 .io-row .um-media { margin: 4px 0 6px; }
 .panel-user-media { margin-bottom: 6px; }
 .panel-um-head { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px; padding: 2px 0; border: none; background: none; color: var(--text); font: inherit; font-size: 12px; font-weight: 600; text-align: left; cursor: pointer; }
@@ -5797,24 +5777,23 @@ body.nt-open .new-task-fab { display: none !important; }
 .panel-um-body { padding: 4px 0 2px; }
 .panel-um-body .um-media { margin: 0; }
 @media (hover: hover) and (pointer: fine) {
-  .um-tile:hover, .um-file:hover { border-color: var(--ib-muted); }
+  .um-tile:hover { border-color: var(--ib-muted); }
 }
 @media (pointer: coarse) {
   .um-compact .um-tile { width: 44px; height: 44px; }
-  .um-compact .um-file { height: 44px; }
   .panel-um-head { min-height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .um-tile, .um-open, .panel-um-head .um-chevron { transition: none; }
+  .um-tile, .panel-um-head .um-chevron { transition: none; }
 }
-.art-peek { position: fixed; z-index: 1000; left: 0; top: 0; width: 360px; max-width: calc(100vw - 16px); overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); box-shadow: var(--ib-shadow-raised); opacity: 0; visibility: hidden; transform: translateY(4px) scale(0.98); transform-origin: top left; pointer-events: none; transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out), visibility 0s linear var(--dur-fade); }
-.art-peek.open { opacity: 1; visibility: visible; transform: none; pointer-events: auto; transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out); }
+/* The peek (I-05) is <ui-hovercard id="art-peek">: the element draws the raised card beside its trigger (360px —
+   its width attribute) and runs the hover / focus / Esc / press rules; the page fills it — a media box, a foot line. */
+#art-peek { --ui-hovercard-z: 1000; }
 .art-peek-media { position: relative; display: flex; align-items: center; justify-content: center; height: 225px; overflow: hidden; background: var(--bg); cursor: zoom-in; color: var(--art-tint, var(--text-secondary)); }
 .art-peek-img, .art-peek-video { max-width: 100%; max-height: 100%; object-fit: contain; }
 .art-peek-frame { position: absolute; inset: 0; overflow: hidden; background: var(--media-paper); }
 .art-peek-frame iframe { width: 1280px; height: 800px; border: 0; transform: scale(0.28125); transform-origin: 0 0; pointer-events: none; }
-.art-peek-doc { align-self: stretch; width: 100%; padding: 10px 14px; overflow: hidden; color: var(--text); font-size: 11px; line-height: 1.5; -webkit-mask-image: linear-gradient(var(--media-black) 70%, transparent); mask-image: linear-gradient(var(--media-black) 70%, transparent); }
-.art-peek-doc .md-doc h1, .art-peek-doc .md-doc h2, .art-peek-doc .md-doc h3 { font-size: 13px; margin: 4px 0; }
+.art-peek-pre { align-self: stretch; width: 100%; margin: 0; padding: 10px 14px; overflow: hidden; color: var(--text); font: 11px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; text-align: left; -webkit-mask-image: linear-gradient(var(--media-black) 70%, transparent); mask-image: linear-gradient(var(--media-black) 70%, transparent); }
 .art-peek-audio { display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; padding: 0 16px; }
 .art-peek-audio .art-glyph { width: 48px; height: 48px; }
 .art-peek-audio audio { width: 100%; }
@@ -5825,60 +5804,11 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-peek-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; color: var(--text); }
 .art-peek-info { font-size: 11px; color: var(--text-tertiary); }
 .art-doc-loading { color: var(--text-tertiary); font-size: 12px; }
-.art-modal { width: min(1240px, 94vw); height: 90vh; max-width: none; max-height: none; margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: var(--ib-shadow-raised); }
-.art-modal[open] { display: flex; flex-direction: column; animation: dlg-in var(--dur-expand) var(--ease-out); }
-.art-modal::backdrop { background: var(--scrim); }
-.art-modal-head { display: flex; align-items: center; gap: 12px; flex-shrink: 0; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--border); }
-.art-modal-kind { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; padding: 3px 9px; border-radius: 999px; background: var(--ib-pill); color: var(--text-secondary); font-size: 11px; font-weight: 700; }
-.art-modal-title { flex: 1; min-width: 0; }
-.art-modal-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
-.art-modal-meta { font-size: 11.5px; color: var(--text-tertiary); }
-.art-modal-nav, .art-modal-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.art-modal-pos { min-width: 40px; font-size: 12px; color: var(--text-secondary); text-align: center; font-variant-numeric: tabular-nums; }
-.art-modal-actions .ui-btn[hidden] { display: none; }
-.art-modal-body { position: relative; display: flex; flex: 1; min-height: 0; align-items: center; justify-content: center; overflow: auto; background: var(--bg); }
-.art-full-imgwrap { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: auto; }
-.art-full-img { max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in; }
-.art-full-imgwrap.is-zoomed { display: block; }
-.art-full-imgwrap.is-zoomed .art-full-img { max-width: none; max-height: none; cursor: zoom-out; }
-.art-full-frame { width: 100%; height: 100%; border: 0; background: var(--media-paper); }
-.art-full-video { max-width: 100%; max-height: 100%; background: var(--media-black); }
-.art-full-audio { display: flex; flex-direction: column; align-items: center; gap: 18px; width: min(560px, 90%); color: var(--purple); }
-.art-full-audio .art-glyph { width: 72px; height: 72px; }
-.art-full-audio audio { width: 100%; }
-.art-full-meta { display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: 460px; padding: 24px; text-align: center; color: var(--text-secondary); }
-.art-full-meta .art-glyph { width: 56px; height: 56px; }
-.art-full-meta-name { font-size: 15px; font-weight: 600; color: var(--text); word-break: break-all; }
-.art-full-meta-sub { font-size: 12px; color: var(--text-tertiary); }
-.art-full-doc { align-self: stretch; width: 100%; max-width: 880px; height: max-content; margin: 0 auto; padding: 28px 32px 56px; }
-.art-text { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12.5px/1.6 var(--mono); }
-.md-doc { font-size: 14px; line-height: 1.65; color: var(--text); word-break: break-word; }
-.md-doc h1, .md-doc h2, .md-doc h3, .md-doc h4, .md-doc h5, .md-doc h6 { margin: 1.3em 0 0.5em; line-height: 1.3; letter-spacing: -0.01em; }
-.md-doc h1 { font-size: 1.6em; } .md-doc h2 { font-size: 1.3em; } .md-doc h3 { font-size: 1.12em; } .md-doc h4, .md-doc h5, .md-doc h6 { font-size: 1em; }
-.md-doc > :first-child { margin-top: 0; }
-.md-doc p, .md-doc ul, .md-doc ol, .md-doc blockquote, .md-doc pre, .md-doc .md-table { margin: 0 0 0.9em; }
-.md-doc ul, .md-doc ol { padding-left: 1.4em; }
-.md-doc li + li { margin-top: 0.2em; }
-.md-doc code { padding: 0.1em 0.35em; border-radius: 6px; background: var(--ib-pill); font: 0.88em var(--mono); }
-.md-doc pre { padding: 12px 14px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--ib-col); }
-.md-doc pre code { padding: 0; background: none; font-size: 12.5px; line-height: 1.55; }
-.md-doc blockquote { padding: 2px 0 2px 12px; border-left: 3px solid var(--border-focus); color: var(--text-secondary); }
-.md-doc hr { margin: 1.4em 0; border: 0; border-top: 1px solid var(--border); }
-.md-doc a { color: var(--accent); }
-.md-doc .md-table { overflow-x: auto; }
-.md-doc table { border-collapse: collapse; font-size: 0.93em; }
-.md-doc th, .md-doc td { padding: 6px 10px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
-.md-doc th { background: var(--ib-col); font-weight: 600; }
-@media (prefers-reduced-motion: reduce) {
-  .art-play, .art-peek, .art-peek.open { transition: none; }
-  .art-modal[open] { animation: none; }
-  /* Gentler, not zero: a dialog's scrim still fades (opacity only, ≤ 180ms). */
-  .art-modal[open] { animation: none; }
-  .art-modal[open]::backdrop { animation: scrim-in 120ms ease both !important; }
-}
-@media (hover: none) {
-  .art-play { width: 40px; height: 40px; top: calc(4px + (var(--fc-tile-w) - 8px) * 0.625 - 44px); }
-}
+/* The viewer (I-06, I-07) is <ui-artifact-viewer tiles="none">: its <ui-dialog size="xl"> draws the panel, the head
+   (kind badge · name · meta · ✕), the body and the foot (‹ n / m › · 새 탭 · 다운로드 · Slack). The page's own
+   body (slot="preview": the model's HTML with scripts, a PDF) is a frame that fills the stage. */
+.art-viewer-preview { display: flex; min-height: 0; background: var(--media-paper); }
+.art-viewer-preview .art-full-frame { flex: 1 1 auto; width: 100%; min-height: 0; border: 0; }
 
 /* ═══ Device-responsive layout (SSOT 2026-10-24) ═══
    Targets: iPhone Duo (folded 382×580, unfolded 951×543), iPhone 18 Pro Max
@@ -5928,12 +5858,9 @@ body.nt-open .new-task-fab { display: none !important; }
 }
 @media (max-width: 639px) {
   /* Responsive (SSOT 2026-10-24) — phones: the last card clears the FAB (a board
-     with cards only — an empty page must not turn scrollable), the
-     defaults menu spans the bar instead of running off the edge, and the
-     artifact viewer takes the whole screen. */
+     with cards only — an empty page must not turn scrollable); the defaults
+     menu and the artifact viewer are the elements' own sheets. */
   .inbox.has-cards { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
-  .art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
-  .art-modal-head { flex-wrap: wrap; row-gap: 6px; }
 }
 /* The cron run drawer (#374) on every device: the visible viewport, not 100vh
    behind the Safari toolbar, and clear of the insets that viewport-fit=cover
@@ -6211,26 +6138,11 @@ ${pageTokenAliases()}
     </form>
   </dialog>
 </div>
-<!-- Artifacts (SSOT 2026-10-23): hover minimap + full-size viewer, shared by board and panel. -->
-<div id="art-peek" class="art-peek" role="tooltip" aria-hidden="true"></div>
-<dialog id="art-modal" class="art-modal" aria-labelledby="art-modal-name">
-  <div class="art-modal-head">
-    <span class="art-modal-kind" id="art-modal-kind"></span>
-    <div class="art-modal-title"><div class="art-modal-name" id="art-modal-name"></div><div class="art-modal-meta" id="art-modal-meta"></div></div>
-    <div class="art-modal-nav">
-      <button type="button" class="ui-icon-btn is-bordered" id="art-modal-prev" aria-label="이전 산출물" onclick="artModalStep(-1)"><i data-ui-icon="chevron-left"></i></button>
-      <span class="art-modal-pos" id="art-modal-pos"></span>
-      <button type="button" class="ui-icon-btn is-bordered" id="art-modal-next" aria-label="다음 산출물" onclick="artModalStep(1)"><i data-ui-icon="chevron-right"></i></button>
-    </div>
-    <div class="art-modal-actions">
-      <a class="ui-btn is-sm" id="art-modal-open" target="_blank" rel="noopener">새 탭</a>
-      <a class="ui-btn is-sm" id="art-modal-download">다운로드</a>
-      <a class="ui-btn is-sm" id="art-modal-slack" target="_blank" rel="noopener">Slack</a>
-      <button type="button" class="ui-icon-btn" aria-label="닫기" onclick="closeArtifactModal()"><i data-ui-icon="close"></i></button>
-    </div>
-  </div>
-  <div class="art-modal-body" id="art-modal-body"></div>
-</dialog>
+<!-- Artifacts (SSOT 2026-10-23): the peek and the viewer, shared by the board, the open cards and the panel —
+     @2lab.ai/ui <ui-hovercard> (I-05: one card for every tile, filled on ui-open) and <ui-artifact-viewer
+     tiles="none"> (I-06 / I-07: opened over the page's own cards with open(items, index, opener)). -->
+<ui-hovercard id="art-peek" for="ui-file-card[data-art-id], .ib-chip[data-art], .um-tile[data-art-id]" width="360"></ui-hovercard>
+<ui-artifact-viewer id="art-viewer" tiles="none" lang="ko"></ui-artifact-viewer>
 
 <script>
 const INIT_USER = ${initUser};
@@ -8422,7 +8334,7 @@ function wireInbox(host) {
     var s = _sessionCache[String(e.detail.cardId)];
     if (!s || !s.conversationId) return;
     var chip = inboxChipOf(host, String(e.detail.cardId), String(e.detail.artifactId));
-    openArtifactModal(s.conversationId, String(e.detail.artifactId), chip || host);
+    openArtifactViewer(s.conversationId, String(e.detail.artifactId), chip || host);
   });
 }
 // The file chip the reader pressed. The element emits ui-artifact on itself
@@ -12257,26 +12169,6 @@ function closeLifecycleDialog() {
   var dlg = document.getElementById('lifecycle-dialog');
   if (dlg && typeof dlg.hide === 'function') dlg.hide();
 }
-// A dialog leaves the way it came (P6): its box and scrim fade out in 180ms (.is-closing), then close() —
-// at once under reduced motion. Opening it again meanwhile keeps it (dialogKeep).
-var DIALOG_EXIT_MS = 180;
-function dialogCloseSoftly(dlg) {
-  if (!dlg || !dlg.open) return;
-  if (dlg._closeT) return;
-  if (reduceMotion()) { dlg.close(); return; }
-  dlg.classList.add('is-closing');
-  dlg._closeT = setTimeout(function() {
-    dlg._closeT = 0;
-    dlg.classList.remove('is-closing');
-    if (dlg.open) dlg.close();
-  }, DIALOG_EXIT_MS);
-}
-function dialogKeep(dlg) {
-  if (!dlg || !dlg._closeT) return;
-  clearTimeout(dlg._closeT);
-  dlg._closeT = 0;
-  dlg.classList.remove('is-closing');
-}
 function setLifecycleStatus(text, isError) {
   var el = document.getElementById('lifecycle-status');
   if (!el) return;
@@ -16032,10 +15924,10 @@ function closePanel() {
 }
 
 document.addEventListener('keydown', function(e) {
-  // Escape in the artifact viewer closes the viewer only (the dialog's own cancel).
+  // Escape in the artifact viewer closes the viewer only (its dialog's own).
   // The cron drawer opens over a docked panel: Escape closes only that, the topmost. An element on top that
   // took the key (the drawer, the defaults menu, a dialog: preventDefault) keeps it from the panel too.
-  if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();
+  if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artViewerIsOpen() && !_cronDrawerKey) closeDetailCard();
 });
 
 // The panel's own scroll (bound once): a held section landing goes back under
@@ -16889,18 +16781,14 @@ async function loadCapacity() {
 // its markdown final answers. The card face shows glyph chips (no image is
 // fetched for the board), the open card a thumbnail strip, the panel a pinned
 // strip plus the files each answer turn produced. Hover (or keyboard focus) →
-// minimap preview in #art-peek; click → full-size viewer in <dialog #art-modal>.
+// a peek in <ui-hovercard #art-peek>; click → <ui-artifact-viewer #art-viewer>.
 // Every render function here is pure; the DOM work sits in the functions after
-// renderArtModalBody and in initArtifactInteractions.
+// artViewerPreview and in initArtifactInteractions.
 var ART_KIND_LABEL = { image: '이미지', audio: '오디오', video: '비디오', html: 'HTML', markdown: '답변', pdf: 'PDF', text: '텍스트', file: '파일' };
 var ART_GLYPH = { image: '<i data-ui-icon="file-image" class="art-glyph"></i>', audio: '<i data-ui-icon="file-audio" class="art-glyph"></i>', video: '<i data-ui-icon="file-video" class="art-glyph"></i>', html: '<i data-ui-icon="file-code" class="art-glyph"></i>', markdown: '<i data-ui-icon="file-text" class="art-glyph"></i>', pdf: '<i data-ui-icon="file-text" class="art-glyph"></i>', text: '<i data-ui-icon="file-text" class="art-glyph"></i>', file: '<i data-ui-icon="file" class="art-glyph"></i>' };
-var ART_PEEK_DELAY_MS = 350; // hover intent before the minimap opens (300–500 ms keeps a sweep across chips quiet)
-var ART_PEEK_CLOSE_MS = 200; // grace to move the pointer into the minimap (WCAG 1.4.13: hoverable)
 var _artCache = Object.create(null); // conversationId → { state: 'loading'|'ok'|'error', list, promise }
 var _artDocCache = Object.create(null); // 'cid|id' → text of a markdown / text artifact
-var _artPeek = { anchor: null, openTimer: null, closeTimer: null };
-var _artModal = { cid: null, list: [], idx: 0, opener: null };
-var _artAudio = { el: null, key: null };
+var _artViewer = { cid: null, scope: 'conversation', list: [] }; // what the open viewer pages through
 
 function artUrl(cid, id, download) {
   // A user's attachment (SSOT 2026-10-25) shares the viewer, not the route.
@@ -16955,40 +16843,18 @@ function umSiblings(cid, id, all) {
   return out;
 }
 
-// "very-long-design-guide-v3.pdf" → "very-long-de…v3.pdf": the extension stays visible.
-function umMiddleName(name, max) {
-  var str = String(name || '');
-  max = max || 28;
-  if (str.length <= max) return str;
-  var dot = str.lastIndexOf('.');
-  var tail = dot > 0 && str.length - dot <= 8 ? str.slice(dot - 3) : str.slice(-6);
-  return str.slice(0, Math.max(1, max - tail.length - 1)) + '…' + tail;
-}
-
-// One attachment: an image tile, or a file card (glyph, name, kind · size).
-// pos / total name the action ("이미지 열기 2/5: login.png"); more > 0 puts "+more" on the tile.
+// One attachment: an image tile (page markup — a fixed box, "+N" past four, named by its action: "이미지 열기 2/5:
+// login.png"), or a <ui-file-card> (a row; a name chip in the compact row) that plays a voice note in place.
 function umTile(cid, a, pos, total, more, compact) {
-  var attrs = ' data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id) + '"';
-  var label = (a.kind === 'image' ? '이미지' : artKindLabel(a)) + ' 열기 ' + pos + '/' + total + ': ' + a.name + (more > 0 ? ' 외 ' + more + '개' : '');
   if (a.kind === 'image' && a.stored) {
-    return '<button type="button" class="um-tile um-img"' + attrs + ' aria-label="' + escAttr(label) + '" title="' + escAttr(a.name) + '">'
+    var label = '이미지 열기 ' + pos + '/' + total + ': ' + a.name + (more > 0 ? ' 외 ' + more + '개' : '');
+    return '<button type="button" class="um-tile um-img" data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id) + '" aria-label="' + escAttr(label) + '" title="' + escAttr(a.name) + '">'
       + '<img src="' + escAttr(umUrl(cid, a.id)) + '" alt="" loading="lazy" decoding="async" onerror="this.parentNode.classList.add(\\'is-broken\\')">'
       + (more > 0 ? '<span class="um-more" aria-hidden="true">+' + more + '</span>' : '')
       + '</button>';
   }
-  var meta = [artKindLabel(a)];
-  if (toNum(a.size) > 0) meta.push(artFormatSize(a.size));
-  if (!a.stored) meta.push(a.unavailable === 'too_large' ? '50 MB 초과 · Slack에만 있음' : 'Slack에만 있음');
-  var play = (a.kind === 'audio' && a.stored)
-    ? '<button type="button" class="art-play um-play" data-art-play="1"' + attrs + ' aria-pressed="false" aria-label="' + escAttr(a.name + ' 재생/일시정지') + '" title="재생">'
-      + '<i data-ui-icon="play" class="ic-play"></i><i data-ui-icon="pause" class="ic-pause"></i></button>'
-    : '';
   return '<div class="um-file art-k-' + escAttr(a.kind || 'file') + (a.stored ? '' : ' is-remote') + (compact ? ' um-file-compact' : '') + '">'
-    + '<button type="button" class="um-open"' + attrs + ' aria-label="' + escAttr(label) + '" title="' + escAttr(a.name) + '">'
-    + artGlyph(a.kind)
-    + '<span class="um-file-text"><span class="um-file-name">' + esc(umMiddleName(a.name, compact ? 20 : 30)) + '</span>'
-    + (compact ? '' : '<span class="um-file-meta">' + esc(meta.join(' · ')) + '</span>') + '</span>'
-    + '</button>' + play + '</div>';
+    + artCard(cid, a, compact ? 'chip' : 'row', true) + '</div>';
 }
 
 // The files of one instruction: images first as a grid of tiles (one image on
@@ -17096,7 +16962,8 @@ function artMeta(a) {
 
 // A file as @2lab.ai/ui <ui-file-card> (D2 I-01..I-03): the page renders the element keyed by data-art-cid /
 // data-art-id, with data-art-v (what it shows) so a re-render that changes the file re-hands it; initFileCards
-// gives it artFileItem. Its ui-open opens the page's viewer, its hover / focus the page's minimap.
+// gives it artFileItem. Its ui-open opens the viewer; the hovercard's for= reaches it for the peek; playable: a
+// play / pause toggle on audio (and video tiles), one clip at a time.
 function artFileItem(cid, a) {
   var item = { id: String(a.id), name: String(a.name || ''), kind: a.kind || 'file' };
   if (toNum(a.size) > 0) item.size = toNum(a.size);
@@ -17105,9 +16972,9 @@ function artFileItem(cid, a) {
   else item.meta = 'Slack에만 있음';
   return item;
 }
-function artCard(cid, a, variant) {
+function artCard(cid, a, variant, playable) {
   var v = [a.name, a.kind, toNum(a.size), toNum(a.createdAt), a.stored ? 1 : 0].join('|');
-  return '<ui-file-card class="art-card" variant="' + variant + '" lang="ko" data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id)
+  return '<ui-file-card class="art-card" variant="' + variant + '"' + (playable ? ' playable' : '') + ' lang="ko" data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id)
     + '" data-art-v="' + escAttr(v) + '"></ui-file-card>';
 }
 // One chip (an answer turn's files).
@@ -17125,21 +16992,10 @@ function artSortForDisplay(list) {
   return files.sort(newest).concat(answers.sort(newest));
 }
 
-// Is this clip the one the shared inline player is playing right now?
-function artAudioPlaying(cid, id) {
-  return !!(_artAudio.el && !_artAudio.el.paused && _artAudio.key === cid + '|' + id);
-}
-
-// A strip tile: the file card (thumbnail, name, meta) + a play button for audio (T8); variant 'chip' in the
-// panel's minimal row. The play state is part of the markup: a live card body is morphed to it on every push.
+// A strip tile: the file card (thumbnail, name, meta; a play / pause toggle on audio — T8 — and video tiles, one
+// clip at a time across the page: playable); variant 'chip' in the panel's minimal row.
 function artTile(cid, a, variant) {
-  var attrs = ' data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id) + '"';
-  var on = a.kind === 'audio' && a.stored && artAudioPlaying(cid, a.id);
-  var play = (a.kind === 'audio' && a.stored)
-    ? '<button type="button" class="art-play' + (on ? ' is-playing' : '') + '" data-art-play="1"' + attrs + ' aria-pressed="' + (on ? 'true' : 'false') + '" aria-label="' + escAttr(a.name + ' 재생/일시정지') + '" title="재생">'
-      + '<i data-ui-icon="play" class="ic-play"></i><i data-ui-icon="pause" class="ic-pause"></i></button>'
-    : '';
-  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, variant || 'tile') + play + '</div>';
+  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, variant || 'tile', true) + '</div>';
 }
 
 // The full list once fetched, else the card's summary (the newest few).
@@ -17190,8 +17046,9 @@ function renderTurnArtifacts(list, cid, startTs, endTs) {
   return '<div class="turn-arts-row">' + hits.map(function(a) { return artChip(cid, a); }).join('') + '</div>';
 }
 
-// Hover minimap (T2). html renders live but WITHOUT scripts (sandbox=""), media
-// never autoplays, markdown/text are fetched and drawn small.
+// Hover peek (T2): what the page fills @2lab.ai/ui <ui-hovercard id="art-peek"> with for one tile — html renders
+// live but WITHOUT scripts (sandbox=""), media never autoplays, a markdown / text answer shows its first lines
+// (the viewer draws the document).
 function renderArtPeekBody(cid, a) {
   var url = escAttr(artUrl(cid, a.id));
   var media;
@@ -17206,7 +17063,7 @@ function renderArtPeekBody(cid, a) {
   } else if (a.kind === 'video') {
     media = '<video class="art-peek-video" preload="metadata" muted playsinline src="' + url + '#t=0.1"></video>';
   } else if (a.kind === 'markdown' || a.kind === 'text') {
-    media = '<div class="art-peek-doc" data-art-doc="' + escAttr(cid + '|' + a.id) + '" data-art-doc-kind="' + escAttr(a.kind) + '"><span class="art-doc-loading">불러오는 중…</span></div>';
+    media = '<pre class="art-peek-pre" data-art-doc="' + escAttr(cid + '|' + a.id) + '"><span class="art-doc-loading">불러오는 중…</span></pre>';
   } else {
     media = '<div class="art-peek-meta">' + artGlyph(a.kind) + '<span class="art-peek-sub">' + esc(a.name) + '</span></div>';
   }
@@ -17215,139 +17072,20 @@ function renderArtPeekBody(cid, a) {
     + '<span class="art-peek-info">' + esc(artMeta(a)) + ' · 클릭하면 크게</span></div>';
 }
 
-// Full-size viewer body (T3/T8). html: scripts only — never same-origin, no
-// popups (the header's buttons open a tab or download). Audio and video start at once.
-function renderArtModalBody(cid, a) {
+// The viewer body the page draws itself (<ui-artifact-viewer>'s slot="preview") where the element's own would not
+// do: the model's HTML runs its scripts (sandbox="allow-scripts" — never same-origin, no popups; the element keeps
+// scripts off), a PDF opens in the browser's own viewer. A user's upload never runs (the element's sandbox=""
+// frame; the route serves it inert as well). '' hands the body back to the element.
+function artViewerPreview(cid, a) {
+  if (!a || !a.stored) return '';
   var url = escAttr(artUrl(cid, a.id));
   var title = escAttr(a.name);
-  if (!a.stored) {
-    var link = /^https:\\/\\//i.test(String(a.permalink || '')) ? '<a class="ui-btn is-primary" href="' + escAttr(a.permalink) + '" target="_blank" rel="noopener">Slack에서 열기</a>' : '';
-    return '<div class="art-full-meta">' + artGlyph(a.kind) + '<div class="art-full-meta-name">' + esc(a.name) + '</div>'
-      + '<div class="art-full-meta-sub">' + esc(artMeta(a)) + '</div>'
-      + '<p>' + (a.source === 'user_upload' ? umMissingReason(a) : '이 파일은 대시보드에 사본이 없습니다 (100 MB 초과이거나 업로드 전에 지워졌습니다).') + '</p>' + link + '</div>';
-  }
-  if (a.kind === 'image') return '<div class="art-full-imgwrap"><img class="art-full-img" src="' + url + '" alt="' + title + '" data-art-zoom="1"></div>';
-  // A user's own upload never runs (the route serves it inert as well).
-  if (a.kind === 'html') return '<iframe class="art-full-frame" sandbox="' + (a.source === 'user_upload' ? '' : 'allow-scripts') + '" src="' + url + '" title="' + title + '" referrerpolicy="no-referrer"></iframe>';
+  if (a.kind === 'html' && a.source !== 'user_upload') return '<iframe class="art-full-frame" sandbox="allow-scripts" src="' + url + '" title="' + title + '" referrerpolicy="no-referrer"></iframe>';
   if (a.kind === 'pdf') return '<iframe class="art-full-frame" src="' + url + '" title="' + title + '"></iframe>';
-  if (a.kind === 'audio') return '<div class="art-full-audio">' + artGlyph('audio') + '<div class="art-full-meta-name">' + esc(a.name) + '</div><audio controls autoplay preload="auto" src="' + url + '"></audio></div>';
-  if (a.kind === 'video') return '<video class="art-full-video" controls autoplay playsinline preload="metadata" src="' + url + '"></video>';
-  if (a.kind === 'markdown' || a.kind === 'text') {
-    return '<div class="art-full-doc" data-art-doc="' + escAttr(cid + '|' + a.id) + '" data-art-doc-kind="' + escAttr(a.kind) + '"><span class="art-doc-loading">불러오는 중…</span></div>';
-  }
-  return '<div class="art-full-meta">' + artGlyph(a.kind) + '<div class="art-full-meta-name">' + esc(a.name) + '</div>'
-    + '<div class="art-full-meta-sub">' + esc(artMeta(a)) + '</div>'
-    + '<a class="ui-btn is-primary" href="' + escAttr(artUrl(cid, a.id, true)) + '">다운로드</a></div>';
+  return '';
 }
 
-// Inline marks on one line: escape first, then code spans, links (http(s) only),
-// bold, italic, strike. Raw HTML never survives.
-function mdInline(s) {
-  var codes = [];
-  var t = String(s == null ? '' : s).replace(/\\x60([^\\x60]+)\\x60/g, function(_m, c) {
-    codes.push('<code>' + esc(c) + '</code>');
-    return '\\u0000' + (codes.length - 1) + '\\u0000';
-  });
-  t = esc(t);
-  t = t.replace(/!?\\[([^\\]]+)\\]\\(([^)\\s]+)\\)/g, function(_m, label, href) {
-    var h = safeHref(href.replace(/&amp;/g, '&'));
-    return h === '#' ? label : '<a href="' + h + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
-  });
-  t = t.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
-  t = t.replace(/(^|[^*\\w])\\*([^*\\s][^*]*?)\\*(?!\\w)/g, '$1<em>$2</em>');
-  t = t.replace(/~~([^~]+)~~/g, '<del>$1</del>');
-  return t.replace(/\\u0000(\\d+)\\u0000/g, function(_m, i) { return codes[Number(i)] || ''; });
-}
-
-// Markdown answers as documents (T1): headings, paragraphs, lists (nested),
-// tables, fenced code, quotes, rules. Everything is escaped before it is marked up.
-function renderMarkdownDoc(src) {
-  var lines = String(src == null ? '' : src).replace(/\\r\\n?/g, '\\n').split('\\n');
-  var out = [];
-  var para = [];
-  var i = 0;
-  var flush = function() {
-    if (para.length) out.push('<p>' + para.map(mdInline).join('<br>') + '</p>');
-    para = [];
-  };
-  var cells = function(l) {
-    return l.trim().replace(/^\\|/, '').replace(/\\|$/, '').split('|').map(function(c) { return c.trim(); });
-  };
-  var listRe = /^(\\s*)([-*+]|\\d{1,3}[.)])\\s+(.*)$/;
-  while (i < lines.length) {
-    var line = lines[i];
-    var fence = line.match(/^\\s{0,3}(\\x60{3,}|~{3,})\\s*([\\w+#.-]*)/);
-    if (fence) {
-      flush();
-      var code = [];
-      i++;
-      while (i < lines.length && lines[i].trim().indexOf(fence[1]) !== 0) { code.push(lines[i]); i++; }
-      i++;
-      out.push('<pre class="md-code"><code' + (fence[2] ? ' data-lang="' + escAttr(fence[2]) + '"' : '') + '>' + esc(code.join('\\n')) + '</code></pre>');
-      continue;
-    }
-    if (!line.trim()) { flush(); i++; continue; }
-    var h = line.match(/^\\s{0,3}(#{1,6})\\s+(.*?)\\s*#*\\s*$/);
-    if (h) {
-      flush();
-      out.push('<h' + h[1].length + '>' + mdInline(h[2]) + '</h' + h[1].length + '>');
-      i++;
-      continue;
-    }
-    if (/^\\s{0,3}([-*_])(\\s*\\1){2,}\\s*$/.test(line)) { flush(); out.push('<hr>'); i++; continue; }
-    if (/^\\s{0,3}>/.test(line)) {
-      flush();
-      var quote = [];
-      while (i < lines.length && /^\\s{0,3}>/.test(lines[i])) { quote.push(lines[i].replace(/^\\s{0,3}>\\s?/, '')); i++; }
-      out.push('<blockquote>' + renderMarkdownDoc(quote.join('\\n')) + '</blockquote>');
-      continue;
-    }
-    if (line.indexOf('|') >= 0 && i + 1 < lines.length && /^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)*\\|?\\s*$/.test(lines[i + 1])) {
-      flush();
-      var head = cells(line);
-      var rows = [];
-      i += 2;
-      while (i < lines.length && lines[i].indexOf('|') >= 0 && lines[i].trim()) { rows.push(cells(lines[i])); i++; }
-      out.push('<div class="md-table"><table><thead><tr>' + head.map(function(c) { return '<th>' + mdInline(c) + '</th>'; }).join('') + '</tr></thead><tbody>'
-        + rows.map(function(r) { return '<tr>' + head.map(function(_c, k) { return '<td>' + mdInline(r[k] || '') + '</td>'; }).join('') + '</tr>'; }).join('')
-        + '</tbody></table></div>');
-      continue;
-    }
-    if (listRe.test(line)) {
-      flush();
-      var items = [];
-      while (i < lines.length) {
-        var m = lines[i].match(listRe);
-        if (m) { items.push({ indent: m[1].replace(/\\t/g, '    ').length, ordered: /\\d/.test(m[2]), text: m[3] }); i++; continue; }
-        if (items.length && /^\\s{2,}\\S/.test(lines[i])) { items[items.length - 1].text += ' ' + lines[i].trim(); i++; continue; }
-        break;
-      }
-      var html = '';
-      var stack = [];
-      items.forEach(function(it) {
-        while (stack.length > 1 && it.indent < stack[stack.length - 1].indent) html += '</li></' + stack.pop().tag + '>';
-        var top = stack[stack.length - 1];
-        if (!top || it.indent > top.indent) {
-          var tag = it.ordered ? 'ol' : 'ul';
-          stack.push({ indent: it.indent, tag: tag });
-          html += '<' + tag + '><li>';
-        } else {
-          html += '</li><li>';
-        }
-        html += mdInline(it.text);
-      });
-      while (stack.length) html += '</li></' + stack.pop().tag + '>';
-      out.push(html);
-      continue;
-    }
-    para.push(line.trim());
-    i++;
-  }
-  flush();
-  return out.join('\\n');
-}
-
-// ── Artifact DOM: fetch, settle, peek, viewer, inline audio ──
+// ── Artifact DOM: fetch, settle, the peek and the viewer ──
 
 function artFind(cid, id) {
   var c = _artCache[cid];
@@ -17391,13 +17129,12 @@ function artSettle(cid) {
     if (s && s.conversationId === cid) refreshCard(key);
   });
   if (panelOpen && panelConvId === cid) renderPanelArtifactsSection();
-  if (artModalIsOpen() && _artModal.cid === cid) {
-    var cur = _artModal.list[_artModal.idx];
-    var list = artSortForDisplay((_artCache[cid] && _artCache[cid].list) || []);
-    var at = cur ? list.findIndex(function(a) { return a.id === cur.id; }) : -1;
-    if (at >= 0) { _artModal.list = list; _artModal.idx = at; renderArtModal(true); }
+  // The open viewer pages through the conversation's files: the new list is handed over (the element keeps showing
+  // the same file wherever it moved). An instruction's attachments (umSiblings) are not this list.
+  if (_artViewer.cid === cid && _artViewer.scope === 'conversation' && artViewerIsOpen()) {
+    _artViewer.list = artSortForDisplay((_artCache[cid] && _artCache[cid].list) || []);
+    artViewerEl().data = { items: artViewerItems(cid, _artViewer.list) };
   }
-  artAudioMark(_artAudio.el && !_artAudio.el.paused ? _artAudio.key : null);
 }
 
 // WS artifact_update: a new file or answer landed in a conversation.
@@ -17472,215 +17209,177 @@ function decoratePanelTurns() {
   decorateAnswerTurns(); // re-ai-answer D11 · D12
 }
 
-function artPeekEl() {
-  return document.getElementById('art-peek');
+// ── The peek (I-05) is @2lab.ai/ui <ui-hovercard id="art-peek">: one card for every tile — the board's face chips
+// (inside <ui-agent-inbox>), the open card's and the panel's <ui-file-card>s, an answer's chips, a user's
+// attachments. The element owns the hover intent, the grace, the quick swap, keyboard focus, Esc, a press, the
+// scroll-away and the placement; the page fills it on ui-open and empties it on ui-closed.
+
+// The file a peek trigger stands for: a keyed card / tile (data-art-cid + data-art-id), or a face chip
+// (data-key="art:<session key>:<file id>" in the inbox's shadow root — the conversation is that session's).
+function artPeekTarget(t) {
+  if (!t || !t.getAttribute) return null;
+  var cid = t.getAttribute('data-art-cid');
+  var id = t.getAttribute('data-art-id');
+  if (!cid && t.hasAttribute('data-art')) {
+    id = String(t.getAttribute('data-art') || '');
+    var key = String(t.getAttribute('data-key') || '');
+    var tail = ':' + id;
+    var sk = id && key.indexOf('art:') === 0 && key.slice(-tail.length) === tail ? key.slice(4, key.length - tail.length) : '';
+    var s = sk ? _sessionCache[sk] : null;
+    cid = s ? s.conversationId : null;
+  }
+  if (!cid || !id) return null;
+  var a = artFind(cid, id);
+  return a ? { cid: cid, a: a } : null;
 }
 
-function showArtPeek(anchor) {
-  var el = artPeekEl();
-  if (!el || !anchor || !anchor.isConnected) return;
-  var cid = anchor.getAttribute('data-art-cid');
-  var a = artFind(cid, anchor.getAttribute('data-art-id'));
-  if (!a) return;
-  clearTimeout(_artPeek.closeTimer);
-  if (_artPeek.anchor === anchor && el.classList.contains('open')) return;
-  _artPeek.anchor = anchor;
-  el.innerHTML = renderArtPeekBody(cid, a);
-  el.classList.add('open');
-  el.setAttribute('aria-hidden', 'false');
-  // Beside the trigger, inside the viewport; never following the pointer.
-  var r = anchor.getBoundingClientRect();
-  var w = el.offsetWidth || 360;
-  var h = el.offsetHeight || 270;
-  var left = Math.min(Math.max(8, r.left), window.innerWidth - w - 8);
-  var top = r.bottom + 8;
-  if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 8);
-  el.style.left = left + 'px';
-  el.style.top = top + 'px';
-  fillArtDocs(el);
+// ui-open: the card is filled for this trigger (or refused: a file the page does not know); a document's head is fetched.
+function onArtPeekOpen(e) {
+  var hit = artPeekTarget(e.detail && e.detail.trigger);
+  if (!hit) { e.preventDefault(); return; }
+  e.target.innerHTML = renderArtPeekBody(hit.cid, hit.a);
+  artPeekFillDoc(e.target);
 }
 
-function hideArtPeek(now) {
-  clearTimeout(_artPeek.openTimer);
-  clearTimeout(_artPeek.closeTimer);
-  var done = function() {
-    var el = artPeekEl();
-    _artPeek.anchor = null;
-    if (!el) return;
-    el.classList.remove('open');
-    el.setAttribute('aria-hidden', 'true');
-    el.innerHTML = ''; // stops a playing preview and drops the iframe
+// ui-closed: the preview goes (a playing clip, the iframe) once the exit has played.
+function onArtPeekClosed(e) {
+  e.target.innerHTML = '';
+}
+
+// The first lines of a markdown / text answer in the peek ([data-art-doc]): the first 64 KB (the route serves
+// ranges), as plain text — the viewer draws the whole document.
+var ART_PEEK_LINES = 24;
+function artPeekFillDoc(root) {
+  var n = root ? root.querySelector('[data-art-doc]') : null;
+  if (!n) return;
+  var key = n.getAttribute('data-art-doc') || '';
+  var sep = key.indexOf('|');
+  if (sep < 0) return;
+  var paint = function(text) {
+    if (n.isConnected) n.textContent = String(text).replace(/\\r\\n?/g, '\\n').split('\\n').slice(0, ART_PEEK_LINES).join('\\n');
   };
-  if (now) done();
-  else _artPeek.closeTimer = setTimeout(done, ART_PEEK_CLOSE_MS);
+  if (_artDocCache[key] != null) { paint(_artDocCache[key]); return; }
+  fetch(artUrl(key.slice(0, sep), key.slice(sep + 1)), { headers: { Range: 'bytes=0-65535' } })
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+    .then(paint)
+    .catch(function() { if (n.isConnected) n.innerHTML = '<span class="art-doc-loading">불러오지 못했습니다</span>'; });
 }
 
-// Fill markdown / text containers ([data-art-doc]) from the content route.
-function fillArtDocs(root) {
-  if (!root) return;
-  Array.prototype.forEach.call(root.querySelectorAll('[data-art-doc]'), function(n) {
-    var key = n.getAttribute('data-art-doc') || '';
-    var kind = n.getAttribute('data-art-doc-kind');
-    var sep = key.indexOf('|');
-    if (sep < 0) return;
-    var paint = function(text) {
-      if (!n.isConnected) return;
-      var src = n.closest('#art-peek') ? text.slice(0, 6000) : text;
-      n.innerHTML = kind === 'markdown' ? '<div class="md-doc">' + renderMarkdownDoc(src) + '</div>' : '<pre class="art-text">' + esc(src) + '</pre>';
-    };
-    if (_artDocCache[key] != null) { paint(_artDocCache[key]); return; }
-    // The minimap needs the head only: ask for the first 64 KB (the route serves
-    // ranges); the viewer fetches, and caches, the whole document.
-    var peek = !!n.closest('#art-peek');
-    fetch(artUrl(key.slice(0, sep), key.slice(sep + 1)), peek ? { headers: { Range: 'bytes=0-65535' } } : undefined)
-      .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
-      .then(function(t) {
-        if (peek) { paint(t); return; }
-        _artDocCache[key] = t.length > 2000000 ? t.slice(0, 2000000) : t;
-        paint(_artDocCache[key]);
-      })
-      .catch(function() { if (n.isConnected) n.innerHTML = '<span class="art-doc-loading">불러오지 못했습니다</span>'; });
-  });
+// The whole text of a markdown / text artifact for the viewer, fetched once (2 MB at most).
+function artDocText(cid, id) {
+  var key = cid + '|' + id;
+  if (_artDocCache[key] != null) return Promise.resolve(_artDocCache[key]);
+  return fetch(artUrl(cid, id))
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+    .then(function(t) {
+      _artDocCache[key] = t.length > 2000000 ? t.slice(0, 2000000) : t;
+      return _artDocCache[key];
+    });
 }
 
-function artModalIsOpen() {
-  var d = document.getElementById('art-modal');
-  return !!(d && (d.open || d.hasAttribute('open')));
+// ── The viewer (I-06, I-07) is @2lab.ai/ui <ui-artifact-viewer id="art-viewer" tiles="none" lang="ko">: no tiles
+// of its own — open(items, index, opener) over the page's cards, chips and tiles, paging through the whole
+// conversation (files newest first, then answers) or an instruction's attachments. The element draws the kind
+// badge, the name and meta, ‹ n / m ›, ← / → / Home / End, the image (zoom), the markdown document, text, audio,
+// video and the calm card of a file only Slack has; 새 탭 / 다운로드 from the url, Slack from items[].actions;
+// Esc / the scrim / ✕ close it and focus goes back to the opener.
+function artViewerEl() {
+  return document.getElementById('art-viewer');
 }
 
-function openArtifactModal(cid, id, opener) {
-  var dlg = document.getElementById('art-modal');
-  if (!dlg || !cid || !id) return;
+function artViewerIsOpen() {
+  var v = artViewerEl();
+  return !!(v && typeof v.index === 'number' && v.index >= 0);
+}
+
+// The file as the viewer pages it: the card's item (artFileItem) plus the page's kind word for a final answer, the
+// title of a user's attachment, why a file has no copy, the Slack permalink as an action, and a document's text
+// once fetched (the element never fetches). The element escapes every string.
+function artViewItem(cid, a) {
+  var item = artFileItem(cid, a);
+  if (a.source === 'final_answer') item.kindLabel = ART_KIND_LABEL.markdown;
+  var notes = [];
+  if (a.title && a.title !== a.name) notes.push(String(a.title));
+  if (!a.stored) notes.push(a.source === 'user_upload' ? umMissingReason(a) : '이 파일은 대시보드에 사본이 없습니다 (100 MB 초과이거나 업로드 전에 지워졌습니다).');
+  if (notes.length) item.meta = notes.join(' · ');
+  if (/^https:\\/\\//i.test(String(a.permalink || ''))) item.actions = [{ id: 'slack', label: 'Slack에서 열기', href: String(a.permalink) }];
+  var text = _artDocCache[cid + '|' + a.id];
+  if ((a.kind === 'markdown' || a.kind === 'text') && a.stored && text != null) item.text = text;
+  return item;
+}
+
+function artViewerItems(cid, list) {
+  return list.map(function(a) { return artViewItem(cid, a); });
+}
+
+// Open the viewer at a file, over the conversation's files — or, for a user's attachment, over the files of its
+// own instruction (from the pinned 지시 첨부 row: every attachment of the session). A tile's clip stops first; the
+// opener (a card, a chip, a tile) takes focus back when the viewer closes.
+function openArtifactViewer(cid, id, opener) {
+  var v = artViewerEl();
+  if (!v || !cid || !id || typeof v.open !== 'function') return;
   var c = _artCache[cid];
   var list = artSortForDisplay((c && c.list) || []);
+  var scope = 'conversation';
   if (umGet(cid, id)) {
-    // A user's attachment pages through the files of its own instruction — or,
-    // opened from the pinned 지시 첨부 row, through every file of the session.
+    scope = 'attachments';
     list = umSiblings(cid, id, !!(opener && opener.closest && opener.closest('#panel-user-media')));
   } else if (!list.some(function(a) { return a.id === id; })) {
     var one = artFind(cid, id);
     if (!one) return;
     list = artSortForDisplay(list.concat([one]));
   }
-  if (_artAudio.el) _artAudio.el.pause();
-  _artModal.cid = cid;
-  _artModal.list = list;
-  _artModal.idx = Math.max(0, list.findIndex(function(a) { return a.id === id; }));
-  _artModal.opener = opener || null;
-  renderArtModal(false);
-  dialogKeep(dlg);
-  if (!artModalIsOpen()) {
-    if (typeof dlg.showModal === 'function') dlg.showModal();
-    else dlg.setAttribute('open', '');
-  }
-  if (!c || c.state !== 'ok') ensureArtifacts(cid);
+  pauseArtCards();
+  _artViewer = { cid: cid, scope: scope, list: list };
+  var at = Math.max(0, list.findIndex(function(a) { return a.id === id; }));
+  // The page's body goes in before the element draws the file: it reads the slot as it renders, so its own frame
+  // for the model's HTML (sandbox="", the url) never loads first.
+  artViewerSlot(v, cid, list[at]);
+  v.open(artViewerItems(cid, list), at, opener && typeof opener.focus === 'function' ? opener : null);
+  if (scope === 'conversation' && (!c || c.state !== 'ok')) ensureArtifacts(cid);
 }
 
-function renderArtModal(headerOnly) {
-  var a = _artModal.list[_artModal.idx];
-  if (!a) return;
-  var cid = _artModal.cid;
-  var n = _artModal.list.length;
-  document.getElementById('art-modal-kind').innerHTML = artGlyph(a.kind) + esc(artKindLabel(a));
-  document.getElementById('art-modal-name').textContent = a.title && a.title !== a.name ? a.title + ' — ' + a.name : a.name;
-  document.getElementById('art-modal-meta').textContent = artMeta(a);
-  document.getElementById('art-modal-pos').textContent = n > 1 ? (_artModal.idx + 1) + ' / ' + n : '';
-  document.getElementById('art-modal-prev').disabled = _artModal.idx <= 0;
-  document.getElementById('art-modal-next').disabled = _artModal.idx >= n - 1;
-  var openA = document.getElementById('art-modal-open');
-  var dlA = document.getElementById('art-modal-download');
-  var slackA = document.getElementById('art-modal-slack');
-  openA.hidden = !a.stored;
-  dlA.hidden = !a.stored;
-  if (a.stored) {
-    openA.href = artUrl(cid, a.id);
-    dlA.href = artUrl(cid, a.id, true);
-  }
-  var slackOk = /^https:\\/\\//i.test(String(a.permalink || ''));
-  slackA.hidden = !slackOk;
-  if (slackOk) slackA.href = a.permalink;
-  if (headerOnly) return;
-  var body = document.getElementById('art-modal-body');
-  body.innerHTML = renderArtModalBody(cid, a);
-  body.scrollTop = 0;
-  fillArtDocs(body);
-  // Start audio / video now: the autoplay attribute alone is not honoured for
-  // markup inserted after load in every browser.
-  var media = body.querySelector('audio, video');
-  if (media && typeof media.play === 'function') {
-    var started = media.play();
-    if (started && typeof started.catch === 'function') started.catch(function() {});
-  }
-}
-
-function artModalStep(delta) {
-  var next = _artModal.idx + delta;
-  if (next < 0 || next >= _artModal.list.length) return;
-  _artModal.idx = next;
-  renderArtModal(false);
-}
-
-function closeArtifactModal() {
-  var dlg = document.getElementById('art-modal');
-  if (!dlg) return;
-  if (typeof dlg.close === 'function' && dlg.open) dialogCloseSoftly(dlg);
-  else { dlg.removeAttribute('open'); artModalClosed(); }
-}
-
-// Runs on every close (button, Escape, backdrop): stop media, give focus back.
-function artModalClosed() {
-  var body = document.getElementById('art-modal-body');
-  if (body) body.innerHTML = '';
-  var opener = _artModal.opener;
-  _artModal.opener = null;
-  // A file card is not focusable itself: focus goes back to its button.
-  var inner = opener && opener.shadowRoot ? opener.shadowRoot.querySelector('button') : null;
-  if (inner) opener = inner;
-  if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus({ preventScroll: true });
-}
-
-// Inline audio (T8): one shared player; ▶ on a tile plays, again pauses.
-function toggleArtAudio(btn) {
-  var cid = btn.getAttribute('data-art-cid');
-  var id = btn.getAttribute('data-art-id');
-  var key = cid + '|' + id;
-  if (!_artAudio.el) {
-    _artAudio.el = new Audio();
-    _artAudio.el.preload = 'auto';
-    _artAudio.el.addEventListener('play', function() { artAudioMark(_artAudio.key); });
-    _artAudio.el.addEventListener('pause', function() { artAudioMark(null); });
-    _artAudio.el.addEventListener('ended', function() { artAudioMark(null); });
-  }
-  var au = _artAudio.el;
-  if (_artAudio.key === key && !au.paused) { au.pause(); return; }
-  _artAudio.key = key;
-  au.src = artUrl(cid, id);
-  au.play().catch(function() { artAudioMark(null); });
-}
-
-function artAudioMark(key) {
-  Array.prototype.forEach.call(document.querySelectorAll('[data-art-play]'), function(b) {
-    var on = !!key && b.getAttribute('data-art-cid') + '|' + b.getAttribute('data-art-id') === key;
-    b.classList.toggle('is-playing', on);
-    b.setAttribute('aria-pressed', on ? 'true' : 'false');
-  });
-}
-
-// Keys, in the capture phase so they are seen before the panel's Escape: the
-// viewer pages with ← / →; Escape with only the minimap open closes the minimap.
-function artHandleKey(e) {
-  if (artModalIsOpen()) {
-    // A focused audio / video / field keeps its own arrow keys (seeking, caret).
-    var tag = e.target && e.target.tagName ? String(e.target.tagName).toUpperCase() : '';
-    if (tag === 'AUDIO' || tag === 'VIDEO' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-    if (e.key === 'ArrowRight') { e.preventDefault(); artModalStep(1); }
-    else if (e.key === 'ArrowLeft') { e.preventDefault(); artModalStep(-1); }
+// The page's body for a file (artViewerPreview) as the viewer's slot="preview" child — put in, swapped for another
+// file's, or taken out (null, or a file the element draws itself: the slot's absence hands the stage back to it).
+function artViewerSlot(v, cid, a) {
+  var html = a ? artViewerPreview(cid, a) : '';
+  var slot = v.querySelector('[slot="preview"]');
+  if (!html) {
+    if (slot) slot.remove();
     return;
   }
-  if (e.key === 'Escape' && _artPeek.anchor) {
-    e.stopPropagation();
-    hideArtPeek(true);
+  if (!slot) {
+    slot = document.createElement('div');
+    slot.setAttribute('slot', 'preview');
+    slot.className = 'art-viewer-preview';
+    v.appendChild(slot);
   }
+  var mark = cid + '|' + a.id;
+  if (slot.getAttribute('data-art-for') !== mark) {
+    slot.setAttribute('data-art-for', mark);
+    slot.innerHTML = html;
+  }
+}
+
+// ui-view: the shown file — the page's body for it when it has one (artViewerSlot), else the element's; a markdown
+// / text document without its text yet is fetched and the list handed back with it.
+function syncArtViewer(detail) {
+  var v = artViewerEl();
+  var cid = _artViewer.cid;
+  var a = detail && cid ? _artViewer.list.find(function(x) { return x.id === detail.id; }) : null;
+  if (!v || !a) return;
+  artViewerSlot(v, cid, a);
+  if ((a.kind === 'markdown' || a.kind === 'text') && a.stored && _artDocCache[cid + '|' + a.id] == null) {
+    artDocText(cid, a.id)
+      .then(function() { if (_artViewer.cid === cid && artViewerIsOpen()) v.data = { items: artViewerItems(cid, _artViewer.list) }; })
+      .catch(function() {});
+  }
+}
+
+// Every <ui-file-card playable> stops: the viewer opens over the page.
+function pauseArtCards() {
+  var cards = document.querySelectorAll('ui-file-card[playable]');
+  for (var i = 0; i < cards.length; i++) if (cards[i].playing && typeof cards[i].pause === 'function') cards[i].pause();
 }
 
 // Every <ui-file-card data-art-id> a render puts in the document — the open card (morphed on every push), the
@@ -17715,79 +17414,46 @@ function fcHydrateIn(node) {
 })();
 
 (function initArtifactInteractions() {
-  var canHover = !!(window.matchMedia && window.matchMedia('(hover: hover)').matches);
-  var trigger = function(t) { return t && t.closest ? t.closest('[data-art-id]:not([data-art-play])') : null; };
-  document.addEventListener('pointerover', function(e) {
-    if (!canHover || e.pointerType === 'touch') return;
-    var t = trigger(e.target);
-    if (t) {
-      clearTimeout(_artPeek.closeTimer);
-      if (_artPeek.anchor === t) return;
-      clearTimeout(_artPeek.openTimer);
-      // Moving between chips while a minimap is open swaps it quickly.
-      var warm = !!_artPeek.anchor;
-      _artPeek.openTimer = setTimeout(function() { showArtPeek(t); }, warm ? 90 : ART_PEEK_DELAY_MS);
-    } else if (e.target.closest && e.target.closest('#art-peek')) {
-      clearTimeout(_artPeek.closeTimer);
-    }
-  });
-  document.addEventListener('pointerout', function(e) {
-    var from = e.target.closest ? (trigger(e.target) || e.target.closest('#art-peek')) : null;
-    if (!from) return;
-    var to = e.relatedTarget;
-    if (to && to.closest && (to.closest('#art-peek') || trigger(to) === from)) return;
-    clearTimeout(_artPeek.openTimer);
-    if (_artPeek.anchor) hideArtPeek(false);
-  });
-  // A file card's button is in its shadow root: the event comes from the card, the focus ring is inside it.
-  var focusVisible = function(t) {
-    var inner = t.shadowRoot && t.shadowRoot.activeElement;
-    return (inner || t).matches(':focus-visible');
-  };
-  document.addEventListener('focusin', function(e) {
-    var t = trigger(e.target);
-    if (t && !t.closest('#art-modal') && focusVisible(t)) { clearTimeout(_artPeek.openTimer); showArtPeek(t); }
-  });
-  // <ui-file-card> asks to open its file (ui-open): the page's viewer, at it, over the conversation's files.
+  // <ui-file-card> asks to open its file (ui-open): the viewer, at it, over the conversation's files. (The
+  // hovercard's ui-open — its detail a trigger — is answered on the card below.)
   document.addEventListener('ui-open', function(e) {
     var t = e.target;
     if (!t || t.localName !== 'ui-file-card' || !t.hasAttribute('data-art-id')) return;
-    hideArtPeek(true);
-    openArtifactModal(t.getAttribute('data-art-cid'), t.getAttribute('data-art-id'), t);
+    openArtifactViewer(t.getAttribute('data-art-cid'), t.getAttribute('data-art-id'), t);
   });
-  document.addEventListener('focusout', function(e) {
-    if (trigger(e.target)) hideArtPeek(false);
-  });
+  // A user's image tile (page markup), or the peek itself (its audio controls excepted): the same viewer.
   document.addEventListener('click', function(e) {
-    var play = e.target.closest ? e.target.closest('[data-art-play]') : null;
-    if (play) { e.preventDefault(); toggleArtAudio(play); return; }
-    var t = trigger(e.target);
-    if (t && t.localName === 'ui-file-card') return; // its ui-open answers
-    if (t && !t.closest('#art-modal')) {
+    if (!e.target.closest) return;
+    var tile = e.target.closest('.um-tile[data-art-id]');
+    if (tile) {
       e.preventDefault();
-      hideArtPeek(true);
-      openArtifactModal(t.getAttribute('data-art-cid'), t.getAttribute('data-art-id'), t);
+      openArtifactViewer(tile.getAttribute('data-art-cid'), tile.getAttribute('data-art-id'), tile);
       return;
     }
-    // A click on the minimap itself opens the same artifact full size (its audio controls excepted).
-    if (e.target.closest && e.target.closest('#art-peek .art-peek-media') && !e.target.closest('audio') && _artPeek.anchor) {
-      var anchor = _artPeek.anchor;
-      hideArtPeek(true);
-      openArtifactModal(anchor.getAttribute('data-art-cid'), anchor.getAttribute('data-art-id'), anchor);
-      return;
+    var peek = document.getElementById('art-peek');
+    if (peek && e.target.closest('#art-peek .art-peek-media') && !e.target.closest('audio')) {
+      var anchor = peek.trigger;
+      var hit = artPeekTarget(anchor);
+      peek.hide();
+      if (hit) openArtifactViewer(hit.cid, hit.a.id, anchor);
     }
-    var zoom = e.target.closest ? e.target.closest('.art-full-img') : null;
-    if (zoom) zoom.parentNode.classList.toggle('is-zoomed');
   });
-  window.addEventListener('keydown', artHandleKey, true);
-  window.addEventListener('scroll', function() { if (_artPeek.anchor) hideArtPeek(true); }, true);
-  var dlg = document.getElementById('art-modal');
-  if (dlg) {
-    dlg.addEventListener('close', artModalClosed);
-    // Escape leaves the same way as the close button (the 180ms fade, then close()).
-    dlg.addEventListener('cancel', function(e) { e.preventDefault(); closeArtifactModal(); });
-    // A click on the backdrop (the dialog element itself, outside its box) closes.
-    dlg.addEventListener('click', function(e) { if (e.target === dlg) closeArtifactModal(); });
+  var peek = document.getElementById('art-peek');
+  if (peek) {
+    peek.addEventListener('ui-open', onArtPeekOpen);
+    peek.addEventListener('ui-closed', onArtPeekClosed);
+  }
+  var viewer = artViewerEl();
+  if (viewer) {
+    viewer.addEventListener('ui-view', function(e) { syncArtViewer(e.detail); });
+    // Closed by the person (Esc, the scrim, ✕): the page's body leaves once the exit has played.
+    viewer.addEventListener('ui-close', function() {
+      _artViewer = { cid: null, scope: 'conversation', list: [] };
+      setTimeout(function() {
+        var slot = viewer.querySelector('[slot="preview"]');
+        if (slot && !artViewerIsOpen()) slot.remove();
+      }, 240);
+    });
   }
 })();
 
@@ -17958,7 +17624,8 @@ function ntIsTouch() {
 }
 
 function ntIsTypingTarget(t) {
-  if (document.querySelector('dialog[open]')) return true;
+  // A dialog on top (the page's, a <ui-dialog>, the artifact viewer's) keeps the key.
+  if (document.querySelector('dialog[open], ui-dialog[open]') || artViewerIsOpen()) return true;
   if (!t) return false;
   var tag = String(t.tagName || '').toUpperCase();
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || !!t.isContentEditable;

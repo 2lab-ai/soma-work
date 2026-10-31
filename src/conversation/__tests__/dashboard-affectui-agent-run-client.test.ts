@@ -941,7 +941,7 @@ describe('approval keyboard (D14) — the element’s own', () => {
       panelOpen: true,
       panelSessionKey: KEY,
       _panelControlsOpen: false,
-      artModalIsOpen: () => false,
+      artViewerIsOpen: () => false,
       _cronDrawerKey: null,
       _deck: deck,
       _sessionCache: { [KEY]: {} },
