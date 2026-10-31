@@ -44,8 +44,14 @@ export interface SessionGoalState {
   createdBy: string;
   continuationCount: number;
   maxContinuations: number;
-  /** ms epoch of a pending cap-reached owner DM decision (S3 dedup guard). */
+  /** ms epoch the cap-reached "keep going?" decision opened (S3); undefined ⇒ none pending. */
   capDmPendingAt?: number;
+  /** The pending decision's round id (DM buttons + dashboard card). */
+  capDecisionId?: string;
+  /** Where the round's DM landed (stored after a successful post). */
+  capDmRef?: { channel: string; ts: string };
+  /** A DM rewrite that has not reached Slack yet. */
+  capDmSync?: { channel: string; ts: string; text: string };
   /**
    * The goal's opening turn was admitted but has not reached the model yet
    * (set by the host when it admits the opening, cleared right before the
@@ -249,9 +255,30 @@ export function enqueueOrActivateGoal(
 function resumeGoalStoppedAtBudget(goal: SessionGoalState): boolean {
   if (goal.status !== 'active' || goal.continuationCount < goal.maxContinuations) return false;
   goal.continuationCount = 0;
-  goal.capDmPendingAt = undefined;
+  endGoalCapDecision(goal);
   goal.updatedAt = Date.now();
   return true;
+}
+
+/**
+ * Ends a goal's pending cap decision without an answer. The default only
+ * clears the decision fields; the host replaces it ({@link setGoalCapDecisionRetirer})
+ * so the owner's DM stops offering its buttons too.
+ */
+let capDecisionRetirer: (goal: SessionGoalState) => void = (goal) => {
+  goal.capDmPendingAt = undefined;
+  goal.capDecisionId = undefined;
+  goal.capDmRef = undefined;
+};
+
+/** Wire the host's cap-decision retirement (production: `retireGoalCapDecision`). */
+export function setGoalCapDecisionRetirer(fn: (goal: SessionGoalState) => void): void {
+  capDecisionRetirer = fn;
+}
+
+/** End the goal's pending cap decision (if any) without an answer. */
+export function endGoalCapDecision(goal: SessionGoalState | undefined): void {
+  if (goal) capDecisionRetirer(goal);
 }
 
 /**
@@ -370,6 +397,8 @@ export function deleteGoalById(
 export function deleteCurrentGoal(session: GoalQueueSession): { deleted: boolean; promoted?: SessionGoalState } {
   const finished = session.goal;
   if (!finished) return { deleted: false };
+  // The deleted goal's open "keep going?" decision ends with it.
+  endGoalCapDecision(finished);
   const next = session.goalQueue && session.goalQueue.length > 0 ? session.goalQueue.shift() : undefined;
   if (next) {
     const now = Date.now();
@@ -381,7 +410,7 @@ export function deleteCurrentGoal(session: GoalQueueSession): { deleted: boolean
     next.lastEvalReason = undefined;
     next.lastEvalSummaryHash = undefined;
     next.lastAssistantTurnSummary = undefined;
-    next.capDmPendingAt = undefined;
+    endGoalCapDecision(next);
     applyGoalToSession(session, next);
     return { deleted: true, promoted: next };
   }

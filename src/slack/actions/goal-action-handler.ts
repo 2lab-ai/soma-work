@@ -10,6 +10,7 @@ import {
   GOAL_UPDATE_MODAL_BLOCK_ID,
   type GoalActionValue,
 } from '../goal-blocks';
+import { answerGoalCapDecision, type GoalCapDecision, goalCapDecisionResolvedText } from '../goal-cap-decision';
 import { HostGoalActionError } from '../goal-host-actions';
 import { getHostGoalActionHandler, resumeGoalLoop } from '../goal-loop-resume';
 import { deleteGoalById, findGoalById, formatGoalObjectiveForSlack } from '../session-goal';
@@ -36,7 +37,7 @@ interface GoalActionContext {
  *     current objective (S1); the modal submit applies the new objective.
  *   - `goal_continue_dm` / `goal_cancel_dm` — the owner-DM cap decision (S3):
  *     Continue resets the continuation counter and resumes the loop; Cancel
- *     pauses the goal.
+ *     pauses the goal. Same answer path as the dashboard card.
  *
  * Owner guard: only the session owner may mutate a goal.
  */
@@ -244,103 +245,57 @@ export class GoalActionHandler {
   }
 
   /**
-   * Resolve the cap-decision DM target (codex review #2). The DM is only ever
-   * sent for the ACTIVE goal with a pending decision, so we bind strictly to
-   * `session.goal` (NOT `findGoalById`, which can return a queued/history goal
-   * a stale click would otherwise corrupt). Requires:
-   *   - the clicked goalId == the live active goal's id,
-   *   - the clicker is the goal owner (`createdBy`),
-   *   - `capDmPendingAt` is still set (a decision is genuinely pending; a user
-   *     message / prior answer / queue-advance clears it ⇒ this click is stale).
+   * The owner-DM cap decision (S3). One answer path with the dashboard's
+   * approval card (`answerGoalCapDecision`): bound to the ACTIVE goal's
+   * pending round (the button carries its id — a button from an earlier round
+   * is stale), answered only by the goal's owner, at most once. An answer
+   * from either surface rewrites the other.
    */
-  private resolveCapDecision(
-    body: any,
-  ): { value: GoalActionValue; session: ConversationSession; goal: SessionGoal } | { stale: true } | { error: string } {
-    const value = decodeGoalActionValue(body.actions?.[0]?.value);
-    const userId = body.user?.id;
-    if (!value || !userId) return { error: '❌ 요청을 처리할 수 없습니다.' };
-    const session = this.ctx.claudeHandler.getSessionByKey(value.sessionKey);
-    const goal = session?.goal;
-    if (!session || !goal || goal.goalId !== value.goalId) return { stale: true };
-    if (goal.createdBy !== userId) return { error: '❌ goal 소유자만 응답할 수 있습니다.' };
-    // The cap DM is only ever sent for an ACTIVE goal sitting at its budget.
-    // Requiring status==='active' (in addition to a pending flag) means a goal
-    // that was completed (`goal done` keeps a complete goal in `session.goal`
-    // when the queue is empty) or paused since the DM was sent can never be
-    // resurrected by a stale Continue/Cancel click (codex review round 2 #1).
-    if (goal.status !== 'active') return { stale: true };
-    if (goal.capDmPendingAt === undefined) return { stale: true };
-    return { value, session, goal };
-  }
-
-  /**
-   * Same invalidation every goal-state change applies
-   * (`GoalHandler.persistGoalChange`). Continuation turns carry a one-line
-   * nudge; the objective reaches the model only through the
-   * `<session-goal>` system block, which is rebuilt only after
-   * `session.systemPrompt` is dropped. The epoch bump makes any in-flight
-   * completion eval discard its verdict instead of applying it.
-   */
-  private persistCapDecision(session: ConversationSession, goal: SessionGoal): void {
-    goal.epoch = (goal.epoch ?? 0) + 1;
-    session.systemPrompt = undefined;
-    this.ctx.claudeHandler.saveSessions();
+  private async answerCapDecision(body: any, respond: RespondFn, decision: GoalCapDecision): Promise<void> {
+    try {
+      const value = decodeGoalActionValue(body.actions?.[0]?.value);
+      if (!value) {
+        await respond({ response_type: 'ephemeral', replace_original: false, text: '❌ 요청을 처리할 수 없습니다.' });
+        return;
+      }
+      const result = answerGoalCapDecision({
+        session: this.ctx.claudeHandler.getSessionByKey(value.sessionKey),
+        sessionKey: value.sessionKey,
+        goalId: value.goalId,
+        decisionId: value.decisionId,
+        actor: body.user?.id,
+        decision,
+        surface: 'slack',
+        save: () => this.ctx.claudeHandler.saveSessions(),
+      });
+      if (result.ok) {
+        await respond({ replace_original: true, text: goalCapDecisionResolvedText(decision, 'slack') });
+        return;
+      }
+      if (result.reason === 'stale') {
+        await respond({ replace_original: true, text: '⚠️ 이미 처리되었거나 더 이상 유효하지 않은 요청입니다.' });
+        return;
+      }
+      await respond({
+        response_type: 'ephemeral',
+        replace_original: false,
+        text: result.reason === 'not_owner' ? '❌ goal 소유자만 응답할 수 있습니다.' : '❌ 요청을 처리할 수 없습니다.',
+      });
+    } catch (error) {
+      this.logger.error(`Error processing goal ${decision} DM`, error);
+      await respond({
+        response_type: 'ephemeral',
+        replace_original: false,
+        text: '❌ 처리 중 오류가 발생했습니다.',
+      }).catch(() => undefined);
+    }
   }
 
   async handleContinueDm(body: any, respond: RespondFn): Promise<void> {
-    try {
-      const r = this.resolveCapDecision(body);
-      if ('error' in r) {
-        await respond({ response_type: 'ephemeral', replace_original: false, text: r.error });
-        return;
-      }
-      if ('stale' in r) {
-        await respond({ replace_original: true, text: '⚠️ 이미 처리되었거나 더 이상 유효하지 않은 요청입니다.' });
-        return;
-      }
-      r.goal.continuationCount = 0;
-      r.goal.capDmPendingAt = undefined;
-      r.goal.status = 'active';
-      r.goal.updatedAt = Date.now();
-      this.persistCapDecision(r.session, r.goal);
-      resumeGoalLoop(r.value.sessionKey);
-      await respond({ replace_original: true, text: '✅ goal을 계속 진행합니다.' });
-    } catch (error) {
-      this.logger.error('Error processing goal continue DM', error);
-      await respond({
-        response_type: 'ephemeral',
-        replace_original: false,
-        text: '❌ 처리 중 오류가 발생했습니다.',
-      }).catch(() => undefined);
-    }
+    await this.answerCapDecision(body, respond, 'continue');
   }
 
   async handleCancelDm(body: any, respond: RespondFn): Promise<void> {
-    try {
-      const r = this.resolveCapDecision(body);
-      if ('error' in r) {
-        await respond({ response_type: 'ephemeral', replace_original: false, text: r.error });
-        return;
-      }
-      if ('stale' in r) {
-        await respond({ replace_original: true, text: '⚠️ 이미 처리되었거나 더 이상 유효하지 않은 요청입니다.' });
-        return;
-      }
-      r.goal.status = 'paused';
-      r.goal.capDmPendingAt = undefined;
-      r.goal.updatedAt = Date.now();
-      this.persistCapDecision(r.session, r.goal);
-      await respond({
-        replace_original: true,
-        text: '🛑 goal을 중단했습니다. (`goal resume`으로 다시 시작할 수 있습니다.)',
-      });
-    } catch (error) {
-      this.logger.error('Error processing goal cancel DM', error);
-      await respond({
-        response_type: 'ephemeral',
-        replace_original: false,
-        text: '❌ 처리 중 오류가 발생했습니다.',
-      }).catch(() => undefined);
-    }
+    await this.answerCapDecision(body, respond, 'cancel');
   }
 }

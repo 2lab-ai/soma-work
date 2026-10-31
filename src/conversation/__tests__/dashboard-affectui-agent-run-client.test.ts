@@ -691,6 +691,7 @@ function cards(
       'acQuestionData',
       'acSlotHtml',
       'acPermissionsHtml',
+      'acGoalDecisionHtml',
       'acQuestionHtml',
       'stripRecommendedMarker',
       'resolveRecommendedId',
@@ -1071,6 +1072,7 @@ describe('after an answer (D15)', () => {
     const said: string[] = [];
     const m = load<{ renderPanelPermission(s: unknown): void }>(['renderPanelPermission'], [], {
       document: { getElementById: (id: string) => els[id] ?? null, activeElement: null },
+      acGoalDecisionHtml: () => '',
       acPermissionsHtml: (s: { pendingPermissions: Array<{ approvalId: string }> }) =>
         s.pendingPermissions.map((p) => `<${p.approvalId}>`).join(''),
       acHydrate: () => {},
@@ -1241,6 +1243,7 @@ describe('live repaint never rebinds an answer to another request (D14, review R
     };
     const m = load<{ renderPanelPermission(s: unknown): void }>(['renderPanelPermission', 'apSafeFocus'], [], {
       document,
+      acGoalDecisionHtml: () => '',
       acPermissionsHtml: (s: { pendingPermissions: Array<{ approvalId: string }> }) =>
         s.pendingPermissions.map((p) => p.approvalId).join(','),
       acHydrate: () => {},
@@ -1837,6 +1840,7 @@ describe('template hygiene', () => {
       'acQuestionData',
       'acSlotHtml',
       'acPermissionsHtml',
+      'acGoalDecisionHtml',
       'acQuestionHtml',
       'acHydrate',
       'acRepaint',

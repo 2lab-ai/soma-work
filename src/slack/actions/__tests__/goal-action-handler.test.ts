@@ -270,3 +270,58 @@ describe('GoalActionHandler — cap-decision DM guards (S3, codex #2)', () => {
     expect(saveSessions).not.toHaveBeenCalled();
   });
 });
+
+describe('GoalActionHandler — the DM and the dashboard card are one request (T2)', () => {
+  function roundBody(goalId: string, decisionId: string, userId = 'U-owner') {
+    return {
+      user: { id: userId },
+      actions: [
+        {
+          value: encodeGoalActionValue({ sessionKey: SESSION_KEY, goalId, channel: 'C1', threadTs: 'T1', decisionId }),
+        },
+      ],
+    };
+  }
+
+  it('Continue from the DM answers its own round and rewrites the clicked DM', async () => {
+    const session = makeSession({
+      goal: makeGoal({ capDmPendingAt: 123, capDecisionId: 'round-2', capDmRef: { channel: 'D1', ts: '1.1' } }),
+    });
+    const { handler, saveSessions } = makeHandler(session);
+    const respond = vi.fn().mockResolvedValue(undefined);
+
+    await handler.handleContinueDm(roundBody('goal-1', 'round-2'), respond);
+
+    expect(session.goal?.capDmPendingAt).toBeUndefined();
+    expect(session.goal?.capDecisionId).toBeUndefined();
+    expect(saveSessions).toHaveBeenCalled();
+    expect(resumeGoalLoopMock).toHaveBeenCalledWith(SESSION_KEY);
+    expect(respond).toHaveBeenCalledWith({ replace_original: true, text: '✅ goal을 계속 진행합니다.' });
+  });
+
+  it('a DM button from an earlier round is stale once the goal hit its budget again', async () => {
+    const session = makeSession({
+      goal: makeGoal({ capDmPendingAt: 456, capDecisionId: 'round-2', capDmRef: { channel: 'D1', ts: '2.2' } }),
+    });
+    const { handler, saveSessions } = makeHandler(session);
+    const respond = vi.fn().mockResolvedValue(undefined);
+
+    await handler.handleContinueDm(roundBody('goal-1', 'round-1'), respond);
+
+    expect(session.goal?.capDmPendingAt).toBe(456);
+    expect(saveSessions).not.toHaveBeenCalled();
+    expect(resumeGoalLoopMock).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('유효하지 않은') }));
+  });
+
+  it('a non-owner click is refused without touching the round', async () => {
+    const session = makeSession({ goal: makeGoal({ capDmPendingAt: 1, capDecisionId: 'r' }) });
+    const { handler } = makeHandler(session);
+    const respond = vi.fn().mockResolvedValue(undefined);
+
+    await handler.handleCancelDm(roundBody('goal-1', 'r', 'U-other'), respond);
+
+    expect(session.goal?.status).toBe('active');
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ text: '❌ goal 소유자만 응답할 수 있습니다.' }));
+  });
+});
