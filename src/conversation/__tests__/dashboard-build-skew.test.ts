@@ -113,6 +113,18 @@ describe('dashboard build skew — T1: the server build reaches the tab', () => 
     expect(res.body).toContain(`const PAGE_BUILD = ${JSON.stringify(dashboard.dashboardBuildId())};`);
   });
 
+  it('a `</script>` in the dashboard path stays data in the page (pre-existing reflected XSS, review round 3)', async () => {
+    const evil = '</script><script>window.__xss=1</script>';
+    const res = await webServer.injectWebServer({
+      method: 'GET',
+      url: `/dashboard/${encodeURIComponent(evil)}`,
+      headers: AUTH_HEADER,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain('<script>window.__xss=1</script>');
+    expect(res.body).toContain('const INIT_USER = "\\u003c/script>\\u003cscript>window.__xss=1\\u003c/script>";');
+  });
+
   it('every board poll answers with the server build (x-dashboard-build)', async () => {
     const res = await webServer.injectWebServer({
       method: 'GET',
@@ -200,13 +212,40 @@ describe('dashboard build skew — T2: a tab on another build reloads', () => {
   function api(
     env: ReturnType<typeof fakeEnv>,
     pageBuild = 'build-A',
-    page: { _pcSending?: boolean; _mcState?: Record<string, unknown> } = {},
+    page: {
+      _pcSending?: boolean;
+      _pcInFlight?: number;
+      _pcFailed?: Record<string, boolean>;
+      _recording?: unknown[];
+      _ntBusy?: boolean;
+      _acState?: Record<string, Record<string, { status: string }>>;
+      _mcState?: Record<string, unknown>;
+      ntDraft?: string;
+    } = {},
   ): Api {
     return load<Api>(
-      ['buildSkewed', 'hasUnsentInput', 'inClosedDialog', 'filledField', 'buildReload', 'onServerBuild'],
+      [
+        'buildSkewed',
+        'hasUnsentInput',
+        'ntSavedPrompt',
+        'inClosedDialog',
+        'filledField',
+        'buildReload',
+        'onServerBuild',
+      ],
       {
         PAGE_BUILD: pageBuild,
         _pcSending: page._pcSending ?? false,
+        _pcInFlight: page._pcInFlight ?? 0,
+        _pcFailed: page._pcFailed ?? {},
+        _recording: page._recording ?? [],
+        _ntBusy: page._ntBusy ?? false,
+        _acState: page._acState ?? {},
+        NT_DRAFT_KEY: 'soma-nt-draft',
+        localStorage: {
+          getItem: (k: string) =>
+            k === 'soma-nt-draft' && page.ntDraft !== undefined ? JSON.stringify({ prompt: page.ntDraft }) : null,
+        },
         _mcState: page._mcState ?? {},
         document: env.document,
         location: env.location,
@@ -296,6 +335,21 @@ describe('dashboard build skew — T2: a tab on another build reloads', () => {
 
   it('a note on its way out, or a multi-question form with picked answers not yet submitted, holds the reload', () => {
     expect(api(fakeEnv(), 'build-A', { _pcSending: true }).hasUnsentInput()).toBe(true);
+    // Its POST still unanswered (the composer already cleared) — review round 3, astra.
+    expect(api(fakeEnv(), 'build-A', { _pcInFlight: 1 }).hasUnsentInput()).toBe(true);
+    // A voice note being recorded; a note whose send failed (its Retry row holds the only copy) — round 3, astra.
+    expect(api(fakeEnv(), 'build-A', { _recording: [{ isConnected: true }] }).hasUnsentInput()).toBe(true);
+    // A composer swapped out mid-recording (its cancel fired off the page) no longer counts (round 3, astra).
+    expect(api(fakeEnv(), 'build-A', { _recording: [{ isConnected: false }] }).hasUnsentInput()).toBe(false);
+    expect(api(fakeEnv(), 'build-A', { _pcFailed: { 'as-1': true } }).hasUnsentInput()).toBe(true);
+    // A new task being launched (dialog possibly closed), an approval answer in flight — round 3, astra · fable.
+    expect(api(fakeEnv(), 'build-A', { _ntBusy: true }).hasUnsentInput()).toBe(true);
+    expect(api(fakeEnv(), 'build-A', { _acState: { k: { 'g|d1': { status: 'sending' } } } }).hasUnsentInput()).toBe(
+      true,
+    );
+    expect(api(fakeEnv(), 'build-A', { _acState: { k: { 'g|d1': { status: 'resolved' } } } }).hasUnsentInput()).toBe(
+      false,
+    );
     const picked = { k1: { id: 'mc|k1', answers: { q1: { choiceId: '1' } } } };
     expect(api(fakeEnv(), 'build-A', { _mcState: picked }).hasUnsentInput()).toBe(true);
     // Submitted, or nothing picked yet: nothing to lose.
@@ -314,7 +368,15 @@ describe('dashboard build skew — T2: a tab on another build reloads', () => {
     expect(api(fakeEnv({ fields: [{ value: '24', closest: () => closed }], dialogs: [closed] })).hasUnsentInput()).toBe(
       false,
     );
-    expect(api(fakeEnv({ ntComposer: { value: 'saved draft', files: [] } })).hasUnsentInput()).toBe(false);
+    expect(
+      api(fakeEnv({ ntComposer: { value: 'saved draft', files: [] } }), 'build-A', {
+        ntDraft: 'saved draft',
+      }).hasUnsentInput(),
+    ).toBe(false);
+    // …only when localStorage really took it (ntSaveDraft swallows quota errors) — round 3, astra.
+    expect(api(fakeEnv({ ntComposer: { value: 'never saved', files: [] } })).hasUnsentInput()).toBe(true);
+    // …but its files are not in the draft: attached files hold the reload with the dialog closed (round 3, fable P3).
+    expect(api(fakeEnv({ ntComposer: { value: '', files: [{ name: 'spec.pdf' }] } })).hasUnsentInput()).toBe(true);
     expect(
       api(
         fakeEnv({
@@ -323,6 +385,25 @@ describe('dashboard build skew — T2: a tab on another build reloads', () => {
       ).hasUnsentInput(),
     ).toBe(false);
     expect(api(fakeEnv({ elements: [{ shadowRoot: { querySelectorAll: () => [] } }] })).hasUnsentInput()).toBe(false);
+  });
+});
+
+describe('dashboard build skew — a failed note stops holding the reload once its row goes', () => {
+  it('pcGiveBack (a Retry that could not go out) drops the failed marker with the row (round 3, astra)', () => {
+    const failed: Record<string, boolean> = { 'as-1': true };
+    const states: string[] = [];
+    const { pcGiveBack } = load<{ pcGiveBack: (el: unknown, ref: string, msg: string, key: string) => void }>(
+      ['pcGiveBack'],
+      {
+        _pcNoteFiles: { 'as-1': [] },
+        _pcFailed: failed,
+        panelSessionKey: 'k',
+        document: { getElementById: () => null },
+      },
+    );
+    pcGiveBack({ value: '', setItemState: (_r: string, st: string) => states.push(st) }, 'as-1', 'retry me', 'k');
+    expect(states).toEqual(['cancelled']);
+    expect(failed).toEqual({});
   });
 });
 

@@ -469,6 +469,8 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
         _lastSentContent: '',
         _lastSentTime: 0,
         _pcSending: false,
+        _pcInFlight: 0,
+        _pcFailed: {},
         _pcNoteFiles: noteFiles,
         ntReadFile: (f: { name: string; type: string }) =>
           unreadable

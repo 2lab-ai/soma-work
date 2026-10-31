@@ -751,7 +751,7 @@ describe('review r1 · a recording belongs to the card it was started for', () =
     const { document } = fakeDoc(old, null);
     const env = load<{ pcFreshSteer(): void; __set(n: string, v: unknown): void }>(
       ['pcComposerData', 'pcComposerSetup', 'pcFreshSteer'],
-      ['PC_LIMITS', '_pcNoteFiles'],
+      ['PC_LIMITS', '_pcNoteFiles', '_pcFailed'],
       { document },
     );
     env.__set('_pcNoteFiles', { 'as-1': ['a.png'] });
