@@ -111,6 +111,7 @@ import {
   NewTaskError,
   type NewTaskSubmission,
   parseAttachments,
+  parseDashboardTaskSubmission,
   parseNewTaskSubmission,
 } from './new-task';
 import type { NewTaskLaunchResult } from './new-task-launcher';
@@ -1470,6 +1471,19 @@ const _newTaskGate = createNewTaskGate();
 
 export function setDashboardNewTaskProvider(provider: DashboardNewTaskProvider | null): void {
   _newTaskProvider = provider;
+}
+
+/** #600 ⑥ — makes and starts a Slack-less dashboard task (`createTaskLauncher`). */
+type DashboardTaskLauncher = (request: {
+  ownerId: string;
+  ownerName: string;
+  prompt: string;
+  folder?: string;
+  model?: string;
+}) => Promise<{ status: number; body: Record<string, unknown> }>;
+let _taskLauncherFn: DashboardTaskLauncher | null = null;
+export function setDashboardTaskLauncher(fn: DashboardTaskLauncher | null): void {
+  _taskLauncherFn = fn;
 }
 
 /** The signed-in Slack user a task runs as — never a body field, never the admin-mode target. */
@@ -3556,12 +3570,46 @@ export async function registerDashboardRoutes(
         reply.status(403).send({ error: 'Slack 계정으로 로그인해야 새 작업을 시작할 수 있습니다' });
         return;
       }
+      const requestId = (request.body as { requestId?: unknown } | null)?.requestId;
+      // #600 ⑥ — a Slack-less dashboard task: no channel, no Slack provider.
+      if ((request.body as { destination?: unknown } | null)?.destination === 'task') {
+        const launch = _taskLauncherFn;
+        if (!launch) {
+          reply.status(501).send({ error: 'Dashboard tasks are not configured' });
+          return;
+        }
+        const parsed = parseDashboardTaskSubmission(request.body);
+        if (!parsed.ok) {
+          reply.status(400).send({ error: parsed.error });
+          return;
+        }
+        const ownerName = (request as { authContext?: { name?: string } }).authContext?.name || userId;
+        try {
+          const result = await _newTaskGate.run(userId, parsed.value.requestId, async () => {
+            const { requestId: _rid, ...rest } = parsed.value;
+            const outcome = await launch({ ownerId: userId, ownerName, ...rest });
+            // A refusal is not remembered by the gate, so the same request may be retried.
+            if (outcome.status >= 400) {
+              throw new NewTaskError(outcome.status, String(outcome.body.error ?? 'refused'));
+            }
+            return outcome.body;
+          });
+          reply.send({ ok: true, ...result });
+        } catch (error) {
+          if (error instanceof NewTaskError) {
+            reply.status(error.statusCode).send({ error: error.message });
+            return;
+          }
+          logger.error('Error starting a dashboard task', error);
+          reply.status(500).send({ error: 'Internal Server Error' });
+        }
+        return;
+      }
       const provider = _newTaskProvider;
       if (!provider) {
         reply.status(501).send({ error: 'New task is not configured' });
         return;
       }
-      const requestId = (request.body as { requestId?: unknown } | null)?.requestId;
       try {
         const result = await _newTaskGate.run(userId, typeof requestId === 'string' ? requestId : '', async () => {
           // Authorize against a FRESH context: membership is re-checked right

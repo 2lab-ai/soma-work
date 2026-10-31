@@ -83,6 +83,7 @@ import {
   setDashboardTaskAccessor,
   setDashboardTaskAnswerHandler,
   setDashboardTaskCommandHandler,
+  setDashboardTaskLauncher,
   setDashboardTrashHandler,
   setOAuthDirectoryLookup,
   setOAuthUserLookup,
@@ -150,11 +151,13 @@ import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
+import { createTaskLauncher } from './task-turn/task-launcher';
 import { createTaskTurnController, type TaskTurnController } from './task-turn/task-turn-controller';
 import { createTaskTurnExecutor } from './task-turn/task-turn-executor';
 import { getTokenManager } from './token-manager';
 import type { ConversationSession } from './types';
 import { productionSettingsRegistry } from './user-settings-registry-production';
+import { WorkingDirectoryManager } from './working-directory-manager';
 
 const logger = new Logger('Main');
 
@@ -1169,6 +1172,13 @@ async function start() {
     setDashboardTaskAnswerHandler((sessionKey, askId, answer, actorUserId) =>
       taskController.answer({ sessionKey, askId, answer, actorUserId }),
     );
+    // #600 ⑥ — the dashboard's "new task" as a Slack-less task: folder, task, first instruction.
+    const taskLauncher = createTaskLauncher({
+      controller: taskController,
+      createTask: (input) => claudeHandler.createTask(input),
+      createFreshDirectory: (ownerId) => new WorkingDirectoryManager().createSessionBaseDir(ownerId),
+    });
+    setDashboardTaskLauncher((request) => taskLauncher.launch(request));
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
       recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => void;
