@@ -389,8 +389,15 @@ export interface ConversationSession {
   ownerName?: string; // Display name of owner
   currentInitiatorId?: string; // User who triggered the current response
   currentInitiatorName?: string; // Display name of current initiator
+  // '' (and no threadTs) for a Slack-less task — see `slackless`.
   channelId: string;
   threadTs?: string;
+  /**
+   * A task with no Slack channel/thread (#596, `SessionRegistry.createTask`).
+   * Its registry key is `task:<taskId>`, not `work:<channel>:<thread>`, and it
+   * is saved and on the board from creation, before any SDK session.
+   */
+  slackless?: boolean;
   sessionId?: string;
   isActive: boolean;
   lastActivity: Date;
@@ -492,10 +499,32 @@ export interface ConversationSession {
    * sleep period instead of sleeping on the next sweep.
    */
   starClearedAt?: number;
+  /**
+   * #598 ④b — the latest turn's outcome of a Slack-less task (D10), written once
+   * per terminal turn by the task runner's strict commit. Current activity wins
+   * over it on the dashboard: `working` shows running, `waiting` shows waiting,
+   * `idle` reads this.
+   */
+  lastTurnOutcome?: TaskTurnOutcomeRecord;
+  /**
+   * #598 ④c — the turn a Slack-less task is running, saved when it starts
+   * (`SessionRegistry.beginTaskTurn`) and cleared by its outcome's commit. A
+   * task loaded `working` names the turn the process lost (restart
+   * reconciliation records it `interrupted`).
+   */
+  activeTaskTurnId?: string;
   // Sleep mode
   sleepStartedAt?: Date;
   // Conversation history recording ID
   conversationId?: string;
+  /**
+   * Task id (#595): the address of this task that is not its Slack
+   * channel/thread. Minted by SessionRegistry and set on every session it
+   * holds; never changes for the life of the task. Lifecycle contract and
+   * lookup: `SessionRegistry.getSessionByTaskId`.
+   */
+  // Only SessionRegistry assigns this (create / load / revive / adoptTaskId) — an assignment elsewhere breaks the task-id index.
+  taskId?: string;
   // Bot activity state (working/waiting/idle)
   activityState?: ActivityState;
   activityStateChangedAt?: number;
@@ -1010,4 +1039,15 @@ export interface UserChoiceGroup {
   question: string; // Group title/context
   choices: UserChoice[]; // Array of individual choices
   context?: string; // Why these decisions are needed
+}
+
+/** #598 ④b — one terminal turn's outcome, as stored on the session. */
+export interface TaskTurnOutcomeRecord {
+  turnId: string;
+  outcome: 'completed' | 'failed' | 'cancelled' | 'waiting' | 'interrupted';
+  category: 'UIUserAskQuestion' | 'WorkflowComplete' | 'Exception' | 'Stalled';
+  reason?: string;
+  retryable?: boolean;
+  recordFailure?: string;
+  at: number;
 }

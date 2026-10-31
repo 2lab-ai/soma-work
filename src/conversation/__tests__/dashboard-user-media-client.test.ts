@@ -68,19 +68,14 @@ const BASE_FNS = [
   'umGet',
   'umUrl',
   'artUrl',
-  'artFormatSize',
-  'artKindLabel',
-  'artGlyph',
-  'artMeta',
   'artFileItem',
   'artCard',
   'umTile',
   'renderUserMedia',
   'umMissingReason',
   'artViewItem',
-  'artViewerPreview',
 ];
-const BASE_VARS = ['ART_KIND_LABEL', 'ART_GLYPH', '_userMedia', 'UM_GRID_MAX', '_artDocCache'];
+const BASE_VARS = ['ART_KIND_LABEL', '_userMedia', 'UM_GRID_MAX', '_artDocCache'];
 
 type Api = {
   umRegister(cid: string, list: unknown[], turn: unknown): void;
@@ -89,7 +84,6 @@ type Api = {
   renderUserMedia(cid: string, list: unknown[], opts?: unknown): string;
   artFileItem(cid: string, a: unknown): Record<string, unknown>;
   artViewItem(cid: string, a: unknown): Record<string, unknown>;
-  artViewerPreview(cid: string, a: unknown): string;
 };
 
 const img = (id: string, name = `${id}.png`) => ({
@@ -292,10 +286,11 @@ describe('C4 — viewer reuse', () => {
       stored: true,
       source: 'user_upload',
     };
-    // No page body (the viewer draws its own sandbox="" frame from the url); the model's html gets the scripted one.
-    expect(api.artViewerPreview('c4', page)).toBe('');
+    // D6b: the element's own sandbox="" frame from the url (no items[].scripts for an upload); the model's html
+    // carries scripts: true — the element's frame runs it (sandbox="allow-scripts", never same-origin).
+    expect(api.artViewItem('c4', page)).not.toHaveProperty('scripts');
     expect(api.artViewItem('c4', page)).not.toHaveProperty('text');
-    expect(api.artViewerPreview('c4', { ...page, source: 'slack_upload' })).toContain('sandbox="allow-scripts"');
+    expect(api.artViewItem('c4', { ...page, source: 'slack_upload' })).toMatchObject({ scripts: true });
   });
 });
 
@@ -366,7 +361,9 @@ describe('goal gap — a user video or voice note with a copy plays in the dashb
       kind: 'video',
       url: '/api/dashboard/session/c8/media/VD1/content',
     });
-    expect(api.artViewerPreview('c8', clip)).toBe('');
+    // A clip is the element's own body (no scripts, no frame flag of the page's).
+    expect(api.artViewItem('c8', clip)).not.toHaveProperty('scripts');
+    expect(api.artViewItem('c8', clip)).not.toHaveProperty('frame');
   });
 
   it("a stored voice note plays in place on its card (<ui-file-card playable>'s toggle)", () => {

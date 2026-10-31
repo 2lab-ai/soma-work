@@ -45,6 +45,7 @@ import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
 import { getClaudeChildProcessRegistry } from './agent-runtime/claude-child-process-registry';
+import { executionContextForTask } from './agent-runtime/execution-context';
 import { initAuthRuntimeDefault } from './auth/auth-runtime';
 import { isLlmuxUp } from './auth/llmux-client';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
@@ -81,6 +82,9 @@ import {
   setDashboardStopHandler,
   setDashboardSubmitRecommendedHandler,
   setDashboardTaskAccessor,
+  setDashboardTaskAnswerHandler,
+  setDashboardTaskCommandHandler,
+  setDashboardTaskLauncher,
   setDashboardTrashHandler,
   setOAuthDirectoryLookup,
   setOAuthUserLookup,
@@ -90,13 +94,18 @@ import {
   startWebServer,
   stopWebServer,
 } from './conversation';
-import { captureArtifactFromWorkLog } from './conversation/artifact-capture';
 import { getArtifactStore } from './conversation/artifacts';
 import type { NewTaskAttachment } from './conversation/new-task';
-import { createNewTaskProvider, createSlackSteerUploader } from './conversation/new-task-provider';
+import {
+  createNewTaskProvider,
+  createSlackSteerUploader,
+  offeredNewTaskModels,
+} from './conversation/new-task-provider';
+import { createConversationDurable } from './conversation/recorder';
+import { createSessionWorkLogAppender } from './conversation/session-work-log';
 import { setSettingsRegistry } from './conversation/settings-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
-import { appendWorkLog, flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
+import { flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
 import { GPT_5_6_UPSTREAM_SLUG, syncLlmuxCodexModel } from './deploy/llmux-codex-model-sync';
@@ -108,6 +117,7 @@ import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
 import { Logger } from './logger';
+import { mcpCallTracker } from './mcp-call-tracker';
 import { McpManager } from './mcp-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
 import { calculateTokenCost, hasModelPricing } from './metrics/model-registry';
@@ -127,7 +137,7 @@ import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
-import { applyAgentEvent, stampWorkLogAgent } from './session/agent-registry';
+import { applyAgentEvent } from './session/agent-registry';
 import { backfillAgentSpend, createAgentSpendReader } from './session/agent-spend';
 import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
 import { switchSessionEffort } from './session/effort-switch';
@@ -136,7 +146,7 @@ import { switchSessionModel } from './session/model-switch';
 import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './session/task-ledger';
 import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from './session/task-usage-reconcile';
 import { resolveArchivedResume } from './session-archive';
-import { canApplySummaryTitle } from './session-title-policy';
+import { applySummaryTitle } from './session-title-policy';
 import {
   answerGoalCapDecision,
   flushGoalCapDmSync,
@@ -153,9 +163,13 @@ import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
+import { createTaskLauncher } from './task-turn/task-launcher';
+import { createTaskTurnController, type TaskTurnController } from './task-turn/task-turn-controller';
+import { createTaskTurnExecutor } from './task-turn/task-turn-executor';
 import { getTokenManager } from './token-manager';
 import type { ConversationSession } from './types';
 import { productionSettingsRegistry } from './user-settings-registry-production';
+import { WorkingDirectoryManager } from './working-directory-manager';
 
 const logger = new Logger('Main');
 
@@ -770,8 +784,17 @@ async function start() {
       logger.info('Dashboard: stopped session', { sessionKey });
     });
 
+    // #598 ④c — the caller of Slack-less tasks' turns, built below once the
+    // work-log appender exists; Close and shutdown reach it through here.
+    let taskTurnController: TaskTurnController | undefined;
+
     // Connect dashboard: close handler (terminate session)
     setDashboardCloseHandler(async (sessionKey: string) => {
+      // A task's running chain ends `cancelled` (session-close) and commits its
+      // outcome before the task is archived and removed (598c v2 a2).
+      if (claudeHandler.getSessionRegistry().getSessionByKey(sessionKey)?.slackless === true) {
+        await taskTurnController?.close(sessionKey);
+      }
       claudeHandler.terminateSession(sessionKey);
       logger.info('Dashboard: closed session', { sessionKey });
     });
@@ -1127,6 +1150,50 @@ async function start() {
         if (changed) scheduleLiveSessionUpdate(sessionKey);
       });
     };
+    const appendSessionWorkLog = createSessionWorkLogAppender({
+      getAllSessions: () => claudeHandler.getAllSessions(),
+      scheduleLiveSessionUpdate,
+      refreshAgentSpend,
+    });
+
+    // #598 ④c — a Slack-less task's instruction from the dashboard runs on the
+    // task executor (its own output graph: dashboard panel, work log, a
+    // fail-closed Slack API) through the controller (D8 refusals, D9 cap,
+    // fallback-compaction re-entry, one chain-level abort on the shared
+    // request coordinator so Stop / shutdown reach it).
+    const taskTurnExecutor = createTaskTurnExecutor({
+      claudeHandler,
+      requestCoordinator: slackHandler.getRequestCoordinator(),
+      mcpCallTracker,
+      todoManager: slackHandler.getTodoManager(),
+      appendSessionWorkLog,
+      createConversation: (s) => createConversationDurable('', '', s.ownerId, s.ownerName ?? '', s.title),
+    });
+    const taskController = createTaskTurnController({
+      runner: taskTurnExecutor,
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      coordinator: slackHandler.getRequestCoordinator(),
+      buildExecutionContext: executionContextForTask,
+      logger: new Logger('TaskTurnController'),
+    });
+    taskTurnController = taskController;
+    setDashboardTaskCommandHandler((sessionKey, message, attachments, actorUserId) =>
+      taskController.start({ sessionKey, text: message, attachments, actorUserId }),
+    );
+    // #599 ⑤ — an answer to a task's open question runs as its next instruction.
+    setDashboardTaskAnswerHandler((sessionKey, askId, answer, actorUserId) =>
+      taskController.answer({ sessionKey, askId, answer, actorUserId }),
+    );
+    // #600 ⑥ — the dashboard's "new task" as a Slack-less task: folder, task, first instruction.
+    const taskLauncher = createTaskLauncher({
+      controller: taskController,
+      createTask: (input) => claudeHandler.createTask(input),
+      createFreshDirectory: (ownerId) => new WorkingDirectoryManager().createSessionBaseDir(ownerId),
+      listModels: (ownerId) => offeredNewTaskModels(ownerId),
+      cleanupSessions: () =>
+        [...claudeHandler.getAllSessions()].map(([key, s]) => ({ key, sourceWorkingDirs: s.sourceWorkingDirs })),
+    });
+    setDashboardTaskLauncher(taskLauncher);
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
       recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => void;
@@ -1164,31 +1231,11 @@ async function start() {
       },
       priceLiveUsage: (model, t) =>
         calculateTokenCost(model, t.inputTokens, t.outputTokens, t.cacheReadTokens, t.cacheCreateTokens),
+      // The pipeline (agent stamp, card push, artifact capture, append) is shared
+      // with a Slack-less task's writer, which keeps the promise (#598 ④b).
+      // Slack turns' recording stays best-effort: the promise is swallowed.
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => {
-        // SSOT 2026-10-22 T7/T10: the entry carries the task in progress (the
-        // dashboard folds the log under it) and a tool call counts on that task.
-        // Spec 12: the task — and the tool count — of the agent that made the
-        // entry: a subagent's own ledger, the session's for the main agent.
-        let owner: ConversationSession | undefined;
-        let ownerKey: string | undefined;
-        for (const [key, session] of claudeHandler.getAllSessions()) {
-          if (session.conversationId === conversationId) {
-            owner = session;
-            ownerKey = key;
-            break;
-          }
-        }
-        const stamped = stampWorkLogAgent(owner ?? {}, entry, Date.now());
-        // A node's tool count grew — a subagent's, or the main agent's (the
-        // registry root): push the card (throttled, ≤ 1/s per session).
-        if (entry.kind === 'tool' && ownerKey) scheduleLiveSessionUpdate(ownerKey);
-        // A subagent is working: its spend may have grown (throttled read).
-        if (entry.agentId && owner && ownerKey) refreshAgentSpend(ownerKey, owner, false);
-        // SSOT 2026-10-23 T1/T7: files the model sends to Slack and its markdown
-        // answers become dashboard artifacts. Before the store sees it, while
-        // `entry` still has the whole final text (the work log caps it).
-        void captureArtifactFromWorkLog(conversationId, entry);
-        appendWorkLog(conversationId, stamped).catch(() => {});
+        appendSessionWorkLog(conversationId, entry).catch(() => {});
       },
       // Spec 12 — the session's agent tree: fold the event into its registry
       // and push the card when something changed (throttled, ≤ 1/s per session).
@@ -1273,36 +1320,32 @@ async function start() {
     // Connect summary generation: update session title on Slack thread header
     setOnSummaryGeneratedCallback((conversationId, _turn, summaryTitle) => {
       const registry = claudeHandler.getSessionRegistry();
-      const allSessions = registry.getAllSessions();
-      const session = [...allSessions.values()].find((s) => s.conversationId === conversationId);
-      if (!session) {
+      // By registry key, so a Slack-less task's card gets its summary title too (#615 R1).
+      const result = applySummaryTitle(registry, conversationId, summaryTitle, {
+        renderThread: (session) => slackHandler.requestThreadSurfaceRender(session),
+        scheduleLiveUpdate: scheduleLiveSessionUpdate,
+      });
+      if (result.outcome === 'no-session') {
         logger.warn('Summary generated but no active session found', {
           conversationId,
           summaryTitle,
-          totalActiveSessions: allSessions.size,
+          totalActiveSessions: registry.getAllSessions().size,
         });
-        return;
-      }
-      // Guard: only overwrite title when it hasn't been deliberately set
-      // (e.g. by dispatch or issue linking). Treat conversationId-equal titles as "empty",
-      // and a provisional cron job-name title as a placeholder (SSOT 2026-10-23 T2).
-      if (!canApplySummaryTitle(session)) {
+      } else if (result.outcome === 'kept') {
+        // Guard: only overwrite title when it hasn't been deliberately set
+        // (e.g. by dispatch or issue linking) — see canApplySummaryTitle.
         logger.debug('Skipping summary title — session already has a deliberate title', {
           conversationId,
-          existingTitle: session.title,
+          existingTitle: result.session.title,
           summaryTitle,
         });
-        return;
+      } else {
+        logger.debug('Summary title applied to session', {
+          conversationId,
+          summaryTitle,
+          sessionKey: result.sessionKey,
+        });
       }
-      registry.updateSessionTitle(session.channelId, session.threadTs, summaryTitle);
-      slackHandler.requestThreadSurfaceRender(session);
-      // The dashboard card shows the new headline now, not at the next poll.
-      scheduleLiveSessionUpdate(registry.getSessionKey(session.channelId, session.threadTs));
-      logger.debug('Summary title applied to session', {
-        conversationId,
-        summaryTitle,
-        sessionKey: `${session.channelId}:${session.threadTs}`,
-      });
     });
 
     // Connect OAuth: email → Slack user lookup for dashboard login
@@ -1678,6 +1721,10 @@ async function start() {
         // into a queue we are freezing. It throws on a store failure, which is
         // why it belongs INSIDE this try, immediately before the sweep.
         slackHandler.prepareFollowupShutdown();
+        // #598 ④c — no new dashboard task chain starts once shutdown begins; a
+        // running one ends through `clearAll()`'s `shutdown` abort, stays
+        // `working` on disk, and restart reconciliation records it.
+        taskTurnController?.stopAccepting();
         slackHandler.getRequestCoordinator().clearAll();
       } catch (error) {
         // `prepare` may have SUCCEEDED and `clearAll` refused afterwards, in
@@ -1685,6 +1732,7 @@ async function start() {
         // the shutdown guard: a bot that stays up but silently refuses every
         // message is a worse outage than the shutdown we just declined.
         slackHandler.cancelFollowupShutdownPreparation();
+        taskTurnController?.resumeAccepting();
         // Wording matters operationally: `clearAll()` aborts session-by-session,
         // so a refusal partway through leaves a MIX — earlier sessions already
         // stopped, the refused one (and any after it) still live. Claiming

@@ -61,6 +61,7 @@ import {
   isPermissionPromptDecision,
   loadPermissionPrompt,
   type PermissionPromptAnswer,
+  type PermissionPromptTarget,
   promptBelongsToThread,
 } from '../permission-prompt-response';
 import { getVersionInfo } from '../release-notifier';
@@ -103,6 +104,7 @@ import {
 import { GOAL_EVAL_DISPATCH_MAX_RETRIES } from '../slack/goal-completion-evaluator';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from '../slack/goal-host-actions';
 import { getSurfaceLines } from '../slack/surface-config';
+import type { TaskAnswer } from '../task-turn/task-answer';
 import { buildThreadPermalink } from '../turn-notifier';
 import { coerceEffort, EFFORT_LEVELS, type EffortLevel, userSettingsStore } from '../user-settings-store';
 import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggregate } from './aggregator';
@@ -120,6 +122,7 @@ import {
   NewTaskError,
   type NewTaskSubmission,
   parseAttachments,
+  parseDashboardTaskSubmission,
   parseNewTaskSubmission,
 } from './new-task';
 import type { NewTaskLaunchResult } from './new-task-launcher';
@@ -127,6 +130,7 @@ import { verifyDashboardTokenRaw } from './oauth';
 import {
   type DashboardPermissionRequest,
   pendingPermissionsFor,
+  pendingTaskPermissionsFor,
   permissionPromptDetail,
   refreshPendingPermissions,
   startPermissionPromptWatch,
@@ -407,9 +411,24 @@ export interface KanbanSession {
    * card reads `activityState: 'waiting'`.
    */
   pendingGoalDecision?: KanbanGoalDecision;
+  /** #600 ⑥ — a Slack-less dashboard task (the client gates task-only UI on it). Absent for Slack sessions. */
+  slackless?: true;
+  /**
+   * #598 ④c — a Slack-less task's last turn outcome (D10): what the last turn
+   * ended as, why, and whether recording it failed. Absent for Slack sessions.
+   */
+  lastTurnOutcome?: {
+    outcome: 'completed' | 'failed' | 'cancelled' | 'waiting' | 'interrupted';
+    category: string;
+    reason?: string;
+    recordFailure?: string;
+    at: number;
+  };
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
+    /** #599 ⑤ — a Slack-less task's question id, sent back with the answer. */
+    askId?: string;
     question: string;
     choices?: Array<{ id: string; label: string; description?: string }>;
     /** ID of the recommended choice (single-choice) */
@@ -801,11 +820,35 @@ function resolveSelfActionKey(wireKey: string, reply: any): string | null {
  * endpoint shares. Returns null if either check failed (the reply has
  * already been sent).
  */
-function resolveSelfActionKeyAndOwner(request: any, reply: any): { wireKey: string; originalKey: string } | null {
+function resolveSelfActionKeyAndOwner(
+  request: any,
+  reply: any,
+  opts: { allowSlackless?: boolean; taskOwnerOnly?: boolean } = {},
+): { wireKey: string; originalKey: string } | null {
   const wireKey: string = request.params?.key ?? '';
   const originalKey = resolveSelfActionKey(wireKey, reply);
   if (originalKey === null) return null;
+  // Owner first: someone else's task answers 403, not a hint of what it is.
   if (!requireSessionOwner(request, reply, originalKey)) return null;
+  // #637 R1 — a task's instruction or answer runs under its owner's identity
+  // (`executionContextForTask`), so only the signed-in owner may send one: the
+  // #716 bearer and admin-mode overrides do not apply. Stop / close / trash keep
+  // them — they cannot run anything.
+  if (opts.taskOwnerOnly) {
+    const target = _getSessionsFn?.()?.get(originalKey);
+    if (target?.slackless === true && !isTaskOwner(request, target.ownerId)) {
+      reply.status(403).send({ error: 'only the task owner can instruct or answer a dashboard task' });
+      return null;
+    }
+  }
+  // Fail closed (#612 review): a Slack-less task takes only the routes that opt in —
+  // stop / close / trash, and `command`, which hands it to the task turn
+  // controller (#598 ④c). Goal, model, effort, the queue and answers are not
+  // supported on a task yet (answers: ⑤ #599).
+  if (!opts.allowSlackless && _getSessionsFn?.()?.get(originalKey)?.slackless === true) {
+    reply.status(409).send({ error: 'not supported on a dashboard task yet' });
+    return null;
+  }
   return { wireKey, originalKey };
 }
 
@@ -1122,6 +1165,13 @@ function _hasWriteAccess(request: any, ownerId: string | undefined): boolean {
   return false;
 }
 
+/** The signed-in user is the task's owner — a user identity, never a bearer token. */
+function isTaskOwner(request: any, ownerId: string | undefined): boolean {
+  const authContext = request.authContext;
+  if (!authContext || authContext.mode === 'bearer_header' || authContext.mode === 'bearer_cookie') return false;
+  return !!authContext.userId && !!ownerId && authContext.userId === ownerId;
+}
+
 /**
  * Write-gate for kanban session actions (stop / close / trash / command /
  * answer-* / submit-recommended). Reads remain world-readable per #716.
@@ -1196,11 +1246,23 @@ type TrashHandler = (sessionKey: string) => Promise<void>;
  * attached or recorded — decoded and held to the new-task limits.
  */
 type CommandHandler = (sessionKey: string, message: string, files: NewTaskAttachment[]) => Promise<void>;
+/**
+ * #598 ④c — a Slack-less task's instruction: the task turn controller refuses
+ * (D8, D9) or accepts it, and the route answers with its status and body.
+ */
+type TaskCommandHandler = (
+  sessionKey: string,
+  message: string,
+  files: NewTaskAttachment[],
+  /** The signed-in user sending it — the route has checked it is the task's owner (#637 R2). */
+  actorUserId: string,
+) => Promise<{ status: number; body: Record<string, unknown> }>;
 
 let _stopHandlerFn: StopHandler | null = null;
 let _closeHandlerFn: CloseHandler | null = null;
 let _trashHandlerFn: TrashHandler | null = null;
 let _commandHandlerFn: CommandHandler | null = null;
+let _taskCommandHandlerFn: TaskCommandHandler | null = null;
 
 export function setDashboardStopHandler(fn: StopHandler): void {
   _stopHandlerFn = fn;
@@ -1213,6 +1275,9 @@ export function setDashboardTrashHandler(fn: TrashHandler): void {
 }
 export function setDashboardCommandHandler(fn: CommandHandler): void {
   _commandHandlerFn = fn;
+}
+export function setDashboardTaskCommandHandler(fn: TaskCommandHandler | null): void {
+  _taskCommandHandlerFn = fn;
 }
 
 /**
@@ -1400,6 +1465,47 @@ export function setDashboardEffortHandler(fn: EffortSwitchHandler): void {
 
 type ChoiceAnswerHandler = (sessionKey: string, choiceId: string, label: string, question: string) => Promise<void>;
 let _choiceAnswerHandlerFn: ChoiceAnswerHandler | null = null;
+/**
+ * #599 ⑤ — a Slack-less task's answer, bound to the question's `askId`; the
+ * task turn controller answers with the route's status and body.
+ */
+type TaskAnswerHandler = (
+  sessionKey: string,
+  askId: string,
+  answer: TaskAnswer,
+  /** The signed-in user answering — the route has checked it is the task's owner. */
+  actorUserId: string,
+) => Promise<{ status: number; body: Record<string, unknown> }>;
+let _taskAnswerHandlerFn: TaskAnswerHandler | null = null;
+export function setDashboardTaskAnswerHandler(fn: TaskAnswerHandler | null): void {
+  _taskAnswerHandlerFn = fn;
+}
+
+/**
+ * #599 ⑤ — on a Slack-less task, an answer route hands the answer to the task
+ * answer handler (askId required) and returns true; on a Slack session it
+ * returns false and the route goes on as before.
+ */
+async function routeTaskAnswer(request: any, reply: any, sessionKey: string, answer: TaskAnswer): Promise<boolean> {
+  if (_getSessionsFn?.()?.get(sessionKey)?.slackless !== true) return false;
+  const askId = (request.body as { askId?: unknown } | undefined)?.askId;
+  if (typeof askId !== 'string' || !askId || askId.length > 200) {
+    reply.status(400).send({ error: 'askId is required to answer a dashboard task' });
+    return true;
+  }
+  if (!_taskAnswerHandlerFn) {
+    reply.status(501).send({ error: 'Task answer handler not configured' });
+    return true;
+  }
+  try {
+    const outcome = await _taskAnswerHandlerFn(sessionKey, askId, answer, String(request.authContext?.userId ?? ''));
+    reply.status(outcome.status).send(outcome.body);
+  } catch (error) {
+    logger.error('Error answering a dashboard task', error);
+    reply.status(500).send({ error: 'Internal Server Error' });
+  }
+  return true;
+}
 
 export function setDashboardChoiceAnswerHandler(fn: ChoiceAnswerHandler): void {
   _choiceAnswerHandlerFn = fn;
@@ -1544,6 +1650,23 @@ const _newTaskGate = createNewTaskGate();
 
 export function setDashboardNewTaskProvider(provider: DashboardNewTaskProvider | null): void {
   _newTaskProvider = provider;
+}
+
+/** #600 ⑥ — makes and starts a Slack-less dashboard task (`createTaskLauncher`), and lists its folders. */
+interface DashboardTaskLauncher {
+  launch(request: {
+    ownerId: string;
+    ownerName: string;
+    prompt: string;
+    folder?: string;
+    model?: string;
+  }): Promise<{ status: number; body: Record<string, unknown> }>;
+  /** The folders a user may name for a task (`listTaskFolders`). */
+  folders(ownerId: string): Array<{ name: string }>;
+}
+let _taskLauncher: DashboardTaskLauncher | null = null;
+export function setDashboardTaskLauncher(launcher: DashboardTaskLauncher | null): void {
+  _taskLauncher = launcher;
 }
 
 /** The signed-in Slack user a task runs as — never a body field, never the admin-mode target. */
@@ -2022,9 +2145,21 @@ export function broadcastArtifactUpdate(artifact: SessionArtifact): void {
 function sessionToKanban(key: string, s: any): KanbanSession {
   const autoResume = deriveAutoResume(s, Date.now());
   const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
-  const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
+  // A Slack-less task (#596) has no thread to share: its aggregate is its own,
+  // not that of every other task with no channel either.
+  const aggregate = computeThreadAggregate(
+    s.channelId,
+    s.threadTs,
+    s.slackless === true ? new Map([[key, s]]) : getAllSessions(),
+    Date.now(),
+  );
   const headline = displayTitle(s);
-  const permissions = pendingPermissionsFor(s.channelId, s.threadTs);
+  // A Slack-less task's (#599 ⑤b) prompts are keyed by its own session key: it
+  // has no thread, and a thread lookup ('' : '') would match every task.
+  const permissions =
+    s.slackless === true
+      ? pendingTaskPermissionsFor(key, s.activeTaskTurnId)
+      : pendingPermissionsFor(s.channelId, s.threadTs);
   const goalDecision = goalDecisionToKanban(s);
   // What the session waits on its user for: its permission prompts and the goal's cap decision.
   const asks = goalDecision ? [...permissions, { createdAt: goalDecision.askedAt }] : permissions;
@@ -2105,6 +2240,18 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     artifacts: cardArtifacts(s.conversationId),
     userMedia: cardUserMedia(s.conversationId),
     followups: followupsOf(key, s.ownerId),
+    ...(s.slackless === true ? { slackless: true as const } : {}),
+    ...(s.slackless === true && s.lastTurnOutcome
+      ? {
+          lastTurnOutcome: {
+            outcome: s.lastTurnOutcome.outcome,
+            category: s.lastTurnOutcome.category,
+            ...(s.lastTurnOutcome.reason ? { reason: s.lastTurnOutcome.reason } : {}),
+            ...(s.lastTurnOutcome.recordFailure ? { recordFailure: s.lastTurnOutcome.recordFailure } : {}),
+            at: s.lastTurnOutcome.at,
+          },
+        }
+      : {}),
     pendingQuestion: s.actionPanel?.pendingQuestion
       ? s.actionPanel.pendingQuestion.type === 'user_choice'
         ? {
@@ -2118,6 +2265,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
             ...(s.actionPanel.pendingQuestion.recommendedChoiceId
               ? { recommendedChoiceId: s.actionPanel.pendingQuestion.recommendedChoiceId }
               : {}),
+            ...taskAskId(s),
           }
         : s.actionPanel.pendingQuestion.type === 'user_choices'
           ? {
@@ -2137,10 +2285,19 @@ function sessionToKanban(key: string, s: any): KanbanSession {
                 context: q.context,
                 ...(q.recommendedChoiceId ? { recommendedChoiceId: q.recommendedChoiceId } : {}),
               })),
+              ...taskAskId(s),
             }
           : undefined // Unknown question type — skip
       : undefined,
   };
+}
+
+/** #599 ⑤ — a Slack-less task's question carries its `askId`; the panel echoes it with the answer. */
+function taskAskId(s: { slackless?: boolean; actionPanel?: { pendingQuestion?: { askId?: unknown } } }): {
+  askId?: string;
+} {
+  const askId = s.actionPanel?.pendingQuestion?.askId;
+  return s.slackless === true && typeof askId === 'string' && askId ? { askId } : {};
 }
 
 /** The task ledger an archive kept (T7/T8), as the card carries it. */
@@ -2249,10 +2406,11 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
 /**
  * A session the board shows: one that has run an SDK session — or, after a
  * `/new` cleared that, one whose task has already spent (SSOT 2026-10-26 T3:
- * the task total outlives the reset, so the card does too).
+ * the task total outlives the reset, so the card does too) — or a Slack-less
+ * task, from its creation on, before it has run (#596).
  */
-function onBoard(s: { sessionId?: string; taskUsage?: unknown }): boolean {
-  return !!s.sessionId || !!s.taskUsage;
+function onBoard(s: { sessionId?: string; taskUsage?: unknown; slackless?: boolean }): boolean {
+  return !!s.sessionId || !!s.taskUsage || s.slackless === true;
 }
 
 function buildKanbanBoard(userId?: string): KanbanBoard {
@@ -3184,7 +3342,7 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/stop',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
       if (!resolved) return;
       const { wireKey: key, originalKey } = resolved;
       try {
@@ -3206,7 +3364,7 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/close',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
       if (!resolved) return;
       const { wireKey: key, originalKey } = resolved;
       try {
@@ -3227,7 +3385,7 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/trash',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
       if (!resolved) return;
       const { wireKey: key, originalKey } = resolved;
       // A starred session is pinned on top of the board; hiding it would
@@ -3364,12 +3522,33 @@ export async function registerDashboardRoutes(
         return;
       }
       // Only the session's owner gets their files decoded (up to the new-task limits).
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       const files = parseAttachments(attachments);
       if (!files.ok) {
         reply.status(400).send({ error: files.error });
+        return;
+      }
+      // #598 ④c — a Slack-less task's instruction runs through the task turn
+      // controller, which answers 202 once the turn's start is saved.
+      if (_getSessionsFn?.()?.get(originalKey)?.slackless === true) {
+        if (!_taskCommandHandlerFn) {
+          reply.status(501).send({ error: 'Task turn handler not configured' });
+          return;
+        }
+        try {
+          const outcome = await _taskCommandHandlerFn(
+            originalKey,
+            message,
+            files.value,
+            String((request as { authContext?: { userId?: string } }).authContext?.userId ?? ''),
+          );
+          reply.status(outcome.status).send(outcome.body);
+        } catch (error) {
+          logger.error('Error starting a dashboard task turn', error);
+          reply.status(500).send({ error: 'Internal Server Error' });
+        }
         return;
       }
       try {
@@ -3729,7 +3908,10 @@ export async function registerDashboardRoutes(
       return;
     }
     try {
-      reply.send({ context: await _newTaskProvider.context(userId) });
+      const context = await _newTaskProvider.context(userId);
+      // #600 ⑥ — with dashboard tasks wired, the folders a task may name (names only).
+      const taskFolders = _taskLauncher?.folders(userId).map((f) => ({ name: f.name }));
+      reply.send({ context: taskFolders ? { ...context, taskFolders } : context });
     } catch (error) {
       logger.error('Error building the new-task context', error);
       reply.status(500).send({ error: 'Internal Server Error' });
@@ -3750,12 +3932,48 @@ export async function registerDashboardRoutes(
         reply.status(403).send({ error: 'Slack 계정으로 로그인해야 새 작업을 시작할 수 있습니다' });
         return;
       }
+      const requestId = (request.body as { requestId?: unknown } | null)?.requestId;
+      // #600 ⑥ — a Slack-less dashboard task: no channel, no Slack provider.
+      if ((request.body as { destination?: unknown } | null)?.destination === 'task') {
+        const launcher = _taskLauncher;
+        if (!launcher) {
+          reply.status(501).send({ error: 'Dashboard tasks are not configured' });
+          return;
+        }
+        const parsed = parseDashboardTaskSubmission(request.body);
+        if (!parsed.ok) {
+          reply.status(400).send({ error: parsed.error });
+          return;
+        }
+        const ownerName = (request as { authContext?: { name?: string } }).authContext?.name || userId;
+        try {
+          const result = await _newTaskGate.run(userId, parsed.value.requestId, async () => {
+            const { requestId: _rid, ...rest } = parsed.value;
+            // The model nickname is resolved by the launcher from the model catalog —
+            // never through the Slack-dependent new-task context (#640 R2).
+            const outcome = await launcher.launch({ ownerId: userId, ownerName, ...rest });
+            // A refusal is not remembered by the gate, so the same request may be retried.
+            if (outcome.status >= 400) {
+              throw new NewTaskError(outcome.status, String(outcome.body.error ?? 'refused'));
+            }
+            return outcome.body;
+          });
+          reply.send({ ok: true, ...result });
+        } catch (error) {
+          if (error instanceof NewTaskError) {
+            reply.status(error.statusCode).send({ error: error.message });
+            return;
+          }
+          logger.error('Error starting a dashboard task', error);
+          reply.status(500).send({ error: 'Internal Server Error' });
+        }
+        return;
+      }
       const provider = _newTaskProvider;
       if (!provider) {
         reply.status(501).send({ error: 'New task is not configured' });
         return;
       }
-      const requestId = (request.body as { requestId?: unknown } | null)?.requestId;
       try {
         const result = await _newTaskGate.run(userId, typeof requestId === 'string' ? requestId : '', async () => {
           // Authorize against a FRESH context: membership is re-checked right
@@ -3799,9 +4017,10 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'Field length exceeded' });
         return;
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
       if (!resolved) return;
       const { originalKey } = resolved;
+      if (await routeTaskAnswer(request, reply, originalKey, { kind: 'single', choiceId })) return;
       try {
         if (_choiceAnswerHandlerFn) {
           await _choiceAnswerHandlerFn(originalKey, choiceId, label, question);
@@ -3869,9 +4088,10 @@ export async function registerDashboardRoutes(
           return;
         }
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
       if (!resolved) return;
       const { originalKey } = resolved;
+      if (await routeTaskAnswer(request, reply, originalKey, { kind: 'multi', selections })) return;
       try {
         if (_multiChoiceAnswerHandlerFn) {
           await _multiChoiceAnswerHandlerFn(originalKey, selections);
@@ -3916,17 +4136,23 @@ export async function registerDashboardRoutes(
     approvalId: string,
   ): Promise<{
     originalKey: string;
-    thread: { channel: string; threadTs?: string };
+    thread: PermissionPromptTarget;
     pending: NonNullable<Awaited<ReturnType<typeof loadPermissionPrompt>>>;
   } | null> {
     const originalKey = resolveSelfActionKey(request.params?.key ?? '', reply);
     if (originalKey === null) return null;
     const session = getAllSessions().get(originalKey);
-    if (!session || !session.channelId) {
+    // A Slack-less task (#599 ⑤b) answers its own prompts, keyed by its session key.
+    const slackless = session?.slackless === true;
+    if (!session || (!slackless && !session.channelId)) {
       reply.status(404).send({ error: 'Session not found' });
       return null;
     }
-    const thread = { channel: String(session.channelId), threadTs: session.threadTs || undefined };
+    // A task's prompt is answerable only while the turn that raised it runs:
+    // that turn's hook is its only waiter.
+    const thread: PermissionPromptTarget = slackless
+      ? { taskKey: originalKey, turnId: String(session.activeTaskTurnId ?? '') }
+      : { channel: String(session.channelId), threadTs: session.threadTs || undefined };
     const pending = await loadPermissionPrompt(approvalId);
     if (!pending || !promptBelongsToThread(pending, thread)) {
       reply.status(404).send({ error: 'Permission request not found or expired' });
@@ -4021,9 +4247,10 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/submit-recommended',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
       if (!resolved) return;
       const { originalKey } = resolved;
+      if (await routeTaskAnswer(request, reply, originalKey, { kind: 'recommended' })) return;
       try {
         if (!_submitRecommendedHandlerFn) {
           reply.status(501).send({ error: 'Submit-recommended handler not configured' });
@@ -4225,6 +4452,17 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/stat-strip.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/bar-chart.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/file-card.js?v=${UI_LIB_VERSION}"></script>
+<!-- The peek's inside is the library's (peekHtml under peekPageCss, 0.12.0 — D4 G5-3): reached from the page's own
+     script as window.uiPeek. Modules run in order, so this one is in place before <ui-hovercard> is defined below. -->
+<script type="module">
+import { peekHtml, peekPageCss } from '/dashboard/ui/artifact-viewer.js?v=${UI_LIB_VERSION}';
+import { fileItemKind } from '/dashboard/ui/file-card.js?v=${UI_LIB_VERSION}';
+var sheet = document.createElement('style');
+sheet.id = 'art-peek-sheet';
+sheet.textContent = peekPageCss;
+document.head.appendChild(sheet);
+window.uiPeek = { html: peekHtml, kind: fileItemKind };
+</script>
 <script type="module" src="/dashboard/ui/hovercard.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/artifact-viewer.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/composer.js?v=${UI_LIB_VERSION}"></script>
@@ -4236,6 +4474,8 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/status-bar.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/deck-nav.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/tabs.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/goal-card.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/log-scroller.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4468,13 +4708,12 @@ ui-stat-strip:not(:defined) { min-height: 44px; }
 ui-stat-strip:not(:defined) > * { display: none; }
 .stats-detail { padding-top: 12px; }
 
-/* ── EXPAND / COLLAPSE (P6, D4 K-06) — @2lab.ai/ui <ui-disclosure> for 세션 정보 (.pi-dc), Tasks (.panel-tasks-dc),
-   지시 첨부 (.panel-um-dc) and the completed goals (.cg-hx, trigger="external": the goal head's own button opens
-   it): the summary row (or the external trigger's aria), the region's 0fr ↔ 1fr grow with its fade, inert while
-   closed, the keyboard and the settle notice (ui-toggled — the page drops a closed region's nodes then) are the
+/* ── EXPAND / COLLAPSE (P6, D4 K-06) — @2lab.ai/ui <ui-disclosure> for 세션 정보 (.pi-dc), Tasks (.panel-tasks-dc)
+   and 지시 첨부 (.panel-um-dc): the summary row, the region's 0fr ↔ 1fr grow with its fade, inert while closed,
+   the keyboard and the settle notice (ui-toggled — the page drops a closed region's nodes then) are the
    element's. flush: the page's own padding under the row. In the panel the row's press surface bleeds 8px past
-   the text so the words line up with the rows around it. ── */
-.pi-dc, .panel-tasks-dc, .panel-um-dc, .cg-hx { display: block; }
+   the text so the words line up with the rows around it. (The completed goals fold inside <ui-goal-card>, D6b.) ── */
+.pi-dc, .panel-tasks-dc, .panel-um-dc { display: block; }
 .pi-dc::part(summary), .panel-tasks-dc::part(summary), .panel-um-dc::part(summary) { width: calc(100% + 16px); margin: 0 -8px; }
 .usage-cb-wrap { max-width: 440px; margin-bottom: 12px; }
 
@@ -4561,7 +4800,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    frame that scrolls past a dozen rows (a wide fan-out stays a card, not a
    page); the element draws the rows, the folds, the bar and the roll-up. */
 .ag-tree { display: block; margin: 12px 0 2px; padding: 10px 12px 6px; border: 1px solid var(--ib-card-border); border-radius: 10px; background: var(--ib-card); }
-.ag-tree > ui-agent-tree, .pa-tree > ui-agent-tree { display: block; min-width: 0; }
+.ag-tree > ui-agent-tree, ui-agent-tree.pa-tree { display: block; min-width: 0; }
 .ag-tree > ui-agent-tree { max-height: 420px; overflow-y: auto; overscroll-behavior: contain; }
 .at-fallback { display: block; padding: 4px 0; font-size: 12px; color: var(--ib-muted); }
 .ag-icon { grid-column: 2; grid-row: 1; width: 16px; height: 16px; display: grid; place-items: center; color: var(--ag-c); }
@@ -4586,13 +4825,18 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-foot-bar .card-actions { margin: 0 0 0 auto; }
 /* SSOT 2026-10-29 T1: the open card's actions (Stop · Close · Slack) — first row under the face. */
 .card-actions-bar { display: flex; justify-content: flex-end; margin: 0 0 10px; padding-bottom: 10px; border-bottom: 1px dashed var(--ib-card-border); }
+/* #600 ⑥ — a dashboard task's last turn on its card */
+.card-task-outcome { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 0 0 8px; font-size: 12px; color: var(--text-secondary); }
+.card-task-outcome .cto-label { font-weight: 600; }
+.card-task-outcome[data-outcome="failed"] .cto-label, .card-task-outcome[data-outcome="interrupted"] .cto-label { color: var(--red); }
+.card-task-outcome .cto-warn { color: var(--red); font-weight: 600; }
 .card-actions-bar .card-actions { margin: 0; }
 .cfb-model { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; min-width: 0; color: var(--ib-muted); font-size: 13px; }
 .card-foot-bar + .cb-model-note { margin-top: 6px; }
 /* ── GOAL LINE — the goal on the open card, its home is the panel (spec 13) ── */
 .card-goal-line { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding: 6px 10px; border: 1px solid var(--ib-card-border); border-radius: 8px; background: var(--ib-card-dim); font-size: 12.5px; min-width: 0; }
 .card-goal-line .cgl-icon { flex-shrink: 0; display: inline-flex; color: var(--ib-muted); }
-.card-goal-line .cgl-icon svg, .card-goal .cg-label svg { width: 14px; height: 14px; }
+.card-goal-line .cgl-icon svg { width: 14px; height: 14px; }
 .card-goal-line .cgl-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ib-text); }
 .card-goal-line .cgl-text.is-muted { color: var(--ib-muted); }
 .card-goal-line .cg-status { flex-shrink: 0; }
@@ -4698,62 +4942,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .ui-btn[data-action="star"][aria-pressed="true"] { color: var(--st-wait); border-color: var(--st-wait); }
 .ui-btn[data-action="revive"] { color: var(--st-run); }
 
-/* ── GOAL LIST (work item, SSOT 2026-10-21 T2/T3) ── */
-.card-goal {
-  margin-top: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--ib-card-border);
-  border-radius: 8px;
-  background: var(--ib-card-dim);
-  font-size: 12.5px;
-}
-.card-goal .cg-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-.card-goal .cg-label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--ib-text); }
-.card-goal .cg-label svg { color: var(--ib-muted); }
-.card-goal .cg-progress { margin-left: auto; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
-.card-goal .cg-objective {
-  color: var(--ib-text);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-line-clamp: 4;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.card-goal .cg-gap { margin-top: 3px; color: var(--ib-muted); overflow-wrap: anywhere; }
-.card-goal .cg-more { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; margin-top: 2px; padding: 0; font: inherit; font-size: 11.5px; color: var(--ib-text-2); background: none; border: 0; cursor: pointer; }
-@media (hover: hover) and (pointer: fine) { .card-goal .cg-more:hover { color: var(--ib-text); text-decoration: underline; } }
-.card-goal .cg-more:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; border-radius: 6px; }
-.card-goal .cg-more[hidden] { display: none; }
-.card-goal .cg-empty { color: var(--ib-muted); }
-.card-goal .cg-row { display: flex; align-items: flex-start; gap: 6px; }
-.card-goal .cg-row > :first-child { flex: 1; min-width: 0; }
-.card-goal .cg-queue-title { margin-top: 8px; color: var(--ib-muted); font-size: 11.5px; }
-.card-goal .cg-queue { list-style: decimal; margin: 2px 0 0 18px; }
-.card-goal .cg-queue li { padding: 2px 0; }
-.card-goal .cg-q-text { overflow-wrap: anywhere; color: var(--ib-text); }
-.card-goal .cg-history-toggle { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font: inherit; font-size: 11.5px; color: var(--ib-text-2); background: none; border: 1px solid var(--ib-card-border); border-radius: 6px; padding: 2px 8px; min-height: 26px; cursor: pointer; white-space: nowrap; }
-.card-goal .cg-progress + .cg-history-toggle { margin-left: 8px; }
-.card-goal .cg-history { list-style: none; margin: 4px 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.card-goal .cg-h-item { border-left: 2px solid var(--st-done); padding: 2px 0 2px 8px; }
-.card-goal .cg-h-obj { color: var(--ib-text); overflow-wrap: anywhere; }
-.card-goal .cg-h-meta { margin-top: 2px; color: var(--ib-muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
-.card-goal .cg-h-reason { margin-top: 2px; color: var(--ib-text-2); font-size: 11.5px; overflow-wrap: anywhere; }
-.card-goal .cg-add { display: flex; gap: 6px; margin-top: 8px; }
-.card-goal .cg-add-input {
-  flex: 1;
-  min-width: 0;
-  font: inherit;
-  font-size: 12.5px;
-  padding: 4px 8px;
-  border: 1px solid var(--ib-card-border);
-  border-radius: 6px;
-  background: var(--ib-card);
-  color: var(--ib-text);
-}
-.card-goal .cg-add-input:focus { outline: none; border-color: var(--border-focus); }
-.card-goal .cg-error { margin-top: 6px; color: var(--st-fail); overflow-wrap: anywhere; }
-
 /* ── PENDING QUESTION (dashboard choice buttons) ── */
 .card-question {
   margin-top: 8px;
@@ -4853,7 +5041,6 @@ ui-drawer:not(:defined) { display: none; }
 .pa-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 14px; line-height: 1.35; }
 .pa-name .ag-type { font-weight: 650; }
 .pa-name .ag-id { font-size: 12px; }
-.pa-tree { display: block; }
 .pa-sum { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 7px; margin-top: 4px; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .pa-dot { color: var(--text-tertiary); }
 .pa-desc { margin-top: 2px; font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -4905,33 +5092,18 @@ ui-drawer:not(:defined) { display: none; }
 /* Section tabs (SSOT 2026-10-29, D4 E-24): @2lab.ai/ui <ui-tabs> — Chat · 작업 로그 at their own width,
    에이전트 트리 at the strip's far end (TabItem.end, T6) with the tree glyph; each section is its own scroll
    box slotted as its tab's panel (panel-focus="none": the box, not the element's wrapper, is the tab stop),
-   sized by sizePanelSections (--psec-h) to the rest of the panel; only the one shown holds nodes. The
-   new-items pill sits over the box from the wrapper, outside the element. */
+   sized by sizePanelSections (--psec-h) to the rest of the panel; only the one shown holds nodes. */
 .panel-sections { display: block; --ui-tabs-bg: var(--surface); }
 .panel-sections::part(list) { padding: 0 12px; background: var(--surface); }
 .panel-sections-body { position: relative; }
-.psec { position: relative; height: var(--psec-h, 60vh); min-height: 160px; overflow-y: auto; scroll-behavior: auto; outline: none; overflow-anchor: none; }
-/* D3 E-25 — a section a library element draws is its own scroll box (<ui-conversation>'s
-   <ui-log-scroller>: the pin, the older-page row, the kept place, the new-items pill):
-   the panel's box only gives it the height. */
+.psec { position: relative; height: var(--psec-h, 60vh); min-height: 160px; }
+/* D3 E-25 — every section is a library element's own scroll box (<ui-log-scroller>: the pin, the
+   older-page row, the kept place, the new-items pill): the panel's box only gives it the height. */
 .psec.psec-el { overflow: hidden; display: flex; flex-direction: column; }
 .psec-el > * { flex: 1 1 auto; min-height: 0; }
-.psec-el > ui-conversation, .psec-el > ui-work-log { padding: 4px 8px 0; }
+.psec-el > ui-conversation, .psec-el > ui-work-log, .psec-el > ui-log-scroller { padding: 4px 8px 0; }
 .cv-arts-slot .turn-arts-row { margin-top: 2px; }
-/* 요약 실패 · 다시 시도 (G-04) under the answer, until the summary lands. */
-.cv-resum { display: flex; align-items: center; gap: 8px; margin: 6px 0 0; font-size: 12.5px; color: var(--text-secondary); }
 .psec[hidden] { display: none; }
-.psec:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
-.psec-older { display: block; margin: 10px auto 2px; padding: 5px 14px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
-@media (hover: hover) and (pointer: fine) { .psec-older:hover { color: var(--text); border-color: var(--text-tertiary); } }
-.psec-older:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-.psec-older[aria-busy="true"] { cursor: progress; font-style: italic; color: var(--text-tertiary); }
-.psec-start { margin: 12px 0 2px; text-align: center; font-size: 11.5px; color: var(--text-tertiary); }
-.psec-older[hidden], .psec-start[hidden], .psec-pill[hidden] { display: none; }
-.psec-empty { margin: 24px 16px; text-align: center; font-size: 12px; color: var(--text-tertiary); }
-.psec-pill { position: absolute; left: 50%; bottom: 12px; z-index: 4; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 4px 14px; border: 1px solid var(--ib-text); border-radius: 999px; background: var(--ib-text); color: var(--ib-card); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: var(--ib-shadow-raised); }
-.psec-pill:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-.panel-tree { padding: 6px 16px 12px; }
 /* 자세히 (T1.6) — a button that behaves like a toggle (HIG Toggles: outside a list,
    not a switch; the background tells the state); the panel's class gates the
    detail-only parts. */
@@ -4989,7 +5161,6 @@ ui-drawer:not(:defined) { display: none; }
 .panel-tasks-body > ui-task-runs, .panel-tasks-body > ui-task-plan { display: block; min-width: 0; }
 .panel-tasks-body > ui-task-runs + ui-task-plan { margin-top: 10px; }
 .tr-total { display: flex; gap: 8px; align-items: baseline; margin: 6px 0 2px; padding-top: 6px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.tr-total + .tr-total { margin-top: 0; padding-top: 0; border-top: 0; }
 .tr-total-k { flex: none; font-weight: 600; color: var(--text-tertiary); }
 .pl-fold { padding: 0 0 4px; }
 /* Panel work log (.prd/10 §3.1-6, §3.3) — what the agent did, in order: the
@@ -5045,17 +5216,14 @@ ui-drawer:not(:defined) { display: none; }
 }
 .panel-header { flex-wrap: wrap; row-gap: 8px; }
 /* ── DETAIL DECK (SSOT 2026-10-29 T2) — every open card's detail card; the ones
-   waiting behind the front card show their top edges above it, and ‹ n / m ›
-   in the top right go through them. ── */
-.panel-deck-peek { display: none; flex: none; flex-direction: column; align-items: center; padding-top: 8px; background: var(--bg); }
-.slide-panel:not([data-deck="0"]) .panel-deck-peek { display: flex; }
-.panel-deck-peek span { display: block; height: 7px; border: 1px solid color-mix(in srgb, var(--text-tertiary) 45%, var(--border)); border-bottom: 0; border-radius: 10px 10px 0 0; background: color-mix(in srgb, var(--surface) 70%, var(--bg)); }
-.panel-deck-peek span:first-child { width: calc(100% - 48px); opacity: 0.75; }
-.panel-deck-peek span:last-child { width: calc(100% - 24px); }
-.slide-panel[data-deck="1"] .panel-deck-peek span:first-child { display: none; }
+   waiting behind the front card show their top edges above it (<ui-deck-nav peek="only">
+   above the header, full width — D3 G6-3, 0.12.0), and ‹ n / m › in the top right go
+   through them. The element draws the edges (one or two, by its data); the page gives
+   the strip its place and hides it while nothing waits behind. ── */
+.panel-deck-peek { display: none; flex: none; padding-top: 8px; background: var(--bg); }
+.slide-panel:not([data-deck="0"]) .panel-deck-peek { display: block; }
 .slide-panel:not([data-deck="0"]) .panel-header { border-top: 1px solid color-mix(in srgb, var(--text-tertiary) 45%, var(--border)); border-radius: 10px 10px 0 0; background: var(--surface); box-shadow: 0 -4px 10px -6px var(--scrim); }
-/* D3 E-05: ‹ n / m › is <ui-deck-nav> (its own pill, 44px on coarse pointers); the edges behind stay the page's
-   (.panel-deck-peek above the header — the element's peek sits under its own nav). */
+/* D3 E-05: ‹ n / m › is <ui-deck-nav> (its own pill, 44px on coarse pointers). */
 .panel-deck { flex: none; }
 .panel-deck[hidden] { display: none; }
 /* The subtitle is one line that ellipsizes: squeezed beside the nav it stacked one or two characters a line
@@ -5076,7 +5244,7 @@ ui-drawer:not(:defined) { display: none; }
 .pi-title { flex-shrink: 0; font-size: 12px; font-weight: 600; color: var(--text-tertiary); }
 .pi-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
 .pi-dot { margin: 0 5px; color: var(--text-tertiary); }
-.pi-links { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 2px; }
+.pi-links { display: flex; flex-wrap: wrap; gap: 4px 12px; }
 .pi-links a { font-weight: 600; color: var(--accent); text-decoration: none; min-height: 24px; display: inline-flex; align-items: center; min-width: 0; overflow-wrap: anywhere; }
 .pi-links a:focus-visible { text-decoration: underline; }
 @media (hover: hover) and (pointer: fine) { .pi-links a:hover { text-decoration: underline; } }
@@ -5096,13 +5264,10 @@ ui-drawer:not(:defined) { display: none; }
    in its token wrapper, first in 세션 정보's open body, at the panel's 560px measure. ── */
 .cw-slot > ui-context-window { display: block; max-width: 560px; }
 .cw-fallback { font-size: 12.5px; color: var(--text-tertiary); }
-/* ── GOAL — the editor's home (spec 13) ── */
+/* ── GOAL — the editor's home (spec 13): @2lab.ai/ui <ui-goal-card> (E-12, D6b). The objective opens folded to
+   its first 3 lines on every opening (SSOT 2026-10-29) — the element's fold, 펼치기 / 접기 its own. ── */
 .panel-goal { padding: 8px 16px; border-bottom: 1px solid var(--border); outline: none; }
-.panel-goal .card-goal { margin-top: 0; }
-/* The goal's home opens the objective folded to its first 3 lines on every opening
-   (SSOT 2026-10-29, the card's line is the summary); 펼치기 shows all of it. */
-.panel-goal .card-goal .cg-objective { -webkit-line-clamp: 3; line-height: 1.45; }
-.panel-goal .card-goal.is-open .cg-objective { display: block; -webkit-line-clamp: unset; overflow: visible; }
+.panel-goal > ui-goal-card { display: block; }
 .panel-goal:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
 /* Scroll container: the common surface (large UIAskQ choices included), the
    agent tabs, Tasks and the section tabs scroll together; each section scrolls
@@ -5238,7 +5403,7 @@ ui-drawer:not(:defined) { display: none; }
 }
 /* ── TOUCH — coarse pointer enlargement ── */
 @media (pointer: coarse) {
-  .psec-older, .psec-pill, .panel-detail-toggle { min-height: 44px; }
+  .panel-detail-toggle { min-height: 44px; }
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
 }
 /* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens (heights only). ── */
@@ -5362,9 +5527,10 @@ ui-drawer:not(:defined) { display: none; }
    is-floating rule. */
 body.nt-open .new-task-fab { display: none !important; }
 
-/* New task (H-01) is @2lab.ai/ui <ui-dialog size="lg">: the element draws the 720px panel, its heading and ✕, the
-   scrim, the rise / settle, the focus trap and, on phones, the bottom sheet that follows the visual viewport (above
-   the soft keyboard). The page keeps its form whole inside and pads it itself (the element's body padding is off). */
+/* New task (H-01) is @2lab.ai/ui <ui-dialog size="lg" size-phone="full">: the element draws the 720px panel, its
+   heading and ✕, the scrim, the rise / settle, the focus trap and, on phones, the full sheet that follows the visual
+   viewport (above the soft keyboard). The page keeps its form whole inside and pads it itself (the element's body
+   padding is off). */
 .nt-dialog::part(body) { padding: 0; }
 .nt-form { display: flex; flex-direction: column; color: var(--text); font-size: 13px; line-height: 1.45; }
 .nt-body { display: flex; flex-direction: column; gap: 12px; padding: 4px 20px 16px; }
@@ -5420,6 +5586,8 @@ body.nt-open .new-task-fab { display: none !important; }
 
 .nt-error { margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--tint-fail-bg); color: var(--tint-fail-fg); font-size: 12.5px; }
 .nt-error[hidden] { display: none; }
+/* #640 R1: chips and rows set display, which beats the hidden attribute's UA style. */
+.nt-dialog [hidden] { display: none !important; }
 .nt-empty { margin: 0; color: var(--text-secondary); font-size: 12.5px; }
 
 .nt-composer { display: block; }
@@ -5522,28 +5690,22 @@ body.nt-open .new-task-fab { display: none !important; }
   .um-tile { transition: none; }
 }
 /* The peek (I-05) is <ui-hovercard id="art-peek">: the element draws the raised card beside its trigger (360px —
-   its width attribute) and runs the hover / focus / Esc / press rules; the page fills it — a media box, a foot line. */
+   its width attribute) and runs the hover / focus / Esc / press rules; its inside is the library's peekHtml (the
+   media box — an image, a document head, the page scaled, the kind's glyph — then name · kind · meta) under
+   peekPageCss, put in by the module in <head> (0.12.0, D4 G5-3). The page adds the press on the media (the viewer)
+   and the markdown head's own rules: the artifact-viewer entry exports no mdDocCss (D6-GAPS). */
 #art-peek { --ui-hovercard-z: 1000; }
-.art-peek-media { position: relative; display: flex; align-items: center; justify-content: center; height: 225px; overflow: hidden; background: var(--bg); cursor: zoom-in; color: var(--art-tint, var(--text-secondary)); }
-.art-peek-img, .art-peek-video { max-width: 100%; max-height: 100%; object-fit: contain; }
-.art-peek-frame { position: absolute; inset: 0; overflow: hidden; background: var(--media-paper); }
-.art-peek-frame iframe { width: 1280px; height: 800px; border: 0; transform: scale(0.28125); transform-origin: 0 0; pointer-events: none; }
-.art-peek-pre { align-self: stretch; width: 100%; margin: 0; padding: 10px 14px; overflow: hidden; color: var(--text); font: 11px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; text-align: left; -webkit-mask-image: linear-gradient(var(--media-black) 70%, transparent); mask-image: linear-gradient(var(--media-black) 70%, transparent); }
-.art-peek-audio { display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; padding: 0 16px; }
-.art-peek-audio .art-glyph { width: 48px; height: 48px; }
-.art-peek-audio audio { width: 100%; }
-.art-peek-meta { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0 18px; text-align: center; }
-.art-peek-meta .art-glyph { width: 36px; height: 36px; }
-.art-peek-sub { font-size: 12px; color: var(--text-secondary); word-break: break-all; }
-.art-peek-foot { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px 10px; border-top: 1px solid var(--border); }
-.art-peek-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; color: var(--text); }
-.art-peek-info { font-size: 11px; color: var(--text-tertiary); }
-.art-doc-loading { color: var(--text-tertiary); font-size: 12px; }
+#art-peek .av-pk-media { cursor: zoom-in; }
+#art-peek .av-pk-doc p, #art-peek .av-pk-doc ul, #art-peek .av-pk-doc ol, #art-peek .av-pk-doc pre, #art-peek .av-pk-doc blockquote { margin: 0 0 0.6em; }
+#art-peek .av-pk-doc ul, #art-peek .av-pk-doc ol { padding-left: 1.3em; }
+#art-peek .av-pk-doc blockquote { padding-left: 0.8em; border-left: 2px solid var(--border); color: var(--text-secondary); }
+#art-peek .av-pk-doc code { padding: 0.1em 0.3em; border-radius: 4px; background: var(--ib-pill); font: 0.9em var(--mono); }
+#art-peek .av-pk-doc pre { padding: 6px 8px; overflow: hidden; border-radius: 6px; background: var(--ib-col); }
+#art-peek .av-pk-doc pre code { padding: 0; background: none; }
 /* The viewer (I-06, I-07) is <ui-artifact-viewer tiles="none">: its <ui-dialog size="xl"> draws the panel, the head
-   (kind badge · name · meta · ✕), the body and the foot (‹ n / m › · 새 탭 · 다운로드 · Slack). The page's own
-   body (slot="preview": the model's HTML with scripts, a PDF) is a frame that fills the stage. */
-.art-viewer-preview { display: flex; min-height: 0; background: var(--media-paper); }
-.art-viewer-preview .art-full-frame { flex: 1 1 auto; width: 100%; min-height: 0; border: 0; }
+   (kind badge · name · meta · ✕), the body — the model's page running its scripts (items[].scripts), a stored PDF
+   in the browser's own viewer (items[].frame), the document, the media, the calm card — and the foot (‹ n / m › ·
+   새 탭 · 다운로드 · Slack). The page slots no body of its own (0.12.0, D4 G5-1 / G5-2). */
 
 /* ═══ Device-responsive layout (SSOT 2026-10-24) ═══
    Targets: iPhone Duo (folded 382×580, unfolded 951×543), iPhone 18 Pro Max
@@ -5750,8 +5912,9 @@ ${pageTokenAliases()}
        (the saved width: initPanelResize); Esc and the scrim arrive as ui-close (→ closeDetailCard, as the ✕ below). Its
        own head is out (hide-close, no heading): the page's header, body and composer fill it. -->
   <ui-drawer class="slide-panel" id="slide-panel" data-deck="0" dock-at="840" width="440" min-width="320" resizable hide-close label="작업 카드" lang="ko">
-    <!-- Detail deck (SSOT 2026-10-29 T2): the edges of the open cards' other detail cards, waiting behind this one. -->
-    <div class="panel-deck-peek" id="panel-deck-peek" aria-hidden="true"><span></span><span></span></div>
+    <!-- Detail deck (SSOT 2026-10-29 T2, D3 G6-3 → D6b): the edges of the open cards' other detail cards, waiting behind
+         this one — <ui-deck-nav peek="only">, the edges alone from the same data as the ‹ n / m › in the header. -->
+    <ui-deck-nav class="panel-deck-peek" id="panel-deck-peek" peek="only" lang="ko" aria-hidden="true"></ui-deck-nav>
     <div class="panel-header">
       <div style="flex:1;min-width:0">
         <h3 id="panel-title" tabindex="-1">작업 카드</h3>
@@ -5807,10 +5970,12 @@ ${pageTokenAliases()}
         <!-- SSOT 2026-10-29 T6: Chat (지시와 답변) first and the default; 에이전트 트리 at the strip's right end (TabItem.end) — the bottom view's top right. -->
         <div class="panel-sections-body" id="panel-sections-body">
           <ui-tabs class="panel-sections" id="panel-sections" panel-focus="none">
-          <div class="psec" id="psec-tree" slot="tree" tabindex="0">
-            <button type="button" class="psec-older" data-sec="tree" hidden>이전 에이전트 보기</button>
-            <p class="psec-start" hidden>에이전트 트리의 시작</p>
-            <div class="psec-body panel-tree" id="panel-tree"></div>
+          <!-- 에이전트 트리 (E-25, D3 G1-1 → D6b): @2lab.ai/ui <ui-log-scroller> around the one <ui-agent-tree> —
+               it lands on the newest agents, pages older ones in on scroll-up (ui-load-older → showMoreTree) and
+               holds the reader's row while the tree grows above it (the rows' data-anchor in the tree's shadow
+               root), the "new" pill for a live arrival; the page keeps the window (atWindowOf, paintTreeTab). -->
+          <div class="psec psec-el ui-tok" id="psec-tree" slot="tree">
+            <ui-log-scroller class="panel-tree" id="panel-tree" lang="ko"></ui-log-scroller>
           </div>
           <!-- 작업 로그 (D3 F-01..F-10): @2lab.ai/ui <ui-work-log> — task groups, entry rows, the raw viewer,
                child agents, its own scroll box (pages older entries in on scroll-up); the tool cards are
@@ -5826,8 +5991,6 @@ ${pageTokenAliases()}
             <ui-conversation class="panel-conv" id="panel-conv" lang="ko"></ui-conversation>
           </div>
           </ui-tabs>
-          <!-- New items while the reader is up the list: one press goes to the newest. -->
-          <button type="button" class="psec-pill" id="psec-pill" hidden></button>
         </div>
       </section>
       </ui-tabs>
@@ -5852,14 +6015,20 @@ ${pageTokenAliases()}
        button scrolls away), the composer dialog, and the launch toast. -->
   <button type="button" class="new-task-fab" id="new-task-fab" aria-label="새 작업 시작" onclick="openNewTask()"><i data-ui-icon="plus" class="nt-fab-icon"></i><span class="nt-fab-label">새 작업</span></button>
   <!-- The composer dialog is @2lab.ai/ui <ui-dialog> (D4 H-01): its heading and ✕, scrim, focus trap, Esc / scrim
-       close (ui-close → ntOnClosed), focus return to the opener, and on phones its bottom sheet above the soft
-       keyboard. The page's form stays whole inside it; ui-submit from the composer posts as before. -->
-  <ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" lang="ko">
+       close (ui-close; ui-closed after the exit → ntOnClosed), focus return to the opener, and on phones the sheet
+       edge to edge (size-phone="full", 0.12.0 — D4 G6-1) above the soft keyboard. The page's form stays whole
+       inside it; ui-submit from the composer posts as before. -->
+  <ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" size-phone="full" lang="ko">
     <form id="nt-form" class="nt-form" onsubmit="event.preventDefault()" novalidate>
       <div class="nt-body" id="nt-body">
+        <div class="nt-toggles nt-dest" id="nt-dest" role="group" aria-label="어디서 할까요" hidden>
+          <button type="button" class="nt-toggle" id="nt-dest-slack" aria-pressed="true" onclick="ntSetDestination('slack')"><span>Slack 채널</span></button>
+          <button type="button" class="nt-toggle" id="nt-dest-task" aria-pressed="false" title="슬랙 스레드 없이 대시보드에서만 진행하는 작업" onclick="ntSetDestination('task')"><span>대시보드 작업</span></button>
+        </div>
         <div class="nt-config" role="group" aria-label="작업 설정">
           <div class="nt-chip nt-chip-model"><label for="nt-model">모델</label><select id="nt-model" onchange="ntOnModelChange()"></select><button type="button" class="nt-battery-btn nt-batt-unknown" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><span class="nt-battery" id="nt-battery" role="img" aria-label="잔여량 미확인"><span class="nt-battery-fill" id="nt-battery-fill"></span></span><span class="nt-battery-pct" id="nt-battery-pct">?</span></button></div>
-          <div class="nt-chip"><label for="nt-effort">effort</label><select id="nt-effort" onchange="ntOnEffortChange()"></select></div>
+          <div class="nt-chip nt-chip-effort"><label for="nt-effort">effort</label><select id="nt-effort" onchange="ntOnEffortChange()"></select></div>
+          <div class="nt-chip nt-chip-folder" id="nt-folder-chip" hidden><label for="nt-folder">폴더</label><select id="nt-folder" onchange="ntOnFolderChange()"></select></div>
           <div class="nt-chip nt-chip-channel"><label for="nt-channel">채널</label><select id="nt-channel" onchange="ntOnChannelChange()"></select></div>
         </div>
         <p class="nt-usage" id="nt-usage" hidden></p>
@@ -5909,7 +6078,6 @@ var STRINGS = {
   summaryPending: '요약 만드는 중…',
   retry: '다시 시도',
   retrying: '다시 시도 중…',
-  queued: '요청함',
   titlePending: '부제 만드는 중…',
   titleFailed: '부제를 만들지 못했습니다',
   titleCooldown: '부제를 만들지 못했습니다 — 1분 뒤 다시 시도하세요',
@@ -6196,7 +6364,9 @@ function acPermissionData(s, p) {
 // rewritten in place is another card, never the old one's answer or focus
 // (review R2 P1).
 function acQuestionId(q) {
-  return 'q|' + JSON.stringify([q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })]);
+  // A dashboard task's question names itself (#599): the same text asked twice is
+  // two questions, so a late answer to the first never resolves the second (#637 R1).
+  return (q.askId ? 'a|' + q.askId + '|' : '') + 'q|' + JSON.stringify([q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })]);
 }
 // pendingQuestion (single choice) → the card's data. The choices read as
 // before ("1. label", the recommended marker stripped); the route takes one
@@ -6925,7 +7095,10 @@ async function answerChoice(key, qid, choiceId) {
   var label = stripRecommendedMarker(c.label);
   var st;
   try {
-    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice', JSON.stringify({ choiceId: choiceId, label: label, question: q.question }));
+    var acBody = { choiceId: choiceId, label: label, question: q.question };
+    // #599 — a dashboard task's question names itself; the answer carries its id back.
+    if (q.askId) acBody.askId = q.askId;
+    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice', JSON.stringify(acBody));
     if (res.ok) {
       st = { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() };
       dashToast({ title: '답을 보냈어요', description: label, tone: 'success' });
@@ -7005,16 +7178,25 @@ function renderPanelTasks(tasks, scopeLabel, earlier, outside) {
   }
   if (runs.ran.length) body += '<ui-task-runs class="panel-task-runs" id="panel-task-runs" lang="ko"></ui-task-runs>';
   if (runs.plan.length || runs.skipped.length || !runs.ran.length) body += '<ui-task-plan class="panel-task-plan" id="panel-task-plan" lang="ko"></ui-task-plan>';
+  // The sums are the runs element's totals row (over every run, shown or not — D3-GAPS G5-2): with
+  // nothing run yet (work before the first list), the work outside any task is the page's one line.
   var html = head + '<div class="panel-tasks-body ui-tok" id="panel-tasks-body">' + body
-    + (runs.ran.length || outside ? taskTotalsHtml(runs.ran, outside) : '') + '</div></ui-disclosure>' + live;
+    + (!runs.ran.length && outside ? taskOutsideHtml(outside) : '') + '</div></ui-disclosure>' + live;
   writePanelTasks(container, html);
   var runsEl = document.getElementById('panel-task-runs');
   if (runsEl) {
-    taskElData(runsEl, { title: '실행된 태스크', runs: taskRunsData(runs.ran.slice(hiddenRuns)), totals: false });
+    var rd = { title: '실행된 태스크', runs: taskRunsData(runs.ran.slice(hiddenRuns)), totals: taskTotalsOf(runs.ran) };
+    if (hiddenRuns) rd.hidden = hiddenRuns;
+    var ex = taskOutsideNote(outside);
+    if (ex) rd.extraTotals = [ex];
+    taskElData(runsEl, rd);
     taskRunsRestore(runsEl);
   }
   var planEl = document.getElementById('panel-task-plan');
-  if (planEl) taskElData(planEl, taskPlanData(runs));
+  if (planEl) {
+    taskElData(planEl, taskPlanData(runs));
+    taskPlanRestore(planEl);
+  }
   // Same data (a session push while a subagent is shown) writes nothing; a
   // change is morphed, so the focused toggle, a row and each element stay.
   function writePanelTasks(el, markup) {
@@ -7148,6 +7330,16 @@ function taskRunsData(ran) {
     if (sub) tools.push({ name: '서브에이전트', count: sub });
     if (tools.length) r.tools = tools;
     r.toolCalls = main + sub;
+    // Its numbers are a share (it ran together with other tasks) or its start was inferred (it went from
+    // waiting straight to completed): ≈ on the row and the detail, and a note saying why (D3-GAPS G5-1).
+    var shared = Math.round(toNum(t.shared));
+    var notes = [];
+    if (shared > 1) notes.push({ label: '분배', value: shared + '개 태스크가 함께 진행 — 수치는 그 몫(1/' + shared + ')' });
+    if (t.startEstimated) notes.push({ label: '시작', value: '진행 중 표시 없이 완료 — 직전 목록의 시각', approx: true });
+    if (notes.length) {
+      r.approx = true;
+      r.notes = notes;
+    }
     if (t.tokens) {
       r.tokens = { input: toNum(t.tokens.input), output: toNum(t.tokens.output), cacheRead: toNum(t.tokens.cacheRead), cacheWrite: toNum(t.tokens.cacheCreate) };
       r.costUsd = toNum(t.tokens.costUsd);
@@ -7194,6 +7386,13 @@ function taskRunsRestore(el) {
   el._trRestored = true;
   for (var id in _panelTaskOpen) if (_panelTaskOpen[id]) el.setOpen(id, true);
 }
+// The plan's earlier fold (the tasks a new plan dropped before they ran) opens with 자세히
+// (resetPanelSections → _panelTasksEarlier) — on the element once it is defined (D3-GAPS G5-3,
+// 0.12.0 setOpen); the reader's own toggle is kept the same way (ui-toggle).
+function taskPlanRestore(el) {
+  if (!el || typeof el.setOpen !== 'function') return;
+  el.setOpen('earlier-plans', !!_panelTasksEarlier);
+}
 // The elements' reports: a run's detail opened / closed (kept for the next
 // element), the dropped-before-running fold opened / closed.
 (function initPanelTasks() {
@@ -7211,30 +7410,42 @@ function taskRunsRestore(el) {
   });
   if (window.customElements && customElements.whenDefined) {
     customElements.whenDefined('ui-task-runs').then(function() { taskRunsRestore(document.getElementById('panel-task-runs')); });
+    customElements.whenDefined('ui-task-plan').then(function() { taskPlanRestore(document.getElementById('panel-task-plan')); });
   }
 })();
-// The foot: the runs' sums (tool calls, tokens, cost) and the work no task got.
-function taskTotalsHtml(ran, outside) {
+// The runs' sums over every run (shown or not) as the element's totals row (D3-GAPS G5-2):
+// how many ran, the tool calls (the main agent's and the subagents' together — the rows
+// count them so), the tokens and cost of the runs that recorded them.
+function taskTotalsOf(ran) {
   var tools = 0;
-  var sub = 0;
   var tok = 0;
   var cost = 0;
   var known = false;
   for (var i = 0; i < ran.length; i++) {
-    tools += toNum(ran[i].toolCalls);
-    sub += toNum(ran[i].agentToolCalls);
+    tools += toNum(ran[i].toolCalls) + toNum(ran[i].agentToolCalls);
     if (ran[i].tokens) { known = true; tok += taskTokTotal(ran[i].tokens); cost += toNum(ran[i].tokens.costUsd); }
   }
-  var bits = ['툴 ' + Math.round(tools) + (sub >= 0.5 ? ' (+서브 ' + Math.round(sub) + ')' : '')];
-  if (known) bits.push(formatTokens(tok) + ' tok', '$' + cost.toFixed(2));
-  // Nothing ran yet (work before the first list): no sum, only the work outside any task.
-  var html = ran.length ? '<div class="tr-total"><span class="tr-total-k">합계</span>' + esc(bits.join(' · ')) + '</div>' : '';
-  if (outside && (toNum(outside.toolCalls) || toNum(outside.agentToolCalls) || taskTokTotal(outside.tokens))) {
-    html += '<div class="tr-total tr-outside"><span class="tr-total-k">태스크 밖</span>' + esc('툴 ' + Math.round(toNum(outside.toolCalls))
-      + (toNum(outside.agentToolCalls) >= 0.5 ? ' (+서브 ' + Math.round(toNum(outside.agentToolCalls)) + ')' : '')
-      + ' · ' + formatTokens(taskTokTotal(outside.tokens)) + ' tok') + '</div>';
-  }
-  return html;
+  // Shares add up to whole calls; a whole number on screen.
+  var out = { runs: ran.length, tools: Math.round(tools) };
+  if (known) { out.tokens = tok; out.costUsd = cost; }
+  return out;
+}
+// The work no task got (태스크 밖): its words — tool calls (+서브), tokens; '' when there is none.
+function taskOutsideText(outside) {
+  if (!outside || !(toNum(outside.toolCalls) || toNum(outside.agentToolCalls) || taskTokTotal(outside.tokens))) return '';
+  return '툴 ' + Math.round(toNum(outside.toolCalls))
+    + (toNum(outside.agentToolCalls) >= 0.5 ? ' (+서브 ' + Math.round(toNum(outside.agentToolCalls)) + ')' : '')
+    + ' · ' + formatTokens(taskTokTotal(outside.tokens)) + ' tok';
+}
+// … as a row under the element's totals (extraTotals), or null.
+function taskOutsideNote(outside) {
+  var text = taskOutsideText(outside);
+  return text ? { label: '태스크 밖', value: text } : null;
+}
+// … as the page's one line while nothing ran yet (no runs element, so no totals row to sit under).
+function taskOutsideHtml(outside) {
+  var text = taskOutsideText(outside);
+  return text ? '<div class="tr-total tr-outside"><span class="tr-total-k">태스크 밖</span>' + esc(text) + '</div>' : '';
 }
 
 let _csrfToken = '';
@@ -8363,10 +8574,8 @@ function paintCardBody(key) {
   if (b.el.parentNode !== host) host.appendChild(b.el);
   var col = _cardCol[key];
   var html = renderCardBody(s, col);
-  if (b.html !== html && !isEditingGoal(b.el) && !isPickingModel(b.el)) {
-    var goalDraft = captureGoalDraft(b.el);
+  if (b.html !== html && !isPickingModel(b.el)) {
     morphInnerHtml(b.el, html);
-    restoreGoalDraft(b.el, goalDraft);
     b.html = html;
     updateTimersIn(b.el);
   }
@@ -8957,7 +9166,7 @@ function domMorph(a, b) {
   domMorphChildren(a, b);
   // What a user changed in a control is live state, not an attribute: follow
   // the fresh markup (a rejected model pick shows the session's model again).
-  // A control in use is never morphed (isEditingGoal / isPickingModel).
+  // A control in use is never morphed (isPickingModel).
   var tag = a.tagName;
   if (tag === 'SELECT') {
     if (a.selectedIndex !== b.selectedIndex) a.selectedIndex = b.selectedIndex;
@@ -9349,7 +9558,6 @@ function applyPanelDetail() {
 // which always opens folded (SSOT 2026-10-29) — else the defaults.
 function resetPanelSections() {
   _panelInfoOpen = _panelDetail;
-  _panelGoalOpen = false; // SSOT 2026-10-29: the goal opens folded — 자세히 and a goal landing too
   _panelTasksOpen = _panelDetail || _panelLand === 'tasks';
   _panelTasksExpanded = _panelTasksOpen;
   _panelTasksEarlier = _panelDetail;
@@ -9586,24 +9794,20 @@ function renderAgentConv() {
   });
 }
 // ── Section tabs (SSOT 2026-10-29) — 에이전트 트리 · 작업 로그 · 지시와 답변 ──
-// Inside the focused agent's tab, three section tabs, each with its own scroll
-// box (the reader's place is per tab). Only the active one is in the DOM: the
-// others keep their data (the work-log state, the turns, the agents) and are
-// painted from it when they are opened. Each opens on its newest items, at its
-// bottom; scrolling up pages back — a sentinel (the top control) within one box
-// height of the view, the control itself the keyboard path — and the reader
-// keeps their place. A new item at the bottom follows a reader who is there; one
-// reading higher keeps their place and gets a pill that jumps to the newest.
+// Inside the focused agent's tab, three section tabs, each a library element in
+// its own scroll box (<ui-log-scroller>: the reader's place is per tab). Only the
+// active one is in the DOM: the others keep their data (the work-log state, the
+// turns, the agents) and are painted from it when they are opened. Each opens on
+// its newest items, at its bottom; scrolling up pages back (the element's top row
+// is the keyboard path; ui-load-older → this page's loader) and the reader keeps
+// their place. A new item at the bottom follows a reader who is there; one
+// reading higher keeps their place and gets the element's pill to the newest.
 var PSEC_ORDER = ['conv', 'log', 'tree'];
-var PSEC_TEXT = {
-  tree: { older: '이전 에이전트 보기', loading: '이전 에이전트 보기', start: '에이전트 트리의 시작' },
-};
-// The sections a library element draws as its own scroll box — it lands on the
-// newest item, follows it, pages older ones in on scroll-up (ui-load-older →
-// this page's loader), keeps the reader's place and says what arrived below:
-// 지시와 답변 (<ui-conversation>), 작업 로그 (<ui-work-log>). 에이전트 트리 is this
-// page's box (psecBox; D3-GAPS G1-1).
-var PSEC_EL = { conv: 'panel-conv', log: 'worklog-list' };
+// The element that draws each section as its own scroll box: 지시와 답변
+// (<ui-conversation>), 작업 로그 (<ui-work-log>), 에이전트 트리 (<ui-log-scroller>
+// around the one <ui-agent-tree> — D3-GAPS G1-1, closed by 0.12.0: the scroller
+// holds the reader's row through the tree's open shadow root).
+var PSEC_EL = { conv: 'panel-conv', log: 'worklog-list', tree: 'panel-tree' };
 function psecEl(sec) {
   var id = PSEC_EL[sec || _psec];
   return id ? document.getElementById(id) : null;
@@ -9611,8 +9815,6 @@ function psecEl(sec) {
 var PANEL_TURNS_PAGE = 20; // turns per page of 지시와 답변
 var AT_PANEL_WINDOW = 20; // agents per step of 에이전트 트리
 var _psec = 'conv'; // the section tab shown
-var _psecPin = true; // the reader is at the newest (the bottom) of the section shown
-var _psecNew = 0; // items that arrived below a reader reading higher up
 var _treeWindow = AT_PANEL_WINDOW; // how many of the newest agents the tree shows (this opening)
 var _treeMaxN = null; // the newest spawn number the tree showed (null: not painted yet)
 
@@ -9681,9 +9883,6 @@ function atWindowOf(anchor, n, pin, after) {
 function psecBox(sec) {
   return document.getElementById('psec-' + (sec || _psec));
 }
-function psecAtBottom(box) {
-  return !!box && box.scrollHeight - box.clientHeight - box.scrollTop <= 4;
-}
 // The tab strip and the panels — <ui-tabs>: the selected tab, the one tab stop, the
 // one panel shown are its own from the data; the same section writes nothing.
 function renderPanelSections() {
@@ -9707,21 +9906,20 @@ function psecClear(sec) {
   } else if (sec === 'tree') {
     var tree = document.getElementById('panel-tree');
     if (tree) {
-      if (tree.firstChild) tree.innerHTML = '';
-      tree._html = '';
+      if (typeof tree.clearItems === 'function') tree.clearItems();
+      else if (tree.firstChild) tree.innerHTML = '';
       tree._tree = null;
       tree._hidden = 0;
       tree._growing = false;
+      tree._sig = '';
     }
     _treeMaxN = null;
   }
-  psecSyncControls(sec);
 }
 function paintSection(sec) {
   if (sec === 'conv') convPaint();
   else if (sec === 'log') wlPaint();
   else paintTreeTab();
-  psecSyncControls(sec);
 }
 // Show the section tab sec: the others leave the DOM; this one is painted from
 // its data and lands on its newest items. (A key or a click keeps the element's
@@ -9733,180 +9931,11 @@ function selectPanelSection(sec) {
   for (var i = 0; i < PSEC_ORDER.length; i++) if (PSEC_ORDER[i] !== sec) psecClear(PSEC_ORDER[i]);
   if (panelSessionKey) paintSection(sec);
   psecToNewest();
-  psecFillSoon(sec);
 }
-// A scroll the page makes (a landing, a kept place, following the newest): the
-// box's scroll handler knows it for its own and reads no reader intent into it.
-function psecSetTop(box, top) {
-  if (Math.abs(box.scrollTop - top) >= 1) box.scrollTop = top;
-  box._lastTop = box.scrollTop;
-}
-// The section shown, at its newest item; a later scroll up is the reader's.
+// The section shown, at its newest item (the element's); a later scroll up is the reader's.
 function psecToNewest() {
-  var box = psecBox();
-  _psecPin = true;
-  psecSetNew(0);
   var el = psecEl();
-  if (el) {
-    if (typeof el.scrollToLatest === 'function') el.scrollToLatest({ smooth: false });
-    return;
-  }
-  if (!box) return;
-  psecSetTop(box, box.scrollHeight);
-  box._armed = false;
-  box._anchor = null;
-}
-function psecJumpNewest() {
-  psecToNewest();
-  var box = psecBox();
-  if (box && box.focus) box.focus({ preventScroll: true });
-}
-function psecSetNew(n) {
-  _psecNew = Math.max(0, n);
-  var pill = document.getElementById('psec-pill');
-  if (!pill) return;
-  var show = _psecNew > 0;
-  if (show) setTextIfChanged(pill, '새 항목 ' + _psecNew + '개 ↓');
-  if (pill.hidden === show) pill.hidden = !show;
-}
-// n new items landed at the bottom of the section shown: a reader who was at the
-// newest (pinned) stays there; one reading higher keeps their place and is told.
-function psecOnAppended(n, pinned) {
-  var box = psecBox();
-  if (!box || !(n > 0)) return;
-  if (pinned) {
-    psecSetTop(box, box.scrollHeight);
-    _psecPin = true;
-    return;
-  }
-  // Not followed (reading higher, or an entry's detail open): growth no longer pins.
-  _psecPin = false;
-  psecSetNew(_psecNew + n);
-}
-// Older items went in above the reader: measured from the bottom, their place stays.
-function psecKeepPlace(box, fromBottom) {
-  if (box) psecSetTop(box, box.scrollHeight - fromBottom);
-}
-// The items the reader is on — the first few agent-tree rows in view, those
-// wholly below the top edge first (the one the edge cuts may still grow), top
-// first — and how far below the box top each sits (null: none in view). Several:
-// a step of older agents can take one away.
-var PSEC_ANCHOR_MAX = 6;
-// The 에이전트 트리 tab's rows live in <ui-agent-tree>'s (open) shadow root.
-function psecTreeRoot(box) {
-  var tree = box.querySelector('ui-agent-tree');
-  return tree && tree.shadowRoot ? tree.shadowRoot : null;
-}
-function psecViewAnchor(box) {
-  var tr = psecTreeRoot(box);
-  if (!tr) return null;
-  var top = box.getBoundingClientRect().top;
-  var bottom = top + box.clientHeight;
-  var out = [];
-  var cut = [];
-  var rows = tr.querySelectorAll('[role="treeitem"][data-id]');
-  for (var i = 0; i < rows.length && out.length < PSEC_ANCHOR_MAX; i++) {
-    // A tree item holds its own row, then its children: the row is where it is.
-    var row = rows[i].firstElementChild;
-    if (!row) continue;
-    var r = row.getBoundingClientRect();
-    if (!r.height || r.bottom <= top) continue;
-    if (r.top >= bottom) break;
-    var v = rows[i].getAttribute('data-id') || '';
-    var key = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(v) : v;
-    (r.top >= top ? out : cut).push({ sel: '[role="treeitem"][data-id="' + key + '"]', at: r.top - top });
-  }
-  out = out.concat(cut).slice(0, PSEC_ANCHOR_MAX);
-  return out.length ? out : null;
-}
-// Where an anchor row is now (its tree item shown), else null.
-function psecAnchorEl(box, c) {
-  var tr = psecTreeRoot(box);
-  var item = tr ? tr.querySelector(c.sel) : null;
-  var el = item ? item.firstElementChild : null;
-  return el && el.getClientRects().length ? el : null;
-}
-// The first of those rows still shown back where it was (false: all are gone).
-function psecRestoreAnchor(box, a) {
-  if (!a || !a.length) return false;
-  for (var i = 0; i < a.length; i++) {
-    var el = psecAnchorEl(box, a[i]);
-    if (!el) continue;
-    var shift = el.getBoundingClientRect().top - box.getBoundingClientRect().top - a[i].at;
-    if (Math.abs(shift) >= 1) psecSetTop(box, box.scrollTop + shift);
-    return true;
-  }
-  return false;
-}
-// A page went in above the reader: their item goes back where it was — and is
-// held there while what was added settles (answers and cards render after it),
-// until the reader moves on. Without an item in view, measured from the bottom.
-// (The boxes have no native scroll anchoring: the place is this page's to keep.)
-function psecHoldPlace(box, anchor, fromBottom) {
-  if (!box) return;
-  if (psecRestoreAnchor(box, anchor)) {
-    box._anchor = anchor;
-  } else {
-    box._anchor = null;
-    psecKeepPlace(box, fromBottom);
-  }
-}
-// What the top of a section shows: 'older' (a control: older items exist),
-// 'loading' (the control says the page is on its way), 'start' (everything is
-// shown), or '' (nothing — loading, empty, a section an element draws).
-function psecOlderState(sec) {
-  if (PSEC_EL[sec]) return '';
-  var host = document.getElementById('panel-tree');
-  if (!host || !host._tree) return '';
-  if (host._growing) return 'loading';
-  return host._hidden > 0 ? 'older' : 'start';
-}
-function psecSyncControls(sec) {
-  var box = psecBox(sec);
-  if (!box) return;
-  var btn = box.querySelector('.psec-older');
-  var start = box.querySelector('.psec-start');
-  var st = sec === _psec && panelSessionKey ? psecOlderState(sec) : '';
-  if (btn) {
-    var show = st === 'older' || st === 'loading';
-    if (btn.hidden === show) btn.hidden = !show;
-    if (show) setTextIfChanged(btn, PSEC_TEXT[sec][st === 'loading' ? 'loading' : 'older']);
-    if (st === 'loading') btn.setAttribute('aria-busy', 'true');
-    else if (btn.hasAttribute('aria-busy')) btn.removeAttribute('aria-busy');
-  }
-  if (start && start.hidden === (st === 'start')) start.hidden = st !== 'start';
-}
-// The page before the oldest item shown — for the control, the sentinel and the
-// scroll; one at a time, nothing at the start.
-function psecLoadOlder(sec) {
-  if (sec !== _psec || psecOlderState(sec) !== 'older') return;
-  showMoreTree();
-}
-// Pure: whether the next older page is due — the box cannot scroll (the reader
-// would otherwise have only the control), or the reader moved up since the
-// landing (armed) and the top (the sentinel) is within one box height of the view.
-function psecPageDue(scrollTop, scrollHeight, clientHeight, armed) {
-  if (!(clientHeight > 0)) return false;
-  if (scrollHeight <= clientHeight + 1) return true;
-  return !!armed && scrollTop <= clientHeight;
-}
-// After a landing, a page, a scroll or the sentinel: the next older page when it
-// is due — so a page that still leaves the top near the view brings the next.
-function psecMaybeFill(sec) {
-  var box = psecBox(sec);
-  if (!box || PSEC_EL[sec] || sec !== _psec) return;
-  if (!psecPageDue(box.scrollTop, box.scrollHeight, box.clientHeight, box._armed)) return;
-  if (psecOlderState(sec) === 'older') psecLoadOlder(sec);
-}
-// psecMaybeFill once the section's elements have rendered (<ui-tool-call-card>,
-// <ui-agent-tree> render on the next microtask): their height decides.
-function psecFillSoon(sec) {
-  requestAnimationFrame(function() { psecMaybeFill(sec); });
-}
-// After a <ui-agent-tree> renders new data: one frame (the library's elements
-// expose no update promise — an UiElement renders on the next microtask).
-function psecAfterRender(_el, fn) {
-  requestAnimationFrame(function() { fn(); });
+  if (el && typeof el.scrollToLatest === 'function') el.scrollToLatest({ smooth: false });
 }
 // The section box takes the rest of the panel (psecHeightOf) as the parts above it
 // change — its height is --psec-h on the wrapper (the box is slotted into <ui-tabs>,
@@ -9952,9 +9981,20 @@ function ptUpsert(list, turn, replaceId) {
 }
 // 에이전트 트리: the session's agents in <ui-agent-tree> (rich — a card per agent on
 // one waterfall axis, every branch's spend rolled up), the main agent at its
-// root and the focused one selected — the newest _treeWindow agents with what
-// connects them (atWindowOf); scrolling up shows AT_PANEL_WINDOW more of the
-// agents already loaded. A live arrival below a reader reading higher is counted.
+// root and the focused one selected — the one item of the tab's <ui-log-scroller>
+// (the tree itself, so the scroller reads the rows' data-anchor through its open
+// shadow root): the newest _treeWindow agents with what connects them
+// (atWindowOf); the scroller's older row / a scroll-up asks for AT_PANEL_WINDOW
+// more of the agents already loaded (ui-load-older → showMoreTree). A live
+// arrival below a reader reading higher is counted on the scroller's pill.
+var TREE_SCROLLER = { label: '에이전트 트리', startText: '에이전트 트리의 시작', emptyText: '이 세션에는 하위 에이전트가 없습니다' };
+function treeScrollerData(host, hasMore) {
+  var d = { label: TREE_SCROLLER.label, startText: TREE_SCROLLER.startText, emptyText: TREE_SCROLLER.emptyText, hasMore: !!hasMore };
+  var sig = JSON.stringify(d);
+  if (host._sig === sig) return;
+  host._sig = sig;
+  host.data = d;
+}
 function paintTreeTab() {
   var host = document.getElementById('panel-tree');
   if (!host || _psec !== 'tree') return;
@@ -9963,8 +10003,11 @@ function paintTreeTab() {
   if (!root || !root.children.length) {
     host._tree = null;
     host._hidden = 0;
-    writePanelPart(host, s ? '<p class="psec-empty">이 세션에는 하위 에이전트가 없습니다</p>' : '');
-    psecSyncControls('tree');
+    if (host.querySelector('ui-agent-tree')) {
+      if (typeof host.clearItems === 'function') host.clearItems();
+      else host.innerHTML = '';
+    }
+    treeScrollerData(host, false);
     return;
   }
   var ns = 'p|' + panelSessionKey;
@@ -9975,35 +10018,48 @@ function paintTreeTab() {
   _treeMaxN = win.maxN;
   host._tree = d;
   host._hidden = win.hidden;
-  var pinned = psecAtBottom(psecBox('tree'));
-  writePanelPart(host, atSlotHtml('pa-tree', ns, '에이전트 트리'));
-  atPaint(host.querySelector('ui-agent-tree'), d, JSON.stringify(d));
-  psecSyncControls('tree');
-  if (newer) psecOnAppended(newer, pinned);
+  var tree = host.querySelector('ui-agent-tree');
+  if (!tree) {
+    // The element is the item (data-item): made once per opening, given data from then on.
+    tree = document.createElement('ui-agent-tree');
+    tree.className = 'pa-tree';
+    tree.setAttribute('lang', 'ko');
+    tree.setAttribute('data-item', 'tree');
+    tree.innerHTML = '<span class="at-fallback">에이전트 트리</span>';
+    if (typeof host.upsertItem === 'function') host.upsertItem('tree', tree, { animate: false });
+    else host.appendChild(tree);
+  }
+  if (tree.getAttribute('data-at-ns') !== ns) tree.setAttribute('data-at-ns', ns);
+  atPaint(tree, d, JSON.stringify(d));
+  treeScrollerData(host, win.hidden > 0);
+  if (newer && typeof host.noteUnread === 'function') host.noteUnread(newer);
 }
+// The scroller asked for older agents (ui-load-older): AT_PANEL_WINDOW more of the
+// agents already loaded go in where they belong in the tree (above the reader, or
+// inside a branch they are reading — the scroller holds their row). One step at a
+// time: the next waits for this one's render (a frame — the element renders on the
+// next microtask), then the scroller hears the page landed and whether more wait.
 function showMoreTree() {
-  var box = psecBox('tree');
   var host = document.getElementById('panel-tree');
-  if (!box || !host || !(host._hidden > 0)) return;
-  // The older agents go in where they belong in the tree (above the reader, or
-  // inside a branch they are reading): the row they are on keeps its place.
-  var fromBottom = box.scrollHeight - box.scrollTop;
-  var anchor = psecViewAnchor(box);
+  if (!host || !(host._hidden > 0) || host._growing) return false;
   _treeWindow += AT_PANEL_WINDOW;
-  paintTreeTab();
-  // One step at a time: the next waits for this one's render (its height).
   host._growing = true;
-  psecAfterRender(host.querySelector('ui-agent-tree'), function() {
-    host._growing = false;
-    if (_psec !== 'tree') return;
-    psecHoldPlace(box, anchor, fromBottom);
-    psecSyncControls('tree');
-    // The root and the branches stay at the top (older agents go in inside them),
-    // so the reader is still there: the next step waits for them to scroll up again
-    // (or the control) — unless the box is still too short to scroll.
-    box._armed = false;
-    psecMaybeFill('tree');
+  // The scroller asks from its scroll handler and takes the reader's place in the next frame (its own frame,
+  // queued before this one): the tree grows a frame later, after that capture, so the scroller restores the
+  // reader's row when the growth lands (D6b review P1). A frame after the growth it hears that more still wait.
+  requestAnimationFrame(function() {
+    if (_psec !== 'tree') {
+      host._growing = false;
+      return;
+    }
+    paintTreeTab();
+    requestAnimationFrame(function() {
+      host._growing = false;
+      if (_psec !== 'tree') return;
+      if (typeof host.prependItems === 'function') host.prependItems([], { hasMore: host._hidden > 0 });
+    });
   });
+  return true;
 }
 // The work log's older page — <ui-work-log> asks for it (ui-load-older) as the
 // reader scrolls up, or to fill a box too short to scroll. The element shows
@@ -10020,10 +10076,8 @@ function loadOlderWorkLog() {
   });
 }
 // One-time wiring: the tablist (<ui-tabs>: click, ←/→/Home/End with automatic
-// activation are its own; its ui-change is the choice), the pill, each box's top
-// control and sentinel, the scroll that tracks where the reader is (at the newest:
-// pinned; moving up: older pages may load), the newest kept in view while content
-// grows under a pinned reader, and the box's size.
+// activation are its own; its ui-change is the choice), the tree's older page
+// (the scroller's ui-load-older), and the boxes' size.
 (function initPanelSections() {
   var strip = document.getElementById('panel-sections');
   if (!strip) return;
@@ -10032,63 +10086,13 @@ function loadOlderWorkLog() {
     if (sec && sec !== _psec) selectPanelSection(sec);
   });
   renderPanelSections();
-  var pill = document.getElementById('psec-pill');
-  if (pill) pill.addEventListener('click', psecJumpNewest);
-  PSEC_ORDER.forEach(function(sec) {
-    var box = document.getElementById('psec-' + sec);
-    if (!box || PSEC_EL[sec]) return;
-    var btn = box.querySelector('.psec-older');
-    if (btn) btn.addEventListener('click', function() { psecLoadOlder(sec); });
-    // The reader acting on a row (an entry's detail, a Raw, a fold) changes the
-    // list by their own hand: nothing is held against it.
-    ['pointerdown', 'keydown'].forEach(function(type) {
-      box.addEventListener(type, function() { box._anchor = null; }, { passive: true });
+  var tree = document.getElementById('panel-tree');
+  if (tree) {
+    tree.addEventListener('ui-load-older', function(e) {
+      if (!showMoreTree()) e.preventDefault();
     });
-    box._lastTop = 0;
-    box.addEventListener('scroll', function() {
-      if (sec !== _psec) return;
-      var top = box.scrollTop;
-      // The page's own scroll (psecSetTop) — or none: no reader intent in it.
-      if (Math.abs(top - box._lastTop) < 1) return;
-      var up = top < box._lastTop;
-      box._lastTop = top;
-      _psecPin = psecAtBottom(box);
-      if (_psecPin && _psecNew) psecSetNew(0);
-      // The reader's own place now: the rows they see, read once a frame — what
-      // changes above them later (an answer, a card rendering) does not move them.
-      box._anchor = null;
-      if (!_psecPin && !box._capture) {
-        box._capture = true;
-        requestAnimationFrame(function() {
-          box._capture = false;
-          if (sec === _psec && !_psecPin) box._anchor = psecViewAnchor(box);
-        });
-      }
-      // The reader moving up arms the sentinel; a landing never does, nor does
-      // the box shrinking under a reader at the newest (they stay there).
-      if (up && !_psecPin) box._armed = true;
-      psecMaybeFill(sec);
-    }, { passive: true });
-    // The sentinel: the top control, observed within one box height above the view.
-    if (btn && typeof IntersectionObserver === 'function') {
-      new IntersectionObserver(function(entries) {
-        for (var i = 0; i < entries.length; i++) if (entries[i].isIntersecting) psecMaybeFill(sec);
-      }, { root: box, rootMargin: '100% 0px 0px 0px' }).observe(btn);
-    }
-  });
+  }
   if (typeof ResizeObserver === 'function') {
-    var pin = new ResizeObserver(function() {
-      var box = psecBox();
-      if (!box) return;
-      if (_psecPin) psecSetTop(box, box.scrollHeight);
-      else if (box._anchor) psecRestoreAnchor(box, box._anchor);
-    });
-    PSEC_ORDER.forEach(function(sec) {
-      var box = PSEC_EL[sec] ? null : document.getElementById('psec-' + sec);
-      var body = box ? box.querySelector('.psec-body') : null;
-      if (body) pin.observe(body);
-      if (box) pin.observe(box);
-    });
     var size = new ResizeObserver(function() { sizePanelSections(); syncPanelArtVariant(); });
     ['panel-scroll', 'panel-surface', 'panel-tabs', 'panel-agents', 'panel-tasks', 'panel-sections'].forEach(function(id) {
       var el = document.getElementById(id);
@@ -10167,6 +10171,10 @@ function renderPanelComposer(s, force) {
   var mode = pcModeOf(s);
   if (force || host._mode !== mode) {
     host._mode = mode;
+    // A dashboard task takes no attachments yet (D8, #600 ⑥): the composer's
+    // tools are off and a pasted or dropped file is refused (#640 R2).
+    host._takesFiles = pcToolsOpen(s, mode);
+    pcComposerSetup(document.getElementById('pc-composer'), host._takesFiles);
     if (mode !== 'open') pcReset();
   }
   var data = steeringData(s, mode);
@@ -10174,6 +10182,11 @@ function renderPanelComposer(s, force) {
   if (!force && el._sig === sig) return;
   el._sig = sig;
   el.data = data;
+}
+// The composer's attach / image / mic: an open session's — but not a dashboard
+// task's, which takes no attachments yet (D8, #600 ⑥).
+function pcToolsOpen(s, mode) {
+  return mode === 'open' && !(s && s.slackless);
 }
 function pcModeOf(s) {
   var isOwnerPanel = !!s.ownerId && s.ownerId === currentUserId;
@@ -10220,6 +10233,9 @@ function steerItemOf(s, id) {
 // actions (sessionActionsOf — Stop takes the bar's two presses, then is busy until the next
 // data). An armed resume's when / attempt / why is a note in the bar's slot.
 var PS_BAR_STATUS = { running: 'running', waiting: 'waiting', resuming: 'waiting', idle: 'idle', sleeping: 'idle', archived: 'idle' };
+// The bar's buttons named for what they do to the session (D3-GAPS G6-1, 0.12.0 ariaLabel): Close is never
+// taken for the panel's ✕ (작업 카드 닫기). Star carries its pressed state and its tooltip; Trash the quiet tone.
+var SESSION_ACTION_ARIA = { stop: 'Stop — 세션 중지', close: 'Close — 세션 종료', trash: 'Trash — 세션 휴지통으로' };
 function panelHeadData(s, col) {
   var st = rootStatusOf(s, col);
   var bar = PS_BAR_STATUS[st] || 'idle';
@@ -10233,7 +10249,11 @@ function panelHeadData(s, col) {
   if (s.slackThreadUrl) d.link = { id: 'slack', href: String(s.slackThreadUrl), label: 'Slack' };
   d.actions = sessionActionsOf(s, col).map(function(a) {
     var x = { id: a.id, label: a.label };
+    if (SESSION_ACTION_ARIA[a.id] && !a.sibling) x.ariaLabel = SESSION_ACTION_ARIA[a.id];
     if (a.id === 'stop' && !a.sibling) { x.tone = 'danger'; x.icon = 'stop'; }
+    if (a.id === 'trash') x.tone = 'quiet';
+    if (a.id === 'star') x.pressed = !!a.pressed;
+    if (a.tip) x.title = a.tip;
     if (a.lock) x.disabled = a.lock;
     if (a.busy) x.busy = true;
     return x;
@@ -10300,7 +10320,9 @@ function panelInfoHtml(s, open, col, keep) {
   if (s.issueUrl) links.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener">' + esc(s.issueLabel || s.issueShortRef || 'Issue') + (s.issueTitle ? ' &mdash; ' + esc(String(s.issueTitle).slice(0, 60)) : '') + '</a>');
   if (s.prUrl) links.push('<a href="' + safeHref(s.prUrl) + '" target="_blank" rel="noopener">' + esc(s.prLabel || s.prShortRef || 'PR') + (s.prTitle ? ' &mdash; ' + esc(String(s.prTitle).slice(0, 60)) : '') + '</a>');
   if (s.conversationId) links.push('<a href="/conversations/' + escAttr(s.conversationId) + '" target="_blank" rel="noopener">전체 대화</a>');
-  var foot = '</ui-disclosure>' + (links.length ? '<div class="pi-links">' + links.join('') + '</div>' : '');
+  // The links stay in view under the summary while the record is folded: the element's links slot (D3-GAPS G6-2, 0.12.0).
+  if (links.length) html += '<div slot="links" class="pi-links">' + links.join('') + '</div>';
+  var foot = '</ui-disclosure>';
   if (!open && !keep) return html + foot;
   var rows = [];
   if (u) {
@@ -10394,6 +10416,8 @@ function cwPhase(s, now) {
 // Closed is the composer's rule: terminated or sleeping (a press would wake it).
 function cwCanCompact(s) {
   if (!s || s.terminated || s.sessionState === 'SLEEPING') return '종료된 세션';
+  // A task turn refuses commands (D8): "compact now" would run as an instruction (#600 ⑥).
+  if (s.slackless) return '대시보드 작업에서는 아직 지원하지 않아요';
   var env = s.environment;
   if (isSiblingSession(s)) return 'Open ' + env.instanceName + ' (' + (env.host || '') + ':' + (env.port || '') + ') to act on this session';
   if (!s.ownerId || s.ownerId !== currentUserId) return READ_ONLY_MSG;
@@ -10592,64 +10616,56 @@ document.addEventListener('ui-compact', function(e) {
 // SSOT 2026-10-29 — "Goal 도 디폴트로 collapsed": the goal's objective opens
 // folded to its first 3 lines on every opening (resetPanelSections — 자세히 and
 // a goal landing included); 펼치기 · 접기 toggles it for this opening.
-var _panelGoalOpen = false;
-var GOAL_FOLD_LINES = 3; // the CSS clamp of .panel-goal .card-goal .cg-objective
-function togglePanelGoal() {
-  _panelGoalOpen = !_panelGoalOpen;
-  renderPanelGoal();
-}
-// The toggle shows only where the fold cuts something: the objective runs past
-// its 3 lines (scrollHeight is the whole text, folded or open). An unknown line
-// height keeps it, so the text can always be opened.
-function syncGoalMore(root) {
-  var obj = root.querySelector('.cg-objective');
-  var more = root.querySelector('.cg-more');
-  if (!obj || !more) return;
-  var lh = parseFloat(getComputedStyle(obj).lineHeight);
-  more.hidden = lh > 0 && obj.scrollHeight <= lh * GOAL_FOLD_LINES + 1;
-}
-
-// The goal's home (spec 13, moved from the card): the shared goal component —
-// current, queue, add / delete, the completed goals (T6) — with the card's
-// gates. Typing survives every live render: while its input has focus nothing
-// is written, and an unfocused draft is carried into the new markup.
+// The goal's home (spec 13): <ui-goal-card lang="ko"> in #panel-goal — one per session, made when the panel
+// turns to that session (another session's draft never carries over; the same session reopened keeps an
+// unsent one), handed data only when it changed (the element morphs in place: typing, focus and its folds
+// survive a live render; the objective opens folded to 3 lines on every opening — a new goal id starts folded).
 function renderPanelGoal() {
   var el = document.getElementById('panel-goal');
   if (!el) return;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var col = s ? sessionColOf(panelSessionKey) : '';
   var isOwner = !!(s && s.ownerId) && s.ownerId === currentUserId;
-  var canEdit = isOwner && !isSiblingSession(s);
-  var html = s ? renderCardGoal(s, col, canEdit, _panelGoalOpen) : '';
-  if (!html) {
+  var live = !!s && col !== 'closed' && !s.terminated;
+  var canEdit = isOwner && live && !isSiblingSession(s);
+  var g = s ? s.goal : null;
+  // Read-only viewers and closed sessions only see a goal list that exists.
+  if (!s || !(g || canEdit)) {
     el.style.display = 'none';
-    if (el._html) el.innerHTML = '';
-    el._html = '';
+    if (el._key) { el.innerHTML = ''; el._key = null; }
     return;
   }
   el.style.display = '';
-  el._key = panelSessionKey;
   // Task view T1.6: a session with no goal keeps the empty editor for 자세히.
-  var g = s.goal;
   el.classList.toggle('is-empty', !(g && (g.current || (g.queue && g.queue.length) || (g.history && g.history.length))));
-  if (el._html === html || isEditingGoal(el)) return;
-  var draft = captureGoalDraft(el);
-  var a = document.activeElement;
-  var hadFocus = !!(a && a !== el && el.contains(a));
-  // A morph keyed by goal id (data-mk): a focused goal button keeps its node
-  // and focus while its goal is there, and is never rebound to another goal.
-  morphInnerHtml(el, html);
-  el._html = html;
-  restoreGoalDraft(el, draft);
-  // The fold toggle follows the text's height: now, and whenever the section resizes (panel width, first layout).
-  syncGoalMore(el);
-  if (!el._goalRo && typeof ResizeObserver === 'function') {
-    el._goalRo = new ResizeObserver(function() { syncGoalMore(el); });
-    el._goalRo.observe(el);
+  var card = el.firstElementChild;
+  // A new card for every panel opening (SSOT 2026-10-29: each opening starts with the past goals folded — the
+  // element keeps its fold across data); reopening the same session carries the unsent add-box draft over
+  // (D6b review P2). Repaints within one opening keep the card and its fold.
+  if (!card || card.tagName !== 'UI-GOAL-CARD' || el._key !== panelSessionKey || el._gen !== _panelGen) {
+    var draft = card && card.tagName === 'UI-GOAL-CARD' && el._key === panelSessionKey && typeof card.draft === 'string' ? card.draft : '';
+    el.innerHTML = '';
+    card = document.createElement('ui-goal-card');
+    card.setAttribute('lang', 'ko');
+    card.setAttribute('data-goal-key', panelSessionKey);
+    el.appendChild(card);
+    if (draft) card.draft = draft;
+    el._key = panelSessionKey;
+    el._gen = _panelGen;
   }
-  // Its goal left (deleted, started, finished): focus lands on the section, never on another goal's control.
-  var now = document.activeElement;
-  if (hadFocus && (!now || now === document.body || !el.contains(now)) && el.focus) el.focus({ preventScroll: true });
+  var d = goalCardData(s, canEdit);
+  var sig = JSON.stringify(d);
+  if (card._gcSig !== sig) {
+    card._gcSig = sig;
+    card.data = d;
+  }
+}
+// The goal landing (관리 → / goal 추가 →): the element's add box when it has one, else its group — read through
+// the open shadow root by element / role, as uiTabsFocus does (the card has no focus API of its own).
+function goalCardFocusTarget() {
+  var card = document.querySelector('#panel-goal > ui-goal-card');
+  var root = card && card.shadowRoot;
+  return root ? (root.querySelector('textarea') || root.querySelector('[role="group"]')) : null;
 }
 
 // Switch the panel's scope: its Tasks and section tabs follow the chosen agent
@@ -11214,11 +11230,26 @@ function renderCardBody(s, col) {
     + actionsHtml
     + permissionHtml
     + renderCardResume(s, col)
+    + taskOutcomeHtml(s)
     + questionHtml
     + middle
     + cardGoalLine(s, col, isOwner && !isSibling)
     + refsHtml
     + footHtml
+    + '</div>';
+}
+
+// #600 ⑥ — a dashboard task's last turn as its card says it: how it ended, why,
+// and a recording failure (the outcome was not saved).
+var TASK_OUTCOME_LABEL = { completed: '완료', failed: '실패', cancelled: '중지됨', interrupted: '중단됨', waiting: '입력 대기' };
+function taskOutcomeHtml(s) {
+  var o = s && s.slackless && s.lastTurnOutcome;
+  if (!o) return '';
+  var kind = String(o.outcome || '');
+  return '<div class="card-task-outcome" data-outcome="' + escAttr(kind) + '">'
+    + '<span class="cto-label">마지막 턴 · ' + esc(TASK_OUTCOME_LABEL[kind] || kind) + '</span>'
+    + (o.reason ? '<span class="cto-reason">' + esc(o.reason) + '</span>' : '')
+    + (o.recordFailure ? '<span class="cto-warn" role="alert">기록하지 못함 · ' + esc(o.recordFailure) + '</span>' : '')
     + '</div>';
 }
 
@@ -11497,160 +11528,68 @@ function renderPanelControls(s) {
 function repaintPanelControlsFor(key) {
   if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelControls(_sessionCache[key]);
 }
-// ── Goal list on the work item (SSOT 2026-10-21 T2/T3) ──
-// The card shows the current goal, its state and the goals queued behind it,
-// and lets the owner add a goal, delete the current goal (the next queued one
-// starts — never \`goal clear\`, which also drops the queue) or delete a queued
-// goal. Every write names WHERE the goal was seen (current / queued), so a goal
-// that moved in the meantime is refused (409) instead of deleting the wrong one.
+// ── Goal (E-12): @2lab.ai/ui <ui-goal-card> — the goal's home (spec 13) ──
+// The board card's line (cardGoalLine) reads the status words; the editor is the element in #panel-goal
+// (renderPanelGoal): the current goal (status chip, the objective folded to 3 lines with 펼치기 / 접기, the
+// 이어하기 budget, the evaluator's 남은 것), the queue, the past goals in its own fold (T6), the add box and the
+// error alert are the element's — as are the second press on Delete, the typed draft across every data write
+// (it morphs in place) and the focus that lands on the card when its goal left. The page keeps the data
+// (goalCardData), the one goal write in flight per session (_goalBusy → busy / busyId) and the routes. Every
+// write names WHERE the goal was seen (current / queued), so a goal that moved in the meantime is refused
+// (409) instead of deleting the wrong one — never goal clear, which also drops the queue. actions is
+// ['delete']: POST /session/:key/goal takes add and delete only (the host layer has no complete / pause,
+// D3 G4-1), so the card never offers them.
 var GOAL_STATUS_LABELS = { active: '진행 중', paused: '일시정지', complete: '완료' };
 var GOAL_STATUS_TONE = { active: 'run', paused: 'wait', complete: 'done' };
 // The goal mark (P7): the 2lab icon set's target glyph, not the bullseye emoji.
 var GOAL_SVG = '<i data-ui-icon="target"></i>';
 var GOAL_VIA_LABELS = { user: '직접 완료', 'eval-model': '평가 모델 완료' };
-// SSOT 2026-10-22 T6 — completed goals open from the goal head, per card.
-var _goalHistoryOpen = Object.create(null); // card key → completed goals shown
-function formatGoalTime(ms) {
-  var n = Number(ms) || 0;
-  if (!n) return '';
-  return new Date(n).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+var GOAL_OBJECTIVE_MAX = 4000; // the route's cap on an objective
+var GOAL_ACTIONS = ['delete']; // what the goal route answers besides add
+var _goalErrors = Object.create(null); // session key → last refused goal action (shown until the next success)
+var _goalBusy = Object.create(null); // session key → { op: 'add' | 'delete', id } while that write is out
+// One past goal for the element: time spent · tokens · cost · continuation turns · how it closed on its meta
+// line, the evaluator's reason as its note (when it ended is the element's, from endedAt).
+function goalPastItem(h) {
+  var meta = [];
+  if (toNum(h.activeMsUsed) > 0) meta.push('소요 ' + formatDuration(toNum(h.activeMsUsed)));
+  if (h.tokens !== undefined) meta.push(formatTokens(h.tokens) + ' tok');
+  if (h.costUsd !== undefined) meta.push('$' + toNum(h.costUsd).toFixed(2));
+  if (toNum(h.continuationCount) > 0) meta.push('이어하기 ' + toNum(h.continuationCount) + '회');
+  if (h.completedVia) meta.push(Object.prototype.hasOwnProperty.call(GOAL_VIA_LABELS, h.completedVia) ? GOAL_VIA_LABELS[h.completedVia] : String(h.completedVia));
+  var item = { id: String(h.goalId), objective: String(h.objective || ''), status: 'complete' };
+  if (toNum(h.completedAt) > 0) item.endedAt = toNum(h.completedAt);
+  if (meta.length) item.meta = meta;
+  if (h.completionReason && h.completionReason !== 'user') item.note = String(h.completionReason);
+  return item;
 }
-// One completed goal: objective, then when it closed · time spent · tokens ·
-// cost · continuation turns · how it closed, then the evaluator's reason.
-function renderGoalHistory(history) {
-  var items = (history || []).map(function(h) {
-    var meta = [];
-    var at = formatGoalTime(h.completedAt);
-    if (at) meta.push('완료 ' + at);
-    if (toNum(h.activeMsUsed) > 0) meta.push('소요 ' + formatDuration(toNum(h.activeMsUsed)));
-    if (h.tokens !== undefined) meta.push(formatTokens(h.tokens) + ' tok');
-    if (h.costUsd !== undefined) meta.push('$' + toNum(h.costUsd).toFixed(2));
-    if (toNum(h.continuationCount) > 0) meta.push('이어하기 ' + toNum(h.continuationCount) + '회');
-    if (h.completedVia) meta.push(esc(Object.prototype.hasOwnProperty.call(GOAL_VIA_LABELS, h.completedVia) ? GOAL_VIA_LABELS[h.completedVia] : h.completedVia));
-    var reason = h.completionReason && h.completionReason !== 'user' ? h.completionReason : '';
-    return '<li class="cg-h-item">'
-      + '<div class="cg-h-obj">' + esc(h.objective) + '</div>'
-      + (meta.length ? '<div class="cg-h-meta">' + meta.join(' &middot; ') + '</div>' : '')
-      + (reason ? '<div class="cg-h-reason">' + esc(reason) + '</div>' : '')
-      + '</li>';
-  }).join('');
-  return '<ol class="cg-history">' + items + '</ol>';
-}
-// The completed goals' choice (T6, D4 K-06): <ui-disclosure class="cg-hx" trigger="external"> under the goal's
-// queue, opened by the head row's 완료된 goal N개 button (for=); the element's ui-toggle keeps the choice here
-// (initDisclosures), and the panel's goal editor — the goal's home (spec 13) — paints the list on the way open
-// and drops it once the region has folded (ui-toggled).
-function goalHistoryToggle(key, open) {
-  if (open) _goalHistoryOpen[key] = true;
-  else if (_goalHistoryOpen[key]) _goalHistoryOpen[key] = 'folding';
-  if (panelOpen && panelSessionKey === key) renderPanelGoal();
-}
-function goalHistoryFolded(key) {
-  if (_goalHistoryOpen[key] !== 'folding') return;
-  delete _goalHistoryOpen[key];
-  if (panelOpen && panelSessionKey === key) renderPanelGoal();
-}
-var _goalErrors = Object.create(null); // card key -> last refused goal action (shown until the next success)
-
-function renderCardGoal(s, col, canEdit, open) {
+// The element's data for session s. canEdit: the owner on a live session (a read-only viewer and a closed
+// session see the list, no controls); busy / error are this page's write state.
+function goalCardData(s, canEdit) {
   var g = s.goal || null;
-  var live = col !== 'closed' && !s.terminated;
-  // Read-only viewers and closed sessions only see a goal list that exists.
-  if (!g && !(canEdit && live)) return '';
-  var editable = canEdit && live;
-  var dis = editable && !isBusy(s.key, 'goal') ? '' : ' disabled';
-  var key = escJs(s.key);
-  var queue = (g && g.queue) || [];
   var cur = g && g.current;
-  var html = '<div class="card-goal' + (open ? ' is-open' : '') + '">';
-  html += '<div class="cg-head"><span class="cg-label">' + GOAL_SVG + 'Goal</span>';
+  var d = { canEdit: !!canEdit, actions: GOAL_ACTIONS, maxLength: GOAL_OBJECTIVE_MAX, current: null, queue: [], history: [] };
   if (cur) {
-    html += '<span class="ui-status is-pill cg-status"' + (GOAL_STATUS_TONE[cur.status] ? ' data-tone="' + GOAL_STATUS_TONE[cur.status] + '"' : '') + '>' + esc(GOAL_STATUS_LABELS[cur.status] || cur.status) + '</span>';
-    if (cur.status === 'active' && toNum(cur.maxContinuations) > 0) {
-      html += '<span class="cg-progress" title="자동 이어하기 횟수 / 상한">' + toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) + '</span>';
+    d.current = { id: String(cur.goalId), objective: String(cur.objective || ''), status: cur.status };
+    if (cur.status === 'active') {
+      // The auto-continue count is a budget, not progress: the quiet meta line, never the bar.
+      if (toNum(cur.maxContinuations) > 0) d.current.meta = [{ label: '이어하기', value: toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) }];
+      if (cur.lastEvalReason) d.current.note = '남은 것: ' + String(cur.lastEvalReason).slice(0, 300);
     }
   }
-  // T6: the completed goals open from the head (any viewer, any column) — the external trigger of the
-  // <ui-disclosure> under the queue (D4 K-06); the element keeps its aria-expanded / aria-controls current.
-  var doneCount = g ? toNum(g.completedCount) : 0;
-  var historyOpen = doneCount > 0 && _goalHistoryOpen[s.key] === true;
-  var historyPainted = historyOpen || (doneCount > 0 && _goalHistoryOpen[s.key] === 'folding');
-  if (doneCount > 0) {
-    html += '<button type="button" class="cg-history-toggle" id="cg-history-toggle" aria-expanded="' + (historyOpen ? 'true' : 'false') + '">완료된 goal ' + doneCount + '개'
-      + '<span class="chev" aria-hidden="true"></span></button>';
+  d.queue = ((g && g.queue) || []).map(function(q) { return { id: String(q.goalId), objective: String(q.objective || '') }; });
+  d.history = ((g && g.history) || []).map(goalPastItem);
+  var busy = _goalBusy[s.key];
+  if (busy) {
+    d.busy = busy.op;
+    if (busy.id) d.busyId = busy.id;
   }
-  html += '</div>';
-  if (cur) {
-    var dropLabel = queue.length ? '현재 goal 삭제 · 다음 시작' : '현재 goal 삭제';
-    html += '<div class="cg-row" data-mk="' + escAttr('goal:' + cur.goalId) + '"><div class="cg-objective" id="panel-goal-obj" title="' + escAttr(cur.objective) + '">' + esc(cur.objective) + '</div>'
-      + '<button type="button" class="ui-btn is-sm is-danger"' + dis
-      + ' onclick="event.stopPropagation();goalAction(\\'' + key + '\\',{action:\\'delete\\',goalId:\\'' + escJs(cur.goalId) + '\\',expect:\\'current\\'},this)">'
-      + dropLabel + '</button></div>';
-    // SSOT 2026-10-29 — folded to its first 3 lines until opened; reading, so never disabled.
-    // syncGoalMore keeps the toggle to an objective that runs past those lines.
-    html += '<button type="button" class="cg-more" aria-expanded="' + (open ? 'true' : 'false') + '" aria-controls="panel-goal-obj"'
-      + ' onclick="event.stopPropagation();togglePanelGoal()">' + (open ? '접기' : '펼치기') + '<span class="chev" aria-hidden="true"></span></button>';
-    if (cur.status === 'active' && cur.lastEvalReason) {
-      html += '<div class="cg-gap">남은 것: ' + esc(String(cur.lastEvalReason).slice(0, 300)) + '</div>';
-    }
-  } else {
-    html += '<div class="cg-empty">현재 goal 없음</div>';
-  }
-  if (queue.length) {
-    html += '<div class="cg-queue-title">대기 중인 goal ' + queue.length + '개</div><ol class="cg-queue">';
-    for (var i = 0; i < queue.length; i++) {
-      var q = queue[i];
-      html += '<li data-mk="' + escAttr('queued:' + q.goalId) + '"><div class="cg-row"><span class="cg-q-text">' + esc(q.objective) + '</span>'
-        + '<button type="button" class="ui-btn is-sm is-danger" title="대기 goal 삭제" aria-label="대기 goal 삭제"' + dis
-        + ' onclick="event.stopPropagation();goalAction(\\'' + key + '\\',{action:\\'delete\\',goalId:\\'' + escJs(q.goalId) + '\\',expect:\\'queued\\'},this)">삭제</button></div></li>';
-    }
-    html += '</ol>';
-  }
-  // The completed goals open under the current goal and its queue (T6) in <ui-disclosure>'s region (its grow in
-  // place, inert while closed); the list is painted while open and through the fold, else the region is empty. Its
-  // id is the page's (the trigger's aria-controls): the morph keys an unkeyed node by tag + id + class, and an id
-  // the element gave itself would make every repaint a new element (no fold, no ui-toggled).
-  if (doneCount > 0) {
-    html += '<ui-disclosure class="cg-hx" id="cg-history" trigger="external" for="cg-history-toggle" data-hx="' + escAttr(s.key) + '"' + (historyOpen ? ' open' : '') + '>'
-      + (historyPainted ? '<div class="cg-queue-title">완료된 goal</div>' + renderGoalHistory(g.history) : '') + '</ui-disclosure>';
-  }
-  if (editable) {
-    html += '<form class="cg-add" onsubmit="event.preventDefault();event.stopPropagation();addGoalFromCard(\\'' + key + '\\',this)">'
-      + '<input class="cg-add-input" name="objective" maxlength="4000" autocomplete="off" aria-label="goal 추가"'
-      + ' placeholder="' + (cur && cur.status !== 'complete' ? 'goal 추가 (현재 goal 다음에 시작)' : 'goal 추가 (바로 시작)') + '"'
-      + ' onblur="goalInputBlur(\\'' + key + '\\')">'
-      + '<button type="submit" class="ui-btn is-sm">추가</button></form>';
-  }
-  if (_goalErrors[s.key]) html += '<div class="cg-error" role="alert">' + esc(_goalErrors[s.key]) + '</div>';
-  return html + '</div>';
-}
-
-// The goal input survives the card's live re-render: while it has focus the
-// body is not replaced at all (typing and IME composition stay intact), and an
-// unfocused draft is carried into the new body.
-function isEditingGoal(root) {
-  var a = document.activeElement;
-  return !!(a && a.classList && a.classList.contains('cg-add-input') && root.contains(a));
+  if (_goalErrors[s.key]) d.error = _goalErrors[s.key];
+  return d;
 }
 // An open model menu holds its anchor's card still: the trigger is where the menu hangs (re-model-picker D12).
 function isPickingModel(root) {
   return !!(root && root.querySelector && root.querySelector('ui-model-picker[open]'));
-}
-function captureGoalDraft(root) {
-  var input = root.querySelector('.cg-add-input');
-  return input && input.value ? input.value : '';
-}
-function restoreGoalDraft(root, value) {
-  if (!value) return;
-  var input = root.querySelector('.cg-add-input');
-  if (input && !input.value) input.value = value;
-}
-function goalInputBlur(key) {
-  // Let a click on 추가 land before the deferred re-render replaces the form.
-  setTimeout(function() {
-    var host = document.getElementById('panel-goal');
-    if (host && panelSessionKey === key && !isEditingGoal(host)) renderPanelGoal();
-  }, 200);
 }
 
 async function postGoalAction(key, payload) {
@@ -11672,54 +11611,51 @@ async function postGoalAction(key, payload) {
 function setGoalError(key, message) {
   if (message) _goalErrors[key] = message;
   else delete _goalErrors[key];
-  refreshCard(key);
+  repaintPanelGoalFor(key);
+}
+function repaintPanelGoalFor(key) {
   if (panelOpen && panelSessionKey === key) renderPanelGoal();
 }
-async function goalAction(key, payload, btn) {
-  if (isBusy(key, 'goal')) return; // one goal write at a time per session
-  if (btn) btn.disabled = true;
+// One goal write at a time per session (spec 13 §3.5: an add never overlaps a delete), shown on the element's
+// button (busy; busyId for a queued goal's remove) until the outcome lands. Resolves to whether it went through.
+async function goalAction(key, payload, busyId) {
+  if (isBusy(key, 'goal')) return false;
   setBusy(key, 'goal', true);
+  _goalBusy[key] = { op: payload.action, id: busyId || '' };
+  repaintPanelGoalFor(key);
   var r;
   try { r = await postGoalAction(key, payload); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
   setBusy(key, 'goal', false);
+  delete _goalBusy[key];
   setGoalError(key, r.ok ? '' : r.error);
-  if (!r.ok && btn) btn.disabled = false;
   loadSessions();
+  return r.ok;
 }
-// One add in flight per card. The input is NOT disabled while it is sent:
-// keeping its focus is what keeps a live re-render from replacing the form
-// (and resurrecting the sent text as a fresh, submittable draft).
-var _goalAdding = Object.create(null);
-async function addGoalFromCard(key, form) {
-  // One goal write at a time per session: an add never overlaps a delete (spec 13 §3.5).
-  if (_goalAdding[key] || isBusy(key, 'goal')) return;
-  var input = form.querySelector('.cg-add-input');
-  var objective = input ? input.value.trim() : '';
+// ui-add is prevented, so the element keeps the words in its box: they are cleared only once the add went
+// through (a refusal leaves them to fix), and only on this session's live card (never another session's draft).
+async function addGoal(key, objective, card) {
+  objective = String(objective || '').trim();
   if (!objective) return;
-  _goalAdding[key] = true;
-  setBusy(key, 'goal', true);
-  var btn = form.querySelector('button');
-  if (btn) btn.disabled = true;
-  var r;
-  try { r = await postGoalAction(key, { action: 'add', objective: objective }); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
-  // The form on screen may have been re-rendered meanwhile — act on the live one,
-  // and only while the panel still shows this session (another session's draft is never touched).
-  var host = panelSessionKey === key ? document.getElementById('panel-goal') : null;
-  var live = (host && host.querySelector('.cg-add-input')) || input;
-  var liveBtn = live.form ? live.form.querySelector('button') : btn;
-  if (liveBtn) liveBtn.disabled = false;
-  if (btn && btn !== liveBtn) btn.disabled = false;
-  if (r.ok) {
-    if (live.value.trim() === objective) live.value = '';
-    live.blur();
-  }
-  // Released only once the sent text is gone from the form: a live render in
-  // between cannot re-arm a submit that would send the same goal twice.
-  delete _goalAdding[key];
-  setBusy(key, 'goal', false);
-  setGoalError(key, r.ok ? '' : r.error);
-  loadSessions();
+  var ok = await goalAction(key, { action: 'add', objective: objective });
+  if (ok && card && card.isConnected && card.getAttribute('data-goal-key') === key && card.draft.trim() === objective) card.draft = '';
 }
+// The element's events: a confirmed Delete (the current goal, or a queued one — its own remove spins), an Add.
+document.addEventListener('ui-delete', function(e) {
+  var el = e.target;
+  if (!el || el.tagName !== 'UI-GOAL-CARD' || !e.detail) return;
+  var key = el.getAttribute('data-goal-key');
+  if (!key || !_sessionCache[key]) { e.preventDefault(); return; }
+  var id = String(e.detail.id || '');
+  goalAction(key, { action: 'delete', goalId: id, expect: e.detail.queued ? 'queued' : 'current' }, e.detail.queued ? id : '');
+});
+document.addEventListener('ui-add', function(e) {
+  var el = e.target;
+  if (!el || el.tagName !== 'UI-GOAL-CARD' || !e.detail) return;
+  e.preventDefault();
+  var key = el.getAttribute('data-goal-key');
+  if (!key || !_sessionCache[key]) return;
+  addGoal(key, e.detail.objective, el);
+});
 
 // Card click / Enter / Space = expand / collapse in place (§3.1-4), Esc inside
 // an open card closes it — the element's (ui-toggle; keyboard without the
@@ -12294,6 +12230,8 @@ async function loadSessions() {
       // Without the WebSocket (or for a sibling instance) the poll is the only
       // update: the whole panel follows it (spec 13).
       repaintPanelSession();
+      // …its question too: a form must show the ask its actions answer (#637 R2).
+      renderPanelQuestion(_sessionCache[panelSessionKey]);
     }
   } catch (e) {
     clearTimeout(timer);
@@ -12419,6 +12357,8 @@ function followSessionKey(oldKey, newKey) {
   if (!newKey || newKey === oldKey || !_sessionCache[newKey]) return;
   var showing = panelOpen && panelSessionKey === oldKey;
   deckRemove(oldKey);
+  // An opening still waiting for <ui-drawer> was for the archived key: it opens the live one (D4 review P3).
+  if (_panelOpenWaiting && _panelOpenWaiting[0] === oldKey) _panelOpenWaiting[0] = newKey;
   if (showing) openPanel(newKey, false);
 }
 
@@ -12438,8 +12378,21 @@ function followSessionKey(oldKey, newKey) {
 var _mcState = Object.create(null);
 var MC_CUSTOM_ID = '\\uC9C1\\uC811\\uC785\\uB825';
 // The form's identity: a different question (or another session) starts clean.
+// A dashboard task's question carries its askId (#599 ⑤): a new ask is a new
+// form, even when it reads the same — picks for one ask never carry to the next.
 function mcFormId(s, q) {
-  return 'mc|' + s.key + '|' + JSON.stringify([q.title || q.question || '', (q.questions || []).map(function(x) { return [x.id, x.question]; })]);
+  return 'mc|' + s.key + '|' + (q.askId ? 'a|' + q.askId + '|' : '')
+    + JSON.stringify([q.title || q.question || '', (q.questions || []).map(function(x) { return [x.id, x.question]; })]);
+}
+// The ask a form was drawn for (#637 R2): an action from a form whose ask is no
+// longer the session's (a push the panel has not painted yet) answers nothing.
+function mcAskShown(el, q) {
+  return (el.getAttribute('data-mc-ask') || '') === ((q && q.askId) || '');
+}
+function mcAskChanged(key) {
+  dashToast({ title: '\uC9C8\uBB38\uC774 \uBC14\uB00C\uC5C8\uC5B4\uC694 \u2014 \uB2E4\uC2DC \uD655\uC778\uD574\uC8FC\uC138\uC694.', tone: 'error' });
+  var s = _sessionCache[key];
+  if (s && mcFormEl(key)) renderMultiChoicePanel(s);
 }
 // The session's form state, reset when its question is another one.
 function mcStateOf(s, q) {
@@ -12485,6 +12438,10 @@ function mcFormData(s, q) {
   if (st.sending) d.submitting = true;
   if (st.sent) d.submitted = true;
   if (st.error) d.error = st.error;
+  // Who may answer here (the session's owner, on this instance — the server re-checks):
+  // else the element holds every control and says why (D3-GAPS G3-1, 0.12.0 canAnswer).
+  var lock = acQuestionLock(s);
+  if (lock) d.canAnswer = lock;
   return d;
 }
 // A push: the form state of every session that no longer asks that form goes
@@ -12572,6 +12529,7 @@ function renderMultiChoicePanel(s) {
     container.appendChild(el);
   }
   el.setAttribute('data-mc-key', s.key);
+  el.setAttribute('data-mc-ask', q.askId || '');
   var d = mcFormData(s, q);
   var sig = JSON.stringify(d);
   if (el._mcSig !== sig) {
@@ -12595,16 +12553,16 @@ function mcSettle(key, err) {
 
 // The element's answers: the working ones kept (ui-change), a send (ui-submit —
 // not cancelled: the element locks until the page hands it the outcome).
-document.addEventListener('ui-change', function(e) {
+function mcOnChange(e) {
   var el = e.target;
   if (!el || el.tagName !== 'UI-CHOICE-FORM' || !e.detail) return;
   var s = _sessionCache[el.getAttribute('data-mc-key')];
   var q = s && s.pendingQuestion;
-  if (!q || !q.questions) return;
+  if (!q || !q.questions || !mcAskShown(el, q)) return;
   mcStateOf(s, q).answers = mcAnswersIn(e.detail.answers);
   refreshCard(s.key);
-});
-document.addEventListener('ui-submit', function(e) {
+}
+function mcOnSubmit(e) {
   var el = e.target;
   if (!el || el.tagName !== 'UI-CHOICE-FORM' || !e.detail) return;
   var key = el.getAttribute('data-mc-key');
@@ -12612,6 +12570,11 @@ document.addEventListener('ui-submit', function(e) {
   var q = s && s.pendingQuestion;
   if (!q || !q.questions) {
     e.preventDefault();
+    return;
+  }
+  if (!mcAskShown(el, q)) {
+    e.preventDefault();
+    mcAskChanged(key);
     return;
   }
   var list = e.detail.answers || [];
@@ -12624,7 +12587,9 @@ document.addEventListener('ui-submit', function(e) {
     && list.every(function(a) { return a.recommended === true; });
   if (allRec) submitAllRecommended(key);
   else submitMultiChoice(key, mcSelectionsOf(s, list));
-});
+}
+document.addEventListener('ui-change', mcOnChange);
+document.addEventListener('ui-submit', mcOnSubmit);
 
 // The POST with the page's CSRF retry: one refresh and one retry after a 403
 // (a rotated token). A body-less POST sends no Content-Type (Fastify refuses a
@@ -12684,12 +12649,19 @@ function submitMultiChoice(key, selections) {
   }
   var sel = selections || {};
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/answer-multi-choice';
-  return mcSend(key, url, JSON.stringify({ selections: sel }));
+  // A dashboard task's answer names its ask (#599 ⑤); a Slack session's has none.
+  var askId = s.pendingQuestion.askId;
+  return mcSend(key, url, JSON.stringify(askId ? { selections: sel, askId: askId } : { selections: sel }));
 }
 // 추천대로 모두 제출 (group-only one-click): the server derives the selections
 // from the session, so the request has no body.
 function submitAllRecommended(key) {
-  return mcSend(key, '/api/dashboard/session/' + encodeURIComponent(key) + '/submit-recommended', undefined);
+  var s = _sessionCache[key];
+  var askId = s && s.pendingQuestion && s.pendingQuestion.askId;
+  // A dashboard task's question names itself (#599 ⑤): its id as JSON. A Slack
+  // session's request stays body-less (mcPost sends no Content-Type then).
+  var body = askId ? JSON.stringify({ askId: askId }) : undefined;
+  return mcSend(key, '/api/dashboard/session/' + encodeURIComponent(key) + '/submit-recommended', body);
 }
 
 // ── Stats ──
@@ -13084,6 +13056,7 @@ function connectWs() {
         if (_cardHost[updatedKey]) refreshCard(updatedKey);
         if (panelOpen && panelSessionKey === updatedKey) {
           renderPanelPermission(msg.session);
+          renderPanelQuestion(msg.session); // the form shows the ask its actions answer (#637 R2)
           var pt2 = document.getElementById('panel-title');
           if (pt2) pt2.textContent = msg.session.displayHeadline || msg.session.summaryTitle || msg.session.title || 'Untitled';
           // Spec 12: the agent tree moved (spawn, status, tool count, a node's tasks);
@@ -13675,7 +13648,7 @@ function wlEntryOf(st, e) {
   var text = String(e.text || '');
   var tool = e.tool ? String(e.tool) : '';
   if ((kind === 'tool' || kind === 'tool_result') && !e._role) {
-    var card = wlCardData(st, seq, false);
+    var card = wlCardData(st, seq);
     x.kind = 'tool';
     x.tool = { name: tool || '툴', status: card ? card.status : 'interrupted' };
     var sum = kind === 'tool' ? wlToolSummary(tool, text) : e.ok === false ? '실패' : '완료';
@@ -13720,18 +13693,29 @@ function wlEntryOf(st, e) {
   if (st.open && st.open.has(seq)) x.raw = wlRawView(st, e);
   return x;
 }
-// Pure: a run of entries outside any task — what its head says (the kind of
-// its first entry; an instruction's first line of words).
-var WL_RUN_TITLE = { instruction: '지시', narration: '진행', final: '응답', notice: '알림', error: '오류', tool: '도구 호출', system: '시스템' };
-function wlRunTitle(first) {
-  var t = WL_RUN_TITLE[first.kind] || '진행';
-  if (first.kind === 'system' && first.system) return first.system.label || t;
-  var line = first.kind === 'instruction' ? String(first.text || '').split('\\n')[0].trim() : '';
-  return line ? t + ' · ' + line : t;
+// Pure: a task group's ledger meta — the element's quiet line under the head's
+// title (D3-GAPS G2-2, 0.12.0 WorkGroup.meta): how the task ended (its time
+// when done, the fate word else — a running one says so, no live clock in a
+// head), and 툴 N회 once it ran. The words are the task list's (renderTaskMeta).
+function wlTaskMeta(t) {
+  var started = Number(t.startedAt) || 0;
+  var completed = Number(t.completedAt) || 0;
+  var removed = Number(t.removedAt) || 0;
+  var fate = taskFateOf(t);
+  var parts = [];
+  if (fate === 'done') {
+    var took = started && completed ? formatDuration(completed - started) || '0s' : '';
+    parts.push(took ? took + ' 만에 완료' : TASK_FATE_LABEL.done);
+  } else if (fate === 'active' || fate === 'paused' || fate === 'dropped' || fate === 'skipped') {
+    parts.push(TASK_FATE_LABEL[fate] + (fate === 'dropped' && started && removed > started ? ' ' + formatDuration(removed - started) : ''));
+  }
+  // SSOT 2026-10-29 T5: a count shared by tasks that ran together is fractional — a whole number on screen.
+  if (fate !== 'pending' && fate !== 'skipped') parts.push({ label: '툴', value: Math.round(toNum(t.toolCalls)) + '회' });
+  return parts;
 }
-// Open state of a group: the reader's choice (the element's ui-toggle, kept
+// Open state of a task group: the reader's choice (the element's ui-toggle, kept
 // across repaints and tab switches), else open when it is the newest task
-// group at first sight — a run outside any task is open.
+// group at first sight. (A run outside any task has no head to fold: headless.)
 function wlGroupOpen(state, id, newest) {
   var map = state.groupOpen || (state.groupOpen = Object.create(null));
   if (!(id in map)) map[id] = !!newest;
@@ -13751,11 +13735,13 @@ function wlGroupOf(e) {
 }
 // SSOT 2026-10-22 T10 — an entry made while a task was in progress carries
 // that task (taskId / taskTitle): one group per task, at the place of its
-// first entry, titled by the ledger (else its latest entry's title); the
-// entries outside a task in runs, each its own group in line. A folded group
-// is handed its count, not its entries: a long log's DOM stays the size of
-// what is open — and the element's scroller never holds the reader's place on
-// rows clipped inside a folded group (D3-GAPS G2-1).
+// first entry, titled by the ledger (else its latest entry's title) with the
+// ledger's meta under it; the entries outside a task (the instruction that
+// starts a turn, the response that ends it) in runs, each a headless group in
+// line — no head, always shown (D3-GAPS G2-2, 0.12.0). A folded task group is
+// handed its count, not its entries: a long log's DOM stays the size of what
+// is open — and the element's scroller never holds the reader's place on rows
+// clipped inside a folded group (D3-GAPS G2-1).
 function wlGroupsOf(st, entries) {
   var rows = [];
   var byTask = Object.create(null);
@@ -13785,16 +13771,16 @@ function wlGroupsOf(st, entries) {
   return rows.map(function(r) {
     var out = { id: r.id };
     if (typeof r.at === 'number' && isFinite(r.at)) out.at = r.at;
-    if (r.taskId) {
-      var task = wlTaskInfo(r.taskId);
-      out.ref = '#' + r.taskId;
-      out.title = (task && task.content) || r.title || '';
-      out.open = wlGroupOpen(st, r.id, r.id === newest);
-    } else {
-      out.ref = '';
-      out.title = wlRunTitle(wlEntryOf(st, r.list[0]));
-      out.open = wlGroupOpen(st, r.id, true);
+    if (!r.taskId) {
+      out.headless = true;
+      out.entries = r.list.map(function(e) { return wlEntryOf(st, e); });
+      return out;
     }
+    var task = wlTaskInfo(r.taskId);
+    out.ref = '#' + r.taskId;
+    out.title = (task && task.content) || r.title || '';
+    if (task) out.meta = wlTaskMeta(task);
+    out.open = wlGroupOpen(st, r.id, r.id === newest);
     out.count = r.list.length;
     out.entries = out.open ? r.list.map(function(e) { return wlEntryOf(st, e); }) : [];
     return out;
@@ -13836,9 +13822,8 @@ function wlCardSlots(el, d) {
     c.setAttribute('lang', 'ko');
     c.setAttribute('slot', 'tool-' + k);
     c.setAttribute('data-key', k);
-    // Each card's header is its own tab stop: the element's rows rove inside it,
-    // a slotted card cannot join that (D3-GAPS G2-3).
-    c.setAttribute('data-stop', '1');
+    // The card is a row on the log's arrow path: the element sets its head-tabindex
+    // (one tab stop across rows and cards — D3-GAPS G2-3, 0.12.0).
     // Light-DOM text: shown until the element is defined (its shadow root has no slot).
     c.innerHTML = '<span class="wl-card-fallback"><span class="wl-tool-name">' + esc(want[k].tool.name) + '</span> ' + esc(want[k].tool.summary || '') + '</span>';
     el.appendChild(c);
@@ -14002,14 +13987,14 @@ function wlCallLive(state, call) {
   return true;
 }
 // The card's data for the entry that carries it (a call, or a result on its own).
-function wlCardData(state, key, stop) {
+function wlCardData(state, key) {
   var carrier = wlEntryBySeq(state, key);
   if (!carrier) return null;
   var call = carrier.kind === 'tool' ? carrier : null;
   var res = call ? wlPairsOf(state).resultOf[call.seq] || null : carrier;
   var tool = String((call && call.tool) || (res && res.tool) || '');
   var status = res ? (res.ok === false ? 'error' : 'success') : wlCallLive(state, call) ? 'running' : 'interrupted';
-  var d = { name: tool || '툴', status: status, focusable: !!stop, open: !!(state.open && state.open.has(key)) };
+  var d = { name: tool || '툴', status: status, open: !!(state.open && state.open.has(key)) };
   var summary = call ? wlToolSummary(tool, call.text) : '';
   if (summary) d.summary = summary;
   if (call && typeof call.ts === 'number' && isFinite(call.ts)) {
@@ -14038,7 +14023,7 @@ function wlCardData(state, key, stop) {
 // load gets a new one), not by content: hashing 256 KiB on every push costs.
 function wlCardSig(d, rev) {
   if (!d) return '';
-  var keys = ['name', 'summary', 'status', 'focusable', 'open', 'at', 'duration', 'loading', 'note', 'detailError', 'error'];
+  var keys = ['name', 'summary', 'status', 'open', 'at', 'duration', 'loading', 'note', 'detailError', 'error'];
   var out = [];
   for (var i = 0; i < keys.length; i++) out.push(d[keys[i]]);
   out.push(d.args === undefined ? -1 : 1, d.result === undefined ? -1 : 1, rev || 0);
@@ -14047,7 +14032,7 @@ function wlCardSig(d, rev) {
 function wlPaintCard(state, el) {
   if (!el || !state) return;
   var key = Math.floor(Number(el.getAttribute('data-key')) || 0);
-  var d = wlCardData(state, key, el.getAttribute('data-stop') === '1');
+  var d = wlCardData(state, key);
   if (!d) return;
   var det = state.cardDetail && state.cardDetail[key];
   // Open without its input / output (a re-pairing dropped them, a fresh render): fetch them.
@@ -14411,10 +14396,6 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // scope — go through the same live path as every update (spec 13).
   // A tasks opening (전체 task N개 →) unfolds the plan with every step and the earlier plans.
   if (_panelLand === 'tasks') { _panelTasksOpen = true; _panelTasksExpanded = true; _panelTasksEarlier = true; }
-  // Another session's goal form (and its draft) never carries into this one;
-  // reopening the same session keeps an unsent draft.
-  var goalEl = document.getElementById('panel-goal');
-  if (goalEl && goalEl._key !== sessionKey) { goalEl.innerHTML = ''; goalEl._html = ''; }
   // An opening's first plan and 입력 필요 renders are the baseline: nothing in
   // them is announced (re-agent-run D7, D15).
   var tasksEl = document.getElementById('panel-tasks');
@@ -14485,6 +14466,8 @@ function deckNextAfter(deck, key) {
 function deckDrop(key) {
   // A session gone from the board since it joined the deck is no next card (review R1).
   for (var i = _deck.length - 1; i >= 0; i--) if (_deck[i] !== key && !_sessionCache[_deck[i]]) _deck.splice(i, 1);
+  // An opening still waiting for <ui-drawer> was for this card: it is dropped with it (D4 review P3).
+  if (_panelOpenWaiting && _panelOpenWaiting[0] === key) _panelOpenWaiting = null;
   var showing = panelOpen && panelSessionKey === key;
   var next = showing ? deckNextAfter(_deck, key) : null;
   deckRemove(key);
@@ -14517,11 +14500,13 @@ function cardFaceOf(key) {
 // The deck's controls and the edges behind the panel; dir = the side a new front card came from.
 // <ui-deck-nav> (D3 E-05) takes the deck as data — how many, which is in front, their names
 // (its ‹ › title "이전: <name>", its position said once) — and asks with ui-page; the page
-// opens that card, which repaints this with the new front.
+// opens that card, which repaints this with the new front. The peek strip above the header
+// (<ui-deck-nav peek="only">) draws the edges of the cards behind from the same data.
 function renderDeckNav(dir) {
   _deck = _deck.filter(function(k) { return !!_sessionCache[k]; });
   var panel = document.getElementById('slide-panel');
   var nav = document.getElementById('panel-deck');
+  var peek = document.getElementById('panel-deck-peek');
   if (!panel || !nav) return;
   var n = _deck.length;
   var i = _deck.indexOf(panelSessionKey);
@@ -14540,6 +14525,7 @@ function renderDeckNav(dir) {
       nav._sig = sig;
       nav._keys = _deck.slice();
       nav.data = data;
+      if (peek) peek.data = data;
     }
   }
   if (dir && !reduceMotion()) deckSlide(panel, dir);
@@ -14571,7 +14557,7 @@ function deckSlide(panel, dir) {
 // else the heading.
 function focusPanelLanding() {
   var t = null;
-  if (_panelLand === 'goal') t = document.querySelector('#panel-goal .cg-add-input') || document.getElementById('panel-goal');
+  if (_panelLand === 'goal') t = goalCardFocusTarget() || document.getElementById('panel-goal');
   else if (_panelLand === 'agent') t = document.querySelector('#panel-agents .pa-focus');
   else if (_panelLand === 'tasks') t = document.getElementById('panel-tasks');
   // The 작업 로그 tab is <ui-tabs>' own (D4 E-24): its selected tab — the one this opening chose — takes focus.
@@ -15026,14 +15012,25 @@ function convEl() {
 }
 // What the list says without turns (G-13: in Korean, the element's own empty state).
 var CONV_EMPTY = { none: '아직 대화가 없습니다', unrecorded: '기록된 대화가 없습니다' };
-// Pure: the turn's summary — the heading of an answer that is empty or failed,
-// and Raw's 요약 view: its title and body, else that it is still being made or failed.
-function convSummaryOf(t) {
+// Pure: the turn's summary — the heading of an answer that is empty or failed, and Raw's 요약 view: its title
+// and body; else that it is still being made; else that it failed (summary.error, the alert mark) with the
+// element's Retry (summary.canRetry → ui-retry { id, what: 'summary' } → convResummarize; G-04) when the turn
+// can be asked for again — or, once asked (c.resum), that the retry is on its way until the next poll brings
+// the summary.
+function convSummaryOf(t, c) {
   var title = t && t.summaryTitle ? String(t.summaryTitle) : '';
-  var text = t && t.summaryBody ? String(t.summaryBody) : t && t.summarized ? STRINGS.summaryFailed : STRINGS.summaryPending;
   var out = {};
   if (title) out.title = title;
-  if (text) out.text = text;
+  if (t && t.summaryBody) out.text = String(t.summaryBody);
+  else if (!(t && t.summarized)) out.text = STRINGS.summaryPending;
+  else {
+    var askable = !!(c && c.cid && t.id);
+    if (askable && c.resum && c.resum[resumKey(c.cid, t.id)]) out.text = STRINGS.retrying;
+    else {
+      out.error = STRINGS.summaryFailed;
+      if (askable) out.canRetry = true;
+    }
+  }
   return out;
 }
 // Pure: a turn soma-work put there (sysTurnInfo) as the element's system turn —
@@ -15051,19 +15048,17 @@ function convSysTurn(t, info, id, at, c, notLast) {
     if (st.phase === 'live') x.progress = { startedAt: st.start, estimateMs: st.est, verb: '압축 중…' };
     else x.text = cpDoneText(info, st);
   }
-  // The files the turn carried (the message an auto-compact intercepted): a
-  // system turn has no media slot in the element (D3-GAPS G1-2) — their names.
-  var atts = Array.isArray(t.attachments) ? t.attachments.filter(function(f) { return f && f.id; }) : [];
-  if (atts.length) facts = facts.concat([['첨부 파일', atts.map(function(f) { return String(f.name || f.id); }).join(', ')]]);
   if (facts.length) x.facts = facts.map(function(f) { return [String(f[0]), String(f[1])]; });
   if (info.raw) x.raw = String(info.raw);
   return x;
 }
 // Pure: the element's turns for the main agent's turns (oldest first), and the
-// slotted children they ask for — a user's files (media-<id>) and the files an
-// answer produced (attachments-<id>: an artifact goes to the first answer whose
-// turn window holds its turn start). c: { cid, bot, now, working, answers
-// (cache key → raw), failed (cache key → why), arts, titles }.
+// slotted children they ask for — the files a turn carried (media-<id>: a
+// person's above their words; a system turn's — the message an auto-compact
+// intercepted — in its open detail) and the files an answer produced
+// (attachments-<id>: an artifact goes to the first answer whose turn window
+// holds its turn start). c: { cid, bot, now, working, answers (cache key → raw),
+// failed (cache key → why), arts, titles, resum (summary retries asked for) }.
 function convTurnsOf(list, c) {
   var turns = [];
   var slots = [];
@@ -15079,23 +15074,24 @@ function convTurnsOf(list, c) {
     if (t.role === 'user') {
       var atts = Array.isArray(t.attachments) ? t.attachments.filter(function(a) { return a && a.id; }) : [];
       var sys = sysTurnInfo(t);
-      if (sys) turns.push(convSysTurn(t, sys, id, at, c, i < list.length - 1));
+      var u;
+      if (sys) u = convSysTurn(t, sys, id, at, c, i < list.length - 1);
       else {
         var said = splitInvokedSkills(decodeSlackEntities(t.rawContent || ''));
-        var u = { id: id, role: 'user', name: String(t.userName || 'User'), text: said.text };
+        u = { id: id, role: 'user', name: String(t.userName || 'User'), text: said.text };
         if (at) u.at = at;
-        if (atts.length) {
-          u.media = true;
-          slots.push({ name: 'media-' + id, kind: 'media', list: atts, turn: t });
-        }
         if (said.skills.length) u.skills = said.skills.map(function(sk) { return { name: sk.name, tokens: sk.tokens, text: sk.body }; });
-        turns.push(u);
       }
+      if (atts.length) {
+        u.media = true;
+        slots.push({ name: 'media-' + id, kind: 'media', list: atts, turn: t });
+      }
+      turns.push(u);
     } else {
       var a = { id: id, role: 'assistant', name: c.bot };
       if (at) a.at = at;
-      var sum = convSummaryOf(t);
-      if (sum.title || sum.text) a.summary = sum;
+      var sum = convSummaryOf(t, c);
+      if (sum.title || sum.text || sum.error) a.summary = sum;
       // D11 — from the instruction to the recorded answer; an optimistic
       // instruction carries this browser's clock, not the server's: no time.
       var pts = prev ? toNum(prev.timestamp) : 0;
@@ -15114,14 +15110,9 @@ function convTurnsOf(list, c) {
       } else a.markdown = '';
       var mine = (c.arts || []).filter(function(x) { return x && !used[x.id] && artInTurn(x, start, ts); });
       mine.forEach(function(x) { used[x.id] = true; });
-      // G-04 요약 실패 · 다시 시도: the element has no summary action (D3-GAPS G1-3), so the retry rides
-      // in the turn's attachments slot until the summary arrives (the next poll drops it).
-      var resum = t.id && c.cid && t.summarized && !t.summaryBody ? { cid: c.cid, turnId: String(t.id) } : null;
-      if (mine.length || resum) {
+      if (mine.length) {
         a.attachments = true;
-        var slot = { name: 'attachments-' + id, kind: 'arts', list: mine, start: start, end: ts };
-        if (resum) slot.resum = resum;
-        slots.push(slot);
+        slots.push({ name: 'attachments-' + id, kind: 'arts', list: mine, start: start, end: ts });
       }
       turns.push(a);
     }
@@ -15137,8 +15128,7 @@ function convSlots(el, slots, cid) {
   for (var i = 0; i < slots.length; i++) {
     var sl = slots[i];
     if (sl.kind === 'media') umRegister(cid, sl.list, sl.turn);
-    want[sl.name] = sl.kind === 'media' ? renderUserMedia(cid, sl.list)
-      : (sl.list.length ? renderTurnArtifacts(sl.list, cid, sl.start, sl.end) : '') + (sl.resum ? convResumHtml(sl.resum) : '');
+    want[sl.name] = sl.kind === 'media' ? renderUserMedia(cid, sl.list) : renderTurnArtifacts(sl.list, cid, sl.start, sl.end);
   }
   var kids = Array.prototype.slice.call(el.children);
   for (var k = 0; k < kids.length; k++) {
@@ -15162,22 +15152,37 @@ function convSlots(el, slots, cid) {
     el.appendChild(d);
   }
 }
-// 요약 실패 · 다시 시도 (G-04): asks the server to summarize the turn again (POST …/resummarize/:turnId);
-// the button carries its ids as data (initConversation answers its click — no inline handler).
-function convResumHtml(r) {
-  return '<p class="cv-resum"><span class="cv-resum-note">' + esc(STRINGS.summaryFailed) + '</span> '
-    + '<button type="button" class="ui-btn is-sm" data-resum-cid="' + escAttr(r.cid) + '" data-resum-turn="' + escAttr(r.turnId) + '">' + esc(STRINGS.retry) + '</button></p>';
+// 요약 실패 · 다시 시도 (G-04): the element's Retry on a turn's summary (Raw's 요약 view) asks the server to
+// summarize the turn again (POST …/resummarize/:turnId, the page's CSRF token, one retry after a refresh). While
+// the request is out, and until the next poll brings the summary, the view reads 다시 시도 중…; a refused request
+// puts the Retry back. A subagent's turns carry no summary: only the main agent's conversation asks.
+var _resumSent = Object.create(null); // resumKey → the resummarize asked for (until the summary lands)
+function resumKey(cid, turnId) {
+  return cid + '|' + turnId;
 }
-async function resummarize(convId, turnId, btn) {
-  btn.disabled = true;
-  btn.textContent = STRINGS.retrying;
+function convResummarize(id) {
+  if (_panelAgent || id === null || id === undefined || id === '') return;
+  var cid = _panelTurnsCid || panelConvId || '';
+  if (cid) resummarize(cid, String(id));
+}
+async function resummarize(convId, turnId) {
+  var key = resumKey(convId, turnId);
+  if (_resumSent[key]) return;
+  _resumSent[key] = true;
+  convPaint();
+  var url = '/api/dashboard/session/' + encodeURIComponent(convId) + '/resummarize/' + encodeURIComponent(turnId);
+  var ok = false;
   try {
-    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(convId) + '/resummarize/' + encodeURIComponent(turnId), { method: 'POST' });
-    if (!res.ok) throw new Error('Failed');
-    btn.textContent = STRINGS.queued;
-  } catch (e) {
-    btn.disabled = false;
-    btn.textContent = STRINGS.retry;
+    var res = await fetch(url, { method: 'POST', headers: _csrfToken ? { 'X-CSRF-Token': _csrfToken } : {} });
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      res = await fetch(url, { method: 'POST', headers: _csrfToken ? { 'X-CSRF-Token': _csrfToken } : {} });
+    }
+    ok = res.ok;
+  } catch (_e) {}
+  if (!ok) {
+    delete _resumSent[key];
+    convPaint();
   }
 }
 // The element's data, written only when it changed (a poll that changes
@@ -15205,7 +15210,7 @@ function convPaint() {
   var working = s ? s.activityState === 'working' : Object.keys(_sessionCache).length === 0;
   var built = convTurnsOf(_panelTurnsList, {
     cid: cid, bot: botNameOf(s), now: Date.now(), working: working,
-    answers: _rawLoadedCache, failed: _ansFailed,
+    answers: _rawLoadedCache, failed: _ansFailed, resum: _resumSent,
     arts: cid && _artCache[cid] ? _artCache[cid].list || [] : [],
     titles: ansLinkTitles(ansSession(cid)),
   });
@@ -15410,11 +15415,6 @@ function ansPendingShow(s, convId, lastRole) {
 (function initConversation() {
   var el = convEl();
   if (!el) return;
-  // 요약 실패 · 다시 시도 in a turn's attachments slot (light DOM: the click lands here as it is).
-  el.addEventListener('click', function(e) {
-    var b = e.target && e.target.closest ? e.target.closest('button[data-resum-turn]') : null;
-    if (b && !b.disabled && el.contains(b)) resummarize(b.getAttribute('data-resum-cid'), b.getAttribute('data-resum-turn'), b);
-  });
   el.addEventListener('ui-load-older', function(e) {
     if (_panelAgent || !_panelTurnsHasMore || _panelTurnsLoading) {
       e.preventDefault();
@@ -15422,9 +15422,11 @@ function ansPendingShow(s, convId, lastRole) {
     }
     loadMorePanelTurns();
   });
+  // Try again on an answer or the list (convRetry), or on a turn's summary (what: 'summary' — G-04).
   el.addEventListener('ui-retry', function(e) {
     var d = e.detail || {};
-    convRetry(d.id);
+    if (d.what === 'summary') convResummarize(d.id);
+    else convRetry(d.id);
   });
   if (window.customElements && customElements.whenDefined) {
     customElements.whenDefined('ui-conversation').then(function() {
@@ -15542,7 +15544,6 @@ function closePanel() {
   resetWorkLog(null);
   // A closed panel holds no section nodes.
   for (var si = 0; si < PSEC_ORDER.length; si++) psecClear(PSEC_ORDER[si]);
-  psecSetNew(0);
   _panelLand = '';
   _panelLanded = false;
   _panelHold = false;
@@ -15706,7 +15707,10 @@ async function sendCommand(text, ref, files) {
   // render that finds it again re-applies its real state (the mode cache is cleared).
   if (!_sessionCache[sendingSessionKey]) {
     var cmdHost = document.getElementById('panel-command');
-    if (cmdHost) cmdHost._mode = '';
+    if (cmdHost) {
+      cmdHost._mode = '';
+      cmdHost._takesFiles = false;
+    }
     el._sig = '';
     el.data = Object.assign({}, el.data, { disabled: true });
   }
@@ -16444,11 +16448,11 @@ async function loadCapacity() {
 // strip plus the files each answer turn produced. Hover (or keyboard focus) →
 // a peek in <ui-hovercard #art-peek>; click → <ui-artifact-viewer #art-viewer>.
 // Every render function here is pure; the DOM work sits in the functions after
-// artViewerPreview and in initArtifactInteractions.
+// artPeekItem and in initArtifactInteractions.
 var ART_KIND_LABEL = { image: '이미지', audio: '오디오', video: '비디오', html: 'HTML', markdown: '답변', pdf: 'PDF', text: '텍스트', file: '파일' };
-var ART_GLYPH = { image: '<i data-ui-icon="file-image" class="art-glyph"></i>', audio: '<i data-ui-icon="file-audio" class="art-glyph"></i>', video: '<i data-ui-icon="file-video" class="art-glyph"></i>', html: '<i data-ui-icon="file-code" class="art-glyph"></i>', markdown: '<i data-ui-icon="file-text" class="art-glyph"></i>', pdf: '<i data-ui-icon="file-text" class="art-glyph"></i>', text: '<i data-ui-icon="file-text" class="art-glyph"></i>', file: '<i data-ui-icon="file" class="art-glyph"></i>' };
 var _artCache = Object.create(null); // conversationId → { state: 'loading'|'ok'|'error', list, promise }
-var _artDocCache = Object.create(null); // 'cid|id' → text of a markdown / text artifact
+var _artDocCache = Object.create(null); // 'cid|id' → text of a markdown / text artifact; 'cid|id|head' → its first 64 KB (the peek)
+var _artDocPending = Object.create(null); // the same keys → the one fetch under way (two askers, one request)
 var _artViewer = { cid: null, scope: 'conversation', list: [] }; // what the open viewer pages through
 
 function artUrl(cid, id, download) {
@@ -16589,32 +16593,6 @@ function umOnTurn(cid, turn) {
   if (panelOpen && panelConvId === cid) renderPanelArtifactsSection();
 }
 
-function artFormatSize(n) {
-  n = toNum(n);
-  if (n < 1024) return n + ' B';
-  if (n < 1048576) return (n / 1024).toFixed(n < 10240 ? 1 : 0) + ' KB';
-  if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
-  return (n / 1073741824).toFixed(1) + ' GB';
-}
-
-function artKindLabel(a) {
-  return ART_KIND_LABEL[a && a.kind] || '파일';
-}
-
-function artGlyph(kind) {
-  return ART_GLYPH[kind] || ART_GLYPH.file;
-}
-
-// "HTML · 47 KB · 14:23" — and says so when only Slack has the bytes.
-function artMeta(a) {
-  var parts = [artKindLabel(a)];
-  if (toNum(a.size) > 0) parts.push(artFormatSize(a.size));
-  var d = new Date(toNum(a.createdAt));
-  if (toNum(a.createdAt) > 0 && !isNaN(d.getTime())) parts.push(d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }));
-  if (!a.stored) parts.push('Slack에만 있음');
-  return parts.join(' · ');
-}
-
 // A file as @2lab.ai/ui <ui-file-card> (D2 I-01..I-03): the page renders the element keyed by data-art-cid /
 // data-art-id, with data-art-v (what it shows) so a re-render that changes the file re-hands it; initFileCards
 // gives it artFileItem. Its ui-open opens the viewer; the hovercard's for= reaches it for the peek; playable: a
@@ -16701,43 +16679,25 @@ function renderTurnArtifacts(list, cid, startTs, endTs) {
   return '<div class="turn-arts-row">' + hits.map(function(a) { return artChip(cid, a); }).join('') + '</div>';
 }
 
-// Hover peek (T2): what the page fills @2lab.ai/ui <ui-hovercard id="art-peek"> with for one tile — html renders
-// live but WITHOUT scripts (sandbox=""), media never autoplays, a markdown / text answer shows its first lines
-// (the viewer draws the document).
-function renderArtPeekBody(cid, a) {
-  var url = escAttr(artUrl(cid, a.id));
-  var media;
-  if (!a.stored) {
-    media = '<div class="art-peek-meta">' + artGlyph(a.kind) + '<span class="art-peek-sub">' + esc(a.name) + '</span><span class="art-peek-sub">대시보드에 사본이 없습니다 — Slack에서 열 수 있습니다</span></div>';
-  } else if (a.kind === 'image') {
-    media = '<img class="art-peek-img" src="' + url + '" alt="' + escAttr(a.name) + '">';
-  } else if (a.kind === 'html') {
-    media = '<div class="art-peek-frame"><iframe sandbox="" src="' + url + '" title="' + escAttr(a.name) + '" tabindex="-1" loading="lazy" referrerpolicy="no-referrer"></iframe></div>';
-  } else if (a.kind === 'audio') {
-    media = '<div class="art-peek-audio">' + artGlyph('audio') + '<audio controls preload="metadata" src="' + url + '"></audio></div>';
-  } else if (a.kind === 'video') {
-    media = '<video class="art-peek-video" preload="metadata" muted playsinline src="' + url + '#t=0.1"></video>';
-  } else if (a.kind === 'markdown' || a.kind === 'text') {
-    media = '<pre class="art-peek-pre" data-art-doc="' + escAttr(cid + '|' + a.id) + '"><span class="art-doc-loading">불러오는 중…</span></pre>';
-  } else {
-    media = '<div class="art-peek-meta">' + artGlyph(a.kind) + '<span class="art-peek-sub">' + esc(a.name) + '</span></div>';
-  }
-  return '<div class="art-peek-media art-k-' + escAttr(a.kind || 'file') + '">' + media + '</div>'
-    + '<div class="art-peek-foot"><span class="art-peek-name">' + esc(a.title || a.name) + '</span>'
-    + '<span class="art-peek-info">' + esc(artMeta(a)) + ' · 클릭하면 크게</span></div>';
+// A markdown / text answer with a copy here: the viewer draws the document, the peek its head.
+function artIsDoc(a) {
+  return !!(a && a.stored && (a.kind === 'markdown' || a.kind === 'text'));
 }
 
-// The viewer body the page draws itself (<ui-artifact-viewer>'s slot="preview") where the element's own would not
-// do: the model's HTML runs its scripts (sandbox="allow-scripts" — never same-origin, no popups; the element keeps
-// scripts off), a PDF opens in the browser's own viewer. A user's upload never runs (the element's sandbox=""
-// frame; the route serves it inert as well). '' hands the body back to the element.
-function artViewerPreview(cid, a) {
-  if (!a || !a.stored) return '';
-  var url = escAttr(artUrl(cid, a.id));
-  var title = escAttr(a.name);
-  if (a.kind === 'html' && a.source !== 'user_upload') return '<iframe class="art-full-frame" sandbox="allow-scripts" src="' + url + '" title="' + title + '" referrerpolicy="no-referrer"></iframe>';
-  if (a.kind === 'pdf') return '<iframe class="art-full-frame" src="' + url + '" title="' + title + '"></iframe>';
-  return '';
+// Hover peek (T2): the card @2lab.ai/ui <ui-hovercard id="art-peek"> shows for one file is the library's own
+// (peekHtml, 0.12.0): the file as the viewer pages it (artViewItem — the model's HTML runs its scripts in the peek's
+// frame too, a user's upload never; media never autoplays) plus a document's head (items[].head: the whole text once
+// the viewer fetched it, else the first 64 KB artDocHead brought in) under the kind's tint ([data-kind]).
+function artPeekItem(cid, a) {
+  var item = artViewItem(cid, a);
+  if (item.text == null && artIsDoc(a)) {
+    var head = _artDocCache[cid + '|' + a.id + '|head'];
+    if (head != null) item.head = head;
+  }
+  return item;
+}
+function artPeekHtml(item, peek) {
+  return '<div class="art-peek" data-kind="' + escAttr(peek.kind(item)) + '">' + peek.html(item, 'ko') + '</div>';
 }
 
 // ── Artifact DOM: fetch, settle, the peek and the viewer ──
@@ -16867,12 +16827,23 @@ function artPeekTarget(t) {
   return a ? { cid: cid, a: a } : null;
 }
 
-// ui-open: the card is filled for this trigger (or refused: a file the page does not know); a document's head is fetched.
+// ui-open: the card is filled for this trigger (or refused: a file the page does not know, or the library's peek
+// not yet reached); a document without its head in hand gets it fetched and the card refilled — while it still
+// shows that file (the element's trigger).
 function onArtPeekOpen(e) {
   var hit = artPeekTarget(e.detail && e.detail.trigger);
-  if (!hit) { e.preventDefault(); return; }
-  e.target.innerHTML = renderArtPeekBody(hit.cid, hit.a);
-  artPeekFillDoc(e.target);
+  var peek = window.uiPeek;
+  if (!hit || !peek) { e.preventDefault(); return; }
+  var card = e.target;
+  var item = artPeekItem(hit.cid, hit.a);
+  card.innerHTML = artPeekHtml(item, peek);
+  if (!artIsDoc(hit.a) || item.text != null || item.head != null) return;
+  artDocHead(hit.cid, hit.a.id)
+    .then(function() {
+      var now = artPeekTarget(card.trigger);
+      if (now && now.cid === hit.cid && now.a.id === hit.a.id) card.innerHTML = artPeekHtml(artPeekItem(hit.cid, hit.a), peek);
+    })
+    .catch(function() {});
 }
 
 // ui-closed: the preview goes (a playing clip, the iframe) once the exit has played.
@@ -16880,35 +16851,31 @@ function onArtPeekClosed(e) {
   e.target.innerHTML = '';
 }
 
-// The first lines of a markdown / text answer in the peek ([data-art-doc]): the first 64 KB (the route serves
-// ranges), as plain text — the viewer draws the whole document.
-var ART_PEEK_LINES = 24;
-function artPeekFillDoc(root) {
-  var n = root ? root.querySelector('[data-art-doc]') : null;
-  if (!n) return;
-  var key = n.getAttribute('data-art-doc') || '';
-  var sep = key.indexOf('|');
-  if (sep < 0) return;
-  var paint = function(text) {
-    if (n.isConnected) n.textContent = String(text).replace(/\\r\\n?/g, '\\n').split('\\n').slice(0, ART_PEEK_LINES).join('\\n');
-  };
-  if (_artDocCache[key] != null) { paint(_artDocCache[key]); return; }
-  fetch(artUrl(key.slice(0, sep), key.slice(sep + 1)), { headers: { Range: 'bytes=0-65535' } })
-    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
-    .then(paint)
-    .catch(function() { if (n.isConnected) n.innerHTML = '<span class="art-doc-loading">불러오지 못했습니다</span>'; });
-}
-
-// The whole text of a markdown / text artifact for the viewer, fetched once (2 MB at most).
-function artDocText(cid, id) {
-  var key = cid + '|' + id;
+// A document's text under one key, fetched once however many ask (the fetch under way is handed to the next
+// asker — a step back onto the same file, the peek and the viewer at once), kept once it lands (cap chars).
+function artDocFetch(key, url, headers, cap) {
   if (_artDocCache[key] != null) return Promise.resolve(_artDocCache[key]);
-  return fetch(artUrl(cid, id))
+  if (_artDocPending[key]) return _artDocPending[key];
+  var p = fetch(url, headers ? { headers: headers } : undefined)
     .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
     .then(function(t) {
-      _artDocCache[key] = t.length > 2000000 ? t.slice(0, 2000000) : t;
+      _artDocCache[key] = t.length > cap ? t.slice(0, cap) : t;
       return _artDocCache[key];
     });
+  _artDocPending[key] = p;
+  var settle = function() { if (_artDocPending[key] === p) delete _artDocPending[key]; };
+  p.then(settle, settle);
+  return p;
+}
+// The whole text of a markdown / text artifact for the viewer (2 MB at most).
+function artDocText(cid, id) {
+  return artDocFetch(cid + '|' + id, artUrl(cid, id), null, 2000000);
+}
+// Its first 64 KB for the peek (the route serves ranges) — the whole text when that is already here.
+function artDocHead(cid, id) {
+  var key = cid + '|' + id;
+  if (_artDocCache[key] != null) return Promise.resolve(_artDocCache[key]);
+  return artDocFetch(key + '|head', artUrl(cid, id), { Range: 'bytes=0-65535' }, 65536);
 }
 
 // ── The viewer (I-06, I-07) is @2lab.ai/ui <ui-artifact-viewer id="art-viewer" tiles="none" lang="ko">: no tiles
@@ -16928,10 +16895,14 @@ function artViewerIsOpen() {
 
 // The file as the viewer pages it: the card's item (artFileItem) plus the page's kind word for a final answer, the
 // title of a user's attachment, why a file has no copy, the Slack permalink as an action, and a document's text
-// once fetched (the element never fetches). The element escapes every string.
+// once fetched (the element never fetches). The model's HTML runs its scripts in the element's frame (items[].scripts
+// — sandboxed, never same-origin; a user's upload never runs); a stored PDF — the page's own route, same origin —
+// opens in the browser's viewer (items[].frame). The element escapes every string.
 function artViewItem(cid, a) {
   var item = artFileItem(cid, a);
   if (a.source === 'final_answer') item.kindLabel = ART_KIND_LABEL.markdown;
+  if (a.stored && a.kind === 'html' && a.source !== 'user_upload') item.scripts = true;
+  if (a.stored && a.kind === 'pdf') item.frame = true;
   var notes = [];
   if (a.title && a.title !== a.name) notes.push(String(a.title));
   if (!a.stored) notes.push(a.source === 'user_upload' ? umMissingReason(a) : '이 파일은 대시보드에 사본이 없습니다 (100 MB 초과이거나 업로드 전에 지워졌습니다).');
@@ -16966,48 +16937,21 @@ function openArtifactViewer(cid, id, opener) {
   pauseArtCards();
   _artViewer = { cid: cid, scope: scope, list: list };
   var at = Math.max(0, list.findIndex(function(a) { return a.id === id; }));
-  // The page's body goes in before the element draws the file: it reads the slot as it renders, so its own frame
-  // for the model's HTML (sandbox="", the url) never loads first.
-  artViewerSlot(v, cid, list[at]);
   v.open(artViewerItems(cid, list), at, opener && typeof opener.focus === 'function' ? opener : null);
   if (scope === 'conversation' && (!c || c.state !== 'ok')) ensureArtifacts(cid);
 }
 
-// The page's body for a file (artViewerPreview) as the viewer's slot="preview" child — put in, swapped for another
-// file's, or taken out (null, or a file the element draws itself: the slot's absence hands the stage back to it).
-function artViewerSlot(v, cid, a) {
-  var html = a ? artViewerPreview(cid, a) : '';
-  var slot = v.querySelector('[slot="preview"]');
-  if (!html) {
-    if (slot) slot.remove();
-    return;
-  }
-  if (!slot) {
-    slot = document.createElement('div');
-    slot.setAttribute('slot', 'preview');
-    slot.className = 'art-viewer-preview';
-    v.appendChild(slot);
-  }
-  var mark = cid + '|' + a.id;
-  if (slot.getAttribute('data-art-for') !== mark) {
-    slot.setAttribute('data-art-for', mark);
-    slot.innerHTML = html;
-  }
-}
-
-// ui-view: the shown file — the page's body for it when it has one (artViewerSlot), else the element's; a markdown
-// / text document without its text yet is fetched and the list handed back with it.
+// ui-view: the shown file — every body is the element's (items[].scripts / frame); a markdown / text document
+// shown before its text is here is fetched (once: artDocFetch keeps the request under way) and the list handed
+// back with it.
 function syncArtViewer(detail) {
   var v = artViewerEl();
   var cid = _artViewer.cid;
   var a = detail && cid ? _artViewer.list.find(function(x) { return x.id === detail.id; }) : null;
-  if (!v || !a) return;
-  artViewerSlot(v, cid, a);
-  if ((a.kind === 'markdown' || a.kind === 'text') && a.stored && _artDocCache[cid + '|' + a.id] == null) {
-    artDocText(cid, a.id)
-      .then(function() { if (_artViewer.cid === cid && artViewerIsOpen()) v.data = { items: artViewerItems(cid, _artViewer.list) }; })
-      .catch(function() {});
-  }
+  if (!v || !artIsDoc(a) || _artDocCache[cid + '|' + a.id] != null) return;
+  artDocText(cid, a.id)
+    .then(function() { if (_artViewer.cid === cid && artViewerIsOpen()) v.data = { items: artViewerItems(cid, _artViewer.list) }; })
+    .catch(function() {});
 }
 
 // Every <ui-file-card playable> stops: the viewer opens over the page.
@@ -17065,7 +17009,7 @@ function fcHydrateIn(node) {
       return;
     }
     var peek = document.getElementById('art-peek');
-    if (peek && e.target.closest('#art-peek .art-peek-media') && !e.target.closest('audio')) {
+    if (peek && e.target.closest('#art-peek .av-pk-media') && !e.target.closest('audio')) {
       var anchor = peek.trigger;
       var hit = artPeekTarget(anchor);
       peek.hide();
@@ -17079,17 +17023,14 @@ function fcHydrateIn(node) {
   }
   var viewer = artViewerEl();
   if (viewer) {
-    // The page's own body (model HTML with its scripts, a PDF) goes in before the element draws a step's body
-    // (ui-before-view, 0.12.0) — so a page is never loaded twice; ui-view keeps the slot in step after it.
-    viewer.addEventListener('ui-before-view', function(e) { syncArtViewer(e.detail); });
+    // The shown file (open, a step): a document's text is brought in on ui-view alone — the page slots nothing
+    // before a body renders, so the element's earlier notice has nothing for it (and one listener is one fetch).
     viewer.addEventListener('ui-view', function(e) { syncArtViewer(e.detail); });
-    // Closed by the person (Esc, the scrim, ✕): the page's body leaves once the exit has played.
-    viewer.addEventListener('ui-close', function() {
-      _artViewer = { cid: null, scope: 'conversation', list: [] };
-      setTimeout(function() {
-        var slot = viewer.querySelector('[slot="preview"]');
-        if (slot && !artViewerIsOpen()) slot.remove();
-      }, 240);
+    // Gone — the person's Esc / scrim / ✕, or the list emptied under it, or the element removed: once the exit has
+    // played (ui-closed, every close) the page lets go of what it paged. A list reopened within the exit cancels
+    // the close, so the guard only keeps a late notice from an open viewer's list.
+    viewer.addEventListener('ui-closed', function() {
+      if (!artViewerIsOpen()) _artViewer = { cid: null, scope: 'conversation', list: [] };
     });
   }
 })();
@@ -17145,10 +17086,9 @@ function fcHydrateIn(node) {
   });
 })();
 // <ui-disclosure> (K-06): Raw, a system turn and a card's system instruction (D1), and — D4 — 세션 정보, Tasks,
-// 지시 첨부 and the completed goals open and close by themselves (the row or the external trigger, Enter / Space,
-// the grow and the fold, inert while closed; a click on the slotted summary's words counts since 0.8.0). The page
-// keeps each choice (_ioOpen, _panelInfoOpen, _panelTasksOpen, _umPanelOpen, _goalHistoryOpen) from the element's
-// cancelable ui-toggle; a region it paints only while open is painted on the way open (so the element grows
+// 지시 첨부 open and close by themselves (the row, Enter / Space, the grow and the fold, inert while closed; a
+// click on the slotted summary's words counts since 0.8.0). The page keeps each choice (_ioOpen, _panelInfoOpen,
+// _panelTasksOpen, _umPanelOpen) from the element's cancelable ui-toggle; a region it paints only while open is painted on the way open (so the element grows
 // around it) and, as 'folding', kept through the fold until the element's ui-toggled says the region has settled —
 // then its nodes go.
 (function initDisclosures() {
@@ -17157,7 +17097,6 @@ function fcHydrateIn(node) {
     if (!t || !t.classList || t.tagName !== 'UI-DISCLOSURE') return;
     var open = !!(e.detail && e.detail.open);
     if (t.classList.contains('io-sys')) ioSysToggle(t.getAttribute('data-cid') || '', open);
-    else if (t.classList.contains('cg-hx')) goalHistoryToggle(t.getAttribute('data-hx') || '', open);
     else if (t.classList.contains('pi-dc')) { _panelInfoOpen = open || 'folding'; if (open) renderPanelInfo(); }
     else if (t.classList.contains('panel-tasks-dc')) { _panelTasksOpen = open || 'folding'; if (open) repaintPanelTasks(); }
     else if (t.classList.contains('panel-um-dc')) { _umPanelOpen = open || 'folding'; if (open) renderPanelArtifactsSection(); }
@@ -17165,8 +17104,7 @@ function fcHydrateIn(node) {
   document.addEventListener('ui-toggled', function(e) {
     var t = e.target;
     if (!t || !t.classList || t.tagName !== 'UI-DISCLOSURE' || (e.detail && e.detail.open)) return;
-    if (t.classList.contains('cg-hx')) goalHistoryFolded(t.getAttribute('data-hx') || '');
-    else if (t.classList.contains('pi-dc') && _panelInfoOpen === 'folding') { _panelInfoOpen = false; renderPanelInfo(); }
+    if (t.classList.contains('pi-dc') && _panelInfoOpen === 'folding') { _panelInfoOpen = false; renderPanelInfo(); }
     else if (t.classList.contains('panel-tasks-dc') && _panelTasksOpen === 'folding') { _panelTasksOpen = false; repaintPanelTasks(); }
     else if (t.classList.contains('panel-um-dc') && _umPanelOpen === 'folding') { _umPanelOpen = false; renderPanelArtifactsSection(); }
   });
@@ -17201,6 +17139,8 @@ var _ntRequestId = null;
 // The text handed to <ui-composer> (a saved draft at first, '' after a launch): it applies a value only when it
 // differs from the last one, so a repaint while someone types never resets the field.
 var _ntValue = null;
+// The files a dashboard task's dialog refuses (#600 ⑥): no type matches.
+var NT_NO_FILES = 'application/x-soma-no-attachments';
 
 function ntBatteryView(b) {
   if (!b || typeof b.level !== 'number') {
@@ -17225,10 +17165,22 @@ function ntDefaultState(ctx, draft) {
     autogoal: !!ctx.autogoalDefault,
     autoz: false,
     prompt: draft && typeof draft.prompt === 'string' ? draft.prompt : '',
+    // #600 ⑥: a Slack channel (the default) or a dashboard task, and its folder by name ('' = a new folder).
+    destination: 'slack',
+    folder: '',
   };
 }
 
 function ntBuildPayload(state, attachments, requestId) {
+  if (state.destination === 'task') {
+    // A dashboard task (#600 ⑥): no channel, no autogoal / autoz, no attachments (D8);
+    // the chosen model's nickname (the server resolves it against the models it
+    // offers, #640 R1), and the folder by name ('' = a new folder).
+    var body = { requestId: requestId, destination: 'task', prompt: state.prompt };
+    if (state.model) body.model = state.model;
+    if (state.folder) body.folder = state.folder;
+    return body;
+  }
   return {
     requestId: requestId,
     prompt: state.prompt,
@@ -17244,6 +17196,10 @@ function ntBuildPayload(state, attachments, requestId) {
 }
 
 function ntCanSubmit(state, attachments) {
+  if (state && state.destination === 'task') {
+    // A task takes no attachments yet (D8): files attached before switching are not dropped silently (#640 R1).
+    return String(state.prompt || '').trim().length > 0 && (attachments || []).length === 0;
+  }
   if (!state || !state.channelId) return false;
   return String(state.prompt || '').trim().length > 0 || (attachments || []).length > 0;
 }
@@ -17318,18 +17274,25 @@ async function openNewTask() {
 }
 
 // The page closes it (a launched task, the FAB's second press): hide() runs the element's exit (settle out, 180ms;
-// a fade under reduced motion) and gives focus back; what the page owns leaves at once (ntOnClosed).
+// a fade under reduced motion) and gives focus back; its ui-closed then lets the page go of what it owns (ntOnClosed).
 function closeNewTask() {
   var dlg = ntEl('nt-dialog');
-  if (!dlg || !dlg.open) return;
-  ntOnClosed();
-  if (typeof dlg.hide === 'function') dlg.hide();
+  if (!dlg || !dlg.open || typeof dlg.hide !== 'function') return;
+  ntShowFab();
+  dlg.hide();
 }
 
-// The sheet is going — the person's Esc / scrim / ✕ (the element's ui-close) or the page's closeNewTask: the FAB
-// comes back; a recording in progress is dropped and a preview stops.
-function ntOnClosed() {
+// The FAB comes back as the close begins, not after the exit: the element gives focus back just before ui-closed,
+// and a FAB still display:none then cannot take it (focus would drop on the body).
+function ntShowFab() {
   document.body.classList.remove('nt-open');
+}
+
+// The sheet has gone — the person's Esc / scrim / ✕ or the page's closeNewTask, after the exit (the element's
+// ui-closed, 0.12.0 — D4 G6-2; a sheet reopened within its exit never sends it): a recording in progress is
+// dropped and a preview stops (the FAB is already back: ntShowFab at the close's start).
+function ntOnClosed() {
+  ntShowFab();
   ntQuietComposer();
 }
 
@@ -17356,16 +17319,26 @@ async function ntLoadContext() {
 }
 
 function ntReconcileState() {
+  ntReconcile(_ntState, _ntCtx);
+}
+
+function ntReconcile(state, ctx) {
   // A choice that is no longer offered falls back to the default.
-  var hasModel = _ntCtx.models.some(function (m) {
-    return m.nickname === _ntState.model;
+  var hasModel = ctx.models.some(function (m) {
+    return m.nickname === state.model;
   });
-  if (!hasModel) _ntState.model = _ntCtx.defaultModel;
-  if (_ntCtx.efforts.indexOf(_ntState.effort) < 0) _ntState.effort = _ntCtx.defaultEffort;
-  var hasChannel = _ntCtx.channels.some(function (c) {
-    return c.id === _ntState.channelId;
+  if (!hasModel) state.model = ctx.defaultModel;
+  if (ctx.efforts.indexOf(state.effort) < 0) state.effort = ctx.defaultEffort;
+  var hasChannel = ctx.channels.some(function (c) {
+    return c.id === state.channelId;
   });
-  if (!hasChannel) _ntState.channelId = _ntCtx.defaultChannelId || null;
+  if (!hasChannel) state.channelId = ctx.defaultChannelId || null;
+  // A dashboard task, or a folder, that is no longer offered (#640 R1).
+  if (!ctx.taskFolders) state.destination = 'slack';
+  var hasFolder = (ctx.taskFolders || []).some(function (f) {
+    return f.name === state.folder;
+  });
+  if (!hasFolder) state.folder = '';
 }
 
 function ntRender() {
@@ -17381,8 +17354,36 @@ function ntRender() {
       return '<option value="' + escAttr(e) + '"' + (e === _ntState.effort ? ' selected' : '') + '>' + esc(e) + '</option>';
     })
     .join('');
+  // #600 ⑥ — where the task goes: offered when the context lists task folders.
+  var isTask = _ntState.destination === 'task';
+  var dest = ntEl('nt-dest');
+  if (dest) dest.hidden = !_ntCtx.taskFolders;
+  var dSlack = ntEl('nt-dest-slack');
+  var dTask = ntEl('nt-dest-task');
+  if (dSlack) dSlack.setAttribute('aria-pressed', isTask ? 'false' : 'true');
+  if (dTask) dTask.setAttribute('aria-pressed', isTask ? 'true' : 'false');
+  var folderChip = ntEl('nt-folder-chip');
+  if (folderChip) folderChip.hidden = !isTask;
+  var folderSel = ntEl('nt-folder');
+  if (folderSel && isTask) {
+    folderSel.innerHTML =
+      '<option value="">새 폴더</option>' +
+      (_ntCtx.taskFolders || [])
+        .map(function (f) {
+          return '<option value="' + escAttr(f.name) + '"' + (f.name === _ntState.folder ? ' selected' : '') + '>' + esc(f.name) + '</option>';
+        })
+        .join('');
+  }
+  // A dashboard task has no channel, effort or autogoal / autoz (D8). The destination
+  // row is an .nt-toggles too: hide the autogoal / autoz row, not it.
+  ['.nt-chip-channel', '.nt-chip-effort', '.nt-toggles:not(.nt-dest)'].forEach(function (sel) {
+    var el = document.querySelector(sel);
+    if (el) el.hidden = isTask;
+  });
   var channel = ntEl('nt-channel');
-  if (_ntCtx.channels.length) {
+  if (isTask) {
+    // A dashboard task has no channel: no channel list, no channel error.
+  } else if (_ntCtx.channels.length) {
     channel.innerHTML = _ntCtx.channels
       .map(function (c) {
         var repos = (c.repos || []).map(function (r) {
@@ -17431,6 +17432,14 @@ function ntComposerData() {
     hint: true,
     camera: 'environment',
   };
+  // A dashboard task takes no attachments yet (D8, #600 ⑥): no attach / voice /
+  // camera tools, and a pasted or dropped file is refused by its type (#640 R2).
+  if (_ntState && _ntState.destination === 'task') {
+    d.attach = false;
+    d.voice = false;
+    d.camera = false;
+    d.accept = NT_NO_FILES;
+  }
   var lim = _ntCtx && _ntCtx.limits;
   if (lim) {
     d.maxLength = lim.maxPromptChars;
@@ -17492,6 +17501,40 @@ function ntOnChannelChange() {
   _ntState.channelId = ntEl('nt-channel').value || null;
 }
 
+// #600 ⑥ — the destination: a Slack channel or a dashboard task (only when offered).
+function ntSetDestination(dest) {
+  if (!_ntState || !_ntCtx) return;
+  _ntState.destination = dest === 'task' && _ntCtx.taskFolders ? 'task' : 'slack';
+  ntSetError(ntBlockedHint(_ntState, ntComposerFiles()));
+  ntRender();
+}
+
+function ntOnFolderChange() {
+  _ntState.folder = ntEl('nt-folder').value || '';
+}
+
+// The files the dialog's composer holds now.
+function ntComposerFiles() {
+  var el = ntEl('nt-composer');
+  return (el && el.files) || [];
+}
+
+// <ui-composer> refused a file: on a dashboard task its accept matches no type, so
+// a type refusal is the attachment rule — said as such (merge review P3).
+function ntOnReject(e) {
+  if (!_ntState || _ntState.destination !== 'task' || !e.detail || e.detail.reason !== 'type') return;
+  ntSetError(ntBlockedHint(_ntState, [e.detail.file]));
+}
+
+// Why the dialog cannot start what it holds, said before a submit: on the switch,
+// and whenever its files change (#640 R2).
+function ntBlockedHint(state, attachments) {
+  if (state && state.destination === 'task' && (attachments || []).length > 0) {
+    return '대시보드 작업은 아직 첨부를 받지 않아요 — 첨부를 빼거나 Slack 채널로 보내 주세요';
+  }
+  return '';
+}
+
 function ntToggle(which) {
   if (!_ntState) return;
   _ntState[which] = !_ntState[which];
@@ -17526,9 +17569,18 @@ async function submitNewTask(detail) {
   var files = (detail && detail.files) || el.files || [];
   _ntState.prompt = detail ? String(detail.text || '') : el.value;
   if (!ntCanSubmit(_ntState, files)) {
-    ntSetError(_ntState.channelId ? '작업 지시를 쓰거나 파일을 첨부해 주세요' : '작업을 올릴 채널을 골라 주세요');
+    ntSetError(
+      _ntState.destination === 'task'
+        ? ntBlockedHint(_ntState, files) || '작업 지시를 써 주세요'
+        : _ntState.channelId
+          ? '작업 지시를 쓰거나 파일을 첨부해 주세요'
+          : '작업을 올릴 채널을 골라 주세요',
+    );
     return;
   }
+  // What was submitted is what is sent: a switch of the destination while the
+  // files are read does not change this launch (#640 R2).
+  var submitted = Object.assign({}, _ntState);
   _ntBusy = true;
   ntSetError('');
   paintNtComposer();
@@ -17536,13 +17588,13 @@ async function submitNewTask(detail) {
     if (files.length) ntSetStatus('첨부 준비 중…');
     var attachments;
     try {
-      attachments = await Promise.all(files.map(ntReadFile));
+      attachments = submitted.destination === 'task' ? [] : await Promise.all(files.map(ntReadFile));
     } catch (readErr) {
       ntSetStatus('');
       ntSetError(String(readErr.message || '').slice(5) + ' — 파일을 읽지 못했습니다');
       return;
     }
-    var body = JSON.stringify(ntBuildPayload(_ntState, attachments, _ntRequestId));
+    var body = JSON.stringify(ntBuildPayload(submitted, attachments, _ntRequestId));
     ntSetStatus('작업을 올리는 중…');
     var res = await ntPostTask(body);
     // Only a stale CSRF token is worth one retry (not "no Slack identity").
@@ -17556,7 +17608,7 @@ async function submitNewTask(detail) {
       ntSetError(data.error || '작업을 시작하지 못했습니다 (' + res.status + ')');
       return;
     }
-    ntOnLaunched(data);
+    ntOnLaunched(data, submitted);
   } catch (e) {
     ntSetStatus('');
     ntSetError('작업을 시작하지 못했습니다 — 네트워크를 확인하고 다시 눌러 주세요 (같은 요청은 두 번 실행되지 않습니다)');
@@ -17578,7 +17630,7 @@ function ntPostTask(body) {
       }
     };
     xhr.upload.onload = function () {
-      ntSetStatus('Slack에 작업을 올리는 중…');
+      ntSetStatus(_ntState && _ntState.destination === 'task' ? '작업을 만드는 중…' : 'Slack에 작업을 올리는 중…');
     };
     xhr.onload = function () {
       var data = null;
@@ -17594,36 +17646,82 @@ function ntPostTask(body) {
   });
 }
 
-function ntOnLaunched(data) {
-  // The next task starts clean: a new idempotency key, no text, no files;
-  // the channel just used stays selected.
+function ntOnLaunched(data, submitted) {
+  // The next task starts clean: a new idempotency key, no text, no files; the
+  // channel just used stays selected, a dashboard task stays a dashboard task.
+  // A task created but not started keeps its instruction (#640 R1): the text,
+  // the folder, the model and the draft.
   _ntRequestId = ntNewRequestId();
-  var composer = ntEl('nt-composer');
-  if (composer && typeof composer.clear === 'function') composer.clear();
-  _ntValue = '';
-  _ntState = ntDefaultState(_ntCtx, null);
-  _ntState.channelId = data.channel || _ntState.channelId;
-  try {
-    localStorage.removeItem(NT_DRAFT_KEY);
-  } catch (e) {}
+  var keep = data.status === 'not-started';
+  _ntState = ntStateAfterLaunch(submitted || _ntState, data, _ntCtx);
+  if (!keep) {
+    var composer = ntEl('nt-composer');
+    if (composer && typeof composer.clear === 'function') composer.clear();
+    _ntValue = '';
+    try {
+      localStorage.removeItem(NT_DRAFT_KEY);
+    } catch (e) {}
+  }
   ntSetStatus('');
   ntRender();
   closeNewTask();
-  var channel = _ntCtx.channels.find(function (c) {
-    return c.id === data.channel;
-  });
+  var channel = data.channel
+    ? _ntCtx.channels.find(function (c) {
+        return c.id === data.channel;
+      })
+    : null;
   // A toast on the page's <ui-toaster>: 카드 열기 opens this launch's card
   // (not a later launch's), Slack에서 보기 its thread.
+  dashToast(ntLaunchToast(data, channel ? channel.name : null), function () { ntOpenLaunched(data); });
+  if (typeof loadSessions === 'function') setTimeout(loadSessions, 800);
+}
+
+// What the dialog holds after a launch: a started task starts the next one clean
+// (the channel just used stays selected, a dashboard task stays a dashboard task);
+// a task created but not started keeps its instruction, folder and model (#640 R1).
+function ntStateAfterLaunch(prev, data, ctx) {
+  var next = ntDefaultState(ctx, null);
+  next.channelId = data.channel || next.channelId;
+  if (prev && prev.destination === 'task' && ctx.taskFolders) next.destination = 'task';
+  if (prev && data.status === 'not-started') {
+    next.prompt = prev.prompt;
+    next.folder = prev.folder;
+    next.model = prev.model;
+  }
+  return next;
+}
+
+// The launch toast: a Slack launch names its channel and links its thread; a
+// dashboard task (#600 ⑥, no channel) opens its card, and one that was created
+// but not started says why.
+function ntLaunchToast(data, channelName) {
+  if (!data.channel) {
+    if (data.status === 'not-started') {
+      return {
+        title: '작업을 만들었지만 아직 시작하지 못했어요',
+        description: String(data.reason || '') + ' — 지시는 새 작업 창에 남겨 두었어요',
+        tone: 'warning',
+        action: { id: 'open', label: '카드 열기' },
+        duration: 12000,
+      };
+    }
+    return {
+      title: '대시보드 작업을 시작했어요',
+      description: '카드에서 진행을 볼 수 있어요',
+      tone: 'success',
+      action: { id: 'open', label: '카드 열기' },
+      duration: 12000,
+    };
+  }
   var toast = {
     title: data.status === 'running' ? '작업을 시작했어요' : '작업을 접수했어요',
-    description: '#' + (channel ? channel.name : data.channel),
+    description: '#' + (channelName || data.channel),
     tone: 'success',
     action: { id: 'open', label: '카드 열기' },
     duration: 12000,
   };
   if (data.permalink) toast.link = { label: 'Slack에서 보기', href: String(data.permalink) };
-  dashToast(toast, function () { ntOpenLaunched(data); });
-  if (typeof loadSessions === 'function') setTimeout(loadSessions, 800);
+  return toast;
 }
 
 async function ntOpenLaunched(launch) {
@@ -17647,9 +17745,15 @@ async function ntOpenLaunched(launch) {
 function ntInit() {
   var dlg = ntEl('nt-dialog');
   if (!dlg) return;
-  // <ui-dialog>: Esc, the scrim and ✕ ask to close (ui-close) — the element then settles out and gives focus back;
-  // the page lets go of what it owns.
-  dlg.addEventListener('ui-close', function () {
+  // <ui-dialog>: Esc, the scrim and ✕ ask to close (ui-close) — the element settles out and gives focus back, then
+  // says so (ui-closed, after every exit, the page's hide() too): the page lets go of what it owns.
+  dlg.addEventListener('ui-close', function (e) {
+    // The person's close, once no listener turned it down (emit dispatches synchronously; read it after).
+    queueMicrotask(function () {
+      if (!e.defaultPrevented) ntShowFab();
+    });
+  });
+  dlg.addEventListener('ui-closed', function () {
     ntOnClosed();
   });
   // <ui-composer id="nt-composer"> (D2 H-05..H-09): it takes drops and pasted screenshots itself (named
@@ -17664,6 +17768,13 @@ function ntInit() {
   composer.addEventListener('ui-submit', function (e) {
     e.preventDefault();
     submitNewTask(e.detail);
+  });
+  // A file the task composer refused (no type matches): why, not only "unsupported type".
+  composer.addEventListener('ui-reject', ntOnReject);
+  // A file added or removed while a dashboard task is chosen: the reason it cannot start, or none (#640 R2).
+  composer.addEventListener('ui-files', function (e) {
+    if (!_ntState || _ntState.destination !== 'task') return;
+    ntSetError(ntBlockedHint(_ntState, (e.detail && e.detail.files) || ntComposerFiles()));
   });
   paintNtComposer();
   // N opens the composer from anywhere outside a text field.
@@ -17783,11 +17894,30 @@ function pcCommandBody(message, files) {
 }
 // The composer's own data: the limits (the steering sets its placeholder, name and
 // off state, and turns its hint off — the steering's key hints stay below it).
-function pcComposerData() {
-  return { maxFiles: PC_LIMITS.maxFiles, maxFileSize: PC_LIMITS.maxFileBytes, maxTotalBytes: PC_LIMITS.maxTotalBytes, minRows: 1, maxRows: 8 };
+// The files a dashboard task's composer refuses (#600 ⑥, #640 R2): no type matches.
+var PC_NO_FILES = 'application/x-soma-no-attachments';
+function pcComposerData(takesFiles) {
+  var d = { maxFiles: PC_LIMITS.maxFiles, maxFileSize: PC_LIMITS.maxFileBytes, maxTotalBytes: PC_LIMITS.maxTotalBytes, minRows: 1, maxRows: 8 };
+  // A dashboard task takes no attachments yet (D8): no attach / image / voice
+  // tools, and a pasted or dropped file is refused by its type.
+  if (takesFiles === false) {
+    d.attach = false;
+    d.image = false;
+    d.voice = false;
+    d.accept = PC_NO_FILES;
+  }
+  return d;
 }
-function pcComposerSetup(c) {
-  if (c) c.data = Object.assign({}, c.data || {}, pcComposerData());
+// The composer's data with the page's part (re)applied: a session that takes
+// files gets the element's defaults back (the task keys are dropped, not kept).
+function pcComposerSetup(c, takesFiles) {
+  if (!c) return;
+  var d = Object.assign({}, c.data || {});
+  delete d.attach;
+  delete d.image;
+  delete d.voice;
+  delete d.accept;
+  c.data = Object.assign(d, pcComposerData(takesFiles));
 }
 // A fresh element for another session: what the old one showed — the text being
 // typed, its files, notes in flight, a failed send's Retry — was the other
@@ -17824,6 +17954,7 @@ function pcInit() {
   var host = document.getElementById('panel-command');
   if (!host) return;
   pcComposerSetup(document.getElementById('pc-composer'));
+  host.addEventListener('ui-reject', pcOnReject);
   host.addEventListener('ui-submit', pcOnSubmit);
   host.addEventListener('ui-promote', function(e) { if (e.detail) steerAct('promote', String(e.detail.id)); });
   host.addEventListener('ui-cancel', function(e) {
@@ -17833,6 +17964,13 @@ function pcInit() {
     steerAct('cancel', String(e.detail.id));
   });
   host.addEventListener('ui-edit', function(e) { if (e.detail) steerAct('edit', String(e.detail.id), String(e.detail.text || '')); });
+}
+// The composer refused a file: on a dashboard task's card every type is refused
+// (pcComposerData), so say why — the element's own line reads "unsupported type".
+function pcOnReject(e) {
+  var host = document.getElementById('panel-command');
+  if (!host || host._takesFiles !== false || !e.detail || e.detail.reason !== 'type') return;
+  dashToast({ title: '\uB300\uC2DC\uBCF4\uB4DC \uC791\uC5C5\uC740 \uC544\uC9C1 \uCCA8\uBD80\uB97C \uBC1B\uC9C0 \uC54A\uC544\uC694', tone: 'error' });
 }
 // ui-submit: a send already reading its files (or a card with no open composer)
 // takes nothing — cancelled, the text stays in the field.
