@@ -333,6 +333,33 @@ describe('dashboard admin approvals (#620)', () => {
     expect(bearerMsgs.some((m) => m.type === 'admin_approvals')).toBe(false);
   });
 
+  it('two pushes racing: a slower, older snapshot never lands after a newer one', async () => {
+    const msgs: any[] = [];
+    const admin = await signIn('UADMIN');
+    sockets.push(
+      await injectWebServerWS('/ws/dashboard', { headers: { cookie: admin.cookie } }, (s: any) =>
+        s.on('message', (d: any) => msgs.push(JSON.parse(d.toString()))),
+      ),
+    );
+    let calls = 0;
+    registry.clearAdminApprovalAdapters();
+    registry.registerAdminApprovalAdapter({
+      kind: 'env_skill',
+      // The first (older) read is slow and still sees the request; the second (newer) sees it answered.
+      pending: () =>
+        ++calls === 1 ? new Promise((r) => setTimeout(() => r([ENV_REQUEST as any]), 80)) : Promise.resolve([]),
+      resolved: () => [],
+      answer: answer as any,
+    });
+    const older = dashboard.broadcastAdminApprovals();
+    const newer = dashboard.broadcastAdminApprovals();
+    await Promise.all([older, newer]);
+    await new Promise((r) => setTimeout(r, 30));
+    const pushed = msgs.filter((m) => m.type === 'admin_approvals');
+    expect(pushed.length).toBeGreaterThan(0);
+    expect(pushed[pushed.length - 1].snapshot.pending).toEqual([]);
+  });
+
   describe('shipped client', () => {
     function client(over: Record<string, unknown> = {}) {
       const toasts: any[] = [];
@@ -371,6 +398,37 @@ describe('dashboard admin approvals (#620)', () => {
       expect(d.choices.map((x: any) => x.label)).toEqual(['✅ 1회 허용 (이 스레드)', '❌ 거부']);
       expect(d.description).toContain('요청 위치: #C1 스레드 171.1');
       expect(d.canAnswer).toBeUndefined();
+    });
+
+    it('an MCP grant request is a permission card: the tool, the DM rows, the risk', () => {
+      const { c } = client();
+      c.applyAdminApprovals({
+        pending: [
+          {
+            id: 'mcp_grant:req-2',
+            kind: 'mcp_grant',
+            card: 'permission',
+            title: 'MCP 도구 권한 요청',
+            description: 'server-tools 서버 쓰기 권한을 24h 동안 요청합니다.',
+            tool: 'mcp__server-tools',
+            rows: { 요청자: 'U1', 서버: 'server-tools', 권한: '쓰기 (write)', 기간: '24h' },
+            risk: 'medium',
+            requesterId: 'U1',
+            createdAt: 1_700_000_000_000,
+          },
+        ],
+        resolved: [],
+      });
+      expect(c.adminApprovalData('mcp_grant:req-2')).toMatchObject({
+        kind: 'permission',
+        tool: 'mcp__server-tools',
+        title: 'MCP 도구 권한 요청',
+        input: { 서버: 'server-tools', 권한: '쓰기 (write)' },
+        risk: 'medium',
+        canExplain: false,
+        canDisableRule: false,
+        label: 'MCP 권한 · 김민수 요청',
+      });
     });
 
     it('locked until admin mode is on, and for an admin without a Slack identity', () => {

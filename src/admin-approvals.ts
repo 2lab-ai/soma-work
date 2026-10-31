@@ -76,12 +76,14 @@ export type AdminApprovalAnswer =
       resolution?: AdminApprovalResolution;
     };
 
+type MaybePromise<T> = T | Promise<T>;
+
 export interface AdminApprovalAdapter {
   kind: AdminApprovalKind;
-  /** Pending requests of this kind. Reads only — never writes the store. */
-  pending(now: number): AdminApproval[];
+  /** Pending requests of this kind. Never answers or changes a request (a store may prune expired ones). May read asynchronously. */
+  pending(now: number): MaybePromise<AdminApproval[]>;
   /** Requests of this kind that ended at or after `since`. */
-  resolved(since: number): AdminApprovalResolution[];
+  resolved(since: number): MaybePromise<AdminApprovalResolution[]>;
   /**
    * Answer one request as admin `actor` from the dashboard. The decision is
    * taken (and persisted) before this resolves; slower follow-ups (DM rewrites,
@@ -116,20 +118,26 @@ export function parseAdminApprovalId(id: string): { kind: AdminApprovalKind; req
   return { kind, requestId };
 }
 
-/** Every kind's pending requests and recent resolutions. An adapter that throws is logged and skipped. */
-export function adminApprovalSnapshot(now: number = Date.now()): AdminApprovalSnapshot {
+/** Every kind's pending requests and recent resolutions. An adapter that throws (or rejects) is logged and skipped. */
+export async function adminApprovalSnapshot(now: number = Date.now()): Promise<AdminApprovalSnapshot> {
   const pending: AdminApproval[] = [];
   const resolved: AdminApprovalResolution[] = [];
-  for (const adapter of adapters.values()) {
-    try {
-      pending.push(...adapter.pending(now));
-      resolved.push(...adapter.resolved(now - RESOLVED_WINDOW_MS));
-    } catch (error) {
-      logger.warn('Admin approval adapter failed to list', {
-        kind: adapter.kind,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+  const parts = await Promise.all(
+    [...adapters.values()].map(async (adapter) => {
+      try {
+        return { pending: await adapter.pending(now), resolved: await adapter.resolved(now - RESOLVED_WINDOW_MS) };
+      } catch (error) {
+        logger.warn('Admin approval adapter failed to list', {
+          kind: adapter.kind,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return { pending: [], resolved: [] };
+      }
+    }),
+  );
+  for (const part of parts) {
+    pending.push(...part.pending);
+    resolved.push(...part.resolved);
   }
   pending.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
   resolved.sort((a, b) => b.at - a.at || a.id.localeCompare(b.id));
@@ -143,7 +151,7 @@ export async function answerAdminApproval(id: string, choiceId: string, actor: s
   if (!parsed || !adapter) return { ok: false, reason: 'not_found' };
   const result = await adapter.answer(parsed.requestId, choiceId, actor);
   if (!result.ok && result.reason === 'already_answered' && !result.resolution) {
-    const resolution = adapter.resolved(0).find((r) => r.id === id);
+    const resolution = (await adapter.resolved(0)).find((r) => r.id === id);
     if (resolution) return { ...result, resolution };
   }
   notifyAdminApprovalsChanged();
@@ -167,7 +175,8 @@ export function notifyAdminApprovalsChanged(): void {
 }
 
 let watchTimer: ReturnType<typeof setInterval> | null = null;
-let lastSignature = '';
+let lastSignature: string | null = null;
+let watchBusy = false;
 
 /**
  * Re-read every kind each `intervalMs` and notify when anything changed. The
@@ -176,13 +185,25 @@ let lastSignature = '';
  */
 export function startAdminApprovalWatch(intervalMs = 1000): void {
   stopAdminApprovalWatch();
-  lastSignature = JSON.stringify(adminApprovalSnapshot());
-  watchTimer = setInterval(() => {
-    const signature = JSON.stringify(adminApprovalSnapshot());
-    if (signature === lastSignature) return;
-    lastSignature = signature;
-    notifyAdminApprovalsChanged();
-  }, intervalMs);
+  lastSignature = null;
+  const tick = async () => {
+    // A slow read (a file store) never overlaps the next tick.
+    if (watchBusy) return;
+    watchBusy = true;
+    try {
+      const signature = JSON.stringify(await adminApprovalSnapshot());
+      const first = lastSignature === null;
+      if (signature === lastSignature) return;
+      lastSignature = signature;
+      if (!first) notifyAdminApprovalsChanged();
+    } catch (error) {
+      logger.warn('Admin approval watch tick failed', error);
+    } finally {
+      watchBusy = false;
+    }
+  };
+  void tick();
+  watchTimer = setInterval(() => void tick(), intervalMs);
   watchTimer.unref?.();
 }
 
