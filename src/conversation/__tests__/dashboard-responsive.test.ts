@@ -689,11 +689,14 @@ describe('settings page — reached from the dashboard top bar', () => {
   const SETTINGS_TS = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
 
   it('its text inputs and selects are 16px on touch screens (iOS does not zoom into them)', () => {
+    // The rows are <ui-setting-row> (M-02) with the page's kit `.ui-input` controls slotted in light DOM, so the
+    // page's own coarse-pointer rule still reaches every field (the kit's ui-kit.css sets no font size there).
     const coarse = SETTINGS_TS.slice(SETTINGS_TS.indexOf('@media (pointer: coarse) {'));
     expect(SETTINGS_TS).toContain('@media (pointer: coarse) {');
-    expect(coarse.slice(0, coarse.indexOf('\n}'))).toMatch(
-      /\.row input\[type="text"\], \.row input\[type="number"\], \.row select \{ font-size: 16px; \}/,
-    );
+    expect(coarse.slice(0, coarse.indexOf('\n}'))).toContain('  .ui-input { font-size: 16px; }');
+    expect(SETTINGS_TS).toContain('<input type="\' + type + \'" class="ui-input" id="f-'); // text / number fields
+    expect(SETTINGS_TS).toContain('<input type="text" class="ui-input" id="c-'); // the custom-value field of a choice
+    expect(SETTINGS_TS).toContain('<select class="ui-input" id="f-');
   });
 });
 
@@ -749,10 +752,17 @@ describe('merged views — trinity code review R4 follow-ups', () => {
     expect(block).not.toContain('.cron-history-btn');
   });
 
-  it('the settings search field is 16px on touch screens too', () => {
+  it('the settings search field is 16px on touch screens too', async () => {
+    // The search field is <ui-settings-nav>'s own (M-03), in its shadow root: the element's styles make it 16px
+    // on a coarse pointer (@2lab.ai/ui src/components/settings-nav/styles.ts, `.sn-q`). The page draws no field.
     const settings = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
-    const coarse = settings.slice(settings.indexOf('@media (pointer: coarse) {'));
-    expect(coarse.slice(0, coarse.indexOf('\n}'))).toContain('.side input[type="search"]');
+    expect(settings).toContain('<ui-settings-nav id="pref-nav" lang="ko">');
+    expect(settings).not.toContain('input type="search"');
+    const { uiLibDistDir } = await import('../ui-lib');
+    const dir = uiLibDistDir();
+    expect(dir).toBeTruthy();
+    const nav = readFileSync(join(dir as string, 'settings-nav.js'), 'utf-8');
+    expect(nav).toMatch(/@media \(pointer: coarse\) \{\n\s*\.sn-q \{ font-size: 16px; \}/);
   });
 });
 
