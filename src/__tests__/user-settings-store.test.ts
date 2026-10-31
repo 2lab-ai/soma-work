@@ -452,6 +452,44 @@ describe('Slack instruction → dashboard task flag (E2 ⑦, D1)', () => {
   });
 });
 
+describe('dashboard view mode (SSOT 2026-11-01)', () => {
+  it('is minimal by default, per user, and a saved value is read back', () => {
+    const store = makeStore();
+    expect(store.getUserDashboardMode('U1')).toBe('minimal');
+    store.setUserDashboardMode('U1', 'advanced');
+    expect(store.getUserDashboardMode('U1')).toBe('advanced');
+    expect(store.getUserDashboardMode('U2')).toBe('minimal');
+    store.setUserDashboardMode('U1', 'minimal');
+    expect(store.getUserDashboardMode('U1')).toBe('minimal');
+  });
+
+  it('survives a reload from disk; an unknown stored value reads as minimal', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uss-view-mode-'));
+    new UserSettingsStore(dir).setUserDashboardMode('U1', 'advanced');
+    expect(new UserSettingsStore(dir).getUserDashboardMode('U1')).toBe('advanced');
+    const file = path.join(dir, 'user-settings.json');
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    raw.U1.dashboardMode = 'detail';
+    fs.writeFileSync(file, JSON.stringify(raw));
+    expect(new UserSettingsStore(dir).getUserDashboardMode('U1')).toBe('minimal');
+  });
+
+  it('a view switch drops no cached system prompt — the dashboard view feeds no prompt', async () => {
+    const { setSettingsPromptInvalidationHook } = await import('../user-settings-store');
+    const store = makeStore();
+    store.setUserSlackTaskEntry('U1', false); // the record exists (an accepted user)
+    const hook = vi.fn();
+    setSettingsPromptInvalidationHook(hook);
+    try {
+      store.setUserDashboardMode('U1', 'advanced');
+      expect(hook).not.toHaveBeenCalled();
+      expect(store.getUserDashboardMode('U1')).toBe('advanced');
+    } finally {
+      setSettingsPromptInvalidationHook(undefined);
+    }
+  });
+});
+
 describe('autogoal mode (S2) + goal max-continuations (S4)', () => {
   it('autogoal defaults to false and toggles per-user', () => {
     const store = makeStore();

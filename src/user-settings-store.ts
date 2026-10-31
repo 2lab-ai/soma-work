@@ -339,6 +339,14 @@ export const DEFAULT_SHOW_THINKING = true;
 const SESSION_THEMES = ['default', 'compact', 'minimal'] as const;
 export type SessionTheme = (typeof SESSION_THEMES)[number];
 const DEFAULT_THEME: SessionTheme = 'default';
+
+/**
+ * The web dashboard's view (SSOT 2026-11-01): `minimal` — the board and, in a
+ * detail card, the task list and the chat — or `advanced`, everything. The
+ * dashboard's own; it feeds no prompt.
+ */
+export const DASHBOARD_MODES = ['minimal', 'advanced'] as const;
+export type DashboardMode = (typeof DASHBOARD_MODES)[number];
 export const THEME_NAMES: Record<SessionTheme, string> = {
   default: 'Default (Rich Card)',
   compact: 'Compact',
@@ -451,6 +459,8 @@ export interface UserSettings {
    * Not toggled from Slack until the entry is live (⑧).
    */
   slackTaskEntry?: boolean;
+  /** The web dashboard's view (SSOT 2026-11-01). Undefined (or unknown) ⇒ `minimal`. */
+  dashboardMode?: DashboardMode;
   /**
    * E4 ③ (.prd/19 D9 e) — the most one epic tree may spend (USD) before the
    * host stops starting its children and waking it; the owner's own
@@ -1022,6 +1032,29 @@ export class UserSettingsStore {
   setUserSlackTaskEntry(userId: string, enabled: boolean): void {
     this.patchUserSettings(userId, { slackTaskEntry: enabled });
     logger.info('Set user Slack task entry', { userId, enabled });
+  }
+
+  /** The web dashboard's view (SSOT 2026-11-01). Default — and any value it does not know — `minimal`. */
+  getUserDashboardMode(userId: string): DashboardMode {
+    return this.settings[userId]?.dashboardMode === 'advanced' ? 'advanced' : 'minimal';
+  }
+
+  /**
+   * Save the dashboard's view. The view feeds no system prompt, so unlike every
+   * other setter it drops no cached prompt (a switch would otherwise rebuild the
+   * prompt of each of the user's sessions). A missing record goes through
+   * `patchUserSettings` like every setter — the registry refuses an unaccepted
+   * user before it gets here.
+   */
+  setUserDashboardMode(userId: string, mode: DashboardMode): void {
+    const existing = this.settings[userId];
+    if (!existing) {
+      this.patchUserSettings(userId, { dashboardMode: mode });
+      return;
+    }
+    existing.dashboardMode = mode;
+    existing.lastUpdated = new Date().toISOString();
+    this.saveSettings();
   }
 
   /** E4 ③ — one epic tree's cost limit (USD); a stored value that is not a valid limit reads as the default. */
