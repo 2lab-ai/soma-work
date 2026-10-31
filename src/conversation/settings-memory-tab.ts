@@ -5,7 +5,7 @@
  *     usage bar, add / edit / delete with undo / clear);
  *   - 지식 페이지: the semantic pages (agent / sites / concepts / projects / cron) — <ui-knowledge-pages> (M-05: a
  *     grouped, searchable list and an editor for title, aliases, Current and the dated History; create, delete),
- *     plus the page's own raw-markdown box for a page the form cannot hold;
+ *     with its source mode for the whole markdown (a page the form cannot hold opens that way);
  *   - 관찰 기록 (에피소딕): every day — <ui-episode-log> (M-06: a day filter, entries edited in place and deleted
  *     with two presses, a note added to today).
  *
@@ -28,7 +28,6 @@ export const MEMORY_TAB_HTML = `<div slot="memory" data-tab="memory" class="page
   <main>
     <p class="intro">에이전트가 기억하는 내용입니다. 개인 메모리는 모든 세션의 시작 프롬프트에 들어가고, 지식 페이지는 목록만 들어가며 내용은 에이전트가 필요할 때 읽습니다. 관찰 기록은 턴마다 자동으로 쌓이는 날짜별 기록입니다. 고친 내용은 새 세션부터, 진행 중인 세션은 다음에 프롬프트를 다시 만들 때 반영됩니다.</p>
     <div id="mem-status" class="status" role="status" aria-live="polite"></div>
-    <div id="mem-recover"></div>
     <section class="group" id="m-l1" aria-labelledby="h-m-l1">
       <header><h2 id="h-m-l1">개인 메모리</h2><p>짧은 항목 목록입니다. 용량이 차면 에이전트가 새로 기억하지 못하니, 오래된 항목을 지우거나 합치세요.</p></header>
       <div id="mem-l1-body"><div class="notice">불러오는 중…</div></div>
@@ -37,8 +36,6 @@ export const MEMORY_TAB_HTML = `<div slot="memory" data-tab="memory" class="page
     <section class="group" id="m-pages" aria-labelledby="h-m-pages">
       <header><h2 id="h-m-pages">지식 페이지</h2><p>주제별로 오래 남길 지식입니다. Current는 지금의 이해, History는 날짜별 변경 기록입니다.</p></header>
       <div class="ui-tok"><ui-knowledge-pages id="kp-panel" lang="ko"></ui-knowledge-pages></div>
-      <p class="kp-tools" id="kp-tools" hidden><button type="button" class="ui-btn is-sm is-quiet" onclick="pageRawMode(true)">원문(markdown)으로 편집</button></p>
-      <div class="kp-raw ui-card" id="kp-raw" hidden></div>
     </section>
     <section class="group" id="m-episodic" aria-labelledby="h-m-episodic">
       <header><h2 id="h-m-episodic">관찰 기록 (에피소딕)</h2><p>날짜별 기록입니다. 잘못 남은 기록은 고치거나 지울 수 있습니다.</p></header>
@@ -57,13 +54,6 @@ export const MEMORY_TAB_CSS = String.raw`
 #mem-l1-body:empty { display: none; }
 /* <ui-knowledge-pages> fills the height it is given (its list and editor scroll inside it). */
 #kp-panel { display: block; height: clamp(420px, calc(100dvh - 220px), 640px); }
-.kp-tools { margin: 8px 0 0; text-align: right; }
-.kp-raw { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; padding: 16px; }
-.kp-raw[hidden] { display: none; }
-.kp-raw-title { margin: 0; font-size: 13px; font-weight: 600; }
-.kp-raw textarea { font-family: var(--mono); font-size: 12.5px; resize: vertical; }
-.kp-raw-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.kp-raw .ui-notice p { margin: 0 0 8px; }
 `;
 
 export const MEMORY_CLIENT_JS = String.raw`
@@ -92,30 +82,6 @@ function memHold() {
   if (!memHold.at) return false;
   memStatus('저장 중입니다 — 끝난 뒤 다시 시도하세요', false);
   return true;
-}
-// A draft that has to leave its editor and has no box to go to is kept in the recovery box at the top of
-// the tab — never dropped (review R10).
-function memRecover(label, text) {
-  var items = memRecover.items || [];
-  for (var i = 0; i < items.length; i++) if (items[i].text === text) return; // kept once
-  memRecover.items = items.concat([{ label: label, text: text }]);
-  paintRecover();
-}
-function paintRecover() {
-  var el = document.getElementById('mem-recover');
-  if (!el) return;
-  var items = memRecover.items || [];
-  var html = '';
-  for (var i = 0; i < items.length; i++) {
-    html += '<div class="notice is-error" role="alert"><p>저장되지 않은 내용 — ' + esc(items[i].label) + '. 필요하면 복사해 다시 저장하세요.</p>'
-      + '<textarea class="ui-input is-block" readonly rows="3" aria-label="' + escAttr('저장되지 않은 내용: ' + items[i].label) + '">' + esc(items[i].text) + '</textarea>'
-      + '<button type="button" class="btn link" onclick="memRecoverDismiss(' + i + ')">닫기</button></div>';
-  }
-  el.innerHTML = html;
-}
-function memRecoverDismiss(i) {
-  (memRecover.items || []).splice(i, 1);
-  paintRecover();
 }
 // force: a 409 recovery that holds the tab itself. Otherwise a load answered while a
 // write is out, or older than a later load, is dropped — it would repaint the cards
@@ -261,13 +227,16 @@ async function l1Write(el, e, method, url, payload) {
 // dated History), keeps every draft across updates and asks before leaving unsaved changes. This tab owns the
 // data and the writes: ui-select loads a page, ui-save / ui-delete go to the page routes with the revision the
 // page was loaded with, and a 409 hands the element a conflict — it keeps the draft and offers Reload or
-// Overwrite (an overwrite writes over the revision this tab fetched with the conflict). A page the form cannot
-// hold (representable: false), or one the user opens as raw markdown, is edited in the box under the element
-// while the element is read-only: saving the form would drop what it cannot show (review R3).
+// Overwrite (an overwrite writes over the revision this tab fetched with the conflict). Every page carries its
+// whole markdown (page.source — the store's raw file) for the element's source mode (0.12.0, D7 M-05): "원문" edits
+// the file as one text, with the same draft, guard and conflict handling; a page the form cannot hold
+// (representable: false) is sourceOnly — the element opens it as source, says why, and offers no form (review R3:
+// saving the form would drop what it cannot show). A source save goes to the raw route with the whole text.
 var KP_EVENTS = ['ui-select', 'ui-new', 'ui-save', 'ui-delete', 'ui-reload'];
 var KP_GROUPS = PAGE_GROUPS.map(function (g) { return { id: g[0], label: g[1] }; });
-// open: GET /api/memory/page's answer for the page in the editor; latest: the newer one after a 409.
-var _kp = { selected: null, open: null, loading: false, saving: false, error: '', status: '', conflict: '', latest: null, raw: false, rawConflict: null };
+// open: GET /api/memory/page's answer for the page in the editor (page, revision, raw, representable); latest:
+// the newer one after a 409.
+var _kp = { selected: null, open: null, loading: false, saving: false, error: '', status: '', conflict: '', latest: null };
 // "YYYY-MM-DD: text" (the store's History bullet) <-> { date, text }; a line without that prefix keeps date ''.
 function kpHistoryIn(line) {
   var m = /^(\d{4}-\d{2}-\d{2}): ([\s\S]*)$/.exec(String(line));
@@ -278,7 +247,10 @@ function kpHistoryOut(h) {
 }
 function kpPage(open) {
   var p = open.page;
-  return { id: p.id, title: p.title, aliases: (p.aliases || []).slice(), group: p.type, current: p.current || '', history: (p.history || []).map(kpHistoryIn), revision: open.revision, updatedAt: p.updated };
+  var out = { id: p.id, title: p.title, aliases: (p.aliases || []).slice(), group: p.type, current: p.current || '', history: (p.history || []).map(kpHistoryIn), revision: open.revision, updatedAt: p.updated };
+  if (typeof open.raw === 'string') out.source = open.raw;
+  if (open.representable === false) out.sourceOnly = true;
+  return out;
 }
 function paintPages() {
   var el = document.getElementById('kp-panel');
@@ -298,19 +270,14 @@ function paintPages() {
     error: _kp.error,
     status: _kp.status,
     conflict: _kp.conflict,
-    readOnly: _kp.raw,
   };
-  var tools = document.getElementById('kp-tools');
-  if (tools) tools.hidden = !(_kp.open && _kp.open.representable !== false && !_kp.raw && !_kp.loading);
-  var box = document.getElementById('kp-raw');
-  if (box) box.hidden = !(_kp.raw && _kp.open);
 }
 function kpOnEvent(e) {
   // One memory write at a time across the tab (review R10): a switch, a new page or a write waits for it.
   if (memHold()) { e.preventDefault(); return; }
   var d = e.detail || {};
   if (e.type === 'ui-select' || e.type === 'ui-reload') kpOpen(String(d.id));
-  else if (e.type === 'ui-new') { keepRawDraft(); _kp.raw = false; _kp.error = ''; _kp.status = ''; paintPages(); }
+  else if (e.type === 'ui-new') { _kp.error = ''; _kp.status = ''; paintPages(); }
   else if (e.type === 'ui-save') kpSave(e, d);
   else if (e.type === 'ui-delete') kpDelete(e, d);
 }
@@ -318,12 +285,10 @@ function kpOnEvent(e) {
 // answering last is dropped (review R9).
 async function kpOpen(id) {
   var seq = (kpOpen.seq = (kpOpen.seq || 0) + 1);
-  keepRawDraft();
   _kp.selected = id;
   _kp.loading = true;
   _kp.error = _kp.status = _kp.conflict = '';
-  _kp.latest = _kp.rawConflict = null;
-  _kp.raw = false;
+  _kp.latest = null;
   paintPages();
   var res = null;
   var data = null;
@@ -340,9 +305,7 @@ async function kpOpen(id) {
     return false;
   }
   _kp.open = data;
-  _kp.raw = data.representable === false;
   paintPages();
-  renderPageRaw();
   return true;
 }
 // A new page's id: <group>/<name>, the name made from the title (letters, digits, - _ .), else from the clock;
@@ -356,8 +319,12 @@ function kpNewId(group, title) {
   for (var n = 2; ids.indexOf(id) >= 0; n++) id = type + '/' + name + '-' + n;
   return id;
 }
+// A form save goes to the page route with its fields; a source save (the element's 원문 mode — detail.source is
+// the whole markdown, written as it is) to the raw route. Both carry the revision the page was loaded with, or
+// after a 409 the newer one Overwrite writes over.
 async function kpSave(e, d) {
   var isNew = d.id === null || d.id === undefined;
+  var asSource = !isNew && typeof d.source === 'string';
   var id = isNew ? kpNewId(d.group, d.title) : String(d.id);
   var revision = isNew ? null : d.overwrite ? (_kp.latest && _kp.latest.revision) : d.revision;
   if (!isNew && typeof revision !== 'string') {
@@ -372,7 +339,9 @@ async function kpSave(e, d) {
   paintPages();
   var r;
   try {
-    r = await apiWrite('PUT', '/api/memory/page', { id: id, title: d.title, aliases: d.aliases || [], current: d.current, history: (d.history || []).map(kpHistoryOut), revision: revision });
+    r = asSource
+      ? await apiWrite('PUT', '/api/memory/page/raw', { id: id, raw: d.source, revision: revision })
+      : await apiWrite('PUT', '/api/memory/page', { id: id, title: d.title, aliases: d.aliases || [], current: d.current, history: (d.history || []).map(kpHistoryOut), revision: revision });
   } catch (x) { r = { ok: false, status: 0, error: String(x && x.message || x) }; }
   if (r.status === 409 && !isNew) {
     // The hold lasts until the newer version is fetched, and is released however that ends (review R12).
@@ -390,10 +359,8 @@ async function kpSave(e, d) {
     _kp.selected = r.data.page.id;
     _kp.conflict = '';
     _kp.latest = null;
-    _kp.raw = r.data.representable === false;
     _kp.status = isNew ? id + ' 페이지를 만들었습니다' : '저장했습니다';
     paintPages();
-    renderPageRaw();
     await refreshPageIndex();
     return;
   }
@@ -432,117 +399,10 @@ async function kpDeleteWrite(id, revision) {
     _kp.error = (r.status === 409 ? '그사이 바뀌었습니다 — 다시 불러와 확인하세요: ' : '지우지 못했습니다: ') + r.error;
     return false;
   }
-  if (_kp.selected === id) { _kp.selected = null; _kp.open = null; _kp.raw = false; _kp.rawConflict = null; }
+  if (_kp.selected === id) { _kp.selected = null; _kp.open = null; }
   memStatus(id + ' 페이지를 지웠습니다', false);
   await refreshPageIndex();
   return true;
-}
-// ── 원문(markdown) 편집 — the page's own box under the element ──
-function pageRawMode(on) {
-  if (memHold() || !_kp.open) return;
-  if (!on && _kp.open.representable === false) return;
-  if (!on) keepRawDraft(); // the form starts from the saved page
-  _kp.raw = !!on;
-  _kp.rawConflict = null;
-  paintPages();
-  renderPageRaw();
-}
-function renderPageRaw() {
-  var box = document.getElementById('kp-raw');
-  if (!box) return;
-  if (!_kp.raw || !_kp.open) { box.innerHTML = ''; return; }
-  var forced = _kp.open.representable === false;
-  var c = _kp.rawConflict;
-  box.innerHTML = '<h3 class="kp-raw-title">' + esc(_kp.open.page.id) + ' — 원문 (markdown)</h3>'
-    + (forced ? '<div class="ui-notice" role="note">이 페이지에는 편집 양식에 담기지 않는 내용이 있어 원문(markdown) 그대로 고칩니다. 내용은 하나도 빠지지 않습니다.</div>' : '')
-    + (c ? '<div class="ui-notice" data-tone="fail" role="alert"><p>다른 곳(에이전트·Slack)에서 이 페이지를 고쳤습니다' + (c.page ? ' (마지막 수정 ' + esc(c.page.updated) + ')' : '') + '.</p>'
-      + '<div class="kp-raw-actions"><button type="button" class="ui-btn is-danger" onclick="overwritePageRaw()">내 수정본으로 덮어쓰기</button> '
-      + '<button type="button" class="ui-btn" onclick="discardPageRaw()">최신 내용 불러오기 (내 수정 버림)</button></div></div>' : '')
-    + '<label class="ui-sr-only" for="pg-raw">원문 (markdown)</label><textarea id="pg-raw" class="ui-input is-block" rows="18" spellcheck="false">' + esc(_kp.open.raw || '') + '</textarea>'
-    + '<div class="kp-raw-actions"><button type="button" class="ui-btn is-primary" onclick="savePageRaw()">저장</button> '
-    + (forced ? '' : '<button type="button" class="ui-btn" onclick="pageRawMode(false)">양식으로 돌아가기</button> ')
-    + '<button type="button" class="ui-btn is-danger" onclick="deletePageRaw()">페이지 삭제</button></div>';
-}
-// What the raw box holds that is not saved — kept in the recovery box when the box is about to show another page.
-function keepRawDraft() {
-  var ta = document.getElementById('pg-raw');
-  if (!_kp.raw || !_kp.open || !ta || typeof ta.value !== 'string' || ta.value === (_kp.open.raw || '')) return;
-  memRecover(_kp.open.page.id + ' 원문 수정본', ta.value);
-}
-function setRawDisabled(on) {
-  var els = document.querySelectorAll ? document.querySelectorAll('#kp-raw textarea, #kp-raw button') : [];
-  for (var i = 0; i < els.length; i++) els[i].disabled = !!on;
-}
-async function savePageRaw() {
-  if (memHold() || !_kp.open) return;
-  var ta = document.getElementById('pg-raw');
-  var raw = ta ? ta.value : '';
-  var sentFrom = _kp.open;
-  var id = sentFrom.page.id;
-  memHold.at = Date.now();
-  setRawDisabled(true);
-  var r;
-  try { r = await apiWrite('PUT', '/api/memory/page/raw', { id: id, raw: raw, revision: sentFrom.revision }); } catch (x) { r = { ok: false, status: 0, error: String(x && x.message || x) }; }
-  if (r.status === 409) {
-    try {
-      var res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
-      var latest = null;
-      try { latest = await res.json(); } catch (_e) {}
-      _kp.rawConflict = res.ok && latest && latest.page ? latest : { page: null, revision: null };
-    } catch (_e) {
-      _kp.rawConflict = { page: null, revision: null };
-    } finally {
-      memHold.at = 0;
-    }
-    renderPageRaw();
-    var box = document.getElementById('pg-raw');
-    if (box) box.value = raw; // what was typed stays in the box (review P1)
-    memStatus('그사이 이 페이지가 바뀌었습니다. 작성하던 내용은 편집 칸에 그대로 있습니다.', true);
-    return;
-  }
-  memHold.at = 0;
-  setRawDisabled(false);
-  if (r.ok && r.data && r.data.page) {
-    _kp.open = r.data;
-    _kp.rawConflict = null;
-    _kp.raw = !r.data.representable;
-    _kp.status = '저장했습니다';
-    paintPages();
-    renderPageRaw();
-    memStatus('저장했습니다', false);
-    await refreshPageIndex();
-    return;
-  }
-  memStatus('저장하지 못했습니다: ' + r.error, true);
-}
-function overwritePageRaw() {
-  var c = _kp.rawConflict;
-  if (!c || !c.revision || !_kp.open || memHold()) return;
-  var ta = document.getElementById('pg-raw');
-  var draft = ta ? ta.value : '';
-  // The box now stands on the newer page: its revision, never the one first opened (review R4).
-  _kp.open = { page: c.page, revision: c.revision, raw: c.raw, representable: c.representable };
-  _kp.rawConflict = null;
-  renderPageRaw();
-  var box = document.getElementById('pg-raw');
-  if (box) box.value = draft;
-  return savePageRaw();
-}
-function discardPageRaw() {
-  if (!_kp.open || memHold()) return;
-  _kp.raw = false; // the user dropped this draft: nothing to keep
-  kpOpen(_kp.open.page.id);
-}
-async function deletePageRaw() {
-  if (memHold() || !_kp.open) return;
-  // The page and revision the dialog is about, fixed before it opens (review R3, R9).
-  var p = _kp.open.page;
-  var revision = _kp.open.revision;
-  setRawDisabled(true);
-  var ok = await confirmDialog({ title: p.title + ' 페이지를 지울까요?', body: p.id + ' — Current와 History가 모두 사라집니다.', action: '페이지 삭제' });
-  if (!ok || memHold() || !_kp.open || _kp.open.page.id !== p.id) { setRawDisabled(false); return; }
-  if (!(await kpDeleteWrite(p.id, revision))) { setRawDisabled(false); memStatus(_kp.error, true); paintPages(); return; }
-  renderPageRaw();
 }
 // The index (pages, episodic dates) after a write; a failed refresh keeps what is on screen.
 async function refreshPageIndex() {

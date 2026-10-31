@@ -778,10 +778,11 @@ describe('agent inbox board — motion contract (§4)', () => {
     expect(KIT).toMatch(/\.ui-spinner::after \{[^}]*border-radius: 50%; background: var\(--ui-tone\); \}/);
   });
 
-  it('the context fill animates transform scaleX, not width', () => {
-    expect(TEMPLATE).toMatch(
-      /\.card-body \.context-bar-fill \{[^}]*transform-origin: left center;[^}]*transition: transform/,
-    );
+  it('the page draws no context bar of its own (the card face’s is the element’s; the panel’s is <ui-context-window>)', () => {
+    // D7 (D-20): the pre-library board rules are gone — the context bar, the column spark, the Slack link and PR
+    // badges, the earlier-plan lines, the show-older button, the empty composer line.
+    for (const gone of ['.context-bar', '.col-spark', '.slack-link', '.pr-badge', '.tl-earlier', '.show-older-btn', '.nt-empty', '.cb-ac {', '.io-muted'])
+      expect(TEMPLATE, gone).not.toContain(gone);
     // The panel's 세션 정보 shows the context as <ui-context-window>'s field of cells now (re-context-window D5/D18), not a bar.
     expect(fnBody('cwSlotHtml')).toContain('<ui-context-window lang="ko"');
     expect(fnBody('panelInfoHtml')).not.toContain('transform:scaleX(');
