@@ -676,7 +676,7 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
         'panelDetailsHtml',
         'panelInfoHtml',
       ],
-      ['PI_CHEV_SVG', '_cw'],
+      ['_cw'],
       {
         formatTokens: (n: number) => `${n}`,
         formatNmSSs: (n: number) => `${n}ms`,
@@ -687,8 +687,8 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
 
   it('collapsed: owner · workflow · tokens · cost · context · last activity (live), and the links stay in view', () => {
     const html = info(card(), false);
-    expect(html).toContain('aria-expanded="false"');
-    const sum = html.slice(html.indexOf('class="pi-sum"'), html.indexOf('</button>'));
+    expect(html).toContain('<ui-disclosure class="pi-dc" flush>');
+    const sum = html.slice(html.indexOf('class="pi-sum"'), html.indexOf('</ui-disclosure>'));
     for (const want of ['Zhuge', 'zwork', '9591000 tok', '$12.40', 'ctx 31%', 'class="rel-time"'])
       expect(sum, want).toContain(want);
     expect(html).toContain('PROJ-1 &mdash; Dashboard surfaces');
@@ -701,7 +701,7 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
   // (dashboard-affectui-context-window-client.test.ts); the token rows say they are session totals.
   it('open: every token kind (cumulative), cost, Σ · compactions · sessions, merge — no old context bar', () => {
     const html = info(card(), true);
-    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('<ui-disclosure class="pi-dc" flush open>');
     const b = html.slice(html.indexOf('class="pi-body"'));
     for (const want of [
       '입력',
@@ -738,8 +738,10 @@ describe('panel goal — the full editor moved here, its draft safe across live 
 
   it('goal writes re-render the panel goal (not only the card) and read the live form from it', () => {
     expect(clientFn('setGoalError')).toContain('renderPanelGoal()');
-    // The 완료된 goal toggle lives in the panel now: it must repaint the panel's goal.
-    expect(clientFn('toggleGoalHistory')).toContain('renderPanelGoal()');
+    // The 완료된 goal toggle lives in the panel now: its choice (the disclosure's ui-toggle) must repaint the panel's
+    // goal — on the way open, and again once the fold settled (D4 K-06).
+    expect(clientFn('goalHistoryToggle')).toContain('renderPanelGoal()');
+    expect(clientFn('goalHistoryFolded')).toContain('renderPanelGoal()');
     // After the await, only this session's form — never another session's draft.
     expect(clientFn('addGoalFromCard')).toContain(
       "panelSessionKey === key ? document.getElementById('panel-goal') : null",
@@ -1696,7 +1698,6 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
         'AGENT_STATUS_TONE',
         'AGENT_STATUS_GLYPH',
         'TASK_FATE_LABEL',
-        'PI_CHEV_SVG',
         'TASK_RUNS_SHOWN',
         'TASK_RUN_STATUS',
         '_panelTaskOpen',
@@ -1736,8 +1737,9 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
 
   it('folded by default (task view T1.3): one head — the runs in one line, no rows (SSOT 2026-10-29 T5)', () => {
     const { innerHTML: html } = rig(false);
+    // D4 K-06: the head is <ui-disclosure>'s row (closed: no open attribute, its region empty).
     expect(html).toContain(
-      '<button type="button" class="panel-sec-head panel-tasks-header" aria-expanded="false" onclick="togglePanelTasks()">',
+      '<ui-disclosure class="panel-tasks-dc" flush><span slot="summary" class="panel-tasks-header">',
     );
     // What runs now, then how many ran and completed (the earlier list's run counts), then
     // how many a new plan dropped before they ran.
@@ -1753,7 +1755,7 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
   it("opened, the earlier list's run is among the runs in start order; the never-run task sits in the plan's earlier fold (SSOT 2026-10-29 T5)", () => {
     const r = rig(true);
     const html = r.innerHTML;
-    expect(html).toContain('aria-expanded="true" aria-controls="panel-tasks-body"');
+    expect(html).toContain('<ui-disclosure class="panel-tasks-dc" flush open>');
     expect(html).toContain('<div class="panel-tasks-body ui-tok" id="panel-tasks-body">');
     // The earlier list's completed task ran first: it comes first.
     expect(r.runs?.runs.map((x: { title: string }) => x.title)).toEqual(['old one', 'now']);

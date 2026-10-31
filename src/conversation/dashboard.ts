@@ -4211,23 +4211,14 @@ ui-stat-strip:not(:defined) { min-height: 44px; }
 ui-stat-strip:not(:defined) > * { display: none; }
 .stats-detail { padding-top: 12px; }
 
-/* ── EXPAND / COLLAPSE (P6) — the library disclosure recipe for 세션 정보 (.panel-info) and the completed goals
-   (.cg-hx): the region is the last row of its host's grid and that row goes 0fr ↔ 1fr on --dur-expand (ease-out)
-   with an opacity fade. Closed, the region is
-   [hidden] + inert but still painted at 0 rows, so it leaves the way it came (세션 정보, drawn only while
-   open, folds first: .xp-shut). It clips only while the row moves (.xp-moving, xpMove), so focus rings
-   inside are whole once it has settled. The panel's ResizeObserver re-measures the sections on every frame
-   of it (sizePanelSections). ── */
-.cg-hx, .panel-info { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; align-content: start; transition: grid-template-rows var(--dur-expand) var(--ease-out); }
-.cg-hx { grid-template-rows: 1fr; }
-.panel-info:has(> .pi-links) { grid-template-rows: auto auto 1fr; }
-.panel-info.xp-shut { grid-template-rows: auto 0fr; }
-.panel-info.xp-shut:has(> .pi-links) { grid-template-rows: auto auto 0fr; }
-.cg-hx:has(> .cg-hx-in[hidden]), .cg-hx.xp-shut { grid-template-rows: 0fr; }
-.cg-hx-in, .panel-info > .pi-body { min-height: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s; }
-.cg-hx-in[hidden] { display: block; }
-.cg-hx-in[hidden], .cg-hx.xp-shut > .cg-hx-in, .panel-info.xp-shut > .pi-body { opacity: 0; visibility: hidden; overflow: hidden; margin-top: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s linear var(--dur-expand); }
-.xp-moving > .cg-hx-in, .xp-moving > .pi-body { overflow: hidden; }
+/* ── EXPAND / COLLAPSE (P6, D4 K-06) — @2lab.ai/ui <ui-disclosure> for 세션 정보 (.pi-dc), Tasks (.panel-tasks-dc),
+   지시 첨부 (.panel-um-dc) and the completed goals (.cg-hx, trigger="external": the goal head's own button opens
+   it): the summary row (or the external trigger's aria), the region's 0fr ↔ 1fr grow with its fade, inert while
+   closed, the keyboard and the settle notice (ui-toggled — the page drops a closed region's nodes then) are the
+   element's. flush: the page's own padding under the row. In the panel the row's press surface bleeds 8px past
+   the text so the words line up with the rows around it. ── */
+.pi-dc, .panel-tasks-dc, .panel-um-dc, .cg-hx { display: block; }
+.pi-dc::part(summary), .panel-tasks-dc::part(summary), .panel-um-dc::part(summary) { width: calc(100% + 16px); margin: 0 -8px; }
 .usage-cb-wrap { max-width: 440px; margin-bottom: 12px; }
 
 /* ── STAT CARDS — the cards behind 자세히 (B-07): <ui-stat-strip id="stats-grid"> in layout 'cards' draws the
@@ -4668,30 +4659,11 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   -webkit-backdrop-filter: saturate(180%) blur(12px);
   backdrop-filter: saturate(180%) blur(12px);
 }
-/* A section head (T1.3): title · a one-line summary · chevron. Tasks and 지시와
-   답변 share it; 작업 로그 keeps its own head (same look). */
-.panel-sec-head {
-  font: inherit;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 36px;
-  padding: 4px 0;
-  border: 0;
-  background: none;
-  color: var(--text-secondary);
-  text-align: left;
-  cursor: pointer;
-}
+/* The Tasks head (T1.3, D4 K-06): the summary slotted into <ui-disclosure> — title · a one-line summary. */
 .ps-sec-title { flex: none; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
-.ps-sec-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.ps-sec-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 400; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .ps-sec-now { display: inline-flex; align-items: center; gap: 4px; color: var(--text); font-weight: 600; }
 .ps-sec-now .spinner { width: 10px; height: 10px; }
-.panel-sec-head .pi-chev { flex: none; width: 12px; height: 12px; transition: transform var(--dur-expand) var(--ease-out); }
-.panel-sec-head[aria-expanded="true"] .pi-chev { transform: rotate(180deg); }
-@media (hover: hover) and (pointer: fine) { .panel-sec-head:hover .ps-sec-title { color: var(--text); } }
-.panel-sec-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; border-radius: 6px; }
 .panel-tasks {
   padding: 4px 16px;
   border-bottom: 1px solid var(--border);
@@ -4760,10 +4732,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   font-size: 12px;
   font-weight: 600;
   color: var(--text-secondary);
-  margin-bottom: 6px;
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 .panel-tasks-toggle {
   display: inline-flex;
@@ -4879,13 +4851,11 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* ── 세션 정보 — one summary line + the links; opened, every number (spec 13) ── */
 .panel-info { padding: 6px 16px 8px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); }
 .panel-info:empty { display: none; }
-.pi-head { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 2px 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+/* The 세션 정보 row (D4 K-06): the summary slotted into <ui-disclosure> — title · the one-line summary. */
+.pi-head { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; }
 .pi-title { flex-shrink: 0; font-size: 12px; font-weight: 600; color: var(--text-tertiary); }
-.pi-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+.pi-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
 .pi-dot { margin: 0 5px; color: var(--text-tertiary); }
-.pi-chev { flex-shrink: 0; width: 14px; height: 14px; color: var(--text-tertiary); transition: transform var(--dur-press) var(--ease-out); }
-.pi-head[aria-expanded="true"] .pi-chev { transform: rotate(180deg); }
-.pi-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; border-radius: 6px; }
 .pi-links { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 2px; }
 .pi-links a { font-weight: 600; color: var(--accent); text-decoration: none; min-height: 24px; display: inline-flex; align-items: center; min-width: 0; overflow-wrap: anywhere; }
 .pi-links a:focus-visible { text-decoration: underline; }
@@ -5048,7 +5018,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 /* ── TOUCH — coarse pointer enlargement ── */
 @media (pointer: coarse) {
-  .psec-older, .psec-pill, .panel-sec-head, .panel-detail-toggle { min-height: 44px; }
+  .psec-older, .psec-pill, .panel-detail-toggle { min-height: 44px; }
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
 }
 /* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens (heights only). ── */
@@ -5069,7 +5039,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .topbar .user-select, .topbar .admin-toggle, .topbar .td-chip { min-height: 44px; }
   .inbox-head .archives-btn { min-height: 44px; }
   .card-body .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
-  .pi-links a, .pi-head, .panel-tasks-toggle { min-height: 44px; }
+  .pi-links a, .panel-tasks-toggle { min-height: 44px; }
   .cgl-go, .card-more-link, .tl-toggle { min-height: 44px; }
 }
 
@@ -5316,10 +5286,8 @@ body.nt-open .new-task-fab { display: none !important; }
 .um-compact .um-file { width: auto; max-width: 200px; }
 .io-row .um-media { margin: 4px 0 6px; }
 .panel-user-media { margin-bottom: 6px; }
-.panel-um-head { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px; padding: 2px 0; border: none; background: none; color: var(--text); font: inherit; font-size: 12px; font-weight: 600; text-align: left; cursor: pointer; }
-.panel-um-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; border-radius: 6px; }
-.panel-um-head .um-chevron { width: 14px; height: 14px; flex-shrink: 0; color: var(--text-tertiary); transition: transform var(--dur-press) var(--ease-out); }
-.panel-um-head[aria-expanded="true"] .um-chevron { transform: rotate(180deg); }
+/* The 지시 첨부 row (D4 K-06): the summary slotted into <ui-disclosure> — glyph · 지시 첨부 · count · hint. */
+.panel-um-head { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text); font-size: 12px; font-weight: 600; }
 .panel-um-body { padding: 4px 0 2px; }
 .panel-um-body .um-media { margin: 0; }
 @media (hover: hover) and (pointer: fine) {
@@ -5327,10 +5295,9 @@ body.nt-open .new-task-fab { display: none !important; }
 }
 @media (pointer: coarse) {
   .um-compact .um-tile { width: 44px; height: 44px; }
-  .panel-um-head { min-height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .um-tile, .panel-um-head .um-chevron { transition: none; }
+  .um-tile { transition: none; }
 }
 /* The peek (I-05) is <ui-hovercard id="art-peek">: the element draws the raised card beside its trigger (360px —
    its width attribute) and runs the hover / focus / Esc / press rules; the page fills it — a media box, a foot line. */
@@ -6537,13 +6504,15 @@ function renderPanelTasks(tasks, scopeLabel, earlier, outside) {
   container._planScope = scope;
   container._planSeen = now;
 
-  var head = '<button type="button" class="panel-sec-head panel-tasks-header" aria-expanded="' + (_panelTasksOpen ? 'true' : 'false') + '"'
-    + (_panelTasksOpen ? ' aria-controls="panel-tasks-body"' : '') + ' onclick="togglePanelTasks()">'
+  // The head is <ui-disclosure>'s row (D4 K-06): the title and the one-line summary slotted in; the body is its
+  // region, painted only while open and through the fold ('folding') — the choice is _panelTasksOpen.
+  var open = _panelTasksOpen === true;
+  var head = '<ui-disclosure class="panel-tasks-dc" flush' + (open ? ' open' : '') + '>'
+    + '<span slot="summary" class="panel-tasks-header">'
     + '<span class="ps-sec-title">' + title + '</span>'
-    + '<span class="ps-sec-sum">' + planSummaryHtml(list, prev) + '</span>'
-    + PI_CHEV_SVG + '</button>';
+    + '<span class="ps-sec-sum">' + planSummaryHtml(list, prev) + '</span></span>';
   var live = '<span class="ar-vh pl-live" role="status" aria-live="polite">' + esc(said.join('. ')) + '</span>';
-  if (!_panelTasksOpen) { writePanelTasks(container, head + live); return; }
+  if (!open && _panelTasksOpen !== 'folding') { writePanelTasks(container, head + '</ui-disclosure>' + live); return; }
 
   // SSOT 2026-10-29 T5, D3 E-22/E-23: the tasks that actually ran, in the order
   // they ran — @2lab.ai/ui <ui-task-runs>: a row per run (status, start, run
@@ -6566,7 +6535,7 @@ function renderPanelTasks(tasks, scopeLabel, earlier, outside) {
   if (runs.ran.length) body += '<ui-task-runs class="panel-task-runs" id="panel-task-runs" lang="ko"></ui-task-runs>';
   if (runs.plan.length || runs.skipped.length || !runs.ran.length) body += '<ui-task-plan class="panel-task-plan" id="panel-task-plan" lang="ko"></ui-task-plan>';
   var html = head + '<div class="panel-tasks-body ui-tok" id="panel-tasks-body">' + body
-    + (runs.ran.length || outside ? taskTotalsHtml(runs.ran, outside) : '') + '</div>' + live;
+    + (runs.ran.length || outside ? taskTotalsHtml(runs.ran, outside) : '') + '</div></ui-disclosure>' + live;
   writePanelTasks(container, html);
   var runsEl = document.getElementById('panel-task-runs');
   if (runsEl) {
@@ -6590,10 +6559,6 @@ function taskElData(el, d) {
   if (el._taskSig === sig) return;
   el._taskSig = sig;
   el.data = d;
-}
-function togglePanelTasks() {
-  _panelTasksOpen = !_panelTasksOpen;
-  repaintPanelTasks();
 }
 // The folded head's one line (SSOT 2026-10-29 T5): the step in progress (its
 // activeForm), then how many tasks ran and completed, what is left of the plan,
@@ -7354,44 +7319,10 @@ function setPeriod(period) {
   loadStats();
 }
 
-// ── Expand / collapse (P6, the library disclosure recipe — CSS "EXPAND / COLLAPSE") ──
-// xpMove: the host's region clips while its row moves, then not (focus rings stay whole).
-// xpEnter / xpLeave: a region drawn only while open (세션 정보) enters from 0 rows, and folds to 0
-// rows before it is dropped (done). Reduced motion: the sheet's global rule makes both instant.
-var XP_MS = 240;
-function xpMove(host) {
-  if (!host || !host.classList) return;
-  host.classList.add('xp-moving');
-  clearTimeout(host._xpMoveT);
-  host._xpMoveT = setTimeout(function() { host.classList.remove('xp-moving'); }, XP_MS + 40);
-}
-function xpEnter(host) {
-  if (!host || !host.classList) return;
-  host.classList.add('xp-shut');
-  void host.offsetHeight;
-  host.classList.remove('xp-shut');
-  xpMove(host);
-}
-function xpLeave(host, done) {
-  if (!host || !host.classList || reduceMotion()) { done(); return; }
-  host.classList.add('xp-shut');
-  xpMove(host);
-  clearTimeout(host._xpLeaveT);
-  host._xpLeaveT = setTimeout(function() {
-    host._xpLeaveT = 0;
-    done();
-    host.classList.remove('xp-shut');
-  }, XP_MS);
-}
-// A fold in progress is undone (the reader opened it again): true when there was one.
-function xpStay(host) {
-  if (!host || !host._xpLeaveT) return false;
-  clearTimeout(host._xpLeaveT);
-  host._xpLeaveT = 0;
-  host.classList.remove('xp-shut');
-  xpMove(host);
-  return true;
-}
+// ── Expand / collapse (P6, D4 K-06) — @2lab.ai/ui <ui-disclosure> (initDisclosures) ──
+// A region the page paints only while open (세션 정보, Tasks, 지시 첨부, the completed goals) keeps its
+// choice in one value: true (open), 'folding' (closing — the nodes stay for the element's fold until
+// ui-toggled), else closed.
 
 // ── Session cache ──
 // Keyed by session key — prototype-free so any key string is just a key.
@@ -9866,13 +9797,13 @@ function onPanelHeadAction(e) {
   else if (id === 'stop' || id === 'close' || id === 'trash') doAction(key, id);
 }
 
-// 세션 정보: a disclosure whose button is the one-line summary (owner ·
-// workflow · tokens · cost · context · last activity, live); the links stay in
-// view under it; opened, every number of the session. The panel is the
-// complete record: the card header's dhShow gates do not apply here.
+// 세션 정보: a <ui-disclosure> (D4 K-06) whose row is the one-line summary (owner ·
+// workflow · tokens · cost · context · last activity, live); opened, every number
+// of the session in its region (painted only while open — keep: through the fold);
+// the links stay in view under it. The panel is the complete record: the card
+// header's dhShow gates do not apply here. _panelInfoOpen: true · 'folding' · false.
 var _panelInfoOpen = false;
-var PI_CHEV_SVG = '<i data-ui-icon="chevron-down" class="pi-chev"></i>';
-function panelInfoHtml(s, open, col) {
+function panelInfoHtml(s, open, col, keep) {
   var u = s.tokenUsage || null;
   var ctx = u ? toNum(u.contextUsagePercent) : 0;
   var sum = [];
@@ -9884,15 +9815,14 @@ function panelInfoHtml(s, open, col) {
     sum.push('<span class="pi-cs' + (ctxCls ? ' ' + ctxCls : '') + '">ctx ' + ctxPercent(ctx) + '%</span>');
   }
   sum.push('<span class="rel-time" data-ts="' + (new Date(s.lastActivity).getTime() || 0) + '"></span>');
-  var html = '<button type="button" class="pi-head" aria-expanded="' + (open ? 'true' : 'false') + '"' + (open ? ' aria-controls="panel-info-body"' : '') + ' onclick="togglePanelInfo()">'
-    + '<span class="pi-title">세션 정보</span><span class="pi-sum">' + sum.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</span>'
-    + PI_CHEV_SVG + '</button>';
+  var html = '<ui-disclosure class="pi-dc" flush' + (open ? ' open' : '') + '>'
+    + '<span slot="summary" class="pi-head"><span class="pi-title">세션 정보</span><span class="pi-sum">' + sum.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</span></span>';
   var links = [];
   if (s.issueUrl) links.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener">' + esc(s.issueLabel || s.issueShortRef || 'Issue') + (s.issueTitle ? ' &mdash; ' + esc(String(s.issueTitle).slice(0, 60)) : '') + '</a>');
   if (s.prUrl) links.push('<a href="' + safeHref(s.prUrl) + '" target="_blank" rel="noopener">' + esc(s.prLabel || s.prShortRef || 'PR') + (s.prTitle ? ' &mdash; ' + esc(String(s.prTitle).slice(0, 60)) : '') + '</a>');
   if (s.conversationId) links.push('<a href="/conversations/' + escAttr(s.conversationId) + '" target="_blank" rel="noopener">전체 대화</a>');
-  if (links.length) html += '<div class="pi-links">' + links.join('') + '</div>';
-  if (!open) return html;
+  var foot = '</ui-disclosure>' + (links.length ? '<div class="pi-links">' + links.join('') + '</div>' : '');
+  if (!open && !keep) return html + foot;
   var rows = [];
   if (u) {
     rows.push(['누적 입력', formatTokens(u.totalInputTokens)]);
@@ -9911,7 +9841,7 @@ function panelInfoHtml(s, open, col) {
   if (s.mergeStats) thread.push('+' + toNum(s.mergeStats.totalLinesAdded) + ' / -' + toNum(s.mergeStats.totalLinesDeleted));
   body += '<div class="pi-thread">' + thread.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</div>';
   if (s.autoResume && s.autoResume.reason) body += '<div class="pi-resume">오류: ' + esc(s.autoResume.reason) + '</div>';
-  return html + '<div class="pi-body" id="panel-info-body">' + cwSlotHtml(s) + body + '</div>';
+  return html + '<div class="pi-body" id="panel-info-body">' + cwSlotHtml(s) + body + '</div>' + foot;
 }
 // 세부 (re-agent-run D19) — who ran it, with what, how much, at what cost:
 // 에이전트 (the model) · 시작한 사람 · 도구 호출 (the main agent's every call —
@@ -9947,30 +9877,8 @@ function renderPanelInfo() {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var now = Date.now();
   if (s) cwObserve(s, now);
-  writePanelPart(el, s ? panelInfoHtml(s, _panelInfoOpen, sessionColOf(panelSessionKey)) : '');
+  writePanelPart(el, s ? panelInfoHtml(s, _panelInfoOpen === true, sessionColOf(panelSessionKey), _panelInfoOpen === 'folding') : '');
   if (s) cwPaint(el.querySelector('ui-context-window'), s, now);
-}
-function togglePanelInfo() {
-  var el = document.getElementById('panel-info');
-  // Opened again while it folds: it stays.
-  if (xpStay(el)) {
-    var h = el.querySelector('.pi-head');
-    if (h) h.setAttribute('aria-expanded', 'true');
-    return;
-  }
-  // Closing: the body folds to 0 rows first, then the part is written without it.
-  if (_panelInfoOpen && el && el.querySelector('.pi-body')) {
-    var head = el.querySelector('.pi-head');
-    if (head) head.setAttribute('aria-expanded', 'false');
-    xpLeave(el, function() {
-      _panelInfoOpen = false;
-      renderPanelInfo();
-    });
-    return;
-  }
-  _panelInfoOpen = !_panelInfoOpen;
-  renderPanelInfo();
-  if (_panelInfoOpen) xpEnter(el);
 }
 
 // ── 컨텍스트 — @2lab.ai/ui <ui-context-window> (.prd/affectui/re-context-window.md D5–D20) ──
@@ -11149,36 +11057,19 @@ function renderGoalHistory(history) {
   }).join('');
   return '<ol class="cg-history">' + items + '</ol>';
 }
-// The completed-goal regions of one card (its face and the panel's goal editor).
-function goalHxHosts(key) {
-  var all = document.querySelectorAll ? document.querySelectorAll('.cg-hx') : [];
-  var out = [];
-  for (var i = 0; i < all.length; i++) if (all[i].getAttribute('data-hx') === key) out.push(all[i]);
-  return out;
-}
-function toggleGoalHistory(key, folded) {
-  var hosts = goalHxHosts(key);
-  // Closing (P6): the open history folds to 0 rows first, then the card and the panel are drawn without it.
-  if (!folded && _goalHistoryOpen[key] && hosts.length && !reduceMotion()) {
-    if (hosts[0]._xpLeaveT) return;
-    for (var j = 0; j < hosts.length; j++) {
-      hosts[j].classList.add('xp-shut');
-      xpMove(hosts[j]);
-    }
-    hosts[0]._xpLeaveT = setTimeout(function() {
-      hosts[0]._xpLeaveT = 0;
-      toggleGoalHistory(key, true);
-    }, XP_MS);
-    return;
-  }
-  if (_goalHistoryOpen[key]) delete _goalHistoryOpen[key];
-  else _goalHistoryOpen[key] = true;
-  refreshCard(key);
-  // The goal editor's home is the panel (spec 13): its 완료된 goal toggle opens there.
+// The completed goals' choice (T6, D4 K-06): <ui-disclosure class="cg-hx" trigger="external"> under the goal's
+// queue, opened by the head row's 완료된 goal N개 button (for=); the element's ui-toggle keeps the choice here
+// (initDisclosures), and the panel's goal editor — the goal's home (spec 13) — paints the list on the way open
+// and drops it once the region has folded (ui-toggled).
+function goalHistoryToggle(key, open) {
+  if (open) _goalHistoryOpen[key] = true;
+  else if (_goalHistoryOpen[key]) _goalHistoryOpen[key] = 'folding';
   if (panelOpen && panelSessionKey === key) renderPanelGoal();
-  // After the (morphing) re-render: the history's row clips while it moves.
-  hosts = goalHxHosts(key);
-  for (var i = 0; i < hosts.length; i++) xpMove(hosts[i]);
+}
+function goalHistoryFolded(key) {
+  if (_goalHistoryOpen[key] !== 'folding') return;
+  delete _goalHistoryOpen[key];
+  if (panelOpen && panelSessionKey === key) renderPanelGoal();
 }
 var _goalErrors = Object.create(null); // card key -> last refused goal action (shown until the next success)
 
@@ -11200,12 +11091,13 @@ function renderCardGoal(s, col, canEdit, open) {
       html += '<span class="cg-progress" title="자동 이어하기 횟수 / 상한">' + toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) + '</span>';
     }
   }
-  // T6: the completed goals open from the head (any viewer, any column).
+  // T6: the completed goals open from the head (any viewer, any column) — the external trigger of the
+  // <ui-disclosure> under the queue (D4 K-06); the element keeps its aria-expanded / aria-controls current.
   var doneCount = g ? toNum(g.completedCount) : 0;
-  var historyOpen = doneCount > 0 && !!_goalHistoryOpen[s.key];
+  var historyOpen = doneCount > 0 && _goalHistoryOpen[s.key] === true;
+  var historyPainted = historyOpen || (doneCount > 0 && _goalHistoryOpen[s.key] === 'folding');
   if (doneCount > 0) {
-    html += '<button type="button" class="cg-history-toggle" aria-expanded="' + (historyOpen ? 'true' : 'false') + '"'
-      + ' onclick="event.stopPropagation();toggleGoalHistory(\\'' + key + '\\')">완료된 goal ' + doneCount + '개'
+    html += '<button type="button" class="cg-history-toggle" id="cg-history-toggle" aria-expanded="' + (historyOpen ? 'true' : 'false') + '">완료된 goal ' + doneCount + '개'
       + '<span class="chev" aria-hidden="true"></span></button>';
   }
   html += '</div>';
@@ -11235,11 +11127,11 @@ function renderCardGoal(s, col, canEdit, open) {
     }
     html += '</ol>';
   }
-  // The completed goals open under the current goal and its queue (T6), in a region that unfolds in place
-  // (P6: its row 0fr → 1fr); closed it is empty, hidden and inert.
+  // The completed goals open under the current goal and its queue (T6) in <ui-disclosure>'s region (its grow in
+  // place, inert while closed); the list is painted while open and through the fold, else the region is empty.
   if (doneCount > 0) {
-    html += '<div class="cg-hx" data-hx="' + escAttr(s.key) + '"><div class="cg-hx-in"'
-      + (historyOpen ? '><div class="cg-queue-title">완료된 goal</div>' + renderGoalHistory(g.history) : ' hidden inert>') + '</div></div>';
+    html += '<ui-disclosure class="cg-hx" trigger="external" for="cg-history-toggle" data-hx="' + escAttr(s.key) + '"' + (historyOpen ? ' open' : '') + '>'
+      + (historyPainted ? '<div class="cg-queue-title">완료된 goal</div>' + renderGoalHistory(g.history) : '') + '</ui-disclosure>';
   }
   if (editable) {
     html += '<form class="cg-add" onsubmit="event.preventDefault();event.stopPropagation();addGoalFromCard(\\'' + key + '\\',this)">'
@@ -16028,22 +15920,16 @@ function umMissingReason(a) {
   return '이 파일은 대시보드에 사본이 없습니다. Slack에서 열 수 있습니다.';
 }
 
-// Pinned row of the panel: "지시 첨부 N", collapsed by default so it costs one
-// line; opened, the session's files in a compact strip. Nothing when none.
-function renderPanelUserMedia(list, cid, open) {
+// Pinned row of the panel: "지시 첨부 N" — a <ui-disclosure> (D4 K-06) collapsed by default so it costs one
+// line; opened, the session's files in a compact strip in its region (painted while open — keep: through
+// the fold). Nothing when none.
+function renderPanelUserMedia(list, cid, open, keep) {
   if (!cid || !list || !list.length) return '';
-  var head = '<button type="button" class="panel-um-head" aria-expanded="' + (open ? 'true' : 'false') + '" aria-controls="panel-um-body" onclick="togglePanelUserMedia()">'
-    + '<i data-ui-icon="attach" class="art-glyph"></i>'
+  var head = '<ui-disclosure class="panel-um-dc" flush' + (open ? ' open' : '') + '>'
+    + '<span slot="summary" class="panel-um-head"><i data-ui-icon="attach" class="art-glyph"></i>'
     + '<span>지시 첨부</span><span class="art-count">' + list.length + '</span>'
-    + '<span class="panel-arts-hint">유저가 지시와 함께 보낸 파일</span>'
-    + '<i data-ui-icon="chevron-down" class="um-chevron"></i>'
-    + '</button>';
-  return head + (open ? '<div class="panel-um-body" id="panel-um-body">' + renderUserMedia(cid, list, { compact: true }) + '</div>' : '');
-}
-
-function togglePanelUserMedia() {
-  _umPanelOpen = !_umPanelOpen;
-  renderPanelArtifactsSection();
+    + '<span class="panel-arts-hint">유저가 지시와 함께 보낸 파일</span></span>';
+  return head + (open || keep ? '<div class="panel-um-body" id="panel-um-body">' + renderUserMedia(cid, list, { compact: true }) + '</div>' : '') + '</ui-disclosure>';
 }
 
 // The session's attachments for the pinned row, fetched when the card says it has some.
@@ -16303,9 +16189,10 @@ function renderPanelArtifactsSection() {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var list = c && c.list ? c.list : ((s && s.artifacts && s.artifacts.recent) || []);
   // The user's files (지시 첨부) first, one collapsed line; then the model's 산출물.
-  var umHtml = cid ? renderPanelUserMedia(_umList[cid] || [], cid, _umPanelOpen) : '';
+  var umHtml = cid ? renderPanelUserMedia(_umList[cid] || [], cid, _umPanelOpen === true, _umPanelOpen === 'folding') : '';
   var html = cid ? (umHtml ? '<div class="panel-user-media" id="panel-user-media">' + umHtml + '</div>' : '') + renderPanelArtifacts(list, cid, artPanelVariant()) : '';
-  el.innerHTML = html;
+  // Morphed (D4 K-06): the 지시 첨부 disclosure keeps its node across a repaint, so its open grows in place.
+  writePanelPart(el, html);
   el.style.display = html ? '' : 'none';
   // The files each answer produced go under it (convTurnsOf: an artifact goes to
   // the first answer whose turn window holds its turn start).
@@ -16624,30 +16511,31 @@ function fcHydrateIn(node) {
     try { localStorage.setItem(STATS_DETAIL_KEY, _statsDetailOpen ? 'open' : 'closed'); } catch (_e) {}
   });
 })();
-// <ui-disclosure> (K-06): Raw, a system turn and a card's system instruction open and close by
-// themselves; the page only keeps a card's choice across its morph re-render (_ioOpen).
-// @2lab.ai/ui 0.5.0 toggles a <ui-disclosure> only when the click's target is inside its own head, and a click on
-// slotted summary content (a System row's words and badge, a card's instruction line) keeps the light-DOM span as
-// its target — so it did nothing (D1-GAPS G4-4). The page toggles it then, with the element's toggle() (its
-// cancelable ui-toggle, its motion) — unless the element already toggled itself in that click (a fixed release).
-// Pure: the disclosure whose slotted summary a click target sits in, or null.
-function dcSummaryHost(t) {
-  var s = t && t.closest ? t.closest('[slot="summary"]') : null;
-  var d = s ? s.parentElement : null;
-  return d && d.tagName === 'UI-DISCLOSURE' ? d : null;
-}
+// <ui-disclosure> (K-06): Raw, a system turn and a card's system instruction (D1), and — D4 — 세션 정보, Tasks,
+// 지시 첨부 and the completed goals open and close by themselves (the row or the external trigger, Enter / Space,
+// the grow and the fold, inert while closed; a click on the slotted summary's words counts since 0.8.0). The page
+// keeps each choice (_ioOpen, _panelInfoOpen, _panelTasksOpen, _umPanelOpen, _goalHistoryOpen) from the element's
+// cancelable ui-toggle; a region it paints only while open is painted on the way open (so the element grows
+// around it) and, as 'folding', kept through the fold until the element's ui-toggled says the region has settled —
+// then its nodes go.
 (function initDisclosures() {
-  var pending = null; // the disclosure a click on its summary content is passing through
-  document.addEventListener('click', function(e) { pending = dcSummaryHost(e.target); }, true);
   document.addEventListener('ui-toggle', function(e) {
     var t = e.target;
-    if (t === pending) pending = null;
-    if (t && t.classList && t.classList.contains('io-sys')) ioSysToggle(t.getAttribute('data-cid') || '', e.detail && e.detail.open);
+    if (!t || !t.classList || t.tagName !== 'UI-DISCLOSURE') return;
+    var open = !!(e.detail && e.detail.open);
+    if (t.classList.contains('io-sys')) ioSysToggle(t.getAttribute('data-cid') || '', open);
+    else if (t.classList.contains('cg-hx')) goalHistoryToggle(t.getAttribute('data-hx') || '', open);
+    else if (t.classList.contains('pi-dc')) { _panelInfoOpen = open || 'folding'; if (open) renderPanelInfo(); }
+    else if (t.classList.contains('panel-tasks-dc')) { _panelTasksOpen = open || 'folding'; if (open) repaintPanelTasks(); }
+    else if (t.classList.contains('panel-um-dc')) { _umPanelOpen = open || 'folding'; if (open) renderPanelArtifactsSection(); }
   });
-  document.addEventListener('click', function() {
-    var d = pending;
-    pending = null;
-    if (d && d.isConnected && typeof d.toggle === 'function') d.toggle();
+  document.addEventListener('ui-toggled', function(e) {
+    var t = e.target;
+    if (!t || !t.classList || t.tagName !== 'UI-DISCLOSURE' || (e.detail && e.detail.open)) return;
+    if (t.classList.contains('cg-hx')) goalHistoryFolded(t.getAttribute('data-hx') || '');
+    else if (t.classList.contains('pi-dc') && _panelInfoOpen === 'folding') { _panelInfoOpen = false; renderPanelInfo(); }
+    else if (t.classList.contains('panel-tasks-dc') && _panelTasksOpen === 'folding') { _panelTasksOpen = false; repaintPanelTasks(); }
+    else if (t.classList.contains('panel-um-dc') && _umPanelOpen === 'folding') { _umPanelOpen = false; renderPanelArtifactsSection(); }
   });
 })();
 // Spec 12 §4.3 — the panel's agent section: a path step drills into that node

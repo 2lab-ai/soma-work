@@ -2106,7 +2106,6 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
           'AGENT_STATUS_TONE',
           'AGENT_STATUS_GLYPH',
           'TASK_FATE_LABEL',
-          'PI_CHEV_SVG',
           'TASK_RUNS_SHOWN',
           'TASK_RUN_STATUS',
           '_panelTaskOpen',
@@ -2204,7 +2203,7 @@ describe('task total on the face and in 세션 정보 (SSOT T3)', () => {
     // The token grid's rows; 세부 (cost) and the context block are their own renderers.
     const f = load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
       ['esc', 'escAttr', 'toNum', 'cardTotalTokens', 'spendTotal', 'spendText', 'ctxLevel', 'panelInfoHtml'],
-      ['PI_CHEV_SVG'],
+      [],
       {
         formatNmSSs: () => '0s',
         safeHref: (h: string) => h,
