@@ -23,6 +23,7 @@ import type {
   ActivityState,
   ConversationSession,
   HandoffContext,
+  OriginThread,
   SessionCronJob,
   SessionGoal,
   SessionIncidentRequest,
@@ -53,6 +54,8 @@ export interface ArchivedSession {
   taskId?: string;
   /** A Slack-less task (#596): no channel/thread to revive into — keyed `task:<taskId>`. */
   slackless?: true;
+  /** E2 ① — the instruction thread of a Slack-less task; a revive brings it back while it is free. */
+  originThread?: OriginThread;
 
   // Owner
   ownerId: string;
@@ -163,6 +166,7 @@ function sessionToArchive(
     conversationId: session.conversationId,
     taskId: session.taskId,
     slackless: session.slackless === true ? true : undefined,
+    originThread: session.originThread,
 
     ownerId: session.ownerId,
     ownerName: session.ownerName,

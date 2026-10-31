@@ -47,6 +47,7 @@ import type {
   ActivityState,
   ConversationSession,
   HandoffContext,
+  OriginThread,
   SessionCronJob,
   SessionGoal,
   SessionIncidentRequest,
@@ -194,6 +195,8 @@ interface SerializedSession {
   taskId?: string;
   // Slack-less task (#596): keyed by taskId on load, not by channelId/threadTs
   slackless?: boolean;
+  /** E2 ① — a Slack-less task's instruction thread; validated on load. */
+  originThread?: unknown;
   // Merge code change stats
   mergeStats?: {
     totalLinesAdded: number;
@@ -270,6 +273,41 @@ export interface CreateTaskInput {
   workingDirectory: string;
   title?: string;
   model?: string;
+  /** E2 ① — the Slack thread the task was instructed from; saved with the task's first strict save. */
+  originThread?: OriginThread;
+}
+
+/** E2 ① — `createTask` refused: a live task already holds this instruction thread. */
+export class OriginThreadTakenError extends Error {
+  readonly holderTaskId: string | undefined;
+  constructor(origin: OriginThread, holderTaskId: string | undefined) {
+    super(`A live task already holds the instruction thread ${origin.channel}:${origin.threadTs}`);
+    this.name = 'OriginThreadTakenError';
+    this.holderTaskId = holderTaskId;
+  }
+}
+
+/**
+ * E2 ① — a stored instruction thread, or undefined: non-empty string channel,
+ * thread and message, and an optional non-empty string agent. Nothing else is
+ * kept, so a record never carries more than this shape.
+ */
+export function sanitizeOriginThread(value: unknown): OriginThread | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const v = value as Record<string, unknown>;
+  const nonEmpty = (x: unknown): x is string => typeof x === 'string' && x !== '';
+  if (!nonEmpty(v.channel) || !nonEmpty(v.threadTs) || !nonEmpty(v.messageTs)) return undefined;
+  if (v.agent !== undefined && !nonEmpty(v.agent)) return undefined;
+  return {
+    channel: v.channel,
+    threadTs: v.threadTs,
+    messageTs: v.messageTs,
+    ...(v.agent !== undefined ? { agent: v.agent as string } : {}),
+  };
+}
+
+function originThreadKey(origin: OriginThread): string {
+  return `${origin.channel}:${origin.threadTs}`;
 }
 
 /**
@@ -392,6 +430,8 @@ export class SessionRegistry {
    * disagree. See `getSessionByTaskId` for the id lifecycle contract.
    */
   private sessionsByTaskId: Map<string, ConversationSession> = new Map();
+  /** E2 ① — live Slack-less tasks by instruction thread (`channel:threadTs`); rebuilt from the records on load. */
+  private tasksByOriginThread: Map<string, ConversationSession> = new Map();
   private logger = new Logger('SessionRegistry');
   private expiryCallbacks?: SessionExpiryCallbacks;
   private beforeSessionDelete?: BeforeSessionDeleteCallback;
@@ -729,12 +769,41 @@ export class SessionRegistry {
     return this.sessionsByTaskId.get(taskId);
   }
 
-  /** Insert under `key`; a different session already there loses its task-id entry. */
+  /**
+   * E2 ① — the live Slack-less task instructed from this Slack thread (its
+   * root `thread_ts`), if any. An archived task is not found: one live task
+   * per instruction thread.
+   */
+  getTaskByOriginThread(channel: string, threadTs: string): ConversationSession | undefined {
+    return this.tasksByOriginThread.get(`${channel}:${threadTs}`);
+  }
+
+  /**
+   * Insert under `key`; a different session already there loses its task-id
+   * entry. A Slack-less task's instruction thread is indexed while it is free;
+   * one another live task holds is dropped from this session (the holder keeps it).
+   */
   private putSession(key: string, session: ConversationSession): void {
     const previous = this.sessions.get(key);
     if (previous && previous !== session) this.unindexTask(previous);
     this.sessions.set(key, session);
     if (session.taskId) this.sessionsByTaskId.set(session.taskId, session);
+    if (session.originThread) {
+      const originKey = originThreadKey(session.originThread);
+      const holder = this.tasksByOriginThread.get(originKey);
+      if (session.slackless !== true) {
+        session.originThread = undefined;
+      } else if (holder && holder !== session) {
+        this.logger.warn('Instruction thread already held by a live task; dropped from this one', {
+          taskId: session.taskId,
+          holderTaskId: holder.taskId,
+          originThread: originKey,
+        });
+        session.originThread = undefined;
+      } else {
+        this.tasksByOriginThread.set(originKey, session);
+      }
+    }
   }
 
   private removeSession(key: string): void {
@@ -743,11 +812,13 @@ export class SessionRegistry {
     if (session) this.unindexTask(session);
   }
 
-  /** Drop the task-id entry only while it still names this session — an inheritor keeps its own. */
+  /** Drop the task-id entry only while it still names this session (an inheritor keeps its own), and its instruction thread. */
   private unindexTask(session: ConversationSession): void {
     if (session.taskId && this.sessionsByTaskId.get(session.taskId) === session) {
       this.sessionsByTaskId.delete(session.taskId);
     }
+    // Only the holder carries its thread — `putSession` dropped it from any other.
+    if (session.originThread) this.tasksByOriginThread.delete(originThreadKey(session.originThread));
   }
 
   /**
@@ -920,11 +991,20 @@ export class SessionRegistry {
   createTask(input: CreateTaskInput): ConversationSession {
     if (!input.ownerId) throw new Error('createTask: ownerId is required');
     if (!input.workingDirectory) throw new Error('createTask: workingDirectory is required');
+    let originThread: OriginThread | undefined;
+    if (input.originThread !== undefined) {
+      originThread = sanitizeOriginThread(input.originThread);
+      if (!originThread) throw new Error('createTask: originThread needs a channel, a thread and a message');
+      // One live task per instruction thread (E2 ①) — refused before anything is saved.
+      const holder = this.tasksByOriginThread.get(originThreadKey(originThread));
+      if (holder) throw new OriginThreadTakenError(originThread, holder.taskId);
+    }
     // No Slack binding: an empty channel and no thread, never invented ones.
     const session = this.newSession(input.ownerId, input.ownerName, '', undefined, input.model);
     session.slackless = true;
     session.workingDirectory = input.workingDirectory;
     if (input.title) session.title = input.title;
+    if (originThread) session.originThread = originThread;
 
     const key = buildTaskSessionKey(session.taskId);
     this.putSession(key, session);
@@ -1197,6 +1277,8 @@ export class SessionRegistry {
       channelId: slackless ? '' : archived.channelId,
       threadTs: slackless ? undefined : archived.threadTs,
       slackless: slackless ? true : undefined,
+      // E2 ① — back while it is free; `putSession` drops it if a live task holds the thread now.
+      originThread: sanitizeOriginThread(archived.originThread),
       // A task runs in its own directory: the one its transcript proves it ran in (#612 R4).
       ...(slackless ? { workingDirectory: cwd } : {}),
       sessionId: archived.sessionId,
@@ -2662,6 +2744,7 @@ export class SessionRegistry {
             conversationId: session.conversationId,
             taskId: session.taskId,
             slackless: session.slackless === true ? true : undefined,
+            originThread: session.originThread,
             // Merge code change stats
             mergeStats: session.mergeStats,
             // User SSOT instructions (persisted)
@@ -2798,6 +2881,7 @@ export class SessionRegistry {
         channelId: serialized.channelId,
         threadTs: serialized.threadTs,
         slackless: serialized.slackless === true ? true : undefined,
+        originThread: sanitizeOriginThread(serialized.originThread),
         lastTurnOutcome: sanitizeTaskTurnOutcome(serialized.lastTurnOutcome),
         sessionId: serialized.sessionId,
         isActive: false,
@@ -3021,6 +3105,8 @@ export class SessionRegistry {
           // Conversation record ID
           conversationId: serialized.conversationId,
           slackless: slackless ? true : undefined,
+          // E2 ① — a malformed instruction thread is dropped; `putSession` drops one on a Slack session.
+          originThread: sanitizeOriginThread(serialized.originThread),
           // Incident ownership is restored verbatim and never repaired: any
           // present value keeps the session restricted (fail closed).
           incidentRequest:
