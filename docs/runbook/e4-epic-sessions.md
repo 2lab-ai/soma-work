@@ -115,7 +115,7 @@ Add `--json` for the raw report. `--since` limits which logs it reads. It always
 - `extraWakeTurns`: wake turns that no consuming chain matches. Each committed wake names exactly the events its chain consumed, so the script matches turns to chains by those events.
   - Only a restart that cut an epic turn holding events adds a released wake. The number must match those restarts, not be 0.
   - In step 3 the restart most likely cuts a child's turn, so expect 0 there.
-  - An instruction you give the epic also consumes its pending events. The report shows these as "owner instructions, no wake turn". They cannot hide an extra wake.
+  - An instruction you give the epic also consumes its pending events. The report lists such chains as "chains with no wake turn". The same label covers a wake whose turn the recorder did not save. Such a chain can hide an extra wake only if it consumed exactly the same `node:word` items, which is rare.
 - `slackCalls`: lines saying a task turn tried to call Slack (T9). The line is logged at most once per process, so read it as "did any task turn call Slack".
 
 **Not a target:** "nothing pending". A child that ends after its epic wrote done leaves its event pending, and a done epic is never woken.
