@@ -824,6 +824,7 @@ async function start() {
         isRunning: (key) => taskTurnController?.isRunning(key) ?? false,
         markClosedByParent: (key) => claudeHandler.getSessionRegistry().markClosedByParent(key),
         recordChildClosed: (key) => claudeHandler.getSessionRegistry().recordEpicChildClosed(key),
+        markClosing: (key, closing) => claudeHandler.getSessionRegistry().markClosing(key, closing),
         logger,
       }),
     );

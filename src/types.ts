@@ -480,6 +480,12 @@ export interface ConversationSession {
    */
   closedBy?: { by: 'parent'; at: number };
   /**
+   * E4 ⑦ — in memory only, never saved: the dashboard close of this task is
+   * under way. An epic being closed takes no wake, no event, no tool call and
+   * no new start; a child being closed owes no wake (fable #703 R1).
+   */
+  closing?: boolean;
+  /**
    * E4 ① — an epic's children, by task id, in creation order. Append-only:
    * written in the same strict save that creates the child, never shortened,
    * so a closed or archived child still counts toward the cap.

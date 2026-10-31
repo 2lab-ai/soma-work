@@ -26,6 +26,9 @@ function rig(session: any, ledgerUnreadable: boolean, children: any[] = [], runn
     recordChildClosed: vi.fn((key: string) => {
       order.push(`closed-event:${key}`);
     }),
+    markClosing: vi.fn((key: string, closing: boolean) => {
+      order.push(`${closing ? 'closing' : 'not-closing'}:${key}`);
+    }),
     logger: { info: vi.fn(), warn: vi.fn() },
   };
   return { close: createDashboardCloseHandler(deps), deps, order };
@@ -54,13 +57,13 @@ describe('dashboard close of a task', () => {
   it('no ledger but the task owes nothing: closes as usual', async () => {
     const r = rig(owingNothing, true);
     await r.close('task:t2');
-    expect(r.order).toEqual([expect.stringMatching(/^closeTask:/), 'terminate']);
+    expect(r.order).toEqual([expect.stringMatching(/^closing:/), expect.stringMatching(/^closeTask:/), 'terminate']);
   });
 
   it('with a ledger: the chain is cancelled and committed, then the task is terminated', async () => {
     const r = rig(owing, false);
     await r.close('task:t1');
-    expect(r.order).toEqual([expect.stringMatching(/^closeTask:/), 'terminate']);
+    expect(r.order).toEqual([expect.stringMatching(/^closing:/), expect.stringMatching(/^closeTask:/), 'terminate']);
   });
 
   it('a Slack session: no task close, just terminated', async () => {
@@ -82,6 +85,7 @@ describe('E4 ⑦ — closing an epic or a child (D10 b · c)', () => {
     const r = rig(epic, false, kids, ['task:c1', 'task:c3']);
     await r.close('task:e1');
     expect(r.order).toEqual([
+      'closing:task:e1',
       'mark:task:c1',
       'mark:task:c3',
       'closeTask:task:c1',
@@ -123,7 +127,7 @@ describe('E4 ⑦ — closing an epic or a child (D10 b · c)', () => {
   it('a child: its epic records the close first, then it closes; a failed record is logged, the close goes on', async () => {
     const r = rig(kids[0], false);
     await r.close('task:c1');
-    expect(r.order).toEqual(['closed-event:task:c1', 'closeTask:task:c1', 'terminate']);
+    expect(r.order).toEqual(['closing:task:c1', 'closed-event:task:c1', 'closeTask:task:c1', 'terminate']);
     expect(r.deps.markClosedByParent).not.toHaveBeenCalled();
 
     const f = rig(kids[0], false);
@@ -140,6 +144,28 @@ describe('E4 ⑦ — closing an epic or a child (D10 b · c)', () => {
     await r.close('task:t9');
     expect(r.deps.getChildTasks).not.toHaveBeenCalled();
     expect(r.deps.recordChildClosed).not.toHaveBeenCalled();
-    expect(r.order).toEqual(['closeTask:task:t9', 'terminate']);
+    expect(r.order).toEqual(['closing:task:t9', 'closeTask:task:t9', 'terminate']);
+  });
+
+  it('a close that fails clears the closing mark (the task is live again); a refusal before it sets none', async () => {
+    const r = rig({ slackless: true, taskId: 'e1', kind: 'epic' }, false, kids, []);
+    r.deps.terminate.mockImplementation(() => {
+      throw new Error('refused');
+    });
+    await expect(r.close('task:e1')).rejects.toThrow('refused');
+    expect(r.order).toEqual(['closing:task:e1', 'closeTask:task:e1', 'not-closing:task:e1']);
+
+    const c = rig({ slackless: true, taskId: 'e2', kind: 'epic' }, false, kids, ['task:c1']);
+    c.deps.closeTask.mockRejectedValueOnce(new Error('boom'));
+    await expect(c.close('task:e2')).rejects.toThrow('boom');
+    expect(c.deps.markClosing).toHaveBeenLastCalledWith('task:e2', false);
+
+    const refused = rig(owing, true);
+    await expect(refused.close('task:t1')).rejects.toBeInstanceOf(SessionDeleteRefusedError);
+    expect(refused.deps.markClosing).not.toHaveBeenCalled();
+
+    const slack = rig({ slackless: false, channelId: 'C1', threadTs: '1.1' }, false);
+    await slack.close('C1:1.1');
+    expect(slack.deps.markClosing).not.toHaveBeenCalled();
   });
 });

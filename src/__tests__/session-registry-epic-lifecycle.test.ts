@@ -8,6 +8,10 @@
  *      survives a restart, the archive and the card's source.
  *   L4 `recordEpicChildClosed`: a delivered `closed` event on the epic, saved
  *      strictly; no live epic, nothing.
+ *   L5 the in-memory closing mark (fable #703 R1): an epic being closed takes no
+ *      chain end; a child being closed records its end delivered; never saved.
+ *   L6 `closedBy` ends with a new chain on the child, not with a hop of the
+ *      chain being closed.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -112,12 +116,76 @@ describe('SessionRegistry — an epic tree’s lifecycle (E4 ⑦)', () => {
     expect(reg.getSessionByTaskId(child.taskId!)).toBeUndefined();
   });
 
-  it('L1 — a closing epic no longer shelters its children', async () => {
+  it.each([
+    ['terminated', (reg: SessionRegistry, epic: any) => void (epic.terminated = true)],
+    [
+      'being closed (the in-memory mark)',
+      (reg: SessionRegistry, epic: any) => reg.markClosing(`task:${epic.taskId}`, true),
+    ],
+  ])('L1 — an epic %s no longer shelters its children', async (_name, close) => {
     const reg = new SessionRegistry();
     const { epic, child } = sleepingTree(reg);
-    epic.terminated = true;
+    close(reg, epic);
     await reg.cleanupInactiveSessions();
     expect(reg.getSessionByTaskId(child.taskId!)).toBeUndefined();
+  });
+
+  const cancelled = (turnId: string) => ({ turnId, outcome: 'cancelled', category: 'Aborted', at: 9 }) as any;
+
+  it('L5 — the closing mark: an epic being closed takes no chain end; a child being closed owes no wake; never saved', () => {
+    const reg = new SessionRegistry();
+    const epic = reg.createTask({ ...BASE, kind: 'epic' });
+    reg.setEpicPlan(epic.taskId!, { nodes: [{ id: 'login', title: 'Fix login', kind: 'issue' }] }, 'epic');
+    const c1 = reg.createTask({ ...BASE, parentTaskId: epic.taskId, planNodeId: 'login' });
+    const c2 = reg.createTask({ ...BASE, parentTaskId: epic.taskId, planNodeId: 'login' });
+    const epicKey = `task:${epic.taskId}`;
+    const k1 = `task:${c1.taskId}`;
+    const k2 = `task:${c2.taskId}`;
+
+    // The child being closed: its end is recorded, delivered.
+    reg.markClosing(k1, true);
+    reg.beginTaskTurn(k1, 't1', 'ch1');
+    reg.commitTaskTurnOutcome(k1, cancelled('t1'), 'idle', { chainId: 'ch1', ends: true });
+    expect(epic.epicEvents?.map((e) => [e.childTaskId, e.state])).toEqual([[c1.taskId, 'delivered']]);
+    expect(readSaved().some((r) => 'closing' in r)).toBe(false);
+
+    // The epic being closed: a child's end is dropped.
+    reg.markClosing(epicKey, true);
+    reg.beginTaskTurn(k2, 't2', 'ch2');
+    reg.commitTaskTurnOutcome(k2, cancelled('t2'), 'idle', { chainId: 'ch2', ends: true });
+    expect(epic.epicEvents).toHaveLength(1);
+    expect(readSaved().some((r) => 'closing' in r)).toBe(false);
+
+    // Cleared (the close did not go through): the epic takes events again.
+    reg.markClosing(epicKey, false);
+    expect(epic.closing).toBeUndefined();
+    reg.beginTaskTurn(k2, 't3', 'ch3');
+    reg.commitTaskTurnOutcome(k2, cancelled('t3'), 'idle', { chainId: 'ch3', ends: true });
+    expect(epic.epicEvents?.find((e) => e.childTaskId === c2.taskId)?.state).toBe('pending');
+  });
+
+  it('L6 — a new chain on a child clears closedBy (put back on a failed save); a hop of the same chain keeps it', () => {
+    const reg = new SessionRegistry();
+    const epic = reg.createTask({ ...BASE, kind: 'epic' });
+    const child = reg.createTask({ ...BASE, parentTaskId: epic.taskId, planNodeId: 'login' });
+    const key = `task:${child.taskId}`;
+    reg.beginTaskTurn(key, 't1', 'ch1');
+    reg.markClosedByParent(key, 7);
+    // A /compact hop of the chain being closed.
+    reg.beginTaskTurn(key, 't2', 'ch1');
+    expect(child.closedBy).toEqual({ by: 'parent', at: 7 });
+    reg.commitTaskTurnOutcome(key, cancelled('t2'), 'idle', { chainId: 'ch1', ends: true });
+
+    const save = vi.spyOn(reg as any, 'saveSessionsOrThrow').mockImplementationOnce(() => {
+      throw new Error('ENOSPC');
+    });
+    expect(() => reg.beginTaskTurn(key, 't3', 'ch2')).toThrow('ENOSPC');
+    save.mockRestore();
+    expect(child.closedBy).toEqual({ by: 'parent', at: 7 });
+
+    reg.beginTaskTurn(key, 't3', 'ch2');
+    expect(child.closedBy).toBeUndefined();
+    expect(readSaved().find((r) => r.taskId === child.taskId)?.closedBy).toBeUndefined();
   });
 
   it('L2 — the load keeps a tree not done (a child first in the file), and archives a done one', () => {

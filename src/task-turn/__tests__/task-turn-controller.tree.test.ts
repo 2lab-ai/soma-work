@@ -15,6 +15,7 @@
  *   T8 canStart takes the tree: a dry run of the same admission, counting nothing.
  *   T9 a tree start answered 500 does not use up the tree's window, and holds no slot.
  *   T10 the refund finds its start in the window even after another start replaced the array.
+ *   T11 a task being closed, or a child of an epic being closed, is 409 (E4 ⑦).
  */
 import { describe, expect, it, vi } from 'vitest';
 import { createTaskTurnController, type TaskTurnControllerDeps } from '../task-turn-controller';
@@ -264,6 +265,26 @@ describe('TaskTurnController — the epic tree slot (E4 ③, .prd/19 §2.1)', ()
     expect(status(await h.run(EPIC))).toBe(503);
     expect(status(await h.run(child(1)))).toBe(503);
     expect(h.controller.canStart(OWNER, 'go', { role: 'child', root: EPIC })?.status).toBe(503);
+  });
+
+  it('T11 — a task being closed starts nothing, nor does a child of an epic being closed (fable #703 R1)', async () => {
+    const h = harness();
+    h.sessions.get(EPIC).closing = true;
+    expect(h.runTaskTurn).not.toHaveBeenCalled();
+    expect(status(await h.run(EPIC))).toBe(409);
+    expect(status(await h.run(child(1)))).toBe(409);
+    expect(h.runTaskTurn).not.toHaveBeenCalled();
+    // A child being closed itself.
+    h.sessions.get(EPIC).closing = undefined;
+    h.sessions.get(child(2)).closing = true;
+    expect(status(await h.run(child(2)))).toBe(409);
+    // Neither touches another tree's or an ordinary task's start; cleared, the epic starts.
+    const plain = await h.run(PLAIN);
+    expect(status(plain)).toBe(202);
+    await h.release(PLAIN, plain.done);
+    const root = await h.run(EPIC);
+    expect(status(root)).toBe(202);
+    await h.release(EPIC, root.done);
   });
 
   it('T8 — canStart takes the tree: the same admission as a start, counting nothing', async () => {

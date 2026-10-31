@@ -938,7 +938,9 @@ export class SessionRegistry {
         : session.parentTaskId
           ? this.sessionsByTaskId.get(session.parentTaskId)
           : undefined;
-    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated || !epic.taskId) return false;
+    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated || epic.closing || !epic.taskId) {
+      return false;
+    }
     if (!isEpicDone(epic.plan)) return true;
     return this.getChildTasks(epic.taskId).some((c) => c.activityState === 'working' || c.activityState === 'waiting');
   }
@@ -969,6 +971,16 @@ export class SessionRegistry {
         error: (err as Error)?.message ?? String(err),
       });
     }
+  }
+
+  /**
+   * E4 ⑦ — the dashboard close of this task starts (`true`) or did not go
+   * through (`false`): an in-memory mark, never saved (fable #703 R1).
+   */
+  markClosing(sessionKey: string, closing: boolean): void {
+    const session = this.getSessionByKey(normalizeSessionKey(sessionKey));
+    if (!session) return;
+    session.closing = closing ? true : undefined;
   }
 
   /**
@@ -1007,7 +1019,7 @@ export class SessionRegistry {
   private epicToReport(child: ConversationSession, what: string): ConversationSession | undefined {
     if (!child.parentTaskId || !child.planNodeId || !child.taskId) return undefined;
     const epic = this.sessionsByTaskId.get(child.parentTaskId);
-    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated) {
+    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated || epic.closing) {
       this.logger.warn('Epic event dropped — the epic is gone or closing', {
         childTaskId: child.taskId,
         parentTaskId: child.parentTaskId,
@@ -1035,7 +1047,9 @@ export class SessionRegistry {
     const closed = end.chainId
       ? resolveEpicApprovals(before, (e) => e.childTaskId === childTaskId && e.chainId === end.chainId, end.at)
       : before;
-    epic.epicEvents = withEpicEvent(closed, chainEndEvent(child, end));
+    // A child its owner is closing owes no wake: its end is recorded, delivered (fable #703 R1).
+    const event = chainEndEvent(child, end);
+    epic.epicEvents = withEpicEvent(closed, child.closing ? { ...event, state: 'delivered' } : event);
     return { epic, before };
   }
 
@@ -1112,7 +1126,11 @@ export class SessionRegistry {
       lastWarningSentAt: session.lastWarningSentAt,
       openChain: session.openChain,
       epicEvents: session.epicEvents,
+      closedBy: session.closedBy,
     };
+    // E4 ⑦ — a new chain on a child its parent's close cancelled: no longer "closed by its parent"
+    // (a `/compact` hop of the chain being closed keeps the mark).
+    if (!chainId || chainId !== session.openChain) session.closedBy = undefined;
     // E2 ③ — the chain is open from its first start until its last commit.
     if (chainId) session.openChain = chainId;
     // E4 ⑥ (D7) — the events this chain was started for are consumed in this same save.
@@ -1137,6 +1155,7 @@ export class SessionRegistry {
       session.lastWarningSentAt = previous.lastWarningSentAt;
       session.openChain = previous.openChain;
       session.epicEvents = previous.epicEvents;
+      session.closedBy = previous.closedBy;
       throw error;
     }
     try {

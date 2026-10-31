@@ -34,14 +34,17 @@ export interface DashboardCloseDeps {
   isRunning(sessionKey: string): boolean;
   markClosedByParent(sessionKey: string): void;
   recordChildClosed(sessionKey: string): void;
+  /** E4 ⑦ — the in-memory "being closed" mark: set before anything stops, cleared if the close fails. */
+  markClosing(sessionKey: string, closing: boolean): void;
   logger: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void };
 }
 
 export function createDashboardCloseHandler(deps: DashboardCloseDeps): (sessionKey: string) => Promise<void> {
   return async (sessionKey) => {
     const closing = deps.getSession(sessionKey);
-    if (closing?.slackless === true) {
-      if (deps.ledgerUnreadable() && owesInstructionThread(closing)) {
+    const task = closing?.slackless === true ? closing : undefined;
+    if (task) {
+      if (deps.ledgerUnreadable() && owesInstructionThread(task)) {
         deps.logger.warn('Dashboard close refused: the notice ledger is unreadable and the task owes its thread', {
           sessionKey,
         });
@@ -51,38 +54,50 @@ export function createDashboardCloseHandler(deps: DashboardCloseDeps): (sessionK
           new Error('task notice ledger unreadable — kept until its notices can be handed over'),
         );
       }
-      if (closing.kind === 'epic' && closing.taskId) {
-        const running = deps
-          .getChildTasks(closing.taskId)
-          .flatMap((c) => (c.taskId ? [buildTaskSessionKey(c.taskId)] : []))
-          .filter((key) => deps.isRunning(key));
-        for (const key of running) {
-          try {
-            deps.markClosedByParent(key);
-          } catch (error) {
-            // Not saved: the child still stops (its outcome is cancelled); only the "closed by
-            // its parent" mark is missing — the close the owner asked for goes on.
-            deps.logger.warn('Epic close: a running child could not be marked closed by its parent', {
-              sessionKey: key,
-              error: (error as Error)?.message,
-            });
-          }
-        }
-        await Promise.all(running.map((key) => deps.closeTask(key)));
-      }
-      if (closing.parentTaskId) {
+      // Marked first: an epic being closed takes no wake (its children's ends would wake it) and
+      // starts nothing; a child being closed owes no wake (fable #703 R1). Cleared if the close fails.
+      deps.markClosing(sessionKey, true);
+    }
+    try {
+      if (task) await closeTask(task, sessionKey);
+      deps.terminate(sessionKey);
+    } catch (error) {
+      if (task) deps.markClosing(sessionKey, false);
+      throw error;
+    }
+    deps.logger.info('Dashboard: closed session', { sessionKey });
+  };
+
+  async function closeTask(task: ConversationSession, sessionKey: string): Promise<void> {
+    if (task.kind === 'epic' && task.taskId) {
+      const running = deps
+        .getChildTasks(task.taskId)
+        .flatMap((c) => (c.taskId ? [buildTaskSessionKey(c.taskId)] : []))
+        .filter((key) => deps.isRunning(key));
+      for (const key of running) {
         try {
-          deps.recordChildClosed(sessionKey);
+          deps.markClosedByParent(key);
         } catch (error) {
-          deps.logger.warn('Child close: its epic could not record the close', {
-            sessionKey,
+          // Not saved: the child still stops (its outcome is cancelled); only the "closed by
+          // its parent" mark is missing — the close the owner asked for goes on.
+          deps.logger.warn('Epic close: a running child could not be marked closed by its parent', {
+            sessionKey: key,
             error: (error as Error)?.message,
           });
         }
       }
-      await deps.closeTask(sessionKey);
+      await Promise.all(running.map((key) => deps.closeTask(key)));
     }
-    deps.terminate(sessionKey);
-    deps.logger.info('Dashboard: closed session', { sessionKey });
-  };
+    if (task.parentTaskId) {
+      try {
+        deps.recordChildClosed(sessionKey);
+      } catch (error) {
+        deps.logger.warn('Child close: its epic could not record the close', {
+          sessionKey,
+          error: (error as Error)?.message,
+        });
+      }
+    }
+    await deps.closeTask(sessionKey);
+  }
 }
