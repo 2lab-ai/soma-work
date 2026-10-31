@@ -34,6 +34,7 @@ vi.mock('../../env-paths', () => ({
     'soma-work-dashboard-slackless-task-test',
   ),
 }));
+vi.mock('../../admin-utils', () => ({ isAdminUser: (id: string) => id === 'U_ADMIN' }));
 vi.mock('../recorder', () => ({
   listConversations: vi.fn().mockResolvedValue([]),
   getConversation: vi.fn().mockResolvedValue(null),
@@ -89,14 +90,26 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
 
   afterAll(async () => {
     await stopWebServer?.();
-    if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    if (fs.existsSync(TEST_DATA_DIR))
+      fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   });
 
   beforeEach(() => {
-    if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    if (fs.existsSync(TEST_DATA_DIR))
+      fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
     archiveState.items = [];
   });
+
+  /** A signed-in dashboard user: the session cookie and its CSRF token. */
+  async function signIn(slackUserId: string): Promise<Record<string, string>> {
+    const { issueSlackToken } = await import('../oauth');
+    const token = issueSlackToken({ slackUserId, email: `${slackUserId}@slack.local`, name: slackUserId });
+    const sso = (await injectWebServer({ method: 'GET', url: `/auth/sso?token=${encodeURIComponent(token)}` })) as any;
+    const cookie = String(sso.headers['set-cookie']).split(';')[0];
+    const me = JSON.parse((await injectWebServer({ method: 'GET', url: '/auth/me', headers: { cookie } })).body);
+    return { cookie, 'x-csrf-token': me.csrfToken as string, 'content-type': 'application/json' };
+  }
 
   async function board(): Promise<Board> {
     const res = await injectWebServer({ method: 'GET', url: '/api/dashboard/sessions', headers: AUTH_HEADER });
@@ -145,7 +158,7 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     expect(cardB?.threadTotalActiveMs).toBe(2_000);
   });
 
-  it('#612 R1 — routes that run or steer a turn refuse a Slack-less task with 409; close is still allowed', async () => {
+  it('#612 R1 / #598 ④c — routes not yet supported on a task refuse with 409; command goes to the task handler (501 unwired); close is allowed', async () => {
     const reg = new SessionRegistry();
     const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
     setDashboardSessionAccessor(() => reg.getAllSessions());
@@ -158,13 +171,15 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
       payload: JSON.stringify({ action: 'add', objective: 'do it' }),
     });
     expect(goal.statusCode).toBe(409);
+    expect(JSON.parse(goal.body).error).toBe('not supported on a dashboard task yet');
     const command = await injectWebServer({
       method: 'POST',
       url: `/api/dashboard/session/${key}/command`,
-      headers,
+      headers: await signIn('U1'),
       payload: JSON.stringify({ message: 'hello' }),
     });
-    expect(command.statusCode).toBe(409);
+    // #598 ④c — no longer refused: it goes to the task handler, not wired here.
+    expect(command.statusCode).toBe(501);
     // No handler is wired in this test: without the guard these answer 501.
     const model = await injectWebServer({
       method: 'POST',
@@ -221,13 +236,13 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
       expect(back?.slackless).toBe(true);
       expect(back?.channelId).toBe('');
 
-      const command = await injectWebServer({
+      const goal = await injectWebServer({
         method: 'POST',
-        url: `/api/dashboard/session/${encodeURIComponent(`task:${taskId}`)}/command`,
+        url: `/api/dashboard/session/${encodeURIComponent(`task:${taskId}`)}/goal`,
         headers,
-        payload: JSON.stringify({ message: 'hello' }),
+        payload: JSON.stringify({ action: 'add', objective: 'do it' }),
       });
-      expect(command.statusCode).toBe(409);
+      expect(goal.statusCode).toBe(409);
     } finally {
       dashboard.setDashboardLifecycleHandler(null);
     }
@@ -240,5 +255,255 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     const b = await board();
     const all = [...b.working, ...b.waiting, ...b.idle, ...b.closed];
     expect(all.find((c) => c.key === 'work:C1:500.001')).toBeUndefined();
+  });
+
+  it('#598 ④c — a Slack-less task’s command goes to the task handler, whose status and body the route returns', async () => {
+    const dashboard = await import('../dashboard');
+    const reg = new SessionRegistry();
+    const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
+    const slack = reg.createSession('U1', 'Alice', 'C1', '500.002');
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const taskHandler = vi.fn(async () => ({ status: 202, body: { ok: true } }));
+    const slackHandler = vi.fn(async () => {});
+    dashboard.setDashboardTaskCommandHandler(taskHandler);
+    dashboard.setDashboardCommandHandler(slackHandler);
+    const headers = { ...AUTH_HEADER, 'X-Admin-Mode': 'on', 'content-type': 'application/json' };
+    const owner = await signIn('U1');
+    try {
+      const accepted = await injectWebServer({
+        method: 'POST',
+        url: `/api/dashboard/session/${encodeURIComponent(`task:${task.taskId}`)}/command`,
+        headers: owner,
+        payload: JSON.stringify({ message: 'raise the timeout' }),
+      });
+      expect(accepted.statusCode).toBe(202);
+      expect(JSON.parse(accepted.body)).toEqual({ ok: true });
+      expect(taskHandler).toHaveBeenCalledWith(`task:${task.taskId}`, 'raise the timeout', [], 'U1');
+      expect(slackHandler).not.toHaveBeenCalled();
+
+      taskHandler.mockResolvedValueOnce({ status: 429, body: { error: 'one dashboard task runs at a time' } } as any);
+      const capped = await injectWebServer({
+        method: 'POST',
+        url: `/api/dashboard/session/${encodeURIComponent(`task:${task.taskId}`)}/command`,
+        headers: owner,
+        payload: JSON.stringify({ message: 'again' }),
+      });
+      expect(capped.statusCode).toBe(429);
+      expect(JSON.parse(capped.body).error).toMatch(/one dashboard task/);
+
+      // A Slack session's command is unchanged: the Slack handler, never the task handler.
+      taskHandler.mockClear();
+      void slack;
+      const slackCmd = await injectWebServer({
+        method: 'POST',
+        url: `/api/dashboard/session/${encodeURIComponent('work:C1:500.002')}/command`,
+        headers,
+        payload: JSON.stringify({ message: 'hi' }),
+      });
+      expect(slackCmd.statusCode).toBe(200);
+      expect(slackHandler).toHaveBeenCalledTimes(1);
+      expect(taskHandler).not.toHaveBeenCalled();
+    } finally {
+      dashboard.setDashboardTaskCommandHandler(null);
+      dashboard.setDashboardCommandHandler(null as any);
+    }
+  });
+
+  it('#598 ④c — a Slack-less task’s card carries its last turn outcome (reason and recording failure included)', async () => {
+    const reg = new SessionRegistry();
+    const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
+    task.lastTurnOutcome = {
+      turnId: 't-1',
+      outcome: 'interrupted',
+      category: 'Exception',
+      reason: 'process ended before the outcome was recorded',
+      recordFailure: 'outcome not saved: ENOSPC',
+      at: 1_793_000_000_000,
+    };
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const b = await board();
+    const card = [...b.working, ...b.waiting, ...b.idle].find((c) => c.key === `task:${task.taskId}`) as any;
+    expect(card?.lastTurnOutcome).toEqual({
+      outcome: 'interrupted',
+      category: 'Exception',
+      reason: 'process ended before the outcome was recorded',
+      recordFailure: 'outcome not saved: ENOSPC',
+      at: 1_793_000_000_000,
+    });
+  });
+
+  // #600 ⑥ — the client gates task-only UI on a field, not on the key's shape.
+  it('#600 ⑥ — a task’s card says it is Slack-less; a Slack session’s card does not', async () => {
+    const reg = new SessionRegistry();
+    const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
+    const slack = reg.createSession('U1', 'Alice', 'C1', '500.009');
+    slack.sessionId = 'sdk-9';
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const b = await board();
+    const all = [...b.working, ...b.waiting, ...b.idle] as any[];
+    expect(all.find((c) => c.key === `task:${task.taskId}`)?.slackless).toBe(true);
+    expect(all.find((c) => c.key === 'work:C1:500.009')?.slackless).toBeUndefined();
+  });
+
+  it('#599 ⑤ — a task’s open question carries its askId on the card; a Slack session’s does not', async () => {
+    const reg = new SessionRegistry();
+    const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
+    task.activityState = 'waiting';
+    task.actionPanel = {
+      waitingForChoice: true,
+      pendingQuestion: {
+        type: 'user_choice',
+        question: 'Which DB?',
+        choices: [{ id: 'pg', label: 'PG' }],
+        askId: 'ask-9',
+      },
+    } as any;
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const b = await board();
+    const card = [...b.working, ...b.waiting, ...b.idle].find((c) => c.key === `task:${task.taskId}`) as any;
+    expect(card?.pendingQuestion?.askId).toBe('ask-9');
+  });
+
+  it('#599 ⑤ — a task’s answers go to the task answer handler bound to the askId; without one they are 400', async () => {
+    const dashboard = await import('../dashboard');
+    const reg = new SessionRegistry();
+    const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const handler = vi.fn(async () => ({ status: 202, body: { ok: true } }));
+    const slackChoice = vi.fn(async () => {});
+    dashboard.setDashboardTaskAnswerHandler(handler);
+    dashboard.setDashboardChoiceAnswerHandler(slackChoice);
+    const headers = await signIn('U1');
+    const base = `/api/dashboard/session/${encodeURIComponent(`task:${task.taskId}`)}`;
+    try {
+      const single = await injectWebServer({
+        method: 'POST',
+        url: `${base}/answer-choice`,
+        headers,
+        payload: JSON.stringify({ choiceId: 'pg', label: 'PG', question: 'Which DB?', askId: 'ask-9' }),
+      });
+      expect(single.statusCode).toBe(202);
+      expect(handler).toHaveBeenLastCalledWith(
+        `task:${task.taskId}`,
+        'ask-9',
+        { kind: 'single', choiceId: 'pg' },
+        'U1',
+      );
+      expect(slackChoice).not.toHaveBeenCalled();
+
+      const noAsk = await injectWebServer({
+        method: 'POST',
+        url: `${base}/answer-choice`,
+        headers,
+        payload: JSON.stringify({ choiceId: 'pg', label: 'PG', question: 'Which DB?' }),
+      });
+      expect(noAsk.statusCode).toBe(400);
+
+      const multi = await injectWebServer({
+        method: 'POST',
+        url: `${base}/answer-multi-choice`,
+        headers,
+        payload: JSON.stringify({ selections: { q1: { choiceId: 'node', label: 'Node' } }, askId: 'ask-9' }),
+      });
+      expect(multi.statusCode).toBe(202);
+      expect(handler).toHaveBeenLastCalledWith(
+        `task:${task.taskId}`,
+        'ask-9',
+        { kind: 'multi', selections: { q1: { choiceId: 'node', label: 'Node' } } },
+        'U1',
+      );
+
+      const rec = await injectWebServer({
+        method: 'POST',
+        url: `${base}/submit-recommended`,
+        headers,
+        payload: JSON.stringify({ askId: 'ask-9' }),
+      });
+      expect(rec.statusCode).toBe(202);
+      expect(handler).toHaveBeenLastCalledWith(`task:${task.taskId}`, 'ask-9', { kind: 'recommended' }, 'U1');
+
+      handler.mockResolvedValueOnce({ status: 409, body: { error: 'the question has changed — reload' } } as any);
+      const stale = await injectWebServer({
+        method: 'POST',
+        url: `${base}/answer-choice`,
+        headers,
+        payload: JSON.stringify({ choiceId: 'pg', label: 'PG', question: 'Which DB?', askId: 'ask-8' }),
+      });
+      expect(stale.statusCode).toBe(409);
+    } finally {
+      dashboard.setDashboardTaskAnswerHandler(null);
+      dashboard.setDashboardChoiceAnswerHandler(null as any);
+    }
+  });
+
+  // #637 R1 (astra P1) — a task's instruction and answers run under its owner's
+  // identity (executionContextForTask), so only the signed-in owner may send
+  // them: not the bearer token, not an admin in admin mode, not another user.
+  // Stop / close / trash keep the #716 write policy (they cannot run anything).
+  it('#637 R1 — only the signed-in owner instructs or answers a task; bearer, admin mode and others get 403', async () => {
+    const dashboard = await import('../dashboard');
+    const reg = new SessionRegistry();
+    const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
+    const slack = reg.createSession('U1', 'Alice', 'C1', '500.003');
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const taskCommand = vi.fn(async () => ({ status: 202, body: { ok: true } }));
+    const taskAnswer = vi.fn(async () => ({ status: 202, body: { ok: true } }));
+    const slackCommand = vi.fn(async () => {});
+    dashboard.setDashboardTaskCommandHandler(taskCommand);
+    dashboard.setDashboardTaskAnswerHandler(taskAnswer);
+    dashboard.setDashboardCommandHandler(slackCommand);
+    const base = `/api/dashboard/session/${encodeURIComponent(`task:${task.taskId}`)}`;
+    const calls: Array<[string, unknown]> = [
+      ['command', { message: 'go' }],
+      ['answer-choice', { choiceId: 'pg', label: 'PG', question: 'Which DB?', askId: 'ask-1' }],
+      ['answer-multi-choice', { selections: { q1: { choiceId: 'node', label: 'Node' } }, askId: 'ask-1' }],
+      ['submit-recommended', { askId: 'ask-1' }],
+    ];
+    const bearer = { ...AUTH_HEADER, 'content-type': 'application/json' };
+    const bearerAdmin = { ...bearer, 'X-Admin-Mode': 'on' };
+    const admin = { ...(await signIn('U_ADMIN')), 'X-Admin-Mode': 'on' };
+    const other = await signIn('U2');
+    try {
+      for (const [route, body] of calls) {
+        for (const headers of [bearer, bearerAdmin, admin, other]) {
+          const res = await injectWebServer({
+            method: 'POST',
+            url: `${base}/${route}`,
+            headers,
+            payload: JSON.stringify(body),
+          });
+          expect({ route, status: res.statusCode }).toEqual({ route, status: 403 });
+        }
+      }
+      expect(taskCommand).not.toHaveBeenCalled();
+      expect(taskAnswer).not.toHaveBeenCalled();
+      // The owner passes.
+      const owner = await signIn('U1');
+      for (const [route, body] of calls) {
+        const res = await injectWebServer({
+          method: 'POST',
+          url: `${base}/${route}`,
+          headers: owner,
+          payload: JSON.stringify(body),
+        });
+        expect({ route, status: res.statusCode }).toEqual({ route, status: 202 });
+      }
+      // Stopping a task stays open to an admin in admin mode (it cannot run anything).
+      const stop = await injectWebServer({ method: 'POST', url: `${base}/stop`, headers: admin });
+      expect(stop.statusCode).not.toBe(403);
+      // A Slack session keeps the #716 policy: an admin in admin mode may still send a command.
+      void slack;
+      const slackCmd = await injectWebServer({
+        method: 'POST',
+        url: `/api/dashboard/session/${encodeURIComponent('work:C1:500.003')}/command`,
+        headers: admin,
+        payload: JSON.stringify({ message: 'hi' }),
+      });
+      expect(slackCmd.statusCode).toBe(200);
+    } finally {
+      dashboard.setDashboardTaskCommandHandler(null);
+      dashboard.setDashboardTaskAnswerHandler(null);
+      dashboard.setDashboardCommandHandler(null as any);
+    }
   });
 });

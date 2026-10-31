@@ -229,6 +229,7 @@ export const SLACK_SETTER_COVERAGE: Readonly<Record<string, SettingKey | { exclu
     excluded: 'deprecated: `compact-threshold` only clears it and moves the value onto the session',
   },
   acceptUser: { excluded: 'admin action on another user (accept / deny), not a personal setting' },
+  settlePendingUser: { excluded: 'admin decision on a pending sign-up (accept / deny), not a personal setting' },
   removeUserSettings: { excluded: 'admin action on another user (deny), not a personal setting' },
   createPendingUser: { excluded: 'onboarding bookkeeping, not a personal setting' },
   ensureUserExists: { excluded: 'onboarding bookkeeping, not a personal setting' },

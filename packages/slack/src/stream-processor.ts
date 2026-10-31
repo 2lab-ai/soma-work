@@ -543,6 +543,14 @@ export interface StreamCallbacks {
   onSourceWorkingDirDetected?: (dirPath: string, context: StreamContext) => Promise<void>;
   /** Called when a user choice UI is rendered */
   onChoiceCreated?: (payload: SlackMessagePayload, context: StreamContext, sourceMessageTs?: string) => Promise<void>;
+  /**
+   * A Slack-less task's question path (#598 ④b, design 598b §6). When set, a
+   * question the model writes as JSON in its text is handed over whole — with
+   * the model's preface — once, before any rendering, and the Slack rendering
+   * path (form store, chunk posts, preface post, `onChoiceCreated`) is skipped.
+   * Slack turns never set it.
+   */
+  onQuestionAsked?: (args: { question: unknown; preface: string }, context: StreamContext) => Promise<void>;
   /** Called when SDK emits compact_boundary (context was auto-compacted) */
   onCompactBoundary?: (metadata?: Record<string, unknown>) => void;
   /**
@@ -1861,6 +1869,10 @@ export class AgentStreamProcessor {
     context: StreamContext,
   ): Promise<void> {
     this.slackTextPosted = true;
+    if (this.callbacks.onQuestionAsked) {
+      await this.callbacks.onQuestionAsked({ question: choices, preface: textWithoutChoice }, context);
+      return;
+    }
     const questions = choices.questions || [];
     const questionCount = questions.length;
 
@@ -1989,6 +2001,10 @@ export class AgentStreamProcessor {
     context: StreamContext,
   ): Promise<void> {
     this.slackTextPosted = true;
+    if (this.callbacks.onQuestionAsked) {
+      await this.callbacks.onQuestionAsked({ question: choice, preface: textWithoutChoice }, context);
+      return;
+    }
     // Log the original model output for debugging
     this.logger.debug('Received single choice from model', {
       question: choice.question,
