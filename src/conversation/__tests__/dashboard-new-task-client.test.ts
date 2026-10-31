@@ -452,6 +452,24 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
 });
 
 // #640 R1 — what the dialog keeps across a refresh of its context, and after a launch.
+// #640 R2 (fable P3): the submit button is disabled while a dashboard task has
+// files attached, so the reason must show without a submit — on the switch, and
+// clear once the files are gone.
+describe('ntBlockedHint (#640 R2)', () => {
+  const { ntBlockedHint } = load<{ ntBlockedHint(state: any, attachments: any[]): string }>(['ntBlockedHint']);
+  it('says why a dashboard task with files cannot start; nothing otherwise', () => {
+    expect(ntBlockedHint({ destination: 'task' }, [{ name: 'a.png' }])).toBe(
+      '대시보드 작업은 아직 첨부를 받지 않아요 — 첨부를 빼거나 Slack 채널로 보내 주세요',
+    );
+    expect(ntBlockedHint({ destination: 'task' }, [])).toBe('');
+    expect(ntBlockedHint({ destination: 'slack' }, [{ name: 'a.png' }])).toBe('');
+  });
+  it('is shown on switching to a dashboard task and refreshed when a file is removed', () => {
+    expect(clientFn('ntSetDestination')).toContain('ntSetError(ntBlockedHint(_ntState, _ntFiles));');
+    expect(clientFn('ntRemoveFile')).toContain('ntSetError(ntBlockedHint(_ntState, _ntFiles));');
+  });
+});
+
 describe('ntReconcile / ntStateAfterLaunch (#640 R1)', () => {
   const fns = load<{
     ntDefaultState(ctx: any, draft: any): any;
