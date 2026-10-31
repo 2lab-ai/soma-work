@@ -4431,7 +4431,7 @@ function renderDashboardPage(userId?: string): string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>soma-work Dashboard</title>
+<title>soma-work 대시보드</title>
 <script type="module" src="/dashboard/ui/tool-call-card.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/ai-answer.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/agent-tree.js?v=${UI_LIB_VERSION}"></script>
@@ -5507,7 +5507,7 @@ ${pageTokenAliases()}
     <div class="topbar-scope" id="topbar-scope" slot="toolbar">
     <div class="topbar-defaults" id="topbar-defaults" hidden>
       <button type="button" class="ui-chip td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
-      <button type="button" class="ui-chip td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
+      <button type="button" class="ui-chip td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 추론 강도 — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">추론 </span><b id="td-effort-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
       <ui-menu id="td-menu" lang="ko"></ui-menu>
       <span class="ui-status-line td-status" id="td-status" role="status" aria-live="polite"></span>
     </div>
@@ -5565,9 +5565,9 @@ ${pageTokenAliases()}
     <!-- Agent inbox (.prd/10 §3.1) — the board, right under the stats strip. -->
     <!-- The board and the CRON lane's cards are @2lab.ai/ui <ui-agent-inbox> elements: the token
          wrapper (.ui-tok) hands them the dashboard tokens. -->
-    <section class="inbox ui-tok" id="inbox" aria-label="Agent inbox">
+    <section class="inbox ui-tok" id="inbox" aria-label="에이전트 인박스">
       <div class="inbox-head">
-        <nav class="crumbs" aria-label="위치"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
+        <nav class="crumbs" aria-label="위치"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">에이전트 인박스</span></nav>
         <div class="inbox-tools">
           <button type="button" class="ui-chip archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><i data-ui-icon="archive"></i><span id="archives-label">보관함</span></button>
           <button type="button" class="ui-chip archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">휴면</span></button>
@@ -5652,7 +5652,7 @@ ${pageTokenAliases()}
         <!-- 세션 정보 (spec 13): one summary line + the links, the complete numbers on demand (or with 자세히) — live. -->
         <div class="panel-info" id="panel-info"></div>
         <!-- Goal (spec 13): the editor's home — current, queue, add / delete, completed goals. -->
-        <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="Goal" style="display:none"></div>
+        <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="목표" style="display:none"></div>
         <!-- 입력 필요 (re-agent-run D8–D17): a head with the count (kit section head + count, D3 E-13), approval cards for the
              permission prompts and the question; one polite status line says arrivals and
              answers (the cards themselves are not a live region — their expiry clock ticks). -->
@@ -5672,7 +5672,7 @@ ${pageTokenAliases()}
         <!-- The focused agent (.prd/12 §4.3): its header; with 자세히, its path. -->
         <div class="panel-agents" id="panel-agents" style="display:none"></div>
         <!-- Tasks (task view T1.3): folded to one line by default. -->
-        <div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>
+        <div class="panel-tasks" id="panel-tasks" role="region" aria-label="작업" tabindex="-1"></div>
         <!-- Section tabs (SSOT 2026-10-29, D4 E-24): @2lab.ai/ui <ui-tabs> over the section boxes, each slotted as its
              tab's panel (slot="<id>"); only the active section holds nodes (psecClear); each opens on its newest items
              and pages back as the reader scrolls up (a top control is the keyboard path), in its own scroll box
@@ -5740,7 +5740,7 @@ ${pageTokenAliases()}
           <!-- Kit select chips (.ui-select-chip, D7 H-02): the word, then the native select sized to its option; the model's
                remaining usage beside it is @2lab.ai/ui <ui-meter shape="battery"> (H-03) in a button that opens the usage line. -->
           <label class="ui-select-chip"><span>모델</span><select id="nt-model" onchange="ntOnModelChange()"></select></label><button type="button" class="nt-battery-btn" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><ui-meter id="nt-battery" shape="battery" low="0.2" high="0.5" label="모델 잔여량" lang="ko"></ui-meter></button>
-          <label class="ui-select-chip nt-chip-effort"><span>effort</span><select id="nt-effort" onchange="ntOnEffortChange()"></select></label>
+          <label class="ui-select-chip nt-chip-effort"><span>추론</span><select id="nt-effort" onchange="ntOnEffortChange()"></select></label>
           <label class="ui-select-chip nt-chip-folder" id="nt-folder-chip" hidden><span>폴더</span><select id="nt-folder" onchange="ntOnFolderChange()"></select></label>
           <label class="ui-select-chip nt-chip-channel"><span>채널</span><select id="nt-channel" onchange="ntOnChannelChange()"></select></label>
         </div>
@@ -5812,6 +5812,8 @@ var STRINGS = {
   statusArchived: '보관됨',
   archives: '보관함',
   sleeping: '휴면',
+  // #814: why a sibling instance's session cannot be acted on here (the actions' lock, 지금 압축's reason).
+  siblingLock: function(env) { return '이 세션은 ' + env.instanceName + ' (' + (env.host || '') + ':' + (env.port || '') + ')에서 열어 조작하세요'; },
 };
 // #814 — name of the dashboard's *home* instance (the one that served this
 // HTML). Used by renderCard() to detect sibling cards and suppress action
@@ -6154,17 +6156,17 @@ var GOAL_DECISION_CHOICES = [{ id: 'continue', label: '✅ 계속' }, { id: 'can
 var GOAL_DECISION_SENT = { continue: '계속 진행을 보냈어요', cancel: '취소를 보냈어요' };
 function acGoalDecisionLock(s, d) {
   if (isSiblingSession(s)) return AC_SIBLING;
-  return d.ownerId && d.ownerId === _viewerUserId ? '' : 'goal 소유자만 응답할 수 있습니다';
+  return d.ownerId && d.ownerId === _viewerUserId ? '' : '목표 소유자만 응답할 수 있습니다';
 }
 function acGoalDecisionData(s, d) {
   var n = toNum(d.maxContinuations);
-  var context = ['Objective: ' + String(d.objective || '')];
-  if (d.reason) context.push('Latest reason: ' + String(d.reason));
+  var context = ['목표: ' + String(d.objective || '')];
+  if (d.reason) context.push('직전 사유: ' + String(d.reason));
   var data = {
     kind: 'question',
     id: String(d.decisionId),
-    label: 'Goal 자동 진행 ' + n + '/' + n,
-    question: '⏳ Goal auto-continuation reached its ' + n + '-turn budget.\\n계속 진행할까요?',
+    label: '목표 자동 진행 ' + n + '/' + n,
+    question: '목표 자동 진행이 ' + n + '회 한도에 닿았습니다.\\n계속 진행할까요?',
     description: context.join('\\n'),
     choices: GOAL_DECISION_CHOICES.map(function(c) { return { id: c.id, label: c.label }; }),
     allowOther: false,
@@ -6180,7 +6182,7 @@ function acGoalDecisionData(s, d) {
 function acGoalDecisionHtml(s) {
   var d = s && s.pendingGoalDecision;
   if (!d || !d.decisionId) return '';
-  return acSlotHtml(s.key, 'goal', 'g|' + d.decisionId, String(d.decisionId), 'Goal 계속 진행할까요? — 응답 대기');
+  return acSlotHtml(s.key, 'goal', 'g|' + d.decisionId, String(d.decisionId), '목표 계속 진행할까요? — 응답 대기');
 }
 // A collapsed card paints no approval card (placeCard), but the requester's
 // input is still fetched as the card's would be (acPermissionData), so opening
@@ -6307,7 +6309,7 @@ function renderPanelPermission(s) {
   var gd = s && s.pendingGoalDecision;
   if (gd && gd.decisionId) {
     ids['g|' + gd.decisionId] = true;
-    if (seen && !seen['g|' + gd.decisionId]) said.push('Goal 계속 진행할까요?');
+    if (seen && !seen['g|' + gd.decisionId]) said.push('목표 계속 진행할까요?');
   }
   container._seenKey = key;
   container._seen = ids;
@@ -6846,7 +6848,7 @@ function renderPanelTasks(tasks, scopeLabel, earlier, outside) {
   var list = tasks || [];
   var prev = earlier || [];
   // Spec 12: a subagent's own tasks are labelled with that agent.
-  var title = 'Tasks' + (scopeLabel ? ' <span class="tasks-scope">&middot; ' + esc(scopeLabel) + '</span>' : '');
+  var title = '작업' + (scopeLabel ? ' <span class="tasks-scope">&middot; ' + esc(scopeLabel) + '</span>' : '');
 
   // D7: a step that completed since the last render of this scope is announced
   // (none on its first). An empty list is a baseline as well.
@@ -7149,7 +7151,7 @@ function taskOutsideText(outside) {
   if (!outside || !(toNum(outside.toolCalls) || toNum(outside.agentToolCalls) || taskTokTotal(outside.tokens))) return '';
   return '툴 ' + Math.round(toNum(outside.toolCalls))
     + (toNum(outside.agentToolCalls) >= 0.5 ? ' (+서브 ' + Math.round(toNum(outside.agentToolCalls)) + ')' : '')
-    + ' · ' + formatTokens(taskTokTotal(outside.tokens)) + ' tok';
+    + ' · ' + formatTokens(taskTokTotal(outside.tokens)) + ' 토큰';
 }
 // … as a row under the element's totals (extraTotals), or null.
 function taskOutsideNote(outside) {
@@ -7449,7 +7451,7 @@ async function pickDefault(kind, value) {
   if (!r.ok) { setDefaultsStatus('저장하지 못했습니다: ' + r.error, true); return; }
   _myDefaults[kind] = r.setting;
   renderDefaultsChips();
-  var msg = '기본 ' + (kind === 'model' ? '모델' : 'effort') + ' → ' + optionLabel(r.setting, r.setting.value) + ' (새 세션부터)';
+  var msg = '기본 ' + (kind === 'model' ? '모델' : '추론 강도') + ' → ' + optionLabel(r.setting, r.setting.value) + ' (새 세션부터)';
   if (skipSession) msg += ' · 이 모델은 세션 전환 목록에 없어 열린 세션은 그대로';
   if (session && isBusy(session.key, kind)) {
     // The session is already switching (from its card or panel): one switch at a time.
@@ -7540,10 +7542,10 @@ function spendTotal(sp) {
   if (!sp) return 0;
   return toNum(sp.inputTokens) + toNum(sp.outputTokens) + toNum(sp.cacheReadTokens) + toNum(sp.cacheCreateTokens);
 }
-// "<tokens> tok · $<cost>" (API-equivalent). ≈ when part of it was priced at
+// "<tokens> 토큰 · $<cost>" (API-equivalent). ≈ when part of it was priced at
 // the fallback rate — a model the price table does not know.
 function spendText(tokens, cost, estimate) {
-  return formatTokens(tokens) + ' tok · ' + (estimate ? '≈' : '') + '$' + toNum(cost).toFixed(2);
+  return formatTokens(tokens) + ' 토큰 · ' + (estimate ? '≈' : '') + '$' + toNum(cost).toFixed(2);
 }
 // A subagent's own spend as its row and header show it. Calls that reported
 // no usage at all (a provider that zeroes it) read as unreported, not as $0.
@@ -7914,7 +7916,7 @@ function doneDayLabel(key, now) {
 }
 // Pure: [{ key, label, open, items }] — opened = the reader's choices.
 // SSOT 2026-10-30 T2: a starred card leaves its day for the pinned group
-// ('starred', ★ Starred), first and open until the reader folds it.
+// ('starred', ★ 즐겨찾기), first and open until the reader folds it.
 function planDoneGroups(done, now, opened) {
   var byKey = Object.create(null);
   var keys = [];
@@ -7939,7 +7941,7 @@ function planDoneGroups(done, now, opened) {
   if (pinned.length) {
     pinned.sort(function(a, b) { return b.t - a.t; });
     var pinOpen = opened && Object.prototype.hasOwnProperty.call(opened, 'starred') ? !!opened.starred : true;
-    groups.unshift({ key: 'starred', label: '\\u2605 Starred', open: pinOpen, items: pinned.map(function(x) { return x.item; }) });
+    groups.unshift({ key: 'starred', label: '\\u2605 즐겨찾기', open: pinOpen, items: pinned.map(function(x) { return x.item; }) });
   }
   return groups;
 }
@@ -8300,7 +8302,7 @@ function refreshCard(key) {
 function cardSummary(s, col, headline) {
   var current = cardCurrentTask(s);
   if (col !== 'closed' && s.pendingPermissions && s.pendingPermissions.length) return permissionSummary(s);
-  if (col !== 'closed' && s.pendingGoalDecision) return 'Goal 계속 진행할까요? — 응답 대기';
+  if (col !== 'closed' && s.pendingGoalDecision) return '목표 계속 진행할까요? — 응답 대기';
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return q.question || q.title;
   // Waiting out a retry: the error behind it is what this card is "doing".
@@ -8329,9 +8331,9 @@ function pendingAutoResume(s, col) {
 // attempt. Absolute clock time (no countdown), so equal data renders equal HTML.
 function autoResumeLabel(r) {
   if (!r) return '';
-  if (r.kind === 'goal-eval') return 'Goal 완료 판정 중';
+  if (r.kind === 'goal-eval') return '목표 완료 판정 중';
   var at = Number(r.at) || 0;
-  var what = r.kind === 'goal-eval-retry' ? 'Goal 판정 재시도' : '자동 재개';
+  var what = r.kind === 'goal-eval-retry' ? '목표 판정 재시도' : '자동 재개';
   var text = (at ? formatTaskTime(at) + ' ' : '') + what;
   var attempt = Number(r.attempt) || 0;
   var max = Number(r.maxAttempts) || 0;
@@ -8434,7 +8436,7 @@ function cardPrMetric(s) {
 // auto-compact point when it is known.
 function cardCtxTitle(s, pct) {
   var auto = toNum(s.autoCompactTokens), used = toNum(s.contextTokens);
-  if (!(auto > 0 && used > 0)) return 'Context window used' + (toNum(pct) > 80 ? ' — 80% 넘게 찼다' : '');
+  if (!(auto > 0 && used > 0)) return '컨텍스트 윈도우 사용량' + (toNum(pct) > 80 ? ' — 80% 넘게 찼다' : '');
   var short = function(n) { return formatTokens(n).replace(/[.]0(?=[KMBT]$)/, ''); };
   return '컨텍스트 ' + ctxPercent(pct) + '% · ' + (s.compactPending ? '다음 입력 때 자동 압축'
     : used >= auto ? '자동 압축 지점을 넘음'
@@ -8618,9 +8620,9 @@ function renderTimeline(s) {
   if (shown.length > max) { tail = shown.length - max; shown = shown.slice(0, max); }
   var hidden = folded + tail + ran;
   var html = '<div class="tl-wrap">';
-  if (folded > 0) html += '<div class="tl-more">+' + folded + ' completed</div>';
+  if (folded > 0) html += '<div class="tl-more">+' + folded + ' 완료</div>';
   if (shown.length) html += '<ul class="tl">' + shown.map(renderTimelineItem).join('') + '</ul>';
-  if (tail > 0) html += '<div class="tl-more">+' + tail + ' more</div>';
+  if (tail > 0) html += '<div class="tl-more">+' + tail + '개 더</div>';
   if (hidden > 0) {
     html += '<button type="button" class="tl-toggle" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',\\'tasks\\',\\'\\',event.detail===0)">'
       + '전체 task ' + (tasks.length + ran) + '개 &rarr;</button>';
@@ -9290,7 +9292,7 @@ function panelTabsData(s, active, mainSt) {
     return t;
   };
   var model = s && s.model ? String(s.model).replace(/^claude-/, '') : '';
-  var tabs = [tab(PT_MAIN, st0, 'Main', model, true)];
+  var tabs = [tab(PT_MAIN, st0, '메인', model, true)];
   var list = ((s && s.agents) || []).slice().sort(function(a, b) { return toNum(a.n) - toNum(b.n); });
   for (var i = 0; i < list.length; i++) {
     var a = list[i];
@@ -9379,7 +9381,7 @@ function agentConvRawOf(seq) {
     // #488: it is also tried again on a later render (a poll, a log page) — after
     // a pause, so a failing load never spins.
     if (r && r.status === 'error') {
-      var failure = _agentConvFailed[key] = { error: String(r.error || 'Error') };
+      var failure = _agentConvFailed[key] = { error: String(r.error || STRINGS.error) };
       setTimeout(function() {
         if (gen !== _panelGen || _agentConvFailed[key] !== failure) return;
         delete _agentConvFailed[key];
@@ -9520,7 +9522,7 @@ function psecForLanding(land) {
 // The section strip's tabs (D4 E-24): Chat · 작업 로그 at the start, 에이전트 트리 at the
 // far end (TabItem.end) with the tree glyph; each one's panel is the box slotted by its id.
 var PSEC_TABS = [
-  { id: 'conv', label: 'Chat', title: '지시와 답변' },
+  { id: 'conv', label: '대화', title: '지시와 답변' },
   { id: 'log', label: '작업 로그' },
   { id: 'tree', label: '에이전트 트리', icon: 'tree', end: true },
 ];
@@ -9928,7 +9930,7 @@ function steerItemOf(s, id) {
 var PS_BAR_STATUS = { running: 'running', waiting: 'waiting', resuming: 'waiting', idle: 'idle', sleeping: 'idle', archived: 'idle' };
 // The bar's buttons named for what they do to the session (D3-GAPS G6-1, 0.12.0 ariaLabel): Close is never
 // taken for the panel's ✕ (작업 카드 닫기). Star carries its pressed state and its tooltip; Trash the quiet tone.
-var SESSION_ACTION_ARIA = { stop: 'Stop — 세션 중지', close: 'Close — 세션 종료', trash: 'Trash — 세션 휴지통으로' };
+var SESSION_ACTION_ARIA = { stop: '중지 — 세션 중지', close: '닫기 — 세션 종료', trash: '휴지통 — 세션 휴지통으로' };
 function panelHeadData(s, col) {
   var st = rootStatusOf(s, col);
   var bar = PS_BAR_STATUS[st] || 'idle';
@@ -10001,16 +10003,16 @@ function panelInfoHtml(s, open, col, keep) {
   var sum = [];
   if (s.ownerName) sum.push(esc(s.ownerName));
   if (s.workflow) sum.push(esc(s.workflow));
-  if (u) sum.push(formatTokens(cardTotalTokens(u)) + ' tok', '$' + toNum(u.totalCostUsd).toFixed(2));
+  if (u) sum.push(formatTokens(cardTotalTokens(u)) + ' 토큰', '$' + toNum(u.totalCostUsd).toFixed(2));
   if (ctx > 0) {
     var ctxCls = ctxLevel(ctx, s.contextTokens, s.autoCompactTokens, s.compactPending);
-    sum.push('<span class="pi-cs' + (ctxCls ? ' ' + ctxCls : '') + '">ctx ' + ctxPercent(ctx) + '%</span>');
+    sum.push('<span class="pi-cs' + (ctxCls ? ' ' + ctxCls : '') + '">컨텍스트 ' + ctxPercent(ctx) + '%</span>');
   }
   sum.push(agoHtml(new Date(s.lastActivity).getTime() || 0));
   var html = '<ui-disclosure class="pi-dc" flush' + (open ? ' open' : '') + '>'
     + '<span slot="summary" class="pi-head"><span class="pi-title">세션 정보</span><span class="pi-sum">' + sum.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</span></span>';
   var links = [];
-  if (s.issueUrl) links.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener">' + esc(s.issueLabel || s.issueShortRef || 'Issue') + (s.issueTitle ? ' &mdash; ' + esc(String(s.issueTitle).slice(0, 60)) : '') + '</a>');
+  if (s.issueUrl) links.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener">' + esc(s.issueLabel || s.issueShortRef || '이슈') + (s.issueTitle ? ' &mdash; ' + esc(String(s.issueTitle).slice(0, 60)) : '') + '</a>');
   if (s.prUrl) links.push('<a href="' + safeHref(s.prUrl) + '" target="_blank" rel="noopener">' + esc(s.prLabel || s.prShortRef || 'PR') + (s.prTitle ? ' &mdash; ' + esc(String(s.prTitle).slice(0, 60)) : '') + '</a>');
   if (s.conversationId) links.push('<a href="/conversations/' + escAttr(s.conversationId) + '" target="_blank" rel="noopener">전체 대화</a>');
   // The links stay in view under the summary while the record is folded: the element's links slot (D3-GAPS G6-2, 0.12.0).
@@ -10112,7 +10114,7 @@ function cwCanCompact(s) {
   // A task turn refuses commands (D8): "compact now" would run as an instruction (#600 ⑥).
   if (s.slackless) return '대시보드 작업에서는 아직 지원하지 않아요';
   var env = s.environment;
-  if (isSiblingSession(s)) return 'Open ' + env.instanceName + ' (' + (env.host || '') + ':' + (env.port || '') + ') to act on this session';
+  if (isSiblingSession(s)) return STRINGS.siblingLock(env);
   if (!s.ownerId || s.ownerId !== currentUserId) return READ_ONLY_MSG;
   if (s.pendingModel) return '모델 전환이 압축을 기다리는 중';
   if (s.compactPending) return '다음 입력 때 자동 압축됩니다';
@@ -10567,7 +10569,7 @@ function renderCardIo(s) {
   var turn = d.instruction && d.instruction.turn ? d.instruction.turn : null;
   var info = turn ? sysTurnInfo(turn) : null;
   // SSOT 2026-10-29 T7: the harness sent it — System, not the user's name.
-  if (info) who = '<span class="io-who is-sys">System</span>';
+  if (info) who = '<span class="io-who is-sys">시스템</span>';
   var replyHtml = d.response && (d.response.title || d.response.body)
     ? '<div class="io-text">'
       + (d.response.title ? '<span class="io-title">' + esc(d.response.title) + '</span>' + (d.response.body ? '\\n' : '') : '')
@@ -10631,7 +10633,7 @@ function ioSkillsHtml(cid, skills) {
     var on = open === i;
     badges += '<button type="button" class="skill-badge" aria-expanded="' + (on ? 'true' : 'false') + '" aria-controls="' + id + '" onclick="ioSkillToggle(\\'' + escJs(cid) + '\\',' + i + ')"'
       + ' title="토큰 수는 추정치 — 영문 4자 또는 그 밖의 글자 1자를 1토큰으로 셈">'
-      + '<span class="skill-name">' + esc(skills[i].name) + '</span><span class="skill-tok">≈' + formatTokens(skills[i].tokens) + ' tokens</span></button>';
+      + '<span class="skill-name">' + esc(skills[i].name) + '</span><span class="skill-tok">≈' + formatTokens(skills[i].tokens) + ' 토큰</span></button>';
     if (on) pane = '<div class="skill-detail" id="' + id + '">' + skillPaneHtml(skills[i]) + '</div>';
   }
   return '<div class="skill-badges" role="group" aria-label="활성화된 스킬 ' + skills.length + '개">' + badges + '</div>' + pane;
@@ -10752,18 +10754,17 @@ function renderCardResume(s, col) {
 function sessionActionsOf(s, col) {
   var running = col === 'working' && !pendingAutoResume(s, col);
   var kind = running ? 'stop' : (col === 'closed' && s.terminated ? 'trash' : 'close');
-  var label = kind === 'stop' ? 'Stop' : (kind === 'trash' ? 'Trash' : 'Close');
+  var label = kind === 'stop' ? '중지' : (kind === 'trash' ? '휴지통' : '닫기');
   var env = s.environment;
   if (SELF_INSTANCE_NAME && env && env.instanceName && env.instanceName !== SELF_INSTANCE_NAME) {
-    return [{ id: kind, label: label + ' \\u2192 ' + env.instanceName, busy: false, sibling: true,
-      lock: 'Open ' + env.instanceName + ' (' + (env.host || '') + ':' + (env.port || '') + ') to act on this session' }];
+    return [{ id: kind, label: label + ' \\u2192 ' + env.instanceName, busy: false, sibling: true, lock: STRINGS.siblingLock(env) }];
   }
   var isOwner = !!s.ownerId && s.ownerId === currentUserId;
   var lock = isOwner ? '' : READ_ONLY_MSG;
   var lifeBusy = isBusy(s.key, 'life');
   var starred = s.starred === true;
   var closed = col === 'closed' || s.terminated === true || s.sessionState === 'SLEEPING';
-  var out = [{ id: 'star', label: starred ? '\\u2605 Starred' : '\\u2606 Star', pressed: starred, lock: lock, busy: lifeBusy,
+  var out = [{ id: 'star', label: starred ? '\\u2605 즐겨찾기' : '\\u2606 즐겨찾기', pressed: starred, lock: lock, busy: lifeBusy,
     tip: !isOwner ? READ_ONLY_MSG
       : starred ? '즐겨찾기 해제 — 다시 자동 sleep·보관 대상이 돼요'
       : '즐겨찾기 — 항상 맨 위, 자동 sleep·보관 안 함' + (closed ? ' (지금 살려요)' : '') }];
@@ -11102,9 +11103,9 @@ async function postModelSwitch(key, nickname) {
 function modelSwitchNote(r) {
   if (!r.ok) return { text: r.error, error: true };
   var res = r.result || {};
-  if (res.status === 'compacting') return { text: '컨텍스트가 ' + res.nickname + '의 autocompact ' + formatTokens(res.autoCompactTokens) + '보다 커서 지금 모델로 compact한 뒤 전환합니다', error: false };
+  if (res.status === 'compacting') return { text: '컨텍스트가 ' + res.nickname + '의 자동 압축 지점 ' + formatTokens(res.autoCompactTokens) + '보다 커서 지금 모델로 압축한 뒤 전환합니다', error: false };
   if (res.status === 'unchanged') return { text: '이미 ' + res.nickname + '입니다', error: false };
-  return { text: res.nickname + '(으)로 전환 · autocompact ' + formatTokens(res.autoCompactTokens), error: false };
+  return { text: res.nickname + '(으)로 전환 · 자동 압축 ' + formatTokens(res.autoCompactTokens), error: false };
 }
 async function changeModel(key, nickname) {
   if (!nickname) return;
@@ -11128,7 +11129,7 @@ async function changeModel(key, nickname) {
 // The owner picks one of the five levels; the session runs it from the next
 // turn (the %effort scope — the owner's default stays). When the session's
 // model caps the level, the note says what actually runs.
-var EFFORT_LABELS = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
+var EFFORT_LABELS = { low: '낮음', medium: '보통', high: '높음', xhigh: '매우 높음', max: '최대' };
 function effortLabel(level) {
   return EFFORT_LABELS[level] || String(level || '');
 }
@@ -11161,7 +11162,7 @@ function effortSwitchNote(r) {
   var res = r.result || {};
   if (res.status === 'unchanged') return { text: '이미 effort ' + effortLabel(res.effort) + '입니다', error: false };
   var capped = res.effective && res.effective !== res.effort ? ' (이 모델은 ' + effortLabel(res.effective) + '까지 실행)' : '';
-  return { text: 'effort ' + effortLabel(res.effort) + ' · 다음 턴부터 적용' + capped, error: false };
+  return { text: '추론 강도 ' + effortLabel(res.effort) + ' · 다음 턴부터 적용' + capped, error: false };
 }
 async function changeEffort(key, effort) {
   if (!effort) return;
@@ -11246,7 +11247,7 @@ var _goalBusy = Object.create(null); // session key → { op: 'add' | 'delete', 
 function goalPastItem(h) {
   var meta = [];
   if (toNum(h.activeMsUsed) > 0) meta.push('소요 ' + formatDuration(toNum(h.activeMsUsed)));
-  if (h.tokens !== undefined) meta.push(formatTokens(h.tokens) + ' tok');
+  if (h.tokens !== undefined) meta.push(formatTokens(h.tokens) + ' 토큰');
   if (h.costUsd !== undefined) meta.push('$' + toNum(h.costUsd).toFixed(2));
   if (toNum(h.continuationCount) > 0) meta.push('이어하기 ' + toNum(h.continuationCount) + '회');
   if (h.completedVia) meta.push(Object.prototype.hasOwnProperty.call(GOAL_VIA_LABELS, h.completedVia) ? GOAL_VIA_LABELS[h.completedVia] : String(h.completedVia));
@@ -12413,7 +12414,7 @@ function paintStats(data) {
   };
   fillStatSlot('stat-merge-lines', 'lines', t ? '+' + toNum(t.mergeLinesAdded) + ' / -' + toNum(t.mergeLinesDeleted) : '');
   var wfEntries = Object.entries((t && t.workflowCounts) || {}).sort(function(a, b) { return toNum(b[1]) - toNum(a[1]); });
-  fillStatSlot('stat-workflows', 'wf', wfEntries.map(function(e) { return '<span>' + esc(e[0]) + ': <b>' + toNum(e[1]) + '</b></span>'; }).join(''));
+  fillStatSlot('stat-workflows', 'wf', wfEntries.map(function(e) { return '<span>' + esc(e[0] === 'default' ? '기본' : e[0]) + ': <b>' + toNum(e[1]) + '</b></span>'; }).join(''));
   paintStatCards();
   _chartDays = data ? (Array.isArray(data.days) ? data.days : []) : null;
   paintCharts(_chartDays, false);
@@ -12751,7 +12752,7 @@ function connectWs() {
           renderPanelPermission(msg.session);
           renderPanelQuestion(msg.session); // the form shows the ask its actions answer (#637 R2)
           var pt2 = document.getElementById('panel-title');
-          if (pt2) pt2.textContent = msg.session.displayHeadline || msg.session.summaryTitle || msg.session.title || 'Untitled';
+          if (pt2) pt2.textContent = msg.session.displayHeadline || msg.session.summaryTitle || msg.session.title || '제목 없음';
           // Spec 12: the agent tree moved (spawn, status, tool count, a node's tasks);
           // spec 13: the live numbers (tokens, cost, timer) move with every push.
           repaintPanelSession();
@@ -13125,7 +13126,7 @@ function wlRawLoad(state, seq, fetchJson) {
     if (status === 403) return { status: 'denied' };
     if (status === 503 && err.code === 'unavailable') return { status: 'damaged' };
     if (cache[seq] === p) delete cache[seq];
-    return { status: 'error', error: String((err && (err.message || err.name)) || 'Error') };
+    return { status: 'error', error: String((err && (err.message || err.name)) || STRINGS.error) };
   });
   cache[seq] = p;
   return p;
@@ -14076,7 +14077,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // #762 — single source of truth for headline. displayHeadline carries the
   // server-resolved priority chain; older WS messages without it still get a
   // sensible fallback.
-  document.getElementById('panel-title').textContent = s.displayHeadline || s.summaryTitle || s.title || 'Untitled';
+  document.getElementById('panel-title').textContent = s.displayHeadline || s.summaryTitle || s.title || '제목 없음';
 
   // TitleSub
   var titleSubTextEl = document.getElementById('panel-title-sub-text');
@@ -14462,7 +14463,7 @@ function sysTurnInfo(t) {
     var gf = [];
     if (n) gf.push(['회차', n[1] + ' / ' + n[2]]);
     if (reason) gf.push(['직전 평가에서 남은 일', reason]);
-    return { kind: 'goal', label: n ? 'Goal #' + n[1] + '/' + n[2] : 'Goal', line: reason ? '직전 평가: ' + sysOneLine(reason, 90) : 'Goal 자동 계속', raw: raw, facts: gf };
+    return { kind: 'goal', label: n ? '목표 #' + n[1] + '/' + n[2] : '목표', line: reason ? '직전 평가: ' + sysOneLine(reason, 90) : '목표 자동 계속', raw: raw, facts: gf };
   }
   // The host prompt that keeps a turn going while background work still runs
   // (packages/slack/src/pipeline/background-wait.ts buildBackgroundWaitPrompt).
@@ -14539,7 +14540,7 @@ function cpFacts(st) {
   }
   if (st.phase === 'done' && toNum(c.durationMs) > 0) f.push(['걸린 시간', formatDuration(c.durationMs)]);
   f.push(['예상 시간', formatDuration(st.est) + (st.estKnown ? ' (직전 압축 기준)' : ' (기본값)')]);
-  if (c.trigger) f.push(['SDK trigger', c.trigger]);
+  if (c.trigger) f.push(['SDK 트리거', c.trigger]);
   if (c.endedAt) f.push(['끝난 시각', new Date(toNum(c.endedAt)).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })]);
   return f;
 }
@@ -14654,7 +14655,7 @@ function skillBadgesHtml(key, skills) {
     _skillBodies[id] = skills[i];
     badges += '<button type="button" class="skill-badge" aria-expanded="false" aria-controls="' + id + '" data-skill="' + id + '" onclick="skillToggle(this)"'
       + ' title="토큰 수는 추정치 — 영문 4자 또는 그 밖의 글자 1자를 1토큰으로 셈">'
-      + '<span class="skill-name">' + esc(skills[i].name) + '</span><span class="skill-tok">≈' + formatTokens(skills[i].tokens) + ' tokens</span></button>';
+      + '<span class="skill-name">' + esc(skills[i].name) + '</span><span class="skill-tok">≈' + formatTokens(skills[i].tokens) + ' 토큰</span></button>';
     panes += '<div class="skill-detail" id="' + id + '" hidden></div>';
   }
   return '<div class="skill-badges" role="group" aria-label="활성화된 스킬 ' + skills.length + '개">' + badges + '</div>' + panes;
@@ -14678,14 +14679,14 @@ function skillToggle(btn) {
   btn.setAttribute('aria-expanded', 'true');
 }
 function skillPaneHtml(sk) {
-  return '<div class="skill-detail-h"><span class="skill-name">' + esc(sk.name) + '</span><span class="skill-tok">≈' + formatTokens(sk.tokens) + ' tokens (추정)</span></div>'
+  return '<div class="skill-detail-h"><span class="skill-name">' + esc(sk.name) + '</span><span class="skill-tok">≈' + formatTokens(sk.tokens) + ' 토큰 (추정)</span></div>'
     + '<pre class="skill-body">' + esc(sk.body) + '</pre>';
 }
 
 // SSOT 2026-10-29 T8: the answers' name — the Slack bot that runs the session
 // (its card's botName — a sibling instance's own bot), else this instance's.
 function botNameOf(s) {
-  return (s && s.botName) || BOT_NAME || 'Assistant';
+  return (s && s.botName) || BOT_NAME || '어시스턴트';
 }
 // ── 지시와 답변 — @2lab.ai/ui <ui-conversation> (D3: G-01..G-13, E-25) ──
 // The section's turns are the library element's: the instruction (clamped,
@@ -14729,9 +14730,11 @@ function convSummaryOf(t, c) {
 // Pure: a turn soma-work put there (sysTurnInfo) as the element's system turn —
 // its badge (kind + label), one line, the facts and the raw prompt. A /compact
 // still running (the latest turn of a working session, younger than a
-// compaction can run) carries its progress; once done, its numbers.
+// compaction can run) carries its progress; once done, its numbers. No name:
+// a turn's own name wins over the element's words, so the element says its
+// own 시스템 (lang="ko") — D8.
 function convSysTurn(t, info, id, at, c, notLast) {
-  var x = { id: id, role: 'system', name: 'System', kind: info.kind === 'bgwork' ? 'background' : info.kind, label: info.label, text: info.line };
+  var x = { id: id, role: 'system', kind: info.kind === 'bgwork' ? 'background' : info.kind, label: info.label, text: info.line };
   if (at) x.at = at;
   var facts = info.facts;
   if (info.kind === 'compact') {
@@ -14771,7 +14774,7 @@ function convTurnsOf(list, c) {
       if (sys) u = convSysTurn(t, sys, id, at, c, i < list.length - 1);
       else {
         var said = splitInvokedSkills(decodeSlackEntities(t.rawContent || ''));
-        u = { id: id, role: 'user', name: String(t.userName || 'User'), text: said.text };
+        u = { id: id, role: 'user', name: String(t.userName || '사용자'), text: said.text };
         if (at) u.at = at;
         if (said.skills.length) u.skills = said.skills.map(function(sk) { return { name: sk.name, tokens: sk.tokens, text: sk.body }; });
       }
@@ -15065,7 +15068,7 @@ function convLoadAnswer(cid, id) {
       if (_ansInflight[key] !== req) return;
       delete _ansInflight[key];
       if (req.gen !== _panelGen) return;
-      _ansFailed[key] = String((err && (err.message || err.name)) || 'Error');
+      _ansFailed[key] = String((err && (err.message || err.name)) || STRINGS.error);
       convPaintSoon();
     });
 }
@@ -15367,7 +15370,7 @@ async function sendCommand(text, ref, files) {
       id: optimisticId,
       role: 'user',
       timestamp: Date.now(),
-      userName: 'You',
+      userName: '나',
       rawContent: shown,
       origin: { by: 'user' },
       _optimistic: true,
@@ -16015,11 +16018,6 @@ function aqTick() {
 // <ui-agent-queue> with providers only. The server (capacity-view.ts) counts each provider in
 // max accounts' worth (tier-weighted) and replays every account's resets in time order, in
 // epoch SECONDS: the element is told so (timeUnit 's') and converts once. capData maps the
-// view; the element draws the folded chips, the bars, the disclosure line, the account marks
-// and their card, the 7-day timeline, ticks every countdown, and speaks a pool's change.
-var CAP_TIERS = { 'claude-max-5x': { short: 'x5', label: 'Max x5' }, 'claude-max-20x': { short: 'x20', label: 'Max x20' }, 'chatgpt-pro-200': { short: '$200', label: 'Pro ($200)' }, 'chatgpt-pro-500': { short: '$500', label: 'Pro ($500)' } };
-var _capacityView = null;
-
 // Floor to the minute and keep the minutes: 3h59m never reads "3h".
 function capCountdown(secs) {
   var s = Math.max(0, Math.floor(Number(secs) || 0));
@@ -16030,6 +16028,11 @@ function capCountdown(secs) {
   if (h < 24) return h + 'h ' + (m % 60) + 'm';
   return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
 }
+// view; the element draws the folded chips, the bars, the disclosure line, the account marks
+// and their card, the 7-day timeline, ticks every countdown, and speaks a pool's change.
+var CAP_TIERS = { 'claude-max-5x': { short: 'x5', label: 'Max x5' }, 'claude-max-20x': { short: 'x20', label: 'Max x20' }, 'chatgpt-pro-200': { short: '$200', label: 'Pro ($200)' }, 'chatgpt-pro-500': { short: '$500', label: 'Pro ($500)' } };
+var _capacityView = null;
+
 function capClockLabel(atSec, nowMs) {
   var d = new Date(atSec * 1000);
   var n = new Date(nowMs);
