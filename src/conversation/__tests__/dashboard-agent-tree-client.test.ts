@@ -1518,7 +1518,7 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     expect(out.html).toContain('<span class="ag-type">메인</span>');
     expect(out.html).toContain('대기');
     expect(out.html).toContain('툴 2');
-    expect(out.html).toContain('task 합계 1200 토큰 · $0.00');
+    expect(out.html).toContain('작업 합계 1200 토큰 · $0.00');
     expect(out.html).not.toContain('세션 Σ');
     // Nothing below it: no subtree element.
     expect(out.html).not.toContain('ui-agent-tree');
@@ -1843,7 +1843,7 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     });
     const { m, out } = panel('', s);
     m.renderPanelAgents();
-    expect(out.html).toContain('task 합계 10000 토큰 · $3.50');
+    expect(out.html).toContain('작업 합계 10000 토큰 · $3.50');
     expect(out.html).toContain('서브 3개 1000 토큰 · $0.75');
   });
 
@@ -2295,8 +2295,8 @@ describe('task total on the face and in 세션 정보 (SSOT T3)', () => {
     const whole = face.cardOf({ key: 'k', tokenUsage: u, subagentSpend: sub }, 'working');
     expect(whole.tokens).toBe(10_000);
     expect(whole.costUsd).toBe(3.5);
-    expect(whole.titles?.tokens).toContain('(task 합계: 메인 + 서브에이전트 2개)');
-    expect(whole.titles?.cost).toBe('API 환산 비용 (task 합계: 메인 + 서브에이전트 2개)');
+    expect(whole.titles?.tokens).toContain('(작업 합계: 메인 + 서브에이전트 2개)');
+    expect(whole.titles?.cost).toBe('API 환산 비용 (작업 합계: 메인 + 서브에이전트 2개)');
     expect(whole.titles?.tokens).not.toContain('부분 합계');
     const partial = face.cardOf({ key: 'k', tokenUsage: { ...u, partialSince: 1_700_000_000_000 } }, 'working');
     expect(partial.titles?.tokens).toContain('부분 합계');

@@ -334,7 +334,7 @@ describe('task window on the card is <ui-task-plan max foot="none"> (T7/T8, D8b 
     const d = tw.cardTaskPlanData(many);
     expect(d.steps.map((s) => s.label)).not.toContain('old plan');
     // Three of the eight leave the window, the earlier run is the panel's too.
-    expect(d.more).toBe('+4개 더 · 전체 task 9개 →');
+    expect(d.more).toBe('+4개 더 · 전체 작업 9개 →');
     const html = tw.renderCardTasks(many);
     expect(html).toContain('max="5" foot="none"');
     expect(html).not.toContain('card-more-link');
@@ -345,12 +345,12 @@ describe('task window on the card is <ui-task-plan max foot="none"> (T7/T8, D8b 
     );
   });
 
-  it('the window hides nothing but earlier lists ran: the page’s own 전체 task N개 → (the element draws its line for its own rows only)', () => {
+  it('the window hides nothing but earlier lists ran: the page’s own 전체 작업 N개 → (the element draws its line for its own rows only)', () => {
     const html = tw.renderCardTasks(
       workingCard({ tasks: [], earlierTasks: [{ id: 'T9', content: 'x', status: 'completed', toolCalls: 1 }] }),
     );
     expect(html).not.toContain('<ui-task-plan');
-    expect(html).toContain('전체 task 1개 &rarr;');
+    expect(html).toContain('전체 작업 1개 &rarr;');
     expect(html).toContain("openPanel('inst::C1:t1','tasks',");
   });
 
@@ -367,7 +367,7 @@ describe('task window on the card is <ui-task-plan max foot="none"> (T7/T8, D8b 
     };
     const html = tw.renderCardTasks(workingCard({ earlierTasks: [skipped, stopped] }));
     expect(html).toContain('<ui-task-plan');
-    expect(html).toContain('전체 task 4개 &rarr;');
+    expect(html).toContain('전체 작업 4개 &rarr;');
     // Only never-run steps behind an empty list: nothing to open.
     expect(tw.renderCardTasks(workingCard({ tasks: [], earlierTasks: [skipped] }))).toBe('');
   });

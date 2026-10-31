@@ -530,7 +530,7 @@ describe('task window on the card — the full ledger is the panel', () => {
     expect(d.steps).toHaveLength(9);
     expect(d.steps[6]).toMatchObject({ status: 'running' });
     // Five rows of nine: four leave the window; the earlier run is in the panel too.
-    expect(d.more).toBe('+5개 더 · 전체 task 10개 →');
+    expect(d.more).toBe('+5개 더 · 전체 작업 10개 →');
     expect(html).not.toContain('toggleCardTasks');
     expect(html).not.toContain('tl-earlier');
     // Only skipped earlier steps and no current list: nothing to open.
@@ -951,7 +951,7 @@ describe('landing follows the opening intent (executed)', () => {
     expect(r.scroll.scrollTop).toBe(420);
   });
 
-  it('전체 task → puts the (unfolded) Tasks section at the top of the scroll area, under the sticky agent tabs, once', () => {
+  it('전체 작업 → puts the (unfolded) Tasks section at the top of the scroll area, under the sticky agent tabs, once', () => {
     // Task view: Tasks are no longer pinned outside the scroll area — they sit in the
     // focused agent's tab, so a tasks opening lands like 관리 → / 상세 does.
     const r = rig('tasks', { tabs: 40 });
