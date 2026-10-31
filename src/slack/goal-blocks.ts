@@ -35,6 +35,8 @@ export interface GoalActionValue {
   goalId: string;
   channel?: string;
   threadTs?: string;
+  /** Cap-decision DM buttons only: the decision round they answer (`SessionGoal.capDecisionId`). */
+  decisionId?: string;
 }
 
 export function encodeGoalActionValue(value: GoalActionValue): string {
@@ -51,6 +53,7 @@ export function decodeGoalActionValue(raw: unknown): GoalActionValue | null {
         goalId: parsed.goalId,
         channel: typeof parsed.channel === 'string' ? parsed.channel : undefined,
         threadTs: typeof parsed.threadTs === 'string' ? parsed.threadTs : undefined,
+        ...(typeof parsed.decisionId === 'string' && parsed.decisionId ? { decisionId: parsed.decisionId } : {}),
       };
     }
   } catch {
