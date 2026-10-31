@@ -173,6 +173,7 @@ import { notifyStartup } from './startup-notifier';
 import { ensureChildFolder } from './task-turn/epic-child-folder';
 import { archivedCostUsd, epicTreeCostUsd } from './task-turn/epic-cost';
 import { setEpicHost } from './task-turn/epic-server';
+import { composeTaskApprovalListeners } from './task-turn/task-approver';
 import { createDashboardCloseHandler } from './task-turn/task-close';
 import { createTaskLauncher } from './task-turn/task-launcher';
 import {
@@ -1289,8 +1290,6 @@ async function start() {
           void deliverer.deliver();
         });
         setTaskNoticeFailureProvider((sessionKey) => deliverer.failures(sessionKey));
-        // E2 ⑥ — a task approval asked is told to the thread at once; an expiry once.
-        claudeHandler.setTaskApprovalListener((event) => deliverer.approval(event));
         taskNoticeDeliverer = deliverer;
         // E2 ⑧ — a plain instruction from a user who turned it on becomes a
         // dashboard task (.prd/18 D1 · D2 · D11 · D12). Only with a deliverer:
@@ -1348,6 +1347,17 @@ async function start() {
           }
         });
       }
+    }
+    {
+      // One approval listener, two hearers: the thread is told at once, an expiry once (E2 ⑥),
+      // and a child's epic records it as needs-input (E4 ⑤, D6 c) — with or without a deliverer.
+      const deliverer = taskNoticeDeliverer;
+      const registry = claudeHandler.getSessionRegistry();
+      claudeHandler.setTaskApprovalListener(
+        composeTaskApprovalListeners(deliverer ? (event) => deliverer.approval(event) : undefined, (event) =>
+          registry.recordEpicApproval(event),
+        ),
+      );
     }
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;

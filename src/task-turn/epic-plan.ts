@@ -229,7 +229,19 @@ export function epicNodeStatus(
     );
     return openApproval ? 'needs-input' : 'running';
   }
-  switch (child.lastTurnOutcome?.outcome) {
+  // The chain's result as its end was recorded (D5): a `/compact` end with nothing re-run is
+  // `failed` though its hop completed — the event of that same outcome says so (fable #701 R1).
+  const last = child.lastTurnOutcome;
+  const end = last
+    ? events.find(
+        (e) =>
+          e.childTaskId === child.taskId &&
+          e.approvalId === undefined &&
+          e.outcome !== 'closed' &&
+          e.turnId === last.turnId,
+      )
+    : undefined;
+  switch (end?.outcome ?? last?.outcome) {
     case 'completed':
       return 'finished';
     case 'failed':
@@ -349,4 +361,29 @@ export function capEpicEvents(events: EpicEvent[]): EpicEvent[] {
     drop.add(e.id);
   }
   return kept.filter((e) => !drop.has(e.id));
+}
+
+/**
+ * E4 ⑤ (D6) — the events with this one added, once: its id is deterministic
+ * (a re-recorded end, or a restart's reconciliation of a held one, is the same
+ * event), then held to the cap.
+ */
+export function withEpicEvent(events: EpicEvent[] | undefined, event: EpicEvent): EpicEvent[] {
+  const list = events ?? [];
+  if (list.some((e) => e.id === event.id)) return list;
+  return capEpicEvents([...list, event]);
+}
+
+/** E4 ⑤ (D6) — the events with the open approval events `match` picks closed at `at` (and delivered). */
+export function resolveEpicApprovals(
+  events: EpicEvent[] | undefined,
+  match: (e: EpicEvent) => boolean,
+  at: number,
+): EpicEvent[] | undefined {
+  if (!events?.some((e) => e.outcome === 'needs-input' && !e.resolvedAt && match(e))) return events;
+  // A closed approval wakes no one and is done: delivered, so the cap drops it before a pending
+  // chain end (fable #701 R1).
+  return events.map((e) =>
+    e.outcome === 'needs-input' && !e.resolvedAt && match(e) ? { ...e, resolvedAt: at, state: 'delivered' } : e,
+  );
 }
