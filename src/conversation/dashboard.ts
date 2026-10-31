@@ -16380,13 +16380,16 @@ function epicChildOf(s, key) {
 // A single-session push of an epic (its bundle; a child's push arrives as its epic's
 // card): the lane is redrawn from the patched board and each drawn child card refreshed.
 function applyEpicPush(s) {
-  if (!s || !s.epic) return;
-  var children = Array.isArray(s.epic.children) ? s.epic.children : [];
+  if (!s) return;
+  var children = s.epic && Array.isArray(s.epic.children) ? s.epic.children : [];
   // Cached first: a panel open on a child reads it even before a board is drawn.
   for (var i = 0; i < children.length; i++) if (children[i] && children[i].key) _sessionCache[children[i].key] = children[i];
-  if (!_lastBoardData) return;
+  // A push with a bundle, or of a card that had a group and has none now (grok #706 R2): the lane changes.
+  if (!_lastBoardData || (!s.epic && !_epicGroupEls[s.key])) return;
   var before = [];
-  for (var key in _cardHost) if (_cardHost[key] && _cardHost[key].className === 'epic-inbox') before.push(key);
+  for (var key in _cardHost) {
+    if (_cardHost[key] && (' ' + _cardHost[key].className + ' ').indexOf(' epic-inbox ') >= 0) before.push(key);
+  }
   var groups = renderEpicLane(_lastBoardData);
   var now = Object.create(null);
   for (var g = 0; g < groups.length; g++) for (var j = 0; j < groups[g].children.length; j++) now[groups[g].children[j].key] = true;

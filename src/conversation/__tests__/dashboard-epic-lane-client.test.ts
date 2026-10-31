@@ -363,6 +363,16 @@ describe('L4–L6 — the lane’s boxes, its cards, the cache and the push', ()
     // Nothing left: no release, no body sync.
     h.m.applyEpicPush(without);
     expect(h.bodies.synced).toBe(1);
+    // The epic's card comes back with no bundle (grok #706 R2): its group goes and its children are released.
+    const bare = { key: 'task:e', title: 'Epic task:e', kind: 'epic' };
+    h.m.setBoard({ working: [bare] });
+    h.m.applyEpicPush(bare);
+    expect(h.state._cardHost['task:c1']).toBeUndefined();
+    expect(h.bodies.synced).toBe(2);
+    expect(h.timers).toHaveLength(1);
+    // A plain card with no group never redraws the lane.
+    h.m.applyEpicPush({ key: 'task:other' });
+    expect(h.bodies.synced).toBe(2);
     expect(h.m.epicChildOf(pushed, 'task:c2')).toMatchObject({ key: 'task:c2' });
     expect(h.m.epicChildOf(pushed, 'task:none')).toBeNull();
     expect(h.m.epicChildOf({ key: 'task:p' }, 'task:c2')).toBeNull();
