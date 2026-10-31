@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   admins: new Set<string>(['UADMIN1', 'UADMIN2']),
-  setGrant: vi.fn((): unknown => null),
+  setGrant: vi.fn((): unknown => ({ replaced: null, written: { grantedAt: 'g', expiresAt: 'e', grantedBy: 'x' } })),
   restoreGrant: vi.fn(),
 }));
 vi.mock('../../admin-utils', () => ({
@@ -71,7 +71,10 @@ describe('MCP grant requests as one decision, Slack + dashboard (#621)', () => {
 
   beforeEach(() => {
     h.setGrant.mockReset();
-    h.setGrant.mockImplementation(() => null);
+    h.setGrant.mockImplementation(() => ({
+      replaced: null,
+      written: { grantedAt: 'g', expiresAt: 'e', grantedBy: 'x' },
+    }));
     h.restoreGrant.mockReset();
     clearMcpGrantResolutions();
     updateDm = vi.fn<UpdateDm>(async () => undefined);
@@ -210,17 +213,35 @@ describe('MCP grant requests as one decision, Slack + dashboard (#621)', () => {
 
   it('the answer cannot be written: the grant is taken back (the earlier one restored), the claim goes back', async () => {
     const id = await makeRequest();
-    const earlier = { grantedAt: 'g', expiresAt: 'e', grantedBy: 'UOLD' };
-    h.setGrant.mockImplementationOnce(() => earlier);
+    const change = {
+      replaced: { grantedAt: 'g0', expiresAt: 'e0', grantedBy: 'UOLD' },
+      written: { grantedAt: 'g1', expiresAt: 'e1', grantedBy: 'UADMIN1' },
+    };
+    h.setGrant.mockImplementationOnce(() => change);
     const spy = vi.spyOn(sharedStore, 'storePermissionResponse').mockRejectedValueOnce(new Error('EACCES'));
     await expect(
       decideMcpGrant({ requestId: id, decision: 'approve', actor: 'UADMIN1', via: 'dashboard', updateDm }),
     ).rejects.toThrow('EACCES');
-    expect(h.restoreGrant).toHaveBeenCalledWith('U1', 'server-tools', 'write', earlier);
+    expect(h.restoreGrant).toHaveBeenCalledWith('U1', 'server-tools', 'write', change);
     spy.mockRestore();
     expect(
       await decideMcpGrant({ requestId: id, decision: 'deny', actor: 'UADMIN2', via: 'slack', updateDm }),
     ).toMatchObject({ ok: true, outcome: 'denied' });
+  });
+
+  it('the answer cannot be written and the grant cannot be taken back: the claim is kept (no contradicting answer)', async () => {
+    const id = await makeRequest();
+    h.restoreGrant.mockImplementationOnce(() => {
+      throw new Error('locked');
+    });
+    const spy = vi.spyOn(sharedStore, 'storePermissionResponse').mockRejectedValueOnce(new Error('EACCES'));
+    await expect(
+      decideMcpGrant({ requestId: id, decision: 'approve', actor: 'UADMIN1', via: 'dashboard', updateDm }),
+    ).rejects.toThrow('EACCES');
+    spy.mockRestore();
+    expect(
+      await decideMcpGrant({ requestId: id, decision: 'deny', actor: 'UADMIN2', via: 'slack', updateDm }),
+    ).toMatchObject({ ok: false, reason: 'already_answered' });
   });
 
   it('the MCP child timed out between the read and the claim: not found, nothing granted', async () => {

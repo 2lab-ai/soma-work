@@ -149,9 +149,9 @@ export async function decideMcpGrant(args: DecideMcpGrantArgs): Promise<McpGrant
   // The grant first, then the answer the child waits on: the child only ever reads "allow" for a
   // grant already on disk. A grant that cannot be written grants nothing and gives the claim back;
   // an answer that cannot be written takes the grant back and gives the claim back.
-  let replaced: GrantEntry | null = null;
+  let change: { replaced: GrantEntry | null; written: GrantEntry } | null = null;
   try {
-    if (decision === 'approve') replaced = mcpToolGrantStore.setGrant(userId, server, level, expiresAt, actor);
+    if (decision === 'approve') change = mcpToolGrantStore.setGrant(userId, server, level, expiresAt, actor);
   } catch (error) {
     await sharedStore.releasePermissionClaim(requestId);
     throw error;
@@ -159,14 +159,18 @@ export async function decideMcpGrant(args: DecideMcpGrantArgs): Promise<McpGrant
   try {
     await sharedStore.storePermissionResponse(requestId, response);
   } catch (error) {
-    if (decision === 'approve') {
+    if (change) {
       try {
-        mcpToolGrantStore.restoreGrant(userId, server, level, replaced);
+        // Only if our entry is still there: a revoke that landed meanwhile stays.
+        mcpToolGrantStore.restoreGrant(userId, server, level, change);
       } catch (restoreError) {
-        logger.error('MCP grant: could not take back a grant whose answer was not delivered', {
+        // The grant stands and cannot be taken back: keep the claim, so no other answer can
+        // contradict it (the child times out). An admin did approve this grant.
+        logger.error('MCP grant: the answer was not delivered and the grant could not be taken back', {
           requestId,
           restoreError,
         });
+        throw error;
       }
     }
     await sharedStore.releasePermissionClaim(requestId);

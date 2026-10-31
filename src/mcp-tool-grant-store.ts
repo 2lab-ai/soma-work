@@ -187,7 +187,8 @@ export class McpToolGrantStore {
 
   /**
    * Set a grant for a user on a specific server at a permission level.
-   * Throws when it could not be written. Returns the entry it replaced (for {@link restoreGrant}).
+   * Throws when it could not be written. Returns the entry it replaced and the
+   * one it wrote (for {@link restoreGrant}).
    */
   setGrant(
     userId: string,
@@ -195,34 +196,46 @@ export class McpToolGrantStore {
     level: PermissionLevel,
     expiresAt: string,
     grantedBy: string,
-  ): GrantEntry | null {
-    const replaced = this.transact(() => {
+  ): { replaced: GrantEntry | null; written: GrantEntry } {
+    const result = this.transact(() => {
       const previous: GrantsData = JSON.parse(JSON.stringify(this.grants));
-      const before = this.grants[userId]?.[serverName]?.[level] ?? null;
+      const replaced = this.grants[userId]?.[serverName]?.[level] ?? null;
+      const written: GrantEntry = { grantedAt: new Date().toISOString(), expiresAt, grantedBy };
       if (!this.grants[userId]) this.grants[userId] = {};
       if (!this.grants[userId][serverName]) this.grants[userId][serverName] = {};
-      this.grants[userId][serverName][level] = { grantedAt: new Date().toISOString(), expiresAt, grantedBy };
+      this.grants[userId][serverName][level] = written;
       this.saveGrants(previous);
-      return before;
+      return { replaced, written };
     });
     logger.info('Grant set', { userId, serverName, level, expiresAt, grantedBy });
-    return replaced;
+    return result;
   }
 
   /**
-   * Put back what {@link setGrant} replaced — only when the grant must not
-   * stand (its approval could not be delivered). Throws when it could not be written.
+   * Take back a grant {@link setGrant} wrote — only when it must not stand (its
+   * approval could not be delivered), and only if it is still the entry there:
+   * a revoke or another grant that landed since is never undone. Puts back what
+   * it replaced (nothing → the level is removed). Returns whether it changed
+   * anything; throws when it could not be written.
    */
-  restoreGrant(userId: string, serverName: string, level: PermissionLevel, entry: GrantEntry | null): void {
-    this.transact(() => {
-      const previous: GrantsData = JSON.parse(JSON.stringify(this.grants));
+  restoreGrant(
+    userId: string,
+    serverName: string,
+    level: PermissionLevel,
+    change: { replaced: GrantEntry | null; written: GrantEntry },
+  ): boolean {
+    const restored = this.transact(() => {
       const server = this.grants[userId]?.[serverName];
-      if (!server) return;
-      if (entry) server[level] = entry;
-      else server[level] = null;
+      const current = server?.[level];
+      if (!server || !current || JSON.stringify(current) !== JSON.stringify(change.written)) return false;
+      const previous: GrantsData = JSON.parse(JSON.stringify(this.grants));
+      if (change.replaced) server[level] = change.replaced;
+      else delete server[level];
       this.saveGrants(previous);
+      return true;
     });
-    logger.info('Grant restored', { userId, serverName, level, restored: !!entry });
+    logger.info('Grant restored', { userId, serverName, level, restored });
+    return restored;
   }
 
   /**
