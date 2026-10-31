@@ -502,13 +502,10 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
     return i;
   };
 
-  it('T1.6 · the head carries the 자세히 switch, off by default', () => {
+  it("T1.6 · the head has no 자세히 switch any more — the top bar's view mode is the one switch (SSOT 2026-11-01)", () => {
     const head = panel.slice(at('<div class="panel-header">'), at('<div class="panel-body"'));
-    // D7 (E-06): the kit chip (.ui-chip[aria-pressed]).
-    expect(head).toMatch(
-      /<button type="button" class="ui-chip panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false"/,
-    );
-    expect(head).toContain('자세히');
+    expect(head).not.toContain('panel-detail-toggle');
+    expect(head).not.toContain('자세히');
   });
 
   it('T1.1 · the surface holds 세션 정보 · 입력 필요 · 산출물, above the tabs', () => {
@@ -712,12 +709,12 @@ describe('T1.5 · the steering composer: multiline, images, files, voice', () =>
   });
 });
 
-describe('T1.6 · 자세히 is a saved per-device choice, off unless saved on', () => {
-  const env = load<{ panelDetailFrom(saved: unknown): boolean }>(['panelDetailFrom'], []);
+describe('T1.6 · 자세히 is the view mode now: 어드밴스드 on, 미니멀 (the default) off — per user, SSOT 2026-11-01', () => {
+  const env = load<{ viewModeFrom(saved: unknown): string }>(['viewModeFrom'], []);
   it('reads the saved value', () => {
-    expect(env.panelDetailFrom('1')).toBe(true);
-    expect(env.panelDetailFrom('0')).toBe(false);
-    expect(env.panelDetailFrom(null)).toBe(false);
+    expect(env.viewModeFrom('advanced')).toBe('advanced');
+    expect(env.viewModeFrom('minimal')).toBe('minimal');
+    expect(env.viewModeFrom(null)).toBe('minimal');
   });
 });
 
@@ -1117,16 +1114,16 @@ describe('browser receipt · a section landing cut short by a short body lands o
   });
 });
 
-describe('T1.6 · HIG: outside a list the 자세히 toggle is a button that behaves like a toggle, not a switch', () => {
-  it('a pressed-state button whose background changes — no switch knob in the panel head', () => {
+describe('T1.6 · HIG: outside a list the view-mode toggle is a button that behaves like a toggle, not a switch', () => {
+  it('a pressed-state button whose background changes — no switch knob in the top bar', () => {
     expect(PAGE).toMatch(
-      /<button type="button" class="ui-chip panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false"[^>]*><i data-ui-icon="list"><\/i>/,
+      /<button type="button" class="ui-chip view-mode-toggle" id="view-mode-toggle" slot="actions" aria-pressed="false"[^>]*><i data-ui-icon="list"><\/i>/,
     );
     expect(PAGE).not.toContain('pdt-switch');
     // Tone pass P2 / D7 (E-06): "pressed" is the kit chip's raised neutral "on" (ui-kit.css
     // .ui-chip[aria-pressed="true"]), not an accent fill — the page keeps no look of its own for it.
-    expect(CSS).not.toMatch(/\.panel-detail-toggle\[aria-pressed="true"\]/);
-    expect(CSS).not.toMatch(/^\.panel-detail-toggle \{/m);
+    expect(CSS).not.toMatch(/\.view-mode-toggle\[aria-pressed="true"\]/);
+    expect(CSS).not.toMatch(/^\.view-mode-toggle \{/m);
     expect(CSS).not.toContain('.pdt-icon');
   });
 });
