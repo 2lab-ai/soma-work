@@ -6,8 +6,9 @@
  * - T7: a Slack session and a Slack-less task with the same user, mode and
  *   directory get the same policy decision for the same tool input. The one
  *   difference is delivery of an escalation: a Slack turn can ask the user
- *   (permission prompt in the thread), a task has no approver yet (#599), so
- *   the same `classify → ask` is a deny there — explicitly, never a bypass.
+ *   (permission prompt in the thread); a task waits for its owner's dashboard
+ *   approval (#599 ⑤b), and with no approver wired the same `classify → ask`
+ *   is a deny — explicitly, never a bypass.
  * - T8: the hook reads the context's user, never a user named in tool input.
  */
 import * as fs from 'node:fs';
@@ -356,3 +357,62 @@ describe('T8 — the context’s user decides, not tool input', () => {
     expect(onEnvSkillDenied).not.toHaveBeenCalled();
   });
 });
+
+describe('#599 ⑤ — a task’s escalation waits for the dashboard approval', () => {
+  async function taskHook(taskApprover?: BuildStreamOptionsDeps['taskApprover']) {
+    const ctx = taskContext();
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: ctx.workingDirectory, executionContext: ctx },
+      makeDeps(taskApprover ? { taskApprover } : {}),
+    );
+    return { hook: policyHook(options), options, ctx };
+  }
+  const escalation = call('Bash', { command: 'rm -rf /' });
+
+  it('approved on the dashboard → allowed; the request is bound to the task, its owner, the tool and the rules', async () => {
+    const request = vi.fn(async () => ({ behavior: 'allow' as const }));
+    const { hook, ctx } = await taskHook({ request });
+    const out = await hook(escalation);
+    expect(decisionOf(out)).toBe('allow');
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: ctx.sessionKey,
+        userId: USER,
+        toolName: 'Bash',
+        toolInput: { command: 'rm -rf /' },
+      }),
+    );
+  });
+
+  it('refused on the dashboard → denied, with the answer as the reason', async () => {
+    const { hook } = await taskHook({ request: async () => ({ behavior: 'deny', message: 'not on prod' }) });
+    const out = await hook(escalation);
+    expect(decisionOf(out)).toBe('deny');
+    expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/not on prod/);
+  });
+
+  it('an approver that fails (store error, expiry, abort) → denied — never run unapproved', async () => {
+    const { hook } = await taskHook({
+      request: async () => {
+        throw new Error('ENOSPC');
+      },
+    });
+    expect(decisionOf(await hook(escalation))).toBe('deny');
+  });
+
+  it('the hook may wait for the approval: a task turn’s PreToolUse matchers carry a timeout above the approval window', async () => {
+    const { options } = await taskHook({ request: async () => ({ behavior: 'allow' as const }) });
+    const matchers = (options.hooks?.PreToolUse ?? []) as Array<{ timeout?: number }>;
+    expect(matchers.length).toBeGreaterThan(0);
+    for (const m of matchers) expect(m.timeout).toBeGreaterThanOrEqual(330);
+  });
+
+  it('a call that needs no approval never reaches the approver', async () => {
+    const request = vi.fn(async () => ({ behavior: 'allow' as const }));
+    const { hook } = await taskHook({ request });
+    await hook(call('Bash', { command: 'ls -la' }));
+    await hook(call('Bash', { command: 'ssh prod-host' }));
+    expect(request).not.toHaveBeenCalled();
+  });
+});
+

@@ -54,7 +54,7 @@ export interface AnswerPermissionPromptArgs {
   /** Needed for `approve_disable_rule`; without it that decision is a plain approve. */
   sessions?: DangerousRuleSessions;
   /** When set, the prompt must belong to this session thread. */
-  thread?: { channel: string; threadTs?: string };
+  thread?: PermissionPromptTarget;
 }
 
 export type PermissionPromptAnswer =
@@ -68,12 +68,33 @@ export async function loadPermissionPrompt(approvalId: string): Promise<PendingA
   return pending && pending.kind === PERMISSION_PROMPT_KIND ? pending : null;
 }
 
-/** True when `pending` was raised in the given session thread. */
+/**
+ * Where a prompt is answered: a Slack session's thread, or a Slack-less task's
+ * key and the turn it is running now (#599 ⑤) — only that turn waits for it.
+ */
+export type PermissionPromptTarget = { channel: string; threadTs?: string } | { taskKey: string; turnId: string };
+
+/** True when `pending` was raised in the given session thread — or, for a task, by that task's running turn. */
 export function promptBelongsToThread(
-  pending: Pick<PendingApproval, 'channel' | 'thread_ts'>,
-  thread: { channel: string; threadTs?: string },
+  pending: Pick<PendingApproval, 'channel' | 'thread_ts' | 'task_key' | 'turn_id'>,
+  thread: PermissionPromptTarget,
 ): boolean {
+  if ('taskKey' in thread) {
+    return (
+      !!pending.task_key &&
+      pending.task_key === thread.taskKey &&
+      !!pending.turn_id &&
+      pending.turn_id === thread.turnId
+    );
+  }
+  if (pending.task_key) return false;
   return pending.channel === thread.channel && (pending.thread_ts ?? '') === (thread.threadTs ?? '');
+}
+
+/** The session whose dangerous rules an approve-and-disable silences, if any. */
+function ruleScopeKey(pending: PendingApproval, sessions: DangerousRuleSessions): string | undefined {
+  if (pending.task_key) return pending.task_key;
+  return pending.channel ? sessions.getSessionKey(pending.channel, pending.thread_ts) : undefined;
 }
 
 export async function answerPermissionPrompt(args: AnswerPermissionPromptArgs): Promise<PermissionPromptAnswer> {
@@ -101,8 +122,9 @@ export async function answerPermissionPrompt(args: AnswerPermissionPromptArgs): 
     throw error;
   }
   // Only the winner, and only once its answer is stored: silence the rules.
-  if (sessions && disabledRuleIds.length > 0 && pending.channel) {
-    sessions.disableDangerousRules(sessions.getSessionKey(pending.channel, pending.thread_ts), disabledRuleIds);
+  if (sessions && disabledRuleIds.length > 0) {
+    const scope = ruleScopeKey(pending, sessions);
+    if (scope) sessions.disableDangerousRules(scope, disabledRuleIds);
   }
   return { ok: true, pending, disabledRuleIds };
 }
@@ -122,7 +144,7 @@ function responseFor(
       return { response: { behavior: 'deny', message: PERMISSION_EXPLAIN_MESSAGE }, disabledRuleIds: [] };
     case 'approve_disable_rule': {
       const ruleIds = pending.rule_ids ?? [];
-      if (!sessions || ruleIds.length === 0 || !pending.channel) {
+      if (!sessions || ruleIds.length === 0 || (!pending.channel && !pending.task_key)) {
         return { response: { behavior: 'allow', message: 'Approved by user' }, disabledRuleIds: [] };
       }
       return {

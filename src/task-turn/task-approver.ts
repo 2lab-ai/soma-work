@@ -1,0 +1,61 @@
+/**
+ * #599 ⑤ — the dashboard approver of a Slack-less task's escalations.
+ *
+ * A task turn's policy hook hands an escalation (a `classify` call the safety
+ * classifier did not allow) here. The approver writes a permission prompt to
+ * the shared approval store — the same store, claim tombstones and answer path
+ * (`answerPermissionPrompt`) the Slack buttons and the dashboard already use —
+ * bound to the task (`task_key`), the turn that raised it (`turn_id`) and its
+ * owner (the only requester who may answer), then waits for the answer.
+ *
+ * Expiry resolves a deny (the store's own timeout answer); an abort (the turn
+ * stopped) or a store error rejects, and the hook turns a rejection into a
+ * deny. Nothing in here can produce an allow without a stored answer.
+ */
+import { randomBytes } from 'node:crypto';
+import { PERMISSION_PROMPT_KIND, type PermissionResponse, type sharedStore } from 'somalib/permission/shared-store';
+import type { TaskApprovalRequest, TaskApprover } from '../agent-runtime/claude-code/build-stream-options';
+
+/** How long a task's approval stays open. The hook's SDK timeout sits above it. */
+export const TASK_APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
+
+export interface TaskApproverDeps {
+  store: Pick<typeof sharedStore, 'storePendingApproval' | 'waitForPermissionResponse'>;
+  /** The turn the task is running (its saved `activeTaskTurnId`). */
+  getActiveTurnId(sessionKey: string): string | undefined;
+  timeoutMs?: number;
+  now?: () => number;
+  newId?: () => string;
+}
+
+export function createTaskApprover(deps: TaskApproverDeps): TaskApprover {
+  const timeoutMs = deps.timeoutMs ?? TASK_APPROVAL_TIMEOUT_MS;
+  const now = deps.now ?? Date.now;
+  const newId = deps.newId ?? (() => `approval_${Date.now()}_${randomBytes(6).toString('hex')}`);
+  return {
+    async request(req: TaskApprovalRequest): Promise<{ behavior: 'allow' | 'deny'; message?: string }> {
+      const approvalId = newId();
+      const createdAt = now();
+      const turnId = deps.getActiveTurnId(req.sessionKey);
+      await deps.store.storePendingApproval(approvalId, {
+        kind: PERMISSION_PROMPT_KIND,
+        tool_name: req.toolName,
+        input: req.toolInput,
+        user: req.userId,
+        task_key: req.sessionKey,
+        ...(turnId ? { turn_id: turnId } : {}),
+        created_at: createdAt,
+        expires_at: createdAt + timeoutMs,
+        ...(req.ruleIds.length > 0 ? { rule_ids: req.ruleIds } : {}),
+      });
+      const response: PermissionResponse = await deps.store.waitForPermissionResponse(
+        approvalId,
+        timeoutMs,
+        req.signal,
+      );
+      return response.behavior === 'allow'
+        ? { behavior: 'allow', ...(response.message ? { message: response.message } : {}) }
+        : { behavior: 'deny', ...(response.message ? { message: response.message } : {}) };
+    },
+  };
+}

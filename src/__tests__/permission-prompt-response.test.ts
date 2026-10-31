@@ -204,3 +204,75 @@ describe('answerPermissionPrompt', () => {
     expect(result).toMatchObject({ ok: false, reason: 'not_found' });
   });
 });
+
+describe('#599 ⑤ — a Slack-less task’s approval (keyed by task, not thread)', () => {
+  const TASK = 'task:11111111-2222-4333-8444-555555555555';
+  const taskSeed = (o: Partial<PendingApproval> = {}) =>
+    seed({ channel: undefined, thread_ts: undefined, task_key: TASK, turn_id: 't-1', ...o });
+
+  it('the requester answers it bound to its task; another task or a Slack thread cannot', async () => {
+    const id = await taskSeed();
+    expect(
+      await answerPermissionPrompt({
+        approvalId: id,
+        actor: 'U_REQ',
+        decision: 'approve',
+        thread: { channel: 'C_T22', threadTs: '171.001' },
+      }),
+    ).toMatchObject({ ok: false, reason: 'not_found' });
+    expect(
+      await answerPermissionPrompt({
+        approvalId: id,
+        actor: 'U_REQ',
+        decision: 'approve',
+        thread: { taskKey: 'task:other', turnId: 't-1' },
+      }),
+    ).toMatchObject({ ok: false, reason: 'not_found' });
+    expect(
+      await answerPermissionPrompt({
+        approvalId: id,
+        actor: 'U_REQ',
+        decision: 'approve',
+        thread: { taskKey: TASK, turnId: 't-0' },
+      }),
+    ).toMatchObject({ ok: false, reason: 'not_found' });
+    const ok = await answerPermissionPrompt({
+      approvalId: id,
+      actor: 'U_REQ',
+      decision: 'approve',
+      thread: { taskKey: TASK, turnId: 't-1' },
+    });
+    expect(ok.ok).toBe(true);
+    expect(await sharedStore.waitForPermissionResponse(id, 1500)).toEqual({
+      behavior: 'allow',
+      message: 'Approved by user',
+    });
+  });
+
+  it('a prompt with no turn is never answerable under a task (fail-closed)', async () => {
+    const id = await taskSeed({ turn_id: undefined });
+    expect(
+      await answerPermissionPrompt({
+        approvalId: id,
+        actor: 'U_REQ',
+        decision: 'approve',
+        thread: { taskKey: TASK, turnId: '' },
+      }),
+    ).toMatchObject({ ok: false, reason: 'not_found' });
+  });
+
+  it('approve_disable_rule silences the rules on the task’s own key', async () => {
+    const id = await taskSeed();
+    const reg = sessions();
+    const r = await answerPermissionPrompt({
+      approvalId: id,
+      actor: 'U_REQ',
+      decision: 'approve_disable_rule',
+      sessions: reg,
+      thread: { taskKey: TASK, turnId: 't-1' },
+    });
+    expect(r).toMatchObject({ ok: true, disabledRuleIds: ['pipe-to-interpreter'] });
+    expect(reg.disableDangerousRules).toHaveBeenCalledWith(TASK, ['pipe-to-interpreter']);
+    expect(reg.getSessionKey).not.toHaveBeenCalled();
+  });
+});
