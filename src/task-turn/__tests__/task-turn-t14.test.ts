@@ -50,6 +50,8 @@ describe('T14 — a Slack-less task across a restart at each of its three points
   let SessionRegistry: typeof import('../../session-registry').SessionRegistry;
   let sharedStore: typeof import('somalib/permission/shared-store').sharedStore;
   const approvals: string[] = [];
+  /** The registry the process currently runs on — the answer handler reads it, as `src/index.ts` wires it. */
+  let live: InstanceType<typeof import('../../session-registry').SessionRegistry> | undefined;
 
   beforeEach(async () => {
     vi.resetModules();
@@ -60,7 +62,11 @@ describe('T14 — a Slack-less task across a restart at each of its three points
     ({ SessionRegistry } = await import('../../session-registry'));
     ({ sharedStore } = await import('somalib/permission/shared-store'));
     const { answerPermissionPrompt } = await import('../../permission-prompt-response');
-    dashboard.setDashboardPermissionAnswerHandler((a: any) => answerPermissionPrompt(a));
+    // As production wires it (src/index.ts): the answer sees the live registry, so the
+    // turn check after the claim runs too (grok #642 R1).
+    dashboard.setDashboardPermissionAnswerHandler((a: any) =>
+      answerPermissionPrompt({ ...a, sessions: live as never }),
+    );
     await webServer.startWebServer({ listen: false });
   }, 60_000);
 
@@ -97,6 +103,7 @@ describe('T14 — a Slack-less task across a restart at each of its three points
   function restart() {
     const reloaded = new SessionRegistry();
     reloaded.loadSessions();
+    live = reloaded;
     dashboard.setDashboardSessionAccessor(() => reloaded.getAllSessions());
     return reloaded;
   }
@@ -132,6 +139,7 @@ describe('T14 — a Slack-less task across a restart at each of its three points
       created_at: Date.now(),
       expires_at: Date.now() + 60_000,
     } as never);
+    live = before;
     dashboard.setDashboardSessionAccessor(() => before.getAllSessions());
     expect((await card(key))?.card.pendingPermissions).toHaveLength(1); // before: it was asking
 
@@ -142,6 +150,10 @@ describe('T14 — a Slack-less task across a restart at each of its three points
     const hit = await card(key);
     expect(hit?.col).toBe('idle');
     expect(hit?.card.pendingPermissions).toBeUndefined();
+    // Refused before anything is claimed or answered — a claimed-then-refused prompt could
+    // never be answered again (grok #642 R1). Watched, not probed: a probe would take the claim.
+    const claim = vi.spyOn(sharedStore, 'claimPermissionResponse');
+    const respond = vi.spyOn(sharedStore, 'storePermissionResponse');
     const answer = await injectWebServer({
       method: 'POST',
       url: `/api/dashboard/session/${encodeURIComponent(key)}/permission`,
@@ -149,7 +161,11 @@ describe('T14 — a Slack-less task across a restart at each of its three points
       payload: { approvalId, decision: 'approve' },
     });
     expect(answer.statusCode).toBe(404);
-    expect(await sharedStore.claimPermissionResponse(approvalId)).toBe(true); // nobody answered it
+    expect(claim).not.toHaveBeenCalled();
+    expect(respond).not.toHaveBeenCalled();
+    claim.mockRestore();
+    respond.mockRestore();
+    expect(await sharedStore.getPendingApproval(approvalId)).not.toBeNull(); // left to expire, untouched
     expect(after.getCrashRecoveredSessions().some((r) => r.sessionKey === key)).toBe(false);
   });
 
