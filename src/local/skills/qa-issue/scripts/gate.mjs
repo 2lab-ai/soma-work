@@ -247,6 +247,8 @@ function answer(argv) {
   }
   if (n === 0) die(1, wanted ? 'no missing precondition matched --ids' : 'no missing precondition to answer for that key');
   const open = Object.values(run.keys).flatMap((g) => g.preconditions.filter((p) => p.status === 'missing' && !DECISIONS.includes(p.decision)));
+  // `answered` = every missing precondition has a recorded decision. It is never consent to run:
+  // only `decide` (which re-probes and re-asks for `provided` that is still missing) grants that.
   run.status = open.length ? 'pending' : 'answered';
   writeFileSync(gate, `${JSON.stringify(run, null, 2)}\n`);
   say({ gateId: run.gateId, recorded: n, open: open.length, status: run.status });
