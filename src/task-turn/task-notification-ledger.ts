@@ -40,6 +40,10 @@ export type TaskNotificationLedgerIntent = Partial<Omit<TaskNoticeIntent, 'id' |
   approvalId?: string;
   toolName?: string;
   expiresAt?: number;
+  /** E2 ⑤ — what rendering needs after the task may be gone: its conversation, owner and key. */
+  conversationId?: string;
+  ownerId?: string;
+  sessionKey?: string;
 };
 
 export interface TaskNotificationLedgerEntry {
