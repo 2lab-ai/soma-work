@@ -163,6 +163,30 @@ describe('TaskTurnController — D9 and the busy task (598c §2)', () => {
     expect((await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY2, text: 'other' })).status).toBe(202);
   });
 
+  it('E4 ⑦ — runningChain names the chain its hops carry while it runs, and none after (grok #709 R1)', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const h = harness({}, [
+      async (input) => {
+        input.onStarted?.();
+        await gate;
+        return completed();
+      },
+    ]);
+    expect(h.controller.runningChain(KEY)).toBeUndefined();
+    const first = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'one' });
+    const id = h.controller.runningChain(KEY);
+    expect(id).toBeTruthy();
+    expect(id).toBe(h.inputs[0].chain?.id);
+    expect(h.controller.runningChain(KEY2)).toBeUndefined();
+    release();
+    await first.done;
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.controller.runningChain(KEY)).toBeUndefined();
+  });
+
   it('the window bound refuses the 11th start in 10 minutes', async () => {
     let t = 0;
     const h = harness({ now: () => t });

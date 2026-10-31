@@ -258,13 +258,28 @@ describe('spawn_child — fable #700 R1', () => {
       w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {}),
     ]);
     expect([parse(a).made, parse(b).made].sort()).toEqual([false, true]);
+    // Two different nodes in overlapping folders (fable #700 R2 P3): the second meets the
+    // first as a running sibling and is refused; nothing more is made.
+    w.epic.plan = applyPlanWrite(
+      undefined,
+      {
+        nodes: [
+          { id: 'login', title: 'Fix login', kind: 'issue' },
+          { id: 'docs', title: 'Docs', kind: 'issue' },
+          { id: 'api', title: 'API', kind: 'issue' },
+        ],
+      },
+      { now: 2, by: 'epic', children: [] },
+    );
     const [c, d] = await Promise.all([
       w.spawn.handler({ planNodeId: 'docs', instruction: 'go', folder: 'work' } as any, {}),
-      w.spawn.handler({ planNodeId: 'docs', instruction: 'go', folder: 'work/docs' } as any, {}),
+      w.spawn.handler({ planNodeId: 'api', instruction: 'go', folder: 'work/api' } as any, {}),
     ]);
     expect(parse(c)).toMatchObject({ made: true });
-    expect(parse(d)).toMatchObject({ made: false });
+    expect(d.isError).toBe(true);
+    expect(parse(d)).toMatchObject({ code: 'folder-overlap' });
     expect(w.host.createTask).toHaveBeenCalledTimes(2);
+    expect(w.children.map((x) => x.planNodeId)).toEqual(['login', 'docs']);
   });
 
   it('K12 — a closing child is not live: its node gets no stale answer, instruct_child calls it closed', async () => {
