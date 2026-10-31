@@ -172,6 +172,7 @@ import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './
 import { notifyStartup } from './startup-notifier';
 import { archivedCostUsd, epicTreeCostUsd } from './task-turn/epic-cost';
 import { setEpicHost } from './task-turn/epic-server';
+import { createEpicWaker } from './task-turn/epic-wake';
 import { composeTaskApprovalListeners } from './task-turn/task-approver';
 import { createDashboardCloseHandler } from './task-turn/task-close';
 import { createTaskLauncher } from './task-turn/task-launcher';
@@ -1224,6 +1225,16 @@ async function start() {
         return readTurnFinal(readWorkLog, child.conversationId, turnId);
       },
     });
+    // E4 ⑥ (.prd/19 D7) — an epic with pending events wakes when it is idle: when its
+    // chain ends (the post-drain idle hook), right after an event, and at boot (below).
+    // Never the cron path.
+    const epicWaker = createEpicWaker({
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      controller: taskController,
+      logger: new Logger('EpicWaker'),
+    });
+    claudeHandler.getSessionRegistry().setOnIdleAfterDrainHook((key) => epicWaker.wake(key));
+    claudeHandler.getSessionRegistry().setEpicEventListener((key) => epicWaker.wake(key));
     setDashboardTaskCommandHandler((sessionKey, message, attachments, actorUserId) =>
       taskController.start({ sessionKey, text: message, attachments, actorUserId }),
     );
@@ -1522,6 +1533,11 @@ async function start() {
       timing('Conversation viewer web server started');
     } catch (error) {
       logger.warn('Failed to start conversation viewer (non-critical)', error);
+    }
+
+    // E4 ⑥ (D7) — boot scan, with the dashboard up: an epic left with pending events wakes.
+    for (const [key, session] of claudeHandler.getAllSessions()) {
+      if (session.slackless === true && session.kind === 'epic') epicWaker.wake(key);
     }
 
     // E2 ⑤ / D13 — after the load and its reconciliation save, and with the
