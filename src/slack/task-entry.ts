@@ -127,6 +127,9 @@ const ANSWERED_TTL_MS = 10 * 60 * 1000;
 
 const NO_DASHBOARD = ':information_source: 대시보드가 꺼져 있어 슬랙 세션으로 진행합니다.';
 const RESTARTING = ':hourglass: 재시작 중이라 지금은 대시보드 작업을 시작할 수 없어요. 잠시 뒤 다시 지시해 주세요.';
+const BUSY = ':hourglass: 다른 대시보드 작업이 진행 중이라 시작하지 않았어요 — 그 작업이 끝난 뒤 다시 지시해 주세요.';
+/** D14: a fixed sentence in the channel; the store or folder error (it can carry a path) goes to the log only. */
+const NOT_CREATED = ':warning: 작업을 만들지 못했어요 — 잠시 뒤 다시 지시해 주세요. 계속되면 관리자에게 알려 주세요.';
 
 export function createSlackTaskEntry(deps: SlackTaskEntryDeps): SlackTaskEntry {
   const now = deps.now ?? Date.now;
@@ -241,7 +244,7 @@ export function createSlackTaskEntry(deps: SlackTaskEntryDeps): SlackTaskEntry {
       deps.logger.error('Task entry: the task could not be made', { channel, ts, error: reason });
       await eyesOff();
       await deps.reactions.add(channel, ts, 'warning').catch(() => undefined);
-      await say({ text: `:warning: 작업을 만들지 못했어요: ${reason}`, thread_ts: root });
+      await say({ text: NOT_CREATED, thread_ts: root });
       return { result: 'error', reason: `task not created: ${reason}` };
     }
 
@@ -253,9 +256,15 @@ export function createSlackTaskEntry(deps: SlackTaskEntryDeps): SlackTaskEntry {
         return { result: 'safe' };
       }
       const reason = String(launched.body.error ?? `status ${launched.status}`);
+      deps.logger.error('Task entry: the launcher refused the task', {
+        channel,
+        ts,
+        status: launched.status,
+        error: reason,
+      });
       await eyesOff();
       await deps.reactions.add(channel, ts, 'warning').catch(() => undefined);
-      await say({ text: `:warning: 작업을 만들지 못했어요: ${reason}`, thread_ts: root });
+      await say({ text: NOT_CREATED, thread_ts: root });
       return { result: 'error', reason: `task not created: ${reason}` };
     }
 
@@ -264,7 +273,12 @@ export function createSlackTaskEntry(deps: SlackTaskEntryDeps): SlackTaskEntry {
       // Made, not started (a race): the thread is owed "not started" after its link.
       const session = deps.getTaskByKey(sessionKey);
       const reason = String(launched.body.reason ?? 'not started');
-      if (session) {
+      if (!session) {
+        deps.logger.warn('Task entry: made but not started, and the task is gone — no "not started" notice', {
+          sessionKey,
+          reason,
+        });
+      } else {
         try {
           deps.notStarted(session, sessionKey, reason);
         } catch (error) {
@@ -283,8 +297,7 @@ export function createSlackTaskEntry(deps: SlackTaskEntryDeps): SlackTaskEntry {
   return { run, guard };
 }
 
+/** 429 and 503 in the user's words — the controller's reasons are English log text (fable #671 P3-2). */
 function refusalText(refused: TaskCommandResponse): string {
-  if (refused.status === 503) return RESTARTING;
-  const why = String(refused.body.error ?? '지금은 시작할 수 없어요');
-  return `:hourglass: 대시보드 작업을 시작하지 않았어요 — ${why}`;
+  return refused.status === 503 ? RESTARTING : BUSY;
 }
