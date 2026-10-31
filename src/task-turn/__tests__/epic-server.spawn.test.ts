@@ -184,6 +184,103 @@ describe('spawn_child (E4 ④b)', () => {
   });
 });
 
+describe('spawn_child — fable #700 R1', () => {
+  it('K8 — an empty, blank, over-long or command instruction is refused before anything is made', async () => {
+    for (const [instruction, code] of [
+      ['', 'empty-instruction'],
+      ['  \n ', 'empty-instruction'],
+      ['x'.repeat(12_001), 'too-long'],
+      ['/compact', 'command'],
+      [' %effort high', 'command'],
+    ] as const) {
+      const w = world();
+      const r = await w.spawn.handler({ planNodeId: 'login', instruction } as any, {});
+      expect(parse(r), instruction.slice(0, 10)).toMatchObject({ ok: false, code });
+      expect(w.controller.canStart).not.toHaveBeenCalled();
+      expect(w.host.createFreshDirectory).not.toHaveBeenCalled();
+      expect(w.host.createTask).not.toHaveBeenCalled();
+      expect(w.controller.start).not.toHaveBeenCalled();
+    }
+    // At the limit is accepted.
+    const w = world();
+    expect(
+      parse(await w.spawn.handler({ planNodeId: 'login', instruction: 'y'.repeat(12_000) } as any, {})),
+    ).toMatchObject({
+      ok: true,
+      made: true,
+    });
+  });
+
+  it('K9 — a refused create removes the folder it made: a fresh one, a named one; a folder already there stays', async () => {
+    const w = world();
+    const fresh = `/tmp/${OWNER}/session_k9`;
+    (w.host.createFreshDirectory as any).mockImplementationOnce(() => {
+      fs.mkdirSync(fresh, { recursive: true });
+      return fresh;
+    });
+    (w.host.ensureDirectory as any).mockImplementation((dir: string) => fs.mkdirSync(dir, { recursive: true }));
+    (w.host.createTask as any).mockImplementation(() => {
+      throw new Error('ENOSPC');
+    });
+    expect(parse(await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {}))).toMatchObject({
+      code: 'not-saved',
+    });
+    expect(fs.existsSync(fresh)).toBe(false);
+
+    expect(
+      parse(await w.spawn.handler({ planNodeId: 'login', instruction: 'go', folder: 'new/deep' } as any, {})),
+    ).toMatchObject({ code: 'not-saved' });
+    expect(fs.existsSync(`${EPIC_DIR}/new`)).toBe(false);
+
+    expect(
+      parse(await w.spawn.handler({ planNodeId: 'login', instruction: 'go', folder: 'work' } as any, {})),
+    ).toMatchObject({
+      code: 'not-saved',
+    });
+    expect(fs.existsSync(`${EPIC_DIR}/work`)).toBe(true);
+  });
+
+  it('K10 — the title is the card rule (first non-empty line, 80 chars); none or blank falls back to the node', async () => {
+    const w = world();
+    await w.spawn.handler({ planNodeId: 'login', instruction: 'go', title: '\n  Fix it\nmore' } as any, {});
+    await w.spawn.handler({ planNodeId: 'docs', instruction: 'go', title: ' \n ' } as any, {});
+    expect((w.host.createTask as any).mock.calls.map((c: any[]) => c[0].title)).toEqual(['Fix it', 'Docs']);
+  });
+
+  it('K11 — two parallel calls (the real start marks the child running at once): one child per node, no shared folder', async () => {
+    const w = world();
+    w.controller.start.mockImplementation(async (req: any) => {
+      w.running.add(req.sessionKey);
+      return { status: 202, body: { ok: true } };
+    });
+    const [a, b] = await Promise.all([
+      w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {}),
+      w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {}),
+    ]);
+    expect([parse(a).made, parse(b).made].sort()).toEqual([false, true]);
+    const [c, d] = await Promise.all([
+      w.spawn.handler({ planNodeId: 'docs', instruction: 'go', folder: 'work' } as any, {}),
+      w.spawn.handler({ planNodeId: 'docs', instruction: 'go', folder: 'work/docs' } as any, {}),
+    ]);
+    expect(parse(c)).toMatchObject({ made: true });
+    expect(parse(d)).toMatchObject({ made: false });
+    expect(w.host.createTask).toHaveBeenCalledTimes(2);
+  });
+
+  it('K12 — a closing child is not live: its node gets no stale answer, instruct_child calls it closed', async () => {
+    const w = world();
+    await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {});
+    w.children[0].terminated = true;
+    expect(parse(await w.instruct.handler({ childId: 'c1', instruction: 'more' } as any, {}))).toMatchObject({
+      code: 'closed',
+    });
+    expect(parse(await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {}))).toMatchObject({
+      made: true,
+      childId: 'c2',
+    });
+  });
+});
+
 describe('instruct_child (E4 ④b, D8)', () => {
   async function withChild() {
     const w = world();
@@ -249,6 +346,19 @@ describe('instruct_child (E4 ④b, D8)', () => {
     expect(parse(await w.instruct.handler({ childId: 'c1', instruction: 'x' } as any, {}))).toMatchObject({
       code: 'closed',
     });
+    expect(w.controller.start).not.toHaveBeenCalled();
+  });
+
+  it('I5 — an empty or over-long instruction is refused and nothing starts (fable #700 R1)', async () => {
+    const w = world();
+    await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {});
+    w.controller.start.mockClear();
+    for (const [instruction, code] of [
+      [' ', 'empty-instruction'],
+      ['z'.repeat(12_001), 'too-long'],
+    ] as const) {
+      expect(parse(await w.instruct.handler({ childId: 'c1', instruction } as any, {}))).toMatchObject({ code });
+    }
     expect(w.controller.start).not.toHaveBeenCalled();
   });
 

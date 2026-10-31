@@ -19,11 +19,13 @@
 import { createSdkMcpServer, type McpSdkServerConfigWithInstance, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { type ExecutionContext, type TaskExecutionContext, taskDirectoryFor } from '../agent-runtime/execution-context';
+import { NEW_TASK_LIMITS } from '../conversation/new-task';
 import { buildTaskSessionKey } from '../session-identity';
 import type { CreateTaskInput } from '../session-registry';
 import type { ConversationSession, EpicPlan } from '../types';
-import { ChildFolderError, foldersOverlap, resolveChildFolder } from './epic-child-folder';
+import { ChildFolderError, foldersOverlap, removeMadeFolders, resolveChildFolder } from './epic-child-folder';
 import { EpicPlanError, epicNodeStatus, isEpicDone, type PlanWriteInput } from './epic-plan';
+import { taskTitleOf } from './task-launcher';
 import type { TaskTurnController } from './task-turn-controller';
 
 /** D9 a — an epic makes at most this many children (closed and archived ones count). */
@@ -43,8 +45,8 @@ export interface EpicHost {
   createTask(input: CreateTaskInput): ConversationSession;
   /** ④b — a fresh `session_*` folder under the owner's `/tmp` root. */
   createFreshDirectory(ownerId: string): string | undefined;
-  /** ④b — make a named child folder (and its parents) if it is not there yet. */
-  ensureDirectory(dir: string): void;
+  /** ④b — make a named child folder (and its parents) if it is not there yet; the first folder it made, if any. */
+  ensureDirectory(dir: string): string | undefined;
   /** ④b — the task turn controller: tree admission and starts. */
   controller: Pick<TaskTurnController, 'canStart' | 'start' | 'isRunning'>;
 }
@@ -88,9 +90,24 @@ function childView(id: string, live: ConversationSession | undefined) {
   };
 }
 
-/** The epic's live children: only those of its own owner count (a child is its epic's owner's, D4). */
+/** The epic's live children: its own owner's (a child is its epic's owner's, D4), not closing. */
 function liveChildrenOf(h: EpicHost, epic: ConversationSession): ConversationSession[] {
-  return h.getChildTasks(epic.taskId as string).filter((c) => c.ownerId === epic.ownerId);
+  return h.getChildTasks(epic.taskId as string).filter((c) => c.ownerId === epic.ownerId && !c.terminated);
+}
+
+/**
+ * Why an instruction cannot be given, or undefined: the dashboard route's own
+ * bounds (not empty, at most `NEW_TASK_LIMITS.maxPromptChars`) and plain text
+ * only — the tools reach the controller without that route (fable #700 R1).
+ */
+function instructionProblem(instruction: string): ToolResult | undefined {
+  const text = instruction.trim();
+  if (text === '') return refuse('empty-instruction', 'an instruction cannot be empty');
+  if (instruction.length > NEW_TASK_LIMITS.maxPromptChars) {
+    return refuse('too-long', `an instruction is at most ${NEW_TASK_LIMITS.maxPromptChars} characters`);
+  }
+  if (/^[/%]/.test(text)) return refuse('command', 'an instruction is plain text — it cannot start with / or %');
+  return undefined;
 }
 
 /** `child_status()` — the plan tree with each node's status and verdict, and every child the epic made. */
@@ -222,6 +239,8 @@ export function epicTools(ctx: TaskExecutionContext) {
       const found = liveEpic(taskId);
       if ('content' in found) return found;
       const { host: h, epic } = found;
+      const bad = instructionProblem(args.instruction);
+      if (bad) return bad;
       const node = epic.plan?.nodes.find((n) => n.id === args.planNodeId);
       if (!node)
         return refuse('no-such-node', `the plan has no node ${args.planNodeId} — write it with plan_write first`);
@@ -242,12 +261,19 @@ export function epicTools(ctx: TaskExecutionContext) {
       });
       if (refused) return refuse(`start-${refused.status}`, String(refused.body.error ?? 'refused'));
       let dir: string;
+      /** A folder this call made, removed again if no child comes of it ("nothing changed"). */
+      let made: { dir: string; first: string } | undefined;
+      const unmake = () => {
+        if (made) removeMadeFolders(made.dir, made.first);
+      };
       if (args.folder === undefined) {
         const fresh = h.createFreshDirectory(ownerId);
         if (!fresh) return refuse('no-folder', 'a folder for the child could not be made');
+        made = { dir: fresh, first: fresh };
         try {
           dir = taskDirectoryFor(ownerId, fresh);
         } catch (error) {
+          unmake();
           return refuse('no-folder', `the child cannot work in its folder: ${(error as Error).message}`);
         }
       } else {
@@ -259,20 +285,28 @@ export function epicTools(ctx: TaskExecutionContext) {
         }
       }
       const sibling = overlappingSibling(h, epic, dir);
-      if (sibling) return refuse('folder-overlap', `a running child (${sibling.taskId}) works in that folder`);
-      if (args.folder !== undefined) h.ensureDirectory(dir);
+      if (sibling) {
+        unmake();
+        return refuse('folder-overlap', `a running child (${sibling.taskId}) works in that folder`);
+      }
+      if (args.folder !== undefined) {
+        const first = h.ensureDirectory(dir);
+        if (first) made = { dir, first };
+      }
       let child: ConversationSession;
       try {
         child = h.createTask({
           ownerId,
           ownerName: epic.ownerName ?? ownerId,
           workingDirectory: dir,
-          title: (args.title ?? node.title).slice(0, 80),
+          // The card's title rule (the launcher's): the first non-empty line, 80 characters.
+          title: taskTitleOf(args.title ?? '') || taskTitleOf(node.title),
           parentTaskId: taskId,
           planNodeId: args.planNodeId,
           ...(epic.model ? { model: epic.model } : {}),
         });
       } catch {
+        unmake();
         return refuse('not-saved', 'the child could not be made — nothing changed; try again');
       }
       const childId = child.taskId as string;
@@ -303,9 +337,8 @@ export function epicTools(ctx: TaskExecutionContext) {
       }
       const child = liveChildrenOf(h, epic).find((c) => c.taskId === args.childId);
       if (!child) return refuse('closed', `${args.childId} is closed — spawn a new child for its node`);
-      if (/^[/%]/.test(args.instruction.trim())) {
-        return refuse('command', 'an instruction is plain text — it cannot start with / or %');
-      }
+      const bad = instructionProblem(args.instruction);
+      if (bad) return bad;
       const sibling = child.workingDirectory
         ? overlappingSibling(h, epic, child.workingDirectory, child.taskId)
         : undefined;
