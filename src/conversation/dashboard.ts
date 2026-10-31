@@ -11072,9 +11072,11 @@ function renderCardGoal(s, col, canEdit, open) {
     html += '</ol>';
   }
   // The completed goals open under the current goal and its queue (T6) in <ui-disclosure>'s region (its grow in
-  // place, inert while closed); the list is painted while open and through the fold, else the region is empty.
+  // place, inert while closed); the list is painted while open and through the fold, else the region is empty. Its
+  // id is the page's (the trigger's aria-controls): the morph keys an unkeyed node by tag + id + class, and an id
+  // the element gave itself would make every repaint a new element (no fold, no ui-toggled).
   if (doneCount > 0) {
-    html += '<ui-disclosure class="cg-hx" trigger="external" for="cg-history-toggle" data-hx="' + escAttr(s.key) + '"' + (historyOpen ? ' open' : '') + '>'
+    html += '<ui-disclosure class="cg-hx" id="cg-history" trigger="external" for="cg-history-toggle" data-hx="' + escAttr(s.key) + '"' + (historyOpen ? ' open' : '') + '>'
       + (historyPainted ? '<div class="cg-queue-title">완료된 goal</div>' + renderGoalHistory(g.history) : '') + '</ui-disclosure>';
   }
   if (editable) {
