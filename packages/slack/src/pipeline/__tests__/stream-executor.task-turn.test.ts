@@ -590,3 +590,31 @@ describe('StreamExecutor — a Slack-less task turn writes to the dashboard (#59
     expect(params.say).not.toHaveBeenCalled();
   });
 });
+
+describe('StreamExecutor — ④b2 R1 review (#629)', () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it('a turn with no SDK session id still schedules its tool cleanup, keyed by the session (no leaked tool mappings)', async () => {
+    const deps = taskDeps();
+    const params = taskParams();
+    params.session.sessionId = undefined;
+    await new StreamExecutor(deps).execute(params);
+    expect(deps.toolTracker.scheduleCleanup).toHaveBeenCalledWith(expect.any(Number), expect.any(Function), TASK_KEY);
+  });
+
+  it('a task turn does not drive the Slack context emoji, even at the most verbose setting', async () => {
+    const usageTurn = () =>
+      (async function* () {
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 10, outputTokens: 5, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+        };
+        yield { type: 'result', stopReason: 'end_turn', finalText: 'ok' };
+      })();
+    const deps = taskDeps(usageTurn);
+    const params = taskParams({ logVerbosity: 0x7fffffff });
+    await new StreamExecutor(deps).execute(params);
+    expect(deps.contextWindowManager.updateContextEmoji).not.toHaveBeenCalled();
+  });
+});

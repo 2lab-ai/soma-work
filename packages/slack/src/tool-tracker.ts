@@ -108,7 +108,9 @@ export class ToolTracker {
       this.scheduleSessionCleanup(delayMs, sessionKey, callback);
       return;
     }
-    this.cancelScheduledCleanup();
+    // The keyless (global) schedule replaces only the global timer: sessions'
+    // own cleanups keep running (#629 R1).
+    if (this.cleanupTimer) clearTimeout(this.cleanupTimer);
 
     this.cleanupTimer = setTimeout(() => {
       this.cleanup();

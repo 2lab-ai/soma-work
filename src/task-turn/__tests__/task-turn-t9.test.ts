@@ -93,7 +93,13 @@ function stoppedTurn(controller: AbortController): Stream {
     })();
 }
 
-async function setup(stream: Stream, abortController = new AbortController()) {
+type Append = ReturnType<typeof createSessionWorkLogAppender>;
+
+async function setup(
+  stream: Stream,
+  abortController = new AbortController(),
+  wrapAppend: (append: Append) => Append = (append) => append,
+) {
   const registry = new SessionRegistry();
   const task = registry.createTask({
     ownerId: 'U0T9OWNER',
@@ -108,11 +114,13 @@ async function setup(stream: Stream, abortController = new AbortController()) {
     requestCoordinator: new RequestCoordinator(),
     mcpCallTracker,
     todoManager: new TodoManager(),
-    appendSessionWorkLog: createSessionWorkLogAppender({
-      getAllSessions: () => registry.getAllSessions(),
-      scheduleLiveSessionUpdate: () => {},
-      refreshAgentSpend: () => {},
-    }),
+    appendSessionWorkLog: wrapAppend(
+      createSessionWorkLogAppender({
+        getAllSessions: () => registry.getAllSessions(),
+        scheduleLiveSessionUpdate: () => {},
+        refreshAgentSpend: () => {},
+      }),
+    ),
     createConversation: (s) => createConversationDurable('', '', s.ownerId, s.ownerName ?? '', s.title),
   });
   const executionContext = {
@@ -252,6 +260,21 @@ describe('T9 — remaining branches (#598 ④b2)', () => {
     expect(executor.slackCalls).toEqual([]);
   });
 
+  it('repeated failing MCP calls (an unhealthy server) post no health alert to Slack (#629 R1 astra)', async () => {
+    const failing = (n: number) => [
+      { type: 'tool_call', toolCallId: `mcp_e${n}`, name: 'mcp__github__get_issue', input: { n } },
+      { type: 'tool_result', toolCallId: `mcp_e${n}`, isError: true, content: [{ type: 'text', text: 'boom' }] },
+    ];
+    const { executor, registry, sessionKey, run } = await setup(
+      variant([...failing(1), ...failing(2), ...failing(3), ...failing(4), ...failing(5)]),
+    );
+    registry.getSessionByKey(sessionKey)!.logVerbosity = ALL_OUTPUT;
+    const result = await run();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(executor.slackCalls).toEqual([]);
+    expect(result.outcome?.outcome).toBe('completed');
+  });
+
   it('an MCP tool call posts no status to Slack', async () => {
     const { executor, run } = await setup(
       variant([
@@ -265,7 +288,7 @@ describe('T9 — remaining branches (#598 ④b2)', () => {
   });
 
   it('a background Bash and a subagent task post nothing to Slack', async () => {
-    const { executor, run } = await setup(
+    const { executor, registry, sessionKey, run } = await setup(
       variant([
         {
           type: 'tool_call',
@@ -290,7 +313,7 @@ describe('T9 — remaining branches (#598 ④b2)', () => {
           type: 'tool_call',
           toolCallId: 'task_1',
           name: 'Task',
-          input: { description: 'explore', prompt: 'look', subagent_type: 'Explore' },
+          input: { description: 'explore', prompt: 'look', subagent_type: 'Explore', run_in_background: true },
         },
         {
           type: 'agent_task_lifecycle',
@@ -306,7 +329,10 @@ describe('T9 — remaining branches (#598 ④b2)', () => {
         { type: 'agent_task_lifecycle', phase: 'settled', taskId: 'bg-1', status: 'completed', toolUseId: 'bash_1' },
       ]),
     );
-    await run();
+    // The most verbose setting, a background subagent included (#629 R1 astra).
+    registry.getSessionByKey(sessionKey)!.logVerbosity = ALL_OUTPUT;
+    const result = await run();
+    expect(result.outcome?.outcome).toBe('completed');
     await new Promise((r) => setTimeout(r, 50));
     expect(executor.slackCalls).toEqual([]);
   });
@@ -316,6 +342,9 @@ describe('T9 — remaining branches (#598 ④b2)', () => {
       variant([{ type: 'assistant_delta', text: 'working' }]),
     );
     const task = registry.getSessionByKey(sessionKey)!;
+    // An explicit session threshold the usage below crosses (#629 R1 astra: the
+    // default model's threshold is above it, so the announcement never ran).
+    task.autoCompactTokens = 100_000;
     task.usage = {
       currentInputTokens: 190_000,
       currentCacheReadTokens: 0,
@@ -331,6 +360,32 @@ describe('T9 — remaining branches (#598 ④b2)', () => {
     await run();
     await new Promise((r) => setTimeout(r, 100));
     expect(executor.slackCalls).toEqual([]);
+    expect(task.autoCompactPending).toBe(true);
+    const page = await readWorkLog(task.conversationId!);
+    expect(page.entries.some((e) => e.kind === 'notice' && /next turn will auto \/compact/.test(e.text ?? ''))).toBe(
+      true,
+    );
+  });
+
+  it('compaction notices go through the task’s own writer — a failed one is the turn’s recording failure (#629 R1)', async () => {
+    const failCompactionNotices = (append: Append): Append =>
+      ((conversationId: string, entry: any) =>
+        entry?.kind === 'notice' && /^Compaction/.test(entry.text ?? '')
+          ? Promise.reject(new Error('EIO-compact'))
+          : append(conversationId, entry)) as Append;
+    const { executor, run } = await setup(
+      variant([
+        { type: 'status', status: 'compacting' },
+        { type: 'compact_boundary', metadata: { trigger: 'auto', preTokens: 100000 } },
+        { type: 'status', status: 'compact_done' },
+        { type: 'assistant_delta', text: 'continuing' },
+      ]),
+      new AbortController(),
+      failCompactionNotices,
+    );
+    const result = await run();
+    expect(executor.slackCalls).toEqual([]);
+    expect(result.outcome).toMatchObject({ outcome: 'failed', reason: 'record: EIO-compact' });
   });
 
   it('at the most verbose setting, a tool-using turn, an MCP call and a compaction still make zero Slack calls', async () => {
