@@ -263,12 +263,17 @@ export interface SessionGoal {
   /** ms epoch of the last continuation injection. */
   lastContinuationAt?: number;
   /**
-   * Set to the ms epoch when a cap-reached "continue?" DM was sent to the
-   * goal owner (S3). Acts as a dedup guard so the loop sends exactly one DM
-   * per cap event; cleared when the owner answers (continue/cancel) or any
-   * real user message resets the loop. Undefined ⇒ no decision pending.
+   * Set to the ms epoch when the cap-reached "continue?" decision opened
+   * (S3). The decision is answered from the owner's DM or the dashboard's
+   * approval card (`slack/goal-cap-decision.ts`); cleared when the owner
+   * answers, or when any real user message / pause / done / completion ends
+   * it. Undefined ⇒ no decision pending.
    */
   capDmPendingAt?: number;
+  /** The pending decision's round id — carried by the DM buttons and the dashboard card, checked on every answer. */
+  capDecisionId?: string;
+  /** Where the round's DM landed; stored only after the post succeeded (absent ⇒ the DM is retried). */
+  capDmRef?: { channel: string; ts: string };
 
   /**
    * The goal's opening turn was admitted but has not reached the model yet
@@ -384,8 +389,15 @@ export interface ConversationSession {
   ownerName?: string; // Display name of owner
   currentInitiatorId?: string; // User who triggered the current response
   currentInitiatorName?: string; // Display name of current initiator
+  // '' (and no threadTs) for a Slack-less task — see `slackless`.
   channelId: string;
   threadTs?: string;
+  /**
+   * A task with no Slack channel/thread (#596, `SessionRegistry.createTask`).
+   * Its registry key is `task:<taskId>`, not `work:<channel>:<thread>`, and it
+   * is saved and on the board from creation, before any SDK session.
+   */
+  slackless?: boolean;
   sessionId?: string;
   isActive: boolean;
   lastActivity: Date;
@@ -487,6 +499,20 @@ export interface ConversationSession {
    * sleep period instead of sleeping on the next sweep.
    */
   starClearedAt?: number;
+  /**
+   * #598 ④b — the latest turn's outcome of a Slack-less task (D10), written once
+   * per terminal turn by the task runner's strict commit. Current activity wins
+   * over it on the dashboard: `working` shows running, `waiting` shows waiting,
+   * `idle` reads this.
+   */
+  lastTurnOutcome?: TaskTurnOutcomeRecord;
+  /**
+   * #598 ④c — the turn a Slack-less task is running, saved when it starts
+   * (`SessionRegistry.beginTaskTurn`) and cleared by its outcome's commit. A
+   * task loaded `working` names the turn the process lost (restart
+   * reconciliation records it `interrupted`).
+   */
+  activeTaskTurnId?: string;
   // Sleep mode
   sleepStartedAt?: Date;
   // Conversation history recording ID
@@ -782,6 +808,13 @@ export interface ConversationSession {
   // breaks the compact → fail → compact loop. Cleared by a successful
   // compaction. See `pauseAutoCompactAfterFailure` in @soma/slack/compact-state.
   autoCompactSuppressedUntilMs?: number | null;
+  // Runtime-only (not serialized): when the running turn was stopped because
+  // it crossed the auto-compact threshold (stream-executor, abort reason
+  // `auto-compact`), and when the session was last stopped by a stop-class
+  // abort (user stop / close / shutdown, slack-handler `beforeAbort`). A stop
+  // after the auto-compact stop cancels the automatic continuation.
+  autoCompactStoppedAtMs?: number;
+  lastStopAtMs?: number;
   /**
    * Session-scoped auto-compact threshold in TOKENS, set by `/autocompact
    * <tokens>` and cleared by `/autocompact reset`. Wins over the model's
@@ -1006,4 +1039,15 @@ export interface UserChoiceGroup {
   question: string; // Group title/context
   choices: UserChoice[]; // Array of individual choices
   context?: string; // Why these decisions are needed
+}
+
+/** #598 ④b — one terminal turn's outcome, as stored on the session. */
+export interface TaskTurnOutcomeRecord {
+  turnId: string;
+  outcome: 'completed' | 'failed' | 'cancelled' | 'waiting' | 'interrupted';
+  category: 'UIUserAskQuestion' | 'WorkflowComplete' | 'Exception' | 'Stalled';
+  reason?: string;
+  retryable?: boolean;
+  recordFailure?: string;
+  at: number;
 }

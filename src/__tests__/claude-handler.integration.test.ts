@@ -10,6 +10,7 @@
 
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { executionContextFromSlack } from '../agent-runtime/execution-context';
 import { ClaudeHandler } from '../claude-handler';
 import { McpManager } from '../mcp-manager';
 import type { ConversationSession } from '../types';
@@ -29,6 +30,12 @@ const optedIn = process.env.SOMA_TEST_REAL_SDK === '1';
 
 const canRun = optedIn && !isNestedSession && !isCI;
 
+// A turn runs only under an execution context (#597), built by its factory.
+const INTEGRATION_CONTEXT = executionContextFromSlack({
+  user: 'U_INTEGRATION',
+  sessionKey: 'work:C_INTEGRATION:integration',
+  workingDirectory: '/tmp',
+});
 const describeWithCredentials = canRun ? describe : describe.skip;
 
 if (optedIn && isNestedSession) {
@@ -92,7 +99,15 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
     const session = createMockSession({ model: 'claude-sonnet-4-20250514' });
     const abortController = new AbortController();
 
-    const stream = handler.streamQuery('Say "hello" and nothing else.', session, abortController, '/tmp');
+    const stream = handler.streamQuery(
+      'Say "hello" and nothing else.',
+      session,
+      abortController,
+      '/tmp',
+      undefined,
+      undefined,
+      INTEGRATION_CONTEXT,
+    );
 
     const result = await collectStream(stream);
     expect(result.errors).toHaveLength(0);
@@ -107,7 +122,15 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
     });
     const abortController = new AbortController();
 
-    const stream = handler.streamQuery('Say "effort-high-ok" and nothing else.', session, abortController, '/tmp');
+    const stream = handler.streamQuery(
+      'Say "effort-high-ok" and nothing else.',
+      session,
+      abortController,
+      '/tmp',
+      undefined,
+      undefined,
+      INTEGRATION_CONTEXT,
+    );
 
     const result = await collectStream(stream);
     expect(result.errors).toHaveLength(0);
@@ -121,7 +144,15 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
     });
     const abortController = new AbortController();
 
-    const stream = handler.streamQuery('Say "effort-low-ok" and nothing else.', session, abortController, '/tmp');
+    const stream = handler.streamQuery(
+      'Say "effort-low-ok" and nothing else.',
+      session,
+      abortController,
+      '/tmp',
+      undefined,
+      undefined,
+      INTEGRATION_CONTEXT,
+    );
 
     const result = await collectStream(stream);
     expect(result.errors).toHaveLength(0);
@@ -139,7 +170,15 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
 
     let crashed = false;
     try {
-      const stream = handler.streamQuery('Say "max-test" and nothing else.', session, abortController, '/tmp');
+      const stream = handler.streamQuery(
+        'Say "max-test" and nothing else.',
+        session,
+        abortController,
+        '/tmp',
+        undefined,
+        undefined,
+        INTEGRATION_CONTEXT,
+      );
       await collectStream(stream);
     } catch (error: any) {
       if (error.message?.includes('exited with code')) {
@@ -164,7 +203,15 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
     });
     const abortController = new AbortController();
 
-    const stream = handler.streamQuery('Say "opus-high-ok" and nothing else.', session, abortController, '/tmp');
+    const stream = handler.streamQuery(
+      'Say "opus-high-ok" and nothing else.',
+      session,
+      abortController,
+      '/tmp',
+      undefined,
+      undefined,
+      INTEGRATION_CONTEXT,
+    );
 
     const result = await collectStream(stream);
     expect(result.errors).toHaveLength(0);

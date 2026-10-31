@@ -29,6 +29,11 @@ vi.mock('../../../user-settings-store', () => ({
   },
 }));
 
+const mockCloseNewUserRequest = vi.fn(async () => undefined);
+vi.mock('../../new-user-decision', () => ({
+  closeNewUserRequest: (...args: unknown[]) => (mockCloseNewUserRequest as any)(...args),
+}));
+
 vi.mock('../../../env-paths', () => ({
   ENV_FILE: '/mock/.env',
   DATA_DIR: '/mock/data',
@@ -90,6 +95,8 @@ describe('AdminHandler', () => {
 
       expect(result.handled).toBe(true);
       expect(userSettingsStore.acceptUser).toHaveBeenCalledWith('U_NEW', 'U_ADMIN');
+      // The open new-user request ends too: its DM buttons and dashboard card (#622).
+      expect(mockCloseNewUserRequest).toHaveBeenCalledWith('U_NEW', 'accept', 'U_ADMIN', undefined);
       expect(ctx.say).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('U_NEW'),
@@ -134,6 +141,7 @@ describe('AdminHandler', () => {
 
       expect(result.handled).toBe(true);
       expect(userSettingsStore.removeUserSettings).toHaveBeenCalledWith('U_NEW');
+      expect(mockCloseNewUserRequest).toHaveBeenCalledWith('U_NEW', 'deny', 'U_ADMIN', undefined);
       expect(ctx.say).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('U_NEW'),

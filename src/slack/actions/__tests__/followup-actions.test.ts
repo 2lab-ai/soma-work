@@ -1416,6 +1416,34 @@ describe('detached failures', () => {
   });
 
   /**
+   * ssot-task: T3 — a `Send now` turn stopped because it crossed the
+   * auto-compact threshold is drainable (`isAutoCompactStop`), and the host's
+   * drain is where the work is handed on. With an empty queue the drain runs
+   * nothing, so the host can only resume the interrupted work if it is told
+   * how the click's own run ended — the settled report rides along.
+   */
+  it('hands the settled report to the host drain, so an auto-compact stop can be resumed', async () => {
+    const h = harness();
+    const report = {
+      sessionKey: SESSION_KEY,
+      runId: 1,
+      turnEpoch: 1,
+      kind: 'send-now',
+      itemId: `${SESSION_KEY}#1`,
+      outcome: { result: 'interrupted', reason: 'auto-compact' },
+      itemDisposition: 'uncertain',
+      canDrain: true,
+    };
+    h.dispatcher.sendNow.mockResolvedValue({
+      status: 'dispatched',
+      run: { runId: 1, turnEpoch: 1, itemId: `${SESSION_KEY}#1`, settled: Promise.resolve(report) },
+    } as SendNowResult);
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick(5);
+    expect(h.deps.runDrain).toHaveBeenCalledWith(SESSION_KEY, report);
+  });
+
+  /**
    * Order is load-bearing the other way too: the drain claims `queued` rows, so
    * a row the sweep has not returned yet is invisible to the loop that follows.
    * Sweeping after the drain would delay it by a whole turn.
@@ -1475,7 +1503,10 @@ describe('detached failures', () => {
     await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
     await tick(5);
     expect(h.deps.reportError).toHaveBeenCalled();
-    expect(h.deps.runDrain).toHaveBeenCalledWith(SESSION_KEY);
+    expect(h.deps.runDrain).toHaveBeenCalledWith(
+      SESSION_KEY,
+      expect.objectContaining({ kind: 'send-now', canDrain: true }),
+    );
   });
 
   it('reports a dispatcher rejection as a retention, not a send', async () => {
@@ -1587,7 +1618,7 @@ describe('against the real queue and dispatcher', () => {
     expect(h.requests[0].message.text).toBe('배포 상태 알려줘');
     expect(h.requests[0].requestedBy).toBe(CLICKER);
     expect(h.requests[0].kind).toBe('send-now');
-    expect(h.runDrain).toHaveBeenCalledWith(SESSION_KEY);
+    expect(h.runDrain).toHaveBeenCalledWith(SESSION_KEY, expect.objectContaining({ kind: 'send-now', canDrain: true }));
     expect(h.refresh).toHaveBeenCalledWith(SESSION_KEY);
   });
 

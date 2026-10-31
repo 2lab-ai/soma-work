@@ -33,6 +33,8 @@ export interface ConversationSession {
   shutdownNotificationSent?: boolean;
   shutdownNotifiedAt?: number;
   wasWorkingAtShutdown?: boolean;
+  /** #598 — a dashboard task with no Slack thread (never notified in Slack). */
+  slackless?: boolean;
 }
 
 export interface ClaudeSessionUiReader {
@@ -1170,6 +1172,9 @@ export class SessionUiManager {
     const notifyPromises: Promise<void>[] = [];
 
     for (const [key, session] of sessions.entries()) {
+      // A Slack-less task has no thread to tell; restart reconciliation records
+      // its lost turn (#598 ④c).
+      if (session.slackless === true) continue;
       if (session.sessionId) {
         // Snapshot wasWorking BEFORE any await. The event loop will run
         // many other turns between here and when postMessage resolves;

@@ -50,9 +50,9 @@ function sessionCookie(
   return `soma_dash_token=${encodeURIComponent(token)}`;
 }
 
-/** The page body without its <style> and <script> blocks — what a reader sees. */
+/** The page body without its <style> and <script> blocks (the card's data JSON too) — what a reader sees. */
 function markup(body: string): string {
-  return body.replace(/<style>[\s\S]*?<\/style>/g, '').replace(/<script>[\s\S]*?<\/script>/g, '');
+  return body.replace(/<style\b[^>]*>[\s\S]*?<\/style>/g, '').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '');
 }
 
 describe('login page', () => {
@@ -107,24 +107,37 @@ describe('login page', () => {
   });
 
   describe('sign-in errors', () => {
-    // A Slack lookup that failed or timed out is not "no account": the page must
-    // say to retry, not send the user to an admin (T2).
+    // A failed sign-in returns to /login?error=…: the server draws the line in the card, so it shows with
+    // JavaScript off. A Slack lookup that failed or timed out is not "no account": the page must say to
+    // retry, not send the user to an admin (T2).
+    async function errorLine(query: string): Promise<string> {
+      await web.startWebServer({ listen: false });
+      const res = await web.injectWebServer({ method: 'GET', url: `/login?${query}` });
+      return markup(res.body).match(/<div class="ac-error" role="alert">[\s\S]*?<\/div>/)?.[0] ?? '';
+    }
+
     it('lookup_misconfigured points at the admin and the Slack link, not at retrying', async () => {
-      const res = await getLogin();
-      const script = res.body.match(/<script>([\s\S]*?)<\/script>\s*<\/body>/)?.[1] ?? '';
-      const line = script.split('\n').find((l) => l.includes("'lookup_misconfigured'")) ?? '';
+      const line = await errorLine('error=lookup_misconfigured');
       expect(line).toContain('admin');
       expect(line).toContain('dashboard link');
       expect(line).not.toContain('try again');
     });
 
     it('lookup_unavailable asks to retry and does not blame the account', async () => {
-      const res = await getLogin();
-      const script = res.body.match(/<script>([\s\S]*?)<\/script>\s*<\/body>/)?.[1] ?? '';
-      const line = script.split('\n').find((l) => l.includes("'lookup_unavailable'")) ?? '';
+      const line = await errorLine('error=lookup_unavailable');
       expect(line).toContain('try again');
       expect(line).not.toContain('No matching Slack account');
       expect(line).not.toContain('Contact your admin');
+    });
+
+    it('no_match names the email as text only', async () => {
+      const line = await errorLine(`error=no_match&email=${encodeURIComponent('<img src=x onerror=1>')}`);
+      expect(line).toContain('No matching Slack account found for &lt;img src=x onerror=1&gt;');
+      expect(line).not.toContain('<img');
+    });
+
+    it('no error, no alert line', async () => {
+      expect(await errorLine('')).toBe('');
     });
   });
 
@@ -263,8 +276,8 @@ describe('dashboard account pill (T1 entry point)', () => {
   const DASHBOARD_TS = fs.readFileSync(path.join(__dirname, '..', 'dashboard.ts'), 'utf8');
 
   it('is a real link to the account page, not a hidden click-to-logout', () => {
-    const pill = DASHBOARD_TS.match(/<a\s[^>]*id="user-pill"[^>]*>/)?.[0] ?? '';
-    expect(pill).toContain('href="/login"');
+    // D2 (A-13): the pill is <ui-app-bar>'s account — a real <a href> to the account page.
+    expect(DASHBOARD_TS).toContain("_appBarAccount = label ? { name: label, href: '/login' } : null;");
     expect(DASHBOARD_TS).not.toContain('title="Click to logout"');
     expect(DASHBOARD_TS).not.toContain("location.href = '/auth/logout'");
     // A link is always clickable — no click-gating attribute left behind.
