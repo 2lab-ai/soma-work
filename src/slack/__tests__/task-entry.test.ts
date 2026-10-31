@@ -197,6 +197,19 @@ describe('createSlackTaskEntry.run (E2 ⑧)', () => {
     expect(h.deps.notStarted).toHaveBeenCalledWith(h.task, KEY, 'raced');
   });
 
+  it('E4 ⑤ — its first chain already ended before its start (conversation not created): no second “not started” notice', async () => {
+    const h = harness({
+      launch: vi.fn(async () => ({
+        status: 200,
+        body: { sessionKey: KEY, status: 'not-started', reason: 'the task turn could not start' },
+      })),
+    });
+    h.task.lastTurnOutcome = { turnId: 't', outcome: 'failed', category: 'Exception', at: 1 };
+    const out = await h.entry.run({ event: h.event, say: h.say, allow: ALLOW });
+    expect(out).toEqual({ result: 'safe' });
+    expect(h.deps.notStarted).not.toHaveBeenCalled();
+  });
+
   it('create throws: eyes off, warning on, told — error', async () => {
     const h = harness({
       launch: vi.fn(async () => {

@@ -259,6 +259,60 @@ describe('SessionRegistry — a child reports to its epic (E4 ⑤)', () => {
     ]);
   });
 
+  it('V4d — a re-minted child reconciled on load: one event under its new id, after the relink (fable #701 R1)', () => {
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+    fs.writeFileSync(
+      SESSIONS_FILE,
+      JSON.stringify([
+        // A Slack session holds the id the child claims: load re-mints the child.
+        {
+          key: 'work:C1:1.1',
+          ownerId: 'U1',
+          userId: 'U1',
+          channelId: 'C1',
+          threadTs: '1.1',
+          taskId: 'child-1',
+          isActive: true,
+          lastActivity: new Date().toISOString(),
+          state: 'MAIN',
+          activityState: 'idle',
+        },
+        slacklessRecord('child-1', {
+          parentTaskId: 'epic-1',
+          planNodeId: 'login',
+          activityState: 'working',
+          activeTaskTurnId: 'turn-9',
+          openChain: 'chain-9',
+        }),
+        slacklessRecord('epic-1', {
+          kind: 'epic',
+          childTaskIds: ['child-1'],
+          epicEvents: [
+            {
+              id: 'child-1:ap-1',
+              childTaskId: 'child-1',
+              planNodeId: 'login',
+              outcome: 'needs-input',
+              approvalId: 'ap-1',
+              chainId: 'chain-9',
+              at: 1,
+              state: 'pending',
+            },
+          ],
+        }),
+      ]),
+    );
+    const reg = new SessionRegistry();
+    reg.loadSessions();
+    const child = [...reg.getAllSessions().values()].find((s) => s.planNodeId === 'login')!;
+    expect(child.taskId).not.toBe('child-1');
+    const events = reg.getSessionByTaskId('epic-1')!.epicEvents!;
+    expect(events.map((e) => e.id)).toEqual([`${child.taskId}:ap-1`, `${child.taskId}:chain-9`]);
+    expect(events.every((e) => e.childTaskId === child.taskId)).toBe(true);
+    // The chain's end closed the approval it asked.
+    expect(events[0]).toMatchObject({ resolvedAt: expect.any(Number), state: 'delivered' });
+  });
+
   it('V5 — an approval is needs-input of the open chain; its answer or the chain end closes it; a failed save does not throw', () => {
     const { reg, epic, child, childKey } = family();
     reg.beginTaskTurn(childKey, 't1', 'chain-1');
