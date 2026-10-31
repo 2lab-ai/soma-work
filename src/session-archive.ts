@@ -268,17 +268,25 @@ export class SessionArchiveStore {
    * Returns null if no archive exists.
    */
   private findLatestArchive(sessionKey: string): string | null {
-    if (!fs.existsSync(this.archiveDir)) return null;
+    return this.archiveFiles(sessionKey)[0] ?? null;
+  }
+
+  /**
+   * A key's archive files, newest first. Exactly `{sanitizedKey}_{digits}.json`:
+   * a key that extends this one (`task-c1_x_…`) is another key's file (E4 ③ R1).
+   */
+  private archiveFiles(sessionKey: string): string[] {
+    if (!fs.existsSync(this.archiveDir)) return [];
     const prefix = `${sanitizeKey(sessionKey)}_`;
     try {
-      const files = fs
+      return fs
         .readdirSync(this.archiveDir)
-        .filter((f) => f.startsWith(prefix) && f.endsWith('.json'))
-        .sort()
-        .reverse(); // newest first (lexicographic sort on timestamp suffix)
-      return files.length > 0 ? path.join(this.archiveDir, files[0]) : null;
+        .filter((f) => f.startsWith(prefix) && /^\d+\.json$/.test(f.slice(prefix.length)))
+        .map((f) => ({ f, at: Number(f.slice(prefix.length, -'.json'.length)) }))
+        .sort((a, b) => b.at - a.at)
+        .map(({ f }) => path.join(this.archiveDir, f));
     } catch {
-      return null;
+      return [];
     }
   }
 
@@ -350,6 +358,25 @@ export class SessionArchiveStore {
    */
   exists(sessionKey: string): boolean {
     return this.findLatestArchive(sessionKey) !== null;
+  }
+
+  /**
+   * E4 ③ — the newest archive of a session key, or null (unreadable or not
+   * this key's). A task keeps its key across revives, so this is its last
+   * close; an epic's cost cap reads a closed child's spend from it.
+   */
+  latest(sessionKey: string): ArchivedSession | null {
+    // Newest first; a file that cannot be read, or names another session, is skipped — an
+    // older snapshot of this key is still this key's spend (E4 ③ R1).
+    for (const file of this.archiveFiles(sessionKey)) {
+      try {
+        const archived = JSON.parse(fs.readFileSync(file, 'utf-8')) as ArchivedSession;
+        if (archived?.sessionKey === sessionKey) return archived;
+      } catch (err) {
+        logger.warn('Failed to read archive file', { sessionKey, error: err });
+      }
+    }
+    return null;
   }
 
   /**

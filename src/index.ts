@@ -149,7 +149,7 @@ import { productionModelCatalogDeps } from './session/model-catalog-deps';
 import { switchSessionModel } from './session/model-switch';
 import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './session/task-ledger';
 import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from './session/task-usage-reconcile';
-import { resolveArchivedResume } from './session-archive';
+import { getArchiveStore, resolveArchivedResume } from './session-archive';
 import { buildTaskSessionKey } from './session-identity';
 import { applySummaryTitle } from './session-title-policy';
 import {
@@ -170,6 +170,7 @@ import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
+import { archivedCostUsd, epicTreeCostUsd } from './task-turn/epic-cost';
 import { setEpicHost } from './task-turn/epic-server';
 import { createDashboardCloseHandler } from './task-turn/task-close';
 import { createTaskLauncher } from './task-turn/task-launcher';
@@ -1195,6 +1196,19 @@ async function start() {
       coordinator: slackHandler.getRequestCoordinator(),
       buildExecutionContext: executionContextForTask,
       logger: new Logger('TaskTurnController'),
+      // E4 ③ (D9 e) — an epic tree's spend: the epic, its live children, and the
+      // closed ones from their latest archive; the owner's limit.
+      treeCostUsd: (rootKey) => {
+        const registry = claudeHandler.getSessionRegistry();
+        const epic = registry.getSessionByKey(rootKey);
+        // No epic to price (gone, or never one): a host start in its name is not admitted.
+        if (!epic) return Number.POSITIVE_INFINITY;
+        return epicTreeCostUsd(epic, {
+          live: (taskId) => registry.getSessionByTaskId(taskId),
+          archived: (taskId) => archivedCostUsd(getArchiveStore().latest(buildTaskSessionKey(taskId))),
+        });
+      },
+      epicCostLimitUsd: (ownerId) => userSettingsStore.getUserEpicCostLimitUsd(ownerId),
     });
     taskTurnController = taskController;
     // E4 ④a (.prd/19 D3) — the host the epic's tools call: registry reads, the plan writer,
