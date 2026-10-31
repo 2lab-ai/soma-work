@@ -415,4 +415,3 @@ describe('#599 ⑤ — a task’s escalation waits for the dashboard approval', 
     expect(request).not.toHaveBeenCalled();
   });
 });
-
