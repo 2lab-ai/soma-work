@@ -13,6 +13,7 @@ import { getDispatchService } from '../../dispatch-service';
 import { userSettingsStore } from '../../user-settings-store';
 import { buildChannelRouteBlocks } from '../actions/channel-route-action-handler';
 import { DispatchAbortError } from '../dispatch-abort';
+import { notifyAdminsNewUser } from '../new-user-decision';
 
 setSessionInitializerProviders({
   expectedHandoffKind: (workflow) => expectedHandoffKind(workflow as any),
@@ -38,6 +39,8 @@ setSessionInitializerProviders({
   getDispatchService,
   getUserSettings: (userId) => userSettingsStore.getUserSettings(userId),
   createPendingUser: (userId, userName) => userSettingsStore.createPendingUser(userId, userName),
+  // Records where each admin DM landed, so the dashboard card and every copy stay in sync (#622).
+  notifyAdminsNewUser: (slackApi, userId, userName) => notifyAdminsNewUser(slackApi, userId, userName),
   getUserSessionTheme: (userId) => userSettingsStore.getUserSessionTheme(userId),
   buildChannelRouteBlocks,
   getDefaultUpdateChannel: () => process.env.DEFAULT_UPDATE_CHANNEL,

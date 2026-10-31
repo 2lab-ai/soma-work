@@ -1,0 +1,149 @@
+/**
+ * #623 — a non-admin's request to delete a bot message as ONE decision,
+ * the admins' Slack DMs + the dashboard. The real request store (DATA_DIR scratch).
+ */
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const h = vi.hoisted(() => ({ admins: new Set<string>(['UADMIN1', 'UADMIN2']) }));
+vi.mock('../../admin-utils', () => ({
+  isAdminUser: (u: string) => h.admins.has(u),
+  getAdminUsers: () => h.admins,
+}));
+
+import { DATA_DIR } from '../../env-paths';
+import { BotDeleteActionHandler } from '../actions/bot-delete-action-handler';
+import {
+  botDeleteAdminApprovalAdapter,
+  botDeleteRequestId,
+  decideBotDelete,
+  requestBotDelete,
+} from '../bot-delete-decision';
+
+function slackApi() {
+  return {
+    openDmChannel: vi.fn(async (u: string) => `D-${u}`),
+    postMessage: vi.fn(async (channel: string, _t: string, _o?: any) => ({ ts: `ts-${channel}`, channel })),
+    updateMessage: vi.fn(async (_c: string, _t: string, _x: string, _b?: any[]) => undefined),
+    deleteMessage: vi.fn(async (_c: string, _t: string) => undefined),
+  };
+}
+
+const TARGET = { requesterId: 'U1', targetChannel: 'C1', targetTs: '171.1' };
+const ID = botDeleteRequestId('C1', '171.1');
+
+function click(api: ReturnType<typeof slackApi>, actor: string, value: object, decision: 'approve' | 'reject') {
+  const respond = vi.fn(async (_m: any) => undefined);
+  const handler = new BotDeleteActionHandler({ slackApi: api });
+  const body = { user: { id: actor }, actions: [{ value: JSON.stringify(value) }] };
+  return (decision === 'approve' ? handler.handleApprove(body, respond) : handler.handleReject(body, respond)).then(
+    () => respond,
+  );
+}
+
+describe('bot-message delete requests as one decision (#623)', () => {
+  let api: ReturnType<typeof slackApi>;
+
+  beforeEach(() => {
+    fs.rmSync(path.join(DATA_DIR, 'admin-requests.json'), { force: true });
+    api = slackApi();
+  });
+
+  it('every admin is asked by DM (buttons carry the request id) and the request is a dashboard card', async () => {
+    expect(await requestBotDelete(api, { ...TARGET, preview: '배포 완료 메시지' })).toBe(2);
+    const value = JSON.parse(api.postMessage.mock.calls[0][2].blocks[1].elements[0].value);
+    expect(value).toMatchObject({ ...TARGET, requestId: ID });
+    const card = (await botDeleteAdminApprovalAdapter(api).pending(Date.now())).find(
+      (c) => c.id === `bot_delete:${ID}`,
+    );
+    expect(card).toMatchObject({
+      kind: 'bot_delete',
+      card: 'permission',
+      requesterId: 'U1',
+      rows: { 채널: 'C1', 메시지: '171.1', 미리보기: '배포 완료 메시지' },
+    });
+  });
+
+  it('approved on the dashboard: deleted once, every admin DM rewritten, the requester told; a Slack click later is refused', async () => {
+    await requestBotDelete(api, TARGET);
+    const adapter = botDeleteAdminApprovalAdapter(api);
+    expect(await adapter.answer(ID, 'approve', 'UADMIN1')).toEqual({ ok: true, outcome: 'approved' });
+    expect(api.deleteMessage).toHaveBeenCalledWith('C1', '171.1');
+    await vi.waitFor(() => expect(api.updateMessage).toHaveBeenCalledTimes(2));
+    for (const c of api.updateMessage.mock.calls) expect(c[2]).toContain('대시보드에서 응답');
+    await vi.waitFor(() => expect(api.postMessage).toHaveBeenCalledWith('D-U1', expect.stringContaining('승인')));
+    expect((await adapter.pending(Date.now())).some((c) => c.id === `bot_delete:${ID}`)).toBe(false);
+    const respond = await click(api, 'UADMIN2', { ...TARGET, requestId: ID }, 'reject');
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
+    expect(api.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(api.postMessage).not.toHaveBeenCalledWith('D-U1', expect.stringContaining('거절'));
+  });
+
+  it('rejected in Slack: nothing deleted, the card resolves with who; the dashboard answer is already answered', async () => {
+    await requestBotDelete(api, TARGET);
+    const respond = await click(api, 'UADMIN2', { ...TARGET, requestId: ID }, 'reject');
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ replace_original: true }));
+    expect(api.updateMessage).toHaveBeenCalledTimes(2);
+    const adapter = botDeleteAdminApprovalAdapter(api);
+    expect((await adapter.resolved(0)).find((r) => r.id === `bot_delete:${ID}`)).toMatchObject({
+      outcome: 'denied',
+      via: 'slack',
+    });
+    expect(await adapter.answer(ID, 'approve', 'UADMIN1')).toEqual({ ok: false, reason: 'already_answered' });
+    expect(api.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('two answers at the same moment: exactly one acts', async () => {
+    await requestBotDelete(api, TARGET);
+    const results = await Promise.all([
+      decideBotDelete({ requestId: ID, decision: 'approve', actor: 'UADMIN1', via: 'dashboard', slackApi: api }),
+      decideBotDelete({ requestId: ID, decision: 'approve', actor: 'UADMIN2', via: 'slack', slackApi: api }),
+    ]);
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(api.deleteMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('a button from before the request store (no request id) still acts — once', async () => {
+    const first = await click(api, 'UADMIN1', TARGET, 'approve');
+    expect(first).toHaveBeenCalledWith(expect.objectContaining({ replace_original: true }));
+    const second = await click(api, 'UADMIN2', TARGET, 'approve');
+    expect(second).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
+    expect(api.deleteMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('a delete that fails reopens the request (try again); a message already gone counts as deleted', async () => {
+    await requestBotDelete(api, TARGET);
+    const adapter = botDeleteAdminApprovalAdapter(api);
+    api.deleteMessage.mockRejectedValueOnce(
+      Object.assign(new Error('ratelimited'), { data: { error: 'ratelimited' } }),
+    );
+    await expect(adapter.answer(ID, 'approve', 'UADMIN1')).rejects.toThrow('삭제에 실패');
+    expect((await adapter.pending(Date.now())).some((c) => c.id === `bot_delete:${ID}`)).toBe(true);
+    api.deleteMessage.mockRejectedValueOnce(Object.assign(new Error('gone'), { data: { error: 'message_not_found' } }));
+    expect(await adapter.answer(ID, 'approve', 'UADMIN2')).toEqual({ ok: true, outcome: 'approved' });
+  });
+
+  it('answered on the dashboard while the DMs were going out: the late copies are closed', async () => {
+    let answered = false;
+    api.postMessage.mockImplementation(async (channel: string) => {
+      if (channel === 'D-UADMIN2' && !answered) {
+        answered = true;
+        await botDeleteAdminApprovalAdapter(api).answer(ID, 'deny', 'UADMIN1');
+      }
+      return { ts: `ts-${channel}`, channel };
+    });
+    await requestBotDelete(api, TARGET);
+    expect(api.updateMessage.mock.calls.map((c) => c[0])).toEqual(expect.arrayContaining(['D-UADMIN1', 'D-UADMIN2']));
+  });
+
+  it('refused: a non-admin, an unknown choice, a missing request', async () => {
+    await requestBotDelete(api, TARGET);
+    const adapter = botDeleteAdminApprovalAdapter(api);
+    expect(await adapter.answer(ID, 'approve', 'U1')).toEqual({ ok: false, reason: 'forbidden' });
+    expect(await adapter.answer(ID, 'maybe', 'UADMIN1')).toEqual({ ok: false, reason: 'invalid' });
+    expect(await adapter.answer('C9/1.1', 'approve', 'UADMIN1')).toEqual({ ok: false, reason: 'not_found' });
+    expect(api.deleteMessage).not.toHaveBeenCalled();
+  });
+});

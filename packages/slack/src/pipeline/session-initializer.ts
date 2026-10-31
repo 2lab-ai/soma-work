@@ -126,6 +126,12 @@ export interface SessionInitializerProviders {
   getDispatchService?: () => DispatchServiceLike;
   getUserSettings?: (userId: string) => any;
   createPendingUser?: (userId: string, userName: string) => void;
+  /**
+   * Ask the admins to accept a new user. The composition root supplies the one
+   * that records where each DM landed (so the dashboard and every admin's copy
+   * stay in sync, #622); without it, the DMs are posted here.
+   */
+  notifyAdminsNewUser?: ((slackApi: any, userId: string, userName: string) => Promise<unknown>) | null;
   getUserSessionTheme?: (userId: string) => any;
   buildChannelRouteBlocks?: (params: ChannelRouteBlockParams) => { text: string; blocks: any[] };
   getDefaultUpdateChannel?: () => string | undefined;
@@ -158,6 +164,7 @@ const providers: Required<SessionInitializerProviders> = {
   getDispatchService: () => missingProvider('getDispatchService'),
   getUserSettings: () => undefined,
   createPendingUser: () => undefined,
+  notifyAdminsNewUser: null,
   getUserSessionTheme: () => undefined,
   buildChannelRouteBlocks: () => missingProvider('buildChannelRouteBlocks'),
   getDefaultUpdateChannel: () => undefined,
@@ -181,6 +188,7 @@ export function setSessionInitializerProviders(next: SessionInitializerProviders
   if (next.getDispatchService) providers.getDispatchService = next.getDispatchService;
   if (next.getUserSettings) providers.getUserSettings = next.getUserSettings;
   if (next.createPendingUser) providers.createPendingUser = next.createPendingUser;
+  if (next.notifyAdminsNewUser) providers.notifyAdminsNewUser = next.notifyAdminsNewUser;
   if (next.getUserSessionTheme) providers.getUserSessionTheme = next.getUserSessionTheme;
   if (next.buildChannelRouteBlocks) providers.buildChannelRouteBlocks = next.buildChannelRouteBlocks;
   if (next.getDefaultUpdateChannel) providers.getDefaultUpdateChannel = next.getDefaultUpdateChannel;
@@ -1476,6 +1484,10 @@ export class SessionInitializer {
    * Send admin DM notifications with Accept/Deny buttons for a new user.
    */
   private async notifyAdminsNewUser(userId: string, userName: string): Promise<void> {
+    if (providers.notifyAdminsNewUser) {
+      await providers.notifyAdminsNewUser(this.deps.slackApi, userId, userName);
+      return;
+    }
     const adminUsers = providers.getAdminUsers();
     if (adminUsers.size === 0) {
       this.logger.warn('No admin users configured, cannot notify about new user', { userId });

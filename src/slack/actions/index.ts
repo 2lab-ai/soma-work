@@ -3,14 +3,17 @@ import { registerAdminApprovalAdapter } from '../../admin-approvals';
 import { isAdminUser } from '../../admin-utils';
 import { getTokenManager } from '../../token-manager';
 import { registerAuthActions } from '../auth/actions';
+import { botDeleteAdminApprovalAdapter } from '../bot-delete-decision';
 import { registerCctActions } from '../cct/actions';
 import { defaultTabCache } from '../commands/usage-carousel-cache';
 import { envSkillAdminApprovalAdapter } from '../env-skill-admin-approval';
 import { mcpGrantAdminApprovalAdapter } from '../mcp-grant-decision';
+import { newUserAdminApprovalAdapter } from '../new-user-decision';
 import { buildDefaultTopicRegistry } from '../z/topics';
 import { ActionPanelActionHandler } from './action-panel-action-handler';
 import { AutoskillActionHandler } from './autoskill-action-handler';
 import { AutoskillAddViewSubmissionHandler } from './autoskill-add-view-submission-handler';
+import { BotDeleteActionHandler } from './bot-delete-action-handler';
 import { ChannelRouteActionHandler } from './channel-route-action-handler';
 import { ChoiceActionHandler } from './choice-action-handler';
 import { CompactActionHandler } from './compact-action-handler';
@@ -91,6 +94,9 @@ setActionHandlersProviders({
     const updateMcpGrantDm = async (ref: { channel: string; ts: string }, text: string) =>
       ctx.slackApi.updateMessage(ref.channel, ref.ts, text, [{ type: 'section', text: { type: 'mrkdwn', text } }]);
     registerAdminApprovalAdapter(mcpGrantAdminApprovalAdapter(updateMcpGrantDm));
+    // New users and bot-message deletes: one decision for the DM buttons and the dashboard (#622, #623).
+    registerAdminApprovalAdapter(newUserAdminApprovalAdapter(ctx.slackApi as any));
+    registerAdminApprovalAdapter(botDeleteAdminApprovalAdapter(ctx.slackApi as any));
 
     const zTopicRegistry = buildDefaultTopicRegistry();
 
@@ -163,6 +169,7 @@ setActionHandlersProviders({
         tabCache: defaultTabCache,
       }),
       mcpToolPermissionHandler: new McpToolPermissionActionHandler({ updateDm: updateMcpGrantDm }),
+      botDeleteHandler: new BotDeleteActionHandler({ slackApi: ctx.slackApi as any }),
       pluginUpdateHandler: new PluginUpdateActionHandler({
         mcpManager: ctx.mcpManager,
       }),
