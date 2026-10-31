@@ -562,6 +562,23 @@ function finiteStamp(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 }
 
+/** E4 ⑤ (D6) — a child's chain end as its epic's event: ids and the outcome enum only, never its text. */
+function chainEndEvent(
+  child: ConversationSession,
+  end: { key: string; chainId?: string; outcome: EpicEvent['outcome']; turnId: string; at: number },
+): EpicEvent {
+  return {
+    id: `${child.taskId}:${end.key}`,
+    childTaskId: child.taskId as string,
+    planNodeId: child.planNodeId as string,
+    outcome: end.outcome,
+    ...(end.chainId ? { chainId: end.chainId } : {}),
+    turnId: end.turnId,
+    at: end.at,
+    state: 'pending',
+  };
+}
+
 export class SessionRegistry {
   private sessions: Map<string, ConversationSession> = new Map();
   /**
@@ -915,16 +932,7 @@ export class SessionRegistry {
     const closed = end.chainId
       ? resolveEpicApprovals(before, (e) => e.childTaskId === childTaskId && e.chainId === end.chainId, end.at)
       : before;
-    epic.epicEvents = withEpicEvent(closed, {
-      id: `${childTaskId}:${end.key}`,
-      childTaskId,
-      planNodeId: child.planNodeId as string,
-      outcome: end.outcome,
-      ...(end.chainId ? { chainId: end.chainId } : {}),
-      turnId: end.turnId,
-      at: end.at,
-      state: 'pending',
-    });
+    epic.epicEvents = withEpicEvent(closed, chainEndEvent(child, end));
     return { epic, before };
   }
 
@@ -3971,8 +3979,22 @@ export class SessionRegistry {
         archivedRelatives.map((a) => a.serialized),
       );
       // E4 ⑤ (D6 a) — a second pass, after every record is in and relinked: a child
-      // can come before its epic in the file. The write-back below saves the events.
+      // can come before its epic in the file. The write-back below saves the events;
+      // an epic archived in this same load carries its event into the archive (grok #701 R1).
       for (const { session, ...end } of reconciledChildren) {
+        const archiving = archivedRelatives.find(
+          (a) =>
+            a.serialized.slackless === true &&
+            a.serialized.kind === 'epic' &&
+            a.serialized.taskId === session.parentTaskId,
+        );
+        if (archiving && session.taskId && session.planNodeId) {
+          archiving.serialized.epicEvents = withEpicEvent(
+            sanitizeEpicEvents(archiving.serialized.epicEvents),
+            chainEndEvent(session, { ...end, outcome: 'interrupted' }),
+          );
+          continue;
+        }
         this.addChainEndEvent(session, { ...end, outcome: 'interrupted' });
       }
       for (const { serialized, lastActivity } of archivedRelatives) {
