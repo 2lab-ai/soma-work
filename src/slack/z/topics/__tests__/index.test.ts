@@ -8,6 +8,7 @@ const EXPECTED_TOPICS = [
   'cct',
   'cwd',
   'email',
+  'epictasks',
   'goal',
   'memory',
   'model',

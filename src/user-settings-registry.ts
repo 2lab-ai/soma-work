@@ -36,6 +36,7 @@ export type SettingKey =
   | 'rating'
   | 'workingDirectory'
   | 'slackTaskEntry'
+  | 'epicTasks'
   | 'permissionMode'
   | 'sandbox'
   | 'sandboxNetwork';
@@ -142,6 +143,8 @@ export interface SettingsStoreLike {
   changeUserRating(userId: string, rating: number): { from: number; to: number };
   getUserPermissionMode(userId: string): PermissionMode;
   getUserSlackTaskEntry(userId: string): boolean;
+  getUserEpicTasks(userId: string): boolean;
+  setUserEpicTasks(userId: string, enabled: boolean): void;
   setUserSlackTaskEntry(userId: string, enabled: boolean): void;
   getUserSandboxDisabled(userId: string): boolean;
   getUserNetworkDisabled(userId: string): boolean;
@@ -227,6 +230,7 @@ export const SLACK_SETTER_COVERAGE: Readonly<Record<string, SettingKey | { exclu
   changeUserRating: 'rating',
   setUserPermissionMode: 'permissionMode',
   setUserSlackTaskEntry: 'slackTaskEntry',
+  setUserEpicTasks: 'epicTasks',
   setUserSandboxDisabled: 'sandbox',
   setUserNetworkDisabled: 'sandboxNetwork',
   clearUserCompactThreshold: {
@@ -429,6 +433,22 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
           slackCommand: 'taskentry on|off',
         };
       }
+      case 'epicTasks': {
+        const value = store.getUserEpicTasks(userId);
+        return {
+          key,
+          group: 'account',
+          label: '에픽 작업 (실험)',
+          description:
+            '대시보드에서 에픽 작업을 만들 수 있습니다. 에픽은 계획을 세우고 하위 작업을 맡깁니다. 이미 만든 에픽은 꺼도 그대로입니다.',
+          kind: 'toggle',
+          value,
+          defaultValue: false,
+          modified: value,
+          editable: true,
+          slackCommand: 'epictasks on|off',
+        };
+      }
       case 'autoGoal': {
         const value = store.getUserAutoGoalEnabled(userId);
         return {
@@ -606,6 +626,7 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
     'rating',
     'workingDirectory',
     'slackTaskEntry',
+    'epicTasks',
     'permissionMode',
     'sandbox',
     'sandboxNetwork',
@@ -667,6 +688,9 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
         return;
       case 'slackTaskEntry':
         store.setUserSlackTaskEntry(userId, expectBoolean(value, key));
+        return;
+      case 'epicTasks':
+        store.setUserEpicTasks(userId, expectBoolean(value, key));
         return;
       case 'goalMaxContinuations': {
         let n: number;

@@ -280,6 +280,20 @@ describe('resolveThemeInput', () => {
   });
 });
 
+describe('epicTasks (E4 ④a-2)', () => {
+  it('is off by default and for anything stored that is not exactly true; set on and off', () => {
+    const store = makeStore();
+    expect(store.getUserEpicTasks('U1')).toBe(false);
+    store.setUserEpicTasks('U1', true);
+    expect(store.getUserEpicTasks('U1')).toBe(true);
+    store.setUserEpicTasks('U1', false);
+    expect(store.getUserEpicTasks('U1')).toBe(false);
+    // A hand-edited value that is not `true` does not turn epics on.
+    (store as any).settings.U1.epicTasks = 'yes';
+    expect(store.getUserEpicTasks('U1')).toBe(false);
+  });
+});
+
 describe('Sandbox + network toggles', () => {
   it('defaults sandbox to ON (disabled=false) and network to ON (disabled=false)', () => {
     const store = makeStore();
