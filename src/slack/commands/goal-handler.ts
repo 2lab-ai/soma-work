@@ -5,6 +5,7 @@ import { DEFAULT_GOAL_MAX_CONTINUATIONS } from '../../types';
 import { validateGoalMaxContinuations } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
 import { buildGoalStatusBlocks } from '../goal-blocks';
+import { retireGoalCapDecision } from '../goal-cap-decision';
 import { bumpGoalEpoch } from '../goal-continuation';
 import { resumeGoalLoop } from '../goal-loop-resume';
 import {
@@ -257,8 +258,8 @@ export class GoalHandler implements CommandHandler {
       return;
     }
     session.goal.status = 'paused';
-    // A lifecycle change resolves any pending cap-decision DM (S3 dedup guard).
-    session.goal.capDmPendingAt = undefined;
+    // A lifecycle change ends any pending cap decision (S3) — its DM too.
+    retireGoalCapDecision(session.goal);
     session.goal.updatedAt = Date.now();
     this.persistGoalChange(session);
     await this.deps.slackApi.postSystemMessage(channel, '⏸️ Goal paused. It will not be injected into future prompts.', {
@@ -354,8 +355,8 @@ export class GoalHandler implements CommandHandler {
     session.goal.completionReason = 'user';
     session.goal.pendingEval = undefined;
     session.goal.lastEvalReason = undefined;
-    // A completed goal resolves any pending cap-decision DM (S3 dedup guard).
-    session.goal.capDmPendingAt = undefined;
+    // A completed goal ends any pending cap decision (S3) — its DM too.
+    retireGoalCapDecision(session.goal);
     session.goal.updatedAt = now;
 
     // Multi-goal (T2): archive the finished goal and promote the next queued

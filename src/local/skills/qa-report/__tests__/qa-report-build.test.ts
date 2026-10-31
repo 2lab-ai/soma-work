@@ -269,3 +269,121 @@ describe('qa-report build.mjs — closeout outcomes', () => {
     expect(run.stderr).toContain('outcomes for keys with no row: PROJ-9');
   });
 });
+
+/**
+ * Preconditions lead the report: what was missing, which cases it blocked, and who
+ * decided what — so "QA could not be done properly because…" is the first thing a
+ * reader sees instead of a column of PARTIAL rows (2026-10-30 stage0: 49 of 69
+ * non-pass cases were precondition gaps).
+ */
+describe('qa-report build.mjs — preconditions first', { timeout: 30_000 }, () => {
+  const pre = (key: string, decision: string | null, status = 'missing', by: string | null = 'U_REQ') => ({
+    key,
+    id: 'P1',
+    kind: 'write-permission',
+    need: 'place a bet as the test player',
+    cases: ['QA-1'],
+    status,
+    decision,
+    confirmedBy: decision && decision !== 'pending' ? by : null,
+    confirmedAt: decision && decision !== 'pending' ? '2026-10-30T01:00:00Z' : null,
+  });
+
+  it('waiting: no case ran, every key not-run, the gap table and the pending decision lead', () => {
+    const { run, out } = build({
+      meta: {
+        repo: 'acme/app',
+        target: 'deploy/staging',
+        status: 'deployed, QA incomplete: waiting for precondition confirmation',
+      },
+      issues: [],
+      nonQa: [{ key: 'PROJ-1', status: 'not-run', reason: 'waiting for precondition confirmation' }],
+      outcomes: { 'PROJ-1': { outcome: 'not-run', reason: 'waiting for precondition confirmation' } },
+      preconditions: [pre('PROJ-1', 'pending')],
+    });
+    expect(run.status, run.stderr).toBe(0);
+    expect(JSON.parse(run.stdout)).toMatchObject({ keys: 1, pass: 0, preconditions: 1, preconditionsOpen: 1 });
+    const r = runReport(readFileSync(out, 'utf8'));
+    const head = r.left.indexOf('<h2>Preconditions');
+    expect(head).toBeGreaterThan(-1);
+    expect(head).toBeLessThan(r.left.indexOf('class="kpis"'));
+    expect(r.left).toContain('waiting for the requester');
+    expect(r.left).toContain('place a bet as the test player');
+    expect(r.left).toContain('QA-1');
+  });
+
+  it('resumed waiver: the waived case stays in the counts as blocked and names who waived it', () => {
+    const issue = {
+      key: 'PROJ-2',
+      qaLevel: 'max',
+      env: { profile: 'acme-env:post-deploy', versionStart: '1.0.0', versionEnd: '1.0.0' },
+      verdict: 'partial',
+      reason: 'precondition-waived:P1 by U_REQ',
+      preconditions: [{ ...pre('PROJ-2', 'waived'), key: undefined }],
+      cases: [
+        {
+          id: 'QA-1',
+          type: 'happy',
+          severity: 'P1',
+          status: 'blocked',
+          precondition: 'P1',
+          auth: { accountRef: 'qaEnv.accounts.player' },
+          steps: ['1) not run'],
+          expected: 'bet expires and the notice shows',
+          actual: 'precondition-waived:P1 by U_REQ',
+        },
+        evidenceCase('QA-2', `data:image/png;base64,${PNG_B64}`),
+      ],
+    };
+    const { run, out } = build({ issues: [issue] });
+    expect(run.status, run.stderr).toBe(0);
+    expect(JSON.parse(run.stdout)).toMatchObject({
+      keys: 1,
+      pass: 0,
+      other: 1,
+      preconditions: 1,
+      preconditionsOpen: 1,
+    });
+    const r = runReport(readFileSync(out, 'utf8'));
+    expect(r.left).toContain('waived by U_REQ');
+    expect(r.left).toContain('PROJ-2');
+    expect(row(r.left, 'PROJ-2')?.status).toBe('partial');
+    expect(r.right).toContain('precondition P1');
+  });
+
+  it('skipped key: deferred row, and the gap shows the skip decision', () => {
+    const { run, out } = build({
+      issues: [],
+      nonQa: [{ key: 'PROJ-3', status: 'deferred', reason: 'precondition-skipped by U_REQ' }],
+      outcomes: { 'PROJ-3': { outcome: 'deferred', reason: 'precondition-skipped by U_REQ' } },
+      preconditions: [pre('PROJ-3', 'skipped')],
+    });
+    expect(run.status, run.stderr).toBe(0);
+    const r = runReport(readFileSync(out, 'utf8'));
+    expect(row(r.left, 'PROJ-3')?.status).toBe('deferred');
+    expect(r.left).toContain('skipped by U_REQ');
+  });
+
+  it('a precondition that was provided and is met is listed as resolved and not open', () => {
+    const { run, out } = build({
+      issues: [passIssue('PROJ-4', true)],
+      preconditions: [pre('PROJ-4', 'provided', 'met')],
+    });
+    expect(run.status, run.stderr).toBe(0);
+    expect(JSON.parse(run.stdout)).toMatchObject({ preconditions: 1, preconditionsOpen: 0 });
+    expect(runReport(readFileSync(out, 'utf8')).left).toContain('provided by U_REQ');
+  });
+
+  it('refuses a precondition without a key or an id (missing stays visibly missing)', () => {
+    const noKey = { ...pre('PROJ-6', 'waived'), key: undefined };
+    const { run } = build({ issues: [passIssue('PROJ-6', true)], preconditions: [noKey] });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('a precondition needs a key and an id');
+  });
+
+  it('refuses a precondition for a key that has no row', () => {
+    const { run } = build({ issues: [passIssue('PROJ-5', true)], preconditions: [pre('PROJ-9', 'waived')] });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('preconditions for keys with no row: PROJ-9');
+  });
+});

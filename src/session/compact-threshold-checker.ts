@@ -59,6 +59,11 @@ export interface CheckAndSchedulePendingCompactArgs {
    * auto-compact announcement is recorded here as a `notice` at every level.
    */
   workLog?: (entry: WorkLogInput) => void;
+  /**
+   * Runs synchronously right after the flag is set, before any await — so a
+   * caller can save the session before a restart could drop the decision.
+   */
+  onArmed?: (decision: { usedTokens: number; thresholdTokens: number }) => void;
 }
 
 /**
@@ -70,7 +75,7 @@ export interface CheckAndSchedulePendingCompactArgs {
  * Trace: docs/misc/issues/current/compact-tracking.md AC3.
  */
 export async function checkAndSchedulePendingCompact(args: CheckAndSchedulePendingCompactArgs): Promise<boolean> {
-  const { session, userId, channel, threadTs, userSettings, slackApi, logger, workLog } = args;
+  const { session, userId, channel, threadTs, userSettings, slackApi, logger, workLog, onArmed } = args;
 
   // Already scheduled — another turn will consume it. Idempotent by design.
   if (session.autoCompactPending) return false;
@@ -129,6 +134,13 @@ export async function checkAndSchedulePendingCompact(args: CheckAndSchedulePendi
   const announcement = `🗜️ Context usage ${Math.round(usedTokens / 1000)}k tokens ≥ ${Math.round(effective.tokens / 1000)}k (${effective.source}) — next turn will auto /compact`;
 
   session.autoCompactPending = true;
+  try {
+    onArmed?.({ usedTokens, thresholdTokens: effective.tokens });
+  } catch (err) {
+    logger?.warn('checkAndSchedulePendingCompact: onArmed threw — ignored', {
+      error: (err as Error)?.message ?? String(err),
+    });
+  }
 
   try {
     workLog?.({ kind: 'notice', text: announcement });
