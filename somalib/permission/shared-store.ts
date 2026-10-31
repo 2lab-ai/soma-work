@@ -9,6 +9,8 @@ export interface PermissionResponse {
   behavior: 'allow' | 'deny';
   updatedInput?: any;
   message?: string;
+  /** MCP grant answers: the outcome line every admin DM copy is rewritten to (by the answer, and again by the child). */
+  promptText?: string;
 }
 
 /**
@@ -22,9 +24,16 @@ export interface PermissionResponse {
  */
 export const PERMISSION_PROMPT_KIND = 'tool_permission' as const;
 
+/**
+ * Marker mcp-tool-permission stamps on its admin-approved grant requests
+ * (`tool_name: 'request_permission'`). Older records carry no kind; readers
+ * treat a kind-less `request_permission` record the same way.
+ */
+export const MCP_GRANT_KIND = 'mcp_grant' as const;
+
 export interface PendingApproval {
-  /** {@link PERMISSION_PROMPT_KIND} on permission prompts; absent on other writers' records. */
-  kind?: typeof PERMISSION_PROMPT_KIND;
+  /** {@link PERMISSION_PROMPT_KIND} on permission prompts, {@link MCP_GRANT_KIND} on MCP grant requests. */
+  kind?: typeof PERMISSION_PROMPT_KIND | typeof MCP_GRANT_KIND;
   tool_name: string;
   input: any;
   channel?: string;
@@ -48,6 +57,15 @@ export interface PendingApproval {
    * session". Absent for non-Bash tools and non-dangerous commands.
    */
   rule_ids?: string[];
+  /** MCP grant requests: where each admin's DM prompt landed, so any answer can rewrite every copy. */
+  prompts?: Array<{ channel: string; ts: string }>;
+  /**
+   * MCP grant requests: the data directory of the instance whose child wrote
+   * the record. The store sits in the OS temp directory, which co-hosted
+   * instances (dev and prod on one host) share; a dashboard lists and answers
+   * only its own instance's requests.
+   */
+  owner?: string;
 }
 
 /** How long an answer claim is kept after it was made. */
@@ -179,6 +197,14 @@ class SharedStore {
     }
     void this.sweepClaims();
     return true;
+  }
+
+  /** Whether an answer has claimed this approval (it is being, or has been, answered). */
+  async isPermissionClaimed(approvalId: string): Promise<boolean> {
+    return fs.promises
+      .access(path.join(this.claimDir, `${approvalId}.json`))
+      .then(() => true)
+      .catch(() => false);
   }
 
   /** Give a claim back — only when the answer that took it failed before its response was stored. */

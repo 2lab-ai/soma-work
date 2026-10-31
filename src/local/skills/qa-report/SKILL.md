@@ -25,6 +25,9 @@ Files: [`template.html`](./template.html) holds the layout. The left pane has ti
                            "commits": [{ "repo": "acme/app", "sha": "<merge commit>", "url": "optional" }] } },
   "nonQa": [{ "key": "PROJ-124", "status": "pass|deferred|not-run|report-only|blocked", "reason": "already passed | open PR | …" }],
   "outcomes": { "PROJ-123": { "outcome": "pass|fail|blocked|partial|deferred|not-run|report-only", "reason": "…" } },
+  "preconditions": [{ "key": "PROJ-123", "id": "P1", "kind": "write-permission", "need": "…", "cases": ["QA-3"],
+                     "status": "met|provisionable|missing", "decision": "provided|waived|skipped|pending",
+                     "confirmedBy": "…", "confirmedAt": "…" }],
   "bodyMentions": [{ "key": "PROJ-125", "pr": { "repo": "acme/app", "number": 43 } }],
   "excludedPrs": [{ "repo": "acme/app", "number": 44, "reason": "deploy head" }] }
 ```
@@ -36,6 +39,7 @@ Files: [`template.html`](./template.html) holds the layout. The left pane has ti
   - `deploy_fail` → fail;
   - `blocked` with a reason starting `superseded:` → superseded;
   - anything else as given; a `nonQa` entry shows its `status`.
+- `preconditions` is the run gate's list (deploy-qa writes it, each entry with its `key`); each qa-issue JSON may carry its own `preconditions[]`, which wins for the same key and id. The report renders them first, as a table — what was needed, which cases it blocked, its status, and the requester's decision with who and when — so the reason QA could not test something is the first thing a reader sees. A precondition is open while its status is not `met` or `provisionable`. A precondition for a key with no row is refused. A case carrying `precondition` shows that it was not run for real; a case with `evidence.mocked` shows that it does not prove server behaviour.
 - Every key the caller handled appears exactly once, in `issues` or in `nonQa`. The build refuses duplicate keys and outcomes for keys with no row.
 - `links` is provenance the caller already holds; `qa-issue` does not return it. Render only what is given. A PR or commit without `url` links to `https://github.com/<owner/repo>/pull|commit/…`. Only `http(s)` links become anchors. An absent link shows "no … link". Never look one up or guess one here.
 - Never invent fields. The call line shows each case's endpoint (method + URL), and each row shows its case tally plus `reason`. An empty `auth.accountRef`, `steps`, `expected`, or `actual` renders as `[—]` and counts in the "missing case fields" KPI.
@@ -51,7 +55,7 @@ node "$CLAUDE_PLUGIN_ROOT/skills/qa-report/scripts/build.mjs" --input <report-in
   --out "$(pwd)/qa-report-<slug>-<YYYYMMDD-HHMMSS>.html" --shots <screenshots dir> [--title "<text>"]
 ```
 
-It prints one JSON line: `html`, `png` (the path to render to), `keys`, `pass`, `fail`, `other`, `missingFields`, `masked`, `shots`, `shotProblems`. A non-zero exit means bad input (the message says which). Fix the input; never hand-write the HTML instead.
+It prints one JSON line: `html`, `png` (the path to render to), `keys`, `pass`, `fail`, `other`, `missingFields`, `masked`, `shots`, `shotProblems`, `preconditions`, `preconditionsOpen`. A non-zero exit means bad input (the message says which). Fix the input; never hand-write the HTML instead.
 
 **2. Render the PNG** with the `html` and `png` paths from step 1. In the same call, run the `local:html` Step 6 validation block with `PNG=<png from step 1>`. Allow one retry on a transient render error. A PNG that cannot be rendered never fails the report: if the retry also fails (the headless browser cannot start, the render exits non-zero, or the validation fails), keep the HTML, which stands alone, and return `png=none png-error=<one-line reason>` in step 3:
 
@@ -60,7 +64,7 @@ node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" --input <html from st
 ```
 
 **3. Return one line**, with every count copied from step 1's output (never counted by eye):
-`qa-report: html=<abs> png=<abs> keys=<n> pass=<n> fail=<n> other=<n> missing-fields=<n> masked=<n> shot-problems=<n>`
+`qa-report: html=<abs> png=<abs> keys=<n> pass=<n> fail=<n> other=<n> missing-fields=<n> masked=<n> shot-problems=<n> preconditions-open=<n>`
 (`png=none png-error=<one-line reason>` when step 2 could not render it; the caller then uploads the HTML alone and says the PNG was not rendered.)
 When a skill called qa-report, stop here. Serving and posting (the calling thread, then the summary channel when the profile's `report` names one) belong to the caller and its profile's `report`, so qa-report never posts in that case and nothing is posted twice. A served link is not required: uploading the HTML and PNG to the thread with the session's Slack file tool (e.g. slack-mcp `send_file` / `send_media`) is an equal alternative. Standalone only: upload the PNG and then the HTML to the current thread as in `local:html` Step 8 (without a PNG, the HTML alone plus `PNG not rendered: <reason>`). Without Slack tools, print the paths.
 
@@ -82,7 +86,7 @@ Unmasked bytes stay exact, and masking twice changes nothing.
 3. Front-end proof is a screenshot of the real render. A bundle or source grep never counts.
 4. Every key links to its tracker issue. Every row and panel header shows its commit and PR links.
 5. Each QA'd key shows the environment version at QA start and end, and a change is flagged.
-6. Negative proof: when a case is blocked or partial because of empty data or a login gate, the empty response, 401, or gate screenshot is the evidence shown. It is never a PASS.
+6. Negative proof: when a case is blocked or partial because of empty data or a login gate, the empty response, 401, or gate screenshot is the evidence shown. It is never a PASS. A case blocked by a missing precondition is never a PASS either, waived or not; it stays in every count.
 7. Never fabricate evidence, links, or fields. Missing stays visibly missing.
 8. The report is self-contained. All evidence is embedded and the page loads nothing from any host.
 9. Images: a screenshot is embedded only from inside the screenshots directory and only with PNG/JPEG/WebP magic bytes. Anything else shows its rejection reason instead.

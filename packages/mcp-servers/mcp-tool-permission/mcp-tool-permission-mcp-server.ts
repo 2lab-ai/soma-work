@@ -26,10 +26,12 @@ import {
   type McpToolPermissionConfig,
 } from '@soma/process-shared/mcp-tool-permission-config.js';
 import {
+  MCP_GRANT_KIND,
   type PendingApproval,
   type PermissionResponse,
   sharedStore,
 } from '@soma/process-shared/permission/shared-store.js';
+import { closePrompts } from './close-prompts.js';
 
 interface SlackContext {
   channel: string;
@@ -214,6 +216,9 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
 
     // Store pending request
     const pending: PendingApproval = {
+      kind: MCP_GRANT_KIND,
+      // Which instance asked: co-hosted instances share this store (os.tmpdir()).
+      ...(process.env.SOMA_DATA_DIR ? { owner: process.env.SOMA_DATA_DIR } : {}),
       tool_name: 'request_permission',
       input: { server, level, duration, estimatedExpiry },
       channel: this.slackContext.channel,
@@ -226,20 +231,35 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
 
     // DM each admin — track delivery count to fail fast if none reached
     let deliveredCount = 0;
+    const prompts: Array<{ channel: string; ts: string }> = [];
     for (const adminId of adminUsers) {
       try {
-        await this.slack.chat.postMessage({
+        const posted = await this.slack.chat.postMessage({
           channel: adminId,
           text: `Permission request from <@${userId}> for ${server} (${level})`,
           blocks,
         });
         deliveredCount++;
+        if (typeof posted?.channel === 'string' && typeof posted?.ts === 'string') {
+          prompts.push({ channel: posted.channel, ts: posted.ts });
+        }
       } catch (error) {
         this.logger.warn('Failed to DM admin for permission request', { adminId, error });
       }
     }
+    // Where every admin's copy landed: an answer from any surface (a Slack
+    // button, the dashboard) rewrites all of them.
+    if (prompts.length > 0) {
+      try {
+        await sharedStore.storePendingApproval(requestId, { ...pending, prompts });
+      } catch (error) {
+        this.logger.warn('Failed to record admin prompt locations', { requestId, error });
+      }
+    }
 
     if (deliveredCount === 0) {
+      // Nobody was asked: the request must not linger in the store (the dashboard would list it).
+      await sharedStore.deletePendingApproval(requestId).catch(() => {});
       throw new Error(
         'Could not deliver permission request to any admin. ' +
           'Please contact an admin directly or check the Slack bot configuration.',
@@ -261,18 +281,16 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
 
     // Wait for admin response
     const response = await sharedStore.waitForPermissionResponse(requestId, 5 * 60 * 1000);
+    // Every admin copy ends without buttons, whoever answered (or nobody, on a timeout). Not awaited:
+    // the result does not wait on Slack.
+    void closePrompts(this.slack, prompts, response, (error) =>
+      this.logger.warn('Failed to close an admin prompt', { requestId, error }),
+    );
 
     if (response.behavior === 'allow') {
-      // Parse the grant info from updatedInput if available
+      // The answering (main) process wrote the grant: it is the only writer, so a revoke that lands
+      // after the answer is never undone by a second write from here.
       const grantInfo = response.updatedInput || { expiresAt: estimatedExpiry, grantedBy: 'admin' };
-      this.grantStore.setGrant(
-        userId,
-        server,
-        level,
-        grantInfo.expiresAt || estimatedExpiry,
-        grantInfo.grantedBy || 'admin',
-      );
-
       return this.textResult(
         JSON.stringify({
           status: 'approved',
@@ -296,6 +314,8 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
     const server = args.server as string | undefined;
     const userId = this.slackContext.user;
 
+    // The main process writes grants: read the file as it is now, not the map loaded at start.
+    this.grantStore.reload();
     const allGrants = this.grantStore.getGrants(userId);
     const now = Date.now();
 

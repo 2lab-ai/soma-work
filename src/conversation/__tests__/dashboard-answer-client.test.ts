@@ -86,11 +86,14 @@ const KEY = 'C1:t1';
 const AUTH_HEADER = { Authorization: 'Bearer test-token' };
 
 interface AnswerClient {
-  submitAllRecommended(key: string, askId?: string): Promise<void>;
-  submitMultiChoice(key: string, askId?: string): Promise<void>;
+  submitAllRecommended(key: string): Promise<void>;
+  submitMultiChoice(key: string, selections: Record<string, { choiceId: string; label: string }>): Promise<void>;
   answerChoice(key: string, qid: string, choiceId: string): Promise<unknown>;
   acQuestionId(q: unknown): string;
-  selectMc(key: string, qIdx: number, choiceId: string, label: string, askId?: string): void;
+  /** The <ui-choice-form>'s events (#599 ⑤ / #637: an action belongs to the ask its form shows). */
+  mcOnChange(e: unknown): void;
+  mcOnSubmit(e: unknown): void;
+  mcStateOf(s: unknown, q: unknown): { answers: Record<string, unknown>; sending?: boolean; sent?: boolean };
 }
 
 describe('dashboard answer buttons → real server (shipped client code)', () => {
@@ -106,13 +109,16 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
   let csrfRefreshes: number;
   let mcState: Record<
     string,
-    { selections: Record<string, { choiceId: string; label: string }>; activeQ: number; askId?: string }
+    { id?: string; answers?: Record<string, unknown>; sending?: boolean; sent?: boolean; error?: string }
   >;
+  let formPaints: number;
+  let formShown: boolean;
   let acState: Record<string, Record<string, unknown>>;
   /** When set, requests ride on this signed-in user's cookie (and its real CSRF token) instead of the bearer. */
   let authAs: { cookie: string; csrf: string } | null;
   /** Runs once a request has reached the server, before its response is returned (a push arriving meanwhile). */
   let beforeReply: (() => void) | null;
+  const SELECTIONS = { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } };
 
   beforeEach(async () => {
     vi.resetModules();
@@ -124,12 +130,12 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     await webServer.startWebServer({ listen: false });
 
     requests = [];
-    acState = {};
-    authAs = null;
-    beforeReply = null;
     alerts = [];
     staleCsrfOnce = false;
     csrfRefreshes = 0;
+    acState = {};
+    authAs = null;
+    beforeReply = null;
     // The browser's fetch, bridged onto the real Fastify app. Auth rides on the
     // bearer header (the browser's cookie); every other header and the body
     // are exactly what the client function passed. Bearer auth skips the CSRF
@@ -168,26 +174,31 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     // affectUI batch 1: the single-choice answer comes from <ui-approval-card> (answerChoice(key, qid, choiceId));
     // failures are error toasts (dashToast), not alert().
     sessionCache = { [KEY]: { key: KEY, pendingQuestion: twoQuestions } };
-    mcState = {
-      [KEY]: {
-        selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } },
-        activeQ: 0,
-      },
-    };
+    mcState = {};
+    formPaints = 0;
+    formShown = true;
     client = load<AnswerClient>(
       [
         'submitAllRecommended',
         'submitMultiChoice',
+        'mcPost',
+        'mcSend',
+        'mcStateOf',
+        'mcFormId',
+        'mcFormEl',
+        'mcSettle',
+        'mcOnChange',
+        'mcOnSubmit',
+        'mcAskShown',
+        'mcAskChanged',
+        'mcAnswersIn',
+        'mcSelectionsOf',
         'answerChoice',
         'acDrop',
         'acQuestionId',
         'acPost',
         'acRefusal',
         'stripRecommendedMarker',
-        'mcStateFor',
-        'mcAskShown',
-        'mcAskChanged',
-        'selectMc',
       ],
       {
         fetch: fetchBridge,
@@ -198,9 +209,18 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
           if (t.tone === 'error') alerts.push(t.title);
         },
         _acState: acState,
+        refreshCard: () => {},
+        MC_CUSTOM_ID: '\uC9C1\uC811\uC785\uB825',
         acRepaint: () => {},
-        renderMultiChoicePanel: () => {},
-        document: { querySelector: () => fakeNode(), querySelectorAll: () => [] },
+        document: {
+          querySelector: () => fakeNode(),
+          querySelectorAll: () => [],
+          // The panel's 입력 필요 holding this session's <ui-choice-form> (or not, formShown false).
+          getElementById: (id: string) =>
+            id === 'panel-question' && formShown
+              ? { firstElementChild: { tagName: 'UI-CHOICE-FORM', getAttribute: () => KEY } }
+              : null,
+        },
         setTimeout: () => 0,
         console: { error() {}, warn() {} },
         _csrfToken: 'csrf-1',
@@ -209,6 +229,9 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
         },
         _sessionCache: sessionCache,
         _mcState: mcState,
+        renderMultiChoicePanel: () => {
+          formPaints++;
+        },
       },
     );
   });
@@ -227,6 +250,43 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
 
   afterEach(async () => {
     await stopWebServer();
+  });
+
+  // D3 E-15: the form is <ui-choice-form>; the page hands it the send's outcome.
+  it("a send is the form's submitting state, then its summary (sent) — the push clears the question", async () => {
+    dashboard.setDashboardMultiChoiceAnswerHandler(vi.fn().mockResolvedValue(undefined));
+    const run = client.submitMultiChoice(KEY, SELECTIONS);
+    expect(mcState[KEY]).toMatchObject({ sending: true });
+    await run;
+    expect(mcState[KEY]).toMatchObject({ sending: false, sent: true });
+    expect(mcState[KEY].error).toBeFalsy();
+    expect(formPaints).toBe(2);
+    expect(alerts).toEqual([]);
+  });
+
+  it("a refusal is the form's error line (it stays usable); with the form off screen it is a toast", async () => {
+    dashboard.setDashboardMultiChoiceAnswerHandler(
+      vi.fn().mockRejectedValue(new Error('Session is not waiting for a choice')),
+    );
+    await client.submitMultiChoice(KEY, SELECTIONS);
+    expect(mcState[KEY]).toMatchObject({ sending: false });
+    expect(mcState[KEY].sent).toBeFalsy();
+    expect(mcState[KEY].error).toBeTruthy();
+    expect(alerts).toEqual([]);
+
+    formShown = false;
+    mcState[KEY].error = '';
+    await client.submitMultiChoice(KEY, SELECTIONS);
+    expect(alerts.length).toBe(1);
+  });
+
+  it('a second send while one is out (or after it landed) sends nothing', async () => {
+    dashboard.setDashboardSubmitRecommendedHandler(vi.fn().mockResolvedValue(undefined));
+    const a = client.submitAllRecommended(KEY);
+    const b = client.submitAllRecommended(KEY);
+    await Promise.all([a, b]);
+    await client.submitAllRecommended(KEY);
+    expect(requests.filter((r) => r.url.endsWith('/submit-recommended'))).toHaveLength(1);
   });
 
   it('T1 — "추천대로 모두 선택" reaches the submit-recommended handler (no "❌ Bad Request")', async () => {
@@ -248,7 +308,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     const handler = vi.fn().mockResolvedValue(undefined);
     dashboard.setDashboardMultiChoiceAnswerHandler(handler);
 
-    await client.submitMultiChoice(KEY);
+    await client.submitMultiChoice(KEY, SELECTIONS);
 
     expect(alerts).toEqual([]);
     expect(handler).toHaveBeenCalledWith(KEY, {
@@ -260,6 +320,29 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
   describe('#599 ⑤ — on a dashboard task the answer carries the question’s askId to the task handler', () => {
     const TASK = 'task:11111111-2222-4333-8444-555555555555';
     let taskHandler: ReturnType<typeof vi.fn>;
+    /** A <ui-choice-form> drawn for `ask` (renderMultiChoicePanel stamps data-mc-ask). */
+    const formFor = (key: string, ask: string) => ({
+      tagName: 'UI-CHOICE-FORM',
+      getAttribute: (n: string) => (n === 'data-mc-key' ? key : n === 'data-mc-ask' ? ask : null),
+    });
+    const ANSWERS = [
+      { questionId: 'q1', choiceId: '1', label: 'a' },
+      { questionId: 'q2', choiceId: '1', label: 'b' },
+    ];
+    /** The form's ui-submit (the element locks until the page settles it, unless the page cancels it). */
+    const submitFrom = (el: unknown, source?: string, answers = ANSWERS) => {
+      const e = {
+        target: el,
+        detail: { answers, ...(source ? { source } : {}) },
+        cancelled: false,
+        preventDefault() {},
+      };
+      e.preventDefault = () => {
+        e.cancelled = true;
+      };
+      client.mcOnSubmit(e);
+      return e;
+    };
     beforeEach(async () => {
       dashboard.setDashboardSessionAccessor(
         () =>
@@ -279,6 +362,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
       authAs = { cookie, csrf: me.csrfToken };
     });
     afterEach(() => dashboard.setDashboardTaskAnswerHandler(null));
+    const askOf = (askId: string) => ({ ...(sessionCache[KEY].pendingQuestion as object), askId });
 
     it('a single choice', async () => {
       const q = { ...single, askId: 'ask-7' };
@@ -289,16 +373,10 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     });
 
     it('a multi-choice form', async () => {
-      sessionCache[TASK] = {
-        key: TASK,
-        pendingQuestion: { ...(sessionCache[KEY].pendingQuestion as object), askId: 'ask-8' },
-      };
-      mcState[TASK] = {
-        selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } },
-        activeQ: 0,
-        askId: 'ask-8',
-      };
-      await client.submitMultiChoice(TASK, 'ask-8');
+      sessionCache[TASK] = { key: TASK, pendingQuestion: askOf('ask-8') };
+      const e = submitFrom(formFor(TASK, 'ask-8'));
+      expect(e.cancelled).toBe(false);
+      await vi.waitFor(() => expect(taskHandler).toHaveBeenCalled());
       expect(taskHandler).toHaveBeenCalledWith(
         TASK,
         'ask-8',
@@ -309,84 +387,59 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     });
 
     it('“submit all recommended”', async () => {
-      sessionCache[TASK] = {
-        key: TASK,
-        pendingQuestion: { ...(sessionCache[KEY].pendingQuestion as object), askId: 'ask-9' },
-      };
-      await client.submitAllRecommended(TASK, 'ask-9');
+      sessionCache[TASK] = { key: TASK, pendingQuestion: askOf('ask-9') };
+      await client.submitAllRecommended(TASK);
       expect(taskHandler).toHaveBeenCalledWith(TASK, 'ask-9', { kind: 'recommended' }, 'U1');
       expect(alerts).toEqual([]);
     });
 
-    // #637 R1 (astra P1) — selections belong to the question that collected them.
-    it('form selections collected for one ask are never sent with the next ask’s id', async () => {
-      const form = sessionCache[KEY].pendingQuestion as object;
-      sessionCache[TASK] = { key: TASK, pendingQuestion: { ...form, askId: 'ask-B' } };
-      mcState[TASK] = {
-        selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } },
-        activeQ: 0,
-        askId: 'ask-A',
-      };
-      await client.submitMultiChoice(TASK, 'ask-B');
-      expect(taskHandler).not.toHaveBeenCalled();
-      expect(requests.some((r) => r.url.endsWith('/answer-multi-choice'))).toBe(false);
-      expect(alerts.length).toBe(1);
+    // #637 R1/R2 (astra P1) — a form's answers belong to the ask it shows. When the
+    // cache already holds the next ask (a push the panel has not painted yet), the
+    // form's submit is refused (cancelled) and nothing is sent; its picks fill nothing.
+    it('a form showing ask A never answers or fills ask B', async () => {
+      sessionCache[TASK] = { key: TASK, pendingQuestion: askOf('ask-B') };
+      const formA = formFor(TASK, 'ask-A');
+      client.mcOnChange({ target: formA, detail: { answers: ANSWERS } });
       expect(mcState[TASK]).toBeUndefined();
-    });
-
-    it('a new ask starts with no selections: the previous ask’s answers do not carry over', () => {
-      const form = sessionCache[KEY].pendingQuestion as object;
-      sessionCache[TASK] = { key: TASK, pendingQuestion: { ...form, askId: 'ask-A' } };
-      client.selectMc(TASK, 0, '1', 'a', 'ask-A');
-      client.selectMc(TASK, 1, '1', 'b', 'ask-A');
-      expect(mcState[TASK]).toMatchObject({ askId: 'ask-A', selections: { q1: {}, q2: {} } });
-      sessionCache[TASK] = { key: TASK, pendingQuestion: { ...form, askId: 'ask-B' } };
-      client.selectMc(TASK, 0, '1', 'a', 'ask-B');
-      expect(mcState[TASK].askId).toBe('ask-B');
-      expect(Object.keys(mcState[TASK].selections)).toEqual(['q1']);
-    });
-
-    // #637 R2 (astra P1) — an action belongs to the form on screen: the ask it
-    // shows travels with it. When the cache already holds the next ask (a push
-    // the panel has not painted), the action is refused instead of answering it.
-    it('actions from a form showing ask A never answer or fill ask B', async () => {
-      const form = sessionCache[KEY].pendingQuestion as object;
-      sessionCache[TASK] = { key: TASK, pendingQuestion: { ...form, askId: 'ask-B' } };
-      await client.submitAllRecommended(TASK, 'ask-A');
-      client.selectMc(TASK, 0, '1', 'a', 'ask-A');
-      expect(mcState[TASK]?.selections ?? {}).toEqual({});
-      mcState[TASK] = {
-        selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } },
-        activeQ: 0,
-        askId: 'ask-B',
-      };
-      await client.submitMultiChoice(TASK, 'ask-A');
+      const e = submitFrom(formA);
+      const r = submitFrom(
+        formA,
+        'recommended',
+        ANSWERS.map((a) => ({ ...a, recommended: true })),
+      );
+      expect(e.cancelled).toBe(true);
+      expect(r.cancelled).toBe(true);
+      expect(requests).toHaveLength(0);
       expect(taskHandler).not.toHaveBeenCalled();
-      expect(requests.length).toBe(0);
-      expect(alerts.length).toBe(3);
+      expect(alerts.length).toBe(2);
     });
 
-    // #637 R2 (astra P2) — a late success for ask A leaves ask B's selections alone.
-    it('a late success for one ask does not erase the next ask’s selections', async () => {
-      const form = sessionCache[KEY].pendingQuestion as object;
-      const bState = () => ({ selections: { q1: { choiceId: '1', label: 'a' } }, activeQ: 1, askId: 'ask-B' });
-      for (const submit of [
-        () => client.submitMultiChoice(TASK, 'ask-A'),
-        () => client.submitAllRecommended(TASK, 'ask-A'),
-      ]) {
-        sessionCache[TASK] = { key: TASK, pendingQuestion: { ...form, askId: 'ask-A' } };
-        mcState[TASK] = {
-          selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } },
-          activeQ: 0,
-          askId: 'ask-A',
-        };
+    it('a new ask starts with no answers: the previous ask’s picks do not carry over', () => {
+      sessionCache[TASK] = { key: TASK, pendingQuestion: askOf('ask-A') };
+      client.mcOnChange({ target: formFor(TASK, 'ask-A'), detail: { answers: ANSWERS } });
+      expect(Object.keys(mcState[TASK].answers ?? {})).toEqual(['q1', 'q2']);
+      sessionCache[TASK] = { key: TASK, pendingQuestion: askOf('ask-B') };
+      const b = client.mcStateOf(sessionCache[TASK], sessionCache[TASK].pendingQuestion);
+      expect(b.answers).toEqual({});
+    });
+
+    // #637 R2 (astra P2) — a late success for ask A leaves ask B's form state alone.
+    it('a late success for one ask does not touch the next ask’s form', async () => {
+      for (const source of [undefined, 'recommended']) {
+        sessionCache[TASK] = { key: TASK, pendingQuestion: askOf('ask-A') };
+        delete mcState[TASK];
         // A is accepted; before its response lands, B is pushed and the owner starts on it.
         beforeReply = () => {
-          sessionCache[TASK].pendingQuestion = { ...form, askId: 'ask-B' };
-          mcState[TASK] = bState();
+          sessionCache[TASK].pendingQuestion = askOf('ask-B');
+          client.mcOnChange({ target: formFor(TASK, 'ask-B'), detail: { answers: [ANSWERS[0]] } });
         };
-        await submit();
-        expect(mcState[TASK]).toEqual(bState());
+        const answers = source ? ANSWERS.map((a) => ({ ...a, recommended: true })) : ANSWERS;
+        submitFrom(formFor(TASK, 'ask-A'), source, answers);
+        await vi.waitFor(() => expect(beforeReply).toBeNull());
+        await new Promise((r) => setImmediate(r));
+        expect(mcState[TASK]).toMatchObject({ answers: { q1: { choiceId: '1' } } });
+        expect(mcState[TASK].sending).toBeFalsy();
+        expect(mcState[TASK].sent).toBeFalsy();
       }
     });
 
@@ -432,7 +485,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     },
     {
       name: '제출하기',
-      run: () => client.submitMultiChoice(KEY),
+      run: () => client.submitMultiChoice(KEY, SELECTIONS),
       register: (h: any) => dashboard.setDashboardMultiChoiceAnswerHandler(h),
     },
     {
