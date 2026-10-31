@@ -16,6 +16,7 @@ import { CwdHandler } from './cwd-handler';
 import { DashboardHandler } from './dashboard-handler';
 import { EffortHandler } from './effort-handler';
 import { EmailHandler } from './email-handler';
+import { EpicTasksHandler } from './epictasks-handler';
 import { GoalHandler } from './goal-handler';
 import { HelpHandler } from './help-handler';
 import { InstructionsHandler } from './instructions-handler';
@@ -120,6 +121,8 @@ setCommandRouterProviders({
         new NotifyHandler(),
         // E2 ⑧ — `taskentry on|off`: Slack instructions → dashboard tasks (per user).
         new TaskEntryHandler(),
+        // E4 ④a-2 — `epictasks on|off`: may this user make epic tasks (per user, off by default).
+        new EpicTasksHandler(),
         new WebhookHandler(),
         new RestoreHandler(),
         newHandler,

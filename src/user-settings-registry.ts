@@ -18,7 +18,7 @@
 
 import type { LogVerbosity } from '@soma/slack/output-flags';
 import type { PermissionMode } from './agent-runtime/policy/permission-mode';
-import type { EffortLevel, NotificationSettings, SessionTheme } from './user-settings-store';
+import type { DashboardMode, EffortLevel, NotificationSettings, SessionTheme } from './user-settings-store';
 
 export type SettingKey =
   | 'defaultModel'
@@ -36,11 +36,13 @@ export type SettingKey =
   | 'rating'
   | 'workingDirectory'
   | 'slackTaskEntry'
+  | 'epicTasks'
   | 'permissionMode'
   | 'sandbox'
-  | 'sandboxNetwork';
+  | 'sandboxNetwork'
+  | 'dashboardMode';
 
-export type SettingGroup = 'model' | 'output' | 'notify' | 'goal' | 'skills' | 'account' | 'permissions';
+export type SettingGroup = 'model' | 'output' | 'notify' | 'goal' | 'skills' | 'account' | 'permissions' | 'dashboard';
 
 export const SETTING_GROUPS: ReadonlyArray<{ id: SettingGroup; label: string; description: string }> = [
   { id: 'model', label: '모델 · effort', description: '새 세션이 시작할 때 쓰는 기본값입니다.' },
@@ -54,6 +56,7 @@ export const SETTING_GROUPS: ReadonlyArray<{ id: SettingGroup; label: string; de
     label: '권한',
     description: '에이전트가 도구를 얼마나 자유롭게 쓰는지 정합니다. 바꾸기 전에 설명을 읽으세요.',
   },
+  { id: 'dashboard', label: '대시보드', description: '대시보드 화면의 모양입니다. Slack에는 영향이 없습니다.' },
 ];
 
 export type SettingKind = 'choice' | 'toggle' | 'text' | 'number' | 'list' | 'readonly';
@@ -87,8 +90,8 @@ export interface SettingView {
   lockedReason?: string;
   /** Consequential setting — shown in the danger zone, confirmed before saving. */
   danger?: boolean;
-  /** The equivalent Slack command. */
-  slackCommand: string;
+  /** The equivalent Slack command — absent for a dashboard-only setting (group `dashboard`). */
+  slackCommand?: string;
 }
 
 export interface SettingsSnapshot {
@@ -142,9 +145,13 @@ export interface SettingsStoreLike {
   changeUserRating(userId: string, rating: number): { from: number; to: number };
   getUserPermissionMode(userId: string): PermissionMode;
   getUserSlackTaskEntry(userId: string): boolean;
+  getUserEpicTasks(userId: string): boolean;
+  setUserEpicTasks(userId: string, enabled: boolean): void;
   setUserSlackTaskEntry(userId: string, enabled: boolean): void;
   getUserSandboxDisabled(userId: string): boolean;
   getUserNetworkDisabled(userId: string): boolean;
+  getUserDashboardMode(userId: string): DashboardMode;
+  setUserDashboardMode(userId: string, mode: DashboardMode): void;
 }
 
 export interface SettingsRegistryDeps {
@@ -202,6 +209,10 @@ const VERBOSITY_LABELS: Record<string, string> = {
   verbose: 'Verbose — 전부',
 };
 const TELEGRAM_CHAT_ID = /^-?\d{1,20}$/;
+const DASHBOARD_MODE_OPTIONS: SettingOption[] = [
+  { value: 'minimal', label: '미니멀', description: '보드와, 상세 카드의 작업 목록과 채팅만 보여 줍니다.' },
+  { value: 'advanced', label: '어드밴스드', description: '통계, 토큰, 에이전트 트리, 작업 로그까지 모두 보여 줍니다.' },
+];
 
 /**
  * Every `UserSettingsStore` mutator a Slack surface (`src/slack/**`) calls,
@@ -227,10 +238,14 @@ export const SLACK_SETTER_COVERAGE: Readonly<Record<string, SettingKey | { exclu
   changeUserRating: 'rating',
   setUserPermissionMode: 'permissionMode',
   setUserSlackTaskEntry: 'slackTaskEntry',
+  setUserEpicTasks: 'epicTasks',
   setUserSandboxDisabled: 'sandbox',
   setUserNetworkDisabled: 'sandboxNetwork',
   clearUserCompactThreshold: {
     excluded: 'deprecated: `compact-threshold` only clears it and moves the value onto the session',
+  },
+  setUserEpicCostLimitUsd: {
+    excluded: 'E4 ③ — read by the epic cost cap; shown and edited with the epic lane (E4 ⑨), no Slack command yet',
   },
   acceptUser: { excluded: 'admin action on another user (accept / deny), not a personal setting' },
   settlePendingUser: { excluded: 'admin decision on a pending sign-up (accept / deny), not a personal setting' },
@@ -426,6 +441,37 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
           slackCommand: 'taskentry on|off',
         };
       }
+      case 'epicTasks': {
+        const value = store.getUserEpicTasks(userId);
+        return {
+          key,
+          group: 'account',
+          label: '에픽 작업 (실험)',
+          description:
+            '대시보드에서 에픽 작업을 만들 수 있습니다. 에픽은 계획을 세우고 하위 작업을 맡깁니다. 이미 만든 에픽은 꺼도 그대로입니다.',
+          kind: 'toggle',
+          value,
+          defaultValue: false,
+          modified: value,
+          editable: true,
+          slackCommand: 'epictasks on|off',
+        };
+      }
+      case 'dashboardMode': {
+        const value = store.getUserDashboardMode(userId);
+        return {
+          key,
+          group: 'dashboard',
+          label: '화면 모드',
+          description: '대시보드 오른쪽 위 어드밴스드 버튼과 같은 설정입니다.',
+          kind: 'choice',
+          value,
+          defaultValue: 'minimal',
+          modified: value !== 'minimal',
+          options: DASHBOARD_MODE_OPTIONS,
+          editable: true,
+        };
+      }
       case 'autoGoal': {
         const value = store.getUserAutoGoalEnabled(userId);
         return {
@@ -603,9 +649,11 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
     'rating',
     'workingDirectory',
     'slackTaskEntry',
+    'epicTasks',
     'permissionMode',
     'sandbox',
     'sandboxNetwork',
+    'dashboardMode',
   ];
 
   async function apply(userId: string, key: SettingKey, value: unknown): Promise<void> {
@@ -665,6 +713,17 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
       case 'slackTaskEntry':
         store.setUserSlackTaskEntry(userId, expectBoolean(value, key));
         return;
+      case 'epicTasks':
+        store.setUserEpicTasks(userId, expectBoolean(value, key));
+        return;
+      case 'dashboardMode': {
+        const mode = expectString(value, key);
+        if (mode !== 'minimal' && mode !== 'advanced') {
+          throw new SettingsError(400, 'dashboardMode는 minimal 또는 advanced여야 합니다');
+        }
+        store.setUserDashboardMode(userId, mode);
+        return;
+      }
       case 'goalMaxContinuations': {
         let n: number;
         try {

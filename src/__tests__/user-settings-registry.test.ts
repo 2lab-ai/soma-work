@@ -58,11 +58,19 @@ function memoryStore(): SettingsStoreLike & { data: Record<string, any> } {
     },
     getUserPermissionMode: (id) => u(id).mode ?? 'auto',
     getUserSlackTaskEntry: (id) => !!u(id).slackTaskEntry,
+    getUserEpicTasks: (id) => !!u(id).epicTasks,
+    setUserEpicTasks: (id, v) => {
+      u(id).epicTasks = v;
+    },
     setUserSlackTaskEntry: (id, v) => {
       u(id).slackTaskEntry = v;
     },
     getUserSandboxDisabled: (id) => !!u(id).sandboxOff,
     getUserNetworkDisabled: (id) => !!u(id).networkOff,
+    getUserDashboardMode: (id) => u(id).dashboardMode ?? 'minimal',
+    setUserDashboardMode: (id, m) => {
+      u(id).dashboardMode = m;
+    },
   };
 }
 
@@ -158,12 +166,16 @@ describe('settings registry — read', () => {
       'rating',
       'workingDirectory',
       'slackTaskEntry',
+      'epicTasks',
       'permissionMode',
       'sandbox',
       'sandboxNetwork',
+      'dashboardMode',
     ]);
     for (const s of snap.settings) {
-      expect(s.slackCommand).toBeTruthy();
+      // A dashboard-only setting (the dashboard's own view) has no Slack command; every other one names it.
+      if (s.group === 'dashboard') expect(s.slackCommand).toBeUndefined();
+      else expect(s.slackCommand).toBeTruthy();
       expect(snap.groups.map((g) => g.id)).toContain(s.group);
     }
   });
@@ -273,6 +285,44 @@ describe('settings registry — write', () => {
     expect(store.data.U1.slackTaskEntry).toBe(true);
     expect(v).toMatchObject({ value: true, modified: true });
     await refused(registry.write('U1', 'slackTaskEntry', 'on'), 400);
+  });
+
+  it('epicTasks (E4 ④a-2): off by default, a toggle in account, written through the store setter', async () => {
+    const { registry, store } = setup();
+    const row = registry.read('U1').settings.find((s) => s.key === 'epicTasks')!;
+    expect(row).toMatchObject({ kind: 'toggle', group: 'account', value: false, modified: false, editable: true });
+    expect(row.slackCommand).toBe('epictasks on|off');
+    const v = await registry.write('U1', 'epicTasks', true);
+    expect(store.data.U1.epicTasks).toBe(true);
+    expect(v).toMatchObject({ value: true, modified: true });
+    await refused(registry.write('U1', 'epicTasks', 'on'), 400);
+  });
+
+  it('dashboardMode (SSOT 2026-11-01): minimal by default, a choice in its own dashboard group, saved per user', async () => {
+    const { registry, store } = setup();
+    const row = registry.read('U1').settings.find((s) => s.key === 'dashboardMode')!;
+    expect(row).toMatchObject({
+      kind: 'choice',
+      group: 'dashboard',
+      value: 'minimal',
+      defaultValue: 'minimal',
+      modified: false,
+      editable: true,
+    });
+    expect(row.options!.map((o) => o.value)).toEqual(['minimal', 'advanced']);
+    expect(registry.read('U1').groups.map((g) => g.id)).toContain('dashboard');
+    const v = await registry.write('U1', 'dashboardMode', 'advanced');
+    expect(store.data.U1.dashboardMode).toBe('advanced');
+    expect(v).toMatchObject({ value: 'advanced', modified: true });
+    // Another user keeps the default — the choice is per user.
+    expect(registry.read('U2').settings.find((s) => s.key === 'dashboardMode')!.value).toBe('minimal');
+    await registry.write('U1', 'dashboardMode', 'minimal');
+    expect(store.data.U1.dashboardMode).toBe('minimal');
+    await refused(registry.write('U1', 'dashboardMode', 'detail'), 400);
+    await refused(registry.write('U1', 'dashboardMode', true), 400);
+    // A denied user cannot write it either (a write must not re-create the record).
+    await refused(registry.write('U_DENIED', 'dashboardMode', 'advanced'), 403);
+    expect(store.data.U_DENIED).toBeUndefined();
   });
 
   it('read-only and unknown keys are refused; wrong value types are 400', async () => {

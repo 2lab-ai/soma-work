@@ -95,7 +95,7 @@ describe('task turn runner — chain settle (E2 ③b)', () => {
     });
   });
 
-  it('an outcome committed before the turn started owes nothing (no settle)', async () => {
+  it('a conversation not created ends the chain before its start: the thread notice and the epic event (E4 ⑤, D6 b)', async () => {
     const h = runnerHarness({
       createConversation: vi.fn(async () => {
         throw new Error('ENOSPC');
@@ -104,7 +104,8 @@ describe('task turn runner — chain settle (E2 ③b)', () => {
     await h.runner.runTaskTurn({ ...h.input, chain: { id: 'c1', continuesIfCompleted: false } });
     expect(h.registry.beginTaskTurn).not.toHaveBeenCalled();
     expect(h.registry.commitTaskTurnOutcome).toHaveBeenCalledTimes(1);
-    expect(h.registry.commitTaskTurnOutcome.mock.calls[0][3]).toBeUndefined();
+    expect(h.registry.commitTaskTurnOutcome.mock.calls[0][1]).toMatchObject({ outcome: 'failed' });
+    expect(h.registry.commitTaskTurnOutcome.mock.calls[0][3]).toEqual({ chainId: 'c1', ends: true });
   });
 
   it('an outcome held in memory carries the same settle', async () => {
@@ -114,6 +115,12 @@ describe('task turn runner — chain settle (E2 ③b)', () => {
     });
     await h.runner.runTaskTurn({ ...h.input, chain: { id: 'c1', continuesIfCompleted: false } });
     expect(h.registry.holdUnsavedTaskTurnOutcome.mock.calls[0][3]).toEqual({ chainId: 'c1', ends: true });
+  });
+
+  it('E4 ⑥ — an epic start’s events go to the turn’s saved start, with its chain', async () => {
+    const h = runnerHarness();
+    await h.runner.runTaskTurn({ ...h.input, chain: { id: 'c1', continuesIfCompleted: false }, consume: ['e1', 'e2'] });
+    expect(h.registry.beginTaskTurn).toHaveBeenCalledWith(KEY, expect.any(String), 'c1', ['e1', 'e2']);
   });
 
   it('a turn with no chain (an old caller) settles nothing', async () => {

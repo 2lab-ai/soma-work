@@ -42,10 +42,26 @@ import {
   migrateLegacyGoalArray,
   stampActiveLegGoalOwner,
 } from './slack/session-goal-lifecycle';
+import {
+  applyPlanWrite,
+  consumeEpicEvents,
+  EPIC_NODE_ID,
+  exemptEpicTreeTaskIds,
+  isEpicDone,
+  type PlanWriteInput,
+  releaseEpicEvents,
+  resolveEpicApprovals,
+  sanitizeEpicEvents,
+  sanitizeEpicPlan,
+  withEpicEvent,
+} from './task-turn/epic-plan';
 import type {
   ActionPanelState,
   ActivityState,
+  ClosedByParent,
   ConversationSession,
+  EpicEvent,
+  EpicPlan,
   HandoffContext,
   OriginThread,
   SessionCronJob,
@@ -203,6 +219,15 @@ interface SerializedSession {
   originThread?: unknown;
   /** E2 ② — a Slack-instructed task's channel context; validated on load. */
   inputContext?: unknown;
+  /** E4 ① — the epic relation; validated on load (`sanitizeEpicRelation`). */
+  kind?: unknown;
+  parentTaskId?: unknown;
+  planNodeId?: unknown;
+  childTaskIds?: unknown;
+  plan?: unknown;
+  epicEvents?: unknown;
+  /** E4 ⑦ — a child closed by its epic's close; validated on load. */
+  closedBy?: unknown;
   /** E2 ③ — the open chain and owed notices of a Slack-less task; validated on load. */
   openChain?: unknown;
   notices?: unknown;
@@ -286,6 +311,62 @@ export interface CreateTaskInput {
   originThread?: OriginThread;
   /** E2 ② — the channel's description, repos and wiki at creation; copied, not referenced. */
   inputContext?: TaskInputContext;
+  /** E4 ① — an epic task. Host only: never from model input or a request body as given. */
+  kind?: 'epic';
+  /** E4 ① — a child task: its live epic (same owner) and the plan node it was made for. */
+  parentTaskId?: string;
+  planNodeId?: string;
+}
+
+/** E4 ① — a plan node id: a short slug, unique within its epic (one rule with the plan's, E4 ②). */
+export const PLAN_NODE_ID = EPIC_NODE_ID;
+
+/** E4 ① ② — the epic relation fields as stored on a record (plan and events on an epic only). */
+export interface EpicRelation {
+  kind?: 'epic';
+  parentTaskId?: string;
+  planNodeId?: string;
+  childTaskIds?: string[];
+  plan?: EpicPlan;
+  epicEvents?: EpicEvent[];
+  closedBy?: ClosedByParent;
+}
+
+/**
+ * E4 ① — keep only a well-formed epic relation, on a Slack-less record only.
+ * A child (`parentTaskId` + `planNodeId`) is never an epic and has no
+ * children; a node id without a parent is dropped; `childTaskIds` is kept on
+ * an epic only, de-duplicated, non-empty strings. Every field it drops is
+ * dropped on its own — a bad `kind` does not cost the record its parent.
+ */
+export function sanitizeEpicRelation(value: Record<string, unknown>, slackless: boolean): EpicRelation {
+  if (!slackless) return {};
+  // An id is a non-blank string other than the record's own (a task is not its own parent or child).
+  const nonEmpty = (x: unknown): x is string => typeof x === 'string' && x.trim() !== '' && x !== value.taskId;
+  // A child: a parent and a well-formed node, nothing else.
+  if (nonEmpty(value.parentTaskId) && typeof value.planNodeId === 'string' && PLAN_NODE_ID.test(value.planNodeId)) {
+    const closed = value.closedBy as { by?: unknown; at?: unknown; chain?: unknown } | undefined;
+    const closedBy: ClosedByParent | undefined =
+      closed && closed.by === 'parent' && typeof closed.at === 'number' && Number.isFinite(closed.at)
+        ? {
+            by: 'parent' as const,
+            at: closed.at,
+            ...(typeof closed.chain === 'string' && closed.chain !== '' ? { chain: closed.chain } : {}),
+          }
+        : undefined;
+    return { parentTaskId: value.parentTaskId, planNodeId: value.planNodeId, ...(closedBy ? { closedBy } : {}) };
+  }
+  if (value.kind !== 'epic') return {};
+  const children = Array.isArray(value.childTaskIds) ? value.childTaskIds.filter(nonEmpty) : [];
+  const childTaskIds = [...new Set(children)];
+  const plan = sanitizeEpicPlan(value.plan);
+  const epicEvents = sanitizeEpicEvents(value.epicEvents);
+  return {
+    kind: 'epic',
+    ...(childTaskIds.length > 0 ? { childTaskIds } : {}),
+    ...(plan ? { plan } : {}),
+    ...(epicEvents ? { epicEvents } : {}),
+  };
 }
 
 /** E2 ① — `createTask` refused: a live task already holds this instruction thread. */
@@ -498,6 +579,23 @@ function finiteStamp(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 }
 
+/** E4 ⑤ (D6) — a child's chain end as its epic's event: ids and the outcome enum only, never its text. */
+function chainEndEvent(
+  child: ConversationSession,
+  end: { key: string; chainId?: string; outcome: EpicEvent['outcome']; turnId: string; at: number },
+): EpicEvent {
+  return {
+    id: `${child.taskId}:${end.key}`,
+    childTaskId: child.taskId as string,
+    planNodeId: child.planNodeId as string,
+    outcome: end.outcome,
+    ...(end.chainId ? { chainId: end.chainId } : {}),
+    turnId: end.turnId,
+    at: end.at,
+    state: 'pending',
+  };
+}
+
 export class SessionRegistry {
   private sessions: Map<string, ConversationSession> = new Map();
   /**
@@ -508,6 +606,8 @@ export class SessionRegistry {
   private sessionsByTaskId: Map<string, ConversationSession> = new Map();
   /** E2 ① — live Slack-less tasks by instruction thread (`channel:threadTs`); rebuilt from the records on load. */
   private tasksByOriginThread: Map<string, ConversationSession> = new Map();
+  /** E4 ① — live child tasks by their epic's task id; rebuilt from the records on load. */
+  private childrenByParent: Map<string, Set<ConversationSession>> = new Map();
   private logger = new Logger('SessionRegistry');
   private expiryCallbacks?: SessionExpiryCallbacks;
   private beforeSessionDelete?: BeforeSessionDeleteCallback;
@@ -522,15 +622,12 @@ export class SessionRegistry {
   private onIdleCallbacks: Map<string, Array<() => void>> = new Map();
 
   /**
-   * Optional hook fired after `drainOnIdleCallbacks` resolves for a
-   * session that just transitioned to idle. Used by the ralph-loop
-   * (auto-continuation) driver to decide whether to inject the next
-   * synthetic continuation turn. Mirrors codex `goals.rs:1270`
-   * (`maybe_continue_goal_if_idle_runtime`) — a thin host hook that the
-   * goal subsystem owns, deliberately kept out of cron-scheduler state.
-   *
-   * Wired up in `src/index.ts` next to the existing cron-scheduler
-   * setup so messageInjector / dependencies are colocated.
+   * Optional single-slot hook fired after `drainOnIdleCallbacks` for a session
+   * that just transitioned to idle — synchronously, inside that session's own
+   * commit. No production caller holds it: E4 ⑥ wakes an epic from the task
+   * controller's `onChainEnd` instead, after the chain is released (a wake from
+   * here would meet the epic's still-running chain — fable #702 R1).
+   * Kept out of cron-scheduler state (`registerOnIdle`).
    */
   private onIdleAfterDrainHook?: (sessionKey: string) => void;
 
@@ -539,6 +636,14 @@ export class SessionRegistry {
    */
   setOnIdleAfterDrainHook(hook: ((sessionKey: string) => void) | undefined): void {
     this.onIdleAfterDrainHook = hook;
+  }
+
+  /** E4 ⑥ — told the epic's session key when a child's chain end was just added to it (saved or held). */
+  private epicEventListener?: (epicSessionKey: string) => void;
+
+  /** E4 ⑥ — install the listener that wakes an epic after an event (D7). */
+  setEpicEventListener(listener: ((epicSessionKey: string) => void) | undefined): void {
+    this.epicEventListener = listener;
   }
 
   /**
@@ -756,8 +861,17 @@ export class SessionRegistry {
     // E2 ③ — the chain's last outcome closes it and owes the thread a notice,
     // in this same write; a hop the chain re-runs after keeps it open, silent.
     const noticesBefore = session.notices;
+    let epicChange: { epic: ConversationSession; before: EpicEvent[] | undefined } | undefined;
     if (settle?.ends) {
       session.openChain = undefined;
+      // E4 ⑤ (D6) — and owes its epic an event, in this same change: saved, put back or held with it.
+      epicChange = this.addChainEndEvent(session, {
+        key: settle.chainId,
+        chainId: settle.chainId,
+        outcome: settle.notice?.kind === 'failure' ? 'failed' : outcome.outcome,
+        turnId: outcome.turnId,
+        at: outcome.at,
+      });
       const kind = settle.notice?.kind ?? noticeKindFor(outcome.outcome);
       const reason = settle.notice?.reason ?? outcome.reason;
       const askId =
@@ -786,9 +900,21 @@ export class SessionRegistry {
         session.activeTaskTurnId = previous.activeTurnId;
         session.openChain = previous.openChain;
         session.notices = previous.notices;
+        if (epicChange) epicChange.epic.epicEvents = epicChange.before;
         throw error;
       }
       if (session.notices !== noticesBefore) this.fireTaskNotices(key, session);
+    }
+    // E4 ⑥ — saved or held, the epic may wake for it (D7); the listener defers the wake.
+    if (epicChange?.epic.taskId) {
+      try {
+        this.epicEventListener?.(buildTaskSessionKey(epicChange.epic.taskId));
+      } catch (err) {
+        this.logger.warn(`${caller}: epic event listener raised`, {
+          sessionKey: key,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
     }
     try {
       this.onActivityStateChangeCallback?.();
@@ -805,12 +931,194 @@ export class SessionRegistry {
   }
 
   /**
+   * E4 ⑦ (D10 a) — a live epic not done yet, or with a child running or
+   * waiting, keeps itself and its children from being archived while asleep.
+   * After `done` (and once the epic is closed) the tree follows the normal clock.
+   */
+  private epicTreeExempt(session: ConversationSession): boolean {
+    if (session.slackless !== true) return false;
+    const epic =
+      session.kind === 'epic'
+        ? session
+        : session.parentTaskId
+          ? this.sessionsByTaskId.get(session.parentTaskId)
+          : undefined;
+    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated || epic.closing || !epic.taskId) {
+      return false;
+    }
+    if (!isEpicDone(epic.plan)) return true;
+    return this.getChildTasks(epic.taskId).some((c) => c.activityState === 'working' || c.activityState === 'waiting');
+  }
+
+  /**
+   * E4 ⑦ (D10 b) — its epic is closing while this child runs: say so on the
+   * child (`closedBy: parent`), saved strictly now, before its chain is
+   * cancelled (session-close — the outcome stays `cancelled`). `chain` is the
+   * chain the close cancels (the controller's id). A failed save is put back
+   * and rethrown.
+   */
+  markClosedByParent(sessionKey: string, at: number = Date.now(), chain?: string): void {
+    const child = this.getSessionByKey(normalizeSessionKey(sessionKey));
+    if (!child || child.slackless !== true || !child.parentTaskId) {
+      throw new Error(`markClosedByParent: ${sessionKey} is not a child task`);
+    }
+    const before = child.closedBy;
+    child.closedBy = { by: 'parent', at, ...(chain ? { chain } : {}) };
+    try {
+      this.saveSessionsOrThrow();
+    } catch (error) {
+      child.closedBy = before;
+      throw error;
+    }
+    try {
+      this.onActivityStateChangeCallback?.();
+    } catch (err) {
+      this.logger.warn('markClosedByParent: broadcast callback raised', {
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+  }
+
+  /**
+   * E4 ⑦ — the dashboard close of this task starts (`true`) or did not go
+   * through (`false`): an in-memory mark, never saved (fable #703 R1).
+   */
+  markClosing(sessionKey: string, closing: boolean): void {
+    const session = this.getSessionByKey(normalizeSessionKey(sessionKey));
+    if (!session) return;
+    session.closing = closing ? true : undefined;
+  }
+
+  /**
+   * E4 ⑦ (D10 c) — a child is being closed: a `closed` event on its epic (id
+   * `<child>:closed`), saved strictly. It never wakes the epic — delivered from
+   * the start, so the cap drops it before a pending chain end. A failed save is
+   * put back and rethrown; no live epic, nothing to record.
+   */
+  recordEpicChildClosed(sessionKey: string, at: number = Date.now()): void {
+    const child = this.getSessionByKey(normalizeSessionKey(sessionKey));
+    if (!child?.parentTaskId) return;
+    const epic = this.epicToReport(child, 'close');
+    if (!epic) return;
+    const before = epic.epicEvents;
+    epic.epicEvents = withEpicEvent(before, {
+      id: `${child.taskId}:closed`,
+      childTaskId: child.taskId as string,
+      planNodeId: child.planNodeId as string,
+      outcome: 'closed',
+      at,
+      state: 'delivered',
+    });
+    if (epic.epicEvents === before) return;
+    try {
+      this.saveSessionsOrThrow();
+    } catch (error) {
+      epic.epicEvents = before;
+      throw error;
+    }
+  }
+
+  /**
+   * E4 ⑤ (D6) — the live epic a child reports to. A child whose epic is gone
+   * or closing reports to no one: the event is dropped and logged.
+   */
+  private epicToReport(child: ConversationSession, what: string): ConversationSession | undefined {
+    if (!child.parentTaskId || !child.planNodeId || !child.taskId) return undefined;
+    const epic = this.sessionsByTaskId.get(child.parentTaskId);
+    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated || epic.closing) {
+      // A closing epic drops its children's events by design (D6 d); a gone one is worth a warning.
+      const closing = epic?.closing === true && !epic.terminated;
+      this.logger[closing ? 'info' : 'warn'](`Epic event dropped — the epic is ${closing ? 'closing' : 'gone'}`, {
+        childTaskId: child.taskId,
+        parentTaskId: child.parentTaskId,
+        what,
+      });
+      return undefined;
+    }
+    return epic;
+  }
+
+  /**
+   * E4 ⑤ (D6) — a child's chain ended: one event on its epic (id: the child's
+   * task id + the chain's id, or the lost turn's), and the approvals that chain
+   * asked are closed. Not saved here — the caller's save carries it with the
+   * child's outcome; returns what to put back if that save fails.
+   */
+  private addChainEndEvent(
+    child: ConversationSession,
+    end: { key: string; chainId?: string; outcome: EpicEvent['outcome']; turnId: string; at: number },
+  ): { epic: ConversationSession; before: EpicEvent[] | undefined } | undefined {
+    const epic = this.epicToReport(child, 'chain end');
+    if (!epic) return undefined;
+    const before = epic.epicEvents;
+    const childTaskId = child.taskId as string;
+    const closed = end.chainId
+      ? resolveEpicApprovals(before, (e) => e.childTaskId === childTaskId && e.chainId === end.chainId, end.at)
+      : before;
+    // A child its owner is closing owes no wake: its end is recorded, delivered (fable #703 R1).
+    const event = chainEndEvent(child, end);
+    epic.epicEvents = withEpicEvent(closed, child.closing ? { ...event, state: 'delivered' } : event);
+    return { epic, before };
+  }
+
+  /**
+   * E4 ⑤ (D6 c) — a child's approval request is a `needs-input` event on its
+   * epic (id: the child's task id + the approval id); its answer closes it.
+   * Saved strictly; a failed save is put back and logged — the approval goes
+   * on either way. It never wakes the epic: only the progress shows it.
+   */
+  recordEpicApproval(
+    event: { type: 'requested' | 'resolved'; approvalId: string; sessionKey: string; turnId?: string },
+    at: number = Date.now(),
+  ): void {
+    const child = this.getSessionByKey(normalizeSessionKey(event.sessionKey));
+    if (!child?.parentTaskId) return;
+    const epic = this.epicToReport(child, `approval ${event.type}`);
+    if (!epic) return;
+    const before = epic.epicEvents;
+    const id = `${child.taskId}:${event.approvalId}`;
+    epic.epicEvents =
+      event.type === 'requested'
+        ? withEpicEvent(before, {
+            id,
+            childTaskId: child.taskId as string,
+            planNodeId: child.planNodeId as string,
+            outcome: 'needs-input',
+            approvalId: event.approvalId,
+            ...(child.openChain ? { chainId: child.openChain } : {}),
+            ...(event.turnId ? { turnId: event.turnId } : {}),
+            at,
+            state: 'pending',
+          })
+        : resolveEpicApprovals(before, (e) => e.id === id, at);
+    if (epic.epicEvents === before) return;
+    try {
+      this.saveSessionsOrThrow();
+    } catch (error) {
+      epic.epicEvents = before;
+      this.logger.warn('Epic approval event not saved — put back; the approval goes on', {
+        childTaskId: child.taskId,
+        approvalId: event.approvalId,
+        error: (error as Error)?.message ?? String(error),
+      });
+      return;
+    }
+    try {
+      this.onActivityStateChangeCallback?.();
+    } catch (err) {
+      this.logger.warn('recordEpicApproval: broadcast callback raised', {
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+  }
+
+  /**
    * #598 ④c — a Slack-less task's turn starts: `working` and the turn's id are
    * saved strictly, so a process that dies before the outcome's commit leaves
    * the lost turn on disk for restart reconciliation (design 598c §6). A failed
    * write restores both and throws — the turn does not run.
    */
-  public beginTaskTurn(sessionKey: string, turnId: string, chainId?: string): void {
+  public beginTaskTurn(sessionKey: string, turnId: string, chainId?: string, consume?: readonly string[]): void {
     const key = normalizeSessionKey(sessionKey);
     const session = this.getSessionByKey(key);
     if (!session) throw new Error(`beginTaskTurn: session not found (${key})`);
@@ -825,9 +1133,21 @@ export class SessionRegistry {
       warningMessageTs: session.warningMessageTs,
       lastWarningSentAt: session.lastWarningSentAt,
       openChain: session.openChain,
+      epicEvents: session.epicEvents,
+      closedBy: session.closedBy,
     };
+    // E4 ⑦ — another chain on a child its parent's close cancelled: no longer "closed by its parent".
+    // A `/compact` hop of the chain being closed keeps the mark, and so does the first hop of the
+    // chain the mark names — a close that lands before that hop is saved (fable #703 R2 P3-1). The
+    // chain is the witness, not a clock: a chain may end in the very millisecond of the close (grok #709 R1).
+    const mark = session.closedBy;
+    if (mark && (!chainId || chainId !== session.openChain) && (mark.chain === undefined || mark.chain !== chainId)) {
+      session.closedBy = undefined;
+    }
     // E2 ③ — the chain is open from its first start until its last commit.
     if (chainId) session.openChain = chainId;
+    // E4 ⑥ (D7) — the events this chain was started for are consumed in this same save.
+    if (chainId && consume?.length) session.epicEvents = consumeEpicEvents(session.epicEvents, consume, chainId);
     // An instruction wakes a sleeping task, as a Slack message wakes its thread,
     // so the inactivity sweep cannot archive it mid-turn (#634 R1).
     if (session.state === 'SLEEPING') this.wakeSession(session);
@@ -847,6 +1167,8 @@ export class SessionRegistry {
       session.warningMessageTs = previous.warningMessageTs;
       session.lastWarningSentAt = previous.lastWarningSentAt;
       session.openChain = previous.openChain;
+      session.epicEvents = previous.epicEvents;
+      session.closedBy = previous.closedBy;
       throw error;
     }
     try {
@@ -955,6 +1277,23 @@ export class SessionRegistry {
     if (session.taskId) this.sessionsByTaskId.set(session.taskId, session);
     // E2 ② — only a Slack-less task carries an input context.
     if (session.inputContext && session.slackless !== true) session.inputContext = undefined;
+    // E4 ① — only a Slack-less task carries the epic relation.
+    if (session.slackless !== true) {
+      session.kind = undefined;
+      session.parentTaskId = undefined;
+      session.planNodeId = undefined;
+      session.childTaskIds = undefined;
+      session.plan = undefined;
+      session.epicEvents = undefined;
+      session.closedBy = undefined;
+    } else if (session.parentTaskId) {
+      let siblings = this.childrenByParent.get(session.parentTaskId);
+      if (!siblings) {
+        siblings = new Set();
+        this.childrenByParent.set(session.parentTaskId, siblings);
+      }
+      siblings.add(session);
+    }
     if (session.originThread) {
       const originKey = originThreadKey(session.originThread);
       const holder = this.tasksByOriginThread.get(originKey);
@@ -988,6 +1327,127 @@ export class SessionRegistry {
       const originKey = originThreadKey(session.originThread);
       if (this.tasksByOriginThread.get(originKey) === session) this.tasksByOriginThread.delete(originKey);
     }
+    if (session.parentTaskId) {
+      const siblings = this.childrenByParent.get(session.parentTaskId);
+      if (siblings?.delete(session) && siblings.size === 0) this.childrenByParent.delete(session.parentTaskId);
+    }
+  }
+
+  /** E4 ① — an epic's live child tasks, in no particular order (archived children are not live). */
+  getChildTasks(parentTaskId: string): ConversationSession[] {
+    return [...(this.childrenByParent.get(parentTaskId) ?? [])];
+  }
+
+  /**
+   * E4 ② (.prd/19 D2) — replace an epic's plan through `applyPlanWrite` and
+   * save it strictly. A refused write (`EpicPlanError`) or a failed save
+   * leaves the plan as it was. Returns the plan now saved.
+   */
+  setEpicPlan(taskId: string, input: PlanWriteInput, by: 'epic' | 'owner'): EpicPlan {
+    const epic = this.sessionsByTaskId.get(taskId);
+    // A closing epic (flagged while its close is awaited) takes no new plan (grok #697 R1).
+    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated || epic.closing)
+      throw new Error(`setEpicPlan: ${taskId} is not a live epic`);
+    const children = this.getChildTasks(taskId).map((c) => ({
+      planNodeId: c.planNodeId,
+      active: c.activityState === 'working' || c.activityState === 'waiting',
+    }));
+    const next = applyPlanWrite(epic.plan, input, { now: Date.now(), by, children });
+    const previous = epic.plan;
+    epic.plan = next;
+    try {
+      this.saveSessionsOrThrow();
+    } catch (error) {
+      epic.plan = previous;
+      throw error;
+    }
+    return next;
+  }
+
+  /**
+   * E4 ① — load gave a Slack-less task a new id because a Slack session held
+   * the one it claimed. The relation follows the new id: a re-minted epic's
+   * children point at it, and a re-minted child is named by its new id in its
+   * epic's list (the cap counts that list). The claimed id now belongs to a
+   * Slack session, which never carries the relation, so these links are the
+   * re-minted task's alone. A relative archived in the same load (`archiving`,
+   * not yet written — an archived record is never re-minted) is patched the
+   * same way before its archive is written. Returns how many links moved.
+   */
+  private relinkRemintedEpicIds(
+    reminted: Array<{ session: ConversationSession; claimed: string }>,
+    archiving: SerializedSession[] = [],
+  ): number {
+    let moved = 0;
+    for (const { session: epic, claimed } of reminted) {
+      if (epic.kind !== 'epic' || !epic.taskId) continue;
+      const children = this.childrenByParent.get(claimed) ?? new Set<ConversationSession>();
+      const archivedChildren = archiving.filter((r) => r.parentTaskId === claimed);
+      if (children.size === 0 && archivedChildren.length === 0) continue;
+      this.childrenByParent.delete(claimed);
+      const siblings = this.childrenByParent.get(epic.taskId) ?? new Set<ConversationSession>();
+      for (const child of children) {
+        child.parentTaskId = epic.taskId;
+        siblings.add(child);
+      }
+      if (siblings.size > 0) this.childrenByParent.set(epic.taskId, siblings);
+      for (const record of archivedChildren) record.parentTaskId = epic.taskId;
+      moved += children.size + archivedChildren.length;
+      this.logger.warn('Epic task id re-minted on load; its children now point at the new id', {
+        claimed,
+        taskId: epic.taskId,
+        children: children.size + archivedChildren.length,
+      });
+    }
+    for (const { session: child, claimed } of reminted) {
+      if (!child.taskId || !child.parentTaskId) continue;
+      const live = this.sessionsByTaskId.get(child.parentTaskId);
+      const epic: { childTaskIds?: unknown; taskId?: unknown; plan?: unknown; epicEvents?: unknown } | undefined =
+        live && live.slackless === true && live.kind === 'epic'
+          ? live
+          : archiving.find((r) => r.taskId === child.parentTaskId && r.kind === 'epic');
+      if (!epic) continue;
+      const list = Array.isArray(epic.childTaskIds) ? (epic.childTaskIds as unknown[]) : [];
+      const taskId = child.taskId;
+      // Renamed in place; appended if the list lacks it (a damaged list heals here only for a
+      // re-minted child — elsewhere the list is append-only through createTask).
+      epic.childTaskIds = list.includes(claimed) ? list.map((id) => (id === claimed ? taskId : id)) : [...list, taskId];
+      // E4 ② — and so does the plan node it was made for. Only `spawned` changes: the plan is
+      // otherwise left as it was (an archiving record's raw plan is sanitized when archived).
+      const plan = epic.plan as { nodes?: unknown } | undefined;
+      if (plan && typeof plan === 'object' && Array.isArray(plan.nodes)) {
+        epic.plan = {
+          ...plan,
+          nodes: plan.nodes.map((n: { spawned?: unknown }) =>
+            n && typeof n === 'object' && Array.isArray(n.spawned) && n.spawned.includes(claimed)
+              ? { ...n, spawned: n.spawned.map((id) => (id === claimed ? taskId : id)) }
+              : n,
+          ),
+        };
+      }
+      // Its events name it by id too.
+      if (Array.isArray(epic.epicEvents)) {
+        epic.epicEvents = epic.epicEvents.map((e: { childTaskId?: unknown; id?: unknown }) =>
+          e && typeof e === 'object' && e.childTaskId === claimed
+            ? {
+                ...e,
+                childTaskId: taskId,
+                // The id keeps its `<child>:<…>` shape (fable #701 R1).
+                ...(typeof e.id === 'string' && e.id.startsWith(`${claimed}:`)
+                  ? { id: `${taskId}${e.id.slice(claimed.length)}` }
+                  : {}),
+              }
+            : e,
+        );
+      }
+      moved++;
+      this.logger.warn("Child task id re-minted on load; its epic's list names the new id", {
+        claimed,
+        taskId,
+        parentTaskId: epic.taskId,
+      });
+    }
+    return moved;
   }
 
   /**
@@ -1160,6 +1620,8 @@ export class SessionRegistry {
   createTask(input: CreateTaskInput): ConversationSession {
     if (!input.ownerId) throw new Error('createTask: ownerId is required');
     if (!input.workingDirectory) throw new Error('createTask: workingDirectory is required');
+    // E4 ① — the relation is checked before anything exists or is saved.
+    const parent = this.checkEpicRelation(input);
     let originThread: OriginThread | undefined;
     if (input.originThread !== undefined) {
       originThread = sanitizeOriginThread(input.originThread);
@@ -1178,6 +1640,11 @@ export class SessionRegistry {
       // The thread is owed the card's link, in this first strict save (D6).
       this.addTaskNotice(session, { id: `${session.taskId}:create:link`, kind: 'link', at: Date.now() });
     }
+    if (input.kind === 'epic') session.kind = 'epic';
+    if (parent) {
+      session.parentTaskId = parent.taskId;
+      session.planNodeId = input.planNodeId;
+    }
     const inputContext = sanitizeTaskInputContext(input.inputContext);
     if (inputContext) session.inputContext = inputContext;
     // A caller passed a context and nothing usable was left: the task runs
@@ -1189,17 +1656,66 @@ export class SessionRegistry {
     }
 
     const key = buildTaskSessionKey(session.taskId);
+    // E4 ① — the parent counts the child in the same save that creates it.
+    const parentChildren = parent?.childTaskIds;
+    const parentPlan = parent?.plan;
+    if (parent) {
+      parent.childTaskIds = [...(parentChildren ?? []), session.taskId];
+      // E4 ② — the node records the child it was made for (it can no longer be removed).
+      if (parentPlan?.nodes.some((n) => n.id === input.planNodeId)) {
+        parent.plan = {
+          ...parentPlan,
+          nodes: parentPlan.nodes.map((n) =>
+            n.id === input.planNodeId ? { ...n, spawned: [...(n.spawned ?? []), session.taskId] } : n,
+          ),
+        };
+      }
+    }
     this.putSession(key, session);
     try {
       this.saveSessionsOrThrow();
     } catch (error) {
       this.removeSession(key);
+      if (parent) {
+        parent.childTaskIds = parentChildren;
+        parent.plan = parentPlan;
+      }
       this.logger.error('Task not created: saving it failed', { taskId: session.taskId });
       throw error;
     }
-    this.logger.info('Slack-less task created', { taskId: session.taskId, ownerId: session.ownerId });
+    this.logger.info('Slack-less task created', {
+      taskId: session.taskId,
+      ownerId: session.ownerId,
+      ...(session.kind ? { kind: session.kind } : {}),
+      ...(session.parentTaskId ? { parentTaskId: session.parentTaskId, planNodeId: session.planNodeId } : {}),
+    });
     if (session.notices) this.fireTaskNotices(key, session);
     return session;
+  }
+
+  /**
+   * E4 ① — the epic relation a `createTask` asks for, checked before anything
+   * is made: only `'epic'` is a kind; an epic has no parent (depth 1); a child
+   * needs a plan node id and a live epic of the same owner; a node id needs a
+   * parent. Returns the parent of a child.
+   */
+  private checkEpicRelation(input: CreateTaskInput): ConversationSession | undefined {
+    if (input.kind !== undefined && input.kind !== 'epic')
+      throw new Error(`createTask: unknown kind ${String(input.kind)}`);
+    if (input.parentTaskId === undefined) {
+      if (input.planNodeId !== undefined) throw new Error('createTask: a plan node needs a parent epic');
+      return undefined;
+    }
+    if (input.kind === 'epic') throw new Error('createTask: an epic cannot have a parent (depth 1)');
+    if (typeof input.planNodeId !== 'string' || !PLAN_NODE_ID.test(input.planNodeId)) {
+      throw new Error('createTask: a child needs a plan node id (a short lowercase slug)');
+    }
+    const parent = this.sessionsByTaskId.get(input.parentTaskId);
+    if (!parent || parent.slackless !== true || parent.kind !== 'epic' || parent.terminated) {
+      throw new Error(`createTask: parent ${input.parentTaskId} is not a live epic`);
+    }
+    if (parent.ownerId !== input.ownerId) throw new Error("createTask: a child is owned by its epic's owner");
+    return parent;
   }
 
   /** A fresh session object with every default a new session starts with (not yet registered). */
@@ -1463,6 +1979,7 @@ export class SessionRegistry {
       // E2 ① — back while it is free; `putSession` drops it if a live task holds the thread now.
       originThread: sanitizeOriginThread(archived.originThread),
       inputContext: sanitizeTaskInputContext(archived.inputContext),
+      ...sanitizeEpicRelation(archived as unknown as Record<string, unknown>, slackless),
       // A task runs in its own directory: the one its transcript proves it ran in (#612 R4).
       ...(slackless ? { workingDirectory: cwd } : {}),
       sessionId: archived.sessionId,
@@ -2627,7 +3144,8 @@ export class SessionRegistry {
       if (session.state === 'SLEEPING') {
         const sleepAge = session.sleepStartedAt ? now - session.sleepStartedAt.getTime() : archiveAfterMs + 1; // Force expire if no sleepStartedAt
 
-        if (sleepAge >= archiveAfterMs) {
+        // E4 ⑦ (D10 a) — an epic tree not done (or with a child at work) sleeps but is not archived.
+        if (sleepAge >= archiveAfterMs && !this.epicTreeExempt(session)) {
           // Same seam as terminateSession, before notification and deletion.
           // A refusal is per-session here: the sweep keeps that session and
           // moves on, so one host failure cannot stall everyone else's expiry.
@@ -2932,6 +3450,13 @@ export class SessionRegistry {
             inputContext: session.inputContext,
             openChain: session.openChain,
             notices: session.notices,
+            kind: session.kind,
+            parentTaskId: session.parentTaskId,
+            planNodeId: session.planNodeId,
+            childTaskIds: session.childTaskIds,
+            plan: session.plan,
+            epicEvents: session.epicEvents,
+            closedBy: session.closedBy,
             // Merge code change stats
             mergeStats: session.mergeStats,
             // User SSOT instructions (persisted)
@@ -3070,6 +3595,7 @@ export class SessionRegistry {
         slackless: serialized.slackless === true ? true : undefined,
         originThread: sanitizeOriginThread(serialized.originThread),
         inputContext: sanitizeTaskInputContext(serialized.inputContext),
+        ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, serialized.slackless === true),
         lastTurnOutcome: sanitizeTaskTurnOutcome(serialized.lastTurnOutcome),
         sessionId: serialized.sessionId,
         isActive: false,
@@ -3140,7 +3666,19 @@ export class SessionRegistry {
       const applyLifecycle = !isSessionLifecyclePolicyDegraded();
       let sleptOnLoadCount = 0;
       let mintedTaskIdCount = 0;
+      const remintedSlackless: Array<{ session: ConversationSession; claimed: string }> = [];
+      const archivedRelatives: Array<{ serialized: SerializedSession; lastActivity: Date }> = [];
+      /** E4 ⑦ (D10 a) — epic trees kept from the load-time archive (decided over the whole file). */
+      const epicTreeExempt = exemptEpicTreeTaskIds(Array.isArray(sessionsArray) ? sessionsArray : []);
       let reconciledTaskTurnCount = 0;
+      /** E4 ⑤ — children whose lost turn was recorded here: their epics hear it after the loop. */
+      const reconciledChildren: Array<{
+        session: ConversationSession;
+        key: string;
+        chainId?: string;
+        turnId: string;
+        at: number;
+      }> = [];
       // Task keys taken by a Slack-less record earlier in THIS load pass (a reload of the
       // same registry is not a duplicate; a second record with one task id in one file is).
       const slacklessKeysThisLoad = new Set<string>();
@@ -3162,9 +3700,17 @@ export class SessionRegistry {
           // never slept or archived on load
         } else if (applyLifecycle && serialized.state === 'SLEEPING') {
           const sleepAge = sleepStartedAt ? now - sleepStartedAt.getTime() : archiveAfterMs + 1;
-          if (sleepAge >= archiveAfterMs) {
+          // E4 ⑦ (D10 a) — nor on load: an epic tree not done (or with a child at work) stays.
+          const treeExempt = typeof serialized.taskId === 'string' && epicTreeExempt.has(serialized.taskId);
+          if (sleepAge >= archiveAfterMs && !treeExempt) {
             // Archive expired session before discarding (#401)
-            this.archiveSerializedOnLoad(serialized, lastActivity, 'sleep_expired');
+            // E4 ① — an epic or child is archived after the relink below, so a
+            // re-minted relative's new id reaches its archive too.
+            if (Object.keys(sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, slackless)).length) {
+              archivedRelatives.push({ serialized, lastActivity });
+            } else {
+              this.archiveSerializedOnLoad(serialized, lastActivity, 'sleep_expired');
+            }
             serialized.sourceWorkingDirs?.forEach((dir) => this.safeRemoveSourceDir(dir));
             continue;
           }
@@ -3296,6 +3842,7 @@ export class SessionRegistry {
           // E2 ① — a malformed instruction thread is dropped; `putSession` drops one on a Slack session.
           originThread: sanitizeOriginThread(serialized.originThread),
           inputContext: sanitizeTaskInputContext(serialized.inputContext),
+          ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, slackless),
           openChain:
             slackless && typeof serialized.openChain === 'string' && serialized.openChain !== ''
               ? serialized.openChain
@@ -3480,6 +4027,10 @@ export class SessionRegistry {
           slacklessKeysThisLoad.add(derivedKey);
         }
         if (restored.minted) mintedTaskIdCount++;
+        // E4 ① — a Slack-less task that lost its claimed id takes its epic links along (after the loop).
+        if (slackless && restored.minted && typeof serialized.taskId === 'string' && serialized.taskId !== '') {
+          remintedSlackless.push({ session, claimed: serialized.taskId });
+        }
         this.putSession(derivedKey, session);
         loaded++;
 
@@ -3520,6 +4071,8 @@ export class SessionRegistry {
             // One notice per lost chain, keyed by the chain (or the turn), so a
             // reconciliation repeated after an unsaved load adds nothing.
             const chainId = session.openChain;
+            // E4 ⑥ (D7) — an epic's lost wake: the events it consumed are pending again, to wake once more.
+            if (chainId && session.kind === 'epic') session.epicEvents = releaseEpicEvents(session.epicEvents, chainId);
             this.addTaskNotice(session, {
               id: `${session.taskId}:${chainId ?? turnId}:interrupted`,
               kind: 'interrupted',
@@ -3529,6 +4082,15 @@ export class SessionRegistry {
               reason: 'process ended before the outcome was recorded',
               at: now,
             });
+            if (session.parentTaskId) {
+              reconciledChildren.push({
+                session,
+                key: chainId ?? turnId,
+                ...(chainId ? { chainId } : {}),
+                turnId,
+                at: now,
+              });
+            }
             session.openChain = undefined;
             session.activityState = 'idle';
             session.activityStateChangedAt = now;
@@ -3567,6 +4129,33 @@ export class SessionRegistry {
       // crash before the next save reloads them awake and restarts their clock.
       if (sleptOnLoadCount > 0) {
         this.logger.info(`Put ${sleptOnLoadCount} stale session(s) to sleep on load`);
+      }
+      // E4 ① — the epic links of a re-minted task follow its new id; the write-back below saves them.
+      this.relinkRemintedEpicIds(
+        remintedSlackless,
+        archivedRelatives.map((a) => a.serialized),
+      );
+      // E4 ⑤ (D6 a) — a second pass, after every record is in and relinked: a child
+      // can come before its epic in the file. The write-back below saves the events;
+      // an epic archived in this same load carries its event into the archive (grok #701 R1).
+      for (const { session, ...end } of reconciledChildren) {
+        const archiving = archivedRelatives.find(
+          (a) =>
+            a.serialized.slackless === true &&
+            a.serialized.kind === 'epic' &&
+            a.serialized.taskId === session.parentTaskId,
+        );
+        if (archiving && session.taskId && session.planNodeId) {
+          archiving.serialized.epicEvents = withEpicEvent(
+            sanitizeEpicEvents(archiving.serialized.epicEvents),
+            chainEndEvent(session, { ...end, outcome: 'interrupted' }),
+          );
+          continue;
+        }
+        this.addChainEndEvent(session, { ...end, outcome: 'interrupted' });
+      }
+      for (const { serialized, lastActivity } of archivedRelatives) {
+        this.archiveSerializedOnLoad(serialized, lastActivity, 'sleep_expired');
       }
       // A task id minted here (a file from before task ids, or a duplicate)
       // is written back now: the next restart must find the same task.

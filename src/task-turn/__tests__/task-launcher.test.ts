@@ -36,6 +36,7 @@ function harness(
     canStart?: unknown;
     startStatus?: number;
     cleanupSessions?: () => Array<{ key: string; sourceWorkingDirs?: string[] }>;
+    epicTasks?: boolean;
   } = {},
 ) {
   const calls: string[] = [];
@@ -68,6 +69,10 @@ function harness(
     },
     listModels: () => MODELS,
     cleanupSessions: over.cleanupSessions,
+    // The flag is the owner's own: any other id reads as off (fable #699 R1 P3-2).
+    ...(over.epicTasks !== undefined
+      ? { epicTasksEnabled: (ownerId: string) => ownerId === OWNER && over.epicTasks === true }
+      : {}),
   });
   return { launcher, controller, calls, created };
 }
@@ -96,9 +101,48 @@ describe('createTaskLauncher (#600 ⑥)', () => {
       sessionKey: `task:${TASK_ID}`,
       text: REQ.prompt,
       actorUserId: OWNER,
+      newTask: true,
     });
     // #640 R1: the dry run sees the instruction, so a command is refused before a task exists.
     expect(h.controller.canStart).toHaveBeenCalledWith(OWNER, REQ.prompt);
+  });
+
+  it('E4 ④a-2 — an epic only behind the owner’s flag: off (or no flag reader) is 403 and nothing is made', async () => {
+    for (const epicTasks of [false, undefined]) {
+      const h = harness({ epicTasks });
+      const r = await h.launcher.launch({ ...REQ, kind: 'epic' });
+      expect(r.status, String(epicTasks)).toBe(403);
+      expect(String(r.body.error)).toMatch(/epictasks on/);
+      expect(h.calls).toEqual([]);
+    }
+  });
+
+  it('E4 ④a-2 — with the flag on, an epic is made as one and starts as a new tree’s root', async () => {
+    const h = harness({ epicTasks: true });
+    const r = await h.launcher.launch({ ...REQ, kind: 'epic' });
+    expect(r).toEqual({ status: 200, body: { sessionKey: `task:${TASK_ID}`, status: 'running' } });
+    expect(h.controller.canStart).toHaveBeenCalledWith(OWNER, REQ.prompt, { role: 'root' });
+    expect(h.created[0]).toMatchObject({ kind: 'epic' });
+    expect(h.controller.start).toHaveBeenCalledWith(expect.objectContaining({ newTask: true }));
+    // An ordinary task with the flag on is still ordinary.
+    const plain = harness({ epicTasks: true });
+    await plain.launcher.launch(REQ);
+    expect(plain.created[0].kind).toBeUndefined();
+    expect(plain.controller.canStart).toHaveBeenCalledWith(OWNER, REQ.prompt);
+  });
+
+  it('E4 ⑨b — epicTasks answers the owner’s flag for the composer; no reader or another id is off', () => {
+    expect(harness({ epicTasks: true }).launcher.epicTasks?.(OWNER)).toBe(true);
+    expect(harness({ epicTasks: true }).launcher.epicTasks?.('U_OTHER')).toBe(false);
+    expect(harness({ epicTasks: false }).launcher.epicTasks?.(OWNER)).toBe(false);
+    expect(harness().launcher.epicTasks?.(OWNER)).toBe(false);
+  });
+
+  it('E4 ④a-2 — the tree refusal of a new epic is returned and nothing is made', async () => {
+    const busy = { status: 429, body: { error: 'one epic runs at a time — wait for its tree to finish' } };
+    const h = harness({ epicTasks: true, canStart: busy });
+    expect(await h.launcher.launch({ ...REQ, kind: 'epic' })).toEqual(busy);
+    expect(h.created).toEqual([]);
   });
 
   it('a Slack instruction’s task carries its instruction thread and channel context (E2 ⑧)', async () => {

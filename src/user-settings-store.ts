@@ -339,6 +339,14 @@ export const DEFAULT_SHOW_THINKING = true;
 const SESSION_THEMES = ['default', 'compact', 'minimal'] as const;
 export type SessionTheme = (typeof SESSION_THEMES)[number];
 const DEFAULT_THEME: SessionTheme = 'default';
+
+/**
+ * The web dashboard's view (SSOT 2026-11-01): `minimal` — the board and, in a
+ * detail card, the task list and the chat — or `advanced`, everything. The
+ * dashboard's own; it feeds no prompt.
+ */
+export const DASHBOARD_MODES = ['minimal', 'advanced'] as const;
+export type DashboardMode = (typeof DASHBOARD_MODES)[number];
 export const THEME_NAMES: Record<SessionTheme, string> = {
   default: 'Default (Rich Card)',
   compact: 'Compact',
@@ -451,6 +459,19 @@ export interface UserSettings {
    * Not toggled from Slack until the entry is live (⑧).
    */
   slackTaskEntry?: boolean;
+  /** The web dashboard's view (SSOT 2026-11-01). Undefined (or unknown) ⇒ `minimal`. */
+  dashboardMode?: DashboardMode;
+  /**
+   * E4 ③ (.prd/19 D9 e) — the most one epic tree may spend (USD) before the
+   * host stops starting its children and waking it; the owner's own
+   * instructions still run. Undefined ⇒ {@link DEFAULT_EPIC_COST_LIMIT_USD}.
+   */
+  epicCostLimitUsd?: number;
+  /**
+   * E4 ④a-2 (.prd/19 D12) — this user may make epic tasks (`kind: 'epic'` on
+   * the new-task API). Set via `/z epictasks on|off`. Undefined ⇒ `false`.
+   */
+  epicTasks?: boolean;
   /**
    * Per-user default for a new goal's auto-continuation cap
    * (`SessionGoal.maxContinuations`). Set via `goal max <N>` / `set goal <N>`.
@@ -489,6 +510,18 @@ export function validateGoalMaxContinuations(value: unknown): number {
     throw new Error('goal max must be an integer');
   }
   return Math.min(GOAL_MAX_CONTINUATIONS_MAX, Math.max(GOAL_MAX_CONTINUATIONS_MIN, value));
+}
+
+// E4 ③ (.prd/19 D9 e): one epic tree's cost limit, USD.
+export const DEFAULT_EPIC_COST_LIMIT_USD = 50;
+export const EPIC_COST_LIMIT_MAX_USD = 10_000;
+
+/** Validate an epic cost limit: a positive finite number of dollars, at most the max. Throws a user-facing `Error`. */
+export function validateEpicCostLimitUsd(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new Error('epic cost limit must be a positive number of dollars');
+  }
+  return Math.min(EPIC_COST_LIMIT_MAX_USD, value);
 }
 
 // Compaction Tracking (#617): threshold bounds + default.
@@ -1004,6 +1037,57 @@ export class UserSettingsStore {
   setUserSlackTaskEntry(userId: string, enabled: boolean): void {
     this.patchUserSettings(userId, { slackTaskEntry: enabled });
     logger.info('Set user Slack task entry', { userId, enabled });
+  }
+
+  /** E4 ④a-2 — may this user make epic tasks. Default `false`. */
+  getUserEpicTasks(userId: string): boolean {
+    return this.settings[userId]?.epicTasks === true;
+  }
+
+  /** E4 ④a-2 — set whether this user may make epic tasks (saved atomically). */
+  setUserEpicTasks(userId: string, enabled: boolean): void {
+    this.patchUserSettings(userId, { epicTasks: enabled });
+    logger.info('Set user epic tasks', { userId, enabled });
+  }
+
+  /** The web dashboard's view (SSOT 2026-11-01). Default — and any value it does not know — `minimal`. */
+  getUserDashboardMode(userId: string): DashboardMode {
+    return this.settings[userId]?.dashboardMode === 'advanced' ? 'advanced' : 'minimal';
+  }
+
+  /**
+   * Save the dashboard's view. The view feeds no system prompt, so unlike every
+   * other setter it drops no cached prompt (a switch would otherwise rebuild the
+   * prompt of each of the user's sessions). A missing record goes through
+   * `patchUserSettings` like every setter — the registry refuses an unaccepted
+   * user before it gets here.
+   */
+  setUserDashboardMode(userId: string, mode: DashboardMode): void {
+    const existing = this.settings[userId];
+    if (!existing) {
+      this.patchUserSettings(userId, { dashboardMode: mode });
+      return;
+    }
+    existing.dashboardMode = mode;
+    existing.lastUpdated = new Date().toISOString();
+    this.saveSettings();
+  }
+
+  /** E4 ③ — one epic tree's cost limit (USD); a stored value that is not a valid limit reads as the default. */
+  getUserEpicCostLimitUsd(userId: string): number {
+    const stored = this.settings[userId]?.epicCostLimitUsd;
+    try {
+      return stored === undefined ? DEFAULT_EPIC_COST_LIMIT_USD : validateEpicCostLimitUsd(stored);
+    } catch {
+      return DEFAULT_EPIC_COST_LIMIT_USD;
+    }
+  }
+
+  /** E4 ③ — set one epic tree's cost limit (validated, saved atomically). */
+  setUserEpicCostLimitUsd(userId: string, value: number): void {
+    const limit = validateEpicCostLimitUsd(value);
+    this.patchUserSettings(userId, { epicCostLimitUsd: limit });
+    logger.info('Set user epic cost limit', { userId, limit });
   }
 
   /**
