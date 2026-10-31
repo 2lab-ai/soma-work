@@ -766,11 +766,13 @@ describe('agent inbox board — motion contract (§4)', () => {
     );
   });
 
-  it('reduced motion stops the spinner and shows a static working indicator (§4-8)', () => {
-    // Every reduced-motion block (SSOT 2026-10-29 T2 added the detail deck's own, earlier in the sheet).
-    const reduced = (TEMPLATE.match(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\n\}/g) ?? []).join('\n');
-    expect(reduced).toContain('.spinner, .spin { animation: none !important; }');
-    expect(reduced).toMatch(/\.spinner \{ border-color: var\(--st-run\); background: radial-gradient/);
+  it('the working ring is the kit spinner; reduced motion stills it as a ring with a dot (§4-8, D7 K-01)', () => {
+    // The page draws no ring of its own any more: the Tasks head's running step is .ui-spinner.is-sm.
+    for (const gone of ['.spinner', '.spin {', '@keyframes spin', 'ag-spinner']) expect(TEMPLATE, gone).not.toContain(gone);
+    expect(TEMPLATE).toContain(`if (st === 'running') return '<span class="ui-spinner is-sm" aria-hidden="true"></span>';`);
+    expect(KIT).toMatch(/\.ui-spinner \{[^}]*animation: ui-spin 0\.9s linear infinite;/);
+    expect(KIT).toContain('.ui-spinner { animation: none; border-color: color-mix(in srgb, var(--ui-tone) 25%, transparent); }');
+    expect(KIT).toMatch(/\.ui-spinner::after \{[^}]*border-radius: 50%; background: var\(--ui-tone\); \}/);
   });
 
   it('the context fill animates transform scaleX, not width', () => {
@@ -830,7 +832,9 @@ describe('agent inbox board — responsive (§5)', () => {
     expect(block).not.toContain('.stats-more');
     // The app bar's links, account and theme toggle are 44px on coarse pointers by the element's own rule;
     // the page's controls in its actions are the page's.
-    expect(block).toContain('.topbar .user-select { min-height: 44px; }');
+    // D7 (A-11): the user select is a kit select chip — 44px on touch / narrow is ui-kit.css's rule.
+    expect(block).not.toContain('.user-select');
+    expect(KIT).toContain('.ui-select-chip { min-height: 44px; }');
     // D7: the bar's chips, 보관함 · 휴면 and 자세히 are kit chips — 44px on touch / narrow is ui-kit.css's rule.
     expect(block).not.toContain('.admin-toggle');
     expect(block).not.toContain('.archives-btn');

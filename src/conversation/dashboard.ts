@@ -4203,6 +4203,7 @@ window.uiPeek = { html: peekHtml, kind: fileItemKind };
 <script type="module" src="/dashboard/ui/goal-card.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/log-scroller.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/elapsed.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/meter.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4298,7 +4299,7 @@ ui-app-bar:not(:defined) > * { visibility: hidden; }
 /* In the bar's row under it (toolbar-row) the scope group wraps, and the row is the user select's cap:
    only a name wider than it ends in an ellipsis. */
 ui-app-bar[toolbar-row] .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; }
-ui-app-bar[toolbar-row] .user-select { max-inline-size: 100%; }
+ui-app-bar[toolbar-row] .user-select { --ui-select-max: 100%; }
 /* 새 작업 in the bar: the ink kit button; its word steps aside on a narrow bar (the + and title stay). */
 ui-app-bar[narrow] .nt-btn-label { display: none; }
 /* SSOT 2026-10-23 T6 — the owner's default model / effort, one click from the top. */
@@ -4319,74 +4320,9 @@ ui-app-bar[narrow] .nt-btn-label { display: none; }
 #td-menu { position: absolute; }
 /* The save line is the kit's status line (.ui-status-line, data-tone="fail" for a refused write), capped in the bar. */
 .topbar .td-status { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* The user select is a trigger (a neutral well with a hairline) because it opens a list. */
-.topbar .user-select {
-  background: transparent;
-  color: var(--text-secondary);
-  border: 1px solid transparent;
-  border-radius: 8px;
-  padding: 6px 10px;
-  text-decoration: none;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease, transform var(--dur-press) var(--ease-out);
-  min-height: 32px;
-  white-space: nowrap;
-  flex: none;
-}
-/* User select: a visible label sized to the selected option, with the native
-   <select> laid transparently over it (it still takes every click, tap and key).
-   A native select cannot show an ellipsis in WebKit — it hard-cuts the text —
-   so the label carries the ellipsis and the select carries the full name in title. */
-.topbar .user-select {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: space-between; /* chevron at the right edge when the select fills the row */
-  gap: 8px;
-  flex: 0 1 auto;
-  min-width: 0;
-  max-inline-size: 180px;
-  background: var(--ib-seg);
-  border-color: var(--ib-card-border);
-  color: var(--ib-text);
-  /* WebKit counts the ellipsized label's full text in this box's scrollable
-     overflow and passes it up to the page (25px of sideways scroll at 320px
-     with a long name selected); nothing in here is meant to extend past it. */
-  overflow: hidden;
-}
-/* Decorations never take a tap: the chevron's transform makes it a stacking
-   context painted above the select, so without pointer-events: none a tap on
-   it would land on the wrapper and the picker would not open. */
-.topbar .user-select-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
-.topbar .user-select::after {
-  content: '';
-  pointer-events: none;
-  flex: none;
-  inline-size: 6px;
-  block-size: 6px;
-  margin: -3px 2px 0;
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  transform: rotate(45deg);
-}
-.topbar .user-select select {
-  position: absolute;
-  z-index: 1;
-  inset: 0;
-  inline-size: 100%;
-  block-size: 100%;
-  opacity: 0;
-  cursor: pointer;
-  appearance: none;
-  border: 0;
-  font: inherit;
-}
-.topbar .user-select:has(select:focus-visible) { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-@media (hover: hover) and (pointer: fine) {
-  .topbar .user-select:hover { background: color-mix(in srgb, var(--ib-text) 6%, var(--ib-card)); }
-}
+/* The user switcher is the kit's select chip (select.ui-select-chip, D7 A-11): a native <select> read as a label,
+   as wide as its selected name, an ellipsis past the bar's cap (--ui-select-max); the full name rides in its title. */
+.topbar .user-select { --ui-select-max: 180px; flex: 0 1 auto; }
 
 /* ── ADMIN MODE TOGGLE — visible only for ADMIN_USERS (#716): a kit chip (.ui-chip[aria-pressed], D7 A-12). On = a
    write-anything mode, so the chip takes the fail tint instead of the kit's neutral "on" (colour where it carries
@@ -4470,9 +4406,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .board-error[hidden] { display: none; }
 .io-row.io-skel { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
 
-/* The working ring (the agent tree's running icons, the panel). */
-.spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--ib-pill); border-top-color: var(--st-run); border-right-color: var(--st-run); display: inline-block; animation: spin 0.9s linear infinite; }
-@keyframes agPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+/* The working ring (the Tasks head's running step) is the kit's spinner (.ui-spinner.is-sm, D7 K-01): the run tone,
+   still under reduced motion by its own rule. */
 
 /* The open card's agent tree: @2lab.ai/ui <ui-agent-tree> (compact) in a
    frame that scrolls past a dozen rows (a wide fan-out stays a card, not a
@@ -4481,9 +4416,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .ag-tree > ui-agent-tree, ui-agent-tree.pa-tree { display: block; min-width: 0; }
 .ag-tree > ui-agent-tree { max-height: 420px; overflow-y: auto; overscroll-behavior: contain; }
 .at-fallback { display: block; padding: 4px 0; font-size: 12px; color: var(--ib-muted); }
-.ag-icon { grid-column: 2; grid-row: 1; width: 16px; height: 16px; display: grid; place-items: center; color: var(--ag-c); }
-.ag-icon svg { width: 14px; height: 14px; }
-.ag-icon .ag-spinner { width: 11px; height: 11px; border-width: 1.8px; }
 .ag-id { flex-shrink: 0; font-size: 11.5px; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
 .ag-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .ag-model { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ib-text-2); }
@@ -4587,8 +4519,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .tl-earlier-title { margin: 8px 0 4px; font-size: 11.5px; color: var(--ib-muted); }
 .tl-earlier .tl-item { color: var(--ib-muted); }
 .tl-toggle { margin-top: 6px; font: inherit; font-size: 12px; color: var(--ib-text-2); background: none; border: 1px solid var(--ib-card-border); border-radius: 6px; padding: 3px 10px; min-height: 28px; cursor: pointer; }
-.spin { display: inline-block; animation: spin 0.9s linear infinite; }
-@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
 /* ── INSTRUCTION / RESPONSE — latest pair, lazy-loaded on expand ── */
 .card-io { margin-top: 12px; display: grid; gap: 6px; }
@@ -4750,7 +4680,6 @@ ui-drawer:not(:defined) { display: none; }
 .ps-sec-title { flex: none; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
 .ps-sec-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 400; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .ps-sec-now { display: inline-flex; align-items: center; gap: 4px; color: var(--text); font-weight: 600; }
-.ps-sec-now .spinner { width: 10px; height: 10px; }
 .panel-tasks {
   padding: 4px 16px;
   border-bottom: 1px solid var(--border);
@@ -5036,11 +4965,8 @@ ui-drawer:not(:defined) { display: none; }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
   .um-tile:active:not(:disabled):not(:focus-visible) { transform: none; }
-  /* Static working indicator: a full ring with a centre dot instead of a spin. */
-  .spinner, .spin { animation: none !important; }
-  /* Loading skeletons hold still (the kit's .ui-skeleton stills itself). */
+  /* Loading skeletons hold still (the kit's .ui-skeleton stills itself; the kit's spinner stands as a ring with a dot). */
   .is-loading { animation: none !important; }
-  .spinner { border-color: var(--st-run); background: radial-gradient(circle, var(--st-run) 0 2px, transparent 2.5px); }
 }
 @media (prefers-reduced-motion: reduce) {
   /* SSOT 2026-10-27 — a compaction past its estimate holds a still, dimmed bar
@@ -5066,8 +4992,8 @@ ui-drawer:not(:defined) { display: none; }
   .panel-command .pc-steer-wrap { flex-basis: 100%; }
 }
 @media (max-width: 639px), (pointer: coarse) {
-  /* The bar's chips (defaults, admin), 보관함 · 휴면 and 자세히 are kit chips: their 44px hit area is the kit's own rule. */
-  .topbar .user-select { min-height: 44px; }
+  /* The bar's chips (defaults, admin), the user select chip, 보관함 · 휴면 and 자세히 are kit chips: their 44px hit
+     area is the kit's own rule. */
   .card-body .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
   .pi-links a, .panel-tasks-toggle { min-height: 44px; }
   .cgl-go, .card-more-link, .tl-toggle { min-height: 44px; }
@@ -5109,40 +5035,13 @@ ui-drawer:not(:defined) { display: none; }
 .new-task-btn { flex: none; padding-right: 6px; }
 .new-task-btn .ui-kbd { background: color-mix(in srgb, var(--ib-card) 16%, transparent); box-shadow: none; color: color-mix(in srgb, var(--ib-card) 82%, transparent); }
 
-.new-task-fab {
-  position: fixed;
-  right: max(16px, env(safe-area-inset-right, 0px));
-  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
-  z-index: 60;
-  display: none;
-  align-items: center;
-  gap: 8px;
-  height: 56px;
-  padding: 0 20px 0 17px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--ib-text);
-  color: var(--ib-card);
-  font: inherit;
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-  box-shadow: var(--ib-shadow-raised);
-  transition: padding var(--dur-expand) var(--ease-out), gap var(--dur-expand) var(--ease-out), transform var(--dur-press) var(--ease-out);
-  animation: nt-fab-in 240ms var(--ease-out) both;
-  -webkit-tap-highlight-color: transparent;
-}
-.new-task-fab:active:not(:focus-visible) { transform: scale(0.95); }
-.new-task-fab:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 3px; }
-.nt-fab-icon { width: 22px; height: 22px; flex: none; transition: transform var(--dur-move) var(--ease-out); }
-.nt-fab-label { display: inline-block; max-width: 7em; overflow: hidden; white-space: nowrap; transition: max-width var(--dur-expand) var(--ease-out), opacity var(--dur-fade) var(--ease-out); }
-.new-task-fab.is-compact { padding: 0 17px; gap: 0; }
-.new-task-fab.is-compact .nt-fab-label { max-width: 0; opacity: 0; }
-.new-task-fab.is-compact .nt-fab-icon { transform: rotate(90deg); }
+/* The floating entry is the kit's extended FAB (.ui-fab.is-extended, D7 H-10): the + with 새 작업 beside it, folding to
+   the round button (.is-folded) while the page scrolls down. The page says when it shows — phones always, PC once the
+   bar's button has scrolled away (.is-floating) — and keeps it above the board's layers. The open composer hides it
+   everywhere; an open drawer hides it only as a sheet (Drawer blocks) — docked, the board is live and the FAB keeps
+   its own is-floating rule. */
+.new-task-fab.ui-fab { display: none; z-index: 60; }
 .new-task-fab.is-floating { display: inline-flex; }
-/* The open composer hides the FAB everywhere; an open drawer hides it only as a
-   sheet (Drawer blocks) — docked, the board is live and the FAB keeps its own
-   is-floating rule. */
 body.nt-open .new-task-fab { display: none !important; }
 
 /* New task (H-01) is @2lab.ai/ui <ui-dialog size="lg" size-phone="full">: the element draws the 720px panel, its
@@ -5154,41 +5053,10 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-body { display: flex; flex-direction: column; gap: 12px; padding: 4px 20px 16px; }
 
 .nt-config { display: flex; flex-wrap: wrap; gap: 8px; }
-.nt-chip { display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 0 4px 0 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); flex: none; max-width: 100%; }
-.nt-chip:focus-within { border-color: var(--border-focus); }
-.nt-chip > label { font-size: 11px; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
-.nt-chip select {
-  appearance: none;
-  -webkit-appearance: none;
-  min-width: 0;
-  max-width: 220px;
-  height: 100%;
-  padding: 0 20px 0 4px;
-  border: 0;
-  outline: none;
-  background-color: transparent;
-  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
-  background-position: calc(100% - 10px) 52%, calc(100% - 6px) 52%;
-  background-size: 4px 4px, 4px 4px;
-  background-repeat: no-repeat;
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  cursor: pointer;
-}
-.nt-chip select option { background: var(--surface); color: var(--text); }
-.nt-battery-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 6px; border: 0; border-radius: 8px; background: transparent; color: var(--text-tertiary); font: inherit; font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; cursor: pointer; }
+/* 모델 · effort · 채널 are kit select chips (.ui-select-chip, D7 H-02); the battery beside the model is <ui-meter
+   shape="battery"> (H-03) in the page's quiet button that opens the usage line. */
+.nt-battery-btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 6px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); font: inherit; cursor: pointer; }
 @media (hover: hover) and (pointer: fine) { .nt-battery-btn:hover { background: var(--ib-pill); } }
-.nt-battery { position: relative; display: inline-block; width: 24px; height: 12px; padding: 1px; border: 1.5px solid currentColor; border-radius: 3px; }
-.nt-battery::after { content: ''; position: absolute; right: -4px; top: 2.5px; width: 2px; height: 4px; border-radius: 0 1px 1px 0; background: currentColor; }
-.nt-battery-fill { display: block; width: 0; height: 100%; border-radius: 1px; background: currentColor; transition: width var(--dur-move) var(--ease-out); }
-.nt-batt-high { color: var(--green); }
-.nt-batt-mid { color: var(--yellow); }
-.nt-batt-low { color: var(--red); }
-.nt-batt-low .nt-battery-fill { animation: nt-blink 1.6s ease-in-out infinite; }
-.nt-batt-unknown { color: var(--text-tertiary); }
 .nt-usage { margin: -4px 0 0; padding: 8px 10px; border-radius: 10px; background: var(--bg); color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 
 /* autogoal · autoz are kit switches (.ui-switch, D7 H-04), the note beside them the page's. */
@@ -5205,34 +5073,27 @@ body.nt-open .new-task-fab { display: none !important; }
 
 
 /* The FAB arrives: opacity + scale from 0.95 (never from nothing), 240ms ease-out — once. */
-@keyframes nt-fab-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: none; } }
-@keyframes nt-blink { 50% { opacity: 0.45; } }
-@keyframes nt-spin { to { rotate: 360deg; } }
 
 @media (max-width: 639px) {
   /* New task — phones: the floating button replaces the top-bar one; the composer is <ui-dialog>'s bottom sheet,
      which follows the visual viewport (the keyboard) itself — the page keeps the form clear of the home indicator. */
   .new-task-btn { display: none; }
-  .new-task-fab { display: inline-flex; }
+  .new-task-fab.ui-fab { display: inline-flex; }
   .nt-body { padding: 4px 14px 10px; gap: 10px; }
   .nt-config { flex-wrap: nowrap; overflow-x: auto; margin: 0 -14px; padding: 0 14px 2px; scrollbar-width: none; }
   .nt-config::-webkit-scrollbar { display: none; }
-  .nt-chip select { max-width: 150px; }
+  .nt-config .ui-select-chip { --ui-select-max: 150px; }
   .nt-body { padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
   .nt-submit-hint { display: none; }
 }
 @media (pointer: coarse) {
-  /* New task — touch: 44px targets, 16px text (iOS does not zoom into it). The composer's own tools, chips and
-     camera are 44px on touch by its rules. */
-  .nt-battery-btn, .nt-chip { min-height: 44px; min-width: 44px; }
-  .nt-chip select { font-size: 16px; }
+  /* New task — touch: 44px targets. The composer's own tools, chips and camera are 44px on touch by its rules; the
+     select chips are 44px with 16px text (iOS does not zoom into them) by the kit's. */
+  .nt-battery-btn { min-height: 44px; min-width: 44px; }
   .nt-kbd, .nt-submit-hint { display: none; }
 }
-@media (prefers-reduced-motion: reduce) {
-  /* New task — no arrival, slide or scale; changes are instant (the dialog's own motion is the element's). */
-  .new-task-btn, .new-task-fab,
-  .nt-battery-fill, .nt-fab-label, .nt-fab-icon { animation: none !important; transition: none !important; }
-}
+/* New task under reduced motion: the FAB's arrival and fold, the meter's fill and the dialog's slide are the kit's
+   and the elements' own stilled rules; the bar's entry has no motion of its own. */
 /* ── Session artifacts (SSOT 2026-10-23): face chips, strips, the peek's inside, the viewer's slot ── */
 .art-glyph { width: 14px; height: 14px; flex-shrink: 0; }
 .art-k-image { --art-tint: var(--green); }
@@ -5408,9 +5269,9 @@ ${pageTokenAliases()}
       <ui-menu id="td-menu" lang="ko"></ui-menu>
       <span class="ui-status-line td-status" id="td-status" role="status" aria-live="polite"></span>
     </div>
-    <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">모든 사용자</span><select id="user-select" title="모든 사용자" aria-label="보드에 보일 사용자" onchange="selectUser(this.value)">
+    <select class="ui-select-chip user-select" id="user-select" title="모든 사용자" aria-label="보드에 보일 사용자" onchange="selectUser(this.value)">
       <option value="">모든 사용자</option>
-    </select></span>
+    </select>
     <button
       id="admin-inbox-btn"
       type="button"
@@ -5621,7 +5482,7 @@ ${pageTokenAliases()}
 
   <!-- New task (SSOT 2026-10-23): floating button (phones, and PC once the top-bar
        button scrolls away), the composer dialog, and the launch toast. -->
-  <button type="button" class="new-task-fab" id="new-task-fab" aria-label="새 작업 시작" onclick="openNewTask()"><i data-ui-icon="plus" class="nt-fab-icon"></i><span class="nt-fab-label">새 작업</span></button>
+  <button type="button" class="ui-fab is-extended new-task-fab" id="new-task-fab" aria-label="새 작업 시작" onclick="openNewTask()"><i data-ui-icon="plus"></i><span>새 작업</span></button>
   <!-- The composer dialog is @2lab.ai/ui <ui-dialog> (D4 H-01): its heading and ✕, scrim, focus trap, Esc / scrim
        close (ui-close; ui-closed after the exit → ntOnClosed), focus return to the opener, and on phones the sheet
        edge to edge (size-phone="full", 0.12.0 — D4 G6-1) above the soft keyboard. The page's form stays whole
@@ -5630,9 +5491,11 @@ ${pageTokenAliases()}
     <form id="nt-form" class="nt-form" onsubmit="event.preventDefault()" novalidate>
       <div class="nt-body" id="nt-body">
         <div class="nt-config" role="group" aria-label="작업 설정">
-          <div class="nt-chip nt-chip-model"><label for="nt-model">모델</label><select id="nt-model" onchange="ntOnModelChange()"></select><button type="button" class="nt-battery-btn nt-batt-unknown" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><span class="nt-battery" id="nt-battery" role="img" aria-label="잔여량 미확인"><span class="nt-battery-fill" id="nt-battery-fill"></span></span><span class="nt-battery-pct" id="nt-battery-pct">?</span></button></div>
-          <div class="nt-chip"><label for="nt-effort">effort</label><select id="nt-effort" onchange="ntOnEffortChange()"></select></div>
-          <div class="nt-chip nt-chip-channel"><label for="nt-channel">채널</label><select id="nt-channel" onchange="ntOnChannelChange()"></select></div>
+          <!-- Kit select chips (.ui-select-chip, D7 H-02): the word, then the native select sized to its option; the model's
+               remaining usage beside it is @2lab.ai/ui <ui-meter shape="battery"> (H-03) in a button that opens the usage line. -->
+          <label class="ui-select-chip"><span>모델</span><select id="nt-model" onchange="ntOnModelChange()"></select></label><button type="button" class="nt-battery-btn" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><ui-meter id="nt-battery" shape="battery" low="0.2" high="0.5" label="모델 잔여량" lang="ko"></ui-meter></button>
+          <label class="ui-select-chip"><span>effort</span><select id="nt-effort" onchange="ntOnEffortChange()"></select></label>
+          <label class="ui-select-chip"><span>채널</span><select id="nt-channel" onchange="ntOnChannelChange()"></select></label>
         </div>
         <p class="nt-usage" id="nt-usage" hidden></p>
         <div class="nt-toggles" role="group" aria-label="자동 진행">
@@ -7495,23 +7358,20 @@ async function loadUsers() {
       select.appendChild(opt);
     }
   } catch (e) { console.error('Failed to load users', e); }
-  syncUserSelectLabel();
+  syncUserSelectTitle();
 }
 
-// The visible label over the transparent user <select> shows the selected
-// option; the select's title keeps the full name when the label is ellipsized.
-function syncUserSelectLabel() {
+// The user select is the kit's select chip (sized to its option, an ellipsis past the cap): its title keeps the
+// selected name in full.
+function syncUserSelectTitle() {
   const select = document.getElementById('user-select');
-  const label = document.getElementById('user-select-label');
-  if (!select || !label) return;
+  if (!select) return;
   const opt = select.options[select.selectedIndex];
-  const text = opt ? opt.textContent : '';
-  if (label.textContent !== text) label.textContent = text;
-  select.title = text;
+  select.title = opt ? opt.textContent : '';
 }
 
 function selectUser(userId) {
-  syncUserSelectLabel();
+  syncUserSelectTitle();
   currentUserId = userId;
   history.replaceState(null, '', userId ? '/dashboard/' + userId : '/dashboard');
   loadSessions();
@@ -8545,7 +8405,7 @@ function agentCounts(agents) {
 }
 // Status icon: shape + the word next to it; colour is a third cue, never the only one.
 function agentIconHtml(st) {
-  if (st === 'running') return '<span class="spinner ag-spinner" aria-hidden="true"></span>';
+  if (st === 'running') return '<span class="ui-spinner is-sm" aria-hidden="true"></span>';
   if (st === 'completed') return '<i data-ui-icon="check"></i>';
   if (st === 'failed') return '<i data-ui-icon="cross"></i>';
   if (st === 'stopped') return '<i data-ui-icon="stop"></i>';
@@ -16518,19 +16378,20 @@ var _ntRequestId = null;
 // differs from the last one, so a repaint while someone types never resets the field.
 var _ntValue = null;
 
+// The battery's reading for <ui-meter> (value 0..1, null = unknown — the element draws "?" with no fill) and the words
+// of the usage line (the button's title too).
 function ntBatteryView(b) {
   if (!b || typeof b.level !== 'number') {
-    return { cls: 'nt-batt-unknown', pct: '?', fill: 0, label: '잔여량 미확인 · 공유 풀 추정' };
+    return { value: null, label: '잔여량 미확인 · 공유 풀 추정' };
   }
   var pct = Math.round(b.level * 100);
-  var cls = b.level >= 0.5 ? 'nt-batt-high' : b.level >= 0.2 ? 'nt-batt-mid' : 'nt-batt-low';
   var parts = ['공유 풀 추정 ' + pct + '%'];
   (b.windows || []).forEach(function (w) {
     if (typeof w.remaining === 'number') parts.push(w.label + ' ' + Math.round(w.remaining * 100) + '%');
   });
   if (b.accounts) parts.push('가용 ' + b.accounts.available + '/' + b.accounts.total);
   if (typeof b.best === 'number') parts.push('최대 ' + Math.round(b.best * 100) + '%');
-  return { cls: cls, pct: pct + '%', fill: pct, label: parts.join(' · ') };
+  return { value: b.level, label: parts.join(' · ') };
 }
 
 function ntDefaultState(ctx, draft) {
@@ -16773,12 +16634,9 @@ function ntRenderBattery() {
     return x.nickname === _ntState.model;
   });
   var v = ntBatteryView(m ? m.battery : null);
-  var btn = ntEl('nt-battery-btn');
-  btn.className = 'nt-battery-btn ' + v.cls;
-  btn.title = v.label;
-  ntEl('nt-battery-fill').style.width = v.fill + '%';
-  ntEl('nt-battery-pct').textContent = v.pct;
-  ntEl('nt-battery').setAttribute('aria-label', '모델 잔여량 ' + v.label);
+  ntEl('nt-battery-btn').title = v.label;
+  // The meter: the fill slides to the level and the tone follows the thresholds (good from a half, fair from a fifth).
+  ntEl('nt-battery').data = { value: v.value, low: 0.2, high: 0.5, label: '모델 잔여량' };
   var usage = _ntCtx.usage || {};
   var extra = [];
   if (usage.source) extra.push(usage.source === 'llmux' ? 'llmux 계정 풀' : 'CCT 슬롯');
@@ -16991,7 +16849,7 @@ function ntInit() {
       openNewTask();
     }
   });
-  // Phones: the floating button folds to a circle while scrolling down.
+  // Phones: the floating button folds to the round button (the kit's .is-folded) while scrolling down.
   var fab = ntEl('new-task-fab');
   var lastY = window.scrollY;
   window.addEventListener(
@@ -16999,7 +16857,7 @@ function ntInit() {
     function () {
       var y = window.scrollY;
       if (Math.abs(y - lastY) < 8) return;
-      fab.classList.toggle('is-compact', y > lastY && y > 80);
+      fab.classList.toggle('is-folded', y > lastY && y > 80);
       lastY = y;
     },
     { passive: true },

@@ -24,6 +24,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { uiLibKitCss } from '../ui-lib';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS;
@@ -60,6 +61,7 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
+const KIT = uiLibKitCss();
 const HEADER = TEMPLATE.slice(TEMPLATE.indexOf('<header class="topbar" id="topbar">'), TEMPLATE.indexOf('</header>'));
 function cssRule(selector: string): string {
   const re = new RegExp(`^${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`, 'm');
@@ -123,14 +125,17 @@ describe('the top bar is <ui-app-bar> (A-03..A-14)', () => {
     expect(TEMPLATE).toContain('ui-app-bar[narrow] .nt-btn-label { display: none; }');
   });
 
-  it('the user select is a visible label over a transparent native select whose title carries the full name', () => {
+  it('the user select is the kit’s select chip (D7 A-11): a native select read as a label, its title the full name', () => {
     expect(HEADER).toMatch(
-      /<span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">[^<]+<\/span><select id="user-select" title="[^"]+" aria-label="보드에 보일 사용자"/,
+      /<select class="ui-select-chip user-select" id="user-select" title="[^"]+" aria-label="보드에 보일 사용자" onchange="selectUser\(this\.value\)">/,
     );
-    expect(cssRule('.topbar .user-select select')).toMatch(/opacity: 0;/);
-    // In the bar the selected name is capped; in the bar's row under it the row is the cap.
-    expect(TEMPLATE).toMatch(/\.topbar \.user-select \{[^}]*max-inline-size: 180px;/);
-    expect(TEMPLATE).toContain('ui-app-bar[toolbar-row] .user-select { max-inline-size: 100%; }');
+    expect(HEADER).not.toContain('user-select-label');
+    // The kit sizes the select to its selected option and ellipsizes past --ui-select-max; the page sets the cap:
+    // in the bar 180px, in the bar's row under it the row.
+    expect(KIT).toContain('max-width: var(--ui-select-max, 220px); field-sizing: content;');
+    expect(TEMPLATE).toContain('.topbar .user-select { --ui-select-max: 180px; flex: 0 1 auto; }');
+    expect(TEMPLATE).toContain('ui-app-bar[toolbar-row] .user-select { --ui-select-max: 100%; }');
+    expect(TEMPLATE).not.toMatch(/\.topbar \.user-select select/);
   });
 
   it('admin-mode-label is split into prefix + state spans (JS rewrites 켬/끔 only)', () => {
@@ -318,7 +323,9 @@ describe('the scope group is the bar’s toolbar — the bar places it', () => {
 describe('touch targets and overflow', () => {
   it("the page's own top-bar controls are 44px on narrow or touch screens (the bar's are the element's)", () => {
     const block = TEMPLATE.match(/@media \(max-width: 639px\), \(pointer: coarse\) \{[\s\S]*?\n\}/)?.[0] ?? '';
-    expect(block).toContain('.topbar .user-select { min-height: 44px; }');
+    // D7 (A-11): the user select is a kit select chip — 44px on touch / narrow is ui-kit.css's rule.
+    expect(block).not.toContain('.user-select');
+    expect(KIT).toContain('.ui-select-chip { min-height: 44px; }');
     // D7 (A-06, A-12): the defaults and admin chips are kit chips — their 44px hit area is the kit's own rule.
     expect(TEMPLATE).toMatch(/<button type="button" class="ui-chip td-chip" id="td-model"/);
     expect(TEMPLATE).toMatch(/<button type="button" class="ui-chip td-chip" id="td-effort"/);
