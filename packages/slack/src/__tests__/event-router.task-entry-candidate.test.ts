@@ -107,6 +107,20 @@ describe('app_mention — the task entry candidate marker (E2 ⑦)', () => {
     expect(synthetic.forwarded().routeContext?.taskEntryCandidate).toBeUndefined();
   });
 
+  it('a mention whose app_mention carries no files is judged on its words — the host re-checks files (fable #670 P2-1)', async () => {
+    // Slack often delivers `@bot … + attachment` as an app_mention without `files`.
+    const h = harness();
+    await h.fire({ text: '<@U_BOT> 이 파일 봐줘' });
+    expect(h.forwarded().routeContext?.taskEntryCandidate).toBe(true);
+  });
+
+  it('no bot id: the mention could not be stripped — no marker (fable #670 P3-4)', async () => {
+    const h = harness();
+    h.router.deps.slackApi.getBotUserId.mockRejectedValueOnce(new Error('auth.test failed'));
+    await h.fire({ text: '<@U_BOT> /compact' });
+    expect(h.forwarded().routeContext?.taskEntryCandidate).toBeUndefined();
+  });
+
   it('a file mention is left to the file_share path — nothing is forwarded from app_mention', async () => {
     const h = harness();
     await h.fire({ text: '<@U_BOT> 이 파일 봐줘', files: [{ id: 'F1' }] });
@@ -125,6 +139,9 @@ describe('app_mention — the task entry candidate marker (E2 ⑦)', () => {
     expect(isTaskEntryCandidate(base, 'new 고쳐줘')).toBe(false);
     expect(isTaskEntryCandidate(base, '!고쳐줘')).toBe(false);
     expect(isTaskEntryCandidate(base, '%model opus')).toBe(false);
+    // Naked commands and a forced skill are candidates: the host narrows (fable #670 P3-3).
+    expect(isTaskEntryCandidate(base, '$review')).toBe(true);
+    expect(isTaskEntryCandidate(base, 'persona linus')).toBe(true);
     // Only `/z` is the z prefix: a word that starts with z is an instruction.
     expect(isTaskEntryCandidate(base, 'zod 스키마 고쳐줘')).toBe(true);
   });
