@@ -87,7 +87,7 @@ describe('TaskTurnController — refusals (598c §1)', () => {
     ['a session command', { text: '%effort high' }, 400, /commands are not supported/],
   ])('refuses %s before anything runs', async (_name, req, status, error) => {
     const h = harness();
-    const r = await h.controller.start({ sessionKey: KEY, ...req });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, ...req });
     expect(r.status).toBe(status);
     expect(String(r.body.error)).toMatch(error);
     expect(h.runTaskTurn).not.toHaveBeenCalled();
@@ -99,7 +99,11 @@ describe('TaskTurnController — refusals (598c §1)', () => {
     ['50% 진행'],
   ])('does not refuse an instruction that only starts like a command: %s', async (text) => {
     const h = harness();
-    const r = await h.controller.start({ sessionKey: KEY, text: text.replace('/tmp-like path first: ', '') });
+    const r = await h.controller.start({
+      actorUserId: 'UOWNER',
+      sessionKey: KEY,
+      text: text.replace('/tmp-like path first: ', ''),
+    });
     expect(r.status).toBe(202);
     await r.done;
   });
@@ -107,7 +111,7 @@ describe('TaskTurnController — refusals (598c §1)', () => {
   it('refuses a session that is not a Slack-less task', async () => {
     const h = harness();
     h.sessions.get(KEY).slackless = undefined;
-    expect((await h.controller.start({ sessionKey: KEY, text: 'go' })).status).toBe(409);
+    expect((await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' })).status).toBe(409);
   });
 
   it('a task whose execution context cannot be built answers 409 with the reason', async () => {
@@ -118,7 +122,7 @@ describe('TaskTurnController — refusals (598c §1)', () => {
         });
       },
     });
-    const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
     expect(r).toMatchObject({
       status: 409,
       body: { error: 'task cannot run: task has no absolute working directory' },
@@ -129,9 +133,9 @@ describe('TaskTurnController — refusals (598c §1)', () => {
   it('after stopAccepting (shutdown) a start answers 503; resumeAccepting (a refused shutdown) re-opens it', async () => {
     const h = harness();
     h.controller.stopAccepting();
-    expect((await h.controller.start({ sessionKey: KEY, text: 'go' })).status).toBe(503);
+    expect((await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' })).status).toBe(503);
     h.controller.resumeAccepting();
-    const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
     expect(r.status).toBe(202);
     await r.done;
   });
@@ -150,27 +154,27 @@ describe('TaskTurnController — D9 and the busy task (598c §2)', () => {
         return completed();
       },
     ]);
-    const first = await h.controller.start({ sessionKey: KEY, text: 'one' });
+    const first = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'one' });
     expect(first.status).toBe(202);
-    expect((await h.controller.start({ sessionKey: KEY, text: 'two' })).status).toBe(409);
-    expect((await h.controller.start({ sessionKey: KEY2, text: 'other' })).status).toBe(429);
+    expect((await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'two' })).status).toBe(409);
+    expect((await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY2, text: 'other' })).status).toBe(429);
     release();
     await first.done;
-    expect((await h.controller.start({ sessionKey: KEY2, text: 'other' })).status).toBe(202);
+    expect((await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY2, text: 'other' })).status).toBe(202);
   });
 
   it('the window bound refuses the 11th start in 10 minutes', async () => {
     let t = 0;
     const h = harness({ now: () => t });
     for (let i = 0; i < 10; i++) {
-      const r = await h.controller.start({ sessionKey: KEY, text: `n${i}` });
+      const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: `n${i}` });
       expect(r.status).toBe(202);
       await r.done;
       t += 1000;
     }
-    expect((await h.controller.start({ sessionKey: KEY, text: 'n10' })).status).toBe(429);
+    expect((await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'n10' })).status).toBe(429);
     t += 10 * 60_000;
-    expect((await h.controller.start({ sessionKey: KEY, text: 'later' })).status).toBe(202);
+    expect((await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'later' })).status).toBe(202);
   });
 
   it('a start answered 500 does not use up the owner’s start window (#634 R1)', async () => {
@@ -180,21 +184,21 @@ describe('TaskTurnController — D9 and the busy task (598c §2)', () => {
       h.runTaskTurn.mockImplementationOnce(async () => {
         throw new Error('ENOSPC');
       });
-      expect((await h.controller.start({ sessionKey: KEY, text: `n${i}` })).status).toBe(500);
+      expect((await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: `n${i}` })).status).toBe(500);
       t += 1000;
     }
-    const ok = await h.controller.start({ sessionKey: KEY, text: 'now it saves' });
+    const ok = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'now it saves' });
     expect(ok.status).toBe(202);
     await ok.done;
   });
 
   it('the cap is released after a chain that throws after acceptance', async () => {
     const h = harness({}, [new Error('boom')]);
-    const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
     expect(r.status).toBe(202);
     await r.done;
     expect(h.deps.logger.error).toHaveBeenCalled();
-    expect((await h.controller.start({ sessionKey: KEY, text: 'again' })).status).toBe(202);
+    expect((await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'again' })).status).toBe(202);
   });
 });
 
@@ -205,10 +209,10 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
         throw new Error('ENOSPC');
       },
     ]);
-    const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
     expect(r.status).toBe(500);
     expect(h.coordinator.controllers.size).toBe(0);
-    expect((await h.controller.start({ sessionKey: KEY, text: 'go' })).status).toBe(202);
+    expect((await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' })).status).toBe(202);
   });
 
   it('accepts once the start is saved, before the turn ends; the first hop is user input with the context', async () => {
@@ -223,7 +227,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
         return completed();
       },
     ]);
-    const r = await h.controller.start({ sessionKey: KEY, text: 'do it' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'do it' });
     expect(r.status).toBe(202);
     const input = h.inputs[0];
     expect(input).toMatchObject({ sessionKey: KEY, executionContext: CTX, text: 'do it' });
@@ -246,7 +250,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
         return completed();
       },
     ]);
-    const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
     await r.done;
   });
 
@@ -260,7 +264,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
         return { turnId: 'a', outcome: null, nonTerminal: 'fallbackCompact' };
       },
     ]);
-    const r = await h.controller.start({ sessionKey: KEY, text: 'big' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'big' });
     await r.done;
     expect(h.runTaskTurn).toHaveBeenCalledTimes(1);
     // The pending fallback turn is ended — cancelled — not left working on the 1M model (#634 R1).
@@ -278,7 +282,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
         throw new Error('ENOSPC');
       },
     ]);
-    const r = await h.controller.start({ sessionKey: KEY, text: 'big' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'big' });
     expect(r.status).toBe(202);
     await r.done;
     expect(h.abandonTurn).toHaveBeenCalledWith(
@@ -298,7 +302,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
         return { turnId: 'a', outcome: null, nonTerminal: 'fallbackCompact' };
       },
     ]);
-    const r = await h.controller.start({ sessionKey: KEY, text: 'big' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'big' });
     await r.done;
     expect(h.runTaskTurn).toHaveBeenCalledTimes(1);
     expect(h.abandonTurn).not.toHaveBeenCalled();
@@ -315,7 +319,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
         return completed();
       },
     ]);
-    const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
     await r.done;
     expect(seen).toBe('user-stop');
   });
@@ -338,7 +342,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
         return completed();
       },
     ]);
-    const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
     await h.controller.close(KEY);
     expect(reason).toBe('session-close');
     await r.done;
@@ -362,7 +366,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
       return { turnId: 'a', outcome: { turnId: 'a', outcome: 'failed', category: 'Exception', at: 1 } };
     });
     h.sessions.get(KEY).actionPanel = { waitingForChoice: true, pendingQuestion: { question: 'Q?' } };
-    const r = await h.controller.start({ sessionKey: KEY, text: 'do X' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'do X' });
     expect(r.status).toBe(500);
     expect(h.sessions.get(KEY).actionPanel.pendingQuestion).toBeUndefined();
   });
@@ -375,7 +379,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
     ]);
     const question = { question: 'Q?', askId: 'ask-1' };
     h.sessions.get(KEY).actionPanel = { waitingForChoice: true, pendingQuestion: question };
-    const r = await h.controller.start({ sessionKey: KEY, text: 'do X' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'do X' });
     expect(r.status).toBe(500);
     const panel = h.sessions.get(KEY).actionPanel;
     expect(panel.waitingForChoice).toBe(true);
@@ -385,7 +389,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
   it('a new instruction supersedes an open question (as a new Slack message does)', async () => {
     const h = harness();
     h.sessions.get(KEY).actionPanel = { waitingForChoice: true, pendingQuestion: { question: 'Q?' } };
-    const r = await h.controller.start({ sessionKey: KEY, text: 'never mind, do X' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'never mind, do X' });
     await r.done;
     const panel = h.sessions.get(KEY).actionPanel;
     expect(panel.waitingForChoice).toBe(false);
@@ -407,7 +411,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
       },
       completed('d'),
     ]);
-    const r = await h.controller.start({ sessionKey: KEY, text: 'the big instruction' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'the big instruction' });
     await r.done;
     expect(h.inputs.map((i) => i.text)).toEqual(['the big instruction', '/compact', 'the big instruction']);
     expect(h.inputs[1]).toMatchObject({ compactHop: true });
@@ -424,7 +428,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
       },
       { turnId: 'b', outcome: { turnId: 'b', outcome: 'failed', category: 'Exception', at: 1 } },
     ]);
-    const r = await h.controller.start({ sessionKey: KEY, text: 'big' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'big' });
     await r.done;
     expect(h.inputs.map((i) => i.text)).toEqual(['big', '/compact']);
   });
@@ -447,7 +451,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
       input.onStarted?.();
       return completed('b');
     });
-    const r = await h.controller.start({ sessionKey: KEY, text: 'big' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'big' });
     await r.done;
     // Dispatch 1: the instruction; dispatch 2 (last): /compact — no budget left to replay.
     expect(h.inputs.map((i) => i.text)).toEqual(['big', '/compact']);
@@ -461,14 +465,14 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
     const h = harness({}, [
       { turnId: 'a', outcome: { turnId: 'a', outcome: 'interrupted', category: 'Stalled', at: 1, retryable: true } },
     ]);
-    const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
     await r.done;
     expect(h.runTaskTurn).toHaveBeenCalledTimes(1);
   });
 
   it('a shutdown return ends the chain without another hop (restart reconciliation owns it)', async () => {
     const h = harness({}, [{ turnId: 'a', outcome: null, nonTerminal: 'shutdown' }]);
-    const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
     await r.done;
     expect(h.runTaskTurn).toHaveBeenCalledTimes(1);
   });
@@ -491,7 +495,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
         },
       ],
     );
-    const r = await h.controller.start({ sessionKey: KEY, text: 'big' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'big' });
     await r.done;
     expect(builds).toBe(2);
     expect(h.runTaskTurn).toHaveBeenCalledTimes(1);
@@ -510,7 +514,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
         return { turnId: 'a', outcome: null, nonTerminal: 'shutdown' };
       },
     ]);
-    const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
     await r.done;
     expect(h.abandonTurn).not.toHaveBeenCalled();
     h.controller.resumeAccepting();
@@ -534,7 +538,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
         return { turnId: 'a', outcome: null, nonTerminal: 'shutdown' };
       },
     ]);
-    const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
     // index.ts order: stopAccepting → clearAll (aborts) → refused → resumeAccepting, all before the turn unwinds.
     h.controller.stopAccepting();
     h.coordinator.abortSession(KEY, 'shutdown');
@@ -555,11 +559,11 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
         return new Promise<RunTaskTurnResult>(() => {}); // never settles
       },
     ]);
-    const r = await h.controller.start({ sessionKey: KEY, text: 'hang' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'hang' });
     expect(r.status).toBe(202);
     await h.controller.close(KEY);
     expect(h.controller.isRunning(KEY)).toBe(false);
-    const next = await h.controller.start({ sessionKey: KEY2, text: 'other task' });
+    const next = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY2, text: 'other task' });
     expect(next.status).toBe(202);
   });
 
@@ -581,7 +585,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
       order.push('abandoned');
       return { turnId, outcome: { ...decided, turnId, at: 1 } };
     });
-    const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
+    const r = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
     await r.done;
     h.controller.resumeAccepting(); // the shutdown was refused: the stranded turn is being ended
     const closing = h.controller.close(KEY).then(() => order.push('closed'));
@@ -591,5 +595,285 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
     releaseAbandon();
     await closing;
     expect(order).toEqual(['abandoned', 'closed']);
+  });
+});
+
+// #637 R2 (fable P3) — every start runs under the owner's identity, so the
+// owner check lives in admission, shared by an instruction and an answer.
+describe('TaskTurnController.start — only the task’s owner starts it (#637 R2)', () => {
+  it('a start by anyone but the owner (or by nobody) is 403 and runs nothing', async () => {
+    const h = harness();
+    for (const actorUserId of ['U_OTHER', '']) {
+      const r = await h.controller.start({ actorUserId, sessionKey: KEY, text: 'go' });
+      expect(r).toMatchObject({ status: 403 });
+    }
+    expect(h.runTaskTurn).not.toHaveBeenCalled();
+    const ok = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
+    expect(ok.status).toBe(202);
+    await ok.done;
+  });
+});
+
+// #600 ⑥ — the new-task launcher asks before it creates anything: the same
+// owner-level admission a start would meet (shutdown, the owner's running
+// task, the start window), with no side effect.
+describe('TaskTurnController.canStart — a dry run of admission (#600 ⑥)', () => {
+  it('null while the owner may start; the start’s own refusal otherwise — and it counts nothing', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const h = harness({ maxStartsPerWindow: 2 } as never, [
+      async (input) => {
+        input.onStarted?.();
+        await gate;
+        return completed('first');
+      },
+    ]);
+    expect(h.controller.canStart('UOWNER')).toBeNull();
+    expect(h.controller.canStart('UOWNER')).toBeNull(); // no window entry taken
+    const first = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
+    expect(first.status).toBe(202);
+    expect(h.controller.canStart('UOWNER')).toMatchObject({ status: 429 });
+    expect(h.controller.canStart('U_SOMEONE_ELSE')).toBeNull();
+    release();
+    await first.done;
+    expect(h.controller.canStart('UOWNER')).toBeNull();
+    h.controller.stopAccepting();
+    expect(h.controller.canStart('UOWNER')).toMatchObject({ status: 503 });
+  });
+
+  // #640 R1 (fable, astra): a first instruction the start would refuse as a
+  // command is refused before a task exists — never a card that cannot start.
+  it.each([
+    ['/compact'],
+    ['/model opus'],
+    ['%model'],
+    ['/zworkflow:using-ssot'], // a plugin's namespaced command (#640 R2)
+    ['/plugin:skill do it'],
+  ])('refuses a command-shaped first instruction (%s) with the start’s own 400', (text) => {
+    const h = harness();
+    expect(h.controller.canStart('UOWNER', text)).toEqual({
+      status: 400,
+      body: { error: 'commands are not supported on a dashboard task yet — send an instruction' },
+    });
+  });
+
+  it('refuses with the window’s own 429 once the owner’s starts fill it, before anything is made', async () => {
+    const h = harness({ maxStartsPerWindow: 1 } as never, [
+      async (input) => {
+        input.onStarted?.();
+        return completed('only');
+      },
+    ]);
+    const first = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
+    expect(first.status).toBe(202);
+    await first.done;
+    expect(h.controller.canStart('UOWNER', 'again')).toEqual({
+      status: 429,
+      body: { error: 'too many dashboard task starts — try again shortly' },
+    });
+  });
+
+  it('lets an instruction that only mentions a path or a slash through', () => {
+    const h = harness();
+    expect(h.controller.canStart('UOWNER', 'clean /tmp/build and explain 2/3 of it')).toBeNull();
+    expect(h.controller.canStart('UOWNER', '  fix the flaky test')).toBeNull();
+  });
+});
+
+describe('TaskTurnController.answer — a dashboard answer to a task’s question (#599 ⑤)', () => {
+  const QUESTION = {
+    type: 'user_choice',
+    question: 'Which DB?',
+    choices: [
+      { id: 'pg', label: 'Postgres' },
+      { id: 'my', label: 'MySQL' },
+    ],
+    askId: 'ask-1',
+    turnId: 't-ask',
+  };
+  const waiting = (h: ReturnType<typeof harness>, key = KEY) => {
+    const s = h.sessions.get(key);
+    s.activityState = 'waiting';
+    s.actionPanel = { waitingForChoice: true, pendingQuestion: { ...QUESTION } };
+    return s;
+  };
+
+  it('runs the answer as the next instruction — the Slack text, user input — and clears the question', async () => {
+    const h = harness();
+    waiting(h);
+    const r = await h.controller.answer({
+      actorUserId: 'UOWNER',
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'single', choiceId: 'pg' },
+    });
+    expect(r.status).toBe(202);
+    await r.done;
+    expect(h.inputs[0]).toMatchObject({ text: 'pg' });
+    expect(h.inputs[0].params?.isUserInput).toBe(true);
+    expect(h.sessions.get(KEY).actionPanel.pendingQuestion).toBeUndefined();
+  });
+
+  it('an answer for another question (stale askId) is 409 and changes nothing', async () => {
+    const h = harness();
+    waiting(h);
+    const r = await h.controller.answer({
+      actorUserId: 'UOWNER',
+      sessionKey: KEY,
+      askId: 'ask-0',
+      answer: { kind: 'single', choiceId: 'pg' },
+    });
+    expect(r).toMatchObject({ status: 409, body: { error: 'the question has changed — reload' } });
+    expect(h.runTaskTurn).not.toHaveBeenCalled();
+    expect(h.sessions.get(KEY).actionPanel.pendingQuestion.askId).toBe('ask-1');
+  });
+
+  it('a task that is not waiting takes no answer', async () => {
+    const h = harness();
+    const s = waiting(h);
+    s.activityState = 'idle';
+    expect(
+      (
+        await h.controller.answer({
+          actorUserId: 'UOWNER',
+          sessionKey: KEY,
+          askId: 'ask-1',
+          answer: { kind: 'single', choiceId: 'pg' },
+        })
+      ).status,
+    ).toBe(409);
+    expect(h.runTaskTurn).not.toHaveBeenCalled();
+  });
+
+  it('a choice that was not offered is 422 and the question stays', async () => {
+    const h = harness();
+    waiting(h);
+    const r = await h.controller.answer({
+      actorUserId: 'UOWNER',
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'single', choiceId: 'oracle' },
+    });
+    expect(r.status).toBe(422);
+    expect(h.runTaskTurn).not.toHaveBeenCalled();
+    expect(h.sessions.get(KEY).actionPanel).toMatchObject({
+      waitingForChoice: true,
+      pendingQuestion: { askId: 'ask-1' },
+    });
+  });
+
+  it('one answer only: a concurrent second answer to the same question is refused', async () => {
+    const h = harness();
+    waiting(h);
+    const a = h.controller.answer({
+      actorUserId: 'UOWNER',
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'single', choiceId: 'pg' },
+    });
+    const b = h.controller.answer({
+      actorUserId: 'UOWNER',
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'single', choiceId: 'my' },
+    });
+    const [ra, rb] = await Promise.all([a, b]);
+    expect([ra.status, rb.status].sort()).toEqual([202, 409]);
+    await ra.done;
+    await rb.done;
+    expect(h.runTaskTurn).toHaveBeenCalledTimes(1);
+  });
+
+  // #637 R1 (astra P1) — the answer runs under the owner's identity: the route
+  // checks the signed-in owner, and the controller refuses anyone else again.
+  it('an answer from anyone but the task’s owner is 403 and changes nothing', async () => {
+    const h = harness();
+    waiting(h);
+    for (const actorUserId of ['U_OTHER', '']) {
+      const r = await h.controller.answer({
+        actorUserId,
+        sessionKey: KEY,
+        askId: 'ask-1',
+        answer: { kind: 'single', choiceId: 'pg' },
+      });
+      expect(r).toMatchObject({ status: 403 });
+    }
+    expect(h.runTaskTurn).not.toHaveBeenCalled();
+    expect(h.sessions.get(KEY).actionPanel.pendingQuestion.askId).toBe('ask-1');
+  });
+
+  // #637 R1 (fable P3) — an answer is not a command: a form whose question
+  // starts with `%` is answered. One that would start with `/` is refused with
+  // its reason (the SDK reads a leading `/word` as a command) and stays open.
+  it('an answer starting with % runs; one that would start with /word is 422 with its reason and the question stays', async () => {
+    const h = harness();
+    const s = waiting(h);
+    s.actionPanel.pendingQuestion = {
+      type: 'user_choices',
+      questions: [{ id: 'q1', question: '%CPU threshold?', choices: [{ id: '80', label: '80%' }] }],
+      askId: 'ask-1',
+    };
+    const ok = await h.controller.answer({
+      actorUserId: 'UOWNER',
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'multi', selections: { q1: { choiceId: '80', label: '80%' } } },
+    });
+    expect(ok.status).toBe(202);
+    await ok.done;
+    expect(h.inputs[0]).toMatchObject({ text: '%CPU threshold?: 80. 80%' });
+
+    const h2 = harness();
+    const s2 = waiting(h2);
+    s2.actionPanel.pendingQuestion = { ...QUESTION, choices: [{ id: '/compact', label: 'compact' }] };
+    const refused = await h2.controller.answer({
+      actorUserId: 'UOWNER',
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'single', choiceId: '/compact' },
+    });
+    expect(refused.status).toBe(422);
+    expect(String(refused.body.error)).toMatch(/would be read as a command — rephrase it as a free-form instruction/);
+    expect(h2.runTaskTurn).not.toHaveBeenCalled();
+    expect(h2.sessions.get(KEY).actionPanel.pendingQuestion.askId).toBe('ask-1');
+  });
+
+  it('an answer refused at admission (the owner’s other task runs) keeps the question, and can be sent again later', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const h = harness({}, [
+      async (input) => {
+        input.onStarted?.();
+        await gate;
+        return completed('other');
+      },
+    ]);
+    const other = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY2, text: 'other work' });
+    waiting(h);
+    const refused = await h.controller.answer({
+      actorUserId: 'UOWNER',
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'single', choiceId: 'pg' },
+    });
+    expect(refused.status).toBe(429);
+    expect(h.sessions.get(KEY).actionPanel).toMatchObject({
+      waitingForChoice: true,
+      pendingQuestion: { askId: 'ask-1' },
+    });
+    release();
+    await other.done;
+    const again = await h.controller.answer({
+      actorUserId: 'UOWNER',
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'single', choiceId: 'pg' },
+    });
+    expect(again.status).toBe(202);
+    await again.done;
   });
 });

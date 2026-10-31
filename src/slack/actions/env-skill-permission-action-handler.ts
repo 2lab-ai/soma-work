@@ -47,6 +47,20 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set([
  * the same admin twice, or two admins — finds it handled. The cross-user skill prompt
  * (`SkillPermissionActionHandler`) is the pattern: the owner there is the admins here.
  */
+/** The outcome of one environment-skill decision (shared by the Slack buttons and the dashboard). */
+export type EnvSkillDecisionResult =
+  | {
+      ok: true;
+      outcome: 'approved' | 'denied';
+      /** The prompt rewrites, the requester's notice and the re-sent turn — running after the decision. */
+      effects: Promise<void>;
+    }
+  | { ok: false; reason: 'not_found' | 'not_admin' | 'already_answered'; message: string };
+
+export function isEnvPermKind(value: unknown): value is EnvPermKind {
+  return typeof value === 'string' && KNOWN_KINDS.has(value);
+}
+
 export class EnvSkillPermissionActionHandler {
   private logger = new Logger('EnvSkillPermissionActionHandler');
 
@@ -66,88 +80,18 @@ export class EnvSkillPermissionActionHandler {
         this.logger.warn('env_skill_perm: malformed value JSON');
         return;
       }
-      const kind =
-        typeof parsed.kind === 'string' && KNOWN_KINDS.has(parsed.kind) ? (parsed.kind as EnvPermKind) : null;
+      const kind = isEnvPermKind(parsed.kind) ? parsed.kind : null;
       const requestId = typeof parsed.requestId === 'string' ? parsed.requestId : '';
       if (!kind || !requestId) {
         this.logger.warn('env_skill_perm: invalid kind/requestId', { kind, requestId });
         return;
       }
-
-      const req = getPermissionRequest(requestId);
-      if (!req || req.ownerId !== ENV_SKILL_GRANT_OWNER) {
-        await this.ephemeral(respond, '⚠️ 만료되었거나 더 이상 유효하지 않은 환경 스킬 권한 요청입니다.');
+      const result = this.decide(requestId, kind, body?.user?.id, 'slack', respond);
+      if (!result.ok) {
+        await this.ephemeral(respond, result.message);
         return;
       }
-
-      // Admin-bound.
-      const clickerId: string | undefined = body?.user?.id;
-      if (!clickerId || !isAdminUser(clickerId)) {
-        await this.ephemeral(respond, '⚠️ 환경 스킬 권한 요청은 어드민만 처리할 수 있습니다.');
-        return;
-      }
-
-      // NOTE: the read above and markRequestHandled below must stay in one synchronous span — an
-      // `await` inserted between them reopens the double-click double-grant this guard closes.
-      if (req.handled) {
-        await this.ephemeral(respond, '⚠️ 이미 처리된 환경 스킬 권한 요청입니다.');
-        return;
-      }
-
-      if (kind === VALUE_KIND_ENV_SKILL_DENY) {
-        markRequestHandled(requestId);
-        const label = `🚫 <@${clickerId}>님이 <@${req.requesterId}>님의 환경 스킬 \`${req.skillName}\` 실행 요청을 거부했습니다.`;
-        await this.closePrompts(req, respond, label);
-        await this.notifyRequester(
-          req,
-          `🚫 <@${req.requesterId}> — 환경 스킬 \`${req.skillName}\` 실행 요청이 거부되었습니다.`,
-        );
-        this.logger.info('env_skill_perm: denied', { requestId, admin: clickerId, requesterId: req.requesterId });
-        return;
-      }
-
-      const registry = envSkillRegistry(this.ctx.mcpManager?.getPluginManager());
-      if (!envSkillExists(req.skillName, registry)) {
-        markRequestHandled(requestId);
-        await this.closePrompts(req, respond, `❌ 환경 스킬 \`${req.skillName}\` 이 더 이상 이 호스트에 없습니다.`);
-        return;
-      }
-
-      let grantLabel: string;
-      switch (kind) {
-        case VALUE_KIND_ENV_SKILL_ALL:
-          grantAllSkills(ENV_SKILL_GRANT_OWNER, req.requesterId);
-          grantLabel = `<@${req.requesterId}>님에게 모든 환경 스킬 실행을 항상 허용했습니다.`;
-          break;
-        case VALUE_KIND_ENV_SKILL_ALWAYS:
-          grantSkill(ENV_SKILL_GRANT_OWNER, req.skillName, req.requesterId);
-          grantLabel = `<@${req.requesterId}>님에게 환경 스킬 \`${req.skillName}\` 실행을 항상 허용했습니다.`;
-          break;
-        default: // VALUE_KIND_ENV_SKILL_ONCE
-          addThreadGrant(ENV_SKILL_GRANT_OWNER, req.skillName, req.requesterId, {
-            channel: req.channel,
-            threadTs: req.threadTs,
-          });
-          grantLabel =
-            `<@${req.requesterId}>님에게 환경 스킬 \`${req.skillName}\` 1회 실행을 허용했습니다 ` +
-            `(${describeRequestPlace(req.channel, req.threadTs)}에서만).`;
-          break;
-      }
-      markRequestHandled(requestId);
-
-      await this.closePrompts(req, respond, `✅ <@${clickerId}> — ${grantLabel}`);
-      const noticeTs = await this.notifyRequester(
-        req,
-        `✅ <@${req.requesterId}> — 어드민 <@${clickerId}>님이 환경 스킬 \`${req.skillName}\` 실행을 허용했습니다. 이어서 실행합니다.`,
-      );
-      await this.fulfill(req, noticeTs);
-      this.logger.info('env_skill_perm: granted + fulfilled', {
-        kind,
-        requestId,
-        admin: clickerId,
-        requesterId: req.requesterId,
-        skillKey: req.skillName,
-      });
+      await result.effects;
     } catch (error) {
       this.logger.error('env_skill_perm: unexpected error', error);
       try {
@@ -156,6 +100,113 @@ export class EnvSkillPermissionActionHandler {
         /* best effort */
       }
     }
+  }
+
+  /**
+   * Take one decision on a request — the Slack buttons (`via: 'slack'`, with the
+   * click's `respond`) and the dashboard (`via: 'dashboard'`) both come here.
+   *
+   * Admin-bound, read server-side by id, handled once: the read and
+   * `markRequestHandled` stay in this one synchronous span, so a second answer —
+   * the same admin twice, two admins, or Slack and the dashboard — finds it
+   * handled. The returned `effects` close every admin's prompt, tell the
+   * requester and (on a grant) send their turn again.
+   */
+  decide(
+    requestId: string,
+    kind: EnvPermKind,
+    actorId: string | undefined,
+    via: 'slack' | 'dashboard',
+    respond?: RespondFn,
+  ): EnvSkillDecisionResult {
+    const req = getPermissionRequest(requestId);
+    if (!req || req.ownerId !== ENV_SKILL_GRANT_OWNER) {
+      return {
+        ok: false,
+        reason: 'not_found',
+        message: '⚠️ 만료되었거나 더 이상 유효하지 않은 환경 스킬 권한 요청입니다.',
+      };
+    }
+    if (!actorId || !isAdminUser(actorId)) {
+      return { ok: false, reason: 'not_admin', message: '⚠️ 환경 스킬 권한 요청은 어드민만 처리할 수 있습니다.' };
+    }
+    // NOTE: the read above and markRequestHandled below must stay in one synchronous span — an
+    // `await` inserted between them reopens the double-click double-grant this guard closes.
+    if (req.handled) {
+      return { ok: false, reason: 'already_answered', message: '⚠️ 이미 처리된 환경 스킬 권한 요청입니다.' };
+    }
+    const where = via === 'dashboard' ? ' (대시보드에서 응답)' : '';
+    const handled = (outcome: 'approved' | 'denied') =>
+      markRequestHandled(requestId, { by: actorId, choiceId: kind, outcome, via, at: Date.now() });
+
+    if (kind === VALUE_KIND_ENV_SKILL_DENY) {
+      handled('denied');
+      const label = `🚫 <@${actorId}>님이 <@${req.requesterId}>님의 환경 스킬 \`${req.skillName}\` 실행 요청을 거부했습니다.${where}`;
+      this.logger.info('env_skill_perm: denied', { requestId, admin: actorId, requesterId: req.requesterId, via });
+      return {
+        ok: true,
+        outcome: 'denied',
+        effects: (async () => {
+          await this.closePrompts(req, label, respond);
+          await this.notifyRequester(
+            req,
+            `🚫 <@${req.requesterId}> — 환경 스킬 \`${req.skillName}\` 실행 요청이 거부되었습니다.`,
+          );
+        })(),
+      };
+    }
+
+    const registry = envSkillRegistry(this.ctx.mcpManager?.getPluginManager());
+    if (!envSkillExists(req.skillName, registry)) {
+      handled('denied');
+      return {
+        ok: true,
+        outcome: 'denied',
+        effects: this.closePrompts(req, `❌ 환경 스킬 \`${req.skillName}\` 이 더 이상 이 호스트에 없습니다.`, respond),
+      };
+    }
+
+    let grantLabel: string;
+    switch (kind) {
+      case VALUE_KIND_ENV_SKILL_ALL:
+        grantAllSkills(ENV_SKILL_GRANT_OWNER, req.requesterId);
+        grantLabel = `<@${req.requesterId}>님에게 모든 환경 스킬 실행을 항상 허용했습니다.`;
+        break;
+      case VALUE_KIND_ENV_SKILL_ALWAYS:
+        grantSkill(ENV_SKILL_GRANT_OWNER, req.skillName, req.requesterId);
+        grantLabel = `<@${req.requesterId}>님에게 환경 스킬 \`${req.skillName}\` 실행을 항상 허용했습니다.`;
+        break;
+      default: // VALUE_KIND_ENV_SKILL_ONCE
+        addThreadGrant(ENV_SKILL_GRANT_OWNER, req.skillName, req.requesterId, {
+          channel: req.channel,
+          threadTs: req.threadTs,
+        });
+        grantLabel =
+          `<@${req.requesterId}>님에게 환경 스킬 \`${req.skillName}\` 1회 실행을 허용했습니다 ` +
+          `(${describeRequestPlace(req.channel, req.threadTs)}에서만).`;
+        break;
+    }
+    handled('approved');
+    this.logger.info('env_skill_perm: granted', {
+      kind,
+      requestId,
+      admin: actorId,
+      requesterId: req.requesterId,
+      skillKey: req.skillName,
+      via,
+    });
+    return {
+      ok: true,
+      outcome: 'approved',
+      effects: (async () => {
+        await this.closePrompts(req, `✅ <@${actorId}> — ${grantLabel}${where}`, respond);
+        const noticeTs = await this.notifyRequester(
+          req,
+          `✅ <@${req.requesterId}> — 어드민 <@${actorId}>님이 환경 스킬 \`${req.skillName}\` 실행을 허용했습니다. 이어서 실행합니다.`,
+        );
+        await this.fulfill(req, noticeTs);
+      })(),
+    };
   }
 
   /**
@@ -181,12 +232,18 @@ export class EnvSkillPermissionActionHandler {
   }
 
   /**
-   * Replace the clicked prompt (via `respond`) and every other admin's copy (via `chat.update`) with
-   * the outcome, so no stale buttons are left in anyone's DMs.
+   * Replace the clicked prompt (via `respond`, Slack answers only) and every admin's copy (via
+   * `chat.update`) with the outcome, so no stale buttons are left in anyone's DMs.
    */
-  private async closePrompts(req: PermissionRequest, respond: RespondFn, text: string): Promise<void> {
+  private async closePrompts(req: PermissionRequest, text: string, respond?: RespondFn): Promise<void> {
     const blocks = [{ type: 'section', text: { type: 'mrkdwn', text } }];
-    await respond({ response_type: 'in_channel', replace_original: true, text, blocks });
+    if (respond) {
+      await respond({ response_type: 'in_channel', replace_original: true, text, blocks }).catch((err: unknown) =>
+        this.logger.warn('env_skill_perm: clicked prompt replace failed', {
+          err: (err as Error)?.message ?? String(err),
+        }),
+      );
+    }
     for (const prompt of req.prompts ?? []) {
       await this.ctx.slackApi
         .updateMessage(prompt.channel, prompt.ts, text, blocks, [])

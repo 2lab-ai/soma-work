@@ -61,16 +61,9 @@ describe('D1 · D2 — the element lives in the L1 block; pages and episodic are
     expect(l1).toContain('<div class="ui-tok"><ui-memory-panel id="l1-panel" lang="ko"></ui-memory-panel></div>');
     expect(MEMORY_TAB_HTML).toContain('<div id="mem-status" class="status" role="status" aria-live="polite"></div>');
     expect(MEMORY_TAB_HTML).toContain(`onclick="memJump('m-l1')"`);
-    for (const id of [
-      'mem-page-list',
-      'mem-page-detail',
-      'mem-ep-date',
-      'mem-ep-body',
-      'mem-ep-new',
-      'mem-page-filter',
-    ]) {
-      expect(MEMORY_TAB_HTML).toContain(`id="${id}"`);
-    }
+    // 지식 페이지 and 관찰 기록 are their own library elements (M-05, M-06)
+    expect(MEMORY_TAB_HTML).toContain('<ui-knowledge-pages id="kp-panel" lang="ko"></ui-knowledge-pages>');
+    expect(MEMORY_TAB_HTML).toContain('<ui-episode-log id="ep-log" lang="ko"></ui-episode-log>');
   });
 });
 
@@ -117,7 +110,7 @@ describe('D12 — the tray', () => {
     expect(status.textContent).toBe(''); // the element said 추가했습니다 itself
     const glue = MEMORY_CLIENT_JS.slice(
       MEMORY_CLIENT_JS.indexOf('// ── 개인 메모리 (L1) ──'),
-      MEMORY_CLIENT_JS.indexOf('// ── 지식 페이지 ──'),
+      MEMORY_CLIENT_JS.indexOf('// ── 지식 페이지'),
     );
     expect(glue).toContain('function l1Write(');
     expect(glue).not.toMatch(/(저장했습니다|추가했습니다|되돌렸습니다|모두 지웠습니다)'/);
@@ -128,16 +121,19 @@ describe('D14 – D16 — CSS contract', () => {
   it('T12 the tab keeps no styles of the panel: no .mm-*, no meter, no counter; the section frame and the token bridge only', () => {
     expect(MEMORY_TAB_CSS).not.toMatch(/\.mm\b|\.mm-|\.meter-line|\.counter|--mm-/);
     // tone pass P9: section.group cards carry --ib-shadow; the element-drawn L1 section drops it too
-    expect(MEMORY_TAB_CSS).toContain('#m-l1 { background: none; border: 0; box-shadow: none; }');
-    expect(MEMORY_TAB_CSS).toContain('#m-l1 > header { padding: 0 2px 10px; border-bottom: 0; }');
+    expect(MEMORY_TAB_CSS).toContain('#m-l1, #m-pages, #m-episodic { background: none; border: 0; box-shadow: none; }');
+    expect(MEMORY_TAB_CSS).toContain(
+      '#m-l1 > header, #m-pages > header, #m-episodic > header { padding: 0 2px 10px; border-bottom: 0; }',
+    );
     // the light-theme amber the inline .mm used is the page's light --yellow — since tone pass P9 the
     // library's own (@2lab.ai/ui tokens.css, aliased), no longer a settings-page hex (#9a6700)
     expect(uiLibTokensCss()).toMatch(/:root, \[data-theme="light"\] \{[^}]*--ui-yellow: #[0-9a-f]{6};/);
     expect(pageTokenAliases()).toContain('--yellow: var(--ui-yellow);');
     expect(SETTINGS_PAGE_CSS).not.toMatch(/--yellow: #/);
     expect(SETTINGS_PAGE_CSS).toMatch(/\.ui-tok \{[^}]*--ui-yellow: var\(--yellow\);/);
-    // pages and episodic still use the global textarea look
-    expect(MEMORY_TAB_CSS).toContain('textarea { width: 100%; font: inherit; font-size: 13px;');
+    // the tab's own text boxes (raw markdown, the recovery box) are the kit's .ui-input — no textarea rule of its own
+    expect(MEMORY_TAB_CSS).not.toMatch(/(^|\n)textarea \{/);
+    expect(MEMORY_CLIENT_JS).toContain('<textarea class="ui-input is-block" readonly');
     // memory classes never borrow the model picker's mp-* (#442)
     expect(MEMORY_TAB_CSS + MEMORY_TAB_HTML + MEMORY_CLIENT_JS).not.toMatch(/\bmp-|class="mp"|ui-mp/);
   });

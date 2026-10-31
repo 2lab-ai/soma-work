@@ -12,6 +12,7 @@
  */
 
 import type { ConversationSession, SessionGoal } from '../types';
+import { retireGoalCapDecision } from './goal-cap-decision';
 
 /** Prefix carried on every synthetic continuation event so log greps and
  *  workflow classifiers can spot goal-loop traffic. */
@@ -59,9 +60,9 @@ export function bumpGoalEpoch(goal: SessionGoal): void {
 export function resetGoalContinuationOnUserMessage(session: { goal?: ConversationSession['goal'] }): void {
   if (!session.goal) return;
   session.goal.continuationCount = 0;
-  // A real user message answers any pending cap-decision DM implicitly — clear
-  // the dedup guard so a future cap event can DM again (S3).
-  session.goal.capDmPendingAt = undefined;
+  // A real user message answers any pending cap decision implicitly: it ends,
+  // its DM stops offering buttons, and a future cap event asks again (S3).
+  retireGoalCapDecision(session.goal);
   // A user nudge also resets the transient eval-dispatch failure streak and
   // lifts any pending backoff window — user intent always outranks the
   // self-healing retry machinery.

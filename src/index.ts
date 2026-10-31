@@ -71,6 +71,7 @@ import {
   setDashboardCronSource,
   setDashboardEffortHandler,
   setDashboardFollowupHandler,
+  setDashboardGoalDecisionHandler,
   setDashboardGoalHandler,
   setDashboardLifecycleHandler,
   setDashboardModelHandler,
@@ -81,7 +82,9 @@ import {
   setDashboardStopHandler,
   setDashboardSubmitRecommendedHandler,
   setDashboardTaskAccessor,
+  setDashboardTaskAnswerHandler,
   setDashboardTaskCommandHandler,
+  setDashboardTaskLauncher,
   setDashboardTrashHandler,
   setOAuthDirectoryLookup,
   setOAuthUserLookup,
@@ -93,7 +96,11 @@ import {
 } from './conversation';
 import { getArtifactStore } from './conversation/artifacts';
 import type { NewTaskAttachment } from './conversation/new-task';
-import { createNewTaskProvider, createSlackSteerUploader } from './conversation/new-task-provider';
+import {
+  createNewTaskProvider,
+  createSlackSteerUploader,
+  offeredNewTaskModels,
+} from './conversation/new-task-provider';
 import { createConversationDurable } from './conversation/recorder';
 import { createSessionWorkLogAppender } from './conversation/session-work-log';
 import { setSettingsRegistry } from './conversation/settings-routes';
@@ -140,20 +147,29 @@ import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './
 import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from './session/task-usage-reconcile';
 import { resolveArchivedResume } from './session-archive';
 import { applySummaryTitle } from './session-title-policy';
+import {
+  answerGoalCapDecision,
+  flushGoalCapDmSync,
+  retireGoalCapDecision,
+  setGoalCapDecisionSurfaces,
+} from './slack/goal-cap-decision';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
+import { setGoalCapDecisionRetirer } from './slack/session-goal';
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { setThreadHeaderProviders } from './slack/thread-header-builder';
 import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
+import { createTaskLauncher } from './task-turn/task-launcher';
 import { createTaskTurnController, type TaskTurnController } from './task-turn/task-turn-controller';
 import { createTaskTurnExecutor } from './task-turn/task-turn-executor';
 import { getTokenManager } from './token-manager';
 import type { ConversationSession } from './types';
 import { productionSettingsRegistry } from './user-settings-registry-production';
+import { WorkingDirectoryManager } from './working-directory-manager';
 
 const logger = new Logger('Main');
 
@@ -1161,9 +1177,23 @@ async function start() {
       logger: new Logger('TaskTurnController'),
     });
     taskTurnController = taskController;
-    setDashboardTaskCommandHandler((sessionKey, message, attachments) =>
-      taskController.start({ sessionKey, text: message, attachments }),
+    setDashboardTaskCommandHandler((sessionKey, message, attachments, actorUserId) =>
+      taskController.start({ sessionKey, text: message, attachments, actorUserId }),
     );
+    // #599 ⑤ — an answer to a task's open question runs as its next instruction.
+    setDashboardTaskAnswerHandler((sessionKey, askId, answer, actorUserId) =>
+      taskController.answer({ sessionKey, askId, answer, actorUserId }),
+    );
+    // #600 ⑥ — the dashboard's "new task" as a Slack-less task: folder, task, first instruction.
+    const taskLauncher = createTaskLauncher({
+      controller: taskController,
+      createTask: (input) => claudeHandler.createTask(input),
+      createFreshDirectory: (ownerId) => new WorkingDirectoryManager().createSessionBaseDir(ownerId),
+      listModels: (ownerId) => offeredNewTaskModels(ownerId),
+      cleanupSessions: () =>
+        [...claudeHandler.getAllSessions()].map(([key, s]) => ({ key, sourceWorkingDirs: s.sourceWorkingDirs })),
+    });
+    setDashboardTaskLauncher(taskLauncher);
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
       recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => void;
@@ -1566,6 +1596,33 @@ async function start() {
       // ONE host path for goal-list changes (opening turn through the fence).
       setHostGoalActionHandler((sessionKey, action, actorUserId) =>
         slackHandler.handleHostGoalAction(sessionKey, action, actorUserId),
+      );
+      // The cap decision ("Goal 계속 진행할까요?") is one request with two
+      // surfaces — the owner's DM and the dashboard's approval card. An answer
+      // or a retirement on either side rewrites the DM and pushes the board.
+      setGoalCapDecisionSurfaces({
+        updateDm: (ref, text) =>
+          goalSlackApi.updateMessage(ref.channel, ref.ts, text, [{ type: 'section', text: { type: 'mrkdwn', text } }]),
+        broadcast: () => registry.broadcastSessionUpdate(),
+      });
+      setGoalCapDecisionRetirer(retireGoalCapDecision);
+      setDashboardGoalDecisionHandler((sessionKey, answer, actorUserId) =>
+        answerGoalCapDecision({
+          session: registry.getSessionByKey(sessionKey),
+          sessionKey,
+          goalId: answer.goalId,
+          decisionId: answer.decisionId,
+          actor: actorUserId,
+          decision: answer.decision,
+          surface: 'dashboard',
+          save: () => registry.saveSessionsOrThrow(),
+        }),
+      );
+      // DM rewrites the previous process could not deliver.
+      flushGoalCapDmSync((decisionId) =>
+        [...registry.getAllSessions().values()].some(
+          (s) => s.goal?.capDecisionId === decisionId && s.goal.capDmPendingAt !== undefined,
+        ),
       );
       timing('Goal turn-settled driver installed');
     } catch (error) {
