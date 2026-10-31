@@ -299,13 +299,15 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(toggle.indexOf('openPanel(key);')).toBeLessThan(toggle.indexOf('deckDrop(key);'));
     // SSOT 2026-10-29 T1: the actions (Stop · Close · Trash) + Slack are the body's first row.
     expect(body).toContain(
-      `const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col, 'card') + slackBtn + '</span></div>';`,
+      `const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col) + slackBtn + '</span></div>';`,
     );
     expect(body).toMatch(/return '<div class="card-body">'\s*\+ actionsHtml\s*\+ permissionHtml/);
     expect(TEMPLATE).toContain("var WL_EMPTY_MSG = '작업 로그 없음';");
     // SSOT 2026-10-29: no conversation → no work-log state; the 작업 로그 tab reads 작업 로그 없음.
     expect(fnBody('resetWorkLog')).toContain('_wl = convId ? wlNewState(convId) : null;');
-    expect(fnBody('paintLogTab')).toContain('var msg = !st ? WL_EMPTY_MSG');
+    // D3: <ui-work-log> says it (wlLogData's emptyText without a state).
+    expect(fnBody('wlLogData')).toContain('if (!st) return Object.assign(d, { groups: [] });');
+    expect(fnBody('wlLogData')).toContain('emptyText: WL_EMPTY_MSG');
     expect(fnBody('openPanel')).toContain('resetWorkLog(panelConvId);');
   });
 
@@ -316,14 +318,13 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(fnBody('loadSessions')).toContain('_lastPolledBoard = data.board;');
   });
 
-  it('older panel turns keep the reading position (anchored on the first turn in view of the 지시와 답변 box)', () => {
+  it('older panel turns keep the reading position (D3: <ui-conversation> prepends the page above the rows in view)', () => {
     const body = fnBody('loadMorePanelTurns');
-    // SSOT 2026-10-29: the box's first turn in view, captured before the page goes in, held after.
-    const anchor = body.indexOf('var anchor = psecViewAnchor(box);');
-    const insert = body.indexOf("turnsEl.insertAdjacentHTML('afterbegin'");
-    expect(anchor).toBeGreaterThan(-1);
-    expect(insert).toBeGreaterThan(anchor);
-    expect(body.indexOf('psecHoldPlace(box, anchor, fromBottom);')).toBeGreaterThan(insert);
+    // The page goes into the data, oldest first; the element's log scroller holds the rows the reader was on.
+    expect(body).toContain('_panelTurnsList = turns.concat(_panelTurnsList);');
+    expect(body).toContain('convPaint();');
+    expect(body).not.toContain('insertAdjacentHTML');
+    // The boxes this page still draws (작업 로그, 에이전트 트리) keep their own anchor.
     expect(fnBody('psecRestoreAnchor')).toContain(
       'el.getBoundingClientRect().top - box.getBoundingClientRect().top - a[i].at',
     );
@@ -353,7 +354,9 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
 describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
   it('has a work log section tab in the panel (SSOT 2026-10-29)', () => {
     expect(TEMPLATE).toContain('id="psec-tab-log" data-sec="log"');
-    expect(TEMPLATE).toContain('<div class="psec" id="psec-log" role="tabpanel" aria-labelledby="psec-tab-log"');
+    expect(TEMPLATE).toContain(
+      '<div class="psec psec-el ui-tok" id="psec-log" role="tabpanel" aria-labelledby="psec-tab-log"',
+    );
     expect(TEMPLATE).toContain('작업 로그 없음');
   });
 
@@ -379,8 +382,8 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
       '<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>',
     );
     const sections = panel.indexOf('<div class="panel-sections" id="panel-sections" role="tablist"');
-    const worklog = panel.indexOf('<div class="psec" id="psec-log" role="tabpanel"');
-    const conv = panel.indexOf('<div class="psec-body panel-conv" id="panel-conv">');
+    const worklog = panel.indexOf('<div class="psec psec-el ui-tok" id="psec-log" role="tabpanel"');
+    const conv = panel.indexOf('<ui-conversation class="panel-conv" id="panel-conv" lang="ko">');
     const command = panel.indexOf('<div class="panel-command" id="panel-command">');
     expect(header).toBeGreaterThan(0);
     expect(scroll).toBeGreaterThan(header);
@@ -414,14 +417,13 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
   });
 
   it('the work log is a section tab with its own scroll box — no disclosure header, never hidden-but-rendered (§3.1-6, SSOT 2026-10-29)', () => {
-    expect(TEMPLATE).toContain(
-      '<div class="psec-body worklog-list" id="worklog-list" role="log" aria-label="작업 로그"></div>',
-    );
+    // D3 F-01: the list is <ui-work-log>, its own scroll box (its <ui-log-scroller>, role=log inside).
+    expect(TEMPLATE).toContain('<ui-work-log class="worklog-list" id="worklog-list" lang="ko"></ui-work-log>');
     expect(TEMPLATE).not.toContain('id="worklog-toggle"');
     expect(TEMPLATE).not.toContain('.worklog-list[hidden]');
-    // The box scrolls, not the list: the list has no height cap of its own.
-    expect(TEMPLATE).toMatch(/\n\.psec \{ position: relative; height: 100%; overflow-y: auto;/);
-    expect(/\n\.worklog-list \{[^}]*\}/.exec(TEMPLATE)?.[0] ?? '').not.toMatch(/max-height|overflow/);
+    // The panel's box gives the element its height; the element scrolls.
+    expect(TEMPLATE).toMatch(/\n\.psec\.psec-el \{ overflow: hidden; display: flex; flex-direction: column; \}/);
+    expect(TEMPLATE).not.toMatch(/\n\.worklog-list \{/);
   });
 
   it('an opening names its section tab — 작업 로그 / ?session= open on the work log; the list is painted only while it is shown (§3.1-6, §3.1-7)', () => {
@@ -436,8 +438,8 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     // 자세히 no longer opens the work log: it is a tab of its own.
     expect(fnBody('togglePanelDetail')).not.toMatch(/worklog|WorkLog/);
     // A batch is painted only while 작업 로그 is shown; else the tab paints from the state when opened.
-    expect(fnBody('paintWorkLog')).toContain("if (_psec !== 'log' || !list || !box) {");
-    expect(fnBody('paintLogTab')).toContain('wlRenderList(st, list);');
+    expect(fnBody('paintWorkLog')).toContain("if (_psec !== 'log') {");
+    expect(fnBody('paintSection')).toContain("else if (sec === 'log') wlPaint();");
   });
 
   it('a section opens on its newest items; any reader input ends the settle hold (§3.1-6)', () => {
@@ -458,17 +460,17 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(fnBody('psecPageDue')).toContain('return !!armed && scrollTop <= clientHeight;');
   });
 
-  it('entry rows toggle on click, Enter and Space; detail buttons do not toggle (§3.1-6)', () => {
-    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initWorkLogInteractions() {'));
-    expect(init).toContain("e.target.closest('.wl-detail')");
-    expect(init).toContain("e.key === 'Enter' || e.key === ' '");
-    expect(init).toContain('toggleWorkLogEntry(');
-    // Roving tabindex: one stop in the list; the arrows, Home and End move it.
-    expect(init).toContain('wlRovingIndex(e.key, rows.indexOf(row), rows.length)');
-    expect(init).toContain("addEventListener('focusin'");
-    expect(fnBody('paintWorkLog')).toContain('wlEnsureTabStop(list)');
-    expect(TEMPLATE).toContain("act === 'retry'");
-    expect(TEMPLATE).toContain("act === 'copy'");
+  it('entry rows toggle on click, Enter and Space (the element’s rows, one roving stop); the page answers its requests (§3.1-6)', () => {
+    // D3 F-03 / F-06: click, Enter / Space and the roving stop are <ui-work-log>'s; 복사 is its raw viewer's.
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initWorkLog() {'));
+    const body = init.slice(0, init.indexOf('\n})();'));
+    expect(body).toContain("el.addEventListener('ui-toggle'");
+    expect(body).toContain("} else if (d.kind === 'entry') {");
+    expect(body).toContain('wlRawFetch(st, seq);');
+    expect(body).toContain("el.addEventListener('ui-retry'");
+    expect(body).toContain("el.addEventListener('ui-open'");
+    expect(body).toContain("el.addEventListener('ui-load-older'");
+    expect(TEMPLATE).not.toMatch(/\n\(function initWorkLogInteractions\(\)/);
   });
 
   it('live-appends work_log WS entries through the seq merge', () => {
@@ -594,17 +596,11 @@ describe('tone pass P7 — surfaces and elevation', () => {
     expect(TEMPLATE).not.toContain('tooltip-open');
   });
 
-  it('turns carry no colour rail; who spoke is a neutral 24px glyph tile with a hairline — the bot an SVG', () => {
+  it('turns carry no colour rail and no emoji avatar (D3: the turn chrome is <ui-conversation>’s own — neutral tiles, the icon set’s bot)', () => {
     expect(TEMPLATE).not.toMatch(/\.turn\.(user|assistant|is-sys) \{[^}]*border-left/);
-    const tile = rule('.turn-avatar');
-    expect(tile).toContain('width: 24px; height: 24px;');
-    expect(tile).toContain('box-shadow: inset 0 0 0 1px var(--border);');
-    expect(tile).not.toMatch(/var\(--(accent|purple)\)/);
-    expect(TEMPLATE).not.toMatch(/\.(user|bot)-avatar \{[^}]*var\(--(accent|purple)\)/);
+    expect(TEMPLATE).not.toContain('.turn-avatar');
     expect(TEMPLATE).not.toContain('&#x1F916;');
-    expect(
-      TEMPLATE.match(/<div class="turn-avatar bot-avatar" aria-hidden="true">' \+ BOT_AVATAR_SVG \+ '<\/div>/g),
-    ).toHaveLength(3);
+    expect(TEMPLATE).not.toContain('BOT_AVATAR_SVG');
   });
 
   it('the goal mark is the target glyph, not the bullseye emoji', () => {
@@ -636,7 +632,7 @@ describe('tone pass P8 — copy and glyphs', () => {
     // One chevron: the icon set's, drawn as a mask in currentColor, turned by aria-expanded.
     expect(TEMPLATE).toMatch(/\n\.chev \{[^}]*mask: var\(--chev\) center \/ contain no-repeat;/);
     expect(TEMPLATE).toContain('.chev.is-up, [aria-expanded="true"] > .chev { transform: rotate(180deg); }');
-    expect(TEMPLATE).toContain(`<span class="wl-g-chev chev is-right" aria-hidden="true"></span>`);
+    // (A work-log group's chevron is <ui-work-log>'s, from the same icon set.)
     // The close buttons and the subtitle's regenerate are SVGs with a name.
     // D1: the glyphs are @2lab.ai/ui's icon set, named in an icon slot the server fills (fillUiIcons).
     expect(TEMPLATE).toMatch(
@@ -688,7 +684,6 @@ describe('tone pass P8 — copy and glyphs', () => {
       'summaryFailed',
       'summaryPending',
       'retry',
-      'retrying',
       'titlePending',
       'titleFailed',
       'error',
@@ -777,10 +772,12 @@ describe('agent inbox board — motion contract (§4)', () => {
     // affectUI batch 1: the card's single-choice question is a <ui-approval-card>, which lists the
     // recommended choice first, tagged and preselected (library: approval-card.test.ts "lists the
     // recommended choice first and preselected; Submit sends it"). The card's star / ink overrides went
-    // with the old buttons; the panel's multi-question form keeps the shared .btn-choice-recommended —
-    // tone pass P2: tagged 추천 (a neutral tag, like the library's approval card), no star, no green.
-    expect(TEMPLATE).not.toMatch(/\.card \.btn-choice-recommended|\.card \.btn-choice\.btn-choice-recommended/);
-    expect(TEMPLATE).toMatch(/\n\.btn-choice-recommended::after \{ content: "추천";/);
+    // with the old buttons; the panel's multi-question form is <ui-choice-form> (D3 E-15), which lists its
+    // recommended choice first and tags it 추천 itself — no star, no green, no page rule.
+    expect(TEMPLATE).not.toMatch(/\.btn-choice-recommended/);
+    expect(TEMPLATE).toContain(
+      '<script type="module" src="/dashboard/ui/choice-form.js?v=${UI_LIB_VERSION}"></script>',
+    );
     expect(TEMPLATE).not.toContain('2B50');
   });
 

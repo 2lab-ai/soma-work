@@ -846,6 +846,7 @@ describe('D10 — one primary button per open card', () => {
         'cardCurrentTask',
         'renderCardResume',
         'isBusy',
+        'sessionActionsOf',
         'sessionActionHtml',
         'cardGoalLine',
         // affectUI batch 1: the prompts and the single-choice question are <ui-approval-card> slots.
@@ -856,15 +857,7 @@ describe('D10 — one primary button per open card', () => {
         'acQuestionHtml',
         'renderCardBody',
       ],
-      [
-        'RESUME_SVG',
-        'GOAL_STATUS_LABELS',
-        'GOAL_STATUS_TONE',
-        'GOAL_SVG',
-        'SESSION_ACTION_ARIA',
-        'SESSION_ACTION_TONE',
-        '_busy',
-      ],
+      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy'],
       { ...STUBS, ...inject },
     ).renderCardBody(s, col);
   const card = (over: Record<string, unknown> = {}) => ({
@@ -977,22 +970,23 @@ describe('D10 — one primary button per open card', () => {
   it("the multi-question 답변하기 is the primary in the owner's card only (fable P2), never on a sibling instance (astra P1)", () => {
     let sibling = false;
     const { renderMultiChoiceCard } = load<{ renderMultiChoiceCard(s: unknown, f: string): string }>(
-      ['esc', 'escJs', 'renderMultiChoiceCard'],
+      ['esc', 'escJs', 'renderMultiChoiceCard', 'mcFormId'],
       [],
       { _mcState: {}, console, currentUserId: 'U1', isSiblingSession: () => sibling },
     );
     const q = { type: 'user_choices', title: 'Pick', questions: [{ id: 'q1' }] };
+    // D3 E-16: the kit's button — ink (is-primary) for the owner on this instance, the plain kit button otherwise.
     expect(renderMultiChoiceCard({ key: 'k', ownerId: 'U1', pendingQuestion: q }, '')).toContain(
-      '<button class="btn-choice btn-choice-primary"',
+      '<button type="button" class="ui-btn is-primary card-mc-go"',
     );
     for (const ownerId of ['U2', undefined]) {
       expect(renderMultiChoiceCard({ key: 'k', ownerId, pendingQuestion: q }, ''), String(ownerId)).toContain(
-        '<button class="btn-choice" onclick=',
+        '<button type="button" class="ui-btn card-mc-go" onclick=',
       );
     }
     sibling = true;
     expect(renderMultiChoiceCard({ key: 'k', ownerId: 'U1', pendingQuestion: q }, '')).toContain(
-      '<button class="btn-choice" onclick=',
+      '<button type="button" class="ui-btn card-mc-go" onclick=',
     );
   });
 });
@@ -1043,6 +1037,7 @@ describe('D10 — the open card renders one approval card per prompt; only what 
         'cardCurrentTask',
         'renderCardResume',
         'isBusy',
+        'sessionActionsOf',
         'sessionActionHtml',
         'cardGoalLine',
         'isPermissionRequester',
@@ -1059,7 +1054,6 @@ describe('D10 — the open card renders one approval card per prompt; only what 
         'GOAL_STATUS_LABELS',
         'GOAL_STATUS_TONE',
         'GOAL_SVG',
-        'SESSION_ACTION_ARIA',
         'SESSION_ACTION_TONE',
         '_busy',
         'AC_SIBLING',

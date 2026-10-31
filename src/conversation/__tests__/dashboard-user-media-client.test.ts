@@ -140,12 +140,14 @@ describe('C1 — panel user turn: the instruction with its files', () => {
     expect(out).toMatch(/data-art-id="D"[^>]*aria-label="[^"]*외 2개/);
   });
 
-  it('renderTurn puts the files before the instruction text, and a files-only turn has no empty text block', () => {
-    const src = clientFn('renderTurn');
-    const userBranch = src.slice(src.indexOf("if (t.role === 'user')"), src.indexOf('} else {'));
-    expect(userBranch).toContain('renderUserMedia(');
-    expect(userBranch.indexOf('renderUserMedia(')).toBeLessThan(userBranch.indexOf('turn-content'));
-    expect(userBranch).toContain('umRegister(');
+  it('a turn’s files go in <ui-conversation>’s media slot (shown above the words); registered for the viewer', () => {
+    // D3: the element draws slot media-<id> above the instruction; a files-only turn has no text.
+    const turns = clientFn('convTurnsOf');
+    expect(turns).toContain("slots.push({ name: 'media-' + id, kind: 'media', list: atts, turn: t });");
+    expect(turns).toContain('u.media = true;');
+    const slots = clientFn('convSlots');
+    expect(slots).toContain('umRegister(cid, sl.list, sl.turn);');
+    expect(slots).toContain('renderUserMedia(cid, sl.list)');
   });
 });
 
