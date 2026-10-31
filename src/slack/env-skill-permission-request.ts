@@ -34,7 +34,7 @@ export interface EnvSkillPermissionSlackApi {
     options?: { threadTs?: string; blocks?: any[] },
   ): Promise<{ ts?: string; channel?: string }>;
   /** Rewrite a prompt that went out after its request was already answered (#620). */
-  updateMessage?(channel: string, ts: string, text: string, blocks?: any[]): Promise<unknown>;
+  updateMessage(channel: string, ts: string, text: string, blocks?: any[]): Promise<unknown>;
 }
 
 export interface RequestEnvSkillPermissionInput {
@@ -126,7 +126,7 @@ async function closeIfAlreadyAnswered(
   req: PermissionRequest | null,
   prompts: PromptRef[],
 ): Promise<void> {
-  if (!req?.handled || !slackApi.updateMessage) return;
+  if (!req?.handled) return;
   const r = req.resolution;
   const text = r
     ? `${r.outcome === 'approved' ? '✅' : '🚫'} <@${r.by}>님이 ${r.via === 'dashboard' ? '대시보드' : 'Slack'}에서 이 환경 스킬 요청을 이미 ${r.outcome === 'approved' ? '허용' : '거부'}했습니다.`
