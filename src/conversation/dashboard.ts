@@ -4537,6 +4537,8 @@ html,body {
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
 }
+/* Korean breaks between words (D8): every block of the page — the kit gives it to its own classes only. */
+html:lang(ko) body { word-break: keep-all; overflow-wrap: anywhere; }
 
 ::selection { background: var(--accent); color: var(--bg); }
 ::-webkit-scrollbar { width: 8px; }

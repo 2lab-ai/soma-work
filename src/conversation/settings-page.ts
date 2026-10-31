@@ -57,6 +57,8 @@ export const SETTINGS_PAGE_CSS = String.raw`
 }
 [data-theme="dark"] { --scrim: rgba(0, 0, 0, 0.56); }
 html, body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; line-height: 1.45; letter-spacing: 0; -webkit-font-smoothing: antialiased; }
+/* Korean breaks between words (D8): the page's h1 and every block — the kit gives it to its own classes only. */
+html:lang(ko) body { word-break: keep-all; overflow-wrap: anywhere; }
 /* @2lab.ai/ui elements (the 기억 tab's <ui-memory-panel>) draw with these tokens: each --ui-* an element
    reads is set on its wrapper from the same-named page token. Not on the element itself — its shadow :host
    defines --border: var(--ui-border, …), so --ui-border: var(--border) there is a cycle. Inherited from the
