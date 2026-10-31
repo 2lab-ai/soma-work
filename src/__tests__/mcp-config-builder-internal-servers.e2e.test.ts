@@ -103,6 +103,8 @@ describe('McpConfigBuilder internal MCP servers e2e', () => {
       threadTs: '1700000000.000000',
       user: 'U123',
     });
+    // One grants file: the child writes where the main process reads (#621).
+    expect(servers['mcp-tool-permission'].env.SOMA_DATA_DIR).toBe('/tmp/packages-srp-e2e-data');
     expect(JSON.parse(servers.cron.env.SOMA_CRON_CONTEXT)).toEqual({
       channel: 'C123',
       threadTs: '1700000000.000000',

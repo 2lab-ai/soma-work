@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -112,6 +113,96 @@ describe('McpToolGrantStore', () => {
   });
 
   // ── S4: atomic write (file survives reload) ──
+  it("two processes writing the same file: a write never drops the other one's grant (#621)", () => {
+    // The MCP child and the main process each hold a store over one file; each loaded it at start.
+    const other = new McpToolGrantStore(dir);
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
+    store.setGrant('U_B', 'server-tools', 'read', expiresAt, 'U_ADMIN');
+    other.setGrant('U_A', 'github', 'write', expiresAt, 'U_ADMIN');
+    const disk = JSON.parse(fs.readFileSync(path.join(dir, 'mcp-tool-grants.json'), 'utf-8'));
+    expect(Object.keys(disk).sort()).toEqual(['U_A', 'U_B']);
+    store.revokeGrant('U_A', 'github', 'all');
+    const after = JSON.parse(fs.readFileSync(path.join(dir, 'mcp-tool-grants.json'), 'utf-8'));
+    expect(after.U_B?.['server-tools']?.read).toBeDefined();
+    expect(after.U_A?.github).toBeUndefined();
+  });
+
+  it('a write that cannot reach the disk throws and leaves the grants as they were (#621)', () => {
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
+    store.setGrant('U_A', 'github', 'read', expiresAt, 'U_ADMIN');
+    // The rename target becomes unwritable: a directory where the temp file must land.
+    fs.chmodSync(dir, 0o500);
+    try {
+      expect(() => store.setGrant('U_B', 'github', 'write', expiresAt, 'U_ADMIN')).toThrow();
+      expect(store.getActiveGrant('U_B', 'github')).toBeNull();
+      expect(store.getActiveGrant('U_A', 'github')?.read).toBeDefined();
+    } finally {
+      fs.chmodSync(dir, 0o700);
+    }
+  });
+
+  it('setGrant returns what it replaced; restoreGrant puts it back — and removes the level when nothing was there', () => {
+    const first = new Date(Date.now() + 86400000).toISOString();
+    const second = new Date(Date.now() + 2 * 86400000).toISOString();
+    const a = store.setGrant('U_A', 'github', 'write', first, 'U_ADMIN1');
+    expect(a.replaced).toBeNull();
+    const b = store.setGrant('U_A', 'github', 'write', second, 'U_ADMIN2');
+    expect(b.replaced?.expiresAt).toBe(first);
+    expect(store.restoreGrant('U_A', 'github', 'write', b)).toBe(true);
+    expect(new McpToolGrantStore(dir).getActiveGrant('U_A', 'github')?.write?.expiresAt).toBe(first);
+    const c = store.setGrant('U_C', 'github', 'read', first, 'U_ADMIN1');
+    expect(store.restoreGrant('U_C', 'github', 'read', c)).toBe(true);
+    const disk = JSON.parse(fs.readFileSync(path.join(dir, 'mcp-tool-grants.json'), 'utf-8'));
+    expect('read' in (disk.U_C?.github ?? {})).toBe(false);
+  });
+
+  it('restoreGrant never undoes a revoke (or another grant) that landed after the write', () => {
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
+    const earlier = store.setGrant('U_A', 'github', 'write', expiresAt, 'U_ADMIN0');
+    const change = store.setGrant('U_A', 'github', 'write', expiresAt, 'U_ADMIN1');
+    expect(earlier.written).toEqual(change.replaced);
+    // Another admin revokes meanwhile (in the MCP child).
+    new McpToolGrantStore(dir).revokeGrant('U_A', 'github', 'all');
+    expect(store.restoreGrant('U_A', 'github', 'write', change)).toBe(false);
+    expect(new McpToolGrantStore(dir).getActiveGrant('U_A', 'github')).toBeNull();
+  });
+
+  it('another process mid-change holds the file: a write waits for it and keeps its change (#621)', async () => {
+    const file = path.join(dir, 'mcp-tool-grants.json');
+    const lock = `${file}.lock`;
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
+    store.setGrant('U_REVOKED', 'github', 'write', expiresAt, 'U_ADMIN');
+    // The "MCP child": takes the lock, revokes U_REVOKED a moment later, releases.
+    const child = spawn(process.execPath, [
+      '-e',
+      `const fs=require('fs');fs.writeFileSync(${JSON.stringify(lock)},'child',{flag:'wx'});` +
+        `setTimeout(()=>{fs.writeFileSync(${JSON.stringify(file)},'{}');fs.unlinkSync(${JSON.stringify(lock)});},300);`,
+    ]);
+    const exited = new Promise((r) => child.on('exit', r));
+    for (let i = 0; i < 200 && !fs.existsSync(lock); i++) await new Promise((r) => setTimeout(r, 10));
+    expect(fs.existsSync(lock)).toBe(true);
+    // The main process approves someone else meanwhile — from a map that still has U_REVOKED.
+    store.setGrant('U_NEW', 'server-tools', 'read', expiresAt, 'U_ADMIN');
+    await exited;
+    const disk = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    expect(disk.U_REVOKED).toBeUndefined();
+    expect(disk.U_NEW?.['server-tools']?.read).toBeDefined();
+  });
+
+  it('a lock nobody releases: a fresh one makes the write fail; an abandoned one is broken', () => {
+    const file = path.join(dir, 'mcp-tool-grants.json');
+    const lock = `${file}.lock`;
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
+    const impatient = new McpToolGrantStore(dir, 50);
+    fs.writeFileSync(lock, 'someone');
+    expect(() => impatient.setGrant('U_A', 'github', 'read', expiresAt, 'U_ADMIN')).toThrow(/locked/);
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lock, old, old);
+    impatient.setGrant('U_A', 'github', 'read', expiresAt, 'U_ADMIN');
+    expect(impatient.getActiveGrant('U_A', 'github')?.read).toBeDefined();
+    expect(fs.existsSync(lock)).toBe(false);
+  });
+
   it('grants survive store reload from disk', () => {
     const expiresAt = new Date(Date.now() + 86400000).toISOString();
     store.setGrant('U_USER', 'server-tools', 'write', expiresAt, 'U_ADMIN');

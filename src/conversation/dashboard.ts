@@ -1427,9 +1427,7 @@ export function wsAuthDeadline(mode: string | undefined, cookieHeader: string | 
 }
 
 /** The snapshot as admin viewers receive it: ids carry this instance's prefix (#814), like card keys. */
-export function adminApprovalsForWire(
-  snapshot: AdminApprovalSnapshot = adminApprovalSnapshot(),
-): AdminApprovalSnapshot {
+export function adminApprovalsForWire(snapshot: AdminApprovalSnapshot): AdminApprovalSnapshot {
   return {
     pending: snapshot.pending.map((a) => ({ ...a, id: composeSessionKey(a.id) })),
     resolved: snapshot.resolved.map((r) => ({ ...r, id: composeSessionKey(r.id) })),
@@ -1437,10 +1435,17 @@ export function adminApprovalsForWire(
 }
 
 /** Push the admin approvals to admin viewers only — never on the shared board. */
-export function broadcastAdminApprovals(): void {
-  if (wsClients.size === 0) return;
+let _adminBroadcastSeq = 0;
+let _adminBroadcastSent = 0;
+export async function broadcastAdminApprovals(): Promise<void> {
+  if (![...wsClients].some((c) => c.slackAdmin)) return;
+  // The snapshot read is async: a slower, older read must never land after a newer one.
+  const seq = ++_adminBroadcastSeq;
   try {
-    const payload = JSON.stringify({ type: 'admin_approvals', snapshot: adminApprovalsForWire() });
+    const snapshot = await adminApprovalSnapshot();
+    if (seq < _adminBroadcastSent) return;
+    _adminBroadcastSent = seq;
+    const payload = JSON.stringify({ type: 'admin_approvals', snapshot: adminApprovalsForWire(snapshot) });
     const now = Date.now();
     for (const client of wsClients) {
       // A socket outliving its sign-in gets nothing (the expiry timer closes it; this is the backstop).
@@ -1461,7 +1466,7 @@ let _adminApprovalUnsub: (() => void) | null = null;
 /** Follow the admin approval stores while the web server listens; push admins on a change. */
 export function startDashboardAdminApprovalWatch(): void {
   stopDashboardAdminApprovalWatch();
-  _adminApprovalUnsub = onAdminApprovalsChanged(() => broadcastAdminApprovals());
+  _adminApprovalUnsub = onAdminApprovalsChanged(() => void broadcastAdminApprovals());
   startAdminApprovalWatch();
 }
 
@@ -3471,7 +3476,7 @@ export async function registerDashboardRoutes(
       reply.status(403).send({ error: 'Slack 계정으로 로그인한 관리자만 볼 수 있습니다' });
       return;
     }
-    reply.header('Cache-Control', 'no-store').send(adminApprovalsForWire());
+    reply.header('Cache-Control', 'no-store').send(adminApprovalsForWire(await adminApprovalSnapshot()));
   });
 
   server.post<{ Body: { id?: unknown; choiceId?: unknown } }>(
@@ -3514,7 +3519,7 @@ export async function registerDashboardRoutes(
       try {
         const result = await answerAdminApproval(localId, choiceId, actor);
         // Every admin viewer sees the outcome at once (the store watch would see it within a second).
-        broadcastAdminApprovals();
+        void broadcastAdminApprovals();
         if (result.ok) {
           logger.info('Admin approval answered from the dashboard', { id: localId, choiceId, actor });
           reply.send({ ok: true, outcome: result.outcome });
