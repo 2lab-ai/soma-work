@@ -191,7 +191,8 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
   }
 
   function scheduleRetry(): void {
-    if (retry) return;
+    // A pass stopped during its last post still reaches here (grok #668 R2).
+    if (retry || stopped) return;
     retry = setTimeout(() => {
       retry = null;
       void deliver();
@@ -322,6 +323,7 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
   /** Shutdown: no new pass, no retry; a pass under way ends after its current post. */
   function stop(): void {
     stopped = true;
+    retryFailedNext = false;
     if (retry) clearTimeout(retry);
     retry = null;
   }
