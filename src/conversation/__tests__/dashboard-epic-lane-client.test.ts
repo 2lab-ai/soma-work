@@ -160,6 +160,7 @@ type FakeEl = {
   data?: unknown;
   _inbox?: FakeEl;
   setAttribute(k: string, v: string): void;
+  getAttribute(k: string): string | null;
   appendChild(c: FakeEl): FakeEl;
   removeChild(c: FakeEl): FakeEl;
   insertBefore(c: FakeEl, ref: FakeEl | null): FakeEl;
@@ -178,6 +179,9 @@ function el(tag: string): FakeEl {
     parentNode: null,
     setAttribute(k, v) {
       e.attrs[k] = v;
+    },
+    getAttribute(k) {
+      return k in e.attrs ? e.attrs[k] : null;
     },
     appendChild(c) {
       moves.count++;
@@ -248,6 +252,7 @@ function laneHarness() {
       'epicPlanStep',
       'epicPlanData',
       'syncEpicLane',
+      'epicLaneKeeps',
       'paintEpicLaneCards',
       'renderEpicLane',
       'applyEpicPush',
@@ -348,6 +353,30 @@ describe('L4–L6 — the lane’s boxes, its cards, the cache and the push', ()
     expect(h.timers).toHaveLength(1);
     h.m.renderEpicLane({});
     expect(h.lane.hidden).toBe(true);
+  });
+
+  it('L4b — a group that leaves from the middle moves no box after it while it fades (fable #706 R2 P3)', () => {
+    const h = laneHarness();
+    const g = (k: string) => epicCard(k, 'running', [child(`${k}1`, { activityState: 'working' })]);
+    h.m.renderEpicLane({ working: [g('task:a'), g('task:b'), g('task:c')] });
+    expect(h.lane.children.map((b) => b.attrs['data-epic'])).toEqual(['task:a', 'task:b', 'task:c']);
+    const c = h.lane.children[2];
+    moves.count = 0;
+    h.m.renderEpicLane({ working: [g('task:a'), g('task:c')] });
+    expect(moves.count).toBe(0);
+    expect(h.lane.children[2]).toBe(c);
+    // Still fading, it is skipped again; then it leaves.
+    h.m.renderEpicLane({ working: [g('task:a'), g('task:c')] });
+    expect(moves.count).toBe(0);
+    h.timers[0]();
+    expect(h.lane.children.map((b) => b.attrs['data-epic'])).toEqual(['task:a', 'task:c']);
+    // A group that comes back while its old box fades gets a new box, placed after the fading one.
+    h.m.renderEpicLane({ working: [g('task:a'), g('task:b'), g('task:c')] });
+    h.m.renderEpicLane({ working: [g('task:a'), g('task:c')] });
+    h.m.renderEpicLane({ working: [g('task:a'), g('task:b'), g('task:c')] });
+    const live = h.lane.children.filter((b) => b.attrs['data-epic'] === 'task:b');
+    expect(live).toHaveLength(2);
+    expect(h.lane.children.map((b) => b.attrs['data-epic'])).toEqual(['task:a', 'task:b', 'task:b', 'task:c']);
   });
 
   it('L5 — the children are cached so their cards open', () => {

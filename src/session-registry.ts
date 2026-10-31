@@ -1020,7 +1020,9 @@ export class SessionRegistry {
     if (!child.parentTaskId || !child.planNodeId || !child.taskId) return undefined;
     const epic = this.sessionsByTaskId.get(child.parentTaskId);
     if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated || epic.closing) {
-      this.logger.warn('Epic event dropped — the epic is gone or closing', {
+      // A closing epic drops its children's events by design (D6 d); a gone one is worth a warning.
+      const closing = epic?.closing === true && !epic.terminated;
+      this.logger[closing ? 'info' : 'warn'](`Epic event dropped — the epic is ${closing ? 'closing' : 'gone'}`, {
         childTaskId: child.taskId,
         parentTaskId: child.parentTaskId,
         what,
@@ -1129,8 +1131,13 @@ export class SessionRegistry {
       closedBy: session.closedBy,
     };
     // E4 ⑦ — a new chain on a child its parent's close cancelled: no longer "closed by its parent"
-    // (a `/compact` hop of the chain being closed keeps the mark).
-    if (!chainId || chainId !== session.openChain) session.closedBy = undefined;
+    // (a `/compact` hop of the chain being closed keeps the mark). The mark goes only once a chain
+    // ended after it: a close that lands before a child's first hop begins marks the chain that
+    // hop opens, and that chain is the one the close cancels (fable #703 R2 P3-1).
+    const closedChainEnded = session.closedBy && (session.lastTurnOutcome?.at ?? -1) >= session.closedBy.at;
+    if ((!chainId || chainId !== session.openChain) && (!session.closedBy || closedChainEnded)) {
+      session.closedBy = undefined;
+    }
     // E2 ③ — the chain is open from its first start until its last commit.
     if (chainId) session.openChain = chainId;
     // E4 ⑥ (D7) — the events this chain was started for are consumed in this same save.
@@ -1333,7 +1340,7 @@ export class SessionRegistry {
   setEpicPlan(taskId: string, input: PlanWriteInput, by: 'epic' | 'owner'): EpicPlan {
     const epic = this.sessionsByTaskId.get(taskId);
     // A closing epic (flagged while its close is awaited) takes no new plan (grok #697 R1).
-    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated)
+    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated || epic.closing)
       throw new Error(`setEpicPlan: ${taskId} is not a live epic`);
     const children = this.getChildTasks(taskId).map((c) => ({
       planNodeId: c.planNodeId,
