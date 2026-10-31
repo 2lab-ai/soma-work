@@ -225,8 +225,9 @@ describe('slot — two <ui-agent-queue>, each in a token wrapper', () => {
       expect(TEMPLATE, sel).not.toContain(`${sel} {`);
     expect(TEMPLATE).not.toContain('data-sec-toggle');
     expect(TEMPLATE).not.toContain('data-cron-group');
-    // The board cards' CRON badge and the drawer stay the page's.
-    expect(TEMPLATE).toContain('.cron-badge {');
+    // The drawer stays the page's; its head's CRON badge is a kit chip (D7 C-06), the board cards' the element's.
+    expect(TEMPLATE).not.toContain('.cron-badge {');
+    expect(TEMPLATE).toContain('<span class="ui-chip" id="cron-drawer-badge" aria-hidden="true"></span>');
     expect(TEMPLATE).toContain('id="cron-drawer"');
   });
 });

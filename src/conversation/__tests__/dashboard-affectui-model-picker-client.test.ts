@@ -251,14 +251,19 @@ describe('mpData — the session as the element’s data', () => {
     const m = mapper(notes);
     const waiting = sess({ pendingModel: 'grok[1m]' });
     expect(m.renderModelNote(waiting, true)).toBe('');
+    // D7 (A-08): the note is the kit's status line (.ui-status-line), a refusal in the fail tone.
     expect(m.renderModelNote(waiting, false)).toBe(
-      '<div class="cb-model-note" role="status">compact 후 grok[1m](으)로 전환합니다…</div>',
+      '<div class="ui-status-line cb-model-note" role="status">compact 후 grok[1m](으)로 전환합니다…</div>',
     );
     notes[KEY] = { text: 'HTTP 409', error: true };
     expect(m.renderModelNote(sess(), true)).toBe('');
-    expect(m.renderModelNote(sess(), false)).toBe('<div class="cb-model-note is-error" role="alert">HTTP 409</div>');
+    expect(m.renderModelNote(sess(), false)).toBe(
+      '<div class="ui-status-line cb-model-note" data-tone="fail" role="alert">HTTP 409</div>',
+    );
     notes[KEY] = { text: '이미 opus[1m]입니다', error: false };
-    expect(m.renderModelNote(sess(), true)).toBe('<div class="cb-model-note" role="status">이미 opus[1m]입니다</div>');
+    expect(m.renderModelNote(sess(), true)).toBe(
+      '<div class="ui-status-line cb-model-note" role="status">이미 opus[1m]입니다</div>',
+    );
   });
 });
 
