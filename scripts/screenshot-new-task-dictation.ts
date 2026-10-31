@@ -7,6 +7,8 @@
  *
  *   Chromium + WebKit, PC 1280 and phone (Pixel 7 / iPhone 13):
  *     - with a recogniser the composer shows one mic — 받아쓰기 — and no audio voice note tool;
+ *     - on the device or only on a yes: WebKit (Apple's engine) starts at once; Chromium (no on-device Korean)
+ *       first says the voice would leave the device, and the second press is the yes;
  *     - pressing it starts a ko-KR, interim, continuous recogniser and shows the tool pressed;
  *     - words still being heard appear in the field as they arrive; settled words stay;
  *     - pressing again stops it; 작업 시작 sends the text — no attachment;
@@ -78,6 +80,8 @@ const FAKE_RECOGNISER = `
   window.__end = function () { var rec = window.__recs[window.__recs.length - 1]; rec.onend(); };
 })();
 `;
+/** The device has already said yes to a speech service off the device. */
+const REMOTE_OK = "try { localStorage.setItem('soma-nt-dictation-remote', 'ok'); } catch (e) {}";
 const NO_RECOGNISER = 'window.SpeechRecognition = undefined; window.webkitSpeechRecognition = undefined;';
 
 interface Posted {
@@ -152,6 +156,23 @@ async function run(browser: Browser, engine: string, label: string, options: Bro
       mks.join(','),
     );
     await pressDictate(page);
+    // On the device or only on a yes: Apple's engine (WebKit) starts at once; a browser whose recogniser sends the
+    // voice off the device (Chromium here: no on-device Korean) says so first, and the second press is the yes.
+    const apple = await page.evaluate(() => (window as any).ntIsAppleSpeech(window));
+    const firstMade = await page.evaluate(() => (window as any).__recs.length);
+    if (apple) {
+      check(`${tag}: Apple's engine (on the device) starts on the first press`, firstMade === 1, `recs=${firstMade}`);
+    } else {
+      const said = (await composerView(page)).status;
+      check(
+        `${tag}: off the device, the first press only says so (and points to the keyboard mic)`,
+        firstMade === 0 && said.includes('기기 밖') && said.includes('키보드의 마이크'),
+        `recs=${firstMade} · ${said}`,
+      );
+      await pressDictate(page);
+      const kept = await page.evaluate(() => localStorage.getItem('soma-nt-dictation-remote'));
+      check(`${tag}: the second press is the yes, kept on the device`, kept === 'ok', String(kept));
+    }
     const rec = await page.evaluate(() => {
       const r = (window as any).__recs[0];
       return r ? { lang: r.lang, interim: r.interimResults, continuous: r.continuous, starts: r.starts } : null;
@@ -217,11 +238,29 @@ async function run(browser: Browser, engine: string, label: string, options: Bro
   }
   // 2) A dashboard task (no attachments) gets the same tool.
   {
-    const { page, context } = await openPage(browser, options, FAKE_RECOGNISER, []);
+    const { page, context } = await openPage(browser, options, FAKE_RECOGNISER + REMOTE_OK, []);
     await openComposer(page);
+    // Switch the destination in the middle of a dictation (a repaint of the composer): the words stay and go on.
+    await pressDictate(page);
+    await page.evaluate(() => (window as any).__say([['대시보드 작업으로', false]]));
     await page.evaluate(() => (window as any).ntSetDestination('task'));
     await page.waitForTimeout(100);
-    const v = await composerView(page);
+    let v = await composerView(page);
+    check(
+      `${tag}: switching to a dashboard task mid-dictation keeps the words`,
+      v.value === '대시보드 작업으로',
+      v.value,
+    );
+    await page.evaluate(() => (window as any).__say([['대시보드 작업으로 보내줘', false]]));
+    await page.evaluate(() => (window as any).ntLoadContext());
+    await page.waitForTimeout(200);
+    v = await composerView(page);
+    check(
+      `${tag}: the next words follow, and a context reload (repaint) keeps them`,
+      v.value === '대시보드 작업으로 보내줘',
+      v.value,
+    );
+    await pressDictate(page);
     const mks = v.tools.map((t) => t.mk);
     check(
       `${tag}: a dashboard task gets 받아쓰기 too`,

@@ -5334,7 +5334,8 @@ body.nt-open .new-task-fab { display: none !important; }
 
 .nt-composer { display: block; }
 .nt-foot { display: flex; align-items: center; gap: 8px; min-height: 18px; margin: 0; }
-.nt-status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* It wraps: a dictation's why (a refused mic, the voice leaving the device) is read in full on a phone. */
+.nt-status { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .nt-submit-hint { flex: none; margin-left: auto; font-size: 11px; color: var(--text-tertiary); }
 
 
@@ -16905,6 +16906,10 @@ var NT_NO_FILES = 'application/x-soma-no-attachments';
 // Korean sentence carries — and the dictation running now ({ rec, base, finals, interim, stopping, hard, … }) or null.
 var NT_DICTATION_LANG = 'ko-KR';
 var _ntDictation = null;
+// The voice leaves the device only on a yes: the first press where it would only says so (_ntDictationAsked), the
+// next press is the yes, and the device keeps it (localStorage, this key).
+var NT_DICTATION_REMOTE_KEY = 'soma-nt-dictation-remote';
+var _ntDictationAsked = false;
 
 // The battery's reading for <ui-meter> (value 0..1, null = unknown — the element draws "?" with no fill) and the words
 // of the usage line (the button's title too).
@@ -17270,9 +17275,10 @@ function ntDictationText(base, finals, interim) {
 }
 
 // One result event, read from its first result (the list holds the whole session): the settled words and the words
-// still being heard. Android Chrome in continuous mode resends what it already settled inside a longer copy — that
-// copy replaces the settled words, so nothing is written twice.
-function ntDictationRead(results) {
+// still being heard. When cumulative (Android Chrome): it resends what it already settled inside a longer copy — that
+// copy replaces the settled words, so nothing is written twice. Elsewhere results are separate segments, so a phrase
+// said twice ("아니, 아니요 …") stays as said.
+function ntDictationRead(results, cumulative) {
   var finals = '';
   var interim = '';
   var n = results && results.length ? results.length : 0;
@@ -17285,12 +17291,12 @@ function ntDictationRead(results) {
       continue;
     }
     var had = finals.trim();
-    if (had && t.trim().indexOf(had) === 0) finals = t.trim();
+    if (cumulative && had && t.trim().indexOf(had) === 0) finals = t.trim();
     else finals = ntJoinSpoken(finals, t);
   }
   var settled = finals.trim();
   var rest = interim.trim();
-  if (settled && rest.indexOf(settled) === 0) interim = rest.slice(settled.length);
+  if (cumulative && settled && rest.indexOf(settled) === 0) interim = rest.slice(settled.length);
   return { finals: finals, interim: interim };
 }
 
@@ -17348,23 +17354,61 @@ async function ntDictationLocal(Rec) {
   }
 }
 
-// The status line while it listens, saying where the words are processed. 'device': a browser without available()
-// — Safari (Apple's engine, on the device for Korean), Chrome on Android and Samsung Internet (Google's service).
+// Apple's speech engine — Safari on a Mac, any browser on an iPhone or iPad (all WebKit): on the device for Korean
+// (WebKit asks Apple for on-device recognition whenever the language has it).
+function ntIsAppleSpeech(w) {
+  var ua = String((w && w.navigator && w.navigator.userAgent) || '');
+  if (/iPhone|iPad|iPod/.test(ua)) return true;
+  return /Macintosh/.test(ua) && /Safari\\//.test(ua) && !/Chrome|Chromium|Edg|Firefox/.test(ua);
+}
+
+// Has this device said yes to dictation through a speech service off the device? The first ask only marks it asked
+// (the press says so instead of listening); the next press is the yes, kept on the device.
+function ntDictationRemoteOk() {
+  try {
+    if (localStorage.getItem(NT_DICTATION_REMOTE_KEY) === 'ok') return true;
+  } catch (e) {}
+  if (!_ntDictationAsked) {
+    _ntDictationAsked = true;
+    return false;
+  }
+  try {
+    localStorage.setItem(NT_DICTATION_REMOTE_KEY, 'ok');
+  } catch (e) {}
+  return true;
+}
+
+// What the press says where the voice would leave the device and the person has not said yes yet.
+function ntDictationOffDevice(where) {
+  if (where === 'installing') {
+    return '기기용 한국어 모델을 내려받는 중입니다 — 다 받으면 이 기기에서 받아씁니다. 지금 기기 밖 음성 서비스로 받아쓰려면 한 번 더 누르세요';
+  }
+  return '이 브라우저는 음성을 기기 밖(브라우저의 음성 서비스)으로 보내 받아씁니다 — 괜찮으면 한 번 더 누르세요. 기기 안에서만 처리하려면 키보드의 마이크를 쓰세요';
+}
+
+// The status line while it listens, saying where the words are processed.
 function ntDictationStatus(where) {
   var how = {
     local: '이 기기에서 처리합니다',
-    installing: '이번에는 브라우저의 음성 서비스로 처리합니다 (기기용 한국어 모델을 내려받는 중)',
-    service: '브라우저의 음성 서비스로 처리합니다',
+    apple: '이 기기의 Apple 음성 인식으로 처리합니다',
+    installing: '이번에는 기기 밖, 브라우저의 음성 서비스로 처리합니다 (기기용 한국어 모델을 내려받는 중)',
+    service: '기기 밖, 브라우저의 음성 서비스로 처리합니다',
   }[where];
-  return '듣는 중… ' + (how ? how + ' · ' : '말하는 대로 적힙니다 · ') + '다시 누르면 멈춥니다';
+  return '듣는 중… ' + (how ? how + ' · ' : '') + '다시 누르면 멈춥니다';
 }
 
 // 받아쓰기 pressed: a recogniser for this dictation — ko-KR, the words while they are said (interimResults), until it
 // is stopped (continuous). Without available() it starts in the press itself (Safari asks for the mic there).
 async function ntDictateStart() {
-  var Rec = ntDictationEngine(typeof window !== 'undefined' ? window : null);
+  var w = typeof window !== 'undefined' ? window : null;
+  var Rec = ntDictationEngine(w);
   var el = ntEl('nt-composer');
-  if (!Rec || !el || _ntDictation) return;
+  if (!Rec || !el || _ntBusy) return;
+  if (_ntDictation) {
+    // Still settling the last words of a stopped one: drop them (they show already) and start again at once.
+    if (!_ntDictation.stopping) return;
+    ntDictateStop(true);
+  }
   var d = {
     rec: null,
     base: String(el.value || ''),
@@ -17376,12 +17420,23 @@ async function ntDictateStart() {
     silent: 0,
     sessions: 0,
     error: '',
+    // Android Chrome repeats settled words in longer copies (ntDictationRead folds them there only).
+    cumulative: !!(w && w.navigator && /Android/i.test(String(w.navigator.userAgent || ''))),
   };
   _ntDictation = d;
   paintNtComposer();
-  ntSetStatus(ntDictationStatus('device'));
-  var where = typeof Rec.available === 'function' ? await ntDictationLocal(Rec) : 'device';
-  if (_ntDictation !== d) return;
+  // Where the words are processed: Chrome's available() when it has one; else Apple's engine (on the device) or a
+  // speech service off the device (Chrome on Android, Samsung Internet, older Chrome, Edge).
+  var where = ntIsAppleSpeech(w) ? 'apple' : 'service';
+  if (typeof Rec.available === 'function') {
+    ntSetStatus('받아쓰기 준비 중…');
+    where = await ntDictationLocal(Rec);
+    if (_ntDictation !== d) return;
+  }
+  if ((where === 'service' || where === 'installing') && !ntDictationRemoteOk()) {
+    ntDictationEnd(d, ntDictationOffDevice(where));
+    return;
+  }
   var rec;
   try {
     rec = new Rec();
@@ -17418,7 +17473,7 @@ async function ntDictateStart() {
 // sends no ui-input for a value the page sets).
 function ntDictationHeard(d, e) {
   if (d.hard || _ntDictation !== d) return;
-  var got = ntDictationRead(e && e.results);
+  var got = ntDictationRead(e && e.results, d.cumulative);
   d.finals = got.finals;
   d.interim = got.interim;
   if (got.finals || got.interim) {
@@ -17490,7 +17545,12 @@ function ntDictateStop(hard) {
     d.rec.stop();
   } catch (e) {
     ntDictationEnd(d, '');
+    return;
   }
+  // A recogniser that never confirms the stop (Edge can go silent) does not hold the tool: let go after 3 s.
+  setTimeout(function () {
+    if (_ntDictation === d) ntDictateStop(true);
+  }, 3000);
 }
 
 // <ui-composer>'s ui-tool: 받아쓰기 is the page's one tool (the camera is the element's own).
