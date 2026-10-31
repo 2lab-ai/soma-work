@@ -51,6 +51,20 @@ export function buildWorkSessionKey(channelId: string, threadTs?: string): strin
 }
 
 /**
+ * Registry key of a Slack-less task (#596): `task:<taskId>`. It sits beside
+ * the `work:<channel>:<thread>` keys and is built from the task id alone — no
+ * channel or thread is invented for it. Two segments, so it never parses as
+ * a Slack key, and `normalizeSessionKey` returns it unchanged.
+ */
+export function buildTaskSessionKey(taskId: string): string {
+  if (!taskId) throw new Error('buildTaskSessionKey: taskId is required');
+  // A separator would make the key parse as something else (a legacy or Slack
+  // key) — a record on disk can be forged, so refuse it here (#612 review).
+  if (/[:/\\\s]/.test(taskId)) throw new Error('buildTaskSessionKey: taskId has a separator');
+  return `task:${taskId}`;
+}
+
+/**
  * Legacy key format, kept ONLY for the persisted `SerializedSession.key`
  * field. The running system derives its map keys via `buildWorkSessionKey`
  * and ignores the persisted field — its sole consumer is a PRE-4d binary
@@ -76,6 +90,8 @@ export function buildLegacySessionKey(channelId: string, threadTs?: string): str
  *   them miss, exactly as they did before.
  */
 export function normalizeSessionKey(key: string): string {
+  // A Slack-less task key is already canonical — by construction, not by the fallbacks below.
+  if (key.startsWith('task:')) return key;
   try {
     parseSessionKey(key);
     return key;

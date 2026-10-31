@@ -321,6 +321,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
         'cardSummary',
         'cardCurrentTask',
         'renderCardResume',
+        'taskOutcomeHtml',
         'isBusy',
         'sessionActionsOf',
         'sessionActionHtml',
@@ -1584,8 +1585,9 @@ describe('the composer follows the session live (executed)', () => {
     const els: Record<string, unknown> = { 'panel-command': host, 'cmd-steer': el };
     let resets = 0;
     const m = load<{ renderPanelComposer(s: unknown, force?: boolean): void }>(
-      ['renderPanelComposer', 'pcModeOf', 'steeringData'],
-      ['STEER_STATE'],
+      // #640 R2: the pass also applies the composer's file rule (no composer in this harness).
+      ['renderPanelComposer', 'pcModeOf', 'pcToolsOpen', 'steeringData', 'pcComposerSetup', 'pcComposerData'],
+      ['STEER_STATE', 'PC_LIMITS', 'PC_NO_FILES'],
       {
         document: { getElementById: (id: string) => els[id] ?? null },
         currentUserId: 'U1',
@@ -1615,6 +1617,43 @@ describe('the composer follows the session live (executed)', () => {
     expect(last()).toMatchObject({ canAct: false });
     expect(clientFn('repaintPanelSession')).toContain('renderPanelComposer(s);');
   });
+
+  // #640 R2 (astra): a dashboard task takes no attachments (D8) — not by the
+  // composer's tools, and not by a paste or a drop on it either (the composer
+  // takes those itself: its accept refuses every file).
+  it('a dashboard task’s composer takes no files: no attach / image / voice tools, every file refused by type', () => {
+    const el: Record<string, unknown> = {};
+    const host: Record<string, unknown> = {};
+    const composer: { data?: Record<string, unknown> } = {};
+    const els: Record<string, unknown> = { 'panel-command': host, 'cmd-steer': el, 'pc-composer': composer };
+    const m = load<{ renderPanelComposer(s: unknown, force?: boolean): void }>(
+      ['renderPanelComposer', 'pcModeOf', 'pcToolsOpen', 'steeringData', 'pcComposerSetup', 'pcComposerData'],
+      ['STEER_STATE', 'PC_LIMITS', 'PC_NO_FILES'],
+      {
+        document: { getElementById: (id: string) => els[id] ?? null },
+        currentUserId: 'U1',
+        pcReset: () => {},
+      },
+    );
+    m.renderPanelComposer({ ownerId: 'U1', activityState: 'idle' }, true);
+    expect(host._takesFiles).toBe(true);
+    expect(composer.data).not.toHaveProperty('accept'); // the element's defaults: every tool, any file
+    expect(composer.data).not.toHaveProperty('attach');
+    m.renderPanelComposer({ ownerId: 'U1', activityState: 'idle', slackless: true }, true); // another card: forced
+    expect(host._mode).toBe('open');
+    expect(host._takesFiles).toBe(false);
+    expect(composer.data).toMatchObject({
+      attach: false,
+      image: false,
+      voice: false,
+      accept: 'application/x-soma-no-attachments',
+    });
+    // Back on a Slack session: the tools and every file type return (the task keys are dropped).
+    m.renderPanelComposer({ ownerId: 'U1', activityState: 'idle' }, true);
+    expect(composer.data).not.toHaveProperty('accept');
+    expect(composer.data).not.toHaveProperty('attach');
+    expect(composer.data).toMatchObject({ maxFiles: 10 });
+  });
 });
 
 describe('the model menu closes on Escape before the panel does (executed)', () => {
@@ -1639,7 +1678,8 @@ describe('the model menu closes on Escape before the panel does (executed)', () 
     expect(clientFn('openPanel')).toContain('renderPanelComposer(s, !sameSession);');
     const send = clientFn('sendCommand');
     expect(send).toContain('el.data = Object.assign({}, el.data, { disabled: true });');
-    expect(send).toContain("if (cmdHost) cmdHost._mode = '';");
+    expect(send).toContain("cmdHost._mode = '';");
+    expect(send).toContain('cmdHost._takesFiles = false;'); // and no file is taken there either (#640 R2)
     const esc = TEMPLATE.slice(
       TEMPLATE.indexOf("if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artViewerIsOpen()"),
     );

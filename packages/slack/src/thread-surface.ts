@@ -234,6 +234,44 @@ export interface ThreadSurfaceOutbox {
  * Either way an unreadable epoch means the store is degraded, not that the host
  * is young.
  */
+/** The status fields `setStatus` writes — shared with the dashboard panel (#598 ④b). */
+export interface StatusPatch {
+  agentPhase?: string;
+  activeTool?: string;
+  waitingForChoice?: boolean;
+  lastProgressAt?: number;
+  lastSignalAt?: number;
+}
+
+/**
+ * The action-panel state `setStatus` writes, without rendering. One body for
+ * the Slack surface and the dashboard panel (#598 ④b), so the two cannot drift.
+ */
+export function applyStatusPatch(session: ConversationSession, patch: StatusPatch): void {
+  if (!session.actionPanel) {
+    session.actionPanel = {
+      channelId: session.channelId,
+      userId: session.ownerId,
+    };
+  }
+
+  session.actionPanel.agentPhase = patch.agentPhase;
+  session.actionPanel.activeTool = patch.activeTool;
+  if (typeof patch.waitingForChoice === 'boolean') {
+    session.actionPanel.waitingForChoice = patch.waitingForChoice;
+  }
+  // Heartbeat: this call happened. NOT a claim that the work moved.
+  session.actionPanel.statusUpdatedAt = Date.now();
+  // U9 — real progress / liveness are written ONLY when the caller supplies
+  // them, and are never cleared by a later generic lifecycle call.
+  if (patch.lastProgressAt !== undefined) {
+    session.actionPanel.lastProgressAt = patch.lastProgressAt;
+  }
+  if (patch.lastSignalAt !== undefined) {
+    session.actionPanel.lastSignalAt = patch.lastSignalAt;
+  }
+}
+
 export interface ThreadSurfaceWriteOptions {
   expectedTurnEpoch?: number;
 }
@@ -503,28 +541,7 @@ export class ThreadSurface {
     // live turn's state exactly as it found it.
     if (this.isStaleWrite(sessionKey, options)) return;
 
-    if (!session.actionPanel) {
-      session.actionPanel = {
-        channelId: session.channelId,
-        userId: session.ownerId,
-      };
-    }
-
-    session.actionPanel.agentPhase = patch.agentPhase;
-    session.actionPanel.activeTool = patch.activeTool;
-    if (typeof patch.waitingForChoice === 'boolean') {
-      session.actionPanel.waitingForChoice = patch.waitingForChoice;
-    }
-    // Heartbeat: this call happened. NOT a claim that the work moved.
-    session.actionPanel.statusUpdatedAt = Date.now();
-    // U9 — real progress / liveness are written ONLY when the caller supplies
-    // them, and are never cleared by a later generic lifecycle call.
-    if (patch.lastProgressAt !== undefined) {
-      session.actionPanel.lastProgressAt = patch.lastProgressAt;
-    }
-    if (patch.lastSignalAt !== undefined) {
-      session.actionPanel.lastSignalAt = patch.lastSignalAt;
-    }
+    applyStatusPatch(session, patch);
 
     try {
       await this.renderViaFlush(session, sessionKey, false);

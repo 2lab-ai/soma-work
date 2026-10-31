@@ -36,6 +36,12 @@ function clientFn(name: string): string {
 function load<T>(fns: string[]): T {
   return new Function(`${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`)() as T;
 }
+/** `load` with the page globals the functions read, given as values. */
+function loadWith<T>(fns: string[], globals: Record<string, unknown>): T {
+  const names = Object.keys(globals);
+  const body = `${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
+  return new Function(...names, body)(...names.map((n) => globals[n])) as T;
+}
 
 // ── Served page ──────────────────────────────────────────────────────
 
@@ -231,6 +237,22 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     for (const gone of ['nt-battery-fill', 'nt-batt-', 'nt-blink']) expect(html, gone).not.toContain(gone);
   });
 
+  it('#600 ⑥ — where the task goes: a Slack channel or a dashboard task, with a folder for the latter', () => {
+    // The two destinations are kit chips that say their state (button.ui-chip[aria-pressed], D7).
+    expect(html).toMatch(/<button type="button" class="ui-chip" id="nt-dest-slack" aria-pressed="true"/);
+    expect(html).toMatch(/<button type="button" class="ui-chip" id="nt-dest-task" aria-pressed="false"/);
+    expect(html).toMatch(/<select id="nt-folder"[^>]*onchange="ntOnFolderChange\(\)"/);
+    expect(script).toContain('function ntSetDestination(');
+    // Task mode hides the autogoal / autoz row, never the destination row (both are .nt-toggles).
+    expect(script).toContain("'.nt-toggles:not(.nt-dest)'");
+  });
+
+  // #640 R1 (astra P2): the dialog's chips and rows set `display`, which beats the
+  // `hidden` attribute's UA style — a hidden row must actually be hidden.
+  it('#640 R1 — anything hidden inside the dialog is not displayed, whatever its class sets', () => {
+    expect(html).toContain('.nt-dialog [hidden] { display: none !important; }');
+  });
+
   it('row 2: autogoal and autoz toggles are kit switches; autoz starts off; autogoal says it is for this task only', () => {
     // D7 (H-04): <label class="ui-switch"><input type="checkbox" role="switch"> — the kit draws the knob; the page
     // reads the switch (ntToggle) and sets it from the draft (checked) when the dialog opens.
@@ -293,7 +315,8 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     // The server's cap on all files together is the element's (0.10.0 maxTotalBytes: it rejects the file that
     // crosses it and says so) — the page no longer takes the file back out on ui-files (D2-GAPS G5-3).
     expect(data).toContain('d.maxTotalBytes = lim.maxTotalBytes;');
-    expect(script).not.toContain("composer.addEventListener('ui-files'");
+    // (Its one ui-files listener only says why a dashboard task cannot start — #640 R2 — it takes nothing out.)
+    expect(script.match(/composer\.addEventListener\('ui-files'/g) ?? []).toHaveLength(1);
     expect(script).not.toContain('composer.removeFile(');
     // It answers ui-submit (cancelled: the page posts, the composer keeps its text and files until the launch)
     // and ui-input (the draft).
@@ -468,7 +491,8 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
     ntDefaultState(ctx: any, draft: any): any;
     ntBuildPayload(state: any, attachments: any[], requestId: string): any;
     ntCanSubmit(state: any, attachments: any[]): boolean;
-  }>(['ntDefaultState', 'ntBuildPayload', 'ntCanSubmit']);
+    ntLaunchToast(data: any, channelName: string | null): any;
+  }>(['ntDefaultState', 'ntBuildPayload', 'ntCanSubmit', 'ntLaunchToast']);
   const ctx = {
     defaultModel: 'opus[1m]',
     defaultEffort: 'xhigh',
@@ -484,6 +508,8 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
       autogoal: true,
       autoz: false,
       prompt: '',
+      destination: 'slack',
+      folder: '',
     });
   });
 
@@ -520,6 +546,285 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
     expect(fns.ntCanSubmit({ ...base, prompt: 'go' }, [])).toBe(true);
     expect(fns.ntCanSubmit(base, [{ name: 'a' }])).toBe(true);
     expect(fns.ntCanSubmit({ ...base, prompt: 'go', channelId: null }, [])).toBe(false);
+  });
+
+  // #600 ⑥ — "대시보드 작업" (dashboard task): no channel, no Slack thread.
+  describe('a dashboard task (#600 ⑥)', () => {
+    const task = () => ({ ...fns.ntDefaultState(ctx, null), destination: 'task', prompt: '고쳐줘', channelId: null });
+
+    it('builds the task body: destination, prompt, the chosen model’s nickname, the folder name — never attachments', () => {
+      expect(
+        fns.ntBuildPayload({ ...task(), folder: 'repo-a' }, [{ name: 'a.png', data: 'AA' }], 'req-0123456789'),
+      ).toEqual({
+        requestId: 'req-0123456789',
+        destination: 'task',
+        prompt: '고쳐줘',
+        model: 'opus[1m]', // the server resolves the nickname against the models it offers (#640 R1)
+        folder: 'repo-a',
+      });
+      // A new folder (the default) sends no folder.
+      expect(fns.ntBuildPayload(task(), [], 'req-0123456789')).toEqual({
+        requestId: 'req-0123456789',
+        destination: 'task',
+        prompt: '고쳐줘',
+        model: 'opus[1m]',
+      });
+    });
+
+    it('needs no channel, but needs an instruction (a task takes no attachments)', () => {
+      expect(fns.ntCanSubmit(task(), [])).toBe(true);
+      expect(fns.ntCanSubmit({ ...task(), prompt: ' ' }, [{ name: 'a' }])).toBe(false);
+    });
+
+    // #640 R1 (fable, astra P2): files attached before switching to a dashboard
+    // task are not silently dropped — the task cannot start until they are removed.
+    it('cannot start while files are attached — they would be dropped', () => {
+      expect(fns.ntCanSubmit(task(), [{ name: 'a.png' }])).toBe(false);
+    });
+
+    it('the launch toast opens the task card — no channel, no Slack link; a task that did not start says why', () => {
+      expect(fns.ntLaunchToast({ sessionKey: 'task:x', status: 'running' }, null)).toEqual({
+        title: '대시보드 작업을 시작했어요',
+        description: '카드에서 진행을 볼 수 있어요',
+        tone: 'success',
+        action: { id: 'open', label: '카드 열기' },
+        duration: 12000,
+      });
+      expect(
+        fns.ntLaunchToast(
+          { sessionKey: 'task:x', status: 'not-started', reason: 'one dashboard task runs at a time' },
+          null,
+        ),
+      ).toMatchObject({
+        title: '작업을 만들었지만 아직 시작하지 못했어요',
+        description: 'one dashboard task runs at a time — 지시는 새 작업 창에 남겨 두었어요',
+        tone: 'warning',
+        action: { id: 'open', label: '카드 열기' },
+      });
+    });
+
+    it('a Slack launch toast is as before: the channel, and the thread link', () => {
+      expect(
+        fns.ntLaunchToast(
+          { channel: 'C_ALPHA', status: 'running', permalink: 'https://slack.example/p1' },
+          'workspace-alpha',
+        ),
+      ).toEqual({
+        title: '작업을 시작했어요',
+        description: '#workspace-alpha',
+        tone: 'success',
+        action: { id: 'open', label: '카드 열기' },
+        duration: 12000,
+        link: { label: 'Slack에서 보기', href: 'https://slack.example/p1' },
+      });
+    });
+  });
+});
+
+// #640 R1 — what the dialog keeps across a refresh of its context, and after a launch.
+// #640 R2 (fable P3): the submit button is disabled while a dashboard task has
+// files attached, so the reason must show without a submit — on the switch, and
+// clear once the files are gone.
+describe('ntBlockedHint (#640 R2)', () => {
+  const { ntBlockedHint } = load<{ ntBlockedHint(state: any, attachments: any[]): string }>(['ntBlockedHint']);
+  it('says why a dashboard task with files cannot start; nothing otherwise', () => {
+    expect(ntBlockedHint({ destination: 'task' }, [{ name: 'a.png' }])).toBe(
+      '대시보드 작업은 아직 첨부를 받지 않아요 — 첨부를 빼거나 Slack 채널로 보내 주세요',
+    );
+    expect(ntBlockedHint({ destination: 'task' }, [])).toBe('');
+    expect(ntBlockedHint({ destination: 'slack' }, [{ name: 'a.png' }])).toBe('');
+  });
+  it('is shown on switching to a dashboard task, and whenever the composer’s files change in task mode', () => {
+    expect(clientFn('ntSetDestination')).toContain('ntSetError(ntBlockedHint(_ntState, ntComposerFiles()));');
+    // <ui-composer> reports every file added (picker, paste, drop) or removed as ui-files (fable #640 R3).
+    const init = clientFn('ntInit');
+    expect(init).toContain("composer.addEventListener('ui-files', function (e) {");
+    expect(init).toContain('ntSetError(ntBlockedHint(_ntState, (e.detail && e.detail.files) || ntComposerFiles()));');
+  });
+});
+
+// #640 R2 (astra): what the user submitted is what is sent — a switch of the
+// destination while attachments are still being read does not turn a Slack
+// launch with files into a dashboard task without them.
+describe('submitNewTask — the submitted state is the one sent (#640 R2)', () => {
+  it('switching to a dashboard task while the files are read does not drop them', async () => {
+    let release!: () => void;
+    const reading = new Promise<void>((r) => {
+      release = r;
+    });
+    const state = {
+      destination: 'slack',
+      channelId: 'C1',
+      prompt: '',
+      model: 'opus',
+      effort: 'xhigh',
+      autogoal: false,
+      autoz: false,
+      folder: '',
+    };
+    const posted: string[] = [];
+    const launched: unknown[][] = [];
+    const file = { name: 'a.png', type: 'image/png' };
+    const { submitNewTask } = loadWith<{ submitNewTask(detail: unknown): Promise<void> }>(
+      ['submitNewTask', 'ntCanSubmit', 'ntBlockedHint', 'ntBuildPayload'],
+      {
+        _ntBusy: false,
+        _ntCtx: {},
+        _ntState: state,
+        _ntRequestId: 'req-0123456789',
+        ntEl: () => ({ files: [file], value: '' }),
+        ntSetError: () => {},
+        ntSetStatus: () => {},
+        paintNtComposer: () => {},
+        // The composer's File read as base64 — held until the test releases it.
+        ntReadFile: async (f: { name: string; type: string }) => {
+          await reading;
+          return { name: f.name, mimetype: f.type, data: 'AA' };
+        },
+        refreshCsrfToken: async () => {},
+        ntPostTask: async (b: string) => {
+          posted.push(b);
+          return { status: 200, data: { ok: true, channel: 'C1', status: 'running' } };
+        },
+        ntOnLaunched: (...args: unknown[]) => launched.push(args),
+      },
+    );
+    const run = submitNewTask({ text: '사진 봐줘', files: [file] });
+    state.destination = 'task'; // the user switches while the files are read
+    release();
+    await run;
+    const body = JSON.parse(posted[0]);
+    expect(body).toMatchObject({ channelId: 'C1', prompt: '사진 봐줘', attachments: [{ name: 'a.png' }] });
+    expect(body.destination).toBeUndefined();
+    // What follows the launch reads the submitted state, too.
+    expect(launched[0][1]).toMatchObject({ destination: 'slack', prompt: '사진 봐줘' });
+  });
+});
+
+// #600 ⑥ / #640 R2 — the dialog's <ui-composer> on a dashboard task: no attach /
+// voice / camera tools, and a pasted or dropped file is refused by its type.
+describe('ntComposerData — a dashboard task takes no files (#640 R2)', () => {
+  const data = (destination: string) =>
+    loadWith<{ ntComposerData(): Record<string, unknown> }>(['ntComposerData', 'ntReadDraft'], {
+      _ntValue: '',
+      _ntBusy: false,
+      _ntCtx: null,
+      _ntState: { destination },
+      NT_NO_FILES: 'application/x-soma-no-attachments',
+      NT_DRAFT_KEY: 'k',
+      localStorage: { getItem: () => null },
+    }).ntComposerData();
+  it('task: the tools are off and every file type is refused', () => {
+    expect(data('task')).toMatchObject({
+      attach: false,
+      voice: false,
+      camera: false,
+      accept: 'application/x-soma-no-attachments',
+    });
+  });
+  it('Slack: the element’s defaults (no file keys of the page’s own)', () => {
+    const d = data('slack');
+    expect(d).not.toHaveProperty('accept');
+    expect(d).not.toHaveProperty('attach');
+    expect(d).toMatchObject({ camera: 'environment', image: false });
+  });
+});
+
+// fable merge review P3: a file the task composer refuses (its accept matches no
+// type) says why — a dashboard task takes no attachments — not only "unsupported type".
+describe('a refused file on a dashboard task says why (merge review P3)', () => {
+  const HINT = '대시보드 작업은 아직 첨부를 받지 않아요 — 첨부를 빼거나 Slack 채널로 보내 주세요';
+  it('the dialog: a type refusal in task mode is the attachment hint; elsewhere nothing', () => {
+    const errors: string[] = [];
+    const run = (destination: string, reason: string) =>
+      loadWith<{ ntOnReject(e: unknown): void }>(['ntOnReject', 'ntBlockedHint'], {
+        _ntState: { destination },
+        ntSetError: (t: string) => errors.push(t),
+      }).ntOnReject({ detail: { reason, file: { name: 'a.png' } } });
+    run('task', 'type');
+    run('task', 'size'); // too large is the element's own words
+    run('slack', 'type');
+    expect(errors).toEqual([HINT]);
+    expect(clientFn('ntInit')).toContain("composer.addEventListener('ui-reject', ntOnReject);");
+  });
+  it('the panel: a type refusal on a task card is a toast with the same reason', () => {
+    const toasts: Array<{ title: string; tone?: string }> = [];
+    const run = (takesFiles: boolean, reason: string) =>
+      loadWith<{ pcOnReject(e: unknown): void }>(['pcOnReject'], {
+        document: { getElementById: () => ({ _takesFiles: takesFiles }) },
+        dashToast: (t: { title: string; tone?: string }) => toasts.push(t),
+      }).pcOnReject({ detail: { reason, file: { name: 'a.png' } } });
+    run(false, 'type');
+    run(false, 'count');
+    run(true, 'type');
+    expect(toasts).toEqual([{ title: '대시보드 작업은 아직 첨부를 받지 않아요', tone: 'error' }]);
+    expect(clientFn('pcInit')).toContain("host.addEventListener('ui-reject', pcOnReject);");
+  });
+});
+
+describe('ntReconcile / ntStateAfterLaunch (#640 R1)', () => {
+  const fns = load<{
+    ntDefaultState(ctx: any, draft: any): any;
+    ntReconcile(state: any, ctx: any): void;
+    ntStateAfterLaunch(prev: any, data: any, ctx: any): any;
+  }>(['ntDefaultState', 'ntReconcile', 'ntStateAfterLaunch']);
+  const ctx = (over: Record<string, unknown> = {}) => ({
+    models: [{ nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]' }],
+    efforts: ['xhigh'],
+    channels: [{ id: 'C_ALPHA', name: 'alpha' }],
+    defaultModel: 'opus[1m]',
+    defaultEffort: 'xhigh',
+    defaultChannelId: 'C_ALPHA',
+    autogoalDefault: true,
+    taskFolders: [{ name: 'repo-a' }],
+    ...over,
+  });
+  const taskState = (over: Record<string, unknown> = {}) => ({
+    ...fns.ntDefaultState(ctx(), null),
+    destination: 'task',
+    folder: 'repo-a',
+    prompt: '고쳐줘',
+    ...over,
+  });
+
+  it('a folder no longer offered falls back to a new folder', () => {
+    const s = taskState({ folder: 'gone' });
+    fns.ntReconcile(s, ctx());
+    expect(s.folder).toBe('');
+    const kept = taskState();
+    fns.ntReconcile(kept, ctx());
+    expect(kept.folder).toBe('repo-a');
+  });
+
+  it('a dashboard task no longer offered (no task folders in the context) falls back to Slack', () => {
+    const s = taskState();
+    fns.ntReconcile(s, ctx({ taskFolders: undefined }));
+    expect(s.destination).toBe('slack');
+    expect(s.folder).toBe('');
+  });
+
+  it('still reconciles the model, effort and channel as before', () => {
+    const s = { ...fns.ntDefaultState(ctx(), null), model: 'x', effort: 'y', channelId: 'C_GONE' };
+    fns.ntReconcile(s, ctx());
+    expect(s).toMatchObject({ model: 'opus[1m]', effort: 'xhigh', channelId: 'C_ALPHA' });
+  });
+
+  it('after a started task the next one starts clean, still a dashboard task', () => {
+    const next = fns.ntStateAfterLaunch(taskState(), { sessionKey: 'task:x', status: 'running' }, ctx());
+    expect(next).toMatchObject({ destination: 'task', prompt: '', folder: '' });
+  });
+
+  // #640 R1 (astra P2): a task created but not started keeps its instruction — it was never run.
+  it('after a task that did not start, the instruction, folder and model are kept', () => {
+    const prev = taskState({ model: 'fable' }); // not the default, so keeping it is observable
+    const next = fns.ntStateAfterLaunch(prev, { sessionKey: 'task:x', status: 'not-started', reason: 'busy' }, ctx());
+    expect(next).toMatchObject({ destination: 'task', prompt: '고쳐줘', folder: 'repo-a', model: 'fable' });
+  });
+
+  it('a Slack launch keeps the channel it used', () => {
+    const prev = { ...fns.ntDefaultState(ctx(), null), prompt: 'go', channelId: 'C_ALPHA' };
+    const next = fns.ntStateAfterLaunch(prev, { channel: 'C_BETA', status: 'running' }, ctx());
+    expect(next).toMatchObject({ destination: 'slack', channelId: 'C_BETA', prompt: '' });
   });
 });
 
