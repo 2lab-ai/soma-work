@@ -57,10 +57,10 @@ The user sends `/z taskentry off`, or turns it off in the dashboard settings ("S
 Stop the service first. The store keeps settings in memory and writes them back.
 
 ```bash
+cd /opt/soma-work/<env>
 sudo ./scripts/service.sh stop
-cd /opt/soma-work/<env>/data
-cp user-settings.json user-settings.json.pre-taskentry-off
-node -e 'const f="user-settings.json";const s=JSON.parse(require("fs").readFileSync(f));for(const u of Object.values(s))delete u.slackTaskEntry;require("fs").writeFileSync(f+".tmp",JSON.stringify(s,null,2));require("fs").renameSync(f+".tmp",f)'
+cp data/user-settings.json data/user-settings.json.pre-taskentry-off
+node -e 'const f="data/user-settings.json";const s=JSON.parse(require("fs").readFileSync(f));for(const u of Object.values(s))delete u.slackTaskEntry;require("fs").writeFileSync(f+".tmp",JSON.stringify(s,null,2));require("fs").renameSync(f+".tmp",f)'
 sudo ./scripts/service.sh start
 ```
 
@@ -93,7 +93,7 @@ The deliverer and the entry are off, and tasks that owe their thread are kept (t
    - **Check:** the thread got an approval notice when it was asked, and a result notice at the end. Nothing else.
 4. In the same thread, mention again and send `!멈춰`.
    - **Check:** one card-link notice each. No Slack session opens.
-5. Give one more instruction, and while it runs, restart dev (`sudo ./scripts/service.sh restart`).
+5. Give one more instruction, and while it runs, restart dev (`sudo /opt/soma-work/dev/scripts/service.sh restart`).
    - **Check:** exactly one "중단" notice in its thread.
 6. `/z taskentry off`, then mention again.
    - **Check:** a normal Slack session, as before.
