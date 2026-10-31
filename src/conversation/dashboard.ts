@@ -4395,8 +4395,6 @@ ui-stat-strip:not(:defined) > * { display: none; }
    and narrow / list layouts are the element's, drawn with the dashboard tokens through .ui-tok (#inbox).
    An open card's body is light DOM in the card's slot (.card-slot > .card-body), styled here. */
 ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0; }
-.col-spark { color: var(--ib-spark); display: inline-flex; flex-shrink: 0; }
-.col-spark svg { width: 14px; height: 14px; }
 
 /* ── Loading skeletons — the shape of what is coming, never a false "0 · Nothing here". The board shows the
    element's until its first answer (data-load="loading"); the open card's 지시 / 응답 lines are the kit's
@@ -4446,7 +4444,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .cgl-go, .card-more-link { flex-shrink: 0; font: inherit; font-size: 12px; color: var(--accent); background: none; border: 0; padding: 4px 2px; min-height: 28px; cursor: pointer; white-space: nowrap; }
 @media (hover: hover) and (pointer: fine) { .cgl-go:hover, .card-more-link:hover { text-decoration: underline; } }
 .card-more-link { display: block; margin: 4px 0 0 auto; }
-.cb-ac { font-variant-numeric: tabular-nums; }
 /* The note under the model is the kit's status line (.ui-status-line, data-tone="fail" for a refused switch; D7 A-08). */
 .cb-model-note { margin-top: 4px; }
 /* Model · effort beside the composer (spec 13). */
@@ -4495,12 +4492,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   vertical-align: baseline;
 }
 
-/* ── CONTEXT USAGE BAR ── */
-.card-body .context-bar { margin-top: 8px; height: 4px; background: var(--ib-pill); border-radius: 2px; overflow: hidden; }
-.card-body .context-bar-fill { width: 100%; height: 100%; border-radius: 2px; transform-origin: left center; transition: transform var(--dur-move) var(--ease-out); background: var(--st-run); }
-.card-body .context-bar-fill.ctx-warn { background: var(--st-wait); }
-.card-body .context-bar-fill.ctx-danger { background: var(--st-fail); }
-
 /* ── TASK TIMELINE — dot + step + time; only the current step's dot is solid ── */
 .tl-wrap { margin-top: 10px; }
 .tl { list-style: none; margin: 0; padding: 0; }
@@ -4517,8 +4508,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .tl-more { font-size: 12px; color: var(--ib-muted); padding: 0 0 6px 16px; }
 .tl-id { flex-shrink: 0; color: var(--ib-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .tl-tools { white-space: nowrap; }
-.tl-earlier-title { margin: 8px 0 4px; font-size: 11.5px; color: var(--ib-muted); }
-.tl-earlier .tl-item { color: var(--ib-muted); }
 .tl-toggle { margin-top: 6px; font: inherit; font-size: 12px; color: var(--ib-text-2); background: none; border: 1px solid var(--ib-card-border); border-radius: 6px; padding: 3px 10px; min-height: 28px; cursor: pointer; }
 
 /* ── INSTRUCTION / RESPONSE — latest pair, lazy-loaded on expand ── */
@@ -4529,7 +4518,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .io-label .io-who.is-sys { color: var(--text-tertiary); }
 .io-text { font-size: 13px; line-height: 1.45; color: var(--ib-text); white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden; }
 .io-text .io-title { font-weight: 600; }
-.io-text.is-muted, .io-muted { color: var(--ib-muted); }
+.io-text.is-muted { color: var(--ib-muted); }
 .card-io .io-sys::part(summary) { padding: 3px 6px; font-size: 12.5px; font-weight: 400; color: var(--ib-text-2); }
 .io-sys-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .card-io .sys-detail { margin: 6px 0 0; }
@@ -4894,13 +4883,6 @@ ui-drawer:not(:defined) { display: none; }
 .skill-detail { margin-top: 6px; }
 .skill-detail-h { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; font-size: 12px; }
 @media (pointer: coarse) { .skill-badge { min-height: 44px; } }
-/* Slack link on cards */
-.slack-link { color: var(--accent); text-decoration: none; font-size: 0.85em; margin-left: 4px; opacity: 0.7; }
-@media (hover: hover) and (pointer: fine) { .slack-link:hover { text-decoration: underline; opacity: 1; } }
-/* PR status badges */
-.card-body .card-links .pr-badge { display: inline-block; padding: 1px 5px; border-radius: 6px; font-size: 10px; font-weight: 700; margin-left: 3px; text-transform: uppercase; letter-spacing: 0.03em; }
-.card-body .card-links .pr-open { background: color-mix(in srgb, var(--accent) 14%, var(--ib-card)); color: color-mix(in srgb, var(--accent) 70%, var(--ib-text)); }
-.card-body .card-links .pr-merged { background: color-mix(in srgb, var(--purple) 14%, var(--ib-card)); color: color-mix(in srgb, var(--purple) 70%, var(--ib-text)); }
 
 /* ── COMMAND INPUT — flat ── */
 .panel-command {
@@ -4974,7 +4956,6 @@ ui-drawer:not(:defined) { display: none; }
 }
 /* ── TOUCH — coarse pointer enlargement ── */
 @media (pointer: coarse) {
-  .show-older-btn { min-height: 40px; padding: 8px 16px; }
 }
 /* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens (heights only). ── */
 /* The composer's model · effort trigger shares the input's line on a narrow or a
@@ -5063,7 +5044,6 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-toggle-note { font-size: 11px; font-weight: 500; color: var(--text-tertiary); }
 
 /* The error and the upload status are kit status lines (.ui-status-line, D7 H-08 / A-08): the error in the fail tone. */
-.nt-empty { margin: 0; color: var(--text-secondary); font-size: 12.5px; }
 
 .nt-composer { display: block; }
 .nt-foot { display: flex; align-items: center; gap: 8px; min-height: 18px; margin: 0; }
