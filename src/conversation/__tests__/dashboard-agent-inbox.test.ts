@@ -317,10 +317,9 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(body).toContain('_panelTurnsList = turns.concat(_panelTurnsList);');
     expect(body).toContain('convPaint();');
     expect(body).not.toContain('insertAdjacentHTML');
-    // The boxes this page still draws (작업 로그, 에이전트 트리) keep their own anchor.
-    expect(fnBody('psecRestoreAnchor')).toContain(
-      'el.getBoundingClientRect().top - box.getBoundingClientRect().top - a[i].at',
-    );
+    // D6b (D3 G1-1): 작업 로그 and 에이전트 트리 are library scroll boxes too (<ui-work-log>, <ui-log-scroller>) — the
+    // page keeps no anchor of its own for any section.
+    expect(TEMPLATE).not.toMatch(/function psecRestoreAnchor\(|function psecViewAnchor\(|_anchor = psecViewAnchor/);
   });
 
   it('reopening a card retries a failed 지시/응답 fetch at once', () => {
@@ -444,13 +443,21 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(fnBody('selectPanelSection')).toContain('psecToNewest();');
   });
 
-  it('older items load as the reader scrolls up toward the top of a section — armed by the reader, never by a landing (§3.1-6, SSOT 2026-10-29)', () => {
+  it('older items load as the reader scrolls up toward the top of a section — the scroll box’s own ask (§3.1-6, SSOT 2026-10-29; D6b: every section a library scroller)', () => {
     const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelSections() {'));
-    expect(init).toContain('if (up && !_psecPin) box._armed = true;');
-    expect(init).toContain('new IntersectionObserver(');
-    expect(init).toContain("rootMargin: '100% 0px 0px 0px'");
-    expect(fnBody('psecToNewest')).toContain('box._armed = false;');
-    expect(fnBody('psecPageDue')).toContain('return !!armed && scrollTop <= clientHeight;');
+    const body = init.slice(0, init.indexOf('\n})();'));
+    // 에이전트 트리: <ui-log-scroller> arms itself on the reader's scroll up (never on a landing) and asks with
+    // ui-load-older; the page answers with its next window or refuses when there is none.
+    expect(body).toContain("tree.addEventListener('ui-load-older', function(e) {");
+    expect(body).toContain('if (!showMoreTree()) e.preventDefault();');
+    // No sentinel, pin or arming of the page's for any section; the newest is the element's scrollToLatest.
+    for (const gone of ['new IntersectionObserver(', '_psecPin', 'box._armed', 'psecLoadOlder(']) {
+      expect(body, gone).not.toContain(gone);
+    }
+    expect(TEMPLATE).not.toMatch(/function psecPageDue\(|function psecMaybeFill\(|function psecAtBottom\(/);
+    expect(fnBody('psecToNewest')).toContain(
+      "if (el && typeof el.scrollToLatest === 'function') el.scrollToLatest({ smooth: false });",
+    );
   });
 
   it('entry rows toggle on click, Enter and Space (the element’s rows, one roving stop); the page answers its requests (§3.1-6)', () => {
@@ -576,7 +583,9 @@ describe('tone pass P7 — surfaces and elevation', () => {
     expect(TEMPLATE).not.toContain('.chart-container');
     // D4 (H-01, I-05, I-06): the New task dialog, the peek and the viewer are @2lab.ai/ui elements — their raised
     // panels are the library's; the page keeps no box, shadow or scrim rule for them.
-    expect(TEMPLATE).toContain('<ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" lang="ko">');
+    expect(TEMPLATE).toContain(
+      '<ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" size-phone="full" lang="ko">',
+    );
     expect(TEMPLATE).not.toMatch(/\.nt-dialog \{/);
     expect(TEMPLATE).toContain('<ui-hovercard id="art-peek"');
     expect(TEMPLATE).toContain('<ui-artifact-viewer id="art-viewer" tiles="none"');

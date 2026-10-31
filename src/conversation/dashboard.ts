@@ -4178,6 +4178,17 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/stat-strip.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/bar-chart.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/file-card.js?v=${UI_LIB_VERSION}"></script>
+<!-- The peek's inside is the library's (peekHtml under peekPageCss, 0.12.0 — D4 G5-3): reached from the page's own
+     script as window.uiPeek. Modules run in order, so this one is in place before <ui-hovercard> is defined below. -->
+<script type="module">
+import { peekHtml, peekPageCss } from '/dashboard/ui/artifact-viewer.js?v=${UI_LIB_VERSION}';
+import { fileItemKind } from '/dashboard/ui/file-card.js?v=${UI_LIB_VERSION}';
+var sheet = document.createElement('style');
+sheet.id = 'art-peek-sheet';
+sheet.textContent = peekPageCss;
+document.head.appendChild(sheet);
+window.uiPeek = { html: peekHtml, kind: fileItemKind };
+</script>
 <script type="module" src="/dashboard/ui/hovercard.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/artifact-viewer.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/composer.js?v=${UI_LIB_VERSION}"></script>
@@ -5237,9 +5248,10 @@ ui-drawer:not(:defined) { display: none; }
    is-floating rule. */
 body.nt-open .new-task-fab { display: none !important; }
 
-/* New task (H-01) is @2lab.ai/ui <ui-dialog size="lg">: the element draws the 720px panel, its heading and ✕, the
-   scrim, the rise / settle, the focus trap and, on phones, the bottom sheet that follows the visual viewport (above
-   the soft keyboard). The page keeps its form whole inside and pads it itself (the element's body padding is off). */
+/* New task (H-01) is @2lab.ai/ui <ui-dialog size="lg" size-phone="full">: the element draws the 720px panel, its
+   heading and ✕, the scrim, the rise / settle, the focus trap and, on phones, the full sheet that follows the visual
+   viewport (above the soft keyboard). The page keeps its form whole inside and pads it itself (the element's body
+   padding is off). */
 .nt-dialog::part(body) { padding: 0; }
 .nt-form { display: flex; flex-direction: column; color: var(--text); font-size: 13px; line-height: 1.45; }
 .nt-body { display: flex; flex-direction: column; gap: 12px; padding: 4px 20px 16px; }
@@ -5397,28 +5409,22 @@ body.nt-open .new-task-fab { display: none !important; }
   .um-tile { transition: none; }
 }
 /* The peek (I-05) is <ui-hovercard id="art-peek">: the element draws the raised card beside its trigger (360px —
-   its width attribute) and runs the hover / focus / Esc / press rules; the page fills it — a media box, a foot line. */
+   its width attribute) and runs the hover / focus / Esc / press rules; its inside is the library's peekHtml (the
+   media box — an image, a document head, the page scaled, the kind's glyph — then name · kind · meta) under
+   peekPageCss, put in by the module in <head> (0.12.0, D4 G5-3). The page adds the press on the media (the viewer)
+   and the markdown head's own rules: the artifact-viewer entry exports no mdDocCss (D6-GAPS). */
 #art-peek { --ui-hovercard-z: 1000; }
-.art-peek-media { position: relative; display: flex; align-items: center; justify-content: center; height: 225px; overflow: hidden; background: var(--bg); cursor: zoom-in; color: var(--art-tint, var(--text-secondary)); }
-.art-peek-img, .art-peek-video { max-width: 100%; max-height: 100%; object-fit: contain; }
-.art-peek-frame { position: absolute; inset: 0; overflow: hidden; background: var(--media-paper); }
-.art-peek-frame iframe { width: 1280px; height: 800px; border: 0; transform: scale(0.28125); transform-origin: 0 0; pointer-events: none; }
-.art-peek-pre { align-self: stretch; width: 100%; margin: 0; padding: 10px 14px; overflow: hidden; color: var(--text); font: 11px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; text-align: left; -webkit-mask-image: linear-gradient(var(--media-black) 70%, transparent); mask-image: linear-gradient(var(--media-black) 70%, transparent); }
-.art-peek-audio { display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; padding: 0 16px; }
-.art-peek-audio .art-glyph { width: 48px; height: 48px; }
-.art-peek-audio audio { width: 100%; }
-.art-peek-meta { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0 18px; text-align: center; }
-.art-peek-meta .art-glyph { width: 36px; height: 36px; }
-.art-peek-sub { font-size: 12px; color: var(--text-secondary); word-break: break-all; }
-.art-peek-foot { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px 10px; border-top: 1px solid var(--border); }
-.art-peek-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; color: var(--text); }
-.art-peek-info { font-size: 11px; color: var(--text-tertiary); }
-.art-doc-loading { color: var(--text-tertiary); font-size: 12px; }
+#art-peek .av-pk-media { cursor: zoom-in; }
+#art-peek .av-pk-doc p, #art-peek .av-pk-doc ul, #art-peek .av-pk-doc ol, #art-peek .av-pk-doc pre, #art-peek .av-pk-doc blockquote { margin: 0 0 0.6em; }
+#art-peek .av-pk-doc ul, #art-peek .av-pk-doc ol { padding-left: 1.3em; }
+#art-peek .av-pk-doc blockquote { padding-left: 0.8em; border-left: 2px solid var(--border); color: var(--text-secondary); }
+#art-peek .av-pk-doc code { padding: 0.1em 0.3em; border-radius: 4px; background: var(--ib-pill); font: 0.9em var(--mono); }
+#art-peek .av-pk-doc pre { padding: 6px 8px; overflow: hidden; border-radius: 6px; background: var(--ib-col); }
+#art-peek .av-pk-doc pre code { padding: 0; background: none; }
 /* The viewer (I-06, I-07) is <ui-artifact-viewer tiles="none">: its <ui-dialog size="xl"> draws the panel, the head
-   (kind badge · name · meta · ✕), the body and the foot (‹ n / m › · 새 탭 · 다운로드 · Slack). The page's own
-   body (slot="preview": the model's HTML with scripts, a PDF) is a frame that fills the stage. */
-.art-viewer-preview { display: flex; min-height: 0; background: var(--media-paper); }
-.art-viewer-preview .art-full-frame { flex: 1 1 auto; width: 100%; min-height: 0; border: 0; }
+   (kind badge · name · meta · ✕), the body — the model's page running its scripts (items[].scripts), a stored PDF
+   in the browser's own viewer (items[].frame), the document, the media, the calm card — and the foot (‹ n / m › ·
+   새 탭 · 다운로드 · Slack). The page slots no body of its own (0.12.0, D4 G5-1 / G5-2). */
 
 /* ═══ Device-responsive layout (SSOT 2026-10-24) ═══
    Targets: iPhone Duo (folded 382×580, unfolded 951×543), iPhone 18 Pro Max
@@ -5728,9 +5734,10 @@ ${pageTokenAliases()}
        button scrolls away), the composer dialog, and the launch toast. -->
   <button type="button" class="new-task-fab" id="new-task-fab" aria-label="새 작업 시작" onclick="openNewTask()"><i data-ui-icon="plus" class="nt-fab-icon"></i><span class="nt-fab-label">새 작업</span></button>
   <!-- The composer dialog is @2lab.ai/ui <ui-dialog> (D4 H-01): its heading and ✕, scrim, focus trap, Esc / scrim
-       close (ui-close → ntOnClosed), focus return to the opener, and on phones its bottom sheet above the soft
-       keyboard. The page's form stays whole inside it; ui-submit from the composer posts as before. -->
-  <ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" lang="ko">
+       close (ui-close; ui-closed after the exit → ntOnClosed), focus return to the opener, and on phones the sheet
+       edge to edge (size-phone="full", 0.12.0 — D4 G6-1) above the soft keyboard. The page's form stays whole
+       inside it; ui-submit from the composer posts as before. -->
+  <ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" size-phone="full" lang="ko">
     <form id="nt-form" class="nt-form" onsubmit="event.preventDefault()" novalidate>
       <div class="nt-body" id="nt-body">
         <div class="nt-config" role="group" aria-label="작업 설정">
@@ -12011,6 +12018,8 @@ function followSessionKey(oldKey, newKey) {
   if (!newKey || newKey === oldKey || !_sessionCache[newKey]) return;
   var showing = panelOpen && panelSessionKey === oldKey;
   deckRemove(oldKey);
+  // An opening still waiting for <ui-drawer> was for the archived key: it opens the live one (D4 review P3).
+  if (_panelOpenWaiting && _panelOpenWaiting[0] === oldKey) _panelOpenWaiting[0] = newKey;
   if (showing) openPanel(newKey, false);
 }
 
@@ -13969,6 +13978,8 @@ function deckNextAfter(deck, key) {
 function deckDrop(key) {
   // A session gone from the board since it joined the deck is no next card (review R1).
   for (var i = _deck.length - 1; i >= 0; i--) if (_deck[i] !== key && !_sessionCache[_deck[i]]) _deck.splice(i, 1);
+  // An opening still waiting for <ui-drawer> was for this card: it is dropped with it (D4 review P3).
+  if (_panelOpenWaiting && _panelOpenWaiting[0] === key) _panelOpenWaiting = null;
   var showing = panelOpen && panelSessionKey === key;
   var next = showing ? deckNextAfter(_deck, key) : null;
   deckRemove(key);
@@ -15937,11 +15948,11 @@ async function loadCapacity() {
 // strip plus the files each answer turn produced. Hover (or keyboard focus) →
 // a peek in <ui-hovercard #art-peek>; click → <ui-artifact-viewer #art-viewer>.
 // Every render function here is pure; the DOM work sits in the functions after
-// artViewerPreview and in initArtifactInteractions.
+// artPeekItem and in initArtifactInteractions.
 var ART_KIND_LABEL = { image: '이미지', audio: '오디오', video: '비디오', html: 'HTML', markdown: '답변', pdf: 'PDF', text: '텍스트', file: '파일' };
-var ART_GLYPH = { image: '<i data-ui-icon="file-image" class="art-glyph"></i>', audio: '<i data-ui-icon="file-audio" class="art-glyph"></i>', video: '<i data-ui-icon="file-video" class="art-glyph"></i>', html: '<i data-ui-icon="file-code" class="art-glyph"></i>', markdown: '<i data-ui-icon="file-text" class="art-glyph"></i>', pdf: '<i data-ui-icon="file-text" class="art-glyph"></i>', text: '<i data-ui-icon="file-text" class="art-glyph"></i>', file: '<i data-ui-icon="file" class="art-glyph"></i>' };
 var _artCache = Object.create(null); // conversationId → { state: 'loading'|'ok'|'error', list, promise }
-var _artDocCache = Object.create(null); // 'cid|id' → text of a markdown / text artifact
+var _artDocCache = Object.create(null); // 'cid|id' → text of a markdown / text artifact; 'cid|id|head' → its first 64 KB (the peek)
+var _artDocPending = Object.create(null); // the same keys → the one fetch under way (two askers, one request)
 var _artViewer = { cid: null, scope: 'conversation', list: [] }; // what the open viewer pages through
 
 function artUrl(cid, id, download) {
@@ -16082,32 +16093,6 @@ function umOnTurn(cid, turn) {
   if (panelOpen && panelConvId === cid) renderPanelArtifactsSection();
 }
 
-function artFormatSize(n) {
-  n = toNum(n);
-  if (n < 1024) return n + ' B';
-  if (n < 1048576) return (n / 1024).toFixed(n < 10240 ? 1 : 0) + ' KB';
-  if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
-  return (n / 1073741824).toFixed(1) + ' GB';
-}
-
-function artKindLabel(a) {
-  return ART_KIND_LABEL[a && a.kind] || '파일';
-}
-
-function artGlyph(kind) {
-  return ART_GLYPH[kind] || ART_GLYPH.file;
-}
-
-// "HTML · 47 KB · 14:23" — and says so when only Slack has the bytes.
-function artMeta(a) {
-  var parts = [artKindLabel(a)];
-  if (toNum(a.size) > 0) parts.push(artFormatSize(a.size));
-  var d = new Date(toNum(a.createdAt));
-  if (toNum(a.createdAt) > 0 && !isNaN(d.getTime())) parts.push(d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }));
-  if (!a.stored) parts.push('Slack에만 있음');
-  return parts.join(' · ');
-}
-
 // A file as @2lab.ai/ui <ui-file-card> (D2 I-01..I-03): the page renders the element keyed by data-art-cid /
 // data-art-id, with data-art-v (what it shows) so a re-render that changes the file re-hands it; initFileCards
 // gives it artFileItem. Its ui-open opens the viewer; the hovercard's for= reaches it for the peek; playable: a
@@ -16194,43 +16179,25 @@ function renderTurnArtifacts(list, cid, startTs, endTs) {
   return '<div class="turn-arts-row">' + hits.map(function(a) { return artChip(cid, a); }).join('') + '</div>';
 }
 
-// Hover peek (T2): what the page fills @2lab.ai/ui <ui-hovercard id="art-peek"> with for one tile — html renders
-// live but WITHOUT scripts (sandbox=""), media never autoplays, a markdown / text answer shows its first lines
-// (the viewer draws the document).
-function renderArtPeekBody(cid, a) {
-  var url = escAttr(artUrl(cid, a.id));
-  var media;
-  if (!a.stored) {
-    media = '<div class="art-peek-meta">' + artGlyph(a.kind) + '<span class="art-peek-sub">' + esc(a.name) + '</span><span class="art-peek-sub">대시보드에 사본이 없습니다 — Slack에서 열 수 있습니다</span></div>';
-  } else if (a.kind === 'image') {
-    media = '<img class="art-peek-img" src="' + url + '" alt="' + escAttr(a.name) + '">';
-  } else if (a.kind === 'html') {
-    media = '<div class="art-peek-frame"><iframe sandbox="" src="' + url + '" title="' + escAttr(a.name) + '" tabindex="-1" loading="lazy" referrerpolicy="no-referrer"></iframe></div>';
-  } else if (a.kind === 'audio') {
-    media = '<div class="art-peek-audio">' + artGlyph('audio') + '<audio controls preload="metadata" src="' + url + '"></audio></div>';
-  } else if (a.kind === 'video') {
-    media = '<video class="art-peek-video" preload="metadata" muted playsinline src="' + url + '#t=0.1"></video>';
-  } else if (a.kind === 'markdown' || a.kind === 'text') {
-    media = '<pre class="art-peek-pre" data-art-doc="' + escAttr(cid + '|' + a.id) + '"><span class="art-doc-loading">불러오는 중…</span></pre>';
-  } else {
-    media = '<div class="art-peek-meta">' + artGlyph(a.kind) + '<span class="art-peek-sub">' + esc(a.name) + '</span></div>';
-  }
-  return '<div class="art-peek-media art-k-' + escAttr(a.kind || 'file') + '">' + media + '</div>'
-    + '<div class="art-peek-foot"><span class="art-peek-name">' + esc(a.title || a.name) + '</span>'
-    + '<span class="art-peek-info">' + esc(artMeta(a)) + ' · 클릭하면 크게</span></div>';
+// A markdown / text answer with a copy here: the viewer draws the document, the peek its head.
+function artIsDoc(a) {
+  return !!(a && a.stored && (a.kind === 'markdown' || a.kind === 'text'));
 }
 
-// The viewer body the page draws itself (<ui-artifact-viewer>'s slot="preview") where the element's own would not
-// do: the model's HTML runs its scripts (sandbox="allow-scripts" — never same-origin, no popups; the element keeps
-// scripts off), a PDF opens in the browser's own viewer. A user's upload never runs (the element's sandbox=""
-// frame; the route serves it inert as well). '' hands the body back to the element.
-function artViewerPreview(cid, a) {
-  if (!a || !a.stored) return '';
-  var url = escAttr(artUrl(cid, a.id));
-  var title = escAttr(a.name);
-  if (a.kind === 'html' && a.source !== 'user_upload') return '<iframe class="art-full-frame" sandbox="allow-scripts" src="' + url + '" title="' + title + '" referrerpolicy="no-referrer"></iframe>';
-  if (a.kind === 'pdf') return '<iframe class="art-full-frame" src="' + url + '" title="' + title + '"></iframe>';
-  return '';
+// Hover peek (T2): the card @2lab.ai/ui <ui-hovercard id="art-peek"> shows for one file is the library's own
+// (peekHtml, 0.12.0): the file as the viewer pages it (artViewItem — the model's HTML runs its scripts in the peek's
+// frame too, a user's upload never; media never autoplays) plus a document's head (items[].head: the whole text once
+// the viewer fetched it, else the first 64 KB artDocHead brought in) under the kind's tint ([data-kind]).
+function artPeekItem(cid, a) {
+  var item = artViewItem(cid, a);
+  if (item.text == null && artIsDoc(a)) {
+    var head = _artDocCache[cid + '|' + a.id + '|head'];
+    if (head != null) item.head = head;
+  }
+  return item;
+}
+function artPeekHtml(item, peek) {
+  return '<div class="art-peek" data-kind="' + escAttr(peek.kind(item)) + '">' + peek.html(item, 'ko') + '</div>';
 }
 
 // ── Artifact DOM: fetch, settle, the peek and the viewer ──
@@ -16360,12 +16327,23 @@ function artPeekTarget(t) {
   return a ? { cid: cid, a: a } : null;
 }
 
-// ui-open: the card is filled for this trigger (or refused: a file the page does not know); a document's head is fetched.
+// ui-open: the card is filled for this trigger (or refused: a file the page does not know, or the library's peek
+// not yet reached); a document without its head in hand gets it fetched and the card refilled — while it still
+// shows that file (the element's trigger).
 function onArtPeekOpen(e) {
   var hit = artPeekTarget(e.detail && e.detail.trigger);
-  if (!hit) { e.preventDefault(); return; }
-  e.target.innerHTML = renderArtPeekBody(hit.cid, hit.a);
-  artPeekFillDoc(e.target);
+  var peek = window.uiPeek;
+  if (!hit || !peek) { e.preventDefault(); return; }
+  var card = e.target;
+  var item = artPeekItem(hit.cid, hit.a);
+  card.innerHTML = artPeekHtml(item, peek);
+  if (!artIsDoc(hit.a) || item.text != null || item.head != null) return;
+  artDocHead(hit.cid, hit.a.id)
+    .then(function() {
+      var now = artPeekTarget(card.trigger);
+      if (now && now.cid === hit.cid && now.a.id === hit.a.id) card.innerHTML = artPeekHtml(artPeekItem(hit.cid, hit.a), peek);
+    })
+    .catch(function() {});
 }
 
 // ui-closed: the preview goes (a playing clip, the iframe) once the exit has played.
@@ -16373,35 +16351,31 @@ function onArtPeekClosed(e) {
   e.target.innerHTML = '';
 }
 
-// The first lines of a markdown / text answer in the peek ([data-art-doc]): the first 64 KB (the route serves
-// ranges), as plain text — the viewer draws the whole document.
-var ART_PEEK_LINES = 24;
-function artPeekFillDoc(root) {
-  var n = root ? root.querySelector('[data-art-doc]') : null;
-  if (!n) return;
-  var key = n.getAttribute('data-art-doc') || '';
-  var sep = key.indexOf('|');
-  if (sep < 0) return;
-  var paint = function(text) {
-    if (n.isConnected) n.textContent = String(text).replace(/\\r\\n?/g, '\\n').split('\\n').slice(0, ART_PEEK_LINES).join('\\n');
-  };
-  if (_artDocCache[key] != null) { paint(_artDocCache[key]); return; }
-  fetch(artUrl(key.slice(0, sep), key.slice(sep + 1)), { headers: { Range: 'bytes=0-65535' } })
-    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
-    .then(paint)
-    .catch(function() { if (n.isConnected) n.innerHTML = '<span class="art-doc-loading">불러오지 못했습니다</span>'; });
-}
-
-// The whole text of a markdown / text artifact for the viewer, fetched once (2 MB at most).
-function artDocText(cid, id) {
-  var key = cid + '|' + id;
+// A document's text under one key, fetched once however many ask (the fetch under way is handed to the next
+// asker — a step back onto the same file, the peek and the viewer at once), kept once it lands (cap chars).
+function artDocFetch(key, url, headers, cap) {
   if (_artDocCache[key] != null) return Promise.resolve(_artDocCache[key]);
-  return fetch(artUrl(cid, id))
+  if (_artDocPending[key]) return _artDocPending[key];
+  var p = fetch(url, headers ? { headers: headers } : undefined)
     .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
     .then(function(t) {
-      _artDocCache[key] = t.length > 2000000 ? t.slice(0, 2000000) : t;
+      _artDocCache[key] = t.length > cap ? t.slice(0, cap) : t;
       return _artDocCache[key];
     });
+  _artDocPending[key] = p;
+  var settle = function() { if (_artDocPending[key] === p) delete _artDocPending[key]; };
+  p.then(settle, settle);
+  return p;
+}
+// The whole text of a markdown / text artifact for the viewer (2 MB at most).
+function artDocText(cid, id) {
+  return artDocFetch(cid + '|' + id, artUrl(cid, id), null, 2000000);
+}
+// Its first 64 KB for the peek (the route serves ranges) — the whole text when that is already here.
+function artDocHead(cid, id) {
+  var key = cid + '|' + id;
+  if (_artDocCache[key] != null) return Promise.resolve(_artDocCache[key]);
+  return artDocFetch(key + '|head', artUrl(cid, id), { Range: 'bytes=0-65535' }, 65536);
 }
 
 // ── The viewer (I-06, I-07) is @2lab.ai/ui <ui-artifact-viewer id="art-viewer" tiles="none" lang="ko">: no tiles
@@ -16421,10 +16395,14 @@ function artViewerIsOpen() {
 
 // The file as the viewer pages it: the card's item (artFileItem) plus the page's kind word for a final answer, the
 // title of a user's attachment, why a file has no copy, the Slack permalink as an action, and a document's text
-// once fetched (the element never fetches). The element escapes every string.
+// once fetched (the element never fetches). The model's HTML runs its scripts in the element's frame (items[].scripts
+// — sandboxed, never same-origin; a user's upload never runs); a stored PDF — the page's own route, same origin —
+// opens in the browser's viewer (items[].frame). The element escapes every string.
 function artViewItem(cid, a) {
   var item = artFileItem(cid, a);
   if (a.source === 'final_answer') item.kindLabel = ART_KIND_LABEL.markdown;
+  if (a.stored && a.kind === 'html' && a.source !== 'user_upload') item.scripts = true;
+  if (a.stored && a.kind === 'pdf') item.frame = true;
   var notes = [];
   if (a.title && a.title !== a.name) notes.push(String(a.title));
   if (!a.stored) notes.push(a.source === 'user_upload' ? umMissingReason(a) : '이 파일은 대시보드에 사본이 없습니다 (100 MB 초과이거나 업로드 전에 지워졌습니다).');
@@ -16459,48 +16437,21 @@ function openArtifactViewer(cid, id, opener) {
   pauseArtCards();
   _artViewer = { cid: cid, scope: scope, list: list };
   var at = Math.max(0, list.findIndex(function(a) { return a.id === id; }));
-  // The page's body goes in before the element draws the file: it reads the slot as it renders, so its own frame
-  // for the model's HTML (sandbox="", the url) never loads first.
-  artViewerSlot(v, cid, list[at]);
   v.open(artViewerItems(cid, list), at, opener && typeof opener.focus === 'function' ? opener : null);
   if (scope === 'conversation' && (!c || c.state !== 'ok')) ensureArtifacts(cid);
 }
 
-// The page's body for a file (artViewerPreview) as the viewer's slot="preview" child — put in, swapped for another
-// file's, or taken out (null, or a file the element draws itself: the slot's absence hands the stage back to it).
-function artViewerSlot(v, cid, a) {
-  var html = a ? artViewerPreview(cid, a) : '';
-  var slot = v.querySelector('[slot="preview"]');
-  if (!html) {
-    if (slot) slot.remove();
-    return;
-  }
-  if (!slot) {
-    slot = document.createElement('div');
-    slot.setAttribute('slot', 'preview');
-    slot.className = 'art-viewer-preview';
-    v.appendChild(slot);
-  }
-  var mark = cid + '|' + a.id;
-  if (slot.getAttribute('data-art-for') !== mark) {
-    slot.setAttribute('data-art-for', mark);
-    slot.innerHTML = html;
-  }
-}
-
-// ui-view: the shown file — the page's body for it when it has one (artViewerSlot), else the element's; a markdown
-// / text document without its text yet is fetched and the list handed back with it.
+// ui-view: the shown file — every body is the element's (items[].scripts / frame); a markdown / text document
+// shown before its text is here is fetched (once: artDocFetch keeps the request under way) and the list handed
+// back with it.
 function syncArtViewer(detail) {
   var v = artViewerEl();
   var cid = _artViewer.cid;
   var a = detail && cid ? _artViewer.list.find(function(x) { return x.id === detail.id; }) : null;
-  if (!v || !a) return;
-  artViewerSlot(v, cid, a);
-  if ((a.kind === 'markdown' || a.kind === 'text') && a.stored && _artDocCache[cid + '|' + a.id] == null) {
-    artDocText(cid, a.id)
-      .then(function() { if (_artViewer.cid === cid && artViewerIsOpen()) v.data = { items: artViewerItems(cid, _artViewer.list) }; })
-      .catch(function() {});
-  }
+  if (!v || !artIsDoc(a) || _artDocCache[cid + '|' + a.id] != null) return;
+  artDocText(cid, a.id)
+    .then(function() { if (_artViewer.cid === cid && artViewerIsOpen()) v.data = { items: artViewerItems(cid, _artViewer.list) }; })
+    .catch(function() {});
 }
 
 // Every <ui-file-card playable> stops: the viewer opens over the page.
@@ -16558,7 +16509,7 @@ function fcHydrateIn(node) {
       return;
     }
     var peek = document.getElementById('art-peek');
-    if (peek && e.target.closest('#art-peek .art-peek-media') && !e.target.closest('audio')) {
+    if (peek && e.target.closest('#art-peek .av-pk-media') && !e.target.closest('audio')) {
       var anchor = peek.trigger;
       var hit = artPeekTarget(anchor);
       peek.hide();
@@ -16572,17 +16523,14 @@ function fcHydrateIn(node) {
   }
   var viewer = artViewerEl();
   if (viewer) {
-    // The page's own body (model HTML with its scripts, a PDF) goes in before the element draws a step's body
-    // (ui-before-view, 0.12.0) — so a page is never loaded twice; ui-view keeps the slot in step after it.
-    viewer.addEventListener('ui-before-view', function(e) { syncArtViewer(e.detail); });
+    // The shown file (open, a step): a document's text is brought in on ui-view alone — the page slots nothing
+    // before a body renders, so the element's earlier notice has nothing for it (and one listener is one fetch).
     viewer.addEventListener('ui-view', function(e) { syncArtViewer(e.detail); });
-    // Closed by the person (Esc, the scrim, ✕): the page's body leaves once the exit has played.
-    viewer.addEventListener('ui-close', function() {
-      _artViewer = { cid: null, scope: 'conversation', list: [] };
-      setTimeout(function() {
-        var slot = viewer.querySelector('[slot="preview"]');
-        if (slot && !artViewerIsOpen()) slot.remove();
-      }, 240);
+    // Gone — the person's Esc / scrim / ✕, or the list emptied under it, or the element removed: once the exit has
+    // played (ui-closed, every close) the page lets go of what it paged. A list reopened within the exit cancels
+    // the close, so the guard only keeps a late notice from an open viewer's list.
+    viewer.addEventListener('ui-closed', function() {
+      if (!artViewerIsOpen()) _artViewer = { cid: null, scope: 'conversation', list: [] };
     });
   }
 })();
@@ -16808,16 +16756,16 @@ async function openNewTask() {
 }
 
 // The page closes it (a launched task, the FAB's second press): hide() runs the element's exit (settle out, 180ms;
-// a fade under reduced motion) and gives focus back; what the page owns leaves at once (ntOnClosed).
+// a fade under reduced motion) and gives focus back; its ui-closed then lets the page go of what it owns (ntOnClosed).
 function closeNewTask() {
   var dlg = ntEl('nt-dialog');
-  if (!dlg || !dlg.open) return;
-  ntOnClosed();
-  if (typeof dlg.hide === 'function') dlg.hide();
+  if (!dlg || !dlg.open || typeof dlg.hide !== 'function') return;
+  dlg.hide();
 }
 
-// The sheet is going — the person's Esc / scrim / ✕ (the element's ui-close) or the page's closeNewTask: the FAB
-// comes back; a recording in progress is dropped and a preview stops.
+// The sheet has gone — the person's Esc / scrim / ✕ or the page's closeNewTask, after the exit (the element's
+// ui-closed, 0.12.0 — D4 G6-2; a sheet reopened within its exit never sends it): the FAB comes back; a recording in
+// progress is dropped and a preview stops.
 function ntOnClosed() {
   document.body.classList.remove('nt-open');
   ntQuietComposer();
@@ -17137,9 +17085,9 @@ async function ntOpenLaunched(launch) {
 function ntInit() {
   var dlg = ntEl('nt-dialog');
   if (!dlg) return;
-  // <ui-dialog>: Esc, the scrim and ✕ ask to close (ui-close) — the element then settles out and gives focus back;
-  // the page lets go of what it owns.
-  dlg.addEventListener('ui-close', function () {
+  // <ui-dialog>: Esc, the scrim and ✕ ask to close (ui-close) — the element settles out and gives focus back, then
+  // says so (ui-closed, after every exit, the page's hide() too): the page lets go of what it owns.
+  dlg.addEventListener('ui-closed', function () {
     ntOnClosed();
   });
   // <ui-composer id="nt-composer"> (D2 H-05..H-09): it takes drops and pasted screenshots itself (named

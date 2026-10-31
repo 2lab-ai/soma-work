@@ -169,7 +169,9 @@ describe('T1 — the New task entry is always in reach, calm', () => {
 
 describe('T3–T11 — the composer, in the order of the sketch', () => {
   it('is one @2lab.ai/ui <ui-dialog> (D4 H-01) with the form kept whole inside; the page keeps no dialog of its own', () => {
-    expect(html).toContain('<ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" lang="ko">');
+    expect(html).toContain(
+      '<ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" size-phone="full" lang="ko">',
+    );
     expect(html).toMatch(/<form[^>]*id="nt-form"/);
     // The form is the dialog's body: the element draws the heading and ✕, so the page's head row is gone.
     expect(html).not.toMatch(/<dialog[^>]*id="nt-dialog"/);
@@ -181,7 +183,10 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(open).toContain('dlg.show();');
     expect(open).not.toContain('showModal');
     expect(clientFn('closeNewTask')).toContain('dlg.hide();');
-    expect(script).toContain("dlg.addEventListener('ui-close', function () {");
+    // D6b (D4 G6-2): the page hears the exit's end (ui-closed, after every close — the person's and hide()'s),
+    // not the ask (ui-close): the FAB comes back once the sheet has gone.
+    expect(script).toContain("dlg.addEventListener('ui-closed', function () {");
+    expect(script).not.toContain("dlg.addEventListener('ui-close', function () {");
     for (const gone of ['is-shown', "dlg.addEventListener('cancel'", 'ntSyncViewport', '--nt-vvh', '--nt-vvt']) {
       expect(script, gone).not.toContain(gone);
     }
@@ -294,8 +299,10 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
   });
 
   it("closing the sheet discards a recording in progress and stops a preview — the element's cancelRecording / pause", () => {
-    // The page's close and the element's ui-close both pass through ntOnClosed (the FAB back, the composer quiet).
-    expect(clientFn('closeNewTask')).toContain('ntOnClosed();');
+    // The page's close (hide()) and the person's both end in the element's ui-closed → ntOnClosed (the FAB back, the
+    // composer quiet) — closeNewTask itself only asks the element.
+    expect(clientFn('closeNewTask')).not.toContain('ntOnClosed();');
+    expect(clientFn('closeNewTask')).toContain("if (!dlg || !dlg.open || typeof dlg.hide !== 'function') return;");
     expect(clientFn('ntOnClosed')).toContain("document.body.classList.remove('nt-open');");
     expect(clientFn('ntOnClosed')).toContain('ntQuietComposer();');
     const quiet = clientFn('ntQuietComposer');
@@ -314,6 +321,9 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
 describe('T12 — PC and phone layouts are designed separately', () => {
   it('PC: a centered dialog of bounded width — the element\'s size="lg" (720px); the page keeps no box rule', () => {
     expect(html).toMatch(/<ui-dialog id="nt-dialog"[^>]* size="lg"/);
+    // Phone: the element's full sheet, edge to edge above the soft keyboard (size-phone="full", 0.12.0 — D4 G6-1);
+    // the page keeps no 100dvh sheet rule of its own.
+    expect(html).toMatch(/<ui-dialog id="nt-dialog"[^>]* size-phone="full"/);
     expect(css).not.toMatch(/\.nt-dialog\s*\{/);
     expect(css).not.toMatch(/\.nt-dialog::backdrop/);
     // The form pads itself; the element's body padding is off so the two do not add up.
