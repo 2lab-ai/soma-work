@@ -468,6 +468,11 @@ export interface UserSettings {
    */
   epicCostLimitUsd?: number;
   /**
+   * E4 ④a-2 (.prd/19 D12) — this user may make epic tasks (`kind: 'epic'` on
+   * the new-task API). Set via `/z epictasks on|off`. Undefined ⇒ `false`.
+   */
+  epicTasks?: boolean;
+  /**
    * Per-user default for a new goal's auto-continuation cap
    * (`SessionGoal.maxContinuations`). Set via `goal max <N>` / `set goal <N>`.
    * Undefined ⇒ `DEFAULT_GOAL_MAX_CONTINUATIONS` (10). Bounded
@@ -1032,6 +1037,17 @@ export class UserSettingsStore {
   setUserSlackTaskEntry(userId: string, enabled: boolean): void {
     this.patchUserSettings(userId, { slackTaskEntry: enabled });
     logger.info('Set user Slack task entry', { userId, enabled });
+  }
+
+  /** E4 ④a-2 — may this user make epic tasks. Default `false`. */
+  getUserEpicTasks(userId: string): boolean {
+    return this.settings[userId]?.epicTasks === true;
+  }
+
+  /** E4 ④a-2 — set whether this user may make epic tasks (saved atomically). */
+  setUserEpicTasks(userId: string, enabled: boolean): void {
+    this.patchUserSettings(userId, { epicTasks: enabled });
+    logger.info('Set user epic tasks', { userId, enabled });
   }
 
   /** The web dashboard's view (SSOT 2026-11-01). Default — and any value it does not know — `minimal`. */

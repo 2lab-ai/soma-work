@@ -1238,6 +1238,8 @@ async function start() {
       listModels: (ownerId) => offeredNewTaskModels(ownerId),
       cleanupSessions: () =>
         [...claudeHandler.getAllSessions()].map(([key, s]) => ({ key, sourceWorkingDirs: s.sourceWorkingDirs })),
+      // E4 ④a-2 (.prd/19 D12) — epics only for an owner who turned them on.
+      epicTasksEnabled: (ownerId) => userSettingsStore.getUserEpicTasks(ownerId),
     });
     setDashboardTaskLauncher(taskLauncher);
     // E2 ⑤ — the one poster of a Slack-less task's notices to its instruction
