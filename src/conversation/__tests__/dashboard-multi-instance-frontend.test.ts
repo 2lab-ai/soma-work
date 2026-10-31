@@ -43,20 +43,30 @@ describe('Dashboard multi-instance frontend (#814)', () => {
     expect(DASHBOARD_TS).toContain('_envCount() > 1');
   });
 
-  it('exposes a topbar tokens tooltip wrap with breakdown attribute', () => {
-    expect(DASHBOARD_TS).toContain('id="stat-tokens-wrap"');
-    expect(DASHBOARD_TS).toContain('id="stat-tokens-tooltip"');
-    expect(DASHBOARD_TS).toContain('data-has-breakdown');
+  it('hands the stats strip a token breakdown on the 토큰 figure (D2 B-04: <ui-stat-strip> breakdown)', () => {
+    // The per-instance breakdown is data: a title and one row per env plus the total, in the figure's format.
+    expect(DASHBOARD_TS).toContain("rows.push({ label: '합계', value: totalTokens });");
+    expect(DASHBOARD_TS).toContain("next = { title: '보드 세션 기준', rows: rows };");
+    expect(DASHBOARD_TS).toContain('if (_tokenBreakdown) tokens.breakdown = _tokenBreakdown;');
+    // It repaints the strip only when the breakdown changed (it runs on every board render).
+    expect(DASHBOARD_TS).toContain('if (JSON.stringify(next) === JSON.stringify(_tokenBreakdown)) return;');
+    // The old wrap / inline tooltip are gone.
+    expect(DASHBOARD_TS).not.toContain('stat-tokens-wrap');
+    expect(DASHBOARD_TS).not.toContain('stat-tokens-tooltip');
   });
 
-  it('mobile tap-toggle uses (hover: none) media query', () => {
-    expect(DASHBOARD_TS).toContain('@media (hover: none)');
-    expect(DASHBOARD_TS).toContain("matchMedia('(hover: none)')");
+  it('touch still reaches the breakdown: the strip figure is a button whose press toggles the card (D2 B-04)', () => {
+    // <ui-stat-strip> makes a figure with a breakdown a button; a press toggles its tooltip (touch too), and
+    // <ui-bar-chart> holds a tapped bar's tooltip itself — the page keeps no tap rule of its own.
+    expect(DASHBOARD_TS).not.toContain('initTooltipTap');
+    expect(DASHBOARD_TS).not.toContain('_tapTip');
   });
 
-  it('updateTokenBreakdown suppresses the tooltip when fewer than 2 envs are present', () => {
+  it('updateTokenBreakdown suppresses the breakdown when fewer than 2 envs are present', () => {
     expect(DASHBOARD_TS).toContain('function updateTokenBreakdown()');
-    expect(DASHBOARD_TS).toContain('envNames.length < 2');
+    // Fewer than two envs: no breakdown (a plain figure, no tooltip, no tab stop).
+    expect(DASHBOARD_TS).toContain('var next = null;');
+    expect(DASHBOARD_TS).toContain('if (envNames.length >= 2) {');
   });
 
   it('CSS `.env-badge` rule is present in the inline style block', () => {

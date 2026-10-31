@@ -26,6 +26,7 @@ describe('requestEnvSkillPermission', () => {
       ts: `${channel}.ts` as string | undefined,
       channel,
     })),
+    updateMessage: vi.fn(async (_channel: string, _ts: string, _text: string, _blocks?: any[]) => undefined),
   };
   const base = {
     slackApi,

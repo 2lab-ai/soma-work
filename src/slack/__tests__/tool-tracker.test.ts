@@ -178,4 +178,75 @@ describe('ToolTracker', () => {
       expect(callbackCalled).toBe(false);
     });
   });
+
+  describe('per-session cleanup (#598 ④b2)', () => {
+    it('one session scheduling its cleanup does not cancel another session’s', () => {
+      const a = vi.fn();
+      const b = vi.fn();
+      tracker.scheduleCleanup(1000, a, 'task:a');
+      tracker.scheduleCleanup(1000, b, 'task:b');
+      vi.advanceTimersByTime(1000);
+      expect(a).toHaveBeenCalledTimes(1);
+      expect(b).toHaveBeenCalledTimes(1);
+    });
+
+    it('a session’s cleanup removes only the tool uses tracked for it', () => {
+      tracker.trackToolUse('tu_a', 'Read', 'task:a');
+      tracker.trackMcpCall('tu_a', 'call_a', 'task:a');
+      tracker.trackToolUse('tu_b', 'Bash', 'task:b');
+      tracker.trackMcpCall('tu_b', 'call_b', 'task:b');
+      tracker.scheduleCleanup(1000, undefined, 'task:a');
+      vi.advanceTimersByTime(1000);
+      expect(tracker.getToolName('tu_a')).toBeUndefined();
+      expect(tracker.getMcpCallId('tu_a')).toBeUndefined();
+      expect(tracker.getToolName('tu_b')).toBe('Bash');
+      expect(tracker.getMcpCallId('tu_b')).toBe('call_b');
+    });
+
+    it('re-scheduling the same session replaces only its own timer', () => {
+      const first = vi.fn();
+      const second = vi.fn();
+      tracker.scheduleCleanup(1000, first, 'task:a');
+      tracker.scheduleCleanup(1000, second, 'task:a');
+      vi.advanceTimersByTime(1000);
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('#629 R1 — a keyless schedule does not cancel or drop a session’s own cleanup', () => {
+    vi.useFakeTimers();
+    try {
+      const tracker = new ToolTracker();
+      const sessionCb = vi.fn();
+      const globalCb = vi.fn();
+      tracker.scheduleCleanup(1000, sessionCb, 'task:a');
+      tracker.scheduleCleanup(1000, globalCb);
+      vi.advanceTimersByTime(1000);
+      expect(sessionCb).toHaveBeenCalledTimes(1);
+      expect(globalCb).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('#629 R2 — a keyless cleanup that fires first neither cancels a later session cleanup nor drops its tools', () => {
+    vi.useFakeTimers();
+    try {
+      const tracker = new ToolTracker();
+      tracker.trackToolUse('tu-s', 'Read', 'task:a');
+      tracker.trackToolUse('tu-global', 'Read');
+      const sessionCb = vi.fn();
+      tracker.scheduleCleanup(40, sessionCb, 'task:a');
+      tracker.scheduleCleanup(5, () => {});
+      vi.advanceTimersByTime(5);
+      expect(tracker.getToolName('tu-s')).toBe('Read'); // the session's tool use survives the global sweep
+      expect(tracker.getToolName('tu-global')).toBeUndefined();
+      vi.advanceTimersByTime(35);
+      expect(sessionCb).toHaveBeenCalledTimes(1);
+      expect(tracker.getToolName('tu-s')).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

@@ -26,6 +26,7 @@ import {
   buildInstructionSupersededBlocks,
 } from '../instruction-confirm-blocks';
 import {
+  adoptLiveOccupancy,
   clearLiveUsage,
   foldLiveUsage,
   type LiveUsageCall,
@@ -76,7 +77,11 @@ import {
 } from '../stream-processor';
 import type { SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer';
-import type { ThreadPanel, TurnAddress, TurnContext, TurnEndReason } from '../thread-panel';
+import { NO_POST_SLACK } from '../task-turn/no-post-slack';
+import { createTaskSay, type TaskTurnBinding, type TaskWorkLogWrite } from '../task-turn/task-say';
+import type { TaskTurnTerminalSignals } from '../task-turn/task-turn-outcome';
+import { TaskTurnRefusedError } from '../task-turn/task-turn-refused';
+import type { TurnAddress, TurnContext, TurnEndReason } from '../thread-panel';
 import type { TodoDisplayManager } from '../todo-display-manager';
 import type { ToolEventProcessor } from '../tool-event-processor';
 import type { ToolTracker } from '../tool-tracker';
@@ -88,6 +93,7 @@ import {
   type TurnNotifier,
   type TurnNotifierNotifyOpts,
 } from '../turn-notifier';
+import type { TurnPanelPort } from '../turn-panel-port';
 import type { UserChoice, UserChoices } from '../user-choice-extractor';
 import { UserChoiceHandler } from '../user-choice-handler';
 import type { TurnAttachment } from '../user-media';
@@ -477,6 +483,19 @@ export function resetWorkLogDropWarningsForTests(): void {
  * sessionKey when it has one, error), throttled process-wide to one warning
  * per `WORK_LOG_DROP_WARN_INTERVAL_MS`.
  */
+/**
+ * The title of a pending question — a single choice's `question`, a form's
+ * `title` (or its first question) — for a waiting task outcome's reason (#626 R1).
+ */
+function pendingQuestionTitle(q: unknown): string | undefined {
+  if (!q || typeof q !== 'object') return undefined;
+  const r = q as { question?: unknown; title?: unknown; questions?: Array<{ question?: unknown }> };
+  if (typeof r.question === 'string' && r.question) return r.question;
+  if (typeof r.title === 'string' && r.title) return r.title;
+  const first = r.questions?.[0]?.question;
+  return typeof first === 'string' && first ? first : undefined;
+}
+
 export function recordConversationWorkLog(
   conversationId: string,
   entry: WorkLogInput,
@@ -562,6 +581,13 @@ export interface ExecuteResult {
    * primary trigger; other `handleError` paths inherit this guarantee.
    */
   handled?: boolean;
+  /**
+   * A Slack-less task turn's raw terminal signals (#598 ④b), set only at the
+   * two terminal returns — never at a continuation return or in `finally`. The
+   * task runner decides the outcome from them once, at commit
+   * (`deriveTaskTurnOutcome`). Absent on every Slack turn.
+   */
+  terminal?: TaskTurnTerminalSignals;
 }
 
 interface StreamExecutorDeps {
@@ -577,7 +603,7 @@ interface StreamExecutorDeps {
   requestCoordinator: RequestCoordinator;
   slackApi: SlackApiHelper;
   assistantStatusManager: AssistantStatusManager;
-  threadPanel?: ThreadPanel;
+  threadPanel?: TurnPanelPort;
   turnNotifier?: TurnNotifier;
   summaryTimer?: SummaryTimer;
   completionMessageTracker?: CompletionMessageTracker;
@@ -624,6 +650,13 @@ interface StreamExecutorDeps {
    * or a host without it, posts the notes in its own channel (SESSION_ROUTING).
    */
   routeReleaseNotes?: (repo: string, target: string) => ReleaseNotesRouting;
+  /**
+   * A Slack-less task turn's work-log writer (#598 ④b): bound per turn through
+   * `taskBinding`, it returns the store's promise so the task runner can wait
+   * for every append before committing the outcome. Slack turns keep the
+   * process-wide best-effort provider.
+   */
+  workLog?: TaskWorkLogWrite;
 }
 
 interface StreamExecuteParams {
@@ -665,6 +698,13 @@ interface StreamExecuteParams {
    * import the runtime. Present → the runtime gets it and no Slack context.
    */
   executionContext?: unknown;
+  /**
+   * The turn a Slack-less task's output is written to (#598 ④b): session key,
+   * conversation and turn id. Required with `executionContext`; the task's
+   * `say` and work-log writes are bound to it, so concurrent task turns never
+   * share a destination. A caller-supplied `say` is ignored for a task turn.
+   */
+  taskBinding?: TaskTurnBinding;
   /**
    * The text is a goal objective dispatched as the goal's opening turn: never
    * forward it to the SDK as a local slash command, whatever it starts with.
@@ -767,6 +807,8 @@ const KNOWN_ABORT_REASONS: ReadonlySet<RequestAbortReason> = new Set([
   // because the session died out-of-band; the user has no other signal.
   // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-1.
   'ghost-session',
+  // auto-compact — the turn crossed the auto-compact threshold (quiet).
+  'auto-compact',
 ]);
 
 /**
@@ -821,6 +863,7 @@ const QUIET_ABORT_REASONS: ReadonlySet<CoercedAbortReason> = new Set<CoercedAbor
   'session-close',
   'shutdown',
   'user-interrupted',
+  'auto-compact',
 ]);
 
 function coerceAbortReason(raw: unknown): CoercedAbortReason {
@@ -1163,7 +1206,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       channel,
       threadTs,
       user,
-      say,
+      say: callerSay,
     } = params;
 
     // A Slack-less task's turn and its execution context come together (#615 R1):
@@ -1172,12 +1215,37 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // before anything runs rather than half-run a Slack path with an empty channel.
     const taskTurn = session.slackless === true;
     if (taskTurn !== (params.executionContext !== undefined)) {
-      throw new Error(
-        taskTurn
-          ? 'Slack-less task turn refused: no execution context'
-          : 'Slack turn refused: an execution context is only for a Slack-less task',
+      throw taskTurn
+        ? new TaskTurnRefusedError('no-execution-context', 'Slack-less task turn refused: no execution context')
+        : new TaskTurnRefusedError(
+            'context-on-slack-session',
+            'Slack turn refused: an execution context is only for a Slack-less task',
+          );
+    }
+    // #598 ④b — a task turn writes only to its own conversation, through the
+    // writer the task runner tracks; its output never goes through a Slack `say`.
+    const taskBinding = params.taskBinding;
+    if (taskTurn && (!taskBinding || !this.deps.workLog || session.conversationId !== taskBinding.conversationId)) {
+      throw new TaskTurnRefusedError(
+        'no-binding',
+        'Slack-less task turn refused: no turn binding, no work-log writer, or a different conversation',
       );
     }
+    // The follow-up turn epoch belongs to the Slack follow-up queue; a task turn's
+    // panel has no epoch source, so an epoch would silently drop its status writes (#626 R1).
+    if (taskTurn && params.followupTurnEpoch !== undefined) {
+      throw new TaskTurnRefusedError(
+        'followup-epoch',
+        'Slack-less task turn refused: a follow-up turn epoch is not supported',
+      );
+    }
+    const say: SayFn = taskTurn ? createTaskSay(taskBinding!, this.deps.workLog!) : callerSay;
+    // The user-facing terminal text a task turn would have posted (SDK result
+    // error, handleError's posts) — carried in the outcome's reason instead.
+    let taskTerminalReason: string | undefined;
+    // The compaction helpers post into the thread; a task has none. They keep
+    // their bookkeeping and work-log notices; their posts go nowhere (#598 ④b2).
+    const compactSlackApi = taskTurn ? NO_POST_SLACK : this.deps.slackApi;
 
     // Issue #688 — capture per-turn status epoch. Every clearStatus call
     // emitted by this execute() carries `expectedEpoch: epoch` so that a
@@ -1273,7 +1341,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // the supersede branch in TurnSurface.begin (which compares prior vs new
     // turnId) would silently skip — leaving the second turn without an open
     // B1 stream.
-    const turnId = `${sessionKey}:${requestStartedAt.getTime()}:${randomUUID()}`;
+    // A task turn uses its runner's turn id, so its work log, its question and its
+    // committed outcome share one id (#626 R1).
+    const turnId = taskTurn ? taskBinding!.turnId : `${sessionKey}:${requestStartedAt.getTime()}:${randomUUID()}`;
     // The SDK session this turn resumes (none → a new one starts). Read before
     // the stream: the turn's `system`/`init` frame overwrites `session.sessionId`.
     const resumedSdkSessionId: string | undefined = session.sessionId;
@@ -1377,10 +1447,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // conversation-level: compact-hooks records them itself through
     // `recordConversationWorkLog`.
     const emitWorkLog = (entry: WorkLogInput): void => {
+      if (taskTurn) {
+        // The runner keeps the promise (its receipt); never let it reject here.
+        this.deps.workLog!(taskBinding!, { turnId, ts: Date.now(), ...entry }).catch(() => {});
+        return;
+      }
       const conversationId = session.conversationId;
       if (!conversationId) return;
       recordConversationWorkLog(conversationId, { turnId, ts: Date.now(), ...entry }, { sessionKey });
     };
+    // A task turn's compaction notices go through its own writer, so a failed
+    // one is the turn's recording failure like any other entry (#629 R1).
+    const compactNoticeSink = taskTurn ? { recordNotice: (text: string) => emitWorkLog({ kind: 'notice', text }) } : {};
 
     // Per-request tool statistics
     const toolStats: RequestToolStats = {};
@@ -1423,6 +1501,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // compacted. Declared outside the try so `finally` can see all three.
     let compactBoundarySeen = false;
     let compactFailureHandled = false;
+    // The occupancy this turn started from (the last turn's reading). A turn
+    // that starts over the auto-compact trigger is armed, never stopped —
+    // see `onArmed` below.
+    const occupancyAtTurnStart = session.usage
+      ? (session.usage.currentInputTokens || 0) +
+        (session.usage.currentOutputTokens || 0) +
+        (session.usage.currentCacheReadTokens || 0) +
+        (session.usage.currentCacheCreateTokens || 0)
+      : 0;
     let compactFailureText: string | undefined;
 
     try {
@@ -1670,7 +1757,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       const SLACK_IDENTITY_TTL_MS = 6 * 60 * 60 * 1000; // 6h
       const emailUnknown = userSettingsStore.getUserEmail(user) === undefined;
       const identityStale = userSettingsStore.shouldRefreshSlackIdentity(user, SLACK_IDENTITY_TTL_MS);
-      if (emailUnknown || identityStale) {
+      // A task's owner is vouched for by its execution context; Slack identity is not consulted (#598 ④b).
+      if (!taskTurn && (emailUnknown || identityStale)) {
         try {
           const profile = await this.deps.slackApi.getUserProfile(user);
           if (emailUnknown) {
@@ -1700,7 +1788,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // short-circuit return guarantees will never arrive.
       // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-5.
       const resolvedEmail = userSettingsStore.getUserEmail(user);
-      if (!resolvedEmail) {
+      if (!taskTurn && !resolvedEmail) {
         const emailFailMessage =
           '이메일이 설정되지 않았습니다. `set email <your-email>` 명령으로 이메일을 설정해주세요. 예: `set email you@company.com`';
         const emailFailBlocks = [
@@ -1785,7 +1873,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         get sessionId() {
           return session?.sessionId;
         },
-        botUserId: await this.deps.slackApi.getBotUserId(),
+        botUserId: taskTurn ? undefined : await this.deps.slackApi.getBotUserId(),
         // Issue #525 P1: surface the per-turn id + ThreadPanel façade to the
         // stream processor so it can route text chunks into the B1 stream.
         // The façade is always populated (StreamExecutor receives it from
@@ -2084,6 +2172,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         },
         onChannelMessageDetected: async (messageText) => {
+          // A task has no channel (D8): the directive is refused visibly, never posted (#598 ④b2).
+          if (taskTurn) {
+            emitWorkLog({
+              kind: 'notice',
+              text: 'A channel message is not supported for a dashboard task; it was not posted.',
+            });
+            return;
+          }
           try {
             await this.deps.slackApi.postMessage(channel, messageText, {});
             this.logger.info('Channel root message posted from model directive', {
@@ -2100,6 +2196,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         },
         onReleaseNotesDetected: async (payload) => {
+          // Release notes post to Slack only; a task records that it did not (D8, #598 ④b2).
+          if (taskTurn) {
+            emitWorkLog({
+              kind: 'notice',
+              text: `Release notes for ${payload.repo} were not posted: Slack posting is not supported for a dashboard task.`,
+            });
+            return;
+          }
           // Cross-channel posting is a deploy-workflow privilege: any other
           // session echoing the directive stays in its own channel.
           const routing =
@@ -2165,12 +2269,76 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           } catch (err) {
             this.logger.debug('notifyLiveUsage failed', { error: (err as Error)?.message ?? String(err) });
           }
+          // The main agent's call is the context it holds now: make it the
+          // occupancy and check the auto-compact threshold at once. The turn-end
+          // check alone missed a goal turn that crossed 750k and ran 90 more
+          // minutes until a restart killed it — no end, no check (a dev deployment
+          // 2026-10-30). Not during a `/compact` turn (its summarization call
+          // reads the whole pre-compact transcript) and not while the one-shot
+          // post-compaction skip is armed (the turn-end check consumes it).
+          // A `/compact` turn's occupancy is the boundary's `post_tokens`.
+          if (!call.sidechain && !session.compactTurnActive) {
+            this.ensureSessionUsage(session);
+            adoptLiveOccupancy(session);
+            if (!session.autoCompactPending && !session.skipThresholdCheckOnce) {
+              void checkAndSchedulePendingCompact({
+                session,
+                userId: user,
+                channel,
+                threadTs,
+                userSettings: userSettingsStore,
+                slackApi: this.deps.slackApi,
+                logger: this.logger,
+                workLog: emitWorkLog,
+                // Armed mid-turn: save at once, before the announcement's await,
+                // so a restart before the turn ends still finds the occupancy
+                // over the threshold (the restore re-arms from it). Then stop
+                // the turn: it cannot compact itself, and left running it can
+                // use up the whole gap to the hard limit (+249k in one turn
+                // against a 227k gap, 2026-10-30). The follow-up dispatcher
+                // treats this stop as drainable and the slack handler resumes
+                // the work once the slot is closed (`resumeAfterAutoCompactStop`)
+                // — the armed flag turns that next turn into `/compact` first.
+                onArmed: ({ thresholdTokens }: { thresholdTokens: number }) => {
+                  this.deps.claudeHandler.getSessionRegistry().persistAndBroadcast?.(sessionKey);
+                  if (abortController.signal.aborted) return;
+                  // Only a turn that CROSSED the trigger is stopped. One that
+                  // started over it (a compaction left the context above a low
+                  // trigger) would compact, replay, cross on its first call and
+                  // stop again — a paid loop with no progress. Armed only: the
+                  // next turn compacts, as before.
+                  if (occupancyAtTurnStart >= thresholdTokens) {
+                    this.logger.info('Auto-compact armed mid-turn — turn started over the trigger, not stopped', {
+                      sessionKey,
+                      occupancyAtTurnStart,
+                      thresholdTokens,
+                    });
+                    return;
+                  }
+                  emitWorkLog({
+                    kind: 'notice',
+                    text: '🗜️ Auto-compact threshold reached mid-turn — stopping this turn to compact, then continuing',
+                  });
+                  // When: a user Stop after this moment cancels the automatic
+                  // continuation (slack-handler `resumeAfterAutoCompactStop`).
+                  session.autoCompactStoppedAtMs = Date.now();
+                  abortController.abort('auto-compact' satisfies RequestAbortReason);
+                },
+              }).catch((err: unknown) => {
+                this.logger.warn('stream-executor: mid-turn compact threshold check failed', {
+                  turnId,
+                  error: (err as Error)?.message ?? String(err),
+                });
+              });
+            }
+          }
         },
         onUsageUpdate: async (usage: UsageData) => {
           this.updateSessionUsage(session, sessionKey, usage, turnId, resumedSdkSessionId);
 
           // Update context window emoji
-          if (session.usage && isOutputEnabled(OutputFlag.CONTEXT_EMOJI)) {
+          // The context emoji is a Slack reaction; a task has none (#629 R1).
+          if (!taskTurn && session.usage && isOutputEnabled(OutputFlag.CONTEXT_EMOJI)) {
             const percent = this.deps.contextWindowManager.calculateRemainingPercent(session.usage);
             await this.deps.contextWindowManager.updateContextEmoji(sessionKey, percent);
           }
@@ -2185,6 +2353,32 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             });
           }
         },
+        // #598 ④b — a task turn's text-JSON question: one fenced registration
+        // replaces the Slack rendering path (design 598b §6).
+        ...(taskTurn
+          ? {
+              onQuestionAsked: async ({ question, preface }: { question: unknown; preface: string }) => {
+                // The preface is already in the turn's held text (recorded as its
+                // final entry); recording it again would show it twice (#626 R1).
+                void preface;
+                const askId = randomUUID();
+                if (!session.actionPanel) session.actionPanel = { channelId: '', userId: session.ownerId };
+                session.actionPanel.pendingQuestion = {
+                  ...(question as Record<string, unknown>),
+                  askId,
+                  turnId,
+                } as typeof session.actionPanel.pendingQuestion;
+                await this.updateRuntimeStatus(
+                  session,
+                  sessionKey,
+                  { agentPhase: '입력 대기', activeTool: undefined, waitingForChoice: true },
+                  turnEpochToken,
+                );
+                choiceRegistered = true;
+                turnCollector.onPhaseChange('입력 대기');
+              },
+            }
+          : {}),
         onChoiceCreated: async (payload, ctx, sourceMessageTs) => {
           await this.updateRuntimeStatus(
             session,
@@ -2360,7 +2554,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
                   session,
                   channel,
                   threadTs,
-                  slackApi: this.deps.slackApi,
+                  slackApi: compactSlackApi,
+                  ...compactNoticeSink,
                   eventRouter: this.deps.dispatchPendingUserMessage
                     ? ({ dispatchPendingUserMessage: this.deps.dispatchPendingUserMessage } as any)
                     : undefined,
@@ -2388,7 +2583,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             void (async () => {
               try {
                 await postCompactStartingIfNeeded(
-                  { session, channel, threadTs, slackApi: this.deps.slackApi },
+                  { session, channel, threadTs, slackApi: compactSlackApi, ...compactNoticeSink },
                   'unknown (fallback)',
                 );
               } catch (err) {
@@ -2697,7 +2892,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // so transitioning to idle would cause dashboard to briefly flicker to "대기" column.
       const hasContinuation = Boolean(toolContinuation);
       if (!hasContinuation) {
-        this.setActivity(session, sessionKey, channel, threadTs, hasPendingChoice ? 'waiting' : 'idle');
+        // A task turn's idle/waiting transition is its runner's, after the
+        // outcome is committed (#598 ④b) — idle hooks must see the new outcome.
+        if (!taskTurn) this.setActivity(session, sessionKey, channel, threadTs, hasPendingChoice ? 'waiting' : 'idle');
         await this.updateRuntimeStatus(
           session,
           sessionKey,
@@ -2761,7 +2958,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           errorLines.push(`> _No error details provided by SDK_`);
         }
         emitWorkLog({ kind: 'error', text: [subtype, ...errors.slice(0, 5)].join(': ') });
-        await say({ text: errorLines.join('\n'), thread_ts: threadTs });
+        // A task turn records this once (the work-log entry above); its text is the outcome's reason.
+        if (taskTurn) taskTerminalReason = errorLines.join('\n');
+        else await say({ text: errorLines.join('\n'), thread_ts: threadTs });
       }
 
       // Reset error retry counts and error context on success (skip if SDK reported an error)
@@ -3124,7 +3323,26 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         this.bgWaitSuppressed.delete(sessionKey);
       }
 
-      return { success: true, messageCount: streamResult.messageCount, turnCollector };
+      return {
+        success: true,
+        messageCount: streamResult.messageCount,
+        turnCollector,
+        ...(taskTurn
+          ? {
+              terminal: {
+                exit: 'success' as const,
+                hasSdkError,
+                renewFailed,
+                endTurnInfoPresent: Boolean(streamResult.endTurnInfo),
+                choiceStillOpen,
+                ...(pendingQuestionTitle(session.actionPanel?.pendingQuestion)
+                  ? { questionTitle: pendingQuestionTitle(session.actionPanel?.pendingQuestion) }
+                  : {}),
+                ...(taskTerminalReason ? { reasonText: taskTerminalReason } : {}),
+              },
+            }
+          : {}),
+      };
     } catch (error: any) {
       const requestAborted = abortController.signal.aborted;
       // Auto fallback compact: preserve the real-user text whose turn just
@@ -3219,6 +3437,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
       let retryAfterMs: number | undefined;
       try {
+        // A task turn's terminal text is recorded once — by the work-log entry
+        // below — and carried in the outcome's reason, not posted (#598 ④b).
+        const errorSay: SayFn = taskTurn
+          ? async (args) => {
+              // The first capture is the concise one (handleError's own); a later
+              // formatted block must not replace it (fable #626 R2).
+              if (args.text?.trim() && taskTerminalReason === undefined) taskTerminalReason = args.text;
+              return {};
+            }
+          : say;
         retryAfterMs = await this.handleError(
           error,
           session,
@@ -3226,7 +3454,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           channel,
           threadTs,
           processedFiles,
-          say,
+          errorSay,
           requestAborted,
           activeSlotSnapshot,
           abortReason,
@@ -3256,14 +3484,29 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // quiet aborts, exhausted-budget terminal errors), `handled: true`
       // lets V1QueryAdapter resolve cleanly — preventing the duplicate Bolt
       // `slack_bolt_unknown_error` log line that the user complained about.
+      const fallbackCompact = Boolean(
+        session.fallbackCompactActive && retryAfterMs === StreamExecutor.ONE_M_FALLBACK_RETRY_DELAY_MS,
+      );
+      const abortLike = !requestAborted && this.isAbortLikeError(error);
       return {
         success: false,
         messageCount: 0,
         retryAfterMs,
-        fallbackCompact: Boolean(
-          session.fallbackCompactActive && retryAfterMs === StreamExecutor.ONE_M_FALLBACK_RETRY_DELAY_MS,
-        ),
+        fallbackCompact,
         handled: retryAfterMs === undefined,
+        ...(taskTurn
+          ? {
+              terminal: {
+                exit: 'error' as const,
+                ...(abortReason !== undefined ? { abortReason } : {}),
+                abortLike,
+                thrownError: !requestAborted && !abortLike,
+                ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+                fallbackCompact,
+                ...(taskTerminalReason ? { reasonText: taskTerminalReason } : {}),
+              },
+            }
+          : {}),
       };
     } finally {
       // Idempotent: if end/fail already ran (catch or early-return path
@@ -3341,7 +3584,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         channel,
         threadTs,
         userSettings: userSettingsStore,
-        slackApi: this.deps.slackApi,
+        slackApi: compactSlackApi,
         logger: this.logger,
         workLog: emitWorkLog,
       }).catch((err: unknown) => {
@@ -3372,8 +3615,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           if (folded) folded.sdkSessionId = session.sessionId;
           // The task total (persisted) just grew outside a result: save it now —
           // the idle save already ran, and a crash before the next one would
-          // lose the fold (SSOT 2026-10-26 T3, review r2).
-          this.deps.claudeHandler.getSessionRegistry().persistAndBroadcast?.(sessionKey);
+          // lose the fold (SSOT 2026-10-26 T3, review r2). A task turn's end is
+          // saved once, by its runner's strict commit (#598 ④b).
+          if (!taskTurn) this.deps.claudeHandler.getSessionRegistry().persistAndBroadcast?.(sessionKey);
         }
         clearLiveUsage(session, turnId);
         this.deps.claudeHandler.getSessionRegistry().endTurn(session);
@@ -3596,7 +3840,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
      */
     interruptFlushFailed?: InterruptFlushFailure,
   ): Promise<number | undefined> {
-    this.setActivity(session, sessionKey, channel, threadTs, 'idle');
+    // A task turn's idle transition is its runner's, after the outcome commit (#598 ④b).
+    if (session.slackless !== true) this.setActivity(session, sessionKey, channel, threadTs, 'idle');
 
     // ── Compaction-failure recovery rails (content-shaped SDK compact
     // errors thrown by execute()'s guards — see textIndicatesCompactionFailure
@@ -3771,6 +4016,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         : unknownAbort
           ? '턴이 알 수 없는 이유로 중단되었습니다.'
           : coalesceErrorMessage(error);
+
+    // A task turn's terminal explanation is its outcome's reason (the notifier
+    // it has posts nothing); `say` here only captures it (#626 R1).
+    if (session.slackless === true && (shouldNotifyException || notifyWorthyAbort)) {
+      await say({ text: abortDisplayMessage, thread_ts: threadTs });
+    }
 
     // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a
     if (shouldNotifyException && this.deps.turnNotifier) {
@@ -4728,14 +4979,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       });
     }
 
-    // Schedule cleanup for todo tracking
-    if (session?.sessionId) {
-      this.deps.toolTracker.scheduleCleanup(5 * 60 * 1000, () => {
-        this.deps.todoDisplayManager.cleanupSession(session.sessionId!);
-        this.deps.todoDisplayManager.cleanup(sessionKey);
-        this.deps.reactionManager.cleanup(sessionKey);
-        this.deps.contextWindowManager.cleanup(sessionKey);
-      });
+    // Schedule cleanup for todo tracking. Per session (#598 ④b2): another
+    // session's later turn must neither cancel this callback nor have its live
+    // tool mappings cleared by it. Scheduled even when the SDK session id was
+    // cleared (an error reset): the turn's tool mappings are still the
+    // session's to remove (#629 R1); only the id-keyed todo cleanup needs it.
+    if (session) {
+      const sdkSessionId = session.sessionId;
+      this.deps.toolTracker.scheduleCleanup(
+        5 * 60 * 1000,
+        () => {
+          if (sdkSessionId) this.deps.todoDisplayManager.cleanupSession(sdkSessionId);
+          this.deps.todoDisplayManager.cleanup(sessionKey);
+          this.deps.reactionManager.cleanup(sessionKey);
+          this.deps.contextWindowManager.cleanup(sessionKey);
+        },
+        sessionKey,
+      );
     }
   }
 
