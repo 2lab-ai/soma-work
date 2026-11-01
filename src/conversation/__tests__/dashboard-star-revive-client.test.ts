@@ -161,19 +161,21 @@ function card(over: Record<string, unknown> = {}) {
   };
 }
 
-describe('T1.3 — the card leads with ★', () => {
+// SSOT 2026-11-01: the star is a toggle on the face (viewCardOf → cardStarOf, the element's ui-star), so the
+// lead no longer carries a ★ — a starred card keeps its spark, a starred cron run reads CRON.
+describe('T1.3 — the star left the lead for the face toggle (SSOT 2026-11-01)', () => {
   const face = load<{
     cardOf: (s: unknown, col: string) => { lead?: { text: string; title?: string; glyph?: string } };
   }>(CARD_OF_FNS, CARD_OF_VARS, CARD_ENV);
 
-  it('a starred card leads with ★, an ordinary one keeps the spark', () => {
-    expect(face.cardOf(card({ starred: true }), 'idle').lead?.text).toBe('★');
+  it('a starred card and an ordinary one both keep the spark', () => {
+    expect(face.cardOf(card({ starred: true }), 'idle').lead).toBeUndefined();
     expect(face.cardOf(card(), 'idle').lead).toBeUndefined();
   });
 
-  it('a starred cron run reads ★ CRON', () => {
+  it('a starred cron run reads CRON', () => {
     const lead = face.cardOf(card({ starred: true, cronJob: { id: 'j', name: 'nightly' } }), 'idle').lead;
-    expect(lead?.text).toBe('★ CRON');
+    expect(lead?.text).toBe('CRON');
     expect(lead?.title).toContain('nightly');
   });
 });
