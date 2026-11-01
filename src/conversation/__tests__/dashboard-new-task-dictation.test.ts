@@ -1157,8 +1157,55 @@ describe('SSOT_5 — Samsung Internet and Chrome on a Galaxy: the first press li
     expect(rec.starts).toBe(2);
     rec.say([interim('다음 문장')]);
     expect(env.composer.value).toBe('실시간 받아쓰기를 테스트하고 있습니다 다음 문장');
-    // The words count as heard: three such sessions are not "silent".
+    // The words count as heard: that session was not a silent one.
     expect(api.__peek('_ntDictation')).not.toBeNull();
+  });
+  it('elsewhere an empty list is a withdrawal: the withdrawn words go (astra review, PR #719)', async () => {
+    const Rec = recClass('unavailable');
+    const { api, env } = page({ engine: Rec, ua: UA.chromeMac });
+    await api.ntDictateStart();
+    const rec = FakeRec.made[0];
+    rec.say([interim('파일 삭제')]);
+    rec.say([]);
+    expect(env.composer.value).toBe('');
+    rec.end();
+    rec.say([interim('다음')]);
+    expect(env.composer.value).toBe('다음');
+  });
+  it('on Android a placeholder still moves the time on: a quick correction replaces, it is not appended (astra, PR #719)', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      const { api, env } = page({ engine: Rec, ua: UA.samsung });
+      await api.ntDictateStart();
+      const rec = FakeRec.made[0];
+      rec.say([interim('오늘 회의를 모두 취소해 주세요')]);
+      vi.advanceTimersByTime(1000);
+      rec.say([interim('')]);
+      vi.advanceTimersByTime(400);
+      rec.say([final('아니요')]);
+      expect(env.composer.value).toBe('아니요');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('on Android an empty result after a pause is still the boundary between utterances (astra, PR #719)', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      const { api, env } = page({ engine: Rec, ua: UA.samsung });
+      await api.ntDictateStart();
+      const rec = FakeRec.made[0];
+      rec.say([interim('첫 문장')]);
+      vi.advanceTimersByTime(1500);
+      rec.say([interim('')]);
+      expect(env.composer.value).toBe('첫 문장');
+      vi.advanceTimersByTime(300);
+      rec.say([interim('다음 문장으로 넘어갑니다')]);
+      expect(env.composer.value).toBe('첫 문장 다음 문장으로 넘어갑니다');
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it('a recogniser that answers is not cut off by that timer, in any session', async () => {
     vi.useFakeTimers();
