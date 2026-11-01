@@ -264,7 +264,7 @@ Slack action은 `src/slack/actions/index.ts`에서 등록됩니다:
 - `PendingChoiceFormData.submitting?: boolean` 필드가 락 역할
 - Slack 핸들러: `completeMultiChoiceForm` 진입 직전 `submitting=true` 동기 set, 실패 시 false 복구
 - Dashboard 핸들러: 진입 시 `formStore.getFormsBySession(sessionKey)`에서 `submitting=true` 폼 발견 시 `'Submission in progress'` throw → 409
-- `session.activityState !== 'waiting'`도 별도로 가드
+- 답변 가능 여부도 별도로 가드한다 (`isAnswerableFromDashboard` — §8.3)
 
 **Endpoint**: `POST /api/dashboard/session/:key/submit-recommended` (CSRF + auth + ownership)
 
@@ -305,6 +305,27 @@ Slack의 partial-fill 동작과 의도적으로 다릅니다. 1000+ sub-question
 Choice/Form 액션 핸들러는:
 - 세션 `activityState`를 `working`으로 전환하고
 - `messageHandler`로 유저 메시지를 “일반 메시지처럼” Claude로 전달하여 다음 턴을 진행합니다.
+
+유저가 버튼 대신 직접 메시지를 보내면, 그 메시지가 질문의 답이다. 열린 선택(`waitingForChoice`)을 내리고
+기록된 질문(`pendingQuestion`)도 지운다 — 대시보드 태스크의 새 지시가 질문을 대체하는 것과 같다
+(`task-turn-controller` startChain). 호스트 턴(goal 계속 진행 등 synthetic)은 답이 아니므로 질문을 그대로 둔다.
+
+### 8.3 대시보드에서 답변을 받는 조건 (2026-11-02)
+요청: "goal이 10/10이 되서 goal을 계속 진행할지를 묻고 그리고 동시에 유저에게 질문이 올경우 이거 질문에 답하면
+에러나서 답변을 못하고 goal을 진행하는 입력을 하면 질문이 사라짐 — 이거 질문에 답해서 자연스럽게 진행되도록 픽스".
+
+카드는 세션이 NEEDS YOU로 보일 때 기록된 질문을 보여 준다. goal의 상한 결정(`pendingGoalDecision`)도 카드를
+NEEDS YOU로 만드는데, 그때 세션 자체는 `idle`이다. 질문 뒤에 다른 턴이 돌아 열린 선택이 내려간 경우(재시작,
+백그라운드 재개 턴)다. 예전에는 대시보드 단일·복수·추천 일괄 답변이 `activityState === 'waiting'`만 받아서 409
+`Session is not waiting for a choice`로 거절했다. 그래서 남은 길은 "계속"뿐이었고, 그러면 goal이 질문을 넘어 돌았다.
+
+`isAnswerableFromDashboard(session, kind)`(`src/slack/actions/choice-action-handler.ts`)가 세 경로의 단일 조건이다:
+- `waiting`이면 받는다.
+- `idle`이고 같은 종류의 질문(`user_choice` / `user_choices`)이 기록돼 있으면 받는다 — 도는 턴이 없으니 답이 다음 턴을 연다.
+- 턴이 도는 중(`working`)이면 거절한다 — 답이 그 턴 위에 얹힌다.
+
+답은 유저 메시지로 들어가므로 `resetGoalContinuationOnUserMessage`가 상한 결정을 끝내고(DM 버튼도 내려감)
+카운터를 0으로 되돌린다. 그 턴이 끝나면 goal이 이어진다. 전송이 실패하면 질문과 `waiting`을 되돌려 다시 답할 수 있다.
 
 ## 9. Tests
 - JSON 추출/정규화/Slack 블록 생성 테스트: `src/slack/user-choice-handler.test.ts`
