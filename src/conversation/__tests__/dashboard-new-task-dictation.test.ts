@@ -1086,7 +1086,7 @@ describe('SSOT_5 — Samsung Internet and Chrome on a Galaxy: the first press li
       vi.useRealTimers();
     }
   });
-  it('once the mic has opened, a later session whose audiostart is late is never cut off by that timer (grok R2 P1)', async () => {
+  it('once the mic has opened, a later session whose audiostart is late (under 30 s) is not cut off (grok R2 P1)', async () => {
     vi.useFakeTimers();
     try {
       const Rec = recClass(null);
@@ -1097,7 +1097,7 @@ describe('SSOT_5 — Samsung Internet and Chrome on a Galaxy: the first press li
       FakeRec.deaf = true; // the next session's audiostart lags (the speech service coming back)
       rec.end();
       expect(rec.starts).toBe(2);
-      await vi.advanceTimersByTimeAsync(60000);
+      await vi.advanceTimersByTimeAsync(25000);
       expect(api.__peek('_ntDictation')).not.toBeNull();
       expect(rec.aborts).toBe(0);
       expect(env.errorLine.textContent).toBe('');
@@ -1109,6 +1109,29 @@ describe('SSOT_5 — Samsung Internet and Chrome on a Galaxy: the first press li
       rec.onaudiostart?.();
       rec.say([interim('늦게 열린 둘째')]);
       expect(env.composer.value).toBe('첫 문장 늦게 열린 둘째');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('once the mic has opened, a restart that never answers is let go after 30 s — status line, auto-start kept (astra R5)', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      const { api, env } = page({ engine: Rec, ua: UA.samsung, mic: 'granted' });
+      api.ntDictateAuto();
+      const rec = FakeRec.made[0];
+      rec.say([final('첫 문장')]);
+      FakeRec.deaf = true;
+      rec.end(); // the restart: no event at all from here
+      await vi.advanceTimersByTimeAsync(29000);
+      expect(api.__peek('_ntDictation')).not.toBeNull();
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(api.__peek('_ntDictation')).toBeNull();
+      expect(rec.aborts).toBe(1);
+      expect(last(env.statuses)).toContain('다시 누르면 이어서');
+      expect(env.errorLine.textContent).toBe('');
+      expect(api.__peek('_ntDictationAutoOff')).toBe(false);
+      expect(env.composer.value).toBe('첫 문장');
     } finally {
       vi.useRealTimers();
     }
