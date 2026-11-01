@@ -18516,9 +18516,14 @@ function ntDictationAnyWords(results) {
 function ntDictationHeard(d, e) {
   if (d.hard || _ntDictation !== d) return;
   var results = e && e.results;
-  // A result whose words are all empty says nothing new (Android's on-device recogniser sends them between words, and
-  // may end an utterance with nomatch, no final): the shown words stay, and an end keeps them as the start.
-  if (!ntDictationAnyWords(results)) return;
+  // Android's on-device recogniser sends results with no words between words, and may end an utterance with nomatch,
+  // no final: one that comes right after words (within 1.2 s) is a placeholder — the shown words stay (and an end
+  // keeps them as the start), only the time moves on. After a pause it is the boundary the fresh-list rule reads; on
+  // other engines an empty list is a withdrawal (astra review, PR #719).
+  if (d.android && !ntDictationAnyWords(results) && Date.now() - (d.at || 0) <= 1200) {
+    d.at = Date.now();
+    return;
+  }
   var r0 = results && results.length ? results[0] : null;
   var first = r0 && r0[0] ? String(r0[0].transcript || '').trim() : '';
   var got = ntDictationRead(results, d.cumulative);
