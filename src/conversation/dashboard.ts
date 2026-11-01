@@ -5215,18 +5215,30 @@ body[data-view-mode="minimal"] #cron-lane,
 body[data-view-mode="minimal"] #topbar-defaults,
 body[data-view-mode="minimal"][data-board-mine] #user-select,
 body[data-view-mode="minimal"] #lifecycle-btn { display: none !important; }
-body[data-view-mode="minimal"] #panel-title-sub,
-body[data-view-mode="minimal"] #panel-info,
-body[data-view-mode="minimal"] #panel-goal,
-body[data-view-mode="minimal"] #panel-artifacts,
-body[data-view-mode="minimal"] #panel-agents,
-body[data-view-mode="minimal"] #panel-controls { display: none !important; }
-/* One agent (the main one) and one section (the chat): no tab strips. */
-body[data-view-mode="minimal"] .panel-tabs::part(list),
-body[data-view-mode="minimal"] .panel-sections::part(list) { display: none; }
-/* The task list: the whole current list, up to a third of the body, then it scrolls in its own box. */
-body[data-view-mode="minimal"] .panel-tasks { max-height: 34cqh; overflow-y: auto; overscroll-behavior: contain; padding: 8px 16px 6px; }
+/* ── VIEW PLANS (SSOT 2026-11-01 ④, .prd/20 §5) — the detail card's sections are the plan's: body[data-detail]
+   lists the ones it shows (VIEW_PLANS detail.show, applyViewMode), and every other one steps aside here. What
+   needs the user — the status bar, the approvals, the question, the composer — is in no list: never hidden. ── */
+body:not([data-detail~="subtitle"]) #panel-title-sub,
+body:not([data-detail~="info"]) #panel-info,
+body:not([data-detail~="goal"]) #panel-goal,
+body:not([data-detail~="artifacts"]) #panel-artifacts,
+body:not([data-detail~="agenthead"]) #panel-agents,
+body:not([data-detail~="controls"]) #panel-controls { display: none !important; }
+/* The agent strip: always (agenttabs), only with a subagent (subtabs — the panel's data-subagents), or none — one
+   agent, the main one. The section strip (sections) or one section, the chat. */
+body:not([data-detail~="agenttabs"]):not([data-detail~="subtabs"]) .panel-tabs::part(list),
+body[data-detail~="subtabs"] .slide-panel:not([data-subagents]) .panel-tabs::part(list),
+body:not([data-detail~="sections"]) .panel-sections::part(list) { display: none; }
+/* The checklist (list) and the task line (line): the whole current list, up to the plan's share of the body
+   (--ptl-max), then it scrolls in its own box. */
+body:not([data-tasks="runs"]) .panel-tasks { max-height: var(--ptl-max, 34cqh); overflow-y: auto; overscroll-behavior: contain; padding: 8px 16px 6px; }
 .ptl-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+/* 3안's task line: one row — how far, the running task — a press opens the checklist under it. */
+.ptl-line { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 4px 0; border: 0; background: var(--surface); color: inherit; font: inherit; text-align: left; cursor: pointer; position: sticky; top: -8px; z-index: 1; }
+.ptl-line .ptl-now { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 12px; }
+.ptl-line .ptl-caret { flex: none; transition: transform 120ms ease; }
+.ptl-line[aria-expanded="true"] .ptl-caret { transform: rotate(180deg); }
+.ptl-line:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .panel-tasks > ui-task-plan.panel-task-list { display: block; min-width: 0; }
 
 /* ── DETAIL DECK (SSOT 2026-10-29 T2) — every open card's detail card; the ones
@@ -5670,7 +5682,7 @@ ${uiLibTokensCss()}
 ${pageTokenAliases()}
 </style>
 </head>
-<body data-view-mode="minimal">
+<body data-view-mode="minimal" data-view-plan="1" data-detail="" data-tasks="list">
 <div class="app">
   <!-- The top bar is @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14): brand (the page's h1), the 대화 · 설정 ·
        기억 links with their titles (folded into 메뉴 when the bar is short of room), the live-update status, the
@@ -7162,8 +7174,12 @@ function panelAgentEarlier() {
   var a = panelAgentOf(s);
   return (a && a.earlierTasks) || [];
 }
+// The plan's tasks (VIEW_PLANS detail.tasks): the checklist (list), one line that opens it (line), or the full
+// Tasks section — the runs table, the plan left, the earlier plans (runs).
 function repaintPanelTasks() {
-  if (!isAdvanced()) { renderPanelTaskList(panelAgentTasks()); return; }
+  var t = viewSpec().detail.tasks;
+  if (t === 'list') { renderPanelTaskList(panelAgentTasks()); return; }
+  if (t === 'line') { renderPanelTaskLine(panelAgentTasks()); return; }
   renderPanelTasks(panelAgentTasks(), panelAgentLabel(), panelAgentEarlier(), panelAgentOutside());
 }
 // 미니멀's task list (SSOT 2026-11-01): the current list as one checklist (<ui-task-plan>: each task's state, its
@@ -7188,6 +7204,39 @@ function renderPanelTaskList(tasks) {
   }
   var el = document.getElementById('panel-task-list');
   if (el) taskElData(el, panelTaskListData(list));
+}
+// 3안's task line (.prd/20 §5.1): "작업 done / all · 지금: the running task" as one button; a press opens the
+// same checklist under it (and folds it again). A new opening starts folded (resetPanelSections).
+var _panelTaskLineOpen = false;
+function renderPanelTaskLine(tasks) {
+  var container = document.getElementById('panel-tasks');
+  if (!container) return;
+  var list = tasks || [];
+  container.style.display = list.length ? '' : 'none';
+  var done = 0, now = null;
+  for (var i = 0; i < list.length; i++) {
+    if (!list[i]) continue;
+    if (list[i].status === 'completed') done++;
+    else if (!now && list[i].status === 'in_progress') now = list[i];
+  }
+  var open = !!_panelTaskLineOpen;
+  var html = list.length
+    ? '<button type="button" class="panel-tasks-header ptl-line" aria-expanded="' + open + '"' + (open ? ' aria-controls="panel-task-list"' : '') + ' onclick="togglePanelTaskLine()">'
+      + '<span class="ps-sec-title">작업 ' + done + ' / ' + list.length + '</span>'
+      + (now ? '<span class="ptl-now">지금: ' + esc(now.content || '') + '</span>' : '<span class="ptl-now"></span>')
+      + '<i data-ui-icon="chevron-down" class="ptl-caret"></i></button>'
+      + (open ? '<ui-task-plan class="panel-task-list" id="panel-task-list" lang="ko" flush foot="none"></ui-task-plan>' : '')
+    : '';
+  if (container._html !== html) {
+    morphInnerHtml(container, html);
+    container._html = html;
+  }
+  var el = open ? document.getElementById('panel-task-list') : null;
+  if (el) taskElData(el, panelTaskListData(list));
+}
+function togglePanelTaskLine() {
+  _panelTaskLineOpen = !_panelTaskLineOpen;
+  repaintPanelTasks();
 }
 function panelTaskListData(tasks) {
   return {
@@ -7525,12 +7574,14 @@ refreshCsrfToken();
 // switches that session, like Slack's bare "effort <level>" applies to the
 // current thread. Hidden when there is no signed-in Slack user (viewer token).
 var _myDefaults = null; // { model: settingRow, effort: settingRow }
+var _settingsLoads = 0; // settings loads started: an answer older than a later one's does not set the plan
 var _tdMenuKind = null;
 async function loadMyDefaults() {
   var box = document.getElementById('topbar-defaults');
   if (!box) return;
   try {
     var seq = _viewModeSeq;
+    var load = ++_settingsLoads;
     var res = await fetch('/api/settings');
     if (!res.ok) { box.hidden = true; return; }
     var data = await res.json();
@@ -7548,6 +7599,10 @@ async function loadMyDefaults() {
         setViewMode(vm);
       }
     }
+    // The user's plan (.prd/20): only the settings page writes it, so the newest answer is the truth — an answer
+    // to an earlier load that lands after a later one (the tab shown twice, pageshow) is not applied.
+    var vp = viewPlanOfSettings(data);
+    if (vp !== null && load === _settingsLoads && vp !== _viewPlan) setViewPlan(vp);
     // Without admin acceptance the server refuses every settings write.
     if (data && data.accepted === false) { box.hidden = true; return; }
     var rows = (data && data.settings) || [];
@@ -7647,8 +7702,10 @@ function closeDefaultsMenu() {
     });
   });
 })();
-// Settings changed in Slack show up when the tab comes back.
+// Settings changed in Slack — or on the settings page (the plan) — show up when the tab comes back, and when the
+// browser brings the page back from its cache (the settings page's back button).
 document.addEventListener('visibilitychange', function() { if (!document.hidden) loadMyDefaults(); });
+window.addEventListener('pageshow', function(e) { if (e.persisted) loadMyDefaults(); });
 async function patchSetting(key, value) {
   var url = '/api/settings/' + encodeURIComponent(key);
   var body = JSON.stringify({ value: value });
@@ -7706,7 +7763,6 @@ async function pickDefault(kind, value) {
   }
   setDefaultsStatus(msg, false);
 }
-loadMyDefaults();
 
 // ── Utility ──
 function decodeSlackEntities(s) {
@@ -8525,7 +8581,7 @@ function paintCardBody(key) {
   }
   if (b.el.parentNode !== host) host.appendChild(b.el);
   var col = _cardCol[key];
-  var html = renderCardBody(s, col, !isAdvanced());
+  var html = renderCardBody(s, col, viewSpec().body);
   if (b.html !== html && !isPickingModel(b.el)) {
     morphInnerHtml(b.el, html);
     b.html = html;
@@ -8836,34 +8892,71 @@ function cardStarOf(s, col) {
   else if (a.busy) st.disabled = true;
   return st;
 }
-// View mode (SSOT 2026-11-01): a minimal face keeps what a glance needs — the title, the status and its time,
-// the task in progress, what the session asks (summary), the lead (CRON · EPIC · a plan node; a plain task's mark),
-// the owner in the All Users view, the star toggle and a line of artifacts; its foot's right end is the cost and
-// the model with its vendor's mark. Tokens, sub-agents, steps, context, media and the PR are 어드밴스드's.
-var MINIMAL_CARD_KEYS = ['id', 'title', 'status', 'statusText', 'bodyMode', 'summary', 'since', 'elapsedMs', 'task', 'lead', 'badge', 'star', 'artifacts', 'artifactsCount'];
-function minimalCard(card, s) {
+// The card face (SSOT 2026-11-01 ④, .prd/20 §5): the plan's face spec (VIEW_PLANS face) picks what of the full
+// card (cardOf) a face keeps. Always: what the card is (its lead), its title, its status and time, the owner in the
+// All Users view, the star toggle; the rest is the plan's parts, the summary rule (all · asks: only when the card
+// asks — a permission, a goal decision, the question, a retry's error; else it is the original title once more),
+// the artifact chips, the kind mark for a plain task instead of the ✦, and the foot's right end in its order.
+var FACE_KEEP = ['id', 'title', 'status', 'statusText', 'bodyMode', 'since', 'elapsedMs', 'lead', 'badge', 'star', 'titles'];
+var FACE_PARTS = { task: ['task'], agents: ['agents'], usage: ['tokens', 'costUsd'], steps: ['steps'], ctx: ['contextPct', 'contextLevel'], arts: ['artifacts', 'artifactsCount'] };
+function faceOf(card, s, col, face) {
+  var f = face || {};
+  var keys = FACE_KEEP.slice();
+  if (f.summary === 'all' || (f.summary === 'asks' && cardAsks(s || {}, col))) keys.push('summary');
+  var show = f.show || [];
+  for (var i = 0; i < show.length; i++) keys = keys.concat(FACE_PARTS[show[i]] || []);
   var out = {};
-  for (var i = 0; i < MINIMAL_CARD_KEYS.length; i++) {
-    var k = MINIMAL_CARD_KEYS[i];
+  for (var j = 0; j < keys.length; j++) {
+    var k = keys[j];
     if (card && Object.prototype.hasOwnProperty.call(card, k) && card[k] !== undefined) out[k] = card[k];
   }
+  if (out.artifacts && f.arts > 0) out.artifacts = out.artifacts.slice(0, f.arts);
   // What the card is: an epic, a plan node or a cron run lead with their own; a plain task with the task mark.
-  if (!out.lead) out.lead = { glyph: 'task', title: '일반 작업' };
-  var foot = minimalFootMetrics(card, s);
+  if (f.kind && !out.lead) out.lead = { glyph: 'task', title: '일반 작업' };
+  var foot = faceFootMetrics(card, s, f.foot || []);
   if (foot.length) out.metrics = foot;
   return out;
 }
-// The minimal foot's right end: the price, then the model with its vendor's mark.
-function minimalFootMetrics(card, s) {
+// Whether the card asks the user something now — cardSummary's first lines.
+function cardAsks(s, col) {
+  if (col !== 'closed' && s.pendingPermissions && s.pendingPermissions.length) return true;
+  if (col !== 'closed' && s.pendingGoalDecision) return true;
+  var q = s.pendingQuestion;
+  if (col === 'waiting' && q && (q.question || q.title)) return true;
+  var r = pendingAutoResume(s, col);
+  return !!(r && r.reason);
+}
+// The foot's right end, in the plan's order: media (the instruction's attachments) · pr · arts (the artifact
+// count) · cost (the price; its tooltip also says the tokens) · model (its name with its vendor's mark).
+function faceFootMetrics(card, s, foot) {
   var out = [];
-  var cost = card ? toNum(card.costUsd) : 0;
-  if (cost > 0) {
-    var price = cost < 0.01 ? '<$0.01' : '$' + (cost >= 100 ? cost.toFixed(0) : cost.toFixed(2));
-    out.push({ text: price, title: (card.titles && card.titles.cost) || 'API 환산 비용' });
+  var host = (card && card.metrics) || [];
+  var hostOf = function(glyph) {
+    for (var h = 0; h < host.length; h++) if (host[h] && host[h].glyph === glyph) return host[h];
+    return null;
+  };
+  var titles = (card && card.titles) || {};
+  for (var i = 0; i < (foot || []).length; i++) {
+    var k = foot[i];
+    var m = null;
+    if (k === 'media') m = hostOf('attach');
+    else if (k === 'pr') m = hostOf('pr');
+    else if (k === 'arts') {
+      var n = card ? toNum(card.artifactsCount) : 0;
+      if (n > 0) m = { text: String(n), glyph: 'file', title: '산출물 ' + n + '개', label: '산출물 ' + n + '개' };
+    } else if (k === 'cost') {
+      var cost = card ? toNum(card.costUsd) : 0;
+      if (cost > 0) {
+        var price = cost < 0.01 ? '<$0.01' : '$' + (cost >= 100 ? cost.toFixed(0) : cost.toFixed(2));
+        m = { text: price, title: (titles.cost || 'API 환산 비용') + (titles.tokens ? '\\n' + titles.tokens : '') };
+      }
+    } else if (k === 'model') {
+      // 'unknown' is the server's placeholder for a model it does not know — no name to show.
+      var model = s && s.model && s.model !== 'unknown' ? String(s.model) : '';
+      if (model) m = { text: modelLabelOf(model), glyph: modelVendorOf(model), title: model };
+    }
+    if (m) out.push(m);
   }
-  // 'unknown' is the server's placeholder for a model it does not know — no name to show.
-  var model = s && s.model && s.model !== 'unknown' ? String(s.model) : '';
-  if (model) out.push({ text: modelLabelOf(model), glyph: modelVendorOf(model), title: model });
   return out;
 }
 // Whose model it is, for its mark: claude · openai · grok · gemini · model (any other).
@@ -8886,7 +8979,7 @@ function viewCardOf(s, col) {
   // The star is a toggle on every face, in both modes: on or off at a press, inert with its reason for anyone
   // but the owner (and on a sibling instance's card).
   c.star = cardStarOf(s, col);
-  return isAdvanced() ? c : minimalCard(c, s);
+  return faceOf(c, s, col, viewSpec().face);
 }
 
 // Task window on the open card (§3.1-4, spec 13) — @2lab.ai/ui <ui-task-plan> in window mode (0.14.1, D8b
@@ -9611,11 +9704,20 @@ function viewModeOfSettings(snapshot) {
   for (var i = 0; i < rows.length; i++) if (rows[i] && rows[i].key === 'dashboardMode') return viewModeFrom(rows[i].value);
   return null;
 }
+// The mode and its plan on the page: <body data-view-mode · data-view-plan>, the detail card's sections and how its
+// tasks read (data-detail · data-tasks · --ptl-max, the CSS of VIEW PLANS), and whether its sections open unfolded.
 function applyViewMode() {
-  document.body.setAttribute('data-view-mode', _viewMode);
+  var spec = viewSpec();
+  var b = document.body;
+  b.setAttribute('data-view-mode', _viewMode);
+  b.setAttribute('data-view-plan', _viewPlan);
+  b.setAttribute('data-detail', spec.detail.show.join(' '));
+  b.setAttribute('data-tasks', spec.detail.tasks);
+  if (spec.detail.tasksMax) b.style.setProperty('--ptl-max', spec.detail.tasksMax + 'cqh');
+  else b.style.removeProperty('--ptl-max');
   var btn = document.getElementById('view-mode-toggle');
   if (btn) btn.setAttribute('aria-pressed', _viewMode === 'advanced' ? 'true' : 'false');
-  _panelDetail = _viewMode === 'advanced';
+  _panelDetail = !!spec.detail.open;
   applyPanelDetail();
 }
 function setViewMode(mode) {
@@ -9650,19 +9752,114 @@ async function saveViewMode() {
   finally { _viewModeSaving = false; }
   if (why) dashToast({ title: '화면 모드를 저장하지 못했어요', description: '이 기기에서만 바뀌었습니다 — ' + why, tone: 'error' });
 }
-// What a switch redraws: the cards (their face and open bodies) and the open
-// detail card. Minimal shows one agent (the main one) and one section (the chat).
+// What a switch (of the mode or the plan) redraws: the cards (their face and open bodies) and the open detail
+// card. A plan without the agent strip shows one agent (the main one); one without the section strip, the chat.
 function rerenderForViewMode() {
   renderBoardForLayout();
   resetPanelSections();
   if (!panelSessionKey) return;
-  if (!isAdvanced()) {
-    if (_panelAgent) selectPanelAgent('');
-    if (_psec !== 'conv') selectPanelSection('conv');
-  }
+  if (!detailShows('agenttabs') && !detailShows('subtabs') && _panelAgent) selectPanelAgent('');
+  if (!detailShows('sections') && _psec !== 'conv') selectPanelSection('conv');
   repaintPanelSession();
   repaintPanelTasks();
   sizePanelSections();
+}
+// ── View plans (SSOT 2026-11-01 ④, .prd/20 §5) — 1안 · 2안 · 3안 of each mode ──
+// One spec per surface, the .prd's tables cell for cell:
+//   face   — the card face (faceOf): the parts it keeps (show), the summary rule (summary: all · asks), the
+//            artifact chips (arts), the task mark for a plain task instead of the ✦ (kind), the foot's right end
+//            in order (foot);
+//   body   — the open card (renderCardBody): its ☆ button (star) and its parts after the actions and what asks,
+//            per column (work · wait · done);
+//   detail — the detail card: the sections it shows (show → <body data-detail>), how its tasks read (tasks: runs ·
+//            list · line → <body data-tasks>), the list's share of the body (tasksMax, in cqh), and whether its
+//            sections open unfolded (open — the old 자세히).
+// What needs the user — the actions, approvals, the question, the composer — is in no list: every plan keeps it.
+// The choice is the user's dashboardPlan setting (설정 › 대시보드 › 화면 구성안); the device keeps a copy for the
+// first paint.
+var VIEW_PLANS = {
+  minimal: {
+    '1': {
+      name: '결과 우선',
+      face: { show: ['task', 'arts'], summary: 'asks', arts: 3, kind: true, foot: ['pr', 'cost', 'model'] },
+      body: { star: false, work: ['refs', 'model'], wait: ['refs', 'model'], done: ['refs', 'model'] },
+      detail: { show: [], tasks: 'list', tasksMax: 34, open: false },
+    },
+    '2': {
+      name: '진행 우선',
+      face: { show: ['task', 'steps'], summary: 'all', kind: true, foot: ['arts', 'cost', 'model'] },
+      body: { star: false, work: ['tasks'], wait: ['tasks'], done: [] },
+      detail: { show: ['subtabs', 'controls'], tasks: 'list', tasksMax: 50, open: false },
+    },
+    '3': {
+      name: '한눈에',
+      face: { show: [], summary: 'asks', kind: true, foot: ['cost', 'model'] },
+      body: { star: false, work: [], wait: [], done: [] },
+      detail: { show: [], tasks: 'line', open: false },
+    },
+  },
+  advanced: {
+    '1': {
+      name: '정리',
+      face: { show: ['task', 'agents', 'usage', 'arts', 'steps', 'ctx'], summary: 'all', arts: 4, kind: true, foot: ['media', 'pr', 'model'] },
+      body: {
+        star: false,
+        work: ['tasks', 'agents', 'io', 'goal', 'refs', 'model'],
+        wait: ['io', 'arts', 'tasks', 'agents', 'goal', 'refs', 'model'],
+        done: ['io', 'arts', 'agents', 'goal', 'refs', 'model'],
+      },
+      detail: { show: ['subtitle', 'info', 'goal', 'artifacts', 'agenthead', 'agenttabs', 'sections', 'controls'], tasks: 'runs', open: true },
+    },
+    '2': {
+      name: '원본',
+      face: { show: ['task', 'agents', 'usage', 'arts', 'steps', 'ctx'], summary: 'all', arts: 4, kind: false, foot: ['media', 'pr'] },
+      body: {
+        star: true,
+        work: ['tasks', 'agents', 'io', 'goal', 'refs', 'model'],
+        wait: ['io', 'arts', 'tasks', 'agents', 'goal', 'refs', 'model'],
+        done: ['io', 'arts', 'agents', 'goal', 'refs', 'model'],
+      },
+      detail: { show: ['subtitle', 'info', 'goal', 'artifacts', 'agenthead', 'agenttabs', 'sections', 'controls'], tasks: 'runs', open: true },
+    },
+    '3': {
+      name: '압축',
+      face: { show: ['task', 'steps', 'ctx'], summary: 'asks', kind: true, foot: ['arts', 'pr', 'cost', 'model'] },
+      body: { star: false, work: ['goal', 'refs', 'model'], wait: ['goal', 'refs', 'model'], done: ['goal', 'refs', 'model'] },
+      detail: { show: ['subtitle', 'info', 'goal', 'artifacts', 'agenthead', 'agenttabs', 'sections', 'controls'], tasks: 'runs', open: false },
+    },
+  },
+};
+var VIEW_PLAN_KEY = 'soma-view-plan';
+var _viewPlan = '1';
+function viewPlanFrom(v) {
+  var p = String(v == null ? '' : v);
+  return p === '2' || p === '3' ? p : '1';
+}
+function readViewPlan() {
+  try { return viewPlanFrom(localStorage.getItem(VIEW_PLAN_KEY)); } catch (_e) { return '1'; }
+}
+// Pure: the user's plan in a /api/settings snapshot, or null when it has no row.
+function viewPlanOfSettings(snapshot) {
+  var rows = (snapshot && snapshot.settings) || [];
+  for (var i = 0; i < rows.length; i++) if (rows[i] && rows[i].key === 'dashboardPlan') return viewPlanFrom(rows[i].value);
+  return null;
+}
+// The current mode's plan.
+function viewSpec() {
+  var m = VIEW_PLANS[viewModeFrom(_viewMode)];
+  return m[viewPlanFrom(_viewPlan)] || m['1'];
+}
+function detailShows(tok) {
+  return viewSpec().detail.show.indexOf(tok) >= 0;
+}
+// The settings answered with another plan (the settings page picked it): the page draws it and keeps the copy.
+function setViewPlan(plan) {
+  var next = viewPlanFrom(plan);
+  var changed = next !== _viewPlan;
+  _viewPlan = next;
+  try { localStorage.setItem(VIEW_PLAN_KEY, next); } catch (_e) {}
+  applyViewMode();
+  if (changed) rerenderForViewMode();
 }
 // ── Task view (SSOT 2026-10-27) — agent tabs, 지시와 답변 ──
 // The panel shows what matters in 미니멀; 어드밴스드 (the old 자세히, T1.6) opens
@@ -9681,6 +9878,7 @@ function resetPanelSections() {
   _panelTasksOpen = _panelDetail || _panelLand === 'tasks';
   _panelTasksExpanded = _panelTasksOpen;
   _panelTasksEarlier = _panelDetail;
+  _panelTaskLineOpen = false;
 }
 
 // Agent tabs (T1.2, D4 E-19): @2lab.ai/ui <ui-tabs shared-panel> — Main first,
@@ -9724,6 +9922,9 @@ function renderPanelTabs() {
   if (!el) return;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var d = s ? panelTabsData(s, _panelAgent, rootStatusOf(s, sessionColOf(panelSessionKey))) : panelTabsData(null, '', '');
+  // A plan that shows the strip only with a subagent (VIEW_PLANS detail subtabs) reads this.
+  var panel = document.getElementById('slide-panel');
+  if (panel) panel.toggleAttribute('data-subagents', d.tabs.length > 1);
   var sig = JSON.stringify(d);
   if (el._sig === sig) return;
   el._sig = sig;
@@ -9937,7 +10138,7 @@ function psecForLanding(land) {
 }
 // 미니멀 (SSOT 2026-11-01) has one section, the chat: every landing opens it.
 function psecForMode(land) {
-  return isAdvanced() ? psecForLanding(land) : 'conv';
+  return detailShows('sections') ? psecForLanding(land) : 'conv';
 }
 // The section strip's tabs (D4 E-24): Chat · 작업 로그 at the start, 에이전트 트리 at the
 // far end (TabItem.end) with the tree glyph; each one's panel is the box slotted by its id.
@@ -11194,9 +11395,10 @@ function sessionActionsOf(s, col) {
 }
 // The open card's action buttons (kit .ui-btn): Stop reads as the danger tone, Trash as a quiet one.
 var SESSION_ACTION_TONE = { stop: ' is-danger', close: '', trash: ' is-quiet' };
-function sessionActionHtml(s, col) {
+// noStar: the face's star toggle is the one star (a plan's open card has no ☆ button of its own).
+function sessionActionHtml(s, col, noStar) {
   var key = escJs(s.key);
-  return sessionActionsOf(s, col).map(function(a) {
+  return sessionActionsOf(s, col).filter(function(a) { return !(noStar === true && a.id === 'star'); }).map(function(a) {
     var off = (a.lock || a.busy ? ' disabled' : '') + (a.busy ? ' aria-busy="true"' : '');
     if (a.sibling) return '<button class="ui-btn' + SESSION_ACTION_TONE[a.id] + '" data-action="' + a.id + '" disabled title="' + escAttr(a.lock) + '">' + esc(a.label) + '</button>';
     if (a.id === 'star') {
@@ -11253,9 +11455,10 @@ function cardGoalLine(s, col, canEdit) {
 //   Slack, 작업 로그.
 // The complete record — meta, every number, titled links, the goal editor, the
 // whole task ledger, the rich agent tree — is the panel's.
-// minimal (SSOT 2026-11-01): the actions and what needs the user only — the task window, the agent tree, the
-// io, the artifacts, the goal line, the refs and model · effort are the detail card's and 어드밴스드's.
-function renderCardBody(s, col, minimal) {
+// The plan (SSOT 2026-11-01 ④, .prd/20 §5): spec is the plan's open card (VIEW_PLANS body) — its ☆ button (the
+// face has the star toggle) and its parts after the actions and what asks, per column; no spec — any other
+// caller — is the open card as it was.
+function renderCardBody(s, col, spec) {
   // Owner gating — server-side requireSessionOwner is the authoritative guard;
   // this is UX only. Fail closed: if ownerId is missing (legacy record) the
   // viewer is not treated as owner so the server-side reject is expected.
@@ -11328,34 +11531,33 @@ function renderCardBody(s, col, minimal) {
   const slackBtn = (dhShow('links') && s.slackThreadUrl)
     ? '<a class="ui-btn" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
     : '';
-  const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col) + slackBtn + '</span></div>';
+  const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col, !!spec && spec.star === false) + slackBtn + '</span></div>';
   const needsHtml = actionsHtml
     + permissionHtml
     + renderCardResume(s, col)
     + taskOutcomeHtml(s)
     + taskNoticeFailHtml(s)
     + questionHtml;
-  if (minimal) return '<div class="card-body">' + needsHtml + '</div>';
 
-  const ioHtml = isSiblingSession(s) ? '' : renderCardIo(s);
-  // Artifacts live on this instance's disk: a sibling instance's card links nowhere here.
-  const artsHtml = isSiblingSession(s) ? '' : renderCardArtifacts(s);
-  const tasksHtml = renderCardTasks(s);
-  const agentsHtml = renderAgentTree(s, col);
-  let middle;
-  if (col === 'working') middle = tasksHtml + agentsHtml + ioHtml;
-  else if (col === 'waiting') middle = ioHtml + artsHtml + tasksHtml + agentsHtml;
-  else middle = ioHtml + artsHtml + agentsHtml;
-
+  const lane = col === 'working' ? 'work' : col === 'waiting' ? 'wait' : 'done';
+  const parts = spec && spec[lane] ? spec[lane]
+    : lane === 'work' ? ['tasks', 'agents', 'io', 'goal', 'refs', 'model']
+    : lane === 'wait' ? ['io', 'arts', 'tasks', 'agents', 'goal', 'refs', 'model']
+    : ['io', 'arts', 'agents', 'goal', 'refs', 'model'];
   const footHtml = modelHtml ? '<div class="card-foot-bar">' + modelHtml + '</div>' + modelNote : modelNote;
-
-  return '<div class="card-body">'
-    + needsHtml
-    + middle
-    + cardGoalLine(s, col, isOwner && !isSibling)
-    + refsHtml
-    + footHtml
-    + '</div>';
+  let rest = '';
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (p === 'tasks') rest += renderCardTasks(s);
+    else if (p === 'agents') rest += renderAgentTree(s, col);
+    else if (p === 'io') rest += isSiblingSession(s) ? '' : renderCardIo(s);
+    // Artifacts live on this instance's disk: a sibling instance's card links nowhere here.
+    else if (p === 'arts') rest += isSiblingSession(s) ? '' : renderCardArtifacts(s);
+    else if (p === 'goal') rest += cardGoalLine(s, col, isOwner && !isSibling);
+    else if (p === 'refs') rest += refsHtml;
+    else if (p === 'model') rest += footHtml;
+  }
+  return '<div class="card-body">' + needsHtml + rest + '</div>';
 }
 
 // #600 ⑥ — a dashboard task's last turn as its card says it: how it ended, why,
@@ -14493,7 +14695,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   _panelAgent = agentId ? String(agentId) : '';
   // 미니멀 (SSOT 2026-11-01) shows one agent, the main one — it has no tab strip to lead back from another (a deep
   // link or a tree that named a subagent opens the session on the main agent's chat).
-  if (!isAdvanced()) _panelAgent = '';
+  if (!detailShows('agenttabs') && !detailShows('subtabs')) _panelAgent = '';
 
   // A card switch starts the composer clean: a fresh <ui-agent-steering> with a
   // fresh composer (the old one's text, files, notes in flight and failed sends
@@ -18884,8 +19086,12 @@ ntInit();
 pcInit();
 // View mode: the device's copy first (the user's setting answers in loadMyDefaults); the agent tabs answer clicks and arrows.
 _viewMode = readViewMode();
+_viewPlan = readViewPlan();
 applyViewMode();
 syncBoardScope();
+// The user's settings (the view mode, the plan, the default model chips) once the view state above exists: a load
+// started earlier captured _viewModeSeq before its var ran and never applied the server's mode.
+loadMyDefaults();
 bindPanelTabs();
 setInterval(loadSessions, 30000);
 // CRON lane jobs and the llmux capacity view poll on their own cadence (the

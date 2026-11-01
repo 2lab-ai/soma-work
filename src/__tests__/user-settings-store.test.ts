@@ -466,6 +466,20 @@ describe('Slack instruction → dashboard task flag (E2 ⑦, D1)', () => {
   });
 });
 
+describe('dashboard view plan (SSOT 2026-11-01 ④, .prd/20)', () => {
+  it('is 1안 by default, per user; 2 and 3 are kept; anything else reads as 1', () => {
+    const store = makeStore();
+    expect(store.getUserDashboardPlan('U1')).toBe('1');
+    store.setUserDashboardPlan('U1', '3');
+    expect(store.getUserDashboardPlan('U1')).toBe('3');
+    expect(store.getUserDashboardPlan('U2')).toBe('1');
+    store.setUserDashboardPlan('U1', '2');
+    expect(store.getUserDashboardPlan('U1')).toBe('2');
+    (store as any).settings.U1.dashboardPlan = 'x';
+    expect(store.getUserDashboardPlan('U1')).toBe('1');
+  });
+});
+
 describe('dashboard view mode (SSOT 2026-11-01)', () => {
   it('is minimal by default, per user, and a saved value is read back', () => {
     const store = makeStore();
