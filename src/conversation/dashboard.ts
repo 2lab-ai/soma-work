@@ -17551,8 +17551,10 @@ var _ntDictation = null;
 // The new task opens listening when the words stay on the device or the phone's own recogniser takes them (SSOT_4,
 // SSOT_5); a refused mic, or a recogniser that does not work, ends that for this page.
 var _ntDictationAutoOff = false;
-// The why a dictation last put on the new task's red error line, so the next press clears only its own.
+// The why a dictation last put on the new task's red error line, so the next press clears only its own — and what
+// the line said under it, given back then.
 var _ntDictationError = '';
+var _ntDictationUnder = '';
 
 // The battery's reading for <ui-meter> (value 0..1, null = unknown — the element draws "?" with no fill) and the words
 // of the usage line (the button's title too).
@@ -17985,14 +17987,19 @@ function ntDictationHost(id) {
         ntSetStatus(msg);
         return;
       }
+      var e = ntEl('nt-error');
+      var under = e && !e.hidden ? String(e.textContent || '') : '';
+      // What the line said before (the context failing to load, no channel): kept, and given back on the next press.
+      if (under && under !== _ntDictationError) _ntDictationUnder = under;
       ntSetStatus('');
       ntSetError(msg);
       _ntDictationError = msg;
     },
     clear: function () {
       var e = ntEl('nt-error');
-      if (_ntDictationError && e && e.textContent === _ntDictationError) ntSetError('');
+      if (_ntDictationError && e && e.textContent === _ntDictationError) ntSetError(_ntDictationUnder);
       _ntDictationError = '';
+      _ntDictationUnder = '';
     },
     paint: function () {
       paintNtComposer();
@@ -18182,6 +18189,8 @@ async function ntDictateStart(host, auto) {
     spoke: false,
     dead: 0,
     spokeRun: false,
+    // The microphone opened at least once in this dictation (its permission is a yes).
+    opened: false,
     // Android refused a restart (still busy): one more try after a moment, once per stretch without words.
     retry: false,
     retried: false,
@@ -18223,6 +18232,7 @@ async function ntDictateStart(host, auto) {
     };
     rec.onaudiostart = function () {
       d.audio = true;
+      d.opened = true;
     };
     rec.onspeechstart = function () {
       d.spoke = true;
@@ -18306,16 +18316,55 @@ function ntDictationHeard(d, e) {
 function ntDictationListen(d) {
   d.rec.start();
   d.sessions++;
-  var n = d.sessions;
+  ntDictationWatch(d, d.sessions, 0);
+}
+
+// The 12 s watch of session n. audiostart comes only after the microphone's yes, so while the browser is still asking
+// (permission 'prompt') it waits longer (up to a minute), and a browser that cannot say waits once more the first time.
+// Granted (or opened before in this dictation) and still silent: the recogniser does not work — the new task stops
+// opening listening. Denied: the mic's why.
+function ntDictationWatch(d, n, waited) {
+  var idle = function () {
+    return _ntDictation === d && !d.hard && !d.stopping && d.sessions === n && !d.audio && !d.heard;
+  };
   setTimeout(function () {
-    if (_ntDictation !== d || d.hard || d.stopping || d.sessions !== n || d.audio || d.heard) return;
-    if (d.auto) _ntDictationAutoOff = true;
-    d.hard = true;
-    ntDictationEnd(d, ntDictationDeadText('dead', d.android), true);
-    try {
-      d.rec.abort();
-    } catch (e) {}
+    if (!idle()) return;
+    ntDictationMicState().then(function (state) {
+      if (!idle()) return;
+      if ((state === 'prompt' && waited < 4) || (state === '' && !d.opened && waited < 1)) {
+        ntDictationWatch(d, n, waited + 1);
+        return;
+      }
+      var sure = state === 'granted' || state === 'denied' || d.opened;
+      if (d.auto && sure) _ntDictationAutoOff = true;
+      d.hard = true;
+      var why =
+        state === 'denied' ? ntDictationErrorText('not-allowed', d.android) : ntDictationDeadText('dead', d.android);
+      ntDictationEnd(d, why, true);
+      try {
+        d.rec.abort();
+      } catch (e) {}
+    });
   }, 12000);
+}
+
+// The microphone permission as the browser says it: 'granted', 'prompt', 'denied', or '' when it cannot say.
+function ntDictationMicState() {
+  try {
+    var w = typeof window !== 'undefined' ? window : null;
+    var p = w && w.navigator && w.navigator.permissions;
+    if (!p || typeof p.query !== 'function') return Promise.resolve('');
+    return Promise.resolve(p.query({ name: 'microphone' })).then(
+      function (st) {
+        return String((st && st.state) || '');
+      },
+      function () {
+        return '';
+      },
+    );
+  } catch (e) {
+    return Promise.resolve('');
+  }
 }
 
 // The recogniser ended. Stopped or failed: the dictation lets go. Ended by itself (iOS after a pause, Android after

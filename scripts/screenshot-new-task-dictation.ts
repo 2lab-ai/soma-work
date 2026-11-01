@@ -466,13 +466,20 @@ async function main() {
       try {
         await run(browser, name, 'pc', { viewport: { width: 1280, height: 860 }, colorScheme: 'light' });
         await run(browser, name, 'phone', { ...devices[phone], colorScheme: 'dark' });
-        // Samsung Internet on a Galaxy (Chromium underneath, its own user agent).
-        if (name === 'chromium')
+        // Samsung Internet on a Galaxy (Chromium underneath, its own user agent): an S24 (360px, what the person
+        // tested) and a 320px screen (Playwright's Galaxy S9+ descriptor).
+        if (name === 'chromium') {
           await run(browser, name, 'samsung', {
+            ...devices['Galaxy S24'],
+            userAgent: SAMSUNG_UA,
+            colorScheme: 'light',
+          });
+          await run(browser, name, 'samsung-320', {
             ...devices['Galaxy S9+'],
             userAgent: SAMSUNG_UA,
             colorScheme: 'light',
           });
+        }
       } finally {
         await browser.close();
       }
