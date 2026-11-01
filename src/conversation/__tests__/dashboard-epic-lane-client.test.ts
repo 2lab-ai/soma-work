@@ -595,7 +595,8 @@ describe('L7 — the epic’s own card', () => {
 
   it('leads with EPIC, says running / needs-input, and shows its progress as steps', () => {
     const run = cardOf({ ...base, ...epicCard('task:e', 'running', []) }, 'working');
-    expect(run.lead).toEqual({ text: 'EPIC', glyph: 'tasks', title: '에픽 — 자식 실행 중' });
+    // SSOT 2026-11-01: an epic's mark is the epic glyph (stacked layers), apart from a plan node's task list.
+    expect(run.lead).toEqual({ text: 'EPIC', glyph: 'epic', title: '에픽 — 자식 실행 중' });
     expect(run.status).toBe('running');
     expect(run.statusText).toBe('자식 실행 중');
     expect(run.steps).toEqual({ done: 1, total: 3 });
