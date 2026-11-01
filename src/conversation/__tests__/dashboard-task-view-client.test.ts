@@ -762,7 +762,8 @@ describe('review r1 · a recording belongs to the card it was started for', () =
     const env = load<{ pcFreshSteer(): void; __set(n: string, v: unknown): void }>(
       ['pcComposerData', 'pcComposerSetup', 'pcFreshSteer'],
       ['PC_LIMITS', '_pcNoteFiles', '_pcFailed'],
-      { document },
+      // 받아쓰기 (SSOT 2026-11-01) has its own suite: no recogniser here, nothing to stop.
+      { document, ntDictateStopIn: () => {}, ntDictationEngine: () => null },
     );
     env.__set('_pcNoteFiles', { 'as-1': ['a.png'] });
     env.pcFreshSteer();
@@ -788,12 +789,14 @@ describe('review r1 · a recording belongs to the card it was started for', () =
       },
     };
     const { document } = fakeDoc(null, composer);
-    load<{ pcReset(): void }>(['pcReset'], [], { document }).pcReset();
+    load<{ pcReset(): void }>(['pcReset'], [], { document, ntDictateStopIn: () => {} }).pcReset();
     expect(calls).toEqual(['cancel', 'pause', 'remove 2', 'remove 1', 'remove 0']);
     expect(composer.files).toEqual([]);
     expect(composer.value).toBe('쓰던 글');
     // Not upgraded yet (no methods): nothing to reset, nothing throws.
-    expect(() => load<{ pcReset(): void }>(['pcReset'], [], fakeDoc(null, {})).pcReset()).not.toThrow();
+    expect(() =>
+      load<{ pcReset(): void }>(['pcReset'], [], { ...fakeDoc(null, {}), ntDictateStopIn: () => {} }).pcReset(),
+    ).not.toThrow();
   });
   it('closing the panel resets the composer (mic, files) and stops watching answers', () => {
     const close = TEMPLATE.slice(

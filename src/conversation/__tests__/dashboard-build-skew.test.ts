@@ -217,6 +217,7 @@ describe('dashboard build skew — T2: a tab on another build reloads', () => {
       _pcInFlight?: number;
       _pcFailed?: Record<string, boolean>;
       _recording?: unknown[];
+      _ntDictation?: unknown;
       _ntBusy?: boolean;
       _acState?: Record<string, Record<string, { status: string }>>;
       _mcState?: Record<string, unknown>;
@@ -239,6 +240,7 @@ describe('dashboard build skew — T2: a tab on another build reloads', () => {
         _pcInFlight: page._pcInFlight ?? 0,
         _pcFailed: page._pcFailed ?? {},
         _recording: page._recording ?? [],
+        _ntDictation: page._ntDictation ?? null,
         _ntBusy: page._ntBusy ?? false,
         _acState: page._acState ?? {},
         NT_DRAFT_KEY: 'soma-nt-draft',
@@ -341,6 +343,8 @@ describe('dashboard build skew — T2: a tab on another build reloads', () => {
     expect(api(fakeEnv(), 'build-A', { _recording: [{ isConnected: true }] }).hasUnsentInput()).toBe(true);
     // A composer swapped out mid-recording (its cancel fired off the page) no longer counts (round 3, astra).
     expect(api(fakeEnv(), 'build-A', { _recording: [{ isConnected: false }] }).hasUnsentInput()).toBe(false);
+    // A live dictation in the new task (SSOT 2026-11-01): its words are still arriving.
+    expect(api(fakeEnv(), 'build-A', { _ntDictation: { stopping: false } }).hasUnsentInput()).toBe(true);
     expect(api(fakeEnv(), 'build-A', { _pcFailed: { 'as-1': true } }).hasUnsentInput()).toBe(true);
     // A new task being launched (dialog possibly closed), an approval answer in flight — round 3, astra · fable.
     expect(api(fakeEnv(), 'build-A', { _ntBusy: true }).hasUnsentInput()).toBe(true);

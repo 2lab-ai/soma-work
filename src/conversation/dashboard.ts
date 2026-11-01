@@ -5502,7 +5502,8 @@ body.nt-open .new-task-fab { display: none !important; }
 
 .nt-composer { display: block; }
 .nt-foot { display: flex; align-items: center; gap: 8px; min-height: 18px; margin: 0; }
-.nt-status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* It wraps: a dictation's why (a refused mic, the voice leaving the device) is read in full on a phone. */
+.nt-status { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .nt-submit-hint { flex: none; margin-left: auto; font-size: 11px; color: var(--text-tertiary); }
 
 
@@ -12967,6 +12968,8 @@ document.addEventListener('ui-record', function(e) {
   var i = _recording.indexOf(e.target);
   if (e.detail && e.detail.state === 'start') {
     if (i < 0) _recording.push(e.target);
+    // One microphone: a voice note starting to record stops 받아쓰기 in its composer (its words stay).
+    if (e.target && e.target.id) ntDictateStopIn(e.target.id === 'pc-composer' ? 'pc' : 'nt');
   } else if (i >= 0) {
     _recording.splice(i, 1);
   }
@@ -12985,6 +12988,8 @@ function hasUnsentInput() {
   // (a composer swapped out mid-recording is cancelled after it left the page — its event never reaches us)
   _recording = _recording.filter(function(el) { return el && el.isConnected !== false; });
   if (_recording.length) return true;
+  // … a dictation listening now (its words are still arriving) …
+  if (_ntDictation) return true;
   for (var fr in _pcFailed) return true;
   // … a new task being launched (its dialog may already be closed), an answer on its way (an approval card sending) …
   if (_ntBusy) return true;
@@ -17539,6 +17544,16 @@ var _ntRequestId = null;
 var _ntValue = null;
 // The files a dashboard task's dialog refuses (#600 ⑥): no type matches.
 var NT_NO_FILES = 'application/x-soma-no-attachments';
+// Live dictation (SSOT 2026-11-01): the language the recogniser listens for — Korean, with the English words a
+// Korean sentence carries — and the dictation running now ({ rec, base, finals, interim, stopping, hard, … }) or null.
+var NT_DICTATION_LANG = 'ko-KR';
+var _ntDictation = null;
+// The voice leaves the device only on a yes: the first press where it would only says so (_ntDictationAsked), the
+// next press is the yes, and the device keeps it (localStorage, this key).
+var NT_DICTATION_REMOTE_KEY = 'soma-nt-dictation-remote';
+var _ntDictationAsked = false;
+// The new task opens listening when the words stay on the device (SSOT_4); a refused mic ends that for this page.
+var _ntDictationAutoOff = false;
 
 // The battery's reading for <ui-meter> (value 0..1, null = unknown — the element draws "?" with no fill) and the words
 // of the usage line (the button's title too).
@@ -17594,6 +17609,14 @@ function ntBuildPayload(state, attachments, requestId) {
       return { name: a.name, mimetype: a.mimetype, data: a.data };
     }),
   };
+}
+
+// The instruction over the server's limit, said before it is sent (a phone's composer shows no counter); '' if it fits.
+function ntTooLong(text) {
+  var max = _ntCtx && _ntCtx.limits && _ntCtx.limits.maxPromptChars;
+  var n = String(text || '').length;
+  if (!max || n <= max) return '';
+  return '지시가 너무 깁니다 — ' + max.toLocaleString('en-US') + '자까지 보낼 수 있어요 (지금 ' + n.toLocaleString('en-US') + '자)';
 }
 
 function ntCanSubmit(state, attachments) {
@@ -17671,6 +17694,9 @@ async function openNewTask() {
     }, 60);
   }
   ntSetStatus(_ntCtx ? '' : '불러오는 중…');
+  // The dialog covers the session panel: a dictation there stops, and the new task may take the microphone.
+  ntDictateStopIn('pc');
+  ntDictateAuto();
   await ntLoadContext();
 }
 
@@ -17704,17 +17730,17 @@ async function ntLoadContext() {
       return {};
     });
     if (!res.ok) {
-      ntSetStatus('');
+      ntSetStatus(ntDictationLive());
       ntSetError(data.error || '새 작업 정보를 불러오지 못했습니다 (' + res.status + ')');
       return;
     }
     _ntCtx = data.context;
     if (!_ntState) _ntState = ntDefaultState(_ntCtx, ntReadDraft());
     else ntReconcileState();
-    ntSetStatus('');
+    ntSetStatus(ntDictationLive());
     ntRender();
   } catch (e) {
-    ntSetStatus('');
+    ntSetStatus(ntDictationLive());
     ntSetError('새 작업 정보를 불러오지 못했습니다 — 네트워크를 확인해 주세요');
   }
 }
@@ -17849,9 +17875,15 @@ function ntComposerData() {
     d.camera = false;
     d.accept = NT_NO_FILES;
   }
+  // Live dictation (SSOT 2026-11-01): beside the voice note (the element's mic, which stays), 받아쓰기 writes what is
+  // said into the field while it is said. It is text, so a dashboard task takes it too. No recogniser (Firefox): none.
+  if (ntDictationEngine(typeof window !== 'undefined' ? window : null)) {
+    d.tools = [ntDictationTool(ntDictating('nt'))];
+  }
   var lim = _ntCtx && _ntCtx.limits;
   if (lim) {
-    d.maxLength = lim.maxPromptChars;
+    // A phone's tool row with 받아쓰기 has no room for the counter: it gives way, and the limit is checked on send.
+    if (!d.tools || ntDictationWide()) d.maxLength = lim.maxPromptChars;
     d.maxFiles = lim.maxFiles;
     d.maxFileSize = lim.maxFileBytes;
     d.maxTotalBytes = lim.maxTotalBytes;
@@ -17862,12 +17894,437 @@ function paintNtComposer() {
   var el = ntEl('nt-composer');
   if (el) el.data = ntComposerData();
 }
-// Closing the sheet discards a recording in progress and stops a voice note's preview (the text and files stay).
+// Closing the sheet discards a recording in progress, stops a voice note's preview and ends a dictation (the text
+// and files stay).
 function ntQuietComposer() {
+  ntDictateStopIn('nt');
   var el = ntEl('nt-composer');
   if (!el || typeof el.cancelRecording !== 'function') return;
   el.cancelRecording();
   el.pause();
+}
+
+// ── Live dictation (SSOT 2026-11-01) ──
+// 받아쓰기: the browser's own speech recogniser (Web Speech API) writes what is said into the field while it is
+// said; the person edits it and sends text. A tool beside the voice note (which stays), in the new task composer
+// ('nt') and the session panel composer ('pc') — one dictation at a time. Safari on an iPhone runs Apple's engine on the phone; Chrome on a Galaxy
+// runs Google's; desktop Chrome is asked to keep it on the device when it says it can (available({ processLocally })).
+
+// The browser's speech recogniser, or null: Firefox has none, and an iPhone web app opened from the Home Screen
+// (navigator.standalone) cannot use it (WebKit bug 225298) — both keep the audio voice note.
+function ntDictationEngine(w) {
+  if (!w) return null;
+  if (w.navigator && w.navigator.standalone === true) return null;
+  return w.SpeechRecognition || w.webkitSpeechRecognition || null;
+}
+
+// The composer's 받아쓰기 tool: a pencil (the voice note keeps the mic), a toggle pressed while it listens. Its word
+// shows on a wide screen; on a phone the row has no room beside the counter and 작업 시작, so the icon carries it (its
+// name stays as the button's label).
+function ntDictationTool(on) {
+  var t = { id: 'dictate', label: '받아쓰기', icon: 'edit', pressed: !!on };
+  if (ntDictationWide()) t.showLabel = true;
+  return t;
+}
+
+// A screen wide enough for the tool row to carry words (and the counter beside 작업 시작).
+function ntDictationWide() {
+  var w = typeof window !== 'undefined' ? window : null;
+  return !!(w && w.matchMedia && w.matchMedia('(min-width: 640px)').matches);
+}
+
+// Is a dictation listening in this composer ('nt' — the new task, 'pc' — the session panel)?
+function ntDictating(id) {
+  return !!_ntDictation && !_ntDictation.stopping && _ntDictation.host.id === id;
+}
+
+// Stop the dictation of this composer, hard: its person typed, sent, closed it or left the session.
+function ntDictateStopIn(id) {
+  if (_ntDictation && _ntDictation.host.id === id) ntDictateStop(true);
+}
+
+// Where a dictation writes: the composer, what follows its text, where its status goes, its repaint. The new task
+// has a status line and a saved draft; the session panel has neither — its why is a toast.
+function ntDictationHost(id) {
+  if (id === 'pc') {
+    return {
+      id: 'pc',
+      el: function () {
+        return document.getElementById('pc-composer');
+      },
+      text: function () {},
+      status: function (msg, final) {
+        if (final && msg) dashToast({ title: msg });
+      },
+      paint: function () {
+        pcPaintComposer();
+      },
+    };
+  }
+  return {
+    id: 'nt',
+    el: function () {
+      return ntEl('nt-composer');
+    },
+    text: function (t) {
+      if (_ntState) _ntState.prompt = t;
+      ntSaveDraft(t);
+    },
+    status: function (msg) {
+      ntSetStatus(msg);
+    },
+    paint: function () {
+      paintNtComposer();
+    },
+  };
+}
+
+// Two pieces of text joined with one space, unless one side already has the whitespace.
+function ntJoinSpoken(a, b) {
+  a = String(a || '');
+  b = String(b || '');
+  if (!a) return b;
+  if (!b) return a;
+  return /\\s$/.test(a) || /^\\s/.test(b) ? a + b : a + ' ' + b;
+}
+
+// The field while dictating: what was there when it started, the settled words, then the words still being heard.
+function ntDictationText(base, finals, interim) {
+  var heard = ntJoinSpoken(finals, interim).replace(/[ \\t]+/g, ' ').trim();
+  return heard ? ntJoinSpoken(base, heard) : String(base || '');
+}
+
+// One result event, read from its first result (the list holds the whole session): the settled words and the words
+// still being heard. When cumulative (Android Chrome): it resends what it already settled inside a longer copy — that
+// copy replaces the settled words, so nothing is written twice. Elsewhere results are separate segments, so a phrase
+// said twice ("아니, 아니요 …") stays as said.
+function ntDictationRead(results, cumulative) {
+  var finals = '';
+  var interim = '';
+  var n = results && results.length ? results.length : 0;
+  for (var i = 0; i < n; i++) {
+    var r = results[i];
+    var t = r && r[0] && r[0].transcript ? String(r[0].transcript) : '';
+    if (!t) continue;
+    if (!r.isFinal) {
+      interim += t;
+      continue;
+    }
+    var had = finals.trim();
+    if (cumulative && had && t.trim().indexOf(had) === 0) finals = t.trim();
+    else finals = ntJoinSpoken(finals, t);
+  }
+  var settled = finals.trim();
+  var rest = interim.trim();
+  if (cumulative && settled && rest.indexOf(settled) === 0) interim = rest.slice(settled.length);
+  return { finals: finals, interim: interim };
+}
+
+// Why a dictation ended, in the page's words; '' for silence and for a stop the page asked for.
+function ntDictationErrorText(code) {
+  switch (String(code || '')) {
+    case 'no-speech':
+    case 'aborted':
+      return '';
+    case 'not-allowed':
+      return '마이크 권한이 없어 받아쓸 수 없습니다 — 브라우저 설정에서 마이크를 허용해 주세요';
+    case 'service-not-allowed':
+      return '이 브라우저에서 받아쓰기가 꺼져 있습니다 — iPhone은 설정 › 일반 › 키보드에서 받아쓰기를 켜 주세요';
+    case 'audio-capture':
+      return '마이크를 찾지 못했습니다 — 마이크 연결을 확인해 주세요';
+    case 'network':
+      return '음성 인식 서비스에 연결하지 못했습니다 — 네트워크를 확인해 주세요';
+    case 'language-not-supported':
+      return '이 브라우저는 한국어 받아쓰기를 지원하지 않습니다';
+    default:
+      return '받아쓰기를 계속하지 못했습니다 — 다시 눌러 주세요';
+  }
+}
+
+// A promise's answer, or the fallback when it takes longer than ms.
+function ntWithin(p, ms, fallback) {
+  var timer = 0;
+  return Promise.race([
+    Promise.resolve(p),
+    new Promise(function (resolve) {
+      timer = setTimeout(function () {
+        resolve(fallback);
+      }, ms);
+    }),
+  ]).finally(function () {
+    clearTimeout(timer);
+  });
+}
+
+// Where this dictation is processed, asked of Chrome's on-device Web Speech (139+, desktop): 'local' when Korean is
+// on this device; for 'downloadable' — also Chrome's answer until this site has asked once, for privacy — install()
+// in this press: a language already there answers at once ('local'), a real download goes on in the background and
+// this dictation runs through the browser's service ('installing'). Anything else, or a slow answer: 'service'.
+async function ntDictationLocal(Rec) {
+  var q = { langs: [NT_DICTATION_LANG], processLocally: true };
+  try {
+    var a = await ntWithin(Rec.available(q), 1500, 'timeout');
+    if (a === 'available') return 'local';
+    if (a !== 'downloadable' || typeof Rec.install !== 'function') return 'service';
+    var ok = await ntWithin(Rec.install(q), 1500, 'pending');
+    if (ok === true) return 'local';
+    return ok === 'pending' ? 'installing' : 'service';
+  } catch (e) {
+    return 'service';
+  }
+}
+
+// Apple's speech engine — Safari on a Mac, any browser on an iPhone or iPad (all WebKit): on the device for Korean
+// (WebKit asks Apple for on-device recognition whenever the language has it).
+function ntIsAppleSpeech(w) {
+  var ua = String((w && w.navigator && w.navigator.userAgent) || '');
+  if (/iPhone|iPad|iPod/.test(ua)) return true;
+  return /Macintosh/.test(ua) && /Safari\\//.test(ua) && !/Chrome|Chromium|Edg|Firefox/.test(ua);
+}
+
+// Has this device said yes to dictation through a speech service off the device? The first ask only marks it asked
+// (the press says so instead of listening); the next press is the yes, kept on the device.
+function ntDictationRemoteOk() {
+  try {
+    if (localStorage.getItem(NT_DICTATION_REMOTE_KEY) === 'ok') return true;
+  } catch (e) {}
+  if (!_ntDictationAsked) {
+    _ntDictationAsked = true;
+    return false;
+  }
+  try {
+    localStorage.setItem(NT_DICTATION_REMOTE_KEY, 'ok');
+  } catch (e) {}
+  return true;
+}
+
+// What the press says where the voice would leave the device and the person has not said yes yet.
+function ntDictationOffDevice(where) {
+  if (where === 'installing') {
+    return '기기용 한국어 모델을 내려받는 중입니다 — 다 받으면 이 기기에서 받아씁니다. 지금 기기 밖 음성 서비스로 받아쓰려면 한 번 더 누르세요';
+  }
+  return '이 브라우저는 음성을 기기 밖(브라우저의 음성 서비스)으로 보내 받아씁니다 — 괜찮으면 한 번 더 누르세요. 기기 안에서만 처리하려면 키보드의 마이크를 쓰세요';
+}
+
+// The status line while it listens, saying where the words are processed.
+function ntDictationStatus(where) {
+  var how = {
+    local: '이 기기에서 처리합니다',
+    apple: '이 기기의 Apple 음성 인식으로 처리합니다',
+    installing: '이번에는 기기 밖, 브라우저의 음성 서비스로 처리합니다 (기기용 한국어 모델을 내려받는 중)',
+    service: '기기 밖, 브라우저의 음성 서비스로 처리합니다',
+  }[where];
+  return '듣는 중… ' + (how ? how + ' · ' : '') + '다시 누르거나 키보드로 쓰면 멈춥니다';
+}
+
+// 받아쓰기 pressed: a recogniser for this dictation — ko-KR, the words while they are said (interimResults), until it
+// is stopped (continuous). Without available() it starts in the press itself (Safari asks for the mic there).
+async function ntDictateStart(host, auto) {
+  host = host || ntDictationHost('nt');
+  var w = typeof window !== 'undefined' ? window : null;
+  var Rec = ntDictationEngine(w);
+  var el = host.el();
+  if (!Rec || !el || (host.id === 'nt' ? _ntBusy : _pcSending)) return;
+  if (_ntDictation) {
+    // Listening here already: nothing to do. Still settling the last words of a stopped one, or listening in the
+    // other composer: drop that one (its words show already) and start here at once.
+    if (_ntDictation.host.id === host.id && !_ntDictation.stopping) return;
+    ntDictateStop(true);
+  }
+  var d = {
+    host: host,
+    auto: !!auto,
+    live: '',
+    rec: null,
+    base: String(el.value || ''),
+    finals: '',
+    interim: '',
+    stopping: false,
+    hard: false,
+    heard: false,
+    silent: 0,
+    sessions: 0,
+    error: '',
+    // Android Chrome repeats settled words in longer copies (ntDictationRead folds them there only).
+    cumulative: !!(w && w.navigator && /Android/i.test(String(w.navigator.userAgent || ''))),
+  };
+  _ntDictation = d;
+  host.paint();
+  // Where the words are processed: Chrome's available() when it has one; else Apple's engine (on the device) or a
+  // speech service off the device (Chrome on Android, Samsung Internet, older Chrome, Edge).
+  var where = ntIsAppleSpeech(w) ? 'apple' : 'service';
+  if (typeof Rec.available === 'function') {
+    d.live = '받아쓰기 준비 중…';
+    host.status(d.live);
+    where = await ntDictationLocal(Rec);
+    if (_ntDictation !== d) return;
+  }
+  // Opened listening (SSOT_4) only where the words stay on the device: elsewhere it stays off, quietly.
+  if (auto && where !== 'local' && where !== 'apple') {
+    ntDictationEnd(d, '');
+    return;
+  }
+  if ((where === 'service' || where === 'installing') && !ntDictationRemoteOk()) {
+    ntDictationEnd(d, ntDictationOffDevice(where));
+    return;
+  }
+  var rec;
+  try {
+    rec = new Rec();
+    d.rec = rec;
+    rec.lang = NT_DICTATION_LANG;
+    rec.interimResults = true;
+    rec.continuous = true;
+    rec.maxAlternatives = 1;
+    if (where === 'local') rec.processLocally = true;
+    rec.onresult = function (e) {
+      ntDictationHeard(d, e);
+    };
+    rec.onerror = function (e) {
+      var code = e && e.error;
+      var why = ntDictationErrorText(code);
+      if (!why) return;
+      // A restart refused after the first session (iOS may want a fresh press): not a missing permission.
+      if (code === 'not-allowed' && d.sessions > 1) why = '받아쓰기가 멈췄습니다 — 다시 누르면 이어서 받아씁니다';
+      // An automatic start the mic refused does not try again on every open (the 받아쓰기 press still does); a
+      // restart refused after a pause (iOS) is not a refused mic.
+      if (d.auto && d.sessions <= 1 && /^(not-allowed|service-not-allowed|audio-capture)$/.test(String(code)))
+        _ntDictationAutoOff = true;
+      d.error = why;
+      d.stopping = true;
+    };
+    rec.onend = function () {
+      ntDictationEnded(d);
+    };
+    rec.start();
+    d.sessions++;
+    d.live = ntDictationStatus(where);
+    host.status(d.live);
+  } catch (e) {
+    ntDictationEnd(d, ntDictationErrorText(''));
+  }
+}
+
+// A result: the field becomes what was there + what is heard; the new task's draft and state follow (the composer
+// sends no ui-input for a value the page sets).
+function ntDictationHeard(d, e) {
+  if (d.hard || _ntDictation !== d) return;
+  var results = e && e.results;
+  var r0 = results && results.length ? results[0] : null;
+  var first = r0 && r0[0] ? String(r0[0].transcript || '').trim() : '';
+  var got = ntDictationRead(results, d.cumulative);
+  var was = ntJoinSpoken(d.finals, d.interim).trim();
+  var now = ntJoinSpoken(got.finals, got.interim).trim();
+  var at = Date.now();
+  // A new utterance in a fresh list (real Chrome, after a pause, drops an utterance it never finalised — no isFinal,
+  // no end): the words that show stay as the start, so nothing said disappears. Only two signs count, so a revision
+  // is never doubled: a settled first result that is gone (a final does not change inside a list), or — after a
+  // pause — a list holding less than half of what showed.
+  var fresh =
+    (d.firstFinal && d.first && now.indexOf(d.first) !== 0) ||
+    (!d.firstFinal && at - (d.at || at) > 1200 && now.length * 2 < was.length);
+  if (was && fresh) d.base = ntDictationText(d.base, d.finals, d.interim);
+  d.first = first;
+  d.firstFinal = !!(r0 && r0.isFinal);
+  d.at = at;
+  d.finals = got.finals;
+  d.interim = got.interim;
+  if (got.finals || got.interim) {
+    d.heard = true;
+    d.silent = 0;
+  }
+  var el = d.host.el();
+  if (!el) return;
+  var text = ntDictationText(d.base, d.finals, d.interim);
+  el.value = text;
+  d.host.text(text);
+}
+
+// The recogniser ended. Stopped or failed: the dictation lets go. Ended by itself (iOS after a pause, Chrome after a
+// while): it listens again with the words so far as its start; three silent sessions in a row end it.
+function ntDictationEnded(d) {
+  if (d.hard || _ntDictation !== d) return;
+  if (d.stopping) {
+    ntDictationEnd(d, d.error);
+    return;
+  }
+  d.base = ntDictationText(d.base, d.finals, d.interim);
+  d.finals = '';
+  d.interim = '';
+  d.silent = d.heard ? 0 : d.silent + 1;
+  d.heard = false;
+  if (d.silent >= 3) {
+    ntDictationEnd(d, '말이 들리지 않아 받아쓰기를 멈췄습니다');
+    return;
+  }
+  try {
+    d.rec.start();
+    d.sessions++;
+  } catch (e) {
+    ntDictationEnd(d, ntDictationErrorText(''));
+  }
+}
+
+// The dictation is over: the tool lets go, and the status line says why (or nothing).
+function ntDictationEnd(d, why) {
+  if (_ntDictation === d) _ntDictation = null;
+  d.stopping = true;
+  d.host.status(why || '', true);
+  d.host.paint();
+}
+
+// Stop the dictation. Soft (the tool pressed again): the recogniser settles what it heard, and that still lands.
+// Hard (the person types, sends or closes the sheet): what is still coming is dropped; the field keeps what it shows.
+function ntDictateStop(hard) {
+  var d = _ntDictation;
+  if (!d) return;
+  if (hard) {
+    d.hard = true;
+    ntDictationEnd(d, '');
+    try {
+      if (d.rec) d.rec.abort();
+    } catch (e) {}
+    return;
+  }
+  if (d.stopping) return;
+  d.stopping = true;
+  d.host.paint();
+  if (!d.rec) {
+    ntDictationEnd(d, '');
+    return;
+  }
+  try {
+    d.rec.stop();
+  } catch (e) {
+    ntDictationEnd(d, '');
+    return;
+  }
+  // A recogniser that never confirms the stop (Edge can go silent) does not hold the tool: let go after 3 s.
+  setTimeout(function () {
+    if (_ntDictation === d) ntDictateStop(true);
+  }, 3000);
+}
+
+// A composer's ui-tool (the new task's, or the session panel's with its host): 받아쓰기 is the page's one tool (the
+// voice note and the camera are the element's own).
+function ntOnComposerTool(e, host) {
+  var t = e && e.detail;
+  if (!t || t.id !== 'dictate') return;
+  var h = host || ntDictationHost('nt');
+  if (t.pressed) ntDictateStart(h);
+  else if (_ntDictation && _ntDictation.host.id === h.id) ntDictateStop(false);
+}
+
+// SSOT_4: the new task opens listening where speech recognition runs on this device; a key typed stops it (ui-input)
+// and the typing goes on. Called inside the opening press — Safari wants it for the microphone.
+function ntDictateAuto() {
+  if (_ntDictationAutoOff || _ntDictation) return;
+  ntDictateStart(ntDictationHost('nt'), true);
+}
+
+// What the status line says when nothing else does: a listening dictation's line, or nothing.
+function ntDictationLive() {
+  return ntDictating('nt') ? _ntDictation.live || '' : '';
 }
 
 function ntRenderBattery() {
@@ -17984,6 +18441,11 @@ async function submitNewTask(detail) {
   if (_ntBusy || !_ntCtx || !_ntState || !el) return;
   var files = (detail && detail.files) || el.files || [];
   _ntState.prompt = detail ? String(detail.text || '') : el.value;
+  var tooLong = ntTooLong(_ntState.prompt);
+  if (tooLong) {
+    ntSetError(tooLong);
+    return;
+  }
   if (!ntCanSubmit(_ntState, files)) {
     ntSetError(
       _ntState.destination === 'task'
@@ -18178,14 +18640,18 @@ function ntInit() {
   // on ⌘/Ctrl+Enter (enter: 'newline').
   var composer = ntEl('nt-composer');
   composer.addEventListener('ui-input', function (e) {
+    ntDictateStopIn('nt');
     var v = e.detail ? String(e.detail.value || '') : '';
     if (_ntState) _ntState.prompt = v;
     ntSaveDraft(v);
   });
   composer.addEventListener('ui-submit', function (e) {
     e.preventDefault();
+    ntDictateStopIn('nt');
     submitNewTask(e.detail);
   });
+  // 받아쓰기 (live dictation): its press starts and stops it; typing, sending and closing stop it hard.
+  composer.addEventListener('ui-tool', ntOnComposerTool);
   // A file the task composer refused (no type matches): why, not only "unsupported type".
   composer.addEventListener('ui-reject', ntOnReject);
   // A file added or removed while a dashboard task is chosen: the reason it cannot start, or none (#640 R2).
@@ -18323,10 +18789,17 @@ function pcComposerData(takesFiles) {
     d.voice = false;
     d.accept = PC_NO_FILES;
   }
+  // 받아쓰기 (live dictation, SSOT 2026-11-01) beside the voice note, as in the new task — text, so a task card too.
+  if (ntDictationEngine(typeof window !== 'undefined' ? window : null)) d.tools = [ntDictationTool(ntDictating('pc'))];
   return d;
 }
 // The composer's data with the page's part (re)applied: a session that takes
 // files gets the element's defaults back (the task keys are dropped, not kept).
+// Repaint the panel composer's page part (its 받아쓰기 tool follows the dictation), for the card it shows.
+function pcPaintComposer() {
+  var host = document.getElementById('panel-command');
+  pcComposerSetup(document.getElementById('pc-composer'), host ? host._takesFiles : undefined);
+}
 function pcComposerSetup(c, takesFiles) {
   if (!c) return;
   var d = Object.assign({}, c.data || {});
@@ -18340,6 +18813,7 @@ function pcComposerSetup(c, takesFiles) {
 // typed, its files, notes in flight, a failed send's Retry — was the other
 // session's. The listeners sit on #panel-command.
 function pcFreshSteer() {
+  ntDictateStopIn('pc');
   var old = document.getElementById('cmd-steer');
   if (!old) return;
   var el = document.createElement('ui-agent-steering');
@@ -18358,6 +18832,7 @@ function pcFreshSteer() {
 // The panel closed, or its session is no longer open to this viewer: no recording
 // (discarded) and no files go on; the text stays in the field.
 function pcReset() {
+  ntDictateStopIn('pc');
   var c = document.getElementById('pc-composer');
   if (!c || typeof c.cancelRecording !== 'function') return;
   c.cancelRecording();
@@ -18373,6 +18848,10 @@ function pcInit() {
   pcComposerSetup(document.getElementById('pc-composer'));
   host.addEventListener('ui-reject', pcOnReject);
   host.addEventListener('ui-submit', pcOnSubmit);
+  // 받아쓰기 (live dictation) in the panel: its press starts and stops it; typing stops it (sending, closing and
+  // another session too — pcOnSubmit, pcReset, pcFreshSteer).
+  host.addEventListener('ui-tool', function(e) { ntOnComposerTool(e, ntDictationHost('pc')); });
+  host.addEventListener('ui-input', function() { ntDictateStopIn('pc'); });
   host.addEventListener('ui-promote', function(e) { if (e.detail) steerAct('promote', String(e.detail.id)); });
   host.addEventListener('ui-cancel', function(e) {
     if (!e.detail) return;
@@ -18392,6 +18871,7 @@ function pcOnReject(e) {
 // ui-submit: a send already reading its files (or a card with no open composer)
 // takes nothing — cancelled, the text stays in the field.
 function pcOnSubmit(e) {
+  ntDictateStopIn('pc');
   var d = e.detail || {};
   var host = document.getElementById('panel-command');
   if (!panelSessionKey || _pcSending || !host || host._mode !== 'open') {

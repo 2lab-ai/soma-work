@@ -1644,6 +1644,7 @@ describe('the composer follows the session live (executed)', () => {
         document: { getElementById: (id: string) => els[id] ?? null },
         currentUserId: 'U1',
         pcReset: () => {},
+        ntDictationEngine: () => null, // 받아쓰기 has its own suite: no recogniser here
       },
     );
     m.renderPanelComposer({ ownerId: 'U1', activityState: 'idle' }, true);
