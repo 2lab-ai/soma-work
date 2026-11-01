@@ -631,19 +631,71 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
   });
 });
 
-// #637 R2 (fable P3) — every start runs under the owner's identity, so the
-// owner check lives in admission, shared by an instruction and an answer.
-describe('TaskTurnController.start — only the task’s owner starts it (#637 R2)', () => {
-  it('a start by anyone but the owner (or by nobody) is 403 and runs nothing', async () => {
+// SSOT 2026-11-02 (replaces #637 R2's owner-only rule) — as in a Slack thread,
+// any signed-in user starts a task's turn and it runs as them: the context is
+// built for the actor (its identity, the owner's directory), hop after hop.
+// Nobody (an empty actor) starts nothing. An epic tree takes another user's
+// word only from an admin: its children start as the owner (host starts).
+describe('TaskTurnController.start — any signed-in user starts it, as themselves (SSOT 2026-11-02)', () => {
+  it('a start by nobody is 403 and runs nothing', async () => {
     const h = harness();
-    for (const actorUserId of ['U_OTHER', '']) {
-      const r = await h.controller.start({ actorUserId, sessionKey: KEY, text: 'go' });
-      expect(r).toMatchObject({ status: 403 });
-    }
+    const r = await h.controller.start({ actorUserId: '', sessionKey: KEY, text: 'go' });
+    expect(r).toMatchObject({ status: 403 });
     expect(h.runTaskTurn).not.toHaveBeenCalled();
-    const ok = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY, text: 'go' });
-    expect(ok.status).toBe(202);
-    await ok.done;
+  });
+
+  it('a start by another user runs with the context built for that user, on every hop', async () => {
+    const other = { ...CTX, userId: 'U_OTHER', ownerId: 'UOWNER' };
+    const build = vi.fn((_s: unknown, actor?: string) => (actor === 'U_OTHER' ? other : CTX));
+    const h = harness({ buildExecutionContext: build as never });
+    const r = await h.controller.start({ actorUserId: 'U_OTHER', sessionKey: KEY, text: 'go' });
+    expect(r.status).toBe(202);
+    await r.done;
+    expect(build).toHaveBeenCalledWith(h.sessions.get(KEY), 'U_OTHER');
+    expect(h.inputs[0].executionContext).toBe(other);
+  });
+
+  it('another user’s start counts against the owner’s one-task slot, not the actor’s', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const h = harness({}, [
+      async (input) => {
+        input.onStarted?.();
+        await gate;
+        return completed();
+      },
+    ]);
+    const first = await h.controller.start({ actorUserId: 'U_OTHER', sessionKey: KEY, text: 'go' });
+    expect(first.status).toBe(202);
+    // The owner's other task waits: one dashboard task of an owner runs at a time.
+    const second = await h.controller.start({ actorUserId: 'UOWNER', sessionKey: KEY2, text: 'go' });
+    expect(second).toMatchObject({ status: 429 });
+    release();
+    await first.done;
+  });
+
+  it('an epic or its child refuses another user who is not an admin; an admin may', async () => {
+    for (const shape of [
+      { kind: 'epic' },
+      { parentTaskId: '33333333-2222-4333-8444-555555555555', planNodeId: 'n1' },
+    ]) {
+      const h = harness({
+        buildExecutionContext: vi.fn((_s: unknown, actor?: string) => ({
+          ...CTX,
+          userId: actor,
+          isAdmin: actor === 'U_ADMIN',
+        })) as never,
+      });
+      Object.assign(h.sessions.get(KEY), shape);
+      const refused = await h.controller.start({ actorUserId: 'U_OTHER', sessionKey: KEY, text: 'go' });
+      expect(refused).toMatchObject({ status: 403 });
+      expect(h.runTaskTurn).not.toHaveBeenCalled();
+      const admin = await h.controller.start({ actorUserId: 'U_ADMIN', sessionKey: KEY, text: 'go' });
+      expect(admin.status).not.toBe(403);
+      await admin.done;
+    }
   });
 });
 
@@ -819,22 +871,29 @@ describe('TaskTurnController.answer — a dashboard answer to a task’s questio
     expect(h.runTaskTurn).toHaveBeenCalledTimes(1);
   });
 
-  // #637 R1 (astra P1) — the answer runs under the owner's identity: the route
-  // checks the signed-in owner, and the controller refuses anyone else again.
-  it('an answer from anyone but the task’s owner is 403 and changes nothing', async () => {
+  // SSOT 2026-11-02 — an answer, like an instruction, comes from any signed-in
+  // user and runs as them; nobody (an empty actor) answers nothing.
+  it('an answer from nobody is 403 and changes nothing; another user’s answer runs', async () => {
     const h = harness();
     waiting(h);
-    for (const actorUserId of ['U_OTHER', '']) {
-      const r = await h.controller.answer({
-        actorUserId,
-        sessionKey: KEY,
-        askId: 'ask-1',
-        answer: { kind: 'single', choiceId: 'pg' },
-      });
-      expect(r).toMatchObject({ status: 403 });
-    }
+    const r = await h.controller.answer({
+      actorUserId: '',
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'single', choiceId: 'pg' },
+    });
+    expect(r).toMatchObject({ status: 403 });
     expect(h.runTaskTurn).not.toHaveBeenCalled();
     expect(h.sessions.get(KEY).actionPanel.pendingQuestion.askId).toBe('ask-1');
+    const other = await h.controller.answer({
+      actorUserId: 'U_OTHER',
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'single', choiceId: 'pg' },
+    });
+    expect(other.status).toBe(202);
+    await other.done;
+    expect(h.deps.buildExecutionContext).toHaveBeenCalledWith(h.sessions.get(KEY), 'U_OTHER');
   });
 
   // #637 R1 (fable P3) — an answer is not a command: a form whose question

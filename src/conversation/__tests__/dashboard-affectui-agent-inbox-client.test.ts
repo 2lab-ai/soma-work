@@ -27,6 +27,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { viewerScope } from '../__fixtures__/viewer-scope';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -74,6 +75,7 @@ function clientArrayVar(name: string): string {
   return cook(TEMPLATE.slice(start + 1, end + 4));
 }
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+  ({ fns, inject } = viewerScope(fns, inject));
   inject = { STRINGS: PAGE_STRINGS, ...inject };
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
@@ -1002,32 +1004,37 @@ describe('D10 — one primary button per open card', () => {
     expect(slot(there)).toBe('inst::C1:t1');
     noWorklog(there);
     expect(lockFor('U1', true)(s)).toBe('다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요');
-    // Someone else's question: locked read-only; no 작업 로그.
+    // Someone else's question: any signed-in viewer answers it, as a Slack button answers as
+    // its clicker (SSOT 2026-11-02); nobody signed in reads it locked. No 작업 로그 either way.
     const theirs = body(card({ ownerId: 'U2', pendingQuestion: rec }), 'waiting');
     expect(slot(theirs)).toBe('inst::C1:t1');
     noWorklog(theirs);
-    expect(lockFor('U1', false)(card({ ownerId: 'U2', pendingQuestion: rec }))).toBe('읽기 전용 — 내 세션이 아닙니다');
+    expect(lockFor('U1', false)(card({ ownerId: 'U2', pendingQuestion: rec }))).toBe('');
+    expect(lockFor('', false)(card({ ownerId: 'U2', pendingQuestion: rec }))).toBe('읽기 전용 — 내 세션이 아닙니다');
     // Only a waiting card asks.
     expect(slot(body(card({ pendingQuestion: rec, activityState: 'working' }), 'working'))).toBeUndefined();
   });
 
-  it("the multi-question 답변하기 is the primary in the owner's card only (fable P2), never on a sibling instance (astra P1)", () => {
+  it('the multi-question 답변하기 is the primary for whoever may answer it (fable P2; SSOT 2026-11-02), never on a sibling instance (astra P1)', () => {
     let sibling = false;
-    const { renderMultiChoiceCard } = load<{ renderMultiChoiceCard(s: unknown, f: string): string }>(
-      ['esc', 'escJs', 'renderMultiChoiceCard', 'mcFormId'],
-      [],
-      { _mcState: {}, console, currentUserId: 'U1', isSiblingSession: () => sibling },
-    );
+    const load1 = (viewer: string) =>
+      load<{ renderMultiChoiceCard(s: unknown, f: string): string }>(
+        ['esc', 'escJs', 'renderMultiChoiceCard', 'mcFormId'],
+        [],
+        { _mcState: {}, console, currentUserId: viewer, isSiblingSession: () => sibling },
+      ).renderMultiChoiceCard;
+    const renderMultiChoiceCard = load1('U1');
     const q = { type: 'user_choices', title: 'Pick', questions: [{ id: 'q1' }] };
-    // D3 E-16: the kit's button — ink (is-primary) for the owner on this instance, the plain kit button otherwise.
-    expect(renderMultiChoiceCard({ key: 'k', ownerId: 'U1', pendingQuestion: q }, '')).toContain(
-      '<button type="button" class="ui-btn is-primary card-mc-go"',
-    );
-    for (const ownerId of ['U2', undefined]) {
+    // D3 E-16: the kit's button — ink (is-primary) for a viewer who may answer on this instance (any signed-in
+    // user, as in a Slack thread), the plain kit button otherwise.
+    for (const ownerId of ['U1', 'U2', undefined]) {
       expect(renderMultiChoiceCard({ key: 'k', ownerId, pendingQuestion: q }, ''), String(ownerId)).toContain(
-        '<button type="button" class="ui-btn card-mc-go" onclick=',
+        '<button type="button" class="ui-btn is-primary card-mc-go"',
       );
     }
+    expect(load1('')({ key: 'k', ownerId: 'U2', pendingQuestion: q }, '')).toContain(
+      '<button type="button" class="ui-btn card-mc-go" onclick=',
+    );
     sibling = true;
     expect(renderMultiChoiceCard({ key: 'k', ownerId: 'U1', pendingQuestion: q }, '')).toContain(
       '<button type="button" class="ui-btn card-mc-go" onclick=',

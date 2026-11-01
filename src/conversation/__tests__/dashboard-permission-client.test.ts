@@ -111,6 +111,8 @@ interface PermissionClient {
 }
 
 function load(inject: Record<string, unknown>): PermissionClient {
+  // The requester is the signed-in viewer (SSOT 2026-11-02), here the board's user unless a test names another.
+  inject = { _viewerUserId: inject.currentUserId ?? '', ...inject };
   const names = Object.keys(inject);
   const body = `${clientVar('AC_SENT')}
 ${clientVar('AC_SIBLING')}

@@ -27,6 +27,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { viewerScope } from '../__fixtures__/viewer-scope';
 import { UI_LIB_FILE, uiLibDistDir } from '../dashboard';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
@@ -55,6 +56,7 @@ function clientVar(name: string): string {
   return cook(m[1]);
 }
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+  ({ fns, inject } = viewerScope(fns, inject));
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;

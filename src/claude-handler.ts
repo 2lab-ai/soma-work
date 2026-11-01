@@ -1233,7 +1233,7 @@ export class ClaudeHandler implements TurnSteeringPort {
       throw new ExecutionContextMissingError('no Slack user and no task context');
     }
     // A task's context is bound to the task it runs (#613 R2): the session and
-    // key handed in must be that task's, owned by the context's user, and a task
+    // key handed in must be that task's, owned by the context's owner, and a task
     // turn carries no Slack thread — so permissions, cwd, prompt and usage can
     // never come from two different tasks.
     if (executionContext?.origin === 'task') {
@@ -1246,7 +1246,8 @@ export class ClaudeHandler implements TurnSteeringPort {
         !session ||
         session.slackless !== true ||
         session.taskId !== executionContext.taskId ||
-        session.ownerId !== executionContext.userId
+        // The task's owner — the turn itself may run as another user who instructed it (SSOT 2026-11-02).
+        session.ownerId !== ((executionContext as { ownerId?: string }).ownerId ?? executionContext.userId)
       ) {
         throw new ExecutionContextMissingError('session is not the task’s');
       }
