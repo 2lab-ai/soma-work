@@ -141,7 +141,16 @@ const UA = {
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0 Safari/537.36',
 };
 
-function page(opts: { engine?: unknown; value?: string; destination?: string; ua?: string; busy?: boolean } = {}) {
+function page(
+  opts: {
+    engine?: unknown;
+    value?: string;
+    destination?: string;
+    ua?: string;
+    busy?: boolean;
+    mic?: string; // the microphone permission navigator.permissions answers; none: it cannot say
+  } = {},
+) {
   const store = new Map<string, string>();
   const errorLine = { textContent: '' };
   const composer = { value: opts.value ?? '', files: [] as unknown[] };
@@ -158,7 +167,9 @@ function page(opts: { engine?: unknown; value?: string; destination?: string; ua
     state: { destination: opts.destination ?? 'slack', prompt: '' },
   };
   // An iPhone by default: Apple's engine, on the device, no question asked.
-  const win: Record<string, unknown> = { navigator: { userAgent: opts.ua ?? UA.iphone } };
+  const nav: Record<string, unknown> = { userAgent: opts.ua ?? UA.iphone };
+  if (opts.mic) nav.permissions = { query: async () => ({ state: opts.mic }) };
+  const win: Record<string, unknown> = { navigator: nav };
   if (opts.engine !== undefined) win.webkitSpeechRecognition = opts.engine;
   const api = loadWith<Page>(
     [
@@ -179,6 +190,8 @@ function page(opts: { engine?: unknown; value?: string; destination?: string; ua
       'ntDictateStart',
       'ntDictationHeard',
       'ntDictationListen',
+      'ntDictationWatch',
+      'ntDictationMicState',
       'ntDictationEnded',
       'ntDictationEnd',
       'ntDictateStop',
@@ -197,6 +210,7 @@ function page(opts: { engine?: unknown; value?: string; destination?: string; ua
       _ntDictation: null,
       _ntDictationAutoOff: false,
       _ntDictationError: '',
+      _ntDictationUnder: '',
       _recording: [] as unknown[],
       _pcSending: false,
       PC_LIMITS: { maxFiles: 10, maxFileBytes: 1, maxTotalBytes: 2 },
@@ -980,16 +994,81 @@ describe('SSOT_5 — Samsung Internet and Chrome on a Galaxy: the first press li
     try {
       const Rec = recClass(null);
       FakeRec.deaf = true;
-      const { api, env } = page({ engine: Rec, ua: UA.samsung });
+      const { api, env } = page({ engine: Rec, ua: UA.samsung, mic: 'granted' });
       api.ntDictateAuto();
       const rec = FakeRec.made[0];
-      vi.advanceTimersByTime(11000);
+      await vi.advanceTimersByTimeAsync(11000);
       expect(api.__peek('_ntDictation')).not.toBeNull();
-      vi.advanceTimersByTime(1500);
+      await vi.advanceTimersByTimeAsync(1500);
       expect(api.__peek('_ntDictation')).toBeNull();
       expect(rec.aborts).toBe(1);
       expect(env.errorLine.textContent).toContain('마이크를 열지 못했습니다');
       expect(api.__peek('_ntDictationAutoOff')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('while the browser still asks for the microphone (prompt) it waits — a late yes listens on (fable review P1)', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      FakeRec.deaf = true;
+      const { api, env } = page({ engine: Rec, ua: UA.samsung, mic: 'prompt' });
+      api.ntDictateAuto();
+      const rec = FakeRec.made[0];
+      await vi.advanceTimersByTimeAsync(40000); // the person reads the prompt
+      expect(api.__peek('_ntDictation')).not.toBeNull();
+      expect(rec.aborts).toBe(0);
+      rec.onaudiostart?.(); // the yes: the microphone opens
+      rec.say([interim('늦게 허용했다')]);
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(api.__peek('_ntDictation')).not.toBeNull();
+      expect(env.composer.value).toBe('늦게 허용했다');
+      expect(env.errorLine.textContent).toBe('');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('a prompt left unanswered for a minute ends it, without turning the automatic start off', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      FakeRec.deaf = true;
+      const { api } = page({ engine: Rec, ua: UA.samsung, mic: 'prompt' });
+      api.ntDictateAuto();
+      await vi.advanceTimersByTimeAsync(61000);
+      expect(api.__peek('_ntDictation')).toBeNull();
+      expect(api.__peek('_ntDictationAutoOff')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('a browser that cannot say waits once more the first time (24 s), then ends it without turning the automatic start off', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      FakeRec.deaf = true;
+      const { api, env } = page({ engine: Rec, ua: UA.samsung });
+      api.ntDictateAuto();
+      await vi.advanceTimersByTimeAsync(13000);
+      expect(api.__peek('_ntDictation')).not.toBeNull();
+      await vi.advanceTimersByTimeAsync(12000);
+      expect(api.__peek('_ntDictation')).toBeNull();
+      expect(env.errorLine.textContent).toContain('마이크를 열지 못했습니다');
+      expect(api.__peek('_ntDictationAutoOff')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('a denied microphone the recogniser never reported: the red line names the permission', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      FakeRec.deaf = true;
+      const { api, env } = page({ engine: Rec, ua: UA.samsung, mic: 'denied' });
+      await api.ntDictateStart();
+      await vi.advanceTimersByTimeAsync(12500);
+      expect(env.errorLine.textContent).toContain('권한');
     } finally {
       vi.useRealTimers();
     }
@@ -1063,6 +1142,17 @@ describe('SSOT_5 — Samsung Internet and Chrome on a Galaxy: the first press li
     } finally {
       vi.useRealTimers();
     }
+  });
+  it('a dictation error over another one (the context failed to load): the next press gives that one back (fable P3)', async () => {
+    const Rec = recClass(null);
+    const { api, env } = page({ engine: Rec, ua: UA.galaxy });
+    env.errorLine.textContent = '설정을 불러오지 못했습니다';
+    await api.ntDictateStart();
+    FakeRec.made[0].onerror?.({ error: 'network' });
+    FakeRec.made[0].end();
+    expect(env.errorLine.textContent).toContain('연결');
+    await api.ntDictateStart();
+    expect(env.errorLine.textContent).toBe('설정을 불러오지 못했습니다');
   });
   it('a new press clears the dictation’s own error line, and leaves any other error alone', async () => {
     const Rec = recClass(null);
