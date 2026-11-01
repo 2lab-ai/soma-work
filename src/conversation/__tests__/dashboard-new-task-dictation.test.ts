@@ -197,6 +197,7 @@ function page(opts: { engine?: unknown; value?: string; destination?: string; ua
       _ntDictation: null,
       _ntDictationAutoOff: false,
       _ntDictationError: '',
+      _recording: [] as unknown[],
       _pcSending: false,
       PC_LIMITS: { maxFiles: 10, maxFileBytes: 1, maxTotalBytes: 2 },
       PC_NO_FILES: 'application/x-soma-no-attachments',
@@ -378,7 +379,7 @@ describe('SSOT_3 — 받아쓰기 is added beside the voice note, which stays ("
     expect(tooLong('가'.repeat(12000))).toBe('');
     expect(tooLong('가'.repeat(12001))).toContain('12,000');
   });
-  it('under 360px (a Galaxy S9, a Fold cover screen) the send keeps only its arrow, so it does not cover 받아쓰기', () => {
+  it('under 360px (an older or zoomed-in phone) the send keeps only its arrow, so it does not cover 받아쓰기', () => {
     const at = (width: number, engine: unknown) =>
       loadWith<{ ntComposerData(): Record<string, any> }>(
         [
@@ -470,6 +471,18 @@ describe('SSOT_2 — 받아쓰기 in the session panel composer (where the perso
     FakeRec.made[1].say([interim('패널로')]);
     expect(env.pc.value).toBe('패널로');
     expect(env.composer.value).toBe('');
+  });
+  it('where the voice leaves the device, the panel’s press says so in a toast (it has no status line)', async () => {
+    const Rec = recClass('unavailable');
+    const { api, env } = page({ engine: Rec, ua: UA.chromeMac });
+    await api.ntDictateStart(api.ntDictationHost('pc'));
+    expect(FakeRec.made[0].starts).toBe(1);
+    expect(last(env.toasts)).toContain('기기 밖');
+    // On the device (Apple's engine): no toast for a press that just listens.
+    const Rec2 = recClass(null);
+    const p2 = page({ engine: Rec2, ua: UA.iphone });
+    await p2.api.ntDictateStart(p2.api.ntDictationHost('pc'));
+    expect(p2.env.toasts).toHaveLength(0);
   });
   it('its why (a refused mic) is a toast — the panel has no status line', async () => {
     const Rec = recClass(null);
@@ -921,37 +934,46 @@ describe('SSOT_5 — Samsung Internet and Chrome on a Galaxy: the first press li
       expect(env.statuses.every((t) => !t.includes('들리지 않아'))).toBe(true);
     }
   });
-  it('speech heard but no words back (Samsung Internet showing "듣는 중" with no text): after three sessions the red line says so', async () => {
+  it('sound heard but no words back, three sessions (a noisy room, or Samsung Internet showing "듣는 중" with no text): it stops saying what to try', async () => {
+    const Rec = recClass(null);
+    const { api, env } = page({ engine: Rec, ua: UA.samsung });
+    api.ntDictateAuto();
+    const rec = FakeRec.made[0];
+    rec.onspeechstart?.();
+    rec.onerror?.({ error: 'no-match' }); // an utterance it could not match
+    rec.end();
+    rec.end(); // a silent one in between
+    expect(api.__peek('_ntDictation')).not.toBeNull();
+    rec.onspeechstart?.();
+    rec.end();
+    expect(rec.starts).toBe(3);
+    expect(api.__peek('_ntDictation')).toBeNull();
+    expect(last(env.statuses)).toContain('글자로 바뀐 것이 없어');
+    expect(last(env.statuses)).toContain('Chrome');
+    expect(env.statuses.every((t) => !t.includes('들리지 않아'))).toBe(true);
+    // Not a broken recogniser for sure (a noisy room does this too): the red line stays clear, and the new task still
+    // opens listening next time (grok review P1).
+    expect(env.errorLine.textContent).toBe('');
+    expect(api.__peek('_ntDictationAutoOff')).toBe(false);
+  });
+  it('words in between reset the run: empty sessions after words start counting again', async () => {
     const Rec = recClass(null);
     const { api, env } = page({ engine: Rec, ua: UA.samsung });
     await api.ntDictateStart();
     const rec = FakeRec.made[0];
     rec.onspeechstart?.();
-    rec.onerror?.({ error: 'no-match' }); // Android: an utterance it could not match
     rec.end();
-    rec.onspeechstart?.();
-    rec.end();
-    expect(api.__peek('_ntDictation')).not.toBeNull(); // two unclear utterances (a noisy room) are not a broken engine
-    rec.onspeechstart?.();
-    rec.end();
-    expect(rec.starts).toBe(3);
-    expect(api.__peek('_ntDictation')).toBeNull();
-    expect(env.errorLine.textContent).toContain('글자를 돌려주지 않습니다');
-    expect(env.errorLine.textContent).toContain('Chrome');
-  });
-  it('words in between reset both counts: one empty session after words is just a pause', async () => {
-    const Rec = recClass(null);
-    const { api } = page({ engine: Rec, ua: UA.samsung });
-    await api.ntDictateStart();
-    const rec = FakeRec.made[0];
     rec.onspeechstart?.();
     rec.end();
     rec.say([final('들렸다')]);
     rec.end();
-    rec.onspeechstart?.();
+    rec.end();
     rec.end();
     expect(api.__peek('_ntDictation')).not.toBeNull();
-    expect(rec.starts).toBe(4);
+    expect(rec.starts).toBe(6);
+    rec.end(); // three silent ones since the words — silence, said as silence
+    expect(api.__peek('_ntDictation')).toBeNull();
+    expect(last(env.statuses)).toContain('들리지 않아');
   });
   it('a recogniser that never answers at all (Android shows a toast, no event reaches the page): after 12 s the red line says so', async () => {
     vi.useFakeTimers();
@@ -1115,7 +1137,7 @@ describe('SSOT_4 — with speech recognition on this device the new task opens l
     api.ntDictateAuto();
     expect(FakeRec.made).toHaveLength(1);
   });
-  it('a recogniser that never opens the mic or returns no words ends the automatic start for this page too', async () => {
+  it('a recogniser that never opens the mic ends the automatic start for this page too', async () => {
     const Rec = recClass(null);
     FakeRec.deaf = true;
     const { api } = page({ engine: Rec, ua: UA.samsung });
@@ -1123,6 +1145,23 @@ describe('SSOT_4 — with speech recognition on this device the new task opens l
     FakeRec.made[0].end();
     FakeRec.made[0].end();
     expect(api.__peek('_ntDictationAutoOff')).toBe(true);
+  });
+  it('not while a voice note is recording (one microphone — the voice note keeps it)', async () => {
+    const Rec = recClass(null);
+    const { api } = page({ engine: Rec, ua: UA.samsung });
+    api.__peek('_recording.push({ id: "pc-composer" })');
+    api.ntDictateAuto();
+    expect(FakeRec.made).toHaveLength(0);
+    api.__peek('_recording.length = 0');
+    api.ntDictateAuto();
+    expect(FakeRec.made).toHaveLength(1);
+  });
+  it('the dialog repaints both composers when the width crosses 360px or 640px (rotation, a Fold opening)', () => {
+    const init = clientFn('ntInit');
+    expect(init).toContain("['(max-width: 359px)', '(min-width: 640px)'].forEach(");
+    expect(init).toMatch(
+      /addEventListener\('change', function \(\) \{\n\s+paintNtComposer\(\);\n\s+pcPaintComposer\(\);/,
+    );
   });
   it('desktop Chrome without Korean on the device (the voice would leave it): it stays off and says nothing', async () => {
     const Rec = recClass('unavailable');
