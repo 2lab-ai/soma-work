@@ -327,6 +327,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
         'sessionActionsOf',
         'sessionActionHtml',
         'cardGoalLine',
+        'renderEpicPlan',
         'renderCardBody',
       ],
       ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy'],
