@@ -178,6 +178,7 @@ function page(opts: { engine?: unknown; value?: string; destination?: string; ua
       'ntDictationDeadText',
       'ntDictateStart',
       'ntDictationHeard',
+      'ntDictationListen',
       'ntDictationEnded',
       'ntDictationEnd',
       'ntDictateStop',
@@ -300,6 +301,8 @@ describe('I1.4 — errors end dictation in plain words; silence and a cancel say
   it('maps the recogniser’s error codes', () => {
     expect(err('no-speech')).toBe('');
     expect(err('aborted')).toBe('');
+    // Android's ERROR_NO_MATCH (an unclear utterance, a noise): not an error — it listens again.
+    expect(err('no-match')).toBe('');
     expect(err('not-allowed')).toContain('마이크');
     expect(err('service-not-allowed')).toContain('받아쓰기');
     expect(err('audio-capture')).toContain('마이크');
@@ -918,16 +921,20 @@ describe('SSOT_5 — Samsung Internet and Chrome on a Galaxy: the first press li
       expect(env.statuses.every((t) => !t.includes('들리지 않아'))).toBe(true);
     }
   });
-  it('speech heard but no words back (Samsung Internet showing "듣는 중" with no text): after two sessions the red line says so', async () => {
+  it('speech heard but no words back (Samsung Internet showing "듣는 중" with no text): after three sessions the red line says so', async () => {
     const Rec = recClass(null);
     const { api, env } = page({ engine: Rec, ua: UA.samsung });
     await api.ntDictateStart();
     const rec = FakeRec.made[0];
     rec.onspeechstart?.();
+    rec.onerror?.({ error: 'no-match' }); // Android: an utterance it could not match
     rec.end();
     rec.onspeechstart?.();
     rec.end();
-    expect(rec.starts).toBe(2);
+    expect(api.__peek('_ntDictation')).not.toBeNull(); // two unclear utterances (a noisy room) are not a broken engine
+    rec.onspeechstart?.();
+    rec.end();
+    expect(rec.starts).toBe(3);
     expect(api.__peek('_ntDictation')).toBeNull();
     expect(env.errorLine.textContent).toContain('글자를 돌려주지 않습니다');
     expect(env.errorLine.textContent).toContain('Chrome');
@@ -945,6 +952,95 @@ describe('SSOT_5 — Samsung Internet and Chrome on a Galaxy: the first press li
     rec.end();
     expect(api.__peek('_ntDictation')).not.toBeNull();
     expect(rec.starts).toBe(4);
+  });
+  it('a recogniser that never answers at all (Android shows a toast, no event reaches the page): after 12 s the red line says so', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      FakeRec.deaf = true;
+      const { api, env } = page({ engine: Rec, ua: UA.samsung });
+      api.ntDictateAuto();
+      const rec = FakeRec.made[0];
+      vi.advanceTimersByTime(11000);
+      expect(api.__peek('_ntDictation')).not.toBeNull();
+      vi.advanceTimersByTime(1500);
+      expect(api.__peek('_ntDictation')).toBeNull();
+      expect(rec.aborts).toBe(1);
+      expect(env.errorLine.textContent).toContain('마이크를 열지 못했습니다');
+      expect(api.__peek('_ntDictationAutoOff')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('a recogniser that answers is not cut off by that timer, in any session', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      const { api } = page({ engine: Rec, ua: UA.samsung });
+      await api.ntDictateStart();
+      const rec = FakeRec.made[0];
+      rec.say([final('첫 문장')]);
+      rec.end();
+      vi.advanceTimersByTime(30000);
+      expect(api.__peek('_ntDictation')).not.toBeNull();
+      expect(rec.aborts).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('Android refusing a restart (its recogniser still busy → not-allowed): one more try after a moment, words kept', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      const { api, env } = page({ engine: Rec, ua: UA.samsung });
+      await api.ntDictateStart();
+      const rec = FakeRec.made[0];
+      rec.say([final('첫 문장')]);
+      rec.end(); // session 2
+      rec.onerror?.({ error: 'not-allowed' });
+      rec.end();
+      expect(api.__peek('_ntDictation')).not.toBeNull();
+      expect(rec.starts).toBe(2);
+      vi.advanceTimersByTime(500);
+      expect(rec.starts).toBe(3);
+      rec.say([final('둘째')]);
+      expect(env.composer.value).toBe('첫 문장 둘째');
+      expect(env.errorLine.textContent).toBe('');
+      // Words in between: a later refusal gets its one more try again.
+      rec.end(); // session 4
+      rec.onerror?.({ error: 'not-allowed' });
+      rec.end();
+      vi.advanceTimersByTime(500);
+      expect(rec.starts).toBe(5);
+      // Refused again right away, no words in between: it stops, saying a press continues; the words stay.
+      rec.onerror?.({ error: 'not-allowed' });
+      rec.end();
+      vi.advanceTimersByTime(1000);
+      expect(rec.starts).toBe(5);
+      expect(api.__peek('_ntDictation')).toBeNull();
+      expect(last(env.statuses)).toContain('다시 누르면 이어서');
+      expect(env.composer.value).toBe('첫 문장 둘째');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('a hard stop during that moment cancels the retry', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      const { api } = page({ engine: Rec, ua: UA.galaxy });
+      await api.ntDictateStart();
+      const rec = FakeRec.made[0];
+      rec.say([final('첫 문장')]);
+      rec.end();
+      rec.onerror?.({ error: 'not-allowed' });
+      rec.end();
+      api.ntDictateStop(true);
+      vi.advanceTimersByTime(1000);
+      expect(rec.starts).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it('a new press clears the dictation’s own error line, and leaves any other error alone', async () => {
     const Rec = recClass(null);
