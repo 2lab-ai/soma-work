@@ -18543,7 +18543,8 @@ function ntDictationHeard(d, e) {
   d.at = at;
   d.finals = got.finals;
   d.interim = got.interim;
-  if (got.finals || got.interim) {
+  // Words, not whitespace, count as heard (three sessions without words still end it).
+  if (ntDictationAnyWords(results)) {
     d.heard = true;
     d.silent = 0;
     d.retried = false;

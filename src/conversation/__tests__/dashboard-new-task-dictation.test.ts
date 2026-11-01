@@ -1160,6 +1160,25 @@ describe('SSOT_5 — Samsung Internet and Chrome on a Galaxy: the first press li
     // The words count as heard: that session was not a silent one.
     expect(api.__peek('_ntDictation')).not.toBeNull();
   });
+  it('whitespace is not words: three sessions of it still end the dictation as silence (astra, PR #719)', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      const { api, env } = page({ engine: Rec, ua: UA.samsung });
+      await api.ntDictateStart();
+      const rec = FakeRec.made[0];
+      for (let i = 0; i < 3; i++) {
+        vi.advanceTimersByTime(1500);
+        rec.say([interim('   ')]);
+        rec.end();
+      }
+      expect(rec.starts).toBe(3);
+      expect(api.__peek('_ntDictation')).toBeNull();
+      expect(last(env.statuses)).toContain('들리지 않아');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('elsewhere an empty list is a withdrawal: the withdrawn words go (astra review, PR #719)', async () => {
     const Rec = recClass('unavailable');
     const { api, env } = page({ engine: Rec, ua: UA.chromeMac });
