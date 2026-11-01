@@ -2091,6 +2091,14 @@ export class SlackHandler {
         // Treat direct user message as completing manual input from choice UI.
         this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');
       }
+      // The user's own message answers the question the model asked, as a
+      // dashboard task's new instruction does (`task-turn-controller` startChain).
+      // Left recorded, the question outlived its answer: the next goal cap
+      // decision made the card read NEEDS YOU and showed it again (SSOT
+      // 2026-11-02). A host turn is not an answer — the question stays.
+      if (!event.synthetic && sessionResult.session.actionPanel?.pendingQuestion) {
+        sessionResult.session.actionPanel.pendingQuestion = undefined;
+      }
 
       await this.threadPanel?.create(sessionResult.session, sessionResult.sessionKey);
 
@@ -6422,8 +6430,19 @@ export class SlackHandler {
         }
       }
       if (session.goal?.status !== 'active') continue;
+      const panel = session.actionPanel;
+      if (session.activityState === 'waiting' && (panel?.waitingForChoice === true || panel?.pendingQuestion)) {
+        // Waiting on its user's answer is not a stale turn: no turn has to run
+        // for the question to stay open. The answer runs as the user's turn and
+        // its idle settle drives the loop. Forcing idle here ran the loop over
+        // the unanswered question until the cap decision asked "keep going?"
+        // next to it (SSOT 2026-11-02).
+        this.logger.info('Goal resume held after restart — the session is waiting on its question', { sessionKey });
+        continue;
+      }
       if (session.activityState !== 'idle') {
-        // Recovery: treat a stale persisted working/waiting state as idle.
+        // Recovery: treat a stale persisted working state (or a waiting one
+        // with no question left) as idle.
         session.activityState = 'idle';
         forcedIdle++;
       }

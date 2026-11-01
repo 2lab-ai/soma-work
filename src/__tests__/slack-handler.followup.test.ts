@@ -15,6 +15,7 @@ import {
 } from '@soma/slack/followup-queue-blocks';
 import { parseFollowupQueueSnapshot } from '@soma/slack/followup-queue-store';
 import { getMetricsEmitter } from '../metrics/event-emitter';
+import { ChoiceActionHandler } from '../slack/actions/choice-action-handler';
 import { QueueHandler } from '../slack/commands/queue-handler';
 import { ThreadSurface } from '../slack/thread-surface';
 import { SlackHandler } from '../slack-handler';
@@ -5796,6 +5797,209 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(result).toEqual({ outcome: 'deleted', goalId: 'g2' });
       expect(registrySession.goalQueue.map((g: any) => g.goalId)).toEqual(['g3']);
       expect(registrySession.goal).toMatchObject({ goalId: 'g1', epoch: 7 });
+    });
+  });
+  /**
+   * SSOT 2026-11-02 — "goal이 10/10이 되서 goal을 계속 진행할지를 묻고 그리고 동시에
+   * 유저에게 질문이 올경우 이거 질문에 답하면 에러나서 답변을 못하고 goal을 진행하는
+   * 입력을 하면 질문이 사라짐 — 이거 질문에 답해서 자연스럽게 진행되도록 픽스".
+   *
+   * The card shows both asks at once: the goal's cap decision makes the board
+   * read NEEDS YOU, and the question the model asked earlier is still recorded
+   * on the session — idle, because the turns that ran after it lowered the
+   * open-choice bit (fable-m5max dev, sessions 1792795612.514029 and
+   * 1793067439.273589). Answering it must run the answer as the user's turn,
+   * which ends the cap round, so the goal goes on from there.
+   */
+  describe('goal stopped at its budget while a question is still open (SSOT 2026-11-02)', () => {
+    const cappedGoal = () => ({
+      goalId: 'g1',
+      objective: '배포 확인',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: 'U_OWNER',
+      continuationCount: 10,
+      maxContinuations: 10,
+      epoch: 7,
+      capDmPendingAt: 1000,
+      capDecisionId: 'round-1',
+    });
+
+    const singleQuestion = () => ({
+      type: 'user_choice',
+      question: '[small] PR #402 머지 + dev 배포를 진행할까요?',
+      choices: [
+        { id: 'merge-and-deploy', label: '머지하고 배포' },
+        { id: 'hold', label: '보류' },
+      ],
+    });
+
+    const multiQuestion = () => ({
+      type: 'user_choices',
+      title: '[medium] auto mode 개선 TO-BE 컨펌 — 결정 2개',
+      questions: [
+        {
+          id: 'q1',
+          question: 'bypass는 누가 켤 수 있나?',
+          choices: [
+            { id: 'admin-only', label: 'admin만' },
+            { id: 'anyone', label: '누구나' },
+          ],
+          recommendedChoiceId: 'admin-only',
+        },
+        {
+          id: 'q2',
+          question: '경고는 어디에 보이나?',
+          choices: [
+            { id: 'slack-and-dashboard', label: '슬랙과 대시보드' },
+            { id: 'slack-only', label: '슬랙만' },
+          ],
+          recommendedChoiceId: 'slack-and-dashboard',
+        },
+      ],
+    });
+
+    function dashboardAnswers(): ChoiceActionHandler {
+      const formStore = {
+        get: () => undefined,
+        set: () => undefined,
+        delete: () => undefined,
+        getFormsBySession: () => new Map(),
+      };
+      return new ChoiceActionHandler(
+        {
+          slackApi: { ...handlerAny.slackApi, updateMessage: vi.fn().mockResolvedValue(undefined) },
+          claudeHandler,
+          messageHandler: (event: any, s: any) => handler.handleMessage(event, s),
+          threadPanel: handlerAny.threadPanel,
+        } as any,
+        formStore as any,
+      );
+    }
+
+    beforeEach(() => {
+      registrySession.goalQueue = undefined;
+      registrySession.goalHistory = undefined;
+      registrySession.goal = cappedGoal();
+      registrySession.activityState = 'idle';
+    });
+
+    function expectGoalGoesOn(): void {
+      // The answer is the user weighing in: the cap round ends on both surfaces
+      // and the budget starts over, so the next idle settle continues the goal.
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'active', continuationCount: 0 });
+      expect(registrySession.goal.capDmPendingAt).toBeUndefined();
+      expect(registrySession.goal.capDecisionId).toBeUndefined();
+      expect(registrySession.actionPanel.pendingQuestion, 'the answered question leaves the card').toBeUndefined();
+    }
+
+    it('T1 a single-choice answer from the dashboard runs as the user turn and the goal goes on', async () => {
+      registrySession.actionPanel = { waitingForChoice: false, pendingQuestion: singleQuestion() };
+
+      await expect(
+        dashboardAnswers().handleChoiceFromDashboard(
+          SESSION_KEY,
+          'merge-and-deploy',
+          '머지하고 배포',
+          singleQuestion().question,
+          'U_OWNER',
+        ),
+      ).resolves.toBeUndefined();
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(startWithContinuation.mock.calls[0][0]).toContain('merge-and-deploy');
+      expectGoalGoesOn();
+    });
+
+    it('T1 a multi-choice answer from the dashboard runs as the user turn and the goal goes on', async () => {
+      registrySession.actionPanel = { waitingForChoice: false, pendingQuestion: multiQuestion() };
+
+      await expect(
+        dashboardAnswers().handleMultiChoiceFromDashboard(
+          SESSION_KEY,
+          {
+            q1: { choiceId: 'admin-only', label: 'admin만' },
+            q2: { choiceId: 'slack-and-dashboard', label: '슬랙과 대시보드' },
+          },
+          'U_OWNER',
+        ),
+      ).resolves.toBeUndefined();
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(startWithContinuation.mock.calls[0][0]).toContain('admin-only. admin만');
+      expect(startWithContinuation.mock.calls[0][0]).toContain('slack-and-dashboard. 슬랙과 대시보드');
+      expectGoalGoesOn();
+    });
+
+    it('T1 "submit all recommended" from the dashboard runs as the user turn and the goal goes on', async () => {
+      registrySession.actionPanel = { waitingForChoice: false, pendingQuestion: multiQuestion() };
+
+      await expect(
+        dashboardAnswers().handleSubmitRecommendedFromDashboard(SESSION_KEY, 'U_OWNER'),
+      ).resolves.toBeUndefined();
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(startWithContinuation.mock.calls[0][0]).toContain('admin-only. admin만');
+      expectGoalGoesOn();
+    });
+
+    it('T1 an answer still waits its turn while a turn is running — nothing runs on top of it', async () => {
+      registrySession.activityState = 'working';
+      registrySession.actionPanel = { waitingForChoice: false, pendingQuestion: singleQuestion() };
+
+      await expect(
+        dashboardAnswers().handleChoiceFromDashboard(
+          SESSION_KEY,
+          'merge-and-deploy',
+          '머지하고 배포',
+          singleQuestion().question,
+          'U_OWNER',
+        ),
+      ).rejects.toThrow('Session is not waiting for a choice');
+
+      expect(startWithContinuation).not.toHaveBeenCalled();
+      expect(registrySession.goal.capDmPendingAt).toBe(1000);
+    });
+
+    it('T1 an idle session with no recorded question has nothing to answer', async () => {
+      registrySession.actionPanel = { waitingForChoice: false };
+
+      await expect(
+        dashboardAnswers().handleChoiceFromDashboard(SESSION_KEY, 'merge-and-deploy', '머지하고 배포', 'Q?', 'U_OWNER'),
+      ).rejects.toThrow('Session is not waiting for a choice');
+
+      expect(startWithContinuation).not.toHaveBeenCalled();
+    });
+
+    it('T2 a typed reply answers the open question: it does not come back with the next cap decision', async () => {
+      registrySession.goal = {
+        ...cappedGoal(),
+        continuationCount: 3,
+        capDmPendingAt: undefined,
+        capDecisionId: undefined,
+      };
+      registrySession.activityState = 'waiting';
+      registrySession.actionPanel = { waitingForChoice: true, pendingQuestion: singleQuestion() };
+
+      await handler.handleMessage(message({ ts: '333.444', text: '머지해' }), say());
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(registrySession.actionPanel.pendingQuestion).toBeUndefined();
+    });
+
+    it('T2 a host turn (not the user) leaves the open question on the session', async () => {
+      registrySession.goal = {
+        ...cappedGoal(),
+        continuationCount: 3,
+        capDmPendingAt: undefined,
+        capDecisionId: undefined,
+      };
+      registrySession.actionPanel = { waitingForChoice: false, pendingQuestion: singleQuestion() };
+
+      await handler.handleMessage(message({ ts: '333.445', synthetic: true }), say());
+
+      expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
     });
   });
 });

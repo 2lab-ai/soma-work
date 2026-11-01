@@ -13,6 +13,25 @@ import type { MessageHandler, PendingChoiceFormData, SayFn } from './types';
 /** Sentinel choiceId for custom text input (직접입력) */
 const CUSTOM_INPUT_CHOICE_ID = '직접입력';
 
+/**
+ * Can a dashboard answer reach this session's question now?
+ *
+ * While the session waits on it, yes. An idle session that still records the
+ * question it asked — of the kind being answered — yes too: no turn runs, so
+ * the answer starts the next one. The card shows such a question whenever
+ * something else makes it read NEEDS YOU, most often the goal's cap decision
+ * (`goalDecisionToKanban`), and refusing the answer then left the user only
+ * "keep going", which ran the goal over the question (SSOT 2026-11-02). While
+ * a turn runs, no: the answer would land on top of it.
+ */
+export function isAnswerableFromDashboard(
+  session: { activityState?: string; actionPanel?: { pendingQuestion?: { type?: string } } },
+  kind: 'user_choice' | 'user_choices',
+): boolean {
+  if (session.activityState === 'waiting') return true;
+  return (session.activityState ?? 'idle') === 'idle' && session.actionPanel?.pendingQuestion?.type === kind;
+}
+
 interface ChoiceActionContext {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
@@ -809,7 +828,7 @@ export class ChoiceActionHandler {
     if (!session) {
       throw new Error('Session not found');
     }
-    if (session.activityState !== 'waiting') {
+    if (!isAnswerableFromDashboard(session, 'user_choices')) {
       throw new Error('Session is not waiting for a choice');
     }
 
@@ -873,8 +892,8 @@ export class ChoiceActionHandler {
       throw new Error('Session not found');
     }
 
-    // Guard: only process if session is actually waiting for a choice
-    if (session.activityState !== 'waiting') {
+    // Guard: only process while the session's question can take an answer
+    if (!isAnswerableFromDashboard(session, 'user_choice')) {
       this.logger.warn('Dashboard choice ignored — session not in waiting state', {
         sessionKey,
         activityState: session.activityState,
@@ -896,6 +915,8 @@ export class ChoiceActionHandler {
     const channel = session.channelId;
     const threadTs = this.resolveSessionThreadTs(session, session.threadTs);
     const choiceMessageTs = session.actionPanel?.choiceMessageTs;
+    // Kept for the rollback: a failed send leaves the question answerable again.
+    const savedPendingQuestion = session.actionPanel?.pendingQuestion;
 
     this.logger.info('Dashboard choice selected', { sessionKey, choiceId, label, userId });
 
@@ -1034,10 +1055,14 @@ export class ChoiceActionHandler {
         say,
       );
     } catch (error) {
-      // Rollback: restore waiting state so the user can retry from dashboard or Slack.
-      // pendingQuestion is already cleared but activityState must not stay 'working' without a Claude stream.
+      // Rollback: restore the question and the waiting state so the user can
+      // retry from the dashboard or Slack — activityState must not stay
+      // 'working' without a Claude stream, nor 'waiting' with no question.
       this.logger.error('Error processing dashboard choice', { sessionKey, choiceId, error });
       try {
+        if (session.actionPanel && savedPendingQuestion) {
+          session.actionPanel.pendingQuestion = savedPendingQuestion;
+        }
         this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
       } catch (rollbackError) {
         this.logger.error('Failed to rollback activity state after dashboard choice error', {
@@ -1063,7 +1088,7 @@ export class ChoiceActionHandler {
       throw new Error('Session not found');
     }
 
-    if (session.activityState !== 'waiting') {
+    if (!isAnswerableFromDashboard(session, 'user_choices')) {
       this.logger.warn('Dashboard multi-choice ignored — session not in waiting state', {
         sessionKey,
         activityState: session.activityState,
