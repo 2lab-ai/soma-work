@@ -528,6 +528,42 @@ describe('I1.1 / I3.1 — pressing 받아쓰기 streams the words into the field
     expect(last(env.statuses)).toContain('마이크');
   });
 
+  it('real Chrome drops an utterance it never finalised when the next starts after a pause: the shown words stay', async () => {
+    // Recorded from Google Chrome 156 (2026-11-01): interim only, a split into two results, then after a pause a
+    // fresh list of one result — no isFinal, no end event in between.
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      const { api, env } = page({ engine: Rec, value: '' });
+      await api.ntDictateStart();
+      const rec = FakeRec.made[0];
+      rec.say([interim('대시보드 새 작업')]);
+      vi.advanceTimersByTime(300);
+      rec.say([interim('대시보드 새 작업 화면에서 실시간')]);
+      vi.advanceTimersByTime(300);
+      rec.say([interim('대시보드 새 작업 화면에서 실시간'), interim(' 받아쓰기')]);
+      expect(env.composer.value).toBe('대시보드 새 작업 화면에서 실시간 받아쓰기');
+      vi.advanceTimersByTime(4800); // a pause
+      rec.say([interim('대')]);
+      expect(env.composer.value).toBe('대시보드 새 작업 화면에서 실시간 받아쓰기 대');
+      vi.advanceTimersByTime(300);
+      rec.say([interim('대시보드 다시')]);
+      expect(env.composer.value).toBe('대시보드 새 작업 화면에서 실시간 받아쓰기 대시보드 다시');
+      // A quick revision inside one utterance is not a new one: no words doubled.
+      vi.advanceTimersByTime(200);
+      rec.say([interim('대시보드 다시 말해')]);
+      vi.advanceTimersByTime(200);
+      rec.say([interim('대시보드 다시 만해')]);
+      expect(env.composer.value).toBe('대시보드 새 작업 화면에서 실시간 받아쓰기 대시보드 다시 만해');
+      // A pause that only continues the same words: still one utterance.
+      vi.advanceTimersByTime(2000);
+      rec.say([interim('대시보드 다시 만해'), interim(' 주세요')]);
+      expect(env.composer.value).toBe('대시보드 새 작업 화면에서 실시간 받아쓰기 대시보드 다시 만해 주세요');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a recogniser that never confirms a stop (Edge) does not hold the tool: it is let go after 3 s', async () => {
     vi.useFakeTimers();
     try {
