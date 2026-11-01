@@ -13,7 +13,7 @@ The new task mic recorded an audio file and posted it with the task. The server 
 - Safari on Mac: `webkitSpeechRecognition` since 14.1, with interim results. Continuous mode was fixed in 17. Siri must be on. WebKit asks Apple's recogniser for on-device recognition whenever the language supports it.
 - Safari on iPhone, and Chrome on iPhone (WebKit): supported from 14.5. Korean is on Apple's on-device dictation list. It does not work in a web app opened from the Home Screen (WebKit bug 225298).
 - Chrome on Android: supported, with interim results. Continuous mode has no effect. Each update can repeat a growing phrase marked final, so naive code repeats words. A page cannot ask for on-device processing; Korean goes to Google.
-- Samsung Internet: prefixed, partial support, treated like Chrome on Android. Test on a real Galaxy.
+- Samsung Internet: prefixed, the same Chromium code as Chrome on Android, so audio goes to Google's speech app on the phone. MDN marks `continuous` as "can be set, has no effect" for Chrome on Android, and Samsung Internet copies that entry. It fails with `service-not-allowed` when the "Speech Recognition and Synthesis from Google" app is disabled. Users also report it showing "listening" and returning no text. Test on a real Galaxy.
 - Firefox: off by default. Only desktop Nightly has on-device recognition, behind a setting.
 
 The API needs HTTPS. Each session takes one language; no engine documents mixed Korean and English speech. The ko-KR recogniser keeps common English terms inside Korean sentences.
@@ -39,19 +39,20 @@ Each means a download of 80 to 240 MB per device with weaker Korean than the bui
 
 1. 받아쓰기 is a tool beside the voice note, which stays (the user's correction on 1 November 2026: "음성녹음은 두고"). It is a pencil, labelled on wide screens. The new task composer and the session panel composer both have it, for every destination (it is text, so a dashboard task takes it). One dictation runs at a time.
 2. The recogniser listens with `lang = 'ko-KR'`, `interimResults = true`, `continuous = true`. The field shows what was there, the settled words, then the words still being heard.
-3. Where the words stay on the device (Safari and iPhone browsers, Chrome with Korean installed), the new task opens listening. A key typed stops it, and the typing goes on. A refused microphone ends the automatic start for that page.
-4. The voice leaves the device only on a yes. Where it would (Chrome on Android, Samsung Internet, Chrome without Korean on the device), it never starts on its own; the first press says so and points to the keyboard's mic, and the second press is the yes, kept on that device.
+3. The new task opens listening where the words stay on the device (Safari and iPhone browsers, Chrome with Korean installed) and on a Galaxy (Chrome and Samsung Internet), where the phone's own recogniser takes them. A key typed stops it, and the typing goes on. A refused microphone, or a recogniser that does not work, ends the automatic start for that page.
+4. Every press starts listening at once. Desktop Chrome without Korean on the device never starts on its own; the status line says the voice goes to the browser's speech service. (A first version asked for a second press as consent. On 1 November 2026 the user reported "삼성인터넷브라우저에서 작동안하잖아", so the question was removed.)
 5. In Chrome with `available()`, the page asks for on-device processing, calls `install()` on downloadable, and says in the status line where the words are processed.
-6. Android's repeated phrases are folded on Android only, so a phrase said twice elsewhere stays.
-7. When the recogniser ends by itself it listens again. Three silent sessions in a row end the dictation. A stop the recogniser never confirms is let go after 3 seconds.
-8. On a phone the new task's character counter gives way to the tool row; the limit is checked on send.
-9. Firefox and an iPhone Home Screen web app keep the voice note only.
+6. On Android the recogniser listens for one utterance per session (`continuous = false`) and starts again after each one. Repeated phrases are folded on Android only, so a phrase said twice elsewhere stays. `available()` is not asked there, because a page cannot keep Android's recogniser on the device.
+7. When the recogniser ends by itself it listens again. Three silent sessions in a row end the dictation. Two sessions in a row that never open the microphone (no `audiostart`), or that hear speech (`speechstart`) but give back no words, end it with that reason on the red error line. A stop the recogniser never confirms is let go after 3 seconds.
+8. Errors the person has to act on go on the red error line, not the small status line. On Android the wording names the setting: "Google 음성 인식 및 합성" for `service-not-allowed`, the site and app mic permission for `not-allowed`. The next press clears only the dictation's own error.
+9. On a phone the new task's character counter gives way to the tool row; the limit is checked on send. Under 360px wide (a Galaxy S9, a Fold's cover screen) the send button shows only its arrow, so it does not cover 받아쓰기.
+10. Firefox and an iPhone Home Screen web app keep the voice note only.
 
 ## Follow-up candidates
 
 - Phrase lists for English technical terms when Chrome runs on-device.
 - A watchdog for Edge when recognition starts but no event arrives.
-- An in-browser model for browsers without a recogniser.
+- An in-browser model for browsers without a recogniser, or whose recogniser does not work (Samsung Internet returning no words). getUserMedia works there, since the voice note records.
 
 ## Sources
 
@@ -70,3 +71,6 @@ Each means a download of 80 to 240 MB per device with weaker Korean than the bui
 - [sherpa-onnx streaming Korean model](https://huggingface.co/k2-fsa/sherpa-onnx-streaming-zipformer-korean-2024-06-16/tree/main)
 - [transformers.js real-time Whisper example](https://github.com/huggingface/transformers.js-examples/tree/main/realtime-whisper-webgpu)
 - [Vosk models](https://alphacephei.com/vosk/models)
+- [MDN: SpeechRecognition `continuous` on Chrome for Android ("can be set, but has no effect")](https://github.com/mdn/browser-compat-data/blob/main/api/SpeechRecognition.json)
+- [Samsung Community: voice input fixed by enabling "Speech Recognition and Synthesis from Google"](https://us.community.samsung.com/t5/Galaxy-S24/Samsung-Internet-Search-Widget-Microphone/td-p/2984268)
+- [Samsung Internet Developers: Speaking to the Web with the Web Speech API](https://medium.com/samsung-internet-dev/speaking-to-the-web-with-the-web-speech-api-980d12d34244)

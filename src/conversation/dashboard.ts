@@ -17548,12 +17548,11 @@ var NT_NO_FILES = 'application/x-soma-no-attachments';
 // Korean sentence carries — and the dictation running now ({ rec, base, finals, interim, stopping, hard, … }) or null.
 var NT_DICTATION_LANG = 'ko-KR';
 var _ntDictation = null;
-// The voice leaves the device only on a yes: the first press where it would only says so (_ntDictationAsked), the
-// next press is the yes, and the device keeps it (localStorage, this key).
-var NT_DICTATION_REMOTE_KEY = 'soma-nt-dictation-remote';
-var _ntDictationAsked = false;
-// The new task opens listening when the words stay on the device (SSOT_4); a refused mic ends that for this page.
+// The new task opens listening when the words stay on the device or the phone's own recogniser takes them (SSOT_4,
+// SSOT_5); a refused mic, or a recogniser that does not work, ends that for this page.
 var _ntDictationAutoOff = false;
+// The why a dictation last put on the new task's red error line, so the next press clears only its own.
+var _ntDictationError = '';
 
 // The battery's reading for <ui-meter> (value 0..1, null = unknown — the element draws "?" with no fill) and the words
 // of the usage line (the button's title too).
@@ -17879,6 +17878,9 @@ function ntComposerData() {
   // said into the field while it is said. It is text, so a dashboard task takes it too. No recogniser (Firefox): none.
   if (ntDictationEngine(typeof window !== 'undefined' ? window : null)) {
     d.tools = [ntDictationTool(ntDictating('nt'))];
+    // A phone under 360px (a Galaxy S9, a Fold's cover screen): four tools and the worded 작업 시작 overlap — the
+    // send keeps its arrow (its name stays the button's label).
+    if (ntDictationNarrow()) d.submitLabel = '';
   }
   var lim = _ntCtx && _ntCtx.limits;
   if (lim) {
@@ -17933,6 +17935,12 @@ function ntDictationWide() {
   return !!(w && w.matchMedia && w.matchMedia('(min-width: 640px)').matches);
 }
 
+// A phone narrower than 360px: no room for the worded send beside four tools.
+function ntDictationNarrow() {
+  var w = typeof window !== 'undefined' ? window : null;
+  return !!(w && w.matchMedia && w.matchMedia('(max-width: 359px)').matches);
+}
+
 // Is a dictation listening in this composer ('nt' — the new task, 'pc' — the session panel)?
 function ntDictating(id) {
   return !!_ntDictation && !_ntDictation.stopping && _ntDictation.host.id === id;
@@ -17956,6 +17964,7 @@ function ntDictationHost(id) {
       status: function (msg, final) {
         if (final && msg) dashToast({ title: msg });
       },
+      clear: function () {},
       paint: function () {
         pcPaintComposer();
       },
@@ -17970,8 +17979,20 @@ function ntDictationHost(id) {
       if (_ntState) _ntState.prompt = t;
       ntSaveDraft(t);
     },
-    status: function (msg) {
-      ntSetStatus(msg);
+    // A why the person has to act on goes on the red error line, where it is seen on a phone; the rest is the status.
+    status: function (msg, final, bad) {
+      if (!bad) {
+        ntSetStatus(msg);
+        return;
+      }
+      ntSetStatus('');
+      ntSetError(msg);
+      _ntDictationError = msg;
+    },
+    clear: function () {
+      var e = ntEl('nt-error');
+      if (_ntDictationError && e && e.textContent === _ntDictationError) ntSetError('');
+      _ntDictationError = '';
     },
     paint: function () {
       paintNtComposer();
@@ -18020,25 +18041,41 @@ function ntDictationRead(results, cumulative) {
   return { finals: finals, interim: interim };
 }
 
-// Why a dictation ended, in the page's words; '' for silence and for a stop the page asked for.
-function ntDictationErrorText(code) {
+// Why a dictation ended, in the page's words; '' for silence and for a stop the page asked for. On Android (Chrome or
+// Samsung Internet on a Galaxy) the recogniser is Google's speech app on the phone, so the words name what to turn on.
+function ntDictationErrorText(code, android) {
   switch (String(code || '')) {
     case 'no-speech':
     case 'aborted':
       return '';
     case 'not-allowed':
+      if (android)
+        return '마이크 권한이 없어 받아쓸 수 없습니다 — 주소창의 사이트 권한과 휴대폰 설정 › 애플리케이션 › 이 브라우저 › 권한에서 마이크를 허용해 주세요';
       return '마이크 권한이 없어 받아쓸 수 없습니다 — 브라우저 설정에서 마이크를 허용해 주세요';
     case 'service-not-allowed':
+      if (android)
+        return '이 휴대폰의 음성 인식이 꺼져 있습니다 — 설정 › 애플리케이션에서 ‘Google 음성 인식 및 합성’과 ‘Google’ 앱을 켜 주세요';
       return '이 브라우저에서 받아쓰기가 꺼져 있습니다 — iPhone은 설정 › 일반 › 키보드에서 받아쓰기를 켜 주세요';
     case 'audio-capture':
       return '마이크를 찾지 못했습니다 — 마이크 연결을 확인해 주세요';
     case 'network':
       return '음성 인식 서비스에 연결하지 못했습니다 — 네트워크를 확인해 주세요';
     case 'language-not-supported':
+      if (android) return '이 휴대폰의 음성 인식이 한국어를 지원하지 않습니다 — ‘Google 음성 인식 및 합성’을 업데이트해 주세요';
       return '이 브라우저는 한국어 받아쓰기를 지원하지 않습니다';
     default:
       return '받아쓰기를 계속하지 못했습니다 — 다시 눌러 주세요';
   }
+}
+
+// A recogniser that does not work, said plainly (not "말이 들리지 않아"): 'dead' — two sessions that never opened the
+// microphone; 'mute' — two that heard speech and gave back no words (Samsung Internet can show listening, no text).
+function ntDictationDeadText(kind, android) {
+  var fix = android
+    ? '설정 › 애플리케이션에서 ‘Google 음성 인식 및 합성’을 켜거나 업데이트하고, 안 되면 Chrome에서 열어 주세요'
+    : '다른 브라우저(Chrome·Safari)에서 열어 주세요';
+  if (kind === 'mute') return '말은 들렸지만 이 브라우저의 음성 인식이 글자를 돌려주지 않습니다 — ' + fix;
+  return '이 브라우저의 음성 인식이 마이크를 열지 못했습니다 — ' + fix;
 }
 
 // A promise's answer, or the fallback when it takes longer than ms.
@@ -18082,28 +18119,13 @@ function ntIsAppleSpeech(w) {
   return /Macintosh/.test(ua) && /Safari\\//.test(ua) && !/Chrome|Chromium|Edg|Firefox/.test(ua);
 }
 
-// Has this device said yes to dictation through a speech service off the device? The first ask only marks it asked
-// (the press says so instead of listening); the next press is the yes, kept on the device.
-function ntDictationRemoteOk() {
-  try {
-    if (localStorage.getItem(NT_DICTATION_REMOTE_KEY) === 'ok') return true;
-  } catch (e) {}
-  if (!_ntDictationAsked) {
-    _ntDictationAsked = true;
-    return false;
-  }
-  try {
-    localStorage.setItem(NT_DICTATION_REMOTE_KEY, 'ok');
-  } catch (e) {}
-  return true;
-}
-
-// What the press says where the voice would leave the device and the person has not said yes yet.
-function ntDictationOffDevice(where) {
-  if (where === 'installing') {
-    return '기기용 한국어 모델을 내려받는 중입니다 — 다 받으면 이 기기에서 받아씁니다. 지금 기기 밖 음성 서비스로 받아쓰려면 한 번 더 누르세요';
-  }
-  return '이 브라우저는 음성을 기기 밖(브라우저의 음성 서비스)으로 보내 받아씁니다 — 괜찮으면 한 번 더 누르세요. 기기 안에서만 처리하려면 키보드의 마이크를 쓰세요';
+// Android — Chrome or Samsung Internet on a Galaxy: the recogniser is the phone's own (Google's speech app), which a
+// page cannot keep on the device and which ends each session at the end of an utterance (continuous has no effect).
+function ntIsAndroid(w) {
+  var n = w && w.navigator;
+  if (/Android/i.test(String((n && n.userAgent) || ''))) return true;
+  var ud = n && n.userAgentData;
+  return !!(ud && /Android/i.test(String(ud.platform || '')));
 }
 
 // The status line while it listens, saying where the words are processed.
@@ -18111,6 +18133,7 @@ function ntDictationStatus(where) {
   var how = {
     local: '이 기기에서 처리합니다',
     apple: '이 기기의 Apple 음성 인식으로 처리합니다',
+    phone: '이 휴대폰의 음성 인식(Google)으로 처리합니다',
     installing: '이번에는 기기 밖, 브라우저의 음성 서비스로 처리합니다 (기기용 한국어 모델을 내려받는 중)',
     service: '기기 밖, 브라우저의 음성 서비스로 처리합니다',
   }[where];
@@ -18118,7 +18141,9 @@ function ntDictationStatus(where) {
 }
 
 // 받아쓰기 pressed: a recogniser for this dictation — ko-KR, the words while they are said (interimResults), until it
-// is stopped (continuous). Without available() it starts in the press itself (Safari asks for the mic there).
+// is stopped (continuous; on Android one utterance per session, listened to again). It starts in the press itself
+// unless Chrome's available() is asked first (Safari asks for the mic in the press). No question first (SSOT_5): the
+// status line says where the words are processed.
 async function ntDictateStart(host, auto) {
   host = host || ntDictationHost('nt');
   var w = typeof window !== 'undefined' ? window : null;
@@ -18131,9 +18156,11 @@ async function ntDictateStart(host, auto) {
     if (_ntDictation.host.id === host.id && !_ntDictation.stopping) return;
     ntDictateStop(true);
   }
+  var android = ntIsAndroid(w);
   var d = {
     host: host,
     auto: !!auto,
+    android: android,
     live: '',
     rec: null,
     base: String(el.value || ''),
@@ -18145,27 +18172,33 @@ async function ntDictateStart(host, auto) {
     silent: 0,
     sessions: 0,
     error: '',
+    bad: false,
+    // This session opened the microphone (audiostart) / heard speech (speechstart); sessions in a row that did not,
+    // or that heard speech and gave back no words — a recogniser that does not work (ntDictationEnded).
+    audio: false,
+    spoke: false,
+    dead: 0,
+    mute: 0,
     // Android Chrome repeats settled words in longer copies (ntDictationRead folds them there only).
-    cumulative: !!(w && w.navigator && /Android/i.test(String(w.navigator.userAgent || ''))),
+    cumulative: android,
   };
   _ntDictation = d;
+  host.clear();
   host.paint();
-  // Where the words are processed: Chrome's available() when it has one; else Apple's engine (on the device) or a
-  // speech service off the device (Chrome on Android, Samsung Internet, older Chrome, Edge).
-  var where = ntIsAppleSpeech(w) ? 'apple' : 'service';
-  if (typeof Rec.available === 'function') {
+  // Where the words are processed: Apple's engine (on the device); the phone's own recogniser on Android (Chrome and
+  // Samsung Internet on a Galaxy — a page cannot ask it to stay on the device, so available() is not asked there);
+  // else Chrome's available() when it has one, or a speech service off the device (older Chrome, Edge).
+  var where = ntIsAppleSpeech(w) ? 'apple' : android ? 'phone' : 'service';
+  if (where === 'service' && typeof Rec.available === 'function') {
     d.live = '받아쓰기 준비 중…';
     host.status(d.live);
     where = await ntDictationLocal(Rec);
     if (_ntDictation !== d) return;
   }
-  // Opened listening (SSOT_4) only where the words stay on the device: elsewhere it stays off, quietly.
-  if (auto && where !== 'local' && where !== 'apple') {
+  // Opened listening (SSOT_4) where the words stay on the device or the phone's own recogniser takes them (a Galaxy,
+  // SSOT_5): elsewhere (desktop Chrome without Korean on it, Edge) it stays off, quietly — the press still starts it.
+  if (auto && where !== 'local' && where !== 'apple' && where !== 'phone') {
     ntDictationEnd(d, '');
-    return;
-  }
-  if ((where === 'service' || where === 'installing') && !ntDictationRemoteOk()) {
-    ntDictationEnd(d, ntDictationOffDevice(where));
     return;
   }
   var rec;
@@ -18174,18 +18207,31 @@ async function ntDictateStart(host, auto) {
     d.rec = rec;
     rec.lang = NT_DICTATION_LANG;
     rec.interimResults = true;
-    rec.continuous = true;
+    // Android ignores continuous at best; Samsung Internet may give nothing in dictation mode. One utterance per
+    // session there, and ntDictationEnded listens again.
+    rec.continuous = !android;
     rec.maxAlternatives = 1;
     if (where === 'local') rec.processLocally = true;
     rec.onresult = function (e) {
       ntDictationHeard(d, e);
     };
+    rec.onaudiostart = function () {
+      d.audio = true;
+    };
+    rec.onspeechstart = function () {
+      d.spoke = true;
+    };
     rec.onerror = function (e) {
       var code = e && e.error;
-      var why = ntDictationErrorText(code);
+      var why = ntDictationErrorText(code, android);
       if (!why) return;
+      // A why the person acts on goes on the red error line.
+      d.bad = true;
       // A restart refused after the first session (iOS may want a fresh press): not a missing permission.
-      if (code === 'not-allowed' && d.sessions > 1) why = '받아쓰기가 멈췄습니다 — 다시 누르면 이어서 받아씁니다';
+      if (code === 'not-allowed' && d.sessions > 1) {
+        why = '받아쓰기가 멈췄습니다 — 다시 누르면 이어서 받아씁니다';
+        d.bad = false;
+      }
       // An automatic start the mic refused does not try again on every open (the 받아쓰기 press still does); a
       // restart refused after a pause (iOS) is not a refused mic.
       if (d.auto && d.sessions <= 1 && /^(not-allowed|service-not-allowed|audio-capture)$/.test(String(code)))
@@ -18201,7 +18247,7 @@ async function ntDictateStart(host, auto) {
     d.live = ntDictationStatus(where);
     host.status(d.live);
   } catch (e) {
-    ntDictationEnd(d, ntDictationErrorText(''));
+    ntDictationEnd(d, ntDictationErrorText('', android), true);
   }
 }
 
@@ -18240,12 +18286,21 @@ function ntDictationHeard(d, e) {
   d.host.text(text);
 }
 
-// The recogniser ended. Stopped or failed: the dictation lets go. Ended by itself (iOS after a pause, Chrome after a
-// while): it listens again with the words so far as its start; three silent sessions in a row end it.
+// The recogniser ended. Stopped or failed: the dictation lets go. Ended by itself (iOS after a pause, Android after
+// each utterance, Chrome after a while): it listens again with the words so far as its start; three silent sessions
+// in a row end it. Two sessions in a row that never opened the microphone, or that heard speech and gave back no
+// words, are a recogniser that does not work: it ends saying so, and the new task stops opening listening.
 function ntDictationEnded(d) {
   if (d.hard || _ntDictation !== d) return;
   if (d.stopping) {
-    ntDictationEnd(d, d.error);
+    ntDictationEnd(d, d.error, d.bad);
+    return;
+  }
+  d.dead = !d.heard && !d.audio ? d.dead + 1 : 0;
+  d.mute = !d.heard && d.spoke ? d.mute + 1 : 0;
+  if (d.dead >= 2 || d.mute >= 2) {
+    if (d.auto) _ntDictationAutoOff = true;
+    ntDictationEnd(d, ntDictationDeadText(d.dead >= 2 ? 'dead' : 'mute', d.android), true);
     return;
   }
   d.base = ntDictationText(d.base, d.finals, d.interim);
@@ -18253,6 +18308,8 @@ function ntDictationEnded(d) {
   d.interim = '';
   d.silent = d.heard ? 0 : d.silent + 1;
   d.heard = false;
+  d.audio = false;
+  d.spoke = false;
   if (d.silent >= 3) {
     ntDictationEnd(d, '말이 들리지 않아 받아쓰기를 멈췄습니다');
     return;
@@ -18261,15 +18318,15 @@ function ntDictationEnded(d) {
     d.rec.start();
     d.sessions++;
   } catch (e) {
-    ntDictationEnd(d, ntDictationErrorText(''));
+    ntDictationEnd(d, ntDictationErrorText('', d.android), true);
   }
 }
 
-// The dictation is over: the tool lets go, and the status line says why (or nothing).
-function ntDictationEnd(d, why) {
+// The dictation is over: the tool lets go, and the page says why (or nothing) — bad: a why the person acts on.
+function ntDictationEnd(d, why, bad) {
   if (_ntDictation === d) _ntDictation = null;
   d.stopping = true;
-  d.host.status(why || '', true);
+  d.host.status(why || '', true, !!(why && bad));
   d.host.paint();
 }
 
@@ -18315,8 +18372,9 @@ function ntOnComposerTool(e, host) {
   else if (_ntDictation && _ntDictation.host.id === h.id) ntDictateStop(false);
 }
 
-// SSOT_4: the new task opens listening where speech recognition runs on this device; a key typed stops it (ui-input)
-// and the typing goes on. Called inside the opening press — Safari wants it for the microphone.
+// SSOT_4: the new task opens listening where speech recognition runs on this device, or on a Galaxy's own recogniser
+// (SSOT_5); a key typed stops it (ui-input) and the typing goes on. Called inside the opening press — Safari wants it
+// for the microphone.
 function ntDictateAuto() {
   if (_ntDictationAutoOff || _ntDictation) return;
   ntDictateStart(ntDictationHost('nt'), true);

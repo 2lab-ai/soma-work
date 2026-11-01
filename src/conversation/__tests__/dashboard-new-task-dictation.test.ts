@@ -53,6 +53,7 @@ class FakeRec {
   static availability: string | null = null; // null: the browser has no available() (Safari, older Chrome)
   static asked: unknown[] = [];
   static installs: unknown[] = [];
+  static deaf = false; // an engine that never opens the microphone (no audiostart)
   lang = '';
   interimResults = false;
   continuous = false;
@@ -64,11 +65,14 @@ class FakeRec {
   onresult: ((e: { results: Result[]; resultIndex: number }) => void) | null = null;
   onerror: ((e: { error: string }) => void) | null = null;
   onend: (() => void) | null = null;
+  onaudiostart: (() => void) | null = null;
+  onspeechstart: (() => void) | null = null;
   constructor() {
     FakeRec.made.push(this);
   }
   start() {
     this.starts++;
+    if (!FakeRec.deaf) this.onaudiostart?.(); // a real engine opens the microphone
   }
   stop() {
     this.stops++;
@@ -89,6 +93,7 @@ function recClass(availability: string | null, install?: () => Promise<boolean>)
   FakeRec.made = [];
   FakeRec.asked = [];
   FakeRec.installs = [];
+  FakeRec.deaf = false;
   FakeRec.availability = availability;
   const C = class extends FakeRec {} as unknown as typeof FakeRec & {
     available?: (o: unknown) => Promise<string>;
@@ -136,22 +141,15 @@ const UA = {
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0 Safari/537.36',
 };
 
-function page(
-  opts: {
-    engine?: unknown;
-    value?: string;
-    destination?: string;
-    ua?: string;
-    remoteOk?: boolean;
-    busy?: boolean;
-  } = {},
-) {
+function page(opts: { engine?: unknown; value?: string; destination?: string; ua?: string; busy?: boolean } = {}) {
   const store = new Map<string, string>();
-  if (opts.remoteOk) store.set('soma-nt-dictation-remote', 'ok');
+  const errorLine = { textContent: '' };
   const composer = { value: opts.value ?? '', files: [] as unknown[] };
   const env = {
     composer,
     statuses: [] as string[],
+    errors: [] as string[],
+    errorLine,
     drafts: [] as string[],
     paints: 0,
     pcPaints: 0,
@@ -166,6 +164,7 @@ function page(
     [
       'ntDictationEngine',
       'ntDictationWide',
+      'ntDictationNarrow',
       'ntDictationTool',
       'ntDictationText',
       'ntJoinSpoken',
@@ -175,8 +174,8 @@ function page(
       'ntDictationLocal',
       'ntDictationStatus',
       'ntIsAppleSpeech',
-      'ntDictationRemoteOk',
-      'ntDictationOffDevice',
+      'ntIsAndroid',
+      'ntDictationDeadText',
       'ntDictateStart',
       'ntDictationHeard',
       'ntDictationEnded',
@@ -195,8 +194,8 @@ function page(
     {
       window: win,
       _ntDictation: null,
-      _ntDictationAsked: false,
       _ntDictationAutoOff: false,
+      _ntDictationError: '',
       _pcSending: false,
       PC_LIMITS: { maxFiles: 10, maxFileBytes: 1, maxTotalBytes: 2 },
       PC_NO_FILES: 'application/x-soma-no-attachments',
@@ -206,7 +205,6 @@ function page(
         env.pcPaints++;
       },
       NT_DICTATION_LANG: 'ko-KR',
-      NT_DICTATION_REMOTE_KEY: 'soma-nt-dictation-remote',
       _ntValue: '',
       _ntBusy: !!opts.busy,
       _ntCtx: null,
@@ -217,8 +215,12 @@ function page(
         getItem: (k: string) => (store.has(k) ? store.get(k) : null),
         setItem: (k: string, v: string) => store.set(k, v),
       },
-      ntEl: (id: string) => (id === 'nt-composer' ? composer : null),
+      ntEl: (id: string) => (id === 'nt-composer' ? composer : id === 'nt-error' ? errorLine : null),
       ntSetStatus: (t: string) => env.statuses.push(t || ''),
+      ntSetError: (t: string) => {
+        errorLine.textContent = t || '';
+        env.errors.push(t || '');
+      },
       ntSaveDraft: (t: string) => env.drafts.push(t),
       paintNtComposer: () => {
         env.paints++;
@@ -305,6 +307,16 @@ describe('I1.4 — errors end dictation in plain words; silence and a cancel say
     expect(err('language-not-supported')).toContain('한국어');
     expect(err('whatever')).toContain('받아쓰기');
   });
+  it('on a Galaxy it names what to turn on there (Google’s speech app, the browser’s mic permission)', () => {
+    const errOn = (code: string) =>
+      new Function(`${clientFn('ntDictationErrorText')}; return ntDictationErrorText;`)()(code, true);
+    expect(errOn('service-not-allowed')).toContain('Google 음성 인식 및 합성');
+    expect(errOn('service-not-allowed')).not.toContain('iPhone');
+    expect(errOn('not-allowed')).toContain('마이크');
+    expect(errOn('not-allowed')).toContain('권한');
+    expect(errOn('language-not-supported')).toContain('한국어');
+    expect(errOn('no-speech')).toBe('');
+  });
 });
 
 // ── The composer's data ──────────────────────────────────────────────
@@ -330,7 +342,15 @@ describe('SSOT_3 — 받아쓰기 is added beside the voice note, which stays ("
     const lim = { maxPromptChars: 12000, maxFiles: 10, maxFileBytes: 1, maxTotalBytes: 2 };
     const data = (wide: boolean, engine: unknown) =>
       loadWith<{ ntComposerData(): Record<string, any> }>(
-        ['ntComposerData', 'ntReadDraft', 'ntDictationEngine', 'ntDictationTool', 'ntDictationWide', 'ntDictating'],
+        [
+          'ntComposerData',
+          'ntReadDraft',
+          'ntDictationEngine',
+          'ntDictationTool',
+          'ntDictationWide',
+          'ntDictationNarrow',
+          'ntDictating',
+        ],
         {
           window: {
             navigator: { userAgent: UA.iphone },
@@ -354,6 +374,44 @@ describe('SSOT_3 — 받아쓰기 is added beside the voice note, which stays ("
     const tooLong = new Function('_ntCtx', `${clientFn('ntTooLong')}; return ntTooLong;`)({ limits: lim });
     expect(tooLong('가'.repeat(12000))).toBe('');
     expect(tooLong('가'.repeat(12001))).toContain('12,000');
+  });
+  it('under 360px (a Galaxy S9, a Fold cover screen) the send keeps only its arrow, so it does not cover 받아쓰기', () => {
+    const at = (width: number, engine: unknown) =>
+      loadWith<{ ntComposerData(): Record<string, any> }>(
+        [
+          'ntComposerData',
+          'ntReadDraft',
+          'ntDictationEngine',
+          'ntDictationTool',
+          'ntDictationWide',
+          'ntDictationNarrow',
+          'ntDictating',
+        ],
+        {
+          window: {
+            navigator: { userAgent: UA.samsung },
+            matchMedia: (q: string) => {
+              const min = /min-width: (\d+)px/.exec(q);
+              const max = /max-width: (\d+)px/.exec(q);
+              return { matches: min ? width >= Number(min[1]) : max ? width <= Number(max[1]) : false };
+            },
+            webkitSpeechRecognition: engine,
+          },
+          _ntValue: '',
+          _ntDictation: null,
+          _ntBusy: false,
+          _ntCtx: null,
+          _ntState: { destination: 'slack' },
+          NT_NO_FILES: 'x',
+          NT_DRAFT_KEY: 'k',
+          localStorage: { getItem: () => null },
+        },
+      ).ntComposerData();
+    expect(at(320, recClass(null)).submitLabel).toBe('');
+    expect(at(359, recClass(null)).submitLabel).toBe('');
+    expect(at(360, recClass(null)).submitLabel).toBe('작업 시작');
+    expect(at(412, recClass(null)).submitLabel).toBe('작업 시작');
+    expect(at(320, undefined).submitLabel).toBe('작업 시작'); // no 받아쓰기: room as before
   });
   it('a dashboard task (no attachments, so no voice note) still gets 받아쓰기: it is text', () => {
     const { api } = page({ engine: recClass(null), destination: 'task' });
@@ -516,7 +574,7 @@ describe('I1.1 / I3.1 — pressing 받아쓰기 streams the words into the field
     expect(last(env.statuses)).toContain('들리지 않아');
   });
 
-  it('a refused microphone ends it with why, and is not retried', async () => {
+  it('a refused microphone ends it with why, on the red error line (not the small status line), and is not retried', async () => {
     const Rec = recClass(null);
     const { api, env } = page({ engine: Rec });
     await api.ntDictateStart();
@@ -525,7 +583,8 @@ describe('I1.1 / I3.1 — pressing 받아쓰기 streams the words into the field
     rec.end();
     expect(rec.starts).toBe(1);
     expect(api.__peek('_ntDictation')).toBeNull();
-    expect(last(env.statuses)).toContain('마이크');
+    expect(env.errorLine.textContent).toContain('마이크');
+    expect(last(env.statuses)).toBe('');
   });
 
   it('real Chrome drops an utterance it never finalised when the next starts after a pause: the shown words stay', async () => {
@@ -701,7 +760,7 @@ describe('I2.1 — on the device when the browser says it can (Chrome’s availa
   const Q = { langs: ['ko-KR'], processLocally: true };
   it('Korean available on the device: the recogniser processes locally, and the status says so', async () => {
     const Rec = recClass('available');
-    const { api, env } = page({ engine: Rec });
+    const { api, env } = page({ engine: Rec, ua: UA.chromeMac });
     await api.ntDictateStart();
     expect(FakeRec.asked[0]).toEqual(Q);
     expect(FakeRec.installs).toHaveLength(0);
@@ -711,7 +770,7 @@ describe('I2.1 — on the device when the browser says it can (Chrome’s availa
   });
   it('downloadable (Chrome says so until the site asks once): install() in the press; already there → local', async () => {
     const Rec = recClass('downloadable', () => Promise.resolve(true));
-    const { api } = page({ engine: Rec });
+    const { api } = page({ engine: Rec, ua: UA.chromeMac });
     await api.ntDictateStart();
     expect(FakeRec.installs[0]).toEqual(Q);
     expect(FakeRec.made[0].processLocally).toBe(true);
@@ -720,7 +779,7 @@ describe('I2.1 — on the device when the browser says it can (Chrome’s availa
     vi.useFakeTimers();
     try {
       const Rec = recClass('downloadable', () => new Promise<boolean>(() => {}));
-      const { api, env } = page({ engine: Rec, ua: UA.chromeMac, remoteOk: true });
+      const { api, env } = page({ engine: Rec, ua: UA.chromeMac });
       const run = api.ntDictateStart();
       await vi.advanceTimersByTimeAsync(1600);
       await run;
@@ -732,14 +791,14 @@ describe('I2.1 — on the device when the browser says it can (Chrome’s availa
       vi.useRealTimers();
     }
   });
-  it('unavailable, downloading, or an install that says no: the browser’s service, said as such (once allowed)', async () => {
+  it('unavailable, downloading, or an install that says no: the browser’s service, said as such', async () => {
     for (const [a, inst] of [
       ['unavailable', undefined],
       ['downloading', undefined],
       ['downloadable', () => Promise.resolve(false)],
     ] as Array<[string, (() => Promise<boolean>) | undefined]>) {
       const Rec = recClass(a, inst);
-      const { api, env } = page({ engine: Rec, ua: UA.chromeMac, remoteOk: true });
+      const { api, env } = page({ engine: Rec, ua: UA.chromeMac });
       await api.ntDictateStart();
       expect(FakeRec.made[0].processLocally).not.toBe(true);
       expect(FakeRec.made[0].starts).toBe(1);
@@ -761,48 +820,56 @@ describe('I2.1 — on the device when the browser says it can (Chrome’s availa
   });
 });
 
-describe('I2 — the voice leaves the device only when the person has said yes (astra review R1, P1)', () => {
-  it('Galaxy (Chrome or Samsung Internet — Google’s service): the first press says so and starts nothing', async () => {
+describe('SSOT_5 — Samsung Internet and Chrome on a Galaxy: the first press listens ("삼성인터넷브라우저에서 작동안하잖아")', () => {
+  it('Galaxy (Chrome or Samsung Internet): the press starts the phone’s recogniser at once — no second press, no question', async () => {
     for (const ua of [UA.galaxy, UA.samsung]) {
       const Rec = recClass(null);
       const { api, env, store } = page({ engine: Rec, ua });
-      await api.ntDictateStart();
-      expect(FakeRec.made).toHaveLength(0);
-      expect(api.__peek('_ntDictation')).toBeNull();
-      expect(last(env.statuses)).toContain('기기 밖');
-      expect(last(env.statuses)).toContain('키보드의 마이크');
-      expect(store.has('soma-nt-dictation-remote')).toBe(false);
+      const run = api.ntDictateStart();
+      // No await before start(): it runs inside the press.
+      expect(FakeRec.made[0]?.starts).toBe(1);
+      await run;
+      expect(api.__peek('_ntDictation')).not.toBeNull();
+      expect(last(env.statuses)).toContain('이 휴대폰의 음성 인식');
+      expect(last(env.statuses)).toContain('다시 누르거나 키보드로 쓰면 멈춥니다');
+      expect(store.size).toBe(0); // nothing to remember: there is no yes to give
+      FakeRec.made[0].say([interim('삼성 인터넷에서 받아쓰기')]);
+      expect(env.composer.value).toBe('삼성 인터넷에서 받아쓰기');
     }
   });
-  it('the second press is the yes: it starts (in that press), and the device remembers it', async () => {
-    const Rec = recClass(null);
-    const { api, env, store } = page({ engine: Rec, ua: UA.galaxy });
+  it('Android listens one utterance per session (continuous is not kept there) and listens again with the words kept', async () => {
+    for (const ua of [UA.galaxy, UA.samsung]) {
+      const Rec = recClass(null);
+      const { api, env } = page({ engine: Rec, ua });
+      await api.ntDictateStart();
+      const rec = FakeRec.made[0];
+      expect(rec.continuous).toBe(false);
+      expect(rec.interimResults).toBe(true);
+      expect(rec.lang).toBe('ko-KR');
+      rec.say([final('첫 문장')]);
+      rec.end(); // the utterance is over: Android ends the session
+      expect(rec.starts).toBe(2);
+      rec.say([interim('둘째 문장')]);
+      expect(env.composer.value).toBe('첫 문장 둘째 문장');
+    }
+  });
+  it('a Galaxy Chrome that has available() is not asked: a page cannot keep Android’s recogniser on the device', async () => {
+    const Rec = recClass('unavailable');
+    const { api, env } = page({ engine: Rec, ua: UA.galaxy });
     await api.ntDictateStart();
-    await api.ntDictateStart();
-    expect(FakeRec.made).toHaveLength(1);
+    expect(FakeRec.asked).toHaveLength(0);
     expect(FakeRec.made[0].starts).toBe(1);
-    expect(store.get('soma-nt-dictation-remote')).toBe('ok');
+    expect(last(env.statuses)).toContain('이 휴대폰의 음성 인식');
+  });
+  it('desktop Chrome without Korean on the device: the first press starts it through the browser’s service, and says so', async () => {
+    const Rec = recClass('unavailable');
+    const { api, env } = page({ engine: Rec, ua: UA.chromeMac });
+    await api.ntDictateStart();
+    expect(FakeRec.made[0].starts).toBe(1);
     expect(last(env.statuses)).toContain('기기 밖');
-    expect(last(env.statuses)).toContain('다시 누르거나 키보드로 쓰면 멈춥니다');
+    expect(env.statuses.every((t) => !t.includes('한 번 더 누르세요'))).toBe(true);
   });
-  it('remembered: it starts on the first press', async () => {
-    const Rec = recClass(null);
-    const { api } = page({ engine: Rec, ua: UA.galaxy, remoteOk: true });
-    await api.ntDictateStart();
-    expect(FakeRec.made[0].starts).toBe(1);
-  });
-  it('desktop Chrome without Korean on the device asks the same way; with Korean on it, it never asks', async () => {
-    let Rec = recClass('unavailable');
-    let p = page({ engine: Rec, ua: UA.chromeMac });
-    await p.api.ntDictateStart();
-    expect(FakeRec.made).toHaveLength(0);
-    expect(last(p.env.statuses)).toContain('기기 밖');
-    Rec = recClass('available');
-    p = page({ engine: Rec, ua: UA.chromeMac });
-    await p.api.ntDictateStart();
-    expect(FakeRec.made[0].processLocally).toBe(true);
-  });
-  it('a Korean model still downloading: the first press says it will be on the device once it is in', async () => {
+  it('a Korean model still downloading: the first press starts it now, and says the device takes over once it is in', async () => {
     vi.useFakeTimers();
     try {
       const Rec = recClass('downloadable', () => new Promise<boolean>(() => {}));
@@ -810,11 +877,88 @@ describe('I2 — the voice leaves the device only when the person has said yes (
       const run = api.ntDictateStart();
       await vi.advanceTimersByTimeAsync(1600);
       await run;
-      expect(FakeRec.made).toHaveLength(0);
+      expect(FakeRec.made[0].starts).toBe(1);
       expect(last(env.statuses)).toContain('내려받는 중');
     } finally {
       vi.useRealTimers();
     }
+  });
+  it('Google’s speech app turned off (service-not-allowed): the red error line says what to turn on, and it is not retried', async () => {
+    for (const ua of [UA.galaxy, UA.samsung]) {
+      const Rec = recClass(null);
+      const { api, env } = page({ engine: Rec, ua });
+      await api.ntDictateStart();
+      const rec = FakeRec.made[0];
+      rec.onerror?.({ error: 'service-not-allowed' });
+      rec.end();
+      expect(rec.starts).toBe(1);
+      expect(api.__peek('_ntDictation')).toBeNull();
+      expect(env.errorLine.textContent).toContain('Google 음성 인식 및 합성');
+    }
+    // An iPhone keeps its own guidance (Settings › General › Keyboard).
+    const Rec = recClass(null);
+    const { api, env } = page({ engine: Rec, ua: UA.iphone });
+    await api.ntDictateStart();
+    FakeRec.made[0].onerror?.({ error: 'service-not-allowed' });
+    FakeRec.made[0].end();
+    expect(env.errorLine.textContent).toContain('iPhone');
+  });
+  it('a recogniser that never opens the microphone: after two sessions the red line says so — not "말이 들리지 않아"', async () => {
+    for (const ua of [UA.samsung, UA.chromeMac]) {
+      const Rec = recClass(ua === UA.chromeMac ? 'unavailable' : null);
+      FakeRec.deaf = true;
+      const { api, env } = page({ engine: Rec, ua });
+      await api.ntDictateStart();
+      const rec = FakeRec.made[0];
+      rec.end();
+      rec.end();
+      expect(rec.starts).toBe(2);
+      expect(api.__peek('_ntDictation')).toBeNull();
+      expect(env.errorLine.textContent).toContain('마이크를 열지 못했습니다');
+      expect(env.statuses.every((t) => !t.includes('들리지 않아'))).toBe(true);
+    }
+  });
+  it('speech heard but no words back (Samsung Internet showing "듣는 중" with no text): after two sessions the red line says so', async () => {
+    const Rec = recClass(null);
+    const { api, env } = page({ engine: Rec, ua: UA.samsung });
+    await api.ntDictateStart();
+    const rec = FakeRec.made[0];
+    rec.onspeechstart?.();
+    rec.end();
+    rec.onspeechstart?.();
+    rec.end();
+    expect(rec.starts).toBe(2);
+    expect(api.__peek('_ntDictation')).toBeNull();
+    expect(env.errorLine.textContent).toContain('글자를 돌려주지 않습니다');
+    expect(env.errorLine.textContent).toContain('Chrome');
+  });
+  it('words in between reset both counts: one empty session after words is just a pause', async () => {
+    const Rec = recClass(null);
+    const { api } = page({ engine: Rec, ua: UA.samsung });
+    await api.ntDictateStart();
+    const rec = FakeRec.made[0];
+    rec.onspeechstart?.();
+    rec.end();
+    rec.say([final('들렸다')]);
+    rec.end();
+    rec.onspeechstart?.();
+    rec.end();
+    expect(api.__peek('_ntDictation')).not.toBeNull();
+    expect(rec.starts).toBe(4);
+  });
+  it('a new press clears the dictation’s own error line, and leaves any other error alone', async () => {
+    const Rec = recClass(null);
+    const { api, env } = page({ engine: Rec, ua: UA.galaxy });
+    await api.ntDictateStart();
+    FakeRec.made[0].onerror?.({ error: 'network' });
+    FakeRec.made[0].end();
+    expect(env.errorLine.textContent).toContain('연결');
+    await api.ntDictateStart();
+    expect(env.errorLine.textContent).toBe('');
+    env.errorLine.textContent = '전송 실패 — 다시 시도해 주세요'; // the send's own error
+    api.ntDictateStop(true);
+    await api.ntDictateStart();
+    expect(env.errorLine.textContent).toBe('전송 실패 — 다시 시도해 주세요');
   });
 });
 
@@ -855,21 +999,44 @@ describe('SSOT_4 — with speech recognition on this device the new task opens l
     expect(FakeRec.made[0]?.processLocally).toBe(true);
     expect(FakeRec.made[0]?.starts).toBe(1);
   });
-  it('the voice would leave the device (Galaxy, Chrome without Korean): it stays off, says nothing, asks nothing', async () => {
-    for (const [ua, avail] of [
-      [UA.galaxy, null],
-      [UA.chromeMac, 'unavailable'],
-    ] as Array<[string, string | null]>) {
-      const Rec = recClass(avail);
-      const { api, env, store } = page({ engine: Rec, ua });
+  it('a Galaxy (Chrome or Samsung Internet): the phone’s recogniser — it opens listening, at once', async () => {
+    for (const ua of [UA.galaxy, UA.samsung]) {
+      const Rec = recClass(null);
+      const { api, env } = page({ engine: Rec, ua });
       api.ntDictateAuto();
-      await new Promise((r) => setTimeout(r, 0)); // past Chrome's available() answer
-      expect(FakeRec.made).toHaveLength(0);
-      expect(api.__peek('_ntDictation')).toBeNull();
-      expect(api.__peek('_ntDictationAsked')).toBe(false);
-      expect(store.has('soma-nt-dictation-remote')).toBe(false);
-      expect(env.statuses.every((t) => !t.includes('기기 밖'))).toBe(true);
+      expect(FakeRec.made[0]?.starts).toBe(1);
+      expect(last(env.statuses)).toContain('이 휴대폰의 음성 인식');
     }
+  });
+  it('a Galaxy whose speech app is off: the opening shows why once on the red line, and stops opening listening', async () => {
+    const Rec = recClass(null);
+    const { api, env } = page({ engine: Rec, ua: UA.samsung });
+    api.ntDictateAuto();
+    FakeRec.made[0].onerror?.({ error: 'service-not-allowed' });
+    FakeRec.made[0].end();
+    expect(env.errorLine.textContent).toContain('Google 음성 인식 및 합성');
+    expect(api.__peek('_ntDictationAutoOff')).toBe(true);
+    api.ntDictateAuto();
+    expect(FakeRec.made).toHaveLength(1);
+  });
+  it('a recogniser that never opens the mic or returns no words ends the automatic start for this page too', async () => {
+    const Rec = recClass(null);
+    FakeRec.deaf = true;
+    const { api } = page({ engine: Rec, ua: UA.samsung });
+    api.ntDictateAuto();
+    FakeRec.made[0].end();
+    FakeRec.made[0].end();
+    expect(api.__peek('_ntDictationAutoOff')).toBe(true);
+  });
+  it('desktop Chrome without Korean on the device (the voice would leave it): it stays off and says nothing', async () => {
+    const Rec = recClass('unavailable');
+    const { api, env, store } = page({ engine: Rec, ua: UA.chromeMac });
+    api.ntDictateAuto();
+    await new Promise((r) => setTimeout(r, 0)); // past Chrome's available() answer
+    expect(FakeRec.made).toHaveLength(0);
+    expect(api.__peek('_ntDictation')).toBeNull();
+    expect(store.size).toBe(0);
+    expect(env.statuses.every((t) => !t.includes('기기 밖'))).toBe(true);
   });
   it('a refused microphone ends the automatic start for this page (no prompt on every open)', async () => {
     const Rec = recClass(null);
