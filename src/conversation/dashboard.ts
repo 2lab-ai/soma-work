@@ -17560,18 +17560,22 @@ async function ntDictateStart(host, auto) {
 function ntDictationHeard(d, e) {
   if (d.hard || _ntDictation !== d) return;
   var results = e && e.results;
-  var n = results && results.length ? results.length : 0;
+  var r0 = results && results.length ? results[0] : null;
+  var first = r0 && r0[0] ? String(r0[0].transcript || '').trim() : '';
   var got = ntDictationRead(results, d.cumulative);
   var was = ntJoinSpoken(d.finals, d.interim).trim();
   var now = ntJoinSpoken(got.finals, got.interim).trim();
   var at = Date.now();
   // A new utterance in a fresh list (real Chrome, after a pause, drops an utterance it never finalised — no isFinal,
-  // no end): the words that show stay as the start, so nothing said disappears. A quick revision inside one
-  // utterance, or words that only go on, is not a new one.
-  if (was && now.indexOf(was) !== 0 && (n < (d.count || 0) || at - (d.at || at) > 1200)) {
-    d.base = ntDictationText(d.base, d.finals, d.interim);
-  }
-  d.count = n;
+  // no end): the words that show stay as the start, so nothing said disappears. Only two signs count, so a revision
+  // is never doubled: a settled first result that is gone (a final does not change inside a list), or — after a
+  // pause — a list holding less than half of what showed.
+  var fresh =
+    (d.firstFinal && d.first && now.indexOf(d.first) !== 0) ||
+    (!d.firstFinal && at - (d.at || at) > 1200 && now.length * 2 < was.length);
+  if (was && fresh) d.base = ntDictationText(d.base, d.finals, d.interim);
+  d.first = first;
+  d.firstFinal = !!(r0 && r0.isFinal);
   d.at = at;
   d.finals = got.finals;
   d.interim = got.interim;
