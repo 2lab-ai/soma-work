@@ -12582,6 +12582,8 @@ document.addEventListener('ui-record', function(e) {
   var i = _recording.indexOf(e.target);
   if (e.detail && e.detail.state === 'start') {
     if (i < 0) _recording.push(e.target);
+    // One microphone: a voice note starting to record stops 받아쓰기 in its composer (its words stay).
+    if (e.target && e.target.id) ntDictateStopIn(e.target.id === 'pc-composer' ? 'pc' : 'nt');
   } else if (i >= 0) {
     _recording.splice(i, 1);
   }
@@ -17050,6 +17052,8 @@ async function openNewTask() {
     }, 60);
   }
   ntSetStatus(_ntCtx ? '' : '불러오는 중…');
+  // The dialog covers the session panel: a dictation there stops, and the new task may take the microphone.
+  ntDictateStopIn('pc');
   ntDictateAuto();
   await ntLoadContext();
 }
@@ -17500,7 +17504,8 @@ async function ntDictateStart(host, auto) {
   // speech service off the device (Chrome on Android, Samsung Internet, older Chrome, Edge).
   var where = ntIsAppleSpeech(w) ? 'apple' : 'service';
   if (typeof Rec.available === 'function') {
-    host.status('받아쓰기 준비 중…');
+    d.live = '받아쓰기 준비 중…';
+    host.status(d.live);
     where = await ntDictationLocal(Rec);
     if (_ntDictation !== d) return;
   }
@@ -17531,8 +17536,10 @@ async function ntDictateStart(host, auto) {
       if (!why) return;
       // A restart refused after the first session (iOS may want a fresh press): not a missing permission.
       if (code === 'not-allowed' && d.sessions > 1) why = '받아쓰기가 멈췄습니다 — 다시 누르면 이어서 받아씁니다';
-      // An automatic start that failed does not try again on every open; the 받아쓰기 press still does.
-      if (d.auto) _ntDictationAutoOff = true;
+      // An automatic start the mic refused does not try again on every open (the 받아쓰기 press still does); a
+      // restart refused after a pause (iOS) is not a refused mic.
+      if (d.auto && d.sessions <= 1 && /^(not-allowed|service-not-allowed|audio-capture)$/.test(String(code)))
+        _ntDictationAutoOff = true;
       d.error = why;
       d.stopping = true;
     };
