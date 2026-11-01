@@ -138,7 +138,9 @@ describe('P1 — the plan table: two modes × three plans; the user’s dashboar
   it('the settings load applies the user’s plan; a return to the tab reads it again', () => {
     const load = clientFn('loadMyDefaults');
     expect(load).toContain('var vp = viewPlanOfSettings(data);');
-    expect(load).toContain('if (vp !== null && vp !== _viewPlan) setViewPlan(vp);');
+    expect(load).toContain('if (vp !== null && load === _settingsLoads && vp !== _viewPlan) setViewPlan(vp);');
+    // The answer is matched to its load: a later load's answer wins even when an earlier one lands last.
+    expect(load.indexOf('var load = ++_settingsLoads;')).toBeLessThan(load.indexOf("await fetch('/api/settings')"));
     // The plan is read before the defaults' acceptance gate (a viewer refused writes still has a plan).
     expect(load.indexOf('viewPlanOfSettings(data)')).toBeLessThan(
       load.indexOf('data.accepted === false) { box.hidden'),
@@ -402,6 +404,17 @@ describe('P3 — the open card follows the plan', () => {
     // The order is the plan's: waiting reads the latest exchange first.
     const w = body('advanced', '1', 'waiting');
     expect(w.indexOf('[IO]')).toBeLessThan(w.indexOf('[TASKS]'));
+  });
+
+  it('advanced 2안 원본 is the open card as it was, byte for byte, in every column (review, grok P1)', () => {
+    const q = { pendingQuestion: { type: 'user_choice', question: 'Ship it?', choices: [{ id: '1', label: 'Yes' }] } };
+    for (const [col, over] of [
+      ['working', {}],
+      ['waiting', q],
+      ['idle', { activityState: 'idle' }],
+      ['closed', { activityState: 'idle', terminated: true }],
+    ] as Array<[string, Record<string, unknown>]>)
+      expect(body('advanced', '2', col, over), col).toBe(env.renderCardBody(card(over), col));
   });
 
   it('no spec (any other caller) is the open card as it was', () => {
