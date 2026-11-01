@@ -18501,11 +18501,24 @@ async function ntDictateStart(host, auto) {
   }
 }
 
+// Does a result event carry any words?
+function ntDictationAnyWords(results) {
+  var n = results && results.length ? results.length : 0;
+  for (var i = 0; i < n; i++) {
+    var r = results[i];
+    if (r && r[0] && String(r[0].transcript || '').trim()) return true;
+  }
+  return false;
+}
+
 // A result: the field becomes what was there + what is heard; the new task's draft and state follow (the composer
 // sends no ui-input for a value the page sets).
 function ntDictationHeard(d, e) {
   if (d.hard || _ntDictation !== d) return;
   var results = e && e.results;
+  // A result whose words are all empty says nothing new (Android's on-device recogniser sends them between words, and
+  // may end an utterance with nomatch, no final): the shown words stay, and an end keeps them as the start.
+  if (!ntDictationAnyWords(results)) return;
   var r0 = results && results.length ? results[0] : null;
   var first = r0 && r0[0] ? String(r0[0].transcript || '').trim() : '';
   var got = ntDictationRead(results, d.cumulative);
