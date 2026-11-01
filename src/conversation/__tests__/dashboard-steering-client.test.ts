@@ -155,6 +155,8 @@ describe('pcInit — the element’s events reach the page’s handlers on #pane
       document: {
         getElementById: (id: string) => (id === 'panel-command' ? host : id === 'pc-composer' ? composer : null),
       },
+      // 받아쓰기 (live dictation, SSOT 2026-11-01) is its own suite; here: no recogniser, nothing to stop.
+      ntDictationEngine: () => null,
       steerAct: (...a: unknown[]) => acts.push(a),
       pcOnSubmit: (e: unknown) => submits.push(e),
       pcOnReject: () => {},
@@ -170,8 +172,16 @@ describe('pcInit — the element’s events reach the page’s handlers on #pane
       maxRows: 8,
     });
     // No paste / drag / drop of the page's own: the composer takes them.
-    // (ui-reject: a file a task card refuses says why — merge review P3.)
-    expect(Object.keys(listeners).sort()).toEqual(['ui-cancel', 'ui-edit', 'ui-promote', 'ui-reject', 'ui-submit']);
+    // (ui-reject: a file a task card refuses says why — merge review P3. ui-tool / ui-input: 받아쓰기, SSOT 2026-11-01.)
+    expect(Object.keys(listeners).sort()).toEqual([
+      'ui-cancel',
+      'ui-edit',
+      'ui-input',
+      'ui-promote',
+      'ui-reject',
+      'ui-submit',
+      'ui-tool',
+    ]);
     listeners['ui-promote']({ detail: { id: 'k#1' } });
     listeners['ui-cancel']({ detail: { id: 'k#2' } });
     listeners['ui-edit']({ detail: { id: 'k#3', text: '고친 내용' } });
@@ -196,6 +206,7 @@ describe('pcInit — the element’s events reach the page’s handlers on #pane
         document: { getElementById: () => host },
         panelSessionKey: KEY,
         _pcSending: env.sending,
+        ntDictateStopIn: () => {},
         sendCommand: (...a: unknown[]) => sent.push(a),
       }).pcOnSubmit;
     const file = { name: 'shot.png' };
