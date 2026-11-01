@@ -7574,12 +7574,14 @@ refreshCsrfToken();
 // switches that session, like Slack's bare "effort <level>" applies to the
 // current thread. Hidden when there is no signed-in Slack user (viewer token).
 var _myDefaults = null; // { model: settingRow, effort: settingRow }
+var _settingsLoads = 0; // settings loads started: an answer older than a later one's does not set the plan
 var _tdMenuKind = null;
 async function loadMyDefaults() {
   var box = document.getElementById('topbar-defaults');
   if (!box) return;
   try {
     var seq = _viewModeSeq;
+    var load = ++_settingsLoads;
     var res = await fetch('/api/settings');
     if (!res.ok) { box.hidden = true; return; }
     var data = await res.json();
@@ -7597,9 +7599,10 @@ async function loadMyDefaults() {
         setViewMode(vm);
       }
     }
-    // The user's plan (.prd/20): the settings page sets it; the page follows on its next answer.
+    // The user's plan (.prd/20): only the settings page writes it, so the newest answer is the truth — an answer
+    // to an earlier load that lands after a later one (the tab shown twice, pageshow) is not applied.
     var vp = viewPlanOfSettings(data);
-    if (vp !== null && vp !== _viewPlan) setViewPlan(vp);
+    if (vp !== null && load === _settingsLoads && vp !== _viewPlan) setViewPlan(vp);
     // Without admin acceptance the server refuses every settings write.
     if (data && data.accepted === false) { box.hidden = true; return; }
     var rows = (data && data.settings) || [];

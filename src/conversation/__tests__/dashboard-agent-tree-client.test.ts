@@ -644,7 +644,13 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
         renderCardBody: (s: unknown, col: string) => ui.renderAgentTree(s, col),
         isAdvanced: () => true,
         // The view plan (.prd/20): advanced 2안 원본 — no spec, the open card and the face as they were.
-        viewSpec: () => ({ detail: { show: [], tasks: 'runs', open: true } }),
+        viewSpec: () => ({
+          detail: {
+            show: ['subtitle', 'info', 'goal', 'artifacts', 'agenthead', 'agenttabs', 'sections', 'controls'],
+            tasks: 'runs',
+            open: true,
+          },
+        }),
         detailShows: () => true,
         faceOf: (c: unknown) => c,
         cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
@@ -906,7 +912,13 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
       // View mode (SSOT 2026-11-01): the card and its body go through the mode — this harness is 어드밴스드.
       isAdvanced: () => true,
       // The view plan (.prd/20): advanced 2안 원본 — no spec, the open card and the face as they were.
-      viewSpec: () => ({ detail: { show: [], tasks: 'runs', open: true } }),
+      viewSpec: () => ({
+        detail: {
+          show: ['subtitle', 'info', 'goal', 'artifacts', 'agenthead', 'agenttabs', 'sections', 'controls'],
+          tasks: 'runs',
+          open: true,
+        },
+      }),
       detailShows: () => true,
       faceOf: (c: unknown) => c,
       cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness

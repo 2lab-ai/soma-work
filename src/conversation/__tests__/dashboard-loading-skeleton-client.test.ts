@@ -239,7 +239,13 @@ function boardFlow(cardOf?: (s: { key: string }, col: string) => unknown, over: 
       // View mode (SSOT 2026-11-01): the board maps each card through the mode — this harness is 어드밴스드.
       isAdvanced: () => true,
       // The view plan (.prd/20): advanced 2안 원본 — no spec, the open card and the face as they were.
-      viewSpec: () => ({ detail: { show: [], tasks: 'runs', open: true } }),
+      viewSpec: () => ({
+        detail: {
+          show: ['subtitle', 'info', 'goal', 'artifacts', 'agenthead', 'agenttabs', 'sections', 'controls'],
+          tasks: 'runs',
+          open: true,
+        },
+      }),
       detailShows: () => true,
       faceOf: (c: unknown) => c,
       cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
