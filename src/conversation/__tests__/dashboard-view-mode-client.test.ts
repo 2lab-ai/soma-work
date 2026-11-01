@@ -350,6 +350,7 @@ describe('T3 — minimal: a card shows what matters', () => {
         'acPermissionsHtml',
         'acGoalDecisionHtml',
         'acQuestionHtml',
+        'renderEpicPlan',
         'renderCardBody',
       ],
       ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy'],

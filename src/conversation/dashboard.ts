@@ -4832,7 +4832,6 @@ ui-breadcrumbs.crumbs { flex: 1 1 auto; min-width: 0; }
    and narrow / list layouts are the element's, drawn with the dashboard tokens through .ui-tok (#inbox).
    An open card's body is light DOM in the card's slot (.card-slot > .card-body), styled here. */
 ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0; }
-ui-agent-inbox.epic-inbox { display: block; min-width: 0; }
 
 /* ── Loading skeletons — the shape of what is coming, never a false "0 · Nothing here". The board shows the
    element's until its first answer (data-load="loading"); the open card's 지시 / 응답 lines are the kit's
@@ -5436,22 +5435,6 @@ body:not([data-tasks="runs"]) .panel-tasks { max-height: var(--ptl-max, 34cqh); 
    are board cards in each job's box (.cron-cards, slot="job:<group key>"), light DOM. */
 .capacity-host { margin-bottom: 18px; }
 .cron-lane { margin-bottom: 12px; }
-/* E4 ⑨a — the EPIC lane: one group per epic with children (head, then the children's cards). */
-.epic-lane { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
-.epic-group { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--surface); }
-.epic-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; min-width: 0; }
-.epic-head .epic-title { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.epic-head .epic-progress { margin-left: auto; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.epic-cards { display: flex; flex-direction: column; gap: 8px; position: relative; }
-/* The lane sets display, which beats the UA [hidden] rule: hide it explicitly (grok #706 R1). */
-.epic-lane[hidden] { display: none; }
-.epic-plan { display: block; margin-bottom: 8px; }
-.epic-plan[hidden] { display: none; }
-/* The bar and the count sit together at the end of the head (the bar takes the auto margin when there is one). */
-.epic-head .epic-bar { margin-left: auto; }
-.epic-head .epic-bar ~ .epic-progress { margin-left: 0; }
-.epic-bar { position: relative; width: 72px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; flex: none; }
-.epic-bar-fill { position: absolute; inset: 0 auto 0 0; background: var(--st-done); border-radius: 3px; }
 .capacity-host[hidden], .cron-lane[hidden] { display: none; }
 .capacity-host > ui-agent-queue, .cron-lane > ui-agent-queue { display: block; min-width: 0; }
 .cron-cards { display: flex; flex-direction: column; gap: 8px; position: relative; }
@@ -5784,7 +5767,6 @@ ${pageTokenAliases()}
            (syncCronLane gives it its data); each job's latest run is its board card — a one-column
            <ui-agent-inbox> (paintCronLaneCards) in the job's slot box (slot="job:<group key>"). -->
       <div class="cron-lane ui-tok" id="cron-lane" hidden><ui-agent-queue id="cron-aq" lang="ko"></ui-agent-queue></div>
-      <div class="epic-lane ui-tok" id="epic-lane" aria-label="에픽" hidden></div>
       <!-- Until the first board answer the columns show skeleton cards, not
            "0 · Nothing here" (a false empty board). A first load that fails says so
            here and offers a retry; the 30 s poll keeps retrying on its own. -->
@@ -8271,8 +8253,9 @@ function renderBoard(board, partial) {
     var arr = board[col0] || [];
     for (var i0 = 0; i0 < arr.length; i0++) {
       _sessionCache[arr[i0].key] = arr[i0];
-      // E4 ⑨a — an epic's children are in no column: cached here too, before the answer
-      // states are evicted and the env / owner indexes read the cache (fable #706 R1 P1).
+      // E4 ⑨a — an epic's children are in no column of the data (the board draws them under
+      // their epic, ⑨c): cached here too, before the answer states are evicted and the env /
+      // owner indexes read the cache (fable #706 R1 P1).
       var kids = arr[i0].epic && Array.isArray(arr[i0].epic.children) ? arr[i0].epic.children : [];
       for (var k0 = 0; k0 < kids.length; k0++) if (kids[k0] && kids[k0].key) _sessionCache[kids[k0].key] = kids[k0];
     }
@@ -8304,8 +8287,18 @@ function renderBoard(board, partial) {
   _cardCol = Object.create(null);
   _cardData = Object.create(null);
   _cardDrawn = Object.create(null);
+  _epicKidsDrawn = Object.create(null);
+  // Each list's cards, an epic's children right after its card (E4 ⑨c, withEpicChildren);
+  // what each epic's children are, as placed, for the push path (applyEpicPush).
+  function place(items, host, drawn) {
+    return withEpicChildren(items).map(function(it) {
+      placeCard(it.s, it.col, host, drawn);
+      if (it.s.kind === 'epic') _epicKidsDrawn[it.s.key] = epicChildrenOf(it.s).map(function(c) { return c.key; }).join(' ');
+      return it.s.key;
+    });
+  }
   function keys(list, col, host) {
-    return (list || []).map(function(s) { placeCard(s, col, host, true); return s.key; });
+    return place((list || []).map(function(s) { return { s: s, col: col }; }), host, true);
   }
   if (kb) {
     kb._ibPlan = {
@@ -8322,7 +8315,7 @@ function renderBoard(board, partial) {
               id: g.key,
               label: g.label,
               open: g.open,
-              keys: g.items.map(function(it) { placeCard(it.s, it.col, kb, g.open); return it.s.key; }),
+              keys: place(g.items, kb, g.open),
             };
           }),
         },
@@ -8336,8 +8329,6 @@ function renderBoard(board, partial) {
   }
   // The CRON lane (Option A): each job's lead run in its own one-column element.
   paintCronLaneCards(cronLaneSlots(cronPlan));
-  // The EPIC lane (E4 ⑨a): each epic's children, which are in no column.
-  renderEpicLane(board);
   // Cards that left every element: closed for good (a card that comes back
   // comes back closed), their bodies and retry timers released.
   for (var gone in prevHost) {
@@ -8865,8 +8856,9 @@ function cardOf(s, col) {
   if (metrics.length) card.metrics = metrics;
   // A cron run leads with the CRON badge instead of the spark (SSOT 2026-10-23 T3).
   if (s.cronJob && s.cronJob.name) card.lead = { text: 'CRON', glyph: 'clock', title: '크론 잡: ' + s.cronJob.name };
-  // A child of an epic (E4 ⑨b) leads with its plan node, the ref its epic's plan tree shows.
-  if (s.parentTaskId && s.planNodeId && !card.lead) card.lead = { text: '#' + String(s.planNodeId), glyph: 'tasks', title: '에픽의 노드 ' + String(s.planNodeId) };
+  // A child of an epic (E4 ⑨b) leads with its plan node, the ref its epic's plan tree shows —
+  // after ↳: it sits right under its epic's card (E4 ⑨c, withEpicChildren).
+  if (s.parentTaskId && s.planNodeId && !card.lead) card.lead = { text: '\u21b3 #' + String(s.planNodeId), glyph: 'tasks', title: '위 에픽의 노드 ' + String(s.planNodeId) };
   // An epic (E4 ⑨a) leads with EPIC and says its state; its progress is accepted nodes of all.
   if (s.kind === 'epic' && s.epic) {
     var epicLabel = EPIC_STATE_LABEL[epicStateOf(s.epic.state)];
@@ -9056,6 +9048,12 @@ function cardTaskPlanHydrate(root) {
   for (var i = 0; i < els.length; i++) {
     var s = _sessionCache[els[i].getAttribute('data-tp-key') || ''];
     if (s) taskElData(els[i], cardTaskPlanData(s));
+  }
+  // An epic's plan tree (renderEpicPlan).
+  var plans = root.querySelectorAll('ui-task-plan[data-epic-plan-key]');
+  for (var j = 0; j < plans.length; j++) {
+    var e = _sessionCache[plans[j].getAttribute('data-epic-plan-key') || ''];
+    if (e) taskElData(plans[j], epicPlanData(e));
   }
 }
 // The window's "+N개 더 · 전체 작업 N개 →" (ui-more): the panel's Tasks, the same landing as the page's link —
@@ -11557,7 +11555,13 @@ function renderCardBody(s, col, spec) {
     else if (p === 'refs') rest += refsHtml;
     else if (p === 'model') rest += footHtml;
   }
-  return '<div class="card-body">' + needsHtml + rest + '</div>';
+  return '<div class="card-body">' + needsHtml + renderEpicPlan(s) + rest + '</div>';
+}
+// E4 ⑨c (#725) — an epic's plan tree in its open card (the lane that drew it above the board
+// is gone): the element, its data in cardTaskPlanHydrate (epicPlanData), where it changed.
+function renderEpicPlan(s) {
+  if (!s || s.kind !== 'epic' || !s.epic || !Array.isArray(s.epic.nodes) || s.epic.nodes.length === 0) return '';
+  return '<ui-task-plan class="card-task-plan epic-plan" lang="ko" flush foot="none" data-epic-plan-key="' + escAttr(s.key) + '"></ui-task-plan>';
 }
 
 // #600 ⑥ — a dashboard task's last turn as its card says it: how it ended, why,
@@ -12023,11 +12027,6 @@ function boardHosts() {
   if (kb) out.push(kb);
   var lane = document.querySelectorAll('ui-agent-inbox.cron-inbox');
   for (var i = 0; i < lane.length; i++) if (lane[i].isConnected && lane[i].getClientRects().length) out.push(lane[i]);
-  // E4 ⑨a — the EPIC lane's children lists.
-  var epics = document.querySelectorAll('ui-agent-inbox.epic-inbox');
-  for (var j = 0; j < epics.length; j++) {
-    if (out.indexOf(epics[j]) < 0 && epics[j].isConnected && epics[j].getClientRects().length) out.push(epics[j]);
-  }
   return out;
 }
 
@@ -16219,10 +16218,8 @@ var _cronJobs = [];          // GET /api/dashboard/cron — this instance's jobs
 var _cronJobsRev = 0;        // bumped by every jobs fetch (laneSig)
 var _cronPlan = null;        // last planCronLane() result
 var _cronGroupEls = Object.create(null); // group key → the job's persistent card box (its slot)
-var _epicGroupEls = Object.create(null); // epic card key → its group box in the EPIC lane (E4 ⑨a)
+var _epicKidsDrawn = Object.create(null); // epic card key → its children's keys, as the last render placed them (E4 ⑨c)
 var EPIC_STATE_LABEL = { 'needs-input': '입력 필요', running: '자식 실행 중', done: '완료', idle: '대기' };
-var EPIC_STATE_TONE = { 'needs-input': 'var(--st-wait)', running: 'var(--accent)', done: 'var(--st-done)', idle: 'var(--text-tertiary)' };
-var EPIC_STATE_RANK = { 'needs-input': 0, running: 1, idle: 2, done: 3 };
 var EPIC_NODE_STEP = { none: 'pending', running: 'running', 'needs-input': 'paused', finished: 'paused', failed: 'failed', cancelled: 'dropped', interrupted: 'paused', closed: 'skipped' };
 var EPIC_NODE_NOTE = { 'needs-input': '입력 필요', finished: '판정 대기', interrupted: '끊김', closed: '닫힘' };
 var _cronDrawerKey = null;   // group key the drawer shows, null when closed
@@ -16521,29 +16518,26 @@ function cronLaneSlots(plan) {
   });
 }
 
-// ── E4 ⑨a (.prd/19 D11) — the EPIC lane ──
+// ── E4 ⑨c (#725, .prd/19 D11) — an epic's children under its card ──
 // The server takes an epic's live children out of the columns and sends their cards
-// in the epic's bundle (card.epic.children). The lane shows one group per epic that
-// has children: its title, state and progress, then the children's cards — the same
-// card as on the board (cardOf), its body in the same slot. The epic's own card stays
-// in its column (RUNNING / WAITING by its state). Waiting groups first, then running.
-function planEpicLane(board) {
-  var groups = [];
-  ['waiting', 'working', 'idle', 'closed'].forEach(function(col) {
-    var arr = (board && board[col]) || [];
-    for (var i = 0; i < arr.length; i++) {
-      var s = arr[i];
-      if (!s || s.kind !== 'epic' || !s.epic) continue;
-      var children = Array.isArray(s.epic.children) ? s.epic.children : [];
-      if (!children.length) continue;
-      groups.push({ key: s.key, epic: s, children: children });
-    }
-  });
-  function rank(g) {
-    return EPIC_STATE_RANK[epicStateOf(g.epic.epic.state)];
+// in the epic's bundle (card.epic.children). The board draws them right after the
+// epic's own card, in the same list — its column, or its DONE day group — each the
+// same card as anywhere (cardOf), in its own activity as its column (epicChildCol).
+// There is no lane above the board: the epic and its children stay together.
+function withEpicChildren(items) {
+  var out = [];
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    out.push(it);
+    var kids = epicChildrenOf(it && it.s);
+    for (var j = 0; j < kids.length; j++) out.push({ s: kids[j], col: epicChildCol(kids[j]) });
   }
-  groups.sort(function(a, b) { return rank(a) - rank(b); });
-  return groups;
+  return out;
+}
+// An epic card's children (its bundle), each with a key; none for any other card.
+function epicChildrenOf(s) {
+  if (!s || s.kind !== 'epic' || !s.epic || !Array.isArray(s.epic.children)) return [];
+  return s.epic.children.filter(function(c) { return !!(c && c.key); });
 }
 // An epic's state as one the page knows ('idle' otherwise — never a prototype key).
 function epicStateOf(state) {
@@ -16556,21 +16550,6 @@ function epicChildCol(c) {
   if (c.activityState === 'waiting') return 'waiting';
   if (c.activityState === 'working') return 'working';
   return 'idle';
-}
-// A group's head: the epic's title, its state chip and its progress (accepted of all nodes).
-function epicLaneHeadHtml(s) {
-  var e = s.epic || {};
-  var state = epicStateOf(e.state);
-  var p = e.progress || {};
-  var title = s.displayHeadline || s.summaryTitle || s.title || '에픽';
-  var html = '<span class="epic-title">' + esc(title) + '</span>';
-  html += '<span class="ui-chip is-toned is-sm epic-state" data-state="' + escAttr(state) + '" style="--ui-tone:' + EPIC_STATE_TONE[state] + '">' + esc(EPIC_STATE_LABEL[state]) + '</span>';
-  if (toNum(p.total) > 0) {
-    html += epicProgressHtml(p);
-    var shown = Math.max(0, Math.min(toNum(p.accepted), toNum(p.total)));
-    html += '<span class="epic-progress" title="받아들인 노드 / 전체 노드">' + shown + '/' + toNum(p.total) + '</span>';
-  }
-  return html;
 }
 // E4 ⑨b — the epic's plan as <ui-task-plan> data: an issue node is a step, its sub nodes nested under it.
 // An accepted node is done; otherwise the node's status (D5) as a step status, with a short note where
@@ -16602,156 +16581,30 @@ function epicPlanData(s) {
   });
   return { steps: steps };
 }
-// The progress bar in a group's head: accepted of all nodes, as a bar the screen reader reads.
-function epicProgressHtml(p) {
-  var total = toNum(p && p.total);
-  if (total <= 0) return '';
-  var accepted = Math.max(0, Math.min(toNum(p.accepted), total));
-  var pct = Math.round((accepted / total) * 100);
-  return '<span class="epic-bar" role="progressbar" aria-label="받아들인 노드" aria-valuemin="0" aria-valuemax="' + total + '" aria-valuenow="' + accepted + '" aria-valuetext="' + accepted + '/' + total + '"><span class="epic-bar-fill" style="width:' + pct + '%"></span></span>';
-}
-// One persistent box per epic group in #epic-lane: its head and its card box.
-function syncEpicLane(groups) {
-  var lane = document.getElementById('epic-lane');
-  if (!lane) return;
-  lane.hidden = groups.length === 0;
-  var keep = Object.create(null);
-  for (var k = 0; k < groups.length; k++) keep[groups[k].key] = true;
-  var prevBox = null;
-  for (var i = 0; i < groups.length; i++) {
-    var g = groups[i];
-    var box = _epicGroupEls[g.key];
-    if (!box) {
-      box = document.createElement('div');
-      box.className = 'epic-group';
-      box.setAttribute('data-epic', g.key);
-      var head = document.createElement('div');
-      head.className = 'epic-head';
-      // E4 ⑨b — the plan tree, between the head and the children's cards.
-      var plan = document.createElement('ui-task-plan');
-      plan.className = 'epic-plan';
-      plan.setAttribute('lang', 'ko');
-      plan.setAttribute('flush', '');
-      plan.setAttribute('foot', 'none');
-      var cards = document.createElement('div');
-      cards.className = 'cards epic-cards';
-      box.appendChild(head);
-      box.appendChild(plan);
-      box.appendChild(cards);
-      box._head = head;
-      box._plan = plan;
-      box._cards = cards;
-      _epicGroupEls[g.key] = box;
-    }
-    var headHtml = epicLaneHeadHtml(g.epic);
-    if (box._headHtml !== headHtml) {
-      box._head.innerHTML = headHtml;
-      box._headHtml = headHtml;
-    }
-    var planData = epicPlanData(g.epic);
-    box._plan.hidden = planData.steps.length === 0;
-    if (planData.steps.length) taskElData(box._plan, planData);
-    // In order, moving a box only when it is not already in its place: a DOM move disconnects the
-    // box's subtree (its inbox, the open bodies, focus, scroll) — fable #706 R1 P1.
-    var place = prevBox ? prevBox.nextSibling : lane.firstChild;
-    // A box still fading out (its group left) is no place: skip it, so the boxes after it stay put (fable #706 R2 P3).
-    while (place && place !== box && !epicLaneKeeps(place, keep)) place = place.nextSibling;
-    if (box !== place) lane.insertBefore(box, place || null);
-    prevBox = box;
-  }
-  for (var key in _epicGroupEls) {
-    if (keep[key]) continue;
-    var old = _epicGroupEls[key];
-    delete _epicGroupEls[key];
-    setTimeout(function(node) { return function() { if (node.parentNode) node.parentNode.removeChild(node); }; }(old), MOTION.fade + 40);
-  }
-}
-// A lane node that is a kept group's own box (not a box fading out, not text).
-function epicLaneKeeps(node, keep) {
-  var key = node.getAttribute ? node.getAttribute('data-epic') : null;
-  return !!key && keep[key] === true && _epicGroupEls[key] === node;
-}
-// Each group's children in its own <ui-agent-inbox view="list"> with one bare column.
-function paintEpicLaneCards(groups) {
-  for (var i = 0; i < groups.length; i++) {
-    var g = groups[i];
-    var box = _epicGroupEls[g.key];
-    if (!box) continue;
-    var el = box._inbox;
-    if (!el) {
-      el = document.createElement('ui-agent-inbox');
-      el.className = 'epic-inbox';
-      el.setAttribute('view', 'list');
-      el.setAttribute('lang', 'ko');
-      wireInbox(el);
-      box._inbox = el;
-    }
-    if (el.parentNode !== box._cards) box._cards.appendChild(el);
-    el._ibPlan = {
-      cols: [{
-        id: 'epic',
-        label: String(g.epic.displayHeadline || g.epic.title || ''),
-        bare: true,
-        keys: g.children.map(function(c) { placeCard(c, epicChildCol(c), el, true); return c.key; }),
-      }],
-      load: 'ready',
-      announce: false,
-    };
-    inboxPaint(el);
-  }
-}
-// The lane for a board: cache the children (a card opens only from the cache), sync, paint.
-function renderEpicLane(board) {
-  var groups = planEpicLane(board);
-  for (var i = 0; i < groups.length; i++) {
-    for (var j = 0; j < groups[i].children.length; j++) _sessionCache[groups[i].children[j].key] = groups[i].children[j];
-  }
-  syncEpicLane(groups);
-  paintEpicLaneCards(groups);
-  return groups;
-}
 // A child's card inside an epic's pushed card, by key.
 function epicChildOf(s, key) {
   var children = (s && s.epic && Array.isArray(s.epic.children)) ? s.epic.children : [];
   for (var i = 0; i < children.length; i++) if (children[i] && children[i].key === key) return children[i];
   return null;
 }
-// A single-session push of an epic (its bundle; a child's push arrives as its epic's
-// card): the lane is redrawn from the patched board and each drawn child card refreshed.
+// A single-session push (an epic's carries its bundle; a child's push arrives as its
+// epic's card). Its children are drawn right under its card (renderBoard): a push
+// whose children are not the ones the last render placed there redraws the board
+// from the patched data; otherwise each child card on the board is refreshed.
 function applyEpicPush(s) {
-  if (!s) return;
-  var children = s.epic && Array.isArray(s.epic.children) ? s.epic.children : [];
+  if (!s || !s.key) return;
+  var children = epicChildrenOf(s);
   // Cached first: a panel open on a child reads it even before a board is drawn.
-  for (var i = 0; i < children.length; i++) if (children[i] && children[i].key) _sessionCache[children[i].key] = children[i];
-  // A push with a bundle, or of a card that had a group and has none now (grok #706 R2): the lane changes.
-  if (!_lastBoardData || (!s.epic && !_epicGroupEls[s.key])) return;
-  var before = [];
-  for (var key in _cardHost) {
-    if (_cardHost[key] && (' ' + _cardHost[key].className + ' ').indexOf(' epic-inbox ') >= 0) before.push(key);
+  for (var i = 0; i < children.length; i++) _sessionCache[children[i].key] = children[i];
+  if (!_lastBoardData) return;
+  var placed = _epicKidsDrawn[s.key];
+  var now = children.map(function(c) { return c.key; }).join(' ');
+  if ((placed === undefined ? '' : placed) !== now) {
+    // An epic the last render did not place (hidden, or not on the board) has nothing drawn to change.
+    if (placed !== undefined || _cardHost[s.key]) renderBoard(_lastBoardData);
+    return;
   }
-  var groups = renderEpicLane(_lastBoardData);
-  var now = Object.create(null);
-  for (var g = 0; g < groups.length; g++) for (var j = 0; j < groups[g].children.length; j++) now[groups[g].children[j].key] = true;
-  // A child that left every group (closed, moved out of the bundle): released as the full render
-  // releases a card that left every element (fable #706 R1 P2).
-  var released = false;
-  for (var b = 0; b < before.length; b++) {
-    var gone = before[b];
-    if (now[gone]) continue;
-    var goneS = _sessionCache[gone];
-    delete _cardHost[gone];
-    delete _cardCol[gone];
-    delete _cardData[gone];
-    delete _cardDrawn[gone];
-    _expanded.delete(gone);
-    releaseCardIoTimer(goneS ? goneS.conversationId : null);
-    released = true;
-  }
-  if (released) syncCardBodies();
-  for (var c = 0; c < children.length; c++) {
-    var ch = children[c];
-    if (ch && ch.key && _cardHost[ch.key]) refreshCard(ch.key);
-  }
+  for (var c = 0; c < children.length; c++) if (_cardHost[children[c].key]) refreshCard(children[c].key);
 }
 
 function renderCronRunRow(run, g, nowMs) {

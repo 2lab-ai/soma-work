@@ -378,13 +378,25 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       'cronCardTime',
       'planCronLane',
       'cardBodyShown',
+      'epicChildCol',
+      'epicChildrenOf',
+      'withEpicChildren',
       'placeCard',
       'viewCardOf',
       'inboxPaint',
       'syncHasCards',
       'renderBoard',
     ],
-    ['BOARD_LABELS', '_cardHost', '_cardCol', '_cardData', '_cardDrawn', '_cardClosing', '_boardRenders'],
+    [
+      'BOARD_LABELS',
+      '_epicKidsDrawn',
+      '_cardHost',
+      '_cardCol',
+      '_cardData',
+      '_cardDrawn',
+      '_cardClosing',
+      '_boardRenders',
+    ],
     {
       document: { getElementById: (id: string) => (id === 'kanban' ? kanban : id === 'inbox' ? inbox : null) },
       _boardLoad: opts.boardLoad ?? 'ready',
@@ -402,7 +414,6 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       syncCronLane: () => {},
       cronLaneSlots: () => [],
       paintCronLaneCards: () => {},
-      renderEpicLane: () => {},
       showArchives: false,
       showSleeping: true,
       _revealedKey: null,
@@ -521,6 +532,97 @@ describe('renderBoard → the board element: NEEDS YOU · RUNNING · DONE by fin
     h.m.renderBoard(b, false);
     expect(h.expanded.has('r1')).toBe(false);
     expect(h.calls.deepLink).toBe(2);
+  });
+});
+describe('renderBoard → an epic’s children right under its card (E4 ⑨c, #725)', () => {
+  const now = Date.now();
+  const s = (key: string, over: Record<string, unknown> = {}) => ({
+    key,
+    lastActivity: new Date(now).toISOString(),
+    ...over,
+  });
+  const kid = (key: string, over: Record<string, unknown> = {}) =>
+    s(key, { parentTaskId: 'e', planNodeId: key, activityState: 'idle', sessionState: 'MAIN', ...over });
+  const epic = (key: string, children: unknown[], over: Record<string, unknown> = {}) =>
+    s(key, {
+      kind: 'epic',
+      epic: { state: 'running', progress: { accepted: 0, total: 2 }, nodes: [], children },
+      ...over,
+    });
+
+  it('in its column: the epic, then each child in its own activity; other cards keep their place', () => {
+    const h = boardHarness();
+    h.m.renderBoard(
+      {
+        waiting: [s('w1')],
+        working: [
+          s('r1'),
+          epic('E', [kid('c1', { activityState: 'working' }), kid('c2', { activityState: 'waiting' }), kid('c3')]),
+          s('r2'),
+        ],
+        idle: [],
+        closed: [],
+      },
+      false,
+    );
+    const plan = h.kanban._ibPlan as Plan;
+    expect(plan.cols[1].keys).toEqual(['r1', 'E', 'c1', 'c2', 'c3', 'r2']);
+    expect(plan.cols[0].keys).toEqual(['w1']);
+    const cards = (h.kanban.data?.columns ?? [])[1].cards as Card[];
+    expect(cards.map((c) => [c.id, c.status])).toEqual([
+      ['r1', 'working'],
+      ['E', 'working'],
+      ['c1', 'working'],
+      ['c2', 'waiting'],
+      ['c3', 'idle'],
+      ['r2', 'working'],
+    ]);
+    const st = h.m.state();
+    expect(st.host.c2).toBe(h.kanban);
+    expect(st.drawn.c3).toBe(true);
+  });
+
+  it('in DONE: the children follow the epic in its day group; a closed day counts them as stubs', () => {
+    const old = now - 5 * 24 * 60 * MIN;
+    const h = boardHarness();
+    h.m.renderBoard(
+      {
+        waiting: [],
+        working: [],
+        idle: [
+          epic('Etoday', [kid('t1'), kid('t2', { sessionState: 'SLEEPING' })], { doneAt: now - MIN, epic: undefined }),
+          s('d1', { doneAt: now - 2 * MIN }),
+          epic('Eold', [kid('o1')], { doneAt: old }),
+        ],
+        closed: [],
+      },
+      false,
+    );
+    const done = (h.kanban._ibPlan as Plan).cols[2];
+    // An epic card without a bundle draws no children.
+    expect(done.groups?.map((g) => [g.open, g.keys])).toEqual([
+      [true, ['Etoday', 'd1']],
+      [false, ['Eold', 'o1']],
+    ]);
+    const st = h.m.state();
+    expect(st.drawn.o1).toBeUndefined();
+    expect(st.data.o1).toEqual({ id: 'o1', title: '', status: 'done', bodyMode: 'slot' });
+    const h2 = boardHarness();
+    h2.m.renderBoard(
+      {
+        waiting: [],
+        working: [],
+        idle: [epic('Etoday', [kid('t1'), kid('t2', { sessionState: 'SLEEPING' })], { doneAt: now - MIN })],
+        closed: [],
+      },
+      false,
+    );
+    const g0 = ((h2.kanban.data?.columns ?? [])[2] as { groups: Array<{ cards: Card[] }> }).groups[0];
+    expect(g0.cards.map((c) => [c.id, c.status])).toEqual([
+      ['Etoday', 'idle'],
+      ['t1', 'idle'],
+      ['t2', 'closed'],
+    ]);
   });
 });
 function dayKey(ms: number): string {
@@ -899,6 +1001,7 @@ describe('D10 — one primary button per open card', () => {
         'acPermissionsHtml',
         'acGoalDecisionHtml',
         'acQuestionHtml',
+        'renderEpicPlan',
         'renderCardBody',
       ],
       ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy'],
@@ -1093,6 +1196,7 @@ describe('D10 — the open card renders one approval card per prompt; only what 
         'acPermissionsHtml',
         'acGoalDecisionHtml',
         'acQuestionHtml',
+        'renderEpicPlan',
         'renderCardBody',
       ],
       [

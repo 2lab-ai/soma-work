@@ -208,6 +208,7 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
         'sessionActionsOf',
         'sessionActionHtml',
         'cardGoalLine',
+        'renderEpicPlan',
         'renderCardBody',
       ],
       ['RESUME_SVG', 'SESSION_ACTION_TONE', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', '_busy'],
