@@ -18501,11 +18501,29 @@ async function ntDictateStart(host, auto) {
   }
 }
 
+// Does a result event carry any words?
+function ntDictationAnyWords(results) {
+  var n = results && results.length ? results.length : 0;
+  for (var i = 0; i < n; i++) {
+    var r = results[i];
+    if (r && r[0] && String(r[0].transcript || '').trim()) return true;
+  }
+  return false;
+}
+
 // A result: the field becomes what was there + what is heard; the new task's draft and state follow (the composer
 // sends no ui-input for a value the page sets).
 function ntDictationHeard(d, e) {
   if (d.hard || _ntDictation !== d) return;
   var results = e && e.results;
+  // Android's on-device recogniser sends results with no words between words, and may end an utterance with nomatch,
+  // no final: one that comes right after words (within 1.2 s) is a placeholder — the shown words stay (and an end
+  // keeps them as the start), only the time moves on. After a pause it is the boundary the fresh-list rule reads; on
+  // other engines an empty list is a withdrawal (astra review, PR #719).
+  if (d.android && !ntDictationAnyWords(results) && Date.now() - (d.at || 0) <= 1200) {
+    d.at = Date.now();
+    return;
+  }
   var r0 = results && results.length ? results[0] : null;
   var first = r0 && r0[0] ? String(r0[0].transcript || '').trim() : '';
   var got = ntDictationRead(results, d.cumulative);
@@ -18525,7 +18543,8 @@ function ntDictationHeard(d, e) {
   d.at = at;
   d.finals = got.finals;
   d.interim = got.interim;
-  if (got.finals || got.interim) {
+  // Words, not whitespace, count as heard (three sessions without words still end it).
+  if (ntDictationAnyWords(results)) {
     d.heard = true;
     d.silent = 0;
     d.retried = false;
