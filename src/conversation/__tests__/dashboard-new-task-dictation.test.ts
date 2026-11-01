@@ -189,6 +189,7 @@ function page(
       'ntDictationDeadText',
       'ntDictateStart',
       'ntDictationHeard',
+      'ntDictationAnyWords',
       'ntDictationListen',
       'ntDictationFallback',
       'ntRecordingNow',
@@ -1135,6 +1136,29 @@ describe('SSOT_5 — Samsung Internet and Chrome on a Galaxy: the first press li
     } finally {
       vi.useRealTimers();
     }
+  });
+  it('result events whose words are all empty (Android’s on-device recogniser sends them between words) leave the shown words alone, and an utterance that ends without a final keeps them', async () => {
+    // Recorded in Chrome 109 on Android 13 with Speech Services 2024-03 (2026-11-02): empty interim results between
+    // words, then nomatch and the end — no final. The shown words vanished and were lost at the end.
+    const Rec = recClass(null);
+    const { api, env } = page({ engine: Rec, ua: UA.samsung });
+    await api.ntDictateStart();
+    const rec = FakeRec.made[0];
+    rec.say([interim('')]);
+    expect(env.composer.value).toBe('');
+    rec.say([interim('실시간')]);
+    expect(env.composer.value).toBe('실시간');
+    rec.say([interim('')]);
+    expect(env.composer.value).toBe('실시간');
+    rec.say([interim('실시간 받아쓰기를 테스트하고 있습니다')]);
+    rec.say([interim('')]);
+    expect(env.composer.value).toBe('실시간 받아쓰기를 테스트하고 있습니다');
+    rec.end(); // nomatch, then the end: no final came
+    expect(rec.starts).toBe(2);
+    rec.say([interim('다음 문장')]);
+    expect(env.composer.value).toBe('실시간 받아쓰기를 테스트하고 있습니다 다음 문장');
+    // The words count as heard: three such sessions are not "silent".
+    expect(api.__peek('_ntDictation')).not.toBeNull();
   });
   it('a recogniser that answers is not cut off by that timer, in any session', async () => {
     vi.useFakeTimers();
