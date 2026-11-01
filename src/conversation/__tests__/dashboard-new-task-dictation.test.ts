@@ -720,6 +720,22 @@ describe('SSOT_4 — with speech recognition on this device the new task opens l
     expect(open).toContain('ntDictateAuto();');
     expect(open.indexOf('ntDictateAuto();')).toBeLessThan(open.indexOf('await ntLoadContext();'));
   });
+  it('a dictation running in the session panel stops when the new task opens over it (astra R3, P1)', async () => {
+    const open = clientFn('openNewTask');
+    expect(open).toContain("ntDictateStopIn('pc');");
+    expect(open.indexOf("ntDictateStopIn('pc');")).toBeLessThan(open.indexOf('ntDictateAuto();'));
+    // …so the automatic start then takes the microphone for the new task.
+    const Rec = recClass(null);
+    const { api, env } = page({ engine: Rec, ua: UA.iphone });
+    await api.ntDictateStart(api.ntDictationHost('pc'));
+    api.ntDictateStopIn('pc'); // what openNewTask does first
+    api.ntDictateAuto();
+    expect(FakeRec.made[0].aborts).toBe(1);
+    expect(FakeRec.made).toHaveLength(2);
+    FakeRec.made[1].say([interim('새 작업으로 말한 지시')]);
+    expect(env.composer.value).toBe('새 작업으로 말한 지시');
+    expect(env.pc.value).toBe('');
+  });
   it('Apple’s engine (on the device): it opens listening, at once', async () => {
     const Rec = recClass(null);
     const { api, env } = page({ engine: Rec, ua: UA.iphone });
@@ -762,6 +778,23 @@ describe('SSOT_4 — with speech recognition on this device the new task opens l
     api.ntDictateAuto();
     expect(FakeRec.made).toHaveLength(1);
   });
+  it('a restart refused after a pause (iOS) does not end the automatic start — only a refused mic does (fable R3, P2)', async () => {
+    const Rec = recClass(null);
+    const { api } = page({ engine: Rec, ua: UA.iphone });
+    api.ntDictateAuto();
+    const rec = FakeRec.made[0];
+    rec.say([final('첫 문장')]);
+    rec.end(); // listens again (session 2)
+    rec.onerror?.({ error: 'not-allowed' });
+    rec.end();
+    expect(api.__peek('_ntDictationAutoOff')).toBe(false);
+  });
+  it('while Chrome is asked, the context loading keeps the "준비 중" line (fable R3, P3)', async () => {
+    const Rec = recClass('available');
+    const { api } = page({ engine: Rec, ua: UA.chromeMac });
+    api.ntDictateAuto();
+    expect(api.ntDictationLive()).toBe('받아쓰기 준비 중…');
+  });
   it('a key typed stops it hard and the typing goes on (the composer’s ui-input)', async () => {
     const Rec = recClass(null);
     const { api, env } = page({ engine: Rec, ua: UA.iphone });
@@ -800,6 +833,12 @@ describe('I1.4 — the dialog wires the stops; a live dictation counts as unsent
     for (const fn of ['pcOnSubmit', 'pcReset', 'pcFreshSteer'])
       expect(clientFn(fn), fn).toContain("ntDictateStopIn('pc');");
     expect(clientFn('pcPaintComposer')).toContain("pcComposerSetup(document.getElementById('pc-composer')");
+  });
+  it('a voice note starting to record stops the dictation of its composer (astra R3, P2 — one microphone)', () => {
+    const at = TEMPLATE.indexOf("document.addEventListener('ui-record', function(e) {");
+    expect(at).toBeGreaterThan(0);
+    const body = TEMPLATE.slice(at, TEMPLATE.indexOf('\n});\n', at));
+    expect(body).toContain("ntDictateStopIn(e.target.id === 'pc-composer' ? 'pc' : 'nt');");
   });
   it('a new build does not reload the tab mid-sentence', () => {
     expect(clientFn('hasUnsentInput')).toContain('if (_ntDictation) return true;');
