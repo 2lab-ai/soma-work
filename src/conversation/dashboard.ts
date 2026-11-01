@@ -17878,8 +17878,8 @@ function ntComposerData() {
   // said into the field while it is said. It is text, so a dashboard task takes it too. No recogniser (Firefox): none.
   if (ntDictationEngine(typeof window !== 'undefined' ? window : null)) {
     d.tools = [ntDictationTool(ntDictating('nt'))];
-    // A phone under 360px (a Galaxy S9, a Fold's cover screen): four tools and the worded 작업 시작 overlap — the
-    // send keeps its arrow (its name stays the button's label).
+    // A screen under 360px wide (an older phone, or one with a large display zoom): four tools and the worded
+    // 작업 시작 overlap — the send keeps its arrow (its name stays the button's label).
     if (ntDictationNarrow()) d.submitLabel = '';
   }
   var lim = _ntCtx && _ntCtx.limits;
@@ -18070,13 +18070,14 @@ function ntDictationErrorText(code, android) {
   }
 }
 
-// A recogniser that does not work, said plainly (not "말이 들리지 않아"): 'dead' — sessions that never opened the
-// microphone; 'mute' — three that heard speech and gave back no words (Samsung Internet can show listening, no text).
+// Said plainly (not "말이 들리지 않아"): 'dead' — a recogniser that never opened the microphone (a red line: it does not
+// work); 'mute' — three sessions that heard sound and gave back no words: a noisy room, or a recogniser that shows
+// listening and returns nothing (Samsung Internet) — the status line says what to try if it keeps happening.
 function ntDictationDeadText(kind, android) {
   var fix = android
     ? '설정 › 애플리케이션에서 ‘Google 음성 인식 및 합성’을 켜거나 업데이트하고, 안 되면 Chrome에서 열어 주세요'
     : '다른 브라우저(Chrome·Safari)에서 열어 주세요';
-  if (kind === 'mute') return '말은 들렸지만 이 브라우저의 음성 인식이 글자를 돌려주지 않습니다 — ' + fix;
+  if (kind === 'mute') return '말소리는 들렸지만 글자로 바뀐 것이 없어 멈췄습니다 — 계속 이러면 ' + fix;
   return '이 브라우저의 음성 인식이 마이크를 열지 못했습니다 — ' + fix;
 }
 
@@ -18175,12 +18176,12 @@ async function ntDictateStart(host, auto) {
     sessions: 0,
     error: '',
     bad: false,
-    // This session opened the microphone (audiostart) / heard speech (speechstart); sessions in a row that did not,
-    // or that heard speech and gave back no words — a recogniser that does not work (ntDictationEnded).
+    // This session opened the microphone (audiostart) / heard sound (speechstart); sessions in a row that never
+    // opened it (a recogniser that does not work), and whether the silent run so far heard sound (ntDictationEnded).
     audio: false,
     spoke: false,
     dead: 0,
-    mute: 0,
+    spokeRun: false,
     // Android refused a restart (still busy): one more try after a moment, once per stretch without words.
     retry: false,
     retried: false,
@@ -18257,6 +18258,8 @@ async function ntDictateStart(host, auto) {
     ntDictationListen(d);
     d.live = ntDictationStatus(where);
     host.status(d.live);
+    // The session panel has no status line: where the voice leaves the device, its toast says so.
+    if (host.id === 'pc' && (where === 'service' || where === 'installing')) host.status(d.live, true);
   } catch (e) {
     ntDictationEnd(d, ntDictationErrorText('', android), true);
   }
@@ -18316,9 +18319,10 @@ function ntDictationListen(d) {
 }
 
 // The recogniser ended. Stopped or failed: the dictation lets go. Ended by itself (iOS after a pause, Android after
-// each utterance, Chrome after a while): it listens again with the words so far as its start; three silent sessions
-// in a row end it. Two sessions in a row that never opened the microphone, or three that heard speech and gave back
-// no words, are a recogniser that does not work: it ends saying so, and the new task stops opening listening.
+// each utterance, Chrome after a while): it listens again with the words so far as its start; three sessions in a row
+// without words end it — said as silence, or, when sound was heard (a noisy room, Samsung Internet returning nothing),
+// with what to try. Two sessions in a row that never opened the microphone are a recogniser that does not work: it
+// ends on the red line, and the new task stops opening listening.
 function ntDictationEnded(d) {
   if (d.hard || _ntDictation !== d) return;
   if (d.stopping) {
@@ -18345,18 +18349,18 @@ function ntDictationEnded(d) {
     return;
   }
   d.dead = !d.heard && !d.audio ? d.dead + 1 : 0;
-  d.mute = !d.heard && d.spoke ? d.mute + 1 : 0;
-  if (d.dead >= 2 || d.mute >= 3) {
+  if (d.dead >= 2) {
     if (d.auto) _ntDictationAutoOff = true;
-    ntDictationEnd(d, ntDictationDeadText(d.dead >= 2 ? 'dead' : 'mute', d.android), true);
+    ntDictationEnd(d, ntDictationDeadText('dead', d.android), true);
     return;
   }
+  d.spokeRun = !d.heard && (d.spokeRun || d.spoke);
   d.silent = d.heard ? 0 : d.silent + 1;
   d.heard = false;
   d.audio = false;
   d.spoke = false;
   if (d.silent >= 3) {
-    ntDictationEnd(d, '말이 들리지 않아 받아쓰기를 멈췄습니다');
+    ntDictationEnd(d, d.spokeRun ? ntDictationDeadText('mute', d.android) : '말이 들리지 않아 받아쓰기를 멈췄습니다');
     return;
   }
   try {
@@ -18420,7 +18424,8 @@ function ntOnComposerTool(e, host) {
 // (SSOT_5); a key typed stops it (ui-input) and the typing goes on. Called inside the opening press — Safari wants it
 // for the microphone.
 function ntDictateAuto() {
-  if (_ntDictationAutoOff || _ntDictation) return;
+  // Not while a voice note is recording (one microphone): the voice note keeps it.
+  if (_ntDictationAutoOff || _ntDictation || _recording.length) return;
   ntDictateStart(ntDictationHost('nt'), true);
 }
 
@@ -18726,6 +18731,16 @@ async function ntOpenLaunched(launch) {
 function ntInit() {
   var dlg = ntEl('nt-dialog');
   if (!dlg) return;
+  // The tool's word (640px) and the send's word (360px) follow the width: a rotation, a Fold opening repaints both
+  // composers.
+  ['(max-width: 359px)', '(min-width: 640px)'].forEach(function (q) {
+    var mq = window.matchMedia && window.matchMedia(q);
+    if (mq && mq.addEventListener)
+      mq.addEventListener('change', function () {
+        paintNtComposer();
+        pcPaintComposer();
+      });
+  });
   // <ui-dialog>: Esc, the scrim and ✕ ask to close (ui-close) — the element settles out and gives focus back, then
   // says so (ui-closed, after every exit, the page's hide() too): the page lets go of what it owns.
   dlg.addEventListener('ui-close', function (e) {

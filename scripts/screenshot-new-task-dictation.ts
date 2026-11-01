@@ -16,8 +16,8 @@
  *     - a dashboard task (no attachments) gets the same tool;
  *     - without a recogniser (Firefox) the voice note only, no 받아쓰기;
  *     - the session panel composer: voice note + 받아쓰기, and dictating writes into it;
- *     - a recogniser error lands on the red error line (on a Galaxy: what to turn on); a recogniser that hears speech
- *       and gives back no words (Samsung Internet) is said plainly there too.
+ *     - a recogniser error lands on the red error line (on a Galaxy: what to turn on); sessions that hear sound and
+ *       give back no words (Samsung Internet, a noisy room) stop with what to try.
  *
  * Run from the repo root (keeps state out of the checkout):
  *   env -i HOME="$HOME" PATH="$PATH" SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst \
@@ -441,8 +441,8 @@ async function run(browser: Browser, engine: string, label: string, options: Bro
     await page.waitForTimeout(100);
     v = await composerView(page);
     check(
-      `${tag}: speech heard but no words back — the red line says so, not "들리지 않아"`,
-      v.error.includes('글자를 돌려주지 않습니다') && !v.status.includes('들리지 않아'),
+      `${tag}: sound heard but no words back — it stops saying what to try, not "들리지 않아"`,
+      v.status.includes('글자로 바뀐 것이 없어') && !v.status.includes('들리지 않아'),
       `${v.error} · status=${v.status}`,
     );
     await page.screenshot({ path: path.join(OUT, `${engine}-${label}-no-words.png`) });
