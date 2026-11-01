@@ -3249,6 +3249,10 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         psecMaybeFill: () => {},
         _panelDetail: !!opts.detail,
         isAdvanced: () => true,
+        // The view plan (.prd/20): advanced 2안 원본 — no spec, the open card and the face as they were.
+        viewSpec: () => ({ detail: { show: [], tasks: 'runs', open: true } }),
+        detailShows: () => true,
+        faceOf: (c: unknown) => c,
         _panelTasksOpen: false,
         _agentConvRaw: null,
         _agentConvFailed: null,

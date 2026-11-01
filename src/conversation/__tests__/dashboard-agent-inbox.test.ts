@@ -297,11 +297,11 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(toggle.indexOf('openPanel(key);')).toBeLessThan(toggle.indexOf('deckDrop(key);'));
     // SSOT 2026-10-29 T1: the actions (Stop · Close · Trash) + Slack are the body's first row.
     expect(body).toContain(
-      `const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col) + slackBtn + '</span></div>';`,
+      `const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col, !!spec && spec.star === false) + slackBtn + '</span></div>';`,
     );
-    // The actions lead what needs the user (needsHtml); the full body (어드밴스드) follows it with the rest.
+    // The actions lead what needs the user (needsHtml); the plan's parts (.prd/20) follow it with the rest.
     expect(body).toMatch(/const needsHtml = actionsHtml\s*\+ permissionHtml/);
-    expect(body).toMatch(/return '<div class="card-body">'\s*\+ needsHtml\s*\+ middle/);
+    expect(body).toContain("return '<div class=\"card-body\">' + needsHtml + rest + '</div>';");
     expect(TEMPLATE).toContain("var WL_EMPTY_MSG = '작업 로그 없음';");
     // SSOT 2026-10-29: no conversation → no work-log state; the 작업 로그 tab reads 작업 로그 없음.
     expect(fnBody('resetWorkLog')).toContain('_wl = convId ? wlNewState(convId) : null;');
@@ -431,7 +431,7 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(reset).toBeGreaterThan(-1);
     // View mode (SSOT 2026-11-01): 어드밴스드 lands on the section the opening names; 미니멀 on the chat.
     expect(body.indexOf('_psec = psecForMode(_panelLand);')).toBeGreaterThan(-1);
-    expect(fnBody('psecForMode')).toContain("return isAdvanced() ? psecForLanding(land) : 'conv';");
+    expect(fnBody('psecForMode')).toContain("return detailShows('sections') ? psecForLanding(land) : 'conv';");
     expect(body.indexOf('selectPanelSection(_psec);')).toBeGreaterThan(reset);
     expect(fnBody('psecForLanding')).toContain("land === 'worklog' ? 'log'");
     expect(TEMPLATE).toMatch(/^var _panelDetail = false;/m);

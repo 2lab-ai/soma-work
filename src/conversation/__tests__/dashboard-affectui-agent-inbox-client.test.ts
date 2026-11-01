@@ -379,22 +379,12 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       'planCronLane',
       'cardBodyShown',
       'placeCard',
-      'minimalCard',
       'viewCardOf',
       'inboxPaint',
       'syncHasCards',
       'renderBoard',
     ],
-    [
-      'BOARD_LABELS',
-      '_cardHost',
-      '_cardCol',
-      '_cardData',
-      '_cardDrawn',
-      '_cardClosing',
-      '_boardRenders',
-      'MINIMAL_CARD_KEYS',
-    ],
+    ['BOARD_LABELS', '_cardHost', '_cardCol', '_cardData', '_cardDrawn', '_cardClosing', '_boardRenders'],
     {
       document: { getElementById: (id: string) => (id === 'kanban' ? kanban : id === 'inbox' ? inbox : null) },
       _boardLoad: opts.boardLoad ?? 'ready',
@@ -422,6 +412,10 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       cardOf: (s: { key: string }, col: string) => ({ id: s.key, title: s.key, status: col, bodyMode: 'slot' }),
       // View mode (SSOT 2026-11-01): the board maps each card through the mode — this harness is 어드밴스드.
       isAdvanced: () => true,
+      // The view plan (.prd/20): advanced 2안 원본 — no spec, the open card and the face as they were.
+      viewSpec: () => ({ detail: { show: [], tasks: 'runs', open: true } }),
+      detailShows: () => true,
+      faceOf: (c: unknown) => c,
       cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
       acPrefetch: () => {},
       releaseCardIoTimer: (cid: unknown) => calls.released.push(cid),
@@ -583,6 +577,10 @@ function bodyHarness() {
     document: { createElement: fakeEl },
     renderCardBody: (s: { key: string }, col: string) => `<div class="card-body">${s.key}|${col}</div>`,
     isAdvanced: () => true,
+    // The view plan (.prd/20): advanced 2안 원본 — no spec, the open card and the face as they were.
+    viewSpec: () => ({ detail: { show: [], tasks: 'runs', open: true } }),
+    detailShows: () => true,
+    faceOf: (c: unknown) => c,
     cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
     isPickingModel: () => false,
     morphInnerHtml: (el: FakeEl, html: string) => {
@@ -721,6 +719,10 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
       MOTION: { move: 320, expand: 240 },
       cardOf: (s: { key: string }, col: string) => ({ id: s.key, title: s.key, status: col }),
       isAdvanced: () => true,
+      // The view plan (.prd/20): advanced 2안 원본 — no spec, the open card and the face as they were.
+      viewSpec: () => ({ detail: { show: [], tasks: 'runs', open: true } }),
+      detailShows: () => true,
+      faceOf: (c: unknown) => c,
       cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
       cardBodyShown: () => false,
       acPrefetch: () => {},
@@ -729,8 +731,8 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
       deckDrop: (...a: unknown[]) => calls.order.push(`deckDrop(${a.join(',')})`),
     };
     const { wireInbox } = load<{ wireInbox(h: unknown): void }>(
-      ['placeCard', 'minimalCard', 'viewCardOf', 'inboxPaint', 'inboxChipOf', 'syncHasCards', 'wireInbox'],
-      ['MINIMAL_CARD_KEYS'],
+      ['placeCard', 'viewCardOf', 'inboxPaint', 'inboxChipOf', 'syncHasCards', 'wireInbox'],
+      [],
       env,
     );
     wireInbox(host);
