@@ -17880,7 +17880,7 @@ function ntComposerData() {
   if (ntDictationEngine(typeof window !== 'undefined' ? window : null)) {
     d.tools = [ntDictationTool(ntDictating('nt'))];
     // A screen under 360px wide (an older phone, or one with a large display zoom): four tools and the worded
-    // 작업 시작 overlap — the send keeps its arrow (its name stays the button's label).
+    // 작업 시작 overlap — the send keeps its arrow (named by the composer's own 보내기).
     if (ntDictationNarrow()) d.submitLabel = '';
   }
   var lim = _ntCtx && _ntCtx.limits;
@@ -18203,6 +18203,9 @@ async function ntDictateStart(host, auto) {
     retried: false,
     // The session whose end was handled (an end the engine never sends is played once — ntDictationFallback).
     handled: 0,
+    // This session was aborted by the browser (a hidden page); the moment before Android's retry (no session running).
+    aborted: false,
+    waiting: false,
     // Android Chrome repeats settled words in longer copies (ntDictationRead folds them there only).
     cumulative: android,
   };
@@ -18248,7 +18251,8 @@ async function ntDictateStart(host, auto) {
     };
     rec.onerror = function (e) {
       var code = e && e.error;
-      if (ntPageHidden() && code !== 'aborted' && code !== 'no-speech') {
+      if (code === 'aborted') d.aborted = true;
+      if (ntPageHidden() && (android || d.aborted) && code !== 'aborted' && code !== 'no-speech') {
         d.error = NT_DICTATION_HIDDEN;
         d.bad = false;
         d.stopping = true;
@@ -18331,8 +18335,10 @@ function ntDictationHeard(d, e) {
   d.host.text(text);
 }
 
-// The page went to the background (another app, the screen off): the browser aborts recognition and refuses a restart
-// there (as not-allowed) — the dictation stops, saying a press continues, instead of calling it a missing permission.
+// The page went to the background (another app, the screen off): Android — or any browser that aborted the session —
+// refuses a restart there (as not-allowed, or a network error) — the dictation stops, saying a press continues,
+// instead of calling it a missing permission. Desktop Chrome keeps listening in a background tab and restarts there:
+// it goes on (fable review R2 P2).
 var NT_DICTATION_HIDDEN = '다른 화면으로 가서 받아쓰기를 멈췄습니다 — 다시 누르면 이어서 받아씁니다';
 function ntPageHidden() {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden';
@@ -18435,7 +18441,9 @@ function ntDictationEnded(d) {
   d.base = ntDictationText(d.base, d.finals, d.interim);
   d.finals = '';
   d.interim = '';
-  if (ntPageHidden()) {
+  var aborted = d.aborted;
+  d.aborted = false;
+  if (ntPageHidden() && (d.android || aborted)) {
     ntDictationEnd(d, NT_DICTATION_HIDDEN);
     return;
   }
@@ -18445,9 +18453,11 @@ function ntDictationEnded(d) {
     d.heard = false;
     d.audio = false;
     d.spoke = false;
+    d.waiting = true;
     setTimeout(function () {
+      d.waiting = false;
       if (_ntDictation !== d || d.hard || d.stopping) return;
-      if (ntPageHidden()) {
+      if (ntPageHidden() && d.android) {
         ntDictationEnd(d, NT_DICTATION_HIDDEN);
         return;
       }
@@ -18506,7 +18516,8 @@ function ntDictateStop(hard) {
   if (d.stopping) return;
   d.stopping = true;
   d.host.paint();
-  if (!d.rec) {
+  // No session running (none yet, or the moment before Android's retry): nothing to settle — let go at once.
+  if (!d.rec || d.waiting) {
     ntDictationEnd(d, '');
     return;
   }
