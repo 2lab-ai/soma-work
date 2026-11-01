@@ -465,6 +465,10 @@ async function saveSetting(key, value) {
   }
   var rows = _snapshot.settings;
   for (var i = 0; i < rows.length; i++) if (rows[i].key === key) rows[i] = r.data.setting;
+  // The dashboard's device copy of its view (dashboard.ts VIEW_MODE_KEY · VIEW_PLAN_KEY): its first paint after a
+  // full reload, before its own settings load answers.
+  var copy = { dashboardMode: 'soma-view-mode', dashboardPlan: 'soma-view-plan' }[key];
+  if (copy) { try { localStorage.setItem(copy, String(r.data.setting.value)); } catch (_e) {} }
   _rowStatus[key] = { state: 'saved', text: '저장됨 — ' + valueText(r.data.setting, r.data.setting.value) };
   repaintRow(key);
   return true;

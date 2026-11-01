@@ -388,6 +388,16 @@ describe('mpHydrate — every picker under a root takes its session’s data, on
       document: { createElement: () => body },
       renderCardBody: (s: { model: string }) => `[BODY:${s.model}]`,
       isAdvanced: () => true,
+      // The view plan (.prd/20): advanced 2안 원본 — no spec, the open card and the face as they were.
+      viewSpec: () => ({
+        detail: {
+          show: ['subtitle', 'info', 'goal', 'artifacts', 'agenthead', 'agenttabs', 'sections', 'controls'],
+          tasks: 'runs',
+          open: true,
+        },
+      }),
+      detailShows: () => true,
+      faceOf: (c: unknown) => c,
       isPickingModel: () => picking,
       morphInnerHtml: (_e: unknown, h: string) => morphs.push(h),
       updateTimersIn: () => {},

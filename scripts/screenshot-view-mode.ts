@@ -22,6 +22,11 @@
  *   M6  the toggle saves the choice per user (PATCH /api/settings/dashboardMode)
  *       and a reload keeps it; advanced shows everything the page showed
  *       before (stats, capacity slot, every card field, 자세히-on sections)
+ *   P1–P6 (SSOT 2026-11-01 ④, .prd/20 §5) — at 1280 light, every mode × 1안 · 2안 · 3안: the card face, the
+ *       open card and the detail card, each cell of the .prd's tables; a plan picked on the settings page
+ *       (설정 › 대시보드 › 화면 구성안) reaches the dashboard without a reload of its own
+ *
+ * PLANS_ONLY=1 runs the plans pass alone.
  *
  * Run from the repo root with a clean env (keeps state out of the checkout):
  *   env -i PATH="$PATH" HOME="$TMP" TMPDIR="$TMP" SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst \
@@ -236,8 +241,17 @@ const PAGE_HELPERS = [
 ].join('\n');
 
 // The per-user store double: one value per user, kept across page loads of a scenario.
-type Store = { mode: string | null; patches: unknown[]; stars: unknown[] };
+type Store = { mode: string | null; plan?: string | null; patches: unknown[]; stars: unknown[] };
+// The real registry's rows for the dashboard group (the settings page draws them as shipped).
+let REAL_DASHBOARD_ROWS: Array<Record<string, unknown>> = [];
+let REAL_GROUPS: unknown[] = [];
 function settingsSnapshot(store: Store) {
+  const dash = REAL_DASHBOARD_ROWS.map((row) => {
+    if (row.key === 'dashboardMode')
+      return { ...row, value: store.mode ?? 'minimal', modified: (store.mode ?? 'minimal') !== 'minimal' };
+    if (row.key === 'dashboardPlan') return { ...row, value: store.plan ?? '1', modified: (store.plan ?? '1') !== '1' };
+    return row;
+  });
   const settings: unknown[] = [
     {
       key: 'defaultModel',
@@ -263,23 +277,9 @@ function settingsSnapshot(store: Store) {
       editable: true,
       slackCommand: 'effort',
     },
-    {
-      key: 'dashboardMode',
-      group: 'output',
-      label: '대시보드 화면',
-      description: '',
-      kind: 'choice',
-      value: store.mode ?? 'minimal',
-      defaultValue: 'minimal',
-      modified: (store.mode ?? 'minimal') !== 'minimal',
-      options: [
-        { value: 'minimal', label: '미니멀' },
-        { value: 'advanced', label: '어드밴스드' },
-      ],
-      editable: true,
-    },
+    ...dash,
   ];
-  return { userId: 'U001', isAdmin: false, accepted: true, groups: [], settings };
+  return { userId: 'U001', isAdmin: false, accepted: true, groups: REAL_GROUPS, settings };
 }
 
 async function installMocks(page: Page, board: unknown, store: Store) {
@@ -296,6 +296,7 @@ async function installMocks(page: Page, board: unknown, store: Store) {
     const body = JSON.parse(r.request().postData() || '{}');
     store.patches.push({ key, value: body.value });
     if (key === 'dashboardMode') store.mode = body.value;
+    if (key === 'dashboardPlan') store.plan = body.value;
     const row = (settingsSnapshot(store).settings as Array<{ key: string }>).find((s) => s.key === key);
     return r.fulfill({ json: { ok: true, setting: row } });
   });
@@ -492,11 +493,15 @@ async function scenario(
   // M3 — the face: what matters only.
   const fA = await faceOf(page, KEY_A);
   check(fA.task && fA.text.includes('미니멀 모드 구현'), `${tag} M3 the running card names its task in progress`, fA);
-  check(!fA.tokens && !fA.ctx && !fA.pr, `${tag} M3 minimal face: no tokens line · context · PR`, fA);
-  // T7 — the foot's right end: the price, then the model with its vendor's mark.
+  check(!fA.tokens && !fA.ctx, `${tag} M3 minimal face: no tokens line · context`, fA);
+  // T7 + .prd/20 1안 — the foot's right end: the PR (the outcome), the price, then the model with its vendor's mark.
   check(
-    fA.foot.length === 2 && fA.foot[0].text === '$6.20' && /opus/i.test(fA.foot[1].text) && fA.foot[1].icon,
-    `${tag} M7 the foot's right end is the price, then the model with its mark`,
+    fA.foot.length === 3 &&
+      /#700/.test(fA.foot[0].text) &&
+      fA.foot[1].text === '$6.20' &&
+      /opus/i.test(fA.foot[2].text) &&
+      fA.foot[2].icon,
+    `${tag} M7 the foot's right end is the PR, the price, then the model with its mark (1안)`,
     fA.foot,
   );
   // T8 — a line of artifacts.
@@ -619,6 +624,271 @@ async function scenario(
   await ctx.close();
 }
 
+// ── P1–P6 (.prd/20 §5): every mode × plan at 1280 light — the face, the open card, the detail card ──
+function openBodyOf(page: Page, key: string) {
+  return page.evaluate((k) => {
+    const b = (window as any).__body(k) as HTMLElement | null;
+    const has = (sel: string) =>
+      !!b && Array.from(b.querySelectorAll<HTMLElement>(sel)).some((e) => e.checkVisibility());
+    return {
+      star: has('[data-action="star"]'),
+      stop: has('[data-action="stop"]'),
+      slack: !!b && /Slack/.test(b.innerText),
+      refs: has('.card-refs'),
+      model: has('.cfb-model'),
+      tasks: has('ui-task-plan'),
+      tree: has('ui-agent-tree'),
+      goal: has('.card-goal-line'),
+      text: b ? b.innerText.slice(0, 400) : '',
+    };
+  }, key);
+}
+function detailState(page: Page) {
+  return page.evaluate(() => {
+    const vis = (sel: string) => {
+      const el = document.querySelector(sel) as HTMLElement | null;
+      return !!el && el.checkVisibility();
+    };
+    const tabsList = document
+      .querySelector('#panel-tabs')
+      ?.shadowRoot?.querySelector('[role="tablist"]') as HTMLElement | null;
+    const secList = document
+      .querySelector('#panel-sections')
+      ?.shadowRoot?.querySelector('[role="tablist"]') as HTMLElement | null;
+    const tasks = document.getElementById('panel-tasks') as HTMLElement | null;
+    const header = document.querySelector('#slide-panel .panel-header') as HTMLElement;
+    const cmd = document.getElementById('panel-command') as HTMLElement;
+    const h = cmd.getBoundingClientRect().bottom - header.getBoundingClientRect().top;
+    return {
+      plan: document.body.getAttribute('data-view-plan'),
+      detail: document.body.getAttribute('data-detail'),
+      tasksMode: document.body.getAttribute('data-tasks'),
+      open: (document.getElementById('slide-panel') as HTMLElement).classList.contains('is-detail'),
+      info: vis('#panel-info'),
+      controls: vis('#panel-controls'),
+      agentTabs: !!tabsList && tabsList.checkVisibility(),
+      sections: !!secList && secList.checkVisibility(),
+      checklist: vis('#panel-task-list'),
+      line: vis('.ptl-line'),
+      runs: vis('#panel-tasks .panel-tasks-header') && !vis('#panel-task-list') && !vis('.ptl-line'),
+      tasksShare: tasks && tasks.checkVisibility() ? Math.round((100 * tasks.getBoundingClientRect().height) / h) : 0,
+      composer: vis('#pc-composer'),
+      status: vis('#panel-status'),
+    };
+  });
+}
+async function plansPass(browser: import('playwright').Browser, board: unknown) {
+  const tag = 'plans';
+  const store: Store = { mode: null, plan: null, patches: [], stars: [] };
+  const ctx = await browser.newContext({
+    viewport: { width: 1280, height: 860 },
+    colorScheme: 'light',
+    reducedMotion: 'reduce',
+  });
+  const tok = process.env.CONVERSATION_VIEWER_TOKEN;
+  if (tok)
+    await ctx.addCookies([{ name: 'soma_dash_token', value: encodeURIComponent(`bearer:${tok}`), url: BASE_URL }]);
+  const page = await ctx.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  await installMocks(page, board, store);
+  log('\n── plans (1280 light) ──');
+  const footText = (f: Awaited<ReturnType<typeof faceOf>>) => f.foot.map((m) => m.text).join(' | ');
+  for (const mode of ['minimal', 'advanced'] as const) {
+    for (const plan of ['1', '2', '3'] as const) {
+      store.mode = mode;
+      store.plan = plan;
+      const t = `${tag} ${mode} ${plan}안`;
+      if (mode === 'minimal' && plan === '2') {
+        // The settings page picked it while the dashboard was open: the tab coming back reads it (no reload).
+        await page.evaluate(() => (window as any).closeDetailCard());
+        await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+        await sleep(800);
+        const live = await page.evaluate(() => document.body.getAttribute('data-view-plan'));
+        check(live === '2', `${t} P1 a plan saved elsewhere reaches the open dashboard when its tab comes back`, live);
+      } else {
+        await page.goto(`${BASE_URL}/dashboard/U001`);
+        await waitBoard(page);
+      }
+      const pl = await page.evaluate(() => [
+        document.body.getAttribute('data-view-mode'),
+        document.body.getAttribute('data-view-plan'),
+      ]);
+      check(pl[0] === mode && pl[1] === plan, `${t} P1 the page draws the user's mode and plan`, pl);
+      const f = await faceOf(page, KEY_A);
+      const fE = await faceOf(page, KEY_EPIC);
+      const fQ = await faceOf(page, KEY_Q);
+      const steps = /\b\d+\/\d+\b/.test(f.text);
+      const agentsRow = await page.evaluate(
+        (k) => !!(window as any).__card(k).querySelector('.ib-face .ib-agents'),
+        KEY_A,
+      );
+      log(
+        `${t} face: task=${f.task} arts=${f.arts} tokens=${f.tokens} agents=${agentsRow} steps=${steps} foot=[${footText(f)}] lead=${JSON.stringify(f.lead)}`,
+      );
+      check(
+        f.star === 'false' && fQ.text.includes('dev에 먼저 배포할까요?'),
+        `${t} P2 every face keeps the star and says what asks`,
+        { star: f.star, q: fQ.text },
+      );
+      check(!!fE.lead && fE.lead.text === 'EPIC', `${t} P2 an epic keeps its EPIC lead`, fE.lead);
+      if (mode === 'minimal' && plan === '1') {
+        check(
+          f.task && f.arts && !steps && !f.tokens && !agentsRow,
+          `${t} P2 face: the task row and the artifacts line; no steps · tokens · agents`,
+          f,
+        );
+        check(
+          /#700/.test(f.foot[0]?.text) && f.foot[1]?.text === '$6.20' && /opus/i.test(f.foot[2]?.text || ''),
+          `${t} P2 foot: PR · cost · model`,
+          f.foot,
+        );
+      } else if (mode === 'minimal' && plan === '2') {
+        check(
+          f.task && !f.arts && steps && !f.tokens,
+          `${t} P2 face: the task row and its steps; no artifacts line`,
+          f,
+        );
+        check(
+          f.foot[0]?.text === '2' && f.foot[1]?.text === '$6.20' && /opus/i.test(f.foot[2]?.text || ''),
+          `${t} P2 foot: artifacts n · cost · model`,
+          f.foot,
+        );
+      } else if (mode === 'minimal' && plan === '3') {
+        check(!f.task && !f.arts && !steps, `${t} P2 face: no task row, no artifacts line, no steps`, f);
+        check(
+          f.foot.length === 2 && f.foot[0].text === '$6.20' && /opus/i.test(f.foot[1].text),
+          `${t} P2 foot: cost · model`,
+          f.foot,
+        );
+      } else if (mode === 'advanced' && plan === '1') {
+        check(f.task && f.arts && f.tokens && agentsRow && steps && f.ctx, `${t} P2 face: everything`, f);
+        check(!!f.lead && f.lead.label === '일반 작업', `${t} P2 a plain task's mark, not the ✦`, f.lead);
+        check(
+          /opus/i.test(f.foot[f.foot.length - 1]?.text || '') && f.foot.some((m) => /#700/.test(m.text)),
+          `${t} P2 foot ends with the model`,
+          f.foot,
+        );
+      } else if (mode === 'advanced' && plan === '2') {
+        check(f.task && f.arts && f.tokens && agentsRow && steps && f.ctx, `${t} P2 face: everything (원본)`, f);
+        check(!f.lead && !f.foot.some((m) => /opus/i.test(m.text)), `${t} P2 원본: the ✦ and no model on the face`, f);
+      } else {
+        check(
+          f.task && !f.arts && !f.tokens && !agentsRow && steps && f.ctx,
+          `${t} P2 face: no agents · tokens · artifacts rows; steps · context stay`,
+          f,
+        );
+        check(
+          f.foot
+            .map((m) => m.text)
+            .join('|')
+            .match(/^2\|#700[^|]*\|\$6\.20\|.*opus/i) !== null,
+          `${t} P2 foot: artifacts n · PR · cost · model`,
+          f.foot,
+        );
+      }
+      await page.screenshot({ path: path.join(OUT, `plan-${mode}-${plan}-1-board.png`) });
+
+      await openCard(page, KEY_A);
+      const b = await openBodyOf(page, KEY_A);
+      const d = await detailState(page);
+      log(`${t} open: ${JSON.stringify({ ...b, text: undefined })}`);
+      log(`${t} detail: ${JSON.stringify(d)}`);
+      check(b.stop && b.slack, `${t} P3 the open card keeps Stop · Slack`, b);
+      check(d.composer && d.status, `${t} P4 the detail card keeps the status bar and the composer`, d);
+      if (mode === 'minimal' && plan === '1') {
+        check(
+          !b.star && b.refs && b.model && !b.tasks && !b.tree,
+          `${t} P3 open card: links and the model switch; no ☆ · task window · tree`,
+          b,
+        );
+        check(
+          d.checklist && !d.agentTabs && !d.controls && !d.sections && !d.info && d.tasksShare <= 35,
+          `${t} P4 detail: the checklist (≤34%), no tabs · controls · info`,
+          d,
+        );
+      } else if (mode === 'minimal' && plan === '2') {
+        check(!b.star && b.tasks && !b.refs && !b.model, `${t} P3 open card: the task window; no ☆ · links · model`, b);
+        check(
+          d.checklist && d.agentTabs && d.controls && !d.sections && !d.info,
+          `${t} P4 detail: the checklist, the agent tabs (subagents), model controls`,
+          d,
+        );
+      } else if (mode === 'minimal' && plan === '3') {
+        check(
+          !b.star && !b.refs && !b.model && !b.tasks && !b.tree,
+          `${t} P3 open card: the actions and what asks only`,
+          b,
+        );
+        check(d.line && !d.checklist && !d.agentTabs && !d.controls, `${t} P4 detail: the task line, folded`, d);
+        await page.click('.ptl-line');
+        await sleep(300);
+        const d2 = await detailState(page);
+        check(d2.line && d2.checklist, `${t} P4 a press on the task line opens the checklist`, d2);
+      } else if (mode === 'advanced' && plan === '1') {
+        check(!b.star && b.tasks && b.tree && b.refs && b.model, `${t} P3 open card: the column's body, no ☆`, b);
+        check(
+          d.open && d.info && d.controls && d.sections && d.agentTabs && d.runs,
+          `${t} P4 detail: everything, unfolded`,
+          d,
+        );
+      } else if (mode === 'advanced' && plan === '2') {
+        check(b.star && b.tasks && b.tree && b.refs && b.model, `${t} P3 원본: the open card as it was, ☆ included`, b);
+        check(d.open && d.info && d.controls && d.sections && d.agentTabs, `${t} P4 detail: everything, unfolded`, d);
+      } else {
+        check(
+          !b.star && !b.tasks && !b.tree && b.goal && b.refs && b.model,
+          `${t} P3 open card: goal · links · model only`,
+          b,
+        );
+        check(
+          !d.open && d.info && d.controls && d.sections && d.agentTabs,
+          `${t} P4 detail: everything, folded at first`,
+          d,
+        );
+      }
+      await page.screenshot({ path: path.join(OUT, `plan-${mode}-${plan}-2-open.png`) });
+      await page.evaluate(() => (window as any).closeDetailCard());
+      await sleep(300);
+    }
+  }
+  // P5 — the settings page: 설정 › 대시보드 › 화면 구성안, three choices; picking one saves dashboardPlan and the
+  // dashboard (back) draws it.
+  store.mode = 'minimal';
+  store.plan = '1';
+  await page.goto(`${BASE_URL}/dashboard/U001`);
+  await waitBoard(page);
+  await page.goto(`${BASE_URL}/dashboard/settings`);
+  await page.waitForSelector('input[name="seg-dashboardPlan"]', { timeout: 15_000 });
+  const row = await page.evaluate(() => {
+    const inputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="seg-dashboardPlan"]'));
+    const host = inputs[0]?.closest('ui-setting-row') as HTMLElement | null;
+    host?.scrollIntoView({ block: 'center' });
+    return {
+      values: inputs.map((i) => i.value),
+      checked: inputs.find((i) => i.checked)?.value,
+      text: host ? host.innerText : '',
+    };
+  });
+  check(
+    row.values.join() === '1,2,3' && row.checked === '1',
+    `${tag} P5 the settings page offers 1안 · 2안 · 3안, 1안 checked`,
+    row,
+  );
+  await sleep(300);
+  await page.screenshot({ path: path.join(OUT, 'plan-settings.png') });
+  await page.click('input[name="seg-dashboardPlan"][value="3"]', { force: true });
+  await sleep(600);
+  check(store.plan === '3', `${tag} P5 picking 3안 saves dashboardPlan`, store.patches);
+  await page.goBack();
+  await waitBoard(page);
+  await sleep(800);
+  const back = await page.evaluate(() => document.body.getAttribute('data-view-plan'));
+  check(back === '3', `${tag} P5 back on the dashboard, it draws 3안`, back);
+  check(errors.length === 0, `${tag} no page errors`, errors);
+  await ctx.close();
+}
+
 async function main() {
   const dashboard = await import('../src/conversation/dashboard');
   dashboard.setDashboardBotName(BOT);
@@ -626,6 +896,16 @@ async function main() {
   const ws = await import('../src/conversation/web-server');
   await ws.startWebServer({ listen: true });
   log(`server ${BASE_URL}`);
+  // The settings page and the dashboard read the real registry's dashboard rows (labels, options as shipped).
+  const { productionSettingsRegistry } = await import('../src/user-settings-registry-production');
+  const { userSettingsStore } = await import('../src/user-settings-store');
+  userSettingsStore.ensureUserExists('U001', 'Zhuge');
+  const real = productionSettingsRegistry().read('U001') as {
+    groups: unknown[];
+    settings: Array<Record<string, unknown>>;
+  };
+  REAL_DASHBOARD_ROWS = real.settings.filter((r) => r.group === 'dashboard');
+  REAL_GROUPS = real.groups;
   const board = makeBoard(buildLedger());
   const runs: Array<['light' | 'dark', number, number]> = [
     ['light', 1280, 860],
@@ -633,10 +913,18 @@ async function main() {
     ['light', 390, 844],
   ];
   try {
-    for (const [theme, w, h] of runs) {
+    for (const [theme, w, h] of process.env.PLANS_ONLY === '1' ? [] : runs) {
       const browser = await chromium.launch({ headless: true, args: ['--single-process', '--no-zygote'] });
       try {
         await scenario(browser, theme, w, h, board);
+      } finally {
+        await browser.close();
+      }
+    }
+    if (!BASELINE) {
+      const browser = await chromium.launch({ headless: true, args: ['--single-process', '--no-zygote'] });
+      try {
+        await plansPass(browser, board);
       } finally {
         await browser.close();
       }
