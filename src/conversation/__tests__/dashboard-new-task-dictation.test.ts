@@ -107,11 +107,17 @@ function recClass(availability: string | null, install?: () => Promise<boolean>)
   return C;
 }
 
+type Host = { id: string };
 type Page = {
-  ntDictateStart(): Promise<void>;
+  ntDictateStart(host?: Host): Promise<void>;
   ntDictateStop(hard?: boolean): void;
-  ntOnComposerTool(e: { detail?: { id?: string; pressed?: boolean } }): void;
+  ntDictateStopIn(id: string): void;
+  ntDictateAuto(): void;
+  ntDictationLive(): string;
+  ntDictationHost(id: string): Host;
+  ntOnComposerTool(e: { detail?: { id?: string; pressed?: boolean } }, host?: Host): void;
   ntComposerData(): Record<string, any>;
+  pcComposerData(takesFiles: boolean | undefined): Record<string, any>;
   __peek(k: string): any;
 };
 
@@ -148,6 +154,9 @@ function page(
     statuses: [] as string[],
     drafts: [] as string[],
     paints: 0,
+    pcPaints: 0,
+    toasts: [] as string[],
+    pc: { value: '' },
     state: { destination: opts.destination ?? 'slack', prompt: '' },
   };
   // An iPhone by default: Apple's engine, on the device, no question asked.
@@ -156,6 +165,7 @@ function page(
   const api = loadWith<Page>(
     [
       'ntDictationEngine',
+      'ntDictationWide',
       'ntDictationTool',
       'ntDictationText',
       'ntJoinSpoken',
@@ -173,13 +183,28 @@ function page(
       'ntDictationEnd',
       'ntDictateStop',
       'ntOnComposerTool',
+      'ntDictating',
+      'ntDictateStopIn',
+      'ntDictationHost',
+      'ntDictateAuto',
+      'ntDictationLive',
       'ntComposerData',
+      'pcComposerData',
       'ntReadDraft',
     ],
     {
       window: win,
       _ntDictation: null,
       _ntDictationAsked: false,
+      _ntDictationAutoOff: false,
+      _pcSending: false,
+      PC_LIMITS: { maxFiles: 10, maxFileBytes: 1, maxTotalBytes: 2 },
+      PC_NO_FILES: 'application/x-soma-no-attachments',
+      document: { getElementById: (id: string) => (id === 'pc-composer' ? env.pc : null) },
+      dashToast: (input: { title: string }) => env.toasts.push(input.title),
+      pcPaintComposer: () => {
+        env.pcPaints++;
+      },
       NT_DICTATION_LANG: 'ko-KR',
       NT_DICTATION_REMOTE_KEY: 'soma-nt-dictation-remote',
       _ntValue: '',
@@ -284,24 +309,125 @@ describe('I1.4 — errors end dictation in plain words; silence and a cancel say
 
 // ── The composer's data ──────────────────────────────────────────────
 
-describe('I1.2 / I1.3 — the composer offers 받아쓰기 instead of the audio note, on both destinations', () => {
-  it('with a recogniser: one mic — the dictation tool, not pressed; the audio voice note is off', () => {
+describe('SSOT_3 — 받아쓰기 is added beside the voice note, which stays ("음성녹음은 두고")', () => {
+  it('with a recogniser: the voice note is the element’s own (untouched) and 받아쓰기 is a labelled tool beside it', () => {
     const { api } = page({ engine: recClass(null) });
     const d = api.ntComposerData();
-    expect(d.voice).toBe(false);
-    expect(d.tools).toEqual([{ id: 'dictate', label: '받아쓰기', icon: 'mic', pressed: false }]);
+    expect(d).not.toHaveProperty('voice');
+    expect(d.tools).toEqual([{ id: 'dictate', label: '받아쓰기', icon: 'edit', pressed: false }]);
   });
-  it('a dashboard task (no attachments) gets voice too: dictation is text', () => {
+  it('its word shows on a wide screen; on a phone the pencil carries it (no room beside the counter)', () => {
+    const tool = (wide: boolean | undefined) =>
+      new Function(
+        'window',
+        `${clientFn('ntDictationWide')}\n${clientFn('ntDictationTool')}; return ntDictationTool(false);`,
+      )(wide === undefined ? {} : { matchMedia: () => ({ matches: wide }) });
+    expect(tool(true)).toEqual({ id: 'dictate', label: '받아쓰기', icon: 'edit', pressed: false, showLabel: true });
+    expect(tool(false)).toEqual({ id: 'dictate', label: '받아쓰기', icon: 'edit', pressed: false });
+    expect(tool(undefined)).toEqual({ id: 'dictate', label: '받아쓰기', icon: 'edit', pressed: false });
+  });
+  it('on a phone the counter gives way to the tool row (the limit is checked on send); on a wide screen it stays', () => {
+    const lim = { maxPromptChars: 12000, maxFiles: 10, maxFileBytes: 1, maxTotalBytes: 2 };
+    const data = (wide: boolean, engine: unknown) =>
+      loadWith<{ ntComposerData(): Record<string, any> }>(
+        ['ntComposerData', 'ntReadDraft', 'ntDictationEngine', 'ntDictationTool', 'ntDictationWide', 'ntDictating'],
+        {
+          window: {
+            navigator: { userAgent: UA.iphone },
+            matchMedia: () => ({ matches: wide }),
+            webkitSpeechRecognition: engine,
+          },
+          _ntValue: '',
+          _ntDictation: null,
+          _ntBusy: false,
+          _ntCtx: { limits: lim },
+          _ntState: { destination: 'slack' },
+          NT_NO_FILES: 'x',
+          NT_DRAFT_KEY: 'k',
+          localStorage: { getItem: () => null },
+        },
+      ).ntComposerData();
+    expect(data(false, recClass(null))).not.toHaveProperty('maxLength');
+    expect(data(true, recClass(null)).maxLength).toBe(12000);
+    expect(data(false, undefined).maxLength).toBe(12000); // no 받아쓰기, room as before
+    expect(clientFn('submitNewTask')).toContain('ntTooLong(_ntState.prompt)');
+    const tooLong = new Function('_ntCtx', `${clientFn('ntTooLong')}; return ntTooLong;`)({ limits: lim });
+    expect(tooLong('가'.repeat(12000))).toBe('');
+    expect(tooLong('가'.repeat(12001))).toContain('12,000');
+  });
+  it('a dashboard task (no attachments, so no voice note) still gets 받아쓰기: it is text', () => {
     const { api } = page({ engine: recClass(null), destination: 'task' });
     const d = api.ntComposerData();
     expect(d).toMatchObject({ attach: false, voice: false, camera: false });
-    expect(d.tools).toEqual([{ id: 'dictate', label: '받아쓰기', icon: 'mic', pressed: false }]);
+    expect(d.tools).toEqual([{ id: 'dictate', label: '받아쓰기', icon: 'edit', pressed: false }]);
   });
-  it('without a recogniser (Firefox): the old voice note stays, no dictation tool', () => {
+  it('without a recogniser (Firefox): the voice note as before, no 받아쓰기', () => {
     const { api } = page();
     const d = api.ntComposerData();
     expect(d).not.toHaveProperty('tools');
     expect(d).not.toHaveProperty('voice');
+  });
+  it('the session panel composer gets the same 받아쓰기 tool, the voice note kept (a dashboard task’s card: no voice)', () => {
+    const { api } = page({ engine: recClass(null) });
+    expect(api.pcComposerData(undefined).tools).toEqual([
+      { id: 'dictate', label: '받아쓰기', icon: 'edit', pressed: false },
+    ]);
+    expect(api.pcComposerData(undefined)).not.toHaveProperty('voice');
+    expect(api.pcComposerData(false)).toMatchObject({
+      voice: false,
+      tools: [{ id: 'dictate', label: '받아쓰기', icon: 'edit', pressed: false }],
+    });
+    const none = page();
+    expect(none.api.pcComposerData(undefined)).not.toHaveProperty('tools');
+  });
+});
+
+describe('SSOT_2 — 받아쓰기 in the session panel composer (where the person types to a running session)', () => {
+  it('its press writes what is said into the panel composer; the new task composer is untouched', async () => {
+    const Rec = recClass(null);
+    const { api, env } = page({ engine: Rec, value: '새 작업 글' });
+    env.pc.value = '세션에';
+    api.ntOnComposerTool({ detail: { id: 'dictate', pressed: true } }, api.ntDictationHost('pc'));
+    await Promise.resolve();
+    const rec = FakeRec.made[0];
+    expect(rec.starts).toBe(1);
+    rec.say([interim('보낼 말')]);
+    expect(env.pc.value).toBe('세션에 보낼 말');
+    expect(env.composer.value).toBe('새 작업 글');
+    expect(api.pcComposerData(undefined).tools[0].pressed).toBe(true);
+    expect(api.ntComposerData().tools[0].pressed).toBe(false);
+    expect(env.pcPaints).toBeGreaterThan(0);
+  });
+  it('only one dictation at a time: pressing it in the other composer moves it there', async () => {
+    const Rec = recClass(null);
+    const { api, env } = page({ engine: Rec });
+    await api.ntDictateStart();
+    api.ntOnComposerTool({ detail: { id: 'dictate', pressed: true } }, api.ntDictationHost('pc'));
+    await Promise.resolve();
+    expect(FakeRec.made[0].aborts).toBe(1);
+    expect(FakeRec.made).toHaveLength(2);
+    FakeRec.made[1].say([interim('패널로')]);
+    expect(env.pc.value).toBe('패널로');
+    expect(env.composer.value).toBe('');
+  });
+  it('its why (a refused mic) is a toast — the panel has no status line', async () => {
+    const Rec = recClass(null);
+    const { api, env } = page({ engine: Rec });
+    await api.ntDictateStart(api.ntDictationHost('pc'));
+    const rec = FakeRec.made[0];
+    rec.onerror?.({ error: 'not-allowed' });
+    rec.end();
+    expect(last(env.toasts)).toContain('마이크');
+    expect(env.statuses.every((t) => !t.includes('마이크'))).toBe(true);
+  });
+  it('ntDictateStopIn stops only the dictation of that composer', async () => {
+    const Rec = recClass(null);
+    const { api } = page({ engine: Rec });
+    await api.ntDictateStart(api.ntDictationHost('pc'));
+    api.ntDictateStopIn('nt');
+    expect(api.__peek('_ntDictation')).not.toBeNull();
+    api.ntDictateStopIn('pc');
+    expect(api.__peek('_ntDictation')).toBeNull();
   });
 });
 
@@ -320,7 +446,7 @@ describe('I1.1 / I3.1 — pressing 받아쓰기 streams the words into the field
     expect(rec.interimResults).toBe(true);
     expect(rec.continuous).toBe(true);
     expect(rec.starts).toBe(1);
-    expect(api.ntComposerData().tools[0]).toMatchObject({ id: 'dictate', pressed: true, label: '받아쓰기 멈추기' });
+    expect(api.ntComposerData().tools[0]).toMatchObject({ id: 'dictate', pressed: true, label: '받아쓰기' });
     expect(env.paints).toBeGreaterThan(0);
     expect(last(env.statuses)).toContain('듣는 중');
 
@@ -553,7 +679,7 @@ describe('I2 — the voice leaves the device only when the person has said yes (
     expect(FakeRec.made[0].starts).toBe(1);
     expect(store.get('soma-nt-dictation-remote')).toBe('ok');
     expect(last(env.statuses)).toContain('기기 밖');
-    expect(last(env.statuses)).toContain('다시 누르면 멈춥니다');
+    expect(last(env.statuses)).toContain('다시 누르거나 키보드로 쓰면 멈춥니다');
   });
   it('remembered: it starts on the first press', async () => {
     const Rec = recClass(null);
@@ -588,17 +714,92 @@ describe('I2 — the voice leaves the device only when the person has said yes (
   });
 });
 
+describe('SSOT_4 — with speech recognition on this device the new task opens listening; a key typed stops it', () => {
+  it('opening the dialog starts it, inside the press (before the dialog awaits its context)', () => {
+    const open = clientFn('openNewTask');
+    expect(open).toContain('ntDictateAuto();');
+    expect(open.indexOf('ntDictateAuto();')).toBeLessThan(open.indexOf('await ntLoadContext();'));
+  });
+  it('Apple’s engine (on the device): it opens listening, at once', async () => {
+    const Rec = recClass(null);
+    const { api, env } = page({ engine: Rec, ua: UA.iphone });
+    api.ntDictateAuto();
+    expect(FakeRec.made[0]?.starts).toBe(1);
+    expect(last(env.statuses)).toContain('키보드로 쓰면 멈춥니다');
+  });
+  it('Chrome with Korean on the device: it opens listening, on the device', async () => {
+    const Rec = recClass('available');
+    const { api } = page({ engine: Rec, ua: UA.chromeMac });
+    api.ntDictateAuto();
+    await new Promise((r) => setTimeout(r, 0)); // past Chrome's available() answer
+    expect(FakeRec.made[0]?.processLocally).toBe(true);
+    expect(FakeRec.made[0]?.starts).toBe(1);
+  });
+  it('the voice would leave the device (Galaxy, Chrome without Korean): it stays off, says nothing, asks nothing', async () => {
+    for (const [ua, avail] of [
+      [UA.galaxy, null],
+      [UA.chromeMac, 'unavailable'],
+    ] as Array<[string, string | null]>) {
+      const Rec = recClass(avail);
+      const { api, env, store } = page({ engine: Rec, ua });
+      api.ntDictateAuto();
+      await new Promise((r) => setTimeout(r, 0)); // past Chrome's available() answer
+      expect(FakeRec.made).toHaveLength(0);
+      expect(api.__peek('_ntDictation')).toBeNull();
+      expect(api.__peek('_ntDictationAsked')).toBe(false);
+      expect(store.has('soma-nt-dictation-remote')).toBe(false);
+      expect(env.statuses.every((t) => !t.includes('기기 밖'))).toBe(true);
+    }
+  });
+  it('a refused microphone ends the automatic start for this page (no prompt on every open)', async () => {
+    const Rec = recClass(null);
+    const { api } = page({ engine: Rec, ua: UA.iphone });
+    api.ntDictateAuto();
+    const rec = FakeRec.made[0];
+    rec.onerror?.({ error: 'not-allowed' });
+    rec.end();
+    expect(api.__peek('_ntDictationAutoOff')).toBe(true);
+    api.ntDictateAuto();
+    expect(FakeRec.made).toHaveLength(1);
+  });
+  it('a key typed stops it hard and the typing goes on (the composer’s ui-input)', async () => {
+    const Rec = recClass(null);
+    const { api, env } = page({ engine: Rec, ua: UA.iphone });
+    api.ntDictateAuto();
+    const rec = FakeRec.made[0];
+    rec.say([interim('말하다가')]);
+    env.composer.value = '말하다가 ㅌ'; // the key the person typed
+    api.ntDictateStopIn('nt'); // what ntInit's ui-input listener does
+    rec.say([final('말하다가 늦은 말')]);
+    expect(env.composer.value).toBe('말하다가 ㅌ');
+    expect(rec.aborts).toBe(1);
+  });
+  it('the context loading clears its own line, not the listening one', () => {
+    const load = clientFn('ntLoadContext');
+    expect(load).not.toContain("ntSetStatus('');");
+    expect(load).toContain('ntSetStatus(ntDictationLive());');
+  });
+});
+
 describe('I1.4 — the dialog wires the stops; a live dictation counts as unsent input', () => {
   it('ui-tool starts and stops it; typing, sending and closing stop it hard', () => {
     const init = clientFn('ntInit');
     expect(init).toContain("composer.addEventListener('ui-tool', ntOnComposerTool);");
+    expect(init).toMatch(/addEventListener\('ui-input', function \(e\) \{\n\s+ntDictateStopIn\('nt'\);/);
     expect(init).toMatch(
-      /addEventListener\('ui-input', function \(e\) \{\n\s+if \(_ntDictation\) ntDictateStop\(true\);/,
+      /addEventListener\('ui-submit', function \(e\) \{\n\s+e\.preventDefault\(\);\n\s+ntDictateStopIn\('nt'\);/,
     );
-    expect(init).toMatch(
-      /addEventListener\('ui-submit', function \(e\) \{\n\s+e\.preventDefault\(\);\n\s+ntDictateStop\(true\);/,
+    expect(clientFn('ntQuietComposer')).toContain("ntDictateStopIn('nt');");
+  });
+  it('the session panel: its ui-tool and typing are wired; sending, closing and switching session stop it', () => {
+    const init = clientFn('pcInit');
+    expect(init).toContain(
+      "host.addEventListener('ui-tool', function(e) { ntOnComposerTool(e, ntDictationHost('pc')); });",
     );
-    expect(clientFn('ntQuietComposer')).toContain('ntDictateStop(true);');
+    expect(init).toContain("host.addEventListener('ui-input', function() { ntDictateStopIn('pc'); });");
+    for (const fn of ['pcOnSubmit', 'pcReset', 'pcFreshSteer'])
+      expect(clientFn(fn), fn).toContain("ntDictateStopIn('pc');");
+    expect(clientFn('pcPaintComposer')).toContain("pcComposerSetup(document.getElementById('pc-composer')");
   });
   it('a new build does not reload the tab mid-sentence', () => {
     expect(clientFn('hasUnsentInput')).toContain('if (_ntDictation) return true;');

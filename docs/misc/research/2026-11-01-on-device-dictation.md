@@ -37,18 +37,18 @@ Each means a download of 80 to 240 MB per device with weaker Korean than the bui
 
 ## What the dashboard does
 
-1. The mic becomes 받아쓰기 wherever a recogniser exists, for both destinations. The audio voice note tool is hidden there.
+1. 받아쓰기 is a tool beside the voice note, which stays (the user's correction on 1 November 2026: "음성녹음은 두고"). It is a pencil, labelled on wide screens. The new task composer and the session panel composer both have it, for every destination (it is text, so a dashboard task takes it). One dictation runs at a time.
 2. The recogniser listens with `lang = 'ko-KR'`, `interimResults = true`, `continuous = true`. The field shows what was there, the settled words, then the words still being heard.
-3. Android's repeated phrases are folded: a final result that starts with the settled words replaces them (on Android only — see 7).
-4. When the recogniser ends by itself it listens again. Three silent sessions in a row end the dictation.
+3. Where the words stay on the device (Safari and iPhone browsers, Chrome with Korean installed), the new task opens listening. A key typed stops it, and the typing goes on. A refused microphone ends the automatic start for that page.
+4. The voice leaves the device only on a yes. Where it would (Chrome on Android, Samsung Internet, Chrome without Korean on the device), it never starts on its own; the first press says so and points to the keyboard's mic, and the second press is the yes, kept on that device.
 5. In Chrome with `available()`, the page asks for on-device processing, calls `install()` on downloadable, and says in the status line where the words are processed.
-6. The voice leaves the device only on a yes. Where it would (Chrome on Android, Samsung Internet, Chrome without Korean on the device), the first press says so and points to the keyboard's mic. The second press is the yes, kept on that device. Safari and iPhone browsers use Apple's engine and start at once.
-7. Android's repeated phrases are folded on Android only, so a phrase said twice elsewhere stays.
-8. Firefox and an iPhone Home Screen web app keep the audio voice note.
+6. Android's repeated phrases are folded on Android only, so a phrase said twice elsewhere stays.
+7. When the recogniser ends by itself it listens again. Three silent sessions in a row end the dictation. A stop the recogniser never confirms is let go after 3 seconds.
+8. On a phone the new task's character counter gives way to the tool row; the limit is checked on send.
+9. Firefox and an iPhone Home Screen web app keep the voice note only.
 
 ## Follow-up candidates
 
-- The session panel composer.
 - Phrase lists for English technical terms when Chrome runs on-device.
 - A watchdog for Edge when recognition starts but no event arrives.
 - An in-browser model for browsers without a recogniser.
