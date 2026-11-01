@@ -5,16 +5,19 @@
  * recogniser is replaced by a scripted one (window.__recs), so the run needs no microphone and no speech service.
  * Exit 1 on any failed check; screenshots are written for every scenario.
  *
- *   Chromium + WebKit, PC 1280 and phone (Pixel 7 / iPhone 13):
+ *   Chromium + WebKit, PC 1280 and phone (Pixel 7 / iPhone 13), and Samsung Internet on a Galaxy (its user agent):
  *     - with a recogniser the composer keeps the voice note (mic) and shows 받아쓰기 beside it, fully in view;
- *     - on the device or only on a yes: WebKit (Apple's engine) starts at once; Chromium (no on-device Korean)
- *       first says the voice would leave the device, and the second press is the yes;
- *     - pressing it starts a ko-KR, interim, continuous recogniser and shows the tool pressed;
+ *     - the new task opens listening on Apple's engine (WebKit) and on a phone's own recogniser (Android — Chrome
+ *       and Samsung Internet, SSOT_5); desktop Chromium (no on-device Korean) opens off, and its first press listens;
+ *     - pressing it starts a ko-KR, interim recogniser (continuous; one utterance per session on Android) and shows
+ *       the tool pressed;
  *     - words still being heard appear in the field as they arrive; settled words stay;
  *     - pressing again stops it; 작업 시작 sends the text — no attachment;
  *     - a dashboard task (no attachments) gets the same tool;
  *     - without a recogniser (Firefox) the voice note only, no 받아쓰기;
- *     - the session panel composer: voice note + 받아쓰기, and dictating writes into it.
+ *     - the session panel composer: voice note + 받아쓰기, and dictating writes into it;
+ *     - a recogniser error lands on the red error line (on a Galaxy: what to turn on); sessions that hear sound and
+ *       give back no words (Samsung Internet, a noisy room) stop with what to try.
  *
  * Run from the repo root (keeps state out of the checkout):
  *   env -i HOME="$HOME" PATH="$PATH" SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst \
@@ -68,7 +71,7 @@ const FAKE_RECOGNISER = `
   window.__recs = [];
   function FakeRec() { this.lang = ''; this.interimResults = false; this.continuous = false; this.starts = 0;
     this.stops = 0; this.aborts = 0; window.__recs.push(this); }
-  FakeRec.prototype.start = function () { this.starts++; };
+  FakeRec.prototype.start = function () { this.starts++; if (this.onaudiostart) this.onaudiostart(); };
   FakeRec.prototype.stop = function () { this.stops++; };
   FakeRec.prototype.abort = function () { this.aborts++; };
   window.SpeechRecognition = undefined;
@@ -79,6 +82,8 @@ const FAKE_RECOGNISER = `
     rec.onresult({ resultIndex: 0, results: list.map(function (x) { return result(x[0], x[1]); }) });
   };
   window.__end = function () { var rec = window.__recs[window.__recs.length - 1]; rec.onend(); };
+  window.__err = function (code) { var rec = window.__recs[window.__recs.length - 1]; rec.onerror({ error: code }); };
+  window.__speech = function () { var rec = window.__recs[window.__recs.length - 1]; rec.onspeechstart(); };
 })();
 `;
 const PANEL_KEY = 'mock-inst::work:C_ALPHA:1700000000.000200';
@@ -98,8 +103,9 @@ const PANEL_SESSION = {
   lastActivity: new Date().toISOString(),
 };
 
-/** The device has already said yes to a speech service off the device. */
-const REMOTE_OK = "try { localStorage.setItem('soma-nt-dictation-remote', 'ok'); } catch (e) {}";
+/** Samsung Internet on a Galaxy S24 (what the person tested, SSOT_5). */
+const SAMSUNG_UA =
+  'Mozilla/5.0 (Linux; Android 14; SM-S928N) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/28.0 Chrome/130.0.0.0 Mobile Safari/537.36';
 const NO_RECOGNISER = 'window.SpeechRecognition = undefined; window.webkitSpeechRecognition = undefined;';
 
 interface Posted {
@@ -167,7 +173,13 @@ async function composerView(page: Page, id = 'nt-composer') {
         clear: !end || r.right <= end.left + 1,
       };
     });
-    return { tools, value: String(el.value || ''), status: document.getElementById('nt-status')?.textContent || '' };
+    const err = document.getElementById('nt-error') as HTMLElement | null;
+    return {
+      tools,
+      value: String(el.value || ''),
+      status: document.getElementById('nt-status')?.textContent || '',
+      error: err && !err.hidden ? err.textContent || '' : '',
+    };
   }, id);
 }
 
@@ -201,15 +213,19 @@ async function run(browser: Browser, engine: string, label: string, options: Bro
       mks.includes('voice') && !!dict && dict.inView && dict.clear && dict.label === '받아쓰기',
       JSON.stringify(v.tools),
     );
-    // SSOT_4: Apple's engine (WebKit — on the device) opens listening with the dialog. A browser whose recogniser
-    // sends the voice off the device (Chromium here: no on-device Korean) opens off and quiet; its first press says
-    // so, and the second press is the yes.
+    // SSOT_4/5: Apple's engine (WebKit — on the device) and a phone's own recogniser (Android: Chrome, Samsung
+    // Internet) open listening with the dialog. Desktop Chromium (no on-device Korean here) opens off and quiet, and
+    // its first press listens — no second press, no question.
     const apple = await page.evaluate(() => (window as any).ntIsAppleSpeech(window));
+    const android = await page.evaluate(() => (window as any).ntIsAndroid(window));
     const opened = await page.evaluate(() => (window as any).__recs.length);
-    if (apple) {
+    if (apple || android) {
       check(
-        `${tag}: on the device — the new task opens listening`,
-        opened === 1 && dict?.pressed === 'true' && v.status.includes('키보드로 쓰면 멈춥니다'),
+        `${tag}: ${apple ? 'Apple’s engine' : 'the phone’s recogniser'} — the new task opens listening`,
+        opened === 1 &&
+          dict?.pressed === 'true' &&
+          v.status.includes('키보드로 쓰면 멈춥니다') &&
+          (apple || v.status.includes('이 휴대폰의 음성 인식')),
         `recs=${opened} · pressed=${dict?.pressed} · ${v.status}`,
       );
     } else {
@@ -222,21 +238,18 @@ async function run(browser: Browser, engine: string, label: string, options: Bro
       const said = (await composerView(page)).status;
       const firstMade = await page.evaluate(() => (window as any).__recs.length);
       check(
-        `${tag}: off the device, the first press only says so (and points to the keyboard mic)`,
-        firstMade === 0 && said.includes('기기 밖') && said.includes('키보드의 마이크'),
+        `${tag}: off the device, the first press listens and says where the words go`,
+        firstMade === 1 && said.includes('기기 밖') && said.includes('듣는 중'),
         `recs=${firstMade} · ${said}`,
       );
-      await pressDictate(page);
-      const kept = await page.evaluate(() => localStorage.getItem('soma-nt-dictation-remote'));
-      check(`${tag}: the second press is the yes, kept on the device`, kept === 'ok', String(kept));
     }
     const rec = await page.evaluate(() => {
       const r = (window as any).__recs[0];
       return r ? { lang: r.lang, interim: r.interimResults, continuous: r.continuous, starts: r.starts } : null;
     });
     check(
-      `${tag}: it listens with a ko-KR, interim, continuous recogniser`,
-      !!rec && rec.lang === 'ko-KR' && rec.interim && rec.continuous && rec.starts === 1,
+      `${tag}: it listens with a ko-KR, interim recogniser — ${android ? 'one utterance per session (Android)' : 'continuous'}`,
+      !!rec && rec.lang === 'ko-KR' && rec.interim && rec.continuous === !android && rec.starts === 1,
       JSON.stringify(rec),
     );
     v = await composerView(page);
@@ -297,8 +310,10 @@ async function run(browser: Browser, engine: string, label: string, options: Bro
   {
     const { page, context } = await openPage(browser, options, FAKE_RECOGNISER, []);
     await openComposer(page);
-    const apple = await page.evaluate(() => (window as any).ntIsAppleSpeech(window));
-    if (apple) {
+    const opensListening = await page.evaluate(
+      () => (window as any).ntIsAppleSpeech(window) || (window as any).ntIsAndroid(window),
+    );
+    if (opensListening) {
       await page.evaluate(() => (window as any).__say([['말하다가', false]]));
       await page.evaluate(() => {
         const el = document.getElementById('nt-composer') as any;
@@ -322,7 +337,7 @@ async function run(browser: Browser, engine: string, label: string, options: Bro
   }
   // 2) A dashboard task (no attachments) gets the same tool.
   {
-    const { page, context } = await openPage(browser, options, FAKE_RECOGNISER + REMOTE_OK, []);
+    const { page, context } = await openPage(browser, options, FAKE_RECOGNISER, []);
     await openComposer(page);
     // Switch the destination in the middle of a dictation (a repaint of the composer): the words stay and go on.
     // (On the device the dialog opened listening already — SSOT_4.)
@@ -370,7 +385,7 @@ async function run(browser: Browser, engine: string, label: string, options: Bro
   }
   // 4) The session panel composer: voice note + 받아쓰기; dictating writes into it.
   {
-    const { page, context } = await openPage(browser, options, FAKE_RECOGNISER + REMOTE_OK, [], true);
+    const { page, context } = await openPage(browser, options, FAKE_RECOGNISER, [], true);
     await page.evaluate((k) => (window as any).openPanel(k), PANEL_KEY);
     await page.waitForSelector('#pc-composer', { state: 'attached', timeout: 10000 });
     await page.waitForTimeout(600);
@@ -394,6 +409,45 @@ async function run(browser: Browser, engine: string, label: string, options: Bro
     await page.screenshot({ path: path.join(OUT, `${engine}-${label}-panel-listening.png`) });
     await context.close();
   }
+  // 5) A recogniser error lands on the red error line, not the small status line; on a Galaxy it names what to turn on.
+  {
+    const { page, context } = await openPage(browser, options, FAKE_RECOGNISER, []);
+    await openComposer(page);
+    if (!(await page.evaluate(() => (window as any).ntDictating('nt')))) await pressDictate(page);
+    const android = await page.evaluate(() => (window as any).ntIsAndroid(window));
+    await page.evaluate(() => (window as any).__err('service-not-allowed'));
+    await page.evaluate(() => (window as any).__end());
+    await page.waitForTimeout(100);
+    let v = await composerView(page);
+    check(
+      `${tag}: a recogniser error shows on the red error line${android ? ' — Google’s speech app named' : ''}`,
+      !!v.error && v.status === '' && (!android || v.error.includes('Google 음성 인식 및 합성')),
+      `${v.error} · status=${v.status}`,
+    );
+    await page.screenshot({ path: path.join(OUT, `${engine}-${label}-error.png`) });
+    // The next press clears it and listens.
+    await pressDictate(page);
+    v = await composerView(page);
+    check(
+      `${tag}: the next press clears the error and listens`,
+      v.error === '' && v.status.includes('듣는 중'),
+      `${v.error} · ${v.status}`,
+    );
+    // Speech heard, no words back, three times (Samsung Internet showing listening with no text): said plainly.
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate(() => (window as any).__speech());
+      await page.evaluate(() => (window as any).__end());
+    }
+    await page.waitForTimeout(100);
+    v = await composerView(page);
+    check(
+      `${tag}: sound heard but no words back — it stops saying what to try, not "들리지 않아"`,
+      v.status.includes('글자로 바뀐 것이 없어') && !v.status.includes('들리지 않아'),
+      `${v.error} · status=${v.status}`,
+    );
+    await page.screenshot({ path: path.join(OUT, `${engine}-${label}-no-words.png`) });
+    await context.close();
+  }
 }
 
 async function main() {
@@ -412,6 +466,20 @@ async function main() {
       try {
         await run(browser, name, 'pc', { viewport: { width: 1280, height: 860 }, colorScheme: 'light' });
         await run(browser, name, 'phone', { ...devices[phone], colorScheme: 'dark' });
+        // Samsung Internet on a Galaxy (Chromium underneath, its own user agent): an S24 (360px, what the person
+        // tested) and a 320px screen (Playwright's Galaxy S9+ descriptor).
+        if (name === 'chromium') {
+          await run(browser, name, 'samsung', {
+            ...devices['Galaxy S24'],
+            userAgent: SAMSUNG_UA,
+            colorScheme: 'light',
+          });
+          await run(browser, name, 'samsung-320', {
+            ...devices['Galaxy S9+'],
+            userAgent: SAMSUNG_UA,
+            colorScheme: 'light',
+          });
+        }
       } finally {
         await browser.close();
       }
