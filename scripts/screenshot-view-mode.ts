@@ -53,6 +53,7 @@ const M = 60_000;
 const KEY_A = 'mock-inst::work:C201:1700000000.000100';
 const KEY_Q = 'mock-inst::work:C202:1700000000.000200';
 const KEY_CRON = 'mock-inst::work:C203:1700000000.000300';
+const KEY_EPIC = 'mock-inst::work:C204:1700000000.000400';
 
 type Todo = { content: string; status: 'pending' | 'in_progress' | 'completed'; activeForm?: string };
 function buildLedger(): ReturnType<typeof ledgerTasks> {
@@ -209,9 +210,16 @@ function makeBoard(view: ReturnType<typeof ledgerTasks>) {
     cronJob: { id: 'job-nightly', name: 'nightly' },
     pendingPermissions: [{ approvalId: 'ap-cron', toolName: 'Bash', requesterId: 'U001' }],
   };
+  // An epic (E4): leads with EPIC and the epic mark.
+  const epic = {
+    ...session(KEY_EPIC, '결제 리뉴얼 에픽', 'C204', null),
+    slackless: true,
+    kind: 'epic',
+    epic: { state: 'running', progress: { accepted: 1, total: 3 }, children: [], nodes: [] },
+  };
   return {
     waiting: [waiting, cronWaiting],
-    working: [session(KEY_A, '대시보드 미니멀 모드', 'C201', view)],
+    working: [session(KEY_A, '대시보드 미니멀 모드', 'C201', view), epic],
     idle,
   };
 }
@@ -228,7 +236,7 @@ const PAGE_HELPERS = [
 ].join('\n');
 
 // The per-user store double: one value per user, kept across page loads of a scenario.
-type Store = { mode: string | null; patches: unknown[] };
+type Store = { mode: string | null; patches: unknown[]; stars: unknown[] };
 function settingsSnapshot(store: Store) {
   const settings: unknown[] = [
     {
@@ -295,6 +303,13 @@ async function installMocks(page: Page, board: unknown, store: Store) {
   await page.route('**/api/dashboard/stats**', (r) => r.fulfill({ json: { stats: [], byDay: [] } }));
   await page.route('**/api/dashboard/usage**', (r) => r.fulfill({ json: { totals: {}, byUser: {}, byDay: [] } }));
   await page.route('**/api/dashboard/sessions**', (r) => r.fulfill({ json: { board } }));
+  await page.route(/\/api\/dashboard\/session\/[^/?]+\/star$/, (r) => {
+    store.stars.push({
+      key: decodeURIComponent(new URL(r.request().url()).pathname.split('/')[4] || ''),
+      body: JSON.parse(r.request().postData() || '{}'),
+    });
+    return r.fulfill({ json: { ok: true } });
+  });
   await page.route(/\/api\/dashboard\/session\/[^/?]+\/artifacts/, (r) => r.fulfill({ json: { artifacts: [] } }));
   await page.route(/\/api\/dashboard\/session\/[^/?]+\/worklog/, (r) =>
     r.fulfill({ json: { entries: [], hasMore: false } }),
@@ -343,12 +358,30 @@ function faceOf(page: Page, key: string) {
       ctx: /\d+%/.test(face.innerText),
       pr: /#700/.test(face.innerText),
       task: has('.ib-task'),
+      // SSOT 2026-11-01 (second instruction): the foot's right end, the artifacts line, the star, the kind mark.
+      foot: Array.from(face.querySelectorAll<HTMLElement>('.ib-foot .ib-metric.is-host')).map((m) => ({
+        text: m.innerText.trim(),
+        icon: !!m.querySelector('svg'),
+        title: m.getAttribute('title') || '',
+      })),
+      arts: has('.ib-arts'),
+      star: (() => {
+        const b = face.querySelector<HTMLElement>('button.ib-star');
+        return b && b.checkVisibility() ? b.getAttribute('aria-pressed') : null;
+      })(),
+      lead: (() => {
+        const l = face.querySelector<HTMLElement>('.ib-lead');
+        return l
+          ? { text: l.innerText.trim(), label: l.getAttribute('aria-label') || '', icon: !!l.querySelector('svg') }
+          : null;
+      })(),
     };
   }, key);
 }
 
 async function openCard(page: Page, key: string) {
-  await page.click(`li.ib-card[data-card="${key}"] .ib-face`);
+  // The title, not the face's middle: the face now carries artifact chips (buttons of their own).
+  await page.click(`li.ib-card[data-card="${key}"] .ib-face .ib-title`);
   await page.waitForFunction(() => {
     const p = document.getElementById('slide-panel') as any;
     return !!p && (p.open === true || p.hasAttribute('open') || p.classList.contains('open'));
@@ -431,7 +464,7 @@ async function scenario(
   board: unknown,
 ) {
   const tag = `${width}-${theme}`;
-  const store: Store = { mode: null, patches: [] };
+  const store: Store = { mode: null, patches: [], stars: [] };
   const ctx = await browser.newContext({ viewport: { width, height }, colorScheme: theme, reducedMotion: 'reduce' });
   const tok = process.env.CONVERSATION_VIEWER_TOKEN;
   if (tok)
@@ -459,7 +492,29 @@ async function scenario(
   // M3 — the face: what matters only.
   const fA = await faceOf(page, KEY_A);
   check(fA.task && fA.text.includes('미니멀 모드 구현'), `${tag} M3 the running card names its task in progress`, fA);
-  check(!fA.tokens && !fA.cost && !fA.ctx && !fA.pr, `${tag} M3 minimal face: no tokens · cost · context · PR`, fA);
+  check(!fA.tokens && !fA.ctx && !fA.pr, `${tag} M3 minimal face: no tokens line · context · PR`, fA);
+  // T7 — the foot's right end: the price, then the model with its vendor's mark.
+  check(
+    fA.foot.length === 2 && fA.foot[0].text === '$6.20' && /opus/i.test(fA.foot[1].text) && fA.foot[1].icon,
+    `${tag} M7 the foot's right end is the price, then the model with its mark`,
+    fA.foot,
+  );
+  // T8 — a line of artifacts.
+  check(fA.arts, `${tag} M8 the minimal face keeps a line of artifacts`, fA);
+  // T9 — the star is a toggle on the face.
+  check(fA.star === 'false', `${tag} M9 the face carries the star toggle (off)`, fA.star);
+  // T10 — a plain task's mark; an epic's.
+  check(
+    !!fA.lead && fA.lead.label === '일반 작업' && fA.lead.icon,
+    `${tag} M10 a plain task leads with the task mark`,
+    fA.lead,
+  );
+  const fE = await faceOf(page, KEY_EPIC);
+  check(
+    !!fE.lead && fE.lead.text === 'EPIC' && fE.lead.icon,
+    `${tag} M10 an epic leads with EPIC and its mark`,
+    fE.lead,
+  );
   const fQ = await faceOf(page, KEY_Q);
   check(fQ.text.includes('dev에 먼저 배포할까요?'), `${tag} M3 a waiting card's face says its question`, fQ);
   await page.screenshot({ path: path.join(OUT, `${tag}-1-minimal-board.png`) });
@@ -500,6 +555,25 @@ async function scenario(
   });
   check(q.visible, `${tag} M5 minimal keeps a waiting session's question card`, q);
   await page.screenshot({ path: path.join(OUT, `${tag}-3-minimal-question.png`) });
+  // T9 — pressing the face's star stars the session (the same write as ☆ 즐겨찾기) and opens nothing.
+  // (A phone's detail card is a sheet over the board: ✕ first; the open card folds so the face is the card.)
+  await page.evaluate(() => (window as any).closeDetailCard());
+  await sleep(500);
+  const openState = (k: string) => page.evaluate((key) => (window as any).__card(key).classList.contains('is-open'), k);
+  const before = await openState(KEY_A);
+  await page.evaluate((k) => {
+    const b = (window as any).__card(k).querySelector('button.ib-star') as HTMLElement;
+    b.click();
+  }, KEY_A);
+  await sleep(400);
+  const after = await openState(KEY_A);
+  check(
+    store.stars.length === 1 &&
+      JSON.stringify(store.stars[0]) === JSON.stringify({ key: KEY_A, body: { starred: true } }) &&
+      before === after,
+    `${tag} M9 pressing the face's star stars the session and does not toggle the card`,
+    { stars: store.stars, before, after },
+  );
   if (BASELINE) {
     log(`${tag} baseline page: ${JSON.stringify(p0)}`);
     log(`${tag} baseline face A: ${JSON.stringify(fA)}`);

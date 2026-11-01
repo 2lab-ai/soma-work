@@ -643,6 +643,7 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
         document: { createElement: () => body },
         renderCardBody: (s: unknown, col: string) => ui.renderAgentTree(s, col),
         isAdvanced: () => true,
+        cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
         isPickingModel: () => false,
         morphInnerHtml: (_el: unknown, html: string) => markup.push(html),
         updateTimersIn: () => {},
@@ -900,6 +901,7 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
       deckDrop: (k: string) => calls.deck.push(`drop ${k}`),
       // View mode (SSOT 2026-11-01): the card and its body go through the mode — this harness is 어드밴스드.
       isAdvanced: () => true,
+      cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
     };
     const fns = load<{
       placeCard(s: unknown, col: string, host: unknown, drawn: boolean): void;
