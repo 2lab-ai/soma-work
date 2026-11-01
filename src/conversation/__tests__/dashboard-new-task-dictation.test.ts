@@ -189,6 +189,7 @@ function page(
       'ntDictationDeadText',
       'ntDictateStart',
       'ntDictationHeard',
+      'ntDictationAnyWords',
       'ntDictationListen',
       'ntDictationFallback',
       'ntRecordingNow',
@@ -1132,6 +1133,95 @@ describe('SSOT_5 — Samsung Internet and Chrome on a Galaxy: the first press li
       expect(env.errorLine.textContent).toBe('');
       expect(api.__peek('_ntDictationAutoOff')).toBe(false);
       expect(env.composer.value).toBe('첫 문장');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('result events whose words are all empty (Android’s on-device recogniser sends them between words) leave the shown words alone, and an utterance that ends without a final keeps them', async () => {
+    // Recorded in Chrome 109 on Android 13 with Speech Services 2024-03 (2026-11-02): empty interim results between
+    // words, then nomatch and the end — no final. The shown words vanished and were lost at the end.
+    const Rec = recClass(null);
+    const { api, env } = page({ engine: Rec, ua: UA.samsung });
+    await api.ntDictateStart();
+    const rec = FakeRec.made[0];
+    rec.say([interim('')]);
+    expect(env.composer.value).toBe('');
+    rec.say([interim('실시간')]);
+    expect(env.composer.value).toBe('실시간');
+    rec.say([interim('')]);
+    expect(env.composer.value).toBe('실시간');
+    rec.say([interim('실시간 받아쓰기를 테스트하고 있습니다')]);
+    rec.say([interim('')]);
+    expect(env.composer.value).toBe('실시간 받아쓰기를 테스트하고 있습니다');
+    rec.end(); // nomatch, then the end: no final came
+    expect(rec.starts).toBe(2);
+    rec.say([interim('다음 문장')]);
+    expect(env.composer.value).toBe('실시간 받아쓰기를 테스트하고 있습니다 다음 문장');
+    // The words count as heard: that session was not a silent one.
+    expect(api.__peek('_ntDictation')).not.toBeNull();
+  });
+  it('whitespace is not words: three sessions of it still end the dictation as silence (astra, PR #719)', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      const { api, env } = page({ engine: Rec, ua: UA.samsung });
+      await api.ntDictateStart();
+      const rec = FakeRec.made[0];
+      for (let i = 0; i < 3; i++) {
+        vi.advanceTimersByTime(1500);
+        rec.say([interim('   ')]);
+        rec.end();
+      }
+      expect(rec.starts).toBe(3);
+      expect(api.__peek('_ntDictation')).toBeNull();
+      expect(last(env.statuses)).toContain('들리지 않아');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('elsewhere an empty list is a withdrawal: the withdrawn words go (astra review, PR #719)', async () => {
+    const Rec = recClass('unavailable');
+    const { api, env } = page({ engine: Rec, ua: UA.chromeMac });
+    await api.ntDictateStart();
+    const rec = FakeRec.made[0];
+    rec.say([interim('파일 삭제')]);
+    rec.say([]);
+    expect(env.composer.value).toBe('');
+    rec.end();
+    rec.say([interim('다음')]);
+    expect(env.composer.value).toBe('다음');
+  });
+  it('on Android a placeholder still moves the time on: a quick correction replaces, it is not appended (astra, PR #719)', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      const { api, env } = page({ engine: Rec, ua: UA.samsung });
+      await api.ntDictateStart();
+      const rec = FakeRec.made[0];
+      rec.say([interim('오늘 회의를 모두 취소해 주세요')]);
+      vi.advanceTimersByTime(1000);
+      rec.say([interim('')]);
+      vi.advanceTimersByTime(400);
+      rec.say([final('아니요')]);
+      expect(env.composer.value).toBe('아니요');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('on Android an empty result after a pause is still the boundary between utterances (astra, PR #719)', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      const { api, env } = page({ engine: Rec, ua: UA.samsung });
+      await api.ntDictateStart();
+      const rec = FakeRec.made[0];
+      rec.say([interim('첫 문장')]);
+      vi.advanceTimersByTime(1500);
+      rec.say([interim('')]);
+      expect(env.composer.value).toBe('첫 문장');
+      vi.advanceTimersByTime(300);
+      rec.say([interim('다음 문장으로 넘어갑니다')]);
+      expect(env.composer.value).toBe('첫 문장 다음 문장으로 넘어갑니다');
     } finally {
       vi.useRealTimers();
     }
