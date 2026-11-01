@@ -59,10 +59,28 @@ Limits found on the way:
 - The Android 11 Google app (2020) returned no result, even for English.
 - `injectAudio` delivered silence on the Android 15 and 16 images, and crashed emulator 37.1 and 37.2 when no guest microphone was open.
 - Processes started by the bot have no macOS microphone permission, so the host microphone records zeros.
-- Repeated runs: 3 of 5 returned words, and each showed them live and kept them; 2 returned only empty results. Every Korean session logged `SodaSpeechRecognizer: Failed to get language pack of required locale: error 13`. With the system locale set to Korean, the emulator offered no Korean pack ("an ideal set of 0 total packs"). Sound heard but no words on Android is therefore the symptom of a missing Korean speech pack, and the page's message now says to download it in ‘Google 음성 인식 및 합성’.
+
+### Why some Korean runs return no words (emulator, 2 November 2026)
+
+Run with a bare recogniser in Samsung Internet (no dashboard code), the same settings as the page (`continuous=false`, `interimResults=true`):
+
+- English came back as a whole sentence in 9 of 9 runs, with the odd misheard word.
+- Korean returned no words in 5 of 17 runs and the whole sentence once. The rest were fragments, such as "테스트하고 있습니다" from the end of the sentence, or misheard words.
+- Whenever the recogniser returned words in a dashboard run, the page showed them live and kept them.
+
+What it is not:
+
+- **Not a missing Korean pack.** Speech Services logged `Failed to get language pack of required locale: error 13` for English too, and English worked every time. On this emulator Google's server ("Online recognizer") does the recognition, not an on-device pack. A message telling users to download a Korean pack was drafted and dropped for this reason.
+- **Not the server's 401 errors.** They appeared in successful English runs and were missing from a failed Korean run.
+- **Not clip length or injection pacing.** A 2.4-second Korean clip also failed, a 6.4-second English clip did not, and real-time injection made no difference.
+
+The emulator has no Google account (`Accounts: 0`) and a side-loaded 2024 Speech Services. Why Korean comes back in fragments there is not known. It says nothing about a real Galaxy, which needs its own test.
+
+Runs through the dashboard add a timing effect. Injected audio arrives about 2.5 seconds late, and Android ends a session after about 5 seconds without speech. The first session can end before the sentence arrives, and the restart takes about half a second.
 
 ## Follow-up candidates
 
+- On Android a session ends after about 5 seconds of silence and restarts, which takes about half a second. Words spoken in that gap are lost.
 - Phrase lists for English technical terms when Chrome runs on-device.
 - A watchdog for Edge when recognition starts but no event arrives.
 - An in-browser model for browsers without a recogniser, or whose recogniser does not work (Samsung Internet returning no words). getUserMedia works there, since the voice note records.

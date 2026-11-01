@@ -975,9 +975,6 @@ describe('SSOT_5 — Samsung Internet and Chrome on a Galaxy: the first press li
     expect(api.__peek('_ntDictation')).toBeNull();
     expect(last(env.statuses)).toContain('글자로 바뀐 것이 없어');
     expect(last(env.statuses)).toContain('Chrome');
-    // Measured on Android (Speech Services: "Failed to get language pack of required locale"): no Korean pack on the
-    // phone gives exactly this — sound heard, no words. The words say to download it.
-    expect(last(env.statuses)).toContain('한국어 음성 인식 언어');
     expect(env.statuses.every((t) => !t.includes('들리지 않아'))).toBe(true);
     // Not a broken recogniser for sure (a noisy room does this too): the red line stays clear, and the new task still
     // opens listening next time (grok review P1).
