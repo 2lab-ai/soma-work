@@ -18354,19 +18354,21 @@ function ntDictationListen(d) {
   ntDictationWatch(d, d.sessions, 0);
 }
 
-// The 12 s watch of session n. audiostart comes only after the yes, so while the browser still asks for the mic
-// (permission 'prompt') it waits, up to a minute, then says it is waiting for that yes; before the mic ever opened it
-// waits once more anyway (iOS asks for speech recognition separately). Still silent with the mic granted (or opened
-// before): the recogniser does not work — the new task stops opening listening. Denied: the mic's why.
+// The 12 s watch of session n, until the mic has opened once in this dictation (then the recogniser is proven: a
+// late audiostart in a later session is not a broken one, and a silent run ends by itself — grok review R2 P1).
+// audiostart comes only after the yes, so while the browser still asks for the mic (permission 'prompt') it waits,
+// up to a minute, then says it is waiting for that yes; it waits once more anyway (iOS asks for speech recognition
+// separately). Still silent with the mic granted: the recogniser does not work — the new task stops opening
+// listening. Denied: the mic's why.
 function ntDictationWatch(d, n, waited) {
   var idle = function () {
-    return _ntDictation === d && !d.hard && !d.stopping && d.sessions === n && !d.audio && !d.heard;
+    return _ntDictation === d && !d.hard && !d.stopping && d.sessions === n && !d.audio && !d.heard && !d.opened;
   };
   setTimeout(function () {
     if (!idle()) return;
     ntDictationMicState().then(function (state) {
       if (!idle()) return;
-      if ((state === 'prompt' && waited < 4) || (!d.opened && waited < 1)) {
+      if ((state === 'prompt' && waited < 4) || waited < 1) {
         ntDictationWatch(d, n, waited + 1);
         return;
       }
@@ -18378,7 +18380,7 @@ function ntDictationWatch(d, n, waited) {
         } catch (e) {}
         return;
       }
-      if (state === 'granted' || state === 'denied' || d.opened) _ntDictationAutoOff = true;
+      if (state === 'granted' || state === 'denied') _ntDictationAutoOff = true;
       var why =
         state === 'denied' ? ntDictationErrorText('not-allowed', d.android) : ntDictationDeadText('dead', d.android);
       ntDictationEnd(d, why, true);
@@ -18447,7 +18449,8 @@ function ntDictationEnded(d) {
     }, 400);
     return;
   }
-  d.dead = !d.heard && !d.audio ? d.dead + 1 : 0;
+  // Only before the mic has ever opened: after that the recogniser is proven, and empty sessions are a silent run.
+  d.dead = !d.opened && !d.heard && !d.audio ? d.dead + 1 : 0;
   if (d.dead >= 2) {
     _ntDictationAutoOff = true;
     ntDictationEnd(d, ntDictationDeadText('dead', d.android), true);

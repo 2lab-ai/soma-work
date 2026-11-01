@@ -1086,6 +1086,33 @@ describe('SSOT_5 — Samsung Internet and Chrome on a Galaxy: the first press li
       vi.useRealTimers();
     }
   });
+  it('once the mic has opened, a later session whose audiostart is late is never cut off by that timer (grok R2 P1)', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      const { api, env } = page({ engine: Rec, ua: UA.samsung, mic: 'granted' });
+      api.ntDictateAuto();
+      const rec = FakeRec.made[0];
+      rec.say([final('첫 문장')]);
+      FakeRec.deaf = true; // the next session's audiostart lags (the speech service coming back)
+      rec.end();
+      expect(rec.starts).toBe(2);
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(api.__peek('_ntDictation')).not.toBeNull();
+      expect(rec.aborts).toBe(0);
+      expect(env.errorLine.textContent).toBe('');
+      expect(api.__peek('_ntDictationAutoOff')).toBe(false);
+      // Nor do two sessions that end before their audiostart: a silent run, not a broken recogniser.
+      rec.end();
+      expect(api.__peek('_ntDictation')).not.toBeNull();
+      expect(env.errorLine.textContent).toBe('');
+      rec.onaudiostart?.();
+      rec.say([interim('늦게 열린 둘째')]);
+      expect(env.composer.value).toBe('첫 문장 늦게 열린 둘째');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('a recogniser that answers is not cut off by that timer, in any session', async () => {
     vi.useFakeTimers();
     try {
