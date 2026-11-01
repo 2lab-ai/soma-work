@@ -433,8 +433,8 @@ async function run(browser: Browser, engine: string, label: string, options: Bro
       v.error === '' && v.status.includes('듣는 중'),
       `${v.error} · ${v.status}`,
     );
-    // Speech heard, no words back, twice (Samsung Internet showing listening with no text): said plainly.
-    for (let i = 0; i < 2; i++) {
+    // Speech heard, no words back, three times (Samsung Internet showing listening with no text): said plainly.
+    for (let i = 0; i < 3; i++) {
       await page.evaluate(() => (window as any).__speech());
       await page.evaluate(() => (window as any).__end());
     }

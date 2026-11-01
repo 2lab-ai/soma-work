@@ -18041,11 +18041,13 @@ function ntDictationRead(results, cumulative) {
   return { finals: finals, interim: interim };
 }
 
-// Why a dictation ended, in the page's words; '' for silence and for a stop the page asked for. On Android (Chrome or
+// Why a dictation ended, in the page's words; '' for silence, an utterance it could not match (Android's
+// ERROR_NO_MATCH — a noise, a mumble: it listens again) and a stop the page asked for. On Android (Chrome or
 // Samsung Internet on a Galaxy) the recogniser is Google's speech app on the phone, so the words name what to turn on.
 function ntDictationErrorText(code, android) {
   switch (String(code || '')) {
     case 'no-speech':
+    case 'no-match':
     case 'aborted':
       return '';
     case 'not-allowed':
@@ -18068,8 +18070,8 @@ function ntDictationErrorText(code, android) {
   }
 }
 
-// A recogniser that does not work, said plainly (not "말이 들리지 않아"): 'dead' — two sessions that never opened the
-// microphone; 'mute' — two that heard speech and gave back no words (Samsung Internet can show listening, no text).
+// A recogniser that does not work, said plainly (not "말이 들리지 않아"): 'dead' — sessions that never opened the
+// microphone; 'mute' — three that heard speech and gave back no words (Samsung Internet can show listening, no text).
 function ntDictationDeadText(kind, android) {
   var fix = android
     ? '설정 › 애플리케이션에서 ‘Google 음성 인식 및 합성’을 켜거나 업데이트하고, 안 되면 Chrome에서 열어 주세요'
@@ -18179,6 +18181,9 @@ async function ntDictateStart(host, auto) {
     spoke: false,
     dead: 0,
     mute: 0,
+    // Android refused a restart (still busy): one more try after a moment, once per stretch without words.
+    retry: false,
+    retried: false,
     // Android Chrome repeats settled words in longer copies (ntDictationRead folds them there only).
     cumulative: android,
   };
@@ -18227,8 +18232,15 @@ async function ntDictateStart(host, auto) {
       if (!why) return;
       // A why the person acts on goes on the red error line.
       d.bad = true;
-      // A restart refused after the first session (iOS may want a fresh press): not a missing permission.
+      // A restart refused after the first session: not a missing permission. Android reports its recogniser still
+      // busy this way — one more try after a moment (ntDictationEnded), once per stretch without words; iOS may want
+      // a fresh press.
       if (code === 'not-allowed' && d.sessions > 1) {
+        if (android && !d.retried) {
+          d.retried = true;
+          d.retry = true;
+          return;
+        }
         why = '받아쓰기가 멈췄습니다 — 다시 누르면 이어서 받아씁니다';
         d.bad = false;
       }
@@ -18242,8 +18254,7 @@ async function ntDictateStart(host, auto) {
     rec.onend = function () {
       ntDictationEnded(d);
     };
-    rec.start();
-    d.sessions++;
+    ntDictationListen(d);
     d.live = ntDictationStatus(where);
     host.status(d.live);
   } catch (e) {
@@ -18278,6 +18289,7 @@ function ntDictationHeard(d, e) {
   if (got.finals || got.interim) {
     d.heard = true;
     d.silent = 0;
+    d.retried = false;
   }
   var el = d.host.el();
   if (!el) return;
@@ -18286,26 +18298,59 @@ function ntDictationHeard(d, e) {
   d.host.text(text);
 }
 
+// One recognition session. One that answers nothing in 12 s — no audiostart, no words (an Android recogniser that
+// cannot be reached raises a toast and sends the page no event at all) — is a recogniser that does not work.
+function ntDictationListen(d) {
+  d.rec.start();
+  d.sessions++;
+  var n = d.sessions;
+  setTimeout(function () {
+    if (_ntDictation !== d || d.hard || d.stopping || d.sessions !== n || d.audio || d.heard) return;
+    if (d.auto) _ntDictationAutoOff = true;
+    d.hard = true;
+    ntDictationEnd(d, ntDictationDeadText('dead', d.android), true);
+    try {
+      d.rec.abort();
+    } catch (e) {}
+  }, 12000);
+}
+
 // The recogniser ended. Stopped or failed: the dictation lets go. Ended by itself (iOS after a pause, Android after
 // each utterance, Chrome after a while): it listens again with the words so far as its start; three silent sessions
-// in a row end it. Two sessions in a row that never opened the microphone, or that heard speech and gave back no
-// words, are a recogniser that does not work: it ends saying so, and the new task stops opening listening.
+// in a row end it. Two sessions in a row that never opened the microphone, or three that heard speech and gave back
+// no words, are a recogniser that does not work: it ends saying so, and the new task stops opening listening.
 function ntDictationEnded(d) {
   if (d.hard || _ntDictation !== d) return;
   if (d.stopping) {
     ntDictationEnd(d, d.error, d.bad);
     return;
   }
+  d.base = ntDictationText(d.base, d.finals, d.interim);
+  d.finals = '';
+  d.interim = '';
+  if (d.retry) {
+    // Android refused the restart (still busy): listen again after a moment, unless the dictation ended meanwhile.
+    d.retry = false;
+    d.heard = false;
+    d.audio = false;
+    d.spoke = false;
+    setTimeout(function () {
+      if (_ntDictation !== d || d.hard || d.stopping) return;
+      try {
+        ntDictationListen(d);
+      } catch (e) {
+        ntDictationEnd(d, ntDictationErrorText('', d.android), true);
+      }
+    }, 400);
+    return;
+  }
   d.dead = !d.heard && !d.audio ? d.dead + 1 : 0;
   d.mute = !d.heard && d.spoke ? d.mute + 1 : 0;
-  if (d.dead >= 2 || d.mute >= 2) {
+  if (d.dead >= 2 || d.mute >= 3) {
     if (d.auto) _ntDictationAutoOff = true;
     ntDictationEnd(d, ntDictationDeadText(d.dead >= 2 ? 'dead' : 'mute', d.android), true);
     return;
   }
-  d.base = ntDictationText(d.base, d.finals, d.interim);
-  d.finals = '';
-  d.interim = '';
   d.silent = d.heard ? 0 : d.silent + 1;
   d.heard = false;
   d.audio = false;
@@ -18315,8 +18360,7 @@ function ntDictationEnded(d) {
     return;
   }
   try {
-    d.rec.start();
-    d.sessions++;
+    ntDictationListen(d);
   } catch (e) {
     ntDictationEnd(d, ntDictationErrorText('', d.android), true);
   }
