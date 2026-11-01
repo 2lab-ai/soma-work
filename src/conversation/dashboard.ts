@@ -5234,7 +5234,7 @@ body:not([data-detail~="sections"]) .panel-sections::part(list) { display: none;
 body:not([data-tasks="runs"]) .panel-tasks { max-height: var(--ptl-max, 34cqh); overflow-y: auto; overscroll-behavior: contain; padding: 8px 16px 6px; }
 .ptl-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
 /* 3안's task line: one row — how far, the running task — a press opens the checklist under it. */
-.ptl-line { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 4px 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.ptl-line { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 4px 0; border: 0; background: var(--surface); color: inherit; font: inherit; text-align: left; cursor: pointer; position: sticky; top: -8px; z-index: 1; }
 .ptl-line .ptl-now { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 12px; }
 .ptl-line .ptl-caret { flex: none; transition: transform 120ms ease; }
 .ptl-line[aria-expanded="true"] .ptl-caret { transform: rotate(180deg); }
@@ -7221,7 +7221,7 @@ function renderPanelTaskLine(tasks) {
   }
   var open = !!_panelTaskLineOpen;
   var html = list.length
-    ? '<button type="button" class="panel-tasks-header ptl-line" aria-expanded="' + open + '" aria-controls="panel-task-list" onclick="togglePanelTaskLine()">'
+    ? '<button type="button" class="panel-tasks-header ptl-line" aria-expanded="' + open + '"' + (open ? ' aria-controls="panel-task-list"' : '') + ' onclick="togglePanelTaskLine()">'
       + '<span class="ps-sec-title">작업 ' + done + ' / ' + list.length + '</span>'
       + (now ? '<span class="ptl-now">지금: ' + esc(now.content || '') + '</span>' : '<span class="ptl-now"></span>')
       + '<i data-ui-icon="chevron-down" class="ptl-caret"></i></button>'

@@ -124,6 +124,16 @@ describe('P1 — the plan table: two modes × three plans; the user’s dashboar
     expect(PAGE).toMatch(/<body[^>]*data-view-plan="1"/);
   });
 
+  it('the settings page keeps the dashboard’s device copy of its mode and plan (its first paint after a full reload)', () => {
+    const page = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
+    expect(page).toContain("var copy = { dashboardMode: 'soma-view-mode', dashboardPlan: 'soma-view-plan' }[key];");
+    expect(page).toContain(
+      'if (copy) { try { localStorage.setItem(copy, String(r.data.setting.value)); } catch (_e) {} }',
+    );
+    expect(TEMPLATE).toContain("var VIEW_PLAN_KEY = 'soma-view-plan';");
+    expect(TEMPLATE).toContain("var VIEW_MODE_KEY = 'soma-view-mode';");
+  });
+
   it('the first settings load starts after the view mode and plan are set up — the server’s mode applies on a fresh device', () => {
     // A call at script load ran before `var _viewModeSeq = 0;`: it captured undefined, so the answer's mode
     // (undefined !== 0) was never applied — a user who chose 어드밴스드 elsewhere opened in 미니멀.
@@ -554,9 +564,12 @@ describe('P4 — the detail card follows the plan', () => {
     expect(container.innerHTML).toContain('작업 1 / 3');
     expect(container.innerHTML).toContain('지금: 구현 &lt;b&gt;');
     expect(container.innerHTML).toContain('aria-expanded="false"');
+    // Folded, it controls nothing yet: no aria-controls pointing at a list that is not there (review, fable P3).
+    expect(container.innerHTML).not.toContain('aria-controls');
     expect(container.innerHTML).not.toContain('<ui-task-plan');
     env.togglePanelTaskLine();
     expect(container.innerHTML).toContain('aria-expanded="true"');
+    expect(container.innerHTML).toContain('aria-controls="panel-task-list"');
     expect(container.innerHTML).toContain('<ui-task-plan class="panel-task-list" id="panel-task-list"');
     expect(plan.data).toEqual({ title: '', steps: tasks });
     env.renderPanelTaskLine([]);
