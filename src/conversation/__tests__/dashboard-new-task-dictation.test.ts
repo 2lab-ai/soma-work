@@ -564,6 +564,74 @@ describe('I1.1 / I3.1 — pressing 받아쓰기 streams the words into the field
     }
   });
 
+  it('revisions are not new utterances: a revised final, a withdrawn interim, a quick 2→1 merge (astra R5, P1)', async () => {
+    vi.useFakeTimers();
+    try {
+      const run = (steps: Array<[number, Result[]]>) => {
+        const Rec = recClass(null);
+        const { api, env } = page({ engine: Rec, value: '' });
+        void api.ntDictateStart();
+        const rec = FakeRec.made[0];
+        for (const [wait, results] of steps) {
+          vi.advanceTimersByTime(wait);
+          rec.say(results);
+        }
+        return env.composer.value;
+      };
+      // An interim settles differently 1.5 s later — the settled first result stays: no doubling.
+      expect(
+        run([
+          [0, [final('첫 문장.'), interim(' 파일을 삭제해')]],
+          [1500, [final('첫 문장.'), final(' 파일을 삭제하지 마.')]],
+        ]),
+      ).toBe('첫 문장. 파일을 삭제하지 마.');
+      // An interim the recogniser withdraws, after a pause: gone, and the final is not doubled.
+      expect(
+        run([
+          [0, [final('첫 문장.'), interim(' 음')]],
+          [1500, [final('첫 문장.')]],
+        ]),
+      ).toBe('첫 문장.');
+      // Two interim results merged into one, quickly (the recorded Chrome log does this inside an utterance).
+      expect(
+        run([
+          [0, [interim('대시보드 새 작업'), interim(' 화면')]],
+          [200, [interim('대시보드 새 작업 화면에서')]],
+        ]),
+      ).toBe('대시보드 새 작업 화면에서');
+      // astra's exact case: two interims merged and corrected in 200 ms.
+      expect(
+        run([
+          [0, [interim('첫 문장'), interim(' 삭제해')]],
+          [200, [interim('첫 문장 삭제하지 마')]],
+        ]),
+      ).toBe('첫 문장 삭제하지 마');
+      // …and a withdrawn interim after a pause, the final kept.
+      expect(
+        run([
+          [0, [final('첫 문장.'), interim(' 잘못 들은 말')]],
+          [1500, [final('첫 문장.')]],
+        ]),
+      ).toBe('첫 문장.');
+      // …and a 2→1 correction that is not a prefix, quickly: replaced, not doubled.
+      expect(
+        run([
+          [0, [interim('대시보드 새 장업'), interim(' 화면')]],
+          [200, [interim('대시보드 새 작업 화면')]],
+        ]),
+      ).toBe('대시보드 새 작업 화면');
+      // A settled first result that vanishes from a fresh list: a new utterance — the shown words stay.
+      expect(
+        run([
+          [0, [final('첫 문장.'), interim(' 둘째')]],
+          [300, [interim('다음 말')]],
+        ]),
+      ).toBe('첫 문장. 둘째 다음 말');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a recogniser that never confirms a stop (Edge) does not hold the tool: it is let go after 3 s', async () => {
     vi.useFakeTimers();
     try {
