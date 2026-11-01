@@ -422,6 +422,7 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       cardOf: (s: { key: string }, col: string) => ({ id: s.key, title: s.key, status: col, bodyMode: 'slot' }),
       // View mode (SSOT 2026-11-01): the board maps each card through the mode — this harness is 어드밴스드.
       isAdvanced: () => true,
+      cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
       acPrefetch: () => {},
       releaseCardIoTimer: (cid: unknown) => calls.released.push(cid),
       syncCardBodies: () => {},
@@ -582,6 +583,7 @@ function bodyHarness() {
     document: { createElement: fakeEl },
     renderCardBody: (s: { key: string }, col: string) => `<div class="card-body">${s.key}|${col}</div>`,
     isAdvanced: () => true,
+    cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
     isPickingModel: () => false,
     morphInnerHtml: (el: FakeEl, html: string) => {
       el.innerHTML = html;
@@ -719,6 +721,7 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
       MOTION: { move: 320, expand: 240 },
       cardOf: (s: { key: string }, col: string) => ({ id: s.key, title: s.key, status: col }),
       isAdvanced: () => true,
+      cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
       cardBodyShown: () => false,
       acPrefetch: () => {},
       openArtifactViewer: (...a: unknown[]) => calls.modal.push(a),

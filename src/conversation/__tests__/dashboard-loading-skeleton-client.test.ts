@@ -249,6 +249,7 @@ function boardFlow(cardOf?: (s: { key: string }, col: string) => unknown, over: 
         cardOf ?? ((s: { key: string }, col: string) => ({ id: s.key, title: s.key, status: col, bodyMode: 'slot' })),
       // View mode (SSOT 2026-11-01): the board maps each card through the mode — this harness is 어드밴스드.
       isAdvanced: () => true,
+      cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
       acPrefetch: () => {},
       releaseCardIoTimer: () => {},
       syncCardBodies: () => {},

@@ -208,16 +208,23 @@ describe('T3 — minimal: a card shows what matters', () => {
     metrics: [{ text: '#700 열림', glyph: 'pr' }],
   };
 
-  it('the face keeps title · status · time · the task in progress · the summary · lead · owner', () => {
-    const env = load<{ minimalCard(c: unknown): Record<string, unknown> }>(['minimalCard'], ['MINIMAL_CARD_KEYS']);
+  it('the face keeps title · status · time · the task in progress · the summary · lead · owner · artifacts; the foot is cost · model', () => {
+    const env = load<{ minimalCard(c: unknown, s?: unknown): Record<string, unknown> }>(
+      ['toNum', 'modelVendorOf', 'modelLabelOf', 'minimalFootMetrics', 'minimalCard'],
+      ['MINIMAL_CARD_KEYS'],
+      { REPRESENTATIVE_MODELS: [] },
+    );
     const m = env.minimalCard(full);
     expect(Object.keys(m).sort()).toEqual(
       [
+        'artifacts',
+        'artifactsCount',
         'badge',
         'bodyMode',
         'elapsedMs',
         'id',
         'lead',
+        'metrics',
         'since',
         'status',
         'statusText',
@@ -227,13 +234,16 @@ describe('T3 — minimal: a card shows what matters', () => {
       ].sort(),
     );
     expect(m.task).toEqual(full.task);
-    // Absent fields stay absent (no undefined keys for the element to read).
-    expect(Object.keys(env.minimalCard({ id: 'k', title: 't', status: 'done', bodyMode: 'slot' }))).toEqual([
-      'id',
-      'title',
-      'status',
-      'bodyMode',
-    ]);
+    // The second instruction (SSOT 2026-11-01): the foot's right end is the price, not the PR or the context.
+    expect(m.metrics).toEqual([{ text: '$6.20', title: 'c' }]);
+    // Absent fields stay absent (no undefined keys for the element to read); a plain task gets its mark.
+    expect(env.minimalCard({ id: 'k', title: 't', status: 'done', bodyMode: 'slot' })).toEqual({
+      id: 'k',
+      title: 't',
+      status: 'done',
+      bodyMode: 'slot',
+      lead: { glyph: 'task', title: '일반 작업' },
+    });
   });
 
   it('the board maps through the mode: advanced is the full card', () => {
@@ -241,7 +251,20 @@ describe('T3 — minimal: a card shows what matters', () => {
     const env = load<{
       viewCardOf(s: unknown, col: string): Record<string, unknown>;
       __set(n: string, v: unknown): void;
-    }>(['viewModeFrom', 'isAdvanced', 'minimalCard', 'viewCardOf'], ['MINIMAL_CARD_KEYS', '_viewMode'], { cardOf });
+    }>(
+      [
+        'viewModeFrom',
+        'isAdvanced',
+        'toNum',
+        'modelVendorOf',
+        'modelLabelOf',
+        'minimalFootMetrics',
+        'minimalCard',
+        'viewCardOf',
+      ],
+      ['MINIMAL_CARD_KEYS', '_viewMode'],
+      { cardOf, REPRESENTATIVE_MODELS: [], cardStarOf: () => ({ on: false }) },
+    );
     expect(env.viewCardOf({}, 'working').costUsd).toBeUndefined();
     env.__set('_viewMode', 'advanced');
     expect(env.viewCardOf({}, 'working').costUsd).toBe(6.2);
@@ -527,5 +550,131 @@ describe('T5 — minimal keeps every session that needs the user in reach (revie
     expect(loadFn.indexOf('var seq = _viewModeSeq;')).toBeGreaterThan(-1);
     expect(loadFn.indexOf('var seq = _viewModeSeq;')).toBeLessThan(loadFn.indexOf("await fetch('/api/settings')"));
     expect(loadFn).toContain('} else if (seq === _viewModeSeq && !_viewModeSaving && vm !== _viewMode) {');
+  });
+});
+
+// SSOT 2026-11-01 (second instruction) — the minimal card's foot names the cost and the model with its vendor's
+// mark, a line of artifacts, the star is a toggle on the card, and an epic and a plain task show their marks.
+describe('T7–T10 — minimal card: cost · model · artifacts, the star toggle, the kind marks', () => {
+  const full = {
+    id: 'k',
+    title: 't',
+    status: 'running',
+    bodyMode: 'slot',
+    tokens: 6_440_000,
+    costUsd: 6.2,
+    titles: { cost: 'API 환산 비용 (작업 합계)' },
+    artifactsCount: 2,
+    artifacts: [{ id: 'a', name: 'x.html', kind: 'html' }],
+    star: { on: false, title: '즐겨찾기' },
+    metrics: [{ text: '#700 열림', glyph: 'pr' }],
+    contextPct: 64,
+  };
+  const env = load<{
+    minimalCard(c: unknown, s?: unknown): Record<string, any>;
+    modelVendorOf(m: unknown): string;
+    modelLabelOf(m: unknown): string;
+  }>(['toNum', 'modelVendorOf', 'modelLabelOf', 'minimalFootMetrics', 'minimalCard'], ['MINIMAL_CARD_KEYS'], {
+    REPRESENTATIVE_MODELS: [{ nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', label: 'Opus 5.5' }],
+  });
+
+  it('T7 — the foot’s right end: the cost, then the model with its vendor’s mark', () => {
+    const m = env.minimalCard(full, { model: 'claude-opus-5-5[1m]' });
+    expect(m.metrics).toEqual([
+      { text: '$6.20', title: 'API 환산 비용 (작업 합계)' },
+      { text: 'Opus 5.5', glyph: 'claude', title: 'claude-opus-5-5[1m]' },
+    ]);
+    // No tokens line, no context, no PR — the price and the model only.
+    expect(m.tokens).toBeUndefined();
+    expect(m.costUsd).toBeUndefined();
+    expect(m.contextPct).toBeUndefined();
+    // No cost known: the model alone; no model: the cost alone.
+    expect(env.minimalCard({ ...full, costUsd: undefined }, { model: 'grok-4.6' }).metrics).toEqual([
+      { text: 'grok-4.6', glyph: 'grok', title: 'grok-4.6' },
+    ]);
+    expect(env.minimalCard(full, {}).metrics).toEqual([{ text: '$6.20', title: 'API 환산 비용 (작업 합계)' }]);
+    // The server's placeholder for a model it does not know is no model name (review: fable P2).
+    expect(env.minimalCard(full, { model: 'unknown' }).metrics).toEqual([
+      { text: '$6.20', title: 'API 환산 비용 (작업 합계)' },
+    ]);
+    // A cost under a cent never reads $0.00 (review, grok P3); past $100 no cents.
+    expect(env.minimalCard({ ...full, costUsd: 0.004 }, {}).metrics[0].text).toBe('<$0.01');
+    expect(env.minimalCard({ ...full, costUsd: 123.4 }, {}).metrics[0].text).toBe('$123');
+  });
+
+  it('T7 — the vendor from the model id: claude · openai · grok · gemini · any other', () => {
+    expect(env.modelVendorOf('claude-opus-5-5[1m]')).toBe('claude');
+    expect(env.modelVendorOf('claude-fable-5')).toBe('claude');
+    expect(env.modelVendorOf('sonnet')).toBe('claude');
+    expect(env.modelVendorOf('gpt-5.5')).toBe('openai');
+    expect(env.modelVendorOf('o3-pro')).toBe('openai');
+    expect(env.modelVendorOf('codex-mini')).toBe('openai');
+    expect(env.modelVendorOf('grok-4.6')).toBe('grok');
+    expect(env.modelVendorOf('gemini-3-pro')).toBe('gemini');
+    expect(env.modelVendorOf('astra')).toBe('model');
+    expect(env.modelVendorOf(undefined)).toBe('model');
+    // The name: the representative label, else the id without the claude- prefix and its date.
+    expect(env.modelLabelOf('claude-opus-5-5[1m]')).toBe('Opus 5.5');
+    expect(env.modelLabelOf('claude-sonnet-4-5-20250929')).toBe('sonnet-4-5');
+    expect(env.modelLabelOf('claude-sonnet-4-5-20250929[1m]')).toBe('sonnet-4-5[1m]');
+    expect(env.modelLabelOf('gpt-5.5')).toBe('gpt-5.5');
+  });
+
+  it('T8 — a line of artifacts stays on the minimal face', () => {
+    const m = env.minimalCard(full, {});
+    expect(m.artifacts).toEqual(full.artifacts);
+    expect(m.artifactsCount).toBe(2);
+  });
+
+  it('T9 — the star toggle stays on the minimal face', () => {
+    expect(env.minimalCard(full, {}).star).toEqual({ on: false, title: '즐겨찾기' });
+  });
+
+  it('T10 — a plain task leads with the task mark; an epic, a child, a cron run keep their own lead', () => {
+    expect(env.minimalCard(full, {}).lead).toEqual({ glyph: 'task', title: '일반 작업' });
+    const epic = { ...full, lead: { text: 'EPIC', glyph: 'epic', title: '에픽 — 실행 중' } };
+    expect(env.minimalCard(epic, {}).lead).toEqual(epic.lead);
+    // cardOf: an epic's lead is the epic mark.
+    expect(clientFn('cardOf')).toContain("card.lead = { text: 'EPIC', glyph: 'epic', title: '에픽 — ' + epicLabel };");
+  });
+});
+
+describe('T9 — the star on every card face is a toggle (SSOT 2026-11-01, "별 표시가 태스크 카드에서 그대로 토글 버튼")', () => {
+  const env = load<{ cardStarOf(s: unknown, col: string): Record<string, unknown> }>(['cardStarOf'], [], {
+    sessionActionsOf: (s: { ownerId?: string; starred?: boolean; sib?: boolean }) =>
+      s.sib
+        ? [{ id: 'stop', sibling: true, lock: 'other instance' }]
+        : [
+            {
+              id: 'star',
+              pressed: s.starred === true,
+              lock: s.ownerId === 'U1' ? '' : 'read only',
+              busy: false,
+              tip: s.starred ? '즐겨찾기 해제' : '즐겨찾기',
+            },
+          ],
+    STRINGS: { siblingLock: () => 'open it on other' },
+  });
+
+  it('the owner’s star is a live toggle; anyone else sees its state, inert, with the reason', () => {
+    expect(env.cardStarOf({ ownerId: 'U1', starred: true }, 'idle')).toEqual({ on: true, title: '즐겨찾기 해제' });
+    expect(env.cardStarOf({ ownerId: 'U1' }, 'idle')).toEqual({ on: false, title: '즐겨찾기' });
+    expect(env.cardStarOf({ ownerId: 'U2', starred: true }, 'idle')).toEqual({
+      on: true,
+      title: '즐겨찾기 해제',
+      disabled: 'read only',
+    });
+    expect(env.cardStarOf({ ownerId: 'U1', starred: true, sib: true, environment: {} }, 'idle')).toEqual({
+      on: true,
+      disabled: 'open it on other',
+    });
+  });
+
+  it('cardOf puts the toggle on the face (no ★ in the lead any more), and the board answers ui-star with doStar', () => {
+    expect(clientFn('viewCardOf')).toContain('c.star = cardStarOf(s, col);');
+    expect(clientFn('cardOf')).not.toContain("'\\u2605 ' + card.lead.text");
+    const wire = clientFn('wireInbox');
+    expect(wire).toContain("host.addEventListener('ui-star', function(e) {");
+    expect(wire).toContain('doStar(String(e.detail.cardId), !!e.detail.starred);');
   });
 });

@@ -325,8 +325,9 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(script).not.toContain('composer.removeFile(');
     // It answers ui-submit (cancelled: the page posts, the composer keeps its text and files until the launch)
     // and ui-input (the draft).
+    // (A live dictation stops first, hard: what is sent is what the field shows — SSOT 2026-11-01.)
     expect(script).toContain(
-      "composer.addEventListener('ui-submit', function (e) {\n    e.preventDefault();\n    submitNewTask(e.detail);",
+      "composer.addEventListener('ui-submit', function (e) {\n    e.preventDefault();\n    ntDictateStopIn('nt');\n    submitNewTask(e.detail);",
     );
     expect(script).toContain('ntSaveDraft(v);');
     expect(clientFn('ntOnLaunched')).toContain(
@@ -340,7 +341,10 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(clientFn('ntComposerData')).not.toContain('tools:');
     expect(html).not.toContain('nt-camera-input');
     expect(script).not.toContain('function ntAddCamera(');
-    expect(script).not.toContain("composer.addEventListener('ui-tool'");
+    // The page's one ui-tool answer is 받아쓰기 (live dictation, SSOT 2026-11-01) — none for the camera.
+    expect(script.match(/composer\.addEventListener\('ui-tool'/g) ?? []).toHaveLength(1);
+    expect(script).toContain("composer.addEventListener('ui-tool', ntOnComposerTool);");
+    expect(clientFn('ntOnComposerTool')).not.toContain('camera');
   });
 
   it("T9 / T11 / PC — files, voice, drop and paste are the composer's: any file type, MediaRecorder, screenshots named", () => {
@@ -671,7 +675,7 @@ describe('submitNewTask — the submitted state is the one sent (#640 R2)', () =
     const launched: unknown[][] = [];
     const file = { name: 'a.png', type: 'image/png' };
     const { submitNewTask } = loadWith<{ submitNewTask(detail: unknown): Promise<void> }>(
-      ['submitNewTask', 'ntCanSubmit', 'ntBlockedHint', 'ntBuildPayload'],
+      ['submitNewTask', 'ntTooLong', 'ntCanSubmit', 'ntBlockedHint', 'ntBuildPayload'],
       {
         _ntBusy: false,
         _ntCtx: {},
@@ -710,15 +714,19 @@ describe('submitNewTask — the submitted state is the one sent (#640 R2)', () =
 // voice / camera tools, and a pasted or dropped file is refused by its type.
 describe('ntComposerData — a dashboard task takes no files (#640 R2)', () => {
   const data = (destination: string) =>
-    loadWith<{ ntComposerData(): Record<string, unknown> }>(['ntComposerData', 'ntReadDraft'], {
-      _ntValue: '',
-      _ntBusy: false,
-      _ntCtx: null,
-      _ntState: { destination },
-      NT_NO_FILES: 'application/x-soma-no-attachments',
-      NT_DRAFT_KEY: 'k',
-      localStorage: { getItem: () => null },
-    }).ntComposerData();
+    loadWith<{ ntComposerData(): Record<string, unknown> }>(
+      ['ntComposerData', 'ntReadDraft', 'ntDictationEngine', 'ntDictationTool'],
+      {
+        _ntValue: '',
+        _ntDictation: null,
+        _ntBusy: false,
+        _ntCtx: null,
+        _ntState: { destination },
+        NT_NO_FILES: 'application/x-soma-no-attachments',
+        NT_DRAFT_KEY: 'k',
+        localStorage: { getItem: () => null },
+      },
+    ).ntComposerData();
   it('task: the tools are off and every file type is refused', () => {
     expect(data('task')).toMatchObject({
       attach: false,
