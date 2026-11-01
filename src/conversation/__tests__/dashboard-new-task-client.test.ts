@@ -327,7 +327,7 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     // and ui-input (the draft).
     // (A live dictation stops first, hard: what is sent is what the field shows — SSOT 2026-11-01.)
     expect(script).toContain(
-      "composer.addEventListener('ui-submit', function (e) {\n    e.preventDefault();\n    ntDictateStop(true);\n    submitNewTask(e.detail);",
+      "composer.addEventListener('ui-submit', function (e) {\n    e.preventDefault();\n    ntDictateStopIn('nt');\n    submitNewTask(e.detail);",
     );
     expect(script).toContain('ntSaveDraft(v);');
     expect(clientFn('ntOnLaunched')).toContain(
@@ -675,7 +675,7 @@ describe('submitNewTask — the submitted state is the one sent (#640 R2)', () =
     const launched: unknown[][] = [];
     const file = { name: 'a.png', type: 'image/png' };
     const { submitNewTask } = loadWith<{ submitNewTask(detail: unknown): Promise<void> }>(
-      ['submitNewTask', 'ntCanSubmit', 'ntBlockedHint', 'ntBuildPayload'],
+      ['submitNewTask', 'ntTooLong', 'ntCanSubmit', 'ntBlockedHint', 'ntBuildPayload'],
       {
         _ntBusy: false,
         _ntCtx: {},

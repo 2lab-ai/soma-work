@@ -6,14 +6,15 @@
  * Exit 1 on any failed check; screenshots are written for every scenario.
  *
  *   Chromium + WebKit, PC 1280 and phone (Pixel 7 / iPhone 13):
- *     - with a recogniser the composer shows one mic — 받아쓰기 — and no audio voice note tool;
+ *     - with a recogniser the composer keeps the voice note (mic) and shows 받아쓰기 beside it, fully in view;
  *     - on the device or only on a yes: WebKit (Apple's engine) starts at once; Chromium (no on-device Korean)
  *       first says the voice would leave the device, and the second press is the yes;
  *     - pressing it starts a ko-KR, interim, continuous recogniser and shows the tool pressed;
  *     - words still being heard appear in the field as they arrive; settled words stay;
  *     - pressing again stops it; 작업 시작 sends the text — no attachment;
  *     - a dashboard task (no attachments) gets the same tool;
- *     - without a recogniser (Firefox) the old voice note tool is back and there is no 받아쓰기.
+ *     - without a recogniser (Firefox) the voice note only, no 받아쓰기;
+ *     - the session panel composer: voice note + 받아쓰기, and dictating writes into it.
  *
  * Run from the repo root (keeps state out of the checkout):
  *   env -i HOME="$HOME" PATH="$PATH" SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst \
@@ -80,6 +81,23 @@ const FAKE_RECOGNISER = `
   window.__end = function () { var rec = window.__recs[window.__recs.length - 1]; rec.onend(); };
 })();
 `;
+const PANEL_KEY = 'mock-inst::work:C_ALPHA:1700000000.000200';
+const PANEL_SESSION = {
+  key: PANEL_KEY,
+  title: '받아쓰기 세션',
+  displayHeadline: '받아쓰기 세션',
+  ownerId: 'U001',
+  ownerName: 'Zhuge',
+  workflow: 'default',
+  model: 'claude-opus-5-5[1m]',
+  effort: 'high',
+  channelId: 'C_ALPHA',
+  sessionState: 'MAIN',
+  activityState: 'idle',
+  conversationId: 'conv-1',
+  lastActivity: new Date().toISOString(),
+};
+
 /** The device has already said yes to a speech service off the device. */
 const REMOTE_OK = "try { localStorage.setItem('soma-nt-dictation-remote', 'ok'); } catch (e) {}";
 const NO_RECOGNISER = 'window.SpeechRecognition = undefined; window.webkitSpeechRecognition = undefined;';
@@ -88,7 +106,13 @@ interface Posted {
   body: any;
 }
 
-async function openPage(browser: Browser, options: BrowserContextOptions, init: string, posted: Posted[]) {
+async function openPage(
+  browser: Browser,
+  options: BrowserContextOptions,
+  init: string,
+  posted: Posted[],
+  withSession = false,
+) {
   const context = await browser.newContext(options);
   const page = await context.newPage();
   await page.addInitScript({ content: WS_STUB });
@@ -98,8 +122,16 @@ async function openPage(browser: Browser, options: BrowserContextOptions, init: 
   );
   await page.route('**/api/dashboard/users', (r) => r.fulfill({ json: { users: [{ id: 'U001', name: 'Zhuge' }] } }));
   await page.route('**/api/dashboard/sessions**', (r) =>
-    r.fulfill({ json: { board: { waiting: [], working: [], done: [] } } }),
+    r.fulfill({ json: { board: { waiting: [], working: withSession ? [PANEL_SESSION] : [], done: [] } } }),
   );
+  if (withSession) {
+    await page.route(/\/api\/dashboard\/session\/[^/?]+\/(artifacts|worklog)/, (r) =>
+      r.fulfill({ json: { artifacts: [], entries: [], hasMore: false } }),
+    );
+    await page.route(/\/api\/dashboard\/session\/[^/?]+(\?.*)?$/, (r) =>
+      r.fulfill({ json: { id: 'conv-1', title: 'conv-1', turnCount: 0, turns: [], hasMore: false } }),
+    );
+  }
   await page.route('**/api/dashboard/new-task/context', (r) => r.fulfill({ json: { context: CONTEXT } }));
   await page.route('**/api/dashboard/new-task', async (r) => {
     posted.push({ body: JSON.parse(r.request().postData() || '{}') });
@@ -113,17 +145,30 @@ async function openPage(browser: Browser, options: BrowserContextOptions, init: 
 }
 
 /** The composer's tools as drawn (its shadow root): their keys and pressed state, and the field's text. */
-async function composerView(page: Page) {
-  return page.evaluate(() => {
-    const el = document.getElementById('nt-composer') as any;
+async function composerView(page: Page, id = 'nt-composer') {
+  return page.evaluate((cid) => {
+    const el = document.getElementById(cid) as any;
     const root = el.shadowRoot || el;
-    const tools = Array.from(root.querySelectorAll('.cp-tools button')).map((b: any) => ({
-      mk: b.getAttribute('data-mk'),
-      pressed: b.getAttribute('aria-pressed'),
-      label: b.getAttribute('aria-label'),
-    }));
+    const bar = (root.querySelector('.cp-tools') as HTMLElement | null)?.getBoundingClientRect();
+    // The row's other end, by what it draws: the leftmost of its visible children.
+    const endKids = Array.from(root.querySelectorAll('.cp-end > *'))
+      .map((k: any) => k.getBoundingClientRect())
+      .filter((r: DOMRect) => r.width > 0);
+    const end = endKids.length ? { left: Math.min(...endKids.map((r: DOMRect) => r.left)) } : null;
+    const tools = Array.from(root.querySelectorAll('.cp-tools button')).map((b: any) => {
+      const r = b.getBoundingClientRect();
+      return {
+        mk: b.getAttribute('data-mk'),
+        pressed: b.getAttribute('aria-pressed'),
+        label: b.getAttribute('aria-label') || b.textContent.trim(),
+        // Fully in view: drawn, and not cut by the tool row (it hides what overflows).
+        inView: !!bar && r.width > 0 && r.left >= bar.left - 1 && r.right <= bar.right + 1,
+        // Clear of the row's other end (the counter, the key hint, 작업 시작).
+        clear: !end || r.right <= end.left + 1,
+      };
+    });
     return { tools, value: String(el.value || ''), status: document.getElementById('nt-status')?.textContent || '' };
-  });
+  }, id);
 }
 
 async function openComposer(page: Page) {
@@ -132,12 +177,12 @@ async function openComposer(page: Page) {
   await page.waitForTimeout(300);
 }
 
-async function pressDictate(page: Page) {
-  await page.evaluate(() => {
-    const el = document.getElementById('nt-composer') as any;
+async function pressDictate(page: Page, id = 'nt-composer') {
+  await page.evaluate((cid) => {
+    const el = document.getElementById(cid) as any;
     const root = el.shadowRoot || el;
     (root.querySelector('[data-mk="tool:dictate"]') as HTMLElement).click();
-  });
+  }, id);
   await page.waitForTimeout(100);
 }
 
@@ -150,20 +195,32 @@ async function run(browser: Browser, engine: string, label: string, options: Bro
     await openComposer(page);
     let v = await composerView(page);
     const mks = v.tools.map((t) => t.mk);
+    const dict = v.tools.find((t) => t.mk === 'tool:dictate');
     check(
-      `${tag}: one mic — 받아쓰기, no audio voice note`,
-      mks.includes('tool:dictate') && !mks.includes('voice'),
-      mks.join(','),
+      `${tag}: the voice note stays and 받아쓰기 sits beside it, fully in view`,
+      mks.includes('voice') && !!dict && dict.inView && dict.clear && dict.label === '받아쓰기',
+      JSON.stringify(v.tools),
     );
-    await pressDictate(page);
-    // On the device or only on a yes: Apple's engine (WebKit) starts at once; a browser whose recogniser sends the
-    // voice off the device (Chromium here: no on-device Korean) says so first, and the second press is the yes.
+    // SSOT_4: Apple's engine (WebKit — on the device) opens listening with the dialog. A browser whose recogniser
+    // sends the voice off the device (Chromium here: no on-device Korean) opens off and quiet; its first press says
+    // so, and the second press is the yes.
     const apple = await page.evaluate(() => (window as any).ntIsAppleSpeech(window));
-    const firstMade = await page.evaluate(() => (window as any).__recs.length);
+    const opened = await page.evaluate(() => (window as any).__recs.length);
     if (apple) {
-      check(`${tag}: Apple's engine (on the device) starts on the first press`, firstMade === 1, `recs=${firstMade}`);
+      check(
+        `${tag}: on the device — the new task opens listening`,
+        opened === 1 && dict?.pressed === 'true' && v.status.includes('키보드로 쓰면 멈춥니다'),
+        `recs=${opened} · pressed=${dict?.pressed} · ${v.status}`,
+      );
     } else {
+      check(
+        `${tag}: off the device — it opens off, saying nothing`,
+        opened === 0 && dict?.pressed === 'false' && !v.status.includes('기기 밖'),
+        `recs=${opened} · ${v.status}`,
+      );
+      await pressDictate(page);
       const said = (await composerView(page)).status;
+      const firstMade = await page.evaluate(() => (window as any).__recs.length);
       check(
         `${tag}: off the device, the first press only says so (and points to the keyboard mic)`,
         firstMade === 0 && said.includes('기기 밖') && said.includes('키보드의 마이크'),
@@ -178,7 +235,7 @@ async function run(browser: Browser, engine: string, label: string, options: Bro
       return r ? { lang: r.lang, interim: r.interimResults, continuous: r.continuous, starts: r.starts } : null;
     });
     check(
-      `${tag}: the press starts a ko-KR, interim, continuous recogniser`,
+      `${tag}: it listens with a ko-KR, interim, continuous recogniser`,
       !!rec && rec.lang === 'ko-KR' && rec.interim && rec.continuous && rec.starts === 1,
       JSON.stringify(rec),
     );
@@ -236,12 +293,40 @@ async function run(browser: Browser, engine: string, label: string, options: Bro
     );
     await context.close();
   }
+  // 1b) On the device it opens listening; a key typed stops it, and the typing goes on.
+  {
+    const { page, context } = await openPage(browser, options, FAKE_RECOGNISER, []);
+    await openComposer(page);
+    const apple = await page.evaluate(() => (window as any).ntIsAppleSpeech(window));
+    if (apple) {
+      await page.evaluate(() => (window as any).__say([['말하다가', false]]));
+      await page.evaluate(() => {
+        const el = document.getElementById('nt-composer') as any;
+        const ta = (el.shadowRoot || el).querySelector('textarea') as HTMLTextAreaElement;
+        ta.focus();
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+      });
+      await page.keyboard.type(' 타자');
+      await page.evaluate(() => (window as any).__say([['말하다가 늦은 말', true]]));
+      await page.waitForTimeout(100);
+      const v = await composerView(page);
+      const aborts = await page.evaluate(() => (window as any).__recs[0].aborts);
+      const pressed = v.tools.find((t) => t.mk === 'tool:dictate')?.pressed;
+      check(
+        `${tag}: a key typed stops it and the typing goes on`,
+        aborts === 1 && v.value === '말하다가 타자' && pressed === 'false',
+        `${v.value} · aborts=${aborts} · pressed=${pressed}`,
+      );
+    }
+    await context.close();
+  }
   // 2) A dashboard task (no attachments) gets the same tool.
   {
     const { page, context } = await openPage(browser, options, FAKE_RECOGNISER + REMOTE_OK, []);
     await openComposer(page);
     // Switch the destination in the middle of a dictation (a repaint of the composer): the words stay and go on.
-    await pressDictate(page);
+    // (On the device the dialog opened listening already — SSOT_4.)
+    if (!(await page.evaluate(() => (window as any).ntDictating('nt')))) await pressDictate(page);
     await page.evaluate(() => (window as any).__say([['대시보드 작업으로', false]]));
     await page.evaluate(() => (window as any).ntSetDestination('task'));
     await page.waitForTimeout(100);
@@ -275,8 +360,38 @@ async function run(browser: Browser, engine: string, label: string, options: Bro
     await openComposer(page);
     const v = await composerView(page);
     const mks = v.tools.map((t) => t.mk);
-    check(`${tag}: no recogniser — the voice note stays, no 받아쓰기`, !mks.includes('tool:dictate'), mks.join(','));
+    check(
+      `${tag}: no recogniser — the voice note only, no 받아쓰기`,
+      mks.includes('voice') && !mks.includes('tool:dictate'),
+      mks.join(','),
+    );
     await page.screenshot({ path: path.join(OUT, `${engine}-${label}-no-recogniser.png`) });
+    await context.close();
+  }
+  // 4) The session panel composer: voice note + 받아쓰기; dictating writes into it.
+  {
+    const { page, context } = await openPage(browser, options, FAKE_RECOGNISER + REMOTE_OK, [], true);
+    await page.evaluate((k) => (window as any).openPanel(k), PANEL_KEY);
+    await page.waitForSelector('#pc-composer', { state: 'attached', timeout: 10000 });
+    await page.waitForTimeout(600);
+    let v = await composerView(page, 'pc-composer');
+    const mks = v.tools.map((t) => t.mk);
+    const dict = v.tools.find((t) => t.mk === 'tool:dictate');
+    check(
+      `${tag}: session panel — the voice note stays and 받아쓰기 sits beside it`,
+      mks.includes('voice') && !!dict && dict.inView && dict.clear,
+      JSON.stringify(v.tools),
+    );
+    await pressDictate(page, 'pc-composer');
+    await page.evaluate(() => (window as any).__say([['세션에 보낼 말', false]]));
+    v = await composerView(page, 'pc-composer');
+    const pressed = v.tools.find((t) => t.mk === 'tool:dictate')?.pressed;
+    check(
+      `${tag}: session panel — 받아쓰기 writes into the panel composer while it listens`,
+      v.value === '세션에 보낼 말' && pressed === 'true',
+      `${v.value} · pressed=${pressed}`,
+    );
+    await page.screenshot({ path: path.join(OUT, `${engine}-${label}-panel-listening.png`) });
     await context.close();
   }
 }
