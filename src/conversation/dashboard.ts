@@ -5215,18 +5215,30 @@ body[data-view-mode="minimal"] #cron-lane,
 body[data-view-mode="minimal"] #topbar-defaults,
 body[data-view-mode="minimal"][data-board-mine] #user-select,
 body[data-view-mode="minimal"] #lifecycle-btn { display: none !important; }
-body[data-view-mode="minimal"] #panel-title-sub,
-body[data-view-mode="minimal"] #panel-info,
-body[data-view-mode="minimal"] #panel-goal,
-body[data-view-mode="minimal"] #panel-artifacts,
-body[data-view-mode="minimal"] #panel-agents,
-body[data-view-mode="minimal"] #panel-controls { display: none !important; }
-/* One agent (the main one) and one section (the chat): no tab strips. */
-body[data-view-mode="minimal"] .panel-tabs::part(list),
-body[data-view-mode="minimal"] .panel-sections::part(list) { display: none; }
-/* The task list: the whole current list, up to a third of the body, then it scrolls in its own box. */
-body[data-view-mode="minimal"] .panel-tasks { max-height: 34cqh; overflow-y: auto; overscroll-behavior: contain; padding: 8px 16px 6px; }
+/* ── VIEW PLANS (SSOT 2026-11-01 ④, .prd/20 §5) — the detail card's sections are the plan's: body[data-detail]
+   lists the ones it shows (VIEW_PLANS detail.show, applyViewMode), and every other one steps aside here. What
+   needs the user — the status bar, the approvals, the question, the composer — is in no list: never hidden. ── */
+body:not([data-detail~="subtitle"]) #panel-title-sub,
+body:not([data-detail~="info"]) #panel-info,
+body:not([data-detail~="goal"]) #panel-goal,
+body:not([data-detail~="artifacts"]) #panel-artifacts,
+body:not([data-detail~="agenthead"]) #panel-agents,
+body:not([data-detail~="controls"]) #panel-controls { display: none !important; }
+/* The agent strip: always (agenttabs), only with a subagent (subtabs — the panel's data-subagents), or none — one
+   agent, the main one. The section strip (sections) or one section, the chat. */
+body:not([data-detail~="agenttabs"]):not([data-detail~="subtabs"]) .panel-tabs::part(list),
+body[data-detail~="subtabs"] .slide-panel:not([data-subagents]) .panel-tabs::part(list),
+body:not([data-detail~="sections"]) .panel-sections::part(list) { display: none; }
+/* The checklist (list) and the task line (line): the whole current list, up to the plan's share of the body
+   (--ptl-max), then it scrolls in its own box. */
+body:not([data-tasks="runs"]) .panel-tasks { max-height: var(--ptl-max, 34cqh); overflow-y: auto; overscroll-behavior: contain; padding: 8px 16px 6px; }
 .ptl-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+/* 3안's task line: one row — how far, the running task — a press opens the checklist under it. */
+.ptl-line { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 4px 0; border: 0; background: var(--surface); color: inherit; font: inherit; text-align: left; cursor: pointer; position: sticky; top: -8px; z-index: 1; }
+.ptl-line .ptl-now { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 12px; }
+.ptl-line .ptl-caret { flex: none; transition: transform 120ms ease; }
+.ptl-line[aria-expanded="true"] .ptl-caret { transform: rotate(180deg); }
+.ptl-line:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .panel-tasks > ui-task-plan.panel-task-list { display: block; min-width: 0; }
 
 /* ── DETAIL DECK (SSOT 2026-10-29 T2) — every open card's detail card; the ones
@@ -5670,7 +5682,7 @@ ${uiLibTokensCss()}
 ${pageTokenAliases()}
 </style>
 </head>
-<body data-view-mode="minimal">
+<body data-view-mode="minimal" data-view-plan="1" data-detail="" data-tasks="list">
 <div class="app">
   <!-- The top bar is @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14): brand (the page's h1), the 대화 · 설정 ·
        기억 links with their titles (folded into 메뉴 when the bar is short of room), the live-update status, the
@@ -7162,8 +7174,12 @@ function panelAgentEarlier() {
   var a = panelAgentOf(s);
   return (a && a.earlierTasks) || [];
 }
+// The plan's tasks (VIEW_PLANS detail.tasks): the checklist (list), one line that opens it (line), or the full
+// Tasks section — the runs table, the plan left, the earlier plans (runs).
 function repaintPanelTasks() {
-  if (!isAdvanced()) { renderPanelTaskList(panelAgentTasks()); return; }
+  var t = viewSpec().detail.tasks;
+  if (t === 'list') { renderPanelTaskList(panelAgentTasks()); return; }
+  if (t === 'line') { renderPanelTaskLine(panelAgentTasks()); return; }
   renderPanelTasks(panelAgentTasks(), panelAgentLabel(), panelAgentEarlier(), panelAgentOutside());
 }
 // 미니멀's task list (SSOT 2026-11-01): the current list as one checklist (<ui-task-plan>: each task's state, its
@@ -7188,6 +7204,39 @@ function renderPanelTaskList(tasks) {
   }
   var el = document.getElementById('panel-task-list');
   if (el) taskElData(el, panelTaskListData(list));
+}
+// 3안's task line (.prd/20 §5.1): "작업 done / all · 지금: the running task" as one button; a press opens the
+// same checklist under it (and folds it again). A new opening starts folded (resetPanelSections).
+var _panelTaskLineOpen = false;
+function renderPanelTaskLine(tasks) {
+  var container = document.getElementById('panel-tasks');
+  if (!container) return;
+  var list = tasks || [];
+  container.style.display = list.length ? '' : 'none';
+  var done = 0, now = null;
+  for (var i = 0; i < list.length; i++) {
+    if (!list[i]) continue;
+    if (list[i].status === 'completed') done++;
+    else if (!now && list[i].status === 'in_progress') now = list[i];
+  }
+  var open = !!_panelTaskLineOpen;
+  var html = list.length
+    ? '<button type="button" class="panel-tasks-header ptl-line" aria-expanded="' + open + '"' + (open ? ' aria-controls="panel-task-list"' : '') + ' onclick="togglePanelTaskLine()">'
+      + '<span class="ps-sec-title">작업 ' + done + ' / ' + list.length + '</span>'
+      + (now ? '<span class="ptl-now">지금: ' + esc(now.content || '') + '</span>' : '<span class="ptl-now"></span>')
+      + '<i data-ui-icon="chevron-down" class="ptl-caret"></i></button>'
+      + (open ? '<ui-task-plan class="panel-task-list" id="panel-task-list" lang="ko" flush foot="none"></ui-task-plan>' : '')
+    : '';
+  if (container._html !== html) {
+    morphInnerHtml(container, html);
+    container._html = html;
+  }
+  var el = open ? document.getElementById('panel-task-list') : null;
+  if (el) taskElData(el, panelTaskListData(list));
+}
+function togglePanelTaskLine() {
+  _panelTaskLineOpen = !_panelTaskLineOpen;
+  repaintPanelTasks();
 }
 function panelTaskListData(tasks) {
   return {
@@ -7525,12 +7574,14 @@ refreshCsrfToken();
 // switches that session, like Slack's bare "effort <level>" applies to the
 // current thread. Hidden when there is no signed-in Slack user (viewer token).
 var _myDefaults = null; // { model: settingRow, effort: settingRow }
+var _settingsLoads = 0; // settings loads started: an answer older than a later one's does not set the plan
 var _tdMenuKind = null;
 async function loadMyDefaults() {
   var box = document.getElementById('topbar-defaults');
   if (!box) return;
   try {
     var seq = _viewModeSeq;
+    var load = ++_settingsLoads;
     var res = await fetch('/api/settings');
     if (!res.ok) { box.hidden = true; return; }
     var data = await res.json();
@@ -7548,6 +7599,10 @@ async function loadMyDefaults() {
         setViewMode(vm);
       }
     }
+    // The user's plan (.prd/20): only the settings page writes it, so the newest answer is the truth — an answer
+    // to an earlier load that lands after a later one (the tab shown twice, pageshow) is not applied.
+    var vp = viewPlanOfSettings(data);
+    if (vp !== null && load === _settingsLoads && vp !== _viewPlan) setViewPlan(vp);
     // Without admin acceptance the server refuses every settings write.
     if (data && data.accepted === false) { box.hidden = true; return; }
     var rows = (data && data.settings) || [];
@@ -7647,8 +7702,10 @@ function closeDefaultsMenu() {
     });
   });
 })();
-// Settings changed in Slack show up when the tab comes back.
+// Settings changed in Slack — or on the settings page (the plan) — show up when the tab comes back, and when the
+// browser brings the page back from its cache (the settings page's back button).
 document.addEventListener('visibilitychange', function() { if (!document.hidden) loadMyDefaults(); });
+window.addEventListener('pageshow', function(e) { if (e.persisted) loadMyDefaults(); });
 async function patchSetting(key, value) {
   var url = '/api/settings/' + encodeURIComponent(key);
   var body = JSON.stringify({ value: value });
@@ -7706,7 +7763,6 @@ async function pickDefault(kind, value) {
   }
   setDefaultsStatus(msg, false);
 }
-loadMyDefaults();
 
 // ── Utility ──
 function decodeSlackEntities(s) {
@@ -8525,7 +8581,7 @@ function paintCardBody(key) {
   }
   if (b.el.parentNode !== host) host.appendChild(b.el);
   var col = _cardCol[key];
-  var html = renderCardBody(s, col, !isAdvanced());
+  var html = renderCardBody(s, col, viewSpec().body);
   if (b.html !== html && !isPickingModel(b.el)) {
     morphInnerHtml(b.el, html);
     b.html = html;
@@ -8836,34 +8892,71 @@ function cardStarOf(s, col) {
   else if (a.busy) st.disabled = true;
   return st;
 }
-// View mode (SSOT 2026-11-01): a minimal face keeps what a glance needs — the title, the status and its time,
-// the task in progress, what the session asks (summary), the lead (CRON · EPIC · a plan node; a plain task's mark),
-// the owner in the All Users view, the star toggle and a line of artifacts; its foot's right end is the cost and
-// the model with its vendor's mark. Tokens, sub-agents, steps, context, media and the PR are 어드밴스드's.
-var MINIMAL_CARD_KEYS = ['id', 'title', 'status', 'statusText', 'bodyMode', 'summary', 'since', 'elapsedMs', 'task', 'lead', 'badge', 'star', 'artifacts', 'artifactsCount'];
-function minimalCard(card, s) {
+// The card face (SSOT 2026-11-01 ④, .prd/20 §5): the plan's face spec (VIEW_PLANS face) picks what of the full
+// card (cardOf) a face keeps. Always: what the card is (its lead), its title, its status and time, the owner in the
+// All Users view, the star toggle; the rest is the plan's parts, the summary rule (all · asks: only when the card
+// asks — a permission, a goal decision, the question, a retry's error; else it is the original title once more),
+// the artifact chips, the kind mark for a plain task instead of the ✦, and the foot's right end in its order.
+var FACE_KEEP = ['id', 'title', 'status', 'statusText', 'bodyMode', 'since', 'elapsedMs', 'lead', 'badge', 'star', 'titles'];
+var FACE_PARTS = { task: ['task'], agents: ['agents'], usage: ['tokens', 'costUsd'], steps: ['steps'], ctx: ['contextPct', 'contextLevel'], arts: ['artifacts', 'artifactsCount'] };
+function faceOf(card, s, col, face) {
+  var f = face || {};
+  var keys = FACE_KEEP.slice();
+  if (f.summary === 'all' || (f.summary === 'asks' && cardAsks(s || {}, col))) keys.push('summary');
+  var show = f.show || [];
+  for (var i = 0; i < show.length; i++) keys = keys.concat(FACE_PARTS[show[i]] || []);
   var out = {};
-  for (var i = 0; i < MINIMAL_CARD_KEYS.length; i++) {
-    var k = MINIMAL_CARD_KEYS[i];
+  for (var j = 0; j < keys.length; j++) {
+    var k = keys[j];
     if (card && Object.prototype.hasOwnProperty.call(card, k) && card[k] !== undefined) out[k] = card[k];
   }
+  if (out.artifacts && f.arts > 0) out.artifacts = out.artifacts.slice(0, f.arts);
   // What the card is: an epic, a plan node or a cron run lead with their own; a plain task with the task mark.
-  if (!out.lead) out.lead = { glyph: 'task', title: '일반 작업' };
-  var foot = minimalFootMetrics(card, s);
+  if (f.kind && !out.lead) out.lead = { glyph: 'task', title: '일반 작업' };
+  var foot = faceFootMetrics(card, s, f.foot || []);
   if (foot.length) out.metrics = foot;
   return out;
 }
-// The minimal foot's right end: the price, then the model with its vendor's mark.
-function minimalFootMetrics(card, s) {
+// Whether the card asks the user something now — cardSummary's first lines.
+function cardAsks(s, col) {
+  if (col !== 'closed' && s.pendingPermissions && s.pendingPermissions.length) return true;
+  if (col !== 'closed' && s.pendingGoalDecision) return true;
+  var q = s.pendingQuestion;
+  if (col === 'waiting' && q && (q.question || q.title)) return true;
+  var r = pendingAutoResume(s, col);
+  return !!(r && r.reason);
+}
+// The foot's right end, in the plan's order: media (the instruction's attachments) · pr · arts (the artifact
+// count) · cost (the price; its tooltip also says the tokens) · model (its name with its vendor's mark).
+function faceFootMetrics(card, s, foot) {
   var out = [];
-  var cost = card ? toNum(card.costUsd) : 0;
-  if (cost > 0) {
-    var price = cost < 0.01 ? '<$0.01' : '$' + (cost >= 100 ? cost.toFixed(0) : cost.toFixed(2));
-    out.push({ text: price, title: (card.titles && card.titles.cost) || 'API 환산 비용' });
+  var host = (card && card.metrics) || [];
+  var hostOf = function(glyph) {
+    for (var h = 0; h < host.length; h++) if (host[h] && host[h].glyph === glyph) return host[h];
+    return null;
+  };
+  var titles = (card && card.titles) || {};
+  for (var i = 0; i < (foot || []).length; i++) {
+    var k = foot[i];
+    var m = null;
+    if (k === 'media') m = hostOf('attach');
+    else if (k === 'pr') m = hostOf('pr');
+    else if (k === 'arts') {
+      var n = card ? toNum(card.artifactsCount) : 0;
+      if (n > 0) m = { text: String(n), glyph: 'file', title: '산출물 ' + n + '개', label: '산출물 ' + n + '개' };
+    } else if (k === 'cost') {
+      var cost = card ? toNum(card.costUsd) : 0;
+      if (cost > 0) {
+        var price = cost < 0.01 ? '<$0.01' : '$' + (cost >= 100 ? cost.toFixed(0) : cost.toFixed(2));
+        m = { text: price, title: (titles.cost || 'API 환산 비용') + (titles.tokens ? '\\n' + titles.tokens : '') };
+      }
+    } else if (k === 'model') {
+      // 'unknown' is the server's placeholder for a model it does not know — no name to show.
+      var model = s && s.model && s.model !== 'unknown' ? String(s.model) : '';
+      if (model) m = { text: modelLabelOf(model), glyph: modelVendorOf(model), title: model };
+    }
+    if (m) out.push(m);
   }
-  // 'unknown' is the server's placeholder for a model it does not know — no name to show.
-  var model = s && s.model && s.model !== 'unknown' ? String(s.model) : '';
-  if (model) out.push({ text: modelLabelOf(model), glyph: modelVendorOf(model), title: model });
   return out;
 }
 // Whose model it is, for its mark: claude · openai · grok · gemini · model (any other).
@@ -8886,7 +8979,7 @@ function viewCardOf(s, col) {
   // The star is a toggle on every face, in both modes: on or off at a press, inert with its reason for anyone
   // but the owner (and on a sibling instance's card).
   c.star = cardStarOf(s, col);
-  return isAdvanced() ? c : minimalCard(c, s);
+  return faceOf(c, s, col, viewSpec().face);
 }
 
 // Task window on the open card (§3.1-4, spec 13) — @2lab.ai/ui <ui-task-plan> in window mode (0.14.1, D8b
@@ -9611,11 +9704,20 @@ function viewModeOfSettings(snapshot) {
   for (var i = 0; i < rows.length; i++) if (rows[i] && rows[i].key === 'dashboardMode') return viewModeFrom(rows[i].value);
   return null;
 }
+// The mode and its plan on the page: <body data-view-mode · data-view-plan>, the detail card's sections and how its
+// tasks read (data-detail · data-tasks · --ptl-max, the CSS of VIEW PLANS), and whether its sections open unfolded.
 function applyViewMode() {
-  document.body.setAttribute('data-view-mode', _viewMode);
+  var spec = viewSpec();
+  var b = document.body;
+  b.setAttribute('data-view-mode', _viewMode);
+  b.setAttribute('data-view-plan', _viewPlan);
+  b.setAttribute('data-detail', spec.detail.show.join(' '));
+  b.setAttribute('data-tasks', spec.detail.tasks);
+  if (spec.detail.tasksMax) b.style.setProperty('--ptl-max', spec.detail.tasksMax + 'cqh');
+  else b.style.removeProperty('--ptl-max');
   var btn = document.getElementById('view-mode-toggle');
   if (btn) btn.setAttribute('aria-pressed', _viewMode === 'advanced' ? 'true' : 'false');
-  _panelDetail = _viewMode === 'advanced';
+  _panelDetail = !!spec.detail.open;
   applyPanelDetail();
 }
 function setViewMode(mode) {
@@ -9650,19 +9752,114 @@ async function saveViewMode() {
   finally { _viewModeSaving = false; }
   if (why) dashToast({ title: '화면 모드를 저장하지 못했어요', description: '이 기기에서만 바뀌었습니다 — ' + why, tone: 'error' });
 }
-// What a switch redraws: the cards (their face and open bodies) and the open
-// detail card. Minimal shows one agent (the main one) and one section (the chat).
+// What a switch (of the mode or the plan) redraws: the cards (their face and open bodies) and the open detail
+// card. A plan without the agent strip shows one agent (the main one); one without the section strip, the chat.
 function rerenderForViewMode() {
   renderBoardForLayout();
   resetPanelSections();
   if (!panelSessionKey) return;
-  if (!isAdvanced()) {
-    if (_panelAgent) selectPanelAgent('');
-    if (_psec !== 'conv') selectPanelSection('conv');
-  }
+  if (!detailShows('agenttabs') && !detailShows('subtabs') && _panelAgent) selectPanelAgent('');
+  if (!detailShows('sections') && _psec !== 'conv') selectPanelSection('conv');
   repaintPanelSession();
   repaintPanelTasks();
   sizePanelSections();
+}
+// ── View plans (SSOT 2026-11-01 ④, .prd/20 §5) — 1안 · 2안 · 3안 of each mode ──
+// One spec per surface, the .prd's tables cell for cell:
+//   face   — the card face (faceOf): the parts it keeps (show), the summary rule (summary: all · asks), the
+//            artifact chips (arts), the task mark for a plain task instead of the ✦ (kind), the foot's right end
+//            in order (foot);
+//   body   — the open card (renderCardBody): its ☆ button (star) and its parts after the actions and what asks,
+//            per column (work · wait · done);
+//   detail — the detail card: the sections it shows (show → <body data-detail>), how its tasks read (tasks: runs ·
+//            list · line → <body data-tasks>), the list's share of the body (tasksMax, in cqh), and whether its
+//            sections open unfolded (open — the old 자세히).
+// What needs the user — the actions, approvals, the question, the composer — is in no list: every plan keeps it.
+// The choice is the user's dashboardPlan setting (설정 › 대시보드 › 화면 구성안); the device keeps a copy for the
+// first paint.
+var VIEW_PLANS = {
+  minimal: {
+    '1': {
+      name: '결과 우선',
+      face: { show: ['task', 'arts'], summary: 'asks', arts: 3, kind: true, foot: ['pr', 'cost', 'model'] },
+      body: { star: false, work: ['refs', 'model'], wait: ['refs', 'model'], done: ['refs', 'model'] },
+      detail: { show: [], tasks: 'list', tasksMax: 34, open: false },
+    },
+    '2': {
+      name: '진행 우선',
+      face: { show: ['task', 'steps'], summary: 'all', kind: true, foot: ['arts', 'cost', 'model'] },
+      body: { star: false, work: ['tasks'], wait: ['tasks'], done: [] },
+      detail: { show: ['subtabs', 'controls'], tasks: 'list', tasksMax: 50, open: false },
+    },
+    '3': {
+      name: '한눈에',
+      face: { show: [], summary: 'asks', kind: true, foot: ['cost', 'model'] },
+      body: { star: false, work: [], wait: [], done: [] },
+      detail: { show: [], tasks: 'line', open: false },
+    },
+  },
+  advanced: {
+    '1': {
+      name: '정리',
+      face: { show: ['task', 'agents', 'usage', 'arts', 'steps', 'ctx'], summary: 'all', arts: 4, kind: true, foot: ['media', 'pr', 'model'] },
+      body: {
+        star: false,
+        work: ['tasks', 'agents', 'io', 'goal', 'refs', 'model'],
+        wait: ['io', 'arts', 'tasks', 'agents', 'goal', 'refs', 'model'],
+        done: ['io', 'arts', 'agents', 'goal', 'refs', 'model'],
+      },
+      detail: { show: ['subtitle', 'info', 'goal', 'artifacts', 'agenthead', 'agenttabs', 'sections', 'controls'], tasks: 'runs', open: true },
+    },
+    '2': {
+      name: '원본',
+      face: { show: ['task', 'agents', 'usage', 'arts', 'steps', 'ctx'], summary: 'all', arts: 4, kind: false, foot: ['media', 'pr'] },
+      body: {
+        star: true,
+        work: ['tasks', 'agents', 'io', 'goal', 'refs', 'model'],
+        wait: ['io', 'arts', 'tasks', 'agents', 'goal', 'refs', 'model'],
+        done: ['io', 'arts', 'agents', 'goal', 'refs', 'model'],
+      },
+      detail: { show: ['subtitle', 'info', 'goal', 'artifacts', 'agenthead', 'agenttabs', 'sections', 'controls'], tasks: 'runs', open: true },
+    },
+    '3': {
+      name: '압축',
+      face: { show: ['task', 'steps', 'ctx'], summary: 'asks', kind: true, foot: ['arts', 'pr', 'cost', 'model'] },
+      body: { star: false, work: ['goal', 'refs', 'model'], wait: ['goal', 'refs', 'model'], done: ['goal', 'refs', 'model'] },
+      detail: { show: ['subtitle', 'info', 'goal', 'artifacts', 'agenthead', 'agenttabs', 'sections', 'controls'], tasks: 'runs', open: false },
+    },
+  },
+};
+var VIEW_PLAN_KEY = 'soma-view-plan';
+var _viewPlan = '1';
+function viewPlanFrom(v) {
+  var p = String(v == null ? '' : v);
+  return p === '2' || p === '3' ? p : '1';
+}
+function readViewPlan() {
+  try { return viewPlanFrom(localStorage.getItem(VIEW_PLAN_KEY)); } catch (_e) { return '1'; }
+}
+// Pure: the user's plan in a /api/settings snapshot, or null when it has no row.
+function viewPlanOfSettings(snapshot) {
+  var rows = (snapshot && snapshot.settings) || [];
+  for (var i = 0; i < rows.length; i++) if (rows[i] && rows[i].key === 'dashboardPlan') return viewPlanFrom(rows[i].value);
+  return null;
+}
+// The current mode's plan.
+function viewSpec() {
+  var m = VIEW_PLANS[viewModeFrom(_viewMode)];
+  return m[viewPlanFrom(_viewPlan)] || m['1'];
+}
+function detailShows(tok) {
+  return viewSpec().detail.show.indexOf(tok) >= 0;
+}
+// The settings answered with another plan (the settings page picked it): the page draws it and keeps the copy.
+function setViewPlan(plan) {
+  var next = viewPlanFrom(plan);
+  var changed = next !== _viewPlan;
+  _viewPlan = next;
+  try { localStorage.setItem(VIEW_PLAN_KEY, next); } catch (_e) {}
+  applyViewMode();
+  if (changed) rerenderForViewMode();
 }
 // ── Task view (SSOT 2026-10-27) — agent tabs, 지시와 답변 ──
 // The panel shows what matters in 미니멀; 어드밴스드 (the old 자세히, T1.6) opens
@@ -9681,6 +9878,7 @@ function resetPanelSections() {
   _panelTasksOpen = _panelDetail || _panelLand === 'tasks';
   _panelTasksExpanded = _panelTasksOpen;
   _panelTasksEarlier = _panelDetail;
+  _panelTaskLineOpen = false;
 }
 
 // Agent tabs (T1.2, D4 E-19): @2lab.ai/ui <ui-tabs shared-panel> — Main first,
@@ -9724,6 +9922,9 @@ function renderPanelTabs() {
   if (!el) return;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var d = s ? panelTabsData(s, _panelAgent, rootStatusOf(s, sessionColOf(panelSessionKey))) : panelTabsData(null, '', '');
+  // A plan that shows the strip only with a subagent (VIEW_PLANS detail subtabs) reads this.
+  var panel = document.getElementById('slide-panel');
+  if (panel) panel.toggleAttribute('data-subagents', d.tabs.length > 1);
   var sig = JSON.stringify(d);
   if (el._sig === sig) return;
   el._sig = sig;
@@ -9937,7 +10138,7 @@ function psecForLanding(land) {
 }
 // 미니멀 (SSOT 2026-11-01) has one section, the chat: every landing opens it.
 function psecForMode(land) {
-  return isAdvanced() ? psecForLanding(land) : 'conv';
+  return detailShows('sections') ? psecForLanding(land) : 'conv';
 }
 // The section strip's tabs (D4 E-24): Chat · 작업 로그 at the start, 에이전트 트리 at the
 // far end (TabItem.end) with the tree glyph; each one's panel is the box slotted by its id.
@@ -11194,9 +11395,10 @@ function sessionActionsOf(s, col) {
 }
 // The open card's action buttons (kit .ui-btn): Stop reads as the danger tone, Trash as a quiet one.
 var SESSION_ACTION_TONE = { stop: ' is-danger', close: '', trash: ' is-quiet' };
-function sessionActionHtml(s, col) {
+// noStar: the face's star toggle is the one star (a plan's open card has no ☆ button of its own).
+function sessionActionHtml(s, col, noStar) {
   var key = escJs(s.key);
-  return sessionActionsOf(s, col).map(function(a) {
+  return sessionActionsOf(s, col).filter(function(a) { return !(noStar === true && a.id === 'star'); }).map(function(a) {
     var off = (a.lock || a.busy ? ' disabled' : '') + (a.busy ? ' aria-busy="true"' : '');
     if (a.sibling) return '<button class="ui-btn' + SESSION_ACTION_TONE[a.id] + '" data-action="' + a.id + '" disabled title="' + escAttr(a.lock) + '">' + esc(a.label) + '</button>';
     if (a.id === 'star') {
@@ -11253,9 +11455,10 @@ function cardGoalLine(s, col, canEdit) {
 //   Slack, 작업 로그.
 // The complete record — meta, every number, titled links, the goal editor, the
 // whole task ledger, the rich agent tree — is the panel's.
-// minimal (SSOT 2026-11-01): the actions and what needs the user only — the task window, the agent tree, the
-// io, the artifacts, the goal line, the refs and model · effort are the detail card's and 어드밴스드's.
-function renderCardBody(s, col, minimal) {
+// The plan (SSOT 2026-11-01 ④, .prd/20 §5): spec is the plan's open card (VIEW_PLANS body) — its ☆ button (the
+// face has the star toggle) and its parts after the actions and what asks, per column; no spec — any other
+// caller — is the open card as it was.
+function renderCardBody(s, col, spec) {
   // Owner gating — server-side requireSessionOwner is the authoritative guard;
   // this is UX only. Fail closed: if ownerId is missing (legacy record) the
   // viewer is not treated as owner so the server-side reject is expected.
@@ -11328,34 +11531,33 @@ function renderCardBody(s, col, minimal) {
   const slackBtn = (dhShow('links') && s.slackThreadUrl)
     ? '<a class="ui-btn" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
     : '';
-  const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col) + slackBtn + '</span></div>';
+  const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col, !!spec && spec.star === false) + slackBtn + '</span></div>';
   const needsHtml = actionsHtml
     + permissionHtml
     + renderCardResume(s, col)
     + taskOutcomeHtml(s)
     + taskNoticeFailHtml(s)
     + questionHtml;
-  if (minimal) return '<div class="card-body">' + needsHtml + '</div>';
 
-  const ioHtml = isSiblingSession(s) ? '' : renderCardIo(s);
-  // Artifacts live on this instance's disk: a sibling instance's card links nowhere here.
-  const artsHtml = isSiblingSession(s) ? '' : renderCardArtifacts(s);
-  const tasksHtml = renderCardTasks(s);
-  const agentsHtml = renderAgentTree(s, col);
-  let middle;
-  if (col === 'working') middle = tasksHtml + agentsHtml + ioHtml;
-  else if (col === 'waiting') middle = ioHtml + artsHtml + tasksHtml + agentsHtml;
-  else middle = ioHtml + artsHtml + agentsHtml;
-
+  const lane = col === 'working' ? 'work' : col === 'waiting' ? 'wait' : 'done';
+  const parts = spec && spec[lane] ? spec[lane]
+    : lane === 'work' ? ['tasks', 'agents', 'io', 'goal', 'refs', 'model']
+    : lane === 'wait' ? ['io', 'arts', 'tasks', 'agents', 'goal', 'refs', 'model']
+    : ['io', 'arts', 'agents', 'goal', 'refs', 'model'];
   const footHtml = modelHtml ? '<div class="card-foot-bar">' + modelHtml + '</div>' + modelNote : modelNote;
-
-  return '<div class="card-body">'
-    + needsHtml
-    + middle
-    + cardGoalLine(s, col, isOwner && !isSibling)
-    + refsHtml
-    + footHtml
-    + '</div>';
+  let rest = '';
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (p === 'tasks') rest += renderCardTasks(s);
+    else if (p === 'agents') rest += renderAgentTree(s, col);
+    else if (p === 'io') rest += isSiblingSession(s) ? '' : renderCardIo(s);
+    // Artifacts live on this instance's disk: a sibling instance's card links nowhere here.
+    else if (p === 'arts') rest += isSiblingSession(s) ? '' : renderCardArtifacts(s);
+    else if (p === 'goal') rest += cardGoalLine(s, col, isOwner && !isSibling);
+    else if (p === 'refs') rest += refsHtml;
+    else if (p === 'model') rest += footHtml;
+  }
+  return '<div class="card-body">' + needsHtml + rest + '</div>';
 }
 
 // #600 ⑥ — a dashboard task's last turn as its card says it: how it ended, why,
@@ -12968,8 +13170,9 @@ document.addEventListener('ui-record', function(e) {
   var i = _recording.indexOf(e.target);
   if (e.detail && e.detail.state === 'start') {
     if (i < 0) _recording.push(e.target);
-    // One microphone: a voice note starting to record stops 받아쓰기 in its composer (its words stay).
-    if (e.target && e.target.id) ntDictateStopIn(e.target.id === 'pc-composer' ? 'pc' : 'nt');
+    // One microphone: a voice note starting to record stops 받아쓰기 wherever it listens (its words stay) — the other
+    // composer's too (a voice note whose mic prompt was still open when the new task opened listening).
+    if (_ntDictation) ntDictateStop(true);
   } else if (i >= 0) {
     _recording.splice(i, 1);
   }
@@ -14493,7 +14696,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   _panelAgent = agentId ? String(agentId) : '';
   // 미니멀 (SSOT 2026-11-01) shows one agent, the main one — it has no tab strip to lead back from another (a deep
   // link or a tree that named a subagent opens the session on the main agent's chat).
-  if (!isAdvanced()) _panelAgent = '';
+  if (!detailShows('agenttabs') && !detailShows('subtabs')) _panelAgent = '';
 
   // A card switch starts the composer clean: a fresh <ui-agent-steering> with a
   // fresh composer (the old one's text, files, notes in flight and failed sends
@@ -17548,12 +17751,11 @@ var NT_NO_FILES = 'application/x-soma-no-attachments';
 // Korean sentence carries — and the dictation running now ({ rec, base, finals, interim, stopping, hard, … }) or null.
 var NT_DICTATION_LANG = 'ko-KR';
 var _ntDictation = null;
-// The voice leaves the device only on a yes: the first press where it would only says so (_ntDictationAsked), the
-// next press is the yes, and the device keeps it (localStorage, this key).
-var NT_DICTATION_REMOTE_KEY = 'soma-nt-dictation-remote';
-var _ntDictationAsked = false;
-// The new task opens listening when the words stay on the device (SSOT_4); a refused mic ends that for this page.
+// The new task opens listening when the words stay on the device or the phone's own recogniser takes them (SSOT_4,
+// SSOT_5); a refused mic, or a recogniser that does not work, ends that for this page.
 var _ntDictationAutoOff = false;
+// The why a dictation last put on the new task's red error line, so the next press clears only its own.
+var _ntDictationError = '';
 
 // The battery's reading for <ui-meter> (value 0..1, null = unknown — the element draws "?" with no fill) and the words
 // of the usage line (the button's title too).
@@ -17879,6 +18081,9 @@ function ntComposerData() {
   // said into the field while it is said. It is text, so a dashboard task takes it too. No recogniser (Firefox): none.
   if (ntDictationEngine(typeof window !== 'undefined' ? window : null)) {
     d.tools = [ntDictationTool(ntDictating('nt'))];
+    // A screen under 360px wide (an older phone, or one with a large display zoom): four tools and the worded
+    // 작업 시작 overlap — the send keeps its arrow (named by the composer's own 보내기).
+    if (ntDictationNarrow()) d.submitLabel = '';
   }
   var lim = _ntCtx && _ntCtx.limits;
   if (lim) {
@@ -17933,6 +18138,12 @@ function ntDictationWide() {
   return !!(w && w.matchMedia && w.matchMedia('(min-width: 640px)').matches);
 }
 
+// A phone narrower than 360px: no room for the worded send beside four tools.
+function ntDictationNarrow() {
+  var w = typeof window !== 'undefined' ? window : null;
+  return !!(w && w.matchMedia && w.matchMedia('(max-width: 359px)').matches);
+}
+
 // Is a dictation listening in this composer ('nt' — the new task, 'pc' — the session panel)?
 function ntDictating(id) {
   return !!_ntDictation && !_ntDictation.stopping && _ntDictation.host.id === id;
@@ -17956,6 +18167,7 @@ function ntDictationHost(id) {
       status: function (msg, final) {
         if (final && msg) dashToast({ title: msg });
       },
+      clear: function () {},
       paint: function () {
         pcPaintComposer();
       },
@@ -17970,8 +18182,28 @@ function ntDictationHost(id) {
       if (_ntState) _ntState.prompt = t;
       ntSaveDraft(t);
     },
-    status: function (msg) {
-      ntSetStatus(msg);
+    // A why the person has to act on goes on the red error line, where it is seen on a phone; the rest is the status.
+    status: function (msg, final, bad) {
+      if (!bad) {
+        ntSetStatus(msg);
+        return;
+      }
+      // The line already says something else (the context failed to load, no channel): that stays, and this why
+      // goes on the status line.
+      var e = ntEl('nt-error');
+      var other = e && !e.hidden ? String(e.textContent || '') : '';
+      if (other && other !== _ntDictationError) {
+        ntSetStatus(msg);
+        return;
+      }
+      ntSetStatus('');
+      ntSetError(msg);
+      _ntDictationError = msg;
+    },
+    clear: function () {
+      var e = ntEl('nt-error');
+      if (_ntDictationError && e && e.textContent === _ntDictationError) ntSetError('');
+      _ntDictationError = '';
     },
     paint: function () {
       paintNtComposer();
@@ -18020,25 +18252,43 @@ function ntDictationRead(results, cumulative) {
   return { finals: finals, interim: interim };
 }
 
-// Why a dictation ended, in the page's words; '' for silence and for a stop the page asked for.
-function ntDictationErrorText(code) {
+// Why a dictation ended, in the page's words; '' for silence and a stop the page asked for (an utterance it could not
+// match arrives as a nomatch event, then an end: it listens again). On Android (Chrome or
+// Samsung Internet on a Galaxy) the recogniser is Google's speech app on the phone, so the words name what to turn on.
+function ntDictationErrorText(code, android) {
   switch (String(code || '')) {
     case 'no-speech':
     case 'aborted':
       return '';
     case 'not-allowed':
+      if (android)
+        return '마이크 권한이 없어 받아쓸 수 없습니다 — 주소창의 사이트 권한과 휴대폰 설정 › 애플리케이션 › 이 브라우저 › 권한에서 마이크를 허용해 주세요';
       return '마이크 권한이 없어 받아쓸 수 없습니다 — 브라우저 설정에서 마이크를 허용해 주세요';
     case 'service-not-allowed':
+      if (android)
+        return '이 휴대폰의 음성 인식이 꺼져 있습니다 — 설정 › 애플리케이션에서 ‘Google 음성 인식 및 합성’과 ‘Google’ 앱을 켜 주세요';
       return '이 브라우저에서 받아쓰기가 꺼져 있습니다 — iPhone은 설정 › 일반 › 키보드에서 받아쓰기를 켜 주세요';
     case 'audio-capture':
       return '마이크를 찾지 못했습니다 — 마이크 연결을 확인해 주세요';
     case 'network':
       return '음성 인식 서비스에 연결하지 못했습니다 — 네트워크를 확인해 주세요';
     case 'language-not-supported':
+      if (android) return '이 휴대폰의 음성 인식이 한국어를 지원하지 않습니다 — ‘Google 음성 인식 및 합성’을 업데이트해 주세요';
       return '이 브라우저는 한국어 받아쓰기를 지원하지 않습니다';
     default:
       return '받아쓰기를 계속하지 못했습니다 — 다시 눌러 주세요';
   }
+}
+
+// Said plainly (not "말이 들리지 않아"): 'dead' — a recogniser that never opened the microphone (a red line: it does not
+// work); 'mute' — three sessions that heard sound and gave back no words: a noisy room, or a recogniser that shows
+// listening and returns nothing (Samsung Internet) — the status line says what to try if it keeps happening.
+function ntDictationDeadText(kind, android) {
+  var fix = android
+    ? '설정 › 애플리케이션에서 ‘Google 음성 인식 및 합성’을 켜거나 업데이트하고, 안 되면 Chrome에서 열어 주세요'
+    : '다른 브라우저(Chrome·Safari)에서 열어 주세요';
+  if (kind === 'mute') return '말소리는 들렸지만 글자로 바뀐 것이 없어 멈췄습니다 — 계속 이러면 ' + fix;
+  return '이 브라우저의 음성 인식이 마이크를 열지 못했습니다 — ' + fix;
 }
 
 // A promise's answer, or the fallback when it takes longer than ms.
@@ -18082,28 +18332,13 @@ function ntIsAppleSpeech(w) {
   return /Macintosh/.test(ua) && /Safari\\//.test(ua) && !/Chrome|Chromium|Edg|Firefox/.test(ua);
 }
 
-// Has this device said yes to dictation through a speech service off the device? The first ask only marks it asked
-// (the press says so instead of listening); the next press is the yes, kept on the device.
-function ntDictationRemoteOk() {
-  try {
-    if (localStorage.getItem(NT_DICTATION_REMOTE_KEY) === 'ok') return true;
-  } catch (e) {}
-  if (!_ntDictationAsked) {
-    _ntDictationAsked = true;
-    return false;
-  }
-  try {
-    localStorage.setItem(NT_DICTATION_REMOTE_KEY, 'ok');
-  } catch (e) {}
-  return true;
-}
-
-// What the press says where the voice would leave the device and the person has not said yes yet.
-function ntDictationOffDevice(where) {
-  if (where === 'installing') {
-    return '기기용 한국어 모델을 내려받는 중입니다 — 다 받으면 이 기기에서 받아씁니다. 지금 기기 밖 음성 서비스로 받아쓰려면 한 번 더 누르세요';
-  }
-  return '이 브라우저는 음성을 기기 밖(브라우저의 음성 서비스)으로 보내 받아씁니다 — 괜찮으면 한 번 더 누르세요. 기기 안에서만 처리하려면 키보드의 마이크를 쓰세요';
+// Android — Chrome or Samsung Internet on a Galaxy: the recogniser is the phone's own (Google's speech app), which a
+// page cannot keep on the device and which ends each session at the end of an utterance (continuous has no effect).
+function ntIsAndroid(w) {
+  var n = w && w.navigator;
+  if (/Android/i.test(String((n && n.userAgent) || ''))) return true;
+  var ud = n && n.userAgentData;
+  return !!(ud && /Android/i.test(String(ud.platform || '')));
 }
 
 // The status line while it listens, saying where the words are processed.
@@ -18111,6 +18346,7 @@ function ntDictationStatus(where) {
   var how = {
     local: '이 기기에서 처리합니다',
     apple: '이 기기의 Apple 음성 인식으로 처리합니다',
+    phone: '이 휴대폰의 음성 인식(Google — 기기 밖 서버를 쓸 수 있음)으로 처리합니다',
     installing: '이번에는 기기 밖, 브라우저의 음성 서비스로 처리합니다 (기기용 한국어 모델을 내려받는 중)',
     service: '기기 밖, 브라우저의 음성 서비스로 처리합니다',
   }[where];
@@ -18118,22 +18354,32 @@ function ntDictationStatus(where) {
 }
 
 // 받아쓰기 pressed: a recogniser for this dictation — ko-KR, the words while they are said (interimResults), until it
-// is stopped (continuous). Without available() it starts in the press itself (Safari asks for the mic there).
+// is stopped (continuous; on Android one utterance per session, listened to again). It starts in the press itself
+// unless Chrome's available() is asked first (Safari asks for the mic in the press). No question first (SSOT_5): the
+// status line says where the words are processed.
 async function ntDictateStart(host, auto) {
   host = host || ntDictationHost('nt');
   var w = typeof window !== 'undefined' ? window : null;
   var Rec = ntDictationEngine(w);
   var el = host.el();
   if (!Rec || !el || (host.id === 'nt' ? _ntBusy : _pcSending)) return;
+  // One microphone: a voice note recording keeps it.
+  if (ntRecordingNow()) {
+    host.status('음성 녹음 중에는 받아쓸 수 없습니다 — 녹음을 마치고 눌러 주세요', true);
+    host.paint();
+    return;
+  }
   if (_ntDictation) {
     // Listening here already: nothing to do. Still settling the last words of a stopped one, or listening in the
     // other composer: drop that one (its words show already) and start here at once.
     if (_ntDictation.host.id === host.id && !_ntDictation.stopping) return;
     ntDictateStop(true);
   }
+  var android = ntIsAndroid(w);
   var d = {
     host: host,
     auto: !!auto,
+    android: android,
     live: '',
     rec: null,
     base: String(el.value || ''),
@@ -18145,27 +18391,43 @@ async function ntDictateStart(host, auto) {
     silent: 0,
     sessions: 0,
     error: '',
+    bad: false,
+    // This session opened the microphone (audiostart) / heard sound (speechstart); sessions in a row that never
+    // opened it (a recogniser that does not work), and whether the silent run so far heard sound (ntDictationEnded).
+    audio: false,
+    spoke: false,
+    dead: 0,
+    spokeRun: false,
+    // The microphone opened at least once in this dictation (its permission is a yes).
+    opened: false,
+    // Android refused a restart (still busy): one more try after a moment, once per stretch without words.
+    retry: false,
+    retried: false,
+    // The session whose end was handled (an end the engine never sends is played once — ntDictationFallback).
+    handled: 0,
+    // This session was aborted by the browser (a hidden page); the moment before Android's retry (no session running).
+    aborted: false,
+    waiting: false,
     // Android Chrome repeats settled words in longer copies (ntDictationRead folds them there only).
-    cumulative: !!(w && w.navigator && /Android/i.test(String(w.navigator.userAgent || ''))),
+    cumulative: android,
   };
   _ntDictation = d;
+  host.clear();
   host.paint();
-  // Where the words are processed: Chrome's available() when it has one; else Apple's engine (on the device) or a
-  // speech service off the device (Chrome on Android, Samsung Internet, older Chrome, Edge).
-  var where = ntIsAppleSpeech(w) ? 'apple' : 'service';
-  if (typeof Rec.available === 'function') {
+  // Where the words are processed: Apple's engine (on the device); the phone's own recogniser on Android (Chrome and
+  // Samsung Internet on a Galaxy — a page cannot ask it to stay on the device, so available() is not asked there);
+  // else Chrome's available() when it has one, or a speech service off the device (older Chrome, Edge).
+  var where = ntIsAppleSpeech(w) ? 'apple' : android ? 'phone' : 'service';
+  if (where === 'service' && typeof Rec.available === 'function') {
     d.live = '받아쓰기 준비 중…';
     host.status(d.live);
     where = await ntDictationLocal(Rec);
     if (_ntDictation !== d) return;
   }
-  // Opened listening (SSOT_4) only where the words stay on the device: elsewhere it stays off, quietly.
-  if (auto && where !== 'local' && where !== 'apple') {
+  // Opened listening (SSOT_4) where the words stay on the device or the phone's own recogniser takes them (a Galaxy,
+  // SSOT_5): elsewhere (desktop Chrome without Korean on it, Edge) it stays off, quietly — the press still starts it.
+  if (auto && where !== 'local' && where !== 'apple' && where !== 'phone') {
     ntDictationEnd(d, '');
-    return;
-  }
-  if ((where === 'service' || where === 'installing') && !ntDictationRemoteOk()) {
-    ntDictationEnd(d, ntDictationOffDevice(where));
     return;
   }
   var rec;
@@ -18174,34 +18436,68 @@ async function ntDictateStart(host, auto) {
     d.rec = rec;
     rec.lang = NT_DICTATION_LANG;
     rec.interimResults = true;
-    rec.continuous = true;
+    // Android ignores continuous at best; Samsung Internet may give nothing in dictation mode. One utterance per
+    // session there, and ntDictationEnded listens again.
+    rec.continuous = !android;
     rec.maxAlternatives = 1;
     if (where === 'local') rec.processLocally = true;
     rec.onresult = function (e) {
       ntDictationHeard(d, e);
     };
+    rec.onaudiostart = function () {
+      d.audio = true;
+      d.opened = true;
+    };
+    rec.onspeechstart = function () {
+      d.spoke = true;
+    };
     rec.onerror = function (e) {
       var code = e && e.error;
-      var why = ntDictationErrorText(code);
+      if (code === 'aborted') d.aborted = true;
+      if (ntPageHidden() && (android || d.aborted) && code !== 'aborted' && code !== 'no-speech') {
+        d.error = NT_DICTATION_HIDDEN;
+        d.bad = false;
+        d.stopping = true;
+        ntDictationFallback(d);
+        return;
+      }
+      var why = ntDictationErrorText(code, android);
       if (!why) return;
-      // A restart refused after the first session (iOS may want a fresh press): not a missing permission.
-      if (code === 'not-allowed' && d.sessions > 1) why = '받아쓰기가 멈췄습니다 — 다시 누르면 이어서 받아씁니다';
-      // An automatic start the mic refused does not try again on every open (the 받아쓰기 press still does); a
-      // restart refused after a pause (iOS) is not a refused mic.
-      if (d.auto && d.sessions <= 1 && /^(not-allowed|service-not-allowed|audio-capture)$/.test(String(code)))
-        _ntDictationAutoOff = true;
+      // A why the person acts on goes on the red error line.
+      d.bad = true;
+      if (code === 'not-allowed') {
+        // Android reports its recogniser still busy (a dictation just dropped, a restart) as not-allowed too: one more
+        // try after a moment (ntDictationEnded), once per stretch without words; refused again, it is the permission.
+        if (android && !d.retried) {
+          d.retried = true;
+          d.retry = true;
+          ntDictationFallback(d);
+          return;
+        }
+        // iOS refusing a restart after the mic was open may want a fresh press: not a missing permission.
+        if (!android && d.opened) {
+          why = '받아쓰기가 멈췄습니다 — 다시 누르면 이어서 받아씁니다';
+          d.bad = false;
+        }
+      }
+      // A mic or a recogniser refused before it ever opened: the new task stops opening listening on this page (the
+      // 받아쓰기 press still tries).
+      if (!d.opened && /^(not-allowed|service-not-allowed|audio-capture)$/.test(String(code))) _ntDictationAutoOff = true;
       d.error = why;
       d.stopping = true;
+      ntDictationFallback(d);
     };
     rec.onend = function () {
       ntDictationEnded(d);
     };
-    rec.start();
-    d.sessions++;
+    ntDictationListen(d);
     d.live = ntDictationStatus(where);
     host.status(d.live);
+    // The session panel has no status line: where the voice may leave the device, its toast says so.
+    if (host.id === 'pc' && (where === 'service' || where === 'installing' || where === 'phone'))
+      host.status(d.live, true);
   } catch (e) {
-    ntDictationEnd(d, ntDictationErrorText(''));
+    ntDictationEnd(d, ntDictationErrorText('', android), true);
   }
 }
 
@@ -18232,6 +18528,7 @@ function ntDictationHeard(d, e) {
   if (got.finals || got.interim) {
     d.heard = true;
     d.silent = 0;
+    d.retried = false;
   }
   var el = d.host.el();
   if (!el) return;
@@ -18240,36 +18537,168 @@ function ntDictationHeard(d, e) {
   d.host.text(text);
 }
 
-// The recogniser ended. Stopped or failed: the dictation lets go. Ended by itself (iOS after a pause, Chrome after a
-// while): it listens again with the words so far as its start; three silent sessions in a row end it.
+// The page went to the background (another app, the screen off): Android — or any browser that aborted the session —
+// refuses a restart there (as not-allowed, or a network error) — the dictation stops, saying a press continues,
+// instead of calling it a missing permission. Desktop Chrome keeps listening in a background tab and restarts there:
+// it goes on (fable review R2 P2).
+var NT_DICTATION_HIDDEN = '다른 화면으로 가서 받아쓰기를 멈췄습니다 — 다시 누르면 이어서 받아씁니다';
+function ntPageHidden() {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+}
+
+// An error with no end after it (Edge can go silent): the end is played after 3 s, once per session.
+function ntDictationFallback(d) {
+  var n = d.sessions;
+  setTimeout(function () {
+    if (d.sessions === n && d.handled !== n) ntDictationEnded(d);
+  }, 3000);
+}
+
+// One recognition session. One that answers nothing in 12 s — no audiostart, no words (an Android recogniser that
+// cannot be reached raises a toast and sends the page no event at all) — is a recogniser that does not work.
+function ntDictationListen(d) {
+  d.rec.start();
+  d.sessions++;
+  ntDictationWatch(d, d.sessions, 0);
+}
+
+// The watch of session n: a session with no audiostart and no words.
+// - Before the mic has opened once in this dictation (12 s): audiostart comes only after the yes, so while the browser
+//   still asks for the mic (permission 'prompt') it waits, up to a minute, then says it is waiting for that yes; it
+//   waits once more anyway (iOS asks for speech recognition separately). Still silent with the mic granted: the
+//   recogniser does not work — the red line, and the new task stops opening listening. Denied: the mic's why.
+// - After (30 s): the recogniser is proven, so a slow restart is not a broken one (grok review R2 P1) — but a restart
+//   that never answers is let go, saying a press continues, without the red line or the auto-start (astra R5).
+function ntDictationWatch(d, n, waited) {
+  var proven = d.opened;
+  var idle = function () {
+    return _ntDictation === d && !d.hard && !d.stopping && d.sessions === n && !d.audio && !d.heard;
+  };
+  var letGo = function (why, bad) {
+    d.hard = true;
+    ntDictationEnd(d, why, bad);
+    try {
+      d.rec.abort();
+    } catch (e) {}
+  };
+  setTimeout(
+    function () {
+      if (!idle()) return;
+      if (proven) {
+        letGo('받아쓰기가 멈췄습니다 — 다시 누르면 이어서 받아씁니다', false);
+        return;
+      }
+      ntDictationMicState().then(function (state) {
+        if (!idle()) return;
+        if ((state === 'prompt' && waited < 4) || waited < 1) {
+          ntDictationWatch(d, n, waited + 1);
+          return;
+        }
+        if (state === 'prompt') {
+          letGo('마이크 허용을 기다리다 받아쓰기를 멈췄습니다 — 허용한 뒤 다시 눌러 주세요', false);
+          return;
+        }
+        if (state === 'granted' || state === 'denied') _ntDictationAutoOff = true;
+        letGo(
+          state === 'denied' ? ntDictationErrorText('not-allowed', d.android) : ntDictationDeadText('dead', d.android),
+          true,
+        );
+      });
+    },
+    proven ? 30000 : 12000,
+  );
+}
+
+// The microphone permission as the browser says it: 'granted', 'prompt', 'denied', or '' when it cannot say.
+function ntDictationMicState() {
+  try {
+    var w = typeof window !== 'undefined' ? window : null;
+    var p = w && w.navigator && w.navigator.permissions;
+    if (!p || typeof p.query !== 'function') return Promise.resolve('');
+    return Promise.resolve(p.query({ name: 'microphone' })).then(
+      function (st) {
+        return String((st && st.state) || '');
+      },
+      function () {
+        return '';
+      },
+    );
+  } catch (e) {
+    return Promise.resolve('');
+  }
+}
+
+// The recogniser ended. Stopped or failed: the dictation lets go. Ended by itself (iOS after a pause, Android after
+// each utterance, Chrome after a while): it listens again with the words so far as its start; three sessions in a row
+// without words end it — said as silence, or, when sound was heard (a noisy room, Samsung Internet returning nothing),
+// with what to try. Two sessions in a row that never opened the microphone are a recogniser that does not work: it
+// ends on the red line, and the new task stops opening listening.
 function ntDictationEnded(d) {
-  if (d.hard || _ntDictation !== d) return;
+  if (d.hard || _ntDictation !== d || d.handled === d.sessions) return;
+  d.handled = d.sessions;
   if (d.stopping) {
-    ntDictationEnd(d, d.error);
+    ntDictationEnd(d, d.error, d.bad);
     return;
   }
   d.base = ntDictationText(d.base, d.finals, d.interim);
   d.finals = '';
   d.interim = '';
+  var aborted = d.aborted;
+  d.aborted = false;
+  if (ntPageHidden() && (d.android || aborted)) {
+    ntDictationEnd(d, NT_DICTATION_HIDDEN);
+    return;
+  }
+  if (d.retry) {
+    // Android refused the restart (still busy): listen again after a moment, unless the dictation ended meanwhile.
+    d.retry = false;
+    d.heard = false;
+    d.audio = false;
+    d.spoke = false;
+    d.waiting = true;
+    setTimeout(function () {
+      d.waiting = false;
+      if (_ntDictation !== d || d.hard || d.stopping) return;
+      if (ntPageHidden() && d.android) {
+        ntDictationEnd(d, NT_DICTATION_HIDDEN);
+        return;
+      }
+      try {
+        ntDictationListen(d);
+      } catch (e) {
+        ntDictationEnd(d, ntDictationErrorText('', d.android), true);
+      }
+    }, 400);
+    return;
+  }
+  // Only before the mic has ever opened: after that the recogniser is proven, and empty sessions are a silent run.
+  d.dead = !d.opened && !d.heard && !d.audio ? d.dead + 1 : 0;
+  if (d.dead >= 2) {
+    _ntDictationAutoOff = true;
+    ntDictationEnd(d, ntDictationDeadText('dead', d.android), true);
+    return;
+  }
+  d.spokeRun = !d.heard && (d.spokeRun || d.spoke);
   d.silent = d.heard ? 0 : d.silent + 1;
   d.heard = false;
+  d.audio = false;
+  d.spoke = false;
   if (d.silent >= 3) {
-    ntDictationEnd(d, '말이 들리지 않아 받아쓰기를 멈췄습니다');
+    ntDictationEnd(d, d.spokeRun ? ntDictationDeadText('mute', d.android) : '말이 들리지 않아 받아쓰기를 멈췄습니다');
     return;
   }
   try {
-    d.rec.start();
-    d.sessions++;
+    ntDictationListen(d);
   } catch (e) {
-    ntDictationEnd(d, ntDictationErrorText(''));
+    ntDictationEnd(d, ntDictationErrorText('', d.android), true);
   }
 }
 
-// The dictation is over: the tool lets go, and the status line says why (or nothing).
-function ntDictationEnd(d, why) {
+// The dictation is over: the tool lets go, and the page says why (or nothing) — bad: a why the person acts on.
+function ntDictationEnd(d, why, bad) {
   if (_ntDictation === d) _ntDictation = null;
   d.stopping = true;
-  d.host.status(why || '', true);
+  d.host.status(why || '', true, !!(why && bad));
   d.host.paint();
 }
 
@@ -18289,7 +18718,8 @@ function ntDictateStop(hard) {
   if (d.stopping) return;
   d.stopping = true;
   d.host.paint();
-  if (!d.rec) {
+  // No session running (none yet, or the moment before Android's retry): nothing to settle — let go at once.
+  if (!d.rec || d.waiting) {
     ntDictationEnd(d, '');
     return;
   }
@@ -18315,10 +18745,21 @@ function ntOnComposerTool(e, host) {
   else if (_ntDictation && _ntDictation.host.id === h.id) ntDictateStop(false);
 }
 
-// SSOT_4: the new task opens listening where speech recognition runs on this device; a key typed stops it (ui-input)
-// and the typing goes on. Called inside the opening press — Safari wants it for the microphone.
+// Is a voice note recording in a composer still on the page (a composer swapped out mid-recording never says it
+// stopped — it is dropped here)?
+function ntRecordingNow() {
+  _recording = _recording.filter(function (el) {
+    return el && el.isConnected !== false;
+  });
+  return _recording.length > 0;
+}
+
+// SSOT_4: the new task opens listening where speech recognition runs on this device, or on a Galaxy's own recogniser
+// (SSOT_5); a key typed stops it (ui-input) and the typing goes on. Called inside the opening press — Safari wants it
+// for the microphone.
 function ntDictateAuto() {
-  if (_ntDictationAutoOff || _ntDictation) return;
+  // Not while a voice note is recording (one microphone): the voice note keeps it.
+  if (_ntDictationAutoOff || _ntDictation || ntRecordingNow()) return;
   ntDictateStart(ntDictationHost('nt'), true);
 }
 
@@ -18624,6 +19065,16 @@ async function ntOpenLaunched(launch) {
 function ntInit() {
   var dlg = ntEl('nt-dialog');
   if (!dlg) return;
+  // The tool's word (640px) and the send's word (360px) follow the width: a rotation, a Fold opening repaints both
+  // composers.
+  ['(max-width: 359px)', '(min-width: 640px)'].forEach(function (q) {
+    var mq = window.matchMedia && window.matchMedia(q);
+    if (mq && mq.addEventListener)
+      mq.addEventListener('change', function () {
+        paintNtComposer();
+        pcPaintComposer();
+      });
+  });
   // <ui-dialog>: Esc, the scrim and ✕ ask to close (ui-close) — the element settles out and gives focus back, then
   // says so (ui-closed, after every exit, the page's hide() too): the page lets go of what it owns.
   dlg.addEventListener('ui-close', function (e) {
@@ -18884,8 +19335,12 @@ ntInit();
 pcInit();
 // View mode: the device's copy first (the user's setting answers in loadMyDefaults); the agent tabs answer clicks and arrows.
 _viewMode = readViewMode();
+_viewPlan = readViewPlan();
 applyViewMode();
 syncBoardScope();
+// The user's settings (the view mode, the plan, the default model chips) once the view state above exists: a load
+// started earlier captured _viewModeSeq before its var ran and never applied the server's mode.
+loadMyDefaults();
 bindPanelTabs();
 setInterval(loadSessions, 30000);
 // CRON lane jobs and the llmux capacity view poll on their own cadence (the
