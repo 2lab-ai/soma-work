@@ -347,6 +347,12 @@ const DEFAULT_THEME: SessionTheme = 'default';
  */
 export const DASHBOARD_MODES = ['minimal', 'advanced'] as const;
 export type DashboardMode = (typeof DASHBOARD_MODES)[number];
+/**
+ * Which of the dashboard's three layouts (.prd/20 §5) each mode draws — 1안 by
+ * default. The dashboard's own, like the mode; it feeds no prompt.
+ */
+export const DASHBOARD_PLANS = ['1', '2', '3'] as const;
+export type DashboardPlan = (typeof DASHBOARD_PLANS)[number];
 export const THEME_NAMES: Record<SessionTheme, string> = {
   default: 'Default (Rich Card)',
   compact: 'Compact',
@@ -461,6 +467,8 @@ export interface UserSettings {
   slackTaskEntry?: boolean;
   /** The web dashboard's view (SSOT 2026-11-01). Undefined (or unknown) ⇒ `minimal`. */
   dashboardMode?: DashboardMode;
+  /** The dashboard's layout plan (.prd/20). Undefined (or unknown) ⇒ `'1'`. */
+  dashboardPlan?: DashboardPlan;
   /**
    * E4 ③ (.prd/19 D9 e) — the most one epic tree may spend (USD) before the
    * host stops starting its children and waking it; the owner's own
@@ -1069,6 +1077,24 @@ export class UserSettingsStore {
       return;
     }
     existing.dashboardMode = mode;
+    existing.lastUpdated = new Date().toISOString();
+    this.saveSettings();
+  }
+
+  /** The dashboard's layout plan (.prd/20). Default — and any value it does not know — `'1'`. */
+  getUserDashboardPlan(userId: string): DashboardPlan {
+    const p = this.settings[userId]?.dashboardPlan;
+    return p === '2' || p === '3' ? p : '1';
+  }
+
+  /** Save the dashboard's layout plan — like the view mode, no prompt reads it, so no cached prompt is dropped. */
+  setUserDashboardPlan(userId: string, plan: DashboardPlan): void {
+    const existing = this.settings[userId];
+    if (!existing) {
+      this.patchUserSettings(userId, { dashboardPlan: plan });
+      return;
+    }
+    existing.dashboardPlan = plan;
     existing.lastUpdated = new Date().toISOString();
     this.saveSettings();
   }

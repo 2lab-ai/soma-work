@@ -438,7 +438,7 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
       'data-at-ns="c|k&quot;&gt;&lt;img src=x&gt;"',
     );
     expect(ui.renderAgentTree(card({ agents: [] }), 'working')).toBe('');
-    expect(fnBody('renderCardBody')).toContain('const agentsHtml = renderAgentTree(s, col);');
+    expect(fnBody('renderCardBody')).toContain("else if (p === 'agents') rest += renderAgentTree(s, col);");
   });
 
   it('atCardData: the main agent first, every subagent under the agent that started it, in spawn order — compact', () => {
@@ -643,6 +643,16 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
         document: { createElement: () => body },
         renderCardBody: (s: unknown, col: string) => ui.renderAgentTree(s, col),
         isAdvanced: () => true,
+        // The view plan (.prd/20): advanced 2안 원본 — no spec, the open card and the face as they were.
+        viewSpec: () => ({
+          detail: {
+            show: ['subtitle', 'info', 'goal', 'artifacts', 'agenthead', 'agenttabs', 'sections', 'controls'],
+            tasks: 'runs',
+            open: true,
+          },
+        }),
+        detailShows: () => true,
+        faceOf: (c: unknown) => c,
         cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
         isPickingModel: () => false,
         morphInnerHtml: (_el: unknown, html: string) => markup.push(html),
@@ -901,6 +911,16 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
       deckDrop: (k: string) => calls.deck.push(`drop ${k}`),
       // View mode (SSOT 2026-11-01): the card and its body go through the mode — this harness is 어드밴스드.
       isAdvanced: () => true,
+      // The view plan (.prd/20): advanced 2안 원본 — no spec, the open card and the face as they were.
+      viewSpec: () => ({
+        detail: {
+          show: ['subtitle', 'info', 'goal', 'artifacts', 'agenthead', 'agenttabs', 'sections', 'controls'],
+          tasks: 'runs',
+          open: true,
+        },
+      }),
+      detailShows: () => true,
+      faceOf: (c: unknown) => c,
       cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
     };
     const fns = load<{
@@ -916,14 +936,13 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
         'atPaint',
         'atHydrate',
         'placeCard',
-        'minimalCard',
         'viewCardOf',
         'inboxPaint',
         'paintCardBody',
         'refreshCard',
         'wireInbox',
       ],
-      ['MINIMAL_CARD_KEYS'],
+      [],
       env,
     );
     fns.wireInbox(host);
@@ -1308,7 +1327,7 @@ describe('panel scope (§4.3)', () => {
     );
     // The collapsed card's agents are the face's data (cardOf); the open card's tree is in its body.
     expect(fnBody('cardOf')).toContain('dots: agents.slice(0, 6).map(agentDotOf)');
-    expect(fnBody('renderCardBody')).toContain('const agentsHtml = renderAgentTree(s, col);');
+    expect(fnBody('renderCardBody')).toContain("else if (p === 'agents') rest += renderAgentTree(s, col);");
     expect(TEMPLATE).toContain('<div class="panel-agents" id="panel-agents" style="display:none"></div>');
   });
 });

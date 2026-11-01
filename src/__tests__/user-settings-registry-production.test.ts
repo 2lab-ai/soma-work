@@ -9,7 +9,7 @@ describe('production settings registry', () => {
     const registry = productionSettingsRegistry();
     userSettingsStore.ensureUserExists('UREGPROD1', 'Prod One');
     const snap = registry.read('UREGPROD1');
-    expect(snap.settings).toHaveLength(20);
+    expect(snap.settings).toHaveLength(21);
     expect(snap.settings.find((s) => s.key === 'persona')!.options!.map((o) => o.value)).toContain('default');
 
     const row = await registry.write('UREGPROD1', 'defaultEffort', 'low');
@@ -23,6 +23,10 @@ describe('production settings registry', () => {
     expect(snap.settings.find((s) => s.key === 'dashboardMode')!.value).toBe('minimal');
     await registry.write('UREGPROD1', 'dashboardMode', 'advanced');
     expect(userSettingsStore.getUserDashboardMode('UREGPROD1')).toBe('advanced');
+    // …and its plan (.prd/20): 1안 until the user picks another.
+    expect(snap.settings.find((s) => s.key === 'dashboardPlan')!.value).toBe('1');
+    await registry.write('UREGPROD1', 'dashboardPlan', '2');
+    expect(userSettingsStore.getUserDashboardPlan('UREGPROD1')).toBe('2');
 
     await expect(registry.write('UREGPROD1', 'persona', 'no-such-persona')).rejects.toMatchObject({ statusCode: 400 });
     await expect(registry.write('UREGPROD1', 'sandbox', false)).rejects.toMatchObject({ statusCode: 403 });

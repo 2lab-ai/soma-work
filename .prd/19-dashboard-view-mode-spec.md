@@ -5,6 +5,8 @@ Status: 구현 · Date: 2026-11-01
 [`15-dashboard-detail-deck-spec.md`](15-dashboard-detail-deck-spec.md)(상세 카드)
 
 > 이 문서가 대체하는 것: 14 T1.6의 패널 우상단 **자세히** 칩과 기기별 저장(`soma-panel-detail`).
+>
+> 이후: 각 모드가 무엇을 보여 줄지는 [`20-dashboard-view-plans-spec.md`](20-dashboard-view-plans-spec.md)의 1 · 2 · 3안이 정한다(기본 1안). 아래 T3 · T4의 미니멀 목록은 그 전의 상태이고, 지금은 20 §5.1의 1안이다.
 
 ## 0. 한 줄 정의
 
