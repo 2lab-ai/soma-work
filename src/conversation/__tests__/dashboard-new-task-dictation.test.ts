@@ -192,6 +192,7 @@ function page(
       'ntDictationListen',
       'ntDictationFallback',
       'ntRecordingNow',
+      'ntPageHidden',
       'ntDictationWatch',
       'ntDictationMicState',
       'ntDictationEnded',
@@ -216,7 +217,11 @@ function page(
       _pcSending: false,
       PC_LIMITS: { maxFiles: 10, maxFileBytes: 1, maxTotalBytes: 2 },
       PC_NO_FILES: 'application/x-soma-no-attachments',
-      document: { getElementById: (id: string) => (id === 'pc-composer' ? env.pc : null) },
+      document: {
+        visibilityState: 'visible',
+        getElementById: (id: string) => (id === 'pc-composer' ? env.pc : null),
+      },
+      NT_DICTATION_HIDDEN: '다른 화면으로 가서 받아쓰기를 멈췄습니다 — 다시 누르면 이어서 받아씁니다',
       dashToast: (input: { title: string }) => env.toasts.push(input.title),
       pcPaintComposer: () => {
         env.pcPaints++;
@@ -1219,6 +1224,25 @@ describe('SSOT_5 — Samsung Internet and Chrome on a Galaxy: the first press li
       vi.useRealTimers();
     }
   });
+  it('the page goes to the background (Android aborts, then refuses a restart as not-allowed): it stops quietly, not "no permission"', async () => {
+    for (const refusal of [true, false]) {
+      const Rec = recClass(null);
+      const { api, env } = page({ engine: Rec, ua: UA.samsung });
+      api.ntDictateAuto();
+      const rec = FakeRec.made[0];
+      rec.say([final('나가기 전 말')]);
+      api.__peek('document.visibilityState = "hidden"');
+      rec.onerror?.({ error: 'aborted' }); // Blink aborts a hidden page's recognition
+      if (refusal) rec.onerror?.({ error: 'not-allowed' });
+      rec.end();
+      expect(rec.starts).toBe(1); // no restart on a hidden page
+      expect(api.__peek('_ntDictation')).toBeNull();
+      expect(last(env.statuses)).toContain('다시 누르면 이어서');
+      expect(env.errorLine.textContent).toBe('');
+      expect(api.__peek('_ntDictationAutoOff')).toBe(false);
+      expect(env.composer.value).toBe('나가기 전 말');
+    }
+  });
   it('a manual press while a voice note records: it says so and leaves the microphone to the voice note', async () => {
     const Rec = recClass(null);
     const { api, env } = page({ engine: Rec, ua: UA.samsung });
@@ -1422,7 +1446,9 @@ describe('I1.4 — the dialog wires the stops; a live dictation counts as unsent
     const at = TEMPLATE.indexOf("document.addEventListener('ui-record', function(e) {");
     expect(at).toBeGreaterThan(0);
     const body = TEMPLATE.slice(at, TEMPLATE.indexOf('\n});\n', at));
-    expect(body).toContain("ntDictateStopIn(e.target.id === 'pc-composer' ? 'pc' : 'nt');");
+    // Wherever it listens — the other composer's too (astra R4: a voice note whose mic prompt was open as the new
+    // task opened listening).
+    expect(body).toContain('if (_ntDictation) ntDictateStop(true);');
   });
   it('a new build does not reload the tab mid-sentence', () => {
     expect(clientFn('hasUnsentInput')).toContain('if (_ntDictation) return true;');

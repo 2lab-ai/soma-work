@@ -12968,8 +12968,9 @@ document.addEventListener('ui-record', function(e) {
   var i = _recording.indexOf(e.target);
   if (e.detail && e.detail.state === 'start') {
     if (i < 0) _recording.push(e.target);
-    // One microphone: a voice note starting to record stops 받아쓰기 in its composer (its words stay).
-    if (e.target && e.target.id) ntDictateStopIn(e.target.id === 'pc-composer' ? 'pc' : 'nt');
+    // One microphone: a voice note starting to record stops 받아쓰기 wherever it listens (its words stay) — the other
+    // composer's too (a voice note whose mic prompt was still open when the new task opened listening).
+    if (_ntDictation) ntDictateStop(true);
   } else if (i >= 0) {
     _recording.splice(i, 1);
   }
@@ -18247,6 +18248,13 @@ async function ntDictateStart(host, auto) {
     };
     rec.onerror = function (e) {
       var code = e && e.error;
+      if (ntPageHidden() && code !== 'aborted' && code !== 'no-speech') {
+        d.error = NT_DICTATION_HIDDEN;
+        d.bad = false;
+        d.stopping = true;
+        ntDictationFallback(d);
+        return;
+      }
       var why = ntDictationErrorText(code, android);
       if (!why) return;
       // A why the person acts on goes on the red error line.
@@ -18321,6 +18329,13 @@ function ntDictationHeard(d, e) {
   var text = ntDictationText(d.base, d.finals, d.interim);
   el.value = text;
   d.host.text(text);
+}
+
+// The page went to the background (another app, the screen off): the browser aborts recognition and refuses a restart
+// there (as not-allowed) — the dictation stops, saying a press continues, instead of calling it a missing permission.
+var NT_DICTATION_HIDDEN = '다른 화면으로 가서 받아쓰기를 멈췄습니다 — 다시 누르면 이어서 받아씁니다';
+function ntPageHidden() {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
 }
 
 // An error with no end after it (Edge can go silent): the end is played after 3 s, once per session.
@@ -18408,6 +18423,10 @@ function ntDictationEnded(d) {
   d.base = ntDictationText(d.base, d.finals, d.interim);
   d.finals = '';
   d.interim = '';
+  if (ntPageHidden()) {
+    ntDictationEnd(d, NT_DICTATION_HIDDEN);
+    return;
+  }
   if (d.retry) {
     // Android refused the restart (still busy): listen again after a moment, unless the dictation ended meanwhile.
     d.retry = false;
@@ -18416,6 +18435,10 @@ function ntDictationEnded(d) {
     d.spoke = false;
     setTimeout(function () {
       if (_ntDictation !== d || d.hard || d.stopping) return;
+      if (ntPageHidden()) {
+        ntDictationEnd(d, NT_DICTATION_HIDDEN);
+        return;
+      }
       try {
         ntDictationListen(d);
       } catch (e) {
