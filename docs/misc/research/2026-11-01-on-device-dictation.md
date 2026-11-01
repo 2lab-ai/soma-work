@@ -59,6 +59,7 @@ Limits found on the way:
 - The Android 11 Google app (2020) returned no result, even for English.
 - `injectAudio` delivered silence on the Android 15 and 16 images, and crashed emulator 37.1 and 37.2 when no guest microphone was open.
 - Processes started by the bot have no macOS microphone permission, so the host microphone records zeros.
+- Repeated runs: 3 of 5 returned words, and each showed them live and kept them; 2 returned only empty results. Every Korean session logged `SodaSpeechRecognizer: Failed to get language pack of required locale: error 13`. With the system locale set to Korean, the emulator offered no Korean pack ("an ideal set of 0 total packs"). Sound heard but no words on Android is therefore the symptom of a missing Korean speech pack, and the page's message now says to download it in ‘Google 음성 인식 및 합성’.
 
 ## Follow-up candidates
 
