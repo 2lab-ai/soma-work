@@ -17559,7 +17559,20 @@ async function ntDictateStart(host, auto) {
 // sends no ui-input for a value the page sets).
 function ntDictationHeard(d, e) {
   if (d.hard || _ntDictation !== d) return;
-  var got = ntDictationRead(e && e.results, d.cumulative);
+  var results = e && e.results;
+  var n = results && results.length ? results.length : 0;
+  var got = ntDictationRead(results, d.cumulative);
+  var was = ntJoinSpoken(d.finals, d.interim).trim();
+  var now = ntJoinSpoken(got.finals, got.interim).trim();
+  var at = Date.now();
+  // A new utterance in a fresh list (real Chrome, after a pause, drops an utterance it never finalised — no isFinal,
+  // no end): the words that show stay as the start, so nothing said disappears. A quick revision inside one
+  // utterance, or words that only go on, is not a new one.
+  if (was && now.indexOf(was) !== 0 && (n < (d.count || 0) || at - (d.at || at) > 1200)) {
+    d.base = ntDictationText(d.base, d.finals, d.interim);
+  }
+  d.count = n;
+  d.at = at;
   d.finals = got.finals;
   d.interim = got.interim;
   if (got.finals || got.interim) {
