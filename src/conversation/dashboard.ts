@@ -8447,6 +8447,11 @@ function wireInbox(host) {
   });
   // A file chip on the face opens the viewer (never the card). The chip is the
   // opener focus returns to.
+  // The face's star (SSOT 2026-11-01): the same write as the open card's ☆ 즐겨찾기; the card does not toggle.
+  host.addEventListener('ui-star', function(e) {
+    if (e.target !== host || !e.detail) return;
+    doStar(String(e.detail.cardId), !!e.detail.starred);
+  });
   host.addEventListener('ui-artifact', function(e) {
     if (e.target !== host || !e.detail) return;
     var s = _sessionCache[String(e.detail.cardId)];
@@ -8808,39 +8813,79 @@ function cardOf(s, col) {
   // An epic (E4 ⑨a) leads with EPIC and says its state; its progress is accepted nodes of all.
   if (s.kind === 'epic' && s.epic) {
     var epicLabel = EPIC_STATE_LABEL[epicStateOf(s.epic.state)];
-    card.lead = { text: 'EPIC', glyph: 'tasks', title: '에픽 — ' + epicLabel };
+    card.lead = { text: 'EPIC', glyph: 'epic', title: '에픽 — ' + epicLabel };
     if (s.epic.state === 'running' || s.epic.state === 'needs-input') card.statusText = epicLabel;
     var ep = s.epic.progress || {};
     if (toNum(ep.total) > 0) card.steps = { done: toNum(ep.accepted), total: toNum(ep.total) };
   }
-  // A starred card leads with ★ (SSOT 2026-10-30 T1.3); a starred cron run reads ★ CRON.
-  if (s.starred === true) {
-    var starTitle = '즐겨찾기 — 항상 맨 위, 자동 sleep·보관 안 함';
-    card.lead = card.lead
-      ? { text: '\\u2605 ' + card.lead.text, glyph: card.lead.glyph, title: starTitle + ' · ' + card.lead.title }
-      : { text: '\\u2605', title: starTitle };
-  }
+  // The star is a toggle on the face (SSOT 2026-11-01 — viewCardOf, cardStarOf), no longer a ★ lead (2026-10-30 T1.3).
   // Owner badge (§3.1-3): in the All Users view every card names its owner.
   var owner = currentUserId ? '' : s.ownerName || s.ownerId || '';
   if (owner) card.badge = { text: String(owner), hue: ownerBadgeHue(s.ownerId || owner), title: String(owner) };
   return card;
 }
 
+// The face's star (SSOT 2026-11-01): the open card's ☆ 즐겨찾기 (sessionActionsOf) as the face's toggle — its state,
+// its tooltip, and for anyone but the owner (or while a write runs) inert with the reason.
+function cardStarOf(s, col) {
+  var a = sessionActionsOf(s, col)[0];
+  if (!a || a.id !== 'star') return { on: s.starred === true, disabled: STRINGS.siblingLock(s.environment || {}) };
+  var st = { on: !!a.pressed, title: a.tip };
+  if (a.lock) st.disabled = a.lock;
+  else if (a.busy) st.disabled = true;
+  return st;
+}
 // View mode (SSOT 2026-11-01): a minimal face keeps what a glance needs — the title, the status and its time,
-// the task in progress, what the session asks (summary), the lead (★ · CRON) and the owner in the All Users view.
-// Tokens, cost, sub-agents, artifacts, steps, context, media and the PR are 어드밴스드's.
-var MINIMAL_CARD_KEYS = ['id', 'title', 'status', 'statusText', 'bodyMode', 'summary', 'since', 'elapsedMs', 'task', 'lead', 'badge'];
-function minimalCard(card) {
+// the task in progress, what the session asks (summary), the lead (CRON · EPIC · a plan node; a plain task's mark),
+// the owner in the All Users view, the star toggle and a line of artifacts; its foot's right end is the cost and
+// the model with its vendor's mark. Tokens, sub-agents, steps, context, media and the PR are 어드밴스드's.
+var MINIMAL_CARD_KEYS = ['id', 'title', 'status', 'statusText', 'bodyMode', 'summary', 'since', 'elapsedMs', 'task', 'lead', 'badge', 'star', 'artifacts', 'artifactsCount'];
+function minimalCard(card, s) {
   var out = {};
   for (var i = 0; i < MINIMAL_CARD_KEYS.length; i++) {
     var k = MINIMAL_CARD_KEYS[i];
     if (card && Object.prototype.hasOwnProperty.call(card, k) && card[k] !== undefined) out[k] = card[k];
   }
+  // What the card is: an epic, a plan node or a cron run lead with their own; a plain task with the task mark.
+  if (!out.lead) out.lead = { glyph: 'task', title: '일반 작업' };
+  var foot = minimalFootMetrics(card, s);
+  if (foot.length) out.metrics = foot;
   return out;
+}
+// The minimal foot's right end: the price, then the model with its vendor's mark.
+function minimalFootMetrics(card, s) {
+  var out = [];
+  var cost = card ? toNum(card.costUsd) : 0;
+  if (cost > 0) {
+    var price = cost < 0.01 ? '<$0.01' : '$' + (cost >= 100 ? cost.toFixed(0) : cost.toFixed(2));
+    out.push({ text: price, title: (card.titles && card.titles.cost) || 'API 환산 비용' });
+  }
+  // 'unknown' is the server's placeholder for a model it does not know — no name to show.
+  var model = s && s.model && s.model !== 'unknown' ? String(s.model) : '';
+  if (model) out.push({ text: modelLabelOf(model), glyph: modelVendorOf(model), title: model });
+  return out;
+}
+// Whose model it is, for its mark: claude · openai · grok · gemini · model (any other).
+function modelVendorOf(model) {
+  var m = String(model || '').toLowerCase();
+  if (/claude|opus|sonnet|haiku|fable/.test(m)) return 'claude';
+  if (/^gpt|^o[0-9]|codex|openai/.test(m)) return 'openai';
+  if (/grok/.test(m)) return 'grok';
+  if (/gemini/.test(m)) return 'gemini';
+  return 'model';
+}
+// The model's name: the representative label (Opus 5.5), else its id without claude- and a date.
+function modelLabelOf(model) {
+  var models = REPRESENTATIVE_MODELS || [];
+  for (var i = 0; i < models.length; i++) if (models[i].model === model && models[i].label) return String(models[i].label);
+  return String(model || '').replace(/^claude-/, '').replace(/-[0-9]{8}(?=\\[|$)/, '');
 }
 function viewCardOf(s, col) {
   var c = cardOf(s, col);
-  return isAdvanced() ? c : minimalCard(c);
+  // The star is a toggle on every face, in both modes: on or off at a press, inert with its reason for anyone
+  // but the owner (and on a sibling instance's card).
+  c.star = cardStarOf(s, col);
+  return isAdvanced() ? c : minimalCard(c, s);
 }
 
 // Task window on the open card (§3.1-4, spec 13) — @2lab.ai/ui <ui-task-plan> in window mode (0.14.1, D8b
