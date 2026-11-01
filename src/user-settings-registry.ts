@@ -18,7 +18,13 @@
 
 import type { LogVerbosity } from '@soma/slack/output-flags';
 import type { PermissionMode } from './agent-runtime/policy/permission-mode';
-import type { DashboardMode, EffortLevel, NotificationSettings, SessionTheme } from './user-settings-store';
+import type {
+  DashboardMode,
+  DashboardPlan,
+  EffortLevel,
+  NotificationSettings,
+  SessionTheme,
+} from './user-settings-store';
 
 export type SettingKey =
   | 'defaultModel'
@@ -40,7 +46,8 @@ export type SettingKey =
   | 'permissionMode'
   | 'sandbox'
   | 'sandboxNetwork'
-  | 'dashboardMode';
+  | 'dashboardMode'
+  | 'dashboardPlan';
 
 export type SettingGroup = 'model' | 'output' | 'notify' | 'goal' | 'skills' | 'account' | 'permissions' | 'dashboard';
 
@@ -152,6 +159,8 @@ export interface SettingsStoreLike {
   getUserNetworkDisabled(userId: string): boolean;
   getUserDashboardMode(userId: string): DashboardMode;
   setUserDashboardMode(userId: string, mode: DashboardMode): void;
+  getUserDashboardPlan(userId: string): DashboardPlan;
+  setUserDashboardPlan(userId: string, plan: DashboardPlan): void;
 }
 
 export interface SettingsRegistryDeps {
@@ -212,6 +221,27 @@ const TELEGRAM_CHAT_ID = /^-?\d{1,20}$/;
 const DASHBOARD_MODE_OPTIONS: SettingOption[] = [
   { value: 'minimal', label: '미니멀', description: '보드와, 상세 카드의 작업 목록과 채팅만 보여 줍니다.' },
   { value: 'advanced', label: '어드밴스드', description: '통계, 토큰, 에이전트 트리, 작업 로그까지 모두 보여 줍니다.' },
+];
+// The three layouts of .prd/20 §5 — one number for both modes; each option says what it is in each.
+const DASHBOARD_PLAN_OPTIONS: SettingOption[] = [
+  {
+    value: '1',
+    label: '1안 (기본)',
+    description:
+      '미니멀 결과 우선: 현재 작업 · 산출물 · PR · 비용 · 모델, 펼치면 링크와 모델 전환. 어드밴스드 정리: 지금 화면에서 중복 별 버튼을 빼고 모델을 더함.',
+  },
+  {
+    value: '2',
+    label: '2안',
+    description:
+      '미니멀 진행 우선: 진행 n/m · 요약, 펼치면 작업 창, 상세에 서브에이전트 탭. 어드밴스드 원본: 바꾸기 전 화면 그대로.',
+  },
+  {
+    value: '3',
+    label: '3안',
+    description:
+      '미니멀 한눈에: 제목 · 상태 · 비용 · 모델만, 상세의 작업은 한 줄. 어드밴스드 압축: 숫자는 바닥 줄로, 펼치면 조작만, 상세는 접혀서 열림.',
+  },
 ];
 
 /**
@@ -472,6 +502,22 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
           editable: true,
         };
       }
+      case 'dashboardPlan': {
+        const value = store.getUserDashboardPlan(userId);
+        return {
+          key,
+          group: 'dashboard',
+          label: '화면 구성안',
+          description:
+            '화면에 무엇을 보여 줄지 고르는 안입니다. 1안: 미니멀 결과 우선 · 어드밴스드 정리(기본). 2안: 미니멀 진행 우선 · 어드밴스드 원본(바꾸기 전 화면). 3안: 미니멀 한눈에 · 어드밴스드 압축. 칸별 표는 .prd/20.',
+          kind: 'choice',
+          value,
+          defaultValue: '1',
+          modified: value !== '1',
+          options: DASHBOARD_PLAN_OPTIONS,
+          editable: true,
+        };
+      }
       case 'autoGoal': {
         const value = store.getUserAutoGoalEnabled(userId);
         return {
@@ -654,6 +700,7 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
     'sandbox',
     'sandboxNetwork',
     'dashboardMode',
+    'dashboardPlan',
   ];
 
   async function apply(userId: string, key: SettingKey, value: unknown): Promise<void> {
@@ -722,6 +769,14 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
           throw new SettingsError(400, 'dashboardMode는 minimal 또는 advanced여야 합니다');
         }
         store.setUserDashboardMode(userId, mode);
+        return;
+      }
+      case 'dashboardPlan': {
+        const plan = expectString(value, key);
+        if (plan !== '1' && plan !== '2' && plan !== '3') {
+          throw new SettingsError(400, 'dashboardPlan은 1, 2, 3 중 하나여야 합니다');
+        }
+        store.setUserDashboardPlan(userId, plan);
         return;
       }
       case 'goalMaxContinuations': {

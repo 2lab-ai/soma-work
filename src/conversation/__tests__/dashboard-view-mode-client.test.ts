@@ -40,10 +40,13 @@ function clientFn(name: string): string {
   const end = TEMPLATE.indexOf('\n}\n', start);
   return cook(TEMPLATE.slice(start + 1, end + 2));
 }
+/** A one-line `var X = …;`, or a block `var X = {` … `\n};` (VIEW_PLANS). */
 function clientVar(name: string): string {
   const m = TEMPLATE.match(new RegExp(`^(var ${name} = .*?;)(?:\\s*//.*)?$`, 'm'));
-  if (!m) throw new Error(`client var ${name} not found`);
-  return cook(m[1]);
+  if (m) return cook(m[1]);
+  const start = TEMPLATE.indexOf(`\nvar ${name} = {\n`);
+  if (start < 0) throw new Error(`client var ${name} not found`);
+  return cook(TEMPLATE.slice(start + 1, TEMPLATE.indexOf('\n};\n', start) + 3));
 }
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
   const names = Object.keys(inject);
@@ -66,9 +69,9 @@ describe('T1 — the detail card has no 자세히 chip; the view mode is the one
     expect(declarationCount('readPanelDetail')).toBe(0);
   });
 
-  it('the detail sections follow the mode: advanced is the old 자세히 on', () => {
+  it('the detail sections follow the mode’s plan: advanced 1안 · 2안 are the old 자세히 on (.prd/20)', () => {
     const fn = clientFn('applyViewMode');
-    expect(fn).toContain("_panelDetail = _viewMode === 'advanced';");
+    expect(fn).toContain('_panelDetail = !!spec.detail.open;');
     expect(fn).toContain('applyPanelDetail();');
   });
 });
@@ -179,7 +182,7 @@ describe('T2 — the top bar carries the 어드밴스드 toggle, saved per user'
   });
 
   it('the first paint is the device copy, then the server answers', () => {
-    expect(TEMPLATE).toMatch(/^_viewMode = readViewMode\(\);\napplyViewMode\(\);/m);
+    expect(TEMPLATE).toMatch(/^_viewMode = readViewMode\(\);\n_viewPlan = readViewPlan\(\);\napplyViewMode\(\);/m);
   });
 });
 
@@ -208,13 +211,31 @@ describe('T3 — minimal: a card shows what matters', () => {
     metrics: [{ text: '#700 열림', glyph: 'pr' }],
   };
 
-  it('the face keeps title · status · time · the task in progress · the summary · lead · owner · artifacts; the foot is cost · model', () => {
-    const env = load<{ minimalCard(c: unknown, s?: unknown): Record<string, unknown> }>(
-      ['toNum', 'modelVendorOf', 'modelLabelOf', 'minimalFootMetrics', 'minimalCard'],
-      ['MINIMAL_CARD_KEYS'],
-      { REPRESENTATIVE_MODELS: [] },
-    );
-    const m = env.minimalCard(full);
+  // The default plan (.prd/20 §5.1, 1안 결과 우선) is what minimal means until the user picks another.
+  const faces = load<{
+    faceOf(c: unknown, s: unknown, col: string, f: unknown): Record<string, unknown>;
+    viewSpec(): any;
+  }>(
+    [
+      'toNum',
+      'pendingAutoResume',
+      'cardAsks',
+      'modelVendorOf',
+      'modelLabelOf',
+      'faceFootMetrics',
+      'faceOf',
+      'viewModeFrom',
+      'viewPlanFrom',
+      'viewSpec',
+    ],
+    ['VIEW_PLANS', 'FACE_KEEP', 'FACE_PARTS', '_viewMode', '_viewPlan'],
+    { REPRESENTATIVE_MODELS: [] },
+  );
+  const minimalFace = (c: unknown, sess: unknown = {}, col = 'working') =>
+    faces.faceOf(c, sess, col, faces.viewSpec().face);
+
+  it('the face keeps title · status · time · the task in progress · lead · owner · artifacts; the summary when it asks; the foot is PR · cost · model', () => {
+    const m = minimalFace(full);
     expect(Object.keys(m).sort()).toEqual(
       [
         'artifacts',
@@ -228,16 +249,21 @@ describe('T3 — minimal: a card shows what matters', () => {
         'since',
         'status',
         'statusText',
-        'summary',
         'task',
         'title',
+        'titles',
       ].sort(),
     );
     expect(m.task).toEqual(full.task);
-    // The second instruction (SSOT 2026-11-01): the foot's right end is the price, not the PR or the context.
-    expect(m.metrics).toEqual([{ text: '$6.20', title: 'c' }]);
+    // What the card asks is the summary; otherwise it would be the title once more (.prd/20 G2).
+    expect(minimalFace(full, { pendingQuestion: { question: '질문' } }, 'waiting').summary).toBe('질문');
+    // The foot's right end: the PR (the outcome, .prd/20 G3), then the price.
+    expect(m.metrics).toEqual([
+      { text: '#700 열림', glyph: 'pr' },
+      { text: '$6.20', title: 'c\nt' },
+    ]);
     // Absent fields stay absent (no undefined keys for the element to read); a plain task gets its mark.
-    expect(env.minimalCard({ id: 'k', title: 't', status: 'done', bodyMode: 'slot' })).toEqual({
+    expect(minimalFace({ id: 'k', title: 't', status: 'done', bodyMode: 'slot' })).toEqual({
       id: 'k',
       title: 't',
       status: 'done',
@@ -246,7 +272,7 @@ describe('T3 — minimal: a card shows what matters', () => {
     });
   });
 
-  it('the board maps through the mode: advanced is the full card', () => {
+  it('the board maps through the mode’s plan: advanced keeps the full card', () => {
     const cardOf = () => ({ ...full });
     const env = load<{
       viewCardOf(s: unknown, col: string): Record<string, unknown>;
@@ -254,15 +280,18 @@ describe('T3 — minimal: a card shows what matters', () => {
     }>(
       [
         'viewModeFrom',
-        'isAdvanced',
+        'viewPlanFrom',
+        'viewSpec',
         'toNum',
+        'pendingAutoResume',
+        'cardAsks',
         'modelVendorOf',
         'modelLabelOf',
-        'minimalFootMetrics',
-        'minimalCard',
+        'faceFootMetrics',
+        'faceOf',
         'viewCardOf',
       ],
-      ['MINIMAL_CARD_KEYS', '_viewMode'],
+      ['VIEW_PLANS', 'FACE_KEEP', 'FACE_PARTS', '_viewMode', '_viewPlan'],
       { cardOf, REPRESENTATIVE_MODELS: [], cardStarOf: () => ({ on: false }) },
     );
     expect(env.viewCardOf({}, 'working').costUsd).toBeUndefined();
@@ -297,7 +326,7 @@ describe('T3 — minimal: a card shows what matters', () => {
     READ_ONLY_MSG: 'read only',
   };
   const body = (s: Record<string, unknown>, col: string, minimal: boolean) =>
-    load<{ renderCardBody(s: unknown, col: string, minimal?: boolean): string }>(
+    load<{ renderCardBody(s: unknown, col: string, spec?: unknown): string }>(
       [
         'esc',
         'escAttr',
@@ -325,7 +354,8 @@ describe('T3 — minimal: a card shows what matters', () => {
       ],
       ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy'],
       STUBS,
-    ).renderCardBody(s, col, minimal);
+      // minimal: the leanest plan (3안) — the actions and what asks, nothing more (.prd/20 §5.1).
+    ).renderCardBody(s, col, minimal ? { star: false, work: [], wait: [], done: [] } : undefined);
   const card = (over: Record<string, unknown> = {}) => ({
     key: 'inst::C1:t1',
     conversationId: 'conv-1',
@@ -356,10 +386,10 @@ describe('T3 — minimal: a card shows what matters', () => {
     expect(prompted).toContain('data-ac-kind="perm"');
   });
 
-  it('advanced (no flag) is the card body as it was', () => {
+  it('no spec is the card body as it was', () => {
     const html = body(card(), 'working', false);
     for (const kept of ['[TASKS]', '[AGENTS]', '[IO]', '[MODEL]', 'card-foot-bar']) expect(html).toContain(kept);
-    expect(clientFn('paintCardBody')).toContain('var html = renderCardBody(s, col, !isAdvanced());');
+    expect(clientFn('paintCardBody')).toContain('var html = renderCardBody(s, col, viewSpec().body);');
   });
 });
 
@@ -381,10 +411,9 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
     for (const s of d.steps) expect(s.toolCalls).toBeUndefined();
   });
 
-  it('the tasks paint through the mode: minimal → the checklist, advanced → the full Tasks section', () => {
+  it('the tasks paint through the plan: minimal 1안 → the checklist, advanced → the full Tasks section', () => {
     const fn = clientFn('repaintPanelTasks');
-    expect(fn).toContain('if (!isAdvanced())');
-    expect(fn).toContain('renderPanelTaskList(panelAgentTasks());');
+    expect(fn).toContain("if (t === 'list') { renderPanelTaskList(panelAgentTasks()); return; }");
     expect(fn).toContain(
       'renderPanelTasks(panelAgentTasks(), panelAgentLabel(), panelAgentEarlier(), panelAgentOutside());',
     );
@@ -397,8 +426,8 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
 
   it('an opening in minimal mode lands on the chat of the main agent', () => {
     const env = load<{ psecForMode(land: string): string; __set(n: string, v: unknown): void }>(
-      ['viewModeFrom', 'isAdvanced', 'psecForLanding', 'psecForMode'],
-      ['_viewMode'],
+      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'detailShows', 'psecForLanding', 'psecForMode'],
+      ['VIEW_PLANS', '_viewMode', '_viewPlan'],
     );
     expect(env.psecForMode('worklog')).toBe('conv');
     expect(env.psecForMode('agent')).toBe('conv');
@@ -410,11 +439,15 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
     const open = clientFn('openPanel');
     const agentAt = open.indexOf("_panelAgent = agentId ? String(agentId) : '';");
     expect(agentAt).toBeGreaterThan(-1);
-    expect(open.indexOf("if (!isAdvanced()) _panelAgent = '';")).toBeGreaterThan(agentAt);
+    expect(open.indexOf("if (!detailShows('agenttabs') && !detailShows('subtabs')) _panelAgent = '';")).toBeGreaterThan(
+      agentAt,
+    );
     // Switching to minimal with a subagent or another section shown brings the main agent's chat back.
     const re = clientFn('rerenderForViewMode');
-    expect(re).toContain("if (_panelAgent) selectPanelAgent('');");
-    expect(re).toContain("if (_psec !== 'conv') selectPanelSection('conv');");
+    expect(re).toContain(
+      "if (!detailShows('agenttabs') && !detailShows('subtabs') && _panelAgent) selectPanelAgent('');",
+    );
+    expect(re).toContain("if (!detailShows('sections') && _psec !== 'conv') selectPanelSection('conv');");
     expect(re).toContain('renderBoardForLayout();');
   });
 
@@ -426,21 +459,29 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
       expect(CSS, sel).toMatch(minimalRule(sel));
   });
 
-  it('the detail card’s top keeps the header and what needs the user; info · goal · artifacts · tabs · model go', () => {
-    for (const sel of [
-      '#panel-title-sub',
-      '#panel-info',
-      '#panel-goal',
-      '#panel-artifacts',
-      '#panel-agents',
-      '#panel-controls',
+  it('the detail card’s top keeps the header and what needs the user; info · goal · artifacts · tabs · model go (1안)', () => {
+    // The plan says which sections show (VIEW_PLANS detail.show → body[data-detail]); minimal 1안 shows none of them.
+    const env = load<{ viewSpec(): any }>(
+      ['viewModeFrom', 'viewPlanFrom', 'viewSpec'],
+      ['VIEW_PLANS', '_viewMode', '_viewPlan'],
+    );
+    expect(env.viewSpec().detail.show).toEqual([]);
+    for (const [tok, sel] of [
+      ['subtitle', '#panel-title-sub'],
+      ['info', '#panel-info'],
+      ['goal', '#panel-goal'],
+      ['artifacts', '#panel-artifacts'],
+      ['agenthead', '#panel-agents'],
+      ['controls', '#panel-controls'],
     ])
-      expect(CSS, sel).toMatch(minimalRule(sel));
-    expect(CSS).toMatch(/body\[data-view-mode="minimal"\] \.panel-tabs::part\(list\)/);
-    expect(CSS).toMatch(/body\[data-view-mode="minimal"\] \.panel-sections::part\(list\)/);
-    // What needs the user is never hidden by the mode.
-    for (const sel of ['#panel-permission', '#panel-question', '#panel-needs-head', '#panel-status', '#pc-composer'])
+      expect(CSS, sel).toContain(`body:not([data-detail~="${tok}"]) ${sel}`);
+    expect(CSS).toContain('.panel-tabs::part(list)');
+    expect(CSS).toContain('body:not([data-detail~="sections"]) .panel-sections::part(list)');
+    // What needs the user is never hidden by the mode or the plan.
+    for (const sel of ['#panel-permission', '#panel-question', '#panel-needs-head', '#panel-status', '#pc-composer']) {
       expect(CSS, sel).not.toMatch(minimalRule(sel));
+      expect(CSS, sel).not.toContain(`]) ${sel}`);
+    }
   });
 });
 
@@ -570,13 +611,38 @@ describe('T7–T10 — minimal card: cost · model · artifacts, the star toggle
     metrics: [{ text: '#700 열림', glyph: 'pr' }],
     contextPct: 64,
   };
-  const env = load<{
-    minimalCard(c: unknown, s?: unknown): Record<string, any>;
+  const env0 = load<{
+    faceOf(c: unknown, s: unknown, col: string, f: unknown): Record<string, any>;
+    faceFootMetrics(c: unknown, s: unknown, foot: string[]): Array<Record<string, unknown>>;
     modelVendorOf(m: unknown): string;
     modelLabelOf(m: unknown): string;
-  }>(['toNum', 'modelVendorOf', 'modelLabelOf', 'minimalFootMetrics', 'minimalCard'], ['MINIMAL_CARD_KEYS'], {
-    REPRESENTATIVE_MODELS: [{ nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', label: 'Opus 5.5' }],
-  });
+    viewSpec(): any;
+  }>(
+    [
+      'toNum',
+      'pendingAutoResume',
+      'cardAsks',
+      'modelVendorOf',
+      'modelLabelOf',
+      'faceFootMetrics',
+      'faceOf',
+      'viewModeFrom',
+      'viewPlanFrom',
+      'viewSpec',
+    ],
+    ['VIEW_PLANS', 'FACE_KEEP', 'FACE_PARTS', '_viewMode', '_viewPlan'],
+    { REPRESENTATIVE_MODELS: [{ nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', label: 'Opus 5.5' }] },
+  );
+  // minimalCard was the minimal face; it is the default plan's face now (.prd/20 §5.1, 1안). The cost and model
+  // cases read the foot's price and model alone (faceFootMetrics: cost · model).
+  const env = {
+    ...env0,
+    minimalCard: (c: unknown, sess: unknown = {}): Record<string, any> => {
+      const m = env0.faceOf(c, sess, 'working', env0.viewSpec().face);
+      const priced = env0.faceFootMetrics(c, sess, ['cost', 'model']);
+      return { ...m, metrics: priced.length ? priced : undefined };
+    },
+  };
 
   it('T7 — the foot’s right end: the cost, then the model with its vendor’s mark', () => {
     const m = env.minimalCard(full, { model: 'claude-opus-5-5[1m]' });

@@ -71,6 +71,10 @@ function memoryStore(): SettingsStoreLike & { data: Record<string, any> } {
     setUserDashboardMode: (id, m) => {
       u(id).dashboardMode = m;
     },
+    getUserDashboardPlan: (id) => u(id).dashboardPlan ?? '1',
+    setUserDashboardPlan: (id, p) => {
+      u(id).dashboardPlan = p;
+    },
   };
 }
 
@@ -171,6 +175,7 @@ describe('settings registry — read', () => {
       'sandbox',
       'sandboxNetwork',
       'dashboardMode',
+      'dashboardPlan',
     ]);
     for (const s of snap.settings) {
       // A dashboard-only setting (the dashboard's own view) has no Slack command; every other one names it.
@@ -322,6 +327,32 @@ describe('settings registry — write', () => {
     await refused(registry.write('U1', 'dashboardMode', true), 400);
     // A denied user cannot write it either (a write must not re-create the record).
     await refused(registry.write('U_DENIED', 'dashboardMode', 'advanced'), 403);
+    expect(store.data.U_DENIED).toBeUndefined();
+  });
+
+  it('dashboardPlan (SSOT 2026-11-01 ④, .prd/20): 1안 by default, 1 · 2 · 3 in the dashboard group, saved per user', async () => {
+    const { registry, store } = setup();
+    const row = registry.read('U1').settings.find((s) => s.key === 'dashboardPlan')!;
+    expect(row).toMatchObject({
+      kind: 'choice',
+      group: 'dashboard',
+      label: '화면 구성안',
+      value: '1',
+      defaultValue: '1',
+      modified: false,
+      editable: true,
+    });
+    expect(row.slackCommand).toBeUndefined();
+    expect(row.options!.map((o) => o.value)).toEqual(['1', '2', '3']);
+    // Each option says what it is in both modes.
+    for (const o of row.options!) expect(o.description).toMatch(/미니멀.*어드밴스드/);
+    const v = await registry.write('U1', 'dashboardPlan', '3');
+    expect(store.data.U1.dashboardPlan).toBe('3');
+    expect(v).toMatchObject({ value: '3', modified: true });
+    expect(registry.read('U2').settings.find((s) => s.key === 'dashboardPlan')!.value).toBe('1');
+    await refused(registry.write('U1', 'dashboardPlan', '4'), 400);
+    await refused(registry.write('U1', 'dashboardPlan', 2), 400);
+    await refused(registry.write('U_DENIED', 'dashboardPlan', '2'), 403);
     expect(store.data.U_DENIED).toBeUndefined();
   });
 

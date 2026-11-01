@@ -204,23 +204,12 @@ function boardFlow(cardOf?: (s: { key: string }, col: string) => unknown, over: 
       'planCronLane',
       'cardBodyShown',
       'placeCard',
-      'minimalCard',
       'viewCardOf',
       'syncHasCards',
       'renderBoard',
       ...BOARD_FNS,
     ],
-    [
-      'BOARD_LABELS',
-      '_cardHost',
-      '_cardCol',
-      '_cardData',
-      '_cardDrawn',
-      '_cardClosing',
-      '_boardRenders',
-      '_boardLoad',
-      'MINIMAL_CARD_KEYS',
-    ],
+    ['BOARD_LABELS', '_cardHost', '_cardCol', '_cardData', '_cardDrawn', '_cardClosing', '_boardRenders', '_boardLoad'],
     {
       document: d.document,
       loadSessions: () => loads.push(1),
@@ -249,6 +238,10 @@ function boardFlow(cardOf?: (s: { key: string }, col: string) => unknown, over: 
         cardOf ?? ((s: { key: string }, col: string) => ({ id: s.key, title: s.key, status: col, bodyMode: 'slot' })),
       // View mode (SSOT 2026-11-01): the board maps each card through the mode — this harness is 어드밴스드.
       isAdvanced: () => true,
+      // The view plan (.prd/20): advanced 2안 원본 — no spec, the open card and the face as they were.
+      viewSpec: () => ({ detail: { show: [], tasks: 'runs', open: true } }),
+      detailShows: () => true,
+      faceOf: (c: unknown) => c,
       cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
       acPrefetch: () => {},
       releaseCardIoTimer: () => {},
