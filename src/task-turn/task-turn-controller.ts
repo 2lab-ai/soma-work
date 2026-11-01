@@ -32,7 +32,11 @@ export interface TaskCommandRequest {
   sessionKey: string;
   text: string;
   attachments?: readonly unknown[];
-  /** The signed-in user sending it; the turn runs as the owner, so only the owner may (#637 R2). */
+  /**
+   * The signed-in user sending it — the owner or anyone else (SSOT 2026-11-02):
+   * the turn runs as them, as a Slack turn runs as the user who wrote in the
+   * thread. Empty is nobody and starts nothing. A host start passes the owner.
+   */
   actorUserId: string;
   /**
    * E4 ③ — who starts it. `owner` (the default): the owner's own instruction
@@ -79,8 +83,11 @@ export interface TaskTurnControllerDeps {
     setController(sessionKey: string, controller: AbortController): void;
     removeController(sessionKey: string, expected?: AbortController): void;
   };
-  /** `executionContextForTask` — throws `ExecutionContextMissingError` with the reason. */
-  buildExecutionContext(session: ConversationSession): ExecutionContext;
+  /**
+   * `executionContextForTask(session, actorUserId)` — the turn's context for the
+   * user who started it; throws `ExecutionContextMissingError` with the reason.
+   */
+  buildExecutionContext(session: ConversationSession, actorUserId?: string): ExecutionContext;
   logger: {
     info(msg: string, meta?: unknown): void;
     warn(msg: string, meta?: unknown): void;
@@ -121,7 +128,7 @@ export interface TaskAnswerRequest {
   sessionKey: string;
   askId: string;
   answer: TaskAnswer;
-  /** The signed-in user answering; only the task's owner may (#637 R1). */
+  /** The signed-in user answering — any user (SSOT 2026-11-02); the answer runs as them. */
   actorUserId: string;
 }
 
@@ -198,6 +205,9 @@ function treeOf(session: ConversationSession, sessionKey: string): (TreeStart & 
 }
 
 const DEFAULT_EPIC_COST_LIMIT_USD = 50;
+
+/** The refusal of another user's word to an epic tree (its children start as the owner). */
+export const EPIC_OWNER_ONLY = 'an epic and its children take instructions from their owner or an admin only';
 
 export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurnController {
   const maxDispatches = deps.maxDispatches ?? 3;
@@ -305,10 +315,10 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     if (!accepting) return { ok: false, response: refuse(503, 'the service is shutting down — try again shortly') };
     const session = deps.getSession(request.sessionKey);
     if (!session || session.slackless !== true) return { ok: false, response: refuse(409, 'not a dashboard task') };
-    // The turn runs under the owner's identity: only the owner starts one — an
-    // instruction or an answer alike (#637 R2).
-    if (!request.actorUserId || request.actorUserId !== session.ownerId) {
-      return { ok: false, response: refuse(403, 'only the task owner can instruct or answer a dashboard task') };
+    // The turn runs as the user who starts it (SSOT 2026-11-02, as a Slack turn
+    // runs as its speaker): anyone signed in — nobody starts nothing.
+    if (!request.actorUserId) {
+      return { ok: false, response: refuse(403, 'a dashboard task runs as the user who instructs it — sign in') };
     }
     if (request.attachments && request.attachments.length > 0) {
       return { ok: false, response: refuse(400, 'attachments are not supported on a dashboard task yet') };
@@ -332,19 +342,25 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     }
     let ctx: ExecutionContext;
     try {
-      ctx = deps.buildExecutionContext(session);
+      ctx = deps.buildExecutionContext(session, request.actorUserId);
     } catch (error) {
       return { ok: false, response: refuse(409, `task cannot run: ${(error as Error)?.message ?? String(error)}`) };
     }
-    // E4 ⑦ — a task being closed, or a child of an epic being closed, starts nothing (fable #703 R1).
     const tree = treeOf(session, request.sessionKey);
+    // An epic's children start as its owner (host starts): another user's word
+    // to an epic tree would run as the owner one hop later — only an admin's.
+    if (tree && request.actorUserId !== session.ownerId && !ctx.isAdmin) {
+      return { ok: false, response: refuse(403, EPIC_OWNER_ONLY) };
+    }
+    // E4 ⑦ — a task being closed, or a child of an epic being closed, starts nothing (fable #703 R1).
     if (session.closing || (tree && tree.root !== request.sessionKey && deps.getSession(tree.root)?.closing)) {
       return { ok: false, response: refuse(409, 'the task is being closed') };
     }
     if (chains.has(request.sessionKey)) {
       return { ok: false, response: refuse(409, 'a turn is already running on this task') };
     }
-    const ownerId = ctx.userId;
+    // The owner's slot and window, whoever starts it: the task is the owner's.
+    const ownerId = session.ownerId as string;
     const t = now();
     const newTask = request.newTask === true;
     const refusal = tree
@@ -505,9 +521,9 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
         hopStarted = false;
         if (dispatch > 1) {
           // The context is per turn, never cached (execution-context.ts): rebuilt
-          // for every hop, so a revoked owner or moved directory stops the chain.
+          // for every hop — for the same user — so a revoked owner or moved directory stops the chain.
           try {
-            ctx = deps.buildExecutionContext(session);
+            ctx = deps.buildExecutionContext(session, ctx.userId);
           } catch (error) {
             await endPending({
               outcome: 'interrupted',
@@ -530,7 +546,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
             text,
             params: {
               abortController: hop,
-              userName: session.ownerName ?? ctx.userId,
+              // The speaker: the owner by name, another user who instructed it by id (SSOT 2026-11-02).
+              userName: ctx.userId === session.ownerId ? (session.ownerName ?? ctx.userId) : ctx.userId,
               workingDirectory: ctx.workingDirectory,
               processedFiles: [],
               isUserInput,
@@ -649,10 +666,10 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
   async function answer(request: TaskAnswerRequest): Promise<TaskCommandResponse> {
     const session = deps.getSession(request.sessionKey);
     if (!session || session.slackless !== true) return refuse(409, 'not a dashboard task');
-    // The turn runs under the owner's identity: only the owner answers (#637 R1;
-    // admission checks it again for every start).
-    if (!request.actorUserId || request.actorUserId !== session.ownerId) {
-      return refuse(403, 'only the task owner can answer its question');
+    // The answer runs as the user who sends it (SSOT 2026-11-02): anyone signed
+    // in — nobody answers nothing (admission checks it again for every start).
+    if (!request.actorUserId) {
+      return refuse(403, 'a dashboard task runs as the user who answers it — sign in');
     }
     const question = session.actionPanel?.pendingQuestion as { askId?: string } | undefined;
     if (session.activityState !== 'waiting' || !question) {

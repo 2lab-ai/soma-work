@@ -16,6 +16,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { viewerScope } from '../__fixtures__/viewer-scope';
 import { pageTokenAliases, uiLibTokensCss } from '../ui-lib';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
@@ -48,6 +49,7 @@ const PAGE_STRINGS = new Function(
   `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
 )();
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, extra: string[] = []): T {
+  ({ fns, inject } = viewerScope(fns, inject));
   inject = { STRINGS: PAGE_STRINGS, ...inject };
   const names = Object.keys(inject);
   const extraNames = extra.map((src) => /^function (\w+)/.exec(src)?.[1] ?? '').filter(Boolean);
@@ -786,7 +788,8 @@ describe("panel goal — the editor is <ui-goal-card> here (D6b E-12), its draft
     expect(src).toContain("document.getElementById('panel-goal')");
     expect(src).toContain("document.createElement('ui-goal-card')");
     expect(src).toContain('goalCardData(s, canEdit)');
-    expect(src).toMatch(/canEdit = isOwner && live && !isSiblingSession\(s\)/);
+    // The owner, or an admin in 관리자 모드, edits a live session's goals (SSOT 2026-11-02: viewerCanManage).
+    expect(src).toMatch(/canEdit = !!s && viewerCanManage\(s\) && live && !isSiblingSession\(s\)/);
     // The element morphs in place, so the page keeps no draft of its own (dashboard-goal-client.test.ts has the rest).
     expect(src).not.toContain('captureGoalDraft');
   });
@@ -1621,11 +1624,12 @@ describe('the composer follows the session live (executed)', () => {
     // A forced pass re-applies.
     m.renderPanelComposer({ ownerId: 'U1', terminated: true }, true);
     expect(writes.length).toBe(n + 1);
-    // Someone else's session: read-only — the queue shows, nothing can be done (like Stop).
+    // Someone else's session: a signed-in viewer instructs it, as in a Slack thread (SSOT 2026-11-02).
     m.renderPanelComposer({ ownerId: 'U2', activityState: 'working' });
+    expect(last()).toMatchObject({ canAct: true, disabled: false });
+    // An epic someone else owns: read-only — the queue shows, nothing can be done (its children start as the owner).
+    m.renderPanelComposer({ ownerId: 'U2', slackless: true, kind: 'epic', activityState: 'working' });
     expect(last()).toMatchObject({ canAct: false, disabled: false });
-    m.renderPanelComposer({ activityState: 'working' }); // no ownerId: fail closed
-    expect(last()).toMatchObject({ canAct: false });
     expect(clientFn('repaintPanelSession')).toContain('renderPanelComposer(s);');
   });
 

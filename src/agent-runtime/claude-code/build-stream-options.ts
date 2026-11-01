@@ -476,7 +476,8 @@ export async function buildStreamOptions(
           }
           if (taskApprover) {
             // #599 ⑤ — the same escalation a Slack turn would ask about waits for
-            // the task owner's answer on the dashboard. Fail closed on anything else.
+            // the answer of the turn's user (the owner, or whoever instructed it — SSOT
+            // 2026-11-02) on the dashboard. Fail closed on anything else.
             logger.warn('Escalation waiting for the dashboard approval (#599)', {
               tool: toolName,
               user: policyUser,

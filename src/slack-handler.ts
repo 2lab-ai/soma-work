@@ -4704,10 +4704,11 @@ export class SlackHandler {
    * Cancel, Edit) — a fourth transport into the handlers the buttons, the menu
    * and the reactions use, never a second policy.
    *
-   * WHO: the route let only the session's owner through (the gate its Stop
-   * uses — or the operator token, or an admin in admin mode), and the dashboard
-   * acts as that owner, as the instruction it sends does
-   * (`injectDashboardMessage`: `user: session.ownerId`). That identity enters as
+   * WHO (SSOT 2026-11-02): whoever may instruct the session. One who may manage
+   * it (`manages` — the owner, the operator token, an admin in admin mode, the
+   * gate its Stop uses) acts as the owner, as before; anyone else presses as
+   * themselves (`actorUserId`), as their Slack click would (Edit: only the
+   * author rewrites). That identity enters as
    * a {@link provenFollowupClick}, so `verifyClick` re-reads the session and
    * everything after it — `canInterrupt`, the item generation, the turn fence,
    * the dispatcher's authorization of the original author, the cancel veto, the
@@ -4732,6 +4733,8 @@ export class SlackHandler {
     epoch: number;
     turnEpoch: number;
     text?: string;
+    actorUserId?: string;
+    manages?: boolean;
   }): Promise<{ ok: true; message?: string } | { ok: false; status: number; message: string }> {
     const deps = this.followupActionDeps;
     const queue = this.followupQueue;
@@ -4744,8 +4747,9 @@ export class SlackHandler {
     }
     const session = this.claudeHandler?.getSessionByKey?.(request.sessionKey);
     if (!session?.ownerId) return { ok: false, status: 404, message: '세션을 찾을 수 없습니다.' };
-    const owner = session.ownerId;
-    if (request.op === 'edit') return this.editFollowupFromDashboard(request, owner);
+    // One who may manage the session presses as its owner (#716); anyone else as themselves (SSOT 2026-11-02).
+    const presser = request.manages === false && request.actorUserId ? request.actorUserId : session.ownerId;
+    if (request.op === 'edit') return this.editFollowupFromDashboard(request, presser);
 
     const role = request.op === 'promote' ? 'sendNow' : 'cancel';
     const item = queue.get(request.sessionKey, request.itemId);
@@ -4780,7 +4784,7 @@ export class SlackHandler {
       epoch: request.epoch,
       turnEpoch: request.turnEpoch,
     };
-    const click = provenFollowupClick(owner);
+    const click = provenFollowupClick(presser);
     try {
       if (operation === 'send-now') await handleFollowupSendNow(deps, click, respond, value);
       else if (operation === 'retry') await handleFollowupRetry(deps, click, respond, value);
@@ -4804,13 +4808,13 @@ export class SlackHandler {
    */
   private async editFollowupFromDashboard(
     request: { sessionKey: string; itemId: string; epoch: number; text?: string },
-    owner: string,
+    presser: string,
   ): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
     const queue = this.followupQueue;
     const text = request.text ?? '';
     const item = queue?.get(request.sessionKey, request.itemId);
     if (!queue || !item) return { ok: false, status: 409, message: '이미 큐에 없는 항목입니다.' };
-    if (item.message?.user !== owner) {
+    if (item.message?.user !== presser) {
       return {
         ok: false,
         status: 403,
@@ -6707,39 +6711,51 @@ export class SlackHandler {
     return this.todoManager;
   }
 
-  /** Handle choice answer from dashboard — delegates to ChoiceActionHandler for full Slack UI cleanup */
+  /**
+   * Handle choice answer from dashboard — delegates to ChoiceActionHandler for full Slack UI cleanup.
+   * `actorUserId` — the signed-in user who answered: the answer runs as them, as a Slack
+   * button click runs as its clicker (SSOT 2026-11-02). None (a viewer token) is the owner.
+   */
   async handleDashboardChoiceAnswer(
     sessionKey: string,
     choiceId: string,
     label: string,
     question: string,
+    actorUserId?: string,
   ): Promise<void> {
     const session = this.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
       throw new Error('Session not found');
     }
-    await this.actionHandlers.handleDashboardChoiceAnswer(sessionKey, choiceId, label, question, session.ownerId);
+    await this.actionHandlers.handleDashboardChoiceAnswer(
+      sessionKey,
+      choiceId,
+      label,
+      question,
+      actorUserId || session.ownerId,
+    );
   }
 
   /** Handle multi-choice form submission from dashboard */
   async handleDashboardMultiChoiceAnswer(
     sessionKey: string,
     selections: Record<string, { choiceId: string; label: string }>,
+    actorUserId?: string,
   ): Promise<void> {
     const session = this.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
       throw new Error('Session not found');
     }
-    await this.actionHandlers.handleDashboardMultiChoiceAnswer(sessionKey, selections, session.ownerId);
+    await this.actionHandlers.handleDashboardMultiChoiceAnswer(sessionKey, selections, actorUserId || session.ownerId);
   }
 
   /** Handle hero "Submit All Recommended" from dashboard (group-only one-click) */
-  async handleDashboardSubmitRecommended(sessionKey: string): Promise<void> {
+  async handleDashboardSubmitRecommended(sessionKey: string, actorUserId?: string): Promise<void> {
     const session = this.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
       throw new Error('Session not found');
     }
-    await this.actionHandlers.handleDashboardSubmitRecommended(sessionKey, session.ownerId);
+    await this.actionHandlers.handleDashboardSubmitRecommended(sessionKey, actorUserId || session.ownerId);
   }
 
   /**

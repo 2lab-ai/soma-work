@@ -13,6 +13,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { viewerScope } from '../__fixtures__/viewer-scope';
 import { pageTokenAliases, uiLibTokensCss } from '../ui-lib';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
@@ -60,6 +61,7 @@ function clientVar(name: string): string {
  * reach shipped vars) and returned next to the shipped ones.
  */
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, seams: string[] = []): T {
+  ({ fns, inject } = viewerScope(fns, inject));
   inject = { STRINGS: STRINGS, ...inject };
   const names = Object.keys(inject);
   const seamNames = seams.map((src) => /^function (\w+)/.exec(src)?.[1] ?? '');

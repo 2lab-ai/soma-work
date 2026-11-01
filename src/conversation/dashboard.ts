@@ -844,23 +844,20 @@ function resolveSelfActionKey(wireKey: string, reply: any): string | null {
 function resolveSelfActionKeyAndOwner(
   request: any,
   reply: any,
-  opts: { allowSlackless?: boolean; taskOwnerOnly?: boolean } = {},
+  opts: { allowSlackless?: boolean; instruct?: boolean } = {},
 ): { wireKey: string; originalKey: string } | null {
   const wireKey: string = request.params?.key ?? '';
   const originalKey = resolveSelfActionKey(wireKey, reply);
   if (originalKey === null) return null;
-  // Owner first: someone else's task answers 403, not a hint of what it is.
-  if (!requireSessionOwner(request, reply, originalKey)) return null;
-  // #637 R1 — a task's instruction or answer runs under its owner's identity
-  // (`executionContextForTask`), so only the signed-in owner may send one: the
-  // #716 bearer and admin-mode overrides do not apply. Stop / close / trash keep
-  // them — they cannot run anything.
-  if (opts.taskOwnerOnly) {
-    const target = _getSessionsFn?.()?.get(originalKey);
-    if (target?.slackless === true && !isTaskOwner(request, target.ownerId)) {
-      reply.status(403).send({ error: 'only the task owner can instruct or answer a dashboard task' });
-      return null;
-    }
+  // The gate first: a refusal answers 403, not a hint of what the session is.
+  // An instruction or an answer (SSOT 2026-11-02): every signed-in user, as in
+  // a Slack thread — it runs as them. Everything else: the #716 write policy.
+  if (
+    opts.instruct
+      ? !requireInstructAccess(request, reply, originalKey)
+      : !requireSessionOwner(request, reply, originalKey)
+  ) {
+    return null;
   }
   // Fail closed (#612 review): a Slack-less task takes only the routes that opt in —
   // stop / close / trash, and `command`, which hands it to the task turn
@@ -1186,11 +1183,42 @@ function _hasWriteAccess(request: any, ownerId: string | undefined): boolean {
   return false;
 }
 
-/** The signed-in user is the task's owner — a user identity, never a bearer token. */
-function isTaskOwner(request: any, ownerId: string | undefined): boolean {
+/** The signed-in Slack user sending the request — a user identity, never a bearer token (which names nobody). */
+function signedInUserId(request: any): string | undefined {
   const authContext = request.authContext;
-  if (!authContext || authContext.mode === 'bearer_header' || authContext.mode === 'bearer_cookie') return false;
-  return !!authContext.userId && !!ownerId && authContext.userId === ownerId;
+  if (!authContext || authContext.mode !== 'oauth_jwt') return undefined;
+  return typeof authContext.userId === 'string' && authContext.userId ? authContext.userId : undefined;
+}
+
+/**
+ * Who may instruct a session or answer its question (SSOT 2026-11-02) — the
+ * Slack rule: anyone may write in anyone's thread, and the turn runs as the
+ * user who wrote. So every signed-in user passes, and the handler runs the
+ * turn as them (`signedInUserId`), never as the owner.
+ *   - A viewer token names nobody: it keeps the #716 write access to a Slack
+ *     session (sent as its owner, as before), and is refused on a dashboard
+ *     task, which has no owner's thread to fall back on — it runs as its sender.
+ *   - An epic tree (an epic, or an epic's child): its children start as the
+ *     owner (host starts), so another user's word would run as the owner one
+ *     hop later — the owner, or an admin in admin mode, only.
+ */
+function requireInstructAccess(request: any, reply: any, sessionKey: string): boolean {
+  const target = _getSessionsFn?.()?.get(sessionKey);
+  const actor = signedInUserId(request);
+  const task = target?.slackless === true;
+  if (!actor) {
+    if (!task && _hasWriteAccess(request, target?.ownerId)) return true;
+    reply.status(403).send({ error: 'Forbidden — sign in with Slack to instruct a task: it runs as you' });
+    return false;
+  }
+  const epicTree = task && (target?.kind === 'epic' || !!target?.parentTaskId);
+  if (epicTree && actor !== target?.ownerId && !_hasWriteAccess(request, target?.ownerId)) {
+    reply.status(403).send({
+      error: 'Forbidden — an epic and its children take instructions from their owner, or an admin in admin mode',
+    });
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -1266,7 +1294,17 @@ type TrashHandler = (sessionKey: string) => Promise<void>;
  * text (may be empty when files are attached) and the files the user pasted,
  * attached or recorded — decoded and held to the new-task limits.
  */
-type CommandHandler = (sessionKey: string, message: string, files: NewTaskAttachment[]) => Promise<void>;
+/**
+ * A Slack session's instruction from the panel. `actorUserId` — the signed-in
+ * user who sent it: the message enters the thread as theirs, as if they had
+ * typed it there (SSOT 2026-11-02). None (a viewer token) is the owner's.
+ */
+type CommandHandler = (
+  sessionKey: string,
+  message: string,
+  files: NewTaskAttachment[],
+  actorUserId?: string,
+) => Promise<void>;
 /**
  * #598 ④c — a Slack-less task's instruction: the task turn controller refuses
  * (D8, D9) or accepts it, and the route answers with its status and body.
@@ -1275,7 +1313,7 @@ type TaskCommandHandler = (
   sessionKey: string,
   message: string,
   files: NewTaskAttachment[],
-  /** The signed-in user sending it — the route has checked it is the task's owner (#637 R2). */
+  /** The signed-in user sending it — any user (SSOT 2026-11-02); the turn runs as them. */
   actorUserId: string,
 ) => Promise<{ status: number; body: Record<string, unknown> }>;
 
@@ -1349,6 +1387,10 @@ export interface DashboardFollowupRequest {
   epoch: number;
   turnEpoch: number;
   text?: string;
+  /** The signed-in user who pressed it (none: a viewer token) — SSOT 2026-11-02. */
+  actorUserId?: string;
+  /** The presser may manage the session (#716: the owner, a token, an admin in admin mode): they act as its owner. */
+  manages?: boolean;
 }
 /** A refusal carries the queue's own words (the item stays) and the status the route answers with. */
 export type DashboardFollowupOutcome = { ok: true; message?: string } | { ok: false; status: number; message: string };
@@ -1500,7 +1542,14 @@ export function setDashboardEffortHandler(fn: EffortSwitchHandler): void {
   _effortSwitchHandlerFn = fn;
 }
 
-type ChoiceAnswerHandler = (sessionKey: string, choiceId: string, label: string, question: string) => Promise<void>;
+/** `actorUserId` — the signed-in user answering; the answer runs as them (SSOT 2026-11-02). None: the owner's. */
+type ChoiceAnswerHandler = (
+  sessionKey: string,
+  choiceId: string,
+  label: string,
+  question: string,
+  actorUserId?: string,
+) => Promise<void>;
 let _choiceAnswerHandlerFn: ChoiceAnswerHandler | null = null;
 /**
  * #599 ⑤ — a Slack-less task's answer, bound to the question's `askId`; the
@@ -1510,7 +1559,7 @@ type TaskAnswerHandler = (
   sessionKey: string,
   askId: string,
   answer: TaskAnswer,
-  /** The signed-in user answering — the route has checked it is the task's owner. */
+  /** The signed-in user answering — any user (SSOT 2026-11-02); the answer runs as them. */
   actorUserId: string,
 ) => Promise<{ status: number; body: Record<string, unknown> }>;
 let _taskAnswerHandlerFn: TaskAnswerHandler | null = null;
@@ -1535,7 +1584,7 @@ async function routeTaskAnswer(request: any, reply: any, sessionKey: string, ans
     return true;
   }
   try {
-    const outcome = await _taskAnswerHandlerFn(sessionKey, askId, answer, String(request.authContext?.userId ?? ''));
+    const outcome = await _taskAnswerHandlerFn(sessionKey, askId, answer, signedInUserId(request) ?? '');
     reply.status(outcome.status).send(outcome.body);
   } catch (error) {
     logger.error('Error answering a dashboard task', error);
@@ -1551,6 +1600,7 @@ export function setDashboardChoiceAnswerHandler(fn: ChoiceAnswerHandler): void {
 type MultiChoiceAnswerHandler = (
   sessionKey: string,
   selections: Record<string, { choiceId: string; label: string }>,
+  actorUserId?: string,
 ) => Promise<void>;
 let _multiChoiceAnswerHandlerFn: MultiChoiceAnswerHandler | null = null;
 
@@ -1664,7 +1714,7 @@ export function stopDashboardAdminApprovalWatch(): void {
 // pass selections — the implementation derives them from session.pendingQuestion
 // recommendations. Returns rejected promise on validation failure for
 // status-code mapping in the route handler.
-type SubmitRecommendedHandler = (sessionKey: string) => Promise<void>;
+type SubmitRecommendedHandler = (sessionKey: string, actorUserId?: string) => Promise<void>;
 let _submitRecommendedHandlerFn: SubmitRecommendedHandler | null = null;
 
 export function setDashboardSubmitRecommendedHandler(fn: SubmitRecommendedHandler): void {
@@ -3677,8 +3727,8 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'message is required (or attach a file)' });
         return;
       }
-      // Only the session's owner gets their files decoded (up to the new-task limits).
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
+      // Only a sender the gate let through gets their files decoded (up to the new-task limits).
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, instruct: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       const files = parseAttachments(attachments);
@@ -3694,12 +3744,7 @@ export async function registerDashboardRoutes(
           return;
         }
         try {
-          const outcome = await _taskCommandHandlerFn(
-            originalKey,
-            message,
-            files.value,
-            String((request as { authContext?: { userId?: string } }).authContext?.userId ?? ''),
-          );
+          const outcome = await _taskCommandHandlerFn(originalKey, message, files.value, signedInUserId(request) ?? '');
           reply.status(outcome.status).send(outcome.body);
         } catch (error) {
           logger.error('Error starting a dashboard task turn', error);
@@ -3709,7 +3754,7 @@ export async function registerDashboardRoutes(
       }
       try {
         if (_commandHandlerFn) {
-          await _commandHandlerFn(originalKey, message, files.value);
+          await _commandHandlerFn(originalKey, message, files.value, signedInUserId(request));
         }
         reply.send({ ok: true });
       } catch (error) {
@@ -3720,10 +3765,13 @@ export async function registerDashboardRoutes(
   );
 
   // The panel's follow-up queue (dashboard batch 2, <ui-agent-steering>): Send now
-  // (Retry on a failed note), Cancel and Edit on one item. Owner-only like Stop —
-  // the same gate — and carrying the generation the panel showed: the item's
-  // epoch, and the session's turnEpoch that Send now is fenced against. A
-  // refusal answers with the queue's own words; the item stays where it was.
+  // (Retry on a failed note), Cancel and Edit on one item, carrying the generation
+  // the panel showed: the item's epoch, and the session's turnEpoch that Send now
+  // is fenced against. Open to whoever may instruct (SSOT 2026-11-02): one who may
+  // manage the session acts as its owner, as before (#716); anyone else as
+  // themselves — so the Slack buttons' own rules decide (only the owner or the
+  // current speaker sends now, only the author edits). A refusal answers with the
+  // queue's own words; the item stays where it was.
   server.post<{
     Params: { key: string; itemId: string; op: string };
     Body: { epoch?: unknown; turnEpoch?: unknown; text?: unknown };
@@ -3758,9 +3806,11 @@ export async function registerDashboardRoutes(
         }
         text = body.text.trim();
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { instruct: true });
       if (!resolved) return;
       const { originalKey } = resolved;
+      const actorUserId = signedInUserId(request);
+      const manages = _hasWriteAccess(request, _getSessionsFn?.()?.get(originalKey)?.ownerId);
       if (!_followupHandler) {
         reply.status(501).send({ error: 'Follow-up queue handler not configured' });
         return;
@@ -3773,6 +3823,8 @@ export async function registerDashboardRoutes(
           epoch: body.epoch,
           turnEpoch: body.turnEpoch,
           ...(text !== undefined ? { text } : {}),
+          ...(actorUserId ? { actorUserId } : {}),
+          manages,
         });
         // Whatever the queue answered, the panel gets the queue as it is now.
         scheduleLiveSessionUpdate(originalKey);
@@ -4177,13 +4229,13 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'Field length exceeded' });
         return;
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, instruct: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       if (await routeTaskAnswer(request, reply, originalKey, { kind: 'single', choiceId })) return;
       try {
         if (_choiceAnswerHandlerFn) {
-          await _choiceAnswerHandlerFn(originalKey, choiceId, label, question);
+          await _choiceAnswerHandlerFn(originalKey, choiceId, label, question, signedInUserId(request));
         } else {
           reply.status(501).send({ error: 'Choice answer handler not configured' });
           return;
@@ -4248,13 +4300,13 @@ export async function registerDashboardRoutes(
           return;
         }
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, instruct: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       if (await routeTaskAnswer(request, reply, originalKey, { kind: 'multi', selections })) return;
       try {
         if (_multiChoiceAnswerHandlerFn) {
-          await _multiChoiceAnswerHandlerFn(originalKey, selections);
+          await _multiChoiceAnswerHandlerFn(originalKey, selections, signedInUserId(request));
         } else {
           reply.status(501).send({ error: 'Multi-choice answer handler not configured' });
           return;
@@ -4407,7 +4459,7 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/submit-recommended',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, instruct: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       if (await routeTaskAnswer(request, reply, originalKey, { kind: 'recommended' })) return;
@@ -4416,7 +4468,7 @@ export async function registerDashboardRoutes(
           reply.status(501).send({ error: 'Submit-recommended handler not configured' });
           return;
         }
-        await _submitRecommendedHandlerFn(originalKey);
+        await _submitRecommendedHandlerFn(originalKey, signedInUserId(request));
         reply.send({ ok: true });
       } catch (error) {
         const errMsg = (error as Error).message || '';
@@ -6041,9 +6093,10 @@ function dhTruncate(field) {
   return (f && typeof f.truncate === 'number') ? f.truncate : null;
 }
 let currentUserId = INIT_USER || '';
-// Displayed + placeholder copy when a non-owner views a session (Korean, like
-// every other reason the page gives). Kept here so wording edits only touch one
-// place: the action buttons, 지금 압축, the subtitle, a question card's lock.
+// Displayed + placeholder copy when the viewer may not act on a session (Korean,
+// like every other reason the page gives): a question card's lock for one who
+// may not instruct it, the subtitle's refusal. The manage controls (the action
+// buttons, 지금 압축) say OWNER_ONLY_MSG (SSOT 2026-11-02).
 const READ_ONLY_MSG = '읽기 전용 — 내 세션이 아닙니다';
 let currentPeriod = 'day';
 let ws = null;
@@ -6056,6 +6109,25 @@ var _panelTasksEarlier = false; // the earlier plans shown under the current one
 let _panelTitleSub = ''; // the subtitle the open panel shows ('' = none yet)
 let _viewerIsAdmin = false; // /auth/me says ADMIN_USERS (or viewer token); UX only, the server re-checks
 let _viewerUserId = ''; // the signed-in user (/auth/me) — not currentUserId, which is the board filter
+
+// Who may do what on a card (SSOT 2026-11-02) — UX only, the server re-checks every write.
+// Mine: the signed-in viewer's — never the board filter's user ('' on the All Users board).
+// Manage (stop · close · trash · star · 살리기 · model · effort · goal · compact): the owner, or an
+// admin with 관리자 모드 on. Instruct (the composer, a question's answer): every signed-in user, as
+// in a Slack thread — the turn runs as them; an epic and its children only from those who manage
+// them (their children start as the owner); a viewer token only a Slack session it manages.
+const OWNER_ONLY_MSG = '소유자나 관리자 모드를 켠 관리자만 할 수 있어요';
+function viewerOwns(s) {
+  return !!(s && s.ownerId) && !!_viewerUserId && s.ownerId === _viewerUserId;
+}
+function viewerCanManage(s) {
+  return viewerOwns(s) || !!(_viewerIsAdmin && _isAdminModeOn());
+}
+function viewerCanInstruct(s) {
+  if (!s) return false;
+  if (s.slackless && (s.kind === 'epic' || s.parentTaskId)) return !!_viewerUserId && viewerCanManage(s);
+  return !!_viewerUserId || (!s.slackless && viewerCanManage(s));
+}
 
 // ── Top bar — @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14) ──
 // The page hands the bar its data — brand, the three page links, the live-update status, the signed-in
@@ -6217,7 +6289,7 @@ var AC_SENT = { approve: '승인을 보냈어요', deny: '거부를 보냈어요
 var AC_SIBLING = '다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요';
 
 function isPermissionRequester(p) {
-  return !!(p && p.requesterId && currentUserId && p.requesterId === currentUserId);
+  return !!(p && p.requesterId && _viewerUserId && p.requesterId === _viewerUserId);
 }
 
 function permissionSummary(s) {
@@ -6227,15 +6299,16 @@ function permissionSummary(s) {
 }
 
 // Who may answer here, as the element's canAnswer: '' (yes) or why not. A
-// prompt: its requester, on this instance. The question: the session's owner,
-// on this instance (as Stop). The server re-checks both.
+// prompt: its requester, on this instance. The question: whoever may instruct
+// the session (viewerCanInstruct — a Slack button answers as its clicker), on
+// this instance. The server re-checks both.
 function acPermissionLock(s, p) {
   if (isSiblingSession(s)) return AC_SIBLING;
   return isPermissionRequester(p) ? '' : '이 요청의 요청자만 응답할 수 있습니다';
 }
 function acQuestionLock(s) {
   if (isSiblingSession(s)) return AC_SIBLING;
-  return s.ownerId && s.ownerId === currentUserId ? '' : READ_ONLY_MSG;
+  return viewerCanInstruct(s) ? '' : READ_ONLY_MSG;
 }
 
 // DashboardPermissionRequest (+ the requester's input, + this page's answer) → the card's data.
@@ -7486,6 +7559,8 @@ function _applyUserPill(data) {
       try { localStorage.removeItem('soma_admin_mode'); } catch(_e) {}
     }
   }
+  // The board may have drawn before the viewer was known: its controls follow the viewer now.
+  repaintViewerControls();
 }
 
 // Admin mode (#716)
@@ -7525,6 +7600,13 @@ function toggleAdminMode() {
   _renderAdminModeButton();
   // The admin approval cards lock and unlock with admin mode.
   if (_adminInboxOpen) paintAdminInbox();
+  repaintViewerControls();
+}
+// Who may do what (viewerCanManage / viewerCanInstruct) changed — the signed-in viewer became known, or
+// 관리자 모드 flipped: the board's cards and the open panel draw their controls again (SSOT 2026-11-02).
+function repaintViewerControls() {
+  if (typeof renderBoardForLayout === 'function') renderBoardForLayout();
+  if (typeof repaintPanelSession === 'function') repaintPanelSession();
 }
 
 // #716: monkey-patch fetch ONCE at boot so every state-mutating request
@@ -7639,7 +7721,7 @@ function sessionAcceptsModel(value) {
 function defaultsScopeSession() {
   if (!panelOpen || !panelSessionKey) return null;
   var s = _sessionCache[panelSessionKey];
-  if (!s || !s.ownerId || s.ownerId !== currentUserId || s.terminated || isSiblingSession(s)) return null;
+  if (!s || !viewerOwns(s) || s.terminated || isSiblingSession(s)) return null;
   return s;
 }
 // <ui-menu id="td-menu"> (A-07): the page hands it the rows — a heading, the options as one radio group (the
@@ -7921,8 +8003,7 @@ function syncUserSelectTitle() {
 }
 
 // 미니멀 hides the board's user picker only on the viewer's own board. Anywhere else — All Users (/dashboard),
-// another user's board — the owner's controls (approve, answer, Stop, the composer) wait until the reader picks
-// themselves, so the picker stays.
+// another user's board — the picker stays (the viewer's own cards are theirs on any board: viewerOwns).
 function syncBoardScope() {
   document.body.toggleAttribute('data-board-mine', !!currentUserId && currentUserId === _viewerUserId);
 }
@@ -10474,9 +10555,9 @@ function writePanelPart(el, html) {
 
 // The composer and the session's follow-up queue — @2lab.ai/ui <ui-agent-steering>
 // (dashboard batch 2) — follow the session, also live (spec 13: the panel's own
-// Close can end the session it shows). Non-owner takes precedence over closed
-// (read-only: the queue shows, nothing can be done — like Stop); fail closed on a
-// missing ownerId. The element keeps the text being typed (an IME composition
+// Close can end the session it shows). Read-only — a viewer who may not instruct
+// it (viewerCanInstruct: nobody signed in, an epic tree's non-manager) — takes
+// precedence over closed (the queue shows, nothing can be done). The element keeps the text being typed (an IME composition
 // too) across every update, so its data is written whenever it changed. It turns
 // its slotted composer off with its field (tools too, a recording discarded); a
 // change of mode away from open also drops the composer's files.
@@ -10505,17 +10586,17 @@ function pcToolsOpen(s, mode) {
   return mode === 'open' && !(s && s.slackless);
 }
 function pcModeOf(s) {
-  var isOwnerPanel = !!s.ownerId && s.ownerId === currentUserId;
   var isClosed = s.terminated || s.sessionState === 'SLEEPING';
-  return !isOwnerPanel ? 'readonly' : (isClosed ? 'closed' : 'open');
+  return !viewerCanInstruct(s) ? 'readonly' : (isClosed ? 'closed' : 'open');
 }
 // The queue's ten states as the element's five: paused → queued (Send now runs
 // it), reserved / claimed / dispatched → sending, uncertain → failed (Retry).
 // Resolved and cancelled notes are history the server does not send.
 var STEER_STATE = { queued: 'queued', paused: 'queued', steered: 'steered', reserved: 'sending', claimed: 'sending', dispatched: 'sending', failed: 'failed', uncertain: 'failed' };
 // The element's data from the session payload (KanbanSession.followups): running
-// while a turn works (Enter then queues for the next step), canAct for the owner
-// only, Edit only where the server offers it. The files of the next message are
+// while a turn works (Enter then queues for the next step), canAct for whoever may
+// instruct (the queue's own rules answer a press — SSOT 2026-11-02), Edit only where
+// the server offers it. The files of the next message are
 // the slotted composer's (a note leaves with them).
 function steeringData(s, mode) {
   var list = (s.followups && s.followups.items) || [];
@@ -10736,7 +10817,7 @@ function cwCanCompact(s) {
   if (s.slackless) return '대시보드 작업에서는 아직 지원하지 않아요';
   var env = s.environment;
   if (isSiblingSession(s)) return STRINGS.siblingLock(env);
-  if (!s.ownerId || s.ownerId !== currentUserId) return READ_ONLY_MSG;
+  if (!viewerCanManage(s)) return OWNER_ONLY_MSG;
   if (s.pendingModel) return '모델 전환이 압축을 기다리는 중';
   if (s.compactPending) return '다음 입력 때 자동 압축됩니다';
   return '';
@@ -10941,9 +11022,8 @@ function renderPanelGoal() {
   if (!el) return;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var col = s ? sessionColOf(panelSessionKey) : '';
-  var isOwner = !!(s && s.ownerId) && s.ownerId === currentUserId;
   var live = !!s && col !== 'closed' && !s.terminated;
-  var canEdit = isOwner && live && !isSiblingSession(s);
+  var canEdit = !!s && viewerCanManage(s) && live && !isSiblingSession(s);
   var g = s ? s.goal : null;
   // Read-only viewers and closed sessions only see a goal list that exists.
   if (!s || !(g || canEdit)) {
@@ -11379,17 +11459,17 @@ function sessionActionsOf(s, col) {
   if (SELF_INSTANCE_NAME && env && env.instanceName && env.instanceName !== SELF_INSTANCE_NAME) {
     return [{ id: kind, label: label + ' \\u2192 ' + env.instanceName, busy: false, sibling: true, lock: STRINGS.siblingLock(env) }];
   }
-  var isOwner = !!s.ownerId && s.ownerId === currentUserId;
-  var lock = isOwner ? '' : READ_ONLY_MSG;
+  var manages = viewerCanManage(s);
+  var lock = manages ? '' : OWNER_ONLY_MSG;
   var lifeBusy = isBusy(s.key, 'life');
   var starred = s.starred === true;
   var closed = col === 'closed' || s.terminated === true || s.sessionState === 'SLEEPING';
   var out = [{ id: 'star', label: starred ? '\\u2605 즐겨찾기' : '\\u2606 즐겨찾기', pressed: starred, lock: lock, busy: lifeBusy,
-    tip: !isOwner ? READ_ONLY_MSG
+    tip: !manages ? OWNER_ONLY_MSG
       : starred ? '즐겨찾기 해제 — 다시 자동 sleep·보관 대상이 돼요'
       : '즐겨찾기 — 항상 맨 위, 자동 sleep·보관 안 함' + (closed ? ' (지금 살려요)' : '') }];
   if (closed) out.push({ id: 'revive', label: '살리기', lock: lock, busy: lifeBusy,
-    tip: isOwner ? '대화를 이어갈 수 있게 세션을 살려요 (작업 폴더 파일은 복구되지 않아요)' : READ_ONLY_MSG });
+    tip: manages ? '대화를 이어갈 수 있게 세션을 살려요 (작업 폴더 파일은 복구되지 않아요)' : OWNER_ONLY_MSG });
   out.push({ id: kind, label: label, lock: lock, busy: isBusy(s.key, 'action') });
   return out;
 }
@@ -11459,10 +11539,10 @@ function cardGoalLine(s, col, canEdit) {
 // face has the star toggle) and its parts after the actions and what asks, per column; no spec — any other
 // caller — is the open card as it was.
 function renderCardBody(s, col, spec) {
-  // Owner gating — server-side requireSessionOwner is the authoritative guard;
-  // this is UX only. Fail closed: if ownerId is missing (legacy record) the
-  // viewer is not treated as owner so the server-side reject is expected.
-  const isOwner = !!s.ownerId && s.ownerId === currentUserId;
+  // Manage gating (viewerCanManage: the owner, or an admin in 관리자 모드) — the
+  // server's requireSessionOwner is the authoritative guard; this is UX only.
+  // Fail closed: a missing ownerId (legacy record) is nobody's.
+  const isOwner = viewerCanManage(s);
   const isSibling = !!(SELF_INSTANCE_NAME && s.environment && s.environment.instanceName && s.environment.instanceName !== SELF_INSTANCE_NAME);
 
   // The open card's quick switch (T4/T5, 10-23 T1; re-model-picker D1): the
@@ -11844,8 +11924,7 @@ function renderPanelControls(s) {
     held = null;
   }
   if (!held) {
-    var isOwner = !!s.ownerId && s.ownerId === currentUserId;
-    var canSwitch = isOwner && !s.terminated && s.sessionState !== 'SLEEPING' && !isSiblingSession(s);
+    var canSwitch = viewerCanManage(s) && !s.terminated && s.sessionState !== 'SLEEPING' && !isSiblingSession(s);
     var modelShort = esc(s.model || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
     var html = '<span class="pc-scope">이 세션</span>'
       + renderModelPicker(s, canSwitch, modelShort, 'panel')
@@ -12843,7 +12922,7 @@ function renderMultiChoiceCard(s, faceSummary) {
     if (answers[q.questions[i].id]) answered++;
   }
   var progressText = answered + '/' + total + ' \\uC644\\uB8CC';
-  var primary = s.ownerId && s.ownerId === currentUserId && !isSiblingSession(s);
+  var primary = viewerCanInstruct(s) && !isSiblingSession(s);
   return '<div class="card-question">'
     + ((q.title || q.question) && (q.title || q.question) === faceSummary ? '' : '<div class="card-question-text">' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>')
     + '<div class="card-question-multi">' + total + '\\uAC1C \\uC9C8\\uBB38 \\u00B7 ' + progressText + '</div>'
