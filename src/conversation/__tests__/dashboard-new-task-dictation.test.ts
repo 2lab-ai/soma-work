@@ -1293,6 +1293,49 @@ describe('SSOT_5 — Samsung Internet and Chrome on a Galaxy: the first press li
       expect(env.composer.value).toBe('나가기 전 말');
     }
   });
+  it('desktop Chrome keeps listening in a background tab: a session that ends there restarts; its errors are its own (fable R2 P2)', async () => {
+    const Rec = recClass('unavailable');
+    const { api, env } = page({ engine: Rec, ua: UA.chromeMac });
+    await api.ntDictateStart();
+    const rec = FakeRec.made[0];
+    rec.say([final('긴 지시 앞부분')]);
+    api.__peek('document.visibilityState = "hidden"'); // the person reads a spec in another tab
+    rec.end(); // Chrome ends the session by itself after a while
+    expect(rec.starts).toBe(2);
+    rec.say([interim('뒷부분')]);
+    expect(env.composer.value).toBe('긴 지시 앞부분 뒷부분');
+    rec.onerror?.({ error: 'network' });
+    rec.end();
+    expect(env.errorLine.textContent).toContain('연결');
+    // Aborted by the browser while hidden: that one stops quietly.
+    const Rec2 = recClass('unavailable');
+    const p2 = page({ engine: Rec2, ua: UA.chromeMac });
+    await p2.api.ntDictateStart();
+    p2.api.__peek('document.visibilityState = "hidden"');
+    FakeRec.made[0].onerror?.({ error: 'aborted' });
+    FakeRec.made[0].end();
+    expect(FakeRec.made[0].starts).toBe(1);
+    expect(last(p2.env.statuses)).toContain('다시 누르면 이어서');
+  });
+  it('a soft stop in the moment before Android’s retry lets go at once (no session to settle)', async () => {
+    vi.useFakeTimers();
+    try {
+      const Rec = recClass(null);
+      const { api } = page({ engine: Rec, ua: UA.samsung });
+      await api.ntDictateStart();
+      const rec = FakeRec.made[0];
+      rec.say([final('첫 문장')]);
+      rec.end();
+      rec.onerror?.({ error: 'not-allowed' }); // busy: the retry waits 400 ms
+      rec.end();
+      api.ntOnComposerTool({ detail: { id: 'dictate', pressed: false } });
+      expect(api.__peek('_ntDictation')).toBeNull();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(rec.starts).toBe(2); // the retry did not start after the stop
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('a manual press while a voice note records: it says so and leaves the microphone to the voice note', async () => {
     const Rec = recClass(null);
     const { api, env } = page({ engine: Rec, ua: UA.samsung });
