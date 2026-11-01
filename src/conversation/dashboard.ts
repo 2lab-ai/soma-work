@@ -18287,6 +18287,10 @@ function ntDictationDeadText(kind, android) {
   var fix = android
     ? '설정 › 애플리케이션에서 ‘Google 음성 인식 및 합성’을 켜거나 업데이트하고, 안 되면 Chrome에서 열어 주세요'
     : '다른 브라우저(Chrome·Safari)에서 열어 주세요';
+  // Sound heard, no words, on Android: measured when the phone's speech app has no Korean pack ("Failed to get language
+  // pack of required locale") — the words say to download it first.
+  if (kind === 'mute' && android)
+    return '말소리는 들렸지만 글자로 바뀐 것이 없어 멈췄습니다 — 계속 이러면 ‘Google 음성 인식 및 합성’ 설정에서 한국어 음성 인식 언어를 내려받고(앱 업데이트), 안 되면 Chrome에서 열어 주세요';
   if (kind === 'mute') return '말소리는 들렸지만 글자로 바뀐 것이 없어 멈췄습니다 — 계속 이러면 ' + fix;
   return '이 브라우저의 음성 인식이 마이크를 열지 못했습니다 — ' + fix;
 }
