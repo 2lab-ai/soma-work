@@ -70,6 +70,7 @@ export interface ConversationSession {
   contextAnchor?: string;
   pendingRewind?: import('../context-anchor').PendingRewind;
   contextRewinds?: import('../context-anchor').ContextRewindRecord[];
+  rewindRedo?: Array<import('../context-anchor').PendingRewind | null>;
   /** What the whole task spent (persisted, never reset) — see `creditTaskSpend`. */
   taskUsage?: TaskUsage;
   /** #772 — the display language the model was last told (`<display-lang>`). Runtime-only. */

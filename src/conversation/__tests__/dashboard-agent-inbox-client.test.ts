@@ -3250,6 +3250,9 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         panelSessionKey: null,
         panelConvId: null,
         _panelTasksExpanded: false,
+        // 되돌리기 모드 belongs to the session it was turned on for (off here).
+        _rb: null,
+        _rbPick: null,
         resetWorkLog: () => {},
         renderPanelTasks: () => {},
         // Task view: openPanel resets the composer's attachments and the sections
