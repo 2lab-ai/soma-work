@@ -576,7 +576,7 @@ describe('#351 goal sessions: the retry belongs to whoever actually claims the s
     handler.setGoalTurnSettledHandler(settled);
 
     expect(handler.resumeActiveGoals()).toBe(1);
-    expect(settled).toHaveBeenCalledWith('k1');
+    expect(settled).toHaveBeenCalledWith('k1', { cause: 'kick' });
     expect(session.pendingRetryAt).toBeUndefined();
     expect(session.pendingRetrySessionId).toBeUndefined();
     expect(claudeHandler.saveSessions).toHaveBeenCalledTimes(1);

@@ -1,5 +1,7 @@
 // Session types live in somalib (shared with mcp-servers).
 // Re-export for backward compatibility — all src/ files import from './types'.
+import type { SessionGoalStall } from '@soma/slack/session-goal';
+
 export type {
   Continuation,
   HandoffContext,
@@ -215,6 +217,9 @@ export interface SessionGoalPendingEval {
   turnId: string;
 }
 
+// Goal stall round — one definition, in the package the queue helpers live in.
+export type { SessionGoalStall };
+
 export interface SessionGoal {
   /**
    * Stable identity for this goal, independent of `createdAt` (which can
@@ -299,6 +304,19 @@ export interface SessionGoal {
    * eval cycle starts) or when the user resets the goal.
    */
   lastEvalReason?: string;
+  /**
+   * The `remaining` list of the same verdict as `lastEvalReason`. Sent back to
+   * the evaluator with the reason so it can tell whether the next failure is
+   * the same one (goal stall).
+   */
+  lastEvalRemaining?: string[];
+  /**
+   * Open while the loop is stopped because the evaluator judged the goal
+   * failed again for the same reason (≥ `GOAL_STALL_MIN_CONFIDENCE`). The
+   * driver runs no eval and injects no continuation until a real user message
+   * (the answer to the stall question, or anything typed) clears it.
+   */
+  stall?: SessionGoalStall;
   /** Counts how many eval cycles have run for this goal. */
   evalAttemptCount?: number;
   /**
