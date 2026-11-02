@@ -566,20 +566,22 @@ export class SummaryService {
    * Trace: S3, Section 3c
    */
   displayOnThread(session: SummarySessionInfo, summaryText: string): void {
+    // The surface is the channel-visible thread root, so it carries only the
+    // TL;DR. The full ES goes inside the thread via `postInThread`.
+    const { tldr, tldrSource } = parseExecutiveSummary(summaryText);
+    // The dashboard's task card shows the same lines (SSOT 2026-11-02 T7) — a task with no
+    // Slack thread (a dashboard task) included, so this comes before the thread-head guard.
+    if (tldr.length > 0) session.executiveSummary = { tldr, at: Date.now() };
+    else session.executiveSummary = undefined;
+
     if (!session.actionPanel) {
       logger.warn('Cannot display summary — no actionPanel on session');
       return;
     }
 
-    // The surface is the channel-visible thread root, so it carries only the
-    // TL;DR. The full ES goes inside the thread via `postInThread`.
-    const { tldr, tldrSource } = parseExecutiveSummary(summaryText);
     const summaryBlocks = this.buildTldrBlocks(tldr);
     session.actionPanel.summaryBlocks = summaryBlocks;
     session.lastSummaryMode = selectExecutiveSummaryMode(session);
-    // The dashboard's task card shows the same lines (SSOT 2026-11-02 T7).
-    if (tldr.length > 0) session.executiveSummary = { tldr, at: Date.now() };
-    else session.executiveSummary = undefined;
 
     if (tldrSource === 'missing') {
       logger.warn('Executive Summary has no <tldr> envelope — surface shows the pointer line', {

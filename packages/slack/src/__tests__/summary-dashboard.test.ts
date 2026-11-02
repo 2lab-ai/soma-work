@@ -54,6 +54,12 @@ describe('T7 — the session holds the TL;DR the thread head shows', () => {
     expect(s.executiveSummary.at).toBeGreaterThanOrEqual(before);
   });
 
+  it('a task with no Slack thread (a dashboard task) still gets the TL;DR for its card (review: fable P3)', () => {
+    const s = { ...session(), actionPanel: undefined };
+    new SummaryService(vi.fn()).displayOnThread(s, ES);
+    expect(s.executiveSummary.tldr).toHaveLength(3);
+  });
+
   it('no TL;DR envelope: nothing for the card (the chat still gets the document)', () => {
     const s = session();
     new SummaryService(vi.fn()).displayOnThread(s, ES.slice(ES.indexOf('## SSOT')));
@@ -105,6 +111,17 @@ describe('T7 — the dashboard chat gets the whole summary', () => {
     expect(seen).toEqual([{ sessionKey: 'C1:1700.0', conversationId: 'conv-1', text: ES }]);
     // The session already holds the TL;DR when the host is told (it pushes the card).
     expect(s.executiveSummary.tldr).toHaveLength(3);
+  });
+
+  it('a failed thread update never keeps the summary from the dashboard (review: fable P3)', async () => {
+    const seen = vi.fn();
+    setStreamExecutorProviders({ recordExecutiveSummary: seen });
+    const executor = new StreamExecutor({
+      summaryService: new SummaryService(vi.fn().mockResolvedValue(ES)),
+      threadPanel: { updatePanel: vi.fn().mockRejectedValue(new Error('slack down')) },
+    } as any);
+    await (executor as any).onSummaryTimerFire(session(), 'C1:1700.0');
+    expect(seen).toHaveBeenCalledWith('C1:1700.0', 'conv-1', ES);
   });
 
   it('no summary (the fork failed): nothing is handed over', async () => {

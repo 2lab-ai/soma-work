@@ -168,6 +168,16 @@ describe('T1 — the recorded instruction takes the optimistic one’s place, ho
     expect(list.map((t) => t.id)).toEqual([first.id, `optimistic-${T0}`]);
   });
 
+  it('no words, no match: an attachment-only send is never confirmed by another empty turn (review: grok P1)', () => {
+    const list: Turn[] = [optimistic('')];
+    const r = wsRig(list);
+    r.push(recorded('', T0 + 1_000, { id: 'empty-other' }));
+    expect(list.map((t) => t.id)).toEqual([`optimistic-${T0}`, 'empty-other']);
+    const m = load<Pure>(PURE);
+    const merged = m.ptMergeFetched([recorded('', T0 + 2_000, { id: 'empty-page' })], [optimistic('')]);
+    expect(merged.map((t) => t.id)).toEqual(['empty-page', `optimistic-${T0}`]);
+  });
+
   it('two sends in a row: each recorded turn takes its own', () => {
     const list: Turn[] = [optimistic('하나', T0, 'optimistic-1'), optimistic('둘', T0 + 500, 'optimistic-2')];
     const r = wsRig(list);
@@ -221,5 +231,6 @@ describe('T1 — a page fetched while the instruction was out drops the optimist
     expect(TEMPLATE).toContain('_panelTurnsList = ptMergeFetched(turns, _panelTurnsList)');
     // The page carries who sent a user turn, so the page path can check the sender too.
     expect(DASHBOARD_TS).toContain("userId: t.role === 'user' ? t.userId : undefined,");
+    expect(DASHBOARD_TS).toContain('executiveSummary: t.executiveSummary ? true : undefined,');
   });
 });
