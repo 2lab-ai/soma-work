@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { displayLangOf, runWithDisplayLang } from '@soma/common/i18n';
 import { Logger, redactAnthropicSecrets } from '@soma/common/logger';
 import {
   boundRateLimitDelayMs,
@@ -101,6 +102,7 @@ import { UserChoiceHandler } from '../user-choice-handler';
 import type { TurnAttachment } from '../user-media';
 import type { WorkLogInput } from '../work-log';
 import { decideBackgroundWaitContinuation, getBackgroundWaitCap } from './background-wait';
+import { appendDisplayLangTag } from './display-lang-tag';
 import { shouldForwardAsLocalSlashCommand } from './local-slash-command';
 import { SESSION_TITLE_PENDING_NOTICE, shouldInjectSessionTitleNotice } from './session-title-notice';
 import { cleanupWithTimeout, DEFAULT_CLEANUP_TIMEOUT_MS, runWithTimeout } from './stream-executor-cleanup-helpers';
@@ -1196,9 +1198,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   }
 
   /**
-   * 스트림 실행
+   * 스트림 실행 — in the turn user's display language (#774): a turn started
+   * from a timer (goal continuation, cron, a dashboard task) has no Slack
+   * event around it, so its posts are told the language here.
    */
   async execute(params: StreamExecuteParams): Promise<ExecuteResult> {
+    const lang = displayLangOf(userSettingsStore.getUserDisplayLanguage?.(params.user));
+    return runWithDisplayLang(lang, () => this.executeTurn(params));
+  }
+
+  private async executeTurn(params: StreamExecuteParams): Promise<ExecuteResult> {
     const {
       session,
       sessionKey,
@@ -1666,6 +1675,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           title: session.title,
           noticeCount: session.titleNoticeCount,
         });
+      }
+
+      // #772 — the user's display language at the very bottom of the session's
+      // first instruction, and again once they change it. Never on an SDK local
+      // slash command: the prompt must stay exactly the command.
+      if (!isSlashCommand) {
+        const tagged = appendDisplayLangTag(
+          finalPrompt,
+          session.displayLangSent,
+          displayLangOf(userSettingsStore.getUserDisplayLanguage?.(user)),
+        );
+        finalPrompt = tagged.prompt;
+        session.displayLangSent = tagged.sent;
       }
 
       // Record user turn (fire-and-forget, non-blocking). A files-only message
