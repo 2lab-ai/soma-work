@@ -541,6 +541,7 @@ export class ClaudeHandler implements TurnSteeringPort {
         matchedRuleIds: req.ruleIds,
         model: this.sessionRegistry.getSessionByKey(req.scope)?.model,
         classifier: this.getSafetyClassifier(),
+        ...(req.signal ? { signal: req.signal } : {}),
       }),
     );
   }

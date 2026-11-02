@@ -76,9 +76,12 @@ describe('second confirmation (T4)', () => {
     expect(recordConversationWorkLog).not.toHaveBeenCalled();
   });
 
-  it('runs it on approve_confirmed — and does not silence any rule', async () => {
+  it('runs it on approve_confirmed after the first ask — and does not silence any rule', async () => {
     const id = await seed({ advice: DENY });
     const reg = sessions();
+    expect(
+      await answerPermissionPrompt({ approvalId: id, actor: 'U_REQ', decision: 'approve', sessions: reg }),
+    ).toMatchObject({ ok: false, reason: 'confirm_required' });
     const result = await answerPermissionPrompt({
       approvalId: id,
       actor: 'U_REQ',
@@ -89,6 +92,25 @@ describe('second confirmation (T4)', () => {
     const stored = await sharedStore.waitForPermissionResponse(id, 1500);
     expect(stored.behavior).toBe('allow');
     expect(reg.disableDangerousRules).not.toHaveBeenCalled();
+  });
+
+  // Review R1 (astra P1): the second answer must follow a first ask the server made — an approve_confirmed sent
+  // straight away is itself only the first answer.
+  it('an approve_confirmed with no first ask is refused like a first approve, then the next one runs', async () => {
+    const id = await seed({ advice: DENY });
+    const first = await answerPermissionPrompt({ approvalId: id, actor: 'U_REQ', decision: 'approve_confirmed' });
+    expect(first).toEqual({ ok: false, reason: 'confirm_required', advice: DENY });
+    expect(await sharedStore.getPendingApproval(id)).not.toBeNull();
+    const second = await answerPermissionPrompt({ approvalId: id, actor: 'U_REQ', decision: 'approve_confirmed' });
+    expect(second.ok).toBe(true);
+  });
+
+  it("the first ask is the asker's: another user's refused attempt does not count, and a deny ends it", async () => {
+    const id = await seed({ advice: DENY });
+    await answerPermissionPrompt({ approvalId: id, actor: 'U_OTHER', decision: 'approve' });
+    expect(
+      await answerPermissionPrompt({ approvalId: id, actor: 'U_REQ', decision: 'approve_confirmed' }),
+    ).toMatchObject({ ok: false, reason: 'confirm_required' });
   });
 
   it('a deny on a red prompt needs no second answer', async () => {
@@ -130,6 +152,7 @@ describe('the answer in the work log (T1)', () => {
 
   it('records a confirmed approve against the AI advice, saying so', async () => {
     const id = await seed({ advice: DENY });
+    await answerPermissionPrompt({ approvalId: id, actor: 'U_REQ', decision: 'approve', sessions: sessions() });
     await answerPermissionPrompt({
       approvalId: id,
       actor: 'U_REQ',

@@ -26,6 +26,7 @@
  */
 
 import { recordConversationWorkLog } from '@soma/slack/pipeline/stream-executor';
+import { WORK_LOG_PERMISSION_DECISIONS } from '@soma/slack/work-log';
 import {
   PERMISSION_PROMPT_KIND,
   type PendingApproval,
@@ -34,15 +35,10 @@ import {
   sharedStore,
 } from 'somalib/permission/shared-store';
 
-export type PermissionPromptDecision = 'approve' | 'deny' | 'explain' | 'approve_disable_rule' | 'approve_confirmed';
+/** The answers a permission prompt takes — one list, shared with the work log entry that records them. */
+export type PermissionPromptDecision = (typeof WORK_LOG_PERMISSION_DECISIONS)[number];
 
-export const PERMISSION_PROMPT_DECISIONS: readonly PermissionPromptDecision[] = [
-  'approve',
-  'deny',
-  'explain',
-  'approve_disable_rule',
-  'approve_confirmed',
-];
+export const PERMISSION_PROMPT_DECISIONS: readonly PermissionPromptDecision[] = WORK_LOG_PERMISSION_DECISIONS;
 
 export function isPermissionPromptDecision(value: unknown): value is PermissionPromptDecision {
   return typeof value === 'string' && (PERMISSION_PROMPT_DECISIONS as readonly string[]).includes(value);
@@ -93,9 +89,35 @@ export type PermissionPromptAnswer =
   /** The AI advised against the call: ask the requester again, then answer `approve_confirmed`. */
   | { ok: false; reason: 'confirm_required'; advice: PermissionAdvice };
 
-/** An approve of a prompt the AI advised against must be confirmed a second time. */
-function needsSecondConfirmation(pending: PendingApproval, decision: PermissionPromptDecision): boolean {
-  return pending.advice?.recommendation === 'deny' && (decision === 'approve' || decision === 'approve_disable_rule');
+/**
+ * The first asks this process made (approval id → who was asked, when). The second confirmation of a prompt the
+ * AI advised against is honoured only after the server itself answered `confirm_required` to that requester
+ * (review R1, astra P1): an `approve_confirmed` sent straight away is only the first answer. The Slack buttons
+ * and the dashboard both answer in this process; a restart drops the record and the requester is asked again.
+ */
+const firstAsks = new Map<string, { actor: string; at: number }>();
+/** A first ask older than the prompt's own lifetime has no prompt left to confirm. */
+const FIRST_ASK_TTL_MS = 10 * 60 * 1000;
+
+function pruneFirstAsks(now: number): void {
+  for (const [id, ask] of firstAsks) if (now - ask.at > FIRST_ASK_TTL_MS) firstAsks.delete(id);
+}
+
+/**
+ * An approve of a prompt the AI advised against must be confirmed a second time: a plain approve always asks;
+ * an `approve_confirmed` asks too unless this requester was already asked.
+ */
+function needsSecondConfirmation(
+  pending: PendingApproval,
+  decision: PermissionPromptDecision,
+  approvalId: string,
+  actor: string,
+): boolean {
+  if (pending.advice?.recommendation !== 'deny') return false;
+  if (decision === 'approve' || decision === 'approve_disable_rule') return true;
+  if (decision !== 'approve_confirmed') return false;
+  const ask = firstAsks.get(approvalId);
+  return !ask || ask.actor !== actor || Date.now() - ask.at > FIRST_ASK_TTL_MS;
 }
 
 /** A permission prompt record that is still pending, or null. */
@@ -143,11 +165,16 @@ export async function answerPermissionPrompt(args: AnswerPermissionPromptArgs): 
     return { ok: false, reason: 'not_requester', requester: pending.user };
   }
   // Before the claim: the prompt stays open for the confirmed answer.
-  if (needsSecondConfirmation(pending, decision) && pending.advice) {
+  if (pending.advice && needsSecondConfirmation(pending, decision, approvalId, actor)) {
+    const now = Date.now();
+    pruneFirstAsks(now);
+    firstAsks.set(approvalId, { actor, at: now });
     return { ok: false, reason: 'confirm_required', advice: pending.advice };
   }
 
   if (!(await sharedStore.claimPermissionResponse(approvalId))) return { ok: false, reason: 'already_answered' };
+  // Claimed: this prompt gets no further answer, so its first ask is spent.
+  firstAsks.delete(approvalId);
   // The MCP server may have timed out between the load and the claim. The
   // claim stays, so nobody else answers it either.
   if (!(await sharedStore.getPendingApproval(approvalId))) return { ok: false, reason: 'not_found' };

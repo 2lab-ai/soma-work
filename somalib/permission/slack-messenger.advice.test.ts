@@ -77,6 +77,21 @@ describe('buildRequestBlocks — AI advice', () => {
     expect(all).not.toContain('🔴');
   });
 
+  // Review R1 (astra P1): model text never goes through mrkdwn — it cannot strike out, bold, link or mention.
+  it('shows the model text as plain_text, so mrkdwn in it is inert', () => {
+    const { m } = messenger();
+    const blocks = m.buildRequestBlocks('Bash', { command: 'x' }, 'approval_7', 'U1', [], {
+      recommendation: 'deny',
+      summary: '~실행하지 마세요~ *APPROVE*',
+      risk: '<https://evil.test|ok>',
+    });
+    const modelBlocks = blocks.filter(
+      (b) => JSON.stringify(b).includes('APPROVE') || JSON.stringify(b).includes('evil.test'),
+    );
+    expect(modelBlocks.length).toBeGreaterThan(0);
+    for (const b of modelBlocks) expect(b.text.type).toBe('plain_text');
+  });
+
   it('escapes the advice so it cannot mention or link anyone', () => {
     const { m } = messenger();
     const blocks = m.buildRequestBlocks('Bash', { command: 'x' }, 'approval_4', 'U1', [], {
@@ -84,10 +99,10 @@ describe('buildRequestBlocks — AI advice', () => {
       summary: '<!channel> ping & <https://evil.test|click>',
       risk: '<@U999>',
     });
-    const all = text(blocks);
-    expect(all).not.toContain('<!channel>');
-    expect(all).not.toContain('<@U999>');
-    expect(all).toContain('&lt;!channel&gt;');
+    // plain_text: Slack shows the characters as written and never resolves a mention or link in them.
+    const model = blocks.filter((b) => JSON.stringify(b).includes('U999') || JSON.stringify(b).includes('channel>'));
+    expect(model.length).toBeGreaterThan(0);
+    for (const b of model) expect(b.text.type).toBe('plain_text');
   });
 });
 

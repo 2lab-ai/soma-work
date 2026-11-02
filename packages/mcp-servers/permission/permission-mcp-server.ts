@@ -34,6 +34,8 @@ export interface PermissionAdviceRequest {
   input: unknown;
   /** Overridable dangerous-rule ids the call matched (Bash only). */
   ruleIds: string[];
+  /** The turn's abort: stops the advisor (and its guardian call) when the turn stops. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -143,7 +145,12 @@ class PermissionMCPServer extends BaseMcpServer {
 
     // SSOT 2026-11-02 T2 — the AI's advice, asked before the prompt exists, so
     // the record (the dashboard's copy) and the card carry the same advice.
-    const advice = await this.adviceFor({ toolName: tool_name, input, ruleIds });
+    const advice = await this.adviceFor({
+      toolName: tool_name,
+      input,
+      ruleIds,
+      ...(context.signal ? { signal: context.signal } : {}),
+    });
     // The turn may have stopped while the guardian thought: raise no prompt nobody waits for.
     if (context.signal?.aborted) throw new Error('Permission request aborted before it was raised');
     const blocks = this.messenger.buildRequestBlocks(tool_name, input, approvalId, user, overridableRules, advice);

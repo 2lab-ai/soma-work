@@ -29,7 +29,10 @@ export const ADVICE_TIMEOUT_MS = 30_000;
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'undefined';
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  const keys = Object.keys(value as Record<string, unknown>).sort();
+  // Keys whose value is undefined are dropped, as JSON drops them (the prompt's input crossed a JSON boundary).
+  const keys = Object.keys(value as Record<string, unknown>)
+    .filter((k) => (value as Record<string, unknown>)[k] !== undefined)
+    .sort();
   return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`).join(',')}}`;
 }
 
@@ -38,7 +41,9 @@ function adviceKey(scope: string, toolName: string, input: unknown): string {
 }
 
 export class PermissionAdviceBoard {
-  private readonly entries = new Map<string, { advice: PermissionAdvice | null; at: number }>();
+  /** Per call key, oldest first: two identical calls escalated at once each keep their own advice. */
+  private readonly entries = new Map<string, Array<{ advice: PermissionAdvice | null; at: number }>>();
+  private size = 0;
   private readonly ttlMs: number;
   private readonly now: () => number;
 
@@ -50,23 +55,36 @@ export class PermissionAdviceBoard {
   /** Leave the guardian's advice (null = it gave none) for the prompt of this call. */
   put(scope: string, toolName: string, input: unknown, advice: PermissionAdvice | null): void {
     const key = adviceKey(scope, toolName, input);
+    const queue = this.entries.get(key) ?? [];
+    // Re-inserted at the end, so the Map's order stays oldest-touched first.
     this.entries.delete(key);
-    this.entries.set(key, { advice, at: this.now() });
-    while (this.entries.size > ADVICE_MAX_ENTRIES) {
+    queue.push({ advice, at: this.now() });
+    this.entries.set(key, queue);
+    this.size += 1;
+    while (this.size > ADVICE_MAX_ENTRIES) {
       const oldest = this.entries.keys().next().value;
       if (oldest === undefined) break;
+      this.size -= this.entries.get(oldest)?.length ?? 0;
       this.entries.delete(oldest);
     }
   }
 
-  /** The advice left for this call, once; undefined when none was left (or it is too old). */
+  /** The oldest advice left for this call, once; undefined when none was left (or it is too old). */
   take(scope: string, toolName: string, input: unknown): { advice: PermissionAdvice | null } | undefined {
     const key = adviceKey(scope, toolName, input);
-    const hit = this.entries.get(key);
-    if (!hit) return undefined;
+    const queue = this.entries.get(key);
+    if (!queue) return undefined;
+    const now = this.now();
+    while (queue.length > 0) {
+      const hit = queue.shift() as { advice: PermissionAdvice | null; at: number };
+      this.size -= 1;
+      if (now - hit.at <= this.ttlMs) {
+        if (queue.length === 0) this.entries.delete(key);
+        return { advice: hit.advice };
+      }
+    }
     this.entries.delete(key);
-    if (this.now() - hit.at > this.ttlMs) return undefined;
-    return { advice: hit.advice };
+    return undefined;
   }
 }
 
@@ -87,6 +105,8 @@ export interface ResolvePermissionAdviceArgs {
   matchedRuleIds?: readonly string[];
   classifier?: SafetyClassifier;
   timeoutMs?: number;
+  /** The turn's abort: ends the wait and the guardian call at once. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -99,13 +119,26 @@ export async function resolvePermissionAdvice(args: ResolvePermissionAdviceArgs)
   if (!args.classifier) return null;
   const input = (args.input && typeof args.input === 'object' ? args.input : {}) as Record<string, unknown>;
   const command = args.toolName === 'Bash' && typeof input.command === 'string' ? input.command : '';
+  // The limit — or the turn stopping — ends the guardian call too (its dispatch is aborted), not only this wait.
+  const abort = new AbortController();
   let timer: NodeJS.Timeout | undefined;
+  let onTurnAbort: (() => void) | undefined;
   const timeout = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), args.timeoutMs ?? ADVICE_TIMEOUT_MS);
+    const stop = () => {
+      abort.abort();
+      resolve(null);
+    };
+    timer = setTimeout(stop, args.timeoutMs ?? ADVICE_TIMEOUT_MS);
+    if (args.signal?.aborted) stop();
+    else if (args.signal) {
+      onTurnAbort = stop;
+      args.signal.addEventListener('abort', stop, { once: true });
+    }
   });
   try {
     const verdict = args.classifier
       .classify({
+        signal: abort.signal,
         toolName: args.toolName,
         command,
         toolInput: input,
@@ -119,5 +152,6 @@ export async function resolvePermissionAdvice(args: ResolvePermissionAdviceArgs)
     return await Promise.race([verdict, timeout]);
   } finally {
     if (timer) clearTimeout(timer);
+    if (onTurnAbort) args.signal?.removeEventListener('abort', onTurnAbort);
   }
 }

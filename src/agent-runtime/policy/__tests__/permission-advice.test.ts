@@ -28,12 +28,28 @@ describe('PermissionAdviceBoard', () => {
     expect(board.take('S1', 'Bash', { command: 'rm -rf ./build', description: 'clean' })).toBeUndefined();
   });
 
+  it('matches an input whose undefined keys were dropped on the way (JSON drops them)', () => {
+    const board = new PermissionAdviceBoard();
+    board.put('S1', 'Bash', { command: 'a', timeout: undefined }, DENY);
+    expect(board.take('S1', 'Bash', { command: 'a' })).toEqual({ advice: DENY });
+  });
+
   it('keeps sessions, tools and inputs apart', () => {
     const board = new PermissionAdviceBoard();
     board.put('S1', 'Bash', { command: 'a' }, DENY);
     expect(board.take('S2', 'Bash', { command: 'a' })).toBeUndefined();
     expect(board.take('S1', 'Write', { command: 'a' })).toBeUndefined();
     expect(board.take('S1', 'Bash', { command: 'b' })).toBeUndefined();
+  });
+
+  // Review R1 (fable P3): two identical calls escalated at once each keep their own advice, oldest first.
+  it('keeps two identical escalations apart, oldest first', () => {
+    const board = new PermissionAdviceBoard();
+    board.put('S1', 'Bash', { command: 'a' }, DENY);
+    board.put('S1', 'Bash', { command: 'a' }, APPROVE);
+    expect(board.take('S1', 'Bash', { command: 'a' })).toEqual({ advice: DENY });
+    expect(board.take('S1', 'Bash', { command: 'a' })).toEqual({ advice: APPROVE });
+    expect(board.take('S1', 'Bash', { command: 'a' })).toBeUndefined();
   });
 
   it('remembers that the guardian gave no advice, so the prompt does not ask again', () => {
@@ -83,6 +99,43 @@ describe('resolvePermissionAdvice', () => {
     const started = Date.now();
     expect(await resolvePermissionAdvice({ ...base, board, classifier: c, timeoutMs: 50 })).toBeNull();
     expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  // Review R1 (astra P2): the limit stops the guardian call too, not only the wait.
+  it('aborts the guardian call when the limit is reached', async () => {
+    let signal: AbortSignal | undefined;
+    const c = {
+      classify: vi.fn((req: { signal?: AbortSignal }) => {
+        signal = req.signal;
+        return new Promise(() => {});
+      }),
+    } as unknown as SafetyClassifier;
+    await resolvePermissionAdvice({ ...base, board: new PermissionAdviceBoard(), classifier: c, timeoutMs: 30 });
+    expect(signal?.aborted).toBe(true);
+  });
+
+  // Review R1 (fable P2): the turn stopping ends the wait and the guardian call at once.
+  it('stops at once, aborting the guardian call, when the turn is aborted', async () => {
+    let signal: AbortSignal | undefined;
+    const c = {
+      classify: vi.fn((req: { signal?: AbortSignal }) => {
+        signal = req.signal;
+        return new Promise(() => {});
+      }),
+    } as unknown as SafetyClassifier;
+    const turn = new AbortController();
+    const started = Date.now();
+    const pending = resolvePermissionAdvice({
+      ...base,
+      board: new PermissionAdviceBoard(),
+      classifier: c,
+      timeoutMs: 60_000,
+      signal: turn.signal,
+    });
+    turn.abort();
+    expect(await pending).toBeNull();
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(signal?.aborted).toBe(true);
   });
 
   it('gives no advice with no guardian wired', async () => {
