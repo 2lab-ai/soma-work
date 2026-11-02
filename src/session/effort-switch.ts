@@ -9,21 +9,27 @@
  * next turn.
  */
 
-import { SDK_EFFORT_LEVELS, type SdkEffortLevel } from 'soma-lib';
+import { EFFORT_LEVELS, type EffortLevel, SDK_EFFORT_LEVELS } from 'soma-lib';
 import type { ConversationSession } from '../types';
 
 export interface EffortSwitchDeps {
   getSession(sessionKey: string): ConversationSession | undefined;
   /** What the model actually runs for `effort` (`clampEffortToModel`). */
   clamp(model: string, effort: string): string;
+  /**
+   * The levels `model` runs, or undefined when nothing is known (then the SDK
+   * levels). A level outside it is refused (400): the dashboard offers only
+   * the model's levels, so a pick outside them is stale or forged.
+   */
+  menu?(model: string): readonly string[] | undefined;
   save(): void;
   broadcast(): void;
 }
 
 export interface EffortSwitchResult {
   status: 'switched' | 'unchanged';
-  effort: SdkEffortLevel;
-  previous: SdkEffortLevel | undefined;
+  effort: EffortLevel;
+  previous: EffortLevel | undefined;
   /** The level the session's model runs — differs from `effort` when the model caps it. */
   effective: string;
 }
@@ -39,20 +45,29 @@ export class EffortSwitchError extends Error {
 }
 
 /** Normalize an effort input the way the Slack resolver does; null when unknown. */
-export function parseEffortLevel(input: unknown): SdkEffortLevel | null {
+export function parseEffortLevel(input: unknown): EffortLevel | null {
   if (typeof input !== 'string') return null;
   const normalized = input.toLowerCase().trim();
-  return (SDK_EFFORT_LEVELS as readonly string[]).includes(normalized) ? (normalized as SdkEffortLevel) : null;
+  return (EFFORT_LEVELS as readonly string[]).includes(normalized) ? (normalized as EffortLevel) : null;
 }
 
 export function switchSessionEffort(sessionKey: string, input: unknown, deps: EffortSwitchDeps): EffortSwitchResult {
   const effort = parseEffortLevel(input);
   if (!effort) {
-    throw new EffortSwitchError(400, `effort는 ${SDK_EFFORT_LEVELS.join(', ')} 중 하나여야 합니다`);
+    throw new EffortSwitchError(400, `effort는 ${EFFORT_LEVELS.join(', ')} 중 하나여야 합니다`);
   }
   const session = deps.getSession(sessionKey);
   if (!session) throw new EffortSwitchError(404, 'Session not found');
   if (session.terminated) throw new EffortSwitchError(409, '종료된 세션은 effort를 바꿀 수 없습니다');
+
+  // The levels the session's model runs; without a menu, the SDK levels (never `ultra`).
+  const menu = (session.model && deps.menu?.(session.model)) || SDK_EFFORT_LEVELS;
+  if (!menu.includes(effort)) {
+    throw new EffortSwitchError(
+      400,
+      `이 세션의 모델은 effort ${effort}를 지원하지 않습니다 — ${menu.join(', ')} 중 하나`,
+    );
+  }
 
   const previous = session.effort;
   const effective = session.model ? deps.clamp(session.model, effort) : effort;

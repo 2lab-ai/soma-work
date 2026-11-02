@@ -343,3 +343,59 @@ describe('a switch whose compact is queued behind another turn (review R4)', () 
     expect(session.pendingModelSwitch).toBeUndefined();
   });
 });
+
+describe('the effort follows the model (a switch never keeps a level the target cannot run)', () => {
+  const SOL = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+  const GROK = ['low', 'medium', 'high', 'xhigh'];
+  const levels = (m: string) =>
+    m === 'grok-4.6' ? GROK : m.startsWith('gpt-') ? SOL : ['low', 'medium', 'high', 'xhigh', 'max'];
+
+  it('representative models carry the levels each runs', () => {
+    const { d } = deps(undefined, { effortLevels: levels });
+    const reps = listRepresentativeModels(d);
+    expect(reps.find((m) => m.nickname === 'sol[1m]')?.effortLevels).toEqual(SOL);
+    expect(reps.find((m) => m.nickname === 'grok[1m]')?.effortLevels).toEqual(GROK);
+    // Without the dep nothing is claimed.
+    expect(listRepresentativeModels(deps(undefined).d)[0]).not.toHaveProperty('effortLevels');
+  });
+
+  it('switching now: ultra on sol becomes xhigh on grok, and the result says so', async () => {
+    const session: Record<string, any> = {
+      model: 'gpt-5.6-sol[1m]',
+      effort: 'ultra',
+      usage: usage(100_000),
+      sessionId: 's',
+    };
+    const { d } = deps(session, { effortLevels: levels });
+    const r = await switchSessionModel('k', 'grok[1m]', d);
+    expect(r).toMatchObject({ status: 'switched', model: 'grok-4.6', effort: 'xhigh' });
+    expect(session).toMatchObject({ model: 'grok-4.6', effort: 'xhigh' });
+  });
+
+  it('a level the target runs is kept (no effort in the result)', async () => {
+    const session: Record<string, any> = {
+      model: 'claude-opus-5-5[1m]',
+      effort: 'high',
+      usage: usage(100_000),
+      sessionId: 's',
+    };
+    const { d } = deps(session, { effortLevels: levels });
+    const r = await switchSessionModel('k', 'sol[1m]', d);
+    expect(r).not.toHaveProperty('effort');
+    expect(session.effort).toBe('high');
+  });
+
+  it('a switch that waits for its compact parks the effort it lands with; the session keeps its level until then', async () => {
+    const session: Record<string, any> = {
+      model: 'gpt-5.6-sol[1m]',
+      effort: 'max',
+      usage: usage(600_000),
+      sessionId: 's',
+    };
+    const { d } = deps(session, { effortLevels: levels });
+    const r = await switchSessionModel('k', 'grok[1m]', d);
+    expect(r).toMatchObject({ status: 'compacting', effort: 'xhigh' });
+    expect(session.pendingModelSwitch).toMatchObject({ model: 'grok-4.6', effort: 'xhigh' });
+    expect(session.effort).toBe('max');
+  });
+});

@@ -24,6 +24,7 @@
 import type { HookInput, HookJSONOutput, Options } from '@anthropic-ai/claude-agent-sdk';
 import * as fs from 'fs';
 import * as path from 'path';
+import { isSdkEffortLevel } from 'soma-lib';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
 import { isAdminUser } from '../../admin-utils';
 import {
@@ -677,7 +678,18 @@ export async function buildStreamOptions(
   // mutated, only this per-query option.
   if (session?.effort) {
     const clamped = options.model ? clampEffortToModel(options.model, session.effort) : session.effort;
-    options.effort = clamped as typeof options.effort;
+    if (isSdkEffortLevel(clamped)) {
+      options.effort = clamped;
+    } else {
+      // `ultra` (only on the models whose catalog menu lists it — the clamp
+      // turns it into `max` everywhere else) is not an SDK/CLI `--effort`
+      // value: it rides as the request body's `output_config.effort` through
+      // CLAUDE_CODE_EXTRA_BODY, which the CLI lets win over `--effort` (the
+      // way soma carries it). llmux resolves it to the wire level the backend
+      // takes.
+      if (!options.env) options.env = {};
+      options.env.CLAUDE_CODE_EXTRA_BODY = withExtraBodyEffort(options.env.CLAUDE_CODE_EXTRA_BODY, clamped);
+    }
     if (clamped !== session.effort) {
       logger.debug('Clamped session effort to model catalog menu', {
         model: options.model,
@@ -942,4 +954,26 @@ function readIncidentRequest(session: ConversationSession | undefined): Incident
   const candidate = (session as { incidentRequest?: unknown } | undefined)?.incidentRequest;
   if (candidate === undefined) return undefined;
   return assertIncidentRequest(candidate);
+}
+
+/**
+ * `CLAUDE_CODE_EXTRA_BODY` with `output_config.effort` set to `effort`, keeping
+ * whatever else an operator put there (config.json#claude.env). A value that is
+ * not a JSON object is replaced — the CLI could not merge it either.
+ */
+export function withExtraBodyEffort(current: string | undefined, effort: string): string {
+  let body: Record<string, unknown> = {};
+  if (current) {
+    try {
+      const parsed: unknown = JSON.parse(current);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) body = parsed as Record<string, unknown>;
+    } catch {
+      // not JSON — replaced below
+    }
+  }
+  const outputConfig =
+    body.output_config && typeof body.output_config === 'object' && !Array.isArray(body.output_config)
+      ? (body.output_config as Record<string, unknown>)
+      : {};
+  return JSON.stringify({ ...body, output_config: { ...outputConfig, effort } });
 }

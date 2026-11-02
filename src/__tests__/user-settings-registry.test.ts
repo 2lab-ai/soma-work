@@ -447,3 +447,62 @@ describe('settings registry — write', () => {
     expect(apply.email).toHaveBeenCalledWith({ userId: 'U1', value: 'clear' });
   });
 });
+
+// The default effort is kept to the default model's levels: ultra only on a model whose menu lists it.
+describe('default model and effort — the effort the default model runs', () => {
+  const ALL = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+  const menus: Record<string, string[]> = {
+    'gpt-6.1-sol[1m]': ALL,
+    'grok-4.6': ['low', 'medium', 'high', 'xhigh'],
+    'claude-opus-5-5[1m]': ['low', 'medium', 'high', 'xhigh', 'max'],
+  };
+  const effortSetup = () => {
+    const ctx = setup({
+      effortLevels: ALL,
+      effortMenu: (model) => menus[model],
+      listModels: () => [
+        { nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', label: 'Opus 5.5' },
+        { nickname: 'sol[1m]', model: 'gpt-6.1-sol[1m]', label: 'Sol 6.1' },
+        { nickname: 'grok[1m]', model: 'grok-4.6', label: 'Grok 4.6' },
+      ],
+    });
+    // The test store knows the six levels (the production store resolves soma-lib EFFORT_LEVELS).
+    ctx.store.resolveEffortInput = (input: string) => {
+      const v = input.toLowerCase().trim();
+      return (ALL.includes(v) ? v : null) as never;
+    };
+    return ctx;
+  };
+
+  it('ultra is taken for a default model whose menu lists it, refused (400) for one that stops below it', async () => {
+    const { registry, store } = effortSetup();
+    store.data.U1 = { ...(store.data.U1 ?? {}), model: 'gpt-6.1-sol[1m]' };
+    await registry.write('U1', 'defaultEffort', 'ultra');
+    expect(store.data.U1.effort).toBe('ultra');
+    store.data.U1.model = 'grok-4.6';
+    const msg = await refused(registry.write('U1', 'defaultEffort', 'max'), 400);
+    expect(msg).toContain('low, medium, high, xhigh');
+    expect(store.data.U1.effort).toBe('ultra');
+  });
+
+  it('a default-model change carries the default effort over to the nearest level the new model runs', async () => {
+    const { registry, store } = effortSetup();
+    store.data.U1 = { ...(store.data.U1 ?? {}), model: 'gpt-6.1-sol[1m]', effort: 'ultra' };
+    await registry.write('U1', 'defaultModel', 'grok[1m]');
+    expect(store.data.U1).toMatchObject({ model: 'grok-4.6', effort: 'xhigh' });
+    // A level the new model runs is kept.
+    await registry.write('U1', 'defaultModel', 'sol[1m]');
+    expect(store.data.U1).toMatchObject({ model: 'gpt-6.1-sol[1m]', effort: 'xhigh' });
+  });
+
+  it('the effort row offers only the levels the default model runs', async () => {
+    const { registry, store } = effortSetup();
+    store.data.U1 = { ...(store.data.U1 ?? {}), model: 'gpt-6.1-sol[1m]', effort: 'high' };
+    const row = (await registry.read('U1')).settings.find((r) => r.key === 'defaultEffort');
+    expect(row?.options?.map((o) => o.value)).toEqual(ALL);
+    expect(row?.options?.find((o) => o.value === 'ultra')?.label).toBe('Ultra');
+    store.data.U1.model = 'grok-4.6';
+    const grok = (await registry.read('U1')).settings.find((r) => r.key === 'defaultEffort');
+    expect(grok?.options?.map((o) => o.value)).toEqual(['low', 'medium', 'high', 'xhigh']);
+  });
+});

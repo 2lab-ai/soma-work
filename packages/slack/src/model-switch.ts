@@ -27,10 +27,13 @@ export interface PendingModelSwitch {
   compactTs?: string;
   /** The compact turn running now is that message's. */
   armed?: boolean;
+  /** The session's effort once the switch lands — set when the target does not run the session's level. */
+  effort?: string;
 }
 
 type SwitchHolder = {
   model?: string;
+  effort?: string;
   autoCompactTokens?: number | null;
   usage?: { contextWindow?: number };
   pendingModelSwitch?: PendingModelSwitch;
@@ -74,13 +77,18 @@ export function armPendingModelSwitch(
   return true;
 }
 
-/** Switch now: model, its auto-compact threshold (override dropped), its window. */
+/**
+ * Switch now: model, its auto-compact threshold (override dropped), its window
+ * — and the effort the target runs when it does not run the session's level.
+ */
 export function applyModelSwitch(
   session: SwitchHolder,
   model: string,
   resolveContextWindow: (model?: string) => number,
+  effort?: string,
 ): void {
   session.model = model;
+  if (effort) session.effort = effort;
   session.autoCompactTokens = undefined;
   if (session.usage) session.usage.contextWindow = resolveContextWindow(model);
   session.pendingModelSwitch = undefined;
@@ -103,7 +111,7 @@ export function applyPendingModelSwitch(
     session.pendingModelSwitch = undefined;
     return undefined;
   }
-  applyModelSwitch(session, pending.model, resolveContextWindow);
+  applyModelSwitch(session, pending.model, resolveContextWindow, pending.effort);
   return pending;
 }
 

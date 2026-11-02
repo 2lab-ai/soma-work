@@ -18,6 +18,7 @@
 
 import { liveOccupancyCall } from '@soma/slack/live-usage';
 import { applyModelSwitch, PENDING_MODEL_SWITCH_TTL_MS } from '@soma/slack/model-switch';
+import { clampEffortToSupported } from 'soma-lib';
 import type { ConversationSession } from '../types';
 
 export const REPRESENTATIVE_MODEL_NICKNAMES = [
@@ -39,6 +40,8 @@ export interface RepresentativeModel {
   contextWindow: number;
   /** The model's own auto-compact threshold (no session override). */
   autoCompactTokens: number;
+  /** The effort levels the model runs, in level order; absent when the catalog has no menu for it. */
+  effortLevels?: string[];
 }
 
 export interface ModelCatalogDeps {
@@ -48,6 +51,8 @@ export interface ModelCatalogDeps {
   /** The model's own auto-compact threshold for this owner (no session override). */
   autoCompactFor(model: string, ownerId?: string): number;
   displayName(model: string): string;
+  /** The effort levels `model` runs, in level order; undefined when the catalog has no menu for it. */
+  effortLevels?(model: string): string[] | undefined;
 }
 
 export interface ModelSwitchDeps extends ModelCatalogDeps {
@@ -90,6 +95,12 @@ export interface ModelSwitchResult {
   model: string;
   autoCompactTokens: number;
   usedTokens: number;
+  /**
+   * The session's effort once the switch lands, present only when it changes:
+   * the target does not run the session's level, so it takes the nearest one
+   * the target runs (the runtime clamp's rule).
+   */
+  effort?: string;
 }
 
 export class ModelSwitchError extends Error {
@@ -108,12 +119,14 @@ export function listRepresentativeModels(deps: ModelCatalogDeps, ownerId?: strin
   for (const nickname of REPRESENTATIVE_MODEL_NICKNAMES) {
     const model = deps.resolveModel(NICKNAME_INPUT[nickname] ?? nickname);
     if (!model) continue;
+    const effortLevels = deps.effortLevels?.(model);
     out.push({
       nickname,
       model,
       label: deps.displayName(model),
       contextWindow: deps.contextWindow(model),
       autoCompactTokens: deps.autoCompactFor(model, ownerId),
+      ...(effortLevels ? { effortLevels: [...effortLevels] } : {}),
     });
   }
   return out;
@@ -171,12 +184,21 @@ export async function switchSessionModel(
         : Number.POSITIVE_INFINITY;
   const shrinking = autoCompactTokens < currentAutoCompact;
   const sizeKnown = !!session.usage || !!(session.liveUsage && Object.keys(session.liveUsage).length);
+  // The effort follows the model: a level the target does not run becomes the
+  // nearest one it does, so no menu ever offers or shows a level the model
+  // cannot take (a model without a catalog menu keeps the level as it is).
+  const menu = deps.effortLevels?.(model);
+  const effort =
+    session.effort && menu && menu.length > 0 && !menu.includes(session.effort)
+      ? clampEffortToSupported(menu, session.effort)
+      : undefined;
   const result = (status: ModelSwitchResult['status']): ModelSwitchResult => ({
     status,
     nickname,
     model,
     autoCompactTokens,
     usedTokens,
+    ...(effort && status !== 'unchanged' ? { effort } : {}),
   });
 
   const hasOverride = typeof session.autoCompactTokens === 'number';
@@ -206,6 +228,7 @@ export async function switchSessionModel(
       model,
       nickname,
       requestedAt: (deps.now ?? Date.now)(),
+      ...(effort ? { effort } : {}),
     };
     session.pendingModelSwitch = parked;
     // This compact is the one the context needs: a threshold compact already
@@ -271,7 +294,7 @@ export async function switchSessionModel(
     return result('compacting');
   }
 
-  applyModelSwitch(session, model, (m) => deps.contextWindow(m ?? model));
+  applyModelSwitch(session, model, (m) => deps.contextWindow(m ?? model), effort);
   deps.save();
   deps.broadcast();
   return result('switched');
