@@ -15,10 +15,14 @@
  * not warn. A pipe whose program comes from stdin (`| sh`, `| python3`, `| python3 -`)
  * or whose inline code can execute what it reads (`exec(`, `eval(`, `subprocess` …)
  * still warns. The policy, the Lean model and the permission card keep the raw
- * catalog, so host and permission child never disagree. The classify step uses
- * this check for one more thing (C1): a call whose ONLY flagged rule is such a
- * data pipe, and whose whole command is one plain read pipeline
- * ({@link isPlainReadPipeline}), runs without a model call.
+ * catalog, so host and permission child never disagree.
+ *
+ * This check never decides whether a call runs. C1 first used it to skip the model
+ * for plain read pipes; the review gate (r6–r8) showed the command text cannot
+ * prove such a skip safe (an earlier call can plant `.curlrc`, PATH, NODE_OPTIONS,
+ * PYTHONPATH or a module in the working directory), and the skip applied to 0 of
+ * the 64 real prompts, so it was dropped: every flagged call goes to the model.
+ * A miss here only hides a warning card.
  */
 
 import { overridableRulesByIds } from 'somalib/permission/dangerous-rules';
@@ -120,7 +124,8 @@ const OPAQUE_SYNTAX = /\\(?:u|x|N|\r?\n)|[\f\v]/;
  * a fixed vocabulary: every identifier outside its string literals — names,
  * attributes, keywords — is one of the words below. A builtin, module attribute or
  * alias that is not listed (help, open, input, vars, getattr, os, modules, env,
- * constructor, and `Object` — reflection over internal objects …) is simply not
+ * constructor, `Object` — reflection over internal objects —, `format` — a format
+ * string read from the data walks the attributes of its arguments …) is simply not
  * a word a reader may use. Comments, triple-quoted
  * strings, JS slashes (comments and regex literals) and non-ASCII outside strings
  * are refused, so a string literal cannot hide code from this scan.
@@ -198,7 +203,6 @@ const COMMON_WORDS = [
   'startswith',
   'endswith',
   'append',
-  'format',
   'splitlines',
   'length',
   'map',
@@ -397,6 +401,12 @@ function inReaderVocabulary(family: InterpreterFamily, code: string): boolean {
     // `sys` only as sys.<stdio|argv|exit> (or in its import): no alias, no other reach.
     const noImports = bare.replace(/\bimport\b[^;\n]*/g, ' ');
     if (/\bsys\b(?!\.(?:stdin|stdout|stderr|argv|exit)\b)/.test(noImports)) return false;
+    // A module is only ever used through one of its attributes (`json.load`), never as a
+    // value: `stdin.read().format(collections)` lets a format string from the data walk
+    // `collections._sys.modules[…]` (review r8, astra).
+    for (const name of PY_READER_MODULES) {
+      if (new RegExp(String.raw`\b${name}\b(?!\.)`).test(noImports)) return false;
+    }
   } else if (/\bprocess\b(?!\.(?:stdin|stdout|exit)\b)/.test(bare)) {
     return false; // `process` only as process.<stdin|stdout|exit>: `const p=process` is out
   }
@@ -515,226 +525,6 @@ function onlyDataPipes(command: string): boolean {
     if (interpreterRunsInput(command, m[1], m.index + m[0].length)) return false;
   }
   return found;
-}
-
-/**
- * C1 narrowed (Z 2026-11-02, D1-A / D2-A; replay of the 64 real prompts). The reader
- * check above only judges what sits AFTER the pipe. The first C1 skipped the model on
- * that alone, and 7 of the 21 calls it skipped were ones the model asks about — every
- * one a remote write or a token in FRONT of a JSON reader (PR merges by `curl -X PUT`,
- * review approvals by POST, a token pulled out of git config into a file). So the
- * model is skipped only for ONE plain pipeline whose producer only reads:
- *
- * - no `;` `&` `&&` `||` `|&` newline, subshell, brace group, here-doc, `<` input,
- *   comment, backslash outside quotes, `$` / backtick outside single quotes;
- * - no redirect except `2>/dev/null` / `2>&1`;
- * - exactly two stages: a remote read, then an interpreter the reader check accepted;
- * - the remote read is `curl` with read-only flags (method GET, no body, no upload,
- *   no output file, no config file, no credentials, http(s) URLs only, and only
- *   the headers in {@link SAFE_HEADER}), `gh api` with method GET, no fields/input,
- *   no `--hostname` and a GitHub path (not a URL), `gh pr|issue|run|repo|release|
- *   workflow view|list|status|diff|checks` (no --web, no --jq / --template — gojq
- *   reads the environment), or `echo` / `printf` of a
- *   literal. A local file read (`cat ~/.netrc | python3 …`, review r6) does not
- *   qualify: it can move a secret with no guardian and no warning.
- *
- * It is an allowlist: a shape it does not recognise goes to the model, never through.
- */
-export function isPlainReadPipeline(command: string): boolean {
-  const stages = plainPipelineStages(command);
-  if (!stages || stages.length !== 2) return false;
-  if (!onlyDataPipes(command)) return false;
-  return isReadProducer(stageWords(stages[0])) && INTERPRETER_STAGE.test(stages[1]);
-}
-
-/** The reader stage: a bare python / node name (no path, no env) — `onlyDataPipes` judged its code. */
-const INTERPRETER_STAGE = /^(?:python[23]?(?:\.\d+)?|node)[ \t]/;
-const STDERR_REDIRECT = /^2>[ \t]*(?:\/dev\/null|&1)(?=[ \t|]|$)/;
-
-/** The stages of one plain pipeline, or null for anything else (see above). */
-function plainPipelineStages(command: string): string[] | null {
-  const stages: string[] = [];
-  let cur = '';
-  let i = 0;
-  while (i < command.length) {
-    const c = command[i];
-    if (c === "'") {
-      const close = command.indexOf("'", i + 1);
-      if (close < 0) return null;
-      cur += command.slice(i, close + 1);
-      i = close + 1;
-    } else if (c === '"') {
-      let j = i + 1;
-      while (j < command.length && command[j] !== '"') {
-        if (command[j] === '$' || command[j] === '`') return null;
-        j += command[j] === '\\' ? 2 : 1;
-      }
-      if (j >= command.length) return null;
-      cur += command.slice(i, j + 1);
-      i = j + 1;
-    } else if (c === '|') {
-      if (command[i + 1] === '|' || command[i + 1] === '&') return null;
-      stages.push(cur.trim());
-      cur = '';
-      i++;
-    } else if (c === '2' && /^\s?$/.test(command[i - 1] ?? '') && STDERR_REDIRECT.test(command.slice(i))) {
-      i += (STDERR_REDIRECT.exec(command.slice(i)) as RegExpExecArray)[0].length;
-    } else if (/[ \t\w./:=@,+%^~*?[\]-]/.test(c)) {
-      cur += c;
-      i++;
-    } else {
-      // ; & < > ( ) { } # $ ` \ ! newline and anything else unusual
-      return null;
-    }
-  }
-  stages.push(cur.trim());
-  return stages.every((s) => s.length > 0) ? stages : null;
-}
-
-/** Words of one validated stage, quotes removed. */
-function stageWords(stage: string): string[] {
-  const words: string[] = [];
-  let i = 0;
-  while (i < stage.length) {
-    if (stage[i] === ' ' || stage[i] === '\t') {
-      i++;
-      continue;
-    }
-    const w = readWord(stage, i);
-    if (w.end <= i) return [];
-    words.push(w.word);
-    i = w.end;
-  }
-  return words;
-}
-
-function isReadProducer(words: string[]): boolean {
-  // A newline inside a quoted header is a second header to curl (review r7, grok P1).
-  if (words.some((w) => /[\x00-\x1f\x7f]/.test(w))) return false;
-  const [program, ...args] = words;
-  if (program === 'curl') return curlOnlyReads(args);
-  if (program === 'gh') return ghOnlyReads(args);
-  return program === 'echo' || program === 'printf';
-}
-
-/** `--flag=value` / `-Xvalue` → [flag, value]; otherwise [arg, undefined]. */
-function splitFlag(arg: string, attached: readonly string[]): [string, string | undefined] {
-  if (arg.startsWith('--')) {
-    const eq = arg.indexOf('=');
-    return eq > 0 ? [arg.slice(0, eq), arg.slice(eq + 1)] : [arg, undefined];
-  }
-  for (const f of attached) if (arg.length > f.length && arg.startsWith(f)) return [f, arg.slice(f.length)];
-  return [arg, undefined];
-}
-
-/**
- * The headers a plain read may send. An allowlist, not a credential denylist: a
- * secret travels under any name (`X-Auth-Token`, `X-Api-Key`, `Private-Token` —
- * review r6, grok P1).
- */
-const SAFE_HEADER =
-  /^\s*(?:accept|accept-encoding|accept-language|x-github-api-version|if-none-match|if-modified-since|cache-control)\s*:/i;
-
-/** Words that are neither a flag nor a flag's separate value. */
-function positionals(args: string[], valued: ReadonlySet<string>, attached: readonly string[]): string[] {
-  const out: string[] = [];
-  for (let k = 0; k < args.length; k++) {
-    const arg = args[k];
-    if (!arg.startsWith('-') || arg === '-') out.push(arg);
-    else if (splitFlag(arg, attached)[1] === undefined && valued.has(arg)) k++;
-  }
-  return out;
-}
-
-/**
- * Walk flags against an allowlist: bare switches, flags that take a value (checked
- * by `valueOk`), everything else rejected. Positional words (URLs, endpoints) pass.
- */
-function flagsOnlyRead(
-  args: string[],
-  spec: { switches: RegExp; valued: ReadonlySet<string>; attached: readonly string[] },
-  valueOk: (flag: string, value: string) => boolean,
-): boolean {
-  for (let k = 0; k < args.length; k++) {
-    const arg = args[k];
-    if (!arg.startsWith('-') || arg === '-') continue;
-    const [flag, inline] = splitFlag(arg, spec.attached);
-    if (inline === undefined && spec.switches.test(flag)) continue;
-    if (!spec.valued.has(flag)) return false;
-    const value = inline ?? args[++k];
-    if (value === undefined || !valueOk(flag, value)) return false;
-  }
-  return true;
-}
-
-const CURL = {
-  switches:
-    /^(?:-[sSLfiIGkv#]+|--(?:silent|show-error|location|fail|fail-with-body|include|head|get|compressed|insecure|verbose|no-progress-meter|globoff))$/,
-  valued: new Set([
-    '-X',
-    '--request',
-    '-H',
-    '--header',
-    '-m',
-    '--max-time',
-    '--connect-timeout',
-    '--retry',
-    '--retry-delay',
-    '--retry-max-time',
-  ]),
-  // No -w / --write-out: `%output{file}` writes a file.
-  // No -A / --user-agent: free text is a credential channel too (review r7).
-  attached: ['-X', '-H', '-m'],
-};
-
-/**
- * curl speaks gopher://, dict://, telnet://, smtp:// … — only an http(s) URL is a plain
- * fetch, and only without userinfo (`https://user:secret@host`, review r6).
- */
-const HTTP_URL = /^https?:\/\/[^/?#@]+(?:[/?#]|$)/i;
-/** A URL or API path that carries a credential in its query or path. */
-const CREDENTIAL_IN_URL = /token|secret|passw|api[_-]?key|auth|credential|signature|sig=|jwt|bearer|code=|session/i;
-
-function curlOnlyReads(args: string[]): boolean {
-  const urls = positionals(args, CURL.valued, CURL.attached);
-  if (urls.length === 0 || !urls.every((u) => HTTP_URL.test(u) && !CREDENTIAL_IN_URL.test(u))) return false;
-  return flagsOnlyRead(args, CURL, (flag, value) => {
-    if (value.startsWith('@')) return false; // a header or format read from a file
-    if (flag === '-X' || flag === '--request') return value.toUpperCase() === 'GET';
-    if (flag === '-H' || flag === '--header') return SAFE_HEADER.test(value);
-    return true;
-  });
-}
-
-const GH_API = {
-  switches: /^(?:--paginate|--slurp|-i|--include|--silent|--verbose)$/,
-  // No --hostname: gh sends the session's GitHub credential to whatever host it names (review r6).
-  // No --jq / --template either: gojq reads `env` / `$ENV`; the reader after the pipe does the parsing.
-  valued: new Set(['-X', '--method', '-H', '--header', '--cache']),
-  attached: ['-X', '-H'],
-};
-const GH_READ_NOUNS: ReadonlySet<string> = new Set(['pr', 'issue', 'run', 'repo', 'release', 'workflow']);
-const GH_READ_VERBS: ReadonlySet<string> = new Set(['view', 'list', 'status', 'diff', 'checks']);
-
-function ghOnlyReads(args: string[]): boolean {
-  const [noun, ...rest] = args;
-  if (noun === 'api') {
-    // A GitHub API path, never a URL or a scheme-relative host (`//evil/x`).
-    const endpoints = positionals(rest, GH_API.valued, GH_API.attached);
-    const [endpoint] = endpoints;
-    if (endpoints.length !== 1 || endpoint.includes('://') || endpoint.startsWith('//')) return false;
-    if (CREDENTIAL_IN_URL.test(endpoint)) return false;
-    return flagsOnlyRead(rest, GH_API, (flag, value) => {
-      if (flag === '-X' || flag === '--method') return value.toUpperCase() === 'GET';
-      if (flag === '-H' || flag === '--header') return SAFE_HEADER.test(value);
-      return true;
-    });
-  }
-  return (
-    GH_READ_NOUNS.has(noun ?? '') &&
-    GH_READ_VERBS.has(rest[0] ?? '') &&
-    !rest.some((a) => /^(?:-w|--web|-q|--jq|-t|--template)(?:=|$)/.test(a) || /^-[qt]./.test(a))
-  );
 }
 
 /**
