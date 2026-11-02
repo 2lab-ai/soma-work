@@ -135,8 +135,8 @@ Entry contract for the final answer (the log is append-only):
   caller posts at every level). They are: the forced-skill banners —
   a non-deferred `$skill` (`skill-force-handler.ts`), the autoskill fire and the deferred
   first-instruction `$skill` on a fresh-context start (`slack-handler.ts`); the goal loop's
-  ✅ completed, ▶️ next queued goal, ⏸️ asked the owner via DM, ⏹️ paused and 🔄 not yet
-  complete (`goal-loop-controller.ts`); and the 🤖 Autogoal notice (`slack-handler.ts`).
+  ✅ completed, ▶️ next queued goal, ⏸️ asked the owner via DM, ⏹️ paused, 🛑 stopped on the
+  same failure twice and 🔄 not yet complete (`goal-loop-controller.ts`); and the 🤖 Autogoal notice (`slack-handler.ts`).
 - When the fallback (below) posts a segment that was already recorded as `narration`, that
   text appears once as `narration` and once as `final` — never two of either.
 
@@ -168,8 +168,8 @@ Entry contract for the final answer (the log is append-only):
 - Goal notices: 🔄 not yet complete, ▶️ starting the next queued goal, and the 🤖 Autogoal
   notice are status messages — not posted below `compact` (`STATUS_MESSAGE`), recorded at every
   level when the session has a conversation. ✅ goal completed (the result), ⏸️ asked the owner
-  via DM and ⏹️ paused — send a message to resume (the user has to act) are posted at every
-  level and recorded the same way. Only the
+  via DM, ⏹️ paused — send a message to resume and 🛑 stopped on the same failure twice (the user
+  has to act) are posted at every level and recorded the same way. Only the
   posts change: the loop (counter, eval, continuation injection, queue advance, autogoal
   activation) runs the same at every level. Goal eval errors (⚠️, ⏳ retrying) are error
   notices and stay posted.

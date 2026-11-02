@@ -530,6 +530,18 @@ describe('T1 — the board draws the launch cards: 시작 중 first in RUNNING, 
   });
 });
 
+// SSOT 2026-11-02 (dev, 04:20Z): the launch answered 'starting' 11 s after the press and its card reached the board
+// ~2 min 18 s later — after the 120 s the 시작 중 card and 카드 열기 waited, so the two never met. They now wait as long
+// as an accepted launch can take to start.
+describe('T1/T2 — the 시작 중 card and 카드 열기 wait as long as a launch can take to start', () => {
+  it('NT_PENDING_MAX_MS is 10 minutes, and 카드 열기 waits as long', () => {
+    expect(TEMPLATE).toContain('\nvar NT_PENDING_MAX_MS = 600000;');
+    expect(TEMPLATE).toContain('\nvar NT_OPEN_WAIT_MS = NT_PENDING_MAX_MS;');
+    expect(TEMPLATE).toContain('\nvar NT_PENDING_POLL_SLOW_MS = 5000;');
+    expect(TEMPLATE).toContain('\nvar NT_PENDING_FAST_MS = 30000;');
+  });
+});
+
 describe('T1 — a 시작 중 card waits for its card, not forever (ntPendingSettle)', () => {
   const fns = loadWith<{ ntPendingSettle(list: any[], keys: string[], self: string, now: number): any[] }>(
     PENDING_FNS,
@@ -566,7 +578,7 @@ describe('T1 — a 시작 중 card waits for its card, not forever (ntPendingSet
 // Review (#747 R1 — fable P2-2, astra Z5): the watch polls only the viewer's own board, and an ask that never
 // answers does not hold it — the deadline still ends it.
 describe('T1 — the watch: one tick at a time, never held by a hung ask, ended by the deadline (ntPendingWatch)', () => {
-  function watch(opts: { currentUserId?: string; hang?: boolean } = {}) {
+  function watch(opts: { currentUserId?: string; hang?: boolean; answeredAgo?: number } = {}) {
     let asks = 0;
     let renders = 0;
     const toasts: any[] = [];
@@ -576,14 +588,24 @@ describe('T1 — the watch: one tick at a time, never held by a hung ask, ended 
       at: now,
       inFlight: false,
       sessionKey: 'work:C_ALPHA:1.2',
-      answeredAt: now,
+      answeredAt: now - (opts.answeredAgo ?? 0),
       state: slackState('A'),
       files: [],
     };
     const api = loadWith<{ ntPendingWatch(): void }>(
-      ['ntPendingWatch', 'ntCardsAwaited', 'ntBoardIsViewers', 'ntPendingPrune', 'ntOpenArrivals', ...PENDING_FNS],
+      [
+        'ntPendingWatch',
+        'ntWatchDelay',
+        'ntCardsAwaited',
+        'ntBoardIsViewers',
+        'ntPendingPrune',
+        'ntOpenArrivals',
+        ...PENDING_FNS,
+      ],
       {
         ...PENDING_CONSTS,
+        NT_PENDING_POLL_SLOW_MS: 5000,
+        NT_PENDING_FAST_MS: 30000,
         _ntPending: [launch],
         _ntOpening: [] as unknown[],
         _ntPendingTimer: 0,
@@ -642,6 +664,22 @@ describe('T1 — the watch: one tick at a time, never held by a hung ask, ended 
     }
   });
 
+  // SSOT 2026-11-02 (dev, 04:20Z): a starting Slack session took ~2 min to reach the board — the watch keeps asking,
+  // every NT_PENDING_POLL_SLOW_MS once NT_PENDING_FAST_MS have passed since the answer (pushes bring it in between).
+  it('30 s after the answer it asks every NT_PENDING_POLL_SLOW_MS', async () => {
+    vi.useFakeTimers();
+    try {
+      const w = watch({ answeredAgo: 40_000 });
+      w.api.ntPendingWatch();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(w.asks()).toBe(0);
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(w.asks()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('another user’s board is not watched', () => {
     vi.useFakeTimers();
     try {
@@ -688,10 +726,15 @@ describe('T1 — a launch that fails: back to the dialog when it is free, else k
         'ntPendingUnsent',
         'ntPendingDrop',
         'ntReconcile',
+        // ntReconcile carries the effort over to the levels the chosen model runs.
+        'mpLevelsOf',
+        'fitEffortLevel',
         ...PENDING_FNS,
       ],
       {
         ...PENDING_CONSTS,
+        EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+        SDK_EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max'],
         NT_DRAFT_KEY: 'k',
         _ntPending: [launch],
         _ntBusy: true,

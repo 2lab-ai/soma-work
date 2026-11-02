@@ -3245,6 +3245,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         // from its data (covered in dashboard-panel-sections-client.test.ts).
         pcReset: () => {},
         resetPanelSections: () => {},
+        // The top bar's "열린 세션에도" switch follows the panel.
+        paintDefaultsScope: () => {},
         selectPanelSection: () => {},
         sizePanelSections: () => {},
         // D3: 지시와 답변 is <ui-conversation>, painted from the data (convPaint; none in this harness).

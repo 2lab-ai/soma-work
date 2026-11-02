@@ -463,3 +463,88 @@ describe('GoalHandler — max-continuation override (S4)', () => {
     );
   });
 });
+
+describe('GoalHandler — goal resume on a stalled goal (goal stall)', () => {
+  it('ends the stall and re-drives the loop', async () => {
+    const resume = await import('../../goal-loop-resume');
+    const kicked: string[] = [];
+    resume.setGoalLoopResumeHandler((key: string) => kicked.push(key));
+    try {
+      const session = makeSession({
+        goal: {
+          goalId: 'g1',
+          objective: 'ship',
+          status: 'active',
+          createdAt: 1,
+          updatedAt: 1,
+          createdBy: 'U123',
+          continuationCount: 2,
+          maxContinuations: 10,
+          epoch: 0,
+          stall: { stallId: 's1', stalledAt: 1, reason: 'r', actions: ['a', 'b', 'c'], confidence: 0.99 },
+        } as any,
+      });
+      const deps = makeDeps(session);
+      await new GoalHandler(deps).execute(makeCtx({ text: 'goal resume' }));
+      expect(session.goal?.stall).toBeUndefined();
+      expect(kicked).toEqual(['C123:171.001']);
+      expect((deps.slackApi.postSystemMessage as any).mock.calls.at(-1)[1]).toContain('runs again');
+    } finally {
+      resume.setGoalLoopResumeHandler(undefined as any);
+    }
+  });
+  it('a goal that stalled at its last continuation gets its budget back (no cap question right after)', async () => {
+    const resume = await import('../../goal-loop-resume');
+    resume.setGoalLoopResumeHandler(() => undefined);
+    try {
+      const session = makeSession({
+        goal: {
+          goalId: 'g1',
+          objective: 'ship',
+          status: 'active',
+          createdAt: 1,
+          updatedAt: 1,
+          createdBy: 'U123',
+          continuationCount: 10,
+          maxContinuations: 10,
+          epoch: 0,
+          stall: { stallId: 's1', stalledAt: 1, reason: 'r', actions: ['a', 'b', 'c'], confidence: 0.99 },
+        } as any,
+      });
+      await new GoalHandler(makeDeps(session)).execute(makeCtx({ text: 'goal resume' }));
+      expect(session.goal?.stall).toBeUndefined();
+      expect(session.goal?.continuationCount).toBe(0);
+    } finally {
+      resume.setGoalLoopResumeHandler(undefined as any);
+    }
+  });
+});
+
+describe('GoalHandler — goal clear ends an open stall (its question is retracted)', () => {
+  it('retires the stall before dropping the goal', async () => {
+    const { setGoalStallRetiredListener } = await import('../../goal-stall');
+    const seen: string[] = [];
+    setGoalStallRetiredListener((_g, _s, cause) => seen.push(cause));
+    try {
+      const session = makeSession({
+        goal: {
+          goalId: 'g1',
+          objective: 'ship',
+          status: 'active',
+          createdAt: 1,
+          updatedAt: 1,
+          createdBy: 'U123',
+          continuationCount: 2,
+          maxContinuations: 10,
+          epoch: 0,
+          stall: { stallId: 's1', stalledAt: 1, reason: 'r', actions: ['a', 'b', 'c'], confidence: 0.99 },
+        } as any,
+      });
+      await new GoalHandler(makeDeps(session)).execute(makeCtx({ text: 'goal clear' }));
+      expect(session.goal).toBeUndefined();
+      expect(seen).toEqual(['lifecycle']);
+    } finally {
+      setGoalStallRetiredListener(undefined);
+    }
+  });
+});
