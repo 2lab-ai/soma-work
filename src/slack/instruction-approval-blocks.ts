@@ -52,7 +52,9 @@ const PREVIEW_CHARS = 300;
 
 /** One instruction's words for a Slack quote: capped, one quote line per line. */
 function quote(text: string): string {
-  const trimmed = text.trim() || '(첨부만 있는 메시지)';
+  const trimmed = text.trim();
+  // The bot's placeholder, not the requester's words: unquoted, so it reads in the owner's language.
+  if (!trimmed) return '_(첨부만 있는 메시지)_';
   const capped = trimmed.length > PREVIEW_CHARS ? `${trimmed.slice(0, PREVIEW_CHARS)}…` : trimmed;
   return capped
     .split('\n')
@@ -62,13 +64,22 @@ function quote(text: string): string {
 
 function previewText(texts: string[]): string {
   const shown = texts.slice(0, PREVIEW_ITEMS).map(quote).join('\n');
-  const more = texts.length > PREVIEW_ITEMS ? `\n_외 ${texts.length - PREVIEW_ITEMS}건_` : '';
+  // The newline outside the template: the catalog matches line by line.
+  const more = texts.length > PREVIEW_ITEMS ? '\n' + `_외 ${texts.length - PREVIEW_ITEMS}건_` : '';
   return shown + more;
 }
 
 function placeLine(view: InstructionApprovalView): string {
-  const title = (view.sessionTitle || '작업 스레드').replace(/[<>|]/g, '');
-  const parts = [view.threadUrl ? `<${view.threadUrl}|${title}>` : `*${title}*`];
+  const title = (view.sessionTitle || '').replace(/[<>|]/g, '');
+  // A session's title is its own words; the default is the bot's — written whole so the catalog knows it.
+  const head = title
+    ? view.threadUrl
+      ? `<${view.threadUrl}|${title}>`
+      : `*${title}*`
+    : view.threadUrl
+      ? `<${view.threadUrl}|작업 스레드>`
+      : '*작업 스레드*';
+  const parts = [head];
   if (view.dashboardUrl) parts.push(`<${view.dashboardUrl}|대시보드에서 보기>`);
   return parts.join('  ·  ');
 }
