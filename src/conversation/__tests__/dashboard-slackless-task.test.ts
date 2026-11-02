@@ -522,6 +522,9 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     expect(columns(b).map((c) => c.key)).not.toContain(`task:${child.taskId}`);
     const epicCard = columns(b).find((c) => c.key === `task:${epic.taskId}`);
     expect(epicCard.epic.children.map((c: any) => c.key)).toEqual([`task:${child.taskId}`]);
+    // E4 ⑨c — a bundled child says so (the board draws it under its epic, leading with ↳); no column card does.
+    expect(epicCard.epic.children[0].underEpic).toBe(true);
+    for (const c of columns(b)) expect(c.underEpic).toBeUndefined();
   });
 
   it('E4 ⑧ R1 — a running child blocked on a permission prompt puts its epic in WAITING (grok P2)', async () => {

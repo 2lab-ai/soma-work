@@ -336,6 +336,7 @@ describe('P3 — the open card follows the plan', () => {
       'acPermissionsHtml',
       'acGoalDecisionHtml',
       'acQuestionHtml',
+      'renderEpicPlan',
       'renderCardBody',
     ],
     ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy', 'VIEW_PLANS'],
