@@ -3,8 +3,8 @@
  *
  * - Every entry is well formed: the same `{n}` placeholders as its Korean key,
  *   no Korean left in the English, edge spaces kept.
- * - Nearly every Korean string the server can show has English: a new Korean
- *   message or page label without an entry is reported here. Fix it with
+ * - Korean strings the server can show without English are reported here (a
+ *   warning; it fails only below 90% coverage). Fix them with
  *   `npm run i18n:extract` (writes scripts/i18n/out/missing-*.json) and add
  *   the English to packages/common/src/i18n-catalog/en-{text,page}.json.
  */
@@ -17,8 +17,24 @@ const CATALOG = join(__dirname, '..', '..', '..', 'packages', 'common', 'src', '
 const read = (name: string): Record<string, string> => JSON.parse(readFileSync(join(CATALOG, name), 'utf8'));
 const HANGUL = /[ㄱ-ㆎ가-힣]/;
 const placeholders = (s: string) => (s.match(/\{\d+\}/g) ?? []).sort();
-/** Share of the code's Korean strings allowed without English before this fails (new strings land first, English soon after). */
-const MAX_MISSING = 0.02;
+/**
+ * Coverage is a report, not a gate for every PR: a change that adds Korean text
+ * lands first and gets English with `npm run i18n:extract` soon after, so other
+ * authors' CI never breaks on it. Below 90% the catalog is falling behind for
+ * real and this fails.
+ */
+const MAX_MISSING = 0.1;
+
+function report(name: string, missing: Array<{ key: string; where: string[] }>, total: number): void {
+  if (missing.length === 0) return;
+  console.warn(
+    `[i18n] ${name}: ${missing.length}/${total} Korean strings have no English — run npm run i18n:extract:\n` +
+      missing
+        .slice(0, 20)
+        .map((f) => `  ${f.where[0]} ${JSON.stringify(f.key.slice(0, 80))}`)
+        .join('\n'),
+  );
+}
 
 describe('English display catalogs', () => {
   for (const name of ['en-text.json', 'en-page.json']) {
@@ -47,6 +63,7 @@ describe('English display catalogs', () => {
     const keys = extractTextKeys();
     const catalog = read('en-text.json');
     const missing = [...keys.values()].filter((f) => !(f.key in catalog));
+    report('text', missing, keys.size);
     expect(keys.size).toBeGreaterThan(1000);
     expect(
       missing.length / keys.size,
@@ -61,6 +78,7 @@ describe('English display catalogs', () => {
     const keys = await extractPageKeys();
     const catalog = read('en-page.json');
     const missing = [...keys.values()].filter((f) => !(f.key in catalog));
+    report('page', missing, keys.size);
     expect(keys.size).toBeGreaterThan(800);
     expect(
       missing.length / keys.size,

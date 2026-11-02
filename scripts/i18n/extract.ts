@@ -160,6 +160,11 @@ function stringKey(node: ts.Node): { key: string; holes: ts.Expression[] } | nul
 }
 
 /** Page source or a model prompt, not a message: big, or HTML / script. */
+/** A page string that is a module's source (an embedded Worker): it starts with an import, or runs past 1200 characters. */
+function isEmbeddedSource(key: string): boolean {
+  return key.length > 1200 || /^\s*(import|export)\s[\s\S]*\bfrom\s/.test(key);
+}
+
 function looksLikeCode(key: string): boolean {
   if (key.length > 1200) return true;
   if (/<(script|style|div|section|ui-[a-z-]+|!DOCTYPE)\b/i.test(key)) return true;
@@ -253,7 +258,8 @@ export async function extractPageKeys(): Promise<Map<string, Found>> {
   const map = new Map<string, Found>();
   for (const [name, html] of Object.entries(pages)) {
     for (const seg of scanPage(html)) {
-      if (seg.skip) continue;
+      // An embedded module or script source (a Worker's code) is code, not page text.
+      if (seg.skip || isEmbeddedSource(seg.key)) continue;
       const a = Math.max(0, seg.start - 80);
       const ctx = html.slice(a, Math.min(html.length, seg.end + 60)).replace(/\s+/g, ' ');
       add(map, seg.key, `${name}:${seg.kind}`, ctx);
