@@ -12,6 +12,7 @@ import Fastify, {
   type LightMyRequestResponse,
 } from 'fastify';
 import * as jwt from 'jsonwebtoken';
+import { dictationA2tError, getDictationA2tService } from '../a2t/a2t-service';
 import { isAdminUser } from '../admin-utils';
 import { config } from '../config';
 import { IS_DEV } from '../env-paths';
@@ -26,6 +27,7 @@ import {
   stopDashboardAdminApprovalWatch,
   stopDashboardPermissionWatch,
 } from './dashboard';
+import { dictationWhisperFromA2t, registerDictationRoutes } from './dictation-routes';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
 import { registerMemoryRoutes } from './memory-routes';
 import {
@@ -709,6 +711,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
   // ---- Dashboard Routes ----
   await registerDashboardRoutes(server, authMiddleware, csrfMiddleware);
+  // 받아쓰기 — the server's Whisper (epic #737, #739): after the dashboard routes, which register @fastify/websocket.
+  registerDictationRoutes(server, authMiddleware, dictationWhisperFromA2t(getDictationA2tService, dictationA2tError));
   await registerWorkLogRoutes(server, authMiddleware);
   await registerArtifactRoutes(server, authMiddleware);
   await registerUserMediaRoutes(server, authMiddleware);

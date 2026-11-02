@@ -77,7 +77,16 @@ describe('RollbackHandler', () => {
   });
 
   it('matches only the strict forms', () => {
-    for (const t of ['rollback', '/rollback', 'rollback 2', 'rollback cancel', '롤백', '롤백 1', '롤백 취소']) {
+    for (const t of [
+      'rollback',
+      '/rollback',
+      'rollback 2',
+      'rollback cancel',
+      '롤백',
+      '롤백 1',
+      '롤백 취소',
+      'rollback goal',
+    ]) {
       expect(handler.canHandle(t)).toBe(true);
     }
     for (const t of ['rollback the migration', 'rollback 2 3', 'rollbacks', 'please rollback']) {
@@ -96,6 +105,8 @@ describe('RollbackHandler', () => {
   it('rollback <n> stores the request for the next turn and says what leaves the context', async () => {
     await handler.execute(ctx('rollback 1'));
     expect(session.pendingRewind).toMatchObject({ anchor: A(1), source: 'input', requestedBy: 'U1' });
+    // The input itself (timestamp 3) leaves the context with what came after it.
+    expect(session.pendingRewind?.keptUntil).toBe(2);
     expect(saves).toBe(1);
     expect(posted[0]).toContain('배포해줘');
     expect(posted[0]).toContain('이후 입력 2개');
@@ -124,5 +135,24 @@ describe('RollbackHandler', () => {
   it('an unknown number points back to the list', async () => {
     await handler.execute(ctx('rollback 7'));
     expect(posted[0]).toContain('7번 입력이 없습니다');
+  });
+
+  it('rollback goal rolls back to where the stalled goal first failed (#745) — only when offered', async () => {
+    await handler.execute(ctx('rollback goal'));
+    expect(session.pendingRewind).toBeUndefined();
+    expect(posted[0]).toContain('되돌릴 goal 실패 지점이 없습니다');
+    session.goal = {
+      goalId: 'g1',
+      status: 'active',
+      stall: { stallId: 's1', stalledAt: 1, reason: 'r', actions: ['a'], confidence: 0.99, rollbackAnchor: A(2) },
+    };
+    await handler.execute(ctx('rollback goal'));
+    expect(session.pendingRewind).toMatchObject({ anchor: A(2), source: 'goal', requestedBy: 'U1' });
+    expect(posted[1]).toContain('처음 실패한 지점');
+    active = true;
+    session.pendingRewind = undefined;
+    await handler.execute(ctx('rollback goal'));
+    expect(session.pendingRewind).toBeUndefined();
+    expect(posted[2]).toContain('진행 중');
   });
 });
