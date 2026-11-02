@@ -95,6 +95,7 @@ describe('SessionInitializer — work queue gate (#726)', () => {
   let requestCoordinator: any;
   let probes: Map<string, any>;
   let initializer: SessionInitializer;
+  let workQueue: InstanceType<typeof WorkQueueService>;
 
   const accepted = {
     userId: 'U123',
@@ -168,7 +169,7 @@ describe('SessionInitializer — work queue gate (#726)', () => {
       getLastActivityAt: vi.fn().mockReturnValue(undefined),
       touchSession: vi.fn(),
     };
-    const workQueue = new WorkQueueService({
+    workQueue = new WorkQueueService({
       slackApi,
       getQueues: () => parseWorkQueuesConfig(undefined).queues,
       probe: (key: string) => probes.get(key) ?? { exists: sessions.has(key), active: true, activity: 'working' },
@@ -221,6 +222,28 @@ describe('SessionInitializer — work queue gate (#726)', () => {
     await initializer.initialize(event('UA', '100', 'Projalpha develop -> dev2'), '/test/dir');
     const other = await initializer.initialize(event('UB', '200', 'Projalpha develop -> dev3'), '/test/dir');
     expect(other.halted).toBeFalsy();
+  });
+
+  it('binds a migrated deploy session to the queue, so its arrow-less next turn is still gated', async () => {
+    // Channel mention → bot-thread migration → the gate passes under the new key.
+    const first = await initializer.initialize(event('UA', '400', 'Projalpha: develop -&gt; deploy/dev2'), '/test/dir');
+    expect(first.halted).toBeFalsy();
+    const botKey = first.sessionKey;
+    expect(botKey).not.toBe('C1:400');
+    expect(sessions.get(botKey)?.workQueueId).toBe('deploy-dev2');
+
+    // A's turn ends (slot freed); B takes dev2.
+    probes.set(botKey, { exists: true, active: false, activity: 'idle', workflow: 'deploy' });
+    workQueue.onSessionDeleted(botKey);
+    makeSession('UB', 'C1', '500', { workflow: 'deploy', sessionId: 'sdk-b' });
+    expect(
+      (await initializer.initialize(event('UB', '500', 'Projalpha develop -> dev2'), '/test/dir')).halted,
+    ).toBeFalsy();
+
+    // A answers the deploy confirmation in the bot thread: no arrow, still the dev2 queue.
+    sessions.get(botKey).sessionId = 'sdk-a';
+    const answer = await initializer.initialize(event('UA', botKey.split(':')[1], '응 진행해'), '/test/dir');
+    expect(answer.halted).toBe(true);
   });
 
   it('gates a brand-new deploy session on its migrated bot thread', async () => {
