@@ -75,6 +75,7 @@ import {
   subagentSpendOf,
 } from '../session/agent-registry';
 import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
+import { CONTEXT_ROLLBACK_REFUSAL_TEXT } from '../session/context-rollback';
 import { sanitizeCronJob } from '../session/cron-job';
 import { effortMenuOf } from '../session/effort-menu';
 import { EffortSwitchError, type EffortSwitchResult } from '../session/effort-switch';
@@ -384,6 +385,17 @@ export interface KanbanSession {
    * session has never had a goal.
    */
   goal?: KanbanGoal;
+  /**
+   * Context rollback (#744): the session can be rolled back (it has an SDK
+   * conversation), and a rollback waiting for the next turn.
+   */
+  rollbackAvailable?: boolean;
+  pendingRewind?: { label: string; requestedAt: number };
+  /**
+   * What applied rollbacks dropped from the model's context: work-log entries
+   * and turns made after `from` and up to `to` are marked "문맥에서 빠짐".
+   */
+  contextRewinds?: Array<{ from: number; to: number; label: string; at: number }>;
   /**
    * Set when the session is idle only because the system will start it again
    * by itself (see {@link KanbanAutoResume}). Such a card is unfinished work:
@@ -1540,6 +1552,38 @@ export function setDashboardGoalDecisionHandler(fn: GoalDecisionHandler | null):
 }
 
 /**
+ * Context rollback (#744) — the picker's points and the request / cancel.
+ * Wired in src/index.ts to `SlackHandler.getContextRollbackPoints` /
+ * `handleContextRollback`; the one gate is `requestContextRollback`.
+ */
+export interface DashboardRollbackHandler {
+  points(sessionKey: string, actorUserId: string | undefined): Promise<unknown>;
+  request(
+    sessionKey: string,
+    /** `at`: the point's time from the picker (marks what the rollback drops). */
+    body: { anchor: string; label: string; source: 'input' | 'worklog'; at?: number } | { cancel: true },
+    actorUserId: string | undefined,
+  ): Promise<{ ok: true; cancelled?: boolean } | { ok: false; reason: string }>;
+}
+let _rollbackHandler: DashboardRollbackHandler | null = null;
+
+export function setDashboardRollbackHandler(h: DashboardRollbackHandler | null): void {
+  _rollbackHandler = h;
+}
+
+/** The thread's rollback refusals, for the dashboard (same words as the thread command). */
+const ROLLBACK_REFUSAL_STATUS: Record<string, number> = {
+  'not-found': 404,
+  'not-owner': 403,
+  busy: 409,
+  'no-change': 409,
+  invalid: 422,
+  'other-session': 422,
+  compacted: 422,
+  'not-in-transcript': 422,
+};
+
+/**
  * SSOT 2026-10-22 T4/T5 — switch a session to a representative model
  * (`session/model-switch.ts` `switchSessionModel`). Throws `ModelSwitchError`
  * for every refusal, whose `statusCode` the route answers with.
@@ -2350,6 +2394,29 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     // aggregator's mergeBoards stamp.
     environment: _selfInstanceEnv ? { ..._selfInstanceEnv } : undefined,
     goal: goalToKanban(s),
+    ...(typeof s.sessionId === 'string' && s.sessionId && s.conversationId && s.slackless !== true
+      ? { rollbackAvailable: true }
+      : {}),
+    ...(s.pendingRewind && typeof s.pendingRewind.label === 'string'
+      ? {
+          pendingRewind: {
+            label: String(s.pendingRewind.label).slice(0, 300),
+            requestedAt: Number(s.pendingRewind.requestedAt) || 0,
+          },
+        }
+      : {}),
+    ...(Array.isArray(s.contextRewinds) && s.contextRewinds.length
+      ? {
+          contextRewinds: s.contextRewinds
+            .slice(-10)
+            .map((r: { from?: unknown; to?: unknown; label?: unknown; at?: unknown }) => ({
+              from: Number(r.from) || 0,
+              to: Number(r.to) || 0,
+              label: String(r.label ?? '').slice(0, 300),
+              at: Number(r.at) || 0,
+            })),
+        }
+      : {}),
     ...(autoResume ? { autoResume } : {}),
     artifacts: cardArtifacts(s.conversationId),
     userMedia: cardUserMedia(s.conversationId),
@@ -4016,6 +4083,94 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── Context rollback (#744): roll the model's context back to an input or a work-log point ──
+
+  server.get<{ Params: { key: string } }>(
+    '/api/dashboard/session/:key/rollback-points',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      if (!_rollbackHandler) {
+        reply.status(501).send({ error: 'Rollback handler not configured' });
+        return;
+      }
+      try {
+        const actor = (request as { authContext?: { userId?: string } }).authContext?.userId;
+        const view = await _rollbackHandler.points(resolved.originalKey, actor);
+        if (!view) {
+          reply.status(404).send({ error: 'Session not found' });
+          return;
+        }
+        reply.send(view);
+      } catch (error) {
+        logger.error('Error reading rollback points', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  server.post<{
+    Params: { key: string };
+    Body: { anchor?: unknown; label?: unknown; source?: unknown; at?: unknown; cancel?: unknown };
+  }>(
+    '/api/dashboard/session/:key/rollback',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { anchor, label, source, at, cancel } = request.body || {};
+      const isCancel = cancel === true;
+      if (
+        !isCancel &&
+        (typeof anchor !== 'string' ||
+          !anchor ||
+          anchor.length > 200 ||
+          typeof label !== 'string' ||
+          label.length > 300 ||
+          (source !== 'input' && source !== 'worklog') ||
+          (at !== undefined && (typeof at !== 'number' || !Number.isFinite(at) || at < 0)))
+      ) {
+        reply
+          .status(400)
+          .send({ error: "anchor, label and source ('input' | 'worklog') — or cancel: true — are required" });
+        return;
+      }
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      if (!_rollbackHandler) {
+        reply.status(501).send({ error: 'Rollback handler not configured' });
+        return;
+      }
+      try {
+        const actor = (request as { authContext?: { userId?: string } }).authContext?.userId;
+        const result = await _rollbackHandler.request(
+          resolved.originalKey,
+          isCancel
+            ? { cancel: true }
+            : {
+                anchor: anchor as string,
+                label: label as string,
+                source: source as 'input' | 'worklog',
+                ...(typeof at === 'number' ? { at } : {}),
+              },
+          actor,
+        );
+        if (result.ok) {
+          reply.send(result);
+          return;
+        }
+        reply.status(ROLLBACK_REFUSAL_STATUS[result.reason] ?? 409).send({
+          error:
+            (CONTEXT_ROLLBACK_REFUSAL_TEXT as Record<string, string>)[result.reason] ??
+            (result.reason === 'not-found' ? '세션을 찾을 수 없습니다' : '되돌릴 수 없습니다'),
+          reason: result.reason,
+        });
+      } catch (error) {
+        logger.error('Error requesting a context rollback', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
   // ── Goal cap decision (the owner-DM "Goal 계속 진행할까요?", as an approval card) ──
 
   server.post<{ Params: { key: string }; Body: { goalId?: unknown; decisionId?: unknown; decision?: unknown } }>(
@@ -4911,6 +5066,15 @@ ui-breadcrumbs.crumbs { flex: 1 1 auto; min-width: 0; }
 /* Session lifecycle dialog (admin, J-01) — @2lab.ai/ui <ui-dialog size="sm">: the element draws the panel, the
    scrim, the enter / exit motion and the phone sheet; the page keeps only its form's rules. */
 .lifecycle-dialog .lc-note { margin: 0 0 12px; font-size: 12px; color: var(--ib-muted); }
+/* Context rollback (#744) — the picker: the owner's inputs and the work log's cut points, newest first. */
+.rollback-dialog .rb-note { margin: 0 0 10px; font-size: 12px; color: var(--ib-muted); }
+.rollback-dialog .rb-sec { margin: 0 0 12px; }
+.rollback-dialog .rb-sec h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--ib-muted); }
+.rollback-dialog .rb-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.rollback-dialog .rb-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rollback-dialog .rb-time { font-size: 11px; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
+.rollback-dialog .rb-pending { margin: 0 0 10px; font-size: 12px; display: flex; gap: 8px; align-items: center; }
+.rollback-dialog .rb-empty { font-size: 12px; color: var(--ib-muted); padding: 4px 0; }
 .lifecycle-dialog label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; font-size: 13px; margin-bottom: 10px; }
 .lifecycle-dialog label input { grid-column: 1 / -1; font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--ib-seg); color: var(--ib-text); }
 .lifecycle-dialog .lc-unit { color: var(--ib-muted); font-size: 12px; }
@@ -5873,6 +6037,13 @@ ${pageTokenAliases()}
           <button type="button" class="ui-btn" onclick="closeLifecycleDialog()">취소</button>
           <button type="submit" form="lifecycle-form" class="ui-btn is-primary lc-save" id="lifecycle-save">저장</button>
         </div>
+      </ui-dialog>
+      <!-- Context rollback (#744): pick a point — just before one of your inputs, or a point in the work log. -->
+      <ui-dialog id="rollback-dialog" class="rollback-dialog" heading="문맥 되돌리기" size="sm" lang="ko">
+        <p class="rb-note">고른 지점까지 모델의 대화 문맥을 되돌립니다. 그 뒤의 대화는 다음 턴부터 모델이 기억하지 않고, 파일 변경은 되돌리지 않습니다.</p>
+        <div id="rollback-body" onclick="onRollbackClick(event)"></div>
+        <p class="ui-status-line" id="rollback-status" role="status" aria-live="polite"></p>
+        <div slot="footer" class="lc-actions"><button type="button" class="ui-btn" onclick="closeRollbackDialog()">닫기</button></div>
       </ui-dialog>
       <!-- CRON lane (SSOT 2026-10-23 T4/T5): @2lab.ai/ui <ui-agent-queue> with the lane only —
            one tile per cron job, four numbers, the next-fire queue and 24 hours of runs
@@ -10777,13 +10948,16 @@ function panelHeadData(s, col) {
 // The bar's slot: an armed resume (what starts the session again, when, which attempt; why on hover).
 function panelHeadNoteHtml(s, col) {
   var resume = pendingAutoResume(s, col);
-  return resume ? '<span class="ps-resume" title="' + escAttr(resume.reason || '') + '">' + esc(autoResumeLabel(resume)) + '</span>' : '';
+  // #744: a rollback waits for the next turn.
+  var rewind = s.pendingRewind ? '<span class="ps-resume" title="' + escAttr(s.pendingRewind.label || '') + '">⏪ 다음 턴부터 되돌림</span>' : '';
+  return (resume ? '<span class="ps-resume" title="' + escAttr(resume.reason || '') + '">' + esc(autoResumeLabel(resume)) + '</span>' : '') + rewind;
 }
 function renderPanelHead() {
   var el = document.getElementById('panel-status');
   if (!el) return;
   var key = panelSessionKey;
   var s = key ? _sessionCache[key] : null;
+  wlSyncRewinds();
   if (!el._wired) {
     el._wired = true;
     el.addEventListener('ui-action', onPanelHeadAction);
@@ -10807,6 +10981,7 @@ function onPanelHeadAction(e) {
   if (!s || !id || id === 'slack') return;
   if (id === 'star') doStar(key, s.starred !== true);
   else if (id === 'revive') doRevive(key);
+  else if (id === 'rollback') openRollbackDialog(key);
   else if (id === 'stop' || id === 'close' || id === 'trash') doAction(key, id);
 }
 
@@ -11587,11 +11762,14 @@ function sessionActionsOf(s, col) {
       : '즐겨찾기 — 항상 맨 위, 자동 sleep·보관 안 함' + (closed ? ' (지금 살려요)' : '') }];
   if (closed) out.push({ id: 'revive', label: '살리기', lock: lock, busy: lifeBusy,
     tip: manages ? '대화를 이어갈 수 있게 세션을 살려요 (작업 폴더 파일은 복구되지 않아요)' : OWNER_ONLY_MSG });
+  // #744: roll the model's context back to an earlier input or work-log point (live sessions with an SDK conversation).
+  if (!closed && s.rollbackAvailable === true) out.push({ id: 'rollback', label: s.pendingRewind ? '⏪ 되돌리기 예약됨' : '⏪ 되돌리기', lock: lock, busy: false,
+    tip: manages ? '모델의 대화 문맥을 이전 입력·작업 로그 지점으로 되돌려요 (파일은 그대로)' : OWNER_ONLY_MSG });
   out.push({ id: kind, label: label, lock: lock, busy: isBusy(s.key, 'action') });
   return out;
 }
 // The open card's action buttons (kit .ui-btn): Stop reads as the danger tone, Trash as a quiet one.
-var SESSION_ACTION_TONE = { stop: ' is-danger', close: '', trash: ' is-quiet' };
+var SESSION_ACTION_TONE = { stop: ' is-danger', close: '', trash: ' is-quiet', rollback: '' };
 // noStar: the face's star toggle is the one star (a plan's open card has no ☆ button of its own).
 function sessionActionHtml(s, col, noStar) {
   var key = escJs(s.key);
@@ -11605,6 +11783,10 @@ function sessionActionHtml(s, col, noStar) {
     if (a.id === 'revive') {
       return '<button type="button" class="ui-btn" data-action="revive"' + off + ' title="' + escAttr(a.tip) + '"'
         + ' onclick="event.stopPropagation();doRevive(\\'' + key + '\\')">' + esc(a.label) + '</button>';
+    }
+    if (a.id === 'rollback') {
+      return '<button type="button" class="ui-btn" data-action="rollback"' + off + ' title="' + escAttr(a.tip) + '"'
+        + ' onclick="event.stopPropagation();openRollbackDialog(\\'' + key + '\\')">' + esc(a.label) + '</button>';
     }
     return '<button class="ui-btn' + SESSION_ACTION_TONE[a.id] + '" data-action="' + a.id + '"' + off + (a.lock ? ' title="' + escAttr(a.lock) + '"' : '')
       + ' onclick="event.stopPropagation();doAction(\\'' + key + '\\',\\'' + a.id + '\\')">' + esc(a.label) + '</button>';
@@ -12554,6 +12736,130 @@ function openLifecycleDialog() {
 function closeLifecycleDialog() {
   var dlg = document.getElementById('lifecycle-dialog');
   if (dlg && typeof dlg.hide === 'function') dlg.hide();
+}
+// ── Context rollback (#744) ──
+// The picker reads its points from the server (the owner's inputs and the work log's cut points of
+// this context, from GET …/rollback-points) and asks with POST …/rollback; the thread is told there.
+var _rollbackKey = null;
+// #744 — what an applied rollback dropped: entries and turns made after a span's
+// kept point and up to its request (the card's contextRewinds) read "문맥에서 빠짐".
+var REWOUND_MARK = '↩︎ 문맥에서 빠짐';
+function rewoundBy(spans, ts) {
+  if (!Array.isArray(spans) || typeof ts !== 'number' || !isFinite(ts)) return null;
+  for (var i = 0; i < spans.length; i++) {
+    var r = spans[i];
+    if (r && ts > r.from && ts <= r.to) return r;
+  }
+  return null;
+}
+// The open log keeps the panel session's spans (st.rewinds); a change repaints it.
+function wlSyncRewinds() {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var spans = s && Array.isArray(s.contextRewinds) ? s.contextRewinds : null;
+  if (!_wl || JSON.stringify(_wl.rewinds || null) === JSON.stringify(spans)) return;
+  _wl.rewinds = spans;
+  wlPaintSoon();
+}
+function setRollbackStatus(text, isError) {
+  var el = document.getElementById('rollback-status');
+  if (!el) return;
+  el.textContent = text || '';
+  if (isError) el.setAttribute('data-tone', 'fail'); else el.removeAttribute('data-tone');
+}
+function closeRollbackDialog() {
+  var dlg = document.getElementById('rollback-dialog');
+  _rollbackKey = null;
+  if (dlg && typeof dlg.hide === 'function') dlg.hide();
+}
+async function openRollbackDialog(key) {
+  var dlg = document.getElementById('rollback-dialog');
+  var body = document.getElementById('rollback-body');
+  if (!dlg || !body || typeof dlg.show !== 'function') return;
+  _rollbackKey = key;
+  body.innerHTML = '';
+  setRollbackStatus('불러오는 중…', false);
+  dlg.show();
+  await loadRollbackPoints(key);
+}
+async function loadRollbackPoints(key) {
+  var body = document.getElementById('rollback-body');
+  try {
+    var res = await fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/rollback-points', { headers: { Accept: 'application/json' } });
+    var v = await res.json().catch(function() { return null; });
+    if (_rollbackKey !== key || !body) return;
+    if (!res.ok || !v) { setRollbackStatus((v && v.error) || ('HTTP ' + res.status), true); return; }
+    body._points = { input: v.inputs || [], worklog: v.worklog || [] };
+    body._locked = !!v.refusal;
+    body._armed = null;
+    var html = '';
+    if (v.pending) {
+      html += '<div class="rb-pending"><span>⏳ 예약됨: ' + esc(v.pending.label) + '</span>'
+        + (v.refusal ? '' : '<button type="button" class="ui-btn is-quiet" data-rb-cancel="1">취소</button>') + '</div>';
+    }
+    html += rollbackSectionHtml('내 입력 — 그 입력 직전으로', 'input', body._points.input, body._locked);
+    html += rollbackSectionHtml('작업 로그 — 그 지점까지 유지', 'worklog', body._points.worklog, body._locked);
+    body.innerHTML = html;
+    setRollbackStatus(v.refusalText || '', !!v.refusal);
+  } catch (e) {
+    if (_rollbackKey === key) setRollbackStatus('네트워크 오류', true);
+  }
+}
+// Newest first; each row's button carries its source and index into the server's list.
+function rollbackSectionHtml(title, source, list, locked) {
+  var rows = '';
+  for (var i = list.length - 1; i >= 0; i--) {
+    var p = list[i];
+    rows += '<div class="rb-row"><span class="rb-time">' + esc(formatTaskTime(Number(p.at) || 0)) + '</span>'
+      + '<span class="rb-label" title="' + escAttr(p.label) + '">' + esc(p.label) + '</span>'
+      + '<button type="button" class="ui-btn" data-rb-source="' + source + '" data-rb-index="' + i + '"' + (locked ? ' disabled' : '') + '>되돌리기</button></div>';
+  }
+  return '<div class="rb-sec"><h4>' + esc(title) + '</h4>' + (rows || '<div class="rb-empty">되돌릴 수 있는 지점이 없습니다</div>') + '</div>';
+}
+function onRollbackClick(e) {
+  var btn = e.target && e.target.closest ? e.target.closest('button') : null;
+  var body = document.getElementById('rollback-body');
+  var key = _rollbackKey;
+  if (!btn || !body || !key || btn.disabled) return;
+  if (btn.getAttribute('data-rb-cancel')) { sendRollback(key, { cancel: true }, '예약을 취소했어요'); return; }
+  var source = btn.getAttribute('data-rb-source');
+  var list = body._points && body._points[source];
+  var p = list && list[Number(btn.getAttribute('data-rb-index'))];
+  if (!p) return;
+  // Two presses, no confirm dialog: the first arms this row and says what it does; the second sends.
+  var id = source + ':' + btn.getAttribute('data-rb-index');
+  if (body._armed !== id) {
+    var prev = body.querySelector ? body.querySelector('[data-rb-armed]') : null;
+    if (prev) { prev.removeAttribute('data-rb-armed'); prev.textContent = '되돌리기'; }
+    body._armed = id;
+    if (btn.setAttribute) btn.setAttribute('data-rb-armed', '1');
+    btn.textContent = '한 번 더 눌러 확인';
+    setRollbackStatus('모델 문맥을 되돌립니다 — ' + p.label + ' (다음 턴부터 적용, 파일은 그대로). 같은 버튼을 한 번 더 누르세요.', false);
+    return;
+  }
+  body._armed = null;
+  sendRollback(key, { anchor: p.anchor, label: p.label, source: source, at: p.at }, '다음 턴부터 문맥을 되돌려요');
+}
+async function sendRollback(key, payload, doneTitle) {
+  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/rollback';
+  var send = function() {
+    var headers = { 'Content-Type': 'application/json' };
+    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+    return fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(payload) });
+  };
+  try {
+    var res = await send();
+    if (res.status === 403) { await refreshCsrfToken(); res = await send(); }
+    var answer = await res.json().catch(function() { return null; });
+    if (res.ok && answer && answer.ok) {
+      dashToast({ title: doneTitle, description: payload.label || undefined, tone: 'success' });
+      if (_rollbackKey === key) await loadRollbackPoints(key);
+      await loadSessions();
+    } else {
+      setRollbackStatus((answer && answer.error) || ('HTTP ' + res.status), true);
+    }
+  } catch (e) {
+    setRollbackStatus('네트워크 오류', true);
+  }
 }
 function setLifecycleStatus(text, isError) {
   var el = document.getElementById('lifecycle-status');
@@ -14088,6 +14394,7 @@ function wlClear() {
 // The latest window only (SSOT 2026-10-29): older pages wait for the reader to
 // scroll up in 작업 로그 — never the whole history on an opening.
 function loadWorkLog() {
+  wlSyncRewinds();
   var st = _wl;
   if (!st) return;
   wlLoadLatest(st, wlFetchJson, paintWorkLog).then(function(result) {
@@ -14248,6 +14555,7 @@ function wlEntryOf(st, e) {
   var kind = Object.prototype.hasOwnProperty.call(WL_LABELS, e.kind) ? e.kind : 'narration';
   var x = { id: String(seq) };
   if (typeof e.ts === 'number' && isFinite(e.ts)) x.at = e.ts;
+  var rewound = st && st.rewinds ? rewoundBy(st.rewinds, Number(e.ts)) : null;
   var text = String(e.text || '');
   var tool = e.tool ? String(e.tool) : '';
   if (kind === 'permission') {
@@ -14265,6 +14573,7 @@ function wlEntryOf(st, e) {
     x.tool = { name: tool || '툴', status: card ? card.status : 'interrupted' };
     var sum = kind === 'tool' ? wlToolSummary(tool, text) : e.ok === false ? '실패' : '완료';
     if (sum) x.tool.summary = sum;
+    if (rewound) x.tool.summary = REWOUND_MARK + (sum ? ' · ' + sum : '');
     if (kind === 'tool' && e.agentRef) x.agent = wlAgentOf(String(e.agentRef));
     return x;
   }
@@ -14301,6 +14610,7 @@ function wlEntryOf(st, e) {
     x.kind = kind;
     x.text = text;
   }
+  if (rewound) x.text = REWOUND_MARK + ' · ' + (x.text || '');
   x.hasRaw = true;
   if (st.open && st.open.has(seq)) x.raw = wlRawView(st, e);
   return x;
@@ -14609,6 +14919,8 @@ function wlCardData(state, key) {
   var d = { name: tool || '툴', status: status, open: !!(state.open && state.open.has(key)) };
   var summary = call ? wlToolSummary(tool, call.text) : '';
   if (summary) d.summary = summary;
+  // #744: a call a rollback dropped says so on its card (the slotted card is what the reader sees).
+  if (state.rewinds && rewoundBy(state.rewinds, Number(carrier.ts))) d.summary = REWOUND_MARK + (summary ? ' · ' + summary : '');
   if (call && typeof call.ts === 'number' && isFinite(call.ts)) {
     d.at = call.ts;
     d.startedAt = call.ts;
@@ -15704,9 +16016,15 @@ function convTurnsOf(list, c) {
         u.media = true;
         slots.push({ name: 'media-' + id, kind: 'media', list: atts, turn: t });
       }
+      // #744: a turn a rollback dropped says so (a person's by its name, a system turn in its line).
+      if (c.rewinds && rewoundBy(c.rewinds, ts)) {
+        if (u.role === 'user') u.name = u.name + ' · ' + REWOUND_MARK;
+        else u.text = REWOUND_MARK + ' · ' + (u.text || '');
+      }
       turns.push(u);
     } else {
       var a = { id: id, role: 'assistant', name: c.bot };
+      if (c.rewinds && rewoundBy(c.rewinds, ts)) a.name = (c.bot || '') + ' · ' + REWOUND_MARK;
       if (at) a.at = at;
       var sum = convSummaryOf(t, c);
       if (sum.title || sum.text || sum.error) a.summary = sum;
@@ -15828,6 +16146,7 @@ function convPaint() {
   var working = s ? s.activityState === 'working' : Object.keys(_sessionCache).length === 0;
   var built = convTurnsOf(_panelTurnsList, {
     cid: cid, bot: botNameOf(s), now: Date.now(), working: working,
+    rewinds: s && Array.isArray(s.contextRewinds) ? s.contextRewinds : null,
     answers: _rawLoadedCache, failed: _ansFailed, resum: _resumSent,
     arts: cid && _artCache[cid] ? _artCache[cid].list || [] : [],
     titles: ansLinkTitles(ansSession(cid)),

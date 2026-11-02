@@ -22,3 +22,16 @@ Requested 2026-11-02: "채팅 내역을 이용하여 원하는 지점으로 문�
 | `rollback cancel` (`롤백 취소`) | Drops a rollback that has not run yet. |
 
 The matcher is strict (`rollback`, `rollback <n>`, `rollback cancel`) so an instruction such as "rollback the migration" still reaches the model. `rollback` is not a known command root for the ❓ hint for the same reason.
+
+## Dashboard
+
+The opened card and the panel head have **⏪ 되돌리기** on a live session that has an SDK conversation (`KanbanSession.rollbackAvailable`). It opens a picker (`<ui-dialog id="rollback-dialog">`) with two lists, newest first:
+
+- **내 입력 — 그 입력 직전으로**: the owner's inputs of this context (`rollbackInputPoints`).
+- **작업 로그 — 그 지점까지 유지**: the work log's cut points (`rollbackWorkLogPoints`): each is the first reply, final answer or tool result entry made after the model reached a new safe cut point, so everything up to and including that entry stays.
+
+**What a rollback dropped is marked.** A request records the time of the last entry it keeps (`PendingRewind.keptUntil` — an input point keeps up to just before the input, a work-log point keeps its own entry, the goal's first failure keeps its turn). When the next turn applies it, the session keeps the dropped span (`contextRewinds: { from: keptUntil, to: requestedAt, label, at }`, the latest 10, persisted, cleared by `new`/renew) and the card carries it. Work-log entries and conversation turns made inside a span read **↩︎ 문맥에서 빠짐** (a tool's summary, an entry's text, a turn's name). The dashboard POST takes the point's time as `at`.
+
+A row's **되돌리기** takes two presses: the first arms it (the button reads `한 번 더 눌러 확인` and the status line says what will happen), the second sends. The dashboard uses no `confirm()` prompts.
+
+`GET /api/dashboard/session/:key/rollback-points` answers both lists, a waiting rollback, and why a rollback cannot be asked now (`refusal`, `refusalText` — not the owner, a turn is running). `POST /api/dashboard/session/:key/rollback` takes `{ anchor, label, source: 'input' | 'worklog' }` or `{ cancel: true }`. Both routes sit behind the owner gate (`resolveSelfActionKeyAndOwner`) and call `SlackHandler.getContextRollbackPoints` / `handleContextRollback`, which use the same `requestContextRollback` gate as the thread command and tell the thread. A refusal answers 403 (not the owner), 409 (a turn is running, nothing to drop) or 422 (the point is from another conversation, before a compaction, or missing from the transcript) with the thread command's words. A waiting rollback shows on the card's action (`⏪ 되돌리기 예약됨`) and in the panel head (`⏪ 다음 턴부터 되돌림`), and can be cancelled from the picker.

@@ -69,6 +69,7 @@ export interface ConversationSession {
   compactionCount?: number;
   contextAnchor?: string;
   pendingRewind?: import('../context-anchor').PendingRewind;
+  contextRewinds?: import('../context-anchor').ContextRewindRecord[];
   /** What the whole task spent (persisted, never reset) — see `creditTaskSpend`. */
   taskUsage?: TaskUsage;
   [key: string]: any;

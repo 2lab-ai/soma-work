@@ -15,6 +15,7 @@ import { getConversation } from '../../conversation/recorder';
 import {
   CONTEXT_ROLLBACK_REFUSAL_TEXT,
   cancelContextRollback,
+  keptUntilOf,
   requestContextRollback,
   rollbackInputLabel,
   rollbackInputPoints,
@@ -81,7 +82,13 @@ export class RollbackHandler implements CommandHandler {
     }
     const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
     const label = `입력 직전: ${rollbackInputLabel(point.text)}`;
-    const result = requestContextRollback(session, { anchor: point.anchor, label, source: 'input' }, user, {
+    const target = {
+      anchor: point.anchor,
+      label,
+      source: 'input' as const,
+      keptUntil: keptUntilOf('input', point.timestamp),
+    };
+    const result = requestContextRollback(session, target, user, {
       requestActive: this.deps.requestCoordinator.isRequestActive(sessionKey),
     });
     if (!result.ok) {
