@@ -11915,7 +11915,9 @@ function effortSwitchNote(r) {
   var res = r.result || {};
   if (res.status === 'unchanged') return { text: '이미 추론 강도 ' + effortLabel(res.effort) + '입니다', error: false };
   var capped = res.effective && res.effective !== res.effort ? ' (이 모델은 ' + effortLabel(res.effective) + '까지 실행)' : '';
-  return { text: '추론 강도 ' + effortLabel(res.effort) + ' · 다음 턴부터 적용' + capped, error: false };
+  // Ultra is codex's top setting; its backend takes max as the strongest reasoning level (llmux sends that).
+  var wire = (res.effective || res.effort) === 'ultra' ? ' · 백엔드에는 최대(max)로 전달' : '';
+  return { text: '추론 강도 ' + effortLabel(res.effort) + ' · 다음 턴부터 적용' + capped + wire, error: false };
 }
 async function changeEffort(key, effort) {
   if (!effort) return;

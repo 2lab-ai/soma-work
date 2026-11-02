@@ -1,3 +1,4 @@
+import { allowedEffortsFor } from '../../session/effort-menu';
 import { EFFORT_LEVELS, userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
@@ -27,7 +28,16 @@ export class EffortHandler implements CommandHandler {
 
     if (parsed.action === 'set' && parsed.level) {
       const resolved = userSettingsStore.resolveEffortInput(parsed.level);
-      if (resolved) {
+      // The default must be a level the default model runs (ultra only where its catalog menu lists it) — the
+      // dashboard's settings refuse the same.
+      const defaultModel = userSettingsStore.getUserDefaultModel(user);
+      const allowed = allowedEffortsFor(defaultModel);
+      if (resolved && !allowed.includes(resolved)) {
+        await say({
+          text: `❌ *Effort Not Supported*\n\n\`${userSettingsStore.getModelDisplayName(defaultModel)}\` does not run \`${resolved}\`.\n\n*Available for this model:* ${allowed.map((n) => `\`${n}\``).join(', ')}`,
+          thread_ts: threadTs,
+        });
+      } else if (resolved) {
         userSettingsStore.setUserDefaultEffort(user, resolved);
 
         // Apply live to the current session so the caller sees the change

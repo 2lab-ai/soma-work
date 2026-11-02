@@ -163,7 +163,10 @@ describe('C4 — after a launch', () => {
 describe('C6 — reconcile: an epic only while it is offered (grok, fable #707 R1)', () => {
   const m = load<{ ntDefaultState(c: unknown, d: unknown): any; ntReconcile(s: any, c: any): void }>(
     ['ntDefaultState', 'ntReconcile', 'mpLevelsOf', 'fitEffortLevel'],
-    { EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], SDK_EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    {
+      EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+      SDK_EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max'],
+    },
   );
   const offered = {
     ...ctx,
