@@ -1819,13 +1819,14 @@ async function start() {
       // released its request-coordinator slot. The controller owns all loop
       // state, serialization, and ordering (M4); the hook only forwards the
       // sessionKey and returns immediately.
-      slackHandler.setGoalTurnSettledHandler((sessionKey: string) => {
-        goalLoopController.onTurnSettled(sessionKey);
+      slackHandler.setGoalTurnSettledHandler((sessionKey: string, opts?: { cause?: 'turn' | 'kick' }) => {
+        goalLoopController.onTurnSettled(sessionKey, opts);
       });
       // S1/S3: let goal action handlers (Delete-advance, owner-DM Continue)
       // kick the loop without holding a direct controller reference.
+      // A kick: no turn ran, so an unchanged summary is not re-judged.
       setGoalLoopResumeHandler((sessionKey: string) => {
-        goalLoopController.onTurnSettled(sessionKey);
+        goalLoopController.onTurnSettled(sessionKey, { cause: 'kick' });
       });
       // SSOT 2026-10-21: the goal-list Delete button and the dashboard share
       // ONE host path for goal-list changes (opening turn through the fence).

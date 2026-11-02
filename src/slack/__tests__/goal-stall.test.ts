@@ -349,8 +349,27 @@ describe('review fixes (trinity round 1)', () => {
     await h.controller.settled(SESSION_KEY);
     expect(h.prompts).toHaveLength(1);
     expect(h.goal.stall).toBeDefined();
-    // A later settle on the same text asks the evaluator again.
-    expect(h.goal.lastEvalSummaryHash).toBeUndefined();
+  });
+
+  it('a kick (goal resume, Continue, a goal added, restart) runs the next turn instead of re-judging the old text', async () => {
+    const { createHash } = await import('node:crypto');
+    const text = 'Still waiting on you: dev has 0 epics.';
+    const h = makeHarness(
+      makeGoal({ lastEvalReason: 'x', lastEvalSummaryHash: createHash('sha1').update(text).digest('hex') }),
+      [verdict({ sameAsPrevious: true, sameConfidence: 0.99 })],
+    );
+    h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await h.controller.settled(SESSION_KEY);
+    expect(h.prompts).toHaveLength(0);
+    expect(h.goal.stall).toBeUndefined();
+    expect(h.injected).toHaveLength(1);
+  });
+
+  it('a kick with text that was never judged still evaluates', async () => {
+    const h = makeHarness(makeGoal({ lastEvalReason: 'x', lastEvalSummaryHash: 'other' }), [verdict()]);
+    h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await h.controller.settled(SESSION_KEY);
+    expect(h.prompts).toHaveLength(1);
   });
 
   it('a failed notice still asks the question, and the notice lists the actions', async () => {
@@ -404,5 +423,47 @@ describe('review fixes (trinity round 1)', () => {
     expect(goal.stall).toBeUndefined();
     expect(goal.continuationCount).toBe(0);
     expect(formatResumedGoalLine(goal)).toContain('repeated failure');
+  });
+});
+
+describe('review fixes (trinity round 2)', () => {
+  it('a reset (/new, renew) ends an open stall through the cap-decision retirer', async () => {
+    const { endGoalCapDecision, setGoalCapDecisionRetirer } = await import('@soma/slack/session-goal');
+    const { retireGoalCapDecision } = await import('../goal-cap-decision');
+    const { setGoalStallRetiredListener } = await import('../goal-stall');
+    setGoalCapDecisionRetirer(retireGoalCapDecision as any);
+    const seen: string[] = [];
+    setGoalStallRetiredListener((_g, _s, cause) => seen.push(cause));
+    try {
+      const goal = makeGoal({
+        stall: {
+          stallId: 's1',
+          stalledAt: 1,
+          reason: 'r',
+          actions: ['a', 'b', 'c'],
+          confidence: 0.99,
+          questionTurnId: 'host:1',
+        },
+      });
+      endGoalCapDecision(goal);
+      expect(goal.stall).toBeUndefined();
+      expect(seen).toEqual(['lifecycle']);
+    } finally {
+      setGoalStallRetiredListener(undefined);
+    }
+  });
+
+  it('the stall line of a resumed goal is used once', async () => {
+    const { enqueueOrActivateGoal, formatResumedGoalLine, setGoalCapDecisionRetirer } = await import(
+      '@soma/slack/session-goal'
+    );
+    const { retireGoalCapDecision } = await import('../goal-cap-decision');
+    setGoalCapDecisionRetirer(retireGoalCapDecision as any);
+    const goal = makeGoal({
+      stall: { stallId: 's1', stalledAt: 1, reason: 'r', actions: ['a', 'b', 'c'], confidence: 0.99 },
+    });
+    enqueueOrActivateGoal({ goal } as any, 'next', 'U1');
+    expect(formatResumedGoalLine(goal)).toContain('repeated failure');
+    expect(formatResumedGoalLine(goal)).toContain('budget');
   });
 });

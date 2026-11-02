@@ -422,6 +422,8 @@ export class GoalHandler implements CommandHandler {
     // pending queue, and the completed history. (To advance to the next goal
     // without nuking the queue, use `goal done` instead.)
     const clearedQueue = session.goalQueue?.length ?? 0;
+    // The dropped goal's open questions end with it (cap decision, stall).
+    retireGoalCapDecision(session.goal);
     session.goal = undefined;
     session.goalQueue = [];
     session.goalHistory = [];

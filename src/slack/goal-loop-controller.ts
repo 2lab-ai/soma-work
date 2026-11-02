@@ -174,6 +174,13 @@ export interface GoalLoopControllerDeps {
   scheduleEvalRetry?: (fn: () => void, delayMs: number) => void;
 }
 
+/**
+ * What woke the loop. `turn`: a work turn ended (its output is new evidence).
+ * `kick`: no turn ran — the owner went on (`goal resume`, Continue, a goal
+ * added) or the process restarted; an unchanged summary is not re-judged.
+ */
+export type GoalLoopTrigger = 'turn' | 'kick';
+
 /** What the host asks the owner when the goal failed again for the same reason. */
 export interface GoalStallQuestion {
   sessionKey: string;
@@ -240,8 +247,9 @@ export class GoalLoopController {
    * This is the ONLY public way to advance the loop; the caller never
    * touches loop state directly (M4 — ordering is owned here).
    */
-  onTurnSettled(sessionKey: string): void {
-    this.enqueue(sessionKey, () => this.runOnce(sessionKey));
+  onTurnSettled(sessionKey: string, opts: { cause?: GoalLoopTrigger } = {}): void {
+    const cause = opts.cause ?? 'turn';
+    this.enqueue(sessionKey, () => this.runOnce(sessionKey, cause));
   }
 
   /**
@@ -273,7 +281,7 @@ export class GoalLoopController {
   }
 
   /** One eval (+ maybe one continuation) for a settled session. */
-  private async runOnce(sessionKey: string): Promise<void> {
+  private async runOnce(sessionKey: string, cause: GoalLoopTrigger = 'turn'): Promise<void> {
     const { registry, requestCoordinator, logger } = this.deps;
     const session = registry.getSessionByKey(sessionKey);
     const goal = session?.goal;
@@ -315,14 +323,17 @@ export class GoalLoopController {
     // eval would return the same "not complete" — skip the (expensive)
     // dispatch and reuse it. Empty summaries never short-circuit (no evidence
     // to reuse), and a `complete` verdict clears the hash so it never sticks.
-    // Only at the cap: below it, the same output after a new turn is exactly
-    // the repeat the stall check exists for, and only the evaluator can say so
-    // (and name the three next instructions) — the dispatch is worth it.
+    // Reused only when no new turn produced this text: a kick (the owner went
+    // on — `goal resume`, Continue, a goal added — or a restart) runs the next
+    // turn instead of re-judging the old one; at the cap the verdict cannot
+    // change anything. A NEW turn with the same output is exactly the repeat
+    // the stall check exists for, and only the evaluator can say so (and name
+    // the three next instructions) — the dispatch is worth it.
     if (
       workSummaryRaw !== '' &&
       activeGoal.lastEvalSummaryHash === summaryHash &&
       activeGoal.lastEvalReason &&
-      activeGoal.continuationCount >= activeGoal.maxContinuations
+      (cause === 'kick' || activeGoal.continuationCount >= activeGoal.maxContinuations)
     ) {
       logger.info('Goal eval short-circuited — work summary unchanged since last eval', { sessionKey });
       await this.handleVerdict(
@@ -569,9 +580,6 @@ export class GoalLoopController {
     // land on a goal the stall holds.
     retireGoalCapDecision(activeGoal);
     const stall = openGoalStall(activeGoal, verdict, this.now());
-    // A later settle on the same text (a restart after the round ended without
-    // a new turn) must ask the evaluator again, not reuse this verdict.
-    activeGoal.lastEvalSummaryHash = undefined;
     this.persist();
     logger.info('Goal loop stopped — same failure as the previous evaluation', {
       sessionKey,
