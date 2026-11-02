@@ -62,7 +62,9 @@ export function createTaskPlanDecider(deps: TaskPlanDeciderDeps): TaskPlanDecide
       return { status: 200, body: { ok: true, state: 'cancelled', revision: decided.gate.revision } };
     }
 
-    const text = planApprovedText(previous.plan!, actorUserId);
+    // decidePlan starts only a waiting plan, so it has one; the check keeps the type honest.
+    if (!previous.plan) return refuse(409, 'no plan is waiting to start');
+    const text = planApprovedText(previous.plan, actorUserId);
     // A dry run first: a refusal (another task of the owner runs, the window) changes nothing.
     // An epic starts in its own tree's slot (E4 ③), as the controller's start will place it.
     const refused =
@@ -71,7 +73,25 @@ export function createTaskPlanDecider(deps: TaskPlanDeciderDeps): TaskPlanDecide
         : deps.controller.canStart(task.ownerId, text);
     if (refused) return refused;
     deps.setTaskPlanGate(taskId, decided.gate);
-    const started = await deps.controller.start({ sessionKey, text, actorUserId });
+    // Not started: the plan waits again, as it was — 시작 can be pressed again (a start that
+    // throws, too: an approved gate with no turn would leave nothing to press — review R1, fable P3).
+    const putBack = () => {
+      try {
+        if (deps.getSession(sessionKey)?.taskPlan === decided.gate) deps.setTaskPlanGate(taskId, previous);
+      } catch (error) {
+        deps.logger.warn('A plan start that did not happen could not be put back', {
+          sessionKey,
+          error: (error as Error)?.message,
+        });
+      }
+    };
+    let started: TaskCommandResponse;
+    try {
+      started = await deps.controller.start({ sessionKey, text, actorUserId });
+    } catch (error) {
+      putBack();
+      throw error;
+    }
     if (started.status === 202) {
       deps.logger.info('Task plan started from the dashboard', { sessionKey, revision, by: actorUserId });
       return {
@@ -80,15 +100,7 @@ export function createTaskPlanDecider(deps: TaskPlanDeciderDeps): TaskPlanDecide
         ...(started.done ? { done: started.done } : {}),
       };
     }
-    // Not started: the plan waits again, as it was — 시작 can be pressed again.
-    try {
-      if (deps.getSession(sessionKey)?.taskPlan === decided.gate) deps.setTaskPlanGate(taskId, previous);
-    } catch (error) {
-      deps.logger.warn('A plan start that did not happen could not be put back', {
-        sessionKey,
-        error: (error as Error)?.message,
-      });
-    }
+    putBack();
     return started;
   };
 }

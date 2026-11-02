@@ -86,5 +86,8 @@ describe('renderTaskPlanPage — the full-page view', () => {
     expect(page).not.toMatch(/<script/i);
     expect(TASK_PLAN_PAGE_CSP).toContain("default-src 'none'");
     expect(TASK_PLAN_PAGE_CSP).toContain("script-src 'none'");
+    // An opaque origin: sandbox without allow-same-origin (review R1, grok P1).
+    expect(TASK_PLAN_PAGE_CSP.split(';')[0].trim()).toBe('sandbox');
+    expect(TASK_PLAN_PAGE_CSP).not.toContain('allow-same-origin');
   });
 });

@@ -140,9 +140,13 @@ export const TASK_PLAN_CSS = `
 .tp-risks h5 { color: color-mix(in srgb, var(--tp-warn) 75%, var(--tp-text)); }
 `;
 
-/** The full-page view's content policy: no script, no network, inline style only. */
+/**
+ * The full-page view's content policy: no script, no network, inline style only — and `sandbox` (no
+ * allow-same-origin), so the page is an opaque origin with no reach to the dashboard's cookie or storage,
+ * as the inert artifacts are (artifact-routes.ts INERT_CSP), even if text the model wrote ever got past the escaping.
+ */
 export const TASK_PLAN_PAGE_CSP =
-  "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; script-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+  "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; script-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
 
 /** The plan as a whole document (the full-page view): the task's title, the plan's state, the fragment. */
 export function renderTaskPlanPage(plan: TaskPlanDoc, meta: { title: string; state: TaskPlanState }): string {
