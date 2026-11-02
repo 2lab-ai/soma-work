@@ -29,7 +29,7 @@ export const DICTATION_TAB_HTML = `<div slot="dictation" data-tab="dictation" cl
         <label class="dic-engine" data-engine="server">
           <input type="radio" name="dic-engine" value="server">
           <span class="dic-engine-body"><span class="dic-engine-name">서버 위스퍼</span>
-          <span class="dic-engine-desc">우리 서버의 Whisper large-v3-turbo가 받아씁니다. 기기 성능과 상관없이 한국어 정확도가 가장 높습니다. 음성은 우리 서버로만 갑니다.</span>
+          <span class="dic-engine-desc">우리 서버의 Whisper large-v3-turbo가 받아씁니다. 기기와 브라우저가 달라도 같은 모델로 받아씁니다. 음성은 우리 서버로만 갑니다.</span>
           <span class="dic-engine-why" data-why="server" hidden></span></span>
         </label>
         <label class="dic-engine" data-engine="browser">
@@ -48,7 +48,7 @@ export const DICTATION_TAB_HTML = `<div slot="dictation" data-tab="dictation" cl
     <section class="group" aria-labelledby="h-dic-test">
       <header><h2 id="h-dic-test">말해서 시험</h2><p>고른 엔진으로 8초 동안 듣습니다. 첫 글자가 나오기까지 걸린 시간과 받아쓴 글을 보여 줍니다.</p></header>
       <div class="dic-test">
-        <button type="button" class="btn primary" id="dic-test-btn">말해서 시험</button>
+        <button type="button" class="btn primary" id="dic-test-btn" disabled>말해서 시험</button>
         <p class="dic-live" id="dic-test-live" aria-live="polite"></p>
         <p class="dic-result" id="dic-test-result" role="status"></p>
       </div>
@@ -257,16 +257,21 @@ function dicPathText(info) {
   var ko = info.langs && info.langs['ko-KR'];
   switch (info.path) {
     case 'apple':
-      return { engine: 'Apple 음성 인식 (Safari·WebKit)', where: '언어가 지원하면 이 기기 안에서 처리합니다 (WebKit이 기기 안 처리를 요청)' };
+      return { engine: 'Apple 음성 인식 (Safari·WebKit)', where: '기기 안인지 Apple 서버인지는 iOS·macOS가 정하고, 페이지에는 알려 주지 않습니다' };
     case 'android':
       return { engine: '이 휴대폰의 음성 인식 앱 (보통 ‘Google 음성 인식 및 합성’)', where: '페이지가 기기 안 처리를 요청할 수 없습니다 — 휴대폰 설정에 따라 Google 서버로 보낼 수 있습니다' };
     case 'chrome':
       return {
         engine: 'Chrome 음성 인식',
-        where: ko === 'available' ? '한국어는 이 기기 안에서 처리합니다 (기기용 한국어 모델이 있음)' : '한국어 기기용 모델이 없어 Google 서버로 보냅니다',
+        where:
+          ko === 'available'
+            ? '한국어는 이 기기 안에서 처리합니다 (기기용 한국어 모델이 있음)'
+            : ko === 'unknown' || ko === 'timeout'
+              ? 'Chrome이 기기용 모델이 있는지 답하지 않아, 기기 안인지 Google 서버인지 알 수 없습니다'
+              : '한국어 기기용 모델이 없어 Google 서버로 보냅니다',
       };
     case 'service':
-      return { engine: '브라우저의 음성 서비스', where: '기기 밖, 브라우저 회사의 서버에서 처리합니다' };
+      return { engine: '브라우저의 음성 서비스', where: '브라우저가 정합니다 — 보통 기기 밖, 브라우저 회사의 서버입니다' };
     case 'webapp':
       return { engine: '쓸 수 없음', where: '홈 화면 웹 앱에서는 iPhone 음성 인식을 쓸 수 없습니다' };
     default:
@@ -277,7 +282,7 @@ function dicPathText(info) {
 var DIC_LANG_NAMES = { 'ko-KR': '한국어', 'en-US': '영어' };
 var DIC_LANG_STATES = {
   available: '이 기기에 있음',
-  downloadable: '내려받을 수 있음 (Chrome은 처음 묻기 전에도 이렇게 답합니다)',
+  downloadable: '내려받을 수 있음',
   downloading: '내려받는 중',
   unavailable: '이 기기에서는 쓸 수 없음',
   timeout: '브라우저가 답하지 않음',
@@ -367,6 +372,7 @@ async function dicInstall(lang) {
 
 // ── 말해서 시험 ──
 var DIC_ERRORS = {
+  'no-audio': '음성 인식기가 마이크를 열지 않았습니다',
   'not-allowed': '마이크 권한이 없습니다',
   'service-not-allowed': '이 기기의 음성 인식이 꺼져 있습니다',
   'audio-capture': '마이크를 찾지 못했습니다',
@@ -376,53 +382,103 @@ var DIC_ERRORS = {
   'language-not-supported': '한국어를 지원하지 않습니다',
 };
 
-// The words of a result list: finals, then the words still being heard.
-function dicTestText(results) {
+// Two pieces of text with one space between them (none added where one side has it).
+function dicJoin(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return /\s$/.test(a) || /^\s/.test(b) ? a + b : a + ' ' + b;
+}
+
+// The words of a result list: finals, then the words still being heard — the dashboard's reading (ntDictationRead):
+// on Android the recogniser resends what it settled inside a longer copy, which replaces it instead of doubling it.
+function dicTestText(results, cumulative) {
   var finals = '';
   var interim = '';
   for (var i = 0; i < results.length; i++) {
     var t = results[i][0] ? String(results[i][0].transcript || '') : '';
-    if (results[i].isFinal) finals += t; else interim += t;
+    if (!t) continue;
+    if (!results[i].isFinal) {
+      interim += t;
+      continue;
+    }
+    var had = finals.trim();
+    if (cumulative && had && t.trim().indexOf(had) === 0) finals = t.trim();
+    else finals = dicJoin(finals, t);
   }
-  return (finals + interim).trim();
+  var settled = finals.trim();
+  var rest = interim.trim();
+  if (cumulative && settled && rest.indexOf(settled) === 0) interim = rest.slice(settled.length);
+  return dicJoin(finals, interim).replace(/\s+/g, ' ').trim();
 }
 
 // The line under the test: the time to the first word and how long it listened, or why nothing came.
 function dicTestSummary(t) {
   var secs = function (ms) { return (Math.round(ms / 100) / 10).toFixed(1) + '초'; };
-  if (t.text) return '첫 글자까지 ' + secs(t.first) + ' · ' + secs(t.ended - t.t0) + ' 동안 들음 · ' + DIC_ENGINE_NAMES[t.engine];
+  if (t.text) return '첫 글자까지 ' + secs(t.first) + ' · ' + secs(t.ended - (t.t0 || t.ended)) + ' 동안 들음 · ' + DIC_ENGINE_NAMES[t.engine];
   return '글자가 나오지 않았습니다' + (t.err ? ' — ' + (DIC_ERRORS[t.err] || t.err) : '') + ' · ' + DIC_ENGINE_NAMES[t.engine];
 }
 
+// The microphone opens within this or the test says so (a recogniser that never answers).
+var DIC_OPEN_MS = 10000;
+// A stop or an error the recogniser never confirms with an end does not hold the test.
+var DIC_SETTLE_MS = 3000;
+
 function dicTestStart() {
   if (_dicTest) return dicTestStop();
-  var engine = dicEffective(dictationEngineChoice(dicStore()), dicEngines(_dicInfo || { path: dicPath(window) }));
-  var Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
   var live = document.getElementById('dic-test-live');
   var res = document.getElementById('dic-test-result');
   var btn = document.getElementById('dic-test-btn');
+  // Not before this device's details are in: where the speech may go (on the device or not) is decided from them.
+  if (!_dicInfo) {
+    if (res) res.textContent = '이 기기 정보를 확인하는 중입니다 — 잠시 뒤에 눌러 주세요';
+    return;
+  }
+  var engine = dicEffective(dictationEngineChoice(dicStore()), dicEngines(_dicInfo));
+  var Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (engine !== 'device' || !Rec) {
     if (res) res.textContent = '이 기기에서는 시험할 엔진이 없습니다';
     return;
   }
-  var t = { engine: engine, rec: new Rec(), t0: Date.now(), first: 0, ended: 0, text: '', err: '' };
+  var android = _dicInfo.path === 'android';
+  var t = { engine: engine, rec: new Rec(), t0: 0, first: 0, ended: 0, base: '', text: '', err: '', stopping: false, android: android };
   t.rec.lang = 'ko-KR';
   t.rec.interimResults = true;
-  t.rec.continuous = false;
+  // As on the dashboard: one utterance per session on Android (it is listened to again below), else continuous.
+  t.rec.continuous = !android;
   t.rec.maxAlternatives = 1;
-  if (_dicInfo && _dicInfo.path === 'chrome' && _dicInfo.langs['ko-KR'] === 'available') t.rec.processLocally = true;
+  if (_dicInfo.path === 'chrome' && _dicInfo.langs['ko-KR'] === 'available') t.rec.processLocally = true;
+  t.rec.onaudiostart = function () {
+    // The eight seconds start when the microphone opens — not while a permission prompt is read.
+    if (t.t0) return;
+    t.t0 = Date.now();
+    clearTimeout(t.timer);
+    t.timer = setTimeout(function () { dicTestStop(); }, DIC_TEST_MS);
+    if (res) res.textContent = '듣는 중… 말해 보세요 (8초)';
+  };
   t.rec.onresult = function (e) {
-    var text = dicTestText(e.results);
-    if (text && !t.first) t.first = Date.now() - t.t0;
+    var text = dicJoin(t.base, dicTestText(e.results, android)).trim();
+    if (text && !t.first) t.first = Date.now() - (t.t0 || Date.now());
     if (text) t.text = text;
     if (live) live.textContent = t.text;
   };
-  t.rec.onerror = function (e) { t.err = (e && e.error) || 'error'; };
-  t.rec.onend = function () { dicTestDone(t); };
+  t.rec.onerror = function (e) {
+    t.err = (e && e.error) || 'error';
+    dicTestSettle(t);
+  };
+  t.rec.onend = function () {
+    // Android ended an utterance with time left: listen again, keeping the words.
+    if (android && !t.stopping && !t.err && t.t0 && Date.now() - t.t0 < DIC_TEST_MS) {
+      t.base = t.text;
+      try { t.rec.start(); return; } catch (_e) {}
+    }
+    dicTestDone(t);
+  };
   _dicTest = t;
-  t.timer = setTimeout(function () { try { t.rec.stop(); } catch (_e) {} }, DIC_TEST_MS);
+  t.timer = setTimeout(function () {
+    if (!t.t0) { t.err = 'no-audio'; dicTestStop(); }
+  }, DIC_OPEN_MS);
   if (live) live.textContent = '';
-  if (res) res.textContent = '듣는 중… 말해 보세요 (8초)';
+  if (res) res.textContent = '마이크를 여는 중…';
   if (btn) btn.textContent = '멈추기';
   try {
     t.rec.start();
@@ -433,7 +489,16 @@ function dicTestStart() {
 }
 
 function dicTestStop() {
-  if (_dicTest) try { _dicTest.rec.stop(); } catch (_e) {}
+  var t = _dicTest;
+  if (!t) return;
+  t.stopping = true;
+  try { t.rec.stop(); } catch (_e) {}
+  dicTestSettle(t);
+}
+
+// The end may never come (Edge can go silent after a stop or an error): the test lets go after a moment.
+function dicTestSettle(t) {
+  setTimeout(function () { dicTestDone(t); }, DIC_SETTLE_MS);
 }
 
 function dicTestDone(t) {
@@ -453,6 +518,8 @@ async function loadDictationTab() {
   _dicInfo = await dicInfo(window);
   dicPaintInfo(_dicInfo);
   dicPaintEngines(_dicInfo);
+  var btn = document.getElementById('dic-test-btn');
+  if (btn) btn.disabled = false;
 }
 
 function initDictationTab() {
