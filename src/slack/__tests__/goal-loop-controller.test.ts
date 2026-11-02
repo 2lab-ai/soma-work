@@ -18,6 +18,7 @@ import {
   extractEvalRetryDelayMs,
   GOAL_EVAL_DISPATCH_MAX_RETRIES,
   GOAL_EVAL_RETRY_DEFAULT_DELAY_MS,
+  GOAL_SUMMARY_PERSIST_MAX,
   GoalLoopController,
   type GoalLoopControllerDeps,
 } from '../goal-loop-controller';
@@ -271,7 +272,7 @@ describe('GoalLoopController', () => {
     expect(maxParallel).toBe(1);
   });
 
-  it('S9: an unchanged work summary short-circuits the eval but still drives a continuation', async () => {
+  it('S9: below the cap the same summary is evaluated again (the stall check needs the evaluator)', async () => {
     let dispatchCount = 0;
     const h = makeHarness({
       dispatcher: async () => {
@@ -280,20 +281,60 @@ describe('GoalLoopController', () => {
       },
     });
 
-    // First settle: real eval runs, records the summary hash + reason.
     h.controller.onTurnSettled(SESSION_KEY);
     await h.controller.settled(SESSION_KEY);
     expect(dispatchCount).toBe(1);
-    expect(h.goal.continuationCount).toBe(1);
     expect(h.goal.lastEvalSummaryHash).toBeDefined();
 
-    // Second settle with the SAME goalLastTurnText: no new dispatch, but the
-    // loop still advances (reuses the prior "not complete" verdict).
+    // Same goalLastTurnText again: below the cap, a real eval runs.
     h.controller.onTurnSettled(SESSION_KEY);
     await h.controller.settled(SESSION_KEY);
-    expect(dispatchCount).toBe(1); // short-circuited — no second eval
+    expect(dispatchCount).toBe(2);
     expect(h.goal.continuationCount).toBe(2);
-    expect(h.injected).toHaveLength(2);
+  });
+
+  it('S9: at the cap a kick reuses the verdict, but a NEW turn with the same output is judged (it may be the repeat a stall needs)', async () => {
+    let dispatchCount = 0;
+    const h = makeHarness({
+      goal: { continuationCount: 10, maxContinuations: 10 },
+      dispatcher: async () => {
+        dispatchCount += 1;
+        return JSON.stringify({ completed: false, reason: 'missing tests', remaining: ['add tests'] });
+      },
+    });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatchCount).toBe(1);
+    // A kick (no new turn ran): reused.
+    h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatchCount).toBe(1);
+    // A real turn that printed the same thing: only the evaluator can call it a repeat.
+    h.controller.onTurnSettled(SESSION_KEY, { cause: 'turn' });
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatchCount).toBe(2);
+    expect(h.injected).toHaveLength(0);
+  });
+
+  it('S9: after a restart the persisted (16k-bounded) summary still matches its hash — a kick does not re-judge it', async () => {
+    let dispatchCount = 0;
+    const h = makeHarness({
+      dispatcher: async () => {
+        dispatchCount += 1;
+        return JSON.stringify({ completed: false, reason: 'missing tests', remaining: ['add tests'] });
+      },
+    });
+    const long = `${'evidence line\n'.repeat(1500)}tail`; // > 16k chars
+    h.session.goalLastTurnText = long;
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatchCount).toBe(1);
+    // Restart: the in-memory text is gone; the goal keeps the bounded mirror.
+    h.session.goalLastTurnText = undefined;
+    h.goal.lastAssistantTurnSummary = long.slice(0, GOAL_SUMMARY_PERSIST_MAX);
+    h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatchCount).toBe(1);
   });
 
   it('S9: a changed work summary does NOT short-circuit (re-evaluates)', async () => {

@@ -258,7 +258,8 @@ export function createPermissionWarningDeduper(opts: { windowMs: number; now?: (
 export interface PermissionWarningEvent {
   /** Slack user the session acts for. */
   user: string;
-  channel: string;
+  /** The session's Slack thread; absent for a Slack-less task turn (dashboard only). */
+  channel?: string;
   threadTs?: string;
   /** Dashboard conversation the warning is recorded into (absent → Slack only). */
   conversationId?: string;

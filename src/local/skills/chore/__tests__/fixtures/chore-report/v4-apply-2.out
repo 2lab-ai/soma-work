@@ -1,0 +1,14 @@
+RESULT	OK	close-pr	pr#7	closed
+RESULT	FAIL	close-pr	pr#30	gh pr close failed: <img src=x onerror=alert(1)> HTTP 502
+RESULT	OK	close-issue	issue#9	closed
+RESULT	SKIP	close-issue	issue#31	changed since approval (now: CLOSED 2026-10-18T00:00:00Z)
+RESULT	OK	jira-transition	jira#TST-101	moved: QA (staging)로 옮김	attempt=20261019T030000Z-5e6f7a8b
+RESULT	OK	jira-transition	jira#TST-102	already-done: 목표 상태와 승인 댓글이 이미 있음	attempt=20261019T030000Z-5e6f7a8b
+RESULT	SKIP	jira-transition	jira#TST-105	manual: 정리 댓글이 예상과 다름 (같은 승인 댓글 2개)	attempt=20261019T030000Z-5e6f7a8b
+RESULT	SKIP	jira-transition	jira#TST-106	at-target: 이미 목표 상태 — 이번 실행이 한 것 아님	attempt=20261019T030000Z-5e6f7a8b
+RESULT	SKIP	jira-transition	jira#TST-107	changed: 승인 뒤 상태가 바뀜 (지금 In Progress)	attempt=20261019T030000Z-5e6f7a8b
+RESULT	SKIP	delete-remote	feat/login-form	gone
+RESULT	SKIP	delete-remote	feat/a%3Db%25c	gone
+RESULT	SKIP	delete-remote	feat/unknown-then-gone	gone
+RESULT	SKIP	delete-remote	feat/stale-skip	basis-changed (PR #105 no longer matches the snapshot)
+SUMMARY	ok=4	skip=8	fail=1	unknown=0	run_id=20261015T051233Z-0a1b2c3d	attempt=20261019T030000Z-5e6f7a8b	scope=full	journal=/repo/.git/chore/20261015T051233Z-0a1b2c3d.journal

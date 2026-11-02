@@ -1,0 +1,83 @@
+{
+ "_comment": "synthetic inputs behind move/valid.tsv: source_sha / payload_sha of each move-issue row = chore_plan.source_sha(issue) / sha256(move_payload(issue, repo_url, snap, reason, related, plan_date))",
+ "repo_url": "https://github.com/test/repo",
+ "plan_date": "2026-10-21",
+ "snap": {
+  "site": "example.atlassian.net",
+  "project": "TST",
+  "project_id": "10000",
+  "issuetype": "10001",
+  "issuetype_name": "작업",
+  "account": "712020:00000000-0000-0000-0000-000000000001",
+  "gh_login": "chore-bot"
+ },
+ "rows": [
+  {
+   "ref": "issue#11",
+   "reason": "재현 절차가 있고 아직 해결 PR이 없습니다; 다음 분기 = 결제, 100% 확인",
+   "related": [],
+   "issue": {
+    "number": 11,
+    "title": "로그인 실패: 안내 문구 없음, 재시도 버튼; 100%",
+    "author": "frank",
+    "created": "2026-05-01T09:00:00Z",
+    "labels": [
+     "ui",
+     "bug"
+    ],
+    "body": "재현:\n1. 잘못된 비밀번호\n2. 아무 안내 없음\n\n기대: 안내 문구",
+    "comments": [
+     {
+      "author": "grace",
+      "created": "2026-05-02T10:00:00Z",
+      "body": "저도 봤습니다.\r\n크롬에서만."
+     },
+     {
+      "author": "frank",
+      "created": "2026-05-03T11:00:00Z",
+      "body": "참고: https://github.com/test/repo/issues/12 와 비슷"
+     }
+    ]
+   }
+  },
+  {
+   "ref": "issue#12",
+   "reason": "TST-90·TST-91과 함께 볼 작업",
+   "related": [
+    "TST-90",
+    "TST-91"
+   ],
+   "issue": {
+    "number": 12,
+    "title": "세션 만료 후 화면 멈춤",
+    "author": "grace",
+    "created": "2026-05-04T00:00:00Z",
+    "labels": [],
+    "body": "줄 1\r\n줄 2\r\n",
+    "comments": []
+   }
+  },
+  {
+   "ref": "issue#13",
+   "reason": "이미 만든 TST-130으로 닫기만",
+   "related": [],
+   "issue": {
+    "number": 13,
+    "title": "지워진 계정의 이슈",
+    "author": null,
+    "created": "2026-05-05T00:00:00Z",
+    "labels": [
+     "question"
+    ],
+    "body": null,
+    "comments": [
+     {
+      "author": null,
+      "created": "2026-05-06T00:00:00Z",
+      "body": "x"
+     }
+    ]
+   }
+  }
+ ]
+}

@@ -105,8 +105,21 @@ describe('buildStreamOptions — catalog window workaround (grok-4.5)', () => {
     expect(options.env?.DISABLE_AUTO_COMPACT).toBe('1');
   });
 
+  it('keeps gpt-6.1-sol on its policy blocking limit (249000) despite a bigger catalog window', async () => {
+    modelCatalog.__testSeed([
+      GROK,
+      { id: 'gpt-6.1-sol', aliases: ['sol'], name: 'GPT-6.1 Sol', efforts: [], max_context: 400_000, group: 'codex' },
+    ]);
+    const session = { model: 'gpt-6.1-sol', systemPrompt: 'x', sessionId: 's3s' } as ConversationSession;
+    const { options } = await buildStreamOptions({ queryEnv: {}, session }, makeDeps());
+    expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBe('249000');
+    expect(options.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+    expect(options.env?.DISABLE_AUTO_COMPACT).toBe('1');
+  });
+
   it.each([
     'gpt-6-astra[1m]',
+    'gpt-6.1-sol[1m]',
     'gpt-99-future[1m]',
   ])('%s session gets the 1M SDK blocking policy (977000)', async (model) => {
     // Contract mirrors gpt-5.6-sol[1m]: the [1m] session must receive
@@ -189,5 +202,45 @@ describe('buildStreamOptions — effort clamp to catalog menu', () => {
     } as ConversationSession;
     const { options } = await buildStreamOptions({ queryEnv: {}, session }, makeDeps());
     expect(options.effort).toBe('xhigh');
+  });
+});
+
+// Ultra (only the codex tiers whose catalog menu lists it) is not an SDK `--effort` value and no backend takes it on
+// the wire (codex and Claude both 400 'ultra', probed 2026-11-02): it runs as max. Never through
+// CLAUDE_CODE_EXTRA_BODY — that body rides every request of the CLI process, Claude subagents included.
+describe('buildStreamOptions — ultra runs as max', () => {
+  const SOL = {
+    id: 'gpt-6.1-sol[1m]',
+    name: 'Sol 6.1',
+    aliases: [],
+    group: 'codex',
+    efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    max_context: 1_000_000,
+  };
+  const OPUS = {
+    id: 'claude-opus-5-5[1m]',
+    name: 'Opus',
+    aliases: [],
+    group: 'claude',
+    efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    max_context: 1_000_000,
+  };
+
+  it('on a model whose menu lists it, on one that stops at max, and on one the catalog does not know: SDK effort max, no extra body', async () => {
+    modelCatalog.__testSeed([SOL, OPUS]);
+    for (const model of ['gpt-6.1-sol[1m]', 'claude-opus-5-5[1m]', 'claude-opus-4-7']) {
+      const session = {
+        model,
+        systemPrompt: 'x',
+        sessionId: `u-${model}`,
+        effort: 'ultra',
+      } as unknown as ConversationSession;
+      const queryEnv: Record<string, string | undefined> = {};
+      const { options } = await buildStreamOptions({ queryEnv, session }, makeDeps());
+      expect(options.effort, model).toBe('max');
+      expect(options.env?.CLAUDE_CODE_EXTRA_BODY, model).toBeUndefined();
+      // The saved level stays what the owner chose.
+      expect(session.effort).toBe('ultra');
+    }
   });
 });

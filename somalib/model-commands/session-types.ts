@@ -268,6 +268,12 @@ export interface SessionResourceUpdateRequest {
   instructionOperations?: SessionInstructionOperation[];
   /** Update session title (e.g. after linking issue or merging PR) */
   title?: string;
+  /**
+   * With `title`: the host applies it only while the session still has a host
+   * stand-in title ("New Session" and friends). Used for intent titles on
+   * voice / image-only sessions so a deliberate title is never overwritten.
+   */
+  titleFillOnly?: boolean;
 }
 
 export interface SessionResourceUpdateResult {

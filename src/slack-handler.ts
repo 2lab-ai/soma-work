@@ -7,6 +7,7 @@ import {
   type DispatchOutcome,
   type DispatchRequest,
   FollowupDispatcher,
+  isAutoCompactStop,
   type RunReport,
 } from '@soma/slack/followup-dispatcher';
 import {
@@ -20,10 +21,11 @@ import {
 import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
 import { OutputFlag } from '@soma/slack/output-flags';
-import { isLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
+import { isLocalSlashCommand, shouldForwardAsLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
 import { slackTsOrderMs } from '@soma/slack/slack-ts';
 import { sayPostSwitches } from '@soma/slack/stream-processor';
+import { getWorkQueues, WorkQueueService } from '@soma/slack/work-queue';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
@@ -78,18 +80,30 @@ import {
   handleCancel as handleFollowupCancel,
   handleRetry as handleFollowupRetry,
   handleSendNow as handleFollowupSendNow,
+  provenFollowupClick,
   registerFollowupActions,
 } from './slack/actions/followup-actions';
 import { createAssistantContainer } from './slack/assistant-container';
 import { buildAutoskillFire } from './slack/autoskill-fire';
+import { requestBotDelete } from './slack/bot-delete-decision';
 import { CommandParser } from './slack/command-parser';
 import type { GoalOpeningAdmission } from './slack/commands/types';
 import { CompletionMessageTracker } from './slack/completion-message-tracker';
 import { createForkExecutor } from './slack/create-fork-executor';
 import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch-abort';
+import { requestEnvSkillPermission } from './slack/env-skill-permission-request';
+import { mintEventTs } from './slack/event-ts';
 import { type FollowupReactionRole, FollowupReactionSurface, rolesForFollowupState } from './slack/followup-reactions';
-import { bumpGoalEpoch, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
+import { retireGoalCapDecision } from './slack/goal-cap-decision';
+import { bumpGoalEpoch, GOAL_SUMMARY_PERSIST_MAX, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from './slack/goal-host-actions';
+import type { GoalStallQuestion } from './slack/goal-loop-controller';
+import {
+  buildGoalStallQuestion,
+  type GoalStallRetireCause,
+  setGoalStallRetiredListener,
+  shouldAskGoalStallQuestion,
+} from './slack/goal-stall';
 import {
   checkAndConsumeBudget,
   formatBudgetExhaustedMessage,
@@ -104,18 +118,20 @@ import {
   deleteGoalById,
   enqueueOrActivateGoal,
   formatGoalObjectiveForSlack,
+  formatResumedGoalLine,
   restoreGoalState,
   snapshotGoalState,
 } from './slack/session-goal';
 import { announceSessionNotice } from './slack/session-notice';
 import { SummaryService } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
+import type { SlackTaskEntry } from './slack/task-entry';
 import { normalizeZInvocation, stripZPrefix } from './slack/z/normalize';
 import { DmZRespond } from './slack/z/respond';
 import { isDmAllowedForNonAdmin } from './slack/z/whitelist';
 import { TodoManager } from './todo-manager';
 import { TurnNotifier } from './turn-notifier';
-import type { ConversationSession, SessionIncidentRequest } from './types';
+import type { ConversationSession, SessionGoal, SessionGoalStall, SessionIncidentRequest } from './types';
 import { userSettingsStore } from './user-settings-store';
 import { WorkingDirectoryManager } from './working-directory-manager';
 
@@ -127,14 +143,6 @@ interface SlackPermalinkTarget {
    * thread permalink. Present when the link points at a message inside a
    * thread (reply or root). Undefined for plain top-level channel messages.
    */
-  threadTs?: string;
-}
-
-interface DmDeleteActionValue {
-  requesterId: string;
-  targetChannel: string;
-  targetTs: string;
-  /** Root ts when the target lives inside a thread (reply or root). */
   threadTs?: string;
 }
 
@@ -261,6 +269,8 @@ export class SlackHandler {
   // Pipeline components
   private inputProcessor: InputProcessor;
   private sessionInitializer: SessionInitializer;
+  /** Process-wide work queue (`config.json#workQueues`) — e.g. one dev2 deploy at a time. */
+  private workQueue: WorkQueueService;
   private streamExecutor: StreamExecutor;
 
   // Follow-up queue (`.prd/slack-agent-ui` U3). Optional on purpose: legacy
@@ -269,6 +279,9 @@ export class SlackHandler {
   // guarded so those paths keep their exact pre-queue behavior.
   private followupStore?: FollowupQueueStorePort;
   private followupQueue?: FollowupQueue;
+  private taskNoticeHandoff?: (sessionKey: string, session: ConversationSession) => void;
+  /** E2 ⑧ — the Slack entry: a plain instruction becomes a dashboard task (wired once the deliverer is up). */
+  private taskEntry?: SlackTaskEntry;
   private followupDispatcher?: FollowupDispatcher;
   /**
    * Why the queue could not be loaded. Set = DEGRADED: the queue refuses to
@@ -370,6 +383,14 @@ export class SlackHandler {
    */
   private followupActionDeps?: FollowupActionsDeps;
   /**
+   * Told the session key after every committed queue write that changed what a
+   * session's queue shows — the dashboard pushes that session's panel
+   * ({@link setFollowupChangeListener}). `followupShown` is the last signature
+   * per session, so an unrelated session's write announces nothing.
+   */
+  private followupChangeListener?: (sessionKey: string) => void;
+  private followupShown?: Map<string, string>;
+  /**
    * Live bot-thread migrations. A first mention opens its dispatch slot under
    * the SOURCE thread key, and the pipeline then moves the session into a new
    * work thread and terminates the source session
@@ -435,7 +456,13 @@ export class SlackHandler {
     // all. The closure reads the queue as a runtime field: it is built later in
     // this constructor, and a stop cannot occur before then.
     this.requestCoordinator = new RequestCoordinator({
-      beforeAbort: (sessionKey, reason) => this.freezeFollowupOnStop(sessionKey, reason),
+      beforeAbort: (sessionKey, reason) => {
+        this.freezeFollowupOnStop(sessionKey, reason);
+        // After the freeze (a refused freeze refuses the stop): the stop is
+        // recorded even with an empty queue, where the freeze records nothing,
+        // so a pending auto-compact continuation can see it.
+        this.noteSessionStop(sessionKey);
+      },
     });
     this.toolTracker = new ToolTracker();
     this.reactionManager = new ReactionManager(this.slackApi);
@@ -555,6 +582,31 @@ export class SlackHandler {
     const pendingInstructionConfirmStore = new PendingInstructionConfirmStore();
     pendingInstructionConfirmStore.loadForms();
 
+    // Work queue (#726): one dev2 deploy at a time across every user of this
+    // process. The gate reads liveness straight from the registry and the
+    // request coordinator — the slot's truth is the session's own state.
+    this.workQueue = new WorkQueueService({
+      slackApi: this.slackApi,
+      getQueues: getWorkQueues,
+      probe: (sessionKey) => {
+        const session = this.claudeHandler.getSessionByKey?.(sessionKey);
+        if (!session || session.terminated) return { exists: false, active: false };
+        return {
+          exists: true,
+          active: this.requestCoordinator.isRequestActive(sessionKey),
+          activity: session.activityState,
+          activityChangedAt: session.activityStateChangedAt,
+          workflow: session.workflow,
+          workQueueId: session.workQueueId,
+        };
+      },
+      registerOnIdle: (sessionKey, cb) => sessionRegistry?.registerOnIdle?.(sessionKey, cb),
+      terminateSession: (sessionKey) => this.claudeHandler.terminateSession(sessionKey),
+    });
+    // A queued request starts by replaying its text through the normal entry.
+    this.workQueue.setReplay((event, say) => this.handleMessage(event as any, say));
+    this.workQueue.start();
+
     // ActionHandlers needs context
     const actionContext: ActionHandlerContext = {
       slackApi: this.slackApi,
@@ -567,6 +619,7 @@ export class SlackHandler {
       completionMessageTracker,
       mcpManager: this.mcpManager,
       pendingInstructionConfirmStore,
+      workQueue: this.workQueue,
     };
     this.actionHandlers = new ActionHandlers(actionContext);
 
@@ -590,6 +643,7 @@ export class SlackHandler {
       contextWindowManager: this.contextWindowManager,
       assistantStatusManager: this.assistantStatusManager,
       threadPanel: this.threadPanel,
+      workQueue: this.workQueue,
     });
 
     // Wire turn completion notification channels. `slackBlockKitChannel`
@@ -643,6 +697,8 @@ export class SlackHandler {
       // for deploy-workflow sessions.
       routeReleaseNotes: (repo, target) => routeReleaseNotes(getReleaseNotesChannels(), repo, target),
     });
+    // Goal stall: a question whose round ended without an answer is retracted.
+    setGoalStallRetiredListener((goal, stall, cause) => this.onGoalStallRetired(goal, stall, cause));
 
     // EventRouter for event handling
     const eventRouterDeps: EventRouterDeps = {
@@ -660,6 +716,9 @@ export class SlackHandler {
       // the buttons go through.
       onReactionAdded: (reaction) => this.handleFollowupReactionControl(reaction),
       isFollowupControlReaction: (name) => this.followupReactions().isControlReaction(name),
+      // E2 ⑧ — a live task's instruction thread: answered here, nothing runs (D2 (2)).
+      guardInstructionThread: (event, say) =>
+        this.taskEntry ? this.taskEntry.guard(event, say) : Promise.resolve(false),
     };
     this.eventRouter = new EventRouter(app, eventRouterDeps, this.handleMessage.bind(this));
 
@@ -670,7 +729,14 @@ export class SlackHandler {
     // 1. StreamExecutor → EventRouter.dispatchPendingUserMessage
     //    Set on an already-constructed instance via a runtime field.
     (this.streamExecutor as any).deps.dispatchPendingUserMessage = (
-      ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean },
+      ctx: {
+        channel: string;
+        threadTs: string;
+        user: string;
+        ts: string;
+        verbatimPrompt?: boolean;
+        hostTurn?: boolean;
+      },
       text: string,
       opts?: { compactRedispatch?: boolean },
     ) => this.eventRouter.dispatchPendingUserMessage(ctx, text, opts);
@@ -688,10 +754,28 @@ export class SlackHandler {
       }),
     );
 
-    // 3. Auto-mode permission warnings (SSOT_2 #3): the model allowed a call the
+    // 3. Environment-skill gate (step 6b of the tool policy): when a non-admin's
+    //    `Skill` call names an environment skill an admin has not granted, the
+    //    hook denies it and this asks the admins. On approval the action handler
+    //    sends the continuation below as the requester, so the run resumes.
+    //    Optional-chained for the same `{}` claudeHandler mocks.
+    this.claudeHandler.setEnvSkillPermissionRequester?.(async ({ requesterId, skillKey, channel, threadTs }) => {
+      await requestEnvSkillPermission({
+        slackApi: this.slackApi,
+        requesterId,
+        skillKey,
+        channel,
+        threadTs,
+        originalText:
+          `어드민이 환경 스킬 ${skillKey} 실행을 허용했습니다. ` +
+          '이 스킬이 거부되어 진행하지 못한 단계부터 이어서 진행하세요.',
+        notifyWhenPending: false,
+      });
+    });
+    // 4. Auto-mode permission warnings (SSOT_2 #3): the model allowed a call the
     //    mechanical check still flags → a buttonless warning card in the thread
     //    and the same card in the dashboard chat (work log).
-    // 4. Whether a steered follow-up still stands — the follow-up queue is the
+    // 5. Whether a steered follow-up still stands — the follow-up queue is the
     //    source of truth (steered, or consumed by the model; nothing else).
     this.claudeHandler.setSteerStandingResolver?.((steer) => {
       const item = this.followupQueue?.get(steer.queueKey, steer.itemId);
@@ -777,6 +861,7 @@ export class SlackHandler {
             // was rejected (`followup-queue.ts:564-567`).
             persist.save(next);
             this.observeCommittedQueue(next);
+            this.announceFollowupChanges(next);
           }
         : undefined,
     });
@@ -873,8 +958,12 @@ export class SlackHandler {
       refresh: (sessionKey) => this.refreshFollowupSurface(sessionKey),
       // The host owns the drain loop; the action module never re-enters the
       // dispatcher itself.
-      runDrain: (sessionKey) =>
+      runDrain: (sessionKey, settled) =>
         this.runFollowupDrainLoop(sessionKey).then((last) => {
+          // The other boundary a dispatcher run settles into (`Send now`,
+          // Resume, Retry): an auto-compact stop — the click's own run, or the
+          // drain's last — hands its work on here exactly as in `drainFollowups`.
+          this.resumeIfAutoCompactStop(sessionKey, last ?? settled);
           // A human-driven drain (Resume / Retry) is a boundary too: release
           // the §3.6 deferral it may just have cleared instead of waiting for
           // a turn end that a deferred loop would never produce.
@@ -930,7 +1019,9 @@ export class SlackHandler {
       | { setBeforeSessionDelete?: (cb: (key: string, session: ConversationSession, reason: string) => void) => void }
       | undefined;
     if (typeof registry?.setBeforeSessionDelete !== 'function') {
-      this.logger.warn('Follow-up cancellation on session delete NOT wired — registry seam unavailable');
+      this.logger.warn(
+        'Follow-up cancellation and task notice handoff on session delete NOT wired — registry seam unavailable',
+      );
       return;
     }
 
@@ -938,12 +1029,19 @@ export class SlackHandler {
       // May throw (the queue store cannot save) — the registry then refuses
       // the deletion and keeps the session.
       this.cancelFollowupsOfDeletedSession(sessionKey, session, reason);
+      // E2 ⑤ — a task's notices still owed to its instruction thread go to the
+      // notice ledger; a write that fails throws, and the deletion is refused.
+      this.taskNoticeHandoff?.(sessionKey, session);
       // The background-task lifecycle tracker is process-wide and keyed by
       // session; this seam is the one teardown point both deletion paths share,
       // so it is where the session's live tasks and settled tombstones go.
       // Drained LAST: a refused deletion leaves a live session, whose tasks must
       // stay tracked.
       this.toolEventProcessor?.clearBackgroundResume(sessionKey);
+      // Work queue (#726): a deleted session frees its slot and drops its
+      // queued requests. Never throws, and idempotent — a refused deletion
+      // cannot reach here (the throws above come first).
+      this.workQueue?.onSessionDeleted(sessionKey);
     });
   }
 
@@ -1102,6 +1200,14 @@ export class SlackHandler {
   }
 
   private async handleMessageInner(event: MessageEvent, say: any): Promise<void> {
+    // A turn sent without a Slack message of its own (an approved request sent
+    // again, an injected session action) arrives with `ts: ''`. The ts is its
+    // queue identity (`<channel>:<ts>`) and the queue store refuses an empty one,
+    // so it is minted here, once, before anything keys on it (`slack/event-ts.ts`).
+    // A minted ts names no Slack message, which the thread-post report below needs.
+    const hasSlackMessage = Boolean(event.ts);
+    if (!hasSlackMessage) event = { ...event, ts: mintEventTs() };
+
     // First admission point: restored items are only trustworthy once the
     // startup reconcile has run against the registry.
     this.warnIfReconcileSkipped();
@@ -1156,8 +1262,9 @@ export class SlackHandler {
     // Bot writes report themselves inside the api helper; an INBOUND reply never
     // touches it, so the ingress reports it instead. Best-effort and never
     // awaited: this is a UI hint, and a listener fault must not touch the fence
-    // below. Synthetic turns are excluded — no message reached the thread.
-    if (event.thread_ts && event.ts && !event.synthetic) {
+    // below. Synthetic and minted-ts turns are excluded — no message reached the
+    // thread, and a phantom ts newer than the panel would re-post it for nothing.
+    if (event.thread_ts && hasSlackMessage && !event.synthetic) {
       try {
         this.slackApi.notifyThreadPost?.({
           channel: event.channel,
@@ -1435,6 +1542,17 @@ export class SlackHandler {
       return { result: 'safe' };
     }
 
+    // E2 ⑧ (.prd/18 D2 (2)) — a live task's instruction thread runs nothing,
+    // whatever path the message took here: the router guards the live event,
+    // but a message queued before the task existed (a `!`, `%`, a command, a
+    // second mention) drains through here (grok #671 P1-2).
+    if (
+      this.taskEntry &&
+      (await this.taskEntry.guard({ channel, ts, thread_ts, files: (event as { files?: unknown[] }).files }, say))
+    ) {
+      return { result: 'safe' };
+    }
+
     // Immediately acknowledge the message with eyes emoji
     await this.slackApi.addReaction(channel, ts, 'eyes');
 
@@ -1675,6 +1793,34 @@ export class SlackHandler {
       return { result: 'blocked', reason: 'dm rejected after routing' };
     }
 
+    // E2 ⑧ (.prd/18 D2 (3)) — a plain instruction from a user who turned it on
+    // becomes a dashboard task, before the working folder or the thinking
+    // status: the host's own allow-list over the router's hint.
+    if (this.taskEntry) {
+      const entered = await this.taskEntry.run({
+        event: { user: event.user, channel, ts, thread_ts, text: event.text },
+        say,
+        allow: {
+          candidate: (event.routeContext as { taskEntryCandidate?: boolean } | undefined)?.taskEntryCandidate === true,
+          dm: channel.startsWith('D'),
+          hasSession: !!preRouteSession,
+          verbatim: verbatimPrompt || routedObjective === true,
+          goalOpening: event.routeContext?.goalOpeningId !== undefined,
+          steer: !verbatimPrompt && trimmedText.startsWith('!'),
+          inlineDirective: !!event.inlineDirectiveRawText,
+          handled: !!handled,
+          continueWithPrompt: continueWithPrompt !== undefined,
+          deferredSkillFire: !!deferredSkillFire,
+          forceWorkflow: !!forceWorkflow,
+          setGoalObjective: setGoalObjective !== undefined,
+          inlineModel: inlineModel !== undefined,
+          inlineNoGoal,
+          fileCount: processedFiles.length,
+        },
+      });
+      if (entered) return entered;
+    }
+
     // If command returned a follow-up prompt (e.g., /new <prompt>), use that instead.
     // Codex P1 review of #555 — `event.text` may be `undefined` (file-only DM,
     // some Slack event shapes). Normalize to an empty string so downstream
@@ -1887,7 +2033,8 @@ export class SlackHandler {
           } else {
             await this.slackApi.postSystemMessage(
               activeChannel,
-              `📋 Goal queued at position ${applied.position}: ${formatGoalObjectiveForSlack(setGoalObjective)}\n_It will start automatically when the current goal completes._`,
+              `📋 Goal queued at position ${applied.position}: ${formatGoalObjectiveForSlack(setGoalObjective)}\n_It will start automatically when the current goal completes._` +
+                (applied.resumedCurrent ? `\n${formatResumedGoalLine(applied.resumedCurrent)}` : ''),
               { threadTs: activeThreadTs },
             );
           }
@@ -2034,6 +2181,21 @@ export class SlackHandler {
         // Treat direct user message as completing manual input from choice UI.
         this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');
       }
+      // The user's own message answers the question the model asked, as a
+      // dashboard task's new instruction does (`task-turn-controller` startChain).
+      // Left recorded, the question outlived its answer: the next goal cap
+      // decision made the card read NEEDS YOU and showed it again (SSOT
+      // 2026-11-02). Not every turn is the user's answer, and those leave the
+      // question: a host turn (synthetic, or a post-compaction replay of one —
+      // `routeContext.hostTurn`) and a maintenance turn (`/compact`, forwarded
+      // to the SDK as a local slash command).
+      const answersOpenQuestion =
+        !event.synthetic &&
+        event.routeContext?.hostTurn !== true &&
+        !shouldForwardAsLocalSlashCommand(effectiveText.trim(), literalPrompt);
+      if (answersOpenQuestion && sessionResult.session.actionPanel?.pendingQuestion) {
+        sessionResult.session.actionPanel.pendingQuestion = undefined;
+      }
 
       await this.threadPanel?.create(sessionResult.session, sessionResult.sessionKey);
 
@@ -2080,6 +2242,7 @@ export class SlackHandler {
         sourceThreadTs,
         sourceChannel,
         synthetic: event.synthetic,
+        hostTurn: event.routeContext?.hostTurn === true,
         literalPrompt,
       });
 
@@ -2361,6 +2524,8 @@ export class SlackHandler {
       sourceThreadTs?: string;
       sourceChannel?: string;
       synthetic?: boolean;
+      /** A post-compact replay of a host turn: recorded as soma-work's (routeContext.hostTurn). */
+      hostTurn?: boolean;
       /** The first turn's text is a goal objective — never an SDK slash command. */
       literalPrompt?: boolean;
       /**
@@ -2415,6 +2580,7 @@ export class SlackHandler {
       sourceThreadTs: context.sourceThreadTs,
       sourceChannel: context.sourceChannel,
       isUserInput: !context.synthetic,
+      hostTurn: context.hostTurn === true,
       literalPrompt: context.literalPrompt === true,
       // Same captured token, for the executor's own late-write fence.
       followupTurnEpoch: expectedTurnEpoch,
@@ -2439,10 +2605,10 @@ export class SlackHandler {
    * has released its request-coordinator slot — so the driver can run
    * the completion eval without racing/superseding the work turn.
    */
-  setGoalTurnSettledHandler(handler: (sessionKey: string) => void): void {
+  setGoalTurnSettledHandler(handler: (sessionKey: string, opts?: { cause?: 'turn' | 'kick' }) => void): void {
     this.goalTurnSettledHandler = handler;
   }
-  private goalTurnSettledHandler?: (sessionKey: string) => void;
+  private goalTurnSettledHandler?: (sessionKey: string, opts?: { cause?: 'turn' | 'kick' }) => void;
 
   /**
    * Post-turn hook fired by the TurnRunner surface. While a goal is
@@ -2501,7 +2667,7 @@ export class SlackHandler {
       // Persisted, bounded mirror (S8) so an eval that first runs after a
       // restart still has real evidence instead of an empty stash. Persisted
       // via the `goal` serializer; the runtime stash above takes precedence.
-      goal.lastAssistantTurnSummary = turnText.slice(0, 16_000);
+      goal.lastAssistantTurnSummary = turnText.slice(0, GOAL_SUMMARY_PERSIST_MAX);
       this.claudeHandler.saveSessions();
     }
     // §3.6 priority: a human follow-up goes before the next autogoal turn. The
@@ -2600,6 +2766,63 @@ export class SlackHandler {
     const unraised = this.followupUnraisedFloors?.get(sessionKey);
     if (own && unraised !== undefined && own.turnEpoch <= unraised) return { ...own, turnEpoch: undefined };
     return own;
+  }
+
+  /**
+   * The dashboard's live queue (the panel's `<ui-agent-steering>`): `fn` is told
+   * the key of every session whose queue changed — an item's state, text or
+   * generation, the turn generation, the freeze — after the write is committed.
+   */
+  /**
+   * E2 ⑤ — the notice deliverer's handoff, run by the session-delete seam after
+   * the follow-up cancel and before the background drain (.prd/18 D6). It
+   * throws when the ledger cannot be written; the registry then keeps the session.
+   */
+  setTaskNoticeHandoff(fn: ((sessionKey: string, session: ConversationSession) => void) | undefined): void {
+    this.taskNoticeHandoff = fn;
+  }
+
+  /** E2 ⑧ — wire the Slack entry (index.ts, once the notice deliverer is up: the card link is its post). */
+  setTaskEntry(entry: SlackTaskEntry | undefined): void {
+    this.taskEntry = entry;
+  }
+
+  setFollowupChangeListener(fn: ((sessionKey: string) => void) | undefined): void {
+    this.followupChangeListener = fn;
+  }
+
+  /**
+   * Called from the save sink, i.e. BEFORE the queue swaps its memory
+   * (`followup-queue.ts` `commit`) — so the listener runs a microtask later,
+   * when a read of the queue sees this write. Best effort: a listener that
+   * throws never fails the transaction that produced the change.
+   */
+  private announceFollowupChanges(snapshot: FollowupQueueSnapshot): void {
+    const listener = this.followupChangeListener;
+    if (!listener) return;
+    const shown = (this.followupShown ??= new Map());
+    const changed: string[] = [];
+    for (const session of snapshot.sessions) {
+      const signature = `${session.turnEpoch}|${session.freeze?.at ?? ''}|${session.items
+        .map((item) => `${item.id}:${item.epoch}`)
+        .join(',')}`;
+      if (shown.get(session.sessionKey) === signature) continue;
+      shown.set(session.sessionKey, signature);
+      changed.push(session.sessionKey);
+    }
+    if (changed.length === 0) return;
+    queueMicrotask(() => {
+      for (const sessionKey of changed) {
+        try {
+          listener(sessionKey);
+        } catch (error) {
+          this.logger.debug('Follow-up change listener failed', {
+            sessionKey,
+            error: (error as Error)?.message ?? String(error),
+          });
+        }
+      }
+    });
   }
 
   /** Why the queue view is untrustworthy right now (DEGRADED), else `undefined`. */
@@ -4363,7 +4586,7 @@ export class SlackHandler {
     // goal's opening turn (its objective, or its `$skill` part), not the text
     // the user is editing. Rewriting it would run `goal Y` as a literal prompt
     // while the goal stays X.
-    if (item.message?.routeContext?.goalOpeningId !== undefined) {
+    if (SlackHandler.isGoalOpeningFollowup(item)) {
       if (['resolved', 'failed', 'cancelled'].includes(item.state)) return;
       const noticed = (this.followupEditNoticed ??= new Set());
       if (noticed.has(item.id)) return;
@@ -4585,6 +4808,169 @@ export class SlackHandler {
   }
 
   /**
+   * A goal command's queued opening turn: its text is the goal's objective (or
+   * its `$skill` part), not the words the user typed, so an edit must not
+   * rewrite it — the goal would stay X while `goal Y` ran as a literal prompt.
+   * The one rule both edit transports (a Slack message edit, the dashboard's
+   * Edit) apply.
+   */
+  private static isGoalOpeningFollowup(item: FollowupItem): boolean {
+    return item.message?.routeContext?.goalOpeningId !== undefined;
+  }
+
+  /**
+   * The dashboard panel's queue controls (`<ui-agent-steering>`: Send now, Retry,
+   * Cancel, Edit) — a fourth transport into the handlers the buttons, the menu
+   * and the reactions use, never a second policy.
+   *
+   * WHO (SSOT 2026-11-02): whoever may instruct the session. One who may manage
+   * it (`manages` — the owner, the operator token, an admin in admin mode, the
+   * gate its Stop uses) acts as the owner, as before; anyone else presses as
+   * themselves (`actorUserId`), as their Slack click would. Edit is always the
+   * signed-in presser's (only the author rewrites). That identity enters as
+   * a {@link provenFollowupClick}, so `verifyClick` re-reads the session and
+   * everything after it — `canInterrupt`, the item generation, the turn fence,
+   * the dispatcher's authorization of the original author, the cancel veto, the
+   * steered cancel through the SDK — is the button's own code.
+   *
+   * WHICH operation: the reaction transport's table read for the clicked row
+   * ({@link followupReactionOperation}) — "go" is `Send now` on a waiting row and
+   * `Retry` on a failed/uncertain one; a state with no such control answers with
+   * the reaction transport's refusal.
+   *
+   * WHAT the dashboard hears: every reply the handler makes, and whether it was a
+   * refusal (`FollowupRespond`'s verdict) — a refusal is a 409 with that text, a
+   * receipt a 200 with it. A reply after the request ended (the `Send now`
+   * follow-through, detached) has no one to go to and is logged.
+   *
+   * Edit has no Slack control: it is {@link editFollowupFromDashboard}.
+   */
+  async handleDashboardFollowupAction(request: {
+    sessionKey: string;
+    itemId: string;
+    op: 'promote' | 'cancel' | 'edit';
+    epoch: number;
+    turnEpoch: number;
+    text?: string;
+    actorUserId?: string;
+    manages?: boolean;
+  }): Promise<{ ok: true; message?: string } | { ok: false; status: number; message: string }> {
+    const deps = this.followupActionDeps;
+    const queue = this.followupQueue;
+    if (!deps || !queue || this.followupReadFailed) {
+      return {
+        ok: false,
+        status: 503,
+        message: `큐를 사용할 수 없습니다 — ${this.followupDegradedReason ?? 'queue unavailable'}`,
+      };
+    }
+    const session = this.claudeHandler?.getSessionByKey?.(request.sessionKey);
+    if (!session?.ownerId) return { ok: false, status: 404, message: '세션을 찾을 수 없습니다.' };
+    // Edit is the writer's own (only the author rewrites): the signed-in presser, whoever manages it.
+    if (request.op === 'edit') return this.editFollowupFromDashboard(request, request.actorUserId || session.ownerId);
+    // Send now / Cancel: one who may manage the session presses as its owner (#716); anyone else as
+    // themselves (SSOT 2026-11-02).
+    const presser = request.manages === false && request.actorUserId ? request.actorUserId : session.ownerId;
+
+    const role = request.op === 'promote' ? 'sendNow' : 'cancel';
+    const item = queue.get(request.sessionKey, request.itemId);
+    // A row that is gone is still sent through: the handler's own refusal says so.
+    const operation = item
+      ? SlackHandler.followupReactionOperation(role, item.state)
+      : role === 'sendNow'
+        ? 'send-now'
+        : 'cancel';
+    if (!operation) {
+      const state = item?.state ?? 'unknown';
+      return {
+        ok: false,
+        status: 409,
+        message:
+          (item && SlackHandler.followupReactionRefusal(role, item.state)) ??
+          `지금 상태(${state})에서는 할 수 없습니다 — 항목은 그대로 둡니다.`,
+      };
+    }
+
+    const said: Array<{ text: string; refused: boolean }> = [];
+    let open = true;
+    const respond: FollowupRespond = async (message, verdict) => {
+      const text = typeof message?.text === 'string' ? message.text : '';
+      if (open) said.push({ text, refused: verdict === 'refused' });
+      else this.logger.info('Dashboard queue action replied after the request ended', { itemId: request.itemId, text });
+      return undefined;
+    };
+    const value = {
+      sessionKey: request.sessionKey,
+      itemId: request.itemId,
+      epoch: request.epoch,
+      turnEpoch: request.turnEpoch,
+    };
+    const click = provenFollowupClick(presser);
+    try {
+      if (operation === 'send-now') await handleFollowupSendNow(deps, click, respond, value);
+      else if (operation === 'retry') await handleFollowupRetry(deps, click, respond, value);
+      else await handleFollowupCancel(deps, click, respond, value);
+    } finally {
+      open = false;
+    }
+    const refusal = said.find((entry) => entry.refused);
+    if (refusal) return { ok: false, status: 409, message: refusal.text };
+    const receipt = said.filter((entry) => entry.text).pop();
+    return receipt ? { ok: true, message: receipt.text } : { ok: true };
+  }
+
+  /**
+   * Edit a queued item from the dashboard (the panel's ✎). The same door the
+   * Slack message edit uses — `editQueued`, `queued` only, never a goal's opening
+   * turn ({@link isGoalOpeningFollowup}) — with the one rule a Slack edit gets
+   * from Slack itself: only the author rewrites a message. The owner may cancel
+   * someone else's note, but putting the owner's words under another author
+   * would be the clicker rewriting the item (A30).
+   */
+  private async editFollowupFromDashboard(
+    request: { sessionKey: string; itemId: string; epoch: number; text?: string },
+    presser: string,
+  ): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
+    const queue = this.followupQueue;
+    const text = request.text ?? '';
+    const item = queue?.get(request.sessionKey, request.itemId);
+    if (!queue || !item) return { ok: false, status: 409, message: '이미 큐에 없는 항목입니다.' };
+    if (item.message?.user !== presser) {
+      return {
+        ok: false,
+        status: 403,
+        message: '다른 사람이 보낸 메시지는 수정할 수 없습니다 — 보낸 사람만 고칠 수 있습니다.',
+      };
+    }
+    if (SlackHandler.isGoalOpeningFollowup(item)) {
+      return {
+        ok: false,
+        status: 409,
+        message:
+          '이 goal 명령은 이미 실행되어 수정할 수 없습니다 — goal을 바꾸려면 goal 목록에서 삭제하고 새로 추가해 주세요.',
+      };
+    }
+    const result = queue.editQueued(request.sessionKey, request.itemId, request.epoch, text);
+    if (!result.ok) return { ok: false, status: 409, message: SlackHandler.dashboardEditRefusal(result.reason, item) };
+    await this.refreshFollowupSurface(request.sessionKey);
+    return { ok: true };
+  }
+
+  /** Why an Edit did not land — the row stays as it is in every case (A13/A29). */
+  private static dashboardEditRefusal(reason: string, item: FollowupItem): string {
+    if (reason === 'stale-epoch') return '이미 바뀐 항목입니다 — 목록을 최신 상태로 갱신했습니다. 다시 수정해 주세요.';
+    if (reason === 'not-found') return '이미 큐에 없는 항목입니다.';
+    if (reason !== 'invalid-state') return `수정하지 못했습니다 (${reason}) — 항목은 그대로 둡니다.`;
+    if (item.state === 'paused') {
+      return '보류된 항목이라 수정할 수 없습니다 — 지금 보내기로 실행하거나, 고친 내용은 새 메시지로 보내 주세요.';
+    }
+    if (item.state === 'uncertain') {
+      return '실행 여부가 불확실한 항목이라 수정할 수 없습니다 — 다시 시도로 실행하거나, 고친 내용은 새 메시지로 보내 주세요.';
+    }
+    return '이미 전달·실행된 메시지라 수정할 수 없습니다.';
+  }
+
+  /**
    * What an edit that could NOT be applied says, derived from the row itself.
    *
    * A parked item was handed to NOBODY — "이미 전달·실행된" would describe a
@@ -4766,7 +5152,8 @@ export class SlackHandler {
         userName,
         userId,
         attachments?.length ? attachments : undefined,
-        { timestamp: instruction.sentAt },
+        // A steered message is always a person's (dashboard SSOT 2026-10-27).
+        { timestamp: instruction.sentAt, origin: { by: 'user' } },
       );
     } catch (error) {
       this.logger.warn('Steered message was not recorded as a user turn', {
@@ -4968,7 +5355,74 @@ export class SlackHandler {
     // `queued` would have the drain below deliver them a second time (§3.2).
     await this.sweepSteerBucketsIfIdle(sessionKey);
     const last = report.canDrain ? await this.runFollowupDrainLoop(sessionKey) : undefined;
-    this.releaseDeferredGoalDriver(sessionKey, last ?? report);
+    const final = last ?? report;
+    this.resumeIfAutoCompactStop(sessionKey, final);
+    this.releaseDeferredGoalDriver(sessionKey, final);
+  }
+
+  /**
+   * At a drain boundary: if the last run settled there was stopped by
+   * `auto-compact`, resume its work. Every boundary a dispatcher run settles
+   * into calls this — `drainFollowups` and the action controls' `runDrain`.
+   */
+  private resumeIfAutoCompactStop(sessionKey: string, final: RunReport | undefined): void {
+    if (final && isAutoCompactStop(final.outcome)) this.resumeAfterAutoCompactStop(sessionKey);
+  }
+
+  /** Record a stop-class abort on the session (`beforeAbort`). */
+  private noteSessionStop(sessionKey: string): void {
+    const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
+    if (session) session.lastStopAtMs = Date.now();
+  }
+
+  /** The host turn that resumes the work an `auto-compact` stop interrupted. */
+  static readonly AUTO_COMPACT_CONTINUATION_TEXT =
+    '[auto-compact] The context reached the auto-compact threshold mid-turn, so the turn was stopped and the conversation compacted. Continue the interrupted work from where it stopped.';
+
+  /**
+   * Resume the work of a turn stopped by `auto-compact`, now that its slot is
+   * closed and the queue had nothing left to run. A synthetic host turn enters
+   * through `handleMessage` like the goal loop's continuation: the busy fence
+   * drops it if anything took the session meanwhile, and the armed flag turns
+   * it into `/compact` and replays it after the compaction. A goal session gets
+   * its continuation from the goal loop instead — a second one would race it.
+   */
+  private resumeAfterAutoCompactStop(sessionKey: string): void {
+    const session = this.claudeHandler.getSessionByKey?.(sessionKey);
+    if (!session || session.terminated) return;
+    if ((session.goal as { status?: string } | undefined)?.status === 'active') return;
+    if (this.followupDispatcher?.isBusy(sessionKey)) return;
+    // The user stopped the session after the auto-compact stop: theirs is the
+    // last word. No automatic continuation — the armed flag still compacts
+    // their next message first.
+    const stoppedAt = session.autoCompactStoppedAtMs;
+    if (session.lastStopAtMs !== undefined && stoppedAt !== undefined && session.lastStopAtMs >= stoppedAt) {
+      this.logger.info('Auto-compact stop: not resuming — the session was stopped after it', { sessionKey });
+      return;
+    }
+    const user = session.ownerId;
+    if (!session.channelId || !session.threadTs || !user) return;
+    const event = {
+      type: 'message',
+      user,
+      channel: session.channelId,
+      thread_ts: session.threadTs,
+      ts: `${Date.now() / 1000}`,
+      text: SlackHandler.AUTO_COMPACT_CONTINUATION_TEXT,
+      synthetic: true,
+      skipDispatch: true,
+      routeContext: { skipAutoBotThread: true, hostTurn: true },
+    };
+    this.logger.info('Auto-compact stop: resuming the work (compacts first)', { sessionKey });
+    void this.handleMessage(
+      event as unknown as MessageEvent,
+      this.threadSay(session.channelId, session.threadTs),
+    ).catch((err: unknown) => {
+      this.logger.warn('Auto-compact stop: resume failed — the next message will compact', {
+        sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    });
   }
 
   /**
@@ -5688,7 +6142,8 @@ export class SlackHandler {
     }
 
     // Non-admin users: send delete request to admins for approval
-    await this.sendAdminDeleteApproval(event, target, say);
+    const preview = typeof targetMessage.text === 'string' ? targetMessage.text : undefined;
+    await this.sendAdminDeleteApproval(event, target, say, preview);
     return true;
   }
 
@@ -5792,7 +6247,12 @@ export class SlackHandler {
    * Send a delete approval request to admin users via DM.
    * Non-admin users cannot delete bot messages directly.
    */
-  private async sendAdminDeleteApproval(event: MessageEvent, target: SlackPermalinkTarget, say: any): Promise<void> {
+  private async sendAdminDeleteApproval(
+    event: MessageEvent,
+    target: SlackPermalinkTarget,
+    say: any,
+    preview?: string,
+  ): Promise<void> {
     const adminUserIds = getAdminUsers();
     if (adminUserIds.size === 0) {
       this.logger.warn('No admin users configured for DM delete approval');
@@ -5800,55 +6260,22 @@ export class SlackHandler {
       return;
     }
 
-    const value: DmDeleteActionValue = {
-      requesterId: event.user,
-      targetChannel: target.channelId,
-      targetTs: target.messageTs,
-    };
+    // The request is recorded with where each admin's DM landed, so a dashboard answer (#623)
+    // and a click both rewrite every copy, and only one of them acts.
+    const notified = await requestBotDelete(
+      this.slackApi,
+      {
+        requesterId: event.user,
+        targetChannel: target.channelId,
+        targetTs: target.messageTs,
+        ...(preview ? { preview } : {}),
+      },
+      adminUserIds,
+    );
 
-    const permalink = `https://slack.com/archives/${target.channelId}/p${target.messageTs.replace('.', '')}`;
-
-    // Notify each admin
-    let notified = 0;
-    for (const adminId of adminUserIds) {
-      try {
-        const adminDmChannel = await this.slackApi.openDmChannel(adminId);
-        await this.slackApi.postMessage(adminDmChannel, '봇 메시지 삭제 요청', {
-          blocks: [
-            {
-              type: 'section',
-              text: {
-                type: 'mrkdwn',
-                text: `<@${event.user}>님이 봇 메시지 삭제를 요청했습니다.\n<${permalink}|메시지 보기>`,
-              },
-            },
-            {
-              type: 'actions',
-              elements: [
-                {
-                  type: 'button',
-                  action_id: 'dm_delete_reject',
-                  text: { type: 'plain_text', text: '거절', emoji: true },
-                  value: JSON.stringify(value),
-                },
-                {
-                  type: 'button',
-                  action_id: 'dm_delete_approve',
-                  text: { type: 'plain_text', text: '승인', emoji: true },
-                  style: 'danger',
-                  value: JSON.stringify(value),
-                },
-              ],
-            },
-          ],
-        });
-        notified++;
-      } catch (error) {
-        this.logger.warn('Failed to send delete approval request to admin', { adminId, error });
-      }
-    }
-
-    if (notified > 0) {
+    if (notified === 'alreadyApproved') {
+      await say({ text: '✅ 이 메시지의 삭제는 이미 어드민이 승인했습니다.' });
+    } else if (notified > 0) {
       await say({ text: '📨 어드민에게 삭제 요청을 보냈습니다. 승인 후 삭제됩니다.' });
       this.logger.info('DM cleanup approval sent to admins', {
         requesterId: event.user,
@@ -6201,6 +6628,8 @@ export class SlackHandler {
     let repaired = 0;
     let retriesClaimed = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
+      // A Slack-less task cannot run a turn yet (#597/#598) — never re-arm its goal (#612 review).
+      if (session.slackless) continue;
       // Repair a stranded queue (defense for the eval-complete crash window):
       // if the current goal is genuinely closed (completed) or absent but goals
       // are still queued, promote the next one so the queue can't be orphaned.
@@ -6219,8 +6648,19 @@ export class SlackHandler {
         }
       }
       if (session.goal?.status !== 'active') continue;
+      const panel = session.actionPanel;
+      if (session.activityState === 'waiting' && (panel?.waitingForChoice === true || panel?.pendingQuestion)) {
+        // Waiting on its user's answer is not a stale turn: no turn has to run
+        // for the question to stay open. The answer runs as the user's turn and
+        // its idle settle drives the loop. Forcing idle here ran the loop over
+        // the unanswered question until the cap decision asked "keep going?"
+        // next to it (SSOT 2026-11-02).
+        this.logger.info('Goal resume held after restart — the session is waiting on its question', { sessionKey });
+        continue;
+      }
       if (session.activityState !== 'idle') {
-        // Recovery: treat a stale persisted working/waiting state as idle.
+        // Recovery: treat a stale persisted working state (or a waiting one
+        // with no question left) as idle.
         session.activityState = 'idle';
         forcedIdle++;
       }
@@ -6230,7 +6670,8 @@ export class SlackHandler {
         queued: session.goalQueue?.length ?? 0,
       });
       try {
-        handler(sessionKey);
+        // A restart is a kick: no turn ran, the last summary was already judged.
+        handler(sessionKey, { cause: 'kick' });
         resumed++;
         // #351 no-double-resume: the goal loop now drives this session, so a
         // pending error auto-retry must not fire a second turn. Only a claim
@@ -6278,6 +6719,8 @@ export class SlackHandler {
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       const dueAt = session.pendingRetryAt;
       if (dueAt === undefined) continue;
+      // A Slack-less task has no execution context yet (#597): never resumed (#612 R2).
+      if (session.slackless) continue;
       // Already armed in this process (e.g. a crash-recovery resume that failed
       // again and scheduled a fresh retry) — arming again would fire it twice.
       if (session.pendingRetryTimer) continue;
@@ -6502,39 +6945,102 @@ export class SlackHandler {
     return this.todoManager;
   }
 
-  /** Handle choice answer from dashboard — delegates to ChoiceActionHandler for full Slack UI cleanup */
+  /**
+   * Goal stall (same failure twice): ask the owner which next instruction to
+   * give, through the same question surface as a model's ASK_USER_QUESTION —
+   * the thread form and the dashboard card, answered as a real user turn.
+   * Skipped when a turn started in the meantime (the user is already steering)
+   * or a question is already open (never supersede one the model asked).
+   */
+  async askGoalStallQuestion(input: GoalStallQuestion): Promise<void> {
+    const session = this.claudeHandler.getSessionByKey(input.sessionKey);
+    if (!shouldAskGoalStallQuestion(session, input, this.requestCoordinator.isRequestActive(input.sessionKey))) return;
+    // Re-checked after the Slack post: the owner may have moved on meanwhile.
+    const roundOpen = () =>
+      this.claudeHandler.getSessionByKey(input.sessionKey)?.goal?.stall?.stallId === input.stallId &&
+      !this.requestCoordinator.isRequestActive(input.sessionKey);
+    const turnId = await this.streamExecutor.askUserQuestionFromHost(input.sessionKey, buildGoalStallQuestion(input), {
+      stillWanted: roundOpen,
+    });
+    if (!turnId) return;
+    const stall = this.claudeHandler.getSessionByKey(input.sessionKey)?.goal?.stall;
+    if (stall?.stallId === input.stallId) {
+      // Bound to its round: when the round ends without an answer, it is retracted.
+      stall.questionTurnId = turnId;
+      this.claudeHandler.saveSessions();
+    } else {
+      await this.streamExecutor.retractHostQuestion(input.sessionKey, turnId);
+    }
+  }
+
+  /**
+   * A stall round ended without an answer (pause, done, delete, resume, an
+   * objective update, a goal added): its question stops accepting answers.
+   * A round the owner ended by writing needs nothing — that turn clears it.
+   */
+  private onGoalStallRetired(goal: SessionGoal, stall: SessionGoalStall, cause: GoalStallRetireCause): void {
+    if (cause === 'user-message' || !stall.questionTurnId) return;
+    const turnId = stall.questionTurnId;
+    for (const [sessionKey, session] of this.claudeHandler.getSessionRegistry().getAllSessions()) {
+      if (session.goal !== goal && session.goal?.goalId !== goal.goalId) continue;
+      // Not deferred: the retraction frees the session synchronously (before any
+      // Slack call), so the caller's loop kick right after — goal resume, an
+      // objective update — finds it idle instead of waiting. The caller persists.
+      void this.streamExecutor.retractHostQuestion(sessionKey, turnId).catch((err: unknown) =>
+        this.logger.warn('Retracting a goal stall question failed', {
+          sessionKey,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+      return;
+    }
+  }
+
+  /**
+   * Handle choice answer from dashboard — delegates to ChoiceActionHandler for full Slack UI cleanup.
+   * `actorUserId` — the signed-in user who answered: the answer runs as them, as a Slack
+   * button click runs as its clicker (SSOT 2026-11-02). None (a viewer token) is the owner.
+   */
   async handleDashboardChoiceAnswer(
     sessionKey: string,
     choiceId: string,
     label: string,
     question: string,
+    actorUserId?: string,
   ): Promise<void> {
     const session = this.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
       throw new Error('Session not found');
     }
-    await this.actionHandlers.handleDashboardChoiceAnswer(sessionKey, choiceId, label, question, session.ownerId);
+    await this.actionHandlers.handleDashboardChoiceAnswer(
+      sessionKey,
+      choiceId,
+      label,
+      question,
+      actorUserId || session.ownerId,
+    );
   }
 
   /** Handle multi-choice form submission from dashboard */
   async handleDashboardMultiChoiceAnswer(
     sessionKey: string,
     selections: Record<string, { choiceId: string; label: string }>,
+    actorUserId?: string,
   ): Promise<void> {
     const session = this.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
       throw new Error('Session not found');
     }
-    await this.actionHandlers.handleDashboardMultiChoiceAnswer(sessionKey, selections, session.ownerId);
+    await this.actionHandlers.handleDashboardMultiChoiceAnswer(sessionKey, selections, actorUserId || session.ownerId);
   }
 
   /** Handle hero "Submit All Recommended" from dashboard (group-only one-click) */
-  async handleDashboardSubmitRecommended(sessionKey: string): Promise<void> {
+  async handleDashboardSubmitRecommended(sessionKey: string, actorUserId?: string): Promise<void> {
     const session = this.claudeHandler.getSessionByKey(sessionKey);
     if (!session) {
       throw new Error('Session not found');
     }
-    await this.actionHandlers.handleDashboardSubmitRecommended(sessionKey, session.ownerId);
+    await this.actionHandlers.handleDashboardSubmitRecommended(sessionKey, actorUserId || session.ownerId);
   }
 
   /**
@@ -6617,8 +7123,14 @@ export class SlackHandler {
         await this.postGoalNoticeBestEffort(
           channel,
           threadTs,
-          `📋 Queued at position ${position} — it starts automatically when the current goal completes.`,
+          `📋 Queued at position ${position} — it starts automatically when the current goal completes.` +
+            (result.resumedCurrent ? `\n${formatResumedGoalLine(result.resumedCurrent)}` : ''),
         );
+        if (result.resumedCurrent) {
+          // The current goal was stopped at its budget; the add gave it the
+          // budget back. No turn ends from a dashboard add, so drive the loop.
+          this.goalTurnSettledHandler?.(sessionKey, { cause: 'kick' });
+        }
         return { outcome: 'queued', goalId: result.goal.goalId, position };
       }
       this.persistHostGoalMutation(live);
@@ -6783,7 +7295,7 @@ export class SlackHandler {
     if (!found) return;
     const { session, goal } = found;
     goal.status = 'paused';
-    goal.capDmPendingAt = undefined;
+    retireGoalCapDecision(goal);
     goal.updatedAt = Date.now();
     this.persistHostGoalMutation(session);
     void this.deleteGoalOfCancelledOpening(sessionKey, goal.goalId, clicker, session);

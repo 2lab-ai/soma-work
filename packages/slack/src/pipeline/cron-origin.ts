@@ -12,8 +12,13 @@
  * would only drift — and a user can type that prefix.
  */
 
-/** Title every non-cron dispatch bypass (auto-resume, goal, incident) keeps. */
-export const SKIP_DISPATCH_TITLE = 'Direct (skipDispatch)';
+import { SKIP_DISPATCH_TITLE } from '@soma/common/format/display-title';
+
+/**
+ * Title every non-cron dispatch bypass (auto-resume, goal, incident) keeps.
+ * Defined once with the other host stand-in titles in @soma/common.
+ */
+export { SKIP_DISPATCH_TITLE };
 
 export interface CronOrigin {
   jobId?: string;

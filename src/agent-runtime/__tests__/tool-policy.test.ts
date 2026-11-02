@@ -12,7 +12,13 @@
 import * as os from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import type { HandoffContext } from '../../types';
-import { evaluateToolPolicy, type ToolPolicyContext } from '../policy/tool-policy';
+import {
+  ENV_GATED_TOOLS,
+  ENV_SKILL_DENY_MESSAGE,
+  evaluateToolPolicy,
+  TOOL_POLICY_MATCHERS,
+  type ToolPolicyContext,
+} from '../policy/tool-policy';
 
 const USER = 'U0PARITY01';
 const OTHER_USER = 'U0OTHERUSR9';
@@ -26,6 +32,7 @@ function makeCtx(overrides: Partial<ToolPolicyContext> = {}): ToolPolicyContext 
     isDangerousRuleDisabled: () => false,
     handoffContext: undefined,
     checkMcpToolPermission: () => null,
+    checkEnvSkillPermission: () => null,
     ...overrides,
   };
 }
@@ -178,6 +185,109 @@ describe('evaluateToolPolicy — guards (epic #1023 P5)', () => {
       expect(spy).not.toHaveBeenCalled(); // admin skips mcp guard
       evaluateToolPolicy('mcp__x__y', {}, makeCtx({ checkMcpToolPermission: spy }));
       expect(spy).toHaveBeenCalledWith('mcp__x__y');
+    });
+  });
+
+  // Environment skills (step 6b): a skill of a deploy-time environment plugin runs only on an
+  // admin's grant, whether the model calls it or reads its files. `checkEnvSkillPermission` gets the
+  // tool name and input of every ENV_GATED_TOOLS call.
+  describe('environment skill gate (step 6b)', () => {
+    const denyEnv = (_tool: string, input: Record<string, unknown>) =>
+      input.skill === 'acme-env:post-deploy' || String(input.file_path ?? '').includes('/plugins/acme-env/')
+        ? 'acme-env:post-deploy'
+        : null;
+
+    it.each([
+      'auto',
+      'bypass',
+      'legacy',
+    ] as const)('denies an ungranted environment skill for a non-admin (%s)', (mode) => {
+      const r = evaluateToolPolicy(
+        'Skill',
+        { skill: 'acme-env:post-deploy', args: '--preflight' },
+        makeCtx({ mode, checkEnvSkillPermission: denyEnv }),
+      );
+      expect(r.decision).toBe('deny');
+      expect(r.reason).toBe('env-skill: acme-env:post-deploy');
+      expect(r.denyMessage).toBe(ENV_SKILL_DENY_MESSAGE);
+    });
+
+    it.each([
+      'auto',
+      'bypass',
+    ] as const)('denies reading an environment skill file by hand, over the mode allow (%s)', (mode) => {
+      const r = evaluateToolPolicy(
+        'Read',
+        { file_path: '/opt/soma-work/dev/plugins/acme-env/skills/post-deploy/SKILL.md' },
+        makeCtx({ mode, checkEnvSkillPermission: denyEnv }),
+      );
+      expect(r.decision).toBe('deny');
+      expect(r.reason).toBe('env-skill: acme-env:post-deploy');
+    });
+
+    it('lets admins run and read environment skills without asking', () => {
+      const spy = vi.fn(denyEnv);
+      const ctx = makeCtx({ isAdmin: true, mode: 'bypass', checkEnvSkillPermission: spy });
+      expect(evaluateToolPolicy('Skill', { skill: 'acme-env:post-deploy' }, ctx).decision).toBe('pass');
+      expect(evaluateToolPolicy('Read', { file_path: '/opt/soma-work/dev/plugins/acme-env/x' }, ctx).decision).toBe(
+        'allow',
+      );
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('has no opinion on a granted or non-environment skill', () => {
+      expect(
+        evaluateToolPolicy('Skill', { skill: 'zworkflow:deploy-qa' }, makeCtx({ checkEnvSkillPermission: denyEnv }))
+          .decision,
+      ).toBe('pass');
+    });
+
+    it('is consulted for ENV_GATED_TOOLS only, with the tool name and input', () => {
+      const spy = vi.fn(() => null);
+      evaluateToolPolicy('TodoWrite', { todos: [] }, makeCtx({ checkEnvSkillPermission: spy }));
+      evaluateToolPolicy('mcp__x__y', { skill: 'acme-env:post-deploy' }, makeCtx({ checkEnvSkillPermission: spy }));
+      evaluateToolPolicy('ExitPlanMode', {}, makeCtx({ checkEnvSkillPermission: spy }));
+      expect(spy).not.toHaveBeenCalled();
+      for (const tool of ENV_GATED_TOOLS) {
+        evaluateToolPolicy(tool, { skill: 42 }, makeCtx({ checkEnvSkillPermission: spy }));
+        expect(spy).toHaveBeenLastCalledWith(tool, { skill: 42 });
+      }
+      evaluateToolPolicy('Skill', undefined, makeCtx({ checkEnvSkillPermission: spy }));
+      expect(spy).toHaveBeenLastCalledWith('Skill', {});
+      expect([...ENV_GATED_TOOLS]).toEqual(['Skill', 'Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit', 'NotebookEdit']);
+    });
+
+    it('an empty deny reason still denies (null is the only "allowed")', () => {
+      expect(evaluateToolPolicy('Skill', { skill: 'x' }, makeCtx({ checkEnvSkillPermission: () => '' })).decision).toBe(
+        'deny',
+      );
+    });
+
+    it('a deny tier hit keeps its own reason (the sensitive-path guard runs first)', () => {
+      const r = evaluateToolPolicy(
+        'Read',
+        { file_path: `${os.homedir()}/.ssh/id_rsa` },
+        makeCtx({ mode: 'bypass', checkEnvSkillPermission: () => 'acme-env' }),
+      );
+      expect(r.reason.startsWith('sensitive-path:')).toBe(true);
+    });
+
+    it('leaves incident sessions to the incident tier', () => {
+      const r = evaluateToolPolicy(
+        'Skill',
+        { skill: 'acme-env:post-deploy' },
+        makeCtx({
+          checkEnvSkillPermission: (_t, input) =>
+            input.skill === 'acme-env:post-deploy' ? 'acme-env:post-deploy' : null,
+          incidentReadOnly: { allowedMcpTools: [] },
+        }),
+      );
+      expect(r.decision).toBe('deny');
+      expect(r.reason.startsWith('incident-read-only:')).toBe(true);
+    });
+
+    it('routes the Skill tool through the policy hook', () => {
+      expect(TOOL_POLICY_MATCHERS).toContain('Skill');
     });
   });
 });

@@ -10,7 +10,7 @@ import { Logger } from '@soma/common/logger';
  *                     prior turn (user-driven mid-turn steering). The user
  *                     just talked to us; surfacing a red card here looks
  *                     like a false-positive failure. Stay quiet.
- *   `user-stop`     — explicit Stop button / dashboard stop / `!`. The user
+ *   `user-stop`     — explicit dashboard Stop / `!` in the thread. The user
  *                     already knows the turn ended; stay quiet.
  *   `session-close` — Close button / session expiry. Same: quiet.
  *   `shutdown`      — process-wide shutdown of all in-flight requests.
@@ -50,7 +50,11 @@ export type RequestAbortReason =
   | 'shutdown'
   | 'stall-timeout'
   | 'user-interrupted'
-  | 'ghost-session';
+  | 'ghost-session'
+  // auto-compact — the running turn crossed the auto-compact threshold: it is
+  // stopped so a `/compact` turn can run before the context hits the hard
+  // limit, and the work continues after it. Quiet; not a stop.
+  | 'auto-compact';
 
 /**
  * The abort reasons that mean "this session is being STOPPED", as opposed to

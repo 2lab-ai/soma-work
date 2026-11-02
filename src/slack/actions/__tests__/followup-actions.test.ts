@@ -798,15 +798,19 @@ describe('cancel', () => {
     expect(text).toContain('권한');
   });
 
-  it('refuses to cancel a running item and points at the stop button', async () => {
+  it('refuses to cancel a running item and points at a stop path that exists', async () => {
     const h = harness();
     h.queue.get.mockReturnValue(queuedItem({ state: 'dispatched' }));
     h.queue.cancelItem.mockReturnValue({ ok: false, reason: 'invalid-state' } as never);
     await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel')));
     await tick();
     const text = lastEphemeral(h.responses);
-    expect(text).toContain('실행 중인 항목은 취소할 수 없습니다');
-    expect(text).toContain('중지');
+    // The panel has no stop button since 2026-10-27 (only 세션 종료 remains);
+    // the live stop paths are `!` in the thread and the dashboard Stop.
+    expect(text).toBe(
+      '실행 중인 항목은 취소할 수 없습니다 — 멈추려면 스레드에 `!`를 보내거나 대시보드의 Stop을 쓰세요.',
+    );
+    expect(text).not.toContain('패널의 중지 버튼');
   });
 
   it('answers a stale generation with a repaint instead of cancelling the newer item', async () => {
@@ -1412,6 +1416,34 @@ describe('detached failures', () => {
   });
 
   /**
+   * ssot-task: T3 — a `Send now` turn stopped because it crossed the
+   * auto-compact threshold is drainable (`isAutoCompactStop`), and the host's
+   * drain is where the work is handed on. With an empty queue the drain runs
+   * nothing, so the host can only resume the interrupted work if it is told
+   * how the click's own run ended — the settled report rides along.
+   */
+  it('hands the settled report to the host drain, so an auto-compact stop can be resumed', async () => {
+    const h = harness();
+    const report = {
+      sessionKey: SESSION_KEY,
+      runId: 1,
+      turnEpoch: 1,
+      kind: 'send-now',
+      itemId: `${SESSION_KEY}#1`,
+      outcome: { result: 'interrupted', reason: 'auto-compact' },
+      itemDisposition: 'uncertain',
+      canDrain: true,
+    };
+    h.dispatcher.sendNow.mockResolvedValue({
+      status: 'dispatched',
+      run: { runId: 1, turnEpoch: 1, itemId: `${SESSION_KEY}#1`, settled: Promise.resolve(report) },
+    } as SendNowResult);
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick(5);
+    expect(h.deps.runDrain).toHaveBeenCalledWith(SESSION_KEY, report);
+  });
+
+  /**
    * Order is load-bearing the other way too: the drain claims `queued` rows, so
    * a row the sweep has not returned yet is invisible to the loop that follows.
    * Sweeping after the drain would delay it by a whole turn.
@@ -1471,7 +1503,10 @@ describe('detached failures', () => {
     await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
     await tick(5);
     expect(h.deps.reportError).toHaveBeenCalled();
-    expect(h.deps.runDrain).toHaveBeenCalledWith(SESSION_KEY);
+    expect(h.deps.runDrain).toHaveBeenCalledWith(
+      SESSION_KEY,
+      expect.objectContaining({ kind: 'send-now', canDrain: true }),
+    );
   });
 
   it('reports a dispatcher rejection as a retention, not a send', async () => {
@@ -1583,7 +1618,7 @@ describe('against the real queue and dispatcher', () => {
     expect(h.requests[0].message.text).toBe('배포 상태 알려줘');
     expect(h.requests[0].requestedBy).toBe(CLICKER);
     expect(h.requests[0].kind).toBe('send-now');
-    expect(h.runDrain).toHaveBeenCalledWith(SESSION_KEY);
+    expect(h.runDrain).toHaveBeenCalledWith(SESSION_KEY, expect.objectContaining({ kind: 'send-now', canDrain: true }));
     expect(h.refresh).toHaveBeenCalledWith(SESSION_KEY);
   });
 

@@ -167,6 +167,8 @@ describe('aggregator: fetchSiblingBoards — selfOnly enforcement (fan-out preve
     const headers = init.headers || {};
     const authHeader = headers.Authorization || headers.authorization;
     expect(authHeader).toBe('Bearer shared-token');
+    // Loopback fan-out: the sibling's compressed route (#477) would gzip ~0.7 MB for nothing.
+    expect(headers['accept-encoding']).toBe('identity');
   });
 });
 

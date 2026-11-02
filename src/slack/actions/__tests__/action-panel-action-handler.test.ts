@@ -1,90 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ActionPanelActionHandler } from '../action-panel-action-handler';
 
+// The workflow-button actions (pr_*, issue_research, focus_choice) are gone;
+// their stale-click behaviour is pinned by
+// `action-panel-action-handler.removed-actions.test.ts`.
 describe('ActionPanelActionHandler', () => {
-  it('rejects action while session is working', async () => {
-    const messageHandler = vi.fn();
-    const handler = new ActionPanelActionHandler({
-      slackApi: {
-        postMessage: vi.fn(),
-      } as any,
-      claudeHandler: {
-        getSessionByKey: vi.fn().mockReturnValue({
-          ownerId: 'U123',
-          channelId: 'C123',
-          threadTs: '111.222',
-          activityState: 'working',
-          links: {
-            pr: { url: 'https://github.com/acme/repo/pull/1', label: 'PR #1' },
-          },
-        }),
-      } as any,
-      messageHandler,
-    });
-
-    const respond = vi.fn().mockResolvedValue(undefined);
-    const body = {
-      user: { id: 'U123' },
-      actions: [
-        {
-          value: JSON.stringify({ sessionKey: 'session-1', action: 'pr_review' }),
-        },
-      ],
-    };
-
-    await handler.handleAction(body, respond as any);
-
-    expect(respond).toHaveBeenCalledWith(
-      expect.objectContaining({
-        response_type: 'ephemeral',
-      }),
-    );
-    expect(messageHandler).not.toHaveBeenCalled();
-  });
-
-  it('rejects action while waiting for choice', async () => {
-    const messageHandler = vi.fn();
-    const handler = new ActionPanelActionHandler({
-      slackApi: {
-        postMessage: vi.fn(),
-      } as any,
-      claudeHandler: {
-        getSessionByKey: vi.fn().mockReturnValue({
-          ownerId: 'U123',
-          channelId: 'C123',
-          threadTs: '111.222',
-          activityState: 'idle',
-          actionPanel: { waitingForChoice: true },
-          links: {
-            pr: { url: 'https://github.com/acme/repo/pull/1', label: 'PR #1' },
-          },
-        }),
-      } as any,
-      messageHandler,
-    });
-
-    const respond = vi.fn().mockResolvedValue(undefined);
-    const body = {
-      user: { id: 'U123' },
-      actions: [
-        {
-          value: JSON.stringify({ sessionKey: 'session-1', action: 'pr_review' }),
-        },
-      ],
-    };
-
-    await handler.handleAction(body, respond as any);
-
-    expect(respond).toHaveBeenCalledWith(
-      expect.objectContaining({
-        response_type: 'ephemeral',
-      }),
-    );
-    expect(messageHandler).not.toHaveBeenCalled();
-  });
-
   it('closes session via close action', async () => {
-    const messageHandler = vi.fn();
     const handler = new ActionPanelActionHandler({
       slackApi: {
         postMessage: vi.fn(),
@@ -99,7 +20,6 @@ describe('ActionPanelActionHandler', () => {
         }),
         terminateSession: vi.fn().mockReturnValue(true),
       } as any,
-      messageHandler,
     });
 
     const respond = vi.fn().mockResolvedValue(undefined);
@@ -119,95 +39,27 @@ describe('ActionPanelActionHandler', () => {
         text: expect.stringContaining('종료'),
       }),
     );
-    expect(messageHandler).not.toHaveBeenCalled();
   });
 
-  it('provides choice guidance link for focus_choice action', async () => {
-    const messageHandler = vi.fn();
+  it('rejects a click from someone other than the session owner', async () => {
+    const terminateSession = vi.fn();
     const handler = new ActionPanelActionHandler({
-      slackApi: {
-        postMessage: vi.fn(),
-        getPermalink: vi.fn().mockResolvedValue('https://workspace.slack.com/archives/C123/p111222333'),
-      } as any,
+      slackApi: { postMessage: vi.fn() } as any,
       claudeHandler: {
-        getSessionByKey: vi.fn().mockReturnValue({
-          ownerId: 'U123',
-          channelId: 'C123',
-          threadTs: '111.222',
-          activityState: 'waiting',
-          actionPanel: {
-            waitingForChoice: true,
-            choiceMessageTs: '111.222',
-          },
-        }),
+        getSessionByKey: vi.fn().mockReturnValue({ ownerId: 'U123', channelId: 'C123', threadTs: '111.222' }),
+        terminateSession,
       } as any,
-      messageHandler,
     });
 
     const respond = vi.fn().mockResolvedValue(undefined);
-    const body = {
-      user: { id: 'U123' },
-      actions: [
-        {
-          value: JSON.stringify({ sessionKey: 'session-1', action: 'focus_choice' }),
-        },
-      ],
-    };
-
-    await handler.handleAction(body, respond as any);
-
-    expect(respond).toHaveBeenCalledWith(
-      expect.objectContaining({
-        response_type: 'ephemeral',
-        text: expect.stringContaining('slack.com/archives'),
-      }),
+    await handler.handleAction(
+      { user: { id: 'U999' }, actions: [{ value: JSON.stringify({ sessionKey: 'session-1', action: 'close' }) }] },
+      respond as any,
     );
-    expect(messageHandler).not.toHaveBeenCalled();
-  });
 
-  it('rejects stale direct merge action in pr-review workflow', async () => {
-    const mergeHandler = vi.fn();
-    const handler = new ActionPanelActionHandler({
-      slackApi: {
-        postMessage: vi.fn(),
-      } as any,
-      claudeHandler: {
-        getSessionByKey: vi.fn().mockReturnValue({
-          ownerId: 'U123',
-          channelId: 'C123',
-          threadTs: '111.222',
-          workflow: 'pr-review',
-          activityState: 'idle',
-          links: {
-            pr: { url: 'https://github.com/acme/repo/pull/1', label: 'PR #1' },
-          },
-        }),
-      } as any,
-      messageHandler: mergeHandler,
-    });
-
-    const respond = vi.fn().mockResolvedValue(undefined);
-    const body = {
-      user: { id: 'U123' },
-      actions: [
-        {
-          value: JSON.stringify({
-            sessionKey: 'session-1',
-            action: 'pr_merge',
-            prUrl: 'https://github.com/acme/repo/pull/1',
-          }),
-        },
-      ],
-    };
-
-    await handler.handleAction(body, respond as any);
-
+    expect(terminateSession).not.toHaveBeenCalled();
     expect(respond).toHaveBeenCalledWith(
-      expect.objectContaining({
-        response_type: 'ephemeral',
-        text: expect.stringContaining('merge gate'),
-      }),
+      expect.objectContaining({ text: '❌ 세션 소유자만 이 작업을 수행할 수 있습니다.' }),
     );
-    expect(mergeHandler).not.toHaveBeenCalled();
   });
 });

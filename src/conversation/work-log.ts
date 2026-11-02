@@ -56,7 +56,9 @@
  * Reads: every scan has a byte budget (WORK_LOG_SCAN_BUDGET_BYTES). The latest
  * window and the seed scan back from the end; `afterSeq` pages first try a
  * short backward scan (the reconnect case), else binary-search byte offsets
- * (lines are in seq order) and read forward. `hasMore` follows what the read
+ * (lines are in seq order) and read forward; `beforeSeq` pages (the reader
+ * scrolling back) binary-search the first line at or past `beforeSeq` and scan
+ * back from there. `hasMore` follows what the read
  * could prove, not merely whether it hit the budget (see WorkLogPage.hasMore).
  * When junk sits between `afterSeq` and the tail, the entries the backward scan
  * found are returned as soon as they provably start the page — the oldest one
@@ -90,7 +92,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { atomicWriteJson, readJsonWithBackup } from '@soma/common/atomic-json';
-import { WORK_LOG_RAW_MAX_BYTES } from '@soma/slack/work-log';
+import { WORK_LOG_PERMISSION_DECISIONS, WORK_LOG_RAW_MAX_BYTES, type WorkLogPermission } from '@soma/slack/work-log';
 import { DATA_DIR } from '../env-paths';
 import { Logger } from '../logger';
 
@@ -110,16 +112,27 @@ export type WorkLogKind =
   | 'notice'
   | 'error'
   /** SSOT_2 #3 — auto mode allowed a call the mechanical check flags; `text` is the command, `warning` the card. */
-  | 'permission_warning';
+  | 'permission_warning'
+  /** SSOT 2026-11-02 T1 — a person's answer to a permission prompt (see `permission`). */
+  | 'permission';
 
 /** The card a `permission_warning` entry carries: the rules the mechanical check matched and the model's reason. */
 export interface WorkLogPermissionWarning {
   rules: Array<{ id: string; label: string; description: string }>;
   reason: string;
 }
+
 export interface WorkLogInput {
   kind: WorkLogKind;
   text: string;
+  /**
+   * SSOT 2026-10-28 — an `instruction` entry: who put it in the conversation
+   * (the recorded user turn's `origin.by`) and whether it was a compaction
+   * turn. The dashboard's work log reads a turn soma-work sent as a one-line
+   * badge from these; entries written before they were kept are read from text.
+   */
+  by?: 'user' | 'system';
+  compactTurn?: true;
   tool?: string;
   ok?: boolean;
   turnId?: string;
@@ -147,11 +160,18 @@ export interface WorkLogInput {
   raw?: string;
   /** UTF-8 size of the original when the emitter already cut `raw`; ignored unless larger than `raw`. */
   rawBytes?: number;
-  /** SDK tool-use id of a `tool` / `tool_result` entry, for live observers (artifact capture). Not persisted. */
+  /**
+   * SDK tool-use id of a `tool` / `tool_result` entry: the key that pairs a
+   * result with its call (the dashboard's tool call card) and that live
+   * observers (artifact capture) match on. Persisted, clamped to
+   * WORK_LOG_FIELD_MAX; entries written before it was kept have none.
+   */
   toolUseId?: string;
+  /** A `permission` entry's answer (SSOT 2026-11-02 T1). */
+  permission?: WorkLogPermission;
 }
 /** An entry as pages and the broadcast carry it: its raw is described, never included. */
-export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes' | 'toolUseId'> {
+export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes'> {
   seq: number;
   ts: number;
   /** UTF-8 byte length of the original raw; present iff the entry has a stored raw. */
@@ -179,8 +199,9 @@ export interface WorkLogRaw {
 export interface WorkLogPage {
   entries: WorkLogEntry[];
   /**
-   * Without `afterSeq`: older entries exist before the returned (latest)
-   * window — or the backward scan stopped at its byte budget, so there may be.
+   * Without `afterSeq` (the latest window, or a `beforeSeq` page): older
+   * entries exist before the returned window — or the backward scan stopped at
+   * its byte budget, so there may be.
    * With `afterSeq`: more entries than `limit` follow afterSeq — or the read
    * stopped at its budget before it could prove the page complete, so there
    * may be (the page can then be short or empty). It is false whenever the
@@ -189,11 +210,20 @@ export interface WorkLogPage {
    * an entry with seq afterSeq + 1).
    */
   hasMore: boolean;
+  /**
+   * A `beforeSeq` page whose backward scan stopped at its byte budget: the file
+   * offset it stopped at. Passed back as `beforeOffset` (with the same
+   * `beforeSeq`, or the oldest seq now held), the next page resumes the scan
+   * there instead of searching from `beforeSeq` again — which, past a run of
+   * non-entry lines longer than one budget, lands after that run every time and
+   * never gets through it.
+   */
+  nextBeforeOffset?: number;
 }
 
 /** Max characters kept per entry `text` (spec §3.3). */
 export const WORK_LOG_TEXT_MAX = 4000;
-/** Max characters kept for `tool`, `turnId`, `taskId` and `taskTitle`. */
+/** Max characters kept for `tool`, `turnId`, `taskId`, `taskTitle`, `agentId`, `agentRef` and `toolUseId`. */
 export const WORK_LOG_FIELD_MAX = 200;
 /** Max UTF-8 bytes kept per raw — defined once, next to the emitter's types. */
 export { WORK_LOG_RAW_MAX_BYTES };
@@ -548,6 +578,32 @@ async function findPageStart(
     else hi = mid;
   }
   return lo;
+}
+
+/**
+ * Byte offset of a line start (or `size`) such that every entry line at or
+ * after it has `seq >= beforeSeq` — where a `beforeSeq` page ends. Lines are in
+ * seq order, so this is a binary search on byte offsets. Only `hi` moves on
+ * evidence (a parsed line ≥ beforeSeq: it and everything after it are past the
+ * page); a missed or unparseable probe only raises `lo`, which costs scanning,
+ * never correctness. Out of budget, the current `hi` is still a valid (if late) end.
+ */
+async function findPageEnd(
+  fh: fs.promises.FileHandle,
+  size: number,
+  beforeSeq: number,
+  budget: Budget,
+): Promise<number> {
+  let lo = 0;
+  let hi = size;
+  while (hi - lo > WORK_LOG_READ_CHUNK_BYTES) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    const probe = await probeAfter(fh, size, mid, budget);
+    if (probe === 'budget') break;
+    if (probe && probe.seq >= beforeSeq) hi = probe.start;
+    else lo = mid;
+  }
+  return hi;
 }
 
 async function openForRead(filePath: string): Promise<{ fh: fs.promises.FileHandle; size: number } | null> {
@@ -1163,6 +1219,16 @@ async function writeEntry(
   return entry;
 }
 
+/** A permission answer as stored: a known decision, a clamped id, a known advice — else none. */
+function permissionFields(p: WorkLogInput['permission']): WorkLogPermission | undefined {
+  if (!p || !(WORK_LOG_PERMISSION_DECISIONS as readonly string[]).includes(p.decision)) return undefined;
+  return {
+    decision: p.decision,
+    ...(p.by !== undefined ? { by: clampChars(String(p.by), WORK_LOG_FIELD_MAX) } : {}),
+    ...(p.ai === 'approve' || p.ai === 'deny' ? { ai: p.ai } : {}),
+  };
+}
+
 /**
  * Append one entry. `ts` defaults to the call time; `seq` is assigned when the
  * entry reaches the front of this conversation's write queue. Resolves with the
@@ -1210,6 +1276,11 @@ export function appendWorkLog(conversationId: string, input: WorkLogInput): Prom
   if (input.agentId !== undefined) fields.agentId = clampChars(String(input.agentId), WORK_LOG_FIELD_MAX);
   if (input.agentRef !== undefined) fields.agentRef = clampChars(String(input.agentRef), WORK_LOG_FIELD_MAX);
   if (input.warning !== undefined) fields.warning = clampWarning(input.warning);
+  if (input.toolUseId !== undefined) fields.toolUseId = clampChars(String(input.toolUseId), WORK_LOG_FIELD_MAX);
+  if (input.by === 'user' || input.by === 'system') fields.by = input.by;
+  if (input.compactTurn === true) fields.compactTurn = true;
+  const permission = permissionFields(input.permission);
+  if (permission) fields.permission = permission;
   const raw =
     input.raw != null
       ? pendingRaw(String(input.raw), input.rawBytes)
@@ -1249,16 +1320,21 @@ function warnBudget(conversationId: string, mode: string, found: number): void {
 }
 
 /**
- * Without `afterSeq`: the latest `limit` entries (`hasMore` = older exist).
+ * Without `afterSeq` / `beforeSeq`: the latest `limit` entries (`hasMore` =
+ * older exist).
  * With `afterSeq`: the first `limit` entries with `seq > afterSeq`, for forward
- * paging (`hasMore` = newer exist past this page). `hasMore` is exactly
- * WorkLogPage.hasMore: a budget stop only sets it when completeness is not
- * proven. Waits for this process's pending writes to the same file first.
- * Unknown or unsafe ids read as empty.
+ * paging (`hasMore` = newer exist past this page).
+ * With `beforeSeq`: the last `limit` entries with `seq < beforeSeq`, for paging
+ * back from the oldest entry a reader holds (`hasMore` = older exist before
+ * this page, or the scan stopped at its byte budget). Not both: the caller
+ * (the route) refuses that; here `afterSeq` wins.
+ * `hasMore` is exactly WorkLogPage.hasMore: a budget stop only sets it when
+ * completeness is not proven. Waits for this process's pending writes to the
+ * same file first. Unknown or unsafe ids read as empty.
  */
 export async function readWorkLog(
   conversationId: string,
-  options: { afterSeq?: number; limit?: number } = {},
+  options: { afterSeq?: number; beforeSeq?: number; beforeOffset?: number; limit?: number } = {},
 ): Promise<WorkLogPage> {
   const empty: WorkLogPage = { entries: [], hasMore: false };
   const files = workLogPaths(conversationId);
@@ -1266,6 +1342,9 @@ export async function readWorkLog(
   const limit = options.limit ?? WORK_LOG_DEFAULT_LIMIT;
   if (!(limit > 0)) return empty;
   const { afterSeq } = options;
+  const beforeSeq = afterSeq === undefined ? options.beforeSeq : undefined;
+  // seqs start at 1: nothing is older than 1.
+  if (beforeSeq !== undefined && !(beforeSeq > 1)) return empty;
 
   await states.get(conversationId)?.queue;
 
@@ -1274,6 +1353,37 @@ export async function readWorkLog(
   const { fh, size } = opened;
   try {
     const budget: Budget = { left: WORK_LOG_SCAN_BUDGET_BYTES };
+
+    if (beforeSeq !== undefined) {
+      // Older page: from where the previous page's scan stopped (its cursor), or
+      // from where entries reach beforeSeq, back towards the start. A cursor past
+      // the end of the file (the log was replaced since) is not trusted.
+      const from = options.beforeOffset;
+      const resume = from !== undefined && Number.isSafeInteger(from) && from > 0 && from <= size;
+      const stop = resume ? from : await findPageEnd(fh, size, beforeSeq, budget);
+      const older: WorkLogEntry[] = [];
+      const cover = { offset: stop };
+      const end = await scanBackward(
+        fh,
+        stop,
+        budget,
+        (line) => {
+          const entry = parseEntry(line);
+          // A late end (out of budget, or no evidence) may still hold newer lines: skip them.
+          if (entry && entry.seq < beforeSeq) older.push(publicEntry(entry));
+          return older.length <= limit; // one extra tells us whether more exist
+        },
+        cover,
+      );
+      if (end === 'budget') warnBudget(conversationId, 'beforeSeq', older.length);
+      const page: WorkLogPage = {
+        entries: older.slice(0, limit).reverse(),
+        hasMore: older.length > limit || end === 'budget',
+      };
+      // Only a budget stop with fewer than a page leaves older lines unexamined below this page.
+      if (end === 'budget' && older.length <= limit) page.nextBeforeOffset = cover.offset;
+      return page;
+    }
 
     if (afterSeq === undefined) {
       const newest: WorkLogEntry[] = [];

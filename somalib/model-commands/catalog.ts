@@ -193,7 +193,15 @@ const UPDATE_SESSION_SCHEMA = {
     title: {
       type: 'string',
       maxLength: 100,
-      description: 'Update session title (e.g. after linking issue or merging PR)',
+      description:
+        'Update session title (e.g. after linking issue or merging PR). Also set it once you know what the user ' +
+        'wants when the session still has a temporary title such as "New Session" (voice / image-only first message).',
+    },
+    titleFillOnly: {
+      type: 'boolean',
+      description:
+        'With `title`: apply it only if the session still has a temporary host title ("New Session", ' +
+        '"Session Reset", "Direct (skipDispatch)"); a deliberate title is left unchanged.',
     },
     operations: {
       type: 'array',
@@ -821,6 +829,7 @@ export function runModelCommand(
         request: request.params,
         // title is passed through for host to apply
         ...(request.params.title ? { title: request.params.title } : {}),
+        ...(request.params.title && request.params.titleFillOnly === true ? { titleFillOnly: true } : {}),
       },
     };
   }

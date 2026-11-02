@@ -56,6 +56,20 @@ function createHandler(sessions: Map<string, ConversationSession>) {
 describe('resumeActiveGoals (T1)', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('skips a Slack-less task (#612 R1): it is not runnable before the execution context exists', () => {
+    const sessions = new Map<string, ConversationSession>([
+      [
+        'task:t1',
+        activeGoalSession({ channelId: '', threadTs: undefined, slackless: true } as Partial<ConversationSession>),
+      ],
+    ]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+    expect(handler.resumeActiveGoals()).toBe(0);
+    expect(settled).not.toHaveBeenCalled();
+  });
+
   it('triggers the goal loop for each active-goal session', () => {
     const sessions = new Map<string, ConversationSession>([
       ['C1-T1', activeGoalSession()],
@@ -69,7 +83,7 @@ describe('resumeActiveGoals (T1)', () => {
 
     expect(resumed).toBe(1);
     expect(settled).toHaveBeenCalledTimes(1);
-    expect(settled).toHaveBeenCalledWith('C1-T1');
+    expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
   });
 
   it('forces a stale (working) activityState to idle so the idle-driver gate passes', () => {
@@ -81,6 +95,49 @@ describe('resumeActiveGoals (T1)', () => {
     handler.resumeActiveGoals();
 
     expect(stale.activityState).toBe('idle');
+  });
+
+  /**
+   * SSOT 2026-11-02 (T3). A goal session waiting on its user's answer is not a
+   * stale turn: no turn has to run for the question to stay open. Forcing it
+   * idle let the loop run ten continuations over the unanswered question until
+   * the cap decision asked "keep going?" next to it (fable-m5max dev,
+   * 1792795612.514029: asked 02:32Z, restart 04:12Z, cap 04:32Z).
+   */
+  it('keeps a session waiting on its question waiting — the goal goes on once the user answers', () => {
+    const asking = activeGoalSession({
+      activityState: 'waiting',
+      actionPanel: {
+        waitingForChoice: true,
+        pendingQuestion: {
+          type: 'user_choice',
+          question: 'PR #402 머지할까요?',
+          choices: [{ id: 'go', label: '진행' }],
+        },
+      },
+    } as Partial<ConversationSession>);
+    const sessions = new Map<string, ConversationSession>([['C1-T1', asking]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+
+    expect(handler.resumeActiveGoals()).toBe(0);
+
+    expect(settled).not.toHaveBeenCalled();
+    expect(asking.activityState).toBe('waiting');
+  });
+
+  it('still forces a waiting state with no question left to idle', () => {
+    const stale = activeGoalSession({ activityState: 'waiting', actionPanel: { waitingForChoice: false } } as any);
+    const sessions = new Map<string, ConversationSession>([['C1-T1', stale]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+
+    expect(handler.resumeActiveGoals()).toBe(1);
+
+    expect(stale.activityState).toBe('idle');
+    expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
   });
 
   it('repairs a stranded queue (complete goal + non-empty queue) by promoting the next goal', () => {
@@ -113,7 +170,7 @@ describe('resumeActiveGoals (T1)', () => {
     expect(completed.goalQueue).toHaveLength(0);
     expect(completed.goalHistory?.[0].objective).toBe('finish the migration');
     expect(resumed).toBe(1);
-    expect(settled).toHaveBeenCalledWith('C1-T1');
+    expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
   });
 
   it('does NOT advance past a paused current goal that has a queue (paused + queue is valid)', () => {

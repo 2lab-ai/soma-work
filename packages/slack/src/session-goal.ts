@@ -31,6 +31,25 @@ export const DEFAULT_GOAL_MAX_CONTINUATIONS = 10;
 export const MAX_GOAL_HISTORY = 20;
 
 /**
+ * A stopped goal loop: the evaluator found the same failure as last time. The
+ * host asked the owner which of `actions` to do next (Slack + dashboard).
+ * Single definition — `src/types.ts` re-exports it.
+ */
+export interface SessionGoalStall {
+  /** Round id carried by the question; an answer for another round is stale. */
+  stallId: string;
+  stalledAt: number;
+  /** The repeated failure reason (the evaluator's words). */
+  reason: string;
+  /** The three next instructions the evaluator expects the owner to give. */
+  actions: string[];
+  /** The evaluator's confidence that the failure is the same. */
+  confidence: number;
+  /** The host question's turn id once posted — its form is retracted when the round ends without an answer. */
+  questionTurnId?: string;
+}
+
+/**
  * Structural mirror of `SessionGoal` (`src/types.ts`) — only the fields the
  * apply/queue helpers create, clear, or carry. The real `SessionGoal` is
  * assignable to this shape and vice versa.
@@ -44,8 +63,19 @@ export interface SessionGoalState {
   createdBy: string;
   continuationCount: number;
   maxContinuations: number;
-  /** ms epoch of a pending cap-reached owner DM decision (S3 dedup guard). */
+  /** ms epoch the cap-reached "keep going?" decision opened (S3); undefined ⇒ none pending. */
   capDmPendingAt?: number;
+  /** The pending decision's round id (DM buttons + dashboard card). */
+  capDecisionId?: string;
+  /** Where the round's DM landed (stored after a successful post). */
+  capDmRef?: { channel: string; ts: string };
+  /**
+   * Open while the loop is stopped on a repeated failure (goal stall, `src/slack/goal-stall.ts`).
+   * Ended through the cap-decision retirer, like the cap decision.
+   */
+  stall?: SessionGoalStall;
+  /** The `remaining` list of the verdict behind `lastEvalReason` (goal stall comparison). */
+  lastEvalRemaining?: string[];
   /**
    * The goal's opening turn was admitted but has not reached the model yet
    * (set by the host when it admits the opening, cleared right before the
@@ -204,8 +234,13 @@ export function findGoalById(session: GoalQueueSession, goalId: string | undefin
  *
  *   - If a goal is already in flight (active/paused) → APPEND `objective` to
  *     `goalQueue` as a `queued` goal and return `{ activated: false }`. The
- *     current goal keeps running untouched; the caller posts a "queued"
- *     notice and does NOT start a continuation.
+ *     current goal keeps its slot; the caller posts a "queued" notice and does
+ *     NOT start a continuation for the queued goal.
+ *     If the current goal is active but stopped at its auto-continuation
+ *     budget (10/10, not complete), this request is the user weighing in — the
+ *     same as a chat message: its counter is reset so it runs again, and it is
+ *     returned as `resumedCurrent`. The caller re-drives the loop (a goal
+ *     command or dashboard add starts no turn whose end would do it).
  *   - Otherwise (no goal, or the current one is complete) → activate a fresh
  *     goal via {@link applyGoalToSession} and return `{ activated: true,
  *     goal }`. The caller starts the continuation for it.
@@ -218,17 +253,79 @@ export function enqueueOrActivateGoal(
   userId: string,
   /** Per-user auto-continuation cap default (S4) applied to the new goal. */
   maxContinuations?: number,
-): { activated: boolean; goal: SessionGoalState; position?: number } {
-  if (isGoalInFlight(session.goal)) {
+): { activated: boolean; goal: SessionGoalState; position?: number; resumedCurrent?: SessionGoalState } {
+  const current = session.goal;
+  if (isGoalInFlight(current)) {
     const queued = createQueuedSessionGoal(objective, userId, maxContinuations);
     session.goalQueue = session.goalQueue ?? [];
     session.goalQueue.push(queued);
-    return { activated: false, goal: queued, position: session.goalQueue.length };
+    const resumedCurrent = current && resumeGoalStoppedAtBudget(current) ? current : undefined;
+    return { activated: false, goal: queued, position: session.goalQueue.length, resumedCurrent };
   }
-  const goal = createActiveSessionGoal(objective, userId, session.goal, maxContinuations);
+  const goal = createActiveSessionGoal(objective, userId, current, maxContinuations);
   applyGoalToSession(session, goal);
   return { activated: true, goal };
 }
+
+/**
+ * An ACTIVE goal stopped at its auto-continuation budget gets the budget back:
+ * counter to 0 and the pending "keep going?" DM answered. Narrower than
+ * `resetGoalContinuationOnUserMessage` on purpose: no epoch bump and no
+ * backoff clear — a goal stopped at the cap has no eval in flight and no
+ * backoff window (the eval that stopped it succeeded and cleared both).
+ * Returns whether it was stopped there. A paused goal is left alone
+ * (pausing was explicit).
+ */
+function resumeGoalStoppedAtBudget(goal: SessionGoalState): boolean {
+  // A goal stopped on a repeated failure (stall) is stopped too: a goal
+  // request is the owner weighing in, so it runs again — otherwise the new
+  // goal would wait behind a goal that can never finish on its own.
+  const stalled = goal.status === 'active' && !!goal.stall;
+  if (goal.status !== 'active' || (goal.continuationCount < goal.maxContinuations && !stalled)) return false;
+  if (stalled) resumedFromStall.add(goal);
+  goal.continuationCount = 0;
+  // Ends the cap decision AND the stall (the host retirer does both).
+  endGoalCapDecision(goal);
+  goal.updatedAt = Date.now();
+  return true;
+}
+
+/**
+ * Ends a goal's pending cap decision without an answer. The default only
+ * clears the decision fields; the host replaces it ({@link setGoalCapDecisionRetirer})
+ * so the owner's DM stops offering its buttons too.
+ */
+let capDecisionRetirer: (goal: SessionGoalState) => void = (goal) => {
+  goal.capDmPendingAt = undefined;
+  goal.capDecisionId = undefined;
+  goal.capDmRef = undefined;
+  goal.stall = undefined;
+};
+
+/** Wire the host's cap-decision retirement (production: `retireGoalCapDecision`). */
+export function setGoalCapDecisionRetirer(fn: (goal: SessionGoalState) => void): void {
+  capDecisionRetirer = fn;
+}
+
+/** End the goal's pending cap decision (if any) without an answer. */
+export function endGoalCapDecision(goal: SessionGoalState | undefined): void {
+  if (goal) capDecisionRetirer(goal);
+}
+
+/**
+ * The line a "goal queued" notice adds when the request gave the current goal
+ * its budget back ({@link enqueueOrActivateGoal} `resumedCurrent`). Single
+ * source for every surface.
+ */
+export function formatResumedGoalLine(goal: SessionGoalState): string {
+  if (resumedFromStall.delete(goal)) {
+    return `▶️ The current goal had stopped on a repeated failure — it runs again now: ${formatGoalObjectiveForSlack(goal.objective)}`;
+  }
+  return `▶️ The current goal had used its ${goal.maxContinuations}-turn auto-continuation budget without finishing — it runs again now: ${formatGoalObjectiveForSlack(goal.objective)}`;
+}
+
+/** Goals {@link resumeGoalStoppedAtBudget} restarted out of a stall (for the notice line). */
+const resumedFromStall = new WeakSet<SessionGoalState>();
 
 /**
  * Close out the current `session.goal` and promote the next queued goal (if
@@ -287,6 +384,8 @@ export function advanceGoalQueue(
   next.updatedAt = now;
   next.pendingEval = undefined;
   next.lastEvalReason = undefined;
+  next.lastEvalRemaining = undefined;
+  next.stall = undefined;
   next.lastEvalSummaryHash = undefined;
   next.lastAssistantTurnSummary = undefined;
   applyGoalToSession(session, next);
@@ -337,6 +436,8 @@ export function deleteGoalById(
 export function deleteCurrentGoal(session: GoalQueueSession): { deleted: boolean; promoted?: SessionGoalState } {
   const finished = session.goal;
   if (!finished) return { deleted: false };
+  // The deleted goal's open "keep going?" decision ends with it.
+  endGoalCapDecision(finished);
   const next = session.goalQueue && session.goalQueue.length > 0 ? session.goalQueue.shift() : undefined;
   if (next) {
     const now = Date.now();
@@ -346,9 +447,11 @@ export function deleteCurrentGoal(session: GoalQueueSession): { deleted: boolean
     next.updatedAt = now;
     next.pendingEval = undefined;
     next.lastEvalReason = undefined;
+    next.lastEvalRemaining = undefined;
+    next.stall = undefined;
     next.lastEvalSummaryHash = undefined;
     next.lastAssistantTurnSummary = undefined;
-    next.capDmPendingAt = undefined;
+    endGoalCapDecision(next);
     applyGoalToSession(session, next);
     return { deleted: true, promoted: next };
   }

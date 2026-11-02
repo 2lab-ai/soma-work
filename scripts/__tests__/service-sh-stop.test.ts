@@ -239,6 +239,8 @@ function runStop(extraPath: string, extraEnv: Record<string, string> = {}, opts:
         // (service.sh resolve_env) — a production shell that happens to carry
         // them must still operate on the real tree.
         SOMA_TEST_HARNESS: '1',
+        // Launchctl and the daemon are shims here: scale service.sh's real waits (pause).
+        SOMA_SERVICE_WAIT_SCALE: '0.05',
         // Force system-daemon mode off so no case here can reach the host's
         // real LaunchDaemon through `sudo -n /bin/launchctl` (the system-domain
         // stop path has its own suite, with a fake sudo).

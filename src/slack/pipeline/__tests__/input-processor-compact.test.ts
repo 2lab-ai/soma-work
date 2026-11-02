@@ -283,3 +283,44 @@ describe('InputProcessor auto-compact interception (#617 AC3)', () => {
     });
   });
 });
+
+describe('auto-compact interception keeps a host turn a host turn', () => {
+  function setup() {
+    const session = makeSession({ autoCompactPending: true });
+    const processor = new InputProcessor({
+      fileHandler: { handleFileUpload: vi.fn() } as any,
+      commandRouter: { route: vi.fn() } as any,
+      claudeHandler: { getSession: vi.fn().mockReturnValue(session) } as any,
+      slackApi: { postSystemMessage: vi.fn().mockResolvedValue(undefined), postEphemeral: vi.fn() } as any,
+    } as any);
+    return { session, processor };
+  }
+  const ev = (extra: Record<string, unknown>) =>
+    ({
+      type: 'message',
+      channel: 'C1',
+      thread_ts: 'T1',
+      user: 'U1',
+      ts: '171.0',
+      text: '[goal-continuation] Continue',
+      ...extra,
+    }) as unknown as MessageEvent;
+
+  it('a synthetic event (goal continuation, resume) is parked with hostTurn', async () => {
+    const { session, processor } = setup();
+    await processor.routeCommand(ev({ synthetic: true }), vi.fn() as any);
+    expect(session.pendingEventContext).toEqual({
+      channel: 'C1',
+      threadTs: 'T1',
+      user: 'U1',
+      ts: '171.0',
+      hostTurn: true,
+    });
+  });
+
+  it('a replayed host turn intercepted again stays one', async () => {
+    const { session, processor } = setup();
+    await processor.routeCommand(ev({ routeContext: { compactRedispatch: true, hostTurn: true } }), vi.fn() as any);
+    expect(session.pendingEventContext?.hostTurn).toBe(true);
+  });
+});

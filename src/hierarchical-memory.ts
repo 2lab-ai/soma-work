@@ -125,7 +125,9 @@ export function formatSemanticIndexForPrompt(userId: string): string {
   for (const type of ['agent', 'sites', 'concepts', 'project', 'cron']) {
     const list = byType.get(type);
     if (!list || list.length === 0) continue;
-    lines.push(`▸ ${TYPE_LABELS[type] ?? type}`);
+    // The model reads this header next to the ids, so it spells the id
+    // prefix (`project/…`), not the human display label (`projects`).
+    lines.push(`▸ ${type}`);
     for (const e of list) {
       const shownAliases = e.aliases
         .slice(0, MAX_ALIASES_SHOWN)

@@ -1,6 +1,10 @@
 #!/bin/bash
 # Test stand-in for dscl (install.test.ts). The local directory is plain files:
 # $SHIM_STATE/<Users|Groups>/<record>/<attribute> holds the attribute value.
+# Like real dscl (macOS 15.6.1), -read exits 0 for a missing attribute and 56 for a missing record, and a value
+# stored with a leading newline prints in dscl's multi-line form ("<attribute>:" then " <value>" lines).
+# SHIM_DSCL_FAIL_READ=<attribute>: a -read of that attribute fails (exit 1), the way a query the directory service
+# cannot answer fails.
 set -euo pipefail
 { printf 'dscl'; printf ' %s' "$@"; printf '\n'; } >>"$SHIM_LOG"
 
@@ -23,8 +27,16 @@ case $command in
   -read)
     [ -d "$record" ] || not_found
     if [ $# -ge 1 ]; then
-      [ -f "$record/$1" ] || { echo "No such key: $1" >&2; exit 181; }
-      printf '%s: %s\n' "$1" "$(cat "$record/$1")"
+      if [ "$1" = "${SHIM_DSCL_FAIL_READ:-}" ]; then
+        echo "dscl shim: read of $1 failed (SHIM_DSCL_FAIL_READ)" >&2
+        exit 1
+      fi
+      [ -f "$record/$1" ] || { echo "No such key: $1" >&2; exit 0; }
+      value=$(cat "$record/$1")
+      case $value in
+        $'\n'*) printf '%s:%s\n' "$1" "$value" ;;
+        *) printf '%s: %s\n' "$1" "$value" ;;
+      esac
     else
       for file in "$record"/*; do printf '%s: %s\n' "$(basename "$file")" "$(cat "$file")"; done
     fi

@@ -13,6 +13,12 @@ export const SECRET_KINDS: readonly SecretKind[] = ['gh', 'cf', 'slack'];
 /** The broker's own Slack app token lives at secrets/slack/<this>.token. */
 export const SLACK_APP_SECRET_NAME = 'broker-app';
 
+/**
+ * Optional: the same app's app-level token (`connections:write`) for Socket Mode. Present = approval cards get
+ * 승인 / 거부 buttons; absent = reactions only.
+ */
+export const SLACK_SOCKET_SECRET_NAME = 'broker-app-socket';
+
 export const MAX_SECRET_BYTES = 8 * 1024;
 
 const EXTENSIONS: Record<SecretKind, string> = { gh: 'token', cf: 'forge', slack: 'token' };

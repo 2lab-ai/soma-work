@@ -34,7 +34,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import { promotePendingToDispatchQueue } from '@soma/slack/compact-state';
 import { OutputFlag, resolveVerbosityMask, shouldOutput } from '@soma/slack/output-flags';
-import { recordConversationWorkLog } from '@soma/slack/pipeline/stream-executor';
+import { recordConversationCompact, recordConversationWorkLog } from '@soma/slack/pipeline/stream-executor';
 import { Logger } from '../../logger';
 import { resolveContextWindow } from '../../metrics/model-registry';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
@@ -128,9 +128,39 @@ const completionNoticed = new WeakSet<object>();
  * No conversation, nothing recorded. `recordConversationWorkLog` swallows a
  * throwing store.
  */
-function recordCompactNotice(session: ConversationSession, text: string): void {
+function recordCompactNotice(session: ConversationSession, text: string, sink?: (text: string) => void): void {
+  // A Slack-less task's turn hands its own writer (its receipts see a failure, #629 R1).
+  if (sink) {
+    sink(text);
+    return;
+  }
   if (!session.conversationId) return;
   recordConversationWorkLog(session.conversationId, { kind: 'notice', text });
+}
+
+/**
+ * Dashboard SSOT 2026-10-27 T2 — the compaction's numbers onto the `/compact`
+ * turn that ran it (once per cycle, beside the completion notice). The SDK's
+ * `duration_ms` when it sent one, else the time since START. Runs before the
+ * cycle clears `compactStartedAtMs`.
+ */
+function recordCompactOnTurn(session: ConversationSession): void {
+  if (!session.conversationId) return;
+  const endedAt = Date.now();
+  const started = session.compactStartedAtMs;
+  const durationMs =
+    typeof session.compactDurationMs === 'number'
+      ? session.compactDurationMs
+      : typeof started === 'number'
+        ? endedAt - started
+        : undefined;
+  recordConversationCompact(session.conversationId, {
+    endedAt,
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(typeof session.compactPreTokens === 'number' ? { preTokens: session.compactPreTokens } : {}),
+    ...(typeof session.compactPostTokens === 'number' ? { postTokens: session.compactPostTokens } : {}),
+    ...(session.compactTrigger ? { trigger: session.compactTrigger } : {}),
+  });
 }
 
 /** Work-log text for a sealed cycle: trigger and SDK token counts, each omitted when unknown. */
@@ -167,6 +197,8 @@ export interface CompactHookDeps {
    * stream-executor at the /compact turn's stream end.
    */
   eventRouter?: EventRouter;
+  /** #629 R1 — a task turn's own work-log writer for the compaction notices (else the conversation's). */
+  recordNotice?: (text: string) => void;
 }
 
 export interface CompactHookSet {
@@ -397,7 +429,7 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
   // only correct position — setting it after the Slack round-trip leaves a
   // race window where a parallel caller passes the guard and double-posts.
   marker.pre = true;
-  recordCompactNotice(session, 'Compaction starting');
+  recordCompactNotice(session, 'Compaction starting', deps.recordNotice);
 
   // Snapshot usage% at pre-compact for the "was ~X%" end-of-cycle message,
   // then INVALIDATE the heuristic so we never present it as "now ~X%".
@@ -571,6 +603,12 @@ export async function postCompactCompleteIfNeeded(
   // "completed" text back to "starting".
   stopStartingTicker(session);
 
+  // Dashboard SSOT 2026-10-27 T2 — the SDK's boundary landed after this
+  // cycle's result was recorded (the hook got there first, without numbers —
+  // its Slack update may still be in flight): hand them to the /compact turn
+  // (the recorder fills only what is missing).
+  if (completionNoticed.has(marker) && opts.source === 'on-compact-boundary') recordCompactOnTurn(session);
+
   const postPromise =
     marker.post === true
       ? Promise.resolve()
@@ -579,7 +617,8 @@ export async function postCompactCompleteIfNeeded(
           // so two racing ENDs cannot both record it.
           if (!completionNoticed.has(marker)) {
             completionNoticed.add(marker);
-            recordCompactNotice(session, describeCompactionComplete(session));
+            recordCompactNotice(session, describeCompactionComplete(session), deps.recordNotice);
+            recordCompactOnTurn(session);
           }
           const text = buildCompactCompleteMessage(session);
           const startingTs = session.compactStartingMessageTs;

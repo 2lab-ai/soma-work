@@ -22,6 +22,8 @@ export interface ProcessedFile {
 export interface ConversationSession {
   channelId: string;
   threadTs?: string;
+  /** A task with no Slack thread (#596): `channelId` is '' and its registry key is `task:<taskId>`. */
+  slackless?: boolean;
   threadRootTs?: string;
   /**
    * Set once, at session init, from `routeContext.incidentRequest` of a
@@ -49,7 +51,17 @@ export interface ConversationSession {
     [key: string]: any;
   };
   /** SSOT 2026-10-22 T5 — a dashboard model switch waiting for its compact (runtime-only). */
-  pendingModelSwitch?: { model: string; nickname: string; requestedAt: number; compactTs?: string; armed?: boolean };
+  pendingModelSwitch?: {
+    model: string;
+    nickname: string;
+    requestedAt: number;
+    compactTs?: string;
+    armed?: boolean;
+    /** The session's effort once the switch lands — set when the target does not run the session's level. */
+    effort?: string;
+    /** The level `effort` replaces (a level set while the switch waited stays). */
+    effortFrom?: string;
+  };
   /** Last per-model SDK running total for `sessionId` (persisted) — see `toTurnUsage`. */
   sdkUsageBaseline?: SdkUsageBaseline;
   /** What the whole task spent (persisted, never reset) — see `creditTaskSpend`. */
@@ -117,6 +129,13 @@ export interface MessageEvent {
      */
     compactRedispatch?: boolean;
     /**
+     * True for a post-compact replay of a host turn (a synthetic event — goal
+     * continuation, resume — the auto-compact intercepted or a compaction
+     * parked). The replay runs through the user-message path; this only makes
+     * the executor record the turn as soma-work's (`origin.by: 'system'`).
+     */
+    hostTurn?: boolean;
+    /**
      * True only for goal auto-continuation injections. Such a turn must
      * NEVER supersede a live request: if the slot is busy when this event
      * reaches concurrency control, the continuation is dropped (the active
@@ -148,6 +167,14 @@ export interface MessageEvent {
      * body cannot forge it. `SessionInitializer` copies it onto the session.
      */
     incidentRequest?: IncidentRequest;
+    /**
+     * E2 ⑦ — set by the router on an original app_mention whose words are a
+     * plain instruction (`isTaskEntryCandidate`): such a mention may become a
+     * dashboard task (⑧). Absent everywhere else. Survives the follow-up queue.
+     * A hint about the words at mention time: a queued item's text or files
+     * may change later, and the host re-checks both when it acts.
+     */
+    taskEntryCandidate?: boolean;
   };
   files?: Array<{
     id: string;

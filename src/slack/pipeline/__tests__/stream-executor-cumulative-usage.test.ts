@@ -15,7 +15,7 @@
 import { LOG_DETAIL } from '@soma/slack/output-flags';
 // Imported through the src wrapper (not `@soma/slack/...`): the wrapper is what
 // installs `setStreamExecutorProviders`, including `getMetricsEmitter`.
-import { adoptSdkSessionId } from '@soma/slack/session-usage-math';
+import { adoptSdkSessionId, sanitizeSessionUsage, toPersistedSessionUsage } from '@soma/slack/session-usage-math';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runAgentStreamFromSdk } from '../../../agent-runtime/claude-code/stream-runner';
 import { buildWorkSessionKey } from '../../../session-identity';
@@ -256,14 +256,15 @@ describe('StreamExecutor — cumulative SDK usage is counted once', () => {
     expect(emitted.tokenUsage.map((e) => Number(e.metadata.costUsd.toFixed(6)))).toEqual([1, 0.8, 0.1]);
   });
 
-  it('keeps counting from the last running total after a restart drops the in-memory usage', async () => {
+  it('keeps counting from the last running total after a restart that comes back without usage', async () => {
     const session = newSession();
     await runTurn(
       session,
       resultFrame({ [OPUS]: { input: 1000, output: 100, cacheRead: 0, cacheCreate: 0, cost: 1 } }),
     );
 
-    // Restart: `session.usage` is runtime-only; the persisted fields survive.
+    // Restart from a sessions.json saved before `usage` was persisted (or whose
+    // usage was dropped as malformed): the other persisted fields survive.
     const restored = JSON.parse(JSON.stringify(session));
     restored.usage = undefined;
 
@@ -350,6 +351,48 @@ describe('StreamExecutor — cumulative SDK usage is counted once', () => {
     expect(session.goal.tokensInput).toBe(1300);
     expect(session.goal.costUsd).toBeCloseTo(1.3);
     expect(emitted.tokenUsage.map((e) => Number(e.metadata.costUsd.toFixed(6)))).toEqual([1, 0.3]);
+  });
+
+  it('a restart between a result-less turn and the next result keeps the totals and counts the folded calls once', async () => {
+    const session = newSession();
+    await runTurn(
+      session,
+      resultFrame({ [OPUS]: { input: 1000, output: 100, cacheRead: 0, cacheCreate: 0, cost: 1 } }),
+    );
+    // Turn 2 makes one API call, then dies before its result: folded into the totals.
+    await runTurn(session, {
+      type: 'assistant',
+      message: {
+        id: 'msg-cut-before-restart',
+        model: OPUS,
+        role: 'assistant',
+        content: [{ type: 'text', text: 'working' }],
+        usage: { input_tokens: 200, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      },
+    });
+    expect(session.usage.totalInputTokens).toBe(1200);
+    const context = session.usage.currentInputTokens;
+
+    // Restart: sessions.json carries `usage` the way saveSessions/loadSessions write and read it.
+    const restored = JSON.parse(JSON.stringify(session));
+    restored.usage = sanitizeSessionUsage(
+      JSON.parse(JSON.stringify(toPersistedSessionUsage(session.usage, session.sessionId))),
+      undefined,
+    );
+    expect(restored.usage.foldedLiveUsage).toBeUndefined();
+    expect(restored.usage.currentInputTokens).toBe(context);
+
+    // Turn 3 resumes: the transcript kept turn 2's call, so the running total includes it.
+    await runTurn(
+      restored,
+      resultFrame({ [OPUS]: { input: 1300, output: 130, cacheRead: 0, cacheCreate: 0, cost: 1.3 } }),
+    );
+
+    // The session totals continue across the restart — 1300, not 1500 (the fold counted twice).
+    expect(restored.usage.totalInputTokens).toBe(1300);
+    expect(restored.usage.totalOutputTokens).toBe(130);
+    expect(restored.usage.totalCostUsd).toBeCloseTo(1.3);
+    expect(restored.taskUsage.inputTokens).toBe(1300);
   });
 
   it('a session saved before baselines existed seeds the baseline instead of re-counting its history', async () => {
@@ -500,7 +543,7 @@ describe('StreamExecutor — cumulative SDK usage is counted once', () => {
 
 /**
  * RED — the task (the dashboard card) shows the total of everything it spent
- * (SSOT T3). `session.usage` is runtime-only and `resetSessionContext` clears
+ * (SSOT T3). `session.usage` was runtime-only and `resetSessionContext` clears
  * it, so the card fell back to 0 after every restart, `/new` or
  * CONTINUE_SESSION (dev 2026-10-26: a card read 20.4M tok / $15.00 while its
  * transcripts held 356M). `session.taskUsage` takes the same per-turn spend the
@@ -528,9 +571,12 @@ describe('StreamExecutor — the task total (taskUsage) outlives restarts and re
     });
     expect(session.taskUsage.costUsd).toBeCloseTo(1.5);
 
-    // Restart: only the persisted fields survive.
+    // Restart: only the persisted fields survive (`usage` without its runtime-only fold).
     const restored = JSON.parse(JSON.stringify(session));
-    restored.usage = undefined;
+    restored.usage = sanitizeSessionUsage(
+      JSON.parse(JSON.stringify(toPersistedSessionUsage(session.usage, session.sessionId))),
+      undefined,
+    );
     await runTurn(
       restored,
       resultFrame({
@@ -538,11 +584,11 @@ describe('StreamExecutor — the task total (taskUsage) outlives restarts and re
         grok: { input: 400, output: 40, cacheRead: 0, cacheCreate: 0, cost: 0.5 },
       }),
     );
-    expect(restored.usage.totalCostUsd).toBeCloseTo(0.25);
+    expect(restored.usage.totalCostUsd).toBeCloseTo(1.75);
     expect(restored.taskUsage.costUsd).toBeCloseTo(1.75);
     expect(restored.taskUsage.inputTokens).toBe(1600);
 
-    // /new: a new SDK session; the runtime totals start over, the task's do not.
+    // /new: a new SDK session; the session totals start over, the task's do not.
     restored.sessionId = undefined;
     restored.usage = undefined;
     await runTurn(

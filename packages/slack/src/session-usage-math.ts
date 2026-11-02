@@ -10,6 +10,13 @@
  * defined" is NOT the same as "per-turn data is valid". Trusting a zeroed
  * per-turn value blanks the context display (`0/372k (100% available)`) and
  * silently disables the fixed-token auto-compact trigger for those models.
+ *
+ * Those models' real per-call reading arrives on the stream's `message_delta`
+ * frame, which the host requests for them (partial messages,
+ * `agent-runtime/claude-code/build-stream-options.ts`) and maps to the same
+ * per-turn fields (`sdk-message-to-event.ts#mapStreamEvent`). The aggregate
+ * fallback below is for a turn that still has no per-call reading — e.g. one
+ * cut off before its first `message_delta`.
  */
 
 /** Minimal structural slice of `UsageData` this module needs. */
@@ -36,11 +43,14 @@ export interface CurrentContextTokens {
  * Select the token set representing the CURRENT context-window occupancy.
  *
  * Per-turn values win only when they are present AND carry information
- * (sum > 0). All-zero per-turn usage — the llmux/codex signature — falls back
- * to the billing aggregate. The aggregate overstates occupancy on multi-call
- * agent loops (it sums every round-trip), but overstating is strictly safer
- * than reporting an empty window: the display clamps at 100% used and the
- * auto-compact trigger fires early instead of never.
+ * (sum > 0). A turn with no per-call reading falls back to the billing
+ * aggregate. The aggregate is NOT an occupancy figure: it sums every round-trip
+ * of the agent loop, so a 20-call turn reads roughly 20× [estimate] the window it actually
+ * holds and trips auto-compact on a session that does not need it (the sol[1m]
+ * miscalculation, 2026-10-27). It is kept only because an empty window would be
+ * worse — the trigger would never fire. The fix for llmux models is upstream of
+ * this function (per-call usage from `message_delta`), not a different
+ * fallback here.
  */
 export function selectCurrentContextTokens(usage: CurrentContextTokensInput): CurrentContextTokens {
   const hasPerTurn = usage.lastTurnInputTokens !== undefined;
@@ -66,6 +76,17 @@ export function selectCurrentContextTokens(usage: CurrentContextTokensInput): Cu
     cacheCreateTokens: usage.cacheCreationInputTokens,
     source: 'aggregate-fallback',
   };
+}
+
+/**
+ * Whether a token count can be a reading of a window's occupancy. One request
+ * never holds more than its context window, so a count above the window is a
+ * sum of calls — the billing aggregate, or on a resumed SDK session its whole
+ * running total (a dev deployment, 2026-10-30: 187,891,067 against 1M, shown as
+ * `187.9M/1M`) — not how full the window is.
+ */
+export function fitsContextWindow(tokens: number, contextWindow: number): boolean {
+  return tokens <= contextWindow;
 }
 
 /** The four live context-occupancy counters, as a mutable structural slice. */
@@ -192,8 +213,8 @@ export interface ModelUsageCounters {
 
 /**
  * The last per-model running total seen for one SDK session. Persisted on the
- * session: `session.usage` is runtime-only, but the goal's spend is not, so a
- * restart must not forget where the running total stood.
+ * session: the goal's spend and the session totals are, so a restart must not
+ * forget where the running total stood.
  */
 export interface SdkUsageBaseline {
   /** SDK session id the totals belong to; a different id means a new running total. */
@@ -345,7 +366,7 @@ export function sanitizeSdkUsageBaseline(raw: unknown): SdkUsageBaseline | undef
 /**
  * Spend a turn that ended WITHOUT its result folded into the session totals
  * (`foldLiveUsage`). Runtime-only, kept on `session.usage` next to the totals
- * it was added to.
+ * it was added to — never saved (`toPersistedSessionUsage`).
  */
 export interface FoldedLiveUsage {
   inputTokens: number;
@@ -417,12 +438,134 @@ export function addSessionSpend(total: number, spend: number): number {
 }
 
 /**
+ * `session.usage` as sessions.json carries it: the context fill of the last
+ * request, its window, and the session totals. Persisted so a restart does not
+ * blank the context gauge (dashboard, `/context`) or hide a full context from
+ * the compact threshold until the session's next turn ends.
+ */
+export interface PersistedSessionUsage {
+  currentInputTokens: number;
+  currentOutputTokens: number;
+  currentCacheReadTokens: number;
+  currentCacheCreateTokens: number;
+  contextWindow: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheReadTokens: number;
+  totalCacheCreateTokens: number;
+  totalCostUsd: number;
+  modelTotals?: Record<string, SessionModelTotals>;
+  lastUpdated: number;
+}
+
+const USAGE_COUNT_FIELDS = [
+  'currentInputTokens',
+  'currentOutputTokens',
+  'currentCacheReadTokens',
+  'currentCacheCreateTokens',
+  'totalInputTokens',
+  'totalOutputTokens',
+  'totalCacheReadTokens',
+  'totalCacheCreateTokens',
+  'totalCostUsd',
+] as const satisfies readonly (keyof PersistedSessionUsage)[];
+
+const MODEL_TOTAL_FIELDS = [
+  'inputTokens',
+  'outputTokens',
+  'cacheReadTokens',
+  'cacheCreateTokens',
+  'costUsd',
+] as const satisfies readonly (keyof SessionModelTotals)[];
+
+function isCount(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0;
+}
+
+/**
+ * What of `session.usage` is saved. The fold of a result-less turn
+ * (`foldedLiveUsage`) stays runtime-only, so the saved totals leave out a fold
+ * the SDK session's next result will settle: the transcript keeps those calls,
+ * that result carries them again, and with the fold gone after a restart it
+ * would count them a second time. A fold no result will settle (another SDK
+ * session's) is final spend and stays in.
+ */
+export function toPersistedSessionUsage(
+  usage: PersistedSessionUsage & { foldedLiveUsage?: FoldedLiveUsage },
+  sdkSessionId: string | undefined,
+): PersistedSessionUsage {
+  const fold = usage.foldedLiveUsage;
+  const pending = fold?.sdkSessionId && fold.sdkSessionId === sdkSessionId ? fold : undefined;
+  return {
+    currentInputTokens: usage.currentInputTokens,
+    currentOutputTokens: usage.currentOutputTokens,
+    currentCacheReadTokens: usage.currentCacheReadTokens,
+    currentCacheCreateTokens: usage.currentCacheCreateTokens,
+    contextWindow: usage.contextWindow,
+    totalInputTokens: addSessionSpend(usage.totalInputTokens, -(pending?.inputTokens ?? 0)),
+    totalOutputTokens: addSessionSpend(usage.totalOutputTokens, -(pending?.outputTokens ?? 0)),
+    totalCacheReadTokens: addSessionSpend(usage.totalCacheReadTokens, -(pending?.cacheReadTokens ?? 0)),
+    totalCacheCreateTokens: addSessionSpend(usage.totalCacheCreateTokens, -(pending?.cacheCreateTokens ?? 0)),
+    totalCostUsd: addSessionSpend(usage.totalCostUsd, -(pending?.costUsd ?? 0)),
+    ...(usage.modelTotals ? { modelTotals: usage.modelTotals } : {}),
+    lastUpdated: usage.lastUpdated,
+  };
+}
+
+/**
+ * Restore a persisted `session.usage`; anything malformed is dropped rather
+ * than trusted — never an invented count. Every count must be a finite number
+ * ≥ 0. A window that is not > 0 falls back to `fallbackWindow` (the session
+ * model's), and with none the usage is dropped. A per-model bucket with a bad
+ * count is left out. Unknown keys — the runtime-only fold included — are not
+ * restored.
+ */
+export function sanitizeSessionUsage(
+  raw: unknown,
+  fallbackWindow: number | undefined,
+): PersistedSessionUsage | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  if (!USAGE_COUNT_FIELDS.every((f) => isCount(r[f]))) return undefined;
+  const saved = r.contextWindow;
+  const contextWindow = isCount(saved) && saved > 0 ? saved : fallbackWindow;
+  if (!isCount(contextWindow) || contextWindow <= 0) return undefined;
+  const out = { contextWindow, lastUpdated: isCount(r.lastUpdated) ? r.lastUpdated : 0 } as PersistedSessionUsage;
+  for (const f of USAGE_COUNT_FIELDS) out[f] = r[f] as number;
+  // A saved occupancy above the window it was saved with is no reading
+  // (`fitsContextWindow`): drop it to "no reading yet" — the totals are kept.
+  // Only the saved window can judge it; a model-lookup fallback is a guess
+  // that may be the base 200k of a session running the 1M window.
+  const occupancy =
+    out.currentInputTokens + out.currentOutputTokens + out.currentCacheReadTokens + out.currentCacheCreateTokens;
+  if (contextWindow === saved && !fitsContextWindow(occupancy, contextWindow)) {
+    out.currentInputTokens = 0;
+    out.currentOutputTokens = 0;
+    out.currentCacheReadTokens = 0;
+    out.currentCacheCreateTokens = 0;
+  }
+  const models = r.modelTotals;
+  if (models && typeof models === 'object' && !Array.isArray(models)) {
+    out.modelTotals = {};
+    for (const [model, bucket] of Object.entries(models as Record<string, unknown>)) {
+      if (!bucket || typeof bucket !== 'object') continue;
+      const b = bucket as Record<string, unknown>;
+      if (!MODEL_TOTAL_FIELDS.every((f) => isCount(b[f]))) continue;
+      out.modelTotals[model] = Object.fromEntries(
+        MODEL_TOTAL_FIELDS.map((f) => [f, b[f]]),
+      ) as unknown as SessionModelTotals;
+    }
+  }
+  return out;
+}
+
+/**
  * SSOT 2026-10-26 T3 — what the whole task (the dashboard card) spent: the
  * main agent and every subagent, across SDK sessions, restarts, `/new` and
  * CONTINUE_SESSION. It takes exactly the per-turn spend the session totals
  * take (a result's growth — `modelUsage` already holds the subagents' calls —
- * and a result-less turn's folded calls), but unlike the runtime-only
- * `session.usage` it is persisted and never reset.
+ * and a result-less turn's folded calls), but unlike `session.usage` (reset
+ * with the context by `/new` and CONTINUE_SESSION) it is never reset.
  */
 export interface TaskUsage {
   inputTokens: number;

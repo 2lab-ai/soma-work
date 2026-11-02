@@ -1,5 +1,7 @@
 // Session types live in somalib (shared with mcp-servers).
 // Re-export for backward compatibility — all src/ files import from './types'.
+import type { SessionGoalStall } from '@soma/slack/session-goal';
+
 export type {
   Continuation,
   HandoffContext,
@@ -136,6 +138,9 @@ export interface ActionPanelPRStatus {
   approved?: boolean; // true if PR has been approved
   head?: string; // source branch
   base?: string; // target branch
+  /** Fetch provenance — see `PRStatusInfo.fetchedForUrl` in @soma/slack/action-panel-builder. */
+  fetchedForUrl?: string;
+  linkStatusAtFetch?: string;
 }
 
 export interface ActionPanelState {
@@ -212,6 +217,9 @@ export interface SessionGoalPendingEval {
   turnId: string;
 }
 
+// Goal stall round — one definition, in the package the queue helpers live in.
+export type { SessionGoalStall };
+
 export interface SessionGoal {
   /**
    * Stable identity for this goal, independent of `createdAt` (which can
@@ -242,8 +250,8 @@ export interface SessionGoal {
   // ── Per-goal accounting (live-accumulated; survives compaction) ────────
   // Credited while THIS goal is the active goal: ms from the turn timer
   // (begin/end/orphan-sweep) and the same aggregate token deltas added to
-  // `session.usage.total*`. `session.usage` is in-memory and reset on
-  // compaction, so we accumulate per-goal at the source rather than diffing.
+  // `session.usage.total*`. `session.usage` is reset with the context (`/new`,
+  // CONTINUE_SESSION), so we accumulate per-goal at the source rather than diffing.
   /** Wall-clock active turn time attributed to this goal (ms). */
   activeMsUsed?: number;
   tokensInput?: number;
@@ -260,12 +268,17 @@ export interface SessionGoal {
   /** ms epoch of the last continuation injection. */
   lastContinuationAt?: number;
   /**
-   * Set to the ms epoch when a cap-reached "continue?" DM was sent to the
-   * goal owner (S3). Acts as a dedup guard so the loop sends exactly one DM
-   * per cap event; cleared when the owner answers (continue/cancel) or any
-   * real user message resets the loop. Undefined ⇒ no decision pending.
+   * Set to the ms epoch when the cap-reached "continue?" decision opened
+   * (S3). The decision is answered from the owner's DM or the dashboard's
+   * approval card (`slack/goal-cap-decision.ts`); cleared when the owner
+   * answers, or when any real user message / pause / done / completion ends
+   * it. Undefined ⇒ no decision pending.
    */
   capDmPendingAt?: number;
+  /** The pending decision's round id — carried by the DM buttons and the dashboard card, checked on every answer. */
+  capDecisionId?: string;
+  /** Where the round's DM landed; stored only after the post succeeded (absent ⇒ the DM is retried). */
+  capDmRef?: { channel: string; ts: string };
 
   /**
    * The goal's opening turn was admitted but has not reached the model yet
@@ -291,6 +304,19 @@ export interface SessionGoal {
    * eval cycle starts) or when the user resets the goal.
    */
   lastEvalReason?: string;
+  /**
+   * The `remaining` list of the same verdict as `lastEvalReason`. Sent back to
+   * the evaluator with the reason so it can tell whether the next failure is
+   * the same one (goal stall).
+   */
+  lastEvalRemaining?: string[];
+  /**
+   * Open while the loop is stopped because the evaluator judged the goal
+   * failed again for the same reason (≥ `GOAL_STALL_MIN_CONFIDENCE`). The
+   * driver runs no eval and injects no continuation until a real user message
+   * (the answer to the stall question, or anything typed) clears it.
+   */
+  stall?: SessionGoalStall;
   /** Counts how many eval cycles have run for this goal. */
   evalAttemptCount?: number;
   /**
@@ -376,13 +402,142 @@ export interface SessionIncidentRequest {
   readonly summary: string;
 }
 
+/**
+ * E2 ① — where a Slack-less task's instruction came from: the channel, the
+ * thread's root (`thread_ts ?? ts`), the instruction message itself (a
+ * redelivered event is recognised by it) and, when not the main bot, the
+ * agent instance that received it.
+ */
+export interface OriginThread {
+  channel: string;
+  threadTs: string;
+  messageTs: string;
+  agent?: string;
+}
+
+/** E2 ③ — what a notice to the instruction thread is about. */
+export type TaskNoticeKind = 'link' | 'result' | 'question' | 'failure' | 'interrupted';
+
+/**
+ * E2 ③ — one notice owed to a task's instruction thread. Its id is
+ * deterministic (`<taskId>:<chain or turn>:<kind>[:<askId>]`), so producing
+ * it twice is one notice.
+ */
+export interface TaskNoticeIntent {
+  id: string;
+  kind: TaskNoticeKind;
+  chainId?: string;
+  turnId?: string;
+  askId?: string;
+  outcome?: TaskTurnOutcomeRecord['outcome'];
+  reason?: string;
+  at: number;
+}
+
+/** E2 ③ — how a turn's outcome commit relates to its chain. */
+export interface TaskChainSettle {
+  chainId: string;
+  /** False only for a completed `/compact` hop the chain re-runs after. */
+  ends: boolean;
+  /**
+   * The notice this end owes, when not the outcome's own — a completed
+   * `/compact` hop with nothing to re-run is a failure, never a result.
+   */
+  notice?: { kind: TaskNoticeKind; reason: string };
+}
+
+/** E2 ② — a Slack-instructed task's channel context (see `ConversationSession.inputContext`). */
+export interface TaskInputContext {
+  channelName?: string;
+  channelDescription?: string;
+  repos?: string[];
+  confluenceUrl?: string;
+}
+
+/**
+ * E4 ⑦ (D10 b) — a child's "closed by its parent" mark. `chain` is the chain the
+ * close cancelled (the controller's id, also when the close lands before that
+ * chain's first hop is saved): another chain starting ends the mark. A mark with
+ * no chain (an older record) ends with any new chain.
+ */
+export interface ClosedByParent {
+  by: 'parent';
+  at: number;
+  chain?: string;
+}
+
 export interface ConversationSession {
   ownerId: string; // User who started the session
   ownerName?: string; // Display name of owner
   currentInitiatorId?: string; // User who triggered the current response
   currentInitiatorName?: string; // Display name of current initiator
+  // '' (and no threadTs) for a Slack-less task — see `slackless`.
   channelId: string;
   threadTs?: string;
+  /**
+   * A task with no Slack channel/thread (#596, `SessionRegistry.createTask`).
+   * Its registry key is `task:<taskId>`, not `work:<channel>:<thread>`, and it
+   * is saved and on the board from creation, before any SDK session.
+   */
+  slackless?: boolean;
+  /**
+   * E2 ① — the Slack thread a Slack-less task was instructed from. Only a
+   * Slack-less task carries it; it is NOT a Slack binding (`channelId` /
+   * `threadTs` stay empty) and not `sourceThread` (a migrated session's
+   * back-pointer). One live task per instruction thread.
+   */
+  originThread?: OriginThread;
+  /**
+   * E2 ② — the channel a Slack-instructed task was created in, snapshotted at
+   * creation: what a Slack session there gets in its system prompt (channel
+   * description, repos, wiki). Prompt text only — never a Slack context.
+   */
+  inputContext?: TaskInputContext;
+  /**
+   * E4 ① (.prd/19 D1) — `'epic'` on an epic task; absent on every other
+   * session. Set by the host at creation only and never changed. A child is
+   * never an epic (depth 1).
+   */
+  kind?: 'epic';
+  /** E4 ① — a child task's epic (its task id). Slack-less tasks only. */
+  parentTaskId?: string;
+  /** E4 ① — the plan node a child task was made for (a short slug). Set with `parentTaskId`. */
+  planNodeId?: string;
+  /**
+   * E4 ⑦ (D10 b) — a child cancelled because its epic was closed while it ran:
+   * saved before its chain was cancelled. The outcome stays `cancelled`; the
+   * card reads this to say its parent closed it.
+   */
+  closedBy?: ClosedByParent;
+  /**
+   * E4 ⑦ — in memory only, never saved: the dashboard close of this task is
+   * under way. An epic being closed takes no wake, no event, no tool call and
+   * no new start; a child being closed owes no wake (fable #703 R1).
+   */
+  closing?: boolean;
+  /**
+   * E4 ① — an epic's children, by task id, in creation order. Append-only:
+   * written in the same strict save that creates the child, never shortened,
+   * so a closed or archived child still counts toward the cap.
+   */
+  childTaskIds?: string[];
+  /** E4 ② (.prd/19 D2) — an epic's plan tree; written only through `applyPlanWrite`. */
+  plan?: EpicPlan;
+  /** E4 ② (.prd/19 D6) — what the epic's children owe it, at most 100; no child text. */
+  epicEvents?: EpicEvent[];
+  /**
+   * E2 ③ — the chain a Slack-less task is running (its id), saved by the
+   * chain's first turn start and kept across `/compact` hops; cleared by the
+   * chain's last outcome commit or by restart reconciliation. A task still
+   * holding one after a restart lost its chain: it is reconciled `interrupted`.
+   */
+  openChain?: string;
+  /**
+   * E2 ③ — notices owed to the task's instruction thread, written in the same
+   * strict save as the state they describe (only a task with `originThread`).
+   * Delivery state lives in the notification ledger, not here.
+   */
+  notices?: TaskNoticeIntent[];
   sessionId?: string;
   isActive: boolean;
   lastActivity: Date;
@@ -473,10 +628,43 @@ export interface ConversationSession {
   terminated?: boolean;
   // Dashboard: session hidden from dashboard view but kept in conversation list
   trashed?: boolean;
+  /**
+   * Dashboard star (SSOT 2026-10-30): pinned on top of the board and kept
+   * alive — the lifecycle sweep never puts it to sleep or archives it.
+   */
+  starred?: boolean;
+  /**
+   * When the star was last removed (epoch ms). The idle clock counts from the
+   * later of this and `lastActivity`, so an unstarred session gets a full
+   * sleep period instead of sleeping on the next sweep.
+   */
+  starClearedAt?: number;
+  /**
+   * #598 ④b — the latest turn's outcome of a Slack-less task (D10), written once
+   * per terminal turn by the task runner's strict commit. Current activity wins
+   * over it on the dashboard: `working` shows running, `waiting` shows waiting,
+   * `idle` reads this.
+   */
+  lastTurnOutcome?: TaskTurnOutcomeRecord;
+  /**
+   * #598 ④c — the turn a Slack-less task is running, saved when it starts
+   * (`SessionRegistry.beginTaskTurn`) and cleared by its outcome's commit. A
+   * task loaded `working` names the turn the process lost (restart
+   * reconciliation records it `interrupted`).
+   */
+  activeTaskTurnId?: string;
   // Sleep mode
   sleepStartedAt?: Date;
   // Conversation history recording ID
   conversationId?: string;
+  /**
+   * Task id (#595): the address of this task that is not its Slack
+   * channel/thread. Minted by SessionRegistry and set on every session it
+   * holds; never changes for the life of the task. Lifecycle contract and
+   * lookup: `SessionRegistry.getSessionByTaskId`.
+   */
+  // Only SessionRegistry assigns this (create / load / revive / adoptTaskId) — an assignment elsewhere breaks the task-id index.
+  taskId?: string;
   // Bot activity state (working/waiting/idle)
   activityState?: ActivityState;
   activityStateChangedAt?: number;
@@ -536,6 +724,14 @@ export interface ConversationSession {
    * title write clears it.
    */
   titleProvisional?: boolean;
+  /**
+   * The work queue (`config.json#workQueues`, e.g. `deploy-dev2`) this
+   * session's work belongs to, set by the work queue gate on its first queued
+   * turn. Persisted, so a later turn of the same deploy session — an answer to
+   * the deploy confirmation, "다시 배포해줘" — still has to hold the queue's
+   * slot after a restart. Cleared by `new`.
+   */
+  workQueueId?: string;
   /**
    * Set once by `SessionInitializer` from a verified incident turn; makes this
    * session incident-owned (restricted runtime, ordinary traffic refused in
@@ -740,6 +936,14 @@ export interface ConversationSession {
    */
   pendingInstructionRejection?: { at: number; request: SessionResourceUpdateRequest };
 
+  /**
+   * How many `<session-title-pending>` notices the stream-executor has injected
+   * while the session wore a host stand-in title (voice / image-only first
+   * message). Capped by SESSION_TITLE_NOTICE_MAX_TURNS. Runtime-only — NOT
+   * persisted (same convention as `pendingInstructionRejection`).
+   */
+  titleNoticeCount?: number;
+
   // Dashboard improvements (v2.1):
   // Number of /compact invocations or SDK-triggered compact_boundary events observed on this session.
   compactionCount?: number;
@@ -783,6 +987,13 @@ export interface ConversationSession {
   // breaks the compact → fail → compact loop. Cleared by a successful
   // compaction. See `pauseAutoCompactAfterFailure` in @soma/slack/compact-state.
   autoCompactSuppressedUntilMs?: number | null;
+  // Runtime-only (not serialized): when the running turn was stopped because
+  // it crossed the auto-compact threshold (stream-executor, abort reason
+  // `auto-compact`), and when the session was last stopped by a stop-class
+  // abort (user stop / close / shutdown, slack-handler `beforeAbort`). A stop
+  // after the auto-compact stop cancels the automatic continuation.
+  autoCompactStoppedAtMs?: number;
+  lastStopAtMs?: number;
   /**
    * Session-scoped auto-compact threshold in TOKENS, set by `/autocompact
    * <tokens>` and cleared by `/autocompact reset`. Wins over the model's
@@ -828,7 +1039,17 @@ export interface ConversationSession {
    * leaves it alone. Runtime-only — NOT persisted, so a restart cancels it
    * instead of applying it to some unrelated later compact.
    */
-  pendingModelSwitch?: { model: string; nickname: string; requestedAt: number; compactTs?: string; armed?: boolean };
+  pendingModelSwitch?: {
+    model: string;
+    nickname: string;
+    requestedAt: number;
+    compactTs?: string;
+    armed?: boolean;
+    /** The session's effort once the switch lands — set when the target does not run the session's level. */
+    effort?: string;
+    /** The level `effort` replaces (a level set while the switch waited stays). */
+    effortFrom?: string;
+  };
   // One-shot suppression for `checkAndSchedulePendingCompact`. Set to `true`
   // by `postCompactCompleteIfNeeded` when a compact cycle seals; cleared by
   // the very next threshold check. Prevents the "Compaction completed →
@@ -888,7 +1109,7 @@ export interface ConversationSession {
   // User message text captured when auto-compact intercepts the turn; re-dispatched after PostCompact.
   pendingUserText?: string | null;
   // Slack event context captured alongside `pendingUserText` for synthetic re-dispatch via event-router.
-  pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string } | null;
+  pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string; hostTurn?: boolean } | null;
   // Deferred post-compact re-dispatch queue (arrival order, one entry per
   // author burst). `postCompactCompleteIfNeeded` promotes
   // `pendingUserText`/`pendingEventContext` here when a compact cycle seals;
@@ -899,7 +1120,7 @@ export interface ConversationSession {
   // control abort the still-running /compact process and lose the compaction
   // entirely (observed as `now ~85% ← was ~85%` immediate re-compact loops).
   compactPendingDispatches?: Array<{
-    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean };
+    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean; hostTurn?: boolean };
     text: string;
   }> | null;
   // Runtime-only exact-once guard while the queue is handed back to EventRouter.
@@ -1007,4 +1228,60 @@ export interface UserChoiceGroup {
   question: string; // Group title/context
   choices: UserChoice[]; // Array of individual choices
   context?: string; // Why these decisions are needed
+}
+
+/** #598 ④b — one terminal turn's outcome, as stored on the session. */
+/** E4 ② — a node of an epic's plan tree (.prd/19 D2). */
+export interface EpicPlanNode {
+  /** A short slug, unique within the epic, never reused for another node. */
+  id: string;
+  title: string;
+  kind: 'issue' | 'sub';
+  /** A sub's issue (absent on an issue). */
+  parent?: string;
+  body?: string;
+  /** The epic's verdict on the node (D5); `by` leaves room for an owner verdict later. */
+  accepted?: { by: 'epic' | 'owner'; at: number };
+  /** The child tasks made for this node, by id — the host's record, never the writer's. */
+  spawned?: string[];
+}
+
+/** E4 ② — an epic's plan (.prd/19 D2, D10 a). */
+export interface EpicPlan {
+  nodes: EpicPlanNode[];
+  done?: { by: 'epic' | 'owner'; at: number };
+  /** Node ids a write removed: never used again for another node (D2). Host-kept. */
+  retired?: string[];
+}
+
+/**
+ * E4 ② — what a child owes its epic (.prd/19 D6): a chain end (its outcome),
+ * an approval request (`needs-input`, with `approvalId`; closed by
+ * `resolvedAt`) or a close. Never any text the child produced.
+ */
+export interface EpicEvent {
+  /** Deterministic: the child's task id + its chain id (or approval id). */
+  id: string;
+  childTaskId: string;
+  planNodeId: string;
+  outcome: TaskTurnOutcomeRecord['outcome'] | 'needs-input' | 'closed';
+  chainId?: string;
+  turnId?: string;
+  approvalId?: string;
+  at: number;
+  state: 'pending' | 'delivered';
+  /** The parent chain that consumed it (D7) — reset to pending if that chain is reconciled interrupted. */
+  consumedBy?: string;
+  /** An approval request that was answered. */
+  resolvedAt?: number;
+}
+
+export interface TaskTurnOutcomeRecord {
+  turnId: string;
+  outcome: 'completed' | 'failed' | 'cancelled' | 'waiting' | 'interrupted';
+  category: 'UIUserAskQuestion' | 'WorkflowComplete' | 'Exception' | 'Stalled';
+  reason?: string;
+  retryable?: boolean;
+  recordFailure?: string;
+  at: number;
 }

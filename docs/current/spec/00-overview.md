@@ -332,4 +332,4 @@ soma-work/
 - [10-commands.md](./10-commands.md) - 명령어 레퍼런스
 - [11-dispatch-refactor.md](./11-dispatch-refactor.md) - 워크플로우 디스패치 리팩터
 - [12-ui-ask-user-question.md](./12-ui-ask-user-question.md) - UIAskUserQuestion 스펙
-- [13-slack-ui-action-panel.md](./13-slack-ui-action-panel.md) - Slack 액션 패널 스펙
+- [13-slack-ui-action-panel.md](./13-slack-ui-action-panel.md) - Slack 세션 surface (헤더 · 상태 레일 · 컨트롤) 스펙

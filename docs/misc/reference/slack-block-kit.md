@@ -401,7 +401,7 @@ action handler가 카드를 교체(`replace`)할 때, **원래 전송한 surface
 
 ## 5) 이 리포 문서 연결
 
-- Slack UI 액션 패널 스펙: `docs/current/spec/13-slack-ui-action-panel.md`
+- Slack 세션 surface (헤더 · 상태 레일 · 컨트롤) 스펙: `docs/current/spec/13-slack-ui-action-panel.md`
 - `/z` 슬래시 커맨드 마스터 스펙: `docs/current/spec/z-command-master-spec.md` (§8 Block Kit, §15 actions/view id)
 
 ---

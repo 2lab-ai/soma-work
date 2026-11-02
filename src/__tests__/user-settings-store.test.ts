@@ -66,6 +66,8 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     // declared statically so a cold start with no llmux catalog snapshot can
     // still select it. `gpt-6-astra` and its `[1m]` opt-in variant (2026-09-07)
     // are appended after the gpt-5.6 tiers — selectable, but NOT the default.
+    // `gpt-6.1-sol` and its `[1m]` variant (2026-10-14) follow astra — the
+    // `sol` shorthand target, still NOT the default.
     // Historical entries MUST survive every bump.
     expect([...AVAILABLE_MODELS]).toEqual([
       'claude-fable-5-1',
@@ -94,6 +96,8 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'gpt-5.6-luna',
       'gpt-6-astra',
       'gpt-6-astra[1m]',
+      'gpt-6.1-sol',
+      'gpt-6.1-sol[1m]',
       'grok-4.6',
     ]);
   });
@@ -109,7 +113,7 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5');
   });
 
-  it('MODEL_ALIASES has exactly the 36 expected key→value mappings', () => {
+  it('MODEL_ALIASES has exactly the 39 expected key→value mappings', () => {
     // `fable` / `fable[1m]` → the literal 1M id. `opus` / `opus[1m]` follow
     // "latest opus" semantics → Opus 5.5, and both land on the `[1m]` variant
     // because that is the id whose client-side denominator is 1M. Version-
@@ -139,8 +143,12 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'gpt5.5': 'gpt-5.5',
       'gpt-5.6': 'gpt-5.6-sol',
       'gpt5.6': 'gpt-5.6-sol',
-      sol: 'gpt-5.6-sol',
-      'sol[1m]': 'gpt-5.6-sol[1m]',
+      // `sol` / `sol[1m]` / `gpt-6.1` follow the newest sol generation and
+      // land on its `[1m]` row (2026-10-14) — gpt-5.6-sol stays reachable by
+      // literal id and the pinned `gpt-5.6` / `gpt5.6` aliases above.
+      sol: 'gpt-6.1-sol[1m]',
+      'sol[1m]': 'gpt-6.1-sol[1m]',
+      'gpt-6.1': 'gpt-6.1-sol[1m]',
       terra: 'gpt-5.6-terra',
       luna: 'gpt-5.6-luna',
       // gpt-6 (2026-09-07): selectable aliases only — `gpt` above still
@@ -269,6 +277,20 @@ describe('resolveThemeInput', () => {
 
   it('resolves "reset" to reset', () => {
     expect(store.resolveThemeInput('reset')).toBe('reset');
+  });
+});
+
+describe('epicTasks (E4 ④a-2)', () => {
+  it('is off by default and for anything stored that is not exactly true; set on and off', () => {
+    const store = makeStore();
+    expect(store.getUserEpicTasks('U1')).toBe(false);
+    store.setUserEpicTasks('U1', true);
+    expect(store.getUserEpicTasks('U1')).toBe(true);
+    store.setUserEpicTasks('U1', false);
+    expect(store.getUserEpicTasks('U1')).toBe(false);
+    // A hand-edited value that is not `true` does not turn epics on.
+    (store as any).settings.U1.epicTasks = 'yes';
+    expect(store.getUserEpicTasks('U1')).toBe(false);
   });
 });
 
@@ -426,6 +448,88 @@ describe('UserSettingsStore.getUserCompactThreshold / clearUserCompactThreshold 
   });
 });
 
+describe('Slack instruction → dashboard task flag (E2 ⑦, D1)', () => {
+  it('is off by default, per user, and set values are read back', () => {
+    const store = makeStore();
+    expect(store.getUserSlackTaskEntry('U1')).toBe(false);
+    store.setUserSlackTaskEntry('U1', true);
+    expect(store.getUserSlackTaskEntry('U1')).toBe(true);
+    expect(store.getUserSlackTaskEntry('U2')).toBe(false);
+    store.setUserSlackTaskEntry('U1', false);
+    expect(store.getUserSlackTaskEntry('U1')).toBe(false);
+  });
+
+  it('survives a reload from disk', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uss-task-entry-'));
+    new UserSettingsStore(dir).setUserSlackTaskEntry('U1', true);
+    expect(new UserSettingsStore(dir).getUserSlackTaskEntry('U1')).toBe(true);
+  });
+});
+
+describe('dashboard surface layouts (.prd/21)', () => {
+  it('empty by default, per user; a saved document is read back checked; a broken stored value reads as empty', () => {
+    const store = makeStore();
+    expect(store.getUserDashboardLayout('U1')).toEqual({ v: 1 });
+    store.setUserDashboardLayout('U1', { v: 1, active: { card: '3' }, thread: { mode: 'theme' } });
+    expect(store.getUserDashboardLayout('U1')).toEqual({ v: 1, active: { card: '3' }, thread: { mode: 'theme' } });
+    expect(store.getUserDashboardLayout('U2')).toEqual({ v: 1 });
+    (store as any).settings.U1.dashboardLayout = { v: 9 };
+    expect(store.getUserDashboardLayout('U1')).toEqual({ v: 1 });
+  });
+});
+
+describe('dashboard view plan (SSOT 2026-11-01 ④, .prd/20)', () => {
+  it('is 1안 by default, per user; 2 and 3 are kept; anything else reads as 1', () => {
+    const store = makeStore();
+    expect(store.getUserDashboardPlan('U1')).toBe('1');
+    store.setUserDashboardPlan('U1', '3');
+    expect(store.getUserDashboardPlan('U1')).toBe('3');
+    expect(store.getUserDashboardPlan('U2')).toBe('1');
+    store.setUserDashboardPlan('U1', '2');
+    expect(store.getUserDashboardPlan('U1')).toBe('2');
+    (store as any).settings.U1.dashboardPlan = 'x';
+    expect(store.getUserDashboardPlan('U1')).toBe('1');
+  });
+});
+
+describe('dashboard view mode (SSOT 2026-11-01)', () => {
+  it('is minimal by default, per user, and a saved value is read back', () => {
+    const store = makeStore();
+    expect(store.getUserDashboardMode('U1')).toBe('minimal');
+    store.setUserDashboardMode('U1', 'advanced');
+    expect(store.getUserDashboardMode('U1')).toBe('advanced');
+    expect(store.getUserDashboardMode('U2')).toBe('minimal');
+    store.setUserDashboardMode('U1', 'minimal');
+    expect(store.getUserDashboardMode('U1')).toBe('minimal');
+  });
+
+  it('survives a reload from disk; an unknown stored value reads as minimal', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uss-view-mode-'));
+    new UserSettingsStore(dir).setUserDashboardMode('U1', 'advanced');
+    expect(new UserSettingsStore(dir).getUserDashboardMode('U1')).toBe('advanced');
+    const file = path.join(dir, 'user-settings.json');
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    raw.U1.dashboardMode = 'detail';
+    fs.writeFileSync(file, JSON.stringify(raw));
+    expect(new UserSettingsStore(dir).getUserDashboardMode('U1')).toBe('minimal');
+  });
+
+  it('a view switch drops no cached system prompt — the dashboard view feeds no prompt', async () => {
+    const { setSettingsPromptInvalidationHook } = await import('../user-settings-store');
+    const store = makeStore();
+    store.setUserSlackTaskEntry('U1', false); // the record exists (an accepted user)
+    const hook = vi.fn();
+    setSettingsPromptInvalidationHook(hook);
+    try {
+      store.setUserDashboardMode('U1', 'advanced');
+      expect(hook).not.toHaveBeenCalled();
+      expect(store.getUserDashboardMode('U1')).toBe('advanced');
+    } finally {
+      setSettingsPromptInvalidationHook(undefined);
+    }
+  });
+});
+
 describe('autogoal mode (S2) + goal max-continuations (S4)', () => {
   it('autogoal defaults to false and toggles per-user', () => {
     const store = makeStore();
@@ -557,7 +661,7 @@ describe('model input resolution — accepted / rejected / unknown', () => {
     expect(store.resolveModelInput('opus')).toBe('claude-opus-5-5[1m]');
     expect(store.resolveModelInput('opus[1m]')).toBe('claude-opus-5-5[1m]');
     expect(store.resolveModelInput('opus-5')).toBe('claude-opus-5');
-    expect(store.resolveModelInput('sol[1m]')).toBe('gpt-5.6-sol[1m]');
+    expect(store.resolveModelInput('sol[1m]')).toBe('gpt-6.1-sol[1m]');
     expect(store.resolveModelInput('grok-4.6')).toBe('grok-4.6');
   });
 
