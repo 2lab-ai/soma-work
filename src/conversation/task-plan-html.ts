@@ -10,10 +10,14 @@
  *   3  each step's detail, deliverable and SSOT / intent refs
  * then the assumptions, risks, what is out of scope and what to settle.
  *
+ * The labels are in the display language (#771: `t` / `tr`, the English catalog); what
+ * the model wrote is shown as written.
+ *
  * `renderTaskPlanHtml` is the fragment the dashboard shows inline in the
  * detail card (its CSS is `TASK_PLAN_CSS`, in the dashboard's stylesheet);
  * `renderTaskPlanPage` wraps it in a whole document for the full-page view.
  */
+import { t, tr } from '@soma/common/i18n';
 import type { TaskPlanDoc, TaskPlanState } from '../task-turn/task-plan';
 
 const ESC: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -40,14 +44,16 @@ function notesHtml(cls: string, label: string, list: string[] | undefined): stri
 
 /** The plan fragment: four levels, then the notes. `state` adds the plan's state to its kicker. */
 export function renderTaskPlanHtml(plan: TaskPlanDoc, opts: { state?: TaskPlanState } = {}): string {
-  const kicker = `작업 계획 v${plan.revision}${opts.state ? ` · ${TASK_PLAN_STATE_LABEL[opts.state]}` : ''}`;
+  const kicker = opts.state
+    ? tr`작업 계획 v${plan.revision} · ${t(TASK_PLAN_STATE_LABEL[opts.state])}`
+    : tr`작업 계획 v${plan.revision}`;
   const l0 = [
     `<header class="tp-l0" data-level="0">`,
     `<p class="tp-kicker">${esc(kicker)}</p>`,
     `<p class="tp-summary">${para(plan.summary)}</p>`,
-    `<p class="tp-intent"><span class="tp-label">의도</span>${para(plan.intent)}</p>`,
+    `<p class="tp-intent"><span class="tp-label">${esc(t('의도'))}</span>${para(plan.intent)}</p>`,
     plan.ssot?.length
-      ? `<details class="tp-ssot"><summary>지시 원문 (SSOT)</summary>${plan.ssot.map((s) => `<blockquote>${para(s)}</blockquote>`).join('')}</details>`
+      ? `<details class="tp-ssot"><summary>${esc(t('지시 원문 (SSOT)'))}</summary>${plan.ssot.map((s) => `<blockquote>${para(s)}</blockquote>`).join('')}</details>`
       : '',
     plan.intents?.length
       ? `<ul class="tp-intents">${plan.intents
@@ -59,7 +65,7 @@ export function renderTaskPlanHtml(plan: TaskPlanDoc, opts: { state?: TaskPlanSt
       : '',
     `</header>`,
   ].join('');
-  const map = `<nav class="tp-map" data-level="1" aria-label="단계"><ol>${plan.phases
+  const map = `<nav class="tp-map" data-level="1" aria-label="${esc(t('단계'))}"><ol>${plan.phases
     .map(
       (p, i) =>
         `<li><span class="tp-n">${i + 1}</span><span class="tp-map-title">${esc(p.title)}</span><span class="tp-count">${p.steps.length}</span></li>`,
@@ -71,7 +77,7 @@ export function renderTaskPlanHtml(plan: TaskPlanDoc, opts: { state?: TaskPlanSt
         .map((s, j) => {
           const detail =
             s.detail || s.deliverable
-              ? `<div class="tp-detail" data-level="3">${s.detail ? `<p>${para(s.detail)}</p>` : ''}${s.deliverable ? `<p class="tp-deliv"><span class="tp-label">산출물</span>${para(s.deliverable)}</p>` : ''}</div>`
+              ? `<div class="tp-detail" data-level="3">${s.detail ? `<p>${para(s.detail)}</p>` : ''}${s.deliverable ? `<p class="tp-deliv"><span class="tp-label">${esc(t('산출물'))}</span>${para(s.deliverable)}</p>` : ''}</div>`
               : '';
           return `<li class="tp-step"><div class="tp-step-head"><span class="tp-sn">${i + 1}.${j + 1}</span><span class="tp-step-title">${esc(s.title)}</span>${refsHtml(s.refs)}</div>${detail}</li>`;
         })
@@ -80,10 +86,10 @@ export function renderTaskPlanHtml(plan: TaskPlanDoc, opts: { state?: TaskPlanSt
     })
     .join('');
   const notes = [
-    notesHtml('tp-questions', '확인할 것', plan.questions),
-    notesHtml('tp-assumptions', '가정', plan.assumptions),
-    notesHtml('tp-risks', '위험', plan.risks),
-    notesHtml('tp-out', '범위 밖', plan.outOfScope),
+    notesHtml('tp-questions', t('확인할 것'), plan.questions),
+    notesHtml('tp-assumptions', t('가정'), plan.assumptions),
+    notesHtml('tp-risks', t('위험'), plan.risks),
+    notesHtml('tp-out', t('범위 밖'), plan.outOfScope),
   ].join('');
   return `<article class="tp" data-revision="${plan.revision}"${opts.state ? ` data-state="${opts.state}"` : ''}>${l0}${map}<div class="tp-phases">${phases}</div>${notes ? `<div class="tp-notes">${notes}</div>` : ''}</article>`;
 }
@@ -154,7 +160,7 @@ export function renderTaskPlanPage(plan: TaskPlanDoc, meta: { title: string; sta
     '<!doctype html>',
     '<html lang="ko"><head><meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
-    `<title>${esc(`작업 계획 v${plan.revision} — ${meta.title}`)}</title>`,
+    `<title>${esc(tr`작업 계획 v${plan.revision} — ${meta.title}`)}</title>`,
     `<style>
 :root { color-scheme: light dark; }
 body { margin: 0; background: #f5f5f7; font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
