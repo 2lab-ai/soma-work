@@ -260,6 +260,109 @@ describe('resumeActiveGoals (T1)', () => {
     expect(claudeHandler.saveSessions).toHaveBeenCalled();
   });
 
+  /**
+   * 2026-11-02: "서비스 재시작하면 자동으로 진행중이던 작업 재시작되도록해줘". A turn the
+   * restart cut short never finished, so it does not spend the continuation
+   * budget. Without the refund, a goal whose 10th continuation was cut
+   * (1793150219.639969, cut at 05:08Z on 10/10) resumes straight into the cap
+   * question and stays stopped.
+   */
+  it('gives back the continuation a restart cut short (no turn text)', () => {
+    const cut = activeGoalSession({ activityState: 'working' });
+    const goal = cut.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 10;
+    goal.lastAssistantTurnSummary = '';
+    goal.lastEvalReason = 'CI is still red on PR #12';
+    const sessions = new Map<string, ConversationSession>([['C1-T1', cut]]);
+    const { handler, claudeHandler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+
+    expect(handler.resumeActiveGoals()).toBe(1);
+
+    expect(goal.continuationCount).toBe(9);
+    expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
+    expect(claudeHandler.saveSessions).toHaveBeenCalled();
+  });
+
+  it('keeps the budget of a goal whose last turn finished (turn text present)', () => {
+    const done = activeGoalSession();
+    (done.goal as NonNullable<ConversationSession['goal']>).continuationCount = 4;
+    const { handler } = createHandler(new Map([['C1-T1', done]]));
+    handler.setGoalTurnSettledHandler(vi.fn());
+
+    handler.resumeActiveGoals();
+
+    expect(done.goal?.continuationCount).toBe(4);
+  });
+
+  it('keeps the budget of a goal whose cap decision is open — the owner decides, not the restart', () => {
+    const capped = activeGoalSession();
+    const goal = capped.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 10;
+    goal.lastAssistantTurnSummary = '';
+    goal.capDmPendingAt = 5;
+    goal.capDecisionId = 'd1';
+    const { handler } = createHandler(new Map([['C1-T1', capped]]));
+    handler.setGoalTurnSettledHandler(vi.fn());
+
+    handler.resumeActiveGoals();
+
+    expect(goal.continuationCount).toBe(10);
+  });
+
+  it('never takes the budget below zero (the opening turn was cut)', () => {
+    const opening = activeGoalSession({ activityState: 'working' });
+    (opening.goal as NonNullable<ConversationSession['goal']>).lastAssistantTurnSummary = '';
+    const { handler } = createHandler(new Map([['C1-T1', opening]]));
+    handler.setGoalTurnSettledHandler(vi.fn());
+
+    handler.resumeActiveGoals();
+
+    expect(opening.goal?.continuationCount).toBe(0);
+  });
+
+  it('a false stall at 10/10 resumes with its cut continuation given back', () => {
+    const stalled = activeGoalSession({
+      activityState: 'waiting',
+      actionPanel: {
+        waitingForChoice: true,
+        pendingQuestion: { type: 'user_choices', hostTurnId: 'host:1', questions: [] },
+        pendingChoice: { turnId: 'host:1', formIds: [] },
+      },
+    } as unknown as Partial<ConversationSession>);
+    const goal = stalled.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 10;
+    goal.lastAssistantTurnSummary = '';
+    goal.lastEvalReason = 'This turn again produced no assistant text';
+    goal.stall = {
+      stallId: 's1',
+      stalledAt: 1,
+      reason: 'This turn again produced no assistant text',
+      actions: ['a', 'b', 'c'],
+      confidence: 0.97,
+      questionTurnId: 'host:1',
+    };
+    const sessions = new Map<string, ConversationSession>([['C1-T1', stalled]]);
+    const { handler, claudeHandler } = createHandler(sessions);
+    claudeHandler.getSessionRegistry = vi.fn(() => ({ getAllSessions: () => sessions }));
+    (handler as any).streamExecutor = {
+      retractHostQuestion: vi.fn(() => {
+        stalled.actionPanel = { waitingForChoice: false } as any;
+        stalled.activityState = 'idle';
+        return Promise.resolve();
+      }),
+    };
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+
+    expect(handler.resumeActiveGoals()).toBe(1);
+
+    expect(goal.stall).toBeUndefined();
+    expect(goal.continuationCount).toBe(9);
+    expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
+  });
+
   it('keeps a real stall (judged on turn text) stopped on its question', () => {
     const stalled = activeGoalSession({
       activityState: 'waiting',
