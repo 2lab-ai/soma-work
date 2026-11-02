@@ -6,9 +6,11 @@
  * from the first user message, a `session_links` directive or the `link` command — on dev, 2 of the last 55 sessions
  * had one. These find the links a conversation already names, so the host can record them:
  *
- *   - {@link linksInText}: every issue, PR and wiki URL in a text (a user message, an assistant reply);
+ *   - {@link linksInText}: every issue, PR and wiki URL in a text (a user message, an assistant reply) — outside
+ *     code (fenced or inline) and quotes, where pasted logs and listings live;
  *   - {@link linksCreatedByTools}: the PR or issue a `gh pr create` / `gh issue create` just made (its output ends
- *     with the new page's URL).
+ *     with the new page's URL);
+ *   - {@link canonicalLinkUrl}: the one form of a link's URL (`/pull/12/files?x` is `/pull/12`), to compare by.
  *
  * Pure: no I/O.
  */
@@ -28,7 +30,25 @@ export const MAX_LINKS_PER_TEXT = 10;
 // A URL in plain text, Slack mrkdwn (`<url|label>`, `<url>`) or Markdown (`[label](url)`): stops at white space and
 // at the characters those formats wrap a URL in.
 const URL_RE = /https?:\/\/[^\s<>|()[\]"'`]+/g;
-const TRAILING = /[.,;:!?*_~]+$/;
+const TRAILING = new Set(['.', ',', ';', ':', '!', '?', '*', '_', '~']);
+/** Longer is not a link anyone pasted: skipped (and keeps every match linear). */
+const MAX_URL_LENGTH = 2048;
+
+function trimTrailing(url: string): string {
+  let end = url.length;
+  while (end > 0 && TRAILING.has(url[end - 1])) end--;
+  return url.slice(0, end);
+}
+
+// What a text quotes rather than says: fenced code, inline code, and quote lines (Slack sends `>` as `&gt;`).
+function prose(text: string): string {
+  return text
+    .replace(/```[\s\S]*?(?:```|$)/g, ' ')
+    .replace(/`[^`\n]*`/g, ' ')
+    .split('\n')
+    .filter((line) => !/^\s*(?:>|&gt;)/.test(line))
+    .join('\n');
+}
 
 interface Rule {
   re: RegExp;
@@ -87,7 +107,8 @@ const RULES: Rule[] = [
 
 /** The link a URL names, or undefined when it is not an issue, a PR or a wiki page. */
 export function classifyLinkUrl(raw: string): CapturedLink | undefined {
-  const url = raw.replace(TRAILING, '');
+  if (typeof raw !== 'string' || raw.length > MAX_URL_LENGTH) return undefined;
+  const url = trimTrailing(raw);
   for (const rule of RULES) {
     const m = url.match(rule.re);
     if (m) return { url: m[0], type: rule.type, provider: rule.provider, label: rule.label(m) };
@@ -95,12 +116,20 @@ export function classifyLinkUrl(raw: string): CapturedLink | undefined {
   return undefined;
 }
 
-/** Every issue, PR and wiki URL in a text, in the order they appear, each once — at most {@link MAX_LINKS_PER_TEXT}. */
+/** The one form of a link's URL: an issue, PR or wiki URL's canonical form, any other URL as it is. */
+export function canonicalLinkUrl(url: string): string {
+  return classifyLinkUrl(url)?.url ?? url;
+}
+
+/**
+ * Every issue, PR and wiki URL a text says (not in code or quotes), in the order they appear, each once — at most
+ * {@link MAX_LINKS_PER_TEXT}.
+ */
 export function linksInText(text: unknown): CapturedLink[] {
   if (typeof text !== 'string' || !text.includes('http')) return [];
   const out: CapturedLink[] = [];
   const seen = new Set<string>();
-  for (const m of text.matchAll(URL_RE)) {
+  for (const m of prose(text).matchAll(URL_RE)) {
     const link = classifyLinkUrl(m[0]);
     if (!link || seen.has(link.url)) continue;
     seen.add(link.url);
@@ -111,9 +140,15 @@ export function linksInText(text: unknown): CapturedLink[] {
 }
 
 interface ToolResultLike {
+  toolUseId?: string;
   toolName?: string;
   result?: unknown;
   isError?: boolean;
+}
+
+/** A Bash command that creates a GitHub PR or issue. */
+export function isCreateCommand(command: unknown): boolean {
+  return typeof command === 'string' && /\bgh\s+(?:pr|issue)\s+create\b/.test(command);
 }
 
 function resultText(result: unknown): string {
@@ -125,14 +160,18 @@ function resultText(result: unknown): string {
 }
 
 /**
- * The PRs and issues a Bash call just created: `gh pr create` and `gh issue create` print the new page's URL as their
- * last line. Only a GitHub PR or issue URL alone on the last line counts — a listing or a log naming PRs does not.
+ * The PRs and issues a Bash call just created: a call whose command {@link isCreateCommand} (`creates` holds those
+ * calls' ids) and whose output's last line is a GitHub PR or issue URL alone — `gh pr create` and `gh issue create`
+ * print the new page's URL last. `gh pr view` / `edit` print one too, but do not create.
  */
-export function linksCreatedByTools(results: ReadonlyArray<ToolResultLike> | undefined): CapturedLink[] {
+export function linksCreatedByTools(
+  results: ReadonlyArray<ToolResultLike> | undefined,
+  creates: ReadonlySet<string>,
+): CapturedLink[] {
   const out: CapturedLink[] = [];
   const seen = new Set<string>();
   for (const r of results ?? []) {
-    if (!r || r.isError || r.toolName !== 'Bash') continue;
+    if (!r || r.isError || r.toolName !== 'Bash' || !r.toolUseId || !creates.has(r.toolUseId)) continue;
     const lines = resultText(r.result).trim().split('\n');
     const last = (lines[lines.length - 1] ?? '').trim();
     if (!/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(pull|issues)\/\d+\/?$/.test(last)) continue;

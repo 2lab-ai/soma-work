@@ -1725,17 +1725,6 @@ export class AgentStreamProcessor {
   private async extractAndDispatchDirectives(text: string, context: StreamContext): Promise<string> {
     let cleaned = text;
 
-    // The links the reply names (세션 링크 자동 기록) — read from the text as the model wrote it, so a directive's
-    // own URL counts too; the session_links directive below still sets the current link explicitly.
-    if (this.callbacks.onLinksMentioned) {
-      try {
-        const mentioned = linksInText(text);
-        if (mentioned.length > 0) this.callbacks.onLinksMentioned(mentioned, context);
-      } catch (error) {
-        this.logger.debug('Failed to record the links a reply names', { error });
-      }
-    }
-
     // Each directive handler is isolated — one failure must not block subsequent handlers
     try {
       const linkResult = SessionLinkDirectiveHandler.extract(cleaned);
@@ -1788,6 +1777,17 @@ export class AgentStreamProcessor {
       }
     } catch (error) {
       this.logger.error('Failed to process source working dir directive', { error });
+    }
+
+    // The links the reply says (세션 링크 자동 기록) — once its directives are out: a session_links directive sets
+    // its links itself, a release_notes one lists shipped PRs that are not this session's.
+    if (this.callbacks.onLinksMentioned) {
+      try {
+        const mentioned = linksInText(cleaned);
+        if (mentioned.length > 0) this.callbacks.onLinksMentioned(mentioned, context);
+      } catch (error) {
+        this.logger.debug('Failed to record the links a reply names', { error });
+      }
     }
 
     return cleaned;

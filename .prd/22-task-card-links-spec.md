@@ -102,12 +102,19 @@
 
 | 출처 | 무엇을 | 지금 링크 |
 |---|---|---|
-| 유저 메시지(매 턴, 호스트 턴 제외) | 메시지의 이슈 · PR · 위키 URL | 종류마다 첫 번째(`first`, 디스패치와 같은 규칙) |
-| `gh pr create` · `gh issue create` (Bash 출력의 마지막 줄이 GitHub PR · 이슈 URL) | 세션이 방금 만든 PR · 이슈 | 그것(`always`) |
+| 유저 메시지(매 턴, 호스트 턴 제외) | 메시지의 이슈 · PR · 위키 URL | 후속 메시지: 종류마다 첫 번째(`first`). 첫 메시지: 디스패치가 이미 고른 지금 링크를 그대로 두고 나머지만 기록(`if-empty`) |
+| 명령이 `gh pr create` · `gh issue create`이고 출력의 마지막 줄이 GitHub PR · 이슈 URL인 Bash | 세션이 방금 만든 PR · 이슈 | 그것(`always`). `gh pr view` · `edit`도 URL을 내지만 만든 것이 아니다 |
 | 봇 답변 | 답변이 이름 붙인 URL | 그 종류에 지금 링크가 없을 때만(`if-empty`). 지나가며 언급한 옛 PR이 지금 PR을 덮지 않는다 |
 
-- 알아보는 URL: GitHub PR · 이슈, GitLab MR, Jira 이슈(`/browse/KEY-1`), Linear 이슈, Confluence 페이지, Notion 페이지. 저장소, 커밋, 파일, 검색 URL은 링크가 아니다. Slack(`<url|label>`)과 Markdown 래퍼, 끝의 구두점은 URL에 넣지 않는다. 한 텍스트에서 최대 10개를 받는다.
-- 이미 아는 링크는 아무것도 바꾸지 않는다(저장도, 순서 번호도 그대로). 기록은 종류마다 최근 30개까지 남기고, 지금 링크는 늘 남긴다.
-- 목록 출력(`gh pr list`)처럼 PR을 이름만 대는 도구 결과는 기록하지 않는다. 마지막 줄이 URL 하나일 때만 "만든 것"으로 본다.
-- 연결부: `stream-executor`가 유저 메시지(`first`)와 도구 결과(`always`)를 기록한다. `stream-processor`의 새 콜백 `onLinksMentioned`가 답변 텍스트의 링크를 넘기고, 실행기가 `if-empty`로 기록한다. 기록은 부수 작업이라 실패해도 턴을 깨지 않는다.
-- 테스트: `session-link-capture.test.ts` A1–A4, `session-registry.note-links.test.ts` N1–N5, `stream-processor.links-mentioned.test.ts` P1–P2, `stream-executor.session-links.test.ts` E1–E4.
+- 알아보는 URL: GitHub PR · 이슈, GitLab MR, Jira 이슈(`/browse/KEY-1`), Linear 이슈, Confluence 페이지, Notion 페이지. 저장소, 커밋, 파일, 검색 URL은 링크가 아니다. Slack(`<url|label>`)과 Markdown 래퍼, 끝의 구두점은 URL에 넣지 않는다. 2048자가 넘는 URL은 건너뛴다. 한 텍스트에서 최대 10개를 받는다.
+- 텍스트가 말하는 것만 본다. 코드 블록, 인라인 코드, 인용 줄(`>`), 답변의 지시문(`release_notes`가 나열하는 배포된 PR 등) 안의 URL은 기록하지 않는다. 붙여 넣은 로그나 목록이 카드를 채우지 않게 하기 위해서다.
+- 링크는 정규형 URL로 비교한다(`/pull/12/files?x`는 `/pull/12`). 그래서 디스패치나 모델이 이미 넣은 링크가 두 번 기록되지 않는다. 이미 아는 링크는 아무것도 바꾸지 않는다.
+- 자동 기록은 모델의 `UPDATE_SESSION`이 비교하는 순서 번호(`linkSequence`)를 올리지 않는다. 이 부수 작업 때문에 모델의 갱신이 `SEQUENCE_MISMATCH`로 실패하면 안 된다.
+- 자동 기록한 링크에는 `auto: true`가 붙는다. 상한(종류마다 30개)은 이것들만 줄이고, 모델이나 유저가 넣은 링크와 지금 링크는 지우지 않는다.
+- 목록 출력(`gh pr list`)처럼 PR을 이름만 대는 도구 결과는 기록하지 않는다.
+- 연결부: `stream-executor`가 유저 메시지와 생성 명령의 결과를 기록한다(`onToolUse`에서 생성 명령의 호출 id를 모아 둔다). `stream-processor`의 새 콜백 `onLinksMentioned`는 지시문을 뺀 답변 텍스트의 링크를 넘기고, 실행기가 `if-empty`로 기록한다. 기록은 부수 작업이라 실패해도 턴을 깨지 않는다.
+- 테스트:
+  - `session-link-capture.test.ts` A1–A5: 생성 명령 검사, 코드와 인용 제외, 정규형, 긴 입력에서도 선형.
+  - `session-registry.note-links.test.ts` N1–N7: 모드, 정규형 중복, 순서 번호 유지, 명시 링크는 줄이지 않음.
+  - `stream-processor.links-mentioned.test.ts` P1–P3: 코드와 `release_notes` 제외.
+  - `stream-executor.session-links.test.ts`: 첫 메시지 `if-empty`, 후속 `first`, `gh pr view`는 기록 안 함, 호스트 턴은 기록 안 함.

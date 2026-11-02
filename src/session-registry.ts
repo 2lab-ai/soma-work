@@ -13,6 +13,7 @@ import {
 } from '@soma/slack/context-anchor';
 import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
 import { endGoalCapDecision } from '@soma/slack/session-goal';
+import { canonicalLinkUrl } from '@soma/slack/session-link-capture';
 import {
   sanitizeSdkUsageBaseline,
   sanitizeSessionUsage,
@@ -2341,8 +2342,11 @@ export class SessionRegistry {
    *   'always'   a PR or issue the session just created;
    *   'if-empty' an assistant reply: only when the kind has no current link, so a PR mentioned in passing does not
    *              replace the one the session works on.
-   * A known link changes nothing. A history keeps the newest {@link MAX_NOTED_LINKS} (the current one always).
-   * Returns whether anything changed (then the sequence moves and the sessions are saved).
+   * Links compare by their canonical URL (`/pull/12/files?x` is `/pull/12`), so a link the dispatch or the model
+   * already set is not recorded twice. A known link changes nothing. A recorded link is tagged `auto`; only those are
+   * trimmed, to the newest {@link MAX_NOTED_LINKS} of a kind (the current one always stays). The sequence the model's
+   * `UPDATE_SESSION` compares against does not move — this bookkeeping must not fail the model's own update.
+   * Returns whether anything changed (then the sessions are saved).
    */
   noteSessionLinks(
     channelId: string,
@@ -2372,15 +2376,18 @@ export class SessionRegistry {
       if (!raw?.url || !type || !(type in HISTORY_KEY_BY_RESOURCE)) continue;
       const history = session.linkHistory![HISTORY_KEY_BY_RESOURCE[type]]!;
       const activeKey = ACTIVE_KEY_BY_RESOURCE[type];
-      const link = this.normalizeSessionLink(raw, type);
-      const at = history.findIndex((l) => l.url === link.url);
+      const link: SessionLink = { ...this.normalizeSessionLink(raw, type), auto: true };
+      const canon = canonicalLinkUrl(link.url);
+      const at = history.findIndex((l) => !!l?.url && canonicalLinkUrl(l.url) === canon);
       const current = session.links![activeKey];
+      const isCurrent = !!current?.url && canonicalLinkUrl(current.url) === canon;
       const makeCurrent =
         mode === 'always' || (mode === 'first' && !firstTaken.has(type)) || (mode === 'if-empty' && !current?.url);
       if (mode === 'first') firstTaken.add(type);
-      if (makeCurrent && current?.url !== link.url) {
-        // What the history already knows (a fetched title or state) stays; the link moves to the newest place.
-        const entry = at >= 0 ? { ...link, ...history[at] } : link;
+      if (makeCurrent && !isCurrent) {
+        // The history's entry (its URL, a fetched title or state, whether it was set on purpose) stays; it moves to
+        // the newest place.
+        const entry = at >= 0 ? history[at] : link;
         if (at >= 0) history.splice(at, 1);
         history.push(entry);
         session.links![activeKey] = { ...entry };
@@ -2390,16 +2397,15 @@ export class SessionRegistry {
         changed = true;
       }
       const keep = session.links![activeKey]?.url;
-      while (history.length > MAX_NOTED_LINKS) {
-        const drop = history.findIndex((l) => l.url !== keep);
+      let recorded = history.filter((l) => l?.auto === true).length;
+      while (recorded > MAX_NOTED_LINKS) {
+        const drop = history.findIndex((l) => l?.auto === true && l.url !== keep);
         if (drop < 0) break;
         history.splice(drop, 1);
+        recorded--;
       }
     }
-    if (changed) {
-      session.linkSequence = (session.linkSequence ?? 0) + 1;
-      this.saveSessions();
-    }
+    if (changed) this.saveSessions();
     return changed;
   }
 

@@ -5,8 +5,11 @@
  *       there is none — a PR mentioned in passing does not replace the one the session works on
  *   N2  'first' (a user message): the first link of each kind becomes current, the others join the history
  *   N3  'always' (a PR or issue the session just created): it becomes current
- *   N4  a link already known changes nothing (no save, no sequence bump); the same calls work by key
- *   N5  a history keeps at most MAX_NOTED_LINKS per kind: the oldest that is not current goes first
+ *   N4  a link already known changes nothing (no save); the same calls work by key
+ *   N5  a history keeps at most MAX_NOTED_LINKS recorded links per kind: the oldest that is not current goes first;
+ *       a link the model or the user set is never trimmed
+ *   N6  links compare by their canonical URL: the dispatch's `/pull/12/files?x` is the `/pull/12` a turn names
+ *   N7  recording never moves the sequence the model's UPDATE_SESSION compares against
  */
 import fs from 'fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -85,11 +88,9 @@ describe('noteSessionLinks', () => {
   it('N4 — a known link changes nothing; by key too', () => {
     const { reg, s } = setup();
     reg.noteSessionLinks('C1', '100.001', [PR(5)], 'if-empty');
-    const seq = s.linkSequence;
     const save = vi.spyOn(reg, 'saveSessions');
     expect(reg.noteSessionLinks('C1', '100.001', [PR(5)], 'if-empty')).toBe(false);
     expect(reg.noteSessionLinks('C1', '100.001', [], 'always')).toBe(false);
-    expect(s.linkSequence).toBe(seq);
     expect(save).not.toHaveBeenCalled();
     const key = reg.getSessionKey('C1', '100.001');
     expect(reg.noteSessionLinksByKey(key, [ISSUE('KEY-1')], 'if-empty')).toBe(true);
@@ -106,5 +107,42 @@ describe('noteSessionLinks', () => {
     expect(urls).toContain(PR(1).url);
     expect(urls).toContain(PR(MAX_NOTED_LINKS + 5).url);
     expect(urls).not.toContain(PR(2).url);
+  });
+
+  it('N5 — a link set on purpose is never trimmed', () => {
+    const { reg, s } = setup();
+    reg.setSessionLinks('C1', '100.001', { pr: PR(500) });
+    for (let i = 1; i <= MAX_NOTED_LINKS + 3; i++) reg.noteSessionLinks('C1', '100.001', [PR(1000 + i)], 'if-empty');
+    reg.noteSessionLinks('C1', '100.001', [PR(9)], 'always');
+    const urls = s.linkHistory?.prs?.map((l) => l.url) ?? [];
+    expect(urls).toContain(PR(500).url);
+    expect(urls.filter((u) => u !== PR(500).url)).toHaveLength(MAX_NOTED_LINKS);
+  });
+
+  it('N6 — the canonical URL: what the dispatch set is not recorded twice, and stays current', () => {
+    const { reg, s } = setup();
+    const long = 'https://github.com/a/b/pull/12/files?notification_referrer_id=x';
+    reg.setSessionLinks('C1', '100.001', { pr: { url: long, type: 'pr', provider: 'github', label: 'PR #12' } });
+    expect(reg.noteSessionLinks('C1', '100.001', [PR(12)], 'first')).toBe(false);
+    expect(s.linkHistory?.prs?.map((l) => l.url)).toEqual([long]);
+    expect(s.links?.pr?.url).toBe(long);
+    // An older PR the dispatch already set becomes current again on 'always' — its entry (not a copy) moves.
+    reg.noteSessionLinks('C1', '100.001', [PR(13)], 'always');
+    reg.noteSessionLinks('C1', '100.001', [PR(12)], 'always');
+    expect(s.links?.pr?.url).toBe(long);
+    expect(s.linkHistory?.prs?.map((l) => l.url)).toEqual([PR(13).url, long]);
+  });
+
+  it('N7 — recording never moves the sequence the model compares against', () => {
+    const { reg, s } = setup();
+    const before = s.linkSequence ?? 0;
+    reg.noteSessionLinks('C1', '100.001', [PR(1), ISSUE('A-1'), DOC], 'always');
+    expect(s.linkSequence ?? 0).toBe(before);
+    expect(
+      reg.updateSessionResources('C1', '100.001', {
+        expectedSequence: before,
+        operations: [{ action: 'add', resourceType: 'pr', link: PR(2) }],
+      }).ok,
+    ).toBe(true);
   });
 });

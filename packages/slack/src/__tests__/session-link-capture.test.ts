@@ -4,10 +4,19 @@
  *   A1  every issue, PR and wiki URL in a text, in order, each once (canonical: /pull/12/files is /pull/12)
  *   A2  Slack mrkdwn (<url|label>), Markdown ([label](url)) and trailing punctuation are not part of a URL
  *   A3  other URLs (a repo, a commit, a blob, a search) are not links; at most MAX_LINKS_PER_TEXT per text
- *   A4  a Bash call whose output ends with a GitHub PR or issue URL created it; a listing or an error did not
+ *   A4  a `gh pr|issue create` call whose output ends with a GitHub PR or issue URL created it; `gh pr view` / `edit`
+ *       print one too and did not; a listing or an error did not
+ *   A5  code (fenced, inline) and quotes are not what a text says; the canonical URL; a pathological URL is linear
  */
 import { describe, expect, it } from 'vitest';
-import { classifyLinkUrl, linksCreatedByTools, linksInText, MAX_LINKS_PER_TEXT } from '../session-link-capture';
+import {
+  canonicalLinkUrl,
+  classifyLinkUrl,
+  isCreateCommand,
+  linksCreatedByTools,
+  linksInText,
+  MAX_LINKS_PER_TEXT,
+} from '../session-link-capture';
 
 describe('linksInText', () => {
   it('A1 — every issue, PR and wiki URL, in order, each once', () => {
@@ -62,23 +71,58 @@ describe('linksInText', () => {
 });
 
 describe('linksCreatedByTools', () => {
-  it('A4 — gh pr create / gh issue create print the new URL last; listings and errors are not creations', () => {
-    const created = linksCreatedByTools([
+  it('A4 — only a create call counts: the last line of its output is the new URL', () => {
+    const results = [
       {
+        toolUseId: 'c1',
         toolName: 'Bash',
         result: 'Creating pull request for feat/x into main in a/b\n\nhttps://github.com/a/b/pull/12\n',
       },
-      { toolName: 'Bash', result: [{ type: 'text', text: 'https://github.com/a/b/issues/34' }] },
+      { toolUseId: 'c2', toolName: 'Bash', result: [{ type: 'text', text: 'https://github.com/a/b/issues/34' }] },
+      // gh pr view --json url -q .url / gh pr edit print a lone URL too — not a creation.
+      { toolUseId: 'v1', toolName: 'Bash', result: 'https://github.com/a/b/pull/40' },
       // A listing names PRs but ends with something else.
-      { toolName: 'Bash', result: '#1 https://github.com/a/b/pull/1\n#2 https://github.com/a/b/pull/2\nshowing 2' },
-      { toolName: 'Bash', result: 'https://github.com/a/b/pull/99', isError: true },
-      { toolName: 'Read', result: 'https://github.com/a/b/pull/98' },
-      { toolName: 'Bash', result: 'https://github.com/a/b/pull/12' },
-    ]);
-    expect(created.map((l) => [l.type, l.url])).toEqual([
+      { toolUseId: 'c3', toolName: 'Bash', result: '#1 https://github.com/a/b/pull/1\nshowing 1' },
+      { toolUseId: 'c4', toolName: 'Bash', result: 'https://github.com/a/b/pull/99', isError: true },
+      { toolUseId: 'c5', toolName: 'Read', result: 'https://github.com/a/b/pull/98' },
+      { toolUseId: 'c6', toolName: 'Bash', result: 'https://github.com/a/b/pull/12' },
+    ];
+    const creates = new Set(['c1', 'c2', 'c3', 'c4', 'c5', 'c6']);
+    expect(linksCreatedByTools(results, creates).map((l) => [l.type, l.url])).toEqual([
       ['pr', 'https://github.com/a/b/pull/12'],
       ['issue', 'https://github.com/a/b/issues/34'],
     ]);
-    expect(linksCreatedByTools(undefined)).toEqual([]);
+    expect(linksCreatedByTools(undefined, creates)).toEqual([]);
+    expect(isCreateCommand('cd x && gh pr create --fill --base main')).toBe(true);
+    expect(isCreateCommand('gh issue create -t t -b b')).toBe(true);
+    expect(isCreateCommand('gh pr view 40 --json url -q .url')).toBe(false);
+    expect(isCreateCommand('gh pr edit 40 --add-label x')).toBe(false);
+    expect(isCreateCommand(undefined)).toBe(false);
+  });
+});
+
+describe('what a text says', () => {
+  it('A5 — code and quotes are not links; the canonical URL; a pathological URL stays linear', () => {
+    const text = [
+      '이번 PR: https://github.com/a/b/pull/5',
+      '```',
+      '#1 https://github.com/a/b/pull/1',
+      '#2 https://github.com/a/b/pull/2',
+      '```',
+      '로그 `https://github.com/a/b/pull/3` 참고',
+      '> 이전 답변: https://github.com/a/b/pull/4',
+      '&gt; Slack 인용: https://github.com/a/b/pull/6',
+    ].join('\n');
+    expect(linksInText(text).map((l) => l.url)).toEqual(['https://github.com/a/b/pull/5']);
+    expect(canonicalLinkUrl('https://github.com/a/b/pull/12/files?notification_referrer_id=x')).toBe(
+      'https://github.com/a/b/pull/12',
+    );
+    expect(canonicalLinkUrl('https://example.com/x')).toBe('https://example.com/x');
+    const t0 = Date.now();
+    expect(linksInText(`https://github.com/a/b/pull/1${'.'.repeat(40_000)}`)).toEqual([]);
+    expect(classifyLinkUrl(`https://github.com/a/b/pull/1${'.'.repeat(1000)}`)?.url).toBe(
+      'https://github.com/a/b/pull/1',
+    );
+    expect(Date.now() - t0).toBeLessThan(200);
   });
 });

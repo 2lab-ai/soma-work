@@ -125,6 +125,8 @@ export interface SessionLink {
   title?: string; // e.g., "Fix login redirect bug"
   status?: string; // e.g., "open", "merged", "in-progress"
   statusCheckedAt?: number;
+  /** Recorded from the conversation (세션 링크 자동 기록), not set by the model or the user: only these are trimmed. */
+  auto?: boolean;
 }
 
 /**
