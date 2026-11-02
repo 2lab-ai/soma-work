@@ -105,7 +105,7 @@ import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch
 import { requestEnvSkillPermission } from './slack/env-skill-permission-request';
 import { mintEventTs } from './slack/event-ts';
 import { type FollowupReactionRole, FollowupReactionSurface, rolesForFollowupState } from './slack/followup-reactions';
-import { retireGoalCapDecision } from './slack/goal-cap-decision';
+import { isGoalCapDecisionPending, retireGoalCapDecision } from './slack/goal-cap-decision';
 import { bumpGoalEpoch, GOAL_SUMMARY_PERSIST_MAX, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from './slack/goal-host-actions';
 import type { GoalStallQuestion } from './slack/goal-loop-controller';
@@ -6498,6 +6498,7 @@ export class SlackHandler {
     let repaired = 0;
     let retriesClaimed = 0;
     let stallsEnded = 0;
+    let refunded = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       // A Slack-less task cannot run a turn yet (#597/#598) — never re-arm its goal (#612 review).
       if (session.slackless) continue;
@@ -6523,7 +6524,8 @@ export class SlackHandler {
       // cut short was taken for "the same failure" (2026-11-02, before the loop
       // stopped judging empty turns). End it — its question is withdrawn and
       // the session stops waiting on it — and resume below.
-      if (session.goal.stall && !(session.goalLastTurnText ?? session.goal.lastAssistantTurnSummary ?? '').trim()) {
+      const noTurnText = !(session.goalLastTurnText ?? session.goal.lastAssistantTurnSummary ?? '').trim();
+      if (session.goal.stall && noTurnText) {
         retireGoalStall(session.goal, 'lifecycle');
         stallsEnded++;
         this.logger.info('Ended a goal stall judged on no turn text — resuming the goal', { sessionKey });
@@ -6543,6 +6545,22 @@ export class SlackHandler {
         // with no question left) as idle.
         session.activityState = 'idle';
         forcedIdle++;
+      }
+      // A turn the restart cut short left no text: it never finished, so it
+      // does not spend the continuation budget — otherwise every deploy costs
+      // each running goal one of its turns, and a goal cut on its last one
+      // resumes straight into the cap question (2026-11-02, 1793150219.639969
+      // cut on 10/10 at 05:08Z). An open cap decision is the owner's call, and
+      // a cut opening turn (0) spent nothing.
+      const capDecisionOpen = isGoalCapDecisionPending(session.goal);
+      if (noTurnText && session.goal.continuationCount > 0 && !capDecisionOpen) {
+        session.goal.continuationCount -= 1;
+        refunded++;
+        this.logger.info('Gave back the goal continuation the restart cut short', {
+          sessionKey,
+          continuationCount: session.goal.continuationCount,
+          maxContinuations: session.goal.maxContinuations,
+        });
       }
       this.logger.info('Resuming active goal after restart', {
         sessionKey,
@@ -6567,7 +6585,9 @@ export class SlackHandler {
         });
       }
     }
-    if (forcedIdle > 0 || repaired > 0 || retriesClaimed > 0 || stallsEnded > 0) this.claudeHandler.saveSessions();
+    if (forcedIdle > 0 || repaired > 0 || retriesClaimed > 0 || stallsEnded > 0 || refunded > 0) {
+      this.claudeHandler.saveSessions();
+    }
     if (resumed > 0 || repaired > 0) {
       this.logger.info(`Resumed ${resumed} active goal(s) after restart (repaired ${repaired} stranded queue(s))`);
     }
