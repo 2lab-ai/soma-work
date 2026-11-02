@@ -19,6 +19,7 @@ import {
   promotePendingToDispatchQueue,
 } from '../compact-state';
 import type { CompletionMessageTracker } from '../completion-message-tracker';
+import { turnStartAnchor } from '../context-anchor';
 import type { ContextWindowManager } from '../context-window-manager';
 import {
   buildInstructionConfirmBlocks,
@@ -188,6 +189,8 @@ export interface RecordUserTurnOpts {
    * it a compaction turn; this is the one definition the dashboard reads.
    */
   compact?: boolean;
+  /** Context rollback (#743) — the SDK cut point just before this input (`@soma/slack/context-anchor`). */
+  anchor?: string;
 }
 
 /** Dashboard SSOT 2026-10-27 T2 — what a compaction reported when it ended. */
@@ -1454,7 +1457,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
       const conversationId = session.conversationId;
       if (!conversationId) return;
-      recordConversationWorkLog(conversationId, { turnId, ts: Date.now(), ...entry }, { sessionKey });
+      // #743: every entry carries the SDK cut point it was made at — the work
+      // log's "roll back to here" resumes there.
+      const anchor = turnStartAnchor(session);
+      recordConversationWorkLog(
+        conversationId,
+        { turnId, ts: Date.now(), ...(anchor ? { anchor } : {}), ...entry },
+        { sessionKey },
+      );
     };
     // A task turn's compaction notices go through its own writer, so a failed
     // one is the turn's recording failure like any other entry (#629 R1).
@@ -1702,6 +1712,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           {
             origin: { by },
             ...(compactTurn ? { compact: true } : {}),
+            // #743: "roll back to just before this input" resumes here.
+            ...(turnStartAnchor(session) ? { anchor: turnStartAnchor(session) } : {}),
           },
         );
         const names = processedFiles.map((f) => f.name).join(' · ');
