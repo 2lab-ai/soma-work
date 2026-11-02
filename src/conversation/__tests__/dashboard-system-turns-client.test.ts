@@ -957,7 +957,14 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     const turns = [
       { id: 'u1', role: 'user', timestamp: 1, userName: 'Z', rawContent: '정리해줘', origin: { by: 'user' } },
       { id: 'a1', role: 'assistant', timestamp: 2, summaryTitle: '정리 완료', summaryBody: '모델 답변' },
-      { id: 'es', role: 'assistant', timestamp: 3, summaryTitle: 'Executive Summary', summaryBody: 'TL;DR', executiveSummary: true },
+      {
+        id: 'es',
+        role: 'assistant',
+        timestamp: 3,
+        summaryTitle: 'Executive Summary',
+        summaryBody: 'TL;DR',
+        executiveSummary: true,
+      },
     ];
     const fetch = vi.fn(async (_url: string) => ({ ok: true, json: async () => ({ turns }) }));
     const c = card(user('x'), { extra: { fetch } });
