@@ -2,11 +2,15 @@
  * C1 (Z, 2026-11-02: D1-A "C1+C2+C3", D2-A "soma-work 안에서 정밀화"). A Bash call that
  * a dangerous rule flags only because it pipes data into an interpreter that
  * READS it (`curl … | python3 -c "import json,sys; …"`) runs without asking the
- * guardian: no model call, no wait, nothing to warn about. Anything else the
- * rules flag — a pipe that runs its input as code, or another rule in the same
- * command — still goes to the guardian.
+ * guardian — but only when the whole command is one plain pipeline whose producer
+ * only reads (`isPlainReadPipeline`): no model call, no wait, nothing to warn about.
+ * Anything else the rules flag — a pipe that runs its input as code, another rule
+ * in the same command, or a remote write / token use in front of the reader —
+ * still goes to the guardian.
  *
- * On the analysis window this was 37 of the 64 real prompts on fable-m5max:dev.
+ * Narrowed after the replay of the 64 real prompts: the first C1 skipped 21 of them,
+ * and 7 of those were calls the model asks about (PR merges by PUT, review approvals
+ * by POST, a token pulled out of git config) — all with a JSON reader at the end.
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -70,6 +74,24 @@ describe('C1 — a data-reading pipe skips the guardian', () => {
   it('a data pipe next to another flagged step still goes to the guardian', async () => {
     const h = await harness();
     await h.run(`rm -rf ./scratch-x && ${READ_PR}`);
+    expect(h.classify).toHaveBeenCalledTimes(1);
+  });
+
+  it('the merge in the screenshot (PUT with a token, then a JSON reader) goes to the guardian', async () => {
+    const h = await harness();
+    await h.run(
+      'T=$(node mint-token.mjs 2>/dev/null); curl -s -X PUT -H "Authorization: Bearer $T" https://api.github.com/repos/o/r/pulls/463/merge -d \'{"merge_method":"merge"}\' | python3 -c "import json,sys; print(json.load(sys.stdin).get(\'merged\'))"',
+    );
+    expect(h.classify).toHaveBeenCalledTimes(1);
+    expect(h.logger.info).not.toHaveBeenCalledWith(
+      'Auto-mode data pipe allowed without the classifier',
+      expect.anything(),
+    );
+  });
+
+  it('a read pipe behind `cd … &&` goes to the guardian (one plain pipeline only)', async () => {
+    const h = await harness();
+    await h.run(`cd scratch && ${READ_PR}`);
     expect(h.classify).toHaveBeenCalledTimes(1);
   });
 

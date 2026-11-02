@@ -14,8 +14,11 @@
  * DATA (`curl … | python3 -c 'json.load(sys.stdin)…'`) is not a problem and does
  * not warn. A pipe whose program comes from stdin (`| sh`, `| python3`, `| python3 -`)
  * or whose inline code can execute what it reads (`exec(`, `eval(`, `subprocess` …)
- * still warns. The refinement is used ONLY here: the classify trigger and the
- * permission card keep the raw catalog, so host and permission child never disagree.
+ * still warns. The policy, the Lean model and the permission card keep the raw
+ * catalog, so host and permission child never disagree. The classify step uses
+ * this check for one more thing (C1): a call whose ONLY flagged rule is such a
+ * data pipe, and whose whole command is one plain read pipeline
+ * ({@link isPlainReadPipeline}), runs without a model call.
  */
 
 import { overridableRulesByIds } from 'somalib/permission/dangerous-rules';
@@ -211,6 +214,213 @@ function onlyDataPipes(command: string): boolean {
     if (interpreterRunsInput(command, m[1], m.index + m[0].length)) return false;
   }
   return found;
+}
+
+/**
+ * C1 narrowed (Z 2026-11-02, D1-A / D2-A; replay of the 64 real prompts). The reader
+ * check above only judges what sits AFTER the pipe. The first C1 skipped the model on
+ * that alone, and 7 of the 21 calls it skipped were ones the model asks about — every
+ * one a remote write or a token in FRONT of a JSON reader (PR merges by `curl -X PUT`,
+ * review approvals by POST, a token pulled out of git config into a file). So the
+ * model is skipped only for ONE plain pipeline whose producer only reads:
+ *
+ * - no `;` `&` `&&` `||` `|&` newline, subshell, brace group, here-doc, `<` input,
+ *   comment, backslash outside quotes, `$` / backtick outside single quotes;
+ * - no redirect except `2>/dev/null` / `2>&1`;
+ * - the first stage is a known reader: `curl` with read-only flags (method GET, no
+ *   body, no upload, no output file, no config file, no credentials or
+ *   Authorization / Cookie header, http(s) URLs only), `gh api` with method GET and
+ *   no fields/input,
+ *   `gh pr|issue|run|repo|release|workflow view|list|status|diff|checks` (no --web),
+ *   or `cat` `echo` `printf` `jq` `head` `tail` `grep`;
+ * - every later stage is one of those text tools or an interpreter the reader check
+ *   accepted.
+ *
+ * It is an allowlist: a shape it does not recognise goes to the model, never through.
+ */
+export function isPlainReadPipeline(command: string): boolean {
+  const stages = plainPipelineStages(command);
+  if (!stages || stages.length < 2) return false;
+  if (!onlyDataPipes(command)) return false;
+  const [first, ...rest] = stages.map(stageWords);
+  if (!first || !isReadProducer(first)) return false;
+  return stages.slice(1).every((stage, k) => INTERPRETER_STAGE.test(stage) || isTextTool(rest[k]));
+}
+
+/** A stage that starts with an interpreter — `onlyDataPipes` already judged every one. */
+const INTERPRETER_STAGE = new RegExp(String.raw`^(?:\S*/)?(?:env\s+(?:-\S+\s+)*)?${INTERPRETER}(?![\w.-])`, 'i');
+const TEXT_TOOLS: ReadonlySet<string> = new Set(['cat', 'echo', 'printf', 'jq', 'head', 'tail', 'grep']);
+const STDERR_REDIRECT = /^2>[ \t]*(?:\/dev\/null|&1)(?=[ \t|]|$)/;
+
+/** The stages of one plain pipeline, or null for anything else (see above). */
+function plainPipelineStages(command: string): string[] | null {
+  const stages: string[] = [];
+  let cur = '';
+  let i = 0;
+  while (i < command.length) {
+    const c = command[i];
+    if (c === "'") {
+      const close = command.indexOf("'", i + 1);
+      if (close < 0) return null;
+      cur += command.slice(i, close + 1);
+      i = close + 1;
+    } else if (c === '"') {
+      let j = i + 1;
+      while (j < command.length && command[j] !== '"') {
+        if (command[j] === '$' || command[j] === '`') return null;
+        j += command[j] === '\\' ? 2 : 1;
+      }
+      if (j >= command.length) return null;
+      cur += command.slice(i, j + 1);
+      i = j + 1;
+    } else if (c === '|') {
+      if (command[i + 1] === '|' || command[i + 1] === '&') return null;
+      stages.push(cur.trim());
+      cur = '';
+      i++;
+    } else if (c === '2' && /^\s?$/.test(command[i - 1] ?? '') && STDERR_REDIRECT.test(command.slice(i))) {
+      i += (STDERR_REDIRECT.exec(command.slice(i)) as RegExpExecArray)[0].length;
+    } else if (/[ \t\w./:=@,+%^~*?[\]-]/.test(c)) {
+      cur += c;
+      i++;
+    } else {
+      // ; & < > ( ) { } # $ ` \ ! newline and anything else unusual
+      return null;
+    }
+  }
+  stages.push(cur.trim());
+  return stages.every((s) => s.length > 0) ? stages : null;
+}
+
+/** Words of one validated stage, quotes removed. */
+function stageWords(stage: string): string[] {
+  const words: string[] = [];
+  let i = 0;
+  while (i < stage.length) {
+    if (stage[i] === ' ' || stage[i] === '\t') {
+      i++;
+      continue;
+    }
+    const w = readWord(stage, i);
+    if (w.end <= i) return [];
+    words.push(w.word);
+    i = w.end;
+  }
+  return words;
+}
+
+function isTextTool(words: string[] | undefined): boolean {
+  return !!words && words.length > 0 && TEXT_TOOLS.has(words[0]);
+}
+
+function isReadProducer(words: string[]): boolean {
+  const [program, ...args] = words;
+  if (program === 'curl') return curlOnlyReads(args);
+  if (program === 'gh') return ghOnlyReads(args);
+  return isTextTool(words);
+}
+
+/** `--flag=value` / `-Xvalue` → [flag, value]; otherwise [arg, undefined]. */
+function splitFlag(arg: string, attached: readonly string[]): [string, string | undefined] {
+  if (arg.startsWith('--')) {
+    const eq = arg.indexOf('=');
+    return eq > 0 ? [arg.slice(0, eq), arg.slice(eq + 1)] : [arg, undefined];
+  }
+  for (const f of attached) if (arg.length > f.length && arg.startsWith(f)) return [f, arg.slice(f.length)];
+  return [arg, undefined];
+}
+
+const CREDENTIAL_HEADER = /^\s*(?:authorization|proxy-authorization|cookie)\s*:/i;
+
+/** Words that are neither a flag nor a flag's separate value. */
+function positionals(args: string[], valued: ReadonlySet<string>, attached: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let k = 0; k < args.length; k++) {
+    const arg = args[k];
+    if (!arg.startsWith('-') || arg === '-') out.push(arg);
+    else if (splitFlag(arg, attached)[1] === undefined && valued.has(arg)) k++;
+  }
+  return out;
+}
+
+/**
+ * Walk flags against an allowlist: bare switches, flags that take a value (checked
+ * by `valueOk`), everything else rejected. Positional words (URLs, endpoints) pass.
+ */
+function flagsOnlyRead(
+  args: string[],
+  spec: { switches: RegExp; valued: ReadonlySet<string>; attached: readonly string[] },
+  valueOk: (flag: string, value: string) => boolean,
+): boolean {
+  for (let k = 0; k < args.length; k++) {
+    const arg = args[k];
+    if (!arg.startsWith('-') || arg === '-') continue;
+    const [flag, inline] = splitFlag(arg, spec.attached);
+    if (inline === undefined && spec.switches.test(flag)) continue;
+    if (!spec.valued.has(flag)) return false;
+    const value = inline ?? args[++k];
+    if (value === undefined || !valueOk(flag, value)) return false;
+  }
+  return true;
+}
+
+const CURL = {
+  switches:
+    /^(?:-[sSLfiIGkv#]+|--(?:silent|show-error|location|fail|fail-with-body|include|head|get|compressed|insecure|verbose|no-progress-meter|globoff))$/,
+  valued: new Set([
+    '-X',
+    '--request',
+    '-H',
+    '--header',
+    '-A',
+    '--user-agent',
+    '-m',
+    '--max-time',
+    '--connect-timeout',
+    '--retry',
+    '--retry-delay',
+    '--retry-max-time',
+  ]),
+  // No -w / --write-out: `%output{file}` writes a file.
+  attached: ['-X', '-H', '-m', '-A'],
+};
+
+/** curl speaks gopher://, dict://, telnet://, smtp:// … — only an http(s) URL is a plain fetch. */
+const HTTP_URL = /^https?:\/\//i;
+
+function curlOnlyReads(args: string[]): boolean {
+  const urls = positionals(args, CURL.valued, CURL.attached);
+  if (urls.length === 0 || !urls.every((u) => HTTP_URL.test(u))) return false;
+  return flagsOnlyRead(args, CURL, (flag, value) => {
+    if (value.startsWith('@')) return false; // a header or format read from a file
+    if (flag === '-X' || flag === '--request') return value.toUpperCase() === 'GET';
+    if (flag === '-H' || flag === '--header') return !CREDENTIAL_HEADER.test(value);
+    return true;
+  });
+}
+
+const GH_API = {
+  switches: /^(?:--paginate|--slurp|-i|--include|--silent|--verbose)$/,
+  valued: new Set(['-X', '--method', '-H', '--header', '-q', '--jq', '-t', '--template', '--cache', '--hostname']),
+  attached: ['-X', '-H', '-q', '-t'],
+};
+const GH_READ_NOUNS: ReadonlySet<string> = new Set(['pr', 'issue', 'run', 'repo', 'release', 'workflow']);
+const GH_READ_VERBS: ReadonlySet<string> = new Set(['view', 'list', 'status', 'diff', 'checks']);
+
+function ghOnlyReads(args: string[]): boolean {
+  const [noun, ...rest] = args;
+  if (noun === 'api') {
+    return flagsOnlyRead(rest, GH_API, (flag, value) => {
+      if (flag === '-X' || flag === '--method') return value.toUpperCase() === 'GET';
+      if (flag === '-H' || flag === '--header') return !CREDENTIAL_HEADER.test(value);
+      return true;
+    });
+  }
+  return (
+    GH_READ_NOUNS.has(noun ?? '') &&
+    GH_READ_VERBS.has(rest[0] ?? '') &&
+    !rest.some((a) => a === '--web' || a === '-w' || a.startsWith('--web='))
+  );
 }
 
 /**
