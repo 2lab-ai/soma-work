@@ -75,6 +75,7 @@ describe('settings page shell', () => {
     expect(JSON.parse(json)).toEqual([
       { id: 'preferences', label: '개인 설정', icon: 'gear' },
       { id: 'memory', label: '기억', icon: 'brain' },
+      { id: 'project', label: '프로젝트 메모리', icon: 'file-text' },
       { id: 'layout', label: '대시보드 화면', icon: 'board' },
       { id: 'dictation', label: '받아쓰기', icon: 'mic' },
     ]);

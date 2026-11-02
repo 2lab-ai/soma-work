@@ -30,9 +30,8 @@ export const PROJECT_TAB_HTML = `<div slot="project" data-tab="project" class="p
 export const PROJECT_TAB_CSS = String.raw`
 .pm-banner { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; font-size: 13px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); margin-bottom: 12px; }
 .pm-banner.is-locked { border-color: var(--text-tertiary); }
-.pm-banner.is-admin { border-color: var(--accent); }
 .pm-item { display: block; width: 100%; text-align: left; font: inherit; font-size: 13px; color: var(--text); background: none; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
-.pm-item[aria-current="true"] { background: var(--surface-raised); font-weight: 700; }
+.pm-item[aria-current="true"] { background: var(--surface-raised); font-weight: 600; }
 .pm-item .lock { display: block; font-weight: 400; }
 #pm-detail { padding: 16px; }
 #pm-detail h2 { font-size: 15px; }
@@ -86,9 +85,9 @@ function paintProjectBanner() {
     ? '<div class="notice is-error" role="alert">' + esc(_pm.storeError) + '</div>'
     : '';
   if (!pmIsAdmin() && _pm && _pm.readOnlyReason === 'anonymous') {
-    html += '<div class="pm-banner is-locked" role="note"><span><span aria-hidden="true">&#x1F512;</span> 읽기 전용 — 이 대시보드는 인증이 설정되지 않아 아무도 수정할 수 없습니다. 관리자 로그인을 설정하세요.</span></div>';
+    html += '<div class="pm-banner is-locked" role="note"><span>읽기 전용 — 이 대시보드는 인증이 설정되지 않아 아무도 수정할 수 없습니다. 관리자 로그인을 설정하세요.</span></div>';
   } else if (!pmIsAdmin()) {
-    html += '<div class="pm-banner is-locked" role="note"><span><span aria-hidden="true">&#x1F512;</span> 읽기 전용 — 관리자만 수정할 수 있습니다.</span></div>';
+    html += '<div class="pm-banner is-locked" role="note"><span>읽기 전용 — 관리자만 수정할 수 있습니다.</span></div>';
   } else if (!adminModeOn()) {
     html += '<div class="pm-banner is-admin" role="note"><span>관리자입니다. 수정하려면 관리자 모드를 켜세요.</span>'
       + '<button type="button" class="btn" onclick="setAdminModeHere(true)">관리자 모드 켜기</button></div>';
