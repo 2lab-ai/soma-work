@@ -31,6 +31,8 @@ export interface SessionProbe {
   /** When `activity` last changed (ms). */
   activityChangedAt?: number;
   workflow?: string;
+  /** The session's queue binding; `new` clears it. */
+  workQueueId?: string;
 }
 
 export interface WorkQueueParty {

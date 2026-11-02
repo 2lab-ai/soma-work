@@ -22,6 +22,7 @@ function harness() {
   };
   const replay = vi.fn(async () => undefined);
   const terminateSession = vi.fn();
+  const deferred: Array<() => void> = [];
   const queues = parseWorkQueuesConfig(undefined).queues;
   const service = new WorkQueueService({
     slackApi,
@@ -30,6 +31,10 @@ function harness() {
     registerOnIdle: (key, cb) => idle.set(key, [...(idle.get(key) ?? []), cb]),
     terminateSession,
     now: () => now,
+    // Idle re-checks run when the test says so.
+    defer: (fn: () => void) => {
+      deferred.push(fn);
+    },
   });
   service.setReplay(replay);
   return {
@@ -45,7 +50,10 @@ function harness() {
       const cbs = idle.get(key) ?? [];
       idle.delete(key);
       for (const cb of cbs) cb();
+      // The idle hook re-checks the session a moment later.
+      for (const fn of deferred.splice(0)) fn();
     },
+    idleCallbacks: (key: string) => idle.get(key)?.length ?? 0,
   };
 }
 
@@ -165,14 +173,21 @@ describe('WorkQueueService', () => {
     );
     expect(h.replay).not.toHaveBeenCalled();
 
-    h.probes.set('C1:200', { exists: true, active: false, activity: 'idle', workflow: 'deploy' });
+    h.probes.set('C1:200', {
+      exists: true,
+      active: false,
+      activity: 'idle',
+      workflow: 'deploy',
+      workQueueId: 'deploy-dev2',
+    });
     h.probes.set('C1:100', { exists: true, active: false, activity: 'idle', workflow: 'deploy' });
     h.fireIdle('C1:100');
     await flush();
 
     expect(h.replay).toHaveBeenCalledTimes(1);
     const [event] = h.replay.mock.calls[0] as any[];
-    expect(event).toMatchObject({ user: 'UB', channel: 'C1', thread_ts: '200', text: TRIGGER });
+    // No Slack message of its own: `ts: ''`, so handleMessage mints one (fable P3).
+    expect(event).toMatchObject({ user: 'UB', channel: 'C1', thread_ts: '200', ts: '', text: TRIGGER });
     expect(event.routeContext).toEqual({ skipAutoBotThread: true });
     expect(h.slackApi.updateMessage).toHaveBeenCalledWith(
       'C1',
@@ -185,14 +200,97 @@ describe('WorkQueueService', () => {
     expect(h.service.decide(input('C1:300', session(), TRIGGER, 'UC')).kind).toBe('blocked');
   });
 
-  it('frees the slot the moment the holder goes idle, even before its turn controller is removed', async () => {
-    // StreamExecutor sets `idle` at the turn end and removes the controller
-    // later, in its finally — the idle transition alone means the work is over.
+  it('frees the slot once the holder is idle and its turn controller is gone', async () => {
+    h.service.decide(input('C1:100', session()));
+    h.probes.set('C1:100', { exists: true, active: false, activity: 'idle', workflow: 'deploy' });
+    h.fireIdle('C1:100');
+    await flush();
+    expect(h.service.decide(input('C1:300', session(), TRIGGER, 'UC')).kind).toBe('pass');
+  });
+
+  it('keeps the slot when a newer turn of the holder superseded the old one (trinity R1, fable P2)', async () => {
+    // The owner's new message aborted the running turn; the aborted turn's
+    // error rail writes idle while the new turn's controller is registered.
     h.service.decide(input('C1:100', session()));
     h.probes.set('C1:100', { exists: true, active: true, activity: 'idle', workflow: 'deploy' });
     h.fireIdle('C1:100');
     await flush();
-    expect(h.service.decide(input('C1:300', session(), TRIGGER, 'UC')).kind).toBe('pass');
+    expect(h.service.decide(input('C1:300', session(), TRIGGER, 'UC')).kind).toBe('blocked');
+    // …and it still listens for the newer turn's own end.
+    expect(h.idleCallbacks('C1:100')).toBeGreaterThan(0);
+  });
+
+  it('a reset session drops its stale queued request; a new request takes its place (trinity R1, astra P1)', async () => {
+    h.service.decide(input('C1:100', session()));
+    h.probes.set('C1:100', { exists: true, active: true, activity: 'working', workflow: 'deploy' });
+    const s = session();
+    const first = h.service.decide(input('C1:200', s, 'old-repo develop -> dev2', 'UB'));
+    await h.service.notifyBlocked(first);
+    await h.service.handleClick(
+      click('work_queue_wait', first.kind === 'blocked' ? first.waiter.id : '', 'UB'),
+      vi.fn(),
+    );
+
+    // `new` clears the binding; the owner asks for another repo in the same thread.
+    s.workQueueId = undefined;
+    const second = h.service.decide(input('C1:200', s, 'new-repo develop -> dev2', 'UB'));
+    expect(second.kind).toBe('blocked');
+    await flush();
+    expect(h.slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      '91',
+      expect.stringContaining('초기화'),
+      expect.any(Array),
+    );
+
+    await h.service.notifyBlocked(second);
+    await h.service.handleClick(
+      click('work_queue_wait', second.kind === 'blocked' ? second.waiter.id : '', 'UB'),
+      vi.fn(),
+    );
+    h.probes.set('C1:200', {
+      exists: true,
+      active: false,
+      activity: 'idle',
+      workflow: 'deploy',
+      workQueueId: 'deploy-dev2',
+    });
+    h.probes.set('C1:100', { exists: true, active: false, activity: 'idle', workflow: 'deploy' });
+    h.fireIdle('C1:100');
+    await flush();
+    expect(h.replay).toHaveBeenCalledTimes(1);
+    expect((h.replay.mock.calls[0] as any[])[0].text).toBe('new-repo develop -> dev2');
+  });
+
+  it('a card that cannot be updated does not stop the replay or the timeout close (trinity R1, astra P2)', async () => {
+    h.service.decide(input('C1:100', session()));
+    h.probes.set('C1:100', { exists: true, active: true, activity: 'working', workflow: 'deploy' });
+    const queued = h.service.decide(input('C1:200', session(), TRIGGER, 'UB'));
+    await h.service.notifyBlocked(queued);
+    await h.service.handleClick(
+      click('work_queue_wait', queued.kind === 'blocked' ? queued.waiter.id : '', 'UB'),
+      vi.fn(),
+    );
+    await h.service.notifyBlocked(h.service.decide(input('C1:300', session(), TRIGGER, 'UC')));
+
+    h.slackApi.updateMessage.mockRejectedValue(new Error('message_not_found'));
+    h.slackApi.postMessage.mockRejectedValue(new Error('channel_not_found'));
+
+    h.probes.set('C1:200', {
+      exists: true,
+      active: false,
+      activity: 'idle',
+      workflow: 'deploy',
+      workQueueId: 'deploy-dev2',
+    });
+    h.probes.set('C1:100', { exists: true, active: false, activity: 'idle', workflow: 'deploy' });
+    h.fireIdle('C1:100');
+    await flush();
+    expect(h.replay).toHaveBeenCalledTimes(1);
+
+    h.advance(10 * MIN);
+    await h.service.runTick();
+    expect(h.terminateSession).toHaveBeenCalledWith('C1:300');
   });
 
   it('keeps the slot when the turn ended waiting on its own question', async () => {

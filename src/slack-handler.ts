@@ -582,6 +582,7 @@ export class SlackHandler {
           activity: session.activityState,
           activityChangedAt: session.activityStateChangedAt,
           workflow: session.workflow,
+          workQueueId: session.workQueueId,
         };
       },
       registerOnIdle: (sessionKey, cb) => sessionRegistry?.registerOnIdle?.(sessionKey, cb),

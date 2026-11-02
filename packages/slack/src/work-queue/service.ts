@@ -82,9 +82,17 @@ export interface WorkQueueServiceDeps {
   terminateSession?: (sessionKey: string) => void;
   now?: () => number;
   graceMs?: number;
+  /** Runs the idle re-check later (default: an unref'd `setTimeout`). */
+  defer?: (fn: () => void, ms: number) => void;
 }
 
 export const WORK_QUEUE_SWEEP_MS = 15_000;
+/** How long after a holder goes idle its slot is re-checked (turn teardown removes the controller). */
+export const IDLE_RECHECK_MS = 3_000;
+
+function defaultDefer(fn: () => void, ms: number): void {
+  setTimeout(fn, ms).unref?.();
+}
 
 export class WorkQueueService {
   readonly manager: WorkQueueManager;
@@ -136,14 +144,16 @@ export class WorkQueueService {
   }
 
   /**
-   * Synchronous: on `pass` the caller registers the turn immediately, so the
-   * slot is never held by a session with no running turn (apart from the
-   * sweep's grace).
+   * Synchronous: the slot is taken (or refused) inside this call, so no other
+   * request can claim it before the caller registers the turn. Only the
+   * caller's own `await` lies between here and `handleConcurrency`; the
+   * sweep's grace covers that window.
    */
   decide(input: GateInput): GateDecision {
     const { session, sessionKey } = input;
     const queues = this.deps.getQueues();
-    const bound = session.workQueueId ? queues.find((q) => q.id === session.workQueueId) : undefined;
+    const boundBefore = session.workQueueId;
+    const bound = boundBefore ? queues.find((q) => q.id === boundBefore) : undefined;
     const queue =
       matchWorkQueue(queues, session.workflow, input.text) ??
       (bound && bound.workflow === session.workflow ? bound : undefined);
@@ -153,7 +163,12 @@ export class WorkQueueService {
     const pending = this.manager.waiterForSession(sessionKey);
     if (pending) {
       const pendingQueue = this.manager.getQueue(pending.queueId);
-      if (pendingQueue) return { kind: 'already-waiting', queue: pendingQueue, waiter: pending };
+      if (pendingQueue && boundBefore === pending.queueId) {
+        return { kind: 'already-waiting', queue: pendingQueue, waiter: pending };
+      }
+      // The session was reset (`new` clears the binding) since this request
+      // was held: it belongs to the old conversation and must never run.
+      void this.handle(this.manager.cancel(pending.id, 'session-reset'));
     }
 
     const party = { sessionKey, userId: input.user, channel: input.channel, threadTs: input.threadTs };
@@ -242,14 +257,25 @@ export class WorkQueueService {
   }
 
   /**
-   * A turn chain of a holder ended idle: its work is over. The idle
-   * transition is the signal — `StreamExecutor` sets it before its `finally`
-   * removes the turn controller, so `probe.active` is still true here and must
-   * not be read. Only a session left waiting on its own question keeps the slot.
+   * A turn of a holder went idle. Re-checked a moment later, because the
+   * idle write alone is ambiguous: a turn's teardown removes its controller
+   * after the write, and a turn aborted by the owner's newer message (a
+   * supersede) writes idle while that newer turn is already registered.
+   *   - waiting on its own question → keep (`holderIdleMinutes` applies);
+   *   - a turn is running → keep, and listen for that turn's end;
+   *   - otherwise the work is over → release.
+   * A teardown slower than the re-check is left to the sweep.
    */
   private onHolderIdle(sessionKey: string): void {
-    if (this.deps.probe(sessionKey).activity === 'waiting') return;
-    void this.handle(this.manager.releaseSession(sessionKey, 'ended'));
+    (this.deps.defer ?? defaultDefer)(() => {
+      const probe = this.deps.probe(sessionKey);
+      if (probe.activity === 'waiting') return;
+      if (probe.active) {
+        this.deps.registerOnIdle?.(sessionKey, () => this.onHolderIdle(sessionKey));
+        return;
+      }
+      void this.handle(this.manager.releaseSession(sessionKey, 'ended'));
+    }, IDLE_RECHECK_MS);
   }
 
   private async handle(events: WorkQueueEvent[]): Promise<void> {
@@ -297,10 +323,13 @@ export class WorkQueueService {
   /** The slot is already reserved for `waiter`; run its request. */
   private async startQueued(queue: WorkQueueDef, waiter: WorkQueueWaiter): Promise<void> {
     const probe = this.deps.probe(waiter.sessionKey);
-    // A session that still exists but left the queue's workflow (`new`) is a
-    // different conversation now: the old request must not run in it.
-    if (probe.exists && probe.workflow !== queue.workflow) {
-      await this.updateCard(waiter, buildClosedCard(cancelledText(queue, 'session-reset')));
+    // A session that is gone, or was reset (`new` clears the binding and the
+    // workflow), is not the conversation that asked: never run the request in it.
+    if (!probe.exists || probe.workflow !== queue.workflow || probe.workQueueId !== queue.id) {
+      await this.updateCard(
+        waiter,
+        buildClosedCard(cancelledText(queue, probe.exists ? 'session-reset' : 'session-gone')),
+      );
       await this.handle(this.manager.releaseSession(waiter.sessionKey, 'session-gone'));
       return;
     }
@@ -323,7 +352,8 @@ export class WorkQueueService {
         user: waiter.userId,
         channel: waiter.channel,
         thread_ts: waiter.threadTs,
-        ts: `workqueue_${this.now()}`,
+        // No Slack message of its own: `handleMessage` mints the ts.
+        ts: '',
         text: waiter.text,
         routeContext: { skipAutoBotThread: true },
       },
@@ -349,15 +379,27 @@ export class WorkQueueService {
     };
   }
 
+  /**
+   * Notices never throw: a card that cannot be edited (deleted, Slack down)
+   * must not stop the queue's own effects — the replay, the session close.
+   */
   private async updateCard(waiter: WorkQueueWaiter, card: { text: string; blocks: any[] }): Promise<void> {
     if (!waiter.cardTs) {
       await this.post(waiter.channel, card.text, waiter.threadTs);
       return;
     }
-    await this.deps.slackApi.updateMessage(waiter.channel, waiter.cardTs, card.text, card.blocks);
+    try {
+      await this.deps.slackApi.updateMessage(waiter.channel, waiter.cardTs, card.text, card.blocks);
+    } catch (error) {
+      this.logger.warn('Work queue card update failed', { sessionKey: waiter.sessionKey, error: String(error) });
+    }
   }
 
   private async post(channel: string, text: string, threadTs: string): Promise<void> {
-    await this.deps.slackApi.postMessage(channel, text, { threadTs });
+    try {
+      await this.deps.slackApi.postMessage(channel, text, { threadTs });
+    } catch (error) {
+      this.logger.warn('Work queue notice failed', { channel, threadTs, error: String(error) });
+    }
   }
 }
