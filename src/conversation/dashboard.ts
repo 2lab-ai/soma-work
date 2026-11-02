@@ -8032,6 +8032,9 @@ function syncBoardScope() {
   document.body.toggleAttribute('data-board-mine', !!currentUserId && currentUserId === _viewerUserId);
 }
 function selectUser(userId) {
+  // Called from the picker (its value already set) and from 카드 열기 (#747 review R2 N4): the picker shows the board.
+  const select = document.getElementById('user-select');
+  if (select && select.value !== userId) select.value = userId;
   syncUserSelectTitle();
   currentUserId = userId;
   syncBoardScope();
@@ -17724,7 +17727,15 @@ var _ntLaunchQueue = Promise.resolve();
 // to open still waiting ({ launch } with wantOpen, openFrom, openUntil), and whether the watch's board ask is out.
 var NT_OPEN_WAIT_MS = NT_PENDING_MAX_MS;
 var _ntOpening = [];
-var _ntWatchAsking = false;
+// The watch's board ask still out ({ at }), or null; one out longer than NT_WATCH_ASK_STALE_MS no longer holds the
+// next (a ready-state ask has no deadline of its own — #747 review R2 N6).
+var _ntWatchAsk = null;
+var NT_WATCH_ASK_STALE_MS = 30000;
+// A launch's POST is given up (and the launch kept, ntLaunchFailed) when its upload makes no progress for
+// NT_POST_STALL_MS, or the answer does not come NT_POST_ANSWER_MS after the upload — a launch that hangs never holds
+// the ones queued behind it (#747 review R2 N2). A retry under the same request id never runs it twice.
+var NT_POST_STALL_MS = 60000;
+var NT_POST_ANSWER_MS = 60000;
 // The text handed to <ui-composer> (a saved draft at first, '' after a launch): it applies a value only when it
 // differs from the last one, so a repaint while someone types never resets the field.
 var _ntValue = null;
@@ -18948,7 +18959,9 @@ async function submitNewTask(detail) {
     ntLaunchFailed(launch, '작업을 시작하지 못했습니다 — 네트워크를 확인하고 다시 눌러 주세요 (같은 요청은 두 번 실행되지 않습니다)');
     return;
   } finally {
-    release();
+    // Only after the launch before it: one that fails before its turn (a file unread) must not let the next one past
+    // a launch still in flight (#747 review R2 N1).
+    turn.then(release, release);
   }
   // Started: never reported as a failure, whatever follows.
   ntOnLaunched(data, submitted, launch);
@@ -18990,20 +19003,31 @@ function ntBeginLaunch(submitted, files) {
 function ntPostTask(body, launch) {
   return new Promise(function (resolve, reject) {
     var xhr = new XMLHttpRequest();
+    var stall = 0;
+    // The deadline: no upload progress for NT_POST_STALL_MS, or no answer NT_POST_ANSWER_MS after the upload.
+    function arm(ms) {
+      clearTimeout(stall);
+      stall = setTimeout(function () {
+        xhr.abort();
+      }, ms);
+    }
     xhr.open('POST', '/api/dashboard/new-task');
     xhr.setRequestHeader('Content-Type', 'application/json');
     xhr.setRequestHeader('X-CSRF-Token', _csrfToken);
     // Where it stands is said on the launch's 시작 중 card — the dialog has closed (and holds the next task).
     xhr.upload.onprogress = function (e) {
+      arm(NT_POST_STALL_MS);
       if (e.lengthComputable && e.total > 65536) {
         ntPendingStatus(launch, '업로드 중… ' + Math.round((e.loaded / e.total) * 100) + '%');
       }
     };
     xhr.upload.onload = function () {
+      arm(NT_POST_ANSWER_MS);
       var toTask = launch && launch.state && launch.state.destination === 'task';
       ntPendingStatus(launch, toTask ? '작업을 만드는 중…' : 'Slack에 작업을 올리는 중…');
     };
     xhr.onload = function () {
+      clearTimeout(stall);
       var data = null;
       try {
         data = JSON.parse(xhr.responseText);
@@ -19011,8 +19035,14 @@ function ntPostTask(body, launch) {
       resolve({ status: xhr.status, data: data });
     };
     xhr.onerror = function () {
+      clearTimeout(stall);
       reject(new Error('network'));
     };
+    xhr.onabort = function () {
+      clearTimeout(stall);
+      reject(new Error('timeout'));
+    };
+    arm(NT_POST_STALL_MS);
     xhr.send(body);
   });
 }
@@ -19079,7 +19109,8 @@ function ntLaunchToast(data, channelName, restored) {
           String(data.reason || '') +
           (restored === false ? ' — 지시는 “시작 실패” 카드에 남겨 두었어요' : ' — 지시는 새 작업 창에 남겨 두었어요'),
         tone: 'warning',
-        action: { id: 'open', label: '카드 열기' },
+        // Kept on a 시작 실패 card, the press takes the instruction back (ntOpenLaunch → ntRetakeLaunch — R2 N8).
+        action: { id: 'open', label: restored === false ? '지시 가져오기' : '카드 열기' },
         duration: 12000,
       };
     }
@@ -19155,7 +19186,8 @@ function ntKeepFailed(launch, message, asNew) {
 // A 시작 실패 card pressed (or its toast's 지시 가져오기): its instruction goes back to the dialog once the dialog is
 // free; while it holds another instruction, the dialog says so and the card stays.
 function ntRetakeLaunch(launch) {
-  if (!launch || !launch.failed) return;
+  // Only a card still on the board: a second press of the toast after it was taken back does nothing (R2 N5).
+  if (!launch || !launch.failed || _ntPending.indexOf(launch) < 0) return;
   if (ntRestoreLaunch(launch, launch.asNew)) {
     ntPendingDrop(launch);
     _ntBusy = ntPendingUnsent();
@@ -19364,12 +19396,13 @@ function ntPendingWatch() {
   _ntPendingTimer = setTimeout(function () {
     _ntPendingTimer = 0;
     if (!ntBoardIsViewers()) return;
-    if (!_ntWatchAsking && typeof loadSessions === 'function') {
-      _ntWatchAsking = true;
+    var now = Date.now();
+    if ((!_ntWatchAsk || now - _ntWatchAsk.at > NT_WATCH_ASK_STALE_MS) && typeof loadSessions === 'function') {
+      var ask = (_ntWatchAsk = { at: now });
       Promise.resolve(loadSessions())
         .catch(function () {})
         .then(function () {
-          _ntWatchAsking = false;
+          if (_ntWatchAsk === ask) _ntWatchAsk = null;
         });
     }
     if (ntPendingPrune()) ntPendingRepaint();
@@ -19381,6 +19414,14 @@ function ntPendingWatch() {
 // The detail card the reader has open now ('' none) — 카드 열기 notes it, to tell later whether they moved on.
 function ntPanelNow() {
   return panelOpen ? String(panelSessionKey || '') : '';
+}
+
+// Something is being written or sent in the open detail card: opening another card would replace it (pcFreshSteer).
+function ntPanelHasInput() {
+  if (!panelOpen) return false;
+  if (_pcSending || _pcInFlight > 0) return true;
+  var c = document.getElementById('pc-composer');
+  return !!(c && (String(c.value || '').trim() || (c.files && c.files.length)));
 }
 
 // T2 — 카드 열기 (the launch toast), or a press on the launch's 시작 중 card: the launch's own card opens on the
@@ -19421,9 +19462,21 @@ function ntOpenArrived(launch) {
   if (!launch.sessionKey) return false;
   var key = resolveDeepLinkKey(launch.sessionKey, Object.keys(_sessionCache), SELF_INSTANCE_NAME);
   var host = key ? _cardHost[key] : null;
+  if (key && !host) {
+    // On the board's data but not drawn — hidden by the 휴면 / 보관 toggle: shown just for this page load, as a deep
+    // link does (openDeepLinkedSession), and opened on that render (#747 review R2 N7).
+    var s = _sessionCache[key];
+    var hidden = s && (s.terminated === true ? !showArchives : !showSleeping);
+    if (hidden && _revealedKey !== key) {
+      _revealedKey = key;
+      loadSessions();
+    }
+    return false;
+  }
   if (!host || typeof host.reveal !== 'function') return false;
   launch.wantOpen = false;
-  if (ntPanelNow() !== launch.openFrom) {
+  // The reader moved to (or closed) another detail card, or is writing in the open one (R2 N3): in view only.
+  if (ntPanelNow() !== launch.openFrom || ntPanelHasInput()) {
     host.reveal(key, { open: false });
     return true;
   }
