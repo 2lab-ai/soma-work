@@ -123,6 +123,7 @@ import { backfillArtifactsFromWorkLog } from './artifact-capture';
 import { type ArtifactSummary, getArtifactStore, type SessionArtifact } from './artifacts';
 import { buildCapacityView, type CapacityView } from './capacity-view';
 import { type CardLink, cardLinksOf } from './card-links';
+import { isClientRef } from './client-ref';
 import { buildCronJobsView, type CronRunSessionLookup } from './cron-view';
 import { DICTATION_BROWSER_JS } from './dictation-browser-client';
 import { DICTATION_PREF_JS } from './dictation-pref';
@@ -1372,6 +1373,8 @@ type CommandHandler = (
   message: string,
   files: NewTaskAttachment[],
   actorUserId?: string,
+  /** #785 — the ref the panel gave its pending copy; the recorded turn carries it back. */
+  clientRef?: string,
 ) => Promise<void>;
 /**
  * #598 ④c — a Slack-less task's instruction: the task turn controller refuses
@@ -3714,6 +3717,8 @@ export async function registerDashboardRoutes(
         userId: t.role === 'user' ? t.userId : undefined,
         // SSOT 2026-11-02 T7: the Executive Summary turn — the open card's 지시/응답 skips it.
         executiveSummary: t.executiveSummary ? true : undefined,
+        // #785: the dashboard send this user turn records — the panel replaces its pending copy by it.
+        clientRef: t.role === 'user' ? t.clientRef : undefined,
         // User media (SSOT 2026-10-25): the files this instruction carried, metadata only.
         attachments: t.role === 'user' ? t.attachments : undefined,
         // SSOT 2026-10-27: who put a user turn there (a host turn reads as one
@@ -3990,15 +3995,17 @@ export async function registerDashboardRoutes(
   // with the images, files and voice notes the user added — base64 in JSON like
   // a new task's, under the same limits (and the same body limit, so a phone
   // photo fits). A files-only instruction is allowed.
-  server.post<{ Params: { key: string }; Body: { message?: string; attachments?: unknown } }>(
+  server.post<{ Params: { key: string }; Body: { message?: string; attachments?: unknown; clientRef?: unknown } }>(
     '/api/dashboard/session/:key/command',
     { bodyLimit: NEW_TASK_BODY_LIMIT, preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { message = '', attachments } = request.body || {};
+      const { message = '', attachments, clientRef } = request.body || {};
       if (typeof message !== 'string') {
         reply.status(400).send({ error: 'message must be a string' });
         return;
       }
+      // #785: the panel's ref for its pending copy. Not one → dropped (the panel falls back to the words).
+      const ref = isClientRef(clientRef) ? clientRef : undefined;
       if (message.length > NEW_TASK_LIMITS.maxPromptChars) {
         reply.status(400).send({ error: `message exceeds max length (${NEW_TASK_LIMITS.maxPromptChars} chars)` });
         return;
@@ -4044,7 +4051,9 @@ export async function registerDashboardRoutes(
             senderId: sender,
           });
         if (_commandHandlerFn) {
-          await _commandHandlerFn(originalKey, message, files.value, sender);
+          // #785: the panel's ref rides along only when there is one (the handler's other callers pass four).
+          if (ref) await _commandHandlerFn(originalKey, message, files.value, sender, ref);
+          else await _commandHandlerFn(originalKey, message, files.value, sender);
         }
         reply.send(waits ? { ok: true, pendingApproval: true } : { ok: true });
       } catch (error) {
@@ -11260,6 +11269,11 @@ function ptSameSend(opt, turn) {
   if (!opt || !opt._optimistic || !turn || turn._optimistic || turn.role !== 'user') return false;
   if (turn.origin && turn.origin.by === 'system') return false;
   if (turn.userId && opt._by && turn.userId !== opt._by) return false;
+  // #785: the server carries the send's own ref back on the turn it recorded. That turn is its record,
+  // whatever words it holds (a routed continuation, a follow-up prompt, a directive remainder, invoked
+  // skills); a turn with another ref is another send's. Turns without one (Slack, older servers) fall
+  // back to the words. Checked after the sender: a ref is no secret, so it never crosses senders.
+  if (turn.clientRef) return String(turn.clientRef) === String(opt.id);
   var key = ptSentKey(opt._sent);
   if (key) return key === ptSentKey(turn.rawContent);
   // A files-only send is recorded with no words: only such a turn is its record. A send with
@@ -11288,7 +11302,8 @@ function ptRecorded(list, opt, held, used) {
     var t = list[i];
     var id = t && t.id ? String(t.id) : '';
     if (!id || held[id] || used[id]) continue;
-    if (toNum(t.timestamp) >= since && ptSameSend(opt, t)) return id;
+    // A turn with this send's ref is its record whatever the clocks say (#785); the window is for word matches.
+    if ((t.clientRef || toNum(t.timestamp) >= since) && ptSameSend(opt, t)) return id;
   }
   return '';
 }
@@ -17599,6 +17614,7 @@ async function sendCommand(text, ref, files) {
   if (!running) {
     const shown = msg + (list.length ? (msg ? '\\n' : '') + '📎 ' + list.map(function(f) { return f.name; }).join(', ') : '');
     optimisticId = 'optimistic-' + Date.now();
+    optimisticId += '-' + Math.random().toString(36).slice(2, 8); // two tabs in the same ms never share a ref (#785)
     appendTurnToPanel({
       id: optimisticId,
       role: 'user',
@@ -17618,7 +17634,7 @@ async function sendCommand(text, ref, files) {
   _pcInFlight++; // until the server answered: a reload now would drop a note the composer no longer holds
   try {
     const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
-    const res = await acPost(cmdUrl, JSON.stringify(pcCommandBody(msg, attachments)));
+    const res = await acPost(cmdUrl, JSON.stringify(pcCommandBody(msg, attachments, optimisticId)));
     var data = {};
     try { data = await res.json(); } catch (_e) {}
     if (!res.ok) why = ((data && data.error) || '') + ' (HTTP ' + res.status + ')';
@@ -21325,13 +21341,13 @@ var _pcFailed = Object.create(null); // refs of notes whose send failed — thei
 function pcCanSend(message, files) {
   return String(message || '').trim().length > 0 || (files || []).length > 0;
 }
-function pcCommandBody(message, files) {
+function pcCommandBody(message, files, clientRef) {
   var list = files || [];
-  if (!list.length) return { message: message };
-  return {
-    message: message,
-    attachments: list.map(function(f) { return { name: f.name, mimetype: f.mimetype, data: f.data }; }),
-  };
+  var body = { message: message };
+  if (list.length) body.attachments = list.map(function(f) { return { name: f.name, mimetype: f.mimetype, data: f.data }; });
+  // #785: the server records this ref on the turn the send becomes; the panel replaces its pending copy by it.
+  if (clientRef) body.clientRef = clientRef;
+  return body;
 }
 // The composer's own data: the limits (the steering sets its placeholder, name and
 // off state, and turns its hint off — the steering's key hints stay below it).

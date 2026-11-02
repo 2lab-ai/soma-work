@@ -26,7 +26,16 @@
 
 export interface CompactDispatchPayload {
   /** `verbatimPrompt`: the text is a goal objective — replayed as the user's words. */
-  ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean; hostTurn?: boolean };
+  ctx: {
+    channel: string;
+    threadTs: string;
+    user: string;
+    ts: string;
+    verbatimPrompt?: boolean;
+    hostTurn?: boolean;
+    /** #785: a dashboard send's ref — the replayed message records it on its turn. */
+    dashboardClientRef?: string;
+  };
   text: string;
 }
 
@@ -52,7 +61,15 @@ export interface CompactStateSession {
    */
   compactTurnActive?: boolean;
   pendingUserText?: string | null;
-  pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string; hostTurn?: boolean } | null;
+  pendingEventContext?: {
+    channel: string;
+    threadTs: string;
+    user: string;
+    ts: string;
+    hostTurn?: boolean;
+    /** #785: the dashboard send it was — the post-compact replay carries it on. */
+    dashboardClientRef?: string;
+  } | null;
   /**
    * Deferred post-compact re-dispatch queue, in arrival order. Multiple
    * entries occur when different users (or non-contiguous messages) arrive
@@ -110,7 +127,7 @@ export function isCompactionInProgress(session: CompactStateSession, nowMs: numb
  */
 export function stashUserMessageDuringCompaction(
   session: CompactStateSession,
-  ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean; hostTurn?: boolean },
+  ctx: CompactDispatchPayload['ctx'],
   text: string,
 ): void {
   if (!text) return;
@@ -120,12 +137,20 @@ export function stashUserMessageDuringCompaction(
   // So does a host turn (`hostTurn`, a goal continuation or resume soma-work
   // injected): merged, a person's words would be recorded as soma-work's or
   // soma-work's prompt as the person's.
-  if (ctx.verbatimPrompt || ctx.hostTurn) {
+  // So does a dashboard send (#785, `dashboardClientRef`): its replay records the ref the panel
+  // replaces its pending copy by — merged, that turn would hold other words, or the ref be lost.
+  if (ctx.verbatimPrompt || ctx.hostTurn || ctx.dashboardClientRef) {
     queue.push({ ctx, text });
     return;
   }
   const last = queue[queue.length - 1];
-  if (last && last.ctx.user === ctx.user && !last.ctx.verbatimPrompt && !last.ctx.hostTurn) {
+  if (
+    last &&
+    last.ctx.user === ctx.user &&
+    !last.ctx.verbatimPrompt &&
+    !last.ctx.hostTurn &&
+    !last.ctx.dashboardClientRef
+  ) {
     last.text += `\n${text}`;
     return;
   }
@@ -133,7 +158,8 @@ export function stashUserMessageDuringCompaction(
     queue.length === 0 &&
     session.pendingUserText &&
     session.pendingEventContext?.user === ctx.user &&
-    !session.pendingEventContext.hostTurn
+    !session.pendingEventContext.hostTurn &&
+    !session.pendingEventContext.dashboardClientRef
   ) {
     session.pendingUserText += `\n${text}`;
     return;

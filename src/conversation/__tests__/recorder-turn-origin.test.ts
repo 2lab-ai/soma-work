@@ -37,6 +37,25 @@ describe('T1.1 — who put the turn there', () => {
     expect((await seen).origin).toEqual({ by: 'system' });
   });
 
+  it("keeps the dashboard send's ref, so the panel replaces its own pending copy by it (#785)", async () => {
+    const cid = createConversation('C1', '1700000000.000310', 'U1', 'Zhuge');
+    const seen = nextTurn();
+    recordUserTurn(cid, 'rewritten by the server', 'Zhuge', 'U1', undefined, {
+      origin: { by: 'user' },
+      clientRef: 'optimistic-1793591000000',
+    });
+    expect((await seen).clientRef).toBe('optimistic-1793591000000');
+  });
+
+  it('a ref that is not one (wrong shape, too long) is not kept (#785)', async () => {
+    const cid = createConversation('C1', '1700000000.000320', 'U1', 'Zhuge');
+    for (const clientRef of ['<script>', 'x'.repeat(65), '']) {
+      const seen = nextTurn();
+      recordUserTurn(cid, 'hello', 'Zhuge', 'U1', undefined, { origin: { by: 'user' }, clientRef });
+      expect('clientRef' in (await seen)).toBe(false);
+    }
+  });
+
   it('a turn recorded without one has none (older callers)', async () => {
     const cid = createConversation('C1', '1700000000.000400', 'U1', 'Zhuge');
     const seen = nextTurn();

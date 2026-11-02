@@ -226,6 +226,8 @@ export class EnvSkillPermissionActionHandler {
         thread_ts: req.threadTs,
         ts: noticeTs ?? '',
         text: req.originalText,
+        // #785: a `$plugin:skill` typed in the dashboard panel — its turn replaces the panel's copy.
+        ...(req.dashboardClientRef ? { dashboardClientRef: req.dashboardClientRef } : {}),
       },
       this.createSayFn(req.channel),
     );

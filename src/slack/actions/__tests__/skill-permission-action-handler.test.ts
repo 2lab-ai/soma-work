@@ -79,6 +79,12 @@ describe('SkillPermissionActionHandler', () => {
     expect(messageHandler.mock.calls[0][0]).toMatchObject({ user: 'U0A', text: '$<@U0B>:deploy' });
   });
 
+  it("allow-skill: a dashboard send's replay carries its ref (#785)", async () => {
+    h.getReq.mockReturnValue({ ...invokeReq, dashboardClientRef: 'optimistic-1-ab' });
+    await handler.handleAction(body(VALUE_KIND_PERM_ALLOW_SKILL), respond);
+    expect(messageHandler.mock.calls[0][0]).toMatchObject({ user: 'U0A', dashboardClientRef: 'optimistic-1-ab' });
+  });
+
   it('allow-all: persists all-skills grant', async () => {
     await handler.handleAction(body(VALUE_KIND_PERM_ALLOW_ALL), respond);
     expect(h.grantAll).toHaveBeenCalledWith('U0B', 'U0A');

@@ -32,6 +32,7 @@ import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 import { isAwaitingUserChoice, TurnRunner, V1QueryAdapter } from './agent-session';
 import type { ClaudeHandler } from './claude-handler';
 import { getFollowupQueueCapacity, getReleaseNotesChannels } from './config';
+import { isClientRef } from './conversation/client-ref';
 import { captureUserMedia, getConversation, recordUserTurn } from './conversation/recorder';
 import { readWorkLog } from './conversation/work-log';
 import { FileHandler, type ProcessedFile } from './file-handler';
@@ -391,7 +392,7 @@ export class SlackHandler {
    * a user turn (text + files, user media) once the SDK confirms the model read
    * it. Cleared with the files ({@link takeSteerFiles}) on every settlement path.
    */
-  private followupSteerInstructions?: Map<string, { text: string; user?: string; sentAt?: number }>;
+  private followupSteerInstructions?: Map<string, { text: string; user?: string; sentAt?: number; clientRef?: string }>;
   /** Seam for the user-turn record of a steered message (tests swap it). */
   private userMediaRecorder = { capture: captureUserMedia, record: recordUserTurn };
   /**
@@ -2347,6 +2348,9 @@ export class SlackHandler {
         synthetic: event.synthetic,
         hostTurn: event.routeContext?.hostTurn === true,
         literalPrompt,
+        // #785: a dashboard send's ref — survives the text rewrites above (routed continuation,
+        // follow-up prompt, directive remainder), so the panel still finds its own instruction.
+        clientRef: isClientRef(event.dashboardClientRef) ? event.dashboardClientRef : undefined,
       });
 
       const continuationHandler: ContinuationHandler = {
@@ -2631,6 +2635,8 @@ export class SlackHandler {
       hostTurn?: boolean;
       /** The first turn's text is a goal objective — never an SDK slash command. */
       literalPrompt?: boolean;
+      /** #785 — the dashboard send's ref (`event.dashboardClientRef`), recorded on its user turn. */
+      clientRef?: string;
       /**
        * Turn generation this dispatch owns (`ssot.md:116-120`, A28). Captured
        * from the dispatch request and passed down verbatim — the surface
@@ -2685,6 +2691,7 @@ export class SlackHandler {
       isUserInput: !context.synthetic,
       hostTurn: context.hostTurn === true,
       literalPrompt: context.literalPrompt === true,
+      clientRef: context.clientRef,
       // Same captured token, for the executor's own late-write fence.
       followupTurnEpoch: expectedTurnEpoch,
     };
@@ -3212,6 +3219,10 @@ export class SlackHandler {
               team: (event as { team?: string }).team,
               say,
               files: carry,
+              // #785: only the goal this message set — a goal `goal done` promoted is not this send.
+              ...(opening.cause === 'set' && isClientRef(event.dashboardClientRef)
+                ? { dashboardClientRef: event.dashboardClientRef }
+                : {}),
             },
             opening,
           );
@@ -3285,6 +3296,8 @@ export class SlackHandler {
       team?: string;
       say: any;
       files?: MessageEvent['files'];
+      /** #785 — the dashboard send that set this goal: its opening turn records the ref. */
+      dashboardClientRef?: string;
     },
     opening: { goalId: string; objective: string; prompt?: string },
   ): GoalOpeningAdmission {
@@ -3309,6 +3322,8 @@ export class SlackHandler {
       team?: string;
       say: any;
       files?: MessageEvent['files'];
+      /** #785 — the dashboard send that set this goal: its opening turn records the ref. */
+      dashboardClientRef?: string;
     },
     opening: { goalId: string; objective: string; prompt?: string },
   ): GoalOpeningAdmission {
@@ -3347,6 +3362,7 @@ export class SlackHandler {
       text: opening.prompt ?? opening.objective,
       ...(anchor.team ? { team: anchor.team } : {}),
       ...(anchor.files?.length ? { files: anchor.files } : {}),
+      ...(anchor.dashboardClientRef ? { dashboardClientRef: anchor.dashboardClientRef } : {}),
       routeContext:
         opening.prompt === undefined
           ? { verbatimPrompt: true, goalOpeningId: opening.goalId }
@@ -4479,6 +4495,8 @@ export class SlackHandler {
         text: rawText,
         user: event.user,
         sentAt: slackTsMs(event.ts),
+        // #785: a dashboard send steered into the running turn is still that send.
+        ...(isClientRef(event.dashboardClientRef) ? { clientRef: event.dashboardClientRef } : {}),
       });
       (this.followupSteerUuids ??= new Map()).set(item.id, steered.uuid);
       return 'steered';
@@ -5226,7 +5244,7 @@ export class SlackHandler {
    */
   private async recordSteeredInstruction(
     sessionKey: string,
-    instruction: { text: string; user?: string; sentAt?: number },
+    instruction: { text: string; user?: string; sentAt?: number; clientRef?: string },
     files: ProcessedFile[],
   ): Promise<void> {
     try {
@@ -5244,7 +5262,12 @@ export class SlackHandler {
         userId,
         attachments?.length ? attachments : undefined,
         // A steered message is always a person's (dashboard SSOT 2026-10-27).
-        { timestamp: instruction.sentAt, origin: { by: 'user' } },
+        {
+          timestamp: instruction.sentAt,
+          origin: { by: 'user' },
+          // #785: the dashboard send it was — the panel replaces its pending copy by it.
+          ...(instruction.clientRef ? { clientRef: instruction.clientRef } : {}),
+        },
       );
     } catch (error) {
       this.logger.warn('Steered message was not recorded as a user turn', {

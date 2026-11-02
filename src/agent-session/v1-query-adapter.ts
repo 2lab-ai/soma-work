@@ -332,6 +332,8 @@ export class V1QueryAdapter implements IAgentSession {
         // A goal objective is literal only on the turn that carries it; a
         // host continuation (e.g. an emergency `/compact`) must stay a command.
         literalPrompt: options.isFirstDispatchTurn ? (this.baseParams as any).literalPrompt : undefined,
+        // #785: the dashboard send's ref names the turn that carries the send — a continuation is not it.
+        clientRef: options.isFirstDispatchTurn ? (this.baseParams as any).clientRef : undefined,
       };
 
       const executeResult = await this.executor.execute(params);

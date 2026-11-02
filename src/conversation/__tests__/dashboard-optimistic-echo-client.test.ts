@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
+const INDEX_TS = readFileSync(join(__dirname, '..', '..', 'index.ts'), 'utf-8');
 
 function cook(fragment: string): string {
   if (fragment.includes('`') || fragment.includes('${')) throw new Error('fragment is not a plain template slice');
@@ -49,6 +50,7 @@ type Turn = {
   _by?: string;
   _files?: number;
   attachments?: { name: string }[];
+  clientRef?: string;
 };
 
 const T0 = 1_793_591_000_000;
@@ -195,6 +197,60 @@ describe('T1 — the recorded instruction takes the optimistic one’s place, ho
     r.push(recorded('하나', T0 + 21_000));
     expect(list.map((t) => t.rawContent)).toEqual(['하나', '둘']);
     expect(list.every((t) => !t._optimistic)).toBe(true);
+  });
+});
+
+describe("#785 — the server hands the send's ref back on the turn it recorded", () => {
+  it("the turn with the send's ref takes its place even when the server rewrote the words", () => {
+    const list: Turn[] = [optimistic('계속 진행해줘')];
+    const r = wsRig(list);
+    r.push(recorded('[follow-up] 계속 진행해줘 (rewritten)', T0 + 30_000, { clientRef: `optimistic-${T0}` }));
+    expect(list.map((t) => t.userName)).toEqual(['Z']);
+    const m = load<Pure>(PURE);
+    const merged = m.ptMergeFetched(
+      [recorded('다시 쓴 문장', T0 + 5_000, { id: 'srv-ref', clientRef: `optimistic-${T0}` })],
+      [optimistic('계속 진행해줘')],
+    );
+    expect(merged.map((t) => t.id)).toEqual(['srv-ref']);
+  });
+
+  it("a ref never crosses senders: someone else's turn with my ref does not take my copy (review: grok P2)", () => {
+    const list: Turn[] = [optimistic('계속')];
+    const r = wsRig(list);
+    r.push(
+      recorded('계속', T0 + 1_000, {
+        id: 'theirs',
+        userId: 'U_OTHER',
+        userName: 'Chris',
+        clientRef: `optimistic-${T0}`,
+      }),
+    );
+    expect(list.map((t) => t.id)).toEqual([`optimistic-${T0}`, 'theirs']);
+  });
+
+  it("the page path takes the turn with the send's ref even when the browser clock runs ahead (review: astra P2)", () => {
+    const m = load<Pure>(PURE);
+    const merged = m.ptMergeFetched(
+      [recorded('다시 쓴 문장', T0 - 120_000, { id: 'srv-skew', clientRef: `optimistic-${T0}` })],
+      [optimistic('계속 진행해줘')],
+    );
+    expect(merged.map((t) => t.id)).toEqual(['srv-skew']);
+  });
+
+  it("a turn carrying another send's ref never takes it, even with the same words", () => {
+    const list: Turn[] = [optimistic('계속', T0, 'optimistic-a'), optimistic('계속', T0 + 1, 'optimistic-b')];
+    const r = wsRig(list);
+    r.push(recorded('계속', T0 + 2_000, { id: 'for-b', clientRef: 'optimistic-b' }));
+    expect(list.map((t) => t.id)).toEqual(['optimistic-a', 'for-b']);
+  });
+
+  it('the send carries its ref; the page and the push carry it back', () => {
+    const m = load<{ pcCommandBody(msg: string, files: unknown[], ref?: string): unknown }>(['pcCommandBody']);
+    expect(m.pcCommandBody('hi', [], 'optimistic-1')).toEqual({ message: 'hi', clientRef: 'optimistic-1' });
+    expect(m.pcCommandBody('hi', [])).toEqual({ message: 'hi' });
+    expect(TEMPLATE).toContain('pcCommandBody(msg, attachments, optimisticId)');
+    expect(DASHBOARD_TS).toContain("clientRef: t.role === 'user' ? t.clientRef : undefined,");
+    expect(INDEX_TS).toContain('...(clientRef ? { dashboardClientRef: clientRef } : {})');
   });
 });
 

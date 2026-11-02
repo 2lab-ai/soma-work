@@ -34,6 +34,8 @@ export interface CommandContext {
    * the channel.
    */
   postEphemeral?: PostEphemeralFn;
+  /** #785 — the dashboard send this command came from: a re-dispatch it causes records the ref. */
+  dashboardClientRef?: string;
   /**
    * When true, a forced `$skill` defers its banner + `<invoked_skills>` block
    * (returned as `deferredSkillFire`) instead of firing during routing — so a

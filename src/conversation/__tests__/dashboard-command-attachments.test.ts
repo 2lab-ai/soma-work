@@ -49,7 +49,13 @@ describe('POST /api/dashboard/session/:key/command — attachments (T1.5)', () =
   let stopWebServer: any;
   let handler: ReturnType<
     typeof vi.fn<
-      (key: string, message: string, files: Array<{ name: string; mimetype: string; data: Buffer }>) => Promise<void>
+      (
+        key: string,
+        message: string,
+        files: Array<{ name: string; mimetype: string; data: Buffer }>,
+        actorUserId?: string,
+        clientRef?: string,
+      ) => Promise<void>
     >
   >;
 
@@ -80,7 +86,13 @@ describe('POST /api/dashboard/session/:key/command — attachments (T1.5)', () =
     dashboard.setDashboardSessionAccessor(() => sessions);
     handler = vi
       .fn<
-        (key: string, message: string, files: Array<{ name: string; mimetype: string; data: Buffer }>) => Promise<void>
+        (
+          key: string,
+          message: string,
+          files: Array<{ name: string; mimetype: string; data: Buffer }>,
+          actorUserId?: string,
+          clientRef?: string,
+        ) => Promise<void>
       >()
       .mockResolvedValue(undefined);
     dashboard.setDashboardCommandHandler(handler);
@@ -125,6 +137,18 @@ describe('POST /api/dashboard/session/:key/command — attachments (T1.5)', () =
     expect(res.statusCode).toBe(200);
     expect(handler.mock.calls[0][1]).toBe('');
     expect(handler.mock.calls[0][2]).toHaveLength(1);
+  });
+
+  it("hands the send's client ref to the handler; one that is not a ref is dropped, never refused (#785)", async () => {
+    const ok = await post({ message: 'hi', clientRef: 'optimistic-1793591000000' });
+    expect(ok.statusCode).toBe(200);
+    expect(handler.mock.calls[0][4]).toBe('optimistic-1793591000000');
+    for (const clientRef of ['<b>', 'x'.repeat(65), 42]) {
+      handler.mockClear();
+      const res = await post({ message: 'hi', clientRef });
+      expect(res.statusCode).toBe(200);
+      expect(handler.mock.calls[0][4]).toBeUndefined();
+    }
   });
 
   it('a text-only message still reaches the handler with no files', async () => {

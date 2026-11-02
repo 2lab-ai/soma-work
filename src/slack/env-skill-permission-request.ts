@@ -46,6 +46,11 @@ export interface RequestEnvSkillPermissionInput {
   threadTs?: string;
   /** Sent again as the requester once an admin allows it, to fulfil the ask. */
   originalText: string;
+  /**
+   * #785 — the dashboard send that typed `$plugin:skill`: the approved replay carries the ref so its
+   * turn replaces the panel's pending copy. Absent for the model-side ask (a host continuation).
+   */
+  dashboardClientRef?: string;
   /** Test seam — defaults to ADMIN_USERS. */
   admins?: readonly string[];
   /**
@@ -94,6 +99,7 @@ export async function requestEnvSkillPermission(
     channel,
     threadTs,
     originalText: input.originalText,
+    ...(input.dashboardClientRef ? { dashboardClientRef: input.dashboardClientRef } : {}),
   });
 
   let delivered: EnvSkillPermissionDelivery;

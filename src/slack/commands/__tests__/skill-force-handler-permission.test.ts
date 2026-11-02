@@ -71,6 +71,12 @@ describe('SkillForceHandler — permission gate', () => {
     expect(JSON.stringify(mockSay.mock.calls)).not.toContain('Zhuge Deploy');
   });
 
+  it('a dashboard send keeps its ref on the permission request — the approved replay records it (#785)', async () => {
+    h.isAllowed.mockReturnValue(false);
+    await handler.execute({ ...makeCtx('$Zhuge:deploy', 'U1'), dashboardClientRef: 'optimistic-1-ab' });
+    expect(h.createReq).toHaveBeenCalledWith(expect.objectContaining({ dashboardClientRef: 'optimistic-1-ab' }));
+  });
+
   it('ALLOW: with a grant, the skill injects normally (no permission request)', async () => {
     h.isAllowed.mockReturnValue(true);
     const result = await handler.execute(makeCtx('$Zhuge:deploy', 'U1'));

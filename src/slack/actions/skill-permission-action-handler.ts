@@ -176,6 +176,8 @@ export class SkillPermissionActionHandler {
           thread_ts: req.threadTs,
           ts: '',
           text: req.originalText,
+          // #785: the dashboard send it was — its turn replaces the panel's pending copy.
+          ...(req.dashboardClientRef ? { dashboardClientRef: req.dashboardClientRef } : {}),
         },
         say,
       );

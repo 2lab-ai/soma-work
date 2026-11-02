@@ -78,6 +78,11 @@ describe('requestEnvSkillPermission', () => {
     });
   });
 
+  it('a dashboard send keeps its ref on the request — the approved replay records it (#785)', async () => {
+    await requestEnvSkillPermission({ ...base, dashboardClientRef: 'optimistic-1-ab' });
+    expect(h.createReq).toHaveBeenCalledWith(expect.objectContaining({ dashboardClientRef: 'optimistic-1-ab' }));
+  });
+
   it('one failed DM does not stop the others', async () => {
     slackApi.openDmChannel.mockImplementation(async (u: string) => {
       if (u === 'UADMIN1') throw new Error('cannot_dm_bot');

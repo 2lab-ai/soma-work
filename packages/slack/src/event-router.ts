@@ -402,7 +402,15 @@ export class EventRouter {
    * `messageHandler` runs) still propagates normally.
    */
   public async dispatchPendingUserMessage(
-    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean; hostTurn?: boolean },
+    ctx: {
+      channel: string;
+      threadTs: string;
+      user: string;
+      ts: string;
+      verbatimPrompt?: boolean;
+      hostTurn?: boolean;
+      dashboardClientRef?: string;
+    },
     text: string,
     opts?: { compactRedispatch?: boolean },
   ): Promise<void> {
@@ -422,6 +430,8 @@ export class EventRouter {
       ts: ctx.ts,
       text,
       ...(Object.keys(routeContext).length > 0 ? { routeContext } : {}),
+      // #785: the dashboard send it was — its turn records the ref the panel replaces its copy by.
+      ...(ctx.dashboardClientRef ? { dashboardClientRef: ctx.dashboardClientRef } : {}),
     } as unknown as MessageEvent;
 
     const say: SayFn = async (arg) => {

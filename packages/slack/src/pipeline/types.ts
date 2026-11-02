@@ -94,6 +94,12 @@ export interface MessageEvent {
   /** True for auto-resume, auto-retry, and other system-generated messages (not real user input) */
   synthetic?: boolean;
   /**
+   * #785 — set by the dashboard on an instruction sent from its panel: the ref
+   * the panel gave its own pending copy. Rides to the user turn the message is
+   * recorded as, so the panel replaces that copy whatever text gets recorded.
+   */
+  dashboardClientRef?: string;
+  /**
    * Original message text BEFORE leading inline session directives
    * (`%model <v>` / `%nogoal`) were stripped by the message handler.
    * Replay stashes (channel-route halt advisory `userMessage`, auto-compact

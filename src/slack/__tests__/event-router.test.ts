@@ -116,6 +116,18 @@ describe('EventRouter', () => {
       );
     });
 
+    it('replays a parked dashboard send with its ref — the turn it records carries it (#785)', async () => {
+      await router.dispatchPendingUserMessage(
+        { channel: 'C123', threadTs: '111.222', user: 'U123', ts: '111.335', dashboardClientRef: 'optimistic-1-ab' },
+        '대시보드 지시',
+        { compactRedispatch: true },
+      );
+      expect(mockMessageHandler).toHaveBeenCalledWith(
+        expect.objectContaining({ text: '대시보드 지시', dashboardClientRef: 'optimistic-1-ab' }),
+        expect.any(Function),
+      );
+    });
+
     it('treats pipeline invocation as the handoff boundary and does not reject after downstream acceptance', async () => {
       mockMessageHandler = vi.fn(async () => {
         throw new Error('downstream turn failed after acceptance');

@@ -215,6 +215,39 @@ describe('SessionInitializer — bot-thread migration copies goal (#1082)', () =
     ]);
   });
 
+  it('parks a dashboard send that arrives mid-compaction with its ref (#785)', async () => {
+    const live = makeOriginalSession({ threadTs: '111.222', sessionId: 'sess-d', activityState: 'working' });
+    mockClaudeHandler.getSession.mockReturnValue(live);
+    (sessionInitializer as any).deps.requestCoordinator.isRequestActive.mockReturnValue(true);
+
+    const result = await sessionInitializer.initialize(
+      {
+        user: 'U123',
+        channel: 'C123',
+        thread_ts: '111.222',
+        ts: '111.336',
+        text: '대시보드 지시',
+        dashboardClientRef: 'optimistic-1-ab',
+        routeContext: { compactRedispatch: true },
+      } as any,
+      '/test/dir',
+    );
+
+    expect(result.halted).toBe(true);
+    expect(live.compactPendingDispatches).toEqual([
+      {
+        ctx: {
+          channel: 'C123',
+          threadTs: '111.222',
+          user: 'U123',
+          ts: '111.336',
+          dashboardClientRef: 'optimistic-1-ab',
+        },
+        text: '대시보드 지시',
+      },
+    ]);
+  });
+
   it('re-parks a replayed host turn with its marker (a goal continuation stays a host turn)', async () => {
     const live = makeOriginalSession({ threadTs: '111.222', sessionId: 'sess-h', activityState: 'working' });
     mockClaudeHandler.getSession.mockReturnValue(live);

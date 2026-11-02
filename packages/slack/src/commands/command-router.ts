@@ -12,6 +12,8 @@ export interface CommandContext {
   say: SayFn;
   triggerId?: string;
   postEphemeral?: PostEphemeralFn;
+  /** #785 — the dashboard send this command came from: a re-dispatch it causes records the ref. */
+  dashboardClientRef?: string;
   /**
    * When true, a forced `$skill` invocation must NOT post its banner or bake
    * its `<invoked_skills>` block into `continueWithPrompt` during routing.
