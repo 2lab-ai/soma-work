@@ -43,6 +43,10 @@ function loadWith<T>(fns: string[], globals: Record<string, unknown>): T {
   return new Function(...names, body)(...names.map((n) => globals[n])) as T;
 }
 
+const NT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+/** The page constants the picker helpers read (EFFORT_LEVELS: every level the app sets; the SDK five without a menu). */
+const NT_GLOBALS = { EFFORT_LEVELS: [...NT_LEVELS, 'ultra'], SDK_EFFORT_LEVELS: NT_LEVELS };
+
 // ── Served page ──────────────────────────────────────────────────────
 
 const mockConfig = {
@@ -207,22 +211,21 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(clientFn('ntIsTypingTarget')).toContain("document.querySelector('dialog[open], ui-dialog[open]')");
   });
 
-  it('row 1: model (with the battery), effort and channel are kit select chips; the battery is <ui-meter shape="battery">', () => {
+  it('row 1: model and effort are one <ui-model-picker> (with the battery), then the kit select chips; the battery is <ui-meter shape="battery">', () => {
     const row = html.slice(html.indexOf('class="nt-config"'), html.indexOf('class="nt-toggles"'));
-    const order = ['id="nt-model"', 'id="nt-battery"', 'id="nt-effort"', 'id="nt-channel"'].map((id) =>
-      row.indexOf(id),
-    );
+    const order = ['id="nt-picker"', 'id="nt-battery"', 'id="nt-channel"'].map((id) => row.indexOf(id));
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
-    // D7 (H-02): <label class="ui-select-chip"><span>word</span><select> — the kit sizes the select to its option.
+    // The session menu's element: one trigger, one menu with the models and the levels each model runs.
     expect(row).toContain(
-      '<label class="ui-select-chip"><span>모델</span><select id="nt-model" onchange="ntOnModelChange()"></select></label>',
+      '<ui-model-picker id="nt-picker" class="nt-picker" lang="ko"><span class="mp-fallback">모델</span></ui-model-picker>',
     );
-    // effort / channel / folder carry the classes main's task mode hides and shows them by (#605: a dashboard task has
-    // no channel or effort; it has a folder).
-    expect(row).toContain(
-      '<label class="ui-select-chip nt-chip-effort"><span>추론</span><select id="nt-effort" onchange="ntOnEffortChange()"></select></label>',
-    );
+    for (const gone of ['id="nt-model"', 'id="nt-effort"', 'ntOnModelChange', 'ntOnEffortChange', 'nt-chip-effort']) {
+      expect(html, gone).not.toContain(gone);
+    }
+    expect(html).toContain('<script type="module" src="/dashboard/ui/model-picker.js?v=');
+    // channel / folder carry the classes main's task mode hides and shows them by (#605: a dashboard task has
+    // no channel; it has a folder — and its picker hides the effort control).
     expect(row).toContain(
       '<label class="ui-select-chip nt-chip-folder" id="nt-folder-chip" hidden><span>폴더</span><select id="nt-folder" onchange="ntOnFolderChange()"></select></label>',
     );
@@ -313,7 +316,8 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     const data = clientFn('ntComposerData');
     expect(data).toContain("label: '작업 지시',");
     expect(data).toContain('value: _ntValue,');
-    expect(data).toContain('busy: _ntBusy,');
+    // No busy state: a launch leaves the dialog in the press itself (SSOT 2026-11-02 T1) — the composer is the next task's.
+    expect(data).not.toContain('busy:');
     expect(data).toContain('d.maxLength = lim.maxPromptChars;');
     expect(data).toContain('d.maxFiles = lim.maxFiles;');
     expect(data).toContain('d.maxFileSize = lim.maxFileBytes;');
@@ -323,14 +327,14 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     // (Its one ui-files listener only says why a dashboard task cannot start — #640 R2 — it takes nothing out.)
     expect(script.match(/composer\.addEventListener\('ui-files'/g) ?? []).toHaveLength(1);
     expect(script).not.toContain('composer.removeFile(');
-    // It answers ui-submit (cancelled: the page posts, the composer keeps its text and files until the launch)
+    // It answers ui-submit (cancelled: the page posts; the launch empties the composer in the press — ntBeginLaunch)
     // and ui-input (the draft).
     // (A live dictation stops first, hard: what is sent is what the field shows — SSOT 2026-11-01.)
     expect(script).toContain(
       "composer.addEventListener('ui-submit', function (e) {\n    e.preventDefault();\n    ntDictateStopIn('nt');\n    submitNewTask(e.detail);",
     );
     expect(script).toContain('ntSaveDraft(v);');
-    expect(clientFn('ntOnLaunched')).toContain(
+    expect(clientFn('ntBeginLaunch')).toContain(
       "if (composer && typeof composer.clear === 'function') composer.clear();",
     );
   });
@@ -677,7 +681,6 @@ describe('submitNewTask — the submitted state is the one sent (#640 R2)', () =
     const { submitNewTask } = loadWith<{ submitNewTask(detail: unknown): Promise<void> }>(
       ['submitNewTask', 'ntTooLong', 'ntCanSubmit', 'ntBlockedHint', 'ntBuildPayload'],
       {
-        _ntBusy: false,
         _ntCtx: {},
         _ntState: state,
         _ntRequestId: 'req-0123456789',
@@ -696,6 +699,20 @@ describe('submitNewTask — the submitted state is the one sent (#640 R2)', () =
           return { status: 200, data: { ok: true, channel: 'C1', status: 'running' } };
         },
         ntOnLaunched: (...args: unknown[]) => launched.push(args),
+        // SSOT 2026-11-02 T1: the launch leaves the dialog first, with a copy of what was submitted.
+        ntBeginLaunch: (submitted: Record<string, unknown>, files: unknown[]) => ({
+          id: 'nt-launch:req-0123456789',
+          requestId: 'req-0123456789',
+          state: submitted,
+          files,
+        }),
+        ntPendingStatus: () => {},
+        // One launch at a time (#747 review R1): none ahead of this one.
+        ntPendingInFlight: () => false,
+        _ntLaunchQueue: Promise.resolve(),
+        ntLaunchFailed: () => {
+          throw new Error('should not fail');
+        },
       },
     );
     const run = submitNewTask({ text: '사진 봐줘', files: [file] });
@@ -776,11 +793,11 @@ describe('a refused file on a dashboard task says why (merge review P3)', () => 
 });
 
 describe('ntReconcile / ntStateAfterLaunch (#640 R1)', () => {
-  const fns = load<{
+  const fns = loadWith<{
     ntDefaultState(ctx: any, draft: any): any;
     ntReconcile(state: any, ctx: any): void;
     ntStateAfterLaunch(prev: any, data: any, ctx: any): any;
-  }>(['ntDefaultState', 'ntReconcile', 'ntStateAfterLaunch']);
+  }>(['ntDefaultState', 'ntReconcile', 'ntStateAfterLaunch', 'mpLevelsOf', 'fitEffortLevel'], NT_GLOBALS);
   const ctx = (over: Record<string, unknown> = {}) => ({
     models: [{ nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]' }],
     efforts: ['xhigh'],
@@ -816,6 +833,24 @@ describe('ntReconcile / ntStateAfterLaunch (#640 R1)', () => {
     expect(s.folder).toBe('');
   });
 
+  it('an effort the chosen model does not run is carried over to the nearest level it runs', () => {
+    const c = ctx({
+      models: [
+        { nickname: 'sol[1m]', model: 'gpt-6.1-sol[1m]', effortLevels: [...NT_LEVELS, 'ultra'] },
+        { nickname: 'grok[1m]', model: 'grok-4.6', effortLevels: ['low', 'medium', 'high', 'xhigh'] },
+      ],
+      efforts: [...NT_LEVELS, 'ultra'],
+      defaultModel: 'sol[1m]',
+      defaultEffort: 'ultra',
+    });
+    const s = { ...fns.ntDefaultState(c, null), model: 'grok[1m]', effort: 'ultra' };
+    fns.ntReconcile(s, c);
+    expect(s.effort).toBe('xhigh');
+    const kept = { ...fns.ntDefaultState(c, null) };
+    fns.ntReconcile(kept, c);
+    expect(kept).toMatchObject({ model: 'sol[1m]', effort: 'ultra' });
+  });
+
   it('still reconciles the model, effort and channel as before', () => {
     const s = { ...fns.ntDefaultState(ctx(), null), model: 'x', effort: 'y', channelId: 'C_GONE' };
     fns.ntReconcile(s, ctx());
@@ -844,3 +879,98 @@ describe('ntReconcile / ntStateAfterLaunch (#640 R1)', () => {
 // T11 voice recording (the recorder's MIME pick — MP4/AAC first for iOS Safari, then Ogg, WebM last — the note's
 // name after its container, the chip sizes) is <ui-composer>'s: library composer.test.ts 'composerRecorderMime: MP4
 // first, then Ogg, then WebM; a throwing check means no' and 'Done files a voice-….m4a note'.
+
+describe('the task’s model and effort — one <ui-model-picker> (ntPickerData / ntOnPick)', () => {
+  const REPS = [
+    {
+      nickname: 'opus[1m]',
+      model: 'claude-opus-5-5[1m]',
+      label: 'Opus 5.5 (1M)',
+      contextWindow: 1_000_000,
+      autoCompactTokens: 750_000,
+      price: { input: 5, output: 25 },
+    },
+    {
+      nickname: 'sol[1m]',
+      model: 'gpt-6.1-sol[1m]',
+      label: 'Sol 6.1 (1M)',
+      contextWindow: 1_000_000,
+      autoCompactTokens: 600_000,
+    },
+  ];
+  const ctx = () => ({
+    models: [
+      {
+        nickname: 'claude-haiku-4-5',
+        model: 'claude-haiku-4-5',
+        label: 'Haiku 4.5',
+        effortLevels: ['low', 'medium', 'high'],
+      },
+      { nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', label: 'Opus 5.5 (1M)', effortLevels: NT_LEVELS },
+      { nickname: 'sol[1m]', model: 'gpt-6.1-sol[1m]', label: 'Sol 6.1 (1M)', effortLevels: [...NT_LEVELS, 'ultra'] },
+    ],
+    efforts: [...NT_LEVELS, 'ultra'],
+  });
+  function setup(state: Record<string, unknown>) {
+    const picker: { data?: any } = {};
+    const battery = vi.fn();
+    const env = {
+      ...NT_GLOBALS,
+      REPRESENTATIVE_MODELS: REPS,
+      _ntCtx: ctx(),
+      _ntState: { destination: 'slack', ...state },
+      ntEl: (id: string) => (id === 'nt-picker' ? picker : null),
+      ntRenderBattery: battery,
+    };
+    const fns = loadWith<{ ntPickerData(): any; ntPaintPicker(): void; ntOnPick(e: unknown): void }>(
+      ['toNum', 'mpLevelsOf', 'fitEffortLevel', 'mpRows', 'ntLevelsOf', 'ntPickerData', 'ntPaintPicker', 'ntOnPick'],
+      env,
+    );
+    return { ...fns, picker, battery, state: env._ntState as Record<string, unknown> };
+  }
+
+  it('offers the dialog’s models with the levels each runs — window · auto-compact · price from the representative row', () => {
+    const { ntPickerData } = setup({ model: 'sol[1m]', effort: 'ultra' });
+    const d = ntPickerData();
+    expect(d.heading).toBe('이 작업의 모델 · 추론 강도');
+    expect(d.value).toEqual({ model: 'sol[1m]', effort: 'ultra' });
+    expect(d.models.map((m: any) => [m.id, m.effortLevels])).toEqual([
+      ['claude-haiku-4-5', ['low', 'medium', 'high']],
+      ['opus[1m]', NT_LEVELS],
+      ['sol[1m]', [...NT_LEVELS, 'ultra']],
+    ]);
+    expect(d.models[1]).toMatchObject({ window: 1_000_000, autoCompactAt: 750_000, price: { input: 5, output: 25 } });
+    // The user's own default outside the representatives has no meters — never guessed.
+    expect(d.models[0]).toMatchObject({ id: 'claude-haiku-4-5', label: 'Haiku 4.5', price: null });
+  });
+
+  it('a dashboard task has no effort: the menu hides its control', () => {
+    const { ntPickerData } = setup({ model: 'opus[1m]', effort: 'max', destination: 'task' });
+    expect(ntPickerData().value).toEqual({ model: 'opus[1m]', effortLevels: [] });
+  });
+
+  it('a model pick carries the effort over to the levels the new model runs — it can never send a level its model cannot take', () => {
+    const { ntOnPick, picker, battery, state } = setup({ model: 'sol[1m]', effort: 'ultra' });
+    const e = { detail: { model: 'opus[1m]', effort: 'ultra', changed: 'model' }, preventDefault: vi.fn() };
+    ntOnPick(e);
+    expect(e.preventDefault).toHaveBeenCalled();
+    expect(state).toMatchObject({ model: 'opus[1m]', effort: 'max' });
+    expect(battery).toHaveBeenCalled();
+    expect(picker.data.value).toEqual({ model: 'opus[1m]', effort: 'max' });
+    ntOnPick({ detail: { model: 'claude-haiku-4-5', changed: 'model' }, preventDefault: vi.fn() });
+    expect(state).toMatchObject({ model: 'claude-haiku-4-5', effort: 'high' });
+  });
+
+  it('a level pick takes only a level the model runs', () => {
+    const { ntOnPick, state } = setup({ model: 'opus[1m]', effort: 'high' });
+    ntOnPick({ detail: { model: 'opus[1m]', effort: 'low', changed: 'effort' }, preventDefault: vi.fn() });
+    expect(state.effort).toBe('low');
+    ntOnPick({ detail: { model: 'opus[1m]', effort: 'ultra', changed: 'effort' }, preventDefault: vi.fn() });
+    expect(state.effort).toBe('low');
+  });
+
+  it('the picker answers its own ui-change; the session pickers’ handler leaves it alone', () => {
+    expect(TEMPLATE).toContain("if (el) el.addEventListener('ui-change', ntOnPick);");
+    expect(clientFn('ntRender')).toContain('ntPaintPicker();');
+  });
+});

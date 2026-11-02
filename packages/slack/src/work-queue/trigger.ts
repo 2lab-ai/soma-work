@@ -19,7 +19,7 @@ const ARROW_RE = /->|→/;
 const NAME_RE = /^[A-Za-z0-9_./-]+/;
 const MENTION_RE = /<[@#!][^>]*>/g;
 
-/** `refs/heads/deploy/dev2`, `deploy/dev2`, `DEV2` → `dev2`. */
+/** `refs/heads/deploy/<name>`, `deploy/<name>`, `<NAME>` → `<name>` (e.g. `DEV2` → `dev2`). */
 export function normalizeTargetBranch(branch: string): string {
   return branch
     .trim()

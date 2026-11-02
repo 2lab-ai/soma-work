@@ -90,3 +90,17 @@ describe('runOneShotText (Claude Code adapter)', () => {
     expect(text).toBe('');
   });
 });
+
+// The goal evaluator matches the work model's effort: ultra is not a CLI `--effort` value and no backend takes it on
+// the wire — the one-shot runner runs it as max, like the streaming query.
+describe('toSdkOptions — an effort the CLI does not take', () => {
+  it('ultra runs as max; an SDK level stays; the env is never touched', async () => {
+    const { toSdkOptions } = await import('../claude-code-runner');
+    const base = { model: 'gpt-6.1-sol[1m]', maxTurns: 1, systemPrompt: 's' };
+    const env = { A: '1' };
+    const ultra = toSdkOptions({ ...base, extensions: { claudeCode: { env, effort: 'ultra' } } } as never);
+    expect(ultra.effort).toBe('max');
+    expect(ultra.env).toEqual({ A: '1' });
+    expect(toSdkOptions({ ...base, extensions: { claudeCode: { env, effort: 'high' } } } as never).effort).toBe('high');
+  });
+});

@@ -145,10 +145,12 @@ describe('Dashboard — session effort switch (SSOT 2026-10-23 T1)', () => {
     expect((await post({ effort: 'low' }, { cookie })).statusCode).toBe(403);
   });
 
-  it('the page carries the five effort levels in order', async () => {
+  it('the page carries every effort level in order (ultra last) and the SDK five a model without a menu runs', async () => {
     const res = await injectWebServer({ method: 'GET', url: '/dashboard', headers: AUTH_HEADER });
     const m = /const EFFORT_LEVELS = (\[.*?\]);\n/.exec(res.body);
     expect(m).not.toBeNull();
-    expect(JSON.parse(m![1])).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    expect(JSON.parse(m![1])).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+    const sdk = /const SDK_EFFORT_LEVELS = (\[.*?\]);\n/.exec(res.body);
+    expect(JSON.parse(sdk![1])).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
   });
 });

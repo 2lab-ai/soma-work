@@ -120,6 +120,8 @@ export function createTaskApprover(deps: TaskApproverDeps): TaskApproverWithStat
           created_at: createdAt,
           expires_at: expiresAt,
           ...(req.ruleIds.length > 0 ? { rule_ids: req.ruleIds } : {}),
+          // SSOT 2026-11-02 — the guardian's advice: the dashboard card shows it and asks twice when red.
+          ...(req.advice ? { advice: req.advice } : {}),
         });
       } catch (error) {
         resolved('error');

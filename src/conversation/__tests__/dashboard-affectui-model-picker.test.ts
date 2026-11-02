@@ -97,9 +97,10 @@ describe('Dashboard — model picker payload', () => {
     vi.restoreAllMocks();
   });
 
-  it('D6 — pickerEffortLevels: the catalog menu ∩ the levels, in level order; none without a menu', () => {
+  it('D6 — pickerEffortLevels: the catalog menu ∩ the levels (ultra included), in level order; none without a menu', () => {
     const { pickerEffortLevels } = dashboard;
-    expect(pickerEffortLevels(['high', 'LOW', 'ultra'])).toEqual(['low', 'high']);
+    expect(pickerEffortLevels(['high', 'LOW', 'ultra'])).toEqual(['low', 'high', 'ultra']);
+    expect(pickerEffortLevels(['turbo', 'high'])).toEqual(['high']);
     expect(pickerEffortLevels(['max', 'xhigh', 'high', 'medium', 'low'])).toEqual([
       'low',
       'medium',
@@ -107,7 +108,8 @@ describe('Dashboard — model picker payload', () => {
       'xhigh',
       'max',
     ]);
-    expect(pickerEffortLevels(['ultra'])).toBeUndefined();
+    expect(pickerEffortLevels(['ultra'])).toEqual(['ultra']);
+    expect(pickerEffortLevels(['turbo'])).toBeUndefined();
     expect(pickerEffortLevels([])).toBeUndefined();
     expect(pickerEffortLevels(null)).toBeUndefined();
   });
