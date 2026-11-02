@@ -3940,6 +3940,41 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     /**
+     * #726 — the work queue is wired at the composition root: the session
+     * initializer gets the same service the handler owns, and the registry's
+     * one before-delete seam frees the deleted session's queue slot.
+     */
+    it("wires the work queue into the session gate and frees a deleted session's slot", async () => {
+      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
+      claudeHandler.getSessionRegistry = () => ({
+        setBeforeSessionDelete: (cb: any) => {
+          beforeDelete = cb;
+        },
+      });
+      const { spawnedAny } = spawnHandler({ client: {}, assistant: vi.fn() } as any);
+      const workQueue = spawnedAny.workQueue;
+      expect(workQueue, 'SlackHandler owns a work queue').toBeDefined();
+      // The busy card's buttons reach this same instance.
+      expect(spawnedAny.actionHandlers.ctx.workQueue).toBe(workQueue);
+      workQueue.stop();
+
+      const deploy = (key: string) => ({
+        session: { workflow: 'deploy' },
+        sessionKey: key,
+        channel: 'C1',
+        threadTs: key.split(':')[1] ?? '1',
+        user: 'U1',
+        text: 'Projalpha: develop -> deploy/dev2',
+      });
+      expect(workQueue.decide(deploy(SESSION_KEY)).kind).toBe('pass');
+      expect(workQueue.decide(deploy('C1:other')).kind).toBe('blocked');
+
+      beforeDelete?.(SESSION_KEY, registrySession, 'expired');
+      await tick();
+      expect(workQueue.decide(deploy('C1:third')).kind, 'the deleted session released its slot').toBe('pass');
+    });
+
+    /**
      * The drain must come LAST in the seam: if cancelling the session's
      * follow-ups throws (e.g. the queue store cannot save), the registry refuses
      * the deletion and keeps the session alive — so its live background tasks

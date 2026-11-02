@@ -42,6 +42,7 @@ import type { WebClient } from '@slack/web-api';
 import type { AgentTreeEvent } from '@soma/slack/agent-tree';
 import type { LiveUsageCall } from '@soma/slack/live-usage';
 import { runNewUserGate } from '@soma/slack/pipeline/session-initializer';
+import { setWorkQueuesConfig } from '@soma/slack/work-queue';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
@@ -568,6 +569,16 @@ async function start() {
     if (appConfig.ui) {
       timing(`UI surface config applied (${Object.keys(uiConfigResult.config).length} surfaces overridden)`);
     }
+    // Install the work queues (config.json#workQueues; absent = the built-in
+    // dev2 deploy queue, concurrency 1). Boot-time only, like `ui`.
+    const workQueueConfig = setWorkQueuesConfig(appConfig.workQueues);
+    for (const warning of workQueueConfig.warnings) {
+      logger.warn(`config.json#workQueues: ${warning}`);
+    }
+    timing(
+      `Work queues: ${workQueueConfig.queues.map((q) => `${q.id}(${q.targets.join('|')} ×${q.concurrency})`).join(', ') || 'none'}`,
+    );
+
     // The one injection point for the dashboard deep link: the thread header
     // `dashboardLink` field and the user-started thread link both resolve
     // through it (undefined = viewer not listening = no link).

@@ -83,5 +83,16 @@
         }
       ]
     }
-  }
+  },
+  "workQueues": [
+    {
+      "id": "deploy-dev2",
+      "label": "deploy/dev2 배포",
+      "workflow": "deploy",
+      "targets": ["deploy/dev2"],
+      "concurrency": 1,
+      "askTimeoutMinutes": 10,
+      "holderIdleMinutes": 10
+    }
+  ]
 }
