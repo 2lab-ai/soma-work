@@ -160,6 +160,20 @@ describe('translateText — text already composed (the output boundary)', () => 
       '<https://a/t|내 제목>  ·  <https://a/d|__tt View on dashboard>',
     );
   });
+
+  it("a person's text with a separator inside a slot keeps the template: the frame translates, their words do not (review P1)", () => {
+    // The task-done DM's shape: `{0} *{1}* — {2}\n<{3}|스레드로 이동>` with {2} the session's title.
+    registerDisplayCatalog('en', {
+      '{0} *__tt 작업 완료* — {1}\n<{2}|__tt 스레드로 이동>': '{0} *__tt Task done* — {1}\n<{2}|__tt Go to thread>',
+      '__tt 수정': '__tt Fix',
+      '__tt 응답': '__tt Reply',
+    });
+    for (const title of ['PR #77 리뷰 · __tt 수정', '배포 — 롤백 준비', '__tt 응답 · __tt 수정']) {
+      expect(translateText(`✅ *__tt 작업 완료* — ${title}\n<https://t|__tt 스레드로 이동>`, 'en'), title).toBe(
+        `✅ *__tt Task done* — ${title}\n<https://t|__tt Go to thread>`,
+      );
+    }
+  });
 });
 
 describe('translateText against the real catalog — never claims a person’s Korean (review P1)', () => {
