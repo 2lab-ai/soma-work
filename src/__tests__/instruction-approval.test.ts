@@ -288,6 +288,8 @@ describe('InstructionApprovals (#767)', () => {
       if (answer.ok) await answer.done;
       expect(released).toHaveLength(1);
       expect(dmUpdates[dmUpdates.length - 1]?.text).toContain('항상 승인 목록에 넣지 못했습니다');
+      // The thread is not told "never asked again" without the caveat.
+      expect(notices[notices.length - 1]?.text).toContain('항상 승인 목록에 넣지 못했습니다');
     });
 
     it('거절 — nothing runs; the thread is told', async () => {

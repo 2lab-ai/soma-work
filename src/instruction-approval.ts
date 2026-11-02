@@ -208,6 +208,11 @@ function textOf(held: HeldInstruction): string {
   return '(질문에 추천 답으로 응답)';
 }
 
+/** A thread line with ⚠️ lines appended. */
+function withNoteLines(text: string, notes: string[]): string {
+  return notes.length ? `${text}\n${notes.map((n) => `⚠️ ${n}`).join('\n')}` : text;
+}
+
 /** A DM message with ⚠️ lines appended (text and a block of its own). */
 function withNotes(message: SlackMessage, notes: string[]): SlackMessage {
   if (!notes.length) return message;
@@ -554,7 +559,9 @@ export class InstructionApprovals {
     await Promise.all([
       ref ? this.bestEffort('DM rewrite', () => this.deps.updateDm?.(ref, resolvedDm)) : undefined,
       thread
-        ? this.bestEffort('thread notice', () => this.deps.postThreadNotice?.(thread, instructionDecidedNotice(view)))
+        ? this.bestEffort('thread notice', () =>
+            this.deps.postThreadNotice?.(thread, withNoteLines(instructionDecidedNotice(view), notes)),
+          )
         : undefined,
     ]);
     for (const held of request.held) {

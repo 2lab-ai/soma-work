@@ -75,6 +75,17 @@ describe('ChoiceActionHandler — someone else’s answer waits for the owner (#
     expect(slackApi.postEphemeral).toHaveBeenCalledWith('C123', 'U_OTHER', expect.stringContaining('승인'));
   });
 
+  it('two answers to the same question are two held items — each has its own ts, not the question’s (trinity R2)', async () => {
+    const { handler, messageHandler } = setup(false);
+    await handler.handleUserChoice(click('U_OTHER'));
+    await new Promise((r) => setTimeout(r, 2));
+    await handler.handleUserChoice(click('U_OTHER'));
+    const tss = messageHandler.mock.calls.map((c: any[]) => c[0].ts);
+    expect(tss).toHaveLength(2);
+    expect(new Set(tss).size).toBe(2);
+    expect(tss).not.toContain('choice-ts');
+  });
+
   it('a dashboard choice from someone else is held the same way', async () => {
     const { handler, messageHandler, threadPanel } = setup(false);
     await handler.handleChoiceFromDashboard(SESSION_KEY, '1', 'A', 'Q?', 'U_OTHER');
