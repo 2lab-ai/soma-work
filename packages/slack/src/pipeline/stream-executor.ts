@@ -1748,17 +1748,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         this.logger.info('Injected host prompt notice', { sessionKey, chars: params.promptNotice.length });
       }
 
-      // #772 — the user's display language at the very bottom of the session's
-      // first instruction, and again once they change it. Never on an SDK local
-      // slash command: the prompt must stay exactly the command.
-      if (!isSlashCommand) {
-        const tagged = appendDisplayLangTag(
+      // #772 — the user's display language, once: at the very bottom of the
+      // first prompt of a conversation session — the SDK has no session to
+      // resume yet. A resumed conversation already has it in its history (the
+      // session id survives a restart, so a restart adds nothing either). Never
+      // on an SDK local slash command: the prompt must stay exactly the command.
+      if (!isSlashCommand && !session.sessionId) {
+        finalPrompt = appendDisplayLangTag(
           finalPrompt,
-          session.displayLangSent,
           displayLangOf(userSettingsStore.getUserDisplayLanguage?.(user)),
         );
-        finalPrompt = tagged.prompt;
-        session.displayLangSent = tagged.sent;
       }
 
       // Record user turn (fire-and-forget, non-blocking). A files-only message

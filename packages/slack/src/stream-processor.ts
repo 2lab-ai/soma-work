@@ -3,6 +3,7 @@
  * Extracted from slack-handler.ts for-await loop (Phase 4.1)
  */
 
+import { stripEchoedDisplayLangTag } from '@soma/common/i18n';
 import { Logger } from '@soma/common/logger';
 import type { AgentStreamEvent, AgentStreamEventOf, AgentUsage } from './agent-stream-types';
 import { type AgentTreeEvent, isAgentSpawnTool, isBackgroundAckText } from './agent-tree';
@@ -1790,7 +1791,8 @@ export class AgentStreamProcessor {
       }
     }
 
-    return cleaned;
+    // #772 — the host's <display-lang> note is for the model; a reply that echoes it at its end never shows it.
+    return stripEchoedDisplayLangTag(cleaned);
   }
 
   /**
@@ -2289,7 +2291,7 @@ export class AgentStreamProcessor {
           this.lastShownSegment = known;
         }
       } else if (finalResult) {
-        currentMessages.push(finalResult);
+        currentMessages.push(stripEchoedDisplayLangTag(finalResult));
         await this.handleFinalResult(finalResult, context, usage, event.durationMs);
       }
       // Nothing reached Slack yet — no `finalText`, or one that showed nothing

@@ -5369,12 +5369,10 @@ ui-app-bar[narrow] .nt-btn-label { display: none; }
    write-anything mode, so the chip takes the fail tint instead of the kit's neutral "on" (colour where it carries
    status), its word pulled toward the ink (≥ 4.5:1 both themes). ── */
 .topbar .admin-toggle { flex: none; }
-/* Display language (#773): EN | KO, the pressed one is the page's language. */
-/* A segmented pair on its own track: two loose chips read backwards (the grey "off" chip looked filled, the
-   white "on" one empty) and the same in dark. The pressed option is the raised step, the other sits flat. */
-.lang-toggle { display: inline-flex; gap: 2px; flex: none; padding: 2px; border-radius: 999px; background: var(--ib-seg); }
-.lang-toggle .lang-opt { min-width: 36px; justify-content: center; font-weight: 600; letter-spacing: 0.02em; background: transparent; border-color: transparent; box-shadow: none; color: var(--ib-muted); }
-.lang-toggle .lang-opt[aria-pressed="true"] { background: var(--ib-seg-on); border-color: transparent; box-shadow: var(--ib-shadow); color: var(--ib-text); }
+/* Display language (#773/#810): one button showing the page's language (KO or EN); a press switches to the other. */
+.lang-toggle { flex: none; min-width: 40px; justify-content: center; font-weight: 600; letter-spacing: 0.02em; }
+.lang-toggle .lang-cur { display: none; }
+html[lang="ko"] .lang-toggle .lang-cur[data-lang="ko"], html[lang="en"] .lang-toggle .lang-cur[data-lang="en"] { display: inline; }
 .topbar .admin-toggle[aria-pressed="true"] { background: var(--tint-fail-bg); border-color: var(--tint-fail-line); color: var(--tint-fail-fg); }
 /* Admin approvals (#620): the admins' Slack DM requests, counted in the top bar (a kit chip with a kit count badge,
    the wait tone while any wait), answered in a sheet. */
@@ -6386,7 +6384,7 @@ ${pageTokenAliases()}
     <button type="button" class="ui-chip view-mode-toggle" id="view-mode-toggle" slot="actions" aria-pressed="false" title="어드밴스드 모드 — 켜면 통계, 토큰, 에이전트 트리, 작업 로그까지 모두 보여 줍니다" onclick="toggleViewMode()"><i data-ui-icon="list"></i><span class="vm-label">어드밴스드</span></button>
     <!-- Display language (#773): en / ko at the top right. The server renders the page in the user's language (the saved
          setting — the one Slack's lang ko|en changes — else the soma_lang cookie); a switch saves both and reloads. -->
-    <div class="lang-toggle" id="lang-toggle" slot="actions" role="group" aria-label="표시 언어"><button type="button" class="ui-chip lang-opt" data-lang="en" aria-pressed="false" title="English" onclick="setDisplayLang('en')">EN</button><button type="button" class="ui-chip lang-opt" data-lang="ko" aria-pressed="true" title="한국어" onclick="setDisplayLang('ko')">KO</button></div>
+    <button type="button" class="ui-chip lang-toggle" id="lang-toggle" slot="actions" aria-label="표시 언어 바꾸기" title="표시 언어 바꾸기" onclick="toggleDisplayLang()"><span class="lang-cur" data-lang="ko">KO</span><span class="lang-cur" data-lang="en">EN</span></button>
     </ui-app-bar>
   </header>
 
@@ -10710,11 +10708,15 @@ async function toggleViewMode() {
 // one Slack's lang ko|en changes) and the soma_lang cookie (a session with no Slack user has only the cookie), then
 // reloads the page in the new language.
 function pageDisplayLang() { return document.documentElement.lang === 'en' ? 'en' : 'ko'; }
+// One button: it shows the page's language (CSS on <html lang>), and a press switches to the other one.
 function paintLangToggle() {
-  var cur = pageDisplayLang();
-  var opts = document.querySelectorAll('#lang-toggle .lang-opt');
-  for (var i = 0; i < opts.length; i++) opts[i].setAttribute('aria-pressed', opts[i].getAttribute('data-lang') === cur ? 'true' : 'false');
+  var b = document.getElementById('lang-toggle');
+  if (!b) return;
+  var label = pageDisplayLang() === 'en' ? '한국어로 보기' : '영어로 보기';
+  b.setAttribute('title', label);
+  b.setAttribute('aria-label', label);
 }
+function toggleDisplayLang() { return setDisplayLang(pageDisplayLang() === 'en' ? 'ko' : 'en'); }
 async function setDisplayLang(lang) {
   if ((lang !== 'en' && lang !== 'ko') || lang === pageDisplayLang()) return;
   document.cookie = 'soma_lang=' + lang + '; path=/; max-age=31536000; samesite=lax';
