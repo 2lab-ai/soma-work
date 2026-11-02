@@ -315,12 +315,17 @@ function renderControl(row) {
   if (row.kind === 'list') {
     var chips = '';
     var list = row.value || [];
+    var all = row.options || [];
     for (var i = 0; i < list.length; i++) {
-      chips += '<span class="chip">' + esc(list[i]) + '<button type="button" aria-label="' + escAttr(list[i] + ' 빼기') + '" data-key="' + k + '" data-item="' + escAttr(list[i])
+      // An item reads as its option's label when it has one (the always-approve list: a name, not a user id).
+      var name = list[i];
+      for (var n = 0; n < all.length; n++) if (all[n].value === list[i] && all[n].label) name = all[n].label;
+      chips += '<span class="chip">' + esc(name) + '<button type="button" aria-label="' + escAttr(name + ' 빼기') + '" data-key="' + k + '" data-item="' + escAttr(list[i])
         + '" onclick="removeListItem(this)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></span>';
     }
+    // #767 — a remove-only list is filled elsewhere (an approval button): no picker, no 추가.
+    if (row.removeOnly) return '<div class="chips">' + (chips || '<span class="lock">없음</span>') + '</div>';
     var opts = '';
-    var all = row.options || [];
     for (var j = 0; j < all.length; j++) {
       if (list.indexOf(all[j].value) < 0) opts += '<option value="' + escAttr(all[j].value) + '">' + esc(all[j].label) + '</option>';
     }

@@ -229,6 +229,7 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
         renderMultiChoiceCard: () => '',
         acPermissionsHtml: () => '',
         acGoalDecisionHtml: () => '',
+        acInstructionApprovalsHtml: () => '',
         acQuestionHtml: () => '',
         renderCardGoal: () => '',
         renderCardTasks: () => '',

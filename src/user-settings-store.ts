@@ -500,10 +500,27 @@ export interface UserSettings {
    * `autoskill` command + card. Undefined ⇒ none.
    */
   autoskills?: string[];
+  /**
+   * #767 — people whose instructions in this user's work threads run without
+   * asking ("해당 사람의 지시 항상 승인"). Added from an instruction approval
+   * request; listed and removed on the dashboard settings page. Undefined ⇒ none.
+   */
+  trustedInstructors?: TrustedInstructor[];
+}
+
+/** #767 — one person on a user's always-approve list. */
+export interface TrustedInstructor {
+  userId: string;
+  /** Their display name when they were added (the list shows it). */
+  name?: string;
+  addedAt: number;
 }
 
 /** Max number of auto-injected skills a user may register. */
 export const MAX_AUTOSKILLS = 20;
+
+/** #767 — max number of people on a user's always-approve list. */
+export const MAX_TRUSTED_INSTRUCTORS = 50;
 
 // Goal auto-continuation cap bounds (S4). The default lives in
 // `src/types.ts` (`DEFAULT_GOAL_MAX_CONTINUATIONS`) which the package tree
@@ -1225,6 +1242,56 @@ export class UserSettingsStore {
       userId,
       current.filter((s) => s !== skill),
     );
+    return true;
+  }
+
+  /** #767 — the user's always-approve list (a copy; oldest first). */
+  getUserTrustedInstructors(userId: string): TrustedInstructor[] {
+    const list = this.settings[userId]?.trustedInstructors;
+    return Array.isArray(list) ? list.map((e) => ({ ...e })) : [];
+  }
+
+  /** #767 — is `instructorId` on `ownerId`'s always-approve list? */
+  isUserTrustedInstructor(ownerId: string, instructorId: string): boolean {
+    const list = this.settings[ownerId]?.trustedInstructors;
+    return Array.isArray(list) && list.some((e) => e?.userId === instructorId);
+  }
+
+  /**
+   * #767 — replace the always-approve list (the dashboard settings write
+   * removes people this way). Malformed and duplicate entries are dropped, the
+   * owner never trusts themself, and the list is capped.
+   */
+  setUserTrustedInstructors(userId: string, list: TrustedInstructor[]): void {
+    const seen = new Set<string>();
+    const out: TrustedInstructor[] = [];
+    for (const raw of Array.isArray(list) ? list : []) {
+      const id = raw && typeof raw.userId === 'string' ? raw.userId.trim() : '';
+      if (!id || id.length > 64 || id === userId || seen.has(id)) continue;
+      seen.add(id);
+      const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim().slice(0, 100) : undefined;
+      const addedAt = typeof raw.addedAt === 'number' && Number.isFinite(raw.addedAt) ? raw.addedAt : Date.now();
+      out.push({ userId: id, ...(name ? { name } : {}), addedAt });
+      if (out.length >= MAX_TRUSTED_INSTRUCTORS) break;
+    }
+    this.patchUserSettings(userId, { trustedInstructors: out });
+    logger.info('Set trusted instructors', { userId, count: out.length });
+  }
+
+  /**
+   * #767 — put one person on the always-approve list ("해당 사람의 지시 항상
+   * 승인"). Returns false (and changes nothing) when already there, the owner
+   * themself, or the list is full.
+   */
+  addUserTrustedInstructor(userId: string, entry: { userId: string; name?: string }): boolean {
+    const current = this.getUserTrustedInstructors(userId);
+    if (!entry?.userId || entry.userId === userId) return false;
+    if (current.some((e) => e.userId === entry.userId)) return false;
+    if (current.length >= MAX_TRUSTED_INSTRUCTORS) return false;
+    this.setUserTrustedInstructors(userId, [
+      ...current,
+      { userId: entry.userId, ...(entry.name ? { name: entry.name } : {}), addedAt: Date.now() },
+    ]);
     return true;
   }
 

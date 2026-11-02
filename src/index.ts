@@ -77,6 +77,7 @@ import {
   setDashboardFollowupHandler,
   setDashboardGoalDecisionHandler,
   setDashboardGoalHandler,
+  setDashboardInstructionApprovals,
   setDashboardLifecycleHandler,
   setDashboardModelHandler,
   setDashboardMultiChoiceAnswerHandler,
@@ -121,6 +122,7 @@ import { migrateThreadHeaderDashboardLinkOnce } from './deploy/migrate-threadhea
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
+import { type HeldInstruction, InstructionApprovals, setInstructionApprovals } from './instruction-approval';
 import { Logger } from './logger';
 import { mcpCallTracker } from './mcp-call-tracker';
 import { McpManager } from './mcp-manager';
@@ -185,10 +187,15 @@ import {
   type TaskNoticeDeliverer,
 } from './task-turn/task-notice-deliverer';
 import { TASK_NOTIFICATION_LEDGER_FILENAME, TaskNotificationLedger } from './task-turn/task-notification-ledger';
-import { createTaskTurnController, type TaskTurnController } from './task-turn/task-turn-controller';
+import {
+  createTaskTurnController,
+  type TaskCommandResponse,
+  type TaskTurnController,
+} from './task-turn/task-turn-controller';
 import { createTaskTurnExecutor } from './task-turn/task-turn-executor';
 import { readTurnFinal } from './task-turn/task-turn-final';
 import { getTokenManager } from './token-manager';
+import { buildThreadPermalink } from './turn-notifier';
 import type { ConversationSession } from './types';
 import { productionSettingsRegistry } from './user-settings-registry-production';
 import { WorkingDirectoryManager } from './working-directory-manager';
@@ -1276,13 +1283,144 @@ async function start() {
       logger: new Logger('EpicWaker'),
     });
     claudeHandler.getSessionRegistry().setEpicEventListener((key) => epicWaker.wake(key));
-    setDashboardTaskCommandHandler((sessionKey, message, attachments, actorUserId) =>
-      taskController.start({ sessionKey, text: message, attachments, actorUserId }),
-    );
+    // #767 — an instruction sent into someone else's work thread waits for the
+    // thread owner's approval: one store for every entry (a Slack reply, a
+    // dashboard instruction, a drained queue item, a Slack-less task), the owner
+    // asked by DM and on the dashboard card, answered on either. An approved
+    // Slack message re-enters the normal entry carrying the request id the gate
+    // re-checks; an approved task instruction starts through the controller.
+    const approvalSlackApi = slackHandler.getSlackApi();
+    const instructionApprovals = new InstructionApprovals({
+      storeFile: path.join(DATA_DIR, 'instruction-approvals.json'),
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      saveSessions: () => claudeHandler.saveSessions(),
+      isTrusted: (ownerId, userId) => userSettingsStore.isUserTrustedInstructor(ownerId, userId),
+      trust: (ownerId, entry) => {
+        userSettingsStore.addUserTrustedInstructor(ownerId, entry);
+      },
+      postOwnerDm: async (ownerId, message) => {
+        const dm = await approvalSlackApi.openDmChannel(ownerId);
+        const posted = await approvalSlackApi.postMessage(dm, message.text, { blocks: message.blocks });
+        return posted?.ts ? { channel: posted.channel || dm, ts: posted.ts } : undefined;
+      },
+      updateDm: (ref, message) => approvalSlackApi.updateMessage(ref.channel, ref.ts, message.text, message.blocks),
+      postThreadNotice: (target, text) =>
+        approvalSlackApi.postSystemMessage(target.channel, text, { threadTs: target.threadTs }),
+      react: (target, name, remove) =>
+        remove
+          ? approvalSlackApi.removeReaction(target.channel, target.ts, name)
+          : approvalSlackApi.addReaction(target.channel, target.ts, name),
+      release: async (request, held) => {
+        if (held.kind === 'message') {
+          const route = (held.event.routeContext as Record<string, unknown> | undefined) ?? {};
+          const event: Record<string, unknown> = {
+            ...held.event,
+            routeContext: { ...route, instructionApprovalId: request.requestId },
+          };
+          const channel = String(event.channel ?? '');
+          const threadTs = typeof event.thread_ts === 'string' ? event.thread_ts : undefined;
+          // Bolt's `say` for a message that has no live Slack event any more — the goal injector's shape.
+          const say = async (args: any) => {
+            const result = await app.client.chat.postMessage({
+              channel,
+              text: (typeof args === 'string' ? args : args?.text) || ' ',
+              thread_ts: (typeof args === 'string' ? undefined : args?.thread_ts) || threadTs,
+              blocks: typeof args === 'string' ? undefined : args?.blocks,
+              attachments: typeof args === 'string' ? undefined : args?.attachments,
+            });
+            return { ts: result.ts as string | undefined };
+          };
+          // Not awaited to its end: the turn runs on; a later held message queues behind it.
+          void slackHandler
+            .handleMessage(event as any, say)
+            .catch((error) =>
+              logger.error('Approved instruction failed to run', { requestId: request.requestId, error }),
+            );
+          return;
+        }
+        const res =
+          held.kind === 'task-command'
+            ? await taskController.start({
+                sessionKey: request.sessionKey,
+                text: held.text,
+                actorUserId: request.requesterId,
+              })
+            : await taskController.answer({
+                sessionKey: request.sessionKey,
+                askId: held.askId,
+                answer: held.answer,
+                actorUserId: request.requesterId,
+              });
+        if (res.status >= 400) {
+          return { ok: false, reason: String((res.body as { error?: unknown })?.error ?? `HTTP ${res.status}`) };
+        }
+      },
+      broadcast: () => broadcastSessionUpdate(),
+      links: (request) => ({
+        ...(request.channel && request.threadTs
+          ? { threadUrl: buildThreadPermalink(request.channel, request.threadTs) ?? undefined }
+          : {}),
+        dashboardUrl: getDashboardSessionUrl(request.ownerId, request.sessionKey) ?? undefined,
+      }),
+    });
+    setInstructionApprovals(instructionApprovals);
+    slackHandler.setInstructionApprovals(instructionApprovals);
+    setDashboardInstructionApprovals(instructionApprovals);
+    /** A Slack-less task's instruction from someone else: held (202) instead of started. */
+    const holdTaskInstruction = async (
+      sessionKey: string,
+      actorUserId: string,
+      instruction: HeldInstruction,
+    ): Promise<TaskCommandResponse | undefined> => {
+      const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
+      if (!session || !actorUserId) return undefined; // the controller refuses with its own words
+      if (instructionApprovals.allows({ sessionKey, session, senderId: actorUserId })) return undefined;
+      const senderName = await approvalSlackApi.getUserName(actorUserId).catch(() => undefined);
+      const held = await instructionApprovals.hold({
+        sessionKey,
+        session,
+        senderId: actorUserId,
+        senderName,
+        instruction,
+      });
+      if (held.refused === 'full') {
+        return {
+          status: 429,
+          body: { error: '승인을 기다리는 지시가 너무 많습니다 — 소유자가 응답한 뒤 다시 보내세요' },
+        };
+      }
+      return {
+        status: 202,
+        body: {
+          ok: true,
+          pendingApproval: true,
+          requestId: held.requestId,
+          message: '작업 소유자의 승인을 기다립니다',
+        },
+      };
+    };
+    setDashboardTaskCommandHandler(async (sessionKey, message, attachments, actorUserId) => {
+      // Attachments are refused by the controller anyway — never held to be lost on release.
+      if (!attachments?.length) {
+        const held = await holdTaskInstruction(sessionKey, actorUserId, {
+          kind: 'task-command',
+          text: message,
+          at: Date.now(),
+        });
+        if (held) return held;
+      }
+      return taskController.start({ sessionKey, text: message, attachments, actorUserId });
+    });
     // #599 ⑤ — an answer to a task's open question runs as its next instruction.
-    setDashboardTaskAnswerHandler((sessionKey, askId, answer, actorUserId) =>
-      taskController.answer({ sessionKey, askId, answer, actorUserId }),
-    );
+    setDashboardTaskAnswerHandler(async (sessionKey, askId, answer, actorUserId) => {
+      const held = await holdTaskInstruction(sessionKey, actorUserId, {
+        kind: 'task-answer',
+        askId,
+        answer,
+        at: Date.now(),
+      });
+      return held ?? taskController.answer({ sessionKey, askId, answer, actorUserId });
+    });
     // #600 ⑥ — the dashboard's "new task" as a Slack-less task: folder, task, first instruction.
     const taskLauncher = createTaskLauncher({
       controller: taskController,
