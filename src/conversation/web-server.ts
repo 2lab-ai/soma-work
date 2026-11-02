@@ -12,11 +12,13 @@ import Fastify, {
   type LightMyRequestResponse,
 } from 'fastify';
 import * as jwt from 'jsonwebtoken';
+import { dictationA2tError, getDictationA2tService } from '../a2t/a2t-service';
 import { isAdminUser } from '../admin-utils';
 import { config } from '../config';
 import { IS_DEV } from '../env-paths';
 import { registerHookRoutes } from '../hooks';
 import { Logger } from '../logger';
+import { userSettingsStore } from '../user-settings-store';
 import { registerArtifactRoutes } from './artifact-routes';
 import {
   registerDashboardRoutes,
@@ -26,6 +28,8 @@ import {
   stopDashboardAdminApprovalWatch,
   stopDashboardPermissionWatch,
 } from './dashboard';
+import { dictationWhisperFromA2t, registerDictationRoutes } from './dictation-routes';
+import { registerDisplayLang } from './display-lang-web';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
 import { registerMemoryRoutes } from './memory-routes';
 import {
@@ -523,6 +527,11 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // Old `http://<host>:<port>` links → https viewerUrl, before any route runs.
   registerCanonicalOriginRedirect(server);
 
+  // #773 — every route runs, and answers, in the request's display language
+  // (saved setting → `soma_lang` cookie → ko). Before any route and before the
+  // compression plugin: its response hook must see a page before it is compressed.
+  registerDisplayLang(server, { savedLangOf: (userId) => userSettingsStore.getUserSettings(userId)?.displayLanguage });
+
   // Required for HTML form POSTs (e.g. the SSO session-switch interstitial
   // at `POST /auth/sso/confirm`, #704). Fastify does not parse
   // application/x-www-form-urlencoded by default; without this plugin the
@@ -709,6 +718,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
   // ---- Dashboard Routes ----
   await registerDashboardRoutes(server, authMiddleware, csrfMiddleware);
+  // 받아쓰기 — the server's Whisper (epic #737, #739): after the dashboard routes, which register @fastify/websocket.
+  registerDictationRoutes(server, authMiddleware, dictationWhisperFromA2t(getDictationA2tService, dictationA2tError));
   await registerWorkLogRoutes(server, authMiddleware);
   await registerArtifactRoutes(server, authMiddleware);
   await registerUserMediaRoutes(server, authMiddleware);

@@ -4,6 +4,13 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import {
+  type ContextRewindRecord,
+  decodeContextAnchor,
+  type PendingRewind,
+  sanitizeContextRewinds,
+  sanitizePendingRewind,
+} from '@soma/slack/context-anchor';
 import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
 import { endGoalCapDecision } from '@soma/slack/session-goal';
 import {
@@ -120,6 +127,15 @@ const ACTIVE_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinks> = 
 /**
  * Serialized session for file persistence
  */
+/** A stored Executive Summary TL;DR, or undefined when what was stored is not one (T7). */
+function restoreExecutiveSummary(v: unknown): { tldr: string[]; at: number } | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const { tldr, at } = v as { tldr?: unknown; at?: unknown };
+  if (!Array.isArray(tldr) || typeof at !== 'number' || !Number.isFinite(at)) return undefined;
+  const lines = tldr.filter((l): l is string => typeof l === 'string' && l.trim() !== '');
+  return lines.length > 0 ? { tldr: lines, at } : undefined;
+}
+
 interface SerializedSession {
   /** SSOT 2026-10-23 — the cron job that created the session, and a placeholder-title mark. */
   cronJob?: SessionCronJob;
@@ -201,6 +217,9 @@ interface SerializedSession {
   showThinking?: boolean;
   // Action panel state
   actionPanel?: ActionPanelState;
+  // The Executive Summary's TL;DR on the dashboard card (SSOT 2026-11-02 T7) — kept across a
+  // restart like the thread head that shows the same lines.
+  executiveSummary?: { tldr: string[]; at: number };
   // Bot-initiated thread metadata
   threadModel?: 'user-initiated' | 'bot-initiated';
   threadRootTs?: string;
@@ -276,6 +295,9 @@ interface SerializedSession {
   taskUsage?: unknown;
   // Dashboard v2.1 — thread-aggregate snapshot fields (live aggregate derived from memory).
   compactionCount?: number;
+  contextAnchor?: string;
+  pendingRewind?: PendingRewind;
+  contextRewinds?: ContextRewindRecord[];
   activeLegStartedAtMs?: number;
   activeLegGoalId?: string;
   activeAccumulatedMs?: number;
@@ -2760,6 +2782,8 @@ export class SessionRegistry {
         previousSessionId: session.sessionId,
       });
       session.sessionId = undefined;
+      // A fresh model context has not been told the display language (#772).
+      session.displayLangSent = undefined;
       // Clear error retry state so fresh session doesn't inherit exhausted budgets
       session.errorRetryCount = 0;
       session.fileAccessRetryCount = 0;
@@ -2882,6 +2906,8 @@ export class SessionRegistry {
     // A reset re-dispatches with a fresh stand-in title, so the title notice
     // budget starts over for the new context.
     session.titleNoticeCount = undefined;
+    // A reset starts a fresh model context: tell it the display language again.
+    session.displayLangSent = undefined;
     // NOTE: `session.instructions` and `session.instructionsCompletedSummary`
     // are intentionally preserved — the user-SSOT semantics require them to
     // survive `/new` and CONTINUE_SESSION resets (they represent durable
@@ -2937,6 +2963,10 @@ export class SessionRegistry {
     session.activeAccumulatedMs = 0;
     session.activeLegStartedAtMs = undefined;
     session.compactionCount = 0;
+    // A fresh conversation has no cut points of its own yet (#743).
+    session.contextAnchor = undefined;
+    session.pendingRewind = undefined;
+    session.contextRewinds = undefined;
     session.summaryTitle = undefined;
     session.summaryTitleTurnId = undefined;
     session.summaryTitleLastUpdatedAtMs = undefined;
@@ -3446,6 +3476,9 @@ export class SessionRegistry {
             thinkingEnabled: session.thinkingEnabled,
             showThinking: session.showThinking,
             actionPanel: session.actionPanel ? { ...session.actionPanel } : undefined,
+            executiveSummary: session.executiveSummary
+              ? { tldr: [...session.executiveSummary.tldr], at: session.executiveSummary.at }
+              : undefined,
             threadModel: session.threadModel,
             threadRootTs: session.threadRootTs,
             isOnboarding: session.isOnboarding,
@@ -3495,6 +3528,10 @@ export class SessionRegistry {
             taskUsage: session.taskUsage,
             // Dashboard v2.1 — derive-first aggregate snapshot (persisted per session)
             compactionCount: session.compactionCount,
+            // Context rollback (#743) — the cut point and a rollback waiting for the next turn.
+            contextAnchor: session.contextAnchor,
+            pendingRewind: session.pendingRewind,
+            contextRewinds: session.contextRewinds,
             activeLegStartedAtMs: session.activeLegStartedAtMs,
             activeLegGoalId: session.activeLegGoalId,
             activeAccumulatedMs: session.activeAccumulatedMs,
@@ -3823,6 +3860,7 @@ export class SessionRegistry {
                 lastRenderedAt: undefined,
               }
             : undefined,
+          executiveSummary: restoreExecutiveSummary(serialized.executiveSummary),
           threadModel: serialized.threadModel,
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
@@ -3923,6 +3961,9 @@ export class SessionRegistry {
           taskUsage: restoreTaskUsage(serialized),
           // Dashboard v2.1 — restore aggregate snapshot
           compactionCount: typeof serialized.compactionCount === 'number' ? serialized.compactionCount : 0,
+          contextAnchor: decodeContextAnchor(serialized.contextAnchor) ? serialized.contextAnchor : undefined,
+          pendingRewind: sanitizePendingRewind(serialized.pendingRewind),
+          contextRewinds: sanitizeContextRewinds(serialized.contextRewinds),
           activeLegStartedAtMs: serialized.activeLegStartedAtMs,
           activeLegGoalId: serialized.activeLegGoalId,
           activeAccumulatedMs: typeof serialized.activeAccumulatedMs === 'number' ? serialized.activeAccumulatedMs : 0,

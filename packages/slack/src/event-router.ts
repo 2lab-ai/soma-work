@@ -71,6 +71,8 @@ export interface EventConversationSession {
   threadTs?: string;
   threadRootTs?: string;
   sessionId?: string;
+  /** #772 — the display language the model was last told (`<display-lang>`); cleared with the SDK session. */
+  displayLangSent?: 'ko' | 'en';
   ownerName?: string;
   title?: string;
   activityState?: string;
@@ -546,6 +548,7 @@ export class EventRouter {
       existing.incidentRequest = request;
       existing.incidentAttemptFinishedId = undefined;
       existing.sessionId = undefined;
+      existing.displayLangSent = undefined;
     }
 
     this.rememberIncidentAttempt(attemptKey);

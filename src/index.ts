@@ -37,6 +37,8 @@ registerSkillStore({
   copySkill: (user, sourceUser, name, newName) => gatedManageSkillCopy(user, sourceUser, name, newName),
 });
 
+// #771 — the English display catalogs (dashboard pages, Slack text): loading registers them.
+import '@soma/common/i18n-en';
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import type { AgentTreeEvent } from '@soma/slack/agent-tree';
@@ -45,7 +47,12 @@ import { runNewUserGate } from '@soma/slack/pipeline/session-initializer';
 import { setWorkQueuesConfig } from '@soma/slack/work-queue';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
-import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
+import {
+  initA2tService,
+  initDictationA2tService,
+  shutdownA2tService,
+  shutdownDictationA2tService,
+} from './a2t/a2t-service';
 import { getClaudeChildProcessRegistry } from './agent-runtime/claude-child-process-registry';
 import { executionContextForTask } from './agent-runtime/execution-context';
 import { initAuthRuntimeDefault } from './auth/auth-runtime';
@@ -67,6 +74,7 @@ import {
   initRecorder,
   isDashboardListening,
   matchSlackUsersByEmail,
+  recordExecutiveSummaryTurn,
   scheduleLiveSessionUpdate,
   setDashboardBotName,
   setDashboardChoiceAnswerHandler,
@@ -82,6 +90,7 @@ import {
   setDashboardMultiChoiceAnswerHandler,
   setDashboardNewTaskProvider,
   setDashboardPermissionAnswerHandler,
+  setDashboardRollbackHandler,
   setDashboardSessionAccessor,
   setDashboardStopHandler,
   setDashboardSubmitRecommendedHandler,
@@ -155,6 +164,11 @@ import { getArchiveStore, resolveArchivedResume } from './session-archive';
 import { buildTaskSessionKey } from './session-identity';
 import { applySummaryTitle } from './session-title-policy';
 import {
+  displayLangMiddleware,
+  installRespondTranslation,
+  installSlackDisplayTranslation,
+} from './slack/display-translate';
+import {
   answerGoalCapDecision,
   flushGoalCapDmSync,
   retireGoalCapDecision,
@@ -165,6 +179,7 @@ import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal
 import { createPendingUserRequest, notifyAdminsNewUser } from './slack/new-user-decision';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
 import { setGoalCapDecisionRetirer } from './slack/session-goal';
+import { composeExecutiveSummaryMarkdown, parseExecutiveSummary } from './slack/summary-service';
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { createSlackTaskEntry } from './slack/task-entry';
 import { threadCardProviders } from './slack/thread-card-data';
@@ -533,6 +548,15 @@ async function start() {
     });
     timing('OAuth refresh scheduler wired');
 
+    // #774 — the bot's Slack text in each user's display language: every
+    // Web API call and respond() is translated on the way out, in the language
+    // of the request's user (the middleware below) or of the turn (the stream
+    // executor). Korean users' text passes through untouched.
+    const displayLangOf = (userId: string) => userSettingsStore.getUserDisplayLanguage(userId);
+    installSlackDisplayTranslation(displayLangOf);
+    installRespondTranslation(app);
+    app.use(displayLangMiddleware(displayLangOf));
+
     // Log ALL incoming events (before any handler)
     type SlackEventBody = {
       type?: string;
@@ -697,6 +721,16 @@ async function start() {
       }
     } catch (error) {
       logger.warn('Failed to start A2T service (non-critical)', error);
+    }
+    // 받아쓰기 — the server's Whisper for live dictation (epic #737, #739): its own worker, loaded in the background
+    // so startup does not wait for the model.
+    {
+      const a2tConfig = appConfig.a2t || {};
+      if (a2tConfig.enabled !== false && a2tConfig.dictation?.enabled !== false) {
+        void initDictationA2tService(a2tConfig).then((d) => {
+          if (d) logger.info('Dictation A2T ready', { status: d.getStatus().state });
+        });
+      }
     }
 
     // Initialize AgentManager if agents are configured (Trace: docs/current/plans/multi-agent/trace.md, S2)
@@ -1432,6 +1466,18 @@ async function start() {
         t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
       ) => number;
     } = {
+      // SSOT 2026-11-02 T7 — an Executive Summary landed: the whole document goes in the dashboard's
+      // chat (지시와 답변), and the card is pushed — the session now holds its TL;DR (esTldr).
+      recordExecutiveSummary: (sessionKey: string, conversationId: string | undefined, text: string) => {
+        if (conversationId) {
+          recordExecutiveSummaryTurn(
+            conversationId,
+            composeExecutiveSummaryMarkdown(text),
+            parseExecutiveSummary(text).tldr,
+          );
+        }
+        scheduleLiveSessionUpdate(sessionKey);
+      },
       // SSOT 2026-10-22 T1/T2 — a running turn made another API call: push the
       // card (≤ 1/s per session) so its token / cost totals grow live.
       // 2026-10-29 T5: the call also counts on the tasks in progress — tokens
@@ -1826,6 +1872,8 @@ async function start() {
         postOwnerDm: postGoalOwnerDm,
         // Same failure twice → ask the owner (thread form + dashboard card).
         askStallQuestion: (question) => slackHandler.askGoalStallQuestion(question),
+        // #788: while the host stops, no loop run starts and a landing verdict is dropped.
+        isShuttingDown: () => slackHandler.isShuttingDown(),
         logger,
         fallbackModel: 'claude-sonnet-4-20250514',
         // S9: optional cheaper eval tier. Unset → eval matches the work model.
@@ -1860,6 +1908,11 @@ async function start() {
         broadcast: () => registry.broadcastSessionUpdate(),
       });
       setGoalCapDecisionRetirer(retireGoalCapDecision);
+      // #744 — context rollback from the dashboard (picker points + request / cancel).
+      setDashboardRollbackHandler({
+        points: (sessionKey, actorUserId) => slackHandler.getContextRollbackPoints(sessionKey, actorUserId),
+        request: (sessionKey, body, actorUserId) => slackHandler.handleContextRollback(sessionKey, body, actorUserId),
+      });
       setDashboardGoalDecisionHandler((sessionKey, answer, actorUserId) =>
         answerGoalCapDecision({
           session: registry.getSessionByKey(sessionKey),
@@ -2038,6 +2091,7 @@ async function start() {
 
         // Stop A2T service
         await shutdownA2tService();
+        await shutdownDictationA2tService();
 
         // Stop sub-agents (Trace: docs/current/plans/multi-agent/trace.md, S7)
         if (agentManager) {

@@ -91,6 +91,29 @@ The same tab shows what a page can learn about this device's recogniser. Browser
 
 Checked in Google Chrome 156 on macOS 26.7.1: the tab showed the Korean model as downloadable, WebGPU as Apple Metal 3, and 말해서 시험 wrote a Korean sentence as it was spoken (first word after 1.9 seconds).
 
+## Server Whisper (2 November 2026, #739)
+
+With 서버 위스퍼 chosen, the browser streams its microphone to the server and Whisper large-v3-turbo writes it down.
+
+- The browser averages the microphone down to 16 kHz mono in an AudioWorklet and sends 100 ms chunks over `/ws/dictation` (signed in, same origin).
+- Whisper is not a streaming model. The server transcribes the open segment again every 0.5 seconds of new speech. Words settle when two transcriptions in a row agree on them (LocalAgreement-2, as in whisper_streaming), and the rest shows as still being heard.
+- A pause of 0.8 seconds closes the segment: one last transcription is final, and the next segment starts empty. A segment is closed anyway at 25 seconds.
+- Silence is never sent: Whisper makes words up there ("감사합니다." on two seconds of zeros, measured). A short burst that is only one of those phrases is dropped.
+- On Apple Silicon the worker uses mlx-whisper on the GPU. On an M5 Max it transcribes a 9–12 second window in about 0.2 seconds (measured), so re-transcribing every half second keeps up.
+- Live dictation has its own worker, so a voice note being transcribed never holds up a stream. It needs about 4 GB of free memory to start (`a2t.dictation.minMemoryMb`), not the voice note's 16 GB.
+
+Checked end to end on 2 November 2026: the real dashboard page in Google Chrome 156 (its AudioWorklet and WebSocket), this server, and the real worker (mlx). A Korean sentence fed as the microphone grew in the field every half second, settled at the pause, and a press finished it.
+
+## Browser Whisper (2 November 2026, #740)
+
+With 브라우저 위스퍼 chosen, Whisper runs in the page's own browser, so the speech never leaves the device.
+
+- A Web Worker runs transformers.js 4.3.2 (pinned) with an ONNX Whisper from onnx-community: on WebGPU when the browser has it (half-precision encoder, 4-bit decoder; 4-bit encoder for the large model), else WebAssembly (8-bit).
+- Each device chooses the model size: 작게 whisper-base (about 165 MB on WebGPU, 77 MB on WebAssembly), 보통 whisper-small (410 / 249 MB, the WebGPU default), 크게 whisper-large-v3-turbo (759 / 1085 MB). The first press downloads it, with progress on the status line, and the browser keeps it for later presses.
+- The worker runs the server's stream policy from its own source (DictationStream as written for #739), fed by the same 16 kHz worklet, so segments settle the same way on both engines.
+- Measured in Google Chrome 156 on an M5 Max (WebGPU, Korean TTS fed as the microphone): whisper-base downloaded in about 16 seconds and wrote the sentence live, with weak Korean ("받아쓰기" → "바닷스기"); whisper-small took about 40 seconds to download and was closer. The server's large-v3-turbo was the most accurate of the three.
+- The runs showed Whisper re-spacing words between transcriptions ("받아쓰기를" ↔ "받아 쓰기를"). The policy now places the words still being heard after the settled ones by letters, anchored on the last settled word, so a re-spaced settled word does not show again.
+
 ## Follow-up candidates
 
 - On this emulator a session ended after about 5 seconds of silence and took about half a second to restart. If phones do the same, words spoken in that gap are lost.
