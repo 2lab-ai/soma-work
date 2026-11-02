@@ -98,6 +98,7 @@ import { bumpGoalEpoch, resetGoalContinuationOnUserMessage } from './slack/goal-
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from './slack/goal-host-actions';
 import type { GoalStallQuestion } from './slack/goal-loop-controller';
 import {
+  applyGoalStallRollbackAnswer,
   buildGoalStallQuestion,
   type GoalStallRetireCause,
   setGoalStallRetiredListener,
@@ -1912,6 +1913,19 @@ export class SlackHandler {
         // mocks. Real ClaudeHandler always exports it (claude-handler.ts:374).
         const fullSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
         if (fullSession?.goal) {
+          // #745: the answer to the stall question said "roll back to the first
+          // failure" — this very turn runs from there. Read before the reset,
+          // which ends the stall round.
+          if (applyGoalStallRollbackAnswer(fullSession, event.text ?? '', event.user)) {
+            this.logger.info('Goal stall answer: context rolls back to the first failure', {
+              sessionKey: sessionResult.sessionKey,
+            });
+            const notice = '⏪ 처음 실패한 지점으로 모델 문맥을 되돌리고 이 지시를 진행합니다 (파일 변경은 그대로).';
+            recordSessionNotice(fullSession, notice, { sessionKey: sessionResult.sessionKey });
+            void this.slackApi
+              .postSystemMessage(channel, notice, { threadTs: originalThreadTs })
+              .catch(() => undefined);
+          }
           resetGoalContinuationOnUserMessage(fullSession);
           this.claudeHandler.saveSessions();
         }

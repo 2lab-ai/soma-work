@@ -56,7 +56,7 @@ import {
   shouldRunGoalIdleDriver,
 } from './goal-completion-evaluator';
 import { GOAL_CONTINUATION_TEXT_PREFIX } from './goal-continuation';
-import { openGoalStall } from './goal-stall';
+import { goalStallRollbackOffer, openGoalStall, trackGoalFirstFailure } from './goal-stall';
 import { advanceGoalQueue, formatGoalObjectiveForSlack } from './session-goal';
 import { announceSessionNotice, recordSessionNotice } from './session-notice';
 
@@ -189,6 +189,8 @@ export interface GoalStallQuestion {
   objective: string;
   reason: string;
   actions: string[];
+  /** #745: also ask whether to roll the context back to the first failure (turns that would leave it). */
+  rollback?: { turns: number };
 }
 
 /**
@@ -342,6 +344,7 @@ export class GoalLoopController {
         activeGoal,
         { completed: false, reason: activeGoal.lastEvalReason, remaining: activeGoal.lastEvalRemaining ?? [] },
         summaryHash,
+        { reused: true },
       );
       return;
     }
@@ -418,8 +421,11 @@ export class GoalLoopController {
     activeGoal: SessionGoal,
     verdict: GoalEvalVerdict,
     summaryHash: string,
+    opts: { reused?: boolean } = {},
   ): Promise<void> {
     const { requestCoordinator, logger } = this.deps;
+    // #745: where the current failure started — a reused verdict judged no new turn.
+    if (!opts.reused) trackGoalFirstFailure(session, activeGoal, verdict, this.now());
     const outcome = decideGoalEvalOutcome(activeGoal, verdict, this.now());
     // Remember which summary produced this verdict so an identical next turn
     // can short-circuit (S9). A `complete` verdict stops the loop, so clear it.
@@ -579,7 +585,7 @@ export class GoalLoopController {
     // restart re-ran the eval at the cap) ends here — its Continue would only
     // land on a goal the stall holds.
     retireGoalCapDecision(activeGoal);
-    const stall = openGoalStall(activeGoal, verdict, this.now());
+    const stall = openGoalStall(activeGoal, verdict, this.now(), goalStallRollbackOffer(session, activeGoal, verdict));
     this.persist();
     logger.info('Goal loop stopped — same failure as the previous evaluation', {
       sessionKey,
@@ -611,6 +617,7 @@ export class GoalLoopController {
         objective: activeGoal.objective,
         reason: verdict.reason,
         actions: stall.actions,
+        ...(stall.rollbackAnchor ? { rollback: { turns: stall.rollbackTurns ?? 0 } } : {}),
       });
     } catch (err: unknown) {
       logger.warn('Goal stall question could not be posted — the notice still asks', {
