@@ -45,7 +45,7 @@ import { runNewUserGate } from '@soma/slack/pipeline/session-initializer';
 import { setWorkQueuesConfig } from '@soma/slack/work-queue';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
-import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
+import { initA2tService, initDictationA2tService, shutdownA2tService, shutdownDictationA2tService } from './a2t/a2t-service';
 import { getClaudeChildProcessRegistry } from './agent-runtime/claude-child-process-registry';
 import { executionContextForTask } from './agent-runtime/execution-context';
 import { initAuthRuntimeDefault } from './auth/auth-runtime';
@@ -697,6 +697,16 @@ async function start() {
       }
     } catch (error) {
       logger.warn('Failed to start A2T service (non-critical)', error);
+    }
+    // 받아쓰기 — the server's Whisper for live dictation (epic #737, #739): its own worker, loaded in the background
+    // so startup does not wait for the model.
+    {
+      const a2tConfig = appConfig.a2t || {};
+      if (a2tConfig.enabled !== false && a2tConfig.dictation?.enabled !== false) {
+        void initDictationA2tService(a2tConfig).then((d) => {
+          if (d) logger.info('Dictation A2T ready', { status: d.getStatus().state });
+        });
+      }
     }
 
     // Initialize AgentManager if agents are configured (Trace: docs/current/plans/multi-agent/trace.md, S2)
@@ -2023,6 +2033,7 @@ async function start() {
 
         // Stop A2T service
         await shutdownA2tService();
+        await shutdownDictationA2tService();
 
         // Stop sub-agents (Trace: docs/current/plans/multi-agent/trace.md, S7)
         if (agentManager) {

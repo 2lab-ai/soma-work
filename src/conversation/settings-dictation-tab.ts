@@ -11,7 +11,8 @@
  *   3. 말해서 시험 — the chosen engine listens for a few seconds: the time to the first word and the words.
  *
  * Client script: String.raw, no `${…}` and no backticks (ships byte for byte). It runs after DICTATION_PREF_JS
- * (dictationEngineChoice · dictationSaveEngine) and uses the page's esc().
+ * (dictationEngineChoice · dictationSaveEngine) and DICTATION_SERVER_JS (dictationServerStatus ·
+ * dictationServerStart), and uses the page's esc().
  */
 
 export const DICTATION_TAB_HTML = `<div slot="dictation" data-tab="dictation" class="page dic-page" hidden>
@@ -216,6 +217,7 @@ async function dicInfo(w) {
     gpu: { has: false },
     memory: Number(n.deviceMemory) || 0,
     cores: Number(n.hardwareConcurrency) || 0,
+    server: { ok: false, why: '' },
   };
   var hints = await dicUaHints(n);
   if (hints) {
@@ -228,19 +230,23 @@ async function dicInfo(w) {
   for (var j = 0; j < DIC_LANGS.length; j++) info.langs[DIC_LANGS[j]] = await dicLangState(Rec, DIC_LANGS[j]);
   info.mic = await dicMicState(n);
   info.gpu = await dicGpu(n);
+  info.server = typeof dictationServerStatus === 'function' ? await dictationServerStatus(w && w.fetch ? w.fetch.bind(w) : null) : { ok: false, why: '' };
   return info;
 }
 
-// What each engine can do on this device — { ok, why } per engine. The server's and the browser's Whisper are not
-// on this build yet (epic #737: #739, #740).
+// What each engine can do on this device — { ok, why } per engine: the server's Whisper when the server has it and
+// this browser can stream its microphone; the browser's Whisper is not on this build yet (epic #737, #740).
 function dicEngines(info) {
   var path = info && info.path;
   var device = { ok: true, why: '' };
   if (path === 'none') device = { ok: false, why: '이 브라우저에는 음성 인식기가 없습니다 — Chrome·Safari·삼성 인터넷에서 열어 주세요' };
   if (path === 'webapp') device = { ok: false, why: '홈 화면에 추가한 웹 앱에서는 쓸 수 없습니다 — Safari에서 열어 주세요' };
+  var srv = (info && info.server) || { ok: false, why: '' };
+  var server = srv.ok ? { ok: true, why: '' } : { ok: false, why: srv.why || '이 서버에는 위스퍼가 없습니다' };
+  if (srv.ok && info && info.secure === false) server = { ok: false, why: '보안 연결(HTTPS)이 아니라 마이크를 쓸 수 없습니다' };
   return {
     device: device,
-    server: { ok: false, why: '준비 중입니다' },
+    server: server,
     browser: { ok: false, why: '준비 중입니다' },
   };
 }
@@ -312,6 +318,8 @@ function dicInfoRows(info) {
     '브라우저 위스퍼가 빠르게 돌려면 필요합니다',
   ]);
   rows.push(['메모리 · 코어', (info.memory ? '약 ' + info.memory + 'GB' : '알 수 없음') + ' · ' + (info.cores ? info.cores + '코어' : '알 수 없음')]);
+  var srv = info.server || { ok: false, why: '' };
+  rows.push(['서버 위스퍼', srv.ok ? '쓸 수 있음 — ' + (srv.model || 'Whisper') : srv.why || '이 서버에는 위스퍼가 없습니다']);
   return rows;
 }
 
@@ -441,6 +449,7 @@ function dicTestStart() {
   }
   var engine = dicEffective(dictationEngineChoice(dicStore()), dicEngines(_dicInfo));
   var Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (engine === 'server') return dicTestServer(live, res, btn);
   if (engine !== 'device' || !Rec) {
     if (res) res.textContent = '이 기기에서는 시험할 엔진이 없습니다';
     return;
@@ -502,15 +511,44 @@ function dicTestStart() {
   }
 }
 
+// 말해서 시험 through the server's Whisper: the microphone streams for eight seconds, the words as they settle.
+function dicTestServer(live, res, btn) {
+  var t = { engine: 'server', rec: null, srv: null, t0: Date.now(), first: 0, ended: 0, text: '', err: '' };
+  _dicTest = t;
+  if (live) live.textContent = '';
+  if (res) res.textContent = '서버 위스퍼 준비 중…';
+  if (btn) btn.textContent = '멈추기';
+  t.srv = dictationServerStart({
+    onReady: function () {
+      t.t0 = Date.now();
+      if (res) res.textContent = '듣는 중… 말해 보세요 (8초)';
+      t.timer = setTimeout(function () { dicTestStop(); }, DIC_TEST_MS);
+    },
+    onText: function (finals, interim) {
+      var text = (finals + ' ' + interim).trim();
+      if (text && !t.first) t.first = Date.now() - t.t0;
+      if (text) t.text = text;
+      if (live) live.textContent = t.text;
+    },
+    onError: function (code, message) {
+      t.err = message || code;
+      dicTestDone(t);
+    },
+    onDone: function () { dicTestDone(t); },
+  });
+}
+
 function dicTestStop() {
   var t = _dicTest;
   if (!t) return;
   t.stopping = true;
-  try { t.rec.stop(); } catch (_e) {}
+  if (t.srv) t.srv.stop();
+  else try { t.rec.stop(); } catch (_e) {}
   dicTestSettle(t);
 }
 
-// The end may never come (Edge can go silent after a stop or an error): the test lets go after a moment.
+// The end may never come (Edge can go silent after a stop or an error; a server that never answers done): the test
+// lets go after a moment.
 function dicTestSettle(t) {
   setTimeout(function () { dicTestDone(t); }, DIC_SETTLE_MS);
 }

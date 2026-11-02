@@ -50,6 +50,49 @@ export async function initA2tService(config: A2tConfig = {}): Promise<A2tService
   }
 }
 
+// ── 받아쓰기 (live dictation) instance ─────────────────────
+// A second worker for the server's Whisper dictation (epic #737, #739): a voice note being transcribed never holds
+// up a live stream, and the stream's smaller memory floor (Whisper turbo on mlx needs ~2 GB) does not lower the
+// voice note's.
+
+let dictationInstance: A2tService | null = null;
+
+/** The live-dictation A2T instance (null until initialized, or when it could not start). */
+export function getDictationA2tService(): A2tService | null {
+  return dictationInstance;
+}
+
+/** Initialize the live-dictation instance. Non-critical — returns null on failure. */
+export async function initDictationA2tService(config: A2tConfig = {}): Promise<A2tService | null> {
+  if (dictationInstance) return dictationInstance;
+  const dictation = config.dictation ?? {};
+  if (dictation.enabled === false) return null;
+  const service = new A2tService({ ...config, minMemoryMb: dictation.minMemoryMb ?? DICTATION_MIN_MEMORY_MB });
+  try {
+    await service.initialize();
+    dictationInstance = service;
+    return service;
+  } catch (error) {
+    logger.warn('Dictation A2T unavailable', { error: (error as Error).message });
+    lastDictationError = (error as Error).message;
+    return null;
+  }
+}
+
+let lastDictationError = '';
+/** Why the live-dictation instance is not running ('' when it is, or was never tried). */
+export function dictationA2tError(): string {
+  return dictationInstance ? '' : lastDictationError;
+}
+
+/** Shutdown the live-dictation instance. */
+export async function shutdownDictationA2tService(): Promise<void> {
+  if (dictationInstance) {
+    await dictationInstance.shutdown();
+    dictationInstance = null;
+  }
+}
+
 /** Shutdown the A2T service singleton. */
 export async function shutdownA2tService(): Promise<void> {
   if (instance) {
@@ -64,11 +107,17 @@ export async function shutdownA2tService(): Promise<void> {
 const REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
 /** Init timeout (model download + load can be slow on first run) */
 const INIT_TIMEOUT_MS = 10 * 60 * 1000;
+/** One live-dictation window (a few seconds of audio) — a worker this slow is stuck. */
+const PCM_TIMEOUT_MS = 20 * 1000;
+/** Free memory the live-dictation worker needs to start (Whisper turbo: ~2 GB). */
+const DICTATION_MIN_MEMORY_MB = 4000;
 
 export class A2tService {
   private process: ChildProcess | null = null;
   private status: A2tStatus = { state: 'not_initialized' };
-  private config: Required<A2tConfig>;
+  private config: Required<Omit<A2tConfig, 'dictation'>>;
+  /** Requests wait their turn: the worker answers one at a time. */
+  private tail: Promise<unknown> = Promise.resolve();
   private rl: readline.Interface | null = null;
   private pendingResponse: {
     resolve: (value: unknown) => void;
@@ -84,6 +133,7 @@ export class A2tService {
       computeType: config.computeType ?? 'auto',
       minMemoryMb: config.minMemoryMb ?? 16000,
       pythonPath: config.pythonPath ?? 'python3',
+      backend: config.backend ?? 'auto',
     };
     if (!this.config.enabled) {
       this.status = { state: 'disabled' };
@@ -116,6 +166,19 @@ export class A2tService {
       case 'shutdown':
         return 'A2T service shut down.';
     }
+  }
+
+  /**
+   * 받아쓰기: transcribe one window of a live stream — 16 kHz mono PCM. Waits its turn behind other requests.
+   */
+  async transcribePcm(pcm: Int16Array, opts: { language?: string; prompt?: string } = {}): Promise<string> {
+    if (!this.isReady()) throw new Error(this.getStatusMessage());
+    const bytes = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+    const response = (await this.sendRequest(
+      { type: 'transcribe_pcm', pcm: bytes.toString('base64'), language: opts.language ?? 'ko', prompt: opts.prompt ?? '' },
+      PCM_TIMEOUT_MS,
+    )) as Record<string, unknown>;
+    return String(response.text ?? '');
   }
 
   /**
@@ -189,6 +252,7 @@ export class A2tService {
           A2T_DEVICE: this.config.device,
           A2T_COMPUTE_TYPE: this.config.computeType,
           A2T_MIN_MEMORY_MB: String(this.config.minMemoryMb),
+          A2T_BACKEND: this.config.backend,
           PYTHONUNBUFFERED: '1',
         },
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -218,7 +282,7 @@ export class A2tService {
           if (msg.type === 'ready') {
             settle(() => {
               this.status = { state: 'ready', model: msg.model, device: msg.device || this.config.device };
-              logger.info('A2T service ready', { model: msg.model, device: msg.device });
+              logger.info('A2T service ready', { model: msg.model, device: msg.device, backend: msg.backend });
               this.rl?.on('line', (l) => this.handleLine(l));
               resolve();
             });
@@ -290,25 +354,28 @@ export class A2tService {
 
   // ── Internal ───────────────────────────────────────────
 
-  private sendRequest(request: object): Promise<unknown> {
-    return new Promise((resolve, reject) => {
-      if (this.pendingResponse) {
-        reject(new Error('A2T service is busy with another request'));
-        return;
-      }
+  private sendRequest(request: object, timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<unknown> {
+    const run = () =>
+      new Promise((resolve, reject) => {
+        if (!this.process?.stdin?.writable) {
+          reject(new Error('A2T worker process not available'));
+          return;
+        }
 
-      if (!this.process?.stdin?.writable) {
-        reject(new Error('A2T worker process not available'));
-        return;
-      }
+        const timer = setTimeout(() => {
+          // The worker never answered: its next line could be this answer, misread as the next request's — it is
+          // stopped (the service reports the error) rather than trusted.
+          this.rejectPending('Transcription timed out');
+          this.status = { state: 'error', error: 'Transcription timed out' };
+          this.kill();
+        }, timeoutMs);
 
-      const timer = setTimeout(() => {
-        this.rejectPending('Transcription timed out');
-      }, REQUEST_TIMEOUT_MS);
-
-      this.pendingResponse = { resolve, reject, timer };
-      this.process.stdin.write(JSON.stringify(request) + '\n');
-    });
+        this.pendingResponse = { resolve, reject, timer };
+        this.process.stdin.write(JSON.stringify(request) + '\n');
+      });
+    const next = this.tail.then(run, run);
+    this.tail = next.catch(() => undefined);
+    return next;
   }
 
   private handleLine(line: string): void {

@@ -48,6 +48,8 @@ import {
   stopPublicUrlCheck,
 } from './public-url';
 import { getConversation, getTurnRawContent, listConversations } from './recorder';
+import { dictationA2tError, getDictationA2tService } from '../a2t/a2t-service';
+import { dictationWhisperFromA2t, registerDictationRoutes } from './dictation-routes';
 import { registerSettingsRoutes } from './settings-routes';
 import type { ConversationTurn } from './types';
 import { registerUserMediaRoutes } from './user-media-routes';
@@ -709,6 +711,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
   // ---- Dashboard Routes ----
   await registerDashboardRoutes(server, authMiddleware, csrfMiddleware);
+  // 받아쓰기 — the server's Whisper (epic #737, #739): after the dashboard routes, which register @fastify/websocket.
+  registerDictationRoutes(server, authMiddleware, dictationWhisperFromA2t(getDictationA2tService, dictationA2tError));
   await registerWorkLogRoutes(server, authMiddleware);
   await registerArtifactRoutes(server, authMiddleware);
   await registerUserMediaRoutes(server, authMiddleware);

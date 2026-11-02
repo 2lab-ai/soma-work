@@ -149,6 +149,9 @@ function page(
     ua?: string;
     busy?: boolean;
     mic?: string; // the microphone permission navigator.permissions answers; none: it cannot say
+    choice?: string; // Settings › 받아쓰기 on this device (dictation-pref.ts); default 기기 기본
+    server?: unknown; // dictationServerStart (dictation-server-client.ts)
+    win?: Record<string, unknown>; // more of window (mediaDevices, WebSocket)
   } = {},
 ) {
   const store = new Map<string, string>();
@@ -169,11 +172,14 @@ function page(
   // An iPhone by default: Apple's engine, on the device, no question asked.
   const nav: Record<string, unknown> = { userAgent: opts.ua ?? UA.iphone };
   if (opts.mic) nav.permissions = { query: async () => ({ state: opts.mic }) };
-  const win: Record<string, unknown> = { navigator: nav };
+  const win: Record<string, unknown> = { navigator: nav, ...(opts.win ?? {}) };
   if (opts.engine !== undefined) win.webkitSpeechRecognition = opts.engine;
   const api = loadWith<Page>(
     [
       'ntDictationEngine',
+      'ntDictationChoice',
+      'ntDictationUsable',
+      'ntDictateStartServer',
       'ntDictationWide',
       'ntDictationNarrow',
       'ntDictationTool',
@@ -211,6 +217,8 @@ function page(
     ],
     {
       window: win,
+      dictationEngineChoice: () => opts.choice ?? 'device',
+      dictationServerStart: opts.server ?? (() => { throw new Error('the server engine was not chosen'); }),
       _ntDictation: null,
       _ntDictationAutoOff: false,
       _ntDictationError: '',
@@ -369,6 +377,9 @@ describe('SSOT_3 — 받아쓰기 is added beside the voice note, which stays ("
           'ntComposerData',
           'ntReadDraft',
           'ntDictationEngine',
+          'ntDictationChoice',
+          'ntDictationUsable',
+          'ntDictateStartServer',
           'ntDictationTool',
           'ntDictationWide',
           'ntDictationNarrow',
@@ -405,6 +416,9 @@ describe('SSOT_3 — 받아쓰기 is added beside the voice note, which stays ("
           'ntComposerData',
           'ntReadDraft',
           'ntDictationEngine',
+          'ntDictationChoice',
+          'ntDictationUsable',
+          'ntDictateStartServer',
           'ntDictationTool',
           'ntDictationWide',
           'ntDictationNarrow',
@@ -1637,5 +1651,122 @@ describe('I1.4 — the dialog wires the stops; a live dictation counts as unsent
   });
   it('a new build does not reload the tab mid-sentence', () => {
     expect(clientFn('hasUnsentInput')).toContain('if (_ntDictation) return true;');
+  });
+});
+
+// ── 서버 위스퍼 (epic #737, #739) ─────────────────────────────────────
+
+type Srv = {
+  cb: { onReady(m: string): void; onText(f: string, i: string): void; onError(c: string, m: string): void; onDone(f: string): void };
+  stops: number;
+  aborts: number;
+};
+function serverFake() {
+  const made: Srv[] = [];
+  const start = vi.fn((cb: Srv['cb']) => {
+    const s: Srv = { cb, stops: 0, aborts: 0 };
+    made.push(s);
+    return { stop: () => s.stops++, abort: () => s.aborts++ };
+  });
+  return { start, made };
+}
+
+describe('#739 — 받아쓰기 through the server’s Whisper when this device chose it', () => {
+  it('streams through the server: ready → the words as they settle → a press finishes → the tool lets go', async () => {
+    const fake = serverFake();
+    const { api, env } = page({ choice: 'server', server: fake.start, value: '메모: ' });
+    await api.ntDictateStart();
+    expect(fake.start).toHaveBeenCalledTimes(1);
+    expect(last(env.statuses)).toBe('서버 위스퍼 준비 중…');
+    const s = fake.made[0];
+    s.cb.onReady('large-v3-turbo');
+    expect(last(env.statuses)).toBe('듣는 중… 서버 위스퍼(large-v3-turbo)로 처리합니다 · 다시 누르거나 키보드로 쓰면 멈춥니다');
+    s.cb.onText('', '대시보드 새');
+    expect(env.composer.value).toBe('메모: 대시보드 새');
+    s.cb.onText('대시보드 새 작업', '화면에서');
+    expect(env.composer.value).toBe('메모: 대시보드 새 작업 화면에서');
+    expect(last(env.drafts)).toBe('메모: 대시보드 새 작업 화면에서');
+    api.ntDictateStop(false);
+    expect(s.stops).toBe(1);
+    expect(api.__peek('_ntDictation')).not.toBeNull(); // the last words are still coming
+    s.cb.onText('대시보드 새 작업 화면에서 실시간', '');
+    s.cb.onDone('대시보드 새 작업 화면에서 실시간');
+    expect(env.composer.value).toBe('메모: 대시보드 새 작업 화면에서 실시간');
+    expect(api.__peek('_ntDictation')).toBeNull();
+  });
+
+  it('a key typed (hard stop) drops what is still coming at once', async () => {
+    const fake = serverFake();
+    const { api, env } = page({ choice: 'server', server: fake.start });
+    await api.ntDictateStart();
+    fake.made[0].cb.onText('하나', '둘');
+    api.ntDictateStop(true);
+    expect(fake.made[0].aborts).toBe(1);
+    expect(api.__peek('_ntDictation')).toBeNull();
+    fake.made[0].cb.onText('하나 둘 셋', '');
+    expect(env.composer.value).toBe('하나 둘');
+  });
+
+  it('a server that never confirms the finish does not hold the tool', async () => {
+    vi.useFakeTimers();
+    try {
+      const fake = serverFake();
+      const { api } = page({ choice: 'server', server: fake.start });
+      await api.ntDictateStart();
+      api.ntDictateStop(false);
+      vi.advanceTimersByTime(4000);
+      expect(fake.made[0].aborts).toBe(1);
+      expect(api.__peek('_ntDictation')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('no Whisper on the server: the red line says why and where to switch back', async () => {
+    const fake = serverFake();
+    const { api, env } = page({ choice: 'server', server: fake.start });
+    await api.ntDictateStart();
+    fake.made[0].cb.onError('unavailable', '이 서버에는 위스퍼가 없습니다');
+    expect(env.errorLine.textContent).toBe('이 서버에는 위스퍼가 없습니다 — 설정 › 받아쓰기에서 기기 기본으로 바꿀 수 있습니다');
+    expect(api.__peek('_ntDictation')).toBeNull();
+  });
+
+  it('a dropped connection says a press continues, off the red line', async () => {
+    const fake = serverFake();
+    const { api, env } = page({ choice: 'server', server: fake.start });
+    await api.ntDictateStart();
+    fake.made[0].cb.onReady('large-v3-turbo');
+    fake.made[0].cb.onError('closed', '서버 위스퍼 연결이 끊겼습니다 — 다시 누르면 이어서 받아씁니다');
+    expect(env.errorLine.textContent).toBe('');
+    expect(last(env.statuses)).toBe('서버 위스퍼 연결이 끊겼습니다 — 다시 누르면 이어서 받아씁니다');
+  });
+
+  it('works without a browser recogniser (Firefox) — the tool shows when the microphone can stream', async () => {
+    const fake = serverFake();
+    const firefox = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0';
+    const media = { mediaDevices: { getUserMedia: () => Promise.resolve({}) } };
+    const { api } = page({ choice: 'server', server: fake.start, ua: firefox, win: { WebSocket: function () {} } });
+    // navigator is built by page(): give it the microphone
+    Object.assign(api.__peek('window').navigator, media);
+    expect(api.ntComposerData().tools?.[0]?.id).toBe('dictate');
+    await api.ntDictateStart();
+    expect(fake.start).toHaveBeenCalledTimes(1);
+    const none = page({ choice: 'device', ua: firefox });
+    expect(none.api.ntComposerData().tools).toBeUndefined();
+  });
+
+  it('the new task opens listening through the server too (the person chose it)', () => {
+    const fake = serverFake();
+    const { api } = page({ choice: 'server', server: fake.start });
+    api.ntDictateAuto();
+    expect(fake.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('the device engine stays the default', async () => {
+    const fake = serverFake();
+    const { api } = page({ engine: FakeRec, server: fake.start });
+    await api.ntDictateStart();
+    expect(fake.start).not.toHaveBeenCalled();
+    expect(FakeRec.made.length).toBeGreaterThan(0);
   });
 });
