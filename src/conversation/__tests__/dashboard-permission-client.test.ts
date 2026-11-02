@@ -76,6 +76,7 @@ const FNS = [
   'permissionSummary',
   'acPermissionLock',
   'acDetailDue',
+  'acPermissionAdvice',
   'acPermissionData',
   'acSlotHtml',
   'acPermissionsHtml',
@@ -386,6 +387,88 @@ describe('dashboard permission prompt → real server (shipped client code)', ()
     expect(c.acPermissionData(card(id), card(id).pendingPermissions[0]).state).toEqual(st);
     expect(toasts).toEqual([]);
     expect(repaint).toHaveBeenCalledWith(key);
+  });
+
+  // SSOT 2026-11-02 T2–T4 — the AI's advice on the dashboard card, and the second question.
+  const RED = { recommendation: 'deny', summary: '홈 폴더를 지웁니다', risk: '되돌릴 수 없습니다' };
+  const GREEN = { recommendation: 'approve', summary: '빌드 폴더를 지웁니다', risk: '빌드 산출물만 사라집니다' };
+
+  it('T4 — red: a high-risk badge, the AI warning, and no disable-rule shortcut', async () => {
+    const id = await seed({ advice: RED });
+    const c = client('U1');
+    const p = { ...card(id).pendingPermissions[0], aiRecommendation: 'deny' };
+    // Before the requester's detail arrives, the board's recommendation alone colours the card.
+    const first = c.acPermissionData(card(id), p) as CardData & { risk?: string; description?: string };
+    expect(first.risk).toBe('high');
+    expect(first.description).toContain('🔴');
+    expect(first.description).toContain('실행하지 마세요');
+    expect(first.canDisableRule).toBe(false);
+    await vi.waitFor(() => expect(repaint).toHaveBeenCalledWith(key));
+    // The requester's detail carries what the call does and why it is risky.
+    const d = c.acPermissionData(card(id), p) as CardData & { description?: string };
+    expect(d.description).toContain('홈 폴더를 지웁니다');
+    expect(d.description).toContain('되돌릴 수 없습니다');
+  });
+
+  it('T3 — green: a low-risk badge and the AI recommendation', async () => {
+    const id = await seed({ advice: GREEN });
+    const p = { ...card(id).pendingPermissions[0], aiRecommendation: 'approve' };
+    const d = client('U1').acPermissionData(card(id), p) as CardData & { risk?: string; description?: string };
+    expect(d.risk).toBe('low');
+    expect(d.description).toContain('🟢');
+    expect(d.description).toContain('AI 추천');
+  });
+
+  it('T4 — red: the first Approve asks again and stores nothing; the second runs it', async () => {
+    const id = await seed({ advice: RED });
+    const c = client('U1');
+
+    const first = await c.answerPermission(key, id, 'approve');
+    expect(first).toMatchObject({ status: 'error', confirm: true, retry: true });
+    expect(String(first.message)).toContain('한 번 더');
+    expect(await sharedStore.getPendingApproval(id)).not.toBeNull();
+    expect(toasts).toEqual([]);
+
+    const second = await c.answerPermission(key, id, 'approve');
+    expect(second).toMatchObject({ status: 'resolved', outcome: 'approved' });
+    expect((await sharedStore.waitForPermissionResponse(id, 1500)).behavior).toBe('allow');
+  });
+
+  // Review R1 (fable P3): a second answer that fails for another reason keeps the card on its second ask.
+  it('T4 — red: a failed second answer keeps the second ask — the next Approve is still the confirmed one', async () => {
+    const id = await seed({ advice: RED });
+    const c = client('U1');
+    expect(await c.answerPermission(key, id, 'approve')).toMatchObject({ status: 'error', confirm: true });
+    // The second answer fails on the network.
+    const realFetch = fetchCalls;
+    const failing = load({
+      fetch: async () => {
+        throw new Error('offline');
+      },
+      console: { error() {}, warn() {} },
+      currentUserId: 'U1',
+      _csrfToken: session.csrf,
+      refreshCsrfToken: async () => {},
+      acRepaint: repaint,
+      dashToast: () => {},
+      _sessionCache: { [key]: card(id) },
+      isSiblingSession: () => false,
+    });
+    failing.state._acState[key] = { ...c.state._acState[key] };
+    const failed = await failing.answerPermission(key, id, 'approve');
+    expect(failed).toMatchObject({ status: 'error', confirm: true, retry: true });
+    void realFetch;
+    // Back online: the next Approve sends the confirmed answer and runs it.
+    c.state._acState[key][`p|${id}`] = failed;
+    expect(await c.answerPermission(key, id, 'approve')).toMatchObject({ status: 'resolved', outcome: 'approved' });
+  });
+
+  it('T4 — red: Deny needs no second answer', async () => {
+    const id = await seed({ advice: RED });
+    expect(await client('U1').answerPermission(key, id, 'deny')).toMatchObject({
+      status: 'resolved',
+      outcome: 'denied',
+    });
   });
 });
 
