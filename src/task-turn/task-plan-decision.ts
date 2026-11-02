@@ -22,6 +22,12 @@ export interface TaskPlanDeciderDeps {
   /** The registry's strict write (`setTaskPlanGate`): a failed save puts the gate back and throws. */
   setTaskPlanGate(taskId: string, gate: TaskPlanGate): void;
   controller: Pick<TaskTurnController, 'canStart' | 'start' | 'isRunning'>;
+  /**
+   * May this user start or cancel the plan? (#777) Someone else's instruction waits for the owner's
+   * approval; a plan decision by someone the owner has not approved would start the work around that
+   * gate, so it is refused (403) — the owner decides. Unset: whoever the route lets through.
+   */
+  mayDecide?: (sessionKey: string, session: ConversationSession, actorUserId: string) => boolean;
   now?: () => number;
   logger: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void };
 }
@@ -46,6 +52,9 @@ export function createTaskPlanDecider(deps: TaskPlanDeciderDeps): TaskPlanDecide
     if (!task || task.slackless !== true || !task.taskId) return refuse(409, 'not a dashboard task');
     if (!task.taskPlan) return refuse(409, 'this task was not made in plan mode');
     if (!actorUserId) return refuse(403, 'sign in to start or cancel a plan');
+    if (deps.mayDecide && !deps.mayDecide(sessionKey, task, actorUserId)) {
+      return refuse(403, "the plan is the task owner's to start or cancel — send your changes as an instruction");
+    }
     if (task.terminated || task.closing) return refuse(409, 'the task is closed');
     // A turn in flight is still writing (or revising) the plan: Stop it first.
     if (deps.controller.isRunning(sessionKey)) {
