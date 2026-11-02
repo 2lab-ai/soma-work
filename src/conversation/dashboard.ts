@@ -9647,6 +9647,33 @@ function viewModeOfSettings(snapshot) {
   for (var i = 0; i < rows.length; i++) if (rows[i] && rows[i].key === 'dashboardMode') return viewModeFrom(rows[i].value);
   return null;
 }
+// The detail card's top sections, moved in the DOM too, so the separator rule (a border on a section that follows
+// another) draws between the sections as they read, not as they were written. Nothing moves when already in order.
+var PANEL_SURFACE_PARTS = {
+  info: ['panel-info'],
+  goal: ['panel-goal'],
+  needs: ['panel-needs-head', 'panel-permission', 'panel-question', 'panel-needs-status'],
+  artifacts: ['panel-artifacts'],
+};
+function orderPanelSurface(order) {
+  var surf = document.getElementById('panel-surface');
+  if (!surf || !surf.children || !surf.appendChild) return;
+  var want = [];
+  for (var i = 0; i < order.length; i++) {
+    var ids = PANEL_SURFACE_PARTS[order[i]] || [];
+    for (var k = 0; k < ids.length; k++) {
+      var el = document.getElementById(ids[k]);
+      if (el && el.parentNode === surf) want.push(el);
+    }
+  }
+  var now = [];
+  for (var c = 0; c < surf.children.length; c++) if (want.indexOf(surf.children[c]) >= 0) now.push(surf.children[c]);
+  var same = now.length === want.length;
+  for (var j = 0; same && j < want.length; j++) if (now[j] !== want[j]) same = false;
+  if (same) return;
+  for (var m = 0; m < want.length; m++) surf.appendChild(want[m]);
+}
+
 // The mode and its plan on the page: <body data-view-mode · data-view-plan>, the detail card's sections and how its
 // tasks read (data-detail · data-tasks · --ptl-max, the CSS of VIEW PLANS), and whether its sections open unfolded.
 function applyViewMode() {
@@ -9661,6 +9688,7 @@ function applyViewMode() {
   // The detail card's top sections in the layout's order (CSS order on .panel-surface's children).
   var order = spec.detail.order || [];
   for (var o = 0; o < order.length; o++) b.style.setProperty('--o-' + order[o], String(o + 1));
+  orderPanelSurface(order);
   var btn = document.getElementById('view-mode-toggle');
   if (btn) btn.setAttribute('aria-pressed', _viewMode === 'advanced' ? 'true' : 'false');
   _panelDetail = !!spec.detail.open;

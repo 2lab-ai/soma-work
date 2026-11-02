@@ -515,8 +515,8 @@ describe('P4 — the detail card follows the plan', () => {
   it('the body says which sections the plan shows and how the tasks read; 자세히 opens with the plan', () => {
     const b = fakeBody();
     const env = load<{ applyViewMode(): void; __set(n: string, v: unknown): void; __get(n: string): any }>(
-      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'applyViewMode'],
-      ['_viewMode', '_viewPlan', '_viewLayout', '_panelDetail'],
+      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'orderPanelSurface', 'applyViewMode'],
+      ['_viewMode', '_viewPlan', '_viewLayout', '_panelDetail', 'PANEL_SURFACE_PARTS'],
       { document: { body: b, getElementById: () => null }, applyPanelDetail: () => {} },
     );
     env.applyViewMode();
@@ -547,6 +547,49 @@ describe('P4 — the detail card follows the plan', () => {
     env.applyViewMode();
     // 3안 압축: everything is there, folded at first (the old 자세히 off).
     expect(env.__get('_panelDetail')).toBe(false);
+  });
+
+  it('the detail card’s top sections move in the DOM too, so the separators fall between them as they read (review P3)', () => {
+    const b = fakeBody();
+    const ids = [
+      'panel-info',
+      'panel-goal',
+      'panel-needs-head',
+      'panel-permission',
+      'panel-question',
+      'panel-needs-status',
+      'panel-artifacts',
+    ];
+    let moves = 0;
+    const surf: { children: any[]; appendChild(el: any): void } = {
+      children: [],
+      appendChild(el: any) {
+        moves++;
+        this.children.splice(this.children.indexOf(el), 1);
+        this.children.push(el);
+      },
+    };
+    const els: Record<string, any> = { 'panel-surface': surf };
+    for (const id of ids) surf.children.push((els[id] = { id, parentNode: surf }));
+    const env = load<{ applyViewMode(): void; __set(n: string, v: unknown): void }>(
+      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'orderPanelSurface', 'applyViewMode'],
+      ['_viewMode', '_viewPlan', '_viewLayout', '_panelDetail', 'PANEL_SURFACE_PARTS'],
+      { document: { body: b, getElementById: (id: string) => els[id] ?? null }, applyPanelDetail: () => {} },
+    );
+    env.applyViewMode();
+    // Already in order: nothing moves (a focused field inside keeps its focus).
+    expect(moves).toBe(0);
+    const detail = JSON.parse(JSON.stringify(B['1'].minimal.detail));
+    const at = (id: string) => detail.top.findIndex((x: { id: string }) => x.id === id);
+    const [artifacts] = detail.top.splice(at('artifacts'), 1);
+    detail.top.unshift(artifacts);
+    env.__set('_viewLayout', { v: 1, presets: { '1': { minimal: { detail } } } });
+    env.applyViewMode();
+    expect(surf.children.map((e) => e.id)).toEqual([
+      'panel-artifacts',
+      ...ids.filter((id) => id !== 'panel-artifacts'),
+    ]);
+    expect(b.props['--o-artifacts']).toBe('1');
   });
 
   const hides = (tok: string, sel: string) => {

@@ -201,9 +201,13 @@ function layCur() {
   if (_laySurface === 'thread') {
     var t = _layDoc.thread;
     if (t && t.mode === 'custom' && t.custom) return layClone(t.custom);
-    return followThreadLayout(layoutsFor(_layDoc, _lay.builtins, _layMode, _lay.plan).card);
+    return followThreadLayout(layoutsFor(_layDoc, _lay.builtins, layThreadViewMode(), _lay.plan).card);
   }
   return layClone(layoutOf(_layDoc, _lay.builtins, _layPreset, _layMode, _laySurface));
+}
+// The thread card follows the task card in the mode the dashboard is in (what Slack shows), not the editor's toggle.
+function layThreadViewMode() {
+  return _lay && _lay.mode === 'advanced' ? 'advanced' : 'minimal';
 }
 function layThreadMode() {
   return (_layDoc && _layDoc.thread && _layDoc.thread.mode) || 'follow';
@@ -395,6 +399,8 @@ function layPaint() {
   var thread = _laySurface === 'thread';
   var presetEl = document.getElementById('lay-preset');
   if (presetEl) presetEl.hidden = thread;
+  var modeEl = document.getElementById('lay-mode');
+  if (modeEl) modeEl.hidden = thread;
   var edited = thread ? layThreadMode() === 'custom' : layEdited(_layPreset, _layMode, _laySurface);
   var badge = document.getElementById('lay-badge');
   if (badge) badge.hidden = !edited;
@@ -667,9 +673,11 @@ function layThreadSet(mode) {
   if (mode === 'custom') {
     var t = _layDoc.thread && _layDoc.thread.custom;
     // 따로 설정 starts from what the thread card shows now.
-    _layDoc.thread = { mode: 'custom', custom: t || followThreadLayout(layoutsFor(_layDoc, _lay.builtins, _layMode, _lay.plan).card) };
+    _layDoc.thread = { mode: 'custom', custom: t || followThreadLayout(layoutsFor(_layDoc, _lay.builtins, layThreadViewMode(), _lay.plan).card) };
   } else {
-    _layDoc.thread = { mode: mode };
+    // The custom card stays saved, so 따로 설정 brings it back after a while on follow or the server theme.
+    var kept = _layDoc.thread && _layDoc.thread.custom;
+    _layDoc.thread = kept ? { mode: mode, custom: kept } : { mode: mode };
   }
   if (mode !== 'theme') _laySurface = 'thread';
   layChanged();

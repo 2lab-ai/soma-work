@@ -15,6 +15,17 @@ const THEME_DESCRIPTIONS: Record<SessionTheme, string> = {
   minimal: '텍스트 최소 UI',
 };
 
+/**
+ * The thread header uses this theme only when the user's thread card is "서버 슬랙 테마" (.prd/21 §5): by default it
+ * follows their dashboard task card, so say where the header is set.
+ */
+function threadHeaderNote(userId: string): string {
+  const mode = userSettingsStore.getUserDashboardLayout(userId).thread?.mode ?? 'follow';
+  return mode === 'theme'
+    ? ''
+    : '\n스레드 헤더는 대시보드 설정 › 대시보드 화면 › 스레드 카드를 따릅니다. 이 테마를 헤더에도 쓰려면 거기서 "서버 슬랙 테마"를 고르세요.';
+}
+
 export async function renderThemeCard(args: { userId: string; issuedAt: number }): Promise<RenderResult> {
   const { userId, issuedAt } = args;
   const current = userSettingsStore.getUserSessionTheme(userId);
@@ -70,7 +81,7 @@ export async function applyTheme(args: { userId: string; value: string }): Promi
   return {
     ok: true,
     summary: `🎨 Theme → ${THEME_NAMES[resolved]}`,
-    description: THEME_DESCRIPTIONS[resolved],
+    description: THEME_DESCRIPTIONS[resolved] + threadHeaderNote(userId),
   };
 }
 
