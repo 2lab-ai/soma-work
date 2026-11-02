@@ -11,6 +11,7 @@
 - [current/spec/](./current/spec/) — evergreen product/system specs
 - [llmux SDK authentication](current/spec/llmux-sdk-auth.md) — per-call tenant identity and parent-environment isolation, verified through the actual SDK.
 - [`/z` command master spec](./current/spec/z-command-master-spec.md)
+- [Context rollback](current/spec/context-rollback.md) — roll the model's context back to before an input or a work-log point (`resumeSessionAt`).
 - [goal-command/](./goal-command/) — goal command spec (top-level legacy location; new specs go under `current/`)
 
 ## 2. Stale Plans
