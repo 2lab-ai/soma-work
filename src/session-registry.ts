@@ -5,6 +5,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
+import { endGoalCapDecision } from '@soma/slack/session-goal';
 import {
   sanitizeSdkUsageBaseline,
   sanitizeSessionUsage,
@@ -2895,7 +2896,9 @@ export class SessionRegistry {
     // forces the next turn to rebuild the prompt with the preserved SSOT.
     // Goals are intentionally cleared: `/new` / `/renew` starts a fresh
     // logical conversation in the same Slack thread, and stale goal steering
-    // would otherwise leak into the new task.
+    // would otherwise leak into the new task. Its open questions (cap
+    // decision, stall) end with it.
+    endGoalCapDecision(session.goal);
     session.goal = undefined;
 
     // Reset activity state

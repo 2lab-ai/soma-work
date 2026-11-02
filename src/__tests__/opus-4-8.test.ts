@@ -68,7 +68,7 @@ describe('opus-4.8 — model-registry pricing + context', () => {
 });
 
 describe('opus-4.8 — effort surface unchanged at the API level', () => {
-  it('EFFORT_LEVELS remains the canonical 5-level set', () => {
-    expect([...EFFORT_LEVELS]).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+  it('EFFORT_LEVELS is the canonical set: the SDK five, then ultra (only a model whose catalog menu lists it runs it)', () => {
+    expect([...EFFORT_LEVELS]).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
   });
 });

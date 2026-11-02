@@ -4503,6 +4503,142 @@ describe('stream-executor — B3 choice wiring', () => {
     expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledWith('C1-171.100');
   });
 
+  it('askUserQuestionFromHost posts a host question exactly like a model one (goal stall)', async () => {
+    const { deps, sessionRegistry } = createP3Deps();
+    deps.actionHandlers.getPendingForm = vi.fn().mockReturnValue(undefined);
+    const session = createSession();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    const question = {
+      type: 'user_choices' as const,
+      title: '🛑 Goal 멈춤',
+      questions: [{ id: 'goal-stall-next', question: '다음 지시', choices: [{ id: '1', label: 'A' }] }],
+    };
+
+    const asked = await executor.askUserQuestionFromHost('C1-171.100', question);
+
+    const turnId = deps.threadPanel.askUserForm.mock.calls[0][0] as string;
+    expect(asked).toBe(turnId);
+    expect(turnId.startsWith('host:C1-171.100:')).toBe(true);
+    expect(deps.actionHandlers.setPendingForm.mock.calls[0][1]).toMatchObject({
+      turnId,
+      channel: 'C1',
+      threadTs: '171.100',
+    });
+    expect(session.actionPanel.pendingQuestion).toMatchObject(question);
+    expect(deps.claudeHandler.setActivityState).toHaveBeenCalledWith('C1', '171.100', 'waiting');
+    expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledWith('C1-171.100');
+  });
+
+  it('askUserQuestionFromHost: the owner moved on during the post → retracted, the session never waits', async () => {
+    const { deps } = createP3Deps();
+    const session = createSession();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    deps.actionHandlers.getPendingForm = vi.fn().mockReturnValue({ channel: 'C1', messageTs: 'form-ts' });
+    deps.slackApi.updateMessage = vi.fn().mockResolvedValue(undefined);
+    // ThreadPanel writes pendingChoice right after its post, as in production.
+    deps.threadPanel.askUserForm = vi.fn(async (turnId: string, _p: unknown, formIds: string[]) => {
+      session.actionPanel.pendingChoice = { turnId, kind: 'multi', choiceTs: 'form-ts', formIds, question: {} };
+      session.actionPanel.waitingForChoice = true;
+      return { ok: true, primaryTs: 'form-ts', allTs: ['form-ts'], formIds };
+    });
+    const executor = new StreamExecutor(deps);
+    const asked = await executor.askUserQuestionFromHost(
+      'C1-171.100',
+      { type: 'user_choices', questions: [{ id: 'q', question: 'Q', choices: [{ id: '1', label: 'A' }] }] },
+      { stillWanted: () => false },
+    );
+    expect(asked).toBeUndefined();
+    expect(session.actionPanel.pendingChoice).toBeUndefined();
+    expect(session.actionPanel.pendingQuestion).toBeUndefined();
+    expect(session.actionPanel.waitingForChoice).toBe(false);
+    expect(deps.claudeHandler.setActivityState).not.toHaveBeenCalledWith('C1', '171.100', 'waiting');
+    expect(deps.actionHandlers.deletePendingForm).toHaveBeenCalled();
+    expect(deps.slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      'form-ts',
+      expect.any(String),
+      expect.any(Array),
+      [],
+    );
+  });
+
+  it('retractHostQuestion leaves a newer question alone', async () => {
+    const { deps } = createP3Deps();
+    const session = createSession();
+    session.actionPanel.pendingChoice = { turnId: 'model-turn', formIds: ['f1'] };
+    session.actionPanel.pendingQuestion = { type: 'user_choice' };
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    await executor.retractHostQuestion('C1-171.100', 'host:old');
+    expect(session.actionPanel.pendingChoice.turnId).toBe('model-turn');
+    expect(session.actionPanel.pendingQuestion).toBeDefined();
+  });
+
+  it('askUserQuestionFromHost stamps the question with its turn id (a fallback without a form is still its own)', async () => {
+    const { deps } = createP3Deps();
+    deps.actionHandlers.getPendingForm = vi.fn().mockReturnValue(undefined);
+    const session = createSession();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    const asked = await executor.askUserQuestionFromHost('C1-171.100', {
+      type: 'user_choices',
+      questions: [{ id: 'q', question: 'Q', choices: [{ id: '1', label: 'A' }] }],
+    });
+    expect(session.actionPanel.pendingQuestion.hostTurnId).toBe(asked);
+  });
+
+  it('retractHostQuestion frees the session before the Slack rewrite resolves (a kick right after is not dropped)', async () => {
+    const { deps, sessionRegistry } = createP3Deps();
+    const session = createSession();
+    session.actionPanel.pendingChoice = { turnId: 'host:x', formIds: ['f1'] };
+    session.actionPanel.pendingQuestion = { type: 'user_choices', questions: [], hostTurnId: 'host:x' };
+    session.actionPanel.waitingForChoice = true;
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    (sessionRegistry as any).getActivityStateByKey = vi.fn(() => 'waiting');
+    deps.actionHandlers.getPendingForm = vi.fn().mockReturnValue({ channel: 'C1', messageTs: 'form-ts' });
+    let release: () => void = () => undefined;
+    deps.slackApi.updateMessage = vi.fn(() => new Promise<void>((r) => (release = r)));
+    const executor = new StreamExecutor(deps);
+    const done = executor.retractHostQuestion('C1-171.100', 'host:x');
+    // Synchronously, before Slack answers:
+    expect(session.actionPanel.pendingChoice).toBeUndefined();
+    expect(session.actionPanel.pendingQuestion).toBeUndefined();
+    expect(session.actionPanel.waitingForChoice).toBe(false);
+    expect(deps.claudeHandler.setActivityState).toHaveBeenCalledWith('C1', '171.100', 'idle');
+    release();
+    await done;
+    // The form loses its buttons: blocks AND attachments are replaced.
+    expect(deps.slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      'form-ts',
+      expect.any(String),
+      expect.any(Array),
+      [],
+    );
+  });
+
+  it('retractHostQuestion clears a fallback question that has no form (no pendingChoice)', async () => {
+    const { deps, sessionRegistry } = createP3Deps();
+    const session = createSession();
+    session.actionPanel.pendingChoice = undefined;
+    session.actionPanel.pendingQuestion = { type: 'user_choices', questions: [], hostTurnId: 'host:y' };
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    (sessionRegistry as any).getActivityStateByKey = vi.fn(() => 'waiting');
+    const executor = new StreamExecutor(deps);
+    await executor.retractHostQuestion('C1-171.100', 'host:y');
+    expect(session.actionPanel.pendingQuestion).toBeUndefined();
+    expect(deps.claudeHandler.setActivityState).toHaveBeenCalledWith('C1', '171.100', 'idle');
+  });
+
+  it('askUserQuestionFromHost refuses a session without a thread', async () => {
+    const { deps } = createP3Deps();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(undefined);
+    const executor = new StreamExecutor(deps);
+    expect(await executor.askUserQuestionFromHost('nope', { type: 'user_choices', questions: [] })).toBeUndefined();
+    expect(deps.threadPanel.askUserForm).not.toHaveBeenCalled();
+  });
+
   it('multi-choice pre-allocates formIds with turnId and calls askUserForm', async () => {
     const { deps } = createP3Deps();
     deps.threadPanel.askUserForm = vi

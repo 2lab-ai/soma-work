@@ -467,6 +467,40 @@ describe('saving', () => {
     expect(deps.repaintRow).toHaveBeenCalledWith('defaultEffort');
   });
 
+  it('a default-model save reads the default effort back — its value and levels follow the model', async () => {
+    const effortRow = row();
+    const snapshot = {
+      settings: [row({ key: 'defaultModel', value: 'sol[1m]', options: [] }), effortRow],
+    };
+    const repaintRow = vi.fn();
+    const fresh = {
+      ...row(),
+      value: 'xhigh',
+      options: ['low', 'medium', 'high', 'xhigh'].map((v) => ({ value: v, label: v })),
+    };
+    const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ settings: [fresh] }) }));
+    const { saveSetting } = load<{ saveSetting(key: string, value: unknown): Promise<boolean> }>(
+      ['findRow', 'valueText', 'needsConfirm', 'saveSetting', 'refreshRow', 'esc'],
+      {
+        _snapshot: snapshot,
+        _rowStatus: {},
+        document: { getElementById: () => null },
+        apiWrite: vi.fn(async (_m: string, _u: string, p: any) => ({
+          ok: true,
+          data: { setting: row({ key: 'defaultModel', value: p.value, options: [] }) },
+        })),
+        confirmDialog: vi.fn(async () => true),
+        repaintRow,
+        paintRowData: vi.fn(),
+        fetch,
+      },
+    );
+    expect(await saveSetting('defaultModel', 'grok[1m]')).toBe(true);
+    expect(fetch).toHaveBeenCalledWith('/api/settings');
+    expect(snapshot.settings[1]).toBe(fresh);
+    expect(repaintRow).toHaveBeenCalledWith('defaultEffort');
+  });
+
   it('a refusal keeps the old value and says why', async () => {
     const { saveSetting, deps, snapshot } = env({
       apiWrite: vi.fn(async () => ({ ok: false, error: 'effort는 … 중 하나여야 합니다' })),
