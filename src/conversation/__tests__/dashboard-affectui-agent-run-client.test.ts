@@ -1378,6 +1378,7 @@ describe('a question rewritten in place is another card (review R2 P1)', () => {
     };
     let next = after;
     const m = load<{ renderPanelQuestion(s: unknown): void }>(['renderPanelQuestion', 'apSafeFocus'], [], {
+      renderPanelPlan: () => {},
       document,
       acQuestionHtml: () => `<${next.getAttribute('data-mk')}>`,
       acHydrate: () => {},
@@ -1662,6 +1663,7 @@ describe('question card (D17)', () => {
     let hydrated = 0;
     let multi = 0;
     const m = load<{ renderPanelQuestion(s: unknown): void }>(['renderPanelQuestion'], [], {
+      renderPanelPlan: () => {},
       document: { getElementById: (id: string) => els[id] ?? null },
       acQuestionHtml: () => '<div class="ac-slot"></div>',
       acHydrate: () => hydrated++,
@@ -1720,7 +1722,7 @@ const CARD = (over: Record<string, unknown> = {}) => ({
 describe('panel head (D18) — <ui-status-bar>', () => {
   const head = (s: Record<string, unknown>, col: string) =>
     load<{ panelHeadData(s: unknown, col: string): Record<string, unknown> }>(
-      ['toNum', 'pendingAutoResume', 'rootStatusOf', 'isBusy', 'sessionActionsOf', 'panelHeadData'],
+      ['toNum', 'pendingAutoResume', 'rootStatusOf', 'isBusy', 'sessionActionsOf', 'panelHeadData', 'planHeadActions'],
       ['AGENT_STATUS_LABEL', 'PS_BAR_STATUS', 'SESSION_ACTION_ARIA', '_busy'],
       { currentUserId: 'U1', SELF_INSTANCE_NAME: '', READ_ONLY_MSG: 'read only' },
     ).panelHeadData(s, col);
