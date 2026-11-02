@@ -493,6 +493,31 @@ describe('GoalHandler — goal resume on a stalled goal (goal stall)', () => {
       resume.setGoalLoopResumeHandler(undefined as any);
     }
   });
+  it('a goal that stalled at its last continuation gets its budget back (no cap question right after)', async () => {
+    const resume = await import('../../goal-loop-resume');
+    resume.setGoalLoopResumeHandler(() => undefined);
+    try {
+      const session = makeSession({
+        goal: {
+          goalId: 'g1',
+          objective: 'ship',
+          status: 'active',
+          createdAt: 1,
+          updatedAt: 1,
+          createdBy: 'U123',
+          continuationCount: 10,
+          maxContinuations: 10,
+          epoch: 0,
+          stall: { stallId: 's1', stalledAt: 1, reason: 'r', actions: ['a', 'b', 'c'], confidence: 0.99 },
+        } as any,
+      });
+      await new GoalHandler(makeDeps(session)).execute(makeCtx({ text: 'goal resume' }));
+      expect(session.goal?.stall).toBeUndefined();
+      expect(session.goal?.continuationCount).toBe(0);
+    } finally {
+      resume.setGoalLoopResumeHandler(undefined as any);
+    }
+  });
 });
 
 describe('GoalHandler — goal clear ends an open stall (its question is retracted)', () => {
