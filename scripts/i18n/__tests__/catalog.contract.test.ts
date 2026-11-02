@@ -31,7 +31,8 @@ describe('English display catalogs', () => {
         else if (placeholders(key.split('@@')[0]).join() !== placeholders(text).join())
           bad.push(`${key}: placeholders differ from "${text}"`);
         else if (text === '' && name === 'en-text.json') bad.push(`${key}: empty`);
-        else {
+        // A punctuation-only English fragment ('/' after a date's month, '' for a counter suffix) may drop edge spaces.
+        else if (!/^[\p{P}\p{S}\s]*$/u.test(text)) {
           const lead = key.length - key.trimStart().length;
           const trail = key.length - key.trimEnd().length;
           if (lead && !text.startsWith(key.slice(0, lead))) bad.push(`${key}: leading space lost`);

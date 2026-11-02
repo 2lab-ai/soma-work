@@ -6059,7 +6059,7 @@ ${pageTokenAliases()}
          user (the dashboardMode setting). -->
     <button type="button" class="ui-chip view-mode-toggle" id="view-mode-toggle" slot="actions" aria-pressed="false" title="어드밴스드 모드 — 켜면 통계, 토큰, 에이전트 트리, 작업 로그까지 모두 보여 줍니다" onclick="toggleViewMode()"><i data-ui-icon="list"></i><span class="vm-label">어드밴스드</span></button>
     <!-- Display language (#773): en / ko at the top right. The server renders the page in the user's language (the saved
-         setting — the one Slack's \`lang ko|en\` changes — else the soma_lang cookie); a switch saves both and reloads. -->
+         setting — the one Slack's lang ko|en changes — else the soma_lang cookie); a switch saves both and reloads. -->
     <div class="lang-toggle" id="lang-toggle" slot="actions" role="group" aria-label="표시 언어"><button type="button" class="ui-chip lang-opt" data-lang="en" aria-pressed="false" title="English" onclick="setDisplayLang('en')">EN</button><button type="button" class="ui-chip lang-opt" data-lang="ko" aria-pressed="true" title="한국어" onclick="setDisplayLang('ko')">KO</button></div>
     </ui-app-bar>
   </header>
@@ -20606,12 +20606,13 @@ _viewMode = readViewMode();
 _viewPlan = readViewPlan();
 _viewLayout = readViewLayout();
 applyViewMode();
-paintLangToggle();
 syncBoardScope();
 // The user's settings (the view mode, the plan, the default model chips) once the view state above exists: a load
 // started earlier captured _viewModeSeq before its var ran and never applied the server's mode.
 loadMyDefaults();
 bindPanelTabs();
+// The EN | KO toggle shows the page's language pressed (#773).
+paintLangToggle();
 setInterval(loadSessions, 30000);
 // CRON lane jobs and the llmux capacity view poll on their own cadence (the
 // server caches llmux for 30s); capacity is handed again every 30s, so its element
