@@ -1,7 +1,7 @@
 // Session types live in somalib (shared with mcp-servers).
 // Re-export for backward compatibility — all src/ files import from './types'.
 import type { PendingRewind } from '@soma/slack/context-anchor';
-import type { SessionGoalStall } from '@soma/slack/session-goal';
+import type { SessionGoalFirstFailure, SessionGoalStall } from '@soma/slack/session-goal';
 
 export type {
   Continuation,
@@ -219,7 +219,7 @@ export interface SessionGoalPendingEval {
 }
 
 // Goal stall round — one definition, in the package the queue helpers live in.
-export type { SessionGoalStall };
+export type { SessionGoalFirstFailure, SessionGoalStall };
 
 export interface SessionGoal {
   /**
@@ -318,6 +318,8 @@ export interface SessionGoal {
    * (the answer to the stall question, or anything typed) clears it.
    */
   stall?: SessionGoalStall;
+  /** #745: where the goal first failed for its current reason, and whether any turn since did new work. */
+  firstFailure?: SessionGoalFirstFailure;
   /** Counts how many eval cycles have run for this goal. */
   evalAttemptCount?: number;
   /**

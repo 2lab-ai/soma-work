@@ -10,8 +10,10 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { anchorRefusal } from '@soma/slack/context-anchor';
 import type { UserChoices } from '@soma/slack/user-choice-extractor';
-import type { SessionGoal, SessionGoalStall } from '../types';
+import { requestContextRollback } from '../session/context-rollback';
+import type { ConversationSession, SessionGoal, SessionGoalStall } from '../types';
 import type { GoalEvalVerdict } from './goal-completion-evaluator';
 
 /**
@@ -44,13 +46,19 @@ export function stallActionsOf(verdict: GoalEvalVerdict): string[] {
 }
 
 /** Open a stall round on the goal. Mutates the goal only; the caller persists. */
-export function openGoalStall(goal: SessionGoal, verdict: GoalEvalVerdict, now: number): SessionGoalStall {
+export function openGoalStall(
+  goal: SessionGoal,
+  verdict: GoalEvalVerdict,
+  now: number,
+  rollback?: { anchor: string; turns: number },
+): SessionGoalStall {
   const stall: SessionGoalStall = {
     stallId: randomUUID(),
     stalledAt: now,
     reason: verdict.reason,
     actions: stallActionsOf(verdict),
     confidence: verdict.sameConfidence ?? 0,
+    ...(rollback ? { rollbackAnchor: rollback.anchor, rollbackTurns: rollback.turns } : {}),
   };
   goal.stall = stall;
   goal.updatedAt = now;
@@ -96,7 +104,11 @@ export const GOAL_STALL_NEXT_QUESTION_ID = 'goal-stall-next';
  * item) so the answer reaches the model as "<question>: <id>. <label>" — a
  * bare choice id would mean nothing to a model that never saw the question.
  */
-export function buildGoalStallQuestion(input: { reason: string; actions: string[] }): UserChoices {
+export function buildGoalStallQuestion(input: {
+  reason: string;
+  actions: string[];
+  rollback?: { turns: number };
+}): UserChoices {
   return {
     type: 'user_choices',
     title: '🛑 Goal 멈춤 — 다음에 할 일을 골라 주세요',
@@ -108,8 +120,58 @@ export function buildGoalStallQuestion(input: { reason: string; actions: string[
         choices: input.actions.map((label, i) => ({ id: String(i + 1), label })),
         recommendedChoiceId: '1',
       },
+      ...(input.rollback
+        ? [
+            {
+              id: GOAL_STALL_ROLLBACK_QUESTION_ID,
+              question: GOAL_STALL_ROLLBACK_QUESTION,
+              context: `처음 실패한 뒤 ${input.rollback.turns}턴은 진전이 없었습니다. 되돌리면 그 턴들이 모델 문맥에서 빠집니다 (파일은 그대로).`,
+              choices: [
+                { id: 'yes', label: '예 — 처음 실패한 지점으로 되돌리고 진행' },
+                { id: 'no', label: '아니오 — 지금 문맥 그대로 진행' },
+              ],
+              recommendedChoiceId: 'yes',
+            },
+          ]
+        : []),
     ],
   };
+}
+
+/** #745: the stall question's second item — roll the context back to the first failure. */
+export const GOAL_STALL_ROLLBACK_QUESTION_ID = 'goal-stall-rollback';
+export const GOAL_STALL_ROLLBACK_QUESTION = '처음 실패한 지점으로 문맥 되돌리기';
+
+/**
+ * Did the answer pick "yes" on the rollback item? The multi-choice answer
+ * reaches the host as lines `<question>: <choiceId>. <label>`
+ * (`ChoiceActionHandler`, Slack form and dashboard alike).
+ */
+export function goalStallRollbackChosen(text: string): boolean {
+  return text.split('\n').some((line) => line.trim().startsWith(`${GOAL_STALL_ROLLBACK_QUESTION}: yes.`));
+}
+
+/**
+ * #745: the owner answered the stall question with "yes" on the rollback item —
+ * the context rolls back to the first failure before this very turn runs (the
+ * caller is the turn's own pre-dispatch, so no other turn holds the slot).
+ * Returns whether a rollback is now waiting.
+ */
+export function applyGoalStallRollbackAnswer(
+  session: ConversationSession,
+  text: string,
+  actor: string,
+  deps: { transcriptHas?: (sessionId: string, uuid: string) => boolean } = {},
+): boolean {
+  const anchor = session.goal?.stall?.rollbackAnchor;
+  if (!anchor || !goalStallRollbackChosen(text)) return false;
+  const result = requestContextRollback(
+    session,
+    { anchor, label: '처음 실패한 지점 (goal 멈춤)', source: 'goal' },
+    actor,
+    { requestActive: false, transcriptHas: deps.transcriptHas },
+  );
+  return result.ok;
 }
 
 /**
@@ -130,4 +192,48 @@ export function shouldAskGoalStallQuestion(
   if (session.goal.stall?.stallId !== input.stallId) return false;
   if (requestActive) return false;
   return !session.actionPanel?.pendingQuestion && !session.actionPanel?.waitingForChoice;
+}
+
+/**
+ * #745: remember where the goal first failed for its current reason — the
+ * context anchor at the end of the turn just judged — and whether any turn
+ * since did new work. A new reason starts it over; completion drops it.
+ * Called with every real verdict, before `decideGoalEvalOutcome` overwrites
+ * `lastEvalReason`.
+ */
+export function trackGoalFirstFailure(
+  session: Pick<ConversationSession, 'contextAnchor'>,
+  goal: SessionGoal,
+  verdict: GoalEvalVerdict,
+  now: number,
+): void {
+  if (verdict.completed) {
+    goal.firstFailure = undefined;
+    return;
+  }
+  const sameReason = !!goal.lastEvalReason?.trim() && verdict.sameAsPrevious === true && !!goal.firstFailure;
+  if (!sameReason) {
+    goal.firstFailure = { anchor: session.contextAnchor, at: now, turns: 0, progressed: false };
+    return;
+  }
+  const first = goal.firstFailure as NonNullable<SessionGoal['firstFailure']>;
+  first.turns += 1;
+  if (verdict.progressed === true) first.progressed = true;
+}
+
+/**
+ * #745: offer the rollback with the stall when no turn since the first failure
+ * did new work and there is something to drop (the first failure is not the
+ * current tail, and its anchor is still usable in this context).
+ */
+export function goalStallRollbackOffer(
+  session: Pick<ConversationSession, 'contextAnchor' | 'sessionId' | 'compactionCount'>,
+  goal: SessionGoal,
+  verdict: GoalEvalVerdict,
+): { anchor: string; turns: number } | undefined {
+  const first = goal.firstFailure;
+  if (!first?.anchor || first.progressed || verdict.progressed === true) return undefined;
+  if (first.anchor === session.contextAnchor || first.turns < 1) return undefined;
+  if (anchorRefusal(session, first.anchor)) return undefined;
+  return { anchor: first.anchor, turns: first.turns };
 }

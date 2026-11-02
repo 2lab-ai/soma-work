@@ -47,6 +47,27 @@ export interface SessionGoalStall {
   confidence: number;
   /** The host question's turn id once posted — its form is retracted when the round ends without an answer. */
   questionTurnId?: string;
+  /**
+   * #745: where the goal first failed for this reason (a context anchor), offered
+   * as a rollback because no turn since did new work. Absent = not offered.
+   */
+  rollbackAnchor?: string;
+  /** How many evaluated turns since the first failure would leave the context. */
+  rollbackTurns?: number;
+}
+
+/**
+ * #745: where the goal first failed for its current failure reason — the
+ * context anchor at the end of that turn — and whether any evaluated turn since
+ * did new work. A new reason (or completion) starts it over.
+ */
+export interface SessionGoalFirstFailure {
+  anchor?: string;
+  at: number;
+  /** Evaluated turns since the first failure (same reason). */
+  turns: number;
+  /** Some turn since did concrete new work (the evaluator's `progressed`). */
+  progressed: boolean;
 }
 
 /**
@@ -76,6 +97,8 @@ export interface SessionGoalState {
   stall?: SessionGoalStall;
   /** The `remaining` list of the verdict behind `lastEvalReason` (goal stall comparison). */
   lastEvalRemaining?: string[];
+  /** #745: where the goal first failed for its current reason. */
+  firstFailure?: SessionGoalFirstFailure;
   /**
    * The goal's opening turn was admitted but has not reached the model yet
    * (set by the host when it admits the opening, cleared right before the
@@ -386,6 +409,7 @@ export function advanceGoalQueue(
   next.lastEvalReason = undefined;
   next.lastEvalRemaining = undefined;
   next.stall = undefined;
+  next.firstFailure = undefined;
   next.lastEvalSummaryHash = undefined;
   next.lastAssistantTurnSummary = undefined;
   applyGoalToSession(session, next);
@@ -449,6 +473,7 @@ export function deleteCurrentGoal(session: GoalQueueSession): { deleted: boolean
     next.lastEvalReason = undefined;
     next.lastEvalRemaining = undefined;
     next.stall = undefined;
+    next.firstFailure = undefined;
     next.lastEvalSummaryHash = undefined;
     next.lastAssistantTurnSummary = undefined;
     endGoalCapDecision(next);
