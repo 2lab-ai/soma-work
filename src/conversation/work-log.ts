@@ -147,6 +147,12 @@ export interface WorkLogInput {
    * WORK_LOG_FIELD_MAX; entries written before it was kept have none.
    */
   toolUseId?: string;
+  /**
+   * Context rollback (#743) — the SDK cut point this entry was made at
+   * (`@soma/slack/context-anchor`, encoded). "Roll back to here" resumes the
+   * next turn there. Entries written before it was kept have none.
+   */
+  anchor?: string;
 }
 /** An entry as pages and the broadcast carry it: its raw is described, never included. */
 export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes'> {
@@ -1228,6 +1234,7 @@ export function appendWorkLog(conversationId: string, input: WorkLogInput): Prom
   if (input.agentId !== undefined) fields.agentId = clampChars(String(input.agentId), WORK_LOG_FIELD_MAX);
   if (input.agentRef !== undefined) fields.agentRef = clampChars(String(input.agentRef), WORK_LOG_FIELD_MAX);
   if (input.toolUseId !== undefined) fields.toolUseId = clampChars(String(input.toolUseId), WORK_LOG_FIELD_MAX);
+  if (typeof input.anchor === 'string' && input.anchor.length <= WORK_LOG_FIELD_MAX) fields.anchor = input.anchor;
   if (input.by === 'user' || input.by === 'system') fields.by = input.by;
   if (input.compactTurn === true) fields.compactTurn = true;
   const raw =

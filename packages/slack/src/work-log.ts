@@ -66,6 +66,12 @@ export interface WorkLogInput {
    * call card pairs a result with its call by it; older logs have none.
    */
   toolUseId?: string;
+  /**
+   * Context rollback (#743) — the SDK cut point this entry was made at
+   * (`@soma/slack/context-anchor`, encoded). "Roll back to here" resumes the
+   * next turn there. Entries written before it was kept have none.
+   */
+  anchor?: string;
 }
 
 /** An entry as pages and the live broadcast carry it: its raw is described, never included. */

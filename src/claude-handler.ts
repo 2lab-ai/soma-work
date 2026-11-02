@@ -12,6 +12,7 @@ import {
   query,
   type SDKMessage,
 } from '@anthropic-ai/claude-agent-sdk';
+import { consumePendingRewind, resetChainTracking, trackChainPoint } from '@soma/slack/context-anchor';
 import { adoptSdkSessionId } from '@soma/slack/session-usage-math';
 import * as fs from 'fs';
 import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShotText } from './agent-runtime';
@@ -1354,6 +1355,22 @@ export class ClaudeHandler implements TurnSteeringPort {
         },
       );
 
+      // Context rollback (#743): a rollback the owner asked for runs this turn
+      // from its anchor — `resumeSessionAt` drops every transcript entry after
+      // it. One-shot: the request is cleared here whatever the turn does, so a
+      // refused uuid fails one turn, never every turn.
+      if (session && !incident && options.resume) {
+        const rewind = consumePendingRewind(session);
+        if (rewind) {
+          options.resumeSessionAt = rewind.uuid;
+          this.logger.info('Context rollback applied to this turn', {
+            sessionId: session.sessionId,
+            source: rewind.rewind.source,
+            resumeSessionAt: rewind.uuid,
+          });
+        }
+      }
+
       if (incident) {
         // Never the whole options object: it carries `env` (the lease's access
         // token) and the attempt's system prompt. Identity and budget only.
@@ -1556,6 +1573,9 @@ export class ClaudeHandler implements TurnSteeringPort {
             if (raw.parent_tool_use_id === undefined || raw.parent_tool_use_id === null) {
               turnStartSeq = frameSeq;
             }
+            if (session && (raw.parent_tool_use_id === undefined || raw.parent_tool_use_id === null)) {
+              resetChainTracking(session);
+            }
             if (session) {
               adoptSdkSessionId(session, message.session_id);
               this.logger.info('Session initialized', {
@@ -1588,6 +1608,9 @@ export class ClaudeHandler implements TurnSteeringPort {
               }
             }
           }
+
+          // Context rollback (#743): remember the latest safe cut point.
+          if (session) trackChainPoint(session, raw);
 
           if (message.type === 'result') lastResultSeq = frameSeq;
 
