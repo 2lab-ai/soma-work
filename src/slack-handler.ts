@@ -112,6 +112,7 @@ import type { GoalStallQuestion } from './slack/goal-loop-controller';
 import {
   buildGoalStallQuestion,
   type GoalStallRetireCause,
+  retireGoalStall,
   setGoalStallRetiredListener,
   shouldAskGoalStallQuestion,
 } from './slack/goal-stall';
@@ -6477,6 +6478,7 @@ export class SlackHandler {
     let forcedIdle = 0;
     let repaired = 0;
     let retriesClaimed = 0;
+    let stallsEnded = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       // A Slack-less task cannot run a turn yet (#597/#598) — never re-arm its goal (#612 review).
       if (session.slackless) continue;
@@ -6498,6 +6500,15 @@ export class SlackHandler {
         }
       }
       if (session.goal?.status !== 'active') continue;
+      // A stall judged on no turn text is not a real stall: a turn the restart
+      // cut short was taken for "the same failure" (2026-11-02, before the loop
+      // stopped judging empty turns). End it — its question is withdrawn and
+      // the session stops waiting on it — and resume below.
+      if (session.goal.stall && !(session.goalLastTurnText ?? session.goal.lastAssistantTurnSummary ?? '').trim()) {
+        retireGoalStall(session.goal, 'lifecycle');
+        stallsEnded++;
+        this.logger.info('Ended a goal stall judged on no turn text — resuming the goal', { sessionKey });
+      }
       const panel = session.actionPanel;
       if (session.activityState === 'waiting' && (panel?.waitingForChoice === true || panel?.pendingQuestion)) {
         // Waiting on its user's answer is not a stale turn: no turn has to run
@@ -6537,7 +6548,7 @@ export class SlackHandler {
         });
       }
     }
-    if (forcedIdle > 0 || repaired > 0 || retriesClaimed > 0) this.claudeHandler.saveSessions();
+    if (forcedIdle > 0 || repaired > 0 || retriesClaimed > 0 || stallsEnded > 0) this.claudeHandler.saveSessions();
     if (resumed > 0 || repaired > 0) {
       this.logger.info(`Resumed ${resumed} active goal(s) after restart (repaired ${repaired} stranded queue(s))`);
     }

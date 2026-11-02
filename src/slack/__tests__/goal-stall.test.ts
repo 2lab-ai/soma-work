@@ -467,3 +467,73 @@ describe('review fixes (trinity round 2)', () => {
     expect(formatResumedGoalLine(goal)).toContain('budget');
   });
 });
+
+/**
+ * 2026-11-02 restart incident (fable-m5max dev, restarts 05:08Z / 05:44Z /
+ * 06:23Z): a restart interrupts the running turns, which leaves them with no
+ * text. The restart kick then judged "(no assistant text)" against a previous
+ * verdict that said the same — the evaluator answered sameAsPrevious 0.96–0.97
+ * and every interrupted goal stopped within ten seconds of boot. No output is
+ * no evidence, not the same failure; a restart is the host going on.
+ */
+describe('restart and interrupted turns never stall (2026-11-02 incident)', () => {
+  const sameAgain = verdict({ sameAsPrevious: true, sameConfidence: 0.97, progressed: false });
+
+  it('a restart kick with no turn text resumes the work without an eval', async () => {
+    const h = makeHarness(makeGoal({ lastEvalReason: 'PR #489 is not merged', lastEvalRemaining: ['merge it'] }), [
+      sameAgain,
+    ]);
+    h.session.goalLastTurnText = '';
+    h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await h.controller.settled(SESSION_KEY);
+    expect(h.prompts).toHaveLength(0);
+    expect(h.goal.stall).toBeUndefined();
+    expect(h.questions).toHaveLength(0);
+    expect(h.injected).toHaveLength(1);
+    // The real gap stays the one the next turn is asked to close.
+    expect(h.goal.lastEvalReason).toBe('PR #489 is not merged');
+    expect(h.goal.lastEvalRemaining).toEqual(['merge it']);
+  });
+
+  it('an interrupted turn (no text) is not judged and does not stall', async () => {
+    const h = makeHarness(makeGoal({ lastEvalReason: 'This turn produced no assistant output' }), [sameAgain]);
+    h.session.goalLastTurnText = '   ';
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.prompts).toHaveLength(0);
+    expect(h.goal.stall).toBeUndefined();
+    expect(h.injected).toHaveLength(1);
+  });
+
+  it('a goal whose first turn was interrupted goes on too', async () => {
+    const h = makeHarness(makeGoal({ lastEvalReason: undefined, continuationCount: 0, evalAttemptCount: 0 }), [
+      sameAgain,
+    ]);
+    h.session.goalLastTurnText = undefined;
+    h.goal.lastAssistantTurnSummary = undefined;
+    h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await h.controller.settled(SESSION_KEY);
+    expect(h.prompts).toHaveLength(0);
+    expect(h.goal.stall).toBeUndefined();
+    expect(h.injected).toHaveLength(1);
+    expect(h.goal.lastEvalReason).toBeTruthy();
+  });
+
+  it('a kick that judges new text cannot stall — the owner or the host chose to go on', async () => {
+    const h = makeHarness(makeGoal({ lastEvalReason: 'x', lastEvalSummaryHash: 'judged-before' }), [sameAgain]);
+    h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await h.controller.settled(SESSION_KEY);
+    expect(h.prompts).toHaveLength(1);
+    expect(h.goal.stall).toBeUndefined();
+    expect(h.questions).toHaveLength(0);
+    expect(h.injected).toHaveLength(1);
+  });
+
+  it('a real turn that repeats the same failure still stalls', async () => {
+    const h = makeHarness(makeGoal({ lastEvalReason: 'dev has 0 epics' }), [sameAgain]);
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.stall).toBeDefined();
+    expect(h.injected).toHaveLength(0);
+  });
+});
