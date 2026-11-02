@@ -2849,7 +2849,7 @@ describe('SlackHandler — follow-up queue host', () => {
      * copied BEFORE the steer cleanup deletes them. A message returned to the
      * queue is not recorded here: the drain runs it as an ordinary turn.
      */
-    async function steerWithFile(text: string) {
+    async function steerWithFile(text: string, extra: Record<string, unknown> = {}) {
       const processed = [{ name: 'shot.png', path: '/tmp/slack-file-1-shot.png', isImage: true }];
       processFiles.mockResolvedValue({ files: processed, shouldContinue: true });
       const order: string[] = [];
@@ -2875,6 +2875,7 @@ describe('SlackHandler — follow-up queue host', () => {
         message({
           ts: '1792900000.000100',
           text,
+          ...extra,
           files: [
             {
               id: 'F1',
@@ -2912,6 +2913,19 @@ describe('SlackHandler — follow-up queue host', () => {
         },
       );
       expect(order).toEqual(['capture', 'record', 'cleanup']);
+      await settle();
+    });
+
+    it('a dashboard send steered into the running turn keeps its ref on the turn it records (#785)', async () => {
+      const { uuid, settle, record } = await steerWithFile('대시보드에서 보낸 지시', {
+        dashboardClientRef: 'optimistic-1-ab',
+      });
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
+      expect((record.mock.calls[0] as unknown[])[5]).toEqual({
+        timestamp: 1792900000000,
+        origin: { by: 'user' },
+        clientRef: 'optimistic-1-ab',
+      });
       await settle();
     });
 
@@ -4780,6 +4794,22 @@ describe('SlackHandler — follow-up queue host', () => {
 
       await settle();
       expect(startWithContinuation, 'a queued goal starts no turn of its own').toHaveBeenCalledTimes(1);
+    });
+
+    it("a goal set from the dashboard while a turn runs: its opening turn carries the send's ref (#785)", async () => {
+      registrySession.goal = undefined;
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(
+        message({ ts: '333.445', text: 'goal 대시보드 목표', dashboardClientRef: 'optimistic-1-ab' }),
+        say(),
+      );
+
+      const queued = items();
+      expect(queued).toHaveLength(1);
+      expect(queued[0].message.text).toBe('대시보드 목표');
+      expect(queued[0].message.dashboardClientRef).toBe('optimistic-1-ab');
+      await settle();
     });
 
     it('T1.1 normalizes `/z goal …` the same way', async () => {
