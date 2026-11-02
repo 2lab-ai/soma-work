@@ -227,29 +227,27 @@ function onlyDataPipes(command: string): boolean {
  * - no `;` `&` `&&` `||` `|&` newline, subshell, brace group, here-doc, `<` input,
  *   comment, backslash outside quotes, `$` / backtick outside single quotes;
  * - no redirect except `2>/dev/null` / `2>&1`;
- * - the first stage is a known reader: `curl` with read-only flags (method GET, no
- *   body, no upload, no output file, no config file, no credentials or
- *   Authorization / Cookie header, http(s) URLs only), `gh api` with method GET and
- *   no fields/input,
- *   `gh pr|issue|run|repo|release|workflow view|list|status|diff|checks` (no --web),
- *   or `cat` `echo` `printf` `jq` `head` `tail` `grep`;
- * - every later stage is one of those text tools or an interpreter the reader check
- *   accepted.
+ * - exactly two stages: a remote read, then an interpreter the reader check accepted;
+ * - the remote read is `curl` with read-only flags (method GET, no body, no upload,
+ *   no output file, no config file, no credentials, http(s) URLs only, and only
+ *   the headers in {@link SAFE_HEADER}), `gh api` with method GET, no fields/input,
+ *   no `--hostname` and a GitHub path (not a URL), `gh pr|issue|run|repo|release|
+ *   workflow view|list|status|diff|checks` (no --web, no --jq / --template — gojq
+ *   reads the environment), or `echo` / `printf` of a
+ *   literal. A local file read (`cat ~/.netrc | python3 …`, review r6) does not
+ *   qualify: it can move a secret with no guardian and no warning.
  *
  * It is an allowlist: a shape it does not recognise goes to the model, never through.
  */
 export function isPlainReadPipeline(command: string): boolean {
   const stages = plainPipelineStages(command);
-  if (!stages || stages.length < 2) return false;
+  if (!stages || stages.length !== 2) return false;
   if (!onlyDataPipes(command)) return false;
-  const [first, ...rest] = stages.map(stageWords);
-  if (!first || !isReadProducer(first)) return false;
-  return stages.slice(1).every((stage, k) => INTERPRETER_STAGE.test(stage) || isTextTool(rest[k]));
+  return isReadProducer(stageWords(stages[0])) && INTERPRETER_STAGE.test(stages[1]);
 }
 
 /** A stage that starts with an interpreter — `onlyDataPipes` already judged every one. */
 const INTERPRETER_STAGE = new RegExp(String.raw`^(?:\S*/)?(?:env\s+(?:-\S+\s+)*)?${INTERPRETER}(?![\w.-])`, 'i');
-const TEXT_TOOLS: ReadonlySet<string> = new Set(['cat', 'echo', 'printf', 'jq', 'head', 'tail', 'grep']);
 const STDERR_REDIRECT = /^2>[ \t]*(?:\/dev\/null|&1)(?=[ \t|]|$)/;
 
 /** The stages of one plain pipeline, or null for anything else (see above). */
@@ -309,15 +307,11 @@ function stageWords(stage: string): string[] {
   return words;
 }
 
-function isTextTool(words: string[] | undefined): boolean {
-  return !!words && words.length > 0 && TEXT_TOOLS.has(words[0]);
-}
-
 function isReadProducer(words: string[]): boolean {
   const [program, ...args] = words;
   if (program === 'curl') return curlOnlyReads(args);
   if (program === 'gh') return ghOnlyReads(args);
-  return isTextTool(words);
+  return program === 'echo' || program === 'printf';
 }
 
 /** `--flag=value` / `-Xvalue` → [flag, value]; otherwise [arg, undefined]. */
@@ -330,7 +324,13 @@ function splitFlag(arg: string, attached: readonly string[]): [string, string | 
   return [arg, undefined];
 }
 
-const CREDENTIAL_HEADER = /^\s*(?:authorization|proxy-authorization|cookie)\s*:/i;
+/**
+ * The headers a plain read may send. An allowlist, not a credential denylist: a
+ * secret travels under any name (`X-Auth-Token`, `X-Api-Key`, `Private-Token` —
+ * review r6, grok P1).
+ */
+const SAFE_HEADER =
+  /^\s*(?:accept|accept-encoding|accept-language|user-agent|x-github-api-version|if-none-match|if-modified-since|cache-control)\s*:/i;
 
 /** Words that are neither a flag nor a flag's separate value. */
 function positionals(args: string[], valued: ReadonlySet<string>, attached: readonly string[]): string[] {
@@ -394,15 +394,17 @@ function curlOnlyReads(args: string[]): boolean {
   return flagsOnlyRead(args, CURL, (flag, value) => {
     if (value.startsWith('@')) return false; // a header or format read from a file
     if (flag === '-X' || flag === '--request') return value.toUpperCase() === 'GET';
-    if (flag === '-H' || flag === '--header') return !CREDENTIAL_HEADER.test(value);
+    if (flag === '-H' || flag === '--header') return SAFE_HEADER.test(value);
     return true;
   });
 }
 
 const GH_API = {
   switches: /^(?:--paginate|--slurp|-i|--include|--silent|--verbose)$/,
-  valued: new Set(['-X', '--method', '-H', '--header', '-q', '--jq', '-t', '--template', '--cache', '--hostname']),
-  attached: ['-X', '-H', '-q', '-t'],
+  // No --hostname: gh sends the session's GitHub credential to whatever host it names (review r6).
+  // No --jq / --template either: gojq reads `env` / `$ENV`; the reader after the pipe does the parsing.
+  valued: new Set(['-X', '--method', '-H', '--header', '--cache']),
+  attached: ['-X', '-H'],
 };
 const GH_READ_NOUNS: ReadonlySet<string> = new Set(['pr', 'issue', 'run', 'repo', 'release', 'workflow']);
 const GH_READ_VERBS: ReadonlySet<string> = new Set(['view', 'list', 'status', 'diff', 'checks']);
@@ -410,16 +412,19 @@ const GH_READ_VERBS: ReadonlySet<string> = new Set(['view', 'list', 'status', 'd
 function ghOnlyReads(args: string[]): boolean {
   const [noun, ...rest] = args;
   if (noun === 'api') {
+    // A GitHub API path, never a URL or a scheme-relative host (`//evil/x`).
+    const endpoints = positionals(rest, GH_API.valued, GH_API.attached);
+    if (endpoints.length !== 1 || endpoints[0].includes('://') || endpoints[0].startsWith('//')) return false;
     return flagsOnlyRead(rest, GH_API, (flag, value) => {
       if (flag === '-X' || flag === '--method') return value.toUpperCase() === 'GET';
-      if (flag === '-H' || flag === '--header') return !CREDENTIAL_HEADER.test(value);
+      if (flag === '-H' || flag === '--header') return SAFE_HEADER.test(value);
       return true;
     });
   }
   return (
     GH_READ_NOUNS.has(noun ?? '') &&
     GH_READ_VERBS.has(rest[0] ?? '') &&
-    !rest.some((a) => a === '--web' || a === '-w' || a.startsWith('--web='))
+    !rest.some((a) => /^(?:-w|--web|-q|--jq|-t|--template)(?:=|$)/.test(a) || /^-[qt]./.test(a))
   );
 }
 
