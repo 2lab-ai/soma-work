@@ -10756,6 +10756,67 @@ function ptUpsert(list, turn, replaceId) {
   list.push(turn);
   return 'append';
 }
+// SSOT 2026-11-02 T1 — this browser's own instruction shows at once as an optimistic turn
+// ('나'); the turn the server records must take its place however late it lands, or the
+// instruction shows twice. Pure: the words a turn is compared by — Slack entities decoded,
+// line ends and runs of blanks folded, trimmed.
+function ptSentKey(s) {
+  return decodeSlackEntities(String(s || '')).replace(/\\r\\n?/g, '\\n').replace(/[ \\t]+/g, ' ').replace(/ ?\\n ?/g, '\\n').trim();
+}
+// Pure: the optimistic turn a recorded user turn takes over ('' = none) — the oldest one with
+// the same words sent by the same person (when both are known: _by is the signed-in sender), the
+// one rule the fetched page uses too (ptRecorded). Any other turn — someone else's, or another
+// instruction of the viewer's own typed in Slack meanwhile — never takes the slot. A turn
+// already held is an update, never an adoption; a turn soma-work put there (origin by system)
+// never adopts.
+function ptOptimisticFor(list, turn) {
+  if (!turn || turn.role !== 'user' || (turn.origin && turn.origin.by === 'system')) return '';
+  var key = ptSentKey(turn.rawContent);
+  for (var i = 0; i < list.length; i++) {
+    var t = list[i];
+    if (!t) continue;
+    if (turn.id && t.id === turn.id) return '';
+    if (!t._optimistic || (turn.userId && t._by && turn.userId !== t._by)) continue;
+    if (ptSentKey(t._sent) === key) return String(t.id);
+  }
+  return '';
+}
+// Pure: the id of the fetched turn that records an optimistic one ('' = none): a user turn with
+// the same words, recorded no earlier than a minute before it was sent, that the panel did not
+// already hold before the fetch (held — so an earlier '계속' never confirms a new '계속') and that
+// confirmed no other optimistic turn (used — one recorded turn, one optimistic turn).
+function ptRecorded(list, opt, held, used) {
+  var key = ptSentKey(opt && opt._sent);
+  var since = toNum(opt && opt.timestamp) - 60000;
+  for (var i = 0; i < list.length; i++) {
+    var t = list[i];
+    var id = t && t.id ? String(t.id) : '';
+    if (!id || held[id] || used[id] || t.role !== 'user' || t._optimistic) continue;
+    if (toNum(t.timestamp) >= since && ptSentKey(t.rawContent) === key) return id;
+  }
+  return '';
+}
+// Pure: a page fetched, then the turns pushed while it loaded (WS) and not in it, after it — an
+// optimistic turn the page newly records goes, one for one.
+function ptMergeFetched(fetched, pushed) {
+  var out = (fetched || []).slice();
+  var held = Object.create(null);
+  var used = Object.create(null);
+  (pushed || []).forEach(function(p) { if (p && p.id && !p._optimistic) held[String(p.id)] = true; });
+  for (var i = 0; i < (pushed || []).length; i++) {
+    var p = pushed[i];
+    if (!p) continue;
+    if (p._optimistic) {
+      var hit = ptRecorded(out, p, held, used);
+      if (hit) {
+        used[hit] = true;
+        continue;
+      }
+    }
+    ptUpsert(out, p);
+  }
+  return out;
+}
 // 에이전트 트리: the session's agents in <ui-agent-tree> (rich — a card per agent on
 // one waterfall axis, every branch's spend rolled up), the main agent at its
 // root and the focused one selected — the one item of the tab's <ui-log-scroller>
@@ -13993,32 +14054,7 @@ function connectWs() {
         // main agent's new list, and a subagent's panel reads its own (spec 12).
         if (panelOpen && panelSessionKey === msg.sessionKey) repaintPanelSession();
       } else if (msg.type === 'conversation_update') {
-        // A turn landed — an open card's 지시/응답 pair may be stale now.
-        invalidateCardIo(msg.conversationId);
-        umOnTurn(msg.conversationId, msg.turn);
-        // If panel is open for this conversation, append or update the turn
-        if (panelOpen && panelConvId === msg.conversationId && msg.turn) {
-          // Dedupe: skip user turns that match our optimistic send (content + within 10s)
-          if (msg.turn.role === 'user' && _lastSentContent && (Date.now() - _lastSentTime) < 10000
-              && (msg.turn.rawContent || '').trim() === _lastSentContent.trim()) {
-            _lastSentContent = '';
-            _lastSentTime = 0;
-            // The server's turn takes over the optimistic one, so a later push for
-            // it (a /compact result, SSOT 2026-10-27) finds it by its real id.
-            if (msg.turn.id) {
-              var optId = '';
-              for (var oi = _panelTurnsList.length - 1; oi >= 0 && !optId; oi--) {
-                var ot = _panelTurnsList[oi];
-                if (ot && ot._optimistic && String(ot.id || '').indexOf('optimistic-') === 0) optId = ot.id;
-              }
-              if (optId) appendTurnToPanel(msg.turn, false, optId);
-            }
-          } else {
-            // A turn already held (a summary landing on its answer) is updated in
-            // place in 지시와 답변's data; a new one goes at the end.
-            appendTurnToPanel(msg.turn);
-          }
-        }
+        onConversationTurn(msg.conversationId, msg.turn);
       } else if (msg.type === 'session_action') {
         // Immediate visual feedback already handled by loadSessions() in doAction
       } else if (msg.type === 'summaryTitleChanged') {
@@ -15630,10 +15666,9 @@ function loadPanelTurns(land) {
       }
 
       var turns = (data && data.turns) || [];
-      // A turn pushed while the page loaded (WS) and not in it stays, after it.
-      var pushed = _panelTurnsList;
-      _panelTurnsList = turns.slice();
-      for (var i = 0; i < pushed.length; i++) ptUpsert(_panelTurnsList, pushed[i]);
+      // A turn pushed while the page loaded (WS) and not in it stays, after it — but not an
+      // optimistic instruction the page already records (T1: it would show twice).
+      _panelTurnsList = ptMergeFetched(turns, _panelTurnsList);
       _panelTurnsCid = data.id || loadingConvId;
       _panelTurnsHasMore = turns.length > 0 && !!data.hasMore;
       _panelTurnsOldestId = turns.length ? turns[0].id : null;
@@ -16292,6 +16327,15 @@ function appendTurnToPanel(turn, own, replaceId) {
   var el = convEl();
   if (own && el && typeof el.scrollToLatest === 'function') el.scrollToLatest();
 }
+// WS conversation_update: a turn landed — an open card's 지시/응답 pair may be stale now; the
+// panel open on its conversation takes it in, in place of the optimistic instruction it
+// records (T1: matched by its words, never by a time window).
+function onConversationTurn(cid, turn) {
+  invalidateCardIo(cid);
+  umOnTurn(cid, turn);
+  if (!panelOpen || panelConvId !== cid || !turn) return;
+  appendTurnToPanel(turn, false, ptOptimisticFor(_panelTurnsList, turn) || undefined);
+}
 // A turn leaves the data (an instruction that could not be sent).
 function dropTurnFromPanel(id) {
   for (var i = _panelTurnsList.length - 1; i >= 0; i--) {
@@ -16655,8 +16699,6 @@ document.addEventListener('keydown', function(e) {
 })();
 
 // ── Send command (optimistic UI) ──
-let _lastSentContent = '';
-let _lastSentTime = 0;
 
 // A note from the composer — Enter, ⌘/Ctrl+Enter, Send, or Retry on a failed one
 // (<ui-agent-steering> ui-submit: text, ref, and the slotted composer's files) — to
@@ -16703,8 +16745,6 @@ async function sendCommand(text, ref, files) {
   var optimisticId = '';
   if (!running) {
     const shown = msg + (list.length ? (msg ? '\\n' : '') + '📎 ' + list.map(function(f) { return f.name; }).join(', ') : '');
-    _lastSentContent = msg;
-    _lastSentTime = Date.now();
     optimisticId = 'optimistic-' + Date.now();
     appendTurnToPanel({
       id: optimisticId,
@@ -16714,6 +16754,8 @@ async function sendCommand(text, ref, files) {
       rawContent: shown,
       origin: { by: 'user' },
       _optimistic: true,
+      _sent: msg, // the words the recorded turn is matched by (ptOptimisticFor)
+      _by: _viewerUserId || '', // who sent it — someone else's turn with the same words never takes it
     }, true);
   }
 
