@@ -83,7 +83,7 @@ describe('resumeActiveGoals (T1)', () => {
 
     expect(resumed).toBe(1);
     expect(settled).toHaveBeenCalledTimes(1);
-    expect(settled).toHaveBeenCalledWith('C1-T1');
+    expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
   });
 
   it('forces a stale (working) activityState to idle so the idle-driver gate passes', () => {
@@ -137,7 +137,7 @@ describe('resumeActiveGoals (T1)', () => {
     expect(handler.resumeActiveGoals()).toBe(1);
 
     expect(stale.activityState).toBe('idle');
-    expect(settled).toHaveBeenCalledWith('C1-T1');
+    expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
   });
 
   it('repairs a stranded queue (complete goal + non-empty queue) by promoting the next goal', () => {
@@ -170,7 +170,7 @@ describe('resumeActiveGoals (T1)', () => {
     expect(completed.goalQueue).toHaveLength(0);
     expect(completed.goalHistory?.[0].objective).toBe('finish the migration');
     expect(resumed).toBe(1);
-    expect(settled).toHaveBeenCalledWith('C1-T1');
+    expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
   });
 
   it('does NOT advance past a paused current goal that has a queue (paused + queue is valid)', () => {
