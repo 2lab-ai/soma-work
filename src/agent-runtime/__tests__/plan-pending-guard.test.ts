@@ -31,6 +31,13 @@ describe('isReadOnlyCommand — reads pass, everything else is refused', () => {
     'wc -l src/conversation/dashboard.ts 2>/dev/null',
     'ls missing 2>&1',
     'jq .name package.json',
+    "grep 'a;b' f",
+    'grep -rn "x | y" src',
+    "find . -name '*.ts'",
+    'ls src/*.ts',
+    'git clone --depth 1 https://github.com/2lab-ai/soma-work.git repo',
+    'gh repo clone 2lab-ai/soma-work',
+    "gh api --paginate repos/2lab-ai/soma-work/pulls --jq '.[].number'",
   ])('reads: %s', (cmd) => {
     expect(isReadOnlyCommand(cmd)).toBe(true);
   });
@@ -69,8 +76,27 @@ describe('isReadOnlyCommand — reads pass, everything else is refused', () => {
     './scripts/deploy.sh',
     'cat a | tee b',
     'xargs rm < list',
-    "grep 'a;b' f",
+    'gh api repos/x/y --jq .[].number', // an unquoted glob in an argument gh reads as options
     '',
+    // Trinity R3 (astra P1): what the shell makes of quotes, escapes and clusters, not their spelling.
+    "find . -name '*.tmp' -de'lete'",
+    'find . -de\\lete',
+    'sort -ro notes.txt README.md',
+    'find . *',
+    'sed -n 1p *',
+    'find . -{delete,x}',
+    "echo $'\\x2d'",
+    '(rm x)',
+    'ls # rm x',
+    "git clone 'ext::sh -c touch% x'",
+    'git clone -u evil url',
+    'git clone --config core.hooksPath=x url',
+    'gh repo clone x -- --upload-pack=y',
+    "gh api -H 'X-HTTP-Method-Override: DELETE' repos/x/y",
+    'gh api -fX title=x repos/x/y',
+    'file -C -m magic',
+    'cat "unterminated',
+    'ls ; ; ls',
   ])('refused: %s', (cmd) => {
     expect(isReadOnlyCommand(cmd)).toBe(false);
   });
@@ -113,16 +139,14 @@ describe('checkPlanPendingCall — the tools of a planning turn', () => {
     expect(checkPlanPendingCall('Bash', {})).toMatch(/not read-only/);
   });
 
-  it('MCP: the plan tool and read-shaped tools run; a tool named for a change does not', () => {
+  it('MCP: the plan tool and the exact read tools run; every other MCP tool does not', () => {
     for (const tool of [
       'mcp__plan__plan_submit',
       'mcp__github__get_file_contents',
       'mcp__github__search_code',
       'mcp__github__list_pull_requests',
-      'mcp__server-tools__db_query',
-      'mcp__slack-mcp__get_thread_messages',
+      'mcp__filesystem__read_text_file',
       'mcp__model-command__list',
-      'mcp__cron__cron_list',
     ]) {
       expect(checkPlanPendingCall(tool, {})).toBeNull();
     }
@@ -138,6 +162,12 @@ describe('checkPlanPendingCall — the tools of a planning turn', () => {
       'mcp__x__getAndDeleteThing',
       'mcp__x__collect',
       'mcp__weird',
+      // Trinity R3 (astra P1): a read-shaped name proves nothing — redis_query takes GEORADIUS … STORE.
+      'mcp__server-tools__redis_query',
+      'mcp__server-tools__db_query',
+      'mcp__cron__cron_list',
+      'mcp__x__get_anything',
+      'mcp__plan__other_tool',
     ]) {
       expect(checkPlanPendingCall(tool, {})).not.toBeNull();
     }

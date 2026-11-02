@@ -7,16 +7,16 @@
  * Research stays open — reading files (Read, Glob, Grep), the web (WebFetch,
  * WebSearch), read-only shell commands (ls, cat, grep, rg, find, git log/show/diff,
  * gh … view/list), getting the code to read (git clone/fetch into the task folder),
- * read-shaped MCP tools (get_/list_/search_/…_query) and the plan tool itself.
+ * the exact read MCP tools and the plan tool itself.
  * Everything else is refused: the native write tools, subagents and workflows
  * (whose own calls would run outside the plan's sight), any tool not on the
  * research allow-list, any shell command this check cannot read as read-only,
- * and any MCP tool not named for a read.
+ * and any MCP tool not on the exact read list.
  *
- * Fail-closed by construction (rules/permission.md rule 3): a command is allowed
- * only when every segment of it parses as an allow-listed read; anything the
- * parser does not understand — a substitution, a redirection, a quote that hides
- * a separator — is refused. Pure: no I/O.
+ * Fail-closed by construction (rules/permission.md rule 3): a command is split
+ * and unquoted as the shell would (`lexCommand`), and allowed only when every
+ * segment is an allow-listed read; whatever the lexer does not model exactly —
+ * an expansion, an escape, a subshell, a redirection — is refused. Pure: no I/O.
  */
 
 /**
@@ -48,7 +48,11 @@ export const PLAN_RESEARCH_TOOLS: readonly string[] = [
   'ReadMcpResourceTool',
 ];
 
-/** Commands that only read (their write options are refused below). */
+/**
+ * Commands that only read, whatever their arguments — none has an option that writes, runs a
+ * program or reaches the network (`file -C` writes, `sort -o` writes, `fd -x` runs: not here).
+ * A glob among their arguments is fine: whatever names it expands to, they still only read.
+ */
 const READ_COMMANDS = new Set([
   'ls',
   'cat',
@@ -59,7 +63,6 @@ const READ_COMMANDS = new Set([
   'echo',
   'printf',
   'which',
-  'file',
   'stat',
   'du',
   'df',
@@ -83,7 +86,7 @@ const READ_COMMANDS = new Set([
   'cd',
 ]);
 
-/** `git` subcommands that read (or fetch the code to read into the task folder). */
+/** `git` subcommands that read. */
 const GIT_READS = new Set([
   'status',
   'log',
@@ -100,9 +103,39 @@ const GIT_READS = new Set([
   'rev-list',
   'merge-base',
   'show-ref',
-  'clone',
-  'fetch',
 ]);
+/** Options of a reading `git` subcommand that write a file, run a program or open a pager program. */
+const GIT_READ_REFUSED = [
+  '--output',
+  '--ext-diff',
+  '--textconv',
+  '--filters',
+  '--open-files-in-pager',
+  '-O',
+  '--exec',
+  '--upload-pack',
+  '--receive-pack',
+  '--config',
+  '--template',
+];
+/** The only options `git clone` / `git fetch` take here (every other one is refused: -c, -u, --upload-pack, …). */
+const GIT_FETCH_OPTIONS = new Set([
+  '-q',
+  '--quiet',
+  '--progress',
+  '--no-progress',
+  '--depth',
+  '--single-branch',
+  '--no-single-branch',
+  '--no-tags',
+  '--tags',
+  '--all',
+  '--prune',
+  '-b',
+  '--branch',
+  '--sparse',
+]);
+const GIT_FETCH_VALUED = ['--depth=', '--branch=', '--filter=', '--shallow-since='];
 
 /** `gh <noun> <verb>` pairs that read. `gh api` is checked on its own (GET only). */
 const GH_READS: Record<string, readonly string[]> = {
@@ -113,18 +146,105 @@ const GH_READS: Record<string, readonly string[]> = {
   release: ['view', 'list'],
   search: ['repos', 'issues', 'prs', 'code', 'commits'],
 };
+/** `gh api` options allowed here; the ones in `GH_API_VALUED` take the next token as their value. */
+const GH_API_OPTIONS = new Set(['--paginate', '--slurp', '-i', '--include', '--silent', '--verbose']);
+const GH_API_VALUED = new Set(['--jq', '-q', '--cache', '--hostname', '-X', '--method', '-t', '--template']);
 
-/** Harmless output plumbing, removed before the redirection check: `2>/dev/null`, `>/dev/null`, `2>&1`. */
-const DEV_NULL = /(^|\s)[12]?>\s*\/dev\/null(?=\s|$)|(^|\s)2>&1(?=\s|$)/g;
-/** Redirection, substitution, process substitution, expansion, a line continuation: never read-only here. */
-const UNREADABLE = /[<>`]|\$\(|\$\{|\\\n/;
-
-function unquote(token: string): string {
-  return token.replace(/^['"]|['"]$/g, '');
+/** One shell word after quote removal; `globbed` — it had an unquoted `*`, `?` or `[` (the shell expands it). */
+interface Word {
+  text: string;
+  globbed: boolean;
 }
 
-function startsWithAny(token: string, prefixes: readonly string[]): boolean {
-  return prefixes.some((p) => token === p || token.startsWith(`${p}=`) || (p.length === 2 && token.startsWith(p)));
+/**
+ * Splits a command the way the shell would, refusing (null) whatever this check does not model
+ * exactly: any `$` (variables, `$(…)`, `$'…'`), a backslash, a backtick, braces (brace expansion),
+ * parentheses (subshells), `#` (comments), `!`, `<`, a redirection other than `2>/dev/null`,
+ * `>/dev/null` and `2>&1`, a background `&`, an unterminated quote and an empty segment. Quotes are
+ * removed as the shell removes them, so `-de'lete'` is the word `-delete`.
+ */
+function lexCommand(command: string): Word[][] | null {
+  const segments: Word[][] = [];
+  let words: Word[] = [];
+  let text = '';
+  let inWord = false;
+  let globbed = false;
+  let quote: '' | "'" | '"' = '';
+  const endWord = () => {
+    if (inWord) words.push({ text, globbed });
+    text = '';
+    inWord = false;
+    globbed = false;
+  };
+  const endSegment = (): boolean => {
+    endWord();
+    if (words.length === 0) return false;
+    segments.push(words);
+    words = [];
+    return true;
+  };
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (quote === "'") {
+      if (c === "'") quote = '';
+      else text += c;
+      continue;
+    }
+    if (quote === '"') {
+      if (c === '"') quote = '';
+      else if (c === '$' || c === '`' || c === '\\') return null;
+      else text += c;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      inWord = true;
+      continue;
+    }
+    if (c === ' ' || c === '\t') {
+      endWord();
+      continue;
+    }
+    if (c === '\n' || c === ';') {
+      if (!endSegment()) return null;
+      continue;
+    }
+    if (c === '|' || c === '&') {
+      const doubled = command[i + 1] === c;
+      if (c === '&' && !doubled) return null; // a background job
+      if (doubled) i++;
+      if (!endSegment()) return null;
+      continue;
+    }
+    if (c === '>') {
+      // Only the harmless plumbing: [1|2]>/dev/null and 2>&1, as a word of their own.
+      const fd = inWord ? text : '';
+      if (inWord && fd !== '1' && fd !== '2') return null;
+      const rest = command.slice(i + 1);
+      const devNull = /^\s*\/dev\/null(?=[\s;|&]|$)/.exec(rest);
+      const dupOut = fd === '2' && /^&1(?=[\s;|&]|$)/.exec(rest);
+      const hit = devNull || dupOut;
+      if (!hit) return null;
+      text = '';
+      inWord = false;
+      globbed = false;
+      i += hit[0].length;
+      continue;
+    }
+    if ('$`\\{}()<#!'.includes(c)) return null;
+    if (c === '*' || c === '?' || c === '[') globbed = true;
+    text += c;
+    inWord = true;
+  }
+  if (quote) return null;
+  if (!endSegment()) return null;
+  return segments;
+}
+
+/** `t` is option `opt`, or `opt=value`, or (a long `opt`) a longer option it prefixes, or (a short `opt`) `opt` with its value glued on. */
+function isOption(t: string, opt: string): boolean {
+  if (t === opt || t.startsWith(`${opt}=`)) return true;
+  return opt.startsWith('--') ? t.startsWith(opt) : t.startsWith(opt) && t.length > opt.length;
 }
 
 function gitIsRead(args: string[]): boolean {
@@ -139,183 +259,131 @@ function gitIsRead(args: string[]): boolean {
   const sub = args[i];
   const rest = args.slice(i + 1);
   if (!sub) return false;
-  if (
-    rest.some((t) =>
-      startsWithAny(t, ['--output', '--ext-diff', '--upload-pack', '-u', '--template', '--config', '-c']),
-    )
-  ) {
-    return false;
+  if (GIT_READS.has(sub)) {
+    return !rest.some((t) => GIT_READ_REFUSED.some((opt) => isOption(t, opt)) || /^-[A-Za-z]*O/.test(t));
   }
-  if (GIT_READS.has(sub)) return true;
-  // List-only forms of the subcommands that also change refs.
-  if (sub === 'branch' || sub === 'tag') {
-    const listing = [
-      '--list',
-      '-l',
-      '-a',
-      '-r',
-      '-v',
-      '-vv',
-      '--all',
-      '--remotes',
-      '--show-current',
-      '--contains',
-      '--merged',
-    ];
-    return (
-      rest.every((t) => t.startsWith('-')) &&
-      rest.every((t) => listing.includes(t) || t.startsWith('--format') || t.startsWith('--sort'))
+  if (sub === 'clone' || sub === 'fetch') {
+    // A transport helper (`ext::…`, `fd::…`) runs a command: refused, as is any option not listed.
+    return rest.every((t) =>
+      t.startsWith('-') ? GIT_FETCH_OPTIONS.has(t) || GIT_FETCH_VALUED.some((v) => t.startsWith(v)) : !t.includes('::'),
     );
   }
-  if (sub === 'remote') return rest.length === 0 || rest[0] === '-v' || rest[0] === 'show' || rest[0] === 'get-url';
-  if (sub === 'config') return rest.length > 0 && ['--get', '--get-all', '--list', '-l'].includes(rest[0]);
-  if (sub === 'worktree' || sub === 'stash') return rest[0] === 'list';
+  // List-only forms of the subcommands that also change refs.
+  if (sub === 'branch' || sub === 'tag') {
+    const listing = ['--list', '-l', '-a', '-r', '-v', '-vv', '--all', '--remotes', '--show-current'];
+    return rest.every((t) => listing.includes(t) || t.startsWith('--format=') || t.startsWith('--sort='));
+  }
+  if (sub === 'remote') {
+    return rest.length === 0 || (rest.length === 1 && rest[0] === '-v') || (rest[0] === 'get-url' && rest.length === 2);
+  }
+  if (sub === 'config') {
+    const reads = ['--get', '--get-all', '--list', '-l'];
+    const scopes = ['--global', '--local', '--system', '--show-origin', '--name-only', '-z'];
+    return (
+      rest.some((t) => reads.includes(t)) &&
+      rest.every((t) => !t.startsWith('-') || reads.includes(t) || scopes.includes(t))
+    );
+  }
+  if (sub === 'worktree' || sub === 'stash') return rest.length === 1 && rest[0] === 'list';
   return false;
 }
 
 function ghIsRead(args: string[]): boolean {
+  // `--` hands the rest to another program (`gh repo clone … -- <git options>`).
+  if (args.includes('--')) return false;
   const [noun, verb, ...rest] = args;
   if (noun === 'api') {
     const tail = [verb, ...rest].filter((t): t is string => typeof t === 'string');
     for (let i = 0; i < tail.length; i++) {
       const t = tail[i];
-      if (t === '-X' || t === '--method') {
-        if ((tail[i + 1] || '').toUpperCase() !== 'GET') return false;
-      } else if (t.startsWith('--method=') && t.slice(9).toUpperCase() !== 'GET') return false;
-      else if (/^-X./.test(t) && t.slice(2).toUpperCase() !== 'GET') return false;
-      // A field or an input body turns the call into a POST.
-      if (startsWithAny(t, ['-f', '-F', '--field', '--raw-field', '--input'])) return false;
+      if (!t.startsWith('-')) continue;
+      if (GH_API_VALUED.has(t)) {
+        const value = tail[i + 1] ?? '';
+        if ((t === '-X' || t === '--method') && value.toUpperCase() !== 'GET') return false;
+        i++;
+        continue;
+      }
+      if (t.startsWith('--method=')) {
+        if (t.slice(9).toUpperCase() !== 'GET') return false;
+        continue;
+      }
+      if (t.toUpperCase() === '-XGET' || t.startsWith('--jq=') || t.startsWith('--cache=')) continue;
+      if (!GH_API_OPTIONS.has(t)) return false; // -f / -F / --field / --input (a body: POST), -H, clusters, …
     }
     return true;
   }
   return !!noun && !!verb && (GH_READS[noun] ?? []).includes(verb);
 }
 
-function segmentIsRead(segment: string): boolean {
-  const tokens = segment.trim().split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return false;
-  const [head, ...args] = tokens.map(unquote);
-  if (head.includes('=') || head.includes('/')) return false; // an assignment, or a program by path
-  if (head === 'git') return gitIsRead(args);
-  if (head === 'gh') return ghIsRead(args);
-  if (head === 'rg') return !args.some((t) => t.startsWith('--pre'));
-  if (head === 'find') {
-    return !args.some((t) =>
-      ['-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fprint0', '-fprintf', '-fls'].includes(t),
-    );
+function segmentIsRead(words: Word[]): boolean {
+  const [head, ...rest] = words;
+  if (!head || head.globbed || head.text.includes('/') || head.text.includes('=')) return false; // a program by path, an assignment
+  const name = head.text;
+  const args = rest.map((w) => w.text);
+  // These read their arguments as options too: a glob could expand to one (a cloned file named `-delete`).
+  const globbed = rest.some((w) => w.globbed);
+  if (name === 'git') return !globbed && gitIsRead(args);
+  if (name === 'gh') return !globbed && ghIsRead(args);
+  if (name === 'rg') return !globbed && !args.some((t) => t.startsWith('--pre'));
+  if (name === 'find') {
+    const acts = ['-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fls'];
+    return !globbed && !args.some((t) => acts.some((a) => t.startsWith(a)));
   }
-  if (head === 'fd') return !args.some((t) => startsWithAny(t, ['-x', '--exec', '-X', '--exec-batch']));
-  if (head === 'sort') return !args.some((t) => startsWithAny(t, ['-o', '--output']));
-  // `sed -n 'N,Mp' file` only: any other script can write (`w`) or run (`e`) something.
-  if (head === 'sed') {
+  // `sed -n 'N,Mp' file…` only: any other script can write (`w`) or run (`e`) something.
+  if (name === 'sed') {
     return (
-      args[0] === '-n' && /^\d+(,(\d+|\$))?p$/.test(args[1] ?? '') && args.slice(2).every((t) => !t.startsWith('-'))
+      !globbed &&
+      args[0] === '-n' &&
+      /^\d+(,(\d+|\$))?p$/.test(args[1] ?? '') &&
+      args.slice(2).every((t) => !t.startsWith('-'))
     );
   }
-  return READ_COMMANDS.has(head);
+  return READ_COMMANDS.has(name);
 }
 
 /** A shell command every segment of which is an allow-listed read; false whenever in doubt. */
 export function isReadOnlyCommand(command: string): boolean {
-  const text = command.replace(DEV_NULL, ' ');
-  if (!text.trim() || UNREADABLE.test(text)) return false;
-  const segments = text.split(/&&|\|\||;|\||\n/);
-  // A lone `&` (background) is left inside a segment after the split: refused.
-  if (segments.some((s) => s.includes('&'))) return false;
-  return segments.every(segmentIsRead);
+  const segments = lexCommand(command);
+  return segments !== null && segments.every(segmentIsRead);
 }
 
-/** The words of an MCP tool's name part (`mcp__<server>__<tool>` → `<tool>`, split on `_`, `-` and case). */
-function mcpToolWords(toolName: string): string[] {
-  const parts = toolName.split('__');
-  const tool = parts.length >= 3 ? parts.slice(2).join('_') : '';
-  return tool
-    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
-    .toLowerCase()
-    .split(/[_-]+/)
-    .filter(Boolean);
-}
-
-/** A word that names a change: any of them in the name refuses the tool, whatever verb it starts with. */
-const MCP_WRITE_WORDS = new Set([
-  'create',
-  'update',
-  'delete',
-  'remove',
-  'write',
-  'push',
-  'merge',
-  'send',
-  'post',
-  'upload',
-  'set',
-  'add',
-  'put',
-  'patch',
-  'move',
-  'rename',
-  'edit',
-  'replace',
-  'close',
-  'reopen',
-  'approve',
-  'commit',
-  'deploy',
-  'run',
-  'exec',
-  'execute',
-  'kill',
-  'cancel',
-  'insert',
-  'drop',
-  'fork',
-  'transfer',
-  'archive',
-  'publish',
-  'invite',
-  'assign',
-  'lock',
-  'unlock',
-  'star',
-  'apply',
-  'reset',
-  'revert',
-  'restore',
-  'trigger',
-  'dispatch',
-  'save',
-  'submit',
-  'request',
-  'grant',
-  'revoke',
-  'register',
-  'start',
-  'stop',
-  'schedule',
-  'enable',
-  'disable',
-]);
-/** A name that starts with one of these (or ends with one of the second set) reads. */
-const MCP_READ_FIRST = new Set([
-  'get',
-  'list',
-  'read',
-  'search',
-  'query',
-  'fetch',
-  'view',
-  'show',
-  'describe',
-  'lookup',
-  'check',
-  'count',
-  'find',
-]);
-const MCP_READ_LAST = new Set(['query', 'search', 'list', 'get', 'read', 'logs', 'status']);
+/**
+ * The MCP tools a planning turn may call: the plan tool and tools whose whole contract is a read,
+ * by exact name — a read-shaped name proves nothing (`redis_query` takes `GEORADIUS … STORE`, a
+ * write; trinity R3, astra P1). Any other MCP tool waits for 시작.
+ */
+export const PLAN_READ_MCP_TOOLS: readonly string[] = [
+  'mcp__plan__plan_submit',
+  'mcp__github__get_file_contents',
+  'mcp__github__search_code',
+  'mcp__github__search_repositories',
+  'mcp__github__search_issues',
+  'mcp__github__search_users',
+  'mcp__github__get_issue',
+  'mcp__github__get_pull_request',
+  'mcp__github__get_pull_request_files',
+  'mcp__github__get_pull_request_comments',
+  'mcp__github__get_pull_request_reviews',
+  'mcp__github__get_pull_request_status',
+  'mcp__github__list_commits',
+  'mcp__github__list_issues',
+  'mcp__github__list_pull_requests',
+  'mcp__filesystem__read_file',
+  'mcp__filesystem__read_text_file',
+  'mcp__filesystem__read_media_file',
+  'mcp__filesystem__read_multiple_files',
+  'mcp__filesystem__list_directory',
+  'mcp__filesystem__list_directory_with_sizes',
+  'mcp__filesystem__directory_tree',
+  'mcp__filesystem__search_files',
+  'mcp__filesystem__get_file_info',
+  'mcp__filesystem__list_allowed_directories',
+  'mcp__model-command__list',
+];
 
 /**
  * Step 6c's check: a reason when a planning turn's call would do the work, else
- * null. `mcp__plan__*` — the plan tool — always runs.
+ * null. The plan tool (`mcp__plan__plan_submit`) always runs.
  */
 export function checkPlanPendingCall(toolName: string, toolInput: Record<string, unknown>): string | null {
   if (toolName === 'Bash') {
@@ -323,13 +391,7 @@ export function checkPlanPendingCall(toolName: string, toolInput: Record<string,
     return isReadOnlyCommand(command) ? null : 'a shell command that is not read-only';
   }
   if (toolName.startsWith('mcp__')) {
-    if (toolName.startsWith('mcp__plan__')) return null;
-    const words = mcpToolWords(toolName);
-    const reads =
-      words.length > 0 &&
-      !words.some((w) => MCP_WRITE_WORDS.has(w)) &&
-      (MCP_READ_FIRST.has(words[0]) || MCP_READ_LAST.has(words[words.length - 1]));
-    return reads ? null : `${toolName} is not a read`;
+    return PLAN_READ_MCP_TOOLS.includes(toolName) ? null : `${toolName} is not one of the read tools`;
   }
   return PLAN_RESEARCH_TOOLS.includes(toolName) ? null : `${toolName || 'this tool'} is not a research tool`;
 }
