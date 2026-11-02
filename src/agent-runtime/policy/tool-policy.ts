@@ -193,7 +193,7 @@ export const ENV_SKILL_DENY_MESSAGE =
  * researches and submits the plan; the change itself goes into the plan.
  */
 export const PLAN_PENDING_DENY_MESSAGE =
-  "Blocked: this task's plan is not started yet. While planning, only reading and research run (Read, Glob, Grep, WebFetch, WebSearch, read-only shell commands such as ls, cat, grep, rg, find, git log/show/diff/status, git clone/fetch, gh … view/list, and read MCP tools). Put this change into the plan and submit it with plan_submit; it runs after the owner presses 시작. Do not retry it or work around it.";
+  "Blocked: this task's plan is not started yet. While planning, only reading and research run (Read, Glob, Grep, WebFetch, WebSearch, the github and filesystem read tools); the shell and every change wait. Put this step into the plan and submit it with plan_submit; it runs after the owner presses 시작. Do not retry it or work around it.";
 
 /**
  * Devops-secret check dispatch — Bash→command, Read/Edit/Write→file_path, Grep→path,
