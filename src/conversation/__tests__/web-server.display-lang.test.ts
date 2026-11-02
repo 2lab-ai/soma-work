@@ -47,17 +47,20 @@ describe('dashboard display language (#773)', () => {
     await stopWebServer();
   });
 
-  it('has the en / ko toggle in the top bar, ko pressed by default, and the page in Korean', async () => {
+  it('has one language toggle button in the top bar that flips en ⇄ ko, and the page in Korean', async () => {
     const res = await get('/dashboard');
     expect(res.statusCode).toBe(200);
     const html = res.body;
     expect(html).toContain('<html lang="ko">');
-    const toggle = /<div[^>]*id="lang-toggle"[^>]*slot="actions"[\s\S]*?<\/div>/.exec(html)?.[0] ?? '';
-    expect(toggle).toMatch(/data-lang="en"[^>]*>EN</);
-    expect(toggle).toMatch(/data-lang="ko"[^>]*>KO</);
-    // en comes first, ko second ("en ko")
-    expect(toggle.indexOf('data-lang="en"')).toBeLessThan(toggle.indexOf('data-lang="ko"'));
-    expect(html).toContain('function setDisplayLang(');
+    // One button, not a pair: it shows the page's language and a press switches to the other one.
+    const toggle = /<button[^>]*id="lang-toggle"[^>]*>[\s\S]*?<\/button>/.exec(html)?.[0] ?? '';
+    expect(toggle).toMatch(/slot="actions"/);
+    expect(toggle).toMatch(/onclick="toggleDisplayLang\(\)"/);
+    expect(toggle).toContain('KO');
+    expect(toggle).toContain('EN');
+    expect(html.match(/id="lang-toggle"/g)).toHaveLength(1);
+    expect(html).not.toMatch(/class="[^"]*lang-opt/);
+    expect(html).toContain('function toggleDisplayLang(');
     expect(html).toContain('새 작업');
   });
 
