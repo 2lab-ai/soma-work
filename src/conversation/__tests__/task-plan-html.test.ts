@@ -105,20 +105,21 @@ describe('renderTaskPlanPage — the full-page view', () => {
   });
 });
 
-describe('the plan in the display language (#771) — the labels are ours, the plan text is the model\'s', () => {
+describe("the plan in the display language (#771) — the labels are ours, the plan text is the model's", () => {
   // The English catalog src/index.ts loads (`@soma/common/i18n-en`).
   const CATALOG = join(__dirname, '..', '..', '..', 'packages', 'common', 'src', 'i18n-catalog');
   registerDisplayCatalog('en', JSON.parse(readFileSync(join(CATALOG, 'en-text.json'), 'utf8')));
   const OWN = ['작업 계획', '의도', '지시 원문', '산출물', '확인할 것', '가정', '위험', '범위 밖', '승인 대기', '단계'];
 
-  it('en: every label in English; the model\'s words as written', () => {
+  it("en: every label in English; the model's words as written", () => {
     const html = runWithDisplayLang('en', () => renderTaskPlanHtml(plan(), { state: 'awaiting' }));
     for (const word of OWN) expect(html, word).not.toContain(word);
     expect(html).toContain('Plan v1 · Awaiting approval');
     expect(html).toContain('>Intent<');
     expect(html).toContain('>Outputs<');
     expect(html).toContain('aria-label="Phases"');
-    for (const s of ['새 작업에 계획 모드를 넣는다', '서버 게이트', '대시보드 작업만', '에픽도?']) expect(html).toContain(s);
+    for (const s of ['새 작업에 계획 모드를 넣는다', '서버 게이트', '대시보드 작업만', '에픽도?'])
+      expect(html).toContain(s);
     const page = runWithDisplayLang('en', () => renderTaskPlanPage(plan(), { title: 'soma-work', state: 'approved' }));
     expect(page).toContain('<title>Plan v1 — soma-work</title>');
     expect(page).toContain('Plan v1 · Started');
