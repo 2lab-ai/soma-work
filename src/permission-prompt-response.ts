@@ -14,23 +14,34 @@
  * - only the user the prompt was raised for (`PendingApproval.user`);
  * - when the caller names a session thread, only a prompt of that thread;
  * - at most once, across surfaces and processes: the store claim is taken
- *   before any side effect, and outlives the MCP server's cleanup.
+ *   before any side effect, and outlives the MCP server's cleanup;
+ * - twice when the AI advised against the call (SSOT 2026-11-02 T4): a plain
+ *   approve is refused with `confirm_required` and stores nothing; only the
+ *   explicit second answer, `approve_confirmed`, runs it. Both surfaces ask
+ *   the second question; this check makes neither able to skip it.
+ *
+ * Every stored answer is recorded in the session's work log as a `permission`
+ * entry (SSOT 2026-11-02 T1) — the Slack card is deleted once answered, so the
+ * log is where the decision stays visible.
  */
 
+import { recordConversationWorkLog } from '@soma/slack/pipeline/stream-executor';
 import {
   PERMISSION_PROMPT_KIND,
   type PendingApproval,
+  type PermissionAdvice,
   type PermissionResponse,
   sharedStore,
 } from 'somalib/permission/shared-store';
 
-export type PermissionPromptDecision = 'approve' | 'deny' | 'explain' | 'approve_disable_rule';
+export type PermissionPromptDecision = 'approve' | 'deny' | 'explain' | 'approve_disable_rule' | 'approve_confirmed';
 
 export const PERMISSION_PROMPT_DECISIONS: readonly PermissionPromptDecision[] = [
   'approve',
   'deny',
   'explain',
   'approve_disable_rule',
+  'approve_confirmed',
 ];
 
 export function isPermissionPromptDecision(value: unknown): value is PermissionPromptDecision {
@@ -40,15 +51,18 @@ export function isPermissionPromptDecision(value: unknown): value is PermissionP
 export const PERMISSION_EXPLAIN_MESSAGE =
   'User requested explanation: Before retrying this tool, explain in the conversation why you need to use this tool, what it will do, and what the expected outcome is. Then request permission again.';
 
-/** The part of `SessionRegistry` the disable-rule answer needs. */
+/** The part of `SessionRegistry` an answer needs: the disable-rule answer, and the work log entry. */
 export interface DangerousRuleSessions {
   getSessionKey(channel: string, threadTs?: string): string;
   disableDangerousRules(sessionKey: string, ruleIds: string[]): void;
   /**
-   * A Slack-less task's live record — its running turn (#637 R1). Without it a
-   * task's rules are never disabled (fail-closed).
+   * A Slack-less task's live record — its running turn (#637 R1) and its
+   * conversation (the work log). Without it a task's rules are never disabled
+   * (fail-closed) and its answers are not recorded.
    */
-  getSessionByKey?(sessionKey: string): { activeTaskTurnId?: string } | undefined;
+  getSessionByKey?(sessionKey: string): { activeTaskTurnId?: string; conversationId?: string } | undefined;
+  /** A Slack session's record — its conversation, where the answer is recorded. */
+  getSession?(channel: string, threadTs?: string): { conversationId?: string } | undefined;
 }
 
 /**
@@ -75,7 +89,14 @@ export interface AnswerPermissionPromptArgs {
 export type PermissionPromptAnswer =
   | { ok: true; pending: PendingApproval; disabledRuleIds: string[] }
   | { ok: false; reason: 'not_found' | 'already_answered' }
-  | { ok: false; reason: 'not_requester'; requester?: string };
+  | { ok: false; reason: 'not_requester'; requester?: string }
+  /** The AI advised against the call: ask the requester again, then answer `approve_confirmed`. */
+  | { ok: false; reason: 'confirm_required'; advice: PermissionAdvice };
+
+/** An approve of a prompt the AI advised against must be confirmed a second time. */
+function needsSecondConfirmation(pending: PendingApproval, decision: PermissionPromptDecision): boolean {
+  return pending.advice?.recommendation === 'deny' && (decision === 'approve' || decision === 'approve_disable_rule');
+}
 
 /** A permission prompt record that is still pending, or null. */
 export async function loadPermissionPrompt(approvalId: string): Promise<PendingApproval | null> {
@@ -121,6 +142,10 @@ export async function answerPermissionPrompt(args: AnswerPermissionPromptArgs): 
   if (!actor || !pending.user || actor !== pending.user) {
     return { ok: false, reason: 'not_requester', requester: pending.user };
   }
+  // Before the claim: the prompt stays open for the confirmed answer.
+  if (needsSecondConfirmation(pending, decision) && pending.advice) {
+    return { ok: false, reason: 'confirm_required', advice: pending.advice };
+  }
 
   if (!(await sharedStore.claimPermissionResponse(approvalId))) return { ok: false, reason: 'already_answered' };
   // The MCP server may have timed out between the load and the claim. The
@@ -141,6 +166,14 @@ export async function answerPermissionPrompt(args: AnswerPermissionPromptArgs): 
     await sharedStore.releasePermissionClaim(approvalId);
     throw error;
   }
+  // The stored answer goes into the session's work log (SSOT 2026-11-02 T1). An
+  // approve-and-disable that silences nothing reads as the plain approve it was.
+  recordAnswer(
+    pending,
+    decision === 'approve_disable_rule' && disabledRuleIds.length === 0 ? 'approve' : decision,
+    actor,
+    sessions,
+  );
   // Only the winner, and only once its answer is stored: silence the rules —
   // for a task, only while the turn that asked is still running (read again
   // after the store's await, with no await before the change).
@@ -152,6 +185,77 @@ export async function answerPermissionPrompt(args: AnswerPermissionPromptArgs): 
   return { ok: true, pending, disabledRuleIds };
 }
 
+/** How each answer reads in the work log: the line's head and whether the call runs. */
+const ANSWER_LINES: Record<PermissionPromptDecision, { head: string; ok: boolean }> = {
+  approve: { head: '✅ 권한 승인', ok: true },
+  approve_disable_rule: { head: '🔓 권한 승인 · 규칙 끔', ok: true },
+  approve_confirmed: { head: '⚠️ 권한 승인 (2차 확인)', ok: true },
+  deny: { head: '❌ 권한 거부', ok: false },
+  explain: { head: '💡 설명 요청 (실행 안 함)', ok: false },
+};
+const ADVICE_WORDS = { approve: 'AI 🟢 승인 추천', deny: 'AI 🔴 실행 말 것' } as const;
+/** Longest call summary in the work log line (the full input is the tool entry's raw). */
+const CALL_SUMMARY_MAX = 200;
+
+/** One line for the call a prompt was about: a Bash command, a file path, else the input as JSON. */
+function callSummary(input: unknown): string {
+  const o = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+  const pick = [o.command, o.file_path, o.path, o.url].find((v) => typeof v === 'string' && v.trim());
+  let text: string;
+  if (typeof pick === 'string') text = pick;
+  else {
+    try {
+      text = JSON.stringify(input ?? {}) ?? '';
+    } catch {
+      text = '';
+    }
+  }
+  text = text.replace(/\s+/g, ' ').trim();
+  return text.length > CALL_SUMMARY_MAX ? `${text.slice(0, CALL_SUMMARY_MAX - 1)}…` : text;
+}
+
+/**
+ * Record a stored answer in the session's work log (SSOT 2026-11-02 T1): a
+ * `permission` entry — the decision, the tool and call, the AI's advice, who
+ * answered. A Slack prompt is conversation-level; a task prompt is filed on
+ * the turn that asked. Never throws: the answer is already stored.
+ */
+function recordAnswer(
+  pending: PendingApproval,
+  decision: PermissionPromptDecision,
+  actor: string,
+  sessions: DangerousRuleSessions | undefined,
+): void {
+  try {
+    const session = pending.task_key
+      ? sessions?.getSessionByKey?.(pending.task_key)
+      : pending.channel
+        ? sessions?.getSession?.(pending.channel, pending.thread_ts)
+        : undefined;
+    const conversationId = session?.conversationId;
+    if (!conversationId) return;
+    const line = ANSWER_LINES[decision];
+    const tool = String(pending.tool_name ?? '');
+    const ai = pending.advice?.recommendation;
+    const call = callSummary(pending.input);
+    const text = [line.head, tool, call, ai ? ADVICE_WORDS[ai] : ''].filter(Boolean).join(' · ');
+    recordConversationWorkLog(
+      conversationId,
+      {
+        kind: 'permission',
+        text,
+        tool,
+        ok: line.ok,
+        ...(pending.task_key && pending.turn_id ? { turnId: pending.turn_id } : {}),
+        permission: { decision, by: actor, ...(ai ? { ai } : {}) },
+      },
+      { sessionKey: pending.task_key ?? sessions?.getSessionKey(pending.channel ?? '', pending.thread_ts) },
+    );
+  } catch {
+    // The work log is a record, never a reason to lose an answer that is stored.
+  }
+}
+
 /** The response the decision stores, and the rules it silences (pure). */
 function responseFor(
   decision: PermissionPromptDecision,
@@ -161,6 +265,17 @@ function responseFor(
   switch (decision) {
     case 'approve':
       return { response: { behavior: 'allow', message: 'Approved by user' }, disabledRuleIds: [] };
+    case 'approve_confirmed':
+      return {
+        response: {
+          behavior: 'allow',
+          message:
+            pending.advice?.recommendation === 'deny'
+              ? 'Approved by user after a second confirmation (the AI advised against it)'
+              : 'Approved by user',
+        },
+        disabledRuleIds: [],
+      };
     case 'deny':
       return { response: { behavior: 'deny', message: 'Denied by user' }, disabledRuleIds: [] };
     case 'explain':

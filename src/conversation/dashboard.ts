@@ -4431,9 +4431,10 @@ export async function registerDashboardRoutes(
     async (request, reply) => {
       const { approvalId, decision } = request.body || {};
       if (!isApprovalId(approvalId) || !isPermissionPromptDecision(decision)) {
-        reply
-          .status(400)
-          .send({ error: 'approvalId and decision (approve | deny | explain | approve_disable_rule) are required' });
+        reply.status(400).send({
+          error:
+            'approvalId and decision (approve | deny | explain | approve_disable_rule | approve_confirmed) are required',
+        });
         return;
       }
       if (!_permissionAnswerHandlerFn) {
@@ -4464,6 +4465,13 @@ export async function registerDashboardRoutes(
             return;
           case 'not_requester':
             reply.status(403).send({ error: 'Only the user this permission request is for can answer it' });
+            return;
+          case 'confirm_required':
+            // SSOT 2026-11-02 T4 — the AI advised against it: the card asks again, then sends approve_confirmed.
+            reply.status(428).send({
+              error: '🔴 AI가 실행하지 말라고 권고한 요청입니다 — 정말 실행하려면 승인을 한 번 더 누르세요',
+              code: 'confirm_required',
+            });
             return;
           default:
             reply.status(404).send({ error: 'Permission request not found or expired' });
@@ -6300,7 +6308,7 @@ function acDetailDue(detail, now) {
 // Per session: a question has no request id (its id is its content), so two
 // sessions asking the same thing are two requests (PR #536 review P1).
 var _acState = Object.create(null);
-var AC_SENT = { approve: '승인을 보냈어요', deny: '거부를 보냈어요', explain: '설명을 요청했어요', approve_disable_rule: '승인을 보냈어요 · 규칙 끔' };
+var AC_SENT = { approve: '승인을 보냈어요', deny: '거부를 보냈어요', explain: '설명을 요청했어요', approve_disable_rule: '승인을 보냈어요 · 규칙 끔', approve_confirmed: '2차 확인 후 승인을 보냈어요' };
 var AC_SIBLING = '다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요';
 
 function isPermissionRequester(p) {
@@ -6328,7 +6336,9 @@ function acQuestionLock(s) {
 
 // DashboardPermissionRequest (+ the requester's input, + this page's answer) → the card's data.
 function acPermissionData(s, p) {
-  var d = { kind: 'permission', id: String(p.approvalId), tool: p.toolName || 'tool', canExplain: true, canDisableRule: !!p.canDisableRule };
+  // SSOT 2026-11-02 T2–T4 — the AI's recommendation: red (do not run) or green (approve).
+  var rec = p.aiRecommendation === 'deny' || p.aiRecommendation === 'approve' ? p.aiRecommendation : '';
+  var d = { kind: 'permission', id: String(p.approvalId), tool: p.toolName || 'tool', canExplain: true, canDisableRule: !!p.canDisableRule && rec !== 'deny' };
   var rules = (p.rules || []).map(function(r) {
     var o = { id: String(r.id), label: String(r.label || r.id) };
     if (r.description) o.description = String(r.description);
@@ -6352,6 +6362,17 @@ function acPermissionData(s, p) {
       d.input = detail.input;
       if (detail.truncated) d.truncated = true;
     }
+  }
+  if (rec) {
+    // The line under the title: the recommendation for every viewer; what the call
+    // does and why it is risky once the requester's detail is in (it can quote the command).
+    var adv = !lock && detail && detail.advice ? detail.advice : null;
+    var lines = [rec === 'deny' ? '🔴 AI 권고: 실행하지 마세요' : '🟢 AI 추천: 승인해도 됩니다'];
+    if (adv && adv.summary) lines.push('무엇을 하나: ' + adv.summary);
+    if (adv && adv.risk) lines.push('왜 위험한가: ' + adv.risk);
+    if (rec === 'deny') lines.push('승인하면 한 번 더 묻습니다');
+    d.risk = rec === 'deny' ? 'high' : 'low';
+    d.description = lines.join('\\n');
   }
   var st = _acState[s.key] && _acState[s.key]['p|' + p.approvalId];
   if (st) d.state = st;
@@ -6665,6 +6686,7 @@ function loadPermissionDetail(key, approvalId) {
       return res.json().catch(function() { return {}; }).then(function(body) {
         if (res.ok && typeof body.input === 'string') {
           _permDetails[approvalId] = { input: body.input, truncated: !!body.truncated };
+          if (body.advice && typeof body.advice === 'object') _permDetails[approvalId].advice = body.advice;
         } else if (res.status === 404) {
           _permDetails[approvalId] = { error: '이미 응답되었거나 만료된 요청입니다' };
         } else {
@@ -6697,7 +6719,10 @@ async function acPost(url, body) {
 async function acRefusal(res) {
   var data = {};
   try { data = await res.json(); } catch (_e) {}
-  return { status: 'error', message: (data && data.error) || ('응답을 보내지 못했어요 (HTTP ' + res.status + ')'), retry: res.status !== 409 && res.status !== 404 };
+  var st = { status: 'error', message: (data && data.error) || ('응답을 보내지 못했어요 (HTTP ' + res.status + ')'), retry: res.status !== 409 && res.status !== 404 };
+  // SSOT 2026-11-02 T4 — the AI advised against it: the next Approve on this card is the second, confirmed one.
+  if (data && data.code === 'confirm_required') st.confirm = true;
+  return st;
 }
 function acToolOf(key, approvalId) {
   var s = _sessionCache[key];
@@ -6770,15 +6795,17 @@ async function answerPermission(key, approvalId, decision) {
   var states = _acState[key] || (_acState[key] = Object.create(null));
   var cur = states[sk];
   if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
+  // SSOT 2026-11-02 T4 — the server asked again (the AI advised against the call): this Approve is the confirmed one.
+  var send = cur && cur.confirm && (decision === 'approve' || decision === 'approve_disable_rule') ? 'approve_confirmed' : decision;
   states[sk] = { status: 'sending', decision: decision };
   acRepaint(key);
   var st;
   try {
-    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/permission', JSON.stringify({ approvalId: approvalId, decision: decision }));
+    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/permission', JSON.stringify({ approvalId: approvalId, decision: send }));
     if (res.ok) {
       st = { status: 'resolved', outcome: decision === 'deny' ? 'denied' : decision === 'explain' ? 'explained' : 'approved', at: Date.now() };
-      if (decision === 'approve_disable_rule') st.ruleDisabled = true;
-      dashToast({ title: AC_SENT[decision] || '응답을 보냈어요', description: acToolOf(key, approvalId), tone: 'success' });
+      if (send === 'approve_disable_rule') st.ruleDisabled = true;
+      dashToast({ title: AC_SENT[send] || '응답을 보냈어요', description: acToolOf(key, approvalId), tone: 'success' });
     } else st = await acRefusal(res);
   } catch (e) {
     console.error('Permission answer error', e);
@@ -13570,7 +13597,8 @@ function updateTokenBreakdown() {
 var WL_BACKFILL_MAX_PAGES = 2000;
 // The latest window an opening loads, and each older page (SSOT 2026-10-29).
 var WL_PAGE = 100;
-var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류' };
+var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류', permission: '권한' };
+var WL_PERMISSION_LABELS = { approve: '권한 승인', approve_disable_rule: '권한 승인 · 규칙 끔', approve_confirmed: '2차 확인 승인', deny: '권한 거부', explain: '설명 요청' };
 var WL_EMPTY_MSG = '작업 로그 없음';
 var _wlCardsWait = false;
 var _wlDetailRev = 0;
@@ -14073,6 +14101,15 @@ function wlEntryOf(st, e) {
   if (typeof e.ts === 'number' && isFinite(e.ts)) x.at = e.ts;
   var text = String(e.text || '');
   var tool = e.tool ? String(e.tool) : '';
+  if (kind === 'permission') {
+    // SSOT 2026-11-02 T1 — a person's answer to a permission prompt: a badge naming the
+    // decision, and the server's line (decision · tool · call · the AI's advice). No raw behind it.
+    var pd = e.permission && typeof e.permission === 'object' ? String(e.permission.decision || '') : '';
+    x.kind = 'system';
+    x.system = { kind: 'permission', label: Object.prototype.hasOwnProperty.call(WL_PERMISSION_LABELS, pd) ? WL_PERMISSION_LABELS[pd] : '권한' };
+    x.text = text;
+    return x;
+  }
   if ((kind === 'tool' || kind === 'tool_result') && !e._role) {
     var card = wlCardData(st, seq);
     x.kind = 'tool';
