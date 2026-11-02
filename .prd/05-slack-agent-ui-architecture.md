@@ -159,6 +159,7 @@ stateDiagram-v2
   uncertain --> resolved: 결과가 확인된 성공
   uncertain --> failed: 결과가 확인된 실패
   uncertain --> queued: 유저 확인 후 명시적 재투입
+  uncertain --> dispatched: 호스트 중단 후 이어받는 턴이 인수 (자기 턴이 모델에 닿은 증거가 있을 때만)
   queued --> cancelled: 세션 삭제 (가시적 취소 + 히스토리)
   reserved --> cancelled: 세션 삭제
   claimed --> cancelled: 세션 삭제
@@ -172,7 +173,10 @@ stateDiagram-v2
 terminal = `resolved` / `cancelled`. 세션 삭제는 **terminal이 아닌 모든 상태**에서 `cancelled`로 가며
 히스토리를 남긴다(A18). `reserved → uncertain` 전이는 **일부러 없다** — 예약만 된 항목은 실행되지 않았으므로
 재시작·stop에서 `paused`로 간다(SSOT §8 R3). 반대로 `claimed`/`dispatched`의 크래시 결과는 `uncertain`으로
-남긴다(부작용 여부 불명, R6).
+남긴다(부작용 여부 불명, R6). `uncertain → dispatched`는 재생이 아니다: 호스트가 끊은(재시작 · `auto-compact`) 항목 중 자기 턴의 첫 SDK
+이벤트가 기록된(`deliveredAt`) 것만, 같은 대화를 이어가는 턴이 모델에 닿는 순간 인수하고 그 턴의 결과로 확정한다.
+그 턴이 자기 항목을 이미 실행 중이면 세션당 `dispatched` 1개 제약 때문에 항목은 `uncertain`에 둔 채, 턴이 `safe`로
+끝날 때 `uncertain → resolved`로만 확정한다(SSOT §3.5).
 
 ## 6. 배치와 경계
 

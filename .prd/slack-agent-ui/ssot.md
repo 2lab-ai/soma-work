@@ -153,6 +153,19 @@ Queue
   - `queued` → 복원하되 **paused**, 유저 resume 전까지 자동 dispatch 금지.
   - `reserved` → **paused**. 예약은 dispatch가 아니다(**아직 디스패치되지 않았다**) — 블라인드 승격 금지.
   - `claimed` / `dispatched` → `uncertain`으로 표시. **블라인드 재실행 금지**(부작용 발생 여부 불명, → §8 R6).
+  - **호스트 중단 후 이어받기 (2026-11-02, work-m64 dev 실측)**: 항목의 턴이 **모델에 닿았다는 증거**
+    (`deliveredAt` — 그 턴의 첫 SDK 이벤트에 기록)가 있고 **호스트가** 끊은(`shutdown` stop · 크래시 복구 ·
+    `auto-compact` stop) `uncertain` 항목은, 그 대화를 이어가는 다음 턴이 모델에 닿는 순간 그 턴이 인수한다.
+    재실행이 아니다 — 그 말은 이미 모델이 읽었고 다음 턴이 같은 대화를 이어간다.
+    - 이어받는 턴: 재시작 후에는 resume 턴(크래시 auto-resume · goal continuation, 합성 host 턴)만 — 유저의
+      새 메시지나 drain된 항목이 먼저 돌면 인수하지 않는다. `auto-compact` stop 후에는 다음에 도는 턴 무엇이든
+      (drain된 항목 · auto-compact continuation · goal continuation) — 그 stop은 다음 턴이 compact 후 이어가라고
+      있는 것이다. 표시 후 10분 안에 그 턴이 오지 않으면 인수하지 않는다.
+    - 자기 항목이 없는 턴은 **실행 중으로** 인수한다(`uncertain → dispatched`) — 그 턴의 결과가 확정한다
+      (`safe` → `resolved`, 다시 중단 → `uncertain`, 오류 → `failed`). 자기 항목이 있는 턴은 세션당
+      `dispatched` 1개 제약(스냅샷 게이트) 때문에 항목을 `uncertain`으로 둔 채 맡고, 턴이 `safe`로 끝날 때만
+      `resolved`로 확정한다(그 외 종료는 그대로 둔다).
+    - 증거 없는 항목(셋업 중 끊김)과 유저 Stop·`Send now`로 `uncertain`이 된 항목은 인수하지 않는다.
   - 확인된 `failed` → 명시적 retry만.
 - stop, 세션 종료 = 큐를 freeze + 사유를 화면에 표시. 유저의 **명시적 resume** 전까지 자동 dispatch 없음.
   - **freeze의 범위는 항목 단위다**: stop/재시작으로 freeze된 세션에서 보류된(`paused`/`uncertain`) 항목만
