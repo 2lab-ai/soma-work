@@ -77,6 +77,7 @@ export class DictationStream {
   private running = 0;
   private lastSent = '';
   private carry: Int16Array = new Int16Array(0);
+  private cancelled = false;
 
   constructor(options: DictationStreamOptions) {
     this.opts = {
@@ -96,8 +97,24 @@ export class DictationStream {
     return this.running > 0;
   }
 
+  /** Transcriptions running or queued. */
+  get backlog(): number {
+    return this.running;
+  }
+
+  /** The listener is gone: the audio is dropped, queued transcriptions are skipped, nothing more is emitted. */
+  cancel(): void {
+    this.cancelled = true;
+    this.chunks = [];
+    this.length = 0;
+    this.preRoll = [];
+    this.preRollLength = 0;
+    this.carry = new Int16Array(0);
+  }
+
   /** Audio from the browser, any length. */
   push(chunk: Int16Array): void {
+    if (this.cancelled) return;
     let data = chunk;
     if (this.carry.length) {
       data = new Int16Array(this.carry.length + chunk.length);
@@ -188,14 +205,16 @@ export class DictationStream {
 
   private queue(job: () => Promise<void>): void {
     this.running++;
-    this.chain = this.chain.then(job).then(
-      () => {
-        this.running--;
-      },
-      () => {
-        this.running--;
-      },
-    );
+    this.chain = this.chain
+      .then(() => (this.cancelled ? undefined : job()))
+      .then(
+        () => {
+          this.running--;
+        },
+        () => {
+          this.running--;
+        },
+      );
   }
 
   /** Transcribe the open segment again; settle the words two hypotheses agree on. */
@@ -269,6 +288,7 @@ export class DictationStream {
   }
 
   private emit(force = false): void {
+    if (this.cancelled) return;
     const t = this.text();
     const key = t.final + '\u0000' + t.interim;
     if (!force && key === this.lastSent) return;

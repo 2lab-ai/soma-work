@@ -5,6 +5,7 @@
  *   C2  a dictation: microphone → worklet → socket (start first, audio only once the server is ready) → words → stop
  *   C3  failures say why: a refused or missing microphone, no worklet, a server that is not there, a dropped line
  *   C4  status: the server's answer, or why it could not be asked
+ *   C5  review (PR #751): stop sends what the worklet still holds before stop; done may say why it ended
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -49,6 +50,33 @@ describe('C1 — the worklet', () => {
     expect(peak).toBeLessThanOrEqual(0.5);
   });
 
+  it('flush: what is held (less than a chunk) goes out, then flushed', () => {
+    const posted: unknown[] = [];
+    let Proc: any = null;
+    new Function('AudioWorkletProcessor', 'registerProcessor', 'sampleRate', api.DICTATION_WORKLET_SRC)(
+      class {
+        port: any = { postMessage: (b: unknown) => posted.push(b) };
+      },
+      (_n: string, c: any) => {
+        Proc = c;
+      },
+      16000,
+    );
+    const p = new Proc();
+    p.process([[new Float32Array(128).fill(0.25)]]);
+    p.process([[new Float32Array(128).fill(0.25)]]);
+    expect(posted).toEqual([]);
+    p.port.onmessage({ data: 'flush' });
+    expect(posted.length).toBe(2);
+    expect(new Int16Array(posted[0] as ArrayBuffer).length).toBe(256);
+    expect(new Int16Array(posted[0] as ArrayBuffer)[0]).toBe(Math.trunc(0.25 * 32767));
+    expect(posted[1]).toBe('flushed');
+    // nothing held: only flushed
+    p.port.onmessage({ data: 'flush' });
+    expect(posted[2]).toBe('flushed');
+    expect(posted.length).toBe(3);
+  });
+
   it('no input (a stopped track) keeps the node alive and posts nothing', () => {
     const posted: unknown[] = [];
     let Proc: any = null;
@@ -66,7 +94,7 @@ describe('C1 — the worklet', () => {
   });
 });
 
-function env(opts: { mic?: 'ok' | Error; worklet?: boolean } = {}) {
+function env(opts: { mic?: 'ok' | Error; worklet?: boolean; flush?: boolean } = {}) {
   const tracks = [
     {
       stopped: 0,
@@ -103,7 +131,9 @@ function env(opts: { mic?: 'ok' | Error; worklet?: boolean } = {}) {
     }
   }
   class FakeNode {
-    port = { onmessage: null as AnyFn | null };
+    port: { onmessage: AnyFn | null; postMessage?: AnyFn } = opts.flush
+      ? { onmessage: null, postMessage: vi.fn() }
+      : { onmessage: null };
     connected: unknown[] = [];
     constructor(
       public ctx: unknown,
@@ -163,7 +193,7 @@ function callbacks() {
       onReady: (m: string) => got.ready.push(m),
       onText: (f: string, i: string) => got.text.push([f, i]),
       onError: (c: string, m: string) => got.errors.push([c, m]),
-      onDone: (f: string) => got.done.push(f),
+      onDone: (f: string, why?: string) => got.done.push(why ? `${f}|${why}` : f),
     },
   };
 }
@@ -220,6 +250,63 @@ describe('C2 — a dictation', () => {
     expect(e.tracks[0].stopped).toBe(1);
     expect(e.sockets[0].readyState).toBe(3);
     e.sockets[0].onclose?.();
+    expect(got.errors).toEqual([]);
+  });
+});
+
+describe('C5 — review (PR #751)', () => {
+  async function ready(e: ReturnType<typeof env>, cb: any) {
+    const c = api.dictationServerStart(cb, e.w);
+    await flush();
+    await flush();
+    e.sockets[0].open();
+    e.sockets[0].msg({ type: 'ready', model: 'large-v3-turbo' });
+    return c;
+  }
+
+  it('stop: the worklet’s last partial chunk goes out before stop', async () => {
+    const e = env({ flush: true });
+    const { cb } = callbacks();
+    const c = await ready(e, cb);
+    const ws = e.sockets[0];
+    const node = e.nodes[0];
+    c.stop();
+    expect(e.tracks[0].stopped).toBe(1);
+    expect(node.port.postMessage).toHaveBeenCalledWith('flush');
+    expect(ws.sent).not.toContain(JSON.stringify({ type: 'stop' }));
+    const tail = new Int16Array(480).buffer;
+    node.port.onmessage({ data: tail });
+    node.port.onmessage({ data: 'flushed' });
+    expect(ws.sent.slice(-2)).toEqual([tail, JSON.stringify({ type: 'stop' })]);
+    node.port.onmessage({ data: new Int16Array(10).buffer }); // after stop: nothing more
+    expect(lastOf(ws.sent)).toBe(JSON.stringify({ type: 'stop' }));
+  });
+
+  it('stop: a worklet that never answers the flush does not hold the stop', async () => {
+    vi.useFakeTimers();
+    try {
+      const e = env({ flush: true });
+      const { cb } = callbacks();
+      const c = api.dictationServerStart(cb, e.w);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      e.sockets[0].open();
+      e.sockets[0].msg({ type: 'ready' });
+      c.stop();
+      expect(e.sockets[0].sent).not.toContain(JSON.stringify({ type: 'stop' }));
+      await vi.advanceTimersByTimeAsync(400);
+      expect(lastOf(e.sockets[0].sent)).toBe(JSON.stringify({ type: 'stop' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('done with a message: the words and why it ended', async () => {
+    const e = env();
+    const { got, cb } = callbacks();
+    await ready(e, cb);
+    e.sockets[0].msg({ type: 'done', final: '마지막 말', message: '받아쓰기는 한 번에 10분까지입니다' });
+    expect(got.done).toEqual(['마지막 말|받아쓰기는 한 번에 10분까지입니다']);
     expect(got.errors).toEqual([]);
   });
 });

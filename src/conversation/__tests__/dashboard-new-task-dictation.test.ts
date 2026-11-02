@@ -1665,7 +1665,7 @@ type Srv = {
     onReady(m: string): void;
     onText(f: string, i: string): void;
     onError(c: string, m: string): void;
-    onDone(f: string): void;
+    onDone(f: string, why?: string): void;
   };
   stops: number;
   aborts: number;
@@ -1718,19 +1718,54 @@ describe('#739 — 받아쓰기 through the server’s Whisper when this device 
     expect(env.composer.value).toBe('하나 둘');
   });
 
-  it('a server that never confirms the finish does not hold the tool', async () => {
+  it('a slow finish still lands: the tool says it is finishing and waits (review, PR #751)', async () => {
     vi.useFakeTimers();
     try {
       const fake = serverFake();
-      const { api } = page({ choice: 'server', server: fake.start });
+      const { api, env } = page({ choice: 'server', server: fake.start });
       await api.ntDictateStart();
+      fake.made[0].cb.onReady('large-v3-turbo');
+      fake.made[0].cb.onText('하나', '둘');
       api.ntDictateStop(false);
-      vi.advanceTimersByTime(4000);
-      expect(fake.made[0].aborts).toBe(1);
+      expect(last(env.statuses)).toBe('마무리하는 중… 마지막 말을 받아쓰고 있습니다');
+      vi.advanceTimersByTime(10000);
+      expect(fake.made[0].aborts).toBe(0);
+      fake.made[0].cb.onText('하나 둘 셋', '');
+      fake.made[0].cb.onDone('하나 둘 셋');
+      expect(env.composer.value).toBe('하나 둘 셋');
       expect(api.__peek('_ntDictation')).toBeNull();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('a server that never confirms the finish: the tool lets go and says the last words did not come', async () => {
+    vi.useFakeTimers();
+    try {
+      const fake = serverFake();
+      const { api, env } = page({ choice: 'server', server: fake.start });
+      await api.ntDictateStart();
+      fake.made[0].cb.onText('하나', '둘');
+      api.ntDictateStop(false);
+      vi.advanceTimersByTime(20000);
+      expect(fake.made[0].aborts).toBe(1);
+      expect(api.__peek('_ntDictation')).toBeNull();
+      expect(env.composer.value).toBe('하나 둘');
+      expect(env.errorLine.textContent).toBe('마지막 말이 제때 오지 않아 보이는 글자까지만 남겼습니다');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the server’s time limit: the last words land and the line says why', async () => {
+    const fake = serverFake();
+    const { api, env } = page({ choice: 'server', server: fake.start });
+    await api.ntDictateStart();
+    fake.made[0].cb.onText('마지막', '말');
+    fake.made[0].cb.onDone('마지막 말', '받아쓰기는 한 번에 10분까지입니다 — 다시 누르면 이어서 받아씁니다');
+    expect(env.composer.value).toBe('마지막 말');
+    expect(last(env.statuses)).toBe('받아쓰기는 한 번에 10분까지입니다 — 다시 누르면 이어서 받아씁니다');
+    expect(env.errorLine.textContent).toBe('');
   });
 
   it('no Whisper on the server: the red line says why and where to switch back', async () => {
