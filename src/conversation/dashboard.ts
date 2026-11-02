@@ -4437,6 +4437,9 @@ export async function registerDashboardRoutes(
           reply.status(404).send({ error: 'Session not found' });
         } else if (errMsg === 'Session is not waiting for a choice') {
           reply.status(409).send({ error: 'Session is not waiting for choices' });
+        } else if (errMsg === 'Only the task owner may answer this form') {
+          // #767 — someone else's answer to a form: only the owner (or someone they approved) answers it.
+          reply.status(403).send({ error: '이 질문은 작업 소유자(또는 소유자가 승인한 사람)만 답할 수 있습니다' });
         } else if (errMsg === 'Session has no pending multi-choice question') {
           reply.status(409).send({ error: 'Session has no pending multi-choice question' });
         } else if (errMsg.startsWith('Missing answer for question')) {
@@ -4602,6 +4605,8 @@ export async function registerDashboardRoutes(
           reply.status(409).send({ error: errMsg });
         } else if (errMsg === 'No recommendation available') {
           reply.status(422).send({ error: errMsg });
+        } else if (errMsg === 'Only the task owner may answer this form') {
+          reply.status(403).send({ error: '이 질문은 작업 소유자(또는 소유자가 승인한 사람)만 답할 수 있습니다' });
         } else {
           logger.error('Error submitting recommended from dashboard', error);
           reply.status(500).send({ error: 'Internal Server Error' });

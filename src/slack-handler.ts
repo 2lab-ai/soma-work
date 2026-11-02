@@ -2763,10 +2763,11 @@ export class SlackHandler {
    * until the owner approves it (`instruction-approval.ts`); the caller runs
    * nothing for a held message.
    *
-   * Only a message that would start or steer a turn is held: a control (`!`,
-   * a command that answers without a turn) keeps its own owner checks, and a
-   * host turn (cron, goal, resume) is the owner's. A top-level message starts
-   * its own session, which its writer owns. Called at the entry, before the
+   * Every message is held — a turn's words and a command alike: a control
+   * (`!`, `goal pause`, `%model`, `model …`) changes the owner's session too,
+   * and most of them have no owner check of their own (trinity R1). A host
+   * turn (cron, goal, resume, a post-compact replay) is the owner's. A
+   * top-level message starts its own session, which its writer owns. Called at the entry, before the
    * queue fence — a held message is never queued, never steered into the
    * running turn — and again in `processMessage` for anything that reaches a
    * dispatch another way (a queue drain, `Send now`).
@@ -2783,7 +2784,10 @@ export class SlackHandler {
     const approvals = this.instructionApprovals;
     if (!approvals || event.synthetic || !event.user || !event.thread_ts) return undefined;
     if (event.channel.startsWith('D')) return undefined;
-    if (!this.isQueueableFollowup(event)) return undefined;
+    // Host replays of a turn already admitted (post-compact, goal continuation) are not new words.
+    if (event.routeContext?.compactRedispatch || event.routeContext?.goalContinuation) return undefined;
+    // Nothing to run: no words, no files.
+    if (!(event.text ?? '').trim() && !event.files?.length) return undefined;
     const session = this.claudeHandler?.getSession?.(event.channel, event.thread_ts);
     if (!session?.ownerId || session.ownerId === event.user) return undefined;
     const sessionKey = this.claudeHandler.getSessionKey(event.channel, event.thread_ts);

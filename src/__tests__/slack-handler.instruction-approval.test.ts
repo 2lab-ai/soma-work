@@ -234,6 +234,20 @@ describe('SlackHandler — someone else’s instruction waits for the owner (#76
     expect(approvals.pendingFor(SESSION_KEY)[0]).toMatchObject({ requesterId: 'U_OTHER', preview: '큐에 있던 지시' });
   });
 
+  it('a non-owner’s control command (`!`, `goal pause`, `%model`) is held too — it changes the owner’s session (trinity R1)', async () => {
+    const abort = vi.spyOn(handlerAny.requestCoordinator, 'abortSession');
+    await handler.handleMessage(message({ user: 'U_OTHER', ts: '302.1', text: '!' }), say);
+    await handler.handleMessage(message({ user: 'U_OTHER', ts: '302.2', text: 'goal pause' }), say);
+    await handler.handleMessage(message({ user: 'U_OTHER', ts: '302.3', text: '%model sonnet' }), say);
+    expect(abort).not.toHaveBeenCalled();
+    expect(handlerAny.inputProcessor.routeCommand).not.toHaveBeenCalled();
+    expect(startWithContinuation).not.toHaveBeenCalled();
+    expect(approvals.pendingFor(SESSION_KEY)[0]).toMatchObject({ requesterId: 'U_OTHER', count: 3 });
+    // The owner's own control still runs at once.
+    await handler.handleMessage(message({ ts: '302.4', text: '%model sonnet' }), say);
+    expect(handlerAny.inputProcessor.routeCommand).toHaveBeenCalledTimes(1);
+  });
+
   it('a host turn (synthetic) and a top-level message are not held', async () => {
     await handler.handleMessage(message({ user: 'U_OTHER', ts: '301.0', synthetic: true }), say);
     expect(approvals.pendingFor(SESSION_KEY)).toEqual([]);

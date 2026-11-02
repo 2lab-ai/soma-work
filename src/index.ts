@@ -1295,9 +1295,7 @@ async function start() {
       getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
       saveSessions: () => claudeHandler.saveSessions(),
       isTrusted: (ownerId, userId) => userSettingsStore.isUserTrustedInstructor(ownerId, userId),
-      trust: (ownerId, entry) => {
-        userSettingsStore.addUserTrustedInstructor(ownerId, entry);
-      },
+      trust: (ownerId, entry) => userSettingsStore.addUserTrustedInstructor(ownerId, entry),
       postOwnerDm: async (ownerId, message) => {
         const dm = await approvalSlackApi.openDmChannel(ownerId);
         const posted = await approvalSlackApi.postMessage(dm, message.text, { blocks: message.blocks });
