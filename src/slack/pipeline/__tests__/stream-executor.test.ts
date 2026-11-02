@@ -4503,6 +4503,41 @@ describe('stream-executor — B3 choice wiring', () => {
     expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledWith('C1-171.100');
   });
 
+  it('askUserQuestionFromHost posts a host question exactly like a model one (goal stall)', async () => {
+    const { deps, sessionRegistry } = createP3Deps();
+    deps.actionHandlers.getPendingForm = vi.fn().mockReturnValue(undefined);
+    const session = createSession();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    const question = {
+      type: 'user_choices' as const,
+      title: '🛑 Goal 멈춤',
+      questions: [{ id: 'goal-stall-next', question: '다음 지시', choices: [{ id: '1', label: 'A' }] }],
+    };
+
+    const asked = await executor.askUserQuestionFromHost('C1-171.100', question);
+
+    expect(asked).toBe(true);
+    const turnId = deps.threadPanel.askUserForm.mock.calls[0][0] as string;
+    expect(turnId.startsWith('host:C1-171.100:')).toBe(true);
+    expect(deps.actionHandlers.setPendingForm.mock.calls[0][1]).toMatchObject({
+      turnId,
+      channel: 'C1',
+      threadTs: '171.100',
+    });
+    expect(session.actionPanel.pendingQuestion).toBe(question);
+    expect(deps.claudeHandler.setActivityState).toHaveBeenCalledWith('C1', '171.100', 'waiting');
+    expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledWith('C1-171.100');
+  });
+
+  it('askUserQuestionFromHost refuses a session without a thread', async () => {
+    const { deps } = createP3Deps();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(undefined);
+    const executor = new StreamExecutor(deps);
+    expect(await executor.askUserQuestionFromHost('nope', { type: 'user_choices', questions: [] })).toBe(false);
+    expect(deps.threadPanel.askUserForm).not.toHaveBeenCalled();
+  });
+
   it('multi-choice pre-allocates formIds with turnId and calls askUserForm', async () => {
     const { deps } = createP3Deps();
     deps.threadPanel.askUserForm = vi

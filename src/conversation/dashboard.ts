@@ -613,6 +613,8 @@ export interface KanbanGoal {
     maxContinuations: number;
     /** The last completion-eval verdict that said "not yet" — what is still missing. */
     lastEvalReason?: string;
+    /** The loop stopped: the goal failed again for the same reason; the owner was asked what to do next. */
+    stalled?: { at: number; reason: string };
   };
   queue: Array<{ goalId: string; objective: string }>;
   completedCount: number;
@@ -2009,6 +2011,14 @@ function goalToKanban(s: any): KanbanGoal | undefined {
             maxContinuations: Number(goal.maxContinuations) || 0,
             ...(typeof goal.lastEvalReason === 'string' && goal.lastEvalReason
               ? { lastEvalReason: goal.lastEvalReason }
+              : {}),
+            ...(goal.stall && typeof goal.stall.reason === 'string'
+              ? {
+                  stalled: {
+                    at: Number(goal.stall.stalledAt) || 0,
+                    reason: goal.stall.reason.slice(0, GOAL_REASON_MAX),
+                  },
+                }
               : {}),
           }
         : undefined,
@@ -11982,6 +11992,11 @@ function goalCardData(s, canEdit) {
       // The auto-continue count is a budget, not progress: the quiet meta line, never the bar.
       if (toNum(cur.maxContinuations) > 0) d.current.meta = [{ label: '이어하기', value: toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) }];
       if (cur.lastEvalReason) d.current.note = '남은 것: ' + String(cur.lastEvalReason).slice(0, 300);
+      // Same failure twice: the loop waits for the owner's answer to the stall question.
+      if (cur.stalled) {
+        (d.current.meta = d.current.meta || []).push({ label: '멈춤', value: '같은 이유로 다시 실패 — 답을 기다림' });
+        d.current.note = '멈춘 이유: ' + String(cur.stalled.reason).slice(0, 300);
+      }
     }
   }
   d.queue = ((g && g.queue) || []).map(function(q) { return { id: String(q.goalId), objective: String(q.objective || '') }; });

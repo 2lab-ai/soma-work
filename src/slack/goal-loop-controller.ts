@@ -51,10 +51,12 @@ import {
   evaluateGoalCompletion,
   GOAL_EVAL_DISPATCH_MAX_RETRIES,
   type GoalEvalDispatcher,
+  type GoalEvalPreviousVerdict,
   type GoalEvalVerdict,
   shouldRunGoalIdleDriver,
 } from './goal-completion-evaluator';
 import { GOAL_CONTINUATION_TEXT_PREFIX } from './goal-continuation';
+import { openGoalStall } from './goal-stall';
 import { advanceGoalQueue, formatGoalObjectiveForSlack } from './session-goal';
 import { announceSessionNotice, recordSessionNotice } from './session-notice';
 
@@ -143,6 +145,13 @@ export interface GoalLoopControllerDeps {
    * decision is asked on the dashboard card only.
    */
   postOwnerDm?: (userId: string, text: string, blocks: unknown[]) => Promise<unknown>;
+  /**
+   * Asks the goal owner, in the thread and on the dashboard, which of the
+   * stall's three next instructions to give (the same question surface the
+   * model's ASK_USER_QUESTION uses — the answer arrives as a real user turn).
+   * Optional — without it the stall is announced with a plain notice.
+   */
+  askStallQuestion?: (question: GoalStallQuestion) => Promise<void>;
   logger: GoalLoopLogger;
   /** Default work model when the session has none. */
   fallbackModel: string;
@@ -163,6 +172,16 @@ export interface GoalLoopControllerDeps {
    * synchronously instead of faking timers.
    */
   scheduleEvalRetry?: (fn: () => void, delayMs: number) => void;
+}
+
+/** What the host asks the owner when the goal failed again for the same reason. */
+export interface GoalStallQuestion {
+  sessionKey: string;
+  goalId: string;
+  stallId: string;
+  objective: string;
+  reason: string;
+  actions: string[];
 }
 
 /**
@@ -302,7 +321,7 @@ export class GoalLoopController {
         sessionKey,
         session,
         activeGoal,
-        { completed: false, reason: activeGoal.lastEvalReason, remaining: [] },
+        { completed: false, reason: activeGoal.lastEvalReason, remaining: activeGoal.lastEvalRemaining ?? [] },
         summaryHash,
       );
       return;
@@ -327,9 +346,15 @@ export class GoalLoopController {
 
     logger.info('Goal session settled idle — dispatching completion eval', { sessionKey });
 
+    // The previous `completed=false` verdict goes to the evaluator so it can
+    // tell a repeat of the same failure from new work (goal stall).
+    const previous = activeGoal.lastEvalReason?.trim()
+      ? { reason: activeGoal.lastEvalReason, remaining: activeGoal.lastEvalRemaining ?? [] }
+      : undefined;
+
     let verdict;
     try {
-      verdict = await this.runEvalWithTimeout(session, objective, evalUserSummary);
+      verdict = await this.runEvalWithTimeout(session, objective, evalUserSummary, previous);
     } catch (err: unknown) {
       this.handleEvalDispatchFailure(sessionKey, session, snapshot, startedAt, err);
       return;
@@ -426,6 +451,11 @@ export class GoalLoopController {
       ? verdict.remaining.map((r) => `• ${r}`).join('\n')
       : '_(no remaining items reported)_';
 
+    if (outcome.action === 'stalled') {
+      await this.stopOnStall(sessionKey, session, activeGoal, verdict);
+      return;
+    }
+
     if (outcome.action === 'cap-paused') {
       logger.info('Goal continuation cap reached', {
         sessionKey,
@@ -515,6 +545,48 @@ export class GoalLoopController {
   }
 
   /**
+   * Same failure twice (≥ GOAL_STALL_MIN_CONFIDENCE): stop the loop and ask
+   * the owner which of three next instructions to give. No continuation is
+   * injected; the round stays open until a real user message ends it.
+   */
+  private async stopOnStall(
+    sessionKey: string,
+    session: ConversationSession,
+    activeGoal: SessionGoal,
+    verdict: GoalEvalVerdict,
+  ): Promise<void> {
+    const { logger } = this.deps;
+    const stall = openGoalStall(activeGoal, verdict, this.now());
+    this.persist();
+    logger.info('Goal loop stopped — same failure as the previous evaluation', {
+      sessionKey,
+      confidence: stall.confidence,
+      progressed: verdict.progressed,
+      continuationCount: activeGoal.continuationCount,
+    });
+    await this.postResultNotice(
+      session,
+      `🛑 Goal 자동 진행을 멈췄습니다 — 지난번과 같은 이유로 다시 실패했습니다 (확신 ${Math.round(stall.confidence * 100)}%).\n*Objective:* ${formatGoalObjectiveForSlack(activeGoal.objective)}\n*Reason:* ${verdict.reason}\n다음에 할 일을 골라 주세요. 아무 메시지나 보내도 goal이 이어집니다.`,
+    );
+    if (!this.deps.askStallQuestion) return;
+    try {
+      await this.deps.askStallQuestion({
+        sessionKey,
+        goalId: activeGoal.goalId,
+        stallId: stall.stallId,
+        objective: activeGoal.objective,
+        reason: verdict.reason,
+        actions: stall.actions,
+      });
+    } catch (err: unknown) {
+      logger.warn('Goal stall question could not be posted — the notice still asks', {
+        sessionKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
    * Loop progress (🔄 not yet complete, ▶️ next queued goal) is a status
    * message: posted only at compact and above (spec 10 §3.2-5 — `minimal`
    * keeps header, task list, final answer, choice/approval and errors).
@@ -575,6 +647,7 @@ export class GoalLoopController {
     session: ConversationSession,
     objective: string,
     workSummary: string,
+    previous?: GoalEvalPreviousVerdict,
   ): ReturnType<typeof evaluateGoalCompletion> {
     const abortController = new AbortController();
     const graceMs = Math.min(GOAL_EVAL_ABORT_GRACE_MS, this.evalTimeoutMs);
@@ -601,6 +674,7 @@ export class GoalLoopController {
             effort: session.effort as EffortLevel | undefined,
             abortController,
             cwd: session.workingDirectory,
+            previous,
           },
           this.deps.dispatcher,
         ),
