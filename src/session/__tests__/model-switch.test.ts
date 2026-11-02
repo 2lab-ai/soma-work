@@ -395,7 +395,7 @@ describe('the effort follows the model (a switch never keeps a level the target 
     const { d } = deps(session, { effortLevels: levels });
     const r = await switchSessionModel('k', 'grok[1m]', d);
     expect(r).toMatchObject({ status: 'compacting', effort: 'xhigh' });
-    expect(session.pendingModelSwitch).toMatchObject({ model: 'grok-4.6', effort: 'xhigh' });
+    expect(session.pendingModelSwitch).toMatchObject({ model: 'grok-4.6', effort: 'xhigh', effortFrom: 'max' });
     expect(session.effort).toBe('max');
   });
 });

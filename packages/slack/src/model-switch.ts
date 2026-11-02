@@ -29,6 +29,8 @@ export interface PendingModelSwitch {
   armed?: boolean;
   /** The session's effort once the switch lands — set when the target does not run the session's level. */
   effort?: string;
+  /** The level `effort` replaces: a level chosen while the switch waited is the owner's and stays. */
+  effortFrom?: string;
 }
 
 type SwitchHolder = {
@@ -111,7 +113,9 @@ export function applyPendingModelSwitch(
     session.pendingModelSwitch = undefined;
     return undefined;
   }
-  applyModelSwitch(session, pending.model, resolveContextWindow, pending.effort);
+  // The parked effort replaces only the level it was computed from: one the owner set while the switch waited stays.
+  const effort = pending.effort && session.effort === pending.effortFrom ? pending.effort : undefined;
+  applyModelSwitch(session, pending.model, resolveContextWindow, effort);
   return pending;
 }
 

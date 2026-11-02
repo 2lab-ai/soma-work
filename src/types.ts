@@ -998,6 +998,8 @@ export interface ConversationSession {
     armed?: boolean;
     /** The session's effort once the switch lands — set when the target does not run the session's level. */
     effort?: string;
+    /** The level `effort` replaces (a level set while the switch waited stays). */
+    effortFrom?: string;
   };
   // One-shot suppression for `checkAndSchedulePendingCompact`. Set to `true`
   // by `postCompactCompleteIfNeeded` when a compact cycle seals; cleared by
