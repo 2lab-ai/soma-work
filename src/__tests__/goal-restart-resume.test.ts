@@ -341,6 +341,32 @@ describe('resumeActiveGoals (T1)', () => {
     expect(goal.continuationCount).toBe(5);
   });
 
+  // #788 round 2 (grok): a failed crash-recovery notice must still clear the
+  // shutdown marker, or the next boot would read the session as cut again and
+  // refund a second time.
+  it('a failed restart notice still clears the marker — the next boot refunds nothing', async () => {
+    const cut = activeGoalSession({ activityState: 'working' }) as ConversationSession & {
+      shutdownNotificationSent?: boolean;
+      wasWorkingAtShutdown?: boolean;
+    };
+    cut.shutdownNotificationSent = true;
+    cut.wasWorkingAtShutdown = true;
+    const goal = cut.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 6;
+    const sessions = new Map<string, ConversationSession>([['C1-T1', cut]]);
+    const { handler, claudeHandler } = createHandler(sessions);
+    claudeHandler.getCrashRecoveredSessions.mockReturnValue([recovered('C1-T1', true)]);
+    (handler as any).app.client.chat.postMessage = vi.fn().mockRejectedValue(new Error('ratelimited'));
+    handler.setGoalTurnSettledHandler(vi.fn());
+
+    await handler.notifyCrashRecovery();
+    handler.resumeActiveGoals();
+
+    expect(goal.continuationCount).toBe(5);
+    expect(cut.wasWorkingAtShutdown).toBe(false);
+    expect(cut.shutdownNotificationSent).toBe(false);
+  });
+
   it('a false stall at 10/10 cut by the restart resumes with its continuation given back', async () => {
     const stalled = activeGoalSession({
       activityState: 'waiting',
