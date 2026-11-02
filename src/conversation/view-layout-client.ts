@@ -160,11 +160,12 @@ function modelChipOf(model, effort, asked) {
   return m;
 }
 // Whose model it is, for its mark: claude · openai · grok · gemini · model (any other).
+// The same rules as @2lab.ai/ui modelVendor (core/model-mark), pinned by a test (#819 review P2).
 function modelVendorOf(model) {
   var m = String(model || '').toLowerCase();
   if (/claude|opus|sonnet|haiku|fable/.test(m)) return 'claude';
-  if (/^gpt|^o[0-9]|codex|openai/.test(m)) return 'openai';
-  if (/grok/.test(m)) return 'grok';
+  if (/^gpt|^o[0-9]|codex|openai|chatgpt/.test(m)) return 'openai';
+  if (/grok|xai/.test(m)) return 'grok';
   if (/gemini/.test(m)) return 'gemini';
   return 'model';
 }
