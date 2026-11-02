@@ -12589,8 +12589,9 @@ function renderCardBody(s, col, spec, face) {
   const modelParts = [];
   if (canSwitchModel) modelParts.push(renderModelPicker(s, true, modelShort, 'card'));
   else {
-    if (dhShow('model') && modelShort) modelParts.push(renderModelPicker(s, false, modelShort, 'card'));
-    if (s.effort) modelParts.push(renderEffortPicker(s));
+    // #813 — the disabled element names the model and its level; the level alone when the name is hidden.
+    if (dhShow('model') && modelShort) modelParts.push(renderModelPicker(s, false, modelShort, 'card', mpReadOnlyWhy(s, isOwner, col)));
+    else if (s.effort) modelParts.push(renderEffortPicker(s));
   }
   const modelHtml = modelParts.length ? '<span class="cfb-model">' + modelParts.join('') + '</span>' : '';
   const modelNote = renderModelNote(s, canSwitchModel);
@@ -13099,13 +13100,29 @@ function setBusy(key, op, on) {
 }
 // The owner's trigger: the element in a token wrapper (.ui-tok, display: contents),
 // named by its session and surface — the panel's menu opens above it. Until the
-// library has loaded it reads the model's name. Others read the model as text.
-function renderModelPicker(s, canSwitch, modelShort, surface) {
-  if (!canSwitch) return '<span class="cb-model-name">' + modelShort + '</span>';
+// library has loaded it reads the model's name. Others read the same element,
+// disabled (#813: the maker's mark, the model's name and the level; no menu) —
+// data-mp-ro carries why it cannot change (mpHydrate hands it over as data.disabled).
+function renderModelPicker(s, canSwitch, modelShort, surface, readOnlyWhy) {
   var where = surface === 'panel' ? 'panel' : 'card';
+  var ro = canSwitch ? '' : ' data-mp-ro="' + escAttr(readOnlyWhy || '바꿀 수 없습니다') + '"';
   return '<span class="ui-tok mp-slot" data-mk="' + escAttr('mp|' + where + '|' + s.key) + '">'
-    + '<ui-model-picker lang="ko"' + (where === 'panel' ? ' side="top"' : '') + ' data-mp-key="' + escAttr(s.key) + '" data-mp-surface="' + where + '">'
+    + '<ui-model-picker lang="ko"' + (where === 'panel' && canSwitch ? ' side="top"' : '') + ' data-mp-key="' + escAttr(s.key) + '" data-mp-surface="' + where + '"' + ro + '>'
     + '<span class="mp-fallback">' + (modelShort || '모델') + '</span></ui-model-picker></span>';
+}
+// The disabled picker's reason, and — when the model runs a lower level than the one set — both levels: its trigger
+// names only the level that runs (#821 review P2; the old read-only text read "매우 높음 → 높음").
+function mpReadOnlyNote(why, s) {
+  var capped = s && s.effortEffective && s.effort && s.effortEffective !== s.effort;
+  return capped ? why + ' · 설정 ' + effortLabel(s.effort) + ' → 실행 ' + effortLabel(s.effortEffective) : why;
+}
+// Why a viewer cannot change a session's model · effort here (the disabled picker's reason).
+function mpReadOnlyWhy(s, isOwner, col) {
+  if (!isOwner) return '내 세션이 아니라 바꿀 수 없습니다';
+  if (isSiblingSession(s)) return '다른 인스턴스의 세션이라 여기서 바꿀 수 없습니다';
+  if (s.sessionState === 'SLEEPING') return '휴면 세션이라 바꿀 수 없습니다';
+  if (col === 'closed' || s.terminated) return '끝난 세션이라 바꿀 수 없습니다';
+  return '바꿀 수 없습니다';
 }
 // The session's model outside the switch list is named by its short id.
 function mpShort(s) {
@@ -13203,10 +13220,14 @@ function mpHydrate(root) {
   for (var i = 0; i < els.length; i++) {
     var s = _sessionCache[els[i].getAttribute('data-mp-key')];
     if (!s) continue;
-    var sig = mpDataSig(s);
+    // #813 — a read-only viewer's element is disabled with its reason (no menu, no pick).
+    var ro = els[i].getAttribute('data-mp-ro');
+    var sig = mpDataSig(s) + '|' + (ro || '');
     if (els[i]._mpSig === sig) continue;
     els[i]._mpSig = sig;
-    els[i].data = mpData(s);
+    var d = mpData(s);
+    if (ro) d.disabled = mpReadOnlyNote(ro, s);
+    els[i].data = d;
   }
 }
 // A pick leaves the element as ui-change (re-model-picker D11): cancelled, so it
@@ -13372,9 +13393,9 @@ function renderPanelControls(s) {
   if (!held) {
     var canSwitch = viewerCanManage(s) && !s.terminated && s.sessionState !== 'SLEEPING' && !isSiblingSession(s);
     var modelShort = esc(s.model || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
+    // #813 — a read-only viewer reads the same element, disabled (its trigger names the level too).
     var html = '<span class="pc-scope">이 세션</span>'
-      + renderModelPicker(s, canSwitch, modelShort, 'panel')
-      + (canSwitch ? '' : renderEffortPicker(s))
+      + renderModelPicker(s, canSwitch, modelShort, 'panel', canSwitch ? '' : mpReadOnlyWhy(s, viewerCanManage(s), s.terminated ? 'closed' : ''))
       + renderModelNote(s, canSwitch);
     if (el._html !== html) {
       morphInnerHtml(el, html);
