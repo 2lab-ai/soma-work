@@ -49,7 +49,7 @@ Do not stop or give up when the tool is missing. Write the same payload, without
 ```json
 {
   "type": "user_choice",
-  "question": "[small] <question>",
+  "question": "[small ~20 lines] <question>",
   "context": "<current state · what happens next>",
   "recommendedChoiceId": "1",
   "choices": [
@@ -61,7 +61,22 @@ Do not stop or give up when the tool is missing. Write the same payload, without
 
 - The host reads the block as the card's question. The card moves to waiting, and a task started from Slack posts one "input needed" notice to its thread. The answer comes back as your next turn.
 - Never ask in plain text instead. A plain-text question ends the turn as a finished result: the thread gets a result notice, and the card shows no question to answer.
-- Several decisions at once: `"type": "user_choices"` with a `questions` array, each item a `user_choice`.
+- Several decisions at once: the same `user_choice_group` payload as on the Slack path. Use a top-level `question` and `choices: [{question, recommendedChoiceId, options:[...]}]`. The host numbers the questions itself (`q1`, `q2`, …). Do not hand-write `user_choices`: each of its questions needs an `id`, and without one the dashboard answers the form incorrectly, with no error. For example:
+
+```json
+{
+  "type": "user_choice_group",
+  "question": "[small ~20 lines] Two decisions before I continue",
+  "choices": [
+    { "question": "Which file name?", "recommendedChoiceId": "1",
+      "options": [{ "id": "1", "label": "summary.txt" }, { "id": "2", "label": "SUMMARY.md" }] },
+    { "question": "Overwrite if it exists?", "recommendedChoiceId": "2",
+      "options": [{ "id": "1", "label": "Overwrite" }, { "id": "2", "label": "Keep and stop" }] }
+  ]
+}
+```
+
+- The question-writing rules below apply unchanged. No quality gate runs on this path, so make the `context` self-contained yourself.
 
 ## Recommended option
 
@@ -71,7 +86,7 @@ Mark the recommended option with the top-level `recommendedChoiceId` field (sing
 - **Slack multi-form** styles it inline (reordered to the front of the buttons row with `style='primary'` + `⭐` prefix) so the 50-block per-message budget is preserved.
 - **Legacy fallback**: if `recommendedChoiceId` is missing, the renderer scans option labels for a trailing `(Recommended · N/M)` (or plain `(Recommended)`) marker and treats that option as recommended. The marker is auto-stripped from the displayed label. **Prefer explicit `recommendedChoiceId` over the label suffix.**
 
-> Fallback (tool unavailable): Output the same structured JSON directly in the message. **In PR review context, plain text is strictly prohibited** — always use structured JSON or tool call.
+> Fallback (tool unavailable): see "Dashboard task turns" above. Write the payload alone, fenced, at the end of the reply. **In PR review context, plain text is strictly prohibited** — always use structured JSON or tool call.
 
 ## Question writing rules
 
