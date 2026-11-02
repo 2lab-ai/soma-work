@@ -4,6 +4,13 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import {
+  type ContextRewindRecord,
+  decodeContextAnchor,
+  type PendingRewind,
+  sanitizeContextRewinds,
+  sanitizePendingRewind,
+} from '@soma/slack/context-anchor';
 import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
 import { endGoalCapDecision } from '@soma/slack/session-goal';
 import {
@@ -278,6 +285,9 @@ interface SerializedSession {
   taskUsage?: unknown;
   // Dashboard v2.1 — thread-aggregate snapshot fields (live aggregate derived from memory).
   compactionCount?: number;
+  contextAnchor?: string;
+  pendingRewind?: PendingRewind;
+  contextRewinds?: ContextRewindRecord[];
   activeLegStartedAtMs?: number;
   activeLegGoalId?: string;
   activeAccumulatedMs?: number;
@@ -2944,6 +2954,10 @@ export class SessionRegistry {
     session.activeAccumulatedMs = 0;
     session.activeLegStartedAtMs = undefined;
     session.compactionCount = 0;
+    // A fresh conversation has no cut points of its own yet (#743).
+    session.contextAnchor = undefined;
+    session.pendingRewind = undefined;
+    session.contextRewinds = undefined;
     session.summaryTitle = undefined;
     session.summaryTitleTurnId = undefined;
     session.summaryTitleLastUpdatedAtMs = undefined;
@@ -3504,6 +3518,10 @@ export class SessionRegistry {
             taskUsage: session.taskUsage,
             // Dashboard v2.1 — derive-first aggregate snapshot (persisted per session)
             compactionCount: session.compactionCount,
+            // Context rollback (#743) — the cut point and a rollback waiting for the next turn.
+            contextAnchor: session.contextAnchor,
+            pendingRewind: session.pendingRewind,
+            contextRewinds: session.contextRewinds,
             activeLegStartedAtMs: session.activeLegStartedAtMs,
             activeLegGoalId: session.activeLegGoalId,
             activeAccumulatedMs: session.activeAccumulatedMs,
@@ -3931,6 +3949,9 @@ export class SessionRegistry {
           taskUsage: restoreTaskUsage(serialized),
           // Dashboard v2.1 — restore aggregate snapshot
           compactionCount: typeof serialized.compactionCount === 'number' ? serialized.compactionCount : 0,
+          contextAnchor: decodeContextAnchor(serialized.contextAnchor) ? serialized.contextAnchor : undefined,
+          pendingRewind: sanitizePendingRewind(serialized.pendingRewind),
+          contextRewinds: sanitizeContextRewinds(serialized.contextRewinds),
           activeLegStartedAtMs: serialized.activeLegStartedAtMs,
           activeLegGoalId: serialized.activeLegGoalId,
           activeAccumulatedMs: typeof serialized.activeAccumulatedMs === 'number' ? serialized.activeAccumulatedMs : 0,
