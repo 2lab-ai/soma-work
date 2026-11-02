@@ -188,6 +188,7 @@ describe('D1 — the engine choice lives in this browser only', () => {
     const fetch = vi.fn();
     const doc = fakeDoc();
     const api = load({ localStorage: store, fetch, navigator: { sendBeacon: vi.fn() } }, doc);
+    api.__peek("_dicInfo = { path: 'chrome', langs: {} }");
     api.dicChoose('device');
     expect(store.setItem).toHaveBeenCalledWith('soma-dictation-engine', 'device');
     expect(fetch).not.toHaveBeenCalled();
@@ -208,8 +209,30 @@ describe('D1 — the engine choice lives in this browser only', () => {
       },
       doc,
     );
+    api.__peek("_dicInfo = { path: 'chrome', langs: {} }");
     api.dicChoose('device');
     expect(doc.el('dic-engine-note').textContent).toContain('저장을 막아');
+  });
+});
+
+describe('D1b — only an engine this device can run is kept', () => {
+  it('every engine starts disabled until this device’s details paint it', () => {
+    for (const v of ['device', 'server', 'browser'])
+      expect(DICTATION_TAB_HTML).toContain(`name="dic-engine" value="${v}" disabled`);
+  });
+
+  it('a choice this device cannot run (or one made before the details are in) is not kept', () => {
+    const store = memStore();
+    const doc = fakeDoc();
+    const api = load({ localStorage: store }, doc);
+    api.dicChoose('device');
+    expect(store.setItem).not.toHaveBeenCalled();
+    expect(doc.el('dic-engine-note').textContent).toContain('확인하는 중');
+    api.__peek("_dicInfo = { path: 'chrome', langs: {} }");
+    api.dicChoose('browser');
+    expect(store.setItem).not.toHaveBeenCalled();
+    expect(doc.el('dic-engine-note').textContent).toBe('준비 중입니다');
+    expect(doc.inputs.map((i) => i.checked)).toEqual([true, false, false]);
   });
 });
 
@@ -564,6 +587,24 @@ describe('D8 — 말해서 시험', () => {
         this.onend?.();
       };
     }
+  });
+
+  it('an empty list withdraws what was still being heard (not on Android right after words)', () => {
+    const { doc, api } = testEnv();
+    api.dicTestStart();
+    const rec = FakeRec.made[0];
+    rec.onaudiostart?.();
+    rec.onresult?.({ results: [res('대시')] });
+    expect(doc.el('dic-test-live').textContent).toBe('대시');
+    rec.onresult?.({ results: [] });
+    expect(doc.el('dic-test-live').textContent).toBe('');
+    const android = testEnv({ path: 'android', langs: {} }, UA.samsung);
+    android.api.dicTestStart();
+    const arec = FakeRec.made[1];
+    arec.onaudiostart?.();
+    arec.onresult?.({ results: [res('대시보드')] });
+    arec.onresult?.({ results: [res('')] });
+    expect(android.doc.el('dic-test-live').textContent).toBe('대시보드');
   });
 
   it('a press while it listens stops it', () => {
