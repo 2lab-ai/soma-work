@@ -130,7 +130,6 @@ const GIT_FETCH_OPTIONS = new Set([
   '--no-tags',
   '--tags',
   '--all',
-  '--prune',
   '-b',
   '--branch',
   '--sparse',
