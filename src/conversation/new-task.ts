@@ -332,6 +332,8 @@ export interface DashboardTaskSubmission {
   model?: string;
   /** E4 ④a-2 (.prd/19 D12) — make an epic; the launcher checks the user's `epicTasks` flag. */
   kind?: 'epic';
+  /** Plan mode (SSOT 2026-11-02) — the composer's plan toggle: plan first, work once started. Absent = off. */
+  plan?: boolean;
 }
 
 const MODEL_NAME = /^[A-Za-z0-9._:[\]-]{1,100}$/;
@@ -365,6 +367,7 @@ export function parseDashboardTaskSubmission(
     return { ok: false, error: 'model must be a model name' };
   }
   if (b.kind !== undefined && b.kind !== 'epic') return { ok: false, error: "kind must be 'epic' or absent" };
+  if (b.plan !== undefined && typeof b.plan !== 'boolean') return { ok: false, error: 'plan must be a boolean' };
   return {
     ok: true,
     value: {
@@ -373,6 +376,7 @@ export function parseDashboardTaskSubmission(
       ...(typeof b.folder === 'string' ? { folder: b.folder } : {}),
       ...(typeof b.model === 'string' ? { model: b.model } : {}),
       ...(b.kind === 'epic' ? { kind: 'epic' as const } : {}),
+      ...(typeof b.plan === 'boolean' ? { plan: b.plan } : {}),
     },
   };
 }

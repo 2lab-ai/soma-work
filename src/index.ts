@@ -89,6 +89,7 @@ import {
   setDashboardTaskAnswerHandler,
   setDashboardTaskCommandHandler,
   setDashboardTaskLauncher,
+  setDashboardTaskPlanHandler,
   setDashboardTrashHandler,
   setOAuthDirectoryLookup,
   setOAuthUserLookup,
@@ -176,6 +177,7 @@ import { ensureChildFolder } from './task-turn/epic-child-folder';
 import { archivedCostUsd, epicTreeCostUsd } from './task-turn/epic-cost';
 import { setEpicHost } from './task-turn/epic-server';
 import { createEpicWaker } from './task-turn/epic-wake';
+import { setPlanHost } from './task-turn/plan-server';
 import { composeTaskApprovalListeners } from './task-turn/task-approver';
 import { createDashboardCloseHandler } from './task-turn/task-close';
 import { createTaskLauncher } from './task-turn/task-launcher';
@@ -185,6 +187,7 @@ import {
   type TaskNoticeDeliverer,
 } from './task-turn/task-notice-deliverer';
 import { TASK_NOTIFICATION_LEDGER_FILENAME, TaskNotificationLedger } from './task-turn/task-notification-ledger';
+import { createTaskPlanDecider } from './task-turn/task-plan-decision';
 import { createTaskTurnController, type TaskTurnController } from './task-turn/task-turn-controller';
 import { createTaskTurnExecutor } from './task-turn/task-turn-executor';
 import { readTurnFinal } from './task-turn/task-turn-final';
@@ -1282,6 +1285,19 @@ async function start() {
     // #599 ⑤ — an answer to a task's open question runs as its next instruction.
     setDashboardTaskAnswerHandler((sessionKey, askId, answer, actorUserId) =>
       taskController.answer({ sessionKey, askId, answer, actorUserId }),
+    );
+    // Plan mode (SSOT 2026-11-02) — the `plan` tool saves through the registry; the dashboard's
+    // 시작 / 취소 decide the revision the user saw (시작 starts the work with the plan).
+    setPlanHost({
+      submitTaskPlan: (taskId, input) => claudeHandler.getSessionRegistry().submitTaskPlan(taskId, input),
+    });
+    setDashboardTaskPlanHandler(
+      createTaskPlanDecider({
+        getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+        setTaskPlanGate: (taskId, gate) => claudeHandler.getSessionRegistry().setTaskPlanGate(taskId, gate),
+        controller: taskController,
+        logger: new Logger('TaskPlanDecider'),
+      }),
     );
     // #600 ⑥ — the dashboard's "new task" as a Slack-less task: folder, task, first instruction.
     const taskLauncher = createTaskLauncher({

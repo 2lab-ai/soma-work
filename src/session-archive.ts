@@ -19,6 +19,7 @@ import { calculateTokenCost } from './metrics/model-registry';
 import { isSafePathSegment, normalizeTmpPath } from './path-utils';
 import type { AgentRegistry } from './session/agent-registry';
 import type { TaskLedger } from './session/task-ledger';
+import type { TaskPlanGate } from './task-turn/task-plan';
 import type {
   ActivityState,
   ClosedByParent,
@@ -72,6 +73,8 @@ export interface ArchivedSession {
   epicEvents?: EpicEvent[];
   /** E4 ⑦ — a child closed by its epic's close. */
   closedBy?: ClosedByParent;
+  /** Plan mode — a plan-mode task's plan gate (validated on revive). */
+  taskPlan?: TaskPlanGate;
 
   // Owner
   ownerId: string;
@@ -191,6 +194,7 @@ function sessionToArchive(
     plan: session.plan,
     epicEvents: session.epicEvents,
     closedBy: session.closedBy,
+    taskPlan: session.slackless === true && session.taskPlan ? JSON.parse(JSON.stringify(session.taskPlan)) : undefined,
 
     ownerId: session.ownerId,
     ownerName: session.ownerName,
