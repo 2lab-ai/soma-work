@@ -109,7 +109,9 @@ When it does not apply, the Slack session path runs as before: DMs, files, comma
 
 ### 🖼️ Dashboard Artifacts
 
-Every file the model sends to Slack (HTML reports, PNG, WAV/voice, video, PDF, text) and every markdown final answer shows up in the web dashboard: as chips on the session card, a thumbnail strip in the opened card, and a strip in the session panel's common surface with each answer's own files under it. Hover for a minimap preview, click for a full-size viewer (HTML runs sandboxed; audio plays straight from the card). Uploads made before the feature are backfilled from the session's work log.
+Every file the model sends to Slack (HTML reports, PNG, WAV/voice, video, PDF, text) shows up in the web dashboard, newest first: as chips on the session card, a thumbnail strip in the opened card, and a strip in the session panel's common surface with each answer's own files under it. A markdown answer is the chat's — it is never listed as an artifact. Hover for a minimap preview, click for a viewer that fits the file (an HTML page, picture, video or PDF fills the screen; a document takes the full height; audio is a small dialog — HTML runs sandboxed; audio plays straight from the card). Press ‹ n / m › at its foot to pick any file of the session from a list. Uploads made before the feature are backfilled from the session's work log. Visualizations (`local:html`, `local:dimensional-drawing`) upload the HTML only — their PNG is a local QA snapshot.
+
+When a turn's Executive Summary lands (about five minutes after the work finishes — the TL;DR the Slack thread head shows), the dashboard shows it too: the whole summary as an answer in the session panel's Chat, and the TL;DR in a box on the task card. The box goes with the next instruction, never shows on a sleeping or archived card, and its × hides it from that card in your browser.
 
 ### 📎 Instruction attachments in the dashboard
 

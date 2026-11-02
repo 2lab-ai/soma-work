@@ -97,11 +97,13 @@ describe('local:dimensional-drawing skill — RED contract', () => {
 
   it('replaces the claude.ai Artifact delivery with the soma-work Slack path', () => {
     const md = readSkill();
-    // PNG via the html skill renderer, link via its server, both files into the thread.
+    // A QA snapshot via the html skill renderer, link via its server, the HTML only into the thread
+    // (SSOT 2026-11-02 T2: a visualization ships as HTML only).
     expect(md).toContain('skills/html/renderer/render.mjs');
     expect(md).toContain('skills/html/server/serve.mjs');
-    expect(md).toMatch(/send_media/);
     expect(md).toMatch(/send_file/);
+    expect(md).not.toMatch(/send_media/);
+    expect(md).toContain('never upload the PNG');
   });
 
   it('derives the plugin root when the bot shell has no CLAUDE_PLUGIN_ROOT', () => {

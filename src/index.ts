@@ -72,6 +72,7 @@ import {
   initRecorder,
   isDashboardListening,
   matchSlackUsersByEmail,
+  recordExecutiveSummaryTurn,
   scheduleLiveSessionUpdate,
   setDashboardBotName,
   setDashboardChoiceAnswerHandler,
@@ -171,6 +172,7 @@ import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal
 import { createPendingUserRequest, notifyAdminsNewUser } from './slack/new-user-decision';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
 import { setGoalCapDecisionRetirer } from './slack/session-goal';
+import { composeExecutiveSummaryMarkdown, parseExecutiveSummary } from './slack/summary-service';
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { createSlackTaskEntry } from './slack/task-entry';
 import { threadCardProviders } from './slack/thread-card-data';
@@ -1433,6 +1435,18 @@ async function start() {
         t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
       ) => number;
     } = {
+      // SSOT 2026-11-02 T7 — an Executive Summary landed: the whole document goes in the dashboard's
+      // chat (지시와 답변), and the card is pushed — the session now holds its TL;DR (esTldr).
+      recordExecutiveSummary: (sessionKey: string, conversationId: string | undefined, text: string) => {
+        if (conversationId) {
+          recordExecutiveSummaryTurn(
+            conversationId,
+            composeExecutiveSummaryMarkdown(text),
+            parseExecutiveSummary(text).tldr,
+          );
+        }
+        scheduleLiveSessionUpdate(sessionKey);
+      },
       // SSOT 2026-10-22 T1/T2 — a running turn made another API call: push the
       // card (≤ 1/s per session) so its token / cost totals grow live.
       // 2026-10-29 T5: the call also counts on the tasks in progress — tokens

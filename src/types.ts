@@ -470,6 +470,11 @@ export interface ClosedByParent {
 }
 
 export interface ConversationSession {
+  /**
+   * SSOT 2026-11-02 T7 — the TL;DR of the Executive Summary the thread head shows, for the
+   * dashboard's task card (SummaryService sets it, the next input clears it).
+   */
+  executiveSummary?: { tldr: string[]; at: number };
   ownerId: string; // User who started the session
   ownerName?: string; // Display name of owner
   currentInitiatorId?: string; // User who triggered the current response
