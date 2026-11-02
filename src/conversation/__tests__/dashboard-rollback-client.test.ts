@@ -79,7 +79,7 @@ function setup(
   });
   const inject: Record<string, unknown> = {
     document: { getElementById: (id: string) => nodes[id] ?? null },
-    window: { confirm: () => true },
+    window: {},
     fetch: fetchMock,
     esc: (t: string) => String(t),
     escAttr: (t: string) => String(t),
@@ -106,7 +106,11 @@ const POINTS = {
 function button(attrs: Record<string, string>) {
   return {
     disabled: false,
+    textContent: '되돌리기',
     getAttribute: (k: string) => attrs[k] ?? null,
+    setAttribute: (k: string, v: string) => {
+      attrs[k] = v;
+    },
     closest: function () {
       return this;
     },
@@ -124,10 +128,20 @@ describe('dashboard rollback picker (client)', () => {
     expect(html).toContain('data-rb-source="worklog" data-rb-index="0"');
   });
 
-  it('a row sends its anchor, label and source', async () => {
-    const { mod, posts } = setup(POINTS);
+  it('a row sends its anchor, label and source on the second press (the first arms it — no confirm())', async () => {
+    const { mod, nodes, posts } = setup(POINTS);
     await mod.openRollbackDialog('C1:T1');
-    mod.onRollbackClick({ target: button({ 'data-rb-source': 'input', 'data-rb-index': '0' }) });
+    const row = button({ 'data-rb-source': 'input', 'data-rb-index': '0' });
+    mod.onRollbackClick({ target: row });
+    expect(posts).toHaveLength(0);
+    expect(row.textContent).toBe('한 번 더 눌러 확인');
+    expect(nodes['rollback-status'].textContent).toContain('입력 직전: 배포해');
+    // Another row re-arms; it does not send.
+    mod.onRollbackClick({ target: button({ 'data-rb-source': 'worklog', 'data-rb-index': '0' }) });
+    expect(posts).toHaveLength(0);
+    mod.onRollbackClick({ target: row });
+    expect(posts).toHaveLength(0);
+    mod.onRollbackClick({ target: row });
     await vi.waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0].url).toBe('/api/dashboard/session/C1%3AT1/rollback');
     expect(posts[0].body).toEqual({ anchor: 'sid~0~a', label: '입력 직전: 배포해', source: 'input' });

@@ -12571,6 +12571,7 @@ async function loadRollbackPoints(key) {
     if (!res.ok || !v) { setRollbackStatus((v && v.error) || ('HTTP ' + res.status), true); return; }
     body._points = { input: v.inputs || [], worklog: v.worklog || [] };
     body._locked = !!v.refusal;
+    body._armed = null;
     var html = '';
     if (v.pending) {
       html += '<div class="rb-pending"><span>⏳ 예약됨: ' + esc(v.pending.label) + '</span>'
@@ -12605,7 +12606,18 @@ function onRollbackClick(e) {
   var list = body._points && body._points[source];
   var p = list && list[Number(btn.getAttribute('data-rb-index'))];
   if (!p) return;
-  if (!window.confirm('모델의 대화 문맥을 되돌릴까요?\\n' + p.label + '\\n(다음 턴부터 적용, 파일은 그대로)')) return;
+  // Two presses, no confirm dialog: the first arms this row and says what it does; the second sends.
+  var id = source + ':' + btn.getAttribute('data-rb-index');
+  if (body._armed !== id) {
+    var prev = body.querySelector ? body.querySelector('[data-rb-armed]') : null;
+    if (prev) { prev.removeAttribute('data-rb-armed'); prev.textContent = '되돌리기'; }
+    body._armed = id;
+    if (btn.setAttribute) btn.setAttribute('data-rb-armed', '1');
+    btn.textContent = '한 번 더 눌러 확인';
+    setRollbackStatus('모델 문맥을 되돌립니다 — ' + p.label + ' (다음 턴부터 적용, 파일은 그대로). 같은 버튼을 한 번 더 누르세요.', false);
+    return;
+  }
+  body._armed = null;
   sendRollback(key, { anchor: p.anchor, label: p.label, source: source }, '다음 턴부터 문맥을 되돌려요');
 }
 async function sendRollback(key, payload, doneTitle) {
