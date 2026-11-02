@@ -88,6 +88,26 @@ export interface FollowupItem {
    * SDK is holding (`enter`).
    */
   steerUuid?: string;
+  /**
+   * Evidence that THIS item's own turn reached the model: the first SDK event
+   * of the run that dispatched it (`markDelivered`). `markDispatched` is not
+   * that evidence — seconds of setup (lease, tenant key, MCP config) lie
+   * between it and the SDK `query()`, and a stop in that window leaves words
+   * the model never read.
+   *
+   * Kept through `uncertain` and the terminal states as history; cleared when
+   * the item goes back to `queued`, so a retried run has to earn its own.
+   * Read through {@link isFollowupDelivered} only: the loader does not
+   * validate this advisory field (a malformed value must not fail the whole
+   * queue closed), so anything but a finite number counts as "no evidence" —
+   * the conservative answer.
+   */
+  deliveredAt?: number;
+}
+
+/** Did this item's own turn reach the model? See `FollowupItem.deliveredAt`. */
+export function isFollowupDelivered(item: Pick<FollowupItem, 'deliveredAt'>): boolean {
+  return typeof item.deliveredAt === 'number' && Number.isFinite(item.deliveredAt);
 }
 
 export interface FollowupSessionSnapshot {
@@ -583,6 +603,59 @@ export class FollowupQueue {
   }
 
   /**
+   * The running item's turn reached the model (its first SDK event). Records
+   * the evidence {@link resumeInterrupted} needs and nothing else.
+   *
+   * NOT a state change, so the epoch does not move: the run that dispatched the
+   * item holds that epoch as its settle token, and bumping it here would make
+   * the run's own outcome look like a stale owner's. Idempotent — every leg of
+   * a continuing turn reports again, and only the first one is the fact.
+   */
+  markDelivered(sessionKey: string, itemId: string, expectedEpoch: number): FollowupOpResult {
+    const current = this.get(sessionKey, itemId);
+    if (current?.state === 'dispatched' && current.epoch === expectedEpoch && isFollowupDelivered(current)) {
+      return { ok: true, item: current };
+    }
+    return this.mutate(sessionKey, itemId, expectedEpoch, (item) => {
+      if (item.state !== 'dispatched') return 'invalid-state';
+      item.deliveredAt = Date.now();
+      return undefined;
+    });
+  }
+
+  /**
+   * `uncertain → dispatched`: the run that resumes the conversation after a
+   * restart takes over an item whose own turn the restart cut.
+   *
+   * Not a replay. The item's words already reached the model — the delivery
+   * evidence says so — and the resuming run continues that very conversation,
+   * so the item's work is what that run carries on with. Leaving the row
+   * `uncertain` meanwhile told the user it had not been sent and offered a
+   * Retry that would deliver it a second time. As `dispatched` it belongs to
+   * the resuming run, whose outcome then settles it exactly like any other
+   * dispatch (`resolved` / `failed` / `uncertain` again), which is the
+   * confirmed result `settle` was waiting for (`ssot.md` §3.5).
+   *
+   * Refused without delivery evidence (`invalid-state`): the words may never
+   * have been read, and calling the row running would hide that. Refused while
+   * another item of the session runs (`busy`), like `markDispatched` — the
+   * snapshot gate allows one `dispatched` row per session, so a second one
+   * would make the next load fail closed. Which
+   * `uncertain` rows a restart cut is the caller's question — this only checks
+   * what the queue itself knows.
+   */
+  resumeInterrupted(sessionKey: string, itemId: string, expectedEpoch: number): FollowupOpResult {
+    return this.mutate(sessionKey, itemId, expectedEpoch, (item, session) => {
+      if (item.state !== 'uncertain' || !isFollowupDelivered(item)) return 'invalid-state';
+      if (session.items.some((other) => other.id !== item.id && other.state === 'dispatched')) return 'busy';
+      this.enter(item, 'dispatched');
+      // The row it was parked as has left, so the freeze may have nothing left to hold.
+      this.settleFreeze(session);
+      return undefined;
+    });
+  }
+
+  /**
    * Record a CONFIRMED outcome. `uncertain` is accepted on purpose: an item
    * parked as `uncertain` by a stop or a restart is only ever pinned to
    * `resolved`/`failed` once the result is actually known (`ssot.md:129`).
@@ -1022,6 +1095,9 @@ export class FollowupQueue {
     item.state = state;
     item.stateReason = reason;
     item.steerUuid = undefined;
+    // Back in line means a new run will carry it: that run earns its own
+    // delivery evidence (`FollowupItem.deliveredAt`).
+    if (state === 'queued') item.deliveredAt = undefined;
     item.epoch += 1;
     item.updatedAt = Date.now();
   }
