@@ -543,6 +543,22 @@ describe('plan mode — a task whose plan is not started researches (SSOT 2026-1
     expect(decisionOf(await hook(call('Read', { file_path: `${WORK_DIR}/a.txt` })))).toBe('allow');
   });
 
+  it('a skill runs no inline shell either: disableSkillShellExecution on a planning turn only (trinity R5, fable P2)', async () => {
+    const deps = makeDeps();
+    const planning = planningContext();
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: planning.workingDirectory, executionContext: planning },
+      deps,
+    );
+    expect((options.settings as { disableSkillShellExecution?: boolean }).disableSkillShellExecution).toBe(true);
+    const started = taskContext();
+    const { options: after } = await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: started.workingDirectory, executionContext: started },
+      makeDeps(),
+    );
+    expect((after.settings as { disableSkillShellExecution?: boolean } | undefined)?.disableSkillShellExecution).toBeUndefined();
+  });
+
   it('every tool reaches the hook (one catch-all entry): a shell or agent tool outside the usual matchers is refused', async () => {
     const ctx = planningContext();
     const deps = makeDeps({
