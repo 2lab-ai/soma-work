@@ -6547,6 +6547,72 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(rowOf(booted).state).toBe('resolved');
     });
 
+    it('a cron fire after the restart is not the resume: it takes nothing over and leaves the mark for the resume', async () => {
+      const snapshot = await interruptedByShutdown(true);
+      const { booted } = bootFrom(snapshot, []);
+      (booted as any).followupResumeMark.set(SESSION_KEY, { cause: 'restart', at: Date.now() });
+
+      const cronTurn = holdNextTurn(booted, true);
+      const cronDone = booted.handleMessage(
+        message({
+          ts: '666.777',
+          text: '[cron] 정기 점검',
+          synthetic: true,
+          skipDispatch: true,
+          cron: { jobId: 'j1', jobName: 'daily' },
+          routeContext: { skipAutoBotThread: true },
+        }),
+        say(),
+      );
+      await cronTurn.started;
+      cronTurn.release();
+      await cronDone;
+      for (let i = 0; i < 4; i++) await tick();
+      expect(rowOf(booted).state).toBe('uncertain');
+
+      const resume = holdNextTurn(booted, true);
+      const resumeDone = booted.handleMessage(
+        message({
+          ts: '888.999',
+          text: '[auto-resume] 계속',
+          synthetic: true,
+          skipDispatch: true,
+          routeContext: { autoResume: true },
+        }),
+        say(),
+      );
+      await resume.started;
+      expect(rowOf(booted).state).toBe('dispatched');
+      resume.release();
+      await resumeDone;
+      for (let i = 0; i < 4; i++) await tick();
+      expect(rowOf(booted).state).toBe('resolved');
+    });
+
+    it('a running takeover cut again by an auto-compact stop is taken over by the continuation', async () => {
+      const snapshot = await interruptedByShutdown(true);
+      const { booted } = bootFrom(snapshot, workingAtShutdown());
+      // The resume reaches the model, takes the row over, then hits the threshold.
+      createAgentSession.mockImplementationOnce((result: any, _say: any, opts: any) => ({
+        startWithContinuation: vi.fn(async () => {
+          reachModel(booted, opts?.turnEpoch);
+          result.abortController.abort('auto-compact');
+          return { hasPendingChoice: false };
+        }),
+        getLastTurnSucceeded: () => true,
+        getRetryAfterMs: () => undefined,
+      }));
+      const continuation = holdNextTurn(booted, true);
+
+      await booted.notifyCrashRecovery();
+      await continuation.started;
+
+      expect(rowOf(booted).state).toBe('dispatched');
+      continuation.release();
+      for (let i = 0; i < 8; i++) await tick();
+      expect(rowOf(booted).state).toBe('resolved');
+    });
+
     it('a resume that comes after the window takes nothing over', async () => {
       const snapshot = await interruptedByShutdown(true);
       const { booted } = bootFrom(snapshot, []);
@@ -6555,7 +6621,13 @@ describe('SlackHandler — follow-up queue host', () => {
 
       const late = holdNextTurn(booted, true);
       const done = booted.handleMessage(
-        message({ ts: '888.999', text: '[auto-resume] 계속', synthetic: true, skipDispatch: true }),
+        message({
+          ts: '888.999',
+          text: '[auto-resume] 계속',
+          synthetic: true,
+          skipDispatch: true,
+          routeContext: { autoResume: true },
+        }),
         say(),
       );
       await late.started;

@@ -166,6 +166,10 @@ Queue
       `dispatched` 1개 제약(스냅샷 게이트) 때문에 항목을 `uncertain`으로 둔 채 맡고, 턴이 `safe`로 끝날 때만
       `resolved`로 확정한다(그 외 종료는 그대로 둔다).
     - 증거 없는 항목(셋업 중 끊김)과 유저 Stop·`Send now`로 `uncertain`이 된 항목은 인수하지 않는다.
+    - 재시작의 resume 턴 판별은 태그로 한다(`routeContext.autoResume` · `goalContinuation`) — cron 같은 다른
+      합성 턴은 인수하지도, 표시를 소모하지도 않는다. 유저 자신의 메시지가 먼저 돌면 표시를 소모한다.
+    - 잔여: 끝에서 확정하는 방식으로 맡긴 항목은 그 턴이 도는 동안 `uncertain`(대시보드 "보내지 못했습니다" + Retry)으로
+      보인다 — 그동안 Retry를 누르면 두 번 전달된다. UI에 `uncertain` 어휘가 없어서 생기는 한계(`@2lab.ai/ui`).
   - 확인된 `failed` → 명시적 retry만.
 - stop, 세션 종료 = 큐를 freeze + 사유를 화면에 표시. 유저의 **명시적 resume** 전까지 자동 dispatch 없음.
   - **freeze의 범위는 항목 단위다**: stop/재시작으로 freeze된 세션에서 보류된(`paused`/`uncertain`) 항목만

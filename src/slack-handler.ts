@@ -212,6 +212,18 @@ const FOLLOWUP_RESUME_WINDOW_MS = 10 * 60_000;
 /** Why a session's next run may take over the follow-up a host-side cut left `uncertain`. */
 type FollowupResumeCause = 'restart' | 'auto-compact';
 
+/**
+ * Is this dispatch the resume a restart started — the crash-recovery
+ * auto-resume or the goal loop's continuation, dispatched as the session's
+ * initial run? `synthetic` alone is not enough: a cron fire is a synthetic
+ * initial turn too, and it does not carry the cut instruction on.
+ */
+function isRestartResumeDispatch(request: DispatchRequest): boolean {
+  const message = request.message;
+  if (request.kind !== 'initial' || message?.synthetic !== true || message.cron) return false;
+  return message.routeContext?.autoResume === true || message.routeContext?.goalContinuation === true;
+}
+
 /** The `stateReason` a stop writes on every row it freezes (`freezeFollowupOnStop`). */
 function followupStopReason(reason: string): string {
   return `실행이 중단되었습니다 (${reason})`;
@@ -5272,7 +5284,10 @@ export class SlackHandler {
 
   /** An auto-compact stop cut a delivered follow-up: the next run carries its conversation on, compacted. */
   private noteAutoCompactCut(sessionKey: string, report: RunReport | undefined): void {
-    if (report && isAutoCompactStop(report.outcome) && report.itemDisposition === 'uncertain') {
+    if (!report || !isAutoCompactStop(report.outcome)) return;
+    // The run's own row, or one it had taken over (a restart resume that then
+    // hit the threshold) — either is now `uncertain` and carried on next.
+    if (report.itemDisposition === 'uncertain' || (report.adoptedItemIds?.length ?? 0) > 0) {
       this.noteFollowupResume(sessionKey, 'auto-compact');
     }
   }
@@ -5292,11 +5307,21 @@ export class SlackHandler {
   private claimFollowupResume(request: DispatchRequest): boolean {
     const mark = this.followupResumeMark.get(request.sessionKey);
     if (!mark) return false;
-    this.followupResumeMark.delete(request.sessionKey);
     // A continuation that never came (the goal eval closed the goal, the resume
     // failed) must not hand the row to some unrelated run much later.
-    if (Date.now() - mark.at > FOLLOWUP_RESUME_WINDOW_MS) return false;
-    if (mark.cause === 'restart' && (request.kind !== 'initial' || request.message?.synthetic !== true)) return false;
+    if (Date.now() - mark.at > FOLLOWUP_RESUME_WINDOW_MS) {
+      this.followupResumeMark.delete(request.sessionKey);
+      return false;
+    }
+    if (mark.cause === 'restart' && !isRestartResumeDispatch(request)) {
+      // A person's own message (typed, or drained from the queue) continues the
+      // conversation on its own terms: the cut row stays theirs to decide, and
+      // the mark is spent. Another host turn (a cron fire) is neither — it
+      // leaves the mark for the resume that is still on its way.
+      if (request.message?.synthetic !== true) this.followupResumeMark.delete(request.sessionKey);
+      return false;
+    }
+    this.followupResumeMark.delete(request.sessionKey);
     this.followupResumeRun.set(request.sessionKey, request.turnEpoch);
     return true;
   }
@@ -6999,6 +7024,7 @@ export class SlackHandler {
       text: resumePrompt,
       synthetic: true,
       skipDispatch: true,
+      routeContext: { autoResume: true },
     };
 
     // Real say — posts to Slack. noopSay silently discarded all bot output.

@@ -619,6 +619,7 @@ export class FollowupQueue {
     return this.mutate(sessionKey, itemId, expectedEpoch, (item) => {
       if (item.state !== 'dispatched') return 'invalid-state';
       item.deliveredAt = Date.now();
+      item.updatedAt = item.deliveredAt;
       return undefined;
     });
   }
