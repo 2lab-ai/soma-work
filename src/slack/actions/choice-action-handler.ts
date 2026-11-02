@@ -144,7 +144,8 @@ export class ChoiceActionHandler {
           userId,
           channel,
           threadTs,
-          ts: messageTs,
+          // Its own ts, not the question's: a second answer (or a second person) is its own held item.
+          ts: String(Date.now() / 1000),
           text: String(choiceId),
           tellClicker: true,
         });
