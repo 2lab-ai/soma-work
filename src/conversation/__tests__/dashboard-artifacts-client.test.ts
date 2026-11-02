@@ -146,6 +146,7 @@ const CARD_OF_FNS = [
   'ctxPercent',
   'cardCtxTitle',
   'cardPrMetric',
+  'cardLinksFace',
   '_hashStr',
   'ownerBadgeHue',
   'isSiblingSession',
@@ -153,6 +154,8 @@ const CARD_OF_FNS = [
 ];
 const CARD_OF_VARS = [
   'PR_STATE_LABEL',
+  'CARD_LINK_KIND',
+  'CARD_LINK_TONES',
   'PR_STATE_TONE',
   'AGENT_STATUS_LABEL',
   'AGENT_STATUS_TONE',

@@ -36,6 +36,7 @@ import { RateHandler } from './rate-handler';
 import { RenewHandler } from './renew-handler';
 import { ReportHandler } from './report-handler';
 import { RestoreHandler } from './restore-handler';
+import { RollbackHandler } from './rollback-handler';
 import { SandboxHandler } from './sandbox-handler';
 import { SessionCommandHandler } from './session-command-handler';
 import { SessionHandler } from './session-handler';
@@ -132,6 +133,8 @@ setCommandRouterProviders({
         new AutoCompactHandler(deps as any),
         new CompactThresholdHandler(deps as any),
         new CompactHandler(deps as any),
+        // #743 — `rollback` / `롤백`: roll the model's context back before an input.
+        new RollbackHandler(deps as any),
         goalHandler,
         new LinkHandler(deps as any),
         new CloseHandler(deps as any),

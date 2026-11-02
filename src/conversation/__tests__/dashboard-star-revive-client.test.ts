@@ -142,12 +142,20 @@ const CARD_OF_FNS = [
   'ctxPercent',
   'cardCtxTitle',
   'cardPrMetric',
+  'cardLinksFace',
   '_hashStr',
   'ownerBadgeHue',
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = [
+  'PR_STATE_LABEL',
+  'CARD_LINK_KIND',
+  'CARD_LINK_TONES',
+  'PR_STATE_TONE',
+  'AGENT_STATUS_LABEL',
+  'OWNER_BADGE_HUES',
+];
 function card(over: Record<string, unknown> = {}) {
   return {
     key: 'inst::C1:t1',

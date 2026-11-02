@@ -382,11 +382,13 @@ describe('settings registry — write', () => {
       },
     });
     expect(store.data.U1.dashboardLayout.active).toEqual({ card: '2' });
-    // Checked on the way in: the unknown id is gone, the missing ones are appended off.
+    // Checked on the way in: the unknown id is gone; the missing ones take the built-in's state at the built-in's
+    // place (.prd/22 §5) — the saved item keeps its state.
     const rows = written.doc.presets!['1']!.minimal!.card!.rows;
-    expect(rows[0]).toEqual({ id: 'task', on: true });
+    expect(rows.find((r) => r.id === 'task')).toEqual({ id: 'task', on: true });
     expect(rows.map((r) => r.id)).not.toContain('nope');
-    expect(rows).toHaveLength(5);
+    expect(rows.map((r) => r.id)).toEqual(['summary', 'task', 'links', 'arts', 'agents', 'usage']);
+    expect(rows.find((r) => r.id === 'links')!.on).toBe(true);
     expect(() => registry.writeLayout('U1', 'x')).toThrow(expect.objectContaining({ statusCode: 400 }));
     expect(() => registry.writeLayout('U_DENIED', { active: { card: '3' } })).toThrow(
       expect.objectContaining({ statusCode: 403 }),

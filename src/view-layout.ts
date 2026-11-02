@@ -10,8 +10,9 @@
  * (`config.json` `ui.threadheader`), or has its own lines.
  *
  * Every layout is an ordered list of items with an on/off switch, so a hidden item keeps its place (the editor
- * dims it). A list always holds every item of its catalog: an unknown id is dropped, a missing one is appended
- * off — a field added later shows up hidden, never in the way.
+ * dims it). A list always holds every item of its catalog: an unknown id is dropped; a missing one (added to the
+ * catalog after the list was saved) takes its preset's state at its preset's place, so a field added later shows
+ * as its preset meant (.prd/22 §5). A custom thread card, which holds only what its user chose, appends it off.
  *
  * Pure: no I/O. The dashboard and the settings page get BUILTIN_PRESETS and LAYOUT_CATALOG as JSON; the store
  * keeps `normalizeLayoutDoc`'s output; the Slack host maps a user's thread card with `threadCardLines`.
@@ -24,7 +25,7 @@ export type PresetId = '1' | '2' | '3';
 export const PRESET_IDS: readonly PresetId[] = ['1', '2', '3'];
 export const VIEW_MODES: readonly ViewMode[] = ['minimal', 'advanced'];
 
-export const CARD_ROWS = ['summary', 'task', 'agents', 'usage', 'arts'] as const;
+export const CARD_ROWS = ['summary', 'task', 'links', 'agents', 'usage', 'arts'] as const;
 export const CARD_CHIPS = ['steps', 'ctx', 'media', 'pr', 'arts', 'cost', 'tokens', 'model'] as const;
 export const OPEN_PARTS = ['tasks', 'agents', 'io', 'arts', 'goal', 'refs', 'model'] as const;
 export const DETAIL_TOP = ['info', 'goal', 'needs', 'artifacts'] as const;
@@ -146,6 +147,7 @@ const ADV_OPEN_PARTS: LayoutItem<OpenPartId>[] = [
 const ALL_ROWS = (summary: 'all' | 'asks'): LayoutItem<CardRowId>[] => [
   it('summary', true, summary),
   it('task', true),
+  it('links', true),
   it('agents', true),
   it('usage', true),
   it('arts', true, '4'),
@@ -163,12 +165,13 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
         rows: [
           it('summary', true, 'asks'),
           it('task', true),
+          it('links', true),
           it('arts', true, '3'),
           it('agents', false),
           it('usage', false),
         ],
         foot: [
-          it('pr', true),
+          it('pr', false),
           it('cost', true),
           it('model', true),
           it('steps', false),
@@ -202,7 +205,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('steps', true),
           it('ctx', true),
           it('media', true),
-          it('pr', true),
+          it('pr', false),
           it('model', true),
           it('arts', false),
           it('cost', false),
@@ -223,6 +226,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
         rows: [
           it('summary', true, 'all'),
           it('task', true),
+          it('links', true),
           it('agents', false),
           it('usage', false),
           it('arts', false, '4'),
@@ -263,7 +267,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('steps', true),
           it('ctx', true),
           it('media', true),
-          it('pr', true),
+          it('pr', false),
           it('arts', false),
           it('cost', false),
           it('tokens', false),
@@ -284,6 +288,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
         rows: [
           it('summary', true, 'asks'),
           it('task', false),
+          it('links', true),
           it('agents', false),
           it('usage', false),
           it('arts', false, '3'),
@@ -321,6 +326,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
         rows: [
           it('summary', true, 'asks'),
           it('task', true),
+          it('links', true),
           it('agents', false),
           it('usage', false),
           it('arts', false, '4'),
@@ -329,7 +335,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('steps', true),
           it('ctx', true),
           it('arts', true),
-          it('pr', true),
+          it('pr', false),
           it('cost', true),
           it('model', true),
           it('media', false),
@@ -399,6 +405,7 @@ export const LAYOUT_CATALOG = {
     rows: [
       { id: 'summary', label: '요약 줄', hint: '권한 요청 · 질문 · 오류 · 원래 제목', opts: SUMMARY_OPTS },
       { id: 'task', label: '현재 작업', hint: '#번호 · 이름 · 시간 (작업 중 · 대기)' },
+      { id: 'links', label: '연결 — 이슈 · PR · 위키', hint: '이슈와 상태 · PR과 머지 상태 · 위키 — 누르면 새 탭' },
       { id: 'agents', label: '서브에이전트', hint: '상태 점과 개수', slack: false },
       { id: 'usage', label: '토큰 · 비용 줄', hint: '작업 합계' },
       { id: 'arts', label: '산출물 줄', hint: '만든 파일 칩', opts: ARTS_OPTS, slack: false },
@@ -491,12 +498,18 @@ export class LayoutError extends Error {
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const isPreset = (v: unknown): v is PresetId => v === '1' || v === '2' || v === '3';
 
-/** Every catalog id once: the given order for the known ones, then the missing ones off. */
+/**
+ * A saved list, checked: its order kept, unknown ids and repeats dropped. An item it misses (one added to the
+ * catalog after it was saved) takes the fallback's state and goes after the fallback's item before it — so a new
+ * item shows as its preset meant (`missing: 'fallback'`, the saved layouts) — or is appended off (`'off'`, a list
+ * built from what a face shows).
+ */
 function items<T extends string>(
   input: unknown,
   catalog: readonly T[],
   fallback: LayoutItem<T>[],
   opt?: Partial<Record<T, (v: unknown) => string | undefined>>,
+  missing: 'fallback' | 'off' = 'fallback',
 ): LayoutItem<T>[] {
   if (!Array.isArray(input)) return fallback.map((x) => ({ ...x }));
   const out: LayoutItem<T>[] = [];
@@ -508,6 +521,21 @@ function items<T extends string>(
     const fb = fallback.find((f) => f.id === id);
     const o = opt?.[id] ? (opt[id]!(raw.opt) ?? fb?.opt) : undefined;
     out.push(o === undefined ? { id, on: raw.on === true } : { id, on: raw.on === true, opt: o });
+  }
+  if (missing === 'fallback') {
+    fallback.forEach((fb, i) => {
+      if (seen.has(fb.id) || !catalog.includes(fb.id)) return;
+      seen.add(fb.id);
+      let at = 0;
+      for (let j = i - 1; j >= 0; j--) {
+        const k = out.findIndex((x) => x.id === fallback[j].id);
+        if (k >= 0) {
+          at = k + 1;
+          break;
+        }
+      }
+      out.splice(at, 0, { ...fb });
+    });
   }
   for (const id of catalog) {
     if (seen.has(id)) continue;
@@ -559,14 +587,16 @@ export function normalizeDetail(input: unknown, fb: DetailLayout): DetailLayout 
 export function normalizeThread(input: unknown): ThreadLayout {
   const o = isObj(input) ? input : {};
   return {
-    info: items(o.info, THREAD_INFO, DEFAULT_THREAD_LAYOUT.info),
-    nav: items(o.nav, THREAD_NAV, DEFAULT_THREAD_LAYOUT.nav),
+    // A custom thread card is the user's own: what it misses is appended off.
+    info: items(o.info, THREAD_INFO, DEFAULT_THREAD_LAYOUT.info, undefined, 'off'),
+    nav: items(o.nav, THREAD_NAV, DEFAULT_THREAD_LAYOUT.nav, undefined, 'off'),
   };
 }
 
 /**
  * What the store keeps: a saved document, checked. Wrong shapes at the top are refused (`LayoutError`, a 400);
- * inside a layout, unknown ids drop and missing ones are appended off; numbers are clamped. Only surfaces the
+ * inside a layout, unknown ids drop and missing ones take the built-in's state at the built-in's place (a custom
+ * thread card appends them off); numbers are clamped. Only surfaces the
  * user edited are kept — the rest stay the built-in, so a later built-in change reaches them.
  */
 export function normalizeLayoutDoc(input: unknown): DashboardLayoutDoc {
@@ -685,7 +715,8 @@ export function followThreadLayout(face: FaceLayout): ThreadLayout {
       add('cost');
     }
   }
-  let pr = false;
+  // The link history (issues · PRs · docs with their states) when the face shows its links or its PR.
+  let pr = face.rows.some((r) => r.on && r.id === 'links');
   for (const c of face.foot) {
     if (!c.on) continue;
     if (c.id === 'steps') add('steps');
@@ -700,6 +731,8 @@ export function followThreadLayout(face: FaceLayout): ThreadLayout {
       info.map((id) => ({ id, on: true })),
       THREAD_INFO,
       DEFAULT_THREAD_LAYOUT.info,
+      undefined,
+      'off',
     ),
     nav: [it('dashboardLink', true), it('linkhistory', pr), it('links', false), it('status', true)],
   };
