@@ -19,6 +19,8 @@
     "format": "biome check --write src/ somalib/ scripts/ packages/",
     "format:check": "biome format src/ somalib/ scripts/ packages/",
     "test": "vitest run",
+    "i18n:check": "tsx scripts/i18n/extract.ts",
+    "i18n:extract": "tsx scripts/i18n/extract.ts --write",
     "test:release": "vitest run --pool=forks --isolate --maxWorkers=1 --testTimeout=30000 --hookTimeout=120000",
     "test:watch": "vitest",
     "verify:lean": "bash scripts/verification/lean-verify.sh",
