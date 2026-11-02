@@ -43,6 +43,8 @@ const TEXT_EXCLUDE = [
   /^src\/cli\//,
   /^src\/prompt\//,
   /^src\/local\//,
+  // Task plan mode: the notice, the approval instruction and the tool result all go to the model.
+  /^src\/task-turn\/(task-plan|plan-server)\.ts$/,
 ];
 
 const LOG_METHODS = new Set(['debug', 'info', 'warn', 'error', 'trace', 'fatal', 'log']);

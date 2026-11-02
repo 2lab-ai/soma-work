@@ -124,6 +124,56 @@ describe('translateText — text already composed (the output boundary)', () => 
     expect(translateText('  __tt 세션 종료', 'en')).toBe('  __tt Session closed');
     expect(translateText('plain english', 'en')).toBe('plain english');
   });
+
+  it('a sentence the catalog knows, then a clause the code appended (`text + " — …"`): both halves', () => {
+    registerDisplayCatalog('en', {
+      '__tt ⭐ {0}님의 지시를 승인했습니다 — 앞으로 묻지 않습니다.':
+        "__tt ⭐ Approved {0}'s instruction — won't ask again.",
+      ' — __tt 대시보드에서 응답했습니다.': ' — __tt answered on the dashboard.',
+      ' (__tt 대시보드에서 응답)': ' (__tt answered from the dashboard)',
+    });
+    expect(
+      translateText(
+        '__tt ⭐ <@U1>님의 지시를 승인했습니다 — 앞으로 묻지 않습니다. — __tt 대시보드에서 응답했습니다.',
+        'en',
+      ),
+    ).toBe("__tt ⭐ Approved <@U1>'s instruction — won't ask again. — __tt answered on the dashboard.");
+    expect(translateText('__tt 세션 종료 (__tt 대시보드에서 응답)', 'en')).toBe(
+      '__tt Session closed (__tt answered from the dashboard)',
+    );
+    // Only when the head is the catalog's too: a person's words before the clause stay as written.
+    expect(translateText('내가 쓴 말 — __tt 대시보드에서 응답했습니다.', 'en')).toBe(
+      '내가 쓴 말 — __tt 대시보드에서 응답했습니다.',
+    );
+  });
+
+  it('a slot never swallows a separator and the Korean beyond it: each part is matched on its own', () => {
+    registerDisplayCatalog('en', {
+      '<{0}|__tt 작업 스레드>': '<{0}|__tt Task thread>',
+      '<{0}|__tt 대시보드에서 보기>': '<{0}|__tt View on dashboard>',
+    });
+    expect(translateText('<https://a/t|__tt 작업 스레드>  ·  <https://a/d|__tt 대시보드에서 보기>', 'en')).toBe(
+      '<https://a/t|__tt Task thread>  ·  <https://a/d|__tt View on dashboard>',
+    );
+    // A person's title in the first part stays as written; the bot's link still reads in English.
+    expect(translateText('<https://a/t|내 제목>  ·  <https://a/d|__tt 대시보드에서 보기>', 'en')).toBe(
+      '<https://a/t|내 제목>  ·  <https://a/d|__tt View on dashboard>',
+    );
+  });
+
+  it("a person's text with a separator inside a slot keeps the template: the frame translates, their words do not (review P1)", () => {
+    // The task-done DM's shape: `{0} *{1}* — {2}\n<{3}|스레드로 이동>` with {2} the session's title.
+    registerDisplayCatalog('en', {
+      '{0} *__tt 작업 완료* — {1}\n<{2}|__tt 스레드로 이동>': '{0} *__tt Task done* — {1}\n<{2}|__tt Go to thread>',
+      '__tt 수정': '__tt Fix',
+      '__tt 응답': '__tt Reply',
+    });
+    for (const title of ['PR #77 리뷰 · __tt 수정', '배포 — 롤백 준비', '__tt 응답 · __tt 수정']) {
+      expect(translateText(`✅ *__tt 작업 완료* — ${title}\n<https://t|__tt 스레드로 이동>`, 'en'), title).toBe(
+        `✅ *__tt Task done* — ${title}\n<https://t|__tt Go to thread>`,
+      );
+    }
+  });
 });
 
 describe('translateText against the real catalog — never claims a person’s Korean (review P1)', () => {
