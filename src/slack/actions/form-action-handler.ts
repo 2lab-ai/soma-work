@@ -1,4 +1,5 @@
 import type { ClaudeHandler } from '../../claude-handler';
+import { getInstructionApprovals } from '../../instruction-approval';
 import { Logger } from '../../logger';
 import type { UserChoices } from '../../types';
 import type { SlackApiHelper } from '../slack-api-helper';
@@ -106,6 +107,42 @@ export class FormActionHandler {
         inputLength: inputValue.length,
         userId,
       });
+
+      // #767 — a typed answer from someone who is not the owner (nor approved) is an instruction:
+      // checked before the question is touched. A single question's answer goes to the message
+      // gate (it holds it, the question stays open); a form's is refused (the owner submits it).
+      const session = sessionKey ? this.ctx.claudeHandler.getSessionByKey(sessionKey) : undefined;
+      const approvals = getInstructionApprovals();
+      if (approvals && session && userId && !approvals.allows({ sessionKey, session, senderId: userId })) {
+        if (type === 'single' && channel) {
+          await this.ctx.messageHandler(
+            {
+              user: userId,
+              channel,
+              thread_ts: this.resolveSessionThreadTs(sessionKey, threadTs),
+              ts: String(Date.now() / 1000),
+              text: inputValue,
+            },
+            this.createSayFn(channel),
+          );
+          await this.ctx.slackApi
+            .postEphemeral(
+              channel,
+              userId,
+              '⏳ 이 작업의 소유자가 승인하면 답이 전달됩니다 — 소유자에게 승인을 요청했습니다.',
+            )
+            .catch(() => undefined);
+        } else if (channel) {
+          await this.ctx.slackApi
+            .postEphemeral(
+              channel,
+              userId,
+              '🚫 이 질문은 작업 소유자(또는 소유자가 승인한 사람)만 답할 수 있습니다. 답을 스레드에 메시지로 남기면 소유자에게 승인을 요청합니다.',
+            )
+            .catch(() => undefined);
+        }
+        return;
+      }
 
       if (type === 'single') {
         await this.handleSingleCustomInput(
