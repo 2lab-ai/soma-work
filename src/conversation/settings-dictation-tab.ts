@@ -21,19 +21,19 @@ export const DICTATION_TAB_HTML = `<div slot="dictation" data-tab="dictation" cl
       <header><h2 id="h-dic-engine">엔진</h2><p>새 작업과 세션 패널의 받아쓰기가 이 엔진을 씁니다.</p></header>
       <div class="dic-engines" id="dic-engines" role="radiogroup" aria-labelledby="h-dic-engine">
         <label class="dic-engine" data-engine="device">
-          <input type="radio" name="dic-engine" value="device">
+          <input type="radio" name="dic-engine" value="device" disabled>
           <span class="dic-engine-body"><span class="dic-engine-name">기기 기본 음성 인식</span>
           <span class="dic-engine-desc">이 기기·브라우저에 들어 있는 음성 인식기입니다. 따로 내려받을 것이 없고 바로 받아씁니다. 처리 위치는 아래 ‘이 기기의 음성 인식’을 보세요.</span>
           <span class="dic-engine-why" data-why="device" hidden></span></span>
         </label>
         <label class="dic-engine" data-engine="server">
-          <input type="radio" name="dic-engine" value="server">
+          <input type="radio" name="dic-engine" value="server" disabled>
           <span class="dic-engine-body"><span class="dic-engine-name">서버 위스퍼</span>
           <span class="dic-engine-desc">우리 서버의 Whisper large-v3-turbo가 받아씁니다. 기기와 브라우저가 달라도 같은 모델로 받아씁니다. 음성은 우리 서버로만 갑니다.</span>
           <span class="dic-engine-why" data-why="server" hidden></span></span>
         </label>
         <label class="dic-engine" data-engine="browser">
-          <input type="radio" name="dic-engine" value="browser">
+          <input type="radio" name="dic-engine" value="browser" disabled>
           <span class="dic-engine-body"><span class="dic-engine-name">브라우저 위스퍼</span>
           <span class="dic-engine-desc">이 브라우저 안에서 Whisper가 받아씁니다. 음성이 기기 밖으로 나가지 않습니다. 처음 쓸 때 모델을 내려받습니다.</span>
           <span class="dic-engine-why" data-why="browser" hidden></span></span>
@@ -352,9 +352,15 @@ function dicStore() {
   try { return window.localStorage; } catch (_e) { return null; }
 }
 
-// A choice: kept in this browser only (dictation-pref.ts) — no request.
+// A choice: kept in this browser only (dictation-pref.ts) — no request. An engine this device cannot run is not kept.
 function dicChoose(v) {
   var note = document.getElementById('dic-engine-note');
+  var e = _dicInfo ? dicEngines(_dicInfo)[v] : null;
+  if (!e || !e.ok) {
+    if (_dicInfo) dicPaintEngines(_dicInfo);
+    if (note) note.textContent = e ? e.why : '이 기기 정보를 확인하는 중입니다 — 잠시 뒤에 골라 주세요';
+    return;
+  }
   var ok = dictationSaveEngine(dicStore(), v);
   if (note) note.textContent = ok ? DIC_ENGINE_NAMES[v] + '을(를) 이 기기에 저장했습니다' : '이 브라우저가 저장을 막아 고를 수 없습니다 (개인 정보 보호 모드 등)';
 }
@@ -456,9 +462,17 @@ function dicTestStart() {
     if (res) res.textContent = '듣는 중… 말해 보세요 (8초)';
   };
   t.rec.onresult = function (e) {
-    var text = dicJoin(t.base, dicTestText(e.results, android)).trim();
-    if (text && !t.first) t.first = Date.now() - (t.t0 || Date.now());
-    if (text) t.text = text;
+    var heard = dicTestText(e.results, android);
+    var now = Date.now();
+    // Android sends results with no words between words (within 1.2 s of words): a placeholder — the words stay
+    // (the dashboard's rule, PR #719). Elsewhere an empty list withdraws what was still being heard.
+    if (!heard && android && now - (t.at || 0) <= 1200) {
+      t.at = now;
+      return;
+    }
+    t.at = now;
+    if (heard && !t.first) t.first = now - (t.t0 || now);
+    t.text = dicJoin(t.base, heard).trim();
     if (live) live.textContent = t.text;
   };
   t.rec.onerror = function (e) {
