@@ -14,7 +14,7 @@
  *   L3  states in words and tones: Jira's own name (the cache's), GitHub 열림 · 닫힘, PR 열림 · 머지됨
  *   L4  a chip is a link to the page (a new tab, noopener) and does not open or close the card
  *   L5  a card with no links has no 연결 row; the PR foot chip is off by default (no second PR on the face)
- *   L6  the open card's refs show the same links with their states
+ *   L6  the open card does not repeat the links its face shows (#809 say it once)
  *   L7  the thread's live PR check wins: the PR merged → the next board says 머지됨
  *   L8  390px: the row wraps, no side scroll
  *
@@ -345,12 +345,9 @@ async function main() {
           (a) => `${a.className.replace('card-ref ', '')}:${a.innerText.replace(/\s+/g, ' ').trim()}`,
         );
       }, KEY);
-      check(
-        refs.join('|') ===
-          'is-issue:PAY-12 In Progress|is-pr:#733 열림|is-wiki:결제 폼 설계|is-issue:#41 닫힘|is-pr:#700 머지됨',
-        `${vp.tag} L6 the open card's refs: the same links with their states`,
-        refs,
-      );
+      // #809 say it once: the face's 연결 row already shows all five (FACE_LINK_MAX is 6), so the open card's refs
+      // list none of them again.
+      check(refs.length === 0, `${vp.tag} L6 the open card does not list the face's links again (say it once)`, refs);
       await cardBox.screenshot({ path: path.join(OUT, `${vp.tag}-3-card-open.png`) });
 
       // L7 — the PR merges; the thread's live check says so; the next board says 머지됨.

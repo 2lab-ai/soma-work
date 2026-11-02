@@ -373,6 +373,11 @@ export interface KanbanSession {
   effort?: EffortLevel;
   /** The level the session's model actually runs, when it caps `effort` (SSOT 2026-10-23 T1). */
   effortEffective?: string;
+  /**
+   * #805 review P2 — `effort` is the owner's default today, not the session's (an archive keeps no effort): the card
+   * face draws no effort gauge for it.
+   */
+  effortFromDefault?: true;
   /** The levels the session's model runs (catalog menu ∩ EFFORT_LEVELS); absent when the catalog does not know it (re-model-picker D6). */
   effortLevels?: EffortLevel[];
   /** Jira short key like "PROJ-123" derived from issueUrl */
@@ -1983,7 +1988,10 @@ function cardDerivedFields(src: {
   model?: string;
   links?: { issue?: { url?: string }; pr?: { url?: string } };
   persistedEffort: boolean;
-}): Pick<KanbanSession, 'effort' | 'effortEffective' | 'effortLevels' | 'issueShortRef' | 'prShortRef'> {
+}): Pick<
+  KanbanSession,
+  'effort' | 'effortEffective' | 'effortFromDefault' | 'effortLevels' | 'issueShortRef' | 'prShortRef'
+> {
   const effort =
     src.persistedEffort && src.effort
       ? coerceEffort(src.effort)
@@ -1995,6 +2003,8 @@ function cardDerivedFields(src: {
   const effortLevels = src.model ? pickerEffortLevels(modelCatalog.getEffortsFor(src.model)) : undefined;
   return {
     effort,
+    // #805 review P2 — an archive keeps no effort: this is the owner's default today, not the run's.
+    ...(!src.persistedEffort ? { effortFromDefault: true as const } : {}),
     ...(clamped !== effort ? { effortEffective: clamped } : {}),
     ...(effortLevels ? { effortLevels } : {}),
     issueShortRef: extractIssueShortRef(src.links?.issue?.url),
@@ -9937,7 +9947,10 @@ function viewCardOf(s, col) {
   // The Executive Summary's TL;DR (SSOT 2026-11-02 T7) — the face keeps it whatever rows the layout picked.
   var tl = cardTldrOf(s, col);
   if (tl) c.tldr = tl;
-  return faceOf(c, s.model, viewSpec().face, cardAsks(s, col));
+  // #805 review: the gauge draws the level the model runs (effortEffective when it caps the set one); an archive's
+  // effort is the owner's default today, not the run's — no gauge (effortFromDefault).
+  var eff = s.effortFromDefault ? '' : s.effortEffective || s.effort;
+  return faceOf(c, s.model, viewSpec().face, cardAsks(s, col), eff, s.effortFromDefault ? '' : s.effort);
 }
 
 // Task window on the open card (§3.1-4, spec 13) — @2lab.ai/ui <ui-task-plan> in window mode (0.14.1, D8b
