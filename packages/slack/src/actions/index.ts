@@ -70,6 +70,7 @@ export interface ActionHandlerDelegates {
     handleDeny(body: any, respond: RespondFn): Promise<void>;
     handleExplain(body: any, respond: RespondFn): Promise<void>;
     handleApproveDisableRule(body: any, respond: RespondFn): Promise<void>;
+    handleApproveConfirmed(body: any, respond: RespondFn): Promise<void>;
   };
   sessionHandler: {
     handleTerminateSession(body: any, respond: RespondFn): Promise<void>;
@@ -245,6 +246,12 @@ export class ActionHandlers {
     app.action('approve_disable_rule_session', async ({ ack, body, respond }) => {
       await ack();
       await this.delegates.permissionHandler.handleApproveDisableRule(body, respond as RespondFn);
+    });
+
+    // SSOT 2026-11-02 T4 — the second question's button on a prompt the AI advised against.
+    app.action('approve_tool_confirmed', async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.permissionHandler.handleApproveConfirmed(body, respond as RespondFn);
     });
 
     app.action('terminate_session', async ({ ack, body, respond }) => {

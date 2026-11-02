@@ -903,6 +903,9 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
         if (timers[id - 1]) timers[id - 1].fn = null;
       },
       releaseCardIoTimer: () => {},
+      // No launch from the new task dialog (SSOT 2026-11-02): a card off the cache is no 시작 중 card.
+      ntPendingOf: () => null,
+      ntOpenLaunch: () => {},
       ensureCardIo: (...a: unknown[]) => calls.io.push(a),
       ensureArtifacts: () => {},
       isSiblingSession: () => false,

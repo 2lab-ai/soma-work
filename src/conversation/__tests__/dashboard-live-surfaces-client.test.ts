@@ -997,7 +997,9 @@ describe('model switch on the open card (T4/T5)', () => {
       'formatTokens',
       'isBusy',
       'mpShort',
+      'mpLevelsOf',
       'mpEffortLevels',
+      'mpRows',
       'mpData',
       'renderModelPicker',
       'renderModelNote',
@@ -1006,7 +1008,8 @@ describe('model switch on the open card (T4/T5)', () => {
     ['_busy'],
     {
       REPRESENTATIVE_MODELS: MODELS,
-      EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max'],
+      EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+      SDK_EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max'],
       _modelNotes: notes,
     },
   );

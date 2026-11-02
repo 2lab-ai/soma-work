@@ -72,6 +72,8 @@ describe('ActionHandlers', () => {
 
       expect(mockApp.action).toHaveBeenCalledWith('approve_tool', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith('deny_tool', expect.any(Function));
+      // SSOT 2026-11-02 T4 — the second question's button on a prompt the AI advised against.
+      expect(mockApp.action).toHaveBeenCalledWith('approve_tool_confirmed', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith('terminate_session', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith(/^user_choice_/, expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith(/^user_skill_invoke_/, expect.any(Function));
