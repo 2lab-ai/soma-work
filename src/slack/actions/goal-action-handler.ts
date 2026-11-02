@@ -13,6 +13,7 @@ import {
 import { answerGoalCapDecision, type GoalCapDecision, goalCapDecisionResolvedText } from '../goal-cap-decision';
 import { HostGoalActionError } from '../goal-host-actions';
 import { getHostGoalActionHandler, resumeGoalLoop } from '../goal-loop-resume';
+import { retireGoalStall } from '../goal-stall';
 import { deleteGoalById, findGoalById, formatGoalObjectiveForSlack } from '../session-goal';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { RespondFn } from './types';
@@ -217,7 +218,10 @@ export class GoalActionHandler {
       session.goalLastTurnText = undefined;
       goal.lastAssistantTurnSummary = undefined;
       goal.lastEvalReason = undefined;
+      goal.lastEvalRemaining = undefined;
       goal.lastEvalSummaryHash = undefined;
+      // A stall was about the old objective: it ends (its question is retracted).
+      retireGoalStall(goal);
       this.ctx.claudeHandler.saveSessions();
 
       await ack({ response_action: 'clear' });

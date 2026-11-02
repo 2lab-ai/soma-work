@@ -76,6 +76,7 @@ describe('settings page shell', () => {
       { id: 'preferences', label: '개인 설정', icon: 'gear' },
       { id: 'memory', label: '기억', icon: 'brain' },
       { id: 'layout', label: '대시보드 화면', icon: 'board' },
+      { id: 'dictation', label: '받아쓰기', icon: 'mic' },
     ]);
     expect(renderSettingsPage([{ id: 'x', label: '</script><b>' }])).toContain('"label":"\\u003c/script>\\u003cb>"');
     // the kit sheet comes before the page sheet, the tokens after it
@@ -434,6 +435,40 @@ describe('saving', () => {
     expect(deps._rowStatus.defaultEffort).toEqual({ state: 'saved', text: '저장됨 — HIGH' });
     expect(deps.paintRowData).toHaveBeenCalledWith('defaultEffort'); // the row says 저장 중… while the PATCH is out
     expect(deps.repaintRow).toHaveBeenCalledWith('defaultEffort');
+  });
+
+  it('a default-model save reads the default effort back — its value and levels follow the model', async () => {
+    const effortRow = row();
+    const snapshot = {
+      settings: [row({ key: 'defaultModel', value: 'sol[1m]', options: [] }), effortRow],
+    };
+    const repaintRow = vi.fn();
+    const fresh = {
+      ...row(),
+      value: 'xhigh',
+      options: ['low', 'medium', 'high', 'xhigh'].map((v) => ({ value: v, label: v })),
+    };
+    const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ settings: [fresh] }) }));
+    const { saveSetting } = load<{ saveSetting(key: string, value: unknown): Promise<boolean> }>(
+      ['findRow', 'valueText', 'needsConfirm', 'saveSetting', 'refreshRow', 'esc'],
+      {
+        _snapshot: snapshot,
+        _rowStatus: {},
+        document: { getElementById: () => null },
+        apiWrite: vi.fn(async (_m: string, _u: string, p: any) => ({
+          ok: true,
+          data: { setting: row({ key: 'defaultModel', value: p.value, options: [] }) },
+        })),
+        confirmDialog: vi.fn(async () => true),
+        repaintRow,
+        paintRowData: vi.fn(),
+        fetch,
+      },
+    );
+    expect(await saveSetting('defaultModel', 'grok[1m]')).toBe(true);
+    expect(fetch).toHaveBeenCalledWith('/api/settings');
+    expect(snapshot.settings[1]).toBe(fresh);
+    expect(repaintRow).toHaveBeenCalledWith('defaultEffort');
   });
 
   it('a refusal keeps the old value and says why', async () => {

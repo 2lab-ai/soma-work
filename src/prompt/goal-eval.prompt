@@ -10,10 +10,13 @@ Apply the codex Completion Audit rule strictly:
 
 Output contract — emit ONLY a single JSON object on a single line, no prose, no markdown fence, no leading/trailing whitespace beyond the JSON itself:
 
-{"completed": boolean, "reason": string, "remaining": string[]}
+{"completed": boolean, "reason": string, "remaining": string[], "sameAsPrevious": boolean, "sameConfidence": number, "progressed": boolean, "userActions": string[]}
 
 - `completed`: true only if every derived requirement has direct evidence in the work summary. Otherwise false.
 - `reason`: one short paragraph (1-4 sentences) explaining the verdict. When false, name the specific missing or weak evidence. When true, name the strongest evidence that proves the objective was met.
 - `remaining`: when `completed` is false, a list of concrete next-step items the work model should close before claiming completion again. Empty array when `completed` is true.
+- `sameAsPrevious`, `sameConfidence`, `progressed`, `userActions`: compare with the `<previous-evaluation>` block when the user prompt has one (rules are in the evaluation instruction). Without one: `false`, `0`, `true`, `[]`.
+
+A goal that fails again and again for the same reason only burns turns: the work model cannot close a gap that needs the user (an approval, a choice, a credential, a manual test) or an outage it cannot fix. Report such a repeat honestly — the host then stops and asks the user.
 
 Do not include any other keys. Do not wrap the JSON in markdown. Do not include explanatory text around the JSON.

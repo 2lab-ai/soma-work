@@ -17,6 +17,7 @@
  */
 
 import type { LogVerbosity } from '@soma/slack/output-flags';
+import { clampEffortToSupported } from 'soma-lib';
 import type { PermissionMode } from './agent-runtime/policy/permission-mode';
 import type {
   DashboardMode,
@@ -204,6 +205,12 @@ export interface SettingsRegistryDeps {
     email: ApplyFn;
   };
   effortLevels: readonly string[];
+  /**
+   * The effort levels `model` runs (its catalog menu ∩ `effortLevels`), or
+   * undefined when nothing is known — then every level is offered and the
+   * runtime clamp decides. The default effort is kept to the default model's.
+   */
+  effortMenu?(model: string): readonly string[] | undefined;
   verbosityLevels: readonly string[];
   themes: Readonly<Record<string, string>>;
   defaults: { model: string; effort: string; verbosity: string; theme: string; goalMaxContinuations: number };
@@ -232,6 +239,7 @@ const EFFORT_LABELS: Record<string, string> = {
   high: 'High',
   xhigh: 'Extra high',
   max: 'Max',
+  ultra: 'Ultra',
 };
 const VERBOSITY_LABELS: Record<string, string> = {
   minimal: 'Minimal — 결과만',
@@ -374,6 +382,8 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
       }
       case 'defaultEffort': {
         const value = store.getUserDefaultEffort(userId);
+        // Only the levels the default model runs (a model change fits the effort to them).
+        const levels = deps.effortMenu?.(store.getUserDefaultModel(userId)) ?? deps.effortLevels;
         return {
           key,
           group: 'model',
@@ -383,9 +393,9 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
           value,
           defaultValue: deps.defaults.effort,
           modified: value !== deps.defaults.effort,
-          options: deps.effortLevels.map((l) => ({ value: l, label: EFFORT_LABELS[l] ?? l })),
+          options: levels.map((l) => ({ value: l, label: EFFORT_LABELS[l] ?? l })),
           editable: true,
-          slackCommand: 'effort <low|medium|high|xhigh|max>',
+          slackCommand: `effort <${deps.effortLevels.join('|')}>`,
         };
       }
       case 'logVerbosity': {
@@ -747,11 +757,27 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
         // accepted, so check again right before the synchronous save.
         assertAccepted(userId);
         store.setUserDefaultModel(userId, choice.modelId);
+        // The default effort follows the model: a level it does not run becomes
+        // the nearest one it does (the runtime clamp's rule).
+        const menu = deps.effortMenu?.(choice.modelId);
+        const effort = store.getUserDefaultEffort(userId);
+        if (menu && menu.length > 0 && !menu.includes(effort)) {
+          const fitted = store.resolveEffortInput(clampEffortToSupported(menu, effort));
+          if (fitted) store.setUserDefaultEffort(userId, fitted);
+        }
         return;
       }
       case 'defaultEffort': {
         const effort = store.resolveEffortInput(expectString(value, key));
         if (!effort) throw new SettingsError(400, `effort는 ${deps.effortLevels.join(', ')} 중 하나여야 합니다`);
+        const model = store.getUserDefaultModel(userId);
+        const menu = deps.effortMenu?.(model);
+        if (menu && menu.length > 0 && !menu.includes(effort)) {
+          throw new SettingsError(
+            400,
+            `${store.getModelDisplayName(model)}은(는) effort ${effort}를 지원하지 않습니다 — ${menu.join(', ')} 중 하나`,
+          );
+        }
         store.setUserDefaultEffort(userId, effort);
         return;
       }
