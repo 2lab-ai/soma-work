@@ -241,7 +241,8 @@ function priceCalls(calls: Map<string, CallUsage>, opts: AgentSpendReaderOptions
   let top = 0;
   for (const [model, t] of byModel) {
     const all = t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheCreateTokens;
-    if (model && all > top) {
+    // A model with no reported usage still names the agent's model (#819 review P1: llmux calls can all be zero).
+    if (model && (all > top || !spend.model)) {
       top = all;
       spend.model = model;
     }
