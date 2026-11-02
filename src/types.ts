@@ -1,5 +1,7 @@
 // Session types live in somalib (shared with mcp-servers).
 // Re-export for backward compatibility — all src/ files import from './types'.
+import type { PendingRewind } from '@soma/slack/context-anchor';
+
 export type {
   Continuation,
   HandoffContext,
@@ -898,6 +900,14 @@ export interface ConversationSession {
   // Dashboard improvements (v2.1):
   // Number of /compact invocations or SDK-triggered compact_boundary events observed on this session.
   compactionCount?: number;
+  /**
+   * Context rollback (#743) — the latest safe cut point of the main agent's
+   * SDK transcript (`@soma/slack/context-anchor`, encoded). Every recorded user
+   * turn and work-log entry carries the value it had then.
+   */
+  contextAnchor?: string;
+  /** Context rollback (#743) — applied as `resumeSessionAt` on the next turn, then cleared. */
+  pendingRewind?: PendingRewind;
   // Compaction Tracking (#617):
   // Monotonically-incrementing epoch; bumped by START signals (PreCompact hook or `status==='compacting'` fallback).
   compactEpoch?: number;

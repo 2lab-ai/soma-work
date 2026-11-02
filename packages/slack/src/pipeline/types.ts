@@ -54,6 +54,11 @@ export interface ConversationSession {
   pendingModelSwitch?: { model: string; nickname: string; requestedAt: number; compactTs?: string; armed?: boolean };
   /** Last per-model SDK running total for `sessionId` (persisted) — see `toTurnUsage`. */
   sdkUsageBaseline?: SdkUsageBaseline;
+  /** Context rollback (#743, `../context-anchor`): SDK session id, compactions, cut point, waiting rollback. */
+  sessionId?: string;
+  compactionCount?: number;
+  contextAnchor?: string;
+  pendingRewind?: import('../context-anchor').PendingRewind;
   /** What the whole task spent (persisted, never reset) — see `creditTaskSpend`. */
   taskUsage?: TaskUsage;
   [key: string]: any;
