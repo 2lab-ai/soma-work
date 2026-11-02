@@ -28,8 +28,8 @@ The matcher is strict (`rollback`, `rollback <n>`, `rollback goal`, `rollback ca
 
 The opened card and the panel head have **⏪ 되돌리기** on a live session that has an SDK conversation (`KanbanSession.rollbackAvailable`). It opens a picker (`<ui-dialog id="rollback-dialog">`) with two lists, newest first:
 
-- **내 입력 — 그 입력 직전으로**: the owner's inputs of this context (`rollbackInputPoints`).
-- **작업 로그 — 그 지점까지 유지**: the work log's cut points (`rollbackWorkLogPoints`): each is the first reply, final answer or tool result entry made after the model reached a new safe cut point, so everything up to and including that entry stays.
+- **내 입력 — 그 입력 직전으로**: the owner's inputs of this context (`rollbackInputPoints`). An input recorded without an anchor (before anchors were kept, or by an older build) gets one from the SDK transcript (`inputAnchorsFromTranscript`): on the active branch since the last compaction, the last safe chain point above its prompt, matched to the record's turn by time.
+- **작업 로그 — 그 지점까지 유지**: the work log's cut points (`rollbackWorkLogPoints`): each is the first reply, final answer or tool result entry made after the model reached a new safe cut point, so everything up to and including that entry stays. A tool-result point is labelled with the call it answers (`toolCallLabel`: `Bash · npm test`), not "Bash ok".
 
 **What a rollback dropped is marked.** A request records the time of the last entry it keeps (`PendingRewind.keptUntil` — an input point keeps up to just before the input, a work-log point keeps its own entry, the goal's first failure keeps its turn). When the next turn applies it, the session keeps the dropped span (`contextRewinds: { from: keptUntil, to: requestedAt, label, at }`, the latest 10, persisted, cleared by `new`/renew) and the card carries it. Work-log entries and conversation turns made inside a span read **↩︎ 문맥에서 빠짐** (a tool's summary, an entry's text, a turn's name). The dashboard POST takes the point's time as `at`.
 
