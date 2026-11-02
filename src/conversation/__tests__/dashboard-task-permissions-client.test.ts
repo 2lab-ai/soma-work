@@ -179,6 +179,14 @@ describe('T3 — every signed-in user instructs every task; only the owner or �
     expect(p.pcModeOf({ ...theirs, slackless: true })).toBe('open');
   });
 
+  it('someone else’s DM with the bot: only its owner or an admin in admin mode instructs it (as in Slack)', () => {
+    const dm = mine({ ownerId: 'U2', channelId: 'D0DM' });
+    expect(page('U3', '').pcModeOf(dm)).toBe('readonly');
+    expect(page('U2', '').pcModeOf(dm)).toBe('open');
+    expect(page('UA', '', { admin: true, adminMode: true }).pcModeOf(dm)).toBe('open');
+    expect(page('U3', '').pcModeOf(mine({ ownerId: 'U2', channelId: 'C0CHAN' }))).toBe('open');
+  });
+
   it('nobody signed in (a viewer token): a Slack session takes instructions only in admin mode, a task never', () => {
     expect(page('', '').pcModeOf(theirs)).toBe('readonly');
     const token = page('', '', { admin: true, adminMode: true });

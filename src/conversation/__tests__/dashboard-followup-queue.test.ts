@@ -247,17 +247,21 @@ describe('Dashboard — the follow-up queue (batch 2)', () => {
         epoch: 2,
         stateReason: '편집됨',
         editable: true,
+        authorId: 'U1',
       });
       expect(bobs.author).toBe('Bob');
+      expect(bobs.authorId).toBe('U2');
       // A reason that only repeats the state is left out.
       expect(steered.stateReason).toBeUndefined();
     });
 
-    it('offers Edit only on the owner’s own queued words that are not a goal’s opening turn', async () => {
+    // SSOT 2026-11-02 — anyone may write here, so Edit is offered on anyone's queued words, to their writer
+    // (authorId; the page shows it to that viewer only, the server checks the author again).
+    it('offers Edit on queued words that are not a goal’s opening turn, naming their writer', async () => {
       const items = (await card()).followups.items;
       const editable = Object.fromEntries(items.map((i: any) => [Number(i.id.split('#')[1]), i.editable]));
       expect(editable[1]).toBe(true);
-      expect(editable[2]).toBe(false); // Bob's words
+      expect(editable[2]).toBe(true); // Bob's words — Bob's to edit
       expect(editable[3]).toBe(false); // steered: handed over
       expect(editable[7]).toBe(false); // paused
       expect(editable[14]).toBe(false); // a goal's opening turn

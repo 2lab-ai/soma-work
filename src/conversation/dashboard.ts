@@ -1218,7 +1218,21 @@ function requireInstructAccess(request: any, reply: any, sessionKey: string): bo
     });
     return false;
   }
+  // A DM with the bot: in Slack nobody else can write there — its owner, or an admin in admin mode, only.
+  if (!task && isDirectMessageChannel(target?.channelId) && actor !== target?.ownerId) {
+    if (!_hasWriteAccess(request, target?.ownerId)) {
+      reply
+        .status(403)
+        .send({ error: 'Forbidden — a DM session takes instructions from its owner, or an admin in admin mode' });
+      return false;
+    }
+  }
   return true;
+}
+
+/** A Slack DM channel id (`D…`) — a conversation only its two members can write in. */
+function isDirectMessageChannel(channelId: unknown): boolean {
+  return typeof channelId === 'string' && channelId.startsWith('D');
 }
 
 /**
@@ -1366,12 +1380,15 @@ export interface DashboardFollowupItem {
   files: string[];
   /** Who wrote it — only when that is not the session's owner (someone else in the thread). */
   author?: string;
+  /** The writer's Slack id: only the writer edits it (SSOT 2026-11-02 — the page offers Edit to that viewer). */
+  authorId?: string;
   enqueuedAt: number;
   state: FollowupItemState;
   stateReason?: string;
   /** The item's CAS generation: every action on it sends it back. */
   epoch: number;
-  /** Edit is offered: `queued`, the owner's own words, not a goal's opening turn (the server checks again). */
+  /** Edit is possible: `queued`, someone's words, not a goal's opening turn — to its writer only (`authorId`;
+   *  the server checks again). */
   editable: boolean;
 }
 export interface DashboardFollowups {
@@ -1469,11 +1486,8 @@ export function followupsOf(sessionKey: string, ownerId: string | undefined): Da
         enqueuedAt: item.enqueuedAt,
         state: item.state,
         epoch: item.epoch,
-        editable:
-          item.state === 'queued' &&
-          !!author &&
-          author === ownerId &&
-          item.message?.routeContext?.goalOpeningId === undefined,
+        editable: item.state === 'queued' && !!author && item.message?.routeContext?.goalOpeningId === undefined,
+        ...(author ? { authorId: author } : {}),
       };
       if (author && author !== ownerId) out.author = nameOf(author);
       if (item.stateReason && !FOLLOWUP_STATE_ECHO.has(item.stateReason)) out.stateReason = item.stateReason;
@@ -2895,11 +2909,14 @@ function sendToConversationAudience(conversationId: string, payload: string): vo
   // Resolve session owner for scoping — iterate because sessions are keyed by
   // sessionKey (channelId:threadTs), not conversationId (UUID)
   let ownerId: string | undefined;
+  // The user instructing it now (SSOT 2026-11-02 — anyone may): they follow the turn they started.
+  let initiatorId: string | undefined;
   const sessions = _getSessionsFn?.();
   if (sessions) {
     for (const [, s] of sessions) {
       if (s.conversationId === conversationId) {
         ownerId = s.ownerId;
+        initiatorId = s.currentInitiatorId;
         break;
       }
     }
@@ -2916,7 +2933,7 @@ function sendToConversationAudience(conversationId: string, payload: string): vo
     if (!ownerId) {
       // When owner is unknown, only admin clients receive the update
       if (!client.isAdmin) continue;
-    } else if (!client.isAdmin && client.userId && client.userId !== ownerId) {
+    } else if (!client.isAdmin && client.userId && client.userId !== ownerId && client.userId !== initiatorId) {
       continue;
     }
     try {
@@ -6114,8 +6131,9 @@ let _viewerUserId = ''; // the signed-in user (/auth/me) — not currentUserId, 
 // Mine: the signed-in viewer's — never the board filter's user ('' on the All Users board).
 // Manage (stop · close · trash · star · 살리기 · model · effort · goal · compact): the owner, or an
 // admin with 관리자 모드 on. Instruct (the composer, a question's answer): every signed-in user, as
-// in a Slack thread — the turn runs as them; an epic and its children only from those who manage
-// them (their children start as the owner); a viewer token only a Slack session it manages.
+// in a Slack thread — the turn runs as them; an epic and its children, and someone else's DM with the
+// bot (nobody else can write there in Slack), only from those who manage them; a viewer token only a
+// Slack session it manages.
 const OWNER_ONLY_MSG = '소유자나 관리자 모드를 켠 관리자만 할 수 있어요';
 function viewerOwns(s) {
   return !!(s && s.ownerId) && !!_viewerUserId && s.ownerId === _viewerUserId;
@@ -6126,6 +6144,7 @@ function viewerCanManage(s) {
 function viewerCanInstruct(s) {
   if (!s) return false;
   if (s.slackless && (s.kind === 'epic' || s.parentTaskId)) return !!_viewerUserId && viewerCanManage(s);
+  if (!s.slackless && typeof s.channelId === 'string' && s.channelId.charAt(0) === 'D') return viewerCanManage(s);
   return !!_viewerUserId || (!s.slackless && viewerCanManage(s));
 }
 
@@ -7605,8 +7624,14 @@ function toggleAdminMode() {
 // Who may do what (viewerCanManage / viewerCanInstruct) changed — the signed-in viewer became known, or
 // 관리자 모드 flipped: the board's cards and the open panel draw their controls again (SSOT 2026-11-02).
 function repaintViewerControls() {
-  if (typeof renderBoardForLayout === 'function') renderBoardForLayout();
-  if (typeof repaintPanelSession === 'function') repaintPanelSession();
+  renderBoardForLayout();
+  repaintPanelSession();
+  // The panel's 입력 필요 cards carry their own locks (the question's, the prompts' requester).
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  if (s) {
+    renderPanelQuestion(s);
+    renderPanelPermission(s);
+  }
 }
 
 // #716: monkey-patch fetch ONCE at boot so every state-mutating request
@@ -10605,7 +10630,8 @@ function steeringData(s, mode) {
     var f = list[i];
     var state = f && STEER_STATE[f.state];
     if (!state || !f.id) continue;
-    var it = { id: String(f.id), text: String(f.text || ''), state: state, canEdit: !!f.editable };
+    // Edit: the writer's own words only (SSOT 2026-11-02 — any viewer may write here now).
+    var it = { id: String(f.id), text: String(f.text || ''), state: state, canEdit: !!f.editable && !!f.authorId && f.authorId === _viewerUserId };
     if (f.enqueuedAt) it.at = Number(f.enqueuedAt);
     if (f.author) it.author = String(f.author);
     if (f.stateReason) it.reason = String(f.stateReason);

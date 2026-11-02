@@ -4707,8 +4707,8 @@ export class SlackHandler {
    * WHO (SSOT 2026-11-02): whoever may instruct the session. One who may manage
    * it (`manages` — the owner, the operator token, an admin in admin mode, the
    * gate its Stop uses) acts as the owner, as before; anyone else presses as
-   * themselves (`actorUserId`), as their Slack click would (Edit: only the
-   * author rewrites). That identity enters as
+   * themselves (`actorUserId`), as their Slack click would. Edit is always the
+   * signed-in presser's (only the author rewrites). That identity enters as
    * a {@link provenFollowupClick}, so `verifyClick` re-reads the session and
    * everything after it — `canInterrupt`, the item generation, the turn fence,
    * the dispatcher's authorization of the original author, the cancel veto, the
@@ -4747,9 +4747,11 @@ export class SlackHandler {
     }
     const session = this.claudeHandler?.getSessionByKey?.(request.sessionKey);
     if (!session?.ownerId) return { ok: false, status: 404, message: '세션을 찾을 수 없습니다.' };
-    // One who may manage the session presses as its owner (#716); anyone else as themselves (SSOT 2026-11-02).
+    // Edit is the writer's own (only the author rewrites): the signed-in presser, whoever manages it.
+    if (request.op === 'edit') return this.editFollowupFromDashboard(request, request.actorUserId || session.ownerId);
+    // Send now / Cancel: one who may manage the session presses as its owner (#716); anyone else as
+    // themselves (SSOT 2026-11-02).
     const presser = request.manages === false && request.actorUserId ? request.actorUserId : session.ownerId;
-    if (request.op === 'edit') return this.editFollowupFromDashboard(request, presser);
 
     const role = request.op === 'promote' ? 'sendNow' : 'cancel';
     const item = queue.get(request.sessionKey, request.itemId);
