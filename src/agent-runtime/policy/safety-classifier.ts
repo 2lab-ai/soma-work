@@ -17,13 +17,24 @@
  * grant) are decided *before* the classifier and are never reachable here.
  */
 
+import type { PermissionAdvice } from 'somalib/permission/shared-store';
+
 export type SafetyVerdictKind = 'allow' | 'ask';
 
 export interface SafetyVerdict {
   verdict: SafetyVerdictKind;
   /** Short rationale, for audit logs. */
   reason: string;
+  /**
+   * SSOT 2026-11-02 — the advice the person sees when the call reaches them:
+   * what it does, why it is risky, approve or deny. Absent when the reply had
+   * none (or no usable one): the prompt then says the AI gave no advice.
+   */
+  advice?: PermissionAdvice;
 }
+
+/** Longest summary / risk kept from a guardian reply (the Slack card and the dashboard show it whole). */
+export const ADVICE_TEXT_MAX = 300;
 
 export interface SafetyClassifyRequest {
   /** Tool name (today always `Bash` — the only tool that reaches `classify`). */
@@ -32,12 +43,18 @@ export interface SafetyClassifyRequest {
   command: string;
   /** Full tool input, for non-Bash future extension. */
   toolInput: Record<string, unknown>;
-  /** Dangerous-rule ids that fired (e.g. `['rm-recursive']`). */
+  /**
+   * Dangerous-rule ids that fired (e.g. `['rm-recursive']`). Empty when the
+   * call reaches the person for another reason (legacy mode asks for every
+   * tool): the guardian is then only asked for its advice.
+   */
   matchedRuleIds: readonly string[];
   /** Working directory of the session, if known. */
   cwd?: string;
   /** Slack user id that owns the session (its sandbox is scoped to /tmp/<user>). */
   user: string;
+  /** Aborts the guardian call (its one-shot dispatch) when the caller stops waiting. */
+  signal?: AbortSignal;
   /**
    * The model the session is CURRENTLY using. This is the default classifier
    * model (the auto-mode reviewer runs on the same model as the work), unless
@@ -55,6 +72,8 @@ export interface SafetyChatOptions {
   timeoutMs: number;
   /** Per-call model = the session's current model (see SafetyClassifyRequest.model). */
   model?: string;
+  /** The caller's abort (SafetyClassifyRequest.signal). */
+  signal?: AbortSignal;
 }
 
 /**
@@ -73,28 +92,60 @@ const DEFAULT_TIMEOUT_MS = 20_000;
  * scoped to the user's /tmp directory, and is asked for strict JSON.
  */
 function buildSafetyPrompt(req: SafetyClassifyRequest): string {
+  const flagged = req.matchedRuleIds.length > 0;
   return [
     'You are a SAFETY REVIEWER (guardian) for an autonomous coding agent.',
     'The agent runs inside an OS sandbox; filesystem writes are restricted to',
     `the user's own /tmp/${req.user} directory and a dev network allowlist.`,
-    'A static rule already flagged the command below as potentially dangerous.',
+    flagged
+      ? 'A static rule already flagged the call below as potentially dangerous.'
+      : 'No static rule flagged the call below; it needs a human answer before it runs.',
     'Decide whether it is safe to AUTO-APPROVE, or whether a human should be',
     'asked first. Be conservative: when in doubt, ask.',
+    'If a human is asked, they see your advice: what the call does, why it is',
+    'risky, and whether you recommend they approve or deny it.',
     '',
     `Tool: ${req.toolName}`,
     `Working directory: ${req.cwd ?? '(unknown)'}`,
     `Matched dangerous rules: ${req.matchedRuleIds.join(', ') || '(none)'}`,
-    'Command:',
+    req.command ? 'Command:' : 'Tool input:',
     '```',
-    req.command,
+    req.command || toolInputText(req.toolInput),
     '```',
     '',
     'Reply with STRICT JSON only, no prose, no code fence:',
-    '{"verdict":"allow"|"ask","reason":"<= 20 words"}',
-    '- "allow": clearly safe and scoped (e.g. deletes only within the sandbox,',
+    '{"verdict":"allow"|"ask","recommendation":"approve"|"deny","summary":"<what the call does, Korean, <= 25 words>","risk":"<why it is risky, Korean, <= 25 words>","reason":"<= 20 words"}',
+    '- "verdict":"allow": clearly safe and scoped (e.g. deletes only within the sandbox,',
     '  reversible, no host-wide / cross-user / credential / network-exfil risk).',
-    '- "ask": anything broad, host-wide, irreversible, or ambiguous.',
+    '- "verdict":"ask": anything broad, host-wide, irreversible, or ambiguous.',
+    '- "recommendation":"approve": a human can accept it once they have read it.',
+    '- "recommendation":"deny": a human should not run it (destructive beyond the task,',
+    "  host-wide, another user's data, credentials, exfiltration, or not what the task needs).",
   ].join('\n');
+}
+
+/** A non-Bash call's input as the guardian reads it: JSON, cut to a few KB. */
+const TOOL_INPUT_PROMPT_MAX = 4_000;
+function toolInputText(input: Record<string, unknown>): string {
+  let text: string;
+  try {
+    text = JSON.stringify(input ?? {}, null, 2) ?? '';
+  } catch {
+    text = String(input);
+  }
+  return text.length > TOOL_INPUT_PROMPT_MAX ? `${text.slice(0, TOOL_INPUT_PROMPT_MAX)}\n… (cut)` : text;
+}
+
+/** The advice in a parsed reply, or undefined when it has none usable. */
+function adviceOf(parsed: {
+  recommendation?: unknown;
+  summary?: unknown;
+  risk?: unknown;
+}): PermissionAdvice | undefined {
+  const rec = parsed.recommendation;
+  if (rec !== 'approve' && rec !== 'deny') return undefined;
+  const text = (v: unknown) => (typeof v === 'string' ? v.trim().slice(0, ADVICE_TEXT_MAX) : '');
+  return { recommendation: rec, summary: text(parsed.summary), risk: text(parsed.risk) };
 }
 
 /**
@@ -109,12 +160,37 @@ export function parseSafetyVerdict(raw: string): SafetyVerdict {
   const match = raw.match(/\{[\s\S]*\}/);
   if (!match) return fallback;
   try {
-    const parsed = JSON.parse(match[0]) as { verdict?: unknown; reason?: unknown };
+    const parsed = JSON.parse(match[0]) as {
+      verdict?: unknown;
+      reason?: unknown;
+      recommendation?: unknown;
+      summary?: unknown;
+      risk?: unknown;
+    };
+    const advice = adviceOf(parsed);
+    const withAdvice = advice ? { advice } : {};
+    // A reply that allows the call yet tells the person not to run it contradicts itself: uncertain, so it is an
+    // ask, and the person sees the red advice (review R1, astra P1). Never auto-approve on it.
+    if (parsed.verdict === 'allow' && advice?.recommendation === 'deny') {
+      return {
+        verdict: 'ask',
+        reason: 'contradictory classifier reply: allow with a deny recommendation (fail-closed)',
+        ...withAdvice,
+      };
+    }
     if (parsed.verdict === 'allow') {
-      return { verdict: 'allow', reason: typeof parsed.reason === 'string' ? parsed.reason : 'classifier approved' };
+      return {
+        verdict: 'allow',
+        reason: typeof parsed.reason === 'string' ? parsed.reason : 'classifier approved',
+        ...withAdvice,
+      };
     }
     if (parsed.verdict === 'ask') {
-      return { verdict: 'ask', reason: typeof parsed.reason === 'string' ? parsed.reason : 'classifier escalated' };
+      return {
+        verdict: 'ask',
+        reason: typeof parsed.reason === 'string' ? parsed.reason : 'classifier escalated',
+        ...withAdvice,
+      };
     }
     return fallback;
   } catch {
@@ -137,7 +213,11 @@ export class LlmSafetyClassifier implements SafetyClassifier {
 
   async classify(req: SafetyClassifyRequest): Promise<SafetyVerdict> {
     try {
-      const raw = await this.chat(buildSafetyPrompt(req), { timeoutMs: this.timeoutMs, model: req.model });
+      const raw = await this.chat(buildSafetyPrompt(req), {
+        timeoutMs: this.timeoutMs,
+        model: req.model,
+        ...(req.signal ? { signal: req.signal } : {}),
+      });
       return parseSafetyVerdict(raw);
     } catch (err) {
       return {

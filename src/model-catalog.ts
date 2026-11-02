@@ -29,7 +29,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { CatalogModel } from 'soma-lib';
-import { clampEffortToSupported, normalizeCatalogEntries } from 'soma-lib';
+import { clampEffortToSupported, normalizeCatalogEntries, SDK_EFFORT_LEVELS } from 'soma-lib';
 import type { LlmuxModelEntry } from './auth/llmux-client';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
@@ -315,10 +315,16 @@ modelCatalog.loadSnapshotSync();
  *   `ultra` exists upstream on some codex tiers); if nothing lower exists, the lowest
  *   supported effort. (grok: xhigh→high, max→high, low→low.)
  *
+ * A model without a catalog menu runs the SDK levels: `ultra` — which only a
+ * model whose menu lists it runs — lands as `max` there, the other levels pass
+ * unchanged.
+ *
  * Pure read over catalog state — never mutates session/user settings.
  * Clamp rule lives in soma-lib `clampEffortToSupported`; this wrapper only
  * supplies the catalog lookup.
  */
 export function clampEffortToModel(modelId: string, effort: string): string {
-  return clampEffortToSupported(modelCatalog.getEffortsFor(modelId), effort);
+  if (typeof effort !== 'string' || !effort) return effort;
+  const menu = modelCatalog.getEffortsFor(modelId);
+  return clampEffortToSupported(menu && menu.length > 0 ? menu : SDK_EFFORT_LEVELS, effort);
 }

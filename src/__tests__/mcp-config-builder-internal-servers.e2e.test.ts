@@ -170,6 +170,8 @@ describe('McpConfigBuilder internal MCP servers e2e', () => {
         { channel: 'C123', threadTs: '1700000000.000000', user: 'U123' },
         expect.any(Array),
         'Bash',
+        // SSOT 2026-11-02 — the AI's advice; no advisor is wired in this builder, so none.
+        null,
       );
       expect(storePendingApproval).toHaveBeenCalledWith(
         expect.stringMatching(/^approval_/),
@@ -185,6 +187,62 @@ describe('McpConfigBuilder internal MCP servers e2e', () => {
         expect.stringMatching(/^approval_/),
         5 * 60 * 1000,
         expect.any(AbortSignal),
+      );
+    } finally {
+      sendPermissionRequest.mockRestore();
+      storePendingApproval.mockRestore();
+      waitForPermissionResponse.mockRestore();
+      await client.close().catch(() => undefined);
+      await permissionServer?.instance?.close().catch(() => undefined);
+    }
+  });
+
+  // SSOT 2026-11-02 T2 — the entry-point wiring: the builder's advisor reaches the live prompt, asked under the
+  // turn's session key (where the policy hook left the escalation's advice), and the card and record carry it.
+  it('asks the wired advisor under the turn session key and puts its advice on the card and the record', async () => {
+    const sendPermissionRequest = vi
+      .spyOn(SlackPermissionMessenger.prototype, 'sendPermissionRequest')
+      .mockResolvedValue({});
+    const storePendingApproval = vi.spyOn(sharedStore, 'storePendingApproval').mockResolvedValue();
+    const waitForPermissionResponse = vi
+      .spyOn(sharedStore, 'waitForPermissionResponse')
+      .mockResolvedValue({ behavior: 'deny' });
+    const advice = { recommendation: 'deny' as const, summary: '데모 폴더를 지웁니다', risk: '되돌릴 수 없습니다' };
+    const advisor = vi.fn(async () => advice);
+    const builder = new McpConfigBuilder(createMockMcpManager());
+    builder.setPermissionAdvisor(advisor);
+    const config = await builder.buildConfig(
+      { channel: 'C123', threadTs: '1700000000.000000', user: 'U123' },
+      undefined,
+      {
+        origin: 'slack',
+        userId: 'U123',
+        sessionKey: 'work:C123:1700000000.000000',
+        workingDirectory: '/tmp/U123/repo',
+        permissionMode: 'auto',
+        isAdmin: false,
+      } as never,
+    );
+    const permissionServer = config.mcpServers?.['permission-prompt'];
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'permission-advice-test', version: '1.0.0' });
+    try {
+      await Promise.all([permissionServer.instance.connect(serverTransport), client.connect(clientTransport)]);
+      const input = { command: 'rm -rf /tmp/demo' };
+      await client.callTool({ name: 'permission_prompt', arguments: { tool_name: 'Bash', input } });
+      expect(advisor).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: 'work:C123:1700000000.000000',
+          user: 'U123',
+          cwd: '/tmp/U123/repo',
+          toolName: 'Bash',
+          input,
+        }),
+      );
+      expect(sendPermissionRequest).toHaveBeenCalledWith(expect.any(Object), expect.any(Array), 'Bash', advice);
+      expect(storePendingApproval).toHaveBeenCalledWith(
+        expect.stringMatching(/^approval_/),
+        expect.objectContaining({ advice }),
       );
     } finally {
       sendPermissionRequest.mockRestore();
