@@ -121,7 +121,7 @@ import {
   restoreGoalState,
   snapshotGoalState,
 } from './slack/session-goal';
-import { announceSessionNotice } from './slack/session-notice';
+import { announceSessionNotice, recordSessionNotice } from './slack/session-notice';
 import { SummaryService } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
 import type { SlackTaskEntry } from './slack/task-entry';
