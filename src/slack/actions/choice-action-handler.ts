@@ -1,6 +1,6 @@
 import type { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
-import type { UserChoices } from '../../types';
+import type { ConversationSession, UserChoices } from '../../types';
 import { ChoiceMessageBuilder } from '../choice-message-builder';
 import type { CompletionMessageTracker } from '../completion-message-tracker';
 import type { SlackApiHelper } from '../slack-api-helper';
@@ -12,6 +12,14 @@ import type { MessageHandler, PendingChoiceFormData, SayFn } from './types';
 
 /** Sentinel choiceId for custom text input (직접입력) */
 const CUSTOM_INPUT_CHOICE_ID = '직접입력';
+
+/** What a dashboard answer took when it was claimed — what its rollback checks against. */
+interface DashboardAnswerClaim {
+  /** The question the answer was for. */
+  question: NonNullable<ConversationSession['actionPanel']>['pendingQuestion'];
+  /** The `working` transition the claim made. */
+  claimedAt: ConversationSession['activityStateChangedAt'];
+}
 
 /**
  * Can a dashboard answer reach this session's question now?
@@ -915,10 +923,10 @@ export class ChoiceActionHandler {
     const channel = session.channelId;
     const threadTs = this.resolveSessionThreadTs(session, session.threadTs);
     const choiceMessageTs = session.actionPanel?.choiceMessageTs;
-    // Kept for the rollback: a failed send leaves the question answerable again.
-    const savedPendingQuestion = session.actionPanel?.pendingQuestion;
 
     this.logger.info('Dashboard choice selected', { sessionKey, choiceId, label, userId });
+    // Before the first await: a second submission finds the question taken.
+    const claim = this.claimDashboardAnswer(session, sessionKey);
 
     // P3 (PHASE>=3) — when a pendingChoice exists, route through resolveChoice.
     // Dashboard payloads don't carry turnId, but pc.turnId always matches itself,
@@ -952,18 +960,7 @@ export class ChoiceActionHandler {
           );
         } catch (error) {
           this.logger.error('Error processing dashboard choice (P3)', { sessionKey, choiceId, error });
-          try {
-            // afterP3Resolve cleared the question: put it back so it can be answered again.
-            if (session.actionPanel && savedPendingQuestion) {
-              session.actionPanel.pendingQuestion = savedPendingQuestion;
-            }
-            this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
-          } catch (rollbackError) {
-            this.logger.error('Failed to rollback activity state after dashboard choice (P3)', {
-              sessionKey,
-              rollbackError,
-            });
-          }
+          this.releaseDashboardAnswer(session, sessionKey, claim);
           throw error;
         }
         return;
@@ -1049,9 +1046,7 @@ export class ChoiceActionHandler {
           });
       }
 
-      // Transition waiting → working
-      this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
-
+      // The session is already `working` (the claim above).
       // Send choiceId as user message to Claude
       const say = this.createSayFn(channel);
       await this.ctx.messageHandler(
@@ -1059,21 +1054,8 @@ export class ChoiceActionHandler {
         say,
       );
     } catch (error) {
-      // Rollback: restore the question and the waiting state so the user can
-      // retry from the dashboard or Slack — activityState must not stay
-      // 'working' without a Claude stream, nor 'waiting' with no question.
       this.logger.error('Error processing dashboard choice', { sessionKey, choiceId, error });
-      try {
-        if (session.actionPanel && savedPendingQuestion) {
-          session.actionPanel.pendingQuestion = savedPendingQuestion;
-        }
-        this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
-      } catch (rollbackError) {
-        this.logger.error('Failed to rollback activity state after dashboard choice error', {
-          sessionKey,
-          rollbackError,
-        });
-      }
+      this.releaseDashboardAnswer(session, sessionKey, claim);
       throw error;
     }
   }
@@ -1137,8 +1119,8 @@ export class ChoiceActionHandler {
       userId,
     });
 
-    // Save pendingQuestion for rollback in case messageHandler fails
-    const savedPendingQuestion = session.actionPanel?.pendingQuestion;
+    // Before the first await: a second submission finds the question taken.
+    const claim = this.claimDashboardAnswer(session, sessionKey);
 
     // Build combined response text once (shared between P3 + legacy paths)
     const responses = questions.map((q: { id: string; question: string }) => {
@@ -1199,17 +1181,7 @@ export class ChoiceActionHandler {
           );
         } catch (error) {
           this.logger.error('Error processing dashboard multi-choice (P3)', { sessionKey, error });
-          try {
-            if (session.actionPanel && savedPendingQuestion) {
-              session.actionPanel.pendingQuestion = savedPendingQuestion;
-            }
-            this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
-          } catch (rollbackError) {
-            this.logger.error('Failed to rollback activity state after dashboard multi-choice (P3)', {
-              sessionKey,
-              rollbackError,
-            });
-          }
+          this.releaseDashboardAnswer(session, sessionKey, claim);
           throw error;
         }
         return;
@@ -1299,9 +1271,7 @@ export class ChoiceActionHandler {
         this.formStore.delete(formId);
       }
 
-      // Transition waiting → working
-      this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
-
+      // The session is already `working` (the claim above).
       // Send combined response to Claude
       const say = this.createSayFn(channel);
       await this.ctx.messageHandler(
@@ -1310,19 +1280,50 @@ export class ChoiceActionHandler {
       );
     } catch (error) {
       this.logger.error('Error processing dashboard multi-choice', { sessionKey, error });
-      try {
-        // Restore pendingQuestion so user can retry from dashboard or Slack
-        if (session.actionPanel && savedPendingQuestion) {
-          session.actionPanel.pendingQuestion = savedPendingQuestion;
-        }
-        this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
-      } catch (rollbackError) {
-        this.logger.error('Failed to rollback activity state after dashboard multi-choice error', {
-          sessionKey,
-          rollbackError,
-        });
-      }
+      this.releaseDashboardAnswer(session, sessionKey, claim);
       throw error;
+    }
+  }
+
+  /**
+   * Take a dashboard answer: the session moves to `working` before the
+   * handler's first await, so a second submission of the same question —
+   * a double click, or the card and the recommended button together — finds
+   * it taken and is refused, instead of both answers running.
+   */
+  private claimDashboardAnswer(session: ConversationSession, sessionKey: string): DashboardAnswerClaim {
+    this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
+    return { question: session.actionPanel?.pendingQuestion, claimedAt: session.activityStateChangedAt };
+  }
+
+  /**
+   * Give a dashboard answer back after its send failed: the question returns,
+   * the session waits on it again, and both are saved so a restart keeps them.
+   *
+   * Only while nothing moved past the answer. A turn that ran on it moves the
+   * session off the claim's `working` (its end settles idle or waiting, and a
+   * later turn's start is a new transition); a newer recorded question means
+   * the model asked again. Either way the answer was used, and offering it
+   * again would run it twice — the newer state stays.
+   */
+  private releaseDashboardAnswer(session: ConversationSession, sessionKey: string, claim: DashboardAnswerClaim): void {
+    const panel = session.actionPanel;
+    const untouched = session.activityState === 'working' && session.activityStateChangedAt === claim.claimedAt;
+    const newerQuestion = panel?.pendingQuestion !== undefined && panel.pendingQuestion !== claim.question;
+    if (!untouched || newerQuestion) {
+      this.logger.info('Dashboard answer not given back — a turn already ran on it', {
+        sessionKey,
+        activityState: session.activityState,
+        newerQuestion,
+      });
+      return;
+    }
+    try {
+      if (panel && claim.question) panel.pendingQuestion = claim.question;
+      this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
+      this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
+    } catch (rollbackError) {
+      this.logger.error('Failed to give a dashboard answer back', { sessionKey, rollbackError });
     }
   }
 

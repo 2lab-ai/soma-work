@@ -5883,6 +5883,13 @@ describe('SlackHandler — follow-up queue host', () => {
       registrySession.goalHistory = undefined;
       registrySession.goal = cappedGoal();
       registrySession.activityState = 'idle';
+      // The registry's real transition: state and its stamp move together.
+      let clock = 0;
+      claudeHandler.setActivityStateByKey.mockImplementation((_key: string, state: string) => {
+        if (registrySession.activityState === state) return;
+        registrySession.activityState = state;
+        registrySession.activityStateChangedAt = ++clock;
+      });
     });
 
     function expectGoalGoesOn(): void {
@@ -6000,6 +6007,69 @@ describe('SlackHandler — follow-up queue host', () => {
       await handler.handleMessage(message({ ts: '333.445', synthetic: true }), say());
 
       expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
+    });
+
+    // astra review P1: not every non-synthetic turn is the user's answer.
+    it.each([
+      ['a post-compaction host turn replay', { text: '이어서 진행', routeContext: { hostTurn: true } }],
+      ['the /compact maintenance turn', { text: '/compact' }],
+    ])('T2 %s leaves the open question on the session', async (_label, overrides) => {
+      registrySession.goal = {
+        ...cappedGoal(),
+        continuationCount: 3,
+        capDmPendingAt: undefined,
+        capDecisionId: undefined,
+      };
+      registrySession.actionPanel = { waitingForChoice: false, pendingQuestion: singleQuestion() };
+
+      await handler.handleMessage(message({ ts: '333.446', ...overrides }), say());
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
+    });
+
+    // astra review P1: two submissions of one answer must run it once.
+    it.each([
+      [
+        'two single-choice answers',
+        (h: ChoiceActionHandler) =>
+          h.handleChoiceFromDashboard(SESSION_KEY, 'merge-and-deploy', '머지하고 배포', 'Q?', 'U_OWNER'),
+        singleQuestion,
+      ],
+      [
+        'submit-all-recommended and a multi-choice answer',
+        (h: ChoiceActionHandler, n: number) =>
+          n === 0
+            ? h.handleSubmitRecommendedFromDashboard(SESSION_KEY, 'U_OWNER')
+            : h.handleMultiChoiceFromDashboard(
+                SESSION_KEY,
+                {
+                  q1: { choiceId: 'anyone', label: '누구나' },
+                  q2: { choiceId: 'slack-only', label: '슬랙만' },
+                },
+                'U_OWNER',
+              ),
+        multiQuestion,
+      ],
+    ])('T1 %s submitted together run once — the second finds the question taken', async (_label, submit, q) => {
+      registrySession.actionPanel = { waitingForChoice: false, pendingQuestion: q() };
+      // Hold the first submission in its Slack cleanup, past the guard.
+      const gate = deferred<void>();
+      handlerAny.threadPanel.clearChoice = vi.fn(() => gate.promise);
+      const answers = dashboardAnswers();
+
+      const first = (submit as any)(answers, 0);
+      const second = (submit as any)(answers, 1);
+      await tick();
+      gate.resolve();
+      const [firstResult, secondResult] = await Promise.allSettled([first, second]);
+
+      expect(firstResult.status).toBe('fulfilled');
+      expect(secondResult).toMatchObject({
+        status: 'rejected',
+        reason: expect.objectContaining({ message: 'Session is not waiting for a choice' }),
+      });
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
     });
   });
 });

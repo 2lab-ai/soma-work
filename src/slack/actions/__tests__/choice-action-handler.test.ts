@@ -899,34 +899,110 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
   });
 
   /**
-   * SSOT 2026-11-02 (trinity review, grok P1). A dashboard answer resolved on
-   * the P3 path cleared the question (afterP3Resolve) before the send; when
-   * the send failed, the rollback put the session back to `waiting` with no
-   * question — a NEEDS YOU card nothing could answer, and every retry 409.
+   * SSOT 2026-11-02 — a dashboard answer's rollback (trinity review: grok P1,
+   * astra P2 ×2). A failed send puts the question back and saves it, but only
+   * while nothing moved past the answer: once a turn ran on it (the session
+   * left the answer's `working`) or a newer question is recorded, the failure
+   * came after the answer was used, and the newer state stays.
    */
-  it.each([
-    ['waiting', 'waiting'],
-    ['idle (cap decision showing it)', 'idle'],
-  ])('dashboard single-choice P3 send failure on a %s session restores the question', async (_label, activity) => {
+  describe('dashboard answer rollback', () => {
     const question = { type: 'user_choice', question: 'Q?', choices: [{ id: '2', label: 'B' }] };
-    const session = {
-      threadRootTs: 'thread-root',
-      threadTs: 'thread-root',
-      channelId: 'C1',
-      activityState: activity,
-      actionPanel: {
-        pendingChoice: { turnId: 't1', kind: 'single', choiceTs: 'msg-1', formIds: [] },
-        pendingQuestion: question,
-      },
-    };
-    claudeHandler.getSessionByKey.mockReturnValue(session);
-    messageHandler.mockRejectedValueOnce(new Error('send failed'));
+    let clock: number;
 
-    await expect(handler.handleChoiceFromDashboard(sessionKey, '2', 'B', 'Q?', 'U1')).rejects.toThrow('send failed');
+    function answerSession(activity: string, p3: boolean) {
+      const session: any = {
+        threadRootTs: 'thread-root',
+        threadTs: 'thread-root',
+        channelId: 'C1',
+        activityState: activity,
+        activityStateChangedAt: 0,
+        actionPanel: {
+          ...(p3 ? { pendingChoice: { turnId: 't1', kind: 'single', choiceTs: 'msg-1', formIds: [] } } : {}),
+          pendingQuestion: question,
+        },
+      };
+      claudeHandler.getSessionByKey.mockReturnValue(session);
+      // The registry's real transition: state and its stamp move together.
+      clock = 0;
+      claudeHandler.setActivityStateByKey.mockImplementation((_key: string, state: string) => {
+        if (session.activityState === state) return;
+        session.activityState = state;
+        session.activityStateChangedAt = ++clock;
+      });
+      return session;
+    }
 
-    expect(threadPanel.resolveChoice).toHaveBeenCalled();
-    expect(session.actionPanel.pendingQuestion).toBe(question);
-    expect(claudeHandler.setActivityStateByKey).toHaveBeenLastCalledWith(sessionKey, 'waiting');
+    it.each([
+      ['P3, waiting', 'waiting', true],
+      ['P3, idle (cap decision showing it)', 'idle', true],
+      ['legacy, waiting', 'waiting', false],
+      ['legacy, idle (cap decision showing it)', 'idle', false],
+    ])('a send that failed before any turn ran (%s) restores and saves the question', async (_l, activity, p3) => {
+      const session = answerSession(activity as string, p3 as boolean);
+      messageHandler.mockRejectedValueOnce(new Error('send failed'));
+
+      await expect(handler.handleChoiceFromDashboard(sessionKey, '2', 'B', 'Q?', 'U1')).rejects.toThrow('send failed');
+
+      expect(session.actionPanel.pendingQuestion).toBe(question);
+      expect(session.activityState).toBe('waiting');
+      const persists = sessionRegistry.persistAndBroadcast.mock.invocationCallOrder;
+      expect(persists[persists.length - 1], 'the restored question is saved').toBeGreaterThan(
+        messageHandler.mock.invocationCallOrder[0],
+      );
+    });
+
+    it.each([
+      ['P3', true],
+      ['legacy', false],
+    ])('a failure after the turn asked a newer question keeps the newer question (%s)', async (_l, p3) => {
+      const session = answerSession('idle', p3 as boolean);
+      const newer = { type: 'user_choice', question: 'Next?', choices: [{ id: '1', label: 'A' }] };
+      messageHandler.mockImplementationOnce(async () => {
+        // The answer ran: its turn asked again and ended waiting, then the drain failed.
+        session.actionPanel.pendingQuestion = newer;
+        claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
+        throw new Error('drain failed');
+      });
+
+      await expect(handler.handleChoiceFromDashboard(sessionKey, '2', 'B', 'Q?', 'U1')).rejects.toThrow('drain failed');
+
+      expect(session.actionPanel.pendingQuestion).toBe(newer);
+    });
+
+    it.each([
+      ['P3', true],
+      ['legacy', false],
+    ])('a failure after the turn ran and ended idle does not offer the used answer again (%s)', async (_l, p3) => {
+      const session = answerSession('idle', p3 as boolean);
+      messageHandler.mockImplementationOnce(async () => {
+        claudeHandler.setActivityStateByKey(sessionKey, 'idle');
+        throw new Error('drain failed');
+      });
+
+      await expect(handler.handleChoiceFromDashboard(sessionKey, '2', 'B', 'Q?', 'U1')).rejects.toThrow('drain failed');
+
+      expect(session.actionPanel.pendingQuestion).toBeUndefined();
+      expect(session.activityState).toBe('idle');
+    });
+
+    it('a multi-choice send that failed before any turn ran restores and saves the question', async () => {
+      const multi = {
+        type: 'user_choices',
+        questions: [{ id: 'q1', question: 'Q1?', choices: [{ id: '1', label: 'A' }] }],
+      };
+      const session = answerSession('idle', false);
+      session.actionPanel.pendingQuestion = multi;
+      messageHandler.mockRejectedValueOnce(new Error('send failed'));
+
+      await expect(
+        handler.handleMultiChoiceFromDashboard(sessionKey, { q1: { choiceId: '1', label: 'A' } }, 'U1'),
+      ).rejects.toThrow('send failed');
+
+      expect(session.actionPanel.pendingQuestion).toBe(multi);
+      expect(session.activityState).toBe('waiting');
+      const persists = sessionRegistry.persistAndBroadcast.mock.invocationCallOrder;
+      expect(persists[persists.length - 1]).toBeGreaterThan(messageHandler.mock.invocationCallOrder[0]);
+    });
   });
 
   it('P3 path persistAndBroadcast clears pendingQuestion', async () => {

@@ -21,7 +21,7 @@ import {
 import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
 import { OutputFlag } from '@soma/slack/output-flags';
-import { isLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
+import { isLocalSlashCommand, shouldForwardAsLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
 import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
@@ -2095,8 +2095,15 @@ export class SlackHandler {
       // dashboard task's new instruction does (`task-turn-controller` startChain).
       // Left recorded, the question outlived its answer: the next goal cap
       // decision made the card read NEEDS YOU and showed it again (SSOT
-      // 2026-11-02). A host turn is not an answer — the question stays.
-      if (!event.synthetic && sessionResult.session.actionPanel?.pendingQuestion) {
+      // 2026-11-02). Not every turn is the user's answer, and those leave the
+      // question: a host turn (synthetic, or a post-compaction replay of one —
+      // `routeContext.hostTurn`) and a maintenance turn (`/compact`, forwarded
+      // to the SDK as a local slash command).
+      const answersOpenQuestion =
+        !event.synthetic &&
+        event.routeContext?.hostTurn !== true &&
+        !shouldForwardAsLocalSlashCommand(effectiveText.trim(), literalPrompt);
+      if (answersOpenQuestion && sessionResult.session.actionPanel?.pendingQuestion) {
         sessionResult.session.actionPanel.pendingQuestion = undefined;
       }
 
