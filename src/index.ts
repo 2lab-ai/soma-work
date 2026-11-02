@@ -37,6 +37,8 @@ registerSkillStore({
   copySkill: (user, sourceUser, name, newName) => gatedManageSkillCopy(user, sourceUser, name, newName),
 });
 
+// #771 — the English display catalogs (dashboard pages, Slack text): loading registers them.
+import '@soma/common/i18n-en';
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import type { AgentTreeEvent } from '@soma/slack/agent-tree';
@@ -57,7 +59,7 @@ import { initAuthRuntimeDefault } from './auth/auth-runtime';
 import { isLlmuxUp } from './auth/llmux-client';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
 import { getChannelDescription } from './channel-description-cache';
-import { getChannel, scanChannels } from './channel-registry';
+import { getAllChannels, getChannel, scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
 import { config, getIncidentTrustedSource, runPreflightChecks, validateConfig } from './config';
 import { loadConfig } from './config-loader';
@@ -72,6 +74,7 @@ import {
   initRecorder,
   isDashboardListening,
   matchSlackUsersByEmail,
+  recordExecutiveSummaryTurn,
   scheduleLiveSessionUpdate,
   setDashboardBotName,
   setDashboardChoiceAnswerHandler,
@@ -113,6 +116,7 @@ import {
   createSlackSteerUploader,
   offeredNewTaskModels,
 } from './conversation/new-task-provider';
+import { setProjectRepoSource } from './conversation/project-memory-routes';
 import { createConversationDurable } from './conversation/recorder';
 import { createSessionWorkLogAppender } from './conversation/session-work-log';
 import { setSettingsRegistry } from './conversation/settings-routes';
@@ -147,6 +151,7 @@ import { answerPermissionPrompt } from './permission-prompt-response';
 import { acquirePidLock, releasePidLock } from './pid-lock';
 import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
+import { getProjectMemoryStore, normalizeProjectSlug } from './project-memory-store';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
 import { applyAgentEvent } from './session/agent-registry';
@@ -162,6 +167,11 @@ import { getArchiveStore, resolveArchivedResume } from './session-archive';
 import { buildTaskSessionKey } from './session-identity';
 import { applySummaryTitle } from './session-title-policy';
 import {
+  displayLangMiddleware,
+  installRespondTranslation,
+  installSlackDisplayTranslation,
+} from './slack/display-translate';
+import {
   answerGoalCapDecision,
   flushGoalCapDmSync,
   retireGoalCapDecision,
@@ -172,6 +182,7 @@ import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal
 import { createPendingUserRequest, notifyAdminsNewUser } from './slack/new-user-decision';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
 import { setGoalCapDecisionRetirer } from './slack/session-goal';
+import { composeExecutiveSummaryMarkdown, parseExecutiveSummary } from './slack/summary-service';
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { createSlackTaskEntry } from './slack/task-entry';
 import { threadCardProviders } from './slack/thread-card-data';
@@ -541,6 +552,15 @@ async function start() {
       },
     });
     timing('OAuth refresh scheduler wired');
+
+    // #774 — the bot's Slack text in each user's display language: every
+    // Web API call and respond() is translated on the way out, in the language
+    // of the request's user (the middleware below) or of the turn (the stream
+    // executor). Korean users' text passes through untouched.
+    const displayLangOf = (userId: string) => userSettingsStore.getUserDisplayLanguage(userId);
+    installSlackDisplayTranslation(displayLangOf);
+    installRespondTranslation(app);
+    app.use(displayLangMiddleware(displayLangOf));
 
     // Log ALL incoming events (before any handler)
     type SlackEventBody = {
@@ -1035,6 +1055,29 @@ async function start() {
       }),
     );
 
+    // Connect dashboard: shared project memory (SSOT 2026-10-23 T4) — projects
+    // come from the channel registry's repo mapping; a change clears the cached
+    // prompt of the sessions in channels mapped to that repo.
+    setProjectRepoSource(() => {
+      const byRepo = new Map<string, string[]>();
+      for (const ch of getAllChannels()) {
+        for (const repo of ch.repos) byRepo.set(repo, [...(byRepo.get(repo) ?? []), ch.name]);
+      }
+      return [...byRepo].map(([repo, channels]) => ({ repo, channels }));
+    });
+    getProjectMemoryStore().setInvalidationHook((slug) => {
+      const sameRepo = (repo: string) => {
+        try {
+          return normalizeProjectSlug(repo) === slug;
+        } catch {
+          return false;
+        }
+      };
+      claudeHandler
+        .getSessionRegistry()
+        .invalidateSystemPromptWhere((session) => (getChannel(session.channelId)?.repos ?? []).some(sameRepo));
+    });
+
     // Connect dashboard: personal settings (SSOT 2026-10-23 T2) — the same
     // validators / `/z` apply functions the Slack commands use.
     setSettingsRegistry(productionSettingsRegistry());
@@ -1449,6 +1492,18 @@ async function start() {
         t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
       ) => number;
     } = {
+      // SSOT 2026-11-02 T7 — an Executive Summary landed: the whole document goes in the dashboard's
+      // chat (지시와 답변), and the card is pushed — the session now holds its TL;DR (esTldr).
+      recordExecutiveSummary: (sessionKey: string, conversationId: string | undefined, text: string) => {
+        if (conversationId) {
+          recordExecutiveSummaryTurn(
+            conversationId,
+            composeExecutiveSummaryMarkdown(text),
+            parseExecutiveSummary(text).tldr,
+          );
+        }
+        scheduleLiveSessionUpdate(sessionKey);
+      },
       // SSOT 2026-10-22 T1/T2 — a running turn made another API call: push the
       // card (≤ 1/s per session) so its token / cost totals grow live.
       // 2026-10-29 T5: the call also counts on the tasks in progress — tokens
@@ -1843,6 +1898,8 @@ async function start() {
         postOwnerDm: postGoalOwnerDm,
         // Same failure twice → ask the owner (thread form + dashboard card).
         askStallQuestion: (question) => slackHandler.askGoalStallQuestion(question),
+        // #788: while the host stops, no loop run starts and a landing verdict is dropped.
+        isShuttingDown: () => slackHandler.isShuttingDown(),
         logger,
         fallbackModel: 'claude-sonnet-4-20250514',
         // S9: optional cheaper eval tier. Unset → eval matches the work model.
