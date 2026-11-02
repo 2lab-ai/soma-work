@@ -111,6 +111,9 @@ describe('isReadOnlyCommand — reads pass, everything else is refused', () => {
     'git clone https://github.com/2lab-ai/soma-work.git ../up',
     'git clone --separate-git-dir=/tmp/g https://github.com/2lab-ai/soma-work.git',
     'git fetch origin main:refs/heads/main',
+    'git fetch origin +refs/heads/main:refs/heads/main',
+    'git fetch --prune origin', // deletes stale remote-tracking refs (trinity R3, grok P3)
+    "gh api repos/x/y --jq '.a' -f title=x", // the option after a value is still checked
   ])('refused: %s', (cmd) => {
     expect(isReadOnlyCommand(cmd)).toBe(false);
   });
