@@ -6436,7 +6436,13 @@ describe('SlackHandler — follow-up queue host', () => {
     it('the resume turn takes the delivered row over, and its own outcome settles it', async () => {
       const snapshot = await interruptedByShutdown(true);
       const { booted } = bootFrom(snapshot, workingAtShutdown());
+      // Booting from a snapshot runs `recover('process restart')`. It freezes the
+      // session under that reason but has no transition for an `uncertain` row,
+      // so the row keeps the reason the shutdown stop wrote — the one the
+      // takeover reads (the live store held exactly this after the deploy).
+      expect((booted as any).getFollowupQueue().freezeReason(SESSION_KEY)).toBe('process restart');
       expect(rowOf(booted).state).toBe('uncertain');
+      expect(rowOf(booted).stateReason).toBe('실행이 중단되었습니다 (shutdown)');
 
       const resume = holdNextTurn(booted, true);
       await booted.notifyCrashRecovery();
@@ -6485,6 +6491,41 @@ describe('SlackHandler — follow-up queue host', () => {
       } finally {
         registrySession.goal = undefined;
       }
+    });
+
+    it('a crash (no graceful stop) leaves the row dispatched on disk; recover parks it and the resume takes it over', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: FOLLOWUP_TS, text: FOLLOWUP_TEXT }), say());
+      const drainGate = deferred<any>();
+      createAgentSession.mockImplementationOnce((_result: any, _say: any, opts: any) => ({
+        startWithContinuation: vi.fn(async () => {
+          reachModel(handler, opts?.turnEpoch);
+          return drainGate.promise;
+        }),
+        getLastTurnSucceeded: () => true,
+        getRetryAfterMs: () => undefined,
+      }));
+      const finished = settle();
+      await tick();
+      await tick();
+      // The process dies here: whatever the store last accepted is what the next one loads.
+      const crashed = JSON.parse(JSON.stringify(saved[saved.length - 1])) as FollowupQueueSnapshot;
+      expect(crashed.sessions[0].items[0].state).toBe('dispatched');
+      expect(typeof crashed.sessions[0].items[0].deliveredAt).toBe('number');
+      drainGate.resolve({ hasPendingChoice: false });
+      await finished;
+
+      const { booted } = bootFrom(crashed, workingAtShutdown());
+      expect(rowOf(booted).state).toBe('uncertain');
+      expect(rowOf(booted).stateReason).toBe('process restart');
+
+      const resume = holdNextTurn(booted, true);
+      await booted.notifyCrashRecovery();
+      await resume.started;
+      expect(rowOf(booted).state).toBe('dispatched');
+      resume.release();
+      for (let i = 0; i < 6; i++) await tick();
+      expect(rowOf(booted).state).toBe('resolved');
     });
 
     it('a resume that comes after the window takes nothing over', async () => {

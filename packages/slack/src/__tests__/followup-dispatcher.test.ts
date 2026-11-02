@@ -1618,6 +1618,31 @@ describe('FollowupDispatcher delivery evidence and the restart takeover', () => 
     expect(h.queue.get(SESSION, parked.id)?.state).toBe('uncertain');
   });
 
+  it('a confirm-at-end the queue refuses is reported, and does not halt the drain', async () => {
+    const queue = new FollowupQueue();
+    const h = harness({
+      queue: portOf(queue, {
+        settle: (s, i, e, o, r) =>
+          s === SESSION && i === `${SESSION}#1` ? { ok: false, reason: 'invalid-state' } : queue.settle(s, i, e, o, r),
+      }),
+    });
+    const parked = cutAfterDelivery({ ...h, queue });
+    enqueue(queue, event({ ts: '4.1' }));
+    const drained = await h.dispatcher.drainNext(SESSION);
+    if (drained.status !== 'dispatched') throw new Error('expected dispatch');
+    h.dispatcher.takeOverInterrupted(SESSION, drained.run.turnEpoch, parked.id, parked.epoch);
+
+    h.pending[0].settle({ result: 'safe' });
+    const report = await drained.run.settled;
+
+    expect(report.itemDisposition).toBe('resolved');
+    expect(queue.get(SESSION, parked.id)?.state).toBe('uncertain');
+    expect(h.dispatcher.drainHalt(SESSION)).toBeUndefined();
+    expect(h.notices).toContainEqual(
+      expect.objectContaining({ type: 'item-uncertain', itemId: parked.id, recorded: false }),
+    );
+  });
+
   it('refuses a stale generation, an undelivered row and a second takeover of the same row', async () => {
     const h = harness();
     const parked = cutAfterDelivery(h);
