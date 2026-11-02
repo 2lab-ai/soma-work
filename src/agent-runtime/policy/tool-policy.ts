@@ -57,7 +57,7 @@ export interface ToolPolicyResult {
   /** Human-readable reason, prefixed with the guard that decided. For audit logs. */
   reason: string;
   /**
-   * Only set for the PR-issue, devops-secret, native write boundary and env-skill denies — the
+   * Only set for the PR-issue, devops-secret, native write boundary, plan-pending and env-skill denies — the
    * SDK surfaces this to the model via `permissionDecisionReason` (so it can, e.g., write in the
    * right place). Other denies intentionally carry no surfaced message (parity with the prior
    * hooks, which only the PR-issue guard set).
@@ -121,6 +121,13 @@ export interface ToolPolicyContext {
    * decides what it lets through, so `mode` is never read either.
    */
   incidentReadOnly?: IncidentReadOnlyContext;
+  /**
+   * Plan mode (SSOT 2026-11-02, step 6c): set on a dashboard task turn whose plan is not
+   * started (`planPending`) — `checkPlanPendingCall` (`plan-pending-guard.ts`). A reason denies
+   * the call in every mode, for admins too: the turn researches, the work starts on 시작.
+   * **Absent → no plan gate.**
+   */
+  checkPlanPending?: (toolName: string, toolInput: Record<string, unknown>) => string | null;
 }
 
 /**
@@ -180,6 +187,13 @@ const DEVOPS_SECRET_DENY_MESSAGE =
  */
 export const ENV_SKILL_DENY_MESSAGE =
   'Blocked: this call reaches an environment skill (calling it or reading its files), which runs only with an admin approval. When it names one skill, an approval request has been sent to the admins; when one approves, this thread receives a message to continue. Do not retry, do not read or follow the skill file another way, and report that the step waits for admin approval.';
+
+/**
+ * Surfaced to the model when step 6c denies a call: the plan is not started, so the turn
+ * researches and submits the plan; the change itself goes into the plan.
+ */
+export const PLAN_PENDING_DENY_MESSAGE =
+  "Blocked: this task's plan is not started yet. While planning, only reading and research run (Read, Glob, Grep, WebFetch, WebSearch, read-only shell commands such as ls, cat, grep, rg, find, git log/show/diff/status, git clone/fetch, gh … view/list, and read MCP tools). Put this change into the plan and submit it with plan_submit; it runs after the owner presses 시작. Do not retry it or work around it.";
 
 /**
  * Devops-secret check dispatch — Bash→command, Read/Edit/Write→file_path, Grep→path,
@@ -297,6 +311,17 @@ export function evaluateToolPolicy(
         reason: `pr-issue: ${result.reason ?? 'precondition failed'}`,
         denyMessage: result.message,
       };
+    }
+  }
+
+  // 6c. Plan mode (SSOT 2026-11-02): a task whose plan is not started researches; the work —
+  //     a write, a subagent, a changing command or MCP tool — waits for 시작. Every mode, admins
+  //     too (the owner's contract, not a privilege). Below the deny steps above, so their reasons
+  //     win; above the mode tier, so it also overrides that tier's allows.
+  if (ctx.checkPlanPending) {
+    const planDenied = ctx.checkPlanPending(toolName, input);
+    if (planDenied !== null) {
+      return { decision: 'deny', reason: `plan-pending: ${planDenied}`, denyMessage: PLAN_PENDING_DENY_MESSAGE };
     }
   }
 
