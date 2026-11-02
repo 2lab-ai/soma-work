@@ -175,6 +175,15 @@ export interface MessageEvent {
      * may change later, and the host re-checks both when it acts.
      */
     taskEntryCandidate?: boolean;
+    /**
+     * #767 — set only by the host when the session owner approved this held
+     * message once (`instruction-approval.ts`). Internal like
+     * `incidentRequest`: it never survives a round-trip through Slack, and the
+     * gate re-checks it against the request store (approved, this owner, this
+     * sender, this very message) — a made-up id releases nothing. Survives the
+     * follow-up queue so a release that had to queue still runs.
+     */
+    instructionApprovalId?: string;
   };
   files?: Array<{
     id: string;

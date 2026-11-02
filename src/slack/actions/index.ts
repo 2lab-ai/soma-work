@@ -1,6 +1,7 @@
 import { setActionHandlersProviders } from '@soma/slack/actions';
 import { registerAdminApprovalAdapter } from '../../admin-approvals';
 import { isAdminUser } from '../../admin-utils';
+import { getInstructionApprovals } from '../../instruction-approval';
 import { Logger } from '../../logger';
 import { getTokenManager } from '../../token-manager';
 import { registerAuthActions } from '../auth/actions';
@@ -24,6 +25,7 @@ import { CronRunPermissionActionHandler } from './cron-run-permission-action-han
 import { EnvSkillPermissionActionHandler } from './env-skill-permission-action-handler';
 import { FormActionHandler } from './form-action-handler';
 import { GoalActionHandler } from './goal-action-handler';
+import { InstructionApprovalActionHandler } from './instruction-approval-action-handler';
 import { InstructionConfirmActionHandler } from './instruction-confirm-action-handler';
 import { JiraActionHandler } from './jira-action-handler';
 import { McpToolPermissionActionHandler } from './mcp-tool-permission-action-handler';
@@ -150,6 +152,7 @@ setActionHandlersProviders({
       cronRunPermissionHandler: new CronRunPermissionActionHandler({
         slackApi: ctx.slackApi as any,
       }),
+      instructionApprovalHandler: new InstructionApprovalActionHandler({ getApprovals: getInstructionApprovals }),
       userSkillMenuHandler: new UserSkillMenuActionHandler({
         slackApi: ctx.slackApi as any,
         claudeHandler: ctx.claudeHandler,

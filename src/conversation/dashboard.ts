@@ -51,6 +51,7 @@ import type { LlmuxStatus } from '../auth/llmux-client';
 import type { LlmuxTierId } from '../auth/llmux-tiers';
 import { config } from '../config';
 import { displayTitle } from '../format/display-title';
+import type { DashboardInstructionApproval, InstructionApprovals } from '../instruction-approval';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
 import { findModelPricing } from '../metrics/model-registry';
@@ -105,6 +106,7 @@ import {
 } from '../session-lifecycle-policy';
 import { GOAL_EVAL_DISPATCH_MAX_RETRIES } from '../slack/goal-completion-evaluator';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from '../slack/goal-host-actions';
+import { isInstructionApprovalDecision } from '../slack/instruction-approval-blocks';
 import { getSurfaceLines } from '../slack/surface-config';
 import { type EpicBoardView, epicBoardView } from '../task-turn/epic-board';
 import { sessionCostUsd } from '../task-turn/epic-cost';
@@ -418,6 +420,14 @@ export interface KanbanSession {
    * card reads `activityState: 'waiting'`.
    */
   pendingGoalDecision?: KanbanGoalDecision;
+  /**
+   * #767 — instructions someone other than the owner sent here, waiting on
+   * the owner's approval (oldest first): the same request the owner's DM asks,
+   * answered on either surface (`POST /api/dashboard/session/:key/instruction-approval`).
+   * Who asked, how many, a short preview — the held words stay server-side.
+   * While any is pending the card reads `activityState: 'waiting'`.
+   */
+  pendingInstructionApprovals?: DashboardInstructionApproval[];
   /** #600 ⑥ — a Slack-less dashboard task (the client gates task-only UI on it). Absent for Slack sessions. */
   slackless?: true;
   /** E4 ① (.prd/19 D1) — an epic task. Absent otherwise. */
@@ -1540,6 +1550,19 @@ export function setDashboardGoalDecisionHandler(fn: GoalDecisionHandler | null):
 }
 
 /**
+ * #767 — the instruction approvals (someone else's instruction waiting on the
+ * session owner): the card reads `pendingFor`, the route answers through
+ * `answer` (the DM buttons' path), and the command route tells a sender whose
+ * words will wait (`allows`). Wired in src/index.ts.
+ */
+type InstructionApprovalsPort = Pick<InstructionApprovals, 'pendingFor' | 'answer' | 'get' | 'allows'>;
+let _instructionApprovals: InstructionApprovalsPort | null = null;
+
+export function setDashboardInstructionApprovals(port: InstructionApprovalsPort | null): void {
+  _instructionApprovals = port;
+}
+
+/**
  * SSOT 2026-10-22 T4/T5 — switch a session to a representative model
  * (`session/model-switch.ts` `switchSessionModel`). Throws `ModelSwitchError`
  * for every refusal, whose `statusCode` the route answers with.
@@ -2275,8 +2298,14 @@ function sessionToKanban(key: string, s: any): KanbanSession {
       ? pendingTaskPermissionsFor(key, s.activeTaskTurnId)
       : pendingPermissionsFor(s.channelId, s.threadTs);
   const goalDecision = goalDecisionToKanban(s);
-  // What the session waits on its user for: its permission prompts and the goal's cap decision.
-  const asks = goalDecision ? [...permissions, { createdAt: goalDecision.askedAt }] : permissions;
+  // #767 — someone else's instructions waiting on the owner.
+  const instructionApprovals = _instructionApprovals?.pendingFor(key) ?? [];
+  // What the session waits on its user for: its permission prompts, the goal's cap decision, the instruction approvals.
+  const asks: Array<{ createdAt?: unknown }> = [
+    ...permissions,
+    ...(goalDecision ? [{ createdAt: goalDecision.askedAt }] : []),
+    ...instructionApprovals,
+  ];
   return {
     // #814 Wire-format key includes the local instance prefix so sibling
     // instances can never collide on the client cache.
@@ -2305,6 +2334,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     lastActivity: s.lastActivity instanceof Date ? s.lastActivity.toISOString() : String(s.lastActivity),
     ...(permissions.length > 0 ? { pendingPermissions: permissions } : {}),
     ...(goalDecision ? { pendingGoalDecision: goalDecision } : {}),
+    ...(instructionApprovals.length > 0 ? { pendingInstructionApprovals: instructionApprovals } : {}),
     issueUrl: s.links?.issue?.url,
     issueLabel: s.links?.issue?.label,
     issueTitle: s.links?.issue?.title,
@@ -3808,10 +3838,20 @@ export async function registerDashboardRoutes(
         return;
       }
       try {
+        // #767 — someone else's instruction goes into the thread, where the gate holds it for the owner.
+        const sender = signedInUserId(request);
+        const waits =
+          !!sender &&
+          !!_instructionApprovals &&
+          !_instructionApprovals.allows({
+            sessionKey: originalKey,
+            session: _getSessionsFn?.()?.get(originalKey),
+            senderId: sender,
+          });
         if (_commandHandlerFn) {
-          await _commandHandlerFn(originalKey, message, files.value, signedInUserId(request));
+          await _commandHandlerFn(originalKey, message, files.value, sender);
         }
-        reply.send({ ok: true });
+        reply.send(waits ? { ok: true, pendingApproval: true } : { ok: true });
       } catch (error) {
         logger.error('Error sending command to session', error);
         reply.status(500).send({ error: 'Internal Server Error' });
@@ -4090,6 +4130,62 @@ export async function registerDashboardRoutes(
         reply.status(403).send({ error: 'goal 소유자만 응답할 수 있습니다' });
       } catch (error) {
         logger.error('Error answering a goal cap decision from the dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  // ── Instruction approval (#767): someone else's instruction, the owner's DM as an approval card ──
+
+  server.post<{ Params: { key: string }; Body: { requestId?: unknown; decision?: unknown } }>(
+    '/api/dashboard/session/:key/instruction-approval',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { requestId, decision } = request.body || {};
+      if (
+        typeof requestId !== 'string' ||
+        !/^iap_[A-Za-z0-9]{1,64}$/.test(requestId) ||
+        !isInstructionApprovalDecision(decision)
+      ) {
+        reply.status(400).send({
+          error: "requestId and decision ('approve' | 'approve_session' | 'approve_always' | 'deny') are required",
+        });
+        return;
+      }
+      // Only the session's owner answers — the decision's own check; the instance is resolved here.
+      const originalKey = resolveSelfActionKey(String(request.params?.key ?? ''), reply);
+      if (originalKey === null) return;
+      if (!_instructionApprovals) {
+        reply.status(501).send({ error: 'Instruction approvals not configured' });
+        return;
+      }
+      const asked = _instructionApprovals.get(requestId);
+      if (!asked || normalizeSessionKey(asked.sessionKey) !== normalizeSessionKey(originalKey)) {
+        reply.status(404).send({ error: '이 작업의 승인 요청이 아닙니다' });
+        return;
+      }
+      try {
+        // A bearer client or a viewer token carries no owner identity and is refused by the decision.
+        const actor = (request as { authContext?: { userId?: string } }).authContext?.userId;
+        const result = _instructionApprovals.answer({ requestId, decision, actor, surface: 'dashboard' });
+        if (result.ok) {
+          logger.info('Instruction approval answered from the dashboard', { sessionKey: originalKey, decision });
+          reply.send({ ok: true, decision: result.decision });
+          return;
+        }
+        const refusal: Record<typeof result.reason, [number, string]> = {
+          invalid: [400, '처리할 수 없는 응답입니다'],
+          not_found: [404, '승인 요청을 찾을 수 없습니다'],
+          not_owner: [403, '작업 소유자만 응답할 수 있습니다'],
+          already_answered: [409, '이미 응답한 요청입니다'],
+          expired: [409, '이미 끝난 요청입니다 — 응답 시간이 지났습니다'],
+          session_gone: [409, '작업 세션이 끝나 지시를 실행할 수 없습니다'],
+          unavailable: [503, '지금은 처리할 수 없습니다 — 잠시 후 다시 시도하세요'],
+        };
+        const [status, error] = refusal[result.reason];
+        reply.status(status).send({ error });
+      } catch (error) {
+        logger.error('Error answering an instruction approval from the dashboard', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
     },
@@ -4375,6 +4471,9 @@ export async function registerDashboardRoutes(
           reply.status(404).send({ error: 'Session not found' });
         } else if (errMsg === 'Session is not waiting for a choice') {
           reply.status(409).send({ error: 'Session is not waiting for choices' });
+        } else if (errMsg === 'Only the task owner may answer this form') {
+          // #767 — someone else's answer to a form: only the owner (or someone they approved) answers it.
+          reply.status(403).send({ error: '이 질문은 작업 소유자(또는 소유자가 승인한 사람)만 답할 수 있습니다' });
         } else if (errMsg === 'Session has no pending multi-choice question') {
           reply.status(409).send({ error: 'Session has no pending multi-choice question' });
         } else if (errMsg.startsWith('Missing answer for question')) {
@@ -4548,6 +4647,8 @@ export async function registerDashboardRoutes(
           reply.status(409).send({ error: errMsg });
         } else if (errMsg === 'No recommendation available') {
           reply.status(422).send({ error: errMsg });
+        } else if (errMsg === 'Only the task owner may answer this form') {
+          reply.status(403).send({ error: '이 질문은 작업 소유자(또는 소유자가 승인한 사람)만 답할 수 있습니다' });
         } else {
           logger.error('Error submitting recommended from dashboard', error);
           reply.status(500).send({ error: 'Internal Server Error' });
@@ -6487,6 +6588,8 @@ function acEvict(key, s) {
   if (q && q.type === 'user_choice' && q.choices) keep[acQuestionId(q)] = true;
   var gd = s && s.pendingGoalDecision;
   if (gd && gd.decisionId) keep['g|' + gd.decisionId] = true;
+  var ia = (s && s.pendingInstructionApprovals) || [];
+  for (var j = 0; j < ia.length; j++) keep['i|' + ia[j].requestId] = true;
   var left = 0;
   for (var id in states) {
     if (keep[id]) left++;
@@ -6550,6 +6653,41 @@ function acGoalDecisionHtml(s) {
   if (!d || !d.decisionId) return '';
   return acSlotHtml(s.key, 'goal', 'g|' + d.decisionId, String(d.decisionId), '목표 계속 진행할까요? — 응답 대기');
 }
+// #767 — someone else's instruction waiting on the session owner: the owner's
+// DM "지시를 보냈습니다. 실행할까요?" as the same card, its four answers. The
+// owner answers here or in the DM; either answer resolves both (the server
+// rewrites the DM, the push takes the card away). Everyone else reads it locked.
+var INSTRUCTION_APPROVAL_CHOICES = [{ id: 'approve', label: '✅ 승인' }, { id: 'approve_session', label: '🔁 이 세션에서 항상 승인' }, { id: 'approve_always', label: '⭐ 이 사람의 지시 항상 승인' }, { id: 'deny', label: '🚫 거절' }];
+var INSTRUCTION_APPROVAL_SENT = { approve: '승인을 보냈어요', approve_session: '이 세션에서 항상 승인했어요', approve_always: '이 사람의 지시를 항상 승인해요', deny: '거절을 보냈어요' };
+function acInstructionApprovalLock(s, a) {
+  if (isSiblingSession(s)) return AC_SIBLING;
+  return a.ownerId && a.ownerId === _viewerUserId ? '' : '작업 소유자만 응답할 수 있습니다 — 소유자의 승인을 기다리는 중입니다';
+}
+function acInstructionApprovalData(s, a) {
+  var who = String(a.requesterName || a.requesterId || '누군가');
+  var n = toNum(a.count);
+  var data = {
+    kind: 'question',
+    id: String(a.requestId),
+    label: '지시 승인 요청',
+    question: who + '님이 이 작업에 지시를 보냈습니다' + (n > 1 ? ' (' + n + '건)' : '') + '.\\n실행할까요? 승인하면 ' + who + '님의 권한으로 실행됩니다.',
+    description: String(a.preview || ''),
+    choices: INSTRUCTION_APPROVAL_CHOICES.map(function(c) { return { id: c.id, label: c.label }; }),
+    allowOther: false,
+  };
+  var asked = toNum(a.createdAt);
+  if (asked > 0) data.createdAt = asked;
+  var lock = acInstructionApprovalLock(s, a);
+  if (lock) data.canAnswer = lock;
+  var st = _acState[s.key] && _acState[s.key]['i|' + a.requestId];
+  if (st) data.state = st;
+  return data;
+}
+function acInstructionApprovalsHtml(s) {
+  return ((s && s.pendingInstructionApprovals) || []).map(function(a) {
+    return acSlotHtml(s.key, 'instr', 'i|' + a.requestId, String(a.requestId), String(a.requesterName || a.requesterId || '') + '님의 지시 승인 — 응답 대기');
+  }).join('');
+}
 // A collapsed card paints no approval card (placeCard), but the requester's
 // input is still fetched as the card's would be (acPermissionData), so opening
 // the card shows it at once.
@@ -6573,6 +6711,11 @@ function acDataFor(el) {
   if (el.getAttribute('data-ac-kind') === 'goal') {
     var gd = s.pendingGoalDecision;
     return gd && String(gd.decisionId) === el.getAttribute('data-ac-id') ? acGoalDecisionData(s, gd) : null;
+  }
+  if (el.getAttribute('data-ac-kind') === 'instr') {
+    var ia = s.pendingInstructionApprovals || [];
+    for (var j = 0; j < ia.length; j++) if (String(ia[j].requestId) === el.getAttribute('data-ac-id')) return acInstructionApprovalData(s, ia[j]);
+    return null;
   }
   var p = acPermissionOf(s, el.getAttribute('data-ac-id'));
   return p ? acPermissionData(s, p) : null;
@@ -6663,6 +6806,7 @@ document.addEventListener('ui-answer', function(e) {
   var choice = e.detail.choiceId === undefined ? '' : String(e.detail.choiceId);
   if (kind === 'question') answerChoice(el.getAttribute('data-ac-key'), String(e.detail.id), choice);
   else if (kind === 'goal') answerGoalDecision(el.getAttribute('data-ac-key'), String(e.detail.id), choice);
+  else if (kind === 'instr') answerInstructionApproval(el.getAttribute('data-ac-key'), String(e.detail.id), choice);
   else if (kind === 'admin') answerAdminApproval(String(e.detail.id), choice);
 });
 
@@ -6721,10 +6865,15 @@ function renderPanelPermission(s) {
     ids['g|' + gd.decisionId] = true;
     if (seen && !seen['g|' + gd.decisionId]) said.push('목표 계속 진행할까요?');
   }
+  var ia = (s && s.pendingInstructionApprovals) || [];
+  for (var j = 0; j < ia.length; j++) {
+    ids['i|' + ia[j].requestId] = true;
+    if (seen && !seen['i|' + ia[j].requestId]) said.push('지시 승인 요청 — ' + (ia[j].requesterName || ia[j].requesterId || ''));
+  }
   container._seenKey = key;
   container._seen = ids;
   renderPanelNeedsHead(s);
-  var html = s ? acPermissionsHtml(s) + acGoalDecisionHtml(s) : '';
+  var html = s ? acPermissionsHtml(s) + acGoalDecisionHtml(s) + acInstructionApprovalsHtml(s) : '';
   var ae = document.activeElement;
   var had = !!(ae && container.contains(ae));
   if (!html) {
@@ -6764,7 +6913,7 @@ function panelQuestionShown(s) {
 function renderPanelNeedsHead(s) {
   var head = document.getElementById('panel-needs-head');
   if (!head) return;
-  var n = s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (panelQuestionShown(s) ? 1 : 0)) : 0;
+  var n = s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (s.pendingInstructionApprovals || []).length + (panelQuestionShown(s) ? 1 : 0)) : 0;
   head.hidden = n === 0;
   var count = document.getElementById('panel-needs-count');
   if (count && count.textContent !== String(n)) count.textContent = String(n);
@@ -6962,6 +7111,40 @@ async function answerGoalDecision(key, decisionId, choiceId) {
   }
   var now = _sessionCache[key] && _sessionCache[key].pendingGoalDecision;
   if (now && String(now.decisionId) === decisionId) (_acState[key] || (_acState[key] = Object.create(null)))[sk] = st;
+  else acDrop(key, sk);
+  acRepaint(key);
+  return st;
+}
+
+// #767 — someone else's instruction from its card: one answer per request. The
+// server rewrites the owner's DM and runs (or drops) the held words; the push
+// takes the card away. A refusal (409: answered in the DM meanwhile, 403: not
+// the owner) stays on the card.
+async function answerInstructionApproval(key, requestId, choiceId) {
+  var s = _sessionCache[key];
+  var list = (s && s.pendingInstructionApprovals) || [];
+  var known = false;
+  for (var i = 0; i < list.length; i++) if (String(list[i].requestId) === requestId) known = true;
+  if (!known || !INSTRUCTION_APPROVAL_SENT[choiceId]) return null;
+  var sk = 'i|' + requestId;
+  var states = _acState[key] || (_acState[key] = Object.create(null));
+  var cur = states[sk];
+  if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
+  states[sk] = { status: 'sending', choiceId: choiceId };
+  acRepaint(key);
+  var st;
+  try {
+    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/instruction-approval', JSON.stringify({ requestId: requestId, decision: choiceId }));
+    if (res.ok) {
+      st = { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() };
+      dashToast({ title: INSTRUCTION_APPROVAL_SENT[choiceId], description: 'Slack DM도 같은 결과로 바뀝니다', tone: 'success' });
+    } else st = await acRefusal(res);
+  } catch (e) {
+    console.error('Instruction approval answer error', e);
+    st = { status: 'error', message: '네트워크 오류 — 다시 시도하세요', retry: true };
+  }
+  var still = ((_sessionCache[key] && _sessionCache[key].pendingInstructionApprovals) || []).some(function(a) { return String(a.requestId) === requestId; });
+  if (still) (_acState[key] || (_acState[key] = Object.create(null)))[sk] = st;
   else acDrop(key, sk);
   acRepaint(key);
   return st;
@@ -8888,6 +9071,8 @@ function cardSummary(s, col, headline) {
   var current = cardCurrentTask(s);
   if (col !== 'closed' && s.pendingPermissions && s.pendingPermissions.length) return permissionSummary(s);
   if (col !== 'closed' && s.pendingGoalDecision) return '목표 계속 진행할까요? — 응답 대기';
+  var ia = col === 'closed' ? [] : s.pendingInstructionApprovals || [];
+  if (ia.length) return (ia[0].requesterName || ia[0].requesterId || '') + '님의 지시 승인 대기' + (ia.length > 1 ? ' 외 ' + (ia.length - 1) + '건' : '');
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return q.question || q.title;
   // Waiting out a retry: the error behind it is what this card is "doing".
@@ -9175,6 +9360,7 @@ function cardStarOf(s, col) {
 function cardAsks(s, col) {
   if (col !== 'closed' && s.pendingPermissions && s.pendingPermissions.length) return true;
   if (col !== 'closed' && s.pendingGoalDecision) return true;
+  if (col !== 'closed' && s.pendingInstructionApprovals && s.pendingInstructionApprovals.length) return true;
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return true;
   var r = pendingAutoResume(s, col);
@@ -11743,7 +11929,8 @@ function renderCardBody(s, col, spec) {
   // The permission prompts the turn is blocked on (SSOT 2026-10-24): one
   // <ui-approval-card> each (acPermissionsHtml), as in the panel.
   // The goal's cap decision sits with them: the same card as the owner's DM.
-  const permissionHtml = col === 'closed' ? '' : acPermissionsHtml(s) + acGoalDecisionHtml(s);
+  // So do someone else's instructions waiting on the owner (#767).
+  const permissionHtml = col === 'closed' ? '' : acPermissionsHtml(s) + acGoalDecisionHtml(s) + acInstructionApprovalsHtml(s);
 
   // SSOT 2026-10-29 T1/T2: the session's actions (Stop · Close · Trash) and
   // Slack sit right under the face — one reach from the click that opened the
@@ -16325,20 +16512,22 @@ async function sendCommand(text, ref, files) {
   }
 
   var why = '';
+  var awaitsOwner = false;
   _pcInFlight++; // until the server answered: a reload now would drop a note the composer no longer holds
   try {
     const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
     const res = await acPost(cmdUrl, JSON.stringify(pcCommandBody(msg, attachments)));
-    if (!res.ok) {
-      var data = {};
-      try { data = await res.json(); } catch (_e) {}
-      why = ((data && data.error) || '') + ' (HTTP ' + res.status + ')';
-    }
+    var data = {};
+    try { data = await res.json(); } catch (_e) {}
+    if (!res.ok) why = ((data && data.error) || '') + ' (HTTP ' + res.status + ')';
+    // #767 — someone else's task: the words wait for its owner's approval.
+    else if (data && data.pendingApproval) awaitsOwner = true;
   } catch (e) {
     why = (e && e.message) || '네트워크 오류';
   } finally {
     _pcInFlight--;
   }
+  if (awaitsOwner) dashToast({ title: '작업 소유자의 승인을 기다려요', description: '소유자가 승인하면 실행됩니다 — 소유자에게 DM과 대시보드로 요청했어요', tone: 'wait' });
   // Sent: its files went with it. Failed: they stay kept by ref for the Retry.
   if (!why && ref) {
     delete _pcNoteFiles[ref];

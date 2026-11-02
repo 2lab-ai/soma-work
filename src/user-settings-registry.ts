@@ -55,6 +55,7 @@ export type SettingKey =
   | 'permissionMode'
   | 'sandbox'
   | 'sandboxNetwork'
+  | 'trustedInstructors'
   | 'dashboardMode'
   | 'dashboardPlan';
 
@@ -99,6 +100,11 @@ export interface SettingView {
   min?: number;
   max?: number;
   maxItems?: number;
+  /**
+   * For `list`: items can only be taken off here (#767 — the always-approve
+   * list is filled by an approval button). `options` then label the items.
+   */
+  removeOnly?: boolean;
   editable: boolean;
   /** Writes need an admin (the Slack command has the same gate). */
   adminOnly?: boolean;
@@ -172,6 +178,8 @@ export interface SettingsStoreLike {
   setUserDashboardPlan(userId: string, plan: DashboardPlan): void;
   getUserDashboardLayout(userId: string): DashboardLayoutDoc;
   setUserDashboardLayout(userId: string, doc: DashboardLayoutDoc): void;
+  getUserTrustedInstructors(userId: string): Array<{ userId: string; name?: string; addedAt: number }>;
+  setUserTrustedInstructors(userId: string, list: Array<{ userId: string; name?: string; addedAt: number }>): void;
 }
 
 /** The 대시보드 화면 editor's data (.prd/21): what the user saved, the built-ins and the catalog to edit with. */
@@ -301,6 +309,8 @@ export const SLACK_SETTER_COVERAGE: Readonly<Record<string, SettingKey | { exclu
   setUserEpicTasks: 'epicTasks',
   setUserSandboxDisabled: 'sandbox',
   setUserNetworkDisabled: 'sandboxNetwork',
+  setUserTrustedInstructors: 'trustedInstructors',
+  addUserTrustedInstructor: 'trustedInstructors',
   clearUserCompactThreshold: {
     excluded: 'deprecated: `compact-threshold` only clears it and moves the value onto the session',
   },
@@ -713,6 +723,23 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
           slackCommand: 'sandbox network on|off',
         };
       }
+      case 'trustedInstructors': {
+        const entries = store.getUserTrustedInstructors(userId);
+        return {
+          key,
+          group: 'permissions',
+          label: '항상 승인하는 사람',
+          description:
+            '내 작업 스레드에 이 사람들이 보낸 지시는 승인을 묻지 않고 바로 실행됩니다. 다른 사람의 지시 승인 요청에서 "이 사람의 지시 항상 승인"을 누르면 여기에 더해집니다. 빼면 다음 지시부터 다시 묻습니다.',
+          kind: 'list',
+          value: entries.map((e) => e.userId),
+          defaultValue: [],
+          modified: entries.length > 0,
+          options: entries.map((e) => ({ value: e.userId, label: e.name || e.userId })),
+          removeOnly: true,
+          editable: true,
+        };
+      }
     }
   }
 
@@ -736,6 +763,7 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
     'permissionMode',
     'sandbox',
     'sandboxNetwork',
+    'trustedInstructors',
     'dashboardMode',
     'dashboardPlan',
   ];
@@ -875,6 +903,26 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
         return viaApply(deps.apply.sandbox, userId, expectBoolean(value, key) ? 'on' : 'off');
       case 'sandboxNetwork':
         return viaApply(deps.apply.sandbox, userId, expectBoolean(value, key) ? 'network_on' : 'network_off');
+      case 'trustedInstructors': {
+        // Remove only (#767): the kept people stay exactly as saved; nobody is added here.
+        if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) {
+          throw new SettingsError(400, `${key}: 사용자 ID 목록이어야 합니다`);
+        }
+        const current = store.getUserTrustedInstructors(userId);
+        const known = new Set(current.map((e) => e.userId));
+        if (value.some((v) => !known.has(v))) {
+          throw new SettingsError(
+            400,
+            '항상 승인할 사람은 지시 승인 요청에서만 더할 수 있습니다 — 여기서는 뺄 수만 있습니다',
+          );
+        }
+        const keep = new Set(value);
+        store.setUserTrustedInstructors(
+          userId,
+          current.filter((e) => keep.has(e.userId)),
+        );
+        return;
+      }
     }
   }
 

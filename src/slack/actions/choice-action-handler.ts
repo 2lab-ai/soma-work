@@ -1,4 +1,5 @@
 import type { ClaudeHandler } from '../../claude-handler';
+import { getInstructionApprovals } from '../../instruction-approval';
 import { Logger } from '../../logger';
 import type { ConversationSession, UserChoices } from '../../types';
 import { ChoiceMessageBuilder } from '../choice-message-builder';
@@ -15,6 +16,13 @@ const CUSTOM_INPUT_CHOICE_ID = '직접입력';
 
 /** Shown on Slack when the question it answers is already being answered (on the dashboard or another click). */
 const ANSWER_IN_PROGRESS_TEXT = '⏳ 이 질문은 이미 답변을 처리하고 있습니다.';
+
+/** #767 — a single choice from someone who is not the owner waits for the owner's approval. */
+const CHOICE_HELD_FOR_OWNER_TEXT = '⏳ 이 작업의 소유자가 승인하면 답이 전달됩니다 — 소유자에게 승인을 요청했습니다.';
+/** #767 — a multi-question form is answered by the owner (or someone they approved) only. */
+const FORM_OWNER_ONLY_TEXT =
+  '🚫 이 질문은 작업 소유자(또는 소유자가 승인한 사람)만 답할 수 있습니다. 답을 스레드에 메시지로 남기면 소유자에게 승인을 요청합니다.';
+export const FORM_OWNER_ONLY_ERROR = 'Only the task owner may answer this form';
 
 /**
  * The question an answer is being given for: the session's recorded question
@@ -82,6 +90,39 @@ export class ChoiceActionHandler {
     private formStore: PendingFormStore,
   ) {}
 
+  /**
+   * #767 — an answer from someone who is not the session's owner (nor
+   * approved for it) is an instruction like any other: it waits for the
+   * owner's approval. Checked BEFORE the question is consumed, so a held
+   * answer leaves the question open for the owner.
+   */
+  private needsOwnerApproval(session: ConversationSession | undefined, sessionKey: string, userId?: string): boolean {
+    const approvals = getInstructionApprovals();
+    if (!approvals || !session || !userId) return false;
+    return !approvals.allows({ sessionKey, session, senderId: userId });
+  }
+
+  /** A single choice from someone else: handed to the message gate (it holds it), the question untouched. */
+  private async holdChoiceForOwner(args: {
+    userId: string;
+    channel: string;
+    threadTs?: string;
+    ts: string;
+    text: string;
+    tellClicker: boolean;
+  }): Promise<void> {
+    const say = this.createSayFn(args.channel);
+    await this.ctx.messageHandler(
+      { user: args.userId, channel: args.channel, thread_ts: args.threadTs, ts: args.ts, text: args.text },
+      say,
+    );
+    if (args.tellClicker) {
+      await this.ctx.slackApi
+        .postEphemeral(args.channel, args.userId, CHOICE_HELD_FOR_OWNER_TEXT)
+        .catch(() => undefined);
+    }
+  }
+
   async handleUserChoice(body: any): Promise<void> {
     let hold: { key: string; value: AnswerHold } | undefined;
     try {
@@ -97,6 +138,19 @@ export class ChoiceActionHandler {
       const completionMessageTs = this.resolveChoiceMessageTs(session, messageTs);
 
       this.logger.info('User choice selected', { sessionKey, choiceId, label, userId });
+
+      if (channel && messageTs && this.needsOwnerApproval(session, sessionKey, userId)) {
+        await this.holdChoiceForOwner({
+          userId,
+          channel,
+          threadTs,
+          // Its own ts, not the question's: a second answer (or a second person) is its own held item.
+          ts: String(Date.now() / 1000),
+          text: String(choiceId),
+          tellClicker: true,
+        });
+        return;
+      }
 
       const branch = classifyClick(this.ctx.claudeHandler, { sessionKey, payloadTurnId, messageTs });
 
@@ -374,6 +428,11 @@ export class ChoiceActionHandler {
       const messageTs = body.message?.ts;
 
       this.logger.info('Form submit requested', { formId, userId });
+
+      if (this.needsOwnerApproval(session, sessionKey, userId)) {
+        if (channel && userId) await this.ctx.slackApi.postEphemeral(channel, userId, FORM_OWNER_ONLY_TEXT);
+        return;
+      }
 
       const pendingForm = this.formStore.get(formId);
       if (!pendingForm) {
@@ -777,6 +836,11 @@ export class ChoiceActionHandler {
       const messageTs = body.message?.ts;
       const isBlocked = typeof action.action_id === 'string' && action.action_id.includes('_blocked_');
 
+      if (this.needsOwnerApproval(session, sessionKey, userId)) {
+        if (channel && userId) await this.ctx.slackApi.postEphemeral(channel, userId, FORM_OWNER_ONLY_TEXT);
+        return;
+      }
+
       if (isBlocked) {
         this.logger.info('hero_recommended_blocked', {
           surface: 'slack',
@@ -916,6 +980,7 @@ export class ChoiceActionHandler {
     if (!session) {
       throw new Error('Session not found');
     }
+    if (this.needsOwnerApproval(session, sessionKey, userId)) throw new Error(FORM_OWNER_ONLY_ERROR);
     if (!isAnswerableFromDashboard(session, 'user_choices')) {
       throw new Error('Session is not waiting for a choice');
     }
@@ -981,6 +1046,22 @@ export class ChoiceActionHandler {
     }
 
     // Guard: only process while the session's question can take an answer
+    if (
+      isAnswerableFromDashboard(session, 'user_choice') &&
+      session.channelId &&
+      this.needsOwnerApproval(session, sessionKey, userId)
+    ) {
+      // #767 — held for the owner like the Slack button; the question stays open.
+      await this.holdChoiceForOwner({
+        userId,
+        channel: session.channelId,
+        threadTs: session.threadRootTs || session.threadTs,
+        ts: String(Date.now() / 1000),
+        text: String(choiceId),
+        tellClicker: false,
+      });
+      return;
+    }
     if (!isAnswerableFromDashboard(session, 'user_choice')) {
       this.logger.warn('Dashboard choice ignored — session not in waiting state', {
         sessionKey,
@@ -1169,6 +1250,7 @@ export class ChoiceActionHandler {
     if (!session) {
       throw new Error('Session not found');
     }
+    if (this.needsOwnerApproval(session, sessionKey, userId)) throw new Error(FORM_OWNER_ONLY_ERROR);
 
     if (!isAnswerableFromDashboard(session, 'user_choices')) {
       this.logger.warn('Dashboard multi-choice ignored — session not in waiting state', {
