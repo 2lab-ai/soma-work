@@ -41,6 +41,8 @@ export interface PermissionRequest {
   threadTs?: string;
   /** Original message text — replayed via messageHandler to fulfill `invoke`. */
   originalText?: string;
+  /** #785 — the dashboard send it was: the replay carries the ref so its turn replaces the panel's copy. */
+  dashboardClientRef?: string;
   /** Environment-skill requests: the admin prompts posted for this request (one per admin DM). */
   prompts?: PromptRef[];
   /** How the request was answered (set with `handled`): who, which choice, from where. */
@@ -78,6 +80,7 @@ export interface CreatePermissionRequestInput {
   channel: string;
   threadTs?: string;
   originalText?: string;
+  dashboardClientRef?: string;
   /** Override TTL (tests). */
   ttlMs?: number;
 }
@@ -155,6 +158,7 @@ export function createPermissionRequest(input: CreatePermissionRequestInput): Cr
     channel: input.channel,
     threadTs: input.threadTs,
     originalText: input.originalText,
+    ...(input.dashboardClientRef ? { dashboardClientRef: input.dashboardClientRef } : {}),
     createdAt: now,
     expiresAt: now + (input.ttlMs ?? DEFAULT_TTL_MS),
     handled: false,

@@ -4796,6 +4796,22 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(startWithContinuation, 'a queued goal starts no turn of its own').toHaveBeenCalledTimes(1);
     });
 
+    it("a goal set from the dashboard while a turn runs: its opening turn carries the send's ref (#785)", async () => {
+      registrySession.goal = undefined;
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(
+        message({ ts: '333.445', text: 'goal 대시보드 목표', dashboardClientRef: 'optimistic-1-ab' }),
+        say(),
+      );
+
+      const queued = items();
+      expect(queued).toHaveLength(1);
+      expect(queued[0].message.text).toBe('대시보드 목표');
+      expect(queued[0].message.dashboardClientRef).toBe('optimistic-1-ab');
+      await settle();
+    });
+
     it('T1.1 normalizes `/z goal …` the same way', async () => {
       registrySession.goal = activeGoal();
       const { settle } = await startBusyTurn();

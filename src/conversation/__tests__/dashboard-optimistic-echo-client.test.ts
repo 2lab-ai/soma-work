@@ -228,6 +228,15 @@ describe("#785 — the server hands the send's ref back on the turn it recorded"
     expect(list.map((t) => t.id)).toEqual([`optimistic-${T0}`, 'theirs']);
   });
 
+  it("the page path takes the turn with the send's ref even when the browser clock runs ahead (review: astra P2)", () => {
+    const m = load<Pure>(PURE);
+    const merged = m.ptMergeFetched(
+      [recorded('다시 쓴 문장', T0 - 120_000, { id: 'srv-skew', clientRef: `optimistic-${T0}` })],
+      [optimistic('계속 진행해줘')],
+    );
+    expect(merged.map((t) => t.id)).toEqual(['srv-skew']);
+  });
+
   it("a turn carrying another send's ref never takes it, even with the same words", () => {
     const list: Turn[] = [optimistic('계속', T0, 'optimistic-a'), optimistic('계속', T0 + 1, 'optimistic-b')];
     const r = wsRig(list);

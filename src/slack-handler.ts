@@ -3219,6 +3219,10 @@ export class SlackHandler {
               team: (event as { team?: string }).team,
               say,
               files: carry,
+              // #785: only the goal this message set — a goal `goal done` promoted is not this send.
+              ...(opening.cause === 'set' && isClientRef(event.dashboardClientRef)
+                ? { dashboardClientRef: event.dashboardClientRef }
+                : {}),
             },
             opening,
           );
@@ -3292,6 +3296,8 @@ export class SlackHandler {
       team?: string;
       say: any;
       files?: MessageEvent['files'];
+      /** #785 — the dashboard send that set this goal: its opening turn records the ref. */
+      dashboardClientRef?: string;
     },
     opening: { goalId: string; objective: string; prompt?: string },
   ): GoalOpeningAdmission {
@@ -3316,6 +3322,8 @@ export class SlackHandler {
       team?: string;
       say: any;
       files?: MessageEvent['files'];
+      /** #785 — the dashboard send that set this goal: its opening turn records the ref. */
+      dashboardClientRef?: string;
     },
     opening: { goalId: string; objective: string; prompt?: string },
   ): GoalOpeningAdmission {
@@ -3354,6 +3362,7 @@ export class SlackHandler {
       text: opening.prompt ?? opening.objective,
       ...(anchor.team ? { team: anchor.team } : {}),
       ...(anchor.files?.length ? { files: anchor.files } : {}),
+      ...(anchor.dashboardClientRef ? { dashboardClientRef: anchor.dashboardClientRef } : {}),
       routeContext:
         opening.prompt === undefined
           ? { verbatimPrompt: true, goalOpeningId: opening.goalId }
