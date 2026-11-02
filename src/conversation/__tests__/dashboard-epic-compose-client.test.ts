@@ -53,6 +53,7 @@ describe('C1 — the request body', () => {
       prompt: '로그인 고쳐줘',
       model: 'opus',
       kind: 'epic',
+      plan: true, // plan mode is on by default; an epic plans before it makes children
     });
     expect(m.ntBuildPayload(task(), [], 'req-1').kind).toBeUndefined();
     expect(m.ntBuildPayload(task({ kind: 'bogus' }), [], 'req-1').kind).toBeUndefined();

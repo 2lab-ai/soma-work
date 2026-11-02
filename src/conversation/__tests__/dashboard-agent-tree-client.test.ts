@@ -944,7 +944,7 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
         'refreshCard',
         'wireInbox',
       ],
-      [],
+      ['_quietOpen'],
       env,
     );
     fns.wireInbox(host);

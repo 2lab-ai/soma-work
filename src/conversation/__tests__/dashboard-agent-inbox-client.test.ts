@@ -1560,7 +1560,7 @@ describe('top-bar user names keep their full text (shipped syncUserSelectLabel +
       ['_applyUserPill'],
       ['_appBarAccount'],
       // View mode (SSOT 2026-11-01): learning the viewer re-says whose board this is (none in this harness).
-      { document: d.document, paintAppBar: () => {}, syncBoardScope: () => {} },
+      { document: d.document, paintAppBar: () => {}, syncBoardScope: () => {}, autoOpenDecisions: () => {} },
       ['function account() { return _appBarAccount; }'],
     );
     m._applyUserPill({ user: { name: LONG } });
@@ -3219,6 +3219,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       {
         // affectUI batch 2b: openPanel gives each opening a fresh <ui-agent-steering>; this harness has no composer.
         pcFreshSteer: () => {},
+        // Plan mode (SSOT 2026-11-02): the panel's plan is painted with the question (none in this harness).
+        renderPanelPlan: () => {},
         document: {
           getElementById: el,
           createElement: (tag: string) => Object.assign(fakeEl(), { tagName: tag.toUpperCase() }),
