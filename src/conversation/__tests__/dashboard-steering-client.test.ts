@@ -158,7 +158,7 @@ describe('pcInit — the element’s events reach the page’s handlers on #pane
         getElementById: (id: string) => (id === 'panel-command' ? host : id === 'pc-composer' ? composer : null),
       },
       // 받아쓰기 (live dictation, SSOT 2026-11-01) is its own suite; here: no recogniser, nothing to stop.
-      ntDictationEngine: () => null,
+      ntDictationEngine: () => null, ntDictationUsable: () => false,
       steerAct: (...a: unknown[]) => acts.push(a),
       pcOnSubmit: (e: unknown) => submits.push(e),
       pcOnReject: () => {},

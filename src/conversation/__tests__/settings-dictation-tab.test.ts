@@ -433,13 +433,21 @@ describe('D5 — this device’s details', () => {
 });
 
 describe('D6 — which engines this device can run', () => {
-  it('기기 기본 needs a recogniser; the server’s and the browser’s Whisper are not on this build yet', () => {
+  it('기기 기본 needs a recogniser; the server’s Whisper needs the server to have it; the browser’s is not on this build yet', () => {
     const api = load();
     expect(api.dicEngines({ path: 'chrome' }).device).toEqual({ ok: true, why: '' });
     expect(api.dicEngines({ path: 'none' }).device.ok).toBe(false);
     expect(api.dicEngines({ path: 'none' }).device.why).toContain('음성 인식기가 없습니다');
     expect(api.dicEngines({ path: 'webapp' }).device.why).toContain('Safari에서 열어');
-    expect(api.dicEngines({ path: 'apple' }).server).toEqual({ ok: false, why: '준비 중입니다' });
+    expect(api.dicEngines({ path: 'apple', server: { ok: true, model: 'large-v3-turbo' } }).server).toEqual({ ok: true, why: '' });
+    // Firefox has no recogniser, but the server's Whisper works there
+    expect(api.dicEngines({ path: 'none', secure: true, server: { ok: true } }).server.ok).toBe(true);
+    expect(api.dicEngines({ path: 'apple', server: { ok: false, why: '서버 위스퍼를 시작하지 못했습니다 — x' } }).server).toEqual({
+      ok: false,
+      why: '서버 위스퍼를 시작하지 못했습니다 — x',
+    });
+    expect(api.dicEngines({ path: 'apple' }).server).toEqual({ ok: false, why: '이 서버에는 위스퍼가 없습니다' });
+    expect(api.dicEngines({ path: 'apple', secure: false, server: { ok: true } }).server.why).toContain('HTTPS');
     expect(api.dicEngines({ path: 'apple' }).browser).toEqual({ ok: false, why: '준비 중입니다' });
   });
 
@@ -451,12 +459,77 @@ describe('D6 — which engines this device can run', () => {
     const [device, server, browser] = doc.inputs;
     expect([device.checked, server.checked, browser.checked]).toEqual([true, false, false]);
     expect([device.disabled, server.disabled, browser.disabled]).toEqual([false, true, true]);
-    expect(doc.whys.server.textContent).toBe('준비 중입니다');
+    expect(doc.whys.server.textContent).toBe('이 서버에는 위스퍼가 없습니다');
     expect(doc.whys.server.hidden).toBe(false);
     expect(doc.whys.device.hidden).toBe(true);
     expect(doc.el('dic-engine-note').textContent).toBe(
       '고른 엔진(서버 위스퍼)을 이 기기에서 쓸 수 없어 기기 기본 음성 인식으로 받아씁니다',
     );
+  });
+});
+
+describe('D6b — the server’s Whisper chosen and running', () => {
+  it('the tab checks it, and the details say which model', async () => {
+    const doc = fakeDoc();
+    const api = load({ localStorage: memStore({ [DICTATION_ENGINE_KEY]: 'server' }) }, doc);
+    api.dicPaintEngines({ path: 'chrome', secure: true, server: { ok: true, model: 'large-v3-turbo' } });
+    expect(doc.inputs.map((i) => i.checked)).toEqual([false, true, false]);
+    expect(doc.el('dic-engine-note').textContent).toBe('');
+    const rows = api.dicInfoRows({
+      browser: { name: 'Chrome', version: '156' },
+      os: { name: 'macOS', version: '' },
+      path: 'chrome',
+      langs: {},
+      mic: 'granted',
+      secure: true,
+      gpu: { has: false },
+      server: { ok: true, model: 'large-v3-turbo' },
+    });
+    expect(rows.find((r: string[]) => r[0] === '서버 위스퍼')[1]).toBe('쓸 수 있음 — large-v3-turbo');
+  });
+
+  it('dicInfo asks the server', async () => {
+    const asked: string[] = [];
+    const win = {
+      navigator: { userAgent: UA.macChrome },
+      fetch: async (u: string) => (asked.push(u), { ok: true, json: async () => ({ server: { ok: true, model: 'large-v3-turbo' } }) }),
+    };
+    const body = `var window = __w, document = __d;
+${DICTATION_PREF_JS}
+var dictationServerStatus = async function (f) { var r = await f('/api/dictation/status'); return (await r.json()).server; };
+${DICTATION_CLIENT_JS}
+return { dicInfo };`;
+    const api = new Function('__w', '__d', body)(win, fakeDoc()) as Api;
+    expect((await api.dicInfo(win)).server).toEqual({ ok: true, model: 'large-v3-turbo' });
+    expect(asked).toEqual(['/api/dictation/status']);
+  });
+
+  it('말해서 시험 streams through the server and reports its words', async () => {
+    vi.useFakeTimers();
+    const doc = fakeDoc();
+    let cb: Record<string, AnyFn> = {};
+    const srv = { stop: vi.fn(), abort: vi.fn() };
+    const win = { navigator: { userAgent: UA.macChrome }, localStorage: memStore({ [DICTATION_ENGINE_KEY]: 'server' }) };
+    const body = `var window = __w, document = __d;
+function esc(s) { return String(s); }
+${DICTATION_PREF_JS}
+var dictationServerStart = function (c) { __cb(c); return __srv; };
+${DICTATION_CLIENT_JS}
+return { dicTestStart, __peek: function (k) { return eval(k); } };`;
+    const api = new Function('__w', '__d', '__cb', '__srv', body)(win, doc, (c: Record<string, AnyFn>) => (cb = c), srv) as Api;
+    api.__peek("_dicInfo = { path: 'chrome', secure: true, langs: {}, server: { ok: true, model: 'large-v3-turbo' } }");
+    api.dicTestStart();
+    expect(doc.el('dic-test-result').textContent).toBe('서버 위스퍼 준비 중…');
+    cb.onReady('large-v3-turbo');
+    vi.advanceTimersByTime(1300);
+    cb.onText('', '대시보드');
+    vi.advanceTimersByTime(700);
+    cb.onText('대시보드 새 작업', '');
+    expect(doc.el('dic-test-live').textContent).toBe('대시보드 새 작업');
+    vi.advanceTimersByTime(6000);
+    expect(srv.stop).toHaveBeenCalledTimes(1);
+    cb.onDone('대시보드 새 작업');
+    expect(doc.el('dic-test-result').textContent).toBe('첫 글자까지 1.3초 · 8.0초 동안 들음 · 서버 위스퍼');
   });
 });
 
