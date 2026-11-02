@@ -10,7 +10,7 @@
  *
  *   L1  the user never opened the editor: 설정 › 대시보드 화면 has 연결 on, right after 현재 작업
  *   L2  the board card's face, by default: the 연결 row below the task — the Jira issue and the GitHub issue with
- *       their states, the PRs with their merge states, the wiki — issues, PRs, wikis, the active ones first
+ *       their states, the PRs with their merge states, the wiki — the current issue · PR · wiki first, then the rest
  *   L3  states in words and tones: Jira's own name (the cache's), GitHub 열림 · 닫힘, PR 열림 · 머지됨
  *   L4  a chip is a link to the page (a new tab, noopener) and does not open or close the card
  *   L5  a card with no links has no 연결 row; the PR foot chip is off by default (no second PR on the face)
@@ -101,7 +101,9 @@ function sessions() {
           docs: [{ url: WIKI, type: 'doc', provider: 'confluence', label: 'Confluence', title: '결제 폼 설계' }],
         },
         // The Slack thread surface's live check of the active PR.
-        actionPanel: { prStatus: { state: 'open', merged: false, draft: false, fetchedForUrl: PR } },
+        actionPanel: {
+          prStatus: { state: 'open', merged: false, draft: false, fetchedForUrl: PR, linkStatusAtFetch: 'open' },
+        },
       },
     ],
     [
@@ -199,7 +201,13 @@ async function main() {
       log(`\n── ${vp.tag} ──`);
       // A browser per viewport: a single-process Chromium does not open a second context.
       const browser = await chromium.launch({ headless: true, args: ['--single-process', '--no-zygote'] });
-      live.get(KEY).actionPanel.prStatus = { state: 'open', merged: false, draft: false, fetchedForUrl: PR };
+      live.get(KEY).actionPanel.prStatus = {
+        state: 'open',
+        merged: false,
+        draft: false,
+        fetchedForUrl: PR,
+        linkStatusAtFetch: 'open',
+      };
       const ctx = await browser.newContext({
         viewport: { width: vp.width, height: vp.height },
         colorScheme: 'light',
@@ -276,16 +284,16 @@ async function main() {
         JSON.stringify(fmt(f.chips)) ===
           JSON.stringify([
             'issue:PAY-12 In Progress(run)',
-            'issue:#41 닫힘(done)',
             'pr:#733 열림(run)',
-            'pr:#700 머지됨(done)',
             'wiki:결제 폼 설계',
+            'issue:#41 닫힘(done)',
+            'pr:#700 머지됨(done)',
           ]),
-        `${vp.tag} L2·L3 issues (Jira, GitHub) with states, PRs with merge states, the wiki — in that order`,
+        `${vp.tag} L2·L3 issues (Jira, GitHub) with states, PRs with merge states, the wiki — the current ones first`,
         fmt(f.chips),
       );
       check(
-        f.chips.map((c) => c.href).join() === [JIRA, GH_ISSUE, PR, PR_OLD, WIKI].join() &&
+        f.chips.map((c) => c.href).join() === [JIRA, PR, WIKI, GH_ISSUE, PR_OLD].join() &&
           f.chips.every((c) => c.target === '_blank' && /noopener/.test(c.rel)),
         `${vp.tag} L4 each chip links to its page in a new tab (noopener)`,
         f.chips.map((c) => [c.href, c.target, c.rel]),
@@ -339,14 +347,20 @@ async function main() {
       }, KEY);
       check(
         refs.join('|') ===
-          'is-issue:PAY-12 In Progress|is-issue:#41 닫힘|is-pr:#733 열림|is-pr:#700 머지됨|is-wiki:결제 폼 설계',
+          'is-issue:PAY-12 In Progress|is-pr:#733 열림|is-wiki:결제 폼 설계|is-issue:#41 닫힘|is-pr:#700 머지됨',
         `${vp.tag} L6 the open card's refs: the same links with their states`,
         refs,
       );
       await cardBox.screenshot({ path: path.join(OUT, `${vp.tag}-3-card-open.png`) });
 
       // L7 — the PR merges; the thread's live check says so; the next board says 머지됨.
-      live.get(KEY).actionPanel.prStatus = { state: 'closed', merged: true, draft: false, fetchedForUrl: PR };
+      live.get(KEY).actionPanel.prStatus = {
+        state: 'closed',
+        merged: true,
+        draft: false,
+        fetchedForUrl: PR,
+        linkStatusAtFetch: 'open',
+      };
       await page.reload();
       await page.waitForFunction(
         (k) =>
