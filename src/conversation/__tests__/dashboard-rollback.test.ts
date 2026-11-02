@@ -115,6 +115,46 @@ describe('Dashboard — context rollback routes (#744)', () => {
     expect(request).toHaveBeenNthCalledWith(3, 'C1:t1', { cancel: true }, undefined);
   });
 
+  it('POST rollback carries an input point’s instruction (quoted in the thread) and Redo (2026-11-03)', async () => {
+    dashboard.setDashboardSessionAccessor(() => new Map([['C1:t1', liveSession()]]));
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: false, reason: 'nothing-to-redo' });
+    dashboard.setDashboardRollbackHandler({ points: vi.fn(), request });
+    const post = (payload: unknown) =>
+      web.injectWebServer({
+        method: 'POST',
+        url: `/api/dashboard/session/${encodeURIComponent('C1:t1')}/rollback`,
+        headers: AUTH_HEADER,
+        payload,
+      });
+    const withText = await post({
+      anchor: 'sid1~0~u',
+      label: '입력 직전: 배포해',
+      source: 'input',
+      at: 5,
+      text: '배포해\n자세히',
+    });
+    expect(withText.statusCode).toBe(200);
+    expect(request).toHaveBeenNthCalledWith(
+      1,
+      'C1:t1',
+      { anchor: 'sid1~0~u', label: '입력 직전: 배포해', source: 'input', at: 5, text: '배포해\n자세히' },
+      undefined,
+    );
+    const redo = await post({ redo: true });
+    expect(redo.statusCode).toBe(200);
+    expect(request).toHaveBeenNthCalledWith(2, 'C1:t1', { redo: true }, undefined);
+    const nothing = await post({ redo: true });
+    expect(nothing.statusCode).toBe(409);
+    expect(JSON.parse(nothing.body).error).toContain('되돌리기를 취소할 것이 없습니다');
+    const tooLong = await post({ anchor: 'sid1~0~u', label: 'x', source: 'input', text: 'x'.repeat(4001) });
+    expect(tooLong.statusCode).toBe(400);
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
   it('rejects a malformed body before the handler', async () => {
     dashboard.setDashboardSessionAccessor(() => new Map([['C1:t1', liveSession()]]));
     const request = vi.fn();
@@ -159,7 +199,34 @@ describe('Dashboard — context rollback routes (#744)', () => {
     const all = Object.values(board).flat() as any[];
     const card = all.find((c: any) => c && c.key === 'C1:t1');
     expect(card.rollbackAvailable).toBe(true);
-    expect(card.pendingRewind).toEqual({ label: '입력 직전: 배포', requestedAt: 9 });
+    expect(card.pendingRewind).toEqual({ label: '입력 직전: 배포', requestedAt: 9, source: 'input' });
+    expect(card.rewindRedo).toBeUndefined();
+  });
+
+  it('a waiting rollback says what it keeps (the marks show at once) and how far Redo goes (2026-11-03)', async () => {
+    dashboard.setDashboardSessionAccessor(
+      () =>
+        new Map([
+          [
+            'C1:t1',
+            liveSession({
+              pendingRewind: {
+                anchor: 'a',
+                label: '응답까지: ok',
+                requestedAt: 9,
+                requestedBy: 'U1',
+                source: 'worklog',
+                keptUntil: 4,
+              },
+              rewindRedo: [null, { anchor: 'b', label: 'x', requestedAt: 7, requestedBy: 'U1', source: 'input' }],
+            }),
+          ],
+        ]),
+    );
+    const res = await web.injectWebServer({ method: 'GET', url: '/api/dashboard/sessions', headers: AUTH_HEADER });
+    const card = (Object.values(JSON.parse(res.body).board).flat() as any[]).find((c: any) => c && c.key === 'C1:t1');
+    expect(card.pendingRewind).toEqual({ label: '응답까지: ok', requestedAt: 9, source: 'worklog', keptUntil: 4 });
+    expect(card.rewindRedo).toBe(2);
   });
 
   it('the card carries what earlier rollbacks dropped, for the log and the conversation marks', async () => {
