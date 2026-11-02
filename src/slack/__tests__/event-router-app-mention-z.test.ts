@@ -98,6 +98,33 @@ describe('EventRouter.app_mention — /z routing (FIX #1)', () => {
     eventRouter.cleanup?.();
   });
 
+  it('#767 (astra R3) — a non-owner’s `@bot /z new` in a session thread goes to the message gate, not ZRouter', async () => {
+    const dispatch = vi.fn().mockResolvedValue({ handled: true, consumed: true });
+    eventRouter.zRouter = { dispatch };
+    (mockDeps as any).holdsForOwnerApproval = vi.fn().mockReturnValue(true);
+    const say = vi.fn();
+    await eventHandlers['app_mention']({
+      event: { user: 'U_OTHER', channel: 'C_X', ts: '2.2', thread_ts: '1.0', text: '<@B_BOT> /z new' },
+      say,
+    });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(mockMessageHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ user: 'U_OTHER', text: '/z new', thread_ts: '1.0' }),
+      say,
+    );
+  });
+
+  it('#767 — the owner’s (or an approved person’s) `@bot /z …` still runs through ZRouter', async () => {
+    const dispatch = vi.fn().mockResolvedValue({ handled: true, consumed: true });
+    eventRouter.zRouter = { dispatch };
+    (mockDeps as any).holdsForOwnerApproval = vi.fn().mockReturnValue(false);
+    await eventHandlers['app_mention']({
+      event: { user: 'U_OWNER', channel: 'C_X', ts: '2.3', thread_ts: '1.0', text: '<@B_BOT> /z persona' },
+      say: vi.fn(),
+    });
+    expect(dispatch).toHaveBeenCalled();
+  });
+
   it('routes `@bot /z persona` through ZRouter with source=channel_mention', async () => {
     const dispatch = vi.fn().mockResolvedValue({ handled: true, consumed: true });
     eventRouter.zRouter = { dispatch };

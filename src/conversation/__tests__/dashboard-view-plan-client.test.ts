@@ -388,6 +388,7 @@ describe('P3 — the open card follows the plan', () => {
       'acQuestionId',
       'acPermissionsHtml',
       'acGoalDecisionHtml',
+      'acInstructionApprovalsHtml',
       'acQuestionHtml',
       'renderEpicPlan',
       'cardLinksFace',

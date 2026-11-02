@@ -306,6 +306,14 @@ export interface EventRouterDeps {
     event: { channel: string; ts: string; thread_ts?: string; user?: string; files?: unknown[] },
     say: SayFn,
   ) => Promise<boolean>;
+  /**
+   * #767 — would the host hold this message for the session owner's approval
+   * (someone who is not the owner, in a thread with a session)? Asked before a
+   * mention's `/z …` runs through ZRouter, which would otherwise act on the
+   * owner's session (`/z new`, `/z model`) ahead of the message gate. True:
+   * the mention goes to the message handler as typed, where the gate holds it.
+   */
+  holdsForOwnerApproval?: (event: MessageEvent) => boolean;
 }
 
 /**
@@ -784,6 +792,18 @@ export class EventRouter {
       // that happens to have a linked work-session is intercepted by the
       // "linked session status" card and never reaches ZRouter, violating the
       // stated contract that channel_mention shares the normalization pipeline.
+      // #767 — someone else's `/z …` in a thread with a session is an
+      // instruction to the owner's session: the message gate holds it (a
+      // released `/z …` is routed by the command router like a typed one).
+      if (
+        event.thread_ts &&
+        stripZPrefix(text) !== null &&
+        this.deps.holdsForOwnerApproval?.({ ...event, text } as MessageEvent)
+      ) {
+        await this.messageHandler({ ...event, text } as MessageEvent, say);
+        return;
+      }
+
       const routedViaZ = await this.maybeRouteAppMentionViaZRouter({
         event,
         strippedText: text,
