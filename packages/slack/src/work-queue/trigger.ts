@@ -20,7 +20,7 @@ const NAME_RE = /^[A-Za-z0-9_./-]+/;
 const MENTION_RE = /<[@#!][^>]*>/g;
 
 /** `refs/heads/deploy/dev2`, `deploy/dev2`, `DEV2` → `dev2`. */
-export function normalizeBranch(branch: string): string {
+export function normalizeTargetBranch(branch: string): string {
   return branch
     .trim()
     .toLowerCase()
@@ -96,7 +96,7 @@ export function matchWorkQueue(
   if (candidates.length === 0) return undefined;
   const trigger = parseDeployTrigger(text);
   if (trigger) {
-    const target = normalizeBranch(trigger.target);
+    const target = normalizeTargetBranch(trigger.target);
     const repos = trigger.repos.map(normalizeRepo);
     return candidates.find((q) => q.targets.includes(target) && (!q.repos || repos.some((r) => q.repos?.includes(r))));
   }

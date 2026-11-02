@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseWorkQueuesConfig } from '../config';
-import { matchWorkQueue, normalizeBranch, normalizeRepo, parseDeployTrigger } from '../trigger';
+import { matchWorkQueue, normalizeTargetBranch, normalizeRepo, parseDeployTrigger } from '../trigger';
 
 // ssot-task T1/T3: the host must recognise which deploys belong to a queue
 // without asking the model — the trigger text is the only signal it has before
@@ -48,9 +48,9 @@ describe('parseDeployTrigger', () => {
 
 describe('normalizers', () => {
   it('treats `dev2`, `deploy/dev2` and `refs/heads/deploy/dev2` as one target', () => {
-    expect(normalizeBranch('deploy/dev2')).toBe('dev2');
-    expect(normalizeBranch('DEV2')).toBe('dev2');
-    expect(normalizeBranch('refs/heads/deploy/dev2')).toBe('dev2');
+    expect(normalizeTargetBranch('deploy/dev2')).toBe('dev2');
+    expect(normalizeTargetBranch('DEV2')).toBe('dev2');
+    expect(normalizeTargetBranch('refs/heads/deploy/dev2')).toBe('dev2');
   });
 
   it('compares repos by their last path segment, case-insensitively', () => {

@@ -24,13 +24,13 @@
  * The queue matches on the target, not the source: two deploys collide on the
  * branch and environment they write to, whatever they were merged from.
  */
-import { normalizeBranch, normalizeRepo } from './trigger';
+import { normalizeTargetBranch, normalizeRepo } from './trigger';
 
 export interface WorkQueueDef {
   id: string;
   label: string;
   workflow: string;
-  /** Normalised with {@link normalizeBranch}. */
+  /** Normalised with {@link normalizeTargetBranch}. */
   targets: string[];
   /** Normalised with {@link normalizeRepo}; undefined = any repo. */
   repos: string[] | undefined;
@@ -69,7 +69,7 @@ function stringList(value: unknown): string[] | undefined {
   return out.length === value.length ? out : undefined;
 }
 
-function parseEntry(raw: unknown, index: number): { def?: WorkQueueDef; warning?: string } {
+function parseQueueEntry(raw: unknown, index: number): { def?: WorkQueueDef; warning?: string } {
   const where = `workQueues[${index}]`;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { warning: `${where}: expected an object` };
   const entry = raw as Record<string, unknown>;
@@ -100,7 +100,7 @@ function parseEntry(raw: unknown, index: number): { def?: WorkQueueDef; warning?
       id,
       label,
       workflow: workflow.trim(),
-      targets: [...new Set(targets.map(normalizeBranch))],
+      targets: [...new Set(targets.map(normalizeTargetBranch))],
       repos: repos ? [...new Set(repos.map(normalizeRepo))] : undefined,
       concurrency,
       askTimeoutMs: askTimeoutMinutes * MINUTE_MS,
@@ -113,7 +113,7 @@ function parseList(list: readonly unknown[]): { queues: WorkQueueDef[]; warnings
   const queues: WorkQueueDef[] = [];
   const warnings: string[] = [];
   list.forEach((raw, index) => {
-    const { def, warning } = parseEntry(raw, index);
+    const { def, warning } = parseQueueEntry(raw, index);
     if (warning) warnings.push(warning);
     if (!def) return;
     if (queues.some((q) => q.id === def.id)) {
