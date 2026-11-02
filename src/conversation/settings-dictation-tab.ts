@@ -436,7 +436,7 @@ function dicTestSummary(t) {
 var DIC_OPEN_MS = 10000;
 // A stop or an error the recogniser never confirms with an end does not hold the test.
 var DIC_SETTLE_MS = 3000;
-var DIC_SETTLE_WHISPER_MS = 20000;
+var DIC_SETTLE_WHISPER_MS = 60000;
 
 function dicTestStart() {
   if (_dicTest) return dicTestStop();

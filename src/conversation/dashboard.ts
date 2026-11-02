@@ -19009,15 +19009,15 @@ function ntDictateStop(hard) {
     d.host.status(d.live);
     d.host.paint();
     if (d.srv) d.srv.stop();
-    // The last words arrive with done — behind other dictations on the server's one worker, that can take a while
-    // (the server allows 20 s a transcription). One that never answers does not hold the tool for ever, and says
-    // what was lost.
+    // The last words arrive with done — behind one transcription in flight and other dictations on the server's one
+    // worker (20 s allowed each), that can take a while: a minute end to end. One that never answers does not hold
+    // the tool for ever, and says what was lost.
     setTimeout(function () {
       if (_ntDictation !== d) return;
       d.hard = true;
       ntDictationEnd(d, '마지막 말이 제때 오지 않아 보이는 글자까지만 남겼습니다', true);
       if (d.srv) d.srv.abort();
-    }, 20000);
+    }, 60000);
     return;
   }
   if (hard) {

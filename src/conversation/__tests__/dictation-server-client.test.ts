@@ -294,7 +294,10 @@ describe('C5 — review (PR #751)', () => {
       e.sockets[0].msg({ type: 'ready' });
       c.stop();
       expect(e.sockets[0].sent).not.toContain(JSON.stringify({ type: 'stop' }));
+      // a worklet that is merely slow (a busy audio thread) still gets its tail out: the fallback waits a second
       await vi.advanceTimersByTimeAsync(400);
+      expect(e.sockets[0].sent).not.toContain(JSON.stringify({ type: 'stop' }));
+      await vi.advanceTimersByTimeAsync(700);
       expect(lastOf(e.sockets[0].sent)).toBe(JSON.stringify({ type: 'stop' }));
     } finally {
       vi.useRealTimers();

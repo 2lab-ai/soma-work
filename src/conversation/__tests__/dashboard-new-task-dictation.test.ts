@@ -1747,6 +1747,10 @@ describe('#739 — 받아쓰기 through the server’s Whisper when this device 
       await api.ntDictateStart();
       fake.made[0].cb.onText('하나', '둘');
       api.ntDictateStop(false);
+      // the server's allowance is per transcription (20 s) and the last words may wait behind one in flight and
+      // behind other dictations: a minute end to end
+      vi.advanceTimersByTime(40000);
+      expect(fake.made[0].aborts).toBe(0);
       vi.advanceTimersByTime(20000);
       expect(fake.made[0].aborts).toBe(1);
       expect(api.__peek('_ntDictation')).toBeNull();

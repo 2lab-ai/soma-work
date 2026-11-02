@@ -169,9 +169,13 @@ export class A2tService {
   }
 
   /**
-   * 받아쓰기: transcribe one window of a live stream — 16 kHz mono PCM. Waits its turn behind other requests.
+   * 받아쓰기: transcribe one window of a live stream — 16 kHz mono PCM. Waits its turn behind other requests; one whose
+   * signal is aborted by then (the listener went away) is never sent.
    */
-  async transcribePcm(pcm: Int16Array, opts: { language?: string; prompt?: string } = {}): Promise<string> {
+  async transcribePcm(
+    pcm: Int16Array,
+    opts: { language?: string; prompt?: string; signal?: AbortSignal } = {},
+  ): Promise<string> {
     if (!this.isReady()) throw new Error(this.getStatusMessage());
     const bytes = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
     const response = (await this.sendRequest(
@@ -182,6 +186,7 @@ export class A2tService {
         prompt: opts.prompt ?? '',
       },
       PCM_TIMEOUT_MS,
+      opts.signal,
     )) as Record<string, unknown>;
     return String(response.text ?? '');
   }
@@ -359,9 +364,13 @@ export class A2tService {
 
   // ── Internal ───────────────────────────────────────────
 
-  private sendRequest(request: object, timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<unknown> {
+  private sendRequest(request: object, timeoutMs: number = REQUEST_TIMEOUT_MS, signal?: AbortSignal): Promise<unknown> {
     const run = () =>
       new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+          reject(new Error('cancelled'));
+          return;
+        }
         if (!this.process?.stdin?.writable) {
           reject(new Error('A2T worker process not available'));
           return;

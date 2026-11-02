@@ -31,7 +31,8 @@ export interface DictationWhisper {
   model(): string;
   /** Why it cannot take a dictation ('' when it can). */
   why(): string;
-  transcribe(pcm: Int16Array, opts: { language: string; prompt: string }): Promise<string>;
+  /** signal: aborted when the listener is gone — a request still waiting its turn is dropped. */
+  transcribe(pcm: Int16Array, opts: { language: string; prompt: string; signal?: AbortSignal }): Promise<string>;
 }
 
 /** Live dictations at once on this server (each keeps the worker busy a few times a second). */
@@ -133,6 +134,7 @@ export function registerDictationRoutes(
       let finishing = false;
       let startedAt = 0;
       let received = 0;
+      const gone = new AbortController();
       // Ended with an error: the stream is dropped (what the browser already shows stays there).
       const fail = (code: string, message: string) => {
         stream?.cancel();
@@ -174,7 +176,7 @@ export function registerDictationRoutes(
             language = LANGS[typeof m.lang === 'string' ? m.lang : 'ko-KR'] ?? 'ko';
             startedAt = Date.now();
             stream = new DictationStream({
-              transcribe: (pcm, prompt) => w.transcribe(pcm, { language, prompt }),
+              transcribe: (pcm, prompt) => w.transcribe(pcm, { language, prompt, signal: gone.signal }),
               onText: (t) => send({ type: 'text', final: t.final, interim: t.interim }),
               onError: (message) => {
                 logger.warn('Dictation transcription failed', { message });
@@ -212,8 +214,10 @@ export function registerDictationRoutes(
         closed = true;
         clearTimeout(unstarted);
         clearTimeout(limit);
-        // The listener is gone: nothing it queued is transcribed for no one.
-        if (!finishing) stream?.cancel();
+        // The listener is gone (finishing or not): nothing it queued is transcribed for no one — not the stream's
+        // next steps, not a request still waiting its turn at the worker.
+        stream?.cancel();
+        gone.abort();
         letGo();
       });
     }) as never,

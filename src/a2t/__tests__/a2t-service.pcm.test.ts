@@ -75,6 +75,24 @@ describe('A2tService.transcribePcm', () => {
     expect(await service.transcribePcm(new Int16Array([2]))).toBe('ok');
   });
 
+  it('a request cancelled while it waits its turn is never sent to the worker (re-review, PR #751)', async () => {
+    service = new A2tService({
+      pythonPath: fakeWorker(
+        `const b = Buffer.from(r.pcm, 'base64'); setTimeout(() => send({ type: 'result', text: 'n=' + b.readInt16LE(0) }), 60);`,
+      ),
+      minMemoryMb: 1,
+    });
+    await service.initialize();
+    const ac = new AbortController();
+    const first = service.transcribePcm(new Int16Array([1]));
+    const second = service.transcribePcm(new Int16Array([2]), { signal: ac.signal });
+    const third = service.transcribePcm(new Int16Array([3]));
+    ac.abort();
+    expect(await first).toBe('n=1');
+    await expect(second).rejects.toThrow('cancelled');
+    expect(await third).toBe('n=3');
+  });
+
   it('not ready: refuses with the status', async () => {
     service = new A2tService({ enabled: false });
     await expect(service.transcribePcm(new Int16Array([1]))).rejects.toThrow('disabled');
