@@ -216,9 +216,8 @@ function sideList(conversations: ConversationMeta[], openId?: string): string {
       )}</ui-elapsed></small></div></a></li>`;
     })
     .join('');
-  const body = conversations.length
-    ? `<ul>${rows}</ul>`
-    : `<p class="ui-empty">${uiIcon('chat')}<strong>아직 기록된 대화가 없습니다</strong>Slack에서 대화를 시작하면 여기에 쌓입니다.</p>`;
+  // No conversations: the list is just its head — the page's one empty state is in the main pane.
+  const body = conversations.length ? `<ul>${rows}</ul>` : '';
   return `<nav class="vw-side" aria-label="대화 목록">
   <h2>대화 <small>${conversations.length}</small></h2>
   ${body}
@@ -236,7 +235,11 @@ export function renderConversationListPage(conversations: ConversationMeta[]): s
 <div class="vw-body">
 ${sideList(conversations)}
 <main class="vw-main">
-  <p class="ui-empty">${uiIcon('chat')}<strong>대화를 고르세요</strong>목록에서 대화를 열면 여기에 보입니다.</p>
+  ${
+    conversations.length
+      ? `<p class="ui-empty">${uiIcon('chat')}<strong>대화를 고르세요</strong>목록에서 대화를 열면 여기에 보입니다.</p>`
+      : `<p class="ui-empty">${uiIcon('chat')}<strong>아직 기록된 대화가 없습니다</strong>Slack에서 대화를 시작하면 여기에 쌓입니다.</p>`
+  }
 </main>
 </div>`,
     scripts: '',

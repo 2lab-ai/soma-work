@@ -198,7 +198,10 @@ describe('conversation list (M-07)', () => {
     expect(empty).toContain('아직 기록된 대화가 없습니다');
     expect(empty).toContain('<h2>대화 <small>0</small></h2>');
     expect(empty).not.toContain('<ul>');
-    // and the main pane asks to pick one
+    // One empty state, not two that contradict each other: nothing to pick, so no "pick one".
+    expect(empty.match(/class="ui-empty"/g)).toHaveLength(1);
+    expect(empty).not.toContain('대화를 고르세요');
+    // and with conversations, the main pane asks to pick one
     expect(html).toContain('<strong>대화를 고르세요</strong>');
   });
 });

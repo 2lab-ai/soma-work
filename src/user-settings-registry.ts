@@ -64,7 +64,7 @@ export type SettingKey =
 export type SettingGroup = 'model' | 'output' | 'notify' | 'goal' | 'skills' | 'account' | 'permissions' | 'dashboard';
 
 export const SETTING_GROUPS: ReadonlyArray<{ id: SettingGroup; label: string; description: string }> = [
-  { id: 'model', label: '모델 · effort', description: '새 세션이 시작할 때 쓰는 기본값입니다.' },
+  { id: 'model', label: '모델 · 추론 강도', description: '새 세션이 시작할 때 쓰는 기본값입니다.' },
   { id: 'output', label: '출력', description: 'Slack 스레드에 보이는 양과 모양, 말투입니다.' },
   { id: 'notify', label: '알림', description: '턴이 끝났을 때 어디로 알릴지 정합니다.' },
   { id: 'goal', label: '목표', description: '목표가 자동으로 이어지는 방식입니다.' },
@@ -245,19 +245,21 @@ export interface SettingsRegistryDeps {
   isAccepted(userId: string): boolean;
 }
 
+// The dashboard's words for the levels (its EFFORT_LABELS): one name per level on every page.
 const EFFORT_LABELS: Record<string, string> = {
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  xhigh: 'Extra high',
-  max: 'Max',
-  ultra: 'Ultra',
+  low: '낮음',
+  medium: '보통',
+  high: '높음',
+  xhigh: '매우 높음',
+  max: '최대',
+  ultra: '울트라',
 };
+// What each level shows, first; the Slack value in brackets.
 const VERBOSITY_LABELS: Record<string, string> = {
-  minimal: 'Minimal — 결과만',
-  compact: 'Compact — 요약',
-  detail: 'Detail — 도구 호출까지',
-  verbose: 'Verbose — 전부',
+  minimal: '결과만 (minimal)',
+  compact: '요약 (compact)',
+  detail: '도구 호출까지 (detail)',
+  verbose: '전부 (verbose)',
 };
 const TELEGRAM_CHAT_ID = /^-?\d{1,20}$/;
 const DISPLAY_LANGUAGE_OPTIONS: SettingOption[] = [
@@ -406,7 +408,7 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
         return {
           key,
           group: 'model',
-          label: '기본 effort',
+          label: '기본 추론 강도',
           description: '새 세션의 추론 강도입니다. 높을수록 느리고 토큰을 더 씁니다.',
           kind: 'choice',
           value,
@@ -582,7 +584,7 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
           group: 'dashboard',
           label: '화면 구성안',
           description:
-            '화면에 무엇을 보여 줄지 고르는 안입니다. 1안: 미니멀 결과 우선 · 어드밴스드 정리(기본). 2안: 미니멀 진행 우선 · 어드밴스드 원본(바꾸기 전 화면). 3안: 미니멀 한눈에 · 어드밴스드 압축. 칸별 표는 .prd/20.',
+            '화면에 무엇을 보여 줄지 고르는 안입니다. 1안: 미니멀 결과 우선 · 어드밴스드 정리(기본). 2안: 미니멀 진행 우선 · 어드밴스드 원본(바꾸기 전 화면). 3안: 미니멀 한눈에 · 어드밴스드 압축.',
           kind: 'choice',
           value,
           defaultValue: '1',
@@ -614,7 +616,7 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
           group: 'goal',
           label: '목표 자동 연속 최대 횟수',
           description:
-            '새 목표가 스스로 이어갈 수 있는 최대 턴 수입니다. 진행 중인 목표는 Slack `goal max`로 바꿉니다.',
+            '새 목표가 스스로 이어갈 수 있는 최대 턴 수입니다. 진행 중인 목표는 아래 Slack 명령으로 바꿉니다.',
           kind: 'number',
           value,
           defaultValue: deps.defaults.goalMaxContinuations,
