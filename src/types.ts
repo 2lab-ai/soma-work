@@ -935,6 +935,13 @@ export interface ConversationSession {
    */
   titleNoticeCount?: number;
 
+  /**
+   * #810 — the model was told the display language (`<display-lang>`) in this SDK
+   * session: set on the first real prompt, persisted so a restart never re-sends
+   * it, cleared with the SDK session (a new conversation is told again).
+   */
+  displayLangTold?: boolean;
+
   // Dashboard improvements (v2.1):
   // Number of /compact invocations or SDK-triggered compact_boundary events observed on this session.
   compactionCount?: number;

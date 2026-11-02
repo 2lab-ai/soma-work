@@ -72,6 +72,8 @@ export interface ConversationSession {
   contextRewinds?: import('../context-anchor').ContextRewindRecord[];
   /** What the whole task spent (persisted, never reset) — see `creditTaskSpend`. */
   taskUsage?: TaskUsage;
+  /** #810 — the model was told the display language in this SDK session (persisted in sessions.json). */
+  displayLangTold?: boolean;
   [key: string]: any;
 }
 
