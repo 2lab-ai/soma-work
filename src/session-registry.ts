@@ -55,6 +55,13 @@ import {
   sanitizeEpicPlan,
   withEpicEvent,
 } from './task-turn/epic-plan';
+import {
+  applyPlanSubmission,
+  checkPlanSubmission,
+  newPlanGate,
+  sanitizeTaskPlanGate,
+  type TaskPlanGate,
+} from './task-turn/task-plan';
 import type {
   ActionPanelState,
   ActivityState,
@@ -230,6 +237,8 @@ interface SerializedSession {
   epicEvents?: unknown;
   /** E4 ⑦ — a child closed by its epic's close; validated on load. */
   closedBy?: unknown;
+  /** Plan mode — a plan-mode task's gate; validated on load (`sanitizeTaskPlanGate`). */
+  taskPlan?: unknown;
   /** E2 ③ — the open chain and owed notices of a Slack-less task; validated on load. */
   openChain?: unknown;
   notices?: unknown;
@@ -318,6 +327,8 @@ export interface CreateTaskInput {
   /** E4 ① — a child task: its live epic (same owner) and the plan node it was made for. */
   parentTaskId?: string;
   planNodeId?: string;
+  /** Plan mode — the dashboard's plan toggle: the task plans first and works only once its owner starts it. */
+  planMode?: boolean;
 }
 
 /** E4 ① — a plan node id: a short slug, unique within its epic (one rule with the plan's, E4 ②). */
@@ -1279,6 +1290,8 @@ export class SessionRegistry {
     if (session.taskId) this.sessionsByTaskId.set(session.taskId, session);
     // E2 ② — only a Slack-less task carries an input context.
     if (session.inputContext && session.slackless !== true) session.inputContext = undefined;
+    // Plan mode — only a Slack-less task carries a plan gate.
+    if (session.taskPlan && session.slackless !== true) session.taskPlan = undefined;
     // E4 ① — only a Slack-less task carries the epic relation.
     if (session.slackless !== true) {
       session.kind = undefined;
@@ -1364,6 +1377,42 @@ export class SessionRegistry {
       throw error;
     }
     return next;
+  }
+
+  /**
+   * Plan mode — the plan the model submitted (`plan_submit`), checked
+   * (`checkPlanSubmission`) and saved strictly as the next revision awaiting
+   * its owner. A refusal (`TaskPlanError`, a task that is not in plan mode)
+   * or a failed save leaves the gate as it was. Returns the gate now saved.
+   */
+  submitTaskPlan(taskId: string, input: unknown): TaskPlanGate {
+    const task = this.sessionsByTaskId.get(taskId);
+    if (!task || task.slackless !== true || !task.taskPlan || task.terminated || task.closing) {
+      throw new Error(`submitTaskPlan: ${taskId} is not a plan-mode task`);
+    }
+    const next = applyPlanSubmission(task.taskPlan, checkPlanSubmission(input), Date.now());
+    this.setTaskPlanGate(taskId, next);
+    return next;
+  }
+
+  /**
+   * Plan mode — replace a task's plan gate and save it strictly (a decision,
+   * or the controller putting back a start that did not happen). A failed
+   * save puts the previous gate back and throws.
+   */
+  setTaskPlanGate(taskId: string, next: TaskPlanGate): void {
+    const task = this.sessionsByTaskId.get(taskId);
+    if (!task || task.slackless !== true || !task.taskPlan) {
+      throw new Error(`setTaskPlanGate: ${taskId} is not a plan-mode task`);
+    }
+    const previous = task.taskPlan;
+    task.taskPlan = next;
+    try {
+      this.saveSessionsOrThrow();
+    } catch (error) {
+      task.taskPlan = previous;
+      throw error;
+    }
   }
 
   /**
@@ -1643,6 +1692,8 @@ export class SessionRegistry {
       this.addTaskNotice(session, { id: `${session.taskId}:create:link`, kind: 'link', at: Date.now() });
     }
     if (input.kind === 'epic') session.kind = 'epic';
+    // Plan mode — the task plans first (drafting), in this first strict save.
+    if (input.planMode === true) session.taskPlan = newPlanGate(Date.now());
     if (parent) {
       session.parentTaskId = parent.taskId;
       session.planNodeId = input.planNodeId;
@@ -1982,6 +2033,7 @@ export class SessionRegistry {
       originThread: sanitizeOriginThread(archived.originThread),
       inputContext: sanitizeTaskInputContext(archived.inputContext),
       ...sanitizeEpicRelation(archived as unknown as Record<string, unknown>, slackless),
+      taskPlan: slackless ? sanitizeTaskPlanGate(archived.taskPlan) : undefined,
       // A task runs in its own directory: the one its transcript proves it ran in (#612 R4).
       ...(slackless ? { workingDirectory: cwd } : {}),
       sessionId: archived.sessionId,
@@ -3463,6 +3515,7 @@ export class SessionRegistry {
             childTaskIds: session.childTaskIds,
             plan: session.plan,
             epicEvents: session.epicEvents,
+            taskPlan: session.slackless === true ? session.taskPlan : undefined,
             closedBy: session.closedBy,
             // Merge code change stats
             mergeStats: session.mergeStats,
@@ -3604,6 +3657,7 @@ export class SessionRegistry {
         originThread: sanitizeOriginThread(serialized.originThread),
         inputContext: sanitizeTaskInputContext(serialized.inputContext),
         ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, serialized.slackless === true),
+        taskPlan: serialized.slackless === true ? sanitizeTaskPlanGate(serialized.taskPlan) : undefined,
         lastTurnOutcome: sanitizeTaskTurnOutcome(serialized.lastTurnOutcome),
         sessionId: serialized.sessionId,
         isActive: false,
@@ -3851,6 +3905,7 @@ export class SessionRegistry {
           originThread: sanitizeOriginThread(serialized.originThread),
           inputContext: sanitizeTaskInputContext(serialized.inputContext),
           ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, slackless),
+          taskPlan: slackless ? sanitizeTaskPlanGate(serialized.taskPlan) : undefined,
           openChain:
             slackless && typeof serialized.openChain === 'string' && serialized.openChain !== ''
               ? serialized.openChain

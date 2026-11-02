@@ -26,6 +26,7 @@ import { buildTaskSessionKey } from '../session-identity';
 import type { ConversationSession, TaskTurnOutcomeRecord } from '../types';
 import { wakeableEpicEvents } from './epic-plan';
 import { buildTaskAnswerText, type TaskAnswer } from './task-answer';
+import { planGateTurn } from './task-plan';
 import type { RunTaskTurnInput, RunTaskTurnResult, TaskTurnNonTerminal } from './task-turn-runner';
 
 export interface TaskCommandRequest {
@@ -208,6 +209,9 @@ const DEFAULT_EPIC_COST_LIMIT_USD = 50;
 
 /** The refusal of another user's word to an epic tree (its children start as the owner). */
 export const EPIC_OWNER_ONLY = 'an epic and its children take instructions from their owner or an admin only';
+
+/** Plan mode — the executor's `promptNotice` param: prepended to the model's prompt, never recorded. */
+const noticeParam = (notice: string | undefined): { promptNotice?: string } => (notice ? { promptNotice: notice } : {});
 
 export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurnController {
   const maxDispatches = deps.maxDispatches ?? 3;
@@ -409,6 +413,13 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       panel.waitingForChoice = false;
     }
 
+    // Plan mode (SSOT 2026-11-02) — an instruction to a task whose plan is not started is
+    // direct input (or a new plan after a cancel): the plan goes back to drafting in the
+    // turn's saved start. A start that does not happen puts the gate back (below).
+    const planBefore = session.taskPlan;
+    const planned = planGateTurn(planBefore, now());
+    if (planned.gate !== planBefore) session.taskPlan = planned.gate;
+
     const abort = new AbortController();
     deps.coordinator.setController(sessionKey, abort);
     let markStarted!: () => void;
@@ -435,6 +446,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       progress,
       chainId,
       consume,
+      planned.notice,
     );
     const chain: Chain = { ownerId, id: chainId, abort, done, ...(tree !== undefined ? { tree } : {}) };
     chains.set(sessionKey, chain);
@@ -474,6 +486,9 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       panel.pendingChoice = openQuestion.pendingChoice;
       panel.waitingForChoice = openQuestion.waiting;
     }
+    if (planned.gate !== planBefore && !progress.committedBeforeStart && session.taskPlan === planned.gate) {
+      session.taskPlan = planBefore;
+    }
     return refuse(500, 'the task turn could not start');
   }
 
@@ -487,6 +502,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     progress: { committedBeforeStart: boolean },
     chainId: string,
     consume: readonly string[] = [],
+    planNotice?: string,
   ): Promise<void> {
     let text = instruction;
     let compactHop = false;
@@ -559,6 +575,9 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
               processedFiles: [],
               isUserInput,
               say: async () => ({}),
+              // Plan mode — the first hop carries the notice its start decided (before the
+              // gate went back to drafting); a later hop reads the task as it is now.
+              ...noticeParam(dispatch === 1 ? planNotice : planGateTurn(session.taskPlan, now()).notice),
             },
             resumable: last ? ['shutdown'] : ['fallbackCompact', 'shutdown'],
             notResumedReasons: {

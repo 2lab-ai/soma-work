@@ -33,6 +33,7 @@ import {
 } from './mcp-tool-permission-config';
 import { isSafePathSegment, normalizeTmpPath } from './path-utils';
 import { attachesEpicServer, buildEpicServer, EPIC_SERVER } from './task-turn/epic-server';
+import { attachesPlanServer, buildPlanServer, PLAN_SERVER } from './task-turn/plan-server';
 import { userSettingsStore } from './user-settings-store';
 
 /** Native SDK tools that require terminal interaction — disallowed in Slack context */
@@ -203,7 +204,11 @@ export class McpConfigBuilder {
 
     // E4 ④a (.prd/19 D3) — the epic's host tools, on an epic's own task turn only (never a
     // child's: depth 1). Allowed below, so a `legacy` task turn (no prompt server) can use them.
-    if (attachesEpicServer(executionContext)) {
+    // Plan mode (SSOT 2026-11-02) — a task whose plan is not started plans: the `plan` server
+    // instead, and no epic server — an epic makes no child before its owner starts its plan.
+    if (attachesPlanServer(executionContext)) {
+      internalServers[PLAN_SERVER] = buildPlanServer(executionContext);
+    } else if (attachesEpicServer(executionContext)) {
       internalServers[EPIC_SERVER] = buildEpicServer(executionContext);
     }
 
@@ -278,6 +283,7 @@ export class McpConfigBuilder {
     // server used to make that condition unconditionally true).
     config.allowedTools = this.buildAllowedTools(slackContext, userBypass, contextUser, !!executionContext);
     if (internalServers[EPIC_SERVER]) config.allowedTools.push(`mcp__${EPIC_SERVER}`);
+    if (internalServers[PLAN_SERVER]) config.allowedTools.push(`mcp__${PLAN_SERVER}`);
 
     this.logger.debug('Added MCP configuration', {
       serverCount: Object.keys(config.mcpServers ?? {}).length,

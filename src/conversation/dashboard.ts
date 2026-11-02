@@ -107,6 +107,7 @@ import { getSurfaceLines } from '../slack/surface-config';
 import { type EpicBoardView, epicBoardView } from '../task-turn/epic-board';
 import { sessionCostUsd } from '../task-turn/epic-cost';
 import type { TaskAnswer } from '../task-turn/task-answer';
+import type { PlanDecision, TaskPlanGate, TaskPlanState } from '../task-turn/task-plan';
 import { buildThreadPermalink } from '../turn-notifier';
 import type { ConversationSession } from '../types';
 import { coerceEffort, EFFORT_LEVELS, type EffortLevel, userSettingsStore } from '../user-settings-store';
@@ -142,6 +143,7 @@ import {
 } from './permission-prompts';
 import { getConversation, resummarizeTurn } from './recorder';
 import { soundClientJs } from './sound-client';
+import { renderTaskPlanHtml, renderTaskPlanPage, TASK_PLAN_PAGE_CSP } from './task-plan-html';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
 import {
   fillUiIcons,
@@ -449,6 +451,13 @@ export interface KanbanSession {
    * posted (attempts spent). Absent when there are none, and for Slack sessions.
    */
   noticeFailures?: Array<{ kind: string; error: string }>;
+  /**
+   * Plan mode (SSOT 2026-11-02) — a plan-mode task's gate as the card shows it:
+   * its state, the latest revision, the conclusion and its size. The plan
+   * itself is fetched (`GET /api/dashboard/session/:key/plan`) when a card or
+   * the panel draws it. Absent for every other session.
+   */
+  taskPlan?: KanbanTaskPlan;
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -1586,6 +1595,22 @@ export function setDashboardTaskAnswerHandler(fn: TaskAnswerHandler | null): voi
 }
 
 /**
+ * Plan mode (SSOT 2026-11-02) — 시작 / 취소 on a task's plan, for the revision
+ * the deciding user saw (`createTaskPlanDecider`, wired in src/index.ts).
+ */
+type TaskPlanHandler = (request: {
+  sessionKey: string;
+  decision: PlanDecision;
+  revision: number;
+  /** The signed-in user deciding — the work runs as them. */
+  actorUserId: string;
+}) => Promise<{ status: number; body: Record<string, unknown> }>;
+let _taskPlanHandlerFn: TaskPlanHandler | null = null;
+export function setDashboardTaskPlanHandler(fn: TaskPlanHandler | null): void {
+  _taskPlanHandlerFn = fn;
+}
+
+/**
  * #599 ⑤ — on a Slack-less task, an answer route hands the answer to the task
  * answer handler (askId required) and returns true; on a Slack session it
  * returns false and the route goes on as before.
@@ -1767,6 +1792,8 @@ interface DashboardTaskLauncher {
     model?: string;
     /** E4 ④a-2 — an epic (the launcher checks the user's flag). */
     kind?: 'epic';
+    /** Plan mode (SSOT 2026-11-02) — plan first, work once the owner starts it. */
+    plan?: boolean;
   }): Promise<{ status: number; body: Record<string, unknown> }>;
   /** The folders a user may name for a task (`listTaskFolders`). */
   folders(ownerId: string): Array<{ name: string }>;
@@ -2246,6 +2273,47 @@ export function broadcastArtifactUpdate(artifact: SessionArtifact): void {
   }
 }
 
+/** Plan mode — the gate as a card carries it (no plan body: that is fetched). */
+export interface KanbanTaskPlan {
+  state: TaskPlanState;
+  revision: number;
+  updatedAt: number;
+  summary?: string;
+  /** How many phases and steps the latest plan has. */
+  phases?: number;
+  steps?: number;
+  submittedAt?: number;
+  decidedAt?: number;
+  decidedBy?: string;
+}
+
+/** Plan mode — a Slack-less task's gate for its card; undefined for any other session. */
+export function taskPlanToKanban(s: { slackless?: boolean; taskPlan?: TaskPlanGate }): KanbanTaskPlan | undefined {
+  const gate = s.slackless === true ? s.taskPlan : undefined;
+  if (!gate) return undefined;
+  const plan = gate.plan;
+  return {
+    state: gate.state,
+    revision: gate.revision,
+    updatedAt: gate.updatedAt,
+    ...(plan
+      ? {
+          summary: plan.summary,
+          phases: plan.phases.length,
+          steps: plan.phases.reduce((n, p) => n + p.steps.length, 0),
+          submittedAt: plan.submittedAt,
+        }
+      : {}),
+    ...(gate.decidedAt !== undefined ? { decidedAt: gate.decidedAt } : {}),
+    ...(gate.decidedBy ? { decidedBy: gate.decidedBy } : {}),
+  };
+}
+
+/** Plan mode — an idle task whose plan waits for its owner asks for them (NEEDS YOU). */
+function planAsks(s: { slackless?: boolean; taskPlan?: TaskPlanGate; activityState?: string }): boolean {
+  return s.slackless === true && s.taskPlan?.state === 'awaiting' && (s.activityState || 'idle') === 'idle';
+}
+
 function sessionToKanban(key: string, s: any): KanbanSession {
   const autoResume = deriveAutoResume(s, Date.now());
   const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
@@ -2286,7 +2354,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     threadTs: s.threadTs,
     // A turn blocked on a permission prompt waits for its user (projection
     // only — the session's own activityState is untouched).
-    activityState: asks.length > 0 ? 'waiting' : s.activityState || 'idle',
+    // A plan waiting for its owner (plan mode) waits too.
+    activityState: asks.length > 0 || planAsks(s) ? 'waiting' : s.activityState || 'idle',
     sessionState: s.state || 'MAIN',
     terminated: s.terminated === true,
     trashed: s.trashed === true,
@@ -2310,7 +2379,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
       : undefined,
     tokenUsage: tokenUsageOf(s),
     doneAt: liveDoneAt(s),
-    waitingSince: liveWaitingSince(s, asks),
+    waitingSince: planAsks(s) ? (s.taskPlan?.updatedAt ?? liveWaitingSince(s, asks)) : liveWaitingSince(s, asks),
     finishedAt: liveFinishedAt(s),
     ...modelFields(s),
     ...contextFields(s),
@@ -2346,6 +2415,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     followups: followupsOf(key, s.ownerId),
     ...(s.slackless === true ? { slackless: true as const, ...noticeFailuresOf(key) } : {}),
     ...(s.slackless === true && s.kind === 'epic' ? { kind: 'epic' as const, epic: epicBundle(s) } : {}),
+    // Plan mode — the gate (its plan is fetched).
+    ...(s.slackless === true && s.taskPlan ? { taskPlan: taskPlanToKanban(s) } : {}),
     ...(s.slackless === true && s.parentTaskId
       ? {
           parentTaskId: s.parentTaskId,
@@ -4001,6 +4072,90 @@ export async function registerDashboardRoutes(
         reply.status(404).send({ error: '만료되었거나 더 이상 없는 요청입니다' });
       } catch (error) {
         logger.error('Error answering an admin approval from the dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  // ── Plan mode (SSOT 2026-11-02): a task's plan, its full page, and 시작 / 취소 ──
+
+  /** A plan-mode task's live record for a read of its plan (any signed-in viewer of the board). */
+  const planTaskOf = (wireKey: string, reply: any): { key: string; session: any } | null => {
+    const key = resolveSelfActionKey(wireKey, reply);
+    if (key === null) return null;
+    const session = _getSessionsFn?.()?.get(key);
+    if (!session || session.slackless !== true || !session.taskPlan) {
+      reply.status(404).send({ error: 'no plan for this task' });
+      return null;
+    }
+    return { key, session };
+  };
+
+  server.get<{ Params: { key: string } }>(
+    '/api/dashboard/session/:key/plan',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const found = planTaskOf(String(request.params?.key ?? ''), reply);
+      if (!found) return;
+      const gate = found.session.taskPlan as TaskPlanGate;
+      reply.header('Cache-Control', 'no-store');
+      reply.send({
+        state: gate.state,
+        revision: gate.revision,
+        html: gate.plan ? renderTaskPlanHtml(gate.plan, { state: gate.state }) : null,
+      });
+    },
+  );
+
+  server.get<{ Params: { key: string } }>(
+    '/dashboard/plan/:key',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const found = planTaskOf(String(request.params?.key ?? ''), reply);
+      if (!found) return;
+      const gate = found.session.taskPlan as TaskPlanGate;
+      if (!gate.plan) {
+        reply.status(404).send({ error: 'the plan is still being written' });
+        return;
+      }
+      reply
+        .header('Content-Security-Policy', TASK_PLAN_PAGE_CSP)
+        .header('X-Content-Type-Options', 'nosniff')
+        .header('Cache-Control', 'no-store')
+        .type('text/html; charset=utf-8')
+        .send(renderTaskPlanPage(gate.plan, { title: displayTitle(found.session), state: gate.state }));
+    },
+  );
+
+  server.post<{ Params: { key: string }; Body: { decision?: unknown; revision?: unknown } }>(
+    '/api/dashboard/session/:key/plan',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { decision, revision } = request.body || {};
+      if ((decision !== 'start' && decision !== 'cancel') || !Number.isInteger(revision) || (revision as number) < 0) {
+        reply
+          .status(400)
+          .send({ error: "decision ('start' | 'cancel') and revision (the plan's number) are required" });
+        return;
+      }
+      // Who may: whoever may instruct the task (SSOT 2026-11-02) — 시작 runs the work as them.
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, instruct: true });
+      if (!resolved) return;
+      if (!_taskPlanHandlerFn) {
+        reply.status(501).send({ error: 'Task plan handler not configured' });
+        return;
+      }
+      try {
+        const outcome = await _taskPlanHandlerFn({
+          sessionKey: resolved.originalKey,
+          decision,
+          revision: revision as number,
+          actorUserId: signedInUserId(request) ?? '',
+        });
+        reply.status(outcome.status).send(outcome.body);
+        if (outcome.status < 400) broadcastSessionUpdate();
+      } catch (error) {
+        logger.error('Error deciding a task plan from the dashboard', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
     },
