@@ -1090,6 +1090,47 @@ describe('loadConfig — deploySandbox passthrough', () => {
   });
 });
 
+// ssot-task T3 — the work queues are operator config: a plugin save
+// (loadConfig → spread → saveConfig) must never drop or resolve them.
+describe('loadConfig — workQueues passthrough', () => {
+  let tmpDir: string;
+  let configFile: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unified-config-work-queues-'));
+    configFile = path.join(tmpDir, 'config.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const QUEUES = [{ id: 'deploy-dev2', workflow: 'deploy', targets: ['deploy/dev2'], concurrency: 1 }];
+
+  it('loads workQueues verbatim and round-trips it through a plugin save', () => {
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({ ui: {}, plugin: { marketplace: [], plugins: [] }, workQueues: QUEUES }),
+    );
+    const loaded = loadConfig(configFile);
+    expect(loaded.workQueues).toEqual(QUEUES);
+    saveConfig(configFile, { ...loaded, plugin: { ...loaded.plugin, plugins: ['some@plugin'] } });
+    expect(JSON.parse(fs.readFileSync(configFile, 'utf-8')).workQueues).toEqual(QUEUES);
+  });
+
+  it('keeps an empty list (queues switched off) and adds no key when there is none', () => {
+    fs.writeFileSync(configFile, JSON.stringify({ ui: {}, workQueues: [] }));
+    expect(loadConfig(configFile).workQueues).toEqual([]);
+    fs.writeFileSync(configFile, JSON.stringify({ ui: {} }));
+    expect('workQueues' in loadConfig(configFile)).toBe(false);
+  });
+
+  it('passes a malformed value through so the queue parser can warn and keep the built-in queue', () => {
+    fs.writeFileSync(configFile, JSON.stringify({ ui: {}, workQueues: { id: 'x' } }));
+    expect(loadConfig(configFile).workQueues).toEqual({ id: 'x' });
+  });
+});
+
 describe('config.json ui defaults seeding (디폴트 설정을 config.json에)', () => {
   // User requirement SSOT_1: defaults must land IN config.json itself so the
   // operator sees and edits them there. Seed happens once, only when the

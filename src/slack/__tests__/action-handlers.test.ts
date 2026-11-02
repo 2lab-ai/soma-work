@@ -145,6 +145,38 @@ describe('ActionHandlers', () => {
     });
   });
 
+  // #726 — the work queue busy card's two buttons reach the queue service.
+  describe('work queue buttons', () => {
+    it('routes work_queue_wait / work_queue_cancel to ctx.workQueue.handleClick', async () => {
+      const handleClick = vi.fn().mockResolvedValue(undefined);
+      const wq = new ActionHandlers({ ...ctx, workQueue: { handleClick } });
+      const mockApp = { action: vi.fn(), view: vi.fn() };
+      wq.registerHandlers(mockApp as any);
+
+      const call = mockApp.action.mock.calls.find(
+        (c) => c[0] instanceof RegExp && c[0].test('work_queue_wait') && c[0].test('work_queue_cancel'),
+      );
+      expect(call).toBeDefined();
+      expect((call![0] as RegExp).test('work_queue_waitx')).toBe(false);
+
+      const ack = vi.fn();
+      const respond = vi.fn();
+      const body = { actions: [{ action_id: 'work_queue_wait', value: 'w1' }], user: { id: 'UB' } };
+      await call![1]({ ack, body, respond });
+      expect(ack).toHaveBeenCalled();
+      expect(handleClick).toHaveBeenCalledWith(body, respond);
+    });
+
+    it('answers "expired" when no work queue is wired', async () => {
+      const mockApp = { action: vi.fn(), view: vi.fn() };
+      handlers.registerHandlers(mockApp as any);
+      const call = mockApp.action.mock.calls.find((c) => c[0] instanceof RegExp && c[0].test('work_queue_cancel'));
+      const respond = vi.fn();
+      await call![1]({ ack: vi.fn(), body: { actions: [{ value: 'w1' }] }, respond });
+      expect(respond).toHaveBeenCalledWith(expect.objectContaining({ replace_original: true }));
+    });
+  });
+
   describe('pending form management', () => {
     const formData = {
       formId: 'form1',
