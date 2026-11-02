@@ -556,7 +556,9 @@ describe('plan mode — a task whose plan is not started researches (SSOT 2026-1
       { queryEnv: {}, workingDirectory: started.workingDirectory, executionContext: started },
       makeDeps(),
     );
-    expect((after.settings as { disableSkillShellExecution?: boolean } | undefined)?.disableSkillShellExecution).toBeUndefined();
+    expect(
+      (after.settings as { disableSkillShellExecution?: boolean } | undefined)?.disableSkillShellExecution,
+    ).toBeUndefined();
   });
 
   it('…with the sandbox turned off too (trinity R5, astra P1)', async () => {
