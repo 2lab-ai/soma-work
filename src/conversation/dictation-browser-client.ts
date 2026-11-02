@@ -332,7 +332,9 @@ function dictationBrowserStart(cb, env) {
         } else if (!sent && !c.ended) worker.postMessage({ type: 'pcm', data: ev.data }, [ev.data]);
       };
       try { node.port.postMessage('flush'); } catch (err) { return send(); }
-      setTimeout(send, 300);
+      // A worklet that never answers (a suspended context) does not hold the stop; a merely busy one answers well
+      // within a second.
+      setTimeout(send, 1000);
     },
     // Drop everything now (the loaded model stays for the next press).
     abort: function () {
