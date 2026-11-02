@@ -392,6 +392,10 @@ export class SessionInitializer {
       ts,
       ...(verbatimReplay ? { verbatimPrompt: true } : {}),
       ...(hostReplay ? { hostTurn: true } : {}),
+      // #785: a dashboard send that arrives mid-compaction is still that send when it replays.
+      ...(typeof event.dashboardClientRef === 'string' && event.dashboardClientRef
+        ? { dashboardClientRef: event.dashboardClientRef }
+        : {}),
     };
     const skipAutoBotThread = event.routeContext?.skipAutoBotThread === true;
     // Whether the mention originated from inside an existing thread (thread_ts exists).

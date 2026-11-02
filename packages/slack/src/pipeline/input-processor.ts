@@ -51,7 +51,15 @@ export interface AutoCompactSession {
   autoCompactPending?: boolean;
   autoCompactSuppressedUntilMs?: number | null;
   pendingUserText?: string | null;
-  pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string; hostTurn?: boolean } | null;
+  pendingEventContext?: {
+    channel: string;
+    threadTs: string;
+    user: string;
+    ts: string;
+    hostTurn?: boolean;
+    /** #785: the dashboard send it was — the post-compact replay carries it on. */
+    dashboardClientRef?: string;
+  } | null;
 }
 
 export interface ClaudeSessionReader {
@@ -191,7 +199,17 @@ export class InputProcessor {
         // already replayed once) is replayed through the user-message path;
         // `hostTurn` keeps it recorded as soma-work's, not the person's.
         const hostTurn = event.synthetic === true || event.routeContext?.hostTurn === true;
-        session.pendingEventContext = { channel, threadTs, user, ts, ...(hostTurn ? { hostTurn: true } : {}) };
+        session.pendingEventContext = {
+          channel,
+          threadTs,
+          user,
+          ts,
+          ...(hostTurn ? { hostTurn: true } : {}),
+          // #785: a dashboard send parked behind the compaction is still that send when it replays.
+          ...(typeof event.dashboardClientRef === 'string' && event.dashboardClientRef
+            ? { dashboardClientRef: event.dashboardClientRef }
+            : {}),
+        };
 
         // Notice post is decorative — fire-and-forget so Slack latency cannot
         // delay the `/compact` injection that the pipeline is about to run.
@@ -226,6 +244,9 @@ export class InputProcessor {
       say,
       postEphemeral,
       deferSkillFire: options?.deferSkillFire,
+      ...(typeof event.dashboardClientRef === 'string' && event.dashboardClientRef
+        ? { dashboardClientRef: event.dashboardClientRef }
+        : {}),
     });
 
     return {
