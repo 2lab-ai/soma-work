@@ -132,6 +132,7 @@ describe('T1 — 작업 시작 closes the dialog at once and leaves a 시작 중
         ntPendingStatus: (_l: unknown, t: string) => calls.push(`status:${t}`),
         ntReadFile: async (f: { name: string }) => {
           await read;
+          if (f.name === 'gone') throw new Error('read:gone');
           return { name: f.name, mimetype: 'image/png', data: 'AA' };
         },
         refreshCsrfToken: async () => {},
@@ -278,6 +279,32 @@ describe('T1 — 작업 시작 closes the dialog at once and leaves a 시작 중
       data: { ok: true, channel: 'C_ALPHA', status: 'running', sessionKey: 'work:C_ALPHA:1.2' },
     });
     await runB;
+  });
+
+  // Review (fable #747 R2 N1): a launch that fails before its turn does not let the next one past the one in flight.
+  it('a launch whose file cannot be read hands its turn on only after the launch before it', async () => {
+    const p = page(slackState('A'));
+    const runA = p.api.submitNewTask({ text: 'A', files: [] });
+    const runB = p.api.submitNewTask({ text: 'B', files: [{ name: 'gone' }] });
+    const runC = p.api.submitNewTask({ text: 'C', files: [] });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    await runB;
+    expect(p.calls).toContain('failed');
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    // A is still in flight: C waits.
+    expect(p.posted.map((b) => JSON.parse(b).prompt)).toEqual(['A']);
+    p.answer({
+      status: 200,
+      data: { ok: true, channel: 'C_ALPHA', status: 'running', sessionKey: 'work:C_ALPHA:1.1' },
+    });
+    await runA;
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(p.posted.map((b) => JSON.parse(b).prompt)).toEqual(['A', 'C']);
+    p.answer({
+      status: 200,
+      data: { ok: true, channel: 'C_ALPHA', status: 'running', sessionKey: 'work:C_ALPHA:1.3' },
+    });
+    await runC;
   });
 
   it('the queue moves on after a launch that failed', async () => {
@@ -560,7 +587,8 @@ describe('T1 — the watch: one tick at a time, never held by a hung ask, ended 
         _ntPending: [launch],
         _ntOpening: [] as unknown[],
         _ntPendingTimer: 0,
-        _ntWatchAsking: false,
+        _ntWatchAsk: null,
+        NT_WATCH_ASK_STALE_MS: 30000,
         _ntCtx: CTX,
         _sessionCache: {},
         SELF_INSTANCE_NAME: 'dev',
@@ -601,6 +629,9 @@ describe('T1 — the watch: one tick at a time, never held by a hung ask, ended 
       await vi.advanceTimersByTimeAsync(10_000);
       expect(w.asks()).toBe(1);
       expect(w.api.__peek('_ntPendingTimer')).not.toBe(0);
+      // An ask out longer than NT_WATCH_ASK_STALE_MS no longer holds the next (fable #747 R2 N6).
+      await vi.advanceTimersByTimeAsync(25_000);
+      expect(w.asks()).toBe(2);
       await vi.advanceTimersByTimeAsync(120_000);
       expect(w.api.__peek('_ntPending')).toHaveLength(0);
       expect(w.renders()).toBe(1);
@@ -751,6 +782,10 @@ describe('T1 — a launch that fails: back to the dialog when it is free, else k
     expect(p.api.__peek('_ntRequestId')).toBe('req-1');
     expect(p.el.addFiles).toHaveBeenCalledWith([p.file]);
     expect(p.calls.slice(-2)).toEqual(['open', 'error:거절됨']);
+    // The toast pressed again after it was taken back: nothing (fable #747 R2 N5).
+    const before = p.calls.length;
+    p.toasts[0].onAction?.();
+    expect(p.calls.length).toBe(before);
   });
 
   it('a voice note being recorded is input: the dialog is not free (astra Z4)', () => {
@@ -765,7 +800,8 @@ describe('T1 — a launch that fails: back to the dialog when it is free, else k
 // ── T2 — 카드 열기 opens the card, never Slack ───────────────────────
 
 describe('T2 — 카드 열기 opens the launch’s card on the board, never Slack', () => {
-  function page(opts: { onBoard: boolean; pendingOnBoard?: boolean; currentUserId?: string }) {
+  function page(opts: { onBoard: boolean; pendingOnBoard?: boolean; currentUserId?: string; showSleeping?: boolean }) {
+    const pc = { value: '', files: [] as unknown[] };
     const key = 'dev::work:C_ALPHA:1.2';
     const opened: string[] = [];
     const revealed: Array<[string, unknown]> = [];
@@ -792,6 +828,7 @@ describe('T2 — 카드 열기 opens the launch’s card on the board, never Sla
         'ntOpenArrived',
         'ntOpenArrivals',
         'ntPanelNow',
+        'ntPanelHasInput',
         'ntBoardIsViewers',
         'ntOnLaunched',
         'ntLaunchToast',
@@ -813,8 +850,13 @@ describe('T2 — 카드 열기 opens the launch’s card on the board, never Sla
         _viewerUserId: 'U1',
         panelOpen: false,
         panelSessionKey: null,
+        _pcSending: false,
+        _pcInFlight: 0,
+        showArchives: false,
+        showSleeping: opts.showSleeping ?? true,
+        _revealedKey: null,
         window: { open: winOpen },
-        document: { getElementById: (id: string) => (id === 'kanban' ? host : null) },
+        document: { getElementById: (id: string) => (id === 'kanban' ? host : id === 'pc-composer' ? pc : null) },
         openPanel: (k: string) => {
           opened.push(k);
           panel.open = true;
@@ -868,6 +910,7 @@ describe('T2 — 카드 열기 opens the launch’s card on the board, never Sla
       panel,
       syncPanel,
       arrive,
+      pc,
     };
   }
 
@@ -913,6 +956,43 @@ describe('T2 — 카드 열기 opens the launch’s card on the board, never Sla
     expect(p.revealed[p.revealed.length - 1]).toEqual([p.key, { open: false }]);
     expect(p.opened).toEqual([]);
     expect(p.api.__peek('_ntOpening')).toEqual([]);
+  });
+
+  // Review (fable #747 R2 N3): a note being written in the open card is not replaced either.
+  it('the reader is writing in the same open card: the arriving card only comes into view', () => {
+    const p = page({ onBoard: false, pendingOnBoard: true });
+    p.panel.open = true;
+    p.panel.key = 'dev::work:C_ALPHA:other';
+    p.syncPanel();
+    p.api.ntOpenLaunch(p.launch);
+    p.pc.value = '쓰던 메모';
+    p.arrive();
+    p.api.ntOpenArrivals();
+    expect(p.revealed[p.revealed.length - 1]).toEqual([p.key, { open: false }]);
+    expect(p.opened).toEqual([]);
+    // Nothing written there: it opens as asked.
+    const q = page({ onBoard: false, pendingOnBoard: true });
+    q.panel.open = true;
+    q.panel.key = 'dev::work:C_ALPHA:other';
+    q.syncPanel();
+    q.api.ntOpenLaunch(q.launch);
+    q.arrive();
+    q.api.ntOpenArrivals();
+    expect(q.opened).toEqual([q.key]);
+  });
+
+  // Review (fable #747 R2 N7): a card the 휴면 toggle hides is shown for this page load, then opened.
+  it('its card hidden by the 휴면 toggle: shown just for this page load, and the board asked again', () => {
+    const p = page({ onBoard: false, showSleeping: false });
+    p.api.ntOpenLaunch(p.launch);
+    p.cache[p.key] = { key: p.key, activityState: 'idle' };
+    p.api.ntOpenArrivals();
+    expect(p.api.__peek('_revealedKey')).toBe(p.key);
+    expect(p.calls).toContain('load');
+    expect(p.api.__peek('_ntOpening')).toEqual([p.launch]);
+    p.cardHost[p.key] = p.host;
+    p.api.ntOpenArrivals();
+    expect(p.opened).toEqual([p.key]);
   });
 
   it('an ask past NT_OPEN_WAIT_MS is dropped', () => {
@@ -1004,6 +1084,19 @@ describe('T2 — 카드 열기 opens the launch’s card on the board, never Sla
     expect(launch.sessionKey).toBe('task:t-1');
   });
 
+  it('a task made but not started whose instruction waits on a 시작 실패 card: the toast says 지시 가져오기 (R2 N8)', () => {
+    const p = page({ onBoard: false });
+    const t = (p.api as any).ntLaunchToast(
+      { sessionKey: 'task:x', status: 'not-started', reason: 'busy' },
+      null,
+      false,
+    );
+    expect(t).toMatchObject({
+      description: 'busy — 지시는 “시작 실패” 카드에 남겨 두었어요',
+      action: { id: 'open', label: '지시 가져오기' },
+    });
+  });
+
   it('the page no longer falls back to the Slack thread from 카드 열기', () => {
     expect(TEMPLATE).not.toContain('function ntOpenLaunched(');
     expect(TEMPLATE).not.toContain('window.open(launch.permalink');
@@ -1018,6 +1111,85 @@ describe('T2 — 카드 열기 opens the launch’s card on the board, never Sla
   });
 });
 
+// Review (fable #747 R2 N2): a POST that hangs is given up, so it never holds the launches queued behind it.
+describe('T1 — a launch’s POST has a deadline that follows its upload (ntPostTask)', () => {
+  function post() {
+    const xhrs: any[] = [];
+    class FakeXhr {
+      upload: Record<string, any> = {};
+      status = 0;
+      responseText = '';
+      onload: any;
+      onerror: any;
+      onabort: any;
+      aborted = false;
+      constructor() {
+        xhrs.push(this);
+      }
+      open() {}
+      setRequestHeader() {}
+      send() {}
+      abort() {
+        this.aborted = true;
+        this.onabort?.();
+      }
+    }
+    const statuses: string[] = [];
+    const api = loadWith<{ ntPostTask(body: string, launch: unknown): Promise<any> }>(['ntPostTask'], {
+      XMLHttpRequest: FakeXhr,
+      _csrfToken: 't',
+      NT_POST_STALL_MS: 60000,
+      NT_POST_ANSWER_MS: 60000,
+      ntPendingStatus: (_l: unknown, t: string) => statuses.push(t),
+    });
+    return { api, xhrs, statuses };
+  }
+
+  it('no upload progress for NT_POST_STALL_MS: aborted and rejected; progress keeps it alive', async () => {
+    vi.useFakeTimers();
+    try {
+      const p = post();
+      const run = p.api.ntPostTask('{}', { state: { destination: 'slack' } });
+      const settled = run.then(
+        () => 'resolved',
+        (e: Error) => e.message,
+      );
+      await vi.advanceTimersByTimeAsync(50_000);
+      p.xhrs[0].upload.onprogress({ lengthComputable: true, loaded: 1, total: 2 });
+      await vi.advanceTimersByTimeAsync(50_000);
+      expect(p.xhrs[0].aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(p.xhrs[0].aborted).toBe(true);
+      expect(await settled).toBe('timeout');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the upload done, no answer for NT_POST_ANSWER_MS: aborted; an answer in time clears the deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const late = post();
+      const lateRun = late.api.ntPostTask('{}', { state: {} }).catch((e: Error) => e.message);
+      late.xhrs[0].upload.onload();
+      await vi.advanceTimersByTimeAsync(60_001);
+      expect(await lateRun).toBe('timeout');
+      const ok = post();
+      const okRun = ok.api.ntPostTask('{}', { state: {} });
+      ok.xhrs[0].upload.onload();
+      ok.xhrs[0].status = 200;
+      ok.xhrs[0].responseText = '{"ok":true}';
+      ok.xhrs[0].onload();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(ok.xhrs[0].aborted).toBe(false);
+      expect(await okRun).toEqual({ status: 200, data: { ok: true } });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('T1 — upload progress is said on the card, not in the closed dialog', () => {
   it('ntPostTask reports to the launch’s card', () => {
     const post = clientFn('ntPostTask');
@@ -1026,5 +1198,38 @@ describe('T1 — upload progress is said on the card, not in the closed dialog',
     expect(post).not.toContain('ntSetStatus(');
     // The destination is the launch's, not the dialog's next task.
     expect(post).not.toContain('_ntState');
+  });
+});
+
+// Review (fable #747 R2 N4): 카드 열기 from another user's board switches the board — the picker shows it too.
+describe('T2 — selectUser keeps the user picker on the board it shows', () => {
+  it('sets the picker’s value when called from the page, before its title is read', () => {
+    const sel: Record<string, any> = {
+      value: 'U2',
+      title: '',
+      options: [
+        { value: 'U1', textContent: '나' },
+        { value: 'U2', textContent: '다른 사람' },
+      ],
+    };
+    Object.defineProperty(sel, 'selectedIndex', {
+      get() {
+        return sel.options.findIndex((o: { value: string }) => o.value === sel.value);
+      },
+    });
+    const api = loadWith<{ selectUser(u: string): void }>(['selectUser', 'syncUserSelectTitle'], {
+      document: { getElementById: (id: string) => (id === 'user-select' ? sel : null) },
+      currentUserId: 'U2',
+      syncBoardScope: () => {},
+      history: { replaceState: () => {} },
+      paintTrail: () => {},
+      loadSessions: () => {},
+      loadStats: () => {},
+      loadCronJobs: () => {},
+    });
+    api.selectUser('U1');
+    expect(sel.value).toBe('U1');
+    expect(sel.title).toBe('나');
+    expect(api.__peek('currentUserId')).toBe('U1');
   });
 });
