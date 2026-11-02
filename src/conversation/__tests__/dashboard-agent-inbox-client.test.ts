@@ -1550,7 +1550,10 @@ describe('top-bar user names keep their full text (shipped syncUserSelectLabel +
   });
 
   it('selectUser and loadUsers keep the title in sync', () => {
-    expect(clientFn('selectUser')).toMatch(/^function selectUser\(userId\) \{\n {2}syncUserSelectTitle\(\);/);
+    // The picker first shows the board it selects (카드 열기 calls selectUser too — #747 review R2 N4), then its title.
+    const select = clientFn('selectUser');
+    expect(select).toContain('if (select && select.value !== userId) select.value = userId;\n  syncUserSelectTitle();');
+    expect(select.indexOf('syncUserSelectTitle();')).toBeLessThan(select.indexOf('currentUserId = userId;'));
     expect(clientFn('loadUsers')).toMatch(/\n {2}syncUserSelectTitle\(\);\n\}$/);
   });
 
