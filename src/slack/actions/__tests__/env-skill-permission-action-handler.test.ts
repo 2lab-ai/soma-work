@@ -108,6 +108,15 @@ describe('EnvSkillPermissionActionHandler', () => {
     });
   });
 
+  it("1회 허용: a dashboard send's replay carries its ref (#785)", async () => {
+    h.requests.set('req-1', { ...h.requests.get('req-1'), dashboardClientRef: 'optimistic-1-ab' });
+    await handler.handleAction(click(VALUE_KIND_ENV_SKILL_ONCE), respond);
+    expect(messageHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ user: 'U1', text: 'continue the deploy', dashboardClientRef: 'optimistic-1-ab' }),
+      expect.any(Function),
+    );
+  });
+
   it('항상 허용: a persisted per-skill grant', async () => {
     await handler.handleAction(click(VALUE_KIND_ENV_SKILL_ALWAYS), respond);
     expect(h.grantSkill).toHaveBeenCalledWith('env-skills', 'acme-env:post-deploy', 'U1');

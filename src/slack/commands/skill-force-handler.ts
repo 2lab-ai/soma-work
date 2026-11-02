@@ -496,6 +496,7 @@ export class SkillForceHandler implements CommandHandler {
         channel,
         threadTs,
         originalText,
+        ...(ctx.dashboardClientRef ? { dashboardClientRef: ctx.dashboardClientRef } : {}),
       });
     }
     this.logger.info('Environment skill use denied — admin permission requested', { requester: user, skillKeys });
