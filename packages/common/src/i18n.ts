@@ -218,10 +218,16 @@ function matchTemplate(s: string, depth: number): string | null {
     const captured = tpl.slots.map((_, i) => m[i + 1] ?? '');
     if (!captured.every((v, i) => plausibleValue(v, tpl.around[i]))) continue;
     const values: string[] = [];
+    let swallowed = false;
     tpl.slots.forEach((slot, i) => {
       const v = captured[i];
-      values[slot] = depth < 2 && HANGUL.test(v) ? (translateUnit(v, depth + 1) ?? v) : v;
+      const t = depth < 2 && HANGUL.test(v) ? translateUnit(v, depth + 1) : null;
+      // A slot that ran across a separator into Korean it cannot place took another part's words:
+      // leave the line to the part-by-part pass.
+      if (t === null && HANGUL.test(v) && SEPARATORS.some((sep) => v.includes(sep))) swallowed = true;
+      values[slot] = t ?? v;
     });
+    if (swallowed) continue;
     return fill(tpl.text, values);
   }
   return null;

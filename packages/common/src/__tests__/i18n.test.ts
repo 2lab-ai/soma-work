@@ -146,6 +146,20 @@ describe('translateText — text already composed (the output boundary)', () => 
       '내가 쓴 말 — __tt 대시보드에서 응답했습니다.',
     );
   });
+
+  it('a slot never swallows a separator and the Korean beyond it: each part is matched on its own', () => {
+    registerDisplayCatalog('en', {
+      '<{0}|__tt 작업 스레드>': '<{0}|__tt Task thread>',
+      '<{0}|__tt 대시보드에서 보기>': '<{0}|__tt View on dashboard>',
+    });
+    expect(translateText('<https://a/t|__tt 작업 스레드>  ·  <https://a/d|__tt 대시보드에서 보기>', 'en')).toBe(
+      '<https://a/t|__tt Task thread>  ·  <https://a/d|__tt View on dashboard>',
+    );
+    // A person's title in the first part stays as written; the bot's link still reads in English.
+    expect(translateText('<https://a/t|내 제목>  ·  <https://a/d|__tt 대시보드에서 보기>', 'en')).toBe(
+      '<https://a/t|내 제목>  ·  <https://a/d|__tt View on dashboard>',
+    );
+  });
 });
 
 describe('translateText against the real catalog — never claims a person’s Korean (review P1)', () => {
