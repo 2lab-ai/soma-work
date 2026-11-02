@@ -22,9 +22,11 @@
  * it, so it reaches the browser byte for byte (tests run it as shipped).
  */
 
+import { LAYOUT_CLIENT_JS, LAYOUT_TAB_CSS, LAYOUT_TAB_HTML } from './settings-layout-tab';
 import { MEMORY_CLIENT_JS, MEMORY_TAB_CSS, MEMORY_TAB_HTML } from './settings-memory-tab';
 import { soundClientJs } from './sound-client';
 import { pageTokenAliases, UI_LIB_VERSION, uiLibKitCss, uiLibTokensCss } from './ui-lib';
+import { VIEW_LAYOUT_CLIENT_JS } from './view-layout-client';
 
 export interface SettingsPageTab {
   id: string;
@@ -37,6 +39,8 @@ export interface SettingsPageTab {
 export const SETTINGS_TABS: SettingsPageTab[] = [
   { id: 'preferences', label: '개인 설정', icon: 'gear' },
   { id: 'memory', label: '기억', icon: 'brain' },
+  // 대시보드 화면 (SSOT 2026-11-02, .prd/21): the surface editor — card, open card, detail card, thread card.
+  { id: 'layout', label: '대시보드 화면', icon: 'board' },
 ];
 
 export const SETTINGS_PAGE_CSS = String.raw`
@@ -666,6 +670,7 @@ function preferencesTab(): string {
 const TAB_HOOKS_JS = String.raw`
 function onTabShown(id) {
   if (id === 'memory' && !_memLoaded) loadMemory();
+  if (id === 'layout' && !_layLoaded) loadLayout();
 }
 `;
 
@@ -692,7 +697,7 @@ export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS): str
 <style id="ui-kit">
 ${uiLibKitCss()}
 </style>
-<style>${SETTINGS_PAGE_CSS}${MEMORY_TAB_CSS}</style>
+<style>${SETTINGS_PAGE_CSS}${MEMORY_TAB_CSS}${LAYOUT_TAB_CSS}</style>
 <!-- Tokens — @2lab.ai/ui is the single source, as on the dashboard (P10, P9): its tokens.css puts every
      --ui-* on :root and [data-theme="light|dark"], and the page's names are aliases of them. -->
 <style id="ui-tokens">
@@ -708,6 +713,7 @@ ${pageTokenAliases()}
 <ui-tabs id="settings-tabs" class="settings-tabs" panel-focus="none">
 ${preferencesTab()}
 ${MEMORY_TAB_HTML}
+${LAYOUT_TAB_HTML}
 </ui-tabs>
 <script type="application/json" id="settings-tabs-data">${tabsJson}</script>
 <dialog id="confirm" aria-labelledby="confirm-title">
@@ -720,7 +726,7 @@ ${MEMORY_TAB_HTML}
     </div>
   </form>
 </dialog>
-<script>${MEMORY_CLIENT_JS}${TAB_HOOKS_JS}${SETTINGS_CLIENT_JS}</script>
+<script>${MEMORY_CLIENT_JS}${VIEW_LAYOUT_CLIENT_JS}${LAYOUT_CLIENT_JS}${TAB_HOOKS_JS}${SETTINGS_CLIENT_JS}</script>
 <script type="module" src="/dashboard/ui/app-bar.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/setting-row.js?v=${UI_LIB_VERSION}"></script>
 <!-- <ui-settings-nav> and the library's own row filter (applySettingsFilter) for the page script's applyFilter. -->
@@ -733,6 +739,8 @@ if (typeof applyFilter === 'function') applyFilter();
 <script type="module" src="/dashboard/ui/memory-panel.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/knowledge-pages.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/episode-log.js?v=${UI_LIB_VERSION}"></script>
+<!-- 대시보드 화면's preview draws the board's own card element. -->
+<script type="module" src="/dashboard/ui/agent-inbox.js?v=${UI_LIB_VERSION}"></script>
 </body>
 </html>`;
 }
