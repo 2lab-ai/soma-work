@@ -23,7 +23,7 @@ import {
   shouldRunGoalIdleDriver,
 } from '../goal-completion-evaluator';
 import { resetGoalContinuationOnUserMessage } from '../goal-continuation';
-import { GoalLoopController, type GoalStallQuestion } from '../goal-loop-controller';
+import { GoalLoopController, type GoalLoopControllerDeps, type GoalStallQuestion } from '../goal-loop-controller';
 
 const SESSION_KEY = 'C1:T1';
 
@@ -184,7 +184,11 @@ interface Harness {
   prompts: string[];
 }
 
-function makeHarness(goal: SessionGoal, verdicts: GoalEvalVerdict[]): Harness {
+function makeHarness(
+  goal: SessionGoal,
+  verdicts: GoalEvalVerdict[],
+  opts: { deps?: Partial<GoalLoopControllerDeps>; failFirst?: number } = {},
+): Harness {
   const session = {
     channelId: 'C1',
     threadTs: 'T1',
@@ -197,6 +201,7 @@ function makeHarness(goal: SessionGoal, verdicts: GoalEvalVerdict[]): Harness {
   const questions: GoalStallQuestion[] = [];
   const prompts: string[] = [];
   let i = 0;
+  let failures = 0;
   const controller = new GoalLoopController({
     registry: {
       getSessionByKey: () => session,
@@ -206,6 +211,7 @@ function makeHarness(goal: SessionGoal, verdicts: GoalEvalVerdict[]): Harness {
     requestCoordinator: { isRequestActive: () => false },
     dispatcher: async ({ userPrompt }) => {
       prompts.push(userPrompt);
+      if (failures++ < (opts.failFirst ?? 0)) throw new Error('eval transport down');
       return JSON.stringify(verdicts[Math.min(i++, verdicts.length - 1)]);
     },
     injectContinuation: async (event) => {
@@ -220,6 +226,7 @@ function makeHarness(goal: SessionGoal, verdicts: GoalEvalVerdict[]): Harness {
     },
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     fallbackModel: 'claude-sonnet-4',
+    ...opts.deps,
   });
   return { controller, goal, session, injected, notices, questions, prompts };
 }
@@ -569,5 +576,94 @@ describe('restart and interrupted turns never stall (2026-11-02 incident)', () =
     await h.controller.settled(SESSION_KEY);
     expect(h.goal.stall).toBeDefined();
     expect(h.injected).toHaveLength(0);
+  });
+});
+
+/**
+ * #788 round 2 (astra review): the restart fix must hold on the paths around
+ * it — an eval retry, a verdict landing while the host stops, and #745's
+ * rollback span across a turn whose work is unknown.
+ */
+describe('restart fix — retries, shutdown and the rollback span (#788 review)', () => {
+  const sameAgain = verdict({ sameAsPrevious: true, sameConfidence: 0.97, progressed: false });
+
+  it('a kick whose eval failed is retried as a kick — it still cannot stall', async () => {
+    const retries: Array<() => void> = [];
+    const h = makeHarness(makeGoal({ lastEvalReason: 'PR #489 is not merged' }), [sameAgain], {
+      failFirst: 1,
+      deps: { scheduleEvalRetry: (fn) => retries.push(fn) },
+    });
+    h.session.goalLastTurnText = 'New text from the turn before the restart, never judged.';
+    h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await h.controller.settled(SESSION_KEY);
+    expect(retries).toHaveLength(1);
+
+    retries[0]();
+    await h.controller.settled(SESSION_KEY);
+
+    expect(h.prompts).toHaveLength(2);
+    expect(h.goal.stall).toBeUndefined();
+    expect(h.injected).toHaveLength(1);
+  });
+
+  it('a real turn whose eval failed is retried as a turn — a real repeat still stalls', async () => {
+    const retries: Array<() => void> = [];
+    const h = makeHarness(makeGoal({ lastEvalReason: 'dev has 0 epics' }), [sameAgain], {
+      failFirst: 1,
+      deps: { scheduleEvalRetry: (fn) => retries.push(fn) },
+    });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    retries[0]();
+    await h.controller.settled(SESSION_KEY);
+
+    expect(h.goal.stall).toBeDefined();
+  });
+
+  it('a verdict that lands while the host shuts down is dropped — no count, no turn', async () => {
+    let stopping = false;
+    const h = makeHarness(makeGoal({ lastEvalReason: undefined, continuationCount: 9 }), [verdict()], {
+      deps: { isShuttingDown: () => stopping },
+    });
+    const run = (h.controller as any).runEvalWithTimeout.bind(h.controller);
+    (h.controller as any).runEvalWithTimeout = async (...args: unknown[]) => {
+      const v = await run(...args);
+      stopping = true; // shutdown began while the eval was in flight
+      return v;
+    };
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(h.goal.continuationCount).toBe(9);
+    expect(h.goal.pendingEval).toBeUndefined();
+    expect(h.injected).toHaveLength(0);
+  });
+
+  it('no loop run starts while the host shuts down', async () => {
+    const h = makeHarness(makeGoal({ lastEvalReason: 'gap', continuationCount: 3 }), [verdict()], {
+      deps: { isShuttingDown: () => true },
+    });
+    h.session.goalLastTurnText = '';
+    h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await h.controller.settled(SESSION_KEY);
+
+    expect(h.prompts).toHaveLength(0);
+    expect(h.goal.continuationCount).toBe(3);
+    expect(h.injected).toHaveLength(0);
+  });
+
+  it("a turn that left no text makes the first failure's progress unknown — no rollback across it", async () => {
+    const h = makeHarness(
+      makeGoal({
+        lastEvalReason: 'dev has 0 epics',
+        firstFailure: { anchor: 'a1', at: 1, turns: 1, progressed: false },
+      }),
+      [sameAgain],
+    );
+    h.session.goalLastTurnText = '';
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    expect(h.goal.firstFailure?.progressed).toBe(true);
   });
 });

@@ -6255,6 +6255,11 @@ export class SlackHandler {
    * proceed with the shutdown, and admission is restored so a failed attempt
    * cannot strand the bot in a state where it accepts nothing.
    */
+  /** True once shutdown preparation began — the goal loop starts nothing new (#788). */
+  isShuttingDown(): boolean {
+    return this.followupShutdownPreparing === true;
+  }
+
   prepareFollowupShutdown(): void {
     // Set first: from here on the host admits no new work, so nothing can be
     // parked or dispatched into a session we are in the middle of stopping.
@@ -6543,7 +6548,8 @@ export class SlackHandler {
       // stopped judging empty turns). End it — its question is withdrawn and
       // the session stops waiting on it — and resume below.
       const noTurnText = !(session.goalLastTurnText ?? session.goal.lastAssistantTurnSummary ?? '').trim();
-      if (session.goal.stall && noTurnText) {
+      const falseStall = !!session.goal.stall && noTurnText;
+      if (falseStall) {
         retireGoalStall(session.goal, 'lifecycle');
         stallsEnded++;
         this.logger.info('Ended a goal stall judged on no turn text — resuming the goal', { sessionKey });
@@ -6568,10 +6574,14 @@ export class SlackHandler {
       // continuation budget — otherwise every deploy costs each running goal
       // one of its turns, and a goal cut on its last one resumes straight into
       // the cap question (2026-11-02, 1793150219.639969 cut on 10/10 at 05:08Z).
-      // "Cut" is the shutdown's own record, not an empty summary. An open cap
-      // decision is the owner's call, and a cut user turn (count 0) spent nothing.
+      // "Cut" is the shutdown's own record, not an empty summary. A false stall
+      // ended above was judged on a turn an earlier restart cut (it was
+      // waiting, not working, at this shutdown, so the record misses it). One
+      // refund either way. An open cap decision is the owner's call, and a cut
+      // user turn (count 0) spent nothing.
       const capDecisionOpen = isGoalCapDecisionPending(session.goal);
-      if (this.restartCutSessionKeys.has(sessionKey) && session.goal.continuationCount > 0 && !capDecisionOpen) {
+      const cutTurn = this.restartCutSessionKeys.has(sessionKey) || falseStall;
+      if (cutTurn && session.goal.continuationCount > 0 && !capDecisionOpen) {
         session.goal.continuationCount -= 1;
         refunded++;
         this.logger.info('Gave back the goal continuation the restart cut short', {
