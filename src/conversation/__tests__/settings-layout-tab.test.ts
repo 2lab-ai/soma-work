@@ -239,6 +239,22 @@ describe('E3 — editing saves at once', () => {
     expect(api.get('_laySaving')).toBe(false);
   });
 
+  it('coming back to the tab while a change is unsaved keeps the change (review residual)', async () => {
+    const { api, timers, release } = editor({}, { gate: true });
+    await api.loadLayout();
+    const tokens = () =>
+      api.get('_layDoc').presets['1'].minimal.card.foot.find((c: { id: string }) => c.id === 'tokens').on;
+    api.layToggle('foot', 'tokens', true);
+    await api.loadLayout(); // the debounce has not fired: the server still has the old document
+    expect(tokens()).toBe(true);
+    timers.splice(0).forEach((fn) => fn()); // PUT leaves
+    await api.loadLayout(); // and is still on its way
+    expect(tokens()).toBe(true);
+    await release();
+    expect(tokens()).toBe(true);
+    expect(api.get('_layPending')).toBe(false);
+  });
+
   it('switches, options and selects; an edited open card drops its per-column order', async () => {
     const { api } = editor();
     await api.loadLayout();
