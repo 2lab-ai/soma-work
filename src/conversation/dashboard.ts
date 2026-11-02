@@ -12627,7 +12627,7 @@ async function doPlanDecision(key, decision) {
   repaint();
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/plan';
   var body = JSON.stringify({ decision: decision, revision: tp.revision });
-  var word = decision === 'start' ? '시작' : '취소';
+  var failed = decision === 'start' ? '계획을 시작하지 못했어요' : '계획을 취소하지 못했어요';
   try {
     var headers = { 'Content-Type': 'application/json' };
     if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
@@ -12641,9 +12641,9 @@ async function doPlanDecision(key, decision) {
     var data = {};
     try { data = await res.json(); } catch (_) {}
     if (res.ok) dashToast({ title: decision === 'start' ? '계획대로 작업을 시작했어요' : '계획을 취소했어요', description: s.title || undefined, tone: 'success' });
-    else dashToast({ title: '계획 ' + word + ' 실패', description: (data && data.error) || 'HTTP ' + res.status, tone: 'error' });
+    else dashToast({ title: failed, description: (data && data.error) || 'HTTP ' + res.status, tone: 'error' });
   } catch (e) {
-    dashToast({ title: '계획 ' + word + ' 실패', description: '네트워크 오류 — 다시 시도하세요', tone: 'error' });
+    dashToast({ title: failed, description: '네트워크 오류 — 다시 시도하세요', tone: 'error' });
   }
   setBusy(key, 'plan', false);
   repaint();
