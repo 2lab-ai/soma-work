@@ -17,6 +17,7 @@ import * as path from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import type { ConversationSession } from '../../types';
+import { userSettingsStore } from '../../user-settings-store';
 import {
   type BuildStreamOptionsDeps,
   buildStreamOptions,
@@ -368,6 +369,41 @@ describe('a task turn run by someone other than its owner (SSOT 2026-11-02)', ()
       'deny',
     );
     expect(decisionOf(await h(call('Write', { file_path: `${WORK_DIR}/ok.txt`, content: 'y' })))).not.toBe('deny');
+  });
+
+  // Trinity R2 (fable P2) — the owner-root exemption leans on the OS sandbox holding Bash's writes.
+  it('never runs unsandboxed: the sandbox fails closed for it, and with the sender’s sandbox off the guard is theirs', async () => {
+    const ctx = executionContextForTask(
+      {
+        ownerId: USER,
+        slackless: true,
+        taskId: TASK_ID,
+        channelId: '',
+        workingDirectory: WORK_DIR,
+      } as ConversationSession,
+      ACTOR,
+    );
+    const on = await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: ctx.workingDirectory, executionContext: ctx },
+      makeDeps(),
+    );
+    expect(on.options.sandbox?.failIfUnavailable).toBe(true);
+    const own = await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: WORK_DIR, executionContext: taskContext() },
+      makeDeps(),
+    );
+    expect(own.options.sandbox?.failIfUnavailable).toBe(false); // the owner's own turn: as before
+    const off = vi.spyOn(userSettingsStore, 'getUserSandboxDisabled').mockReturnValue(true);
+    try {
+      const { options } = await buildStreamOptions(
+        { queryEnv: {}, workingDirectory: ctx.workingDirectory, executionContext: ctx },
+        makeDeps(),
+      );
+      expect(options.sandbox).toBeUndefined();
+      expect(decisionOf(await policyHook(options)(call('Bash', { command: `cd ${WORK_DIR} && ls` })))).toBe('deny');
+    } finally {
+      off.mockRestore();
+    }
   });
 });
 
