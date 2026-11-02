@@ -496,6 +496,7 @@ function laySampleCard(id) {
   return c;
 }
 var LAY_MODEL = 'claude-opus-5-5[1m]';
+var LAY_EFFORT = 'high'; // the sample card's effort (#805: the face's model chip draws it as a gauge)
 function layInbox(card, open) {
   return {
     columns: [{ id: 'preview', label: '미리보기', cards: [card], bare: true }],
@@ -594,7 +595,7 @@ function layPreview(l) {
   var id = 'pv-' + _laySurface + '-' + _laySample;
   var full = laySampleCard(id);
   var asks = _laySample === 'wait';
-  var card = faceOf(full, LAY_MODEL, face, asks);
+  var card = faceOf(full, LAY_MODEL, face, asks, LAY_EFFORT);
   var html = '<div class="ui-tok"><ui-agent-inbox id="lay-inbox" lang="ko"></ui-agent-inbox></div>';
   if (box._kind !== id) { box.innerHTML = html; box._kind = id; }
   var inbox = document.getElementById('lay-inbox');
