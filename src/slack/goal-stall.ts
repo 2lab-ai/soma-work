@@ -55,7 +55,7 @@ export function openGoalStall(
   goal: SessionGoal,
   verdict: GoalEvalVerdict,
   now: number,
-  rollback?: { anchor: string; turns: number },
+  rollback?: { anchor: string; turns: number; keptUntil?: number },
 ): SessionGoalStall {
   const stall: SessionGoalStall = {
     stallId: randomUUID(),
@@ -63,7 +63,13 @@ export function openGoalStall(
     reason: verdict.reason,
     actions: stallActionsOf(verdict),
     confidence: verdict.sameConfidence ?? 0,
-    ...(rollback ? { rollbackAnchor: rollback.anchor, rollbackTurns: rollback.turns } : {}),
+    ...(rollback
+      ? {
+          rollbackAnchor: rollback.anchor,
+          rollbackTurns: rollback.turns,
+          ...(rollback.keptUntil !== undefined ? { rollbackKeptUntil: rollback.keptUntil } : {}),
+        }
+      : {}),
   };
   goal.stall = stall;
   goal.updatedAt = now;
@@ -171,9 +177,9 @@ export function requestGoalStallRollback(
 ): ContextRollbackResult | undefined {
   const anchor = session.goal?.stall?.rollbackAnchor;
   if (!anchor) return undefined;
-  // What came after the first failure's turn leaves the context (the dashboard marks it, #744).
-  const first = session.goal?.firstFailure;
-  const keptUntil = first?.anchor === anchor ? keptUntilOf('goal', first.at) : undefined;
+  // What came after the first failure's turn leaves the context (the dashboard marks it, #744);
+  // fixed on the stall when the offer was made.
+  const keptUntil = session.goal?.stall?.rollbackKeptUntil;
   return requestContextRollback(
     session,
     { anchor, label: GOAL_STALL_ROLLBACK_LABEL, source: 'goal', keptUntil },
@@ -262,10 +268,11 @@ export function goalStallRollbackOffer(
   session: Pick<ConversationSession, 'contextAnchor' | 'sessionId' | 'compactionCount'>,
   goal: SessionGoal,
   verdict: GoalEvalVerdict,
-): { anchor: string; turns: number } | undefined {
+): { anchor: string; turns: number; keptUntil?: number } | undefined {
   const first = goal.firstFailure;
   if (!first?.anchor || first.progressed || verdict.progressed === true) return undefined;
   if (first.anchor === session.contextAnchor || first.turns < 1) return undefined;
   if (anchorRefusal(session, first.anchor)) return undefined;
-  return { anchor: first.anchor, turns: first.turns };
+  // What the rollback keeps is fixed now: a rollback applied before the answer clears firstFailure.
+  return { anchor: first.anchor, turns: first.turns, keptUntil: keptUntilOf('goal', first.at) };
 }
