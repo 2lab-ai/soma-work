@@ -55,6 +55,7 @@ import {
   formatResumedGoalLine,
   type GoalQueueSession,
 } from '../session-goal';
+import { type CapturedLink, linksCreatedByTools, linksInText } from '../session-link-capture';
 import {
   accumulateModelTotals,
   addSessionSpend,
@@ -1198,6 +1199,37 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   /**
    * 스트림 실행
    */
+  /**
+   * 세션 링크 자동 기록 (SSOT 2026-11-02): record links a turn names on its session (SessionRegistry.noteSessionLinks —
+   * 'first' a user message, 'always' a PR or issue just created, 'if-empty' a reply). Bookkeeping: never throws.
+   */
+  private noteLinks(
+    session: ConversationSession,
+    sessionKey: string,
+    channel: string,
+    threadTs: string | undefined,
+    links: CapturedLink[],
+    mode: 'first' | 'always' | 'if-empty',
+  ): void {
+    if (links.length === 0) return;
+    try {
+      const handler = this.deps.claudeHandler;
+      const changed =
+        session.slackless === true
+          ? handler.noteSessionLinksByKey?.(sessionKey, links, mode)
+          : handler.noteSessionLinks?.(channel, threadTs, links, mode);
+      if (changed) {
+        this.logger.info('Session links recorded from the conversation', {
+          sessionKey,
+          mode,
+          urls: links.map((l) => l.url),
+        });
+      }
+    } catch (error) {
+      this.logger.debug('Failed to record session links', { sessionKey, error: (error as Error)?.message });
+    }
+  }
+
   async execute(params: StreamExecuteParams): Promise<ExecuteResult> {
     const {
       session,
@@ -1751,6 +1783,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         }
       }
 
+      // 세션 링크 자동 기록 (SSOT 2026-11-02): the issues, PRs and wikis the user's message names — every turn, not
+      // only the first (the dispatch's); the first of each kind is the one to work on.
+      if (session && text && params.isUserInput !== false && params.hostTurn !== true) {
+        this.noteLinks(session, sessionKey, channel, threadTs, linksInText(text), 'first');
+      }
+
       this.logger.info('Sending query to Claude Code SDK', {
         prompt: finalPrompt.substring(0, 200) + (finalPrompt.length > 200 ? '...' : ''),
         sessionId: session.sessionId,
@@ -2089,6 +2127,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               }
             },
           );
+          // The PR or issue a `gh pr create` / `gh issue create` just made is the session's current one.
+          this.noteLinks(
+            session,
+            ctx.sessionKey,
+            ctx.channel,
+            ctx.threadTs,
+            linksCreatedByTools(allToolResults),
+            'always',
+          );
           const commandResult = await this.handleModelCommandToolResults(allToolResults, session, ctx, turnEpochToken);
           if (commandResult.hasPendingChoice) {
             toolChoicePending = true;
@@ -2168,6 +2215,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         onUpdateMessage: async (ch, ts, text) => {
           await this.updateToolCallMessage(ch, ts, text);
         },
+        // The links a reply names join the history; one becomes current only when its kind has none.
+        onLinksMentioned: (links) => this.noteLinks(session, sessionKey, channel, threadTs, links, 'if-empty'),
         onSessionLinksDetected: async (links) => {
           if (session.slackless === true) this.deps.claudeHandler.setSessionLinksByKey(sessionKey, links as any);
           else this.deps.claudeHandler.setSessionLinks(channel, threadTs, links as any);

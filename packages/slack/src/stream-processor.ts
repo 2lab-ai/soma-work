@@ -31,6 +31,7 @@ import {
 // Type-only: the interrupt-flush guard compares `AbortSignal.reason` against
 // the producer-side reason union (no runtime import, no cycle).
 import type { RequestAbortReason } from './request-coordinator';
+import { type CapturedLink, linksInText } from './session-link-capture';
 import type { SessionLinks } from './thread-header-builder';
 import type { EndTurnInfo } from './thread-surface';
 import { ToolFormatter } from './tool-formatter';
@@ -535,6 +536,11 @@ export interface StreamCallbacks {
   onLiveUsage?: (call: LiveUsageCall) => void;
   /** Called when model outputs session_links JSON directive */
   onSessionLinksDetected?: (links: SessionLinks, context: StreamContext) => Promise<void>;
+  /**
+   * 세션 링크 자동 기록 (SSOT 2026-11-02): the issue, PR and wiki URLs an assistant text names (its directives
+   * stripped), for the host to record. Called only when there is at least one. Bookkeeping — a throw is swallowed.
+   */
+  onLinksMentioned?: (links: CapturedLink[], context: StreamContext) => void;
   /** Called when model outputs channel_message JSON directive */
   onChannelMessageDetected?: (messageText: string, context: StreamContext) => Promise<void>;
   /** Called once per valid release_notes JSON directive (a multi-repo deploy emits several) */
@@ -1718,6 +1724,17 @@ export class AgentStreamProcessor {
    */
   private async extractAndDispatchDirectives(text: string, context: StreamContext): Promise<string> {
     let cleaned = text;
+
+    // The links the reply names (세션 링크 자동 기록) — read from the text as the model wrote it, so a directive's
+    // own URL counts too; the session_links directive below still sets the current link explicitly.
+    if (this.callbacks.onLinksMentioned) {
+      try {
+        const mentioned = linksInText(text);
+        if (mentioned.length > 0) this.callbacks.onLinksMentioned(mentioned, context);
+      } catch (error) {
+        this.logger.debug('Failed to record the links a reply names', { error });
+      }
+    }
 
     // Each directive handler is isolated — one failure must not block subsequent handlers
     try {
