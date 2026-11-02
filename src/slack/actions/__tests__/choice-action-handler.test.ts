@@ -898,6 +898,37 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
     expect(messageHandler).not.toHaveBeenCalled();
   });
 
+  /**
+   * SSOT 2026-11-02 (trinity review, grok P1). A dashboard answer resolved on
+   * the P3 path cleared the question (afterP3Resolve) before the send; when
+   * the send failed, the rollback put the session back to `waiting` with no
+   * question — a NEEDS YOU card nothing could answer, and every retry 409.
+   */
+  it.each([
+    ['waiting', 'waiting'],
+    ['idle (cap decision showing it)', 'idle'],
+  ])('dashboard single-choice P3 send failure on a %s session restores the question', async (_label, activity) => {
+    const question = { type: 'user_choice', question: 'Q?', choices: [{ id: '2', label: 'B' }] };
+    const session = {
+      threadRootTs: 'thread-root',
+      threadTs: 'thread-root',
+      channelId: 'C1',
+      activityState: activity,
+      actionPanel: {
+        pendingChoice: { turnId: 't1', kind: 'single', choiceTs: 'msg-1', formIds: [] },
+        pendingQuestion: question,
+      },
+    };
+    claudeHandler.getSessionByKey.mockReturnValue(session);
+    messageHandler.mockRejectedValueOnce(new Error('send failed'));
+
+    await expect(handler.handleChoiceFromDashboard(sessionKey, '2', 'B', 'Q?', 'U1')).rejects.toThrow('send failed');
+
+    expect(threadPanel.resolveChoice).toHaveBeenCalled();
+    expect(session.actionPanel.pendingQuestion).toBe(question);
+    expect(claudeHandler.setActivityStateByKey).toHaveBeenLastCalledWith(sessionKey, 'waiting');
+  });
+
   it('P3 path persistAndBroadcast clears pendingQuestion', async () => {
     const session = {
       threadRootTs: 'thread-root',
