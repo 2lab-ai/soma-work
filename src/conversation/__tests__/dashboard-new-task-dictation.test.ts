@@ -1861,6 +1861,42 @@ describe('#740 — 받아쓰기 through Whisper in this browser when this device
     );
   });
 
+  it('finishing in the browser may take longer (WebAssembly is slow): it waits up to 60 s (review, PR #765)', async () => {
+    vi.useFakeTimers();
+    try {
+      const fake = serverFake();
+      const { api, env } = page({ choice: 'browser', browser: fake.start });
+      await api.ntDictateStart();
+      fake.made[0].cb.onReady('whisper-base, WebAssembly');
+      fake.made[0].cb.onText('하나', '둘');
+      api.ntDictateStop(false);
+      vi.advanceTimersByTime(45000);
+      expect(fake.made[0].aborts).toBe(0);
+      fake.made[0].cb.onText('하나 둘 셋', '');
+      fake.made[0].cb.onDone('하나 둘 셋');
+      expect(env.composer.value).toBe('하나 둘 셋');
+      // one that never finishes: let go at 60 s, and said
+      await api.ntDictateStart();
+      api.ntDictateStop(false);
+      vi.advanceTimersByTime(60000);
+      expect(fake.made[1].aborts).toBe(1);
+      expect(env.errorLine.textContent).toBe('마지막 말이 제때 오지 않아 보이는 글자까지만 남겼습니다');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('inference that fails: the red line says so', async () => {
+    const fake = serverFake();
+    const { api, env } = page({ choice: 'browser', browser: fake.start });
+    await api.ntDictateStart();
+    fake.made[0].cb.onError('failed', '브라우저 위스퍼가 받아쓰지 못했습니다 — GPU device lost');
+    expect(env.errorLine.textContent).toBe(
+      '브라우저 위스퍼가 받아쓰지 못했습니다 — GPU device lost — 설정 › 받아쓰기에서 기기 기본으로 바꿀 수 있습니다',
+    );
+    expect(api.__peek('_ntDictation')).toBeNull();
+  });
+
   it('usable without a browser recogniser where a Worker can run WebAssembly', () => {
     const firefox = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0';
     const { api } = page({ choice: 'browser', ua: firefox, win: { Worker: () => {} } });

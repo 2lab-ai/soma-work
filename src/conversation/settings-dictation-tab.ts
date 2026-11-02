@@ -238,6 +238,8 @@ async function dicInfo(w) {
   for (var j = 0; j < DIC_LANGS.length; j++) info.langs[DIC_LANGS[j]] = await dicLangState(Rec, DIC_LANGS[j]);
   info.mic = await dicMicState(n);
   info.gpu = await dicGpu(n);
+  // WebGPU in name only (no adapter): the browser's Whisper runs on WebAssembly there (dictationBrowserRuntime).
+  if (info.browserDevice === 'webgpu' && !info.gpu.has) info.browserDevice = 'wasm';
   info.server = typeof dictationServerStatus === 'function' ? await dictationServerStatus(w && w.fetch ? w.fetch.bind(w) : null) : { ok: false, why: '' };
   return info;
 }
@@ -594,7 +596,8 @@ function dicTestStop() {
 }
 
 // The end may never come (Edge can go silent after a stop or an error; a server that never answers done): the test
-// lets go after a moment — longer for Whisper, whose last words may wait behind other dictations.
+// lets go after a moment — longer for Whisper, whose last words may wait behind other dictations (the server) or on
+// a slow WebAssembly run (this browser).
 function dicTestSettle(t) {
   setTimeout(function () { dicTestDone(t); }, t.srv ? DIC_SETTLE_WHISPER_MS : DIC_SETTLE_MS);
 }
