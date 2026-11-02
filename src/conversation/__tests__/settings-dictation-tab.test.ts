@@ -134,6 +134,7 @@ class FakeRec {
   onresult: AnyFn | null = null;
   onerror: AnyFn | null = null;
   onend: AnyFn | null = null;
+  onaudiostart: AnyFn | null = null;
   constructor() {
     FakeRec.made.push(this);
   }
