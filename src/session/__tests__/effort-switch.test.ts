@@ -75,3 +75,39 @@ describe('switchSessionEffort', () => {
     }
   });
 });
+
+// The effort must be one the session's model runs: ultra only where its menu lists it (sol / terra / astra).
+describe('switchSessionEffort — the level must be one the session’s model runs', () => {
+  const SOL = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+  const GROK = ['low', 'medium', 'high', 'xhigh'];
+  const menu = (model: string) => (model.startsWith('gpt-') ? SOL : model.startsWith('grok') ? GROK : undefined);
+
+  it('ultra is taken on a model whose menu lists it', () => {
+    const s = session({ model: 'gpt-6.1-sol[1m]' } as Partial<ConversationSession>);
+    const r = switchSessionEffort('C1:t1', 'ULTRA', deps(s, { menu }));
+    expect(s.effort).toBe('ultra');
+    expect(r).toMatchObject({ status: 'switched', effort: 'ultra', effective: 'ultra' });
+  });
+
+  it('a level outside the model’s menu is refused with 400 and nothing changes', () => {
+    const s = session({ model: 'grok-4.6', effort: 'high' } as Partial<ConversationSession>);
+    const d = deps(s, { menu });
+    for (const level of ['max', 'ultra']) {
+      try {
+        switchSessionEffort('C1:t1', level, d);
+        expect.unreachable(`${level} on grok`);
+      } catch (e) {
+        expect((e as EffortSwitchError).statusCode).toBe(400);
+        expect((e as Error).message).toContain('low, medium, high, xhigh');
+      }
+    }
+    expect(s.effort).toBe('high');
+    expect(d.save).not.toHaveBeenCalled();
+  });
+
+  it('a model without a menu takes the SDK levels — never ultra', () => {
+    const s = session({ model: 'claude-opus-5-5[1m]' } as Partial<ConversationSession>);
+    expect(switchSessionEffort('C1:t1', 'max', deps(s, { menu })).status).toBe('switched');
+    expect(() => switchSessionEffort('C1:t1', 'ultra', deps(s, { menu }))).toThrow(EffortSwitchError);
+  });
+});

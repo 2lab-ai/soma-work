@@ -56,7 +56,7 @@ describe('card effort picker (T1)', () => {
   // the library's suite owns the radiogroup ('offers only the levels the model runs; arrows select at
   // once and keep the menu open'). Others read the level as text.
   const { renderEffortPicker } = load<{ renderEffortPicker(s: Record<string, unknown>): string }>(
-    ['esc', 'escAttr', 'effortLabel', 'renderEffortPicker'],
+    ['esc', 'escAttr', 'effortLabel', 'effortWord', 'renderEffortPicker'],
     ['EFFORT_LABELS'],
     { STRINGS },
   );
@@ -64,11 +64,22 @@ describe('card effort picker (T1)', () => {
   it('a non-owner sees the level as text, with the level the model really runs', () => {
     const html = renderEffortPicker({ key: 'k', effort: 'max', effortEffective: 'high' });
     expect(html).not.toContain('<select');
-    expect(html).toContain('최대 &rarr; 높음');
+    expect(html).toContain(
+      '<span class="ui-effort" data-effort="max">최대</span> &rarr; <span class="ui-effort" data-effort="high">높음</span>',
+    );
     expect(html).toContain('이 모델은 높음까지 실행합니다');
     expect(renderEffortPicker({ key: 'k', effort: 'high' })).toBe(
       // Tone pass P8: the tooltip is Korean chrome (STRINGS.effortTitle) — was "Reasoning effort".
-      '<span class="meta-effort" title="추론 강도">높음</span>',
+      '<span class="meta-effort" title="추론 강도"><span class="ui-effort" data-effort="high">높음</span></span>',
+    );
+  });
+
+  it('every effort word carries its level for the kit’s look — XHigh red, Max and Ultra foil; ultra reads 울트라', () => {
+    expect(renderEffortPicker({ key: 'k', effort: 'ultra' })).toContain(
+      '<span class="ui-effort" data-effort="ultra">울트라</span>',
+    );
+    expect(renderEffortPicker({ key: 'k', effort: 'xhigh' })).toContain(
+      '<span class="ui-effort" data-effort="xhigh">매우 높음</span>',
     );
   });
 });
@@ -112,58 +123,112 @@ describe('postEffortSwitch / effortSwitchNote (T1)', () => {
   });
 });
 
-describe('top-bar default chips (T6)', () => {
-  const defaults = () => ({
+describe('top-bar defaults: one <ui-model-picker> sets the default model and effort together (T6)', () => {
+  const ALL = [...LEVELS, 'ultra'];
+  const REPS = [
+    {
+      nickname: 'opus[1m]',
+      model: 'claude-opus-5-5[1m]',
+      label: 'Opus 5.5 (1M)',
+      contextWindow: 1_000_000,
+      autoCompactTokens: 750_000,
+      effortLevels: LEVELS,
+    },
+    {
+      nickname: 'sol[1m]',
+      model: 'gpt-6.1-sol[1m]',
+      label: 'Sol 6.1 (1M)',
+      contextWindow: 1_000_000,
+      autoCompactTokens: 600_000,
+      effortLevels: ALL,
+    },
+    {
+      nickname: 'grok[1m]',
+      model: 'grok-4.6',
+      label: 'Grok 4.6',
+      contextWindow: 500_000,
+      autoCompactTokens: 450_000,
+      effortLevels: ['low', 'medium', 'high', 'xhigh'],
+    },
+  ];
+  const defaults = (model = 'sol[1m]', effort = 'ultra', levels: string[] = ALL) => ({
     model: {
       key: 'defaultModel',
-      value: 'opus[1m]',
-      options: [
-        { value: 'opus[1m]', label: 'Opus 5.5', description: 'claude-opus-5-5[1m]' },
-        { value: 'grok[1m]', label: 'Grok 4.6', description: 'grok-4.6' },
-      ],
+      value: model,
+      options: REPS.map((r) => ({ value: r.nickname, label: r.label, description: r.model })),
     },
-    effort: {
-      key: 'defaultEffort',
-      value: 'xhigh',
-      options: LEVELS.map((l) => ({ value: l, label: l })),
-    },
+    effort: { key: 'defaultEffort', value: effort, options: levels.map((l) => ({ value: l, label: l })) },
+  });
+  const pickerFns = ['toNum', 'mpLevelsOf', 'mpRows', 'defaultsPickerData'];
+  const pickerEnv = (myDefaults: unknown, over: Record<string, unknown> = {}) => ({
+    REPRESENTATIVE_MODELS: REPS,
+    EFFORT_LEVELS: ALL,
+    SDK_EFFORT_LEVELS: LEVELS,
+    _myDefaults: myDefaults,
+    _tdBusy: { model: false, effort: false },
+    _tdError: '',
+    ...over,
   });
 
-  it('the menu lists the options with the current one checked; the open owned session gets the scope box', () => {
-    // D1 (A-07): the defaults menu is @2lab.ai/ui <ui-menu> — the page hands it rows (data), never markup.
-    type Item = { kind: string; value?: string; label?: string; description?: string; checked?: boolean };
-    const scope = vi.fn();
-    const fns = load<{ defaultsMenuData(kind: string): { label: string; items: Item[] } }>(
-      ['defaultsMenuData'],
-      ['TD_ALSO_SESSION', '_tdAlsoSession'],
-      { _myDefaults: defaults(), defaultsScopeSession: scope },
+  it('the bar holds one picker — no separate model and effort chips, no menu of its own', () => {
+    const box = TEMPLATE.slice(
+      TEMPLATE.indexOf('<div class="topbar-defaults"'),
+      TEMPLATE.indexOf('</div>', TEMPLATE.indexOf('<div class="topbar-defaults"')),
     );
-    scope.mockReturnValue(null);
-    let d = fns.defaultsMenuData('model');
-    expect(d.label).toBe('새 세션 기본 모델');
-    expect(d.items[0]).toEqual({ kind: 'heading', label: '새 세션 기본 모델' });
-    const radios = d.items.filter((it) => it.kind === 'radio');
-    expect(radios.map((it) => it.value)).toEqual(['opus[1m]', 'grok[1m]']);
-    expect(radios.filter((it) => it.checked)).toHaveLength(1);
-    expect(d.items.some((it) => it.kind === 'checkbox')).toBe(false);
-    // A pick arrives as the element's ui-select (values as data, never inside inline JS) and is saved by kind.
-    expect(TEMPLATE).toContain("if (d.kind === 'radio' && _tdMenuKind) pickDefault(_tdMenuKind, d.value);");
-    expect(TEMPLATE).not.toContain('pickDefaultFrom');
+    expect(box).toContain('<ui-model-picker id="td-picker" class="td-picker" lang="ko"');
+    expect(box).not.toContain('id="td-model"');
+    expect(box).not.toContain('id="td-effort"');
+    expect(box).not.toContain('<ui-menu');
+    expect(box).not.toContain('<select');
+  });
 
-    scope.mockReturnValue({ key: 'self::C1:t1', displayHeadline: '대시보드 개선' });
-    d = fns.defaultsMenuData('effort');
-    expect(d.items[d.items.length - 1]).toEqual({
-      kind: 'checkbox',
-      value: 'td-also-session',
-      label: '열린 세션에도 적용',
-      description: '대시보드 개선',
-      checked: true,
-    });
-    // The box is answered too (a checkbox row keeps the menu open), and it is on again each time the menu opens.
-    expect(TEMPLATE).toContain(
-      "if (d.kind === 'checkbox' && d.value === TD_ALSO_SESSION) { _tdAlsoSession = !!d.checked; return; }",
+  it('the data: every representative model with the levels it runs; the default model and effort; the levels the server offers for it', () => {
+    const { defaultsPickerData } = load<{ defaultsPickerData(): any }>(pickerFns, [], pickerEnv(defaults()));
+    const d = defaultsPickerData();
+    expect(d.heading).toBe('새 세션 기본값');
+    expect(d.models.map((m: any) => [m.id, m.effortLevels])).toEqual([
+      ['opus[1m]', LEVELS],
+      ['sol[1m]', ALL],
+      ['grok[1m]', ['low', 'medium', 'high', 'xhigh']],
+    ]);
+    expect(d.value).toEqual({ model: 'sol[1m]', effort: 'ultra', effortLevels: ALL });
+    expect(d.busy).toEqual({ model: false, effort: false });
+    expect(d).not.toHaveProperty('error');
+    // A default outside the representatives (the element's first, current row) keeps the levels the server offers.
+    const outside = load<{ defaultsPickerData(): any }>(
+      pickerFns,
+      [],
+      pickerEnv(defaults('claude-haiku-4-5', 'high', ['low', 'medium', 'high'])),
     );
-    expect(clientFn('openDefaultsMenu')).toContain('_tdAlsoSession = true;');
+    expect(outside.defaultsPickerData().value).toEqual({
+      model: 'claude-haiku-4-5',
+      effort: 'high',
+      effortLevels: ['low', 'medium', 'high'],
+    });
+    // A write in flight and the last refusal are the element's to show.
+    const busy = load<{ defaultsPickerData(): any }>(
+      pickerFns,
+      [],
+      pickerEnv(defaults(), { _tdBusy: { model: true, effort: false }, _tdError: '저장하지 못했습니다: HTTP 400' }),
+    );
+    expect(busy.defaultsPickerData()).toMatchObject({
+      busy: { model: true, effort: false },
+      error: '저장하지 못했습니다: HTTP 400',
+    });
+  });
+
+  it('a pick is the page’s: cancelled, then saved by what changed (model or effort)', () => {
+    const init = TEMPLATE.slice(
+      TEMPLATE.indexOf('(function initDefaultsPicker()'),
+      TEMPLATE.indexOf('})();', TEMPLATE.indexOf('(function initDefaultsPicker()')),
+    );
+    expect(init).toContain("document.getElementById('td-picker')");
+    expect(init).toContain("el.addEventListener('ui-change'");
+    expect(init).toContain('e.preventDefault();');
+    expect(init).toContain("if (e.detail.changed === 'model') pickDefault('model', String(e.detail.model || ''));");
+    expect(init).toContain(
+      "else if (e.detail.changed === 'effort') pickDefault('effort', String(e.detail.effort || ''));",
+    );
   });
 
   it('only an owned, live, local open session is a scope target', () => {
@@ -184,73 +249,113 @@ describe('top-bar default chips (T6)', () => {
     expect(run({ open: true, key: 'k' }, { k: { ...s, sibling: true } })).toBeNull();
   });
 
-  it('a pick saves the default, and with the scope box checked also switches the open session', async () => {
+  it('"열린 세션에도" shows only while a session the owner may switch is open (panel open / close repaint it)', () => {
+    const sw: any = { hidden: true, title: '' };
+    const run = (scope: unknown) =>
+      load<{ paintDefaultsScope(): void }>(['paintDefaultsScope'], [], {
+        document: { getElementById: () => sw },
+        _myDefaults: defaults(),
+        defaultsScopeSession: () => scope,
+      }).paintDefaultsScope();
+    run(null);
+    expect(sw.hidden).toBe(true);
+    run({ key: 'k', displayHeadline: '대시보드 개선' });
+    expect(sw.hidden).toBe(false);
+    expect(sw.title).toContain('대시보드 개선');
+    expect(clientFn('openPanel')).toContain('paintDefaultsScope();');
+    expect(clientFn('closePanel')).toContain('paintDefaultsScope();');
+  });
+
+  function pickEnv(over: Record<string, unknown> = {}) {
+    const status: any = { textContent: '', setAttribute: vi.fn(), removeAttribute: vi.fn() };
+    const myDefaults: any = defaults('opus[1m]', 'max', LEVELS);
     const patchSetting = vi.fn(async (key: string, value: string) => ({
       ok: true,
       setting: { key, value, options: [{ value, label: value.toUpperCase() }] },
     }));
-    const postEffortSwitch = vi.fn(async () => ({ ok: true, result: { status: 'switched', effort: 'low' } }));
-    const postModelSwitch = vi.fn();
-    const status: any = { textContent: '', setAttribute: vi.fn(), removeAttribute: vi.fn() };
-    const document = { getElementById: () => status };
-    const myDefaults: any = defaults();
-    const env = {
-      document,
+    const env: Record<string, unknown> = {
+      document: { getElementById: () => status },
+      EFFORT_LEVELS: ALL,
+      SDK_EFFORT_LEVELS: LEVELS,
       _myDefaults: myDefaults,
       _modelNotes: {} as Record<string, unknown>,
+      _tdBusy: { model: false, effort: false },
+      _tdError: '',
+      _tdAlsoSession: true,
       patchSetting,
-      postEffortSwitch,
-      postModelSwitch,
-      defaultsScopeSession: () => ({ key: 'self::C1:t1' }),
-      closeDefaultsMenu: vi.fn(),
-      renderDefaultsChips: vi.fn(),
+      postEffortSwitch: vi.fn(async (_k: string, effort: string) => ({
+        ok: true,
+        result: { status: 'switched', effort },
+      })),
+      postModelSwitch: vi.fn(async () => ({ ok: true, result: { status: 'switched' } })),
+      defaultsScopeSession: () => ({ key: 'self::C1:t1', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] }),
+      renderDefaultsPicker: vi.fn(),
+      refreshDefaultEffort: vi.fn(async () => {
+        myDefaults.effort = { key: 'defaultEffort', value: 'xhigh', options: [{ value: 'xhigh', label: 'XHIGH' }] };
+      }),
       optionLabel: (row: any, v: string) => (row.options.find((o: any) => o.value === v) || {}).label || v,
-      modelSwitchNote: vi.fn(),
+      effortLabel: (l: string) => l,
+      modelSwitchNote: () => ({ text: 'ok', error: false }),
       effortSwitchNote: () => ({ text: 'ok', error: false }),
+      mpApplyEffort: vi.fn(),
       refreshCard: vi.fn(),
+      repaintPanelControlsFor: vi.fn(),
       loadSessions: vi.fn(),
+      REPRESENTATIVE_MODELS: REPS,
+      ...over,
     };
-    // Spec 13: the session branch takes the per-session busy lock and repaints the panel's picker.
-    // The scope box's state is the page's (_tdAlsoSession, answered from <ui-menu>'s ui-select).
-    const withBox = (on: boolean) =>
-      load<{ pickDefault(kind: string, value: string): Promise<void> }>(
-        ['isBusy', 'setBusy', 'setDefaultsStatus', 'pickDefault'],
-        ['_busy'],
-        { ...env, _tdAlsoSession: on, repaintPanelControlsFor: vi.fn() },
-      ).pickDefault;
-    await withBox(true)('effort', 'low');
-    expect(patchSetting).toHaveBeenCalledWith('defaultEffort', 'low');
-    expect(postEffortSwitch).toHaveBeenCalledWith('self::C1:t1', 'low');
-    expect(postModelSwitch).not.toHaveBeenCalled();
-    expect(myDefaults.effort.value).toBe('low');
-    expect(status.textContent).toBe('기본 추론 강도 → LOW (새 세션부터) · 열린 세션에도 적용');
+    const fns = load<{ pickDefault(kind: string, value: string): Promise<void> }>(
+      [
+        'isBusy',
+        'setBusy',
+        'setDefaultsStatus',
+        'mpLevelsOf',
+        'mpEffortLevels',
+        'fitEffortLevel',
+        'sessionAcceptsModel',
+        'pickDefault',
+      ],
+      ['_busy'],
+      env,
+    );
+    return { ...fns, env, status, myDefaults, patchSetting };
+  }
 
-    postEffortSwitch.mockClear();
-    await withBox(false)('effort', 'high');
-    expect(postEffortSwitch).not.toHaveBeenCalled();
+  it('an effort pick saves the default and, with the switch on, sets the open session to the nearest level its model runs', async () => {
+    const { pickDefault, env, status, myDefaults, patchSetting } = pickEnv();
+    await pickDefault('effort', 'ultra');
+    expect(patchSetting).toHaveBeenCalledWith('defaultEffort', 'ultra');
+    expect(myDefaults.effort.value).toBe('ultra');
+    // The open session's model stops at max: it gets max, never a level it cannot run.
+    expect(env.postEffortSwitch).toHaveBeenCalledWith('self::C1:t1', 'max');
+    expect(status.textContent).toBe('기본 추론 강도 → ULTRA (새 세션부터) · 열린 세션에도 적용 (max)');
+    // The switch off: the session is left alone.
+    const off = pickEnv({ _tdAlsoSession: false });
+    await off.pickDefault('effort', 'high');
+    expect(off.env.postEffortSwitch).not.toHaveBeenCalled();
   });
 
-  it('a refused save says why and leaves the session alone', async () => {
-    const status: any = { textContent: '', setAttribute: vi.fn(), removeAttribute: vi.fn() };
-    const postEffortSwitch = vi.fn();
-    const { pickDefault } = load<{ pickDefault(kind: string, value: string): Promise<void> }>(
-      ['setDefaultsStatus', 'pickDefault'],
-      [],
-      {
-        document: { getElementById: () => status },
-        _tdAlsoSession: true,
-        _myDefaults: defaults(),
-        patchSetting: async () => ({ ok: false, error: 'effort는 low, medium, high, xhigh, max 중 하나여야 합니다' }),
-        postEffortSwitch,
-        postModelSwitch: vi.fn(),
-        defaultsScopeSession: () => ({ key: 'k' }),
-        closeDefaultsMenu: () => {},
-        renderDefaultsChips: () => {},
-      },
-    );
-    await pickDefault('effort', 'turbo');
+  it('a model pick saves the default model, reads back the effort the server carried over, and switches the open session', async () => {
+    const { pickDefault, env, status, myDefaults, patchSetting } = pickEnv();
+    await pickDefault('model', 'grok[1m]');
+    expect(patchSetting).toHaveBeenCalledWith('defaultModel', 'grok[1m]');
+    expect(env.refreshDefaultEffort).toHaveBeenCalledTimes(1);
+    expect(myDefaults.effort.value).toBe('xhigh');
+    expect(env.postModelSwitch).toHaveBeenCalledWith('self::C1:t1', 'grok[1m]');
+    expect(status.textContent).toBe('기본 모델 → GROK[1M] (새 세션부터) · 추론 강도 XHIGH · 열린 세션에도 적용');
+  });
+
+  it('a refused save says why (under the picker too) and leaves the session alone', async () => {
+    const { pickDefault, env, status } = pickEnv({
+      patchSetting: async () => ({
+        ok: false,
+        error: 'Grok 4.6은(는) effort ultra를 지원하지 않습니다 — low, medium, high, xhigh 중 하나',
+      }),
+    });
+    await pickDefault('effort', 'ultra');
     expect(status.textContent).toContain('저장하지 못했습니다');
-    expect(postEffortSwitch).not.toHaveBeenCalled();
+    expect(env.renderDefaultsPicker).toHaveBeenCalled(); // the picker shows the refusal (its data's error)
+    expect(env.postEffortSwitch).not.toHaveBeenCalled();
   });
 });
 
@@ -271,31 +376,17 @@ describe('top-bar chips stay clickable while a session panel is open (T6, review
     expect(DASHBOARD_TS).not.toContain('.slide-panel-overlay');
   });
 
-  it('the model scope box is offered only for a model the session switch accepts (a representative nickname)', () => {
-    const fns = load<{ defaultsMenuData(kind: string): { items: { kind: string }[] } }>(
-      ['defaultsMenuData'],
-      ['TD_ALSO_SESSION', '_tdAlsoSession'],
-      {
-        _myDefaults: {
-          model: {
-            value: 'claude-sonnet-4-6',
-            options: [
-              { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-              { value: 'opus[1m]', label: 'Opus 5.5' },
-            ],
-          },
-        },
-        defaultsScopeSession: () => ({ key: 'k', displayHeadline: 'x' }),
-        REPRESENTATIVE_MODELS: [{ nickname: 'opus[1m]' }],
-      },
-    );
-    expect(fns.defaultsMenuData('model').items.some((it) => it.kind === 'checkbox')).toBe(true);
-    const picks: string[] = [];
+  it('a model outside the session switch list is saved as the default only (a representative nickname is required)', () => {
     const only = load<{ sessionAcceptsModel(v: string): boolean }>(['sessionAcceptsModel'], [], {
       REPRESENTATIVE_MODELS: [{ nickname: 'opus[1m]' }],
     });
-    picks.push(String(only.sessionAcceptsModel('opus[1m]')), String(only.sessionAcceptsModel('claude-sonnet-4-6')));
-    expect(picks).toEqual(['true', 'false']);
+    expect([only.sessionAcceptsModel('opus[1m]'), only.sessionAcceptsModel('claude-sonnet-4-6')]).toEqual([
+      true,
+      false,
+    ]);
+    expect(clientFn('pickDefault')).toContain(
+      "var skipSession = !!session && kind === 'model' && !sessionAcceptsModel(value);",
+    );
   });
 });
 
@@ -308,7 +399,7 @@ describe('top-bar chips for a user without admin acceptance (T6, review P3)', ()
         ok: true,
         json: async () => ({ accepted: false, settings: [{ key: 'defaultModel' }, { key: 'defaultEffort' }] }),
       }),
-      renderDefaultsChips: () => {},
+      renderDefaultsPicker: () => {},
     });
     await loadMyDefaults();
     expect(box.hidden).toBe(true);

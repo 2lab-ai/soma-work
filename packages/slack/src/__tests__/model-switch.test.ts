@@ -37,6 +37,33 @@ describe('applyModelSwitch', () => {
   });
 });
 
+describe('the effort follows the model', () => {
+  it('a switch carrying an effort sets it (the target does not run the session’s level); without one the level stays', () => {
+    const s: Record<string, any> = { model: 'gpt-6.1-sol[1m]', effort: 'ultra' };
+    applyModelSwitch(s, 'grok-4.6', cw, 'xhigh');
+    expect(s).toMatchObject({ model: 'grok-4.6', effort: 'xhigh' });
+    applyModelSwitch(s, 'claude-opus-5-5[1m]', cw);
+    expect(s.effort).toBe('xhigh');
+  });
+
+  it('a switch that waited for its compact lands with the effort it parked', () => {
+    const s: Record<string, any> = {
+      model: 'gpt-6.1-sol[1m]',
+      effort: 'ultra',
+      pendingModelSwitch: {
+        model: 'grok-4.6',
+        nickname: 'grok[1m]',
+        requestedAt: 1,
+        compactTs: '1.1',
+        armed: true,
+        effort: 'xhigh',
+      },
+    };
+    expect(applyPendingModelSwitch(s, cw, 2)).toMatchObject({ nickname: 'grok[1m]' });
+    expect(s).toMatchObject({ model: 'grok-4.6', effort: 'xhigh' });
+  });
+});
+
 describe('a switch waiting for its compact', () => {
   // Armed: the compact turn running now is the one this switch dispatched.
   const pending = () => ({ model: 'grok-4.6', nickname: 'grok[1m]', requestedAt: 1, compactTs: '100.1', armed: true });

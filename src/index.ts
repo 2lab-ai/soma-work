@@ -145,6 +145,7 @@ import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from 
 import { applyAgentEvent } from './session/agent-registry';
 import { backfillAgentSpend, createAgentSpendReader } from './session/agent-spend';
 import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
+import { allowedEffortsFor } from './session/effort-menu';
 import { switchSessionEffort } from './session/effort-switch';
 import { productionModelCatalogDeps } from './session/model-catalog-deps';
 import { switchSessionModel } from './session/model-switch';
@@ -1025,6 +1026,7 @@ async function start() {
       switchSessionEffort(sessionKey, effort, {
         getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
         clamp: clampEffortToModel,
+        menu: allowedEffortsFor,
         save: () => claudeHandler.saveSessions(),
         broadcast: () => broadcastSessionUpdate(),
       }),
