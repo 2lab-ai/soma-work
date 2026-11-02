@@ -79,6 +79,10 @@ function memoryStore(): SettingsStoreLike & { data: Record<string, any> } {
     setUserDashboardPlan: (id, p) => {
       u(id).dashboardPlan = p;
     },
+    getUserTrustedInstructors: (id) => (u(id).trusted || []).map((e: any) => ({ ...e })),
+    setUserTrustedInstructors: (id, list) => {
+      u(id).trusted = list;
+    },
   };
 }
 
@@ -178,12 +182,14 @@ describe('settings registry — read', () => {
       'permissionMode',
       'sandbox',
       'sandboxNetwork',
+      'trustedInstructors',
       'dashboardMode',
       'dashboardPlan',
     ]);
     for (const s of snap.settings) {
-      // A dashboard-only setting (the dashboard's own view) has no Slack command; every other one names it.
-      if (s.group === 'dashboard') expect(s.slackCommand).toBeUndefined();
+      // A dashboard-only setting (the dashboard's own view) has no Slack command; every other one names it —
+      // except the always-approve list (#767), which a Slack approval button fills and only the page edits.
+      if (s.group === 'dashboard' || s.key === 'trustedInstructors') expect(s.slackCommand).toBeUndefined();
       else expect(s.slackCommand).toBeTruthy();
       expect(snap.groups.map((g) => g.id)).toContain(s.group);
     }
@@ -445,5 +451,50 @@ describe('settings registry — write', () => {
     const { registry, apply } = setup();
     await registry.write('U1', 'email', '  ');
     expect(apply.email).toHaveBeenCalledWith({ userId: 'U1', value: 'clear' });
+  });
+});
+
+describe('settings registry — the always-approve list (#767 T4)', () => {
+  function seeded() {
+    const ctx = setup();
+    ctx.store.data.U1 = {
+      trusted: [
+        { userId: 'U_A', name: 'Alice', addedAt: 1 },
+        { userId: 'U_B', addedAt: 2 },
+      ],
+    };
+    return ctx;
+  }
+
+  it('lists the people with their names, in 권한, removable only', () => {
+    const { registry } = seeded();
+    const row = registry.read('U1').settings.find((s) => s.key === 'trustedInstructors')!;
+    expect(row).toMatchObject({ group: 'permissions', kind: 'list', value: ['U_A', 'U_B'], modified: true });
+    expect(row.removeOnly).toBe(true);
+    expect(row.options).toEqual([
+      { value: 'U_A', label: 'Alice' },
+      { value: 'U_B', label: 'U_B' },
+    ]);
+    expect(registry.read('U2').settings.find((s) => s.key === 'trustedInstructors')).toMatchObject({
+      value: [],
+      modified: false,
+    });
+  });
+
+  it('a write removes people and keeps the rest as they were', async () => {
+    const { registry, store } = seeded();
+    const view = await registry.write('U1', 'trustedInstructors', ['U_B']);
+    expect(store.data.U1.trusted).toEqual([{ userId: 'U_B', addedAt: 2 }]);
+    expect(view.value).toEqual(['U_B']);
+    await registry.write('U1', 'trustedInstructors', []);
+    expect(store.data.U1.trusted).toEqual([]);
+  });
+
+  it('a write cannot add anyone — people are added from an approval request', async () => {
+    const { registry, store } = seeded();
+    expect(await refused(registry.write('U1', 'trustedInstructors', ['U_A', 'U_NEW']), 400)).toContain('승인 요청');
+    await refused(registry.write('U1', 'trustedInstructors', 'U_A'), 400);
+    await refused(registry.write('U1', 'trustedInstructors', [1]), 400);
+    expect(store.data.U1.trusted).toHaveLength(2);
   });
 });

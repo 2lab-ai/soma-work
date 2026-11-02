@@ -715,6 +715,12 @@ export interface ConversationSession {
    */
   workQueueId?: string;
   /**
+   * #767 — people the owner approved for THIS session ("이 세션에서 항상
+   * 승인"): their instructions here run without asking the owner again.
+   * Persisted with the session; it ends with the session.
+   */
+  approvedInstructors?: string[];
+  /**
    * Set once by `SessionInitializer` from a verified incident turn; makes this
    * session incident-owned (restricted runtime, ordinary traffic refused in
    * the thread). Persisted so a restart cannot launder the restriction away,

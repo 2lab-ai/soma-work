@@ -339,6 +339,7 @@ describe('T3 — minimal: a card shows what matters', () => {
         'acQuestionId',
         'acPermissionsHtml',
         'acGoalDecisionHtml',
+        'acInstructionApprovalsHtml',
         'acQuestionHtml',
         'renderEpicPlan',
         'renderCardBody',

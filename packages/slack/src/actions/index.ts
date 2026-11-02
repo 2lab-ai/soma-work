@@ -129,6 +129,12 @@ export interface ActionHandlerDelegates {
   cronEditSubmitHandler: { handleSubmit(ack: ViewAck, body: any): Promise<void> };
   /** Owner-facing buttons of the `cron run` permission prompt (once/always/deny). */
   cronRunPermissionHandler: { handleAction(body: any, respond: RespondFn): Promise<void> };
+  /**
+   * #767 — the owner's DM buttons for an instruction someone else sent into
+   * their work thread (approve / this session / this person always / deny).
+   * Optional for older delegate providers.
+   */
+  instructionApprovalHandler?: { handleAction(body: any, respond: RespondFn): Promise<void> };
   userSkillMenuHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
   userSkillPermissionHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
   /** Admin-facing buttons of the environment-skill permission prompt (once/always/all/deny). */
@@ -315,6 +321,12 @@ export class ActionHandlers {
     app.action(/^cron_run_perm_/, async ({ ack, body, respond }) => {
       await ack();
       await this.delegates.cronRunPermissionHandler.handleAction(body, respond as RespondFn);
+    });
+
+    // #767 — the session owner's answer to someone else's instruction (DM'd prompt).
+    app.action(/^instr_approval_/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.instructionApprovalHandler?.handleAction(body, respond as RespondFn);
     });
 
     app.view(CRON_EDIT_MODAL_CALLBACK_ID, async ({ ack, body }) => {

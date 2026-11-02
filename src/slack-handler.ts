@@ -33,6 +33,7 @@ import type { ClaudeHandler } from './claude-handler';
 import { getFollowupQueueCapacity, getReleaseNotesChannels } from './config';
 import { captureUserMedia, recordUserTurn } from './conversation/recorder';
 import { FileHandler, type ProcessedFile } from './file-handler';
+import type { InstructionApprovals } from './instruction-approval';
 import { getLastCommandChannelStore } from './last-command-channel-store';
 import { Logger } from './logger';
 import { mcpCallTracker } from './mcp-call-tracker';
@@ -267,6 +268,8 @@ export class SlackHandler {
   private taskNoticeHandoff?: (sessionKey: string, session: ConversationSession) => void;
   /** E2 ⑧ — the Slack entry: a plain instruction becomes a dashboard task (wired once the deliverer is up). */
   private taskEntry?: SlackTaskEntry;
+  /** #767 — the owner-approval gate for someone else's instruction (wired in index.ts). */
+  private instructionApprovals?: InstructionApprovals;
   private followupDispatcher?: FollowupDispatcher;
   /**
    * Why the queue could not be loaded. Set = DEGRADED: the queue refuses to
@@ -1192,6 +1195,15 @@ export class SlackHandler {
       return;
     }
 
+    // #767 — someone who is not this thread's owner: held for the owner's
+    // approval before anything parks, queues or steers it. Ahead of the
+    // shutdown parking too — the hold is durable on its own.
+    const ownerHold = this.ownerApprovalHold(event);
+    if (ownerHold) {
+      await this.holdForOwnerApproval(event, ownerHold);
+      return;
+    }
+
     // Shutdown has begun recording its state: DISPATCHING now would start a
     // turn the process is about to kill. The instruction itself is still
     // parked durably — see below.
@@ -1403,6 +1415,16 @@ export class SlackHandler {
       // `blocked`, like the other policy refusals below: nothing ran, so `safe`
       // would record a dropped message as resolved.
       return { result: 'blocked', reason: 'incident-owned thread: ordinary message dropped' };
+    }
+
+    // #767 — the backstop of the entry gate: a message that reaches a dispatch
+    // another way (a queue drain, `Send now`, a message parked before the gate
+    // or before its writer lost an approval) is held here. `safe`: it is in the
+    // owner's hands now, nothing is owed by this dispatch.
+    const ownerHold = this.ownerApprovalHold(event);
+    if (ownerHold) {
+      await this.holdForOwnerApproval(event, ownerHold);
+      return { result: 'safe' };
     }
 
     // SSOT 2026-10-23 T5 — "the channel the user last gave a command in" is the
@@ -2729,6 +2751,86 @@ export class SlackHandler {
   /** E2 ⑧ — wire the Slack entry (index.ts, once the notice deliverer is up: the card link is its post). */
   setTaskEntry(entry: SlackTaskEntry | undefined): void {
     this.taskEntry = entry;
+  }
+
+  /** #767 — wire the owner-approval gate for instructions from someone who is not the session's owner. */
+  setInstructionApprovals(approvals: InstructionApprovals | undefined): void {
+    this.instructionApprovals = approvals;
+  }
+
+  /**
+   * #767 — hold an instruction from someone who is not this thread's owner
+   * until the owner approves it (`instruction-approval.ts`); the caller runs
+   * nothing for a held message.
+   *
+   * Only a message that would start or steer a turn is held: a control (`!`,
+   * a command that answers without a turn) keeps its own owner checks, and a
+   * host turn (cron, goal, resume) is the owner's. A top-level message starts
+   * its own session, which its writer owns. Called at the entry, before the
+   * queue fence — a held message is never queued, never steered into the
+   * running turn — and again in `processMessage` for anything that reaches a
+   * dispatch another way (a queue drain, `Send now`).
+   */
+  /**
+   * The gate's decision, synchronously: what to hold this message under, or
+   * undefined when it runs. Synchronous on purpose — the entry calls it ahead
+   * of the queue fence, and an await there (even one that decides nothing)
+   * would move every message's fence by a tick.
+   */
+  private ownerApprovalHold(
+    event: MessageEvent,
+  ): { approvals: InstructionApprovals; sessionKey: string; session: ConversationSession } | undefined {
+    const approvals = this.instructionApprovals;
+    if (!approvals || event.synthetic || !event.user || !event.thread_ts) return undefined;
+    if (event.channel.startsWith('D')) return undefined;
+    if (!this.isQueueableFollowup(event)) return undefined;
+    const session = this.claudeHandler?.getSession?.(event.channel, event.thread_ts);
+    if (!session?.ownerId || session.ownerId === event.user) return undefined;
+    const sessionKey = this.claudeHandler.getSessionKey(event.channel, event.thread_ts);
+    const approvalId = (event.routeContext as { instructionApprovalId?: string } | undefined)?.instructionApprovalId;
+    if (approvals.allows({ sessionKey, session, senderId: event.user, approvalId, ts: event.ts })) return undefined;
+    return { approvals, sessionKey, session };
+  }
+
+  /** Hold the message for the owner (`ownerApprovalHold` decided it): ask, tell the thread. */
+  private async holdForOwnerApproval(
+    event: MessageEvent,
+    { approvals, sessionKey, session }: NonNullable<ReturnType<SlackHandler['ownerApprovalHold']>>,
+  ): Promise<void> {
+    let senderName: string | undefined;
+    try {
+      senderName = (await this.slackApi.getUserName(event.user)) || undefined;
+    } catch {
+      senderName = undefined;
+    }
+    // The event as it will run once approved; a stale approval id is not carried over.
+    const { instructionApprovalId: _stale, ...route } = (event.routeContext ?? {}) as Record<string, unknown>;
+    const stored = JSON.parse(
+      JSON.stringify({
+        ...event,
+        ...(Object.keys(route).length ? { routeContext: route } : { routeContext: undefined }),
+      }),
+    ) as Record<string, unknown>;
+    const held = await approvals.hold({
+      sessionKey,
+      session,
+      senderId: event.user,
+      senderName,
+      instruction: { kind: 'message', ts: event.ts, text: event.text ?? '', at: Date.now(), event: stored },
+    });
+    this.logger.info('Instruction held for the session owner’s approval', {
+      sessionKey,
+      sender: event.user,
+      requestId: held.requestId,
+      created: held.created,
+    });
+    if (held.refused === 'full') {
+      await this.slackApi.postSystemMessage(
+        event.channel,
+        `⚠️ <@${event.user}>님의 승인 대기 중인 지시가 너무 많아 이 메시지는 보관하지 않았습니다. 소유자가 응답한 뒤 다시 보내 주세요.`,
+        { threadTs: event.thread_ts },
+      );
+    }
   }
 
   setFollowupChangeListener(fn: ((sessionKey: string) => void) | undefined): void {
