@@ -42,13 +42,18 @@ export class EffortHandler implements CommandHandler {
 
         // Apply live to the current session so the caller sees the change
         // on this turn, not only on the next new session.
+        // Only when this session's own model runs the level (ultra only where its catalog menu lists it).
         const session = this.deps.claudeHandler.getSession(channel, threadTs);
-        if (session) {
+        const sessionRuns = !!session && allowedEffortsFor(session.model).includes(resolved);
+        if (session && sessionRuns) {
           session.effort = resolved;
         }
 
         await say({
-          text: `✅ *Effort Changed*\n\nDefault effort is now: *${resolved}*\n\n_Applied to current and future sessions._`,
+          text:
+            sessionRuns || !session
+              ? `✅ *Effort Changed*\n\nDefault effort is now: *${resolved}*\n\n_Applied to current and future sessions._`
+              : `✅ *Effort Changed*\n\nDefault effort is now: *${resolved}*\n\n_Future sessions only — this session's model does not run \`${resolved}\`; use \`%effort <level>\` for it._`,
           thread_ts: threadTs,
         });
       } else {

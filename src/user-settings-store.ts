@@ -323,8 +323,8 @@ export type { EffortLevel } from 'soma-lib';
 // Effort levels — everything llmux publishes per model (soma-lib
 // `EFFORT_LEVELS`): the SDK's five plus `ultra`, which only the codex tiers
 // whose catalog menu lists it run (sol / terra / astra). The runtime clamps a
-// level to the model's menu, and carries `ultra` outside the SDK `effort`
-// option (build-stream-options `withExtraBodyEffort`).
+// level to the model's menu and runs `ultra` as `max` — no backend takes
+// `ultra` on the wire (build-stream-options).
 export { EFFORT_LEVELS } from 'soma-lib';
 export const DEFAULT_EFFORT: EffortLevel = 'xhigh';
 

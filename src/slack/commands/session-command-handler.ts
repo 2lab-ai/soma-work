@@ -327,8 +327,9 @@ export class SessionCommandHandler implements CommandHandler {
     const valid = EFFORT_LEVELS;
     const normalized = input.toLowerCase();
 
-    // A known level the session's model does not run (ultra only where its catalog menu lists it).
-    const allowed = allowedEffortsFor(session?.model);
+    // A known level the session's model does not run (ultra only where its catalog menu lists it). A session
+    // without a model of its own runs the owner's default.
+    const allowed = allowedEffortsFor(session?.model || userSettingsStore.getUserDefaultModel(ctx.user));
     if (valid.includes(normalized as any) && !allowed.includes(normalized as any)) {
       await say({
         text: `❌ This session's model does not run effort \`${normalized}\`.\n*Available for this model:* ${allowed.map((v) => `\`${v}\``).join(', ')}`,

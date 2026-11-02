@@ -42,6 +42,7 @@ import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { getPermissionGatedServers, loadMcpToolPermissions } from '../../mcp-tool-permission-config';
 import { resolveModelProfile } from '../../metrics/model-profile';
 import { clampEffortToModel, modelCatalog } from '../../model-catalog';
+
 import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
 import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/deploy-sandbox-grant';
@@ -678,18 +679,14 @@ export async function buildStreamOptions(
   // mutated, only this per-query option.
   if (session?.effort) {
     const clamped = options.model ? clampEffortToModel(options.model, session.effort) : session.effort;
-    if (isSdkEffortLevel(clamped)) {
-      options.effort = clamped;
-    } else {
-      // `ultra` (only on the models whose catalog menu lists it — the clamp
-      // turns it into `max` everywhere else) is not an SDK/CLI `--effort`
-      // value: it rides as the request body's `output_config.effort` through
-      // CLAUDE_CODE_EXTRA_BODY, which the CLI lets win over `--effort` (the
-      // way soma carries it). llmux resolves it to the wire level the backend
-      // takes.
-      if (!options.env) options.env = {};
-      options.env.CLAUDE_CODE_EXTRA_BODY = withExtraBodyEffort(options.env.CLAUDE_CODE_EXTRA_BODY, clamped);
-    }
+    // `ultra` (kept only on the codex tiers whose catalog menu lists it) is not
+    // an SDK/CLI `--effort` value, and no backend takes it on the wire: the
+    // codex backend's strongest level is `max` (it 400s 'ultra', probed
+    // 2026-11-02 — llmux #228 maps it the same way) and Claude models 400 it
+    // too. It runs as `max`. Not through CLAUDE_CODE_EXTRA_BODY: that body
+    // rides every request of the CLI process — a Claude subagent or the CLI's
+    // own small-model calls would carry `ultra` and be refused.
+    options.effort = (isSdkEffortLevel(clamped) ? clamped : 'max') as typeof options.effort;
     if (clamped !== session.effort) {
       logger.debug('Clamped session effort to model catalog menu', {
         model: options.model,
@@ -954,26 +951,4 @@ function readIncidentRequest(session: ConversationSession | undefined): Incident
   const candidate = (session as { incidentRequest?: unknown } | undefined)?.incidentRequest;
   if (candidate === undefined) return undefined;
   return assertIncidentRequest(candidate);
-}
-
-/**
- * `CLAUDE_CODE_EXTRA_BODY` with `output_config.effort` set to `effort`, keeping
- * whatever else an operator put there (config.json#claude.env). A value that is
- * not a JSON object is replaced — the CLI could not merge it either.
- */
-export function withExtraBodyEffort(current: string | undefined, effort: string): string {
-  let body: Record<string, unknown> = {};
-  if (current) {
-    try {
-      const parsed: unknown = JSON.parse(current);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) body = parsed as Record<string, unknown>;
-    } catch {
-      // not JSON — replaced below
-    }
-  }
-  const outputConfig =
-    body.output_config && typeof body.output_config === 'object' && !Array.isArray(body.output_config)
-      ? (body.output_config as Record<string, unknown>)
-      : {};
-  return JSON.stringify({ ...body, output_config: { ...outputConfig, effort } });
 }
