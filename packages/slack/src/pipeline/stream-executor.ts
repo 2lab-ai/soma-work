@@ -6416,6 +6416,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       !this.deps.requestCoordinator.isRequestActive?.(sessionKey)
     ) {
       this.setActivity(session, sessionKey, channel, threadTs, 'idle');
+      // The runtime status said '입력 대기' for this question.
+      await this.updateRuntimeStatus(session, sessionKey, { agentPhase: undefined, waitingForChoice: false }).catch(
+        () => undefined,
+      );
     }
     try {
       this.deps.claudeHandler.getSessionRegistry?.().persistAndBroadcast?.(sessionKey);

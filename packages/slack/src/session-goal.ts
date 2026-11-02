@@ -299,6 +299,7 @@ let capDecisionRetirer: (goal: SessionGoalState) => void = (goal) => {
   goal.capDmPendingAt = undefined;
   goal.capDecisionId = undefined;
   goal.capDmRef = undefined;
+  goal.stall = undefined;
 };
 
 /** Wire the host's cap-decision retirement (production: `retireGoalCapDecision`). */
@@ -317,7 +318,7 @@ export function endGoalCapDecision(goal: SessionGoalState | undefined): void {
  * source for every surface.
  */
 export function formatResumedGoalLine(goal: SessionGoalState): string {
-  if (resumedFromStall.has(goal)) {
+  if (resumedFromStall.delete(goal)) {
     return `▶️ The current goal had stopped on a repeated failure — it runs again now: ${formatGoalObjectiveForSlack(goal.objective)}`;
   }
   return `▶️ The current goal had used its ${goal.maxContinuations}-turn auto-continuation budget without finishing — it runs again now: ${formatGoalObjectiveForSlack(goal.objective)}`;

@@ -2558,10 +2558,10 @@ export class SlackHandler {
    * has released its request-coordinator slot — so the driver can run
    * the completion eval without racing/superseding the work turn.
    */
-  setGoalTurnSettledHandler(handler: (sessionKey: string) => void): void {
+  setGoalTurnSettledHandler(handler: (sessionKey: string, opts?: { cause?: 'turn' | 'kick' }) => void): void {
     this.goalTurnSettledHandler = handler;
   }
-  private goalTurnSettledHandler?: (sessionKey: string) => void;
+  private goalTurnSettledHandler?: (sessionKey: string, opts?: { cause?: 'turn' | 'kick' }) => void;
 
   /**
    * Post-turn hook fired by the TurnRunner surface. While a goal is
@@ -6508,7 +6508,8 @@ export class SlackHandler {
         queued: session.goalQueue?.length ?? 0,
       });
       try {
-        handler(sessionKey);
+        // A restart is a kick: no turn ran, the last summary was already judged.
+        handler(sessionKey, { cause: 'kick' });
         resumed++;
         // #351 no-double-resume: the goal loop now drives this session, so a
         // pending error auto-retry must not fire a second turn. Only a claim
@@ -6966,7 +6967,7 @@ export class SlackHandler {
         if (result.resumedCurrent) {
           // The current goal was stopped at its budget; the add gave it the
           // budget back. No turn ends from a dashboard add, so drive the loop.
-          this.goalTurnSettledHandler?.(sessionKey);
+          this.goalTurnSettledHandler?.(sessionKey, { cause: 'kick' });
         }
         return { outcome: 'queued', goalId: result.goal.goalId, position };
       }
