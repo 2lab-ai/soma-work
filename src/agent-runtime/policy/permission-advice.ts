@@ -125,7 +125,10 @@ export async function resolvePermissionAdvice(args: ResolvePermissionAdviceArgs)
   let onTurnAbort: (() => void) | undefined;
   const timeout = new Promise<null>((resolve) => {
     const stop = () => {
-      abort.abort();
+      // Tagged (B-2): the guardian call stops because its advice is no longer awaited.
+      abort.abort(
+        args.signal?.aborted ? args.signal.reason : new Error('permission advice: time limit reached (no advice)'),
+      );
       resolve(null);
     };
     timer = setTimeout(stop, args.timeoutMs ?? ADVICE_TIMEOUT_MS);
