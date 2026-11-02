@@ -5370,9 +5370,11 @@ ui-app-bar[narrow] .nt-btn-label { display: none; }
    status), its word pulled toward the ink (≥ 4.5:1 both themes). ── */
 .topbar .admin-toggle { flex: none; }
 /* Display language (#773): EN | KO, the pressed one is the page's language. */
-.lang-toggle { display: inline-flex; gap: 2px; flex: none; }
-.lang-toggle .lang-opt { min-width: 36px; justify-content: center; font-weight: 600; letter-spacing: 0.02em; }
-.lang-toggle .lang-opt[aria-pressed="true"] { background: var(--ib-seg-on); box-shadow: var(--ib-shadow); }
+/* A segmented pair on its own track: two loose chips read backwards (the grey "off" chip looked filled, the
+   white "on" one empty) and the same in dark. The pressed option is the raised step, the other sits flat. */
+.lang-toggle { display: inline-flex; gap: 2px; flex: none; padding: 2px; border-radius: 999px; background: var(--ib-seg); }
+.lang-toggle .lang-opt { min-width: 36px; justify-content: center; font-weight: 600; letter-spacing: 0.02em; background: transparent; border-color: transparent; box-shadow: none; color: var(--ib-muted); }
+.lang-toggle .lang-opt[aria-pressed="true"] { background: var(--ib-seg-on); border-color: transparent; box-shadow: var(--ib-shadow); color: var(--ib-text); }
 .topbar .admin-toggle[aria-pressed="true"] { background: var(--tint-fail-bg); border-color: var(--tint-fail-line); color: var(--tint-fail-fg); }
 /* Admin approvals (#620): the admins' Slack DM requests, counted in the top bar (a kit chip with a kit count badge,
    the wait tone while any wait), answered in a sheet. */
@@ -5832,7 +5834,8 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
 }
 .panel-header h3 {
   flex: 1;
-  font-size: 13px;
+  /* The panel is the card it opened from, larger: its title is never smaller than the card's (15px). */
+  font-size: 15px;
   font-weight: 650;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5905,6 +5908,7 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
    (44px targets on coarse pointers, reduced motion); the page adds only an armed resume in its slot. ── */
 .panel-status { flex-basis: 100%; min-width: 0; }
 .ps-resume { min-width: 0; font-size: 12px; color: var(--st-wait); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-resume > svg { width: 12px; height: 12px; margin-right: 4px; vertical-align: -2px; }
 /* ── 세션 정보 — one summary line + the links; opened, every number (spec 13) ── */
 .panel-info { padding: 6px 16px 8px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); }
 .panel-info:empty { display: none; }
@@ -9501,7 +9505,7 @@ function paintCardBody(key) {
   }
   if (b.el.parentNode !== host) host.appendChild(b.el);
   var col = _cardCol[key];
-  var html = renderCardBody(s, col, viewSpec().body);
+  var html = renderCardBody(s, col, viewSpec().body, viewSpec().face);
   if (b.html !== html && !isPickingModel(b.el)) {
     morphInnerHtml(b.el, html);
     b.html = html;
@@ -9663,12 +9667,16 @@ var PR_STATE_TONE = { open: 'run', merged: 'done', closed: 'fail' };
 // 'links', as the PR chip and the open card's refs.
 var CARD_LINK_KIND = { issue: '이슈', pr: 'PR', wiki: '위키' };
 var CARD_LINK_TONES = { run: 1, done: 1, fail: 1, wait: 1 };
+// The face's 연결 row draws this many chips, the rest as "+N" (@2lab.ai/ui agent-inbox MAX_LINKS).
+var FACE_LINK_MAX = 6;
 function cardLinksFace(s) {
   if (!dhShow('links') || !s || !Array.isArray(s.cardLinks)) return [];
   var out = [];
   for (var i = 0; i < s.cardLinks.length; i++) {
     var l = s.cardLinks[i];
-    if (!l || !CARD_LINK_KIND[l.kind] || !l.url || !l.text) continue;
+    // The library's own filter (cardLinks: a known kind, a text, an absolute http(s) URL), so the face's first
+    // FACE_LINK_MAX chips are exactly this list's first FACE_LINK_MAX.
+    if (!l || !CARD_LINK_KIND[l.kind] || !l.text || !/^https?:\\/\\/[^\\s]+$/i.test(String(l.url || ''))) continue;
     var link = { kind: l.kind, href: String(l.url), text: String(l.text) };
     if (l.status) link.status = String(l.status);
     if (l.tone && CARD_LINK_TONES[l.tone]) link.tone = l.tone;
@@ -11602,6 +11610,7 @@ function panelHeadData(s, col) {
     var x = { id: a.id, label: a.label };
     if (SESSION_ACTION_ARIA[a.id] && !a.sibling) x.ariaLabel = SESSION_ACTION_ARIA[a.id];
     if (a.id === 'stop' && !a.sibling) { x.tone = 'danger'; x.icon = 'stop'; }
+    if (a.icon && !a.sibling) x.icon = a.icon;
     if (a.id === 'trash') x.tone = 'quiet';
     if (a.id === 'star') x.pressed = !!a.pressed;
     if (a.tip) x.title = a.tip;
@@ -11615,7 +11624,7 @@ function panelHeadData(s, col) {
 function panelHeadNoteHtml(s, col) {
   var resume = pendingAutoResume(s, col);
   // #744: a rollback waits for the next turn.
-  var rewind = s.pendingRewind ? '<span class="ps-resume" title="' + escAttr(s.pendingRewind.label || '') + '">⏪ 다음 턴부터 되돌림</span>' : '';
+  var rewind = s.pendingRewind ? '<span class="ps-resume" title="' + escAttr(s.pendingRewind.label || '') + '">' + '<i data-ui-icon="undo"></i>' + '다음 턴부터 되돌림</span>' : '';
   return (resume ? '<span class="ps-resume" title="' + escAttr(resume.reason || '') + '">' + esc(autoResumeLabel(resume)) + '</span>' : '') + rewind;
 }
 function renderPanelHead() {
@@ -12426,14 +12435,15 @@ function sessionActionsOf(s, col) {
   var lifeBusy = isBusy(s.key, 'life');
   var starred = s.starred === true;
   var closed = col === 'closed' || s.terminated === true || s.sessionState === 'SLEEPING';
-  var out = [{ id: 'star', label: starred ? '\\u2605 즐겨찾기' : '\\u2606 즐겨찾기', pressed: starred, lock: lock, busy: lifeBusy,
+  // The set's star (filled when pressed) — not the ★ / ☆ text glyphs, drawn in another hand than the icons beside them.
+  var out = [{ id: 'star', label: '즐겨찾기', icon: 'star', pressed: starred, lock: lock, busy: lifeBusy,
     tip: !manages ? OWNER_ONLY_MSG
       : starred ? '즐겨찾기 해제 — 다시 자동 sleep·보관 대상이 돼요'
       : '즐겨찾기 — 항상 맨 위, 자동 sleep·보관 안 함' + (closed ? ' (지금 살려요)' : '') }];
   if (closed) out.push({ id: 'revive', label: '살리기', lock: lock, busy: lifeBusy,
     tip: manages ? '대화를 이어갈 수 있게 세션을 살려요 (작업 폴더 파일은 복구되지 않아요)' : OWNER_ONLY_MSG });
   // #744: roll the model's context back to an earlier input or work-log point (live sessions with an SDK conversation).
-  if (!closed && s.rollbackAvailable === true) out.push({ id: 'rollback', label: s.pendingRewind ? '⏪ 되돌리기 예약됨' : '⏪ 되돌리기', lock: lock, busy: false,
+  if (!closed && s.rollbackAvailable === true) out.push({ id: 'rollback', label: s.pendingRewind ? '문맥 되돌리기 예약됨' : '문맥 되돌리기', icon: 'undo', lock: lock, busy: false,
     tip: manages ? '모델의 대화 문맥을 이전 입력·작업 로그 지점으로 되돌려요 (파일은 그대로)' : OWNER_ONLY_MSG });
   out.push({ id: kind, label: label, lock: lock, busy: isBusy(s.key, 'action') });
   return out;
@@ -12448,7 +12458,7 @@ function sessionActionHtml(s, col, noStar) {
     if (a.sibling) return '<button class="ui-btn' + SESSION_ACTION_TONE[a.id] + '" data-action="' + a.id + '" disabled title="' + escAttr(a.lock) + '">' + esc(a.label) + '</button>';
     if (a.id === 'star') {
       return '<button type="button" class="ui-btn" data-action="star" aria-pressed="' + a.pressed + '"' + off + ' title="' + escAttr(a.tip) + '"'
-        + ' onclick="event.stopPropagation();doStar(\\'' + key + '\\',' + !a.pressed + ')">' + esc(a.label) + '</button>';
+        + ' onclick="event.stopPropagation();doStar(\\'' + key + '\\',' + !a.pressed + ')"><i data-ui-icon="star"></i>' + esc(a.label) + '</button>';
     }
     if (a.id === 'revive') {
       return '<button type="button" class="ui-btn" data-action="revive"' + off + ' title="' + escAttr(a.tip) + '"'
@@ -12456,7 +12466,7 @@ function sessionActionHtml(s, col, noStar) {
     }
     if (a.id === 'rollback') {
       return '<button type="button" class="ui-btn" data-action="rollback"' + off + ' title="' + escAttr(a.tip) + '"'
-        + ' onclick="event.stopPropagation();openRollbackDialog(\\'' + key + '\\')">' + esc(a.label) + '</button>';
+        + ' onclick="event.stopPropagation();openRollbackDialog(\\'' + key + '\\')"><i data-ui-icon="undo"></i>' + esc(a.label) + '</button>';
     }
     return '<button class="ui-btn' + SESSION_ACTION_TONE[a.id] + '" data-action="' + a.id + '"' + off + (a.lock ? ' title="' + escAttr(a.lock) + '"' : '')
       + ' onclick="event.stopPropagation();doAction(\\'' + key + '\\',\\'' + a.id + '\\')">' + esc(a.label) + '</button>';
@@ -12507,7 +12517,8 @@ function cardGoalLine(s, col, canEdit) {
 // The plan (SSOT 2026-11-01 ④, .prd/20 §5): spec is the layout's open card (viewSpec().body) — its ☆ button (the
 // face has the star toggle) and its parts after the actions and what asks, per column; no spec — any other
 // caller — is the open card as it was.
-function renderCardBody(s, col, spec) {
+// face: the face's layout (viewSpec().face) — the body leaves out what the face above it already shows.
+function renderCardBody(s, col, spec, face) {
   // Manage gating (viewerCanManage: the owner, or an admin in 관리자 모드) — the
   // server's requireSessionOwner is the authoritative guard; this is UX only.
   // Fail closed: a missing ownerId (legacy record) is nobody's.
@@ -12541,16 +12552,21 @@ function renderCardBody(s, col, spec) {
   // Short refs (PROJ-123 · PR-123), gated by ui.dashboardheader 'links'. The
   // titled links and the conversation are the panel's (세션 정보).
   const refParts = [];
-  // 작업 카드의 연결: every linked issue, PR and wiki with its state, when the board sent them.
-  const refLinks = cardLinksFace(s);
+  // 작업 카드의 연결: every linked issue, PR and wiki with its state, when the board sent them. Say it once:
+  // when the face's 연결 row already shows them (the default layout), the open body lists only the ones the face
+  // folds into its "+N" (@2lab.ai/ui draws FACE_LINK_MAX chips, in this order).
+  const faceShowsLinks = !!(face && Array.isArray(face.rows) && face.rows.some(function(r) { return r && r.id === 'links' && r.on; }));
+  const allLinks = cardLinksFace(s);
+  const refLinks = faceShowsLinks ? allLinks.slice(FACE_LINK_MAX) : allLinks;
+  const linksOnFace = faceShowsLinks && allLinks.length > 0;
   for (var rl = 0; rl < refLinks.length; rl++) {
     var ref = refLinks[rl];
     refParts.push('<a class="card-ref is-' + ref.kind + '" href="' + safeHref(ref.href) + '" target="_blank" rel="noopener" title="' + escAttr(ref.title) + '">' + esc(ref.text) + (ref.status ? ' <span class="card-ref-st"' + (ref.tone ? ' data-tone="' + ref.tone + '"' : '') + '>' + esc(ref.status) + '</span>' : '') + '</a>');
   }
-  if (!refLinks.length && dhShow('links') && s.issueShortRef && s.issueUrl) {
+  if (!linksOnFace && !refLinks.length && dhShow('links') && s.issueShortRef && s.issueUrl) {
     refParts.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener" title="' + escAttr(s.issueTitle || s.issueLabel || s.issueShortRef) + '">' + esc(s.issueShortRef) + '</a>');
   }
-  if (!refLinks.length && dhShow('links') && s.prShortRef && s.prUrl) {
+  if (!linksOnFace && !refLinks.length && dhShow('links') && s.prShortRef && s.prUrl) {
     refParts.push('<a href="' + safeHref(s.prUrl) + '" target="_blank" rel="noopener" title="' + escAttr(s.prTitle || s.prLabel || s.prShortRef) + '">' + esc(s.prShortRef) + '</a>');
   }
   const refsHtml = refParts.length || envHtml
@@ -12560,6 +12576,10 @@ function renderCardBody(s, col, spec) {
   // The collapsed face already shows the pending question as its summary; the
   // open card then keeps only the choices, not the same sentence twice.
   const faceSummary = cardSummary(s, col, s.displayHeadline || s.summaryTitle || s.title);
+  // The face shows that summary only when its layout has the summary row on (a user can turn it off); a caller
+  // with no layout (face undefined) keeps the old reading — the face shows it.
+  const faceShowsSummary = !face || !Array.isArray(face.rows) || face.rows.some(function(r) { return r && r.id === 'summary' && r.on; });
+  const summaryOnFace = faceShowsSummary ? faceSummary : '';
   // The pending question of a waiting session. The single-choice question is
   // the same <ui-approval-card> as the panel's (acQuestionHtml — its answer is
   // ui-answer, locked for anyone but the owner on this instance); the element
@@ -12569,10 +12589,11 @@ function renderCardBody(s, col, spec) {
   if (s.pendingQuestion && col === 'waiting') {
     if (s.pendingQuestion.type === 'user_choice' && s.pendingQuestion.choices) {
       // SSOT 2026-11-02 — a simple question (예 / 아니오, 시작 / 취소) is its choices as buttons: one press answers.
-      if (quickChoicesOf(s.pendingQuestion)) questionHtml = quickChoiceHtml(s, s.pendingQuestion);
+      // Say it once: the face already shows the question (whole, on an open card) — the buttons go without it.
+      if (quickChoicesOf(s.pendingQuestion)) questionHtml = quickChoiceHtml(s, s.pendingQuestion, !!summaryOnFace && summaryOnFace === s.pendingQuestion.question);
       else questionHtml = acQuestionHtml(s, s.pendingQuestion);
     } else if (s.pendingQuestion.type === 'user_choices') {
-      questionHtml = renderMultiChoiceCard(s, faceSummary);
+      questionHtml = renderMultiChoiceCard(s, summaryOnFace);
     }
   }
 
@@ -12889,7 +12910,8 @@ function quickChoicesOf(q) {
   }
   return q.choices;
 }
-function quickChoiceHtml(s, q) {
+// onFace: the card's face is showing the question (its summary) — the group keeps it as its name, not as text.
+function quickChoiceHtml(s, q, onFace) {
   var qid = acQuestionId(q);
   var lock = acQuestionLock(s);
   var st = _acState[s.key] && _acState[s.key][qid];
@@ -12907,7 +12929,8 @@ function quickChoiceHtml(s, q) {
   }).join('');
   var note = st && st.status === 'error' ? '<div class="card-quick-note" role="alert">' + esc(st.message || '보내지 못했어요') + '</div>'
     : st && st.status === 'resolved' ? '<div class="card-quick-note">답을 보냈어요</div>' : '';
-  return '<div class="card-question card-quick" role="group" aria-label="' + escAttr(q.question || '') + '"><div class="card-question-text">' + esc(q.question || '') + '</div><div class="card-quick-row">' + buttons + '</div>' + note + '</div>';
+  var text = onFace === true ? '' : '<div class="card-question-text">' + esc(q.question || '') + '</div>';
+  return '<div class="card-question card-quick" role="group" aria-label="' + escAttr(q.question || '') + '">' + text + '<div class="card-quick-row">' + buttons + '</div>' + note + '</div>';
 }
 function cardQuickAnswer(btn) {
   if (!btn || btn.disabled) return;

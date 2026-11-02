@@ -112,6 +112,17 @@ describe('C1 — the board’s links as the card’s', () => {
     expect(env(false).cardLinksFace({ cardLinks: LINKS })).toEqual([]);
     expect(env().cardLinksFace({ cardLinks: [{ kind: 'nope', url: 'x', text: 'y' }, null, LINKS[2]] })).toHaveLength(1);
     expect(env().cardLinksFace({})).toEqual([]);
+    // As the library filters (an absolute http(s) URL), so the face's first chips are this list's first entries.
+    expect(
+      env().cardLinksFace({ cardLinks: [{ kind: 'issue', url: 'javascript:alert(1)', text: '#1' }, LINKS[2]] }),
+    ).toHaveLength(1);
+  });
+
+  it('FACE_LINK_MAX is the library’s own chip count (@2lab.ai/ui agent-inbox MAX_LINKS), read from its build', () => {
+    const dist = readFileSync(join(process.cwd(), 'node_modules/@2lab.ai/ui/dist/agent-inbox.js'), 'utf8');
+    const lib = /const MAX_LINKS = (\d+);/.exec(dist);
+    expect(lib, 'MAX_LINKS in dist/agent-inbox.js').not.toBeNull();
+    expect(TEMPLATE).toContain(`var FACE_LINK_MAX = ${lib?.[1]};`);
   });
 });
 
@@ -154,8 +165,9 @@ describe('C2 — every built-in face shows the links row by default', () => {
 describe('C3 — the open card’s refs', () => {
   it('list the same pages with their states (the old short refs only when the board sent none)', () => {
     const fn = clientFn('renderCardBody');
-    expect(fn).toContain('const refLinks = cardLinksFace(s);');
+    // Say it once: the face's 연결 row already lists them (the default layout) — the body then lists none.
+    expect(fn).toContain('const refLinks = faceShowsLinks ? allLinks.slice(FACE_LINK_MAX) : allLinks;');
     expect(fn).toContain('<span class="card-ref-st"');
-    expect(fn).toContain("if (!refLinks.length && dhShow('links') && s.issueShortRef && s.issueUrl) {");
+    expect(fn).toContain("if (!linksOnFace && !refLinks.length && dhShow('links') && s.issueShortRef && s.issueUrl) {");
   });
 });

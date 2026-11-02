@@ -311,8 +311,8 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     READ_ONLY_MSG: 'read only',
     _goalErrors: {},
   };
-  const body = (s: Record<string, unknown>, col: string, inject: Record<string, unknown> = {}) =>
-    load<{ renderCardBody(s: unknown, col: string): string }>(
+  const body = (s: Record<string, unknown>, col: string, inject: Record<string, unknown> = {}, face?: unknown) =>
+    load<{ renderCardBody(s: unknown, col: string, spec?: unknown, face?: unknown): string }>(
       [
         'esc',
         'escAttr',
@@ -337,6 +337,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
         'renderCardBody',
       ],
       [
+        'FACE_LINK_MAX',
         'CARD_LINK_KIND',
         'CARD_LINK_TONES',
         'RESUME_SVG',
@@ -347,7 +348,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
         '_busy',
       ],
       { ...STUBS, ...inject },
-    ).renderCardBody(s, col);
+    ).renderCardBody(s, col, undefined, face);
 
   it('never repeats the face: no tokens, cost, context bar, thread timers, merge, owner/workflow/last-activity meta, subtitles', () => {
     const html = body(card(), 'working');
@@ -392,6 +393,26 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(html).toContain('data-action="close"');
+  });
+
+  it('a quick question is said once — unless the layout turned the face’s summary row off (then the body says it)', () => {
+    const q = {
+      type: 'user_choice',
+      question: 'Ship it?',
+      choices: [
+        { id: '1', label: '예' },
+        { id: '2', label: '아니오' },
+      ],
+    };
+    const s = card({ activityState: 'waiting', pendingQuestion: q });
+    const quick = (_s: unknown, _q: unknown, onFace: boolean) => `[QUICK onFace=${onFace}]`;
+    const inject = { quickChoiceHtml: quick, stripRecommendedMarker: (l: string) => l };
+    // Summary row on (the default layouts): the face reads the question, the buttons go without it.
+    expect(body(s, 'waiting', inject, { rows: [{ id: 'summary', on: true }] })).toContain('[QUICK onFace=true]');
+    // Summary row off: nothing on the face says it, so the body keeps the question.
+    expect(body(s, 'waiting', inject, { rows: [{ id: 'summary', on: false }] })).toContain('[QUICK onFace=false]');
+    // No layout given (any other caller): as before, the face shows it.
+    expect(body(s, 'waiting', inject)).toContain('[QUICK onFace=true]');
   });
 
   it('a permission prompt heads the body whatever the column; an armed resume heads a running card', () => {
@@ -466,6 +487,29 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     expect(html.endsWith('[NOTE]</div>')).toBe(true);
     // The actions bar is still first.
     expect(html.startsWith('<div class="card-body"><div class="card-actions-bar">')).toBe(true);
+  });
+
+  it('says the links once: with the face’s 연결 row on, the open body lists no refs of its own', () => {
+    const s = card({
+      cardLinks: [{ kind: 'issue', url: 'https://github.com/o/r/issues/41', text: '#41', status: '열림' }],
+    });
+    const faceRows = { rows: [{ id: 'links', on: true }] };
+    expect(body(s, 'working', {}, faceRows)).not.toContain('class="card-refs"');
+    // More than the face draws (6, then "+N"): the body lists the ones the face folded away, and only those.
+    const many = card({
+      cardLinks: Array.from({ length: 8 }, (_, i) => ({
+        kind: 'issue',
+        url: `https://github.com/o/r/issues/${i + 1}`,
+        text: `#${i + 1}`,
+      })),
+    });
+    const extra = body(many, 'working', {}, faceRows);
+    expect(extra).toContain('>#7');
+    expect(extra).toContain('>#8');
+    expect(extra).not.toContain('>#6<');
+    // A layout without the 연결 row keeps them in the body.
+    expect(body(s, 'working', {}, { rows: [] })).toContain('class="card-refs"');
+    expect(body(s, 'working')).toContain('class="card-refs"');
   });
 
   it("refs are the short ids only — the titled links are the panel's", () => {
@@ -680,7 +724,8 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
     const d = head(card({ activityState: 'idle', starred: true }), 'idle');
     expect(d.actions.find((a) => a.id === 'star')).toEqual({
       id: 'star',
-      label: '\u2605 즐겨찾기',
+      label: '즐겨찾기',
+      icon: 'star',
       pressed: true,
       title: '즐겨찾기 해제 — 다시 자동 sleep·보관 대상이 돼요',
     });
