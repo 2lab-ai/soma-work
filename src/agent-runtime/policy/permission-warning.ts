@@ -113,6 +113,300 @@ const NODE_COMPUTED_ACCESS = /\b(?:globalThis|global|this|self|Reflect|Proxy)\b|
 /** Escapes and unusual whitespace can spell a name the scan cannot see (`ev\u0061l`, `import\f…`, `\`-newline). */
 const OPAQUE_SYNTAX = /\\(?:u|x|N|\r?\n)|[\f\v]/;
 
+/**
+ * Review r7 (astra): "no forbidden word" is not "a data reader" — `help("payload")`
+ * imports a module, `const p=process; p.env` reaches the environment, and neither
+ * names anything on a denylist. So a reader's code must also be written ENTIRELY in
+ * a fixed vocabulary: every identifier outside its string literals — names,
+ * attributes, keywords — is one of the words below. A builtin, module attribute or
+ * alias that is not listed (help, open, input, vars, getattr, os, modules, env,
+ * constructor, and `Object` — reflection over internal objects …) is simply not
+ * a word a reader may use. Comments, triple-quoted
+ * strings, JS slashes (comments and regex literals) and non-ASCII outside strings
+ * are refused, so a string literal cannot hide code from this scan.
+ */
+const COMMON_WORDS = [
+  // variable names a one-liner uses
+  'data',
+  'obj',
+  'item',
+  'row',
+  'rows',
+  'pr',
+  'prs',
+  'issue',
+  'issues',
+  'run',
+  'runs',
+  'job',
+  'jobs',
+  'res',
+  'result',
+  'results',
+  'out',
+  'body',
+  'title',
+  'state',
+  'number',
+  'name',
+  'names',
+  'status',
+  'check',
+  'checks',
+  'ref',
+  'sha',
+  'url',
+  'node',
+  'nodes',
+  'edges',
+  'label',
+  'labels',
+  'line',
+  'lines',
+  'text',
+  'msg',
+  'val',
+  'value',
+  'entry',
+  'commit',
+  'commits',
+  'review',
+  'reviews',
+  'comment',
+  'comments',
+  'files',
+  'user',
+  'login',
+  'chunk',
+  'buf',
+  'raw',
+  'count',
+  'total',
+  'tag',
+  'tags',
+  // methods of the parsed data (str / list / dict / array / map)
+  'get',
+  'keys',
+  'values',
+  'items',
+  'join',
+  'split',
+  'strip',
+  'lower',
+  'upper',
+  'replace',
+  'startswith',
+  'endswith',
+  'append',
+  'format',
+  'splitlines',
+  'length',
+  'map',
+  'filter',
+  'slice',
+  'trim',
+  'push',
+  'sort',
+  'reverse',
+  'includes',
+  'find',
+  'some',
+  'every',
+  'reduce',
+  'forEach',
+  'toString',
+  'toFixed',
+  'padStart',
+  'padEnd',
+  'startsWith',
+  'endsWith',
+  'toLowerCase',
+  'toUpperCase',
+  'has',
+  'size',
+  'concat',
+  'flat',
+  'entries',
+  'index',
+];
+const PY_WORDS: ReadonlySet<string> = new Set([
+  ...COMMON_WORDS,
+  'import',
+  'for',
+  'in',
+  'if',
+  'else',
+  'elif',
+  'not',
+  'and',
+  'or',
+  'is',
+  'None',
+  'True',
+  'False',
+  'lambda',
+  'try',
+  'except',
+  'pass',
+  'while',
+  'break',
+  'continue',
+  'print',
+  'len',
+  'str',
+  'int',
+  'float',
+  'bool',
+  'list',
+  'dict',
+  'tuple',
+  'set',
+  'sorted',
+  'reversed',
+  'enumerate',
+  'zip',
+  'min',
+  'max',
+  'sum',
+  'any',
+  'all',
+  'range',
+  'isinstance',
+  'abs',
+  'round',
+  'repr',
+  'Exception',
+  'KeyError',
+  'ValueError',
+  'IndexError',
+  'TypeError',
+  'key',
+  'end',
+  'sep',
+  'file',
+  'indent',
+  'sort_keys',
+  'ensure_ascii',
+  'default',
+  // the importable reader modules and the attributes a reader uses from them
+  ...PY_READER_MODULES,
+  'stdin',
+  'stdout',
+  'stderr',
+  'argv',
+  'exit',
+  'read',
+  'readlines',
+  'load',
+  'loads',
+  'dumps',
+  'findall',
+  'search',
+  'match',
+  'sub',
+  'group',
+  'groups',
+  'Counter',
+  'defaultdict',
+  'most_common',
+  'islice',
+  'chain',
+  'groupby',
+  'date',
+  'timedelta',
+  'fromisoformat',
+  'strftime',
+  'floor',
+  'ceil',
+  'b64decode',
+  'b64encode',
+  'decode',
+  'encode',
+  'mean',
+  'median',
+  'pprint',
+  'reader',
+  'shorten',
+  'wrap',
+]);
+const NODE_WORDS: ReadonlySet<string> = new Set([
+  ...COMMON_WORDS,
+  'const',
+  'let',
+  'var',
+  'for',
+  'of',
+  'in',
+  'if',
+  'else',
+  'return',
+  'new',
+  'typeof',
+  'null',
+  'undefined',
+  'true',
+  'false',
+  'try',
+  'catch',
+  'while',
+  'break',
+  'continue',
+  'function',
+  'JSON',
+  'parse',
+  'stringify',
+  'console',
+  'log',
+  'error',
+
+  'Array',
+  'isArray',
+  'from',
+  'String',
+  'Number',
+  'Math',
+  'max',
+  'min',
+  'round',
+  'floor',
+  'ceil',
+  'parseInt',
+  'Set',
+  'Map',
+  'process',
+  'stdin',
+  'stdout',
+  'exit',
+  'on',
+  'setEncoding',
+  'print',
+  'STDIN',
+  'end',
+]);
+const SINGLE_LETTER = /^[A-Za-z]\d?$/;
+const PY_STRING = /(?<!\w)[rRbBuU]{0,2}(?:'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*")/g;
+const JS_STRING = /'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"/g;
+const TRIPLE_QUOTE = /'''|"""/;
+
+function inReaderVocabulary(family: InterpreterFamily, code: string): boolean {
+  if (family === 'python' && (code.includes('#') || TRIPLE_QUOTE.test(code))) return false;
+  if (family === 'node' && code.includes('/')) return false;
+  const bare = code.replace(family === 'python' ? PY_STRING : JS_STRING, ' ');
+  if (/[^\x00-\x7f]/.test(bare)) return false;
+  if (family === 'python') {
+    // `sys` only as sys.<stdio|argv|exit> (or in its import): no alias, no other reach.
+    const noImports = bare.replace(/\bimport\b[^;\n]*/g, ' ');
+    if (/\bsys\b(?!\.(?:stdin|stdout|stderr|argv|exit)\b)/.test(noImports)) return false;
+  } else if (/\bprocess\b(?!\.(?:stdin|stdout|exit)\b)/.test(bare)) {
+    return false; // `process` only as process.<stdin|stdout|exit>: `const p=process` is out
+  }
+  const words = family === 'python' ? PY_WORDS : NODE_WORDS;
+  for (const m of bare.matchAll(/(?<![\w$])[A-Za-z_$][\w$]*/g)) {
+    if (!words.has(m[0]) && !SINGLE_LETTER.test(m[0])) return false;
+  }
+  return true;
+}
+
 function isDataReaderCode(family: InterpreterFamily, rawCode: string): boolean {
   if (rawCode.trim().length === 0) return false;
   if (OPAQUE_SYNTAX.test(rawCode)) return false;
@@ -135,8 +429,9 @@ function isDataReaderCode(family: InterpreterFamily, rawCode: string): boolean {
     // After the one allowed stdin read, no require, fs or *Sync call may remain,
     // and nothing may be reached through a computed or global property.
     if (/\brequire\b|\bfs\b|\w+Sync\b/.test(rest) || NODE_COMPUTED_ACCESS.test(rest)) return false;
+    return inReaderVocabulary(family, rest.replace(/\b(?:process\.)?stdout\.write\b/g, 'print'));
   }
-  return true;
+  return inReaderVocabulary(family, code.replace(/\b(?:sys\.)?stdout\.write\b/g, 'print'));
 }
 
 /**
@@ -314,6 +609,8 @@ function stageWords(stage: string): string[] {
 }
 
 function isReadProducer(words: string[]): boolean {
+  // A newline inside a quoted header is a second header to curl (review r7, grok P1).
+  if (words.some((w) => /[\x00-\x1f\x7f]/.test(w))) return false;
   const [program, ...args] = words;
   if (program === 'curl') return curlOnlyReads(args);
   if (program === 'gh') return ghOnlyReads(args);
@@ -336,7 +633,7 @@ function splitFlag(arg: string, attached: readonly string[]): [string, string | 
  * review r6, grok P1).
  */
 const SAFE_HEADER =
-  /^\s*(?:accept|accept-encoding|accept-language|user-agent|x-github-api-version|if-none-match|if-modified-since|cache-control)\s*:/i;
+  /^\s*(?:accept|accept-encoding|accept-language|x-github-api-version|if-none-match|if-modified-since|cache-control)\s*:/i;
 
 /** Words that are neither a flag nor a flag's separate value. */
 function positionals(args: string[], valued: ReadonlySet<string>, attached: readonly string[]): string[] {
@@ -378,8 +675,6 @@ const CURL = {
     '--request',
     '-H',
     '--header',
-    '-A',
-    '--user-agent',
     '-m',
     '--max-time',
     '--connect-timeout',
@@ -388,7 +683,8 @@ const CURL = {
     '--retry-max-time',
   ]),
   // No -w / --write-out: `%output{file}` writes a file.
-  attached: ['-X', '-H', '-m', '-A'],
+  // No -A / --user-agent: free text is a credential channel too (review r7).
+  attached: ['-X', '-H', '-m'],
 };
 
 /**
@@ -397,7 +693,7 @@ const CURL = {
  */
 const HTTP_URL = /^https?:\/\/[^/?#@]+(?:[/?#]|$)/i;
 /** A URL or API path that carries a credential in its query or path. */
-const CREDENTIAL_IN_URL = /token|secret|passw|api[_-]?key|auth|credential|signature|sig=/i;
+const CREDENTIAL_IN_URL = /token|secret|passw|api[_-]?key|auth|credential|signature|sig=|jwt|bearer|code=|session/i;
 
 function curlOnlyReads(args: string[]): boolean {
   const urls = positionals(args, CURL.valued, CURL.attached);
