@@ -126,8 +126,8 @@ export interface InstructionApprovalDeps {
   saveSessions(): void;
   /** Is `userId` on `ownerId`'s always-approve list? */
   isTrusted(ownerId: string, userId: string): boolean;
-  /** Put `entry` on `ownerId`'s always-approve list. */
-  trust(ownerId: string, entry: { userId: string; name?: string }): void;
+  /** Put `entry` on `ownerId`'s always-approve list; `false` when it could not be added (the list is full). */
+  trust(ownerId: string, entry: { userId: string; name?: string }): boolean | void;
   /** DM the owner; resolves where the DM landed. */
   postOwnerDm?(ownerId: string, message: SlackMessage): Promise<{ channel: string; ts: string } | undefined>;
   updateDm?(ref: { channel: string; ts: string }, message: SlackMessage): Promise<unknown>;
@@ -206,6 +206,16 @@ function textOf(held: HeldInstruction): string {
       .join(', ')})`;
   }
   return '(질문에 추천 답으로 응답)';
+}
+
+/** A DM message with ⚠️ lines appended (text and a block of its own). */
+function withNotes(message: SlackMessage, notes: string[]): SlackMessage {
+  if (!notes.length) return message;
+  const lines = notes.map((n) => `⚠️ ${n}`).join('\n');
+  return {
+    text: `${message.text}\n${lines}`,
+    blocks: [...(message.blocks ?? []), { type: 'context', elements: [{ type: 'mrkdwn', text: lines }] }],
+  };
 }
 
 function heldKey(held: HeldInstruction): string | undefined {
@@ -497,9 +507,11 @@ export class InstructionApprovals {
     }
 
     if (decision === 'approve_session' && session) this.approveForSession(request, session);
+    const notes: string[] = [];
     if (decision === 'approve_always') {
+      let trusted: boolean | void = false;
       try {
-        this.deps.trust(request.ownerId, {
+        trusted = this.deps.trust(request.ownerId, {
           userId: request.requesterId,
           ...(request.requesterName ? { name: request.requesterName } : {}),
         });
@@ -509,10 +521,16 @@ export class InstructionApprovals {
           error: error instanceof Error ? error.message : String(error),
         });
       }
+      // Already on the list counts as on it; a full list or a failed save does not — the DM says so.
+      if (trusted === false && !this.deps.isTrusted(request.ownerId, request.requesterId)) {
+        notes.push(
+          '항상 승인 목록에 넣지 못했습니다(목록이 가득 찼거나 저장에 실패했습니다) — 이번 지시만 승인했습니다. 대시보드 설정에서 목록을 정리한 뒤 다시 승인하세요.',
+        );
+      }
     }
     this.deps.broadcast?.();
     logger.info('Instruction approval answered', { requestId, decision, surface, held: request.held.length });
-    return { ok: true, decision, request, done: this.afterAnswer(request) };
+    return { ok: true, decision, request, done: this.afterAnswer(request, notes) };
   }
 
   private approveForSession(request: InstructionApprovalRequest, session: InstructionGateSession): void {
@@ -528,14 +546,13 @@ export class InstructionApprovals {
     }
   }
 
-  private async afterAnswer(request: InstructionApprovalRequest): Promise<void> {
+  private async afterAnswer(request: InstructionApprovalRequest, notes: string[] = []): Promise<void> {
     const view = this.viewOf(request);
     const ref = request.dmRef;
     const thread = this.threadOf(request);
+    const resolvedDm = withNotes(buildInstructionApprovalResolvedDm(view), notes);
     await Promise.all([
-      ref
-        ? this.bestEffort('DM rewrite', () => this.deps.updateDm?.(ref, buildInstructionApprovalResolvedDm(view)))
-        : undefined,
+      ref ? this.bestEffort('DM rewrite', () => this.deps.updateDm?.(ref, resolvedDm)) : undefined,
       thread
         ? this.bestEffort('thread notice', () => this.deps.postThreadNotice?.(thread, instructionDecidedNotice(view)))
         : undefined,
@@ -559,11 +576,8 @@ export class InstructionApprovals {
     );
     const failures = (await Promise.all(runs)).filter((r): r is string => typeof r === 'string');
     if (failures.length && ref) {
-      const resolved = buildInstructionApprovalResolvedDm(view);
-      const text = `${resolved.text}\n⚠️ 실행하지 못한 지시가 있습니다: ${failures.join(' · ').slice(0, 500)}`;
-      await this.bestEffort('DM failure note', () =>
-        this.deps.updateDm?.(ref, { text, blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }] }),
-      );
+      const failed = withNotes(resolvedDm, [`실행하지 못한 지시가 있습니다: ${failures.join(' · ').slice(0, 500)}`]);
+      await this.bestEffort('DM failure note', () => this.deps.updateDm?.(ref, failed));
     }
   }
 

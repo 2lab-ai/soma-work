@@ -280,6 +280,16 @@ describe('InstructionApprovals (#767)', () => {
       expect(released).toHaveLength(1);
     });
 
+    it('이 사람의 지시 항상 승인 with a full list — runs once, and the DM says the person was not added (trinity R1)', async () => {
+      const approvals = new InstructionApprovals(deps({ trust: () => false }));
+      const { requestId } = await holdOne(approvals);
+      const answer = approvals.answer({ requestId, decision: 'approve_always', actor: OWNER, surface: 'slack' });
+      expect(answer.ok).toBe(true);
+      if (answer.ok) await answer.done;
+      expect(released).toHaveLength(1);
+      expect(dmUpdates[dmUpdates.length - 1]?.text).toContain('항상 승인 목록에 넣지 못했습니다');
+    });
+
     it('거절 — nothing runs; the thread is told', async () => {
       const approvals = new InstructionApprovals(deps());
       const { requestId } = await holdOne(approvals);
