@@ -12,7 +12,11 @@
 import { randomUUID } from 'node:crypto';
 import { anchorRefusal } from '@soma/slack/context-anchor';
 import type { UserChoices } from '@soma/slack/user-choice-extractor';
-import { requestContextRollback } from '../session/context-rollback';
+import {
+  CONTEXT_ROLLBACK_REFUSAL_TEXT,
+  type ContextRollbackResult,
+  requestContextRollback,
+} from '../session/context-rollback';
 import type { ConversationSession, SessionGoal, SessionGoalStall } from '../types';
 import type { GoalEvalVerdict } from './goal-completion-evaluator';
 
@@ -151,27 +155,46 @@ export function goalStallRollbackChosen(text: string): boolean {
   return text.split('\n').some((line) => line.trim().startsWith(`${GOAL_STALL_ROLLBACK_QUESTION}: yes.`));
 }
 
+/** The label a rollback to the stall's first failure carries (notices, the dashboard). */
+export const GOAL_STALL_ROLLBACK_LABEL = '처음 실패한 지점 (goal 멈춤)';
+
 /**
- * #745: the owner answered the stall question with "yes" on the rollback item —
- * the context rolls back to the first failure before this very turn runs (the
+ * #745: ask for a rollback to where the stalled goal first failed for its
+ * current reason, through the one gate. Undefined when the stall offers none
+ * (no stall, or the repeated turns did work).
+ */
+export function requestGoalStallRollback(
+  session: ConversationSession,
+  actor: string,
+  deps: { requestActive: boolean; transcriptHas?: (sessionId: string, uuid: string) => boolean },
+): ContextRollbackResult | undefined {
+  const anchor = session.goal?.stall?.rollbackAnchor;
+  if (!anchor) return undefined;
+  return requestContextRollback(session, { anchor, label: GOAL_STALL_ROLLBACK_LABEL, source: 'goal' }, actor, deps);
+}
+
+/**
+ * #745: the stall question was answered with "yes" on the rollback item — the
+ * context rolls back to the first failure before this very turn runs (the
  * caller is the turn's own pre-dispatch, so no other turn holds the slot).
- * Returns whether a rollback is now waiting.
+ * Undefined when the answer did not pick it or there is no offer; otherwise
+ * the gate's result — a refusal is the caller's to tell (never silent).
  */
 export function applyGoalStallRollbackAnswer(
   session: ConversationSession,
   text: string,
   actor: string,
   deps: { transcriptHas?: (sessionId: string, uuid: string) => boolean } = {},
-): boolean {
-  const anchor = session.goal?.stall?.rollbackAnchor;
-  if (!anchor || !goalStallRollbackChosen(text)) return false;
-  const result = requestContextRollback(
-    session,
-    { anchor, label: '처음 실패한 지점 (goal 멈춤)', source: 'goal' },
-    actor,
-    { requestActive: false, transcriptHas: deps.transcriptHas },
-  );
-  return result.ok;
+): ContextRollbackResult | undefined {
+  if (!goalStallRollbackChosen(text)) return undefined;
+  return requestGoalStallRollback(session, actor, { requestActive: false, transcriptHas: deps.transcriptHas });
+}
+
+/** What the thread is told about the answer's rollback: done, or why not (the turn runs as it is). */
+export function goalStallRollbackNotice(result: ContextRollbackResult): string {
+  return result.ok
+    ? '⏪ 처음 실패한 지점으로 모델 문맥을 되돌리고 이 지시를 진행합니다 (파일 변경은 그대로).'
+    : `⛔ 처음 실패한 지점으로 되돌리지 못했습니다 — ${CONTEXT_ROLLBACK_REFUSAL_TEXT[result.reason]} 이 지시는 지금 문맥 그대로 진행합니다.`;
 }
 
 /**

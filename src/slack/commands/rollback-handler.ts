@@ -19,10 +19,11 @@ import {
   rollbackInputLabel,
   rollbackInputPoints,
 } from '../../session/context-rollback';
+import { requestGoalStallRollback } from '../goal-stall';
 import { recordSessionNotice } from '../session-notice';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
-const ROLLBACK_RE = /^\/?(?:rollback|롤백)(?:\s+(\d{1,3}|cancel|취소))?$/i;
+const ROLLBACK_RE = /^\/?(?:rollback|롤백)(?:\s+(\d{1,3}|cancel|취소|goal))?$/i;
 
 /** How many of the latest inputs the list shows. */
 export const ROLLBACK_LIST_MAX = 10;
@@ -52,6 +53,30 @@ export class RollbackHandler implements CommandHandler {
       const had = cancelContextRollback(session);
       if (had) this.deps.claudeHandler.saveSessions();
       await post(had ? '↩️ 예약된 문맥 되돌리기를 취소했습니다.' : '💡 예약된 문맥 되돌리기가 없습니다.');
+      return { handled: true };
+    }
+
+    if (arg === 'goal') {
+      // #745: to where the stalled goal first failed — offered only when the repeated turns did nothing.
+      const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
+      const result = requestGoalStallRollback(session, user, {
+        requestActive: this.deps.requestCoordinator.isRequestActive(sessionKey),
+      });
+      if (!result) {
+        await post(
+          '💡 되돌릴 goal 실패 지점이 없습니다 (goal이 같은 이유로 멈췄고, 그 사이 한 일이 없을 때만 있습니다).',
+        );
+        return { handled: true };
+      }
+      if (!result.ok) {
+        await post(`⛔ ${CONTEXT_ROLLBACK_REFUSAL_TEXT[result.reason]}`);
+        return { handled: true };
+      }
+      this.deps.claudeHandler.saveSessions();
+      const notice =
+        '⏪ 다음 턴부터 모델 문맥을 goal이 처음 실패한 지점으로 되돌립니다 (그 뒤의 반복된 턴이 문맥에서 빠집니다. 파일 변경은 되돌리지 않습니다). 다음 지시를 보내세요.';
+      recordSessionNotice(session, notice);
+      await post(notice);
       return { handled: true };
     }
 

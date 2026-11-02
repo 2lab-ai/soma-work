@@ -101,6 +101,7 @@ import {
   applyGoalStallRollbackAnswer,
   buildGoalStallQuestion,
   type GoalStallRetireCause,
+  goalStallRollbackNotice,
   setGoalStallRetiredListener,
   shouldAskGoalStallQuestion,
 } from './slack/goal-stall';
@@ -1916,11 +1917,15 @@ export class SlackHandler {
           // #745: the answer to the stall question said "roll back to the first
           // failure" — this very turn runs from there. Read before the reset,
           // which ends the stall round.
-          if (applyGoalStallRollbackAnswer(fullSession, event.text ?? '', event.user)) {
-            this.logger.info('Goal stall answer: context rolls back to the first failure', {
+          const stallRollback = applyGoalStallRollbackAnswer(fullSession, event.text ?? '', event.user);
+          if (stallRollback) {
+            // Told either way: a refused rollback is never silent (the turn runs as it is).
+            const log = stallRollback.ok ? this.logger.info.bind(this.logger) : this.logger.warn.bind(this.logger);
+            log('Goal stall answer: roll back to the first failure', {
               sessionKey: sessionResult.sessionKey,
+              ...(stallRollback.ok ? {} : { refusal: stallRollback.reason }),
             });
-            const notice = '⏪ 처음 실패한 지점으로 모델 문맥을 되돌리고 이 지시를 진행합니다 (파일 변경은 그대로).';
+            const notice = goalStallRollbackNotice(stallRollback);
             recordSessionNotice(fullSession, notice, { sessionKey: sessionResult.sessionKey });
             void this.slackApi
               .postSystemMessage(channel, notice, { threadTs: originalThreadTs })

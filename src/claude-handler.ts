@@ -1363,6 +1363,9 @@ export class ClaudeHandler implements TurnSteeringPort {
         const rewind = consumePendingRewind(session);
         if (rewind) {
           options.resumeSessionAt = rewind.uuid;
+          // The goal's first failure lies on the dropped branch now (#745): the
+          // next failure starts a new one.
+          if (session.goal?.firstFailure) session.goal.firstFailure = undefined;
           this.logger.info('Context rollback applied to this turn', {
             sessionId: session.sessionId,
             source: rewind.rewind.source,

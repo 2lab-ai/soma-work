@@ -219,7 +219,7 @@ app-token 프롬프트는 금지된 자격증명 경로라 삭제됨), `scripts/
 
 주요 `/z` 명령: `help` · `cwd` · `mcp` · `bypass` · `taskentry` · `epictasks`(에픽 작업 만들기 허용, 유저 단위·기본 꺼짐·실험) · `persona` · `model` · `verbosity` · `session` · `new`/`renew` · `close` · `restore` · `context`/`compact` · `link` · `onboarding` · `admin` · `cct` · `auth` · `marketplace` · `plugin` · `skill` · `report`
 
-문맥 되돌리기: `rollback`(또는 `롤백`)은 내 입력 목록을 보여주고, `rollback <번호>`는 그 입력 *직전*으로 모델의 대화 문맥을 되돌립니다(파일은 그대로, 다음 턴부터 적용). `rollback cancel`로 취소. 스펙: [`docs/current/spec/context-rollback.md`](./docs/current/spec/context-rollback.md)
+문맥 되돌리기: `rollback`(또는 `롤백`)은 내 입력 목록을 보여주고, `rollback <번호>`는 그 입력 *직전*으로 모델의 대화 문맥을 되돌립니다(파일은 그대로, 다음 턴부터 적용). `rollback goal`은 같은 이유로 멈춘 goal이 처음 실패한 지점으로 되돌립니다(그 사이 한 일이 없을 때만). `rollback cancel`로 취소. 스펙: [`docs/current/spec/context-rollback.md`](./docs/current/spec/context-rollback.md)
 
 - 출력 수준(`/z verbosity`, 세션 한정 `%verbosity`): `minimal` · `compact` · `detail` · `verbose`. 기본값은 `minimal`이다 — 스레드에는 task list(메인 에이전트의 것 — 서브에이전트의 목록은 대시보드의 그 서브에이전트 항목에 있다), 질문/승인, 최종 답변, 오류만 남고, 모델의 실시간 작업 설명·도구 호출·압축 공지·스킬 발동 배너(`$skill`·autoskill 포함)는 대시보드 작업 로그로 간다.
 
