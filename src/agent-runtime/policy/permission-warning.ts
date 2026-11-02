@@ -75,8 +75,11 @@ const NOT_A_READER = new RegExp(
     String.raw`\b(?:open|write\w*|unlink\w*|remove|rmtree|rename\w*|mkdir\w*|chmod|chown|truncate|socket|fetch|https?|net|request|urlopen)\b`,
     String.raw`(?<![.\w])(?:load|do)\s*[('"]`, // ruby `load 'f'`, perl `do 'f'` (json.load is a method call, not this)
     String.raw`\bimport\s*\(`, // JS dynamic import()
-    String.raw`\bprocess\.(?!stdin\b|stdout\b|exit\b)`, // node: only stdin / stdout / exit
-    String.raw`\bsys\.(?!stdin\b|stdout\b|stderr\b|argv\b|exit\b)`, // python: only stdio / argv / exit
+    // node: only stdin / stdout / exit; python: only stdio / argv / exit. Whitespace and `?.`
+    // around the dot are still member access (`process . getBuiltinModule(…)`, review r6).
+    String.raw`\bprocess\s*\??\s*\.\s*(?!stdin\b|stdout\b|exit\b)`,
+    String.raw`\bsys\s*\.\s*(?!stdin\b|stdout\b|stderr\b|argv\b|exit\b)`,
+    String.raw`\bgetBuiltinModule\b`,
     String.raw`\b(?:attrgetter|methodcaller|itemgetter|FileIO|modules|_getframe|f_builtins|f_globals|f_locals|vars|type|dir|buffer|raw|fileno)\b`,
   ].join('|'),
 );
@@ -211,6 +214,9 @@ function onlyDataPipes(command: string): boolean {
   let found = false;
   for (let m = PIPE_TO_INTERPRETER.exec(command); m !== null; m = PIPE_TO_INTERPRETER.exec(command)) {
     found = true;
+    // Only the bare interpreter name is the interpreter: a path can name any binary
+    // (`./python3`), and `env` can run something else (`env -S./payload python3`, review r6).
+    if (/\/|\benv\b/.test(m[0])) return false;
     if (interpreterRunsInput(command, m[1], m.index + m[0].length)) return false;
   }
   return found;
@@ -246,8 +252,8 @@ export function isPlainReadPipeline(command: string): boolean {
   return isReadProducer(stageWords(stages[0])) && INTERPRETER_STAGE.test(stages[1]);
 }
 
-/** A stage that starts with an interpreter — `onlyDataPipes` already judged every one. */
-const INTERPRETER_STAGE = new RegExp(String.raw`^(?:\S*/)?(?:env\s+(?:-\S+\s+)*)?${INTERPRETER}(?![\w.-])`, 'i');
+/** The reader stage: a bare python / node name (no path, no env) — `onlyDataPipes` judged its code. */
+const INTERPRETER_STAGE = /^(?:python[23]?(?:\.\d+)?|node)[ \t]/;
 const STDERR_REDIRECT = /^2>[ \t]*(?:\/dev\/null|&1)(?=[ \t|]|$)/;
 
 /** The stages of one plain pipeline, or null for anything else (see above). */
@@ -385,12 +391,17 @@ const CURL = {
   attached: ['-X', '-H', '-m', '-A'],
 };
 
-/** curl speaks gopher://, dict://, telnet://, smtp:// … — only an http(s) URL is a plain fetch. */
-const HTTP_URL = /^https?:\/\//i;
+/**
+ * curl speaks gopher://, dict://, telnet://, smtp:// … — only an http(s) URL is a plain
+ * fetch, and only without userinfo (`https://user:secret@host`, review r6).
+ */
+const HTTP_URL = /^https?:\/\/[^/?#@]+(?:[/?#]|$)/i;
+/** A URL or API path that carries a credential in its query or path. */
+const CREDENTIAL_IN_URL = /token|secret|passw|api[_-]?key|auth|credential|signature|sig=/i;
 
 function curlOnlyReads(args: string[]): boolean {
   const urls = positionals(args, CURL.valued, CURL.attached);
-  if (urls.length === 0 || !urls.every((u) => HTTP_URL.test(u))) return false;
+  if (urls.length === 0 || !urls.every((u) => HTTP_URL.test(u) && !CREDENTIAL_IN_URL.test(u))) return false;
   return flagsOnlyRead(args, CURL, (flag, value) => {
     if (value.startsWith('@')) return false; // a header or format read from a file
     if (flag === '-X' || flag === '--request') return value.toUpperCase() === 'GET';
@@ -414,7 +425,9 @@ function ghOnlyReads(args: string[]): boolean {
   if (noun === 'api') {
     // A GitHub API path, never a URL or a scheme-relative host (`//evil/x`).
     const endpoints = positionals(rest, GH_API.valued, GH_API.attached);
-    if (endpoints.length !== 1 || endpoints[0].includes('://') || endpoints[0].startsWith('//')) return false;
+    const [endpoint] = endpoints;
+    if (endpoints.length !== 1 || endpoint.includes('://') || endpoint.startsWith('//')) return false;
+    if (CREDENTIAL_IN_URL.test(endpoint)) return false;
     return flagsOnlyRead(rest, GH_API, (flag, value) => {
       if (flag === '-X' || flag === '--method') return value.toUpperCase() === 'GET';
       if (flag === '-H' || flag === '--header') return SAFE_HEADER.test(value);
