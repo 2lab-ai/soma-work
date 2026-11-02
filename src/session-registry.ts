@@ -123,6 +123,8 @@ interface SerializedSession {
   /** SSOT 2026-10-23 — the cron job that created the session, and a placeholder-title mark. */
   cronJob?: SessionCronJob;
   titleProvisional?: boolean;
+  /** The work queue the session's work belongs to (see ConversationSession.workQueueId). */
+  workQueueId?: string;
   /** SSOT 2026-10-30 — the dashboard star (kept alive) and when it was last removed. */
   starred?: boolean;
   starClearedAt?: number;
@@ -2802,7 +2804,10 @@ export class SessionRegistry {
     // would leak the previous goal into the fresh conversation. Mirrors the
     // saveSessions() guard which now persists `sessionId || handoffContext
     // || goal` (#959).
-    if (!session || (!session.sessionId && !session.goal)) {
+    // A session the work queue held before its first turn has neither, yet
+    // `new` must still unbind it so its queued request never runs in the new
+    // conversation (#726).
+    if (!session || (!session.sessionId && !session.goal && !session.workQueueId)) {
       return false;
     }
 
@@ -2821,6 +2826,8 @@ export class SessionRegistry {
     // The placeholder mark belongs to the cleared title; the cron origin
     // (`cronJob`) is a fact about the thread and stays.
     session.titleProvisional = undefined;
+    // The new conversation is dispatched again; its queue (if any) is decided then.
+    session.workQueueId = undefined;
     session.lastActivity = new Date();
     // The old task list stays as history; none of it is in progress any more,
     // so the new conversation's work is not attributed to it (dashboard T7/T10).
@@ -3498,6 +3505,7 @@ export class SessionRegistry {
             incidentRequest: session.incidentRequest,
             cronJob: session.cronJob,
             titleProvisional: session.titleProvisional || undefined,
+            workQueueId: session.workQueueId,
             starred: session.starred === true ? true : undefined,
             starClearedAt: session.starClearedAt,
             lastTurnOutcome: session.lastTurnOutcome,
@@ -3860,6 +3868,7 @@ export class SessionRegistry {
             typeof serialized.incidentAttemptFinishedId === 'string' ? serialized.incidentAttemptFinishedId : undefined,
           cronJob: sanitizeCronJob(serialized.cronJob),
           titleProvisional: serialized.titleProvisional === true ? true : undefined,
+          workQueueId: typeof serialized.workQueueId === 'string' ? serialized.workQueueId : undefined,
           starred: starred ? true : undefined,
           starClearedAt: finiteStamp(serialized.starClearedAt),
           lastTurnOutcome: sanitizeTaskTurnOutcome(serialized.lastTurnOutcome),

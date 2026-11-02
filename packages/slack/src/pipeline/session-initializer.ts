@@ -19,6 +19,7 @@ import type { RequestAbortReason, RequestCoordinator } from '../request-coordina
 import type { SlackApiHelper } from '../slack-api-helper';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import type { ThreadPanel } from '../thread-panel';
+import type { GateDecision, GateInput } from '../work-queue/service';
 import { resolveCronOrigin, skipDispatchTitle } from './cron-origin';
 import type { ConversationSession, MessageEvent, SayFn, SessionInitResult } from './types';
 
@@ -287,6 +288,17 @@ interface SessionInitializerDeps {
   requestCoordinator: RequestCoordinator;
   assistantStatusManager?: AssistantStatusManager;
   threadPanel?: ThreadPanel;
+  /**
+   * Work queue gate (`@soma/slack/work-queue`). Consulted right before every
+   * `handleConcurrency`: a full queue halts the turn before the model runs.
+   */
+  workQueue?: WorkQueueGate;
+}
+
+/** What the session initializer needs from the work queue. */
+export interface WorkQueueGate {
+  decide(input: GateInput): GateDecision;
+  notifyBlocked(decision: GateDecision): Promise<void>;
 }
 
 /**
@@ -827,6 +839,7 @@ export class SessionInitializer {
             userName,
             effectiveWorkingDir,
             hasSourceThread,
+            dispatchText ?? '',
           );
           if (migrated) {
             return migrated;
@@ -849,6 +862,7 @@ export class SessionInitializer {
           userName,
           effectiveWorkingDir,
           hasSourceThread,
+          dispatchText ?? '',
         );
         if (migrated) {
           return migrated;
@@ -943,6 +957,21 @@ export class SessionInitializer {
       };
     }
 
+    // Work queue — a full queue (e.g. a dev2 deploy already running) halts
+    // this turn before the model starts. Decided synchronously, so on pass
+    // the slot and this turn's controller are registered in the same tick.
+    if (await this.haltedByWorkQueue(session, sessionKey, channel, threadTs, user, dispatchText ?? '')) {
+      return {
+        session,
+        sessionKey,
+        isNewSession,
+        userName,
+        workingDirectory: effectiveWorkingDir,
+        abortController: new AbortController(),
+        halted: true,
+      };
+    }
+
     // Handle concurrency control
     const abortController = this.handleConcurrency(sessionKey, channel, threadTs, user, userName, session);
 
@@ -954,6 +983,40 @@ export class SessionInitializer {
       workingDirectory: effectiveWorkingDir,
       abortController,
     };
+  }
+
+  /**
+   * Run the work queue gate for this turn. `false` = go on (the caller calls
+   * `handleConcurrency` next, with no await in between on the pass path);
+   * `true` = the queue is full, the requester was told, the turn is halted.
+   * A gate error lets the turn through (logged): a bug in the queue must not
+   * stop every deploy.
+   */
+  private async haltedByWorkQueue(
+    session: ConversationSession,
+    sessionKey: string,
+    channel: string,
+    threadTs: string,
+    user: string,
+    text: string,
+  ): Promise<boolean> {
+    const gate = this.deps.workQueue;
+    if (!gate) return false;
+    let decision: GateDecision;
+    try {
+      decision = gate.decide({ session: session as any, sessionKey, channel, threadTs, user, text });
+    } catch (error) {
+      this.logger.error('Work queue gate failed — letting the turn through', { sessionKey, error });
+      return false;
+    }
+    if (decision.kind === 'pass') return false;
+    this.logger.info('⏳ Session halted — work queue full', { sessionKey, queue: decision.queue.id });
+    try {
+      await gate.notifyBlocked(decision);
+    } catch (error) {
+      this.logger.warn('Work queue notice failed', { sessionKey, error });
+    }
+    return true;
   }
 
   /**
@@ -1296,6 +1359,7 @@ export class SessionInitializer {
     userName: string,
     workingDirectory: string,
     hasSourceThread: boolean = false,
+    gateText: string = '',
   ): Promise<SessionInitResult | undefined> {
     const headerPayload = ThreadHeaderBuilder.build({
       title: session.title || session.links?.pr?.label || session.links?.issue?.label,
@@ -1398,6 +1462,19 @@ export class SessionInitializer {
     }
 
     const newSessionKey = this.deps.claudeHandler.getSessionKey(channel, rootResult.ts);
+    // Work queue gate on the migrated session — its key is the one the slot
+    // must be held under (the original thread's session is gone).
+    if (await this.haltedByWorkQueue(botSession, newSessionKey, channel, rootResult.ts, user, gateText)) {
+      return {
+        session: botSession,
+        sessionKey: newSessionKey,
+        isNewSession: true,
+        userName,
+        workingDirectory,
+        abortController: new AbortController(),
+        halted: true,
+      };
+    }
     const abortController = this.handleConcurrency(newSessionKey, channel, rootResult.ts, user, userName, botSession);
     this.deps.reactionManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
     await this.deps.contextWindowManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
