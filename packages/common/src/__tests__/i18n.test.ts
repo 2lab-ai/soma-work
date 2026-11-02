@@ -124,6 +124,28 @@ describe('translateText — text already composed (the output boundary)', () => 
     expect(translateText('  __tt 세션 종료', 'en')).toBe('  __tt Session closed');
     expect(translateText('plain english', 'en')).toBe('plain english');
   });
+
+  it('a sentence the catalog knows, then a clause the code appended (`text + " — …"`): both halves', () => {
+    registerDisplayCatalog('en', {
+      '__tt ⭐ {0}님의 지시를 승인했습니다 — 앞으로 묻지 않습니다.':
+        "__tt ⭐ Approved {0}'s instruction — won't ask again.",
+      ' — __tt 대시보드에서 응답했습니다.': ' — __tt answered on the dashboard.',
+      ' (__tt 대시보드에서 응답)': ' (__tt answered from the dashboard)',
+    });
+    expect(
+      translateText(
+        '__tt ⭐ <@U1>님의 지시를 승인했습니다 — 앞으로 묻지 않습니다. — __tt 대시보드에서 응답했습니다.',
+        'en',
+      ),
+    ).toBe("__tt ⭐ Approved <@U1>'s instruction — won't ask again. — __tt answered on the dashboard.");
+    expect(translateText('__tt 세션 종료 (__tt 대시보드에서 응답)', 'en')).toBe(
+      '__tt Session closed (__tt answered from the dashboard)',
+    );
+    // Only when the head is the catalog's too: a person's words before the clause stay as written.
+    expect(translateText('내가 쓴 말 — __tt 대시보드에서 응답했습니다.', 'en')).toBe(
+      '내가 쓴 말 — __tt 대시보드에서 응답했습니다.',
+    );
+  });
 });
 
 describe('translateText against the real catalog — never claims a person’s Korean (review P1)', () => {

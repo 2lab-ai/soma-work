@@ -93,7 +93,11 @@ function button(view: InstructionApprovalView, decision: InstructionApprovalDeci
 /** The owner's DM while the request waits: who, where, the words, the four answers. */
 export function buildInstructionApprovalDm(view: InstructionApprovalView): SlackMessage {
   const count = view.texts.length;
-  const head = `🙋 <@${view.requesterId}>님이 회원님의 작업에 지시를 보냈습니다${count > 1 ? ` (${count}건)` : ''}. 실행할까요?`;
+  // Two whole sentences, not a ` (n건)` spliced in: each is one catalog template for the reader's language.
+  const head =
+    count > 1
+      ? `🙋 <@${view.requesterId}>님이 회원님의 작업에 지시 ${count}건을 보냈습니다. 실행할까요?`
+      : `🙋 <@${view.requesterId}>님이 회원님의 작업에 지시를 보냈습니다. 실행할까요?`;
   return {
     text: head,
     blocks: [
