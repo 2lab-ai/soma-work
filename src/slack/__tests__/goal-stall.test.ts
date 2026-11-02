@@ -317,3 +317,22 @@ describe('stall question — what the owner sees', () => {
     ).toBe(false);
   });
 });
+
+describe('stall supersedes an open cap decision', () => {
+  it('a stall opened while the 10/10 decision is open ends that decision (one question, one way out)', async () => {
+    const h = makeHarness(
+      makeGoal({
+        lastEvalReason: 'x',
+        continuationCount: 10,
+        capDmPendingAt: 5,
+        capDecisionId: 'cap-round-1',
+      }),
+      [verdict({ sameAsPrevious: true, sameConfidence: 0.99 })],
+    );
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.stall).toBeDefined();
+    expect(h.goal.capDmPendingAt).toBeUndefined();
+    expect(h.goal.capDecisionId).toBeUndefined();
+  });
+});

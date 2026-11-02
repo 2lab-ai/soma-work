@@ -44,7 +44,7 @@ import { retryReasonLine } from '../retry-reason';
 import type { ConversationSession, SessionGoal } from '../types';
 import type { EffortLevel } from '../user-settings-store';
 import { buildCapDecisionDmBlocks } from './goal-blocks';
-import { dmRefOf, openGoalCapDecision, recordGoalCapDm } from './goal-cap-decision';
+import { dmRefOf, openGoalCapDecision, recordGoalCapDm, retireGoalCapDecision } from './goal-cap-decision';
 import {
   applyGoalEvalDispatchFailure,
   decideGoalEvalOutcome,
@@ -556,6 +556,10 @@ export class GoalLoopController {
     verdict: GoalEvalVerdict,
   ): Promise<void> {
     const { logger } = this.deps;
+    // One question at a time: a 10/10 "keep going?" decision still open (a
+    // restart re-ran the eval at the cap) ends here — its Continue would only
+    // land on a goal the stall holds.
+    retireGoalCapDecision(activeGoal);
     const stall = openGoalStall(activeGoal, verdict, this.now());
     this.persist();
     logger.info('Goal loop stopped — same failure as the previous evaluation', {
