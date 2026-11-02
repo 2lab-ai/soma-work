@@ -14733,6 +14733,8 @@ function wlCardData(state, key) {
   var d = { name: tool || '툴', status: status, open: !!(state.open && state.open.has(key)) };
   var summary = call ? wlToolSummary(tool, call.text) : '';
   if (summary) d.summary = summary;
+  // #744: a call a rollback dropped says so on its card (the slotted card is what the reader sees).
+  if (state.rewinds && rewoundBy(state.rewinds, Number(carrier.ts))) d.summary = REWOUND_MARK + (summary ? ' · ' + summary : '');
   if (call && typeof call.ts === 'number' && isFinite(call.ts)) {
     d.at = call.ts;
     d.startedAt = call.ts;
