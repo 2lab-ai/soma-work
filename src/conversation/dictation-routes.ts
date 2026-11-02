@@ -217,7 +217,7 @@ export function registerDictationRoutes(
         // The listener is gone (finishing or not): nothing it queued is transcribed for no one — not the stream's
         // next steps, not a request still waiting its turn at the worker.
         stream?.cancel();
-        gone.abort();
+        gone.abort('dictation socket closed');
         letGo();
       });
     }) as never,
