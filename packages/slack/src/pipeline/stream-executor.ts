@@ -6358,9 +6358,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     };
     // Unique per ask: a click is matched to its question by this id alone.
     const turnId = `host:${sessionKey}:${Date.now()}`;
+    // Stamped on the question too: a fallback render leaves no pendingChoice,
+    // and the question is all retractHostQuestion can recognise it by.
+    const asked: UserChoices & { hostTurnId: string } = { ...question, hostTurnId: turnId };
     const committed = await this.renderAskUserQuestionFromCommand(
       turnId,
-      question,
+      asked,
       session,
       { channel, threadTs, sessionKey, say, turnId, incidentAttempt: session.incidentRequest !== undefined },
       undefined,
@@ -6382,26 +6385,21 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   async retractHostQuestion(sessionKey: string, turnId: string): Promise<void> {
     const session = this.deps.claudeHandler.getSessionByKey(sessionKey);
     const panel = session?.actionPanel;
-    if (!session || !panel || panel.pendingChoice?.turnId !== turnId) return;
-    const formIds = panel.pendingChoice.formIds ?? [];
-    for (const formId of formIds) {
+    if (!session || !panel) return;
+    // Its own question: by the form's turn id, or — a fallback that never got a
+    // form (no pendingChoice) — by the turn id stamped on the question.
+    const ownChoice = panel.pendingChoice?.turnId === turnId;
+    const ownQuestion = (panel.pendingQuestion as { hostTurnId?: string } | undefined)?.hostTurnId === turnId;
+    if (!ownChoice && !(ownQuestion && !panel.pendingChoice)) return;
+    // Synchronously, before any Slack call: the session stops waiting on it now,
+    // so a loop kick right after (goal resume, an objective update) is not
+    // dropped as "waiting", and no click lands on a withdrawn question.
+    const formIds: string[] = ownChoice ? (panel.pendingChoice?.formIds ?? []) : [];
+    const forms = formIds.map((formId: string) => {
       const form = this.deps.actionHandlers.getPendingForm(formId);
       this.deps.actionHandlers.deletePendingForm(formId);
-      if (form?.messageTs) {
-        try {
-          await this.deps.slackApi.updateMessage(form.channel, form.messageTs, '⏱️ 더 이상 유효하지 않은 질문입니다.', [
-            { type: 'section', text: { type: 'mrkdwn', text: '⏱️ _더 이상 유효하지 않은 질문입니다._' } },
-          ]);
-        } catch (err) {
-          this.logger.debug('retractHostQuestion: form rewrite failed', {
-            sessionKey,
-            error: (err as Error)?.message ?? String(err),
-          });
-        }
-      }
-    }
-    // Re-read: the awaits above may have let the owner answer or a turn start.
-    if (panel.pendingChoice?.turnId !== turnId) return;
+      return form;
+    });
     panel.pendingChoice = undefined;
     panel.pendingQuestion = undefined;
     panel.waitingForChoice = false;
@@ -6409,13 +6407,31 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     panel.choiceBlocks = undefined;
     const channel = session.channelId;
     const threadTs = session.threadRootTs || session.threadTs;
-    if (
-      channel &&
-      threadTs &&
+    const wasWaiting =
+      !!channel &&
+      !!threadTs &&
       this.deps.claudeHandler.getSessionRegistry?.().getActivityStateByKey?.(sessionKey) === 'waiting' &&
-      !this.deps.requestCoordinator.isRequestActive?.(sessionKey)
-    ) {
-      this.setActivity(session, sessionKey, channel, threadTs, 'idle');
+      !this.deps.requestCoordinator.isRequestActive?.(sessionKey);
+    if (wasWaiting) this.setActivity(session, sessionKey, channel as string, threadTs as string, 'idle');
+    // Then the Slack side: the form loses its buttons (blocks AND attachments).
+    for (const form of forms) {
+      if (!form?.messageTs) continue;
+      try {
+        await this.deps.slackApi.updateMessage(
+          form.channel,
+          form.messageTs,
+          '⏱️ 더 이상 유효하지 않은 질문입니다.',
+          [{ type: 'section', text: { type: 'mrkdwn', text: '⏱️ _더 이상 유효하지 않은 질문입니다._' } }],
+          [],
+        );
+      } catch (err) {
+        this.logger.debug('retractHostQuestion: form rewrite failed', {
+          sessionKey,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+    }
+    if (wasWaiting) {
       // The runtime status said '입력 대기' for this question.
       await this.updateRuntimeStatus(session, sessionKey, { agentPhase: undefined, waitingForChoice: false }).catch(
         () => undefined,

@@ -55,7 +55,10 @@ import {
   type GoalEvalVerdict,
   shouldRunGoalIdleDriver,
 } from './goal-completion-evaluator';
-import { GOAL_CONTINUATION_TEXT_PREFIX } from './goal-continuation';
+import { GOAL_CONTINUATION_TEXT_PREFIX, GOAL_SUMMARY_PERSIST_MAX } from './goal-continuation';
+
+export { GOAL_SUMMARY_PERSIST_MAX };
+
 import { openGoalStall } from './goal-stall';
 import { advanceGoalQueue, formatGoalObjectiveForSlack } from './session-goal';
 import { announceSessionNotice, recordSessionNotice } from './session-notice';
@@ -316,7 +319,9 @@ export class GoalLoopController {
 
     const objective = activeGoal.objective;
     const workSummaryRaw = (session.goalLastTurnText ?? activeGoal.lastAssistantTurnSummary ?? '').trim();
-    const summaryHash = this.hashSummary(workSummaryRaw);
+    // Hashed as the goal persists it (bounded): after a restart only the bounded
+    // mirror is left, and the same evidence must still read as unchanged.
+    const summaryHash = this.hashSummary(workSummaryRaw.slice(0, GOAL_SUMMARY_PERSIST_MAX).trim());
 
     // S9 cost short-circuit: if the work summary is byte-identical to what we
     // last evaluated and we already hold that verdict's gap reason, a fresh
@@ -325,15 +330,15 @@ export class GoalLoopController {
     // to reuse), and a `complete` verdict clears the hash so it never sticks.
     // Reused only when no new turn produced this text: a kick (the owner went
     // on — `goal resume`, Continue, a goal added — or a restart) runs the next
-    // turn instead of re-judging the old one; at the cap the verdict cannot
-    // change anything. A NEW turn with the same output is exactly the repeat
-    // the stall check exists for, and only the evaluator can say so (and name
-    // the three next instructions) — the dispatch is worth it.
+    // turn instead of re-judging the old one. A NEW turn with the same output —
+    // at the cap too — is exactly the repeat the stall check exists for, and
+    // only the evaluator can say so (and name the three next instructions)
+    // instead of the generic cap question: the dispatch is worth it.
     if (
       workSummaryRaw !== '' &&
       activeGoal.lastEvalSummaryHash === summaryHash &&
       activeGoal.lastEvalReason &&
-      (cause === 'kick' || activeGoal.continuationCount >= activeGoal.maxContinuations)
+      cause === 'kick'
     ) {
       logger.info('Goal eval short-circuited — work summary unchanged since last eval', { sessionKey });
       await this.handleVerdict(
