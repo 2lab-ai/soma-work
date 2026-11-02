@@ -32,6 +32,7 @@ import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 import { isAwaitingUserChoice, TurnRunner, V1QueryAdapter } from './agent-session';
 import type { ClaudeHandler } from './claude-handler';
 import { getFollowupQueueCapacity, getReleaseNotesChannels } from './config';
+import { isClientRef } from './conversation/client-ref';
 import { captureUserMedia, getConversation, recordUserTurn } from './conversation/recorder';
 import { readWorkLog } from './conversation/work-log';
 import { FileHandler, type ProcessedFile } from './file-handler';
@@ -391,7 +392,7 @@ export class SlackHandler {
    * a user turn (text + files, user media) once the SDK confirms the model read
    * it. Cleared with the files ({@link takeSteerFiles}) on every settlement path.
    */
-  private followupSteerInstructions?: Map<string, { text: string; user?: string; sentAt?: number }>;
+  private followupSteerInstructions?: Map<string, { text: string; user?: string; sentAt?: number; clientRef?: string }>;
   /** Seam for the user-turn record of a steered message (tests swap it). */
   private userMediaRecorder = { capture: captureUserMedia, record: recordUserTurn };
   /**
@@ -2349,7 +2350,7 @@ export class SlackHandler {
         literalPrompt,
         // #785: a dashboard send's ref — survives the text rewrites above (routed continuation,
         // follow-up prompt, directive remainder), so the panel still finds its own instruction.
-        clientRef: typeof event.dashboardClientRef === 'string' ? event.dashboardClientRef : undefined,
+        clientRef: isClientRef(event.dashboardClientRef) ? event.dashboardClientRef : undefined,
       });
 
       const continuationHandler: ContinuationHandler = {
@@ -4485,6 +4486,8 @@ export class SlackHandler {
         text: rawText,
         user: event.user,
         sentAt: slackTsMs(event.ts),
+        // #785: a dashboard send steered into the running turn is still that send.
+        ...(isClientRef(event.dashboardClientRef) ? { clientRef: event.dashboardClientRef } : {}),
       });
       (this.followupSteerUuids ??= new Map()).set(item.id, steered.uuid);
       return 'steered';
@@ -5232,7 +5235,7 @@ export class SlackHandler {
    */
   private async recordSteeredInstruction(
     sessionKey: string,
-    instruction: { text: string; user?: string; sentAt?: number },
+    instruction: { text: string; user?: string; sentAt?: number; clientRef?: string },
     files: ProcessedFile[],
   ): Promise<void> {
     try {
@@ -5250,7 +5253,12 @@ export class SlackHandler {
         userId,
         attachments?.length ? attachments : undefined,
         // A steered message is always a person's (dashboard SSOT 2026-10-27).
-        { timestamp: instruction.sentAt, origin: { by: 'user' } },
+        {
+          timestamp: instruction.sentAt,
+          origin: { by: 'user' },
+          // #785: the dashboard send it was — the panel replaces its pending copy by it.
+          ...(instruction.clientRef ? { clientRef: instruction.clientRef } : {}),
+        },
       );
     } catch (error) {
       this.logger.warn('Steered message was not recorded as a user turn', {

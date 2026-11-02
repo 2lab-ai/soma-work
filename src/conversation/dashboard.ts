@@ -11267,12 +11267,13 @@ function ptSentKey(s) {
 // meanwhile, a host turn — never takes the slot.
 function ptSameSend(opt, turn) {
   if (!opt || !opt._optimistic || !turn || turn._optimistic || turn.role !== 'user') return false;
-  // #785: the server carries the send's own ref back on the turn it recorded. That turn is its record,
-  // whatever words it holds (a routed continuation, a follow-up prompt, a directive remainder); a turn
-  // with another ref is another send's. Turns without one (Slack, older servers) fall back to the words.
-  if (turn.clientRef) return String(turn.clientRef) === String(opt.id);
   if (turn.origin && turn.origin.by === 'system') return false;
   if (turn.userId && opt._by && turn.userId !== opt._by) return false;
+  // #785: the server carries the send's own ref back on the turn it recorded. That turn is its record,
+  // whatever words it holds (a routed continuation, a follow-up prompt, a directive remainder, invoked
+  // skills); a turn with another ref is another send's. Turns without one (Slack, older servers) fall
+  // back to the words. Checked after the sender: a ref is no secret, so it never crosses senders.
+  if (turn.clientRef) return String(turn.clientRef) === String(opt.id);
   var key = ptSentKey(opt._sent);
   if (key) return key === ptSentKey(turn.rawContent);
   // A files-only send is recorded with no words: only such a turn is its record. A send with
@@ -17612,6 +17613,7 @@ async function sendCommand(text, ref, files) {
   if (!running) {
     const shown = msg + (list.length ? (msg ? '\\n' : '') + '📎 ' + list.map(function(f) { return f.name; }).join(', ') : '');
     optimisticId = 'optimistic-' + Date.now();
+    optimisticId += '-' + Math.random().toString(36).slice(2, 8); // two tabs in the same ms never share a ref (#785)
     appendTurnToPanel({
       id: optimisticId,
       role: 'user',

@@ -1118,7 +1118,15 @@ export interface ConversationSession {
   // User message text captured when auto-compact intercepts the turn; re-dispatched after PostCompact.
   pendingUserText?: string | null;
   // Slack event context captured alongside `pendingUserText` for synthetic re-dispatch via event-router.
-  pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string; hostTurn?: boolean } | null;
+  pendingEventContext?: {
+    channel: string;
+    threadTs: string;
+    user: string;
+    ts: string;
+    hostTurn?: boolean;
+    /** #785: the dashboard send it was — the post-compact replay carries it on. */
+    dashboardClientRef?: string;
+  } | null;
   // Deferred post-compact re-dispatch queue (arrival order, one entry per
   // author burst). `postCompactCompleteIfNeeded` promotes
   // `pendingUserText`/`pendingEventContext` here when a compact cycle seals;
