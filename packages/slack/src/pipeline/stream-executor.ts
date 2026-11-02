@@ -652,6 +652,17 @@ interface StreamExecutorDeps {
    */
   routeReleaseNotes?: (repo: string, target: string) => ReleaseNotesRouting;
   /**
+   * The turn's prompt reached the model: the FIRST SDK event of this
+   * execution, which arrives only after `query()` took the prompt. Everything
+   * before it (lease, tenant key, MCP config) can still fail or be stopped with
+   * the words unread. The host records it as the dispatched follow-up's
+   * delivery evidence, and uses it as the moment a post-restart resume turn
+   * takes over the item the restart cut. `turnEpoch` is the follow-up turn
+   * generation this execution was started under (absent outside a dispatch).
+   * Fired once per execution; a throw is swallowed — it must never cost the turn.
+   */
+  onTurnReachedModel?: (args: { sessionKey: string; turnEpoch?: number }) => void;
+  /**
    * A Slack-less task turn's work-log writer (#598 ④b): bound per turn through
    * `taskBinding`, it returns the store's promise so the task runner can wait
    * for every append before committing the outcome. Slack turns keep the
@@ -1920,6 +1931,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         },
       };
 
+      // The first SDK event of this execution: the prompt is in the model's hands.
+      let reachedModel = false;
+
       // Create stream callbacks
       const streamCallbacks: StreamCallbacks = {
         // HEARTBEAT. The transport spoke — that is all this proves, so it
@@ -1929,6 +1943,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         onSdkActivity: () => {
           this.deps.requestCoordinator.touchSession(sessionKey);
           this.recordLiveness(session, sessionKey, { lastSignalAt: Date.now() }, turnEpochToken);
+          if (!reachedModel) {
+            reachedModel = true;
+            this.notifyTurnReachedModel(sessionKey, turnEpochToken);
+          }
         },
         // REAL PROGRESS (U9). Model output / tool call / tool result / plan /
         // background-task lifecycle. Progress is also a signal, so both clocks
@@ -5264,6 +5282,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     expectedTurnEpoch?: number,
   ): Promise<void> {
     await this.deps.threadPanel?.setStatus(session, sessionKey, patch, { expectedTurnEpoch });
+  }
+
+  /** `onTurnReachedModel`, once per execution — best effort, never the turn's problem. */
+  private notifyTurnReachedModel(sessionKey: string, turnEpoch: number | undefined): void {
+    try {
+      this.deps.onTurnReachedModel?.({ sessionKey, turnEpoch });
+    } catch (error) {
+      this.logger.warn('onTurnReachedModel threw — ignored', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
   }
 
   /**

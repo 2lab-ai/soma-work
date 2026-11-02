@@ -363,3 +363,70 @@ describe('U9 — heartbeat vs real progress in the header patches', () => {
     expect(liveness.every((p) => typeof p.agentPhase === 'string' && p.agentPhase.length > 0)).toBe(true);
   });
 });
+
+/**
+ * `onTurnReachedModel` — the host's delivery evidence for a dispatched
+ * follow-up (work-m64 dev, 2026-11-02). It must mean "the SDK took the prompt":
+ * fired by the FIRST SDK event of the execution, exactly once, with the turn
+ * generation the run was dispatched under — and never at all for a stream
+ * that produced nothing.
+ */
+describe('onTurnReachedModel — the first SDK event of the execution', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('fires once, with the dispatch generation, however many events follow', async () => {
+    const session = createSession();
+    const deps = createDeps(() =>
+      (async function* () {
+        yield { type: 'status', status: 'working' };
+        yield { type: 'assistant_delta', text: '작업 중' };
+        yield { type: 'result', stopReason: 'end_turn' };
+      })(),
+    );
+    const onTurnReachedModel = vi.fn();
+    const executor = new StreamExecutor({ ...deps, onTurnReachedModel });
+
+    await executor.execute(createParams(session, new AbortController(), vi.fn().mockResolvedValue({ ts: 'm' })));
+    await settle();
+
+    expect(onTurnReachedModel).toHaveBeenCalledTimes(1);
+    expect(onTurnReachedModel).toHaveBeenCalledWith({ sessionKey: 'C42:thread42', turnEpoch: DISPATCH_EPOCH });
+  });
+
+  it('does not fire for a stream that produced no SDK event', async () => {
+    const session = createSession();
+    const deps = createDeps(() => (async function* () {})());
+    const onTurnReachedModel = vi.fn();
+    const executor = new StreamExecutor({ ...deps, onTurnReachedModel });
+
+    await executor.execute(createParams(session, new AbortController(), vi.fn().mockResolvedValue({ ts: 'm' })));
+    await settle();
+
+    expect(onTurnReachedModel).not.toHaveBeenCalled();
+  });
+
+  it('a throwing hook costs the turn nothing', async () => {
+    const session = createSession();
+    const deps = createDeps(() =>
+      (async function* () {
+        yield { type: 'assistant_delta', text: '작업 중' };
+        yield { type: 'result', stopReason: 'end_turn' };
+      })(),
+    );
+    const onTurnReachedModel = vi.fn(() => {
+      throw new Error('queue store down');
+    });
+    const executor = new StreamExecutor({ ...deps, onTurnReachedModel });
+
+    const result = await executor.execute(
+      createParams(session, new AbortController(), vi.fn().mockResolvedValue({ ts: 'm' })),
+    );
+    await settle();
+
+    expect(onTurnReachedModel).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(true);
+    expect(deps.requestCoordinator.touchSession).toHaveBeenCalled();
+  });
+});

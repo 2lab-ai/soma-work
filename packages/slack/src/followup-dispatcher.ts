@@ -5,6 +5,7 @@ import {
   type FollowupItem,
   type FollowupOpFailure,
   type FollowupOpResult,
+  isFollowupDelivered,
 } from './followup-queue';
 import type { MessageEvent } from './pipeline/types';
 
@@ -89,6 +90,12 @@ export interface RunReport {
   itemId?: string;
   outcome: RunOutcome;
   itemDisposition: ItemDisposition;
+  /**
+   * Items this run took over from an interrupted turn (`takeOverInterrupted`)
+   * and settled with its outcome alongside its own — present only when there
+   * were any, so the host can repaint them.
+   */
+  adoptedItemIds?: string[];
   /** Only a `safe` outcome opens the next drain boundary. */
   canDrain: boolean;
 }
@@ -257,6 +264,10 @@ export interface FollowupQueuePort {
   getTurnEpoch(sessionKey: string): number;
   /** `dispatched → uncertain` WITHOUT freezing the session (the `Send now` cut). */
   markInterrupted(sessionKey: string, itemId: string, expectedEpoch: number, reason: string): FollowupOpResult;
+  /** The running item's turn reached the model — evidence only, the epoch does not move. */
+  markDelivered(sessionKey: string, itemId: string, expectedEpoch: number): FollowupOpResult;
+  /** `uncertain → dispatched` for a delivered item the restart cut; refused without evidence. */
+  resumeInterrupted(sessionKey: string, itemId: string, expectedEpoch: number): FollowupOpResult;
   /** `queued → steered` under `uuid`, persisted BEFORE the push (06 §3.2). */
   steer(sessionKey: string, itemId: string, expectedEpoch: number, uuid: string): FollowupOpResult;
   /** `steered → resolved` on the SDK's consumption receipt. Addressed by uuid — the SDK knows no item id. */
@@ -291,6 +302,18 @@ export interface FollowupDispatcherDeps {
   notify?: (notice: DispatcherNotice) => void;
 }
 
+/**
+ * An interrupted item a run took over. `running`: it went back to `dispatched`
+ * under this run, so the run's outcome settles it like its own. Otherwise it
+ * stays `uncertain` while the run works (a session holds one `dispatched` row
+ * at most — the snapshot gate refuses two) and only a `safe` end confirms it.
+ */
+interface AdoptedItem {
+  itemId: string;
+  itemEpoch: number;
+  running: boolean;
+}
+
 interface LiveRun {
   runId: number;
   sessionKey: string;
@@ -299,6 +322,8 @@ interface LiveRun {
   itemId?: string;
   /** Item CAS token captured at `markDispatched` — guards the settle against a stale owner. */
   itemEpoch?: number;
+  /** Interrupted items this run took over; its outcome settles them too (`takeOverInterrupted`). */
+  adopted?: AdoptedItem[];
   /** Set once the run has settled; a finished run is never restored as the slot owner. */
   done?: boolean;
   settled: Promise<RunReport>;
@@ -369,6 +394,80 @@ export class FollowupDispatcher {
   clearDrainHalt(sessionKey: string, trigger: DrainHaltTrigger): void {
     if (!this.halts.delete(sessionKey)) return;
     this.deps.notify?.({ type: 'drain-resumed', sessionKey, trigger });
+  }
+
+  /**
+   * The live run of `turnEpoch` reached the model — its first SDK event. When
+   * that run carries a queue item, the item gets its delivery evidence
+   * (`FollowupQueue.markDelivered`), the fact a later restart takeover needs.
+   *
+   * Fenced on the turn generation: an event from a run that `Send now` already
+   * replaced must not mark the replacement's item. Answers `none` when there is
+   * nothing to mark (no live run of that generation, or an item-less run).
+   * Never throws — the caller is the stream's event path.
+   */
+  noteTurnReachedModel(
+    sessionKey: string,
+    turnEpoch: number,
+  ): { status: 'marked'; itemId: string } | { status: 'none' } | { status: 'failed'; detail: string } {
+    const run = this.liveRunOf(sessionKey, turnEpoch);
+    const itemId = run?.itemId;
+    const itemEpoch = run?.itemEpoch;
+    if (itemId === undefined || itemEpoch === undefined) return { status: 'none' };
+    const marked = this.attempt(() => this.deps.queue.markDelivered(sessionKey, itemId, itemEpoch));
+    return marked.ok ? { status: 'marked', itemId: marked.item.id } : { status: 'failed', detail: marked.detail };
+  }
+
+  /**
+   * The live run of `turnEpoch` takes over a delivered `uncertain` item: the
+   * run carries on the conversation that item's words are in, so the run's end
+   * is the confirmed result the row was waiting for (`ssot.md` §3.5, A31).
+   *
+   * - An item-less run takes it over RUNNING (`FollowupQueue.resumeInterrupted`,
+   *   `uncertain → dispatched`): the row stops saying it was not sent while the
+   *   run works, and the run's outcome settles it like its own — `safe` →
+   *   `resolved`, a stop → `uncertain` again, an error → `failed`.
+   * - A run that already carries a running item (its own, or one taken over
+   *   first) cannot put a second row in `dispatched` — the snapshot gate allows
+   *   one per session. The item stays `uncertain` and only a `safe` end of the
+   *   run confirms it `resolved`; any other end leaves it as it was.
+   *
+   * Refused without delivery evidence: words that may never have reached the
+   * model are not "carried on" by anything. Which items an interruption cut,
+   * and whether this run is the one that continues them, is the host's call.
+   */
+  takeOverInterrupted(
+    sessionKey: string,
+    turnEpoch: number,
+    itemId: string,
+    expectedEpoch: number,
+  ): { ok: true; item: FollowupItem; running: boolean } | { ok: false; detail: string } {
+    const run = this.liveRunOf(sessionKey, turnEpoch);
+    if (!run) return { ok: false, detail: 'no live run of that turn' };
+    if (run.adopted?.some((adopted) => adopted.itemId === itemId)) return { ok: false, detail: 'already taken over' };
+    const item = this.deps.queue.get(sessionKey, itemId);
+    if (!item || item.epoch !== expectedEpoch || item.state !== 'uncertain' || !isFollowupDelivered(item)) {
+      return { ok: false, detail: 'not a delivered uncertain item' };
+    }
+    run.adopted ??= [];
+    const adopted = run.adopted;
+    if (run.itemId === undefined && !adopted.some((other) => other.running)) {
+      const taken = this.attempt(() => this.deps.queue.resumeInterrupted(sessionKey, itemId, expectedEpoch));
+      if (taken.ok) {
+        adopted.push({ itemId: taken.item.id, itemEpoch: taken.item.epoch, running: true });
+        return { ok: true, item: taken.item, running: true };
+      }
+      // Another row of the session is running (not this run's): confirm at the end instead.
+      if (taken.reason !== 'busy') return { ok: false, detail: taken.detail };
+    }
+    adopted.push({ itemId: item.id, itemEpoch: item.epoch, running: false });
+    return { ok: true, item, running: false };
+  }
+
+  /** The run holding the slot, if it is still live and of this generation. */
+  private liveRunOf(sessionKey: string, turnEpoch: number): LiveRun | undefined {
+    const run = this.slots.get(sessionKey);
+    return run && !run.done && run.turnEpoch === turnEpoch ? run : undefined;
   }
 
   /**
@@ -1080,8 +1179,43 @@ export class FollowupDispatcher {
    * and a `blocked` turn is recorded the same way (see the case below).
    */
   private recordItemOutcome(run: LiveRun, outcome: DispatchOutcome): { disposition: ItemDisposition; error?: string } {
-    const { itemId, itemEpoch, sessionKey } = run;
-    if (!itemId || itemEpoch === undefined) return { disposition: 'none' };
+    const own =
+      run.itemId !== undefined && run.itemEpoch !== undefined
+        ? this.recordOutcomeFor(run.sessionKey, run.itemId, run.itemEpoch, outcome)
+        : { disposition: 'none' as const };
+    let error = own.error;
+    for (const adopted of run.adopted ?? []) {
+      const recorded = adopted.running
+        ? this.recordOutcomeFor(run.sessionKey, adopted.itemId, adopted.itemEpoch, outcome)
+        : this.confirmAdopted(run.sessionKey, adopted, outcome);
+      error ??= recorded.error;
+    }
+    return { disposition: own.disposition, error };
+  }
+
+  /**
+   * A taken-over item that stayed `uncertain` (see {@link takeOverInterrupted}):
+   * only a `safe` end of the run confirms it `resolved`. Any other end leaves it
+   * `uncertain` — the run proved nothing new about it. Skipped when the row
+   * moved meanwhile (a user Retry or Cancel): the run no longer speaks for it.
+   */
+  private confirmAdopted(sessionKey: string, adopted: AdoptedItem, outcome: DispatchOutcome): { error?: string } {
+    if (outcome.result !== 'safe') return {};
+    const item = this.deps.queue.get(sessionKey, adopted.itemId);
+    if (!item || item.epoch !== adopted.itemEpoch || item.state !== 'uncertain') return {};
+    const settled = this.attempt(() =>
+      this.deps.queue.settle(sessionKey, adopted.itemId, adopted.itemEpoch, 'resolved'),
+    );
+    return settled.ok ? {} : { error: settled.detail };
+  }
+
+  /** {@link recordItemOutcome} for one item the run carries — its own, or one it took over. */
+  private recordOutcomeFor(
+    sessionKey: string,
+    itemId: string,
+    itemEpoch: number,
+    outcome: DispatchOutcome,
+  ): { disposition: ItemDisposition; error?: string } {
     const item = this.deps.queue.get(sessionKey, itemId);
     // Stale-owner guard: the item moved on, so this run no longer speaks for it.
     if (!item || item.epoch !== itemEpoch || item.state !== 'dispatched') return { disposition: 'none' };
@@ -1201,6 +1335,7 @@ export class FollowupDispatcher {
       itemId: run.itemId,
       outcome,
       itemDisposition,
+      ...(run.adopted?.length ? { adoptedItemIds: run.adopted.map((adopted) => adopted.itemId) } : {}),
       canDrain: outcome.result === 'safe' || isAutoCompactStop(outcome),
     };
   }

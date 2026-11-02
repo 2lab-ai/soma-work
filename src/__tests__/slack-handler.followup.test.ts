@@ -6317,4 +6317,370 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(startWithContinuation).toHaveBeenCalledTimes(1);
     });
   });
+
+  /**
+   * Live report (work-m64 dev, 2026-11-02 13:06–13:08 KST): a follow-up was
+   * dispatched and its turn was running when a deploy restarted the service.
+   * The stop froze it `uncertain`. After the restart the session was resumed on
+   * the same conversation and the model carried on with that instruction — yet
+   * the dashboard row kept saying 보내지 못했습니다 with a Retry that would have
+   * delivered it a second time. Nothing ever settled the row (verification.md
+   * §U8 residual: "uncertain→resolved 호출자 없음").
+   *
+   * The resume turn now takes the row over once IT reaches the model, and only
+   * when the row carries evidence that its own turn had reached the model too.
+   */
+  describe('restart resume takes over the interrupted follow-up', () => {
+    const FOLLOWUP_TS = '333.444';
+    const FOLLOWUP_TEXT = '패스키 서비스 도메인을 별도로 유지하려는 의도가 뭐야?';
+
+    /** The executor's first-SDK-event hook, as the host wired it. */
+    function reachModel(target: SlackHandler, turnEpoch: number | undefined): void {
+      const deps = (target as any).streamExecutor?.deps;
+      deps?.onTurnReachedModel?.({ sessionKey: SESSION_KEY, turnEpoch });
+    }
+
+    /**
+     * Before the restart: the follow-up is drained and its turn is running.
+     * `delivered` says whether that turn got as far as the model (its first SDK
+     * event) before the deploy stopped it. Returns the snapshot the store held
+     * when the process went away.
+     */
+    async function interruptedByShutdown(delivered: boolean): Promise<FollowupQueueSnapshot> {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: FOLLOWUP_TS, text: FOLLOWUP_TEXT }), say());
+      const drainGate = deferred<any>();
+      createAgentSession.mockImplementationOnce((_result: any, _say: any, opts: any) => ({
+        startWithContinuation: vi.fn(async () => {
+          if (delivered) reachModel(handler, opts?.turnEpoch);
+          return drainGate.promise;
+        }),
+        getLastTurnSucceeded: () => true,
+        getRetryAfterMs: () => undefined,
+      }));
+      const finished = settle();
+      await tick();
+      await tick();
+      expect(items()[0].state).toBe('dispatched');
+
+      handler.prepareFollowupShutdown();
+      expect(items()[0].state).toBe('uncertain');
+      const snapshot = JSON.parse(JSON.stringify(saved[saved.length - 1])) as FollowupQueueSnapshot;
+
+      drainGate.resolve({ hasPendingChoice: false });
+      await finished;
+      return snapshot;
+    }
+
+    /** The next process: same registry session, the queue restored from `snapshot`. */
+    function bootFrom(snapshot: FollowupQueueSnapshot, recovered: any[]): { booted: SlackHandler; postMessage: any } {
+      const postMessage = vi.fn().mockResolvedValue({ ts: '999.000' });
+      const registryHandler = {
+        ...claudeHandler,
+        getAllSessions: vi.fn(() => new Map([[SESSION_KEY, registrySession]])),
+        loadSessions: vi.fn(() => 1),
+        getCrashRecoveredSessions: vi.fn(() => recovered),
+        clearCrashRecoveredSessions: vi.fn(),
+      };
+      const booted = new SlackHandler(
+        { client: { chat: { postMessage } }, assistant: vi.fn() } as any,
+        registryHandler as any,
+        {} as any,
+        { followupQueueStore: { load: () => snapshot, save: () => undefined, recoveryWarning: undefined } },
+      );
+      const bootedAny = booted as any;
+      bootedAny.slackApi = handlerAny.slackApi;
+      bootedAny.assistantStatusManager = handlerAny.assistantStatusManager;
+      bootedAny.inputProcessor = handlerAny.inputProcessor;
+      bootedAny.messageValidator = handlerAny.messageValidator;
+      bootedAny.sessionInitializer = handlerAny.sessionInitializer;
+      bootedAny.threadPanel = handlerAny.threadPanel;
+      bootedAny.createAgentSession = createAgentSession;
+      booted.loadSavedSessions();
+      return { booted, postMessage };
+    }
+
+    const workingAtShutdown = () => [
+      {
+        sessionKey: SESSION_KEY,
+        channelId: CHANNEL,
+        threadTs: THREAD_TS,
+        ownerId: 'U_OWNER',
+        activityState: 'working',
+        shouldAutoResume: true,
+      },
+    ];
+
+    const rowOf = (booted: SlackHandler) =>
+      (booted as any)
+        .getFollowupQueue()
+        .list(SESSION_KEY)
+        .find((item: any) => item.message.ts === FOLLOWUP_TS);
+
+    /** Hold the next turn open; `reached` fires its first SDK event. */
+    function holdNextTurn(booted: SlackHandler, reached: boolean): { release: () => void; started: Promise<void> } {
+      const gate = deferred<any>();
+      const started = deferred<void>();
+      createAgentSession.mockImplementationOnce((_result: any, _say: any, opts: any) => ({
+        startWithContinuation: vi.fn(async () => {
+          if (reached) reachModel(booted, opts?.turnEpoch);
+          started.resolve();
+          return gate.promise;
+        }),
+        getLastTurnSucceeded: () => true,
+        getRetryAfterMs: () => undefined,
+      }));
+      return { release: () => gate.resolve({ hasPendingChoice: false }), started: started.promise };
+    }
+
+    it('the resume turn takes the delivered row over, and its own outcome settles it', async () => {
+      const snapshot = await interruptedByShutdown(true);
+      const { booted } = bootFrom(snapshot, workingAtShutdown());
+      expect(rowOf(booted).state).toBe('uncertain');
+
+      const resume = holdNextTurn(booted, true);
+      await booted.notifyCrashRecovery();
+      await resume.started;
+
+      // Running again, under the resume turn — not "보내지 못했습니다" with a Retry.
+      expect(rowOf(booted).state).toBe('dispatched');
+
+      resume.release();
+      for (let i = 0; i < 6; i++) await tick();
+      expect(rowOf(booted).state).toBe('resolved');
+      expect((booted as any).getFollowupQueue().freezeReason(SESSION_KEY)).toBeUndefined();
+    });
+
+    it('the goal loop resume takes it over too — the path the work-m64 dev session took', async () => {
+      const snapshot = await interruptedByShutdown(true);
+      const { booted } = bootFrom(snapshot, []);
+      const goal = { status: 'active', objective: '패스키 계획 정리', goalId: 'g-1', epoch: 1 };
+      registrySession.goal = goal;
+      try {
+        let injected = false;
+        // The goal loop's settle handler injects its continuation as a synthetic host turn.
+        (booted as any).setGoalTurnSettledHandler?.((key: string) => {
+          if (injected || key !== SESSION_KEY) return;
+          injected = true;
+          void booted.handleMessage(
+            message({
+              ts: `${Date.now() / 1000}`,
+              text: '[goal continuation] 계속',
+              synthetic: true,
+              skipDispatch: true,
+              routeContext: { skipAutoBotThread: true, goalContinuation: true },
+            }),
+            say(),
+          );
+        });
+        const resume = holdNextTurn(booted, true);
+
+        expect(booted.resumeActiveGoals()).toBe(1);
+        await resume.started;
+        expect(rowOf(booted).state).toBe('dispatched');
+
+        resume.release();
+        for (let i = 0; i < 6; i++) await tick();
+        expect(rowOf(booted).state).toBe('resolved');
+      } finally {
+        registrySession.goal = undefined;
+      }
+    });
+
+    it('a resume that comes after the window takes nothing over', async () => {
+      const snapshot = await interruptedByShutdown(true);
+      const { booted } = bootFrom(snapshot, []);
+      // The resume was noted at boot but its run only arrives 11 minutes later.
+      (booted as any).followupResumeMark.set(SESSION_KEY, { cause: 'restart', at: Date.now() - 11 * 60_000 });
+
+      const late = holdNextTurn(booted, true);
+      const done = booted.handleMessage(
+        message({ ts: '888.999', text: '[auto-resume] 계속', synthetic: true, skipDispatch: true }),
+        say(),
+      );
+      await late.started;
+      late.release();
+      await done;
+      for (let i = 0; i < 4; i++) await tick();
+
+      expect(rowOf(booted).state).toBe('uncertain');
+    });
+
+    it('leaves a row whose turn never reached the model uncertain — its words may never have been read', async () => {
+      const snapshot = await interruptedByShutdown(false);
+      const { booted } = bootFrom(snapshot, workingAtShutdown());
+
+      const resume = holdNextTurn(booted, true);
+      await booted.notifyCrashRecovery();
+      await resume.started;
+      resume.release();
+      for (let i = 0; i < 6; i++) await tick();
+
+      expect(rowOf(booted).state).toBe('uncertain');
+    });
+
+    it('does not let the first turn after the restart take it over when that turn is the user’s own message', async () => {
+      const snapshot = await interruptedByShutdown(true);
+      // Nothing resumes this session: it is idle in the registry's eyes.
+      const { booted } = bootFrom(snapshot, []);
+
+      const userTurn = holdNextTurn(booted, true);
+      const done = booted.handleMessage(message({ ts: '777.888', text: '다른 질문' }), say());
+      await userTurn.started;
+      userTurn.release();
+      await done;
+      for (let i = 0; i < 4; i++) await tick();
+
+      expect(rowOf(booted).state).toBe('uncertain');
+    });
+
+    it('does not take over a row a user Stop made uncertain', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: FOLLOWUP_TS, text: FOLLOWUP_TEXT }), say());
+      const drainGate = deferred<any>();
+      createAgentSession.mockImplementationOnce((_result: any, _say: any, opts: any) => ({
+        startWithContinuation: vi.fn(async () => {
+          reachModel(handler, opts?.turnEpoch);
+          return drainGate.promise;
+        }),
+        getLastTurnSucceeded: () => true,
+        getRetryAfterMs: () => undefined,
+      }));
+      const finished = settle();
+      await tick();
+      await tick();
+      handlerAny.requestCoordinator.abortSession(SESSION_KEY, 'user-stop');
+      expect(items()[0].state).toBe('uncertain');
+      const snapshot = JSON.parse(JSON.stringify(saved[saved.length - 1])) as FollowupQueueSnapshot;
+      drainGate.resolve({ hasPendingChoice: false });
+      await finished;
+
+      const { booted } = bootFrom(snapshot, workingAtShutdown());
+      const resume = holdNextTurn(booted, true);
+      await booted.notifyCrashRecovery();
+      await resume.started;
+      resume.release();
+      for (let i = 0; i < 6; i++) await tick();
+
+      // The user stopped it; a restart resume is not their decision to run it again.
+      expect(rowOf(booted).state).toBe('uncertain');
+    });
+  });
+
+  /**
+   * The same thread, half an hour later (work-m64 dev, 2026-11-02 04:31–04:33Z):
+   * a follow-up's turn crossed the auto-compact threshold and was stopped. The
+   * stop parked it `uncertain` ("auto-compact"), the next queued follow-up ran
+   * — compacting first — and carried the conversation on, yet the cut row kept
+   * saying 보내지 못했습니다. The run that carries an auto-compact stop on takes
+   * the cut row over, whatever kind of run it is.
+   */
+  describe('the run after an auto-compact stop takes over the cut follow-up', () => {
+    const CUT_TS = '333.444';
+    const NEXT_TS = '444.555';
+
+    function reachModel(turnEpoch: number | undefined): void {
+      handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({ sessionKey: SESSION_KEY, turnEpoch });
+    }
+
+    /** A drained turn that reaches the model and is then stopped at the auto-compact threshold. */
+    function autoCompactStoppedTurn(): void {
+      createAgentSession.mockImplementationOnce((result: any, _say: any, opts: any) => ({
+        startWithContinuation: vi.fn(async () => {
+          reachModel(opts?.turnEpoch);
+          result.abortController.abort('auto-compact');
+          return { hasPendingChoice: false };
+        }),
+        getLastTurnSucceeded: () => true,
+        getRetryAfterMs: () => undefined,
+      }));
+    }
+
+    /** The next turn: reaches the model, then waits for `release`. */
+    function heldTurn(): { release: () => void; started: Promise<void> } {
+      const gate = deferred<any>();
+      const started = deferred<void>();
+      createAgentSession.mockImplementationOnce((_result: any, _say: any, opts: any) => ({
+        startWithContinuation: vi.fn(async () => {
+          reachModel(opts?.turnEpoch);
+          started.resolve();
+          return gate.promise;
+        }),
+        getLastTurnSucceeded: () => true,
+        getRetryAfterMs: () => undefined,
+      }));
+      return { release: () => gate.resolve({ hasPendingChoice: false }), started: started.promise };
+    }
+
+    const row = (ts: string) => items().find((item: any) => item.message.ts === ts);
+
+    it('a queued follow-up that runs next carries it on: the cut row is confirmed when that run ends safe', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: CUT_TS, text: '이거 검토해줘' }), say());
+      await handler.handleMessage(message({ ts: NEXT_TS, text: '본질부터 다시 생각해봐' }), say());
+      autoCompactStoppedTurn();
+      const next = heldTurn();
+
+      const finished = settle();
+      await next.started;
+
+      expect(row(CUT_TS).state).toBe('uncertain');
+      expect(row(CUT_TS).stateReason).toBe('auto-compact');
+      expect(row(NEXT_TS).state).toBe('dispatched');
+
+      next.release();
+      await finished;
+      for (let i = 0; i < 4; i++) await tick();
+
+      expect(row(NEXT_TS).state).toBe('resolved');
+      expect(row(CUT_TS).state).toBe('resolved');
+    });
+
+    it('the auto-compact continuation carries it on when nothing was queued — running, then resolved', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: CUT_TS, text: '이거 검토해줘' }), say());
+      autoCompactStoppedTurn();
+      const continuation = heldTurn();
+
+      const finished = settle();
+      await continuation.started;
+
+      expect(row(CUT_TS).state).toBe('dispatched');
+
+      continuation.release();
+      await finished;
+      for (let i = 0; i < 6; i++) await tick();
+      expect(row(CUT_TS).state).toBe('resolved');
+    });
+
+    it('a row a user Stop made uncertain is never taken over by the next run', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: CUT_TS, text: '이거 검토해줘' }), say());
+      const gate = deferred<any>();
+      createAgentSession.mockImplementationOnce((_result: any, _say: any, opts: any) => ({
+        startWithContinuation: vi.fn(async () => {
+          reachModel(opts?.turnEpoch);
+          return gate.promise;
+        }),
+        getLastTurnSucceeded: () => true,
+        getRetryAfterMs: () => undefined,
+      }));
+      const finished = settle();
+      await tick();
+      await tick();
+      handlerAny.requestCoordinator.abortSession(SESSION_KEY, 'user-stop');
+      gate.resolve({ hasPendingChoice: false });
+      await finished;
+      expect(row(CUT_TS).state).toBe('uncertain');
+
+      const after = heldTurn();
+      const done = handler.handleMessage(message({ ts: '777.888', text: '다른 질문' }), say());
+      await after.started;
+      after.release();
+      await done;
+      for (let i = 0; i < 4; i++) await tick();
+
+      expect(row(CUT_TS).state).toBe('uncertain');
+    });
+  });
 });
