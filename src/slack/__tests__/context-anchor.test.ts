@@ -7,11 +7,14 @@
 
 import {
   anchorRefusal,
+  CONTEXT_REWIND_HISTORY_MAX,
   type ContextAnchorSession,
   consumePendingRewind,
   decodeContextAnchor,
   encodeContextAnchor,
   resetChainTracking,
+  sanitizeContextRewinds,
+  sanitizePendingRewind,
   trackChainPoint,
   turnStartAnchor,
 } from '@soma/slack/context-anchor';
@@ -137,5 +140,58 @@ describe('consumePendingRewind — one-shot', () => {
     s.pendingRewind = rewind(encodeContextAnchor({ sid: 'old', epoch: 0, uuid: U(5) }));
     expect(consumePendingRewind(s)).toBeUndefined();
     expect(s.pendingRewind).toBeUndefined();
+  });
+});
+
+describe('what a rollback dropped is kept, so the dashboard can mark it (#744)', () => {
+  const anchor = encodeContextAnchor({ sid: SID, epoch: 0, uuid: U(5) });
+  const req = (over: Record<string, unknown> = {}) => ({
+    anchor,
+    label: '입력 직전: 배포해',
+    requestedAt: 200,
+    requestedBy: 'U1',
+    source: 'input' as const,
+    ...over,
+  });
+
+  it('applying a request that knows what it keeps records the dropped span', () => {
+    const s = session({ contextAnchor: encodeContextAnchor({ sid: SID, epoch: 0, uuid: U(9) }) });
+    s.pendingRewind = req({ keptUntil: 100 });
+    consumePendingRewind(s, () => 300);
+    expect(s.contextRewinds).toEqual([{ from: 100, to: 200, label: '입력 직전: 배포해', at: 300 }]);
+  });
+
+  it('no span without keptUntil; a refused request records nothing', () => {
+    const s = session();
+    s.pendingRewind = req();
+    consumePendingRewind(s, () => 300);
+    expect(s.contextRewinds).toBeUndefined();
+    s.pendingRewind = req({ keptUntil: 1, anchor: encodeContextAnchor({ sid: 'old', epoch: 0, uuid: U(5) }) });
+    consumePendingRewind(s, () => 300);
+    expect(s.contextRewinds).toBeUndefined();
+  });
+
+  it('keeps only the latest spans', () => {
+    const s = session();
+    for (let i = 0; i < CONTEXT_REWIND_HISTORY_MAX + 3; i++) {
+      s.pendingRewind = req({ keptUntil: i, requestedAt: i + 1 });
+      consumePendingRewind(s, () => 1000 + i);
+    }
+    expect(s.contextRewinds).toHaveLength(CONTEXT_REWIND_HISTORY_MAX);
+    expect(s.contextRewinds?.[0].from).toBe(3);
+  });
+
+  it('persisted values are checked on restore', () => {
+    expect(sanitizePendingRewind(req({ keptUntil: 7 }))?.keptUntil).toBe(7);
+    expect(sanitizePendingRewind(req({ keptUntil: 'x' }))?.keptUntil).toBeUndefined();
+    expect(
+      sanitizeContextRewinds([
+        { from: 1, to: 2, label: 'a', at: 3 },
+        { from: 5, to: 4, label: 'reversed', at: 6 },
+        { from: 'x', to: 2, label: 'b', at: 3 },
+        null,
+      ]),
+    ).toEqual([{ from: 1, to: 2, label: 'a', at: 3 }]);
+    expect(sanitizeContextRewinds('nope')).toBeUndefined();
   });
 });

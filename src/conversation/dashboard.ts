@@ -76,6 +76,7 @@ import {
   subagentSpendOf,
 } from '../session/agent-registry';
 import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
+import { CONTEXT_ROLLBACK_REFUSAL_TEXT } from '../session/context-rollback';
 import { sanitizeCronJob } from '../session/cron-job';
 import { effortMenuOf } from '../session/effort-menu';
 import { EffortSwitchError, type EffortSwitchResult } from '../session/effort-switch';
@@ -120,6 +121,8 @@ import { type ArtifactSummary, getArtifactStore, type SessionArtifact } from './
 import { buildCapacityView, type CapacityView } from './capacity-view';
 import { type CardLink, cardLinksOf } from './card-links';
 import { buildCronJobsView, type CronRunSessionLookup } from './cron-view';
+import { DICTATION_PREF_JS } from './dictation-pref';
+import { DICTATION_SERVER_JS } from './dictation-server-client';
 import { readAllInstances } from './instance-registry';
 import {
   createNewTaskGate,
@@ -391,6 +394,17 @@ export interface KanbanSession {
    * session has never had a goal.
    */
   goal?: KanbanGoal;
+  /**
+   * Context rollback (#744): the session can be rolled back (it has an SDK
+   * conversation), and a rollback waiting for the next turn.
+   */
+  rollbackAvailable?: boolean;
+  pendingRewind?: { label: string; requestedAt: number };
+  /**
+   * What applied rollbacks dropped from the model's context: work-log entries
+   * and turns made after `from` and up to `to` are marked "문맥에서 빠짐".
+   */
+  contextRewinds?: Array<{ from: number; to: number; label: string; at: number }>;
   /**
    * Set when the session is idle only because the system will start it again
    * by itself (see {@link KanbanAutoResume}). Such a card is unfinished work:
@@ -1547,6 +1561,38 @@ export function setDashboardGoalDecisionHandler(fn: GoalDecisionHandler | null):
 }
 
 /**
+ * Context rollback (#744) — the picker's points and the request / cancel.
+ * Wired in src/index.ts to `SlackHandler.getContextRollbackPoints` /
+ * `handleContextRollback`; the one gate is `requestContextRollback`.
+ */
+export interface DashboardRollbackHandler {
+  points(sessionKey: string, actorUserId: string | undefined): Promise<unknown>;
+  request(
+    sessionKey: string,
+    /** `at`: the point's time from the picker (marks what the rollback drops). */
+    body: { anchor: string; label: string; source: 'input' | 'worklog'; at?: number } | { cancel: true },
+    actorUserId: string | undefined,
+  ): Promise<{ ok: true; cancelled?: boolean } | { ok: false; reason: string }>;
+}
+let _rollbackHandler: DashboardRollbackHandler | null = null;
+
+export function setDashboardRollbackHandler(h: DashboardRollbackHandler | null): void {
+  _rollbackHandler = h;
+}
+
+/** The thread's rollback refusals, for the dashboard (same words as the thread command). */
+const ROLLBACK_REFUSAL_STATUS: Record<string, number> = {
+  'not-found': 404,
+  'not-owner': 403,
+  busy: 409,
+  'no-change': 409,
+  invalid: 422,
+  'other-session': 422,
+  compacted: 422,
+  'not-in-transcript': 422,
+};
+
+/**
  * SSOT 2026-10-22 T4/T5 — switch a session to a representative model
  * (`session/model-switch.ts` `switchSessionModel`). Throws `ModelSwitchError`
  * for every refusal, whose `statusCode` the route answers with.
@@ -2385,6 +2431,29 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     // aggregator's mergeBoards stamp.
     environment: _selfInstanceEnv ? { ..._selfInstanceEnv } : undefined,
     goal: goalToKanban(s),
+    ...(typeof s.sessionId === 'string' && s.sessionId && s.conversationId && s.slackless !== true
+      ? { rollbackAvailable: true }
+      : {}),
+    ...(s.pendingRewind && typeof s.pendingRewind.label === 'string'
+      ? {
+          pendingRewind: {
+            label: String(s.pendingRewind.label).slice(0, 300),
+            requestedAt: Number(s.pendingRewind.requestedAt) || 0,
+          },
+        }
+      : {}),
+    ...(Array.isArray(s.contextRewinds) && s.contextRewinds.length
+      ? {
+          contextRewinds: s.contextRewinds
+            .slice(-10)
+            .map((r: { from?: unknown; to?: unknown; label?: unknown; at?: unknown }) => ({
+              from: Number(r.from) || 0,
+              to: Number(r.to) || 0,
+              label: String(r.label ?? '').slice(0, 300),
+              at: Number(r.at) || 0,
+            })),
+        }
+      : {}),
     ...(autoResume ? { autoResume } : {}),
     artifacts: cardArtifacts(s.conversationId),
     userMedia: cardUserMedia(s.conversationId),
@@ -4074,6 +4143,94 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── Context rollback (#744): roll the model's context back to an input or a work-log point ──
+
+  server.get<{ Params: { key: string } }>(
+    '/api/dashboard/session/:key/rollback-points',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      if (!_rollbackHandler) {
+        reply.status(501).send({ error: 'Rollback handler not configured' });
+        return;
+      }
+      try {
+        const actor = (request as { authContext?: { userId?: string } }).authContext?.userId;
+        const view = await _rollbackHandler.points(resolved.originalKey, actor);
+        if (!view) {
+          reply.status(404).send({ error: 'Session not found' });
+          return;
+        }
+        reply.send(view);
+      } catch (error) {
+        logger.error('Error reading rollback points', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  server.post<{
+    Params: { key: string };
+    Body: { anchor?: unknown; label?: unknown; source?: unknown; at?: unknown; cancel?: unknown };
+  }>(
+    '/api/dashboard/session/:key/rollback',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { anchor, label, source, at, cancel } = request.body || {};
+      const isCancel = cancel === true;
+      if (
+        !isCancel &&
+        (typeof anchor !== 'string' ||
+          !anchor ||
+          anchor.length > 200 ||
+          typeof label !== 'string' ||
+          label.length > 300 ||
+          (source !== 'input' && source !== 'worklog') ||
+          (at !== undefined && (typeof at !== 'number' || !Number.isFinite(at) || at < 0)))
+      ) {
+        reply
+          .status(400)
+          .send({ error: "anchor, label and source ('input' | 'worklog') — or cancel: true — are required" });
+        return;
+      }
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      if (!_rollbackHandler) {
+        reply.status(501).send({ error: 'Rollback handler not configured' });
+        return;
+      }
+      try {
+        const actor = (request as { authContext?: { userId?: string } }).authContext?.userId;
+        const result = await _rollbackHandler.request(
+          resolved.originalKey,
+          isCancel
+            ? { cancel: true }
+            : {
+                anchor: anchor as string,
+                label: label as string,
+                source: source as 'input' | 'worklog',
+                ...(typeof at === 'number' ? { at } : {}),
+              },
+          actor,
+        );
+        if (result.ok) {
+          reply.send(result);
+          return;
+        }
+        reply.status(ROLLBACK_REFUSAL_STATUS[result.reason] ?? 409).send({
+          error:
+            (CONTEXT_ROLLBACK_REFUSAL_TEXT as Record<string, string>)[result.reason] ??
+            (result.reason === 'not-found' ? '세션을 찾을 수 없습니다' : '되돌릴 수 없습니다'),
+          reason: result.reason,
+        });
+      } catch (error) {
+        logger.error('Error requesting a context rollback', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
   // ── Goal cap decision (the owner-DM "Goal 계속 진행할까요?", as an approval card) ──
 
   server.post<{ Params: { key: string }; Body: { goalId?: unknown; decisionId?: unknown; decision?: unknown } }>(
@@ -4971,6 +5128,15 @@ ui-breadcrumbs.crumbs { flex: 1 1 auto; min-width: 0; }
 /* Session lifecycle dialog (admin, J-01) — @2lab.ai/ui <ui-dialog size="sm">: the element draws the panel, the
    scrim, the enter / exit motion and the phone sheet; the page keeps only its form's rules. */
 .lifecycle-dialog .lc-note { margin: 0 0 12px; font-size: 12px; color: var(--ib-muted); }
+/* Context rollback (#744) — the picker: the owner's inputs and the work log's cut points, newest first. */
+.rollback-dialog .rb-note { margin: 0 0 10px; font-size: 12px; color: var(--ib-muted); }
+.rollback-dialog .rb-sec { margin: 0 0 12px; }
+.rollback-dialog .rb-sec h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--ib-muted); }
+.rollback-dialog .rb-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.rollback-dialog .rb-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rollback-dialog .rb-time { font-size: 11px; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
+.rollback-dialog .rb-pending { margin: 0 0 10px; font-size: 12px; display: flex; gap: 8px; align-items: center; }
+.rollback-dialog .rb-empty { font-size: 12px; color: var(--ib-muted); padding: 4px 0; }
 .lifecycle-dialog label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; font-size: 13px; margin-bottom: 10px; }
 .lifecycle-dialog label input { grid-column: 1 / -1; font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--ib-seg); color: var(--ib-text); }
 .lifecycle-dialog .lc-unit { color: var(--ib-muted); font-size: 12px; }
@@ -5939,6 +6105,13 @@ ${pageTokenAliases()}
           <button type="button" class="ui-btn" onclick="closeLifecycleDialog()">취소</button>
           <button type="submit" form="lifecycle-form" class="ui-btn is-primary lc-save" id="lifecycle-save">저장</button>
         </div>
+      </ui-dialog>
+      <!-- Context rollback (#744): pick a point — just before one of your inputs, or a point in the work log. -->
+      <ui-dialog id="rollback-dialog" class="rollback-dialog" heading="문맥 되돌리기" size="sm" lang="ko">
+        <p class="rb-note">고른 지점까지 모델의 대화 문맥을 되돌립니다. 그 뒤의 대화는 다음 턴부터 모델이 기억하지 않고, 파일 변경은 되돌리지 않습니다.</p>
+        <div id="rollback-body" onclick="onRollbackClick(event)"></div>
+        <p class="ui-status-line" id="rollback-status" role="status" aria-live="polite"></p>
+        <div slot="footer" class="lc-actions"><button type="button" class="ui-btn" onclick="closeRollbackDialog()">닫기</button></div>
       </ui-dialog>
       <!-- CRON lane (SSOT 2026-10-23 T4/T5): @2lab.ai/ui <ui-agent-queue> with the lane only —
            one tile per cron job, four numbers, the next-fire queue and 24 hours of runs
@@ -10079,6 +10252,8 @@ function rerenderForViewMode() {
 // script (view-layout-client.ts) turns a layout into a face, the open card's parts and the detail card's switches.
 var VIEW_BUILTINS = ${JSON.stringify(BUILTIN_PRESETS)};
 ${VIEW_LAYOUT_CLIENT_JS}
+${DICTATION_PREF_JS}
+${DICTATION_SERVER_JS}
 var VIEW_LAYOUT_KEY = 'soma-view-layout';
 var _viewLayout = { v: 1 }; // the user's saved layouts (GET /api/settings/dashboard-layout); the device keeps a copy
 var _layoutLoads = 0; // layout loads started: only the newest answer is drawn
@@ -10581,6 +10756,67 @@ function ptUpsert(list, turn, replaceId) {
   list.push(turn);
   return 'append';
 }
+// SSOT 2026-11-02 T1 — this browser's own instruction shows at once as an optimistic turn
+// ('나'); the turn the server records must take its place however late it lands, or the
+// instruction shows twice. Pure: the words a turn is compared by — Slack entities decoded,
+// line ends and runs of blanks folded, trimmed.
+function ptSentKey(s) {
+  return decodeSlackEntities(String(s || '')).replace(/\\r\\n?/g, '\\n').replace(/[ \\t]+/g, ' ').replace(/ ?\\n ?/g, '\\n').trim();
+}
+// Pure: the optimistic turn a recorded user turn takes over ('' = none) — the oldest one with
+// the same words sent by the same person (when both are known: _by is the signed-in sender), the
+// one rule the fetched page uses too (ptRecorded). Any other turn — someone else's, or another
+// instruction of the viewer's own typed in Slack meanwhile — never takes the slot. A turn
+// already held is an update, never an adoption; a turn soma-work put there (origin by system)
+// never adopts.
+function ptOptimisticFor(list, turn) {
+  if (!turn || turn.role !== 'user' || (turn.origin && turn.origin.by === 'system')) return '';
+  var key = ptSentKey(turn.rawContent);
+  for (var i = 0; i < list.length; i++) {
+    var t = list[i];
+    if (!t) continue;
+    if (turn.id && t.id === turn.id) return '';
+    if (!t._optimistic || (turn.userId && t._by && turn.userId !== t._by)) continue;
+    if (ptSentKey(t._sent) === key) return String(t.id);
+  }
+  return '';
+}
+// Pure: the id of the fetched turn that records an optimistic one ('' = none): a user turn with
+// the same words, recorded no earlier than a minute before it was sent, that the panel did not
+// already hold before the fetch (held — so an earlier '계속' never confirms a new '계속') and that
+// confirmed no other optimistic turn (used — one recorded turn, one optimistic turn).
+function ptRecorded(list, opt, held, used) {
+  var key = ptSentKey(opt && opt._sent);
+  var since = toNum(opt && opt.timestamp) - 60000;
+  for (var i = 0; i < list.length; i++) {
+    var t = list[i];
+    var id = t && t.id ? String(t.id) : '';
+    if (!id || held[id] || used[id] || t.role !== 'user' || t._optimistic) continue;
+    if (toNum(t.timestamp) >= since && ptSentKey(t.rawContent) === key) return id;
+  }
+  return '';
+}
+// Pure: a page fetched, then the turns pushed while it loaded (WS) and not in it, after it — an
+// optimistic turn the page newly records goes, one for one.
+function ptMergeFetched(fetched, pushed) {
+  var out = (fetched || []).slice();
+  var held = Object.create(null);
+  var used = Object.create(null);
+  (pushed || []).forEach(function(p) { if (p && p.id && !p._optimistic) held[String(p.id)] = true; });
+  for (var i = 0; i < (pushed || []).length; i++) {
+    var p = pushed[i];
+    if (!p) continue;
+    if (p._optimistic) {
+      var hit = ptRecorded(out, p, held, used);
+      if (hit) {
+        used[hit] = true;
+        continue;
+      }
+    }
+    ptUpsert(out, p);
+  }
+  return out;
+}
 // 에이전트 트리: the session's agents in <ui-agent-tree> (rich — a card per agent on
 // one waterfall axis, every branch's spend rolled up), the main agent at its
 // root and the focused one selected — the one item of the tab's <ui-log-scroller>
@@ -10865,13 +11101,16 @@ function panelHeadData(s, col) {
 // The bar's slot: an armed resume (what starts the session again, when, which attempt; why on hover).
 function panelHeadNoteHtml(s, col) {
   var resume = pendingAutoResume(s, col);
-  return resume ? '<span class="ps-resume" title="' + escAttr(resume.reason || '') + '">' + esc(autoResumeLabel(resume)) + '</span>' : '';
+  // #744: a rollback waits for the next turn.
+  var rewind = s.pendingRewind ? '<span class="ps-resume" title="' + escAttr(s.pendingRewind.label || '') + '">⏪ 다음 턴부터 되돌림</span>' : '';
+  return (resume ? '<span class="ps-resume" title="' + escAttr(resume.reason || '') + '">' + esc(autoResumeLabel(resume)) + '</span>' : '') + rewind;
 }
 function renderPanelHead() {
   var el = document.getElementById('panel-status');
   if (!el) return;
   var key = panelSessionKey;
   var s = key ? _sessionCache[key] : null;
+  wlSyncRewinds();
   if (!el._wired) {
     el._wired = true;
     el.addEventListener('ui-action', onPanelHeadAction);
@@ -10895,6 +11134,7 @@ function onPanelHeadAction(e) {
   if (!s || !id || id === 'slack') return;
   if (id === 'star') doStar(key, s.starred !== true);
   else if (id === 'revive') doRevive(key);
+  else if (id === 'rollback') openRollbackDialog(key);
   else if (id === 'stop' || id === 'close' || id === 'trash') doAction(key, id);
 }
 
@@ -11675,11 +11915,14 @@ function sessionActionsOf(s, col) {
       : '즐겨찾기 — 항상 맨 위, 자동 sleep·보관 안 함' + (closed ? ' (지금 살려요)' : '') }];
   if (closed) out.push({ id: 'revive', label: '살리기', lock: lock, busy: lifeBusy,
     tip: manages ? '대화를 이어갈 수 있게 세션을 살려요 (작업 폴더 파일은 복구되지 않아요)' : OWNER_ONLY_MSG });
+  // #744: roll the model's context back to an earlier input or work-log point (live sessions with an SDK conversation).
+  if (!closed && s.rollbackAvailable === true) out.push({ id: 'rollback', label: s.pendingRewind ? '⏪ 되돌리기 예약됨' : '⏪ 되돌리기', lock: lock, busy: false,
+    tip: manages ? '모델의 대화 문맥을 이전 입력·작업 로그 지점으로 되돌려요 (파일은 그대로)' : OWNER_ONLY_MSG });
   out.push({ id: kind, label: label, lock: lock, busy: isBusy(s.key, 'action') });
   return out;
 }
 // The open card's action buttons (kit .ui-btn): Stop reads as the danger tone, Trash as a quiet one.
-var SESSION_ACTION_TONE = { stop: ' is-danger', close: '', trash: ' is-quiet' };
+var SESSION_ACTION_TONE = { stop: ' is-danger', close: '', trash: ' is-quiet', rollback: '' };
 // noStar: the face's star toggle is the one star (a plan's open card has no ☆ button of its own).
 function sessionActionHtml(s, col, noStar) {
   var key = escJs(s.key);
@@ -11693,6 +11936,10 @@ function sessionActionHtml(s, col, noStar) {
     if (a.id === 'revive') {
       return '<button type="button" class="ui-btn" data-action="revive"' + off + ' title="' + escAttr(a.tip) + '"'
         + ' onclick="event.stopPropagation();doRevive(\\'' + key + '\\')">' + esc(a.label) + '</button>';
+    }
+    if (a.id === 'rollback') {
+      return '<button type="button" class="ui-btn" data-action="rollback"' + off + ' title="' + escAttr(a.tip) + '"'
+        + ' onclick="event.stopPropagation();openRollbackDialog(\\'' + key + '\\')">' + esc(a.label) + '</button>';
     }
     return '<button class="ui-btn' + SESSION_ACTION_TONE[a.id] + '" data-action="' + a.id + '"' + off + (a.lock ? ' title="' + escAttr(a.lock) + '"' : '')
       + ' onclick="event.stopPropagation();doAction(\\'' + key + '\\',\\'' + a.id + '\\')">' + esc(a.label) + '</button>';
@@ -12648,6 +12895,130 @@ function openLifecycleDialog() {
 function closeLifecycleDialog() {
   var dlg = document.getElementById('lifecycle-dialog');
   if (dlg && typeof dlg.hide === 'function') dlg.hide();
+}
+// ── Context rollback (#744) ──
+// The picker reads its points from the server (the owner's inputs and the work log's cut points of
+// this context, from GET …/rollback-points) and asks with POST …/rollback; the thread is told there.
+var _rollbackKey = null;
+// #744 — what an applied rollback dropped: entries and turns made after a span's
+// kept point and up to its request (the card's contextRewinds) read "문맥에서 빠짐".
+var REWOUND_MARK = '↩︎ 문맥에서 빠짐';
+function rewoundBy(spans, ts) {
+  if (!Array.isArray(spans) || typeof ts !== 'number' || !isFinite(ts)) return null;
+  for (var i = 0; i < spans.length; i++) {
+    var r = spans[i];
+    if (r && ts > r.from && ts <= r.to) return r;
+  }
+  return null;
+}
+// The open log keeps the panel session's spans (st.rewinds); a change repaints it.
+function wlSyncRewinds() {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var spans = s && Array.isArray(s.contextRewinds) ? s.contextRewinds : null;
+  if (!_wl || JSON.stringify(_wl.rewinds || null) === JSON.stringify(spans)) return;
+  _wl.rewinds = spans;
+  wlPaintSoon();
+}
+function setRollbackStatus(text, isError) {
+  var el = document.getElementById('rollback-status');
+  if (!el) return;
+  el.textContent = text || '';
+  if (isError) el.setAttribute('data-tone', 'fail'); else el.removeAttribute('data-tone');
+}
+function closeRollbackDialog() {
+  var dlg = document.getElementById('rollback-dialog');
+  _rollbackKey = null;
+  if (dlg && typeof dlg.hide === 'function') dlg.hide();
+}
+async function openRollbackDialog(key) {
+  var dlg = document.getElementById('rollback-dialog');
+  var body = document.getElementById('rollback-body');
+  if (!dlg || !body || typeof dlg.show !== 'function') return;
+  _rollbackKey = key;
+  body.innerHTML = '';
+  setRollbackStatus('불러오는 중…', false);
+  dlg.show();
+  await loadRollbackPoints(key);
+}
+async function loadRollbackPoints(key) {
+  var body = document.getElementById('rollback-body');
+  try {
+    var res = await fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/rollback-points', { headers: { Accept: 'application/json' } });
+    var v = await res.json().catch(function() { return null; });
+    if (_rollbackKey !== key || !body) return;
+    if (!res.ok || !v) { setRollbackStatus((v && v.error) || ('HTTP ' + res.status), true); return; }
+    body._points = { input: v.inputs || [], worklog: v.worklog || [] };
+    body._locked = !!v.refusal;
+    body._armed = null;
+    var html = '';
+    if (v.pending) {
+      html += '<div class="rb-pending"><span>⏳ 예약됨: ' + esc(v.pending.label) + '</span>'
+        + (v.refusal ? '' : '<button type="button" class="ui-btn is-quiet" data-rb-cancel="1">취소</button>') + '</div>';
+    }
+    html += rollbackSectionHtml('내 입력 — 그 입력 직전으로', 'input', body._points.input, body._locked);
+    html += rollbackSectionHtml('작업 로그 — 그 지점까지 유지', 'worklog', body._points.worklog, body._locked);
+    body.innerHTML = html;
+    setRollbackStatus(v.refusalText || '', !!v.refusal);
+  } catch (e) {
+    if (_rollbackKey === key) setRollbackStatus('네트워크 오류', true);
+  }
+}
+// Newest first; each row's button carries its source and index into the server's list.
+function rollbackSectionHtml(title, source, list, locked) {
+  var rows = '';
+  for (var i = list.length - 1; i >= 0; i--) {
+    var p = list[i];
+    rows += '<div class="rb-row"><span class="rb-time">' + esc(formatTaskTime(Number(p.at) || 0)) + '</span>'
+      + '<span class="rb-label" title="' + escAttr(p.label) + '">' + esc(p.label) + '</span>'
+      + '<button type="button" class="ui-btn" data-rb-source="' + source + '" data-rb-index="' + i + '"' + (locked ? ' disabled' : '') + '>되돌리기</button></div>';
+  }
+  return '<div class="rb-sec"><h4>' + esc(title) + '</h4>' + (rows || '<div class="rb-empty">되돌릴 수 있는 지점이 없습니다</div>') + '</div>';
+}
+function onRollbackClick(e) {
+  var btn = e.target && e.target.closest ? e.target.closest('button') : null;
+  var body = document.getElementById('rollback-body');
+  var key = _rollbackKey;
+  if (!btn || !body || !key || btn.disabled) return;
+  if (btn.getAttribute('data-rb-cancel')) { sendRollback(key, { cancel: true }, '예약을 취소했어요'); return; }
+  var source = btn.getAttribute('data-rb-source');
+  var list = body._points && body._points[source];
+  var p = list && list[Number(btn.getAttribute('data-rb-index'))];
+  if (!p) return;
+  // Two presses, no confirm dialog: the first arms this row and says what it does; the second sends.
+  var id = source + ':' + btn.getAttribute('data-rb-index');
+  if (body._armed !== id) {
+    var prev = body.querySelector ? body.querySelector('[data-rb-armed]') : null;
+    if (prev) { prev.removeAttribute('data-rb-armed'); prev.textContent = '되돌리기'; }
+    body._armed = id;
+    if (btn.setAttribute) btn.setAttribute('data-rb-armed', '1');
+    btn.textContent = '한 번 더 눌러 확인';
+    setRollbackStatus('모델 문맥을 되돌립니다 — ' + p.label + ' (다음 턴부터 적용, 파일은 그대로). 같은 버튼을 한 번 더 누르세요.', false);
+    return;
+  }
+  body._armed = null;
+  sendRollback(key, { anchor: p.anchor, label: p.label, source: source, at: p.at }, '다음 턴부터 문맥을 되돌려요');
+}
+async function sendRollback(key, payload, doneTitle) {
+  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/rollback';
+  var send = function() {
+    var headers = { 'Content-Type': 'application/json' };
+    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+    return fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(payload) });
+  };
+  try {
+    var res = await send();
+    if (res.status === 403) { await refreshCsrfToken(); res = await send(); }
+    var answer = await res.json().catch(function() { return null; });
+    if (res.ok && answer && answer.ok) {
+      dashToast({ title: doneTitle, description: payload.label || undefined, tone: 'success' });
+      if (_rollbackKey === key) await loadRollbackPoints(key);
+      await loadSessions();
+    } else {
+      setRollbackStatus((answer && answer.error) || ('HTTP ' + res.status), true);
+    }
+  } catch (e) {
+    setRollbackStatus('네트워크 오류', true);
+  }
 }
 function setLifecycleStatus(text, isError) {
   var el = document.getElementById('lifecycle-status');
@@ -13683,32 +14054,7 @@ function connectWs() {
         // main agent's new list, and a subagent's panel reads its own (spec 12).
         if (panelOpen && panelSessionKey === msg.sessionKey) repaintPanelSession();
       } else if (msg.type === 'conversation_update') {
-        // A turn landed — an open card's 지시/응답 pair may be stale now.
-        invalidateCardIo(msg.conversationId);
-        umOnTurn(msg.conversationId, msg.turn);
-        // If panel is open for this conversation, append or update the turn
-        if (panelOpen && panelConvId === msg.conversationId && msg.turn) {
-          // Dedupe: skip user turns that match our optimistic send (content + within 10s)
-          if (msg.turn.role === 'user' && _lastSentContent && (Date.now() - _lastSentTime) < 10000
-              && (msg.turn.rawContent || '').trim() === _lastSentContent.trim()) {
-            _lastSentContent = '';
-            _lastSentTime = 0;
-            // The server's turn takes over the optimistic one, so a later push for
-            // it (a /compact result, SSOT 2026-10-27) finds it by its real id.
-            if (msg.turn.id) {
-              var optId = '';
-              for (var oi = _panelTurnsList.length - 1; oi >= 0 && !optId; oi--) {
-                var ot = _panelTurnsList[oi];
-                if (ot && ot._optimistic && String(ot.id || '').indexOf('optimistic-') === 0) optId = ot.id;
-              }
-              if (optId) appendTurnToPanel(msg.turn, false, optId);
-            }
-          } else {
-            // A turn already held (a summary landing on its answer) is updated in
-            // place in 지시와 답변's data; a new one goes at the end.
-            appendTurnToPanel(msg.turn);
-          }
-        }
+        onConversationTurn(msg.conversationId, msg.turn);
       } else if (msg.type === 'session_action') {
         // Immediate visual feedback already handled by loadSessions() in doAction
       } else if (msg.type === 'summaryTitleChanged') {
@@ -14182,6 +14528,7 @@ function wlClear() {
 // The latest window only (SSOT 2026-10-29): older pages wait for the reader to
 // scroll up in 작업 로그 — never the whole history on an opening.
 function loadWorkLog() {
+  wlSyncRewinds();
   var st = _wl;
   if (!st) return;
   wlLoadLatest(st, wlFetchJson, paintWorkLog).then(function(result) {
@@ -14342,6 +14689,7 @@ function wlEntryOf(st, e) {
   var kind = Object.prototype.hasOwnProperty.call(WL_LABELS, e.kind) ? e.kind : 'narration';
   var x = { id: String(seq) };
   if (typeof e.ts === 'number' && isFinite(e.ts)) x.at = e.ts;
+  var rewound = st && st.rewinds ? rewoundBy(st.rewinds, Number(e.ts)) : null;
   var text = String(e.text || '');
   var tool = e.tool ? String(e.tool) : '';
   if (kind === 'permission') {
@@ -14359,6 +14707,7 @@ function wlEntryOf(st, e) {
     x.tool = { name: tool || '툴', status: card ? card.status : 'interrupted' };
     var sum = kind === 'tool' ? wlToolSummary(tool, text) : e.ok === false ? '실패' : '완료';
     if (sum) x.tool.summary = sum;
+    if (rewound) x.tool.summary = REWOUND_MARK + (sum ? ' · ' + sum : '');
     if (kind === 'tool' && e.agentRef) x.agent = wlAgentOf(String(e.agentRef));
     return x;
   }
@@ -14395,6 +14744,7 @@ function wlEntryOf(st, e) {
     x.kind = kind;
     x.text = text;
   }
+  if (rewound) x.text = REWOUND_MARK + ' · ' + (x.text || '');
   x.hasRaw = true;
   if (st.open && st.open.has(seq)) x.raw = wlRawView(st, e);
   return x;
@@ -14703,6 +15053,8 @@ function wlCardData(state, key) {
   var d = { name: tool || '툴', status: status, open: !!(state.open && state.open.has(key)) };
   var summary = call ? wlToolSummary(tool, call.text) : '';
   if (summary) d.summary = summary;
+  // #744: a call a rollback dropped says so on its card (the slotted card is what the reader sees).
+  if (state.rewinds && rewoundBy(state.rewinds, Number(carrier.ts))) d.summary = REWOUND_MARK + (summary ? ' · ' + summary : '');
   if (call && typeof call.ts === 'number' && isFinite(call.ts)) {
     d.at = call.ts;
     d.startedAt = call.ts;
@@ -15314,10 +15666,9 @@ function loadPanelTurns(land) {
       }
 
       var turns = (data && data.turns) || [];
-      // A turn pushed while the page loaded (WS) and not in it stays, after it.
-      var pushed = _panelTurnsList;
-      _panelTurnsList = turns.slice();
-      for (var i = 0; i < pushed.length; i++) ptUpsert(_panelTurnsList, pushed[i]);
+      // A turn pushed while the page loaded (WS) and not in it stays, after it — but not an
+      // optimistic instruction the page already records (T1: it would show twice).
+      _panelTurnsList = ptMergeFetched(turns, _panelTurnsList);
       _panelTurnsCid = data.id || loadingConvId;
       _panelTurnsHasMore = turns.length > 0 && !!data.hasMore;
       _panelTurnsOldestId = turns.length ? turns[0].id : null;
@@ -15798,9 +16149,15 @@ function convTurnsOf(list, c) {
         u.media = true;
         slots.push({ name: 'media-' + id, kind: 'media', list: atts, turn: t });
       }
+      // #744: a turn a rollback dropped says so (a person's by its name, a system turn in its line).
+      if (c.rewinds && rewoundBy(c.rewinds, ts)) {
+        if (u.role === 'user') u.name = u.name + ' · ' + REWOUND_MARK;
+        else u.text = REWOUND_MARK + ' · ' + (u.text || '');
+      }
       turns.push(u);
     } else {
       var a = { id: id, role: 'assistant', name: c.bot };
+      if (c.rewinds && rewoundBy(c.rewinds, ts)) a.name = (c.bot || '') + ' · ' + REWOUND_MARK;
       if (at) a.at = at;
       var sum = convSummaryOf(t, c);
       if (sum.title || sum.text || sum.error) a.summary = sum;
@@ -15922,6 +16279,7 @@ function convPaint() {
   var working = s ? s.activityState === 'working' : Object.keys(_sessionCache).length === 0;
   var built = convTurnsOf(_panelTurnsList, {
     cid: cid, bot: botNameOf(s), now: Date.now(), working: working,
+    rewinds: s && Array.isArray(s.contextRewinds) ? s.contextRewinds : null,
     answers: _rawLoadedCache, failed: _ansFailed, resum: _resumSent,
     arts: cid && _artCache[cid] ? _artCache[cid].list || [] : [],
     titles: ansLinkTitles(ansSession(cid)),
@@ -15968,6 +16326,15 @@ function appendTurnToPanel(turn, own, replaceId) {
   convPaint();
   var el = convEl();
   if (own && el && typeof el.scrollToLatest === 'function') el.scrollToLatest();
+}
+// WS conversation_update: a turn landed — an open card's 지시/응답 pair may be stale now; the
+// panel open on its conversation takes it in, in place of the optimistic instruction it
+// records (T1: matched by its words, never by a time window).
+function onConversationTurn(cid, turn) {
+  invalidateCardIo(cid);
+  umOnTurn(cid, turn);
+  if (!panelOpen || panelConvId !== cid || !turn) return;
+  appendTurnToPanel(turn, false, ptOptimisticFor(_panelTurnsList, turn) || undefined);
 }
 // A turn leaves the data (an instruction that could not be sent).
 function dropTurnFromPanel(id) {
@@ -16332,8 +16699,6 @@ document.addEventListener('keydown', function(e) {
 })();
 
 // ── Send command (optimistic UI) ──
-let _lastSentContent = '';
-let _lastSentTime = 0;
 
 // A note from the composer — Enter, ⌘/Ctrl+Enter, Send, or Retry on a failed one
 // (<ui-agent-steering> ui-submit: text, ref, and the slotted composer's files) — to
@@ -16380,8 +16745,6 @@ async function sendCommand(text, ref, files) {
   var optimisticId = '';
   if (!running) {
     const shown = msg + (list.length ? (msg ? '\\n' : '') + '📎 ' + list.map(function(f) { return f.name; }).join(', ') : '');
-    _lastSentContent = msg;
-    _lastSentTime = Date.now();
     optimisticId = 'optimistic-' + Date.now();
     appendTurnToPanel({
       id: optimisticId,
@@ -16391,6 +16754,8 @@ async function sendCommand(text, ref, files) {
       rawContent: shown,
       origin: { by: 'user' },
       _optimistic: true,
+      _sent: msg, // the words the recorded turn is matched by (ptOptimisticFor)
+      _by: _viewerUserId || '', // who sent it — someone else's turn with the same words never takes it
     }, true);
   }
 
@@ -18341,8 +18706,9 @@ function ntComposerData() {
     d.accept = NT_NO_FILES;
   }
   // Live dictation (SSOT 2026-11-01): beside the voice note (the element's mic, which stays), 받아쓰기 writes what is
-  // said into the field while it is said. It is text, so a dashboard task takes it too. No recogniser (Firefox): none.
-  if (ntDictationEngine(typeof window !== 'undefined' ? window : null)) {
+  // said into the field while it is said. It is text, so a dashboard task takes it too. No recogniser (Firefox) and
+  // no other engine chosen: none.
+  if (ntDictationUsable(typeof window !== 'undefined' ? window : null)) {
     d.tools = [ntDictationTool(ntDictating('nt'))];
     // A screen under 360px wide (an older phone, or one with a large display zoom): four tools and the worded
     // 작업 시작 overlap — the send keeps its arrow (named by the composer's own 보내기).
@@ -18384,6 +18750,29 @@ function ntDictationEngine(w) {
   if (!w) return null;
   if (w.navigator && w.navigator.standalone === true) return null;
   return w.SpeechRecognition || w.webkitSpeechRecognition || null;
+}
+
+// The engine this device chose in Settings › 받아쓰기 (dictation-pref.ts — this browser's storage only): 'device'
+// (the recogniser above, the default), 'server' (the server's Whisper) or 'browser'. Read at each press, so a choice
+// made in another tab applies.
+function ntDictationChoice() {
+  var store = null;
+  try {
+    store = typeof localStorage !== 'undefined' ? localStorage : null;
+  } catch (e) {
+    store = null;
+  }
+  return typeof dictationEngineChoice === 'function' ? dictationEngineChoice(store) : 'device';
+}
+
+// Can 받아쓰기 run here: the browser's recogniser — or, with the server's Whisper chosen, a microphone stream
+// (Firefox and an iPhone Home Screen web app too).
+function ntDictationUsable(w) {
+  if (ntDictationChoice() === 'server') {
+    var n = w && w.navigator;
+    return !!(n && n.mediaDevices && typeof n.mediaDevices.getUserMedia === 'function' && w.WebSocket);
+  }
+  return !!ntDictationEngine(w);
 }
 
 // The composer's 받아쓰기 tool: a pencil (the voice note keeps the mic), a toggle pressed while it listens. Its word
@@ -18627,7 +19016,8 @@ async function ntDictateStart(host, auto) {
   var el = host.el();
   // The new task's composer is never held by a launch (it left the dialog at once — SSOT 2026-11-02 T1); a session
   // note is, while its files are read.
-  if (!Rec || !el || (host.id !== 'nt' && _pcSending)) return;
+  var engine = ntDictationChoice();
+  if ((!Rec && engine !== 'server') || !el || (host.id !== 'nt' && _pcSending)) return;
   // One microphone: a voice note recording keeps it.
   if (ntRecordingNow()) {
     host.status('음성 녹음 중에는 받아쓸 수 없습니다 — 녹음을 마치고 눌러 주세요', true);
@@ -18639,6 +19029,10 @@ async function ntDictateStart(host, auto) {
     // other composer: drop that one (its words show already) and start here at once.
     if (_ntDictation.host.id === host.id && !_ntDictation.stopping) return;
     ntDictateStop(true);
+  }
+  if (engine === 'server') {
+    ntDictateStartServer(host, el);
+    return;
   }
   var android = ntIsAndroid(w);
   var d = {
@@ -18764,6 +19158,48 @@ async function ntDictateStart(host, auto) {
   } catch (e) {
     ntDictationEnd(d, ntDictationErrorText('', android), true);
   }
+}
+
+// 받아쓰기 through the server's Whisper (epic #737, #739): the microphone streams to the server and its words come
+// back as they settle — the settled ones and those still heard, like a recogniser's results. Opens listening like
+// the device engine (the person chose it); a press, a key or sending stops it.
+function ntDictateStartServer(host, el) {
+  var d = { host: host, engine: 'server', live: '', base: String(el.value || ''), finals: '', interim: '', stopping: false, hard: false, srv: null };
+  _ntDictation = d;
+  host.clear();
+  d.live = '서버 위스퍼 준비 중…';
+  host.status(d.live);
+  host.paint();
+  d.srv = dictationServerStart({
+    onReady: function (model) {
+      if (_ntDictation !== d) return;
+      d.live = '듣는 중… 서버 위스퍼(' + (model || 'Whisper') + ')로 처리합니다 · 다시 누르거나 키보드로 쓰면 멈춥니다';
+      host.status(d.live);
+      if (host.id === 'pc') host.status(d.live, true);
+    },
+    onText: function (finals, interim) {
+      if (d.hard || _ntDictation !== d) return;
+      d.finals = finals;
+      d.interim = interim;
+      var cur = d.host.el();
+      if (!cur) return;
+      var text = ntDictationText(d.base, d.finals, d.interim);
+      cur.value = text;
+      d.host.text(text);
+    },
+    onError: function (code, message) {
+      if (_ntDictation !== d) return;
+      // A server without Whisper or a refused microphone: a why to act on (the red line). A dropped connection says
+      // a press continues.
+      var bad = code !== 'closed' && code !== 'too-long';
+      var why = code === 'unavailable' || code === 'unsupported' ? message + ' — 설정 › 받아쓰기에서 기기 기본으로 바꿀 수 있습니다' : message;
+      ntDictationEnd(d, why, bad);
+    },
+    // The words are in (onText); why, when the server ended it (its time limit).
+    onDone: function (final, why) {
+      if (_ntDictation === d) ntDictationEnd(d, why || '');
+    },
+  });
 }
 
 // Does a result event carry any words?
@@ -18991,6 +19427,30 @@ function ntDictationEnd(d, why, bad) {
 function ntDictateStop(hard) {
   var d = _ntDictation;
   if (!d) return;
+  if (d.engine === 'server') {
+    if (hard) {
+      d.hard = true;
+      ntDictationEnd(d, '');
+      if (d.srv) d.srv.abort();
+      return;
+    }
+    if (d.stopping) return;
+    d.stopping = true;
+    d.live = '마무리하는 중… 마지막 말을 받아쓰고 있습니다';
+    d.host.status(d.live);
+    d.host.paint();
+    if (d.srv) d.srv.stop();
+    // The last words arrive with done — behind one transcription in flight and other dictations on the server's one
+    // worker (20 s allowed each), that can take a while: a minute end to end. One that never answers does not hold
+    // the tool for ever, and says what was lost.
+    setTimeout(function () {
+      if (_ntDictation !== d) return;
+      d.hard = true;
+      ntDictationEnd(d, '마지막 말이 제때 오지 않아 보이는 글자까지만 남겼습니다', true);
+      if (d.srv) d.srv.abort();
+    }, 60000);
+    return;
+  }
   if (hard) {
     d.hard = true;
     ntDictationEnd(d, '');
@@ -20007,7 +20467,7 @@ function pcComposerData(takesFiles) {
     d.accept = PC_NO_FILES;
   }
   // 받아쓰기 (live dictation, SSOT 2026-11-01) beside the voice note, as in the new task — text, so a task card too.
-  if (ntDictationEngine(typeof window !== 'undefined' ? window : null)) d.tools = [ntDictationTool(ntDictating('pc'))];
+  if (ntDictationUsable(typeof window !== 'undefined' ? window : null)) d.tools = [ntDictationTool(ntDictating('pc'))];
   return d;
 }
 // The composer's data with the page's part (re)applied: a session that takes

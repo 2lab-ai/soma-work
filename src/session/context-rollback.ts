@@ -36,6 +36,18 @@ export interface ContextRollbackTarget {
   anchor: string;
   label: string;
   source: PendingRewind['source'];
+  /** The time of the last entry the rollback keeps (see `keptUntilOf`); marks what it drops. */
+  keptUntil?: number;
+}
+
+/**
+ * The last moment a rollback to a point keeps. An input point rolls back to
+ * just before the input, so the input itself leaves; a work-log point and the
+ * goal's first failure keep their own entry.
+ */
+export function keptUntilOf(source: PendingRewind['source'], at: number | undefined): number | undefined {
+  if (typeof at !== 'number' || !Number.isFinite(at) || at <= 0) return undefined;
+  return source === 'input' ? at - 1 : at;
 }
 
 export interface ContextRollbackDeps {
@@ -77,12 +89,17 @@ export function requestContextRollback(
   const { uuid } = decodeContextAnchor(target.anchor)!;
   const has = deps.transcriptHas ?? transcriptHasUuid;
   if (!has(session.sessionId as string, uuid)) return { ok: false, reason: 'not-in-transcript' };
+  const requestedAt = (deps.now ?? Date.now)();
+  const kept = target.keptUntil;
   const rewind: PendingRewind = {
     anchor: target.anchor,
     label: target.label.slice(0, 300),
-    requestedAt: (deps.now ?? Date.now)(),
+    requestedAt,
     requestedBy: actor,
     source: target.source,
+    ...(typeof kept === 'number' && Number.isFinite(kept) && kept >= 0 && kept <= requestedAt
+      ? { keptUntil: kept }
+      : {}),
   };
   session.pendingRewind = rewind;
   return { ok: true, rewind };
@@ -142,4 +159,81 @@ export function rollbackInputPoints(
 export function rollbackInputLabel(text: string, max = 80): string {
   const line = (text.split('\n').find((l) => l.trim()) ?? '').trim();
   return line.length > max ? `${line.slice(0, max - 1)}…` : line || '(빈 입력)';
+}
+
+/** A point in the work log the owner can roll back to (everything up to it stays). */
+export interface RollbackWorkLogPoint {
+  seq: number;
+  ts: number;
+  kind: string;
+  text: string;
+  anchor: string;
+}
+
+/** Work-log kinds that can mark a cut point — what the model said or got back. */
+const WORK_LOG_POINT_KINDS = new Set(['narration', 'final', 'tool_result']);
+
+/**
+ * The work-log points of this context, oldest first: each is the first entry
+ * made after the model reached a new safe cut point (a reply, or a tool result
+ * that closed the open calls), so rolling back there keeps that entry and
+ * everything before it. Entries without an anchor (older logs), from before a
+ * compaction or another conversation, and the current tail are left out.
+ */
+export function rollbackWorkLogPoints(
+  session: ConversationSession,
+  entries: ReadonlyArray<{ seq: number; ts: number; kind: string; text: string; anchor?: string }>,
+): RollbackWorkLogPoint[] {
+  const tail = turnStartAnchor(session);
+  const out: RollbackWorkLogPoint[] = [];
+  let previous: string | undefined;
+  for (const e of [...entries].sort((a, b) => a.seq - b.seq)) {
+    const anchor = typeof e.anchor === 'string' ? e.anchor : undefined;
+    const moved = anchor !== undefined && anchor !== previous;
+    if (anchor !== undefined) previous = anchor;
+    if (!moved || !WORK_LOG_POINT_KINDS.has(e.kind)) continue;
+    if (anchor === tail || anchorRefusal(session, anchor)) continue;
+    out.push({ seq: e.seq, ts: e.ts, kind: e.kind, text: e.text, anchor });
+  }
+  return out;
+}
+
+/** What the picker and the rollback API answer for a session. */
+export interface RollbackPointsView {
+  /** Why nothing can be rolled back right now (busy, not the owner …); absent = it can. */
+  refusal?: ContextRollbackRefusal;
+  /** The refusal in the thread's words. */
+  refusalText?: string;
+  pending?: { label: string; requestedAt: number };
+  inputs: Array<{ anchor: string; label: string; at: number }>;
+  worklog: Array<{ anchor: string; label: string; at: number; kind: string }>;
+}
+
+const WORK_LOG_KIND_LABEL: Record<string, string> = { narration: '응답', final: '최종 답', tool_result: '툴 결과' };
+
+export function buildRollbackPointsView(
+  session: ConversationSession,
+  inputs: RollbackInputPoint[],
+  worklog: RollbackWorkLogPoint[],
+  gate: { actor: string | undefined; requestActive: boolean },
+): RollbackPointsView {
+  const refusal: ContextRollbackRefusal | undefined =
+    gate.actor !== session.ownerId ? 'not-owner' : gate.requestActive ? 'busy' : undefined;
+  return {
+    ...(refusal ? { refusal, refusalText: CONTEXT_ROLLBACK_REFUSAL_TEXT[refusal] } : {}),
+    ...(session.pendingRewind
+      ? { pending: { label: session.pendingRewind.label, requestedAt: session.pendingRewind.requestedAt } }
+      : {}),
+    inputs: inputs.slice(-20).map((p) => ({
+      anchor: p.anchor,
+      label: `입력 직전: ${rollbackInputLabel(p.text)}`,
+      at: p.timestamp,
+    })),
+    worklog: worklog.slice(-30).map((p) => ({
+      anchor: p.anchor,
+      label: `${WORK_LOG_KIND_LABEL[p.kind] ?? p.kind}까지: ${rollbackInputLabel(p.text)}`,
+      at: p.ts,
+      kind: p.kind,
+    })),
+  };
 }

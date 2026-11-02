@@ -17,6 +17,10 @@ export interface A2tConfig {
   minMemoryMb?: number;
   /** Path to Python 3 executable. Default: 'python3' */
   pythonPath?: string;
+  /** 'auto' (mlx-whisper on Apple Silicon when installed, else faster-whisper) | 'mlx' | 'faster-whisper'. Default: 'auto' */
+  backend?: string;
+  /** 받아쓰기 (live dictation, a second worker): enabled (default true) and its free-memory floor (default 4000 MB). */
+  dictation?: { enabled?: boolean; minMemoryMb?: number };
 }
 
 /** Transcription result from the worker */

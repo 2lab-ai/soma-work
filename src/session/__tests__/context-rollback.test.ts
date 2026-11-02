@@ -8,6 +8,7 @@ import type { ConversationTurn } from '../../conversation/types';
 import type { ConversationSession } from '../../types';
 import {
   cancelContextRollback,
+  keptUntilOf,
   requestContextRollback,
   rollbackInputLabel,
   rollbackInputPoints,
@@ -117,5 +118,65 @@ describe('rollbackInputPoints — the inputs the owner can roll back before', ()
   it('labels an input by its first line', () => {
     expect(rollbackInputLabel('\n  배포해줘\n둘째 줄')).toBe('배포해줘');
     expect(rollbackInputLabel('x'.repeat(100), 10)).toHaveLength(10);
+  });
+});
+
+describe('rollbackWorkLogPoints — the work-log points', () => {
+  it('lists the first entry after each new cut point, model output only', async () => {
+    const { rollbackWorkLogPoints } = await import('../context-rollback');
+    const s = session({ contextAnchor: A(9) });
+    const points = rollbackWorkLogPoints(s, [
+      { seq: 1, ts: 1, kind: 'instruction', text: '배포해', anchor: A(1) },
+      { seq: 2, ts: 2, kind: 'narration', text: '확인할게요', anchor: A(2) },
+      { seq: 3, ts: 3, kind: 'tool', text: 'Bash ls', anchor: A(2) },
+      { seq: 4, ts: 4, kind: 'tool_result', text: 'ok', anchor: A(3) },
+      { seq: 5, ts: 5, kind: 'notice', text: 'n', anchor: A(4) },
+      { seq: 6, ts: 6, kind: 'narration', text: 'more', anchor: A(4) },
+      { seq: 7, ts: 7, kind: 'final', text: '끝', anchor: A(9) }, // the tail
+      { seq: 8, ts: 8, kind: 'narration', text: 'old log', anchor: undefined },
+    ]);
+    expect(points.map((p) => p.seq)).toEqual([2, 4]);
+  });
+});
+
+describe('buildRollbackPointsView', () => {
+  it('says why a viewer cannot roll back and carries a waiting request', async () => {
+    const { buildRollbackPointsView } = await import('../context-rollback');
+    const s = session({
+      pendingRewind: { anchor: A(2), label: '입력 직전: x', requestedAt: 3, requestedBy: 'U1', source: 'input' },
+    });
+    const v = buildRollbackPointsView(
+      s,
+      [{ turnId: 't', timestamp: 1, text: '배포해\n자세히', anchor: A(1) }],
+      [{ seq: 2, ts: 2, kind: 'tool_result', text: 'ok', anchor: A(2) }],
+      { actor: 'U2', requestActive: false },
+    );
+    expect(v.refusal).toBe('not-owner');
+    expect(v.pending).toEqual({ label: '입력 직전: x', requestedAt: 3 });
+    expect(v.inputs[0]).toEqual({ anchor: A(1), label: '입력 직전: 배포해', at: 1 });
+    expect(v.worklog[0].label).toBe('툴 결과까지: ok');
+    expect(buildRollbackPointsView(s, [], [], { actor: 'U1', requestActive: true }).refusal).toBe('busy');
+  });
+});
+
+describe('what the rollback keeps (#744 marks what it dropped)', () => {
+  it('a request carries keptUntil when it is a time up to now', () => {
+    const s = session();
+    requestContextRollback(s, { anchor: A(3), label: 'x', source: 'input', keptUntil: 4 }, 'U1', ok);
+    expect(s.pendingRewind?.keptUntil).toBe(4);
+    const later = session();
+    requestContextRollback(later, { anchor: A(3), label: 'x', source: 'input', keptUntil: 99 }, 'U1', ok);
+    expect(later.pendingRewind?.keptUntil).toBeUndefined();
+    const bad = session();
+    requestContextRollback(bad, { anchor: A(3), label: 'x', source: 'input', keptUntil: Number.NaN }, 'U1', ok);
+    expect(bad.pendingRewind?.keptUntil).toBeUndefined();
+  });
+
+  it('an input is dropped with what came after it; a work-log point stays', () => {
+    expect(keptUntilOf('input', 50)).toBe(49);
+    expect(keptUntilOf('worklog', 50)).toBe(50);
+    expect(keptUntilOf('goal', 50)).toBe(50);
+    expect(keptUntilOf('input', undefined)).toBeUndefined();
+    expect(keptUntilOf('worklog', 'x' as unknown as number)).toBeUndefined();
   });
 });
