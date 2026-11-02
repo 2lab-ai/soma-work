@@ -210,7 +210,7 @@ describe('T5 — collapsed card face: artifacts visible on the board itself', ()
     const fetched: string[] = [];
     const panels: string[] = [];
     const s = { key: 'k1', conversationId: 'conv-1', artifacts: { count: 1, recent: [png] } };
-    const { wireInbox } = load<{ wireInbox(h: unknown): void }>(['inboxChipOf', 'wireInbox'], [], {
+    const { wireInbox } = load<{ wireInbox(h: unknown): void }>(['inboxChipOf', 'wireInbox'], ['_quietOpen'], {
       _expanded: new Set<string>(),
       _sessionCache: { k1: s },
       _doneGroupOpen: {},

@@ -519,6 +519,7 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
       prompt: '',
       destination: 'slack',
       folder: '',
+      plan: true, // plan mode (SSOT 2026-11-02): on by default for a dashboard task
     });
   });
 
@@ -570,6 +571,7 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
         prompt: '고쳐줘',
         model: 'opus[1m]', // the server resolves the nickname against the models it offers (#640 R1)
         folder: 'repo-a',
+        plan: true, // the 작업 계획 switch, on by default
       });
       // A new folder (the default) sends no folder.
       expect(fns.ntBuildPayload(task(), [], 'req-0123456789')).toEqual({
@@ -577,6 +579,7 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
         destination: 'task',
         prompt: '고쳐줘',
         model: 'opus[1m]',
+        plan: true,
       });
     });
 
