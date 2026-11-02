@@ -9,7 +9,12 @@
 import * as fs from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ConversationSession } from '../../types';
-import { ExecutionContextMissingError, executionContextForTask, executionContextFromSlack } from '../execution-context';
+import {
+  ExecutionContextMissingError,
+  executionContextForTask,
+  executionContextFromSlack,
+  revalidateTaskDirectory,
+} from '../execution-context';
 
 const TASK_ID = '11111111-2222-4333-8444-555555555555';
 
@@ -36,6 +41,7 @@ describe('executionContextForTask (#597)', () => {
     expect(ctx).toEqual({
       origin: 'task',
       userId: 'U1',
+      ownerId: 'U1',
       isAdmin: false,
       permissionMode: 'auto', // a user with no explicit choice
       sessionKey: `task:${TASK_ID}`,
@@ -87,6 +93,58 @@ describe('executionContextForTask (#597)', () => {
     expect(() => executionContextForTask(task(overrides as Partial<ConversationSession>))).toThrow(
       ExecutionContextMissingError,
     );
+  });
+});
+
+// SSOT 2026-11-02 — as in a Slack thread, another user's instruction runs as
+// that user: their identity, admin flag and permission mode; the task's owner
+// and the owner's task directory (still validated against the owner's root).
+describe('executionContextForTask — the user who instructs (SSOT 2026-11-02)', () => {
+  it('runs as the actor, in the owner’s directory', () => {
+    const ctx = executionContextForTask(task(), 'U2');
+    expect(ctx).toMatchObject({
+      origin: 'task',
+      userId: 'U2',
+      ownerId: 'U1',
+      isAdmin: false,
+      sessionKey: `task:${TASK_ID}`,
+      workingDirectory: '/tmp/U1/session_1793000000000_ab12cd34',
+    });
+    expect(Object.isFrozen(ctx)).toBe(true);
+  });
+
+  it('no actor (a host start) is the owner, as before', () => {
+    expect(executionContextForTask(task()).userId).toBe('U1');
+    expect(executionContextForTask(task(), 'U1').userId).toBe('U1');
+  });
+
+  it.each([
+    ['an actor id with a path separator', '../U1'],
+    ['an actor id with a slash', 'U1/x'],
+  ])('refuses %s', (_label, actor) => {
+    expect(() => executionContextForTask(task(), actor)).toThrow(ExecutionContextMissingError);
+  });
+
+  it('the directory is still checked against the owner’s root, not the actor’s', () => {
+    expect(() => executionContextForTask(task({ workingDirectory: '/tmp/U2/session_x' }), 'U2')).toThrow(
+      ExecutionContextMissingError,
+    );
+  });
+});
+
+describe('revalidateTaskDirectory — the owner’s root (SSOT 2026-11-02)', () => {
+  const OWNER = 'U0REVALOWN';
+  const root = `/tmp/${OWNER}`;
+  beforeEach(() => {
+    fs.mkdirSync(`${root}/session_real`, { recursive: true });
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('an actor’s context passes in the owner’s directory', () => {
+    const ctx = executionContextForTask(task({ ownerId: OWNER, workingDirectory: `${root}/session_real` }), 'U2');
+    expect(() => revalidateTaskDirectory(ctx)).not.toThrow();
   });
 });
 

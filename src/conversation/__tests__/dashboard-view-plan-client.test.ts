@@ -14,6 +14,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { BUILTIN_PRESETS } from '../../view-layout';
+import { viewerScope } from '../__fixtures__/viewer-scope';
 import { VIEW_LAYOUT_CLIENT_JS } from '../view-layout-client';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
@@ -48,6 +49,7 @@ function clientVar(name: string): string {
 }
 /** The page's script as the browser runs it: the shared layout script (view-layout-client.ts) and VIEW_BUILTINS first. */
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+  ({ fns, inject } = viewerScope(fns, inject));
   const all: Record<string, unknown> = { VIEW_BUILTINS: BUILTIN_PRESETS, ...inject };
   const names = Object.keys(all);
   const setter = '__set: function(n, v) { eval(n + " = v"); }';
@@ -386,6 +388,7 @@ describe('P3 — the open card follows the plan', () => {
       'acPermissionsHtml',
       'acGoalDecisionHtml',
       'acQuestionHtml',
+      'renderEpicPlan',
       'renderCardBody',
     ],
     ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy'],

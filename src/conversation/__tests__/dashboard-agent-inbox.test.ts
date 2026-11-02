@@ -201,7 +201,9 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(body).toContain('planDoneGroups(plan.done, Date.now(), _doneGroupOpen)');
     // DONE = one group per day; the element counts every group, open or closed (a closed day's cards are stubs).
     expect(body).toContain('groups: groups.map(function(g) {');
-    expect(body).toContain('placeCard(it.s, it.col, kb, g.open)');
+    // Each day's items through place() (E4 ⑨c: an epic's children follow its card), drawn when the day is open.
+    expect(body).toContain('keys: place(g.items, kb, g.open),');
+    expect(body).toContain('placeCard(it.s, it.col, host, drawn);');
     expect(body).not.toContain('renderOlderToggle');
     expect(body).toContain('renderArchivesToggle(plan.archivedCount)');
     // The #814 tokens tooltip follows the board it describes.
@@ -301,7 +303,8 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     );
     // The actions lead what needs the user (needsHtml); the plan's parts (.prd/20) follow it with the rest.
     expect(body).toMatch(/const needsHtml = actionsHtml\s*\+ permissionHtml/);
-    expect(body).toContain("return '<div class=\"card-body\">' + needsHtml + rest + '</div>';");
+    // E4 ⑨c — an epic's plan tree sits between the needs and the rest (renderEpicPlan, '' for any other card).
+    expect(body).toContain("return '<div class=\"card-body\">' + needsHtml + renderEpicPlan(s) + rest + '</div>';");
     expect(TEMPLATE).toContain("var WL_EMPTY_MSG = '작업 로그 없음';");
     // SSOT 2026-10-29: no conversation → no work-log state; the 작업 로그 tab reads 작업 로그 없음.
     expect(fnBody('resetWorkLog')).toContain('_wl = convId ? wlNewState(convId) : null;');

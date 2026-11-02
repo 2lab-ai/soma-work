@@ -1371,7 +1371,8 @@ describe('Dashboard API', () => {
 
       expect(res.statusCode).toBe(200);
       expect(JSON.parse(res.body)).toEqual({ ok: true });
-      expect(handler).toHaveBeenCalledWith('C1:t1');
+      // The viewer token names nobody: no actor, the handler runs it as the owner (SSOT 2026-11-02).
+      expect(handler).toHaveBeenCalledWith('C1:t1', undefined);
     });
 
     it('Test 13b — returns 401 without auth', async () => {

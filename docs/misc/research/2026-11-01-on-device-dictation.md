@@ -60,8 +60,27 @@ Limits found on the way:
 - `injectAudio` delivered silence on the Android 15 and 16 images, and crashed emulator 37.1 and 37.2 when no guest microphone was open.
 - Processes started by the bot have no macOS microphone permission, so the host microphone records zeros.
 
+### Why some Korean runs return no words (emulator, 2 November 2026)
+
+Run with a bare recogniser in Samsung Internet (no dashboard code), the same settings as the page (`continuous=false`, `interimResults=true`):
+
+- English returned words in 9 of 9 runs.
+- Korean returned no words in 5 of 17 runs and the whole sentence once. The rest were fragments, such as "테스트하고 있습니다" from the end of the sentence, or misheard words.
+- Whenever the recogniser returned words in a dashboard run, the page showed them live and kept them.
+
+What it is not:
+
+- **Not a missing Korean pack.** Speech Services logged `Failed to get language pack of required locale: error 13` for English too, and English worked every time. On this emulator Google's server ("Online recognizer") does the recognition, not an on-device pack. A message telling users to download a Korean pack was drafted and dropped for this reason.
+- **Not the server's 401 errors.** They appeared in successful English runs and were missing from a failed Korean run.
+- **Clip length and injection mode do not explain it on their own.** A 2.4-second Korean clip also failed, a 6.4-second English clip returned words, and switching the emulator's injection mode did not stop the failures.
+
+The emulator has no Google account (`Accounts: 0`) and a side-loaded 2024 Speech Services. Why Korean comes back in fragments there is not known. It says nothing about a real Galaxy, which needs its own test.
+
+Runs through the dashboard add a harness effect. The harness waits 2.5 seconds after the new task opens, then checks permission and microphone readiness before starting the audio; the total startup delay was not measured. On this emulator a session ended after about 5 seconds without speech and took about half a second to restart, so the first session could end before the sentence arrived, and the restart could cut its start.
+
 ## Follow-up candidates
 
+- On this emulator a session ended after about 5 seconds of silence and took about half a second to restart. If phones do the same, words spoken in that gap are lost.
 - Phrase lists for English technical terms when Chrome runs on-device.
 - A watchdog for Edge when recognition starts but no event arrives.
 - An in-browser model for browsers without a recogniser, or whose recogniser does not work (Samsung Internet returning no words). getUserMedia works there, since the voice note records.
