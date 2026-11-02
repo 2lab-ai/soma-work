@@ -6131,7 +6131,7 @@ describe('SlackHandler — follow-up queue host', () => {
 
       async function race(first: () => Promise<unknown>, second: () => Promise<unknown>) {
         const a = first();
-        await tick();
+        for (let i = 0; i < 5; i++) await tick();
         const b = second();
         await tick();
         gate.resolve();
@@ -6172,6 +6172,45 @@ describe('SlackHandler — follow-up queue host', () => {
         });
         expect(startWithContinuation).toHaveBeenCalledTimes(1);
         expect(startWithContinuation.mock.calls[0][0]).toContain('admin-only. admin만');
+      });
+
+      // astra review P1 (third round): the legacy form path deletes the form,
+      // then awaits its final Slack rewrite before it dispatches.
+      it('a dashboard multi-choice answer after the Slack form is gone but before it dispatched is refused', async () => {
+        openMulti();
+        // Hold only the FINAL rewrite: the submitting indicator goes through,
+        // the form is deleted, and the dispatch waits on the gate.
+        handlerAny.slackApi.updateMessage = vi.fn((_c: string, _ts: string, text: string) =>
+          String(text).includes('모든 선택 완료') ? gate.promise : Promise.resolve(),
+        );
+        const [, dashboard] = await race(formSubmit, dashboardMulti);
+
+        expect(forms.has('form-1'), 'the window under test: the form is already gone').toBe(false);
+        expect(dashboard).toMatchObject({
+          status: 'rejected',
+          reason: expect.objectContaining({ message: 'Session is not waiting for a choice' }),
+        });
+        expect(startWithContinuation).toHaveBeenCalledTimes(1);
+        expect(startWithContinuation.mock.calls[0][0]).toContain('admin-only. admin만');
+      });
+
+      it('two chunks of one Slack form are answered independently — the first does not block the second', async () => {
+        openMulti();
+        forms.set('form-2', { ...forms.get('form-1'), formId: 'form-2', messageTs: 'form-msg-2' });
+        const second = () =>
+          surfaces.handleFormSubmit({
+            actions: [{ value: JSON.stringify({ formId: 'form-2', sessionKey: SESSION_KEY }) }],
+            user: { id: 'U_OWNER' },
+            channel: { id: CHANNEL },
+            message: { ts: 'form-msg-2', thread_ts: THREAD_TS },
+          });
+        await race(formSubmit, second);
+
+        expect(handlerAny.slackApi.postEphemeral).not.toHaveBeenCalledWith(
+          CHANNEL,
+          'U_OWNER',
+          expect.stringContaining('이미 답변'),
+        );
       });
 
       it('a Slack form submit while the dashboard answers the same question is refused — the answer runs once', async () => {

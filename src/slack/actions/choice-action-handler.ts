@@ -24,6 +24,8 @@ const ANSWER_IN_PROGRESS_TEXT = '⏳ 이 질문은 이미 답변을 처리하고
 interface AnswerHold {
   question: unknown;
   choice: unknown;
+  /** A Slack form chunk's hold: two chunks of one form answer different questions of it. */
+  formId?: string;
 }
 
 /** What a dashboard answer took when it was claimed — what its rollback checks against. */
@@ -73,7 +75,7 @@ export class ChoiceActionHandler {
    * session is being answered for right now. Both surfaces run in this one
    * handler instance, and a hold is taken synchronously before the first await.
    */
-  private readonly answering = new Map<string, AnswerHold>();
+  private readonly answering = new Map<string, Set<AnswerHold>>();
 
   constructor(
     private ctx: ChoiceActionContext,
@@ -403,7 +405,7 @@ export class ChoiceActionHandler {
 
       // The dashboard answering this question right now, or this form already
       // submitting (a second click), makes this submit a second answer.
-      if (pendingForm.submitting || (session && this.questionTaken(sessionKey, session))) {
+      if (pendingForm.submitting || (session && this.questionTaken(sessionKey, session, formId))) {
         this.logger.info('Form submit refused — the question is already being answered', { sessionKey, formId });
         await this.ctx.slackApi.postEphemeral(channel, userId, ANSWER_IN_PROGRESS_TEXT);
         return;
@@ -422,13 +424,16 @@ export class ChoiceActionHandler {
         return;
       }
 
-      // Before the first await: the form is submitting — a dashboard answer to
-      // the same question (and a second click) is refused until it ends. In
-      // memory only: a restart must not find the form locked.
+      // Before the first await: this chunk holds the question — a dashboard
+      // answer to it (and a second click on this form) is refused until the
+      // submit returns, past its dispatch, though the form store entry is
+      // deleted on the way. Another chunk of the same form still submits.
+      const hold = session ? this.holdAnswer(sessionKey, session, formId) : undefined;
       pendingForm.submitting = true;
       try {
         await this.submitMultiChoiceForm(body, pendingForm, sessionKey, channel, userId, messageTs);
       } finally {
+        if (hold) this.endAnswerHold(sessionKey, hold);
         const stillOpen = this.formStore.get(formId);
         if (stillOpen) stillOpen.submitting = false;
       }
@@ -826,7 +831,7 @@ export class ChoiceActionHandler {
       }
 
       // The dashboard answering this question right now makes this a second answer.
-      if (session && this.questionTaken(sessionKey, session)) {
+      if (session && this.questionTaken(sessionKey, session, formId)) {
         if (channel && userId) await this.ctx.slackApi.postEphemeral(channel, userId, ANSWER_IN_PROGRESS_TEXT);
         return;
       }
@@ -862,6 +867,8 @@ export class ChoiceActionHandler {
       const totalCount = pendingForm.questions.length;
 
       if (answeredCount === totalCount) {
+        // Held until the submit returns, as a form submit's chunk hold is.
+        const hold = session ? this.holdAnswer(sessionKey, session, formId) : undefined;
         try {
           pendingForm.submitting = true;
           this.formStore.set(formId, pendingForm);
@@ -878,6 +885,8 @@ export class ChoiceActionHandler {
             this.formStore.set(formId, stillExists);
           }
           throw error;
+        } finally {
+          if (hold) this.endAnswerHold(sessionKey, hold);
         }
       } else {
         // Partial fill: refresh UI, then nudge user.
@@ -1400,30 +1409,48 @@ export class ChoiceActionHandler {
     return { hold, question: session.actionPanel?.pendingQuestion, claimedAt: session.activityStateChangedAt };
   }
 
-  /** Is the session's current question being answered right now? */
-  private questionTaken(sessionKey: string, session: ConversationSession): boolean {
-    const held = this.answering.get(sessionKey);
-    if (!held) return false;
+  /**
+   * Is the session's current question being answered right now — by anything
+   * that is not another chunk of the same Slack form (`formId`)?
+   */
+  private questionTaken(sessionKey: string, session: ConversationSession, formId?: string): boolean {
+    const holds = this.answering.get(sessionKey);
+    if (!holds) return false;
     const panel = session.actionPanel;
-    return (
-      (held.question !== undefined && held.question === panel?.pendingQuestion) ||
-      (held.choice !== undefined && held.choice === panel?.pendingChoice)
-    );
+    for (const held of holds) {
+      const sameQuestion =
+        (held.question !== undefined && held.question === panel?.pendingQuestion) ||
+        (held.choice !== undefined && held.choice === panel?.pendingChoice);
+      if (!sameQuestion) continue;
+      if (formId !== undefined && held.formId !== undefined && held.formId !== formId) continue;
+      return true;
+    }
+    return false;
   }
 
-  /** Take the hold on the session's current question; undefined when it is already taken. */
-  private holdAnswer(sessionKey: string, session: ConversationSession): AnswerHold | undefined {
-    if (this.questionTaken(sessionKey, session)) return undefined;
+  /**
+   * Take a hold on the session's current question; undefined when it is
+   * already taken. Held until the answer's handler returns — past its dispatch
+   * handoff, whatever its Slack cleanup deletes on the way.
+   */
+  private holdAnswer(sessionKey: string, session: ConversationSession, formId?: string): AnswerHold | undefined {
+    if (this.questionTaken(sessionKey, session, formId)) return undefined;
     const hold: AnswerHold = {
       question: session.actionPanel?.pendingQuestion,
       choice: session.actionPanel?.pendingChoice,
+      ...(formId !== undefined ? { formId } : {}),
     };
-    this.answering.set(sessionKey, hold);
+    const holds = this.answering.get(sessionKey) ?? new Set<AnswerHold>();
+    holds.add(hold);
+    this.answering.set(sessionKey, holds);
     return hold;
   }
 
   private endAnswerHold(sessionKey: string, hold: AnswerHold): void {
-    if (this.answering.get(sessionKey) === hold) this.answering.delete(sessionKey);
+    const holds = this.answering.get(sessionKey);
+    if (!holds) return;
+    holds.delete(hold);
+    if (holds.size === 0) this.answering.delete(sessionKey);
   }
 
   /**
