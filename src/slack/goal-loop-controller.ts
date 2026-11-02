@@ -175,6 +175,13 @@ export interface GoalLoopControllerDeps {
    * synchronously instead of faking timers.
    */
   scheduleEvalRetry?: (fn: () => void, delayMs: number) => void;
+  /**
+   * True once the host is shutting down (#788). No loop run starts, and a
+   * verdict that lands meanwhile is dropped: applying it would spend a
+   * continuation (or open the cap decision) and inject a turn the stopping
+   * host refuses. The restart's goal resume re-judges the goal.
+   */
+  isShuttingDown?: () => boolean;
 }
 
 /**
@@ -230,7 +237,10 @@ export class GoalLoopController {
    * this map together, so the first post-restart settle re-arms exactly one
    * retry for the remaining `evalBackoffUntil` window.
    */
-  private readonly armedEvalRetries = new Map<string, { token: object; goalId: string; epoch: number }>();
+  private readonly armedEvalRetries = new Map<
+    string,
+    { token: object; goalId: string; epoch: number; cause: GoalLoopTrigger }
+  >();
 
   constructor(deps: GoalLoopControllerDeps) {
     this.deps = deps;
@@ -290,6 +300,10 @@ export class GoalLoopController {
     const { registry, requestCoordinator, logger } = this.deps;
     const session = registry.getSessionByKey(sessionKey);
     const goal = session?.goal;
+    if (this.deps.isShuttingDown?.()) {
+      logger.info('Goal loop run skipped — the host is shutting down; the restart resumes the goal', { sessionKey });
+      return;
+    }
     if (
       !session ||
       !shouldRunGoalIdleDriver({
@@ -315,7 +329,12 @@ export class GoalLoopController {
       // failure path already armed one and this is a no-op; after a restart
       // the timer was lost while `evalBackoffUntil` persisted, so without
       // this the loop would stall until unrelated user activity.
-      this.armEvalRetry(sessionKey, { epoch: activeGoal.epoch ?? 0, goalId: activeGoal.goalId }, backoffMsRemaining);
+      this.armEvalRetry(
+        sessionKey,
+        { epoch: activeGoal.epoch ?? 0, goalId: activeGoal.goalId },
+        backoffMsRemaining,
+        cause,
+      );
       return;
     }
 
@@ -345,6 +364,10 @@ export class GoalLoopController {
     const noTurnText = workSummaryRaw === '';
     const alreadyJudged = activeGoal.lastEvalSummaryHash === summaryHash;
     if (hasGap && (noTurnText || (cause === 'kick' && alreadyJudged))) {
+      // #745 × #788: a turn that left no text may still have done work (files,
+      // commands) before it was cut. Its progress is unknown, so the rollback
+      // span from the first failure may not reach across it.
+      if (noTurnText && activeGoal.firstFailure) activeGoal.firstFailure.progressed = true;
       logger.info(
         noTurnText
           ? 'Goal eval skipped — the last turn left no text (interrupted); resuming the work'
@@ -395,7 +418,7 @@ export class GoalLoopController {
     try {
       verdict = await this.runEvalWithTimeout(session, objective, evalUserSummary, previous);
     } catch (err: unknown) {
-      this.handleEvalDispatchFailure(sessionKey, session, snapshot, startedAt, err);
+      this.handleEvalDispatchFailure(sessionKey, session, snapshot, startedAt, err, cause);
       return;
     }
 
@@ -418,6 +441,17 @@ export class GoalLoopController {
       // A replaced/cleared goal (createdAt changed) owns its own lease; we
       // never touch it.
       if (live && live.goalId === snapshot.goalId && live.pendingEval?.requestedAt === startedAt) {
+        live.pendingEval = undefined;
+        this.persist();
+      }
+      return;
+    }
+
+    // The host began shutting down while the eval ran: drop the verdict and
+    // release our lease. The restart's goal resume re-judges this text.
+    if (this.deps.isShuttingDown?.()) {
+      logger.info('Goal eval verdict dropped — the host is shutting down; the restart re-judges', { sessionKey });
+      if (live && live.pendingEval?.requestedAt === startedAt) {
         live.pendingEval = undefined;
         this.persist();
       }
@@ -763,6 +797,7 @@ export class GoalLoopController {
     snapshot: GoalEpochSnapshot,
     startedAt: number,
     err: unknown,
+    cause: GoalLoopTrigger = 'turn',
   ): void {
     const { registry, logger } = this.deps;
     const live = registry.getSessionByKey(sessionKey)?.goal;
@@ -824,7 +859,7 @@ export class GoalLoopController {
               `(attempt ${live.evalDispatchRetryCount}/${GOAL_EVAL_DISPATCH_MAX_RETRIES}).\n*Error:* ${message}`,
           )
           .catch(() => undefined);
-        this.armEvalRetry(sessionKey, snapshot, delayMs);
+        this.armEvalRetry(sessionKey, snapshot, delayMs, cause);
         return;
       }
       // Budget exhausted — reset the streak so a user nudge starts a fresh
@@ -853,15 +888,26 @@ export class GoalLoopController {
    * retry never produces a stale extra eval. On a valid fire it lifts the
    * `evalBackoffUntil` gate so the re-entered run can actually dispatch.
    */
-  private armEvalRetry(sessionKey: string, snapshot: GoalEpochSnapshot, delayMs: number): void {
+  private armEvalRetry(
+    sessionKey: string,
+    snapshot: GoalEpochSnapshot,
+    delayMs: number,
+    cause: GoalLoopTrigger = 'turn',
+  ): void {
     const existing = this.armedEvalRetries.get(sessionKey);
     // Same intent already armed → dedupe. A DIFFERENT intent (goal replaced
     // or epoch moved since the stale arm) must NOT be suppressed — the stale
     // timer will fail its own snapshot check, so without replacement the new
     // backoff window would be left with no timer at all (stall).
-    if (existing && existing.goalId === snapshot.goalId && existing.epoch === snapshot.epoch) return;
+    // The retry re-enters with what woke the run it replaces (#788): a kick's
+    // retry stays a kick (it cannot stall); a real turn arriving meanwhile wins.
+    if (existing && existing.goalId === snapshot.goalId && existing.epoch === snapshot.epoch) {
+      if (cause === 'turn') existing.cause = 'turn';
+      return;
+    }
     const token = {};
-    this.armedEvalRetries.set(sessionKey, { token, goalId: snapshot.goalId, epoch: snapshot.epoch });
+    const entry = { token, goalId: snapshot.goalId, epoch: snapshot.epoch, cause };
+    this.armedEvalRetries.set(sessionKey, entry);
     this.scheduleEvalRetry(() => {
       // Superseded by a newer arm → this timer no longer owns the session's
       // retry; never delete the newer arm's bookkeeping.
@@ -874,7 +920,7 @@ export class GoalLoopController {
       liveAtFire.evalBackoffUntil = undefined;
       liveAtFire.evalRetryReason = undefined;
       this.persist();
-      this.onTurnSettled(sessionKey);
+      this.onTurnSettled(sessionKey, { cause: entry.cause });
     }, delayMs);
   }
 

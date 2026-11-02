@@ -410,6 +410,65 @@ describe('resumeActiveGoals (T1)', () => {
     expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
   });
 
+  // #788 round 2 (astra): a goal a PREVIOUS deploy falsely stalled at 10/10 is
+  // waiting, not working, at this shutdown — it is not in the cut record. Its
+  // stall was judged on the turn an earlier restart cut, so ending that stall
+  // gives the continuation back too, or it resumes straight into the cap.
+  it('a false stall left by an earlier deploy at 10/10 resumes at 9/10', () => {
+    const stalled = activeGoalSession({
+      activityState: 'waiting',
+      actionPanel: {
+        waitingForChoice: true,
+        pendingQuestion: { type: 'user_choices', hostTurnId: 'host:1', questions: [] },
+        pendingChoice: { turnId: 'host:1', formIds: [] },
+      },
+    } as unknown as Partial<ConversationSession>);
+    const goal = stalled.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 10;
+    goal.lastAssistantTurnSummary = '';
+    goal.lastEvalReason = 'This turn again produced no assistant text';
+    goal.stall = {
+      stallId: 's1',
+      stalledAt: 1,
+      reason: 'This turn again produced no assistant text',
+      actions: ['a', 'b', 'c'],
+      confidence: 0.97,
+      questionTurnId: 'host:1',
+    };
+    const sessions = new Map<string, ConversationSession>([['C1-T1', stalled]]);
+    const { handler, claudeHandler } = createHandler(sessions);
+    claudeHandler.getSessionRegistry = vi.fn(() => ({ getAllSessions: () => sessions }));
+    (handler as any).streamExecutor = {
+      retractHostQuestion: vi.fn(() => {
+        stalled.actionPanel = { waitingForChoice: false } as any;
+        stalled.activityState = 'idle';
+        return Promise.resolve();
+      }),
+    };
+    handler.setGoalTurnSettledHandler(vi.fn());
+
+    expect(handler.resumeActiveGoals()).toBe(1);
+
+    expect(goal.stall).toBeUndefined();
+    expect(goal.continuationCount).toBe(9);
+  });
+
+  it('a false stall that was also cut gives back one continuation, not two', () => {
+    const stalled = activeGoalSession({ activityState: 'working' });
+    const goal = stalled.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 10;
+    goal.lastAssistantTurnSummary = '';
+    goal.lastEvalReason = 'no output';
+    goal.stall = { stallId: 's1', stalledAt: 1, reason: 'no output', actions: ['a', 'b', 'c'], confidence: 0.97 };
+    const { handler } = createHandler(new Map([['C1-T1', stalled]]));
+    (handler as any).restartCutSessionKeys = new Set(['C1-T1']);
+    handler.setGoalTurnSettledHandler(vi.fn());
+
+    handler.resumeActiveGoals();
+
+    expect(goal.continuationCount).toBe(9);
+  });
+
   it('keeps a real stall (judged on turn text) stopped on its question', () => {
     const stalled = activeGoalSession({
       activityState: 'waiting',
