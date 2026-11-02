@@ -185,6 +185,8 @@ export function rollbackWorkLogPoints(
 export interface RollbackPointsView {
   /** Why nothing can be rolled back right now (busy, not the owner …); absent = it can. */
   refusal?: ContextRollbackRefusal;
+  /** The refusal in the thread's words. */
+  refusalText?: string;
   pending?: { label: string; requestedAt: number };
   inputs: Array<{ anchor: string; label: string; at: number }>;
   worklog: Array<{ anchor: string; label: string; at: number; kind: string }>;
@@ -201,7 +203,7 @@ export function buildRollbackPointsView(
   const refusal: ContextRollbackRefusal | undefined =
     gate.actor !== session.ownerId ? 'not-owner' : gate.requestActive ? 'busy' : undefined;
   return {
-    ...(refusal ? { refusal } : {}),
+    ...(refusal ? { refusal, refusalText: CONTEXT_ROLLBACK_REFUSAL_TEXT[refusal] } : {}),
     ...(session.pendingRewind
       ? { pending: { label: session.pendingRewind.label, requestedAt: session.pendingRewind.requestedAt } }
       : {}),
