@@ -82,6 +82,7 @@
     "./user-skill-file-roundtrip": "./dist/user-skill-file-roundtrip.js",
     "./user-media": "./dist/user-media.js",
     "./work-log": "./dist/work-log.js",
+    "./work-queue": "./dist/work-queue/index.js",
     "./z/capability": "./dist/z/capability.js",
     "./z/normalize": "./dist/z/normalize.js",
     "./z/respond": "./dist/z/respond.js",
@@ -364,6 +365,9 @@
       ],
       "task-turn/no-post-slack": [
         "dist/task-turn/no-post-slack.d.ts"
+      ],
+      "work-queue": [
+        "dist/work-queue/index.d.ts"
       ]
     }
   },
