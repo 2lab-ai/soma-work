@@ -46,6 +46,7 @@ type Turn = {
   origin?: { by: string };
   _optimistic?: boolean;
   _sent?: string;
+  _by?: string;
 };
 
 const T0 = 1_793_591_000_000;
@@ -60,6 +61,7 @@ const optimistic = (sent: string, at = T0, id = `optimistic-${at}`): Turn => ({
   origin: { by: 'user' },
   _optimistic: true,
   _sent: sent,
+  _by: 'U_Z',
 });
 const recorded = (raw: string, at: number, extra: Partial<Turn> = {}): Turn => ({
   id: `srv-${at}`,
@@ -148,6 +150,15 @@ describe('T1 — the recorded instruction takes the optimistic one’s place, ho
     expect(r.names()).toEqual(['나', 'Chris', 'Z']);
   });
 
+  it('someone else’s instruction with the very same words never takes mine (review: astra P2)', () => {
+    const list: Turn[] = [optimistic('계속')];
+    const r = wsRig(list);
+    r.push(recorded('계속', T0 + 1_000, { id: 'theirs', userId: 'U_OTHER', userName: 'Chris' }));
+    expect(list.map((t) => t.userName)).toEqual(['나', 'Chris']);
+    r.push(recorded('계속', T0 + 5_000, { id: 'mine' }));
+    expect(list.map((t) => t.id)).toEqual(['mine', 'theirs']);
+  });
+
   it('a second push of a turn already shown is an update in place, not an adoption', () => {
     const first = recorded('먼저 한 지시', T0 - 60_000);
     const list: Turn[] = [first, optimistic('배포해줘')];
@@ -173,6 +184,20 @@ describe('T1 — a page fetched while the instruction was out drops the optimist
     const page = [recorded('이전', T0 - 90_000), recorded(SAID, T0 + 30_000)];
     const merged = m.ptMergeFetched(page, [optimistic(SAID)]);
     expect(merged.map((t) => t.userName)).toEqual(['Z', 'Z']);
+  });
+
+  it('a turn the panel already held before the send never confirms a new one with the same words (review: astra P2)', () => {
+    const prior = recorded('계속', T0 - 30_000, { id: 'prior' });
+    const merged = m.ptMergeFetched([prior], [prior, optimistic('계속')]);
+    expect(merged.map((t) => t.id)).toEqual(['prior', `optimistic-${T0}`]);
+  });
+
+  it('one recorded turn confirms one optimistic turn: two sends of the same words, one recorded — one stays', () => {
+    const merged = m.ptMergeFetched(
+      [recorded('계속', T0 + 9_000)],
+      [optimistic('계속', T0, 'optimistic-1'), optimistic('계속', T0 + 500, 'optimistic-2')],
+    );
+    expect(merged.map((t) => t.id)).toEqual([`srv-${T0 + 9_000}`, 'optimistic-2']);
   });
 
   it('not recorded yet (or only an older turn with the same words): it stays, after the page', () => {

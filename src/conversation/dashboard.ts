@@ -10525,10 +10525,11 @@ function ptSentKey(s) {
   return decodeSlackEntities(String(s || '')).replace(/\\r\\n?/g, '\\n').replace(/[ \\t]+/g, ' ').replace(/ ?\\n ?/g, '\\n').trim();
 }
 // Pure: the optimistic turn a recorded user turn takes over ('' = none) — the oldest one with
-// the same words, the one rule the fetched page uses too (ptRecorded). Any other turn — someone
-// else's, or another instruction of the viewer's own typed in Slack meanwhile — never takes the
-// slot. A turn already held is an update, never an adoption; a turn soma-work put there (origin
-// by system) never adopts.
+// the same words sent by the same person (when both are known: _by is the signed-in sender), the
+// one rule the fetched page uses too (ptRecorded). Any other turn — someone else's, or another
+// instruction of the viewer's own typed in Slack meanwhile — never takes the slot. A turn
+// already held is an update, never an adoption; a turn soma-work put there (origin by system)
+// never adopts.
 function ptOptimisticFor(list, turn) {
   if (!turn || turn.role !== 'user' || (turn.origin && turn.origin.by === 'system')) return '';
   var key = ptSentKey(turn.rawContent);
@@ -10536,29 +10537,43 @@ function ptOptimisticFor(list, turn) {
     var t = list[i];
     if (!t) continue;
     if (turn.id && t.id === turn.id) return '';
-    if (t._optimistic && ptSentKey(t._sent) === key) return String(t.id);
+    if (!t._optimistic || (turn.userId && t._by && turn.userId !== t._by)) continue;
+    if (ptSentKey(t._sent) === key) return String(t.id);
   }
   return '';
 }
-// Pure: does this list (a page just fetched) already hold the recorded turn of an optimistic one?
-// The same words, recorded no earlier than a minute before it was sent (an older turn with the
-// same words — another '계속' — is not it).
-function ptRecorded(list, opt) {
+// Pure: the id of the fetched turn that records an optimistic one ('' = none): a user turn with
+// the same words, recorded no earlier than a minute before it was sent, that the panel did not
+// already hold before the fetch (held — so an earlier '계속' never confirms a new '계속') and that
+// confirmed no other optimistic turn (used — one recorded turn, one optimistic turn).
+function ptRecorded(list, opt, held, used) {
   var key = ptSentKey(opt && opt._sent);
   var since = toNum(opt && opt.timestamp) - 60000;
   for (var i = 0; i < list.length; i++) {
     var t = list[i];
-    if (t && t.role === 'user' && !t._optimistic && toNum(t.timestamp) >= since && ptSentKey(t.rawContent) === key) return true;
+    var id = t && t.id ? String(t.id) : '';
+    if (!id || held[id] || used[id] || t.role !== 'user' || t._optimistic) continue;
+    if (toNum(t.timestamp) >= since && ptSentKey(t.rawContent) === key) return id;
   }
-  return false;
+  return '';
 }
 // Pure: a page fetched, then the turns pushed while it loaded (WS) and not in it, after it — an
-// optimistic turn the page already records goes.
+// optimistic turn the page newly records goes, one for one.
 function ptMergeFetched(fetched, pushed) {
   var out = (fetched || []).slice();
+  var held = Object.create(null);
+  var used = Object.create(null);
+  (pushed || []).forEach(function(p) { if (p && p.id && !p._optimistic) held[String(p.id)] = true; });
   for (var i = 0; i < (pushed || []).length; i++) {
     var p = pushed[i];
-    if (!p || (p._optimistic && ptRecorded(out, p))) continue;
+    if (!p) continue;
+    if (p._optimistic) {
+      var hit = ptRecorded(out, p, held, used);
+      if (hit) {
+        used[hit] = true;
+        continue;
+      }
+    }
     ptUpsert(out, p);
   }
   return out;
@@ -16347,6 +16362,7 @@ async function sendCommand(text, ref, files) {
       origin: { by: 'user' },
       _optimistic: true,
       _sent: msg, // the words the recorded turn is matched by (ptOptimisticFor)
+      _by: _viewerUserId || '', // who sent it — someone else's turn with the same words never takes it
     }, true);
   }
 
