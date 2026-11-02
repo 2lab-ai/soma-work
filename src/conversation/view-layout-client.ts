@@ -40,7 +40,7 @@ function layoutsFor(doc, builtins, mode, plan) {
 var FACE_KEEP = ['id', 'title', 'status', 'statusText', 'bodyMode', 'since', 'elapsedMs', 'lead', 'badge', 'star', 'titles'];
 var FACE_ROW_KEYS = { summary: ['summary'], task: ['task'], links: ['links'], agents: ['agents'], usage: ['tokens', 'costUsd'], arts: ['artifacts', 'artifactsCount'] };
 var FACE_ROW_NAME = { summary: 'summary', task: 'task', links: 'links', agents: 'agents', usage: 'usage', arts: 'artifacts' };
-function faceOf(card, model, face, asks) {
+function faceOf(card, model, face, asks, effort, asked) {
   var f = face || { rows: [], foot: [] };
   var out = {};
   var copy = function(k) {
@@ -69,7 +69,7 @@ function faceOf(card, model, face, asks) {
   out.rows = rows;
   // What the card is: an epic, a plan node or a cron run lead with their own; a plain task with the task mark.
   if (f.kind && !out.lead) out.lead = { glyph: 'task', title: '일반 작업' };
-  var foot = faceFootMetrics(card, model, f.foot || []);
+  var foot = faceFootMetrics(card, model, f.foot || [], effort, asked);
   if (foot.length) out.metrics = foot;
   return out;
 }
@@ -85,8 +85,9 @@ function layoutTokens(n) {
 }
 // The foot's chips in the layout's order (the host's metrics of the element): steps · context · the
 // instruction's attachments · the PR · the artifact count · the cost (its tooltip also says the tokens) · the
-// tokens · the model (its name with its vendor's mark).
-function faceFootMetrics(card, model, foot) {
+// tokens · the model (#805: icons only — its maker's mark in the model's colour and the effort gauge; the name is
+// the chip's title and accessible name).
+function faceFootMetrics(card, model, foot, effort, asked) {
   var out = [];
   var c = card || {};
   var host = c.metrics || [];
@@ -123,18 +124,48 @@ function faceFootMetrics(card, model, foot) {
     } else if (chip.id === 'model') {
       // 'unknown' is the server's placeholder for a model it does not know — no name to show.
       var md = model && model !== 'unknown' ? String(model) : '';
-      if (md) m = { text: modelLabelOf(md), glyph: modelVendorOf(md), title: md };
+      if (md) m = modelChipOf(md, effort, asked);
     }
     if (m) out.push(m);
   }
   return out;
 }
+// The effort levels the face's gauge draws (@2lab.ai/ui 0.22.0), in Korean for the chip's title and name.
+var MODEL_EFFORT_KO = { low: '낮음', medium: '보통', high: '높음', xhigh: '매우 높음', max: '최대', ultra: '울트라' };
+// Each AI in its maker's colour (#805, as affectUI's agent rows draw them): every Claude model is Claude's clay,
+// Gemini is Google's blue. OpenAI's and xAI's marks are black, so they keep the chip's ink (no colour).
+var MODEL_MAKER_COLOR = { claude: '#d97757', gemini: '#4285f4' };
+function modelColorOf(model) {
+  var v = modelVendorOf(model);
+  return Object.prototype.hasOwnProperty.call(MODEL_MAKER_COLOR, v) ? MODEL_MAKER_COLOR[v] : '';
+}
+// The face's model chip (#805): no words — the mark in its maker's colour, the effort gauge; the name, the effort in
+// words and the id are its title and accessible name. effort is the level the model runs; asked, the one set — said
+// too when the model caps it (review P1: Grok runs Extra high as High).
+function modelChipOf(model, effort, asked) {
+  var name = modelLabelOf(model);
+  var eff = typeof effort === 'string' && Object.prototype.hasOwnProperty.call(MODEL_EFFORT_KO, effort) ? effort : '';
+  var effKo = eff ? MODEL_EFFORT_KO[eff] : '';
+  var set = eff && typeof asked === 'string' && asked !== eff && Object.prototype.hasOwnProperty.call(MODEL_EFFORT_KO, asked) ? MODEL_EFFORT_KO[asked] : '';
+  var effWords = eff ? '추론 강도 ' + effKo + (set ? ' (설정 ' + set + ')' : '') : '';
+  var m = {
+    text: '',
+    glyph: modelVendorOf(model),
+    title: name + (effWords ? ' · ' + effWords : '') + (name !== model ? '\n' + model : ''),
+    label: '모델 ' + name + (effWords ? ', ' + effWords : ''),
+  };
+  var color = modelColorOf(model);
+  if (color) m.color = color;
+  if (eff) m.effort = eff;
+  return m;
+}
 // Whose model it is, for its mark: claude · openai · grok · gemini · model (any other).
+// The same rules as @2lab.ai/ui modelVendor (core/model-mark), pinned by a test (#819 review P2).
 function modelVendorOf(model) {
   var m = String(model || '').toLowerCase();
   if (/claude|opus|sonnet|haiku|fable/.test(m)) return 'claude';
-  if (/^gpt|^o[0-9]|codex|openai/.test(m)) return 'openai';
-  if (/grok/.test(m)) return 'grok';
+  if (/^gpt|^o[0-9]|codex|openai|chatgpt/.test(m)) return 'openai';
+  if (/grok|xai/.test(m)) return 'grok';
   if (/gemini/.test(m)) return 'gemini';
   return 'model';
 }

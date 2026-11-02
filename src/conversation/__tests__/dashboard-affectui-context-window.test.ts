@@ -44,6 +44,7 @@ const AUTH_HEADER = { Authorization: 'Bearer test-token' };
 /** The card fields this suite reads. */
 type Card = {
   title?: string;
+  effortFromDefault?: true;
   contextTokens?: number;
   tokenUsage: { contextUsagePercent: number };
   contextParts: {
@@ -159,6 +160,10 @@ describe('re-context-window — the card payload says what fills the context (D1
     const archived = (await cards(new Map())).find((c) => c.title === 'Archived');
     expect(archived).toBeDefined();
     expect(archived?.contextParts).toBeUndefined();
+    // #805 review P2 — an archive keeps no effort: the card's is the owner's default today, and says so (the face
+    // draws no gauge for it); a live card's is its own.
+    expect(archived?.effortFromDefault).toBe(true);
+    expect((await one(live())).effortFromDefault).toBeUndefined();
   });
 
   it('D2 — a compaction’s post_tokens held in the input counter is one unsplit total, said as such', async () => {

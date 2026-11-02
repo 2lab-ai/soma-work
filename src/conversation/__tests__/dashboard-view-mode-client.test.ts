@@ -16,7 +16,7 @@
  *   T5  advanced: everything the page showed, every section open (the old 자세히)
  */
 
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { BUILTIN_PRESETS } from '../../view-layout';
@@ -461,13 +461,14 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
       expect(CSS, sel).toMatch(minimalRule(sel));
   });
 
-  it('the detail card’s top keeps the header and what needs the user; info · goal · artifacts · tabs · model go (1안)', () => {
-    // The layout says which sections show (detailSpecOf → body[data-detail]); minimal 1안 shows none of them.
+  it('the detail card’s top keeps the header and what needs the user; info · goal · artifacts · tabs go, the model stays (1안, #805)', () => {
+    // The layout says which sections show (detailSpecOf → body[data-detail]); minimal 1안 shows only the model ·
+    // effort line — the task card shows the model as icons only, so the detail card is where its name is (#805).
     const env = load<{ viewSpec(): any }>(
       ['viewModeFrom', 'viewPlanFrom', 'viewSpec'],
       ['_viewMode', '_viewPlan', '_viewLayout'],
     );
-    expect(env.viewSpec().detail.show).toEqual([]);
+    expect(env.viewSpec().detail.show).toEqual(['controls']);
     for (const [tok, sel] of [
       ['subtitle', '#panel-title-sub'],
       ['info', '#panel-info'],
@@ -636,11 +637,17 @@ describe('T7–T10 — minimal card: cost · model · artifacts, the star toggle
     },
   };
 
-  it('T7 — the foot’s right end: the cost, then the model with its vendor’s mark', () => {
+  it('T7 — the foot’s right end: the cost, then the model as its vendor’s mark (#805: no name on the face)', () => {
     const m = env.minimalCard(full, { model: 'claude-opus-5-5[1m]' });
     expect(m.metrics).toEqual([
       { text: '$6.20', title: 'API 환산 비용 (작업 합계)' },
-      { text: 'Opus 5.5', glyph: 'claude', title: 'claude-opus-5-5[1m]' },
+      {
+        text: '',
+        glyph: 'claude',
+        color: '#d97757',
+        title: 'Opus 5.5\nclaude-opus-5-5[1m]',
+        label: '모델 Opus 5.5',
+      },
     ]);
     // No tokens line, no context, no PR — the price and the model only.
     expect(m.tokens).toBeUndefined();
@@ -648,7 +655,7 @@ describe('T7–T10 — minimal card: cost · model · artifacts, the star toggle
     expect(m.contextPct).toBeUndefined();
     // No cost known: the model alone; no model: the cost alone.
     expect(env.minimalCard({ ...full, costUsd: undefined }, { model: 'grok-4.6' }).metrics).toEqual([
-      { text: 'grok-4.6', glyph: 'grok', title: 'grok-4.6' },
+      { text: '', glyph: 'grok', title: 'grok-4.6', label: '모델 grok-4.6' },
     ]);
     expect(env.minimalCard(full, {}).metrics).toEqual([{ text: '$6.20', title: 'API 환산 비용 (작업 합계)' }]);
     // The server's placeholder for a model it does not know is no model name (review: fable P2).
@@ -676,6 +683,38 @@ describe('T7–T10 — minimal card: cost · model · artifacts, the star toggle
     expect(env.modelLabelOf('claude-sonnet-4-5-20250929')).toBe('sonnet-4-5');
     expect(env.modelLabelOf('claude-sonnet-4-5-20250929[1m]')).toBe('sonnet-4-5[1m]');
     expect(env.modelLabelOf('gpt-5.5')).toBe('gpt-5.5');
+  });
+
+  // #819 review P2 — the board chip and the library (picker, agent tree) name a model's maker the same way: the
+  // client's ES5 copy is pinned to the installed library's modelVendor.
+  it('#813 modelVendorOf names the maker exactly as @2lab.ai/ui modelVendor does', () => {
+    const dist = join(process.cwd(), 'node_modules/@2lab.ai/ui/dist');
+    const file = readdirSync(dist).find((f) => /^model-mark-.*\.js$/.test(f));
+    expect(file, 'dist/model-mark-*.js').toBeDefined();
+    const src = readFileSync(join(dist, file as string), 'utf8');
+    const fn = /function modelVendor\(model\) \{[\s\S]*?\n\}/.exec(src)?.[0];
+    expect(fn, 'modelVendor in the library build').toBeDefined();
+    const lib = new Function(`${fn}\nreturn modelVendor;`)() as (m: unknown) => string;
+    const ids = [
+      'claude-opus-5-5[1m]',
+      'Sonnet 4.6',
+      'haiku',
+      'fable[1m]',
+      'gpt-5.5',
+      'GPT-6.1 Sol (1M)',
+      'o3-pro',
+      'codex-mini',
+      'openai/gpt-oss',
+      'chatgpt-4o-latest',
+      'grok-4.6',
+      'xai-grok-beta',
+      'xai-beta',
+      'gemini-3-pro',
+      'astra',
+      'llama-4',
+      '',
+    ];
+    expect(ids.map((m) => env.modelVendorOf(m))).toEqual(ids.map((m) => lib(m)));
   });
 
   it('T8 — a line of artifacts stays on the minimal face', () => {

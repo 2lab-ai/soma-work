@@ -24,13 +24,13 @@ const SWITCHED: Record<DisplayLang, ApplyResult> = {
     ok: true,
     summary: '🌐 표시 언어: 한국어',
     description:
-      '대시보드, 슬랙 스레드의 봇 문구, 모델의 답변이 한국어로 바뀝니다. 열려 있는 대시보드는 새로 고치면 바뀝니다.',
+      '대시보드와 슬랙 스레드의 봇 문구가 한국어로 바뀝니다. 모델의 답변은 새 대화부터 한국어입니다. 열려 있는 대시보드는 새로 고치면 바뀝니다.',
   },
   en: {
     ok: true,
     summary: '🌐 Display language: English',
     description:
-      "The dashboard, the bot's text in Slack threads and the model's answers now use English. Refresh an open dashboard to see it.",
+      "The dashboard and the bot's text in Slack threads now use English; the model answers in English from your next new conversation. Refresh an open dashboard to see it.",
   },
 };
 
@@ -48,7 +48,7 @@ export async function renderLangCard(args: { userId: string; issuedAt: number })
     ],
     additionalCommands: [
       '`lang ko` · `lang en` — 바꾸기',
-      '_대시보드 오른쪽 위 en / ko 토글과 같은 설정입니다. 모델은 다음 지시부터 이 언어로 답합니다._',
+      '_대시보드 오른쪽 위 언어 토글과 같은 설정입니다. 모델은 새 대화부터 이 언어로 답합니다._',
     ],
     issuedAt: args.issuedAt,
   });

@@ -142,6 +142,7 @@ type TNode = {
   parentId?: string;
   name: string;
   role?: string;
+  model?: string;
   status: string;
   startedAt?: number;
   endedAt?: number;
@@ -444,6 +445,32 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
     expect(fnBody('renderCardBody')).toContain("else if (p === 'agents') rest += renderAgentTree(s, col);");
   });
 
+  // soma-work#813 — the model as its maker's mark (affectUI's agent fleet): the main agent runs the session's model, a
+  // subagent the model its transcript ran most (spend.model); one we do not know has none (no guessed mark).
+  it("#813 a node names its model: the main agent the session's, a subagent the one it ran; unknown → none", () => {
+    const agents = [
+      {
+        ...AGENTS[0],
+        spend: {
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheReadTokens: 0,
+          cacheCreateTokens: 0,
+          costUsd: 0,
+          calls: 1,
+          model: 'claude-haiku-4-5',
+        },
+      },
+      ...AGENTS.slice(1),
+    ];
+    const d = ui.atCardData(card({ agents }), 'working') as TreeData;
+    expect(nodeOf(d, ':main')?.model).toBe('claude-opus-5-5[1m]');
+    expect(nodeOf(d, 'toolu_explore')?.model).toBe('claude-haiku-4-5');
+    expect(nodeOf(d, 'toolu_lib')?.model).toBeUndefined();
+    // The server's placeholder for a model it does not know is no model.
+    expect(nodeOf(ui.atCardData(card({ model: 'unknown' }), 'working') as TreeData, ':main')?.model).toBeUndefined();
+  });
+
   it('atCardData: the main agent first, every subagent under the agent that started it, in spawn order — compact', () => {
     const d = ui.atCardData(card(), 'working') as TreeData;
     expect(d).toMatchObject({ density: 'compact', title: '에이전트', selectedId: null });
@@ -455,7 +482,15 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
     ]);
     // The root: 메인, its tool count, its active time running from the open leg; the face's task row already
     // names #T2, so the root does not say it again (spec 13).
-    expect(nodeOf(d, ':main')).toEqual({ id: ':main', name: '메인', status: 'running', toolCalls: 7, startedAt: T0 });
+    // #813 — and the session's model, so the element leads it with its maker's mark.
+    expect(nodeOf(d, ':main')).toEqual({
+      id: ':main',
+      name: '메인',
+      status: 'running',
+      toolCalls: 7,
+      startedAt: T0,
+      model: 'claude-opus-5-5[1m]',
+    });
     // A subagent: A<n> type, its brief as the role (background said), what it does now.
     expect(nodeOf(d, 'toolu_explore')).toEqual({
       id: 'toolu_explore',
