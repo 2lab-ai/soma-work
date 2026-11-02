@@ -49,6 +49,7 @@ import { validateSessionGoalObjective } from './prompt/session-goal-block';
 import { routeReleaseNotes } from './release-notes-routes';
 import { retryReasonLine } from './retry-reason';
 import {
+  activeChainFilter,
   buildRollbackPointsView,
   CONTEXT_ROLLBACK_REFUSAL_TEXT,
   type ContextRollbackRefusal,
@@ -6876,10 +6877,12 @@ export class SlackHandler {
     if (!session) return undefined;
     const record = session.conversationId ? await getConversation(session.conversationId) : null;
     const page = session.conversationId ? await readWorkLog(session.conversationId, { limit: 500 }) : { entries: [] };
+    const onChain = activeChainFilter(session);
     return buildRollbackPointsView(
       session,
-      rollbackInputPoints(session, record),
-      rollbackWorkLogPoints(session, page.entries),
+      // After a rollback the dropped branch's points stay in the logs; only the active branch is offered.
+      rollbackInputPoints(session, record, onChain),
+      rollbackWorkLogPoints(session, page.entries, onChain),
       {
         actor: actorUserId || session.ownerId,
         requestActive: this.requestCoordinator.isRequestActive(sessionKey),

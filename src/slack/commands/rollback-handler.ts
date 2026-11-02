@@ -13,6 +13,7 @@
 
 import { getConversation } from '../../conversation/recorder';
 import {
+  activeChainFilter,
   CONTEXT_ROLLBACK_REFUSAL_TEXT,
   cancelContextRollback,
   keptUntilOf,
@@ -82,7 +83,8 @@ export class RollbackHandler implements CommandHandler {
     }
 
     const record = session.conversationId ? await getConversation(session.conversationId) : null;
-    const points = rollbackInputPoints(session, record).slice(-ROLLBACK_LIST_MAX);
+    // Only the active branch: after a rollback the dropped inputs stay in the record.
+    const points = rollbackInputPoints(session, record, activeChainFilter(session)).slice(-ROLLBACK_LIST_MAX);
 
     if (!arg) {
       if (points.length === 0) {

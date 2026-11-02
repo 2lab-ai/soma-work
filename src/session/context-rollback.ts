@@ -53,8 +53,10 @@ export function keptUntilOf(source: PendingRewind['source'], at: number | undefi
 export interface ContextRollbackDeps {
   /** A turn holds the session's request slot (never cut a running turn). */
   requestActive: boolean;
-  /** Does the SDK transcript of `sessionId` contain the chain entry `uuid`? */
+  /** Does the SDK transcript of `sessionId` contain the chain entry `uuid`? Overrides the default (active-branch) check. */
   transcriptHas?: (sessionId: string, uuid: string) => boolean;
+  /** The transcript text of `sessionId` (default: the SDK's `.jsonl`). */
+  readTranscript?: (sessionId: string) => string | undefined;
   now?: () => number;
 }
 
@@ -67,6 +69,72 @@ export function transcriptHasUuid(sessionId: string, uuid: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** The SDK transcript text of a session, or undefined. */
+export function readTranscriptText(sessionId: string): string | undefined {
+  try {
+    const file = findTranscriptPath(sessionId);
+    return file ? fs.readFileSync(file, 'utf8') : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The uuids on the active chain of a transcript: `tailUuid` and its ancestors by `parentUuid`.
+ * After a `resumeSessionAt` rollback the SDK chains the next message to the rollback point, so
+ * the dropped branch is no longer an ancestor of the tail. Undefined when the tail is unknown.
+ */
+export function activeChainUuids(text: string, tailUuid: string): Set<string> | undefined {
+  const parent = new Map<string, string | null>();
+  for (const line of text.split('\n')) {
+    if (!line.includes('"uuid"')) continue;
+    let e: { uuid?: unknown; parentUuid?: unknown } | null = null;
+    try {
+      e = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (e && typeof e.uuid === 'string') parent.set(e.uuid, typeof e.parentUuid === 'string' ? e.parentUuid : null);
+  }
+  if (!parent.has(tailUuid)) return undefined;
+  const chain = new Set<string>();
+  let cur: string | null | undefined = tailUuid;
+  while (cur && !chain.has(cur)) {
+    chain.add(cur);
+    cur = parent.get(cur) ?? null;
+  }
+  return chain;
+}
+
+/**
+ * Is `uuid` on the active branch of the session's transcript? The tail is the session's latest
+ * safe point; without one (or a tail the file lacks) only presence is checked. Fails closed.
+ */
+export function transcriptOnActiveChain(
+  session: Pick<ConversationSession, 'sessionId' | 'contextAnchor'>,
+  uuid: string,
+  read: (sessionId: string) => string | undefined = readTranscriptText,
+): boolean {
+  if (!session.sessionId) return false;
+  const text = read(session.sessionId);
+  if (!text) return false;
+  const tail = decodeContextAnchor(session.contextAnchor)?.uuid;
+  const chain = tail ? activeChainUuids(text, tail) : undefined;
+  return chain ? chain.has(uuid) : text.includes(`"uuid":"${uuid}"`);
+}
+
+/** A filter for the point lists: the uuid is on the active branch. Undefined = no filter (unknown). */
+export function activeChainFilter(
+  session: Pick<ConversationSession, 'sessionId' | 'contextAnchor'>,
+  read: (sessionId: string) => string | undefined = readTranscriptText,
+): ((uuid: string) => boolean) | undefined {
+  const tail = decodeContextAnchor(session.contextAnchor)?.uuid;
+  if (!session.sessionId || !tail) return undefined;
+  const text = read(session.sessionId);
+  const chain = text ? activeChainUuids(text, tail) : undefined;
+  return chain ? (uuid: string) => chain.has(uuid) : undefined;
 }
 
 /**
@@ -87,7 +155,10 @@ export function requestContextRollback(
   if (refusal) return { ok: false, reason: refusal };
   if (target.anchor === session.contextAnchor && !session.pendingRewind) return { ok: false, reason: 'no-change' };
   const { uuid } = decodeContextAnchor(target.anchor)!;
-  const has = deps.transcriptHas ?? transcriptHasUuid;
+  // The point must be on the ACTIVE branch: after a rollback the dropped branch's uuids stay in
+  // the file, but the SDK cannot resume there ("No message found with message.uuid").
+  const has =
+    deps.transcriptHas ?? ((_sid: string, u: string) => transcriptOnActiveChain(session, u, deps.readTranscript));
   if (!has(session.sessionId as string, uuid)) return { ok: false, reason: 'not-in-transcript' };
   const requestedAt = (deps.now ?? Date.now)();
   const kept = target.keptUntil;
@@ -119,7 +190,8 @@ export const CONTEXT_ROLLBACK_REFUSAL_TEXT: Record<ContextRollbackRefusal, strin
   invalid: '이 지점은 되돌릴 수 있는 기록이 없습니다.',
   'other-session': '이 지점은 이전 대화(new/renew 이전)라 되돌릴 수 없습니다.',
   compacted: '이 지점 뒤에 문맥 압축(/compact)이 있어 되돌릴 수 없습니다.',
-  'not-in-transcript': '모델 대화 기록에서 이 지점을 찾을 수 없어 되돌릴 수 없습니다.',
+  'not-in-transcript':
+    '모델 대화 기록의 현재 흐름에서 이 지점을 찾을 수 없어 되돌릴 수 없습니다 (이미 되돌려서 빠진 지점일 수 있습니다).',
   'no-change': '이미 이 지점이 마지막입니다 — 되돌릴 것이 없습니다.',
 };
 
@@ -140,6 +212,8 @@ export interface RollbackInputPoint {
 export function rollbackInputPoints(
   session: ConversationSession,
   record: Pick<ConversationRecord, 'turns'> | null | undefined,
+  /** Keep only points on the active branch (`activeChainFilter`); absent = no filter. */
+  onChain?: (uuid: string) => boolean,
 ): RollbackInputPoint[] {
   if (!record) return [];
   const tail = turnStartAnchor(session);
@@ -150,7 +224,8 @@ export function rollbackInputPoints(
         t.origin?.by !== 'system' &&
         typeof t.anchor === 'string' &&
         t.anchor !== tail &&
-        !anchorRefusal(session, t.anchor),
+        !anchorRefusal(session, t.anchor) &&
+        (!onChain || onChain(decodeContextAnchor(t.anchor)?.uuid ?? '')),
     )
     .map((t) => ({ turnId: t.id, timestamp: t.timestamp, text: t.rawContent, anchor: t.anchor as string }));
 }
@@ -183,6 +258,8 @@ const WORK_LOG_POINT_KINDS = new Set(['narration', 'final', 'tool_result']);
 export function rollbackWorkLogPoints(
   session: ConversationSession,
   entries: ReadonlyArray<{ seq: number; ts: number; kind: string; text: string; anchor?: string }>,
+  /** Keep only points on the active branch (`activeChainFilter`); absent = no filter. */
+  onChain?: (uuid: string) => boolean,
 ): RollbackWorkLogPoint[] {
   const tail = turnStartAnchor(session);
   const out: RollbackWorkLogPoint[] = [];
@@ -193,6 +270,7 @@ export function rollbackWorkLogPoints(
     if (anchor !== undefined) previous = anchor;
     if (!moved || !WORK_LOG_POINT_KINDS.has(e.kind)) continue;
     if (anchor === tail || anchorRefusal(session, anchor)) continue;
+    if (onChain && !onChain(decodeContextAnchor(anchor)?.uuid ?? '')) continue;
     out.push({ seq: e.seq, ts: e.ts, kind: e.kind, text: e.text, anchor });
   }
   return out;
