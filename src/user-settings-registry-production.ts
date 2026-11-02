@@ -9,6 +9,7 @@ import * as path from 'path';
 import { isAdminUser } from './admin-utils';
 import { config } from './config';
 import { getAvailablePersonas } from './prompt-builder';
+import { allowedEffortsFor } from './session/effort-menu';
 import { productionModelCatalogDeps } from './session/model-catalog-deps';
 import { listRepresentativeModels } from './session/model-switch';
 import { autoskillExists, listAvailableSkills } from './skill-locator';
@@ -49,6 +50,7 @@ export function productionSettingsRegistry(): SettingsRegistry {
       email: applyEmail,
     },
     effortLevels: EFFORT_LEVELS,
+    effortMenu: allowedEffortsFor,
     verbosityLevels: VERBOSITY_NAMES,
     themes: THEME_NAMES,
     defaults: {

@@ -335,13 +335,13 @@ describe('touch targets and overflow', () => {
     // D7 (A-11): the user select is a kit select chip — 44px on touch / narrow is ui-kit.css's rule.
     expect(block).not.toContain('.user-select');
     expect(KIT).toContain('.ui-select-chip { min-height: 44px; }');
-    // D7 (A-06, A-12): the defaults and admin chips are kit chips — their 44px hit area is the kit's own rule.
-    expect(TEMPLATE).toMatch(/<button type="button" class="ui-chip td-chip" id="td-model"/);
-    expect(TEMPLATE).toMatch(/<button type="button" class="ui-chip td-chip" id="td-effort"/);
+    // D7 (A-06, A-12): the admin chips are kit chips — their 44px hit area is the kit's own rule; the defaults are
+    // <ui-model-picker>, whose trigger is 44px on touch / narrow by the element's own rule.
+    expect(TEMPLATE).toMatch(/<ui-model-picker id="td-picker" class="td-picker" lang="ko"/);
     expect(TEMPLATE).toMatch(/class="ui-chip admin-toggle admin-inbox-btn"/);
     expect(TEMPLATE).toMatch(/class="ui-chip admin-toggle"\n/);
     expect(block).not.toContain('.admin-toggle');
-    expect(block).not.toContain('.td-chip');
+    expect(block).not.toContain('.td-picker');
   });
 
   it('does NOT add html, body { overflow-x: hidden } — width is fitted directly', () => {

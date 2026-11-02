@@ -1,5 +1,7 @@
 import { getVerbosityFlags, getVerbosityName, LOG_DETAIL, VERBOSITY_NAMES } from '@soma/slack/output-flags';
+import { clampEffortToSupported } from 'soma-lib';
 import { resolveContextWindow } from '../../metrics/model-registry';
+import { allowedEffortsFor } from '../../session/effort-menu';
 import {
   DEFAULT_EFFORT,
   EFFORT_LEVELS,
@@ -266,9 +268,16 @@ export class SessionCommandHandler implements CommandHandler {
     if (session.usage) {
       session.usage.contextWindow = resolveContextWindow(resolved);
     }
+    // The effort follows the model: a level the new model does not run becomes the nearest one it does.
+    const allowed = allowedEffortsFor(resolved);
+    let effortNote = '';
+    if (session.effort && !allowed.includes(session.effort)) {
+      session.effort = clampEffortToSupported(allowed, session.effort);
+      effortNote = `\nEffort is now *${session.effort}* (this model does not run the previous level).`;
+    }
     const displayName = userSettingsStore.getModelDisplayName(resolved);
     await say({
-      text: `⚡ *Session Model Changed*\n\nThis session now uses: *${displayName}* (\`${resolved}\`)\n_User default unchanged. Use \`model ${input}\` to change permanently._`,
+      text: `⚡ *Session Model Changed*\n\nThis session now uses: *${displayName}* (\`${resolved}\`)${effortNote}\n_User default unchanged. Use \`model ${input}\` to change permanently._`,
       thread_ts: threadTs,
     });
     return { handled: true };
@@ -325,6 +334,17 @@ export class SessionCommandHandler implements CommandHandler {
     const { say, threadTs } = ctx;
     const valid = EFFORT_LEVELS;
     const normalized = input.toLowerCase();
+
+    // A known level the session's model does not run (ultra only where its catalog menu lists it). A session
+    // without a model of its own runs the owner's default.
+    const allowed = allowedEffortsFor(session?.model || userSettingsStore.getUserDefaultModel(ctx.user));
+    if (valid.includes(normalized as any) && !allowed.includes(normalized as any)) {
+      await say({
+        text: `❌ This session's model does not run effort \`${normalized}\`.\n*Available for this model:* ${allowed.map((v) => `\`${v}\``).join(', ')}`,
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    }
 
     if (!valid.includes(normalized as any)) {
       const validStr = valid.map((v) => `\`${v}\``).join(', ');

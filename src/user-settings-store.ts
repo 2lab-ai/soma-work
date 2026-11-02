@@ -2,7 +2,7 @@ import { atomicWriteJson } from '@soma/common/atomic-json';
 import { DEFAULT_LOG_VERBOSITY, getVerbosityFlags, type LogVerbosity, VERBOSITY_NAMES } from '@soma/slack/output-flags';
 import fs from 'fs';
 import path from 'path';
-import { SDK_EFFORT_LEVELS as EFFORT_LEVELS, type SdkEffortLevel as EffortLevel } from 'soma-lib';
+import { EFFORT_LEVELS, type EffortLevel } from 'soma-lib';
 import { isPermissionMode, type PermissionMode, resolvePermissionMode } from './agent-runtime/policy/permission-mode';
 import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
 import { Logger } from './logger.js';
@@ -319,10 +319,13 @@ export function coerceToAvailableModel(raw: string | null | undefined): string {
   return DEFAULT_MODEL;
 }
 
-export type { SdkEffortLevel as EffortLevel } from 'soma-lib';
-// Effort levels — this store's menu is the SDK subset (no `ultra`, which only
-// some llmux codex tiers offer): soma-lib `SDK_EFFORT_LEVELS`.
-export { SDK_EFFORT_LEVELS as EFFORT_LEVELS } from 'soma-lib';
+export type { EffortLevel } from 'soma-lib';
+// Effort levels — everything llmux publishes per model (soma-lib
+// `EFFORT_LEVELS`): the SDK's five plus `ultra`, which only the codex tiers
+// whose catalog menu lists it run (sol / terra / astra). The runtime clamps a
+// level to the model's menu and runs `ultra` as `max` — no backend takes
+// `ultra` on the wire (build-stream-options).
+export { EFFORT_LEVELS } from 'soma-lib';
 export const DEFAULT_EFFORT: EffortLevel = 'xhigh';
 
 /** Coerce arbitrary stored input to a known EffortLevel, falling back to DEFAULT_EFFORT. */

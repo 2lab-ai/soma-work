@@ -147,6 +147,7 @@ import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from 
 import { applyAgentEvent } from './session/agent-registry';
 import { backfillAgentSpend, createAgentSpendReader } from './session/agent-spend';
 import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
+import { allowedEffortsFor } from './session/effort-menu';
 import { switchSessionEffort } from './session/effort-switch';
 import { productionModelCatalogDeps } from './session/model-catalog-deps';
 import { switchSessionModel } from './session/model-switch';
@@ -1032,6 +1033,8 @@ async function start() {
       switchSessionEffort(sessionKey, effort, {
         getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
         clamp: clampEffortToModel,
+        menu: allowedEffortsFor,
+        ownerDefaultModel: (ownerId) => (ownerId ? userSettingsStore.getUserDefaultModel(ownerId) : undefined),
         save: () => claudeHandler.saveSessions(),
         broadcast: () => broadcastSessionUpdate(),
       }),
@@ -1942,6 +1945,8 @@ async function start() {
         injectContinuation: goalMessageInjector,
         postNotice: postGoalNotice,
         postOwnerDm: postGoalOwnerDm,
+        // Same failure twice → ask the owner (thread form + dashboard card).
+        askStallQuestion: (question) => slackHandler.askGoalStallQuestion(question),
         logger,
         fallbackModel: 'claude-sonnet-4-20250514',
         // S9: optional cheaper eval tier. Unset → eval matches the work model.
@@ -1953,13 +1958,14 @@ async function start() {
       // released its request-coordinator slot. The controller owns all loop
       // state, serialization, and ordering (M4); the hook only forwards the
       // sessionKey and returns immediately.
-      slackHandler.setGoalTurnSettledHandler((sessionKey: string) => {
-        goalLoopController.onTurnSettled(sessionKey);
+      slackHandler.setGoalTurnSettledHandler((sessionKey: string, opts?: { cause?: 'turn' | 'kick' }) => {
+        goalLoopController.onTurnSettled(sessionKey, opts);
       });
       // S1/S3: let goal action handlers (Delete-advance, owner-DM Continue)
       // kick the loop without holding a direct controller reference.
+      // A kick: no turn ran, so an unchanged summary is not re-judged.
       setGoalLoopResumeHandler((sessionKey: string) => {
-        goalLoopController.onTurnSettled(sessionKey);
+        goalLoopController.onTurnSettled(sessionKey, { cause: 'kick' });
       });
       // SSOT 2026-10-21: the goal-list Delete button and the dashboard share
       // ONE host path for goal-list changes (opening turn through the fence).

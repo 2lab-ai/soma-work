@@ -1047,6 +1047,7 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
           __ret: opener,
           // Task view: a closing panel releases the composer and the answer observer.
           pcReset: () => {},
+          paintDefaultsScope: () => {},
           _ansIo: null,
           // SSOT 2026-10-29: a closed panel holds no section nodes and no pill.
           psecClear: () => {},
@@ -1094,6 +1095,7 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
         resetWorkLog: () => {},
         _cardBodies: {},
         pcReset: () => {},
+        paintDefaultsScope: () => {},
         _ansIo: null,
         psecClear: () => {},
         psecSetNew: () => {},
@@ -1650,6 +1652,7 @@ describe('the composer follows the session live (executed)', () => {
         document: { getElementById: (id: string) => els[id] ?? null },
         currentUserId: 'U1',
         pcReset: () => {},
+        paintDefaultsScope: () => {},
         ntDictationEngine: () => null, // 받아쓰기 has its own suite: no recogniser here
       },
     );
@@ -1684,7 +1687,11 @@ describe('the model menu closes on Escape before the panel does (executed)', () 
       refreshCard: () => {},
       repaintPanelControlsFor: (k: string) => repainted.push(k),
     });
-    const picker = { tagName: 'UI-MODEL-PICKER', getAttribute: (n: string) => (n === 'data-mp-key' ? 'k' : null) };
+    const picker = {
+      tagName: 'UI-MODEL-PICKER',
+      getAttribute: (n: string) => (n === 'data-mp-key' ? 'k' : null),
+      hasAttribute: (n: string) => n === 'data-mp-key',
+    };
     m.mpOnOpenChange({ target: picker, detail: { open: false } });
     expect(repainted).toEqual(['k']); // the controls catch up on what they held while the menu was open
     // Held while its own session's menu is open (a menu of another session is closed: model-picker client test).
