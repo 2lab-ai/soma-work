@@ -845,6 +845,34 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     }
   });
 
+  // Trinity R1 (fable P2) — "the Slack way" ends where Slack's does: nobody else
+  // can write in another user's DM with the bot, so a DM session takes another
+  // user's word only from an admin in admin mode.
+  it('SSOT 2026-11-02 — a DM session takes instructions from its owner or an admin in admin mode only', async () => {
+    const dashboard = await import('../dashboard');
+    const reg = new SessionRegistry();
+    reg.createSession('U1', 'Alice', 'D0OWNERDM', '600.001');
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const slackCommand = vi.fn(async () => {});
+    dashboard.setDashboardCommandHandler(slackCommand);
+    const url = `/api/dashboard/session/${encodeURIComponent('work:D0OWNERDM:600.001')}/command`;
+    const payload = JSON.stringify({ message: 'hi' });
+    try {
+      for (const headers of [await signIn('U2'), await signIn('U_ADMIN')]) {
+        expect((await injectWebServer({ method: 'POST', url, headers, payload })).statusCode).toBe(403);
+      }
+      expect(slackCommand).not.toHaveBeenCalled();
+      const adminOn = { ...(await signIn('U_ADMIN')), 'X-Admin-Mode': 'on' };
+      expect((await injectWebServer({ method: 'POST', url, headers: adminOn, payload })).statusCode).toBe(200);
+      expect(slackCommand).toHaveBeenLastCalledWith('work:D0OWNERDM:600.001', 'hi', [], 'U_ADMIN');
+      expect((await injectWebServer({ method: 'POST', url, headers: await signIn('U1'), payload })).statusCode).toBe(
+        200,
+      );
+    } finally {
+      dashboard.setDashboardCommandHandler(null as any);
+    }
+  });
+
   it('SSOT 2026-11-02 — closing, stopping or trashing someone else’s task stays the owner’s or admin mode’s', async () => {
     const dashboard = await import('../dashboard');
     const reg = new SessionRegistry();

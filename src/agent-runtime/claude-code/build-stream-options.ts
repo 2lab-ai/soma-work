@@ -364,6 +364,8 @@ export async function buildStreamOptions(
     // in auto mode goes to the safety classifier). Live state (abort signal, handoff
     // context) is resolved per call so mid-session aborts and handoff changes are honored.
     const policyUser = execCtx.userId;
+    const crossUserRoot =
+      execCtx.origin === 'task' ? (execCtx as { ownerId?: string }).ownerId || policyUser : policyUser;
     const policyIsAdmin = execCtx.isAdmin;
     const cachedPermConfig = CONFIG_FILE ? loadMcpToolPermissions(CONFIG_FILE) : {};
     const gatedServerNames = getPermissionGatedServers(cachedPermConfig);
@@ -390,7 +392,10 @@ export async function buildStreamOptions(
       // the repository of a new worktree are resolved from it, as the SDK does.
       const hookCwd = (input as { cwd?: string }).cwd || workingDirectory || process.cwd();
       const ctx: ToolPolicyContext = {
-        user: policyUser,
+        // The /tmp root the cross-user guard holds the turn to: a task's owner's, the root the task lives in
+        // (SSOT 2026-11-02 — another user who instructs it works in that folder). Writes stay held to the task
+        // folder and the sender's own root (`nativeWriteRoots`, the sandbox); grants and approvals stay the sender's.
+        user: crossUserRoot,
         isAdmin: policyIsAdmin,
         mode: somaPermissionMode,
         aborted: abortController?.signal.aborted ?? false,

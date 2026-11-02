@@ -285,6 +285,15 @@ describe('SlackHandler — the dashboard’s follow-up queue controls', () => {
         status: 403,
       });
       expect(queue().get(SESSION_KEY, owners.id)?.message.text).toBe('owner words');
+      // An admin in admin mode (manages) edits their own note — and not the owner's (only the author rewrites).
+      const admins = park({ ts: '303.4', user: 'U_ADMIN', text: 'admin words' });
+      const admin = { op: 'edit', actorUserId: 'U_ADMIN', manages: true };
+      expect(await act({ ...admin, itemId: admins.id, epoch: admins.epoch, text: 'fixed' })).toEqual({ ok: true });
+      const owners2 = park({ ts: '303.5', text: 'owner words 2' });
+      expect(await act({ ...admin, itemId: owners2.id, epoch: owners2.epoch, text: 'x' })).toMatchObject({
+        ok: false,
+        status: 403,
+      });
     });
   });
 

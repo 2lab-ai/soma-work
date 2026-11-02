@@ -329,6 +329,48 @@ describe('a Slack turn — the speaker decides, not the session owner (#613 R1)'
   });
 });
 
+// SSOT 2026-11-02 (trinity R1, fable P1) — another user's instruction runs as
+// them in the owner's task folder. The cross-user Bash guard is held to the
+// task's owner root (the root the task lives in), so the folder the model is
+// told it works in is not "another user's directory" to it; writes stay held
+// to the task folder and the sender's own root (sandbox + native boundary).
+describe('a task turn run by someone other than its owner (SSOT 2026-11-02)', () => {
+  const ACTOR = 'U0ACTOR001';
+  async function hook() {
+    const ctx = executionContextForTask(
+      {
+        ownerId: USER,
+        slackless: true,
+        taskId: TASK_ID,
+        channelId: '',
+        workingDirectory: WORK_DIR,
+      } as ConversationSession,
+      ACTOR,
+    );
+    expect(ctx.userId).toBe(ACTOR);
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: ctx.workingDirectory, executionContext: ctx },
+      makeDeps(),
+    );
+    return policyHook(options);
+  }
+
+  it('Bash naming the task folder by its absolute path is not a cross-user denial', async () => {
+    const h = await hook();
+    const out = await h(call('Bash', { command: `cd ${WORK_DIR} && ls -la` }));
+    expect(decisionOf(out)).not.toBe('deny');
+  });
+
+  it('a third user’s /tmp stays off limits, and writes stay in the task folder', async () => {
+    const h = await hook();
+    expect(decisionOf(await h(call('Bash', { command: `cat /tmp/${OTHER}/secret` })))).toBe('deny');
+    expect(decisionOf(await h(call('Write', { file_path: `/tmp/${USER}/other_task/x.txt`, content: 'x' })))).toBe(
+      'deny',
+    );
+    expect(decisionOf(await h(call('Write', { file_path: `${WORK_DIR}/ok.txt`, content: 'y' })))).not.toBe('deny');
+  });
+});
+
 describe('T8 — the context’s user decides, not tool input', () => {
   it('a task cannot write into another user’s directory whatever the input claims', async () => {
     const ctx = taskContext();

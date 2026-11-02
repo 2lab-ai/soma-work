@@ -537,6 +537,37 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
     );
   });
 
+  it('an epic hop whose sender is no longer an admin ends the pending turn (SSOT 2026-11-02, trinity R1 P3)', async () => {
+    let builds = 0;
+    const h = harness(
+      {
+        buildExecutionContext: (_s: unknown, actor?: string) => {
+          builds += 1;
+          return { ...CTX, userId: actor, isAdmin: builds === 1 }; // admin removed after the first hop
+        },
+      } as never,
+      [
+        async (input) => {
+          input.onStarted?.();
+          h.sessions.get(KEY).fallbackCompactPendingUserText = 'big';
+          return { turnId: 'a', outcome: null, nonTerminal: 'fallbackCompact' };
+        },
+      ],
+    );
+    h.sessions.get(KEY).kind = 'epic';
+    const r = await h.controller.start({ actorUserId: 'U_ADMIN', sessionKey: KEY, text: 'big' });
+    expect(r.status).toBe(202);
+    await r.done;
+    expect(builds).toBe(2);
+    expect(h.runTaskTurn).toHaveBeenCalledTimes(1);
+    expect(h.abandonTurn).toHaveBeenCalledWith(
+      KEY,
+      'a',
+      expect.objectContaining({ outcome: 'interrupted', reason: expect.stringContaining('owner or an admin') }),
+      expect.any(String),
+    );
+  });
+
   it('a refused shutdown (resumeAccepting) ends the turns a shutdown abort left working (#634 R1)', async () => {
     const h = harness({}, [
       async (input) => {
@@ -653,6 +684,8 @@ describe('TaskTurnController.start — any signed-in user starts it, as themselv
     await r.done;
     expect(build).toHaveBeenCalledWith(h.sessions.get(KEY), 'U_OTHER');
     expect(h.inputs[0].executionContext).toBe(other);
+    // The dashboard sends the turn's live updates to the user instructing it.
+    expect(h.sessions.get(KEY).currentInitiatorId).toBe('U_OTHER');
   });
 
   it('another user’s start counts against the owner’s one-task slot, not the actor’s', async () => {

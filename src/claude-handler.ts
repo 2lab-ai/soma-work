@@ -1324,7 +1324,7 @@ export class ClaudeHandler implements TurnSteeringPort {
       // unavailable / ccp mode) falls back to the shared key = legacy tenant.
       // The lease carries the daemon it belongs to, so an llmux switch during
       // issuance cannot pair this key with a different daemon's URL.
-      // A task's usage is its owner's — the user its execution context names.
+      // A task's usage is the user its execution context names — the owner, or whoever instructed it (SSOT 2026-11-02).
       const tenantUserId =
         executionContext?.origin === 'task'
           ? executionContext.userId

@@ -393,6 +393,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     if (!admitted.ok) return admitted.response;
     const { session, ctx, ownerId, startedAt, tree, window } = admitted;
     const { sessionKey } = request;
+    // Who instructs it now (SSOT 2026-11-02): the dashboard sends them the turn's live updates.
+    session.currentInitiatorId = ctx.userId;
 
     // A new instruction supersedes an open question, as a new Slack message
     // does; the turn's saved start persists the cleared panel. A start that is
@@ -530,6 +532,11 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
               category: 'Exception',
               reason: `task cannot run: ${(error as Error)?.message ?? String(error)}`,
             });
+            return;
+          }
+          // The epic rule again for this hop's context: an admin removed mid-chain stops it (trinity R1 P3).
+          if (treeOf(session, sessionKey) && ctx.userId !== session.ownerId && !ctx.isAdmin) {
+            await endPending({ outcome: 'interrupted', category: 'Exception', reason: EPIC_OWNER_ONLY });
             return;
           }
         }

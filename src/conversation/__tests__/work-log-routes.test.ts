@@ -616,6 +616,39 @@ describe('work_log WebSocket broadcast scoping', () => {
     expect(workLogs(other)).toHaveLength(0);
   });
 
+  // SSOT 2026-11-02 (trinity R1, astra P2) — anyone may instruct a session now: the user who
+  // instructs it follows the turn they started (its live text and its work log), nobody else does.
+  it('also sends work_log and conversation_update to the user instructing the session now', async () => {
+    dashboard.setDashboardSessionAccessor(
+      () =>
+        new Map<string, any>([
+          [
+            'C1:t1',
+            {
+              sessionId: 'sid1',
+              conversationId: 'conv-live',
+              ownerId: 'U_OWNER',
+              currentInitiatorId: 'U_SPEAKER',
+              channelId: 'C1',
+              threadTs: 't1',
+              activityState: 'working',
+              state: 'MAIN',
+              lastActivity: new Date('2026-10-16T00:00:00Z'),
+            },
+          ],
+        ]),
+    );
+    const speaker = await connect({ cookie: userCookie('U_SPEAKER') });
+    const other = await connect({ cookie: userCookie('U_OTHER') });
+    dashboard.broadcastWorkLog('conv-live', { seq: 1, ts: 1, kind: 'narration', text: 'reading' });
+    dashboard.broadcastConversationUpdate('conv-live', { id: 't1', role: 'assistant' });
+    await flushAll([speaker, other]);
+    expect(workLogs(speaker)).toHaveLength(1);
+    expect(speaker.messages.filter((m) => m.type === 'conversation_update')).toHaveLength(1);
+    expect(workLogs(other)).toHaveLength(0);
+    expect(other.messages.filter((m) => m.type === 'conversation_update')).toHaveLength(0);
+  });
+
   it('sends work_log only to admins when no live session owns the conversation', async () => {
     const owner = await connect({ cookie: userCookie('U_OWNER') });
     const admin = await connect({ cookie: userCookie('U_ADMIN') });
