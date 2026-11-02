@@ -44,7 +44,7 @@ export class EffortHandler implements CommandHandler {
         // on this turn, not only on the next new session.
         // Only when this session's own model runs the level (ultra only where its catalog menu lists it).
         const session = this.deps.claudeHandler.getSession(channel, threadTs);
-        const sessionRuns = !!session && allowedEffortsFor(session.model).includes(resolved);
+        const sessionRuns = !!session && allowedEffortsFor(session.model || defaultModel).includes(resolved);
         if (session && sessionRuns) {
           session.effort = resolved;
         }
