@@ -15,7 +15,13 @@
  */
 
 import { overridableRulesByIds } from 'somalib/permission/dangerous-rules';
-import { PERMISSION_PROMPT_KIND, type PendingApproval, sharedStore } from 'somalib/permission/shared-store';
+import {
+  PERMISSION_PROMPT_KIND,
+  type PendingApproval,
+  type PermissionAdvice,
+  type PermissionRecommendation,
+  sharedStore,
+} from 'somalib/permission/shared-store';
 import { Logger } from '../logger';
 
 const logger = new Logger('DashboardPermissionPrompts');
@@ -28,8 +34,14 @@ export interface DashboardPermissionRequest {
   requesterId?: string;
   /** Matched overridable dangerous-command rules (static catalog text). */
   rules: Array<{ id: string; label: string; description: string }>;
-  /** True when "Approve & disable rule (this session)" applies. */
+  /** True when "Approve & disable rule (this session)" applies — never when the AI advised against the call. */
   canDisableRule: boolean;
+  /**
+   * SSOT 2026-11-02 — the AI's recommendation, so every viewer's card is
+   * green or red. What the call does and why it is risky can quote the
+   * command, so they are in the requester-only detail.
+   */
+  aiRecommendation?: PermissionRecommendation;
   createdAt: number;
   expiresAt: number;
 }
@@ -39,6 +51,8 @@ export interface DashboardPermissionDetail extends DashboardPermissionRequest {
   /** Pretty-printed JSON, cut at {@link PERMISSION_INPUT_MAX_CHARS}. */
   input: string;
   truncated: boolean;
+  /** The AI's advice in full (absent when it gave none). */
+  advice?: PermissionAdvice;
 }
 
 export const PERMISSION_INPUT_MAX_CHARS = 64 * 1024;
@@ -71,15 +85,24 @@ function toRequest(approvalId: string, approval: PendingApproval): DashboardPerm
     label: r.label,
     description: r.description,
   }));
+  const ai = adviceOf(approval)?.recommendation;
   return {
     approvalId,
     toolName: String(approval.tool_name ?? ''),
     ...(approval.user ? { requesterId: approval.user } : {}),
     rules,
-    canDisableRule: rules.length > 0,
+    canDisableRule: rules.length > 0 && ai !== 'deny',
+    ...(ai ? { aiRecommendation: ai } : {}),
     createdAt: Number(approval.created_at) || 0,
     expiresAt: Number(approval.expires_at) || 0,
   };
+}
+
+/** The record's advice when it is well formed (the store is a shared directory). */
+function adviceOf(approval: PendingApproval): PermissionAdvice | undefined {
+  const a = approval.advice;
+  if (!a || (a.recommendation !== 'approve' && a.recommendation !== 'deny')) return undefined;
+  return { recommendation: a.recommendation, summary: String(a.summary ?? ''), risk: String(a.risk ?? '') };
 }
 
 export function permissionPromptDetail(approvalId: string, approval: PendingApproval): DashboardPermissionDetail {
@@ -90,10 +113,12 @@ export function permissionPromptDetail(approvalId: string, approval: PendingAppr
     input = String(approval.input);
   }
   const truncated = input.length > PERMISSION_INPUT_MAX_CHARS;
+  const advice = adviceOf(approval);
   return {
     ...toRequest(approvalId, approval),
     input: truncated ? input.slice(0, PERMISSION_INPUT_MAX_CHARS) : input,
     truncated,
+    ...(advice ? { advice } : {}),
   };
 }
 
