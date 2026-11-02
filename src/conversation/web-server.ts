@@ -4,6 +4,7 @@ import fastifyCompress from '@fastify/compress';
 import fastifyFormbody from '@fastify/formbody';
 // Type-only: the plugin itself is registered by dashboard.ts via dynamic import.
 import type { WebSocket } from '@fastify/websocket';
+import { stripEchoedDisplayLangTag } from '@soma/common/i18n';
 import Fastify, {
   type FastifyInstance,
   type FastifyReply,
@@ -910,7 +911,8 @@ function generateMarkdownExport(title: string | undefined, ownerName: string, tu
     } else {
       lines.push(`## 🤖 Assistant (${time})`);
       lines.push('');
-      lines.push(turn.rawContent);
+      // #810 — a reply recorded before the echo was stripped exports without it.
+      lines.push(stripEchoedDisplayLangTag(turn.rawContent ?? ''));
     }
     lines.push('');
     lines.push('---');

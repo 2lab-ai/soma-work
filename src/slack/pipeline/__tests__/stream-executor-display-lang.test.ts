@@ -179,8 +179,15 @@ describe('#772 — <display-lang> on the first instruction', () => {
     terminated: false,
     conversationId: 'conv_lang',
   });
-  /** A conversation already running — or one loaded back from disk after a restart: it has its SDK session id. */
-  const resumedSession = (): Record<string, unknown> => ({ ...newSession(), sessionId: 'sess_lang' });
+  /**
+   * A conversation already running — or one loaded back from disk after a restart: its SDK session id and
+   * the persisted mark that the model was told (sessions.json keeps `displayLangTold`).
+   */
+  const resumedSession = (): Record<string, unknown> => ({
+    ...newSession(),
+    sessionId: 'sess_lang',
+    displayLangTold: true,
+  });
 
   it('the first prompt of a conversation ends with the tag, after the context block', async () => {
     const prompt = await promptOf(newSession(), '대시보드 고쳐줘');
@@ -196,7 +203,22 @@ describe('#772 — <display-lang> on the first instruction', () => {
     expect(second).not.toContain('<display-lang>');
   });
 
-  it('a conversation resumed after a restart has no tag (nothing in memory says it was sent)', async () => {
+  it('a thread that opens with an SDK slash command still tells the model on its first real prompt', async () => {
+    const session = newSession();
+    expect(await promptOf(session, '/model opus')).toBe('/model opus');
+    session.sessionId = 'sess_slash'; // the slash turn already opened the SDK session
+    const first = await promptOf(session, '대시보드 고쳐줘');
+    expect(first.trimEnd().endsWith('<display-lang>ko</display-lang>')).toBe(true);
+    session.sessionId = 'sess_slash';
+    expect(await promptOf(session, '두 번째 지시')).not.toContain('<display-lang>');
+  });
+
+  it('an incident attempt carries no tag (its conclusion is published byte for byte)', async () => {
+    const prompt = await promptOf({ ...newSession(), incidentRequest: { requestId: 'r1' } }, 'incident brief');
+    expect(prompt).not.toContain('<display-lang>');
+  });
+
+  it('a conversation resumed after a restart has no tag (the mark is persisted)', async () => {
     const prompt = await promptOf(resumedSession(), '재시작 뒤 지시');
     expect(prompt).not.toContain('<display-lang>');
   });

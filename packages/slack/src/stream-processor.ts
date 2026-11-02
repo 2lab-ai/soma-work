@@ -2593,7 +2593,8 @@ export class AgentStreamProcessor {
     const interrupted: RequestAbortReason = 'user-interrupted';
     if (abortSignal.reason !== interrupted) return { delivered: false };
 
-    const pending = textBuf.join('');
+    // #810 — a rescued tail never shows the model's echo of the host's <display-lang> note.
+    const pending = stripEchoedDisplayLangTag(textBuf.join(''));
     // Everything below this line is a DELIBERATE drop (nothing to rescue, or
     // content that must not be shown), so the buffer is consumed as before.
     // Only the Slack write defers the clear.

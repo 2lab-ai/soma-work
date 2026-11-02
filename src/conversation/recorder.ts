@@ -438,7 +438,7 @@ async function _recordAssistantTurnAsync(conversationId: string, content: string
   }
 
   // Then generate summary asynchronously (don't block)
-  generateSummary(conversationId, turn.id, content).catch((err) => {
+  generateSummary(conversationId, turn.id, turn.rawContent ?? content).catch((err) => {
     logger.error(`Failed to generate summary for turn ${turn.id}`, err);
   });
 }
@@ -618,7 +618,8 @@ export async function resummarizeTurn(conversationId: string, turnId: string): P
   await serializedSave(conversationId, record);
 
   // Re-generate summary
-  generateSummary(conversationId, turnId, turn.rawContent).catch((err) => {
+  const text = turn.role === 'assistant' ? stripEchoedDisplayLangTag(turn.rawContent) : turn.rawContent;
+  generateSummary(conversationId, turnId, text).catch((err) => {
     logger.error(`Resummarize failed for turn ${turnId}`, err);
   });
   return true;
