@@ -11302,7 +11302,8 @@ function ptRecorded(list, opt, held, used) {
     var t = list[i];
     var id = t && t.id ? String(t.id) : '';
     if (!id || held[id] || used[id]) continue;
-    if (toNum(t.timestamp) >= since && ptSameSend(opt, t)) return id;
+    // A turn with this send's ref is its record whatever the clocks say (#785); the window is for word matches.
+    if ((t.clientRef || toNum(t.timestamp) >= since) && ptSameSend(opt, t)) return id;
   }
   return '';
 }

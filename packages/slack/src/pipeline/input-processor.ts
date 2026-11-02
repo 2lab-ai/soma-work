@@ -244,6 +244,9 @@ export class InputProcessor {
       say,
       postEphemeral,
       deferSkillFire: options?.deferSkillFire,
+      ...(typeof event.dashboardClientRef === 'string' && event.dashboardClientRef
+        ? { dashboardClientRef: event.dashboardClientRef }
+        : {}),
     });
 
     return {

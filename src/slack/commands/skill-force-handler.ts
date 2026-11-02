@@ -457,6 +457,7 @@ export class SkillForceHandler implements CommandHandler {
         channel,
         threadTs,
         originalText,
+        ...(ctx.dashboardClientRef ? { dashboardClientRef: ctx.dashboardClientRef } : {}),
       });
       const msg = buildPermissionRequestMessage({
         requestId: req.requestId,
