@@ -10,7 +10,14 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { BUILTIN_PRESETS, LAYOUT_CATALOG } from '../../view-layout';
+import {
+  BUILTIN_PRESETS,
+  followThreadLayout,
+  LAYOUT_CATALOG,
+  resolveLayouts,
+  threadCardLines,
+  threadLines,
+} from '../../view-layout';
 import { LAYOUT_CLIENT_JS, LAYOUT_TAB_HTML } from '../settings-layout-tab';
 import { renderSettingsPage } from '../settings-page';
 import { VIEW_LAYOUT_CLIENT_JS } from '../view-layout-client';
@@ -241,7 +248,7 @@ describe('E4 — defaults, the quick switch, the thread card, undo and reset', (
     expect(api.get('_layPreset')).toBe('1');
   });
 
-  it('따로 설정 starts from what the thread card shows now; the server theme keeps none', async () => {
+  it('따로 설정 starts from what the thread card shows now; the server theme keeps the custom card', async () => {
     const { api, els } = editor();
     await api.loadLayout();
     api.layThreadSet('custom');
@@ -255,8 +262,28 @@ describe('E4 — defaults, the quick switch, the thread card, undo and reset', (
     ]);
     expect(api.get('_laySurface')).toBe('thread');
     api.layThreadSet('theme');
-    expect(api.get('_layDoc').thread).toEqual({ mode: 'theme' });
+    // The custom card stays saved: 따로 설정 brings it back after the server theme (review P3).
+    expect(api.get('_layDoc').thread).toEqual({ mode: 'theme', custom: t.custom });
     expect(els['lay-controls'].innerHTML).toContain('서버의 슬랙 테마');
+    api.layThreadSet('custom');
+    expect(api.get('_layDoc').thread).toEqual({ mode: 'custom', custom: t.custom });
+  });
+
+  it('the thread card follows the dashboard’s own mode, not the editor’s mode switch (review P2)', async () => {
+    const { api, els } = editor({ mode: 'advanced' });
+    await api.loadLayout();
+    api.set('_layMode', 'minimal'); // the editor is showing minimal
+    api.set('_laySurface', 'thread');
+    api.layPaint();
+    expect(els['lay-mode'].hidden).toBe(true);
+    api.layThreadSet('custom');
+    const want = followThreadLayout(resolveLayouts({ v: 1 }, 'advanced', '1').card);
+    expect(api.get('_layDoc').thread.custom).toEqual(want);
+    // What Slack shows for this user is the same card.
+    expect(threadLines(want)).toEqual(threadCardLines({ v: 1 }, 'advanced', '1'));
+    api.set('_laySurface', 'card');
+    api.layPaint();
+    expect(els['lay-mode'].hidden).toBe(false);
   });
 
   it('되돌리기 undoes the last change; 기본값으로 drops this surface’s edit', async () => {

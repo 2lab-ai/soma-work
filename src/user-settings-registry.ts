@@ -410,7 +410,8 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
           key,
           group: 'output',
           label: '스레드 헤더 테마',
-          description: 'Slack 스레드 헤더와 턴 종료 카드의 모양입니다.',
+          description:
+            'Slack 턴 종료 카드의 모양입니다. 스레드 헤더는 대시보드 화면 › 스레드 카드가 "서버 슬랙 테마"일 때 이 테마를 씁니다.',
           kind: 'choice',
           value,
           defaultValue: deps.defaults.theme,

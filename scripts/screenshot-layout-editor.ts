@@ -19,7 +19,9 @@
  *
  * Run from the repo root with a clean env:
  *   env -i PATH="$PATH" HOME="$TMP" TMPDIR="$TMP" SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst \
+ *     PLAYWRIGHT_BROWSERS_PATH="$HOME/Library/Caches/ms-playwright" \
  *     CONVERSATION_VIEWER_TOKEN=t npx tsx scripts/screenshot-layout-editor.ts [outDir]
+ * (PLAYWRIGHT_BROWSERS_PATH points at the real browser cache, since HOME is the temp dir.)
  */
 
 import * as fs from 'node:fs';
@@ -193,6 +195,12 @@ async function saved(page: Page) {
   });
 }
 
+/** A full-page shot from the top: a shot taken where the page was scrolled draws the fixed nav mid-page. */
+async function fullShot(page: Page, file: string) {
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path: path.join(OUT, file), fullPage: true });
+}
+
 async function run(browser: import('playwright').Browser, width: number, height: number) {
   const tag = `${width}`;
   const store: Store = { doc: { v: 1 }, puts: [] };
@@ -238,7 +246,7 @@ async function run(browser: import('playwright').Browser, width: number, height:
     `${tag} R1 the preview is the 1안 face`,
     f0,
   );
-  await page.screenshot({ path: path.join(OUT, `${tag}-1-card.png`), fullPage: true });
+  await fullShot(page, `${tag}-1-card.png`);
 
   // R2 — a switch: the tokens chip.
   await page.click('#lay-controls input[data-lay="toggle"][data-zone="foot"][data-id="tokens"]', { force: true });
@@ -268,7 +276,7 @@ async function run(browser: import('playwright').Browser, width: number, height:
   check(foot[0] === 'model', `${tag} R4 dragging 모델 onto PR puts it first`, foot);
   const f3 = await previewFace(page);
   check(!!f3 && /Opus/.test(f3.chips[0] || ''), `${tag} R4 the preview's foot starts with the model`, f3);
-  await page.screenshot({ path: path.join(OUT, `${tag}-2-card-edited.png`), fullPage: true });
+  await fullShot(page, `${tag}-2-card-edited.png`);
 
   // R5 — the open card.
   await surface(page, 'open');
@@ -281,7 +289,7 @@ async function run(browser: import('playwright').Browser, width: number, height:
     `${tag} R5 the open card's preview: actions first, then the task window`,
     o,
   );
-  await page.screenshot({ path: path.join(OUT, `${tag}-3-open.png`), fullPage: true });
+  await fullShot(page, `${tag}-3-open.png`);
 
   // R6 — the detail card: the task list as one line.
   await surface(page, 'detail');
@@ -289,7 +297,7 @@ async function run(browser: import('playwright').Browser, width: number, height:
   await saved(page);
   const d = await page.evaluate(() => (document.getElementById('lay-preview') as HTMLElement).innerText);
   check(/작업 2 \/ 4/.test(d), `${tag} R6 the detail preview shows the task line`, d.slice(0, 200));
-  await page.screenshot({ path: path.join(OUT, `${tag}-4-detail.png`), fullPage: true });
+  await fullShot(page, `${tag}-4-detail.png`);
 
   // R7 — the thread card: 따로 설정, then 진행 n/m on.
   await page.selectOption('#lay-thread-mode', 'custom');
@@ -305,7 +313,7 @@ async function run(browser: import('playwright').Browser, width: number, height:
   await saved(page);
   const sk = await page.evaluate(() => (document.getElementById('lay-preview') as HTMLElement).innerText);
   check(/작업 2\/4/.test(sk) && /결제 페이지 리뉴얼/.test(sk), `${tag} R7 the Slack preview adds the steps`, sk);
-  await page.screenshot({ path: path.join(OUT, `${tag}-5-thread.png`), fullPage: true });
+  await fullShot(page, `${tag}-5-thread.png`);
 
   // R8 — the detail card's default preset.
   await page.selectOption('#lay-def-detail', '3');
