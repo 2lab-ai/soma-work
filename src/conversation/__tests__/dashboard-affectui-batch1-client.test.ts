@@ -269,39 +269,43 @@ describe('doAction — Stop / Close / Trash say how they went (they failed silen
 });
 
 describe('ntOnLaunched — a launched task is a toast with 카드 열기 and the Slack link', () => {
+  // The dialog closed and emptied in the press itself (ntBeginLaunch — SSOT 2026-11-02 T1); the answer only links
+  // the launch's 시작 중 card to its session and says so.
   function launch() {
     const toasts: Array<[Toast, (() => void) | undefined]> = [];
     const opened: unknown[] = [];
-    const cleared: number[] = [];
-    const m = load<{ ntOnLaunched(d: unknown): void }>(['ntOnLaunched', 'ntLaunchToast', 'ntStateAfterLaunch'], [], {
-      dashToast: (t: Toast, fn?: () => void) => toasts.push([t, fn]),
-      ntOpenLaunched: (d: unknown) => opened.push(d),
-      _ntRequestId: '',
-      ntNewRequestId: () => 'r2',
-      // D2: the next task starts clean — <ui-composer id="nt-composer"> is cleared (text, files, recording).
-      ntEl: (id: string) => (id === 'nt-composer' ? { clear: () => cleared.push(1) } : null),
-      _ntValue: null,
-      _ntState: {},
-      ntDefaultState: () => ({}),
-      _ntCtx: { channels: [{ id: 'C1', name: 'dev' }] },
-      localStorage: { removeItem() {} },
-      NT_DRAFT_KEY: 'k',
-      ntSetStatus: () => {},
-      ntRender: () => {},
-      closeNewTask: () => {},
-      loadSessions: () => {},
-      setTimeout: () => 0,
-    });
-    return { run: m.ntOnLaunched, toasts, opened, cleared };
+    const restored: Array<[unknown, boolean]> = [];
+    const m = load<{ ntOnLaunched(d: unknown, submitted: unknown, launch: unknown): void }>(
+      ['ntOnLaunched', 'ntLaunchToast'],
+      [],
+      {
+        dashToast: (t: Toast, fn?: () => void) => toasts.push([t, fn]),
+        ntOpenLaunch: (l: unknown) => opened.push(l),
+        _ntPending: [],
+        _ntBusy: true,
+        ntPendingInFlight: () => false,
+        ntRestoreLaunch: (l: unknown, asNew: boolean) => {
+          restored.push([l, asNew]);
+          return true;
+        },
+        ntPendingRepaint: () => {},
+        ntPendingWatch: () => {},
+        _ntCtx: { channels: [{ id: 'C1', name: 'dev' }] },
+      },
+    );
+    return { run: m.ntOnLaunched, toasts, opened, restored };
   }
+  const pending = (id: string) => ({ id, state: {}, files: [], inFlight: true, sessionKey: '' }) as Record<string, any>;
 
   it('running vs queued, the channel name, the card action, the link only when there is one, 12 s on screen', () => {
     const l = launch();
     const first = { status: 'running', channel: 'C1', permalink: 'https://slack.test/p1', sessionKey: 'k1' };
     const second = { status: 'queued', channel: 'C9', sessionKey: 'k2' };
-    l.run(first);
-    l.run(second);
-    expect(l.cleared).toHaveLength(2);
+    const a = pending('nt-launch:a');
+    const b = pending('nt-launch:b');
+    l.run(first, {}, a);
+    l.run(second, {}, b);
+    expect(l.restored).toHaveLength(0);
     expect(l.toasts.map((t) => t[0])).toEqual([
       {
         title: '작업을 시작했어요',
@@ -319,21 +323,29 @@ describe('ntOnLaunched — a launched task is a toast with 카드 열기 and the
         duration: 12000,
       },
     ]);
-    // Each toast's 카드 열기 opens its own launch, not the latest one.
+    // Each launch now waits for its card under its own key …
+    expect(a).toMatchObject({ inFlight: false, sessionKey: 'k1' });
+    expect(b).toMatchObject({ inFlight: false, sessionKey: 'k2' });
+    // … and each toast's 카드 열기 opens its own launch, not the latest one (on the board — never Slack, T2).
     l.toasts[0][1]?.();
-    expect(l.opened).toEqual([first]);
-    expect(clientFn('ntOpenLaunched')).toContain('var key = launch && launch.sessionKey;');
+    expect(l.opened).toEqual([a]);
+    expect(TEMPLATE).not.toContain('function ntOpenLaunched(');
   });
 
-  // #640 R1 (astra P2): a dashboard task created but not started keeps its instruction —
-  // the composer is not cleared (its text) and the toast says so.
-  it('a dashboard task that did not start keeps the composer and says why', () => {
+  // #640 R1 (astra P2): a dashboard task created but not started keeps its instruction — given back to the
+  // dialog as a new request (the task it made stays), and the toast says so.
+  it('a dashboard task that did not start gives its instruction back and says why', () => {
     const l = launch();
-    l.run({ sessionKey: 'task:x', status: 'not-started', reason: 'busy' });
-    expect(l.cleared).toHaveLength(0);
-    expect(l.toasts[0][0]).toMatchObject({ title: '작업을 만들었지만 아직 시작하지 못했어요', tone: 'warning' });
-    l.run({ sessionKey: 'task:y', status: 'running' });
-    expect(l.cleared).toHaveLength(1);
+    const a = pending('nt-launch:a');
+    l.run({ sessionKey: 'task:x', status: 'not-started', reason: 'busy' }, {}, a);
+    expect(l.restored).toEqual([[a, true]]);
+    expect(l.toasts[0][0]).toMatchObject({
+      title: '작업을 만들었지만 아직 시작하지 못했어요',
+      description: 'busy — 지시는 새 작업 창에 남겨 두었어요',
+      tone: 'warning',
+    });
+    l.run({ sessionKey: 'task:y', status: 'running' }, {}, pending('nt-launch:b'));
+    expect(l.restored).toHaveLength(1);
     expect(l.toasts[1][0]).toMatchObject({ title: '대시보드 작업을 시작했어요' });
   });
 });

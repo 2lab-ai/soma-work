@@ -782,11 +782,13 @@ describe('I1.1 / I3.1 — pressing 받아쓰기 streams the words into the field
     expect(env.composer.value).toBe('첫 문장');
   });
 
-  it('not while the task is being sent (fable review R1, P3)', async () => {
+  // fable review R1 P3 held dictation while the task was sent — the dialog then still held that task. Since
+  // SSOT 2026-11-02 T1 a launch leaves the dialog in the press: the emptied composer is the next task's.
+  it('a launch on its way does not hold the next task’s dictation', async () => {
     const Rec = recClass(null);
     const { api } = page({ engine: Rec, busy: true });
     await api.ntDictateStart();
-    expect(FakeRec.made).toHaveLength(0);
+    expect(FakeRec.made).toHaveLength(1);
   });
 
   it('other tools are not dictation', async () => {
