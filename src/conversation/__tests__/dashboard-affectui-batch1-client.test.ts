@@ -283,7 +283,9 @@ describe('ntOnLaunched — a launched task is a toast with 카드 열기 and the
         ntOpenLaunch: (l: unknown) => opened.push(l),
         _ntPending: [],
         _ntBusy: true,
-        ntPendingInFlight: () => false,
+        ntPendingUnsent: () => false,
+        ntPendingDrop: () => {},
+        ntKeepFailed: () => {},
         ntRestoreLaunch: (l: unknown, asNew: boolean) => {
           restored.push([l, asNew]);
           return true;

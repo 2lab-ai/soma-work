@@ -8412,8 +8412,8 @@ function renderBoard(board, partial) {
   _cardDrawn = Object.create(null);
   _epicKidsDrawn = Object.create(null);
   // SSOT 2026-11-02 T1: launches from the new task dialog lead RUNNING as 시작 중 cards until their own card is
-  // in this board (ntPendingPlace settles them against it first).
-  var pendingKeys = ntPendingPlace(kb);
+  // in this board (ntPendingPlace settles them against it first); one that did not start leads NEEDS YOU.
+  var pending = ntPendingPlace(kb);
   // Each list's cards, an epic's children right after its card (E4 ⑨c, withEpicChildren);
   // what each epic's children are, as placed, for the push path (applyEpicPush).
   var hideKids = showSleeping === false;
@@ -8433,8 +8433,8 @@ function renderBoard(board, partial) {
   if (kb) {
     kb._ibPlan = {
       cols: [
-        { id: 'waiting', label: BOARD_LABELS.waiting, keys: keys(rest.waiting, 'waiting', kb) },
-        { id: 'working', label: BOARD_LABELS.working, keys: pendingKeys.concat(keys(rest.working, 'working', kb)) },
+        { id: 'waiting', label: BOARD_LABELS.waiting, keys: pending.waiting.concat(keys(rest.waiting, 'waiting', kb)) },
+        { id: 'working', label: BOARD_LABELS.working, keys: pending.working.concat(keys(rest.working, 'working', kb)) },
         {
           id: 'done',
           label: BOARD_LABELS.done,
@@ -8483,6 +8483,8 @@ function renderBoard(board, partial) {
   // element's enter / move animations have settled (SSOT 2026-10-24).
   scheduleLayoutRefresh(MOTION.move + 40);
   openDeepLinkedSession();
+  // T2: a launch's card 카드 열기 asked for, now that a render may have brought it.
+  ntOpenArrivals();
 }
 
 // One card on an element this render: where it is, with what, and its data —
@@ -13268,7 +13270,8 @@ function hasUnsentInput() {
   // … a dictation listening now (its words are still arriving) …
   if (_ntDictation) return true;
   for (var fr in _pcFailed) return true;
-  // … a new task being launched (its dialog may already be closed), an answer on its way (an approval card sending) …
+  // … a new task being launched (its dialog may already be closed) or one that did not start (its 시작 실패 card holds
+  // the instruction), an answer on its way (an approval card sending) …
   if (_ntBusy) return true;
   for (var ak in _acState) {
     for (var aid in _acState[ak]) if (_acState[ak][aid] && _acState[ak][aid].status === 'sending') return true;
@@ -17699,8 +17702,9 @@ paintTrail();
 var NT_DRAFT_KEY = 'soma-nt-draft';
 var _ntCtx = null;
 var _ntState = null;
-// A launch on its way (its POST not answered yet). The dialog has already closed and emptied for the next task
-// (SSOT 2026-11-02 T1), so this holds nothing in the dialog: it is what a reload would lose (hasUnsentInput).
+// A launch on its way (its POST not answered yet), or one that did not start and waits on its 시작 실패 card
+// (ntPendingUnsent). The dialog has already closed and emptied for the next task (SSOT 2026-11-02 T1), so this holds
+// nothing in the dialog: it is what a reload would lose (hasUnsentInput).
 var _ntBusy = false;
 var _ntRequestId = null;
 // SSOT 2026-11-02 T1 — the launches the board shows as 시작 중 cards (first in RUNNING) until their own card is on
@@ -17712,8 +17716,15 @@ var NT_PENDING_PREFIX = 'nt-launch:';
 var NT_PENDING_MAX_MS = 120000;
 var NT_PENDING_POLL_MS = 1000;
 var _ntPendingTimer = 0;
-// T2 — 카드 열기 waits this long for the launch's card to arrive before it gives up (openDeepLinkedSession).
-var NT_OPEN_WAIT_MS = 60000;
+// The server takes one launch per user at a time (createNewTaskGate: a second one in flight is refused with 429).
+// The dialog no longer holds a launch until its answer, so the launches are sent one after another: each posts
+// once the one before it has been answered (#747 review R1).
+var _ntLaunchQueue = Promise.resolve();
+// T2 — 카드 열기 waits as long as a 시작 중 card does for the launch's card (ntOpenArrivals), then gives up. The asks
+// to open still waiting ({ launch } with wantOpen, openFrom, openUntil), and whether the watch's board ask is out.
+var NT_OPEN_WAIT_MS = NT_PENDING_MAX_MS;
+var _ntOpening = [];
+var _ntWatchAsking = false;
 // The text handed to <ui-composer> (a saved draft at first, '' after a launch): it applies a value only when it
 // differs from the last one, so a repaint while someone types never resets the field.
 var _ntValue = null;
@@ -18893,8 +18904,15 @@ async function submitNewTask(detail) {
     );
     return;
   }
+  var waitsFor = ntPendingInFlight();
   var launch = ntBeginLaunch(Object.assign({}, _ntState), files);
   var submitted = launch.state;
+  // Its turn comes when the launch before it has its answer (_ntLaunchQueue); the next one waits for this one.
+  var turn = _ntLaunchQueue;
+  var release;
+  _ntLaunchQueue = new Promise(function (r) {
+    release = r;
+  });
   var data;
   try {
     if (files.length) ntPendingStatus(launch, '첨부 준비 중…');
@@ -18905,6 +18923,8 @@ async function submitNewTask(detail) {
       ntLaunchFailed(launch, String(readErr.message || '').slice(5) + ' — 파일을 읽지 못했습니다');
       return;
     }
+    if (waitsFor) ntPendingStatus(launch, '앞 작업이 시작되면 올려요…');
+    await turn;
     var body = JSON.stringify(ntBuildPayload(submitted, attachments, launch.requestId));
     ntPendingStatus(launch, '작업을 올리는 중…');
     var res = await ntPostTask(body, launch);
@@ -18921,6 +18941,8 @@ async function submitNewTask(detail) {
   } catch (e) {
     ntLaunchFailed(launch, '작업을 시작하지 못했습니다 — 네트워크를 확인하고 다시 눌러 주세요 (같은 요청은 두 번 실행되지 않습니다)');
     return;
+  } finally {
+    release();
   }
   // Started: never reported as a failure, whatever follows.
   ntOnLaunched(data, submitted, launch);
@@ -18990,19 +19012,23 @@ function ntPostTask(body, launch) {
 }
 
 // The server answered: the task exists (running, accepted, or — a dashboard task — created but not started). Its
-// 시작 중 card waits for the task's own card under the session key (ntPendingSettle); the toast's 카드 열기 opens
-// that card (T2). A task created but not started keeps its instruction (#640 R1): it goes back to the dialog as a
-// new request (the task it made stays), unless a new instruction is being written there.
+// 시작 중 card waits for the task's own card under the session key (ntPendingPrune); the toast's 카드 열기 opens
+// that card (T2). A task created but not started is no task starting (#747 review R1): its card leaves, and its
+// instruction goes back to the dialog as a new request (#640 R1) — or, when the dialog holds another instruction,
+// waits on a 시작 실패 card.
 function ntOnLaunched(data, submitted, launch) {
-  launch = launch || { id: '', state: submitted || {}, files: [] };
   launch.inFlight = false;
-  _ntBusy = ntPendingInFlight();
   launch.sessionKey = String(data.sessionKey || '');
   launch.answeredAt = Date.now();
+  launch.permalink = data.permalink ? String(data.permalink) : '';
   launch.phase = '에이전트를 시작하는 중…';
-  // No key to wait for: nothing will replace its card.
-  if (!launch.sessionKey) _ntPending = _ntPending.filter(function (p) { return p !== launch; });
-  var restored = data.status === 'not-started' ? ntRestoreLaunch(launch, true) : true;
+  var notStarted = data.status === 'not-started';
+  var restored = notStarted ? ntRestoreLaunch(launch, true) : true;
+  if (!restored) ntKeepFailed(launch, String(data.reason || '시작하지 못했어요'), true);
+  else if (!launch.sessionKey || notStarted) ntPendingDrop(launch);
+  // No 시작 중 card waits on the board for a task made but not started: the board is asked once for its card.
+  if (notStarted && launch.sessionKey && typeof loadSessions === 'function') loadSessions();
+  _ntBusy = ntPendingUnsent();
   ntPendingRepaint();
   var channel = data.channel
     ? ((_ntCtx && _ntCtx.channels) || []).find(function (c) {
@@ -19014,8 +19040,8 @@ function ntOnLaunched(data, submitted, launch) {
   dashToast(ntLaunchToast(data, channel ? channel.name : null, restored), function () {
     ntOpenLaunch(launch);
   });
-  // Its 시작 중 card was pressed while it was on its way: it opens now that it has a key.
-  if (launch.wantOpen) ntOpenLaunch(launch);
+  // Its 시작 중 card was pressed while it was on its way: the same ask goes on now that it has a key.
+  if (launch.wantOpen && !launch.failed) ntOpenLaunch(launch, true);
   ntPendingWatch();
 }
 
@@ -19037,13 +19063,15 @@ function ntStateAfterLaunch(prev, data, ctx) {
 
 // The launch toast: a Slack launch names its channel and links its thread; a
 // dashboard task (#600 ⑥, no channel) opens its card, and one that was created
-// but not started says why (and, when it was given back, that the dialog has it).
+// but not started says why and where its instruction is (the dialog, or its 시작 실패 card).
 function ntLaunchToast(data, channelName, restored) {
   if (!data.channel) {
     if (data.status === 'not-started') {
       return {
         title: '작업을 만들었지만 아직 시작하지 못했어요',
-        description: String(data.reason || '') + (restored === false ? '' : ' — 지시는 새 작업 창에 남겨 두었어요'),
+        description:
+          String(data.reason || '') +
+          (restored === false ? ' — 지시는 “시작 실패” 카드에 남겨 두었어요' : ' — 지시는 새 작업 창에 남겨 두었어요'),
         tone: 'warning',
         action: { id: 'open', label: '카드 열기' },
         duration: 12000,
@@ -19068,25 +19096,37 @@ function ntLaunchToast(data, channelName, restored) {
   return toast;
 }
 
-// A launch that did not start (refused, a file unread, no network): its 시작 중 card leaves, and what was sent goes
-// back to the dialog — the instruction, its files and choices, the same request id — unless a new instruction is
-// being written there (then the toast names the one that failed). The toast says why; 다시 열기 shows the dialog.
+// A launch that did not start (refused, a file unread, no network): what was sent goes back to the dialog — the
+// instruction, its files and choices, the same request id — and its card leaves. When the dialog holds another
+// instruction nothing is replaced and nothing is lost (#747 review R1): the launch stays on the board as a 시작 실패
+// card (NEEDS YOU) until it is taken back (ntRetakeLaunch). The toast says why.
 function ntLaunchFailed(launch, message) {
   launch.inFlight = false;
-  _ntPending = _ntPending.filter(function (p) {
-    return p !== launch;
-  });
-  _ntBusy = ntPendingInFlight();
+  launch.wantOpen = false;
   var restored = ntRestoreLaunch(launch, false);
+  if (restored) ntPendingDrop(launch);
+  else ntKeepFailed(launch, message, false);
+  _ntBusy = ntPendingUnsent();
   ntPendingRepaint();
   var dlg = ntEl('nt-dialog');
   if (restored && dlg && dlg.open) ntSetError(message);
-  var toast = { title: '작업을 시작하지 못했어요', description: message, tone: 'error' };
-  if (restored) toast.action = { id: 'open', label: '다시 열기' };
-  else toast.description = message + ' · ' + ntLaunchTitle(launch);
-  dashToast(toast, function () {
-    ntReopenWithError(message);
-  });
+  if (restored) {
+    dashToast({ title: '작업을 시작하지 못했어요', description: message, tone: 'error', action: { id: 'open', label: '다시 열기' } }, function () {
+      ntReopenWithError(message);
+    });
+    return;
+  }
+  dashToast(
+    {
+      title: '작업을 시작하지 못했어요',
+      description: message + ' — 지시는 “시작 실패” 카드에 남겨 두었어요',
+      tone: 'error',
+      action: { id: 'open', label: '지시 가져오기' },
+    },
+    function () {
+      ntRetakeLaunch(launch);
+    },
+  );
 }
 
 // The dialog shows the given-back launch with why it did not start.
@@ -19095,11 +19135,39 @@ function ntReopenWithError(message) {
   ntSetError(message);
 }
 
-// Put a launch back in the dialog — only into an empty one (no text, no files, no dictation running): what someone
-// writes meanwhile is never replaced. asNew: a task was made (not started), so a resend is a new request.
+// A launch that did not start and could not go back to the dialog: kept, as a 시작 실패 card. asNew: a task was
+// made (not started), so taking it back makes a new request.
+function ntKeepFailed(launch, message, asNew) {
+  launch.failed = true;
+  launch.wantOpen = false;
+  launch.reason = message;
+  launch.asNew = !!asNew;
+  launch.failedAt = Date.now();
+  if (_ntPending.indexOf(launch) < 0) _ntPending.unshift(launch);
+}
+
+// A 시작 실패 card pressed (or its toast's 지시 가져오기): its instruction goes back to the dialog once the dialog is
+// free; while it holds another instruction, the dialog says so and the card stays.
+function ntRetakeLaunch(launch) {
+  if (!launch || !launch.failed) return;
+  if (ntRestoreLaunch(launch, launch.asNew)) {
+    ntPendingDrop(launch);
+    _ntBusy = ntPendingUnsent();
+    ntPendingRepaint();
+    ntReopenWithError(launch.reason);
+    return;
+  }
+  openNewTask();
+  ntSetError('새 작업 창에 쓰던 지시가 있어요 — 보내거나 비운 뒤 “시작 실패” 카드를 다시 눌러 주세요');
+}
+
+// Put a launch back in the dialog — only into a free one: no text, no files, no voice note being recorded. What
+// someone writes meanwhile is never replaced; a dictation listening into the empty field has heard nothing and stops.
+// asNew: a task was made (not started), so a resend is a new request.
 function ntRestoreLaunch(launch, asNew) {
   var el = ntEl('nt-composer');
   if (!ntComposerPristine(el)) return false;
+  if (ntDictating('nt')) ntDictateStopIn('nt');
   _ntState = Object.assign({}, launch.state);
   if (_ntCtx) ntReconcile(_ntState, _ntCtx);
   if (!asNew) _ntRequestId = launch.requestId;
@@ -19113,7 +19181,7 @@ function ntRestoreLaunch(launch, asNew) {
 }
 
 function ntComposerPristine(el) {
-  if (!el || ntDictating('nt')) return false;
+  if (!el || ntRecordingNow()) return false;
   return !String(el.value || '').trim() && !(el.files && el.files.length);
 }
 
@@ -19137,8 +19205,20 @@ function ntLaunchTitle(launch) {
 }
 
 // A launch's card (T1): RUNNING with the status 시작 중 and the clock from the press; where it goes and what it is
-// doing now as its summary. It has no body (no session yet): pressing it arms 카드 열기 instead (wireInbox).
+// doing now as its summary. It has no body (no session yet): pressing it arms 카드 열기 instead (wireInbox). A launch
+// that did not start and waits to be taken back (ntKeepFailed) is a 시작 실패 card with its reason.
 function ntPendingCardOf(launch, channelName) {
+  if (launch.failed) {
+    return {
+      id: launch.id,
+      title: ntLaunchTitle(launch),
+      summary: String(launch.reason || '') + ' · 눌러서 지시를 작성 창으로 가져오기',
+      status: 'failed',
+      statusText: '시작 실패',
+      since: launch.failedAt,
+      bodyMode: 'slot',
+    };
+  }
   var st = launch.state || {};
   var where =
     st.destination === 'task'
@@ -19157,11 +19237,12 @@ function ntPendingCardOf(launch, channelName) {
   };
 }
 
-// The launches still to show (pure): one on its way stays (a failure takes it back itself); an answered one leaves
-// once its card is among the board's keys (this instance's prefixed key too) or after NT_PENDING_MAX_MS.
+// The launches still to show (pure): one on its way stays (a failure takes it back itself), and so does one that
+// did not start (until it is taken back); an answered one leaves once its card is among the board's keys (this
+// instance's prefixed key too) or after NT_PENDING_MAX_MS.
 function ntPendingSettle(list, keys, selfInstance, now) {
   return list.filter(function (p) {
-    if (!p.sessionKey) return true;
+    if (p.failed || !p.sessionKey) return true;
     if (resolveDeepLinkKey(p.sessionKey, keys, selfInstance)) return false;
     return now - (p.answeredAt || p.at) < NT_PENDING_MAX_MS;
   });
@@ -19170,6 +19251,19 @@ function ntPendingSettle(list, keys, selfInstance, now) {
 function ntPendingInFlight() {
   return _ntPending.some(function (p) {
     return p.inFlight;
+  });
+}
+
+// What a reload would lose (hasUnsentInput, through _ntBusy): a launch on its way, or one that did not start.
+function ntPendingUnsent() {
+  return _ntPending.some(function (p) {
+    return p.inFlight || p.failed;
+  });
+}
+
+function ntPendingDrop(launch) {
+  _ntPending = _ntPending.filter(function (p) {
+    return p !== launch;
   });
 }
 
@@ -19184,20 +19278,44 @@ function ntChannelName(id) {
   return null;
 }
 
-// The 시작 중 cards a board render draws (renderBoard, after its per-render maps were reset): settled first, then
-// placed on the board element as drawn RUNNING cards. Only on a board that shows the viewer's own cards (theirs, or
-// All Users) — another user's board neither draws nor settles them.
+// The board shows the viewer's own cards — theirs, or All Users — so a launch's card lands on it.
+function ntBoardIsViewers() {
+  return !(currentUserId && _viewerUserId && currentUserId !== _viewerUserId);
+}
+
+// Settle the launches against the board (the viewer's): the ones whose card is there leave; one whose card did not
+// come within NT_PENDING_MAX_MS leaves with a toast that says so (and links its thread). True when one left.
+function ntPendingPrune() {
+  var keys = Object.keys(_sessionCache);
+  var kept = ntPendingSettle(_ntPending, keys, SELF_INSTANCE_NAME, Date.now());
+  if (kept.length === _ntPending.length) return false;
+  _ntPending.forEach(function (p) {
+    if (kept.indexOf(p) >= 0 || resolveDeepLinkKey(p.sessionKey, keys, SELF_INSTANCE_NAME)) return;
+    var toast = { title: '작업 카드가 아직 보드에 오지 않았어요', description: ntLaunchTitle(p), tone: 'warning' };
+    if (p.permalink) toast.link = { label: 'Slack에서 보기', href: p.permalink };
+    dashToast(toast);
+  });
+  _ntPending = kept;
+  return true;
+}
+
+// The launch cards a board render draws (renderBoard, after its per-render maps were reset), settled first: 시작 중
+// cards first in RUNNING, 시작 실패 cards first in NEEDS YOU. Only on the viewer's own board — another user's board
+// neither draws nor settles them.
 function ntPendingPlace(host) {
-  if (!host || !_ntPending.length) return [];
-  if (currentUserId && _viewerUserId && currentUserId !== _viewerUserId) return [];
-  _ntPending = ntPendingSettle(_ntPending, Object.keys(_sessionCache), SELF_INSTANCE_NAME, Date.now());
-  return _ntPending.map(function (p) {
+  var out = { working: [], waiting: [] };
+  if (!host || !_ntPending.length || !ntBoardIsViewers()) return out;
+  ntPendingPrune();
+  _ntPending.forEach(function (p) {
+    var col = p.failed ? 'waiting' : 'working';
     _cardHost[p.id] = host;
-    _cardCol[p.id] = 'working';
+    _cardCol[p.id] = col;
     _cardData[p.id] = ntPendingCardOf(p, ntChannelName(p.state && p.state.channelId));
     _cardDrawn[p.id] = true;
-    return p.id;
+    out[col].push(p.id);
   });
+  ntPendingWatch();
+  return out;
 }
 
 // The board again with the launches as they are now (begun, answered, failed). Before the first board answer there
@@ -19216,41 +19334,111 @@ function ntPendingStatus(launch, text) {
   inboxPaint(kb);
 }
 
-// While an answered launch's card is not on the board the board is asked again every NT_PENDING_POLL_MS — a Slack
-// session joins the board once its agent has started, seconds after the server answered. One ask at a time, until
-// no launch waits; a wait that ran out without a render (a failed ask) is settled here.
+// A card the page waits for: an answered launch's (its 시작 중 card), or one 카드 열기 asked to open (for
+// NT_OPEN_WAIT_MS).
+function ntCardsAwaited() {
+  var now = Date.now();
+  return (
+    _ntPending.some(function (p) {
+      return !!p.sessionKey && !p.failed;
+    }) ||
+    _ntOpening.some(function (l) {
+      return !!l.sessionKey && now <= l.openUntil;
+    })
+  );
+}
+
+// While a card is awaited on the viewer's board, the board is asked again every NT_PENDING_POLL_MS — a Slack session
+// joins the board once its agent has started, seconds after the server answered. One ask at a time, and an ask that
+// never answers does not hold the watch: each tick settles the launches and the asks to open (their deadlines end the
+// watch), and the next tick comes regardless. A board of another user is not watched; returning to one's own board
+// (its render) starts it again.
 function ntPendingWatch() {
-  if (_ntPendingTimer) return;
-  if (!_ntPending.some(function (p) { return !!p.sessionKey; })) return;
+  if (_ntPendingTimer || !ntBoardIsViewers() || !ntCardsAwaited()) return;
   _ntPendingTimer = setTimeout(function () {
-    Promise.resolve(typeof loadSessions === 'function' ? loadSessions() : null)
-      .catch(function () {})
-      .then(function () {
-        _ntPendingTimer = 0;
-        var before = _ntPending.length;
-        _ntPending = ntPendingSettle(_ntPending, Object.keys(_sessionCache), SELF_INSTANCE_NAME, Date.now());
-        if (_ntPending.length !== before) ntPendingRepaint();
-        ntPendingWatch();
-      });
+    _ntPendingTimer = 0;
+    if (!ntBoardIsViewers()) return;
+    if (!_ntWatchAsking && typeof loadSessions === 'function') {
+      _ntWatchAsking = true;
+      Promise.resolve(loadSessions())
+        .catch(function () {})
+        .then(function () {
+          _ntWatchAsking = false;
+        });
+    }
+    if (ntPendingPrune()) ntPendingRepaint();
+    ntOpenArrivals();
+    ntPendingWatch();
   }, NT_PENDING_POLL_MS);
 }
 
+// The detail card the reader has open now ('' none) — 카드 열기 notes it, to tell later whether they moved on.
+function ntPanelNow() {
+  return panelOpen ? String(panelSessionKey || '') : '';
+}
+
 // T2 — 카드 열기 (the launch toast), or a press on the launch's 시작 중 card: the launch's own card opens on the
-// board with its detail card, the deep link's way (openDeepLinkedSession: reveal, then the panel) — never Slack.
-// Not on the board yet: its 시작 중 card comes into view and the card opens as soon as a render brings it (every
-// render ends in openDeepLinkedSession), for NT_OPEN_WAIT_MS. Pressed before the server answered: it opens then.
-function ntOpenLaunch(launch) {
+// board with its detail card — never Slack. Not on the board yet: its 시작 중 card comes into view and the card opens
+// as soon as a render brings it (ntOpenArrivals, at every render's end), for NT_OPEN_WAIT_MS from the press (or the
+// answer, for a press before it). From another user's board the viewer's own board comes first — the card lands
+// there. keepAsk: the same ask goes on (the answer came), so what the reader had open then still counts. A 시작 실패
+// card is taken back instead (ntRetakeLaunch).
+function ntOpenLaunch(launch, keepAsk) {
   if (!launch) return;
+  if (launch.failed) {
+    ntRetakeLaunch(launch);
+    return;
+  }
+  if (!keepAsk || !launch.wantOpen) launch.openFrom = ntPanelNow();
   launch.wantOpen = true;
-  if (launch.sessionKey) {
-    _deepLinkSession = launch.sessionKey;
-    _deepLinkDeadline = Date.now() + NT_OPEN_WAIT_MS;
-    openDeepLinkedSession();
-    if (!_deepLinkSession) return;
+  launch.openUntil = Date.now() + NT_OPEN_WAIT_MS;
+  if (_ntOpening.indexOf(launch) < 0) _ntOpening.push(launch);
+  if (!keepAsk && !ntBoardIsViewers() && typeof selectUser === 'function') {
+    selectUser(_viewerUserId);
+    return;
+  }
+  if (ntOpenArrived(launch)) {
+    _ntOpening = _ntOpening.filter(function (l) {
+      return l !== launch;
+    });
+    return;
   }
   var kb = document.getElementById('kanban');
   if (kb && typeof kb.reveal === 'function' && _cardHost[launch.id] === kb) kb.reveal(launch.id, { open: false });
   ntPendingWatch();
+}
+
+// The launch's card, when it is on the board: in view and open with its detail card (the deep link's way) — unless the
+// reader opened or closed another detail card since the press (#747 review R1): then the card only comes into view,
+// and the panel and what is being written there stay theirs. True once the card was there.
+function ntOpenArrived(launch) {
+  if (!launch.sessionKey) return false;
+  var key = resolveDeepLinkKey(launch.sessionKey, Object.keys(_sessionCache), SELF_INSTANCE_NAME);
+  var host = key ? _cardHost[key] : null;
+  if (!host || typeof host.reveal !== 'function') return false;
+  launch.wantOpen = false;
+  if (ntPanelNow() !== launch.openFrom) {
+    host.reveal(key, { open: false });
+    return true;
+  }
+  host.reveal(key);
+  if (!panelOpen || panelSessionKey !== key) openPanel(key);
+  return true;
+}
+
+// Every render's end: the launches 카드 열기 asked to open whose card has come, opened; asks past their deadline,
+// dropped.
+function ntOpenArrivals() {
+  if (!_ntOpening.length) return;
+  var now = Date.now();
+  _ntOpening = _ntOpening.filter(function (l) {
+    if (!l.wantOpen || l.failed) return false;
+    if (l.sessionKey && now > l.openUntil) {
+      l.wantOpen = false;
+      return false;
+    }
+    return !ntOpenArrived(l);
+  });
 }
 
 function ntInit() {
