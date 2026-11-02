@@ -134,24 +134,53 @@ describe('translateMessagePayload / translateApiOptions', () => {
 
 describe('installSlackDisplayTranslation — every Web API call', () => {
   const proto = WebClient.prototype as any;
-  const original = proto.apiCall;
+  const original = proto.makeRequest;
   afterEach(() => {
-    proto.apiCall = original;
+    proto.makeRequest = original;
     __resetSlackDisplayTranslationForTests();
   });
 
-  it('translates in the work language, or the reader named by the call', async () => {
-    const sent: any[] = [];
-    proto.apiCall = vi.fn(async (_m: string, o: unknown) => {
-      sent.push(o);
-      return { ok: true };
+  it('reaches a client built BEFORE the install (Bolt app.client) through its bound methods', async () => {
+    const sent: Array<{ url: string; body: any }> = [];
+    proto.makeRequest = vi.fn(async (url: string, body: any) => {
+      sent.push({ url, body });
+      return { status: 200, headers: {}, request: { path: '/api/x' }, data: { ok: true, channel: { id: 'D_OPENED' } } };
     });
+    const early = new WebClient('xoxb-test'); // methods bound now, like app.client
     installSlackDisplayTranslation((u) => (u === 'U_EN' ? 'en' : 'ko'));
+    await early.chat.postMessage({ channel: 'C1', text: '__dt 세션 종료' });
+    await runWithDisplayLang('en', () => early.chat.postMessage({ channel: 'C1', text: '__dt 세션 종료' }));
+    await early.chat.postEphemeral({ channel: 'C1', user: 'U_EN', text: '__dt 세션 종료' });
+    const late = new WebClient('xoxb-test');
+    await runWithDisplayLang('en', () => late.chat.update({ channel: 'C1', ts: '1.1', text: '__dt 세션 종료' }));
+    expect(sent.map((r) => r.body.text)).toEqual([
+      '__dt 세션 종료',
+      '__dt Session closed',
+      '__dt Session closed',
+      '__dt Session closed',
+    ]);
+    expect(sent[0].url).toMatch(/chat\.postMessage$/);
+  });
+
+  it('a DM the bot opened is read by that user, not by whoever triggered it', async () => {
+    const sent: any[] = [];
+    proto.makeRequest = vi.fn(async (_url: string, body: any) => {
+      sent.push(body);
+      return {
+        status: 200,
+        headers: {},
+        request: { path: '/api/x' },
+        data: { ok: true, channel: { id: 'D_ADMIN_KO' } },
+      };
+    });
+    installSlackDisplayTranslation((u) => (u === 'U_ADMIN' ? 'ko' : 'en'));
     const client = new WebClient('xoxb-test');
-    await client.apiCall('chat.postMessage', { channel: 'C1', text: '__dt 세션 종료' });
-    await runWithDisplayLang('en', () => client.apiCall('chat.postMessage', { channel: 'C1', text: '__dt 세션 종료' }));
-    await client.apiCall('chat.postEphemeral', { channel: 'C1', user: 'U_EN', text: '__dt 세션 종료' });
-    expect(sent.map((o) => o.text)).toEqual(['__dt 세션 종료', '__dt Session closed', '__dt Session closed']);
+    // The requester (en) triggers an approval request DM to a Korean admin.
+    await runWithDisplayLang('en', async () => {
+      await client.conversations.open({ users: 'U_ADMIN' });
+      await client.chat.postMessage({ channel: 'D_ADMIN_KO', text: '__dt 세션 종료' });
+    });
+    expect(sent[1].text).toBe('__dt 세션 종료');
   });
 });
 

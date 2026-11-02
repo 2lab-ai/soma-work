@@ -2770,6 +2770,8 @@ export class SessionRegistry {
         previousSessionId: session.sessionId,
       });
       session.sessionId = undefined;
+      // A fresh model context has not been told the display language (#772).
+      session.displayLangSent = undefined;
       // Clear error retry state so fresh session doesn't inherit exhausted budgets
       session.errorRetryCount = 0;
       session.fileAccessRetryCount = 0;

@@ -127,47 +127,80 @@ export function translateApiOptions(method: string, options: unknown, lang: Disp
   }
   if (method === 'assistant.threads.setStatus') {
     const status = typeof o.status === 'string' ? translateText(o.status, lang) : o.status;
-    const loading = Array.isArray(o.loading_messages)
-      ? o.loading_messages.map((m) => (typeof m === 'string' ? translateText(m, lang) : m))
-      : o.loading_messages;
-    return { ...o, status, loading_messages: loading };
+    const out: Record<string, unknown> = { ...o, status };
+    if (Array.isArray(o.loading_messages))
+      out.loading_messages = o.loading_messages.map((m) => (typeof m === 'string' ? translateText(m, lang) : m));
+    return out;
   }
   return options;
 }
 
-/** Who reads this call when the call itself says: an ephemeral's user, or a DM posted to a user id. */
+/** DM channels the bot opened (`conversations.open` with one user) → that user: they read what is posted there. */
+const dmReaders = new Map<string, string>();
+const DM_READERS_MAX = 2000;
+
+export function rememberDmReader(channelId: string, userId: string): void {
+  if (dmReaders.size >= DM_READERS_MAX) dmReaders.delete(dmReaders.keys().next().value as string);
+  dmReaders.set(channelId, userId);
+}
+
+/** Who reads this call when the call itself says: an ephemeral's user, a DM by user id, or a DM the bot opened. */
 export function readerOf(method: string, options: unknown): string | undefined {
   if (!options || typeof options !== 'object') return undefined;
   const o = options as Record<string, unknown>;
   if (method === 'chat.postEphemeral' && typeof o.user === 'string') return o.user;
-  if (typeof o.channel === 'string' && /^[UW][A-Z0-9]+$/.test(o.channel)) return o.channel;
+  if (typeof o.channel === 'string') {
+    if (/^[UW][A-Z0-9]+$/.test(o.channel)) return o.channel;
+    const dm = dmReaders.get(o.channel);
+    if (dm) return dm;
+  }
   return undefined;
 }
 
 type LangOfUser = (userId: string) => DisplayLang;
 let installed = false;
 
+/** The Web API method of a request URL (`https://slack.com/api/chat.postMessage` → `chat.postMessage`). */
+export function methodOfUrl(url: string): string {
+  const path = url.split('?')[0];
+  return path.slice(path.lastIndexOf('/') + 1);
+}
+
 /**
- * Translate every Web API call in the process (patched once on the
- * prototype: Bolt's per-request clients and the app's own client alike).
+ * Translate every Web API call in the process. Patched once on
+ * `WebClient.prototype.makeRequest`, not `apiCall`: a client binds its
+ * `chat.postMessage`-style methods to `apiCall` when it is built, so a patch
+ * there would miss every client built before it (Bolt's `app.client`), while
+ * `apiCall` reaches `this.makeRequest` through the prototype on every call.
  */
 export function installSlackDisplayTranslation(langOfUser: LangOfUser): void {
   if (installed) return;
   installed = true;
   const proto = WebClient.prototype as unknown as {
-    apiCall: (method: string, options?: unknown) => Promise<unknown>;
+    makeRequest: (url: string, body: unknown, headers?: unknown) => Promise<unknown>;
   };
-  const original = proto.apiCall;
-  proto.apiCall = function apiCall(this: unknown, method: string, options?: unknown) {
-    const reader = readerOf(method, options);
-    const lang = reader ? langOfUser(reader) : currentDisplayLang();
-    let translated = options;
+  const original = proto.makeRequest;
+  proto.makeRequest = async function makeRequest(this: unknown, url: string, body: unknown, headers?: unknown) {
+    const method = typeof url === 'string' ? methodOfUrl(url) : '';
+    let translated = body;
     try {
-      translated = translateApiOptions(method, options, lang);
+      const reader = readerOf(method, body);
+      const lang = reader ? langOfUser(reader) : currentDisplayLang();
+      translated = translateApiOptions(method, body, lang);
     } catch {
-      translated = options; // a translation fault never costs the post
+      translated = body; // a translation fault never costs the post
     }
-    return original.call(this, method, translated);
+    const response = await original.call(this, url, translated, headers);
+    if (method === 'conversations.open') {
+      try {
+        const users = (body as { users?: unknown } | undefined)?.users;
+        const id = (response as { data?: { channel?: { id?: unknown } } })?.data?.channel?.id;
+        if (typeof users === 'string' && !users.includes(',') && typeof id === 'string') rememberDmReader(id, users);
+      } catch {
+        /* only a hint */
+      }
+    }
+    return response;
   };
 }
 
