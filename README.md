@@ -253,6 +253,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z close` | Close current thread session |
 | `/z restore` | Restore a session |
 | `/z context` · `/z compact` | Show / compact the context window |
+| `rollback` · `rollback <n>` · `rollback cancel` | Roll the model's conversation context back to just before one of your inputs — files are not touched (naked form only; `롤백` also works). Spec: [`docs/current/spec/context-rollback.md`](./docs/current/spec/context-rollback.md) |
 | `/z link <type> <url>` | Attach issue/PR/doc links |
 | `/z onboarding` | Run onboarding workflow |
 | `/z admin [accept\|deny\|users\|config\|llmchat\|session list]` | Admin commands |
