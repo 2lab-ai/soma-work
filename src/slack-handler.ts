@@ -108,7 +108,7 @@ import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch
 import { requestEnvSkillPermission } from './slack/env-skill-permission-request';
 import { mintEventTs } from './slack/event-ts';
 import { type FollowupReactionRole, FollowupReactionSurface, rolesForFollowupState } from './slack/followup-reactions';
-import { retireGoalCapDecision } from './slack/goal-cap-decision';
+import { isGoalCapDecisionPending, retireGoalCapDecision } from './slack/goal-cap-decision';
 import { bumpGoalEpoch, GOAL_SUMMARY_PERSIST_MAX, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from './slack/goal-host-actions';
 import type { GoalStallQuestion } from './slack/goal-loop-controller';
@@ -117,6 +117,7 @@ import {
   buildGoalStallQuestion,
   type GoalStallRetireCause,
   goalStallRollbackNotice,
+  retireGoalStall,
   setGoalStallRetiredListener,
   shouldAskGoalStallQuestion,
 } from './slack/goal-stall';
@@ -427,6 +428,12 @@ export class SlackHandler {
    * never touches a run that is already in flight.
    */
   private followupShutdownPreparing?: boolean;
+  /**
+   * Sessions whose turn the last shutdown cut short (`wasWorkingAtShutdown`),
+   * recorded by `notifyCrashRecovery` before it clears that marker and read
+   * once by `resumeActiveGoals`: a cut goal turn gives its continuation back.
+   */
+  private restartCutSessionKeys = new Set<string>();
   /** The startup reconcile has run (or was deliberately skipped) — see {@link reconcileFollowupSessionsOnce}. */
   private followupReconciled?: boolean;
   /** The RESTORED state had something to reconcile — see {@link warnIfReconcileSkipped}. */
@@ -2656,6 +2663,14 @@ export class SlackHandler {
       // via the `goal` serializer; the runtime stash above takes precedence.
       goal.lastAssistantTurnSummary = turnText.slice(0, GOAL_SUMMARY_PERSIST_MAX);
       this.claudeHandler.saveSessions();
+    }
+    // A turn the shutdown aborted: its evidence is stashed above (the restart
+    // reads it), but the loop must not run while the host stops — it would
+    // spend a continuation (or open the cap decision) and inject a turn the
+    // stopping host refuses. The restart's goal resume drives it (#788).
+    if (this.followupShutdownPreparing) {
+      this.logger.info('Goal driver held — the host is shutting down; the restart resumes the goal', { sessionKey });
+      return;
     }
     // §3.6 priority: a human follow-up goes before the next autogoal turn. The
     // evidence stash above still happens — only the DRIVER is held back — so a
@@ -6240,6 +6255,11 @@ export class SlackHandler {
    * proceed with the shutdown, and admission is restored so a failed attempt
    * cannot strand the bot in a state where it accepts nothing.
    */
+  /** True once shutdown preparation began — the goal loop starts nothing new (#788). */
+  isShuttingDown(): boolean {
+    return this.followupShutdownPreparing === true;
+  }
+
   prepareFollowupShutdown(): void {
     // Set first: from here on the host admits no new work, so nothing can be
     // parked or dispatched into a session we are in the middle of stopping.
@@ -6347,6 +6367,7 @@ export class SlackHandler {
       // back to `activityState === 'working'`.
       const isWorking =
         typeof session.shouldAutoResume === 'boolean' ? session.shouldAutoResume : session.activityState === 'working';
+      if (isWorking) this.restartCutSessionKeys.add(session.sessionKey);
 
       // #351: an idle session whose error auto-retry is still pending is
       // resumed by resumePendingErrorRetries — say when, instead of asking the
@@ -6499,6 +6520,8 @@ export class SlackHandler {
     let forcedIdle = 0;
     let repaired = 0;
     let retriesClaimed = 0;
+    let stallsEnded = 0;
+    let refunded = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       // A Slack-less task cannot run a turn yet (#597/#598) — never re-arm its goal (#612 review).
       if (session.slackless) continue;
@@ -6520,6 +6543,17 @@ export class SlackHandler {
         }
       }
       if (session.goal?.status !== 'active') continue;
+      // A stall judged on no turn text is not a real stall: a turn the restart
+      // cut short was taken for "the same failure" (2026-11-02, before the loop
+      // stopped judging empty turns). End it — its question is withdrawn and
+      // the session stops waiting on it — and resume below.
+      const noTurnText = !(session.goalLastTurnText ?? session.goal.lastAssistantTurnSummary ?? '').trim();
+      const falseStall = !!session.goal.stall && noTurnText;
+      if (falseStall) {
+        retireGoalStall(session.goal, 'lifecycle');
+        stallsEnded++;
+        this.logger.info('Ended a goal stall judged on no turn text — resuming the goal', { sessionKey });
+      }
       const panel = session.actionPanel;
       if (session.activityState === 'waiting' && (panel?.waitingForChoice === true || panel?.pendingQuestion)) {
         // Waiting on its user's answer is not a stale turn: no turn has to run
@@ -6535,6 +6569,26 @@ export class SlackHandler {
         // with no question left) as idle.
         session.activityState = 'idle';
         forcedIdle++;
+      }
+      // A turn the restart cut short never finished, so it does not spend the
+      // continuation budget — otherwise every deploy costs each running goal
+      // one of its turns, and a goal cut on its last one resumes straight into
+      // the cap question (2026-11-02, 1793150219.639969 cut on 10/10 at 05:08Z).
+      // "Cut" is the shutdown's own record, not an empty summary. A false stall
+      // ended above was judged on a turn an earlier restart cut (it was
+      // waiting, not working, at this shutdown, so the record misses it). One
+      // refund either way. An open cap decision is the owner's call, and a cut
+      // user turn (count 0) spent nothing.
+      const capDecisionOpen = isGoalCapDecisionPending(session.goal);
+      const cutTurn = this.restartCutSessionKeys.has(sessionKey) || falseStall;
+      if (cutTurn && session.goal.continuationCount > 0 && !capDecisionOpen) {
+        session.goal.continuationCount -= 1;
+        refunded++;
+        this.logger.info('Gave back the goal continuation the restart cut short', {
+          sessionKey,
+          continuationCount: session.goal.continuationCount,
+          maxContinuations: session.goal.maxContinuations,
+        });
       }
       this.logger.info('Resuming active goal after restart', {
         sessionKey,
@@ -6559,7 +6613,11 @@ export class SlackHandler {
         });
       }
     }
-    if (forcedIdle > 0 || repaired > 0 || retriesClaimed > 0) this.claudeHandler.saveSessions();
+    // Read once: a later pass (no restart in between) refunds nothing.
+    this.restartCutSessionKeys.clear();
+    if (forcedIdle > 0 || repaired > 0 || retriesClaimed > 0 || stallsEnded > 0 || refunded > 0) {
+      this.claudeHandler.saveSessions();
+    }
     if (resumed > 0 || repaired > 0) {
       this.logger.info(`Resumed ${resumed} active goal(s) after restart (repaired ${repaired} stranded queue(s))`);
     }
