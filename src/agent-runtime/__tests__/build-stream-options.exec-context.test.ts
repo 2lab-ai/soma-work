@@ -511,3 +511,98 @@ describe('#599 ⑤ — a task’s escalation waits for the dashboard approval', 
     expect(request).not.toHaveBeenCalled();
   });
 });
+
+describe('plan mode — a task whose plan is not started researches (SSOT 2026-11-02, step 6c)', () => {
+  function planningContext(): ExecutionContext {
+    return executionContextForTask({
+      ownerId: USER,
+      slackless: true,
+      taskId: TASK_ID,
+      channelId: '',
+      workingDirectory: WORK_DIR,
+      taskPlan: { state: 'awaiting', revision: 1, updatedAt: 1 },
+    } as ConversationSession);
+  }
+
+  it('the hook refuses the work (Write, a changing command) and lets reading through', async () => {
+    const ctx = planningContext();
+    expect((ctx as { planPending?: true }).planPending).toBe(true);
+    const deps = makeDeps({
+      mcpConfigBuilder: { buildConfig: vi.fn(async () => makeMcpConfig({ somaPermissionMode: 'bypass' })) },
+    });
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: ctx.workingDirectory, executionContext: ctx },
+      deps,
+    );
+    const hook = policyHook(options as { hooks?: Record<string, unknown> });
+    const write = await hook(call('Write', { file_path: `${WORK_DIR}/a.txt`, content: 'x' }));
+    expect(decisionOf(write)).toBe('deny');
+    expect(String(write.hookSpecificOutput.permissionDecisionReason)).toContain('plan is not started');
+    expect(decisionOf(await hook(call('Bash', { command: 'git commit -am wip' })))).toBe('deny');
+    expect(decisionOf(await hook(call('Bash', { command: 'git log -3' })))).toBe('deny'); // no shell while planning
+    expect(decisionOf(await hook(call('Read', { file_path: `${WORK_DIR}/a.txt` })))).toBe('allow');
+  });
+
+  it('a skill runs no inline shell either: disableSkillShellExecution on a planning turn only (trinity R5, fable P2)', async () => {
+    const deps = makeDeps();
+    const planning = planningContext();
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: planning.workingDirectory, executionContext: planning },
+      deps,
+    );
+    expect((options.settings as { disableSkillShellExecution?: boolean }).disableSkillShellExecution).toBe(true);
+    const started = taskContext();
+    const { options: after } = await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: started.workingDirectory, executionContext: started },
+      makeDeps(),
+    );
+    expect(
+      (after.settings as { disableSkillShellExecution?: boolean } | undefined)?.disableSkillShellExecution,
+    ).toBeUndefined();
+  });
+
+  it('…with the sandbox turned off too (trinity R5, astra P1)', async () => {
+    const off = vi.spyOn(userSettingsStore, 'getUserSandboxDisabled').mockReturnValue(true);
+    try {
+      const planning = planningContext();
+      const { options } = await buildStreamOptions(
+        { queryEnv: {}, workingDirectory: planning.workingDirectory, executionContext: planning },
+        makeDeps(),
+      );
+      expect(options.sandbox).toBeUndefined();
+      expect((options.settings as { disableSkillShellExecution?: boolean }).disableSkillShellExecution).toBe(true);
+    } finally {
+      off.mockRestore();
+    }
+  });
+
+  it('every tool reaches the hook (one catch-all entry): a shell or agent tool outside the usual matchers is refused', async () => {
+    const ctx = planningContext();
+    const deps = makeDeps({
+      mcpConfigBuilder: { buildConfig: vi.fn(async () => makeMcpConfig({ somaPermissionMode: 'bypass' })) },
+    });
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: ctx.workingDirectory, executionContext: ctx },
+      deps,
+    );
+    const entries = (options.hooks?.PreToolUse ?? []) as Array<{ matcher?: string }>;
+    expect(entries).toHaveLength(1);
+    expect(entries[0].matcher).toBeUndefined();
+    const hook = policyHook(options as { hooks?: Record<string, unknown> });
+    expect(decisionOf(await hook(call('Monitor', { command: 'rm -rf src', description: 'x' })))).toBe('deny');
+    expect(decisionOf(await hook(call('Workflow', { script: 'x' })))).toBe('deny');
+  });
+
+  it('a started plan (or no plan mode) is not gated: Write runs under bypass as before', async () => {
+    const deps = makeDeps({
+      mcpConfigBuilder: { buildConfig: vi.fn(async () => makeMcpConfig({ somaPermissionMode: 'bypass' })) },
+    });
+    const ctx = taskContext();
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: ctx.workingDirectory, executionContext: ctx },
+      deps,
+    );
+    const hook = policyHook(options as { hooks?: Record<string, unknown> });
+    expect(decisionOf(await hook(call('Write', { file_path: `${WORK_DIR}/a.txt`, content: 'x' })))).toBe('allow');
+  });
+});
