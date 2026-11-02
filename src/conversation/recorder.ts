@@ -1,3 +1,4 @@
+import { stripEchoedDisplayLangTag } from '@soma/common/i18n';
 import { randomUUID } from 'crypto';
 import { Logger } from '../logger';
 import { getMetricsEmitter } from '../metrics/event-emitter';
@@ -414,7 +415,8 @@ async function _recordAssistantTurnAsync(conversationId: string, content: string
     id: randomUUID(),
     role: 'assistant',
     timestamp: Date.now(),
-    rawContent: content,
+    // #772 — a reply that echoed the host's <display-lang> note is kept without it.
+    rawContent: stripEchoedDisplayLangTag(content),
     summarized: false,
   };
 
@@ -674,7 +676,9 @@ export async function getTurnRawContent(conversationId: string, turnId: string):
   if (!record) return null;
 
   const turn = record.turns.find((t) => t.id === turnId);
-  return turn?.rawContent || null;
+  if (!turn?.rawContent) return null;
+  // #772 — a reply recorded before the echo was stripped reads without it too.
+  return turn.role === 'assistant' ? stripEchoedDisplayLangTag(turn.rawContent) || null : turn.rawContent;
 }
 
 /**
