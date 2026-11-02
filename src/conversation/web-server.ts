@@ -1,5 +1,6 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import * as os from 'node:os';
+import fastifyCompress from '@fastify/compress';
 import fastifyFormbody from '@fastify/formbody';
 // Type-only: the plugin itself is registered by dashboard.ts via dynamic import.
 import type { WebSocket } from '@fastify/websocket';
@@ -20,7 +21,9 @@ import { registerArtifactRoutes } from './artifact-routes';
 import {
   registerDashboardRoutes,
   setSelfInstanceEnv,
+  startDashboardAdminApprovalWatch,
   startDashboardPermissionWatch,
+  stopDashboardAdminApprovalWatch,
   stopDashboardPermissionWatch,
 } from './dashboard';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
@@ -489,6 +492,16 @@ export function getConversationUrl(conversationId: string): string {
  * viewer failed to start or has stopped — or when there is no owner or key.
  * @public — injected once in src/index.ts (`setThreadHeaderProviders`).
  */
+/**
+ * E2 ⑧ (.prd/18 D12) — the dashboard is listening (so `getDashboardSessionUrl`
+ * hands out card links). The Slack entry asks this before making a task: with no
+ * dashboard there is no surface to answer, approve or stop, so it stays on the
+ * Slack session path.
+ */
+export function isDashboardListening(): boolean {
+  return listening;
+}
+
 export function getDashboardSessionUrl(ownerId: string, sessionKey: string): string | undefined {
   if (!listening || !ownerId || !sessionKey) return undefined;
   const base = getViewerBaseUrl().replace(/\/+$/, '');
@@ -515,6 +528,11 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // application/x-www-form-urlencoded by default; without this plugin the
   // handler would receive an empty `request.body`.
   await server.register(fastifyFormbody);
+
+  // Response compression, opt-in per route (dashboard.ts FIRST_LOAD_COMPRESSION).
+  // Off by default so byte-range routes (artifacts, user media) keep exact
+  // Content-Length / Content-Range semantics (#477).
+  await server.register(fastifyCompress, { global: false });
 
   // ---- HTML Routes (require auth when token is configured) ----
 
@@ -549,7 +567,12 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
           reply.status(404).send('Conversation not found');
           return;
         }
-        const html = renderConversationViewPage(record);
+        // The list beside it (M-08, the archive page); a list that fails to load leaves the conversation alone.
+        const conversations = await listConversations().catch((error) => {
+          logger.warn('Conversation list unavailable beside a conversation', error);
+          return undefined;
+        });
+        const html = renderConversationViewPage(record, conversations);
         reply.type('text/html; charset=utf-8').send(html);
       } catch (error) {
         logger.error('Error rendering conversation', error);
@@ -604,6 +627,9 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
           rawContent: t.role === 'user' ? t.rawContent : undefined,
           // A user turn's attached files (user media) — metadata only, the bytes have their own route.
           attachments: t.role === 'user' ? t.attachments : undefined,
+          // Dashboard SSOT 2026-10-27: who put a user turn there, and a /compact turn's compaction.
+          origin: t.role === 'user' ? t.origin : undefined,
+          compact: t.role === 'user' ? t.compact : undefined,
         }));
 
         reply.send({
@@ -762,6 +788,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
       // Permission prompts waiting in the shared store → cards (SSOT 2026-10-24).
       startDashboardPermissionWatch();
+      startDashboardAdminApprovalWatch();
 
       return;
     } catch (error) {
@@ -784,6 +811,7 @@ export async function stopWebServer(): Promise<void> {
   listening = false;
   stopPublicUrlCheck();
   stopDashboardPermissionWatch();
+  stopDashboardAdminApprovalWatch();
   if (server) {
     // Flush hook state before closing
     try {

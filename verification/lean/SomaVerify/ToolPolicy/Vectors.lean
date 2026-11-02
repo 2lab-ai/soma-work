@@ -5,7 +5,7 @@ import SomaVerify.ToolPolicy.Model
 /-!
 # Conformance vectors for `SomaVerify.ToolPolicy`
 
-`verification/vectors/tool-policy.json` holds seven kinds of case, told apart by `kind`.
+`verification/vectors/tool-policy.json` holds eight kinds of case, told apart by `kind`.
 
 Replayed by `tool-policy.lean-conformance.test.ts`, which mocks the guard primitives with each
 row's `prims` and calls the real `evaluateToolPolicy` once per entry of `calls`. Every call also
@@ -19,12 +19,18 @@ other, so a wrong argument or a wrong check fails the replay.
   3 × 2^10 = 3072 rows. Each row has nine calls, one per path through the tool-name tests of the
   TS: Bash, Read, Glob, Grep with and without a path, a native tool without a sensitive-path
   check but with a devops-secret check (Write, the path Edit shares), the PR-create MCP tool,
-  another `mcp__` tool, and a tool the policy does not govern.
+  another `mcp__` tool, and `Skill`. The environment-skill check (phase 4) comes back clear in
+  every table row: it is consulted for a non-admin `Skill` call only, which the `tool-names`,
+  `boundary` and `concrete` rows fire it on.
 * `tool-names`: every native tool and a set of near misses (case, spacing, look-alike letters,
   prefixes, the empty name), with no primitive firing, each firing alone, and all firing, in
   every mode, for admins and non-admins.
+* Every `expect` is the output of `evaluateToolPolicyWith`, the model of the whole TS function
+  (phase 4 with the native write boundary); a row without `checkNativeWrite` gets
+  `evaluateToolPolicyEnv`'s, which `ProofsNativeWrite.lean` proves equal.
 * `boundary`: the payloads the table holds fixed. A sensitive result without a reason or with
-  an empty one, an empty MCP or devops-secret reason, PR-issue results without a reason or a message,
+  an empty one, an empty MCP, devops-secret or environment-skill reason (and the environment-skill
+  check firing for admins and alongside every other primitive), PR-issue results without a reason or a message,
   empty and longer rule-id lists, Grep `path` values that are empty, blank, not strings or
   missing, and undefined tool inputs.
 * `arguments`: Glob, Read, Edit, Write, Bash and Grep inputs that differ only in the properties
@@ -37,10 +43,16 @@ other, so a wrong argument or a wrong check fails the replay.
   firing, each deny condition alone, a dangerous Bash, everything at once), in every mode, for
   admins and non-admins. Each row calls the allow-listed tools, near misses of them, native tools
   including `Task` and `Agent`, and tools the policy has never heard of.
+* `native-write`: the only rows with `ctx.checkNativeWrite` set, as `checkNativeWrite`: what it
+  returns (`null`, a reason, the empty reason) with every pattern of `patterns`, in every mode, for
+  admins and non-admins, with and without the live incident context. Each row calls the six
+  native write tools, with and without a target, near misses of their names, and the tools of the
+  other steps. The replay answers every call with the row's value and fails when the policy asks
+  for a tool outside `NATIVE_WRITE_TOOLS`.
 
 Replayed by `tool-policy.concrete.lean-conformance.test.ts` against the real modules, no mocks:
 
-* `constants`: `NATIVE_BYPASS_TOOLS`, `TOOL_POLICY_MATCHERS` and
+* `constants`: `NATIVE_BYPASS_TOOLS`, `NATIVE_WRITE_TOOLS`, `TOOL_POLICY_MATCHERS` and
   `INCIDENT_TOOL_POLICY_MATCHERS` as the model has them.
 * `concrete`: real tool calls, some in an incident session. Each lists the primitive calls the
   policy makes for it, with the values the test first checks against the real primitives; the
@@ -128,11 +140,17 @@ def incidentProp : Option IncidentReadOnly → List (String × Json)
   | some inc => [("incidentReadOnly", incidentJson inc)]
   | none => []
 
+/-- The `checkNativeWrite` property: what `ctx.checkNativeWrite` returns (`null` for `none`), or
+left out when the property is undefined. -/
+def nativeWriteProp : Option (Option String) → List (String × Json)
+  | some v => [("checkNativeWrite", (v.map .str).getD .null)]
+  | none => []
+
 def primsJson (p : Primitives) : Json :=
   .obj [("ssh", .bool p.ssh), ("sensitive", sensitiveJson p.sensitive),
     ("crossUser", .bool p.crossUser), ("mcpDenied", mcpJson p.mcpDenied),
     ("prIssue", prIssueJson p.prIssue), ("bash", bashJson p.bash),
-    ("devopsSecret", mcpJson p.devopsSecret)]
+    ("devopsSecret", mcpJson p.devopsSecret), ("envSkillDenied", mcpJson p.envSkillDenied)]
 
 /-! ## Mocked rows -/
 
@@ -145,6 +163,8 @@ structure Row where
   prims : Primitives
   /-- `ctx.incidentReadOnly`; `none` leaves it undefined -/
   incident : Option IncidentReadOnly := none
+  /-- what `ctx.checkNativeWrite` returns; `none` leaves it undefined -/
+  nativeWrite : Option (Option String) := none
 
 /-- A call: the tool name and the exact `toolInput` handed to the TS (`none` is `undefined`). -/
 structure Call where
@@ -161,19 +181,19 @@ def callJson (r : Row) (c : Call) : Json :=
   .obj [("tool", .str c.tool), ("input", c.input.getD .null),
     ("sensitiveCall", sensitiveCallJson (sensitiveCall (r.toInput c))),
     ("devopsCall", devopsCallJson (devopsCall (r.toInput c))),
-    ("expect", resultJson (evaluateToolPolicy r.incident (r.toInput c)))]
+    ("expect", resultJson (evaluateToolPolicyWith r.nativeWrite r.incident (r.toInput c)))]
 
 def rowJson (kind : String) (calls : List Call) (r : Row) : Json :=
   .obj ([("kind", .str kind), ("mode", .str (modeName r.mode)), ("isAdmin", .bool r.isAdmin),
     ("aborted", .bool r.aborted), ("handoff", .bool r.handoff), ("prims", primsJson r.prims)] ++
-    incidentProp r.incident ++
+    incidentProp r.incident ++ nativeWriteProp r.nativeWrite ++
     [("calls", .arr (calls.map (callJson r)))])
 
 /-- Every primitive silent: nothing sensitive, no deny reason, not blocked, not dangerous. -/
 def quiet : Primitives :=
   { ssh := false, sensitive := { isSensitive := false }, crossUser := false, mcpDenied := none,
     prIssue := { blocked := false }, bash := { decision := .allow, matchedRuleIds := [] },
-    devopsSecret := none }
+    devopsSecret := none, envSkillDenied := none }
 
 def devopsReason : String := "devops-reason"
 
@@ -181,6 +201,8 @@ def sensitiveHit : SensitivePathResult :=
   { isSensitive := true, reason := some "sensitive-reason" }
 
 def mcpReason : String := "mcp-reason"
+
+def envSkillReason : String := "acme-env:post-deploy"
 
 /-- A block with a `PrIssueGuardReason` and a message. -/
 def prBlocked : PrIssueGuardResult :=
@@ -242,7 +264,8 @@ def toolNames : List Call :=
 
 def allFiring : Primitives :=
   { ssh := true, sensitive := sensitiveHit, crossUser := true, mcpDenied := some mcpReason,
-    prIssue := prBlocked, bash := bashAsk, devopsSecret := some devopsReason }
+    prIssue := prBlocked, bash := bashAsk, devopsSecret := some devopsReason,
+    envSkillDenied := some envSkillReason }
 
 /-- `(aborted, handoff, prims)`: nothing firing, each deny condition's inputs alone, a dangerous
 Bash alone, and everything at once. -/
@@ -256,6 +279,7 @@ def patterns : List (Bool × Bool × Primitives) :=
     (false, false, { quiet with mcpDenied := some mcpReason }),
     (false, true, { quiet with prIssue := prBlocked }),
     (false, false, { quiet with bash := bashAsk }),
+    (false, false, { quiet with envSkillDenied := some envSkillReason }),
     (true, true, allFiring)]
 
 def namesRows : List Row :=
@@ -281,6 +305,14 @@ def devopsCalls : List Call :=
     ⟨"Grep", empty⟩, ⟨"Glob", empty⟩, ⟨"NotebookEdit", empty⟩, ⟨prCreateMcpTool, empty⟩,
     ⟨"mcp__server-tools__db_query", empty⟩, ⟨"Skill", empty⟩]
 
+/-- The `Skill` tool with and without a `skill` input, the tools before it in the deny tier, an
+`mcp__` tool and a tool the policy does not govern. -/
+def envSkillCalls : List Call :=
+  [⟨"Skill", some (.obj [("skill", .str "acme-env:post-deploy"), ("args", .str "--preflight")])⟩,
+    ⟨"Skill", empty⟩, ⟨"Skill", none⟩, ⟨"Bash", empty⟩, ⟨"Read", empty⟩, ⟨"Glob", empty⟩,
+    ⟨"Grep", grepPath⟩, ⟨"Write", empty⟩, ⟨"Edit", empty⟩, ⟨"NotebookEdit", empty⟩,
+    ⟨"mcp__server-tools__db_query", empty⟩, ⟨"ExitPlanMode", empty⟩, ⟨"skill", empty⟩]
+
 def prCalls : List Call :=
   [⟨"Bash", empty⟩, ⟨prCreateMcpTool, empty⟩, ⟨"Read", empty⟩,
     ⟨"mcp__server-tools__db_query", empty⟩]
@@ -305,6 +337,12 @@ def boundaryRows : List (Row × List Call) :=
     (fun s => (autoRow { quiet with sensitive := s }, sensitiveCalls)) ++
   [(autoRow { quiet with mcpDenied := some "" }, mcpCalls),
     ({ autoRow { quiet with mcpDenied := some "" } with isAdmin := true }, mcpCalls)] ++
+  ([.auto, .bypass, .legacy] : List Mode).flatMap (fun mode =>
+    [({ autoRow { quiet with envSkillDenied := some "" } with mode }, envSkillCalls),
+      ({ autoRow { quiet with envSkillDenied := some envSkillReason } with mode, isAdmin := true },
+        envSkillCalls),
+      ({ autoRow { allFiring with envSkillDenied := some envSkillReason } with mode, handoff := true },
+        envSkillCalls)]) ++
   [(autoRow { quiet with devopsSecret := some "" }, devopsCalls),
     ({ autoRow { quiet with devopsSecret := some "" } with isAdmin := true, mode := .bypass },
       devopsCalls),
@@ -418,10 +456,47 @@ def incidentRows : List Row :=
   patterns.map fun (aborted, handoff, prims) =>
     { mode, isAdmin, aborted, handoff, prims, incident := some inc }
 
+/-- What `ctx.checkNativeWrite` returns on the `native-write` rows: inside, a reason, the empty
+reason (still a denial: `outside !== null`). -/
+def nativeWriteValues : List (Option String) :=
+  [none, some "outside-reason", some ""]
+
+/-- The three native write tools with a target, without one and with no input at all; near misses
+of their names; and the tools the other steps look at. -/
+def nativeWriteCalls : List Call :=
+  [⟨"Write", some (.obj [("file_path", .str "/tmp/U0VECTOR01/a.txt"), ("content", .str "x")])⟩,
+    ⟨"Edit", some (.obj [("file_path", .str "/tmp/U0VECTOR01/a.txt"), ("old_string", .str "a"),
+      ("new_string", .str "b")])⟩,
+    ⟨"NotebookEdit", some (.obj [("notebook_path", .str "/tmp/U0VECTOR01/n.ipynb"),
+      ("new_source", .str "x")])⟩,
+    ⟨"Artifact", some (.obj [("action", .str "read_asset"), ("url", .str "u"), ("asset_id", .str "a"),
+      ("out_dir", .str "/tmp/U0VECTOR01")])⟩,
+    ⟨"EnterWorktree", some (.obj [("name", .str "feat")])⟩,
+    ⟨"Agent", some (.obj [("description", .str "d"), ("prompt", .str "p"), ("isolation", .str "worktree")])⟩,
+    ⟨"Write", empty⟩, ⟨"Edit", none⟩, ⟨"Artifact", empty⟩, ⟨"Agent", empty⟩,
+    ⟨"write", empty⟩, ⟨"WRITE", empty⟩, ⟨"Write ", empty⟩, ⟨"MultiEdit", empty⟩,
+    ⟨"NotebookEdit2", empty⟩, ⟨"Edits", empty⟩, ⟨"mcp__x__Write", empty⟩, ⟨"artifact", empty⟩,
+    ⟨"ExitWorktree", empty⟩, ⟨"Monitor", empty⟩,
+    ⟨"Bash", empty⟩, ⟨"Read", some (.obj [("file_path", .str "/tmp/U0VECTOR01/a.txt")])⟩,
+    ⟨"Glob", empty⟩, ⟨"Grep", grepPath⟩, ⟨"TodoWrite", empty⟩, ⟨"Task", empty⟩,
+    ⟨"mcp__server-tools__db_query", empty⟩, ⟨prCreateMcpTool, empty⟩, ⟨"Skill", empty⟩,
+    ⟨"", empty⟩]
+
+/-- Every `nativeWriteValues` × `patterns` × mode × `isAdmin`, without and with the live incident
+context. -/
+def nativeWriteRows : List Row :=
+  nativeWriteValues.flatMap fun v =>
+  [none, some { allowedMcpTools := [evidenceTool] }].flatMap fun incident =>
+  modes.flatMap fun mode =>
+  bools.flatMap fun isAdmin =>
+  patterns.map fun (aborted, handoff, prims) =>
+    { mode, isAdmin, aborted, handoff, prims, incident, nativeWrite := some v }
+
 /-! ## Constants -/
 
 def constantsJson : Json :=
   .obj [("kind", .str "constants"), ("nativeBypassTools", strs nativeBypassTools),
+    ("nativeWriteTools", strs nativeWriteTools),
     ("toolPolicyMatchers", strs toolPolicyMatchers),
     ("incidentToolPolicyMatchers",
       .arr (incidentToolPolicyMatchers.map fun m => (m.map .str).getD .null))]
@@ -506,9 +581,10 @@ def concreteJson (c : Concrete) : Json :=
     ("ctx", .obj ([("user", .str sessionUser), ("isAdmin", .bool c.isAdmin),
       ("mode", .str (modeName c.mode)), ("aborted", .bool c.aborted),
       ("handoffContext", c.handoff.getD .null), ("mcpDenied", mcpJson c.prims.mcpDenied),
+      ("envSkillDenied", mcpJson c.prims.envSkillDenied),
       ("disabledRules", strs c.disabledRules)] ++ incidentProp c.incident)),
     ("pre", .arr (devopsPreJson c ++ c.pre.map (preJson c))),
-    ("expect", resultJson (evaluateToolPolicy c.incident c.toInput))]
+    ("expect", resultJson (evaluateToolPolicyEnv c.incident c.toInput))]
 
 def bashInput (command : String) : Json :=
   .obj [("command", .str command)]
@@ -729,6 +805,23 @@ def concreteCases : List Concrete :=
    { name := "glob-broker-base-nonadmin-auto", tool := "Glob",
      input := .obj [("pattern", .str "secrets/**"), ("path", .str brokerData)], mode := .auto,
      prims := { quiet with devopsSecret := some "devops broker path" }, pre := [] },
+   { name := "skill-env-denied-nonadmin-auto", tool := "Skill",
+     input := .obj [("skill", .str "acme-env:post-deploy"), ("args", .str "--preflight")],
+     mode := .auto, prims := { quiet with envSkillDenied := some "acme-env:post-deploy" }, pre := [] },
+   { name := "skill-env-denied-nonadmin-bypass", tool := "Skill",
+     input := .obj [("skill", .str "acme-env:staging-qa")], mode := .bypass,
+     prims := { quiet with envSkillDenied := some "acme-env:staging-qa" }, pre := [] },
+   { name := "skill-env-denied-admin-bypass", tool := "Skill",
+     input := .obj [("skill", .str "acme-env:post-deploy")], isAdmin := true, mode := .bypass,
+     prims := { quiet with envSkillDenied := some "acme-env:post-deploy" }, pre := [] },
+   { name := "skill-env-granted-nonadmin-legacy", tool := "Skill",
+     input := .obj [("skill", .str "acme-env:post-deploy")], mode := .legacy, pre := [] },
+   { name := "skill-plain-nonadmin-auto", tool := "Skill",
+     input := .obj [("skill", .str "zworkflow:deploy-qa")], mode := .auto, pre := [] },
+   { name := "incident-skill-env-denied-nonadmin-auto", tool := "Skill",
+     input := .obj [("skill", .str "acme-env:post-deploy")], mode := .auto,
+     incident := some liveIncident,
+     prims := { quiet with envSkillDenied := some "acme-env:post-deploy" }, pre := [] },
    { name := "incident-bash-gh-auth-token-admin-bypass", tool := "Bash",
      input := bashInput "gh auth token", isAdmin := true, mode := .bypass,
      incident := some liveIncident,
@@ -741,6 +834,7 @@ def cases : List Json :=
   boundaryRows.map (fun (r, calls) => rowJson "boundary" calls r) ++
   argumentRows.map (rowJson "arguments" argumentCalls) ++
   incidentRows.map (rowJson "incident" incidentCalls) ++
+  nativeWriteRows.map (rowJson "native-write" nativeWriteCalls) ++
   [constantsJson] ++
   concreteCases.map concreteJson
 

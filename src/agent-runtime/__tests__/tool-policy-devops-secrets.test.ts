@@ -22,6 +22,7 @@ function makeCtx(overrides: Partial<ToolPolicyContext> = {}): ToolPolicyContext 
     isDangerousRuleDisabled: () => false,
     handoffContext: undefined,
     checkMcpToolPermission: () => null,
+    checkEnvSkillPermission: () => null,
     ...overrides,
   };
 }

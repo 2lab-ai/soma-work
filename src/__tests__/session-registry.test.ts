@@ -55,6 +55,36 @@ describe('SessionRegistry persistence', () => {
     expect(restored?.actionPanel?.threadTs).toBe('171.001');
   });
 
+  // Work queue (#726): a deploy session stays bound to its queue across a
+  // restart, so its later turns still need the queue's slot; `new` unbinds it.
+  it('restores the work queue binding and clears it on reset', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C123', '171.0021');
+    session.sessionId = 'session-wq';
+    session.workQueueId = 'deploy-dev2';
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    expect(reader.getSession('C123', '171.0021')?.workQueueId).toBe('deploy-dev2');
+
+    reader.resetSessionContext('C123', '171.0021');
+    expect(reader.getSession('C123', '171.0021')?.workQueueId).toBeUndefined();
+  });
+
+  // Trinity R2 (astra P1): a deploy held by the work queue before its first
+  // turn has no sessionId — `new` must still reset it, or its stale queued
+  // request would run in the new conversation.
+  it('resets a never-run session that is bound to a work queue', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C123', '171.0022');
+    session.workflow = 'deploy';
+    session.workQueueId = 'deploy-dev2';
+    expect(registry.resetSessionContext('C123', '171.0022')).toBe(true);
+    expect(registry.getSession('C123', '171.0022')?.workQueueId).toBeUndefined();
+    expect(registry.getSession('C123', '171.0022')?.workflow).toBeUndefined();
+  });
+
   it('restores bot-initiated thread metadata', () => {
     const writer = new SessionRegistry();
     const session = writer.createSession('U123', 'Tester', 'C123', '171.002');
@@ -412,6 +442,100 @@ describe('SessionRegistry persistence', () => {
 
     const updated = registry.getSession('C123', '171.021');
     expect(updated?.title).toBe('First Title');
+  });
+
+  // A model that read a voice transcript or an image writes this title, so it
+  // is untrusted text headed for the Slack thread header and the dashboard.
+  it('updateSessionTitle strips Slack control sequences (mentions, link markup)', () => {
+    const registry = new SessionRegistry();
+    registry.createSession('U123', 'Tester', 'C123', '171.022');
+
+    registry.updateSessionTitle('C123', '171.022', '<!channel> 배포 <@U999> <https://x.io|가이드> 정리');
+
+    expect(registry.getSession('C123', '171.022')?.title).toBe('배포 가이드 정리');
+  });
+
+  // Entities are decoded BEFORE stripping: an encoded mention must not come
+  // out the other side as a live `<!channel>`.
+  it('updateSessionTitle does not let an entity-encoded mention survive as a live one', () => {
+    const registry = new SessionRegistry();
+    registry.createSession('U123', 'Tester', 'C123', '171.024');
+
+    registry.updateSessionTitle('C123', '171.024', '&lt;!channel&gt; 이미지 분석 &lt;@U999&gt;');
+
+    const title = registry.getSession('C123', '171.024')?.title;
+    expect(title).toBe('이미지 분석');
+    expect(title).not.toContain('<!channel>');
+  });
+
+  it('updateSessionTitle keeps the old title when the new one sanitizes to nothing', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C123', '171.023');
+    session.title = 'Keep Me';
+
+    registry.updateSessionTitle('C123', '171.023', '<!here>  ');
+
+    expect(registry.getSession('C123', '171.023')?.title).toBe('Keep Me');
+  });
+
+  describe('fillPlaceholderSessionTitle — fill-only write for intent titles', () => {
+    it('replaces a host stand-in title and reports it applied', () => {
+      const registry = new SessionRegistry();
+      const session = registry.createSession('U123', 'Tester', 'C123', '171.030');
+      session.title = 'New Session';
+
+      const applied = registry.fillPlaceholderSessionTitle('C123', '171.030', '음성 지시 세션 제목 자동 갱신');
+
+      expect(applied).toBe(true);
+      expect(registry.getSession('C123', '171.030')?.title).toBe('음성 지시 세션 제목 자동 갱신');
+    });
+
+    it('refuses to overwrite a deliberate title and reports it skipped', () => {
+      const registry = new SessionRegistry();
+      const session = registry.createSession('U123', 'Tester', 'C123', '171.031');
+      session.title = 'PR #42 merged: fix login';
+
+      const applied = registry.fillPlaceholderSessionTitle('C123', '171.031', 'Something else');
+
+      expect(applied).toBe(false);
+      expect(registry.getSession('C123', '171.031')?.title).toBe('PR #42 merged: fix login');
+    });
+
+    it('sanitizes the filled title', () => {
+      const registry = new SessionRegistry();
+      const session = registry.createSession('U123', 'Tester', 'C123', '171.032');
+      session.title = 'Session Reset';
+
+      expect(registry.fillPlaceholderSessionTitle('C123', '171.032', '<!channel> 이미지 분석')).toBe(true);
+      expect(registry.getSession('C123', '171.032')?.title).toBe('이미지 분석');
+    });
+
+    it('does nothing when the candidate sanitizes to empty', () => {
+      const registry = new SessionRegistry();
+      const session = registry.createSession('U123', 'Tester', 'C123', '171.033');
+      session.title = 'New Session';
+
+      expect(registry.fillPlaceholderSessionTitle('C123', '171.033', '<!here>')).toBe(false);
+      expect(registry.getSession('C123', '171.033')?.title).toBe('New Session');
+    });
+
+    it('returns false for an unknown session', () => {
+      const registry = new SessionRegistry();
+      expect(registry.fillPlaceholderSessionTitle('C404', '1.0', 'Title')).toBe(false);
+    });
+
+    // A provisional title (cron job name) is a stand-in too: the first real
+    // title replaces it and the provisional flag is cleared.
+    it('replaces a provisional cron-job title and clears the flag', () => {
+      const registry = new SessionRegistry();
+      const session = registry.createSession('U123', 'Tester', 'C123', '171.034');
+      session.title = 'nightly-report';
+      session.titleProvisional = true;
+
+      expect(registry.fillPlaceholderSessionTitle('C123', '171.034', '야간 리포트 실패 원인 분석')).toBe(true);
+      expect(registry.getSession('C123', '171.034')?.title).toBe('야간 리포트 실패 원인 분석');
+      expect(registry.getSession('C123', '171.034')?.titleProvisional).toBeUndefined();
+    });
   });
 
   // Security: sessionWorkingDir with path traversal is dropped on load

@@ -72,6 +72,8 @@ describe('ActionHandlers', () => {
 
       expect(mockApp.action).toHaveBeenCalledWith('approve_tool', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith('deny_tool', expect.any(Function));
+      // SSOT 2026-11-02 T4 — the second question's button on a prompt the AI advised against.
+      expect(mockApp.action).toHaveBeenCalledWith('approve_tool_confirmed', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith('terminate_session', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith(/^user_choice_/, expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith(/^user_skill_invoke_/, expect.any(Function));
@@ -129,17 +131,51 @@ describe('ActionHandlers', () => {
           'cct',
           'cwd',
           'email',
+          'epictasks',
           'goal',
           'memory',
           'model',
           'notify',
           'persona',
           'sandbox',
+          'taskentry',
           'theme',
           'usage',
           'verbosity',
         ].sort(),
       );
+    });
+  });
+
+  // #726 — the work queue busy card's two buttons reach the queue service.
+  describe('work queue buttons', () => {
+    it('routes work_queue_wait / work_queue_cancel to ctx.workQueue.handleClick', async () => {
+      const handleClick = vi.fn().mockResolvedValue(undefined);
+      const wq = new ActionHandlers({ ...ctx, workQueue: { handleClick } });
+      const mockApp = { action: vi.fn(), view: vi.fn() };
+      wq.registerHandlers(mockApp as any);
+
+      const call = mockApp.action.mock.calls.find(
+        (c) => c[0] instanceof RegExp && c[0].test('work_queue_wait') && c[0].test('work_queue_cancel'),
+      );
+      expect(call).toBeDefined();
+      expect((call![0] as RegExp).test('work_queue_waitx')).toBe(false);
+
+      const ack = vi.fn();
+      const respond = vi.fn();
+      const body = { actions: [{ action_id: 'work_queue_wait', value: 'w1' }], user: { id: 'UB' } };
+      await call![1]({ ack, body, respond });
+      expect(ack).toHaveBeenCalled();
+      expect(handleClick).toHaveBeenCalledWith(body, respond);
+    });
+
+    it('answers "expired" when no work queue is wired', async () => {
+      const mockApp = { action: vi.fn(), view: vi.fn() };
+      handlers.registerHandlers(mockApp as any);
+      const call = mockApp.action.mock.calls.find((c) => c[0] instanceof RegExp && c[0].test('work_queue_cancel'));
+      const respond = vi.fn();
+      await call![1]({ ack: vi.fn(), body: { actions: [{ value: 'w1' }] }, respond });
+      expect(respond).toHaveBeenCalledWith(expect.objectContaining({ replace_original: true }));
     });
   });
 
@@ -314,6 +350,27 @@ describe('ActionHandlers', () => {
           replace_original: false,
         }),
       );
+    });
+  });
+
+  describe('dm_delete_approve / dm_delete_reject (#623 — one decision with the dashboard)', () => {
+    it("an admin approval deletes once; a second admin's click is refused instead of deleting again", async () => {
+      const { resetAdminUsersCache } = await import('../../admin-utils');
+      process.env.ADMIN_USERS = 'U_ADMIN,U_ADMIN2';
+      resetAdminUsersCache();
+      const api = { ...createMockSlackApi(), openDmChannel: vi.fn(async (u: string) => `D-${u}`) };
+      const h2 = new ActionHandlers({ ...ctx, slackApi: api as unknown as SlackApiHelper });
+      const mockApp = { action: vi.fn(), view: vi.fn() };
+      h2.registerHandlers(mockApp as any);
+      const approve = mockApp.action.mock.calls.find((c) => c[0] === 'dm_delete_approve')![1];
+      const value = JSON.stringify({ requesterId: 'U_REQ', targetChannel: 'C77', targetTs: `${Date.now()}.1` });
+      const first = vi.fn();
+      await approve({ ack: vi.fn(), body: { user: { id: 'U_ADMIN' }, actions: [{ value }] }, respond: first });
+      const second = vi.fn();
+      await approve({ ack: vi.fn(), body: { user: { id: 'U_ADMIN2' }, actions: [{ value }] }, respond: second });
+      expect(api.deleteMessage).toHaveBeenCalledTimes(1);
+      expect(first).toHaveBeenCalledWith(expect.objectContaining({ replace_original: true }));
+      expect(second).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
     });
   });
 

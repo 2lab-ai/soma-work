@@ -94,6 +94,36 @@ afterEach(() => {
   fs.rmSync(configDir, { recursive: true, force: true });
 });
 
+describe('agent spend — hands each read call to the task ledger (T5 live follow-up)', () => {
+  it('onCalls gets every call with its final usage; its answer marks the holder changed', async () => {
+    writeAgent('aaaa1111', [
+      assistant('msg_1', 'claude-opus-5-5', [10, 5, 1000, 100]),
+      assistant('msg_1', 'claude-opus-5-5', [10, 50, 1000, 100]),
+    ]);
+    const h = holder();
+    const seen: Array<[string, number]> = [];
+    let answer = false;
+    const reader = createAgentSpendReader({
+      configDir,
+      price,
+      isPriced,
+      now: () => T0,
+      onCalls: (who, calls) => {
+        expect(who).toBe(h);
+        for (const [id, c] of calls) seen.push([id, c.outputTokens]);
+        return answer;
+      },
+    });
+    expect(await reader.refresh(h)).toBe(true); // the spend itself changed
+    expect(seen).toEqual([['msg_1', 50]]);
+    // Nothing new in the spend: only the ledger's answer says whether the card moves.
+    answer = true;
+    expect(await reader.refresh(h, { force: true })).toBe(true);
+    answer = false;
+    expect(await reader.refresh(h, { force: true })).toBe(false);
+  });
+});
+
 describe('agent spend — read from the subagent transcript (T2)', () => {
   it('sums each API call once (the last line of a message wins), skips synthetic lines, prices per model', async () => {
     writeAgent('aaaa1111', [

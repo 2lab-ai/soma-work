@@ -25,7 +25,9 @@ export type WorkLogKind =
   | 'notice'
   | 'error'
   /** SSOT_2 #3 — auto mode allowed a call the mechanical check flags; `text` is the command, `warning` the card. */
-  | 'permission_warning';
+  | 'permission_warning'
+  /** SSOT 2026-11-02 T1 — a person's answer to a permission prompt (see `permission`). */
+  | 'permission';
 
 /** The card a `permission_warning` entry carries: the rules the mechanical check matched and the model's reason. */
 export interface WorkLogPermissionWarning {
@@ -33,9 +35,35 @@ export interface WorkLogPermissionWarning {
   reason: string;
 }
 
+/** The answers a permission prompt can get (the answer path's `PermissionPromptDecision`). */
+export const WORK_LOG_PERMISSION_DECISIONS = [
+  'approve',
+  'deny',
+  'explain',
+  'approve_disable_rule',
+  'approve_confirmed',
+] as const;
+
+/** SSOT 2026-11-02 T1 — a `permission` entry's answer: what was decided, by whom, and what the AI advised. */
+export interface WorkLogPermission {
+  decision: (typeof WORK_LOG_PERMISSION_DECISIONS)[number];
+  /** Slack user id of who answered (the prompt's requester). */
+  by?: string;
+  /** The AI's recommendation shown on the prompt; absent when it gave none. */
+  ai?: 'approve' | 'deny';
+}
+
 export interface WorkLogInput {
   kind: WorkLogKind;
   text: string;
+  /**
+   * SSOT 2026-10-28 — an `instruction` entry: who put it in the conversation
+   * (the recorded user turn's `origin.by`) and whether it was a compaction
+   * turn. The dashboard's work log reads a turn soma-work sent as a one-line
+   * badge from these; entries written before they were kept are read from text.
+   */
+  by?: 'user' | 'system';
+  compactTurn?: true;
   tool?: string;
   ok?: boolean;
   turnId?: string;
@@ -71,13 +99,16 @@ export interface WorkLogInput {
   /**
    * SSOT 2026-10-23 T1 — the SDK tool-use id of a `tool` / `tool_result` entry,
    * so a live observer (the dashboard's artifact capture) pairs a call with its
-   * result exactly. Never persisted: the store keeps its own fields only.
+   * result exactly. Persisted by the store (clamped) since the 작업 로그 tool
+   * call card pairs a result with its call by it; older logs have none.
    */
   toolUseId?: string;
+  /** A `permission` entry's answer (SSOT 2026-11-02 T1). */
+  permission?: WorkLogPermission;
 }
 
 /** An entry as pages and the live broadcast carry it: its raw is described, never included. */
-export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes' | 'toolUseId'> {
+export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes'> {
   seq: number;
   ts: number;
   /** UTF-8 byte length of the original raw; present iff the entry has one. */

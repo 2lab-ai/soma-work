@@ -122,3 +122,28 @@ describe('dispatch-backed classifier — timeout is enforced (T7.1)', () => {
     expect(signal?.aborted).toBe(false);
   });
 });
+
+// Review R1 (astra P2): a caller's abort reaches the one-shot dispatch.
+describe('buildSafetyClassifier — abort', () => {
+  it('passes an AbortController to dispatch that the request signal aborts', async () => {
+    let ac: AbortController | undefined;
+    const dispatch = vi.fn((_m: string, _s: string, opts: { abortController?: AbortController }) => {
+      ac = opts.abortController;
+      return new Promise<string>(() => {});
+    });
+    const c = buildSafetyClassifier({ env: {}, dispatch });
+    const caller = new AbortController();
+    const pending = c.classify({
+      toolName: 'Bash',
+      command: 'ls',
+      toolInput: { command: 'ls' },
+      matchedRuleIds: [],
+      user: 'U1',
+      signal: caller.signal,
+    });
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalled());
+    caller.abort();
+    expect(ac?.signal.aborted).toBe(true);
+    void pending;
+  });
+});

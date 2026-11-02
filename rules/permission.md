@@ -50,7 +50,7 @@ PreToolUse 훅 / MCP 권한서버 = 위 결정의 **집행자**일 뿐, 독자 �
 
 - MCP 권한서버 둘(`mcp-servers/permission` + `mcp-servers/mcp-tool-permission`) — 역할 통합 또는 명확 분리 문서화.
 - grant store 이중(`src/mcp-tool-grant-store.ts` ↔ `packages/process-shared/src/mcp-tool-grant-store.ts`), `click-classifier.ts` 이중(src ↔ @soma/slack) — 단일화.
-- `mcp-config-builder`가 SDK 모드를 따로 유도 — `permission-mode`로 단일화. (`off`→`auto` 의미역전, `false`→`auto` 무고지 강등도 여기서 정리.)
+- `mcp-config-builder`가 SDK 모드를 따로 유도 — `permission-mode`로 단일화. (`off`→`auto` 의미역전, `false`→`auto` 무고지 강등도 여기서 정리.) `mcp-config-builder`의 "사용자 없음 → bypass"는 #597에서 `permission-mode.ts`의 `NO_CONTEXT_PERMISSION_MODE`(`legacy`)로 옮겼다.
 - 타입드 `goal`/스킬 명령 등 일부 경로가 owner guard를 건너뜀 — 모든 mutation을 동일 guard 통과.
 - classifier 기본 모델이 세션 모델을 상속한다(`safety-classifier-factory.ts`, #model-call-unify) — 위 "싼 모델" 규칙과 충돌. 어느 쪽을 정본으로 할지 후속 이슈에서 결정.
 

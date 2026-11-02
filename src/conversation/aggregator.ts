@@ -147,7 +147,9 @@ export async function fetchSiblingBoards(options: FetchSiblingBoardsOptions): Pr
     try {
       const res = await fetchImpl(url, {
         method: 'GET',
-        headers: { Authorization: `Bearer ${viewerToken}` },
+        // Loopback fan-out: ask for identity so the sibling's compressed
+        // /api/dashboard/sessions route (#477) does not gzip for nothing.
+        headers: { Authorization: `Bearer ${viewerToken}`, 'accept-encoding': 'identity' },
         signal: controller.signal,
       });
       if (!res.ok) {

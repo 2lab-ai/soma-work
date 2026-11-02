@@ -43,6 +43,8 @@ export async function publishPermissionWarning(
       warning: { rules: warning.rules, reason: warning.reason },
     });
   }
+  // A Slack-less task turn has no thread: the dashboard entry is the warning.
+  if (!warning.channel) return;
   const blocks = buildPermissionWarningBlocks({
     toolName: warning.toolName,
     input: warning.toolInput,

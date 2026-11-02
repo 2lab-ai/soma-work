@@ -5,11 +5,14 @@ import { DEFAULT_GOAL_MAX_CONTINUATIONS } from '../../types';
 import { validateGoalMaxContinuations } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
 import { buildGoalStatusBlocks } from '../goal-blocks';
+import { retireGoalCapDecision } from '../goal-cap-decision';
 import { bumpGoalEpoch } from '../goal-continuation';
+import { resumeGoalLoop } from '../goal-loop-resume';
 import {
   advanceGoalQueue,
   enqueueOrActivateGoal,
   formatGoalObjectiveForSlack,
+  formatResumedGoalLine,
   restoreGoalState,
   snapshotGoalState,
 } from '../session-goal';
@@ -191,13 +194,20 @@ export class GoalHandler implements CommandHandler {
       // eval). The running goal owns the loop untouched until it completes and
       // advances the queue. Just persist the appended queue entry.
       this.deps.claudeHandler.saveSessions();
-      const queuedNotice = `📋 Goal queued at position ${result.position}: ${this.formatObjectiveForSlack(objective)}\n_It will start automatically when the current goal completes._`;
+      const resumedLine = result.resumedCurrent ? `\n${formatResumedGoalLine(result.resumedCurrent)}` : '';
+      const queuedNotice = `📋 Goal queued at position ${result.position}: ${this.formatObjectiveForSlack(objective)}\n_It will start automatically when the current goal completes._${resumedLine}`;
       if (ctx.admitOpening) {
         // The queue entry is already saved: a Slack failure must not turn a
         // done change into a crash (the host keeps the redelivery claim).
         await this.notifyBestEffort(ctx.channel, ctx.threadTs, queuedNotice);
       } else {
         await this.deps.slackApi.postSystemMessage(ctx.channel, queuedNotice, { threadTs: ctx.threadTs });
+      }
+      if (result.resumedCurrent) {
+        // The current goal was stopped at its budget and this command starts no
+        // turn whose end would drive the loop — kick it so the goal runs again.
+        this.deps.claudeHandler.broadcastSessionUpdate?.();
+        resumeGoalLoop(this.deps.claudeHandler.getSessionKey(ctx.channel, ctx.threadTs));
       }
       return { handled: true, goalQueued: true };
     }
@@ -248,8 +258,8 @@ export class GoalHandler implements CommandHandler {
       return;
     }
     session.goal.status = 'paused';
-    // A lifecycle change resolves any pending cap-decision DM (S3 dedup guard).
-    session.goal.capDmPendingAt = undefined;
+    // A lifecycle change ends any pending cap decision (S3) — its DM too.
+    retireGoalCapDecision(session.goal);
     session.goal.updatedAt = Date.now();
     this.persistGoalChange(session);
     await this.deps.slackApi.postSystemMessage(channel, '⏸️ Goal paused. It will not be injected into future prompts.', {
@@ -279,6 +289,15 @@ export class GoalHandler implements CommandHandler {
     // active with no first turn, judged on whatever unrelated turn ends next.
     const needsOpening = goal.status === 'paused' && goal.openingPending === true;
     const snapshot = needsOpening && admitOpening ? snapshotGoalState(session) : undefined;
+    // `goal resume` on a goal the loop stopped on a repeated failure: the owner
+    // chose to go on — the stall ends (its question is retracted), the budget
+    // comes back (a stall at the last continuation would otherwise ask the cap
+    // question right away), and the loop runs again below.
+    const wasStalled = !!goal.stall;
+    if (wasStalled) {
+      retireGoalCapDecision(goal);
+      goal.continuationCount = 0;
+    }
     goal.status = 'active';
     goal.updatedAt = Date.now();
     this.persistGoalChange(session);
@@ -314,6 +333,13 @@ export class GoalHandler implements CommandHandler {
       return { handled: true, continueWithPrompt: goal.objective, verbatimPrompt: true };
     }
 
+    if (wasStalled) {
+      await this.deps.slackApi.postSystemMessage(channel, '▶️ Goal resumed — the auto-continuation loop runs again.', {
+        threadTs,
+      });
+      resumeGoalLoop(this.deps.claudeHandler.getSessionKey(channel, threadTs));
+      return { handled: true };
+    }
     await this.deps.slackApi.postSystemMessage(channel, '▶️ Goal resumed. It will be injected into future prompts.', {
       threadTs,
     });
@@ -345,8 +371,8 @@ export class GoalHandler implements CommandHandler {
     session.goal.completionReason = 'user';
     session.goal.pendingEval = undefined;
     session.goal.lastEvalReason = undefined;
-    // A completed goal resolves any pending cap-decision DM (S3 dedup guard).
-    session.goal.capDmPendingAt = undefined;
+    // A completed goal ends any pending cap decision (S3) — its DM too.
+    retireGoalCapDecision(session.goal);
     session.goal.updatedAt = now;
 
     // Multi-goal (T2): archive the finished goal and promote the next queued
@@ -400,6 +426,8 @@ export class GoalHandler implements CommandHandler {
     // pending queue, and the completed history. (To advance to the next goal
     // without nuking the queue, use `goal done` instead.)
     const clearedQueue = session.goalQueue?.length ?? 0;
+    // The dropped goal's open questions end with it (cap decision, stall).
+    retireGoalCapDecision(session.goal);
     session.goal = undefined;
     session.goalQueue = [];
     session.goalHistory = [];

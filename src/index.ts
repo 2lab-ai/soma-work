@@ -40,16 +40,21 @@ registerSkillStore({
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import type { AgentTreeEvent } from '@soma/slack/agent-tree';
+import type { LiveUsageCall } from '@soma/slack/live-usage';
+import { runNewUserGate } from '@soma/slack/pipeline/session-initializer';
+import { setWorkQueuesConfig } from '@soma/slack/work-queue';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
 import { getClaudeChildProcessRegistry } from './agent-runtime/claude-child-process-registry';
+import { executionContextForTask } from './agent-runtime/execution-context';
 import { initAuthRuntimeDefault } from './auth/auth-runtime';
 import { isLlmuxUp } from './auth/llmux-client';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
-import { scanChannels } from './channel-registry';
+import { getChannelDescription } from './channel-description-cache';
+import { getChannel, scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
-import { config, runPreflightChecks, validateConfig } from './config';
+import { config, getIncidentTrustedSource, runPreflightChecks, validateConfig } from './config';
 import { loadConfig } from './config-loader';
 import {
   broadcastArtifactUpdate,
@@ -60,14 +65,19 @@ import {
   broadcastWorkLog,
   getDashboardSessionUrl,
   initRecorder,
+  isDashboardListening,
   matchSlackUsersByEmail,
   scheduleLiveSessionUpdate,
+  setDashboardBotName,
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
   setDashboardCommandHandler,
   setDashboardCronSource,
   setDashboardEffortHandler,
+  setDashboardFollowupHandler,
+  setDashboardGoalDecisionHandler,
   setDashboardGoalHandler,
+  setDashboardLifecycleHandler,
   setDashboardModelHandler,
   setDashboardMultiChoiceAnswerHandler,
   setDashboardNewTaskProvider,
@@ -76,21 +86,31 @@ import {
   setDashboardStopHandler,
   setDashboardSubmitRecommendedHandler,
   setDashboardTaskAccessor,
+  setDashboardTaskAnswerHandler,
+  setDashboardTaskCommandHandler,
+  setDashboardTaskLauncher,
   setDashboardTrashHandler,
   setOAuthDirectoryLookup,
   setOAuthUserLookup,
   setOnSummaryGeneratedCallback,
   setOnTurnRecordedCallback,
   setSessionTitleBridge,
+  setTaskNoticeFailureProvider,
   startWebServer,
   stopWebServer,
 } from './conversation';
-import { captureArtifactFromWorkLog } from './conversation/artifact-capture';
 import { getArtifactStore } from './conversation/artifacts';
-import { createNewTaskProvider } from './conversation/new-task-provider';
+import type { NewTaskAttachment } from './conversation/new-task';
+import {
+  createNewTaskProvider,
+  createSlackSteerUploader,
+  offeredNewTaskModels,
+} from './conversation/new-task-provider';
+import { createConversationDurable } from './conversation/recorder';
+import { createSessionWorkLogAppender } from './conversation/session-work-log';
 import { setSettingsRegistry } from './conversation/settings-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
-import { appendWorkLog, flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
+import { flushWorkLog, readWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
 import { GPT_5_6_UPSTREAM_SLUG, syncLlmuxCodexModel } from './deploy/llmux-codex-model-sync';
@@ -102,6 +122,7 @@ import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
 import { Logger } from './logger';
+import { mcpCallTracker } from './mcp-call-tracker';
 import { McpManager } from './mcp-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
 import { calculateTokenCost, hasModelPricing } from './metrics/model-registry';
@@ -121,26 +142,57 @@ import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
-import { applyAgentEvent, stampWorkLogAgent } from './session/agent-registry';
+import { applyAgentEvent } from './session/agent-registry';
 import { backfillAgentSpend, createAgentSpendReader } from './session/agent-spend';
 import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
+import { allowedEffortsFor } from './session/effort-menu';
 import { switchSessionEffort } from './session/effort-switch';
 import { productionModelCatalogDeps } from './session/model-catalog-deps';
 import { switchSessionModel } from './session/model-switch';
-import { applyTodoList, ledgerTasks } from './session/task-ledger';
-import { canApplySummaryTitle } from './session-title-policy';
+import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './session/task-ledger';
+import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from './session/task-usage-reconcile';
+import { getArchiveStore, resolveArchivedResume } from './session-archive';
+import { buildTaskSessionKey } from './session-identity';
+import { applySummaryTitle } from './session-title-policy';
+import {
+  answerGoalCapDecision,
+  flushGoalCapDmSync,
+  retireGoalCapDecision,
+  setGoalCapDecisionSurfaces,
+} from './slack/goal-cap-decision';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
+import { createPendingUserRequest, notifyAdminsNewUser } from './slack/new-user-decision';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
+import { setGoalCapDecisionRetirer } from './slack/session-goal';
 import { setUiSurfacesConfig } from './slack/surface-config';
+import { createSlackTaskEntry } from './slack/task-entry';
+import { threadCardProviders } from './slack/thread-card-data';
 import { setThreadHeaderProviders } from './slack/thread-header-builder';
 import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
+import { ensureChildFolder } from './task-turn/epic-child-folder';
+import { archivedCostUsd, epicTreeCostUsd } from './task-turn/epic-cost';
+import { setEpicHost } from './task-turn/epic-server';
+import { createEpicWaker } from './task-turn/epic-wake';
+import { composeTaskApprovalListeners } from './task-turn/task-approver';
+import { createDashboardCloseHandler } from './task-turn/task-close';
+import { createTaskLauncher } from './task-turn/task-launcher';
+import {
+  createTaskNoticeDeliverer,
+  owesInstructionThread,
+  type TaskNoticeDeliverer,
+} from './task-turn/task-notice-deliverer';
+import { TASK_NOTIFICATION_LEDGER_FILENAME, TaskNotificationLedger } from './task-turn/task-notification-ledger';
+import { createTaskTurnController, type TaskTurnController } from './task-turn/task-turn-controller';
+import { createTaskTurnExecutor } from './task-turn/task-turn-executor';
+import { readTurnFinal } from './task-turn/task-turn-final';
 import { getTokenManager } from './token-manager';
 import type { ConversationSession } from './types';
 import { productionSettingsRegistry } from './user-settings-registry-production';
+import { WorkingDirectoryManager } from './working-directory-manager';
 
 const logger = new Logger('Main');
 
@@ -519,10 +571,25 @@ async function start() {
     if (appConfig.ui) {
       timing(`UI surface config applied (${Object.keys(uiConfigResult.config).length} surfaces overridden)`);
     }
+    // Install the work queues (config.json#workQueues; absent = the built-in
+    // dev2 deploy queue, concurrency 1). Boot-time only, like `ui`.
+    const workQueueConfig = setWorkQueuesConfig(appConfig.workQueues);
+    for (const warning of workQueueConfig.warnings) {
+      logger.warn(`config.json#workQueues: ${warning}`);
+    }
+    timing(
+      `Work queues: ${workQueueConfig.queues.map((q) => `${q.id}(${q.targets.join('|')} ×${q.concurrency})`).join(', ') || 'none'}`,
+    );
+
     // The one injection point for the dashboard deep link: the thread header
     // `dashboardLink` field and the user-started thread link both resolve
     // through it (undefined = viewer not listening = no link).
-    setThreadHeaderProviders({ getDashboardSessionUrl });
+    setThreadHeaderProviders({
+      getDashboardSessionUrl,
+      // 스레드 태스크 카드 (.prd/21): the owner's thread card (by default their dashboard's task card), and the
+      // session's numbers and tasks for its fields.
+      ...threadCardProviders(userSettingsStore),
+    });
 
     // Install operator-controlled additional env (config.json#claude.env)
     // BEFORE any ClaudeHandler / SDK consumers are constructed, so every
@@ -667,6 +734,16 @@ async function start() {
         const { setBotDisplayName } = await import('./slack/tool-formatter');
         setBotDisplayName(authContext.botName);
       }
+      // SSOT 2026-10-29 T8 — the dashboard's chat names the answers after the
+      // bot as Slack shows it (users.info: display name, else real name — not
+      // the auth.test handle). Off the startup path; on failure the handle.
+      setDashboardBotName(authContext.botName);
+      void slackApi
+        .getUserProfile(authContext.userId)
+        .then((p) => {
+          if (p.displayName && p.displayName !== authContext.userId) setDashboardBotName(p.displayName);
+        })
+        .catch(() => {});
       timing(`Slack workspace URL: ${authContext.url}, bot: ${authContext.botName ?? 'unknown'}`);
     } catch (error) {
       logger.error('Failed to initialize Slack workspace URL — thread permalinks will be unavailable', error);
@@ -745,11 +822,32 @@ async function start() {
       logger.info('Dashboard: stopped session', { sessionKey });
     });
 
-    // Connect dashboard: close handler (terminate session)
-    setDashboardCloseHandler(async (sessionKey: string) => {
-      claudeHandler.terminateSession(sessionKey);
-      logger.info('Dashboard: closed session', { sessionKey });
-    });
+    // #598 ④c — the caller of Slack-less tasks' turns, built below once the
+    // work-log appender exists; Close and shutdown reach it through here.
+    let taskTurnController: TaskTurnController | undefined;
+    /** E2 ⑤ — the notice ledger could not be read: tasks that owe their thread are kept (D6). */
+    let taskNoticeLedgerUnreadable = false;
+
+    // Connect dashboard: close handler (terminate session). A task's running
+    // chain is cancelled and committed first; with no notice ledger a task that
+    // owes its thread is refused before that (E2 ⑨).
+    setDashboardCloseHandler(
+      createDashboardCloseHandler({
+        getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+        closeTask: async (key) => taskTurnController?.close(key),
+        terminate: (key) => claudeHandler.terminateSession(key),
+        ledgerUnreadable: () => taskNoticeLedgerUnreadable,
+        // E4 ⑦ (D10 b · c) — an epic's close cancels its running children first; a child's close is its epic's event.
+        getChildTasks: (parentTaskId) => claudeHandler.getSessionRegistry().getChildTasks(parentTaskId),
+        isRunning: (key) => taskTurnController?.isRunning(key) ?? false,
+        runningChain: (key) => taskTurnController?.runningChain(key),
+        markClosedByParent: (key, chain) =>
+          claudeHandler.getSessionRegistry().markClosedByParent(key, Date.now(), chain),
+        recordChildClosed: (key) => claudeHandler.getSessionRegistry().recordEpicChildClosed(key),
+        markClosing: (key, closing) => claudeHandler.getSessionRegistry().markClosing(key, closing),
+        logger,
+      }),
+    );
 
     // Connect dashboard: trash handler (hide session from dashboard)
     setDashboardTrashHandler(async (sessionKey: string) => {
@@ -757,18 +855,49 @@ async function start() {
       logger.info('Dashboard: trashed session', { sessionKey });
     });
 
+    // Connect dashboard: task star + revive (SSOT 2026-10-30). Star pins and
+    // keeps a session alive (and wakes a sleeping one); revive wakes a
+    // sleeping session or restores an archived one — only when its transcript
+    // and cwd prove the conversation can continue (resolveArchivedResume).
+    setDashboardLifecycleHandler({
+      star: (sessionKey, starred) => claudeHandler.getSessionRegistry().setStarred(sessionKey, starred),
+      revive: (sessionKey) => claudeHandler.getSessionRegistry().reviveSession(sessionKey),
+      restore: (archived) => {
+        const proof = resolveArchivedResume(archived, {
+          incidentChannelIds: getIncidentTrustedSource()?.channelIds,
+        });
+        if (!proof.ok) {
+          logger.warn('Dashboard: archived session not restorable', {
+            sessionKey: archived.sessionKey,
+            archivedAt: archived.archivedAt,
+            code: proof.code,
+          });
+          return proof;
+        }
+        return claudeHandler.getSessionRegistry().restoreArchivedSession(archived, proof.cwd);
+      },
+    });
+
+    // The composer's files go up one by one; a retry reuses what Slack already took (#488).
+    const uploadSteerFiles = createSlackSteerUploader(app.client);
     // Connect dashboard: command handler (inject message as if user typed in Slack)
     /** Returns the injected message's identity (channel + ts), undefined when nothing was sent. */
     const injectDashboardMessage = async (
       sessionKey: string,
       message: string,
       onSent?: (sent: { channel: string; ts: string }) => void,
+      attachments: NewTaskAttachment[] = [],
+      /** The signed-in user who sent it (SSOT 2026-11-02); none (a viewer token, the owner's own compact) is the owner. */
+      actorUserId?: string,
     ): Promise<{ channel: string; ts: string } | undefined> => {
       const session = claudeHandler.getSessionByKey(sessionKey);
       if (!session) {
         logger.warn('Dashboard command: session not found', { sessionKey });
         return undefined;
       }
+      // The message enters the thread as its sender's, as if they had typed it
+      // there: a Slack turn runs as the user who wrote it (SSOT 2026-11-02).
+      const sender = actorUserId || session.ownerId;
       // Post the user's message to the Slack thread so it's visible,
       // styled as a quote block with dashboard origin indicator.
       // Validate required fields before attempting Slack echo — fail fast on programming errors
@@ -781,28 +910,39 @@ async function start() {
         return undefined;
       }
 
-      // Register the owner's input before the echo awaits: an auto-mode approval
-      // being decided right now must not be used without it.
+      // Register the owner's input before the first await (file upload, echo): an
+      // auto-mode approval being decided right now must not be used without it.
+      // Only the owner's own words count — another sender registers nothing.
       const ownerInput = slackHandler.beginOwnerInput(
         sessionKey,
-        session.ownerId,
+        sender,
         `dashboard:${Date.now()}:${Math.random().toString(36).slice(2)}`,
       );
       try {
+        // The composer's files (T1.5) go into the thread first — the pipeline
+        // reads them from Slack like files the user attached there. A failed
+        // upload fails the instruction (the dashboard offers a retry); it is
+        // never sent without the files the user meant it to carry.
+        const files = attachments.length
+          ? await uploadSteerFiles(session.channelId, session.threadTs, attachments)
+          : undefined;
+        // A files-only instruction still echoes a line (a section needs text).
+        const echoed = message.trim() ? message : `📎 ${attachments.length}개 파일`;
+
         let echoTs: string | undefined;
         try {
           const echoResult = await app.client.chat.postMessage({
             channel: session.channelId,
             thread_ts: session.threadTs,
-            text: message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+            text: echoed.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
             blocks: [
               {
                 type: 'context',
-                elements: [{ type: 'mrkdwn', text: `💬 *<@${session.ownerId}>* via Dashboard` }],
+                elements: [{ type: 'mrkdwn', text: `💬 *<@${sender}>* via Dashboard` }],
               },
               {
                 type: 'section',
-                text: { type: 'plain_text', text: message.length > 3000 ? `${message.slice(0, 2997)}...` : message },
+                text: { type: 'plain_text', text: echoed.length > 3000 ? `${echoed.slice(0, 2997)}...` : echoed },
               },
             ],
           });
@@ -835,21 +975,36 @@ async function start() {
             channel: session.channelId,
             thread_ts: session.threadTs,
             text: message,
-            user: session.ownerId,
+            user: sender,
             ts,
+            ...(files ? { files } : {}),
           } as any,
           dashboardSay,
           ownerInput,
         );
-        logger.info('Dashboard: command sent to session', { sessionKey, messageLength: message.length });
+        logger.info('Dashboard: command sent to session', {
+          sessionKey,
+          messageLength: message.length,
+          files: attachments.length,
+        });
         return { channel: session.channelId, ts };
       } finally {
         ownerInput?.settle();
       }
     };
-    setDashboardCommandHandler(async (sessionKey: string, message: string) => {
-      await injectDashboardMessage(sessionKey, message);
+    setDashboardCommandHandler(async (sessionKey, message, attachments, actorUserId) => {
+      await injectDashboardMessage(sessionKey, message, undefined, attachments, actorUserId);
     });
+
+    // Connect dashboard: the session's follow-up queue on the panel
+    // (<ui-agent-steering>, batch 2) — Send now / Retry / Cancel through the
+    // Slack controls' own handlers, Edit through editQueued, and every committed
+    // queue change pushes that session to the open panels.
+    setDashboardFollowupHandler({
+      view: (sessionKey) => slackHandler.getFollowupView(sessionKey),
+      act: (request) => slackHandler.handleDashboardFollowupAction(request),
+    });
+    slackHandler.setFollowupChangeListener((sessionKey) => scheduleLiveSessionUpdate(sessionKey));
 
     // Connect dashboard: model switch (SSOT 2026-10-22 T4/T5) — representative
     // models only; a context above the target's auto-compact threshold is
@@ -886,6 +1041,8 @@ async function start() {
       switchSessionEffort(sessionKey, effort, {
         getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
         clamp: clampEffortToModel,
+        menu: allowedEffortsFor,
+        ownerDefaultModel: (ownerId) => (ownerId ? userSettingsStore.getUserDefaultModel(ownerId) : undefined),
         save: () => claudeHandler.saveSessions(),
         broadcast: () => broadcastSessionUpdate(),
       }),
@@ -898,9 +1055,9 @@ async function start() {
     );
 
     // Connect dashboard: choice answer handler (dashboard button click → same path as Slack button)
-    setDashboardChoiceAnswerHandler(async (sessionKey: string, choiceId: string, label: string, question: string) => {
+    setDashboardChoiceAnswerHandler(async (sessionKey, choiceId, label, question, actorUserId) => {
       try {
-        await slackHandler.handleDashboardChoiceAnswer(sessionKey, choiceId, label, question);
+        await slackHandler.handleDashboardChoiceAnswer(sessionKey, choiceId, label, question, actorUserId);
         logger.info('Dashboard: choice answered', { sessionKey, choiceId, label });
       } catch (error) {
         logger.error('Dashboard: choice answer failed', { sessionKey, choiceId, label, error });
@@ -916,9 +1073,9 @@ async function start() {
 
     // Connect dashboard: multi-choice form answer handler
     setDashboardMultiChoiceAnswerHandler(
-      async (sessionKey: string, selections: Record<string, { choiceId: string; label: string }>) => {
+      async (sessionKey: string, selections: Record<string, { choiceId: string; label: string }>, actorUserId) => {
         try {
-          await slackHandler.handleDashboardMultiChoiceAnswer(sessionKey, selections);
+          await slackHandler.handleDashboardMultiChoiceAnswer(sessionKey, selections, actorUserId);
           logger.info('Dashboard: multi-choice answered', {
             sessionKey,
             selectionCount: Object.keys(selections).length,
@@ -931,9 +1088,9 @@ async function start() {
     );
 
     // Connect dashboard: hero "Submit All Recommended" (group-only one-click)
-    setDashboardSubmitRecommendedHandler(async (sessionKey: string) => {
+    setDashboardSubmitRecommendedHandler(async (sessionKey: string, actorUserId) => {
       try {
-        await slackHandler.handleDashboardSubmitRecommended(sessionKey);
+        await slackHandler.handleDashboardSubmitRecommended(sessionKey, actorUserId);
         logger.info('Dashboard: submit-recommended completed', { sessionKey });
       } catch (error) {
         logger.error('Dashboard: submit-recommended failed', { sessionKey, error });
@@ -983,7 +1140,7 @@ async function start() {
       if (!owner) return;
       owner.taskLedger = applyTodoList(owner.taskLedger, todos, Date.now());
       const view = ledgerTasks(owner.taskLedger);
-      broadcastTaskUpdate(sessionKey, view.current, view.earlier);
+      broadcastTaskUpdate(sessionKey, view.current, view.earlier, view.outside);
     });
 
     // Connect dashboard: real-time conversation turn updates
@@ -1006,21 +1163,270 @@ async function start() {
     // events and its subagents' tool entries (≤ 1 read / 10 s per running
     // agent); a turn end reads every agent not sealed yet and seals the ended
     // ones. Off the hot path: the card is pushed when a number changed.
+    // 2026-10-29 T5 (live follow-up) — a call's live frame carries only the
+    // output counted at its start; its final usage is in the transcript. The
+    // tasks' credits are replaced with it: the main agent's calls here, at most
+    // every 10 s while a turn runs and at its end; the subagents' calls as the
+    // spend reader reads their transcripts (`onCalls`).
+    const priceTranscriptCall = (model: string | undefined, c: TranscriptCall) =>
+      calculateTokenCost(model, c.inputTokens, c.outputTokens, c.cacheReadTokens, c.cacheCreateTokens);
     const agentSpendReader = createAgentSpendReader({
       price: (model, t) =>
         calculateTokenCost(model, t.inputTokens, t.outputTokens, t.cacheReadTokens, t.cacheCreateTokens),
       isPriced: hasModelPricing,
+      onCalls: (holder, calls) => {
+        const session = holder as ConversationSession;
+        // A subagent's call is priced by its own model when the table knows it (live used the session's).
+        return reconcileTaskCalls(session.taskLedger, calls, 's:', (c, credited) =>
+          priceTranscriptCall(c.model && hasModelPricing(c.model) ? c.model : (credited ?? session.model), c),
+        );
+      },
     });
+    const mainCallReader = createMainCallReader();
+    const reconciledAt = new Map<string, number>();
+    const RECONCILED_KEPT = 1024;
+    const reconcileTaskUsage = (
+      sessionKey: string,
+      session: ConversationSession,
+      force: boolean,
+      sid: string | undefined = session.sessionId,
+    ) => {
+      if (!sid || !session.taskLedger) return;
+      const at = Date.now();
+      if (!force && at - (reconciledAt.get(sessionKey) ?? 0) < 10_000) return;
+      reconciledAt.delete(sessionKey);
+      reconciledAt.set(sessionKey, at);
+      while (reconciledAt.size > RECONCILED_KEPT) reconciledAt.delete(reconciledAt.keys().next().value as string);
+      void mainCallReader
+        .read(sid, { force })
+        .then((calls) => {
+          // The ledger object may have been replaced meanwhile (a new list): its credits moved with it.
+          const ledger = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey)?.taskLedger;
+          // The main agent's calls: re-priced at the model their live credit used (a /model since does not re-price them).
+          if (
+            reconcileTaskCalls(ledger, calls, 'm:', (c, credited) => priceTranscriptCall(credited ?? session.model, c))
+          ) {
+            scheduleLiveSessionUpdate(sessionKey);
+          }
+        })
+        .catch((error) => {
+          logger.debug('Task usage reconcile failed', {
+            sessionKey,
+            error: (error as Error)?.message ?? String(error),
+          });
+        });
+    };
     const refreshAgentSpend = (sessionKey: string, session: ConversationSession, force: boolean) => {
       if (!session.agents?.agents.length) return;
       void agentSpendReader.refresh(session, { force }).then((changed) => {
         if (changed) scheduleLiveSessionUpdate(sessionKey);
       });
     };
+    const appendSessionWorkLog = createSessionWorkLogAppender({
+      getAllSessions: () => claudeHandler.getAllSessions(),
+      scheduleLiveSessionUpdate,
+      refreshAgentSpend,
+    });
+
+    // #598 ④c — a Slack-less task's instruction from the dashboard runs on the
+    // task executor (its own output graph: dashboard panel, work log, a
+    // fail-closed Slack API) through the controller (D8 refusals, D9 cap,
+    // fallback-compaction re-entry, one chain-level abort on the shared
+    // request coordinator so Stop / shutdown reach it).
+    const taskTurnExecutor = createTaskTurnExecutor({
+      claudeHandler,
+      requestCoordinator: slackHandler.getRequestCoordinator(),
+      mcpCallTracker,
+      todoManager: slackHandler.getTodoManager(),
+      appendSessionWorkLog,
+      createConversation: (s) => createConversationDurable('', '', s.ownerId, s.ownerName ?? '', s.title),
+    });
+    const taskController = createTaskTurnController({
+      runner: taskTurnExecutor,
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      coordinator: slackHandler.getRequestCoordinator(),
+      buildExecutionContext: executionContextForTask,
+      logger: new Logger('TaskTurnController'),
+      // E4 ③ (D9 e) — an epic tree's spend: the epic, its live children, and the
+      // closed ones from their latest archive; the owner's limit.
+      treeCostUsd: (rootKey) => {
+        const registry = claudeHandler.getSessionRegistry();
+        const epic = registry.getSessionByKey(rootKey);
+        // No epic to price (gone, or never one): a host start in its name is not admitted.
+        if (!epic) return Number.POSITIVE_INFINITY;
+        return epicTreeCostUsd(epic, {
+          live: (taskId) => registry.getSessionByTaskId(taskId),
+          archived: (taskId) => archivedCostUsd(getArchiveStore().latest(buildTaskSessionKey(taskId))),
+        });
+      },
+      epicCostLimitUsd: (ownerId) => userSettingsStore.getUserEpicCostLimitUsd(ownerId),
+      // E4 ⑥ — once a chain that started has ended, an epic left with pending events may wake
+      // (grok #702 R1); one that never started is the waker's own retry to make (fable #702 R2).
+      onChainEnd: (key, { started }) => {
+        if (started) epicWaker.wake(key);
+      },
+    });
+    taskTurnController = taskController;
+    // E4 ④a (.prd/19 D3) — the host the epic's tools call: registry reads, the plan writer,
+    // a child's last final from its work log. Set here, not imported there (no cycle).
+    setEpicHost({
+      getTask: (taskId) => claudeHandler.getSessionRegistry().getSessionByTaskId(taskId),
+      getChildTasks: (parentTaskId) => claudeHandler.getSessionRegistry().getChildTasks(parentTaskId),
+      setEpicPlan: (taskId, input, by) => claudeHandler.getSessionRegistry().setEpicPlan(taskId, input, by),
+      readChildFinal: async (child) => {
+        const turnId = child.lastTurnOutcome?.turnId;
+        if (!child.conversationId || !turnId) return undefined;
+        return readTurnFinal(readWorkLog, child.conversationId, turnId);
+      },
+      // E4 ④b — making and starting children (D4 · D8 · D9).
+      createTask: (input) => claudeHandler.createTask(input),
+      createFreshDirectory: (ownerId) => new WorkingDirectoryManager().createSessionBaseDir(ownerId),
+      ensureDirectory: ensureChildFolder,
+      controller: taskController,
+    });
+    // E4 ⑥ (.prd/19 D7) — an epic with pending events wakes when it is idle: when a chain
+    // of its ends (the controller's onChainEnd, above — the post-drain idle hook fires inside
+    // the epic's own commit, before its chain is released, so it is not used), right after
+    // an event, and at boot (below). Never the cron path.
+    const epicWaker = createEpicWaker({
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      controller: taskController,
+      logger: new Logger('EpicWaker'),
+    });
+    claudeHandler.getSessionRegistry().setEpicEventListener((key) => epicWaker.wake(key));
+    setDashboardTaskCommandHandler((sessionKey, message, attachments, actorUserId) =>
+      taskController.start({ sessionKey, text: message, attachments, actorUserId }),
+    );
+    // #599 ⑤ — an answer to a task's open question runs as its next instruction.
+    setDashboardTaskAnswerHandler((sessionKey, askId, answer, actorUserId) =>
+      taskController.answer({ sessionKey, askId, answer, actorUserId }),
+    );
+    // #600 ⑥ — the dashboard's "new task" as a Slack-less task: folder, task, first instruction.
+    const taskLauncher = createTaskLauncher({
+      controller: taskController,
+      createTask: (input) => claudeHandler.createTask(input),
+      createFreshDirectory: (ownerId) => new WorkingDirectoryManager().createSessionBaseDir(ownerId),
+      listModels: (ownerId) => offeredNewTaskModels(ownerId),
+      cleanupSessions: () =>
+        [...claudeHandler.getAllSessions()].map(([key, s]) => ({ key, sourceWorkingDirs: s.sourceWorkingDirs })),
+      // E4 ④a-2 (.prd/19 D12) — epics only for an owner who turned them on.
+      epicTasksEnabled: (ownerId) => userSettingsStore.getUserEpicTasks(ownerId),
+    });
+    setDashboardTaskLauncher(taskLauncher);
+    // E2 ⑤ — the one poster of a Slack-less task's notices to its instruction
+    // thread (.prd/18 D6 · D7 · D10). Its ledger is loaded before anything
+    // registers; a ledger that cannot be read leaves the deliverer off (the
+    // notices stay on their task records) rather than start empty and re-post.
+    let taskNoticeDeliverer: TaskNoticeDeliverer | undefined;
+    {
+      const registry = claudeHandler.getSessionRegistry();
+      const ledger = new TaskNotificationLedger(path.join(DATA_DIR, TASK_NOTIFICATION_LEDGER_FILENAME));
+      try {
+        ledger.load();
+        const deliverer = createTaskNoticeDeliverer({
+          ledger,
+          post: async (target, message) => {
+            const res = await slackClient.chat.postMessage({
+              channel: target.channel,
+              thread_ts: target.threadTs,
+              text: message.text,
+              ...(message.blocks ? { blocks: message.blocks as any[] } : {}),
+              unfurl_links: false,
+            });
+            return { ts: res.ts };
+          },
+          readFinal: (conversationId, turnId) => readTurnFinal(readWorkLog, conversationId, turnId),
+          cardUrl: (ownerId, sessionKey) => getDashboardSessionUrl(ownerId, sessionKey),
+          getTask: (taskId) => {
+            const session = registry.getSessionByTaskId(taskId);
+            return session ? { session, sessionKey: buildTaskSessionKey(taskId) } : undefined;
+          },
+          settled: (taskId, noticeId) => registry.pruneTaskNotice(taskId, noticeId),
+          isApprovalOpen: (approvalId) => claudeHandler.isTaskApprovalOpen(approvalId),
+          logger: new Logger('TaskNoticeDeliverer'),
+        });
+        registry.setTaskNoticeListener((session, sessionKey) => {
+          deliverer.enqueue(session, sessionKey);
+          void deliverer.deliver();
+        });
+        slackHandler.setTaskNoticeHandoff((sessionKey, session) => {
+          deliverer.handoff(session, sessionKey);
+          void deliverer.deliver();
+        });
+        setTaskNoticeFailureProvider((sessionKey) => deliverer.failures(sessionKey));
+        taskNoticeDeliverer = deliverer;
+        // E2 ⑧ — a plain instruction from a user who turned it on becomes a
+        // dashboard task (.prd/18 D1 · D2 · D11 · D12). Only with a deliverer:
+        // without one the thread would never get its link or results.
+        const slackApi = slackHandler.getSlackApi();
+        slackHandler.setTaskEntry(
+          createSlackTaskEntry({
+            isEnabled: (userId) => userSettingsStore.getUserSlackTaskEntry(userId),
+            isDashboardListening,
+            newUserGate: (at) =>
+              runNewUserGate(
+                {
+                  getUserSettings: (u) => userSettingsStore.getUserSettings(u),
+                  createPendingUser: (u, n) => createPendingUserRequest(u, n),
+                  notifyAdmins: (u, n) => notifyAdminsNewUser(slackApi, u, n),
+                  postMessage: (c, text, options) => slackApi.postMessage(c, text, options),
+                  logger: new Logger('TaskEntryGate'),
+                },
+                at,
+              ),
+            getUserName: (userId) => slackApi.getUserName(userId),
+            canStart: (ownerId, text) => taskController.canStart(ownerId, text),
+            launch: (request) => taskLauncher.launch(request),
+            getTaskByKey: (sessionKey) => registry.getSessionByKey(sessionKey),
+            getTaskByOriginThread: (channel, threadTs) => registry.getTaskByOriginThread(channel, threadTs),
+            notStarted: (session, sessionKey, reason) => deliverer.notStarted(session, sessionKey, reason),
+            cardUrl: (ownerId, sessionKey) => getDashboardSessionUrl(ownerId, sessionKey),
+            inputContext: async (channel) => {
+              const info = getChannel(channel);
+              const channelDescription = await getChannelDescription(slackApi.getClient(), channel);
+              return {
+                ...(info?.name ? { channelName: info.name } : {}),
+                ...(channelDescription ? { channelDescription } : {}),
+                ...(info?.repos?.length ? { repos: info.repos } : {}),
+                ...(info?.confluenceUrl ? { confluenceUrl: info.confluenceUrl } : {}),
+              };
+            },
+            reactions: {
+              remove: (channel, ts, name) => slackApi.removeReaction(channel, ts, name),
+              add: (channel, ts, name) => slackApi.addReaction(channel, ts, name),
+            },
+            logger: new Logger('SlackTaskEntry'),
+          }),
+        );
+      } catch (error) {
+        logger.error('Task notice ledger unreadable — task thread notices stay on their tasks, undelivered', {
+          error: (error as Error)?.message,
+        });
+        // Fail closed (D6): a task that still owes its thread is not deleted while
+        // there is no ledger to hand that to (fable #668 P2-1).
+        taskNoticeLedgerUnreadable = true;
+        slackHandler.setTaskNoticeHandoff((sessionKey, session) => {
+          if (owesInstructionThread(session)) {
+            throw new Error(`task notice ledger unreadable — ${sessionKey} kept until its notices can be handed over`);
+          }
+        });
+      }
+    }
+    {
+      // One approval listener, two hearers: the thread is told at once, an expiry once (E2 ⑥),
+      // and a child's epic records it as needs-input (E4 ⑤, D6 c) — with or without a deliverer.
+      const deliverer = taskNoticeDeliverer;
+      const registry = claudeHandler.getSessionRegistry();
+      claudeHandler.setTaskApprovalListener(
+        composeTaskApprovalListeners(deliverer ? (event) => deliverer.approval(event) : undefined, (event) =>
+          registry.recordEpicApproval(event),
+        ),
+      );
+    }
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
       recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => void;
-      notifyLiveUsage: (sessionKey: string) => void;
+      notifyLiveUsage: (sessionKey: string, call?: LiveUsageCall) => void;
       priceLiveUsage: (
         model: string | undefined,
         t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
@@ -1028,34 +1434,37 @@ async function start() {
     } = {
       // SSOT 2026-10-22 T1/T2 — a running turn made another API call: push the
       // card (≤ 1/s per session) so its token / cost totals grow live.
-      notifyLiveUsage: (sessionKey: string) => scheduleLiveSessionUpdate(sessionKey),
-      priceLiveUsage: (model, t) =>
-        calculateTokenCost(model, t.inputTokens, t.outputTokens, t.cacheReadTokens, t.cacheCreateTokens),
-      appendWorkLog: (conversationId: string, entry: WorkLogInput) => {
-        // SSOT 2026-10-22 T7/T10: the entry carries the task in progress (the
-        // dashboard folds the log under it) and a tool call counts on that task.
-        // Spec 12: the task — and the tool count — of the agent that made the
-        // entry: a subagent's own ledger, the session's for the main agent.
-        let owner: ConversationSession | undefined;
-        let ownerKey: string | undefined;
-        for (const [key, session] of claudeHandler.getAllSessions()) {
-          if (session.conversationId === conversationId) {
-            owner = session;
-            ownerKey = key;
-            break;
+      // 2026-10-29 T5: the call also counts on the tasks in progress — tokens
+      // and its API-equivalent cost (priced like the live totals), main agent
+      // and subagents alike (a subagent works for the main task that spawned it).
+      notifyLiveUsage: (sessionKey: string, call?: LiveUsageCall) => {
+        if (call) {
+          const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
+          if (session) {
+            // Work before the first TodoWrite is held too (review R1: it was dropped).
+            session.taskLedger = session.taskLedger ?? emptyTaskLedger(Date.now());
+            const key = call.messageId ? `${call.sidechain ? 's:' : 'm:'}${call.messageId}` : undefined;
+            const cost = calculateTokenCost(
+              session.model,
+              call.inputTokens,
+              call.outputTokens,
+              call.cacheReadTokens,
+              call.cacheCreateTokens,
+            );
+            creditTaskUsage(session.taskLedger, key, call, Number.isFinite(cost) ? cost : 0, session.model);
+            // The calls before this one have their final usage in the transcript by now.
+            reconcileTaskUsage(sessionKey, session, false);
           }
         }
-        const stamped = stampWorkLogAgent(owner ?? {}, entry, Date.now());
-        // A node's tool count grew — a subagent's, or the main agent's (the
-        // registry root): push the card (throttled, ≤ 1/s per session).
-        if (entry.kind === 'tool' && ownerKey) scheduleLiveSessionUpdate(ownerKey);
-        // A subagent is working: its spend may have grown (throttled read).
-        if (entry.agentId && owner && ownerKey) refreshAgentSpend(ownerKey, owner, false);
-        // SSOT 2026-10-23 T1/T7: files the model sends to Slack and its markdown
-        // answers become dashboard artifacts. Before the store sees it, while
-        // `entry` still has the whole final text (the work log caps it).
-        void captureArtifactFromWorkLog(conversationId, entry);
-        appendWorkLog(conversationId, stamped).catch(() => {});
+        scheduleLiveSessionUpdate(sessionKey);
+      },
+      priceLiveUsage: (model, t) =>
+        calculateTokenCost(model, t.inputTokens, t.outputTokens, t.cacheReadTokens, t.cacheCreateTokens),
+      // The pipeline (agent stamp, card push, artifact capture, append) is shared
+      // with a Slack-less task's writer, which keeps the promise (#598 ④b).
+      // Slack turns' recording stays best-effort: the promise is swallowed.
+      appendWorkLog: (conversationId: string, entry: WorkLogInput) => {
+        appendSessionWorkLog(conversationId, entry).catch(() => {});
       },
       // Spec 12 — the session's agent tree: fold the event into its registry
       // and push the card when something changed (throttled, ≤ 1/s per session).
@@ -1064,6 +1473,12 @@ async function start() {
         if (!session) return;
         if (applyAgentEvent(session, event)) scheduleLiveSessionUpdate(sessionKey);
         refreshAgentSpend(sessionKey, session, event.kind === 'turn_end');
+        // A turn's last call: its transcript line is written as the turn ends — read it just after.
+        // The SDK session is taken now: a /new in the next 1.5 s must not point the read at the new transcript (review).
+        if (event.kind === 'turn_end') {
+          const sid = session.sessionId;
+          setTimeout(() => reconcileTaskUsage(sessionKey, session, true, sid), 1500).unref?.();
+        }
       },
     };
     setStreamExecutorProviders(workLogProviders);
@@ -1134,36 +1549,32 @@ async function start() {
     // Connect summary generation: update session title on Slack thread header
     setOnSummaryGeneratedCallback((conversationId, _turn, summaryTitle) => {
       const registry = claudeHandler.getSessionRegistry();
-      const allSessions = registry.getAllSessions();
-      const session = [...allSessions.values()].find((s) => s.conversationId === conversationId);
-      if (!session) {
+      // By registry key, so a Slack-less task's card gets its summary title too (#615 R1).
+      const result = applySummaryTitle(registry, conversationId, summaryTitle, {
+        renderThread: (session) => slackHandler.requestThreadSurfaceRender(session),
+        scheduleLiveUpdate: scheduleLiveSessionUpdate,
+      });
+      if (result.outcome === 'no-session') {
         logger.warn('Summary generated but no active session found', {
           conversationId,
           summaryTitle,
-          totalActiveSessions: allSessions.size,
+          totalActiveSessions: registry.getAllSessions().size,
         });
-        return;
-      }
-      // Guard: only overwrite title when it hasn't been deliberately set
-      // (e.g. by dispatch or issue linking). Treat conversationId-equal titles as "empty",
-      // and a provisional cron job-name title as a placeholder (SSOT 2026-10-23 T2).
-      if (!canApplySummaryTitle(session)) {
+      } else if (result.outcome === 'kept') {
+        // Guard: only overwrite title when it hasn't been deliberately set
+        // (e.g. by dispatch or issue linking) — see canApplySummaryTitle.
         logger.debug('Skipping summary title — session already has a deliberate title', {
           conversationId,
-          existingTitle: session.title,
+          existingTitle: result.session.title,
           summaryTitle,
         });
-        return;
+      } else {
+        logger.debug('Summary title applied to session', {
+          conversationId,
+          summaryTitle,
+          sessionKey: result.sessionKey,
+        });
       }
-      registry.updateSessionTitle(session.channelId, session.threadTs, summaryTitle);
-      slackHandler.requestThreadSurfaceRender(session);
-      // The dashboard card shows the new headline now, not at the next poll.
-      scheduleLiveSessionUpdate(registry.getSessionKey(session.channelId, session.threadTs));
-      logger.debug('Summary title applied to session', {
-        conversationId,
-        summaryTitle,
-        sessionKey: `${session.channelId}:${session.threadTs}`,
-      });
     });
 
     // Connect OAuth: email → Slack user lookup for dashboard login
@@ -1181,6 +1592,28 @@ async function start() {
       timing('Conversation viewer web server started');
     } catch (error) {
       logger.warn('Failed to start conversation viewer (non-critical)', error);
+    }
+
+    // E4 ⑥ (D7) — boot scan, with the dashboard up: an epic left with pending events wakes.
+    for (const [key, session] of claudeHandler.getAllSessions()) {
+      if (session.slackless === true && session.kind === 'epic') epicWaker.wake(key);
+    }
+
+    // E2 ⑤ / D13 — after the load and its reconciliation save, and with the
+    // dashboard up (the card links): register what live tasks owe their
+    // threads, then post everything the ledger has not posted.
+    if (taskNoticeDeliverer) {
+      for (const [key, session] of claudeHandler.getAllSessions()) {
+        if (session.slackless !== true || !session.notices?.length) continue;
+        try {
+          taskNoticeDeliverer.enqueue(session, key);
+        } catch (error) {
+          logger.error('Task notices not registered at boot', { key, error: (error as Error)?.message });
+        }
+      }
+      // A notice that had failed is tried once more after a restart (D13).
+      void taskNoticeDeliverer.deliver({ retryFailed: true });
+      timing('Task notice deliverer: boot scan started');
     }
 
     // Start the app
@@ -1391,6 +1824,8 @@ async function start() {
         injectContinuation: goalMessageInjector,
         postNotice: postGoalNotice,
         postOwnerDm: postGoalOwnerDm,
+        // Same failure twice → ask the owner (thread form + dashboard card).
+        askStallQuestion: (question) => slackHandler.askGoalStallQuestion(question),
         logger,
         fallbackModel: 'claude-sonnet-4-20250514',
         // S9: optional cheaper eval tier. Unset → eval matches the work model.
@@ -1402,18 +1837,46 @@ async function start() {
       // released its request-coordinator slot. The controller owns all loop
       // state, serialization, and ordering (M4); the hook only forwards the
       // sessionKey and returns immediately.
-      slackHandler.setGoalTurnSettledHandler((sessionKey: string) => {
-        goalLoopController.onTurnSettled(sessionKey);
+      slackHandler.setGoalTurnSettledHandler((sessionKey: string, opts?: { cause?: 'turn' | 'kick' }) => {
+        goalLoopController.onTurnSettled(sessionKey, opts);
       });
       // S1/S3: let goal action handlers (Delete-advance, owner-DM Continue)
       // kick the loop without holding a direct controller reference.
+      // A kick: no turn ran, so an unchanged summary is not re-judged.
       setGoalLoopResumeHandler((sessionKey: string) => {
-        goalLoopController.onTurnSettled(sessionKey);
+        goalLoopController.onTurnSettled(sessionKey, { cause: 'kick' });
       });
       // SSOT 2026-10-21: the goal-list Delete button and the dashboard share
       // ONE host path for goal-list changes (opening turn through the fence).
       setHostGoalActionHandler((sessionKey, action, actorUserId) =>
         slackHandler.handleHostGoalAction(sessionKey, action, actorUserId),
+      );
+      // The cap decision ("Goal 계속 진행할까요?") is one request with two
+      // surfaces — the owner's DM and the dashboard's approval card. An answer
+      // or a retirement on either side rewrites the DM and pushes the board.
+      setGoalCapDecisionSurfaces({
+        updateDm: (ref, text) =>
+          goalSlackApi.updateMessage(ref.channel, ref.ts, text, [{ type: 'section', text: { type: 'mrkdwn', text } }]),
+        broadcast: () => registry.broadcastSessionUpdate(),
+      });
+      setGoalCapDecisionRetirer(retireGoalCapDecision);
+      setDashboardGoalDecisionHandler((sessionKey, answer, actorUserId) =>
+        answerGoalCapDecision({
+          session: registry.getSessionByKey(sessionKey),
+          sessionKey,
+          goalId: answer.goalId,
+          decisionId: answer.decisionId,
+          actor: actorUserId,
+          decision: answer.decision,
+          surface: 'dashboard',
+          save: () => registry.saveSessionsOrThrow(),
+        }),
+      );
+      // DM rewrites the previous process could not deliver.
+      flushGoalCapDmSync((decisionId) =>
+        [...registry.getAllSessions().values()].some(
+          (s) => s.goal?.capDecisionId === decisionId && s.goal.capDmPendingAt !== undefined,
+        ),
       );
       timing('Goal turn-settled driver installed');
     } catch (error) {
@@ -1512,6 +1975,10 @@ async function start() {
         // into a queue we are freezing. It throws on a store failure, which is
         // why it belongs INSIDE this try, immediately before the sweep.
         slackHandler.prepareFollowupShutdown();
+        // #598 ④c — no new dashboard task chain starts once shutdown begins; a
+        // running one ends through `clearAll()`'s `shutdown` abort, stays
+        // `working` on disk, and restart reconciliation records it.
+        taskTurnController?.stopAccepting();
         slackHandler.getRequestCoordinator().clearAll();
       } catch (error) {
         // `prepare` may have SUCCEEDED and `clearAll` refused afterwards, in
@@ -1519,6 +1986,7 @@ async function start() {
         // the shutdown guard: a bot that stays up but silently refuses every
         // message is a worse outage than the shutdown we just declined.
         slackHandler.cancelFollowupShutdownPreparation();
+        taskTurnController?.resumeAccepting();
         // Wording matters operationally: `clearAll()` aborts session-by-session,
         // so a refusal partway through leaves a MIX — earlier sessions already
         // stopped, the refused one (and any after it) still live. Claiming
@@ -1584,6 +2052,22 @@ async function start() {
       if (githubAuth) {
         githubAuth.stopAutoRefresh();
         logger.info('GitHub App auto-refresh stopped');
+      }
+
+      // E2 ⑤ — no new task notice pass or retry once shutting down (grok #668 P3);
+      // wait, bounded, for a post under way so its mark is saved — a post cut
+      // by the exit is sent again at boot (fable #668 P3-3).
+      if (taskNoticeDeliverer) {
+        let stopTimer: NodeJS.Timeout | undefined;
+        const ended = await Promise.race([
+          taskNoticeDeliverer.stop().then(() => true),
+          new Promise<false>((resolve) => {
+            stopTimer = setTimeout(() => resolve(false), 3000);
+            stopTimer.unref?.();
+          }),
+        ]);
+        clearTimeout(stopTimer);
+        if (!ended) logger.warn('Task notice post still under way at shutdown — it may be sent again at boot');
       }
 
       // Stop conversation viewer

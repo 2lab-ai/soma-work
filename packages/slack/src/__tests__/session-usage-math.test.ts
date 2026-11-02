@@ -20,6 +20,7 @@ import { describe, expect, it } from 'vitest';
 import {
   adoptSdkSessionId,
   applyPostCompactOccupancy,
+  sanitizeSessionUsage,
   selectCurrentContextTokens,
   settleFoldedLiveUsage,
   toTurnUsage,
@@ -450,5 +451,80 @@ describe('creditTaskSpend — a fold priced at the parent rate is corrected by t
     expect(holder.taskUsage.inputTokens).toBe(1000);
     expect(holder.taskUsage.costUsd).toBeCloseTo(6);
     expect(holder.taskUsage.pendingFold).toBeUndefined();
+  });
+});
+
+/**
+ * ssot-task: T2 — a saved occupancy above its window is not a reading
+ * (a dev deployment, 2026-10-30: sessions.json carried `current*` = the session's
+ * whole running total, 187,891,067 against a 1M window). Restoring it kept
+ * the dashboard at `187.9M/1M` and re-fired the compact announcement after
+ * every restart until the next real reading.
+ */
+describe('sanitizeSessionUsage — occupancy above the window', () => {
+  const totals = {
+    totalInputTokens: 3_868_187,
+    totalOutputTokens: 426_418,
+    totalCacheReadTokens: 172_893_178,
+    totalCacheCreateTokens: 10_703_284,
+    totalCostUsd: 134.57,
+  };
+
+  it('drops the impossible occupancy and keeps the billing totals', () => {
+    const restored = sanitizeSessionUsage(
+      {
+        currentInputTokens: 3_868_187,
+        currentOutputTokens: 426_418,
+        currentCacheReadTokens: 172_893_178,
+        currentCacheCreateTokens: 10_703_284,
+        contextWindow: 1_000_000,
+        ...totals,
+        lastUpdated: 1793342535410,
+      },
+      1_000_000,
+    );
+    expect(restored).toBeDefined();
+    const u = restored!;
+    expect(u.currentInputTokens + u.currentOutputTokens + u.currentCacheReadTokens + u.currentCacheCreateTokens).toBe(
+      0,
+    );
+    expect(u.totalInputTokens).toBe(totals.totalInputTokens);
+    expect(u.totalCacheReadTokens).toBe(totals.totalCacheReadTokens);
+    expect(u.totalCostUsd).toBe(totals.totalCostUsd);
+    expect(u.contextWindow).toBe(1_000_000);
+  });
+
+  it('does not judge against a fallback window — a guessed window may be the base 200k of a 1M session', () => {
+    const restored = sanitizeSessionUsage(
+      {
+        currentInputTokens: 32_960,
+        currentOutputTokens: 1_000,
+        currentCacheReadTokens: 354_320,
+        currentCacheCreateTokens: 0,
+        contextWindow: 0,
+        ...totals,
+        lastUpdated: 1,
+      },
+      200_000,
+    );
+    expect(restored!.contextWindow).toBe(200_000);
+    expect(restored!.currentCacheReadTokens).toBe(354_320);
+  });
+
+  it('keeps an occupancy within the window as saved', () => {
+    const restored = sanitizeSessionUsage(
+      {
+        currentInputTokens: 2_000,
+        currentOutputTokens: 1_000,
+        currentCacheReadTokens: 400_000,
+        currentCacheCreateTokens: 7_000,
+        contextWindow: 1_000_000,
+        ...totals,
+        lastUpdated: 1,
+      },
+      1_000_000,
+    );
+    expect(restored!.currentCacheReadTokens).toBe(400_000);
+    expect(restored!.currentInputTokens).toBe(2_000);
   });
 });

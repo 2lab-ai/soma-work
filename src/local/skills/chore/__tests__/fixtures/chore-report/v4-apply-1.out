@@ -1,0 +1,5 @@
+RESULT	OK	delete-remote	feat/login-form	deleted
+RESULT	OK	delete-remote	feat/a%3Db%25c	deleted
+RESULT	NOT-ATTEMPTED	delete-remote	feat/stale-skip	run aborted at remote-batch-1
+RESULT	UNKNOWN	delete-remote	feat/unknown-then-gone	sent at remote-batch-1, outcome unread
+ABORTED	run_id=20261015T051233Z-0a1b2c3d	at=remote-batch-1	ok=2	skip=0	fail=0	unknown=1	unattempted=1	reason=push failed: connection reset	attempt=20261019T020000Z-1a2b3c4d	scope=only-group	journal=/repo/.git/chore/20261015T051233Z-0a1b2c3d.journal

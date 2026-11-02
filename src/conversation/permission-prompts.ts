@@ -15,7 +15,13 @@
  */
 
 import { overridableRulesByIds } from 'somalib/permission/dangerous-rules';
-import { PERMISSION_PROMPT_KIND, type PendingApproval, sharedStore } from 'somalib/permission/shared-store';
+import {
+  PERMISSION_PROMPT_KIND,
+  type PendingApproval,
+  type PermissionAdvice,
+  type PermissionRecommendation,
+  sharedStore,
+} from 'somalib/permission/shared-store';
 import { Logger } from '../logger';
 
 const logger = new Logger('DashboardPermissionPrompts');
@@ -28,8 +34,14 @@ export interface DashboardPermissionRequest {
   requesterId?: string;
   /** Matched overridable dangerous-command rules (static catalog text). */
   rules: Array<{ id: string; label: string; description: string }>;
-  /** True when "Approve & disable rule (this session)" applies. */
+  /** True when "Approve & disable rule (this session)" applies — never when the AI advised against the call. */
   canDisableRule: boolean;
+  /**
+   * SSOT 2026-11-02 — the AI's recommendation, so every viewer's card is
+   * green or red. What the call does and why it is risky can quote the
+   * command, so they are in the requester-only detail.
+   */
+  aiRecommendation?: PermissionRecommendation;
   createdAt: number;
   expiresAt: number;
 }
@@ -39,6 +51,8 @@ export interface DashboardPermissionDetail extends DashboardPermissionRequest {
   /** Pretty-printed JSON, cut at {@link PERMISSION_INPUT_MAX_CHARS}. */
   input: string;
   truncated: boolean;
+  /** The AI's advice in full (absent when it gave none). */
+  advice?: PermissionAdvice;
 }
 
 export const PERMISSION_INPUT_MAX_CHARS = 64 * 1024;
@@ -47,21 +61,48 @@ export function permissionThreadKey(channel: string | undefined, threadTs: strin
   return `${channel ?? ''}:${threadTs ?? ''}`;
 }
 
+const TASK_INDEX_PREFIX = 'task-key:';
+
+/**
+ * The index key of one prompt: a Slack-less task's (#599 ⑤b) is its own
+ * session key and the turn that raised it, which no `channel:thread` key can
+ * equal; a Slack prompt's is its thread. A task has no channel or thread, so
+ * keying it by thread would put every channel-less prompt on every task's card.
+ */
+function promptIndexKey(approval: PendingApproval): string {
+  return approval.task_key
+    ? taskIndexKey(approval.task_key, approval.turn_id ?? '')
+    : permissionThreadKey(approval.channel, approval.thread_ts);
+}
+
+function taskIndexKey(taskKey: string, turnId: string): string {
+  return `${TASK_INDEX_PREFIX}${taskKey}#${turnId}`;
+}
+
 function toRequest(approvalId: string, approval: PendingApproval): DashboardPermissionRequest {
   const rules = overridableRulesByIds(approval.rule_ids ?? []).map((r) => ({
     id: r.id,
     label: r.label,
     description: r.description,
   }));
+  const ai = adviceOf(approval)?.recommendation;
   return {
     approvalId,
     toolName: String(approval.tool_name ?? ''),
     ...(approval.user ? { requesterId: approval.user } : {}),
     rules,
-    canDisableRule: rules.length > 0,
+    canDisableRule: rules.length > 0 && ai !== 'deny',
+    ...(ai ? { aiRecommendation: ai } : {}),
     createdAt: Number(approval.created_at) || 0,
     expiresAt: Number(approval.expires_at) || 0,
   };
+}
+
+/** The record's advice when it is well formed (the store is a shared directory). */
+function adviceOf(approval: PendingApproval): PermissionAdvice | undefined {
+  const a = approval.advice;
+  if (!a || (a.recommendation !== 'approve' && a.recommendation !== 'deny')) return undefined;
+  return { recommendation: a.recommendation, summary: String(a.summary ?? ''), risk: String(a.risk ?? '') };
 }
 
 export function permissionPromptDetail(approvalId: string, approval: PendingApproval): DashboardPermissionDetail {
@@ -72,10 +113,12 @@ export function permissionPromptDetail(approvalId: string, approval: PendingAppr
     input = String(approval.input);
   }
   const truncated = input.length > PERMISSION_INPUT_MAX_CHARS;
+  const advice = adviceOf(approval);
   return {
     ...toRequest(approvalId, approval),
     input: truncated ? input.slice(0, PERMISSION_INPUT_MAX_CHARS) : input,
     truncated,
+    ...(advice ? { advice } : {}),
   };
 }
 
@@ -91,11 +134,31 @@ export function pendingPermissionsFor(
   return byThread.get(permissionThreadKey(channel, threadTs)) ?? [];
 }
 
+/**
+ * A changed index key as callers name it: a task's session key, or a
+ * `channel:thread` key. The board's watcher only needs "something changed";
+ * the names are for callers (and tests) that care which session it was.
+ */
+function reportedKey(indexKey: string): string {
+  if (!indexKey.startsWith(TASK_INDEX_PREFIX)) return indexKey;
+  return indexKey.slice(TASK_INDEX_PREFIX.length, indexKey.lastIndexOf('#'));
+}
+
+/**
+ * Prompts pending for one Slack-less task (#599 ⑤b) raised by the turn it is
+ * running (`activeTaskTurnId`); empty when none or when no turn runs — a
+ * prompt of an ended turn has no waiter left.
+ */
+export function pendingTaskPermissionsFor(taskKey: string, turnId: string | undefined): DashboardPermissionRequest[] {
+  if (!turnId) return [];
+  return byThread.get(taskIndexKey(taskKey, turnId)) ?? [];
+}
+
 async function readAndDiff(): Promise<string[]> {
   const next = new Map<string, DashboardPermissionRequest[]>();
   for (const { approvalId, approval } of await sharedStore.listPendingApprovals()) {
     if (approval.kind !== PERMISSION_PROMPT_KIND) continue;
-    const key = permissionThreadKey(approval.channel, approval.thread_ts);
+    const key = promptIndexKey(approval);
     const list = next.get(key) ?? [];
     list.push(toRequest(approvalId, approval));
     next.set(key, list);
@@ -108,7 +171,7 @@ async function readAndDiff(): Promise<string[]> {
   }
   const changed: string[] = [];
   for (const key of new Set([...signatures.keys(), ...nextSignatures.keys()])) {
-    if (signatures.get(key) !== nextSignatures.get(key)) changed.push(key);
+    if (signatures.get(key) !== nextSignatures.get(key)) changed.push(reportedKey(key));
   }
   byThread = next;
   signatures = nextSignatures;
@@ -116,7 +179,8 @@ async function readAndDiff(): Promise<string[]> {
 }
 
 /**
- * Re-read the store. Returns the thread keys whose prompts appeared, changed
+ * Re-read the store. Returns the thread keys (a task's session key for a
+ * Slack-less task) whose prompts appeared, changed
  * or went away since the previous read. Calls run one after another, each on
  * a fresh read.
  */

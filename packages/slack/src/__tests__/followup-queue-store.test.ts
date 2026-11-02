@@ -204,6 +204,35 @@ describe('FollowupQueueStore', () => {
       expect(store().load()).toEqual(original);
     });
 
+    it('round-trips a re-parked host turn (routeContext.hostTurn) and rejects a non-boolean marker', () => {
+      const original = snapshot([
+        item({
+          message: message({
+            text: '[goal-continuation] Continue',
+            routeContext: { compactRedispatch: true, hostTurn: true },
+          }),
+        }),
+      ]);
+      store().save(original);
+      expect(store().load()).toEqual(original);
+      expect(() =>
+        parseFollowupQueueSnapshot(
+          snapshot([item({ message: message({ routeContext: { hostTurn: 'yes' as never } }) })]),
+        ),
+      ).toThrow(/routeContext\.hostTurn/);
+    });
+
+    it('round-trips a task entry candidate (routeContext.taskEntryCandidate, E2 ⑦) and rejects a non-boolean marker', () => {
+      const original = snapshot([item({ message: message({ routeContext: { taskEntryCandidate: true } }) })]);
+      store().save(original);
+      expect(store().load()).toEqual(original);
+      expect(() =>
+        parseFollowupQueueSnapshot(
+          snapshot([item({ message: message({ routeContext: { taskEntryCandidate: 'yes' as never } }) })]),
+        ),
+      ).toThrow(/routeContext\.taskEntryCandidate/);
+    });
+
     it('rejects a steerUuid that is not a string rather than dropping it', () => {
       expect(() => parseFollowupQueueSnapshot(snapshot([item({ steerUuid: 7 as never })]))).toThrow(
         'items[0].steerUuid is not a string',

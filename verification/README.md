@@ -17,7 +17,9 @@ vectors; vitest replays the vectors against the TypeScript (`npm run test:releas
   generates **conformance vectors** (inputs and its outputs), committed under
   `verification/vectors/`, and vitest replays each one against the **real exported function**.
 - **Lean Verify** (`.github/workflows/lean-verify.yml`) rebuilds and audits every proof,
-  regenerates the vectors, fails on drift, then runs the gate's self-test. Fork PRs are refused by
+  regenerates the vectors, fails on drift, then runs the gate's self-test — on every push, and on
+  a pull request only when it changes `verification/`, `scripts/verification/` or the workflow
+  (`scripts/verification/selftest-scope.sh`; an undeterminable diff runs it). Fork PRs are refused by
   the same guard as `ci.yml`. The gate appends elan's and Homebrew's bin directories to `PATH`, so
   any Node stage runs on the Node the job itself set up.
 

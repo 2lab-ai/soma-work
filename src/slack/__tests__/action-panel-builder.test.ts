@@ -20,19 +20,9 @@ function getStatusSectionText(payload: { blocks: any[] }): string {
   return '';
 }
 
-function getFieldsSectionText(payload: { blocks: any[] }): string {
-  // Find the summary fields section (has "소요 시간" or "도구 사용"), not the hero fields
-  const fieldsBlock = payload.blocks.find(
-    (block) =>
-      block.type === 'section' &&
-      Array.isArray(block.fields) &&
-      block.fields.some((f: any) => /소요 시간|도구 사용/.test(String(f.text || ''))),
-  );
-  if (!fieldsBlock) return '';
-  return fieldsBlock.fields.map((f: any) => String(f.text || '')).join(' ');
-}
-
 describe('ActionPanelBuilder', () => {
+  // Workflow buttons were removed on 2026-10-27; every workflow now renders the
+  // same controls (see action-panel-builder.buttons.test.ts).
   it('builds close-only action row for default workflow', () => {
     const payload = ActionPanelBuilder.build({ sessionKey: 'session-1', workflow: 'default' });
     const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
@@ -40,75 +30,6 @@ describe('ActionPanelBuilder', () => {
 
     expect(actionBlocks).toHaveLength(1);
     expect(actionIds).toEqual(['panel_close']);
-  });
-
-  it('includes fix_new/fix_renew/approve/docs/close buttons for pr-review workflow', () => {
-    const payload = ActionPanelBuilder.build({ sessionKey: 'session-2', workflow: 'pr-review' });
-    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
-    const actionIds = actionBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
-
-    expect(actionIds).toEqual(
-      expect.arrayContaining([
-        'panel_pr_fix_new',
-        'panel_pr_fix_renew',
-        'panel_pr_approve',
-        'panel_pr_docs',
-        'panel_close',
-      ]),
-    );
-  });
-
-  it('dynamically adds review buttons when prUrl exists and workflow has no review buttons', () => {
-    const payload = ActionPanelBuilder.build({
-      sessionKey: 'session-2b',
-      workflow: 'jira-create-pr',
-      prUrl: 'https://github.com/org/repo/pull/1',
-    });
-    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
-    const actionIds = actionBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
-
-    expect(actionIds).toContain('panel_pr_review_new');
-    expect(actionIds).toContain('panel_pr_review_renew');
-    expect(actionIds).toContain('panel_close');
-  });
-
-  it('does not duplicate review buttons when workflow already has them', () => {
-    const payload = ActionPanelBuilder.build({
-      sessionKey: 'session-2c',
-      workflow: 'pr-fix-and-update',
-      prUrl: 'https://github.com/org/repo/pull/1',
-    });
-    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
-    const actionIds = actionBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
-
-    const reviewCount = actionIds.filter((id: string) => id === 'panel_pr_review_new').length;
-    expect(reviewCount).toBe(1);
-  });
-
-  it('hides merge button for pr-review workflow even when PR is mergeable', () => {
-    const payload = ActionPanelBuilder.build({
-      sessionKey: 'session-2d',
-      workflow: 'pr-review',
-      prUrl: 'https://github.com/org/repo/pull/1',
-      prStatus: { state: 'open', mergeable: true, draft: false, merged: false, approved: true },
-    });
-    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
-    const actionIds = actionBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
-
-    expect(actionIds).not.toContain('panel_pr_merge');
-  });
-
-  it('hides merge button for pr-fix-and-update workflow even when PR is mergeable', () => {
-    const payload = ActionPanelBuilder.build({
-      sessionKey: 'session-2e',
-      workflow: 'pr-fix-and-update',
-      prUrl: 'https://github.com/org/repo/pull/1',
-      prStatus: { state: 'open', mergeable: true, draft: false, merged: false, approved: true },
-    });
-    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
-    const actionIds = actionBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
-
-    expect(actionIds).not.toContain('panel_pr_merge');
   });
 
   it('renders the status area as one section carrying badge and metrics', () => {
@@ -177,18 +98,14 @@ describe('ActionPanelBuilder', () => {
       choiceBlocks: [{ type: 'section', text: { type: 'mrkdwn', text: '❓ *질문*' } }],
     });
 
-    // Link section text should still appear (without URL)
-    const linkSection = payload.blocks.find(
-      (b) => b.type === 'section' && b.text?.text?.includes('질문에 답변해 주세요'),
-    );
-    expect(linkSection).toBeDefined();
-
-    // No URL in text when permalink is absent
-    expect(linkSection.text.text).toBe('❓ 질문에 답변해 주세요');
-    expect(linkSection.accessory).toBeUndefined();
+    // The question prompt is the last line of the status rail (T2), not its
+    // own section behind a divider; no URL when the permalink is absent.
+    const rail = payload.blocks.find((b) => b.type === 'section');
+    const lines = String(rail.text.text).split('\n');
+    expect(lines[lines.length - 1]).toBe('❓ 질문에 답변해 주세요');
+    expect(rail.accessory).toBeUndefined();
   });
-
-  it('renders closed state with hero + divider + summary grid + footer', () => {
+  it('renders closed state as one rail: badge + close time, then summary, PR and link', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-7',
       workflow: 'default',
@@ -199,37 +116,12 @@ describe('ActionPanelBuilder', () => {
       latestResponseLink: 'https://workspace.slack.com/archives/C123/p111',
     });
 
-    // Hero: status (left) + PR (right) in 2-column fields
-    const statusText = getStatusSectionText(payload);
-    expect(statusText).toContain('⚫ *종료됨*');
-    expect(statusText).toContain('Merged');
-    expect(statusText).toContain('*PR*');
-
-    // Summary fields grid
-    const fieldsText = getFieldsSectionText(payload);
-    expect(fieldsText).toContain('소요 시간');
-    expect(fieldsText).toContain('3:20');
-    expect(fieldsText).toContain('도구 사용');
-    expect(fieldsText).toContain('12회');
-    // Context% moved to thread header badge
-
-    // Divider present
-    const hasDivider = payload.blocks.some((b) => b.type === 'divider');
-    expect(hasDivider).toBe(true);
-
-    // Footer context with timestamp and link
-    const footerCtx = payload.blocks.find(
-      (b) => b.type === 'context' && b.elements?.some((el: any) => /종료/.test(String(el?.text || ''))),
-    );
-    expect(footerCtx).toBeDefined();
-    const footerTexts = footerCtx.elements.map((el: any) => String(el.text)).join(' ');
-    expect(footerTexts).toContain('최신 응답');
-
-    // No action buttons in closed state
-    const actionBlocks = payload.blocks.filter((b) => b.type === 'actions');
-    expect(actionBlocks).toHaveLength(0);
+    // T2: one full-width section, no hero grid / divider / summary grid / footer.
+    expect(payload.blocks.map((b) => b.type)).toEqual(['section']);
+    const [line1, line2] = String(payload.blocks[0].text.text).split('\n');
+    expect(line1).toMatch(/^⚫ \*종료됨\* · \d{2}-\d{2} \d{2}:\d{2} 종료$/);
+    expect(line2).toBe('⏱ 3:20 · 🛠 12 · 🔀 Merged · <https://workspace.slack.com/archives/C123/p111|💬 최신 응답>');
   });
-
   it('renders closed state without turnSummary (minimal)', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-7b',
@@ -240,65 +132,27 @@ describe('ActionPanelBuilder', () => {
 
     const statusText = getStatusSectionText(payload);
     expect(statusText).toContain('⚫ *종료됨*');
-
-    // Context% is now in thread header badge — not in action panel
-    const fieldsText = getFieldsSectionText(payload);
-    expect(fieldsText).not.toContain('컨텍스트');
-    expect(fieldsText).not.toContain('소요 시간');
+    // Nothing to summarise → the rail is the single closed line.
+    expect(statusText.split('\n')).toHaveLength(1);
+    expect(statusText).not.toContain('컨텍스트');
 
     const actionBlocks = payload.blocks.filter((b) => b.type === 'actions');
     expect(actionBlocks).toHaveLength(0);
   });
-
-  it('separates workflow_actions and control_actions block_ids', () => {
-    const payload = ActionPanelBuilder.build({
-      sessionKey: 'session-9',
-      workflow: 'pr-review',
-    });
-    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
-
-    // workflow_actions + control_actions = 2 action blocks
-    expect(actionBlocks.length).toBeGreaterThanOrEqual(2);
-    expect(actionBlocks[0].block_id).toBe('workflow_actions');
-    expect(actionBlocks[actionBlocks.length - 1].block_id).toBe('control_actions');
-
-    // Close button is in control_actions, not workflow_actions
-    const controlIds = actionBlocks[actionBlocks.length - 1].elements.map((el: any) => el.action_id);
-    expect(controlIds).toEqual(['panel_close']);
-  });
-
-  it('keeps max 1 primary button when review workflow is mergeable', () => {
-    const payload = ActionPanelBuilder.build({
-      sessionKey: 'session-10',
-      workflow: 'pr-review',
-      prUrl: 'https://github.com/org/repo/pull/1',
-      prStatus: { state: 'open', mergeable: true, draft: false, merged: false, approved: false },
-    });
-    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
-    const allButtons = actionBlocks.flatMap((block: any) => block.elements);
-    const primaryButtons = allButtons.filter((b: any) => b.style === 'primary');
-
-    expect(primaryButtons.length).toBeLessThanOrEqual(1);
-    if (primaryButtons.length === 1) {
-      expect(primaryButtons[0].action_id).toBe('panel_pr_approve');
-    }
-  });
-
-  it('stop button shows ⏸ emoji prefix when working', () => {
+  it('renders only 세션 종료 while working — the ⏸ 중지 button is gone too', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-11',
       workflow: 'default',
       activityState: 'working',
       hasActiveRequest: true,
     });
-    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
-    const stopButton = actionBlocks.flatMap((b: any) => b.elements).find((el: any) => el.action_id === 'panel_stop');
+    const actionIds = payload.blocks
+      .filter((block) => block.type === 'actions')
+      .flatMap((b: any) => b.elements.map((el: any) => el.action_id));
 
-    expect(stopButton).toBeDefined();
-    expect(stopButton.text.text).toBe('⏸ 중지');
+    expect(actionIds).toEqual(['panel_close']);
   });
-
-  it('block order: status section (badge + metrics) → divider → actions', () => {
+  it('block order: status rail (badge + metrics) → actions, no divider', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-8',
       workflow: 'default',
@@ -307,18 +161,10 @@ describe('ActionPanelBuilder', () => {
       turnSummary: '⏱ 1:30 · 🛠 5',
     });
 
-    const types = payload.blocks.map((b) => b.type);
-    const heroIdx = types.indexOf('section');
-    const dividerIdx = types.indexOf('divider');
-    const actionsIdx = types.indexOf('actions');
-
-    expect(heroIdx).toBe(0);
-    expect(heroIdx).toBeLessThan(dividerIdx);
-    expect(dividerIdx).toBeLessThan(actionsIdx);
+    expect(payload.blocks.map((b) => b.type)).toEqual(['section', 'actions']);
     expect(getStatusSectionText(payload)).toContain('⏱ 1:30 · 🛠 5');
   });
-
-  it('renders PR status in 2-column layout beside status badge', () => {
+  it('renders PR status on the full-width rail, not in a second column', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-pr-layout',
       workflow: 'pr-review',
@@ -326,15 +172,10 @@ describe('ActionPanelBuilder', () => {
       prStatus: { state: 'open', mergeable: true, draft: false, merged: false, approved: true },
     });
 
-    // First section should have fields (2-column)
-    const heroSection = payload.blocks.find((b: any) => b.type === 'section' && Array.isArray(b.fields));
-    expect(heroSection).toBeDefined();
-    expect(heroSection.fields).toHaveLength(2);
-    expect(heroSection.fields[0].text).toContain('사용 가능');
-    expect(heroSection.fields[1].text).toContain('*PR*');
-    expect(heroSection.fields[1].text).toContain('Approved');
+    const rail = payload.blocks.find((b: any) => b.type === 'section');
+    expect(rail.fields).toBeUndefined();
+    expect(String(rail.text.text).split('\n')).toEqual(['⚪ *사용 가능*', '🔀 Approved · Merge 가능']);
   });
-
   it('renders only close button for z-plan-to-work handoff workflow (#695)', () => {
     const payload = ActionPanelBuilder.build({ sessionKey: 'session-z1', workflow: 'z-plan-to-work' });
     const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');

@@ -39,6 +39,7 @@ import {
 } from '../../sensitive-path-filter';
 import type { HandoffContext } from '../../types';
 import { checkDevopsSecretCommand, checkDevopsSecretGlob, checkDevopsSecretPath } from './devops-secret-guard';
+import { NATIVE_WRITE_TOOLS, type NativeWriteCheck } from './native-write-boundary';
 import type { PermissionMode } from './permission-mode';
 
 const PR_CREATE_MCP_TOOL = 'mcp__github__create_pull_request';
@@ -56,9 +57,10 @@ export interface ToolPolicyResult {
   /** Human-readable reason, prefixed with the guard that decided. For audit logs. */
   reason: string;
   /**
-   * Only set for the PR-issue and devops-secret denies — the SDK surfaces this to
-   * the model via `permissionDecisionReason`. Other denies intentionally carry no
-   * surfaced message (parity with the prior hooks, which only the PR-issue guard set).
+   * Only set for the PR-issue, devops-secret, native write boundary and env-skill denies — the
+   * SDK surfaces this to the model via `permissionDecisionReason` (so it can, e.g., write in the
+   * right place). Other denies intentionally carry no surfaced message (parity with the prior
+   * hooks, which only the PR-issue guard set).
    */
   denyMessage?: string;
   /**
@@ -76,7 +78,7 @@ export interface ToolPolicyResult {
 export interface ToolPolicyContext {
   /** Slack user id of the session owner/initiator. */
   user: string;
-  /** `isAdminUser(user)` — admins bypass the ssh / sensitive / mcp guards, except in an incident session. */
+  /** `isAdminUser(user)` — admins bypass the ssh / sensitive / write-boundary / mcp guards, except in an incident session. */
   isAdmin: boolean;
   /**
    * The session's permission mode (`mcpConfig.somaPermissionMode`). Governs the
@@ -97,6 +99,21 @@ export interface ToolPolicyContext {
   handoffContext?: HandoffContext;
   /** Returns a deny reason for a permission-gated MCP tool, else null. */
   checkMcpToolPermission: (toolName: string) => string | null;
+  /**
+   * Native write boundary (`native-write-boundary.ts`): for a call of a
+   * `NATIVE_WRITE_TOOLS` tool, a deny reason when a path it writes lands outside
+   * the roots sandboxed Bash may write, else null. **Absent → native writes are not
+   * confined** — a session whose sandbox an admin turned off, whose Bash is not
+   * confined either. Admins are exempt, as from the other guards of the block.
+   */
+  checkNativeWrite?: NativeWriteCheck;
+  /**
+   * Returns a deny reason when a call of one of `ENV_GATED_TOOLS` reaches a deploy-time
+   * environment plugin that `ctx.user` holds no admin grant for — the `Skill` tool naming one of
+   * its skills, or a read of its files — else null. Consulted for non-admins only (step 6b):
+   * environment skills run on an admin's approval.
+   */
+  checkEnvSkillPermission: (toolName: string, toolInput: Record<string, unknown>) => string | null;
   /**
    * Incident READ-ONLY mode. **Absent (the default) → nothing changes.**
    * Present → the session is an incident receiver: `isAdmin` is ignored (the
@@ -155,6 +172,14 @@ function checkSensitiveForTool(toolName: string, input: Record<string, unknown>)
 
 const DEVOPS_SECRET_DENY_MESSAGE =
   'Blocked: reading GitHub or keychain credentials and touching the devops broker files is denied in every permission mode.';
+
+/**
+ * Surfaced to the model when step 6b denies an environment skill. The enforcing hook files the
+ * admin approval request; on approval the requester's turn is sent again, so the model must
+ * neither retry nor work around the denial.
+ */
+export const ENV_SKILL_DENY_MESSAGE =
+  'Blocked: this call reaches an environment skill (calling it or reading its files), which runs only with an admin approval. When it names one skill, an approval request has been sent to the admins; when one approves, this thread receives a message to continue. Do not retry, do not read or follow the skill file another way, and report that the step waits for admin approval.';
 
 /**
  * Devops-secret check dispatch — Bash→command, Read/Edit/Write→file_path, Grep→path,
@@ -227,7 +252,7 @@ export function evaluateToolPolicy(
     return { decision: 'deny', reason: `devops-secret: ${devopsSecret}`, denyMessage: DEVOPS_SECRET_DENY_MESSAGE };
   }
 
-  // 2-4. Admins bypass the ssh / sensitive / mcp guards; an incident session gets no admin privilege.
+  // 2-4. Admins bypass the ssh / sensitive / write-boundary / mcp guards; an incident session gets no admin privilege.
   if (!ctx.isAdmin || ctx.incidentReadOnly) {
     // 2. SSH ban (Bash).
     if (toolName === 'Bash' && isSshCommand(command)) {
@@ -237,6 +262,13 @@ export function evaluateToolPolicy(
     const sensitive = checkSensitiveForTool(toolName, input);
     if (sensitive?.isSensitive) {
       return { decision: 'deny', reason: `sensitive-path: ${sensitive.reason ?? 'sensitive location'}` };
+    }
+    // 3b. Native write boundary (NATIVE_WRITE_TOOLS): the roots sandboxed Bash may write.
+    if (ctx.checkNativeWrite && NATIVE_WRITE_TOOLS.includes(toolName)) {
+      const outside = ctx.checkNativeWrite(toolName, input);
+      if (outside !== null) {
+        return { decision: 'deny', reason: `write-boundary: ${outside}`, denyMessage: outside };
+      }
     }
     // 4. MCP tool permission (mcp__ tools): checks the user's grants on every
     //    call, so a grant that expires mid-session is denied. The query-start
@@ -274,13 +306,24 @@ export function evaluateToolPolicy(
     return evaluateIncidentReadOnly(toolName, ctx.incidentReadOnly);
   }
 
+  // 6b. Environment skill (non-admins): a skill of a deploy-time environment plugin runs only on an
+  //     admin's grant, whether the model calls it (`Skill`) or touches its files by hand. Below the
+  //     incident tier, which already decides every call; above the mode tier, so it also
+  //     overrides that tier's Bash and native-tool allows.
+  if (ENV_GATED_TOOLS.includes(toolName) && !ctx.isAdmin) {
+    const envDenied = ctx.checkEnvSkillPermission(toolName, input);
+    if (envDenied !== null) {
+      return { decision: 'deny', reason: `env-skill: ${envDenied}`, denyMessage: ENV_SKILL_DENY_MESSAGE };
+    }
+  }
+
   // ── ALLOW / CLASSIFY tier (only reached when no deny fired) ──
   // Mode governs the outcome. Note `legacy` falls through to `pass` below so
   // the SDK runs its own per-tool permission prompt (the old accept/reject).
 
   // 7. Bypass mode (unsafe): allow Bash with no prompt — even a dangerous one.
   //    The hard-deny tier above still protects multi-tenant isolation
-  //    (cross-user / ssh / sensitive / mcp grant).
+  //    (cross-user / ssh / sensitive / write boundary / mcp grant).
   if (ctx.mode === 'bypass' && toolName === 'Bash') {
     return { decision: 'allow', reason: 'bypass: unsafe allow-all Bash' };
   }
@@ -307,14 +350,36 @@ export function evaluateToolPolicy(
   return { decision: 'pass', reason: 'no policy opinion' };
 }
 
-/** Hook matchers covering every tool the policy decides on: Bash, the native tools, `mcp__` (deny tier only). */
-export const TOOL_POLICY_MATCHERS: readonly string[] = ['Bash', NATIVE_BYPASS_TOOLS.join('|'), 'mcp__'];
+/** The tools step 6b consults `ctx.checkEnvSkillPermission` for: the `Skill` tool, the file readers and writers. */
+export const ENV_GATED_TOOLS: readonly string[] = [
+  'Skill',
+  'Read',
+  'Glob',
+  'Grep',
+  'Bash',
+  'Write',
+  'Edit',
+  'NotebookEdit',
+];
+
+/**
+ * Hook matchers covering every tool the policy decides on: Bash, the native tools, `mcp__` (deny tier
+ * only), `Skill` (step 6b only; every other `Skill` call gets `pass`), and the native write tools
+ * outside `NATIVE_BYPASS_TOOLS` (step 3b only; the policy passes them otherwise).
+ */
+export const TOOL_POLICY_MATCHERS: readonly string[] = [
+  'Bash',
+  NATIVE_BYPASS_TOOLS.join('|'),
+  'mcp__',
+  'Skill',
+  NATIVE_WRITE_TOOLS.filter((tool) => !NATIVE_BYPASS_TOOLS.includes(tool)).join('|'),
+];
 
 /**
  * Matchers for an incident READ-ONLY session — a single *catch-all* entry.
  *
  * `TOOL_POLICY_MATCHERS` deliberately enumerates the governed tools, so tools
- * outside it (`Skill`, `EnterPlanMode`, a native tool a future SDK adds) never
+ * outside it (`EnterPlanMode`, `AskUserQuestion`, a native tool a future SDK adds) never
  * reach the hook. That is correct for a normal session and fatal for an
  * incident one, whose whole contract is "deny everything not named". The SDK's
  * `HookCallbackMatcher.matcher` is optional and an omitted matcher fires for

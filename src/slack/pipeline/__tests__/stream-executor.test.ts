@@ -1320,6 +1320,8 @@ describe('model-command integration', () => {
           snapshot: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 1 },
         }),
         getSessionByKey: vi.fn().mockReturnValue({ ownerId: 'U1' }),
+        updateSessionTitle: vi.fn(),
+        fillPlaceholderSessionTitle: vi.fn().mockReturnValue(true),
       },
       fileHandler: {
         cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
@@ -1436,6 +1438,58 @@ describe('model-command integration', () => {
         operations: expect.any(Array),
       }),
     );
+  });
+
+  // Voice / image-only sessions: the model writes the intent title with the
+  // fill-only guard, so the host must route it to the guarded registry write.
+  function titleOnlyUpdateResult(params: Record<string, unknown>) {
+    return [
+      {
+        toolUseId: 'tool_title',
+        toolName: 'mcp__model-command__run',
+        result: JSON.stringify({
+          type: 'model_command_result',
+          commandId: 'UPDATE_SESSION',
+          ok: true,
+          payload: {
+            session: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 0 },
+            appliedOperations: 0,
+            request: { operations: [], ...params },
+            ...params,
+          },
+        }),
+      },
+    ];
+  }
+
+  it('routes UPDATE_SESSION { title, titleFillOnly: true } to the fill-only registry write', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({ title: '음성 지시 세션 제목', titleFillOnly: true }),
+      createSession(),
+      { channel: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100', say },
+    );
+
+    expect(deps.claudeHandler.fillPlaceholderSessionTitle).toHaveBeenCalledWith('C1', '171.100', '음성 지시 세션 제목');
+    expect(deps.claudeHandler.updateSessionTitle).not.toHaveBeenCalled();
+  });
+
+  it('keeps plain UPDATE_SESSION { title } as an unconditional rename (pr-review contract)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({ title: 'PR #42 merged' }),
+      createSession(),
+      { channel: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100', say },
+    );
+
+    expect(deps.claudeHandler.updateSessionTitle).toHaveBeenCalledWith('C1', '171.100', 'PR #42 merged');
+    expect(deps.claudeHandler.fillPlaceholderSessionTitle).not.toHaveBeenCalled();
   });
 
   it('renders ASK_USER_QUESTION from command tool and marks waiting state', async () => {
@@ -4449,6 +4503,142 @@ describe('stream-executor — B3 choice wiring', () => {
     expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledWith('C1-171.100');
   });
 
+  it('askUserQuestionFromHost posts a host question exactly like a model one (goal stall)', async () => {
+    const { deps, sessionRegistry } = createP3Deps();
+    deps.actionHandlers.getPendingForm = vi.fn().mockReturnValue(undefined);
+    const session = createSession();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    const question = {
+      type: 'user_choices' as const,
+      title: '🛑 Goal 멈춤',
+      questions: [{ id: 'goal-stall-next', question: '다음 지시', choices: [{ id: '1', label: 'A' }] }],
+    };
+
+    const asked = await executor.askUserQuestionFromHost('C1-171.100', question);
+
+    const turnId = deps.threadPanel.askUserForm.mock.calls[0][0] as string;
+    expect(asked).toBe(turnId);
+    expect(turnId.startsWith('host:C1-171.100:')).toBe(true);
+    expect(deps.actionHandlers.setPendingForm.mock.calls[0][1]).toMatchObject({
+      turnId,
+      channel: 'C1',
+      threadTs: '171.100',
+    });
+    expect(session.actionPanel.pendingQuestion).toMatchObject(question);
+    expect(deps.claudeHandler.setActivityState).toHaveBeenCalledWith('C1', '171.100', 'waiting');
+    expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledWith('C1-171.100');
+  });
+
+  it('askUserQuestionFromHost: the owner moved on during the post → retracted, the session never waits', async () => {
+    const { deps } = createP3Deps();
+    const session = createSession();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    deps.actionHandlers.getPendingForm = vi.fn().mockReturnValue({ channel: 'C1', messageTs: 'form-ts' });
+    deps.slackApi.updateMessage = vi.fn().mockResolvedValue(undefined);
+    // ThreadPanel writes pendingChoice right after its post, as in production.
+    deps.threadPanel.askUserForm = vi.fn(async (turnId: string, _p: unknown, formIds: string[]) => {
+      session.actionPanel.pendingChoice = { turnId, kind: 'multi', choiceTs: 'form-ts', formIds, question: {} };
+      session.actionPanel.waitingForChoice = true;
+      return { ok: true, primaryTs: 'form-ts', allTs: ['form-ts'], formIds };
+    });
+    const executor = new StreamExecutor(deps);
+    const asked = await executor.askUserQuestionFromHost(
+      'C1-171.100',
+      { type: 'user_choices', questions: [{ id: 'q', question: 'Q', choices: [{ id: '1', label: 'A' }] }] },
+      { stillWanted: () => false },
+    );
+    expect(asked).toBeUndefined();
+    expect(session.actionPanel.pendingChoice).toBeUndefined();
+    expect(session.actionPanel.pendingQuestion).toBeUndefined();
+    expect(session.actionPanel.waitingForChoice).toBe(false);
+    expect(deps.claudeHandler.setActivityState).not.toHaveBeenCalledWith('C1', '171.100', 'waiting');
+    expect(deps.actionHandlers.deletePendingForm).toHaveBeenCalled();
+    expect(deps.slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      'form-ts',
+      expect.any(String),
+      expect.any(Array),
+      [],
+    );
+  });
+
+  it('retractHostQuestion leaves a newer question alone', async () => {
+    const { deps } = createP3Deps();
+    const session = createSession();
+    session.actionPanel.pendingChoice = { turnId: 'model-turn', formIds: ['f1'] };
+    session.actionPanel.pendingQuestion = { type: 'user_choice' };
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    await executor.retractHostQuestion('C1-171.100', 'host:old');
+    expect(session.actionPanel.pendingChoice.turnId).toBe('model-turn');
+    expect(session.actionPanel.pendingQuestion).toBeDefined();
+  });
+
+  it('askUserQuestionFromHost stamps the question with its turn id (a fallback without a form is still its own)', async () => {
+    const { deps } = createP3Deps();
+    deps.actionHandlers.getPendingForm = vi.fn().mockReturnValue(undefined);
+    const session = createSession();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    const asked = await executor.askUserQuestionFromHost('C1-171.100', {
+      type: 'user_choices',
+      questions: [{ id: 'q', question: 'Q', choices: [{ id: '1', label: 'A' }] }],
+    });
+    expect(session.actionPanel.pendingQuestion.hostTurnId).toBe(asked);
+  });
+
+  it('retractHostQuestion frees the session before the Slack rewrite resolves (a kick right after is not dropped)', async () => {
+    const { deps, sessionRegistry } = createP3Deps();
+    const session = createSession();
+    session.actionPanel.pendingChoice = { turnId: 'host:x', formIds: ['f1'] };
+    session.actionPanel.pendingQuestion = { type: 'user_choices', questions: [], hostTurnId: 'host:x' };
+    session.actionPanel.waitingForChoice = true;
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    (sessionRegistry as any).getActivityStateByKey = vi.fn(() => 'waiting');
+    deps.actionHandlers.getPendingForm = vi.fn().mockReturnValue({ channel: 'C1', messageTs: 'form-ts' });
+    let release: () => void = () => undefined;
+    deps.slackApi.updateMessage = vi.fn(() => new Promise<void>((r) => (release = r)));
+    const executor = new StreamExecutor(deps);
+    const done = executor.retractHostQuestion('C1-171.100', 'host:x');
+    // Synchronously, before Slack answers:
+    expect(session.actionPanel.pendingChoice).toBeUndefined();
+    expect(session.actionPanel.pendingQuestion).toBeUndefined();
+    expect(session.actionPanel.waitingForChoice).toBe(false);
+    expect(deps.claudeHandler.setActivityState).toHaveBeenCalledWith('C1', '171.100', 'idle');
+    release();
+    await done;
+    // The form loses its buttons: blocks AND attachments are replaced.
+    expect(deps.slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      'form-ts',
+      expect.any(String),
+      expect.any(Array),
+      [],
+    );
+  });
+
+  it('retractHostQuestion clears a fallback question that has no form (no pendingChoice)', async () => {
+    const { deps, sessionRegistry } = createP3Deps();
+    const session = createSession();
+    session.actionPanel.pendingChoice = undefined;
+    session.actionPanel.pendingQuestion = { type: 'user_choices', questions: [], hostTurnId: 'host:y' };
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    (sessionRegistry as any).getActivityStateByKey = vi.fn(() => 'waiting');
+    const executor = new StreamExecutor(deps);
+    await executor.retractHostQuestion('C1-171.100', 'host:y');
+    expect(session.actionPanel.pendingQuestion).toBeUndefined();
+    expect(deps.claudeHandler.setActivityState).toHaveBeenCalledWith('C1', '171.100', 'idle');
+  });
+
+  it('askUserQuestionFromHost refuses a session without a thread', async () => {
+    const { deps } = createP3Deps();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(undefined);
+    const executor = new StreamExecutor(deps);
+    expect(await executor.askUserQuestionFromHost('nope', { type: 'user_choices', questions: [] })).toBeUndefined();
+    expect(deps.threadPanel.askUserForm).not.toHaveBeenCalled();
+  });
+
   it('multi-choice pre-allocates formIds with turnId and calls askUserForm', async () => {
     const { deps } = createP3Deps();
     deps.threadPanel.askUserForm = vi
@@ -7069,5 +7259,141 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     expect(say).not.toHaveBeenCalled();
     expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+  });
+});
+
+// ── Voice / image-only first message → intent title trigger (execute e2e) ──
+//
+// A voice memo or image arrives with no text, so intake stores the stand-in
+// title "New Session" and the dashboard card says nothing about the work. The
+// model is the only party that understands the attachment, so the host injects
+// a <session-title-pending> notice into the prompt of every real user turn
+// while the stand-in persists. This block runs the full execute() path and
+// asserts on the exact prompt handed to the agent runtime.
+describe('session-title-pending notice (execute e2e)', () => {
+  async function* doneStream() {
+    yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+  }
+
+  function createDeps() {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+        streamAgentEvents: vi.fn().mockImplementation(() => toAgentEvents(doneStream())),
+        getSessionRegistry: vi.fn().mockReturnValue({
+          beginTurn: vi.fn(),
+          endTurn: vi.fn(),
+          broadcastSessionUpdate: vi.fn(),
+          getActivityState: vi.fn().mockReturnValue('idle'),
+        }),
+      },
+      fileHandler: {
+        formatFilePrompt: vi
+          .fn()
+          .mockResolvedValue('Please analyze the uploaded files.\n\nUploaded files:\n\n## Audio: voice.m4a\n'),
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {
+        handleToolUse: vi.fn().mockResolvedValue(undefined),
+        handleToolResult: vi.fn().mockResolvedValue(undefined),
+        getLiveBackgroundWork: vi.fn().mockReturnValue({ count: 0, labels: [], signature: '' }),
+        cleanup: vi.fn(),
+      },
+      statusReporter: { getStatusEmoji: vi.fn().mockReturnValue('thinking_face') },
+      reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(50),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      toolTracker: { scheduleCleanup: vi.fn() },
+      todoDisplayManager: {
+        cleanupSession: vi.fn(),
+        cleanup: vi.fn(),
+        handleTodoUpdate: vi.fn().mockResolvedValue(undefined),
+      },
+      actionHandlers: {},
+      requestCoordinator: { removeController: vi.fn(), touchSession: vi.fn() },
+      slackApi: {
+        getUserProfile: vi.fn().mockResolvedValue({ email: 'user@example.com', displayName: 'User' }),
+        getClient: vi.fn().mockReturnValue({}),
+        getBotUserId: vi.fn().mockResolvedValue('U_BOT'),
+        deleteMessage: vi.fn().mockResolvedValue(undefined),
+        postSystemMessage: vi.fn().mockResolvedValue(undefined),
+      },
+      assistantStatusManager: {
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
+      threadPanel: undefined,
+      dispatchPendingUserMessage: vi.fn().mockResolvedValue(undefined),
+    } as any;
+  }
+
+  function voiceOnlySession(title: string | undefined) {
+    return {
+      sessionId: 'sess_voice',
+      ownerId: 'U_TEST',
+      logVerbosity: LOG_DETAIL,
+      usage: {},
+      terminated: false,
+      model: 'claude-opus-4-6',
+      title,
+    } as any;
+  }
+
+  async function runTurn(session: any, overrides: Record<string, unknown> = {}) {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+    const deps = createDeps();
+    const executor = new StreamExecutor(deps);
+    await executor.execute({
+      session,
+      sessionKey: 'C7:t7',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [{ name: 'voice.m4a', isAudio: true, path: '/tmp/voice.m4a' }],
+      text: '',
+      channel: 'C7',
+      threadTs: 't7',
+      user: 'U_TEST',
+      say: vi.fn().mockResolvedValue({ ts: 'msg_ts' }),
+      isUserInput: true,
+      ...overrides,
+    } as any);
+    return deps.claudeHandler.streamAgentEvents.mock.calls[0][0] as string;
+  }
+
+  it('injects the notice for a voice-only user turn while the title is the stand-in', async () => {
+    const session = voiceOnlySession('New Session');
+    const prompt = await runTurn(session);
+    expect(prompt).toContain('<session-title-pending>');
+    expect(prompt).toContain('"titleFillOnly": true');
+    expect(prompt).toContain('## Audio: voice.m4a');
+    expect(session.titleNoticeCount).toBe(1);
+  });
+
+  it('does not inject once the session has a real title', async () => {
+    const prompt = await runTurn(voiceOnlySession('음성·이미지 첫 지시 세션의 대시보드 제목 자동 갱신'));
+    expect(prompt).not.toContain('<session-title-pending>');
+  });
+
+  it('does not inject on a synthetic turn (auto-resume / continuation)', async () => {
+    const prompt = await runTurn(voiceOnlySession('New Session'), { isUserInput: false });
+    expect(prompt).not.toContain('<session-title-pending>');
+  });
+
+  it('stops after the cap', async () => {
+    const session = voiceOnlySession('New Session');
+    session.titleNoticeCount = 3;
+    const prompt = await runTurn(session);
+    expect(prompt).not.toContain('<session-title-pending>');
+    expect(session.titleNoticeCount).toBe(3);
   });
 });

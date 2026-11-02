@@ -54,6 +54,8 @@ import { Logger } from '../logger';
 import type { McpManager } from '../mcp-manager';
 
 const SESSION_KEY = 'C123:1700000000.1';
+// A turn runs only under an execution context (#597): these turns are Slack turns.
+const TEST_SLACK_CONTEXT = { user: 'U_TEST', channel: 'C123', threadTs: '1700000000.1' } as never;
 
 interface FakeQuery {
   received: unknown[];
@@ -208,7 +210,7 @@ function newHandler(): ClaudeHandler {
 async function runSteeredTurn(uuids: string[]): Promise<unknown[]> {
   const handler = newHandler();
   const it = handler
-    .streamQuery('hello there', undefined, undefined, undefined, undefined, SESSION_KEY)
+    .streamQuery('hello there', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
     [Symbol.asyncIterator]();
 
   const frames: unknown[] = [];
@@ -237,7 +239,7 @@ describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
   it('passes an AsyncIterable prompt whose first message is the user text', async () => {
     const handler = newHandler();
     const it = handler
-      .streamQuery('hello there', undefined, undefined, undefined, undefined, SESSION_KEY)
+      .streamQuery('hello there', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
       [Symbol.asyncIterator]();
 
     await it.next(); // init
@@ -259,7 +261,7 @@ describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
   it('steerTurn injects a uuid-stamped user message the CLI receives before the result', async () => {
     const handler = newHandler();
     const it = handler
-      .streamQuery('hello there', undefined, undefined, undefined, undefined, SESSION_KEY)
+      .streamQuery('hello there', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
       [Symbol.asyncIterator]();
 
     await it.next();
@@ -299,7 +301,7 @@ describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
   it('closes the input channel on the result frame and forgets the turn afterwards', async () => {
     const handler = newHandler();
     const it = handler
-      .streamQuery('hello there', undefined, undefined, undefined, undefined, SESSION_KEY)
+      .streamQuery('hello there', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
       [Symbol.asyncIterator]();
 
     await it.next();
@@ -320,7 +322,7 @@ describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
     const handler = newHandler();
     const abortController = new AbortController();
     const it = handler
-      .streamQuery('hello there', undefined, abortController, undefined, undefined, SESSION_KEY)
+      .streamQuery('hello there', undefined, abortController, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
       [Symbol.asyncIterator]();
 
     await it.next();
@@ -338,7 +340,7 @@ describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
   it('cancelSteeredMessage reports `withdrawn` when the SDK took the message back', async () => {
     const handler = newHandler();
     const it = handler
-      .streamQuery('hello there', undefined, undefined, undefined, undefined, SESSION_KEY)
+      .streamQuery('hello there', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
       [Symbol.asyncIterator]();
 
     await it.next();
@@ -358,7 +360,7 @@ describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
   it('cancelSteeredMessage reports `already-dequeued` when the SDK refused to withdraw', async () => {
     const handler = newHandler();
     const it = handler
-      .streamQuery('hello there', undefined, undefined, undefined, undefined, SESSION_KEY)
+      .streamQuery('hello there', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
       [Symbol.asyncIterator]();
 
     await it.next();
@@ -396,7 +398,7 @@ describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
 
     const handler = newHandler();
     const it = handler
-      .streamQuery('hello there', undefined, undefined, undefined, undefined, SESSION_KEY)
+      .streamQuery('hello there', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
       [Symbol.asyncIterator]();
 
     await it.next();
@@ -475,7 +477,7 @@ describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
         undefined,
         undefined,
         undefined,
-        undefined,
+        TEST_SLACK_CONTEXT,
         SESSION_KEY,
       )) {
         events.push(e);
@@ -569,7 +571,7 @@ describe('ClaudeHandler steer settlement (spec §6 item 6)', () => {
 
     const handler = newHandler();
     const it = handler
-      .streamQuery('hello there', undefined, undefined, undefined, undefined, SESSION_KEY)
+      .streamQuery('hello there', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
       [Symbol.asyncIterator]();
     await it.next();
     await it.next();
@@ -785,7 +787,7 @@ describe('ClaudeHandler steer settlement (spec §6 item 6)', () => {
     installSettlementQuery({ queuedTurnCount: 1, interrupt });
 
     const it = handler
-      .streamQuery('hello there', undefined, undefined, undefined, undefined, SESSION_KEY)
+      .streamQuery('hello there', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
       [Symbol.asyncIterator]();
     await it.next();
     await it.next();
@@ -862,7 +864,7 @@ describe('ClaudeHandler steer settlement (spec §6 item 6)', () => {
       installSettlementQuery({ queuedTurnCount: 0, interrupt: vi.fn() });
       const handler = newHandler();
       const it = handler
-        .streamQuery('hello there', undefined, undefined, undefined, undefined, SESSION_KEY)
+        .streamQuery('hello there', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
         [Symbol.asyncIterator]();
 
       await it.next();
@@ -886,7 +888,7 @@ describe('ClaudeHandler steer settlement (spec §6 item 6)', () => {
     const handler = newHandler();
     const events = [];
     const stream = handler
-      .streamAgentEvents('hello', undefined, undefined, undefined, undefined, SESSION_KEY)
+      .streamAgentEvents('hello', undefined, undefined, undefined, TEST_SLACK_CONTEXT, SESSION_KEY)
       [Symbol.asyncIterator]();
 
     events.push((await stream.next()).value); // session_start

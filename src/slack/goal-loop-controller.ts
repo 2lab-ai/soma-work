@@ -44,16 +44,22 @@ import { retryReasonLine } from '../retry-reason';
 import type { ConversationSession, SessionGoal } from '../types';
 import type { EffortLevel } from '../user-settings-store';
 import { buildCapDecisionDmBlocks } from './goal-blocks';
+import { dmRefOf, openGoalCapDecision, recordGoalCapDm, retireGoalCapDecision } from './goal-cap-decision';
 import {
   applyGoalEvalDispatchFailure,
   decideGoalEvalOutcome,
   evaluateGoalCompletion,
   GOAL_EVAL_DISPATCH_MAX_RETRIES,
   type GoalEvalDispatcher,
+  type GoalEvalPreviousVerdict,
   type GoalEvalVerdict,
   shouldRunGoalIdleDriver,
 } from './goal-completion-evaluator';
-import { GOAL_CONTINUATION_TEXT_PREFIX } from './goal-continuation';
+import { GOAL_CONTINUATION_TEXT_PREFIX, GOAL_SUMMARY_PERSIST_MAX } from './goal-continuation';
+
+export { GOAL_SUMMARY_PERSIST_MAX };
+
+import { openGoalStall } from './goal-stall';
 import { advanceGoalQueue, formatGoalObjectiveForSlack } from './session-goal';
 import { announceSessionNotice, recordSessionNotice } from './session-notice';
 
@@ -137,10 +143,18 @@ export interface GoalLoopControllerDeps {
   /**
    * DMs the goal owner a Block Kit message (S3). Used when the
    * auto-continuation budget is exhausted to ask "keep going?" with
-   * Continue/Cancel buttons. Optional — when unset the loop falls back to the
-   * in-thread pause notice only.
+   * Continue/Cancel buttons. Resolves to the posted message (`{ channel, ts }`)
+   * so an answer on the dashboard can rewrite it. Optional — when unset the
+   * decision is asked on the dashboard card only.
    */
   postOwnerDm?: (userId: string, text: string, blocks: unknown[]) => Promise<unknown>;
+  /**
+   * Asks the goal owner, in the thread and on the dashboard, which of the
+   * stall's three next instructions to give (the same question surface the
+   * model's ASK_USER_QUESTION uses — the answer arrives as a real user turn).
+   * Optional — without it the stall is announced with a plain notice.
+   */
+  askStallQuestion?: (question: GoalStallQuestion) => Promise<void>;
   logger: GoalLoopLogger;
   /** Default work model when the session has none. */
   fallbackModel: string;
@@ -161,6 +175,23 @@ export interface GoalLoopControllerDeps {
    * synchronously instead of faking timers.
    */
   scheduleEvalRetry?: (fn: () => void, delayMs: number) => void;
+}
+
+/**
+ * What woke the loop. `turn`: a work turn ended (its output is new evidence).
+ * `kick`: no turn ran — the owner went on (`goal resume`, Continue, a goal
+ * added) or the process restarted; an unchanged summary is not re-judged.
+ */
+export type GoalLoopTrigger = 'turn' | 'kick';
+
+/** What the host asks the owner when the goal failed again for the same reason. */
+export interface GoalStallQuestion {
+  sessionKey: string;
+  goalId: string;
+  stallId: string;
+  objective: string;
+  reason: string;
+  actions: string[];
 }
 
 /**
@@ -219,8 +250,9 @@ export class GoalLoopController {
    * This is the ONLY public way to advance the loop; the caller never
    * touches loop state directly (M4 — ordering is owned here).
    */
-  onTurnSettled(sessionKey: string): void {
-    this.enqueue(sessionKey, () => this.runOnce(sessionKey));
+  onTurnSettled(sessionKey: string, opts: { cause?: GoalLoopTrigger } = {}): void {
+    const cause = opts.cause ?? 'turn';
+    this.enqueue(sessionKey, () => this.runOnce(sessionKey, cause));
   }
 
   /**
@@ -252,7 +284,7 @@ export class GoalLoopController {
   }
 
   /** One eval (+ maybe one continuation) for a settled session. */
-  private async runOnce(sessionKey: string): Promise<void> {
+  private async runOnce(sessionKey: string, cause: GoalLoopTrigger = 'turn'): Promise<void> {
     const { registry, requestCoordinator, logger } = this.deps;
     const session = registry.getSessionByKey(sessionKey);
     const goal = session?.goal;
@@ -287,20 +319,33 @@ export class GoalLoopController {
 
     const objective = activeGoal.objective;
     const workSummaryRaw = (session.goalLastTurnText ?? activeGoal.lastAssistantTurnSummary ?? '').trim();
-    const summaryHash = this.hashSummary(workSummaryRaw);
+    // Hashed as the goal persists it (bounded): after a restart only the bounded
+    // mirror is left, and the same evidence must still read as unchanged.
+    const summaryHash = this.hashSummary(workSummaryRaw.slice(0, GOAL_SUMMARY_PERSIST_MAX).trim());
 
     // S9 cost short-circuit: if the work summary is byte-identical to what we
     // last evaluated and we already hold that verdict's gap reason, a fresh
     // eval would return the same "not complete" — skip the (expensive)
     // dispatch and reuse it. Empty summaries never short-circuit (no evidence
     // to reuse), and a `complete` verdict clears the hash so it never sticks.
-    if (workSummaryRaw !== '' && activeGoal.lastEvalSummaryHash === summaryHash && activeGoal.lastEvalReason) {
+    // Reused only when no new turn produced this text: a kick (the owner went
+    // on — `goal resume`, Continue, a goal added — or a restart) runs the next
+    // turn instead of re-judging the old one. A NEW turn with the same output —
+    // at the cap too — is exactly the repeat the stall check exists for, and
+    // only the evaluator can say so (and name the three next instructions)
+    // instead of the generic cap question: the dispatch is worth it.
+    if (
+      workSummaryRaw !== '' &&
+      activeGoal.lastEvalSummaryHash === summaryHash &&
+      activeGoal.lastEvalReason &&
+      cause === 'kick'
+    ) {
       logger.info('Goal eval short-circuited — work summary unchanged since last eval', { sessionKey });
       await this.handleVerdict(
         sessionKey,
         session,
         activeGoal,
-        { completed: false, reason: activeGoal.lastEvalReason, remaining: [] },
+        { completed: false, reason: activeGoal.lastEvalReason, remaining: activeGoal.lastEvalRemaining ?? [] },
         summaryHash,
       );
       return;
@@ -325,9 +370,15 @@ export class GoalLoopController {
 
     logger.info('Goal session settled idle — dispatching completion eval', { sessionKey });
 
+    // The previous `completed=false` verdict goes to the evaluator so it can
+    // tell a repeat of the same failure from new work (goal stall).
+    const previous = activeGoal.lastEvalReason?.trim()
+      ? { reason: activeGoal.lastEvalReason, remaining: activeGoal.lastEvalRemaining ?? [] }
+      : undefined;
+
     let verdict;
     try {
-      verdict = await this.runEvalWithTimeout(session, objective, evalUserSummary);
+      verdict = await this.runEvalWithTimeout(session, objective, evalUserSummary, previous);
     } catch (err: unknown) {
       this.handleEvalDispatchFailure(sessionKey, session, snapshot, startedAt, err);
       return;
@@ -424,56 +475,76 @@ export class GoalLoopController {
       ? verdict.remaining.map((r) => `• ${r}`).join('\n')
       : '_(no remaining items reported)_';
 
+    if (outcome.action === 'stalled') {
+      await this.stopOnStall(sessionKey, session, activeGoal, verdict);
+      return;
+    }
+
     if (outcome.action === 'cap-paused') {
       logger.info('Goal continuation cap reached', {
         sessionKey,
         continuationCount: activeGoal.continuationCount,
         maxContinuations: activeGoal.maxContinuations,
       });
-      // S3: instead of silently pausing, DM the owner a "keep going?" decision
-      // with Continue/Cancel buttons. `capDmPendingAt` dedups so exactly one DM
-      // is sent per cap event (it's cleared on a Continue/Cancel answer or any
-      // real user message via resetGoalContinuationOnUserMessage).
-      const alreadyAsked = activeGoal.capDmPendingAt !== undefined;
-      if (this.deps.postOwnerDm && !alreadyAsked) {
+      // S3: instead of silently pausing, ask the owner "keep going?". The
+      // decision is ONE request answered from the DM or the dashboard's
+      // approval card (`goal-cap-decision.ts`); it opens here whether or not
+      // the DM gets through, so the card shows even when Slack is down.
+      const opened = openGoalCapDecision(activeGoal, this.now());
+      if (opened) {
+        this.persist();
+        this.deps.registry.broadcastSessionUpdate?.();
+      }
+      const decisionId = activeGoal.capDecisionId as string;
+      // The DM goes out once per round: a round whose DM never landed (no ref)
+      // retries it on the next cap trigger (codex review #1).
+      let dmSent = false;
+      let dmFailed = false;
+      if (this.deps.postOwnerDm && !activeGoal.capDmRef) {
         const blocks = buildCapDecisionDmBlocks({
           value: {
             sessionKey,
             goalId: activeGoal.goalId,
             channel: session.channelId,
             threadTs: session.threadTs,
+            decisionId,
           },
           objective: activeGoal.objective,
           maxContinuations: activeGoal.maxContinuations,
           reason: verdict.reason,
           formatObjective: formatGoalObjectiveForSlack,
         });
-        // Send the DM FIRST; only stamp the dedup guard on success so a failed
-        // send never leaves the goal flagged-but-undecided with no retry path
-        // (codex review #1). On failure, fall through to the in-thread notice;
-        // a later cap trigger can retry the DM since the flag was never set.
-        let dmSent = false;
         try {
-          await this.deps.postOwnerDm(activeGoal.createdBy, '⏳ Goal 계속 진행할까요?', blocks);
+          const posted = await this.deps.postOwnerDm(activeGoal.createdBy, '⏳ Goal 계속 진행할까요?', blocks);
           dmSent = true;
+          const ref = dmRefOf(posted);
+          // The answer may have come from the dashboard while the post was in
+          // flight: a late DM is rewritten at once instead of offering buttons.
+          if (ref && recordGoalCapDm(activeGoal, decisionId, ref) === 'recorded') this.persist();
         } catch (err: unknown) {
-          logger.warn('Failed to DM goal owner the cap decision — falling back to thread notice', {
+          dmFailed = true;
+          logger.warn('Failed to DM goal owner the cap decision — the dashboard card still asks', {
             sessionKey,
             error: err instanceof Error ? err.message : String(err),
           });
         }
-        if (dmSent) {
-          activeGoal.capDmPendingAt = this.now();
-          this.persist();
-          await this.postResultNotice(
-            session,
-            `⏸️ Goal auto-continuation reached its ${activeGoal.maxContinuations}-turn budget. Asked the owner via DM whether to keep going.`,
-          );
-          return;
-        }
       }
-      // Fallback (no DM transport, already asked, or DM send failed): keep the
-      // original in-thread pause notice.
+      if (dmSent) {
+        await this.postResultNotice(
+          session,
+          `⏸️ Goal auto-continuation reached its ${activeGoal.maxContinuations}-turn budget. Asked the owner via DM and the dashboard whether to keep going.`,
+        );
+        return;
+      }
+      if (opened && dmFailed) {
+        await this.postResultNotice(
+          session,
+          `⏸️ Goal auto-continuation reached its ${activeGoal.maxContinuations}-turn budget. Asked the owner on the dashboard whether to keep going (the DM could not be sent).\n*Latest reason:* ${verdict.reason}\nSend a message in this thread to resume.`,
+        );
+        return;
+      }
+      // Already asked this round, or no DM transport (the dashboard card asks):
+      // keep the original in-thread pause notice.
       await this.postResultNotice(
         session,
         `⏹️ Goal auto-continuation paused after ${activeGoal.maxContinuations} turns.\n*Latest reason:* ${verdict.reason}\nSend a message in this thread to resume.`,
@@ -495,6 +566,63 @@ export class GoalLoopController {
     }
 
     this.injectContinuationTurn(sessionKey, session, activeGoal);
+  }
+
+  /**
+   * Same failure twice (≥ GOAL_STALL_MIN_CONFIDENCE): stop the loop and ask
+   * the owner which of three next instructions to give. No continuation is
+   * injected; the round stays open until a real user message ends it.
+   */
+  private async stopOnStall(
+    sessionKey: string,
+    session: ConversationSession,
+    activeGoal: SessionGoal,
+    verdict: GoalEvalVerdict,
+  ): Promise<void> {
+    const { logger } = this.deps;
+    // One question at a time: a 10/10 "keep going?" decision still open (a
+    // restart re-ran the eval at the cap) ends here — its Continue would only
+    // land on a goal the stall holds.
+    retireGoalCapDecision(activeGoal);
+    const stall = openGoalStall(activeGoal, verdict, this.now());
+    this.persist();
+    logger.info('Goal loop stopped — same failure as the previous evaluation', {
+      sessionKey,
+      confidence: stall.confidence,
+      progressed: verdict.progressed,
+      continuationCount: activeGoal.continuationCount,
+    });
+    // The notice carries the three actions too: it stands in for the question
+    // when the question cannot be posted (another question is open, Slack failed).
+    const actionLines = stall.actions.map((a, i) => `${i + 1}. ${a}`).join('\n');
+    try {
+      await this.postResultNotice(
+        session,
+        `🛑 Goal 자동 진행을 멈췄습니다 — 지난번과 같은 이유로 다시 실패했습니다 (확신 ${Math.round(stall.confidence * 100)}%).\n*Objective:* ${formatGoalObjectiveForSlack(activeGoal.objective)}\n*Reason:* ${verdict.reason}\n*다음 지시 후보:*\n${actionLines}\n하나를 고르거나 직접 지시하세요 — 어떤 메시지든 goal을 이어갑니다. 멈추려면 \`goal pause\`.`,
+      );
+    } catch (err: unknown) {
+      // Never let a failed notice keep the question from being asked.
+      logger.warn('Goal stall notice could not be posted', {
+        sessionKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    if (!this.deps.askStallQuestion) return;
+    try {
+      await this.deps.askStallQuestion({
+        sessionKey,
+        goalId: activeGoal.goalId,
+        stallId: stall.stallId,
+        objective: activeGoal.objective,
+        reason: verdict.reason,
+        actions: stall.actions,
+      });
+    } catch (err: unknown) {
+      logger.warn('Goal stall question could not be posted — the notice still asks', {
+        sessionKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**
@@ -558,6 +686,7 @@ export class GoalLoopController {
     session: ConversationSession,
     objective: string,
     workSummary: string,
+    previous?: GoalEvalPreviousVerdict,
   ): ReturnType<typeof evaluateGoalCompletion> {
     const abortController = new AbortController();
     const graceMs = Math.min(GOAL_EVAL_ABORT_GRACE_MS, this.evalTimeoutMs);
@@ -584,6 +713,7 @@ export class GoalLoopController {
             effort: session.effort as EffortLevel | undefined,
             abortController,
             cwd: session.workingDirectory,
+            previous,
           },
           this.deps.dispatcher,
         ),

@@ -199,6 +199,8 @@ export interface ModelCommandPayloadMap {
     confirmationRequired: boolean;
     request: SessionResourceUpdateRequest;
     title?: string;
+    /** Host applies `title` only while the session has a stand-in title. */
+    titleFillOnly?: true;
   };
   ASK_USER_QUESTION: {
     question: UserChoice | UserChoices;

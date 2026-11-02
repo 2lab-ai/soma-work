@@ -173,6 +173,33 @@ describe('work log store', () => {
     expect('taskId' in plain).toBe(false);
   });
 
+  it('keeps who sent an instruction (by) and whether it was a compaction (compactTurn) — SSOT 2026-10-28', async () => {
+    const sys = await wl.appendWorkLog('conv-by', {
+      kind: 'instruction',
+      text: '/compact',
+      by: 'system',
+      compactTurn: true,
+    });
+    expect(sys).toMatchObject({ by: 'system', compactTurn: true });
+    const person = await wl.appendWorkLog('conv-by', { kind: 'instruction', text: 'go', by: 'user' });
+    expect(person.by).toBe('user');
+    expect('compactTurn' in person).toBe(false);
+    const junk = await wl.appendWorkLog('conv-by', {
+      kind: 'instruction',
+      text: 'x',
+      by: 'robot' as never,
+      compactTurn: 'yes' as never,
+    });
+    expect('by' in junk).toBe(false);
+    expect('compactTurn' in junk).toBe(false);
+    const page = await wl.readWorkLog('conv-by');
+    expect(page.entries.map((e) => [e.by, e.compactTurn])).toEqual([
+      ['system', true],
+      ['user', undefined],
+      [undefined, undefined],
+    ]);
+  });
+
   it('keeps who made an entry (agentId) and which agent it starts (agentRef), and marks it attributed — spec 12 §2.4', async () => {
     const sub = await wl.appendWorkLog('conv-agent', {
       kind: 'tool',
@@ -228,6 +255,62 @@ describe('work log store', () => {
     expect('warning' in plain).toBe(false);
   });
 
+  it('keeps the SDK tool-use id that pairs a tool_result with its call — clamped, absent when not given', async () => {
+    const call = await wl.appendWorkLog('conv-pair', {
+      kind: 'tool',
+      text: 'Read a.ts',
+      tool: 'Read',
+      toolUseId: 'toolu_01A',
+    });
+    const result = await wl.appendWorkLog('conv-pair', {
+      kind: 'tool_result',
+      text: 'Read ok',
+      tool: 'Read',
+      ok: true,
+      toolUseId: 'toolu_01A',
+    });
+    const long = await wl.appendWorkLog('conv-pair', {
+      kind: 'tool',
+      text: 'Bash ls',
+      tool: 'Bash',
+      toolUseId: 'y'.repeat(5000),
+    });
+    const plain = await wl.appendWorkLog('conv-pair', { kind: 'narration', text: 'thinking' });
+    expect(call.toolUseId).toBe('toolu_01A');
+    expect(result.toolUseId).toBe('toolu_01A');
+    expect(long.toolUseId?.length).toBe(wl.WORK_LOG_FIELD_MAX);
+    expect('toolUseId' in plain).toBe(false);
+    const page = await (await loadFresh()).readWorkLog('conv-pair');
+    expect(page.entries.map((e) => e.toolUseId?.slice(0, 9))).toEqual([
+      'toolu_01A',
+      'toolu_01A',
+      'yyyyyyyyy',
+      undefined,
+    ]);
+  });
+
+  // SSOT 2026-11-02 T1 — a permission answer is its own entry: the decision, who answered, the AI's advice.
+  it('keeps a permission entry with its decision, who answered and the AI advice — and drops what is not one', async () => {
+    const kept = await wl.appendWorkLog('conv-perm', {
+      kind: 'permission',
+      text: '⚠️ 권한 승인 (2차 확인) · Bash · rm -rf ~/work',
+      tool: 'Bash',
+      ok: true,
+      permission: { decision: 'approve_confirmed', by: 'U_REQ', ai: 'deny' },
+    });
+    const junk = await wl.appendWorkLog('conv-perm', {
+      kind: 'permission',
+      text: 'x',
+      permission: { decision: 'nope', by: 'z'.repeat(5000), ai: 'maybe' } as never,
+    });
+    expect(kept.kind).toBe('permission');
+    expect(kept.permission).toEqual({ decision: 'approve_confirmed', by: 'U_REQ', ai: 'deny' });
+    // An unknown decision is no permission record; an over-long id is clamped; an unknown advice is dropped.
+    expect(junk.permission).toBeUndefined();
+    const page = await (await loadFresh()).readWorkLog('conv-perm');
+    expect(page.entries[0]).toMatchObject({ kind: 'permission', permission: { decision: 'approve_confirmed' } });
+  });
+
   it('serializes concurrent appends so every line stays whole and ordered', async () => {
     const all = Array.from({ length: 50 }, (_, i) =>
       wl.appendWorkLog('conv-c', { kind: 'narration', text: `step ${i}` }),
@@ -261,6 +344,41 @@ describe('work log store', () => {
     expect(await wl.readWorkLog('conv-p', { afterSeq: 7 })).toMatchObject({ hasMore: false });
     expect(seqs(await wl.readWorkLog('conv-p', { afterSeq: 0, limit: 2 }))).toEqual([1, 2]);
     expect(await wl.readWorkLog('conv-p', { afterSeq: 10 })).toEqual({ entries: [], hasMore: false });
+  });
+
+  it('with beforeSeq returns the LAST `limit` entries before it; hasMore = older entries exist', async () => {
+    for (let i = 1; i <= 10; i++) await wl.appendWorkLog('conv-b', { kind: 'narration', text: `n${i}` });
+
+    // The dashboard holds the latest window [8, 9, 10] and pages back from its oldest seq.
+    const page1 = await wl.readWorkLog('conv-b', { beforeSeq: 8, limit: 3 });
+    expect(seqs(page1)).toEqual([5, 6, 7]);
+    expect(page1.hasMore).toBe(true);
+    const page2 = await wl.readWorkLog('conv-b', { beforeSeq: 5, limit: 3 });
+    expect(seqs(page2)).toEqual([2, 3, 4]);
+    expect(page2.hasMore).toBe(true);
+    const first = await wl.readWorkLog('conv-b', { beforeSeq: 2, limit: 3 });
+    expect(seqs(first)).toEqual([1]);
+    expect(first.hasMore).toBe(false);
+    expect(await wl.readWorkLog('conv-b', { beforeSeq: 4, limit: 3 })).toMatchObject({ hasMore: false });
+    // Nothing is older than the first seq; a missing log is empty.
+    expect(await wl.readWorkLog('conv-b', { beforeSeq: 1 })).toEqual({ entries: [], hasMore: false });
+    expect(await wl.readWorkLog('conv-b', { beforeSeq: 0 })).toEqual({ entries: [], hasMore: false });
+    expect(await wl.readWorkLog('conv-missing', { beforeSeq: 9 })).toEqual({ entries: [], hasMore: false });
+    // Past the newest seq it is the latest window.
+    expect(seqs(await wl.readWorkLog('conv-b', { beforeSeq: 1_000_000, limit: 2 }))).toEqual([9, 10]);
+  });
+
+  it('beforeSeq pages across seq holes (a restart resumes above the reservation) without losing entries', async () => {
+    // 1..5, then a hole up to 1001 (a fresh seed), then 1001..1005.
+    writeRaw('conv-hole', [1, 2, 3, 4, 5, 1001, 1002, 1003, 1004, 1005].map((n) => line(n)).join(''));
+    expect(seqs(await wl.readWorkLog('conv-hole', { beforeSeq: 1003, limit: 3 }))).toEqual([5, 1001, 1002]);
+    expect(seqs(await wl.readWorkLog('conv-hole', { beforeSeq: 1001, limit: 3 }))).toEqual([3, 4, 5]);
+    expect(seqs(await wl.readWorkLog('conv-hole', { beforeSeq: 700, limit: 10 }))).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('afterSeq and beforeSeq together: the forward page (the route refuses the pair)', async () => {
+    for (let i = 1; i <= 6; i++) await wl.appendWorkLog('conv-ab', { kind: 'narration', text: `n${i}` });
+    expect(seqs(await wl.readWorkLog('conv-ab', { afterSeq: 2, beforeSeq: 4, limit: 2 }))).toEqual([3, 4]);
   });
 
   it('defaults to the latest 500 entries', async () => {
@@ -385,6 +503,21 @@ describe('work log store', () => {
       }
     });
 
+    it('beforeSeq deep in the history pages back from the right place, reading a small part of the file', async () => {
+      for (const beforeSeq of [6, 778, 10_000, 15_001, N - 600, N]) {
+        counter.bytes = 0;
+        const page = await wl.readWorkLog('conv-big', { beforeSeq, limit: 5 });
+        expect(seqs(page)).toEqual([5, 4, 3, 2, 1].map((k) => beforeSeq - k));
+        expect(page.entries[4].text.endsWith(`#${beforeSeq - 1}`)).toBe(true);
+        expect(page.hasMore).toBe(beforeSeq - 5 > 1); // seq 1 is the first entry
+        // Binary search for the page end + a short backward read: well under the file.
+        expect(counter.bytes).toBeLessThan(fileSize / 10);
+      }
+      const head = await wl.readWorkLog('conv-big', { beforeSeq: 4, limit: 5 });
+      expect(seqs(head)).toEqual([1, 2, 3]);
+      expect(head.hasMore).toBe(false);
+    });
+
     it('seeds from the reservation, reading only the tail (for the trailing newline and quarantine)', async () => {
       fs.writeFileSync(sidecarFile('conv-big'), JSON.stringify({ reservedSeq: N + 999 }));
       const next = await wl.appendWorkLog('conv-big', { kind: 'notice', text: 'after restart' });
@@ -425,6 +558,14 @@ describe('work log store', () => {
           expect(counter.bytes).toBeLessThanOrEqual(wl.WORK_LOG_SCAN_BUDGET_BYTES);
         });
 
+        it('a beforeSeq read stays within the budget; hasMore says the page may not be complete', async () => {
+          const page = await wl.readWorkLog('conv-junk', { beforeSeq: 996, limit: 10 });
+          // The junk after the entries gives the search no end: the scan from the end stops at its budget.
+          expect(page.hasMore).toBe(true);
+          expect(page.entries.every((e) => e.seq < 996)).toBe(true);
+          expect(counter.bytes).toBeLessThanOrEqual(wl.WORK_LOG_SCAN_BUDGET_BYTES);
+        });
+
         it('a seed stops at the budget, quarantines the log, and continues above the live reservation', async () => {
           // The reservation the module would have written for entries 1..1000.
           fs.writeFileSync(sidecarFile('conv-junk'), JSON.stringify({ reservedSeq: 1999 }));
@@ -441,6 +582,44 @@ describe('work log store', () => {
         });
       });
     }
+
+    it('a beforeSeq page that stops inside a long run of junk hands back a byte cursor that gets past it', async () => {
+      // Entries 1..1000, 9 MB of junk (more than one scan budget), entries 1001..1004.
+      writeRaw('conv-gap', Array.from({ length: 1000 }, (_, i) => line(i + 1)).join(''));
+      appendRaw('conv-gap', junkLines());
+      appendRaw('conv-gap', [1001, 1002, 1003, 1004].map((n) => line(n)).join(''));
+      const first = await wl.readWorkLog('conv-gap', { beforeSeq: 1005, limit: 10 });
+      expect(seqs(first)).toEqual([1001, 1002, 1003, 1004]);
+      expect(first.hasMore).toBe(true);
+      expect(typeof first.nextBeforeOffset).toBe('number');
+
+      // Without the cursor the next page is the same empty answer every time (the search lands after the junk).
+      const stuck = await wl.readWorkLog('conv-gap', { beforeSeq: 1001, limit: 10 });
+      expect(stuck.entries).toEqual([]);
+      expect(stuck.hasMore).toBe(true);
+
+      // With it, each page resumes where the last one stopped — each within one budget — and reaches 991..1000.
+      let cursor = first.nextBeforeOffset;
+      let page = first;
+      for (let hop = 0; hop < 3 && cursor !== undefined; hop++) {
+        const counter = countReads();
+        page = await wl.readWorkLog('conv-gap', { beforeSeq: 1001, beforeOffset: cursor, limit: 10 });
+        expect(counter.bytes).toBeLessThanOrEqual(wl.WORK_LOG_SCAN_BUDGET_BYTES);
+        vi.restoreAllMocks();
+        if (page.entries.length) break;
+        expect(page.nextBeforeOffset).toBeLessThan(cursor as number);
+        cursor = page.nextBeforeOffset;
+      }
+      expect(seqs(page)).toEqual([991, 992, 993, 994, 995, 996, 997, 998, 999, 1000]);
+      expect(page.hasMore).toBe(true);
+    });
+
+    it('a beforeOffset past the end of the log (it was replaced since) is ignored', async () => {
+      writeRaw('conv-off', Array.from({ length: 20 }, (_, i) => line(i + 1)).join(''));
+      const page = await wl.readWorkLog('conv-off', { beforeSeq: 11, beforeOffset: 10 ** 12, limit: 3 });
+      expect(seqs(page)).toEqual([8, 9, 10]);
+      expect(page.nextBeforeOffset).toBeUndefined();
+    });
 
     it('without a sidecar an unreadable tail fails closed instead of guessing from the file size', async () => {
       writeRaw('conv-legacy', Array.from({ length: 50 }, (_, i) => line(i + 1)).join(''));

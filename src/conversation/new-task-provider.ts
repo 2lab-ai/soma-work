@@ -20,12 +20,19 @@ import { fetchLlmuxStatus } from '../auth/llmux-client';
 import { getAllChannels } from '../channel-registry';
 import { getLastCommandChannelStore } from '../last-command-channel-store';
 import { Logger } from '../logger';
+import { allowedEffortsFor } from '../session/effort-menu';
 import { productionModelCatalogDeps } from '../session/model-catalog-deps';
 import { listRepresentativeModels } from '../session/model-switch';
 import { getTokenManager } from '../token-manager';
 import { EFFORT_LEVELS, userSettingsStore } from '../user-settings-store';
 import type { DashboardNewTaskProvider } from './dashboard';
-import { buildNewTaskContext, isSlackFileUrl, type NewTaskAttachment, type UsageAccountView } from './new-task';
+import {
+  buildNewTaskContext,
+  isSlackFileUrl,
+  type NewTaskAttachment,
+  newTaskModelOptions,
+  type UsageAccountView,
+} from './new-task';
 import {
   launchNewTask,
   type NewTaskEvent,
@@ -34,6 +41,7 @@ import {
   slackEventFileFrom,
 } from './new-task-launcher';
 import { cctSlotsToUsage, createTtlCache, llmuxAccountsToUsage } from './new-task-usage';
+import { createSteerUploader, type SteerUploaderOptions } from './steer-uploads';
 
 const logger = new Logger('DashboardNewTask');
 
@@ -80,13 +88,13 @@ async function loadUsage(): Promise<{ accounts: UsageAccountView[]; source: stri
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/** Upload into the thread, then read each file back in the shape the message pipeline downloads from. */
-async function uploadFiles(
+/** Upload into the thread; the ids Slack gave the files, in order (all of them, or it throws). */
+export async function uploadFileIds(
   client: WebClient,
   channel: string,
   threadTs: string,
   files: NewTaskAttachment[],
-): Promise<SlackEventFile[]> {
+): Promise<string[]> {
   // biome-ignore lint/suspicious/noExplicitAny: FilesUploadV2Arguments is a tagged union the multi-file branch does not narrow to
   const result: any = await client.filesUploadV2({
     channel_id: channel,
@@ -100,21 +108,89 @@ async function uploadFiles(
   if (ids.length !== files.length) {
     throw new Error(`Slack accepted ${ids.length} of ${files.length} files`);
   }
-  const out: SlackEventFile[] = [];
-  for (const id of ids) {
-    let info: any;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      info = (await client.files.info({ file: id }))?.file;
-      if (info?.url_private_download) break;
-      await sleep(500);
-    }
-    if (!info?.url_private_download) throw new Error(`Slack has no download URL for file ${id} yet`);
-    // The pipeline fetches this URL with the bot token: only ever a Slack file host.
-    if (!isSlackFileUrl(info.url_private_download))
-      throw new Error(`Slack returned a non-Slack download URL for file ${id}`);
-    out.push(slackEventFileFrom(id, info));
+  return ids;
+}
+
+/** Read an uploaded file back in the shape the message pipeline downloads from. */
+export async function resolveUploadedFile(client: WebClient, id: string): Promise<SlackEventFile> {
+  let info: any;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    info = (await client.files.info({ file: id }))?.file;
+    if (info?.url_private_download) break;
+    await sleep(500);
   }
+  if (!info?.url_private_download) throw new Error(`Slack has no download URL for file ${id} yet`);
+  // The pipeline fetches this URL with the bot token: only ever a Slack file host.
+  if (!isSlackFileUrl(info.url_private_download))
+    throw new Error(`Slack returned a non-Slack download URL for file ${id}`);
+  return slackEventFileFrom(id, info);
+}
+
+/**
+ * Upload into the thread, then read each file back in the shape the message
+ * pipeline downloads from (a new task's attachments). The panel composer's
+ * files go through `createSteerUploader` on the same two steps.
+ */
+export async function uploadFiles(
+  client: WebClient,
+  channel: string,
+  threadTs: string,
+  files: NewTaskAttachment[],
+): Promise<SlackEventFile[]> {
+  const ids = await uploadFileIds(client, channel, threadTs, files);
+  const out: SlackEventFile[] = [];
+  for (const id of ids) out.push(await resolveUploadedFile(client, id));
   return out;
+}
+
+/**
+ * The panel composer's uploader (`injectDashboardMessage`): one Slack upload
+ * per file, kept by id so a retry never uploads a file Slack already took (#488).
+ */
+export function createSlackSteerUploader(client: WebClient, opts?: SteerUploaderOptions) {
+  return createSteerUploader(
+    {
+      upload: async (channel, threadTs, file) => (await uploadFileIds(client, channel, threadTs, [file]))[0],
+      resolve: (id) => resolveUploadedFile(client, id),
+    },
+    opts,
+  );
+}
+
+/**
+ * The models the dialog offers `userId` (nickname → id), from the model catalog
+ * and the user's settings alone — no Slack call, no usage fetch. A dashboard
+ * task resolves its model with this (#640 R2).
+ */
+export function offeredNewTaskModels(userId: string): Array<{ nickname: string; model: string }> {
+  const { representativeModels, userDefaultModel, userDefaultModelLabel } = newTaskModelInputs(userId);
+  return newTaskModelOptions(representativeModels, userDefaultModel, userDefaultModelLabel).options.map((m) => ({
+    nickname: m.nickname,
+    model: m.model,
+  }));
+}
+
+/** The dialog's model inputs — one source for the context and the task launcher (#640 R3). */
+function newTaskModelInputs(userId: string): {
+  representativeModels: Array<{ nickname: string; model: string; label: string; effortLevels?: string[] }>;
+  userDefaultModel: string;
+  userDefaultModelLabel: string;
+  userDefaultModelEffortLevels?: string[];
+} {
+  let representativeModels: Array<{ nickname: string; model: string; label: string; effortLevels?: string[] }> = [];
+  try {
+    representativeModels = listRepresentativeModels(productionModelCatalogDeps(), userId);
+  } catch (error) {
+    logger.warn('New task: representative models unavailable', { error: String(error) });
+  }
+  const userDefaultModel = userSettingsStore.getUserDefaultModel(userId);
+  const userDefaultModelEffortLevels = [...allowedEffortsFor(userDefaultModel)];
+  return {
+    representativeModels,
+    userDefaultModel,
+    userDefaultModelLabel: userSettingsStore.getModelDisplayName(userDefaultModel),
+    ...(userDefaultModelEffortLevels ? { userDefaultModelEffortLevels } : {}),
+  };
 }
 
 export function createNewTaskProvider(deps: NewTaskProviderDeps): DashboardNewTaskProvider {
@@ -136,17 +212,13 @@ export function createNewTaskProvider(deps: NewTaskProviderDeps): DashboardNewTa
       } catch (error) {
         logger.warn('New task: usage unavailable — battery unknown', { error: String(error) });
       }
-      let representativeModels: Array<{ nickname: string; model: string; label: string }> = [];
-      try {
-        representativeModels = listRepresentativeModels(productionModelCatalogDeps(), userId);
-      } catch (error) {
-        logger.warn('New task: representative models unavailable', { error: String(error) });
-      }
-      const userDefaultModel = userSettingsStore.getUserDefaultModel(userId);
+      const { representativeModels, userDefaultModel, userDefaultModelLabel, userDefaultModelEffortLevels } =
+        newTaskModelInputs(userId);
       return buildNewTaskContext({
         representativeModels,
         userDefaultModel,
-        userDefaultModelLabel: userSettingsStore.getModelDisplayName(userDefaultModel),
+        userDefaultModelLabel,
+        userDefaultModelEffortLevels,
         userDefaultEffort: userSettingsStore.getUserDefaultEffort(userId),
         efforts: EFFORT_LEVELS,
         autogoalDefault: userSettingsStore.getUserAutoGoalEnabled(userId),

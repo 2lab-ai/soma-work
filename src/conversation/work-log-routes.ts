@@ -1,7 +1,7 @@
 /**
  * Work log API (spec §3.3).
  *
- *   GET /api/dashboard/session/:conversationId/worklog?afterSeq=&limit=
+ *   GET /api/dashboard/session/:conversationId/worklog?afterSeq=&beforeSeq=&limit=
  *     → 200 { entries: WorkLogEntry[], hasMore: boolean }
  *   GET /api/dashboard/session/:conversationId/worklog/:seq/raw
  *     → 200 { seq, raw, rawBytes, rawTruncated } (Cache-Control: no-store)
@@ -29,9 +29,15 @@
  *         durable reservation, a failed append that never landed, a
  *         quarantine, a backup recovery): no entry will ever carry them — do
  *         not wait for them.
+ *   - beforeSeq=N (N ≥ 0): the last `limit` entries with seq < N, for paging
+ *     back from the oldest entry a reader holds (the dashboard loads the latest
+ *     window and older pages only as the reader scrolls up); hasMore = older
+ *     entries exist before this page, or the read stopped at its byte budget
+ *     (so there may be). N ≤ 1 is an empty page.
  *   - limit: default 500, allowed 1..500.
- *   - Both params are decimal integers (`^\d+$`); anything else is
- *     400 { error: 'bad_request' } rather than a silent mode switch.
+ *   - Every param is a decimal integer (`^\d+$`), and afterSeq and beforeSeq
+ *     are never asked together; anything else is 400 { error: 'bad_request' }
+ *     rather than a silent mode switch.
  *   - hasMore without afterSeq: older entries exist, or the read stopped at its
  *     byte budget (so there may be). With afterSeq: more than `limit` entries
  *     follow, or the read stopped at its budget before it could prove the page
@@ -89,12 +95,23 @@ export async function registerWorkLogRoutes(
 ): Promise<void> {
   server.get<{
     Params: { conversationId: string };
-    Querystring: { afterSeq?: string; limit?: string };
+    Querystring: { afterSeq?: string; beforeSeq?: string; beforeOffset?: string; limit?: string };
   }>('/api/dashboard/session/:conversationId/worklog', { preHandler: [authMiddleware] }, async (request, reply) => {
     try {
       const limit = parseStrictInt(request.query.limit, 1, WORK_LOG_DEFAULT_LIMIT);
       const afterSeq = parseStrictInt(request.query.afterSeq, 0, Number.MAX_SAFE_INTEGER);
-      if (limit === null || afterSeq === null) {
+      const beforeSeq = parseStrictInt(request.query.beforeSeq, 0, Number.MAX_SAFE_INTEGER);
+      // The previous older page's byte cursor (WorkLogPage.nextBeforeOffset): only for a beforeSeq page.
+      const beforeOffset = parseStrictInt(request.query.beforeOffset, 1, Number.MAX_SAFE_INTEGER);
+      // Forward and backward paging at once has no meaning: refuse it rather than pick one.
+      if (
+        limit === null ||
+        afterSeq === null ||
+        beforeSeq === null ||
+        beforeOffset === null ||
+        (afterSeq !== undefined && beforeSeq !== undefined) ||
+        (beforeOffset !== undefined && beforeSeq === undefined)
+      ) {
         reply.status(400).send({ error: 'bad_request' });
         return;
       }
@@ -111,11 +128,13 @@ export async function registerWorkLogRoutes(
         return;
       }
 
-      const { entries, hasMore } = await readWorkLog(conversationId, {
+      const { entries, hasMore, nextBeforeOffset } = await readWorkLog(conversationId, {
         afterSeq,
+        beforeSeq,
+        ...(beforeOffset !== undefined ? { beforeOffset } : {}),
         limit: limit ?? WORK_LOG_DEFAULT_LIMIT,
       });
-      reply.send({ entries, hasMore });
+      reply.send(nextBeforeOffset !== undefined ? { entries, hasMore, nextBeforeOffset } : { entries, hasMore });
     } catch (error) {
       logger.error('Error reading work log', error);
       reply.status(500).send({ error: 'Internal Server Error' });

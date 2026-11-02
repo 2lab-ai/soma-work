@@ -2,7 +2,7 @@ import { atomicWriteJson } from '@soma/common/atomic-json';
 import { DEFAULT_LOG_VERBOSITY, getVerbosityFlags, type LogVerbosity, VERBOSITY_NAMES } from '@soma/slack/output-flags';
 import fs from 'fs';
 import path from 'path';
-import { SDK_EFFORT_LEVELS as EFFORT_LEVELS, type SdkEffortLevel as EffortLevel } from 'soma-lib';
+import { EFFORT_LEVELS, type EffortLevel } from 'soma-lib';
 import { isAdminUser } from './admin-utils';
 import { effectivePermissionMode, isPermissionMode, type PermissionMode } from './agent-runtime/policy/permission-mode';
 import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
@@ -11,6 +11,7 @@ import { isRejectedModelInput, resolveModelInputCompatibility } from './metrics/
 import { modelCatalog } from './model-catalog';
 import { createPromptInvalidator } from './prompt-cache-invalidation';
 import { maskUrl } from './turn-notifier.js';
+import { type DashboardLayoutDoc, normalizeLayoutDoc } from './view-layout';
 
 const logger = new Logger('UserSettingsStore');
 
@@ -22,7 +23,7 @@ const invalidator = createPromptInvalidator(logger, 'Settings');
 export const setSettingsPromptInvalidationHook = invalidator.setHook;
 const fireSettingsInvalidate = invalidator.fire;
 
-// Available models — the 22-entry user-facing allow-list.
+// Available models — the user-facing allow-list.
 //
 // Contract:
 //   - The 9 bare claude entries are the historical lineup and MUST NOT be
@@ -54,7 +55,9 @@ const fireSettingsInvalidate = invalidator.fire;
 //     2026-09-07 probe). 272k context window (openai/codex catalog value —
 //     the same class as gpt-5.5's 272k input cap, NOT gpt-5.6's 372k);
 //     efforts low/medium/high/xhigh/max/ultra, catalog default effort low.
-//     It is the only shipped gpt-6 tier (no sol/terra/luna) and is a
+//     It is the only gpt-6 tier declared statically here — upstream,
+//     generation 6 also grew sol and luna tiers (llmux catalog, 2026-09-22),
+//     which reach users through the llmux catalog overlay. It is a
 //     declared row in metrics/model-profile.ts: 249k blocking limit, 240k
 //     auto-compact (= limit − DEFAULT_COMPACT_HEADROOM). The `[1m]` opt-in
 //     variant ships alongside the bare id (same wire contract as
@@ -68,6 +71,16 @@ const fireSettingsInvalidate = invalidator.fire;
 //     is intentionally NOT bumped), and the `astra`/`gpt-6`/`gpt6`
 //     shorthand aliases point at the `[1m]` variant so a user typing the
 //     shorthand does not silently get a fifth of the window they meant.
+//   - `gpt-6.1-sol` (added 2026-10-14) is the newest sol generation and rides
+//     the same llmux codex passthrough (llmux forwards the slug verbatim and
+//     moved its own `sol` alias to it on 2026-10-06). 272k context window
+//     (openai/codex catalog value — same class as gpt-6-astra); it is a
+//     declared row in metrics/model-profile.ts with the gen-6 numbers (249k
+//     blocking limit, 240k auto-compact). The `[1m]` opt-in variant ships
+//     alongside it under the shared GPT `[1m]` policy (1M window, 977k
+//     blocking limit, 600k auto-compact). The `sol` / `sol[1m]` / `gpt-6.1`
+//     shorthands point at the `[1m]` variant; the default stays
+//     `gpt-5.6-sol`, whose literal ids remain selectable.
 //   - `grok-4.6` (added 2026-08-26) is DECLARED here rather than left to the
 //     llmux catalog overlay: a cold start with no catalog snapshot must still
 //     be able to select the model whose 450k auto-compact default is declared
@@ -125,6 +138,8 @@ export const AVAILABLE_MODELS = [
   'gpt-5.6-luna',
   'gpt-6-astra',
   'gpt-6-astra[1m]',
+  'gpt-6.1-sol',
+  'gpt-6.1-sol[1m]',
   'grok-4.6',
 ] as const;
 
@@ -193,11 +208,17 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   // keep resolving (llmux also maps the bare id to sol on the wire).
   'gpt-5.6': 'gpt-5.6-sol',
   'gpt5.6': 'gpt-5.6-sol',
-  // Tier shorthands. `sol[1m]` is the 1M opt-in of the flagship — a different
-  // profile (1M window / 977k blocking limit / 600k trigger), not a decoration
-  // on the bare 372k one.
-  sol: 'gpt-5.6-sol',
-  'sol[1m]': 'gpt-5.6-sol[1m]',
+  // Tier shorthands. `sol` / `sol[1m]` follow the NEWEST sol generation
+  // (gpt-6.1-sol since 2026-10-14, matching llmux's own `sol` alias) and land
+  // on its `[1m]` row — same rule as `astra` / `fable` / `opus`: a family
+  // shorthand selects the spelling whose SDK-side window is actually 1M
+  // (1M window / 977k blocking limit / 600k trigger). `gpt-6.1` is the bare
+  // generation spelling. gpt-5.6-sol stays reachable by its literal ids and
+  // the pinned `gpt-5.6` / `gpt5.6` aliases above; bump these rows (plus
+  // AVAILABLE_MODELS) when a newer sol generation lands.
+  sol: 'gpt-6.1-sol[1m]',
+  'sol[1m]': 'gpt-6.1-sol[1m]',
+  'gpt-6.1': 'gpt-6.1-sol[1m]',
   terra: 'gpt-5.6-terra',
   luna: 'gpt-5.6-luna',
   // gpt-6 (2026-09-03 release, wired 2026-09-07). Selectable, NOT the
@@ -299,10 +320,13 @@ export function coerceToAvailableModel(raw: string | null | undefined): string {
   return DEFAULT_MODEL;
 }
 
-export type { SdkEffortLevel as EffortLevel } from 'soma-lib';
-// Effort levels — this store's menu is the SDK subset (no `ultra`, which only
-// some llmux codex tiers offer): soma-lib `SDK_EFFORT_LEVELS`.
-export { SDK_EFFORT_LEVELS as EFFORT_LEVELS } from 'soma-lib';
+export type { EffortLevel } from 'soma-lib';
+// Effort levels — everything llmux publishes per model (soma-lib
+// `EFFORT_LEVELS`): the SDK's five plus `ultra`, which only the codex tiers
+// whose catalog menu lists it run (sol / terra / astra). The runtime clamps a
+// level to the model's menu and runs `ultra` as `max` — no backend takes
+// `ultra` on the wire (build-stream-options).
+export { EFFORT_LEVELS } from 'soma-lib';
 export const DEFAULT_EFFORT: EffortLevel = 'xhigh';
 
 /** Coerce arbitrary stored input to a known EffortLevel, falling back to DEFAULT_EFFORT. */
@@ -320,6 +344,20 @@ export const DEFAULT_SHOW_THINKING = true;
 const SESSION_THEMES = ['default', 'compact', 'minimal'] as const;
 export type SessionTheme = (typeof SESSION_THEMES)[number];
 const DEFAULT_THEME: SessionTheme = 'default';
+
+/**
+ * The web dashboard's view (SSOT 2026-11-01): `minimal` — the board and, in a
+ * detail card, the task list and the chat — or `advanced`, everything. The
+ * dashboard's own; it feeds no prompt.
+ */
+export const DASHBOARD_MODES = ['minimal', 'advanced'] as const;
+export type DashboardMode = (typeof DASHBOARD_MODES)[number];
+/**
+ * Which of the dashboard's three layouts (.prd/20 §5) each mode draws — 1안 by
+ * default. The dashboard's own, like the mode; it feeds no prompt.
+ */
+export const DASHBOARD_PLANS = ['1', '2', '3'] as const;
+export type DashboardPlan = (typeof DASHBOARD_PLANS)[number];
 export const THEME_NAMES: Record<SessionTheme, string> = {
   default: 'Default (Rich Card)',
   compact: 'Compact',
@@ -426,6 +464,30 @@ export interface UserSettings {
    */
   autoGoalEnabled?: boolean;
   /**
+   * E2 ⑦ (.prd/18 D1) — a plain Slack instruction from this user becomes a
+   * dashboard task, and its thread gets only the link, results and input
+   * requests. Read only when a new task would be made. Undefined ⇒ `false`.
+   * Not toggled from Slack until the entry is live (⑧).
+   */
+  slackTaskEntry?: boolean;
+  /** The web dashboard's view (SSOT 2026-11-01). Undefined (or unknown) ⇒ `minimal`. */
+  dashboardMode?: DashboardMode;
+  /** The dashboard's layout plan (.prd/20). Undefined (or unknown) ⇒ `'1'`. */
+  dashboardPlan?: DashboardPlan;
+  /** The user's surface layouts (.prd/21): edited presets, defaults per surface, the thread card. */
+  dashboardLayout?: DashboardLayoutDoc;
+  /**
+   * E4 ③ (.prd/19 D9 e) — the most one epic tree may spend (USD) before the
+   * host stops starting its children and waking it; the owner's own
+   * instructions still run. Undefined ⇒ {@link DEFAULT_EPIC_COST_LIMIT_USD}.
+   */
+  epicCostLimitUsd?: number;
+  /**
+   * E4 ④a-2 (.prd/19 D12) — this user may make epic tasks (`kind: 'epic'` on
+   * the new-task API). Set via `/z epictasks on|off`. Undefined ⇒ `false`.
+   */
+  epicTasks?: boolean;
+  /**
    * Per-user default for a new goal's auto-continuation cap
    * (`SessionGoal.maxContinuations`). Set via `goal max <N>` / `set goal <N>`.
    * Undefined ⇒ `DEFAULT_GOAL_MAX_CONTINUATIONS` (10). Bounded
@@ -463,6 +525,18 @@ export function validateGoalMaxContinuations(value: unknown): number {
     throw new Error('goal max must be an integer');
   }
   return Math.min(GOAL_MAX_CONTINUATIONS_MAX, Math.max(GOAL_MAX_CONTINUATIONS_MIN, value));
+}
+
+// E4 ③ (.prd/19 D9 e): one epic tree's cost limit, USD.
+export const DEFAULT_EPIC_COST_LIMIT_USD = 50;
+export const EPIC_COST_LIMIT_MAX_USD = 10_000;
+
+/** Validate an epic cost limit: a positive finite number of dollars, at most the max. Throws a user-facing `Error`. */
+export function validateEpicCostLimitUsd(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new Error('epic cost limit must be a positive number of dollars');
+  }
+  return Math.min(EPIC_COST_LIMIT_MAX_USD, value);
 }
 
 // Compaction Tracking (#617): threshold bounds + default.
@@ -970,6 +1044,107 @@ export class UserSettingsStore {
     logger.info('Set user default effort', { userId, effort });
   }
 
+  /** E2 ⑦ — a plain Slack instruction becomes a dashboard task (D1). Default `false`. */
+  getUserSlackTaskEntry(userId: string): boolean {
+    return this.settings[userId]?.slackTaskEntry ?? false;
+  }
+
+  /** E2 ⑦ — set the Slack-instruction → dashboard-task flag (saved atomically). */
+  setUserSlackTaskEntry(userId: string, enabled: boolean): void {
+    this.patchUserSettings(userId, { slackTaskEntry: enabled });
+    logger.info('Set user Slack task entry', { userId, enabled });
+  }
+
+  /** E4 ④a-2 — may this user make epic tasks. Default `false`. */
+  getUserEpicTasks(userId: string): boolean {
+    return this.settings[userId]?.epicTasks === true;
+  }
+
+  /** E4 ④a-2 — set whether this user may make epic tasks (saved atomically). */
+  setUserEpicTasks(userId: string, enabled: boolean): void {
+    this.patchUserSettings(userId, { epicTasks: enabled });
+    logger.info('Set user epic tasks', { userId, enabled });
+  }
+
+  /** The web dashboard's view (SSOT 2026-11-01). Default — and any value it does not know — `minimal`. */
+  getUserDashboardMode(userId: string): DashboardMode {
+    return this.settings[userId]?.dashboardMode === 'advanced' ? 'advanced' : 'minimal';
+  }
+
+  /**
+   * Save the dashboard's view. The view feeds no system prompt, so unlike every
+   * other setter it drops no cached prompt (a switch would otherwise rebuild the
+   * prompt of each of the user's sessions). A missing record goes through
+   * `patchUserSettings` like every setter — the registry refuses an unaccepted
+   * user before it gets here.
+   */
+  setUserDashboardMode(userId: string, mode: DashboardMode): void {
+    const existing = this.settings[userId];
+    if (!existing) {
+      this.patchUserSettings(userId, { dashboardMode: mode });
+      return;
+    }
+    existing.dashboardMode = mode;
+    existing.lastUpdated = new Date().toISOString();
+    this.saveSettings();
+  }
+
+  /** The dashboard's layout plan (.prd/20). Default — and any value it does not know — `'1'`. */
+  getUserDashboardPlan(userId: string): DashboardPlan {
+    const p = this.settings[userId]?.dashboardPlan;
+    return p === '2' || p === '3' ? p : '1';
+  }
+
+  /** Save the dashboard's layout plan — like the view mode, no prompt reads it, so no cached prompt is dropped. */
+  setUserDashboardPlan(userId: string, plan: DashboardPlan): void {
+    const existing = this.settings[userId];
+    if (!existing) {
+      this.patchUserSettings(userId, { dashboardPlan: plan });
+      return;
+    }
+    existing.dashboardPlan = plan;
+    existing.lastUpdated = new Date().toISOString();
+    this.saveSettings();
+  }
+
+  /** The user's surface layouts (.prd/21), checked on the way out; a stored value that no longer checks is empty. */
+  getUserDashboardLayout(userId: string): DashboardLayoutDoc {
+    try {
+      return normalizeLayoutDoc(this.settings[userId]?.dashboardLayout);
+    } catch {
+      return { v: 1 };
+    }
+  }
+
+  /** Save the user's surface layouts (already checked by the registry) — no prompt reads them. */
+  setUserDashboardLayout(userId: string, doc: DashboardLayoutDoc): void {
+    const existing = this.settings[userId];
+    if (!existing) {
+      this.patchUserSettings(userId, { dashboardLayout: doc });
+      return;
+    }
+    existing.dashboardLayout = doc;
+    existing.lastUpdated = new Date().toISOString();
+    this.saveSettings();
+  }
+
+  /** E4 ③ — one epic tree's cost limit (USD); a stored value that is not a valid limit reads as the default. */
+  getUserEpicCostLimitUsd(userId: string): number {
+    const stored = this.settings[userId]?.epicCostLimitUsd;
+    try {
+      return stored === undefined ? DEFAULT_EPIC_COST_LIMIT_USD : validateEpicCostLimitUsd(stored);
+    } catch {
+      return DEFAULT_EPIC_COST_LIMIT_USD;
+    }
+  }
+
+  /** E4 ③ — set one epic tree's cost limit (validated, saved atomically). */
+  setUserEpicCostLimitUsd(userId: string, value: number): void {
+    const limit = validateEpicCostLimitUsd(value);
+    this.patchUserSettings(userId, { epicCostLimitUsd: limit });
+    logger.info('Set user epic cost limit', { userId, limit });
+  }
+
   /**
    * Get user's autogoal mode (S2). Default `false`.
    */
@@ -1320,6 +1495,13 @@ export class UserSettingsStore {
       case 'gpt-6-astra[1m]':
         // Shared GPT [1m] policy: 1M window, 977k SDK block, 600k auto-compact.
         return 'GPT-6 Astra (1M)';
+      case 'gpt-6.1-sol':
+        // Newest sol generation (llmux codex backend); 272k catalog window,
+        // 240k auto-compact (model-profile.ts).
+        return 'GPT-6.1 Sol (272k)';
+      case 'gpt-6.1-sol[1m]':
+        // Shared GPT [1m] policy: 1M window, 977k SDK block, 600k auto-compact.
+        return 'GPT-6.1 Sol (1M)';
       default:
         // llmux model-catalog overlay — catalog models carry their llmux
         // display name (e.g. `grok-4.5` → "Grok 4.5"); anything else echoes
@@ -1411,6 +1593,35 @@ export class UserSettingsStore {
       acceptedAt: new Date().toISOString(),
     });
     logger.info('User accepted', { userId, acceptedBy: adminUserId });
+  }
+
+  /**
+   * Accept or remove a pending user — on disk, or not at all. A write that
+   * fails restores the record and throws, so an admin's answer is reported only
+   * once it is persisted (#622).
+   */
+  settlePendingUser(userId: string, adminUserId: string, accept: boolean): void {
+    const before = this.settings[userId];
+    if (!before) throw new Error(`No pending user ${userId}`);
+    const snapshot: UserSettings = JSON.parse(JSON.stringify(before));
+    if (accept) {
+      Object.assign(before, {
+        accepted: true,
+        acceptedBy: adminUserId,
+        acceptedAt: new Date().toISOString(),
+        lastUpdated: new Date().toISOString(),
+      });
+    } else {
+      delete this.settings[userId];
+    }
+    try {
+      atomicWriteJson(this.settingsFile, this.settings);
+    } catch (error) {
+      this.settings[userId] = snapshot;
+      throw error;
+    }
+    fireSettingsInvalidate(userId);
+    logger.info(accept ? 'User accepted' : 'Removed user settings', { userId, by: adminUserId });
   }
 
   /**

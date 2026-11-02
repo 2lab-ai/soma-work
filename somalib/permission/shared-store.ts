@@ -9,6 +9,8 @@ export interface PermissionResponse {
   behavior: 'allow' | 'deny';
   updatedInput?: any;
   message?: string;
+  /** MCP grant answers: the outcome line every admin DM copy is rewritten to (by the answer, and again by the child). */
+  promptText?: string;
 }
 
 /**
@@ -22,14 +24,44 @@ export interface PermissionResponse {
  */
 export const PERMISSION_PROMPT_KIND = 'tool_permission' as const;
 
+/**
+ * Marker mcp-tool-permission stamps on its admin-approved grant requests
+ * (`tool_name: 'request_permission'`). Older records carry no kind; readers
+ * treat a kind-less `request_permission` record the same way.
+ */
+export const MCP_GRANT_KIND = 'mcp_grant' as const;
+
+/** What the AI (the auto-mode guardian) recommends the person answers. */
+export type PermissionRecommendation = 'approve' | 'deny';
+
+/**
+ * SSOT 2026-11-02 — the AI's advice on one permission prompt: what the call
+ * does, why it is risky, and whether to accept it. Shown on every surface the
+ * prompt reaches (Slack card, dashboard card); `deny` makes the answer path
+ * ask for a second confirmation before it runs the call.
+ */
+export interface PermissionAdvice {
+  recommendation: PermissionRecommendation;
+  /** What the call does, in a sentence. */
+  summary: string;
+  /** Why it is risky, in a sentence. */
+  risk: string;
+}
+
 export interface PendingApproval {
-  /** {@link PERMISSION_PROMPT_KIND} on permission prompts; absent on other writers' records. */
-  kind?: typeof PERMISSION_PROMPT_KIND;
+  /** {@link PERMISSION_PROMPT_KIND} on permission prompts, {@link MCP_GRANT_KIND} on MCP grant requests. */
+  kind?: typeof PERMISSION_PROMPT_KIND | typeof MCP_GRANT_KIND;
   tool_name: string;
   input: any;
   channel?: string;
   thread_ts?: string;
   user?: string;
+  /**
+   * #599 ⑤ — a Slack-less task's prompt is bound to the task (its session key)
+   * and the turn that raised it, not to a Slack thread (it has none).
+   */
+  task_key?: string;
+  turn_id?: string;
   created_at: number;
   expires_at: number;
   /**
@@ -42,6 +74,20 @@ export interface PendingApproval {
    * session". Absent for non-Bash tools and non-dangerous commands.
    */
   rule_ids?: string[];
+  /**
+   * Permission prompts: the AI's advice, asked before the prompt was raised.
+   * Absent when the guardian gave none (failed, too slow, or switched off).
+   */
+  advice?: PermissionAdvice;
+  /** MCP grant requests: where each admin's DM prompt landed, so any answer can rewrite every copy. */
+  prompts?: Array<{ channel: string; ts: string }>;
+  /**
+   * MCP grant requests: the data directory of the instance whose child wrote
+   * the record. The store sits in the OS temp directory, which co-hosted
+   * instances (dev and prod on one host) share; a dashboard lists and answers
+   * only its own instance's requests.
+   */
+  owner?: string;
 }
 
 /** How long an answer claim is kept after it was made. */
@@ -173,6 +219,14 @@ class SharedStore {
     }
     void this.sweepClaims();
     return true;
+  }
+
+  /** Whether an answer has claimed this approval (it is being, or has been, answered). */
+  async isPermissionClaimed(approvalId: string): Promise<boolean> {
+    return fs.promises
+      .access(path.join(this.claimDir, `${approvalId}.json`))
+      .then(() => true)
+      .catch(() => false);
   }
 
   /** Give a claim back — only when the answer that took it failed before its response was stored. */
