@@ -25,6 +25,7 @@ import type { HookInput, HookJSONOutput, Options } from '@anthropic-ai/claude-ag
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
+import type { PermissionAdvice } from 'somalib/permission/shared-store';
 import { isAdminUser } from '../../admin-utils';
 import {
   buildRepoContextBlock,
@@ -56,6 +57,7 @@ import {
   revalidateTaskDirectory,
 } from '../execution-context';
 import { createNativeWriteCheck } from '../policy/native-write-boundary';
+import { permissionAdviceBoard } from '../policy/permission-advice';
 import type { SafetyClassifier } from '../policy/safety-classifier';
 import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
 
@@ -165,6 +167,8 @@ export interface TaskApprovalRequest {
   toolName: string;
   toolInput: Record<string, unknown>;
   ruleIds: string[];
+  /** SSOT 2026-11-02 — the guardian's advice, shown on the dashboard card (absent when it gave none). */
+  advice?: PermissionAdvice;
   signal?: AbortSignal;
   /**
    * When the SDK cancels this hook (epoch ms, its timeout less a margin): the
@@ -473,12 +477,16 @@ export async function buildStreamOptions(
                   // Default classifier model = the session's CURRENT model
                   // (#model-call-unify). Resolved on `options.model` earlier.
                   model: options.model,
+                  // The SDK cancelling this hook (the turn stopped) stops the guardian call too.
+                  ...(hookOptions?.signal ? { signal: hookOptions.signal } : {}),
                 })
                 .catch((err) => ({
                   verdict: 'ask' as const,
                   reason: `classifier threw (fail-closed): ${err instanceof Error ? err.message : String(err)}`,
                 }))
             : { verdict: 'ask' as const, reason: 'no classifier wired (fail-closed)' };
+          // The guardian's advice for the person, when the call reaches one (SSOT 2026-11-02 T2).
+          const advice: PermissionAdvice | null = ('advice' in verdict && verdict.advice) || null;
           if (verdict.verdict === 'allow') {
             logger.info('Auto-mode classifier approved tool call', {
               tool: toolName,
@@ -504,6 +512,7 @@ export async function buildStreamOptions(
                 toolName,
                 toolInput: toolInput ?? {},
                 ruleIds: [...(result.matchedRuleIds ?? [])],
+                ...(advice ? { advice } : {}),
                 deadlineAt: hookDeadlineAt,
                 ...(hookOptions?.signal ? { signal: hookOptions.signal } : {}),
               })
@@ -546,6 +555,9 @@ export async function buildStreamOptions(
             rule: result.reason,
             reason: verdict.reason,
           });
+          // SSOT 2026-11-02 T2 — the prompt the SDK raises for this `ask` shows the
+          // guardian's advice; null tells it the guardian gave none (no second call).
+          permissionAdviceBoard.put(hookSessionKey, toolName, toolInput ?? {}, advice);
           return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } };
         }
         case 'allow':
