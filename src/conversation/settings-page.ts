@@ -737,7 +737,7 @@ ${MEMORY_TAB_HTML}
 ${LAYOUT_TAB_HTML}
 ${DICTATION_TAB_HTML}
 </ui-tabs>
-<script type="application/json" id="settings-tabs-data">${tabsJson}</script>
+<script type="application/json" id="settings-tabs-data" data-i18n>${tabsJson}</script>
 <dialog id="confirm" aria-labelledby="confirm-title">
   <form method="dialog">
     <h3 id="confirm-title"></h3>

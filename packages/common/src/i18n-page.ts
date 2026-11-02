@@ -154,6 +154,18 @@ const DATA_BEFORE = [
 
 type Prev = '' | 'id' | 'kw' | 'num' | 'str' | 'close' | 'brace' | 'punct';
 
+/**
+ * Whether a `<script>` is page text: code is; a JSON data block is the
+ * server's data (a conversation's turns) and stays byte for byte — unless it
+ * says it carries page labels (`data-i18n`, or the sign-in card's
+ * `data-auth-state`, which @2lab.ai/ui writes).
+ */
+function scansScript(openTag: string): boolean {
+  const type = /\btype\s*=\s*["']([^"']*)["']/i.exec(openTag)?.[1]?.trim().toLowerCase() ?? '';
+  if (type === '' || type === 'module' || type === 'text/javascript' || type === 'application/javascript') return true;
+  return /\bdata-i18n\b|\bdata-auth-state\b/i.test(openTag);
+}
+
 class PageScanner {
   readonly segments: PageSegment[] = [];
   constructor(private readonly s: string) {}
@@ -181,10 +193,9 @@ class PageScanner {
       const name = m[2].toLowerCase();
       if (!m[1] && (name === 'script' || name === 'style')) {
         const close = this.findClose(name, tagEnd);
-        // A JSON data block (an element's data: the sign-in card's hint, the settings tabs) is scanned like script:
-        // only a string equal to a catalog key is ever replaced, so a conversation's own words stay as written.
-        if (name === 'script') this.js(tagEnd, close, false, false);
-        else this.css(tagEnd, close);
+        if (name === 'script') {
+          if (scansScript(s.slice(lt, tagEnd))) this.js(tagEnd, close, false, false);
+        } else this.css(tagEnd, close);
         i = close;
         continue;
       }

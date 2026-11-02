@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   currentDisplayLang,
@@ -121,5 +123,31 @@ describe('translateText — text already composed (the output boundary)', () => 
     expect(translateText('__tt 모델 · opus · 사용자 글', 'en')).toBe('__tt Model · opus · 사용자 글');
     expect(translateText('  __tt 세션 종료', 'en')).toBe('  __tt Session closed');
     expect(translateText('plain english', 'en')).toBe('plain english');
+  });
+});
+
+describe('translateText against the real catalog — never claims a person’s Korean (review P1)', () => {
+  // The shipped English catalog, registered like @soma/common/i18n-en does.
+  registerDisplayCatalog(
+    'en',
+    JSON.parse(readFileSync(join(__dirname, '..', 'i18n-catalog', 'en-text.json'), 'utf8')) as Record<string, string>,
+  );
+
+  it('leaves free Korean text that only starts or ends like a short template as written', () => {
+    for (const s of [
+      '내일',
+      '내일부턴',
+      '월 3일',
+      '원인: 토큰 만료라서 다시 로그인해',
+      '피크 12시까지 기다려',
+      '작업 2/5 완료했고 나머지는 내일',
+    ]) {
+      expect(translateText(s, 'en'), s).toBe(s);
+    }
+  });
+
+  it('still translates the bot’s own composed text', () => {
+    expect(translateText('🌐 표시 언어: English', 'en')).toBe('🌐 Display language: English');
+    expect(translateText('❌ `ko` 또는 `en`만 받습니다: `fr`', 'en')).toBe('❌ Only `ko` or `en` is accepted: `fr`');
   });
 });
