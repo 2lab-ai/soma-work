@@ -101,6 +101,31 @@ describe('Dashboard — work item goal list (SSOT T2/T3)', () => {
     return JSON.parse(res.body).board;
   }
 
+  describe('goal stall — the card says the loop stopped on a repeated failure', () => {
+    it('carries the stall reason', async () => {
+      const sessions = new Map<string, any>([
+        [
+          'C1:t1',
+          liveSession({
+            goal: goal({
+              lastEvalReason: 'dev에 에픽이 없다',
+              stall: {
+                stallId: 's1',
+                stalledAt: 77,
+                reason: 'dev에 에픽이 없다',
+                actions: ['a', 'b', 'c'],
+                confidence: 0.98,
+              },
+            }),
+          }),
+        ],
+      ]);
+      const board_ = await board(sessions);
+      const card = [...(board_.working ?? []), ...(board_.waiting ?? []), ...(board_.done ?? [])][0];
+      expect(card.goal.current.stalled).toEqual({ at: 77, reason: 'dev에 에픽이 없다', actions: ['a', 'b', 'c'] });
+    });
+  });
+
   describe('T2 — the card carries the current goal, its state and the queue', () => {
     it('serializes current goal, status, progress, eval gap and queued goals in order', async () => {
       const sessions = new Map<string, any>([
