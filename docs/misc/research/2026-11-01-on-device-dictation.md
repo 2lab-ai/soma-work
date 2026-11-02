@@ -76,7 +76,7 @@ What it is not:
 
 The emulator has no Google account (`Accounts: 0`) and a side-loaded 2024 Speech Services. Why Korean comes back in fragments there is not known. It says nothing about a real Galaxy, which needs its own test.
 
-Runs through the dashboard add a harness effect. The harness starts the audio about 2.5 seconds after the new task opens. On this emulator a session ended after about 5 seconds without speech and took about half a second to restart, so the first session could end before the sentence arrived, and the restart could cut its start.
+Runs through the dashboard add a harness effect. The harness waits 2.5 seconds after the new task opens, then checks permission and microphone readiness before starting the audio; the total startup delay was not measured. On this emulator a session ended after about 5 seconds without speech and took about half a second to restart, so the first session could end before the sentence arrived, and the restart could cut its start.
 
 ## Follow-up candidates
 
