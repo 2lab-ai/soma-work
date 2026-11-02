@@ -50,6 +50,7 @@ import type { LlmuxStatus } from '../auth/llmux-client';
 import type { LlmuxTierId } from '../auth/llmux-tiers';
 import { config } from '../config';
 import { displayTitle } from '../format/display-title';
+import { peekLinkMetadata, warmLinkMetadata } from '../link-metadata-fetcher';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
 import { findModelPricing } from '../metrics/model-registry';
@@ -115,6 +116,7 @@ import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggreg
 import { backfillArtifactsFromWorkLog } from './artifact-capture';
 import { type ArtifactSummary, getArtifactStore, type SessionArtifact } from './artifacts';
 import { buildCapacityView, type CapacityView } from './capacity-view';
+import { type CardLink, cardLinksOf } from './card-links';
 import { buildCronJobsView, type CronRunSessionLookup } from './cron-view';
 import { readAllInstances } from './instance-registry';
 import {
@@ -229,6 +231,11 @@ export interface KanbanSession {
   prLabel?: string;
   prTitle?: string;
   prStatus?: string;
+  /**
+   * 작업 카드의 연결 (SSOT 2026-11-02): every linked issue, PR and wiki (the active ones and the history), each
+   * with a short reference and its state — the card's `links` row (card-links.ts).
+   */
+  cardLinks?: CardLink[];
   /** Merge stats */
   mergeStats?: {
     totalLinesAdded: number;
@@ -2246,6 +2253,33 @@ export function broadcastArtifactUpdate(artifact: SessionArtifact): void {
   }
 }
 
+/**
+ * A live card's links with the freshest state the host has without waiting: the thread's live PR check, the
+ * link-metadata cache, the state recorded with the link. Stale or missing states are fetched in the background
+ * (once per URL per cache TTL) for the board's next draw.
+ */
+function liveCardLinks(s: any): Pick<KanbanSession, 'cardLinks'> {
+  const cardLinks = cardLinksOf(s ?? {}, peekLinkMetadata);
+  if (!cardLinks.length) return {};
+  try {
+    const all = [
+      s.links?.issue,
+      s.links?.pr,
+      ...(Array.isArray(s.linkHistory?.issues) ? s.linkHistory.issues : []),
+      ...(Array.isArray(s.linkHistory?.prs) ? s.linkHistory.prs : []),
+    ].filter((l) => l && typeof l.url === 'string');
+    warmLinkMetadata(all);
+  } catch {
+    // the card never fails for its links' freshness
+  }
+  return { cardLinks };
+}
+/** An archived card's links: the cache's state when it has one, else the recorded one; nothing is fetched. */
+function archivedCardLinks(archived: ArchivedSession): Pick<KanbanSession, 'cardLinks'> {
+  const cardLinks = cardLinksOf(archived as any, peekLinkMetadata);
+  return cardLinks.length ? { cardLinks } : {};
+}
+
 function sessionToKanban(key: string, s: any): KanbanSession {
   const autoResume = deriveAutoResume(s, Date.now());
   const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
@@ -2302,6 +2336,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     prLabel: s.links?.pr?.label,
     prTitle: s.links?.pr?.title,
     prStatus: s.links?.pr?.status,
+    ...liveCardLinks(s),
     mergeStats: s.mergeStats
       ? {
           totalLinesAdded: s.mergeStats.totalLinesAdded,
@@ -2468,6 +2503,7 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
     prLabel: archived.links?.pr?.label,
     prTitle: archived.links?.pr?.title,
     prStatus: archived.links?.pr?.status,
+    ...archivedCardLinks(archived),
     mergeStats: archived.mergeStats
       ? {
           totalLinesAdded: archived.mergeStats.totalLinesAdded,
@@ -4995,6 +5031,12 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 .card-body .card-refs a:focus-visible { text-decoration: underline; }
 .card-body .card-refs .ref-sep { color: var(--ib-muted); opacity: 0.6; }
+/* 작업 카드의 연결: a linked page's state after its reference, in its tone. */
+.card-body .card-refs .card-ref-st { color: var(--ib-text-2, var(--text-secondary)); font-weight: 400; }
+.card-body .card-refs .card-ref-st[data-tone="run"] { color: var(--ib-run-fg, var(--ui-st-run)); }
+.card-body .card-refs .card-ref-st[data-tone="done"] { color: var(--ib-done-fg, var(--ui-st-done)); }
+.card-body .card-refs .card-ref-st[data-tone="fail"] { color: var(--ib-fail-fg, var(--ui-st-fail)); }
+.card-body .card-refs .card-ref-st[data-tone="wait"] { color: var(--ib-wait-fg, var(--ui-st-wait)); }
 
 /* ── ENV BADGE — multi-instance origin tag (#814): the kit's toned chip (.ui-chip.is-toned.is-sm, D8b D-15) — its
    --ui-tone set inline from getEnvBadgeColor() (ENV_BADGE_PALETTE); the kit draws the 14% tint, the word 70%
@@ -8863,6 +8905,25 @@ function ctxPercent(pct) {
 // never alone); an unknown state shows the bare number. The title adds the PR's title.
 var PR_STATE_LABEL = { open: '열림', draft: '초안', merged: '머지됨', closed: '닫힘' };
 var PR_STATE_TONE = { open: 'run', merged: 'done', closed: 'fail' };
+// The card's linked pages (KanbanSession.cardLinks, card-links.ts) as @2lab.ai/ui 0.19.0 card.links chips: the
+// short reference, the state in words and its tone, a tooltip that says what it is. Gated by ui.dashboardheader
+// 'links', as the PR chip and the open card's refs.
+var CARD_LINK_KIND = { issue: '이슈', pr: 'PR', wiki: '위키' };
+var CARD_LINK_TONES = { run: 1, done: 1, fail: 1, wait: 1 };
+function cardLinksFace(s) {
+  if (!dhShow('links') || !s || !Array.isArray(s.cardLinks)) return [];
+  var out = [];
+  for (var i = 0; i < s.cardLinks.length; i++) {
+    var l = s.cardLinks[i];
+    if (!l || !CARD_LINK_KIND[l.kind] || !l.url || !l.text) continue;
+    var link = { kind: l.kind, href: String(l.url), text: String(l.text) };
+    if (l.status) link.status = String(l.status);
+    if (l.tone && CARD_LINK_TONES[l.tone]) link.tone = l.tone;
+    link.title = CARD_LINK_KIND[l.kind] + ' ' + link.text + (l.title && l.title !== link.text ? ' — ' + l.title : '') + (link.status ? ' · ' + link.status : '');
+    out.push(link);
+  }
+  return out;
+}
 function cardPrMetric(s) {
   if (!dhShow('links') || !s.prUrl || !s.prShortRef) return null;
   var ref = String(s.prShortRef);
@@ -8993,6 +9054,9 @@ function cardOf(s, col) {
   var pr = cardPrMetric(s);
   if (pr) metrics.push(pr);
   if (metrics.length) card.metrics = metrics;
+  // 작업 카드의 연결 (SSOT 2026-11-02): every linked issue, PR and wiki with its state — the face's links row.
+  var links = cardLinksFace(s);
+  if (links.length) card.links = links;
   // A cron run leads with the CRON badge instead of the spark (SSOT 2026-10-23 T3).
   if (s.cronJob && s.cronJob.name) card.lead = { text: 'CRON', glyph: 'clock', title: '크론 잡: ' + s.cronJob.name };
   // A child of an epic (E4 ⑨b) leads with its plan node, the ref its epic's plan tree shows —
@@ -11571,10 +11635,16 @@ function renderCardBody(s, col, spec) {
   // Short refs (PROJ-123 · PR-123), gated by ui.dashboardheader 'links'. The
   // titled links and the conversation are the panel's (세션 정보).
   const refParts = [];
-  if (dhShow('links') && s.issueShortRef && s.issueUrl) {
+  // 작업 카드의 연결: every linked issue, PR and wiki with its state, when the board sent them.
+  const refLinks = cardLinksFace(s);
+  for (var rl = 0; rl < refLinks.length; rl++) {
+    var ref = refLinks[rl];
+    refParts.push('<a class="card-ref is-' + ref.kind + '" href="' + safeHref(ref.href) + '" target="_blank" rel="noopener" title="' + escAttr(ref.title) + '">' + esc(ref.text) + (ref.status ? ' <span class="card-ref-st"' + (ref.tone ? ' data-tone="' + ref.tone + '"' : '') + '>' + esc(ref.status) + '</span>' : '') + '</a>');
+  }
+  if (!refLinks.length && dhShow('links') && s.issueShortRef && s.issueUrl) {
     refParts.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener" title="' + escAttr(s.issueTitle || s.issueLabel || s.issueShortRef) + '">' + esc(s.issueShortRef) + '</a>');
   }
-  if (dhShow('links') && s.prShortRef && s.prUrl) {
+  if (!refLinks.length && dhShow('links') && s.prShortRef && s.prUrl) {
     refParts.push('<a href="' + safeHref(s.prUrl) + '" target="_blank" rel="noopener" title="' + escAttr(s.prTitle || s.prLabel || s.prShortRef) + '">' + esc(s.prShortRef) + '</a>');
   }
   const refsHtml = refParts.length || envHtml

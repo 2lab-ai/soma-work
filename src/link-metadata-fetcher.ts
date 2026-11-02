@@ -135,6 +135,66 @@ export async function fetchBatchLinkMetadata(links: SessionLink[]): Promise<Sess
 }
 
 /**
+ * The cache's last answer for a URL (title and state), whatever its age — undefined when it was never fetched.
+ * For readers that must not wait (the dashboard board); {@link warmLinkMetadata} keeps it fresh.
+ */
+export function peekLinkMetadata(url: string): { title?: string; status?: string } | undefined {
+  const cached = metadataCache.get(url);
+  if (!cached || (!cached.title && !cached.status)) return undefined;
+  return { ...(cached.title ? { title: cached.title } : {}), ...(cached.status ? { status: cached.status } : {}) };
+}
+
+const WARM_PER_CALL = 8;
+const lastWarmAt = new Map<string, number>();
+
+/**
+ * Fetch, in the background, the GitHub / Jira issues and PRs whose cached answer is missing or older than the
+ * TTL (작업 카드의 연결, SSOT 2026-11-02): the board shows what the cache has now and the fresh state on its next
+ * draw. Each URL is tried at most once per TTL (a failed fetch is not retried at every board) and at most
+ * {@link WARM_PER_CALL} per call. Returns how many fetches started. Never throws, never waits.
+ */
+export function warmLinkMetadata(
+  links: ReadonlyArray<Pick<SessionLink, 'url' | 'type' | 'provider'>>,
+  opts: { now?: number; fetch?: (link: SessionLink) => Promise<{ title?: string; status?: string }> } = {},
+): number {
+  const now = opts.now ?? Date.now();
+  const fetchOne = opts.fetch ?? fetchLinkMetadata;
+  if (lastWarmAt.size > 2000) {
+    for (const [url, at] of lastWarmAt) if (now - at >= CACHE_TTL) lastWarmAt.delete(url);
+  }
+  let started = 0;
+  for (const link of links) {
+    if (started >= WARM_PER_CALL) break;
+    if (!link?.url || (link.type !== 'issue' && link.type !== 'pr')) continue;
+    if (link.provider !== 'github' && link.provider !== 'jira') continue;
+    const cached = metadataCache.get(link.url);
+    if (cached && now - cached.fetchedAt < CACHE_TTL) continue;
+    const tried = lastWarmAt.get(link.url);
+    if (tried !== undefined && now - tried < CACHE_TTL) continue;
+    lastWarmAt.set(link.url, now);
+    started++;
+    let pending: Promise<{ title?: string; status?: string }>;
+    try {
+      pending = Promise.resolve(fetchOne(link as SessionLink));
+    } catch (error) {
+      pending = Promise.reject(error);
+    }
+    pending
+      .then((meta) => {
+        if (meta && (meta.title || meta.status)) {
+          const prev = metadataCache.get(link.url);
+          if (!prev || prev.fetchedAt <= now) {
+            // Dated when the fetch began (the injected clock): fetchLinkMetadata's own, later entry is kept.
+            metadataCache.set(link.url, { title: meta.title, status: meta.status, fetchedAt: now });
+          }
+        }
+      })
+      .catch((error) => logger.debug('Background link metadata fetch failed', { url: link.url, error: String(error) }));
+  }
+  return started;
+}
+
+/**
  * Fetch GitHub PR or issue metadata (title + status) from API.
  */
 async function fetchGitHubMetadata(link: SessionLink): Promise<{ title?: string; status?: string }> {
