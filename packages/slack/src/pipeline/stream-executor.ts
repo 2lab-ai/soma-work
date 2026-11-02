@@ -70,6 +70,7 @@ import {
   AgentStreamProcessor,
   type InterruptFlushFailure,
   readIdleTimeoutMs,
+  type SayFunction,
   type StreamCallbacks,
   type StreamContext,
   sayPostSwitches,
@@ -6324,6 +6325,40 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       supersededPrior: !!evicted,
       sessionId: session.sessionId,
     });
+  }
+
+  /**
+   * A question the HOST asks (goal stall — same failure twice), rendered and
+   * recorded exactly like a model's ASK_USER_QUESTION: the Slack form, the
+   * session's `pendingChoice` / `pendingQuestion`, activity `waiting` — so the
+   * thread and the dashboard both answer it, and the answer is a real user
+   * turn. Ask only while the session is idle: an open question is superseded.
+   * Returns false when the session or its thread is unknown.
+   */
+  async askUserQuestionFromHost(sessionKey: string, question: UserChoices): Promise<boolean> {
+    const session = this.deps.claudeHandler.getSessionByKey(sessionKey);
+    const channel = session?.channelId;
+    const threadTs = session?.threadRootTs || session?.threadTs;
+    if (!session || !channel || !threadTs) return false;
+    const say: SayFunction = async (message) => {
+      const posted = await this.deps.slackApi.postMessage(channel, message.text, {
+        threadTs: message.thread_ts || threadTs,
+        blocks: message.blocks,
+        attachments: message.attachments,
+      });
+      return { ts: posted.ts };
+    };
+    // Unique per ask: a click is matched to its question by this id alone.
+    const turnId = `host:${sessionKey}:${Date.now()}`;
+    await this.renderAskUserQuestionFromCommand(turnId, question, session, {
+      channel,
+      threadTs,
+      sessionKey,
+      say,
+      turnId,
+      incidentAttempt: session.incidentRequest !== undefined,
+    });
+    return true;
   }
 
   private async renderAskUserQuestionFromCommand(

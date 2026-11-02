@@ -20,6 +20,7 @@ import path from 'node:path';
 import { Logger } from '../logger';
 import type { EffortLevel } from '../user-settings-store';
 import { retireGoalCapDecision } from './goal-cap-decision';
+import { GOAL_STALL_ACTION_COUNT, GOAL_STALL_MIN_CONFIDENCE } from './goal-stall';
 
 const logger = new Logger('GoalEval');
 
@@ -32,9 +33,34 @@ const logger = new Logger('GoalEval');
  */
 export const GOAL_EVAL_DISPATCH_MAX_RETRIES = 3;
 
+// Defined in the leaf `goal-stall` module (no runtime import cycle through
+// goal-cap-decision); re-exported here for the evaluator's callers.
+export { GOAL_STALL_ACTION_COUNT, GOAL_STALL_MIN_CONFIDENCE };
+
+/** Upper bound for one stall action — it becomes a button label and a user turn. */
+const GOAL_STALL_ACTION_MAX_CHARS = 200;
+
 /** Strict shape the eval model must emit (single JSON object). */
 export interface GoalEvalVerdict {
   completed: boolean;
+  reason: string;
+  remaining: string[];
+  /**
+   * Only meaningful when the prompt carried a previous verdict: the goal is
+   * still unfinished for the same reason (same missing requirement or the
+   * same blocker), and the latest turn did not close it.
+   */
+  sameAsPrevious?: boolean;
+  /** 0..1 — the evaluator's confidence in `sameAsPrevious`. */
+  sameConfidence?: number;
+  /** The latest turn did concrete new work (files, commands, PR / deploy state). */
+  progressed?: boolean;
+  /** On a confident repeat: the 3 instructions the owner is most likely to give next. */
+  userActions?: string[];
+}
+
+/** The verdict before the latest turn, sent back to the evaluator for comparison. */
+export interface GoalEvalPreviousVerdict {
   reason: string;
   remaining: string[];
 }
@@ -51,6 +77,8 @@ export interface GoalEvalCallInput {
   abortController?: AbortController;
   /** Optional cwd override for the SDK process. */
   cwd?: string;
+  /** The previous `completed=false` verdict, so the evaluator can spot a repeat. */
+  previous?: GoalEvalPreviousVerdict;
 }
 
 /**
@@ -93,12 +121,31 @@ export function __resetGoalEvalPromptCacheForTests(): void {
   cachedSystemPrompt = null;
 }
 
-export function buildGoalEvalUserPrompt(objective: string, workSummary: string): string {
+/** Keep user / model text from opening or closing a prompt tag. */
+function escapeEvalTag(text: string): string {
+  return text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+export function buildGoalEvalUserPrompt(
+  objective: string,
+  workSummary: string,
+  previous?: GoalEvalPreviousVerdict,
+): string {
+  const previousBlock = previous?.reason.trim()
+    ? [
+        '<previous-evaluation>',
+        `reason: ${escapeEvalTag(previous.reason.trim())}`,
+        ...(previous.remaining.length ? ['remaining:', ...previous.remaining.map((r) => `- ${escapeEvalTag(r)}`)] : []),
+        '</previous-evaluation>',
+        '',
+      ]
+    : [];
   return [
     '<objective>',
     objective,
     '</objective>',
     '',
+    ...previousBlock,
     '<work-summary>',
     workSummary,
     '</work-summary>',
@@ -108,9 +155,37 @@ export function buildGoalEvalUserPrompt(objective: string, workSummary: string):
     'If evidence is indirect, missing, or weak for any requirement, set completed=false.',
     'Reason must name the specific gap (or the strongest proof when completed=true) in one short paragraph.',
     'Remaining must list the concrete next-step items the work model should close before claiming completion again. Empty array when completed=true.',
-    'Emit ONLY a single JSON object: {"completed": boolean, "reason": string, "remaining": string[]}',
+    ...(previousBlock.length
+      ? [
+          'The <previous-evaluation> block is your verdict after the previous work turn. Compare against it:',
+          '- sameAsPrevious: true when the goal is still unfinished for the same reason — the same missing requirement or the same blocker — and the latest turn did not close it. False when the reason differs or part of the previous gap was closed.',
+          `- sameConfidence: 0 to 1. Use ${GOAL_STALL_MIN_CONFIDENCE} or more only when you are sure the gap is unchanged.`,
+          '- progressed: true when the latest turn did concrete new work toward the objective (changed files, ran commands with new results, changed a PR or deploy). Re-checking state, repeating earlier evidence or saying it is waiting is not progress.',
+          `- userActions: when sameAsPrevious is true with sameConfidence ≥ ${GOAL_STALL_MIN_CONFIDENCE}, exactly ${GOAL_STALL_ACTION_COUNT} short instructions the user is most likely to give next so the goal can be finished, most likely first, in the language of the objective. Otherwise an empty array.`,
+          '- Requirements the previous evaluation accepted with direct evidence stay accepted unless the latest turn contradicts them; do not ask for that evidence again.',
+        ]
+      : []),
+    'Emit ONLY a single JSON object: {"completed": boolean, "reason": string, "remaining": string[], "sameAsPrevious": boolean, "sameConfidence": number, "progressed": boolean, "userActions": string[]}',
     '</evaluation-instruction>',
   ].join('\n');
+}
+
+/** Normalise the optional stall fields; old-shape verdicts read as "not the same". */
+function readStallFields(parsed: Record<string, unknown>): Partial<GoalEvalVerdict> {
+  const out: Partial<GoalEvalVerdict> = {};
+  if (typeof parsed.sameAsPrevious === 'boolean') out.sameAsPrevious = parsed.sameAsPrevious;
+  if (typeof parsed.sameConfidence === 'number' && Number.isFinite(parsed.sameConfidence)) {
+    out.sameConfidence = Math.min(1, Math.max(0, parsed.sameConfidence));
+  }
+  if (typeof parsed.progressed === 'boolean') out.progressed = parsed.progressed;
+  if (Array.isArray(parsed.userActions)) {
+    out.userActions = parsed.userActions
+      .filter((a): a is string => typeof a === 'string')
+      .map((a) => a.trim().slice(0, GOAL_STALL_ACTION_MAX_CHARS))
+      .filter((a) => a.length > 0)
+      .slice(0, GOAL_STALL_ACTION_COUNT);
+  }
+  return out;
 }
 
 /**
@@ -168,6 +243,7 @@ export function parseGoalEvalVerdict(raw: string): GoalEvalVerdict {
           completed: parsed.completed,
           reason: parsed.reason,
           remaining: parsed.remaining,
+          ...readStallFields(parsed),
         };
       }
       lastErr = new GoalEvalParseError('Eval response missing required fields or wrong types', candidate);
@@ -191,7 +267,7 @@ export async function evaluateGoalCompletion(
   dispatcher: GoalEvalDispatcher,
 ): Promise<GoalEvalVerdict> {
   const systemPrompt = loadGoalEvalSystemPrompt();
-  const userPrompt = buildGoalEvalUserPrompt(input.objective, input.workSummary);
+  const userPrompt = buildGoalEvalUserPrompt(input.objective, input.workSummary, input.previous);
 
   logger.info('Running goal completion eval', {
     model: input.model,
@@ -214,6 +290,9 @@ export async function evaluateGoalCompletion(
     completed: verdict.completed,
     reasonPreview: verdict.reason.slice(0, 120),
     remainingCount: verdict.remaining.length,
+    sameAsPrevious: verdict.sameAsPrevious,
+    sameConfidence: verdict.sameConfidence,
+    progressed: verdict.progressed,
   });
   return verdict;
 }
@@ -255,9 +334,11 @@ export function applyGoalEvalFailure(
   goal: import('../types').SessionGoal,
   reason: string,
   now: number = Date.now(),
+  remaining?: string[],
 ): void {
   goal.pendingEval = undefined;
   goal.lastEvalReason = reason;
+  goal.lastEvalRemaining = remaining?.length ? [...remaining] : undefined;
   goal.evalAttemptCount = (goal.evalAttemptCount ?? 0) + 1;
   goal.updatedAt = now;
 }
@@ -277,7 +358,21 @@ export function applyGoalEvalDispatchFailure(goal: import('../types').SessionGoa
 }
 
 /** Per-turn loop decision (spec §Auto-Continuation Loop step 4-5). */
-export type GoalEvalOutcome = { action: 'complete' } | { action: 'continue' } | { action: 'cap-paused' };
+export type GoalEvalOutcome =
+  | { action: 'complete' }
+  | { action: 'continue' }
+  | { action: 'cap-paused' }
+  | { action: 'stalled' };
+
+/**
+ * The verdict says the goal failed again for the same reason, confidently.
+ * Only a verdict that was compared against a recorded previous failure can
+ * stall — the first failure of a goal never does.
+ */
+export function isGoalStallVerdict(verdict: GoalEvalVerdict, previousReason: string | undefined): boolean {
+  if (verdict.completed || !previousReason?.trim()) return false;
+  return verdict.sameAsPrevious === true && (verdict.sameConfidence ?? 0) >= GOAL_STALL_MIN_CONFIDENCE;
+}
 
 /**
  * Decide what the turn-end auto-continuation loop does given an eval
@@ -308,7 +403,13 @@ export function decideGoalEvalOutcome(
     return { action: 'complete' };
   }
 
-  applyGoalEvalFailure(goal, verdict.reason, now);
+  const stalled = isGoalStallVerdict(verdict, goal.lastEvalReason);
+  applyGoalEvalFailure(goal, verdict.reason, now, verdict.remaining);
+
+  // Same failure again: stop and ask the owner — the counter stays where it
+  // is, because no continuation is injected. Checked before the cap so a
+  // repeat at 10/10 asks the more useful question.
+  if (stalled) return { action: 'stalled' };
 
   // Cap check BEFORE incrementing: with maxContinuations=N the host
   // injects continuations until the counter reaches N, then pauses.
@@ -356,6 +457,8 @@ export function shouldRunGoalIdleDriver(state: GoalIdleDriverState): boolean {
   const { goal, requestActive, activityState } = state;
   if (!goal || goal.status !== 'active') return false;
   if (goal.pendingEval) return false;
+  // A stalled goal waits for the owner's answer (or any message from them).
+  if (goal.stall) return false;
   if (requestActive) return false;
   if (activityState !== 'idle') return false;
   return true;

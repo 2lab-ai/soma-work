@@ -1806,6 +1806,8 @@ async function start() {
         injectContinuation: goalMessageInjector,
         postNotice: postGoalNotice,
         postOwnerDm: postGoalOwnerDm,
+        // Same failure twice → ask the owner (thread form + dashboard card).
+        askStallQuestion: (question) => slackHandler.askGoalStallQuestion(question),
         logger,
         fallbackModel: 'claude-sonnet-4-20250514',
         // S9: optional cheaper eval tier. Unset → eval matches the work model.

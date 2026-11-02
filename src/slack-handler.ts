@@ -96,6 +96,8 @@ import { type FollowupReactionRole, FollowupReactionSurface, rolesForFollowupSta
 import { retireGoalCapDecision } from './slack/goal-cap-decision';
 import { bumpGoalEpoch, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from './slack/goal-host-actions';
+import type { GoalStallQuestion } from './slack/goal-loop-controller';
+import { buildGoalStallQuestion, shouldAskGoalStallQuestion } from './slack/goal-stall';
 import {
   checkAndConsumeBudget,
   formatBudgetExhaustedMessage,
@@ -6771,6 +6773,19 @@ export class SlackHandler {
   /** Expose todo manager for dashboard task accessor */
   getTodoManager(): TodoManager {
     return this.todoManager;
+  }
+
+  /**
+   * Goal stall (same failure twice): ask the owner which next instruction to
+   * give, through the same question surface as a model's ASK_USER_QUESTION —
+   * the thread form and the dashboard card, answered as a real user turn.
+   * Skipped when a turn started in the meantime (the user is already steering)
+   * or a question is already open (never supersede one the model asked).
+   */
+  async askGoalStallQuestion(input: GoalStallQuestion): Promise<void> {
+    const session = this.claudeHandler.getSessionByKey(input.sessionKey);
+    if (!shouldAskGoalStallQuestion(session, input, this.requestCoordinator.isRequestActive(input.sessionKey))) return;
+    await this.streamExecutor.askUserQuestionFromHost(input.sessionKey, buildGoalStallQuestion(input));
   }
 
   /**

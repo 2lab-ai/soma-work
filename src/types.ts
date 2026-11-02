@@ -215,6 +215,22 @@ export interface SessionGoalPendingEval {
   turnId: string;
 }
 
+/**
+ * A stopped goal loop: the evaluator found the same failure as last time. The
+ * host asked the owner which of `actions` to do next (Slack + dashboard).
+ */
+export interface SessionGoalStall {
+  /** Round id carried by the question; an answer for another round is stale. */
+  stallId: string;
+  stalledAt: number;
+  /** The repeated failure reason (the evaluator's words). */
+  reason: string;
+  /** The three next instructions the evaluator expects the owner to give. */
+  actions: string[];
+  /** The evaluator's confidence that the failure is the same. */
+  confidence: number;
+}
+
 export interface SessionGoal {
   /**
    * Stable identity for this goal, independent of `createdAt` (which can
@@ -299,6 +315,19 @@ export interface SessionGoal {
    * eval cycle starts) or when the user resets the goal.
    */
   lastEvalReason?: string;
+  /**
+   * The `remaining` list of the same verdict as `lastEvalReason`. Sent back to
+   * the evaluator with the reason so it can tell whether the next failure is
+   * the same one (goal stall).
+   */
+  lastEvalRemaining?: string[];
+  /**
+   * Open while the loop is stopped because the evaluator judged the goal
+   * failed again for the same reason (≥ `GOAL_STALL_MIN_CONFIDENCE`). The
+   * driver runs no eval and injects no continuation until a real user message
+   * (the answer to the stall question, or anything typed) clears it.
+   */
+  stall?: SessionGoalStall;
   /** Counts how many eval cycles have run for this goal. */
   evalAttemptCount?: number;
   /**
