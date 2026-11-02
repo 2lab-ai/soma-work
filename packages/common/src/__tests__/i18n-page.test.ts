@@ -90,4 +90,15 @@ describe('translatePage', () => {
     registerPageCatalog({ [`일@@${ctx}`]: '' });
     expect(translatePage(html, 'en')).toBe("<script>var u = n + 'days'; var d = m + '월 ' + Number(d) + '';</script>");
   });
+
+  it('leaves a JSON data block (a conversation) byte for byte; a block that opts in is page text', () => {
+    const data = '<script type="application/json" id="conv-data">{"turns":[{"text":"__q 새 작업"}]}</script>';
+    expect(translatePage(data, 'en')).toBe(data);
+    const tabs = '<script type="application/json" id="settings-tabs-data" data-i18n>{"label":"__q 새 작업"}</script>';
+    expect(translatePage(tabs, 'en')).toBe(
+      '<script type="application/json" id="settings-tabs-data" data-i18n>{"label":"__q New \\"task\\""}</script>',
+    );
+    const auth = '<script type="application/json" data-auth-state>{"hint":"__q 새 작업"}</script>';
+    expect(JSON.parse(/>([^<]*)</.exec(translatePage(auth, 'en'))![1])).toEqual({ hint: '__q New "task"' });
+  });
 });

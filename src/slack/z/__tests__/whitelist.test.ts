@@ -57,5 +57,7 @@ describe('isDmAllowedForNonAdmin — lang (#772, a personal setting, never a pro
   it('still rejects prose that starts with the word', () => {
     expect(isDmAllowedForNonAdmin('language model 비교해줘')).toBe(false);
     expect(isDmAllowedForNonAdmin('lang en please')).toBe(false);
+    expect(isDmAllowedForNonAdmin('/z lang en please')).toBe(false);
+    expect(isDmAllowedForNonAdmin('/z language model 비교해줘')).toBe(false);
   });
 });

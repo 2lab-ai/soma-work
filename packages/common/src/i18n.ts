@@ -16,6 +16,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 const HANGUL = /[\u3131-\u318E\uAC00-\uD7A3]/;
+const HANGUL_G = /[\u3131-\u318E\uAC00-\uD7A3]/g;
 
 export const DISPLAY_LANGS = ['ko', 'en'] as const;
 export type DisplayLang = (typeof DISPLAY_LANGS)[number];
@@ -66,6 +67,8 @@ interface Template {
   re: RegExp;
   /** Placeholder numbers in the order they appear in the key. */
   slots: number[];
+  /** The literal text on each side of each slot (in order of appearance): '' at the template's edge. */
+  around: Array<{ before: string; after: string }>;
   /** The longest literal part — a line without it cannot match. */
   anchor: string;
   /** Total literal length: the most specific template wins. */
@@ -88,11 +91,28 @@ function compileTemplate(key: string, text: string): Template | null {
     else slots.push(Number(parts[i]));
   }
   const weight = literals.reduce((n, l) => n + l.length, 0);
-  // A template whose words are all placeholders would match anything.
-  if (!HANGUL.test(literals.join(''))) return null;
+  // A template needs real words of its own: with fewer than two Korean syllables
+  // (`{0}일`, `{0}분`) it would match the end of any Korean word (`내일` → `내d`).
+  if ((literals.join('').match(HANGUL_G) ?? []).length < 2) return null;
   const anchor = literals.reduce((a, l) => (l.length > a.length ? l : a), '');
   const re = new RegExp(`^${literals.map(escapeRe).join('([\\s\\S]*?)')}$`);
-  return { re, slots, anchor, weight, text };
+  const around = slots.map((_, i) => ({ before: literals[i], after: literals[i + 1] }));
+  return { re, slots, around, anchor, weight, text };
+}
+
+/**
+ * Whether a captured value can be what the code put in that slot. A value
+ * that splits a Korean word (Hangul right against Hangul literal text) is
+ * someone's sentence, not a filled template. At the template's edge the slot
+ * is open-ended: Korean there is taken only when it is itself catalog text
+ * (a status word), so `원인: {0}` never claims a person's Korean sentence.
+ */
+function plausibleValue(v: string, side: { before: string; after: string }): boolean {
+  if (!v) return true;
+  if (side.after && HANGUL.test(side.after[0]) && HANGUL.test(v[v.length - 1])) return false;
+  if (side.before && HANGUL.test(side.before[side.before.length - 1]) && HANGUL.test(v[0])) return false;
+  if ((!side.before || !side.after) && HANGUL.test(v) && !english.has(v.trim())) return false;
+  return true;
 }
 
 /**
@@ -188,9 +208,11 @@ function matchTemplate(s: string, depth: number): string | null {
     if (!s.includes(tpl.anchor)) continue;
     const m = tpl.re.exec(s);
     if (!m) continue;
+    const captured = tpl.slots.map((_, i) => m[i + 1] ?? '');
+    if (!captured.every((v, i) => plausibleValue(v, tpl.around[i]))) continue;
     const values: string[] = [];
     tpl.slots.forEach((slot, i) => {
-      const v = m[i + 1] ?? '';
+      const v = captured[i];
       values[slot] = depth < 2 && HANGUL.test(v) ? (translateUnit(v, depth + 1) ?? v) : v;
     });
     return fill(tpl.text, values);
