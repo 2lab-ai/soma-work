@@ -10828,6 +10828,7 @@ function renderPanelHead() {
   if (!el) return;
   var key = panelSessionKey;
   var s = key ? _sessionCache[key] : null;
+  wlSyncRewinds();
   if (!el._wired) {
     el._wired = true;
     el.addEventListener('ui-action', onPanelHeadAction);
@@ -12576,9 +12577,13 @@ function rewoundBy(spans, ts) {
   }
   return null;
 }
-function panelRewinds() {
+// The open log keeps the panel session's spans (st.rewinds); a change repaints it.
+function wlSyncRewinds() {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  return s && Array.isArray(s.contextRewinds) ? s.contextRewinds : null;
+  var spans = s && Array.isArray(s.contextRewinds) ? s.contextRewinds : null;
+  if (!_wl || JSON.stringify(_wl.rewinds || null) === JSON.stringify(spans)) return;
+  _wl.rewinds = spans;
+  wlPaintSoon();
 }
 function setRollbackStatus(text, isError) {
   var el = document.getElementById('rollback-status');
@@ -14212,6 +14217,7 @@ function wlClear() {
 // The latest window only (SSOT 2026-10-29): older pages wait for the reader to
 // scroll up in 작업 로그 — never the whole history on an opening.
 function loadWorkLog() {
+  wlSyncRewinds();
   var st = _wl;
   if (!st) return;
   wlLoadLatest(st, wlFetchJson, paintWorkLog).then(function(result) {
@@ -14372,7 +14378,7 @@ function wlEntryOf(st, e) {
   var kind = Object.prototype.hasOwnProperty.call(WL_LABELS, e.kind) ? e.kind : 'narration';
   var x = { id: String(seq) };
   if (typeof e.ts === 'number' && isFinite(e.ts)) x.at = e.ts;
-  var rewound = rewoundBy(panelRewinds(), Number(e.ts));
+  var rewound = st && st.rewinds ? rewoundBy(st.rewinds, Number(e.ts)) : null;
   var text = String(e.text || '');
   var tool = e.tool ? String(e.tool) : '';
   if ((kind === 'tool' || kind === 'tool_result') && !e._role) {
@@ -15822,14 +15828,14 @@ function convTurnsOf(list, c) {
         slots.push({ name: 'media-' + id, kind: 'media', list: atts, turn: t });
       }
       // #744: a turn a rollback dropped says so (a person's by its name, a system turn in its line).
-      if (rewoundBy(c.rewinds, ts)) {
+      if (c.rewinds && rewoundBy(c.rewinds, ts)) {
         if (u.role === 'user') u.name = u.name + ' · ' + REWOUND_MARK;
         else u.text = REWOUND_MARK + ' · ' + (u.text || '');
       }
       turns.push(u);
     } else {
       var a = { id: id, role: 'assistant', name: c.bot };
-      if (rewoundBy(c.rewinds, ts)) a.name = (c.bot || '') + ' · ' + REWOUND_MARK;
+      if (c.rewinds && rewoundBy(c.rewinds, ts)) a.name = (c.bot || '') + ' · ' + REWOUND_MARK;
       if (at) a.at = at;
       var sum = convSummaryOf(t, c);
       if (sum.title || sum.text || sum.error) a.summary = sum;
