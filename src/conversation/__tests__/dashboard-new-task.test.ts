@@ -241,6 +241,39 @@ describe('Dashboard — New task API', () => {
       expect(JSON.parse(res.body).error).toBe('첨부 업로드 실패');
     });
 
+    // SSOT 2026-11-02 (dev, 04:20Z): the launch answered 'starting', the Slack rate limiter held the pipeline, and the
+    // session existed 24 s later — but without an SDK sessionId until ~2 min later, so the board hid it and the
+    // dashboard's 시작 중 card never met its card. A session launched here is on the board as soon as it exists.
+    it('a session it launched is on the board as soon as it exists — before its SDK session id', async () => {
+      const key = 'work:C_ALPHA:1792735000.000200';
+      provider.start.mockResolvedValueOnce({ ...LAUNCH, sessionKey: key, status: 'starting' });
+      const sessions = new Map<string, Record<string, unknown>>();
+      dashboard.setDashboardSessionAccessor(() => sessions);
+      const fresh = (threadTs: string) => ({
+        channelId: 'C_ALPHA',
+        threadTs,
+        ownerId: 'U_PLAIN',
+        ownerName: 'Plain',
+        activityState: 'working',
+        state: 'MAIN',
+        lastActivity: new Date(),
+        usage: {},
+      });
+      const auth = await signIn();
+      const res = await post(auth, body({ requestId: 'req-launch-board-1' }));
+      expect(res.statusCode).toBe(200);
+      // The pipeline creates the session later, with no sessionId yet; an unrelated one like it stays hidden.
+      sessions.set(key, fresh('1792735000.000200'));
+      sessions.set('work:C_ALPHA:1792735000.000999', fresh('1792735000.000999'));
+      const board = await injectWebServer({ method: 'GET', url: '/api/dashboard/sessions', headers: AUTH_HEADER });
+      expect(board.statusCode).toBe(200);
+      const keys = Object.values(JSON.parse(board.body).board as Record<string, Array<{ key: string }>>)
+        .flat()
+        .map((c) => c.key);
+      expect(keys.some((k) => k === key || k.endsWith(`::${key}`))).toBe(true);
+      expect(keys.some((k) => k.endsWith('1792735000.000999'))).toBe(false);
+    });
+
     it('a viewer token without a Slack user → 403', async () => {
       const res = await injectWebServer({
         method: 'POST',

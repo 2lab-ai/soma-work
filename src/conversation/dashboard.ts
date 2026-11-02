@@ -2535,13 +2535,35 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
 }
 
 /**
+ * SSOT 2026-11-02 — the sessions the dashboard's new task launched (registry key → when, ms). Under load a launched
+ * Slack session is created tens of seconds after the answer and runs its SDK session minutes later (dev, 04:20Z:
+ * +24 s / +2 min 18 s); the dashboard's 시작 중 card waits for its card, so the board shows it from its creation.
+ */
+const DASHBOARD_LAUNCH_TTL_MS = 30 * 60 * 1000;
+const _dashboardLaunches = new Map<string, number>();
+
+function rememberDashboardLaunch(sessionKey: unknown): void {
+  if (typeof sessionKey !== 'string' || !sessionKey) return;
+  const now = Date.now();
+  for (const [key, at] of _dashboardLaunches) if (now - at > DASHBOARD_LAUNCH_TTL_MS) _dashboardLaunches.delete(key);
+  _dashboardLaunches.set(sessionKey, now);
+}
+
+function launchedFromDashboard(key: string | undefined): boolean {
+  if (!key) return false;
+  const at = _dashboardLaunches.get(key);
+  return at !== undefined && Date.now() - at <= DASHBOARD_LAUNCH_TTL_MS;
+}
+
+/**
  * A session the board shows: one that has run an SDK session — or, after a
  * `/new` cleared that, one whose task has already spent (SSOT 2026-10-26 T3:
  * the task total outlives the reset, so the card does too) — or a Slack-less
- * task, from its creation on, before it has run (#596).
+ * task, from its creation on, before it has run (#596) — or one the dashboard
+ * launched (its registry key), from its creation on (SSOT 2026-11-02).
  */
-function onBoard(s: { sessionId?: string; taskUsage?: unknown; slackless?: boolean }): boolean {
-  return !!s.sessionId || !!s.taskUsage || s.slackless === true;
+function onBoard(s: { sessionId?: string; taskUsage?: unknown; slackless?: boolean }, key?: string): boolean {
+  return !!s.sessionId || !!s.taskUsage || s.slackless === true || launchedFromDashboard(key);
 }
 
 /** A card's column. An epic's follows its `epicState` while a child works or waits (E4 ⑧, D11). */
@@ -2647,7 +2669,7 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
   const children: Array<[string, ConversationSession]> = [];
 
   for (const [key, session] of sessions.entries()) {
-    if (!onBoard(session)) continue;
+    if (!onBoard(session, key)) continue;
     if (userId && session.ownerId !== userId) continue;
     if (session.trashed === true) continue;
 
@@ -2673,8 +2695,8 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
   try {
     const liveThreadKeys = new Set<string>();
     const liveConversationIds = new Set<string>();
-    for (const [, s] of sessions.entries()) {
-      if (!onBoard(s)) continue;
+    for (const [key, s] of sessions.entries()) {
+      if (!onBoard(s, key)) continue;
       if (s.trashed === true) continue;
       if (s.channelId && s.threadTs) liveThreadKeys.add(`${s.channelId}:${s.threadTs}`);
       if (s.conversationId) liveConversationIds.add(s.conversationId);
@@ -3035,7 +3057,7 @@ export function broadcastSingleSessionUpdate(sessionKey: string): void {
   if (wsClients.size === 0) return;
   try {
     const session = _getSessionsFn?.().get(sessionKey);
-    if (!session || !onBoard(session)) return;
+    if (!session || !onBoard(session, sessionKey)) return;
     // E4 ⑧ — a child's card lives in its epic's bundle: push the epic's card, which carries it.
     const [key, shown] = bundlingEpicOf(session) ?? [sessionKey, session];
     const kanban = sessionToKanban(key, shown);
@@ -4228,6 +4250,8 @@ export async function registerDashboardRoutes(
           if (!parsed.ok) throw new NewTaskError(400, parsed.error);
           return provider.start(userId, parsed.value);
         });
+        // Its session is on the board from its creation, before its SDK session (SSOT 2026-11-02).
+        rememberDashboardLaunch(result.sessionKey);
         reply.send({ ok: true, ...result });
       } catch (error) {
         if (error instanceof NewTaskError) {
@@ -17892,8 +17916,12 @@ var _ntRequestId = null;
 // (ntPendingSettle) or after NT_PENDING_MAX_MS, while the board is asked again every NT_PENDING_POLL_MS.
 var _ntPending = [];
 var NT_PENDING_PREFIX = 'nt-launch:';
-var NT_PENDING_MAX_MS = 120000;
+var NT_PENDING_MAX_MS = 600000;
 var NT_PENDING_POLL_MS = 1000;
+// After NT_PENDING_FAST_MS from the answer the board is asked every NT_PENDING_POLL_SLOW_MS (a starting Slack session
+// can take minutes under load — dev, 2026-11-02 04:20Z; pushes bring its card in between).
+var NT_PENDING_POLL_SLOW_MS = 5000;
+var NT_PENDING_FAST_MS = 30000;
 var _ntPendingTimer = 0;
 // The server takes one launch per user at a time (createNewTaskGate: a second one in flight is refused with 429).
 // The dialog no longer holds a launch until its answer, so the launches are sent one after another: each posts
@@ -19602,8 +19630,8 @@ function ntCardsAwaited() {
   );
 }
 
-// While a card is awaited on the viewer's board, the board is asked again every NT_PENDING_POLL_MS — a Slack session
-// joins the board once its agent has started, seconds after the server answered. One ask at a time, and an ask that
+// While a card is awaited on the viewer's board, the board is asked again (ntWatchDelay) — a launched Slack session
+// joins the board once it exists, which under load can be minutes after the server answered. One ask at a time, and an ask that
 // never answers does not hold the watch: each tick settles the launches and the asks to open (their deadlines end the
 // watch), and the next tick comes regardless. A board of another user is not watched; returning to one's own board
 // (its render) starts it again.
@@ -19624,7 +19652,21 @@ function ntPendingWatch() {
     if (ntPendingPrune()) ntPendingRepaint();
     ntOpenArrivals();
     ntPendingWatch();
-  }, NT_PENDING_POLL_MS);
+  }, ntWatchDelay());
+}
+
+// How long until the watch's next tick: NT_PENDING_POLL_MS while a card it awaits was answered (or asked for) within
+// NT_PENDING_FAST_MS, NT_PENDING_POLL_SLOW_MS after that.
+function ntWatchDelay() {
+  var now = Date.now();
+  var fresh =
+    _ntPending.some(function (p) {
+      return !!p.sessionKey && !p.failed && now - (p.answeredAt || p.at) < NT_PENDING_FAST_MS;
+    }) ||
+    _ntOpening.some(function (l) {
+      return !!l.sessionKey && now - (l.openUntil - NT_OPEN_WAIT_MS) < NT_PENDING_FAST_MS;
+    });
+  return fresh ? NT_PENDING_POLL_MS : NT_PENDING_POLL_SLOW_MS;
 }
 
 // The detail card the reader has open now ('' none) — 카드 열기 notes it, to tell later whether they moved on.
