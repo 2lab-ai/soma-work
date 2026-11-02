@@ -361,11 +361,11 @@ describe('C2 — the one-line row (<ui-conversation> system turn)', () => {
       TEMPLATE.indexOf("msg.type === 'conversation_update'"),
       TEMPLATE.indexOf("msg.type === 'session_action'"),
     );
-    // The optimistic turn is found in 지시와 답변's data and replaced there by the server's — matched by its words
-    // or by being the viewer's own, never by a time window (SSOT 2026-11-02 T1, dashboard-optimistic-echo-client).
+    // The optimistic turn is found in 지시와 답변's data and replaced there by the server's — matched by its words,
+    // never by a time window (SSOT 2026-11-02 T1, dashboard-optimistic-echo-client).
     expect(ws).toContain('onConversationTurn(msg.conversationId, msg.turn)');
     expect(clientFn('onConversationTurn')).toContain(
-      'appendTurnToPanel(turn, false, ptOptimisticFor(_panelTurnsList, turn, _viewerUserId) || undefined)',
+      'appendTurnToPanel(turn, false, ptOptimisticFor(_panelTurnsList, turn) || undefined)',
     );
     // affectUI batch 2b: the composer (<ui-agent-steering>) draws the optimistic turn only when no turn is running;
     // a note sent mid-turn is a queued note in the steering list instead (dashboard-steering-client).

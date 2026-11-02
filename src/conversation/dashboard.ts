@@ -10525,22 +10525,20 @@ function ptSentKey(s) {
   return decodeSlackEntities(String(s || '')).replace(/\\r\\n?/g, '\\n').replace(/[ \\t]+/g, ' ').replace(/ ?\\n ?/g, '\\n').trim();
 }
 // Pure: the optimistic turn a recorded user turn takes over ('' = none) — the oldest one with
-// the same words; else, the turn being the viewer's own instruction, the oldest one (the server
-// may have changed the text, a mention say). A turn already held is an update, never an
-// adoption; a turn soma-work put there (origin by system) never adopts.
-function ptOptimisticFor(list, turn, viewerId) {
+// the same words, the one rule the fetched page uses too (ptRecorded). Any other turn — someone
+// else's, or another instruction of the viewer's own typed in Slack meanwhile — never takes the
+// slot. A turn already held is an update, never an adoption; a turn soma-work put there (origin
+// by system) never adopts.
+function ptOptimisticFor(list, turn) {
   if (!turn || turn.role !== 'user' || (turn.origin && turn.origin.by === 'system')) return '';
   var key = ptSentKey(turn.rawContent);
-  var first = '';
   for (var i = 0; i < list.length; i++) {
     var t = list[i];
     if (!t) continue;
     if (turn.id && t.id === turn.id) return '';
-    if (!t._optimistic) continue;
-    if (ptSentKey(t._sent) === key) return String(t.id);
-    if (!first) first = String(t.id);
+    if (t._optimistic && ptSentKey(t._sent) === key) return String(t.id);
   }
-  return viewerId && turn.userId === viewerId ? first : '';
+  return '';
 }
 // Pure: does this list (a page just fetched) already hold the recorded turn of an optimistic one?
 // The same words, recorded no earlier than a minute before it was sent (an older turn with the
@@ -15923,12 +15921,12 @@ function appendTurnToPanel(turn, own, replaceId) {
 }
 // WS conversation_update: a turn landed — an open card's 지시/응답 pair may be stale now; the
 // panel open on its conversation takes it in, in place of the optimistic instruction it
-// records (T1: matched by its words or by being the viewer's own, never by a time window).
+// records (T1: matched by its words, never by a time window).
 function onConversationTurn(cid, turn) {
   invalidateCardIo(cid);
   umOnTurn(cid, turn);
   if (!panelOpen || panelConvId !== cid || !turn) return;
-  appendTurnToPanel(turn, false, ptOptimisticFor(_panelTurnsList, turn, _viewerUserId) || undefined);
+  appendTurnToPanel(turn, false, ptOptimisticFor(_panelTurnsList, turn) || undefined);
 }
 // A turn leaves the data (an instruction that could not be sent).
 function dropTurnFromPanel(id) {
