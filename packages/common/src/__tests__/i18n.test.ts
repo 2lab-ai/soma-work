@@ -141,6 +141,10 @@ describe('translateText against the real catalog — never claims a person’s K
       '원인: 토큰 만료라서 다시 로그인해',
       '피크 12시까지 기다려',
       '작업 2/5 완료했고 나머지는 내일',
+      '파일 3개',
+      '2026년 11월 2일',
+      '// TODO 3개',
+      '총 5회',
     ]) {
       expect(translateText(s, 'en'), s).toBe(s);
     }

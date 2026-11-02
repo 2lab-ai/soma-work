@@ -111,7 +111,9 @@ export function registerDisplayLang(server: FastifyInstance, deps: DisplayLangWe
     if (lang === 'ko') return payload;
     const type = contentTypeOf(reply);
     if (type.startsWith('text/html')) return translatePage(payload, lang);
-    if (type.startsWith('application/json')) return translateJsonBody(payload, lang, request.url);
+    // Only an error's words and the settings labels change: the board's big polls are not parsed.
+    if (type.startsWith('application/json') && (reply.statusCode >= 400 || request.url.startsWith('/api/settings')))
+      return translateJsonBody(payload, lang, request.url);
     return payload;
   });
 }
