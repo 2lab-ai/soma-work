@@ -543,6 +543,23 @@ describe('plan mode — a task whose plan is not started researches (SSOT 2026-1
     expect(decisionOf(await hook(call('Read', { file_path: `${WORK_DIR}/a.txt` })))).toBe('allow');
   });
 
+  it('every tool reaches the hook (one catch-all entry): a shell or agent tool outside the usual matchers is refused', async () => {
+    const ctx = planningContext();
+    const deps = makeDeps({
+      mcpConfigBuilder: { buildConfig: vi.fn(async () => makeMcpConfig({ somaPermissionMode: 'bypass' })) },
+    });
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: ctx.workingDirectory, executionContext: ctx },
+      deps,
+    );
+    const entries = (options.hooks?.PreToolUse ?? []) as Array<{ matcher?: string }>;
+    expect(entries).toHaveLength(1);
+    expect(entries[0].matcher).toBeUndefined();
+    const hook = policyHook(options as { hooks?: Record<string, unknown> });
+    expect(decisionOf(await hook(call('Monitor', { command: 'rm -rf src', description: 'x' })))).toBe('deny');
+    expect(decisionOf(await hook(call('Workflow', { script: 'x' })))).toBe('deny');
+  });
+
   it('a started plan (or no plan mode) is not gated: Write runs under bypass as before', async () => {
     const deps = makeDeps({
       mcpConfigBuilder: { buildConfig: vi.fn(async () => makeMcpConfig({ somaPermissionMode: 'bypass' })) },

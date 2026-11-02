@@ -8,9 +8,10 @@
  * WebSearch), read-only shell commands (ls, cat, grep, rg, find, git log/show/diff,
  * gh … view/list), getting the code to read (git clone/fetch into the task folder),
  * read-shaped MCP tools (get_/list_/search_/…_query) and the plan tool itself.
- * Everything that changes something is refused: the native write tools, subagents
- * (whose own calls would run outside the plan's sight), any shell command this
- * check cannot read as read-only, and any other MCP tool.
+ * Everything else is refused: the native write tools, subagents and workflows
+ * (whose own calls would run outside the plan's sight), any tool not on the
+ * research allow-list, any shell command this check cannot read as read-only,
+ * and any MCP tool not named for a read.
  *
  * Fail-closed by construction (rules/permission.md rule 3): a command is allowed
  * only when every segment of it parses as an allow-listed read; anything the
@@ -18,16 +19,33 @@
  * a separator — is refused. Pure: no I/O.
  */
 
-/** Native tools a planning turn may not call: they write, or spawn a worker that could. */
-export const PLAN_PENDING_DENIED_TOOLS: readonly string[] = [
-  'Write',
-  'Edit',
-  'MultiEdit',
-  'NotebookEdit',
-  'Artifact',
-  'EnterWorktree',
-  'Agent',
-  'Task',
+/**
+ * The native tools a planning turn may call besides Bash (checked as a command): reading, searching,
+ * the web, its own to-do list and background-output readers, skills (instructions), MCP resource
+ * reads. Every other tool — a writer, a subagent or workflow, a tool that runs a command (`Monitor`),
+ * schedules, notifies or triggers, and any tool a future SDK adds — is refused: an allow-list, so a
+ * tool nobody listed fails closed. The policy hook of a planning turn sees every tool (catch-all
+ * matcher, `build-stream-options.ts`), not only `TOOL_POLICY_MATCHERS`.
+ */
+export const PLAN_RESEARCH_TOOLS: readonly string[] = [
+  'Read',
+  'Glob',
+  'Grep',
+  'WebFetch',
+  'WebSearch',
+  'Skill',
+  'TodoWrite',
+  'TaskCreate',
+  'TaskGet',
+  'TaskList',
+  'TaskUpdate',
+  'TaskOutput',
+  'BashOutput',
+  'TaskStop',
+  'KillShell',
+  'ToolSearch',
+  'ListMcpResourcesTool',
+  'ReadMcpResourceTool',
 ];
 
 /** Commands that only read (their write options are refused below). */
@@ -300,7 +318,6 @@ const MCP_READ_LAST = new Set(['query', 'search', 'list', 'get', 'read', 'logs',
  * null. `mcp__plan__*` — the plan tool — always runs.
  */
 export function checkPlanPendingCall(toolName: string, toolInput: Record<string, unknown>): string | null {
-  if (PLAN_PENDING_DENIED_TOOLS.includes(toolName)) return `${toolName} changes things or starts a worker`;
   if (toolName === 'Bash') {
     const command = typeof toolInput.command === 'string' ? toolInput.command : '';
     return isReadOnlyCommand(command) ? null : 'a shell command that is not read-only';
@@ -314,5 +331,5 @@ export function checkPlanPendingCall(toolName: string, toolInput: Record<string,
       (MCP_READ_FIRST.has(words[0]) || MCP_READ_LAST.has(words[words.length - 1]));
     return reads ? null : `${toolName} is not a read`;
   }
-  return null;
+  return PLAN_RESEARCH_TOOLS.includes(toolName) ? null : `${toolName || 'this tool'} is not a research tool`;
 }

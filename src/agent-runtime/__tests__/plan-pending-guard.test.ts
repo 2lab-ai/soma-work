@@ -5,7 +5,7 @@
  * ssot-task map: T2 (the model plans, it does not work) · T4 (the work starts on 시작).
  */
 import { describe, expect, it } from 'vitest';
-import { checkPlanPendingCall, isReadOnlyCommand, PLAN_PENDING_DENIED_TOOLS } from '../policy/plan-pending-guard';
+import { checkPlanPendingCall, isReadOnlyCommand, PLAN_RESEARCH_TOOLS } from '../policy/plan-pending-guard';
 
 describe('isReadOnlyCommand — reads pass, everything else is refused', () => {
   it.each([
@@ -79,8 +79,28 @@ describe('isReadOnlyCommand — reads pass, everything else is refused', () => {
 describe('checkPlanPendingCall — the tools of a planning turn', () => {
   it('refuses the native write tools and subagents', () => {
     for (const tool of ['Write', 'Edit', 'NotebookEdit', 'Artifact', 'EnterWorktree', 'Agent', 'Task']) {
-      expect(PLAN_PENDING_DENIED_TOOLS).toContain(tool);
+      expect(PLAN_RESEARCH_TOOLS).not.toContain(tool);
       expect(checkPlanPendingCall(tool, {})).not.toBeNull();
+    }
+  });
+
+  it('refuses every tool it does not know as research — an allow-list, not a deny-list', () => {
+    // Tools outside the usual hook matchers that run a command, start agents or reach out.
+    for (const tool of [
+      'Monitor',
+      'Workflow',
+      'RemoteTrigger',
+      'ScheduleWakeup',
+      'PushNotification',
+      'SendMessage',
+      'EnterPlanMode',
+      'ExitPlanMode',
+      'ExitWorktree',
+      'CronCreate',
+      'FutureTool',
+      '',
+    ]) {
+      expect(checkPlanPendingCall(tool, {}), tool).not.toBeNull();
     }
   });
 

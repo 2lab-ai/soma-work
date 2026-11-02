@@ -614,4 +614,57 @@ def evaluateToolPolicyWith (nativeWrite : Option (Option String))
   | some inc => evaluateIncidentReadOnly i.toolName inc
   | none => modeTierEnv i
 
+/-! ## Plan mode: step 6c (lines 317-326)
+
+Phase 6 adds a deny step the earlier code did not have, after step 6 (the PR-issue precondition)
+and before the incident and mode tiers: when `ctx.checkPlanPending` is set — a dashboard task
+whose plan is not started — and answers the call with a reason, the call is denied with
+`PLAN_PENDING_DENY_MESSAGE`, in every mode and for admins too. `plan` is what the check gives the
+call: `none` when `ctx.checkPlanPending` is undefined, `some none` when it answers `null`,
+`some (some reason)` when it answers a reason (the empty reason included: `planDenied !== null`).
+
+`evaluateToolPolicyWith` above is the function without the step and keeps its name, so every
+theorem about it stands as proved. `evaluateToolPolicyPlan` is the TS function now: the same chain
+with step 6c after `prIssueGuard`. `ProofsPlan.lean` proves the two agree whenever the step is
+silent, that a reason always ends in a deny, and that when no earlier step fires the step's denial
+is the result. The conformance vectors are its output. -/
+
+/-- `PLAN_PENDING_DENY_MESSAGE` — lines 195-196. -/
+def planPendingDenyMessage : String :=
+  "Blocked: this task's plan is not started yet. While planning, only reading and research run (Read, Glob, Grep, WebFetch, WebSearch, read-only shell commands such as ls, cat, grep, rg, find, git log/show/diff/status, git clone/fetch, gh … view/list, and read MCP tools). Put this change into the plan and submit it with plan_submit; it runs after the owner presses 시작. Do not retry it or work around it."
+
+/-- 6c. Plan mode — lines 321-326: a reason from `ctx.checkPlanPending` denies. -/
+def planGuard : Option (Option String) → Option Result
+  | some (some denied) =>
+    some { decision := .deny, reason := "plan-pending: " ++ denied,
+           denyMessage := some planPendingDenyMessage }
+  | _ => none
+
+/-- `evaluateToolPolicy` — lines 245-376, all of it: `nativeWrite` is what `ctx.checkNativeWrite`
+gives the call, `plan` what `ctx.checkPlanPending` gives it, `incident` is `ctx.incidentReadOnly`.
+The steps of `evaluateToolPolicyWith`, with step 6c after the PR-issue step. -/
+def evaluateToolPolicyPlan (nativeWrite : Option (Option String)) (plan : Option (Option String))
+    (incident : Option IncidentReadOnly) (i : Input) : Result :=
+  match abortGuard i with
+  | some r => r
+  | none =>
+  match devopsGuard i with
+  | some r => r
+  | none =>
+  match adminExemptGuardsWith nativeWrite incident i with
+  | some r => r
+  | none =>
+  match crossUserGuard i with
+  | some r => r
+  | none =>
+  match prIssueGuard i with
+  | some r => r
+  | none =>
+  match planGuard plan with
+  | some r => r
+  | none =>
+  match incident with
+  | some inc => evaluateIncidentReadOnly i.toolName inc
+  | none => modeTierEnv i
+
 end SomaVerify.ToolPolicy
