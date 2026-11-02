@@ -461,13 +461,14 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
       expect(CSS, sel).toMatch(minimalRule(sel));
   });
 
-  it('the detail card’s top keeps the header and what needs the user; info · goal · artifacts · tabs · model go (1안)', () => {
-    // The layout says which sections show (detailSpecOf → body[data-detail]); minimal 1안 shows none of them.
+  it('the detail card’s top keeps the header and what needs the user; info · goal · artifacts · tabs go, the model stays (1안, #805)', () => {
+    // The layout says which sections show (detailSpecOf → body[data-detail]); minimal 1안 shows only the model ·
+    // effort line — the task card shows the model as icons only, so the detail card is where its name is (#805).
     const env = load<{ viewSpec(): any }>(
       ['viewModeFrom', 'viewPlanFrom', 'viewSpec'],
       ['_viewMode', '_viewPlan', '_viewLayout'],
     );
-    expect(env.viewSpec().detail.show).toEqual([]);
+    expect(env.viewSpec().detail.show).toEqual(['controls']);
     for (const [tok, sel] of [
       ['subtitle', '#panel-title-sub'],
       ['info', '#panel-info'],
@@ -636,11 +637,17 @@ describe('T7–T10 — minimal card: cost · model · artifacts, the star toggle
     },
   };
 
-  it('T7 — the foot’s right end: the cost, then the model with its vendor’s mark', () => {
+  it('T7 — the foot’s right end: the cost, then the model as its vendor’s mark (#805: no name on the face)', () => {
     const m = env.minimalCard(full, { model: 'claude-opus-5-5[1m]' });
     expect(m.metrics).toEqual([
       { text: '$6.20', title: 'API 환산 비용 (작업 합계)' },
-      { text: 'Opus 5.5', glyph: 'claude', title: 'claude-opus-5-5[1m]' },
+      {
+        text: '',
+        glyph: 'claude',
+        color: '#d97757',
+        title: 'Opus 5.5\nclaude-opus-5-5[1m]',
+        label: '모델 Opus 5.5',
+      },
     ]);
     // No tokens line, no context, no PR — the price and the model only.
     expect(m.tokens).toBeUndefined();
@@ -648,7 +655,7 @@ describe('T7–T10 — minimal card: cost · model · artifacts, the star toggle
     expect(m.contextPct).toBeUndefined();
     // No cost known: the model alone; no model: the cost alone.
     expect(env.minimalCard({ ...full, costUsd: undefined }, { model: 'grok-4.6' }).metrics).toEqual([
-      { text: 'grok-4.6', glyph: 'grok', title: 'grok-4.6' },
+      { text: '', glyph: 'grok', title: 'grok-4.6', label: '모델 grok-4.6' },
     ]);
     expect(env.minimalCard(full, {}).metrics).toEqual([{ text: '$6.20', title: 'API 환산 비용 (작업 합계)' }]);
     // The server's placeholder for a model it does not know is no model name (review: fable P2).
