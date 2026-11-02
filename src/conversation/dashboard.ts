@@ -3610,6 +3610,8 @@ export async function registerDashboardRoutes(
         // SSOT 2026-11-02 T1: who sent a user turn (the live push carries it too), so the panel
         // matches its own pending instruction to the recorded one by sender as well as words.
         userId: t.role === 'user' ? t.userId : undefined,
+        // SSOT 2026-11-02 T7: the Executive Summary turn — the open card's 지시/응답 skips it.
+        executiveSummary: t.executiveSummary ? true : undefined,
         // User media (SSOT 2026-10-25): the files this instruction carried, metadata only.
         attachments: t.role === 'user' ? t.attachments : undefined,
         // SSOT 2026-10-27: who put a user turn there (a host turn reads as one
@@ -10836,7 +10838,9 @@ function ptSameSend(opt, turn) {
   if (!opt || !opt._optimistic || !turn || turn._optimistic || turn.role !== 'user') return false;
   if (turn.origin && turn.origin.by === 'system') return false;
   if (turn.userId && opt._by && turn.userId !== opt._by) return false;
-  return ptSentKey(opt._sent) === ptSentKey(turn.rawContent);
+  // No words, no match: an attachment-only send (or a turn without its text) is never "the same instruction".
+  var key = ptSentKey(opt._sent);
+  return !!key && key === ptSentKey(turn.rawContent);
 }
 // Pure: the optimistic turn a recorded user turn takes over ('' = none) — the oldest one it is
 // the send of (ptSameSend). A turn already held is an update, never an adoption.
@@ -11654,7 +11658,7 @@ function wlLegacyMixed(entries) {
 }
 
 // Latest user instruction + model response (§3.1-4), fetched lazily on
-// expand from GET /api/dashboard/session/:conversationId?limit=2 and cached
+// expand from GET /api/dashboard/session/:conversationId?limit=3 (2 + an Executive Summary turn, skipped) and cached
 // per conversation. Only a complete fetch for the session's current
 // lastActivity counts as fresh. A failure — or a partial result (the
 // instruction loaded, the raw response did not) — keeps what it has and is
@@ -11880,10 +11884,12 @@ function ioCompactOutHtml(info, cp) {
 // The latest instruction and the reply that answers it (only an assistant
 // turn AFTER the latest user turn counts). Rejects on any HTTP failure.
 function fetchCardIo(cid) {
-  return fetch('/api/dashboard/session/' + encodeURIComponent(cid) + '?limit=2')
+  return fetch('/api/dashboard/session/' + encodeURIComponent(cid) + '?limit=3')
     .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
     .then(function(data) {
-      var turns = (data && data.turns) || [];
+      // The Executive Summary is a turn of its own in the chat; the card's 응답 stays the model's reply
+      // (its TL;DR has a box of its own on the face). One more turn is fetched so it can be skipped.
+      var turns = ((data && data.turns) || []).filter(function(t) { return !t.executiveSummary; });
       var ui = -1;
       for (var i = turns.length - 1; i >= 0; i--) { if (turns[i].role === 'user') { ui = i; break; } }
       var reply = null;

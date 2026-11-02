@@ -4897,6 +4897,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       const summaryText = outcome.value;
       if (summaryText) {
         summaryService.displayOnThread(session as any, summaryText);
+        // The dashboard: the whole summary in its chat, the TL;DR on the task card (T7). Before the
+        // Slack calls, so a failed thread update never keeps it from the dashboard.
+        try {
+          streamExecutorProviders.recordExecutiveSummary(sessionKey, session.conversationId, summaryText);
+        } catch (err: any) {
+          this.logger.warn('recordExecutiveSummary failed', { sessionKey, error: err?.message });
+        }
         // Trigger re-render so the summary blocks appear in the Slack thread header.
         // Without this, summaryBlocks sit in memory but the message is never updated.
         await this.deps.threadPanel?.updatePanel(session, sessionKey);
@@ -4908,12 +4915,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // turns. Errors are swallowed inside `postInThread` — a failed post
         // must not crash the summary fork.
         await summaryService.postInThread(session as any, summaryText);
-        // The dashboard: the whole summary in its chat, the TL;DR on the task card (T7).
-        try {
-          streamExecutorProviders.recordExecutiveSummary(sessionKey, session.conversationId, summaryText);
-        } catch (err: any) {
-          this.logger.warn('recordExecutiveSummary failed', { sessionKey, error: err?.message });
-        }
       }
     } catch (err: any) {
       if (this.summaryAbortControllers.get(sessionKey) === abortController) {
