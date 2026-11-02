@@ -6,8 +6,9 @@
  *   rollback            list the inputs you can roll back before (numbered)
  *   rollback <n>        roll back to just before input n
  *   rollback cancel     drop a rollback that has not run yet
+ *   rollback redo       take the last rollback back (until the next turn runs)
  *
- * Korean alias: `롤백` (`롤백 3`, `롤백 취소`). The matcher is strict on purpose —
+ * Korean alias: `롤백` (`롤백 3`, `롤백 취소`, `롤백 다시`). The matcher is strict on purpose —
  * "rollback the migration" is an instruction for the model, not this command.
  */
 
@@ -16,9 +17,12 @@ import {
   activeChainFilter,
   CONTEXT_ROLLBACK_REFUSAL_TEXT,
   cancelContextRollback,
+  contextRedoNotice,
+  contextRollbackNotice,
   inputAnchorsFromTranscript,
   keptUntilOf,
   readTranscriptText,
+  redoContextRollback,
   requestContextRollback,
   rollbackInputLabel,
   rollbackInputPoints,
@@ -27,7 +31,7 @@ import { requestGoalStallRollback } from '../goal-stall';
 import { recordSessionNotice } from '../session-notice';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
-const ROLLBACK_RE = /^\/?(?:rollback|롤백)(?:\s+(\d{1,3}|cancel|취소|goal))?$/i;
+const ROLLBACK_RE = /^\/?(?:rollback|롤백)(?:\s+(\d{1,3}|cancel|취소|goal|redo|다시))?$/i;
 
 /** How many of the latest inputs the list shows. */
 export const ROLLBACK_LIST_MAX = 10;
@@ -60,6 +64,21 @@ export class RollbackHandler implements CommandHandler {
       return { handled: true };
     }
 
+    if (arg === 'redo' || arg === '다시') {
+      const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
+      const redo = redoContextRollback(session, user, {
+        requestActive: this.deps.requestCoordinator.isRequestActive(sessionKey),
+      });
+      if (!redo.ok) {
+        await post(`${redo.reason === 'nothing-to-redo' ? '💡' : '⛔'} ${CONTEXT_ROLLBACK_REFUSAL_TEXT[redo.reason]}`);
+        return { handled: true };
+      }
+      this.deps.claudeHandler.saveSessions();
+      const notice = contextRedoNotice(redo, '스레드');
+      recordSessionNotice(session, notice);
+      await post(notice);
+      return { handled: true };
+    }
     if (arg === 'goal') {
       // #745: to where the stalled goal first failed — offered only when the repeated turns did nothing.
       const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
@@ -132,7 +151,7 @@ export class RollbackHandler implements CommandHandler {
     }
     this.deps.claudeHandler.saveSessions();
     const dropped = points.length - (n - 1);
-    const notice = `⏪ 다음 턴부터 모델 문맥을 "${rollbackInputLabel(point.text)}" 입력 직전으로 되돌립니다 (이후 입력 ${dropped}개와 그 작업이 문맥에서 빠집니다. 파일 변경은 되돌리지 않습니다). 다음 지시를 보내세요.`;
+    const notice = `${contextRollbackNotice(result.rewind, '스레드', point.text)}\n(이후 입력 ${dropped}개와 그 작업이 문맥에서 빠집니다.)`;
     recordSessionNotice(session, notice);
     await post(notice);
     return { handled: true };

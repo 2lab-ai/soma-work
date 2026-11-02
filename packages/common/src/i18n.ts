@@ -292,6 +292,16 @@ function translateLine(line: string): string {
 }
 
 /**
+ * A reply with the `<display-lang>` tag it echoed at its end removed (#772). The tag is the host's note
+ * to the model at the bottom of a conversation's first prompt; a model that copies it into its answer
+ * must not show it to anyone. Only a trailing tag goes — the tag quoted inside a reply stays (in backticks
+ * it is never trailing). Known cost: prose that itself ends with the bare tag loses it.
+ */
+export function stripEchoedDisplayLangTag(text: string): string {
+  return text.replace(/(?:\s*<display-lang>[a-z]{2}<\/display-lang>)+\s*$/, '');
+}
+
+/**
  * A string already put together — a Slack message, a server error — in
  * `lang`: the whole string if the catalog has it (exactly, or as a `{n}`
  * template), else line by line, else the parts between ` · `-style
