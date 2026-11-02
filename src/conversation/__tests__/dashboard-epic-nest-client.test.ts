@@ -158,6 +158,9 @@ describe('N1, L2 — the children after their epic, each in its own column', () 
     expect(m.epicChildCol(child('a', { activityState: 'waiting' }))).toBe('waiting');
     expect(m.epicChildCol(child('a'))).toBe('idle');
     expect(m.epicChildCol(child('a', { activityState: 'working', sessionState: 'SLEEPING' }))).toBe('closed');
+    // An idle child with an armed automatic resume is at work, as the server reads it (fable #727 R2 P3-1).
+    expect(m.epicChildCol(child('a', { autoResume: { at: 1, reason: 'x' } }))).toBe('working');
+    expect(m.epicChildCol(child('a', { activityState: 'waiting', autoResume: { at: 1 } }))).toBe('waiting');
   });
 });
 
@@ -485,6 +488,11 @@ describe('N4 — the page: no lane; renderBoard places the children', () => {
     );
     expect(rb).toContain('var hideKids = showSleeping === false;');
     expect(rb).toContain('renderSleepingToggle(plan.sleepingCount + kidCounts.sleeping);');
+    // Counted from the board the columns draw, after the CRON lane took its runs (grok #727 R2 P2).
+    expect(rb).toContain('var kidCounts = epicKidsCounts(rest);');
+    expect(rb.indexOf('var kidCounts = epicKidsCounts(rest);')).toBeGreaterThan(
+      rb.indexOf('var rest = cronPlan.board;'),
+    );
     // The push computes the same signature with the same filter.
     expect(fn('applyEpicPush')).toContain('var now = epicKidsSig(s, showSleeping === false, _revealedKey);');
     expect(rb).toContain('keys: place(g.items, kb, g.open),');

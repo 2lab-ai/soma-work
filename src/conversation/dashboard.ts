@@ -8302,7 +8302,9 @@ function renderBoard(board, partial) {
       return it.s.key;
     });
   }
-  var kidCounts = epicKidsCounts(board);
+  // Counted from the board the columns draw (after the CRON lane took its runs). The 휴면 count
+  // covers every sleeping child, shown or hidden — as planDoneColumn's covers every sleeping card.
+  var kidCounts = epicKidsCounts(rest);
   function keys(list, col, host) {
     return place((list || []).map(function(s) { return { s: s, col: col }; }), host, true);
   }
@@ -16587,7 +16589,8 @@ function epicStateOf(state) {
 function epicChildCol(c) {
   if (c.sessionState === 'SLEEPING') return 'closed';
   if (c.activityState === 'waiting') return 'waiting';
-  if (c.activityState === 'working') return 'working';
+  // An idle child with an armed automatic resume is at work, as the server reads it (shownActivity).
+  if (c.activityState === 'working' || (c.activityState === 'idle' && c.autoResume)) return 'working';
   return 'idle';
 }
 // E4 ⑨b — the epic's plan as <ui-task-plan> data: an issue node is a step, its sub nodes nested under it.
