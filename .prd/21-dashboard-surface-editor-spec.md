@@ -153,3 +153,4 @@ DashboardLayoutDoc {
   - 편집: 스위치, ↑, 드래그, 펼침, 디테일 한 줄, 스레드 따로 설정, 기본 안, 되돌리기
   - 반영: 저장한 레이아웃이 보드 카드와 디테일 카드에 그대로 그려지는지
   - 회귀: 기존 `scripts/screenshot-view-mode.ts`
+- 슬랙 스레드 카드 끝까지: `src/slack/__tests__/thread-card-data.e2e.test.ts`가 실제 `UserSettingsStore`(임시 디렉터리), 호스트 배선(`threadCardProviders` — src/index.ts가 쓰는 그 함수, 세션 테마는 src/slack/thread-surface.ts처럼), 실제 `ThreadSurface.updatePanel`로 슬랙에 보낼 루트 메시지 블록을 만든다. 다섯 경우를 본다: 손대지 않음(미니멀 1안), 어드밴스드 2안, 카드 편집, 따로 설정, 서버 슬랙 테마(compact, 예전 헤더와 같음). `scripts/thread-card-receipt.ts`는 같은 블록을 JSON으로 써서 `chat.postMessage`로 실제 슬랙에 올려 볼 수 있게 한다.
