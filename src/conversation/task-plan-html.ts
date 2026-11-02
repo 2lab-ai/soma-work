@@ -160,11 +160,13 @@ export function renderTaskPlanPage(plan: TaskPlanDoc, meta: { title: string; sta
 body { margin: 0; background: #f5f5f7; font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
 main { max-width: 860px; margin: 0 auto; padding: 32px 20px 56px; display: flex; flex-direction: column; gap: 12px; }
 .tp-page-task { margin: 0; font-size: 13px; color: #6e6e73; }
+${TASK_PLAN_CSS}
+/* After the shared CSS: the same selector, so the later rule wins (review R1 — dark set first lost to the light defaults). */
 @media (prefers-color-scheme: dark) {
   body { background: #000; }
+  .tp-page-task { color: #a1a1a6; }
   .tp { --tp-text: #f5f5f7; --tp-muted: #a1a1a6; --tp-line: #38383a; --tp-pill: #1c1c1e; --tp-card: #111113; }
-}
-${TASK_PLAN_CSS}</style>`,
+}</style>`,
     '</head><body><main>',
     `<p class="tp-page-task">${esc(meta.title)}</p>`,
     renderTaskPlanHtml(plan, { state: meta.state }),

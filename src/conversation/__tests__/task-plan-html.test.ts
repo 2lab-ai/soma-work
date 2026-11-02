@@ -90,4 +90,14 @@ describe('renderTaskPlanPage — the full-page view', () => {
     expect(TASK_PLAN_PAGE_CSP.split(';')[0].trim()).toBe('sandbox');
     expect(TASK_PLAN_PAGE_CSP).not.toContain('allow-same-origin');
   });
+  it('dark mode wins over the shared light defaults (the dark colours come after TASK_PLAN_CSS)', () => {
+    // Same selector (.tp), so the later rule wins: dark set before the shared CSS was overridden by its
+    // light defaults — dark text on a black page (phase titles, notes) (review R1, browser check).
+    const page = renderTaskPlanPage(plan(), { title: 't', state: 'awaiting' });
+    const shared = page.indexOf('.tp { --tp-text: var(--ib-text');
+    const dark = page.indexOf('@media (prefers-color-scheme: dark)');
+    expect(shared).toBeGreaterThan(-1);
+    expect(dark).toBeGreaterThan(shared);
+    expect(page.slice(dark)).toContain('--tp-text: #f5f5f7');
+  });
 });
