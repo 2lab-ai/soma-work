@@ -40,6 +40,29 @@ Call `mcp__model-command__run`:
 
 If multiple decisions are bundled, use `type: "user_choice_group"` + `choices: [{question, recommendedChoiceId, options:[...]}]` array.
 
+## Dashboard task turns (no `mcp__model-command__run`)
+
+A dashboard task turn has no `mcp__model-command__run`. This covers a task made on the dashboard, one made from a Slack mention (`slackTaskEntry`), and one restored from the archive. A task turn carries no Slack context, so the model-command server is never attached.
+
+Do not stop or give up when the tool is missing. Write the same payload, without the `commandId` / `params` wrapper, as one fenced `json` block at the end of your reply, and end your turn:
+
+```json
+{
+  "type": "user_choice",
+  "question": "[small] <question>",
+  "context": "<current state · what happens next>",
+  "recommendedChoiceId": "1",
+  "choices": [
+    { "id": "1", "label": "<action>", "description": "<trade-offs>" },
+    { "id": "2", "label": "<other action>", "description": "<trade-offs>" }
+  ]
+}
+```
+
+- The host reads the block as the card's question. The card moves to waiting, and a task started from Slack posts one "input needed" notice to its thread. The answer comes back as your next turn.
+- Never ask in plain text instead. A plain-text question ends the turn as a finished result: the thread gets a result notice, and the card shows no question to answer.
+- Several decisions at once: `"type": "user_choices"` with a `questions` array, each item a `user_choice`.
+
 ## Recommended option
 
 Mark the recommended option with the top-level `recommendedChoiceId` field (single choice) or per-question `recommendedChoiceId` (group). It must match one of the option `id`s. If it doesn't match, it is silently dropped (no error).
