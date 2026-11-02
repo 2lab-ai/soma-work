@@ -718,6 +718,7 @@ function cards(
       'acPermissionLock',
       'acQuestionLock',
       'acDetailDue',
+      'acPermissionAdvice',
       'acPermissionData',
       'acQuestionId',
       'acQuestionData',
@@ -851,9 +852,10 @@ describe('permission approval card (D10–D13)', () => {
     const html = cards().acPermissionsHtml(
       SESSION({ pendingPermissions: [PERM(), PERM({ approvalId: 'a"2', toolName: '<b>' })] }),
     );
+    // SSOT 2026-11-02: a permission slot also carries the page's AI-advice box after its card (filled by acHydrate).
     expect(html).toBe(
-      '<div class="ui-tok ac-slot" data-mk="ac|p|approval_a1"><ui-approval-card lang="ko" data-ac-key="inst::C1:t1" data-ac-kind="perm" data-ac-id="approval_a1"><span class="ac-fallback">Bash 실행 승인 — 응답 대기</span></ui-approval-card></div>' +
-        '<div class="ui-tok ac-slot" data-mk="ac|p|a&quot;2"><ui-approval-card lang="ko" data-ac-key="inst::C1:t1" data-ac-kind="perm" data-ac-id="a&quot;2"><span class="ac-fallback">&lt;b&gt; 실행 승인 — 응답 대기</span></ui-approval-card></div>',
+      '<div class="ui-tok ac-slot" data-mk="ac|p|approval_a1"><ui-approval-card lang="ko" data-ac-key="inst::C1:t1" data-ac-kind="perm" data-ac-id="approval_a1"><span class="ac-fallback">Bash 실행 승인 — 응답 대기</span></ui-approval-card><div class="ac-advice" hidden></div></div>' +
+        '<div class="ui-tok ac-slot" data-mk="ac|p|a&quot;2"><ui-approval-card lang="ko" data-ac-key="inst::C1:t1" data-ac-kind="perm" data-ac-id="a&quot;2"><span class="ac-fallback">&lt;b&gt; 실행 승인 — 응답 대기</span></ui-approval-card><div class="ac-advice" hidden></div></div>',
     );
     expect(html).not.toContain('onclick=');
     // The tokens reach the element from its wrapper (.ui-tok), never on the element (a custom-property cycle).
@@ -1448,6 +1450,7 @@ describe('an answer’s state belongs to its session and leaves with its request
         'acQuestionId',
         'acQuestionData',
         'acDetailDue',
+        'acPermissionAdvice',
         'acPermissionData',
         'stripRecommendedMarker',
         'resolveRecommendedId',
@@ -1898,6 +1901,7 @@ describe('template hygiene', () => {
       'acPermissionLock',
       'acQuestionLock',
       'acDetailDue',
+      'acPermissionAdvice',
       'acPermissionData',
       'acQuestionId',
       'acQuestionData',

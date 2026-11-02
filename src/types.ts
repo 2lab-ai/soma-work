@@ -1,6 +1,7 @@
 // Session types live in somalib (shared with mcp-servers).
 // Re-export for backward compatibility — all src/ files import from './types'.
 import type { PendingRewind } from '@soma/slack/context-anchor';
+import type { SessionGoalStall } from '@soma/slack/session-goal';
 
 export type {
   Continuation,
@@ -217,6 +218,9 @@ export interface SessionGoalPendingEval {
   turnId: string;
 }
 
+// Goal stall round — one definition, in the package the queue helpers live in.
+export type { SessionGoalStall };
+
 export interface SessionGoal {
   /**
    * Stable identity for this goal, independent of `createdAt` (which can
@@ -301,6 +305,19 @@ export interface SessionGoal {
    * eval cycle starts) or when the user resets the goal.
    */
   lastEvalReason?: string;
+  /**
+   * The `remaining` list of the same verdict as `lastEvalReason`. Sent back to
+   * the evaluator with the reason so it can tell whether the next failure is
+   * the same one (goal stall).
+   */
+  lastEvalRemaining?: string[];
+  /**
+   * Open while the loop is stopped because the evaluator judged the goal
+   * failed again for the same reason (≥ `GOAL_STALL_MIN_CONFIDENCE`). The
+   * driver runs no eval and injects no continuation until a real user message
+   * (the answer to the stall question, or anything typed) clears it.
+   */
+  stall?: SessionGoalStall;
   /** Counts how many eval cycles have run for this goal. */
   evalAttemptCount?: number;
   /**
@@ -1000,7 +1017,17 @@ export interface ConversationSession {
    * leaves it alone. Runtime-only — NOT persisted, so a restart cancels it
    * instead of applying it to some unrelated later compact.
    */
-  pendingModelSwitch?: { model: string; nickname: string; requestedAt: number; compactTs?: string; armed?: boolean };
+  pendingModelSwitch?: {
+    model: string;
+    nickname: string;
+    requestedAt: number;
+    compactTs?: string;
+    armed?: boolean;
+    /** The session's effort once the switch lands — set when the target does not run the session's level. */
+    effort?: string;
+    /** The level `effort` replaces (a level set while the switch waited stays). */
+    effortFrom?: string;
+  };
   // One-shot suppression for `checkAndSchedulePendingCompact`. Set to `true`
   // by `postCompactCompleteIfNeeded` when a compact cycle seals; cleared by
   // the very next threshold check. Prevents the "Compaction completed →

@@ -31,6 +31,23 @@ export const PERMISSION_PROMPT_KIND = 'tool_permission' as const;
  */
 export const MCP_GRANT_KIND = 'mcp_grant' as const;
 
+/** What the AI (the auto-mode guardian) recommends the person answers. */
+export type PermissionRecommendation = 'approve' | 'deny';
+
+/**
+ * SSOT 2026-11-02 — the AI's advice on one permission prompt: what the call
+ * does, why it is risky, and whether to accept it. Shown on every surface the
+ * prompt reaches (Slack card, dashboard card); `deny` makes the answer path
+ * ask for a second confirmation before it runs the call.
+ */
+export interface PermissionAdvice {
+  recommendation: PermissionRecommendation;
+  /** What the call does, in a sentence. */
+  summary: string;
+  /** Why it is risky, in a sentence. */
+  risk: string;
+}
+
 export interface PendingApproval {
   /** {@link PERMISSION_PROMPT_KIND} on permission prompts, {@link MCP_GRANT_KIND} on MCP grant requests. */
   kind?: typeof PERMISSION_PROMPT_KIND | typeof MCP_GRANT_KIND;
@@ -57,6 +74,11 @@ export interface PendingApproval {
    * session". Absent for non-Bash tools and non-dangerous commands.
    */
   rule_ids?: string[];
+  /**
+   * Permission prompts: the AI's advice, asked before the prompt was raised.
+   * Absent when the guardian gave none (failed, too slow, or switched off).
+   */
+  advice?: PermissionAdvice;
   /** MCP grant requests: where each admin's DM prompt landed, so any answer can rewrite every copy. */
   prompts?: Array<{ channel: string; ts: string }>;
   /**

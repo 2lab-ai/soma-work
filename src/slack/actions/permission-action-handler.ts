@@ -1,3 +1,5 @@
+import type { PermissionAdvice } from 'somalib/permission/shared-store';
+import { permissionAdviceDetailBlocks } from 'somalib/permission/slack-messenger';
 import { Logger } from '../../logger';
 import {
   answerPermissionPrompt,
@@ -42,6 +44,22 @@ export class PermissionActionHandler {
   }
 
   /**
+   * SSOT 2026-11-02 T4 — the second question's button: the requester confirms
+   * running a call the AI advised against. On success the question is replaced
+   * by what happened.
+   */
+  async handleApproveConfirmed(body: any, respond: RespondFn): Promise<void> {
+    const ok = await this.run(body, respond, 'approve_confirmed', 'approval');
+    if (ok) {
+      await respond({
+        response_type: 'ephemeral',
+        replace_original: true,
+        text: '⚠️ 2차 확인 완료 — AI 권고와 달리 실행을 승인했습니다.',
+      });
+    }
+  }
+
+  /**
    * Approve the current tool call AND silence the matched overridable
    * dangerous-command rules for the remainder of this ConversationSession
    * (in-memory; evaluateToolPolicy reads the set through
@@ -52,18 +70,19 @@ export class PermissionActionHandler {
     await this.run(body, respond, 'approve_disable_rule', 'approval');
   }
 
+  /** Answer the prompt; true when the answer was stored. */
   private async run(
     body: any,
     respond: RespondFn,
     decision: PermissionPromptDecision,
     noun: 'approval' | 'denial' | 'request',
-  ): Promise<void> {
+  ): Promise<boolean> {
     const approvalId = body?.actions?.[0]?.value;
     const user = body?.user?.id;
     if (!approvalId || typeof approvalId !== 'string') {
       this.logger.warn(`${decision}: missing approvalId`);
       await this.ephemeralError(respond, '❌ Missing approval id. The request may have already been handled.');
-      return;
+      return false;
     }
     try {
       const result = await answerPermissionPrompt({
@@ -79,18 +98,33 @@ export class PermissionActionHandler {
           decision,
           disabledRuleIds: result.disabledRuleIds,
         });
-        return;
+        return true;
+      }
+      if (result.reason === 'confirm_required') {
+        this.logger.info('Permission approve needs a second confirmation (AI advised against it)', {
+          approvalId,
+          user,
+          decision,
+        });
+        await respond({
+          response_type: 'ephemeral',
+          replace_original: false,
+          text: '🔴 AI가 실행하지 말라고 권고한 요청입니다. 정말 실행할까요?',
+          blocks: buildSecondConfirmBlocks(approvalId, result.advice),
+        });
+        return false;
       }
       await this.explainRefusal(respond, result, approvalId, user, decision);
     } catch (error) {
       this.logger.error(`Error processing tool ${noun}`, error);
       await this.ephemeralError(respond, `❌ Error processing ${noun}. The request may have already been handled.`);
     }
+    return false;
   }
 
   private async explainRefusal(
     respond: RespondFn,
-    result: Extract<PermissionPromptAnswer, { ok: false }>,
+    result: Exclude<Extract<PermissionPromptAnswer, { ok: false }>, { reason: 'confirm_required' }>,
     approvalId: string,
     clicker: string | undefined,
     decision: PermissionPromptDecision,
@@ -127,4 +161,33 @@ export class PermissionActionHandler {
       replace_original: false,
     });
   }
+}
+
+/**
+ * SSOT 2026-11-02 T4 — the second question, shown only to the requester: the
+ * AI's reasons in red, and one red button that runs the call. Denying stays on
+ * the card itself.
+ */
+export function buildSecondConfirmBlocks(approvalId: string, advice: PermissionAdvice): any[] {
+  return [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: '🔴 *AI가 실행하지 말라고 권고한 요청입니다. 정말 실행할까요?*' },
+    },
+    // The model's words as plain_text (never mrkdwn).
+    ...permissionAdviceDetailBlocks(advice),
+    { type: 'section', text: { type: 'mrkdwn', text: '멈추려면 권한 카드의 ❌ Deny를 누르세요.' } },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '⚠️ 네, 실행합니다 (2차 확인)' },
+          style: 'danger',
+          action_id: 'approve_tool_confirmed',
+          value: approvalId,
+        },
+      ],
+    },
+  ];
 }

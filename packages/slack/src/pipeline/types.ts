@@ -51,7 +51,17 @@ export interface ConversationSession {
     [key: string]: any;
   };
   /** SSOT 2026-10-22 T5 — a dashboard model switch waiting for its compact (runtime-only). */
-  pendingModelSwitch?: { model: string; nickname: string; requestedAt: number; compactTs?: string; armed?: boolean };
+  pendingModelSwitch?: {
+    model: string;
+    nickname: string;
+    requestedAt: number;
+    compactTs?: string;
+    armed?: boolean;
+    /** The session's effort once the switch lands — set when the target does not run the session's level. */
+    effort?: string;
+    /** The level `effort` replaces (a level set while the switch waited stays). */
+    effortFrom?: string;
+  };
   /** Last per-model SDK running total for `sessionId` (persisted) — see `toTurnUsage`. */
   sdkUsageBaseline?: SdkUsageBaseline;
   /** Context rollback (#743, `../context-anchor`): SDK session id, compactions, cut point, waiting rollback. */

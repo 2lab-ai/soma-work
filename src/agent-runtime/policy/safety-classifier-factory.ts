@@ -30,10 +30,11 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 /** System prompt for the dispatch one-shot — the guardian reviewer role. */
 const SAFETY_SYSTEM_PROMPT = [
   'You are a SAFETY REVIEWER (guardian) for an autonomous coding agent.',
-  'You receive one tool call that a static rule already flagged as potentially',
-  'dangerous, and you decide whether it is safe to AUTO-APPROVE or whether a',
-  'human should be asked first. Be conservative: when in doubt, ask.',
-  'Reply with STRICT JSON only, no prose: {"verdict":"allow"|"ask","reason":"<= 20 words"}.',
+  'You receive one tool call that needs a decision before it runs, and you decide',
+  'whether it is safe to AUTO-APPROVE or whether a human should be asked first.',
+  'Be conservative: when in doubt, ask. A human who is asked sees your advice:',
+  'what the call does, why it is risky, and whether you recommend approve or deny.',
+  'Reply with STRICT JSON only, no prose, in the shape the message gives.',
 ].join(' ');
 
 /**
@@ -73,7 +74,17 @@ export function buildSafetyClassifier(args: BuildSafetyClassifierArgs = {}): Saf
   const envModel = env.PERMISSION_AUTO_CLASSIFIER_MODEL || undefined;
   const timeoutMs = Number(env.PERMISSION_AUTO_CLASSIFIER_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
 
-  const chat: SafetyChatFn = (prompt, opts) =>
-    dispatch(prompt, SAFETY_SYSTEM_PROMPT, { model: envModel || opts.model });
+  const chat: SafetyChatFn = (prompt, opts) => {
+    // The caller's abort stops the one-shot dispatch itself, not only the caller's wait (review R1, astra P2).
+    if (!opts.signal) return dispatch(prompt, SAFETY_SYSTEM_PROMPT, { model: envModel || opts.model });
+    const abortController = new AbortController();
+    const signal = opts.signal;
+    const onAbort = () => abortController.abort(signal.reason);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+    return dispatch(prompt, SAFETY_SYSTEM_PROMPT, { model: envModel || opts.model, abortController }).finally(() =>
+      signal.removeEventListener('abort', onAbort),
+    );
+  };
   return new LlmSafetyClassifier(chat, { timeoutMs });
 }
