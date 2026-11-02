@@ -436,6 +436,7 @@ function dicTestSummary(t) {
 var DIC_OPEN_MS = 10000;
 // A stop or an error the recogniser never confirms with an end does not hold the test.
 var DIC_SETTLE_MS = 3000;
+var DIC_SETTLE_WHISPER_MS = 20000;
 
 function dicTestStart() {
   if (_dicTest) return dicTestStop();
@@ -518,13 +519,16 @@ function dicTestServer(live, res, btn) {
   if (live) live.textContent = '';
   if (res) res.textContent = '서버 위스퍼 준비 중…';
   if (btn) btn.textContent = '멈추기';
+  // Callbacks of a test that has been let go (dicTestDone) never touch the next one.
   t.srv = dictationServerStart({
     onReady: function () {
+      if (_dicTest !== t) return;
       t.t0 = Date.now();
       if (res) res.textContent = '듣는 중… 말해 보세요 (8초)';
       t.timer = setTimeout(function () { dicTestStop(); }, DIC_TEST_MS);
     },
     onText: function (finals, interim) {
+      if (_dicTest !== t) return;
       var text = (finals + ' ' + interim).trim();
       if (text && !t.first) t.first = Date.now() - t.t0;
       if (text) t.text = text;
@@ -548,15 +552,17 @@ function dicTestStop() {
 }
 
 // The end may never come (Edge can go silent after a stop or an error; a server that never answers done): the test
-// lets go after a moment.
+// lets go after a moment — longer for Whisper, whose last words may wait behind other dictations.
 function dicTestSettle(t) {
-  setTimeout(function () { dicTestDone(t); }, DIC_SETTLE_MS);
+  setTimeout(function () { dicTestDone(t); }, t.srv ? DIC_SETTLE_WHISPER_MS : DIC_SETTLE_MS);
 }
 
 function dicTestDone(t) {
   if (_dicTest !== t) return;
   _dicTest = null;
   clearTimeout(t.timer);
+  // A Whisper test let go before its done: its client is dropped (microphone, socket).
+  if (t.srv) try { t.srv.abort(); } catch (_e) {}
   t.ended = Date.now();
   var res = document.getElementById('dic-test-result');
   var btn = document.getElementById('dic-test-btn');

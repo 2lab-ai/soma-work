@@ -4,6 +4,9 @@
  *   R1  status: whether this server can take a dictation, with which model, or why not
  *   R2  a dictation: start → audio frames → words as they settle → stop → done
  *   R3  refused: not signed in, another site, no Whisper, too many at once, bad frames
+ *   R4  review (PR #751): a bad message never takes the server down, an unstarted socket lets go, the time limit
+ *       still delivers the last words, a failing Whisper says so, audio faster than real time is refused, and a
+ *       socket that goes away takes its queued transcriptions with it
  */
 
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -27,13 +30,16 @@ afterEach(async () => {
   app = null;
 });
 
-async function server(whisper: DictationWhisper | null, opts: { signedIn?: boolean } = {}) {
+async function server(
+  whisper: DictationWhisper | null,
+  opts: { signedIn?: boolean; startMs?: number; maxMs?: number } = {},
+) {
   app = Fastify();
   await app.register(await import('@fastify/websocket'));
   const auth = vi.fn(async (_req: unknown, reply: { code: (n: number) => { send: (b: unknown) => void } }) => {
     if (opts.signedIn === false) reply.code(401).send({ error: 'Unauthorized' });
   });
-  registerDictationRoutes(app, auth as never, () => whisper);
+  registerDictationRoutes(app, auth as never, () => whisper, { startMs: opts.startMs, maxMs: opts.maxMs });
   await app.ready();
   return app;
 }
@@ -199,6 +205,102 @@ describe('R3 — refused', () => {
     c.ws.send(JSON.stringify({ type: 'start' }));
     c.ws.send(Buffer.alloc(70 * 1024));
     await vi.waitFor(() => expect(lastOf(c.msgs)).toMatchObject({ type: 'error', code: 'bad-request' }));
+  });
+});
+
+describe('R4 — review (PR #751)', () => {
+  it('a JSON frame that is not an object is a bad request, and the server keeps going', async () => {
+    const a = await server(fakeWhisper());
+    for (const bad of ['null', '7', '"start"', '[]']) {
+      const c = await open(a);
+      c.ws.send(bad);
+      await vi.waitFor(() => expect(c.msgs[0]).toMatchObject({ type: 'error', code: 'bad-request' }));
+      await vi.waitFor(() => expect(c.ws.readyState).toBeGreaterThanOrEqual(2));
+    }
+    const ok = await open(a);
+    ok.ws.send(JSON.stringify({ type: 'start' }));
+    await vi.waitFor(() => expect(ok.msgs[0]).toEqual({ type: 'ready', model: 'large-v3-turbo' }));
+  });
+
+  it('a socket that never starts lets go of its place', async () => {
+    const a = await server(fakeWhisper(), { startMs: 80 });
+    const held = [];
+    for (let i = 0; i < MAX_DICTATIONS; i++) held.push(await open(a));
+    for (const h of held) {
+      await vi.waitFor(() => expect(h.msgs[0]).toMatchObject({ type: 'error', code: 'bad-request' }));
+      await vi.waitFor(() => expect(h.ws.readyState).toBeGreaterThanOrEqual(2));
+    }
+    const next = await open(a);
+    next.ws.send(JSON.stringify({ type: 'start' }));
+    await vi.waitFor(() => expect(next.msgs[0]).toEqual({ type: 'ready', model: 'large-v3-turbo' }));
+  });
+
+  it('the time limit finalizes: the last words arrive with done, and why it stopped', async () => {
+    const w = fakeWhisper(() => '마지막 말');
+    const a = await server(w, { maxMs: 400 });
+    const c = await open(a);
+    c.ws.send(JSON.stringify({ type: 'start' }));
+    for (let i = 0; i < 3; i++) c.ws.send(tone(100, true));
+    await vi.waitFor(() => expect(lastOf(c.msgs)?.type).toBe('done'), { timeout: 3000 });
+    expect(c.msgs.find((m) => m.type === 'error')).toBeUndefined();
+    expect(lastOf(c.msgs)).toEqual({
+      type: 'done',
+      final: '마지막 말',
+      message: '받아쓰기는 한 번에 10분까지입니다 — 다시 누르면 이어서 받아씁니다',
+    });
+  });
+
+  it('a Whisper that fails after ready: an error the browser shows, and the socket closes', async () => {
+    const w = fakeWhisper(() => {
+      throw new Error('A2T worker exited');
+    });
+    const a = await server(w);
+    const c = await open(a);
+    c.ws.send(JSON.stringify({ type: 'start' }));
+    for (let i = 0; i < 8; i++) c.ws.send(tone(100, true));
+    await vi.waitFor(() => expect(c.msgs.find((m) => m.type === 'error')).toMatchObject({ code: 'failed' }));
+    expect(String(c.msgs.find((m) => m.type === 'error')?.message)).toContain('A2T worker exited');
+    await vi.waitFor(() => expect(c.ws.readyState).toBeGreaterThanOrEqual(2));
+    expect(c.msgs.find((m) => m.type === 'done')).toBeUndefined();
+  });
+
+  it('audio far faster than real time is refused', async () => {
+    const a = await server(fakeWhisper());
+    const c = await open(a);
+    c.ws.send(JSON.stringify({ type: 'start' }));
+    for (let i = 0; i < 60; i++) c.ws.send(tone(1000, true)); // a minute of audio at once
+    await vi.waitFor(() => expect(lastOf(c.msgs)).toMatchObject({ type: 'error', code: 'bad-request' }));
+    await vi.waitFor(() => expect(c.ws.readyState).toBeGreaterThanOrEqual(2));
+  });
+
+  it('a socket that goes away drops its queued transcriptions', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const calls: number[] = [];
+    const w: DictationWhisper = {
+      ...fakeWhisper(),
+      transcribe: async (pcm) => {
+        calls.push(pcm.length);
+        await gate;
+        return '말';
+      },
+    };
+    const a = await server(w);
+    const c = await open(a);
+    c.ws.send(JSON.stringify({ type: 'start' }));
+    // speech, a pause (closes a segment), speech, a pause: one transcription runs, more queue behind it
+    for (let k = 0; k < 3; k++) {
+      for (let i = 0; i < 6; i++) c.ws.send(tone(100, true));
+      for (let i = 0; i < 9; i++) c.ws.send(tone(100, false));
+    }
+    await vi.waitFor(() => expect(calls.length).toBe(1));
+    c.ws.terminate();
+    await new Promise((r) => setTimeout(r, 50));
+    release();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(calls.length).toBe(1);
   });
 });
 

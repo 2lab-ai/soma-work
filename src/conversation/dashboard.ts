@@ -18764,8 +18764,9 @@ function ntDictateStartServer(host, el) {
       var why = code === 'unavailable' || code === 'unsupported' ? message + ' — 설정 › 받아쓰기에서 기기 기본으로 바꿀 수 있습니다' : message;
       ntDictationEnd(d, why, bad);
     },
-    onDone: function () {
-      if (_ntDictation === d) ntDictationEnd(d, '');
+    // The words are in (onText); why, when the server ended it (its time limit).
+    onDone: function (final, why) {
+      if (_ntDictation === d) ntDictationEnd(d, why || '');
     },
   });
 }
@@ -19004,12 +19005,19 @@ function ntDictateStop(hard) {
     }
     if (d.stopping) return;
     d.stopping = true;
+    d.live = '마무리하는 중… 마지막 말을 받아쓰고 있습니다';
+    d.host.status(d.live);
     d.host.paint();
     if (d.srv) d.srv.stop();
-    // The server's last words arrive with done; one that never answers does not hold the tool.
+    // The last words arrive with done — behind other dictations on the server's one worker, that can take a while
+    // (the server allows 20 s a transcription). One that never answers does not hold the tool for ever, and says
+    // what was lost.
     setTimeout(function () {
-      if (_ntDictation === d) ntDictateStop(true);
-    }, 4000);
+      if (_ntDictation !== d) return;
+      d.hard = true;
+      ntDictationEnd(d, '마지막 말이 제때 오지 않아 보이는 글자까지만 남겼습니다', true);
+      if (d.srv) d.srv.abort();
+    }, 20000);
     return;
   }
   if (hard) {

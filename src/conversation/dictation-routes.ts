@@ -11,7 +11,8 @@
  *   ← {"type":"ready","model":"large-v3-turbo"}
  *   ← {"type":"text","final":"…","interim":"…"}            as words settle (DictationStream)
  *   ← {"type":"done","final":"…"}                          after stop; the server closes
- *   ← {"type":"error","code":"unavailable"|"busy"|"bad-request"|"too-long","message":"…"}
+ *   ← {"type":"done","final":"…","message":"…"}            at the time limit: finalized, and why it stopped
+ *   ← {"type":"error","code":"unavailable"|"busy"|"bad-request"|"failed","message":"…"}   then the server closes
  *
  * Audio is held only while it is transcribed: nothing is written to disk or kept after the socket closes.
  */
@@ -37,10 +38,17 @@ export interface DictationWhisper {
 export const MAX_DICTATIONS = 4;
 /** One dictation's longest run. */
 export const MAX_DICTATION_MS = 10 * 60 * 1000;
+/** A socket that has not sent start by then lets go of its place. */
+export const START_MS = 10 * 1000;
 /** A binary frame larger than this is not a microphone chunk. */
 export const MAX_FRAME_BYTES = 64 * 1024;
+/** Audio may run ahead of the clock by this much (a network stall delivers a burst); more is not a microphone. */
+export const AHEAD_MS = 10 * 1000;
+/** Transcriptions waiting for one dictation: past this the worker cannot keep up with it. */
+export const MAX_BACKLOG = 8;
 
 const LANGS: Record<string, string> = { 'ko-KR': 'ko', ko: 'ko', 'en-US': 'en', en: 'en' };
+const RATE = 16000;
 
 /** A page of this server, or no browser at all — another site's page cannot open a dictation on the user's cookie. */
 export function sameOrigin(headers: Record<string, unknown>, extraHosts: string[] = []): boolean {
@@ -62,9 +70,11 @@ export function registerDictationRoutes(
   server: FastifyInstance,
   authMiddleware: Middleware,
   whisper: () => DictationWhisper | null,
-  opts: { extraHosts?: () => string[] } = {},
+  opts: { extraHosts?: () => string[]; startMs?: number; maxMs?: number } = {},
 ): void {
   let open = 0;
+  const startMs = opts.startMs ?? START_MS;
+  const maxMs = opts.maxMs ?? MAX_DICTATION_MS;
 
   server.get('/api/dictation/status', { preHandler: [authMiddleware] }, async () => {
     const w = whisper();
@@ -82,20 +92,32 @@ export function registerDictationRoutes(
     '/ws/dictation',
     { websocket: true, preHandler: [authMiddleware] } as never,
     ((socket: any, request: any) => {
+      let closed = false;
       const send = (msg: object) => {
+        if (closed) return;
         try {
           socket.send(JSON.stringify(msg));
         } catch {
           /* closed */
         }
       };
-      const refuse = (code: string, message: string) => {
-        send({ type: 'error', code, message });
+      let holding = false;
+      // This socket's place among the MAX_DICTATIONS — given back once, when it hangs up or goes away.
+      const letGo = () => {
+        if (holding) open--;
+        holding = false;
+      };
+      const hangUp = (code: number, reason: string) => {
+        letGo();
         try {
-          socket.close(1008, code);
+          socket.close(code, reason);
         } catch {
           /* closed */
         }
+      };
+      const refuse = (code: string, message: string) => {
+        send({ type: 'error', code, message });
+        hangUp(1008, code);
       };
       if (!sameOrigin(request?.headers ?? {}, opts.extraHosts?.() ?? []))
         return refuse('bad-request', '다른 사이트에서는 받아쓸 수 없습니다');
@@ -104,71 +126,95 @@ export function registerDictationRoutes(
       if (open >= MAX_DICTATIONS)
         return refuse('busy', '서버 위스퍼가 지금 다른 받아쓰기로 바쁩니다 — 잠시 뒤에 다시 눌러 주세요');
       open++;
+      holding = true;
 
       let stream: DictationStream | null = null;
       let language = 'ko';
-      let closed = false;
       let finishing = false;
-      const limit = setTimeout(() => {
-        send({
-          type: 'error',
-          code: 'too-long',
-          message: '받아쓰기는 한 번에 10분까지입니다 — 다시 누르면 이어서 받아씁니다',
-        });
-        void finish();
-      }, MAX_DICTATION_MS);
-      limit.unref?.();
-
-      const finish = async () => {
+      let startedAt = 0;
+      let received = 0;
+      // Ended with an error: the stream is dropped (what the browser already shows stays there).
+      const fail = (code: string, message: string) => {
+        stream?.cancel();
+        finishing = true;
+        refuse(code, message);
+      };
+      // Finished: the open segment is finalized and every word goes out with done (and why, when it was not asked).
+      const finish = async (message = '') => {
         if (finishing || !stream) return;
         finishing = true;
         const out = await stream.finish();
-        if (!closed) {
-          send({ type: 'done', final: out.final });
-          try {
-            socket.close(1000, 'done');
-          } catch {
-            /* closed */
-          }
-        }
+        if (closed) return;
+        send(message ? { type: 'done', final: out.final, message } : { type: 'done', final: out.final });
+        hangUp(1000, 'done');
       };
+      const unstarted = setTimeout(() => {
+        if (!stream) fail('bad-request', 'start first');
+      }, startMs);
+      unstarted.unref?.();
+      const limit = setTimeout(() => {
+        if (!stream) return fail('bad-request', 'start first');
+        void finish('받아쓰기는 한 번에 10분까지입니다 — 다시 누르면 이어서 받아씁니다');
+      }, maxMs);
+      limit.unref?.();
 
-      socket.on('message', (data: Buffer, isBinary: boolean) => {
+      const onMessage = (data: Buffer, isBinary: boolean) => {
         if (closed || finishing) return;
         if (!isBinary) {
-          let msg: { type?: string; lang?: string } = {};
+          let msg: unknown = null;
           try {
             msg = JSON.parse(String(data));
           } catch {
-            return refuse('bad-request', 'invalid message');
+            return fail('bad-request', 'invalid message');
           }
-          if (msg.type === 'start' && !stream) {
-            language = LANGS[String(msg.lang || 'ko-KR')] ?? 'ko';
+          if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return fail('bad-request', 'invalid message');
+          const m = msg as { type?: unknown; lang?: unknown };
+          if (m.type === 'start' && !stream) {
+            clearTimeout(unstarted);
+            language = LANGS[typeof m.lang === 'string' ? m.lang : 'ko-KR'] ?? 'ko';
+            startedAt = Date.now();
             stream = new DictationStream({
               transcribe: (pcm, prompt) => w.transcribe(pcm, { language, prompt }),
-              onText: (t) => {
-                if (!closed) send({ type: 'text', final: t.final, interim: t.interim });
+              onText: (t) => send({ type: 'text', final: t.final, interim: t.interim }),
+              onError: (message) => {
+                logger.warn('Dictation transcription failed', { message });
+                fail('failed', `서버 위스퍼가 받아쓰지 못했습니다 — ${message}`);
               },
-              onError: (message) => logger.warn('Dictation transcription failed', { message }),
             });
             send({ type: 'ready', model: w.model() });
-          } else if (msg.type === 'stop') {
+          } else if (m.type === 'stop') {
             void finish();
           }
           return;
         }
-        if (!stream) return refuse('bad-request', 'start first');
-        if (data.length > MAX_FRAME_BYTES || data.length % 2) return refuse('bad-request', 'bad audio frame');
+        if (!stream) return fail('bad-request', 'start first');
+        if (data.length > MAX_FRAME_BYTES || data.length % 2) return fail('bad-request', 'bad audio frame');
+        received += data.length / 2;
+        if ((received * 1000) / RATE > Date.now() - startedAt + AHEAD_MS)
+          return fail('bad-request', 'audio faster than real time');
         // A copy: the frame's buffer is the socket's, and Int16Array wants an aligned offset.
         const pcm = new Int16Array(data.length / 2);
         for (let i = 0; i < pcm.length; i++) pcm[i] = data.readInt16LE(i * 2);
         stream.push(pcm);
+        if (stream.backlog > MAX_BACKLOG)
+          fail('busy', '서버 위스퍼가 받아쓰기를 따라가지 못합니다 — 잠시 뒤에 다시 눌러 주세요');
+      };
+      socket.on('message', (data: Buffer, isBinary: boolean) => {
+        try {
+          onMessage(data, isBinary);
+        } catch (e) {
+          logger.warn('Dictation message failed', { message: (e as Error)?.message || String(e) });
+          fail('bad-request', 'invalid message');
+        }
       });
 
       socket.on('close', () => {
         closed = true;
+        clearTimeout(unstarted);
         clearTimeout(limit);
-        open--;
+        // The listener is gone: nothing it queued is transcribed for no one.
+        if (!finishing) stream?.cancel();
+        letGo();
       });
     }) as never,
   );

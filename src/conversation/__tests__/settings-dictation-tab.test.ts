@@ -548,6 +548,51 @@ return { dicTestStart, __peek: function (k) { return eval(k); } };`;
   });
 });
 
+describe('D6c — a server test that never finishes (review, PR #751)', () => {
+  it('lets go after a while, drops its client, and its late words never land on the next test', async () => {
+    vi.useFakeTimers();
+    const doc = fakeDoc();
+    const cbs: Array<Record<string, AnyFn>> = [];
+    const srvs: Array<{ stop: AnyFn; abort: AnyFn }> = [];
+    const win = {
+      navigator: { userAgent: UA.macChrome },
+      localStorage: memStore({ [DICTATION_ENGINE_KEY]: 'server' }),
+    };
+    const body = `var window = __w, document = __d;
+function esc(s) { return String(s); }
+${DICTATION_PREF_JS}
+var dictationServerStart = function (c) { return __start(c); };
+${DICTATION_CLIENT_JS}
+return { dicTestStart, __peek: function (k) { return eval(k); } };`;
+    const api = new Function('__w', '__d', '__start', body)(win, doc, (c: Record<string, AnyFn>) => {
+      cbs.push(c);
+      const s = { stop: vi.fn(), abort: vi.fn() };
+      srvs.push(s);
+      return s;
+    }) as Api;
+    api.__peek("_dicInfo = { path: 'chrome', secure: true, langs: {}, server: { ok: true, model: 'large-v3-turbo' } }");
+    api.dicTestStart();
+    cbs[0].onReady('large-v3-turbo');
+    cbs[0].onText('첫 시험', '');
+    vi.advanceTimersByTime(8000);
+    expect(srvs[0].stop).toHaveBeenCalledTimes(1);
+    // a slow finish is waited for longer than a recogniser's 3 s
+    vi.advanceTimersByTime(5000);
+    expect(api.__peek('_dicTest')).not.toBeNull();
+    vi.advanceTimersByTime(15000);
+    expect(api.__peek('_dicTest')).toBeNull();
+    expect(srvs[0].abort).toHaveBeenCalledTimes(1);
+    api.dicTestStart();
+    cbs[1].onReady('large-v3-turbo');
+    cbs[1].onText('두 번째', '');
+    cbs[0].onText('첫 시험 늦은 말', '');
+    cbs[0].onDone('첫 시험 늦은 말');
+    expect(doc.el('dic-test-live').textContent).toBe('두 번째');
+    expect(api.__peek('_dicTest')).not.toBeNull();
+    vi.useRealTimers();
+  });
+});
+
 describe('D7 — the settings page carries the tab', () => {
   it('lists 받아쓰기 and renders its panel, three engines and the script', () => {
     expect(SETTINGS_TABS.map((t) => t.id)).toContain('dictation');
