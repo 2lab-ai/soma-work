@@ -112,7 +112,7 @@ function mapper(notes: Record<string, unknown> = {}) {
   return load<{
     mpData(s: unknown): Data;
     setBusy(k: string, op: string, on: boolean): void;
-    renderModelPicker(s: unknown, can: boolean, short: string, surface?: string): string;
+    renderModelPicker(s: unknown, can: boolean, short: string, surface?: string, why?: string): string;
     renderModelNote(s: unknown, picker?: boolean): string;
   }>(
     [
@@ -127,6 +127,8 @@ function mapper(notes: Record<string, unknown> = {}) {
       'mpRows',
       'mpData',
       'renderModelPicker',
+      'mpReadOnlyWhy',
+      'mpReadOnlyNote',
       'renderModelNote',
     ],
     ['_busy'],
@@ -158,16 +160,39 @@ describe('D1 — one <ui-model-picker> per surface for the owner; others read th
     expect(html).toContain('<span class="mp-fallback">모델</span>');
   });
 
-  it('read-only viewers keep the plain text, byte for byte', () => {
-    expect(mapper().renderModelPicker(sess(), false, 'opus-5-5[1m]', 'card')).toBe(
-      '<span class="cb-model-name">opus-5-5[1m]</span>',
+  // #813 (live check) — a read-only viewer reads the same element, disabled: the maker's mark, the model's name and
+  // the level, no menu — it used to read the raw id as plain text ("opus-5-5[1m]") with no mark.
+  it('read-only viewers get the element disabled, with the reason it cannot change', () => {
+    expect(mapper().renderModelPicker(sess(), false, 'opus-5-5[1m]', 'card', '내 세션이 아니라 바꿀 수 없습니다')).toBe(
+      '<span class="ui-tok mp-slot" data-mk="mp|card|inst::C1:t1"><ui-model-picker lang="ko" data-mp-key="inst::C1:t1"' +
+        ' data-mp-surface="card" data-mp-ro="내 세션이 아니라 바꿀 수 없습니다"><span class="mp-fallback">opus-5-5[1m]</span>' +
+        '</ui-model-picker></span>',
     );
+    const why = clientFn('mpReadOnlyWhy');
+    expect(why).toContain('내 세션이 아니라 바꿀 수 없습니다');
+    expect(why).toContain('끝난 세션이라 바꿀 수 없습니다');
+    const hydrate = clientFn('mpHydrate');
+    expect(hydrate).toContain("var ro = els[i].getAttribute('data-mp-ro');");
+    expect(hydrate).toContain('if (ro) d.disabled = mpReadOnlyNote(ro, s);');
+    // #821 review P2 — the disabled trigger names only the level that runs; when the model caps the set one the
+    // reason says both (the old read-only text read "매우 높음 → 높음").
+    const note = new Function(
+      'EFFORT_LABELS',
+      `${clientFn('effortLabel')}\n${clientFn('mpReadOnlyNote')}\nreturn mpReadOnlyNote;`,
+    )({ high: '높음', xhigh: '매우 높음' }) as (why: string, s: Record<string, unknown>) => string;
+    expect(note('내 세션이 아니라 바꿀 수 없습니다', { effort: 'xhigh', effortEffective: 'high' })).toBe(
+      '내 세션이 아니라 바꿀 수 없습니다 · 설정 매우 높음 → 실행 높음',
+    );
+    expect(note('끝난 세션이라 바꿀 수 없습니다', { effort: 'high' })).toBe('끝난 세션이라 바꿀 수 없습니다');
   });
 
-  it('the card strip: the owner gets the element alone, others the text and the level', () => {
+  it('the card strip: the owner gets the element; others the element disabled (the level only when the name is hidden)', () => {
     const body = clientFn('renderCardBody');
     expect(body).toContain("if (canSwitchModel) modelParts.push(renderModelPicker(s, true, modelShort, 'card'));");
-    expect(body).toContain('if (s.effort) modelParts.push(renderEffortPicker(s));');
+    expect(body).toContain(
+      "if (dhShow('model') && modelShort) modelParts.push(renderModelPicker(s, false, modelShort, 'card', mpReadOnlyWhy(s, isOwner, col)));",
+    );
+    expect(body).toContain('else if (s.effort) modelParts.push(renderEffortPicker(s));');
     expect(body).toContain('const modelNote = renderModelNote(s, canSwitchModel);');
     // The owner's control: a live, non-sibling session (the server re-checks owner / admin on both routes).
     expect(body).toContain(
@@ -634,7 +659,7 @@ describe('D12 — an open menu holds its surface still', () => {
     expect(m.isPickingModel(null)).toBe(false);
   });
 
-  it('the panel controls: the element after "이 세션" for the owner, text for others; held while open, the data still set', () => {
+  it('the panel controls: the element after "이 세션" — live for the owner, disabled for others; held while open, the data still set', () => {
     const writes: string[] = [];
     const hydrated: unknown[] = [];
     let open = false;
@@ -645,6 +670,7 @@ describe('D12 — an open menu holds its surface still', () => {
       currentUserId: 'U1',
       isSiblingSession: () => false,
       esc: (x: string) => x,
+      mpReadOnlyWhy: () => '',
       renderModelPicker: (_s: unknown, can: boolean, _short: string, surface: string) => `[M:${can}:${surface}]`,
       renderEffortPicker: () => '[E]',
       renderModelNote: (_s: unknown, picker: boolean) => `[NOTE:${picker}]`,
@@ -654,7 +680,8 @@ describe('D12 — an open menu holds its surface still', () => {
     m.renderPanelControls({ key: 'k', ownerId: 'U1', model: 'claude-opus-5-5[1m]', effort: 'high' });
     expect(writes[writes.length - 1]).toBe('<span class="pc-scope">이 세션</span>[M:true:panel][NOTE:true]');
     m.renderPanelControls({ key: 'k2', ownerId: 'U2', model: 'claude-opus-5-5[1m]', effort: 'high' });
-    expect(writes[writes.length - 1]).toBe('<span class="pc-scope">이 세션</span>[M:false:panel][E][NOTE:false]');
+    // #813 — others read the same element, disabled: its trigger names the level, so no separate level text.
+    expect(writes[writes.length - 1]).toBe('<span class="pc-scope">이 세션</span>[M:false:panel][NOTE:false]');
     // A sleeping or terminated session reads the text.
     m.renderPanelControls({ key: 'k', ownerId: 'U1', model: 'm', sessionState: 'SLEEPING' });
     expect(writes[writes.length - 1]).toContain('[M:false:panel]');
@@ -685,6 +712,7 @@ describe('D12 — an open menu holds its surface still', () => {
       currentUserId: 'U1',
       isSiblingSession: () => false,
       esc: (x: string) => x,
+      mpReadOnlyWhy: () => '',
       renderModelPicker: (s: { key: string }, can: boolean, _short: string, surface: string) =>
         `[M:${s.key}:${can}:${surface}]`,
       renderEffortPicker: () => '[E]',

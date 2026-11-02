@@ -249,6 +249,7 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
         renderCardGoal: () => '',
         renderCardTasks: () => '',
         renderModelNote: () => '',
+        mpReadOnlyWhy: () => '',
         renderModelPicker: () => '',
         renderEffortPicker: () => '',
         cardTotalTokens: () => 0,

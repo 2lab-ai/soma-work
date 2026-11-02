@@ -302,6 +302,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     acQuestionHtml: () => '[Q]',
     renderMultiChoiceCard: () => '[MC]',
     renderModelNote: () => '',
+    mpReadOnlyWhy: () => '',
     renderModelPicker: () => '[MODEL]',
     renderEffortPicker: () => '[EFFORT]',
     cardTotalTokens: () => 9_591_000,
@@ -466,10 +467,11 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     const foot = html.slice(html.indexOf('class="card-foot-bar"'));
     expect(foot).toBe('class="card-foot-bar"><span class="cfb-model">[MODEL]</span></div></div>');
     // The owner's one trigger carries the level and opens the model · effort menu
-    // (.prd/affectui/re-model-picker.md D1); a reader gets the level as text.
+    // (.prd/affectui/re-model-picker.md D1); a reader gets the same element disabled (#813), its level included.
     expect(foot).not.toContain('[EFFORT]');
     const read = body(card(), 'working', { currentUserId: 'U2' });
-    expect(read.slice(read.indexOf('class="card-foot-bar"'))).toContain('[MODEL][EFFORT]');
+    expect(read.slice(read.indexOf('class="card-foot-bar"'))).toContain('<span class="cfb-model">[MODEL]</span>');
+    expect(read.slice(read.indexOf('class="card-foot-bar"'))).not.toContain('[EFFORT]');
     // A reader's state action is in the bar too (disabled, read-only), never in the foot.
     expect(read.slice(read.indexOf('class="card-foot-bar"'))).not.toContain('data-action="stop"');
     // The switch is not the body's first line.
