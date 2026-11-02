@@ -227,7 +227,15 @@ describe('P2 — the card face follows the plan', () => {
   };
   const MODEL_ID = 'claude-opus-5-5[1m]';
   const COST = { text: '$6.20', title: 'API 환산 비용\n총 토큰 6.4M' };
-  const MODEL = { text: 'Opus 5.5', glyph: 'claude', title: 'claude-opus-5-5[1m]' };
+  // #805: the face shows the model as icons — the maker's mark in the model's colour (and the effort gauge when the
+  // session has one); the name is the chip's title and accessible name.
+  const MODEL = {
+    text: '',
+    glyph: 'claude',
+    color: '#d97757',
+    title: 'Opus 5.5\nclaude-opus-5-5[1m]',
+    label: '모델 Opus 5.5',
+  };
   const PR = full.metrics[1];
   const MEDIA = full.metrics[0];
   const ARTS = { text: '5', glyph: 'file', title: '산출물 5개', label: '산출물 5개' };
@@ -236,7 +244,7 @@ describe('P2 — the card face follows the plan', () => {
   const faceFn = (
     new Function('REPRESENTATIVE_MODELS', `${VIEW_LAYOUT_CLIENT_JS}\nreturn faceOf;`) as (
       r: unknown,
-    ) => (c: unknown, model: unknown, f: unknown, asks: boolean) => Record<string, any>
+    ) => (c: unknown, model: unknown, f: unknown, asks: boolean, effort?: unknown) => Record<string, any>
   )([{ nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', label: 'Opus 5.5' }]);
   const face = (mode: string, p: string, asks = false) => faceFn({ ...full }, MODEL_ID, B[p][mode].card, asks);
 
@@ -291,6 +299,52 @@ describe('P2 — the card face follows the plan', () => {
     expect(m.metrics).toEqual([STEPS, CTX, MEDIA]);
   });
 
+  it("#805 the model chip: icons only — the mark in its maker's colour and the effort gauge; the name as title", () => {
+    const m = faceFn({ ...full }, MODEL_ID, B['1'].minimal.card, false, 'xhigh');
+    expect(m.metrics[m.metrics.length - 1]).toEqual({
+      text: '',
+      glyph: 'claude',
+      color: '#d97757',
+      effort: 'xhigh',
+      title: 'Opus 5.5 · 추론 강도 매우 높음\nclaude-opus-5-5[1m]',
+      label: '모델 Opus 5.5, 추론 강도 매우 높음',
+    });
+    // An effort the gauge does not know is left out (the name stays).
+    const odd = faceFn({ ...full }, MODEL_ID, B['1'].minimal.card, false, 'turbo');
+    expect(odd.metrics[odd.metrics.length - 1]).toEqual(MODEL);
+  });
+
+  it("#805 each maker's colour: Claude clay, Gemini blue; OpenAI and Grok the ink; an unknown model none", () => {
+    const chip = (id: string) => {
+      const m = faceFn({ ...full }, id, B['1'].minimal.card, false, 'high');
+      return m.metrics[m.metrics.length - 1];
+    };
+    // Each maker's own colour (affectUI's agent rows): every Claude model is Claude's clay, Gemini is Google's blue;
+    // OpenAI's and xAI's marks are black, so they take the chip's ink (no colour).
+    const colours = [
+      'claude-opus-5-5[1m]',
+      'claude-sonnet-4-6',
+      'claude-haiku-4-5',
+      'fable',
+      'gpt-5.5-codex',
+      'grok-4',
+      'gemini-3-pro',
+    ].map((id) => [chip(id).glyph, chip(id).color]);
+    expect(colours).toEqual([
+      ['claude', '#d97757'],
+      ['claude', '#d97757'],
+      ['claude', '#d97757'],
+      ['claude', '#d97757'],
+      ['openai', undefined],
+      ['grok', undefined],
+      ['gemini', '#4285f4'],
+    ]);
+    const other = chip('llama-4');
+    expect(other.glyph).toBe('model');
+    expect(other.color).toBeUndefined();
+    expect(other.effort).toBe('high');
+  });
+
   it('advanced 3안 압축: no sub-agent or token rows; the numbers at the foot', () => {
     const m = face('advanced', '3');
     expect(m.rows).toEqual(['task', 'links']);
@@ -338,7 +392,7 @@ describe('P2 — the card face follows the plan', () => {
   it('the board draws every face through the plan', () => {
     const fn = clientFn('viewCardOf');
     expect(fn).toContain('c.star = cardStarOf(s, col);');
-    expect(fn).toContain('return faceOf(c, s.model, viewSpec().face, cardAsks(s, col));');
+    expect(fn).toContain('return faceOf(c, s.model, viewSpec().face, cardAsks(s, col), s.effort);');
     expect(declarationCount('minimalCard')).toBe(0);
     expect(declarationCount('MINIMAL_CARD_KEYS')).toBe(0);
   });
@@ -539,7 +593,8 @@ describe('P4 — the detail card follows the plan', () => {
     env.applyViewMode();
     expect(b.attrs['data-view-mode']).toBe('minimal');
     expect(b.attrs['data-view-plan']).toBe('1');
-    expect(b.attrs['data-detail']).toBe('');
+    // #805 — the detail card names the model (the task card shows it as icons only): its model · effort line stays.
+    expect(b.attrs['data-detail']).toBe('controls');
     expect(b.attrs['data-tasks']).toBe('list');
     expect(b.props['--ptl-max']).toBe('34cqh');
     expect(env.__get('_panelDetail')).toBe(false);
@@ -549,6 +604,7 @@ describe('P4 — the detail card follows the plan', () => {
     expect(b.props['--ptl-max']).toBe('50cqh');
     env.__set('_viewPlan', '3');
     env.applyViewMode();
+    expect(b.attrs['data-detail']).toBe('controls');
     expect(b.attrs['data-tasks']).toBe('line');
     // The task line's checklist opens up to the same share.
     expect(b.props['--ptl-max']).toBe('34cqh');

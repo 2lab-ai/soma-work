@@ -9903,7 +9903,7 @@ function viewCardOf(s, col) {
   // The Executive Summary's TL;DR (SSOT 2026-11-02 T7) — the face keeps it whatever rows the layout picked.
   var tl = cardTldrOf(s, col);
   if (tl) c.tldr = tl;
-  return faceOf(c, s.model, viewSpec().face, cardAsks(s, col));
+  return faceOf(c, s.model, viewSpec().face, cardAsks(s, col), s.effort);
 }
 
 // Task window on the open card (§3.1-4, spec 13) — @2lab.ai/ui <ui-task-plan> in window mode (0.14.1, D8b
