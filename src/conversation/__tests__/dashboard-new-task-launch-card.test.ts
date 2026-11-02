@@ -80,7 +80,11 @@ function slackState(prompt: string) {
 // ── T1 — the dialog closes at once ──────────────────────────────────
 
 describe('T1 — 작업 시작 closes the dialog at once and leaves a 시작 중 card', () => {
-  function page(state: Record<string, unknown>, composerFiles: unknown[] = []) {
+  function page(
+    state: Record<string, unknown>,
+    composerFiles: unknown[] = [],
+    read: Promise<void> = Promise.resolve(),
+  ) {
     const calls: string[] = [];
     const posted: string[] = [];
     const composer = {
@@ -126,7 +130,10 @@ describe('T1 — 작업 시작 closes the dialog at once and leaves a 시작 중
         closeNewTask: () => calls.push('close'),
         ntPendingRepaint: () => calls.push('board'),
         ntPendingStatus: (_l: unknown, t: string) => calls.push(`status:${t}`),
-        ntReadFile: async (f: { name: string }) => ({ name: f.name, mimetype: 'image/png', data: 'AA' }),
+        ntReadFile: async (f: { name: string }) => {
+          await read;
+          return { name: f.name, mimetype: 'image/png', data: 'AA' };
+        },
         refreshCsrfToken: async () => {},
         // The server has not answered yet.
         ntPostTask: (b: string) => {
@@ -221,6 +228,56 @@ describe('T1 — 작업 시작 closes the dialog at once and leaves a 시작 중
     await runB;
     expect(p.calls.filter((c) => c === 'launched')).toHaveLength(2);
     expect(p.calls).not.toContain('failed');
+  });
+
+  // Review (grok #747 R2 P2): the card says it waits only while it really does — not when the launch before it was
+  // answered while this one's files were read.
+  it('a launch whose files are read while the one before it is answered never says it waits', async () => {
+    let releaseRead!: () => void;
+    const read = new Promise<void>((r) => {
+      releaseRead = r;
+    });
+    const p = page(slackState('A'), [], read);
+    const runA = p.api.submitNewTask({ text: 'A', files: [] });
+    const runB = p.api.submitNewTask({ text: 'B', files: [{ name: 'big.mov' }] });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    expect(p.calls).toContain('status:첨부 준비 중…');
+    // A is answered while B's file is still being read.
+    p.answer({
+      status: 200,
+      data: { ok: true, channel: 'C_ALPHA', status: 'running', sessionKey: 'work:C_ALPHA:1.1' },
+    });
+    await runA;
+    releaseRead();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(p.posted.map((b) => JSON.parse(b).prompt)).toEqual(['A', 'B']);
+    expect(p.calls).not.toContain('status:앞 작업이 시작되면 올려요…');
+    p.answer({
+      status: 200,
+      data: { ok: true, channel: 'C_ALPHA', status: 'running', sessionKey: 'work:C_ALPHA:1.2' },
+    });
+    await runB;
+  });
+
+  it('a launch whose files are read before the one before it is answered says it waits, then posts', async () => {
+    const p = page(slackState('A'));
+    const runA = p.api.submitNewTask({ text: 'A', files: [] });
+    const runB = p.api.submitNewTask({ text: 'B', files: [{ name: 'small.png' }] });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(p.calls).toContain('status:앞 작업이 시작되면 올려요…');
+    expect(p.posted).toHaveLength(1);
+    p.answer({
+      status: 200,
+      data: { ok: true, channel: 'C_ALPHA', status: 'running', sessionKey: 'work:C_ALPHA:1.1' },
+    });
+    await runA;
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(p.posted).toHaveLength(2);
+    p.answer({
+      status: 200,
+      data: { ok: true, channel: 'C_ALPHA', status: 'running', sessionKey: 'work:C_ALPHA:1.2' },
+    });
+    await runB;
   });
 
   it('the queue moves on after a launch that failed', async () => {

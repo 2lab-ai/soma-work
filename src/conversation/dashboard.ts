@@ -18913,6 +18913,12 @@ async function submitNewTask(detail) {
   _ntLaunchQueue = new Promise(function (r) {
     release = r;
   });
+  // Whether its turn has come: the card says it waits only while it really does (#747 review R2) — the launch before
+  // it may be answered while this one's files are read.
+  var turnCame = false;
+  turn.then(function () {
+    turnCame = true;
+  });
   var data;
   try {
     if (files.length) ntPendingStatus(launch, '첨부 준비 중…');
@@ -18923,7 +18929,7 @@ async function submitNewTask(detail) {
       ntLaunchFailed(launch, String(readErr.message || '').slice(5) + ' — 파일을 읽지 못했습니다');
       return;
     }
-    if (waitsFor) ntPendingStatus(launch, '앞 작업이 시작되면 올려요…');
+    if (waitsFor && !turnCame) ntPendingStatus(launch, '앞 작업이 시작되면 올려요…');
     await turn;
     var body = JSON.stringify(ntBuildPayload(submitted, attachments, launch.requestId));
     ntPendingStatus(launch, '작업을 올리는 중…');
