@@ -72,6 +72,8 @@ export interface ConversationSession {
   contextRewinds?: import('../context-anchor').ContextRewindRecord[];
   /** What the whole task spent (persisted, never reset) — see `creditTaskSpend`. */
   taskUsage?: TaskUsage;
+  /** #772 — the display language the model was last told (`<display-lang>`). Runtime-only. */
+  displayLangSent?: 'ko' | 'en';
   [key: string]: any;
 }
 
@@ -148,6 +150,14 @@ export interface MessageEvent {
      * turn wins), not aborted. See `GoalLoopController` (M2).
      */
     goalContinuation?: boolean;
+    /**
+     * True only for the crash-recovery auto-resume turn (`autoResumeSession`)
+     * — the turn that carries on a session a restart cut. With
+     * `goalContinuation` it is how the follow-up host tells a real resume
+     * apart from any other synthetic turn (a cron fire) when deciding which
+     * run takes over the follow-up the restart left `uncertain`.
+     */
+    autoResume?: boolean;
     /**
      * True when `text` is a `/z` command's verbatim `continueWithPrompt` (a
      * goal objective) that already went through command routing. The message

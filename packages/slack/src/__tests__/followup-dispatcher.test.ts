@@ -73,6 +73,8 @@ function portOf(queue: FollowupQueue, extras: Partial<FollowupQueuePort> = {}): 
     markConsumed: (s, u) => queue.markConsumed(s, u),
     unsteer: (s, u, r) => queue.unsteer(s, u, r),
     unsteerAll: (s, r) => queue.unsteerAll(s, r),
+    markDelivered: (s, i, e) => queue.markDelivered(s, i, e),
+    resumeInterrupted: (s, i, e) => queue.resumeInterrupted(s, i, e),
     ...extras,
   };
 }
@@ -1495,5 +1497,174 @@ describe('FollowupDispatcher auto-steering (06 §3.2)', () => {
     expect(h.queue.get(SESSION, sibling.id)?.state).toBe('dispatched');
     expect(h.queue.get(SESSION, steeredItem.id)?.state).toBe('steered');
     expect(h.dispatcher.shouldYield(SESSION)).toBe(false); // no `queued` item is left
+  });
+});
+
+/**
+ * Delivery evidence and the restart takeover (work-m64 dev, 2026-11-02): the
+ * run's first SDK event marks its own item delivered, and a resuming run can
+ * take a delivered `uncertain` item over so that ITS outcome settles the row.
+ */
+describe('FollowupDispatcher delivery evidence and the restart takeover', () => {
+  /** A queue whose one item was dispatched, delivered and then cut by a stop. */
+  function cutAfterDelivery(h: ReturnType<typeof harness>): FollowupItem {
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+    const claimed = h.queue.claimNext(SESSION);
+    if (!claimed.ok) throw new Error('claim failed');
+    const marked = h.queue.markDispatched(SESSION, item.id, claimed.item.epoch);
+    if (!marked.ok) throw new Error('dispatch failed');
+    h.queue.markDelivered(SESSION, item.id, marked.item.epoch);
+    h.queue.freeze(SESSION, '실행이 중단되었습니다 (shutdown)');
+    const parked = h.queue.get(SESSION, item.id);
+    if (parked?.state !== 'uncertain') throw new Error('expected an uncertain row');
+    return parked;
+  }
+
+  it("marks the live run's own item delivered — and only for that run's generation", async () => {
+    const h = harness();
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+    const drained = await h.dispatcher.drainNext(SESSION);
+    if (drained.status !== 'dispatched') throw new Error('expected dispatch');
+
+    expect(h.dispatcher.noteTurnReachedModel(SESSION, drained.run.turnEpoch + 1)).toEqual({ status: 'none' });
+    expect(h.queue.get(SESSION, item.id)?.deliveredAt).toBeUndefined();
+
+    expect(h.dispatcher.noteTurnReachedModel(SESSION, drained.run.turnEpoch)).toEqual({
+      status: 'marked',
+      itemId: item.id,
+    });
+    expect(typeof h.queue.get(SESSION, item.id)?.deliveredAt).toBe('number');
+
+    // The run still owns its item: its outcome settles it as before.
+    h.pending[0].settle({ result: 'safe' });
+    const report = await drained.run.settled;
+    expect(report.itemDisposition).toBe('resolved');
+  });
+
+  it('has nothing to mark for an item-less run', () => {
+    const h = harness();
+    const started = h.dispatcher.runInitial(SESSION, event({ ts: '2.1' }));
+    if (started.status !== 'dispatched') throw new Error('expected dispatch');
+
+    expect(h.dispatcher.noteTurnReachedModel(SESSION, started.run.turnEpoch)).toEqual({ status: 'none' });
+  });
+
+  it("an item-less run takes it over RUNNING, and the run's outcome settles it", async () => {
+    const h = harness();
+    const parked = cutAfterDelivery(h);
+    const resume = h.dispatcher.runInitial(SESSION, event({ ts: '3.1', text: 'resume' }));
+    if (resume.status !== 'dispatched') throw new Error('expected dispatch');
+
+    const taken = h.dispatcher.takeOverInterrupted(SESSION, resume.run.turnEpoch, parked.id, parked.epoch);
+
+    expect(taken).toMatchObject({ ok: true, running: true });
+    expect(h.queue.get(SESSION, parked.id)?.state).toBe('dispatched');
+    h.pending[0].settle({ result: 'safe' });
+    const report = await resume.run.settled;
+    expect(report.adoptedItemIds).toEqual([parked.id]);
+    expect(h.queue.get(SESSION, parked.id)?.state).toBe('resolved');
+  });
+
+  it('a running takeover cut again goes back to uncertain — never resolved', async () => {
+    const h = harness();
+    const parked = cutAfterDelivery(h);
+    const resume = h.dispatcher.runInitial(SESSION, event({ ts: '3.1', text: 'resume' }));
+    if (resume.status !== 'dispatched') throw new Error('expected dispatch');
+    h.dispatcher.takeOverInterrupted(SESSION, resume.run.turnEpoch, parked.id, parked.epoch);
+
+    h.pending[0].settle({ result: 'interrupted', reason: 'shutdown' });
+    await resume.run.settled;
+
+    expect(h.queue.get(SESSION, parked.id)?.state).toBe('uncertain');
+  });
+
+  it('a run with its own item keeps the taken-over row uncertain and confirms it only on a safe end', async () => {
+    const h = harness();
+    const parked = cutAfterDelivery(h);
+    const own = enqueue(h.queue, event({ ts: '4.1' }));
+    const drained = await h.dispatcher.drainNext(SESSION);
+    if (drained.status !== 'dispatched') throw new Error('expected dispatch');
+
+    const taken = h.dispatcher.takeOverInterrupted(SESSION, drained.run.turnEpoch, parked.id, parked.epoch);
+
+    // One `dispatched` row per session — the snapshot gate refuses two.
+    expect(taken).toMatchObject({ ok: true, running: false });
+    expect(h.queue.get(SESSION, parked.id)?.state).toBe('uncertain');
+    expect(
+      h.queue
+        .list(SESSION)
+        .filter((item) => item.state === 'dispatched')
+        .map((item) => item.id),
+    ).toEqual([own.id]);
+    h.pending[0].settle({ result: 'safe' });
+    const report = await drained.run.settled;
+    expect(report.itemId).toBe(own.id);
+    expect(report.adoptedItemIds).toEqual([parked.id]);
+    expect(h.queue.get(SESSION, own.id)?.state).toBe('resolved');
+    expect(h.queue.get(SESSION, parked.id)?.state).toBe('resolved');
+  });
+
+  it('a confirm-at-end takeover is left alone by any end but safe', async () => {
+    const h = harness();
+    const parked = cutAfterDelivery(h);
+    enqueue(h.queue, event({ ts: '4.1' }));
+    const drained = await h.dispatcher.drainNext(SESSION);
+    if (drained.status !== 'dispatched') throw new Error('expected dispatch');
+    h.dispatcher.takeOverInterrupted(SESSION, drained.run.turnEpoch, parked.id, parked.epoch);
+
+    h.pending[0].settle({ result: 'error', reason: 'model 500' });
+    await drained.run.settled;
+
+    expect(h.queue.get(SESSION, parked.id)?.state).toBe('uncertain');
+  });
+
+  it('a confirm-at-end the queue refuses is reported, and does not halt the drain', async () => {
+    const queue = new FollowupQueue();
+    const h = harness({
+      queue: portOf(queue, {
+        settle: (s, i, e, o, r) =>
+          s === SESSION && i === `${SESSION}#1` ? { ok: false, reason: 'invalid-state' } : queue.settle(s, i, e, o, r),
+      }),
+    });
+    const parked = cutAfterDelivery({ ...h, queue });
+    enqueue(queue, event({ ts: '4.1' }));
+    const drained = await h.dispatcher.drainNext(SESSION);
+    if (drained.status !== 'dispatched') throw new Error('expected dispatch');
+    h.dispatcher.takeOverInterrupted(SESSION, drained.run.turnEpoch, parked.id, parked.epoch);
+
+    h.pending[0].settle({ result: 'safe' });
+    const report = await drained.run.settled;
+
+    expect(report.itemDisposition).toBe('resolved');
+    expect(queue.get(SESSION, parked.id)?.state).toBe('uncertain');
+    expect(h.dispatcher.drainHalt(SESSION)).toBeUndefined();
+    expect(h.notices).toContainEqual(
+      expect.objectContaining({ type: 'item-uncertain', itemId: parked.id, recorded: false }),
+    );
+  });
+
+  it('refuses a stale generation, an undelivered row and a second takeover of the same row', async () => {
+    const h = harness();
+    const parked = cutAfterDelivery(h);
+    const undelivered = enqueue(h.queue, event({ ts: '5.1' }));
+    const claimed = h.queue.claimNext(SESSION);
+    if (!claimed.ok) throw new Error('claim failed');
+    // 5.1 is now claimed; move it straight to uncertain without delivery evidence.
+    const marked = h.queue.markDispatched(SESSION, undelivered.id, claimed.item.epoch);
+    if (!marked.ok) throw new Error('dispatch failed');
+    h.queue.markInterrupted(SESSION, undelivered.id, marked.item.epoch, 'shutdown');
+    const bare = h.queue.get(SESSION, undelivered.id);
+    if (!bare) throw new Error('missing item');
+    const resume = h.dispatcher.runInitial(SESSION, event({ ts: '3.1', text: 'resume' }));
+    if (resume.status !== 'dispatched') throw new Error('expected dispatch');
+
+    expect(h.dispatcher.takeOverInterrupted(SESSION, resume.run.turnEpoch + 1, parked.id, parked.epoch).ok).toBe(false);
+    expect(h.dispatcher.takeOverInterrupted(SESSION, resume.run.turnEpoch, bare.id, bare.epoch).ok).toBe(false);
+    expect(h.dispatcher.takeOverInterrupted(SESSION, resume.run.turnEpoch, parked.id, parked.epoch).ok).toBe(true);
+    const again = h.queue.get(SESSION, parked.id);
+    expect(h.dispatcher.takeOverInterrupted(SESSION, resume.run.turnEpoch, parked.id, again?.epoch ?? -1).ok).toBe(
+      false,
+    );
+    expect(h.queue.get(SESSION, bare.id)?.state).toBe('uncertain');
   });
 });

@@ -87,6 +87,7 @@ export const DEFAULT_HELP_CATEGORIES: HelpCategory[] = [
       { id: 'persona', label: 'persona' },
       { id: 'model', label: 'model' },
       { id: 'verbosity', label: 'verbosity' },
+      { id: 'lang', label: 'lang' },
     ],
   },
   {

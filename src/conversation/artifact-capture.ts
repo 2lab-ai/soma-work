@@ -1,12 +1,12 @@
 /**
- * Turns the work-log stream into session artifacts.
+ * Turns the work-log stream into session artifacts — the files the model sent to
+ * Slack. A final answer is the chat's, never an artifact (SSOT 2026-11-02 T6).
  *
  * Every step of a turn already reaches the daemon as a work-log entry
  * (src/index.ts wires the stream executor's `appendWorkLog` provider):
  *
  *   tool        mcp__slack-mcp__send_file|send_media  raw = the tool input JSON ({ file_path, filename, title, … })
  *   tool_result same tool                              raw = the tool's JSON reply ({ uploaded, file_id, filename, size, permalink, … })
- *   final       the turn's final answer                text = the whole answer (the work log caps it later, not here)
  *
  * The slack-mcp server runs as a grandchild stdio process, so this is the one
  * place the daemon sees both halves of an upload. A call and its result carry
@@ -36,7 +36,7 @@ export interface CaptureEntry {
   text: string;
   tool?: string;
   toolUseId?: string;
-  /** Set on a subagent's entries (spec 12). Its final text goes to the main agent, not to Slack. */
+  /** Set on a subagent's entries (spec 12). Its uploads are still files sent to Slack. */
   agentId?: string;
   ok?: boolean;
   turnId?: string;
@@ -157,18 +157,6 @@ export function captureArtifactFromWorkLog(
         });
       })().catch((err) => logger.warn(`Upload artifact not recorded for ${conversationId}`, err));
     }
-
-    if (entry.kind === 'final' && typeof entry.text === 'string' && !entry.agentId) {
-      return store
-        .recordAnswer({
-          conversationId,
-          turnId: entry.turnId ?? `final:${entry.ts ?? Date.now()}`,
-          markdown: entry.raw ?? entry.text,
-          now: entry.ts,
-        })
-        .then(() => undefined)
-        .catch((err) => logger.warn(`Answer artifact not recorded for ${conversationId}`, err));
-    }
   } catch (err) {
     logger.warn('Artifact capture failed', err);
   }
@@ -190,8 +178,7 @@ const BACKFILL_PAGE = 500;
 const backfillInflight = new Map<string, Promise<void>>();
 
 /**
- * Record the uploads and markdown answers of a conversation's existing work log,
- * once. Idempotent (Slack file id / turn id dedupe) and safe to race with live
+ * Record the uploads of a conversation's existing work log, once. Idempotent (Slack file id / turn id dedupe) and safe to race with live
  * capture. Bytes are kept when the uploaded file is still a readable /tmp file.
  */
 export function backfillArtifactsFromWorkLog(
@@ -234,14 +221,6 @@ export function backfillArtifactsFromWorkLog(
             size: reply.size,
             tool: e.tool.replace(/^mcp__slack-mcp__/, ''),
             turnId: e.turnId,
-            now: e.ts,
-          });
-        } else if (e.kind === 'final' && !e.agentId) {
-          const text = e.rawBytes ? ((await rawOf(e.seq)) ?? e.text) : e.text;
-          await store.recordAnswer({
-            conversationId,
-            turnId: e.turnId ?? `final:${e.seq}`,
-            markdown: text,
             now: e.ts,
           });
         }
