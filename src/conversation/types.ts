@@ -60,6 +60,11 @@ export interface ConversationTurn {
    * "Roll back to just before this input" resumes the next turn there.
    */
   anchor?: string;
+  /**
+   * User turn sent from the dashboard panel: the ref the panel gave its own pending copy (#785).
+   * The panel replaces that copy by this ref, whatever text the server recorded.
+   */
+  clientRef?: string;
 
   // Assistant turn fields (populated for role === 'assistant')
   summaryTitle?: string; // 1-line title from SUMMARY_MODEL

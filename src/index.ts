@@ -935,6 +935,8 @@ async function start() {
       attachments: NewTaskAttachment[] = [],
       /** The signed-in user who sent it (SSOT 2026-11-02); none (a viewer token, the owner's own compact) is the owner. */
       actorUserId?: string,
+      /** #785 — the ref the panel gave its pending copy; recorded on the turn this send becomes. */
+      clientRef?: string,
     ): Promise<{ channel: string; ts: string } | undefined> => {
       const session = claudeHandler.getSessionByKey(sessionKey);
       if (!session) {
@@ -1013,6 +1015,7 @@ async function start() {
           user: sender,
           ts,
           ...(files ? { files } : {}),
+          ...(clientRef ? { dashboardClientRef: clientRef } : {}),
         } as any,
         dashboardSay,
       );
@@ -1023,8 +1026,8 @@ async function start() {
       });
       return { channel: session.channelId, ts };
     };
-    setDashboardCommandHandler(async (sessionKey, message, attachments, actorUserId) => {
-      await injectDashboardMessage(sessionKey, message, undefined, attachments, actorUserId);
+    setDashboardCommandHandler(async (sessionKey, message, attachments, actorUserId, clientRef) => {
+      await injectDashboardMessage(sessionKey, message, undefined, attachments, actorUserId, clientRef);
     });
 
     // Connect dashboard: the session's follow-up queue on the panel
