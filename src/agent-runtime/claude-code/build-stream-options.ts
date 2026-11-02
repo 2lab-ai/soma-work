@@ -845,7 +845,7 @@ export async function buildStreamOptions(
     // admin-curated notes, read-only for the model; a change clears the cached
     // prompt of the sessions in those channels (src/index.ts).
     if (builtSystemPrompt && hasRepos) {
-      const projectBlock = projectMemoryPromptBlock(getProjectMemoryStore(), slackContext!.repos || []);
+      const projectBlock = projectMemoryPromptBlock(getProjectMemoryStore(), channelContext!.repos || []);
       if (projectBlock) builtSystemPrompt = `${builtSystemPrompt}\n\n${projectBlock}`;
     }
 

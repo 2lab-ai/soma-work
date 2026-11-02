@@ -49,9 +49,14 @@ function detail(isAdmin: boolean, adminMode: boolean) {
 describe('프로젝트 메모리 tab', () => {
   it('the page carries the tab and the whole script still parses', () => {
     const html = renderSettingsPage();
-    expect(html).toContain('<a href="#project">프로젝트 메모리</a>');
-    expect(html).toContain('<div data-tab="project" class="page" hidden>');
-    const script = /<script>([\s\S]*)<\/script>\s*<\/body>/.exec(html)![1];
+    // the tab is an entry of the <ui-tabs> list data, and its page is a slotted panel
+    const tabs = JSON.parse(
+      /<script type="application\/json" id="settings-tabs-data">([^<]*)<\/script>/.exec(html)![1],
+    );
+    expect(tabs).toContainEqual({ id: 'project', label: '프로젝트 메모리', icon: 'file-text' });
+    expect(html).toContain('<div slot="project" data-tab="project" class="page" hidden>');
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1]; // the page script (library elements load as modules after it)
+    expect(script).toContain('function loadProjects');
     expect(() => new Function(script)).not.toThrow();
     expect(PROJECT_CLIENT_JS).not.toContain('`');
     expect(PROJECT_CLIENT_JS).not.toContain('${');
