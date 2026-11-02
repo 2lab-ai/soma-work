@@ -194,7 +194,8 @@ describe('T3 — the chrome is Korean', () => {
     expect(TEMPLATE).toContain("close: '닫기 — 세션 종료'");
     expect(TEMPLATE).toContain("trash: '휴지통 — 세션 휴지통으로'");
     // The source is a template literal: its \u escapes carry a doubled backslash on disk.
-    expect(TEMPLATE).toContain("label: starred ? '\\\\u2605 즐겨찾기' : '\\\\u2606 즐겨찾기'");
+    // One word for both states; the set's star (filled when pressed) says which — no ★ / ☆ text glyphs.
+    expect(TEMPLATE).toContain("label: '즐겨찾기', icon: 'star', pressed: starred");
     expect(TEMPLATE).toContain("groups.unshift({ key: 'starred', label: '\\\\u2605 즐겨찾기'");
     expect(PAGE_STRINGS.siblingLock({ instanceName: 'other', host: 'h', port: 1 })).toBe(
       '이 세션은 other (h:1)에서 열어 조작하세요',

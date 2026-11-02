@@ -504,7 +504,7 @@ describe('P3 — the open card follows the plan', () => {
     const html = env.renderCardBody(card(), 'working');
     expect(html).toContain('data-action="star"');
     expect(present(html)).toEqual(['[TASKS]', '[AGENTS]', '[IO]', 'card-goal-line', 'card-refs', '[MODEL]']);
-    expect(clientFn('paintCardBody')).toContain('var html = renderCardBody(s, col, viewSpec().body);');
+    expect(clientFn('paintCardBody')).toContain('var html = renderCardBody(s, col, viewSpec().body, viewSpec().face);');
   });
 });
 

@@ -227,7 +227,7 @@ describe('tone pass P9 — the settings page speaks the dashboard language', () 
 });
 
 describe('개인 설정 rows — <ui-setting-row> (M-02)', () => {
-  const r = load<{ renderRow(row: any): string; rowData(row: any): any }>([...RENDER, 'rowData'], {
+  const r = load<{ renderRow(row: any): string; rowData(row: any): any }>([...RENDER, 'slackHints', 'rowData'], {
     _rowStatus: { defaultModel: { state: 'error', text: '저장하지 못했습니다: 없음' } },
   });
 
@@ -357,12 +357,23 @@ describe('개인 설정 rows — <ui-setting-row> (M-02)', () => {
     expect(empty).not.toContain('<select');
   });
 
+  it('a row with two Slack commands shows two chips, so neither breaks mid-command', () => {
+    expect(r.rowData(row({ slackCommand: 'notify telegram <chat_id> | notify telegram off' })).hints).toEqual([
+      { label: 'Slack:', code: 'notify telegram <chat_id>' },
+      { label: '', code: 'notify telegram off' },
+    ]);
+  });
+
   it('without admin acceptance every row is locked with the reason (the server refuses writes)', () => {
     const { lockIfNotAccepted } = load<{ lockIfNotAccepted(d: any): any }>(['lockIfNotAccepted']);
     const snap = lockIfNotAccepted({ accepted: false, settings: [row(), row({ key: 'email', kind: 'text' })] });
     expect(snap.settings.every((s: any) => s.editable === false && s.lockedReason.includes('승인'))).toBe(true);
     expect(r.renderRow(snap.settings[0])).not.toContain('<input');
-    expect(r.rowData(snap.settings[0]).locked.reason).toBe('관리자 승인 전에는 바꿀 수 없습니다.');
+    // The page's notice says why, once — a row says nothing more than its lock and value.
+    expect(r.rowData(snap.settings[0]).locked.reason).toBe('');
+    expect(r.rowData(snap.settings[0]).locked.value).toBeTruthy();
+    // Locked at its default: the value shown is the default, so no '기본값' hint repeats it.
+    expect(r.rowData(snap.settings[0]).defaultText).toBeUndefined();
     const ok = lockIfNotAccepted({ accepted: true, settings: [row()] });
     expect(ok.settings[0].editable).toBe(true);
   });
@@ -402,7 +413,7 @@ describe('side nav and filter — <ui-settings-nav> (M-03)', () => {
       modifiedOnly: false,
       empty: true,
       label: '개인 설정 섹션',
-      placeholder: '설정 검색 (이름 · 설명 · Slack 명령)',
+      placeholder: '설정 검색',
     });
   });
 

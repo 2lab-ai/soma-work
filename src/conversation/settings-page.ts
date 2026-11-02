@@ -350,19 +350,26 @@ function renderControl(row) {
 function renderRow(row) {
   return '<ui-setting-row lang="ko" id="row-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '">' + renderControl(row) + '</ui-setting-row>';
 }
+function slackHints(cmd) {
+  if (!cmd) return [];
+  return String(cmd).split(' | ').filter(function(c) { return c.trim(); }).map(function(c, i) { return { label: i ? '' : 'Slack:', code: c.trim() }; });
+}
 function rowData(row) {
   var st = _rowStatus[row.key];
   var d = {
     key: row.key,
     label: row.label,
     description: row.description || '',
-    hints: row.slackCommand ? [{ label: 'Slack:', code: row.slackCommand }] : [],
+    // One chip per command ('a | b' is two commands): a chip never breaks in the middle of a command.
+    hints: slackHints(row.slackCommand),
     modified: !!row.modified,
     canReset: !!(row.modified && row.editable && row.defaultValue !== undefined && row.kind !== 'list'),
     status: st ? { state: st.state, text: st.text } : null,
-    locked: row.editable ? null : { reason: row.lockedReason || '', value: valueText(row, row.value) },
+    // A page-wide lock (no admin acceptance) is said once, in the nav's notice — not under every row.
+    locked: row.editable ? null : { reason: row.lockedByPage ? '' : row.lockedReason || '', value: valueText(row, row.value) },
   };
-  if (row.defaultValue !== undefined && row.kind !== 'readonly') d.defaultText = valueText(row, row.defaultValue);
+  // The default, unless the row is locked at it: the value shown is the default, said once.
+  if (row.defaultValue !== undefined && row.kind !== 'readonly' && !(d.locked && !row.modified)) d.defaultText = valueText(row, row.defaultValue);
   if (row.adminOnly) d.badge = '관리자';
   return d;
 }
@@ -444,6 +451,7 @@ function lockIfNotAccepted(data) {
   for (var i = 0; i < rows.length; i++) {
     rows[i].editable = false;
     rows[i].lockedReason = '관리자 승인 전에는 바꿀 수 없습니다.';
+    rows[i].lockedByPage = true;
   }
   return data;
 }
@@ -573,7 +581,7 @@ function paintNav(result) {
     modifiedOnly: _prefFilter.modifiedOnly,
     empty: !!(filtering && result && result.shown === 0),
     label: '개인 설정 섹션',
-    placeholder: '설정 검색 (이름 · 설명 · Slack 명령)',
+    placeholder: '설정 검색',
   };
 }
 function initPreferences() {
