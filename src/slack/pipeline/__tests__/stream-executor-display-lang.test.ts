@@ -213,6 +213,14 @@ describe('#772 — <display-lang> on the first instruction', () => {
     expect(await promptOf(session, '두 번째 지시')).not.toContain('<display-lang>');
   });
 
+  it('a first turn cut before the SDK named a session: the next prompt (a fresh SDK session) is told', async () => {
+    const session = newSession();
+    expect((await promptOf(session, '첫 지시')).trimEnd().endsWith('<display-lang>ko</display-lang>')).toBe(true);
+    // superseded / failed before the init frame: still no session id
+    const again = await promptOf(session, '정정: 이렇게 해줘');
+    expect(again.trimEnd().endsWith('<display-lang>ko</display-lang>')).toBe(true);
+  });
+
   it('an incident attempt carries no tag (its conclusion is published byte for byte)', async () => {
     const prompt = await promptOf({ ...newSession(), incidentRequest: { requestId: 'r1' } }, 'incident brief');
     expect(prompt).not.toContain('<display-lang>');

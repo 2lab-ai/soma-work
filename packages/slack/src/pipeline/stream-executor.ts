@@ -1751,11 +1751,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // #772/#810 — the user's display language, once: at the very bottom of the
       // first real prompt of a conversation session. `displayLangTold` is
       // persisted with the session (a restart re-sends nothing) and cleared with
-      // the SDK session (a new conversation is told again). Never on an SDK local
-      // slash command — the prompt must stay exactly the command, and a thread
-      // that opens with one is told on its first real prompt — nor on an incident
-      // attempt, whose conclusion is published byte for byte.
-      if (!isSlashCommand && !session.displayLangTold && !session.incidentRequest) {
+      // the SDK session (a new conversation is told again). A prompt with no SDK
+      // session yet is told even when the mark is set: the turn that set it was
+      // cut before the SDK named a session, so this one starts a fresh context.
+      // Never on an SDK local slash command — the prompt must stay exactly the
+      // command, and a thread that opens with one is told on its first real
+      // prompt — nor on an incident attempt, published byte for byte.
+      if (!isSlashCommand && !session.incidentRequest && (!session.displayLangTold || !session.sessionId)) {
         finalPrompt = appendDisplayLangTag(
           finalPrompt,
           displayLangOf(userSettingsStore.getUserDisplayLanguage?.(user)),
