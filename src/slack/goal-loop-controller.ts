@@ -596,10 +596,14 @@ export class GoalLoopController {
     // The notice carries the three actions too: it stands in for the question
     // when the question cannot be posted (another question is open, Slack failed).
     const actionLines = stall.actions.map((a, i) => `${i + 1}. ${a}`).join('\n');
+    // #745: the rollback offer too, for the same reason (`rollback goal` is its thread form).
+    const rollbackLine = stall.rollbackAnchor
+      ? `\n↩︎ 처음 실패한 뒤 ${stall.rollbackTurns ?? 0}턴 동안 한 일이 없습니다 — \`rollback goal\` 로 그 지점까지 문맥을 되돌릴 수 있습니다.`
+      : '';
     try {
       await this.postResultNotice(
         session,
-        `🛑 Goal 자동 진행을 멈췄습니다 — 지난번과 같은 이유로 다시 실패했습니다 (확신 ${Math.round(stall.confidence * 100)}%).\n*Objective:* ${formatGoalObjectiveForSlack(activeGoal.objective)}\n*Reason:* ${verdict.reason}\n*다음 지시 후보:*\n${actionLines}\n하나를 고르거나 직접 지시하세요 — 어떤 메시지든 goal을 이어갑니다. 멈추려면 \`goal pause\`.`,
+        `🛑 Goal 자동 진행을 멈췄습니다 — 지난번과 같은 이유로 다시 실패했습니다 (확신 ${Math.round(stall.confidence * 100)}%).\n*Objective:* ${formatGoalObjectiveForSlack(activeGoal.objective)}\n*Reason:* ${verdict.reason}\n*다음 지시 후보:*\n${actionLines}\n하나를 고르거나 직접 지시하세요 — 어떤 메시지든 goal을 이어갑니다. 멈추려면 \`goal pause\`.${rollbackLine}`,
       );
     } catch (err: unknown) {
       // Never let a failed notice keep the question from being asked.

@@ -19,6 +19,7 @@ Requested 2026-11-02: "채팅 내역을 이용하여 원하는 지점으로 문�
 |---|---|
 | `rollback` (`롤백`) | Lists your inputs in this context that can be rolled back before (the latest 10, numbered). Goal continuations and other system turns are left out. |
 | `rollback <n>` | Rolls the context back to just before input n. The thread is told what leaves the context; the next message runs from there. |
+| `rollback goal` | Rolls the context back to where a stalled goal first failed for its reason (#745) — only when the stall offers it (the repeated turns did nothing). Same gate. |
 | `rollback cancel` (`롤백 취소`) | Drops a rollback that has not run yet. |
 
-The matcher is strict (`rollback`, `rollback <n>`, `rollback cancel`) so an instruction such as "rollback the migration" still reaches the model. `rollback` is not a known command root for the ❓ hint for the same reason.
+The matcher is strict (`rollback`, `rollback <n>`, `rollback goal`, `rollback cancel`) so an instruction such as "rollback the migration" still reaches the model. `rollback` is not a known command root for the ❓ hint for the same reason.

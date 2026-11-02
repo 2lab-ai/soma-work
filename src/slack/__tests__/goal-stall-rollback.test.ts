@@ -20,6 +20,7 @@ import {
   buildGoalStallQuestion,
   GOAL_STALL_ROLLBACK_QUESTION_ID,
   goalStallRollbackChosen,
+  goalStallRollbackNotice,
 } from '../goal-stall';
 
 const SID = 'a1b2c3d4-0000-4000-8000-000000000001';
@@ -56,13 +57,16 @@ function harness(goal: SessionGoal, verdicts: GoalEvalVerdict[], anchors: string
     contextAnchor: anchors[0],
   } as unknown as ConversationSession;
   const questions: GoalStallQuestion[] = [];
+  const notices: string[] = [];
   let i = 0;
   const controller = new GoalLoopController({
     registry: { getSessionByKey: () => session, getActivityStateByKey: () => 'idle', saveSessions: () => undefined },
     requestCoordinator: { isRequestActive: () => false },
     dispatcher: async () => JSON.stringify(verdicts[Math.min(i++, verdicts.length - 1)]),
     injectContinuation: async () => undefined,
-    postNotice: async () => undefined,
+    postNotice: async (_channel: string, _threadTs: string | undefined, text: string) => {
+      notices.push(text);
+    },
     askStallQuestion: async (q) => {
       questions.push(q);
     },
@@ -76,7 +80,7 @@ function harness(goal: SessionGoal, verdicts: GoalEvalVerdict[], anchors: string
     controller.onTurnSettled(KEY);
     await controller.settled(KEY);
   };
-  return { controller, session, goal, questions, settle };
+  return { controller, session, goal, questions, notices, settle };
 }
 
 const fail = (o: Partial<GoalEvalVerdict> = {}): GoalEvalVerdict => ({
@@ -117,6 +121,8 @@ describe('the stall question offers the rollback only when nothing was done', ()
     await h.settle(2);
     expect(h.goal.stall?.rollbackAnchor).toBe(A(1));
     expect(h.questions[0].rollback).toEqual({ turns: 1 });
+    // The notice offers it too: it stands in when the question cannot be posted.
+    expect(h.notices[h.notices.length - 1]).toContain('`rollback goal`');
     const q = buildGoalStallQuestion(h.questions[0]);
     const item = q.questions.find((x) => x.id === GOAL_STALL_ROLLBACK_QUESTION_ID);
     expect(item?.choices.map((c) => c.id)).toEqual(['yes', 'no']);
@@ -138,6 +144,7 @@ describe('the stall question offers the rollback only when nothing was done', ()
     expect(h.goal.stall).toBeDefined();
     expect(h.goal.stall?.rollbackAnchor).toBeUndefined();
     expect(buildGoalStallQuestion(h.questions[0]).questions).toHaveLength(1);
+    expect(h.notices[h.notices.length - 1]).not.toContain('rollback goal');
   });
 
   it('the first failure is the current tail (nothing to drop) → no rollback item', async () => {
@@ -180,11 +187,11 @@ describe('answering the question', () => {
       }),
     } as unknown as ConversationSession;
     const applied = applyGoalStallRollbackAnswer(session, answerYes, 'U1', { transcriptHas: () => true });
-    expect(applied).toBe(true);
+    expect(applied?.ok).toBe(true);
     expect(session.pendingRewind).toMatchObject({ anchor: A(1), source: 'goal', requestedBy: 'U1' });
   });
 
-  it('no answer for the rollback item, another user, or no offer → nothing', () => {
+  it('no answer for the rollback item or no offer → nothing; another user → refused, and it says so', () => {
     const base = () =>
       ({
         ownerId: 'U1',
@@ -196,12 +203,21 @@ describe('answering the question', () => {
         }),
       }) as unknown as ConversationSession;
     const s1 = base();
-    expect(applyGoalStallRollbackAnswer(s1, 'ok go', 'U1', { transcriptHas: () => true })).toBe(false);
+    expect(applyGoalStallRollbackAnswer(s1, 'ok go', 'U1', { transcriptHas: () => true })).toBeUndefined();
     const s2 = base();
-    expect(applyGoalStallRollbackAnswer(s2, answerYes, 'U2', { transcriptHas: () => true })).toBe(false);
+    const refused = applyGoalStallRollbackAnswer(s2, answerYes, 'U2', { transcriptHas: () => true });
+    expect(refused).toEqual({ ok: false, reason: 'not-owner' });
     const s3 = base();
     (s3.goal as any).stall.rollbackAnchor = undefined;
-    expect(applyGoalStallRollbackAnswer(s3, answerYes, 'U1', { transcriptHas: () => true })).toBe(false);
+    expect(applyGoalStallRollbackAnswer(s3, answerYes, 'U1', { transcriptHas: () => true })).toBeUndefined();
     expect(s1.pendingRewind ?? s2.pendingRewind ?? s3.pendingRewind).toBeUndefined();
+  });
+
+  it('the thread is told either way: rolled back, or why not and that the turn runs as it is', () => {
+    expect(goalStallRollbackNotice({ ok: true } as any)).toContain('처음 실패한 지점으로');
+    const no = goalStallRollbackNotice({ ok: false, reason: 'compacted' });
+    expect(no).toContain('⛔');
+    expect(no).toContain('/compact');
+    expect(no).toContain('지금 문맥 그대로');
   });
 });
