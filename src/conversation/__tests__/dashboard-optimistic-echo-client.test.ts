@@ -78,6 +78,7 @@ const PURE = [
   'toNum',
   'decodeSlackEntities',
   'ptSentKey',
+  'ptSameSend',
   'ptUpsert',
   'ptOptimisticFor',
   'ptRecorded',
@@ -192,6 +193,13 @@ describe('T1 — a page fetched while the instruction was out drops the optimist
     expect(merged.map((t) => t.id)).toEqual(['prior', `optimistic-${T0}`]);
   });
 
+  it('the page path uses the same rule: someone else’s same words or a system turn never confirms mine (review: astra P2)', () => {
+    const theirs = recorded('계속', T0 + 2_000, { id: 'theirs', userId: 'U_OTHER', userName: 'Chris' });
+    const system = recorded('계속', T0 + 3_000, { id: 'system', origin: { by: 'system' } });
+    const merged = m.ptMergeFetched([theirs, system], [optimistic('계속')]);
+    expect(merged.map((t) => t.id)).toEqual(['theirs', 'system', `optimistic-${T0}`]);
+  });
+
   it('one recorded turn confirms one optimistic turn: two sends of the same words, one recorded — one stays', () => {
     const merged = m.ptMergeFetched(
       [recorded('계속', T0 + 9_000)],
@@ -211,5 +219,7 @@ describe('T1 — a page fetched while the instruction was out drops the optimist
     expect(TEMPLATE).not.toContain('(Date.now() - _lastSentTime) < 10000');
     expect(TEMPLATE).toContain('onConversationTurn(msg.conversationId, msg.turn)');
     expect(TEMPLATE).toContain('_panelTurnsList = ptMergeFetched(turns, _panelTurnsList)');
+    // The page carries who sent a user turn, so the page path can check the sender too.
+    expect(DASHBOARD_TS).toContain("userId: t.role === 'user' ? t.userId : undefined,");
   });
 });

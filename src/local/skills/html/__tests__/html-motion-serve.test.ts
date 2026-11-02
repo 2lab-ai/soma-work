@@ -35,7 +35,7 @@ describe('local:html skill — motion layer + local web server contract', () => 
     // The serve step must come before the Slack upload step so the link can
     // ride in the upload comment.
     const serveIdx = md.search(/###\s*7\.\s*Publish to the local web server/);
-    const uploadIdx = md.search(/###\s*8\.\s*Dual upload/);
+    const uploadIdx = md.search(/###\s*8\.\s*Upload the HTML/);
     expect(serveIdx).toBeGreaterThan(-1);
     expect(uploadIdx).toBeGreaterThan(-1);
     expect(serveIdx).toBeLessThan(uploadIdx);
