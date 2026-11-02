@@ -110,6 +110,7 @@ import { getAvailablePersonas, PromptBuilder } from './prompt-builder';
 import {
   type CrashRecoveredSession,
   type CreateTaskInput,
+  type NoteLinksMode,
   SessionExpiryCallbacks,
   SessionRegistry,
 } from './session-registry';
@@ -726,6 +727,20 @@ export class ClaudeHandler implements TurnSteeringPort {
 
   setSessionLinks(channelId: string, threadTs: string | undefined, links: SessionLinks): void {
     this.sessionRegistry.setSessionLinks(channelId, threadTs, links);
+  }
+
+  /** Record the links a conversation names (세션 링크 자동 기록): SessionRegistry.noteSessionLinks. */
+  noteSessionLinks(
+    channelId: string,
+    threadTs: string | undefined,
+    links: ReadonlyArray<SessionLink>,
+    mode: NoteLinksMode,
+  ): boolean {
+    return this.sessionRegistry.noteSessionLinks(channelId, threadTs, links, mode);
+  }
+
+  noteSessionLinksByKey(sessionKey: string, links: ReadonlyArray<SessionLink>, mode: NoteLinksMode): boolean {
+    return this.sessionRegistry.noteSessionLinksByKey(sessionKey, links, mode);
   }
 
   addSourceWorkingDir(channelId: string, threadTs: string | undefined, dirPath: string): boolean {
