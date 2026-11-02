@@ -56,6 +56,7 @@ import {
   revalidateTaskDirectory,
 } from '../execution-context';
 import { createNativeWriteCheck } from '../policy/native-write-boundary';
+import { checkPlanPendingCall } from '../policy/plan-pending-guard';
 import type { SafetyClassifier } from '../policy/safety-classifier';
 import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
 
@@ -387,6 +388,8 @@ export async function buildStreamOptions(
       ? { channel: slackContext.channel, threadTs: slackContext.threadTs }
       : { channel: execCtx.sessionKey };
     const envRegistry = deps.getEnvSkillRegistry?.();
+    // Plan mode (SSOT 2026-11-02): a task whose plan is not started researches; step 6c refuses the work.
+    const planPending = execCtx.origin === 'task' && (execCtx as { planPending?: true }).planPending === true;
 
     const policyHook = async (
       input: HookInput,
@@ -421,6 +424,7 @@ export async function buildStreamOptions(
           envRegistry
             ? checkEnvSkillAccess(tool, toolInput, policyUser, envSkillScope, envRegistry, workingDirectory)
             : null,
+        ...(planPending ? { checkPlanPending: checkPlanPendingCall } : {}),
       };
 
       const result = evaluateToolPolicy(toolName, toolInput, ctx);

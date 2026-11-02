@@ -287,7 +287,7 @@ export function decidePlan(
 export const PLAN_SUBMIT_TOOL = 'mcp__plan__plan_submit';
 
 const PLAN_RULES = [
-  '- 지금은 계획만 세운다. 작업을 시작하지 않는다: 파일 수정·커밋·PR·배포·메시지 발송·외부 시스템 변경 금지. 읽기·검색·조사는 해도 된다.',
+  '- 지금은 계획만 세운다. 작업을 시작하지 않는다: 파일 수정·커밋·PR·배포·메시지 발송·외부 시스템 변경 금지. 읽기·검색·조사는 해도 된다(Read · Glob · Grep · WebFetch · WebSearch, 읽기 전용 셸 명령, 코드를 읽기 위한 git clone · fetch). 그 밖의 호출(Write · Edit · 서브에이전트 · 바꾸는 명령 · 바꾸는 MCP 도구)은 도구 정책이 거부한다 — 거부되면 재시도하지 말고 그 변경을 계획에 넣는다.',
   '- Skill 도구로 `zworkflow:using-ssot`와 `zworkflow:using-intentfirst`를 먼저 불러 그 규율로 계획한다: 지시 원문을 SSOT로 고정(paraphrase 금지) → SSOT-TASK-TREE → INTENT-LIST → INTENT-TASK-TREE → 두 트리의 차이와 가정.',
   '- using-intentfirst의 "기다리지 않고 선진행" 규칙은 이 작업에서 쓰지 않는다. 계획 모드에서는 계획을 제출하고 멈춘다 — 유저가 대시보드에서 시작해야 일한다.',
   `- 계획은 \`${PLAN_SUBMIT_TOOL}\` 하나로 제출한다. 하이레벨에서 디테일로: summary(한 줄 결론) · intent(의도) · ssot(원문 인용) · intents → phases(큰 단계) → steps(단계별 작업) → detail · deliverable · refs(T<n>/I<n> 매핑). 가정·위험·범위 밖·확인할 것(questions)도 담는다.`,

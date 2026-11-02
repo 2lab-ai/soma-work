@@ -511,3 +511,48 @@ describe('#599 ⑤ — a task’s escalation waits for the dashboard approval', 
     expect(request).not.toHaveBeenCalled();
   });
 });
+
+describe('plan mode — a task whose plan is not started researches (SSOT 2026-11-02, step 6c)', () => {
+  function planningContext(): ExecutionContext {
+    return executionContextForTask({
+      ownerId: USER,
+      slackless: true,
+      taskId: TASK_ID,
+      channelId: '',
+      workingDirectory: WORK_DIR,
+      taskPlan: { state: 'awaiting', revision: 1, updatedAt: 1 },
+    } as ConversationSession);
+  }
+
+  it('the hook refuses the work (Write, a changing command) and lets reading through', async () => {
+    const ctx = planningContext();
+    expect((ctx as { planPending?: true }).planPending).toBe(true);
+    const deps = makeDeps({
+      mcpConfigBuilder: { buildConfig: vi.fn(async () => makeMcpConfig({ somaPermissionMode: 'bypass' })) },
+    });
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: ctx.workingDirectory, executionContext: ctx },
+      deps,
+    );
+    const hook = policyHook(options as { hooks?: Record<string, unknown> });
+    const write = await hook(call('Write', { file_path: `${WORK_DIR}/a.txt`, content: 'x' }));
+    expect(decisionOf(write)).toBe('deny');
+    expect(String(write.hookSpecificOutput.permissionDecisionReason)).toContain('plan is not started');
+    expect(decisionOf(await hook(call('Bash', { command: 'git commit -am wip' })))).toBe('deny');
+    expect(decisionOf(await hook(call('Bash', { command: 'git log -3' })))).toBe('allow');
+    expect(decisionOf(await hook(call('Read', { file_path: `${WORK_DIR}/a.txt` })))).toBe('allow');
+  });
+
+  it('a started plan (or no plan mode) is not gated: Write runs under bypass as before', async () => {
+    const deps = makeDeps({
+      mcpConfigBuilder: { buildConfig: vi.fn(async () => makeMcpConfig({ somaPermissionMode: 'bypass' })) },
+    });
+    const ctx = taskContext();
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: ctx.workingDirectory, executionContext: ctx },
+      deps,
+    );
+    const hook = policyHook(options as { hooks?: Record<string, unknown> });
+    expect(decisionOf(await hook(call('Write', { file_path: `${WORK_DIR}/a.txt`, content: 'x' })))).toBe('allow');
+  });
+});
