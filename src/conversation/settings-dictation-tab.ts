@@ -36,10 +36,14 @@ export const DICTATION_TAB_HTML = `<div slot="dictation" data-tab="dictation" cl
         <label class="dic-engine" data-engine="browser">
           <input type="radio" name="dic-engine" value="browser" disabled>
           <span class="dic-engine-body"><span class="dic-engine-name">브라우저 위스퍼</span>
-          <span class="dic-engine-desc">이 브라우저 안에서 Whisper가 받아씁니다. 음성이 기기 밖으로 나가지 않습니다. 처음 쓸 때 모델을 내려받습니다.</span>
+          <span class="dic-engine-desc">이 브라우저 안에서 Whisper가 받아씁니다. 음성이 기기 밖으로 나가지 않습니다. 처음 쓸 때 모델을 내려받고, 다음부터는 브라우저에 저장된 모델을 씁니다.</span>
           <span class="dic-engine-why" data-why="browser" hidden></span></span>
         </label>
       </div>
+      <label class="dic-model" id="dic-model-row" hidden><span>브라우저 위스퍼 모델</span>
+        <select class="ui-input" id="dic-browser-model" aria-describedby="dic-model-note"></select>
+        <span class="dic-sub" id="dic-model-note">큰 모델일수록 정확하지만 내려받는 양과 기기 부담이 큽니다. 이 기기에만 저장됩니다.</span>
+      </label>
       <p class="dic-note" id="dic-engine-note" role="status" aria-live="polite"></p>
     </section>
     <section class="group" aria-labelledby="h-dic-info">
@@ -73,6 +77,9 @@ export const DICTATION_TAB_CSS = String.raw`
 .dic-engine-why { font-size: 12.5px; color: var(--tint-fail-fg); }
 .dic-engine-why[hidden], .dic-note:empty { display: none; }
 .dic-note { font-size: 12.5px; color: var(--text-secondary); padding: 0 16px 12px; }
+.dic-model { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 0 16px 14px 44px; font-size: 13px; }
+.dic-model[hidden] { display: none; }
+.dic-model .dic-sub { flex: 1 1 100%; font-size: 12px; color: var(--text-secondary); }
 .dic-info { margin: 0; }
 .dic-row { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 12px; padding: 9px 16px; border-top: 1px solid var(--border); font-size: 13px; }
 .dic-row:first-child { border-top: 0; }
@@ -218,6 +225,7 @@ async function dicInfo(w) {
     memory: Number(n.deviceMemory) || 0,
     cores: Number(n.hardwareConcurrency) || 0,
     server: { ok: false, why: '' },
+    browserDevice: typeof dictationBrowserDevice === 'function' ? dictationBrowserDevice(w) : '',
   };
   var hints = await dicUaHints(n);
   if (hints) {
@@ -230,12 +238,14 @@ async function dicInfo(w) {
   for (var j = 0; j < DIC_LANGS.length; j++) info.langs[DIC_LANGS[j]] = await dicLangState(Rec, DIC_LANGS[j]);
   info.mic = await dicMicState(n);
   info.gpu = await dicGpu(n);
+  // WebGPU in name only (no adapter): the browser's Whisper runs on WebAssembly there (dictationBrowserRuntime).
+  if (info.browserDevice === 'webgpu' && !info.gpu.has) info.browserDevice = 'wasm';
   info.server = typeof dictationServerStatus === 'function' ? await dictationServerStatus(w && w.fetch ? w.fetch.bind(w) : null) : { ok: false, why: '' };
   return info;
 }
 
-// What each engine can do on this device — { ok, why } per engine: the server's Whisper when the server has it and
-// this browser can stream its microphone; the browser's Whisper is not on this build yet (epic #737, #740).
+// What each engine can do on this device — { ok, why } per engine: the server's Whisper when the server has it; the
+// browser's Whisper where a Web Worker can run WebAssembly (WebGPU makes it fast).
 function dicEngines(info) {
   var path = info && info.path;
   var device = { ok: true, why: '' };
@@ -244,10 +254,13 @@ function dicEngines(info) {
   var srv = (info && info.server) || { ok: false, why: '' };
   var server = srv.ok ? { ok: true, why: '' } : { ok: false, why: srv.why || '이 서버에는 위스퍼가 없습니다' };
   if (srv.ok && info && info.secure === false) server = { ok: false, why: '보안 연결(HTTPS)이 아니라 마이크를 쓸 수 없습니다' };
+  var bdev = info && info.browserDevice;
+  var browser = bdev ? { ok: true, why: '' } : { ok: false, why: '이 브라우저는 Web Worker·WebAssembly를 지원하지 않아 쓸 수 없습니다' };
+  if (bdev && info && info.secure === false) browser = { ok: false, why: '보안 연결(HTTPS)이 아니라 마이크를 쓸 수 없습니다' };
   return {
     device: device,
     server: server,
-    browser: { ok: false, why: '준비 중입니다' },
+    browser: browser,
   };
 }
 
@@ -320,6 +333,14 @@ function dicInfoRows(info) {
   rows.push(['메모리 · 코어', (info.memory ? '약 ' + info.memory + 'GB' : '알 수 없음') + ' · ' + (info.cores ? info.cores + '코어' : '알 수 없음')]);
   var srv = info.server || { ok: false, why: '' };
   rows.push(['서버 위스퍼', srv.ok ? '쓸 수 있음 — ' + (srv.model || 'Whisper') : srv.why || '이 서버에는 위스퍼가 없습니다']);
+  rows.push([
+    '브라우저 위스퍼',
+    info.browserDevice === 'webgpu'
+      ? 'WebGPU로 실행 (빠름)'
+      : info.browserDevice === 'wasm'
+        ? 'WebAssembly로 실행 (느림 — 작은 모델 권장)'
+        : '쓸 수 없음 (Web Worker·WebAssembly 미지원)',
+  ]);
   return rows;
 }
 
@@ -354,6 +375,24 @@ function dicPaintEngines(info) {
   }
   var note = document.getElementById('dic-engine-note');
   if (note) note.textContent = use !== choice ? '고른 엔진(' + DIC_ENGINE_NAMES[choice] + ')을 이 기기에서 쓸 수 없어 ' + DIC_ENGINE_NAMES[use] + '으로 받아씁니다' : '';
+}
+
+// 브라우저 위스퍼's model choice: shown where it can run, each with this device's download.
+function dicPaintModels(info) {
+  var row = document.getElementById('dic-model-row');
+  var sel = document.getElementById('dic-browser-model');
+  if (!row || !sel || typeof DICTATION_BROWSER_MODELS === 'undefined') return;
+  var dev = info && info.browserDevice;
+  row.hidden = !dev;
+  if (!dev) return;
+  var cur = dictationBrowserModel(dicStore(), dev);
+  var html = '';
+  for (var k in DICTATION_BROWSER_MODELS) {
+    var m = DICTATION_BROWSER_MODELS[k];
+    html += '<option value="' + esc(k) + '"' + (k === cur ? ' selected' : '') + '>' + esc(m.label + ' · 약 ' + m[dev] + 'MB') + '</option>';
+  }
+  sel.innerHTML = html;
+  sel.value = cur;
 }
 
 function dicStore() {
@@ -450,7 +489,7 @@ function dicTestStart() {
   }
   var engine = dicEffective(dictationEngineChoice(dicStore()), dicEngines(_dicInfo));
   var Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (engine === 'server') return dicTestServer(live, res, btn);
+  if (engine === 'server' || engine === 'browser') return dicTestWhisper(engine, live, res, btn);
   if (engine !== 'device' || !Rec) {
     if (res) res.textContent = '이 기기에서는 시험할 엔진이 없습니다';
     return;
@@ -512,15 +551,20 @@ function dicTestStart() {
   }
 }
 
-// 말해서 시험 through the server's Whisper: the microphone streams for eight seconds, the words as they settle.
-function dicTestServer(live, res, btn) {
-  var t = { engine: 'server', rec: null, srv: null, t0: Date.now(), first: 0, ended: 0, text: '', err: '' };
+// 말해서 시험 through a Whisper (the server's, or this browser's): eight seconds from when it listens, the words as
+// they settle; the browser's first press downloads its model (the progress shows).
+function dicTestWhisper(engine, live, res, btn) {
+  var t = { engine: engine, rec: null, srv: null, t0: Date.now(), first: 0, ended: 0, text: '', err: '' };
   _dicTest = t;
   if (live) live.textContent = '';
-  if (res) res.textContent = '서버 위스퍼 준비 중…';
+  if (res) res.textContent = DIC_ENGINE_NAMES[engine] + ' 준비 중…';
   if (btn) btn.textContent = '멈추기';
   // Callbacks of a test that has been let go (dicTestDone) never touch the next one.
-  t.srv = dictationServerStart({
+  var start = engine === 'browser' ? dictationBrowserStart : dictationServerStart;
+  t.srv = start({
+    onProgress: function (pct) {
+      if (res && _dicTest === t) res.textContent = '모델을 내려받는 중… ' + pct + '% (처음 한 번만)';
+    },
     onReady: function () {
       if (_dicTest !== t) return;
       t.t0 = Date.now();
@@ -552,7 +596,8 @@ function dicTestStop() {
 }
 
 // The end may never come (Edge can go silent after a stop or an error; a server that never answers done): the test
-// lets go after a moment — longer for Whisper, whose last words may wait behind other dictations.
+// lets go after a moment — longer for Whisper, whose last words may wait behind other dictations (the server) or on
+// a slow WebAssembly run (this browser).
 function dicTestSettle(t) {
   setTimeout(function () { dicTestDone(t); }, t.srv ? DIC_SETTLE_WHISPER_MS : DIC_SETTLE_MS);
 }
@@ -576,6 +621,7 @@ async function loadDictationTab() {
   _dicInfo = await dicInfo(window);
   dicPaintInfo(_dicInfo);
   dicPaintEngines(_dicInfo);
+  dicPaintModels(_dicInfo);
   var btn = document.getElementById('dic-test-btn');
   if (btn) btn.disabled = false;
 }
@@ -586,6 +632,11 @@ function initDictationTab() {
   root.addEventListener('change', function (e) {
     var t = e.target;
     if (t && t.name === 'dic-engine' && t.checked) dicChoose(t.value);
+    if (t && t.id === 'dic-browser-model') {
+      var note = document.getElementById('dic-engine-note');
+      var ok = dictationSaveBrowserModel(dicStore(), t.value);
+      if (note) note.textContent = ok ? '브라우저 위스퍼 모델을 이 기기에 저장했습니다' : '이 브라우저가 저장을 막아 고를 수 없습니다';
+    }
   });
   root.addEventListener('click', function (e) {
     var t = e.target;

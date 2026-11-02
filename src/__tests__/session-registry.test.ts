@@ -585,6 +585,20 @@ describe('SessionRegistry persistence', () => {
     expect(session.errorRetryCount).toBe(0);
   });
 
+  it('#772 — a new model context (clearSessionId, resetSessionContext) is told the display language again', () => {
+    const registry = new SessionRegistry();
+    const a = registry.createSession('U123', 'Tester', 'C_DL', '171.DL1');
+    a.sessionId = 'session-dl';
+    a.displayLangSent = 'en';
+    registry.clearSessionId('C_DL', '171.DL1');
+    expect(a.displayLangSent).toBeUndefined();
+    const b = registry.createSession('U123', 'Tester', 'C_DL', '171.DL2');
+    b.sessionId = 'session-dl2';
+    b.displayLangSent = 'ko';
+    registry.resetSessionContext('C_DL', '171.DL2');
+    expect(b.displayLangSent).toBeUndefined();
+  });
+
   it('resetSessionContext clears file-access retry state', () => {
     const registry = new SessionRegistry();
     const session = registry.createSession('U123', 'Tester', 'C_FA', '171.FA2');
@@ -1218,6 +1232,20 @@ describe('invalidateSystemPromptForUser', () => {
     expect(registry.invalidateSystemPromptForUser('U-ghost')).toBe(0);
     expect(registry.invalidateSystemPromptForUser('')).toBe(0);
     expect(s.systemPrompt).toBe('cached');
+  });
+});
+
+describe('invalidateSystemPromptWhere (SSOT 2026-10-23 T4)', () => {
+  it('clears the cached prompt of the sessions the predicate picks (a project memory change)', () => {
+    const registry = new SessionRegistry();
+    const inRepoChannel = registry.createSession('U-a', 'a', 'C_REPO', 't1');
+    inRepoChannel.systemPrompt = 'cached-1';
+    const elsewhere = registry.createSession('U-b', 'b', 'C_OTHER', 't2');
+    elsewhere.systemPrompt = 'cached-2';
+    const count = registry.invalidateSystemPromptWhere((s) => s.channelId === 'C_REPO');
+    expect(count).toBe(1);
+    expect(inRepoChannel.systemPrompt).toBeUndefined();
+    expect(elsewhere.systemPrompt).toBe('cached-2');
   });
 });
 

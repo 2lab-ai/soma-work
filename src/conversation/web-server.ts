@@ -18,6 +18,7 @@ import { config } from '../config';
 import { IS_DEV } from '../env-paths';
 import { registerHookRoutes } from '../hooks';
 import { Logger } from '../logger';
+import { userSettingsStore } from '../user-settings-store';
 import { registerArtifactRoutes } from './artifact-routes';
 import {
   registerDashboardRoutes,
@@ -28,6 +29,7 @@ import {
   stopDashboardPermissionWatch,
 } from './dashboard';
 import { dictationWhisperFromA2t, registerDictationRoutes } from './dictation-routes';
+import { registerDisplayLang } from './display-lang-web';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
 import { registerMemoryRoutes } from './memory-routes';
 import {
@@ -40,6 +42,7 @@ import {
   validateCsrfToken,
   verifyDashboardTokenRaw,
 } from './oauth';
+import { registerProjectMemoryRoutes } from './project-memory-routes';
 import {
   effectiveViewerUrl,
   getInstanceId,
@@ -525,6 +528,11 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // Old `http://<host>:<port>` links → https viewerUrl, before any route runs.
   registerCanonicalOriginRedirect(server);
 
+  // #773 — every route runs, and answers, in the request's display language
+  // (saved setting → `soma_lang` cookie → ko). Before any route and before the
+  // compression plugin: its response hook must see a page before it is compressed.
+  registerDisplayLang(server, { savedLangOf: (userId) => userSettingsStore.getUserSettings(userId)?.displayLanguage });
+
   // Required for HTML form POSTs (e.g. the SSO session-switch interstitial
   // at `POST /auth/sso/confirm`, #704). Fastify does not parse
   // application/x-www-form-urlencoded by default; without this plugin the
@@ -720,6 +728,10 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   registerSettingsRoutes(server, authMiddleware, csrfMiddleware);
   // Personal memory — the settings page "기억" tab (SSOT 2026-10-23 T3).
   registerMemoryRoutes(server, authMiddleware, csrfMiddleware);
+  // Shared project memory — read: any signed-in user; write: admin (SSOT 2026-10-23 T4).
+  registerProjectMemoryRoutes(server, authMiddleware, csrfMiddleware, (request, reply) =>
+    requireWriteAccess(request, reply, undefined),
+  );
 
   // Health check
   server.get('/health', async (_request, reply) => {
