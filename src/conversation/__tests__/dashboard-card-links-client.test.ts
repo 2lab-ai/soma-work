@@ -154,8 +154,9 @@ describe('C2 — every built-in face shows the links row by default', () => {
 describe('C3 — the open card’s refs', () => {
   it('list the same pages with their states (the old short refs only when the board sent none)', () => {
     const fn = clientFn('renderCardBody');
-    expect(fn).toContain('const refLinks = cardLinksFace(s);');
+    // Say it once: the face's 연결 row already lists them (the default layout) — the body then lists none.
+    expect(fn).toContain('const refLinks = faceShowsLinks ? [] : cardLinksFace(s);');
     expect(fn).toContain('<span class="card-ref-st"');
-    expect(fn).toContain("if (!refLinks.length && dhShow('links') && s.issueShortRef && s.issueUrl) {");
+    expect(fn).toContain("if (!linksOnFace && !refLinks.length && dhShow('links') && s.issueShortRef && s.issueUrl) {");
   });
 });
