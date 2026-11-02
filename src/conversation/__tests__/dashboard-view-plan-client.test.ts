@@ -244,7 +244,14 @@ describe('P2 — the card face follows the plan', () => {
   const faceFn = (
     new Function('REPRESENTATIVE_MODELS', `${VIEW_LAYOUT_CLIENT_JS}\nreturn faceOf;`) as (
       r: unknown,
-    ) => (c: unknown, model: unknown, f: unknown, asks: boolean, effort?: unknown) => Record<string, any>
+    ) => (
+      c: unknown,
+      model: unknown,
+      f: unknown,
+      asks: boolean,
+      effort?: unknown,
+      asked?: unknown,
+    ) => Record<string, any>
   )([{ nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', label: 'Opus 5.5' }]);
   const face = (mode: string, p: string, asks = false) => faceFn({ ...full }, MODEL_ID, B[p][mode].card, asks);
 
@@ -312,6 +319,19 @@ describe('P2 — the card face follows the plan', () => {
     // An effort the gauge does not know is left out (the name stays).
     const odd = faceFn({ ...full }, MODEL_ID, B['1'].minimal.card, false, 'turbo');
     expect(odd.metrics[odd.metrics.length - 1]).toEqual(MODEL);
+  });
+
+  it('#805 review P1 — the gauge is the level the model runs; the title names the set level when it is capped', () => {
+    const m = faceFn({ ...full }, MODEL_ID, B['1'].minimal.card, false, 'high', 'xhigh');
+    expect(m.metrics[m.metrics.length - 1]).toEqual({
+      ...MODEL,
+      effort: 'high',
+      title: 'Opus 5.5 · 추론 강도 높음 (설정 매우 높음)\nclaude-opus-5-5[1m]',
+      label: '모델 Opus 5.5, 추론 강도 높음 (설정 매우 높음)',
+    });
+    // Not capped: the set level is the one it runs — said once.
+    const same = faceFn({ ...full }, MODEL_ID, B['1'].minimal.card, false, 'high', 'high');
+    expect(same.metrics[same.metrics.length - 1].title).toBe('Opus 5.5 · 추론 강도 높음\nclaude-opus-5-5[1m]');
   });
 
   it("#805 each maker's colour: Claude clay, Gemini blue; OpenAI and Grok the ink; an unknown model none", () => {
@@ -392,7 +412,12 @@ describe('P2 — the card face follows the plan', () => {
   it('the board draws every face through the plan', () => {
     const fn = clientFn('viewCardOf');
     expect(fn).toContain('c.star = cardStarOf(s, col);');
-    expect(fn).toContain('return faceOf(c, s.model, viewSpec().face, cardAsks(s, col), s.effort);');
+    // #805 review: the gauge draws the level the model runs (effortEffective when it caps the set one); an archive's
+    // effort is the owner's default today, not the run's — no gauge.
+    expect(fn).toContain("var eff = s.effortFromDefault ? '' : s.effortEffective || s.effort;");
+    expect(fn).toContain(
+      "return faceOf(c, s.model, viewSpec().face, cardAsks(s, col), eff, s.effortFromDefault ? '' : s.effort);",
+    );
     expect(declarationCount('minimalCard')).toBe(0);
     expect(declarationCount('MINIMAL_CARD_KEYS')).toBe(0);
   });
