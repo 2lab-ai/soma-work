@@ -272,6 +272,20 @@ describe('T1.1 — the recorded user turn says who put it there', () => {
     );
   });
 
+  it('a dashboard send carries its ref to the turn it records — whatever text the turn holds (#785)', async () => {
+    await new StreamExecutor(createDeps()).execute(
+      params('다시 쓴 지시', { isUserInput: true, clientRef: 'optimistic-1793591000000' }),
+    );
+    expect(originOf()).toEqual({ origin: { by: 'user' }, clientRef: 'optimistic-1793591000000' });
+  });
+
+  it('a turn soma-work put there never carries a dashboard ref (#785)', async () => {
+    await new StreamExecutor(createDeps()).execute(
+      params('/compact', { isUserInput: true, clientRef: 'optimistic-1' }, { pendingUserText: '원래 보낸 메시지' }),
+    );
+    expect(originOf()).toEqual({ origin: { by: 'system' }, compact: true });
+  });
+
   it('a synthetic / continuation turn (isUserInput false) → system', async () => {
     const text =
       '[goal-continuation] Continue working toward the active session goal (objective in <session-goal>). Auto-continuation 2/10.';

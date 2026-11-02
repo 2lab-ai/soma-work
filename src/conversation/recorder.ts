@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { Logger } from '../logger';
 import { getMetricsEmitter } from '../metrics/event-emitter';
+import { isClientRef } from './client-ref';
 import { ConversationStorage } from './storage';
 import { generateSessionSummaryTitle, type SessionSummaryTitleLinks, summarizeResponse } from './summarizer';
 import type { ConversationRecord, ConversationTurn, TurnCompaction, TurnOrigin } from './types';
@@ -257,7 +258,7 @@ export function recordUserTurn(
   userName?: string,
   userId?: string,
   attachments?: readonly TurnAttachment[],
-  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean; anchor?: string } = {},
+  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean; anchor?: string; clientRef?: string } = {},
 ): void {
   // Fire-and-forget
   _recordUserTurnAsync(conversationId, content, userName, userId, attachments, opts).catch((err) => {
@@ -275,7 +276,7 @@ async function _recordUserTurnAsync(
   userName: string | undefined,
   userId: string | undefined,
   attachments: readonly TurnAttachment[] | undefined,
-  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean; anchor?: string },
+  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean; anchor?: string; clientRef?: string },
 ): Promise<void> {
   const record = await getOrLoadConversation(conversationId);
   if (!record) {
@@ -300,6 +301,7 @@ async function _recordUserTurnAsync(
     ...(origin ? { origin: { by: origin.by } } : {}),
     ...(opts.compact ? { compact: estimateMs !== undefined ? { estimateMs } : {} } : {}),
     ...(typeof opts.anchor === 'string' && opts.anchor ? { anchor: opts.anchor } : {}),
+    ...(isClientRef(opts.clientRef) ? { clientRef: opts.clientRef } : {}),
   };
 
   record.turns.push(turn);

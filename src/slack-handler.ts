@@ -2347,6 +2347,9 @@ export class SlackHandler {
         synthetic: event.synthetic,
         hostTurn: event.routeContext?.hostTurn === true,
         literalPrompt,
+        // #785: a dashboard send's ref — survives the text rewrites above (routed continuation,
+        // follow-up prompt, directive remainder), so the panel still finds its own instruction.
+        clientRef: typeof event.dashboardClientRef === 'string' ? event.dashboardClientRef : undefined,
       });
 
       const continuationHandler: ContinuationHandler = {
@@ -2631,6 +2634,8 @@ export class SlackHandler {
       hostTurn?: boolean;
       /** The first turn's text is a goal objective — never an SDK slash command. */
       literalPrompt?: boolean;
+      /** #785 — the dashboard send's ref (`event.dashboardClientRef`), recorded on its user turn. */
+      clientRef?: string;
       /**
        * Turn generation this dispatch owns (`ssot.md:116-120`, A28). Captured
        * from the dispatch request and passed down verbatim — the surface
@@ -2685,6 +2690,7 @@ export class SlackHandler {
       isUserInput: !context.synthetic,
       hostTurn: context.hostTurn === true,
       literalPrompt: context.literalPrompt === true,
+      clientRef: context.clientRef,
       // Same captured token, for the executor's own late-write fence.
       followupTurnEpoch: expectedTurnEpoch,
     };
