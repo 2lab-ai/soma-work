@@ -16,7 +16,8 @@ const RATE = 16000;
 function tone(ms: number, voiced: boolean): Buffer {
   const n = Math.round((RATE * ms) / 1000);
   const b = Buffer.alloc(n * 2);
-  for (let i = 0; i < n; i++) b.writeInt16LE(voiced ? Math.round(Math.sin((2 * Math.PI * 440 * i) / RATE) * 0.2 * 32767) : 0, i * 2);
+  for (let i = 0; i < n; i++)
+    b.writeInt16LE(voiced ? Math.round(Math.sin((2 * Math.PI * 440 * i) / RATE) * 0.2 * 32767) : 0, i * 2);
   return b;
 }
 
@@ -37,7 +38,9 @@ async function server(whisper: DictationWhisper | null, opts: { signedIn?: boole
   return app;
 }
 
-function fakeWhisper(answer: (pcm: Int16Array, prompt: string) => string = () => '대시보드 새 작업'): DictationWhisper & {
+function fakeWhisper(
+  answer: (pcm: Int16Array, prompt: string) => string = () => '대시보드 새 작업',
+): DictationWhisper & {
   calls: Array<{ samples: number; language: string; prompt: string }>;
 } {
   const calls: Array<{ samples: number; language: string; prompt: string }> = [];
@@ -54,17 +57,24 @@ function fakeWhisper(answer: (pcm: Int16Array, prompt: string) => string = () =>
 }
 
 type Msg = { type: string; [k: string]: unknown };
-async function open(a: FastifyInstance, headers: Record<string, string> = { host: 'agents.example', origin: 'https://agents.example' }) {
+async function open(
+  a: FastifyInstance,
+  headers: Record<string, string> = { host: 'agents.example', origin: 'https://agents.example' },
+) {
   const msgs: Msg[] = [];
   let closed: { code: number; reason: string } | null = null;
-  const ws = await (a as unknown as { injectWS: Function }).injectWS('/ws/dictation', { headers }, {
-    onInit: (s: any) => {
-      s.on('message', (d: Buffer) => msgs.push(JSON.parse(String(d))));
-      s.on('close', (code: number, reason: Buffer) => {
-        closed = { code, reason: String(reason) };
-      });
+  const ws = await (a as unknown as { injectWS: Function }).injectWS(
+    '/ws/dictation',
+    { headers },
+    {
+      onInit: (s: any) => {
+        s.on('message', (d: Buffer) => msgs.push(JSON.parse(String(d))));
+        s.on('close', (code: number, reason: Buffer) => {
+          closed = { code, reason: String(reason) };
+        });
+      },
     },
-  });
+  );
   return { ws, msgs, closed: () => closed };
 }
 
@@ -81,7 +91,11 @@ describe('R1 — status', () => {
       server: { ok: false, why: '이 서버에는 위스퍼가 없습니다' },
     });
     await a.close();
-    const broken = { ...fakeWhisper(), ready: () => false, why: () => '서버 위스퍼를 시작하지 못했습니다 — no module mlx_whisper' };
+    const broken = {
+      ...fakeWhisper(),
+      ready: () => false,
+      why: () => '서버 위스퍼를 시작하지 못했습니다 — no module mlx_whisper',
+    };
     a = await server(broken);
     expect((await a.inject({ method: 'GET', url: '/api/dictation/status' })).json().server).toEqual({
       ok: false,
@@ -148,7 +162,9 @@ describe('R3 — refused', () => {
   it('no Whisper on this server: unavailable, with why', async () => {
     const a = await server({ ...fakeWhisper(), ready: () => false, why: () => '이 서버에는 위스퍼가 없습니다' });
     const c = await open(a);
-    await vi.waitFor(() => expect(c.msgs[0]).toEqual({ type: 'error', code: 'unavailable', message: '이 서버에는 위스퍼가 없습니다' }));
+    await vi.waitFor(() =>
+      expect(c.msgs[0]).toEqual({ type: 'error', code: 'unavailable', message: '이 서버에는 위스퍼가 없습니다' }),
+    );
   });
 
   it(`more than ${MAX_DICTATIONS} at once: busy`, async () => {
@@ -170,11 +186,15 @@ describe('R3 — refused', () => {
     const a = await server(fakeWhisper());
     let c = await open(a);
     c.ws.send(tone(100, true));
-    await vi.waitFor(() => expect(c.msgs[0]).toMatchObject({ type: 'error', code: 'bad-request', message: 'start first' }));
+    await vi.waitFor(() =>
+      expect(c.msgs[0]).toMatchObject({ type: 'error', code: 'bad-request', message: 'start first' }),
+    );
     c = await open(a);
     c.ws.send(JSON.stringify({ type: 'start' }));
     c.ws.send(Buffer.alloc(3));
-    await vi.waitFor(() => expect(lastOf(c.msgs)).toMatchObject({ type: 'error', code: 'bad-request', message: 'bad audio frame' }));
+    await vi.waitFor(() =>
+      expect(lastOf(c.msgs)).toMatchObject({ type: 'error', code: 'bad-request', message: 'bad audio frame' }),
+    );
     c = await open(a);
     c.ws.send(JSON.stringify({ type: 'start' }));
     c.ws.send(Buffer.alloc(70 * 1024));
@@ -185,7 +205,9 @@ describe('R3 — refused', () => {
 describe('sameOrigin', () => {
   it('a page of this server, a forwarded host, a configured host, or no browser', () => {
     expect(sameOrigin({ host: 'a.example', origin: 'https://a.example' })).toBe(true);
-    expect(sameOrigin({ host: 'localhost:33000', 'x-forwarded-host': 'a.example', origin: 'https://a.example' })).toBe(true);
+    expect(sameOrigin({ host: 'localhost:33000', 'x-forwarded-host': 'a.example', origin: 'https://a.example' })).toBe(
+      true,
+    );
     expect(sameOrigin({ host: 'localhost:33000', origin: 'https://a.example' }, ['a.example'])).toBe(true);
     expect(sameOrigin({ host: 'a.example' })).toBe(true);
     expect(sameOrigin({ host: 'a.example', origin: 'https://b.example' })).toBe(false);

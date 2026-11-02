@@ -67,7 +67,14 @@ describe('C1 — the worklet', () => {
 });
 
 function env(opts: { mic?: 'ok' | Error; worklet?: boolean } = {}) {
-  const tracks = [{ stopped: 0, stop() { this.stopped++; } }];
+  const tracks = [
+    {
+      stopped: 0,
+      stop() {
+        this.stopped++;
+      },
+    },
+  ];
   const sockets: any[] = [];
   const nodes: any[] = [];
   class FakeWS {
@@ -98,7 +105,10 @@ function env(opts: { mic?: 'ok' | Error; worklet?: boolean } = {}) {
   class FakeNode {
     port = { onmessage: null as AnyFn | null };
     connected: unknown[] = [];
-    constructor(public ctx: unknown, public name: string) {
+    constructor(
+      public ctx: unknown,
+      public name: string,
+    ) {
       nodes.push(this);
     }
     connect(n: unknown) {
@@ -128,7 +138,9 @@ function env(opts: { mic?: 'ok' | Error; worklet?: boolean } = {}) {
   const w = {
     navigator: {
       mediaDevices: {
-        getUserMedia: vi.fn(() => (opts.mic instanceof Error ? Promise.reject(opts.mic) : Promise.resolve({ getTracks: () => tracks }))),
+        getUserMedia: vi.fn(() =>
+          opts.mic instanceof Error ? Promise.reject(opts.mic) : Promise.resolve({ getTracks: () => tracks }),
+        ),
       },
     },
     WebSocket: FakeWS,
@@ -164,7 +176,9 @@ describe('C2 — a dictation', () => {
     await flush();
     await flush();
     const gum = (e.w.navigator.mediaDevices.getUserMedia.mock.calls[0] as unknown[])[0];
-    expect(gum).toEqual({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    expect(gum).toEqual({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
     const ws = e.sockets[0];
     expect(ws.url).toBe('wss://agents.example/ws/dictation');
     expect(ws.binaryType).toBe('arraybuffer');
@@ -282,13 +296,22 @@ describe('C4 — status', () => {
   });
 
   it('or why it could not be asked', async () => {
-    expect(await api.dictationServerStatus(async () => ({ ok: false }))).toEqual({ ok: false, why: '서버에 연결하지 못했습니다' });
-    expect(await api.dictationServerStatus(async () => { throw new Error('offline'); })).toEqual({ ok: false, why: '서버에 연결하지 못했습니다' });
+    expect(await api.dictationServerStatus(async () => ({ ok: false }))).toEqual({
+      ok: false,
+      why: '서버에 연결하지 못했습니다',
+    });
+    expect(
+      await api.dictationServerStatus(async () => {
+        throw new Error('offline');
+      }),
+    ).toEqual({ ok: false, why: '서버에 연결하지 못했습니다' });
     expect((await api.dictationServerStatus(async () => ({ ok: true, json: async () => ({}) }))).ok).toBe(false);
   });
 
   it('ws on http, wss on https', () => {
-    expect(api.dictationServerUrl({ protocol: 'http:', host: 'localhost:33000' })).toBe('ws://localhost:33000/ws/dictation');
+    expect(api.dictationServerUrl({ protocol: 'http:', host: 'localhost:33000' })).toBe(
+      'ws://localhost:33000/ws/dictation',
+    );
     expect(api.dictationServerUrl({ protocol: 'https:', host: 'a.example' })).toBe('wss://a.example/ws/dictation');
   });
 

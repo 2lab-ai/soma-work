@@ -439,10 +439,15 @@ describe('D6 — which engines this device can run', () => {
     expect(api.dicEngines({ path: 'none' }).device.ok).toBe(false);
     expect(api.dicEngines({ path: 'none' }).device.why).toContain('음성 인식기가 없습니다');
     expect(api.dicEngines({ path: 'webapp' }).device.why).toContain('Safari에서 열어');
-    expect(api.dicEngines({ path: 'apple', server: { ok: true, model: 'large-v3-turbo' } }).server).toEqual({ ok: true, why: '' });
+    expect(api.dicEngines({ path: 'apple', server: { ok: true, model: 'large-v3-turbo' } }).server).toEqual({
+      ok: true,
+      why: '',
+    });
     // Firefox has no recogniser, but the server's Whisper works there
     expect(api.dicEngines({ path: 'none', secure: true, server: { ok: true } }).server.ok).toBe(true);
-    expect(api.dicEngines({ path: 'apple', server: { ok: false, why: '서버 위스퍼를 시작하지 못했습니다 — x' } }).server).toEqual({
+    expect(
+      api.dicEngines({ path: 'apple', server: { ok: false, why: '서버 위스퍼를 시작하지 못했습니다 — x' } }).server,
+    ).toEqual({
       ok: false,
       why: '서버 위스퍼를 시작하지 못했습니다 — x',
     });
@@ -492,7 +497,9 @@ describe('D6b — the server’s Whisper chosen and running', () => {
     const asked: string[] = [];
     const win = {
       navigator: { userAgent: UA.macChrome },
-      fetch: async (u: string) => (asked.push(u), { ok: true, json: async () => ({ server: { ok: true, model: 'large-v3-turbo' } }) }),
+      fetch: async (u: string) => (
+        asked.push(u), { ok: true, json: async () => ({ server: { ok: true, model: 'large-v3-turbo' } }) }
+      ),
     };
     const body = `var window = __w, document = __d;
 ${DICTATION_PREF_JS}
@@ -509,14 +516,22 @@ return { dicInfo };`;
     const doc = fakeDoc();
     let cb: Record<string, AnyFn> = {};
     const srv = { stop: vi.fn(), abort: vi.fn() };
-    const win = { navigator: { userAgent: UA.macChrome }, localStorage: memStore({ [DICTATION_ENGINE_KEY]: 'server' }) };
+    const win = {
+      navigator: { userAgent: UA.macChrome },
+      localStorage: memStore({ [DICTATION_ENGINE_KEY]: 'server' }),
+    };
     const body = `var window = __w, document = __d;
 function esc(s) { return String(s); }
 ${DICTATION_PREF_JS}
 var dictationServerStart = function (c) { __cb(c); return __srv; };
 ${DICTATION_CLIENT_JS}
 return { dicTestStart, __peek: function (k) { return eval(k); } };`;
-    const api = new Function('__w', '__d', '__cb', '__srv', body)(win, doc, (c: Record<string, AnyFn>) => (cb = c), srv) as Api;
+    const api = new Function('__w', '__d', '__cb', '__srv', body)(
+      win,
+      doc,
+      (c: Record<string, AnyFn>) => (cb = c),
+      srv,
+    ) as Api;
     api.__peek("_dicInfo = { path: 'chrome', secure: true, langs: {}, server: { ok: true, model: 'large-v3-turbo' } }");
     api.dicTestStart();
     expect(doc.el('dic-test-result').textContent).toBe('서버 위스퍼 준비 중…');
