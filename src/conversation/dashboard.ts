@@ -18780,8 +18780,8 @@ function ntDictateStartWhisper(host, el, engine) {
       if (_ntDictation !== d) return;
       // A server without Whisper or a refused microphone: a why to act on (the red line). A dropped connection says
       // a press continues.
-      var bad = code !== 'closed' && code !== 'too-long';
-      var why = code === 'unavailable' || code === 'unsupported' || code === 'model' ? message + ' — 설정 › 받아쓰기에서 기기 기본으로 바꿀 수 있습니다' : message;
+      var bad = code !== 'closed';
+      var why = /^(unavailable|unsupported|model|failed)$/.test(String(code)) ? message + ' — 설정 › 받아쓰기에서 기기 기본으로 바꿀 수 있습니다' : message;
       ntDictationEnd(d, why, bad);
     },
     // The words are in (onText); why, when the server ended it (its time limit).
@@ -19030,8 +19030,8 @@ function ntDictateStop(hard) {
     d.host.paint();
     if (d.srv) d.srv.stop();
     // The last words arrive with done — behind one transcription in flight and other dictations on the server's one
-    // worker (20 s allowed each), that can take a while: a minute end to end. One that never answers does not hold
-    // the tool for ever, and says what was lost.
+    // worker (20 s allowed each), or from this browser's WebAssembly, that can take a while: a minute end to end. One
+    // that never answers does not hold the tool for ever, and says what was lost.
     setTimeout(function () {
       if (_ntDictation !== d) return;
       d.hard = true;

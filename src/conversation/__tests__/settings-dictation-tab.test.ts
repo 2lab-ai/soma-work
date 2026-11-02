@@ -528,6 +528,22 @@ return { dicInfo };`;
     expect(asked).toEqual(['/api/dictation/status']);
   });
 
+  it('dicInfo: WebGPU in name only (no adapter) is WebAssembly for the browser’s Whisper (review, PR #765)', async () => {
+    const win = {
+      navigator: { userAgent: UA.macChrome, gpu: { requestAdapter: async () => null } },
+      Worker: () => {},
+    };
+    const body = `var window = __w, document = __d;
+${DICTATION_PREF_JS}
+function dictationBrowserDevice(w) { return w.navigator.gpu ? 'webgpu' : 'wasm'; }
+${DICTATION_CLIENT_JS}
+return { dicInfo };`;
+    const api = new Function('__w', '__d', body)(win, fakeDoc()) as Api;
+    const info = await api.dicInfo(win);
+    expect(info.gpu).toEqual({ has: false });
+    expect(info.browserDevice).toBe('wasm');
+  });
+
   it('말해서 시험 streams through the server and reports its words', async () => {
     vi.useFakeTimers();
     const doc = fakeDoc();
