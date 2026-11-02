@@ -71,7 +71,7 @@ describe('settings page shell', () => {
       expect(existsSync(join(uiLibDistDir() as string, file)), file).toBe(true);
     }
     // the tab list's data: an inert JSON script the page script reads (no < can close it)
-    const json = /<script type="application\/json" id="settings-tabs-data">([^<]*)<\/script>/.exec(html)![1];
+    const json = /<script type="application\/json" id="settings-tabs-data" data-i18n>([^<]*)<\/script>/.exec(html)![1];
     expect(JSON.parse(json)).toEqual([
       { id: 'preferences', label: '개인 설정', icon: 'gear' },
       { id: 'memory', label: '기억', icon: 'brain' },
