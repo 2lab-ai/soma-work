@@ -94,7 +94,7 @@ import { requestEnvSkillPermission } from './slack/env-skill-permission-request'
 import { mintEventTs } from './slack/event-ts';
 import { type FollowupReactionRole, FollowupReactionSurface, rolesForFollowupState } from './slack/followup-reactions';
 import { retireGoalCapDecision } from './slack/goal-cap-decision';
-import { bumpGoalEpoch, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
+import { bumpGoalEpoch, GOAL_SUMMARY_PERSIST_MAX, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from './slack/goal-host-actions';
 import type { GoalStallQuestion } from './slack/goal-loop-controller';
 import {
@@ -2620,7 +2620,7 @@ export class SlackHandler {
       // Persisted, bounded mirror (S8) so an eval that first runs after a
       // restart still has real evidence instead of an empty stash. Persisted
       // via the `goal` serializer; the runtime stash above takes precedence.
-      goal.lastAssistantTurnSummary = turnText.slice(0, 16_000);
+      goal.lastAssistantTurnSummary = turnText.slice(0, GOAL_SUMMARY_PERSIST_MAX);
       this.claudeHandler.saveSessions();
     }
     // §3.6 priority: a human follow-up goes before the next autogoal turn. The
@@ -6821,15 +6821,15 @@ export class SlackHandler {
     const turnId = stall.questionTurnId;
     for (const [sessionKey, session] of this.claudeHandler.getSessionRegistry().getAllSessions()) {
       if (session.goal !== goal && session.goal?.goalId !== goal.goalId) continue;
-      // Deferred: the caller is mid-mutation and persists right after.
-      queueMicrotask(() => {
-        void this.streamExecutor.retractHostQuestion(sessionKey, turnId).catch((err: unknown) =>
-          this.logger.warn('Retracting a goal stall question failed', {
-            sessionKey,
-            error: err instanceof Error ? err.message : String(err),
-          }),
-        );
-      });
+      // Not deferred: the retraction frees the session synchronously (before any
+      // Slack call), so the caller's loop kick right after — goal resume, an
+      // objective update — finds it idle instead of waiting. The caller persists.
+      void this.streamExecutor.retractHostQuestion(sessionKey, turnId).catch((err: unknown) =>
+        this.logger.warn('Retracting a goal stall question failed', {
+          sessionKey,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
       return;
     }
   }
