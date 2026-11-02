@@ -2804,7 +2804,10 @@ export class SessionRegistry {
     // would leak the previous goal into the fresh conversation. Mirrors the
     // saveSessions() guard which now persists `sessionId || handoffContext
     // || goal` (#959).
-    if (!session || (!session.sessionId && !session.goal)) {
+    // A session the work queue held before its first turn has neither, yet
+    // `new` must still unbind it so its queued request never runs in the new
+    // conversation (#726).
+    if (!session || (!session.sessionId && !session.goal && !session.workQueueId)) {
       return false;
     }
 

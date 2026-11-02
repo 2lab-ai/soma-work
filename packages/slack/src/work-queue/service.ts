@@ -102,6 +102,7 @@ export class WorkQueueService {
   private timer?: ReturnType<typeof setInterval>;
   private ticking = false;
   private sweepMs: number | undefined;
+  private readonly idleWatched = new Set<string>();
 
   constructor(private readonly deps: WorkQueueServiceDeps) {
     this.now = deps.now ?? Date.now;
@@ -158,7 +159,6 @@ export class WorkQueueService {
       matchWorkQueue(queues, session.workflow, input.text) ??
       (bound && bound.workflow === session.workflow ? bound : undefined);
     if (!queue) return { kind: 'pass' };
-    session.workQueueId = queue.id;
 
     const pending = this.manager.waiterForSession(sessionKey);
     if (pending) {
@@ -170,11 +170,14 @@ export class WorkQueueService {
       // was held: it belongs to the old conversation and must never run.
       void this.handle(this.manager.cancel(pending.id, 'session-reset'));
     }
+    // Bound only once this request is going to acquire or wait — a held
+    // request keeps the queue it is waiting in.
+    session.workQueueId = queue.id;
 
     const party = { sessionKey, userId: input.user, channel: input.channel, threadTs: input.threadTs };
     const result = this.manager.tryAcquire(queue, party);
     if (result.ok) {
-      this.deps.registerOnIdle?.(sessionKey, () => this.onHolderIdle(sessionKey));
+      this.watchIdle(sessionKey);
       this.armSweep();
       return { kind: 'pass' };
     }
@@ -236,6 +239,8 @@ export class WorkQueueService {
 
   /** Registry before-delete seam. Synchronous and never throws. */
   onSessionDeleted(sessionKey: string): void {
+    // The registry dropped the session's idle callbacks with it.
+    this.idleWatched.delete(sessionKey);
     try {
       void this.handle(this.manager.forgetSession(sessionKey));
     } catch (error) {
@@ -267,15 +272,23 @@ export class WorkQueueService {
    * A teardown slower than the re-check is left to the sweep.
    */
   private onHolderIdle(sessionKey: string): void {
+    this.idleWatched.delete(sessionKey);
     (this.deps.defer ?? defaultDefer)(() => {
       const probe = this.deps.probe(sessionKey);
       if (probe.activity === 'waiting') return;
       if (probe.active) {
-        this.deps.registerOnIdle?.(sessionKey, () => this.onHolderIdle(sessionKey));
+        this.watchIdle(sessionKey);
         return;
       }
       void this.handle(this.manager.releaseSession(sessionKey, 'ended'));
     }, IDLE_RECHECK_MS);
+  }
+
+  /** One idle hook per holder at a time (the registry drains them on idle). */
+  private watchIdle(sessionKey: string): void {
+    if (this.idleWatched.has(sessionKey)) return;
+    this.idleWatched.add(sessionKey);
+    this.deps.registerOnIdle?.(sessionKey, () => this.onHolderIdle(sessionKey));
   }
 
   private async handle(events: WorkQueueEvent[]): Promise<void> {
@@ -340,7 +353,6 @@ export class WorkQueueService {
       return;
     }
     this.logger.info('Work queue starting queued request', { queue: queue.id, sessionKey: waiter.sessionKey });
-    await this.updateCard(waiter, buildClosedCard(startedText(queue)));
     const say = async (msg: any) =>
       this.deps.slackApi.postMessage(waiter.channel, msg?.text ?? '', {
         threadTs: waiter.threadTs,
@@ -361,6 +373,9 @@ export class WorkQueueService {
     ).catch((error) => {
       this.logger.warn('Queued request replay failed', { sessionKey: waiter.sessionKey, error: String(error) });
     });
+    // After the replay is admitted — nothing awaits between the check above
+    // and the admission, so a reset cannot slip in and receive the old request.
+    await this.updateCard(waiter, buildClosedCard(startedText(queue)));
   }
 
   private async holderLine(holder: WorkQueueHolder): Promise<HolderLine> {
