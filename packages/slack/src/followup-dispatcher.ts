@@ -1185,10 +1185,13 @@ export class FollowupDispatcher {
         : { disposition: 'none' as const };
     let error = own.error;
     for (const adopted of run.adopted ?? []) {
-      const recorded = adopted.running
-        ? this.recordOutcomeFor(run.sessionKey, adopted.itemId, adopted.itemEpoch, outcome)
-        : this.confirmAdopted(run.sessionKey, adopted, outcome);
-      error ??= recorded.error;
+      if (!adopted.running) {
+        this.confirmAdopted(run.sessionKey, adopted, outcome);
+        continue;
+      }
+      // A running takeover is `dispatched` under this run: an unrecorded outcome
+      // leaves it in flight, which is the lane-wedging case the halt exists for.
+      error ??= this.recordOutcomeFor(run.sessionKey, adopted.itemId, adopted.itemEpoch, outcome).error;
     }
     return { disposition: own.disposition, error };
   }
@@ -1198,15 +1201,28 @@ export class FollowupDispatcher {
    * only a `safe` end of the run confirms it `resolved`. Any other end leaves it
    * `uncertain` — the run proved nothing new about it. Skipped when the row
    * moved meanwhile (a user Retry or Cancel): the run no longer speaks for it.
+   *
+   * A confirmation the queue refuses is reported, never treated as unrecorded:
+   * the row is still exactly what it was before the run (`uncertain`, with its
+   * Retry), so nothing about it became unknown, and halting the session's drain
+   * over it would stop every later follow-up for a row that did not move.
    */
-  private confirmAdopted(sessionKey: string, adopted: AdoptedItem, outcome: DispatchOutcome): { error?: string } {
-    if (outcome.result !== 'safe') return {};
+  private confirmAdopted(sessionKey: string, adopted: AdoptedItem, outcome: DispatchOutcome): void {
+    if (outcome.result !== 'safe') return;
     const item = this.deps.queue.get(sessionKey, adopted.itemId);
-    if (!item || item.epoch !== adopted.itemEpoch || item.state !== 'uncertain') return {};
+    if (!item || item.epoch !== adopted.itemEpoch || item.state !== 'uncertain') return;
     const settled = this.attempt(() =>
       this.deps.queue.settle(sessionKey, adopted.itemId, adopted.itemEpoch, 'resolved'),
     );
-    return settled.ok ? {} : { error: settled.detail };
+    if (!settled.ok) {
+      this.safeNotify({
+        type: 'item-uncertain',
+        sessionKey,
+        itemId: adopted.itemId,
+        recorded: false,
+        detail: `confirm after takeover failed: ${settled.detail}`,
+      });
+    }
   }
 
   /** {@link recordItemOutcome} for one item the run carries — its own, or one it took over. */
