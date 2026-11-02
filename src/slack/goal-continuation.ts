@@ -19,6 +19,9 @@ import { retireGoalStall } from './goal-stall';
  *  workflow classifiers can spot goal-loop traffic. */
 export const GOAL_CONTINUATION_TEXT_PREFIX = '[goal-continuation]';
 
+/** The work-summary evidence a goal persists (`lastAssistantTurnSummary`), and what the eval's S9 hash covers. */
+export const GOAL_SUMMARY_PERSIST_MAX = 16_000;
+
 /**
  * Bump the goal's intent epoch. Called by every goal mutation (set / pause
  * / resume / done / clear) and by every real user message. The completion
