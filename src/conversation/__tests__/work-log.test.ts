@@ -265,6 +265,28 @@ describe('work log store', () => {
     ]);
   });
 
+  // SSOT 2026-11-02 T1 — a permission answer is its own entry: the decision, who answered, the AI's advice.
+  it('keeps a permission entry with its decision, who answered and the AI advice — and drops what is not one', async () => {
+    const kept = await wl.appendWorkLog('conv-perm', {
+      kind: 'permission',
+      text: '⚠️ 권한 승인 (2차 확인) · Bash · rm -rf ~/work',
+      tool: 'Bash',
+      ok: true,
+      permission: { decision: 'approve_confirmed', by: 'U_REQ', ai: 'deny' },
+    });
+    const junk = await wl.appendWorkLog('conv-perm', {
+      kind: 'permission',
+      text: 'x',
+      permission: { decision: 'nope', by: 'z'.repeat(5000), ai: 'maybe' } as never,
+    });
+    expect(kept.kind).toBe('permission');
+    expect(kept.permission).toEqual({ decision: 'approve_confirmed', by: 'U_REQ', ai: 'deny' });
+    // An unknown decision is no permission record; an over-long id is clamped; an unknown advice is dropped.
+    expect(junk.permission).toBeUndefined();
+    const page = await (await loadFresh()).readWorkLog('conv-perm');
+    expect(page.entries[0]).toMatchObject({ kind: 'permission', permission: { decision: 'approve_confirmed' } });
+  });
+
   it('serializes concurrent appends so every line stays whole and ordered', async () => {
     const all = Array.from({ length: 50 }, (_, i) =>
       wl.appendWorkLog('conv-c', { kind: 'narration', text: `step ${i}` }),
