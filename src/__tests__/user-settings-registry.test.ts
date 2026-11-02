@@ -538,7 +538,9 @@ describe('default model and effort — the effort the default model runs', () =>
     store.data.U1 = { ...(store.data.U1 ?? {}), model: 'gpt-6.1-sol[1m]', effort: 'high' };
     const row = (await registry.read('U1')).settings.find((r) => r.key === 'defaultEffort');
     expect(row?.options?.map((o) => o.value)).toEqual(ALL);
-    expect(row?.options?.find((o) => o.value === 'ultra')?.label).toBe('Ultra');
+    // The dashboard's words for the levels, on the settings page too (one name per level).
+    expect(row?.options?.find((o) => o.value === 'ultra')?.label).toBe('울트라');
+    expect(row?.options?.find((o) => o.value === 'xhigh')?.label).toBe('매우 높음');
     store.data.U1.model = 'grok-4.6';
     const grok = (await registry.read('U1')).settings.find((r) => r.key === 'defaultEffort');
     expect(grok?.options?.map((o) => o.value)).toEqual(['low', 'medium', 'high', 'xhigh']);
