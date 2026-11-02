@@ -11852,21 +11852,40 @@ var _planDocs = Object.create(null); // card key → { revision, state, html | e
 var _autoOpened = Object.create(null); // card key → the decision autoOpenDecisions opened it for
 var _quietOpen = { key: '' }; // the card autoOpenDecisions opens right now: its ui-toggle opens no panel
 // Who may decide here: whoever may instruct the task (the server's requireInstructAccess), on this instance.
-function planLock(s) {
+// decide — 시작 · 취소, on every surface (the card, the top, the bottom): not while the turn that wrote the plan
+// is still finishing either; the server answers a decision 409 until it ends (review R2). 직접 입력 asks
+// planLock(s): it only opens the composer.
+function planLock(s, decide) {
   if (isSiblingSession(s)) return AC_SIBLING;
-  return viewerCanInstruct(s) ? '' : READ_ONLY_MSG;
+  if (!viewerCanInstruct(s)) return READ_ONLY_MSG;
+  return decide && s && s.activityState === 'working' ? '작업이 끝나면 결정할 수 있어요' : '';
 }
-// 시작 · 취소 · 직접 입력 — one press each (a write in flight holds 시작 and 취소).
-// The key and the decision ride as data (planButton reads them): no value is built into inline JS.
-function planButtonsHtml(s) {
+// The plan the detail card shows against the board's (review R2, P1): 시작 there approves what the user can
+// see, so it waits until the card shows the board's revision, loaded — '' then; else why 시작 waits.
+function planShownLag(s) {
+  var tp = s && s.taskPlan;
+  if (!tp) return '';
+  var doc = _planDocs[s.key];
+  if (doc && !doc.loading && doc.html && doc.revision === tp.revision) return '';
+  if (doc && !doc.loading && doc.error) return '계획 v' + tp.revision + ' 불러오지 못했어요 — 다시 시도하세요';
+  return '계획 v' + tp.revision + ' 불러오는 중이에요 — 보이면 시작하세요';
+}
+// 시작 · 취소 · 직접 입력 — one press each (a write in flight holds 시작 and 취소; planLock(s, true) says why
+// they wait). A plan still being written has 취소 alone: nothing to start yet. hold: why 시작 waits besides
+// (the detail card's bottom: planShownLag). The key and the decision ride as data (planButton reads them):
+// no value is built into inline JS.
+function planButtonsHtml(s, hold) {
   var key = escAttr(s.key);
-  var lock = planLock(s);
+  var lock = planLock(s, true);
   var busy = isBusy(s.key, 'plan');
-  var held = lock ? ' disabled title="' + escAttr(lock) + '"' : busy ? ' disabled aria-busy="true"' : '';
+  var held = function(why) { return why ? ' disabled title="' + escAttr(why) + '"' : busy ? ' disabled aria-busy="true"' : ''; };
   var press = ' data-plan-key="' + key + '" onclick="event.stopPropagation();planButton(this)"';
-  return '<button type="button" class="ui-btn is-primary plan-btn" data-plan="start"' + held + press + '>▶ 시작</button>'
-    + '<button type="button" class="ui-btn plan-btn" data-plan="cancel"' + held + press + '>취소</button>'
-    + '<button type="button" class="ui-btn plan-btn" data-plan="input"' + (lock ? ' disabled title="' + escAttr(lock) + '"' : '') + press + '>직접 입력</button>';
+  var cancel = '<button type="button" class="ui-btn plan-btn" data-plan="cancel"' + held(lock) + press + '>취소</button>';
+  if (s.taskPlan && s.taskPlan.state === 'drafting') return cancel;
+  var inputLock = planLock(s);
+  return '<button type="button" class="ui-btn is-primary plan-btn" data-plan="start"' + held(lock || hold) + press + '>▶ 시작</button>'
+    + cancel
+    + '<button type="button" class="ui-btn plan-btn" data-plan="input"' + (inputLock ? ' disabled title="' + escAttr(inputLock) + '"' : '') + press + '>직접 입력</button>';
 }
 function planButton(btn) {
   var key = btn && btn.getAttribute('data-plan-key');
@@ -11890,31 +11909,41 @@ function taskPlanCardHtml(s) {
     + (tp.revision > 0 ? '<a class="card-plan-link" href="/dashboard/plan/' + encodeURIComponent(s.key) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">계획 전체 보기 ↗</a>' : '')
     + '</div>';
   if (tp.summary) html += '<div class="card-plan-summary">' + esc(tp.summary) + '</div>';
-  if (tp.state === 'awaiting') html += '<div class="card-plan-actions">' + planButtonsHtml(s) + '</div>';
+  // A plan still being written while the task is not running (its turn ended without one): 취소 is the way
+  // out — the server takes it while drafting (review R2).
+  var stuck = tp.state === 'drafting' && s.activityState !== 'working';
+  if (tp.state === 'awaiting' || stuck) html += '<div class="card-plan-actions">' + planButtonsHtml(s) + '</div>';
   else if (tp.state === 'cancelled') html += '<div class="card-plan-note">새 지시를 보내면 다시 계획합니다</div>';
   return html + '</div>';
 }
-// The detail card's top: 시작 (the bar's one primary) and 취소 lead its actions while a plan waits.
+// The detail card's top: 시작 (the bar's one primary) and 취소 lead its actions while a plan waits — 시작 once the
+// card shows the board's revision (planShownLag); 취소 alone while a plan is being written and the task is not
+// running (review R2).
 function planHeadActions(s) {
   var tp = s && s.taskPlan;
-  if (!tp || tp.state !== 'awaiting') return [];
-  var lock = planLock(s);
+  if (!tp) return [];
+  var stuck = tp.state === 'drafting' && s.activityState !== 'working';
+  if (tp.state !== 'awaiting' && !stuck) return [];
+  var lock = planLock(s, true);
   var busy = isBusy(s.key, 'plan');
-  var acts = [
+  var cancel = { id: 'plan-cancel', label: '취소', title: '이 계획을 취소합니다 — 새 지시를 보내면 다시 계획합니다' };
+  var acts = stuck ? [cancel] : [
     { id: 'plan-start', label: '▶ 시작', primary: true, title: '작업 계획 v' + tp.revision + '대로 작업을 시작합니다' },
-    { id: 'plan-cancel', label: '취소', title: '이 계획을 취소합니다 — 새 지시를 보내면 다시 계획합니다' },
+    cancel,
   ];
+  var lag = stuck ? '' : planShownLag(s);
   acts.forEach(function(a) {
-    if (lock) a.disabled = lock;
+    var why = lock || (a.id === 'plan-start' ? lag : '');
+    if (why) a.disabled = why;
     else if (busy) a.busy = true;
   });
   return acts;
 }
-// The detail card's bottom: the same three, right above the composer.
+// The detail card's bottom: the same three, right above the composer (시작 waiting as at the top).
 function planBarHtml(s) {
   var tp = s && s.taskPlan;
   if (!tp || tp.state !== 'awaiting') return '';
-  return '<span class="ppb-label">작업 계획 v' + tp.revision + ' — 시작할까요?</span><span class="ppb-actions">' + planButtonsHtml(s) + '</span>';
+  return '<span class="ppb-label">작업 계획 v' + tp.revision + ' — 시작할까요?</span><span class="ppb-actions">' + planButtonsHtml(s, planShownLag(s)) + '</span>';
 }
 // The plan in the detail card's 입력 필요: shown the moment the card opens — the server's drawing of the
 // revision the card names, a full-page link, the plan folded once decided. Fetched once for each revision and
@@ -11939,8 +11968,11 @@ function panelPlanHtml(s, tp) {
   var body = doc && doc.html ? doc.html
     : doc && doc.error ? '<p class="pp-note" role="alert">계획을 불러오지 못했어요 — ' + esc(doc.error) + ' <button type="button" class="ui-btn is-sm" data-plan-key="' + escAttr(key) + '" onclick="retryPanelPlan(this.getAttribute(\\'data-plan-key\\'))">다시 시도</button></p>'
     : '<p class="pp-note">작업 계획 불러오는 중…</p>';
+  // The board names a newer revision than the one on the card: said above it until that one arrives (review R2, P1).
+  var shown = doc && doc.html ? doc.revision : tp.revision;
+  if (shown < tp.revision) body = '<p class="pp-note pp-lag">v' + tp.revision + ' 불러오는 중 — 아래는 v' + shown + '</p>' + body;
   if (tp.state === 'approved' || tp.state === 'cancelled') return head + '<details class="pp-fold"><summary>계획 펼치기</summary>' + body + '</details>';
-  if (tp.state === 'drafting') return head + '<p class="pp-note">직접 입력을 반영해 다음 버전을 쓰는 중 — 아래는 v' + tp.revision + '</p>' + body;
+  if (tp.state === 'drafting') return head + '<p class="pp-note">직접 입력을 반영해 다음 버전을 쓰는 중 — 아래는 v' + shown + '</p>' + body;
   return head + body;
 }
 function loadPanelPlan(s) {
@@ -11956,13 +11988,20 @@ function loadPanelPlan(s) {
       return r.json();
     })
     .then(function(d) {
-      _planDocs[key] = { revision: Number(d && d.revision) || 0, state: String((d && d.state) || ''), html: d && typeof d.html === 'string' ? d.html : '', asked: askKey };
+      var html = d && typeof d.html === 'string' ? d.html : '';
+      // A saved plan the server could not read back (dropped on load) answers without one: a note with
+      // 다시 시도, not 불러오는 중 forever (review R2).
+      if (!html) throw new Error('이 버전의 계획을 찾지 못했어요');
+      _planDocs[key] = { revision: Number(d.revision) || 0, state: String(d.state || ''), html: html, asked: askKey };
     })
     .catch(function(e) {
       _planDocs[key] = { revision: Number(asked.revision) || 0, state: String(asked.state || ''), html: '', error: String((e && e.message) || e), asked: askKey };
     })
     .then(function() {
-      if (panelSessionKey === key) renderPanelPlan(_sessionCache[key] || s);
+      if (panelSessionKey !== key) return;
+      // The top's 시작 waits for this document too (planShownLag): it repaints with the plan.
+      renderPanelHead();
+      renderPanelPlan(_sessionCache[key] || s);
     });
 }
 function retryPanelPlan(key) {
@@ -11993,11 +12032,20 @@ function renderPanelPlan(s) {
     }
   }
 }
-// 시작 / 취소: the revision the user saw (a newer one meanwhile is a 409 that says so).
+// 시작 / 취소: the revision the user saw (a newer one meanwhile is a 409 that says so). With the detail card
+// open, 시작 approves the plan it shows — only once that is the board's revision, loaded (planShownLag), so the
+// revision posted is the card's; until then it asks for that plan and says so (review R2, P1). With the card
+// closed, 시작 is the task card's, which shows the board's own summary of the board's revision. 취소 needs no plan.
 async function doPlanDecision(key, decision) {
   var s = _sessionCache[key];
   var tp = s && s.taskPlan;
   if (!tp || isBusy(key, 'plan')) return;
+  if (decision === 'start' && panelOpen && panelSessionKey === key && planShownLag(s)) {
+    loadPanelPlan(s);
+    renderPanelPlan(s);
+    dashToast({ title: planShownLag(s), description: s.title || undefined, tone: 'neutral' });
+    return;
+  }
   setBusy(key, 'plan', true);
   function repaint() {
     refreshCard(key);

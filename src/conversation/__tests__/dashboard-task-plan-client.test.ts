@@ -116,7 +116,7 @@ describe('U2 — the task card shows the plan and its three buttons (T6)', () =>
     );
     expect(html).toContain('is-primary');
   });
-  it('writing, started and cancelled plans say so; no buttons', () => {
+  it('writing, started and cancelled plans say so; none offers 시작', () => {
     const writing = m.taskPlanCardHtml(awaiting({ taskPlan: { state: 'drafting', revision: 0, updatedAt: 1 } }));
     expect(writing).toContain('계획을 세우는 중');
     expect(writing).not.toContain('data-plan="start"');
@@ -151,6 +151,30 @@ describe('U2 — the task card shows the plan and its three buttons (T6)', () =>
     const html = locked.taskPlanCardHtml(awaiting());
     expect(html).toMatch(/disabled title="읽기 전용"/);
   });
+  it('a plan still being written while the task is not running: 취소 alone (nothing to start); while it runs, none (review R2)', () => {
+    for (const revision of [0, 1]) {
+      const html = m.taskPlanCardHtml(
+        awaiting({ activityState: 'idle', taskPlan: { state: 'drafting', revision, updatedAt: 1 } }),
+      );
+      expect(html).toContain(
+        'data-plan="cancel" data-plan-key="task:a" onclick="event.stopPropagation();planButton(this)"',
+      );
+      expect(html).not.toContain('data-plan="start"');
+      expect(html).not.toContain('data-plan="input"');
+    }
+    const running = m.taskPlanCardHtml(
+      awaiting({ activityState: 'working', taskPlan: { state: 'drafting', revision: 1, updatedAt: 1 } }),
+    );
+    expect(running).toContain('v1 고치는 중');
+    expect(running).not.toContain('data-plan=');
+  });
+  it('while the turn that wrote it is still finishing, 시작 · 취소 are shown but held with the reason; 직접 입력 is not (review R2)', () => {
+    const html = m.taskPlanCardHtml(awaiting({ activityState: 'working' }));
+    expect(html.match(/data-plan="(start|cancel)" disabled title="작업이 끝나면 결정할 수 있어요"/g)?.length).toBe(2);
+    expect(html).toContain('data-plan="input" data-plan-key="task:a"');
+    // Not running: free, as before.
+    expect(m.taskPlanCardHtml(awaiting())).not.toContain('disabled');
+  });
   it('the open card draws it with what asks, before the layout’s parts', () => {
     const body = clientFn('renderCardBody');
     expect(body).toContain('+ taskPlanCardHtml(s)');
@@ -174,15 +198,19 @@ describe('U3 — the face says a plan waits; the card asks (T6)', () => {
 
 describe('U4 — the detail card’s top: 시작 · 취소 first (T6)', () => {
   it('panelHeadData leads with 시작 (primary) and 취소 while a plan waits; onPanelHeadAction decides', () => {
-    const m = load<{ panelHeadData(s: any, col: string): any }>(['panelHeadData', 'planHeadActions', 'planLock'], {
-      rootStatusOf: () => 'waiting',
-      PS_BAR_STATUS: { waiting: 'waiting' },
-      AGENT_STATUS_LABEL: { waiting: '입력 대기' },
-      toNum: Number,
-      sessionActionsOf: () => [{ id: 'close', label: '닫기' }],
-      SESSION_ACTION_ARIA: {},
-      ...lockFree,
-    });
+    const m = load<{ panelHeadData(s: any, col: string): any }>(
+      ['panelHeadData', 'planHeadActions', 'planLock', 'planShownLag'],
+      {
+        rootStatusOf: () => 'waiting',
+        PS_BAR_STATUS: { waiting: 'waiting' },
+        AGENT_STATUS_LABEL: { waiting: '입력 대기' },
+        toNum: Number,
+        sessionActionsOf: () => [{ id: 'close', label: '닫기' }],
+        SESSION_ACTION_ARIA: {},
+        _planDocs: Object.create(null),
+        ...lockFree,
+      },
+    );
     const d = m.panelHeadData(awaiting(), 'waiting');
     expect(d.actions.map((a: any) => a.id)).toEqual(['plan-start', 'plan-cancel', 'close']);
     expect(d.actions[0]).toMatchObject({ label: '▶ 시작', primary: true });
@@ -194,6 +222,37 @@ describe('U4 — the detail card’s top: 시작 · 취소 first (T6)', () => {
     const onHead = clientFn('onPanelHeadAction');
     expect(onHead).toContain("if (id === 'plan-start') doPlanDecision(key, 'start');");
     expect(onHead).toContain("else if (id === 'plan-cancel') doPlanDecision(key, 'cancel');");
+  });
+  it('a plan still being written while the task is not running: 취소 alone at the top; while the turn finishes, 시작 · 취소 are held (review R2)', () => {
+    const m = load<{ panelHeadData(s: any, col: string): any }>(
+      ['panelHeadData', 'planHeadActions', 'planLock', 'planShownLag'],
+      {
+        rootStatusOf: () => 'waiting',
+        PS_BAR_STATUS: { waiting: 'waiting' },
+        AGENT_STATUS_LABEL: { waiting: '입력 대기' },
+        toNum: Number,
+        sessionActionsOf: () => [{ id: 'close', label: '닫기' }],
+        SESSION_ACTION_ARIA: {},
+        // The detail card shows v2, the board's revision: nothing else holds 시작.
+        _planDocs: { 'task:a': { revision: 2, state: 'awaiting', html: '<article>v2</article>', asked: '2:awaiting' } },
+        ...lockFree,
+      },
+    );
+    const drafting = (activityState: string) =>
+      m.panelHeadData(awaiting({ activityState, taskPlan: { state: 'drafting', revision: 1, updatedAt: 1 } }), 'idle');
+    const idle = drafting('idle');
+    expect(idle.actions.map((a: any) => a.id)).toEqual(['plan-cancel', 'close']);
+    expect(idle.actions[0]).toMatchObject({ label: '취소' });
+    expect(idle.actions[0].disabled).toBeUndefined();
+    expect(drafting('working').actions.map((a: any) => a.id)).toEqual(['close']);
+    const finishing = m.panelHeadData(awaiting({ activityState: 'working' }), 'running');
+    expect(finishing.actions.slice(0, 2)).toEqual([
+      expect.objectContaining({ id: 'plan-start', disabled: '작업이 끝나면 결정할 수 있어요' }),
+      expect.objectContaining({ id: 'plan-cancel', disabled: '작업이 끝나면 결정할 수 있어요' }),
+    ]);
+    const ready = m.panelHeadData(awaiting(), 'waiting');
+    expect(ready.actions[0].disabled).toBeUndefined();
+    expect(ready.actions[1].disabled).toBeUndefined();
   });
 });
 
@@ -220,7 +279,16 @@ describe('U5 — the detail card: the plan inline, the bottom bar (T5)', () => {
     }));
     const cache: Record<string, any> = {};
     const m = load<{ renderPanelPlan(s: any): void; planBarHtml(s: any): string }>(
-      ['renderPanelPlan', 'planBarHtml', 'planLock', 'planButtonsHtml', 'loadPanelPlan', 'panelPlanHtml', 'planAskKey'],
+      [
+        'renderPanelPlan',
+        'planBarHtml',
+        'planLock',
+        'planButtonsHtml',
+        'loadPanelPlan',
+        'panelPlanHtml',
+        'planAskKey',
+        'planShownLag',
+      ],
       {
         _sessionCache: cache,
         document: { getElementById: (id: string) => els[id] ?? null },
@@ -231,6 +299,7 @@ describe('U5 — the detail card: the plan inline, the bottom bar (T5)', () => {
         _planDocs: Object.create(null),
         panelSessionKey: 'task:a',
         renderPanelNeedsHead: () => {},
+        renderPanelHead: () => {},
         ...lockFree,
       },
       '',
@@ -265,7 +334,16 @@ describe('U5 — the detail card: the plan inline, the bottom bar (T5)', () => {
     }));
     const cache: Record<string, any> = {};
     const m = load<{ renderPanelPlan(s: any): void }>(
-      ['renderPanelPlan', 'planBarHtml', 'planLock', 'planButtonsHtml', 'loadPanelPlan', 'panelPlanHtml', 'planAskKey'],
+      [
+        'renderPanelPlan',
+        'planBarHtml',
+        'planLock',
+        'planButtonsHtml',
+        'loadPanelPlan',
+        'panelPlanHtml',
+        'planAskKey',
+        'planShownLag',
+      ],
       {
         _sessionCache: cache,
         document: { getElementById: (id: string) => els[id] ?? null },
@@ -276,6 +354,7 @@ describe('U5 — the detail card: the plan inline, the bottom bar (T5)', () => {
         _planDocs: Object.create(null),
         panelSessionKey: 'task:a',
         renderPanelNeedsHead: () => {},
+        renderPanelHead: () => {},
         ...lockFree,
       },
       '',
@@ -298,6 +377,112 @@ describe('U5 — the detail card: the plan inline, the bottom bar (T5)', () => {
     m.renderPanelPlan(started);
     await new Promise((r) => setTimeout(r, 0));
     expect(fetchFn.mock.calls.length).toBeLessThanOrEqual(2);
+  });
+  it('the board names v2 while the card still shows v1: it says so above v1, and its 시작 (top and bottom) waits for v2 (review R2, P1)', async () => {
+    const el = (id: string) => ({ id, hidden: true, innerHTML: '', style: {} as any, setAttribute() {} });
+    const els: Record<string, any> = { 'panel-plan': el('panel-plan'), 'panel-plan-bar': el('panel-plan-bar') };
+    // The card fetched v1; the board has moved on to v2 — the fetch of v2 is held until we let it go.
+    const docs: Record<string, any> = {
+      'task:a': { revision: 1, state: 'awaiting', html: '<article class="tp">PLAN v1</article>', asked: '1:awaiting' },
+    };
+    let release: () => void = () => {};
+    const fetchFn = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({
+              ok: true,
+              json: async () => ({ state: 'awaiting', revision: 2, html: '<article class="tp">PLAN v2</article>' }),
+            });
+        }),
+    );
+    const renderPanelHead = vi.fn();
+    const cache: Record<string, any> = {};
+    const m = load<{ renderPanelPlan(s: any): void; planHeadActions(s: any): any[] }>(
+      [
+        'renderPanelPlan',
+        'planBarHtml',
+        'planLock',
+        'planButtonsHtml',
+        'loadPanelPlan',
+        'panelPlanHtml',
+        'planAskKey',
+        'planShownLag',
+        'planHeadActions',
+      ],
+      {
+        _sessionCache: cache,
+        document: { getElementById: (id: string) => els[id] ?? null },
+        fetch: fetchFn,
+        esc,
+        escJs,
+        escAttr: esc,
+        _planDocs: docs,
+        panelSessionKey: 'task:a',
+        renderPanelHead,
+        ...lockFree,
+      },
+      '',
+      ['TASK_PLAN_STATE_LABEL', 'TASK_PLAN_TONE'],
+    );
+    const s = awaiting();
+    cache['task:a'] = s;
+    m.renderPanelPlan(s);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    const box = els['panel-plan'].innerHTML as string;
+    expect(box).toContain('v2 불러오는 중 — 아래는 v1');
+    expect(box.indexOf('v2 불러오는 중')).toBeLessThan(box.indexOf('PLAN v1'));
+    const wait = '계획 v2 불러오는 중이에요 — 보이면 시작하세요';
+    expect(els['panel-plan-bar'].innerHTML).toContain(`data-plan="start" disabled title="${wait}"`);
+    expect(els['panel-plan-bar'].innerHTML).not.toMatch(/data-plan="cancel" disabled/);
+    const top = m.planHeadActions(s);
+    expect(top[0]).toMatchObject({ id: 'plan-start', disabled: wait });
+    expect(top[1].disabled).toBeUndefined();
+    // v2 arrives: the note goes, 시작 is free at the bottom and — the top repainted — at the top.
+    release();
+    await vi.waitFor(() => expect(els['panel-plan'].innerHTML).toContain('PLAN v2'));
+    expect(els['panel-plan'].innerHTML).not.toContain('불러오는 중');
+    expect(els['panel-plan-bar'].innerHTML).not.toMatch(/data-plan="start" disabled/);
+    expect(renderPanelHead).toHaveBeenCalled();
+    expect(m.planHeadActions(s)[0].disabled).toBeUndefined();
+  });
+  it('a plan that comes back empty (a saved plan dropped on load) is a note with 다시 시도, not 불러오는 중 forever (review R2)', async () => {
+    for (const html of ['', null]) {
+      const els: Record<string, any> = {
+        'panel-plan': { id: 'panel-plan', hidden: true, innerHTML: '', style: {}, setAttribute() {} },
+      };
+      const fetchFn = vi.fn(async () => ({ ok: true, json: async () => ({ state: 'awaiting', revision: 2, html }) }));
+      const cache: Record<string, any> = {};
+      const m = load<{ renderPanelPlan(s: any): void }>(
+        ['renderPanelPlan', 'loadPanelPlan', 'panelPlanHtml', 'planAskKey'],
+        {
+          _sessionCache: cache,
+          document: { getElementById: (id: string) => els[id] ?? null },
+          fetch: fetchFn,
+          esc,
+          escJs,
+          escAttr: esc,
+          _planDocs: Object.create(null),
+          panelSessionKey: 'task:a',
+          renderPanelHead: () => {},
+        },
+        '',
+        ['TASK_PLAN_STATE_LABEL', 'TASK_PLAN_TONE'],
+      );
+      const s = awaiting();
+      cache['task:a'] = s;
+      m.renderPanelPlan(s);
+      await vi.waitFor(() => expect(els['panel-plan'].innerHTML).toContain('이 버전의 계획을 찾지 못했어요'));
+      const box = els['panel-plan'].innerHTML as string;
+      expect(box).toContain('role="alert"');
+      expect(box).toContain('>다시 시도</button>');
+      expect(box).toContain('retryPanelPlan(');
+      expect(box).not.toContain('불러오는 중');
+      // Asked once: the note stands until 다시 시도.
+      m.renderPanelPlan(s);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+    }
   });
   it('the panel paints it with the needs, and the 입력 필요 count counts a waiting plan', () => {
     expect(clientFn('repaintPanelSession')).toContain('renderPanelPlan(s)');
@@ -331,6 +516,72 @@ describe('U6 — 시작 / 취소 post the revision; 직접 입력 opens the comp
     expect(posted[0].url).toBe('/api/dashboard/session/task%3Aa/plan');
     expect(JSON.parse(posted[0].init.body)).toEqual({ decision: 'start', revision: 2 });
     expect(posted[0].init.headers['X-CSRF-Token']).toBe('tok');
+  });
+  // The detail card fetched v1; the board's cache already names v2 (review R2, P1).
+  function decideEnv(open: boolean, doc: Record<string, unknown>) {
+    const calls: { method: string; body?: any }[] = [];
+    const toasts: any[] = [];
+    const docs: Record<string, any> = { 'task:a': doc };
+    const fetchFn = vi.fn(async (_url: string, init?: any) => {
+      const method = (init && init.method) || 'GET';
+      calls.push({ method, body: init && init.body ? JSON.parse(init.body) : undefined });
+      if (method === 'POST') return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      return { ok: true, json: async () => ({ state: 'awaiting', revision: 2, html: '<article>PLAN v2</article>' }) };
+    });
+    const m = load<{ doPlanDecision(key: string, decision: string): Promise<void> }>(
+      ['doPlanDecision', 'planShownLag', 'loadPanelPlan', 'planAskKey'],
+      {
+        _sessionCache: { 'task:a': awaiting() },
+        _csrfToken: 'tok',
+        fetch: fetchFn,
+        isBusy: () => false,
+        setBusy: () => {},
+        refreshCard: () => {},
+        renderPanelHead: () => {},
+        renderPanelPlan: () => {},
+        panelOpen: open,
+        panelSessionKey: open ? 'task:a' : '',
+        dashToast: (t: any) => toasts.push(t),
+        loadSessions: () => {},
+        refreshCsrfToken: async () => {},
+        _planDocs: docs,
+      },
+    );
+    const posts = () => calls.filter((c) => c.method === 'POST').map((c) => c.body);
+    const gets = () => calls.filter((c) => c.method === 'GET').length;
+    return { m, docs, toasts, posts, gets };
+  }
+  const v1 = { revision: 1, state: 'awaiting', html: '<article>PLAN v1</article>' };
+  it('with the detail card open, 시작 approves the plan it shows: never v2 while v1 is what is seen — it asks for v2 and says so (review R2, P1)', async () => {
+    // v1 shown, nothing in flight: no post; a fetch of v2 is asked for; a toast says why.
+    const e = decideEnv(true, { ...v1, asked: '1:awaiting' });
+    await e.m.doPlanDecision('task:a', 'start');
+    expect(e.posts()).toEqual([]);
+    expect(e.gets()).toBe(1);
+    expect(e.toasts[0]).toMatchObject({ title: '계획 v2 불러오는 중이에요 — 보이면 시작하세요' });
+    // v2 arrives: now 시작 posts v2 — the revision on the card.
+    await vi.waitFor(() => expect(e.docs['task:a']).toMatchObject({ revision: 2, html: '<article>PLAN v2</article>' }));
+    await e.m.doPlanDecision('task:a', 'start');
+    expect(e.posts()).toEqual([{ decision: 'start', revision: 2 }]);
+    // The fetch of v2 still in flight (v1 on the card): no post, no second fetch.
+    const inFlight = decideEnv(true, { ...v1, loading: true, asked: '2:awaiting' });
+    await inFlight.m.doPlanDecision('task:a', 'start');
+    expect(inFlight.posts()).toEqual([]);
+    expect(inFlight.gets()).toBe(0);
+    expect(inFlight.toasts).toHaveLength(1);
+    // Nothing shown yet (the card just opened): no post either.
+    const none = decideEnv(true, undefined as any);
+    await none.m.doPlanDecision('task:a', 'start');
+    expect(none.posts()).toEqual([]);
+  });
+  it('취소 posts the board’s revision whatever the card shows; with the card closed, 시작 is the task card’s — the board’s revision (review R2, P1)', async () => {
+    const open = decideEnv(true, { ...v1, loading: true, asked: '2:awaiting' });
+    await open.m.doPlanDecision('task:a', 'cancel');
+    expect(open.posts()).toEqual([{ decision: 'cancel', revision: 2 }]);
+    const closed = decideEnv(false, { ...v1, asked: '1:awaiting' });
+    await closed.m.doPlanDecision('task:a', 'start');
+    expect(closed.posts()).toEqual([{ decision: 'start', revision: 2 }]);
+    expect(closed.gets()).toBe(0);
   });
   it('planButton dispatches by its data; cardQuickAnswer answers with the attributes', () => {
     const calls: string[] = [];
