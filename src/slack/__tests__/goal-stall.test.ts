@@ -336,3 +336,73 @@ describe('stall supersedes an open cap decision', () => {
     expect(h.goal.capDecisionId).toBeUndefined();
   });
 });
+
+describe('review fixes (trinity round 1)', () => {
+  it('S9: the same text after a new turn below the cap runs the evaluator (and can stall)', async () => {
+    const { createHash } = await import('node:crypto');
+    const text = 'Still waiting on you: dev has 0 epics.';
+    const h = makeHarness(
+      makeGoal({ lastEvalReason: 'x', lastEvalSummaryHash: createHash('sha1').update(text).digest('hex') }),
+      [verdict({ sameAsPrevious: true, sameConfidence: 0.99, userActions: ['a', 'b', 'c'] })],
+    );
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.prompts).toHaveLength(1);
+    expect(h.goal.stall).toBeDefined();
+    // A later settle on the same text asks the evaluator again.
+    expect(h.goal.lastEvalSummaryHash).toBeUndefined();
+  });
+
+  it('a failed notice still asks the question, and the notice lists the actions', async () => {
+    const actions = ['A1', 'A2', 'A3'];
+    const h = makeHarness(makeGoal({ lastEvalReason: 'x' }), [
+      verdict({ sameAsPrevious: true, sameConfidence: 0.99, userActions: actions }),
+    ]);
+    const failing = makeHarness(makeGoal({ lastEvalReason: 'x' }), [
+      verdict({ sameAsPrevious: true, sameConfidence: 0.99, userActions: actions }),
+    ]);
+    // Swap the notice transport for one that throws.
+    (failing.controller as any).deps.postNotice = async () => {
+      throw new Error('slack down');
+    };
+    h.controller.onTurnSettled(SESSION_KEY);
+    failing.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    await failing.controller.settled(SESSION_KEY);
+    expect(h.notices.find((n) => n.includes('🛑'))).toContain('1. A1');
+    expect(failing.questions).toHaveLength(1);
+  });
+
+  it('a user message ends the round as "user-message"; a lifecycle change as "lifecycle"', async () => {
+    const { setGoalStallRetiredListener, retireGoalStall } = await import('../goal-stall');
+    const seen: string[] = [];
+    setGoalStallRetiredListener((_g, _s, cause) => seen.push(cause));
+    try {
+      const stall = { stallId: 's1', stalledAt: 1, reason: 'r', actions: ['a', 'b', 'c'], confidence: 0.99 };
+      resetGoalContinuationOnUserMessage({ goal: makeGoal({ stall: { ...stall } }) });
+      retireGoalStall(makeGoal({ stall: { ...stall } }));
+      expect(seen).toEqual(['user-message', 'lifecycle']);
+    } finally {
+      setGoalStallRetiredListener(undefined);
+    }
+  });
+
+  it('a goal added while the current goal is stalled restarts it (it could never finish on its own)', async () => {
+    const { enqueueOrActivateGoal, formatResumedGoalLine, setGoalCapDecisionRetirer } = await import(
+      '@soma/slack/session-goal'
+    );
+    const { retireGoalCapDecision } = await import('../goal-cap-decision');
+    setGoalCapDecisionRetirer(retireGoalCapDecision as any);
+    const goal = makeGoal({
+      continuationCount: 3,
+      stall: { stallId: 's1', stalledAt: 1, reason: 'r', actions: ['a', 'b', 'c'], confidence: 0.99 },
+    });
+    const session: any = { goal };
+    const result = enqueueOrActivateGoal(session, '다음 goal', 'U1');
+    expect(result.activated).toBe(false);
+    expect(result.resumedCurrent).toBe(goal);
+    expect(goal.stall).toBeUndefined();
+    expect(goal.continuationCount).toBe(0);
+    expect(formatResumedGoalLine(goal)).toContain('repeated failure');
+  });
+});

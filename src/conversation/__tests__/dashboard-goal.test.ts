@@ -122,7 +122,7 @@ describe('Dashboard — work item goal list (SSOT T2/T3)', () => {
       ]);
       const board_ = await board(sessions);
       const card = [...(board_.working ?? []), ...(board_.waiting ?? []), ...(board_.done ?? [])][0];
-      expect(card.goal.current.stalled).toEqual({ at: 77, reason: 'dev에 에픽이 없다' });
+      expect(card.goal.current.stalled).toEqual({ at: 77, reason: 'dev에 에픽이 없다', actions: ['a', 'b', 'c'] });
     });
   });
 

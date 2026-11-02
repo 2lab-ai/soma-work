@@ -97,7 +97,12 @@ import { retireGoalCapDecision } from './slack/goal-cap-decision';
 import { bumpGoalEpoch, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from './slack/goal-host-actions';
 import type { GoalStallQuestion } from './slack/goal-loop-controller';
-import { buildGoalStallQuestion, shouldAskGoalStallQuestion } from './slack/goal-stall';
+import {
+  buildGoalStallQuestion,
+  type GoalStallRetireCause,
+  setGoalStallRetiredListener,
+  shouldAskGoalStallQuestion,
+} from './slack/goal-stall';
 import {
   checkAndConsumeBudget,
   formatBudgetExhaustedMessage,
@@ -124,7 +129,7 @@ import { DmZRespond } from './slack/z/respond';
 import { isDmAllowedForNonAdmin } from './slack/z/whitelist';
 import { TodoManager } from './todo-manager';
 import { TurnNotifier } from './turn-notifier';
-import type { ConversationSession, SessionIncidentRequest } from './types';
+import type { ConversationSession, SessionGoal, SessionGoalStall, SessionIncidentRequest } from './types';
 import { userSettingsStore } from './user-settings-store';
 import { WorkingDirectoryManager } from './working-directory-manager';
 
@@ -684,6 +689,8 @@ export class SlackHandler {
       // for deploy-workflow sessions.
       routeReleaseNotes: (repo, target) => routeReleaseNotes(getReleaseNotesChannels(), repo, target),
     });
+    // Goal stall: a question whose round ended without an answer is retracted.
+    setGoalStallRetiredListener((goal, stall, cause) => this.onGoalStallRetired(goal, stall, cause));
 
     // EventRouter for event handling
     const eventRouterDeps: EventRouterDeps = {
@@ -6785,7 +6792,45 @@ export class SlackHandler {
   async askGoalStallQuestion(input: GoalStallQuestion): Promise<void> {
     const session = this.claudeHandler.getSessionByKey(input.sessionKey);
     if (!shouldAskGoalStallQuestion(session, input, this.requestCoordinator.isRequestActive(input.sessionKey))) return;
-    await this.streamExecutor.askUserQuestionFromHost(input.sessionKey, buildGoalStallQuestion(input));
+    // Re-checked after the Slack post: the owner may have moved on meanwhile.
+    const roundOpen = () =>
+      this.claudeHandler.getSessionByKey(input.sessionKey)?.goal?.stall?.stallId === input.stallId &&
+      !this.requestCoordinator.isRequestActive(input.sessionKey);
+    const turnId = await this.streamExecutor.askUserQuestionFromHost(input.sessionKey, buildGoalStallQuestion(input), {
+      stillWanted: roundOpen,
+    });
+    if (!turnId) return;
+    const stall = this.claudeHandler.getSessionByKey(input.sessionKey)?.goal?.stall;
+    if (stall?.stallId === input.stallId) {
+      // Bound to its round: when the round ends without an answer, it is retracted.
+      stall.questionTurnId = turnId;
+      this.claudeHandler.saveSessions();
+    } else {
+      await this.streamExecutor.retractHostQuestion(input.sessionKey, turnId);
+    }
+  }
+
+  /**
+   * A stall round ended without an answer (pause, done, delete, resume, an
+   * objective update, a goal added): its question stops accepting answers.
+   * A round the owner ended by writing needs nothing — that turn clears it.
+   */
+  private onGoalStallRetired(goal: SessionGoal, stall: SessionGoalStall, cause: GoalStallRetireCause): void {
+    if (cause === 'user-message' || !stall.questionTurnId) return;
+    const turnId = stall.questionTurnId;
+    for (const [sessionKey, session] of this.claudeHandler.getSessionRegistry().getAllSessions()) {
+      if (session.goal !== goal && session.goal?.goalId !== goal.goalId) continue;
+      // Deferred: the caller is mid-mutation and persists right after.
+      queueMicrotask(() => {
+        void this.streamExecutor.retractHostQuestion(sessionKey, turnId).catch((err: unknown) =>
+          this.logger.warn('Retracting a goal stall question failed', {
+            sessionKey,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      });
+      return;
+    }
   }
 
   /**

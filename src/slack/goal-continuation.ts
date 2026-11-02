@@ -13,6 +13,7 @@
 
 import type { ConversationSession, SessionGoal } from '../types';
 import { retireGoalCapDecision } from './goal-cap-decision';
+import { retireGoalStall } from './goal-stall';
 
 /** Prefix carried on every synthetic continuation event so log greps and
  *  workflow classifiers can spot goal-loop traffic. */
@@ -60,6 +61,8 @@ export function bumpGoalEpoch(goal: SessionGoal): void {
 export function resetGoalContinuationOnUserMessage(session: { goal?: ConversationSession['goal'] }): void {
   if (!session.goal) return;
   session.goal.continuationCount = 0;
+  // The owner wrote: an open stall round ends (this turn clears its question).
+  retireGoalStall(session.goal, 'user-message');
   // A real user message answers any pending cap decision implicitly: it ends,
   // its DM stops offering buttons, and a future cap event asks again (S3).
   retireGoalCapDecision(session.goal);

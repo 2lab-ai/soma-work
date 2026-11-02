@@ -158,7 +158,7 @@ export function buildGoalEvalUserPrompt(
     ...(previousBlock.length
       ? [
           'The <previous-evaluation> block is your verdict after the previous work turn. Compare against it:',
-          '- sameAsPrevious: true when the goal is still unfinished for the same reason — the same missing requirement or the same blocker — and the latest turn did not close it. False when the reason differs or part of the previous gap was closed.',
+          '- sameAsPrevious: true when the goal is still unfinished for the same reason — the same missing requirement or the same blocker — and the latest turn did not close it. Judge by the underlying blocker, not the wording: a turn that only re-checks, re-states or re-prints earlier evidence while the same requirement stays open is the same failure. False when the reason differs or part of the previous gap was closed.',
           `- sameConfidence: 0 to 1. Use ${GOAL_STALL_MIN_CONFIDENCE} or more only when you are sure the gap is unchanged.`,
           '- progressed: true when the latest turn did concrete new work toward the objective (changed files, ran commands with new results, changed a PR or deploy). Re-checking state, repeating earlier evidence or saying it is waiting is not progress.',
           `- userActions: when sameAsPrevious is true with sameConfidence ≥ ${GOAL_STALL_MIN_CONFIDENCE}, exactly ${GOAL_STALL_ACTION_COUNT} short instructions the user is most likely to give next so the goal can be finished, most likely first, in the language of the objective. Otherwise an empty array.`,

@@ -289,6 +289,11 @@ export class GoalHandler implements CommandHandler {
     // active with no first turn, judged on whatever unrelated turn ends next.
     const needsOpening = goal.status === 'paused' && goal.openingPending === true;
     const snapshot = needsOpening && admitOpening ? snapshotGoalState(session) : undefined;
+    // `goal resume` on a goal the loop stopped on a repeated failure: the owner
+    // chose to go on — the stall ends (its question is retracted) and the loop
+    // runs again below.
+    const wasStalled = !!goal.stall;
+    if (wasStalled) retireGoalCapDecision(goal);
     goal.status = 'active';
     goal.updatedAt = Date.now();
     this.persistGoalChange(session);
@@ -324,6 +329,13 @@ export class GoalHandler implements CommandHandler {
       return { handled: true, continueWithPrompt: goal.objective, verbatimPrompt: true };
     }
 
+    if (wasStalled) {
+      await this.deps.slackApi.postSystemMessage(channel, '▶️ Goal resumed — the auto-continuation loop runs again.', {
+        threadTs,
+      });
+      resumeGoalLoop(this.deps.claudeHandler.getSessionKey(channel, threadTs));
+      return { handled: true };
+    }
     await this.deps.slackApi.postSystemMessage(channel, '▶️ Goal resumed. It will be injected into future prompts.', {
       threadTs,
     });

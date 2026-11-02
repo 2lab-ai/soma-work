@@ -30,7 +30,7 @@ export const GOAL_STALL_ACTION_COUNT = 3;
 export const GOAL_STALL_FALLBACK_ACTIONS: readonly string[] = [
   '막힌 부분은 다른 방법으로 우회해서 계속 진행해',
   '남은 항목은 빼고 지금까지 된 것으로 마무리해',
-  'goal을 멈추고 지금 상태를 정리해서 보고해',
+  '여기까지 한 것과 남은 것을 정리해서 보고해',
 ];
 
 /** Three distinct actions: the evaluator's first, then the fallbacks. */
@@ -57,10 +57,18 @@ export function openGoalStall(goal: SessionGoal, verdict: GoalEvalVerdict, now: 
   return stall;
 }
 
-type StallRetiredListener = (goal: SessionGoal, stall: SessionGoalStall) => void;
+/**
+ * Why a stall round ended. `user-message`: the owner wrote (the answer to the
+ * question, or anything typed) — that turn clears the question itself.
+ * `lifecycle`: pause, done, delete, resume, update, a goal added — the open
+ * question no longer applies and is retracted.
+ */
+export type GoalStallRetireCause = 'user-message' | 'lifecycle';
+
+type StallRetiredListener = (goal: SessionGoal, stall: SessionGoalStall, cause: GoalStallRetireCause) => void;
 let onRetired: StallRetiredListener | undefined;
 
-/** Host hook: an open stall question ended (answered, typed over, paused, done …). */
+/** Host hook: a stall round ended. Production: retract its question when it ended without an answer. */
 export function setGoalStallRetiredListener(fn: StallRetiredListener | undefined): void {
   onRetired = fn;
 }
@@ -69,12 +77,12 @@ export function setGoalStallRetiredListener(fn: StallRetiredListener | undefined
  * End the goal's open stall round. Called by every real user message and by
  * every goal lifecycle change (through `retireGoalCapDecision`).
  */
-export function retireGoalStall(goal: SessionGoal | undefined): void {
+export function retireGoalStall(goal: SessionGoal | undefined, cause: GoalStallRetireCause = 'lifecycle'): void {
   const stall = goal?.stall;
   if (!goal || !stall) return;
   goal.stall = undefined;
   try {
-    onRetired?.(goal, stall);
+    onRetired?.(goal, stall, cause);
   } catch {
     // A surface update must never break the goal mutation that ended the round.
   }
