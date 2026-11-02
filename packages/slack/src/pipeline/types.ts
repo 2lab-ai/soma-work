@@ -149,6 +149,14 @@ export interface MessageEvent {
      */
     goalContinuation?: boolean;
     /**
+     * True only for the crash-recovery auto-resume turn (`autoResumeSession`)
+     * — the turn that carries on a session a restart cut. With
+     * `goalContinuation` it is how the follow-up host tells a real resume
+     * apart from any other synthetic turn (a cron fire) when deciding which
+     * run takes over the follow-up the restart left `uncertain`.
+     */
+    autoResume?: boolean;
+    /**
      * True when `text` is a `/z` command's verbatim `continueWithPrompt` (a
      * goal objective) that already went through command routing. The message
      * path dispatches it as the user's words: no second command routing, no
