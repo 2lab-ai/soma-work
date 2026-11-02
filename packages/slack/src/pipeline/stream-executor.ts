@@ -195,6 +195,8 @@ export interface RecordUserTurnOpts {
   compact?: boolean;
   /** Context rollback (#743) — the SDK cut point just before this input (`@soma/slack/context-anchor`). */
   anchor?: string;
+  /** A dashboard send's ref (#785): the panel replaces its own pending copy by it. */
+  clientRef?: string;
 }
 
 /** Dashboard SSOT 2026-10-27 T2 — what a compaction reported when it ended. */
@@ -756,6 +758,13 @@ interface StreamExecuteParams {
    * surface keeps its legacy ungated behaviour.
    */
   followupTurnEpoch?: number;
+  /**
+   * #785 — the ref the dashboard panel gave its own pending copy of this
+   * instruction (`event.dashboardClientRef`). Recorded on the user turn so the
+   * panel replaces that copy by ref, whatever text the turn ends up holding.
+   * First dispatch turn only (the adapter drops it on continuations).
+   */
+  clientRef?: string;
 }
 
 /**
@@ -1799,6 +1808,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             ...(compactTurn ? { compact: true } : {}),
             // #743: "roll back to just before this input" resumes here.
             ...(turnStartAnchor(session) ? { anchor: turnStartAnchor(session) } : {}),
+            // #785: the dashboard send this turn records — a turn soma-work put there never is one.
+            ...(by === 'user' && params.clientRef ? { clientRef: params.clientRef } : {}),
           },
         );
         const names = processedFiles.map((f) => f.name).join(' · ');

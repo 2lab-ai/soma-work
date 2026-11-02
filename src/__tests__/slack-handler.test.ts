@@ -2698,6 +2698,28 @@ describe('SlackHandler — #1082 goal-prefixed first message', () => {
     expect(plain.execute.mock.calls[0][0].hostTurn).toBeFalsy();
   });
 
+  it("a dashboard send's ref (event.dashboardClientRef) reaches the executor; a plain message has none (#785)", async () => {
+    const { handler, execute } = buildGoalHarness({ handled: false });
+    await handler.handleMessage(
+      {
+        user: 'U123',
+        channel: 'C123',
+        ts: '111.224',
+        text: '대시보드 지시',
+        dashboardClientRef: 'optimistic-1',
+      } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg125' }),
+    );
+    expect(execute.mock.calls[0][0].clientRef).toBe('optimistic-1');
+
+    const plain = buildGoalHarness({ handled: false });
+    await plain.handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.225', text: '슬랙에서 친 지시' } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg126' }),
+    );
+    expect(plain.execute.mock.calls[0][0].clientRef).toBeUndefined();
+  });
+
   it('a plain message is not literal — a typed `/compact` stays an SDK command', async () => {
     const { handler, execute } = buildGoalHarness({ handled: false });
     await handler.handleMessage(

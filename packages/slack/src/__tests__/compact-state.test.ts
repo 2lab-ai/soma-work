@@ -90,6 +90,29 @@ describe('stashUserMessageDuringCompaction', () => {
     ]);
   });
 
+  // #785: a dashboard send replays alone — merged, its ref would name a turn holding other
+  // words, or be lost; and nothing merges into it.
+  it('never merges a dashboard send with same-user text, in either direction', () => {
+    const d1 = { ...u1, ts: '1.5', dashboardClientRef: 'optimistic-1-ab' };
+    const s: CompactStateSession = {};
+    stashUserMessageDuringCompaction(s, u1, 'a');
+    stashUserMessageDuringCompaction(s, d1, 'dash');
+    stashUserMessageDuringCompaction(s, u1, 'b');
+    expect(s.compactPendingDispatches).toEqual([
+      { ctx: u1, text: 'a' },
+      { ctx: d1, text: 'dash' },
+      { ctx: u1, text: 'b' },
+    ]);
+  });
+
+  it('never appends to a parked dashboard send (pre-compact pending message)', () => {
+    const d1 = { ...u1, ts: '0.5', dashboardClientRef: 'optimistic-1-ab' };
+    const s: CompactStateSession = { pendingUserText: 'dash', pendingEventContext: d1 };
+    stashUserMessageDuringCompaction(s, u1, 'more');
+    expect(s.pendingUserText).toBe('dash');
+    expect(s.compactPendingDispatches).toEqual([{ ctx: u1, text: 'more' }]);
+  });
+
   // PR #305: a goal objective (`verbatimPrompt`) replays as the user's words,
   // never as a command. Merging it with ordinary text would change the
   // meaning of one or the other, so it always gets its own entry.

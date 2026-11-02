@@ -104,6 +104,32 @@ describe('V1QueryAdapter.startWithContinuation', () => {
     expect(adapter.getTurnCount()).toBe(3);
   });
 
+  it("a dashboard send's ref rides the first dispatch turn only — a continuation is not that send (#785)", async () => {
+    let callCount = 0;
+    mockExecutor = {
+      execute: vi.fn().mockImplementation(() => {
+        callCount++;
+        const collector = createCollectorWithContinuation(callCount < 2 ? { prompt: 'Turn 2' } : null);
+        return Promise.resolve({ success: true, messageCount: 1, turnCollector: collector });
+      }),
+    };
+    const handler: ContinuationHandler = {
+      shouldContinue: (result) => {
+        const cont = result.continuation as any;
+        return cont ? { continue: true, prompt: cont.prompt } : { continue: false };
+      },
+    };
+    const adapter = new V1QueryAdapter({
+      streamExecutor: mockExecutor,
+      executeParams: { ...createMockExecuteParams(), clientRef: 'optimistic-1' },
+      turnRunner: mockRunner,
+    });
+    await adapter.startWithContinuation('Turn 1', handler);
+    expect(mockExecutor.execute).toHaveBeenCalledTimes(2);
+    expect(mockExecutor.execute.mock.calls[0][0].clientRef).toBe('optimistic-1');
+    expect(mockExecutor.execute.mock.calls[1][0].clientRef).toBeUndefined();
+  });
+
   // Trace: S2, 3b — resetSession calls handler
   it('calls onResetSession when continuation has resetSession', async () => {
     let callCount = 0;
