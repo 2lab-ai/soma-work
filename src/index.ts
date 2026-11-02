@@ -1827,6 +1827,8 @@ async function start() {
         postOwnerDm: postGoalOwnerDm,
         // Same failure twice → ask the owner (thread form + dashboard card).
         askStallQuestion: (question) => slackHandler.askGoalStallQuestion(question),
+        // #788: while the host stops, no loop run starts and a landing verdict is dropped.
+        isShuttingDown: () => slackHandler.isShuttingDown(),
         logger,
         fallbackModel: 'claude-sonnet-4-20250514',
         // S9: optional cheaper eval tier. Unset → eval matches the work model.
