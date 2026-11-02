@@ -24,7 +24,9 @@
 import type { HookInput, HookJSONOutput, Options } from '@anthropic-ai/claude-agent-sdk';
 import * as fs from 'fs';
 import * as path from 'path';
+import { isSdkEffortLevel } from 'soma-lib';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
+import type { PermissionAdvice } from 'somalib/permission/shared-store';
 import { isAdminUser } from '../../admin-utils';
 import {
   buildRepoContextBlock,
@@ -41,6 +43,7 @@ import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { getPermissionGatedServers, loadMcpToolPermissions } from '../../mcp-tool-permission-config';
 import { resolveModelProfile } from '../../metrics/model-profile';
 import { clampEffortToModel, modelCatalog } from '../../model-catalog';
+
 import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
 import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/deploy-sandbox-grant';
@@ -56,6 +59,7 @@ import {
   revalidateTaskDirectory,
 } from '../execution-context';
 import { createNativeWriteCheck } from '../policy/native-write-boundary';
+import { permissionAdviceBoard } from '../policy/permission-advice';
 import { checkPlanPendingCall } from '../policy/plan-pending-guard';
 import type { SafetyClassifier } from '../policy/safety-classifier';
 import {
@@ -171,6 +175,8 @@ export interface TaskApprovalRequest {
   toolName: string;
   toolInput: Record<string, unknown>;
   ruleIds: string[];
+  /** SSOT 2026-11-02 — the guardian's advice, shown on the dashboard card (absent when it gave none). */
+  advice?: PermissionAdvice;
   signal?: AbortSignal;
   /**
    * When the SDK cancels this hook (epoch ms, its timeout less a margin): the
@@ -482,12 +488,16 @@ export async function buildStreamOptions(
                   // Default classifier model = the session's CURRENT model
                   // (#model-call-unify). Resolved on `options.model` earlier.
                   model: options.model,
+                  // The SDK cancelling this hook (the turn stopped) stops the guardian call too.
+                  ...(hookOptions?.signal ? { signal: hookOptions.signal } : {}),
                 })
                 .catch((err) => ({
                   verdict: 'ask' as const,
                   reason: `classifier threw (fail-closed): ${err instanceof Error ? err.message : String(err)}`,
                 }))
             : { verdict: 'ask' as const, reason: 'no classifier wired (fail-closed)' };
+          // The guardian's advice for the person, when the call reaches one (SSOT 2026-11-02 T2).
+          const advice: PermissionAdvice | null = ('advice' in verdict && verdict.advice) || null;
           if (verdict.verdict === 'allow') {
             logger.info('Auto-mode classifier approved tool call', {
               tool: toolName,
@@ -513,6 +523,7 @@ export async function buildStreamOptions(
                 toolName,
                 toolInput: toolInput ?? {},
                 ruleIds: [...(result.matchedRuleIds ?? [])],
+                ...(advice ? { advice } : {}),
                 deadlineAt: hookDeadlineAt,
                 ...(hookOptions?.signal ? { signal: hookOptions.signal } : {}),
               })
@@ -555,6 +566,9 @@ export async function buildStreamOptions(
             rule: result.reason,
             reason: verdict.reason,
           });
+          // SSOT 2026-11-02 T2 — the prompt the SDK raises for this `ask` shows the
+          // guardian's advice; null tells it the guardian gave none (no second call).
+          permissionAdviceBoard.put(hookSessionKey, toolName, toolInput ?? {}, advice);
           return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } };
         }
         case 'allow':
@@ -689,7 +703,14 @@ export async function buildStreamOptions(
   // mutated, only this per-query option.
   if (session?.effort) {
     const clamped = options.model ? clampEffortToModel(options.model, session.effort) : session.effort;
-    options.effort = clamped as typeof options.effort;
+    // `ultra` (kept only on the codex tiers whose catalog menu lists it) is not
+    // an SDK/CLI `--effort` value, and no backend takes it on the wire: the
+    // codex backend's strongest level is `max` (it 400s 'ultra', probed
+    // 2026-11-02 — llmux #228 maps it the same way) and Claude models 400 it
+    // too. It runs as `max`. Not through CLAUDE_CODE_EXTRA_BODY: that body
+    // rides every request of the CLI process — a Claude subagent or the CLI's
+    // own small-model calls would carry `ultra` and be refused.
+    options.effort = (isSdkEffortLevel(clamped) ? clamped : 'max') as typeof options.effort;
     if (clamped !== session.effort) {
       logger.debug('Clamped session effort to model catalog menu', {
         model: options.model,

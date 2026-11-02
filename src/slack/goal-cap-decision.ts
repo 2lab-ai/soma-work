@@ -36,6 +36,7 @@ import { DATA_DIR } from '../env-paths';
 import { Logger } from '../logger';
 import type { ConversationSession, SessionGoal } from '../types';
 import { resumeGoalLoop } from './goal-loop-resume';
+import { retireGoalStall } from './goal-stall';
 
 const logger = new Logger('GoalCapDecision');
 
@@ -244,6 +245,8 @@ export function answerGoalCapDecision(args: AnswerGoalCapDecisionArgs): GoalCapD
  */
 export function retireGoalCapDecision(goal: SessionGoal | undefined): void {
   if (!goal) return;
+  // The same lifecycle ends an open stall question (same failure twice).
+  retireGoalStall(goal);
   const wasPending = goal.capDmPendingAt !== undefined;
   const ref = goal.capDmRef;
   const round = goal.capDecisionId;
