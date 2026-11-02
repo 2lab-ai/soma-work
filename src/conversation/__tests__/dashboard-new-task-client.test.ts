@@ -313,7 +313,8 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     const data = clientFn('ntComposerData');
     expect(data).toContain("label: '작업 지시',");
     expect(data).toContain('value: _ntValue,');
-    expect(data).toContain('busy: _ntBusy,');
+    // No busy state: a launch leaves the dialog in the press itself (SSOT 2026-11-02 T1) — the composer is the next task's.
+    expect(data).not.toContain('busy:');
     expect(data).toContain('d.maxLength = lim.maxPromptChars;');
     expect(data).toContain('d.maxFiles = lim.maxFiles;');
     expect(data).toContain('d.maxFileSize = lim.maxFileBytes;');
@@ -323,14 +324,14 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     // (Its one ui-files listener only says why a dashboard task cannot start — #640 R2 — it takes nothing out.)
     expect(script.match(/composer\.addEventListener\('ui-files'/g) ?? []).toHaveLength(1);
     expect(script).not.toContain('composer.removeFile(');
-    // It answers ui-submit (cancelled: the page posts, the composer keeps its text and files until the launch)
+    // It answers ui-submit (cancelled: the page posts; the launch empties the composer in the press — ntBeginLaunch)
     // and ui-input (the draft).
     // (A live dictation stops first, hard: what is sent is what the field shows — SSOT 2026-11-01.)
     expect(script).toContain(
       "composer.addEventListener('ui-submit', function (e) {\n    e.preventDefault();\n    ntDictateStopIn('nt');\n    submitNewTask(e.detail);",
     );
     expect(script).toContain('ntSaveDraft(v);');
-    expect(clientFn('ntOnLaunched')).toContain(
+    expect(clientFn('ntBeginLaunch')).toContain(
       "if (composer && typeof composer.clear === 'function') composer.clear();",
     );
   });
@@ -677,7 +678,6 @@ describe('submitNewTask — the submitted state is the one sent (#640 R2)', () =
     const { submitNewTask } = loadWith<{ submitNewTask(detail: unknown): Promise<void> }>(
       ['submitNewTask', 'ntTooLong', 'ntCanSubmit', 'ntBlockedHint', 'ntBuildPayload'],
       {
-        _ntBusy: false,
         _ntCtx: {},
         _ntState: state,
         _ntRequestId: 'req-0123456789',
@@ -696,6 +696,20 @@ describe('submitNewTask — the submitted state is the one sent (#640 R2)', () =
           return { status: 200, data: { ok: true, channel: 'C1', status: 'running' } };
         },
         ntOnLaunched: (...args: unknown[]) => launched.push(args),
+        // SSOT 2026-11-02 T1: the launch leaves the dialog first, with a copy of what was submitted.
+        ntBeginLaunch: (submitted: Record<string, unknown>, files: unknown[]) => ({
+          id: 'nt-launch:req-0123456789',
+          requestId: 'req-0123456789',
+          state: submitted,
+          files,
+        }),
+        ntPendingStatus: () => {},
+        // One launch at a time (#747 review R1): none ahead of this one.
+        ntPendingInFlight: () => false,
+        _ntLaunchQueue: Promise.resolve(),
+        ntLaunchFailed: () => {
+          throw new Error('should not fail');
+        },
       },
     );
     const run = submitNewTask({ text: '사진 봐줘', files: [file] });
