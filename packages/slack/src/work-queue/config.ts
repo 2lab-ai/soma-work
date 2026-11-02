@@ -24,7 +24,7 @@
  * The queue matches on the target, not the source: two deploys collide on the
  * branch and environment they write to, whatever they were merged from.
  */
-import { normalizeTargetBranch, normalizeRepo } from './trigger';
+import { normalizeRepo, normalizeTargetBranch } from './trigger';
 
 export interface WorkQueueDef {
   id: string;

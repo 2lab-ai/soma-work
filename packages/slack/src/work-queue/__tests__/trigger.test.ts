@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseWorkQueuesConfig } from '../config';
-import { matchWorkQueue, normalizeTargetBranch, normalizeRepo, parseDeployTrigger } from '../trigger';
+import { matchWorkQueue, normalizeRepo, normalizeTargetBranch, parseDeployTrigger } from '../trigger';
 
 // ssot-task T1/T3: the host must recognise which deploys belong to a queue
 // without asking the model — the trigger text is the only signal it has before
