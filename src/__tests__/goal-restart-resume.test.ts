@@ -211,6 +211,84 @@ describe('resumeActiveGoals (T1)', () => {
     expect(handler.resumeActiveGoals()).toBe(0);
   });
 
+  /**
+   * 2026-11-02 restart incident. Before the "no output is no evidence" rule a
+   * restart-interrupted turn was judged "the same failure" and the goal
+   * stopped on a stall question (owner-mac dev: 1793150219.639969 stalled at
+   * 05:08:54Z, then every later restart held it as "waiting on its question").
+   * A stall opened on no turn text is not a real stall: the restart ends it,
+   * withdraws its question, and resumes the goal.
+   */
+  it('ends a stall that was judged on no turn text, withdraws its question, and resumes the goal', () => {
+    const stalled = activeGoalSession({
+      activityState: 'waiting',
+      actionPanel: {
+        waitingForChoice: true,
+        pendingQuestion: { type: 'user_choices', hostTurnId: 'host:1', questions: [] },
+        pendingChoice: { turnId: 'host:1', formIds: [] },
+      },
+    } as unknown as Partial<ConversationSession>);
+    const goal = stalled.goal as NonNullable<ConversationSession['goal']>;
+    goal.lastAssistantTurnSummary = '';
+    goal.lastEvalReason = 'This turn again produced no assistant text';
+    goal.stall = {
+      stallId: 's1',
+      stalledAt: 1,
+      reason: 'This turn again produced no assistant text',
+      actions: ['a', 'b', 'c'],
+      confidence: 0.97,
+      questionTurnId: 'host:1',
+    };
+    const sessions = new Map<string, ConversationSession>([['C1-T1', stalled]]);
+    const { handler, claudeHandler } = createHandler(sessions);
+    claudeHandler.getSessionRegistry = vi.fn(() => ({ getAllSessions: () => sessions }));
+    const retract = vi.fn((_key: string, _turnId: string) => {
+      // The real retraction frees the session synchronously, before any Slack call.
+      stalled.actionPanel = { waitingForChoice: false } as any;
+      stalled.activityState = 'idle';
+      return Promise.resolve();
+    });
+    (handler as any).streamExecutor = { retractHostQuestion: retract };
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+
+    expect(handler.resumeActiveGoals()).toBe(1);
+
+    expect(stalled.goal?.stall).toBeUndefined();
+    expect(retract).toHaveBeenCalledWith('C1-T1', 'host:1');
+    expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
+    expect(claudeHandler.saveSessions).toHaveBeenCalled();
+  });
+
+  it('keeps a real stall (judged on turn text) stopped on its question', () => {
+    const stalled = activeGoalSession({
+      activityState: 'waiting',
+      actionPanel: {
+        waitingForChoice: true,
+        pendingQuestion: { type: 'user_choices', hostTurnId: 'host:1', questions: [] },
+      },
+    } as Partial<ConversationSession>);
+    const goal = stalled.goal as NonNullable<ConversationSession['goal']>;
+    goal.lastAssistantTurnSummary = 'Still waiting on you: dev has 0 epics.';
+    goal.stall = {
+      stallId: 's1',
+      stalledAt: 1,
+      reason: 'dev has 0 epics',
+      actions: ['a', 'b', 'c'],
+      confidence: 0.98,
+      questionTurnId: 'host:1',
+    };
+    const sessions = new Map<string, ConversationSession>([['C1-T1', stalled]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+
+    expect(handler.resumeActiveGoals()).toBe(0);
+
+    expect(stalled.goal?.stall?.stallId).toBe('s1');
+    expect(settled).not.toHaveBeenCalled();
+  });
+
   it('notifyCrashRecovery skips generic auto-resume for active-goal sessions (no double resume)', async () => {
     const sessions = new Map<string, ConversationSession>([['C1-T1', activeGoalSession()]]);
     const { handler, claudeHandler } = createHandler(sessions);
