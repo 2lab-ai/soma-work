@@ -111,6 +111,8 @@ interface PermissionClient {
 }
 
 function load(inject: Record<string, unknown>): PermissionClient {
+  // The requester is the signed-in viewer (SSOT 2026-11-02), here the board's user unless a test names another.
+  inject = { _viewerUserId: inject.currentUserId ?? '', ...inject };
   const names = Object.keys(inject);
   const body = `${clientVar('AC_SENT')}
 ${clientVar('AC_SIBLING')}
@@ -439,8 +441,10 @@ describe('dashboard permission prompt — wiring in the page', () => {
     expect(body.slice(0, body.indexOf('\n}\n'))).toContain('acPermissionsHtml(s)');
     const summary = TEMPLATE.slice(TEMPLATE.indexOf('\nfunction cardSummary('));
     expect(summary.slice(0, summary.indexOf('\n}\n'))).toContain('permissionSummary(s)');
-    // The board push, the session push, the opening — and acRepaint (an answer's state, a loaded input).
-    expect(TEMPLATE.match(/renderPanelPermission\((panelS|s|msg\.session)\);/g)?.length).toBe(4);
+    // The board push, the session push, the opening, a change of viewer or 관리자 모드 (repaintViewerControls,
+    // SSOT 2026-11-02) — and acRepaint (an answer's state, a loaded input).
+    expect(TEMPLATE.match(/renderPanelPermission\((panelS|s|msg\.session)\);/g)?.length).toBe(5);
+    expect(clientFn('repaintViewerControls')).toContain('renderPanelPermission(s);');
     expect(clientFn('acRepaint')).toContain('renderPanelPermission(s);');
   });
 });

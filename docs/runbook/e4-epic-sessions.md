@@ -25,13 +25,11 @@
 - **Children** are Slack-less tasks with `parentTaskId` and `planNodeId`. At most 3 run at once per epic tree. A tree is limited to 30 starts per 10 minutes and has a cost limit (`epicCostLimitUsd`, default $50). The 3, the 30 and the $50 live in `src/task-turn/task-turn-controller.ts`. The 7 is `EPIC_CHILD_MAX` in `src/task-turn/epic-server.ts`.
 - **Waking** (`src/task-turn/epic-wake.ts`): when a child's chain ends, the epic gets an event. An idle epic that is not done then gets one host turn whose text is `Epic wake: N events — <node>:<word>, …`. That turn's start consumes the events. A restart puts the events that an unfinished epic turn consumed back to pending, and the boot scan wakes the epic again.
 - **Closing** (`src/task-turn/task-close.ts`): closing an epic marks each running child "closed by its parent", cancels them all, then closes the epic. The mark names the chain it cancelled. Closing a child records a `closed` event on its epic. A close never wakes the epic.
-- **The board:** the EPIC lane draws each epic with:
-  - its state chip: 입력 필요 (it or a child waits on its owner), 자식 실행 중 (it or a child works), 완료 (done, with nothing waiting or working), 대기 (none of these);
-  - its progress (accepted nodes of all nodes);
-  - its plan tree;
-  - its children's cards.
-
-  An epic's children appear only in its lane, not in the board's columns.
+- **The board:** an epic is one card in its column, like any task. Its children's cards follow it, right under it, in the same column or DONE day group (#725). There is no lane above the columns.
+  - The epic's card leads with EPIC and shows its state (자식 실행 중 or 입력 필요 while a child works or waits) and its progress (accepted nodes of all nodes).
+  - Each child's card leads with `↳ #<node>` and shows its own state.
+  - Open the epic's card to see its plan tree.
+  - An epic's children appear only under it, never on their own in the columns.
 
 ## 2. State and logs
 
@@ -85,7 +83,7 @@ Close every live epic on its card first. Then revert the E4 merges, newest first
 
 1. Send `/z epictasks on` to the dev bot, or turn on **에픽 작업 (실험)** in the dashboard settings.
 2. On the dev dashboard, go to **새 작업** → **대시보드 작업** and turn on the **에픽** chip. Give an instruction that splits into three parts, for example: `README 초안의 설치·사용·라이선스 세 섹션을 각각 다른 파일로 써줘`.
-   - **Check:** until its first child is made, the epic card sits in its column. From then on the EPIC lane shows the epic, a plan tree with 3 nodes, progress 0/3, and the children's cards as they are made.
+   - **Check:** the epic card sits in its column. Its children's cards appear right under it as they are made, each leading with `↳ #<node>`. Its progress reads 0/3, and its open card shows a plan tree with 3 nodes.
 3. Wait for one child to finish while another still runs. Then restart dev (`sudo /opt/soma-work/dev/scripts/service.sh restart`).
    - **Check:** after the restart, the epic, its children and their events are still there. The epic wakes once for what the restart cut.
 4. Let it run until every node is accepted.

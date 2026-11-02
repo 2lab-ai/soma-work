@@ -45,6 +45,12 @@ export interface ExecutionContext {
 export interface TaskExecutionContext extends ExecutionContext {
   readonly origin: 'task';
   readonly taskId: string;
+  /**
+   * The task's owner — whose `/tmp/<ownerId>/` root holds `workingDirectory`.
+   * `userId` is the user the turn runs as: the owner, or another signed-in user
+   * who instructed it (SSOT 2026-11-02 — as a Slack turn runs as its speaker).
+   */
+  readonly ownerId: string;
   readonly workingDirectory: string;
   /** E4 ④a (.prd/19 D3) — from the saved task: an epic, or a child's epic. The epic server attaches on these. */
   readonly kind?: 'epic';
@@ -92,11 +98,19 @@ export function executionContextFromSlack(input: {
  * owner's `/tmp/<ownerId>/` root (the root the sandbox mounts for writing and
  * the cross-user check guards) — not a channel's repo, not another user's
  * directory, not the root itself (D6).
+ *
+ * `actorUserId` — the signed-in user who instructs it (SSOT 2026-11-02): the
+ * turn runs as them, as a Slack turn runs as the user who wrote in the thread —
+ * their admin flag and permission mode, never the owner's. The directory stays
+ * the owner's task directory, checked against the owner's root. None (a host
+ * start) is the owner.
  */
-export function executionContextForTask(session: ConversationSession): TaskExecutionContext {
+export function executionContextForTask(session: ConversationSession, actorUserId?: string): TaskExecutionContext {
   if (session.slackless !== true) throw new ExecutionContextMissingError('not a Slack-less task');
   const ownerId = session.ownerId;
   if (!ownerId || !isSafePathSegment(ownerId)) throw new ExecutionContextMissingError('task has no usable owner');
+  const userId = actorUserId || ownerId;
+  if (!isSafePathSegment(userId)) throw new ExecutionContextMissingError('task has no usable actor');
   if (!session.taskId) throw new ExecutionContextMissingError('task has no id');
   let sessionKey: string;
   try {
@@ -106,9 +120,10 @@ export function executionContextForTask(session: ConversationSession): TaskExecu
   }
   const workingDirectory = taskDirectoryFor(ownerId, session.workingDirectory);
   return Object.freeze({
-    ...contextFor('task', ownerId, sessionKey),
+    ...contextFor('task', userId, sessionKey),
     origin: 'task',
     taskId: session.taskId,
+    ownerId,
     workingDirectory,
     // E4 ④a — the epic relation as saved (only a Slack-less record carries it).
     ...(session.kind === 'epic' ? { kind: 'epic' as const } : {}),
@@ -143,8 +158,10 @@ export function revalidateTaskDirectory(ctx: ExecutionContext): void {
   if (ctx.origin !== 'task' || !ctx.workingDirectory) {
     throw new ExecutionContextMissingError('not a task context with a directory');
   }
+  // The owner's root: the turn may run as another user who instructed the task (SSOT 2026-11-02).
+  const ownerId = (ctx as Partial<TaskExecutionContext>).ownerId || ctx.userId;
   const now = realDirectory(ctx.workingDirectory);
-  if (now !== ctx.workingDirectory || !now.startsWith(`/tmp/${ctx.userId}/`)) {
+  if (now !== ctx.workingDirectory || !now.startsWith(`/tmp/${ownerId}/`)) {
     throw new ExecutionContextMissingError('task working directory moved since its context was built');
   }
 }
