@@ -614,7 +614,7 @@ export interface KanbanGoal {
     /** The last completion-eval verdict that said "not yet" — what is still missing. */
     lastEvalReason?: string;
     /** The loop stopped: the goal failed again for the same reason; the owner was asked what to do next. */
-    stalled?: { at: number; reason: string };
+    stalled?: { at: number; reason: string; actions: string[] };
   };
   queue: Array<{ goalId: string; objective: string }>;
   completedCount: number;
@@ -2017,6 +2017,9 @@ function goalToKanban(s: any): KanbanGoal | undefined {
                   stalled: {
                     at: Number(goal.stall.stalledAt) || 0,
                     reason: goal.stall.reason.slice(0, GOAL_REASON_MAX),
+                    actions: Array.isArray(goal.stall.actions)
+                      ? goal.stall.actions.filter((a: unknown) => typeof a === 'string').slice(0, 3)
+                      : [],
                   },
                 }
               : {}),
@@ -11995,7 +11998,8 @@ function goalCardData(s, canEdit) {
       // Same failure twice: the loop waits for the owner's answer to the stall question.
       if (cur.stalled) {
         (d.current.meta = d.current.meta || []).push({ label: '멈춤', value: '같은 이유로 다시 실패 — 답을 기다림' });
-        d.current.note = '멈춘 이유: ' + String(cur.stalled.reason).slice(0, 300);
+        d.current.note = '멈춘 이유: ' + String(cur.stalled.reason).slice(0, 300) +
+          ((cur.stalled.actions || []).length ? ' · 다음 지시 후보: ' + cur.stalled.actions.map(function(a, i) { return (i + 1) + '. ' + a; }).join(' / ') : '');
       }
     }
   }

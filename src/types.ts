@@ -1,5 +1,7 @@
 // Session types live in somalib (shared with mcp-servers).
 // Re-export for backward compatibility — all src/ files import from './types'.
+import type { SessionGoalStall } from '@soma/slack/session-goal';
+
 export type {
   Continuation,
   HandoffContext,
@@ -215,21 +217,8 @@ export interface SessionGoalPendingEval {
   turnId: string;
 }
 
-/**
- * A stopped goal loop: the evaluator found the same failure as last time. The
- * host asked the owner which of `actions` to do next (Slack + dashboard).
- */
-export interface SessionGoalStall {
-  /** Round id carried by the question; an answer for another round is stale. */
-  stallId: string;
-  stalledAt: number;
-  /** The repeated failure reason (the evaluator's words). */
-  reason: string;
-  /** The three next instructions the evaluator expects the owner to give. */
-  actions: string[];
-  /** The evaluator's confidence that the failure is the same. */
-  confidence: number;
-}
+// Goal stall round — one definition, in the package the queue helpers live in.
+export type { SessionGoalStall };
 
 export interface SessionGoal {
   /**

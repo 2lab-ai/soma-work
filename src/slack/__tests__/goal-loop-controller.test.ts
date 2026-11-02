@@ -271,7 +271,7 @@ describe('GoalLoopController', () => {
     expect(maxParallel).toBe(1);
   });
 
-  it('S9: an unchanged work summary short-circuits the eval but still drives a continuation', async () => {
+  it('S9: below the cap the same summary is evaluated again (the stall check needs the evaluator)', async () => {
     let dispatchCount = 0;
     const h = makeHarness({
       dispatcher: async () => {
@@ -280,20 +280,34 @@ describe('GoalLoopController', () => {
       },
     });
 
-    // First settle: real eval runs, records the summary hash + reason.
     h.controller.onTurnSettled(SESSION_KEY);
     await h.controller.settled(SESSION_KEY);
     expect(dispatchCount).toBe(1);
-    expect(h.goal.continuationCount).toBe(1);
     expect(h.goal.lastEvalSummaryHash).toBeDefined();
 
-    // Second settle with the SAME goalLastTurnText: no new dispatch, but the
-    // loop still advances (reuses the prior "not complete" verdict).
+    // Same goalLastTurnText again: below the cap, a real eval runs.
     h.controller.onTurnSettled(SESSION_KEY);
     await h.controller.settled(SESSION_KEY);
-    expect(dispatchCount).toBe(1); // short-circuited — no second eval
+    expect(dispatchCount).toBe(2);
     expect(h.goal.continuationCount).toBe(2);
-    expect(h.injected).toHaveLength(2);
+  });
+
+  it('S9: at the cap an unchanged work summary short-circuits the eval', async () => {
+    let dispatchCount = 0;
+    const h = makeHarness({
+      goal: { continuationCount: 10, maxContinuations: 10 },
+      dispatcher: async () => {
+        dispatchCount += 1;
+        return JSON.stringify({ completed: false, reason: 'missing tests', remaining: ['add tests'] });
+      },
+    });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatchCount).toBe(1);
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatchCount).toBe(1); // short-circuited — same verdict, still at the cap
+    expect(h.injected).toHaveLength(0);
   });
 
   it('S9: a changed work summary does NOT short-circuit (re-evaluates)', async () => {

@@ -315,7 +315,15 @@ export class GoalLoopController {
     // eval would return the same "not complete" — skip the (expensive)
     // dispatch and reuse it. Empty summaries never short-circuit (no evidence
     // to reuse), and a `complete` verdict clears the hash so it never sticks.
-    if (workSummaryRaw !== '' && activeGoal.lastEvalSummaryHash === summaryHash && activeGoal.lastEvalReason) {
+    // Only at the cap: below it, the same output after a new turn is exactly
+    // the repeat the stall check exists for, and only the evaluator can say so
+    // (and name the three next instructions) — the dispatch is worth it.
+    if (
+      workSummaryRaw !== '' &&
+      activeGoal.lastEvalSummaryHash === summaryHash &&
+      activeGoal.lastEvalReason &&
+      activeGoal.continuationCount >= activeGoal.maxContinuations
+    ) {
       logger.info('Goal eval short-circuited — work summary unchanged since last eval', { sessionKey });
       await this.handleVerdict(
         sessionKey,
@@ -561,6 +569,9 @@ export class GoalLoopController {
     // land on a goal the stall holds.
     retireGoalCapDecision(activeGoal);
     const stall = openGoalStall(activeGoal, verdict, this.now());
+    // A later settle on the same text (a restart after the round ended without
+    // a new turn) must ask the evaluator again, not reuse this verdict.
+    activeGoal.lastEvalSummaryHash = undefined;
     this.persist();
     logger.info('Goal loop stopped — same failure as the previous evaluation', {
       sessionKey,
@@ -568,10 +579,21 @@ export class GoalLoopController {
       progressed: verdict.progressed,
       continuationCount: activeGoal.continuationCount,
     });
-    await this.postResultNotice(
-      session,
-      `🛑 Goal 자동 진행을 멈췄습니다 — 지난번과 같은 이유로 다시 실패했습니다 (확신 ${Math.round(stall.confidence * 100)}%).\n*Objective:* ${formatGoalObjectiveForSlack(activeGoal.objective)}\n*Reason:* ${verdict.reason}\n다음에 할 일을 골라 주세요. 아무 메시지나 보내도 goal이 이어집니다.`,
-    );
+    // The notice carries the three actions too: it stands in for the question
+    // when the question cannot be posted (another question is open, Slack failed).
+    const actionLines = stall.actions.map((a, i) => `${i + 1}. ${a}`).join('\n');
+    try {
+      await this.postResultNotice(
+        session,
+        `🛑 Goal 자동 진행을 멈췄습니다 — 지난번과 같은 이유로 다시 실패했습니다 (확신 ${Math.round(stall.confidence * 100)}%).\n*Objective:* ${formatGoalObjectiveForSlack(activeGoal.objective)}\n*Reason:* ${verdict.reason}\n*다음 지시 후보:*\n${actionLines}\n하나를 고르거나 직접 지시하세요 — 어떤 메시지든 goal을 이어갑니다. 멈추려면 \`goal pause\`.`,
+      );
+    } catch (err: unknown) {
+      // Never let a failed notice keep the question from being asked.
+      logger.warn('Goal stall notice could not be posted', {
+        sessionKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     if (!this.deps.askStallQuestion) return;
     try {
       await this.deps.askStallQuestion({
