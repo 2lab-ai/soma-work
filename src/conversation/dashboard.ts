@@ -4823,6 +4823,8 @@ ui-app-bar[narrow] .nt-btn-label { display: none; }
    before it is quiet; "열린 세션에도" (a kit switch) shows only while a session the owner may switch is open. */
 .topbar .td-prefix { font-size: 12px; color: var(--ib-muted); }
 .topbar .td-also { font-size: 12px; white-space: nowrap; }
+/* The kit's .ui-switch sets a display of its own, which beats the hidden attribute: say it again. */
+.topbar .td-also[hidden] { display: none; }
 /* The save line is the kit's status line (.ui-status-line, data-tone="fail" for a refused write), capped in the bar. */
 .topbar .td-status { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The user switcher is the kit's select chip (select.ui-select-chip, D7 A-11): a native <select> read as a label,
@@ -18823,9 +18825,10 @@ function ntPickerData() {
     row.effortLevels = mpLevelsOf(m.effortLevels);
     return row;
   });
-  // A dashboard task has no effort (D8): the menu hides its control.
-  var value = { model: _ntState.model, effort: _ntState.effort };
+  // A dashboard task has no effort (D8): the menu hides its control and the trigger names no level.
+  var value = { model: _ntState.model };
   if (_ntState.destination === 'task') value.effortLevels = [];
+  else value.effort = _ntState.effort;
   return { models: models, value: value, heading: '이 작업의 모델 · 추론 강도' };
 }
 

@@ -273,6 +273,8 @@ describe('top-bar defaults: one <ui-model-picker> sets the default model and eff
     expect(sw.hidden).toBe(false);
     expect(sw.title).toContain('대시보드 개선');
     expect(clientFn('openPanel')).toContain('paintDefaultsScope();');
+    // The kit's .ui-switch display would beat the hidden attribute without its own rule.
+    expect(TEMPLATE).toContain('.topbar .td-also[hidden] { display: none; }');
     expect(clientFn('closePanel')).toContain('paintDefaultsScope();');
   });
 

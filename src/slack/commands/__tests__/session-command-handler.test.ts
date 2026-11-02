@@ -258,3 +258,22 @@ describe('SessionCommandHandler — %effort takes only a level the session’s m
     expect(session.effort).toBe('ultra');
   });
 });
+
+describe('SessionCommandHandler — %model carries the effort over to the levels the new model runs', () => {
+  it('ultra on sol → opus: the session effort becomes max and the reply says so', async () => {
+    const session: Record<string, unknown> = { model: 'gpt-6.1-sol[1m]', effort: 'ultra' };
+    const handler = new SessionCommandHandler({
+      claudeHandler: { getSession: vi.fn().mockReturnValue(session) },
+    } as unknown as CommandDependencies);
+    const ctx: CommandContext = {
+      user: 'U1',
+      channel: 'C1',
+      threadTs: '171.100',
+      text: '%model opus',
+      say: vi.fn().mockResolvedValue({ ts: 'ts1' }),
+    };
+    await handler.execute(ctx);
+    expect(session).toMatchObject({ model: 'claude-opus-4-1-20250805', effort: 'max' });
+    expect((ctx.say as ReturnType<typeof vi.fn>).mock.calls[0][0].text).toContain('Effort is now *max*');
+  });
+});

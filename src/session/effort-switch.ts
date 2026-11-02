@@ -22,6 +22,8 @@ export interface EffortSwitchDeps {
    * the model's levels, so a pick outside them is stale or forged.
    */
   menu?(model: string): readonly string[] | undefined;
+  /** The owner's default model — what a session without a model of its own runs. */
+  ownerDefaultModel?(ownerId: string | undefined): string | undefined;
   save(): void;
   broadcast(): void;
 }
@@ -61,7 +63,8 @@ export function switchSessionEffort(sessionKey: string, input: unknown, deps: Ef
   if (session.terminated) throw new EffortSwitchError(409, '종료된 세션은 effort를 바꿀 수 없습니다');
 
   // The levels the session's model runs; without a menu, the SDK levels (never `ultra`).
-  const menu = (session.model && deps.menu?.(session.model)) || SDK_EFFORT_LEVELS;
+  const model = session.model || deps.ownerDefaultModel?.(session.ownerId);
+  const menu = (model && deps.menu?.(model)) || SDK_EFFORT_LEVELS;
   if (!menu.includes(effort)) {
     throw new EffortSwitchError(
       400,

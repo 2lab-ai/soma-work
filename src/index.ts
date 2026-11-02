@@ -1027,6 +1027,7 @@ async function start() {
         getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
         clamp: clampEffortToModel,
         menu: allowedEffortsFor,
+        ownerDefaultModel: (ownerId) => (ownerId ? userSettingsStore.getUserDefaultModel(ownerId) : undefined),
         save: () => claudeHandler.saveSessions(),
         broadcast: () => broadcastSessionUpdate(),
       }),

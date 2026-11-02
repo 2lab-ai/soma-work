@@ -932,7 +932,7 @@ describe('the task’s model and effort — one <ui-model-picker> (ntPickerData 
 
   it('a dashboard task has no effort: the menu hides its control', () => {
     const { ntPickerData } = setup({ model: 'opus[1m]', effort: 'max', destination: 'task' });
-    expect(ntPickerData().value).toEqual({ model: 'opus[1m]', effort: 'max', effortLevels: [] });
+    expect(ntPickerData().value).toEqual({ model: 'opus[1m]', effortLevels: [] });
   });
 
   it('a model pick carries the effort over to the levels the new model runs — it can never send a level its model cannot take', () => {
