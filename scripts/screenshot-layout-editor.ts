@@ -442,12 +442,11 @@ async function run(browser: import('playwright').Browser, width: number, height:
   });
   check(
     /중지/.test(body) &&
-      // The refs wrap on a phone: one space for any run of white space.
-      /#700 열림/.test(body.replace(/\s+/g, ' ')) &&
-      /PAY-12 In Progress/.test(body.replace(/\s+/g, ' ')) &&
+      // #809 say it once: the face's 연결 row shows #700 and PAY-12, so the open card does not list them again.
+      !/#700|PAY-12/.test(body) &&
       /\[작업 창\]/.test(body) &&
       detail.line,
-    `${tag} R10 the open card (actions, links, the task window) and its detail card (the task line)`,
+    `${tag} R10 the open card (actions, the task window; the face's links not again) and its detail card (the task line)`,
     { body: body.slice(0, 200), detail },
   );
   check(
