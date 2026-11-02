@@ -13,6 +13,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { viewerScope } from '../__fixtures__/viewer-scope';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -45,6 +46,7 @@ function clientVar(name: string): string {
   return cook(TEMPLATE.slice(start + 1, end + 3));
 }
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+  ({ fns, inject } = viewerScope(fns, inject));
   const names = Object.keys(inject);
   const setter = '__set: function(n, v) { eval(n + " = v"); }';
   const getter = '__get: function(n) { return eval(n); }';
@@ -334,6 +336,7 @@ describe('P3 — the open card follows the plan', () => {
       'acPermissionsHtml',
       'acGoalDecisionHtml',
       'acQuestionHtml',
+      'renderEpicPlan',
       'renderCardBody',
     ],
     ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy', 'VIEW_PLANS'],

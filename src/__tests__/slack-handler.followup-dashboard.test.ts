@@ -257,6 +257,46 @@ describe('SlackHandler — the dashboard’s follow-up queue controls', () => {
     });
   });
 
+  // SSOT 2026-11-02 — a dashboard user who may not manage the session presses as
+  // themselves, so the button's own rules answer: the interrupt policy for Send now
+  // and Cancel (here: refused), only the author for Edit (their own note: allowed).
+  describe('a presser who may not manage the session (SSOT 2026-11-02)', () => {
+    it('Cancel and Send now ask the interrupt policy about that user, not the owner', async () => {
+      const canInterrupt = handlerAny.claudeHandler.canInterrupt as ReturnType<typeof vi.fn>;
+      canInterrupt.mockImplementation((_c: string, _t: string, user: string) => user === 'U_OWNER');
+      const item = park({ ts: '303.1' });
+      const press = { itemId: item.id, epoch: item.epoch, actorUserId: 'U_OTHER', manages: false };
+      expect(await act({ ...press, op: 'cancel' })).toMatchObject({ ok: false, status: 409 });
+      expect(await act({ ...press, op: 'promote' })).toMatchObject({ ok: false, status: 409 });
+      expect(queue().get(SESSION_KEY, item.id)?.state).toBe('queued');
+      expect(canInterrupt).toHaveBeenCalledWith(CHANNEL, THREAD_TS, 'U_OTHER');
+      // One who manages it (the owner, an admin in admin mode) presses as the owner.
+      expect(await act({ ...press, op: 'cancel', manages: true })).toMatchObject({ ok: true });
+      expect(queue().get(SESSION_KEY, item.id)?.state).toBe('cancelled');
+    });
+
+    it('Edit: their own note yes, the owner’s words no', async () => {
+      const theirs = park({ ts: '303.2', user: 'U_OTHER', text: 'theirs' });
+      const press = { op: 'edit', actorUserId: 'U_OTHER', manages: false };
+      expect(await act({ ...press, itemId: theirs.id, epoch: theirs.epoch, text: 'fixed' })).toEqual({ ok: true });
+      const owners = park({ ts: '303.3', text: 'owner words' });
+      expect(await act({ ...press, itemId: owners.id, epoch: owners.epoch, text: 'x' })).toMatchObject({
+        ok: false,
+        status: 403,
+      });
+      expect(queue().get(SESSION_KEY, owners.id)?.message.text).toBe('owner words');
+      // An admin in admin mode (manages) edits their own note — and not the owner's (only the author rewrites).
+      const admins = park({ ts: '303.4', user: 'U_ADMIN', text: 'admin words' });
+      const admin = { op: 'edit', actorUserId: 'U_ADMIN', manages: true };
+      expect(await act({ ...admin, itemId: admins.id, epoch: admins.epoch, text: 'fixed' })).toEqual({ ok: true });
+      const owners2 = park({ ts: '303.5', text: 'owner words 2' });
+      expect(await act({ ...admin, itemId: owners2.id, epoch: owners2.epoch, text: 'x' })).toMatchObject({
+        ok: false,
+        status: 403,
+      });
+    });
+  });
+
   it('a session this process does not have is a 404', async () => {
     const res = await handler.handleDashboardFollowupAction({
       sessionKey: 'C9:9.9',

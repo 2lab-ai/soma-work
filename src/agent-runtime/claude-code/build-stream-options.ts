@@ -347,6 +347,11 @@ export async function buildStreamOptions(
   // confines the native file tools of a non-admin to the same roots
   // (`native-write-boundary.ts`); with the sandbox off neither is confined.
   const sandboxDisabled = contextUser ? userSettingsStore.getUserSandboxDisabled(contextUser) : false;
+  // A task turn run by a user other than its owner (SSOT 2026-11-02): it works in the owner's task folder.
+  const isOtherUsersTaskTurn =
+    execCtx?.origin === 'task' &&
+    (execCtx as { ownerId?: string }).ownerId !== undefined &&
+    (execCtx as { ownerId?: string }).ownerId !== execCtx.userId;
   const sandboxUserDir =
     contextUser && isSafePathSegment(contextUser) ? normalizeTmpPath(path.join('/tmp', contextUser)) : undefined;
   const nativeWriteRoots: readonly string[] | undefined = sandboxDisabled
@@ -364,6 +369,12 @@ export async function buildStreamOptions(
     // in auto mode goes to the safety classifier). Live state (abort signal, handoff
     // context) is resolved per call so mid-session aborts and handoff changes are honored.
     const policyUser = execCtx.userId;
+    // The owner's root only while the OS sandbox holds Bash's writes to the task folder and the sender's
+    // root (trinity R2, fable P2): with the sandbox off the cross-user text check is the only Bash guard left.
+    const crossUserRoot =
+      execCtx.origin === 'task' && !sandboxDisabled
+        ? (execCtx as { ownerId?: string }).ownerId || policyUser
+        : policyUser;
     const policyIsAdmin = execCtx.isAdmin;
     const cachedPermConfig = CONFIG_FILE ? loadMcpToolPermissions(CONFIG_FILE) : {};
     const gatedServerNames = getPermissionGatedServers(cachedPermConfig);
@@ -390,7 +401,10 @@ export async function buildStreamOptions(
       // the repository of a new worktree are resolved from it, as the SDK does.
       const hookCwd = (input as { cwd?: string }).cwd || workingDirectory || process.cwd();
       const ctx: ToolPolicyContext = {
-        user: policyUser,
+        // The /tmp root the cross-user guard holds the turn to: a task's owner's, the root the task lives in
+        // (SSOT 2026-11-02 — another user who instructs it works in that folder). Writes stay held to the task
+        // folder and the sender's own root (`nativeWriteRoots`, the sandbox); grants and approvals stay the sender's.
+        user: crossUserRoot,
         isAdmin: policyIsAdmin,
         mode: somaPermissionMode,
         aborted: abortController?.signal.aborted ?? false,
@@ -476,7 +490,8 @@ export async function buildStreamOptions(
           }
           if (taskApprover) {
             // #599 ⑤ — the same escalation a Slack turn would ask about waits for
-            // the task owner's answer on the dashboard. Fail closed on anything else.
+            // the answer of the turn's user (the owner, or whoever instructed it — SSOT
+            // 2026-11-02) on the dashboard. Fail closed on anything else.
             logger.warn('Escalation waiting for the dashboard approval (#599)', {
               tool: toolName,
               user: policyUser,
@@ -703,7 +718,9 @@ export async function buildStreamOptions(
     const sandboxConfig: NonNullable<Options['sandbox']> = {
       enabled: true,
       autoAllowBashIfSandboxed: true,
-      failIfUnavailable: false,
+      // A task turn run by someone other than its owner never runs unsandboxed: its cross-user Bash check
+      // holds to the owner's root, so the OS sandbox is what keeps its writes to the task folder (SSOT 2026-11-02).
+      failIfUnavailable: isOtherUsersTaskTurn,
       allowUnsandboxedCommands: false,
     };
     // Mount only the user's /tmp/{userId} directory for writes.

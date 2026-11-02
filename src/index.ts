@@ -869,12 +869,17 @@ async function start() {
       message: string,
       onSent?: (sent: { channel: string; ts: string }) => void,
       attachments: NewTaskAttachment[] = [],
+      /** The signed-in user who sent it (SSOT 2026-11-02); none (a viewer token, the owner's own compact) is the owner. */
+      actorUserId?: string,
     ): Promise<{ channel: string; ts: string } | undefined> => {
       const session = claudeHandler.getSessionByKey(sessionKey);
       if (!session) {
         logger.warn('Dashboard command: session not found', { sessionKey });
         return undefined;
       }
+      // The message enters the thread as its sender's, as if they had typed it
+      // there: a Slack turn runs as the user who wrote it (SSOT 2026-11-02).
+      const sender = actorUserId || session.ownerId;
       // Post the user's message to the Slack thread so it's visible,
       // styled as a quote block with dashboard origin indicator.
       // Validate required fields before attempting Slack echo — fail fast on programming errors
@@ -906,7 +911,7 @@ async function start() {
           blocks: [
             {
               type: 'context',
-              elements: [{ type: 'mrkdwn', text: `💬 *<@${session.ownerId}>* via Dashboard` }],
+              elements: [{ type: 'mrkdwn', text: `💬 *<@${sender}>* via Dashboard` }],
             },
             {
               type: 'section',
@@ -941,7 +946,7 @@ async function start() {
           channel: session.channelId,
           thread_ts: session.threadTs,
           text: message,
-          user: session.ownerId,
+          user: sender,
           ts,
           ...(files ? { files } : {}),
         } as any,
@@ -954,8 +959,8 @@ async function start() {
       });
       return { channel: session.channelId, ts };
     };
-    setDashboardCommandHandler(async (sessionKey, message, attachments) => {
-      await injectDashboardMessage(sessionKey, message, undefined, attachments);
+    setDashboardCommandHandler(async (sessionKey, message, attachments, actorUserId) => {
+      await injectDashboardMessage(sessionKey, message, undefined, attachments, actorUserId);
     });
 
     // Connect dashboard: the session's follow-up queue on the panel
@@ -1015,9 +1020,9 @@ async function start() {
     );
 
     // Connect dashboard: choice answer handler (dashboard button click → same path as Slack button)
-    setDashboardChoiceAnswerHandler(async (sessionKey: string, choiceId: string, label: string, question: string) => {
+    setDashboardChoiceAnswerHandler(async (sessionKey, choiceId, label, question, actorUserId) => {
       try {
-        await slackHandler.handleDashboardChoiceAnswer(sessionKey, choiceId, label, question);
+        await slackHandler.handleDashboardChoiceAnswer(sessionKey, choiceId, label, question, actorUserId);
         logger.info('Dashboard: choice answered', { sessionKey, choiceId, label });
       } catch (error) {
         logger.error('Dashboard: choice answer failed', { sessionKey, choiceId, label, error });
@@ -1033,9 +1038,9 @@ async function start() {
 
     // Connect dashboard: multi-choice form answer handler
     setDashboardMultiChoiceAnswerHandler(
-      async (sessionKey: string, selections: Record<string, { choiceId: string; label: string }>) => {
+      async (sessionKey: string, selections: Record<string, { choiceId: string; label: string }>, actorUserId) => {
         try {
-          await slackHandler.handleDashboardMultiChoiceAnswer(sessionKey, selections);
+          await slackHandler.handleDashboardMultiChoiceAnswer(sessionKey, selections, actorUserId);
           logger.info('Dashboard: multi-choice answered', {
             sessionKey,
             selectionCount: Object.keys(selections).length,
@@ -1048,9 +1053,9 @@ async function start() {
     );
 
     // Connect dashboard: hero "Submit All Recommended" (group-only one-click)
-    setDashboardSubmitRecommendedHandler(async (sessionKey: string) => {
+    setDashboardSubmitRecommendedHandler(async (sessionKey: string, actorUserId) => {
       try {
-        await slackHandler.handleDashboardSubmitRecommended(sessionKey);
+        await slackHandler.handleDashboardSubmitRecommended(sessionKey, actorUserId);
         logger.info('Dashboard: submit-recommended completed', { sessionKey });
       } catch (error) {
         logger.error('Dashboard: submit-recommended failed', { sessionKey, error });
