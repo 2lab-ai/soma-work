@@ -31,7 +31,18 @@ import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 import { isAwaitingUserChoice, TurnRunner, V1QueryAdapter } from './agent-session';
 import type { ClaudeHandler } from './claude-handler';
 import { getFollowupQueueCapacity, getReleaseNotesChannels } from './config';
-import { captureUserMedia, recordUserTurn } from './conversation/recorder';
+import { captureUserMedia, getConversation, recordUserTurn } from './conversation/recorder';
+import { readWorkLog } from './conversation/work-log';
+import {
+  buildRollbackPointsView,
+  CONTEXT_ROLLBACK_REFUSAL_TEXT,
+  type ContextRollbackRefusal,
+  cancelContextRollback,
+  type RollbackPointsView,
+  requestContextRollback,
+  rollbackInputPoints,
+  rollbackWorkLogPoints,
+} from './session/context-rollback';
 import { FileHandler, type ProcessedFile } from './file-handler';
 import { getLastCommandChannelStore } from './last-command-channel-store';
 import { Logger } from './logger';
@@ -113,7 +124,7 @@ import {
   restoreGoalState,
   snapshotGoalState,
 } from './slack/session-goal';
-import { announceSessionNotice } from './slack/session-notice';
+import { announceSessionNotice, recordSessionNotice } from './slack/session-notice';
 import { SummaryService } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
 import type { SlackTaskEntry } from './slack/task-entry';
@@ -6771,6 +6782,63 @@ export class SlackHandler {
   /** Expose todo manager for dashboard task accessor */
   getTodoManager(): TodoManager {
     return this.todoManager;
+  }
+
+  /**
+   * Context rollback (#744): the points the dashboard picker offers — the
+   * owner's inputs and the work log's cut points of this context — and whether
+   * a rollback can be asked now. `actorUserId` is the signed-in user; the route
+   * already passed the owner gate, so none (a viewer token) is the owner.
+   */
+  async getContextRollbackPoints(sessionKey: string, actorUserId?: string): Promise<RollbackPointsView | undefined> {
+    const session = this.claudeHandler.getSessionByKey(sessionKey);
+    if (!session) return undefined;
+    const record = session.conversationId ? await getConversation(session.conversationId) : null;
+    const page = session.conversationId ? await readWorkLog(session.conversationId, { limit: 500 }) : { entries: [] };
+    return buildRollbackPointsView(session, rollbackInputPoints(session, record), rollbackWorkLogPoints(session, page.entries), {
+      actor: actorUserId || session.ownerId,
+      requestActive: this.requestCoordinator.isRequestActive(sessionKey),
+    });
+  }
+
+  /**
+   * Context rollback (#744) from the dashboard: ask for one (to an input or a
+   * work-log point) or cancel a waiting one. The one gate is
+   * `requestContextRollback`; the thread is told, as for the `rollback` command.
+   */
+  async handleContextRollback(
+    sessionKey: string,
+    body: { anchor: string; label: string; source: 'input' | 'worklog' } | { cancel: true },
+    actorUserId?: string,
+  ): Promise<{ ok: true; cancelled?: boolean } | { ok: false; reason: ContextRollbackRefusal | 'not-found' }> {
+    const session = this.claudeHandler.getSessionByKey(sessionKey);
+    if (!session) return { ok: false, reason: 'not-found' };
+    const actor = actorUserId || session.ownerId;
+    const threadTs = session.threadRootTs || session.threadTs;
+    const tell = async (text: string) => {
+      recordSessionNotice(session, text, { sessionKey });
+      if (session.channelId && threadTs && session.slackless !== true) {
+        await this.slackApi.postSystemMessage(session.channelId, text, { threadTs }).catch(() => undefined);
+      }
+    };
+    if ('cancel' in body) {
+      if (actor !== session.ownerId) return { ok: false, reason: 'not-owner' };
+      const had = cancelContextRollback(session);
+      if (had) {
+        this.claudeHandler.saveSessions();
+        await tell('↩️ 예약된 문맥 되돌리기를 취소했습니다 (대시보드).');
+      }
+      return { ok: true, cancelled: had };
+    }
+    const result = requestContextRollback(session, body, actor, {
+      requestActive: this.requestCoordinator.isRequestActive(sessionKey),
+    });
+    if (!result.ok) return result;
+    this.claudeHandler.saveSessions();
+    await tell(
+      `⏪ 다음 턴부터 모델 문맥을 되돌립니다 — ${result.rewind.label} (대시보드). 그 뒤의 대화는 문맥에서 빠지고, 파일 변경은 되돌리지 않습니다. 다음 지시를 보내세요.`,
+    );
+    return { ok: true };
   }
 
   /**
