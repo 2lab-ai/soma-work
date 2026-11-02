@@ -216,6 +216,12 @@ describe('dashboard task session (per-task overrides)', () => {
     expect(existing.effort).toBe('max');
   });
 
+  it('a new task’s ultra reaches the session (the dialog offers it only on a model that runs it)', async () => {
+    createdSession.effort = 'xhigh';
+    await sessionInitializer.initialize(dashboardTaskEvent({ effortOverride: 'ultra' }) as any, '/test/dir');
+    expect(createdSession.effort).toBe('ultra');
+  });
+
   it('an invalid effort value is ignored (user default stays)', async () => {
     createdSession.effort = 'xhigh';
     await sessionInitializer.initialize(dashboardTaskEvent({ effortOverride: 'ludicrous' }) as any, '/test/dir');

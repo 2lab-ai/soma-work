@@ -57,10 +57,29 @@ describe('the effort follows the model', () => {
         compactTs: '1.1',
         armed: true,
         effort: 'xhigh',
+        effortFrom: 'ultra',
       },
     };
     expect(applyPendingModelSwitch(s, cw, 2)).toMatchObject({ nickname: 'grok[1m]' });
     expect(s).toMatchObject({ model: 'grok-4.6', effort: 'xhigh' });
+  });
+
+  it('a level the owner set while the switch waited is theirs: the parked effort does not overwrite it', () => {
+    const s: Record<string, any> = {
+      model: 'gpt-6.1-sol[1m]',
+      effort: 'low',
+      pendingModelSwitch: {
+        model: 'grok-4.6',
+        nickname: 'grok[1m]',
+        requestedAt: 1,
+        compactTs: '1.1',
+        armed: true,
+        effort: 'xhigh',
+        effortFrom: 'ultra',
+      },
+    };
+    applyPendingModelSwitch(s, cw, 2);
+    expect(s).toMatchObject({ model: 'grok-4.6', effort: 'low' });
   });
 });
 

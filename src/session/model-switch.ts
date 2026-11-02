@@ -228,7 +228,7 @@ export async function switchSessionModel(
       model,
       nickname,
       requestedAt: (deps.now ?? Date.now)(),
-      ...(effort ? { effort } : {}),
+      ...(effort ? { effort, effortFrom: session.effort } : {}),
     };
     session.pendingModelSwitch = parked;
     // This compact is the one the context needs: a threshold compact already
