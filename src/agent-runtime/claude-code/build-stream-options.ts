@@ -477,6 +477,8 @@ export async function buildStreamOptions(
                   // Default classifier model = the session's CURRENT model
                   // (#model-call-unify). Resolved on `options.model` earlier.
                   model: options.model,
+                  // The SDK cancelling this hook (the turn stopped) stops the guardian call too.
+                  ...(hookOptions?.signal ? { signal: hookOptions.signal } : {}),
                 })
                 .catch((err) => ({
                   verdict: 'ask' as const,
