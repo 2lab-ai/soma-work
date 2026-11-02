@@ -257,7 +257,7 @@ export function recordUserTurn(
   userName?: string,
   userId?: string,
   attachments?: readonly TurnAttachment[],
-  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean } = {},
+  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean; anchor?: string } = {},
 ): void {
   // Fire-and-forget
   _recordUserTurnAsync(conversationId, content, userName, userId, attachments, opts).catch((err) => {
@@ -275,7 +275,7 @@ async function _recordUserTurnAsync(
   userName: string | undefined,
   userId: string | undefined,
   attachments: readonly TurnAttachment[] | undefined,
-  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean },
+  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean; anchor?: string },
 ): Promise<void> {
   const record = await getOrLoadConversation(conversationId);
   if (!record) {
@@ -299,6 +299,7 @@ async function _recordUserTurnAsync(
     ...(attachments && attachments.length > 0 ? { attachments: [...attachments] } : {}),
     ...(origin ? { origin: { by: origin.by } } : {}),
     ...(opts.compact ? { compact: estimateMs !== undefined ? { estimateMs } : {} } : {}),
+    ...(typeof opts.anchor === 'string' && opts.anchor ? { anchor: opts.anchor } : {}),
   };
 
   record.turns.push(turn);
