@@ -704,6 +704,9 @@ describe('submitNewTask — the submitted state is the one sent (#640 R2)', () =
           files,
         }),
         ntPendingStatus: () => {},
+        // One launch at a time (#747 review R1): none ahead of this one.
+        ntPendingInFlight: () => false,
+        _ntLaunchQueue: Promise.resolve(),
         ntLaunchFailed: () => {
           throw new Error('should not fail');
         },

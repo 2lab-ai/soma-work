@@ -498,7 +498,7 @@ describe('N4 — the page: no lane; renderBoard places the children', () => {
     expect(rb).toContain('keys: place(g.items, kb, g.open),');
     // RUNNING leads with the new task dialog's 시작 중 cards (SSOT 2026-11-02 T1), then its own list.
     expect(rb).toContain(
-      "{ id: 'working', label: BOARD_LABELS.working, keys: pendingKeys.concat(keys(rest.working, 'working', kb)) },",
+      "{ id: 'working', label: BOARD_LABELS.working, keys: pending.working.concat(keys(rest.working, 'working', kb)) },",
     );
   });
 
