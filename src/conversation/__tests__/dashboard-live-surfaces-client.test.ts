@@ -6,6 +6,7 @@
  *
  *   T1/T2  collapsed card: total tokens + API-equivalent cost, counted up live
  *   T3     collapsed card: the task in progress — its id, name and running time
+ *          (the collapsed card is <ui-agent-inbox>'s; the page hands it cardOf's data)
  *   T7/T8  task timeline / panel: task ids, elapsed time and tool calls of
  *          completed tasks, earlier tasks on demand
  */
@@ -40,7 +41,12 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
+/** The page's chrome words (STRINGS), as served: the board's Korean words live there (D2 group 6). */
+const PAGE_STRINGS = new Function(
+  `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
+)();
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+  inject = { STRINGS: PAGE_STRINGS, ...inject };
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
@@ -51,50 +57,47 @@ const SHOW_ALL = {
   dhMax: (_f: string, d: number) => d,
   dhTruncate: () => null,
   currentUserId: 'U1',
-  // The artifact row has its own suite (dashboard-artifacts-client.test.ts).
-  isSiblingSession: () => false,
-  artFaceChips: () => '',
-  umFaceBadge: () => '',
 };
-const FACE_FNS = [
-  'esc',
-  'escAttr',
-  'escJs',
+// The collapsed face is @2lab.ai/ui <ui-agent-inbox>'s: the page hands it the
+// card data (cardOf), text and numbers only; the element draws, escapes, ticks
+// and counts it up ('renders the face: task, sub-agents, tokens · cost, files,
+// status tag with a live clock, metrics', 'escapes every user and model string').
+const CARD_ENV = { ...SHOW_ALL, _ownerIndex: null, SELF_INSTANCE_NAME: 'inst' };
+const CARD_OF_FNS = [
   'toNum',
   'formatTokens',
-  'formatCount',
-  'cardTotalTokens',
-  'cardCurrentTask',
-  'renderCardTaskRow',
-  'agentStatusOf',
-  'agentCounts',
-  'renderCardAgents',
-  'renderCardUsage',
   'formatTaskTime',
+  'permissionSummary',
+  'cardSummary',
   'pendingAutoResume',
   'autoResumeLabel',
-  'cardSummary',
-  'doneTimeOf',
-  'cardAgo',
-  'renderCardStatus',
-  'renderOwnerBadge',
+  'cardCurrentTask',
+  'cardTaskRow',
+  'agentStatusOf',
+  'agentCounts',
+  'agentDotOf',
+  'cardTotalTokens',
   'ctxLevel',
   'ctxPercent',
-  'renderCardPr',
-  'renderCardFace',
+  'cardCtxTitle',
+  'cardPrMetric',
+  'cardLinksFace',
+  '_hashStr',
+  'ownerBadgeHue',
+  'isSiblingSession',
+  'cardOf',
 ];
-const FACE_VARS = [
-  'SPARK_SVG',
-  'WAIT_SVG',
-  'TASKS_SVG',
-  'CTX_SVG',
+const CARD_OF_VARS = [
   'PR_STATE_LABEL',
-  'PR_SVG',
-  'RESUME_SVG',
+  'CARD_LINK_KIND',
+  'CARD_LINK_TONES',
+  'PR_STATE_TONE',
   'AGENT_STATUS_LABEL',
-  'AGENT_DOTS_MAX',
-  'AGENTS_SVG',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'OWNER_BADGE_HUES',
 ];
+type Face = { cardOf(s: unknown, col: string): Record<string, unknown>; cardTotalTokens(u: unknown): number };
 
 function workingCard(over: Record<string, unknown> = {}) {
   return {
@@ -130,16 +133,13 @@ function workingCard(over: Record<string, unknown> = {}) {
 }
 
 describe('collapsed card: total tokens and cost (T1/T2)', () => {
-  const face = load<{ renderCardFace(s: unknown, col: string): string; cardTotalTokens(u: unknown): number }>(
-    FACE_FNS,
-    FACE_VARS,
-    SHOW_ALL,
-  );
+  const face = load<Face>(CARD_OF_FNS, CARD_OF_VARS, CARD_ENV);
 
   it('shows the session total of every token kind and the API-equivalent cost, as count-up targets', () => {
-    const html = face.renderCardFace(workingCard(), 'working');
-    expect(html).toContain('<span class="cnt" data-cnt="tok" data-to="6500">6,500</span>');
-    expect(html).toContain('<span class="cnt" data-cnt="cost" data-to="1.2345">$1.23</span>');
+    const c = face.cardOf(workingCard(), 'working');
+    // The numbers the element counts up to; it formats them ("6,500", "$1.23").
+    expect(c.tokens).toBe(6500);
+    expect(c.costUsd).toBe(1.2345);
   });
 
   it('total = input + output + cache read + cache write', () => {
@@ -155,59 +155,62 @@ describe('collapsed card: total tokens and cost (T1/T2)', () => {
   });
 
   it('every column shows it, also a finished card; a card without usage shows no usage row', () => {
-    expect(face.renderCardFace(workingCard(), 'idle')).toContain('data-cnt="tok"');
-    expect(face.renderCardFace(workingCard(), 'closed')).toContain('data-cnt="cost"');
-    expect(face.renderCardFace(workingCard({ tokenUsage: undefined }), 'working')).not.toContain('card-usage');
+    expect(face.cardOf(workingCard(), 'idle').tokens).toBe(6500);
+    expect(face.cardOf(workingCard(), 'closed').costUsd).toBe(1.2345);
+    const none = face.cardOf(workingCard({ tokenUsage: undefined }), 'working');
+    expect(none.tokens).toBeUndefined();
+    expect(none.costUsd).toBeUndefined();
   });
 
   it('follows the dashboard header fields: tokens and cost hide independently', () => {
-    const noCost = load<{ renderCardFace(s: unknown, col: string): string }>(FACE_FNS, FACE_VARS, {
-      ...SHOW_ALL,
-      dhShow: (f: string) => f !== 'cost',
-    });
-    const html = noCost.renderCardFace(workingCard(), 'working');
-    expect(html).toContain('data-cnt="tok"');
-    expect(html).not.toContain('data-cnt="cost"');
+    const noCost = load<Face>(CARD_OF_FNS, CARD_OF_VARS, { ...CARD_ENV, dhShow: (f: string) => f !== 'cost' });
+    const c = noCost.cardOf(workingCard(), 'working');
+    expect(c.tokens).toBe(6500);
+    expect(c.costUsd).toBeUndefined();
+    const noTokens = load<Face>(CARD_OF_FNS, CARD_OF_VARS, { ...CARD_ENV, dhShow: (f: string) => f !== 'tokens' });
+    const d = noTokens.cardOf(workingCard(), 'working');
+    expect(d.tokens).toBeUndefined();
+    expect(d.costUsd).toBe(1.2345);
   });
 
   it('a hostile number renders as a plain number', () => {
-    const html = face.renderCardFace(
+    const c = face.cardOf(
       workingCard({ tokenUsage: { totalInputTokens: '"><img src=x onerror=alert(1)>', totalCostUsd: 'x' } }),
       'working',
     );
-    expect(html).not.toMatch(/onerror|<img/);
-    expect(html).toContain('data-to="0"');
+    expect(c.tokens).toBe(0);
+    expect(c.costUsd).toBe(0);
+    expect(JSON.stringify(c)).not.toMatch(/onerror|<img/);
   });
 });
 
 describe('collapsed card: the task in progress (T3)', () => {
-  const face = load<{ renderCardFace(s: unknown, col: string): string }>(FACE_FNS, FACE_VARS, SHOW_ALL);
+  const face = load<Face>(CARD_OF_FNS, CARD_OF_VARS, CARD_ENV);
 
   it('names the running task with its id and a live elapsed timer', () => {
-    const html = face.renderCardFace(workingCard(), 'working');
-    expect(html).toContain('<span class="ct-id">#T2</span>');
-    expect(html).toContain('<span class="ct-name">Write the parser</span>');
-    expect(html).toContain('<span class="ct-time task-elapsed" data-since="61000"></span>');
+    // The element ticks the timer from startedAt.
+    expect(face.cardOf(workingCard(), 'working').task).toEqual({
+      label: 'Write the parser',
+      id: 'T2',
+      startedAt: 61_000,
+    });
   });
 
   it('the summary line no longer repeats the task the task row already shows', () => {
-    const html = face.renderCardFace(
-      workingCard({ summaryTitle: 'Parser rewrite', displayHeadline: 'Headline' }),
-      'working',
-    );
-    expect(html).toContain('<div class="card-summary">Parser rewrite</div>');
-    expect(html.match(/Write the parser/g)).toHaveLength(1);
+    const c = face.cardOf(workingCard({ summaryTitle: 'Parser rewrite', displayHeadline: 'Headline' }), 'working');
+    expect(c.summary).toBe('Parser rewrite');
+    expect(JSON.stringify(c).match(/Write the parser/g)).toHaveLength(1);
   });
 
   it('a waiting card still shows its task; finished cards and cards without a running task show none', () => {
-    expect(face.renderCardFace(workingCard(), 'waiting')).toContain('card-task');
-    expect(face.renderCardFace(workingCard(), 'idle')).not.toContain('card-task');
+    expect(face.cardOf(workingCard(), 'waiting').task).toBeDefined();
+    expect(face.cardOf(workingCard(), 'idle').task).toBeUndefined();
     const noneRunning = workingCard({ tasks: [{ id: 'T1', content: 'a', status: 'pending', toolCalls: 0 }] });
-    expect(face.renderCardFace(noneRunning, 'working')).not.toContain('card-task');
+    expect(face.cardOf(noneRunning, 'working').task).toBeUndefined();
   });
 
-  it('escapes the task name and id', () => {
-    const html = face.renderCardFace(
+  it('the task name and id are text for the element to escape; a start time that is not a number is dropped', () => {
+    const c = face.cardOf(
       workingCard({
         tasks: [
           { id: '<b>', content: '<img src=x onerror=alert(1)>', status: 'in_progress', startedAt: 'x', toolCalls: 0 },
@@ -215,110 +218,109 @@ describe('collapsed card: the task in progress (T3)', () => {
       }),
       'working',
     );
-    expect(html).not.toMatch(/<img|<b>/);
-    expect(html).not.toContain('data-since="x"');
+    expect(c.task).toEqual({ label: '<img src=x onerror=alert(1)>', id: '<b>' });
   });
 });
 
-describe('count-up animation of the usage numbers (T1/T2)', () => {
-  function rig(opts: { animate?: boolean; reduce?: boolean } = {}) {
-    const frames: Array<(t: number) => void> = [];
-    let now = 0;
-    const m = load<{
-      startCountUp(el: unknown, id: string): void;
-      countUpValue(from: number, to: number, p: number): number;
-    }>(['toNum', 'formatCount', 'countUpValue', 'startCountUp'], ['COUNT_UP_MS', '_counters'], {
-      canAnimate: () => opts.animate !== false,
-      reduceMotion: () => !!opts.reduce,
-      requestAnimationFrame: (f: (t: number) => void) => frames.push(f),
-      cancelAnimationFrame: () => {},
-      performance: { now: () => now },
-    });
-    const el = (to: number, kind = 'tok') => {
-      const attrs: Record<string, string> = { 'data-cnt': kind, 'data-to': String(to) };
-      return { textContent: '', getAttribute: (k: string) => attrs[k] ?? null };
-    };
-    const run = (ms: number) => {
-      now += ms;
-      const f = frames.shift();
-      if (f) f(now);
-    };
-    return { m, el, run, frames };
-  }
+// Count-up of the usage numbers (T1/T2) is the element's (agent-inbox.ts #countUp, 900 ms ease-out, none
+// with reduced motion) — the library's 'renders the face: task, sub-agents, tokens · cost, …' owns the usage
+// row; the count-up itself has no library test yet.
 
-  it('the first paint shows the value as is; a higher value counts up to it frame by frame', () => {
-    const r = rig();
-    const a = r.el(1000);
-    r.m.startCountUp(a, 'k|tok');
-    expect(r.frames).toHaveLength(0);
-    const b = r.el(2000);
-    r.m.startCountUp(b, 'k|tok');
-    expect(b.textContent).toBe('1,000');
-    const seen: number[] = [];
-    for (let i = 0; i < 40 && r.frames.length; i++) {
-      r.run(50);
-      seen.push(Number(b.textContent.replace(/,/g, '')));
-    }
-    expect(seen[seen.length - 1]).toBe(2000);
-    expect(seen.every((v, i) => i === 0 || v >= seen[i - 1])).toBe(true);
-    expect(seen.some((v) => v > 1000 && v < 2000)).toBe(true);
-  });
-
-  it('a new value mid-count continues from the number on screen', () => {
-    const r = rig();
-    r.m.startCountUp(r.el(0), 'k|tok');
-    const b = r.el(1000);
-    r.m.startCountUp(b, 'k|tok');
-    r.run(300);
-    const mid = Number(b.textContent.replace(/,/g, ''));
-    const c = r.el(3000);
-    r.m.startCountUp(c, 'k|tok');
-    expect(Number(c.textContent.replace(/,/g, ''))).toBe(mid);
-  });
-
-  it('cost counts in dollars; a lower value and reduced motion jump straight to the value', () => {
-    const r = rig();
-    r.m.startCountUp(r.el(5, 'cost'), 'k|cost');
-    const lower = r.el(2, 'cost');
-    r.m.startCountUp(lower, 'k|cost');
-    expect(lower.textContent).toBe('$2.00');
-    const calm = rig({ reduce: true });
-    calm.m.startCountUp(calm.el(1), 'k|tok');
-    const up = calm.el(9999);
-    calm.m.startCountUp(up, 'k|tok');
-    expect(up.textContent).toBe('9,999');
-    expect(calm.frames).toHaveLength(0);
-  });
-
-  it('eases out: fast first, settling on the target', () => {
-    expect(rig().m.countUpValue(0, 100, 0)).toBe(0);
-    expect(rig().m.countUpValue(0, 100, 1)).toBe(100);
-    expect(rig().m.countUpValue(0, 100, 0.5)).toBeGreaterThan(50);
+describe('live times are <ui-elapsed> (D7 K-03)', () => {
+  it('the page loads @2lab.ai/ui/elapsed and keeps no tick of its own (D8b: the cron countdown is the element’s too) — no clock loop, no Date.now() in markup', () => {
+    expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/elapsed.js?v=${UI_LIB_VERSION}"></script>');
+    for (const gone of [
+      'function updateTimers',
+      'aqTick',
+      'updateTimersIn',
+      'card-timer-live',
+      'rel-time',
+      'task-elapsed',
+      'data-leg-started',
+      'function timeAgo',
+    ])
+      expect(TEMPLATE, gone).not.toContain(gone);
+    const h = load<{
+      elapsedHtml(since: number, title?: string): string;
+      activeTimeHtml(leg: number, acc: number, title?: string): string;
+      agoHtml(at: number): string;
+    }>(['esc', 'escAttr', 'toNum', 'formatDuration', 'formatNmSSs', 'elapsedHtml', 'activeTimeHtml', 'agoHtml'], []);
+    expect(h.elapsedHtml(61000, '활성 시간')).toBe(
+      '<ui-elapsed since="61000" lang="ko" title="활성 시간"></ui-elapsed>',
+    );
+    expect(h.agoHtml(1700000000000)).toBe('<ui-elapsed since="1700000000000" format="ago" lang="ko"></ui-elapsed>');
+    // A leg under way: since = its start less what ran before it; closed: the settled total in the page's words.
+    expect(h.activeTimeHtml(1700000000000, 65000)).toBe('<ui-elapsed since="1699999935000" lang="ko"></ui-elapsed>');
+    expect(h.activeTimeHtml(0, 65000, '활성 시간')).toBe('<span title="활성 시간">1분 05초</span>');
+    expect(h.elapsedHtml(Number.NaN)).not.toContain('NaN');
   });
 });
 
-describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
-  // Task view T2: the meta and the 전체 task count read each task's fate.
-  const tl = load<{ renderTimeline(s: unknown): string }>(
-    ['esc', 'escJs', 'toNum', 'formatDuration', 'taskFateOf', 'renderTaskMeta', 'renderTimelineItem', 'renderTimeline'],
-    ['TASK_FATE_LABEL'],
+describe('task window on the card is <ui-task-plan max foot="none"> (T7/T8, D8b D-12)', () => {
+  // Task view T2: the steps and the 전체 task count read each task's fate.
+  type Step = Record<string, unknown>;
+  const tw = load<{
+    renderCardTasks(s: unknown): string;
+    cardTaskPlanData(s: unknown): { title: string; steps: Step[]; more?: string };
+    cardTaskStep(t: unknown, i: number): Step;
+  }>(
+    [
+      'esc',
+      'escAttr',
+      'escJs',
+      'toNum',
+      'taskFateOf',
+      'cardTaskStep',
+      'cardTaskHidden',
+      'cardTasksRan',
+      'cardTaskPlanData',
+      'renderCardTasks',
+    ],
+    ['CARD_TASK_ROWS', 'CARD_TASK_STATUS'],
     { ...SHOW_ALL },
   );
 
-  it('each task shows its id; a completed task its elapsed time and tool calls', () => {
-    const html = tl.renderTimeline(workingCard());
-    expect(html).toContain('<span class="tl-id">#T1</span>');
-    expect(html).toContain('1m 0s');
-    expect(html).toContain('툴 7회');
-    expect(html).toContain('<span class="task-elapsed" data-since="61000"></span>');
-    expect(html).toContain('툴 3회');
-    // A pending task has neither time nor tool calls.
-    expect(html).toMatch(/#T3<\/span><span class="tl-text">Ship it<\/span><\/li>/);
+  it('the window is the element: dhMax rows, no phase foot, flush in the card, keyed to its session; its data where it changed', () => {
+    expect(tw.renderCardTasks(workingCard())).toBe(
+      '<ui-task-plan class="card-task-plan" lang="ko" flush max="5" foot="none" data-tp-key="inst::C1:t1"></ui-task-plan>',
+    );
+    expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/task-plan.js?v=${UI_LIB_VERSION}"></script>');
+    expect(clientFn('paintCardBody')).toContain('cardTaskPlanHydrate(b.el);');
+    expect(clientFn('cardTaskPlanHydrate')).toContain("querySelectorAll('ui-task-plan[data-tp-key]')");
+    expect(clientFn('cardTaskPlanHydrate')).toContain('taskElData(els[i], cardTaskPlanData(s));');
+    // The page's own timeline is gone: no rows, no fold line, no link of its own in the window.
+    for (const gone of ['.tl-item', 'tl-toggle', 'tl-wrap', 'function renderTimeline', 'function renderTaskMeta'])
+      expect(TEMPLATE, gone).not.toContain(gone);
+  });
+
+  it('each step carries its id (the ref), a completed one its times and tool calls, the running one its start — the element ticks it — and a pending one neither', () => {
+    const d = tw.cardTaskPlanData(workingCard());
+    expect(d.title).toBe('');
+    expect(d.steps[0]).toEqual({
+      id: 'T1',
+      ref: '#T1',
+      label: 'Explore code',
+      status: 'done',
+      startedAt: 1000,
+      endedAt: 61_000,
+      toolCalls: 7,
+    });
+    expect(d.steps[1]).toEqual({
+      id: 'T2',
+      ref: '#T2',
+      label: 'Write the parser',
+      status: 'running',
+      startedAt: 61_000,
+      toolCalls: 3,
+    });
+    expect(d.steps[2]).toEqual({ id: 'T3', ref: '#T3', label: 'Ship it', status: 'pending' });
+    // Three rows fit the window of five: no "+N" line.
+    expect(d.more).toBeUndefined();
   });
 
   // Spec 13: the open card is a window; every task of the list and the earlier
-  // lists are the panel's Tasks — 전체 task N개 → opens them there (T7 reachability kept).
-  it('completed tasks beyond the budget and earlier tasks are one click away, in the panel', () => {
+  // lists are the panel's Tasks — the element's "+N" line (ui-more) opens them there (T7 reachability kept).
+  it('completed tasks beyond the budget and earlier tasks are one press away, in the panel', () => {
     const many = workingCard({
       tasks: Array.from({ length: 8 }, (_, i) => ({
         id: `T${i + 1}`,
@@ -332,17 +334,27 @@ describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
         { id: 'T0', content: 'old plan', status: 'completed', startedAt: 1, completedAt: 2, toolCalls: 4 },
       ],
     });
-    const html = tl.renderTimeline(many);
-    expect(html).not.toContain('old plan');
-    expect(html).toContain('전체 task 9개 &rarr;');
-    expect(html).toContain("openPanel('" + many.key + "','tasks',");
+    const d = tw.cardTaskPlanData(many);
+    expect(d.steps.map((s) => s.label)).not.toContain('old plan');
+    // Three of the eight leave the window, the earlier run is the panel's too.
+    expect(d.more).toBe('+4개 더 · 전체 작업 9개 →');
+    const html = tw.renderCardTasks(many);
+    expect(html).toContain('max="5" foot="none"');
+    expect(html).not.toContain('card-more-link');
+    // ui-more → the panel's Tasks: the same call the page's link makes, focus landing by keyboard.
+    const onMore = TEMPLATE.slice(TEMPLATE.indexOf("document.addEventListener('ui-more', function(e) {"));
+    expect(onMore.slice(0, onMore.indexOf('\n});'))).toContain(
+      "openPanel(el.getAttribute('data-tp-key') || '', 'tasks', '', _atKeyed);",
+    );
   });
 
-  it('a session with only earlier tasks still offers them', () => {
-    const html = tl.renderTimeline(
+  it('the window hides nothing but earlier lists ran: the page’s own 전체 작업 N개 → (the element draws its line for its own rows only)', () => {
+    const html = tw.renderCardTasks(
       workingCard({ tasks: [], earlierTasks: [{ id: 'T9', content: 'x', status: 'completed', toolCalls: 1 }] }),
     );
-    expect(html).toContain('전체 task 1개 &rarr;');
+    expect(html).not.toContain('<ui-task-plan');
+    expect(html).toContain('전체 작업 1개 &rarr;');
+    expect(html).toContain("openPanel('inst::C1:t1','tasks',");
   });
 
   it('task view T2: earlier steps a new plan dropped before they ran are not counted; one that ran is', () => {
@@ -356,99 +368,129 @@ describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
       removedAt: 9000,
       toolCalls: 2,
     };
-    expect(tl.renderTimeline(workingCard({ earlierTasks: [skipped, stopped] }))).toContain('전체 task 4개 &rarr;');
+    const html = tw.renderCardTasks(workingCard({ earlierTasks: [skipped, stopped] }));
+    expect(html).toContain('<ui-task-plan');
+    expect(html).toContain('전체 작업 4개 &rarr;');
     // Only never-run steps behind an empty list: nothing to open.
-    expect(tl.renderTimeline(workingCard({ tasks: [], earlierTasks: [skipped] }))).toBe('');
+    expect(tw.renderCardTasks(workingCard({ tasks: [], earlierTasks: [skipped] }))).toBe('');
   });
 
-  it('task view T2: a paused step says 멈춤 with its tools and never ticks; the pending one stays bare', () => {
-    const html = tl.renderTimeline(
-      workingCard({
-        tasks: [
-          { id: 'T1', content: 'Was running', status: 'pending', startedAt: 1000, toolCalls: 4 },
-          { id: 'T2', content: 'Next', status: 'pending' },
-        ],
-      }),
-    );
-    expect(html).toContain(
-      '<span class="tl-time">멈춤 &middot; <span class="tl-tools" title="툴 호출 수">툴 4회</span></span>',
-    );
-    expect(html).not.toContain('task-elapsed');
-    expect(html).toMatch(/#T2<\/span><span class="tl-text">Next<\/span><\/li>/);
+  it('task view T2: a paused step is paused with its start and tools and no end (never ticks); the pending one stays bare', () => {
+    expect(
+      tw.cardTaskStep({ id: 'T1', content: 'Was running', status: 'pending', startedAt: 1000, toolCalls: 4 }, 0),
+    ).toEqual({
+      id: 'T1',
+      ref: '#T1',
+      label: 'Was running',
+      status: 'paused',
+      startedAt: 1000,
+      toolCalls: 4,
+    });
+    expect(tw.cardTaskStep({ id: 'T2', content: 'Next', status: 'pending' }, 1)).toEqual({
+      id: 'T2',
+      ref: '#T2',
+      label: 'Next',
+      status: 'pending',
+    });
+    // A step without an id is keyed by its place; no ref.
+    expect(tw.cardTaskStep({ content: 'x', status: 'pending' }, 3)).toEqual({
+      id: 'step3',
+      label: 'x',
+      status: 'pending',
+    });
   });
 });
 
-describe('panel task rows carry id, elapsed time and tool calls (T7/T8)', () => {
-  const { renderPanelTaskItem } = load<{ renderPanelTaskItem(t: unknown): string }>(
-    [
-      'esc',
-      'escAttr',
-      'toNum',
-      'formatDuration',
-      'formatTaskTime',
-      'agentIconHtml',
-      'taskFateOf',
-      'renderPanelTaskItem',
-    ],
-    ['TASK_FATE_LABEL', 'TASK_PAUSE_SVG', 'TASK_STOP_SVG', 'TASK_SKIP_SVG'],
+// D3 E-22/E-23: a panel task is a <ui-task-runs> run (or a <ui-task-plan> step); the page hands it the id,
+// the times and the tool calls — the element draws the duration, the chip and the status word.
+describe('panel task runs carry id, times and tool calls (T7/T8)', () => {
+  const { taskRunsData, taskPlanData, taskRunsOf } = load<{
+    taskRunsData(ran: unknown[]): Array<Record<string, any>>;
+    taskPlanData(runs: unknown): Record<string, any>;
+    taskRunsOf(current: unknown[], earlier?: unknown[]): unknown;
+  }>(
+    ['toNum', 'taskFateOf', 'taskIdNum', 'taskRunStart', 'taskRunEnd', 'taskRunsOf', 'taskRunsData', 'taskPlanData'],
+    ['TASK_RUN_STATUS'],
   );
-  it('completed: id, duration and tool count', () => {
-    const html = renderPanelTaskItem({
+  it('completed: id, start and end, tool count', () => {
+    const [run] = taskRunsData([
+      { id: 'T4', content: 'Build', status: 'completed', startedAt: 5, completedAt: 9, toolCalls: 12 },
+    ]);
+    expect(run).toMatchObject({
       id: 'T4',
-      content: 'Build',
-      status: 'completed',
-      startedAt: 0,
-      completedAt: 0,
+      ref: '#T4',
+      title: 'Build',
+      status: 'done',
+      startedAt: 5,
+      endedAt: 9,
       toolCalls: 12,
     });
-    expect(html).toContain('<span class="task-id">#T4</span>');
-    expect(html).toContain('툴 12회');
+  });
+  it('D6b (D3-GAPS G5-1): a share (ran together with other tasks) or an inferred start reads ≈ (approx) with a note saying why', () => {
+    const run = (over: Record<string, unknown>) =>
+      taskRunsData([
+        { id: 'T1', content: 'a', status: 'completed', startedAt: 1, completedAt: 2, toolCalls: 2.5, ...over },
+      ])[0];
+    expect(run({ shared: 2 })).toMatchObject({
+      approx: true,
+      notes: [{ label: '분배', value: '2개 태스크가 함께 진행 — 수치는 그 몫(1/2)' }],
+    });
+    expect(run({ startEstimated: true })).toMatchObject({
+      approx: true,
+      notes: [{ label: '시작', value: '진행 중 표시 없이 완료 — 직전 목록의 시각', approx: true }],
+    });
+    expect(run({ shared: 3, startEstimated: true }).notes).toHaveLength(2);
+    const plain = run({ shared: 1 });
+    expect(plain.approx).toBeUndefined();
+    expect(plain.notes).toBeUndefined();
   });
   it('task view T2: a step a later plan dropped after it ran keeps its tools and time; one that never ran has neither', () => {
-    const dropped = renderPanelTaskItem({
-      id: 'T5',
-      content: 'Stopped',
-      status: 'in_progress',
-      dropped: 'started',
-      startedAt: 1000,
-      removedAt: 61_000,
-      toolCalls: 6,
-    });
-    expect(dropped).toContain('data-step="dropped"');
-    expect(dropped).toContain('<span class="pl-fate">중단</span><span class="pl-chip">툴 6회</span>');
-    expect(dropped).toContain('<span class="pl-aside">1m 0s</span>');
-    expect(dropped).not.toContain('aria-current');
-    const skipped = renderPanelTaskItem({
-      id: 'T6',
-      content: 'Never ran',
-      status: 'pending',
-      dropped: 'unstarted',
-      toolCalls: 0,
-    });
-    expect(skipped).toContain('data-step="skipped"');
-    expect(skipped).toContain('<span class="pl-fate">실행 안 됨</span>');
-    expect(skipped).not.toContain('pl-chip');
-    expect(skipped).toContain('<span class="ar-vh">, 실행 안 됨</span>');
+    const [dropped] = taskRunsData([
+      {
+        id: 'T5',
+        content: 'Stopped',
+        status: 'in_progress',
+        dropped: 'started',
+        startedAt: 1000,
+        removedAt: 61_000,
+        toolCalls: 6,
+      },
+    ]);
+    // SSOT 2026-10-29 T5: a task a new plan replaced after it ran is dropped (교체됨), its work stays on it —
+    // never running, its time from its start to when it left.
+    expect(dropped).toMatchObject({ status: 'dropped', startedAt: 1000, endedAt: 61_000, toolCalls: 6 });
+    const runs = taskRunsOf(
+      [],
+      [{ id: 'T6', content: 'Never ran', status: 'pending', dropped: 'unstarted', toolCalls: 0 }],
+    );
+    const plan = taskPlanData(runs);
+    expect(plan.steps).toEqual([]);
+    expect(plan.earlier[0].steps).toEqual([
+      { id: 'skipped:T6', ref: '#T6', label: 'Never ran', status: 'pending', fate: 'dropped' },
+    ]);
+    // A plan step carries no tool count (nothing ran).
+    expect('toolCalls' in plan.earlier[0].steps[0]).toBe(false);
   });
 });
 
-describe('goals: completed goals open with their details (T6)', () => {
-  const open: Record<string, boolean> = {};
-  const m = load<{ renderCardGoal(s: unknown, col: string, canEdit: boolean): string }>(
-    [
-      'esc',
-      'escAttr',
-      'escJs',
-      'toNum',
-      'formatTokens',
-      'formatDuration',
-      'formatGoalTime',
-      'renderGoalHistory',
-      'isBusy',
-      'renderCardGoal',
-    ],
-    ['GOAL_STATUS_LABELS', '_goalErrors', 'GOAL_VIA_LABELS', '_busy'],
-    { _goalHistoryOpen: open },
+describe('goals: completed goals with their details (T6) — what the page hands <ui-goal-card>', () => {
+  const m = load<{
+    goalCardData(
+      s: unknown,
+      canEdit: boolean,
+    ): {
+      history: Array<{
+        id: string;
+        objective: string;
+        status: string;
+        endedAt?: number;
+        meta?: string[];
+        note?: string;
+      }>;
+    };
+  }>(
+    ['toNum', 'formatTokens', 'formatDuration', 'goalPastItem', 'goalCardData'],
+    ['GOAL_VIA_LABELS', 'GOAL_OBJECTIVE_MAX', 'GOAL_ACTIONS', '_goalErrors', '_goalBusy'],
   );
   const card = (history: unknown[], over: Record<string, unknown> = {}) => ({
     key: 'inst::C1:t1',
@@ -477,53 +519,46 @@ describe('goals: completed goals open with their details (T6)', () => {
     { goalId: 'g1', objective: '<b>첫</b>', completedVia: 'user', completionReason: 'user' },
   ];
 
-  it('closed: the head offers the completed goals with their count; no details yet', () => {
-    const html = m.renderCardGoal(card(H), 'working', true);
-    expect(html).toContain('aria-expanded="false"');
-    expect(html).toContain('완료된 goal 2개');
-    expect(html).not.toContain('두번째 끝난 goal');
+  it('every completed goal with when it closed, time spent, tokens, cost, continuations, how and why — the element folds them under 지난 목표', () => {
+    const { history } = m.goalCardData(card(H), true);
+    expect(history).toEqual([
+      {
+        id: 'g2',
+        objective: '두번째 끝난 goal',
+        status: 'complete',
+        endedAt: Date.parse('2026-10-21T01:12:00Z'),
+        meta: ['소요 10분 00초', '1.5M 토큰', '$3.40', '이어하기 4회', '평가 모델 완료'],
+        note: '모든 요건에 증거가 있다',
+      },
+      // Newest first, as the server sends them; the text goes as written (the element escapes it).
+      { id: 'g1', objective: '<b>첫</b>', status: 'complete', meta: ['직접 완료'] },
+    ]);
   });
 
-  it('open: every completed goal with when it closed, time spent, tokens, cost, continuations, how and why', () => {
-    open['inst::C1:t1'] = true;
-    const html = m.renderCardGoal(card(H), 'working', true);
-    expect(html).toContain('aria-expanded="true"');
-    expect(html).toContain('두번째 끝난 goal');
-    expect(html).toContain('10m 0s');
-    expect(html).toContain('1.5M tok');
-    expect(html).toContain('$3.40');
-    expect(html).toContain('이어하기 4회');
-    expect(html).toContain('평가 모델 완료');
-    expect(html).toContain('모든 요건에 증거가 있다');
-    expect(html).toContain('직접 완료');
-    // Newest first, as the server sends them.
-    expect(html.indexOf('두번째 끝난 goal')).toBeLessThan(html.indexOf('&lt;b&gt;첫&lt;/b&gt;'));
-    expect(html).not.toContain('<b>첫');
-    delete open['inst::C1:t1'];
+  it('a read-only viewer gets the history too (the element shows it without controls)', () => {
+    expect(m.goalCardData(card(H), false).history).toHaveLength(2);
   });
 
-  it('a read-only viewer and a closed card can open the history too', () => {
-    open['inst::C1:t1'] = true;
-    expect(m.renderCardGoal(card(H), 'closed', false)).toContain('두번째 끝난 goal');
-    delete open['inst::C1:t1'];
-  });
-
-  it('no completed goals: no history control', () => {
-    expect(m.renderCardGoal(card([]), 'working', true)).not.toContain('cg-history');
+  it('no completed goals: an empty history (the element draws no fold)', () => {
+    expect(m.goalCardData(card([]), true).history).toEqual([]);
   });
 });
 
-describe('work log: every entry, however many (T9)', () => {
+describe('work log: the latest window on opening, older pages as the reader scrolls up (SSOT 2026-10-29; was T9 "every entry")', () => {
   type E = { seq: number; taskId?: string };
   const range = (a: number, b: number): E[] => Array.from({ length: b - a + 1 }, (_, i) => ({ seq: a + i }));
   const wl = load<{
     wlNewState(c: string): any;
+    wlLatestUrl(c: string): string;
+    wlOlderUrl(c: string, beforeSeq: number): string;
     wlLoadLatest(st: any, f: (u: string) => Promise<unknown>, on: (s: any, a: any[]) => void): Promise<string>;
-    wlLoadOlder(st: any, f: (u: string) => Promise<unknown>, on: (s: any, a: any[]) => void): Promise<unknown>;
+    wlLoadOlderPage(st: any, f: (u: string) => Promise<unknown>, on: (s: any, a: any[]) => void): Promise<unknown>;
   }>(
     [
       'wlNewState',
       'wlUrl',
+      'wlLatestUrl',
+      'wlOlderUrl',
       'wlValidSeq',
       'wlMerge',
       'wlPageMaxSeq',
@@ -535,103 +570,211 @@ describe('work log: every entry, however many (T9)', () => {
       'wlLoadLatest',
       'wlOnLive',
       'wlRecover',
-      'wlLoadOlder',
+      'wlLoadOlderPage',
     ],
-    ['WL_BACKFILL_MAX_PAGES'],
+    ['WL_BACKFILL_MAX_PAGES', 'WL_PAGE', 'WL_OLDER_EMPTY_MAX'],
   );
-  /** The real API: no afterSeq = the latest `size`; afterSeq = the first `size` after it. */
-  function server(log: E[], size: number) {
-    const calls: Array<string | null> = [];
+  /** The real API: no cursor = the latest `limit`; beforeSeq = the last `limit` before it; afterSeq = the first after it. */
+  function server(log: E[]) {
+    const calls: string[] = [];
     const fetchJson = async (url: string) => {
-      const q = new URL(url, 'http://h').searchParams.get('afterSeq');
-      calls.push(q);
-      const rest = q === null ? log : log.filter((e) => e.seq > Number(q));
-      return { entries: q === null ? rest.slice(-size) : rest.slice(0, size), hasMore: rest.length > size };
+      const q = new URL(url, 'http://h').searchParams;
+      calls.push(q.toString());
+      const limit = Number(q.get('limit') || 500);
+      if (q.has('beforeSeq')) {
+        const before = log.filter((e) => e.seq < Number(q.get('beforeSeq')));
+        return { entries: before.slice(-limit), hasMore: before.length > limit };
+      }
+      const after = q.has('afterSeq') ? log.filter((e) => e.seq > Number(q.get('afterSeq'))) : log;
+      return {
+        entries: q.has('afterSeq') ? after.slice(0, limit) : after.slice(-limit),
+        hasMore: after.length > limit,
+      };
     };
     return { calls, fetchJson };
   }
 
-  it('after the latest window, pages the older entries in until the log is whole', async () => {
-    const srv = server(range(1, 1200), 500);
-    const st = wl.wlNewState('c');
-    const painted: number[] = [];
-    const onAdded = (_s: unknown, a: Array<{ entry: E }>) => painted.push(...a.map((x) => x.entry.seq));
-    expect(await wl.wlLoadLatest(st, srv.fetchJson, onAdded)).toBe('ok');
-    expect(st.entries).toHaveLength(500);
-    await wl.wlLoadOlder(st, srv.fetchJson, onAdded);
-    expect(st.entries.map((e: E) => e.seq)).toEqual(range(1, 1200).map((e) => e.seq));
-    expect(srv.calls).toEqual([null, '0', '500']);
-    expect(new Set(painted).size).toBe(1200);
+  it('the URLs: the latest WL_PAGE (100), and the WL_PAGE before a seq', () => {
+    expect(Number(clientVar('WL_PAGE').match(/\d+/)?.[0])).toBe(100);
+    expect(wl.wlLatestUrl('c/1')).toBe('/api/dashboard/session/c%2F1/worklog?limit=100');
+    expect(wl.wlOlderUrl('c1', 784)).toBe('/api/dashboard/session/c1/worklog?beforeSeq=784&limit=100');
   });
 
-  it('the older pages paint once, after the last page — not a full re-render per page (review P1)', async () => {
-    const srv = server(range(1, 5000), 500);
+  it('an opening loads the latest 100 entries and nothing else — never the whole history', async () => {
+    const srv = server(range(1, 1200));
     const st = wl.wlNewState('c');
+    expect(await wl.wlLoadLatest(st, srv.fetchJson, () => {})).toBe('ok');
+    expect(st.entries.map((e: E) => e.seq)).toEqual(range(1101, 1200).map((e) => e.seq));
+    expect(st.olderPending).toBe(true); // older entries exist: the reader may page back
+    expect(srv.calls).toEqual(['limit=100']);
+  });
+
+  it('each older page is the 100 before the oldest held, merged by seq and painted once — down to the start', async () => {
+    const srv = server(range(1, 1200));
+    const st = wl.wlNewState('c');
+    await wl.wlLoadLatest(st, srv.fetchJson, () => {});
     let paints = 0;
-    await wl.wlLoadLatest(st, srv.fetchJson, () => {});
-    await wl.wlLoadOlder(st, srv.fetchJson, () => {
+    const onAdded = (_s: unknown, a: Array<{ entry: E; index: number }>) => {
       paints++;
-    });
-    expect(st.entries).toHaveLength(5000);
-    expect(srv.calls.length).toBe(11); // the latest window + 10 forward pages
-    expect(paints).toBe(1);
+      expect(a[0].index).toBe(0); // older entries go in above
+    };
+    expect(await wl.wlLoadOlderPage(st, srv.fetchJson, onAdded)).toBe('ok');
+    expect(st.entries[0].seq).toBe(1001);
+    expect(srv.calls[1]).toBe('beforeSeq=1101&limit=100');
+    while (st.olderPending) await wl.wlLoadOlderPage(st, srv.fetchJson, onAdded);
+    expect(st.entries.map((e: E) => e.seq)).toEqual(range(1, 1200).map((e) => e.seq));
+    expect(paints).toBe(11);
+    expect(srv.calls).toHaveLength(12);
+    // At the start: nothing more is asked.
+    await wl.wlLoadOlderPage(st, srv.fetchJson, onAdded);
+    expect(srv.calls).toHaveLength(12);
   });
 
-  it('an older page that fails keeps the history pending, so the next try asks again (review F8)', async () => {
-    const srv = server(range(1, 1200), 500);
+  it('one page at a time: a second ask while one is in flight shares it', async () => {
+    const srv = server(range(1, 1200));
     const st = wl.wlNewState('c');
     await wl.wlLoadLatest(st, srv.fetchJson, () => {});
-    await wl.wlLoadOlder(
+    const a = wl.wlLoadOlderPage(st, srv.fetchJson, () => {});
+    const b = wl.wlLoadOlderPage(st, srv.fetchJson, () => {});
+    expect(b).toBe(a);
+    await a;
+    expect(srv.calls).toEqual(['limit=100', 'beforeSeq=1101&limit=100']);
+    expect(st.olderLoading).toBeNull();
+  });
+
+  it('a page that fails keeps the older entries pending; the next try asks the same page (no gap)', async () => {
+    const srv = server(range(1, 1200));
+    const st = wl.wlNewState('c');
+    await wl.wlLoadLatest(st, srv.fetchJson, () => {});
+    const r = await wl.wlLoadOlderPage(
       st,
       async () => {
         throw Object.assign(new Error('HTTP 500'), { status: 500 });
       },
       () => {},
     );
+    expect(r).toBe('error');
     expect(st.olderPending).toBe(true);
-    await wl.wlLoadOlder(st, srv.fetchJson, () => {});
-    expect(st.entries).toHaveLength(1200);
-    expect(st.olderPending).toBe(false);
-  });
-
-  it('a retry after a partial success resumes where it stopped — no gap is left (review R2-2)', async () => {
-    const srv = server(range(1, 1200), 500);
-    const st = wl.wlNewState('c');
-    await wl.wlLoadLatest(st, srv.fetchJson, () => {});
-    let n = 0;
-    await wl.wlLoadOlder(
-      st,
-      async (u: string) => {
-        n++;
-        if (n === 2) throw Object.assign(new Error('HTTP 500'), { status: 500 });
-        return srv.fetchJson(u);
-      },
-      () => {},
-    );
-    expect(st.olderPending).toBe(true);
-    await wl.wlLoadOlder(st, srv.fetchJson, () => {});
-    expect(st.entries.map((e: E) => e.seq)).toEqual(range(1, 1200).map((e) => e.seq));
-    expect(st.olderPending).toBe(false);
+    await wl.wlLoadOlderPage(st, srv.fetchJson, () => {});
+    expect(srv.calls[1]).toBe('beforeSeq=1101&limit=100');
+    expect(st.entries.map((e: E) => e.seq)).toEqual(range(1001, 1200).map((e) => e.seq));
   });
 
   it('a log that fits the latest window asks for nothing more', async () => {
-    const srv = server(range(1, 40), 500);
+    const srv = server(range(1, 40));
     const st = wl.wlNewState('c');
     await wl.wlLoadLatest(st, srv.fetchJson, () => {});
-    await wl.wlLoadOlder(st, srv.fetchJson, () => {});
-    expect(srv.calls).toEqual([null]);
+    expect(st.olderPending).toBe(false);
+    await wl.wlLoadOlderPage(st, srv.fetchJson, () => {});
+    expect(srv.calls).toEqual(['limit=100']);
+  });
+
+  it('a server that keeps saying hasMore but brings nothing older ends the paging after 3 such pages in a row', async () => {
+    const st = wl.wlNewState('c');
+    const calls: string[] = [];
+    const stuck = async (url: string) => {
+      calls.push(url);
+      return { entries: calls.length === 1 ? range(901, 1000) : [], hasMore: true };
+    };
+    await wl.wlLoadLatest(st, stuck, () => {});
+    expect(await wl.wlLoadOlderPage(st, stuck, () => {})).toBe('empty');
+    expect(st.olderPending).toBe(true);
+    await wl.wlLoadOlderPage(st, stuck, () => {});
+    await wl.wlLoadOlderPage(st, stuck, () => {});
+    expect(st.olderPending).toBe(false);
+    await wl.wlLoadOlderPage(st, stuck, () => {});
+    expect(calls).toHaveLength(4);
+    // The same page each time: the cursor did not move.
+    expect(new Set(calls.slice(1)).size).toBe(1);
+  });
+
+  // #542 review P3: the server stops a beforeSeq scan at its byte budget inside a long run of
+  // non-entry lines with an empty page and hasMore: true — that is not the start of the log.
+  it('an empty older page that says hasMore (a budget stop) keeps the paging: the same page is asked again', async () => {
+    const st = wl.wlNewState('c');
+    const calls: string[] = [];
+    let budgetStops = 1;
+    const srv = async (url: string) => {
+      const q = new URL(url, 'http://h').searchParams;
+      calls.push(q.toString());
+      if (!q.has('beforeSeq')) return { entries: range(901, 1000), hasMore: true };
+      if (budgetStops-- > 0) return { entries: [], hasMore: true };
+      return { entries: range(801, 900), hasMore: true };
+    };
+    await wl.wlLoadLatest(st, srv, () => {});
+    await wl.wlLoadOlderPage(st, srv, () => {});
+    expect(st.olderPending).toBe(true);
+    expect(await wl.wlLoadOlderPage(st, srv, () => {})).toBe('ok');
+    expect(calls.slice(1)).toEqual(['beforeSeq=901&limit=100', 'beforeSeq=901&limit=100']);
+    expect(st.entries[0].seq).toBe(801);
+    // A page that brings entries starts the count again.
+    expect(st.olderEmpty).toBe(0);
+    expect(st.olderPending).toBe(true);
+  });
+
+  // #562 review P3: past a run of non-entry lines longer than one scan budget the server's search
+  // lands after the run every time; its byte cursor (nextBeforeOffset) is what gets the next page through.
+  it("an empty page's byte cursor is sent with the next page and moves it on, until entries come", async () => {
+    const st = wl.wlNewState('c');
+    const calls: string[] = [];
+    const cursors = [9_000_000, 1_000_000];
+    const srv = async (url: string) => {
+      const q = new URL(url, 'http://h').searchParams;
+      calls.push(q.toString());
+      if (!q.has('beforeSeq')) return { entries: range(901, 1000), hasMore: true };
+      const next = cursors.shift();
+      if (next !== undefined) return { entries: [], hasMore: true, nextBeforeOffset: next };
+      return { entries: range(801, 900), hasMore: true };
+    };
+    await wl.wlLoadLatest(st, srv, () => {});
+    expect(await wl.wlLoadOlderPage(st, srv, () => {})).toBe('empty');
+    expect(await wl.wlLoadOlderPage(st, srv, () => {})).toBe('empty');
+    // Two empty pages, but each moved the cursor: they do not count towards the stop.
+    expect(st.olderPending).toBe(true);
+    expect(await wl.wlLoadOlderPage(st, srv, () => {})).toBe('ok');
+    expect(calls.slice(1)).toEqual([
+      'beforeSeq=901&limit=100',
+      'beforeSeq=901&limit=100&beforeOffset=9000000',
+      'beforeSeq=901&limit=100&beforeOffset=1000000',
+    ]);
+    expect(st.entries[0].seq).toBe(801);
+    // Entries came without a cursor: the next page searches from the oldest held again.
+    expect(st.olderOffset).toBeUndefined();
+  });
+
+  it('a cursor that does not move counts as an empty page (a server repeating one cannot spin the paging)', async () => {
+    const st = wl.wlNewState('c');
+    const calls: string[] = [];
+    const srv = async (url: string) => {
+      const q = new URL(url, 'http://h').searchParams;
+      calls.push(q.toString());
+      if (!q.has('beforeSeq')) return { entries: range(901, 1000), hasMore: true };
+      return { entries: [], hasMore: true, nextBeforeOffset: 5000 };
+    };
+    await wl.wlLoadLatest(st, srv, () => {});
+    for (let i = 0; i < 6; i++) await wl.wlLoadOlderPage(st, srv, () => {});
+    expect(st.olderPending).toBe(false);
+    // The first stop set the cursor; the next 3 repeated it.
+    expect(calls).toHaveLength(5);
+  });
+
+  it('the older-page URL carries a byte cursor only when given one', () => {
+    expect(wl.wlOlderUrl('c1', 784)).toBe('/api/dashboard/session/c1/worklog?beforeSeq=784&limit=100');
+    expect((wl as any).wlOlderUrl('c1', 784, 4096)).toBe(
+      '/api/dashboard/session/c1/worklog?beforeSeq=784&limit=100&beforeOffset=4096',
+    );
   });
 
   it('stops for a closed panel and on 403', async () => {
-    const srv = server(range(1, 1200), 500);
+    const srv = server(range(1, 1200));
     const st = wl.wlNewState('c');
     await wl.wlLoadLatest(st, srv.fetchJson, () => {});
     st.closed = true;
-    await wl.wlLoadOlder(st, srv.fetchJson, () => {});
-    expect(srv.calls).toEqual([null]);
+    await wl.wlLoadOlderPage(st, srv.fetchJson, () => {});
+    expect(srv.calls).toEqual(['limit=100']);
     const st2 = wl.wlNewState('c');
     await wl.wlLoadLatest(st2, srv.fetchJson, () => {});
-    await wl.wlLoadOlder(
+    await wl.wlLoadOlderPage(
       st2,
       async () => {
         throw Object.assign(new Error('HTTP 403'), { status: 403 });
@@ -641,33 +784,64 @@ describe('work log: every entry, however many (T9)', () => {
     expect(st2.denied).toBe(true);
   });
 
+  // #542 review P3: a subagent tab looking for its spawn call walks back a bounded number of pages.
+  it('a subagent tab seeks its spawn call back at most WL_SEEK_MAX_PAGES (20) pages — also for an agent the bar does not know', () => {
+    let pages = 0;
+    const seek = load<{ wlSeekAgentSpawn(st: any, a: any, id: string): void }>(
+      ['wlSeekAgentSpawn'],
+      ['WL_SEEK_MAX_PAGES'],
+      {
+        toNum: (v: unknown) => Number(v) || 0,
+        loadOlderWorkLog: () => {
+          pages++;
+        },
+      },
+    );
+    const st = { olderPending: true, olderLoading: null, entries: [{ seq: 90_000, ts: 1_000 }] };
+    // A log-only agent (panelAgentOf null: no start time, so no floor) used to page to the start of the log.
+    for (let i = 0; i < 50; i++) seek.wlSeekAgentSpawn(st, null, 'toolu_logonly');
+    expect(pages).toBe(20);
+    // Another agent's tab has its own walk.
+    for (let i = 0; i < 50; i++) seek.wlSeekAgentSpawn(st, null, 'toolu_other');
+    expect(pages).toBe(40);
+    // A known agent still stops once the window reaches back past its start.
+    const known = { olderPending: true, olderLoading: null, entries: [{ seq: 5, ts: 1_000 }] };
+    seek.wlSeekAgentSpawn(known, { startedAt: 100_000 }, 'toolu_known');
+    expect(pages).toBe(40);
+    // Nothing while a page is in flight or nothing older exists.
+    seek.wlSeekAgentSpawn({ ...st, olderLoading: Promise.resolve() }, null, 'toolu_x');
+    seek.wlSeekAgentSpawn({ ...st, olderPending: false }, null, 'toolu_x');
+    expect(pages).toBe(40);
+    expect(clientFn('renderAgentConv')).toContain('wlSeekAgentSpawn(_wl, a, _panelAgent);');
+  });
+
   it('recovery no longer stops at 20 pages (10,000 entries)', () => {
     expect(Number(clientVar('WL_BACKFILL_MAX_PAGES').match(/\d+/)?.[0])).toBeGreaterThanOrEqual(1000);
   });
 });
 
-describe('work log folds under the task each entry was made in (T10)', () => {
-  const m = load<{
-    wlBuildRows(entries: unknown[]): Array<{ entry?: any; group?: any }>;
-    renderWorkLogGroup(group: unknown, open: boolean, task: unknown): string;
-  }>(
-    [
-      'esc',
-      'escAttr',
-      'toNum',
-      'formatDuration',
-      'decodeSlackEntities',
-      'taskFateOf',
-      'renderTaskMeta',
-      'wlToolSummary',
-      'renderWorkLogEntry',
-      'wlGroupOf',
-      'wlBuildRows',
-      'renderWorkLogGroupHead',
-      'renderWorkLogGroup',
-    ],
-    ['WL_LABELS', 'TASK_FATE_LABEL'],
-  );
+describe('work log folds under the task each entry was made in (T10; <ui-work-log> groups)', () => {
+  type Group = {
+    id: string;
+    ref?: string;
+    title?: string;
+    open?: boolean;
+    count?: number;
+    headless?: boolean;
+    meta?: unknown[];
+    entries: Array<{ id: string }>;
+  };
+  const groupsOf = (entries: unknown[], tasks: Record<string, unknown> = {}, st: Record<string, unknown> = {}) =>
+    load<{ wlGroupsOf(st: unknown, entries: unknown[]): Group[] }>(['wlGroupOf', 'wlGroupOpen', 'wlGroupsOf'], [], {
+      wlTaskMeta: (t: Record<string, unknown>) =>
+        t.toolCalls === undefined ? [] : [{ label: '툴', value: `${t.toolCalls}회` }],
+      wlTaskInfo: (id: string) => tasks[id] ?? null,
+      wlEntryOf: (_st: unknown, e: { seq: number; kind: string; text: string }) => ({
+        id: String(e.seq),
+        kind: e.kind,
+        text: e.text,
+      }),
+    }).wlGroupsOf({ entries, ...st }, entries);
   const E = (seq: number, taskId?: string, taskTitle?: string, kind = 'tool') => ({
     seq,
     ts: 0,
@@ -676,55 +850,59 @@ describe('work log folds under the task each entry was made in (T10)', () => {
     ...(taskId ? { taskId, taskTitle } : {}),
   });
 
-  it('entries of one task gather under it, at its first entry; entries outside any task stay in line', () => {
-    const rows = m.wlBuildRows([
-      E(1, undefined, undefined, 'instruction'),
-      E(2, 'T1', 'Explore'),
-      E(3, 'T1', 'Explore'),
-      E(4, 'T2', 'Build'),
-      E(5, undefined, undefined, 'final'),
-      E(6, 'T1', 'Explore again'),
+  it('entries of one task gather under it, at its first entry; entries outside any task are headless runs in line (D3-GAPS G2-2)', () => {
+    const g = groupsOf(
+      [
+        E(1, undefined, undefined, 'instruction'),
+        E(2, 'T1', 'Explore'),
+        E(3, 'T1', 'Explore'),
+        E(4, 'T2', 'Build'),
+        E(5, undefined, undefined, 'final'),
+        E(6, 'T1', 'Explore again'),
+      ],
+      {},
+      { groupOpen: { 'task:T1': true } },
+    );
+    expect(g.map((x) => `${x.id}:${x.entries.map((e) => e.id).join(',')}`)).toEqual([
+      'run:1:1',
+      'task:T1:2,3,6',
+      'task:T2:',
+      'run:5:5',
     ]);
-    expect(
-      rows.map((r) =>
-        r.entry ? r.entry.seq : `${r.group.taskId}:${r.group.entries.map((e: any) => e.seq).join(',')}`,
-      ),
-    ).toEqual([1, 'T1:2,3,6', 'T2:4', 5]);
-    // The group is titled by its latest entry.
-    expect(rows[1].group.title).toBe('Explore again');
+    // The group is titled by its latest entry (no ledger task, so no meta); the newest task is open at first sight.
+    expect(g[1]).toMatchObject({ ref: '#T1', title: 'Explore again', count: 3, open: true });
+    expect(g[1].meta).toBeUndefined();
+    expect(g[2]).toMatchObject({ ref: '#T2', title: 'Build', count: 1, open: false });
+    // A run outside any task: no head (nothing to title, count, fold or open) — its entries always in line.
+    expect(g[0]).toEqual({
+      id: 'run:1',
+      at: 0,
+      headless: true,
+      entries: [{ id: '1', kind: 'instruction', text: 'e1' }],
+    });
+    expect(g[3]).toEqual({ id: 'run:5', at: 0, headless: true, entries: [{ id: '5', kind: 'final', text: 'e5' }] });
   });
 
-  it('a group renders as a header button (id, title, count, task time / tools) over its entries', () => {
-    const html = m.renderWorkLogGroup(
-      { taskId: 'T1', title: 'Explore', entries: [E(2, 'T1', 'Explore'), E(3, 'T1', 'Explore')] },
-      false,
-      { id: 'T1', content: 'Explore', status: 'completed', startedAt: 1000, completedAt: 61_000, toolCalls: 2 },
-    );
-    expect(html).toContain('<div class="wl-group" data-task-id="T1">');
-    expect(html).toContain('role="button"');
-    expect(html).toContain('aria-expanded="false"');
-    expect(html).toContain('#T1');
-    expect(html).toContain('<span class="wl-g-count">2</span>');
-    expect(html).toContain('1m 0s');
-    expect(html).toContain('툴 2회');
-    // A closed group holds no entry nodes until it is opened (review P1: DOM size).
-    expect(html).toContain('<div class="wl-group-body" hidden></div>');
-    expect(html).not.toContain('data-seq="2"');
-    const open = m.renderWorkLogGroup(
-      { taskId: 'T1', title: 'Explore', entries: [E(2, 'T1', 'Explore'), E(3, 'T1', 'Explore')] },
-      true,
-      null,
-    );
-    expect(open).toContain('data-seq="2"');
-    expect(open).toContain('data-seq="3"');
-    expect(m.renderWorkLogGroup({ taskId: 'T1', title: 'x', entries: [] }, true, null)).toContain(
-      '<div class="wl-group-body" data-filled="1">',
-    );
+  it('a group head: #id, the ledger’s title and meta, the count; a folded group holds no entries until it is opened (DOM size)', () => {
+    const tasks = { T1: { id: 'T1', content: 'Explore (ledger)', status: 'completed', toolCalls: 2 } };
+    const closed = groupsOf([E(2, 'T1', 'Explore'), E(3, 'T1', 'Explore'), E(4, 'T2', 'Build')], tasks);
+    expect(closed[0]).toEqual({
+      id: 'task:T1',
+      at: 0,
+      ref: '#T1',
+      title: 'Explore (ledger)',
+      meta: [{ label: '툴', value: '2회' }],
+      open: false,
+      count: 2,
+      entries: [],
+    });
+    const open = groupsOf([E(2, 'T1', 'Explore'), E(3, 'T1', 'Explore')], tasks, { groupOpen: { 'task:T1': true } });
+    expect(open[0].entries.map((e) => e.id)).toEqual(['2', '3']);
   });
 
-  it('escapes task ids and titles', () => {
-    const html = m.renderWorkLogGroup({ taskId: '"><img src=x>', title: '<script>', entries: [] }, true, null);
-    expect(html).not.toMatch(/<img|<script/);
+  it('task ids and titles are data (the element escapes them)', () => {
+    const g = groupsOf([E(2, '"><img src=x>', '<script>')]);
+    expect(g[0]).toMatchObject({ id: 'task:"><img src=x>', ref: '#"><img src=x>', title: '<script>' });
   });
 });
 
@@ -756,7 +934,7 @@ describe('DONE grouped by the day the work finished (T11/T12)', () => {
   it('groups by finish day — Today, 어제, then each earlier day — newest first, cards newest first', () => {
     const g = m.planDoneGroups(done, NOW, {});
     expect(g.map((x) => [x.label, x.items.map((i) => i.s.key)])).toEqual([
-      ['Today', ['today-late', 'today-early']],
+      ['오늘', ['today-late', 'today-early']],
       ['어제', ['yesterday']],
       [expect.stringContaining('10월 20일'), ['older-1b', 'older-1']],
       [expect.stringContaining('10월 19일'), ['older-2']],
@@ -791,8 +969,10 @@ describe('DONE grouped by the day the work finished (T11/T12)', () => {
 });
 
 describe('model switch on the open card (T4/T5)', () => {
-  // The <select> became the model menu (.prd/affectui/re-model-picker.md D1/D3):
-  // the same six models, the same "compact 후 전환" rule, now as listbox rows.
+  // The <select> became the model menu (.prd/affectui/re-model-picker.md D1/D3), now @2lab.ai/ui
+  // <ui-model-picker>: the dashboard hands it the same six models (mpData) and the context; the element
+  // draws the rows and the "compact 후 전환" rule ('marks a row whose auto-compact point is below the
+  // context as switching after compaction' in the library's model-picker.test.ts).
   const MODELS = [
     { nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', autoCompactTokens: 750_000 },
     { nickname: 'fable[1m]', model: 'claude-fable-5-1[1m]', autoCompactTokens: 750_000 },
@@ -804,41 +984,35 @@ describe('model switch on the open card (T4/T5)', () => {
   const notes: Record<string, unknown> = {};
   const m = load<{
     renderModelPicker(s: unknown, canSwitch: boolean, short: string): string;
-    renderModelMenu(s: unknown): string;
-    renderModelNote(s: unknown): string;
+    mpData(s: unknown): {
+      models: Array<{ id: string; autoCompactAt: number }>;
+      value: { model: string };
+      contextTokens: number;
+      busy: { model: unknown };
+    };
+    renderModelNote(s: unknown, picker?: boolean): string;
     modelSwitchNote(r: unknown): { text: string; error: boolean };
   }>(
     [
       'esc',
       'escAttr',
-      'escJs',
       'toNum',
       'formatTokens',
-      'effortLabel',
       'isBusy',
       'mpShort',
-      'mpOptions',
-      'mpCurrentIndex',
-      'mpOptId',
-      'mpIndexOf',
-      'mpActiveIndex',
-      'mpSegments',
-      'mpMax',
-      'mpMetersHtml',
-      'mpMoney',
-      'mpPriceWords',
-      'mpTray',
+      'mpLevelsOf',
       'mpEffortLevels',
-      'renderEffortControl',
-      'renderModelMenu',
+      'mpRows',
+      'mpData',
       'renderModelPicker',
       'renderModelNote',
       'modelSwitchNote',
     ],
-    ['_busy', '_mp', 'EFFORT_LABELS', 'MP_EFFORT_SHORT'],
+    ['_busy'],
     {
       REPRESENTATIVE_MODELS: MODELS,
-      EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max'],
+      EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+      SDK_EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max'],
       _modelNotes: notes,
     },
   );
@@ -849,36 +1023,35 @@ describe('model switch on the open card (T4/T5)', () => {
     ...over,
   });
 
-  it('offers exactly the six representative models, the current one selected', () => {
-    const html = m.renderModelMenu(s());
-    const values = [...html.matchAll(/data-mp-nick="([^"]*)"/g)].map((x) => x[1]);
-    expect(values).toEqual(['opus[1m]', 'fable[1m]', 'sonnet[1m]', 'sol[1m]', 'astra[1m]', 'grok[1m]']);
-    expect(html).toMatch(/data-mp-nick="opus\[1m\]" aria-selected="true"/);
-    expect(html).toContain('role="listbox" aria-label="모델"');
+  it('offers exactly the six representative models, the current one the value', () => {
+    const d = m.mpData(s());
+    expect(d.models.map((x) => x.id)).toEqual([
+      'opus[1m]',
+      'fable[1m]',
+      'sonnet[1m]',
+      'sol[1m]',
+      'astra[1m]',
+      'grok[1m]',
+    ]);
+    expect(d.value.model).toBe('opus[1m]');
     const trigger = m.renderModelPicker(s(), true, 'opus-5-5[1m]');
-    expect(trigger).toContain('data-mp-key="inst::C1:t1"');
-    expect(trigger).toContain('onclick="event.stopPropagation();mpToggleFrom(this)"');
+    expect(trigger).toContain('<ui-model-picker lang="ko" data-mp-key="inst::C1:t1" data-mp-surface="card">');
+    expect(trigger).not.toContain('onclick');
   });
 
-  it('shows each model’s auto-compact threshold; a target below the context says it compacts first', () => {
-    const html = m.renderModelMenu(s());
-    expect(html).toContain('grok[1m] · autocompact 450.0K · compact 후 전환');
-    expect(html).toContain('fable[1m] · autocompact 750.0K<');
-    // The current model never says so.
-    expect(html).not.toContain('opus[1m] · autocompact 750.0K · compact');
+  it('hands over each model’s auto-compact threshold and the context it is measured against', () => {
+    const d = m.mpData(s());
+    expect(d.models.find((x) => x.id === 'grok[1m]')?.autoCompactAt).toBe(450_000);
+    expect(d.contextTokens).toBe(500_000);
   });
 
-  it('a model outside the list is shown as the current, unselectable entry', () => {
-    const html = m.renderModelMenu(s({ model: 'claude-haiku-4-5-20251001' }));
-    expect(html).toContain('id="mp-opt-0" role="option" data-mp-i="0" aria-selected="true" aria-disabled="true"');
-    expect(html).toContain('<span class="mp-title-name">haiku-4-5</span>');
+  it('a model outside the list is the value by its short id (the element’s current, unselectable entry)', () => {
+    expect(m.mpData(s({ model: 'claude-haiku-4-5-20251001' })).value.model).toBe('haiku-4-5');
   });
 
   it('read-only viewers see the model name, no control; a waiting switch locks the list and says so', () => {
     expect(m.renderModelPicker(s(), false, 'opus-5-5[1m]')).toBe('<span class="cb-model-name">opus-5-5[1m]</span>');
-    expect(m.renderModelMenu(s({ pendingModel: 'grok[1m]' }))).toContain(
-      'role="listbox" aria-label="모델" tabindex="0" aria-activedescendant="mp-opt-0" aria-disabled="true"',
-    );
+    expect(m.mpData(s({ pendingModel: 'grok[1m]' })).busy.model).toBe('compact 후 grok[1m](으)로 전환 대기 중');
     expect(m.renderModelNote(s({ pendingModel: 'grok[1m]' }))).toContain('compact 후 grok[1m](으)로 전환합니다');
   });
 
@@ -886,13 +1059,13 @@ describe('model switch on the open card (T4/T5)', () => {
     expect(
       m.modelSwitchNote({ ok: true, result: { status: 'switched', nickname: 'grok[1m]', autoCompactTokens: 450_000 } })
         .text,
-    ).toBe('grok[1m](으)로 전환 · autocompact 450.0K');
+    ).toBe('grok[1m](으)로 전환 · 자동 압축 450.0K');
     expect(
       m.modelSwitchNote({
         ok: true,
         result: { status: 'compacting', nickname: 'grok[1m]', autoCompactTokens: 450_000 },
       }).text,
-    ).toContain('compact한 뒤 전환');
+    ).toContain('압축한 뒤 전환');
     expect(m.modelSwitchNote({ ok: false, error: '먼저 compact' })).toEqual({ text: '먼저 compact', error: true });
   });
 });

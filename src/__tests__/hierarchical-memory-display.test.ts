@@ -23,6 +23,7 @@ import {
   formatPageForDisplay,
   formatPagesForDisplay,
   formatSearchForDisplay,
+  formatSemanticIndexForPrompt,
   hierarchicalMemoryStore,
   removeUserPage,
 } from '../hierarchical-memory';
@@ -55,6 +56,18 @@ describe('hierarchical memory — user text interface', () => {
     expect(out).toContain('agent/build');
     expect(out).toContain('project/soma/1');
     expect(out).toContain('2개 페이지');
+  });
+
+  // The model-facing index groups pages under a header. It printed
+  // `▸ projects` above ids that start with `project/` — the model then wrote
+  // `projects/<x>` ids (3 page_upsert failures in 30 days). The header must
+  // spell the id prefix.
+  it('prompt index headers spell the id prefix (project, not projects)', () => {
+    hierarchicalMemoryStore.upsertPage(user, { type: 'project', project: 'soma' }, { title: 'Soma', current: 'x' });
+    const index = formatSemanticIndexForPrompt(user);
+    expect(index).toContain('▸ project\n');
+    expect(index).not.toContain('▸ projects');
+    expect(index).toContain('project/soma');
   });
 
   it('shows a page with Current + History', () => {

@@ -2,6 +2,7 @@ import type { App } from '@slack/bolt';
 import { Logger } from '@soma/common/logger';
 import { TURN_DISMISS_ACTION_ID, TURN_FEEDBACK_ACTION_ID } from '../turn-feedback-block-builder';
 import { TurnFeedbackStore } from '../turn-feedback-store';
+import { EXPIRED_CLICK_TEXT, WORK_QUEUE_CANCEL_ACTION, WORK_QUEUE_WAIT_ACTION } from '../work-queue/blocks';
 import { type PendingChoiceFormData, PendingFormStore } from './pending-form-store';
 import { PendingInstructionConfirmStore } from './pending-instruction-confirm-store';
 
@@ -49,6 +50,8 @@ export interface ActionHandlerContext {
   completionMessageTracker?: any;
   mcpManager?: any;
   pendingInstructionConfirmStore?: PendingInstructionConfirmStore;
+  /** Work queue busy card (`work_queue_wait` / `work_queue_cancel`), #726. */
+  workQueue?: { handleClick(body: any, respond: RespondFn): Promise<void> };
 }
 
 export interface ActionHandlersStores {
@@ -67,6 +70,7 @@ export interface ActionHandlerDelegates {
     handleDeny(body: any, respond: RespondFn): Promise<void>;
     handleExplain(body: any, respond: RespondFn): Promise<void>;
     handleApproveDisableRule(body: any, respond: RespondFn): Promise<void>;
+    handleApproveConfirmed(body: any, respond: RespondFn): Promise<void>;
   };
   sessionHandler: {
     handleTerminateSession(body: any, respond: RespondFn): Promise<void>;
@@ -137,6 +141,15 @@ export interface ActionHandlerDelegates {
   mcpToolPermissionHandler: {
     handleApprove(body: any, respond: RespondFn): Promise<void>;
     handleDeny(body: any, respond: RespondFn): Promise<void>;
+  };
+  /**
+   * Admin 승인 / 거절 on a bot-message delete request (#623) — the decision the
+   * dashboard's admin approvals share. Optional for older delegate providers,
+   * which keep the inline handlers below.
+   */
+  botDeleteHandler?: {
+    handleApprove(body: any, respond: RespondFn): Promise<void>;
+    handleReject(body: any, respond: RespondFn): Promise<void>;
   };
   pluginUpdateHandler: {
     handleIgnore(body: any, respond: RespondFn): Promise<void>;
@@ -233,6 +246,12 @@ export class ActionHandlers {
     app.action('approve_disable_rule_session', async ({ ack, body, respond }) => {
       await ack();
       await this.delegates.permissionHandler.handleApproveDisableRule(body, respond as RespondFn);
+    });
+
+    // SSOT 2026-11-02 T4 — the second question's button on a prompt the AI advised against.
+    app.action('approve_tool_confirmed', async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.permissionHandler.handleApproveConfirmed(body, respond as RespondFn);
     });
 
     app.action('terminate_session', async ({ ack, body, respond }) => {
@@ -417,6 +436,19 @@ export class ActionHandlers {
       await this.delegates.mcpToolPermissionHandler.handleDeny(body, respond as RespondFn);
     });
 
+    // Work queue busy card: "deploy after the current one" / "cancel" (#726).
+    app.action(
+      new RegExp(`^(${WORK_QUEUE_WAIT_ACTION}|${WORK_QUEUE_CANCEL_ACTION})$`),
+      async ({ ack, body, respond }) => {
+        await ack();
+        if (!this.ctx.workQueue) {
+          await (respond as RespondFn)({ replace_original: true, text: EXPIRED_CLICK_TEXT });
+          return;
+        }
+        await this.ctx.workQueue.handleClick(body, respond as RespondFn);
+      },
+    );
+
     app.action('channel_route_move', async ({ ack, body, respond }) => {
       await ack();
       await this.delegates.channelRouteHandler.handleMove(body, respond as RespondFn);
@@ -464,12 +496,16 @@ export class ActionHandlers {
 
     app.action('dm_delete_approve', async ({ ack, body, respond }) => {
       await ack();
-      await this.handleDmDeleteApprove(body, respond as RespondFn);
+      if (this.delegates.botDeleteHandler)
+        await this.delegates.botDeleteHandler.handleApprove(body, respond as RespondFn);
+      else await this.handleDmDeleteApprove(body, respond as RespondFn);
     });
 
     app.action('dm_delete_reject', async ({ ack, body, respond }) => {
       await ack();
-      await this.handleDmDeleteReject(body, respond as RespondFn);
+      if (this.delegates.botDeleteHandler)
+        await this.delegates.botDeleteHandler.handleReject(body, respond as RespondFn);
+      else await this.handleDmDeleteReject(body, respond as RespondFn);
     });
 
     app.action('dm_delete_thread_confirm', async ({ ack, body, respond }) => {

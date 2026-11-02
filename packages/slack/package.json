@@ -82,6 +82,7 @@
     "./user-skill-file-roundtrip": "./dist/user-skill-file-roundtrip.js",
     "./user-media": "./dist/user-media.js",
     "./work-log": "./dist/work-log.js",
+    "./work-queue": "./dist/work-queue/index.js",
     "./z/capability": "./dist/z/capability.js",
     "./z/normalize": "./dist/z/normalize.js",
     "./z/respond": "./dist/z/respond.js",
@@ -90,6 +91,13 @@
     "./z/types": "./dist/z/types.js",
     "./z/ui-builder": "./dist/z/ui-builder.js",
     "./z/whitelist": "./dist/z/whitelist.js",
+    "./task-turn/dashboard-turn-panel": "./dist/task-turn/dashboard-turn-panel.js",
+    "./task-turn/fail-closed-slack-api": "./dist/task-turn/fail-closed-slack-api.js",
+    "./task-turn/task-say": "./dist/task-turn/task-say.js",
+    "./turn-panel-port": "./dist/turn-panel-port.js",
+    "./task-turn/task-turn-outcome": "./dist/task-turn/task-turn-outcome.js",
+    "./task-turn/task-turn-refused": "./dist/task-turn/task-turn-refused.js",
+    "./task-turn/no-post-slack": "./dist/task-turn/no-post-slack.js",
     "./*": "./dist/*.js"
   },
   "typesVersions": {
@@ -336,6 +344,30 @@
       ],
       "*": [
         "dist/*"
+      ],
+      "task-turn/dashboard-turn-panel": [
+        "dist/task-turn/dashboard-turn-panel.d.ts"
+      ],
+      "task-turn/fail-closed-slack-api": [
+        "dist/task-turn/fail-closed-slack-api.d.ts"
+      ],
+      "task-turn/task-say": [
+        "dist/task-turn/task-say.d.ts"
+      ],
+      "turn-panel-port": [
+        "dist/turn-panel-port.d.ts"
+      ],
+      "task-turn/task-turn-outcome": [
+        "dist/task-turn/task-turn-outcome.d.ts"
+      ],
+      "task-turn/task-turn-refused": [
+        "dist/task-turn/task-turn-refused.d.ts"
+      ],
+      "task-turn/no-post-slack": [
+        "dist/task-turn/no-post-slack.d.ts"
+      ],
+      "work-queue": [
+        "dist/work-queue/index.d.ts"
       ]
     }
   },

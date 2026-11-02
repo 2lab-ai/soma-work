@@ -55,6 +55,11 @@ export interface ConversationTurn {
   origin?: TurnOrigin;
   /** User turn that is a `/compact`: its compaction. */
   compact?: TurnCompaction;
+  /**
+   * User turn: the SDK cut point just before it (#743, `@soma/slack/context-anchor`).
+   * "Roll back to just before this input" resumes the next turn there.
+   */
+  anchor?: string;
 
   // Assistant turn fields (populated for role === 'assistant')
   summaryTitle?: string; // 1-line title from SUMMARY_MODEL

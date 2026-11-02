@@ -6,13 +6,15 @@
  *
  * A RUNNING card whose session is idle because a retry timer or a goal
  * re-check will start it again shows: when it resumes, which attempt, and the
- * error behind it — never the "Running" spinner, and never a Stop button for a
- * turn that is not running.
+ * error behind it — never the running status, and never a Stop button for a
+ * turn that is not running. The face is the board element's (@2lab.ai/ui
+ * <ui-agent-inbox>); the page hands it the card data (cardOf).
  */
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { viewerScope } from '../__fixtures__/viewer-scope';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -32,37 +34,75 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
+/** The page's chrome words (STRINGS), as served: the board's Korean words live there (D2 group 6). */
+const PAGE_STRINGS = new Function(
+  `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
+)();
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+  ({ fns, inject } = viewerScope(fns, inject));
+  inject = { STRINGS: PAGE_STRINGS, ...inject };
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
+// The face is now @2lab.ai/ui <ui-agent-inbox>'s: the page hands it the card
+// data (cardOf) — status, statusText and summary as text, escaped by the
+// element ('escapes every user and model string'). The open card's resume row
+// (renderCardResume) is still the page's.
+const CARD_OF_FNS = [
+  'toNum',
+  'formatTokens',
+  'formatTaskTime',
+  'permissionSummary',
+  'cardSummary',
+  'pendingAutoResume',
+  'autoResumeLabel',
+  'cardCurrentTask',
+  'cardTaskRow',
+  'agentStatusOf',
+  'agentCounts',
+  'agentDotOf',
+  'cardTotalTokens',
+  'ctxLevel',
+  'ctxPercent',
+  'cardCtxTitle',
+  'cardPrMetric',
+  'cardLinksFace',
+  '_hashStr',
+  'ownerBadgeHue',
+  'isSiblingSession',
+  'cardOf',
+];
+const CARD_OF_VARS = [
+  'PR_STATE_LABEL',
+  'CARD_LINK_KIND',
+  'CARD_LINK_TONES',
+  'PR_STATE_TONE',
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'OWNER_BADGE_HUES',
+];
+
 interface Card {
   pendingAutoResume(s: unknown, col: string): unknown;
   autoResumeLabel(r: unknown): string;
-  renderCardStatus(s: unknown, col: string): string;
   cardSummary(s: unknown, col: string, headline: string): string;
-  renderCardResume(s: unknown, col: string): string;
+  cardOf(s: unknown, col: string): Record<string, unknown>;
 }
 
-const card = load<Card>(
-  [
-    'esc',
-    'escAttr',
-    'toNum',
-    'formatTaskTime',
-    'pendingAutoResume',
-    'autoResumeLabel',
-    'doneTimeOf',
-    'cardAgo',
-    'renderCardStatus',
-    'cardSummary',
-    'renderCardResume',
-  ],
-  ['WAIT_SVG', 'RESUME_SVG'],
+const card = load<Card>(CARD_OF_FNS, CARD_OF_VARS, {
   // The task row is hidden here, so the summary line names the running task.
-  { dhShow: () => false },
+  dhShow: () => false,
+  dhTruncate: () => null,
+  currentUserId: 'U1',
+  _ownerIndex: null,
+  SELF_INSTANCE_NAME: '',
+});
+const resumeRow = load<{ renderCardResume(s: unknown, col: string): string }>(
+  ['esc', 'toNum', 'formatTaskTime', 'pendingAutoResume', 'autoResumeLabel', 'renderCardResume'],
+  ['RESUME_SVG'],
 );
 
 const AT = Date.UTC(2026, 9, 22, 10, 24);
@@ -80,22 +120,23 @@ function resuming(autoResume: Record<string, unknown>, overrides: Record<string,
   };
 }
 
-describe('a RUNNING card waiting out an automatic resume (shipped card renderers)', () => {
-  it('a 429 turn retry: resume time, attempt n/3 and the error — no Running spinner', () => {
+describe('a RUNNING card waiting out an automatic resume (cardOf + the open card’s resume row)', () => {
+  it('a 429 turn retry: the wait status, resume time, attempt n/3 and the error — no Running clock', () => {
     const s = resuming({ kind: 'error-retry', at: AT, attempt: 1, maxAttempts: 3, reason: RATE_LIMIT });
-    const html = card.renderCardStatus(s, 'working');
+    const c = card.cardOf(s, 'working');
 
-    expect(html).toContain('is-resume');
-    expect(html).toContain(`${atText} 자동 재개 · 시도 1/3`);
-    expect(html).toContain(`title="${RATE_LIMIT}"`);
-    expect(html).not.toContain('spinner');
-    expect(html).not.toContain('Running');
+    expect(c.status).toBe('waiting');
+    expect(c.statusText).toBe(`${atText} 자동 재개 · 시도 1/3`);
+    expect(c.since).toBeUndefined();
+    expect(c.elapsedMs).toBeUndefined();
+    expect(c.summary).toBe(`오류: ${RATE_LIMIT}`);
 
     expect(card.cardSummary(s, 'working', 'headline')).toBe(`오류: ${RATE_LIMIT}`);
-    const row = card.renderCardResume(s, 'working');
-    expect(row).toContain('class="card-resume"');
-    expect(row).toContain(`${atText} 자동 재개 · 시도 1/3`);
-    expect(row).toContain(RATE_LIMIT);
+    const row = resumeRow.renderCardResume(s, 'working');
+    // D7 (D-10): the kit's notice in the wait tone — the clock glyph, the when in <strong>, the reason under it.
+    expect(row).toMatch(/^<div class="ui-notice card-resume" data-tone="wait"><i data-ui-icon="clock"><\/i><div>/);
+    expect(row).toContain(`<strong>${atText} 자동 재개 · 시도 1/3</strong>`);
+    expect(row).toContain(`<div>${RATE_LIMIT}</div>`);
   });
 
   it('a goal completion check re-run after a dispatch failure', () => {
@@ -106,41 +147,50 @@ describe('a RUNNING card waiting out an automatic resume (shipped card renderers
       maxAttempts: 3,
       reason: 'one-shot dispatch aborted during pool rate-limit retry wait',
     });
-    expect(card.renderCardStatus(s, 'working')).toContain(`${atText} Goal 판정 재시도 · 시도 2/3`);
+    expect(card.cardOf(s, 'working')).toMatchObject({
+      status: 'waiting',
+      statusText: `${atText} 목표 판정 재시도 · 시도 2/3`,
+    });
   });
 
   it('a goal completion check running now has no clock and no error line', () => {
     const s = resuming({ kind: 'goal-eval' });
-    expect(card.autoResumeLabel(s.autoResume)).toBe('Goal 완료 판정 중');
-    expect(card.renderCardStatus(s, 'working')).toContain('Goal 완료 판정 중');
+    expect(card.autoResumeLabel(s.autoResume)).toBe('목표 완료 판정 중');
+    expect(card.cardOf(s, 'working')).toMatchObject({ status: 'waiting', statusText: '목표 완료 판정 중' });
     expect(card.cardSummary(s, 'working', 'headline')).not.toContain('오류');
-    expect(card.renderCardResume(s, 'working')).not.toContain('cr-reason');
+    expect(resumeRow.renderCardResume(s, 'working')).toMatch(/<strong>목표 완료 판정 중<\/strong><\/div><\/div>$/);
   });
 
-  it('a turn that is actually running wins over an armed retry: spinner, current task, no resume row', () => {
+  it('a turn that is actually running wins over an armed retry: running, current task, no resume row', () => {
     const s = resuming(
       { kind: 'error-retry', at: AT, attempt: 1, maxAttempts: 3, reason: RATE_LIMIT },
       { activityState: 'working', tasks: [{ content: 'T1.5 변이 실행', status: 'in_progress' }] },
     );
     expect(card.pendingAutoResume(s, 'working')).toBeNull();
-    expect(card.renderCardStatus(s, 'working')).toContain('spinner');
+    const c = card.cardOf(s, 'working');
+    expect(c.status).toBe('running');
+    expect(c.statusText).toBeUndefined();
     expect(card.cardSummary(s, 'working', 'headline')).toBe('T1.5 변이 실행');
-    expect(card.renderCardResume(s, 'working')).toBe('');
+    expect(resumeRow.renderCardResume(s, 'working')).toBe('');
   });
 
   it('outside the RUNNING column an autoResume field changes nothing', () => {
     const s = resuming({ kind: 'error-retry', at: AT, attempt: 1, maxAttempts: 3, reason: RATE_LIMIT });
     expect(card.pendingAutoResume(s, 'idle')).toBeNull();
-    expect(card.renderCardStatus(s, 'idle')).toContain('Done in');
+    // "Done in <active time>": the element words it from status done + elapsedMs.
+    const c = card.cardOf(s, 'idle');
+    expect(c).toMatchObject({ status: 'done', elapsedMs: 3_485_924 });
+    expect(c.statusText).toBeUndefined();
   });
 
   it('a hostile error line is text, never markup', () => {
     const bad = '"><img src=x onerror=alert(1)>';
     const s = resuming({ kind: 'error-retry', at: AT, attempt: 1, maxAttempts: 3, reason: bad });
-    for (const html of [card.renderCardStatus(s, 'working'), card.renderCardResume(s, 'working')]) {
-      expect(html).not.toContain('<img');
-      expect(html).not.toMatch(/="\s*onerror/);
-    }
+    // The face carries it as plain text; the element escapes it ('escapes every user and model string').
+    expect(card.cardOf(s, 'working').summary).toBe(`오류: ${bad}`);
+    const html = resumeRow.renderCardResume(s, 'working');
+    expect(html).not.toContain('<img');
+    expect(html).not.toMatch(/="\s*onerror/);
   });
 
   it('the open card offers Close, not Stop, while it waits (no turn to stop); a running card keeps Stop', () => {
@@ -153,14 +203,30 @@ describe('a RUNNING card waiting out an automatic resume (shipped card renderers
         'formatTaskTime',
         'pendingAutoResume',
         'autoResumeLabel',
+        // SSOT 2026-10-29 T4: the summary reads the running task through the face's own helper.
+        'cardCurrentTask',
         'cardSummary',
         'renderCardResume',
+        'taskOutcomeHtml',
+        'taskNoticeFailHtml',
         'isBusy',
+        'sessionActionsOf',
         'sessionActionHtml',
         'cardGoalLine',
+        'renderEpicPlan',
+        'cardLinksFace',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'SESSION_ACTION_ARIA', 'GOAL_STATUS_LABELS', '_busy'],
+      [
+        'CARD_LINK_KIND',
+        'CARD_LINK_TONES',
+        'RESUME_SVG',
+        'SESSION_ACTION_TONE',
+        'GOAL_STATUS_LABELS',
+        'GOAL_STATUS_TONE',
+        'GOAL_SVG',
+        '_busy',
+      ],
       {
         effortLabel: (e: string) => e,
         dhShow: () => false,
@@ -173,13 +239,12 @@ describe('a RUNNING card waiting out an automatic resume (shipped card renderers
         renderCardIo: () => '',
         renderCardArtifacts: () => '',
         renderAgentTree: () => '',
-        resolveRecommendedId: () => null,
-        stripRecommendedMarker: (l: string) => l,
-        choiceDataAttrs: () => '',
         renderMultiChoiceCard: () => '',
-        renderPermissionBlock: () => '',
+        acPermissionsHtml: () => '',
+        acGoalDecisionHtml: () => '',
+        acQuestionHtml: () => '',
         renderCardGoal: () => '',
-        renderTimeline: () => '',
+        renderCardTasks: () => '',
         renderModelNote: () => '',
         renderModelPicker: () => '',
         renderEffortPicker: () => '',
@@ -196,13 +261,13 @@ describe('a RUNNING card waiting out an automatic resume (shipped card renderers
       lastActivity: '2026-10-22T09:24:00Z',
     };
     const waitingHtml = body.renderCardBody(waiting, 'working');
-    expect(waitingHtml).toContain('btn-close');
-    expect(waitingHtml).not.toContain('btn-stop');
-    expect(waitingHtml).toContain('class="card-resume"');
+    expect(waitingHtml).toContain('data-action="close"');
+    expect(waitingHtml).not.toContain('data-action="stop"');
+    expect(waitingHtml).toContain('class="ui-notice card-resume" data-tone="wait"');
 
     const runningHtml = body.renderCardBody({ ...waiting, activityState: 'working' }, 'working');
-    expect(runningHtml).toContain('btn-stop');
-    expect(runningHtml).not.toContain('class="card-resume"');
+    expect(runningHtml).toContain('data-action="stop"');
+    expect(runningHtml).not.toContain('card-resume');
   });
 
   it('an open panel re-renders its tasks on every board push (a finished turn stops spinning)', () => {
@@ -211,8 +276,62 @@ describe('a RUNNING card waiting out an automatic resume (shipped card renderers
     // spec 13: through the one live path (repaintPanelSession → repaintPanelScope → repaintPanelTasks).
     expect(ws).toContain('repaintPanelSession();');
     expect(TEMPLATE.slice(TEMPLATE.indexOf('\nfunction repaintPanelScope('))).toContain('repaintPanelTasks();');
+    // SSOT 2026-10-29 T5: with the work no task got (the main agent's 태스크 밖 row).
     expect(TEMPLATE.slice(TEMPLATE.indexOf('\nfunction repaintPanelTasks('))).toContain(
-      'renderPanelTasks(panelAgentTasks(), panelAgentLabel(), panelAgentEarlier());',
+      'renderPanelTasks(panelAgentTasks(), panelAgentLabel(), panelAgentEarlier(), panelAgentOutside());',
     );
+    // …which rides the task_update push with the list (null clears it; a server without it leaves it).
+    expect(ws).toContain(
+      "if ('tasksOutside' in msg) _sessionCache[msg.sessionKey].tasksOutside = msg.tasksOutside || undefined;",
+    );
+  });
+});
+
+// SSOT 2026-10-29 T4: the face names one task — the one in progress (card.task, the task row).
+// The summary line used to fall back to the last completed task (or the last in the list), which
+// read as a second task next to the running one.
+describe('the card summary never names a task other than the running one (SSOT 2026-10-29 T4)', () => {
+  const shown = load<Card>(CARD_OF_FNS, CARD_OF_VARS, {
+    // The task row is shown: it names the running task, the summary does not repeat it.
+    dhShow: () => true,
+    dhTruncate: () => null,
+    currentUserId: 'U1',
+    _ownerIndex: null,
+    SELF_INSTANCE_NAME: '',
+  });
+  const tasks = [
+    { id: 'T1', content: 'Read the spec', status: 'completed' },
+    { id: 'T2', content: 'Write the parser', status: 'in_progress', startedAt: AT },
+    { id: 'T3', content: 'Ship it', status: 'pending' },
+  ];
+
+  it('a running task and a completed task: the completed task never reaches the summary', () => {
+    const s = { key: 'k', displayHeadline: 'Headline', activityState: 'working', tasks };
+    // Task row hidden: the summary is the running task.
+    expect(card.cardOf(s, 'working').summary).toBe('Write the parser');
+    // Task row shown: the row is the running task; the summary falls to the session's own titles — or nothing.
+    const face = shown.cardOf(s, 'working');
+    expect(face.task).toEqual({ label: 'Write the parser', id: 'T2', startedAt: AT });
+    expect(face.summary).toBeUndefined();
+    expect(shown.cardSummary({ ...s, summaryTitle: 'Parser work' }, 'working', 'Headline')).toBe('Parser work');
+    expect(shown.cardSummary({ ...s, title: 'Thread title' }, 'working', 'Headline')).toBe('Thread title');
+    for (const m of [card, shown]) {
+      for (const col of ['working', 'waiting', 'idle', 'closed']) {
+        const text = JSON.stringify(m.cardOf(s, col));
+        expect(text, col).not.toContain('Read the spec');
+        expect(text, col).not.toContain('Ship it');
+      }
+    }
+  });
+
+  it('no running task (done, or waiting on its next step): no task text at all — not the last done, not the last listed', () => {
+    const idle = { key: 'k', activityState: 'idle', tasks: tasks.map((t) => ({ ...t, status: 'completed' })) };
+    expect(card.cardSummary(idle, 'idle', 'Headline')).toBe('');
+    expect(card.cardSummary({ ...idle, title: 'Thread title' }, 'idle', 'Headline')).toBe('Thread title');
+    // A title that is the headline is not said twice.
+    expect(card.cardSummary({ ...idle, title: 'Headline' }, 'idle', 'Headline')).toBe('');
+    const between = { key: 'k', activityState: 'working', tasks: [tasks[0], tasks[2]] };
+    expect(card.cardSummary(between, 'working', 'Headline')).toBe('');
+    expect(card.cardOf(between, 'working').summary).toBeUndefined();
   });
 });

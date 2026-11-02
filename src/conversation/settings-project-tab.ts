@@ -13,7 +13,7 @@
  * Client script: String.raw, no `${…}` and no backticks (ships byte for byte).
  */
 
-export const PROJECT_TAB_HTML = `<div data-tab="project" class="page" hidden>
+export const PROJECT_TAB_HTML = `<div slot="project" data-tab="project" class="page" hidden>
   <aside class="side" aria-label="프로젝트 목록">
     <input type="search" id="pm-filter" placeholder="프로젝트 검색" aria-label="프로젝트 검색" oninput="paintProjectList()">
     <nav id="pm-list"></nav>

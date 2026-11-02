@@ -33,7 +33,15 @@
  */
 
 import { type AgentTreeEvent, normalizeAgentId } from '@soma/slack/agent-tree';
-import { applyTodoList, sanitizeTaskLedger, stampWorkLogTask, type TaskLedger, type TodoInput } from './task-ledger';
+import {
+  applyTodoList,
+  emptyTaskLedger,
+  recordAgentToolCall,
+  sanitizeTaskLedger,
+  stampWorkLogTask,
+  type TaskLedger,
+  type TodoInput,
+} from './task-ledger';
 
 export type AgentStatus = 'running' | 'completed' | 'failed' | 'stopped' | 'unknown';
 
@@ -364,6 +372,8 @@ export function stampWorkLogAgent<E extends { kind: string; tool?: string; agent
   entry: E,
   now: number,
 ): E & { taskId?: string; taskTitle?: string } {
+  // Work before the model's first TodoWrite is held on the ledger too (review R1).
+  if (entry.kind === 'tool' && !h.taskLedger) h.taskLedger = emptyTaskLedger(now);
   if (!entry.agentId) {
     if (entry.kind === 'tool') {
       const reg = ensureRegistry(h);
@@ -379,6 +389,9 @@ export function stampWorkLogAgent<E extends { kind: string; tool?: string; agent
   if (entry.kind === 'tool') {
     setTools(agent, (agent.loggedTools ?? 0) + 1, undefined);
     if (entry.tool) agent.lastTool = clip(String(entry.tool), TYPE_MAX);
+    // 2026-10-29 T5: a subagent works for the main task that is in progress —
+    // its tool calls count there too (as the subagents' share, not the main agent's).
+    recordAgentToolCall(h.taskLedger);
   }
   if (created && h.agents) enforceBounds(h.agents);
   return stampWorkLogTask(agent.ledger, entry);

@@ -48,12 +48,16 @@ describe('settings routes (SSOT 2026-10-23 T2)', () => {
   const registry = {
     read: vi.fn((userId: string) => ({ userId, isAdmin: userId === 'U_ADMIN', groups: [], settings: [] })),
     write: vi.fn(async (_userId: string, key: string, value: unknown) => ({ key, value })),
+    readLayout: vi.fn((userId: string) => ({ userId, doc: { v: 1 } })),
+    writeLayout: vi.fn((userId: string, doc: unknown) => ({ userId, doc })),
   };
 
   beforeEach(async () => {
     vi.resetModules();
     registry.read.mockClear();
     registry.write.mockClear();
+    registry.readLayout.mockClear();
+    registry.writeLayout.mockClear();
     const webServer = await import('../web-server');
     stopWebServer = webServer.stopWebServer;
     injectWebServer = webServer.injectWebServer;
@@ -110,6 +114,54 @@ describe('settings routes (SSOT 2026-10-23 T2)', () => {
     expect(JSON.parse(res.body)).toEqual({ ok: true, setting: { key: 'defaultEffort', value: 'high' } });
   });
 
+  it('the 대시보드 화면 layouts (.prd/21): GET reads the signed-in user’s; PUT writes the whole document with CSRF', async () => {
+    const auth = { ...(await signIn('U1')), 'content-type': 'application/json' };
+    const got = await injectWebServer({
+      method: 'GET',
+      url: '/api/settings/dashboard-layout',
+      headers: { cookie: auth.cookie },
+    });
+    expect(got.statusCode).toBe(200);
+    expect(registry.readLayout).toHaveBeenCalledWith('U1');
+    expect(JSON.parse(got.body)).toEqual({ userId: 'U1', doc: { v: 1 } });
+    const doc = { v: 1, active: { card: '2' } };
+    const put = await injectWebServer({
+      method: 'PUT',
+      url: '/api/settings/dashboard-layout',
+      headers: auth,
+      payload: { doc, userId: 'U_OTHER' },
+    });
+    expect(put.statusCode).toBe(200);
+    expect(registry.writeLayout).toHaveBeenCalledWith('U1', doc);
+    expect(JSON.parse(put.body)).toEqual({ ok: true, layout: { userId: 'U1', doc } });
+    // Without a doc: 400. Without CSRF: refused before the registry.
+    expect(
+      (await injectWebServer({ method: 'PUT', url: '/api/settings/dashboard-layout', headers: auth, payload: {} }))
+        .statusCode,
+    ).toBe(400);
+    registry.writeLayout.mockClear();
+    const noCsrf = await injectWebServer({
+      method: 'PUT',
+      url: '/api/settings/dashboard-layout',
+      headers: { cookie: auth.cookie, 'content-type': 'application/json' },
+      payload: { doc },
+    });
+    expect(noCsrf.statusCode).toBe(403);
+    expect(registry.writeLayout).not.toHaveBeenCalled();
+    // A refusal keeps its status and message.
+    registry.writeLayout.mockImplementationOnce(() => {
+      throw new SettingsError(400, '레이아웃은 객체여야 합니다');
+    });
+    const bad = await injectWebServer({
+      method: 'PUT',
+      url: '/api/settings/dashboard-layout',
+      headers: auth,
+      payload: { doc: 'x' },
+    });
+    expect(bad.statusCode).toBe(400);
+    expect(JSON.parse(bad.body)).toEqual({ error: '레이아웃은 객체여야 합니다' });
+  });
+
   it('PATCH without a CSRF token is refused before the registry runs', async () => {
     const { cookie } = await signIn('U1');
     const res = await injectWebServer({
@@ -160,7 +212,12 @@ describe('settings routes (SSOT 2026-10-23 T2)', () => {
 
   it('the dashboard top bar links to the settings page', async () => {
     const res = await injectWebServer({ method: 'GET', url: '/dashboard', headers: await signIn('U1') });
-    expect(res.body).toContain('<a href="/dashboard/settings" id="settings-link"');
+    // D2 group 1: the top bar is @2lab.ai/ui <ui-app-bar>; its links are data (설정 → /dashboard/settings).
+    // D4 group 4 (D2-GAPS G1-2): the link carries its title — the element draws it as the tooltip.
+    expect(res.body).toContain('<ui-app-bar id="app-bar" lang="ko">');
+    expect(res.body).toMatch(
+      /\{ id: 'settings', label: '설정', href: '\/dashboard\/settings', icon: 'gear', title: '[^']+' \},/,
+    );
   });
 
   it('503 when no registry is wired', async () => {

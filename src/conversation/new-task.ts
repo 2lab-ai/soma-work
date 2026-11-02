@@ -13,6 +13,8 @@
  * production wiring lives in `src/index.ts`.
  */
 
+import { clampEffortToSupported } from 'soma-lib';
+
 /** Upload / text limits. The client enforces them before sending; the server again after decoding. */
 export const NEW_TASK_LIMITS = Object.freeze({
   maxPromptChars: 12_000,
@@ -128,8 +130,12 @@ export interface NewTaskModelOption {
   nickname: string;
   model: string;
   label: string;
+  /** The effort levels the model runs, in level order; absent when the catalog has no menu for it. */
+  effortLevels?: string[];
   battery: ModelBattery;
 }
+
+type ModelInput = { nickname: string; model: string; label: string; effortLevels?: string[] };
 
 export interface NewTaskContext {
   models: NewTaskModelOption[];
@@ -147,9 +153,11 @@ export interface NewTaskContext {
 }
 
 export interface NewTaskContextInput {
-  representativeModels: Array<{ nickname: string; model: string; label: string }>;
+  representativeModels: ModelInput[];
   userDefaultModel: string;
   userDefaultModelLabel: string;
+  /** The levels the user's default model runs, when it is not a representative model. */
+  userDefaultModelEffortLevels?: string[];
   userDefaultEffort: string;
   efforts: readonly string[];
   autogoalDefault: boolean;
@@ -166,18 +174,48 @@ export interface NewTaskContextInput {
   usageFetchedAt: number | null;
 }
 
-export function buildNewTaskContext(input: NewTaskContextInput): NewTaskContext {
-  // Models: the representative set; the user's own default first when it is not one of them.
-  const options = input.representativeModels.map((m) => ({ nickname: m.nickname, model: m.model, label: m.label }));
-  let defaultModel = options.find((m) => m.model === input.userDefaultModel)?.nickname;
+/**
+ * The models the new-task dialog offers: the representative set, with the
+ * user's own default first when it is not one of them. Shared by the context
+ * and the dashboard-task launcher, which resolves a nickname with it (#640 R2).
+ */
+export function newTaskModelOptions(
+  representativeModels: ModelInput[],
+  userDefaultModel: string,
+  userDefaultModelLabel: string,
+  userDefaultModelEffortLevels?: string[],
+): { options: ModelInput[]; defaultModel: string } {
+  const options: ModelInput[] = representativeModels.map((m) => ({
+    nickname: m.nickname,
+    model: m.model,
+    label: m.label,
+    ...(m.effortLevels ? { effortLevels: [...m.effortLevels] } : {}),
+  }));
+  let defaultModel = options.find((m) => m.model === userDefaultModel)?.nickname;
   if (!defaultModel) {
     options.unshift({
-      nickname: input.userDefaultModel,
-      model: input.userDefaultModel,
-      label: input.userDefaultModelLabel || input.userDefaultModel,
+      nickname: userDefaultModel,
+      model: userDefaultModel,
+      label: userDefaultModelLabel || userDefaultModel,
+      ...(userDefaultModelEffortLevels ? { effortLevels: [...userDefaultModelEffortLevels] } : {}),
     });
-    defaultModel = input.userDefaultModel;
+    defaultModel = userDefaultModel;
   }
+  return { options, defaultModel };
+}
+
+/** `effort` carried over to a model's levels (unchanged when it runs it or has no menu) — the runtime clamp's rule. */
+function fitToLevels(levels: readonly string[] | undefined, effort: string): string {
+  return levels && levels.length > 0 && !levels.includes(effort) ? clampEffortToSupported(levels, effort) : effort;
+}
+
+export function buildNewTaskContext(input: NewTaskContextInput): NewTaskContext {
+  const { options, defaultModel } = newTaskModelOptions(
+    input.representativeModels,
+    input.userDefaultModel,
+    input.userDefaultModelLabel,
+    input.userDefaultModelEffortLevels,
+  );
   const models = options.map((m) => ({ ...m, battery: computeModelBattery(m.model, input.usageAccounts) }));
 
   // Channels: repo-mapped channels the user is a member of — never inferred from history.
@@ -209,11 +247,14 @@ export function buildNewTaskContext(input: NewTaskContextInput): NewTaskContext 
   );
 
   const efforts = [...input.efforts];
+  // The default effort, kept to the default model's levels (what it would run anyway).
+  const userEffort = efforts.includes(input.userDefaultEffort) ? input.userDefaultEffort : (efforts[0] ?? '');
+  const defaultLevels = options.find((m) => m.nickname === defaultModel)?.effortLevels;
   return {
     models,
     defaultModel,
     efforts,
-    defaultEffort: efforts.includes(input.userDefaultEffort) ? input.userDefaultEffort : (efforts[0] ?? ''),
+    defaultEffort: userEffort ? fitToLevels(defaultLevels, userEffort) : userEffort,
     channels,
     defaultChannelId,
     membershipUnknown: members === null,
@@ -305,6 +346,61 @@ export function parseAttachments(
   return { ok: true, value: attachments };
 }
 
+/** #600 ⑥ — a "new task" that becomes a Slack-less dashboard task (`destination: 'task'`). */
+export interface DashboardTaskSubmission {
+  requestId: string;
+  prompt: string;
+  /** An existing folder's name in the user's `/tmp/<user>/`; the launcher validates it. */
+  folder?: string;
+  /** The nickname of a model the dialog offers; the task launcher resolves it (#640 R1). */
+  model?: string;
+  /** E4 ④a-2 (.prd/19 D12) — make an epic; the launcher checks the user's `epicTasks` flag. */
+  kind?: 'epic';
+}
+
+const MODEL_NAME = /^[A-Za-z0-9._:[\]-]{1,100}$/;
+
+/**
+ * The dashboard-task form of a new-task body: a prompt (required — a task turn
+ * takes no attachments yet, D8), optionally a folder name and a model. No
+ * channel, no autogoal / autoz (Slack router features a task turn does not reach).
+ */
+export function parseDashboardTaskSubmission(
+  body: unknown,
+): { ok: true; value: DashboardTaskSubmission } | { ok: false; error: string } {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false, error: 'body must be an object' };
+  const b = body as Record<string, unknown>;
+  if (typeof b.requestId !== 'string' || !REQUEST_ID.test(b.requestId)) {
+    return { ok: false, error: 'requestId must be 8–64 characters of [A-Za-z0-9_-]' };
+  }
+  if (typeof b.prompt !== 'string') return { ok: false, error: 'prompt must be a string' };
+  const prompt = b.prompt.trim();
+  if (!prompt) return { ok: false, error: 'prompt is required' };
+  if (prompt.length > NEW_TASK_LIMITS.maxPromptChars) {
+    return { ok: false, error: `prompt exceeds ${NEW_TASK_LIMITS.maxPromptChars} characters` };
+  }
+  if (Array.isArray(b.attachments) ? b.attachments.length > 0 : b.attachments !== undefined) {
+    return { ok: false, error: 'attachments are not supported on a dashboard task yet' };
+  }
+  if (b.folder !== undefined && (typeof b.folder !== 'string' || !b.folder)) {
+    return { ok: false, error: 'folder must be a folder name' };
+  }
+  if (b.model !== undefined && (typeof b.model !== 'string' || !MODEL_NAME.test(b.model))) {
+    return { ok: false, error: 'model must be a model name' };
+  }
+  if (b.kind !== undefined && b.kind !== 'epic') return { ok: false, error: "kind must be 'epic' or absent" };
+  return {
+    ok: true,
+    value: {
+      requestId: b.requestId,
+      prompt,
+      ...(typeof b.folder === 'string' ? { folder: b.folder } : {}),
+      ...(typeof b.model === 'string' ? { model: b.model } : {}),
+      ...(b.kind === 'epic' ? { kind: 'epic' as const } : {}),
+    },
+  };
+}
+
 export function parseNewTaskSubmission(body: unknown, ctx: NewTaskContext): NewTaskParseResult {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false, error: 'body must be an object' };
   const b = body as Record<string, unknown>;
@@ -321,6 +417,12 @@ export function parseNewTaskSubmission(body: unknown, ctx: NewTaskContext): NewT
   if (!model) return { ok: false, error: 'model is not one of the offered models' };
   if (typeof b.effort !== 'string' || !ctx.efforts.includes(b.effort)) {
     return { ok: false, error: 'effort is not one of the offered efforts' };
+  }
+  if (model.effortLevels && model.effortLevels.length > 0 && !model.effortLevels.includes(b.effort)) {
+    return {
+      ok: false,
+      error: `${model.nickname} does not run effort ${b.effort}: one of ${model.effortLevels.join(', ')}`,
+    };
   }
   if (typeof b.channelId !== 'string' || !ctx.channels.some((c) => c.id === b.channelId)) {
     return { ok: false, error: 'channel is not one of the channels offered to you' };

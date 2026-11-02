@@ -196,6 +196,46 @@ export function createConversation(
 }
 
 /**
+ * #598 ④b — create a conversation and resolve only once its record is on disk.
+ * A failed save rejects and leaves nothing cached, so a Slack-less task never
+ * runs a turn whose recording destination does not exist
+ * (`createConversation` returns at once and only logs a failed save).
+ */
+export async function createConversationDurable(
+  channelId: string,
+  threadTs: string,
+  ownerId: string,
+  ownerName: string,
+  title?: string,
+  workflow?: string,
+): Promise<string> {
+  const id = randomUUID();
+  const now = Date.now();
+  const record: ConversationRecord = {
+    id,
+    channelId,
+    threadTs,
+    ownerId,
+    ownerName,
+    title,
+    workflow,
+    createdAt: now,
+    updatedAt: now,
+    turns: [],
+  };
+  cacheRecord(id, record);
+  try {
+    await serializedSave(id, record);
+  } catch (err) {
+    activeConversations.delete(id);
+    writeLocks.delete(id);
+    throw err;
+  }
+  logger.info(`Created conversation ${id} (durable)`, { ownerName });
+  return id;
+}
+
+/**
  * Copy a turn's downloaded files into the user-media store (SSOT 2026-10-25).
  * Awaited by the caller BEFORE it records the turn and before the turn's temp
  * cleanup; bounded inside the store, never throws, never drops a file.
@@ -217,7 +257,7 @@ export function recordUserTurn(
   userName?: string,
   userId?: string,
   attachments?: readonly TurnAttachment[],
-  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean } = {},
+  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean; anchor?: string } = {},
 ): void {
   // Fire-and-forget
   _recordUserTurnAsync(conversationId, content, userName, userId, attachments, opts).catch((err) => {
@@ -235,7 +275,7 @@ async function _recordUserTurnAsync(
   userName: string | undefined,
   userId: string | undefined,
   attachments: readonly TurnAttachment[] | undefined,
-  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean },
+  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean; anchor?: string },
 ): Promise<void> {
   const record = await getOrLoadConversation(conversationId);
   if (!record) {
@@ -259,6 +299,7 @@ async function _recordUserTurnAsync(
     ...(attachments && attachments.length > 0 ? { attachments: [...attachments] } : {}),
     ...(origin ? { origin: { by: origin.by } } : {}),
     ...(opts.compact ? { compact: estimateMs !== undefined ? { estimateMs } : {} } : {}),
+    ...(typeof opts.anchor === 'string' && opts.anchor ? { anchor: opts.anchor } : {}),
   };
 
   record.turns.push(turn);

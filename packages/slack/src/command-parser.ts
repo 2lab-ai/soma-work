@@ -2,7 +2,9 @@
  * Command parsing utilities for Slack bot commands
  */
 
-export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+// Every effort level the app sets — soma-lib `EFFORT_LEVELS` (this package does not depend on soma-lib): the SDK's
+// five, then `ultra`, which only a model whose llmux catalog menu lists it runs (the setters check the model).
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 
 export type CctAction =
   | { action: 'status' }
@@ -1312,6 +1314,10 @@ export class CommandParser {
     // Notification
     'notify',
     'webhook',
+    // Slack instructions → dashboard tasks (E2 ⑧)
+    'taskentry',
+    // Epic tasks on the dashboard (E4 ④a-2)
+    'epictasks',
     // Report
     'report',
     // Skills
@@ -1437,6 +1443,11 @@ export class CommandParser {
       '• `link issue <url>` - Attach issue link to current session',
       '• `link pr <url>` - Attach PR link to current session',
       '• `link doc <url>` - Attach doc link to current session',
+      '',
+      '*Dashboard Tasks:*',
+      '• `taskentry` - Show whether your channel instructions become dashboard tasks',
+      '• `taskentry on|off` - Turn it on/off (per user, off by default)',
+      '• `epictasks on|off` - Allow making epic tasks on the dashboard (per user, off by default)',
       '',
       '*MCP Servers:*',
       '• `mcp` or `/mcp` - Show MCP server status',

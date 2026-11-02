@@ -22,6 +22,8 @@ export interface ProcessedFile {
 export interface ConversationSession {
   channelId: string;
   threadTs?: string;
+  /** A task with no Slack thread (#596): `channelId` is '' and its registry key is `task:<taskId>`. */
+  slackless?: boolean;
   threadRootTs?: string;
   /**
    * Set once, at session init, from `routeContext.incidentRequest` of a
@@ -49,9 +51,25 @@ export interface ConversationSession {
     [key: string]: any;
   };
   /** SSOT 2026-10-22 T5 — a dashboard model switch waiting for its compact (runtime-only). */
-  pendingModelSwitch?: { model: string; nickname: string; requestedAt: number; compactTs?: string; armed?: boolean };
+  pendingModelSwitch?: {
+    model: string;
+    nickname: string;
+    requestedAt: number;
+    compactTs?: string;
+    armed?: boolean;
+    /** The session's effort once the switch lands — set when the target does not run the session's level. */
+    effort?: string;
+    /** The level `effort` replaces (a level set while the switch waited stays). */
+    effortFrom?: string;
+  };
   /** Last per-model SDK running total for `sessionId` (persisted) — see `toTurnUsage`. */
   sdkUsageBaseline?: SdkUsageBaseline;
+  /** Context rollback (#743, `../context-anchor`): SDK session id, compactions, cut point, waiting rollback. */
+  sessionId?: string;
+  compactionCount?: number;
+  contextAnchor?: string;
+  pendingRewind?: import('../context-anchor').PendingRewind;
+  contextRewinds?: import('../context-anchor').ContextRewindRecord[];
   /** What the whole task spent (persisted, never reset) — see `creditTaskSpend`. */
   taskUsage?: TaskUsage;
   [key: string]: any;
@@ -155,6 +173,14 @@ export interface MessageEvent {
      * body cannot forge it. `SessionInitializer` copies it onto the session.
      */
     incidentRequest?: IncidentRequest;
+    /**
+     * E2 ⑦ — set by the router on an original app_mention whose words are a
+     * plain instruction (`isTaskEntryCandidate`): such a mention may become a
+     * dashboard task (⑧). Absent everywhere else. Survives the follow-up queue.
+     * A hint about the words at mention time: a queued item's text or files
+     * may change later, and the host re-checks both when it acts.
+     */
+    taskEntryCandidate?: boolean;
   };
   files?: Array<{
     id: string;

@@ -69,6 +69,26 @@ describe('Restart symmetry: notifyShutdown stamps recovery markers', () => {
     return { manager, sessions, postMessage };
   };
 
+  it('#598 ④c — a Slack-less task that has run is not posted to Slack and gets no marker (restart reconciliation owns it)', async () => {
+    const { manager, sessions, postMessage } = buildManager();
+    const task: ConversationSession = {
+      ownerId: 'U1',
+      userId: 'U1',
+      channelId: '',
+      slackless: true,
+      sessionId: 'sid-task',
+      isActive: true,
+      lastActivity: new Date(),
+      activityState: 'working',
+    } as ConversationSession;
+    sessions.set('task:11111111-2222-4333-8444-555555555555', task);
+
+    await manager.notifyShutdown();
+
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(task.shutdownNotificationSent).toBeUndefined();
+  });
+
   it('marks every notified session with shutdownNotificationSent=true', async () => {
     const { manager, sessions } = buildManager();
     const s1: ConversationSession = {

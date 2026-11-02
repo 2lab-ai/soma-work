@@ -280,6 +280,20 @@ describe('resolveThemeInput', () => {
   });
 });
 
+describe('epicTasks (E4 ④a-2)', () => {
+  it('is off by default and for anything stored that is not exactly true; set on and off', () => {
+    const store = makeStore();
+    expect(store.getUserEpicTasks('U1')).toBe(false);
+    store.setUserEpicTasks('U1', true);
+    expect(store.getUserEpicTasks('U1')).toBe(true);
+    store.setUserEpicTasks('U1', false);
+    expect(store.getUserEpicTasks('U1')).toBe(false);
+    // A hand-edited value that is not `true` does not turn epics on.
+    (store as any).settings.U1.epicTasks = 'yes';
+    expect(store.getUserEpicTasks('U1')).toBe(false);
+  });
+});
+
 describe('Sandbox + network toggles', () => {
   it('defaults sandbox to ON (disabled=false) and network to ON (disabled=false)', () => {
     const store = makeStore();
@@ -431,6 +445,88 @@ describe('UserSettingsStore.getUserCompactThreshold / clearUserCompactThreshold 
     expect(store.getUserCompactThreshold('U1')).toBe(DEFAULT_COMPACT_THRESHOLD);
     expect(store.getUserCompactThreshold('U2')).toBe(70);
     expect(new UserSettingsStore(dir).getUserCompactThreshold('U1')).toBe(DEFAULT_COMPACT_THRESHOLD);
+  });
+});
+
+describe('Slack instruction → dashboard task flag (E2 ⑦, D1)', () => {
+  it('is off by default, per user, and set values are read back', () => {
+    const store = makeStore();
+    expect(store.getUserSlackTaskEntry('U1')).toBe(false);
+    store.setUserSlackTaskEntry('U1', true);
+    expect(store.getUserSlackTaskEntry('U1')).toBe(true);
+    expect(store.getUserSlackTaskEntry('U2')).toBe(false);
+    store.setUserSlackTaskEntry('U1', false);
+    expect(store.getUserSlackTaskEntry('U1')).toBe(false);
+  });
+
+  it('survives a reload from disk', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uss-task-entry-'));
+    new UserSettingsStore(dir).setUserSlackTaskEntry('U1', true);
+    expect(new UserSettingsStore(dir).getUserSlackTaskEntry('U1')).toBe(true);
+  });
+});
+
+describe('dashboard surface layouts (.prd/21)', () => {
+  it('empty by default, per user; a saved document is read back checked; a broken stored value reads as empty', () => {
+    const store = makeStore();
+    expect(store.getUserDashboardLayout('U1')).toEqual({ v: 1 });
+    store.setUserDashboardLayout('U1', { v: 1, active: { card: '3' }, thread: { mode: 'theme' } });
+    expect(store.getUserDashboardLayout('U1')).toEqual({ v: 1, active: { card: '3' }, thread: { mode: 'theme' } });
+    expect(store.getUserDashboardLayout('U2')).toEqual({ v: 1 });
+    (store as any).settings.U1.dashboardLayout = { v: 9 };
+    expect(store.getUserDashboardLayout('U1')).toEqual({ v: 1 });
+  });
+});
+
+describe('dashboard view plan (SSOT 2026-11-01 ④, .prd/20)', () => {
+  it('is 1안 by default, per user; 2 and 3 are kept; anything else reads as 1', () => {
+    const store = makeStore();
+    expect(store.getUserDashboardPlan('U1')).toBe('1');
+    store.setUserDashboardPlan('U1', '3');
+    expect(store.getUserDashboardPlan('U1')).toBe('3');
+    expect(store.getUserDashboardPlan('U2')).toBe('1');
+    store.setUserDashboardPlan('U1', '2');
+    expect(store.getUserDashboardPlan('U1')).toBe('2');
+    (store as any).settings.U1.dashboardPlan = 'x';
+    expect(store.getUserDashboardPlan('U1')).toBe('1');
+  });
+});
+
+describe('dashboard view mode (SSOT 2026-11-01)', () => {
+  it('is minimal by default, per user, and a saved value is read back', () => {
+    const store = makeStore();
+    expect(store.getUserDashboardMode('U1')).toBe('minimal');
+    store.setUserDashboardMode('U1', 'advanced');
+    expect(store.getUserDashboardMode('U1')).toBe('advanced');
+    expect(store.getUserDashboardMode('U2')).toBe('minimal');
+    store.setUserDashboardMode('U1', 'minimal');
+    expect(store.getUserDashboardMode('U1')).toBe('minimal');
+  });
+
+  it('survives a reload from disk; an unknown stored value reads as minimal', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uss-view-mode-'));
+    new UserSettingsStore(dir).setUserDashboardMode('U1', 'advanced');
+    expect(new UserSettingsStore(dir).getUserDashboardMode('U1')).toBe('advanced');
+    const file = path.join(dir, 'user-settings.json');
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    raw.U1.dashboardMode = 'detail';
+    fs.writeFileSync(file, JSON.stringify(raw));
+    expect(new UserSettingsStore(dir).getUserDashboardMode('U1')).toBe('minimal');
+  });
+
+  it('a view switch drops no cached system prompt — the dashboard view feeds no prompt', async () => {
+    const { setSettingsPromptInvalidationHook } = await import('../user-settings-store');
+    const store = makeStore();
+    store.setUserSlackTaskEntry('U1', false); // the record exists (an accepted user)
+    const hook = vi.fn();
+    setSettingsPromptInvalidationHook(hook);
+    try {
+      store.setUserDashboardMode('U1', 'advanced');
+      expect(hook).not.toHaveBeenCalled();
+      expect(store.getUserDashboardMode('U1')).toBe('advanced');
+    } finally {
+      setSettingsPromptInvalidationHook(undefined);
+    }
   });
 });
 

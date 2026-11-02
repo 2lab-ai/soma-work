@@ -1368,6 +1368,52 @@ describe('MEMORY command — validator allow-list (regression: listed-but-uninvo
     expect((result.request.params as { id?: string }).id).toBe('agent/build-system');
   });
 
+  // Production (30 days of dev transcripts): episodic_append failed 43 of 99
+  // calls with "content is required" — 41 of them passed the observation as
+  // `text`. The validator's allow-list rebuild dropped `text` silently, so the
+  // handler saw no content, the model paid for a ~1.6K-char help payload and a
+  // retry. `text` can only mean the observation here, so carry it through.
+  it('normalizes the `text` alias into `content` for episodic_append', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'MEMORY',
+      params: { op: 'episodic_append', text: '2026-10-30: observed a thing' },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect((result.request.params as { content?: string }).content).toBe('2026-10-30: observed a thing');
+  });
+
+  // The 2 remaining episodic_append failures (one call, retried verbatim) sent
+  // the observation as `body` next to a `title`. Same rule as `text`.
+  it('normalizes the `body` alias into `content` for episodic_append (title is ignored)', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'MEMORY',
+      params: { op: 'episodic_append', title: 'report', body: '2026-10-30: wrote the report' },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect((result.request.params as { content?: string }).content).toBe('2026-10-30: wrote the report');
+  });
+
+  it('prefers content, then text, then body', () => {
+    const pick = (params: Record<string, unknown>) => {
+      const r = validateModelCommandRunArgs({ commandId: 'MEMORY', params: { op: 'episodic_append', ...params } });
+      if (!r.ok) throw new Error('unreachable');
+      return (r.request.params as { content?: string }).content;
+    };
+    expect(pick({ content: 'c', text: 't', body: 'b' })).toBe('c');
+    expect(pick({ text: 't', body: 'b' })).toBe('t');
+  });
+
+  it('keeps `content` when both `content` and `text` are given', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'MEMORY',
+      params: { op: 'episodic_append', content: 'canonical', text: 'alias' },
+    });
+    if (!result.ok) throw new Error('unreachable');
+    expect((result.request.params as { content?: string }).content).toBe('canonical');
+  });
+
   it('normalizes the `path` alias into `id`', () => {
     const result = validateModelCommandRunArgs({
       commandId: 'MEMORY',
@@ -1376,5 +1422,106 @@ describe('MEMORY command — validator allow-list (regression: listed-but-uninvo
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('unreachable');
     expect((result.request.params as { id?: string }).id).toBe('project/soma-work/1234');
+  });
+});
+
+// The `list` schema advertises `url` on every UPDATE_SESSION operation, and
+// remove/set_active take it — but `add` only read `link.url`, so a model that
+// followed the advertised schema got "add operation requires link with url"
+// (3 production failures in 30 days).
+describe('UPDATE_SESSION add — top-level `url` shorthand', () => {
+  it('accepts `url` on an add operation as the link url', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        operations: [{ action: 'add', resourceType: 'pr', url: 'https://github.com/2lab-ai/soma-work/pull/404' }],
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    const op = (
+      result.request.params as { operations: Array<{ action: string; link?: { url: string; type: string } }> }
+    ).operations[0];
+    expect(op.action).toBe('add');
+    expect(op.link?.url).toBe('https://github.com/2lab-ai/soma-work/pull/404');
+    expect(op.link?.type).toBe('pr');
+  });
+
+  it('prefers `link` over the `url` shorthand when both are given', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        operations: [
+          {
+            action: 'add',
+            resourceType: 'issue',
+            url: 'https://x/shorthand',
+            link: { url: 'https://x/link', title: 'T' },
+          },
+        ],
+      },
+    });
+    if (!result.ok) throw new Error('unreachable');
+    const op = (result.request.params as { operations: Array<{ link?: { url: string; title?: string } }> })
+      .operations[0];
+    expect(op.link?.url).toBe('https://x/link');
+    expect(op.link?.title).toBe('T');
+  });
+
+  it('still rejects an add operation with neither `link` nor `url`', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: { operations: [{ action: 'add', resourceType: 'pr' }] },
+    });
+    expect(result.ok).toBe(false);
+  });
+});
+
+// 1 production failure sent payload.type "user_choices" (the internal
+// normalized type name) with a plain user_choice body. The input schema only
+// allows user_choice / user_choice_group, so it failed with a ~2.7K-char
+// schema payload. The name alone cannot be aliased — `user_choices` is the
+// internal multi-question shape — so the body's shape decides.
+describe('ASK_USER_QUESTION payload.type "user_choices" — decided by shape', () => {
+  const choices = [
+    { id: '1', label: 'A', description: 'first' },
+    { id: '2', label: 'B', description: 'second' },
+  ];
+
+  it('treats a user_choice-shaped body (question + choices with labels) as user_choice', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'ASK_USER_QUESTION',
+      params: { payload: { type: 'user_choices', question: '[small] pick one', context: 'why', choices } },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    const q = (result.request.params as { question: { type: string; question?: string } }).question;
+    expect(q.type).toBe('user_choice');
+    expect(q.question).toBe('[small] pick one');
+  });
+
+  it('treats a group-shaped body (choices with question + options) as user_choice_group', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'ASK_USER_QUESTION',
+      params: {
+        payload: {
+          type: 'user_choices',
+          question: '[small] header',
+          choices: [{ question: 'Which?', options: choices }],
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    const q = (result.request.params as { question: { type: string } }).question;
+    expect(q.type).toBe('user_choices');
+  });
+
+  it('still rejects "user_choices" when the body matches neither shape', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'ASK_USER_QUESTION',
+      params: { payload: { type: 'user_choices', question: 'no choices here' } },
+    });
+    expect(result.ok).toBe(false);
   });
 });
