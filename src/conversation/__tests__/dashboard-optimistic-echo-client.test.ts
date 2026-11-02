@@ -88,7 +88,7 @@ type Pure = {
 };
 
 /** The WS path: the turn pushed for the conversation open in the panel. */
-function wsRig(list: Turn[], viewer = 'U_Z') {
+function wsRig(list: Turn[]) {
   const painted: number[] = [];
   const m = load<{ onConversationTurn(cid: string, turn: Turn): void }>(
     [...PURE, 'appendTurnToPanel', 'onConversationTurn'],
@@ -99,7 +99,6 @@ function wsRig(list: Turn[], viewer = 'U_Z') {
       _panelTurnsMsg: '',
       _psec: 'conv',
       _panelAgent: '',
-      _viewerUserId: viewer,
       convPaint: () => painted.push(1),
       convEl: () => null,
       invalidateCardIo: () => {},
@@ -125,11 +124,20 @@ describe('T1 — the recorded instruction takes the optimistic one’s place, ho
     expect(r.names()).toEqual(['Z']);
   });
 
-  it('text the server changed beyond that: the viewer’s own next instruction still takes it over', () => {
+  it('only the same words adopt: another instruction of the viewer’s own (typed in Slack meanwhile) never takes the slot (review: grok P1)', () => {
     const list: Turn[] = [optimistic('배포해줘')];
     const r = wsRig(list);
-    r.push(recorded('<@U_BOT> 배포해줘', T0 + 40_000));
-    expect(r.names()).toEqual(['Z']);
+    r.push(recorded('슬랙에서 친 다른 지시', T0 + 1_000, { id: 'slack-own' }));
+    expect(list.map((t) => [t.userName, t.rawContent])).toEqual([
+      ['나', '배포해줘'],
+      ['Z', '슬랙에서 친 다른 지시'],
+    ]);
+    // Then the dashboard's own instruction is recorded: it takes its own slot, nothing is lost or swapped.
+    r.push(recorded('배포해줘', T0 + 20_000));
+    expect(list.map((t) => [t.userName, t.rawContent])).toEqual([
+      ['Z', '배포해줘'],
+      ['Z', '슬랙에서 친 다른 지시'],
+    ]);
   });
 
   it('someone else’s instruction, or a turn soma-work put there, never takes it', () => {
