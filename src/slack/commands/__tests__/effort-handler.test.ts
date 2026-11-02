@@ -13,8 +13,8 @@ const { mockSetUserDefaultEffort, mockGetUserDefaultEffort, mockResolveEffortInp
 
 // The levels each default model runs (the llmux catalog menu; SDK five without one).
 vi.mock('../../../session/effort-menu', () => ({
-  allowedEffortsFor: (model: string) =>
-    model.startsWith('gpt-6')
+  allowedEffortsFor: (model?: string) =>
+    model?.startsWith('gpt-6')
       ? ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
       : model === 'grok-4.6'
         ? ['low', 'medium', 'high', 'xhigh']
@@ -134,6 +134,16 @@ describe('EffortHandler', () => {
       mockGetUserDefaultModel.mockReturnValueOnce('gpt-6.1-sol[1m]');
       await handler.execute(makeCtx('effort ultra'));
       expect(mockSetUserDefaultEffort).toHaveBeenCalledWith('U1', 'ultra');
+    });
+
+    it('a default the open session’s model does not run is saved for future sessions only', async () => {
+      mockGetUserDefaultModel.mockReturnValueOnce('gpt-6.1-sol[1m]');
+      session.model = 'claude-opus-5-5[1m]';
+      const ctx = makeCtx('effort ultra');
+      await handler.execute(ctx);
+      expect(mockSetUserDefaultEffort).toHaveBeenCalledWith('U1', 'ultra');
+      expect(session.effort).toBe('high');
+      expect((ctx.say as ReturnType<typeof vi.fn>).mock.calls[0][0].text).toContain('Future sessions only');
     });
 
     it('persists even when no live session exists', async () => {

@@ -14,11 +14,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { McpConfig } from '../../mcp-config-builder';
 import { modelCatalog } from '../../model-catalog';
 import type { ConversationSession } from '../../types';
-import {
-  type BuildStreamOptionsDeps,
-  buildStreamOptions,
-  withExtraBodyEffort,
-} from '../claude-code/build-stream-options';
+import { type BuildStreamOptionsDeps, buildStreamOptions } from '../claude-code/build-stream-options';
 
 const GROK = {
   id: 'grok-4.5',
@@ -209,10 +205,10 @@ describe('buildStreamOptions — effort clamp to catalog menu', () => {
   });
 });
 
-// Ultra (only the codex tiers whose catalog menu lists it) is not an SDK `--effort` value: it rides as the request
-// body's output_config.effort through CLAUDE_CODE_EXTRA_BODY (the CLI lets that win over --effort), and llmux lands it
-// as the strongest level the backend takes.
-describe('buildStreamOptions — ultra rides the request body', () => {
+// Ultra (only the codex tiers whose catalog menu lists it) is not an SDK `--effort` value and no backend takes it on
+// the wire (codex and Claude both 400 'ultra', probed 2026-11-02): it runs as max. Never through
+// CLAUDE_CODE_EXTRA_BODY — that body rides every request of the CLI process, Claude subagents included.
+describe('buildStreamOptions — ultra runs as max', () => {
   const SOL = {
     id: 'gpt-6.1-sol[1m]',
     name: 'Sol 6.1',
@@ -230,57 +226,21 @@ describe('buildStreamOptions — ultra rides the request body', () => {
     max_context: 1_000_000,
   };
 
-  it('on a model whose menu lists it: no SDK effort, output_config.effort=ultra in CLAUDE_CODE_EXTRA_BODY', async () => {
-    modelCatalog.__testSeed([SOL]);
-    const session = {
-      model: 'gpt-6.1-sol[1m]',
-      systemPrompt: 'x',
-      sessionId: 'u1',
-      effort: 'ultra',
-    } as unknown as ConversationSession;
-    const queryEnv: Record<string, string | undefined> = {};
-    const { options } = await buildStreamOptions({ queryEnv, session }, makeDeps());
-    expect(options.effort).toBeUndefined();
-    expect(JSON.parse(String(options.env?.CLAUDE_CODE_EXTRA_BODY))).toEqual({ output_config: { effort: 'ultra' } });
-  });
-
-  it('keeps what an operator already put in the extra body', async () => {
-    modelCatalog.__testSeed([SOL]);
-    const session = {
-      model: 'gpt-6.1-sol[1m]',
-      systemPrompt: 'x',
-      sessionId: 'u2',
-      effort: 'ultra',
-    } as unknown as ConversationSession;
-    const queryEnv: Record<string, string | undefined> = {
-      CLAUDE_CODE_EXTRA_BODY: JSON.stringify({ metadata: { a: 1 }, output_config: { format: 'x' } }),
-    };
-    const { options } = await buildStreamOptions({ queryEnv, session }, makeDeps());
-    expect(JSON.parse(String(options.env?.CLAUDE_CODE_EXTRA_BODY))).toEqual({
-      metadata: { a: 1 },
-      output_config: { format: 'x', effort: 'ultra' },
-    });
-  });
-
-  it('on a model that stops at max, or one the catalog does not know: max as the SDK effort, no extra body', async () => {
-    modelCatalog.__testSeed([OPUS]);
-    for (const model of ['claude-opus-5-5[1m]', 'claude-opus-4-7']) {
+  it('on a model whose menu lists it, on one that stops at max, and on one the catalog does not know: SDK effort max, no extra body', async () => {
+    modelCatalog.__testSeed([SOL, OPUS]);
+    for (const model of ['gpt-6.1-sol[1m]', 'claude-opus-5-5[1m]', 'claude-opus-4-7']) {
       const session = {
         model,
         systemPrompt: 'x',
-        sessionId: `u3-${model}`,
+        sessionId: `u-${model}`,
         effort: 'ultra',
       } as unknown as ConversationSession;
       const queryEnv: Record<string, string | undefined> = {};
       const { options } = await buildStreamOptions({ queryEnv, session }, makeDeps());
       expect(options.effort, model).toBe('max');
       expect(options.env?.CLAUDE_CODE_EXTRA_BODY, model).toBeUndefined();
+      // The saved level stays what the owner chose.
+      expect(session.effort).toBe('ultra');
     }
-  });
-
-  it('withExtraBodyEffort replaces a value that is not a JSON object', () => {
-    expect(JSON.parse(withExtraBodyEffort('not json', 'ultra'))).toEqual({ output_config: { effort: 'ultra' } });
-    expect(JSON.parse(withExtraBodyEffort('[1]', 'ultra'))).toEqual({ output_config: { effort: 'ultra' } });
-    expect(JSON.parse(withExtraBodyEffort(undefined, 'ultra'))).toEqual({ output_config: { effort: 'ultra' } });
   });
 });
