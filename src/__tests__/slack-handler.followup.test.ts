@@ -50,6 +50,13 @@ function deferred<T>(): Deferred<T> {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/** `Promise.allSettled` for one promise, with its handler attached at once — no unhandled rejection in between. */
+const settled = <T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> =>
+  promise.then(
+    (value) => ({ status: 'fulfilled', value }) as const,
+    (reason) => ({ status: 'rejected', reason }) as const,
+  );
+
 /**
  * What a QUEUED message shows since 09: the receipt and both controls, ON the
  * user's own message. There is no bot card and no text receipt any more — the
@@ -6130,12 +6137,14 @@ describe('SlackHandler — follow-up queue host', () => {
         );
 
       async function race(first: () => Promise<unknown>, second: () => Promise<unknown>) {
-        const a = first();
+        // Each settles as soon as it starts: a refusal rejects before the gate
+        // opens and must never surface as an unhandled rejection.
+        const a = settled(first());
         for (let i = 0; i < 5; i++) await tick();
-        const b = second();
+        const b = settled(second());
         await tick();
         gate.resolve();
-        return Promise.allSettled([a, b]);
+        return Promise.all([a, b]);
       }
 
       it('a Slack click on the question the dashboard is answering is refused — the answer runs once', async () => {
@@ -6258,11 +6267,11 @@ describe('SlackHandler — follow-up queue host', () => {
       handlerAny.threadPanel.clearChoice = vi.fn(() => gate.promise);
       const answers = dashboardAnswers();
 
-      const first = (submit as any)(answers, 0);
-      const second = (submit as any)(answers, 1);
+      const first = settled((submit as any)(answers, 0));
+      const second = settled((submit as any)(answers, 1));
       await tick();
       gate.resolve();
-      const [firstResult, secondResult] = await Promise.allSettled([first, second]);
+      const [firstResult, secondResult] = await Promise.all([first, second]);
 
       expect(firstResult.status).toBe('fulfilled');
       expect(secondResult).toMatchObject({
