@@ -64,7 +64,11 @@ describe('the panel head has 되돌리기 모드 and Redo; the board’s card ha
     expect(off).toContain('rollback');
     expect(off).not.toContain('redo');
     const acts = m.sessionActionsOf({ ...card, rewindRedo: 2 }, 'idle');
-    expect(acts.find((a: any) => a.id === 'rollback')).toMatchObject({ label: '되돌리기 모드', icon: 'undo', pressed: true });
+    expect(acts.find((a: any) => a.id === 'rollback')).toMatchObject({
+      label: '되돌리기 모드',
+      icon: 'undo',
+      pressed: true,
+    });
     expect(acts.find((a: any) => a.id === 'redo')).toMatchObject({ label: '↪︎ Redo' });
   });
   it('the card’s action bar leaves both out', () => {
