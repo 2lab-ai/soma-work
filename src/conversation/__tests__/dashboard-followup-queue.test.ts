@@ -247,17 +247,21 @@ describe('Dashboard — the follow-up queue (batch 2)', () => {
         epoch: 2,
         stateReason: '편집됨',
         editable: true,
+        authorId: 'U1',
       });
       expect(bobs.author).toBe('Bob');
+      expect(bobs.authorId).toBe('U2');
       // A reason that only repeats the state is left out.
       expect(steered.stateReason).toBeUndefined();
     });
 
-    it('offers Edit only on the owner’s own queued words that are not a goal’s opening turn', async () => {
+    // SSOT 2026-11-02 — anyone may write here, so Edit is offered on anyone's queued words, to their writer
+    // (authorId; the page shows it to that viewer only, the server checks the author again).
+    it('offers Edit on queued words that are not a goal’s opening turn, naming their writer', async () => {
       const items = (await card()).followups.items;
       const editable = Object.fromEntries(items.map((i: any) => [Number(i.id.split('#')[1]), i.editable]));
       expect(editable[1]).toBe(true);
-      expect(editable[2]).toBe(false); // Bob's words
+      expect(editable[2]).toBe(true); // Bob's words — Bob's to edit
       expect(editable[3]).toBe(false); // steered: handed over
       expect(editable[7]).toBe(false); // paused
       expect(editable[14]).toBe(false); // a goal's opening turn
@@ -269,22 +273,35 @@ describe('Dashboard — the follow-up queue (batch 2)', () => {
     });
   });
 
-  describe('POST …/queue/:itemId/:op — owner-only like Stop', () => {
+  // SSOT 2026-11-02 — open to whoever may instruct: one who may manage the session
+  // (the owner, the token, an admin in admin mode) acts as its owner; anyone else
+  // as themselves, so the queue's own (Slack) rules answer their press.
+  describe('POST …/queue/:itemId/:op — whoever may instruct; the queue decides', () => {
     it('the owner’s act reaches the queue with the generation the panel showed', async () => {
       const res = await post(`${KEY}#1`, 'promote', { epoch: 2, turnEpoch: 7 }, await signIn('U1'));
       expect(res.statusCode).toBe(200);
       expect(JSON.parse(res.body)).toEqual({ ok: true });
-      expect(act).toHaveBeenCalledWith({ sessionKey: KEY, itemId: `${KEY}#1`, op: 'promote', epoch: 2, turnEpoch: 7 });
+      expect(act).toHaveBeenCalledWith({
+        sessionKey: KEY,
+        itemId: `${KEY}#1`,
+        op: 'promote',
+        epoch: 2,
+        turnEpoch: 7,
+        actorUserId: 'U1',
+        manages: true,
+      });
     });
 
-    it('anyone else is refused 403 and the queue is never asked; the operator token may act', async () => {
+    it('anyone else reaches the queue as themselves (it answers by its own rules); the operator token as the owner', async () => {
       for (const op of ['promote', 'cancel', 'edit']) {
         const res = await post(`${KEY}#1`, op, { epoch: 2, turnEpoch: 7, text: 'x' }, await signIn('U2'));
-        expect(res.statusCode).toBe(403);
+        expect(res.statusCode).toBe(200);
+        expect(act).toHaveBeenLastCalledWith(expect.objectContaining({ op, actorUserId: 'U2', manages: false }));
       }
-      expect(act).not.toHaveBeenCalled();
       expect((await post(`${KEY}#1`, 'cancel', { epoch: 2, turnEpoch: 7 })).statusCode).toBe(200);
-      expect(act).toHaveBeenCalledTimes(1);
+      expect(act).toHaveBeenLastCalledWith(expect.objectContaining({ op: 'cancel', manages: true }));
+      expect(act.mock.calls[act.mock.calls.length - 1][0]).not.toHaveProperty('actorUserId');
+      expect(act).toHaveBeenCalledTimes(4);
     });
 
     it('a refusal is a 4xx with the queue’s own words; a receipt comes back as the message', async () => {
@@ -316,6 +333,7 @@ describe('Dashboard — the follow-up queue (batch 2)', () => {
         epoch: 2,
         turnEpoch: 7,
         text: 'Postgres 16',
+        manages: true,
       });
       expect((await post(`${KEY}#1`, 'edit', { epoch: 2, turnEpoch: 7, text: '   ' })).statusCode).toBe(400);
       expect((await post(`${KEY}#1`, 'edit', { epoch: 2, turnEpoch: 7 })).statusCode).toBe(400);

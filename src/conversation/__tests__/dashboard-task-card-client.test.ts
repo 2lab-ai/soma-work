@@ -37,11 +37,17 @@ type Fns = {
   cwCanCompact(s: unknown): string;
   pcToolsOpen(s: unknown, mode: string): boolean;
 };
+// The viewer U1 — the signed-in user the manage checks read (SSOT 2026-11-02), not an admin.
 const fns = new Function(
-  'currentUserId',
+  '_viewerUserId',
+  '_viewerIsAdmin',
+  '_isAdminModeOn',
   'isSiblingSession',
   'READ_ONLY_MSG',
+  'OWNER_ONLY_MSG',
   `${clientVar('TASK_OUTCOME_LABEL')}\n${clientVar('TASK_NOTICE_LABEL')}\n${[
+    'viewerOwns',
+    'viewerCanManage',
     'esc',
     'escAttr',
     'taskOutcomeHtml',
@@ -51,7 +57,14 @@ const fns = new Function(
   ]
     .map(clientFn)
     .join('\n')}\nreturn { taskOutcomeHtml, taskNoticeFailHtml, cwCanCompact, pcToolsOpen };`,
-)('U1', () => false, 'read only') as Fns;
+)(
+  'U1',
+  false,
+  () => false,
+  () => false,
+  'read only',
+  'read only',
+) as Fns;
 
 const task = (over: Record<string, unknown> = {}) => ({ key: 'task:a', slackless: true, ownerId: 'U1', ...over });
 
