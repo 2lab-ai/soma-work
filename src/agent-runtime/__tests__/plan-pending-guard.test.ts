@@ -13,7 +13,6 @@ describe('isReadOnlyCommand — reads pass, everything else is refused', () => {
     'cat src/index.ts',
     'head -50 README.md && tail -20 README.md',
     "grep -rn 'taskPlan' src | head -20",
-    'rg -n planPending src',
     'find . -name "*.ts" -not -path "./node_modules/*"',
     "sed -n '1,120p' src/types.ts",
     'git log --oneline -20',
@@ -27,6 +26,9 @@ describe('isReadOnlyCommand — reads pass, everything else is refused', () => {
     'git fetch https://github.com/2lab-ai/soma-work.git',
     'git clone git@github.com:2lab-ai/soma-work.git repo',
     'cd repo && git log -3',
+    'cd src/agent-runtime && ls',
+    'git -C repo log --oneline -3',
+    'gh repo clone 2lab-ai/soma-work repo',
     'gh pr view 758 --json title,body',
     'gh issue list --state open',
     'gh api repos/2lab-ai/soma-work/pulls/758',
@@ -114,6 +116,21 @@ describe('isReadOnlyCommand — reads pass, everything else is refused', () => {
     'git fetch origin +refs/heads/main:refs/heads/main',
     'git fetch --prune origin', // deletes stale remote-tracking refs (trinity R3, grok P3)
     "gh api repos/x/y --jq '.a' -f title=x", // the option after a value is still checked
+    // Trinity R4 (astra): git takes abbreviated long options; rg runs a program; clones outside the folder.
+    'git grep --open-files-in-page="sh -c x" -e PLAN -- src',
+    'git log --outp=x.txt',
+    'git diff --ext main',
+    'rg --hostname-bin=/usr/bin/ssh-agent --hyperlink-format=default x README.md',
+    'rg -n planPending src',
+    'gh repo clone 2lab-ai/soma-work /tmp/plan-mode-outside',
+    'gh repo clone 2lab-ai/soma-work ../up',
+    'git -C /tmp clone https://github.com/2lab-ai/soma-work.git plan-mode-outside',
+    'cd /tmp && git clone https://github.com/2lab-ai/soma-work.git plan-mode-outside',
+    'cd ..',
+    'cd ~',
+    'cd',
+    'gh pr view 1 --web',
+    'gh repo view -w',
   ])('refused: %s', (cmd) => {
     expect(isReadOnlyCommand(cmd)).toBe(false);
   });
