@@ -82,6 +82,10 @@ async function app() {
   server.get('/missing', { preHandler: [auth] }, async (_r, reply) =>
     reply.code(404).send({ error: '__dl 세션을 찾을 수 없어요' }),
   );
+  // The work-log routes' shape: an async handler that sends without returning the reply.
+  server.get('/no-return', { preHandler: [auth] }, async (_r, reply) => {
+    reply.code(404).send({ error: '__dl 세션을 찾을 수 없어요' });
+  });
   return { server, page };
 }
 
@@ -120,6 +124,15 @@ describe('registerDisplayLang — the web server end to end', () => {
     expect(en.statusCode).toBe(404);
     expect(en.json()).toEqual({ error: '__dl Session not found' });
     const ko = await server.inject({ method: 'GET', url: '/missing' });
+    expect(ko.json()).toEqual({ error: '__dl 세션을 찾을 수 없어요' });
+  });
+
+  it('an async handler that sends without returning the reply is answered once (no ERR_HTTP_HEADERS_SENT)', async () => {
+    const { server } = await app();
+    const en = await server.inject({ method: 'GET', url: '/no-return', headers: { 'x-user': 'U_EN' } });
+    expect(en.statusCode).toBe(404);
+    expect(en.json()).toEqual({ error: '__dl Session not found' });
+    const ko = await server.inject({ method: 'GET', url: '/no-return' });
     expect(ko.json()).toEqual({ error: '__dl 세션을 찾을 수 없어요' });
   });
 });

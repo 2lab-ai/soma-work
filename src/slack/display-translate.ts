@@ -3,7 +3,7 @@
  *
  * The bot's Slack text is written in Korean across the code base. Instead of
  * threading a language through every builder, the text is translated where it
- * leaves the process: every Web API call (`WebClient.prototype.apiCall` — what
+ * leaves the process: every Web API call (`WebClient.prototype.makeRequest` — what
  * `say`, `client.chat.*` and `views.*` all go through) and every `respond()`
  * (Bolt posts it with its own axios instance). Only bot-chrome fields are
  * touched — message `text`, Block Kit text objects, view titles and buttons,
