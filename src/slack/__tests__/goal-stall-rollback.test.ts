@@ -121,6 +121,7 @@ describe('the stall question offers the rollback only when nothing was done', ()
     await h.settle(2);
     expect(h.goal.stall?.rollbackAnchor).toBe(A(1));
     expect(h.questions[0].rollback).toEqual({ turns: 1 });
+    expect(h.goal.stall?.rollbackKeptUntil).toBe(h.goal.firstFailure?.at);
     // The notice offers it too: it stands in when the question cannot be posted.
     expect(h.notices[h.notices.length - 1]).toContain('`rollback goal`');
     const q = buildGoalStallQuestion(h.questions[0]);
@@ -183,6 +184,7 @@ describe('answering the question', () => {
           actions: ['a', 'b', 'c'],
           confidence: 0.99,
           rollbackAnchor: A(1),
+          rollbackKeptUntil: 40,
         },
         firstFailure: { anchor: A(1), at: 40, turns: 2, progressed: false },
       }),
@@ -191,6 +193,30 @@ describe('answering the question', () => {
     expect(applied?.ok).toBe(true);
     // What came after the first failure's turn is what the dashboard marks as dropped (#744).
     expect(session.pendingRewind).toMatchObject({ anchor: A(1), source: 'goal', requestedBy: 'U1', keptUntil: 40 });
+  });
+
+  it('the span it drops is fixed when the offer is made — a rollback in between does not lose it', () => {
+    const session = {
+      ownerId: 'U1',
+      sessionId: SID,
+      compactionCount: 0,
+      contextAnchor: A(2),
+      goal: makeGoal({
+        stall: {
+          stallId: 's1',
+          stalledAt: 1,
+          reason: 'r',
+          actions: ['a'],
+          confidence: 0.99,
+          rollbackAnchor: A(1),
+          rollbackKeptUntil: 40,
+        },
+        // Another rollback was applied meanwhile: firstFailure is gone.
+        firstFailure: undefined,
+      }),
+    } as unknown as ConversationSession;
+    expect(applyGoalStallRollbackAnswer(session, answerYes, 'U1', { transcriptHas: () => true })?.ok).toBe(true);
+    expect(session.pendingRewind?.keptUntil).toBe(40);
   });
 
   it('no answer for the rollback item or no offer → nothing; another user → refused, and it says so', () => {

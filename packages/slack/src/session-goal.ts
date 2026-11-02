@@ -54,6 +54,8 @@ export interface SessionGoalStall {
   rollbackAnchor?: string;
   /** How many evaluated turns since the first failure would leave the context. */
   rollbackTurns?: number;
+  /** The time of the last entry the rollback keeps (the first failure's), fixed when the offer is made (#744 marks). */
+  rollbackKeptUntil?: number;
 }
 
 /**
