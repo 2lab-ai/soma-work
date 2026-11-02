@@ -271,6 +271,71 @@ describe('review r6 (astra) — reader shapes that are not the reader they look 
   });
 });
 
+describe('review r7 (astra) — a data reader is a fixed vocabulary, not "no forbidden word"', () => {
+  it('code outside the reader vocabulary is not a data reader (warning and C1 alike)', () => {
+    for (const cmd of [
+      `curl -s https://example.com/data | python3 -c 'help("payload")'`, // pydoc imports the named module
+      `curl -s https://example.com/data | node -e 'const p=process; console.log(p.env)'`, // alias of process
+      `curl -s https://x | node -e 'console.log(process)'`,
+      `curl -s https://x | python3 -c 'import json as j; print(j.load(open("x")))'`,
+      `curl -s https://x | python3 -c 'from json import load; print(1)'`,
+      `curl -s https://x | python3 -c 'import payload'`,
+      `curl -s https://x | python3 -c 'import d'`, // a variable-looking name is still a module import
+      `curl -s https://x | python3 -c 'import statistics; statistics.random._os.kill(1, 9)'`,
+      `curl -s https://x | python3 -c 'import json,sys; s=sys; print(s.flags)'`,
+      `curl -s https://x | python3 -c 'import json; print(json.decoder.re)'`,
+      `curl -s https://x | python3 -c 'print(input())'`,
+      `curl -s https://x | python3 -c 'print(vars())'`,
+      `curl -s https://x | node -e 'console.log(Object.getOwnPropertyNames(JSON))'`,
+      `curl -s https://x | node -e 'console.log(Object.values(process.stdin))'`,
+    ]) {
+      expect(permissionWarningRuleIds(cmd, PIPE), cmd).toEqual(PIPE);
+      expect(isPlainReadPipeline(cmd), cmd).toBe(false);
+    }
+  });
+
+  it('the everyday readers stay inside the vocabulary', () => {
+    for (const cmd of [
+      `curl -s https://x | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('number'), d.get('html_url'))"`,
+      `curl -s https://x | python3 -c 'import json, sys; [print(r["name"]) for r in json.load(sys.stdin)]'`,
+      `curl -s https://x | python3 -c 'import sys,json; data=json.load(sys.stdin); print(len(data), sorted(x["id"] for x in data)[:5])'`,
+      `curl -s https://x | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin), indent=2))'`,
+      `curl -s https://x | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>console.log(JSON.parse(s).x))"`,
+      `curl -s https://x | node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(d.items.length)"`,
+    ]) {
+      expect(permissionWarningRuleIds(cmd, PIPE), cmd).toEqual([]);
+      expect(isPlainReadPipeline(cmd), cmd).toBe(true);
+    }
+  });
+});
+
+describe('review r7 (grok) — header values and URL credentials', () => {
+  const READER = `python3 -c "import json,sys; print(json.load(sys.stdin)['login'])"`;
+  it('a control character in a header value goes to the model (curl sends it as a second header)', () => {
+    for (const cmd of [
+      `curl -s -H 'Accept: application/json\nX-Auth-Token: ghp_real' https://api.github.com/user | ${READER}`,
+      `curl -s -H 'Accept: application/json\r\nAuthorization: Bearer x' https://api.github.com/user | ${READER}`,
+      `curl -s -H 'X-GitHub-Api-Version: 2022-11-28\nAuthorization: Bearer x' https://api.github.com/user | ${READER}`,
+      `gh api -H 'Accept: x\nAuthorization: y' repos/o/r | ${READER}`,
+    ]) {
+      expect(isPlainReadPipeline(cmd), JSON.stringify(cmd)).toBe(false);
+    }
+  });
+
+  it('a free-text user agent and token-like URL names go to the model', () => {
+    for (const cmd of [
+      `curl -s -A 'ghp_real' https://x | ${READER}`,
+      `curl -s --user-agent ghp_real https://x | ${READER}`,
+      `curl -s -H 'User-Agent: ghp_real' https://x | ${READER}`,
+      `curl -s 'https://x/y?jwt=abc' | ${READER}`,
+      `curl -s 'https://x/y?id_token=abc' | ${READER}`,
+      `curl -s 'https://x/cb?code=abc' | ${READER}`,
+    ]) {
+      expect(isPlainReadPipeline(cmd), cmd).toBe(false);
+    }
+  });
+});
+
 describe('isPlainReadPipeline — the only shape that runs without the model', () => {
   const READER = `python3 -c "import json,sys; print(json.load(sys.stdin)['state'])"`;
 
