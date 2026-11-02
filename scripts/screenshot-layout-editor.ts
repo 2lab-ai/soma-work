@@ -454,6 +454,29 @@ async function run(browser: import('playwright').Browser, width: number, height:
     `${tag} R10 #805 the detail card names the model (its model · effort line)`,
     detail.model,
   );
+  // #813 — every model picker's tile is the maker's mark (Claude's clay starburst), not the name's first letter: the
+  // open card's and the detail card's.
+  const tiles = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('ui-model-picker'))
+      .filter((p) => (p as HTMLElement).checkVisibility())
+      .map((p) => {
+        const g = p.shadowRoot?.querySelector('.mp-trigger .mp-glyph') as HTMLElement | null;
+        return g
+          ? {
+              vendor: g.dataset.vendor || '',
+              hue: g.style.getPropertyValue('--model-hue').trim(),
+              svg: !!g.querySelector('svg'),
+              text: (g.textContent || '').trim(),
+            }
+          : null;
+      }),
+  );
+  check(
+    tiles.length >= 2 &&
+      tiles.every((t) => !!t && t.vendor === 'claude' && t.hue === '#d97757' && t.svg && t.text === ''),
+    `${tag} R10 #813 the open card's and the detail card's model pickers lead with Claude's mark in clay (no letter)`,
+    tiles,
+  );
   await page.screenshot({ path: path.join(OUT, `${tag}-6-board-after.png`) });
   check(errors.length === 0, `${tag} no page errors`, errors);
   await ctx.close();
