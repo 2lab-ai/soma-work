@@ -2,7 +2,9 @@
  * Command parsing utilities for Slack bot commands
  */
 
-export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+// Every effort level the app sets — soma-lib `EFFORT_LEVELS` (this package does not depend on soma-lib): the SDK's
+// five, then `ultra`, which only a model whose llmux catalog menu lists it runs (the setters check the model).
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 
 export type CctAction =
   | { action: 'status' }

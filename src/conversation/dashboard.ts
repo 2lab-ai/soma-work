@@ -36,6 +36,7 @@ import type { FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { sumLiveUsage } from '@soma/slack/live-usage';
 import { livePendingModelSwitch } from '@soma/slack/model-switch';
 import type { FastifyInstance } from 'fastify';
+import { SDK_EFFORT_LEVELS } from 'soma-lib';
 import type { CronExecutionRecord, CronJob } from 'somalib/cron/cron-storage';
 import {
   type AdminApprovalSnapshot,
@@ -75,6 +76,7 @@ import {
 } from '../session/agent-registry';
 import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
 import { sanitizeCronJob } from '../session/cron-job';
+import { effortMenuOf } from '../session/effort-menu';
 import { EffortSwitchError, type EffortSwitchResult } from '../session/effort-switch';
 import { productionModelCatalogDeps } from '../session/model-catalog-deps';
 import {
@@ -1840,16 +1842,11 @@ export function extractPrShortRef(url?: string): string | undefined {
 
 /**
  * affectUI model picker D6 — the effort levels a model runs: its catalog menu
- * ∩ EFFORT_LEVELS, in EFFORT_LEVELS order. Undefined when the catalog has no
- * menu for the model (the picker then offers every level and the runtime
- * clamp decides, as before).
+ * ∩ EFFORT_LEVELS (`ultra` included), in EFFORT_LEVELS order. Undefined when
+ * the catalog has no menu for the model (the picker then offers the SDK levels
+ * and the runtime clamp decides). One rule with the setters: `effortMenuOf`.
  */
-export function pickerEffortLevels(catalogEfforts: readonly string[] | null | undefined): EffortLevel[] | undefined {
-  if (!catalogEfforts || catalogEfforts.length === 0) return undefined;
-  const menu = new Set(catalogEfforts.map((e) => String(e).toLowerCase()));
-  const levels = EFFORT_LEVELS.filter((level) => menu.has(level));
-  return levels.length > 0 ? levels : undefined;
-}
+export const pickerEffortLevels = effortMenuOf;
 
 /**
  * Card-derived UI fields shared between live (sessionToKanban) and archived
@@ -4666,6 +4663,7 @@ function renderDashboardPage(userId?: string): string {
   }
   const initRepresentativeModels = JSON.stringify(representativeModels).replace(/</g, '\\u003c');
   const initEffortLevels = JSON.stringify(EFFORT_LEVELS);
+  const initSdkEffortLevels = JSON.stringify(SDK_EFFORT_LEVELS);
   // T8: the bot's Slack name (escaped like the header config — it comes from Slack).
   const initBotName = JSON.stringify(_botDisplayName || null).replace(/</g, '\\u003c');
   // Icon slots (<i data-ui-icon="…">) are filled from @2lab.ai/ui's icon set (fillUiIcons).
@@ -4828,17 +4826,13 @@ ui-app-bar[narrow] .nt-btn-label { display: none; }
    clickable while a session panel is open — that is when "열린 세션에도 적용" exists. */
 .topbar .topbar-defaults { position: relative; z-index: 101; display: flex; gap: 6px; align-items: center; flex: none; }
 .topbar .topbar-defaults[hidden] { display: none; }
-/* The defaults are kit chips (.ui-chip, D7 A-06) that open the library menu (A-07): the word before the value is
-   quiet; while the menu is open the chip wears the kit's "on" look and its chevron is turned. */
-.topbar .td-prefix { color: var(--ib-muted); }
-.topbar .td-chip[aria-expanded="true"] { background: var(--ib-seg-on); box-shadow: var(--ib-shadow); }
-.topbar .td-caret { transition: transform var(--dur-move) var(--ease-out); }
-.topbar .td-chip[aria-expanded="true"] .td-caret { transform: rotate(180deg); }
-/* The menu pops from its trigger's corner (the library menu / model-picker popover): in from translateY(-4px)
-   scale(.96) with opacity 160ms + transform 220ms ease-out, out in 180ms; display is discrete, so after the
-   exit a closed menu takes no hits and no room. */
-/* The defaults menu is @2lab.ai/ui <ui-menu id="td-menu"> (A-07): it hangs from the chip that opened it. */
-#td-menu { position: absolute; }
+/* The default model and effort are one @2lab.ai/ui <ui-model-picker id="td-picker"> — the session menu's element:
+   the models with window · auto-compact · cost and only the levels the model runs, both set in one menu. The word
+   before it is quiet; "열린 세션에도" (a kit switch) shows only while a session the owner may switch is open. */
+.topbar .td-prefix { font-size: 12px; color: var(--ib-muted); }
+.topbar .td-also { font-size: 12px; white-space: nowrap; }
+/* The kit's .ui-switch sets a display of its own, which beats the hidden attribute: say it again. */
+.topbar .td-also[hidden] { display: none; }
 /* The save line is the kit's status line (.ui-status-line, data-tone="fail" for a refused write), capped in the bar. */
 .topbar .td-status { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The user switcher is the kit's select chip (select.ui-select-chip, D7 A-11): a native <select> read as a label,
@@ -5781,9 +5775,9 @@ ${pageTokenAliases()}
     <ui-app-bar id="app-bar" lang="ko">
     <div class="topbar-scope" id="topbar-scope" slot="toolbar">
     <div class="topbar-defaults" id="topbar-defaults" hidden>
-      <button type="button" class="ui-chip td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
-      <button type="button" class="ui-chip td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 추론 강도 — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">추론 </span><b id="td-effort-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
-      <ui-menu id="td-menu" lang="ko"></ui-menu>
+      <span class="td-prefix" aria-hidden="true">기본</span>
+      <ui-model-picker id="td-picker" class="td-picker" lang="ko" title="새 세션의 기본 모델 · 추론 강도"><span class="mp-fallback">기본 모델</span></ui-model-picker>
+      <label class="ui-switch td-also" id="td-also" hidden title="켜 두면 고른 기본값을 패널에 열린 세션에도 바로 적용합니다"><input type="checkbox" role="switch" id="td-also-session" checked onchange="tdOnAlsoChange(this.checked)"><span>열린 세션에도</span></label>
       <span class="ui-status-line td-status" id="td-status" role="status" aria-live="polite"></span>
     </div>
     <select class="ui-select-chip user-select" id="user-select" title="모든 사용자" aria-label="보드에 보일 사용자" onchange="selectUser(this.value)">
@@ -6015,10 +6009,11 @@ ${pageTokenAliases()}
           <button type="button" class="ui-chip" id="nt-kind-epic" aria-pressed="false" hidden title="계획을 쓰고 자식 작업을 만들어 끝까지 모는 에픽" onclick="ntToggleEpic()"><span>에픽</span></button>
         </div>
         <div class="nt-config" role="group" aria-label="작업 설정">
-          <!-- Kit select chips (.ui-select-chip, D7 H-02): the word, then the native select sized to its option; the model's
-               remaining usage beside it is @2lab.ai/ui <ui-meter shape="battery"> (H-03) in a button that opens the usage line. -->
-          <label class="ui-select-chip"><span>모델</span><select id="nt-model" onchange="ntOnModelChange()"></select></label><button type="button" class="nt-battery-btn" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><ui-meter id="nt-battery" shape="battery" low="0.2" high="0.5" label="모델 잔여량" lang="ko"></ui-meter></button>
-          <label class="ui-select-chip nt-chip-effort"><span>추론</span><select id="nt-effort" onchange="ntOnEffortChange()"></select></label>
+          <!-- The task's model and effort: @2lab.ai/ui <ui-model-picker> (the session menu's element) — one trigger, one menu
+               with each model's window · auto-compact · cost and only the levels that model runs; a model pick carries
+               the effort over to them (ntOnPick). The model's remaining usage beside it is @2lab.ai/ui
+               <ui-meter shape="battery"> (H-03) in a button that opens the usage line. The rest are kit select chips. -->
+          <ui-model-picker id="nt-picker" class="nt-picker" lang="ko"><span class="mp-fallback">모델</span></ui-model-picker><button type="button" class="nt-battery-btn" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><ui-meter id="nt-battery" shape="battery" low="0.2" high="0.5" label="모델 잔여량" lang="ko"></ui-meter></button>
           <label class="ui-select-chip nt-chip-folder" id="nt-folder-chip" hidden><span>폴더</span><select id="nt-folder" onchange="ntOnFolderChange()"></select></label>
           <label class="ui-select-chip nt-chip-channel"><span>채널</span><select id="nt-channel" onchange="ntOnChannelChange()"></select></label>
         </div>
@@ -6108,6 +6103,8 @@ const DASHBOARD_HEADER_CONFIG = ${initDashboardHeaderConfig};
 // SSOT 2026-10-22 T4: [{ nickname, model, label, contextWindow, autoCompactTokens }]
 const REPRESENTATIVE_MODELS = ${initRepresentativeModels};
 const EFFORT_LEVELS = ${initEffortLevels};
+// The levels a model without a catalog menu runs — never ultra (only a model whose menu lists it runs that).
+const SDK_EFFORT_LEVELS = ${initSdkEffortLevels};
 // field → first config entry map (show/max/truncate lookups in renderCard).
 const _dhFieldMap = {};
 for (const _dhLine of DASHBOARD_HEADER_CONFIG) {
@@ -7774,14 +7771,14 @@ async function refreshCsrfToken() {
 refreshCsrfToken();
 
 // ── Top bar: the owner's default model / effort (SSOT 2026-10-23 T6) ──
-// One click opens a menu; picking saves the default at once (PATCH
-// /api/settings/:key — the same path as Slack "model set" / "effort"). When the
-// owner has a session panel open, "이 세션에도 적용" (on by default) also
-// switches that session, like Slack's bare "effort <level>" applies to the
-// current thread. Hidden when there is no signed-in Slack user (viewer token).
+// One picker (<ui-model-picker id="td-picker">) sets the default model and
+// effort together; a pick saves at once (PATCH /api/settings/:key — the same
+// path as Slack "model set" / "effort"). When the owner has a session panel
+// open, "열린 세션에도" (on by default) also switches that session, like Slack's
+// bare "effort <level>" applies to the current thread. Hidden when there is no
+// signed-in Slack user (viewer token).
 var _myDefaults = null; // { model: settingRow, effort: settingRow }
 var _settingsLoads = 0; // settings loads started: an answer older than a later one's does not set the plan
-var _tdMenuKind = null;
 async function loadMyDefaults() {
   var box = document.getElementById('topbar-defaults');
   if (!box) return;
@@ -7821,7 +7818,7 @@ async function loadMyDefaults() {
     }
     if (!model || !effort) { box.hidden = true; return; }
     _myDefaults = { model: model, effort: effort };
-    renderDefaultsChips();
+    renderDefaultsPicker();
     box.hidden = false;
   } catch (_e) { box.hidden = true; }
 }
@@ -7829,13 +7826,6 @@ function optionLabel(row, value) {
   var opts = (row && row.options) || [];
   for (var i = 0; i < opts.length; i++) if (opts[i].value === value) return opts[i].label;
   return String(value || '');
-}
-function renderDefaultsChips() {
-  if (!_myDefaults) return;
-  var m = document.getElementById('td-model-value');
-  var e = document.getElementById('td-effort-value');
-  if (m) m.textContent = optionLabel(_myDefaults.model, _myDefaults.model.value);
-  if (e) e.textContent = optionLabel(_myDefaults.effort, _myDefaults.effort.value);
 }
 // The session model switch takes representative nicknames only.
 function sessionAcceptsModel(value) {
@@ -7850,64 +7840,52 @@ function defaultsScopeSession() {
   if (!s || !viewerOwns(s) || s.terminated || isSiblingSession(s)) return null;
   return s;
 }
-// <ui-menu id="td-menu"> (A-07): the page hands it the rows — a heading, the options as one radio group (the
-// current one checked) and, for the open session the owner may switch too, a checkbox "열린 세션에도 적용" that is
-// on each time the menu opens — and answers ui-select. The element hangs from the chip, moves focus to the checked
-// row, does the arrows / typeahead / Esc / outside press, and gives focus back to the chip.
-var TD_ALSO_SESSION = 'td-also-session';
+// "열린 세션에도" (on by default): a pick also switches the session open in the panel. Shown only while there is one.
 var _tdAlsoSession = true;
-function defaultsMenuData(kind) {
-  var row = _myDefaults && (kind === 'model' ? _myDefaults.model : _myDefaults.effort);
-  if (!row) return null;
-  var title = kind === 'model' ? '새 세션 기본 모델' : '새 세션 기본 추론 강도';
-  var items = [{ kind: 'heading', label: title }];
-  var opts = row.options || [];
-  for (var i = 0; i < opts.length; i++) {
-    var o = opts[i];
-    var it = { kind: 'radio', value: String(o.value), label: String(o.label), checked: o.value === row.value };
-    if (o.description && kind === 'model') it.description = String(o.description);
-    items.push(it);
-  }
-  var s = defaultsScopeSession();
-  if (s) {
-    items.push({ kind: 'separator' });
-    items.push({ kind: 'checkbox', value: TD_ALSO_SESSION, label: '열린 세션에도 적용', description: String(s.displayHeadline || s.title || s.key), checked: _tdAlsoSession });
-  }
-  return { label: title, items: items };
+function tdOnAlsoChange(on) {
+  _tdAlsoSession = !!on;
 }
-function openDefaultsMenu(kind, btn) {
-  var menu = document.getElementById('td-menu');
-  if (!menu || !_myDefaults || typeof menu.show !== 'function') return;
-  if (menu.open && _tdMenuKind === kind) { closeDefaultsMenu(); return; }
-  _tdAlsoSession = true;
-  var d = defaultsMenuData(kind);
-  if (!d) return;
-  _tdMenuKind = kind;
-  menu.data = d;
-  menu.show(btn);
+function paintDefaultsScope() {
+  var sw = document.getElementById('td-also');
+  if (!sw) return;
+  var s = _myDefaults ? defaultsScopeSession() : null;
+  sw.hidden = !s;
+  if (s) sw.title = '켜 두면 고른 기본값을 열린 세션(' + String(s.displayHeadline || s.title || s.key) + ')에도 바로 적용합니다';
 }
-function closeDefaultsMenu() {
-  var menu = document.getElementById('td-menu');
-  if (menu && menu.open) menu.hide();
-  _tdMenuKind = null;
+// <ui-model-picker id="td-picker">: the representative models (mpRows — each with the levels it runs), the
+// default model (a model outside them is the element's first, current, unselectable row) and the default effort,
+// with the levels the server offers for the default model (the settings row's options). A model pick carries the
+// effort over on the server; the picker shows the writes in flight and the last refusal.
+var _tdBusy = { model: false, effort: false };
+var _tdError = '';
+function defaultsPickerData() {
+  if (!_myDefaults) return null;
+  var levels = ((_myDefaults.effort && _myDefaults.effort.options) || []).map(function(o) { return String(o.value); });
+  var value = { model: String(_myDefaults.model.value || ''), effort: String(_myDefaults.effort.value || '') };
+  if (levels.length) value.effortLevels = levels;
+  var d = { models: mpRows(REPRESENTATIVE_MODELS || []), value: value, heading: '새 세션 기본값', busy: { model: _tdBusy.model, effort: _tdBusy.effort } };
+  if (_tdError) d.error = _tdError;
+  return d;
 }
-(function initDefaultsMenu() {
-  var menu = document.getElementById('td-menu');
-  if (!menu) return;
-  menu.addEventListener('ui-select', function(e) {
-    var d = e.detail || {};
-    if (d.kind === 'checkbox' && d.value === TD_ALSO_SESSION) { _tdAlsoSession = !!d.checked; return; }
-    if (d.kind === 'radio' && _tdMenuKind) pickDefault(_tdMenuKind, d.value);
+function renderDefaultsPicker() {
+  var el = document.getElementById('td-picker');
+  var d = defaultsPickerData();
+  if (el && d) el.data = d;
+  paintDefaultsScope();
+}
+(function initDefaultsPicker() {
+  var el = document.getElementById('td-picker');
+  if (!el) return;
+  // The page holds the default: the element shows the saved value until the server agrees.
+  el.addEventListener('ui-change', function(e) {
+    if (!e.detail) return;
+    e.preventDefault();
+    if (e.detail.changed === 'model') pickDefault('model', String(e.detail.model || ''));
+    else if (e.detail.changed === 'effort') pickDefault('effort', String(e.detail.effort || ''));
   });
-  // Closed by the element (Esc, an outside press, focus leaving): the page forgets which chip it was.
-  menu.addEventListener('ui-open-change', function(e) {
-    var open = !!(e.detail && e.detail.open);
-    if (!open) _tdMenuKind = null;
-    // The element marks only the chip it hangs from; the other chip keeps saying it is collapsed.
-    ['td-model', 'td-effort'].forEach(function(id) {
-      var chip = document.getElementById(id);
-      if (chip && (!open || chip.getAttribute('aria-expanded') !== 'true')) chip.setAttribute('aria-expanded', 'false');
-    });
+  // Opening the menu re-reads whether a session is open (the switch beside it).
+  el.addEventListener('ui-open-change', function(e) {
+    if (e.detail && e.detail.open) paintDefaultsScope();
   });
 })();
 // Settings changed in Slack — or on the settings page (the plan) — show up when the tab comes back, and when the
@@ -7938,38 +7916,63 @@ function setDefaultsStatus(text, isError) {
   if (isError) el.setAttribute('data-tone', 'fail'); else el.removeAttribute('data-tone');
 }
 async function pickDefault(kind, value) {
+  if (!value || !_myDefaults || _tdBusy[kind]) return;
   var session = _tdAlsoSession ? defaultsScopeSession() : null;
   var skipSession = !!session && kind === 'model' && !sessionAcceptsModel(value);
   if (skipSession) session = null;
-  closeDefaultsMenu();
   var key = kind === 'model' ? 'defaultModel' : 'defaultEffort';
+  _tdBusy[kind] = true;
+  _tdError = '';
+  renderDefaultsPicker();
   setDefaultsStatus('저장 중…', false);
   var r;
   try { r = await patchSetting(key, value); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
-  if (!r.ok) { setDefaultsStatus('저장하지 못했습니다: ' + r.error, true); return; }
+  _tdBusy[kind] = false;
+  if (!r.ok) {
+    _tdError = '저장하지 못했습니다: ' + r.error;
+    renderDefaultsPicker();
+    setDefaultsStatus(_tdError, true);
+    return;
+  }
   _myDefaults[kind] = r.setting;
-  renderDefaultsChips();
+  // A model change carries the default effort over to the levels the new model runs (the server's rule): read both back.
+  if (kind === 'model') await refreshDefaultEffort();
+  renderDefaultsPicker();
   var msg = '기본 ' + (kind === 'model' ? '모델' : '추론 강도') + ' → ' + optionLabel(r.setting, r.setting.value) + ' (새 세션부터)';
+  if (kind === 'model' && _myDefaults.effort) msg += ' · 추론 강도 ' + optionLabel(_myDefaults.effort, _myDefaults.effort.value);
   if (skipSession) msg += ' · 이 모델은 세션 전환 목록에 없어 열린 세션은 그대로';
   if (session && isBusy(session.key, kind)) {
     // The session is already switching (from its card or panel): one switch at a time.
     msg += ' · 열린 세션은 전환 중이라 그대로';
   } else if (session) {
+    // An effort goes to the session as the nearest level its own model runs.
+    var target = kind === 'model' ? value : fitEffortLevel(mpEffortLevels(session), value);
     var sr;
     setBusy(session.key, kind, true);
     refreshCard(session.key);
     repaintPanelControlsFor(session.key);
     try {
-      sr = kind === 'model' ? await postModelSwitch(session.key, value) : await postEffortSwitch(session.key, value);
+      sr = kind === 'model' ? await postModelSwitch(session.key, target) : await postEffortSwitch(session.key, target);
     } catch (e) { sr = { ok: false, error: String(e && e.message || e) }; }
     setBusy(session.key, kind, false);
     _modelNotes[session.key] = kind === 'model' ? modelSwitchNote(sr) : effortSwitchNote(sr);
-    msg += sr.ok ? ' · 열린 세션에도 적용' : ' · 열린 세션은 바꾸지 못함: ' + sr.error;
+    if (kind === 'effort') mpApplyEffort(session.key, sr);
+    msg += sr.ok ? ' · 열린 세션에도 적용' + (target !== value ? ' (' + effortLabel(target) + ')' : '') : ' · 열린 세션은 바꾸지 못함: ' + sr.error;
     refreshCard(session.key);
     repaintPanelControlsFor(session.key);
     loadSessions();
   }
   setDefaultsStatus(msg, false);
+}
+// The default effort row after a model change (its value and the levels it offers follow the model).
+async function refreshDefaultEffort() {
+  try {
+    var res = await fetch('/api/settings');
+    if (!res.ok) return;
+    var data = await res.json();
+    var rows = (data && data.settings) || [];
+    for (var i = 0; i < rows.length; i++) if (rows[i].key === 'defaultEffort' && _myDefaults) _myDefaults.effort = rows[i];
+  } catch (_e) {}
 }
 
 // ── Utility ──
@@ -11812,13 +11815,49 @@ function renderModelPicker(s, canSwitch, modelShort, surface) {
 function mpShort(s) {
   return String((s && s.model) || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
 }
-// The levels the session's model runs (all of them when the catalog has no menu for it) — re-model-picker D6/D7.
+// The levels the session's model runs (the SDK levels — never ultra — when the catalog has no menu for it) — re-model-picker D6/D7.
 function mpEffortLevels(s) {
+  return mpLevelsOf(s && s.effortLevels);
+}
+// A model's levels in level order: its menu ∩ EFFORT_LEVELS, or the SDK levels without a menu.
+function mpLevelsOf(menu) {
   var all = EFFORT_LEVELS || [];
-  var menu = s.effortLevels && s.effortLevels.length ? s.effortLevels : null;
+  if (!menu || !menu.length) return (SDK_EFFORT_LEVELS || all).slice();
   var out = [];
-  for (var i = 0; i < all.length; i++) if (!menu || menu.indexOf(all[i]) >= 0) out.push(all[i]);
-  return out.length ? out : all.slice();
+  for (var i = 0; i < all.length; i++) if (menu.indexOf(all[i]) >= 0) out.push(all[i]);
+  return out.length ? out : (SDK_EFFORT_LEVELS || all).slice();
+}
+// An effort carried over to a model's levels: kept when the model runs it, else the strongest level it runs that is
+// not stronger, else its weakest (the server's and the library's rule) — a model change never keeps a level the
+// new model cannot take.
+function fitEffortLevel(levels, effort) {
+  if (!effort || !levels || !levels.length || levels.indexOf(effort) >= 0) return effort;
+  var order = EFFORT_LEVELS || [];
+  var at = order.indexOf(effort);
+  var best = '';
+  for (var i = 0; i < levels.length; i++) {
+    var r = order.indexOf(levels[i]);
+    if (r >= 0 && r <= at && (!best || r > order.indexOf(best))) best = levels[i];
+  }
+  if (best) return best;
+  var low = '';
+  for (var j = 0; j < levels.length; j++) {
+    var q = order.indexOf(levels[j]);
+    if (q >= 0 && (!low || q < order.indexOf(low))) low = levels[j];
+  }
+  return low || levels[0];
+}
+// The representative models as picker rows: named by nickname (what every write takes), with window,
+// auto-compact point, price and the levels each model runs (a pick of a row fits the effort to them).
+function mpRows(models) {
+  var rows = [];
+  for (var i = 0; i < (models || []).length; i++) {
+    var m = models[i];
+    var row = { id: m.nickname, label: m.label || m.nickname, short: m.nickname, window: toNum(m.contextWindow), autoCompactAt: toNum(m.autoCompactTokens), price: m.price || null };
+    row.effortLevels = mpLevelsOf(m.effortLevels);
+    rows.push(row);
+  }
+  return rows;
 }
 // What the picker shows of one session: the representative models in server
 // order, each named by its nickname (what POST /model takes); the session's
@@ -11829,13 +11868,9 @@ function mpEffortLevels(s) {
 // compaction locks the rows and says so under the trigger — and the last refusal.
 function mpData(s) {
   var models = REPRESENTATIVE_MODELS || [];
-  var rows = [];
+  var rows = mpRows(models);
   var cur = '';
-  for (var i = 0; i < models.length; i++) {
-    var m = models[i];
-    if (m.model === s.model) cur = m.nickname;
-    rows.push({ id: m.nickname, label: m.label || m.nickname, short: m.nickname, window: toNum(m.contextWindow), autoCompactAt: toNum(m.autoCompactTokens), price: m.price || null });
-  }
+  for (var i = 0; i < models.length; i++) if (models[i].model === s.model) cur = models[i].nickname;
   var value = { model: cur || mpShort(s), effortLevels: mpEffortLevels(s) };
   if (s.effort) value.effort = s.effort;
   if (s.effortEffective) value.effectiveEffort = s.effortEffective;
@@ -11883,7 +11918,8 @@ function mpHydrate(root) {
 // changeModel, a level to changeEffort (each one write per session at a time).
 function mpOnChange(e) {
   var el = e.target;
-  if (!el || el.tagName !== 'UI-MODEL-PICKER' || !e.detail) return;
+  // Only a session's picker (the new task's and the defaults' answer their own ui-change).
+  if (!el || el.tagName !== 'UI-MODEL-PICKER' || !e.detail || !el.hasAttribute('data-mp-key')) return;
   e.preventDefault();
   var key = el.getAttribute('data-mp-key');
   if (e.detail.changed === 'model') changeModel(key, String(e.detail.model || ''));
@@ -11894,7 +11930,7 @@ document.addEventListener('ui-change', mpOnChange);
 // and the panel controls held their live updates while it was open (D12).
 function mpOnOpenChange(e) {
   var el = e.target;
-  if (!el || el.tagName !== 'UI-MODEL-PICKER' || !e.detail || e.detail.open) return;
+  if (!el || el.tagName !== 'UI-MODEL-PICKER' || !e.detail || e.detail.open || !el.hasAttribute('data-mp-key')) return;
   var key = el.getAttribute('data-mp-key');
   refreshCard(key);
   repaintPanelControlsFor(key);
@@ -11956,16 +11992,21 @@ async function changeModel(key, nickname) {
 // The owner picks one of the five levels; the session runs it from the next
 // turn (the %effort scope — the owner's default stays). When the session's
 // model caps the level, the note says what actually runs.
-var EFFORT_LABELS = { low: '낮음', medium: '보통', high: '높음', xhigh: '매우 높음', max: '최대' };
+var EFFORT_LABELS = { low: '낮음', medium: '보통', high: '높음', xhigh: '매우 높음', max: '최대', ultra: '울트라' };
 function effortLabel(level) {
   return EFFORT_LABELS[level] || String(level || '');
+}
+// One effort word with its level's look — XHigh a red gradient, Max a gold foil, Ultra a holographic foil
+// (@2lab.ai/ui kit .ui-effort, the same as the model menu's).
+function effortWord(level) {
+  return '<span class="ui-effort" data-effort="' + escAttr(level) + '">' + esc(effortLabel(level)) + '</span>';
 }
 function renderEffortPicker(s) {
   // The owner's control lives in the model menu (<ui-model-picker>); others read the level.
   var capped = s.effortEffective && s.effortEffective !== s.effort
     ? ' title="이 모델은 ' + escAttr(effortLabel(s.effortEffective)) + '까지 실행합니다"' : ' title="' + STRINGS.effortTitle + '"';
-  return '<span class="meta-effort"' + capped + '>' + esc(effortLabel(s.effort))
-    + (s.effortEffective && s.effortEffective !== s.effort ? ' &rarr; ' + esc(effortLabel(s.effortEffective)) : '') + '</span>';
+  return '<span class="meta-effort"' + capped + '>' + effortWord(s.effort)
+    + (s.effortEffective && s.effortEffective !== s.effort ? ' &rarr; ' + effortWord(s.effortEffective) : '') + '</span>';
 }
 async function postEffortSwitch(key, effort) {
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/effort';
@@ -11989,7 +12030,9 @@ function effortSwitchNote(r) {
   var res = r.result || {};
   if (res.status === 'unchanged') return { text: '이미 추론 강도 ' + effortLabel(res.effort) + '입니다', error: false };
   var capped = res.effective && res.effective !== res.effort ? ' (이 모델은 ' + effortLabel(res.effective) + '까지 실행)' : '';
-  return { text: '추론 강도 ' + effortLabel(res.effort) + ' · 다음 턴부터 적용' + capped, error: false };
+  // Ultra is codex's top setting; its backend takes max as the strongest reasoning level (llmux sends that).
+  var wire = (res.effective || res.effort) === 'ultra' ? ' · 백엔드에는 최대(max)로 전달' : '';
+  return { text: '추론 강도 ' + effortLabel(res.effort) + ' · 다음 턴부터 적용' + capped + wire, error: false };
 }
 async function changeEffort(key, effort) {
   if (!effort) return;
@@ -14969,6 +15012,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   layoutBeforeChange();
   panel.show();
   panelOpen = true;
+  paintDefaultsScope();
   panel.setAttribute('label', document.getElementById('panel-title').textContent);
   syncPanelWidth();
 
@@ -16080,6 +16124,7 @@ function closePanel() {
   panelOpen = false;
   panelSessionKey = null;
   panelConvId = null;
+  paintDefaultsScope();
   // The 산출물 part is written through writePanelPart (nothing when unchanged): emptied here, it forgets what it
   // last wrote too, so the same card reopened paints its strip again (D4 K-06 review).
   var panelArts = document.getElementById('panel-artifacts');
@@ -18064,6 +18109,11 @@ function ntReconcile(state, ctx) {
   });
   if (!hasModel) state.model = ctx.defaultModel;
   if (ctx.efforts.indexOf(state.effort) < 0) state.effort = ctx.defaultEffort;
+  // An effort the chosen model does not run is carried over to the levels it runs.
+  var chosen = ctx.models.find(function (m) {
+    return m.nickname === state.model;
+  });
+  state.effort = fitEffortLevel(mpLevelsOf(chosen && chosen.effortLevels), state.effort);
   var hasChannel = ctx.channels.some(function (c) {
     return c.id === state.channelId;
   });
@@ -18080,19 +18130,9 @@ function ntReconcile(state, ctx) {
 
 function ntRender() {
   if (!_ntCtx || !_ntState) return;
-  ntEl('nt-model').innerHTML = _ntCtx.models
-    .map(function (m) {
-      var sel = m.nickname === _ntState.model ? ' selected' : '';
-      return '<option value="' + escAttr(m.nickname) + '" title="' + escAttr(m.label) + '"' + sel + '>' + esc(m.nickname) + '</option>';
-    })
-    .join('');
-  ntEl('nt-effort').innerHTML = _ntCtx.efforts
-    .map(function (e) {
-      return '<option value="' + escAttr(e) + '"' + (e === _ntState.effort ? ' selected' : '') + '>' + esc(effortLabel(e)) + '</option>';
-    })
-    .join('');
   // #600 ⑥ — where the task goes: offered when the context lists task folders.
   var isTask = _ntState.destination === 'task';
+  ntPaintPicker();
   var dest = ntEl('nt-dest');
   if (dest) dest.hidden = !_ntCtx.taskFolders;
   var dSlack = ntEl('nt-dest-slack');
@@ -18119,7 +18159,7 @@ function ntRender() {
   }
   // A dashboard task has no channel, effort or autogoal / autoz (D8). The destination
   // row is an .nt-toggles too: hide the autogoal / autoz row, not it.
-  ['.nt-chip-channel', '.nt-chip-effort', '.nt-toggles:not(.nt-dest)'].forEach(function (sel) {
+  ['.nt-chip-channel', '.nt-toggles:not(.nt-dest)'].forEach(function (sel) {
     var el = document.querySelector(sel);
     if (el) el.hidden = isTask;
   });
@@ -18919,14 +18959,59 @@ function ntToggleUsage() {
   ntEl('nt-battery-btn').setAttribute('aria-expanded', u.hidden ? 'false' : 'true');
 }
 
-function ntOnModelChange() {
-  _ntState.model = ntEl('nt-model').value;
-  ntRenderBattery();
+// The levels a model the dialog offers runs (its own list from the context; the SDK levels without one).
+function ntLevelsOf(nickname) {
+  var m = (_ntCtx && _ntCtx.models || []).find(function (x) {
+    return x.nickname === nickname;
+  });
+  return mpLevelsOf(m && m.effortLevels);
 }
 
-function ntOnEffortChange() {
-  _ntState.effort = ntEl('nt-effort').value;
+// The picker's rows: the offered models in context order, each with the window, auto-compact point and price of its
+// representative row when it has one (the user's own default outside them has none) and the levels it runs.
+function ntPickerData() {
+  var reps = REPRESENTATIVE_MODELS || [];
+  var models = (_ntCtx.models || []).map(function (m) {
+    var rep = reps.find(function (r) {
+      return r.nickname === m.nickname;
+    });
+    var row = rep ? mpRows([rep])[0] : { id: m.nickname, label: m.label || m.nickname, short: m.nickname, price: null };
+    row.label = m.label || row.label;
+    row.effortLevels = mpLevelsOf(m.effortLevels);
+    return row;
+  });
+  // A dashboard task has no effort (D8): the menu hides its control and the trigger names no level.
+  var value = { model: _ntState.model };
+  if (_ntState.destination === 'task') value.effortLevels = [];
+  else value.effort = _ntState.effort;
+  return { models: models, value: value, heading: '이 작업의 모델 · 추론 강도' };
 }
+
+function ntPaintPicker() {
+  var el = ntEl('nt-picker');
+  if (!el || !_ntCtx || !_ntState) return;
+  el.data = ntPickerData();
+}
+
+// A pick in the task's menu (ui-change): the page holds the choice — a model carries the effort over to the levels
+// it runs, so the dialog can never send a level its model cannot take — and redraws the menu from it.
+function ntOnPick(e) {
+  if (!e.detail || !_ntState) return;
+  e.preventDefault();
+  if (e.detail.changed === 'model') {
+    _ntState.model = String(e.detail.model || '');
+    _ntState.effort = fitEffortLevel(ntLevelsOf(_ntState.model), _ntState.effort);
+    ntRenderBattery();
+  } else if (e.detail.changed === 'effort') {
+    var level = String(e.detail.effort || '');
+    if (ntLevelsOf(_ntState.model).indexOf(level) >= 0) _ntState.effort = level;
+  }
+  ntPaintPicker();
+}
+(function initNtPicker() {
+  var el = document.getElementById('nt-picker');
+  if (el) el.addEventListener('ui-change', ntOnPick);
+})();
 
 function ntOnChannelChange() {
   _ntState.channelId = ntEl('nt-channel').value || null;
