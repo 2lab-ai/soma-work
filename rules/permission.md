@@ -23,7 +23,7 @@ evaluateToolPolicy(tool, ctx, mode)         ← 유일한 결정 함수
    ├─ ① hard-deny tier (abort/ssh/민감경로/cross-user/…)         → DENY
    ├─ ② grant lookup (단일 grant store, 영속)                     → ALLOW
    ├─ ③ auto 모드 + 위험 Bash → safety-classifier (timeout=abort) → ALLOW | ASK
-   │      ├─ 걸린 규칙이 데이터 읽기 파이프뿐(permission-warning.ts가 남기는 규칙 없음) → classifier 없이 ALLOW (C1)
+   │      ├─ 걸린 규칙이 데이터 읽기 파이프뿐 + 명령 전체가 읽기 전용 단일 파이프(isPlainReadPipeline) → classifier 없이 ALLOW (C1)
    │      └─ ALLOW 후 기계 검사(policy/permission-warning.ts) → 경고 카드만 (결정 불변)
    └─ ④ 그 외                                                     → ASK(사용자 프롬프트)
    │

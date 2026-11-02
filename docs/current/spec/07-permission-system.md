@@ -474,7 +474,7 @@ this.app.action('deny_tool', async ({ ack, body, respond }) => {
 ```
 Bash 호출 → 하드 거부 계층 → 위험 규칙 매칭(soma-lib 카탈로그)
    ├─ 매칭 없음 → 실행
-   ├─ 걸린 규칙이 데이터 읽기 파이프뿐(C1, 아래 기계 검사가 남기는 규칙 없음) → classifier 없이 실행, 경고 없음
+   ├─ 걸린 규칙이 데이터 읽기 파이프뿐이고 명령 전체가 읽기 전용 단일 파이프(C1, isPlainReadPipeline) → classifier 없이 실행, 경고 없음
    └─ 그 밖의 매칭 → safety classifier (owner 본인이 요청한 턴이면 owner의 Slack 원문만 데이터로 인용 — 스킬 본문 제외, steer 포함,
             긴 글은 앞뒤만 남기고 잘림을 명시. 20s 타임아웃 = 실제 abort, 실패·예외는 ask)
         ├─ ask   → 🔐 Permission Request 카드 (Slack + 대시보드 "입력 필요", #754의 AI 권고 포함)
@@ -489,7 +489,7 @@ Bash 호출 → 하드 거부 계층 → 위험 규칙 매칭(soma-lib 카탈로
 - classifier가 판단하는 동안 owner 지시가 바뀌면(예: 끼어든 "삭제하지 마") 그 승인은 쓰지 않고 묻는다. 취소되거나 큐로 돌아간 steer는 지시에서 빠진다. 지시 이력이 불완전할 수 있으면(재시작으로 복원된 세션, 50개 상한, 스킬 블록 뒤에 남은 텍스트) 파괴적 작업은 그 지시만으로 허용하지 않는다.
 - 경고는 결정을 바꾸지 않는다. 훅이 `allow`를 반환한 뒤 fire-and-forget으로 게시되고, 실패는 로그만 남는다.
 - 같은 명령 + 같은 규칙은 세션당 10분에 한 번만 경고한다.
-- C1(데이터 읽기 파이프, Z 2026-11-02 D1-A·D2-A): 걸린 규칙이 `pipe-to-interpreter` 하나이고 그 파이프가 위 기계 검사의 데이터 읽기 조건을 만족하면 classifier를 부르지 않고 실행한다(모델 호출·대기 없음). 판정은 soma-work의 classify 단계 안에서 하고(`build-stream-options.ts`), `evaluateToolPolicy`·soma-lib 카탈로그·Lean 모델은 바뀌지 않는다. 판정 함수가 실패하면 classifier가 정한다(허용으로 새지 않음). 다른 규칙이 같이 걸리거나 입력을 코드로 실행하는 파이프(`| sh`, `| python3 -`)는 계속 classifier로 간다. 이렇게 되면 `curl -X PUT …/merge | python3 -c 'json…'`의 원격 변경도 묻지 않는데, 이는 `gh pr merge`가 오늘도 규칙에 걸리지 않는 것과 같은 수준이다.
+- C1(데이터 읽기 파이프, Z 2026-11-02 D1-A·D2-A): 두 조건을 모두 만족하면 classifier를 부르지 않고 실행한다(모델 호출·대기 없음). (1) 걸린 규칙이 파이프 규칙뿐이고 그 파이프가 위 기계 검사의 데이터 읽기 조건을 만족한다. (2) 명령 전체가 읽기 전용 단일 파이프다(`permission-warning.ts`의 `isPlainReadPipeline`). 단일 파이프란 `;` `&&` `||` `&` 줄바꿈·서브셸·here-doc·`$(…)`·따옴표 밖 `$`·파일 리다이렉트가 없고(`2>/dev/null`, `2>&1`만 허용), 첫 단계가 읽기만 하는 명령인 경우다. 읽기만 하는 명령은 `curl`(GET, 본문·업로드·출력 파일·설정 파일·자격증명·Authorization/Cookie 헤더 없음, http(s) URL만), `gh api`(GET, 필드·입력 없음), `gh pr|issue|run|repo|release|workflow view|list|status|diff|checks`, `cat` `echo` `printf` `jq` `head` `tail` `grep`이다. 허용 목록 방식이라 모르는 형태는 classifier로 간다. 처음 구현은 (1)만 봤는데, 실제 질문 64건 재생에서 21건을 건너뛰었고 그중 7건이 모델이 묻는 명령이었다(토큰을 쓴 `curl -X PUT …/merge`, 리뷰 승인 POST, git config 토큰 추출). 모두 앞 명령이 원격 변경이나 토큰 사용이고 끝만 JSON 읽기였다. (2)를 더한 뒤 같은 64건 중 건너뛰는 것은 0건이다. 이 64건은 모두 체이닝·토큰·원격 변경을 포함했다. 질문 수 감소는 C2가 맡는다. 판정은 soma-work의 classify 단계 안에서 하고(`build-stream-options.ts`), `evaluateToolPolicy`·soma-lib 카탈로그·Lean 모델은 바뀌지 않는다. 판정 함수가 실패하면 classifier가 정한다(허용으로 새지 않음).
 - 질문 결과(C3): 퍼미션 서버가 질문마다 `Permission prompt outcome` 한 줄을 남긴다(도구, 규칙, allow/deny, 시간 초과 여부, 기다린 시간, AI 권고). 누가 답했는지는 #754의 `permission` 작업 로그 항목에 있다.
 
 ### 7.3 Commands
