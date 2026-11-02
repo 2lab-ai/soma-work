@@ -71,6 +71,10 @@ function memoryStore(): SettingsStoreLike & { data: Record<string, any> } {
     setUserDashboardMode: (id, m) => {
       u(id).dashboardMode = m;
     },
+    getUserDashboardLayout: (id) => u(id).dashboardLayout ?? { v: 1 },
+    setUserDashboardLayout: (id, doc) => {
+      u(id).dashboardLayout = doc;
+    },
     getUserDashboardPlan: (id) => u(id).dashboardPlan ?? '1',
     setUserDashboardPlan: (id, p) => {
       u(id).dashboardPlan = p;
@@ -353,6 +357,40 @@ describe('settings registry — write', () => {
     await refused(registry.write('U1', 'dashboardPlan', '4'), 400);
     await refused(registry.write('U1', 'dashboardPlan', 2), 400);
     await refused(registry.write('U_DENIED', 'dashboardPlan', '2'), 403);
+    expect(store.data.U_DENIED).toBeUndefined();
+  });
+
+  it('dashboard layouts (.prd/21): read with the built-ins and the catalog; a write is checked and accepted-only', () => {
+    const { registry, store } = setup();
+    const snap = registry.readLayout('U1');
+    expect(snap).toMatchObject({ userId: 'U1', accepted: true, doc: { v: 1 }, plan: '1', mode: 'minimal' });
+    expect(Object.keys(snap.builtins)).toEqual(['1', '2', '3']);
+    expect(snap.catalog.card.rows.length).toBeGreaterThan(0);
+    const written = registry.writeLayout('U1', {
+      active: { card: '2' },
+      presets: {
+        '1': {
+          minimal: {
+            card: {
+              rows: [
+                { id: 'task', on: true },
+                { id: 'nope', on: true },
+              ],
+            },
+          },
+        },
+      },
+    });
+    expect(store.data.U1.dashboardLayout.active).toEqual({ card: '2' });
+    // Checked on the way in: the unknown id is gone, the missing ones are appended off.
+    const rows = written.doc.presets!['1']!.minimal!.card!.rows;
+    expect(rows[0]).toEqual({ id: 'task', on: true });
+    expect(rows.map((r) => r.id)).not.toContain('nope');
+    expect(rows).toHaveLength(5);
+    expect(() => registry.writeLayout('U1', 'x')).toThrow(expect.objectContaining({ statusCode: 400 }));
+    expect(() => registry.writeLayout('U_DENIED', { active: { card: '3' } })).toThrow(
+      expect.objectContaining({ statusCode: 403 }),
+    );
     expect(store.data.U_DENIED).toBeUndefined();
   });
 

@@ -65,6 +65,41 @@ export function registerSettingsRoutes(
     }
   });
 
+  // The 대시보드 화면 editor (.prd/21): the user's surface layouts — read by the editor and the dashboard, written
+  // whole by the editor (checked; an unaccepted user is refused like any settings write).
+  server.get('/api/settings/dashboard-layout', read, async (request, reply) => {
+    const userId = requireSelfUser(request, reply);
+    if (!userId) return;
+    if (!_registry) {
+      reply.status(503).send({ error: 'Settings are not available on this instance' });
+      return;
+    }
+    reply.header('Cache-Control', 'no-store').send(_registry.readLayout(userId));
+  });
+  server.put<{ Body: { doc?: unknown } }>('/api/settings/dashboard-layout', write, async (request, reply) => {
+    const userId = requireSelfUser(request, reply);
+    if (!userId) return;
+    if (!_registry) {
+      reply.status(503).send({ error: 'Settings are not available on this instance' });
+      return;
+    }
+    const body = request.body || {};
+    if (!('doc' in body)) {
+      reply.status(400).send({ error: 'doc is required' });
+      return;
+    }
+    try {
+      reply.send({ ok: true, layout: _registry.writeLayout(userId, body.doc) });
+    } catch (error) {
+      if (error instanceof SettingsError) {
+        reply.status(error.statusCode).send({ error: error.message });
+        return;
+      }
+      logger.error('Error writing the dashboard layout', { error });
+      reply.status(500).send({ error: 'Internal Server Error' });
+    }
+  });
+
   server.patch<{ Params: { key: string }; Body: { value?: unknown } }>(
     '/api/settings/:key',
     write,

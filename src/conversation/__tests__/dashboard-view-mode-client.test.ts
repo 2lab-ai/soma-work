@@ -19,6 +19,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { BUILTIN_PRESETS } from '../../view-layout';
+import { VIEW_LAYOUT_CLIENT_JS } from '../view-layout-client';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -49,10 +51,13 @@ function clientVar(name: string): string {
   return cook(TEMPLATE.slice(start + 1, TEMPLATE.indexOf('\n};\n', start) + 3));
 }
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
-  const names = Object.keys(inject);
+  // The page's script as the browser runs it: the shared layout script (view-layout-client.ts) and VIEW_BUILTINS first.
+  const all: Record<string, unknown> = { VIEW_BUILTINS: BUILTIN_PRESETS, ...inject };
+  const names = Object.keys(all);
   const setter = '__set: function(n, v) { eval(n + " = v"); }';
-  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${[...fns, setter].join(', ')} };`;
-  return new Function(...names, body)(...names.map((n) => inject[n])) as T;
+  const getter = '__get: function(n) { return eval(n); }';
+  const body = `${VIEW_LAYOUT_CLIENT_JS}\n${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${[...fns, setter, getter].join(', ')} };`;
+  return new Function(...names, body)(...names.map((n) => all[n])) as T;
 }
 /** The page markup as served (the template between <body> and the first <script>). */
 const PAGE = cook(TEMPLATE.slice(TEMPLATE.indexOf('<body'), TEMPLATE.indexOf('<script>', TEMPLATE.indexOf('<body'))));
@@ -182,7 +187,9 @@ describe('T2 — the top bar carries the 어드밴스드 toggle, saved per user'
   });
 
   it('the first paint is the device copy, then the server answers', () => {
-    expect(TEMPLATE).toMatch(/^_viewMode = readViewMode\(\);\n_viewPlan = readViewPlan\(\);\napplyViewMode\(\);/m);
+    expect(TEMPLATE).toMatch(
+      /^_viewMode = readViewMode\(\);\n_viewPlan = readViewPlan\(\);\n_viewLayout = readViewLayout\(\);\napplyViewMode\(\);/m,
+    );
   });
 });
 
@@ -213,26 +220,16 @@ describe('T3 — minimal: a card shows what matters', () => {
 
   // The default plan (.prd/20 §5.1, 1안 결과 우선) is what minimal means until the user picks another.
   const faces = load<{
-    faceOf(c: unknown, s: unknown, col: string, f: unknown): Record<string, unknown>;
+    cardAsks(s: unknown, col: string): boolean;
     viewSpec(): any;
+    __get(n: string): any;
   }>(
-    [
-      'toNum',
-      'pendingAutoResume',
-      'cardAsks',
-      'modelVendorOf',
-      'modelLabelOf',
-      'faceFootMetrics',
-      'faceOf',
-      'viewModeFrom',
-      'viewPlanFrom',
-      'viewSpec',
-    ],
-    ['VIEW_PLANS', 'FACE_KEEP', 'FACE_PARTS', '_viewMode', '_viewPlan'],
+    ['toNum', 'pendingAutoResume', 'cardAsks', 'viewModeFrom', 'viewPlanFrom', 'viewSpec'],
+    ['_viewMode', '_viewPlan', '_viewLayout'],
     { REPRESENTATIVE_MODELS: [] },
   );
   const minimalFace = (c: unknown, sess: unknown = {}, col = 'working') =>
-    faces.faceOf(c, sess, col, faces.viewSpec().face);
+    faces.__get('faceOf')(c, (sess as { model?: string }).model, faces.viewSpec().face, faces.cardAsks(sess, col));
 
   it('the face keeps title · status · time · the task in progress · lead · owner · artifacts; the summary when it asks; the foot is PR · cost · model', () => {
     const m = minimalFace(full);
@@ -246,6 +243,7 @@ describe('T3 — minimal: a card shows what matters', () => {
         'id',
         'lead',
         'metrics',
+        'rows',
         'since',
         'status',
         'statusText',
@@ -268,6 +266,8 @@ describe('T3 — minimal: a card shows what matters', () => {
       title: 't',
       status: 'done',
       bodyMode: 'slot',
+      // The layout's rows by name; a row without its data draws nothing (the element skips it).
+      rows: ['task', 'artifacts'],
       lead: { glyph: 'task', title: '일반 작업' },
     });
   });
@@ -278,20 +278,8 @@ describe('T3 — minimal: a card shows what matters', () => {
       viewCardOf(s: unknown, col: string): Record<string, unknown>;
       __set(n: string, v: unknown): void;
     }>(
-      [
-        'viewModeFrom',
-        'viewPlanFrom',
-        'viewSpec',
-        'toNum',
-        'pendingAutoResume',
-        'cardAsks',
-        'modelVendorOf',
-        'modelLabelOf',
-        'faceFootMetrics',
-        'faceOf',
-        'viewCardOf',
-      ],
-      ['VIEW_PLANS', 'FACE_KEEP', 'FACE_PARTS', '_viewMode', '_viewPlan'],
+      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'toNum', 'pendingAutoResume', 'cardAsks', 'viewCardOf'],
+      ['_viewMode', '_viewPlan', '_viewLayout'],
       { cardOf, REPRESENTATIVE_MODELS: [], cardStarOf: () => ({ on: false }) },
     );
     expect(env.viewCardOf({}, 'working').costUsd).toBeUndefined();
@@ -427,7 +415,7 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
   it('an opening in minimal mode lands on the chat of the main agent', () => {
     const env = load<{ psecForMode(land: string): string; __set(n: string, v: unknown): void }>(
       ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'detailShows', 'psecForLanding', 'psecForMode'],
-      ['VIEW_PLANS', '_viewMode', '_viewPlan'],
+      ['_viewMode', '_viewPlan', '_viewLayout'],
     );
     expect(env.psecForMode('worklog')).toBe('conv');
     expect(env.psecForMode('agent')).toBe('conv');
@@ -460,10 +448,10 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
   });
 
   it('the detail card’s top keeps the header and what needs the user; info · goal · artifacts · tabs · model go (1안)', () => {
-    // The plan says which sections show (VIEW_PLANS detail.show → body[data-detail]); minimal 1안 shows none of them.
+    // The layout says which sections show (detailSpecOf → body[data-detail]); minimal 1안 shows none of them.
     const env = load<{ viewSpec(): any }>(
       ['viewModeFrom', 'viewPlanFrom', 'viewSpec'],
-      ['VIEW_PLANS', '_viewMode', '_viewPlan'],
+      ['_viewMode', '_viewPlan', '_viewLayout'],
     );
     expect(env.viewSpec().detail.show).toEqual([]);
     for (const [tok, sel] of [
@@ -612,34 +600,24 @@ describe('T7–T10 — minimal card: cost · model · artifacts, the star toggle
     contextPct: 64,
   };
   const env0 = load<{
-    faceOf(c: unknown, s: unknown, col: string, f: unknown): Record<string, any>;
-    faceFootMetrics(c: unknown, s: unknown, foot: string[]): Array<Record<string, unknown>>;
-    modelVendorOf(m: unknown): string;
-    modelLabelOf(m: unknown): string;
     viewSpec(): any;
+    __get(n: string): any;
   }>(
-    [
-      'toNum',
-      'pendingAutoResume',
-      'cardAsks',
-      'modelVendorOf',
-      'modelLabelOf',
-      'faceFootMetrics',
-      'faceOf',
-      'viewModeFrom',
-      'viewPlanFrom',
-      'viewSpec',
-    ],
-    ['VIEW_PLANS', 'FACE_KEEP', 'FACE_PARTS', '_viewMode', '_viewPlan'],
+    ['toNum', 'pendingAutoResume', 'cardAsks', 'viewModeFrom', 'viewPlanFrom', 'viewSpec'],
+    ['_viewMode', '_viewPlan', '_viewLayout'],
     { REPRESENTATIVE_MODELS: [{ nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', label: 'Opus 5.5' }] },
   );
   // minimalCard was the minimal face; it is the default plan's face now (.prd/20 §5.1, 1안). The cost and model
   // cases read the foot's price and model alone (faceFootMetrics: cost · model).
   const env = {
-    ...env0,
-    minimalCard: (c: unknown, sess: unknown = {}): Record<string, any> => {
-      const m = env0.faceOf(c, sess, 'working', env0.viewSpec().face);
-      const priced = env0.faceFootMetrics(c, sess, ['cost', 'model']);
+    modelVendorOf: (m: unknown): string => env0.__get('modelVendorOf')(m),
+    modelLabelOf: (m: unknown): string => env0.__get('modelLabelOf')(m),
+    minimalCard: (c: unknown, sess: { model?: string } = {}): Record<string, any> => {
+      const m = env0.__get('faceOf')(c, sess.model, env0.viewSpec().face, false);
+      const priced = env0.__get('faceFootMetrics')(c, sess.model, [
+        { id: 'cost', on: true },
+        { id: 'model', on: true },
+      ]);
       return { ...m, metrics: priced.length ? priced : undefined };
     },
   };

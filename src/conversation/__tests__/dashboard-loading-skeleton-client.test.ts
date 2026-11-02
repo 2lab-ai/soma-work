@@ -248,6 +248,7 @@ function boardFlow(cardOf?: (s: { key: string }, col: string) => unknown, over: 
       }),
       detailShows: () => true,
       faceOf: (c: unknown) => c,
+      cardAsks: () => false,
       cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
       acPrefetch: () => {},
       releaseCardIoTimer: () => {},
