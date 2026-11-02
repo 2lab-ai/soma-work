@@ -559,6 +559,21 @@ describe('plan mode — a task whose plan is not started researches (SSOT 2026-1
     expect((after.settings as { disableSkillShellExecution?: boolean } | undefined)?.disableSkillShellExecution).toBeUndefined();
   });
 
+  it('…with the sandbox turned off too (trinity R5, astra P1)', async () => {
+    const off = vi.spyOn(userSettingsStore, 'getUserSandboxDisabled').mockReturnValue(true);
+    try {
+      const planning = planningContext();
+      const { options } = await buildStreamOptions(
+        { queryEnv: {}, workingDirectory: planning.workingDirectory, executionContext: planning },
+        makeDeps(),
+      );
+      expect(options.sandbox).toBeUndefined();
+      expect((options.settings as { disableSkillShellExecution?: boolean }).disableSkillShellExecution).toBe(true);
+    } finally {
+      off.mockRestore();
+    }
+  });
+
   it('every tool reaches the hook (one catch-all entry): a shell or agent tool outside the usual matchers is refused', async () => {
     const ctx = planningContext();
     const deps = makeDeps({
