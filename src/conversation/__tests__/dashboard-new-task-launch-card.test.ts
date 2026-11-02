@@ -688,10 +688,15 @@ describe('T1 — a launch that fails: back to the dialog when it is free, else k
         'ntPendingUnsent',
         'ntPendingDrop',
         'ntReconcile',
+        // ntReconcile carries the effort over to the levels the chosen model runs.
+        'mpLevelsOf',
+        'fitEffortLevel',
         ...PENDING_FNS,
       ],
       {
         ...PENDING_CONSTS,
+        EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+        SDK_EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max'],
         NT_DRAFT_KEY: 'k',
         _ntPending: [launch],
         _ntBusy: true,

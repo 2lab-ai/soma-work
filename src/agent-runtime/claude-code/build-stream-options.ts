@@ -24,6 +24,7 @@
 import type { HookInput, HookJSONOutput, Options } from '@anthropic-ai/claude-agent-sdk';
 import * as fs from 'fs';
 import * as path from 'path';
+import { isSdkEffortLevel } from 'soma-lib';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
 import type { PermissionAdvice } from 'somalib/permission/shared-store';
 import { isAdminUser } from '../../admin-utils';
@@ -42,6 +43,7 @@ import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { getPermissionGatedServers, loadMcpToolPermissions } from '../../mcp-tool-permission-config';
 import { resolveModelProfile } from '../../metrics/model-profile';
 import { clampEffortToModel, modelCatalog } from '../../model-catalog';
+
 import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
 import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/deploy-sandbox-grant';
@@ -689,7 +691,14 @@ export async function buildStreamOptions(
   // mutated, only this per-query option.
   if (session?.effort) {
     const clamped = options.model ? clampEffortToModel(options.model, session.effort) : session.effort;
-    options.effort = clamped as typeof options.effort;
+    // `ultra` (kept only on the codex tiers whose catalog menu lists it) is not
+    // an SDK/CLI `--effort` value, and no backend takes it on the wire: the
+    // codex backend's strongest level is `max` (it 400s 'ultra', probed
+    // 2026-11-02 — llmux #228 maps it the same way) and Claude models 400 it
+    // too. It runs as `max`. Not through CLAUDE_CODE_EXTRA_BODY: that body
+    // rides every request of the CLI process — a Claude subagent or the CLI's
+    // own small-model calls would carry `ultra` and be refused.
+    options.effort = (isSdkEffortLevel(clamped) ? clamped : 'max') as typeof options.effort;
     if (clamped !== session.effort) {
       logger.debug('Clamped session effort to model catalog menu', {
         model: options.model,
