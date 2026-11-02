@@ -298,6 +298,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     // affectUI batch 1: the prompts and the single-choice question are <ui-approval-card> slots.
     acPermissionsHtml: () => '',
     acGoalDecisionHtml: () => '',
+    acInstructionApprovalsHtml: () => '',
     acQuestionHtml: () => '[Q]',
     renderMultiChoiceCard: () => '[MC]',
     renderModelNote: () => '',
