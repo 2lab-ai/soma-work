@@ -54,8 +54,10 @@ import {
   CONTEXT_ROLLBACK_REFUSAL_TEXT,
   type ContextRollbackRefusal,
   cancelContextRollback,
+  inputAnchorsFromTranscript,
   keptUntilOf,
   type RollbackPointsView,
+  readTranscriptText,
   requestContextRollback,
   rollbackInputPoints,
   rollbackWorkLogPoints,
@@ -6877,11 +6879,15 @@ export class SlackHandler {
     if (!session) return undefined;
     const record = session.conversationId ? await getConversation(session.conversationId) : null;
     const page = session.conversationId ? await readWorkLog(session.conversationId, { limit: 500 }) : { entries: [] };
-    const onChain = activeChainFilter(session);
+    // One read of the transcript: the active branch, and the "just before" points of inputs
+    // recorded without an anchor (before anchors were kept).
+    const transcript = session.sessionId ? readTranscriptText(session.sessionId) : undefined;
+    const onChain = activeChainFilter(session, () => transcript);
+    const derived = inputAnchorsFromTranscript(session, record, transcript);
     return buildRollbackPointsView(
       session,
       // After a rollback the dropped branch's points stay in the logs; only the active branch is offered.
-      rollbackInputPoints(session, record, onChain),
+      rollbackInputPoints(session, record, onChain, derived),
       rollbackWorkLogPoints(session, page.entries, onChain),
       {
         actor: actorUserId || session.ownerId,

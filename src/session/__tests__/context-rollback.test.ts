@@ -9,12 +9,15 @@ import type { ConversationSession } from '../../types';
 import {
   activeChainFilter,
   activeChainUuids,
+  buildRollbackPointsView,
   cancelContextRollback,
+  inputAnchorsFromTranscript,
   keptUntilOf,
   requestContextRollback,
   rollbackInputLabel,
   rollbackInputPoints,
   rollbackWorkLogPoints,
+  toolCallLabel,
 } from '../context-rollback';
 
 const SID = 'a1b2c3d4-0000-4000-8000-000000000001';
@@ -238,5 +241,99 @@ describe('after a rollback, only the active branch can be rolled back to (found 
     expect(rollbackInputPoints(s, record, onChain).map((p) => p.text)).toEqual(['in5']);
     // No transcript (or no tail) → no filter: the gate still checks presence.
     expect(activeChainFilter(session({ contextAnchor: undefined }), () => text)).toBeUndefined();
+  });
+});
+
+describe('input points come from the transcript too — inputs recorded before anchors were kept (found on dev, 2026-11-02)', () => {
+  const at = (sec: number) => new Date(Date.UTC(2026, 10, 2, 5, 0, sec)).toISOString();
+  const e = (o: Record<string, unknown>) => JSON.stringify(o);
+  // a1 (reply) → u1 prompt → a2 tool_use → r2 tool_result → a3 reply → s3 system → u2 prompt → a4 reply
+  const text = [
+    e({ type: 'system', subtype: 'compact_boundary', uuid: U(90), parentUuid: null }),
+    e({ type: 'assistant', uuid: U(1), parentUuid: U(90), message: { content: [{ type: 'text', text: 'hi' }] } }),
+    e({ type: 'user', uuid: U(11), parentUuid: U(1), timestamp: at(10), message: { content: 'deploy it' } }),
+    e({
+      type: 'assistant',
+      uuid: U(2),
+      parentUuid: U(11),
+      message: { content: [{ type: 'tool_use', id: 't', name: 'Bash' }] },
+    }),
+    e({
+      type: 'user',
+      uuid: U(12),
+      parentUuid: U(2),
+      message: { content: [{ type: 'tool_result', tool_use_id: 't' }] },
+    }),
+    e({ type: 'assistant', uuid: U(3), parentUuid: U(12), message: { content: [{ type: 'text', text: 'done' }] } }),
+    e({ type: 'system', uuid: U(13), parentUuid: U(3) }),
+    e({
+      type: 'user',
+      uuid: U(14),
+      parentUuid: U(13),
+      timestamp: at(40),
+      message: { content: [{ type: 'text', text: 'goal-continuation' }] },
+    }),
+    e({ type: 'assistant', uuid: U(4), parentUuid: U(14), message: { content: [{ type: 'text', text: 'ok' }] } }),
+    e({ type: 'user', uuid: U(15), parentUuid: U(4), timestamp: at(70), message: { content: 'test again' } }),
+    e({ type: 'assistant', uuid: U(5), parentUuid: U(15), message: { content: [{ type: 'text', text: 'ok' }] } }),
+  ].join('\n');
+  const ms = (sec: number) => Date.UTC(2026, 10, 2, 5, 0, sec);
+  const record = {
+    turns: [
+      { id: 'i1', role: 'user', timestamp: ms(9), rawContent: 'deploy it', origin: { by: 'user' } },
+      { id: 'g1', role: 'user', timestamp: ms(39), rawContent: '[goal-continuation] …', origin: { by: 'system' } },
+      { id: 'i2', role: 'user', timestamp: ms(69), rawContent: 'test again', origin: { by: 'user' } },
+    ],
+  } as never;
+
+  it('each input without a recorded anchor gets the last safe point before its prompt', () => {
+    const s = session({ contextAnchor: A(5), compactionCount: 0 });
+    const derived = inputAnchorsFromTranscript(s, record, text);
+    expect(derived.get('i1')).toBe(A(1));
+    expect(derived.get('i2')).toBe(A(4));
+    const points = rollbackInputPoints(
+      s,
+      record,
+      activeChainFilter(s, () => text),
+      derived,
+    );
+    expect(points.map((p) => p.text)).toEqual(['deploy it', 'test again']);
+    expect(points.map((p) => p.anchor)).toEqual([A(1), A(4)]);
+  });
+
+  it('no transcript, no tail, or a prompt before the compaction boundary → nothing derived', () => {
+    expect(inputAnchorsFromTranscript(session({ contextAnchor: A(5) }), record, undefined).size).toBe(0);
+    expect(inputAnchorsFromTranscript(session({ contextAnchor: undefined }), record, text).size).toBe(0);
+  });
+
+  it('a tool-result point is labelled with the call it answers, not "Bash ok"', () => {
+    const s = session({ contextAnchor: A(9) });
+    const entries = [
+      {
+        seq: 1,
+        ts: 1,
+        kind: 'tool',
+        tool: 'Bash',
+        toolUseId: 'x',
+        text: 'Bash {"command":"npm test -- --run"}',
+        anchor: A(2),
+      },
+      { seq: 2, ts: 2, kind: 'tool_result', tool: 'Bash', toolUseId: 'x', text: 'Bash ok', anchor: A(3) },
+    ];
+    const view = buildRollbackPointsView(s, [], rollbackWorkLogPoints(s, entries), {
+      actor: 'U1',
+      requestActive: false,
+    });
+    expect(view.worklog[0].label).toBe('툴 결과까지: Bash · npm test -- --run');
+  });
+
+  it('a call stored cut short still reads as its command; a `cd <dir> &&` prefix is dropped', () => {
+    expect(
+      toolCallLabel('Bash {"command":"cd /tmp/x/soma-work && git push -q origin HEAD:feat/a 2>&1 | tail -1; git ls-re'),
+    ).toBe('Bash · git push -q origin HEAD:feat/a 2>&1 | tail -1; git ls-re');
+    expect(toolCallLabel('mcp__slack-mcp__send_thread_message {"text":"배포 완료\\n다음 단계')).toBe(
+      'send_thread_message · 배포 완료 다음 단계',
+    );
+    expect(toolCallLabel('Read {"file_path":"/a/b.ts"}')).toBe('Read · /a/b.ts');
   });
 });
