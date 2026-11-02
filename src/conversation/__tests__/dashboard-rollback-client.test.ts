@@ -198,8 +198,12 @@ describe('marks on what a rollback dropped (client)', () => {
   });
   it('the work log and the conversation both draw the mark', () => {
     const wl = clientFn('wlEntryOf');
-    expect(wl).toContain('rewoundBy(');
+    expect(wl).toContain('rewoundBy(st.rewinds');
     expect(wl).toContain('REWOUND_MARK');
+    // The open log takes the panel session's spans on every head repaint and on load.
+    expect(clientFn('renderPanelHead')).toContain('wlSyncRewinds();');
+    expect(clientFn('loadWorkLog')).toContain('wlSyncRewinds();');
+    expect(clientFn('convPaint')).toContain('rewinds: s && Array.isArray(s.contextRewinds)');
     const conv = clientFn('convTurnsOf');
     expect(conv).toContain('rewoundBy(');
     expect(TEMPLATE).toContain("var REWOUND_MARK = '↩︎ 문맥에서 빠짐';");
