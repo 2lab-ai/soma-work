@@ -1494,6 +1494,9 @@ async function start() {
         getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
         setTaskPlanGate: (taskId, gate) => claudeHandler.getSessionRegistry().setTaskPlanGate(taskId, gate),
         controller: taskController,
+        // #777 — 시작 · 취소 are the owner's call: someone the owner has not approved is refused, not held.
+        mayDecide: (sessionKey, session, actorUserId) =>
+          instructionApprovals.allows({ sessionKey, session, senderId: actorUserId }),
         logger: new Logger('TaskPlanDecider'),
       }),
     );
