@@ -2093,6 +2093,8 @@ export class SessionRegistry {
       // A task runs in its own directory: the one its transcript proves it ran in (#612 R4).
       ...(slackless ? { workingDirectory: cwd } : {}),
       sessionId: archived.sessionId,
+      // A revived session's history already has the tag if it had an SDK session (#810).
+      displayLangTold: !!archived.sessionId,
       conversationId: archived.conversationId,
       taskId: restoredTask.taskId,
       isActive: true,
@@ -3707,7 +3709,8 @@ export class SessionRegistry {
             incidentRequest: session.incidentRequest,
             cronJob: session.cronJob,
             titleProvisional: session.titleProvisional || undefined,
-            displayLangTold: typeof session.displayLangTold === 'boolean' ? session.displayLangTold : undefined,
+            // Always a boolean: only a file saved before #810 lacks it (see the load rule).
+            displayLangTold: session.displayLangTold === true,
             workQueueId: session.workQueueId,
             approvedInstructors: session.approvedInstructors?.length ? [...session.approvedInstructors] : undefined,
             starred: session.starred === true ? true : undefined,

@@ -82,6 +82,9 @@ describe('SessionRegistry persistence', () => {
     const fresh = writer.createSession('U123', 'Tester', 'C123', '171.0032');
     fresh.sessionId = 'session-slash-only';
     fresh.displayLangTold = false;
+    // A thread that opened with a slash command and was never told: no mark set at all.
+    const neverTold = writer.createSession('U123', 'Tester', 'C123', '171.0033');
+    neverTold.sessionId = 'session-slash-only-2';
     writer.saveSessions();
     const raw = JSON.parse(fs.readFileSync(`${TEST_DATA_DIR}/sessions.json`, 'utf8'));
     const list: any[] = Array.isArray(raw) ? raw : (raw.sessions ?? Object.values(raw));
@@ -94,6 +97,8 @@ describe('SessionRegistry persistence', () => {
     reader.loadSessions();
     expect(reader.getSession('C123', '171.0031')?.displayLangTold).toBe(true);
     expect(reader.getSession('C123', '171.0032')?.displayLangTold).toBe(false);
+    // Saved as an explicit false, so the pre-#810 rule never mistakes it for told.
+    expect(reader.getSession('C123', '171.0033')?.displayLangTold).toBe(false);
   });
 
   // Trinity R2 (astra P1): a deploy held by the work queue before its first
