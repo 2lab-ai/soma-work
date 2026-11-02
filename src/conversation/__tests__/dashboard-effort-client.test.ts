@@ -110,6 +110,16 @@ describe('postEffortSwitch / effortSwitchNote (T1)', () => {
     expect(r).toMatchObject({ ok: true, result: { status: 'switched' } });
   });
 
+  it('an ultra pick says the backend gets max — the strongest level it takes', () => {
+    const { effortSwitchNote } = load<{ effortSwitchNote(r: unknown): { text: string; error: boolean } }>(
+      ['effortLabel', 'effortSwitchNote'],
+      ['EFFORT_LABELS'],
+    );
+    expect(
+      effortSwitchNote({ ok: true, result: { status: 'switched', effort: 'ultra', effective: 'ultra' } }).text,
+    ).toBe('추론 강도 울트라 · 다음 턴부터 적용 · 백엔드에는 최대(max)로 전달');
+  });
+
   it('says when the change applies and what the model caps it to', () => {
     const { effortSwitchNote } = load<{ effortSwitchNote(r: any): { text: string; error: boolean } }>(
       ['effortLabel', 'effortSwitchNote'],

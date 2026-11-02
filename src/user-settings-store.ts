@@ -1019,7 +1019,7 @@ export class UserSettingsStore {
   /** Remove the deprecated persisted percentage after session-token conversion. */
   clearUserCompactThreshold(userId: string): void {
     const settings = this.settings[userId];
-    if (!settings || !Object.hasOwn(settings, 'compactThreshold')) return;
+    if (!settings || !Object.prototype.hasOwnProperty.call(settings, 'compactThreshold')) return;
     delete settings.compactThreshold;
     settings.lastUpdated = new Date().toISOString();
     this.saveSettings();

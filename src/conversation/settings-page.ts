@@ -475,7 +475,21 @@ async function saveSetting(key, value) {
   if (copy) { try { localStorage.setItem(copy, String(r.data.setting.value)); } catch (_e) {} }
   _rowStatus[key] = { state: 'saved', text: '저장됨 — ' + valueText(r.data.setting, r.data.setting.value) };
   repaintRow(key);
+  // The default effort follows the default model (its value and the levels it offers): read that row back.
+  if (key === 'defaultModel') await refreshRow('defaultEffort');
   return true;
+}
+// One row read back from the server after another row's save changed it.
+async function refreshRow(key) {
+  try {
+    var res = await fetch('/api/settings');
+    if (!res.ok) return;
+    var data = await res.json();
+    var fresh = ((data && data.settings) || []).find(function(x) { return x.key === key; });
+    var rows = _snapshot.settings;
+    for (var i = 0; fresh && i < rows.length; i++) if (rows[i].key === key) rows[i] = fresh;
+    if (fresh) repaintRow(key);
+  } catch (_e) {}
 }
 function onChoice(el) {
   return saveSetting(el.getAttribute('data-key'), el.value);

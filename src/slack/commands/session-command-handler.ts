@@ -1,5 +1,6 @@
 import { getVerbosityFlags, getVerbosityName, LOG_DETAIL, VERBOSITY_NAMES } from '@soma/slack/output-flags';
 import { resolveContextWindow } from '../../metrics/model-registry';
+import { allowedEffortsFor } from '../../session/effort-menu';
 import {
   DEFAULT_EFFORT,
   EFFORT_LEVELS,
@@ -325,6 +326,16 @@ export class SessionCommandHandler implements CommandHandler {
     const { say, threadTs } = ctx;
     const valid = EFFORT_LEVELS;
     const normalized = input.toLowerCase();
+
+    // A known level the session's model does not run (ultra only where its catalog menu lists it).
+    const allowed = allowedEffortsFor(session?.model);
+    if (valid.includes(normalized as any) && !allowed.includes(normalized as any)) {
+      await say({
+        text: `❌ This session's model does not run effort \`${normalized}\`.\n*Available for this model:* ${allowed.map((v) => `\`${v}\``).join(', ')}`,
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    }
 
     if (!valid.includes(normalized as any)) {
       const validStr = valid.map((v) => `\`${v}\``).join(', ');
