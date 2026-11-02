@@ -5,7 +5,7 @@
  * call in every permission mode, for admins too (trinity R2, astra P1).
  *
  * Research stays open — reading files (Read, Glob, Grep), the web (WebFetch,
- * WebSearch), read-only shell commands (ls, cat, grep, rg, find, git log/show/diff,
+ * WebSearch), read-only shell commands (ls, cat, grep, find, git log/show/diff,
  * gh … view/list), getting the code to read (git clone/fetch into the task folder),
  * the exact read MCP tools and the plan tool itself.
  * Everything else is refused: the native write tools, subagents and workflows
@@ -83,7 +83,6 @@ const READ_COMMANDS = new Set([
   'false',
   'test',
   '[',
-  'cd',
 ]);
 
 /** `git` subcommands that read. */
@@ -94,7 +93,6 @@ const GIT_READS = new Set([
   'diff',
   'ls-files',
   'ls-tree',
-  'grep',
   'blame',
   'rev-parse',
   'describe',
@@ -246,6 +244,11 @@ function isOption(t: string, opt: string): boolean {
   return opt.startsWith('--') ? t.startsWith(opt) : t.startsWith(opt) && t.length > opt.length;
 }
 
+/** A path that stays inside the folder it is read from: relative, no `..`, no `~`, not an option. */
+function isInsidePath(t: string): boolean {
+  return t !== '' && !t.startsWith('/') && !t.startsWith('~') && !t.startsWith('-') && !t.split('/').includes('..');
+}
+
 /** A URL-ish repository argument (`https://…`, `ssh://…`, `git@host:owner/repo`). */
 function isRemoteUrl(t: string): boolean {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(t) || /^[\w.-]+@[\w.-]+:/.test(t);
@@ -273,28 +276,43 @@ function gitFetchIsRead(sub: 'clone' | 'fetch', rest: string[]): boolean {
   if (sub === 'clone') {
     const [repo, dir, ...extra] = positionals;
     if (!repo || extra.length > 0) return false;
-    if (dir === undefined) return true;
-    return !dir.startsWith('/') && !dir.startsWith('~') && !dir.split('/').includes('..');
+    return dir === undefined || isInsidePath(dir);
   }
   return positionals.every((t, n) => !t.includes(':') || (n === 0 && isRemoteUrl(t)));
 }
 
+/**
+ * A refused option, spelled in full or abbreviated: git takes any unambiguous prefix of a long
+ * option (`--open-files-in-page` is `--open-files-in-pager`; trinity R4, astra P1).
+ */
+function isRefusedGitOption(t: string): boolean {
+  if (GIT_READ_REFUSED.some((opt) => isOption(t, opt))) return true;
+  if (/^-[A-Za-z]*O/.test(t)) return true;
+  if (!t.startsWith('--')) return false;
+  const name = t.split('=')[0];
+  return name.length > 3 && GIT_READ_REFUSED.some((opt) => opt.startsWith('--') && opt.startsWith(name));
+}
+
 function gitIsRead(args: string[]): boolean {
+  let moved = false;
   let i = 0;
   // Global options that only change where or how it reads.
   while (i < args.length && args[i].startsWith('-')) {
     const opt = args[i];
-    if (opt === '-C') i += 2;
-    else if (opt === '--no-pager' || opt === '-P' || opt === '--no-optional-locks') i += 1;
+    if (opt === '-C') {
+      moved = true;
+      i += 2;
+    } else if (opt === '--no-pager' || opt === '-P' || opt === '--no-optional-locks') i += 1;
     else return false; // -c, --config-env, --exec-path, … can make git run a program
   }
   const sub = args[i];
   const rest = args.slice(i + 1);
   if (!sub) return false;
   if (GIT_READS.has(sub)) {
-    return !rest.some((t) => GIT_READ_REFUSED.some((opt) => isOption(t, opt)) || /^-[A-Za-z]*O/.test(t));
+    return !rest.some(isRefusedGitOption);
   }
-  if (sub === 'clone' || sub === 'fetch') return gitFetchIsRead(sub, rest);
+  // Into the task folder only: not from another directory (`git -C /tmp clone …`).
+  if (sub === 'clone' || sub === 'fetch') return !moved && gitFetchIsRead(sub, rest);
   // List-only forms of the subcommands that also change refs.
   if (sub === 'branch' || sub === 'tag') {
     const listing = ['--list', '-l', '-a', '-r', '-v', '-vv', '--all', '--remotes', '--show-current'];
@@ -318,7 +336,15 @@ function gitIsRead(args: string[]): boolean {
 function ghIsRead(args: string[]): boolean {
   // `--` hands the rest to another program (`gh repo clone … -- <git options>`).
   if (args.includes('--')) return false;
+  // `--web` opens a browser: a program outside the folder.
+  if (args.some((t) => t === '-w' || t === '--web')) return false;
   const [noun, verb, ...rest] = args;
+  if (noun === 'repo' && verb === 'clone') {
+    // `gh repo clone <repo> [<dir>]`: the directory inside the folder; no options (trinity R4, astra P2).
+    if (rest.some((t) => t.startsWith('-'))) return false;
+    const [repo, dir, ...extra] = rest;
+    return !!repo && extra.length === 0 && !repo.includes('::') && (dir === undefined || isInsidePath(dir));
+  }
   if (noun === 'api') {
     const tail = [verb, ...rest].filter((t): t is string => typeof t === 'string');
     for (let i = 0; i < tail.length; i++) {
@@ -351,7 +377,9 @@ function segmentIsRead(words: Word[]): boolean {
   const globbed = rest.some((w) => w.globbed);
   if (name === 'git') return !globbed && gitIsRead(args);
   if (name === 'gh') return !globbed && ghIsRead(args);
-  if (name === 'rg') return !globbed && !args.some((t) => t.startsWith('--pre'));
+  // `rg` is not here: it runs programs (`--pre`, `--hostname-bin`); the Grep tool searches instead.
+  // `cd` stays inside the folder (the shell keeps it for the next command, and a clone lands there).
+  if (name === 'cd') return !globbed && args.length === 1 && isInsidePath(args[0]);
   if (name === 'find') {
     const acts = ['-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fls'];
     return !globbed && !args.some((t) => acts.some((a) => t.startsWith(a)));
