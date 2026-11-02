@@ -471,6 +471,12 @@ function laySampleCard(id) {
     metrics: [{ text: '1', glyph: 'attach', title: '지시 첨부 1개', label: '지시 첨부 1개' }, { text: '#700 열림', glyph: 'pr', title: 'PR #700 열림' }],
     badge: { text: 'Zhuge', hue: 2, title: 'Zhuge' },
     star: { on: false, title: '즐겨찾기 — 항상 맨 위' },
+    // 작업 카드의 연결: the linked issue, PR and wiki with their states (a sample; the board's are the session's).
+    links: [
+      { kind: 'issue', href: 'https://example.atlassian.net/browse/PAY-12', text: 'PAY-12', status: 'In Progress', tone: 'run', title: '이슈 PAY-12 — 결제 폼 검증 · In Progress' },
+      { kind: 'pr', href: 'https://github.com/example/app/pull/700', text: '#700', status: '열림', tone: 'run', title: 'PR #700 · 열림' },
+      { kind: 'wiki', href: 'https://example.atlassian.net/wiki/spaces/PAY/pages/1/Design', text: '결제 폼 설계', title: '위키 결제 폼 설계' },
+    ],
   };
   if (_laySample === 'wait') {
     c.status = 'waiting';
@@ -483,6 +489,9 @@ function laySampleCard(id) {
     delete c.task;
     c.steps = { done: 4, total: 4 };
     c.agents = { total: 2, running: 0, done: 2, failed: 0, dots: ['done', 'done'] };
+    c.links[0] = Object.assign({}, c.links[0], { status: 'Done', tone: 'done', title: '이슈 PAY-12 — 결제 폼 검증 · Done' });
+    c.links[1] = Object.assign({}, c.links[1], { status: '머지됨', tone: 'done', title: 'PR #700 · 머지됨' });
+    c.metrics = [c.metrics[0], { text: '#700 머지됨', glyph: 'pr', tone: 'done', title: 'PR #700 머지됨' }];
   }
   return c;
 }

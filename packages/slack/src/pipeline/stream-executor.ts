@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { displayLangOf, runWithDisplayLang } from '@soma/common/i18n';
 import { Logger, redactAnthropicSecrets } from '@soma/common/logger';
 import {
   boundRateLimitDelayMs,
@@ -19,6 +20,7 @@ import {
   promotePendingToDispatchQueue,
 } from '../compact-state';
 import type { CompletionMessageTracker } from '../completion-message-tracker';
+import { turnStartAnchor } from '../context-anchor';
 import type { ContextWindowManager } from '../context-window-manager';
 import {
   buildInstructionConfirmBlocks,
@@ -101,6 +103,7 @@ import { UserChoiceHandler } from '../user-choice-handler';
 import type { TurnAttachment } from '../user-media';
 import type { WorkLogInput } from '../work-log';
 import { decideBackgroundWaitContinuation, getBackgroundWaitCap } from './background-wait';
+import { appendDisplayLangTag } from './display-lang-tag';
 import { shouldForwardAsLocalSlashCommand } from './local-slash-command';
 import { SESSION_TITLE_PENDING_NOTICE, shouldInjectSessionTitleNotice } from './session-title-notice';
 import { cleanupWithTimeout, DEFAULT_CLEANUP_TIMEOUT_MS, runWithTimeout } from './stream-executor-cleanup-helpers';
@@ -190,6 +193,8 @@ export interface RecordUserTurnOpts {
    * it a compaction turn; this is the one definition the dashboard reads.
    */
   compact?: boolean;
+  /** Context rollback (#743) — the SDK cut point just before this input (`@soma/slack/context-anchor`). */
+  anchor?: string;
 }
 
 /** Dashboard SSOT 2026-10-27 T2 — what a compaction reported when it ended. */
@@ -212,6 +217,12 @@ export interface StreamExecutorProviders {
   shouldShowStatusBlock?: (status: any) => boolean;
   createConversation?: (channel: string, threadTs: string, user: string, userName: string) => string;
   recordAssistantTurn?: (conversationId: string, text: string) => void;
+  /**
+   * SSOT 2026-11-02 T7 — an Executive Summary landed (the session already holds its TL;DR,
+   * `executiveSummary`): the host puts the whole summary in the dashboard's chat and pushes the
+   * card. Fire-and-forget; must never throw. No-op by default.
+   */
+  recordExecutiveSummary?: (sessionKey: string, conversationId: string | undefined, text: string) => void;
   recordUserTurn?: (
     conversationId: string,
     text: string,
@@ -311,6 +322,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   shouldShowStatusBlock: () => false,
   createConversation: () => '',
   recordAssistantTurn: () => {},
+  recordExecutiveSummary: () => {},
   recordUserTurn: () => {},
   recordCompactResult: () => {},
   captureUserMedia: async () => [],
@@ -652,6 +664,17 @@ interface StreamExecutorDeps {
    * or a host without it, posts the notes in its own channel (SESSION_ROUTING).
    */
   routeReleaseNotes?: (repo: string, target: string) => ReleaseNotesRouting;
+  /**
+   * The turn's prompt reached the model: the FIRST SDK event of this
+   * execution, which arrives only after `query()` took the prompt. Everything
+   * before it (lease, tenant key, MCP config) can still fail or be stopped with
+   * the words unread. The host records it as the dispatched follow-up's
+   * delivery evidence, and uses it as the moment a post-restart resume turn
+   * takes over the item the restart cut. `turnEpoch` is the follow-up turn
+   * generation this execution was started under (absent outside a dispatch).
+   * Fired once per execution; a throw is swallowed — it must never cost the turn.
+   */
+  onTurnReachedModel?: (args: { sessionKey: string; turnEpoch?: number }) => void;
   /**
    * A Slack-less task turn's work-log writer (#598 ④b): bound per turn through
    * `taskBinding`, it returns the store's promise so the task runner can wait
@@ -1194,9 +1217,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   }
 
   /**
-   * 스트림 실행
+   * 스트림 실행 — in the turn user's display language (#774): a turn started
+   * from a timer (goal continuation, cron, a dashboard task) has no Slack
+   * event around it, so its posts are told the language here.
    */
   async execute(params: StreamExecuteParams): Promise<ExecuteResult> {
+    const lang = displayLangOf(userSettingsStore.getUserDisplayLanguage?.(params.user));
+    return runWithDisplayLang(lang, () => this.executeTurn(params));
+  }
+
+  private async executeTurn(params: StreamExecuteParams): Promise<ExecuteResult> {
     const {
       session,
       sessionKey,
@@ -1456,7 +1486,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
       const conversationId = session.conversationId;
       if (!conversationId) return;
-      recordConversationWorkLog(conversationId, { turnId, ts: Date.now(), ...entry }, { sessionKey });
+      // #743: every entry carries the SDK cut point it was made at — the work
+      // log's "roll back to here" resumes there.
+      const anchor = turnStartAnchor(session);
+      recordConversationWorkLog(
+        conversationId,
+        { turnId, ts: Date.now(), ...(anchor ? { anchor } : {}), ...entry },
+        { sessionKey },
+      );
     };
     // A task turn's compaction notices go through its own writer, so a failed
     // one is the turn's recording failure like any other entry (#629 R1).
@@ -1659,6 +1696,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         });
       }
 
+      // #772 — the user's display language at the very bottom of the session's
+      // first instruction, and again once they change it. Never on an SDK local
+      // slash command: the prompt must stay exactly the command.
+      if (!isSlashCommand) {
+        const tagged = appendDisplayLangTag(
+          finalPrompt,
+          session.displayLangSent,
+          displayLangOf(userSettingsStore.getUserDisplayLanguage?.(user)),
+        );
+        finalPrompt = tagged.prompt;
+        session.displayLangSent = tagged.sent;
+      }
+
       // Record user turn (fire-and-forget, non-blocking). A files-only message
       // is a user turn too: its instruction IS the files (user media).
       const hasInput = !!text || processedFiles.length > 0;
@@ -1704,6 +1754,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           {
             origin: { by },
             ...(compactTurn ? { compact: true } : {}),
+            // #743: "roll back to just before this input" resumes here.
+            ...(turnStartAnchor(session) ? { anchor: turnStartAnchor(session) } : {}),
           },
         );
         const names = processedFiles.map((f) => f.name).join(' · ');
@@ -1932,6 +1984,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         },
       };
 
+      // The first SDK event of this execution: the prompt is in the model's hands.
+      // A local slash command (`/compact` — the auto-compact path parks the
+      // follow-up's own words and runs this in their place) carries none of the
+      // instruction, so it is no evidence that the instruction was delivered.
+      let reachedModel = isSlashCommand;
+
       // Create stream callbacks
       const streamCallbacks: StreamCallbacks = {
         // HEARTBEAT. The transport spoke — that is all this proves, so it
@@ -1941,6 +1999,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         onSdkActivity: () => {
           this.deps.requestCoordinator.touchSession(sessionKey);
           this.recordLiveness(session, sessionKey, { lastSignalAt: Date.now() }, turnEpochToken);
+          if (!reachedModel) {
+            reachedModel = true;
+            this.notifyTurnReachedModel(sessionKey, turnEpochToken);
+          }
         },
         // REAL PROGRESS (U9). Model output / tool call / tool result / plan /
         // background-task lifecycle. Progress is also a signal, so both clocks
@@ -4890,6 +4952,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       const summaryText = outcome.value;
       if (summaryText) {
         summaryService.displayOnThread(session as any, summaryText);
+        // The dashboard: the whole summary in its chat, the TL;DR on the task card (T7). Before the
+        // Slack calls, so a failed thread update never keeps it from the dashboard.
+        try {
+          streamExecutorProviders.recordExecutiveSummary(sessionKey, session.conversationId, summaryText);
+        } catch (err: any) {
+          this.logger.warn('recordExecutiveSummary failed', { sessionKey, error: err?.message });
+        }
         // Trigger re-render so the summary blocks appear in the Slack thread header.
         // Without this, summaryBlocks sit in memory but the message is never updated.
         await this.deps.threadPanel?.updatePanel(session, sessionKey);
@@ -5276,6 +5345,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     expectedTurnEpoch?: number,
   ): Promise<void> {
     await this.deps.threadPanel?.setStatus(session, sessionKey, patch, { expectedTurnEpoch });
+  }
+
+  /** `onTurnReachedModel`, once per execution — best effort, never the turn's problem. */
+  private notifyTurnReachedModel(sessionKey: string, turnEpoch: number | undefined): void {
+    try {
+      this.deps.onTurnReachedModel?.({ sessionKey, turnEpoch });
+    } catch (error) {
+      this.logger.warn('onTurnReachedModel threw — ignored', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
   }
 
   /**

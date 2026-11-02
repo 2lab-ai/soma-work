@@ -38,8 +38,8 @@ function layoutsFor(doc, builtins, mode, plan) {
 // asks: the card asks the user something now (a permission, a goal decision, the question, a retry's error) —
 // a summary row set to "물을 때만" shows only then.
 var FACE_KEEP = ['id', 'title', 'status', 'statusText', 'bodyMode', 'since', 'elapsedMs', 'lead', 'badge', 'star', 'titles'];
-var FACE_ROW_KEYS = { summary: ['summary'], task: ['task'], agents: ['agents'], usage: ['tokens', 'costUsd'], arts: ['artifacts', 'artifactsCount'] };
-var FACE_ROW_NAME = { summary: 'summary', task: 'task', agents: 'agents', usage: 'usage', arts: 'artifacts' };
+var FACE_ROW_KEYS = { summary: ['summary'], task: ['task'], links: ['links'], agents: ['agents'], usage: ['tokens', 'costUsd'], arts: ['artifacts', 'artifactsCount'] };
+var FACE_ROW_NAME = { summary: 'summary', task: 'task', links: 'links', agents: 'agents', usage: 'usage', arts: 'artifacts' };
 function faceOf(card, model, face, asks) {
   var f = face || { rows: [], foot: [] };
   var out = {};
@@ -59,6 +59,12 @@ function faceOf(card, model, face, asks) {
     for (var k = 0; k < keys.length; k++) copy(keys[k]);
     if (row.id === 'arts' && out.artifacts) out.artifacts = out.artifacts.slice(0, Math.max(1, Number(row.opt) || 4));
     rows.push(FACE_ROW_NAME[row.id]);
+  }
+  // The Executive Summary's TL;DR (SSOT 2026-11-02 T7) is not a layout row: a face that has one shows it after
+  // the summary row (first when the layout shows none) until its × or the next turn drops it.
+  if (card && card.tldr) {
+    out.tldr = card.tldr;
+    rows.splice(rows.indexOf('summary') + 1, 0, 'tldr');
   }
   out.rows = rows;
   // What the card is: an epic, a plan node or a cron run lead with their own; a plain task with the task mark.
@@ -163,7 +169,9 @@ function followThreadLayout(face) {
     if (rows[r].id === 'task') add('task');
     if (rows[r].id === 'usage') { add('tokens'); add('cost'); }
   }
+  // The link history when the face shows its links or its PR.
   var pr = false;
+  for (var l = 0; l < rows.length; l++) if (rows[l] && rows[l].on && rows[l].id === 'links') pr = true;
   var foot = (face && face.foot) || [];
   var map = { steps: 'steps', ctx: 'ctx', cost: 'cost', tokens: 'tokens', model: 'model' };
   for (var f = 0; f < foot.length; f++) {

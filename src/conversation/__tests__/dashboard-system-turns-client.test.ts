@@ -361,9 +361,12 @@ describe('C2 — the one-line row (<ui-conversation> system turn)', () => {
       TEMPLATE.indexOf("msg.type === 'conversation_update'"),
       TEMPLATE.indexOf("msg.type === 'session_action'"),
     );
-    // The optimistic turn is found in 지시와 답변's data and replaced there by the server's.
-    expect(ws).toContain("String(ot.id || '').indexOf('optimistic-') === 0");
-    expect(ws).toContain('appendTurnToPanel(msg.turn, false, optId)');
+    // The optimistic turn is found in 지시와 답변's data and replaced there by the server's — matched by its words,
+    // never by a time window (SSOT 2026-11-02 T1, dashboard-optimistic-echo-client).
+    expect(ws).toContain('onConversationTurn(msg.conversationId, msg.turn)');
+    expect(clientFn('onConversationTurn')).toContain(
+      'appendTurnToPanel(turn, false, ptOptimisticFor(_panelTurnsList, turn) || undefined)',
+    );
     // affectUI batch 2b: the composer (<ui-agent-steering>) draws the optimistic turn only when no turn is running;
     // a note sent mid-turn is a queued note in the steering list instead (dashboard-steering-client).
     const from = TEMPLATE.indexOf("optimisticId = 'optimistic-' + Date.now();");
@@ -948,6 +951,27 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     expect(res.instruction.turn.origin).toEqual({ by: 'user' });
     expect(res.instruction.turn.role).toBe('user');
     expect(res.response).toEqual({ title: 'T', body: 'B' });
+  });
+
+  it('fetchCardIo: the Executive Summary turn is not the card’s 응답, and the instruction before it stays (SSOT 2026-11-02 T7, review: fable P2)', async () => {
+    const turns = [
+      { id: 'u1', role: 'user', timestamp: 1, userName: 'Z', rawContent: '정리해줘', origin: { by: 'user' } },
+      { id: 'a1', role: 'assistant', timestamp: 2, summaryTitle: '정리 완료', summaryBody: '모델 답변' },
+      {
+        id: 'es',
+        role: 'assistant',
+        timestamp: 3,
+        summaryTitle: 'Executive Summary',
+        summaryBody: 'TL;DR',
+        executiveSummary: true,
+      },
+    ];
+    const fetch = vi.fn(async (_url: string) => ({ ok: true, json: async () => ({ turns }) }));
+    const c = card(user('x'), { extra: { fetch } });
+    const res = await c.fetchCardIo(CID);
+    expect(String(fetch.mock.calls[0][0])).toContain('?limit=3');
+    expect(res.instruction.turn.rawContent).toBe('정리해줘');
+    expect(res.response).toEqual({ title: '정리 완료', body: '모델 답변' });
   });
 
   it('cpTick keeps an open card’s compaction live while its session works, and ends it when it stops', () => {

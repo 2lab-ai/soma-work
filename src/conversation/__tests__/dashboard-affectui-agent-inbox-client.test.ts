@@ -104,6 +104,7 @@ const CARD_OF_FNS = [
   'ctxPercent',
   'cardCtxTitle',
   'cardPrMetric',
+  'cardLinksFace',
   '_hashStr',
   'ownerBadgeHue',
   'isSiblingSession',
@@ -111,6 +112,8 @@ const CARD_OF_FNS = [
 ];
 const CARD_OF_VARS = [
   'PR_STATE_LABEL',
+  'CARD_LINK_KIND',
+  'CARD_LINK_TONES',
   'PR_STATE_TONE',
   'AGENT_STATUS_LABEL',
   'AGENT_STATUS_TONE',
@@ -450,6 +453,7 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       faceOf: (c: unknown) => c,
       cardAsks: () => false,
       cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
+      cardTldrOf: () => null, // the face's Executive Summary TL;DR (SSOT 2026-11-02 T7) — none in this harness
       acPrefetch: () => {},
       releaseCardIoTimer: (cid: unknown) => calls.released.push(cid),
       syncCardBodies: () => {},
@@ -776,6 +780,7 @@ function bodyHarness() {
     faceOf: (c: unknown) => c,
     cardAsks: () => false,
     cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
+    cardTldrOf: () => null, // the face's Executive Summary TL;DR (SSOT 2026-11-02 T7) — none in this harness
     isPickingModel: () => false,
     morphInnerHtml: (el: FakeEl, html: string) => {
       el.innerHTML = html;
@@ -925,6 +930,7 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
       faceOf: (c: unknown) => c,
       cardAsks: () => false,
       cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
+      cardTldrOf: () => null, // the face's Executive Summary TL;DR (SSOT 2026-11-02 T7) — none in this harness
       cardBodyShown: () => false,
       acPrefetch: () => {},
       openArtifactViewer: (...a: unknown[]) => calls.modal.push(a),
@@ -1083,9 +1089,19 @@ describe('D10 — one primary button per open card', () => {
         'acGoalDecisionHtml',
         'acQuestionHtml',
         'renderEpicPlan',
+        'cardLinksFace',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy'],
+      [
+        'CARD_LINK_KIND',
+        'CARD_LINK_TONES',
+        'RESUME_SVG',
+        'GOAL_STATUS_LABELS',
+        'GOAL_STATUS_TONE',
+        'GOAL_SVG',
+        'SESSION_ACTION_TONE',
+        '_busy',
+      ],
       { ...STUBS, ...inject },
     ).renderCardBody(s, col);
   const card = (over: Record<string, unknown> = {}) => ({
@@ -1283,9 +1299,12 @@ describe('D10 — the open card renders one approval card per prompt; only what 
         'acGoalDecisionHtml',
         'acQuestionHtml',
         'renderEpicPlan',
+        'cardLinksFace',
         'renderCardBody',
       ],
       [
+        'CARD_LINK_KIND',
+        'CARD_LINK_TONES',
         'RESUME_SVG',
         'GOAL_STATUS_LABELS',
         'GOAL_STATUS_TONE',

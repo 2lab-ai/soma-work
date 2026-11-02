@@ -75,6 +75,10 @@ function memoryStore(): SettingsStoreLike & { data: Record<string, any> } {
     setUserDashboardLayout: (id, doc) => {
       u(id).dashboardLayout = doc;
     },
+    getUserDisplayLanguage: (id) => u(id).displayLanguage ?? 'ko',
+    setUserDisplayLanguage: (id, l) => {
+      u(id).displayLanguage = l;
+    },
     getUserDashboardPlan: (id) => u(id).dashboardPlan ?? '1',
     setUserDashboardPlan: (id, p) => {
       u(id).dashboardPlan = p;
@@ -164,6 +168,7 @@ describe('settings registry — read', () => {
       'logVerbosity',
       'sessionTheme',
       'persona',
+      'displayLanguage',
       'notifySlackDm',
       'notifyTelegram',
       'notifyWebhook',
@@ -307,6 +312,31 @@ describe('settings registry — write', () => {
     await refused(registry.write('U1', 'epicTasks', 'on'), 400);
   });
 
+  it('displayLanguage (#772): ko by default, ko or en, the same setting as `lang ko|en` and the dashboard toggle', async () => {
+    const { registry, store } = setup();
+    const row = registry.read('U1').settings.find((s) => s.key === 'displayLanguage')!;
+    expect(row).toMatchObject({
+      kind: 'choice',
+      group: 'output',
+      value: 'ko',
+      defaultValue: 'ko',
+      modified: false,
+      editable: true,
+      slackCommand: 'lang ko|en',
+    });
+    expect(row.options!.map((o) => o.value)).toEqual(['ko', 'en']);
+    const v = await registry.write('U1', 'displayLanguage', 'en');
+    expect(store.data.U1.displayLanguage).toBe('en');
+    expect(v).toMatchObject({ value: 'en', modified: true });
+    expect(registry.read('U2').settings.find((s) => s.key === 'displayLanguage')!.value).toBe('ko');
+    await registry.write('U1', 'displayLanguage', 'ko');
+    expect(store.data.U1.displayLanguage).toBe('ko');
+    await refused(registry.write('U1', 'displayLanguage', 'fr'), 400);
+    await refused(registry.write('U1', 'displayLanguage', true), 400);
+    await refused(registry.write('U_DENIED', 'displayLanguage', 'en'), 403);
+    expect(store.data.U_DENIED).toBeUndefined();
+  });
+
   it('dashboardMode (SSOT 2026-11-01): minimal by default, a choice in its own dashboard group, saved per user', async () => {
     const { registry, store } = setup();
     const row = registry.read('U1').settings.find((s) => s.key === 'dashboardMode')!;
@@ -382,11 +412,13 @@ describe('settings registry — write', () => {
       },
     });
     expect(store.data.U1.dashboardLayout.active).toEqual({ card: '2' });
-    // Checked on the way in: the unknown id is gone, the missing ones are appended off.
+    // Checked on the way in: the unknown id is gone; the missing ones take the built-in's state at the built-in's
+    // place (.prd/22 §5) — the saved item keeps its state.
     const rows = written.doc.presets!['1']!.minimal!.card!.rows;
-    expect(rows[0]).toEqual({ id: 'task', on: true });
+    expect(rows.find((r) => r.id === 'task')).toEqual({ id: 'task', on: true });
     expect(rows.map((r) => r.id)).not.toContain('nope');
-    expect(rows).toHaveLength(5);
+    expect(rows.map((r) => r.id)).toEqual(['summary', 'task', 'links', 'arts', 'agents', 'usage']);
+    expect(rows.find((r) => r.id === 'links')!.on).toBe(true);
     expect(() => registry.writeLayout('U1', 'x')).toThrow(expect.objectContaining({ statusCode: 400 }));
     expect(() => registry.writeLayout('U_DENIED', { active: { card: '3' } })).toThrow(
       expect.objectContaining({ statusCode: 403 }),

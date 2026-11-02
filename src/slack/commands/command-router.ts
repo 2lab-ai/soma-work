@@ -20,6 +20,7 @@ import { EpicTasksHandler } from './epictasks-handler';
 import { GoalHandler } from './goal-handler';
 import { HelpHandler } from './help-handler';
 import { InstructionsHandler } from './instructions-handler';
+import { LangHandler } from './lang-handler';
 import { LinkHandler } from './link-handler';
 import { MarketplaceHandler } from './marketplace-handler';
 import { McpHandler } from './mcp-handler';
@@ -36,6 +37,7 @@ import { RateHandler } from './rate-handler';
 import { RenewHandler } from './renew-handler';
 import { ReportHandler } from './report-handler';
 import { RestoreHandler } from './restore-handler';
+import { RollbackHandler } from './rollback-handler';
 import { SandboxHandler } from './sandbox-handler';
 import { SessionCommandHandler } from './session-command-handler';
 import { SessionHandler } from './session-handler';
@@ -121,6 +123,8 @@ setCommandRouterProviders({
         new NotifyHandler(),
         // E2 ⑧ — `taskentry on|off`: Slack instructions → dashboard tasks (per user).
         new TaskEntryHandler(),
+        // #772 — `lang ko|en`: the user's display language (dashboard, thread, answers).
+        new LangHandler(),
         // E4 ④a-2 — `epictasks on|off`: may this user make epic tasks (per user, off by default).
         new EpicTasksHandler(),
         new WebhookHandler(),
@@ -132,6 +136,8 @@ setCommandRouterProviders({
         new AutoCompactHandler(deps as any),
         new CompactThresholdHandler(deps as any),
         new CompactHandler(deps as any),
+        // #743 — `rollback` / `롤백`: roll the model's context back before an input.
+        new RollbackHandler(deps as any),
         goalHandler,
         new LinkHandler(deps as any),
         new CloseHandler(deps as any),

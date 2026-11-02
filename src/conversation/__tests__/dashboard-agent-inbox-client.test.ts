@@ -1287,6 +1287,7 @@ const CARD_OF_FNS = [
   'ctxPercent',
   'cardCtxTitle',
   'cardPrMetric',
+  'cardLinksFace',
   '_hashStr',
   'ownerBadgeHue',
   'isSiblingSession',
@@ -1294,6 +1295,8 @@ const CARD_OF_FNS = [
 ];
 const CARD_OF_VARS = [
   'PR_STATE_LABEL',
+  'CARD_LINK_KIND',
+  'CARD_LINK_TONES',
   'PR_STATE_TONE',
   'AGENT_STATUS_LABEL',
   'AGENT_STATUS_TONE',
@@ -3191,6 +3194,12 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'panelTabsHeight',
         'landPanel',
         'ptUpsert',
+        // SSOT 2026-11-02 T1: a fetched page drops the optimistic instruction it already records.
+        'decodeSlackEntities',
+        'ptSentKey',
+        'ptSameSend',
+        'ptRecorded',
+        'ptMergeFetched',
         // SSOT 2026-10-29 T2: every opening puts the session's detail card in the deck.
         'deckAdd',
       ],

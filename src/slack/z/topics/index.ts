@@ -17,6 +17,7 @@ import { createCwdTopicBinding } from './cwd-topic';
 import { createEmailTopicBinding } from './email-topic';
 import { createEpicTasksTopicBinding } from './epictasks-topic';
 import { createGoalTopicBinding } from './goal-topic';
+import { createLangTopicBinding } from './lang-topic';
 import { createMemoryTopicBinding } from './memory-topic';
 import { createModelTopicBinding } from './model-topic';
 import { createNotifyTopicBinding } from './notify-topic';
@@ -40,6 +41,7 @@ export function registerAllTopics(registry: ZTopicRegistry): void {
   registry.register(createCwdTopicBinding());
   registry.register(createEmailTopicBinding());
   registry.register(createGoalTopicBinding());
+  registry.register(createLangTopicBinding());
   registry.register(createMemoryTopicBinding());
   registry.register(createModelTopicBinding());
   registry.register(createNotifyTopicBinding());

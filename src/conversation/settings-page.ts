@@ -22,7 +22,9 @@
  * it, so it reaches the browser byte for byte (tests run it as shipped).
  */
 
+import { DICTATION_BROWSER_JS } from './dictation-browser-client';
 import { DICTATION_PREF_JS } from './dictation-pref';
+import { DICTATION_SERVER_JS } from './dictation-server-client';
 import { DICTATION_CLIENT_JS, DICTATION_TAB_CSS, DICTATION_TAB_HTML } from './settings-dictation-tab';
 import { LAYOUT_CLIENT_JS, LAYOUT_TAB_CSS, LAYOUT_TAB_HTML } from './settings-layout-tab';
 import { MEMORY_CLIENT_JS, MEMORY_TAB_CSS, MEMORY_TAB_HTML } from './settings-memory-tab';
@@ -735,7 +737,7 @@ ${MEMORY_TAB_HTML}
 ${LAYOUT_TAB_HTML}
 ${DICTATION_TAB_HTML}
 </ui-tabs>
-<script type="application/json" id="settings-tabs-data">${tabsJson}</script>
+<script type="application/json" id="settings-tabs-data" data-i18n>${tabsJson}</script>
 <dialog id="confirm" aria-labelledby="confirm-title">
   <form method="dialog">
     <h3 id="confirm-title"></h3>
@@ -746,7 +748,7 @@ ${DICTATION_TAB_HTML}
     </div>
   </form>
 </dialog>
-<script>${MEMORY_CLIENT_JS}${VIEW_LAYOUT_CLIENT_JS}${LAYOUT_CLIENT_JS}${DICTATION_PREF_JS}${DICTATION_CLIENT_JS}${TAB_HOOKS_JS}${SETTINGS_CLIENT_JS}</script>
+<script>${MEMORY_CLIENT_JS}${VIEW_LAYOUT_CLIENT_JS}${LAYOUT_CLIENT_JS}${DICTATION_PREF_JS}${DICTATION_SERVER_JS}${DICTATION_BROWSER_JS}${DICTATION_CLIENT_JS}${TAB_HOOKS_JS}${SETTINGS_CLIENT_JS}</script>
 <script type="module" src="/dashboard/ui/app-bar.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/setting-row.js?v=${UI_LIB_VERSION}"></script>
 <!-- <ui-settings-nav> and the library's own row filter (applySettingsFilter) for the page script's applyFilter. -->
