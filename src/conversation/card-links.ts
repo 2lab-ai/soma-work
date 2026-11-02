@@ -3,12 +3,14 @@
  * 깃허브 이슈)들과 이슈 상태, 연결된 PR들과 머지 상태, 연결된 위키들").
  *
  * What the board sends per card for its `links` row (@2lab.ai/ui 0.19.0 `card.links`): every page the session is
- * linked to — the active issue / PR / doc and the link history — as issues, then PRs, then wikis, each with a short
- * reference and, for issues and PRs, its state in words.
+ * linked to, each with a short reference and, for issues and PRs, its state in words. First the current issue, PR
+ * and wiki (the active link of each kind, else its newest), then the rest of each kind newest first — so the face's
+ * first chips always hold one of each kind, however many issues came before.
  *
  * A PR's state is the live one the Slack thread surface checked (`actionPanel.prStatus`, when it was fetched for
- * this URL), else the fetched one (`peek`, the link-metadata cache), else the one recorded with the link. An
- * issue's is the fetched one, else the recorded one. A wiki has none.
+ * this URL and the link has not been re-recorded since — as ActionPanelBuilder.livePrStatus), else the fetched one
+ * (`peek`, the link-metadata cache), else the one recorded with the link; a merge, which never goes back, wins from
+ * any of them. An issue's is the fetched one, else the recorded one. A wiki has none.
  */
 
 export type CardLinkKind = 'issue' | 'pr' | 'wiki';
@@ -39,7 +41,13 @@ export interface CardLinkSource {
   links?: { issue?: LinkLike; pr?: LinkLike; doc?: LinkLike };
   linkHistory?: { issues?: LinkLike[]; prs?: LinkLike[]; docs?: LinkLike[] };
   actionPanel?: {
-    prStatus?: { state?: string; merged?: boolean; draft?: boolean; fetchedForUrl?: string };
+    prStatus?: {
+      state?: string;
+      merged?: boolean;
+      draft?: boolean;
+      fetchedForUrl?: string;
+      linkStatusAtFetch?: string;
+    };
   };
 }
 
@@ -114,9 +122,11 @@ function shortText(kind: CardLinkKind, link: LinkLike, title: string | undefined
   return clip(nonBlank(link.label) ? link.label.trim() : 'Wiki');
 }
 
-function livePrState(src: CardLinkSource, url: string): string | undefined {
+function livePrState(src: CardLinkSource, link: LinkLike): string | undefined {
   const live = src.actionPanel?.prStatus;
-  if (!live || live.fetchedForUrl !== url) return undefined;
+  if (!live || live.fetchedForUrl !== link.url) return undefined;
+  // A check made before the link was recorded again is not this link's (ActionPanelBuilder.livePrStatus).
+  if ((live.linkStatusAtFetch ?? '') !== (link.status ?? '')) return undefined;
   if (live.merged) return 'merged';
   if (live.draft && live.state !== 'closed') return 'draft';
   return nonBlank(live.state) ? live.state : undefined;
@@ -130,36 +140,62 @@ const KINDS: Array<{ kind: CardLinkKind; active: 'issue' | 'pr' | 'doc'; history
 
 /** Every page the session is linked to, as the card's links. */
 export function cardLinksOf(src: CardLinkSource, peek?: LinkPeek): CardLink[] {
-  const out: CardLink[] = [];
-  const seen = new Set<string>();
-  for (const { kind, active, history } of KINDS) {
+  const lists = KINDS.map(({ kind, active, history }) => {
     const list = Array.isArray(src.linkHistory?.[history]) ? src.linkHistory![history]!.slice().reverse() : [];
     const activeLink = src.links?.[active];
     // The active link first, then the history newest first; the history's copy of a URL adds what it knows.
-    const ordered = activeLink ? [activeLink, ...list] : list;
-    for (const link of ordered) {
+    const ordered: LinkLike[] = [];
+    const seen = new Set<string>();
+    for (const link of activeLink ? [activeLink, ...list] : list) {
       const url = link && typeof link.url === 'string' ? link.url.trim() : '';
       if (!/^https?:\/\/\S+$/i.test(url) || seen.has(url)) continue;
       seen.add(url);
-      const merged: LinkLike = { ...list.find((l) => l?.url === url), ...link };
-      const cached = peek ? peek(url) : undefined;
-      const title = nonBlank(cached?.title) ? cached!.title : nonBlank(merged.title) ? merged.title : undefined;
-      const raw =
-        kind === 'pr'
-          ? livePrState(src, url) || cached?.status || merged.status
-          : kind === 'issue'
-            ? cached?.status || merged.status
-            : undefined;
-      const state = linkState(kind, raw);
-      out.push({
-        kind,
-        url,
-        text: shortText(kind, merged, kind === 'wiki' ? title : undefined),
-        ...(title ? { title: title.trim().slice(0, 200) } : {}),
-        ...state,
-      });
-      if (out.length >= MAX_CARD_LINKS) return out;
+      ordered.push({ ...list.find((l) => l?.url === url), ...link, url });
     }
+    return { kind, ordered, active: activeLink && typeof activeLink.url === 'string' ? activeLink : undefined };
+  });
+  const out: CardLink[] = [];
+  const seen = new Set<string>();
+  const push = (kind: CardLinkKind, link: LinkLike, isActive: boolean) => {
+    const url = link.url as string;
+    if (seen.has(url) || out.length >= MAX_CARD_LINKS) return;
+    seen.add(url);
+    const cached = peek ? peek(url) : undefined;
+    const title = nonBlank(cached?.title) ? cached!.title : nonBlank(link.title) ? link.title : undefined;
+    let raw: string | undefined;
+    if (kind === 'pr') {
+      const states = [isActive ? livePrState(src, link) : undefined, cached?.status, link.status];
+      raw = states.some((x) => nonBlank(x) && x.trim().toLowerCase() === 'merged') ? 'merged' : states.find(nonBlank);
+    } else if (kind === 'issue') {
+      raw = cached?.status || link.status;
+    }
+    out.push({
+      kind,
+      url,
+      text: shortText(kind, link, kind === 'wiki' ? title : undefined),
+      ...(title ? { title: title.trim().slice(0, 200) } : {}),
+      ...linkState(kind, raw),
+    });
+  };
+  // The current one of each kind, then the rest of each kind.
+  for (const { kind, ordered, active } of lists) {
+    if (ordered[0]) push(kind, ordered[0], !!active && active.url?.trim() === ordered[0].url);
   }
+  // The rest share what room is left fairly (each kind its turn, one at a time), still drawn kind by kind.
+  const rest = lists.map((l) => l.ordered.slice(1));
+  const quota = rest.map(() => 0);
+  let room = MAX_CARD_LINKS - out.length;
+  let open = rest.map((_, i) => i).filter((i) => rest[i].length > 0);
+  while (room > 0 && open.length > 0) {
+    for (const i of open) {
+      if (room === 0) break;
+      quota[i]++;
+      room--;
+    }
+    open = open.filter((i) => quota[i] < rest[i].length);
+  }
+  lists.forEach(({ kind }, i) => {
+    for (const link of rest[i].slice(0, quota[i])) push(kind, link, false);
+  });
   return out;
 }

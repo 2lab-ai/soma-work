@@ -10,8 +10,9 @@
  * (`config.json` `ui.threadheader`), or has its own lines.
  *
  * Every layout is an ordered list of items with an on/off switch, so a hidden item keeps its place (the editor
- * dims it). A list always holds every item of its catalog: an unknown id is dropped, a missing one is appended
- * off — a field added later shows up hidden, never in the way.
+ * dims it). A list always holds every item of its catalog: an unknown id is dropped; a missing one (added to the
+ * catalog after the list was saved) takes its preset's state at its preset's place, so a field added later shows
+ * as its preset meant (.prd/22 §5). A custom thread card, which holds only what its user chose, appends it off.
  *
  * Pure: no I/O. The dashboard and the settings page get BUILTIN_PRESETS and LAYOUT_CATALOG as JSON; the store
  * keeps `normalizeLayoutDoc`'s output; the Slack host maps a user's thread card with `threadCardLines`.
@@ -594,7 +595,8 @@ export function normalizeThread(input: unknown): ThreadLayout {
 
 /**
  * What the store keeps: a saved document, checked. Wrong shapes at the top are refused (`LayoutError`, a 400);
- * inside a layout, unknown ids drop and missing ones are appended off; numbers are clamped. Only surfaces the
+ * inside a layout, unknown ids drop and missing ones take the built-in's state at the built-in's place (a custom
+ * thread card appends them off); numbers are clamped. Only surfaces the
  * user edited are kept — the rest stay the built-in, so a later built-in change reaches them.
  */
 export function normalizeLayoutDoc(input: unknown): DashboardLayoutDoc {
