@@ -480,7 +480,7 @@ Bash 호출 → 하드 거부 계층 → 위험 규칙 매칭(soma-lib 카탈로
         ├─ ask   → 🔐 Permission Request 카드 (Slack + 대시보드 "입력 필요", #754의 AI 권고 포함)
         └─ allow → 실행 + 기계 검사(permission-warning.ts)
                     └─ 여전히 문제(데이터 파이프만 제외: `| python3 -c` / `| node -e` 한 줄짜리가
-                       허용 모듈만 import하고 실행·쓰기·로드가 없을 때. perl·ruby·php·다른 플래그·추가 인자는 모두 경고) →
+                       허용 모듈만 import하고, 허용 어휘만 쓰고, 실행·쓰기·로드가 없을 때. perl·ruby·php·다른 플래그·추가 인자·경로나 env가 붙은 인터프리터는 모두 경고) →
                        ⚠️ Permission Warning: Slack 스레드 카드(버튼 없음) + 대시보드 작업 로그의 "퍼미션 경고" 줄과
                        지시와 답변의 같은 시각 시스템 줄(work-log kind `permission_warning`). Slack 없는 task 턴은 대시보드만.
 ```
