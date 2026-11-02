@@ -9667,6 +9667,8 @@ var PR_STATE_TONE = { open: 'run', merged: 'done', closed: 'fail' };
 // 'links', as the PR chip and the open card's refs.
 var CARD_LINK_KIND = { issue: '이슈', pr: 'PR', wiki: '위키' };
 var CARD_LINK_TONES = { run: 1, done: 1, fail: 1, wait: 1 };
+// The face's 연결 row draws this many chips, the rest as "+N" (@2lab.ai/ui agent-inbox MAX_LINKS).
+var FACE_LINK_MAX = 6;
 function cardLinksFace(s) {
   if (!dhShow('links') || !s || !Array.isArray(s.cardLinks)) return [];
   var out = [];
@@ -12549,10 +12551,12 @@ function renderCardBody(s, col, spec, face) {
   // titled links and the conversation are the panel's (세션 정보).
   const refParts = [];
   // 작업 카드의 연결: every linked issue, PR and wiki with its state, when the board sent them. Say it once:
-  // when the face's 연결 row already shows them (the default layout), the open body adds no second list.
+  // when the face's 연결 row already shows them (the default layout), the open body lists only the ones the face
+  // folds into its "+N" (@2lab.ai/ui draws FACE_LINK_MAX chips, in this order).
   const faceShowsLinks = !!(face && Array.isArray(face.rows) && face.rows.some(function(r) { return r && r.id === 'links' && r.on; }));
-  const refLinks = faceShowsLinks ? [] : cardLinksFace(s);
-  const linksOnFace = faceShowsLinks && cardLinksFace(s).length > 0;
+  const allLinks = cardLinksFace(s);
+  const refLinks = faceShowsLinks ? allLinks.slice(FACE_LINK_MAX) : allLinks;
+  const linksOnFace = faceShowsLinks && allLinks.length > 0;
   for (var rl = 0; rl < refLinks.length; rl++) {
     var ref = refLinks[rl];
     refParts.push('<a class="card-ref is-' + ref.kind + '" href="' + safeHref(ref.href) + '" target="_blank" rel="noopener" title="' + escAttr(ref.title) + '">' + esc(ref.text) + (ref.status ? ' <span class="card-ref-st"' + (ref.tone ? ' data-tone="' + ref.tone + '"' : '') + '>' + esc(ref.status) + '</span>' : '') + '</a>');
@@ -12570,6 +12574,10 @@ function renderCardBody(s, col, spec, face) {
   // The collapsed face already shows the pending question as its summary; the
   // open card then keeps only the choices, not the same sentence twice.
   const faceSummary = cardSummary(s, col, s.displayHeadline || s.summaryTitle || s.title);
+  // The face shows that summary only when its layout has the summary row on (a user can turn it off); a caller
+  // with no layout (face undefined) keeps the old reading — the face shows it.
+  const faceShowsSummary = !face || !Array.isArray(face.rows) || face.rows.some(function(r) { return r && r.id === 'summary' && r.on; });
+  const summaryOnFace = faceShowsSummary ? faceSummary : '';
   // The pending question of a waiting session. The single-choice question is
   // the same <ui-approval-card> as the panel's (acQuestionHtml — its answer is
   // ui-answer, locked for anyone but the owner on this instance); the element
@@ -12580,10 +12588,10 @@ function renderCardBody(s, col, spec, face) {
     if (s.pendingQuestion.type === 'user_choice' && s.pendingQuestion.choices) {
       // SSOT 2026-11-02 — a simple question (예 / 아니오, 시작 / 취소) is its choices as buttons: one press answers.
       // Say it once: the face already shows the question (whole, on an open card) — the buttons go without it.
-      if (quickChoicesOf(s.pendingQuestion)) questionHtml = quickChoiceHtml(s, s.pendingQuestion, faceSummary === s.pendingQuestion.question);
+      if (quickChoicesOf(s.pendingQuestion)) questionHtml = quickChoiceHtml(s, s.pendingQuestion, !!summaryOnFace && summaryOnFace === s.pendingQuestion.question);
       else questionHtml = acQuestionHtml(s, s.pendingQuestion);
     } else if (s.pendingQuestion.type === 'user_choices') {
-      questionHtml = renderMultiChoiceCard(s, faceSummary);
+      questionHtml = renderMultiChoiceCard(s, summaryOnFace);
     }
   }
 
@@ -12920,7 +12928,7 @@ function quickChoiceHtml(s, q, onFace) {
   var note = st && st.status === 'error' ? '<div class="card-quick-note" role="alert">' + esc(st.message || '보내지 못했어요') + '</div>'
     : st && st.status === 'resolved' ? '<div class="card-quick-note">답을 보냈어요</div>' : '';
   var text = onFace === true ? '' : '<div class="card-question-text">' + esc(q.question || '') + '</div>';
-  return '<div class="card-question card-quick' + (onFace === true ? ' is-on-face' : '') + '" role="group" aria-label="' + escAttr(q.question || '') + '">' + text + '<div class="card-quick-row">' + buttons + '</div>' + note + '</div>';
+  return '<div class="card-question card-quick" role="group" aria-label="' + escAttr(q.question || '') + '">' + text + '<div class="card-quick-row">' + buttons + '</div>' + note + '</div>';
 }
 function cardQuickAnswer(btn) {
   if (!btn || btn.disabled) return;
