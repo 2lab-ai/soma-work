@@ -46,7 +46,7 @@ function fakeEl(id: string): El {
   };
 }
 
-function editor(answer: Record<string, unknown> = {}) {
+function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean } = {}) {
   const els: Record<string, El> = {};
   const el = (id: string) => (els[id] ??= fakeEl(id));
   for (const id of [
@@ -90,6 +90,12 @@ function editor(answer: Record<string, unknown> = {}) {
     ...answer,
   };
   let serverDoc: unknown = null;
+  // With a gate, each PUT waits until the test releases it (a slow network).
+  const gates: Array<() => void> = [];
+  const release = async () => {
+    gates.shift()?.();
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  };
   const inject = {
     document,
     localStorage: { setItem: (k: string, v: string) => (stored[k] = v), getItem: () => null },
@@ -101,8 +107,10 @@ function editor(answer: Record<string, unknown> = {}) {
     fetch: async () => ({ ok: true, json: async () => snapshot }),
     apiWrite: async (method: string, url: string, body: { doc: unknown }) => {
       puts.push({ method, url, body: JSON.parse(JSON.stringify(body)) });
-      serverDoc = JSON.parse(JSON.stringify(body.doc));
-      return { ok: true, data: { ok: true, layout: { doc: serverDoc } } };
+      const sent = JSON.parse(JSON.stringify(body.doc));
+      if (opts.gate) await new Promise<void>((r) => gates.push(r));
+      serverDoc = sent;
+      return { ok: true, data: { ok: true, layout: { doc: sent } } };
     },
   };
   const names = Object.keys(inject);
@@ -121,7 +129,7 @@ function editor(answer: Record<string, unknown> = {}) {
     }
     await new Promise((r) => setImmediate(r));
   };
-  return { api, els, puts, stored, flush };
+  return { api, els, puts, stored, flush, timers, release };
 }
 
 describe('E1 — loading', () => {
@@ -188,6 +196,47 @@ describe('E3 — editing saves at once', () => {
     expect(els['lay-status'].textContent).toBe('저장됨');
     // The dashboard's device copy follows the save (its first paint).
     expect(JSON.parse(stored['soma-view-layout']).presets['1'].minimal.card.rows[0].id).toBe('arts');
+  });
+
+  it('a slow save never undoes a change made while it ran (review P1, the autosave race)', async () => {
+    const { api, puts, stored, timers, release } = editor({}, { gate: true });
+    await api.loadLayout();
+    const foot = () => {
+      const f = api.get('_layDoc').presets['1'].minimal.card.foot;
+      const on = (id: string) => f.find((c: { id: string }) => c.id === id).on;
+      return { tokens: on('tokens'), model: on('model') };
+    };
+    api.layToggle('foot', 'tokens', true);
+    timers.splice(0).forEach((fn) => fn()); // the debounce fires: PUT 1 leaves (tokens on, model on)
+    expect(puts).toHaveLength(1);
+    api.layToggle('foot', 'model', false); // while PUT 1 is on its way
+    await release(); // PUT 1 answers with the document it was sent
+    expect(foot()).toEqual({ tokens: true, model: false });
+    timers.splice(0).forEach((fn) => fn());
+    await release();
+    await release();
+    expect(foot()).toEqual({ tokens: true, model: false });
+    const last = (puts[puts.length - 1] as any).body.doc.presets['1'].minimal.card.foot;
+    expect(last.find((c: { id: string }) => c.id === 'model').on).toBe(false);
+    const copy = JSON.parse(stored['soma-view-layout']).presets['1'].minimal.card.foot;
+    expect(copy.find((c: { id: string }) => c.id === 'model').on).toBe(false);
+  });
+
+  it('a change saved while a PUT runs goes in one more PUT, and that answer is the one kept', async () => {
+    const { api, puts, timers, release } = editor({}, { gate: true });
+    await api.loadLayout();
+    api.layToggle('foot', 'tokens', true);
+    timers.splice(0).forEach((fn) => fn()); // PUT 1 leaves
+    api.layToggle('foot', 'model', false);
+    timers.splice(0).forEach((fn) => fn()); // its debounce fires while PUT 1 runs: queued, not a second PUT
+    expect(puts).toHaveLength(1);
+    await release(); // PUT 1 answers: an edit came after it, so the newer document leaves at once
+    expect(puts).toHaveLength(2);
+    await release();
+    const f = api.get('_layDoc').presets['1'].minimal.card.foot;
+    expect(f.find((c: { id: string }) => c.id === 'model').on).toBe(false);
+    expect(f.find((c: { id: string }) => c.id === 'tokens').on).toBe(true);
+    expect(api.get('_laySaving')).toBe(false);
   });
 
   it('switches, options and selects; an edited open card drops its per-column order', async () => {
@@ -267,6 +316,9 @@ describe('E4 — defaults, the quick switch, the thread card, undo and reset', (
     expect(els['lay-controls'].innerHTML).toContain('서버의 슬랙 테마');
     api.layThreadSet('custom');
     expect(api.get('_layDoc').thread).toEqual({ mode: 'custom', custom: t.custom });
+    // 태스크 카드 따라가기로 (the reset on this surface) also keeps it (review P2).
+    api.layReset();
+    expect(api.get('_layDoc').thread).toEqual({ mode: 'follow', custom: t.custom });
   });
 
   it('the thread card follows the dashboard’s own mode, not the editor’s mode switch (review P2)', async () => {

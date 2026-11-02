@@ -144,6 +144,7 @@ var _laySample = 'run';     // run · wait · done
 var _laySaveTimer = 0;
 var _laySaving = false;
 var _layResave = false;
+var _layRev = 0; // bumped by every edit — a save applies its answer only when no edit came after it
 var _layLoaded = false;
 var _layDrag = null;        // { zone, from } while a handle is dragged
 
@@ -235,27 +236,32 @@ function laySet(layout) {
   layChanged();
 }
 function layChanged() {
+  _layRev++;
   layPaint();
   setLayStatus('저장 중…');
   clearTimeout(_laySaveTimer);
   _laySaveTimer = setTimeout(saveLayout, 350);
 }
-// One PUT of the whole document at a time; a change while it runs is saved after it.
+// One PUT of the whole document at a time; a change while it runs is saved after it. Each PUT remembers the
+// edit it carried (_layRev): its answer is applied only when no edit came after it, else the newer document goes next.
 async function saveLayout() {
   if (_laySaving) { _layResave = true; return; }
   _laySaving = true;
   var why = '';
   try {
-    do {
+    for (;;) {
       _layResave = false;
+      var rev = _layRev;
       var r = await apiWrite('PUT', '/api/settings/dashboard-layout', { doc: _layDoc });
       if (!r.ok) { why = r.error || 'HTTP'; break; }
-      // The server's checked copy (its order, the items it appended) is the truth, unless the user moved on.
-      if (!_layResave && r.data && r.data.layout && r.data.layout.doc) {
+      if (rev !== _layRev) continue; // the user moved on while it ran: save what they have now
+      // The server's checked copy (its order, the items it appended) is the truth.
+      if (r.data && r.data.layout && r.data.layout.doc) {
         _layDoc = layClone(r.data.layout.doc);
         try { localStorage.setItem('soma-view-layout', JSON.stringify(_layDoc)); } catch (_e) {}
       }
-    } while (_layResave);
+      if (!_layResave) break;
+    }
   } catch (e) { why = String((e && e.message) || e); }
   finally { _laySaving = false; }
   setLayStatus(why ? '저장하지 못했습니다 — ' + why : '저장됨');
@@ -642,7 +648,9 @@ function laySelect(key, value) {
 function layReset() {
   layPush();
   if (_laySurface === 'thread') {
-    _layDoc.thread = { mode: 'follow' };
+    // Back to the task card; the custom card stays saved for 따로 설정 (as the mode menu does).
+    var kept = _layDoc.thread && _layDoc.thread.custom;
+    _layDoc.thread = kept ? { mode: 'follow', custom: kept } : { mode: 'follow' };
   } else {
     var p = _layDoc.presets && _layDoc.presets[_layPreset];
     if (p && p[_layMode]) {
