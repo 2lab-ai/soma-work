@@ -953,6 +953,27 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     expect(res.response).toEqual({ title: 'T', body: 'B' });
   });
 
+  it('fetchCardIo: the Executive Summary turn is not the card’s 응답, and the instruction before it stays (SSOT 2026-11-02 T7, review: fable P2)', async () => {
+    const turns = [
+      { id: 'u1', role: 'user', timestamp: 1, userName: 'Z', rawContent: '정리해줘', origin: { by: 'user' } },
+      { id: 'a1', role: 'assistant', timestamp: 2, summaryTitle: '정리 완료', summaryBody: '모델 답변' },
+      {
+        id: 'es',
+        role: 'assistant',
+        timestamp: 3,
+        summaryTitle: 'Executive Summary',
+        summaryBody: 'TL;DR',
+        executiveSummary: true,
+      },
+    ];
+    const fetch = vi.fn(async (_url: string) => ({ ok: true, json: async () => ({ turns }) }));
+    const c = card(user('x'), { extra: { fetch } });
+    const res = await c.fetchCardIo(CID);
+    expect(String(fetch.mock.calls[0][0])).toContain('?limit=3');
+    expect(res.instruction.turn.rawContent).toBe('정리해줘');
+    expect(res.response).toEqual({ title: '정리 완료', body: '모델 답변' });
+  });
+
   it('cpTick keeps an open card’s compaction live while its session works, and ends it when it stops', () => {
     const NOWT = 1_792_900_000_000;
     function node(start: number, key: string) {

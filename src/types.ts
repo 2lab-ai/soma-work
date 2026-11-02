@@ -1,7 +1,7 @@
 // Session types live in somalib (shared with mcp-servers).
 // Re-export for backward compatibility — all src/ files import from './types'.
 import type { ContextRewindRecord, PendingRewind } from '@soma/slack/context-anchor';
-import type { SessionGoalStall } from '@soma/slack/session-goal';
+import type { SessionGoalFirstFailure, SessionGoalStall } from '@soma/slack/session-goal';
 
 export type {
   Continuation,
@@ -220,7 +220,7 @@ export interface SessionGoalPendingEval {
 }
 
 // Goal stall round — one definition, in the package the queue helpers live in.
-export type { SessionGoalStall };
+export type { SessionGoalFirstFailure, SessionGoalStall };
 
 export interface SessionGoal {
   /**
@@ -319,6 +319,8 @@ export interface SessionGoal {
    * (the answer to the stall question, or anything typed) clears it.
    */
   stall?: SessionGoalStall;
+  /** #745: where the goal first failed for its current reason, and whether any turn since did new work. */
+  firstFailure?: SessionGoalFirstFailure;
   /** Counts how many eval cycles have run for this goal. */
   evalAttemptCount?: number;
   /**
@@ -469,6 +471,11 @@ export interface ClosedByParent {
 }
 
 export interface ConversationSession {
+  /**
+   * SSOT 2026-11-02 T7 — the TL;DR of the Executive Summary the thread head shows, for the
+   * dashboard's task card (SummaryService sets it, the next input clears it).
+   */
+  executiveSummary?: { tldr: string[]; at: number };
   ownerId: string; // User who started the session
   ownerName?: string; // Display name of owner
   currentInitiatorId?: string; // User who triggered the current response
@@ -921,6 +928,14 @@ export interface ConversationSession {
    * persisted (same convention as `pendingInstructionRejection`).
    */
   titleNoticeCount?: number;
+
+  /**
+   * #772 — the display language the model was last told with
+   * `<display-lang>` (set on the session's first instruction, and again when
+   * the user changes it). Runtime-only — NOT persisted: after a restart or a
+   * reset the next instruction tells it again.
+   */
+  displayLangSent?: 'ko' | 'en';
 
   // Dashboard improvements (v2.1):
   // Number of /compact invocations or SDK-triggered compact_boundary events observed on this session.

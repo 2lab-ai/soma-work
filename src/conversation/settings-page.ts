@@ -22,11 +22,13 @@
  * it, so it reaches the browser byte for byte (tests run it as shipped).
  */
 
+import { DICTATION_BROWSER_JS } from './dictation-browser-client';
 import { DICTATION_PREF_JS } from './dictation-pref';
 import { DICTATION_SERVER_JS } from './dictation-server-client';
 import { DICTATION_CLIENT_JS, DICTATION_TAB_CSS, DICTATION_TAB_HTML } from './settings-dictation-tab';
 import { LAYOUT_CLIENT_JS, LAYOUT_TAB_CSS, LAYOUT_TAB_HTML } from './settings-layout-tab';
 import { MEMORY_CLIENT_JS, MEMORY_TAB_CSS, MEMORY_TAB_HTML } from './settings-memory-tab';
+import { PROJECT_CLIENT_JS, PROJECT_TAB_CSS, PROJECT_TAB_HTML } from './settings-project-tab';
 import { soundClientJs } from './sound-client';
 import { pageTokenAliases, UI_LIB_VERSION, uiLibKitCss, uiLibTokensCss } from './ui-lib';
 import { VIEW_LAYOUT_CLIENT_JS } from './view-layout-client';
@@ -42,6 +44,7 @@ export interface SettingsPageTab {
 export const SETTINGS_TABS: SettingsPageTab[] = [
   { id: 'preferences', label: '개인 설정', icon: 'gear' },
   { id: 'memory', label: '기억', icon: 'brain' },
+  { id: 'project', label: '프로젝트 메모리', icon: 'file-text' },
   // 대시보드 화면 (SSOT 2026-11-02, .prd/21): the surface editor — card, open card, detail card, thread card.
   { id: 'layout', label: '대시보드 화면', icon: 'board' },
   // 받아쓰기 (SSOT 2026-11-02, epic #737): this device's engine — kept in this browser only — and its recogniser's details.
@@ -689,6 +692,7 @@ function preferencesTab(): string {
 const TAB_HOOKS_JS = String.raw`
 function onTabShown(id) {
   if (id === 'memory' && !_memLoaded) loadMemory();
+  if (id === 'project' && !_pmLoaded) loadProjects();
   if (id === 'layout' && !_layLoaded) loadLayout();
   if (id === 'dictation' && !_dicLoaded) loadDictationTab();
 }
@@ -717,7 +721,7 @@ export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS): str
 <style id="ui-kit">
 ${uiLibKitCss()}
 </style>
-<style>${SETTINGS_PAGE_CSS}${MEMORY_TAB_CSS}${LAYOUT_TAB_CSS}${DICTATION_TAB_CSS}</style>
+<style>${SETTINGS_PAGE_CSS}${MEMORY_TAB_CSS}${PROJECT_TAB_CSS}${LAYOUT_TAB_CSS}${DICTATION_TAB_CSS}</style>
 <!-- Tokens — @2lab.ai/ui is the single source, as on the dashboard (P10, P9): its tokens.css puts every
      --ui-* on :root and [data-theme="light|dark"], and the page's names are aliases of them. -->
 <style id="ui-tokens">
@@ -733,10 +737,11 @@ ${pageTokenAliases()}
 <ui-tabs id="settings-tabs" class="settings-tabs" panel-focus="none">
 ${preferencesTab()}
 ${MEMORY_TAB_HTML}
+${PROJECT_TAB_HTML}
 ${LAYOUT_TAB_HTML}
 ${DICTATION_TAB_HTML}
 </ui-tabs>
-<script type="application/json" id="settings-tabs-data">${tabsJson}</script>
+<script type="application/json" id="settings-tabs-data" data-i18n>${tabsJson}</script>
 <dialog id="confirm" aria-labelledby="confirm-title">
   <form method="dialog">
     <h3 id="confirm-title"></h3>
@@ -747,7 +752,7 @@ ${DICTATION_TAB_HTML}
     </div>
   </form>
 </dialog>
-<script>${MEMORY_CLIENT_JS}${VIEW_LAYOUT_CLIENT_JS}${LAYOUT_CLIENT_JS}${DICTATION_PREF_JS}${DICTATION_SERVER_JS}${DICTATION_CLIENT_JS}${TAB_HOOKS_JS}${SETTINGS_CLIENT_JS}</script>
+<script>${MEMORY_CLIENT_JS}${PROJECT_CLIENT_JS}${VIEW_LAYOUT_CLIENT_JS}${LAYOUT_CLIENT_JS}${DICTATION_PREF_JS}${DICTATION_SERVER_JS}${DICTATION_BROWSER_JS}${DICTATION_CLIENT_JS}${TAB_HOOKS_JS}${SETTINGS_CLIENT_JS}</script>
 <script type="module" src="/dashboard/ui/app-bar.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/setting-row.js?v=${UI_LIB_VERSION}"></script>
 <!-- <ui-settings-nav> and the library's own row filter (applySettingsFilter) for the page script's applyFilter. -->

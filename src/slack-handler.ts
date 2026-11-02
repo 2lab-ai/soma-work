@@ -17,6 +17,7 @@ import {
   FollowupQueue,
   type FollowupQueueSnapshot,
   FREEZE_PARKED_STATES,
+  isFollowupDelivered,
 } from '@soma/slack/followup-queue';
 import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
@@ -49,12 +50,15 @@ import { validateSessionGoalObjective } from './prompt/session-goal-block';
 import { routeReleaseNotes } from './release-notes-routes';
 import { retryReasonLine } from './retry-reason';
 import {
+  activeChainFilter,
   buildRollbackPointsView,
   CONTEXT_ROLLBACK_REFUSAL_TEXT,
   type ContextRollbackRefusal,
   cancelContextRollback,
+  inputAnchorsFromTranscript,
   keptUntilOf,
   type RollbackPointsView,
+  readTranscriptText,
   requestContextRollback,
   rollbackInputPoints,
   rollbackWorkLogPoints,
@@ -105,13 +109,16 @@ import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch
 import { requestEnvSkillPermission } from './slack/env-skill-permission-request';
 import { mintEventTs } from './slack/event-ts';
 import { type FollowupReactionRole, FollowupReactionSurface, rolesForFollowupState } from './slack/followup-reactions';
-import { retireGoalCapDecision } from './slack/goal-cap-decision';
+import { isGoalCapDecisionPending, retireGoalCapDecision } from './slack/goal-cap-decision';
 import { bumpGoalEpoch, GOAL_SUMMARY_PERSIST_MAX, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from './slack/goal-host-actions';
 import type { GoalStallQuestion } from './slack/goal-loop-controller';
 import {
+  applyGoalStallRollbackAnswer,
   buildGoalStallQuestion,
   type GoalStallRetireCause,
+  goalStallRollbackNotice,
+  retireGoalStall,
   setGoalStallRetiredListener,
   shouldAskGoalStallQuestion,
 } from './slack/goal-stall';
@@ -193,6 +200,69 @@ const FOLLOWUP_CWD_CHANGED_REASON = '작업 디렉토리가 변경되어 실행�
  *     report work that has not started);
  *   - `paused` / `cancelled` are session outcomes, reported as a `snapshot`.
  */
+/**
+ * How long after a cut (restart resume started, auto-compact stop) the
+ * session's next dispatch may still take the cut follow-up over. That dispatch
+ * comes within seconds to a minute (crash recovery at boot, the goal loop after
+ * one completion eval, the drain right after an auto-compact stop); the window
+ * only bounds one that never came.
+ */
+const FOLLOWUP_RESUME_WINDOW_MS = 10 * 60_000;
+
+/** Why a session's next run may take over the follow-up a host-side cut left `uncertain`. */
+type FollowupResumeCause = 'restart' | 'auto-compact';
+
+/** A row a host-side cut left `uncertain`, pinned at the epoch the cut left it at. */
+interface FollowupCutRef {
+  id: string;
+  epoch: number;
+}
+
+/**
+ * A session whose conversation is about to be carried on after a host-side
+ * cut, and EXACTLY the rows that cut left — never every host-cut row the
+ * queue happens to hold: a row an earlier mark left for its owner stays theirs.
+ */
+interface FollowupResumeMark {
+  cause: FollowupResumeCause;
+  at: number;
+  items: FollowupCutRef[];
+}
+
+/**
+ * Is this dispatch the resume a restart started — the crash-recovery
+ * auto-resume or the goal loop's continuation, dispatched as the session's
+ * initial run? `synthetic` alone is not enough: a cron fire is a synthetic
+ * initial turn too, and it does not carry the cut instruction on.
+ */
+function isRestartResumeDispatch(request: DispatchRequest): boolean {
+  const message = request.message;
+  if (request.kind !== 'initial' || message?.synthetic !== true || message.cron) return false;
+  return message.routeContext?.autoResume === true || message.routeContext?.goalContinuation === true;
+}
+
+/** The `stateReason` a stop writes on every row it freezes (`freezeFollowupOnStop`). */
+function followupStopReason(reason: string): string {
+  return `실행이 중단되었습니다 (${reason})`;
+}
+
+/**
+ * Was this row cut by the HOST — `uncertain` with its own turn's delivery
+ * evidence, parked by the graceful shutdown's stop, a crash recovery, or an
+ * auto-compact stop? The only rows a continuing run may take over: a row a user
+ * Stop or a `Send now` made uncertain was stopped by a person, and carrying on
+ * the conversation is not their decision to run it again.
+ */
+function isHostCutFollowup(item: FollowupItem): boolean {
+  return (
+    item.state === 'uncertain' &&
+    isFollowupDelivered(item) &&
+    (item.stateReason === followupStopReason('shutdown') ||
+      item.stateReason === FOLLOWUP_RESTART_FREEZE_REASON ||
+      item.stateReason === 'auto-compact')
+  );
+}
+
 const FOLLOWUP_STATE_OPERATIONS: Readonly<Record<string, FollowupQueueOperation | undefined>> = {
   queued: 'enqueue',
   claimed: 'claim',
@@ -422,6 +492,25 @@ export class SlackHandler {
    * never touches a run that is already in flight.
    */
   private followupShutdownPreparing?: boolean;
+  /**
+   * Sessions whose turn the last shutdown cut short (`wasWorkingAtShutdown`),
+   * recorded by `notifyCrashRecovery` before it clears that marker and read
+   * once by `resumeActiveGoals`: a cut goal turn gives its continuation back.
+   */
+  private restartCutSessionKeys = new Set<string>();
+  /**
+   * Sessions whose queue holds a row a host-side cut left `uncertain` (a
+   * restart, an auto-compact stop) and whose conversation is about to be
+   * carried on → why and when. Spent by the session's NEXT dispatch, within
+   * {@link FOLLOWUP_RESUME_WINDOW_MS} — see {@link claimFollowupResume}.
+   */
+  private readonly followupResumeMark = new Map<string, FollowupResumeMark>();
+  /**
+   * Slot key → turn generation of the run that carries a cut conversation on,
+   * while it has not yet reached the model. That run takes the cut rows over
+   * the moment it does ({@link onFollowupTurnReachedModel}).
+   */
+  private readonly followupResumeRun = new Map<string, { turnEpoch: number; items: FollowupCutRef[] }>();
   /** The startup reconcile has run (or was deliberately skipped) — see {@link reconcileFollowupSessionsOnce}. */
   private followupReconciled?: boolean;
   /** The RESTORED state had something to reconcile — see {@link warnIfReconcileSkipped}. */
@@ -462,6 +551,8 @@ export class SlackHandler {
     this.requestCoordinator = new RequestCoordinator({
       beforeAbort: (sessionKey, reason) => {
         this.freezeFollowupOnStop(sessionKey, reason);
+        // A person's stop also revokes any takeover still pending for the session.
+        this.forgetFollowupResume(sessionKey);
         // After the freeze (a refused freeze refuses the stop): the stop is
         // recorded even with an empty queue, where the freeze records nothing,
         // so a pending auto-compact continuation can see it.
@@ -700,6 +791,9 @@ export class SlackHandler {
       // that repo + branch (SOMA_RELEASE_NOTES_CHANNELS); the executor asks only
       // for deploy-workflow sessions.
       routeReleaseNotes: (repo, target) => routeReleaseNotes(getReleaseNotesChannels(), repo, target),
+      // The prompt reached the model (first SDK event): delivery evidence for
+      // the dispatched follow-up, and the restart takeover's moment.
+      onTurnReachedModel: (args) => this.onFollowupTurnReachedModel(args),
     });
     // Goal stall: a question whose round ended without an answer is retracted.
     setGoalStallRetiredListener((goal, stall, cause) => this.onGoalStallRetired(goal, stall, cause));
@@ -947,8 +1041,10 @@ export class SlackHandler {
       refresh: (sessionKey) => this.refreshFollowupSurface(sessionKey),
       // The host owns the drain loop; the action module never re-enters the
       // dispatcher itself.
-      runDrain: (sessionKey, settled) =>
-        this.runFollowupDrainLoop(sessionKey).then((last) => {
+      runDrain: (sessionKey, settled) => {
+        // A click's run that an auto-compact stop ended: the drain below carries it on.
+        this.noteAutoCompactCut(sessionKey, settled);
+        return this.runFollowupDrainLoop(sessionKey).then((last) => {
           // The other boundary a dispatcher run settles into (`Send now`,
           // Resume, Retry): an auto-compact stop — the click's own run, or the
           // drain's last — hands its work on here exactly as in `drainFollowups`.
@@ -957,7 +1053,8 @@ export class SlackHandler {
           // the §3.6 deferral it may just have cleared instead of waiting for
           // a turn end that a deferred loop would never produce.
           if (last) this.releaseDeferredGoalDriver(sessionKey, last);
-        }),
+        });
+      },
       // The drain is gated on a safe outcome; the sweep is not. A `Send now`
       // whose turn ended aborted/blocked/parked left every row steered into
       // it with no settlement frame and no drain behind it to clear them.
@@ -1924,6 +2021,23 @@ export class SlackHandler {
         // mocks. Real ClaudeHandler always exports it (claude-handler.ts:374).
         const fullSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
         if (fullSession?.goal) {
+          // #745: the answer to the stall question said "roll back to the first
+          // failure" — this very turn runs from there. Read before the reset,
+          // which ends the stall round.
+          const stallRollback = applyGoalStallRollbackAnswer(fullSession, event.text ?? '', event.user);
+          if (stallRollback) {
+            // Told either way: a refused rollback is never silent (the turn runs as it is).
+            const log = stallRollback.ok ? this.logger.info.bind(this.logger) : this.logger.warn.bind(this.logger);
+            log('Goal stall answer: roll back to the first failure', {
+              sessionKey: sessionResult.sessionKey,
+              ...(stallRollback.ok ? {} : { refusal: stallRollback.reason }),
+            });
+            const notice = goalStallRollbackNotice(stallRollback);
+            recordSessionNotice(fullSession, notice, { sessionKey: sessionResult.sessionKey });
+            void this.slackApi
+              .postSystemMessage(channel, notice, { threadTs: originalThreadTs })
+              .catch(() => undefined);
+          }
           resetGoalContinuationOnUserMessage(fullSession);
           this.claudeHandler.saveSessions();
         }
@@ -2634,6 +2748,14 @@ export class SlackHandler {
       // via the `goal` serializer; the runtime stash above takes precedence.
       goal.lastAssistantTurnSummary = turnText.slice(0, GOAL_SUMMARY_PERSIST_MAX);
       this.claudeHandler.saveSessions();
+    }
+    // A turn the shutdown aborted: its evidence is stashed above (the restart
+    // reads it), but the loop must not run while the host stops — it would
+    // spend a continuation (or open the cap decision) and inject a turn the
+    // stopping host refuses. The restart's goal resume drives it (#788).
+    if (this.followupShutdownPreparing) {
+      this.logger.info('Goal driver held — the host is shutting down; the restart resumes the goal', { sessionKey });
+      return;
     }
     // §3.6 priority: a human follow-up goes before the next autogoal turn. The
     // evidence stash above still happens — only the DRIVER is held back — so a
@@ -3657,6 +3779,9 @@ export class SlackHandler {
       return;
     }
     if (notice.type === 'run-settled') {
+      // Rows the run took over were settled with it: repaint what they now say.
+      for (const itemId of notice.report.adoptedItemIds ?? [])
+        void this.syncFollowupReactions(notice.sessionKey, itemId);
       // Anchor for the NEXT drain's wait: the boundary opened here.
       timing.settledAt.set(notice.sessionKey, Date.now());
       // Only the run that claimed the session clears it — an interrupted
@@ -5134,6 +5259,7 @@ export class SlackHandler {
     // The dispatcher hands over a JSON clone, so mutating it inside the
     // pipeline (inline directives, `/z` rewrite) cannot touch queue state.
     const event = request.message as MessageEvent;
+    const resumeRun = this.claimFollowupResume(request);
     try {
       return await this.processMessage(event, say, {
         turnEpoch: request.turnEpoch,
@@ -5153,6 +5279,165 @@ export class SlackHandler {
         });
       }
       return { result: 'error', reason: (error as Error)?.message ?? String(error) };
+    } finally {
+      // A resume run that never reached the model took nothing over, and its
+      // window must not outlive it.
+      if (resumeRun && this.followupResumeRun.get(request.sessionKey)?.turnEpoch === request.turnEpoch) {
+        this.followupResumeRun.delete(request.sessionKey);
+      }
+    }
+  }
+
+  /**
+   * The conversation of `sessionKey` is about to be carried on after a
+   * host-side cut: a restart resume is being started, or an auto-compact stop
+   * just ended a run. Remembered only when the queue holds a row that cut left
+   * `uncertain` — the next run has something to take over only then.
+   */
+  private noteFollowupResume(sessionKey: string, cause: FollowupResumeCause, itemIds?: readonly string[]): void {
+    const queue = this.followupQueue;
+    if (!queue || this.followupReadFailed) return;
+    const now = Date.now();
+    const items = queue
+      .list(sessionKey)
+      .filter(isHostCutFollowup)
+      .filter((item) =>
+        itemIds
+          ? itemIds.includes(item.id)
+          : // A restart's own cut: the shutdown stop or the crash recovery wrote
+            // these rows minutes ago. An older host-cut row was left for its
+            // owner by an earlier mark and is not this restart's to carry on.
+            now - item.updatedAt <= FOLLOWUP_RESUME_WINDOW_MS,
+      )
+      .map((item) => ({ id: item.id, epoch: item.epoch }));
+    if (items.length > 0) this.followupResumeMark.set(sessionKey, { cause, at: now, items });
+  }
+
+  /**
+   * A person stopped the session (Stop, Close): theirs is the last word, so no
+   * pending takeover may still confirm a row afterwards. Both keys — the
+   * coordinator speaks the canonical one, the marks live under the slot key.
+   */
+  private forgetFollowupResume(sessionKey: string): void {
+    const slotKey = this.boundFollowupSlot(sessionKey);
+    for (const key of slotKey ? [sessionKey, slotKey] : [sessionKey]) {
+      this.followupResumeMark.delete(key);
+      this.followupResumeRun.delete(key);
+    }
+  }
+
+  /** An auto-compact stop cut a delivered follow-up: the next run carries its conversation on, compacted. */
+  private noteAutoCompactCut(sessionKey: string, report: RunReport | undefined): void {
+    if (!report || !isAutoCompactStop(report.outcome)) return;
+    // Stopped by a person after the auto-compact stop: nothing carries it on
+    // (the same rule `resumeAfterAutoCompactStop` keeps).
+    const session = this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(sessionKey));
+    const stoppedAt = session?.autoCompactStoppedAtMs;
+    if (session?.lastStopAtMs !== undefined && stoppedAt !== undefined && session.lastStopAtMs >= stoppedAt) return;
+    // The run's own row, and any it had taken over (a restart resume that then
+    // hit the threshold) — exactly these, now `uncertain`, are carried on next.
+    const itemIds = [
+      ...(report.itemDisposition === 'uncertain' && report.itemId ? [report.itemId] : []),
+      ...(report.adoptedItemIds ?? []),
+    ];
+    if (itemIds.length > 0) this.noteFollowupResume(sessionKey, 'auto-compact', itemIds);
+  }
+
+  /**
+   * The session's next dispatch spends the mark. It keeps the takeover only
+   * when it IS the run that carries the cut conversation on:
+   *
+   * - after a restart, the resume itself — a synthetic host turn dispatched as
+   *   the initial run (crash-recovery auto-resume, goal continuation). The
+   *   user's own message or a drained follow-up continues the conversation on
+   *   its own terms, so the cut row stays `uncertain` and the user's decision.
+   * - after an auto-compact stop, whatever runs next: the stop exists so that
+   *   the next turn compacts and carries on (`isAutoCompactStop`), be it a
+   *   queued follow-up, the auto-compact continuation or the goal loop's.
+   */
+  private claimFollowupResume(request: DispatchRequest): boolean {
+    const mark = this.followupResumeMark.get(request.sessionKey);
+    if (!mark) return false;
+    // A continuation that never came (the goal eval closed the goal, the resume
+    // failed) must not hand the row to some unrelated run much later.
+    if (Date.now() - mark.at > FOLLOWUP_RESUME_WINDOW_MS) {
+      this.followupResumeMark.delete(request.sessionKey);
+      return false;
+    }
+    if (mark.cause === 'restart' && !isRestartResumeDispatch(request)) {
+      // A person's own message (typed, or drained from the queue) continues the
+      // conversation on its own terms: the cut row stays theirs to decide, and
+      // the mark is spent. Another host turn (a cron fire) is neither — it
+      // leaves the mark for the resume that is still on its way.
+      if (request.message?.synthetic !== true) this.followupResumeMark.delete(request.sessionKey);
+      return false;
+    }
+    this.followupResumeMark.delete(request.sessionKey);
+    this.followupResumeRun.set(request.sessionKey, { turnEpoch: request.turnEpoch, items: mark.items });
+    return true;
+  }
+
+  /**
+   * The executor's first SDK event for a turn (`onTurnReachedModel`): the
+   * prompt is in the model's hands.
+   *
+   * 1. The run's own follow-up gets its delivery evidence — what a later
+   *    restart needs to know that its words were read.
+   * 2. The run that carries a cut conversation on takes over the rows the cut
+   *    left `uncertain`, now that the conversation holding their words runs again.
+   *
+   * Best effort: a queue refusal is logged, never the turn's problem.
+   */
+  private onFollowupTurnReachedModel({ sessionKey, turnEpoch }: { sessionKey: string; turnEpoch?: number }): void {
+    const dispatcher = this.followupDispatcher;
+    if (!dispatcher || turnEpoch === undefined) return;
+    // The executor speaks the session's canonical key; the run holds its slot
+    // under the slot key, which differs while a bot-thread migration is bound.
+    const slotKey = this.boundFollowupSlot(sessionKey) ?? sessionKey;
+    const marked = dispatcher.noteTurnReachedModel(slotKey, turnEpoch);
+    if (marked.status === 'failed') {
+      this.logger.warn('Follow-up delivery evidence not recorded', { sessionKey: slotKey, detail: marked.detail });
+    }
+    const resume = this.followupResumeRun.get(slotKey);
+    if (resume?.turnEpoch !== turnEpoch) return;
+    this.followupResumeRun.delete(slotKey);
+    this.takeOverCutFollowups(slotKey, turnEpoch, resume.items);
+  }
+
+  /**
+   * The run of `turnEpoch` takes over every row a host-side cut left
+   * `uncertain` in this session, newest first: the dashboard stops saying
+   * 보내지 못했습니다 (and offering a Retry that would deliver it twice) while
+   * the model is in fact carrying on with it, and the run's end settles the
+   * row (`FollowupDispatcher.takeOverInterrupted`).
+   */
+  private takeOverCutFollowups(slotKey: string, turnEpoch: number, refs: readonly FollowupCutRef[]): void {
+    const queue = this.followupQueue;
+    const dispatcher = this.followupDispatcher;
+    if (!queue || !dispatcher || this.followupReadFailed) return;
+    // Exactly the rows the mark named, and only while each still sits where the
+    // cut left it (same epoch: no Retry, Cancel or Stop moved it since).
+    const cut = queue
+      .list(slotKey)
+      .filter((item) => refs.some((ref) => ref.id === item.id && ref.epoch === item.epoch))
+      .filter(isHostCutFollowup)
+      .sort((a, b) => (b.deliveredAt ?? 0) - (a.deliveredAt ?? 0));
+    for (const item of cut) {
+      const taken = dispatcher.takeOverInterrupted(slotKey, turnEpoch, item.id, item.epoch);
+      if (!taken.ok) {
+        this.logger.warn('Run could not take over the interrupted follow-up', {
+          sessionKey: slotKey,
+          itemId: item.id,
+          detail: taken.detail,
+        });
+        continue;
+      }
+      this.logger.info('Run took over the interrupted follow-up', {
+        sessionKey: slotKey,
+        itemId: item.id,
+        running: taken.running,
+      });
+      if (taken.running) void this.syncFollowupReactions(slotKey, item.id);
     }
   }
 
@@ -5199,6 +5484,8 @@ export class SlackHandler {
    * the loop; none of them is retried here (A16).
    */
   private async drainFollowups(sessionKey: string, report: RunReport): Promise<void> {
+    // Before anything else can dispatch: the run after an auto-compact stop carries it on.
+    this.noteAutoCompactCut(sessionKey, report);
     // BEFORE the boundary check, not inside it: a turn that ends unhealthy is
     // exactly the turn whose steered messages never got a settlement frame, and
     // a `steered` row is invisible to every drain that follows.
@@ -5443,6 +5730,9 @@ export class SlackHandler {
       if (drained.status !== 'dispatched') break;
       const drainedItemId = drained.run.itemId;
       last = await drained.run.settled;
+      // An auto-compact stop opens the boundary (`canDrain`): the next item this
+      // loop drains carries the cut conversation on.
+      this.noteAutoCompactCut(sessionKey, last);
       // The delivery this item's bookkeeping described is over — `recordItemOutcome`
       // left it `resolved`, `failed` or `uncertain` (`followup-dispatcher.ts:1060`).
       // Keeping the one-shot past it leaks an entry per item that ever took a
@@ -5697,7 +5987,7 @@ export class SlackHandler {
     const pending = queue.list(sessionKey).filter((item) => !['resolved', 'failed', 'cancelled'].includes(item.state));
     if (pending.length === 0) return;
 
-    queue.freeze(sessionKey, `실행이 중단되었습니다 (${reason})`);
+    queue.freeze(sessionKey, followupStopReason(reason));
     this.logger.info('Follow-up queue frozen by session stop', { sessionKey, reason, items: pending.length });
 
     // Every row the freeze just parked changed state, so its reactions are
@@ -6218,6 +6508,11 @@ export class SlackHandler {
    * proceed with the shutdown, and admission is restored so a failed attempt
    * cannot strand the bot in a state where it accepts nothing.
    */
+  /** True once shutdown preparation began — the goal loop starts nothing new (#788). */
+  isShuttingDown(): boolean {
+    return this.followupShutdownPreparing === true;
+  }
+
   prepareFollowupShutdown(): void {
     // Set first: from here on the host admits no new work, so nothing can be
     // parked or dispatched into a session we are in the middle of stopping.
@@ -6325,6 +6620,7 @@ export class SlackHandler {
       // back to `activityState === 'working'`.
       const isWorking =
         typeof session.shouldAutoResume === 'boolean' ? session.shouldAutoResume : session.activityState === 'working';
+      if (isWorking) this.restartCutSessionKeys.add(session.sessionKey);
 
       // #351: an idle session whose error auto-retry is still pending is
       // resumed by resumePendingErrorRetries — say when, instead of asking the
@@ -6394,6 +6690,8 @@ export class SlackHandler {
           this.clearPendingErrorRetry(liveForResume);
           retriesSuperseded++;
         }
+        // This resume continues the turn the restart cut — it may take that turn's follow-up over.
+        this.noteFollowupResume(session.sessionKey, 'restart');
         this.autoResumeSession(session, notificationTs)
           .then(() => {
             this.logger.info('Auto-resume completed', {
@@ -6477,6 +6775,8 @@ export class SlackHandler {
     let forcedIdle = 0;
     let repaired = 0;
     let retriesClaimed = 0;
+    let stallsEnded = 0;
+    let refunded = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       // A Slack-less task cannot run a turn yet (#597/#598) — never re-arm its goal (#612 review).
       if (session.slackless) continue;
@@ -6498,6 +6798,17 @@ export class SlackHandler {
         }
       }
       if (session.goal?.status !== 'active') continue;
+      // A stall judged on no turn text is not a real stall: a turn the restart
+      // cut short was taken for "the same failure" (2026-11-02, before the loop
+      // stopped judging empty turns). End it — its question is withdrawn and
+      // the session stops waiting on it — and resume below.
+      const noTurnText = !(session.goalLastTurnText ?? session.goal.lastAssistantTurnSummary ?? '').trim();
+      const falseStall = !!session.goal.stall && noTurnText;
+      if (falseStall) {
+        retireGoalStall(session.goal, 'lifecycle');
+        stallsEnded++;
+        this.logger.info('Ended a goal stall judged on no turn text — resuming the goal', { sessionKey });
+      }
       const panel = session.actionPanel;
       if (session.activityState === 'waiting' && (panel?.waitingForChoice === true || panel?.pendingQuestion)) {
         // Waiting on its user's answer is not a stale turn: no turn has to run
@@ -6514,11 +6825,33 @@ export class SlackHandler {
         session.activityState = 'idle';
         forcedIdle++;
       }
+      // A turn the restart cut short never finished, so it does not spend the
+      // continuation budget — otherwise every deploy costs each running goal
+      // one of its turns, and a goal cut on its last one resumes straight into
+      // the cap question (2026-11-02, 1793150219.639969 cut on 10/10 at 05:08Z).
+      // "Cut" is the shutdown's own record, not an empty summary. A false stall
+      // ended above was judged on a turn an earlier restart cut (it was
+      // waiting, not working, at this shutdown, so the record misses it). One
+      // refund either way. An open cap decision is the owner's call, and a cut
+      // user turn (count 0) spent nothing.
+      const capDecisionOpen = isGoalCapDecisionPending(session.goal);
+      const cutTurn = this.restartCutSessionKeys.has(sessionKey) || falseStall;
+      if (cutTurn && session.goal.continuationCount > 0 && !capDecisionOpen) {
+        session.goal.continuationCount -= 1;
+        refunded++;
+        this.logger.info('Gave back the goal continuation the restart cut short', {
+          sessionKey,
+          continuationCount: session.goal.continuationCount,
+          maxContinuations: session.goal.maxContinuations,
+        });
+      }
       this.logger.info('Resuming active goal after restart', {
         sessionKey,
         objectivePreview: session.goal.objective.slice(0, 120),
         queued: session.goalQueue?.length ?? 0,
       });
+      // The goal loop's continuation resumes the turn the restart cut — it may take that turn's follow-up over.
+      this.noteFollowupResume(sessionKey, 'restart');
       try {
         // A restart is a kick: no turn ran, the last summary was already judged.
         handler(sessionKey, { cause: 'kick' });
@@ -6531,13 +6864,18 @@ export class SlackHandler {
           retriesClaimed++;
         }
       } catch (error) {
+        this.followupResumeMark.delete(sessionKey);
         this.logger.error('Failed to resume active goal after restart', {
           sessionKey,
           error: (error as Error).message,
         });
       }
     }
-    if (forcedIdle > 0 || repaired > 0 || retriesClaimed > 0) this.claudeHandler.saveSessions();
+    // Read once: a later pass (no restart in between) refunds nothing.
+    this.restartCutSessionKeys.clear();
+    if (forcedIdle > 0 || repaired > 0 || retriesClaimed > 0 || stallsEnded > 0 || refunded > 0) {
+      this.claudeHandler.saveSessions();
+    }
     if (resumed > 0 || repaired > 0) {
       this.logger.info(`Resumed ${resumed} active goal(s) after restart (repaired ${repaired} stranded queue(s))`);
     }
@@ -6741,6 +7079,7 @@ export class SlackHandler {
       text: resumePrompt,
       synthetic: true,
       skipDispatch: true,
+      routeContext: { autoResume: true },
     };
 
     // Real say — posts to Slack. noopSay silently discarded all bot output.
@@ -6796,6 +7135,57 @@ export class SlackHandler {
   }
 
   /**
+   * Goal stall (same failure twice): ask the owner which next instruction to
+   * give, through the same question surface as a model's ASK_USER_QUESTION —
+   * the thread form and the dashboard card, answered as a real user turn.
+   * Skipped when a turn started in the meantime (the user is already steering)
+   * or a question is already open (never supersede one the model asked).
+   */
+  async askGoalStallQuestion(input: GoalStallQuestion): Promise<void> {
+    const session = this.claudeHandler.getSessionByKey(input.sessionKey);
+    if (!shouldAskGoalStallQuestion(session, input, this.requestCoordinator.isRequestActive(input.sessionKey))) return;
+    // Re-checked after the Slack post: the owner may have moved on meanwhile.
+    const roundOpen = () =>
+      this.claudeHandler.getSessionByKey(input.sessionKey)?.goal?.stall?.stallId === input.stallId &&
+      !this.requestCoordinator.isRequestActive(input.sessionKey);
+    const turnId = await this.streamExecutor.askUserQuestionFromHost(input.sessionKey, buildGoalStallQuestion(input), {
+      stillWanted: roundOpen,
+    });
+    if (!turnId) return;
+    const stall = this.claudeHandler.getSessionByKey(input.sessionKey)?.goal?.stall;
+    if (stall?.stallId === input.stallId) {
+      // Bound to its round: when the round ends without an answer, it is retracted.
+      stall.questionTurnId = turnId;
+      this.claudeHandler.saveSessions();
+    } else {
+      await this.streamExecutor.retractHostQuestion(input.sessionKey, turnId);
+    }
+  }
+
+  /**
+   * A stall round ended without an answer (pause, done, delete, resume, an
+   * objective update, a goal added): its question stops accepting answers.
+   * A round the owner ended by writing needs nothing — that turn clears it.
+   */
+  private onGoalStallRetired(goal: SessionGoal, stall: SessionGoalStall, cause: GoalStallRetireCause): void {
+    if (cause === 'user-message' || !stall.questionTurnId) return;
+    const turnId = stall.questionTurnId;
+    for (const [sessionKey, session] of this.claudeHandler.getSessionRegistry().getAllSessions()) {
+      if (session.goal !== goal && session.goal?.goalId !== goal.goalId) continue;
+      // Not deferred: the retraction frees the session synchronously (before any
+      // Slack call), so the caller's loop kick right after — goal resume, an
+      // objective update — finds it idle instead of waiting. The caller persists.
+      void this.streamExecutor.retractHostQuestion(sessionKey, turnId).catch((err: unknown) =>
+        this.logger.warn('Retracting a goal stall question failed', {
+          sessionKey,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+      return;
+    }
+  }
+
+  /**
    * Context rollback (#744): the points the dashboard picker offers — the
    * owner's inputs and the work log's cut points of this context — and whether
    * a rollback can be asked now. `actorUserId` is the signed-in user; the route
@@ -6806,10 +7196,16 @@ export class SlackHandler {
     if (!session) return undefined;
     const record = session.conversationId ? await getConversation(session.conversationId) : null;
     const page = session.conversationId ? await readWorkLog(session.conversationId, { limit: 500 }) : { entries: [] };
+    // One read of the transcript: the active branch, and the "just before" points of inputs
+    // recorded without an anchor (before anchors were kept).
+    const transcript = session.sessionId ? readTranscriptText(session.sessionId) : undefined;
+    const onChain = activeChainFilter(session, () => transcript);
+    const derived = inputAnchorsFromTranscript(session, record, transcript);
     return buildRollbackPointsView(
       session,
-      rollbackInputPoints(session, record),
-      rollbackWorkLogPoints(session, page.entries),
+      // After a rollback the dropped branch's points stay in the logs; only the active branch is offered.
+      rollbackInputPoints(session, record, onChain, derived),
+      rollbackWorkLogPoints(session, page.entries, onChain),
       {
         actor: actorUserId || session.ownerId,
         requestActive: this.requestCoordinator.isRequestActive(sessionKey),
@@ -6861,57 +7257,6 @@ export class SlackHandler {
       `⏪ 다음 턴부터 모델 문맥을 되돌립니다 — ${result.rewind.label} (대시보드). 그 뒤의 대화는 문맥에서 빠지고, 파일 변경은 되돌리지 않습니다. 다음 지시를 보내세요.`,
     );
     return { ok: true };
-  }
-
-  /**
-   * Goal stall (same failure twice): ask the owner which next instruction to
-   * give, through the same question surface as a model's ASK_USER_QUESTION —
-   * the thread form and the dashboard card, answered as a real user turn.
-   * Skipped when a turn started in the meantime (the user is already steering)
-   * or a question is already open (never supersede one the model asked).
-   */
-  async askGoalStallQuestion(input: GoalStallQuestion): Promise<void> {
-    const session = this.claudeHandler.getSessionByKey(input.sessionKey);
-    if (!shouldAskGoalStallQuestion(session, input, this.requestCoordinator.isRequestActive(input.sessionKey))) return;
-    // Re-checked after the Slack post: the owner may have moved on meanwhile.
-    const roundOpen = () =>
-      this.claudeHandler.getSessionByKey(input.sessionKey)?.goal?.stall?.stallId === input.stallId &&
-      !this.requestCoordinator.isRequestActive(input.sessionKey);
-    const turnId = await this.streamExecutor.askUserQuestionFromHost(input.sessionKey, buildGoalStallQuestion(input), {
-      stillWanted: roundOpen,
-    });
-    if (!turnId) return;
-    const stall = this.claudeHandler.getSessionByKey(input.sessionKey)?.goal?.stall;
-    if (stall?.stallId === input.stallId) {
-      // Bound to its round: when the round ends without an answer, it is retracted.
-      stall.questionTurnId = turnId;
-      this.claudeHandler.saveSessions();
-    } else {
-      await this.streamExecutor.retractHostQuestion(input.sessionKey, turnId);
-    }
-  }
-
-  /**
-   * A stall round ended without an answer (pause, done, delete, resume, an
-   * objective update, a goal added): its question stops accepting answers.
-   * A round the owner ended by writing needs nothing — that turn clears it.
-   */
-  private onGoalStallRetired(goal: SessionGoal, stall: SessionGoalStall, cause: GoalStallRetireCause): void {
-    if (cause === 'user-message' || !stall.questionTurnId) return;
-    const turnId = stall.questionTurnId;
-    for (const [sessionKey, session] of this.claudeHandler.getSessionRegistry().getAllSessions()) {
-      if (session.goal !== goal && session.goal?.goalId !== goal.goalId) continue;
-      // Not deferred: the retraction frees the session synchronously (before any
-      // Slack call), so the caller's loop kick right after — goal resume, an
-      // objective update — finds it idle instead of waiting. The caller persists.
-      void this.streamExecutor.retractHostQuestion(sessionKey, turnId).catch((err: unknown) =>
-        this.logger.warn('Retracting a goal stall question failed', {
-          sessionKey,
-          error: err instanceof Error ? err.message : String(err),
-        }),
-      );
-      return;
-    }
   }
 
   /**

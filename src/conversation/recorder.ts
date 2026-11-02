@@ -440,6 +440,45 @@ async function _recordAssistantTurnAsync(conversationId: string, content: string
 }
 
 /**
+ * SSOT 2026-11-02 T7 — record the session's Executive Summary in its conversation (fire-and-forget,
+ * never throws): one answer turn marked `executiveSummary` whose raw text is the whole document
+ * and whose summary is its TL;DR. It is already a summary — the summarizer is not asked — and it
+ * is not the model's reply, so the session title is not rebuilt from it.
+ */
+export function recordExecutiveSummaryTurn(conversationId: string, markdown: string, tldr: readonly string[]): void {
+  _recordExecutiveSummaryTurnAsync(conversationId, markdown, tldr).catch((err) => {
+    logger.error(`Failed to record the Executive Summary for ${conversationId}`, err);
+  });
+}
+
+async function _recordExecutiveSummaryTurnAsync(
+  conversationId: string,
+  markdown: string,
+  tldr: readonly string[],
+): Promise<void> {
+  const record = await getOrLoadConversation(conversationId);
+  if (!record) {
+    logger.warn(`Conversation ${conversationId} not found, skipping the Executive Summary turn`);
+    return;
+  }
+  const now = Date.now();
+  const turn: ConversationTurn = {
+    id: randomUUID(),
+    role: 'assistant',
+    timestamp: now,
+    rawContent: markdown,
+    summaryTitle: 'Executive Summary',
+    ...(tldr.length ? { summaryBody: tldr.join('\n') } : {}),
+    summarized: true,
+    executiveSummary: true,
+  };
+  record.turns.push(turn);
+  record.updatedAt = now;
+  await serializedSave(conversationId, record);
+  if (_onTurnRecorded) _onTurnRecorded(conversationId, turn);
+}
+
+/**
  * Generate summary for an assistant turn and update the record
  */
 async function generateSummary(conversationId: string, turnId: string, content: string): Promise<void> {

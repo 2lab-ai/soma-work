@@ -1,19 +1,22 @@
 ---
 name: html
-description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML with a Lottie motion layer and a rendered PNG, publish the HTML on the local web server (clickable access link), then upload both files to the current Slack thread. The visual design is driven by the `ui-ux` skill as the main design engine — applied by default on EVERY invocation, whether or not the user mentions design (design-system + named references; default reference `openai`); a `design=` input selects the design driver deterministically — `default`, any registered reference (for example `claude`, `toss-blue`, `toss-black`), or `impeccable`; `omd-<id>` selects any oh-my-design archive reference, and batch mode renders one page once per reference — with the `design` skill applied on top as the anti-AI-slop layer and the `motion-design`/`apple-design` standards governing all CSS motion and display typography. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
+description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML with a Lottie motion layer, check it with a local PNG QA snapshot, publish the HTML on the local web server (clickable access link), then upload the HTML only to the current Slack thread — the PNG is never uploaded unless the user asks for an image. The visual design is driven by the `ui-ux` skill as the main design engine — applied by default on EVERY invocation, whether or not the user mentions design (design-system + named references; default reference `openai`); a `design=` input selects the design driver deterministically — `default`, any registered reference (for example `claude`, `toss-blue`, `toss-black`), or `impeccable`; `omd-<id>` selects any oh-my-design archive reference, and batch mode renders one page once per reference — with the `design` skill applied on top as the anti-AI-slop layer and the `motion-design`/`apple-design` standards governing all CSS motion and display typography. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
-version: 0.6.0
+version: 0.7.0
 license: ISC
 ---
 
 # HTML Anything — Local Skill
 
-Turn any blob of content into a ship-ready single-file HTML + a high-DPI PNG,
-publish the HTML on a local web server, then drop both files **and the live
-access link** into the current Slack thread. The HTML is the artifact; the
-PNG is the static preview Slack can render inline; the served URL is where
-the page actually *lives* — Lottie motion (Step 3.7) only exists in a real
-browser tab, so the link is a first-class deliverable, not a nicety.
+Turn any blob of content into a ship-ready single-file HTML, publish it on a
+local web server, then drop the HTML **and the live access link** into the
+current Slack thread. The HTML is the artifact — the only file uploaded; the
+served URL is where the page actually *lives* — Lottie motion (Step 3.7) only
+exists in a real browser tab, so the link is a first-class deliverable, not a
+nicety. A high-DPI PNG is rendered as a local QA snapshot (Steps 5–6) and is
+never uploaded: one page is one artifact in the thread and on the dashboard
+(SSOT 2026-11-02). Upload a PNG only when the user explicitly asks for an
+image.
 
 This skill is a thin, vendored adaptation of
 [`nexu-io/html-anything`](https://github.com/nexu-io/html-anything) (Apache-2.0).
@@ -451,7 +454,10 @@ You may use a Tailwind CDN (`https://cdn.tailwindcss.com`) and Google Fonts
 allowed at render time — Playwright waits for `networkidle` before the
 screenshot.
 
-### 5. Render to PNG
+### 5. Render a QA snapshot (PNG, never uploaded)
+
+The snapshot is how you look at the page before shipping it (Step 6). It is
+not a deliverable: Step 8 uploads the HTML only.
 
 ```bash
 node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" \
@@ -474,7 +480,7 @@ carries the motion. If the captured frame looks empty because an animation
 starts from opacity 0, pass `--wait-ms 1500` so the screenshot lands on a
 populated frame.
 
-### 6. Validate the PNG
+### 6. Validate the page through the snapshot
 
 ```bash
 PNG="$(pwd)/html-<slug>-<ts>.png"
@@ -503,7 +509,7 @@ Then check what the bytes cannot tell you:
    `toss-*`, `Inter` for `openai`). A declared family absent from `fonts used`
    means the text was drawn with something else: name what was used in the
    Step 8 upload comment (`font fallback: <declared> → <used>`) and never
-   present the PNG as rendered in the declared font. A locally installed face
+   present the page as rendered in the declared font. A locally installed face
    counts as used. If either line reads `unknown`, say the font check was
    unavailable — do not claim success or fallback.
 2. **Look at the PNG.** Open it with the Read tool once and check for clipped
@@ -573,30 +579,30 @@ curl -fsS -o /dev/null -w '%{http_code}' "<url>"   # must print 200
 If the server cannot start (exit 2), report it in the upload comment and
 fall back to file-only delivery — do not block the artifact on the link.
 
-### 8. Dual upload to Slack (+ the link)
+### 8. Upload the HTML to Slack (+ the link)
 
 ```
-mcp__slack-mcp__send_media(
-  file_path="<absolute path to PNG>",
-  title="<meaningful artifact title>",
-  alt_text="<1-2 sentence description of what the page shows>",
-  initial_comment="<template + design driver used (+ 'Impeccable — document-based application' on that driver) + any fallback note> — live: <url from Step 7>"
-)
 mcp__slack-mcp__send_file(
   file_path="<absolute path to HTML>",
-  title="<same slug>.html (open in browser to edit / re-render)",
-  initial_comment="Single-file HTML. Live (with motion): <url from Step 7>"
+  title="<meaningful artifact title>",
+  initial_comment="<template + design driver used (+ 'Impeccable — document-based application' on that driver) + any fallback note> — live (with motion): <url from Step 7>"
 )
 ```
 
+Do **not** upload the PNG. The Step 5 snapshot was your QA check, not a
+deliverable: one page is one artifact in the thread and in the dashboard's
+artifact list (SSOT 2026-11-02). The one exception is a user who explicitly
+asked for an image (`png로도`, "as an image") — then also send it with
+`mcp__slack-mcp__send_media`.
+
 If the slack-mcp tools are not available in this session (e.g., the skill
-was invoked outside a Slack-mention context), skip the uploads, print both
-absolute paths plus the served URL, and end the turn.
+was invoked outside a Slack-mention context), skip the upload, print the
+HTML's absolute path plus the served URL, and end the turn.
 
 ### 9. End the turn
 
-One-line confirmation: `template used`, `PNG path`, `HTML path`, **served
-URL**. No preamble. No follow-up question — the classifier resolves
+One-line confirmation: `template used`, `HTML path`, **served URL**. No
+preamble. No follow-up question — the classifier resolves
 ambiguity by falling through to `doc-kami-parchment`, and the user can
 re-invoke with an explicit `--template=<name>` if they want a different
 look.
@@ -657,6 +663,8 @@ and adapter a single run uses.
   runtime dep; failing import → tell the user to rebuild the image.
 - Do **not** upload the HTML as inline mrkdwn — Slack mangles `<style>` and
   long lines. Always `send_file`.
+- Do **not** upload the QA snapshot PNG next to the HTML — the page is the
+  artifact, and a second file doubles every entry in the dashboard's list.
 - Do **not** loop on render failure. One retry on transient
   `networkidle`/`navigation` errors; if the second attempt fails, report
   the error and stop.
@@ -719,7 +727,7 @@ V1 ships 8 templates. To add more from the html-anything catalog (75 total):
 - [`templates/skills/<name>/SKILL.md`](./templates/skills/) — vendored
   template specs from html-anything (Apache-2.0).
 - [`renderer/render.mjs`](./renderer/render.mjs) — Playwright HTML → PNG
-  CLI.
+  CLI (the Step 5 QA snapshot).
 - [`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md) — third-party attribution.
 - [`__tests__/html-skill.test.ts`](./__tests__/html-skill.test.ts) — RED
   contract that pins the v1 surface (frontmatter, classifier templates,
