@@ -520,6 +520,25 @@ describe('SlackHandler — follow-up queue host', () => {
   });
 
   /**
+   * #788 (fable review P1): a turn the shutdown aborts ends with no text. Its
+   * evidence is still stashed (the restart reads it), but the goal loop must
+   * not run on it while the host is stopping: it would spend a continuation (or
+   * open the cap decision) and inject a turn the stopping host refuses. The
+   * restart's goal resume drives the goal instead.
+   */
+  it('does not drive the goal loop for a turn that ends while the host is shutting down', () => {
+    const goalDriver = vi.fn();
+    handler.setGoalTurnSettledHandler(goalDriver);
+    registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+
+    handler.prepareFollowupShutdown();
+    handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+
+    expect(goalDriver).not.toHaveBeenCalled();
+    expect(registrySession.goalLastTurnText).toBe('');
+  });
+
+  /**
    * Incident 2026-10-01 (a goal session on work-m64 dev):
    * `goal <objective>` typed while a goal turn runs is queued as
    * `control-with-dispatch`. At the boundary it re-routes through

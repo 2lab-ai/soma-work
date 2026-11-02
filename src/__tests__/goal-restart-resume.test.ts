@@ -211,6 +211,293 @@ describe('resumeActiveGoals (T1)', () => {
     expect(handler.resumeActiveGoals()).toBe(0);
   });
 
+  /**
+   * 2026-11-02 restart incident. Before the "no output is no evidence" rule a
+   * restart-interrupted turn was judged "the same failure" and the goal
+   * stopped on a stall question (fable-m5max dev: 1793150219.639969 stalled at
+   * 05:08:54Z, then every later restart held it as "waiting on its question").
+   * A stall opened on no turn text is not a real stall: the restart ends it,
+   * withdraws its question, and resumes the goal.
+   */
+  it('ends a stall that was judged on no turn text, withdraws its question, and resumes the goal', () => {
+    const stalled = activeGoalSession({
+      activityState: 'waiting',
+      actionPanel: {
+        waitingForChoice: true,
+        pendingQuestion: { type: 'user_choices', hostTurnId: 'host:1', questions: [] },
+        pendingChoice: { turnId: 'host:1', formIds: [] },
+      },
+    } as unknown as Partial<ConversationSession>);
+    const goal = stalled.goal as NonNullable<ConversationSession['goal']>;
+    goal.lastAssistantTurnSummary = '';
+    goal.lastEvalReason = 'This turn again produced no assistant text';
+    goal.stall = {
+      stallId: 's1',
+      stalledAt: 1,
+      reason: 'This turn again produced no assistant text',
+      actions: ['a', 'b', 'c'],
+      confidence: 0.97,
+      questionTurnId: 'host:1',
+    };
+    const sessions = new Map<string, ConversationSession>([['C1-T1', stalled]]);
+    const { handler, claudeHandler } = createHandler(sessions);
+    claudeHandler.getSessionRegistry = vi.fn(() => ({ getAllSessions: () => sessions }));
+    const retract = vi.fn((_key: string, _turnId: string) => {
+      // The real retraction frees the session synchronously, before any Slack call.
+      stalled.actionPanel = { waitingForChoice: false } as any;
+      stalled.activityState = 'idle';
+      return Promise.resolve();
+    });
+    (handler as any).streamExecutor = { retractHostQuestion: retract };
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+
+    expect(handler.resumeActiveGoals()).toBe(1);
+
+    expect(stalled.goal?.stall).toBeUndefined();
+    expect(retract).toHaveBeenCalledWith('C1-T1', 'host:1');
+    expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
+    expect(claudeHandler.saveSessions).toHaveBeenCalled();
+  });
+
+  /**
+   * 2026-11-02: "서비스 재시작하면 자동으로 진행중이던 작업 재시작되도록해줘". A turn the
+   * restart cut short never finished, so it does not spend the continuation
+   * budget. Without the refund, every deploy costs each running goal one turn,
+   * and a goal cut on its 10th continuation (1793150219.639969, 05:08Z) resumes
+   * straight into the cap question. "Cut by the restart" is the shutdown's own
+   * record (`wasWorkingAtShutdown` → `shouldAutoResume`), read by crash
+   * recovery before it clears the marker — not "the summary is empty".
+   */
+  function recovered(sessionKey: string, working: boolean) {
+    return {
+      channelId: 'C1',
+      threadTs: 'T1',
+      ownerId: 'U1',
+      activityState: working ? 'working' : 'idle',
+      shouldAutoResume: working,
+      sessionKey,
+    };
+  }
+
+  async function bootWith(sessions: Map<string, ConversationSession>, cut: ReturnType<typeof recovered>[]) {
+    const { handler, claudeHandler } = createHandler(sessions);
+    claudeHandler.getCrashRecoveredSessions.mockReturnValue(cut);
+    (handler as any).handleMessage = vi.fn().mockResolvedValue(undefined);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+    await handler.notifyCrashRecovery();
+    const resumed = handler.resumeActiveGoals();
+    return { handler, claudeHandler, settled, resumed };
+  }
+
+  it('gives back the continuation of a goal turn the restart cut short', async () => {
+    const cut = activeGoalSession({ activityState: 'working' });
+    const goal = cut.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 10;
+    const { settled, resumed, claudeHandler } = await bootWith(new Map([['C1-T1', cut]]), [recovered('C1-T1', true)]);
+
+    expect(resumed).toBe(1);
+    expect(goal.continuationCount).toBe(9);
+    expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
+    expect(claudeHandler.saveSessions).toHaveBeenCalled();
+  });
+
+  it('keeps the budget of a goal that was idle at shutdown — even with an empty summary', async () => {
+    const idle = activeGoalSession();
+    const goal = idle.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 4;
+    goal.lastAssistantTurnSummary = '';
+    await bootWith(new Map([['C1-T1', idle]]), [recovered('C1-T1', false)]);
+
+    expect(goal.continuationCount).toBe(4);
+  });
+
+  it('keeps the budget of a goal whose cap decision is open — the owner decides, not the restart', async () => {
+    const capped = activeGoalSession({ activityState: 'working' });
+    const goal = capped.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 10;
+    goal.capDmPendingAt = 5;
+    goal.capDecisionId = 'd1';
+    await bootWith(new Map([['C1-T1', capped]]), [recovered('C1-T1', true)]);
+
+    expect(goal.continuationCount).toBe(10);
+  });
+
+  it('never takes the budget below zero (a user turn was cut — it spent nothing)', async () => {
+    const userTurn = activeGoalSession({ activityState: 'working' });
+    await bootWith(new Map([['C1-T1', userTurn]]), [recovered('C1-T1', true)]);
+
+    expect(userTurn.goal?.continuationCount).toBe(0);
+  });
+
+  it('gives back once per restart — a second resume pass refunds nothing', async () => {
+    const cut = activeGoalSession({ activityState: 'working' });
+    const goal = cut.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 6;
+    const { handler } = await bootWith(new Map([['C1-T1', cut]]), [recovered('C1-T1', true)]);
+    handler.resumeActiveGoals();
+
+    expect(goal.continuationCount).toBe(5);
+  });
+
+  // #788 round 2 (grok): a failed crash-recovery notice must still clear the
+  // shutdown marker, or the next boot would read the session as cut again and
+  // refund a second time.
+  it('a failed restart notice still clears the marker — the next boot refunds nothing', async () => {
+    const cut = activeGoalSession({ activityState: 'working' }) as ConversationSession & {
+      shutdownNotificationSent?: boolean;
+      wasWorkingAtShutdown?: boolean;
+    };
+    cut.shutdownNotificationSent = true;
+    cut.wasWorkingAtShutdown = true;
+    const goal = cut.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 6;
+    const sessions = new Map<string, ConversationSession>([['C1-T1', cut]]);
+    const { handler, claudeHandler } = createHandler(sessions);
+    claudeHandler.getCrashRecoveredSessions.mockReturnValue([recovered('C1-T1', true)]);
+    (handler as any).app.client.chat.postMessage = vi.fn().mockRejectedValue(new Error('ratelimited'));
+    handler.setGoalTurnSettledHandler(vi.fn());
+
+    await handler.notifyCrashRecovery();
+    handler.resumeActiveGoals();
+
+    expect(goal.continuationCount).toBe(5);
+    expect(cut.wasWorkingAtShutdown).toBe(false);
+    expect(cut.shutdownNotificationSent).toBe(false);
+  });
+
+  it('a false stall at 10/10 cut by the restart resumes with its continuation given back', async () => {
+    const stalled = activeGoalSession({
+      activityState: 'waiting',
+      actionPanel: {
+        waitingForChoice: true,
+        pendingQuestion: { type: 'user_choices', hostTurnId: 'host:1', questions: [] },
+        pendingChoice: { turnId: 'host:1', formIds: [] },
+      },
+    } as unknown as Partial<ConversationSession>);
+    const goal = stalled.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 10;
+    goal.lastAssistantTurnSummary = '';
+    goal.lastEvalReason = 'This turn again produced no assistant text';
+    goal.stall = {
+      stallId: 's1',
+      stalledAt: 1,
+      reason: 'This turn again produced no assistant text',
+      actions: ['a', 'b', 'c'],
+      confidence: 0.97,
+      questionTurnId: 'host:1',
+    };
+    const sessions = new Map<string, ConversationSession>([['C1-T1', stalled]]);
+    const { handler, claudeHandler } = createHandler(sessions);
+    claudeHandler.getSessionRegistry = vi.fn(() => ({ getAllSessions: () => sessions }));
+    (handler as any).streamExecutor = {
+      retractHostQuestion: vi.fn(() => {
+        stalled.actionPanel = { waitingForChoice: false } as any;
+        stalled.activityState = 'idle';
+        return Promise.resolve();
+      }),
+    };
+    // The 10th continuation was the turn the restart cut.
+    (handler as any).restartCutSessionKeys = new Set(['C1-T1']);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+
+    expect(handler.resumeActiveGoals()).toBe(1);
+
+    expect(goal.stall).toBeUndefined();
+    expect(goal.continuationCount).toBe(9);
+    expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
+  });
+
+  // #788 round 2 (astra): a goal a PREVIOUS deploy falsely stalled at 10/10 is
+  // waiting, not working, at this shutdown — it is not in the cut record. Its
+  // stall was judged on the turn an earlier restart cut, so ending that stall
+  // gives the continuation back too, or it resumes straight into the cap.
+  it('a false stall left by an earlier deploy at 10/10 resumes at 9/10', () => {
+    const stalled = activeGoalSession({
+      activityState: 'waiting',
+      actionPanel: {
+        waitingForChoice: true,
+        pendingQuestion: { type: 'user_choices', hostTurnId: 'host:1', questions: [] },
+        pendingChoice: { turnId: 'host:1', formIds: [] },
+      },
+    } as unknown as Partial<ConversationSession>);
+    const goal = stalled.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 10;
+    goal.lastAssistantTurnSummary = '';
+    goal.lastEvalReason = 'This turn again produced no assistant text';
+    goal.stall = {
+      stallId: 's1',
+      stalledAt: 1,
+      reason: 'This turn again produced no assistant text',
+      actions: ['a', 'b', 'c'],
+      confidence: 0.97,
+      questionTurnId: 'host:1',
+    };
+    const sessions = new Map<string, ConversationSession>([['C1-T1', stalled]]);
+    const { handler, claudeHandler } = createHandler(sessions);
+    claudeHandler.getSessionRegistry = vi.fn(() => ({ getAllSessions: () => sessions }));
+    (handler as any).streamExecutor = {
+      retractHostQuestion: vi.fn(() => {
+        stalled.actionPanel = { waitingForChoice: false } as any;
+        stalled.activityState = 'idle';
+        return Promise.resolve();
+      }),
+    };
+    handler.setGoalTurnSettledHandler(vi.fn());
+
+    expect(handler.resumeActiveGoals()).toBe(1);
+
+    expect(goal.stall).toBeUndefined();
+    expect(goal.continuationCount).toBe(9);
+  });
+
+  it('a false stall that was also cut gives back one continuation, not two', () => {
+    const stalled = activeGoalSession({ activityState: 'working' });
+    const goal = stalled.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 10;
+    goal.lastAssistantTurnSummary = '';
+    goal.lastEvalReason = 'no output';
+    goal.stall = { stallId: 's1', stalledAt: 1, reason: 'no output', actions: ['a', 'b', 'c'], confidence: 0.97 };
+    const { handler } = createHandler(new Map([['C1-T1', stalled]]));
+    (handler as any).restartCutSessionKeys = new Set(['C1-T1']);
+    handler.setGoalTurnSettledHandler(vi.fn());
+
+    handler.resumeActiveGoals();
+
+    expect(goal.continuationCount).toBe(9);
+  });
+
+  it('keeps a real stall (judged on turn text) stopped on its question', () => {
+    const stalled = activeGoalSession({
+      activityState: 'waiting',
+      actionPanel: {
+        waitingForChoice: true,
+        pendingQuestion: { type: 'user_choices', hostTurnId: 'host:1', questions: [] },
+      },
+    } as Partial<ConversationSession>);
+    const goal = stalled.goal as NonNullable<ConversationSession['goal']>;
+    goal.lastAssistantTurnSummary = 'Still waiting on you: dev has 0 epics.';
+    goal.stall = {
+      stallId: 's1',
+      stalledAt: 1,
+      reason: 'dev has 0 epics',
+      actions: ['a', 'b', 'c'],
+      confidence: 0.98,
+      questionTurnId: 'host:1',
+    };
+    const sessions = new Map<string, ConversationSession>([['C1-T1', stalled]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+
+    expect(handler.resumeActiveGoals()).toBe(0);
+
+    expect(stalled.goal?.stall?.stallId).toBe('s1');
+    expect(settled).not.toHaveBeenCalled();
+  });
+
   it('notifyCrashRecovery skips generic auto-resume for active-goal sessions (no double resume)', async () => {
     const sessions = new Map<string, ConversationSession>([['C1-T1', activeGoalSession()]]);
     const { handler, claudeHandler } = createHandler(sessions);

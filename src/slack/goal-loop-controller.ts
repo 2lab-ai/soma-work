@@ -175,6 +175,13 @@ export interface GoalLoopControllerDeps {
    * synchronously instead of faking timers.
    */
   scheduleEvalRetry?: (fn: () => void, delayMs: number) => void;
+  /**
+   * True once the host is shutting down (#788). No loop run starts, and a
+   * verdict that lands meanwhile is dropped: applying it would spend a
+   * continuation (or open the cap decision) and inject a turn the stopping
+   * host refuses. The restart's goal resume re-judges the goal.
+   */
+  isShuttingDown?: () => boolean;
 }
 
 /**
@@ -230,7 +237,10 @@ export class GoalLoopController {
    * this map together, so the first post-restart settle re-arms exactly one
    * retry for the remaining `evalBackoffUntil` window.
    */
-  private readonly armedEvalRetries = new Map<string, { token: object; goalId: string; epoch: number }>();
+  private readonly armedEvalRetries = new Map<
+    string,
+    { token: object; goalId: string; epoch: number; cause: GoalLoopTrigger }
+  >();
 
   constructor(deps: GoalLoopControllerDeps) {
     this.deps = deps;
@@ -290,6 +300,10 @@ export class GoalLoopController {
     const { registry, requestCoordinator, logger } = this.deps;
     const session = registry.getSessionByKey(sessionKey);
     const goal = session?.goal;
+    if (this.deps.isShuttingDown?.()) {
+      logger.info('Goal loop run skipped — the host is shutting down; the restart resumes the goal', { sessionKey });
+      return;
+    }
     if (
       !session ||
       !shouldRunGoalIdleDriver({
@@ -315,7 +329,12 @@ export class GoalLoopController {
       // failure path already armed one and this is a no-op; after a restart
       // the timer was lost while `evalBackoffUntil` persisted, so without
       // this the loop would stall until unrelated user activity.
-      this.armEvalRetry(sessionKey, { epoch: activeGoal.epoch ?? 0, goalId: activeGoal.goalId }, backoffMsRemaining);
+      this.armEvalRetry(
+        sessionKey,
+        { epoch: activeGoal.epoch ?? 0, goalId: activeGoal.goalId },
+        backoffMsRemaining,
+        cause,
+      );
       return;
     }
 
@@ -325,29 +344,45 @@ export class GoalLoopController {
     // mirror is left, and the same evidence must still read as unchanged.
     const summaryHash = this.hashSummary(workSummaryRaw.slice(0, GOAL_SUMMARY_PERSIST_MAX).trim());
 
-    // S9 cost short-circuit: if the work summary is byte-identical to what we
-    // last evaluated and we already hold that verdict's gap reason, a fresh
-    // eval would return the same "not complete" — skip the (expensive)
-    // dispatch and reuse it. Empty summaries never short-circuit (no evidence
-    // to reuse), and a `complete` verdict clears the hash so it never sticks.
-    // Reused only when no new turn produced this text: a kick (the owner went
-    // on — `goal resume`, Continue, a goal added — or a restart) runs the next
-    // turn instead of re-judging the old one. A NEW turn with the same output —
-    // at the cap too — is exactly the repeat the stall check exists for, and
-    // only the evaluator can say so (and name the three next instructions)
-    // instead of the generic cap question: the dispatch is worth it.
-    if (
-      workSummaryRaw !== '' &&
-      activeGoal.lastEvalSummaryHash === summaryHash &&
-      activeGoal.lastEvalReason &&
-      cause === 'kick'
-    ) {
-      logger.info('Goal eval short-circuited — work summary unchanged since last eval', { sessionKey });
+    // Nothing new to judge → reuse the last gap and run the next turn, no eval:
+    //  - No turn text, over a real earlier gap. A turn a restart or an abort
+    //    cut short leaves none, and an empty summary is no evidence either way:
+    //    the evaluator can only restate the last gap — and, shown its previous
+    //    "no output" verdict, called the silence "the same failure" and stopped
+    //    every goal a restart interrupted (2026-11-02, fable-m5max dev, restarts
+    //    05:08Z/05:44Z/06:23Z/06:51Z/07:38Z). With no earlier gap there is
+    //    nothing to reuse: the eval runs as before #746, and with no previous
+    //    verdict it cannot stall.
+    //  - A kick (the owner went on — `goal resume`, Continue, a goal added — or
+    //    a restart) over text already judged (S9). A NEW turn with the same
+    //    output — at the cap too — is exactly the repeat the stall check exists
+    //    for, and only the evaluator can say so (and name the three next
+    //    instructions) instead of the generic cap question: the dispatch is
+    //    worth it.
+    // The last real gap stays the reason the next continuation is asked to close.
+    const hasGap = !!activeGoal.lastEvalReason?.trim();
+    const noTurnText = workSummaryRaw === '';
+    const alreadyJudged = activeGoal.lastEvalSummaryHash === summaryHash;
+    if (hasGap && (noTurnText || (cause === 'kick' && alreadyJudged))) {
+      // #745 × #788: a turn that left no text may still have done work (files,
+      // commands) before it was cut. Its progress is unknown, so the rollback
+      // span from the first failure may not reach across it.
+      if (noTurnText && activeGoal.firstFailure) activeGoal.firstFailure.progressed = true;
+      logger.info(
+        noTurnText
+          ? 'Goal eval skipped — the last turn left no text (interrupted); resuming the work'
+          : 'Goal eval short-circuited — work summary unchanged since last eval',
+        { sessionKey, cause },
+      );
       await this.handleVerdict(
         sessionKey,
         session,
         activeGoal,
-        { completed: false, reason: activeGoal.lastEvalReason, remaining: activeGoal.lastEvalRemaining ?? [] },
+        {
+          completed: false,
+          reason: activeGoal.lastEvalReason as string,
+          remaining: activeGoal.lastEvalRemaining ?? [],
+        },
         summaryHash,
         { reused: true },
       );
@@ -383,7 +418,7 @@ export class GoalLoopController {
     try {
       verdict = await this.runEvalWithTimeout(session, objective, evalUserSummary, previous);
     } catch (err: unknown) {
-      this.handleEvalDispatchFailure(sessionKey, session, snapshot, startedAt, err);
+      this.handleEvalDispatchFailure(sessionKey, session, snapshot, startedAt, err, cause);
       return;
     }
 
@@ -412,7 +447,24 @@ export class GoalLoopController {
       return;
     }
 
-    await this.handleVerdict(sessionKey, session, activeGoal, verdict, summaryHash);
+    // The host began shutting down while the eval ran: drop the verdict and
+    // release our lease. The restart's goal resume re-judges this text.
+    if (this.deps.isShuttingDown?.()) {
+      logger.info('Goal eval verdict dropped — the host is shutting down; the restart re-judges', { sessionKey });
+      if (live && live.pendingEval?.requestedAt === startedAt) {
+        live.pendingEval = undefined;
+        this.persist();
+      }
+      return;
+    }
+
+    // A kick is the owner or the host going on — never "the same failure
+    // again": no turn ran since that decision. The next real turn can stall.
+    if (cause === 'kick' && verdict.sameAsPrevious) {
+      logger.info('Goal stall check skipped — a kick, not a repeated turn', { sessionKey });
+    }
+
+    await this.handleVerdict(sessionKey, session, activeGoal, verdict, summaryHash, { stallAllowed: cause !== 'kick' });
   }
 
   /**
@@ -426,12 +478,15 @@ export class GoalLoopController {
     activeGoal: SessionGoal,
     verdict: GoalEvalVerdict,
     summaryHash: string,
-    opts: { reused?: boolean } = {},
+    opts: { reused?: boolean; stallAllowed?: boolean } = {},
   ): Promise<void> {
     const { requestCoordinator, logger } = this.deps;
     // #745: where the current failure started — a reused verdict judged no new turn.
     if (!opts.reused) trackGoalFirstFailure(session, activeGoal, verdict, this.now());
-    const outcome = decideGoalEvalOutcome(activeGoal, verdict, this.now());
+    // A kick may not stall (runOnce); the repeat still counted toward the first failure above.
+    const judged =
+      opts.stallAllowed === false && verdict.sameAsPrevious ? { ...verdict, sameAsPrevious: false } : verdict;
+    const outcome = decideGoalEvalOutcome(activeGoal, judged, this.now());
     // Remember which summary produced this verdict so an identical next turn
     // can short-circuit (S9). A `complete` verdict stops the loop, so clear it.
     activeGoal.lastEvalSummaryHash = outcome.action === 'complete' ? undefined : summaryHash;
@@ -742,6 +797,7 @@ export class GoalLoopController {
     snapshot: GoalEpochSnapshot,
     startedAt: number,
     err: unknown,
+    cause: GoalLoopTrigger = 'turn',
   ): void {
     const { registry, logger } = this.deps;
     const live = registry.getSessionByKey(sessionKey)?.goal;
@@ -803,7 +859,7 @@ export class GoalLoopController {
               `(attempt ${live.evalDispatchRetryCount}/${GOAL_EVAL_DISPATCH_MAX_RETRIES}).\n*Error:* ${message}`,
           )
           .catch(() => undefined);
-        this.armEvalRetry(sessionKey, snapshot, delayMs);
+        this.armEvalRetry(sessionKey, snapshot, delayMs, cause);
         return;
       }
       // Budget exhausted — reset the streak so a user nudge starts a fresh
@@ -832,15 +888,26 @@ export class GoalLoopController {
    * retry never produces a stale extra eval. On a valid fire it lifts the
    * `evalBackoffUntil` gate so the re-entered run can actually dispatch.
    */
-  private armEvalRetry(sessionKey: string, snapshot: GoalEpochSnapshot, delayMs: number): void {
+  private armEvalRetry(
+    sessionKey: string,
+    snapshot: GoalEpochSnapshot,
+    delayMs: number,
+    cause: GoalLoopTrigger = 'turn',
+  ): void {
     const existing = this.armedEvalRetries.get(sessionKey);
     // Same intent already armed → dedupe. A DIFFERENT intent (goal replaced
     // or epoch moved since the stale arm) must NOT be suppressed — the stale
     // timer will fail its own snapshot check, so without replacement the new
     // backoff window would be left with no timer at all (stall).
-    if (existing && existing.goalId === snapshot.goalId && existing.epoch === snapshot.epoch) return;
+    // The retry re-enters with what woke the run it replaces (#788): a kick's
+    // retry stays a kick (it cannot stall); a real turn arriving meanwhile wins.
+    if (existing && existing.goalId === snapshot.goalId && existing.epoch === snapshot.epoch) {
+      if (cause === 'turn') existing.cause = 'turn';
+      return;
+    }
     const token = {};
-    this.armedEvalRetries.set(sessionKey, { token, goalId: snapshot.goalId, epoch: snapshot.epoch });
+    const entry = { token, goalId: snapshot.goalId, epoch: snapshot.epoch, cause };
+    this.armedEvalRetries.set(sessionKey, entry);
     this.scheduleEvalRetry(() => {
       // Superseded by a newer arm → this timer no longer owns the session's
       // retry; never delete the newer arm's bookkeeping.
@@ -853,7 +920,7 @@ export class GoalLoopController {
       liveAtFire.evalBackoffUntil = undefined;
       liveAtFire.evalRetryReason = undefined;
       this.persist();
-      this.onTurnSettled(sessionKey);
+      this.onTurnSettled(sessionKey, { cause: entry.cause });
     }, delayMs);
   }
 
