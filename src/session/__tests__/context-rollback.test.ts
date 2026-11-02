@@ -7,11 +7,14 @@ import { describe, expect, it } from 'vitest';
 import type { ConversationTurn } from '../../conversation/types';
 import type { ConversationSession } from '../../types';
 import {
+  activeChainFilter,
+  activeChainUuids,
   cancelContextRollback,
   keptUntilOf,
   requestContextRollback,
   rollbackInputLabel,
   rollbackInputPoints,
+  rollbackWorkLogPoints,
 } from '../context-rollback';
 
 const SID = 'a1b2c3d4-0000-4000-8000-000000000001';
@@ -178,5 +181,62 @@ describe('what the rollback keeps (#744 marks what it dropped)', () => {
     expect(keptUntilOf('goal', 50)).toBe(50);
     expect(keptUntilOf('input', undefined)).toBeUndefined();
     expect(keptUntilOf('worklog', 'x' as unknown as number)).toBeUndefined();
+  });
+});
+
+describe('after a rollback, only the active branch can be rolled back to (found on dev, 2026-11-02)', () => {
+  // A transcript where the context was rolled back to U(2): U(3)/U(4) are the dropped branch,
+  // U(5)/U(6) the active one (the SDK chains the next message to the rollback point).
+  const line = (uuid: string, parent: string | null) => JSON.stringify({ type: 'user', uuid, parentUuid: parent });
+  const text = [
+    line(U(1), null),
+    line(U(2), U(1)),
+    line(U(3), U(2)),
+    line(U(4), U(3)),
+    line(U(5), U(2)),
+    line(U(6), U(5)),
+    '{"type":"last-prompt"}',
+  ].join('\n');
+
+  it('the active chain is the tail and its ancestors', () => {
+    expect([...(activeChainUuids(text, U(6)) ?? [])].sort()).toEqual([U(1), U(2), U(5), U(6)].sort());
+    expect(activeChainUuids(text, U(9))).toBeUndefined();
+  });
+
+  it('the gate refuses a point on the dropped branch (the SDK would fail the turn: "No message found")', () => {
+    const s = session({ contextAnchor: A(6) });
+    const deps = { requestActive: false, readTranscript: () => text, now: () => 5 };
+    expect(requestContextRollback(s, { anchor: A(4), label: 'x', source: 'worklog' }, 'U1', deps)).toEqual({
+      ok: false,
+      reason: 'not-in-transcript',
+    });
+    expect(requestContextRollback(s, { anchor: A(2), label: 'x', source: 'worklog' }, 'U1', deps).ok).toBe(true);
+  });
+
+  it('the lists leave the dropped branch out', () => {
+    const s = session({ contextAnchor: A(6) });
+    const onChain = activeChainFilter(s, () => text);
+    expect(onChain).toBeDefined();
+    const entries = [3, 4, 5].map((n, i) => ({
+      seq: i + 1,
+      ts: i + 1,
+      kind: 'narration',
+      text: `p${n}`,
+      anchor: A(n),
+    }));
+    expect(rollbackWorkLogPoints(s, entries, onChain).map((p) => p.text)).toEqual(['p5']);
+    const record = {
+      turns: [3, 5].map((n) => ({
+        id: `t${n}`,
+        role: 'user',
+        timestamp: n,
+        rawContent: `in${n}`,
+        anchor: A(n),
+        origin: { by: 'user' },
+      })),
+    } as never;
+    expect(rollbackInputPoints(s, record, onChain).map((p) => p.text)).toEqual(['in5']);
+    // No transcript (or no tail) → no filter: the gate still checks presence.
+    expect(activeChainFilter(session({ contextAnchor: undefined }), () => text)).toBeUndefined();
   });
 });
