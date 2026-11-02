@@ -37,6 +37,8 @@ registerSkillStore({
   copySkill: (user, sourceUser, name, newName) => gatedManageSkillCopy(user, sourceUser, name, newName),
 });
 
+// #771 — the English display catalogs (dashboard pages, Slack text): loading registers them.
+import '@soma/common/i18n-en';
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import type { AgentTreeEvent } from '@soma/slack/agent-tree';
@@ -161,6 +163,11 @@ import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from '.
 import { getArchiveStore, resolveArchivedResume } from './session-archive';
 import { buildTaskSessionKey } from './session-identity';
 import { applySummaryTitle } from './session-title-policy';
+import {
+  displayLangMiddleware,
+  installRespondTranslation,
+  installSlackDisplayTranslation,
+} from './slack/display-translate';
 import {
   answerGoalCapDecision,
   flushGoalCapDmSync,
@@ -540,6 +547,15 @@ async function start() {
       },
     });
     timing('OAuth refresh scheduler wired');
+
+    // #774 — the bot's Slack text in each user's display language: every
+    // Web API call and respond() is translated on the way out, in the language
+    // of the request's user (the middleware below) or of the turn (the stream
+    // executor). Korean users' text passes through untouched.
+    const displayLangOf = (userId: string) => userSettingsStore.getUserDisplayLanguage(userId);
+    installSlackDisplayTranslation(displayLangOf);
+    installRespondTranslation(app);
+    app.use(displayLangMiddleware(displayLangOf));
 
     // Log ALL incoming events (before any handler)
     type SlackEventBody = {

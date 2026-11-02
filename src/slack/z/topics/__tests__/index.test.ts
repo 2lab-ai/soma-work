@@ -10,6 +10,7 @@ const EXPECTED_TOPICS = [
   'email',
   'epictasks',
   'goal',
+  'lang',
   'memory',
   'model',
   'notify',
