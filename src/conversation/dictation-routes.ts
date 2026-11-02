@@ -52,7 +52,9 @@ export function sameOrigin(headers: Record<string, unknown>, extraHosts: string[
   } catch {
     return false;
   }
-  const own = [headers.host, headers['x-forwarded-host'], ...extraHosts].filter((h): h is string => typeof h === 'string');
+  const own = [headers.host, headers['x-forwarded-host'], ...extraHosts].filter(
+    (h): h is string => typeof h === 'string',
+  );
   return own.some((h) => h.split(',')[0].trim() === host);
 }
 
@@ -76,92 +78,101 @@ export function registerDictationRoutes(
     return;
   }
 
-  server.get('/ws/dictation', { websocket: true, preHandler: [authMiddleware] } as never, ((socket: any, request: any) => {
-    const send = (msg: object) => {
-      try {
-        socket.send(JSON.stringify(msg));
-      } catch {
-        /* closed */
-      }
-    };
-    const refuse = (code: string, message: string) => {
-      send({ type: 'error', code, message });
-      try {
-        socket.close(1008, code);
-      } catch {
-        /* closed */
-      }
-    };
-    if (!sameOrigin(request?.headers ?? {}, opts.extraHosts?.() ?? [])) return refuse('bad-request', '다른 사이트에서는 받아쓸 수 없습니다');
-    const w = whisper();
-    if (!w?.ready()) return refuse('unavailable', w?.why() || '이 서버에는 위스퍼가 없습니다');
-    if (open >= MAX_DICTATIONS) return refuse('busy', '서버 위스퍼가 지금 다른 받아쓰기로 바쁩니다 — 잠시 뒤에 다시 눌러 주세요');
-    open++;
-
-    let stream: DictationStream | null = null;
-    let language = 'ko';
-    let closed = false;
-    let finishing = false;
-    const limit = setTimeout(() => {
-      send({ type: 'error', code: 'too-long', message: '받아쓰기는 한 번에 10분까지입니다 — 다시 누르면 이어서 받아씁니다' });
-      void finish();
-    }, MAX_DICTATION_MS);
-    limit.unref?.();
-
-    const finish = async () => {
-      if (finishing || !stream) return;
-      finishing = true;
-      const out = await stream.finish();
-      if (!closed) {
-        send({ type: 'done', final: out.final });
+  server.get(
+    '/ws/dictation',
+    { websocket: true, preHandler: [authMiddleware] } as never,
+    ((socket: any, request: any) => {
+      const send = (msg: object) => {
         try {
-          socket.close(1000, 'done');
+          socket.send(JSON.stringify(msg));
         } catch {
           /* closed */
         }
-      }
-    };
-
-    socket.on('message', (data: Buffer, isBinary: boolean) => {
-      if (closed || finishing) return;
-      if (!isBinary) {
-        let msg: { type?: string; lang?: string } = {};
+      };
+      const refuse = (code: string, message: string) => {
+        send({ type: 'error', code, message });
         try {
-          msg = JSON.parse(String(data));
+          socket.close(1008, code);
         } catch {
-          return refuse('bad-request', 'invalid message');
+          /* closed */
         }
-        if (msg.type === 'start' && !stream) {
-          language = LANGS[String(msg.lang || 'ko-KR')] ?? 'ko';
-          stream = new DictationStream({
-            transcribe: (pcm, prompt) => w.transcribe(pcm, { language, prompt }),
-            onText: (t) => {
-              if (!closed) send({ type: 'text', final: t.final, interim: t.interim });
-            },
-            onError: (message) => logger.warn('Dictation transcription failed', { message }),
-          });
-          send({ type: 'ready', model: w.model() });
-        } else if (msg.type === 'stop') {
-          void finish();
-        }
-        return;
-      }
-      if (!stream) return refuse('bad-request', 'start first');
-      if (data.length > MAX_FRAME_BYTES || data.length % 2) return refuse('bad-request', 'bad audio frame');
-      // A copy: the frame's buffer is the socket's, and Int16Array wants an aligned offset.
-      const pcm = new Int16Array(data.length / 2);
-      for (let i = 0; i < pcm.length; i++) pcm[i] = data.readInt16LE(i * 2);
-      stream.push(pcm);
-    });
+      };
+      if (!sameOrigin(request?.headers ?? {}, opts.extraHosts?.() ?? []))
+        return refuse('bad-request', '다른 사이트에서는 받아쓸 수 없습니다');
+      const w = whisper();
+      if (!w?.ready()) return refuse('unavailable', w?.why() || '이 서버에는 위스퍼가 없습니다');
+      if (open >= MAX_DICTATIONS)
+        return refuse('busy', '서버 위스퍼가 지금 다른 받아쓰기로 바쁩니다 — 잠시 뒤에 다시 눌러 주세요');
+      open++;
 
-    socket.on('close', () => {
-      closed = true;
-      clearTimeout(limit);
-      open--;
-    });
-  }) as never);
+      let stream: DictationStream | null = null;
+      let language = 'ko';
+      let closed = false;
+      let finishing = false;
+      const limit = setTimeout(() => {
+        send({
+          type: 'error',
+          code: 'too-long',
+          message: '받아쓰기는 한 번에 10분까지입니다 — 다시 누르면 이어서 받아씁니다',
+        });
+        void finish();
+      }, MAX_DICTATION_MS);
+      limit.unref?.();
+
+      const finish = async () => {
+        if (finishing || !stream) return;
+        finishing = true;
+        const out = await stream.finish();
+        if (!closed) {
+          send({ type: 'done', final: out.final });
+          try {
+            socket.close(1000, 'done');
+          } catch {
+            /* closed */
+          }
+        }
+      };
+
+      socket.on('message', (data: Buffer, isBinary: boolean) => {
+        if (closed || finishing) return;
+        if (!isBinary) {
+          let msg: { type?: string; lang?: string } = {};
+          try {
+            msg = JSON.parse(String(data));
+          } catch {
+            return refuse('bad-request', 'invalid message');
+          }
+          if (msg.type === 'start' && !stream) {
+            language = LANGS[String(msg.lang || 'ko-KR')] ?? 'ko';
+            stream = new DictationStream({
+              transcribe: (pcm, prompt) => w.transcribe(pcm, { language, prompt }),
+              onText: (t) => {
+                if (!closed) send({ type: 'text', final: t.final, interim: t.interim });
+              },
+              onError: (message) => logger.warn('Dictation transcription failed', { message }),
+            });
+            send({ type: 'ready', model: w.model() });
+          } else if (msg.type === 'stop') {
+            void finish();
+          }
+          return;
+        }
+        if (!stream) return refuse('bad-request', 'start first');
+        if (data.length > MAX_FRAME_BYTES || data.length % 2) return refuse('bad-request', 'bad audio frame');
+        // A copy: the frame's buffer is the socket's, and Int16Array wants an aligned offset.
+        const pcm = new Int16Array(data.length / 2);
+        for (let i = 0; i < pcm.length; i++) pcm[i] = data.readInt16LE(i * 2);
+        stream.push(pcm);
+      });
+
+      socket.on('close', () => {
+        closed = true;
+        clearTimeout(limit);
+        open--;
+      });
+    }) as never,
+  );
 }
-
 
 /** The live-dictation A2T instance as the routes see it. */
 export function dictationWhisperFromA2t(

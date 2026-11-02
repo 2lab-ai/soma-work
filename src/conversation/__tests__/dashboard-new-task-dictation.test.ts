@@ -218,7 +218,11 @@ function page(
     {
       window: win,
       dictationEngineChoice: () => opts.choice ?? 'device',
-      dictationServerStart: opts.server ?? (() => { throw new Error('the server engine was not chosen'); }),
+      dictationServerStart:
+        opts.server ??
+        (() => {
+          throw new Error('the server engine was not chosen');
+        }),
       _ntDictation: null,
       _ntDictationAutoOff: false,
       _ntDictationError: '',
@@ -1657,7 +1661,12 @@ describe('I1.4 — the dialog wires the stops; a live dictation counts as unsent
 // ── 서버 위스퍼 (epic #737, #739) ─────────────────────────────────────
 
 type Srv = {
-  cb: { onReady(m: string): void; onText(f: string, i: string): void; onError(c: string, m: string): void; onDone(f: string): void };
+  cb: {
+    onReady(m: string): void;
+    onText(f: string, i: string): void;
+    onError(c: string, m: string): void;
+    onDone(f: string): void;
+  };
   stops: number;
   aborts: number;
 };
@@ -1680,7 +1689,9 @@ describe('#739 — 받아쓰기 through the server’s Whisper when this device 
     expect(last(env.statuses)).toBe('서버 위스퍼 준비 중…');
     const s = fake.made[0];
     s.cb.onReady('large-v3-turbo');
-    expect(last(env.statuses)).toBe('듣는 중… 서버 위스퍼(large-v3-turbo)로 처리합니다 · 다시 누르거나 키보드로 쓰면 멈춥니다');
+    expect(last(env.statuses)).toBe(
+      '듣는 중… 서버 위스퍼(large-v3-turbo)로 처리합니다 · 다시 누르거나 키보드로 쓰면 멈춥니다',
+    );
     s.cb.onText('', '대시보드 새');
     expect(env.composer.value).toBe('메모: 대시보드 새');
     s.cb.onText('대시보드 새 작업', '화면에서');
@@ -1727,7 +1738,9 @@ describe('#739 — 받아쓰기 through the server’s Whisper when this device 
     const { api, env } = page({ choice: 'server', server: fake.start });
     await api.ntDictateStart();
     fake.made[0].cb.onError('unavailable', '이 서버에는 위스퍼가 없습니다');
-    expect(env.errorLine.textContent).toBe('이 서버에는 위스퍼가 없습니다 — 설정 › 받아쓰기에서 기기 기본으로 바꿀 수 있습니다');
+    expect(env.errorLine.textContent).toBe(
+      '이 서버에는 위스퍼가 없습니다 — 설정 › 받아쓰기에서 기기 기본으로 바꿀 수 있습니다',
+    );
     expect(api.__peek('_ntDictation')).toBeNull();
   });
 
@@ -1745,7 +1758,7 @@ describe('#739 — 받아쓰기 through the server’s Whisper when this device 
     const fake = serverFake();
     const firefox = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0';
     const media = { mediaDevices: { getUserMedia: () => Promise.resolve({}) } };
-    const { api } = page({ choice: 'server', server: fake.start, ua: firefox, win: { WebSocket: function () {} } });
+    const { api } = page({ choice: 'server', server: fake.start, ua: firefox, win: { WebSocket: () => {} } });
     // navigator is built by page(): give it the microphone
     Object.assign(api.__peek('window').navigator, media);
     expect(api.ntComposerData().tools?.[0]?.id).toBe('dictate');

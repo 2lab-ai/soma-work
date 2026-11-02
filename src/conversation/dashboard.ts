@@ -118,6 +118,8 @@ import { backfillArtifactsFromWorkLog } from './artifact-capture';
 import { type ArtifactSummary, getArtifactStore, type SessionArtifact } from './artifacts';
 import { buildCapacityView, type CapacityView } from './capacity-view';
 import { buildCronJobsView, type CronRunSessionLookup } from './cron-view';
+import { DICTATION_PREF_JS } from './dictation-pref';
+import { DICTATION_SERVER_JS } from './dictation-server-client';
 import { readAllInstances } from './instance-registry';
 import {
   createNewTaskGate,
@@ -155,8 +157,6 @@ import {
   uiLibTokensCss,
 } from './ui-lib';
 import { getUserMediaStore } from './user-media';
-import { DICTATION_PREF_JS } from './dictation-pref';
-import { DICTATION_SERVER_JS } from './dictation-server-client';
 import { VIEW_LAYOUT_CLIENT_JS } from './view-layout-client';
 import type { WorkLogEntry } from './work-log';
 

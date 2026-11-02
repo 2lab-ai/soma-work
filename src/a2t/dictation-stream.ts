@@ -217,8 +217,10 @@ export class DictationStream {
       if (this.silencePhrase(text, voiced)) text = '';
       const cur = words(text);
       let common = 0;
-      while (common < cur.length && common < this.previous.length && norm(cur[common]) === norm(this.previous[common])) common++;
-      if (common > this.committed.length) this.committed = this.committed.concat(cur.slice(this.committed.length, common));
+      while (common < cur.length && common < this.previous.length && norm(cur[common]) === norm(this.previous[common]))
+        common++;
+      if (common > this.committed.length)
+        this.committed = this.committed.concat(cur.slice(this.committed.length, common));
       this.interim = cur.slice(this.committed.length);
       this.previous = cur;
       this.emit();

@@ -175,7 +175,12 @@ export class A2tService {
     if (!this.isReady()) throw new Error(this.getStatusMessage());
     const bytes = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
     const response = (await this.sendRequest(
-      { type: 'transcribe_pcm', pcm: bytes.toString('base64'), language: opts.language ?? 'ko', prompt: opts.prompt ?? '' },
+      {
+        type: 'transcribe_pcm',
+        pcm: bytes.toString('base64'),
+        language: opts.language ?? 'ko',
+        prompt: opts.prompt ?? '',
+      },
       PCM_TIMEOUT_MS,
     )) as Record<string, unknown>;
     return String(response.text ?? '');

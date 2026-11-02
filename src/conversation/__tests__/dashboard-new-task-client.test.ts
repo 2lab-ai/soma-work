@@ -732,7 +732,14 @@ describe('submitNewTask — the submitted state is the one sent (#640 R2)', () =
 describe('ntComposerData — a dashboard task takes no files (#640 R2)', () => {
   const data = (destination: string) =>
     loadWith<{ ntComposerData(): Record<string, unknown> }>(
-      ['ntComposerData', 'ntReadDraft', 'ntDictationEngine', 'ntDictationChoice', 'ntDictationUsable', 'ntDictationTool'],
+      [
+        'ntComposerData',
+        'ntReadDraft',
+        'ntDictationEngine',
+        'ntDictationChoice',
+        'ntDictationUsable',
+        'ntDictationTool',
+      ],
       {
         _ntValue: '',
         _ntDictation: null,

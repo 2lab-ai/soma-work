@@ -166,16 +166,18 @@ describe('S5 — one transcription at a time; finishing finalizes what is left',
 });
 
 describe('S6 — silence phrases and failures', () => {
-  it.each(['감사합니다.', '시청해주셔서 감사합니다.', 'MBC 뉴스 김성현입니다.', 'Thank you.'])(
-    'drops "%s" from a short burst',
-    async (phrase) => {
-      const h = harness([phrase]);
-      await feed(h.stream, 400, true);
-      await feed(h.stream, 1000, false);
-      await h.stream.finish();
-      expect(h.last()?.final ?? '').toBe('');
-    },
-  );
+  it.each([
+    '감사합니다.',
+    '시청해주셔서 감사합니다.',
+    'MBC 뉴스 김성현입니다.',
+    'Thank you.',
+  ])('drops "%s" from a short burst', async (phrase) => {
+    const h = harness([phrase]);
+    await feed(h.stream, 400, true);
+    await feed(h.stream, 1000, false);
+    await h.stream.finish();
+    expect(h.last()?.final ?? '').toBe('');
+  });
 
   it('keeps a real 감사합니다 inside longer speech', async () => {
     const h = harness(['도와줘서 정말 감사합니다', '도와줘서 정말 감사합니다']);

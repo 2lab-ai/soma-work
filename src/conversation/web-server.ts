@@ -12,6 +12,7 @@ import Fastify, {
   type LightMyRequestResponse,
 } from 'fastify';
 import * as jwt from 'jsonwebtoken';
+import { dictationA2tError, getDictationA2tService } from '../a2t/a2t-service';
 import { isAdminUser } from '../admin-utils';
 import { config } from '../config';
 import { IS_DEV } from '../env-paths';
@@ -26,6 +27,7 @@ import {
   stopDashboardAdminApprovalWatch,
   stopDashboardPermissionWatch,
 } from './dashboard';
+import { dictationWhisperFromA2t, registerDictationRoutes } from './dictation-routes';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
 import { registerMemoryRoutes } from './memory-routes';
 import {
@@ -48,8 +50,6 @@ import {
   stopPublicUrlCheck,
 } from './public-url';
 import { getConversation, getTurnRawContent, listConversations } from './recorder';
-import { dictationA2tError, getDictationA2tService } from '../a2t/a2t-service';
-import { dictationWhisperFromA2t, registerDictationRoutes } from './dictation-routes';
 import { registerSettingsRoutes } from './settings-routes';
 import type { ConversationTurn } from './types';
 import { registerUserMediaRoutes } from './user-media-routes';
