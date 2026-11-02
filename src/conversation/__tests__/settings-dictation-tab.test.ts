@@ -577,9 +577,9 @@ return { dicTestStart, __peek: function (k) { return eval(k); } };`;
     vi.advanceTimersByTime(8000);
     expect(srvs[0].stop).toHaveBeenCalledTimes(1);
     // a slow finish is waited for longer than a recogniser's 3 s
-    vi.advanceTimersByTime(5000);
+    vi.advanceTimersByTime(40000);
     expect(api.__peek('_dicTest')).not.toBeNull();
-    vi.advanceTimersByTime(15000);
+    vi.advanceTimersByTime(20000);
     expect(api.__peek('_dicTest')).toBeNull();
     expect(srvs[0].abort).toHaveBeenCalledTimes(1);
     api.dicTestStart();

@@ -160,8 +160,9 @@ function dictationServerStart(cb, env) {
         } else if (!sent && ws.readyState === 1) ws.send(e.data);
       };
       try { node.port.postMessage('flush'); } catch (err) { return send(); }
-      // A worklet that never answers (a suspended context) does not hold the stop.
-      setTimeout(send, 300);
+      // A worklet that never answers (a suspended context) does not hold the stop; a merely busy one answers well
+      // within a second (one render quantum is 3 ms).
+      setTimeout(send, 1000);
     },
     // Drop everything now.
     abort: function () {

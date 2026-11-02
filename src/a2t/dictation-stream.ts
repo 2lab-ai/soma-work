@@ -229,7 +229,7 @@ export class DictationStream {
       try {
         text = await this.opts.transcribe(pcm, this.prompt());
       } catch (e) {
-        this.opts.onError?.((e as Error).message || String(e));
+        if (!this.cancelled) this.opts.onError?.((e as Error).message || String(e));
         return;
       }
       if (gen !== this.generation) return; // the segment closed meanwhile
@@ -270,7 +270,7 @@ export class DictationStream {
       try {
         text = await this.opts.transcribe(pcm, prompt);
       } catch (e) {
-        this.opts.onError?.((e as Error).message || String(e));
+        if (!this.cancelled) this.opts.onError?.((e as Error).message || String(e));
         text = placeholder;
       }
       if (this.silencePhrase(text, voiced)) text = '';

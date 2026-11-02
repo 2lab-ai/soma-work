@@ -304,6 +304,41 @@ describe('R4 — review (PR #751)', () => {
   });
 });
 
+describe('R5 — re-review (PR #751)', () => {
+  it('stop, then the socket goes away: the queued segments are not transcribed for no one', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const calls: number[] = [];
+    const signals: Array<AbortSignal | undefined> = [];
+    const w: DictationWhisper = {
+      ...fakeWhisper(),
+      transcribe: async (pcm, o) => {
+        calls.push(pcm.length);
+        signals.push(o.signal);
+        await gate;
+        return '말';
+      },
+    };
+    const a = await server(w);
+    const c = await open(a);
+    c.ws.send(JSON.stringify({ type: 'start' }));
+    for (let k = 0; k < 3; k++) {
+      for (let i = 0; i < 6; i++) c.ws.send(tone(100, true));
+      for (let i = 0; i < 9; i++) c.ws.send(tone(100, false));
+    }
+    await vi.waitFor(() => expect(calls.length).toBe(1));
+    c.ws.send(JSON.stringify({ type: 'stop' }));
+    await new Promise((r) => setTimeout(r, 30));
+    c.ws.terminate();
+    await vi.waitFor(() => expect(signals[0]?.aborted).toBe(true));
+    release();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(calls.length).toBe(1);
+  });
+});
+
 describe('sameOrigin', () => {
   it('a page of this server, a forwarded host, a configured host, or no browser', () => {
     expect(sameOrigin({ host: 'a.example', origin: 'https://a.example' })).toBe(true);
