@@ -89,6 +89,28 @@ function contentTypeOf(reply: FastifyReply): string {
   return typeof t === 'string' ? t : '';
 }
 
+/** A response body in the request's language (HTML pages, JSON errors and settings labels); anything else as is. */
+export function translateResponse(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  payload: unknown,
+  deps: DisplayLangWebDeps,
+): unknown {
+  if (typeof payload !== 'string') return payload;
+  try {
+    const lang = requestDisplayLang(request, deps);
+    if (lang === 'ko') return payload;
+    const type = contentTypeOf(reply);
+    if (type.startsWith('text/html')) return translatePage(payload, lang);
+    // Only an error's words and the settings labels change: the board's big polls are not parsed.
+    if (type.startsWith('application/json') && (reply.statusCode >= 400 || request.url.startsWith('/api/settings')))
+      return translateJsonBody(payload, lang, request.url);
+  } catch {
+    // A translation fault never costs the response: it goes as rendered.
+  }
+  return payload;
+}
+
 /**
  * Put every route of `server` in its request's language. Call before any
  * route is registered (it appends a pre-handler to each route as it is added)
@@ -105,15 +127,10 @@ export function registerDisplayLang(server: FastifyInstance, deps: DisplayLangWe
     const list = Array.isArray(pre) ? pre : pre ? [pre] : [];
     route.preHandler = [...list, scope] as typeof route.preHandler;
   });
-  server.addHook('onSend', async (request, reply, payload) => {
-    if (typeof payload !== 'string') return payload;
-    const lang = requestDisplayLang(request, deps);
-    if (lang === 'ko') return payload;
-    const type = contentTypeOf(reply);
-    if (type.startsWith('text/html')) return translatePage(payload, lang);
-    // Only an error's words and the settings labels change: the board's big polls are not parsed.
-    if (type.startsWith('application/json') && (reply.statusCode >= 400 || request.url.startsWith('/api/settings')))
-      return translateJsonBody(payload, lang, request.url);
-    return payload;
+  // Synchronous (done-callback) on purpose: an async onSend hook defers every send, and a handler that
+  // calls reply.send() without returning the reply then resolves first — Fastify sends twice
+  // (ERR_HTTP_HEADERS_SENT). A callback that answers at once keeps the send where it was.
+  server.addHook('onSend', (request, reply, payload, done) => {
+    done(null, translateResponse(request, reply, payload, deps));
   });
 }
