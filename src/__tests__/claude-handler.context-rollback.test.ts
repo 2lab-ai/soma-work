@@ -83,6 +83,8 @@ describe('ClaudeHandler — context rollback', () => {
         requestedBy: 'U1',
         source: 'input',
       },
+      // Redo ends when the turn runs: the rollback it would take back is applied now.
+      rewindRedo: [null],
       // The goal's first failure belongs to the dropped branch once the rollback runs.
       goal: { goalId: 'g1', status: 'active', firstFailure: { anchor: 'x', at: 1, turns: 2, progressed: false } },
     };
@@ -102,6 +104,7 @@ describe('ClaudeHandler — context rollback', () => {
 
     expect(queryMock.mock.calls[0][0].options.resumeSessionAt).toBe(U(3));
     expect(session.pendingRewind).toBeUndefined();
+    expect(session.rewindRedo).toBeUndefined();
     expect(session.goal.firstFailure).toBeUndefined();
     expect(decodeContextAnchor(session.contextAnchor)?.uuid).toBe(U(12));
 

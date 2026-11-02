@@ -10,6 +10,7 @@ import {
   type PendingRewind,
   sanitizeContextRewinds,
   sanitizePendingRewind,
+  sanitizeRewindRedo,
 } from '@soma/slack/context-anchor';
 import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
 import { endGoalCapDecision } from '@soma/slack/session-goal';
@@ -315,6 +316,7 @@ interface SerializedSession {
   contextAnchor?: string;
   pendingRewind?: PendingRewind;
   contextRewinds?: ContextRewindRecord[];
+  rewindRedo?: Array<PendingRewind | null>;
   activeLegStartedAtMs?: number;
   activeLegGoalId?: string;
   activeAccumulatedMs?: number;
@@ -3122,6 +3124,7 @@ export class SessionRegistry {
     session.contextAnchor = undefined;
     session.pendingRewind = undefined;
     session.contextRewinds = undefined;
+    session.rewindRedo = undefined;
     session.summaryTitle = undefined;
     session.summaryTitleTurnId = undefined;
     session.summaryTitleLastUpdatedAtMs = undefined;
@@ -3690,6 +3693,7 @@ export class SessionRegistry {
             contextAnchor: session.contextAnchor,
             pendingRewind: session.pendingRewind,
             contextRewinds: session.contextRewinds,
+            rewindRedo: session.rewindRedo,
             activeLegStartedAtMs: session.activeLegStartedAtMs,
             activeLegGoalId: session.activeLegGoalId,
             activeAccumulatedMs: session.activeAccumulatedMs,
@@ -4123,6 +4127,7 @@ export class SessionRegistry {
           contextAnchor: decodeContextAnchor(serialized.contextAnchor) ? serialized.contextAnchor : undefined,
           pendingRewind: sanitizePendingRewind(serialized.pendingRewind),
           contextRewinds: sanitizeContextRewinds(serialized.contextRewinds),
+          rewindRedo: sanitizeRewindRedo(serialized.rewindRedo),
           activeLegStartedAtMs: serialized.activeLegStartedAtMs,
           activeLegGoalId: serialized.activeLegGoalId,
           activeAccumulatedMs: typeof serialized.activeAccumulatedMs === 'number' ? serialized.activeAccumulatedMs : 0,

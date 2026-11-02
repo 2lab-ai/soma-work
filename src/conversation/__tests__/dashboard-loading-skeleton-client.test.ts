@@ -1101,6 +1101,11 @@ describe('[T3] session panel — turn-shaped skeleton instead of "Loading..."', 
         convTurnsOf: (list: { id: string }[]) => ({ turns: list.map((t) => ({ id: t.id, role: 'user' })), slots: [] }),
         convSlots: () => {},
         convSetData: (_el: unknown, d: Record<string, unknown>) => sets.push(d),
+        // 되돌리기 모드 (covered in dashboard-rollback-client.test.ts): off here.
+        onRbTurnClick: () => {},
+        rbIndex: () => null,
+        rewindSpansOf: (s: { contextRewinds?: unknown[] } | null) =>
+          s && Array.isArray(s.contextRewinds) && s.contextRewinds.length ? s.contextRewinds : null,
       },
       ['function __set(n, v) { eval(n + " = v"); }'],
     );

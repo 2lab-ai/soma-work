@@ -86,6 +86,8 @@ describe('RollbackHandler', () => {
       '롤백 1',
       '롤백 취소',
       'rollback goal',
+      'rollback redo',
+      '롤백 다시',
     ]) {
       expect(handler.canHandle(t)).toBe(true);
     }
@@ -110,6 +112,25 @@ describe('RollbackHandler', () => {
     expect(saves).toBe(1);
     expect(posted[0]).toContain('배포해줘');
     expect(posted[0]).toContain('이후 입력 2개');
+    // The instruction it rolls back before is quoted (the person sees what they would send again).
+    expect(posted[0]).toContain('> 배포해줘');
+  });
+
+  it('rollback redo takes the last rollback back, one step at a time (2026-11-03)', async () => {
+    await handler.execute(ctx('rollback redo'));
+    expect(posted[0]).toContain('되돌리기를 취소할 것이 없습니다');
+    await handler.execute(ctx('rollback 2'));
+    await handler.execute(ctx('rollback 1'));
+    expect(session.pendingRewind?.anchor).toBe(A(1));
+    await handler.execute(ctx('rollback redo', 'U2'));
+    expect(session.pendingRewind?.anchor).toBe(A(1));
+    expect(posted[3]).toContain('세션 주인');
+    await handler.execute(ctx('롤백 다시'));
+    expect(session.pendingRewind?.anchor).toBe(A(3)); // input 2 (테스트 다시)
+    expect(posted[4]).toContain('↪︎');
+    await handler.execute(ctx('rollback redo'));
+    expect(session.pendingRewind).toBeUndefined();
+    expect(posted[5]).toContain('문맥은 그대로');
   });
 
   it('refuses while a turn runs', async () => {

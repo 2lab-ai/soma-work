@@ -57,12 +57,16 @@ import {
   CONTEXT_ROLLBACK_REFUSAL_TEXT,
   type ContextRollbackRefusal,
   cancelContextRollback,
+  contextRedoNotice,
+  contextRollbackNotice,
   inputAnchorsFromTranscript,
   keptUntilOf,
   type RollbackPointsView,
   readTranscriptText,
+  redoContextRollback,
   requestContextRollback,
   rollbackInputPoints,
+  rollbackWorkLogInstructionPoints,
   rollbackWorkLogPoints,
 } from './session/context-rollback';
 import {
@@ -7345,6 +7349,7 @@ export class SlackHandler {
         actor: actorUserId || session.ownerId,
         requestActive: this.requestCoordinator.isRequestActive(sessionKey),
       },
+      rollbackWorkLogInstructionPoints(session, page.entries, onChain),
     );
   }
 
@@ -7355,7 +7360,10 @@ export class SlackHandler {
    */
   async handleContextRollback(
     sessionKey: string,
-    body: { anchor: string; label: string; source: 'input' | 'worklog'; at?: number } | { cancel: true },
+    body:
+      | { anchor: string; label: string; source: 'input' | 'worklog'; at?: number; text?: string }
+      | { cancel: true }
+      | { redo: true },
     actorUserId?: string,
   ): Promise<{ ok: true; cancelled?: boolean } | { ok: false; reason: ContextRollbackRefusal | 'not-found' }> {
     const session = this.claudeHandler.getSessionByKey(sessionKey);
@@ -7377,6 +7385,15 @@ export class SlackHandler {
       }
       return { ok: true, cancelled: had };
     }
+    if ('redo' in body) {
+      const redo = redoContextRollback(session, actor, {
+        requestActive: this.requestCoordinator.isRequestActive(sessionKey),
+      });
+      if (!redo.ok) return redo;
+      this.claudeHandler.saveSessions();
+      await tell(contextRedoNotice(redo, '대시보드'));
+      return { ok: true };
+    }
     const target = {
       anchor: body.anchor,
       label: body.label,
@@ -7388,9 +7405,7 @@ export class SlackHandler {
     });
     if (!result.ok) return result;
     this.claudeHandler.saveSessions();
-    await tell(
-      `⏪ 다음 턴부터 모델 문맥을 되돌립니다 — ${result.rewind.label} (대시보드). 그 뒤의 대화는 문맥에서 빠지고, 파일 변경은 되돌리지 않습니다. 다음 지시를 보내세요.`,
-    );
+    await tell(contextRollbackNotice(result.rewind, '대시보드', body.source === 'input' ? body.text : undefined));
     return { ok: true };
   }
 

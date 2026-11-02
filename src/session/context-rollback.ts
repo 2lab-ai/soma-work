@@ -14,12 +14,16 @@ import * as fs from 'node:fs';
 import {
   type AnchorRefusal,
   anchorRefusal,
+  CONTEXT_REWIND_REDO_MAX,
   decodeContextAnchor,
   encodeContextAnchor,
   type PendingRewind,
   turnStartAnchor,
 } from '@soma/slack/context-anchor';
 import { findTranscriptPath } from '@soma/slack/pipeline/transcript-sanitizer';
+
+export { CONTEXT_REWIND_REDO_MAX };
+
 import type { ConversationRecord, ConversationTurn } from '../conversation/types';
 import type { ConversationSession } from '../types';
 
@@ -29,7 +33,9 @@ export type ContextRollbackRefusal =
   | 'not-owner'
   | 'not-in-transcript'
   /** The target is the current tail: nothing to roll back. */
-  | 'no-change';
+  | 'no-change'
+  /** Redo: no rollback since the last turn to take back. */
+  | 'nothing-to-redo';
 
 export type ContextRollbackResult = { ok: true; rewind: PendingRewind } | { ok: false; reason: ContextRollbackRefusal };
 
@@ -173,14 +179,73 @@ export function requestContextRollback(
       ? { keptUntil: kept }
       : {}),
   };
+  // Redo takes this request back to what waited before it (none = null).
+  session.rewindRedo = [...(session.rewindRedo ?? []), session.pendingRewind ?? null].slice(-CONTEXT_REWIND_REDO_MAX);
   session.pendingRewind = rewind;
   return { ok: true, rewind };
 }
 
-/** Drop a rollback that has not run yet. Returns whether there was one. */
+export type ContextRedoResult =
+  | { ok: true; undone: PendingRewind; restored?: PendingRewind }
+  | { ok: false; reason: 'not-owner' | 'busy' | 'nothing-to-redo' };
+
+/**
+ * Redo: take the last rollback back — the waiting rollback it replaced (or none) waits again. Only
+ * until the next turn runs: that turn applies the rollback and clears the stack (an applied
+ * rollback cannot be taken back — the SDK cannot resume on the branch it dropped).
+ */
+export function redoContextRollback(
+  session: ConversationSession,
+  actor: string,
+  deps: { requestActive: boolean },
+): ContextRedoResult {
+  if (actor !== session.ownerId) return { ok: false, reason: 'not-owner' };
+  if (deps.requestActive) return { ok: false, reason: 'busy' };
+  const stack = session.rewindRedo ?? [];
+  const undone = session.pendingRewind;
+  if (!stack.length || !undone) return { ok: false, reason: 'nothing-to-redo' };
+  const previous = stack[stack.length - 1];
+  session.rewindRedo = stack.length > 1 ? stack.slice(0, -1) : undefined;
+  session.pendingRewind = previous ?? undefined;
+  return { ok: true, undone, ...(previous ? { restored: previous } : {}) };
+}
+
+/** The instruction quoted for Slack (`> ` per line), cut at `max` characters. */
+function quoteForSlack(text: string, max = 1500): string {
+  const cut = text.length > max ? `${text.slice(0, max - 1)}…` : text;
+  return cut
+    .split('\n')
+    .map((l) => `> ${l}`)
+    .join('\n');
+}
+
+/**
+ * The thread's notice for a rollback: an input point quotes the instruction it rolls back before
+ * (the person sees what they are about to send again); every point says when it applies, that
+ * files stay, and how to take it back.
+ */
+export function contextRollbackNotice(rewind: PendingRewind, via: string, instruction?: string): string {
+  const after =
+    '다음 지시부터 적용됩니다 — 그 뒤의 대화는 모델 문맥에서 빠지고, 파일 변경은 되돌리지 않습니다. 취소하려면 Redo (`rollback redo`).';
+  if (rewind.source === 'input' && instruction?.trim()) {
+    return `⏪ 모델 문맥을 이 지시를 보내기 *전*으로 되돌렸습니다 (${via}):\n${quoteForSlack(instruction.trim())}\n${after}`;
+  }
+  return `⏪ 모델 문맥을 되돌렸습니다 — ${rewind.label} (${via}). ${after}`;
+}
+
+/** The thread's notice for a Redo: what was taken back, and what waits now (if anything). */
+export function contextRedoNotice(result: Extract<ContextRedoResult, { ok: true }>, via: string): string {
+  const head = `↪︎ 되돌리기를 취소했습니다 (Redo, ${via}) — ${result.undone.label}.`;
+  return result.restored
+    ? `${head} 그 전에 고른 되돌리기가 다시 대기합니다: ${result.restored.label}`
+    : `${head} 문맥은 그대로 이어집니다.`;
+}
+
+/** Drop a rollback that has not run yet, and its redo history. Returns whether there was one. */
 export function cancelContextRollback(session: ConversationSession): boolean {
   const had = !!session.pendingRewind;
   session.pendingRewind = undefined;
+  session.rewindRedo = undefined;
   return had;
 }
 
@@ -194,6 +259,7 @@ export const CONTEXT_ROLLBACK_REFUSAL_TEXT: Record<ContextRollbackRefusal, strin
   'not-in-transcript':
     '모델 대화 기록의 현재 흐름에서 이 지점을 찾을 수 없어 되돌릴 수 없습니다 (이미 되돌려서 빠진 지점일 수 있습니다).',
   'no-change': '이미 이 지점이 마지막입니다 — 되돌릴 것이 없습니다.',
+  'nothing-to-redo': '되돌리기를 취소할 것이 없습니다 (다음 지시가 실행되면 그 전의 되돌리기는 확정됩니다).',
 };
 
 /** A user input the owner can roll back to (just before it). */
@@ -376,15 +442,57 @@ export function rollbackWorkLogPoints(
   return out;
 }
 
-/** What the picker and the rollback API answer for a session. */
+/** A person's instruction in the work log that can be rolled back to (just before it). */
+export interface RollbackInstructionPoint {
+  seq: number;
+  ts: number;
+  text: string;
+  anchor: string;
+}
+
+/**
+ * The work log's instructions the owner can roll back before, oldest first: a person's (not a
+ * system turn's) instruction recorded with a usable anchor — the point the turn started from — on
+ * the active branch, and not the current tail (nothing would leave).
+ */
+export function rollbackWorkLogInstructionPoints(
+  session: ConversationSession,
+  entries: ReadonlyArray<{ seq: number; ts: number; kind: string; text: string; anchor?: string; by?: string }>,
+  /** Keep only points on the active branch (`activeChainFilter`); absent = no filter. */
+  onChain?: (uuid: string) => boolean,
+): RollbackInstructionPoint[] {
+  const tail = turnStartAnchor(session);
+  const out: RollbackInstructionPoint[] = [];
+  for (const e of [...entries].sort((a, b) => a.seq - b.seq)) {
+    if (e.kind !== 'instruction' || e.by === 'system' || typeof e.anchor !== 'string') continue;
+    if (e.anchor === tail || anchorRefusal(session, e.anchor)) continue;
+    if (onChain && !onChain(decodeContextAnchor(e.anchor)?.uuid ?? '')) continue;
+    out.push({ seq: e.seq, ts: e.ts, text: e.text, anchor: e.anchor });
+  }
+  return out;
+}
+
+/** The longest instruction text the view carries (the confirmation shows it; the composer gets it back). */
+const ROLLBACK_TEXT_MAX = 4000;
+
+/**
+ * What the rollback mode and the rollback API answer for a session: every point, keyed to the
+ * entry it sits on — a conversation input by its turn id, a work-log entry by its seq.
+ */
 export interface RollbackPointsView {
   /** Why nothing can be rolled back right now (busy, not the owner …); absent = it can. */
   refusal?: ContextRollbackRefusal;
   /** The refusal in the thread's words. */
   refusalText?: string;
-  pending?: { label: string; requestedAt: number };
-  inputs: Array<{ anchor: string; label: string; at: number }>;
-  worklog: Array<{ anchor: string; label: string; at: number; kind: string }>;
+  pending?: { label: string; requestedAt: number; source: PendingRewind['source']; keptUntil?: number };
+  /** How many rollbacks Redo can take back (0 = none). */
+  redo: number;
+  /** Just before each of the person's inputs (the conversation's turns). */
+  inputs: Array<{ turnId: string; anchor: string; label: string; text: string; at: number }>;
+  /** Up to a work-log point (a reply, a tool result): it and everything before it stay. */
+  worklog: Array<{ seq: number; anchor: string; label: string; at: number; kind: string }>;
+  /** Just before each of the person's instructions in the work log (`at` = what the rollback keeps + 1). */
+  instructions: Array<{ seq: number; anchor: string; label: string; text: string; at: number }>;
 }
 
 /** "Bash {\"command\":\"npm test\"}" → "Bash · npm test": the tool and what it was asked to do. */
@@ -409,20 +517,44 @@ export function buildRollbackPointsView(
   inputs: RollbackInputPoint[],
   worklog: RollbackWorkLogPoint[],
   gate: { actor: string | undefined; requestActive: boolean },
+  instructions: RollbackInstructionPoint[] = [],
 ): RollbackPointsView {
   const refusal: ContextRollbackRefusal | undefined =
     gate.actor !== session.ownerId ? 'not-owner' : gate.requestActive ? 'busy' : undefined;
+  const pending = session.pendingRewind;
+  // The same instruction is recorded twice — the conversation's input and the work log's entry —
+  // with the same anchor; its rollback drops both, so it keeps up to the earlier of the two.
+  const inputAt = new Map<string, number>();
+  for (const p of inputs) if (!inputAt.has(p.anchor)) inputAt.set(p.anchor, p.timestamp);
   return {
     ...(refusal ? { refusal, refusalText: CONTEXT_ROLLBACK_REFUSAL_TEXT[refusal] } : {}),
-    ...(session.pendingRewind
-      ? { pending: { label: session.pendingRewind.label, requestedAt: session.pendingRewind.requestedAt } }
+    ...(pending
+      ? {
+          pending: {
+            label: pending.label,
+            requestedAt: pending.requestedAt,
+            source: pending.source,
+            ...(typeof pending.keptUntil === 'number' ? { keptUntil: pending.keptUntil } : {}),
+          },
+        }
       : {}),
-    inputs: inputs.slice(-20).map((p) => ({
+    redo: session.pendingRewind ? (session.rewindRedo?.length ?? 0) : 0,
+    inputs: inputs.slice(-500).map((p) => ({
+      turnId: p.turnId,
       anchor: p.anchor,
       label: `입력 직전: ${rollbackInputLabel(p.text)}`,
+      text: String(p.text ?? '').slice(0, ROLLBACK_TEXT_MAX),
       at: p.timestamp,
     })),
-    worklog: worklog.slice(-30).map((p) => ({
+    instructions: instructions.slice(-500).map((p) => ({
+      seq: p.seq,
+      anchor: p.anchor,
+      label: `입력 직전: ${rollbackInputLabel(p.text)}`,
+      text: String(p.text ?? '').slice(0, ROLLBACK_TEXT_MAX),
+      at: Math.min(p.ts, inputAt.get(p.anchor) ?? p.ts),
+    })),
+    worklog: worklog.slice(-500).map((p) => ({
+      seq: p.seq,
       anchor: p.anchor,
       label: `${WORK_LOG_KIND_LABEL[p.kind] ?? p.kind}까지: ${p.call ? toolCallLabel(p.call) : rollbackInputLabel(p.text)}`,
       at: p.ts,

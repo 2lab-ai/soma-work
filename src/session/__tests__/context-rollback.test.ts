@@ -158,8 +158,14 @@ describe('buildRollbackPointsView', () => {
       { actor: 'U2', requestActive: false },
     );
     expect(v.refusal).toBe('not-owner');
-    expect(v.pending).toEqual({ label: '입력 직전: x', requestedAt: 3 });
-    expect(v.inputs[0]).toEqual({ anchor: A(1), label: '입력 직전: 배포해', at: 1 });
+    expect(v.pending).toEqual({ label: '입력 직전: x', requestedAt: 3, source: 'input' });
+    expect(v.inputs[0]).toEqual({
+      turnId: 't',
+      anchor: A(1),
+      label: '입력 직전: 배포해',
+      text: '배포해\n자세히',
+      at: 1,
+    });
     expect(v.worklog[0].label).toBe('툴 결과까지: ok');
     expect(buildRollbackPointsView(s, [], [], { actor: 'U1', requestActive: true }).refusal).toBe('busy');
   });

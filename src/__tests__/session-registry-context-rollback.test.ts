@@ -43,6 +43,10 @@ describe('SessionRegistry — context rollback fields', () => {
       keptUntil: 4,
     };
     s.contextRewinds = [{ from: 1, to: 3, label: '입력 직전: 첫 지시', at: 3 }];
+    s.rewindRedo = [
+      null,
+      { anchor: A(4), label: '응답까지: ok', requestedAt: 6, requestedBy: 'U1', source: 'worklog' },
+    ];
     writer.saveSessions();
     const reader = new SessionRegistry();
     reader.loadSessions();
@@ -57,6 +61,11 @@ describe('SessionRegistry — context rollback fields', () => {
       keptUntil: 4,
     });
     expect(r?.contextRewinds).toEqual([{ from: 1, to: 3, label: '입력 직전: 첫 지시', at: 3 }]);
+    // Redo survives a restart (the rollback has not run yet).
+    expect(r?.rewindRedo).toEqual([
+      null,
+      { anchor: A(4), label: '응답까지: ok', requestedAt: 6, requestedBy: 'U1', source: 'worklog' },
+    ]);
   });
 
   it('drops malformed values on load', () => {
@@ -80,9 +89,11 @@ describe('SessionRegistry — context rollback fields', () => {
     s.contextAnchor = A(5);
     s.pendingRewind = { anchor: A(2), label: 'x', requestedAt: 7, requestedBy: 'U1', source: 'input' };
     s.contextRewinds = [{ from: 1, to: 3, label: 'x', at: 3 }];
+    s.rewindRedo = [null];
     reg.resetSessionContext('C1', '171.3');
     expect(s.contextAnchor).toBeUndefined();
     expect(s.pendingRewind).toBeUndefined();
     expect(s.contextRewinds).toBeUndefined();
+    expect(s.rewindRedo).toBeUndefined();
   });
 });

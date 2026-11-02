@@ -646,6 +646,9 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
         SELF_INSTANCE_NAME: '',
         READ_ONLY_MSG: 'read only',
         _busy: Object.create(null),
+        // 되돌리기 모드: off (covered in dashboard-rollback-client.test.ts).
+        _rb: null,
+        rbOn: () => false,
         ...inject,
       },
     );

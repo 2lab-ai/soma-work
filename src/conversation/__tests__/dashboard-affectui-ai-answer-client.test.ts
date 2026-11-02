@@ -336,6 +336,11 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
         convTurnsOf: (list: unknown[], c: Env) => ({ turns: list.map((t) => ({ ...(t as object), c })), slots: [] }),
         convSlots: (_el: unknown, s: unknown) => slots.push(s),
         convSetData: (_el: unknown, d: Record<string, unknown>) => sets.push(d),
+        // 되돌리기 모드 (covered in dashboard-rollback-client.test.ts): off here.
+        onRbTurnClick: () => {},
+        rbIndex: () => null,
+        rewindSpansOf: (s: { contextRewinds?: unknown[] } | null) =>
+          s && Array.isArray(s.contextRewinds) && s.contextRewinds.length ? s.contextRewinds : null,
         ...env,
       },
     );

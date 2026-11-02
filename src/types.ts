@@ -956,6 +956,8 @@ export interface ConversationSession {
   pendingRewind?: PendingRewind;
   /** Context rollback (#744) — what applied rollbacks dropped, for the dashboard's marks. */
   contextRewinds?: ContextRewindRecord[];
+  /** Rollback mode (2026-11-03) — Redo: the waiting rollbacks each request replaced, until the next turn. */
+  rewindRedo?: Array<PendingRewind | null>;
   // Compaction Tracking (#617):
   // Monotonically-incrementing epoch; bumped by START signals (PreCompact hook or `status==='compacting'` fallback).
   compactEpoch?: number;

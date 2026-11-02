@@ -1392,6 +1392,8 @@ export class ClaudeHandler implements TurnSteeringPort {
       // it. One-shot: the request is cleared here whatever the turn does, so a
       // refused uuid fails one turn, never every turn.
       if (session && !incident && options.resume) {
+        // A turn runs: a rollback waiting now is applied below and cannot be taken back (Redo ends).
+        session.rewindRedo = undefined;
         const rewind = consumePendingRewind(session);
         if (rewind) {
           options.resumeSessionAt = rewind.uuid;
