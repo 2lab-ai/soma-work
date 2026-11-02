@@ -983,7 +983,7 @@ describe('model switch on the open card (T4/T5)', () => {
   ];
   const notes: Record<string, unknown> = {};
   const m = load<{
-    renderModelPicker(s: unknown, canSwitch: boolean, short: string): string;
+    renderModelPicker(s: unknown, canSwitch: boolean, short: string, surface?: string, why?: string): string;
     mpData(s: unknown): {
       models: Array<{ id: string; autoCompactAt: number }>;
       value: { model: string };
@@ -1005,6 +1005,8 @@ describe('model switch on the open card (T4/T5)', () => {
       'mpRows',
       'mpData',
       'renderModelPicker',
+      'mpReadOnlyWhy',
+      'mpReadOnlyNote',
       'renderModelNote',
       'modelSwitchNote',
     ],
@@ -1050,7 +1052,10 @@ describe('model switch on the open card (T4/T5)', () => {
   });
 
   it('read-only viewers see the model name, no control; a waiting switch locks the list and says so', () => {
-    expect(m.renderModelPicker(s(), false, 'opus-5-5[1m]')).toBe('<span class="cb-model-name">opus-5-5[1m]</span>');
+    // #813 — the element, disabled (data-mp-ro carries why); no menu.
+    expect(m.renderModelPicker(s(), false, 'opus-5-5[1m]', 'panel', '끝난 세션이라 바꿀 수 없습니다')).toContain(
+      'data-mp-ro="끝난 세션이라 바꿀 수 없습니다"',
+    );
     expect(m.mpData(s({ pendingModel: 'grok[1m]' })).busy.model).toBe('compact 후 grok[1m](으)로 전환 대기 중');
     expect(m.renderModelNote(s({ pendingModel: 'grok[1m]' }))).toContain('compact 후 grok[1m](으)로 전환합니다');
   });
