@@ -67,6 +67,11 @@ describe('SkillForceHandler — environment-skill gate', () => {
     });
   });
 
+  it('a `$plugin:skill` typed in the dashboard panel passes its ref to the admin ask (#785)', async () => {
+    await handler.execute({ ...makeCtx('$acme-env:post-deploy'), dashboardClientRef: 'optimistic-1-ab' });
+    expect(h.requestEnv).toHaveBeenCalledWith(expect.objectContaining({ dashboardClientRef: 'optimistic-1-ab' }));
+  });
+
   it('DENY: a non-admin without a grant halts and asks the admins, leaking nothing', async () => {
     const text = '$acme-env:post-deploy --preflight repo=acme/app target=deploy/staging';
     const result = await handler.execute(makeCtx(text));
