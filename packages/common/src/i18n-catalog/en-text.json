@@ -1601,7 +1601,6 @@
   "최근 지시와 답변": "Recent instructions and answers",
   "최대 {0}자 (Slack 입력 한도). 더 길게는 cron prompt 명령 사용.": "Max {0} characters (Slack input limit). For longer prompts, use the cron prompt command.",
   "최종 답": "Final answer",
-  "최종 답변": "Final answer",
   "추가": "Add",
   "추가 사용 없을 때 해당 창만 회복 · 다른 한도·쿨다운·인증 상태는 별도 확인.": "Only that window recovers if there is no further usage · check other limits, cooldowns, and auth state separately.",
   "추가된 새 스킬이 없습니다.": "No new skills were added.",
