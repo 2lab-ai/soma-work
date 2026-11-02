@@ -1006,6 +1006,7 @@ describe('model switch on the open card (T4/T5)', () => {
       'mpData',
       'renderModelPicker',
       'mpReadOnlyWhy',
+      'mpReadOnlyNote',
       'renderModelNote',
       'modelSwitchNote',
     ],

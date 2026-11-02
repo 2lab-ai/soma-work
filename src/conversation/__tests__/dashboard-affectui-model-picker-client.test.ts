@@ -128,6 +128,7 @@ function mapper(notes: Record<string, unknown> = {}) {
       'mpData',
       'renderModelPicker',
       'mpReadOnlyWhy',
+      'mpReadOnlyNote',
       'renderModelNote',
     ],
     ['_busy'],
@@ -172,7 +173,17 @@ describe('D1 — one <ui-model-picker> per surface for the owner; others read th
     expect(why).toContain('끝난 세션이라 바꿀 수 없습니다');
     const hydrate = clientFn('mpHydrate');
     expect(hydrate).toContain("var ro = els[i].getAttribute('data-mp-ro');");
-    expect(hydrate).toContain('if (ro) d.disabled = ro;');
+    expect(hydrate).toContain('if (ro) d.disabled = mpReadOnlyNote(ro, s);');
+    // #821 review P2 — the disabled trigger names only the level that runs; when the model caps the set one the
+    // reason says both (the old read-only text read "매우 높음 → 높음").
+    const note = new Function(
+      'EFFORT_LABELS',
+      `${clientFn('effortLabel')}\n${clientFn('mpReadOnlyNote')}\nreturn mpReadOnlyNote;`,
+    )({ high: '높음', xhigh: '매우 높음' }) as (why: string, s: Record<string, unknown>) => string;
+    expect(note('내 세션이 아니라 바꿀 수 없습니다', { effort: 'xhigh', effortEffective: 'high' })).toBe(
+      '내 세션이 아니라 바꿀 수 없습니다 · 설정 매우 높음 → 실행 높음',
+    );
+    expect(note('끝난 세션이라 바꿀 수 없습니다', { effort: 'high' })).toBe('끝난 세션이라 바꿀 수 없습니다');
   });
 
   it('the card strip: the owner gets the element; others the element disabled (the level only when the name is hidden)', () => {

@@ -13110,6 +13110,12 @@ function renderModelPicker(s, canSwitch, modelShort, surface, readOnlyWhy) {
     + '<ui-model-picker lang="ko"' + (where === 'panel' && canSwitch ? ' side="top"' : '') + ' data-mp-key="' + escAttr(s.key) + '" data-mp-surface="' + where + '"' + ro + '>'
     + '<span class="mp-fallback">' + (modelShort || '모델') + '</span></ui-model-picker></span>';
 }
+// The disabled picker's reason, and — when the model runs a lower level than the one set — both levels: its trigger
+// names only the level that runs (#821 review P2; the old read-only text read "매우 높음 → 높음").
+function mpReadOnlyNote(why, s) {
+  var capped = s && s.effortEffective && s.effort && s.effortEffective !== s.effort;
+  return capped ? why + ' · 설정 ' + effortLabel(s.effort) + ' → 실행 ' + effortLabel(s.effortEffective) : why;
+}
 // Why a viewer cannot change a session's model · effort here (the disabled picker's reason).
 function mpReadOnlyWhy(s, isOwner, col) {
   if (!isOwner) return '내 세션이 아니라 바꿀 수 없습니다';
@@ -13220,7 +13226,7 @@ function mpHydrate(root) {
     if (els[i]._mpSig === sig) continue;
     els[i]._mpSig = sig;
     var d = mpData(s);
-    if (ro) d.disabled = ro;
+    if (ro) d.disabled = mpReadOnlyNote(ro, s);
     els[i].data = d;
   }
 }
