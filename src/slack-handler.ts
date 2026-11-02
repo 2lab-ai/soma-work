@@ -110,8 +110,10 @@ import { bumpGoalEpoch, GOAL_SUMMARY_PERSIST_MAX, resetGoalContinuationOnUserMes
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from './slack/goal-host-actions';
 import type { GoalStallQuestion } from './slack/goal-loop-controller';
 import {
+  applyGoalStallRollbackAnswer,
   buildGoalStallQuestion,
   type GoalStallRetireCause,
+  goalStallRollbackNotice,
   setGoalStallRetiredListener,
   shouldAskGoalStallQuestion,
 } from './slack/goal-stall';
@@ -1924,6 +1926,23 @@ export class SlackHandler {
         // mocks. Real ClaudeHandler always exports it (claude-handler.ts:374).
         const fullSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
         if (fullSession?.goal) {
+          // #745: the answer to the stall question said "roll back to the first
+          // failure" — this very turn runs from there. Read before the reset,
+          // which ends the stall round.
+          const stallRollback = applyGoalStallRollbackAnswer(fullSession, event.text ?? '', event.user);
+          if (stallRollback) {
+            // Told either way: a refused rollback is never silent (the turn runs as it is).
+            const log = stallRollback.ok ? this.logger.info.bind(this.logger) : this.logger.warn.bind(this.logger);
+            log('Goal stall answer: roll back to the first failure', {
+              sessionKey: sessionResult.sessionKey,
+              ...(stallRollback.ok ? {} : { refusal: stallRollback.reason }),
+            });
+            const notice = goalStallRollbackNotice(stallRollback);
+            recordSessionNotice(fullSession, notice, { sessionKey: sessionResult.sessionKey });
+            void this.slackApi
+              .postSystemMessage(channel, notice, { threadTs: originalThreadTs })
+              .catch(() => undefined);
+          }
           resetGoalContinuationOnUserMessage(fullSession);
           this.claudeHandler.saveSessions();
         }
@@ -6796,6 +6815,57 @@ export class SlackHandler {
   }
 
   /**
+   * Goal stall (same failure twice): ask the owner which next instruction to
+   * give, through the same question surface as a model's ASK_USER_QUESTION —
+   * the thread form and the dashboard card, answered as a real user turn.
+   * Skipped when a turn started in the meantime (the user is already steering)
+   * or a question is already open (never supersede one the model asked).
+   */
+  async askGoalStallQuestion(input: GoalStallQuestion): Promise<void> {
+    const session = this.claudeHandler.getSessionByKey(input.sessionKey);
+    if (!shouldAskGoalStallQuestion(session, input, this.requestCoordinator.isRequestActive(input.sessionKey))) return;
+    // Re-checked after the Slack post: the owner may have moved on meanwhile.
+    const roundOpen = () =>
+      this.claudeHandler.getSessionByKey(input.sessionKey)?.goal?.stall?.stallId === input.stallId &&
+      !this.requestCoordinator.isRequestActive(input.sessionKey);
+    const turnId = await this.streamExecutor.askUserQuestionFromHost(input.sessionKey, buildGoalStallQuestion(input), {
+      stillWanted: roundOpen,
+    });
+    if (!turnId) return;
+    const stall = this.claudeHandler.getSessionByKey(input.sessionKey)?.goal?.stall;
+    if (stall?.stallId === input.stallId) {
+      // Bound to its round: when the round ends without an answer, it is retracted.
+      stall.questionTurnId = turnId;
+      this.claudeHandler.saveSessions();
+    } else {
+      await this.streamExecutor.retractHostQuestion(input.sessionKey, turnId);
+    }
+  }
+
+  /**
+   * A stall round ended without an answer (pause, done, delete, resume, an
+   * objective update, a goal added): its question stops accepting answers.
+   * A round the owner ended by writing needs nothing — that turn clears it.
+   */
+  private onGoalStallRetired(goal: SessionGoal, stall: SessionGoalStall, cause: GoalStallRetireCause): void {
+    if (cause === 'user-message' || !stall.questionTurnId) return;
+    const turnId = stall.questionTurnId;
+    for (const [sessionKey, session] of this.claudeHandler.getSessionRegistry().getAllSessions()) {
+      if (session.goal !== goal && session.goal?.goalId !== goal.goalId) continue;
+      // Not deferred: the retraction frees the session synchronously (before any
+      // Slack call), so the caller's loop kick right after — goal resume, an
+      // objective update — finds it idle instead of waiting. The caller persists.
+      void this.streamExecutor.retractHostQuestion(sessionKey, turnId).catch((err: unknown) =>
+        this.logger.warn('Retracting a goal stall question failed', {
+          sessionKey,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+      return;
+    }
+  }
+
+  /**
    * Context rollback (#744): the points the dashboard picker offers — the
    * owner's inputs and the work log's cut points of this context — and whether
    * a rollback can be asked now. `actorUserId` is the signed-in user; the route
@@ -6861,57 +6931,6 @@ export class SlackHandler {
       `⏪ 다음 턴부터 모델 문맥을 되돌립니다 — ${result.rewind.label} (대시보드). 그 뒤의 대화는 문맥에서 빠지고, 파일 변경은 되돌리지 않습니다. 다음 지시를 보내세요.`,
     );
     return { ok: true };
-  }
-
-  /**
-   * Goal stall (same failure twice): ask the owner which next instruction to
-   * give, through the same question surface as a model's ASK_USER_QUESTION —
-   * the thread form and the dashboard card, answered as a real user turn.
-   * Skipped when a turn started in the meantime (the user is already steering)
-   * or a question is already open (never supersede one the model asked).
-   */
-  async askGoalStallQuestion(input: GoalStallQuestion): Promise<void> {
-    const session = this.claudeHandler.getSessionByKey(input.sessionKey);
-    if (!shouldAskGoalStallQuestion(session, input, this.requestCoordinator.isRequestActive(input.sessionKey))) return;
-    // Re-checked after the Slack post: the owner may have moved on meanwhile.
-    const roundOpen = () =>
-      this.claudeHandler.getSessionByKey(input.sessionKey)?.goal?.stall?.stallId === input.stallId &&
-      !this.requestCoordinator.isRequestActive(input.sessionKey);
-    const turnId = await this.streamExecutor.askUserQuestionFromHost(input.sessionKey, buildGoalStallQuestion(input), {
-      stillWanted: roundOpen,
-    });
-    if (!turnId) return;
-    const stall = this.claudeHandler.getSessionByKey(input.sessionKey)?.goal?.stall;
-    if (stall?.stallId === input.stallId) {
-      // Bound to its round: when the round ends without an answer, it is retracted.
-      stall.questionTurnId = turnId;
-      this.claudeHandler.saveSessions();
-    } else {
-      await this.streamExecutor.retractHostQuestion(input.sessionKey, turnId);
-    }
-  }
-
-  /**
-   * A stall round ended without an answer (pause, done, delete, resume, an
-   * objective update, a goal added): its question stops accepting answers.
-   * A round the owner ended by writing needs nothing — that turn clears it.
-   */
-  private onGoalStallRetired(goal: SessionGoal, stall: SessionGoalStall, cause: GoalStallRetireCause): void {
-    if (cause === 'user-message' || !stall.questionTurnId) return;
-    const turnId = stall.questionTurnId;
-    for (const [sessionKey, session] of this.claudeHandler.getSessionRegistry().getAllSessions()) {
-      if (session.goal !== goal && session.goal?.goalId !== goal.goalId) continue;
-      // Not deferred: the retraction frees the session synchronously (before any
-      // Slack call), so the caller's loop kick right after — goal resume, an
-      // objective update — finds it idle instead of waiting. The caller persists.
-      void this.streamExecutor.retractHostQuestion(sessionKey, turnId).catch((err: unknown) =>
-        this.logger.warn('Retracting a goal stall question failed', {
-          sessionKey,
-          error: err instanceof Error ? err.message : String(err),
-        }),
-      );
-      return;
-    }
   }
 
   /**
