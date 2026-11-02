@@ -111,3 +111,18 @@ describe('switchSessionEffort — the level must be one the session’s model ru
     expect(() => switchSessionEffort('C1:t1', 'ultra', deps(s, { menu }))).toThrow(EffortSwitchError);
   });
 });
+
+describe('switchSessionEffort — a session without a model of its own runs the owner’s default', () => {
+  it('ultra is taken when the owner’s default model runs it, refused when it does not', () => {
+    const menu = (model: string) =>
+      model.startsWith('gpt-') ? ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] : undefined;
+    const s = session({ model: undefined } as Partial<ConversationSession>);
+    expect(
+      switchSessionEffort('C1:t1', 'ultra', deps(s, { menu, ownerDefaultModel: () => 'gpt-6.1-sol[1m]' })).effort,
+    ).toBe('ultra');
+    const t = session({ model: undefined, effort: 'high' } as Partial<ConversationSession>);
+    expect(() =>
+      switchSessionEffort('C1:t1', 'ultra', deps(t, { menu, ownerDefaultModel: () => 'claude-opus-5-5[1m]' })),
+    ).toThrow(EffortSwitchError);
+  });
+});

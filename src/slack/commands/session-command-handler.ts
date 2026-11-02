@@ -1,4 +1,5 @@
 import { getVerbosityFlags, getVerbosityName, LOG_DETAIL, VERBOSITY_NAMES } from '@soma/slack/output-flags';
+import { clampEffortToSupported } from 'soma-lib';
 import { resolveContextWindow } from '../../metrics/model-registry';
 import { allowedEffortsFor } from '../../session/effort-menu';
 import {
@@ -267,9 +268,16 @@ export class SessionCommandHandler implements CommandHandler {
     if (session.usage) {
       session.usage.contextWindow = resolveContextWindow(resolved);
     }
+    // The effort follows the model: a level the new model does not run becomes the nearest one it does.
+    const allowed = allowedEffortsFor(resolved);
+    let effortNote = '';
+    if (session.effort && !allowed.includes(session.effort)) {
+      session.effort = clampEffortToSupported(allowed, session.effort);
+      effortNote = `\nEffort is now *${session.effort}* (this model does not run the previous level).`;
+    }
     const displayName = userSettingsStore.getModelDisplayName(resolved);
     await say({
-      text: `⚡ *Session Model Changed*\n\nThis session now uses: *${displayName}* (\`${resolved}\`)\n_User default unchanged. Use \`model ${input}\` to change permanently._`,
+      text: `⚡ *Session Model Changed*\n\nThis session now uses: *${displayName}* (\`${resolved}\`)${effortNote}\n_User default unchanged. Use \`model ${input}\` to change permanently._`,
       thread_ts: threadTs,
     });
     return { handled: true };
