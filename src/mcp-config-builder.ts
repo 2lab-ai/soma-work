@@ -7,8 +7,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { McpSdkServerConfigWithInstance, McpStdioServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
-import { createPermissionPromptHandler, type PermissionRequestContext } from '@soma/mcp-server-permission';
+import {
+  createPermissionPromptHandler,
+  type PermissionAdviceRequest,
+  type PermissionRequestContext,
+} from '@soma/mcp-server-permission';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
+import type { PermissionAdvice } from 'somalib/permission/shared-store';
 import { z } from 'zod';
 import { isAdminUser } from './admin-utils';
 import type { ExecutionContext } from './agent-runtime/execution-context';
@@ -100,6 +105,16 @@ export interface McpConfig {
 }
 
 /**
+ * SSOT 2026-11-02 T2 — the AI's advice for one permission prompt of one turn:
+ * the session (`scope`, the key the policy hook used), its user and directory,
+ * and the call. Null when there is none. Wired by `ClaudeHandler` to the
+ * guardian (`resolvePermissionAdvice`).
+ */
+export type PermissionAdvisor = (
+  req: PermissionAdviceRequest & { scope: string; user: string; cwd?: string },
+) => Promise<PermissionAdvice | null>;
+
+/**
  * McpConfigBuilder assembles MCP server configuration
  * - Adds permission prompt server when needed
  * - Manages allowed tools list
@@ -111,6 +126,7 @@ export class McpConfigBuilder {
   /** Agent configs for agent MCP server (Trace: docs/current/plans/multi-agent/trace.md, S4) */
   private agentConfigs?: Record<string, any>;
   private serverCommandRegistry = new Map<InternalMcpServerName, InternalMcpServerCommand>();
+  private permissionAdvisor?: PermissionAdvisor;
 
   constructor(mcpManager: McpManager) {
     this.mcpManager = mcpManager;
@@ -122,6 +138,11 @@ export class McpConfigBuilder {
    */
   setAgentConfigs(configs: Record<string, any>): void {
     this.agentConfigs = configs;
+  }
+
+  /** SSOT 2026-11-02 T2 — where every permission prompt gets the AI's advice (set once by ClaudeHandler). */
+  setPermissionAdvisor(advisor: PermissionAdvisor): void {
+    this.permissionAdvisor = advisor;
   }
 
   /**
@@ -210,7 +231,9 @@ export class McpConfigBuilder {
     // Always add permission prompt server when in Slack context
     // Even bypass users need the MCP server for dangerous command approval via Slack UI
     if (slackContext) {
-      internalServers['permission-prompt'] = this.buildPermissionServer(slackContext)['permission-prompt'];
+      internalServers['permission-prompt'] = this.buildPermissionServer(slackContext, executionContext)[
+        'permission-prompt'
+      ];
       config.permissionPromptToolName = 'mcp__permission-prompt__permission_prompt';
 
       this.logger.debug('Configured permission prompts for Slack integration', {
@@ -311,7 +334,15 @@ export class McpConfigBuilder {
    * The handler remains owned by @soma/mcp-server-permission so the SDK and
    * stdio entrypoints share the same Slack approval semantics.
    */
-  private buildPermissionServer(slackContext: SlackContext): Record<string, McpSdkServerConfigWithInstance> {
+  private buildPermissionServer(
+    slackContext: SlackContext,
+    executionContext?: ExecutionContext,
+  ): Record<string, McpSdkServerConfigWithInstance> {
+    // The advice is looked up under the key the policy hook left it at: the turn's session key.
+    const advisor = this.permissionAdvisor;
+    const scope = executionContext?.sessionKey;
+    const user = executionContext?.userId ?? slackContext.user;
+    const cwd = executionContext?.workingDirectory;
     const handler = createPermissionPromptHandler({
       slackToken: process.env.SLACK_BOT_TOKEN,
       slackContext: {
@@ -319,6 +350,7 @@ export class McpConfigBuilder {
         threadTs: slackContext.threadTs,
         user: slackContext.user,
       },
+      ...(advisor && scope ? { resolveAdvice: (req) => advisor({ ...req, scope, user, cwd }) } : {}),
     });
     const permissionPrompt = tool(
       'permission_prompt',
