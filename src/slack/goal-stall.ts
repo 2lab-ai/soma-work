@@ -15,6 +15,7 @@ import type { UserChoices } from '@soma/slack/user-choice-extractor';
 import {
   CONTEXT_ROLLBACK_REFUSAL_TEXT,
   type ContextRollbackResult,
+  keptUntilOf,
   requestContextRollback,
 } from '../session/context-rollback';
 import type { ConversationSession, SessionGoal, SessionGoalStall } from '../types';
@@ -170,7 +171,15 @@ export function requestGoalStallRollback(
 ): ContextRollbackResult | undefined {
   const anchor = session.goal?.stall?.rollbackAnchor;
   if (!anchor) return undefined;
-  return requestContextRollback(session, { anchor, label: GOAL_STALL_ROLLBACK_LABEL, source: 'goal' }, actor, deps);
+  // What came after the first failure's turn leaves the context (the dashboard marks it, #744).
+  const first = session.goal?.firstFailure;
+  const keptUntil = first?.anchor === anchor ? keptUntilOf('goal', first.at) : undefined;
+  return requestContextRollback(
+    session,
+    { anchor, label: GOAL_STALL_ROLLBACK_LABEL, source: 'goal', keptUntil },
+    actor,
+    deps,
+  );
 }
 
 /**
