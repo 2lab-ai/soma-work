@@ -474,20 +474,23 @@ this.app.action('deny_tool', async ({ ack, body, respond }) => {
 ```
 Bash 호출 → 하드 거부 계층 → 위험 규칙 매칭(soma-lib 카탈로그)
    ├─ 매칭 없음 → 실행
-   └─ 매칭 → safety classifier (owner 본인이 요청한 턴이면 owner의 Slack 원문만 데이터로 인용 — 스킬 본문 제외, steer 포함,
+   ├─ 걸린 규칙이 데이터 읽기 파이프뿐(C1, 아래 기계 검사가 남기는 규칙 없음) → classifier 없이 실행, 경고 없음
+   └─ 그 밖의 매칭 → safety classifier (owner 본인이 요청한 턴이면 owner의 Slack 원문만 데이터로 인용 — 스킬 본문 제외, steer 포함,
             긴 글은 앞뒤만 남기고 잘림을 명시. 20s 타임아웃 = 실제 abort, 실패·예외는 ask)
-        ├─ ask   → 🔐 Permission Request 카드 (Slack + 대시보드 "입력 필요")
+        ├─ ask   → 🔐 Permission Request 카드 (Slack + 대시보드 "입력 필요", #754의 AI 권고 포함)
         └─ allow → 실행 + 기계 검사(permission-warning.ts)
                     └─ 여전히 문제(데이터 파이프만 제외: `| python3 -c` / `| node -e` 한 줄짜리가
                        허용 모듈만 import하고 실행·쓰기·로드가 없을 때. perl·ruby·php·다른 플래그·추가 인자는 모두 경고) →
-                       ⚠️ Permission Warning 카드: Slack 스레드(버튼 없음) + 대시보드 채팅·작업 로그(work-log kind `permission_warning`)
+                       ⚠️ Permission Warning: Slack 스레드 카드(버튼 없음) + 대시보드 작업 로그의 "퍼미션 경고" 줄과
+                       지시와 답변의 같은 시각 시스템 줄(work-log kind `permission_warning`). Slack 없는 task 턴은 대시보드만.
 ```
 
 - owner가 직접 부른 스킬만 classifier에 넘긴다. 근거는 owner 본인 메시지의 `$스킬`·`$local:스킬` 토큰과, owner가 Slack 명령·버튼·대시보드로 등록한 autoskill 두 가지뿐이다(`src/slack/owner-skill-invocations.ts`). 호스트가 붙인 `<invoked_skills>` 블록 텍스트는 근거로 쓰지 않는다. 스킬 본문이 섹션 경계를 흉내 낼 수 있고, 다른 스킬의 `$참조`는 owner가 입력하지 않은 의존성으로 펼쳐지기 때문이다. 위임 범위는 호스트 코드(`safety-classifier.ts`의 `SKILL_DELEGATIONS`)가 정한다. 지금은 `local:autoz` 하나로, 세션이 작업하는 저장소에서 이슈와 PR을 열고 자체 리뷰 게이트 뒤에 승인하고 머지하는 것까지다. 다른 사람이나 다른 계정의 자격증명을 쓰는 일은 어떤 스킬도 위임하지 않는다.
 - classifier가 판단하는 동안 owner 지시가 바뀌면(예: 끼어든 "삭제하지 마") 그 승인은 쓰지 않고 묻는다. 취소되거나 큐로 돌아간 steer는 지시에서 빠진다. 지시 이력이 불완전할 수 있으면(재시작으로 복원된 세션, 50개 상한, 스킬 블록 뒤에 남은 텍스트) 파괴적 작업은 그 지시만으로 허용하지 않는다.
 - 경고는 결정을 바꾸지 않는다. 훅이 `allow`를 반환한 뒤 fire-and-forget으로 게시되고, 실패는 로그만 남는다.
 - 같은 명령 + 같은 규칙은 세션당 10분에 한 번만 경고한다.
-- 데이터 파이프 판정은 경고에만 쓴다. 질문 trigger와 퍼미션 카드는 원래 카탈로그를 그대로 쓴다(퍼미션 MCP child와 어긋나지 않음, Lean 모델 변경 없음).
+- C1(데이터 읽기 파이프, Z 2026-11-02 D1-A·D2-A): 걸린 규칙이 `pipe-to-interpreter` 하나이고 그 파이프가 위 기계 검사의 데이터 읽기 조건을 만족하면 classifier를 부르지 않고 실행한다(모델 호출·대기 없음). 판정은 soma-work의 classify 단계 안에서 하고(`build-stream-options.ts`), `evaluateToolPolicy`·soma-lib 카탈로그·Lean 모델은 바뀌지 않는다. 판정 함수가 실패하면 classifier가 정한다(허용으로 새지 않음). 다른 규칙이 같이 걸리거나 입력을 코드로 실행하는 파이프(`| sh`, `| python3 -`)는 계속 classifier로 간다. 이렇게 되면 `curl -X PUT …/merge | python3 -c 'json…'`의 원격 변경도 묻지 않는데, 이는 `gh pr merge`가 오늘도 규칙에 걸리지 않는 것과 같은 수준이다.
+- 질문 결과(C3): 퍼미션 서버가 질문마다 `Permission prompt outcome` 한 줄을 남긴다(도구, 규칙, allow/deny, 시간 초과 여부, 기다린 시간, AI 권고). 누가 답했는지는 #754의 `permission` 작업 로그 항목에 있다.
 
 ### 7.3 Commands
 

@@ -51,5 +51,8 @@ describe('buildStreamOptions — a warning failure never changes the allow', () 
     expect(out.hookSpecificOutput?.permissionDecision).toBe('allow');
     expect(deps.onPermissionWarning).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith('Permission warning could not be published', expect.any(Object));
+    // C1: the same throwing check never turns a flagged call into an allow without the classifier.
+    expect(logger.warn).toHaveBeenCalledWith('Data-pipe check failed — the classifier decides', expect.any(Object));
+    expect(deps.safetyClassifier?.classify).toHaveBeenCalledTimes(1);
   });
 });
