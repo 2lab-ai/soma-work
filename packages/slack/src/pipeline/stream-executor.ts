@@ -1944,7 +1944,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       };
 
       // The first SDK event of this execution: the prompt is in the model's hands.
-      let reachedModel = false;
+      // A local slash command (`/compact` — the auto-compact path parks the
+      // follow-up's own words and runs this in their place) carries none of the
+      // instruction, so it is no evidence that the instruction was delivered.
+      let reachedModel = isSlashCommand;
 
       // Create stream callbacks
       const streamCallbacks: StreamCallbacks = {

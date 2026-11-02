@@ -212,6 +212,23 @@ const FOLLOWUP_RESUME_WINDOW_MS = 10 * 60_000;
 /** Why a session's next run may take over the follow-up a host-side cut left `uncertain`. */
 type FollowupResumeCause = 'restart' | 'auto-compact';
 
+/** A row a host-side cut left `uncertain`, pinned at the epoch the cut left it at. */
+interface FollowupCutRef {
+  id: string;
+  epoch: number;
+}
+
+/**
+ * A session whose conversation is about to be carried on after a host-side
+ * cut, and EXACTLY the rows that cut left — never every host-cut row the
+ * queue happens to hold: a row an earlier mark left for its owner stays theirs.
+ */
+interface FollowupResumeMark {
+  cause: FollowupResumeCause;
+  at: number;
+  items: FollowupCutRef[];
+}
+
 /**
  * Is this dispatch the resume a restart started — the crash-recovery
  * auto-resume or the goal loop's continuation, dispatched as the session's
@@ -487,13 +504,13 @@ export class SlackHandler {
    * carried on → why and when. Spent by the session's NEXT dispatch, within
    * {@link FOLLOWUP_RESUME_WINDOW_MS} — see {@link claimFollowupResume}.
    */
-  private readonly followupResumeMark = new Map<string, { cause: FollowupResumeCause; at: number }>();
+  private readonly followupResumeMark = new Map<string, FollowupResumeMark>();
   /**
    * Slot key → turn generation of the run that carries a cut conversation on,
    * while it has not yet reached the model. That run takes the cut rows over
    * the moment it does ({@link onFollowupTurnReachedModel}).
    */
-  private readonly followupResumeRun = new Map<string, number>();
+  private readonly followupResumeRun = new Map<string, { turnEpoch: number; items: FollowupCutRef[] }>();
   /** The startup reconcile has run (or was deliberately skipped) — see {@link reconcileFollowupSessionsOnce}. */
   private followupReconciled?: boolean;
   /** The RESTORED state had something to reconcile — see {@link warnIfReconcileSkipped}. */
@@ -534,6 +551,8 @@ export class SlackHandler {
     this.requestCoordinator = new RequestCoordinator({
       beforeAbort: (sessionKey, reason) => {
         this.freezeFollowupOnStop(sessionKey, reason);
+        // A person's stop also revokes any takeover still pending for the session.
+        this.forgetFollowupResume(sessionKey);
         // After the freeze (a refused freeze refuses the stop): the stop is
         // recorded even with an empty queue, where the freeze records nothing,
         // so a pending auto-compact continuation can see it.
@@ -5263,7 +5282,7 @@ export class SlackHandler {
     } finally {
       // A resume run that never reached the model took nothing over, and its
       // window must not outlive it.
-      if (resumeRun && this.followupResumeRun.get(request.sessionKey) === request.turnEpoch) {
+      if (resumeRun && this.followupResumeRun.get(request.sessionKey)?.turnEpoch === request.turnEpoch) {
         this.followupResumeRun.delete(request.sessionKey);
       }
     }
@@ -5275,21 +5294,53 @@ export class SlackHandler {
    * just ended a run. Remembered only when the queue holds a row that cut left
    * `uncertain` — the next run has something to take over only then.
    */
-  private noteFollowupResume(sessionKey: string, cause: FollowupResumeCause): void {
+  private noteFollowupResume(sessionKey: string, cause: FollowupResumeCause, itemIds?: readonly string[]): void {
     const queue = this.followupQueue;
     if (!queue || this.followupReadFailed) return;
-    if (queue.list(sessionKey).some(isHostCutFollowup))
-      this.followupResumeMark.set(sessionKey, { cause, at: Date.now() });
+    const now = Date.now();
+    const items = queue
+      .list(sessionKey)
+      .filter(isHostCutFollowup)
+      .filter((item) =>
+        itemIds
+          ? itemIds.includes(item.id)
+          : // A restart's own cut: the shutdown stop or the crash recovery wrote
+            // these rows minutes ago. An older host-cut row was left for its
+            // owner by an earlier mark and is not this restart's to carry on.
+            now - item.updatedAt <= FOLLOWUP_RESUME_WINDOW_MS,
+      )
+      .map((item) => ({ id: item.id, epoch: item.epoch }));
+    if (items.length > 0) this.followupResumeMark.set(sessionKey, { cause, at: now, items });
+  }
+
+  /**
+   * A person stopped the session (Stop, Close): theirs is the last word, so no
+   * pending takeover may still confirm a row afterwards. Both keys — the
+   * coordinator speaks the canonical one, the marks live under the slot key.
+   */
+  private forgetFollowupResume(sessionKey: string): void {
+    const slotKey = this.boundFollowupSlot(sessionKey);
+    for (const key of slotKey ? [sessionKey, slotKey] : [sessionKey]) {
+      this.followupResumeMark.delete(key);
+      this.followupResumeRun.delete(key);
+    }
   }
 
   /** An auto-compact stop cut a delivered follow-up: the next run carries its conversation on, compacted. */
   private noteAutoCompactCut(sessionKey: string, report: RunReport | undefined): void {
     if (!report || !isAutoCompactStop(report.outcome)) return;
-    // The run's own row, or one it had taken over (a restart resume that then
-    // hit the threshold) — either is now `uncertain` and carried on next.
-    if (report.itemDisposition === 'uncertain' || (report.adoptedItemIds?.length ?? 0) > 0) {
-      this.noteFollowupResume(sessionKey, 'auto-compact');
-    }
+    // Stopped by a person after the auto-compact stop: nothing carries it on
+    // (the same rule `resumeAfterAutoCompactStop` keeps).
+    const session = this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(sessionKey));
+    const stoppedAt = session?.autoCompactStoppedAtMs;
+    if (session?.lastStopAtMs !== undefined && stoppedAt !== undefined && session.lastStopAtMs >= stoppedAt) return;
+    // The run's own row, and any it had taken over (a restart resume that then
+    // hit the threshold) — exactly these, now `uncertain`, are carried on next.
+    const itemIds = [
+      ...(report.itemDisposition === 'uncertain' && report.itemId ? [report.itemId] : []),
+      ...(report.adoptedItemIds ?? []),
+    ];
+    if (itemIds.length > 0) this.noteFollowupResume(sessionKey, 'auto-compact', itemIds);
   }
 
   /**
@@ -5322,7 +5373,7 @@ export class SlackHandler {
       return false;
     }
     this.followupResumeMark.delete(request.sessionKey);
-    this.followupResumeRun.set(request.sessionKey, request.turnEpoch);
+    this.followupResumeRun.set(request.sessionKey, { turnEpoch: request.turnEpoch, items: mark.items });
     return true;
   }
 
@@ -5347,9 +5398,10 @@ export class SlackHandler {
     if (marked.status === 'failed') {
       this.logger.warn('Follow-up delivery evidence not recorded', { sessionKey: slotKey, detail: marked.detail });
     }
-    if (this.followupResumeRun.get(slotKey) !== turnEpoch) return;
+    const resume = this.followupResumeRun.get(slotKey);
+    if (resume?.turnEpoch !== turnEpoch) return;
     this.followupResumeRun.delete(slotKey);
-    this.takeOverCutFollowups(slotKey, turnEpoch);
+    this.takeOverCutFollowups(slotKey, turnEpoch, resume.items);
   }
 
   /**
@@ -5359,12 +5411,15 @@ export class SlackHandler {
    * the model is in fact carrying on with it, and the run's end settles the
    * row (`FollowupDispatcher.takeOverInterrupted`).
    */
-  private takeOverCutFollowups(slotKey: string, turnEpoch: number): void {
+  private takeOverCutFollowups(slotKey: string, turnEpoch: number, refs: readonly FollowupCutRef[]): void {
     const queue = this.followupQueue;
     const dispatcher = this.followupDispatcher;
     if (!queue || !dispatcher || this.followupReadFailed) return;
+    // Exactly the rows the mark named, and only while each still sits where the
+    // cut left it (same epoch: no Retry, Cancel or Stop moved it since).
     const cut = queue
       .list(slotKey)
+      .filter((item) => refs.some((ref) => ref.id === item.id && ref.epoch === item.epoch))
       .filter(isHostCutFollowup)
       .sort((a, b) => (b.deliveredAt ?? 0) - (a.deliveredAt ?? 0));
     for (const item of cut) {

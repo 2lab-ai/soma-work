@@ -395,6 +395,26 @@ describe('onTurnReachedModel — the first SDK event of the execution', () => {
     expect(onTurnReachedModel).toHaveBeenCalledWith({ sessionKey: 'C42:thread42', turnEpoch: DISPATCH_EPOCH });
   });
 
+  it('does not fire for a local /compact turn — the auto-compact path parked the instruction, it was not delivered', async () => {
+    const session = createSession();
+    const deps = createDeps(() =>
+      (async function* () {
+        yield { type: 'status', status: 'compacting' };
+        yield { type: 'result', stopReason: 'end_turn' };
+      })(),
+    );
+    const onTurnReachedModel = vi.fn();
+    const executor = new StreamExecutor({ ...deps, onTurnReachedModel });
+
+    await executor.execute({
+      ...createParams(session, new AbortController(), vi.fn().mockResolvedValue({ ts: 'm' })),
+      text: '/compact',
+    });
+    await settle();
+
+    expect(onTurnReachedModel).not.toHaveBeenCalled();
+  });
+
   it('does not fire for a stream that produced no SDK event', async () => {
     const session = createSession();
     const deps = createDeps(() => (async function* () {})());

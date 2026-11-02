@@ -6550,7 +6550,11 @@ describe('SlackHandler — follow-up queue host', () => {
     it('a cron fire after the restart is not the resume: it takes nothing over and leaves the mark for the resume', async () => {
       const snapshot = await interruptedByShutdown(true);
       const { booted } = bootFrom(snapshot, []);
-      (booted as any).followupResumeMark.set(SESSION_KEY, { cause: 'restart', at: Date.now() });
+      (booted as any).followupResumeMark.set(SESSION_KEY, {
+        cause: 'restart',
+        items: [{ id: rowOf(booted).id, epoch: rowOf(booted).epoch }],
+        at: Date.now(),
+      });
 
       const cronTurn = holdNextTurn(booted, true);
       const cronDone = booted.handleMessage(
@@ -6613,11 +6617,30 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(rowOf(booted).state).toBe('resolved');
     });
 
+    it('a restart resume does not take over an older host-cut row — that one was left for its owner', async () => {
+      const snapshot = await interruptedByShutdown(true);
+      // The row was cut by an EARLIER deploy, half an hour ago, and left as it was.
+      snapshot.sessions[0].items[0].updatedAt -= 30 * 60_000;
+      const { booted } = bootFrom(snapshot, workingAtShutdown());
+
+      const resume = holdNextTurn(booted, true);
+      await booted.notifyCrashRecovery();
+      await resume.started;
+      resume.release();
+      for (let i = 0; i < 6; i++) await tick();
+
+      expect(rowOf(booted).state).toBe('uncertain');
+    });
+
     it('a resume that comes after the window takes nothing over', async () => {
       const snapshot = await interruptedByShutdown(true);
       const { booted } = bootFrom(snapshot, []);
       // The resume was noted at boot but its run only arrives 11 minutes later.
-      (booted as any).followupResumeMark.set(SESSION_KEY, { cause: 'restart', at: Date.now() - 11 * 60_000 });
+      (booted as any).followupResumeMark.set(SESSION_KEY, {
+        cause: 'restart',
+        items: [{ id: rowOf(booted).id, epoch: rowOf(booted).epoch }],
+        at: Date.now() - 11 * 60_000,
+      });
 
       const late = holdNextTurn(booted, true);
       const done = booted.handleMessage(
@@ -6813,6 +6836,86 @@ describe('SlackHandler — follow-up queue host', () => {
       for (let i = 0; i < 4; i++) await tick();
 
       expect(row(CUT_TS).state).toBe('uncertain');
+    });
+  });
+
+  /**
+   * Takeover is bound to the rows its own cut produced, and a person's Stop
+   * revokes it (#779 review, astra-zhuge R2).
+   */
+  describe('takeover is bound to its own cut and revoked by a person’s Stop', () => {
+    function reachModel(turnEpoch: number | undefined): void {
+      handlerAny.streamExecutor?.deps?.onTurnReachedModel?.({ sessionKey: SESSION_KEY, turnEpoch });
+    }
+
+    function heldTurn(): { release: () => void; started: Promise<void> } {
+      const gate = deferred<any>();
+      const started = deferred<void>();
+      createAgentSession.mockImplementationOnce((_result: any, _say: any, opts: any) => ({
+        startWithContinuation: vi.fn(async () => {
+          reachModel(opts?.turnEpoch);
+          started.resolve();
+          return gate.promise;
+        }),
+        getLastTurnSucceeded: () => true,
+        getRetryAfterMs: () => undefined,
+      }));
+      return { release: () => gate.resolve({ hasPendingChoice: false }), started: started.promise };
+    }
+
+    /** A delivered row whose turn a host-side cut (`reason`) left `uncertain`. */
+    function cutRow(ts: string, reason: string): any {
+      const queue = handlerAny.getFollowupQueue();
+      queue.enqueue(SESSION_KEY, message({ ts, text: `지시 ${ts}` }));
+      const claimed = queue.claimNext(SESSION_KEY);
+      if (!claimed.ok) throw new Error('claim failed');
+      const marked = queue.markDispatched(SESSION_KEY, claimed.item.id, claimed.item.epoch);
+      if (!marked.ok) throw new Error('dispatch failed');
+      queue.markDelivered(SESSION_KEY, marked.item.id, marked.item.epoch);
+      queue.markInterrupted(SESSION_KEY, marked.item.id, marked.item.epoch, reason);
+      return queue.get(SESSION_KEY, marked.item.id);
+    }
+
+    const row = (ts: string) => items().find((item: any) => item.message.ts === ts);
+
+    async function runNextUserTurn(): Promise<{ started: Promise<void>; finish: () => Promise<void> }> {
+      const next = heldTurn();
+      const done = handler.handleMessage(message({ ts: '777.001', text: '계속' }), say());
+      return {
+        started: next.started,
+        finish: async () => {
+          next.release();
+          await done;
+          for (let i = 0; i < 4; i++) await tick();
+        },
+      };
+    }
+
+    it('the carrying run takes over exactly the rows its cut named, not an older host-cut row', async () => {
+      cutRow('555.001', '실행이 중단되었습니다 (shutdown)'); // left for its owner earlier
+      const fresh = cutRow('555.002', 'auto-compact');
+      handlerAny.noteFollowupResume(SESSION_KEY, 'auto-compact', [fresh.id]);
+
+      const next = await runNextUserTurn();
+      await next.started;
+
+      expect(row('555.002').state).toBe('dispatched');
+      expect(row('555.001').state).toBe('uncertain');
+      await next.finish();
+      expect(row('555.002').state).toBe('resolved');
+      expect(row('555.001').state).toBe('uncertain');
+    });
+
+    it('a person’s Stop after the cut revokes the pending takeover', async () => {
+      const cut = cutRow('555.003', 'auto-compact');
+      handlerAny.noteFollowupResume(SESSION_KEY, 'auto-compact', [cut.id]);
+
+      handlerAny.requestCoordinator.abortSession(SESSION_KEY, 'user-stop');
+      const next = await runNextUserTurn();
+      await next.started;
+      await next.finish();
+
+      expect(row('555.003').state).toBe('uncertain');
     });
   });
 });
