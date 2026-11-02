@@ -24,7 +24,7 @@ import { OutputFlag } from '@soma/slack/output-flags';
 import { isLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
 import { sayPostSwitches } from '@soma/slack/stream-processor';
-import { getWorkQueues, setWorkQueueService, WorkQueueService } from '@soma/slack/work-queue';
+import { getWorkQueues, WorkQueueService } from '@soma/slack/work-queue';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
@@ -589,7 +589,6 @@ export class SlackHandler {
     });
     // A queued request starts by replaying its text through the normal entry.
     this.workQueue.setReplay((event, say) => this.handleMessage(event as any, say));
-    setWorkQueueService(this.workQueue);
     this.workQueue.start();
 
     // ActionHandlers needs context
