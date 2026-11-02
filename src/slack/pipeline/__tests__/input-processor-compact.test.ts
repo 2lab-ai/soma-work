@@ -318,6 +318,12 @@ describe('auto-compact interception keeps a host turn a host turn', () => {
     });
   });
 
+  it('a dashboard send parked behind the compaction keeps its ref for the replay (#785)', async () => {
+    const { session, processor } = setup();
+    await processor.routeCommand(ev({ text: '대시보드 지시', dashboardClientRef: 'optimistic-1-ab' }), vi.fn() as any);
+    expect(session.pendingEventContext?.dashboardClientRef).toBe('optimistic-1-ab');
+  });
+
   it('a replayed host turn intercepted again stays one', async () => {
     const { session, processor } = setup();
     await processor.routeCommand(ev({ routeContext: { compactRedispatch: true, hostTurn: true } }), vi.fn() as any);

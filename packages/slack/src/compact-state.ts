@@ -26,7 +26,16 @@
 
 export interface CompactDispatchPayload {
   /** `verbatimPrompt`: the text is a goal objective — replayed as the user's words. */
-  ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean; hostTurn?: boolean };
+  ctx: {
+    channel: string;
+    threadTs: string;
+    user: string;
+    ts: string;
+    verbatimPrompt?: boolean;
+    hostTurn?: boolean;
+    /** #785: a dashboard send's ref — the replayed message records it on its turn. */
+    dashboardClientRef?: string;
+  };
   text: string;
 }
 
@@ -52,7 +61,15 @@ export interface CompactStateSession {
    */
   compactTurnActive?: boolean;
   pendingUserText?: string | null;
-  pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string; hostTurn?: boolean } | null;
+  pendingEventContext?: {
+    channel: string;
+    threadTs: string;
+    user: string;
+    ts: string;
+    hostTurn?: boolean;
+    /** #785: the dashboard send it was — the post-compact replay carries it on. */
+    dashboardClientRef?: string;
+  } | null;
   /**
    * Deferred post-compact re-dispatch queue, in arrival order. Multiple
    * entries occur when different users (or non-contiguous messages) arrive

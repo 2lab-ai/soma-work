@@ -214,6 +214,20 @@ describe("#785 — the server hands the send's ref back on the turn it recorded"
     expect(merged.map((t) => t.id)).toEqual(['srv-ref']);
   });
 
+  it("a ref never crosses senders: someone else's turn with my ref does not take my copy (review: grok P2)", () => {
+    const list: Turn[] = [optimistic('계속')];
+    const r = wsRig(list);
+    r.push(
+      recorded('계속', T0 + 1_000, {
+        id: 'theirs',
+        userId: 'U_OTHER',
+        userName: 'Chris',
+        clientRef: `optimistic-${T0}`,
+      }),
+    );
+    expect(list.map((t) => t.id)).toEqual([`optimistic-${T0}`, 'theirs']);
+  });
+
   it("a turn carrying another send's ref never takes it, even with the same words", () => {
     const list: Turn[] = [optimistic('계속', T0, 'optimistic-a'), optimistic('계속', T0 + 1, 'optimistic-b')];
     const r = wsRig(list);
