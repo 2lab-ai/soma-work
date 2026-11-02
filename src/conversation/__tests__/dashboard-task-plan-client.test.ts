@@ -704,7 +704,7 @@ describe('U7 — a simple question is buttons on the task card (T7)', () => {
   it('the open card uses the buttons for a simple question, the approval card otherwise', () => {
     const body = clientFn('renderCardBody');
     expect(body).toContain(
-      'if (quickChoicesOf(s.pendingQuestion)) questionHtml = quickChoiceHtml(s, s.pendingQuestion, faceSummary === s.pendingQuestion.question);',
+      'if (quickChoicesOf(s.pendingQuestion)) questionHtml = quickChoiceHtml(s, s.pendingQuestion, !!summaryOnFace && summaryOnFace === s.pendingQuestion.question);',
     );
     expect(body).toContain('else questionHtml = acQuestionHtml(s, s.pendingQuestion);');
   });

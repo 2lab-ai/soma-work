@@ -155,7 +155,7 @@ describe('C3 — the open card’s refs', () => {
   it('list the same pages with their states (the old short refs only when the board sent none)', () => {
     const fn = clientFn('renderCardBody');
     // Say it once: the face's 연결 row already lists them (the default layout) — the body then lists none.
-    expect(fn).toContain('const refLinks = faceShowsLinks ? [] : cardLinksFace(s);');
+    expect(fn).toContain('const refLinks = faceShowsLinks ? allLinks.slice(FACE_LINK_MAX) : allLinks;');
     expect(fn).toContain('<span class="card-ref-st"');
     expect(fn).toContain("if (!linksOnFace && !refLinks.length && dhShow('links') && s.issueShortRef && s.issueUrl) {");
   });
