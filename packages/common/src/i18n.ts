@@ -78,6 +78,11 @@ interface Template {
 
 const templateByKey = new Map<string, Template>();
 let templates: Template[] = [];
+/**
+ * Clauses the code appends to a finished sentence (`text + ' — 대시보드에서 응답했습니다.'`,
+ * `text + ' (대시보드에서 응답)'`): keys that start with a space. Longest first.
+ */
+let suffixKeys: string[] = [];
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -127,6 +132,7 @@ export function registerDisplayCatalog(lang: Exclude<DisplayLang, 'ko'>, entries
   for (const [source, text] of Object.entries(entries)) {
     if (typeof text !== 'string' || text.length === 0) continue;
     english.set(source, text);
+    if (source.startsWith(' ') && HANGUL.test(source) && !source.includes('{')) suffixKeys.push(source);
     const tpl = compileTemplate(source, text);
     if (tpl) {
       templateByKey.set(source, tpl);
@@ -134,6 +140,7 @@ export function registerDisplayCatalog(lang: Exclude<DisplayLang, 'ko'>, entries
     }
   }
   if (added) templates = [...templateByKey.values()].sort((a, b) => b.weight - a.weight);
+  suffixKeys = [...new Set(suffixKeys)].sort((a, b) => b.length - a.length);
 }
 
 /** Whether the catalog for `lang` has text for this source string (`ko` has every one). */
@@ -236,6 +243,12 @@ function translateLine(line: string): string {
   if (inner !== line) {
     const t = translateUnit(inner, 0);
     if (t !== null) return line.replace(inner, () => t);
+  }
+  // A sentence the catalog knows with a clause the code appended: both halves must be the catalog's.
+  for (const suffix of suffixKeys) {
+    if (line.length <= suffix.length || !line.endsWith(suffix)) continue;
+    const head = translateUnit(line.slice(0, -suffix.length), 0);
+    if (head !== null) return head + (english.get(suffix) as string);
   }
   for (const sep of SEPARATORS) {
     if (!line.includes(sep)) continue;
