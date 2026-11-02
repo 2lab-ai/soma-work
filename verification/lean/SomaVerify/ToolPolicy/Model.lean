@@ -631,7 +631,7 @@ is the result. The conformance vectors are its output. -/
 
 /-- `PLAN_PENDING_DENY_MESSAGE` — lines 195-196. -/
 def planPendingDenyMessage : String :=
-  "Blocked: this task's plan is not started yet. While planning, only reading and research run (Read, Glob, Grep, WebFetch, WebSearch, read-only shell commands such as ls, cat, grep, rg, find, git log/show/diff/status, git clone/fetch, gh … view/list, and read MCP tools). Put this change into the plan and submit it with plan_submit; it runs after the owner presses 시작. Do not retry it or work around it."
+  "Blocked: this task's plan is not started yet. While planning, only reading and research run (Read, Glob, Grep, WebFetch, WebSearch, the github and filesystem read tools); the shell and every change wait. Put this step into the plan and submit it with plan_submit; it runs after the owner presses 시작. Do not retry it or work around it."
 
 /-- 6c. Plan mode — lines 321-326: a reason from `ctx.checkPlanPending` denies. -/
 def planGuard : Option (Option String) → Option Result

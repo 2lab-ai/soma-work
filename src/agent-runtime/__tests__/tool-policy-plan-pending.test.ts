@@ -56,9 +56,10 @@ describe('evaluateToolPolicy — step 6c, a plan not started', () => {
   it('lets research through to the mode tier as before', () => {
     expect(evaluateToolPolicy('Read', { file_path: FILE }, planning()).decision).toBe('allow');
     expect(evaluateToolPolicy('Grep', { pattern: 'x' }, planning()).decision).toBe('allow');
-    expect(evaluateToolPolicy('Bash', { command: 'git log --oneline -5' }, planning()).decision).toBe('allow');
+    // The shell waits for 시작, reads included (trinity R4): research goes through Read, Glob and Grep.
+    expect(evaluateToolPolicy('Bash', { command: 'git log --oneline -5' }, planning()).decision).toBe('deny');
     expect(evaluateToolPolicy('mcp__plan__plan_submit', {}, planning()).decision).toBe('pass');
-    expect(evaluateToolPolicy('Bash', { command: 'ls' }, planning({ mode: 'legacy' })).decision).toBe('pass');
+    expect(evaluateToolPolicy('Read', { file_path: FILE }, planning({ mode: 'legacy' })).decision).toBe('pass');
   });
 
   it('an earlier deny still wins (abort, devops secret)', () => {

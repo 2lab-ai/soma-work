@@ -539,7 +539,7 @@ describe('plan mode — a task whose plan is not started researches (SSOT 2026-1
     expect(decisionOf(write)).toBe('deny');
     expect(String(write.hookSpecificOutput.permissionDecisionReason)).toContain('plan is not started');
     expect(decisionOf(await hook(call('Bash', { command: 'git commit -am wip' })))).toBe('deny');
-    expect(decisionOf(await hook(call('Bash', { command: 'git log -3' })))).toBe('allow');
+    expect(decisionOf(await hook(call('Bash', { command: 'git log -3' })))).toBe('deny'); // no shell while planning
     expect(decisionOf(await hook(call('Read', { file_path: `${WORK_DIR}/a.txt` })))).toBe('allow');
   });
 
