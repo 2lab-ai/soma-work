@@ -3,9 +3,10 @@
  * 깃허브 이슈)들과 이슈 상태, 연결된 PR들과 머지 상태, 연결된 위키들") — one turn records every link it names, so the
  * task card shows them. Harness shape copied from `stream-executor.release-notes.test.ts`.
  *
- *   E1  the user's message: its links, the first of each kind current ('first')
+ *   E1  the user's message: on the first turn its links join what the dispatch set ('if-empty'); on a follow-up the
+ *       first of each kind becomes current ('first')
  *   E2  the reply: the links it names, current only where none is ('if-empty')
- *   E3  a `gh pr create`: the new PR, current ('always'); a Bash listing of PRs records nothing
+ *   E3  a `gh pr create`: the new PR, current ('always'); `gh pr view` and a listing record nothing
  *   E4  a host turn (not the user's words) records nothing from its text
  */
 
@@ -200,7 +201,7 @@ describe('StreamExecutor — the links a turn names are recorded on its session'
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => vi.clearAllMocks());
 
-  it('E1 · E2 · E3 — the user message (first), the reply (if-empty), a created PR (always)', async () => {
+  it('E1 · E2 · E3 — the first message (if-empty), the reply (if-empty), a created PR (always)', async () => {
     streamEvents = () => [
       { type: 'tool_call', toolCallId: 'tu1', name: 'Bash', input: { command: 'gh pr create --fill' } },
       {
@@ -215,6 +216,13 @@ describe('StreamExecutor — the links a turn names are recorded on its session'
         toolCallId: 'tu2',
         name: 'Bash',
         content: [{ type: 'text', text: '#700 https://github.com/2lab-ai/soma-work/pull/700\nshowing 1 of 1' }],
+      },
+      { type: 'tool_call', toolCallId: 'tu3', name: 'Bash', input: { command: 'gh pr view 650 --json url -q .url' } },
+      {
+        type: 'tool_result',
+        toolCallId: 'tu3',
+        name: 'Bash',
+        content: [{ type: 'text', text: 'https://github.com/2lab-ai/soma-work/pull/650' }],
       },
       { type: 'assistant_delta', text: REPLY },
       { type: 'result', stopReason: 'end_turn', finalText: REPLY },
@@ -232,7 +240,7 @@ describe('StreamExecutor — the links a turn names are recorded on its session'
     expect(calls).toContainEqual([
       CHANNEL,
       THREAD,
-      'first',
+      'if-empty',
       ['https://2lab.atlassian.net/browse/PAY-12', 'https://github.com/2lab-ai/soma-work/pull/700'],
     ]);
     expect(calls).toContainEqual([CHANNEL, THREAD, 'always', [NEW_PR]]);
@@ -242,8 +250,20 @@ describe('StreamExecutor — the links a turn names are recorded on its session'
       'if-empty',
       ['https://2lab.atlassian.net/wiki/spaces/PAY/pages/123456/Payment+Form+Design'],
     ]);
-    // The listing named #700 but created nothing.
-    expect(calls.filter((c: unknown[]) => c[2] === 'always')).toHaveLength(1);
+    // The listing named #700 and `gh pr view` printed #650, but neither created anything.
+    expect(calls.filter((c: unknown[]) => c[2] === 'always')).toEqual([[CHANNEL, THREAD, 'always', [NEW_PR]]]);
+  });
+
+  it('E1 — a follow-up message: the first link of each kind becomes current', async () => {
+    streamEvents = (t) => [
+      { type: 'assistant_delta', text: t },
+      { type: 'result', stopReason: 'end_turn', finalText: t },
+    ];
+    const deps = createDeps('네.');
+    await new StreamExecutor(deps).execute(createParams(createSession({ initialInstruction: '처음 지시' })));
+    await settle();
+    const modes = deps.claudeHandler.noteSessionLinks.mock.calls.map((c: any[]) => c[3]);
+    expect(modes).toEqual(['first']);
   });
 
   it('E4 — a host turn (a continuation, a resume) records nothing from its text', async () => {

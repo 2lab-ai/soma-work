@@ -55,7 +55,7 @@ import {
   formatResumedGoalLine,
   type GoalQueueSession,
 } from '../session-goal';
-import { type CapturedLink, linksCreatedByTools, linksInText } from '../session-link-capture';
+import { type CapturedLink, isCreateCommand, linksCreatedByTools, linksInText } from '../session-link-capture';
 import {
   accumulateModelTotals,
   addSessionSpend,
@@ -1762,6 +1762,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Store user instruction for SSOT tracking (only real user input, not auto-resume/continuation/renew)
       // followUpInstructions is capped to prevent unbounded memory growth.
       const MAX_FOLLOW_UP_INSTRUCTIONS = 50;
+      // Whether this turn's text is a follow-up (the first message's links are the dispatch's to set).
+      let followUpTurn = false;
       if (session && text && params.isUserInput !== false) {
         if (!session.initialInstruction) {
           session.initialInstruction = text;
@@ -1780,14 +1782,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             text,
             speaker: userName,
           });
+          followUpTurn = true;
         }
       }
 
-      // 세션 링크 자동 기록 (SSOT 2026-11-02): the issues, PRs and wikis the user's message names — every turn, not
-      // only the first (the dispatch's); the first of each kind is the one to work on.
+      // 세션 링크 자동 기록 (SSOT 2026-11-02): the issues, PRs and wikis the user's message names — every turn. On a
+      // follow-up the first of each kind is the one to work on; on the first message the dispatch already chose the
+      // current links (its model's choice, a Jira issue before a GitHub one), so the rest only join the history.
       if (session && text && params.isUserInput !== false && params.hostTurn !== true) {
-        this.noteLinks(session, sessionKey, channel, threadTs, linksInText(text), 'first');
+        this.noteLinks(session, sessionKey, channel, threadTs, linksInText(text), followUpTurn ? 'first' : 'if-empty');
       }
+      // The Bash calls of this turn that create a PR or an issue (their results are recorded as the current link).
+      const createCalls = new Set<string>();
 
       this.logger.info('Sending query to Claude Code SDK', {
         prompt: finalPrompt.substring(0, 200) + (finalPrompt.length > 200 ? '...' : ''),
@@ -2007,6 +2013,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             abortController.abort('ghost-session' satisfies RequestAbortReason);
             return;
           }
+          for (const tu of allToolUses) {
+            if (tu.name === 'Bash' && isCreateCommand((tu.input as { command?: unknown } | undefined)?.command)) {
+              createCalls.add(tu.id);
+            }
+          }
           // Spec 12 §2.2: what the main agent is doing — the thread header's
           // current tool, the Slack tool rows, the request's tool stats — is
           // the main agent's calls only. A subagent's are in its own work log.
@@ -2133,7 +2144,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             ctx.sessionKey,
             ctx.channel,
             ctx.threadTs,
-            linksCreatedByTools(allToolResults),
+            linksCreatedByTools(allToolResults, createCalls),
             'always',
           );
           const commandResult = await this.handleModelCommandToolResults(allToolResults, session, ctx, turnEpochToken);

@@ -4,6 +4,7 @@
  *
  *   P1  a reply naming a PR, an issue and a wiki: the host gets the three links, each once
  *   P2  a reply with no such URL: no call; a throwing host callback never breaks the turn
+ *   P3  what a reply quotes is not what it says: code blocks and a release_notes directive's shipped PRs are not counted
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentStreamEvent } from '../agent-stream-types';
@@ -76,5 +77,37 @@ describe('onLinksMentioned', () => {
     );
     expect(boom).toHaveBeenCalled();
     expect(r.success).toBe(true);
+  });
+
+  it("P3 — code and a release_notes directive are not the reply's links", async () => {
+    const notes = JSON.stringify({
+      type: 'release_notes',
+      repo: 'acme/App',
+      target: 'deploy/dev',
+      version: '1.0.0',
+      tldr: ['a', 'b', 'c'],
+      text: '- https://github.com/acme/App/pull/1\n- https://github.com/acme/App/pull/2',
+    });
+    const reply = [
+      '배포했습니다: https://github.com/acme/App/pull/3',
+      '```',
+      'https://github.com/acme/App/pull/4',
+      '```',
+      notes,
+    ].join('\n');
+    const seen: string[] = [];
+    await new AgentStreamProcessor({
+      onLinksMentioned: (links) => {
+        for (const l of links) seen.push(l.url);
+      },
+    }).process(
+      events([
+        { type: 'assistant_delta', text: reply },
+        { type: 'result', stopReason: 'end_turn', finalText: reply },
+      ]),
+      context(),
+      new AbortController().signal,
+    );
+    expect([...new Set(seen)]).toEqual(['https://github.com/acme/App/pull/3']);
   });
 });
