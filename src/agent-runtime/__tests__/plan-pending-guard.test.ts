@@ -1,152 +1,65 @@
 /**
  * Plan mode (SSOT 2026-11-02) — step 6c's check: while a task's plan is not
  * started, a call that would do the work is refused; research runs (trinity R2, astra P1).
+ * The shell is refused outright (trinity R3–R4): every "read-only" classifier the
+ * review rounds probed had a way through, kept below as regressions.
  *
  * ssot-task map: T2 (the model plans, it does not work) · T4 (the work starts on 시작).
  */
 import { describe, expect, it } from 'vitest';
-import { checkPlanPendingCall, isReadOnlyCommand, PLAN_RESEARCH_TOOLS } from '../policy/plan-pending-guard';
+import { PLAN_SUBMIT_TOOL } from '../../task-turn/task-plan';
+import { checkPlanPendingCall, PLAN_READ_MCP_TOOLS, PLAN_RESEARCH_TOOLS } from '../policy/plan-pending-guard';
 
-describe('isReadOnlyCommand — reads pass, everything else is refused', () => {
+describe('checkPlanPendingCall — the shell waits for 시작', () => {
   it.each([
-    'ls -la',
-    'cat src/index.ts',
-    'head -50 README.md && tail -20 README.md',
-    "grep -rn 'taskPlan' src | head -20",
-    'find . -name "*.ts" -not -path "./node_modules/*"',
-    "sed -n '1,120p' src/types.ts",
-    'git log --oneline -20',
-    'git -C repo show HEAD~1 --stat',
-    'git diff main...HEAD -- src',
-    'git status --short',
-    'git branch --show-current',
-    'git branch -a',
-    'git clone https://github.com/2lab-ai/soma-work.git',
-    'git fetch origin main',
-    'git fetch https://github.com/2lab-ai/soma-work.git',
-    'git clone git@github.com:2lab-ai/soma-work.git repo',
-    'cd repo && git log -3',
-    'cd src/agent-runtime && ls',
-    'git -C repo log --oneline -3',
-    'gh repo clone 2lab-ai/soma-work repo',
-    'gh pr view 758 --json title,body',
-    'gh issue list --state open',
-    'gh api repos/2lab-ai/soma-work/pulls/758',
-    'wc -l src/conversation/dashboard.ts 2>/dev/null',
-    'ls missing 2>&1',
-    'jq .name package.json',
-    "grep 'a;b' f",
-    'grep -rn "x | y" src',
-    "find . -name '*.ts'",
-    'ls src/*.ts',
-    'git clone --depth 1 https://github.com/2lab-ai/soma-work.git repo',
-    'gh repo clone 2lab-ai/soma-work',
-    "gh api --paginate repos/2lab-ai/soma-work/pulls --jq '.[].number'",
-  ])('reads: %s', (cmd) => {
-    expect(isReadOnlyCommand(cmd)).toBe(true);
-  });
-
-  it.each([
-    'rm -rf src',
-    'echo hi > notes.md',
-    'cat a >> b',
-    'git commit -m x',
-    'git push origin HEAD',
-    'git checkout -b feat',
-    'git branch new-branch',
-    'git branch -D old',
-    'git -c core.pager=sh log',
-    'git log --output=out.txt',
-    'git clone --upload-pack=evil url',
-    'npm install',
-    'npx vitest run',
-    'node -e "1"',
-    'python3 script.py',
-    'curl -o x https://example.com',
-    'find . -name x -delete',
-    'find . -exec rm {} \\;',
-    "sed -i 's/a/b/' f.ts",
-    "sed -n 'w out' f",
-    'sort -o out in',
-    'rg --pre ./x pattern',
-    'gh pr create --title x',
-    'gh pr merge 1',
-    'gh api -X POST repos/x/y/issues',
-    'gh api repos/x/y/issues -f title=x',
-    'echo $(rm -rf x)',
-    'echo `id`',
-    'ls & rm x',
-    'X=1 ls',
-    './scripts/deploy.sh',
-    'cat a | tee b',
-    'xargs rm < list',
-    'gh api repos/x/y --jq .[].number', // an unquoted glob in an argument gh reads as options
-    '',
-    // Trinity R3 (astra P1): what the shell makes of quotes, escapes and clusters, not their spelling.
+    // What a read-only classifier would have let through — each changed something in review.
     "find . -name '*.tmp' -de'lete'",
     'find . -de\\lete',
     'sort -ro notes.txt README.md',
-    'find . *',
-    'sed -n 1p *',
-    'find . -{delete,x}',
-    "echo $'\\x2d'",
-    '(rm x)',
-    'ls # rm x',
-    "git clone 'ext::sh -c touch% x'",
-    'git clone -u evil url',
-    'git clone --config core.hooksPath=x url',
-    'gh repo clone x -- --upload-pack=y',
-    "gh api -H 'X-HTTP-Method-Override: DELETE' repos/x/y",
-    'gh api -fX title=x repos/x/y',
-    'file -C -m magic',
-    'cat "unterminated',
-    'ls ; ; ls',
-    // Trinity R3 (fable P1/P2/P3): a pager program, gh's pass-through to git, clusters, where clone writes.
-    "git grep -Oecho -e 'def planGuard' -- verification",
-    "git grep -Orm -e . -- 'src/*'",
-    "git grep -O'sed -i s/a/b/' -e x",
-    "git grep --open-files-in-pager=sh -e '#!' -- '*.sh'",
-    "gh repo clone 2lab-ai/soma-work x -- -c 'core.fsmonitor=sh scripts/deploy.sh'",
-    'gh repo clone 2lab-ai/soma-work x -- --template=/tmp/hooks',
-    'fd -Hx rm',
-    'git clone https://github.com/2lab-ai/soma-work.git /tmp/elsewhere',
-    'git clone https://github.com/2lab-ai/soma-work.git ../up',
-    'git clone --separate-git-dir=/tmp/g https://github.com/2lab-ai/soma-work.git',
-    'git fetch origin main:refs/heads/main',
-    'git fetch origin +refs/heads/main:refs/heads/main',
-    'git fetch --prune origin', // deletes stale remote-tracking refs (trinity R3, grok P3)
-    "gh api repos/x/y --jq '.a' -f title=x", // the option after a value is still checked
-    // Trinity R4 (astra): git takes abbreviated long options; rg runs a program; clones outside the folder.
     'git grep --open-files-in-page="sh -c x" -e PLAN -- src',
-    'git log --outp=x.txt',
-    'git diff --ext main',
+    "git grep -O'sed -i s/a/b/' -e x",
     'rg --hostname-bin=/usr/bin/ssh-agent --hyperlink-format=default x README.md',
-    'rg -n planPending src',
-    'gh repo clone 2lab-ai/soma-work /tmp/plan-mode-outside',
-    'gh repo clone 2lab-ai/soma-work ../up',
-    'git -C /tmp clone https://github.com/2lab-ai/soma-work.git plan-mode-outside',
-    'cd /tmp && git clone https://github.com/2lab-ai/soma-work.git plan-mode-outside',
-    'cd ..',
-    'cd ~',
-    'cd',
-    'gh pr view 1 --web',
-    'gh repo view -w',
-  ])('refused: %s', (cmd) => {
-    expect(isReadOnlyCommand(cmd)).toBe(false);
+    "printf '%n' 'a[$(touch /tmp/plan-mode-bypass; echo 1)]'",
+    'printf -v PATH ./payload; git status',
+    'git clone https://github.com/2lab-ai/soma-work.git node_modules/plan-escape',
+    'gh repo view 2lab-ai/soma-work --web=true',
+    'gh pr view 758 -cw',
+    'git fetch origin tag v1.0.0',
+    'git fetch origin main:refs/heads/main',
+    // And plain reads: no shell at all while planning.
+    'ls -la',
+    'cat src/index.ts',
+    'git log --oneline -5',
+    'git status',
+    '',
+  ])('refused: %s', (command) => {
+    expect(checkPlanPendingCall('Bash', { command })).toMatch(/plan is started/);
+  });
+
+  it('refuses a call with no command too', () => {
+    expect(checkPlanPendingCall('Bash', {})).not.toBeNull();
   });
 });
 
 describe('checkPlanPendingCall — the tools of a planning turn', () => {
-  it('refuses the native write tools and subagents', () => {
-    for (const tool of ['Write', 'Edit', 'NotebookEdit', 'Artifact', 'EnterWorktree', 'Agent', 'Task']) {
-      expect(PLAN_RESEARCH_TOOLS).not.toContain(tool);
-      expect(checkPlanPendingCall(tool, {})).not.toBeNull();
+  it('lets reading and research run', () => {
+    for (const tool of ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'TodoWrite', 'Skill']) {
+      expect(PLAN_RESEARCH_TOOLS).toContain(tool);
+      expect(checkPlanPendingCall(tool, {})).toBeNull();
     }
   });
 
-  it('refuses every tool it does not know as research — an allow-list, not a deny-list', () => {
-    // Tools outside the usual hook matchers that run a command, start agents or reach out.
+  it('refuses the native write tools, subagents and every tool it does not know — an allow-list', () => {
     for (const tool of [
+      'Bash',
+      'Write',
+      'Edit',
+      'MultiEdit',
+      'NotebookEdit',
+      'Artifact',
+      'EnterWorktree',
+      'Agent',
+      'Task',
       'Monitor',
       'Workflow',
       'RemoteTrigger',
@@ -157,32 +70,27 @@ describe('checkPlanPendingCall — the tools of a planning turn', () => {
       'ExitPlanMode',
       'ExitWorktree',
       'CronCreate',
+      'KillShell',
+      'BashOutput',
       'FutureTool',
       '',
     ]) {
+      expect(PLAN_RESEARCH_TOOLS).not.toContain(tool);
       expect(checkPlanPendingCall(tool, {}), tool).not.toBeNull();
     }
   });
 
-  it('lets reading and research run', () => {
-    for (const tool of ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'TodoWrite', 'Skill']) {
-      expect(checkPlanPendingCall(tool, {})).toBeNull();
-    }
-    expect(checkPlanPendingCall('Bash', { command: 'git log -5' })).toBeNull();
-    expect(checkPlanPendingCall('Bash', { command: 'git push' })).toMatch(/not read-only/);
-    expect(checkPlanPendingCall('Bash', {})).toMatch(/not read-only/);
-  });
-
   it('MCP: the plan tool and the exact read tools run; every other MCP tool does not', () => {
+    expect(PLAN_READ_MCP_TOOLS).toContain(PLAN_SUBMIT_TOOL);
     for (const tool of [
-      'mcp__plan__plan_submit',
+      PLAN_SUBMIT_TOOL,
       'mcp__github__get_file_contents',
       'mcp__github__search_code',
       'mcp__github__list_pull_requests',
       'mcp__filesystem__read_text_file',
       'mcp__model-command__list',
     ]) {
-      expect(checkPlanPendingCall(tool, {})).toBeNull();
+      expect(checkPlanPendingCall(tool, {}), tool).toBeNull();
     }
     for (const tool of [
       'mcp__github__create_pull_request',
@@ -192,18 +100,15 @@ describe('checkPlanPendingCall — the tools of a planning turn', () => {
       'mcp__slack-mcp__send_thread_message',
       'mcp__model-command__run',
       'mcp__cron__cron_create',
-      'mcp__x__get_or_create_item',
-      'mcp__x__getAndDeleteThing',
-      'mcp__x__collect',
-      'mcp__weird',
-      // Trinity R3 (astra P1): a read-shaped name proves nothing — redis_query takes GEORADIUS … STORE.
+      'mcp__cron__cron_list',
+      // A read-shaped name proves nothing — redis_query takes GEORADIUS … STORE.
       'mcp__server-tools__redis_query',
       'mcp__server-tools__db_query',
-      'mcp__cron__cron_list',
       'mcp__x__get_anything',
       'mcp__plan__other_tool',
+      'mcp__weird',
     ]) {
-      expect(checkPlanPendingCall(tool, {})).not.toBeNull();
+      expect(checkPlanPendingCall(tool, {}), tool).not.toBeNull();
     }
   });
 });
