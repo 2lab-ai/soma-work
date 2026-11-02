@@ -1,6 +1,7 @@
 // Session types live in somalib (shared with mcp-servers).
 // Re-export for backward compatibility — all src/ files import from './types'.
-import type { SessionGoalStall } from '@soma/slack/session-goal';
+import type { ContextRewindRecord, PendingRewind } from '@soma/slack/context-anchor';
+import type { SessionGoalFirstFailure, SessionGoalStall } from '@soma/slack/session-goal';
 
 export type {
   Continuation,
@@ -218,7 +219,7 @@ export interface SessionGoalPendingEval {
 }
 
 // Goal stall round — one definition, in the package the queue helpers live in.
-export type { SessionGoalStall };
+export type { SessionGoalFirstFailure, SessionGoalStall };
 
 export interface SessionGoal {
   /**
@@ -317,6 +318,8 @@ export interface SessionGoal {
    * (the answer to the stall question, or anything typed) clears it.
    */
   stall?: SessionGoalStall;
+  /** #745: where the goal first failed for its current reason, and whether any turn since did new work. */
+  firstFailure?: SessionGoalFirstFailure;
   /** Counts how many eval cycles have run for this goal. */
   evalAttemptCount?: number;
   /**
@@ -916,6 +919,16 @@ export interface ConversationSession {
   // Dashboard improvements (v2.1):
   // Number of /compact invocations or SDK-triggered compact_boundary events observed on this session.
   compactionCount?: number;
+  /**
+   * Context rollback (#743) — the latest safe cut point of the main agent's
+   * SDK transcript (`@soma/slack/context-anchor`, encoded). Every recorded user
+   * turn and work-log entry carries the value it had then.
+   */
+  contextAnchor?: string;
+  /** Context rollback (#743) — applied as `resumeSessionAt` on the next turn, then cleared. */
+  pendingRewind?: PendingRewind;
+  /** Context rollback (#744) — what applied rollbacks dropped, for the dashboard's marks. */
+  contextRewinds?: ContextRewindRecord[];
   // Compaction Tracking (#617):
   // Monotonically-incrementing epoch; bumped by START signals (PreCompact hook or `status==='compacting'` fallback).
   compactEpoch?: number;

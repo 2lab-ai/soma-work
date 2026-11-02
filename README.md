@@ -254,6 +254,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z close` | Close current thread session |
 | `/z restore` | Restore a session |
 | `/z context` · `/z compact` | Show / compact the context window |
+| `rollback` · `rollback <n>` · `rollback goal` · `rollback cancel` | Roll the model's conversation context back to just before one of your inputs, or (`rollback goal`) to where a stalled goal first failed — files are not touched (naked form only; `롤백` also works). On the dashboard, **⏪ 되돌리기** on the card also rolls back to a work-log point. Spec: [`docs/current/spec/context-rollback.md`](./docs/current/spec/context-rollback.md) |
 | `/z link <type> <url>` | Attach issue/PR/doc links |
 | `/z onboarding` | Run onboarding workflow |
 | `/z admin [accept\|deny\|users\|config\|llmchat\|session list]` | Admin commands |
