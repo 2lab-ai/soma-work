@@ -2890,6 +2890,8 @@ export class SessionRegistry {
     // A reset re-dispatches with a fresh stand-in title, so the title notice
     // budget starts over for the new context.
     session.titleNoticeCount = undefined;
+    // A reset starts a fresh model context: tell it the display language again.
+    session.displayLangSent = undefined;
     // NOTE: `session.instructions` and `session.instructionsCompletedSummary`
     // are intentionally preserved — the user-SSOT semantics require them to
     // survive `/new` and CONTINUE_SESSION resets (they represent durable
