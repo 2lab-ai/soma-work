@@ -29,7 +29,10 @@ function awaitingTask(): ConversationSession {
   } as unknown as ConversationSession;
 }
 
-function harness(start: () => Promise<{ status: number; body: unknown }>) {
+function harness(
+  start: () => Promise<{ status: number; body: unknown }>,
+  mayDecide?: (sessionKey: string, session: ConversationSession, actorUserId: string) => boolean,
+) {
   const task = awaitingTask();
   const setTaskPlanGate = vi.fn((_id: string, gate: TaskPlanGate) => {
     task.taskPlan = gate;
@@ -39,6 +42,7 @@ function harness(start: () => Promise<{ status: number; body: unknown }>) {
     setTaskPlanGate,
     controller: { canStart: () => null, isRunning: () => false, start: vi.fn(start) as never },
     now: () => NOW + 1,
+    ...(mayDecide ? { mayDecide } : {}),
     logger: { info: () => {}, warn: () => {} },
   });
   return { task, decide, setTaskPlanGate };
@@ -70,5 +74,32 @@ describe('createTaskPlanDecider — a start that does not happen puts the plan b
     expect(res.status).toBe(200);
     expect(task.taskPlan?.state).toBe('approved');
     expect(task.taskPlan?.decidedBy).toBe('U1');
+  });
+});
+
+describe("createTaskPlanDecider — 시작 · 취소 are the owner's call (#777)", () => {
+  // Someone else's instruction waits for the owner (#777); a plan decision by someone the owner has not
+  // approved would start the work around that gate, so it is refused — the owner decides.
+  const ownerOnly = (_key: string, session: ConversationSession, actor: string) => actor === session.ownerId;
+
+  it.each([
+    'start',
+    'cancel',
+  ] as const)('%s by someone the owner has not approved: 403, the plan still waits', async (decision) => {
+    const start = vi.fn(async () => ({ status: 202, body: { ok: true } }));
+    const { task, decide, setTaskPlanGate } = harness(start, ownerOnly);
+    const res = await decide({ sessionKey: KEY, decision, revision: 1, actorUserId: 'U2' });
+    expect(res.status).toBe(403);
+    expect(String((res.body as { error?: string }).error)).toMatch(/owner/);
+    expect(task.taskPlan?.state).toBe('awaiting');
+    expect(setTaskPlanGate).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('the owner (or someone the owner approved) decides as before', async () => {
+    const { task, decide } = harness(async () => ({ status: 202, body: { ok: true } }), ownerOnly);
+    const res = await decide({ sessionKey: KEY, decision: 'start', revision: 1, actorUserId: 'U1' });
+    expect(res.status).toBe(200);
+    expect(task.taskPlan?.state).toBe('approved');
   });
 });
