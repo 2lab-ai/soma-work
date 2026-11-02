@@ -10838,9 +10838,11 @@ function ptSameSend(opt, turn) {
   if (!opt || !opt._optimistic || !turn || turn._optimistic || turn.role !== 'user') return false;
   if (turn.origin && turn.origin.by === 'system') return false;
   if (turn.userId && opt._by && turn.userId !== opt._by) return false;
-  // No words, no match: an attachment-only send (or a turn without its text) is never "the same instruction".
   var key = ptSentKey(opt._sent);
-  return !!key && key === ptSentKey(turn.rawContent);
+  if (key) return key === ptSentKey(turn.rawContent);
+  // A files-only send is recorded with no words: only such a turn is its record. A send with
+  // neither words nor files matches nothing.
+  return !!opt._files && !ptSentKey(turn.rawContent);
 }
 // Pure: the optimistic turn a recorded user turn takes over ('' = none) — the oldest one it is
 // the send of (ptSameSend). A turn already held is an update, never an adoption.
@@ -16829,6 +16831,7 @@ async function sendCommand(text, ref, files) {
       origin: { by: 'user' },
       _optimistic: true,
       _sent: msg, // the words the recorded turn is matched by (ptOptimisticFor)
+      _files: list.length, // a files-only send (no words) is matched by a recorded turn with no words
       _by: _viewerUserId || '', // who sent it — someone else's turn with the same words never takes it
     }, true);
   }

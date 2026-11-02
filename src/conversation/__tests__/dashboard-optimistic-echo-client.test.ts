@@ -47,6 +47,8 @@ type Turn = {
   _optimistic?: boolean;
   _sent?: string;
   _by?: string;
+  _files?: number;
+  attachments?: { name: string }[];
 };
 
 const T0 = 1_793_591_000_000;
@@ -168,14 +170,22 @@ describe('T1 — the recorded instruction takes the optimistic one’s place, ho
     expect(list.map((t) => t.id)).toEqual([first.id, `optimistic-${T0}`]);
   });
 
-  it('no words, no match: an attachment-only send is never confirmed by another empty turn (review: grok P1)', () => {
-    const list: Turn[] = [optimistic('')];
+  it('a files-only send (no words) shows once: the recorded turn with no words takes its place (review: fable P1)', () => {
+    const filesOnly = () => ({ ...optimistic(''), rawContent: '📎 report.pdf', _files: 1 });
+    const list: Turn[] = [filesOnly()];
+    const r = wsRig(list);
+    r.push(recorded('', T0 + 15_000, { id: 'files', attachments: [{ name: 'report.pdf' }] }));
+    expect(list.map((t) => t.id)).toEqual(['files']);
+    const m = load<Pure>(PURE);
+    const merged = m.ptMergeFetched([recorded('', T0 + 2_000, { id: 'files-page' })], [filesOnly()]);
+    expect(merged.map((t) => t.id)).toEqual(['files-page']);
+  });
+
+  it('words never match a turn with no words, and a send with neither words nor files matches nothing (review: grok P1)', () => {
+    const list: Turn[] = [optimistic('배포해줘'), optimistic('', T0 + 1, 'optimistic-empty')];
     const r = wsRig(list);
     r.push(recorded('', T0 + 1_000, { id: 'empty-other' }));
-    expect(list.map((t) => t.id)).toEqual([`optimistic-${T0}`, 'empty-other']);
-    const m = load<Pure>(PURE);
-    const merged = m.ptMergeFetched([recorded('', T0 + 2_000, { id: 'empty-page' })], [optimistic('')]);
-    expect(merged.map((t) => t.id)).toEqual(['empty-page', `optimistic-${T0}`]);
+    expect(list.map((t) => t.id)).toEqual([`optimistic-${T0}`, 'optimistic-empty', 'empty-other']);
   });
 
   it('two sends in a row: each recorded turn takes its own', () => {
