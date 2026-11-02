@@ -47,6 +47,26 @@ const SILENCE_PHRASE_MAX_VOICED_MS = 2000;
 function norm(w: string): string {
   return w.replace(/[.,!?。、…"'“”‘’()[\]]/g, '').toLowerCase();
 }
+/**
+ * Where the words still being heard start in a hypothesis: after as many letters as the settled words hold. Whisper
+ * re-spaces words between runs ("받아쓰기를" ↔ "받아 쓰기를"); counting letters, not words, keeps a re-spaced
+ * settled word from showing again as still heard.
+ */
+function alignAfter(cur: string[], committed: string[]): number {
+  const target = committed.map(norm).join('').length;
+  let letters = 0;
+  let i = 0;
+  while (i < cur.length && letters < target) letters += norm(cur[i++]).length;
+  // An earlier word heard with other letters shifts the count: the boundary is where the last settled word is, if it
+  // is within two words of the count.
+  const last = committed.length ? norm(committed[committed.length - 1]) : '';
+  if (last && !(i > 0 && norm(cur[i - 1]) === last)) {
+    for (const j of [i + 1, i - 1, i + 2, i - 2]) {
+      if (j > 0 && j <= cur.length && norm(cur[j - 1]) === last) return j;
+    }
+  }
+  return i;
+}
 function words(text: string): string[] {
   return String(text || '')
     .trim()
@@ -240,7 +260,7 @@ export class DictationStream {
         common++;
       if (common > this.committed.length)
         this.committed = this.committed.concat(cur.slice(this.committed.length, common));
-      this.interim = cur.slice(this.committed.length);
+      this.interim = cur.slice(alignAfter(cur, this.committed));
       this.previous = cur;
       this.emit();
     });
@@ -296,4 +316,23 @@ export class DictationStream {
     this.lastSent = key;
     this.opts.onText(t);
   }
+}
+
+/**
+ * The policy as browser source — DictationStream and what it uses, from this module's own code (not a copy), for a
+ * page's Web Worker running Whisper in the browser (#740): the browser's segments settle exactly as the server's do.
+ */
+export function dictationStreamSource(): string {
+  return [
+    // A transpiler that keeps names (esbuild under tsx/vitest) adds static{__name(this,…)} to the class source.
+    'var __name = typeof __name === "function" ? __name : function (f) { return f; };',
+    `var FRAME_MS = ${FRAME_MS};`,
+    `var PROMPT_CHARS = ${PROMPT_CHARS};`,
+    `var SILENCE_PHRASES = ${SILENCE_PHRASES.toString()};`,
+    `var SILENCE_PHRASE_MAX_VOICED_MS = ${SILENCE_PHRASE_MAX_VOICED_MS};`,
+    norm.toString(),
+    alignAfter.toString(),
+    words.toString(),
+    `var DictationStream = ${DictationStream.toString()};`,
+  ].join('\n');
 }

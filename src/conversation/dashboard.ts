@@ -118,6 +118,7 @@ import { backfillArtifactsFromWorkLog } from './artifact-capture';
 import { type ArtifactSummary, getArtifactStore, type SessionArtifact } from './artifacts';
 import { buildCapacityView, type CapacityView } from './capacity-view';
 import { buildCronJobsView, type CronRunSessionLookup } from './cron-view';
+import { DICTATION_BROWSER_JS } from './dictation-browser-client';
 import { DICTATION_PREF_JS } from './dictation-pref';
 import { DICTATION_SERVER_JS } from './dictation-server-client';
 import { readAllInstances } from './instance-registry';
@@ -10019,6 +10020,7 @@ var VIEW_BUILTINS = ${JSON.stringify(BUILTIN_PRESETS)};
 ${VIEW_LAYOUT_CLIENT_JS}
 ${DICTATION_PREF_JS}
 ${DICTATION_SERVER_JS}
+${DICTATION_BROWSER_JS}
 var VIEW_LAYOUT_KEY = 'soma-view-layout';
 var _viewLayout = { v: 1 }; // the user's saved layouts (GET /api/settings/dashboard-layout); the device keeps a copy
 var _layoutLoads = 0; // layout loads started: only the newest answer is drawn
@@ -18334,12 +18336,15 @@ function ntDictationChoice() {
   return typeof dictationEngineChoice === 'function' ? dictationEngineChoice(store) : 'device';
 }
 
-// Can 받아쓰기 run here: the browser's recogniser — or, with the server's Whisper chosen, a microphone stream
-// (Firefox and an iPhone Home Screen web app too).
+// Can 받아쓰기 run here: the browser's recogniser — or, with a Whisper chosen, a microphone stream (to the server, or
+// to a Web Worker with WebAssembly) — Firefox and an iPhone Home Screen web app too.
 function ntDictationUsable(w) {
-  if (ntDictationChoice() === 'server') {
+  var choice = ntDictationChoice();
+  if (choice === 'server' || choice === 'browser') {
     var n = w && w.navigator;
-    return !!(n && n.mediaDevices && typeof n.mediaDevices.getUserMedia === 'function' && w.WebSocket);
+    var mic = !!(n && n.mediaDevices && typeof n.mediaDevices.getUserMedia === 'function');
+    if (choice === 'server') return mic && !!w.WebSocket;
+    return mic && !!w.Worker && typeof WebAssembly !== 'undefined';
   }
   return !!ntDictationEngine(w);
 }
@@ -18586,7 +18591,7 @@ async function ntDictateStart(host, auto) {
   // The new task's composer is never held by a launch (it left the dialog at once — SSOT 2026-11-02 T1); a session
   // note is, while its files are read.
   var engine = ntDictationChoice();
-  if ((!Rec && engine !== 'server') || !el || (host.id !== 'nt' && _pcSending)) return;
+  if ((!Rec && engine === 'device') || !el || (host.id !== 'nt' && _pcSending)) return;
   // One microphone: a voice note recording keeps it.
   if (ntRecordingNow()) {
     host.status('음성 녹음 중에는 받아쓸 수 없습니다 — 녹음을 마치고 눌러 주세요', true);
@@ -18599,8 +18604,8 @@ async function ntDictateStart(host, auto) {
     if (_ntDictation.host.id === host.id && !_ntDictation.stopping) return;
     ntDictateStop(true);
   }
-  if (engine === 'server') {
-    ntDictateStartServer(host, el);
+  if (engine === 'server' || engine === 'browser') {
+    ntDictateStartWhisper(host, el, engine);
     return;
   }
   var android = ntIsAndroid(w);
@@ -18729,20 +18734,35 @@ async function ntDictateStart(host, auto) {
   }
 }
 
-// 받아쓰기 through the server's Whisper (epic #737, #739): the microphone streams to the server and its words come
-// back as they settle — the settled ones and those still heard, like a recogniser's results. Opens listening like
-// the device engine (the person chose it); a press, a key or sending stops it.
-function ntDictateStartServer(host, el) {
-  var d = { host: host, engine: 'server', live: '', base: String(el.value || ''), finals: '', interim: '', stopping: false, hard: false, srv: null };
+// 받아쓰기 through Whisper (epic #737): the server's (#739 — the microphone streams to the server) or this browser's
+// (#740 — a Web Worker on this device; the model downloads once). Its words come back as they settle — the settled
+// ones and those still heard, like a recogniser's results. Opens listening like the device engine (the person chose
+// it); a press, a key or sending stops it.
+function ntDictateStartWhisper(host, el, engine) {
+  var d = { host: host, engine: engine, live: '', base: String(el.value || ''), finals: '', interim: '', stopping: false, hard: false, srv: null };
+  var name = engine === 'browser' ? '브라우저 위스퍼' : '서버 위스퍼';
   _ntDictation = d;
   host.clear();
-  d.live = '서버 위스퍼 준비 중…';
+  d.live = name + ' 준비 중…';
   host.status(d.live);
   host.paint();
-  d.srv = dictationServerStart({
+  var start = engine === 'browser' ? dictationBrowserStart : dictationServerStart;
+  d.srv = start({
+    onProgress: function (pct) {
+      if (_ntDictation !== d) return;
+      d.live = name + ' 모델을 내려받는 중… ' + pct + '% (처음 한 번만)';
+      host.status(d.live);
+    },
     onReady: function (model) {
       if (_ntDictation !== d) return;
-      d.live = '듣는 중… 서버 위스퍼(' + (model || 'Whisper') + ')로 처리합니다 · 다시 누르거나 키보드로 쓰면 멈춥니다';
+      d.live =
+        '듣는 중… ' +
+        name +
+        '(' +
+        (model || 'Whisper') +
+        ')' +
+        (engine === 'browser' ? '로 이 기기 안에서 처리합니다' : '로 처리합니다') +
+        ' · 다시 누르거나 키보드로 쓰면 멈춥니다';
       host.status(d.live);
       if (host.id === 'pc') host.status(d.live, true);
     },
@@ -18761,7 +18781,7 @@ function ntDictateStartServer(host, el) {
       // A server without Whisper or a refused microphone: a why to act on (the red line). A dropped connection says
       // a press continues.
       var bad = code !== 'closed' && code !== 'too-long';
-      var why = code === 'unavailable' || code === 'unsupported' ? message + ' — 설정 › 받아쓰기에서 기기 기본으로 바꿀 수 있습니다' : message;
+      var why = code === 'unavailable' || code === 'unsupported' || code === 'model' ? message + ' — 설정 › 받아쓰기에서 기기 기본으로 바꿀 수 있습니다' : message;
       ntDictationEnd(d, why, bad);
     },
     // The words are in (onText); why, when the server ended it (its time limit).
@@ -18996,7 +19016,7 @@ function ntDictationEnd(d, why, bad) {
 function ntDictateStop(hard) {
   var d = _ntDictation;
   if (!d) return;
-  if (d.engine === 'server') {
+  if (d.engine === 'server' || d.engine === 'browser') {
     if (hard) {
       d.hard = true;
       ntDictationEnd(d, '');

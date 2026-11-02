@@ -151,6 +151,7 @@ function page(
     mic?: string; // the microphone permission navigator.permissions answers; none: it cannot say
     choice?: string; // Settings › 받아쓰기 on this device (dictation-pref.ts); default 기기 기본
     server?: unknown; // dictationServerStart (dictation-server-client.ts)
+    browser?: unknown; // dictationBrowserStart (dictation-browser-client.ts)
     win?: Record<string, unknown>; // more of window (mediaDevices, WebSocket)
   } = {},
 ) {
@@ -179,7 +180,7 @@ function page(
       'ntDictationEngine',
       'ntDictationChoice',
       'ntDictationUsable',
-      'ntDictateStartServer',
+      'ntDictateStartWhisper',
       'ntDictationWide',
       'ntDictationNarrow',
       'ntDictationTool',
@@ -222,6 +223,11 @@ function page(
         opts.server ??
         (() => {
           throw new Error('the server engine was not chosen');
+        }),
+      dictationBrowserStart:
+        opts.browser ??
+        (() => {
+          throw new Error('the browser engine was not chosen');
         }),
       _ntDictation: null,
       _ntDictationAutoOff: false,
@@ -383,7 +389,7 @@ describe('SSOT_3 — 받아쓰기 is added beside the voice note, which stays ("
           'ntDictationEngine',
           'ntDictationChoice',
           'ntDictationUsable',
-          'ntDictateStartServer',
+          'ntDictateStartWhisper',
           'ntDictationTool',
           'ntDictationWide',
           'ntDictationNarrow',
@@ -422,7 +428,7 @@ describe('SSOT_3 — 받아쓰기 is added beside the voice note, which stays ("
           'ntDictationEngine',
           'ntDictationChoice',
           'ntDictationUsable',
-          'ntDictateStartServer',
+          'ntDictateStartWhisper',
           'ntDictationTool',
           'ntDictationWide',
           'ntDictationNarrow',
@@ -1820,5 +1826,50 @@ describe('#739 — 받아쓰기 through the server’s Whisper when this device 
     await api.ntDictateStart();
     expect(fake.start).not.toHaveBeenCalled();
     expect(FakeRec.made.length).toBeGreaterThan(0);
+  });
+});
+
+describe('#740 — 받아쓰기 through Whisper in this browser when this device chose it', () => {
+  it('the first press downloads the model (progress on the status line), then it listens on this device', async () => {
+    const fake = serverFake();
+    const { api, env } = page({ choice: 'browser', browser: fake.start });
+    await api.ntDictateStart();
+    expect(fake.start).toHaveBeenCalledTimes(1);
+    expect(last(env.statuses)).toBe('브라우저 위스퍼 준비 중…');
+    const s = fake.made[0] as Srv & { cb: Srv['cb'] & { onProgress(p: number): void } };
+    s.cb.onProgress(37);
+    expect(last(env.statuses)).toBe('브라우저 위스퍼 모델을 내려받는 중… 37% (처음 한 번만)');
+    s.cb.onReady('whisper-small, WebGPU');
+    expect(last(env.statuses)).toBe(
+      '듣는 중… 브라우저 위스퍼(whisper-small, WebGPU)로 이 기기 안에서 처리합니다 · 다시 누르거나 키보드로 쓰면 멈춥니다',
+    );
+    s.cb.onText('대시보드', '새 작업');
+    expect(env.composer.value).toBe('대시보드 새 작업');
+    api.ntDictateStop(false);
+    expect(s.stops).toBe(1);
+    s.cb.onDone('대시보드 새 작업');
+    expect(api.__peek('_ntDictation')).toBeNull();
+  });
+
+  it('a model that cannot load: the red line, and where to switch back', async () => {
+    const fake = serverFake();
+    const { api, env } = page({ choice: 'browser', browser: fake.start });
+    await api.ntDictateStart();
+    fake.made[0].cb.onError('model', '브라우저 위스퍼 모델을 불러오지 못했습니다 — out of memory');
+    expect(env.errorLine.textContent).toBe(
+      '브라우저 위스퍼 모델을 불러오지 못했습니다 — out of memory — 설정 › 받아쓰기에서 기기 기본으로 바꿀 수 있습니다',
+    );
+  });
+
+  it('usable without a browser recogniser where a Worker can run WebAssembly', () => {
+    const firefox = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0';
+    const { api } = page({ choice: 'browser', ua: firefox, win: { Worker: () => {} } });
+    Object.assign(api.__peek('window').navigator, { mediaDevices: { getUserMedia: () => Promise.resolve({}) } });
+    expect(api.ntComposerData().tools?.[0]?.id).toBe('dictate');
+    const noWorker = page({ choice: 'browser', ua: firefox });
+    Object.assign(noWorker.api.__peek('window').navigator, {
+      mediaDevices: { getUserMedia: () => Promise.resolve({}) },
+    });
+    expect(noWorker.api.ntComposerData().tools).toBeUndefined();
   });
 });
