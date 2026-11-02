@@ -4137,14 +4137,15 @@ export async function registerDashboardRoutes(
 
   // ── Instruction approval (#767): someone else's instruction, the owner's DM as an approval card ──
 
-  server.post<{ Params: { key: string }; Body: { requestId?: unknown; decision?: unknown } }>(
+  server.post<{ Params: { key: string }; Body: { requestId?: unknown; decision?: unknown; revision?: unknown } }>(
     '/api/dashboard/session/:key/instruction-approval',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { requestId, decision } = request.body || {};
+      const { requestId, decision, revision } = request.body || {};
       if (
         typeof requestId !== 'string' ||
         !/^iap_[A-Za-z0-9]{1,64}$/.test(requestId) ||
+        (revision !== undefined && (typeof revision !== 'number' || !Number.isInteger(revision))) ||
         !isInstructionApprovalDecision(decision)
       ) {
         reply.status(400).send({
@@ -4167,7 +4168,13 @@ export async function registerDashboardRoutes(
       try {
         // A bearer client or a viewer token carries no owner identity and is refused by the decision.
         const actor = (request as { authContext?: { userId?: string } }).authContext?.userId;
-        const result = _instructionApprovals.answer({ requestId, decision, actor, surface: 'dashboard' });
+        const result = _instructionApprovals.answer({
+          requestId,
+          decision,
+          actor,
+          surface: 'dashboard',
+          ...(typeof revision === 'number' ? { revision } : {}),
+        });
         if (result.ok) {
           logger.info('Instruction approval answered from the dashboard', { sessionKey: originalKey, decision });
           reply.send({ ok: true, decision: result.decision });
@@ -4181,6 +4188,7 @@ export async function registerDashboardRoutes(
           expired: [409, '이미 끝난 요청입니다 — 응답 시간이 지났습니다'],
           session_gone: [409, '작업 세션이 끝나 지시를 실행할 수 없습니다'],
           unavailable: [503, '지금은 처리할 수 없습니다 — 잠시 후 다시 시도하세요'],
+          changed: [409, '그사이 같은 사람의 지시가 더 들어왔습니다 — 갱신된 카드에서 다시 응답하세요'],
         };
         const [status, error] = refusal[result.reason];
         reply.status(status).send({ error });
@@ -7124,7 +7132,11 @@ async function answerInstructionApproval(key, requestId, choiceId) {
   var s = _sessionCache[key];
   var list = (s && s.pendingInstructionApprovals) || [];
   var known = false;
-  for (var i = 0; i < list.length; i++) if (String(list[i].requestId) === requestId) known = true;
+  // The version this card shows (how many instructions): an answer covers only those (astra R3).
+  var rev = 0;
+  for (var i = 0; i < list.length; i++) {
+    if (String(list[i].requestId) === requestId) { known = true; rev = toNum(list[i].count); }
+  }
   if (!known || !INSTRUCTION_APPROVAL_SENT[choiceId]) return null;
   var sk = 'i|' + requestId;
   var states = _acState[key] || (_acState[key] = Object.create(null));
@@ -7134,7 +7146,7 @@ async function answerInstructionApproval(key, requestId, choiceId) {
   acRepaint(key);
   var st;
   try {
-    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/instruction-approval', JSON.stringify({ requestId: requestId, decision: choiceId }));
+    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/instruction-approval', JSON.stringify({ requestId: requestId, decision: choiceId, revision: rev }));
     if (res.ok) {
       st = { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() };
       dashToast({ title: INSTRUCTION_APPROVAL_SENT[choiceId], description: 'Slack DM도 같은 결과로 바뀝니다', tone: 'success' });

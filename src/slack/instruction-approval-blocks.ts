@@ -82,7 +82,8 @@ function button(view: InstructionApprovalView, decision: InstructionApprovalDeci
     type: 'button',
     text: { type: 'plain_text', text: label.slice(0, 75), emoji: true },
     action_id: `${INSTRUCTION_APPROVAL_ACTION_PREFIX}${decision}`,
-    value: JSON.stringify({ requestId: view.requestId, decision }),
+    // `rev`: how many instructions this DM shows — an answer covers only those (astra R3).
+    value: JSON.stringify({ requestId: view.requestId, decision, rev: view.texts.length }),
   };
   if (decision === 'approve') el.style = 'primary';
   if (decision === 'deny') el.style = 'danger';
@@ -186,10 +187,10 @@ export function instructionDecidedNotice(view: InstructionApprovalView): string 
 /** A Slack click's `{ requestId, decision }`, or null when the payload is not ours. */
 export function parseInstructionApprovalAction(
   body: any,
-): { requestId: string; decision: InstructionApprovalDecision } | null {
+): { requestId: string; decision: InstructionApprovalDecision; revision?: number } | null {
   const raw: unknown = body?.actions?.[0]?.value;
   if (typeof raw !== 'string') return null;
-  let parsed: { requestId?: unknown; decision?: unknown };
+  let parsed: { requestId?: unknown; decision?: unknown; rev?: unknown };
   try {
     parsed = JSON.parse(raw);
   } catch {
@@ -197,5 +198,6 @@ export function parseInstructionApprovalAction(
   }
   if (typeof parsed.requestId !== 'string' || !parsed.requestId) return null;
   if (!isInstructionApprovalDecision(parsed.decision)) return null;
-  return { requestId: parsed.requestId, decision: parsed.decision };
+  const revision = typeof parsed.rev === 'number' && Number.isInteger(parsed.rev) ? parsed.rev : undefined;
+  return { requestId: parsed.requestId, decision: parsed.decision, ...(revision !== undefined ? { revision } : {}) };
 }

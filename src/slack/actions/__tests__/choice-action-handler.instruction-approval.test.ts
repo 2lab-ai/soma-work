@@ -106,6 +106,54 @@ describe('ChoiceActionHandler — someone else’s answer waits for the owner (#
     );
   });
 
+  it('someone else cannot change the owner’s form selections — select, edit, reset (astra R3)', async () => {
+    const { handler, slackApi } = setup(false);
+    const body = (value: Record<string, unknown>) => ({
+      user: { id: 'U_OTHER' },
+      channel: { id: 'C123' },
+      message: { ts: 'form-ts', thread_ts: 'thread-root' },
+      actions: [{ value: JSON.stringify({ sessionKey: SESSION_KEY, formId: 'f1', questionId: 'q1', ...value }) }],
+    });
+    const forms = new Map<string, any>([
+      [
+        'f1',
+        {
+          formId: 'f1',
+          sessionKey: SESSION_KEY,
+          channel: 'C123',
+          threadTs: 'thread-root',
+          messageTs: 'form-ts',
+          questions: [
+            {
+              id: 'q1',
+              question: 'Q1?',
+              choices: [
+                { id: '1', label: 'A' },
+                { id: '2', label: 'B' },
+              ],
+            },
+          ],
+          selections: { q1: { choiceId: '1', label: 'A' } },
+          createdAt: Date.now(),
+        },
+      ],
+    ]);
+    const formStore = {
+      get: (id: string) => forms.get(id),
+      set: (id: string, v: any) => forms.set(id, v),
+      delete: (id: string) => forms.delete(id),
+      getFormsBySession: () => new Map(forms),
+    };
+    (handler as any).formStore = formStore;
+    const before = JSON.stringify(formStore.get('f1') ?? null);
+    await handler.handleMultiChoice(body({ choiceId: '2', label: 'B' }));
+    await handler.handleEditChoice(body({}));
+    await handler.handleFormReset(body({}));
+    expect(JSON.stringify(formStore.get('f1') ?? null)).toBe(before);
+    expect(slackApi.postEphemeral).toHaveBeenCalledTimes(3);
+    for (const call of slackApi.postEphemeral.mock.calls) expect(call[2]).toContain('소유자');
+  });
+
   it('the owner (or an approved person) answers as before', async () => {
     const { handler, slackApi, allows } = setup(true);
     await handler.handleUserChoice(click('U_OWNER'));

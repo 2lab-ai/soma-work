@@ -146,16 +146,37 @@ describe('InstructionApprovals (#767)', () => {
       const s = sessions.get(KEY);
       // Not yet answered: the id releases nothing.
       expect(
-        approvals.allows({ sessionKey: KEY, session: s, senderId: OTHER, approvalId: requestId, ts: '101.000' }),
+        approvals.allows({
+          sessionKey: KEY,
+          session: s,
+          senderId: OTHER,
+          approvalId: requestId,
+          ts: '101.000',
+          text: '배포해줘',
+        }),
       ).toBe(false);
       const answer = approvals.answer({ requestId, decision: 'approve', actor: OWNER, surface: 'slack' });
       expect(answer.ok).toBe(true);
       expect(
-        approvals.allows({ sessionKey: KEY, session: s, senderId: OTHER, approvalId: requestId, ts: '101.000' }),
+        approvals.allows({
+          sessionKey: KEY,
+          session: s,
+          senderId: OTHER,
+          approvalId: requestId,
+          ts: '101.000',
+          text: '배포해줘',
+        }),
       ).toBe(true);
       // Another message, another session, another sender, or a made-up id: still held.
       expect(
-        approvals.allows({ sessionKey: KEY, session: s, senderId: OTHER, approvalId: requestId, ts: '102.000' }),
+        approvals.allows({
+          sessionKey: KEY,
+          session: s,
+          senderId: OTHER,
+          approvalId: requestId,
+          ts: '102.000',
+          text: '배포해줘',
+        }),
       ).toBe(false);
       expect(
         approvals.allows({
@@ -164,14 +185,79 @@ describe('InstructionApprovals (#767)', () => {
           senderId: OTHER,
           approvalId: requestId,
           ts: '101.000',
+          text: '배포해줘',
         }),
       ).toBe(false);
       expect(
-        approvals.allows({ sessionKey: KEY, session: s, senderId: 'U_THIRD', approvalId: requestId, ts: '101.000' }),
+        approvals.allows({
+          sessionKey: KEY,
+          session: s,
+          senderId: 'U_THIRD',
+          approvalId: requestId,
+          ts: '101.000',
+          text: '배포해줘',
+        }),
       ).toBe(false);
       expect(
-        approvals.allows({ sessionKey: KEY, session: s, senderId: OTHER, approvalId: 'iap_forged', ts: '101.000' }),
+        approvals.allows({
+          sessionKey: KEY,
+          session: s,
+          senderId: OTHER,
+          approvalId: 'iap_forged',
+          ts: '101.000',
+          text: '배포해줘',
+        }),
       ).toBe(false);
+    });
+  });
+
+  describe('astra R3 — an approval covers exactly what the owner was shown', () => {
+    it('a one-time approval does not cover the message once its words were edited', async () => {
+      const approvals = new InstructionApprovals(deps());
+      const { requestId } = await holdOne(approvals, '101.000', 'read status');
+      const answer = approvals.answer({ requestId, decision: 'approve', actor: OWNER, surface: 'slack', revision: 1 });
+      expect(answer.ok).toBe(true);
+      const s = sessions.get(KEY);
+      const base = { sessionKey: KEY, session: s, senderId: OTHER, approvalId: requestId, ts: '101.000' };
+      expect(approvals.allows({ ...base, text: 'read status' })).toBe(true);
+      expect(approvals.allows({ ...base, text: 'rm -rf everything' })).toBe(false);
+    });
+
+    it('an answer to an older version (fewer instructions than now) is refused and the DM shows the new one', async () => {
+      const approvals = new InstructionApprovals(deps());
+      const { requestId } = await holdOne(approvals, '101.000', 'one');
+      await holdOne(approvals, '102.000', 'two');
+      const stale = approvals.answer({ requestId, decision: 'approve', actor: OWNER, surface: 'slack', revision: 1 });
+      expect(stale).toMatchObject({ ok: false, reason: 'changed' });
+      expect(released).toEqual([]);
+      const fresh = approvals.answer({ requestId, decision: 'approve', actor: OWNER, surface: 'slack', revision: 2 });
+      expect(fresh.ok).toBe(true);
+      if (fresh.ok) await fresh.done;
+      expect(released).toHaveLength(2);
+    });
+
+    it('words that join while the first DM is on its way are shown on it once it lands', async () => {
+      let land!: (ref: { channel: string; ts: string }) => void;
+      const approvals = new InstructionApprovals(
+        deps({
+          postOwnerDm: (_owner, msg) => {
+            dms.push({ ownerId: OWNER, text: msg.text, blocks: msg.blocks ?? [] });
+            return new Promise((resolve) => {
+              land = resolve;
+            });
+          },
+        }),
+      );
+      const first = holdOne(approvals, '101.000', 'one');
+      await new Promise((r) => setTimeout(r, 0));
+      await holdOne(approvals, '102.000', 'two');
+      land({ channel: 'D_OWNER', ts: 'dm.1' });
+      await first;
+      const last = dmUpdates[dmUpdates.length - 1];
+      expect(last?.ref).toEqual({ channel: 'D_OWNER', ts: 'dm.1' });
+      expect(JSON.stringify(last?.blocks)).toContain('two');
+      // Its buttons name the new version.
+      expect(JSON.stringify(last?.blocks)).toContain('\\"rev\\":2');
     });
   });
 

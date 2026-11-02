@@ -714,6 +714,8 @@ export class SlackHandler {
       // E2 ⑧ — a live task's instruction thread: answered here, nothing runs (D2 (2)).
       guardInstructionThread: (event, say) =>
         this.taskEntry ? this.taskEntry.guard(event, say) : Promise.resolve(false),
+      // #767 — a non-owner's `/z …` mention goes to the message gate instead of ZRouter.
+      holdsForOwnerApproval: (event) => this.ownerApprovalHold(event as MessageEvent) !== undefined,
     };
     this.eventRouter = new EventRouter(app, eventRouterDeps, this.handleMessage.bind(this));
 
@@ -2801,7 +2803,11 @@ export class SlackHandler {
     if (!session?.ownerId || session.ownerId === event.user) return undefined;
     const sessionKey = this.claudeHandler.getSessionKey(event.channel, event.thread_ts);
     const approvalId = (event.routeContext as { instructionApprovalId?: string } | undefined)?.instructionApprovalId;
-    if (approvals.allows({ sessionKey, session, senderId: event.user, approvalId, ts: event.ts })) return undefined;
+    if (
+      approvals.allows({ sessionKey, session, senderId: event.user, approvalId, ts: event.ts, text: event.text ?? '' })
+    ) {
+      return undefined;
+    }
     return { approvals, sessionKey, session };
   }
 
