@@ -203,7 +203,7 @@ describe('WorkQueueService', () => {
     expect(h.service.decide(input('C1:300', session(), TRIGGER, 'UC')).kind).toBe('blocked');
   });
 
-  it('a requester\'s cancel also closes the session made only for the request', async () => {
+  it("a requester's cancel also closes the session made only for the request", async () => {
     h.service.decide(input('C1:100', session()));
     h.probes.set('C1:100', { exists: true, active: true, activity: 'working', workflow: 'deploy' });
     const decision = h.service.decide(input('C1:200', session(), TRIGGER, 'UB'));
