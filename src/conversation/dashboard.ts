@@ -11917,7 +11917,11 @@ function planBarHtml(s) {
   return '<span class="ppb-label">작업 계획 v' + tp.revision + ' — 시작할까요?</span><span class="ppb-actions">' + planButtonsHtml(s) + '</span>';
 }
 // The plan in the detail card's 입력 필요: shown the moment the card opens — the server's drawing of the
-// revision the card names (fetched once per revision and state), a full-page link, the plan folded once decided.
+// revision the card names, a full-page link, the plan folded once decided. Fetched once for each revision and
+// state the board names (doc.asked): a server ahead of the board answers once, not again and again (review R1).
+function planAskKey(tp) {
+  return (tp ? tp.revision : '') + ':' + (tp ? tp.state : '');
+}
 function panelPlanHtml(s, tp) {
   var key = s.key;
   var head = '<div class="pp-head"><span class="pp-title">작업 계획' + (tp.revision > 0 ? ' v' + tp.revision : '') + '</span>'
@@ -11928,7 +11932,7 @@ function panelPlanHtml(s, tp) {
     return head + '<p class="pp-note">지시를 SSOT로 고정하고 의도를 정리해 전체 계획(결론 → 단계 → 작업 → 디테일)을 세우는 중입니다. 제출되면 여기에 바로 보입니다.</p>';
   }
   var doc = _planDocs[key];
-  if (!doc || (!doc.loading && (doc.revision < tp.revision || (doc.revision === tp.revision && doc.state !== tp.state)))) {
+  if (!doc || (!doc.loading && doc.asked !== planAskKey(tp))) {
     loadPanelPlan(s);
     doc = _planDocs[key];
   }
@@ -11944,17 +11948,18 @@ function loadPanelPlan(s) {
   var cur = _planDocs[key];
   if (cur && cur.loading) return;
   var asked = s.taskPlan || {};
-  _planDocs[key] = { revision: cur ? cur.revision : -1, state: cur ? cur.state : '', html: cur ? cur.html : '', loading: true };
+  var askKey = planAskKey(s.taskPlan);
+  _planDocs[key] = { revision: cur ? cur.revision : -1, state: cur ? cur.state : '', html: cur ? cur.html : '', loading: true, asked: askKey };
   fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/plan')
     .then(function(r) {
       if (!r || !r.ok) throw new Error('HTTP ' + (r ? r.status : '?'));
       return r.json();
     })
     .then(function(d) {
-      _planDocs[key] = { revision: Number(d && d.revision) || 0, state: String((d && d.state) || ''), html: d && typeof d.html === 'string' ? d.html : '' };
+      _planDocs[key] = { revision: Number(d && d.revision) || 0, state: String((d && d.state) || ''), html: d && typeof d.html === 'string' ? d.html : '', asked: askKey };
     })
     .catch(function(e) {
-      _planDocs[key] = { revision: Number(asked.revision) || 0, state: String(asked.state || ''), html: '', error: String((e && e.message) || e) };
+      _planDocs[key] = { revision: Number(asked.revision) || 0, state: String(asked.state || ''), html: '', error: String((e && e.message) || e), asked: askKey };
     })
     .then(function() {
       if (panelSessionKey === key) renderPanelPlan(_sessionCache[key] || s);
