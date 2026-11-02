@@ -164,6 +164,18 @@ describe('agent spend — read from the subagent transcript (T2)', () => {
     expect(h.agents!.agents[0].spend!.model).toBe('claude-sonnet-4-6');
   });
 
+  // #819 review P1 — a short llmux subagent can report zero usage on every call; its transcript still names its model.
+  it('#813 a subagent whose every call reports zero usage still has its model', async () => {
+    writeAgent('aaaa1111', [
+      assistant('msg_1', 'grok-4.6', [0, 0, 0, 0]),
+      assistant('msg_2', 'grok-4.6', [0, 0, 0, 0]),
+    ]);
+    const h = holder();
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => T0 });
+    await reader.refresh(h);
+    expect(h.agents!.agents[0].spend?.model).toBe('grok-4.6');
+  });
+
   it('reads only what was appended since the last read, and a half-written line waits for its end', async () => {
     const f = writeAgent('aaaa1111', [assistant('msg_1', 'claude-opus-5-5', [1, 1, 100, 0])]);
     const h = holder();

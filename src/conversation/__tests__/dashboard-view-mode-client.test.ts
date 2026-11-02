@@ -16,7 +16,7 @@
  *   T5  advanced: everything the page showed, every section open (the old 자세히)
  */
 
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { BUILTIN_PRESETS } from '../../view-layout';
@@ -683,6 +683,38 @@ describe('T7–T10 — minimal card: cost · model · artifacts, the star toggle
     expect(env.modelLabelOf('claude-sonnet-4-5-20250929')).toBe('sonnet-4-5');
     expect(env.modelLabelOf('claude-sonnet-4-5-20250929[1m]')).toBe('sonnet-4-5[1m]');
     expect(env.modelLabelOf('gpt-5.5')).toBe('gpt-5.5');
+  });
+
+  // #819 review P2 — the board chip and the library (picker, agent tree) name a model's maker the same way: the
+  // client's ES5 copy is pinned to the installed library's modelVendor.
+  it('#813 modelVendorOf names the maker exactly as @2lab.ai/ui modelVendor does', () => {
+    const dist = join(process.cwd(), 'node_modules/@2lab.ai/ui/dist');
+    const file = readdirSync(dist).find((f) => /^model-mark-.*\.js$/.test(f));
+    expect(file, 'dist/model-mark-*.js').toBeDefined();
+    const src = readFileSync(join(dist, file as string), 'utf8');
+    const fn = /function modelVendor\(model\) \{[\s\S]*?\n\}/.exec(src)?.[0];
+    expect(fn, 'modelVendor in the library build').toBeDefined();
+    const lib = new Function(`${fn}\nreturn modelVendor;`)() as (m: unknown) => string;
+    const ids = [
+      'claude-opus-5-5[1m]',
+      'Sonnet 4.6',
+      'haiku',
+      'fable[1m]',
+      'gpt-5.5',
+      'GPT-6.1 Sol (1M)',
+      'o3-pro',
+      'codex-mini',
+      'openai/gpt-oss',
+      'chatgpt-4o-latest',
+      'grok-4.6',
+      'xai-grok-beta',
+      'xai-beta',
+      'gemini-3-pro',
+      'astra',
+      'llama-4',
+      '',
+    ];
+    expect(ids.map((m) => env.modelVendorOf(m))).toEqual(ids.map((m) => lib(m)));
   });
 
   it('T8 — a line of artifacts stays on the minimal face', () => {

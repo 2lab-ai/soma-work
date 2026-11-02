@@ -60,7 +60,8 @@ export interface SpendTotals {
  * version is unsealed on restore, so the current calculation re-reads it.
  * Bump it whenever the calculation or the prices change.
  */
-export const SPEND_CALC_VERSION = 3;
+// 4 (#813): a spend records the agent's model — older sealed spends are re-read once to get it.
+export const SPEND_CALC_VERSION = 4;
 
 /**
  * What one subagent spent: its own API calls, read from its transcript
