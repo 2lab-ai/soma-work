@@ -137,7 +137,9 @@ describe('checkPlanPendingCall — skills (trinity R5, astra P1)', () => {
     for (const name of ['using-ssot', 'using-intentfirst']) {
       const text = readFileSync(join(__dirname, '..', '..', 'local', 'skills', name, 'SKILL.md'), 'utf8');
       const frontmatter = text.startsWith('---') ? text.slice(3, text.indexOf('\n---', 3)) : '';
-      expect(/^hooks\s*:/m.test(frontmatter), `${name} hooks`).toBe(false);
+      // Any spelling of the key — quoted, indented (trinity R5, astra P2) — and no forked subagent context.
+      expect(/^\s*["']?hooks["']?\s*:/m.test(frontmatter), `${name} hooks`).toBe(false);
+      expect(/^\s*["']?context["']?\s*:\s*["']?fork/m.test(frontmatter), `${name} context: fork`).toBe(false);
       expect(/!`|^```!/m.test(text), `${name} inline shell`).toBe(false);
     }
   });
