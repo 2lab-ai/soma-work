@@ -117,6 +117,11 @@ export const SURFACE_FIELD_REGISTRY: Record<SurfaceName, readonly string[]> = {
     'linkhistory',
     'dashboardLink',
     'status',
+    // 스레드 태스크 카드 (soma-work .prd/21): what the dashboard's task card shows, in Slack.
+    'cost',
+    'tokens',
+    'task',
+    'steps',
     'separator',
   ],
   turnend: [

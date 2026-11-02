@@ -13,7 +13,9 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { BUILTIN_PRESETS } from '../../view-layout';
 import { viewerScope } from '../__fixtures__/viewer-scope';
+import { VIEW_LAYOUT_CLIENT_JS } from '../view-layout-client';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -45,13 +47,15 @@ function clientVar(name: string): string {
   const end = TEMPLATE.indexOf('\n};\n', start);
   return cook(TEMPLATE.slice(start + 1, end + 3));
 }
+/** The page's script as the browser runs it: the shared layout script (view-layout-client.ts) and VIEW_BUILTINS first. */
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
   ({ fns, inject } = viewerScope(fns, inject));
-  const names = Object.keys(inject);
+  const all: Record<string, unknown> = { VIEW_BUILTINS: BUILTIN_PRESETS, ...inject };
+  const names = Object.keys(all);
   const setter = '__set: function(n, v) { eval(n + " = v"); }';
   const getter = '__get: function(n) { return eval(n); }';
-  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${[...fns, setter, getter].join(', ')} };`;
-  return new Function(...names, body)(...names.map((n) => inject[n])) as T;
+  const body = `${VIEW_LAYOUT_CLIENT_JS}\n${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${[...fns, setter, getter].join(', ')} };`;
+  return new Function(...names, body)(...names.map((n) => all[n])) as T;
 }
 const PAGE = cook(TEMPLATE.slice(TEMPLATE.indexOf('<body'), TEMPLATE.indexOf('<script>', TEMPLATE.indexOf('<body'))));
 const CSS = cook(
@@ -61,10 +65,11 @@ const T0 = 1_700_000_000_000;
 
 type Spec = {
   name: string;
-  face: { show: string[]; summary: string; arts?: number; kind: boolean; foot: string[] };
+  face: { rows: Array<{ id: string; on: boolean }>; foot: Array<{ id: string; on: boolean }>; kind: boolean };
   body: { star: boolean; work: string[]; wait: string[]; done: string[] };
-  detail: { show: string[]; tasks: string; tasksMax?: number; open: boolean };
+  detail: { show: string[]; tasks: string; tasksMax?: number; open: boolean; order: string[] };
 };
+const B = BUILTIN_PRESETS as unknown as Record<string, Record<string, any>>;
 const plansEnv = () =>
   load<{
     viewPlanFrom(v: unknown): string;
@@ -75,26 +80,40 @@ const plansEnv = () =>
     __get(n: string): any;
   }>(
     ['viewModeFrom', 'viewPlanFrom', 'viewPlanOfSettings', 'viewSpec', 'detailShows'],
-    ['VIEW_PLANS', '_viewMode', '_viewPlan'],
+    ['_viewMode', '_viewPlan', '_viewLayout'],
   );
 
 describe('P1 — the plan table: two modes × three plans; the user’s dashboardPlan picks one', () => {
-  it('every mode has 1안 · 2안 · 3안, each with a face, an open card and a detail card', () => {
+  it('every mode has 1안 · 2안 · 3안 (the built-in presets), each with a face, an open card and a detail card', () => {
     const env = plansEnv();
-    const plans = env.__get('VIEW_PLANS') as Record<string, Record<string, Spec>>;
-    expect(Object.keys(plans).sort()).toEqual(['advanced', 'minimal']);
     for (const mode of ['minimal', 'advanced']) {
-      expect(Object.keys(plans[mode]).sort()).toEqual(['1', '2', '3']);
+      env.__set('_viewMode', mode);
       for (const p of ['1', '2', '3']) {
-        const s = plans[mode][p];
-        expect(s.name, `${mode} ${p}`).toBeTruthy();
-        expect(Array.isArray(s.face.show) && Array.isArray(s.face.foot)).toBe(true);
+        env.__set('_viewPlan', p);
+        const s = env.viewSpec();
+        expect(s.name, `${mode} ${p}`).toBe(B[p].name[mode]);
+        expect(Array.isArray(s.face.rows) && Array.isArray(s.face.foot)).toBe(true);
         for (const lane of ['work', 'wait', 'done'] as const) expect(Array.isArray(s.body[lane])).toBe(true);
-        expect(['runs', 'list', 'line']).toContain(s.detail.tasks);
+        expect(['runs', 'list', 'line', 'none']).toContain(s.detail.tasks);
         // The .prd names each plan as the table does.
         expect(PRD).toContain(s.name);
       }
     }
+  });
+
+  it('the user’s layouts win: a default per surface, an edited preset (.prd/21)', () => {
+    const env = plansEnv();
+    env.__set('_viewLayout', { v: 1, active: { card: '3', detail: '2' } });
+    expect(env.viewSpec().name).toBe('한눈에');
+    expect(env.viewSpec().detail.tasksMax).toBe(50);
+    env.__set('_viewLayout', {
+      v: 1,
+      presets: { '1': { minimal: { card: { ...B['1'].minimal.card, kind: false } } } },
+    });
+    expect(env.viewSpec().face.kind).toBe(false);
+    // A broken copy on the device falls back to the built-ins rather than breaking the board.
+    env.__set('_viewLayout', { v: 1, presets: { '1': { minimal: { open: { parts: 'x' } } } } });
+    expect(env.viewSpec().body.work).toEqual([]);
   });
 
   it('1안 unless the value says 2 or 3; the settings snapshot’s dashboardPlan row, or null without one', () => {
@@ -142,7 +161,11 @@ describe('P1 — the plan table: two modes × three plans; the user’s dashboar
     expect(TEMPLATE).not.toMatch(/\}\nloadMyDefaults\(\);\n/);
     const call = TEMPLATE.indexOf('\nloadMyDefaults();\n');
     expect(TEMPLATE.indexOf('\nloadMyDefaults();\n', call + 1)).toBe(-1);
-    expect(call).toBeGreaterThan(TEMPLATE.indexOf('_viewPlan = readViewPlan();\napplyViewMode();\nsyncBoardScope();'));
+    expect(call).toBeGreaterThan(
+      TEMPLATE.indexOf(
+        '_viewPlan = readViewPlan();\n_viewLayout = readViewLayout();\napplyViewMode();\nsyncBoardScope();',
+      ),
+    );
     expect(call).toBeGreaterThan(TEMPLATE.indexOf('var _viewModeSeq = 0;'));
     expect(call).toBeGreaterThan(TEMPLATE.indexOf("var _viewPlan = '1';"));
   });
@@ -202,32 +225,31 @@ describe('P2 — the card face follows the plan', () => {
       { text: '#700 열림', glyph: 'pr', title: 'PR #700 열림' },
     ],
   };
-  const s = { model: 'claude-opus-5-5[1m]' };
-  const asking = { ...s, pendingQuestion: { question: '배포할까요?' } };
+  const MODEL_ID = 'claude-opus-5-5[1m]';
   const COST = { text: '$6.20', title: 'API 환산 비용\n총 토큰 6.4M' };
   const MODEL = { text: 'Opus 5.5', glyph: 'claude', title: 'claude-opus-5-5[1m]' };
   const PR = full.metrics[1];
   const MEDIA = full.metrics[0];
   const ARTS = { text: '5', glyph: 'file', title: '산출물 5개', label: '산출물 5개' };
-  const env = load<{
-    faceOf(c: unknown, s: unknown, col: string, f: unknown): Record<string, any>;
-    __get(n: string): any;
-  }>(
-    ['toNum', 'pendingAutoResume', 'cardAsks', 'modelVendorOf', 'modelLabelOf', 'faceFootMetrics', 'faceOf'],
-    ['VIEW_PLANS', 'FACE_KEEP', 'FACE_PARTS'],
-    { REPRESENTATIVE_MODELS: [{ nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', label: 'Opus 5.5' }] },
-  );
-  const plans = env.__get('VIEW_PLANS') as Record<string, Record<string, Spec>>;
-  const face = (mode: string, p: string, sess = s, col = 'working') =>
-    env.faceOf({ ...full }, sess, col, plans[mode][p].face);
+  const STEPS = { text: '2/4', glyph: 'tasks', title: '완료한 작업 / 전체' };
+  const CTX = { text: '64%', glyph: 'context', title: 'x', tone: 'warn' };
+  const faceFn = (
+    new Function('REPRESENTATIVE_MODELS', `${VIEW_LAYOUT_CLIENT_JS}\nreturn faceOf;`) as (
+      r: unknown,
+    ) => (c: unknown, model: unknown, f: unknown, asks: boolean) => Record<string, any>
+  )([{ nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', label: 'Opus 5.5' }]);
+  const face = (mode: string, p: string, asks = false) => faceFn({ ...full }, MODEL_ID, B[p][mode].card, asks);
 
   it('minimal 1안 결과 우선: the task row, three artifacts, the summary only when it asks; PR · cost · model', () => {
     const m = face('minimal', '1');
+    expect(m.rows).toEqual(['task', 'artifacts']);
     expect(m.task).toEqual(full.task);
     expect(m.artifacts.map((a: { id: string }) => a.id)).toEqual(['a', 'b', 'c']);
     expect(m.artifactsCount).toBe(5);
     expect(m.summary).toBeUndefined();
-    expect(face('minimal', '1', asking, 'waiting').summary).toBe('원래 제목');
+    const asking = face('minimal', '1', true);
+    expect(asking.summary).toBe('원래 제목');
+    expect(asking.rows).toEqual(['summary', 'task', 'artifacts']);
     expect(m.metrics).toEqual([PR, COST, MODEL]);
     for (const gone of ['agents', 'tokens', 'costUsd', 'steps', 'contextPct']) expect(m[gone], gone).toBeUndefined();
     expect(m.lead).toEqual({ glyph: 'task', title: '일반 작업' });
@@ -235,40 +257,70 @@ describe('P2 — the card face follows the plan', () => {
     expect(m.badge).toEqual(full.badge);
   });
 
-  it('minimal 2안 진행 우선: the summary always, the task row and its steps; artifacts as a count, cost · model', () => {
+  it('minimal 2안 진행 우선: the summary always, the task row; steps · artifacts n · cost · model at the foot', () => {
     const m = face('minimal', '2');
+    expect(m.rows).toEqual(['summary', 'task']);
     expect(m.summary).toBe('원래 제목');
-    expect(m.task).toEqual(full.task);
-    expect(m.steps).toEqual(full.steps);
     expect(m.artifacts).toBeUndefined();
-    expect(m.metrics).toEqual([ARTS, COST, MODEL]);
+    expect(m.metrics).toEqual([STEPS, ARTS, COST, MODEL]);
   });
 
   it('minimal 3안 한눈에: title · status · time; the summary only when it asks; cost · model', () => {
     const m = face('minimal', '3');
+    expect(m.rows).toEqual([]);
     for (const gone of ['task', 'artifacts', 'steps', 'summary', 'agents']) expect(m[gone], gone).toBeUndefined();
     expect(m.metrics).toEqual([COST, MODEL]);
-    expect(face('minimal', '3', asking, 'waiting').summary).toBe('원래 제목');
+    expect(face('minimal', '3', true).summary).toBe('원래 제목');
   });
 
-  it('advanced 1안 정리: everything, the kind mark instead of ✦, the model at the foot’s end', () => {
+  it('advanced 1안 정리: every row, the kind mark instead of ✦, the model at the foot’s end', () => {
     const m = face('advanced', '1');
-    for (const kept of ['summary', 'task', 'agents', 'tokens', 'costUsd', 'steps', 'contextPct', 'artifacts'])
+    expect(m.rows).toEqual(['summary', 'task', 'agents', 'usage', 'artifacts']);
+    for (const kept of ['summary', 'task', 'agents', 'tokens', 'costUsd', 'artifacts'])
       expect(m[kept], kept).toBeDefined();
     expect(m.artifacts).toHaveLength(4);
     expect(m.lead).toEqual({ glyph: 'task', title: '일반 작업' });
-    expect(m.metrics).toEqual([MEDIA, PR, MODEL]);
+    expect(m.metrics).toEqual([STEPS, CTX, MEDIA, PR, MODEL]);
   });
 
-  it('advanced 2안 원본: the face as it was — the full card, ✦ (no lead), attachments · PR', () => {
-    expect(face('advanced', '2')).toEqual(full);
+  it('advanced 2안 원본: the face as it was — every row, ✦ (no lead), steps · context · attachments · PR', () => {
+    const m = face('advanced', '2');
+    expect(m.rows).toEqual(['summary', 'task', 'agents', 'usage', 'artifacts']);
+    expect(m.lead).toBeUndefined();
+    expect(m.metrics).toEqual([STEPS, CTX, MEDIA, PR]);
   });
 
-  it('advanced 3안 압축: no sub-agent or token rows; the numbers at the foot — artifacts · PR · cost · model', () => {
+  it('advanced 3안 압축: no sub-agent or token rows; the numbers at the foot', () => {
     const m = face('advanced', '3');
+    expect(m.rows).toEqual(['task']);
     for (const gone of ['agents', 'tokens', 'costUsd', 'artifacts', 'summary']) expect(m[gone], gone).toBeUndefined();
-    for (const kept of ['task', 'steps', 'contextPct']) expect(m[kept], kept).toBeDefined();
-    expect(m.metrics).toEqual([ARTS, PR, COST, MODEL]);
+    expect(m.metrics).toEqual([STEPS, CTX, ARTS, PR, COST, MODEL]);
+  });
+
+  it('a user’s layout: the rows in its order, the head’s switches, a hidden chip gone (.prd/21)', () => {
+    const layout = {
+      kind: false,
+      star: false,
+      owner: false,
+      rows: [
+        { id: 'arts', on: true, opt: '1' },
+        { id: 'task', on: true },
+        { id: 'usage', on: false },
+      ],
+      foot: [
+        { id: 'model', on: true },
+        { id: 'tokens', on: true },
+        { id: 'cost', on: false },
+      ],
+    };
+    const m = faceFn({ ...full }, MODEL_ID, layout, false);
+    expect(m.rows).toEqual(['artifacts', 'task']);
+    expect(m.artifacts).toHaveLength(1);
+    expect(m.star).toBeUndefined();
+    expect(m.badge).toBeUndefined();
+    expect(m.lead).toBeUndefined();
+    expect(m.tokens).toBeUndefined();
+    expect(m.metrics).toEqual([MODEL, { text: '6.4M 토큰', title: '총 토큰 6.4M' }]);
   });
 
   it('what asks: a permission, a goal decision, a waiting question, a retry’s error — never on a closed card', () => {
@@ -285,7 +337,7 @@ describe('P2 — the card face follows the plan', () => {
   it('the board draws every face through the plan', () => {
     const fn = clientFn('viewCardOf');
     expect(fn).toContain('c.star = cardStarOf(s, col);');
-    expect(fn).toContain('return faceOf(c, s, col, viewSpec().face);');
+    expect(fn).toContain('return faceOf(c, s.model, viewSpec().face, cardAsks(s, col));');
     expect(declarationCount('minimalCard')).toBe(0);
     expect(declarationCount('MINIMAL_CARD_KEYS')).toBe(0);
   });
@@ -339,10 +391,14 @@ describe('P3 — the open card follows the plan', () => {
       'renderEpicPlan',
       'renderCardBody',
     ],
-    ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy', 'VIEW_PLANS'],
+    ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy'],
     STUBS,
   );
-  const plans = env.__get('VIEW_PLANS') as Record<string, Record<string, Spec>>;
+  const openParts = env.__get('openPartsOf') as (open: unknown, col: string) => string[];
+  const bodyOf = (mode: string, p: string) => {
+    const o = B[p][mode].open;
+    return { star: !!o.star, work: openParts(o, 'working'), wait: openParts(o, 'waiting'), done: openParts(o, 'idle') };
+  };
   const card = (over: Record<string, unknown> = {}) => ({
     key: 'inst::C1:t1',
     conversationId: 'conv-1',
@@ -357,7 +413,7 @@ describe('P3 — the open card follows the plan', () => {
     ...over,
   });
   const body = (mode: string, p: string, col = 'working', over: Record<string, unknown> = {}) =>
-    env.renderCardBody(card(over), col, plans[mode][p].body);
+    env.renderCardBody(card(over), col, bodyOf(mode, p));
   const PARTS = ['[TASKS]', '[AGENTS]', '[IO]', '[ARTS]', 'card-goal-line', 'card-refs', '[MODEL]'];
   const present = (html: string) => PARTS.filter((p) => html.includes(p));
 
@@ -462,8 +518,8 @@ describe('P4 — the detail card follows the plan', () => {
   it('the body says which sections the plan shows and how the tasks read; 자세히 opens with the plan', () => {
     const b = fakeBody();
     const env = load<{ applyViewMode(): void; __set(n: string, v: unknown): void; __get(n: string): any }>(
-      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'applyViewMode'],
-      ['VIEW_PLANS', '_viewMode', '_viewPlan', '_panelDetail'],
+      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'orderPanelSurface', 'applyViewMode'],
+      ['_viewMode', '_viewPlan', '_viewLayout', '_panelDetail', 'PANEL_SURFACE_PARTS'],
       { document: { body: b, getElementById: () => null }, applyPanelDetail: () => {} },
     );
     env.applyViewMode();
@@ -480,7 +536,8 @@ describe('P4 — the detail card follows the plan', () => {
     env.__set('_viewPlan', '3');
     env.applyViewMode();
     expect(b.attrs['data-tasks']).toBe('line');
-    expect(b.props['--ptl-max']).toBeUndefined();
+    // The task line's checklist opens up to the same share.
+    expect(b.props['--ptl-max']).toBe('34cqh');
     env.__set('_viewMode', 'advanced');
     env.__set('_viewPlan', '1');
     env.applyViewMode();
@@ -493,6 +550,49 @@ describe('P4 — the detail card follows the plan', () => {
     env.applyViewMode();
     // 3안 압축: everything is there, folded at first (the old 자세히 off).
     expect(env.__get('_panelDetail')).toBe(false);
+  });
+
+  it('the detail card’s top sections move in the DOM too, so the separators fall between them as they read (review P3)', () => {
+    const b = fakeBody();
+    const ids = [
+      'panel-info',
+      'panel-goal',
+      'panel-needs-head',
+      'panel-permission',
+      'panel-question',
+      'panel-needs-status',
+      'panel-artifacts',
+    ];
+    let moves = 0;
+    const surf: { children: any[]; appendChild(el: any): void } = {
+      children: [],
+      appendChild(el: any) {
+        moves++;
+        this.children.splice(this.children.indexOf(el), 1);
+        this.children.push(el);
+      },
+    };
+    const els: Record<string, any> = { 'panel-surface': surf };
+    for (const id of ids) surf.children.push((els[id] = { id, parentNode: surf }));
+    const env = load<{ applyViewMode(): void; __set(n: string, v: unknown): void }>(
+      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'orderPanelSurface', 'applyViewMode'],
+      ['_viewMode', '_viewPlan', '_viewLayout', '_panelDetail', 'PANEL_SURFACE_PARTS'],
+      { document: { body: b, getElementById: (id: string) => els[id] ?? null }, applyPanelDetail: () => {} },
+    );
+    env.applyViewMode();
+    // Already in order: nothing moves (a focused field inside keeps its focus).
+    expect(moves).toBe(0);
+    const detail = JSON.parse(JSON.stringify(B['1'].minimal.detail));
+    const at = (id: string) => detail.top.findIndex((x: { id: string }) => x.id === id);
+    const [artifacts] = detail.top.splice(at('artifacts'), 1);
+    detail.top.unshift(artifacts);
+    env.__set('_viewLayout', { v: 1, presets: { '1': { minimal: { detail } } } });
+    env.applyViewMode();
+    expect(surf.children.map((e) => e.id)).toEqual([
+      'panel-artifacts',
+      ...ids.filter((id) => id !== 'panel-artifacts'),
+    ]);
+    expect(b.props['--o-artifacts']).toBe('1');
   });
 
   const hides = (tok: string, sel: string) => {
@@ -584,7 +684,7 @@ describe('P4 — the detail card follows the plan', () => {
   it('the agent tabs and the section tabs follow the plan: no strip, no subagent or other section left selected', () => {
     const env = load<{ psecForMode(land: string): string; __set(n: string, v: unknown): void }>(
       ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'detailShows', 'psecForLanding', 'psecForMode'],
-      ['VIEW_PLANS', '_viewMode', '_viewPlan'],
+      ['_viewMode', '_viewPlan', '_viewLayout'],
     );
     expect(env.psecForMode('worklog')).toBe('conv');
     env.__set('_viewMode', 'advanced');

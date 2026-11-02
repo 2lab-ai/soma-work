@@ -81,14 +81,33 @@ function statusWord(status: string): string {
 export interface ThreadHeaderProviders {
   /** `/dashboard/<ownerId>?session=<sessionKey>` on the viewer, or undefined when the viewer is not listening. */
   getDashboardSessionUrl?: (ownerId: string, sessionKey: string) => string | undefined;
+  /**
+   * 스레드 태스크 카드 (soma-work .prd/21): the owner's thread header lines — by default the dashboard's task
+   * card in Slack — or undefined to keep the server's theme (`ui.threadheader`).
+   */
+  getThreadCardLines?: (ownerId: string) => SurfaceLineConfig[] | undefined;
+  /** The session's numbers and tasks for the card's fields (cost · tokens · task · steps). */
+  getThreadCardData?: (session: unknown) => ThreadCardData | undefined;
+}
+
+/** What a thread card says beyond the header's own data: the task card's numbers and its task in progress. */
+export interface ThreadCardData {
+  costUsd?: number;
+  totalTokens?: number;
+  currentTask?: string;
+  steps?: { done: number; total: number };
 }
 
 const threadHeaderProviders: Required<ThreadHeaderProviders> = {
   getDashboardSessionUrl: () => undefined,
+  getThreadCardLines: () => undefined,
+  getThreadCardData: () => undefined,
 };
 
 export function setThreadHeaderProviders(next: ThreadHeaderProviders): void {
   if (next.getDashboardSessionUrl) threadHeaderProviders.getDashboardSessionUrl = next.getDashboardSessionUrl;
+  if (next.getThreadCardLines) threadHeaderProviders.getThreadCardLines = next.getThreadCardLines;
+  if (next.getThreadCardData) threadHeaderProviders.getThreadCardData = next.getThreadCardData;
 }
 
 /** Max links to display per type when the field config sets no `max` */
@@ -99,7 +118,9 @@ const HEADER_MAX_CHARS = 150;
 const CONTEXT_MAX_ELEMENTS = 10;
 const MESSAGE_MAX_BLOCKS = 50;
 
-export interface ThreadHeaderData {
+export interface ThreadHeaderData extends ThreadCardData {
+  /** The lines to draw instead of the resolved ones (the owner's thread card, else getThreadCardLines). */
+  lines?: SurfaceLineConfig[];
   title?: string;
   workflow?: WorkflowType;
   ownerName?: string;
@@ -152,7 +173,14 @@ export class ThreadHeaderBuilder {
     // then raw title. Undefined when neither is set so resolveTitle's
     // existing pr/issue fallback chain still runs.
     const resolvedTitle = session.summaryTitle?.trim() || session.title?.trim() || undefined;
+    let card: ThreadCardData | undefined;
+    try {
+      card = threadHeaderProviders.getThreadCardData(session);
+    } catch {
+      card = undefined; // the header never fails for the card's extras
+    }
     return ThreadHeaderBuilder.build({
+      ...card,
       title: resolvedTitle,
       workflow: session.workflow,
       ownerName: session.ownerName,
@@ -173,7 +201,16 @@ export class ThreadHeaderBuilder {
   static build(data: ThreadHeaderData): ThreadHeaderPayload {
     const theme = (data.theme || 'default') as SurfaceTheme;
     const textFallback = ThreadHeaderBuilder.buildTextFallback(data);
-    const lines = getSurfaceLines('threadheader', theme);
+    // The owner's thread card (스레드 태스크 카드) when the host has one, else the server's theme.
+    let own: SurfaceLineConfig[] | undefined = data.lines;
+    if (!own && data.ownerId) {
+      try {
+        own = threadHeaderProviders.getThreadCardLines(data.ownerId);
+      } catch {
+        own = undefined;
+      }
+    }
+    const lines = own && own.length ? own : getSurfaceLines('threadheader', theme);
     return { text: textFallback, blocks: ThreadHeaderBuilder.renderLines(lines, data) };
   }
 
@@ -292,6 +329,25 @@ export class ThreadHeaderBuilder {
       case 'dashboardLink': {
         const url = ThreadHeaderBuilder.resolveDashboardSessionUrl(data.ownerId, data.sessionKey);
         return url ? [ThreadHeaderBuilder.formatDashboardLink(url)] : [];
+      }
+      case 'cost': {
+        const cost = Number(data.costUsd) || 0;
+        if (cost <= 0) return [];
+        return [cost < 0.01 ? '<$0.01' : `$${cost >= 100 ? cost.toFixed(0) : cost.toFixed(2)}`];
+      }
+      case 'tokens': {
+        const n = Number(data.totalTokens) || 0;
+        return n > 0 ? [`${ThreadHeaderBuilder.formatTokenCount(n)} 토큰`] : [];
+      }
+      case 'task': {
+        const task = data.currentTask?.trim();
+        return task ? [`▶ ${ThreadHeaderBuilder.truncateText(task, 120)}`] : [];
+      }
+      case 'steps': {
+        const total = Math.floor(Number(data.steps?.total) || 0);
+        if (total <= 0) return [];
+        const done = Math.min(total, Math.max(0, Math.floor(Number(data.steps?.done) || 0)));
+        return [`작업 ${done}/${total}`];
       }
       default:
         // Unknown fields were already warn-filtered by surface-config

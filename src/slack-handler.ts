@@ -21,9 +21,10 @@ import {
 import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
 import { OutputFlag } from '@soma/slack/output-flags';
-import { isLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
+import { isLocalSlashCommand, shouldForwardAsLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
 import { sayPostSwitches } from '@soma/slack/stream-processor';
+import { getWorkQueues, WorkQueueService } from '@soma/slack/work-queue';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
@@ -253,6 +254,8 @@ export class SlackHandler {
   // Pipeline components
   private inputProcessor: InputProcessor;
   private sessionInitializer: SessionInitializer;
+  /** Process-wide work queue (`config.json#workQueues`) — e.g. one dev2 deploy at a time. */
+  private workQueue: WorkQueueService;
   private streamExecutor: StreamExecutor;
 
   // Follow-up queue (`.prd/slack-agent-ui` U3). Optional on purpose: legacy
@@ -564,6 +567,31 @@ export class SlackHandler {
     const pendingInstructionConfirmStore = new PendingInstructionConfirmStore();
     pendingInstructionConfirmStore.loadForms();
 
+    // Work queue (#726): one dev2 deploy at a time across every user of this
+    // process. The gate reads liveness straight from the registry and the
+    // request coordinator — the slot's truth is the session's own state.
+    this.workQueue = new WorkQueueService({
+      slackApi: this.slackApi,
+      getQueues: getWorkQueues,
+      probe: (sessionKey) => {
+        const session = this.claudeHandler.getSessionByKey?.(sessionKey);
+        if (!session || session.terminated) return { exists: false, active: false };
+        return {
+          exists: true,
+          active: this.requestCoordinator.isRequestActive(sessionKey),
+          activity: session.activityState,
+          activityChangedAt: session.activityStateChangedAt,
+          workflow: session.workflow,
+          workQueueId: session.workQueueId,
+        };
+      },
+      registerOnIdle: (sessionKey, cb) => sessionRegistry?.registerOnIdle?.(sessionKey, cb),
+      terminateSession: (sessionKey) => this.claudeHandler.terminateSession(sessionKey),
+    });
+    // A queued request starts by replaying its text through the normal entry.
+    this.workQueue.setReplay((event, say) => this.handleMessage(event as any, say));
+    this.workQueue.start();
+
     // ActionHandlers needs context
     const actionContext: ActionHandlerContext = {
       slackApi: this.slackApi,
@@ -576,6 +604,7 @@ export class SlackHandler {
       completionMessageTracker,
       mcpManager: this.mcpManager,
       pendingInstructionConfirmStore,
+      workQueue: this.workQueue,
     };
     this.actionHandlers = new ActionHandlers(actionContext);
 
@@ -599,6 +628,7 @@ export class SlackHandler {
       contextWindowManager: this.contextWindowManager,
       assistantStatusManager: this.assistantStatusManager,
       threadPanel: this.threadPanel,
+      workQueue: this.workQueue,
     });
 
     // Wire turn completion notification channels. `slackBlockKitChannel`
@@ -976,6 +1006,10 @@ export class SlackHandler {
       // Drained LAST: a refused deletion leaves a live session, whose tasks must
       // stay tracked.
       this.toolEventProcessor?.clearBackgroundResume(sessionKey);
+      // Work queue (#726): a deleted session frees its slot and drops its
+      // queued requests. Never throws, and idempotent — a refused deletion
+      // cannot reach here (the throws above come first).
+      this.workQueue?.onSessionDeleted(sessionKey);
     });
   }
 
@@ -2090,6 +2124,21 @@ export class SlackHandler {
         await this.threadPanel?.clearChoice(sessionResult.sessionKey);
         // Treat direct user message as completing manual input from choice UI.
         this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');
+      }
+      // The user's own message answers the question the model asked, as a
+      // dashboard task's new instruction does (`task-turn-controller` startChain).
+      // Left recorded, the question outlived its answer: the next goal cap
+      // decision made the card read NEEDS YOU and showed it again (SSOT
+      // 2026-11-02). Not every turn is the user's answer, and those leave the
+      // question: a host turn (synthetic, or a post-compaction replay of one —
+      // `routeContext.hostTurn`) and a maintenance turn (`/compact`, forwarded
+      // to the SDK as a local slash command).
+      const answersOpenQuestion =
+        !event.synthetic &&
+        event.routeContext?.hostTurn !== true &&
+        !shouldForwardAsLocalSlashCommand(effectiveText.trim(), literalPrompt);
+      if (answersOpenQuestion && sessionResult.session.actionPanel?.pendingQuestion) {
+        sessionResult.session.actionPanel.pendingQuestion = undefined;
       }
 
       await this.threadPanel?.create(sessionResult.session, sessionResult.sessionKey);
@@ -6428,8 +6477,19 @@ export class SlackHandler {
         }
       }
       if (session.goal?.status !== 'active') continue;
+      const panel = session.actionPanel;
+      if (session.activityState === 'waiting' && (panel?.waitingForChoice === true || panel?.pendingQuestion)) {
+        // Waiting on its user's answer is not a stale turn: no turn has to run
+        // for the question to stay open. The answer runs as the user's turn and
+        // its idle settle drives the loop. Forcing idle here ran the loop over
+        // the unanswered question until the cap decision asked "keep going?"
+        // next to it (SSOT 2026-11-02).
+        this.logger.info('Goal resume held after restart — the session is waiting on its question', { sessionKey });
+        continue;
+      }
       if (session.activityState !== 'idle') {
-        // Recovery: treat a stale persisted working/waiting state as idle.
+        // Recovery: treat a stale persisted working state (or a waiting one
+        // with no question left) as idle.
         session.activityState = 'idle';
         forcedIdle++;
       }

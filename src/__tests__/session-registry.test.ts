@@ -55,6 +55,36 @@ describe('SessionRegistry persistence', () => {
     expect(restored?.actionPanel?.threadTs).toBe('171.001');
   });
 
+  // Work queue (#726): a deploy session stays bound to its queue across a
+  // restart, so its later turns still need the queue's slot; `new` unbinds it.
+  it('restores the work queue binding and clears it on reset', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C123', '171.0021');
+    session.sessionId = 'session-wq';
+    session.workQueueId = 'deploy-dev2';
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    expect(reader.getSession('C123', '171.0021')?.workQueueId).toBe('deploy-dev2');
+
+    reader.resetSessionContext('C123', '171.0021');
+    expect(reader.getSession('C123', '171.0021')?.workQueueId).toBeUndefined();
+  });
+
+  // Trinity R2 (astra P1): a deploy held by the work queue before its first
+  // turn has no sessionId — `new` must still reset it, or its stale queued
+  // request would run in the new conversation.
+  it('resets a never-run session that is bound to a work queue', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C123', '171.0022');
+    session.workflow = 'deploy';
+    session.workQueueId = 'deploy-dev2';
+    expect(registry.resetSessionContext('C123', '171.0022')).toBe(true);
+    expect(registry.getSession('C123', '171.0022')?.workQueueId).toBeUndefined();
+    expect(registry.getSession('C123', '171.0022')?.workflow).toBeUndefined();
+  });
+
   it('restores bot-initiated thread metadata', () => {
     const writer = new SessionRegistry();
     const session = writer.createSession('U123', 'Tester', 'C123', '171.002');

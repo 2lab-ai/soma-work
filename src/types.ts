@@ -707,6 +707,14 @@ export interface ConversationSession {
    */
   titleProvisional?: boolean;
   /**
+   * The work queue (`config.json#workQueues`, e.g. `deploy-dev2`) this
+   * session's work belongs to, set by the work queue gate on its first queued
+   * turn. Persisted, so a later turn of the same deploy session — an answer to
+   * the deploy confirmation, "다시 배포해줘" — still has to hold the queue's
+   * slot after a restart. Cleared by `new`.
+   */
+  workQueueId?: string;
+  /**
    * Set once by `SessionInitializer` from a verified incident turn; makes this
    * session incident-owned (restricted runtime, ordinary traffic refused in
    * the thread). Persisted so a restart cannot launder the restriction away,

@@ -42,6 +42,7 @@ import type { WebClient } from '@slack/web-api';
 import type { AgentTreeEvent } from '@soma/slack/agent-tree';
 import type { LiveUsageCall } from '@soma/slack/live-usage';
 import { runNewUserGate } from '@soma/slack/pipeline/session-initializer';
+import { setWorkQueuesConfig } from '@soma/slack/work-queue';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
@@ -165,6 +166,7 @@ import { type StreamExecutorProviders, setStreamExecutorProviders } from './slac
 import { setGoalCapDecisionRetirer } from './slack/session-goal';
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { createSlackTaskEntry } from './slack/task-entry';
+import { threadCardProviders } from './slack/thread-card-data';
 import { setThreadHeaderProviders } from './slack/thread-header-builder';
 import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
@@ -568,10 +570,25 @@ async function start() {
     if (appConfig.ui) {
       timing(`UI surface config applied (${Object.keys(uiConfigResult.config).length} surfaces overridden)`);
     }
+    // Install the work queues (config.json#workQueues; absent = the built-in
+    // dev2 deploy queue, concurrency 1). Boot-time only, like `ui`.
+    const workQueueConfig = setWorkQueuesConfig(appConfig.workQueues);
+    for (const warning of workQueueConfig.warnings) {
+      logger.warn(`config.json#workQueues: ${warning}`);
+    }
+    timing(
+      `Work queues: ${workQueueConfig.queues.map((q) => `${q.id}(${q.targets.join('|')} ×${q.concurrency})`).join(', ') || 'none'}`,
+    );
+
     // The one injection point for the dashboard deep link: the thread header
     // `dashboardLink` field and the user-started thread link both resolve
     // through it (undefined = viewer not listening = no link).
-    setThreadHeaderProviders({ getDashboardSessionUrl });
+    setThreadHeaderProviders({
+      getDashboardSessionUrl,
+      // 스레드 태스크 카드 (.prd/21): the owner's thread card (by default their dashboard's task card), and the
+      // session's numbers and tasks for its fields.
+      ...threadCardProviders(userSettingsStore),
+    });
 
     // Install operator-controlled additional env (config.json#claude.env)
     // BEFORE any ClaudeHandler / SDK consumers are constructed, so every

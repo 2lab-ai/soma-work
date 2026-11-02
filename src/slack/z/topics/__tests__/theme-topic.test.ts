@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../../user-settings-store', () => {
   const store: Record<string, string | undefined> = {};
+  const layouts: Record<string, unknown> = { UTHEME: { v: 1, thread: { mode: 'theme' } } };
   return {
     THEME_NAMES: { default: 'Default', compact: 'Compact', minimal: 'Minimal' },
     userSettingsStore: {
       getUserSessionTheme: (u: string) => store[u] ?? 'default',
+      getUserDashboardLayout: (u: string) => layouts[u] ?? { v: 1 },
       setUserSessionTheme: (u: string, v: string | undefined) => {
         store[u] = v;
       },
@@ -47,6 +49,15 @@ describe('theme-topic.applyTheme', () => {
     const r = await applyTheme({ userId: 'U1', value: 'compact' });
     expect(r.ok).toBe(true);
     expect(r.summary).toContain('Compact');
+  });
+
+  it('says where the thread header is set while the thread card follows the task card (.prd/21 §5)', async () => {
+    const r = await applyTheme({ userId: 'U1', value: 'compact' });
+    expect(r.description).toContain('스레드 카드');
+    expect(r.description).toContain('서버 슬랙 테마');
+    // A user whose thread card is the server's theme gets the theme on the header: no note.
+    const t = await applyTheme({ userId: 'UTHEME', value: 'compact' });
+    expect(t.description).not.toContain('스레드 카드');
   });
 
   it('reset restores default', async () => {

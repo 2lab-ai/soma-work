@@ -400,6 +400,7 @@ describe('mpHydrate — every picker under a root takes its session’s data, on
       }),
       detailShows: () => true,
       faceOf: (c: unknown) => c,
+      cardAsks: () => false,
       isPickingModel: () => picking,
       morphInnerHtml: (_e: unknown, h: string) => morphs.push(h),
       updateTimersIn: () => {},

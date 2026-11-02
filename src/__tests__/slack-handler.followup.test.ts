@@ -15,6 +15,7 @@ import {
 } from '@soma/slack/followup-queue-blocks';
 import { parseFollowupQueueSnapshot } from '@soma/slack/followup-queue-store';
 import { getMetricsEmitter } from '../metrics/event-emitter';
+import { ChoiceActionHandler } from '../slack/actions/choice-action-handler';
 import { QueueHandler } from '../slack/commands/queue-handler';
 import { ThreadSurface } from '../slack/thread-surface';
 import { SlackHandler } from '../slack-handler';
@@ -48,6 +49,13 @@ function deferred<T>(): Deferred<T> {
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** `Promise.allSettled` for one promise, with its handler attached at once — no unhandled rejection in between. */
+const settled = <T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> =>
+  promise.then(
+    (value) => ({ status: 'fulfilled', value }) as const,
+    (reason) => ({ status: 'rejected', reason }) as const,
+  );
 
 /**
  * What a QUEUED message shows since 09: the receipt and both controls, ON the
@@ -3940,6 +3948,41 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     /**
+     * #726 — the work queue is wired at the composition root: the session
+     * initializer gets the same service the handler owns, and the registry's
+     * one before-delete seam frees the deleted session's queue slot.
+     */
+    it("wires the work queue into the session gate and frees a deleted session's slot", async () => {
+      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
+      claudeHandler.getSessionRegistry = () => ({
+        setBeforeSessionDelete: (cb: any) => {
+          beforeDelete = cb;
+        },
+      });
+      const { spawnedAny } = spawnHandler({ client: {}, assistant: vi.fn() } as any);
+      const workQueue = spawnedAny.workQueue;
+      expect(workQueue, 'SlackHandler owns a work queue').toBeDefined();
+      // The busy card's buttons reach this same instance.
+      expect(spawnedAny.actionHandlers.ctx.workQueue).toBe(workQueue);
+      workQueue.stop();
+
+      const deploy = (key: string) => ({
+        session: { workflow: 'deploy' },
+        sessionKey: key,
+        channel: 'C1',
+        threadTs: key.split(':')[1] ?? '1',
+        user: 'U1',
+        text: 'Projalpha: develop -> deploy/dev2',
+      });
+      expect(workQueue.decide(deploy(SESSION_KEY)).kind).toBe('pass');
+      expect(workQueue.decide(deploy('C1:other')).kind).toBe('blocked');
+
+      beforeDelete?.(SESSION_KEY, registrySession, 'expired');
+      await tick();
+      expect(workQueue.decide(deploy('C1:third')).kind, 'the deleted session released its slot').toBe('pass');
+    });
+
+    /**
      * The drain must come LAST in the seam: if cancelling the session's
      * follow-ups throws (e.g. the queue store cannot save), the registry refuses
      * the deletion and keeps the session alive — so its live background tasks
@@ -5796,6 +5839,481 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(result).toEqual({ outcome: 'deleted', goalId: 'g2' });
       expect(registrySession.goalQueue.map((g: any) => g.goalId)).toEqual(['g3']);
       expect(registrySession.goal).toMatchObject({ goalId: 'g1', epoch: 7 });
+    });
+  });
+  /**
+   * SSOT 2026-11-02 — "goal이 10/10이 되서 goal을 계속 진행할지를 묻고 그리고 동시에
+   * 유저에게 질문이 올경우 이거 질문에 답하면 에러나서 답변을 못하고 goal을 진행하는
+   * 입력을 하면 질문이 사라짐 — 이거 질문에 답해서 자연스럽게 진행되도록 픽스".
+   *
+   * The card shows both asks at once: the goal's cap decision makes the board
+   * read NEEDS YOU, and the question the model asked earlier is still recorded
+   * on the session — idle, because the turns that ran after it lowered the
+   * open-choice bit (fable-m5max dev, sessions 1792795612.514029 and
+   * 1793067439.273589). Answering it must run the answer as the user's turn,
+   * which ends the cap round, so the goal goes on from there.
+   */
+  describe('goal stopped at its budget while a question is still open (SSOT 2026-11-02)', () => {
+    const cappedGoal = () => ({
+      goalId: 'g1',
+      objective: '배포 확인',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: 'U_OWNER',
+      continuationCount: 10,
+      maxContinuations: 10,
+      epoch: 7,
+      capDmPendingAt: 1000,
+      capDecisionId: 'round-1',
+    });
+
+    const singleQuestion = () => ({
+      type: 'user_choice',
+      question: '[small] PR #402 머지 + dev 배포를 진행할까요?',
+      choices: [
+        { id: 'merge-and-deploy', label: '머지하고 배포' },
+        { id: 'hold', label: '보류' },
+      ],
+    });
+
+    const multiQuestion = () => ({
+      type: 'user_choices',
+      title: '[medium] auto mode 개선 TO-BE 컨펌 — 결정 2개',
+      questions: [
+        {
+          id: 'q1',
+          question: 'bypass는 누가 켤 수 있나?',
+          choices: [
+            { id: 'admin-only', label: 'admin만' },
+            { id: 'anyone', label: '누구나' },
+          ],
+          recommendedChoiceId: 'admin-only',
+        },
+        {
+          id: 'q2',
+          question: '경고는 어디에 보이나?',
+          choices: [
+            { id: 'slack-and-dashboard', label: '슬랙과 대시보드' },
+            { id: 'slack-only', label: '슬랙만' },
+          ],
+          recommendedChoiceId: 'slack-and-dashboard',
+        },
+      ],
+    });
+
+    function dashboardAnswers(): ChoiceActionHandler {
+      const formStore = {
+        get: () => undefined,
+        set: () => undefined,
+        delete: () => undefined,
+        getFormsBySession: () => new Map(),
+      };
+      return new ChoiceActionHandler(
+        {
+          slackApi: { ...handlerAny.slackApi, updateMessage: vi.fn().mockResolvedValue(undefined) },
+          claudeHandler,
+          messageHandler: (event: any, s: any) => handler.handleMessage(event, s),
+          threadPanel: handlerAny.threadPanel,
+        } as any,
+        formStore as any,
+      );
+    }
+
+    beforeEach(() => {
+      registrySession.goalQueue = undefined;
+      registrySession.goalHistory = undefined;
+      registrySession.goal = cappedGoal();
+      registrySession.activityState = 'idle';
+      // The registry's real transition: state and its stamp move together.
+      let clock = 0;
+      claudeHandler.setActivityStateByKey.mockImplementation((_key: string, state: string) => {
+        if (registrySession.activityState === state) return;
+        registrySession.activityState = state;
+        registrySession.activityStateChangedAt = ++clock;
+      });
+    });
+
+    function expectGoalGoesOn(): void {
+      // The answer is the user weighing in: the cap round ends on both surfaces
+      // and the budget starts over, so the next idle settle continues the goal.
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'active', continuationCount: 0 });
+      expect(registrySession.goal.capDmPendingAt).toBeUndefined();
+      expect(registrySession.goal.capDecisionId).toBeUndefined();
+      expect(registrySession.actionPanel.pendingQuestion, 'the answered question leaves the card').toBeUndefined();
+    }
+
+    it('T1 a single-choice answer from the dashboard runs as the user turn and the goal goes on', async () => {
+      registrySession.actionPanel = { waitingForChoice: false, pendingQuestion: singleQuestion() };
+
+      await expect(
+        dashboardAnswers().handleChoiceFromDashboard(
+          SESSION_KEY,
+          'merge-and-deploy',
+          '머지하고 배포',
+          singleQuestion().question,
+          'U_OWNER',
+        ),
+      ).resolves.toBeUndefined();
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(startWithContinuation.mock.calls[0][0]).toContain('merge-and-deploy');
+      expectGoalGoesOn();
+    });
+
+    it('T1 a multi-choice answer from the dashboard runs as the user turn and the goal goes on', async () => {
+      registrySession.actionPanel = { waitingForChoice: false, pendingQuestion: multiQuestion() };
+
+      await expect(
+        dashboardAnswers().handleMultiChoiceFromDashboard(
+          SESSION_KEY,
+          {
+            q1: { choiceId: 'admin-only', label: 'admin만' },
+            q2: { choiceId: 'slack-and-dashboard', label: '슬랙과 대시보드' },
+          },
+          'U_OWNER',
+        ),
+      ).resolves.toBeUndefined();
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(startWithContinuation.mock.calls[0][0]).toContain('admin-only. admin만');
+      expect(startWithContinuation.mock.calls[0][0]).toContain('slack-and-dashboard. 슬랙과 대시보드');
+      expectGoalGoesOn();
+    });
+
+    it('T1 "submit all recommended" from the dashboard runs as the user turn and the goal goes on', async () => {
+      registrySession.actionPanel = { waitingForChoice: false, pendingQuestion: multiQuestion() };
+
+      await expect(
+        dashboardAnswers().handleSubmitRecommendedFromDashboard(SESSION_KEY, 'U_OWNER'),
+      ).resolves.toBeUndefined();
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(startWithContinuation.mock.calls[0][0]).toContain('admin-only. admin만');
+      expectGoalGoesOn();
+    });
+
+    it('T1 an answer still waits its turn while a turn is running — nothing runs on top of it', async () => {
+      registrySession.activityState = 'working';
+      registrySession.actionPanel = { waitingForChoice: false, pendingQuestion: singleQuestion() };
+
+      await expect(
+        dashboardAnswers().handleChoiceFromDashboard(
+          SESSION_KEY,
+          'merge-and-deploy',
+          '머지하고 배포',
+          singleQuestion().question,
+          'U_OWNER',
+        ),
+      ).rejects.toThrow('Session is not waiting for a choice');
+
+      expect(startWithContinuation).not.toHaveBeenCalled();
+      expect(registrySession.goal.capDmPendingAt).toBe(1000);
+    });
+
+    it('T1 an idle session with no recorded question has nothing to answer', async () => {
+      registrySession.actionPanel = { waitingForChoice: false };
+
+      await expect(
+        dashboardAnswers().handleChoiceFromDashboard(SESSION_KEY, 'merge-and-deploy', '머지하고 배포', 'Q?', 'U_OWNER'),
+      ).rejects.toThrow('Session is not waiting for a choice');
+
+      expect(startWithContinuation).not.toHaveBeenCalled();
+    });
+
+    it('T2 a typed reply answers the open question: it does not come back with the next cap decision', async () => {
+      registrySession.goal = {
+        ...cappedGoal(),
+        continuationCount: 3,
+        capDmPendingAt: undefined,
+        capDecisionId: undefined,
+      };
+      registrySession.activityState = 'waiting';
+      registrySession.actionPanel = { waitingForChoice: true, pendingQuestion: singleQuestion() };
+
+      await handler.handleMessage(message({ ts: '333.444', text: '머지해' }), say());
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(registrySession.actionPanel.pendingQuestion).toBeUndefined();
+    });
+
+    it('T2 a host turn (not the user) leaves the open question on the session', async () => {
+      registrySession.goal = {
+        ...cappedGoal(),
+        continuationCount: 3,
+        capDmPendingAt: undefined,
+        capDecisionId: undefined,
+      };
+      registrySession.actionPanel = { waitingForChoice: false, pendingQuestion: singleQuestion() };
+
+      await handler.handleMessage(message({ ts: '333.445', synthetic: true }), say());
+
+      expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
+    });
+
+    // astra review P1: not every non-synthetic turn is the user's answer.
+    it.each([
+      ['a post-compaction host turn replay', { text: '이어서 진행', routeContext: { hostTurn: true } }],
+      ['the /compact maintenance turn', { text: '/compact' }],
+    ])('T2 %s leaves the open question on the session', async (_label, overrides) => {
+      registrySession.goal = {
+        ...cappedGoal(),
+        continuationCount: 3,
+        capDmPendingAt: undefined,
+        capDecisionId: undefined,
+      };
+      registrySession.actionPanel = { waitingForChoice: false, pendingQuestion: singleQuestion() };
+
+      await handler.handleMessage(message({ ts: '333.446', ...overrides }), say());
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
+    });
+
+    // astra review P1 (second round): one answer per question across Slack AND the dashboard.
+    describe('one answer per question across Slack and the dashboard', () => {
+      const QUESTION_TS = 'q-msg';
+      let gate: Deferred<void>;
+      let forms: Map<string, any>;
+      let surfaces: ChoiceActionHandler;
+
+      beforeEach(() => {
+        gate = deferred<void>();
+        forms = new Map();
+        const formStore = {
+          get: (id: string) => forms.get(id),
+          set: (id: string, f: any) => forms.set(id, f),
+          delete: (id: string) => forms.delete(id),
+          getFormsBySession: (key: string) => new Map([...forms].filter(([, f]) => f.sessionKey === key)),
+        };
+        surfaces = new ChoiceActionHandler(
+          {
+            slackApi: handlerAny.slackApi,
+            claudeHandler,
+            messageHandler: (event: any, s: any) => handler.handleMessage(event, s),
+            threadPanel: handlerAny.threadPanel,
+          } as any,
+          formStore as any,
+        );
+      });
+
+      const slackClick = () =>
+        surfaces.handleUserChoice({
+          actions: [
+            {
+              value: JSON.stringify({
+                sessionKey: SESSION_KEY,
+                choiceId: 'merge-and-deploy',
+                label: '머지하고 배포',
+                question: 'Q?',
+                turnId: 't-q',
+              }),
+            },
+          ],
+          user: { id: 'U_OWNER' },
+          channel: { id: CHANNEL },
+          message: { ts: QUESTION_TS, thread_ts: THREAD_TS },
+        });
+      const dashboardAnswer = () =>
+        surfaces.handleChoiceFromDashboard(SESSION_KEY, 'merge-and-deploy', '머지하고 배포', 'Q?', 'U_OWNER');
+
+      function openSingle(): void {
+        registrySession.actionPanel = {
+          waitingForChoice: false,
+          pendingQuestion: singleQuestion(),
+          pendingChoice: { turnId: 't-q', kind: 'single', choiceTs: QUESTION_TS, formIds: [] },
+        };
+        // The real resolve: rewrite the Slack message (held), then drop the P3 record.
+        handlerAny.threadPanel.resolveChoice = vi.fn(async (session: any) => {
+          await gate.promise;
+          session.actionPanel.pendingChoice = undefined;
+          session.actionPanel.waitingForChoice = false;
+          return true;
+        });
+      }
+
+      function openMulti(): void {
+        registrySession.actionPanel = {
+          waitingForChoice: false,
+          pendingQuestion: multiQuestion(),
+          choiceMessageTs: 'form-msg',
+        };
+        forms.set('form-1', {
+          formId: 'form-1',
+          sessionKey: SESSION_KEY,
+          channel: CHANNEL,
+          threadTs: THREAD_TS,
+          messageTs: 'form-msg',
+          questions: multiQuestion().questions,
+          selections: {
+            q1: { choiceId: 'admin-only', label: 'admin만' },
+            q2: { choiceId: 'slack-and-dashboard', label: '슬랙과 대시보드' },
+          },
+          createdAt: 1,
+        });
+        // Every Slack message rewrite is held until the gate opens.
+        handlerAny.slackApi.updateMessage = vi.fn(() => gate.promise);
+      }
+      const formSubmit = () =>
+        surfaces.handleFormSubmit({
+          actions: [{ value: JSON.stringify({ formId: 'form-1', sessionKey: SESSION_KEY }) }],
+          user: { id: 'U_OWNER' },
+          channel: { id: CHANNEL },
+          message: { ts: 'form-msg', thread_ts: THREAD_TS },
+        });
+      const dashboardMulti = () =>
+        surfaces.handleMultiChoiceFromDashboard(
+          SESSION_KEY,
+          {
+            q1: { choiceId: 'anyone', label: '누구나' },
+            q2: { choiceId: 'slack-only', label: '슬랙만' },
+          },
+          'U_OWNER',
+        );
+
+      async function race(first: () => Promise<unknown>, second: () => Promise<unknown>) {
+        // Each settles as soon as it starts: a refusal rejects before the gate
+        // opens and must never surface as an unhandled rejection.
+        const a = settled(first());
+        for (let i = 0; i < 5; i++) await tick();
+        const b = settled(second());
+        await tick();
+        gate.resolve();
+        return Promise.all([a, b]);
+      }
+
+      it('a Slack click on the question the dashboard is answering is refused — the answer runs once', async () => {
+        openSingle();
+        const [dashboard] = await race(dashboardAnswer, slackClick);
+
+        expect(dashboard.status).toBe('fulfilled');
+        expect(startWithContinuation).toHaveBeenCalledTimes(1);
+        expect(handlerAny.slackApi.postEphemeral).toHaveBeenCalledWith(
+          CHANNEL,
+          'U_OWNER',
+          expect.stringContaining('이미 답변'),
+        );
+      });
+
+      it('a dashboard answer to the question a Slack click is answering is refused — the answer runs once', async () => {
+        openSingle();
+        const [, dashboard] = await race(slackClick, dashboardAnswer);
+
+        expect(dashboard).toMatchObject({
+          status: 'rejected',
+          reason: expect.objectContaining({ message: 'Session is not waiting for a choice' }),
+        });
+        expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      });
+
+      it('a dashboard multi-choice answer while the Slack form is submitting is refused — the answer runs once', async () => {
+        openMulti();
+        const [, dashboard] = await race(formSubmit, dashboardMulti);
+
+        expect(dashboard).toMatchObject({
+          status: 'rejected',
+          reason: expect.objectContaining({ message: 'Session is not waiting for a choice' }),
+        });
+        expect(startWithContinuation).toHaveBeenCalledTimes(1);
+        expect(startWithContinuation.mock.calls[0][0]).toContain('admin-only. admin만');
+      });
+
+      // astra review P1 (third round): the legacy form path deletes the form,
+      // then awaits its final Slack rewrite before it dispatches.
+      it('a dashboard multi-choice answer after the Slack form is gone but before it dispatched is refused', async () => {
+        openMulti();
+        // Hold only the FINAL rewrite: the submitting indicator goes through,
+        // the form is deleted, and the dispatch waits on the gate.
+        handlerAny.slackApi.updateMessage = vi.fn((_c: string, _ts: string, text: string) =>
+          String(text).includes('모든 선택 완료') ? gate.promise : Promise.resolve(),
+        );
+        const [, dashboard] = await race(formSubmit, dashboardMulti);
+
+        expect(forms.has('form-1'), 'the window under test: the form is already gone').toBe(false);
+        expect(dashboard).toMatchObject({
+          status: 'rejected',
+          reason: expect.objectContaining({ message: 'Session is not waiting for a choice' }),
+        });
+        expect(startWithContinuation).toHaveBeenCalledTimes(1);
+        expect(startWithContinuation.mock.calls[0][0]).toContain('admin-only. admin만');
+      });
+
+      it('two chunks of one Slack form are answered independently — the first does not block the second', async () => {
+        openMulti();
+        forms.set('form-2', { ...forms.get('form-1'), formId: 'form-2', messageTs: 'form-msg-2' });
+        const second = () =>
+          surfaces.handleFormSubmit({
+            actions: [{ value: JSON.stringify({ formId: 'form-2', sessionKey: SESSION_KEY }) }],
+            user: { id: 'U_OWNER' },
+            channel: { id: CHANNEL },
+            message: { ts: 'form-msg-2', thread_ts: THREAD_TS },
+          });
+        await race(formSubmit, second);
+
+        expect(handlerAny.slackApi.postEphemeral).not.toHaveBeenCalledWith(
+          CHANNEL,
+          'U_OWNER',
+          expect.stringContaining('이미 답변'),
+        );
+      });
+
+      it('a Slack form submit while the dashboard answers the same question is refused — the answer runs once', async () => {
+        openMulti();
+        const [dashboard] = await race(dashboardMulti, formSubmit);
+
+        expect(dashboard.status).toBe('fulfilled');
+        expect(startWithContinuation).toHaveBeenCalledTimes(1);
+        expect(startWithContinuation.mock.calls[0][0]).toContain('anyone. 누구나');
+        expect(handlerAny.slackApi.postEphemeral).toHaveBeenCalledWith(
+          CHANNEL,
+          'U_OWNER',
+          expect.stringContaining('이미 답변'),
+        );
+      });
+    });
+
+    // astra review P1: two submissions of one answer must run it once.
+    it.each([
+      [
+        'two single-choice answers',
+        (h: ChoiceActionHandler) =>
+          h.handleChoiceFromDashboard(SESSION_KEY, 'merge-and-deploy', '머지하고 배포', 'Q?', 'U_OWNER'),
+        singleQuestion,
+      ],
+      [
+        'submit-all-recommended and a multi-choice answer',
+        (h: ChoiceActionHandler, n: number) =>
+          n === 0
+            ? h.handleSubmitRecommendedFromDashboard(SESSION_KEY, 'U_OWNER')
+            : h.handleMultiChoiceFromDashboard(
+                SESSION_KEY,
+                {
+                  q1: { choiceId: 'anyone', label: '누구나' },
+                  q2: { choiceId: 'slack-only', label: '슬랙만' },
+                },
+                'U_OWNER',
+              ),
+        multiQuestion,
+      ],
+    ])('T1 %s submitted together run once — the second finds the question taken', async (_label, submit, q) => {
+      registrySession.actionPanel = { waitingForChoice: false, pendingQuestion: q() };
+      // Hold the first submission in its Slack cleanup, past the guard.
+      const gate = deferred<void>();
+      handlerAny.threadPanel.clearChoice = vi.fn(() => gate.promise);
+      const answers = dashboardAnswers();
+
+      const first = settled((submit as any)(answers, 0));
+      const second = settled((submit as any)(answers, 1));
+      await tick();
+      gate.resolve();
+      const [firstResult, secondResult] = await Promise.all([first, second]);
+
+      expect(firstResult.status).toBe('fulfilled');
+      expect(secondResult).toMatchObject({
+        status: 'rejected',
+        reason: expect.objectContaining({ message: 'Session is not waiting for a choice' }),
+      });
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
     });
   });
 });
