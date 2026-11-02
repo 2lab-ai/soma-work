@@ -505,18 +505,36 @@ describe('restart and interrupted turns never stall (2026-11-02 incident)', () =
     expect(h.injected).toHaveLength(1);
   });
 
-  it('a goal whose first turn was interrupted goes on too', async () => {
+  // fable review (#788 P2): with no earlier gap there is nothing to reuse, and
+  // inventing "interrupted" would be false for an objective update or a goal
+  // promoted from the queue. The eval runs as before #746 — with no previous
+  // verdict it cannot stall.
+  it('a goal with no earlier gap and no turn text is evaluated as before — and cannot stall', async () => {
     const h = makeHarness(makeGoal({ lastEvalReason: undefined, continuationCount: 0, evalAttemptCount: 0 }), [
-      sameAgain,
+      verdict({ reason: 'No work on the objective yet', sameAsPrevious: true, sameConfidence: 0.99 }),
     ]);
     h.session.goalLastTurnText = undefined;
     h.goal.lastAssistantTurnSummary = undefined;
     h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
     await h.controller.settled(SESSION_KEY);
-    expect(h.prompts).toHaveLength(0);
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0]).toContain('(no assistant text was produced this turn)');
+    expect(h.prompts[0]).not.toContain('<previous-evaluation>');
     expect(h.goal.stall).toBeUndefined();
     expect(h.injected).toHaveLength(1);
-    expect(h.goal.lastEvalReason).toBeTruthy();
+    expect(h.goal.lastEvalReason).toBe('No work on the objective yet');
+  });
+
+  it('a real turn with no text and no earlier gap cannot stall either', async () => {
+    const h = makeHarness(makeGoal({ lastEvalReason: undefined }), [
+      verdict({ sameAsPrevious: true, sameConfidence: 0.99 }),
+    ]);
+    h.session.goalLastTurnText = '';
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.prompts).toHaveLength(1);
+    expect(h.goal.stall).toBeUndefined();
+    expect(h.injected).toHaveLength(1);
   });
 
   it('a kick that judges new text cannot stall — the owner or the host chose to go on', async () => {
