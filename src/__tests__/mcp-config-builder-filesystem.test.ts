@@ -81,6 +81,32 @@ describe('McpConfigBuilder filesystem restriction', () => {
   });
 
   // Trace: Scenario 2, Section 3a → 6 — path is normalized (no /private/tmp)
+  // SSOT 2026-11-02 (trinity R1, astra P1) — another user's instruction runs a
+  // task turn as them in the owner's task folder: the filesystem server gets
+  // their own root and that one task folder, never the owner's whole root.
+  it('a task turn run by someone else also reaches that task’s folder — and only it', async () => {
+    const ctx = {
+      origin: 'task',
+      userId: 'U0ACTOR001',
+      ownerId: 'U0OWNER001',
+      isAdmin: false,
+      permissionMode: 'auto',
+      sessionKey: 'task:t1',
+      taskId: 't1',
+      workingDirectory: '/tmp/U0OWNER001/session_task_a',
+    } as any;
+    const config = await builder.buildConfig(undefined, undefined, ctx);
+    const fsArgs = (config.mcpServers?.filesystem as any)?.args as string[];
+    expect(fsArgs).toContain('/tmp/U0ACTOR001');
+    expect(fsArgs).toContain('/tmp/U0OWNER001/session_task_a');
+    expect(fsArgs).not.toContain('/tmp/U0OWNER001');
+    // The owner's own turn: their root already holds the folder — one root, as before.
+    const own = await builder.buildConfig(undefined, undefined, { ...ctx, userId: 'U0OWNER001' });
+    expect((own.mcpServers?.filesystem as any)?.args.filter((a: string) => a.startsWith('/tmp'))).toEqual([
+      '/tmp/U0OWNER001',
+    ]);
+  });
+
   it('uses normalized path (not /private/tmp)', async () => {
     const config = await builder.buildConfig({
       channel: 'C001',

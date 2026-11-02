@@ -756,11 +756,12 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     }
   });
 
-  // #637 R1 (astra P1) — a task's instruction and answers run under its owner's
-  // identity (executionContextForTask), so only the signed-in owner may send
-  // them: not the bearer token, not an admin in admin mode, not another user.
-  // Stop / close / trash keep the #716 write policy (they cannot run anything).
-  it('#637 R1 — only the signed-in owner instructs or answers a task; bearer, admin mode and others get 403', async () => {
+  // SSOT 2026-11-02 (replaces #637 R1's owner-only rule) — as in a Slack thread,
+  // every signed-in user instructs or answers a task and the turn runs as the
+  // user who sent it (the controller gets that user, never the owner). A viewer
+  // token names nobody, so it cannot instruct a task. Closing someone else's
+  // task stays the owner's or an admin's in admin mode (#716).
+  it('SSOT 2026-11-02 — every signed-in user instructs or answers a task, as themselves; a token cannot', async () => {
     const dashboard = await import('../dashboard');
     const reg = new SessionRegistry();
     const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
@@ -781,11 +782,10 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     ];
     const bearer = { ...AUTH_HEADER, 'content-type': 'application/json' };
     const bearerAdmin = { ...bearer, 'X-Admin-Mode': 'on' };
-    const admin = { ...(await signIn('U_ADMIN')), 'X-Admin-Mode': 'on' };
-    const other = await signIn('U2');
     try {
+      // A viewer token names nobody — a task runs as the user who instructs it.
       for (const [route, body] of calls) {
-        for (const headers of [bearer, bearerAdmin, admin, other]) {
+        for (const headers of [bearer, bearerAdmin]) {
           const res = await injectWebServer({
             method: 'POST',
             url: `${base}/${route}`,
@@ -797,33 +797,138 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
       }
       expect(taskCommand).not.toHaveBeenCalled();
       expect(taskAnswer).not.toHaveBeenCalled();
-      // The owner passes.
-      const owner = await signIn('U1');
-      for (const [route, body] of calls) {
-        const res = await injectWebServer({
-          method: 'POST',
-          url: `${base}/${route}`,
-          headers: owner,
-          payload: JSON.stringify(body),
-        });
-        expect({ route, status: res.statusCode }).toEqual({ route, status: 202 });
+      // The owner, another user and an admin (admin mode on or off) all pass — each as themselves.
+      const actors: Array<[string, Record<string, string>]> = [
+        ['U1', await signIn('U1')],
+        ['U2', await signIn('U2')],
+        ['U_ADMIN', await signIn('U_ADMIN')],
+        ['U_ADMIN', { ...(await signIn('U_ADMIN')), 'X-Admin-Mode': 'on' }],
+      ];
+      for (const [actor, headers] of actors) {
+        for (const [route, body] of calls) {
+          const res = await injectWebServer({
+            method: 'POST',
+            url: `${base}/${route}`,
+            headers,
+            payload: JSON.stringify(body),
+          });
+          expect({ actor, route, status: res.statusCode }).toEqual({ actor, route, status: 202 });
+        }
+        expect(taskCommand).toHaveBeenLastCalledWith(`task:${task.taskId}`, 'go', [], actor);
+        expect((taskAnswer.mock.calls[taskAnswer.mock.calls.length - 1] as unknown[] | undefined)?.[3]).toBe(actor);
       }
-      // Stopping a task stays open to an admin in admin mode (it cannot run anything).
-      const stop = await injectWebServer({ method: 'POST', url: `${base}/stop`, headers: admin });
-      expect(stop.statusCode).not.toBe(403);
-      // A Slack session keeps the #716 policy: an admin in admin mode may still send a command.
+      // A Slack session: another user's instruction reaches the thread as theirs.
       void slack;
+      const slackKey = encodeURIComponent('work:C1:500.003');
+      const other = await signIn('U2');
       const slackCmd = await injectWebServer({
         method: 'POST',
-        url: `/api/dashboard/session/${encodeURIComponent('work:C1:500.003')}/command`,
-        headers: admin,
+        url: `/api/dashboard/session/${slackKey}/command`,
+        headers: other,
         payload: JSON.stringify({ message: 'hi' }),
       });
       expect(slackCmd.statusCode).toBe(200);
+      expect(slackCommand).toHaveBeenLastCalledWith('work:C1:500.003', 'hi', [], 'U2');
+      // A token still sends to a Slack session (as its owner — it names nobody else).
+      const tokenCmd = await injectWebServer({
+        method: 'POST',
+        url: `/api/dashboard/session/${slackKey}/command`,
+        headers: bearer,
+        payload: JSON.stringify({ message: 'hi' }),
+      });
+      expect(tokenCmd.statusCode).toBe(200);
+      expect(slackCommand).toHaveBeenLastCalledWith('work:C1:500.003', 'hi', [], undefined);
     } finally {
       dashboard.setDashboardTaskCommandHandler(null);
       dashboard.setDashboardTaskAnswerHandler(null);
       dashboard.setDashboardCommandHandler(null as any);
+    }
+  });
+
+  // Trinity R1 (fable P2) — "the Slack way" ends where Slack's does: nobody else
+  // can write in another user's DM with the bot, so a DM session takes another
+  // user's word only from an admin in admin mode.
+  it('SSOT 2026-11-02 — a DM session takes instructions from its owner or an admin in admin mode only', async () => {
+    const dashboard = await import('../dashboard');
+    const reg = new SessionRegistry();
+    reg.createSession('U1', 'Alice', 'D0OWNERDM', '600.001');
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const slackCommand = vi.fn(async () => {});
+    dashboard.setDashboardCommandHandler(slackCommand);
+    const url = `/api/dashboard/session/${encodeURIComponent('work:D0OWNERDM:600.001')}/command`;
+    const payload = JSON.stringify({ message: 'hi' });
+    try {
+      for (const headers of [await signIn('U2'), await signIn('U_ADMIN')]) {
+        expect((await injectWebServer({ method: 'POST', url, headers, payload })).statusCode).toBe(403);
+      }
+      expect(slackCommand).not.toHaveBeenCalled();
+      const adminOn = { ...(await signIn('U_ADMIN')), 'X-Admin-Mode': 'on' };
+      expect((await injectWebServer({ method: 'POST', url, headers: adminOn, payload })).statusCode).toBe(200);
+      expect(slackCommand).toHaveBeenLastCalledWith('work:D0OWNERDM:600.001', 'hi', [], 'U_ADMIN');
+      expect((await injectWebServer({ method: 'POST', url, headers: await signIn('U1'), payload })).statusCode).toBe(
+        200,
+      );
+    } finally {
+      dashboard.setDashboardCommandHandler(null as any);
+    }
+  });
+
+  it('SSOT 2026-11-02 — closing, stopping or trashing someone else’s task stays the owner’s or admin mode’s', async () => {
+    const dashboard = await import('../dashboard');
+    const reg = new SessionRegistry();
+    const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const stop = vi.fn(async () => true);
+    const close = vi.fn(async () => true);
+    const trash = vi.fn(async () => true);
+    dashboard.setDashboardStopHandler(stop as any);
+    dashboard.setDashboardCloseHandler(close as any);
+    dashboard.setDashboardTrashHandler(trash as any);
+    const base = `/api/dashboard/session/${encodeURIComponent(`task:${task.taskId}`)}`;
+    const other = await signIn('U2');
+    const adminOff = await signIn('U_ADMIN');
+    const adminOn = { ...(await signIn('U_ADMIN')), 'X-Admin-Mode': 'on' };
+    for (const route of ['stop', 'close', 'trash']) {
+      for (const headers of [other, adminOff]) {
+        const res = await injectWebServer({ method: 'POST', url: `${base}/${route}`, headers, payload: '{}' });
+        expect({ route, status: res.statusCode }).toEqual({ route, status: 403 });
+      }
+      const res = await injectWebServer({ method: 'POST', url: `${base}/${route}`, headers: adminOn, payload: '{}' });
+      expect({ route, status: res.statusCode === 403 ? 403 : 'passed' }).toEqual({ route, status: 'passed' });
+    }
+  });
+
+  // An epic's children start as the epic's owner (host starts), so an instruction
+  // to an epic tree from someone else would run as the owner one hop later: only
+  // the owner, or an admin in admin mode, instructs an epic or its child.
+  it('SSOT 2026-11-02 — an epic tree takes instructions from its owner or an admin in admin mode only', async () => {
+    const dashboard = await import('../dashboard');
+    const reg = new SessionRegistry();
+    const epic = reg.createTask({
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      workingDirectory: '/work/U1/e',
+      kind: 'epic',
+    } as any);
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const taskCommand = vi.fn(async () => ({ status: 202, body: { ok: true } }));
+    dashboard.setDashboardTaskCommandHandler(taskCommand);
+    const url = `/api/dashboard/session/${encodeURIComponent(`task:${epic.taskId}`)}/command`;
+    const payload = JSON.stringify({ message: 'go' });
+    try {
+      for (const headers of [await signIn('U2'), await signIn('U_ADMIN')]) {
+        const res = await injectWebServer({ method: 'POST', url, headers, payload });
+        expect(res.statusCode).toBe(403);
+      }
+      expect(taskCommand).not.toHaveBeenCalled();
+      const adminOn = { ...(await signIn('U_ADMIN')), 'X-Admin-Mode': 'on' };
+      expect((await injectWebServer({ method: 'POST', url, headers: adminOn, payload })).statusCode).toBe(202);
+      expect(taskCommand).toHaveBeenLastCalledWith(`task:${epic.taskId}`, 'go', [], 'U_ADMIN');
+      expect((await injectWebServer({ method: 'POST', url, headers: await signIn('U1'), payload })).statusCode).toBe(
+        202,
+      );
+    } finally {
+      dashboard.setDashboardTaskCommandHandler(null);
     }
   });
 });

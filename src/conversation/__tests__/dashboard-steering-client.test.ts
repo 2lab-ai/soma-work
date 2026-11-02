@@ -64,9 +64,11 @@ const item = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('steeringData — the session payload as the element’s data', () => {
+  // The viewer U1 (SSOT 2026-11-02 — Edit is the writer's own: the item's authorId is the viewer).
   const data = load<{ steeringData(s: unknown, mode: string): Record<string, any> }>(
     ['steeringData'],
     ['STEER_STATE'],
+    { _viewerUserId: 'U1' },
   ).steeringData;
 
   it('the queue’s ten states fold to the element’s five; history and id-less rows are not shown', () => {
@@ -101,14 +103,14 @@ describe('steeringData — the session payload as the element’s data', () => {
     ]);
   });
 
-  it('a note carries its text, time, author, reason and files; Edit only where the server offers it', () => {
+  it('a note carries its text, time, author, reason and files; Edit only where the server offers it, to its writer', () => {
     const s = {
       activityState: 'working',
       followups: {
         turnEpoch: 7,
         items: [
-          item(),
-          item({ id: 'k#2', editable: false, author: 'Zhuge', stateReason: '편집됨', files: ['a.png', 'b.log'] }),
+          item({ authorId: 'U1' }),
+          item({ id: 'k#2', authorId: 'U2', author: 'Zhuge', stateReason: '편집됨', files: ['a.png', 'b.log'] }),
         ],
       },
     };

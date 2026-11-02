@@ -241,7 +241,11 @@ export class McpConfigBuilder {
         });
       } else {
         const userTmpDir = normalizeTmpPath(path.join('/tmp', userId));
-        const fsConfig = config.mcpServers.filesystem as { args?: string[] };
+        // A copy per turn: the server entry is shared with the manager's config, and this turn's roots
+        // (its user's, a task's folder) must not leak into the next turn's.
+        const shared = config.mcpServers.filesystem as { args?: string[] };
+        const fsConfig = { ...shared, ...(Array.isArray(shared.args) ? { args: [...shared.args] } : {}) };
+        config.mcpServers.filesystem = fsConfig as typeof config.mcpServers.filesystem;
         if (Array.isArray(fsConfig.args)) {
           // Replace ALL /tmp-prefixed args (MCP filesystem accepts multiple dirs)
           let replaced = false;
@@ -253,6 +257,12 @@ export class McpConfigBuilder {
           }
           if (!replaced) {
             fsConfig.args.push(userTmpDir);
+          }
+          // A task turn run by someone other than its owner (SSOT 2026-11-02) works in the owner's task
+          // folder: that one folder too (validated by its context), never the owner's whole root.
+          const taskDir = executionContext?.origin === 'task' ? executionContext.workingDirectory : undefined;
+          if (taskDir && !taskDir.startsWith(`${userTmpDir}/`) && !fsConfig.args.includes(taskDir)) {
+            fsConfig.args.push(taskDir);
           }
           this.logger.debug('Filesystem MCP restricted to user directory', {
             user: userId,

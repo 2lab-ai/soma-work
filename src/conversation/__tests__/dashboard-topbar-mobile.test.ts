@@ -24,6 +24,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { viewerScope } from '../__fixtures__/viewer-scope';
 import { uiLibKitCss } from '../ui-lib';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
@@ -55,6 +56,7 @@ function clientVar(name: string): string {
 }
 /** Build a module from shipped functions; `inject` names become parameters; `seams` read them back. */
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, seams: string[] = []): T {
+  ({ fns, inject } = viewerScope(fns, inject));
   const names = Object.keys(inject);
   const seamNames = seams.map((src) => /^function (\w+)/.exec(src)?.[1] ?? '');
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${seams.join('\n')}\nreturn { ${[...fns, ...seamNames].join(', ')} };`;

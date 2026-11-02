@@ -15,6 +15,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { viewerScope } from '../__fixtures__/viewer-scope';
 
 const mockConfig = {
   conversation: {
@@ -62,6 +63,7 @@ function clientFn(name: string): string {
   return cook(TEMPLATE.slice(start + 1, end + 2));
 }
 function load<T>(fns: string[], inject: Record<string, unknown>): T {
+  ({ fns, inject } = viewerScope(fns, inject));
   const names = Object.keys(inject);
   const body = `${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
@@ -296,7 +298,8 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     await client.submitAllRecommended(KEY);
 
     expect(alerts).toEqual([]);
-    expect(handler).toHaveBeenCalledWith(KEY);
+    // The viewer token names nobody: the answer runs as the owner (SSOT 2026-11-02 — a signed-in user is passed).
+    expect(handler).toHaveBeenCalledWith(KEY, undefined);
     // A body-less POST must not claim a JSON body.
     const sent = requests.find((r) => r.url.endsWith('/submit-recommended'));
     expect(sent?.body).toBeUndefined();
@@ -311,10 +314,14 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     await client.submitMultiChoice(KEY, SELECTIONS);
 
     expect(alerts).toEqual([]);
-    expect(handler).toHaveBeenCalledWith(KEY, {
-      q1: { choiceId: '1', label: 'a' },
-      q2: { choiceId: '1', label: 'b' },
-    });
+    expect(handler).toHaveBeenCalledWith(
+      KEY,
+      {
+        q1: { choiceId: '1', label: 'a' },
+        q2: { choiceId: '1', label: 'b' },
+      },
+      undefined, // the viewer token names nobody (SSOT 2026-11-02)
+    );
   });
 
   describe('#599 ⑤ — on a dashboard task the answer carries the question’s askId to the task handler', () => {
@@ -470,7 +477,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
 
     const st = await client.answerChoice(KEY, useSingle(), '2');
 
-    expect(handler).toHaveBeenCalledWith(KEY, '2', 'manual-deploy', 'macmini:main prod 배포');
+    expect(handler).toHaveBeenCalledWith(KEY, '2', 'manual-deploy', 'macmini:main prod 배포', undefined);
     expect(st).toMatchObject({ status: 'resolved', outcome: 'answered', choiceId: '2' });
   });
 
