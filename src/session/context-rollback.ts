@@ -15,6 +15,7 @@ import {
   type AnchorRefusal,
   anchorRefusal,
   decodeContextAnchor,
+  encodeContextAnchor,
   type PendingRewind,
   turnStartAnchor,
 } from '@soma/slack/context-anchor';
@@ -214,20 +215,114 @@ export function rollbackInputPoints(
   record: Pick<ConversationRecord, 'turns'> | null | undefined,
   /** Keep only points on the active branch (`activeChainFilter`); absent = no filter. */
   onChain?: (uuid: string) => boolean,
+  /** Anchors for inputs recorded without one, from the transcript (`inputAnchorsFromTranscript`). */
+  derived?: ReadonlyMap<string, string>,
 ): RollbackInputPoint[] {
   if (!record) return [];
   const tail = turnStartAnchor(session);
-  return record.turns
-    .filter(
-      (t: ConversationTurn) =>
-        t.role === 'user' &&
-        t.origin?.by !== 'system' &&
-        typeof t.anchor === 'string' &&
-        t.anchor !== tail &&
-        !anchorRefusal(session, t.anchor) &&
-        (!onChain || onChain(decodeContextAnchor(t.anchor)?.uuid ?? '')),
-    )
-    .map((t) => ({ turnId: t.id, timestamp: t.timestamp, text: t.rawContent, anchor: t.anchor as string }));
+  const out: RollbackInputPoint[] = [];
+  for (const t of record.turns as ConversationTurn[]) {
+    if (t.role !== 'user' || t.origin?.by === 'system') continue;
+    const anchor = typeof t.anchor === 'string' ? t.anchor : derived?.get(t.id);
+    if (!anchor || anchor === tail || anchorRefusal(session, anchor)) continue;
+    if (onChain && !onChain(decodeContextAnchor(anchor)?.uuid ?? '')) continue;
+    out.push({ turnId: t.id, timestamp: t.timestamp, text: t.rawContent, anchor });
+  }
+  return out;
+}
+
+type TranscriptEntry = {
+  type?: string;
+  subtype?: string;
+  uuid?: string;
+  parentUuid?: string | null;
+  timestamp?: string;
+  isMeta?: boolean;
+  isCompactSummary?: boolean;
+  message?: { content?: unknown };
+};
+
+function blocks(e: TranscriptEntry): Array<{ type?: string }> {
+  const c = e.message?.content;
+  return Array.isArray(c) ? (c as Array<{ type?: string }>) : [];
+}
+
+/** A prompt the host sent (an input turn): text content, not a tool result, not SDK metadata. */
+function isPrompt(e: TranscriptEntry): boolean {
+  if (e.type !== 'user' || e.isMeta || e.isCompactSummary) return false;
+  const c = e.message?.content;
+  if (typeof c === 'string') return c.length > 0;
+  const b = blocks(e);
+  return b.some((x) => x.type === 'text') && !b.some((x) => x.type === 'tool_result');
+}
+
+/** A safe cut point: an assistant message with no tool_use, or a tool_result message. */
+function isSafePoint(e: TranscriptEntry): boolean {
+  if (e.type === 'assistant') return !blocks(e).some((x) => x.type === 'tool_use');
+  return e.type === 'user' && blocks(e).some((x) => x.type === 'tool_result');
+}
+
+/**
+ * Anchors for the record's inputs that were recorded without one (before anchors were kept, or
+ * by an older build), read from the SDK transcript: on the active branch since the last
+ * compaction, each prompt's "just before" point is the last safe chain point above it. Prompts
+ * are matched to the record's turns by time (the prompt is written within seconds of the turn
+ * being recorded). Returns turn id → anchor; empty when anything is unknown.
+ */
+export function inputAnchorsFromTranscript(
+  session: Pick<ConversationSession, 'sessionId' | 'contextAnchor' | 'compactionCount'>,
+  record: Pick<ConversationRecord, 'turns'> | null | undefined,
+  text: string | undefined,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  const tail = decodeContextAnchor(session.contextAnchor)?.uuid;
+  if (!record || !text || !tail || !session.sessionId) return out;
+  const byUuid = new Map<string, TranscriptEntry>();
+  for (const line of text.split('\n')) {
+    if (!line.includes('"uuid"')) continue;
+    try {
+      const e = JSON.parse(line) as TranscriptEntry;
+      if (e && typeof e.uuid === 'string') byUuid.set(e.uuid, e);
+    } catch {
+      // not an entry
+    }
+  }
+  if (!byUuid.has(tail)) return out;
+  // The active branch since the last compaction, oldest first.
+  const chain: TranscriptEntry[] = [];
+  for (let cur = byUuid.get(tail); cur; cur = cur.parentUuid ? byUuid.get(cur.parentUuid) : undefined) {
+    if (cur.type === 'system' && cur.subtype === 'compact_boundary') break;
+    chain.push(cur);
+    if (chain.length > 200_000) break;
+  }
+  chain.reverse();
+  const prompts: Array<{ ts: number; anchor: string }> = [];
+  let lastSafe: string | undefined;
+  for (const e of chain) {
+    if (isPrompt(e)) {
+      const ts = Date.parse(e.timestamp ?? '');
+      if (lastSafe && Number.isFinite(ts)) {
+        prompts.push({
+          ts,
+          anchor: encodeContextAnchor({ sid: session.sessionId, epoch: session.compactionCount ?? 0, uuid: lastSafe }),
+        });
+      }
+    } else if (isSafePoint(e)) {
+      lastSafe = e.uuid;
+    }
+  }
+  const turns = [...(record.turns as ConversationTurn[])]
+    .filter((t) => t.role === 'user')
+    .sort((a, b) => a.timestamp - b.timestamp);
+  let i = 0;
+  for (const t of turns) {
+    while (i < prompts.length && prompts[i].ts < t.timestamp - 2_000) i++;
+    if (i < prompts.length && prompts[i].ts <= t.timestamp + 120_000) {
+      if (typeof t.anchor !== 'string') out.set(t.id, prompts[i].anchor);
+      i++;
+    }
+  }
+  return out;
 }
 
 /** First line of an input, cut for a list or a notice. */
@@ -243,6 +338,8 @@ export interface RollbackWorkLogPoint {
   kind: string;
   text: string;
   anchor: string;
+  /** A tool result's call (the `tool` entry with the same toolUseId), for its label. */
+  call?: string;
 }
 
 /** Work-log kinds that can mark a cut point — what the model said or got back. */
@@ -257,13 +354,15 @@ const WORK_LOG_POINT_KINDS = new Set(['narration', 'final', 'tool_result']);
  */
 export function rollbackWorkLogPoints(
   session: ConversationSession,
-  entries: ReadonlyArray<{ seq: number; ts: number; kind: string; text: string; anchor?: string }>,
+  entries: ReadonlyArray<{ seq: number; ts: number; kind: string; text: string; anchor?: string; toolUseId?: string }>,
   /** Keep only points on the active branch (`activeChainFilter`); absent = no filter. */
   onChain?: (uuid: string) => boolean,
 ): RollbackWorkLogPoint[] {
   const tail = turnStartAnchor(session);
   const out: RollbackWorkLogPoint[] = [];
   let previous: string | undefined;
+  const calls = new Map<string, string>();
+  for (const e of entries) if (e.kind === 'tool' && e.toolUseId) calls.set(e.toolUseId, e.text);
   for (const e of [...entries].sort((a, b) => a.seq - b.seq)) {
     const anchor = typeof e.anchor === 'string' ? e.anchor : undefined;
     const moved = anchor !== undefined && anchor !== previous;
@@ -271,7 +370,8 @@ export function rollbackWorkLogPoints(
     if (!moved || !WORK_LOG_POINT_KINDS.has(e.kind)) continue;
     if (anchor === tail || anchorRefusal(session, anchor)) continue;
     if (onChain && !onChain(decodeContextAnchor(anchor)?.uuid ?? '')) continue;
-    out.push({ seq: e.seq, ts: e.ts, kind: e.kind, text: e.text, anchor });
+    const call = e.kind === 'tool_result' && e.toolUseId ? calls.get(e.toolUseId) : undefined;
+    out.push({ seq: e.seq, ts: e.ts, kind: e.kind, text: e.text, anchor, ...(call ? { call } : {}) });
   }
   return out;
 }
@@ -285,6 +385,21 @@ export interface RollbackPointsView {
   pending?: { label: string; requestedAt: number };
   inputs: Array<{ anchor: string; label: string; at: number }>;
   worklog: Array<{ anchor: string; label: string; at: number; kind: string }>;
+}
+
+/** "Bash {\"command\":\"npm test\"}" → "Bash · npm test": the tool and what it was asked to do. */
+export function toolCallLabel(call: string, max = 80): string {
+  const sp = call.indexOf(' ');
+  const name = sp > 0 ? call.slice(0, sp) : call;
+  const shortName = name.startsWith('mcp__') ? (name.split('__').pop() ?? name) : name;
+  // The stored call is often cut short (invalid JSON): read the first useful string field as text.
+  const m = (sp > 0 ? call.slice(sp + 1) : '').match(
+    /"(command|description|file_path|path|pattern|url|query|text|prompt)"\s*:\s*"((?:[^"\\]|\\.)*)/,
+  );
+  let what = m ? m[2].replace(/\\n/g, ' ').replace(/\\(.)/g, '$1') : '';
+  if (m?.[1] === 'command') what = what.replace(/^cd\s+\S+\s*&&\s*/, '');
+  what = what.replace(/\s+/g, ' ').trim();
+  return what ? rollbackInputLabel(`${shortName} · ${what}`, max) : shortName;
 }
 
 const WORK_LOG_KIND_LABEL: Record<string, string> = { narration: '응답', final: '최종 답', tool_result: '툴 결과' };
@@ -309,7 +424,7 @@ export function buildRollbackPointsView(
     })),
     worklog: worklog.slice(-30).map((p) => ({
       anchor: p.anchor,
-      label: `${WORK_LOG_KIND_LABEL[p.kind] ?? p.kind}까지: ${rollbackInputLabel(p.text)}`,
+      label: `${WORK_LOG_KIND_LABEL[p.kind] ?? p.kind}까지: ${p.call ? toolCallLabel(p.call) : rollbackInputLabel(p.text)}`,
       at: p.ts,
       kind: p.kind,
     })),
