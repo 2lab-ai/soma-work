@@ -59,33 +59,44 @@ describe('English display catalogs', () => {
     });
   }
 
-  it('covers the Slack and server text', () => {
-    const keys = extractTextKeys();
-    const catalog = read('en-text.json');
-    const missing = [...keys.values()].filter((f) => !(f.key in catalog));
-    report('text', missing, keys.size);
-    expect(keys.size).toBeGreaterThan(1000);
-    expect(
-      missing.length / keys.size,
-      `run npm run i18n:extract — missing: ${missing
-        .slice(0, 20)
-        .map((f) => `${f.where[0]} ${JSON.stringify(f.key)}`)
-        .join('; ')}`,
-    ).toBeLessThanOrEqual(MAX_MISSING);
-  });
+  // Each scan parses the whole code base or renders every page: seconds, more on a loaded CI runner.
+  const SCAN_TIMEOUT_MS = 120_000;
 
-  it('covers the pages', async () => {
-    const keys = await extractPageKeys();
-    const catalog = read('en-page.json');
-    const missing = [...keys.values()].filter((f) => !(f.key in catalog));
-    report('page', missing, keys.size);
-    expect(keys.size).toBeGreaterThan(800);
-    expect(
-      missing.length / keys.size,
-      `run npm run i18n:extract — missing: ${missing
-        .slice(0, 20)
-        .map((f) => `${f.where[0]} ${JSON.stringify(f.key)}`)
-        .join('; ')}`,
-    ).toBeLessThanOrEqual(MAX_MISSING);
-  });
+  it(
+    'covers the Slack and server text',
+    () => {
+      const keys = extractTextKeys();
+      const catalog = read('en-text.json');
+      const missing = [...keys.values()].filter((f) => !(f.key in catalog));
+      report('text', missing, keys.size);
+      expect(keys.size).toBeGreaterThan(1000);
+      expect(
+        missing.length / keys.size,
+        `run npm run i18n:extract — missing: ${missing
+          .slice(0, 20)
+          .map((f) => `${f.where[0]} ${JSON.stringify(f.key)}`)
+          .join('; ')}`,
+      ).toBeLessThanOrEqual(MAX_MISSING);
+    },
+    SCAN_TIMEOUT_MS,
+  );
+
+  it(
+    'covers the pages',
+    async () => {
+      const keys = await extractPageKeys();
+      const catalog = read('en-page.json');
+      const missing = [...keys.values()].filter((f) => !(f.key in catalog));
+      report('page', missing, keys.size);
+      expect(keys.size).toBeGreaterThan(800);
+      expect(
+        missing.length / keys.size,
+        `run npm run i18n:extract — missing: ${missing
+          .slice(0, 20)
+          .map((f) => `${f.where[0]} ${JSON.stringify(f.key)}`)
+          .join('; ')}`,
+      ).toBeLessThanOrEqual(MAX_MISSING);
+    },
+    SCAN_TIMEOUT_MS,
+  );
 });
