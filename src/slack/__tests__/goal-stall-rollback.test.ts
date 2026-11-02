@@ -184,11 +184,13 @@ describe('answering the question', () => {
           confidence: 0.99,
           rollbackAnchor: A(1),
         },
+        firstFailure: { anchor: A(1), at: 40, turns: 2, progressed: false },
       }),
     } as unknown as ConversationSession;
     const applied = applyGoalStallRollbackAnswer(session, answerYes, 'U1', { transcriptHas: () => true });
     expect(applied?.ok).toBe(true);
-    expect(session.pendingRewind).toMatchObject({ anchor: A(1), source: 'goal', requestedBy: 'U1' });
+    // What came after the first failure's turn is what the dashboard marks as dropped (#744).
+    expect(session.pendingRewind).toMatchObject({ anchor: A(1), source: 'goal', requestedBy: 'U1', keptUntil: 40 });
   });
 
   it('no answer for the rollback item or no offer → nothing; another user → refused, and it says so', () => {
