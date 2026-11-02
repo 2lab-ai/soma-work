@@ -763,7 +763,7 @@ describe('review r1 · a recording belongs to the card it was started for', () =
       ['pcComposerData', 'pcComposerSetup', 'pcFreshSteer'],
       ['PC_LIMITS', '_pcNoteFiles', '_pcFailed'],
       // 받아쓰기 (SSOT 2026-11-01) has its own suite: no recogniser here, nothing to stop.
-      { document, ntDictateStopIn: () => {}, ntDictationEngine: () => null },
+      { document, ntDictateStopIn: () => {}, ntDictationEngine: () => null, ntDictationUsable: () => false },
     );
     env.__set('_pcNoteFiles', { 'as-1': ['a.png'] });
     env.pcFreshSteer();

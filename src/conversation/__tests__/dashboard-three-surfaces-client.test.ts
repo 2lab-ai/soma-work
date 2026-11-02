@@ -1652,7 +1652,8 @@ describe('the composer follows the session live (executed)', () => {
         currentUserId: 'U1',
         pcReset: () => {},
         paintDefaultsScope: () => {},
-        ntDictationEngine: () => null, // 받아쓰기 has its own suite: no recogniser here
+        ntDictationEngine: () => null,
+        ntDictationUsable: () => false, // 받아쓰기 has its own suite: no recogniser here
       },
     );
     m.renderPanelComposer({ ownerId: 'U1', activityState: 'idle' }, true);

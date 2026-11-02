@@ -118,6 +118,8 @@ import { backfillArtifactsFromWorkLog } from './artifact-capture';
 import { type ArtifactSummary, getArtifactStore, type SessionArtifact } from './artifacts';
 import { buildCapacityView, type CapacityView } from './capacity-view';
 import { buildCronJobsView, type CronRunSessionLookup } from './cron-view';
+import { DICTATION_PREF_JS } from './dictation-pref';
+import { DICTATION_SERVER_JS } from './dictation-server-client';
 import { readAllInstances } from './instance-registry';
 import {
   createNewTaskGate,
@@ -10015,6 +10017,8 @@ function rerenderForViewMode() {
 // script (view-layout-client.ts) turns a layout into a face, the open card's parts and the detail card's switches.
 var VIEW_BUILTINS = ${JSON.stringify(BUILTIN_PRESETS)};
 ${VIEW_LAYOUT_CLIENT_JS}
+${DICTATION_PREF_JS}
+${DICTATION_SERVER_JS}
 var VIEW_LAYOUT_KEY = 'soma-view-layout';
 var _viewLayout = { v: 1 }; // the user's saved layouts (GET /api/settings/dashboard-layout); the device keeps a copy
 var _layoutLoads = 0; // layout loads started: only the newest answer is drawn
@@ -18271,8 +18275,9 @@ function ntComposerData() {
     d.accept = NT_NO_FILES;
   }
   // Live dictation (SSOT 2026-11-01): beside the voice note (the element's mic, which stays), 받아쓰기 writes what is
-  // said into the field while it is said. It is text, so a dashboard task takes it too. No recogniser (Firefox): none.
-  if (ntDictationEngine(typeof window !== 'undefined' ? window : null)) {
+  // said into the field while it is said. It is text, so a dashboard task takes it too. No recogniser (Firefox) and
+  // no other engine chosen: none.
+  if (ntDictationUsable(typeof window !== 'undefined' ? window : null)) {
     d.tools = [ntDictationTool(ntDictating('nt'))];
     // A screen under 360px wide (an older phone, or one with a large display zoom): four tools and the worded
     // 작업 시작 overlap — the send keeps its arrow (named by the composer's own 보내기).
@@ -18314,6 +18319,29 @@ function ntDictationEngine(w) {
   if (!w) return null;
   if (w.navigator && w.navigator.standalone === true) return null;
   return w.SpeechRecognition || w.webkitSpeechRecognition || null;
+}
+
+// The engine this device chose in Settings › 받아쓰기 (dictation-pref.ts — this browser's storage only): 'device'
+// (the recogniser above, the default), 'server' (the server's Whisper) or 'browser'. Read at each press, so a choice
+// made in another tab applies.
+function ntDictationChoice() {
+  var store = null;
+  try {
+    store = typeof localStorage !== 'undefined' ? localStorage : null;
+  } catch (e) {
+    store = null;
+  }
+  return typeof dictationEngineChoice === 'function' ? dictationEngineChoice(store) : 'device';
+}
+
+// Can 받아쓰기 run here: the browser's recogniser — or, with the server's Whisper chosen, a microphone stream
+// (Firefox and an iPhone Home Screen web app too).
+function ntDictationUsable(w) {
+  if (ntDictationChoice() === 'server') {
+    var n = w && w.navigator;
+    return !!(n && n.mediaDevices && typeof n.mediaDevices.getUserMedia === 'function' && w.WebSocket);
+  }
+  return !!ntDictationEngine(w);
 }
 
 // The composer's 받아쓰기 tool: a pencil (the voice note keeps the mic), a toggle pressed while it listens. Its word
@@ -18557,7 +18585,8 @@ async function ntDictateStart(host, auto) {
   var el = host.el();
   // The new task's composer is never held by a launch (it left the dialog at once — SSOT 2026-11-02 T1); a session
   // note is, while its files are read.
-  if (!Rec || !el || (host.id !== 'nt' && _pcSending)) return;
+  var engine = ntDictationChoice();
+  if ((!Rec && engine !== 'server') || !el || (host.id !== 'nt' && _pcSending)) return;
   // One microphone: a voice note recording keeps it.
   if (ntRecordingNow()) {
     host.status('음성 녹음 중에는 받아쓸 수 없습니다 — 녹음을 마치고 눌러 주세요', true);
@@ -18569,6 +18598,10 @@ async function ntDictateStart(host, auto) {
     // other composer: drop that one (its words show already) and start here at once.
     if (_ntDictation.host.id === host.id && !_ntDictation.stopping) return;
     ntDictateStop(true);
+  }
+  if (engine === 'server') {
+    ntDictateStartServer(host, el);
+    return;
   }
   var android = ntIsAndroid(w);
   var d = {
@@ -18694,6 +18727,48 @@ async function ntDictateStart(host, auto) {
   } catch (e) {
     ntDictationEnd(d, ntDictationErrorText('', android), true);
   }
+}
+
+// 받아쓰기 through the server's Whisper (epic #737, #739): the microphone streams to the server and its words come
+// back as they settle — the settled ones and those still heard, like a recogniser's results. Opens listening like
+// the device engine (the person chose it); a press, a key or sending stops it.
+function ntDictateStartServer(host, el) {
+  var d = { host: host, engine: 'server', live: '', base: String(el.value || ''), finals: '', interim: '', stopping: false, hard: false, srv: null };
+  _ntDictation = d;
+  host.clear();
+  d.live = '서버 위스퍼 준비 중…';
+  host.status(d.live);
+  host.paint();
+  d.srv = dictationServerStart({
+    onReady: function (model) {
+      if (_ntDictation !== d) return;
+      d.live = '듣는 중… 서버 위스퍼(' + (model || 'Whisper') + ')로 처리합니다 · 다시 누르거나 키보드로 쓰면 멈춥니다';
+      host.status(d.live);
+      if (host.id === 'pc') host.status(d.live, true);
+    },
+    onText: function (finals, interim) {
+      if (d.hard || _ntDictation !== d) return;
+      d.finals = finals;
+      d.interim = interim;
+      var cur = d.host.el();
+      if (!cur) return;
+      var text = ntDictationText(d.base, d.finals, d.interim);
+      cur.value = text;
+      d.host.text(text);
+    },
+    onError: function (code, message) {
+      if (_ntDictation !== d) return;
+      // A server without Whisper or a refused microphone: a why to act on (the red line). A dropped connection says
+      // a press continues.
+      var bad = code !== 'closed' && code !== 'too-long';
+      var why = code === 'unavailable' || code === 'unsupported' ? message + ' — 설정 › 받아쓰기에서 기기 기본으로 바꿀 수 있습니다' : message;
+      ntDictationEnd(d, why, bad);
+    },
+    // The words are in (onText); why, when the server ended it (its time limit).
+    onDone: function (final, why) {
+      if (_ntDictation === d) ntDictationEnd(d, why || '');
+    },
+  });
 }
 
 // Does a result event carry any words?
@@ -18921,6 +18996,30 @@ function ntDictationEnd(d, why, bad) {
 function ntDictateStop(hard) {
   var d = _ntDictation;
   if (!d) return;
+  if (d.engine === 'server') {
+    if (hard) {
+      d.hard = true;
+      ntDictationEnd(d, '');
+      if (d.srv) d.srv.abort();
+      return;
+    }
+    if (d.stopping) return;
+    d.stopping = true;
+    d.live = '마무리하는 중… 마지막 말을 받아쓰고 있습니다';
+    d.host.status(d.live);
+    d.host.paint();
+    if (d.srv) d.srv.stop();
+    // The last words arrive with done — behind one transcription in flight and other dictations on the server's one
+    // worker (20 s allowed each), that can take a while: a minute end to end. One that never answers does not hold
+    // the tool for ever, and says what was lost.
+    setTimeout(function () {
+      if (_ntDictation !== d) return;
+      d.hard = true;
+      ntDictationEnd(d, '마지막 말이 제때 오지 않아 보이는 글자까지만 남겼습니다', true);
+      if (d.srv) d.srv.abort();
+    }, 60000);
+    return;
+  }
   if (hard) {
     d.hard = true;
     ntDictationEnd(d, '');
@@ -19937,7 +20036,7 @@ function pcComposerData(takesFiles) {
     d.accept = PC_NO_FILES;
   }
   // 받아쓰기 (live dictation, SSOT 2026-11-01) beside the voice note, as in the new task — text, so a task card too.
-  if (ntDictationEngine(typeof window !== 'undefined' ? window : null)) d.tools = [ntDictationTool(ntDictating('pc'))];
+  if (ntDictationUsable(typeof window !== 'undefined' ? window : null)) d.tools = [ntDictationTool(ntDictating('pc'))];
   return d;
 }
 // The composer's data with the page's part (re)applied: a session that takes
