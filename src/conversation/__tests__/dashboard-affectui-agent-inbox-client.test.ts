@@ -104,6 +104,7 @@ const CARD_OF_FNS = [
   'ctxPercent',
   'cardCtxTitle',
   'cardPrMetric',
+  'cardLinksFace',
   '_hashStr',
   'ownerBadgeHue',
   'isSiblingSession',
@@ -111,6 +112,8 @@ const CARD_OF_FNS = [
 ];
 const CARD_OF_VARS = [
   'PR_STATE_LABEL',
+  'CARD_LINK_KIND',
+  'CARD_LINK_TONES',
   'PR_STATE_TONE',
   'AGENT_STATUS_LABEL',
   'AGENT_STATUS_TONE',
@@ -1083,9 +1086,19 @@ describe('D10 — one primary button per open card', () => {
         'acGoalDecisionHtml',
         'acQuestionHtml',
         'renderEpicPlan',
+        'cardLinksFace',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy'],
+      [
+        'CARD_LINK_KIND',
+        'CARD_LINK_TONES',
+        'RESUME_SVG',
+        'GOAL_STATUS_LABELS',
+        'GOAL_STATUS_TONE',
+        'GOAL_SVG',
+        'SESSION_ACTION_TONE',
+        '_busy',
+      ],
       { ...STUBS, ...inject },
     ).renderCardBody(s, col);
   const card = (over: Record<string, unknown> = {}) => ({
@@ -1283,9 +1296,12 @@ describe('D10 — the open card renders one approval card per prompt; only what 
         'acGoalDecisionHtml',
         'acQuestionHtml',
         'renderEpicPlan',
+        'cardLinksFace',
         'renderCardBody',
       ],
       [
+        'CARD_LINK_KIND',
+        'CARD_LINK_TONES',
         'RESUME_SVG',
         'GOAL_STATUS_LABELS',
         'GOAL_STATUS_TONE',
