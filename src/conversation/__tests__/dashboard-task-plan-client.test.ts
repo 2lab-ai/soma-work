@@ -220,7 +220,7 @@ describe('U5 — the detail card: the plan inline, the bottom bar (T5)', () => {
     }));
     const cache: Record<string, any> = {};
     const m = load<{ renderPanelPlan(s: any): void; planBarHtml(s: any): string }>(
-      ['renderPanelPlan', 'planBarHtml', 'planLock', 'planButtonsHtml', 'loadPanelPlan', 'panelPlanHtml'],
+      ['renderPanelPlan', 'planBarHtml', 'planLock', 'planButtonsHtml', 'loadPanelPlan', 'panelPlanHtml', 'planAskKey'],
       {
         _sessionCache: cache,
         document: { getElementById: (id: string) => els[id] ?? null },
@@ -254,6 +254,50 @@ describe('U5 — the detail card: the plan inline, the bottom bar (T5)', () => {
     // A started plan: no bar, the plan folded.
     m.renderPanelPlan(awaiting({ taskPlan: { state: 'approved', revision: 2, updatedAt: 1 } }));
     expect(bar.hidden).toBe(true);
+  });
+  it('a server ahead of the board (same revision, another state) is fetched once, not again and again (review R1, fable P2)', async () => {
+    const el = (id: string) => ({ id, hidden: true, innerHTML: '', style: {} as any, setAttribute() {} });
+    const els: Record<string, any> = { 'panel-plan': el('panel-plan'), 'panel-plan-bar': el('panel-plan-bar') };
+    // The plan was started meanwhile: the server says approved; the board's cache still says awaiting.
+    const fetchFn = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ state: 'approved', revision: 2, html: '<article class="tp">PLAN</article>' }),
+    }));
+    const cache: Record<string, any> = {};
+    const m = load<{ renderPanelPlan(s: any): void }>(
+      ['renderPanelPlan', 'planBarHtml', 'planLock', 'planButtonsHtml', 'loadPanelPlan', 'panelPlanHtml', 'planAskKey'],
+      {
+        _sessionCache: cache,
+        document: { getElementById: (id: string) => els[id] ?? null },
+        fetch: fetchFn,
+        esc,
+        escJs,
+        escAttr: esc,
+        _planDocs: Object.create(null),
+        panelSessionKey: 'task:a',
+        renderPanelNeedsHead: () => {},
+        ...lockFree,
+      },
+      '',
+      ['TASK_PLAN_STATE_LABEL', 'TASK_PLAN_TONE'],
+    );
+    const s = awaiting();
+    cache['task:a'] = s;
+    m.renderPanelPlan(s);
+    await vi.waitFor(() => expect(els['panel-plan'].innerHTML).toContain('PLAN'));
+    for (let i = 0; i < 5; i++) {
+      m.renderPanelPlan(s);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    // The board catches up (approved): one look for that, then none.
+    const started = awaiting({ taskPlan: { state: 'approved', revision: 2, updatedAt: 2 } });
+    cache['task:a'] = started;
+    m.renderPanelPlan(started);
+    await new Promise((r) => setTimeout(r, 0));
+    m.renderPanelPlan(started);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchFn.mock.calls.length).toBeLessThanOrEqual(2);
   });
   it('the panel paints it with the needs, and the 입력 필요 count counts a waiting plan', () => {
     expect(clientFn('repaintPanelSession')).toContain('renderPanelPlan(s)');
