@@ -72,6 +72,35 @@ describe('SessionRegistry persistence', () => {
     expect(reader.getSession('C123', '171.0021')?.workQueueId).toBeUndefined();
   });
 
+  // #810: "the model was told the display language" survives a restart, so a restart never re-sends
+  // <display-lang>. A session saved before the mark existed counts as told once it has an SDK session.
+  it('restores displayLangTold; a pre-mark session with an SDK session reads as told', () => {
+    const writer = new SessionRegistry();
+    const told = writer.createSession('U123', 'Tester', 'C123', '171.0031');
+    told.sessionId = 'session-told';
+    told.displayLangTold = true;
+    const fresh = writer.createSession('U123', 'Tester', 'C123', '171.0032');
+    fresh.sessionId = 'session-slash-only';
+    fresh.displayLangTold = false;
+    // A thread that opened with a slash command and was never told: no mark set at all.
+    const neverTold = writer.createSession('U123', 'Tester', 'C123', '171.0033');
+    neverTold.sessionId = 'session-slash-only-2';
+    writer.saveSessions();
+    const raw = JSON.parse(fs.readFileSync(`${TEST_DATA_DIR}/sessions.json`, 'utf8'));
+    const list: any[] = Array.isArray(raw) ? raw : (raw.sessions ?? Object.values(raw));
+    const legacy = list.find((s: any) => s.threadTs === '171.0031');
+    expect(legacy).toBeDefined();
+    delete legacy.displayLangTold; // as a build before #810 saved it
+    fs.writeFileSync(`${TEST_DATA_DIR}/sessions.json`, JSON.stringify(raw));
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    expect(reader.getSession('C123', '171.0031')?.displayLangTold).toBe(true);
+    expect(reader.getSession('C123', '171.0032')?.displayLangTold).toBe(false);
+    // Saved as an explicit false, so the pre-#810 rule never mistakes it for told.
+    expect(reader.getSession('C123', '171.0033')?.displayLangTold).toBe(false);
+  });
+
   // Trinity R2 (astra P1): a deploy held by the work queue before its first
   // turn has no sessionId — `new` must still reset it, or its stale queued
   // request would run in the new conversation.
@@ -585,18 +614,20 @@ describe('SessionRegistry persistence', () => {
     expect(session.errorRetryCount).toBe(0);
   });
 
-  it('#772 — a new model context (clearSessionId, resetSessionContext) is told the display language again', () => {
+  it('#810 — a new model context (clearSessionId, resetSessionContext) is told the display language again', () => {
     const registry = new SessionRegistry();
     const a = registry.createSession('U123', 'Tester', 'C_DL', '171.DL1');
     a.sessionId = 'session-dl';
-    a.displayLangSent = 'en';
+    a.displayLangTold = true;
     registry.clearSessionId('C_DL', '171.DL1');
-    expect(a.displayLangSent).toBeUndefined();
+    expect(a.sessionId).toBeUndefined();
+    expect(a.displayLangTold).toBe(false);
     const b = registry.createSession('U123', 'Tester', 'C_DL', '171.DL2');
     b.sessionId = 'session-dl2';
-    b.displayLangSent = 'ko';
+    b.displayLangTold = true;
     registry.resetSessionContext('C_DL', '171.DL2');
-    expect(b.displayLangSent).toBeUndefined();
+    expect(b.sessionId).toBeUndefined();
+    expect(b.displayLangTold).toBe(false);
   });
 
   it('resetSessionContext clears file-access retry state', () => {

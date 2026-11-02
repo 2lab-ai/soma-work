@@ -380,7 +380,14 @@ describe('E5 — the preview is the dashboard’s face', () => {
       ['#700', '열림'],
       ['결제 폼 설계', undefined],
     ]);
-    expect(card.metrics.map((m: { text: string }) => m.text)).toEqual(['$6.20', 'Opus 5.5']);
+    // #805: the model as icons — the mark in its colour and the sample's effort; the name is the title.
+    expect(card.metrics.map((m: { text: string }) => m.text)).toEqual(['$6.20', '']);
+    expect(card.metrics[1]).toMatchObject({
+      glyph: 'claude',
+      color: '#d97757',
+      effort: 'high',
+      label: '모델 Opus 5.5, 추론 강도 높음',
+    });
     api.set('_laySurface', 'open');
     api.layPaint();
     const open = els['lay-inbox'];

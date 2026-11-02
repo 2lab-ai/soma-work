@@ -373,6 +373,11 @@ export interface KanbanSession {
   effort?: EffortLevel;
   /** The level the session's model actually runs, when it caps `effort` (SSOT 2026-10-23 T1). */
   effortEffective?: string;
+  /**
+   * #805 review P2 — `effort` is the owner's default today, not the session's (an archive keeps no effort): the card
+   * face draws no effort gauge for it.
+   */
+  effortFromDefault?: true;
   /** The levels the session's model runs (catalog menu ∩ EFFORT_LEVELS); absent when the catalog does not know it (re-model-picker D6). */
   effortLevels?: EffortLevel[];
   /** Jira short key like "PROJ-123" derived from issueUrl */
@@ -1983,7 +1988,10 @@ function cardDerivedFields(src: {
   model?: string;
   links?: { issue?: { url?: string }; pr?: { url?: string } };
   persistedEffort: boolean;
-}): Pick<KanbanSession, 'effort' | 'effortEffective' | 'effortLevels' | 'issueShortRef' | 'prShortRef'> {
+}): Pick<
+  KanbanSession,
+  'effort' | 'effortEffective' | 'effortFromDefault' | 'effortLevels' | 'issueShortRef' | 'prShortRef'
+> {
   const effort =
     src.persistedEffort && src.effort
       ? coerceEffort(src.effort)
@@ -1995,6 +2003,8 @@ function cardDerivedFields(src: {
   const effortLevels = src.model ? pickerEffortLevels(modelCatalog.getEffortsFor(src.model)) : undefined;
   return {
     effort,
+    // #805 review P2 — an archive keeps no effort: this is the owner's default today, not the run's.
+    ...(!src.persistedEffort ? { effortFromDefault: true as const } : {}),
     ...(clamped !== effort ? { effortEffective: clamped } : {}),
     ...(effortLevels ? { effortLevels } : {}),
     issueShortRef: extractIssueShortRef(src.links?.issue?.url),
@@ -5397,12 +5407,10 @@ ui-app-bar[narrow] .nt-btn-label { display: none; }
    write-anything mode, so the chip takes the fail tint instead of the kit's neutral "on" (colour where it carries
    status), its word pulled toward the ink (≥ 4.5:1 both themes). ── */
 .topbar .admin-toggle { flex: none; }
-/* Display language (#773): EN | KO, the pressed one is the page's language. */
-/* A segmented pair on its own track: two loose chips read backwards (the grey "off" chip looked filled, the
-   white "on" one empty) and the same in dark. The pressed option is the raised step, the other sits flat. */
-.lang-toggle { display: inline-flex; gap: 2px; flex: none; padding: 2px; border-radius: 999px; background: var(--ib-seg); }
-.lang-toggle .lang-opt { min-width: 36px; justify-content: center; font-weight: 600; letter-spacing: 0.02em; background: transparent; border-color: transparent; box-shadow: none; color: var(--ib-muted); }
-.lang-toggle .lang-opt[aria-pressed="true"] { background: var(--ib-seg-on); border-color: transparent; box-shadow: var(--ib-shadow); color: var(--ib-text); }
+/* Display language (#773/#810): one button showing the page's language (KO or EN); a press switches to the other. */
+.lang-toggle { flex: none; min-width: 40px; justify-content: center; font-weight: 600; letter-spacing: 0.02em; }
+.lang-toggle .lang-cur { display: none; }
+html[lang="ko"] .lang-toggle .lang-cur[data-lang="ko"], html[lang="en"] .lang-toggle .lang-cur[data-lang="en"] { display: inline; }
 .topbar .admin-toggle[aria-pressed="true"] { background: var(--tint-fail-bg); border-color: var(--tint-fail-line); color: var(--tint-fail-fg); }
 /* Admin approvals (#620): the admins' Slack DM requests, counted in the top bar (a kit chip with a kit count badge,
    the wait tone while any wait), answered in a sheet. */
@@ -6414,7 +6422,7 @@ ${pageTokenAliases()}
     <button type="button" class="ui-chip view-mode-toggle" id="view-mode-toggle" slot="actions" aria-pressed="false" title="어드밴스드 모드 — 켜면 통계, 토큰, 에이전트 트리, 작업 로그까지 모두 보여 줍니다" onclick="toggleViewMode()"><i data-ui-icon="list"></i><span class="vm-label">어드밴스드</span></button>
     <!-- Display language (#773): en / ko at the top right. The server renders the page in the user's language (the saved
          setting — the one Slack's lang ko|en changes — else the soma_lang cookie); a switch saves both and reloads. -->
-    <div class="lang-toggle" id="lang-toggle" slot="actions" role="group" aria-label="표시 언어"><button type="button" class="ui-chip lang-opt" data-lang="en" aria-pressed="false" title="English" onclick="setDisplayLang('en')">EN</button><button type="button" class="ui-chip lang-opt" data-lang="ko" aria-pressed="true" title="한국어" onclick="setDisplayLang('ko')">KO</button></div>
+    <button type="button" class="ui-chip lang-toggle" id="lang-toggle" slot="actions" aria-label="표시 언어 바꾸기" title="표시 언어 바꾸기" onclick="toggleDisplayLang()"><span class="lang-cur" data-lang="ko">KO</span><span class="lang-cur" data-lang="en">EN</span></button>
     </ui-app-bar>
   </header>
 
@@ -9939,7 +9947,10 @@ function viewCardOf(s, col) {
   // The Executive Summary's TL;DR (SSOT 2026-11-02 T7) — the face keeps it whatever rows the layout picked.
   var tl = cardTldrOf(s, col);
   if (tl) c.tldr = tl;
-  return faceOf(c, s.model, viewSpec().face, cardAsks(s, col));
+  // #805 review: the gauge draws the level the model runs (effortEffective when it caps the set one); an archive's
+  // effort is the owner's default today, not the run's — no gauge (effortFromDefault).
+  var eff = s.effortFromDefault ? '' : s.effortEffective || s.effort;
+  return faceOf(c, s.model, viewSpec().face, cardAsks(s, col), eff, s.effortFromDefault ? '' : s.effort);
 }
 
 // Task window on the open card (§3.1-4, spec 13) — @2lab.ai/ui <ui-task-plan> in window mode (0.14.1, D8b
@@ -10365,6 +10376,9 @@ function atNode(n, parentId, s, rootLine) {
     if (why) d.reason = why;
     var line = rootLine ? agentActivity(n) : '';
     if (line) d.summary = line;
+    // #813 — the session's model: the element leads the main agent with its maker's mark (not the 'unknown' placeholder).
+    var sm = s && typeof s.model === 'string' && s.model !== 'unknown' ? s.model : '';
+    if (sm) d.model = sm;
     var tu = s && s.tokenUsage;
     var own = tu ? cardTotalTokens(tu) - spendTotal(s.subagentSpend) : 0;
     if (own > 0) {
@@ -10390,6 +10404,8 @@ function atNode(n, parentId, s, rootLine) {
     d.tokens = tk;
     d.costUsd = toNum(n.spend.costUsd);
   }
+  // #813 — the model its transcript ran most (spend.model); none known, no mark.
+  if (n.spend && typeof n.spend.model === 'string' && n.spend.model) d.model = n.spend.model;
   var act = agentActivity(n);
   if (act && d.status === 'failed') d.reason = act;
   else if (act) d.summary = act;
@@ -10738,11 +10754,15 @@ async function toggleViewMode() {
 // one Slack's lang ko|en changes) and the soma_lang cookie (a session with no Slack user has only the cookie), then
 // reloads the page in the new language.
 function pageDisplayLang() { return document.documentElement.lang === 'en' ? 'en' : 'ko'; }
+// One button: it shows the page's language (CSS on <html lang>), and a press switches to the other one.
 function paintLangToggle() {
-  var cur = pageDisplayLang();
-  var opts = document.querySelectorAll('#lang-toggle .lang-opt');
-  for (var i = 0; i < opts.length; i++) opts[i].setAttribute('aria-pressed', opts[i].getAttribute('data-lang') === cur ? 'true' : 'false');
+  var b = document.getElementById('lang-toggle');
+  if (!b) return;
+  var label = pageDisplayLang() === 'en' ? '한국어로 보기' : '영어로 보기';
+  b.setAttribute('title', label);
+  b.setAttribute('aria-label', label);
 }
+function toggleDisplayLang() { return setDisplayLang(pageDisplayLang() === 'en' ? 'ko' : 'en'); }
 async function setDisplayLang(lang) {
   if ((lang !== 'en' && lang !== 'ko') || lang === pageDisplayLang()) return;
   document.cookie = 'soma_lang=' + lang + '; path=/; max-age=31536000; samesite=lax';

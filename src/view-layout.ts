@@ -122,12 +122,14 @@ const DETAIL_ALL: Omit<DetailLayout, 'tasks' | 'tasksMax' | 'open'> = {
   controls: true,
   subtitle: true,
 };
-const DETAIL_LEAN = (agents: DetailAgents, controls: boolean): Omit<DetailLayout, 'tasks' | 'tasksMax' | 'open'> => ({
+// The lean detail card still names the model (#805): the task card shows it as icons only, so the detail card is
+// where its name is — the model · effort line above the composer is on in every built-in.
+const DETAIL_LEAN = (agents: DetailAgents): Omit<DetailLayout, 'tasks' | 'tasksMax' | 'open'> => ({
   top: [it('info', false), it('goal', false), it('needs', true), it('artifacts', false)],
   agents,
   agenthead: false,
   sections: false,
-  controls,
+  controls: true,
   subtitle: false,
 });
 const ADV_OPEN_BY_COL: OpenLayout['byCol'] = {
@@ -193,7 +195,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('goal', false),
         ],
       },
-      detail: { ...DETAIL_LEAN('none', false), tasks: 'list', tasksMax: 34, open: false },
+      detail: { ...DETAIL_LEAN('none'), tasks: 'list', tasksMax: 34, open: false },
     },
     advanced: {
       card: {
@@ -255,7 +257,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
         ],
         byCol: { work: ['tasks'], wait: ['tasks'], done: [] },
       },
-      detail: { ...DETAIL_LEAN('sub', true), tasks: 'list', tasksMax: 50, open: false },
+      detail: { ...DETAIL_LEAN('sub'), tasks: 'list', tasksMax: 50, open: false },
     },
     advanced: {
       card: {
@@ -316,7 +318,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('model', false),
         ],
       },
-      detail: { ...DETAIL_LEAN('none', false), tasks: 'line', tasksMax: 34, open: false },
+      detail: { ...DETAIL_LEAN('none'), tasks: 'line', tasksMax: 34, open: false },
     },
     advanced: {
       card: {

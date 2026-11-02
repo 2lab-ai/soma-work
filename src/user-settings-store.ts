@@ -1095,8 +1095,8 @@ export class UserSettingsStore {
 
   /**
    * Save the display language. It feeds no system prompt (the model is told
-   * with `<display-lang>` on the next instruction), so like the dashboard's
-   * view it drops no cached prompt.
+   * with `<display-lang>` once, on the first prompt of a conversation), so
+   * like the dashboard's view it drops no cached prompt.
    */
   setUserDisplayLanguage(userId: string, lang: DisplayLang): void {
     const existing = this.settings[userId];

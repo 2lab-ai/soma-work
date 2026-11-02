@@ -1,3 +1,4 @@
+import { stripEchoedDisplayLangTag } from '@soma/common/i18n';
 import { randomUUID } from 'crypto';
 import { Logger } from '../logger';
 import { getMetricsEmitter } from '../metrics/event-emitter';
@@ -414,7 +415,8 @@ async function _recordAssistantTurnAsync(conversationId: string, content: string
     id: randomUUID(),
     role: 'assistant',
     timestamp: Date.now(),
-    rawContent: content,
+    // #772 — a reply that echoed the host's <display-lang> note is kept without it.
+    rawContent: stripEchoedDisplayLangTag(content),
     summarized: false,
   };
 
@@ -436,7 +438,7 @@ async function _recordAssistantTurnAsync(conversationId: string, content: string
   }
 
   // Then generate summary asynchronously (don't block)
-  generateSummary(conversationId, turn.id, content).catch((err) => {
+  generateSummary(conversationId, turn.id, turn.rawContent ?? content).catch((err) => {
     logger.error(`Failed to generate summary for turn ${turn.id}`, err);
   });
 }
@@ -616,7 +618,8 @@ export async function resummarizeTurn(conversationId: string, turnId: string): P
   await serializedSave(conversationId, record);
 
   // Re-generate summary
-  generateSummary(conversationId, turnId, turn.rawContent).catch((err) => {
+  const text = turn.role === 'assistant' ? stripEchoedDisplayLangTag(turn.rawContent) : turn.rawContent;
+  generateSummary(conversationId, turnId, text).catch((err) => {
     logger.error(`Resummarize failed for turn ${turnId}`, err);
   });
   return true;
@@ -674,7 +677,9 @@ export async function getTurnRawContent(conversationId: string, turnId: string):
   if (!record) return null;
 
   const turn = record.turns.find((t) => t.id === turnId);
-  return turn?.rawContent || null;
+  if (!turn?.rawContent) return null;
+  // #772 — a reply recorded before the echo was stripped reads without it too.
+  return turn.role === 'assistant' ? stripEchoedDisplayLangTag(turn.rawContent) || null : turn.rawContent;
 }
 
 /**

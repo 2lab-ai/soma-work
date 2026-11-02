@@ -936,12 +936,11 @@ export interface ConversationSession {
   titleNoticeCount?: number;
 
   /**
-   * #772 — the display language the model was last told with
-   * `<display-lang>` (set on the session's first instruction, and again when
-   * the user changes it). Runtime-only — NOT persisted: after a restart or a
-   * reset the next instruction tells it again.
+   * #810 — the model was told the display language (`<display-lang>`) in this SDK
+   * session: set on the first real prompt, persisted so a restart never re-sends
+   * it, cleared with the SDK session (a new conversation is told again).
    */
-  displayLangSent?: 'ko' | 'en';
+  displayLangTold?: boolean;
 
   // Dashboard improvements (v2.1):
   // Number of /compact invocations or SDK-triggered compact_boundary events observed on this session.

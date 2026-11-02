@@ -154,6 +154,8 @@ interface SerializedSession {
   /** SSOT 2026-10-23 — the cron job that created the session, and a placeholder-title mark. */
   cronJob?: SessionCronJob;
   titleProvisional?: boolean;
+  /** #810 — the model was told the display language (`<display-lang>`) in this SDK session. */
+  displayLangTold?: boolean;
   /** The work queue the session's work belongs to (see ConversationSession.workQueueId). */
   workQueueId?: string;
   /** #767 — people the owner approved for this session (see ConversationSession.approvedInstructors). */
@@ -2093,6 +2095,8 @@ export class SessionRegistry {
       // A task runs in its own directory: the one its transcript proves it ran in (#612 R4).
       ...(slackless ? { workingDirectory: cwd } : {}),
       sessionId: archived.sessionId,
+      // A revived session's history already has the tag if it had an SDK session (#810).
+      displayLangTold: !!archived.sessionId,
       conversationId: archived.conversationId,
       taskId: restoredTask.taskId,
       isActive: true,
@@ -2941,8 +2945,8 @@ export class SessionRegistry {
         previousSessionId: session.sessionId,
       });
       session.sessionId = undefined;
-      // A fresh model context has not been told the display language (#772).
-      session.displayLangSent = undefined;
+      // A fresh model context has not been told the display language (#810).
+      session.displayLangTold = false;
       // Clear error retry state so fresh session doesn't inherit exhausted budgets
       session.errorRetryCount = 0;
       session.fileAccessRetryCount = 0;
@@ -3006,6 +3010,8 @@ export class SessionRegistry {
 
     // Clear conversation-related fields
     session.sessionId = undefined;
+    // The next conversation is told the display language on its first prompt (#810).
+    session.displayLangTold = false;
     session.title = undefined;
     // The placeholder mark belongs to the cleared title; the cron origin
     // (`cronJob`) is a fact about the thread and stays.
@@ -3063,8 +3069,6 @@ export class SessionRegistry {
     // A reset re-dispatches with a fresh stand-in title, so the title notice
     // budget starts over for the new context.
     session.titleNoticeCount = undefined;
-    // A reset starts a fresh model context: tell it the display language again.
-    session.displayLangSent = undefined;
     // NOTE: `session.instructions` and `session.instructionsCompletedSummary`
     // are intentionally preserved — the user-SSOT semantics require them to
     // survive `/new` and CONTINUE_SESSION resets (they represent durable
@@ -3709,6 +3713,8 @@ export class SessionRegistry {
             incidentRequest: session.incidentRequest,
             cronJob: session.cronJob,
             titleProvisional: session.titleProvisional || undefined,
+            // Always a boolean: only a file saved before #810 lacks it (see the load rule).
+            displayLangTold: session.displayLangTold === true,
             workQueueId: session.workQueueId,
             approvedInstructors: session.approvedInstructors?.length ? [...session.approvedInstructors] : undefined,
             starred: session.starred === true ? true : undefined,
@@ -4076,6 +4082,9 @@ export class SessionRegistry {
             typeof serialized.incidentAttemptFinishedId === 'string' ? serialized.incidentAttemptFinishedId : undefined,
           cronJob: sanitizeCronJob(serialized.cronJob),
           titleProvisional: serialized.titleProvisional === true ? true : undefined,
+          // A session saved before the mark existed (#810) was told on its first prompt if it has an SDK session.
+          displayLangTold:
+            typeof serialized.displayLangTold === 'boolean' ? serialized.displayLangTold : !!serialized.sessionId,
           workQueueId: typeof serialized.workQueueId === 'string' ? serialized.workQueueId : undefined,
           approvedInstructors: sanitizeApprovedInstructors(serialized.approvedInstructors),
           starred: starred ? true : undefined,

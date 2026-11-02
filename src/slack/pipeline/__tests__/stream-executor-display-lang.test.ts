@@ -1,7 +1,9 @@
 /**
- * #772 — the execute path puts `<display-lang>` at the very bottom of the
- * session's first instruction (after the context block), never on an SDK
- * local slash command, and again after the user changes the language.
+ * #772 — `<display-lang>` goes once, at the very bottom of the first prompt of
+ * a conversation session (no SDK session to resume yet), after the context
+ * block. A resumed conversation never carries it — not on the next turn, not
+ * after a restart (the session comes back from disk), not after a language
+ * switch — and an SDK local slash command stays exactly the command.
  * Mocks mirror stream-executor-turn-origin.test.ts.
  */
 
@@ -169,34 +171,71 @@ describe('#772 — <display-lang> on the first instruction', () => {
   beforeEach(() => {
     lang.value = 'ko';
   });
-  const newSession = () => ({
-    sessionId: 'sess_lang',
+  /** A conversation the SDK has not started yet: no session id to resume. */
+  const newSession = (): Record<string, unknown> => ({
     ownerId: 'U_TEST',
     logVerbosity: LOG_DETAIL,
     usage: {},
     terminated: false,
     conversationId: 'conv_lang',
   });
+  /**
+   * A conversation already running — or one loaded back from disk after a restart: its SDK session id and
+   * the persisted mark that the model was told (sessions.json keeps `displayLangTold`).
+   */
+  const resumedSession = (): Record<string, unknown> => ({
+    ...newSession(),
+    sessionId: 'sess_lang',
+    displayLangTold: true,
+  });
 
-  it('the first instruction ends with the tag, after the context block', async () => {
+  it('the first prompt of a conversation ends with the tag, after the context block', async () => {
     const prompt = await promptOf(newSession(), '대시보드 고쳐줘');
     expect(prompt.trimEnd().endsWith('<display-lang>ko</display-lang>')).toBe(true);
     expect(prompt.indexOf('</context>')).toBeLessThan(prompt.indexOf('<display-lang>'));
   });
 
-  it('the next instruction in the same session has no tag', async () => {
+  it('the next prompt of the same conversation has no tag', async () => {
     const session = newSession();
     await promptOf(session, '첫 지시');
+    session.sessionId = 'sess_started'; // the SDK's init frame names the session
     const second = await promptOf(session, '두 번째 지시');
     expect(second).not.toContain('<display-lang>');
   });
 
-  it('after the user switches to en the next instruction carries the new language', async () => {
+  it('a thread that opens with an SDK slash command still tells the model on its first real prompt', async () => {
     const session = newSession();
-    await promptOf(session, '첫 지시');
+    expect(await promptOf(session, '/model opus')).toBe('/model opus');
+    session.sessionId = 'sess_slash'; // the slash turn already opened the SDK session
+    const first = await promptOf(session, '대시보드 고쳐줘');
+    expect(first.trimEnd().endsWith('<display-lang>ko</display-lang>')).toBe(true);
+    session.sessionId = 'sess_slash';
+    expect(await promptOf(session, '두 번째 지시')).not.toContain('<display-lang>');
+  });
+
+  it('a first turn cut before the SDK named a session: the next prompt (a fresh SDK session) is told', async () => {
+    const session = newSession();
+    expect((await promptOf(session, '첫 지시')).trimEnd().endsWith('<display-lang>ko</display-lang>')).toBe(true);
+    // superseded / failed before the init frame: still no session id
+    const again = await promptOf(session, '정정: 이렇게 해줘');
+    expect(again.trimEnd().endsWith('<display-lang>ko</display-lang>')).toBe(true);
+  });
+
+  it('an incident attempt carries no tag (its conclusion is published byte for byte)', async () => {
+    const prompt = await promptOf({ ...newSession(), incidentRequest: { requestId: 'r1' } }, 'incident brief');
+    expect(prompt).not.toContain('<display-lang>');
+  });
+
+  it('a conversation resumed after a restart has no tag (the mark is persisted)', async () => {
+    const prompt = await promptOf(resumedSession(), '재시작 뒤 지시');
+    expect(prompt).not.toContain('<display-lang>');
+  });
+
+  it('switching language mid-conversation adds no tag: only the first prompt carries it', async () => {
+    const session = resumedSession();
     lang.value = 'en';
     const next = await promptOf(session, 'second');
-    expect(next.trimEnd().endsWith('<display-lang>en</display-lang>')).toBe(true);
+    expect(next).not.toContain('<display-lang>');
   });
 
   it('an SDK local slash command stays exactly the command', async () => {

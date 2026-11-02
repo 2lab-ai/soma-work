@@ -152,6 +152,10 @@ function session(key: string, title: string, channel: string, view: ReturnType<t
     prShortRef: 'PR-700',
     prStatus: 'open',
     prTitle: '대시보드 미니멀 모드',
+    // 작업 카드의 연결 (.prd/22, sessionToKanban's cardLinks): since #776 the face's PR is in the 연결 row.
+    cardLinks: [
+      { kind: 'pr', url: 'https://github.com/2lab-ai/soma-work/pull/700', text: '#700', status: '열림', tone: 'run' },
+    ],
     tokenUsage: {
       totalInputTokens: 300_000,
       totalOutputTokens: 40_000,
@@ -361,7 +365,9 @@ function faceOf(page: Page, key: string) {
       task: has('.ib-task'),
       // SSOT 2026-11-01 (second instruction): the foot's right end, the artifacts line, the star, the kind mark.
       foot: Array.from(face.querySelectorAll<HTMLElement>('.ib-foot .ib-metric.is-host')).map((m) => ({
-        text: m.innerText.trim(),
+        // An icon-only chip (the model, #805) is named by its aria-label; `shown` is the text on the face.
+        text: m.innerText.trim() || m.getAttribute('aria-label') || '',
+        shown: m.innerText.trim(),
         icon: !!m.querySelector('svg'),
         title: m.getAttribute('title') || '',
       })),
@@ -494,14 +500,16 @@ async function scenario(
   const fA = await faceOf(page, KEY_A);
   check(fA.task && fA.text.includes('미니멀 모드 구현'), `${tag} M3 the running card names its task in progress`, fA);
   check(!fA.tokens && !fA.ctx, `${tag} M3 minimal face: no tokens line · context`, fA);
-  // T7 + .prd/20 1안 — the foot's right end: the PR (the outcome), the price, then the model with its vendor's mark.
+  // T7 + .prd/20 1안 — the foot's right end: the price, then the model as icons (#805: the vendor's mark and the
+  // effort, no name). The PR is the 연결 row's (#776 — the PR foot chip is off by default).
   check(
-    fA.foot.length === 3 &&
-      /#700/.test(fA.foot[0].text) &&
-      fA.foot[1].text === '$6.20' &&
-      /opus/i.test(fA.foot[2].text) &&
-      fA.foot[2].icon,
-    `${tag} M7 the foot's right end is the PR, the price, then the model with its mark (1안)`,
+    fA.foot.length === 2 &&
+      fA.foot[0].text === '$6.20' &&
+      /opus/i.test(fA.foot[1].text) &&
+      fA.foot[1].shown === '' &&
+      fA.foot[1].icon &&
+      fA.pr,
+    `${tag} M7 the foot's right end is the price, then the model as icons — mark and effort, no name (1안, #805); the PR is in the 연결 row`,
     fA.foot,
   );
   // T8 — a line of artifacts.
@@ -543,7 +551,12 @@ async function scenario(
     l1,
   );
   check(!l1.sectionStrip && !l1.agentTabs, `${tag} M4 minimal hides the section tabs and the agent tabs`, l1);
-  check(l1.composer && !l1.controls, `${tag} M4 the composer stays; model · effort go`, l1);
+  // #805 — the face shows the model as icons only, so the detail card names it: model · effort stay.
+  check(
+    l1.composer && l1.controls,
+    `${tag} M4 the composer stays; model · effort stay (the detail card names the model, #805)`,
+    l1,
+  );
   check(!l1.info && !l1.artifacts && !l1.titleSub, `${tag} M4 minimal hides 세션 정보 · 산출물 · 부제`, l1);
   await page.screenshot({ path: path.join(OUT, `${tag}-2-minimal-detail.png`) });
 
@@ -807,8 +820,8 @@ async function plansPass(browser: import('playwright').Browser, board: unknown) 
           b,
         );
         check(
-          d.checklist && !d.agentTabs && !d.controls && !d.sections && !d.info && d.tasksShare <= 35,
-          `${t} P4 detail: the checklist (≤34%), no tabs · controls · info`,
+          d.checklist && !d.agentTabs && d.controls && !d.sections && !d.info && d.tasksShare <= 35,
+          `${t} P4 detail: the checklist (≤34%), the model line (#805); no tabs · info`,
           d,
         );
       } else if (mode === 'minimal' && plan === '2') {
@@ -824,7 +837,11 @@ async function plansPass(browser: import('playwright').Browser, board: unknown) 
           `${t} P3 open card: the actions and what asks only`,
           b,
         );
-        check(d.line && !d.checklist && !d.agentTabs && !d.controls, `${t} P4 detail: the task line, folded`, d);
+        check(
+          d.line && !d.checklist && !d.agentTabs && d.controls,
+          `${t} P4 detail: the task line, folded; the model line (#805)`,
+          d,
+        );
         await page.click('.ptl-line');
         await sleep(300);
         const d2 = await detailState(page);

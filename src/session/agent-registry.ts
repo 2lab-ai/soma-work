@@ -60,7 +60,8 @@ export interface SpendTotals {
  * version is unsealed on restore, so the current calculation re-reads it.
  * Bump it whenever the calculation or the prices change.
  */
-export const SPEND_CALC_VERSION = 3;
+// 4 (#813): a spend records the agent's model — older sealed spends are re-read once to get it.
+export const SPEND_CALC_VERSION = 4;
 
 /**
  * What one subagent spent: its own API calls, read from its transcript
@@ -79,6 +80,11 @@ export interface AgentSpend extends SpendTotals {
   version?: number;
   /** Subagents without a record of their own whose calls are counted here (`agent-spend.ts`). */
   nestedAgents?: number;
+  /**
+   * soma-work#813 — the model that did most of the agent's work (the most tokens), as its transcript names it. The
+   * dashboard draws its maker's mark on the agent.
+   */
+  model?: string;
 }
 
 /** The subagents' spend added up (records still kept plus those the cap dropped). */
@@ -544,6 +550,8 @@ export function sanitizeAgentRegistry(raw: unknown): AgentRegistry | undefined {
       if (version) rec.spend.version = Math.floor(version);
       const nested = finitePositive((a.spend as Record<string, unknown>).nestedAgents);
       if (nested) rec.spend.nestedAgents = Math.min(Math.floor(nested), 10_000);
+      const model = (a.spend as Record<string, unknown>).model;
+      if (typeof model === 'string' && model) rec.spend.model = clip(model, TYPE_MAX);
       const unpriced = (a.spend as Record<string, unknown>).unpricedModels;
       if (Array.isArray(unpriced)) {
         const names = unpriced.filter((m): m is string => typeof m === 'string' && m.length > 0).slice(0, 10);

@@ -184,6 +184,20 @@ const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 /** The preview card's rows (class names) and foot chips (texts), from the element's shadow root. */
 function previewFace(page: Page) {
   return page.evaluate(() => {
+    const modelChipOf = (face: HTMLElement) => {
+      const m = face.querySelector<HTMLElement>('.ib-foot .ib-metric.is-model');
+      if (!m) return null;
+      return {
+        text: m.innerText.trim(),
+        role: m.getAttribute('role'),
+        label: m.getAttribute('aria-label') || '',
+        title: m.getAttribute('title') || '',
+        mark: !!m.querySelector('svg:not(.ib-eff)'),
+        effort: m.querySelector('svg.ib-eff')?.getAttribute('data-effort') || '',
+        bars: m.querySelectorAll('svg.ib-eff .ib-eff-bar.is-on').length,
+        hue: m.style.getPropertyValue('--ib-model-hue').trim(),
+      };
+    };
     const el = document.getElementById('lay-inbox') as HTMLElement | null;
     const face = el?.shadowRoot?.querySelector('li.ib-card .ib-face') as HTMLElement | null;
     if (!face) return null;
@@ -191,7 +205,11 @@ function previewFace(page: Page) {
       rows: Array.from(face.children)
         .map((d) => (d as HTMLElement).className.split(' ')[0])
         .filter((c) => c !== 'ib-head' && c !== 'ib-foot'),
-      chips: Array.from(face.querySelectorAll<HTMLElement>('.ib-foot .ib-metric')).map((m) => m.innerText.trim()),
+      // An icon-only chip (the model, #805) is named by its aria-label.
+      chips: Array.from(face.querySelectorAll<HTMLElement>('.ib-foot .ib-metric')).map(
+        (m) => m.innerText.trim() || m.getAttribute('aria-label') || '',
+      ),
+      model: modelChipOf(face),
       open: !!el?.shadowRoot?.querySelector('li.ib-card.is-open'),
       body: (el?.querySelector('[slot^="body:"]') as HTMLElement | null)?.innerText || '',
     };
@@ -294,6 +312,20 @@ async function run(browser: import('playwright').Browser, width: number, height:
   check(foot[0] === 'model', `${tag} R4 dragging 모델 onto PR puts it first`, foot);
   const f3 = await previewFace(page);
   check(!!f3 && /Opus/.test(f3.chips[0] || ''), `${tag} R4 the preview's foot starts with the model`, f3);
+  // #805 — the face shows the model as icons: the maker's mark in the model's colour and the effort gauge, no name.
+  check(
+    !!f3?.model &&
+      f3.model.text === '' &&
+      f3.model.role === 'img' &&
+      f3.model.mark &&
+      f3.model.effort === 'high' &&
+      f3.model.bars === 3 &&
+      f3.model.hue === '#d97757' &&
+      f3.model.label === '모델 Opus 5.5, 추론 강도 높음' &&
+      /Opus 5\.5 · 추론 강도 높음/.test(f3.model.title),
+    `${tag} R4 #805 the preview's model chip: mark + effort gauge (3 bars) in Opus clay, no text; named by label and title`,
+    f3?.model,
+  );
   await fullShot(page, `${tag}-2-card-edited.png`);
 
   // R5 — the open card.
@@ -353,7 +385,20 @@ async function run(browser: import('playwright').Browser, width: number, height:
       rows: Array.from(face.children)
         .map((x) => (x as HTMLElement).className.split(' ')[0])
         .filter((c) => c !== 'ib-head' && c !== 'ib-foot'),
-      chips: Array.from(face.querySelectorAll<HTMLElement>('.ib-foot .ib-metric')).map((m) => m.innerText.trim()),
+      chips: Array.from(face.querySelectorAll<HTMLElement>('.ib-foot .ib-metric')).map(
+        (m) => m.innerText.trim() || m.getAttribute('aria-label') || '',
+      ),
+      model: (() => {
+        const m = face.querySelector<HTMLElement>('.ib-foot .ib-metric.is-model');
+        return m
+          ? {
+              text: m.innerText.trim(),
+              role: m.getAttribute('role'),
+              effort: m.querySelector('svg.ib-eff')?.getAttribute('data-effort') || '',
+              hue: m.style.getPropertyValue('--ib-model-hue').trim(),
+            }
+          : null;
+      })(),
     };
   }, KEY_A);
   check(b.rows.join() === 'ib-arts,ib-task,ib-links', `${tag} R10 the board card's rows follow the saved order`, b);
@@ -361,6 +406,15 @@ async function run(browser: import('playwright').Browser, width: number, height:
     /Opus/.test(b.chips[0] || '') && b.chips.some((c) => /토큰/.test(c)),
     `${tag} R10 the board card's foot: the model first, the tokens chip`,
     b,
+  );
+  check(
+    !!b.model &&
+      b.model.text === '' &&
+      b.model.role === 'img' &&
+      b.model.effort === 'high' &&
+      b.model.hue === '#d97757',
+    `${tag} R10 #805 the board card's model chip is icons only (mark, colour, effort gauge)`,
+    b.model,
   );
   await page.click(`li.ib-card[data-card="${KEY_A}"] .ib-face .ib-title`);
   await sleep(1000);
@@ -373,17 +427,55 @@ async function run(browser: import('playwright').Browser, width: number, height:
   // R6 set 1안's detail card to the task line (R9 took back only the default): the detail card shows the line.
   const detail = await page.evaluate(() => {
     const line = document.querySelector('#panel-tasks .ptl-line') as HTMLElement | null;
-    return { line: !!line && line.checkVisibility(), text: line ? line.innerText : '' };
+    const controls = document.getElementById('panel-controls');
+    // #805 — the detail card names the model: the model · effort line shows, and its <ui-model-picker> trigger (in
+    // its shadow root) reads the model's name.
+    const picker = controls?.querySelector('ui-model-picker') as HTMLElement | null;
+    return {
+      line: !!line && line.checkVisibility(),
+      text: line ? line.innerText : '',
+      model: {
+        shown: !!controls && controls.checkVisibility(),
+        name: (picker?.shadowRoot?.textContent ?? '').replace(/\s+/g, ' ').trim(),
+      },
+    };
   });
   check(
     /중지/.test(body) &&
-      // The refs wrap on a phone: one space for any run of white space.
-      /#700 열림/.test(body.replace(/\s+/g, ' ')) &&
-      /PAY-12 In Progress/.test(body.replace(/\s+/g, ' ')) &&
+      // #809 say it once: the face's 연결 row shows #700 and PAY-12, so the open card does not list them again.
+      !/#700|PAY-12/.test(body) &&
       /\[작업 창\]/.test(body) &&
       detail.line,
-    `${tag} R10 the open card (actions, links, the task window) and its detail card (the task line)`,
+    `${tag} R10 the open card (actions, the task window; the face's links not again) and its detail card (the task line)`,
     { body: body.slice(0, 200), detail },
+  );
+  check(
+    detail.model.shown && /Opus 5\.5/.test(detail.model.name),
+    `${tag} R10 #805 the detail card names the model (its model · effort line)`,
+    detail.model,
+  );
+  // #813 — every model picker's tile is the maker's mark (Claude's clay starburst), not the name's first letter: the
+  // open card's and the detail card's.
+  const tiles = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('ui-model-picker'))
+      .filter((p) => (p as HTMLElement).checkVisibility())
+      .map((p) => {
+        const g = p.shadowRoot?.querySelector('.mp-trigger .mp-glyph') as HTMLElement | null;
+        return g
+          ? {
+              vendor: g.dataset.vendor || '',
+              hue: g.style.getPropertyValue('--model-hue').trim(),
+              svg: !!g.querySelector('svg'),
+              text: (g.textContent || '').trim(),
+            }
+          : null;
+      }),
+  );
+  check(
+    tiles.length >= 2 &&
+      tiles.every((t) => !!t && t.vendor === 'claude' && t.hue === '#d97757' && t.svg && t.text === ''),
+    `${tag} R10 #813 the open card's and the detail card's model pickers lead with Claude's mark in clay (no letter)`,
+    tiles,
   );
   await page.screenshot({ path: path.join(OUT, `${tag}-6-board-after.png`) });
   check(errors.length === 0, `${tag} no page errors`, errors);
