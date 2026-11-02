@@ -427,6 +427,8 @@ export interface KanbanSession {
   /** E4 ① — a child task's epic (task id) and plan node. Absent otherwise. */
   parentTaskId?: string;
   planNodeId?: string;
+  /** E4 ⑨c — set on a child card sent in its epic's bundle: the board draws it right under the epic. */
+  underEpic?: true;
   /** E4 ⑦ — a child its epic's close cancelled (the outcome stays `cancelled`). Absent otherwise. */
   closedBy?: { by: 'parent'; at: number };
   /**
@@ -844,23 +846,20 @@ function resolveSelfActionKey(wireKey: string, reply: any): string | null {
 function resolveSelfActionKeyAndOwner(
   request: any,
   reply: any,
-  opts: { allowSlackless?: boolean; taskOwnerOnly?: boolean } = {},
+  opts: { allowSlackless?: boolean; instruct?: boolean } = {},
 ): { wireKey: string; originalKey: string } | null {
   const wireKey: string = request.params?.key ?? '';
   const originalKey = resolveSelfActionKey(wireKey, reply);
   if (originalKey === null) return null;
-  // Owner first: someone else's task answers 403, not a hint of what it is.
-  if (!requireSessionOwner(request, reply, originalKey)) return null;
-  // #637 R1 — a task's instruction or answer runs under its owner's identity
-  // (`executionContextForTask`), so only the signed-in owner may send one: the
-  // #716 bearer and admin-mode overrides do not apply. Stop / close / trash keep
-  // them — they cannot run anything.
-  if (opts.taskOwnerOnly) {
-    const target = _getSessionsFn?.()?.get(originalKey);
-    if (target?.slackless === true && !isTaskOwner(request, target.ownerId)) {
-      reply.status(403).send({ error: 'only the task owner can instruct or answer a dashboard task' });
-      return null;
-    }
+  // The gate first: a refusal answers 403, not a hint of what the session is.
+  // An instruction or an answer (SSOT 2026-11-02): every signed-in user, as in
+  // a Slack thread — it runs as them. Everything else: the #716 write policy.
+  if (
+    opts.instruct
+      ? !requireInstructAccess(request, reply, originalKey)
+      : !requireSessionOwner(request, reply, originalKey)
+  ) {
+    return null;
   }
   // Fail closed (#612 review): a Slack-less task takes only the routes that opt in —
   // stop / close / trash, and `command`, which hands it to the task turn
@@ -1186,11 +1185,56 @@ function _hasWriteAccess(request: any, ownerId: string | undefined): boolean {
   return false;
 }
 
-/** The signed-in user is the task's owner — a user identity, never a bearer token. */
-function isTaskOwner(request: any, ownerId: string | undefined): boolean {
+/** The signed-in Slack user sending the request — a user identity, never a bearer token (which names nobody). */
+function signedInUserId(request: any): string | undefined {
   const authContext = request.authContext;
-  if (!authContext || authContext.mode === 'bearer_header' || authContext.mode === 'bearer_cookie') return false;
-  return !!authContext.userId && !!ownerId && authContext.userId === ownerId;
+  if (!authContext || authContext.mode !== 'oauth_jwt') return undefined;
+  return typeof authContext.userId === 'string' && authContext.userId ? authContext.userId : undefined;
+}
+
+/**
+ * Who may instruct a session or answer its question (SSOT 2026-11-02) — the
+ * Slack rule: anyone may write in anyone's thread, and the turn runs as the
+ * user who wrote. So every signed-in user passes, and the handler runs the
+ * turn as them (`signedInUserId`), never as the owner.
+ *   - A viewer token names nobody: it keeps the #716 write access to a Slack
+ *     session (sent as its owner, as before), and is refused on a dashboard
+ *     task, which has no owner's thread to fall back on — it runs as its sender.
+ *   - An epic tree (an epic, or an epic's child): its children start as the
+ *     owner (host starts), so another user's word would run as the owner one
+ *     hop later — the owner, or an admin in admin mode, only.
+ */
+function requireInstructAccess(request: any, reply: any, sessionKey: string): boolean {
+  const target = _getSessionsFn?.()?.get(sessionKey);
+  const actor = signedInUserId(request);
+  const task = target?.slackless === true;
+  if (!actor) {
+    if (!task && _hasWriteAccess(request, target?.ownerId)) return true;
+    reply.status(403).send({ error: 'Forbidden — sign in with Slack to instruct a task: it runs as you' });
+    return false;
+  }
+  const epicTree = task && (target?.kind === 'epic' || !!target?.parentTaskId);
+  if (epicTree && actor !== target?.ownerId && !_hasWriteAccess(request, target?.ownerId)) {
+    reply.status(403).send({
+      error: 'Forbidden — an epic and its children take instructions from their owner, or an admin in admin mode',
+    });
+    return false;
+  }
+  // A DM with the bot: in Slack nobody else can write there — its owner, or an admin in admin mode, only.
+  if (!task && isDirectMessageChannel(target?.channelId) && actor !== target?.ownerId) {
+    if (!_hasWriteAccess(request, target?.ownerId)) {
+      reply
+        .status(403)
+        .send({ error: 'Forbidden — a DM session takes instructions from its owner, or an admin in admin mode' });
+      return false;
+    }
+  }
+  return true;
+}
+
+/** A Slack DM channel id (`D…`) — a conversation only its two members can write in. */
+function isDirectMessageChannel(channelId: unknown): boolean {
+  return typeof channelId === 'string' && channelId.startsWith('D');
 }
 
 /**
@@ -1266,7 +1310,17 @@ type TrashHandler = (sessionKey: string) => Promise<void>;
  * text (may be empty when files are attached) and the files the user pasted,
  * attached or recorded — decoded and held to the new-task limits.
  */
-type CommandHandler = (sessionKey: string, message: string, files: NewTaskAttachment[]) => Promise<void>;
+/**
+ * A Slack session's instruction from the panel. `actorUserId` — the signed-in
+ * user who sent it: the message enters the thread as theirs, as if they had
+ * typed it there (SSOT 2026-11-02). None (a viewer token) is the owner's.
+ */
+type CommandHandler = (
+  sessionKey: string,
+  message: string,
+  files: NewTaskAttachment[],
+  actorUserId?: string,
+) => Promise<void>;
 /**
  * #598 ④c — a Slack-less task's instruction: the task turn controller refuses
  * (D8, D9) or accepts it, and the route answers with its status and body.
@@ -1275,7 +1329,7 @@ type TaskCommandHandler = (
   sessionKey: string,
   message: string,
   files: NewTaskAttachment[],
-  /** The signed-in user sending it — the route has checked it is the task's owner (#637 R2). */
+  /** The signed-in user sending it — any user (SSOT 2026-11-02); the turn runs as them. */
   actorUserId: string,
 ) => Promise<{ status: number; body: Record<string, unknown> }>;
 
@@ -1328,12 +1382,15 @@ export interface DashboardFollowupItem {
   files: string[];
   /** Who wrote it — only when that is not the session's owner (someone else in the thread). */
   author?: string;
+  /** The writer's Slack id: only the writer edits it (SSOT 2026-11-02 — the page offers Edit to that viewer). */
+  authorId?: string;
   enqueuedAt: number;
   state: FollowupItemState;
   stateReason?: string;
   /** The item's CAS generation: every action on it sends it back. */
   epoch: number;
-  /** Edit is offered: `queued`, the owner's own words, not a goal's opening turn (the server checks again). */
+  /** Edit is possible: `queued`, someone's words, not a goal's opening turn — to its writer only (`authorId`;
+   *  the server checks again). */
   editable: boolean;
 }
 export interface DashboardFollowups {
@@ -1349,6 +1406,10 @@ export interface DashboardFollowupRequest {
   epoch: number;
   turnEpoch: number;
   text?: string;
+  /** The signed-in user who pressed it (none: a viewer token) — SSOT 2026-11-02. */
+  actorUserId?: string;
+  /** The presser may manage the session (#716: the owner, a token, an admin in admin mode): they act as its owner. */
+  manages?: boolean;
 }
 /** A refusal carries the queue's own words (the item stays) and the status the route answers with. */
 export type DashboardFollowupOutcome = { ok: true; message?: string } | { ok: false; status: number; message: string };
@@ -1427,11 +1488,8 @@ export function followupsOf(sessionKey: string, ownerId: string | undefined): Da
         enqueuedAt: item.enqueuedAt,
         state: item.state,
         epoch: item.epoch,
-        editable:
-          item.state === 'queued' &&
-          !!author &&
-          author === ownerId &&
-          item.message?.routeContext?.goalOpeningId === undefined,
+        editable: item.state === 'queued' && !!author && item.message?.routeContext?.goalOpeningId === undefined,
+        ...(author ? { authorId: author } : {}),
       };
       if (author && author !== ownerId) out.author = nameOf(author);
       if (item.stateReason && !FOLLOWUP_STATE_ECHO.has(item.stateReason)) out.stateReason = item.stateReason;
@@ -1500,7 +1558,14 @@ export function setDashboardEffortHandler(fn: EffortSwitchHandler): void {
   _effortSwitchHandlerFn = fn;
 }
 
-type ChoiceAnswerHandler = (sessionKey: string, choiceId: string, label: string, question: string) => Promise<void>;
+/** `actorUserId` — the signed-in user answering; the answer runs as them (SSOT 2026-11-02). None: the owner's. */
+type ChoiceAnswerHandler = (
+  sessionKey: string,
+  choiceId: string,
+  label: string,
+  question: string,
+  actorUserId?: string,
+) => Promise<void>;
 let _choiceAnswerHandlerFn: ChoiceAnswerHandler | null = null;
 /**
  * #599 ⑤ — a Slack-less task's answer, bound to the question's `askId`; the
@@ -1510,7 +1575,7 @@ type TaskAnswerHandler = (
   sessionKey: string,
   askId: string,
   answer: TaskAnswer,
-  /** The signed-in user answering — the route has checked it is the task's owner. */
+  /** The signed-in user answering — any user (SSOT 2026-11-02); the answer runs as them. */
   actorUserId: string,
 ) => Promise<{ status: number; body: Record<string, unknown> }>;
 let _taskAnswerHandlerFn: TaskAnswerHandler | null = null;
@@ -1535,7 +1600,7 @@ async function routeTaskAnswer(request: any, reply: any, sessionKey: string, ans
     return true;
   }
   try {
-    const outcome = await _taskAnswerHandlerFn(sessionKey, askId, answer, String(request.authContext?.userId ?? ''));
+    const outcome = await _taskAnswerHandlerFn(sessionKey, askId, answer, signedInUserId(request) ?? '');
     reply.status(outcome.status).send(outcome.body);
   } catch (error) {
     logger.error('Error answering a dashboard task', error);
@@ -1551,6 +1616,7 @@ export function setDashboardChoiceAnswerHandler(fn: ChoiceAnswerHandler): void {
 type MultiChoiceAnswerHandler = (
   sessionKey: string,
   selections: Record<string, { choiceId: string; label: string }>,
+  actorUserId?: string,
 ) => Promise<void>;
 let _multiChoiceAnswerHandlerFn: MultiChoiceAnswerHandler | null = null;
 
@@ -1664,7 +1730,7 @@ export function stopDashboardAdminApprovalWatch(): void {
 // pass selections — the implementation derives them from session.pendingQuestion
 // recommendations. Returns rejected promise on validation failure for
 // status-code mapping in the route handler.
-type SubmitRecommendedHandler = (sessionKey: string) => Promise<void>;
+type SubmitRecommendedHandler = (sessionKey: string, actorUserId?: string) => Promise<void>;
 let _submitRecommendedHandlerFn: SubmitRecommendedHandler | null = null;
 
 export function setDashboardSubmitRecommendedHandler(fn: SubmitRecommendedHandler): void {
@@ -2527,7 +2593,9 @@ function shownActivity(card: KanbanSession): ConversationSession['activityState'
 /** E4 ⑧ (D11) — an epic's bundle: its view and its children's cards (every card of an epic carries it). */
 function epicBundle(epic: ConversationSession): NonNullable<KanbanSession['epic']> {
   const entries = bundledChildrenOf(epic);
-  const cards = new Map(entries.map(([key, child]) => [child, sessionToKanban(key, child)]));
+  const cards = new Map(
+    entries.map(([key, child]) => [child, { ...sessionToKanban(key, child), underEpic: true as const }]),
+  );
   const view = epicBoardView(
     epic,
     entries.map(([, child]) => child),
@@ -2845,11 +2913,14 @@ function sendToConversationAudience(conversationId: string, payload: string): vo
   // Resolve session owner for scoping — iterate because sessions are keyed by
   // sessionKey (channelId:threadTs), not conversationId (UUID)
   let ownerId: string | undefined;
+  // The user instructing it now (SSOT 2026-11-02 — anyone may): they follow the turn they started.
+  let initiatorId: string | undefined;
   const sessions = _getSessionsFn?.();
   if (sessions) {
     for (const [, s] of sessions) {
       if (s.conversationId === conversationId) {
         ownerId = s.ownerId;
+        initiatorId = s.currentInitiatorId;
         break;
       }
     }
@@ -2866,7 +2937,7 @@ function sendToConversationAudience(conversationId: string, payload: string): vo
     if (!ownerId) {
       // When owner is unknown, only admin clients receive the update
       if (!client.isAdmin) continue;
-    } else if (!client.isAdmin && client.userId && client.userId !== ownerId) {
+    } else if (!client.isAdmin && client.userId && client.userId !== ownerId && client.userId !== initiatorId) {
       continue;
     }
     try {
@@ -3677,8 +3748,8 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'message is required (or attach a file)' });
         return;
       }
-      // Only the session's owner gets their files decoded (up to the new-task limits).
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
+      // Only a sender the gate let through gets their files decoded (up to the new-task limits).
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, instruct: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       const files = parseAttachments(attachments);
@@ -3694,12 +3765,7 @@ export async function registerDashboardRoutes(
           return;
         }
         try {
-          const outcome = await _taskCommandHandlerFn(
-            originalKey,
-            message,
-            files.value,
-            String((request as { authContext?: { userId?: string } }).authContext?.userId ?? ''),
-          );
+          const outcome = await _taskCommandHandlerFn(originalKey, message, files.value, signedInUserId(request) ?? '');
           reply.status(outcome.status).send(outcome.body);
         } catch (error) {
           logger.error('Error starting a dashboard task turn', error);
@@ -3709,7 +3775,7 @@ export async function registerDashboardRoutes(
       }
       try {
         if (_commandHandlerFn) {
-          await _commandHandlerFn(originalKey, message, files.value);
+          await _commandHandlerFn(originalKey, message, files.value, signedInUserId(request));
         }
         reply.send({ ok: true });
       } catch (error) {
@@ -3720,10 +3786,13 @@ export async function registerDashboardRoutes(
   );
 
   // The panel's follow-up queue (dashboard batch 2, <ui-agent-steering>): Send now
-  // (Retry on a failed note), Cancel and Edit on one item. Owner-only like Stop —
-  // the same gate — and carrying the generation the panel showed: the item's
-  // epoch, and the session's turnEpoch that Send now is fenced against. A
-  // refusal answers with the queue's own words; the item stays where it was.
+  // (Retry on a failed note), Cancel and Edit on one item, carrying the generation
+  // the panel showed: the item's epoch, and the session's turnEpoch that Send now
+  // is fenced against. Open to whoever may instruct (SSOT 2026-11-02): one who may
+  // manage the session acts as its owner, as before (#716); anyone else as
+  // themselves — so the Slack buttons' own rules decide (only the owner or the
+  // current speaker sends now, only the author edits). A refusal answers with the
+  // queue's own words; the item stays where it was.
   server.post<{
     Params: { key: string; itemId: string; op: string };
     Body: { epoch?: unknown; turnEpoch?: unknown; text?: unknown };
@@ -3758,9 +3827,11 @@ export async function registerDashboardRoutes(
         }
         text = body.text.trim();
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { instruct: true });
       if (!resolved) return;
       const { originalKey } = resolved;
+      const actorUserId = signedInUserId(request);
+      const manages = _hasWriteAccess(request, _getSessionsFn?.()?.get(originalKey)?.ownerId);
       if (!_followupHandler) {
         reply.status(501).send({ error: 'Follow-up queue handler not configured' });
         return;
@@ -3773,6 +3844,8 @@ export async function registerDashboardRoutes(
           epoch: body.epoch,
           turnEpoch: body.turnEpoch,
           ...(text !== undefined ? { text } : {}),
+          ...(actorUserId ? { actorUserId } : {}),
+          manages,
         });
         // Whatever the queue answered, the panel gets the queue as it is now.
         scheduleLiveSessionUpdate(originalKey);
@@ -4177,13 +4250,13 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'Field length exceeded' });
         return;
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, instruct: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       if (await routeTaskAnswer(request, reply, originalKey, { kind: 'single', choiceId })) return;
       try {
         if (_choiceAnswerHandlerFn) {
-          await _choiceAnswerHandlerFn(originalKey, choiceId, label, question);
+          await _choiceAnswerHandlerFn(originalKey, choiceId, label, question, signedInUserId(request));
         } else {
           reply.status(501).send({ error: 'Choice answer handler not configured' });
           return;
@@ -4248,13 +4321,13 @@ export async function registerDashboardRoutes(
           return;
         }
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, instruct: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       if (await routeTaskAnswer(request, reply, originalKey, { kind: 'multi', selections })) return;
       try {
         if (_multiChoiceAnswerHandlerFn) {
-          await _multiChoiceAnswerHandlerFn(originalKey, selections);
+          await _multiChoiceAnswerHandlerFn(originalKey, selections, signedInUserId(request));
         } else {
           reply.status(501).send({ error: 'Multi-choice answer handler not configured' });
           return;
@@ -4407,7 +4480,7 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/submit-recommended',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, taskOwnerOnly: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, instruct: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       if (await routeTaskAnswer(request, reply, originalKey, { kind: 'recommended' })) return;
@@ -4416,7 +4489,7 @@ export async function registerDashboardRoutes(
           reply.status(501).send({ error: 'Submit-recommended handler not configured' });
           return;
         }
-        await _submitRecommendedHandlerFn(originalKey);
+        await _submitRecommendedHandlerFn(originalKey, signedInUserId(request));
         reply.send({ ok: true });
       } catch (error) {
         const errMsg = (error as Error).message || '';
@@ -4832,7 +4905,6 @@ ui-breadcrumbs.crumbs { flex: 1 1 auto; min-width: 0; }
    and narrow / list layouts are the element's, drawn with the dashboard tokens through .ui-tok (#inbox).
    An open card's body is light DOM in the card's slot (.card-slot > .card-body), styled here. */
 ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0; }
-ui-agent-inbox.epic-inbox { display: block; min-width: 0; }
 
 /* ── Loading skeletons — the shape of what is coming, never a false "0 · Nothing here". The board shows the
    element's until its first answer (data-load="loading"); the open card's 지시 / 응답 lines are the kit's
@@ -5436,22 +5508,6 @@ body:not([data-tasks="runs"]) .panel-tasks { max-height: var(--ptl-max, 34cqh); 
    are board cards in each job's box (.cron-cards, slot="job:<group key>"), light DOM. */
 .capacity-host { margin-bottom: 18px; }
 .cron-lane { margin-bottom: 12px; }
-/* E4 ⑨a — the EPIC lane: one group per epic with children (head, then the children's cards). */
-.epic-lane { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
-.epic-group { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--surface); }
-.epic-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; min-width: 0; }
-.epic-head .epic-title { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.epic-head .epic-progress { margin-left: auto; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.epic-cards { display: flex; flex-direction: column; gap: 8px; position: relative; }
-/* The lane sets display, which beats the UA [hidden] rule: hide it explicitly (grok #706 R1). */
-.epic-lane[hidden] { display: none; }
-.epic-plan { display: block; margin-bottom: 8px; }
-.epic-plan[hidden] { display: none; }
-/* The bar and the count sit together at the end of the head (the bar takes the auto margin when there is one). */
-.epic-head .epic-bar { margin-left: auto; }
-.epic-head .epic-bar ~ .epic-progress { margin-left: 0; }
-.epic-bar { position: relative; width: 72px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; flex: none; }
-.epic-bar-fill { position: absolute; inset: 0 auto 0 0; background: var(--st-done); border-radius: 3px; }
 .capacity-host[hidden], .cron-lane[hidden] { display: none; }
 .capacity-host > ui-agent-queue, .cron-lane > ui-agent-queue { display: block; min-width: 0; }
 .cron-cards { display: flex; flex-direction: column; gap: 8px; position: relative; }
@@ -5784,7 +5840,6 @@ ${pageTokenAliases()}
            (syncCronLane gives it its data); each job's latest run is its board card — a one-column
            <ui-agent-inbox> (paintCronLaneCards) in the job's slot box (slot="job:<group key>"). -->
       <div class="cron-lane ui-tok" id="cron-lane" hidden><ui-agent-queue id="cron-aq" lang="ko"></ui-agent-queue></div>
-      <div class="epic-lane ui-tok" id="epic-lane" aria-label="에픽" hidden></div>
       <!-- Until the first board answer the columns show skeleton cards, not
            "0 · Nothing here" (a false empty board). A first load that fails says so
            here and offers a retry; the 30 s poll keeps retrying on its own. -->
@@ -6041,9 +6096,10 @@ function dhTruncate(field) {
   return (f && typeof f.truncate === 'number') ? f.truncate : null;
 }
 let currentUserId = INIT_USER || '';
-// Displayed + placeholder copy when a non-owner views a session (Korean, like
-// every other reason the page gives). Kept here so wording edits only touch one
-// place: the action buttons, 지금 압축, the subtitle, a question card's lock.
+// Displayed + placeholder copy when the viewer may not act on a session (Korean,
+// like every other reason the page gives): a question card's lock for one who
+// may not instruct it, the subtitle's refusal. The manage controls (the action
+// buttons, 지금 압축) say OWNER_ONLY_MSG (SSOT 2026-11-02).
 const READ_ONLY_MSG = '읽기 전용 — 내 세션이 아닙니다';
 let currentPeriod = 'day';
 let ws = null;
@@ -6056,6 +6112,27 @@ var _panelTasksEarlier = false; // the earlier plans shown under the current one
 let _panelTitleSub = ''; // the subtitle the open panel shows ('' = none yet)
 let _viewerIsAdmin = false; // /auth/me says ADMIN_USERS (or viewer token); UX only, the server re-checks
 let _viewerUserId = ''; // the signed-in user (/auth/me) — not currentUserId, which is the board filter
+
+// Who may do what on a card (SSOT 2026-11-02) — UX only, the server re-checks every write.
+// Mine: the signed-in viewer's — never the board filter's user ('' on the All Users board).
+// Manage (stop · close · trash · star · 살리기 · model · effort · goal · compact): the owner, or an
+// admin with 관리자 모드 on. Instruct (the composer, a question's answer): every signed-in user, as
+// in a Slack thread — the turn runs as them; an epic and its children, and someone else's DM with the
+// bot (nobody else can write there in Slack), only from those who manage them; a viewer token only a
+// Slack session it manages.
+const OWNER_ONLY_MSG = '소유자나 관리자 모드를 켠 관리자만 할 수 있어요';
+function viewerOwns(s) {
+  return !!(s && s.ownerId) && !!_viewerUserId && s.ownerId === _viewerUserId;
+}
+function viewerCanManage(s) {
+  return viewerOwns(s) || !!(_viewerIsAdmin && _isAdminModeOn());
+}
+function viewerCanInstruct(s) {
+  if (!s) return false;
+  if (s.slackless && (s.kind === 'epic' || s.parentTaskId)) return !!_viewerUserId && viewerCanManage(s);
+  if (!s.slackless && typeof s.channelId === 'string' && s.channelId.charAt(0) === 'D') return viewerCanManage(s);
+  return !!_viewerUserId || (!s.slackless && viewerCanManage(s));
+}
 
 // ── Top bar — @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14) ──
 // The page hands the bar its data — brand, the three page links, the live-update status, the signed-in
@@ -6217,7 +6294,7 @@ var AC_SENT = { approve: '승인을 보냈어요', deny: '거부를 보냈어요
 var AC_SIBLING = '다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요';
 
 function isPermissionRequester(p) {
-  return !!(p && p.requesterId && currentUserId && p.requesterId === currentUserId);
+  return !!(p && p.requesterId && _viewerUserId && p.requesterId === _viewerUserId);
 }
 
 function permissionSummary(s) {
@@ -6227,15 +6304,16 @@ function permissionSummary(s) {
 }
 
 // Who may answer here, as the element's canAnswer: '' (yes) or why not. A
-// prompt: its requester, on this instance. The question: the session's owner,
-// on this instance (as Stop). The server re-checks both.
+// prompt: its requester, on this instance. The question: whoever may instruct
+// the session (viewerCanInstruct — a Slack button answers as its clicker), on
+// this instance. The server re-checks both.
 function acPermissionLock(s, p) {
   if (isSiblingSession(s)) return AC_SIBLING;
   return isPermissionRequester(p) ? '' : '이 요청의 요청자만 응답할 수 있습니다';
 }
 function acQuestionLock(s) {
   if (isSiblingSession(s)) return AC_SIBLING;
-  return s.ownerId && s.ownerId === currentUserId ? '' : READ_ONLY_MSG;
+  return viewerCanInstruct(s) ? '' : READ_ONLY_MSG;
 }
 
 // DashboardPermissionRequest (+ the requester's input, + this page's answer) → the card's data.
@@ -7486,6 +7564,8 @@ function _applyUserPill(data) {
       try { localStorage.removeItem('soma_admin_mode'); } catch(_e) {}
     }
   }
+  // The board may have drawn before the viewer was known: its controls follow the viewer now.
+  repaintViewerControls();
 }
 
 // Admin mode (#716)
@@ -7525,6 +7605,19 @@ function toggleAdminMode() {
   _renderAdminModeButton();
   // The admin approval cards lock and unlock with admin mode.
   if (_adminInboxOpen) paintAdminInbox();
+  repaintViewerControls();
+}
+// Who may do what (viewerCanManage / viewerCanInstruct) changed — the signed-in viewer became known, or
+// 관리자 모드 flipped: the board's cards and the open panel draw their controls again (SSOT 2026-11-02).
+function repaintViewerControls() {
+  renderBoardForLayout();
+  repaintPanelSession();
+  // The panel's 입력 필요 cards carry their own locks (the question's, the prompts' requester).
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  if (s) {
+    renderPanelQuestion(s);
+    renderPanelPermission(s);
+  }
 }
 
 // #716: monkey-patch fetch ONCE at boot so every state-mutating request
@@ -7639,7 +7732,7 @@ function sessionAcceptsModel(value) {
 function defaultsScopeSession() {
   if (!panelOpen || !panelSessionKey) return null;
   var s = _sessionCache[panelSessionKey];
-  if (!s || !s.ownerId || s.ownerId !== currentUserId || s.terminated || isSiblingSession(s)) return null;
+  if (!s || !viewerOwns(s) || s.terminated || isSiblingSession(s)) return null;
   return s;
 }
 // <ui-menu id="td-menu"> (A-07): the page hands it the rows — a heading, the options as one radio group (the
@@ -7921,8 +8014,7 @@ function syncUserSelectTitle() {
 }
 
 // 미니멀 hides the board's user picker only on the viewer's own board. Anywhere else — All Users (/dashboard),
-// another user's board — the owner's controls (approve, answer, Stop, the composer) wait until the reader picks
-// themselves, so the picker stays.
+// another user's board — the picker stays (the viewer's own cards are theirs on any board: viewerOwns).
 function syncBoardScope() {
   document.body.toggleAttribute('data-board-mine', !!currentUserId && currentUserId === _viewerUserId);
 }
@@ -8271,8 +8363,9 @@ function renderBoard(board, partial) {
     var arr = board[col0] || [];
     for (var i0 = 0; i0 < arr.length; i0++) {
       _sessionCache[arr[i0].key] = arr[i0];
-      // E4 ⑨a — an epic's children are in no column: cached here too, before the answer
-      // states are evicted and the env / owner indexes read the cache (fable #706 R1 P1).
+      // E4 ⑨a — an epic's children are in no column of the data (the board draws them under
+      // their epic, ⑨c): cached here too, before the answer states are evicted and the env /
+      // owner indexes read the cache (fable #706 R1 P1).
       var kids = arr[i0].epic && Array.isArray(arr[i0].epic.children) ? arr[i0].epic.children : [];
       for (var k0 = 0; k0 < kids.length; k0++) if (kids[k0] && kids[k0].key) _sessionCache[kids[k0].key] = kids[k0];
     }
@@ -8304,8 +8397,22 @@ function renderBoard(board, partial) {
   _cardCol = Object.create(null);
   _cardData = Object.create(null);
   _cardDrawn = Object.create(null);
+  _epicKidsDrawn = Object.create(null);
+  // Each list's cards, an epic's children right after its card (E4 ⑨c, withEpicChildren);
+  // what each epic's children are, as placed, for the push path (applyEpicPush).
+  var hideKids = showSleeping === false;
+  function place(items, host, drawn) {
+    return withEpicChildren(items, hideKids, _revealedKey).map(function(it) {
+      placeCard(it.s, it.col, host, drawn);
+      if (it.s.kind === 'epic') _epicKidsDrawn[it.s.key] = epicKidsSig(it.s, hideKids, _revealedKey);
+      return it.s.key;
+    });
+  }
+  // Counted from the board the columns draw (after the CRON lane took its runs). The 휴면 count
+  // covers every sleeping child, shown or hidden — as planDoneColumn's covers every sleeping card.
+  var kidCounts = epicKidsCounts(rest);
   function keys(list, col, host) {
-    return (list || []).map(function(s) { placeCard(s, col, host, true); return s.key; });
+    return place((list || []).map(function(s) { return { s: s, col: col }; }), host, true);
   }
   if (kb) {
     kb._ibPlan = {
@@ -8322,7 +8429,7 @@ function renderBoard(board, partial) {
               id: g.key,
               label: g.label,
               open: g.open,
-              keys: g.items.map(function(it) { placeCard(it.s, it.col, kb, g.open); return it.s.key; }),
+              keys: place(g.items, kb, g.open),
             };
           }),
         },
@@ -8330,14 +8437,13 @@ function renderBoard(board, partial) {
       load: partial ? (_boardLoad === 'loading' ? 'loading' : 'failed') : 'ready',
       // D6: how many need you and how many run — the data as it came (CRON runs
       // waiting on a reply included), before the lane takes its runs and any hold.
-      announce: { needs: (board.waiting || []).length, running: (board.working || []).length },
+      // E4 ⑨c: an epic's children are in no column of the data but drawn in one — counted too.
+      announce: { needs: (board.waiting || []).length + kidCounts.needs, running: (board.working || []).length + kidCounts.running },
     };
     inboxPaint(kb);
   }
   // The CRON lane (Option A): each job's lead run in its own one-column element.
   paintCronLaneCards(cronLaneSlots(cronPlan));
-  // The EPIC lane (E4 ⑨a): each epic's children, which are in no column.
-  renderEpicLane(board);
   // Cards that left every element: closed for good (a card that comes back
   // comes back closed), their bodies and retry timers released.
   for (var gone in prevHost) {
@@ -8352,7 +8458,7 @@ function renderBoard(board, partial) {
   _expanded.forEach(function(key) { if (_cardDrawn[key]) ensureCardIo(key, false); });
   syncHasCards();
   renderArchivesToggle(plan.archivedCount);
-  renderSleepingToggle(plan.sleepingCount);
+  renderSleepingToggle(plan.sleepingCount + kidCounts.sleeping);
   paintCronDrawer();
   // The #814 tokens tooltip describes this board (user switch, WS push).
   updateTokenBreakdown();
@@ -8865,8 +8971,12 @@ function cardOf(s, col) {
   if (metrics.length) card.metrics = metrics;
   // A cron run leads with the CRON badge instead of the spark (SSOT 2026-10-23 T3).
   if (s.cronJob && s.cronJob.name) card.lead = { text: 'CRON', glyph: 'clock', title: '크론 잡: ' + s.cronJob.name };
-  // A child of an epic (E4 ⑨b) leads with its plan node, the ref its epic's plan tree shows.
-  if (s.parentTaskId && s.planNodeId && !card.lead) card.lead = { text: '#' + String(s.planNodeId), glyph: 'tasks', title: '에픽의 노드 ' + String(s.planNodeId) };
+  // A child of an epic (E4 ⑨b) leads with its plan node, the ref its epic's plan tree shows —
+  // after ↳ when it sits right under its epic's card (E4 ⑨c: a card from the epic's bundle).
+  if (s.parentTaskId && s.planNodeId && !card.lead) {
+    var under = s.underEpic === true;
+    card.lead = { text: (under ? '\u21b3 #' : '#') + String(s.planNodeId), glyph: 'tasks', title: (under ? '위 에픽의 노드 ' : '에픽의 노드 ') + String(s.planNodeId) };
+  }
   // An epic (E4 ⑨a) leads with EPIC and says its state; its progress is accepted nodes of all.
   if (s.kind === 'epic' && s.epic) {
     var epicLabel = EPIC_STATE_LABEL[epicStateOf(s.epic.state)];
@@ -9056,6 +9166,12 @@ function cardTaskPlanHydrate(root) {
   for (var i = 0; i < els.length; i++) {
     var s = _sessionCache[els[i].getAttribute('data-tp-key') || ''];
     if (s) taskElData(els[i], cardTaskPlanData(s));
+  }
+  // An epic's plan tree (renderEpicPlan).
+  var plans = root.querySelectorAll('ui-task-plan[data-epic-plan-key]');
+  for (var j = 0; j < plans.length; j++) {
+    var e = _sessionCache[plans[j].getAttribute('data-epic-plan-key') || ''];
+    if (e) taskElData(plans[j], epicPlanData(e));
   }
 }
 // The window's "+N개 더 · 전체 작업 N개 →" (ui-more): the panel's Tasks, the same landing as the page's link —
@@ -10474,9 +10590,9 @@ function writePanelPart(el, html) {
 
 // The composer and the session's follow-up queue — @2lab.ai/ui <ui-agent-steering>
 // (dashboard batch 2) — follow the session, also live (spec 13: the panel's own
-// Close can end the session it shows). Non-owner takes precedence over closed
-// (read-only: the queue shows, nothing can be done — like Stop); fail closed on a
-// missing ownerId. The element keeps the text being typed (an IME composition
+// Close can end the session it shows). Read-only — a viewer who may not instruct
+// it (viewerCanInstruct: nobody signed in, an epic tree's non-manager) — takes
+// precedence over closed (the queue shows, nothing can be done). The element keeps the text being typed (an IME composition
 // too) across every update, so its data is written whenever it changed. It turns
 // its slotted composer off with its field (tools too, a recording discarded); a
 // change of mode away from open also drops the composer's files.
@@ -10505,17 +10621,17 @@ function pcToolsOpen(s, mode) {
   return mode === 'open' && !(s && s.slackless);
 }
 function pcModeOf(s) {
-  var isOwnerPanel = !!s.ownerId && s.ownerId === currentUserId;
   var isClosed = s.terminated || s.sessionState === 'SLEEPING';
-  return !isOwnerPanel ? 'readonly' : (isClosed ? 'closed' : 'open');
+  return !viewerCanInstruct(s) ? 'readonly' : (isClosed ? 'closed' : 'open');
 }
 // The queue's ten states as the element's five: paused → queued (Send now runs
 // it), reserved / claimed / dispatched → sending, uncertain → failed (Retry).
 // Resolved and cancelled notes are history the server does not send.
 var STEER_STATE = { queued: 'queued', paused: 'queued', steered: 'steered', reserved: 'sending', claimed: 'sending', dispatched: 'sending', failed: 'failed', uncertain: 'failed' };
 // The element's data from the session payload (KanbanSession.followups): running
-// while a turn works (Enter then queues for the next step), canAct for the owner
-// only, Edit only where the server offers it. The files of the next message are
+// while a turn works (Enter then queues for the next step), canAct for whoever may
+// instruct (the queue's own rules answer a press — SSOT 2026-11-02), Edit only where
+// the server offers it. The files of the next message are
 // the slotted composer's (a note leaves with them).
 function steeringData(s, mode) {
   var list = (s.followups && s.followups.items) || [];
@@ -10524,7 +10640,8 @@ function steeringData(s, mode) {
     var f = list[i];
     var state = f && STEER_STATE[f.state];
     if (!state || !f.id) continue;
-    var it = { id: String(f.id), text: String(f.text || ''), state: state, canEdit: !!f.editable };
+    // Edit: the writer's own words only (SSOT 2026-11-02 — any viewer may write here now).
+    var it = { id: String(f.id), text: String(f.text || ''), state: state, canEdit: !!f.editable && !!f.authorId && f.authorId === _viewerUserId };
     if (f.enqueuedAt) it.at = Number(f.enqueuedAt);
     if (f.author) it.author = String(f.author);
     if (f.stateReason) it.reason = String(f.stateReason);
@@ -10736,7 +10853,7 @@ function cwCanCompact(s) {
   if (s.slackless) return '대시보드 작업에서는 아직 지원하지 않아요';
   var env = s.environment;
   if (isSiblingSession(s)) return STRINGS.siblingLock(env);
-  if (!s.ownerId || s.ownerId !== currentUserId) return READ_ONLY_MSG;
+  if (!viewerCanManage(s)) return OWNER_ONLY_MSG;
   if (s.pendingModel) return '모델 전환이 압축을 기다리는 중';
   if (s.compactPending) return '다음 입력 때 자동 압축됩니다';
   return '';
@@ -10941,9 +11058,8 @@ function renderPanelGoal() {
   if (!el) return;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var col = s ? sessionColOf(panelSessionKey) : '';
-  var isOwner = !!(s && s.ownerId) && s.ownerId === currentUserId;
   var live = !!s && col !== 'closed' && !s.terminated;
-  var canEdit = isOwner && live && !isSiblingSession(s);
+  var canEdit = !!s && viewerCanManage(s) && live && !isSiblingSession(s);
   var g = s ? s.goal : null;
   // Read-only viewers and closed sessions only see a goal list that exists.
   if (!s || !(g || canEdit)) {
@@ -11379,17 +11495,17 @@ function sessionActionsOf(s, col) {
   if (SELF_INSTANCE_NAME && env && env.instanceName && env.instanceName !== SELF_INSTANCE_NAME) {
     return [{ id: kind, label: label + ' \\u2192 ' + env.instanceName, busy: false, sibling: true, lock: STRINGS.siblingLock(env) }];
   }
-  var isOwner = !!s.ownerId && s.ownerId === currentUserId;
-  var lock = isOwner ? '' : READ_ONLY_MSG;
+  var manages = viewerCanManage(s);
+  var lock = manages ? '' : OWNER_ONLY_MSG;
   var lifeBusy = isBusy(s.key, 'life');
   var starred = s.starred === true;
   var closed = col === 'closed' || s.terminated === true || s.sessionState === 'SLEEPING';
   var out = [{ id: 'star', label: starred ? '\\u2605 즐겨찾기' : '\\u2606 즐겨찾기', pressed: starred, lock: lock, busy: lifeBusy,
-    tip: !isOwner ? READ_ONLY_MSG
+    tip: !manages ? OWNER_ONLY_MSG
       : starred ? '즐겨찾기 해제 — 다시 자동 sleep·보관 대상이 돼요'
       : '즐겨찾기 — 항상 맨 위, 자동 sleep·보관 안 함' + (closed ? ' (지금 살려요)' : '') }];
   if (closed) out.push({ id: 'revive', label: '살리기', lock: lock, busy: lifeBusy,
-    tip: isOwner ? '대화를 이어갈 수 있게 세션을 살려요 (작업 폴더 파일은 복구되지 않아요)' : READ_ONLY_MSG });
+    tip: manages ? '대화를 이어갈 수 있게 세션을 살려요 (작업 폴더 파일은 복구되지 않아요)' : OWNER_ONLY_MSG });
   out.push({ id: kind, label: label, lock: lock, busy: isBusy(s.key, 'action') });
   return out;
 }
@@ -11459,10 +11575,10 @@ function cardGoalLine(s, col, canEdit) {
 // face has the star toggle) and its parts after the actions and what asks, per column; no spec — any other
 // caller — is the open card as it was.
 function renderCardBody(s, col, spec) {
-  // Owner gating — server-side requireSessionOwner is the authoritative guard;
-  // this is UX only. Fail closed: if ownerId is missing (legacy record) the
-  // viewer is not treated as owner so the server-side reject is expected.
-  const isOwner = !!s.ownerId && s.ownerId === currentUserId;
+  // Manage gating (viewerCanManage: the owner, or an admin in 관리자 모드) — the
+  // server's requireSessionOwner is the authoritative guard; this is UX only.
+  // Fail closed: a missing ownerId (legacy record) is nobody's.
+  const isOwner = viewerCanManage(s);
   const isSibling = !!(SELF_INSTANCE_NAME && s.environment && s.environment.instanceName && s.environment.instanceName !== SELF_INSTANCE_NAME);
 
   // The open card's quick switch (T4/T5, 10-23 T1; re-model-picker D1): the
@@ -11557,7 +11673,13 @@ function renderCardBody(s, col, spec) {
     else if (p === 'refs') rest += refsHtml;
     else if (p === 'model') rest += footHtml;
   }
-  return '<div class="card-body">' + needsHtml + rest + '</div>';
+  return '<div class="card-body">' + needsHtml + renderEpicPlan(s) + rest + '</div>';
+}
+// E4 ⑨c (#725) — an epic's plan tree in its open card (the lane that drew it above the board
+// is gone): the element, its data in cardTaskPlanHydrate (epicPlanData), where it changed.
+function renderEpicPlan(s) {
+  if (!s || s.kind !== 'epic' || !s.epic || !Array.isArray(s.epic.nodes) || s.epic.nodes.length === 0) return '';
+  return '<ui-task-plan class="card-task-plan epic-plan" lang="ko" flush foot="none" data-epic-plan-key="' + escAttr(s.key) + '"></ui-task-plan>';
 }
 
 // #600 ⑥ — a dashboard task's last turn as its card says it: how it ended, why,
@@ -11844,8 +11966,7 @@ function renderPanelControls(s) {
     held = null;
   }
   if (!held) {
-    var isOwner = !!s.ownerId && s.ownerId === currentUserId;
-    var canSwitch = isOwner && !s.terminated && s.sessionState !== 'SLEEPING' && !isSiblingSession(s);
+    var canSwitch = viewerCanManage(s) && !s.terminated && s.sessionState !== 'SLEEPING' && !isSiblingSession(s);
     var modelShort = esc(s.model || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
     var html = '<span class="pc-scope">이 세션</span>'
       + renderModelPicker(s, canSwitch, modelShort, 'panel')
@@ -12023,11 +12144,6 @@ function boardHosts() {
   if (kb) out.push(kb);
   var lane = document.querySelectorAll('ui-agent-inbox.cron-inbox');
   for (var i = 0; i < lane.length; i++) if (lane[i].isConnected && lane[i].getClientRects().length) out.push(lane[i]);
-  // E4 ⑨a — the EPIC lane's children lists.
-  var epics = document.querySelectorAll('ui-agent-inbox.epic-inbox');
-  for (var j = 0; j < epics.length; j++) {
-    if (out.indexOf(epics[j]) < 0 && epics[j].isConnected && epics[j].getClientRects().length) out.push(epics[j]);
-  }
   return out;
 }
 
@@ -12843,7 +12959,7 @@ function renderMultiChoiceCard(s, faceSummary) {
     if (answers[q.questions[i].id]) answered++;
   }
   var progressText = answered + '/' + total + ' \\uC644\\uB8CC';
-  var primary = s.ownerId && s.ownerId === currentUserId && !isSiblingSession(s);
+  var primary = viewerCanInstruct(s) && !isSiblingSession(s);
   return '<div class="card-question">'
     + ((q.title || q.question) && (q.title || q.question) === faceSummary ? '' : '<div class="card-question-text">' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>')
     + '<div class="card-question-multi">' + total + '\\uAC1C \\uC9C8\\uBB38 \\u00B7 ' + progressText + '</div>'
@@ -16219,10 +16335,8 @@ var _cronJobs = [];          // GET /api/dashboard/cron — this instance's jobs
 var _cronJobsRev = 0;        // bumped by every jobs fetch (laneSig)
 var _cronPlan = null;        // last planCronLane() result
 var _cronGroupEls = Object.create(null); // group key → the job's persistent card box (its slot)
-var _epicGroupEls = Object.create(null); // epic card key → its group box in the EPIC lane (E4 ⑨a)
+var _epicKidsDrawn = Object.create(null); // epic card key → its children's keys, as the last render placed them (E4 ⑨c)
 var EPIC_STATE_LABEL = { 'needs-input': '입력 필요', running: '자식 실행 중', done: '완료', idle: '대기' };
-var EPIC_STATE_TONE = { 'needs-input': 'var(--st-wait)', running: 'var(--accent)', done: 'var(--st-done)', idle: 'var(--text-tertiary)' };
-var EPIC_STATE_RANK = { 'needs-input': 0, running: 1, idle: 2, done: 3 };
 var EPIC_NODE_STEP = { none: 'pending', running: 'running', 'needs-input': 'paused', finished: 'paused', failed: 'failed', cancelled: 'dropped', interrupted: 'paused', closed: 'skipped' };
 var EPIC_NODE_NOTE = { 'needs-input': '입력 필요', finished: '판정 대기', interrupted: '끊김', closed: '닫힘' };
 var _cronDrawerKey = null;   // group key the drawer shows, null when closed
@@ -16521,29 +16635,55 @@ function cronLaneSlots(plan) {
   });
 }
 
-// ── E4 ⑨a (.prd/19 D11) — the EPIC lane ──
+// ── E4 ⑨c (#725, .prd/19 D11) — an epic's children under its card ──
 // The server takes an epic's live children out of the columns and sends their cards
-// in the epic's bundle (card.epic.children). The lane shows one group per epic that
-// has children: its title, state and progress, then the children's cards — the same
-// card as on the board (cardOf), its body in the same slot. The epic's own card stays
-// in its column (RUNNING / WAITING by its state). Waiting groups first, then running.
-function planEpicLane(board) {
-  var groups = [];
+// in the epic's bundle (card.epic.children). The board draws them right after the
+// epic's own card, in the same list — its column, or its DONE day group — each the
+// same card as anywhere (cardOf), in its own activity as its column (epicChildCol).
+// There is no lane above the board: the epic and its children stay together.
+function withEpicChildren(items, hideSleeping, revealKey) {
+  var out = [];
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    out.push(it);
+    var kids = epicKidsShown(it && it.s, hideSleeping, revealKey);
+    for (var j = 0; j < kids.length; j++) out.push({ s: kids[j], col: epicChildCol(kids[j]) });
+  }
+  return out;
+}
+// An epic card's children (its bundle), each with a key; none for any other card.
+function epicChildrenOf(s) {
+  if (!s || s.kind !== 'epic' || !s.epic || !Array.isArray(s.epic.children)) return [];
+  return s.epic.children.filter(function(c) { return !!(c && c.key); });
+}
+// The children the board draws under the epic: a sleeping one only while 휴면 is shown
+// (as planDoneColumn hides a sleeping card), or when a deep link revealed it.
+function epicKidsShown(s, hideSleeping, revealKey) {
+  return epicChildrenOf(s).filter(function(c) {
+    return !hideSleeping || c.sessionState !== 'SLEEPING' || (!!revealKey && c.key === revealKey);
+  });
+}
+// What the board drew under an epic: each shown child and its column. A push whose children
+// differ — a child made or gone, or one whose column changed — redraws (applyEpicPush).
+function epicKidsSig(s, hideSleeping, revealKey) {
+  return epicKidsShown(s, hideSleeping, revealKey).map(function(c) { return c.key + ':' + epicChildCol(c); }).join(' ');
+}
+// How many of the board's epic children need the person and how many run (the announcement).
+function epicKidsCounts(board) {
+  var n = { needs: 0, running: 0, sleeping: 0 };
   ['waiting', 'working', 'idle', 'closed'].forEach(function(col) {
     var arr = (board && board[col]) || [];
     for (var i = 0; i < arr.length; i++) {
-      var s = arr[i];
-      if (!s || s.kind !== 'epic' || !s.epic) continue;
-      var children = Array.isArray(s.epic.children) ? s.epic.children : [];
-      if (!children.length) continue;
-      groups.push({ key: s.key, epic: s, children: children });
+      var kids = epicChildrenOf(arr[i]);
+      for (var j = 0; j < kids.length; j++) {
+        var c = epicChildCol(kids[j]);
+        if (c === 'waiting') n.needs++;
+        else if (c === 'working') n.running++;
+        else if (c === 'closed') n.sleeping++;
+      }
     }
   });
-  function rank(g) {
-    return EPIC_STATE_RANK[epicStateOf(g.epic.epic.state)];
-  }
-  groups.sort(function(a, b) { return rank(a) - rank(b); });
-  return groups;
+  return n;
 }
 // An epic's state as one the page knows ('idle' otherwise — never a prototype key).
 function epicStateOf(state) {
@@ -16554,23 +16694,9 @@ function epicStateOf(state) {
 function epicChildCol(c) {
   if (c.sessionState === 'SLEEPING') return 'closed';
   if (c.activityState === 'waiting') return 'waiting';
-  if (c.activityState === 'working') return 'working';
+  // An idle child with an armed automatic resume is at work, as the server reads it (shownActivity).
+  if (c.activityState === 'working' || (c.activityState === 'idle' && c.autoResume)) return 'working';
   return 'idle';
-}
-// A group's head: the epic's title, its state chip and its progress (accepted of all nodes).
-function epicLaneHeadHtml(s) {
-  var e = s.epic || {};
-  var state = epicStateOf(e.state);
-  var p = e.progress || {};
-  var title = s.displayHeadline || s.summaryTitle || s.title || '에픽';
-  var html = '<span class="epic-title">' + esc(title) + '</span>';
-  html += '<span class="ui-chip is-toned is-sm epic-state" data-state="' + escAttr(state) + '" style="--ui-tone:' + EPIC_STATE_TONE[state] + '">' + esc(EPIC_STATE_LABEL[state]) + '</span>';
-  if (toNum(p.total) > 0) {
-    html += epicProgressHtml(p);
-    var shown = Math.max(0, Math.min(toNum(p.accepted), toNum(p.total)));
-    html += '<span class="epic-progress" title="받아들인 노드 / 전체 노드">' + shown + '/' + toNum(p.total) + '</span>';
-  }
-  return html;
 }
 // E4 ⑨b — the epic's plan as <ui-task-plan> data: an issue node is a step, its sub nodes nested under it.
 // An accepted node is done; otherwise the node's status (D5) as a step status, with a short note where
@@ -16602,156 +16728,31 @@ function epicPlanData(s) {
   });
   return { steps: steps };
 }
-// The progress bar in a group's head: accepted of all nodes, as a bar the screen reader reads.
-function epicProgressHtml(p) {
-  var total = toNum(p && p.total);
-  if (total <= 0) return '';
-  var accepted = Math.max(0, Math.min(toNum(p.accepted), total));
-  var pct = Math.round((accepted / total) * 100);
-  return '<span class="epic-bar" role="progressbar" aria-label="받아들인 노드" aria-valuemin="0" aria-valuemax="' + total + '" aria-valuenow="' + accepted + '" aria-valuetext="' + accepted + '/' + total + '"><span class="epic-bar-fill" style="width:' + pct + '%"></span></span>';
-}
-// One persistent box per epic group in #epic-lane: its head and its card box.
-function syncEpicLane(groups) {
-  var lane = document.getElementById('epic-lane');
-  if (!lane) return;
-  lane.hidden = groups.length === 0;
-  var keep = Object.create(null);
-  for (var k = 0; k < groups.length; k++) keep[groups[k].key] = true;
-  var prevBox = null;
-  for (var i = 0; i < groups.length; i++) {
-    var g = groups[i];
-    var box = _epicGroupEls[g.key];
-    if (!box) {
-      box = document.createElement('div');
-      box.className = 'epic-group';
-      box.setAttribute('data-epic', g.key);
-      var head = document.createElement('div');
-      head.className = 'epic-head';
-      // E4 ⑨b — the plan tree, between the head and the children's cards.
-      var plan = document.createElement('ui-task-plan');
-      plan.className = 'epic-plan';
-      plan.setAttribute('lang', 'ko');
-      plan.setAttribute('flush', '');
-      plan.setAttribute('foot', 'none');
-      var cards = document.createElement('div');
-      cards.className = 'cards epic-cards';
-      box.appendChild(head);
-      box.appendChild(plan);
-      box.appendChild(cards);
-      box._head = head;
-      box._plan = plan;
-      box._cards = cards;
-      _epicGroupEls[g.key] = box;
-    }
-    var headHtml = epicLaneHeadHtml(g.epic);
-    if (box._headHtml !== headHtml) {
-      box._head.innerHTML = headHtml;
-      box._headHtml = headHtml;
-    }
-    var planData = epicPlanData(g.epic);
-    box._plan.hidden = planData.steps.length === 0;
-    if (planData.steps.length) taskElData(box._plan, planData);
-    // In order, moving a box only when it is not already in its place: a DOM move disconnects the
-    // box's subtree (its inbox, the open bodies, focus, scroll) — fable #706 R1 P1.
-    var place = prevBox ? prevBox.nextSibling : lane.firstChild;
-    // A box still fading out (its group left) is no place: skip it, so the boxes after it stay put (fable #706 R2 P3).
-    while (place && place !== box && !epicLaneKeeps(place, keep)) place = place.nextSibling;
-    if (box !== place) lane.insertBefore(box, place || null);
-    prevBox = box;
-  }
-  for (var key in _epicGroupEls) {
-    if (keep[key]) continue;
-    var old = _epicGroupEls[key];
-    delete _epicGroupEls[key];
-    setTimeout(function(node) { return function() { if (node.parentNode) node.parentNode.removeChild(node); }; }(old), MOTION.fade + 40);
-  }
-}
-// A lane node that is a kept group's own box (not a box fading out, not text).
-function epicLaneKeeps(node, keep) {
-  var key = node.getAttribute ? node.getAttribute('data-epic') : null;
-  return !!key && keep[key] === true && _epicGroupEls[key] === node;
-}
-// Each group's children in its own <ui-agent-inbox view="list"> with one bare column.
-function paintEpicLaneCards(groups) {
-  for (var i = 0; i < groups.length; i++) {
-    var g = groups[i];
-    var box = _epicGroupEls[g.key];
-    if (!box) continue;
-    var el = box._inbox;
-    if (!el) {
-      el = document.createElement('ui-agent-inbox');
-      el.className = 'epic-inbox';
-      el.setAttribute('view', 'list');
-      el.setAttribute('lang', 'ko');
-      wireInbox(el);
-      box._inbox = el;
-    }
-    if (el.parentNode !== box._cards) box._cards.appendChild(el);
-    el._ibPlan = {
-      cols: [{
-        id: 'epic',
-        label: String(g.epic.displayHeadline || g.epic.title || ''),
-        bare: true,
-        keys: g.children.map(function(c) { placeCard(c, epicChildCol(c), el, true); return c.key; }),
-      }],
-      load: 'ready',
-      announce: false,
-    };
-    inboxPaint(el);
-  }
-}
-// The lane for a board: cache the children (a card opens only from the cache), sync, paint.
-function renderEpicLane(board) {
-  var groups = planEpicLane(board);
-  for (var i = 0; i < groups.length; i++) {
-    for (var j = 0; j < groups[i].children.length; j++) _sessionCache[groups[i].children[j].key] = groups[i].children[j];
-  }
-  syncEpicLane(groups);
-  paintEpicLaneCards(groups);
-  return groups;
-}
 // A child's card inside an epic's pushed card, by key.
 function epicChildOf(s, key) {
   var children = (s && s.epic && Array.isArray(s.epic.children)) ? s.epic.children : [];
   for (var i = 0; i < children.length; i++) if (children[i] && children[i].key === key) return children[i];
   return null;
 }
-// A single-session push of an epic (its bundle; a child's push arrives as its epic's
-// card): the lane is redrawn from the patched board and each drawn child card refreshed.
+// A single-session push (an epic's carries its bundle; a child's push arrives as its
+// epic's card). Its children are drawn right under its card (renderBoard): a push
+// whose children or their columns are not the ones the last render drew there
+// (epicKidsSig) redraws the board from the patched data; otherwise each child card on
+// the board is refreshed in place from the pushed card (cached above), in the same column.
 function applyEpicPush(s) {
-  if (!s) return;
-  var children = s.epic && Array.isArray(s.epic.children) ? s.epic.children : [];
+  if (!s || !s.key) return;
+  var children = epicChildrenOf(s);
   // Cached first: a panel open on a child reads it even before a board is drawn.
-  for (var i = 0; i < children.length; i++) if (children[i] && children[i].key) _sessionCache[children[i].key] = children[i];
-  // A push with a bundle, or of a card that had a group and has none now (grok #706 R2): the lane changes.
-  if (!_lastBoardData || (!s.epic && !_epicGroupEls[s.key])) return;
-  var before = [];
-  for (var key in _cardHost) {
-    if (_cardHost[key] && (' ' + _cardHost[key].className + ' ').indexOf(' epic-inbox ') >= 0) before.push(key);
+  for (var i = 0; i < children.length; i++) _sessionCache[children[i].key] = children[i];
+  if (!_lastBoardData) return;
+  var placed = _epicKidsDrawn[s.key];
+  var now = epicKidsSig(s, showSleeping === false, _revealedKey);
+  if ((placed === undefined ? '' : placed) !== now) {
+    // An epic the last render did not place (hidden, or not on the board) has nothing drawn to change.
+    if (placed !== undefined || _cardHost[s.key]) renderBoard(_lastBoardData);
+    return;
   }
-  var groups = renderEpicLane(_lastBoardData);
-  var now = Object.create(null);
-  for (var g = 0; g < groups.length; g++) for (var j = 0; j < groups[g].children.length; j++) now[groups[g].children[j].key] = true;
-  // A child that left every group (closed, moved out of the bundle): released as the full render
-  // releases a card that left every element (fable #706 R1 P2).
-  var released = false;
-  for (var b = 0; b < before.length; b++) {
-    var gone = before[b];
-    if (now[gone]) continue;
-    var goneS = _sessionCache[gone];
-    delete _cardHost[gone];
-    delete _cardCol[gone];
-    delete _cardData[gone];
-    delete _cardDrawn[gone];
-    _expanded.delete(gone);
-    releaseCardIoTimer(goneS ? goneS.conversationId : null);
-    released = true;
-  }
-  if (released) syncCardBodies();
-  for (var c = 0; c < children.length; c++) {
-    var ch = children[c];
-    if (ch && ch.key && _cardHost[ch.key]) refreshCard(ch.key);
-  }
+  for (var c = 0; c < children.length; c++) if (_cardHost[children[c].key]) refreshCard(children[c].key);
 }
 
 function renderCronRunRow(run, g, nowMs) {

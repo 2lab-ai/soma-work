@@ -18,6 +18,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { viewerScope } from '../__fixtures__/viewer-scope';
 import { uiLibDistDir } from '../dashboard';
 import { uiLibKitCss } from '../ui-lib';
 
@@ -47,6 +48,7 @@ function clientVar(name: string): string {
   return cook(m[1]);
 }
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, extra: string[] = []): T {
+  ({ fns, inject } = viewerScope(fns, inject));
   const names = Object.keys(inject);
   const extraNames = extra.map((src) => /^function (\w+)/.exec(src)?.[1] ?? '').filter(Boolean);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${extra.join('\n')}\nreturn { ${[...fns, ...extraNames].join(', ')} };`;
@@ -950,9 +952,13 @@ describe('approval keyboard (D14) — the element’s own', () => {
     expect(TEMPLATE).not.toContain("addEventListener('keydown', apKeydown)");
     expect(cards().acPermissionData(SESSION(), PERM()).canAnswer).toBeUndefined();
     expect(cards({ user: 'U2' }).acPermissionData(SESSION(), PERM()).canAnswer).toBeTruthy();
-    expect(cards().acQuestionData(SESSION({ ownerId: 'U2' }), { question: 'q?', choices: [] }).canAnswer).toBe(
-      '읽기 전용 — 내 세션이 아닙니다',
-    );
+    // A question: any signed-in viewer answers it (SSOT 2026-11-02); nobody signed in reads it locked.
+    expect(
+      cards().acQuestionData(SESSION({ ownerId: 'U2' }), { question: 'q?', choices: [] }).canAnswer,
+    ).toBeUndefined();
+    expect(
+      cards({ user: '' }).acQuestionData(SESSION({ ownerId: 'U2' }), { question: 'q?', choices: [] }).canAnswer,
+    ).toBe('읽기 전용 — 내 세션이 아닙니다');
   });
 
   it('Esc end to end: one the card handled (stopped in its shadow root) never reaches the page; one it let through closes the detail card (SSOT 2026-10-29 T2) — the panel with it — and denies nothing', () => {
