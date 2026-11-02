@@ -237,7 +237,14 @@ function priceCalls(calls: Map<string, CallUsage>, opts: AgentSpendReaderOptions
   if (filled.estimated) spend.estimatedCalls = filled.estimated;
   spend.version = SPEND_CALC_VERSION;
   const unpriced: string[] = [];
+  // soma-work#813 — the model that did most of the work (the most tokens) is the agent's model.
+  let top = 0;
   for (const [model, t] of byModel) {
+    const all = t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheCreateTokens;
+    if (model && all > top) {
+      top = all;
+      spend.model = model;
+    }
     spend.inputTokens += t.inputTokens;
     spend.outputTokens += t.outputTokens;
     spend.cacheReadTokens += t.cacheReadTokens;
@@ -289,6 +296,7 @@ function sameSpend(a: AgentSpend | undefined, b: AgentSpend): boolean {
     a.estimatedCalls === b.estimatedCalls &&
     a.version === b.version &&
     a.nestedAgents === b.nestedAgents &&
+    a.model === b.model &&
     (a.unpricedModels ?? []).join('\n') === (b.unpricedModels ?? []).join('\n')
   );
 }

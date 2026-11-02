@@ -10329,6 +10329,9 @@ function atNode(n, parentId, s, rootLine) {
     if (why) d.reason = why;
     var line = rootLine ? agentActivity(n) : '';
     if (line) d.summary = line;
+    // #813 — the session's model: the element leads the main agent with its maker's mark (not the 'unknown' placeholder).
+    var sm = s && typeof s.model === 'string' && s.model !== 'unknown' ? s.model : '';
+    if (sm) d.model = sm;
     var tu = s && s.tokenUsage;
     var own = tu ? cardTotalTokens(tu) - spendTotal(s.subagentSpend) : 0;
     if (own > 0) {
@@ -10354,6 +10357,8 @@ function atNode(n, parentId, s, rootLine) {
     d.tokens = tk;
     d.costUsd = toNum(n.spend.costUsd);
   }
+  // #813 — the model its transcript ran most (spend.model); none known, no mark.
+  if (n.spend && typeof n.spend.model === 'string' && n.spend.model) d.model = n.spend.model;
   var act = agentActivity(n);
   if (act && d.status === 'failed') d.reason = act;
   else if (act) d.summary = act;
