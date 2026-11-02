@@ -308,7 +308,7 @@ Choice/Form 액션 핸들러는:
 
 유저가 버튼 대신 직접 메시지를 보내면, 그 메시지가 질문의 답이다. 열린 선택(`waitingForChoice`)을 내리고
 기록된 질문(`pendingQuestion`)도 지운다 — 대시보드 태스크의 새 지시가 질문을 대체하는 것과 같다
-(`task-turn-controller` startChain). 호스트 턴(goal 계속 진행 등 synthetic)은 답이 아니므로 질문을 그대로 둔다.
+(`task-turn-controller` startChain). 유저의 답이 아닌 턴은 질문을 그대로 둔다: 호스트 턴(goal 계속 진행 등 synthetic, compaction 뒤 재실행되는 호스트 턴 `routeContext.hostTurn`)과 `/compact` 같은 유지보수 턴(SDK 로컬 슬래시 명령).
 
 ### 8.3 대시보드에서 답변을 받는 조건 (2026-11-02)
 요청: "goal이 10/10이 되서 goal을 계속 진행할지를 묻고 그리고 동시에 유저에게 질문이 올경우 이거 질문에 답하면
@@ -325,7 +325,10 @@ NEEDS YOU로 만드는데, 그때 세션 자체는 `idle`이다. 질문 뒤에 �
 - 턴이 도는 중(`working`)이면 거절한다 — 답이 그 턴 위에 얹힌다.
 
 답은 유저 메시지로 들어가므로 `resetGoalContinuationOnUserMessage`가 상한 결정을 끝내고(DM 버튼도 내려감)
-카운터를 0으로 되돌린다. 그 턴이 끝나면 goal이 이어진다. 전송이 실패하면 질문과 `waiting`을 되돌려 다시 답할 수 있다.
+카운터를 0으로 되돌린다. 그 턴이 끝나면 goal이 이어진다.
+
+- 선점: 답은 첫 `await` 전에 세션을 `working`으로 바꾼다. 같은 질문에 두 번째 제출(더블 클릭, 카드 답과 추천 일괄 동시)은 409로 거절되고 한 번만 실행된다.
+- 되돌리기: 전송이 실패하면 질문과 `waiting`을 되돌리고 저장한다(재시작해도 남는다). 단, 답이 이미 쓰였으면 되돌리지 않는다 — 세션이 선점한 `working`에서 벗어났거나(턴이 돌고 끝남) 더 새 질문이 기록됐으면 새 상태를 그대로 둔다.
 
 ## 9. Tests
 - JSON 추출/정규화/Slack 블록 생성 테스트: `src/slack/user-choice-handler.test.ts`
