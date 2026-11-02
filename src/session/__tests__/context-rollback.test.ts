@@ -119,3 +119,41 @@ describe('rollbackInputPoints — the inputs the owner can roll back before', ()
     expect(rollbackInputLabel('x'.repeat(100), 10)).toHaveLength(10);
   });
 });
+
+describe('rollbackWorkLogPoints — the work-log points', () => {
+  it('lists the first entry after each new cut point, model output only', async () => {
+    const { rollbackWorkLogPoints } = await import('../context-rollback');
+    const s = session({ contextAnchor: A(9) });
+    const points = rollbackWorkLogPoints(s, [
+      { seq: 1, ts: 1, kind: 'instruction', text: '배포해', anchor: A(1) },
+      { seq: 2, ts: 2, kind: 'narration', text: '확인할게요', anchor: A(2) },
+      { seq: 3, ts: 3, kind: 'tool', text: 'Bash ls', anchor: A(2) },
+      { seq: 4, ts: 4, kind: 'tool_result', text: 'ok', anchor: A(3) },
+      { seq: 5, ts: 5, kind: 'notice', text: 'n', anchor: A(4) },
+      { seq: 6, ts: 6, kind: 'narration', text: 'more', anchor: A(4) },
+      { seq: 7, ts: 7, kind: 'final', text: '끝', anchor: A(9) }, // the tail
+      { seq: 8, ts: 8, kind: 'narration', text: 'old log', anchor: undefined },
+    ]);
+    expect(points.map((p) => p.seq)).toEqual([2, 4]);
+  });
+});
+
+describe('buildRollbackPointsView', () => {
+  it('says why a viewer cannot roll back and carries a waiting request', async () => {
+    const { buildRollbackPointsView } = await import('../context-rollback');
+    const s = session({
+      pendingRewind: { anchor: A(2), label: '입력 직전: x', requestedAt: 3, requestedBy: 'U1', source: 'input' },
+    });
+    const v = buildRollbackPointsView(
+      s,
+      [{ turnId: 't', timestamp: 1, text: '배포해\n자세히', anchor: A(1) }],
+      [{ seq: 2, ts: 2, kind: 'tool_result', text: 'ok', anchor: A(2) }],
+      { actor: 'U2', requestActive: false },
+    );
+    expect(v.refusal).toBe('not-owner');
+    expect(v.pending).toEqual({ label: '입력 직전: x', requestedAt: 3 });
+    expect(v.inputs[0]).toEqual({ anchor: A(1), label: '입력 직전: 배포해', at: 1 });
+    expect(v.worklog[0].label).toBe('툴 결과까지: ok');
+    expect(buildRollbackPointsView(s, [], [], { actor: 'U1', requestActive: true }).refusal).toBe('busy');
+  });
+});

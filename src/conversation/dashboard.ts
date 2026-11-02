@@ -74,6 +74,7 @@ import {
   subagentSpendOf,
 } from '../session/agent-registry';
 import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
+import { CONTEXT_ROLLBACK_REFUSAL_TEXT } from '../session/context-rollback';
 import { sanitizeCronJob } from '../session/cron-job';
 import { EffortSwitchError, type EffortSwitchResult } from '../session/effort-switch';
 import { productionModelCatalogDeps } from '../session/model-catalog-deps';
@@ -382,6 +383,12 @@ export interface KanbanSession {
    * session has never had a goal.
    */
   goal?: KanbanGoal;
+  /**
+   * Context rollback (#744): the session can be rolled back (it has an SDK
+   * conversation), and a rollback waiting for the next turn.
+   */
+  rollbackAvailable?: boolean;
+  pendingRewind?: { label: string; requestedAt: number };
   /**
    * Set when the session is idle only because the system will start it again
    * by itself (see {@link KanbanAutoResume}). Such a card is unfinished work:
@@ -1536,6 +1543,37 @@ export function setDashboardGoalDecisionHandler(fn: GoalDecisionHandler | null):
 }
 
 /**
+ * Context rollback (#744) — the picker's points and the request / cancel.
+ * Wired in src/index.ts to `SlackHandler.getContextRollbackPoints` /
+ * `handleContextRollback`; the one gate is `requestContextRollback`.
+ */
+export interface DashboardRollbackHandler {
+  points(sessionKey: string, actorUserId: string | undefined): Promise<unknown>;
+  request(
+    sessionKey: string,
+    body: { anchor: string; label: string; source: 'input' | 'worklog' } | { cancel: true },
+    actorUserId: string | undefined,
+  ): Promise<{ ok: true; cancelled?: boolean } | { ok: false; reason: string }>;
+}
+let _rollbackHandler: DashboardRollbackHandler | null = null;
+
+export function setDashboardRollbackHandler(h: DashboardRollbackHandler | null): void {
+  _rollbackHandler = h;
+}
+
+/** The thread's rollback refusals, for the dashboard (same words as the thread command). */
+const ROLLBACK_REFUSAL_STATUS: Record<string, number> = {
+  'not-found': 404,
+  'not-owner': 403,
+  busy: 409,
+  'no-change': 409,
+  invalid: 422,
+  'other-session': 422,
+  compacted: 422,
+  'not-in-transcript': 422,
+};
+
+/**
  * SSOT 2026-10-22 T4/T5 — switch a session to a representative model
  * (`session/model-switch.ts` `switchSessionModel`). Throws `ModelSwitchError`
  * for every refusal, whose `statusCode` the route answers with.
@@ -2340,6 +2378,17 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     // aggregator's mergeBoards stamp.
     environment: _selfInstanceEnv ? { ..._selfInstanceEnv } : undefined,
     goal: goalToKanban(s),
+    ...(typeof s.sessionId === 'string' && s.sessionId && s.conversationId && s.slackless !== true
+      ? { rollbackAvailable: true }
+      : {}),
+    ...(s.pendingRewind && typeof s.pendingRewind.label === 'string'
+      ? {
+          pendingRewind: {
+            label: String(s.pendingRewind.label).slice(0, 300),
+            requestedAt: Number(s.pendingRewind.requestedAt) || 0,
+          },
+        }
+      : {}),
     ...(autoResume ? { autoResume } : {}),
     artifacts: cardArtifacts(s.conversationId),
     userMedia: cardUserMedia(s.conversationId),
@@ -4001,6 +4050,85 @@ export async function registerDashboardRoutes(
         reply.status(404).send({ error: '만료되었거나 더 이상 없는 요청입니다' });
       } catch (error) {
         logger.error('Error answering an admin approval from the dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  // ── Context rollback (#744): roll the model's context back to an input or a work-log point ──
+
+  server.get<{ Params: { key: string } }>(
+    '/api/dashboard/session/:key/rollback-points',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      if (!_rollbackHandler) {
+        reply.status(501).send({ error: 'Rollback handler not configured' });
+        return;
+      }
+      try {
+        const actor = (request as { authContext?: { userId?: string } }).authContext?.userId;
+        const view = await _rollbackHandler.points(resolved.originalKey, actor);
+        if (!view) {
+          reply.status(404).send({ error: 'Session not found' });
+          return;
+        }
+        reply.send(view);
+      } catch (error) {
+        logger.error('Error reading rollback points', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  server.post<{ Params: { key: string }; Body: { anchor?: unknown; label?: unknown; source?: unknown; cancel?: unknown } }>(
+    '/api/dashboard/session/:key/rollback',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { anchor, label, source, cancel } = request.body || {};
+      const isCancel = cancel === true;
+      if (
+        !isCancel &&
+        (typeof anchor !== 'string' ||
+          !anchor ||
+          anchor.length > 200 ||
+          typeof label !== 'string' ||
+          label.length > 300 ||
+          (source !== 'input' && source !== 'worklog'))
+      ) {
+        reply.status(400).send({ error: "anchor, label and source ('input' | 'worklog') — or cancel: true — are required" });
+        return;
+      }
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      if (!_rollbackHandler) {
+        reply.status(501).send({ error: 'Rollback handler not configured' });
+        return;
+      }
+      try {
+        const actor = (request as { authContext?: { userId?: string } }).authContext?.userId;
+        const result = await _rollbackHandler.request(
+          resolved.originalKey,
+          isCancel
+            ? { cancel: true }
+            : { anchor: anchor as string, label: label as string, source: source as 'input' | 'worklog' },
+          actor,
+        );
+        if (result.ok) {
+          reply.send(result);
+          return;
+        }
+        reply
+          .status(ROLLBACK_REFUSAL_STATUS[result.reason] ?? 409)
+          .send({
+            error:
+              (CONTEXT_ROLLBACK_REFUSAL_TEXT as Record<string, string>)[result.reason] ??
+              (result.reason === 'not-found' ? '세션을 찾을 수 없습니다' : '되돌릴 수 없습니다'),
+            reason: result.reason,
+          });
+      } catch (error) {
+        logger.error('Error requesting a context rollback', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
     },

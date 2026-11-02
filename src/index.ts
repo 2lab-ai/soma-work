@@ -76,6 +76,7 @@ import {
   setDashboardEffortHandler,
   setDashboardFollowupHandler,
   setDashboardGoalDecisionHandler,
+  setDashboardRollbackHandler,
   setDashboardGoalHandler,
   setDashboardLifecycleHandler,
   setDashboardModelHandler,
@@ -1839,6 +1840,11 @@ async function start() {
         broadcast: () => registry.broadcastSessionUpdate(),
       });
       setGoalCapDecisionRetirer(retireGoalCapDecision);
+      // #744 — context rollback from the dashboard (picker points + request / cancel).
+      setDashboardRollbackHandler({
+        points: (sessionKey, actorUserId) => slackHandler.getContextRollbackPoints(sessionKey, actorUserId),
+        request: (sessionKey, body, actorUserId) => slackHandler.handleContextRollback(sessionKey, body, actorUserId),
+      });
       setDashboardGoalDecisionHandler((sessionKey, answer, actorUserId) =>
         answerGoalCapDecision({
           session: registry.getSessionByKey(sessionKey),
