@@ -336,8 +336,8 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(fnBody('wireInbox')).toContain('ensureCardIo(key, true)');
   });
 
-  it('lazy-loads the latest instruction/response pair with limit=2', () => {
-    expect(TEMPLATE).toContain("'?limit=2'");
+  it('lazy-loads the latest instruction/response pair (limit=3: one more for an Executive Summary turn it skips)', () => {
+    expect(TEMPLATE).toContain("'?limit=3'");
     expect(TEMPLATE).toContain('지시');
     expect(TEMPLATE).toContain('응답');
   });

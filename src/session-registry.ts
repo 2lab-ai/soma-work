@@ -127,6 +127,15 @@ const ACTIVE_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinks> = 
 /**
  * Serialized session for file persistence
  */
+/** A stored Executive Summary TL;DR, or undefined when what was stored is not one (T7). */
+function restoreExecutiveSummary(v: unknown): { tldr: string[]; at: number } | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const { tldr, at } = v as { tldr?: unknown; at?: unknown };
+  if (!Array.isArray(tldr) || typeof at !== 'number' || !Number.isFinite(at)) return undefined;
+  const lines = tldr.filter((l): l is string => typeof l === 'string' && l.trim() !== '');
+  return lines.length > 0 ? { tldr: lines, at } : undefined;
+}
+
 interface SerializedSession {
   /** SSOT 2026-10-23 — the cron job that created the session, and a placeholder-title mark. */
   cronJob?: SessionCronJob;
@@ -208,6 +217,9 @@ interface SerializedSession {
   showThinking?: boolean;
   // Action panel state
   actionPanel?: ActionPanelState;
+  // The Executive Summary's TL;DR on the dashboard card (SSOT 2026-11-02 T7) — kept across a
+  // restart like the thread head that shows the same lines.
+  executiveSummary?: { tldr: string[]; at: number };
   // Bot-initiated thread metadata
   threadModel?: 'user-initiated' | 'bot-initiated';
   threadRootTs?: string;
@@ -3458,6 +3470,9 @@ export class SessionRegistry {
             thinkingEnabled: session.thinkingEnabled,
             showThinking: session.showThinking,
             actionPanel: session.actionPanel ? { ...session.actionPanel } : undefined,
+            executiveSummary: session.executiveSummary
+              ? { tldr: [...session.executiveSummary.tldr], at: session.executiveSummary.at }
+              : undefined,
             threadModel: session.threadModel,
             threadRootTs: session.threadRootTs,
             isOnboarding: session.isOnboarding,
@@ -3839,6 +3854,7 @@ export class SessionRegistry {
                 lastRenderedAt: undefined,
               }
             : undefined,
+          executiveSummary: restoreExecutiveSummary(serialized.executiveSummary),
           threadModel: serialized.threadModel,
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,

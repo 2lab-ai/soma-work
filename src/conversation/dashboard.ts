@@ -414,11 +414,16 @@ export interface KanbanSession {
   autoResume?: KanbanAutoResume;
   /**
    * SSOT 2026-10-23 T1/T5 — what the model produced in this conversation: the
-   * files it sent to Slack and its markdown final answers. The count and the
-   * few newest, so the card face shows them without a fetch; the full list is
+   * files it sent to Slack (never a final answer, SSOT 2026-11-02 T6). The count
+   * and the few newest, so the card face shows them without a fetch; the full list is
    * `GET /api/dashboard/session/:conversationId/artifacts`. Absent when none.
    */
   artifacts?: ArtifactSummary;
+  /**
+   * SSOT 2026-11-02 T7 — the Executive Summary's TL;DR (the thread head's in Slack) for the task
+   * card: from when the summary landed until the next input clears it. Absent when none.
+   */
+  esTldr?: { lines: string[]; at: number };
   /**
    * SSOT 2026-10-25 — how many files the user attached to this session's
    * instructions (user media). The card face shows a paperclip count only and
@@ -2255,6 +2260,13 @@ export function liveWaitingSince(
   return oldest;
 }
 
+/** SSOT 2026-11-02 T7 — the card's TL;DR: the session's Executive Summary lines, at most five. */
+function esTldrOf(s: ConversationSession): { esTldr?: { lines: string[]; at: number } } {
+  const es = s.executiveSummary;
+  const lines = Array.isArray(es?.tldr) ? es.tldr.filter((l) => typeof l === 'string' && l.trim()).slice(0, 5) : [];
+  return es && lines.length ? { esTldr: { lines, at: Number(es.at) || 0 } } : {};
+}
+
 // ── Artifacts (SSOT 2026-10-23) ──
 
 /** One work-log backfill at a time: a board of old cards must not read every log at once. */
@@ -2458,6 +2470,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...(autoResume ? { autoResume } : {}),
     artifacts: cardArtifacts(s.conversationId),
     userMedia: cardUserMedia(s.conversationId),
+    ...esTldrOf(s),
     followups: followupsOf(key, s.ownerId),
     ...(s.slackless === true ? { slackless: true as const, ...noticeFailuresOf(key) } : {}),
     ...(s.slackless === true && s.kind === 'epic' ? { kind: 'epic' as const, epic: epicBundle(s) } : {}),
@@ -3595,6 +3608,11 @@ export async function registerDashboardRoutes(
         summaryBody: t.summaryBody,
         summarized: t.summarized,
         rawContent: t.role === 'user' ? t.rawContent : undefined,
+        // SSOT 2026-11-02 T1: who sent a user turn (the live push carries it too), so the panel
+        // matches its own pending instruction to the recorded one by sender as well as words.
+        userId: t.role === 'user' ? t.userId : undefined,
+        // SSOT 2026-11-02 T7: the Executive Summary turn — the open card's 지시/응답 skips it.
+        executiveSummary: t.executiveSummary ? true : undefined,
         // User media (SSOT 2026-10-25): the files this instruction carried, metadata only.
         attachments: t.role === 'user' ? t.attachments : undefined,
         // SSOT 2026-10-27: who put a user turn there (a host turn reads as one
@@ -5928,10 +5946,12 @@ body.nt-open .new-task-fab { display: none !important; }
 #art-peek .av-pk-doc code { padding: 0.1em 0.3em; border-radius: 4px; background: var(--ib-pill); font: 0.9em var(--mono); }
 #art-peek .av-pk-doc pre { padding: 6px 8px; overflow: hidden; border-radius: 6px; background: var(--ib-col); }
 #art-peek .av-pk-doc pre code { padding: 0; background: none; }
-/* The viewer (I-06, I-07) is <ui-artifact-viewer tiles="none">: its <ui-dialog size="xl"> draws the panel, the head
-   (kind badge · name · meta · ✕), the body — the model's page running its scripts (items[].scripts), a stored PDF
-   in the browser's own viewer (items[].frame), the document, the media, the calm card — and the foot (‹ n / m › ·
-   새 탭 · 다운로드 · Slack). The page slots no body of its own (0.12.0, D4 G5-1 / G5-2). */
+/* The viewer (I-06, I-07) is <ui-artifact-viewer tiles="none">: its <ui-dialog> draws the panel, sized to the file
+   (0.20.0, SSOT 2026-11-02 T4: a page, a picture, a video, a PDF fill the screen; a document is full height at a
+   reading width; audio and the calm card are small), the head (kind badge · name · meta · ✕), the body — the
+   model's page running its scripts (items[].scripts), a stored PDF in the browser's own viewer (items[].frame), the
+   document, the media, the calm card — and the foot (‹ n / m ›, a list of every file at a press (T5) · 새 탭 ·
+   다운로드 · Slack). The page slots no body of its own (0.12.0, D4 G5-1 / G5-2). */
 
 /* ═══ Device-responsive layout (SSOT 2026-10-24) ═══
    Targets: iPhone Duo (folded 382×580, unfolded 951×543), iPhone 18 Pro Max
@@ -8997,6 +9017,11 @@ function wireInbox(host) {
     if (e.target !== host || !e.detail) return;
     doStar(String(e.detail.cardId), !!e.detail.starred);
   });
+  // The face's TL;DR × (SSOT 2026-11-02 T7): gone from that card in this browser; the card does not toggle.
+  host.addEventListener('ui-dismiss', function(e) {
+    if (e.target !== host || !e.detail || e.detail.what !== 'tldr') return;
+    tldrDismiss(String(e.detail.cardId));
+  });
   host.addEventListener('ui-artifact', function(e) {
     if (e.target !== host || !e.detail) return;
     var s = _sessionCache[String(e.detail.cardId)];
@@ -9347,6 +9372,7 @@ function cardOf(s, col) {
   // Artifacts (T5): the newest few as chips that open the viewer (ui-artifact),
   // never an image on the face. A sibling instance's files are not on this disk.
   var arts = s.artifacts;
+  // The server's summary is newest first and holds no final answer (SSOT 2026-11-02 T3/T6).
   if (!sibling && s.conversationId && arts && toNum(arts.count) > 0 && arts.recent && arts.recent.length) {
     card.artifactsCount = toNum(arts.count);
     card.artifacts = arts.recent.slice(0, 4).map(function(a) { return { id: String(a.id), name: String(a.name || ''), kind: a.kind || 'file' }; });
@@ -9396,6 +9422,43 @@ function cardOf(s, col) {
   return card;
 }
 
+// ── SSOT 2026-11-02 T7: the Executive Summary's TL;DR on the task card ──
+// The server's esTldr (from when the summary landed until the next input) as the element's card.tldr — the
+// thread head's TL;DR in Slack. Never on a sleeping or archived card (the closed column). Its × (the element's
+// ui-dismiss) drops it from that card in this browser, remembered by the summary's time so a newer summary
+// shows again; the newest TLDR_GONE_MAX dismissals are kept.
+var TLDR_GONE_KEY = 'soma-dash-tldr-gone';
+var TLDR_GONE_MAX = 200;
+var _tldrGone = null; // card key → the esTldr.at dismissed, loaded once from localStorage
+function tldrGoneLoad() {
+  if (_tldrGone) return _tldrGone;
+  _tldrGone = Object.create(null);
+  try {
+    var raw = JSON.parse(localStorage.getItem(TLDR_GONE_KEY) || '{}');
+    if (raw && typeof raw === 'object') for (var k in raw) if (typeof raw[k] === 'number') _tldrGone[k] = raw[k];
+  } catch (_e) {}
+  return _tldrGone;
+}
+function cardTldrOf(s, col) {
+  var t = s && s.esTldr;
+  var lines = t && Array.isArray(t.lines) ? t.lines.filter(function(l) { return typeof l === 'string' && l.trim(); }) : [];
+  if (!lines.length || col === 'closed') return null;
+  if (tldrGoneLoad()[s.key] === toNum(t.at)) return null;
+  return { lines: lines.map(String), title: 'TL;DR' };
+}
+function tldrDismiss(key) {
+  var s = _sessionCache[key];
+  var gone = tldrGoneLoad();
+  gone[key] = s && s.esTldr ? toNum(s.esTldr.at) : 0;
+  var keys = Object.keys(gone);
+  if (keys.length > TLDR_GONE_MAX) {
+    keys.sort(function(a, b) { return gone[a] - gone[b]; });
+    for (var i = 0; i < keys.length - TLDR_GONE_MAX; i++) delete gone[keys[i]];
+  }
+  try { localStorage.setItem(TLDR_GONE_KEY, JSON.stringify(gone)); } catch (_e) {}
+  refreshCard(key);
+}
+
 // The face's star (SSOT 2026-11-01): the open card's ☆ 즐겨찾기 (sessionActionsOf) as the face's toggle — its state,
 // its tooltip, and for anyone but the owner (or while a write runs) inert with the reason.
 function cardStarOf(s, col) {
@@ -9423,6 +9486,9 @@ function viewCardOf(s, col) {
   // The star is a toggle on every face, in both modes: on or off at a press, inert with its reason for anyone
   // but the owner (and on a sibling instance's card).
   c.star = cardStarOf(s, col);
+  // The Executive Summary's TL;DR (SSOT 2026-11-02 T7) — the face keeps it whatever rows the layout picked.
+  var tl = cardTldrOf(s, col);
+  if (tl) c.tldr = tl;
   return faceOf(c, s.model, viewSpec().face, cardAsks(s, col));
 }
 
@@ -10765,36 +10831,44 @@ function ptUpsert(list, turn, replaceId) {
 function ptSentKey(s) {
   return decodeSlackEntities(String(s || '')).replace(/\\r\\n?/g, '\\n').replace(/[ \\t]+/g, ' ').replace(/ ?\\n ?/g, '\\n').trim();
 }
-// Pure: the optimistic turn a recorded user turn takes over ('' = none) — the oldest one with
-// the same words sent by the same person (when both are known: _by is the signed-in sender), the
-// one rule the fetched page uses too (ptRecorded). Any other turn — someone else's, or another
-// instruction of the viewer's own typed in Slack meanwhile — never takes the slot. A turn
-// already held is an update, never an adoption; a turn soma-work put there (origin by system)
-// never adopts.
+// Pure: is this recorded turn the one an optimistic turn sent — the one rule both paths use (the
+// live push, ptOptimisticFor; the fetched page, ptRecorded): a user turn soma-work did not put
+// there, from the same sender when both are known (_by is the signed-in sender), with the same
+// words. Any other turn — someone else's, another instruction of the viewer's own typed in Slack
+// meanwhile, a host turn — never takes the slot.
+function ptSameSend(opt, turn) {
+  if (!opt || !opt._optimistic || !turn || turn._optimistic || turn.role !== 'user') return false;
+  if (turn.origin && turn.origin.by === 'system') return false;
+  if (turn.userId && opt._by && turn.userId !== opt._by) return false;
+  var key = ptSentKey(opt._sent);
+  if (key) return key === ptSentKey(turn.rawContent);
+  // A files-only send is recorded with no words: only such a turn is its record. A send with
+  // neither words nor files matches nothing.
+  return !!opt._files && !ptSentKey(turn.rawContent);
+}
+// Pure: the optimistic turn a recorded user turn takes over ('' = none) — the oldest one it is
+// the send of (ptSameSend). A turn already held is an update, never an adoption.
 function ptOptimisticFor(list, turn) {
-  if (!turn || turn.role !== 'user' || (turn.origin && turn.origin.by === 'system')) return '';
-  var key = ptSentKey(turn.rawContent);
+  if (!turn) return '';
   for (var i = 0; i < list.length; i++) {
     var t = list[i];
     if (!t) continue;
     if (turn.id && t.id === turn.id) return '';
-    if (!t._optimistic || (turn.userId && t._by && turn.userId !== t._by)) continue;
-    if (ptSentKey(t._sent) === key) return String(t.id);
+    if (ptSameSend(t, turn)) return String(t.id);
   }
   return '';
 }
-// Pure: the id of the fetched turn that records an optimistic one ('' = none): a user turn with
-// the same words, recorded no earlier than a minute before it was sent, that the panel did not
+// Pure: the id of the fetched turn that records an optimistic one ('' = none): its send
+// (ptSameSend), recorded no earlier than a minute before it was sent, that the panel did not
 // already hold before the fetch (held — so an earlier '계속' never confirms a new '계속') and that
 // confirmed no other optimistic turn (used — one recorded turn, one optimistic turn).
 function ptRecorded(list, opt, held, used) {
-  var key = ptSentKey(opt && opt._sent);
   var since = toNum(opt && opt.timestamp) - 60000;
   for (var i = 0; i < list.length; i++) {
     var t = list[i];
     var id = t && t.id ? String(t.id) : '';
-    if (!id || held[id] || used[id] || t.role !== 'user' || t._optimistic) continue;
-    if (toNum(t.timestamp) >= since && ptSentKey(t.rawContent) === key) return id;
+    if (!id || held[id] || used[id]) continue;
+    if (toNum(t.timestamp) >= since && ptSameSend(opt, t)) return id;
   }
   return '';
 }
@@ -11588,7 +11662,7 @@ function wlLegacyMixed(entries) {
 }
 
 // Latest user instruction + model response (§3.1-4), fetched lazily on
-// expand from GET /api/dashboard/session/:conversationId?limit=2 and cached
+// expand from GET /api/dashboard/session/:conversationId?limit=3 (2 + an Executive Summary turn, skipped) and cached
 // per conversation. Only a complete fetch for the session's current
 // lastActivity counts as fresh. A failure — or a partial result (the
 // instruction loaded, the raw response did not) — keeps what it has and is
@@ -11814,10 +11888,12 @@ function ioCompactOutHtml(info, cp) {
 // The latest instruction and the reply that answers it (only an assistant
 // turn AFTER the latest user turn counts). Rejects on any HTTP failure.
 function fetchCardIo(cid) {
-  return fetch('/api/dashboard/session/' + encodeURIComponent(cid) + '?limit=2')
+  return fetch('/api/dashboard/session/' + encodeURIComponent(cid) + '?limit=3')
     .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
     .then(function(data) {
-      var turns = (data && data.turns) || [];
+      // The Executive Summary is a turn of its own in the chat; the card's 응답 stays the model's reply
+      // (its TL;DR has a box of its own on the face). One more turn is fetched so it can be skipped.
+      var turns = ((data && data.turns) || []).filter(function(t) { return !t.executiveSummary; });
       var ui = -1;
       for (var i = turns.length - 1; i >= 0; i--) { if (turns[i].role === 'user') { ui = i; break; } }
       var reply = null;
@@ -16757,6 +16833,7 @@ async function sendCommand(text, ref, files) {
       origin: { by: 'user' },
       _optimistic: true,
       _sent: msg, // the words the recorded turn is matched by (ptOptimisticFor)
+      _files: list.length, // a files-only send (no words) is matched by a recorded turn with no words
       _by: _viewerUserId || '', // who sent it — someone else's turn with the same words never takes it
     }, true);
   }
@@ -17626,7 +17703,7 @@ async function loadCapacity() {
 // a peek in <ui-hovercard #art-peek>; click → <ui-artifact-viewer #art-viewer>.
 // Every render function here is pure; the DOM work sits in the functions after
 // artPeekItem and in initArtifactInteractions.
-var ART_KIND_LABEL = { image: '이미지', audio: '오디오', video: '비디오', html: 'HTML', markdown: '답변', pdf: 'PDF', text: '텍스트', file: '파일' };
+var ART_KIND_LABEL = { image: '이미지', audio: '오디오', video: '비디오', html: 'HTML', markdown: '마크다운', pdf: 'PDF', text: '텍스트', file: '파일' };
 var _artCache = Object.create(null); // conversationId → { state: 'loading'|'ok'|'error', list, promise }
 var _artDocCache = Object.create(null); // 'cid|id' → text of a markdown / text artifact; 'cid|id|head' → its first 64 KB (the peek)
 var _artDocPending = Object.create(null); // the same keys → the one fetch under way (two askers, one request)
@@ -17806,14 +17883,12 @@ function artChip(cid, a) {
   return artCard(cid, a, 'chip');
 }
 
-// Files newest first, then answers newest first: the html/png the user looks for
-// is never buried under a long chat's answers.
+// Newest first, by when each file was made (SSOT 2026-11-02 T3) — every list: the card's chips
+// and tiles, the panel strip, an answer's row, the viewer's pages. A markdown final answer an
+// older server recorded is the chat's, never listed (T6).
 function artSortForDisplay(list) {
-  var files = [];
-  var answers = [];
-  (list || []).forEach(function(a) { if (a) (a.source === 'final_answer' ? answers : files).push(a); });
-  var newest = function(x, y) { return toNum(y.createdAt) - toNum(x.createdAt); };
-  return files.sort(newest).concat(answers.sort(newest));
+  var files = (list || []).filter(function(a) { return a && a.source !== 'final_answer'; });
+  return files.sort(function(x, y) { return toNum(y.createdAt) - toNum(x.createdAt); });
 }
 
 // A strip tile: the file card (thumbnail, name, meta; a play / pause toggle on audio — T8 — and video tiles, one
@@ -17838,7 +17913,7 @@ function renderCardArtifacts(s) {
   var list = artSortForDisplay(artListFor(s));
   if (!list.length) return '';
   var c = _artCache[s.conversationId];
-  var total = c && c.list ? c.list.length : Math.max(toNum(s.artifacts && s.artifacts.count), list.length);
+  var total = c && c.list ? list.length : Math.max(toNum(s.artifacts && s.artifacts.count), list.length);
   var shown = list.slice(0, CARD_ART_TILES);
   return '<div class="card-artifacts"><div class="io-label art-section-label">산출물 <span class="art-count">' + total + '</span></div>'
     + '<div class="art-strip">' + shown.map(function(a) { return artTile(s.conversationId, a); }).join('') + '</div>'
@@ -18098,7 +18173,6 @@ function artViewerIsOpen() {
 // opens in the browser's viewer (items[].frame). The element escapes every string.
 function artViewItem(cid, a) {
   var item = artFileItem(cid, a);
-  if (a.source === 'final_answer') item.kindLabel = ART_KIND_LABEL.markdown;
   if (a.stored && a.kind === 'html' && a.source !== 'user_upload') item.scripts = true;
   if (a.stored && a.kind === 'pdf') item.frame = true;
   var notes = [];
