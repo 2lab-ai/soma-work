@@ -178,8 +178,15 @@ describe('T2 — every live time is the element in Korean; the settled ones say 
 });
 
 describe('T3 — the chrome is Korean', () => {
-  it('effort levels: 낮음 · 보통 · 높음 · 매우 높음 · 최대', () => {
-    expect(page.EFFORT_LABELS).toEqual({ low: '낮음', medium: '보통', high: '높음', xhigh: '매우 높음', max: '최대' });
+  it('effort levels: 낮음 · 보통 · 높음 · 매우 높음 · 최대 · 울트라', () => {
+    expect(page.EFFORT_LABELS).toEqual({
+      low: '낮음',
+      medium: '보통',
+      high: '높음',
+      xhigh: '매우 높음',
+      max: '최대',
+      ultra: '울트라',
+    });
   });
   it('session actions 중지 · 휴지통 · 닫기, the star 즐겨찾기 (both states), the starred group; the sibling lock in Korean', () => {
     expect(TEMPLATE).toContain("var label = kind === 'stop' ? '중지' : (kind === 'trash' ? '휴지통' : '닫기');");
@@ -223,14 +230,14 @@ describe('T3 — the chrome is Korean', () => {
   });
   it('effort reads 추론 강도 everywhere a person sees it; the New task levels are the Korean words, not the ids (R-D8 P2)', () => {
     expect(TEMPLATE).toContain('aria-label="이 세션의 모델과 추론 강도"');
-    expect(TEMPLATE).toContain("var title = kind === 'model' ? '새 세션 기본 모델' : '새 세션 기본 추론 강도';");
+    expect(TEMPLATE).toContain("heading: '새 세션 기본값'");
+    expect(TEMPLATE).toContain("heading: '이 작업의 모델 · 추론 강도'");
     expect(TEMPLATE).toContain(
       "return { text: '이미 추론 강도 ' + effortLabel(res.effort) + '입니다', error: false };",
     );
-    // The <select>'s option text is what the sweep cannot see: the level's word (낮음 … 최대), its id the value.
-    expect(TEMPLATE).toContain(
-      "return '<option value=\"' + escAttr(e) + '\"' + (e === _ntState.effort ? ' selected' : '') + '>' + esc(effortLabel(e)) + '</option>';",
-    );
+    // The levels' words are the model menu's own (<ui-model-picker lang="ko">: 낮음 … 울트라); the page's text words too.
+    expect(TEMPLATE).toContain('<ui-model-picker id="nt-picker" class="nt-picker" lang="ko">');
+    expect(TEMPLATE).toContain('<ui-model-picker id="td-picker" class="td-picker" lang="ko"');
     expect(TEMPLATE).not.toMatch(/'[^'\n]*[가-힣][^'\n]*\beffort\b[^'\n]*'/);
   });
   it('the system turn carries no page name — the element says 시스템 under lang="ko"; the open card says 시스템', () => {
@@ -242,8 +249,7 @@ describe('T3 — the chrome is Korean', () => {
   it('tokens, effort, compaction, titles: 토큰 · 추론 · 자동 압축 · 제목 없음 · 사용자 · 어시스턴트 · 나', () => {
     expect(TEMPLATE).not.toMatch(/' tok'|' tokens|' tok · '/);
     expect(TEMPLATE).toContain("' 토큰 · '");
-    expect(TEMPLATE).toContain('<span class="td-prefix">추론 </span>');
-    expect(TEMPLATE).toContain('<label class="ui-select-chip nt-chip-effort"><span>추론</span>');
+    expect(TEMPLATE).toContain('<span class="td-prefix" aria-hidden="true">기본</span>');
     expect(TEMPLATE).toContain("'(으)로 전환 · 자동 압축 '");
     // No string the page shows says "autocompact" (comments may).
     expect(TEMPLATE).not.toMatch(/'[^'\n]*autocompact[^'\n]*'/);

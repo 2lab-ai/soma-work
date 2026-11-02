@@ -21,6 +21,8 @@ function resolveDetailedStub(raw: string): ModelInputResolution {
 
 // Stub user-settings-store so SessionCommandHandler's imports don't trigger real file I/O.
 vi.mock('../../../user-settings-store', () => ({
+  DEFAULT_EFFORT: 'xhigh',
+  EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   DEFAULT_SHOW_THINKING: false,
   DEFAULT_THINKING_ENABLED: false,
   MODEL_ALIASES: { opus: 'claude-opus-4-1-20250805', sonnet: 'claude-sonnet-4-20250514' },
@@ -37,6 +39,14 @@ vi.mock('../../../user-settings-store', () => ({
     resolveModelInputDetailedWithRefresh: vi.fn(async (v: string) => resolveDetailedStub(v)),
     resolveVerbosityInput: vi.fn((v: string) => (['minimal', 'compact', 'detail', 'verbose'].includes(v) ? v : null)),
   },
+}));
+
+// The levels each model runs (the llmux catalog menu; the SDK five without one).
+vi.mock('../../../session/effort-menu', () => ({
+  allowedEffortsFor: (model?: string) =>
+    model?.startsWith('gpt-6')
+      ? ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
+      : ['low', 'medium', 'high', 'xhigh', 'max'],
 }));
 
 vi.mock('../../../utils/dir-size', () => ({
@@ -216,5 +226,54 @@ describe('SessionCommandHandler', () => {
       expect(texts[0]).toContain('더 이상 사용되지 않습니다');
       expect(texts[1]).toContain('No active session');
     });
+  });
+});
+
+describe('SessionCommandHandler — %effort takes only a level the session’s model runs', () => {
+  const ctxFor = (text: string): CommandContext => ({
+    user: 'U1',
+    channel: 'C1',
+    threadTs: '171.100',
+    text,
+    say: vi.fn().mockResolvedValue({ ts: 'ts1' }),
+  });
+  const handlerFor = (session: Record<string, unknown>) =>
+    new SessionCommandHandler({
+      claudeHandler: { getSession: vi.fn().mockReturnValue(session) },
+    } as unknown as CommandDependencies);
+
+  it('ultra on a model that stops at max is refused and the session keeps its level', async () => {
+    const session: Record<string, unknown> = { model: 'claude-sonnet-4-20250514', effort: 'high' };
+    const ctx = ctxFor('%effort ultra');
+    await handlerFor(session).execute(ctx);
+    expect(session.effort).toBe('high');
+    const text = (ctx.say as ReturnType<typeof vi.fn>).mock.calls[0][0].text;
+    expect(text).toContain('does not run effort `ultra`');
+    expect(text).toContain('`max`');
+  });
+
+  it('ultra on a model whose menu lists it is set for the session', async () => {
+    const session: Record<string, unknown> = { model: 'gpt-6.1-sol[1m]', effort: 'high' };
+    await handlerFor(session).execute(ctxFor('%effort ultra'));
+    expect(session.effort).toBe('ultra');
+  });
+});
+
+describe('SessionCommandHandler — %model carries the effort over to the levels the new model runs', () => {
+  it('ultra on sol → opus: the session effort becomes max and the reply says so', async () => {
+    const session: Record<string, unknown> = { model: 'gpt-6.1-sol[1m]', effort: 'ultra' };
+    const handler = new SessionCommandHandler({
+      claudeHandler: { getSession: vi.fn().mockReturnValue(session) },
+    } as unknown as CommandDependencies);
+    const ctx: CommandContext = {
+      user: 'U1',
+      channel: 'C1',
+      threadTs: '171.100',
+      text: '%model opus',
+      say: vi.fn().mockResolvedValue({ ts: 'ts1' }),
+    };
+    await handler.execute(ctx);
+    expect(session).toMatchObject({ model: 'claude-opus-4-1-20250805', effort: 'max' });
+    expect((ctx.say as ReturnType<typeof vi.fn>).mock.calls[0][0].text).toContain('Effort is now *max*');
   });
 });
