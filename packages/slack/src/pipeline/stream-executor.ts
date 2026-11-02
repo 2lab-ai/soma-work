@@ -214,6 +214,12 @@ export interface StreamExecutorProviders {
   shouldShowStatusBlock?: (status: any) => boolean;
   createConversation?: (channel: string, threadTs: string, user: string, userName: string) => string;
   recordAssistantTurn?: (conversationId: string, text: string) => void;
+  /**
+   * SSOT 2026-11-02 T7 — an Executive Summary landed (the session already holds its TL;DR,
+   * `executiveSummary`): the host puts the whole summary in the dashboard's chat and pushes the
+   * card. Fire-and-forget; must never throw. No-op by default.
+   */
+  recordExecutiveSummary?: (sessionKey: string, conversationId: string | undefined, text: string) => void;
   recordUserTurn?: (
     conversationId: string,
     text: string,
@@ -313,6 +319,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   shouldShowStatusBlock: () => false,
   createConversation: () => '',
   recordAssistantTurn: () => {},
+  recordExecutiveSummary: () => {},
   recordUserTurn: () => {},
   recordCompactResult: () => {},
   captureUserMedia: async () => [],
@@ -4901,6 +4908,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // turns. Errors are swallowed inside `postInThread` — a failed post
         // must not crash the summary fork.
         await summaryService.postInThread(session as any, summaryText);
+        // The dashboard: the whole summary in its chat, the TL;DR on the task card (T7).
+        try {
+          streamExecutorProviders.recordExecutiveSummary(sessionKey, session.conversationId, summaryText);
+        } catch (err: any) {
+          this.logger.warn('recordExecutiveSummary failed', { sessionKey, error: err?.message });
+        }
       }
     } catch (err: any) {
       if (this.summaryAbortControllers.get(sessionKey) === abortController) {
