@@ -216,6 +216,20 @@ describe('D1 — the engine choice lives in this browser only', () => {
   });
 });
 
+describe('D1c — 브라우저 위스퍼’s model size, on this device only', () => {
+  it('reads and keeps base · small · turbo under its own key; anything else is not chosen', () => {
+    const body = `${DICTATION_PREF_JS}\nreturn { dictationBrowserModelChoice, dictationSaveBrowserModel };`;
+    const api = new Function(body)() as Api;
+    const store = memStore();
+    expect(api.dictationBrowserModelChoice(store)).toBe('');
+    expect(api.dictationSaveBrowserModel(store, 'turbo')).toBe(true);
+    expect(store.data).toEqual({ 'soma-dictation-browser-model': 'turbo' });
+    expect(api.dictationBrowserModelChoice(store)).toBe('turbo');
+    expect(api.dictationSaveBrowserModel(store, 'xl')).toBe(false);
+    expect(api.dictationBrowserModelChoice(memStore({ 'soma-dictation-browser-model': 'xl' }))).toBe('');
+  });
+});
+
 describe('D1b — only an engine this device can run is kept', () => {
   it('every engine starts disabled until this device’s details paint it', () => {
     for (const v of ['device', 'server', 'browser'])
@@ -232,7 +246,7 @@ describe('D1b — only an engine this device can run is kept', () => {
     api.__peek("_dicInfo = { path: 'chrome', langs: {} }");
     api.dicChoose('browser');
     expect(store.setItem).not.toHaveBeenCalled();
-    expect(doc.el('dic-engine-note').textContent).toBe('준비 중입니다');
+    expect(doc.el('dic-engine-note').textContent).toContain('Web Worker·WebAssembly');
     expect(doc.inputs.map((i) => i.checked)).toEqual([true, false, false]);
   });
 });
@@ -433,7 +447,7 @@ describe('D5 — this device’s details', () => {
 });
 
 describe('D6 — which engines this device can run', () => {
-  it('기기 기본 needs a recogniser; the server’s Whisper needs the server to have it; the browser’s is not on this build yet', () => {
+  it('기기 기본 needs a recogniser; the server’s Whisper needs the server to have it; the browser’s a Worker with WebAssembly', () => {
     const api = load();
     expect(api.dicEngines({ path: 'chrome' }).device).toEqual({ ok: true, why: '' });
     expect(api.dicEngines({ path: 'none' }).device.ok).toBe(false);
@@ -453,7 +467,10 @@ describe('D6 — which engines this device can run', () => {
     });
     expect(api.dicEngines({ path: 'apple' }).server).toEqual({ ok: false, why: '이 서버에는 위스퍼가 없습니다' });
     expect(api.dicEngines({ path: 'apple', secure: false, server: { ok: true } }).server.why).toContain('HTTPS');
-    expect(api.dicEngines({ path: 'apple' }).browser).toEqual({ ok: false, why: '준비 중입니다' });
+    expect(api.dicEngines({ path: 'apple' }).browser.ok).toBe(false);
+    expect(api.dicEngines({ path: 'apple' }).browser.why).toContain('Web Worker·WebAssembly');
+    expect(api.dicEngines({ path: 'none', browserDevice: 'wasm' }).browser).toEqual({ ok: true, why: '' });
+    expect(api.dicEngines({ path: 'apple', browserDevice: 'webgpu', secure: false }).browser.why).toContain('HTTPS');
   });
 
   it('a chosen engine this device cannot run falls back to 기기 기본, and the tab says so', () => {

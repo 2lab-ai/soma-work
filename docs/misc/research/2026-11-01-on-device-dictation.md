@@ -104,6 +104,16 @@ With 서버 위스퍼 chosen, the browser streams its microphone to the server a
 
 Checked end to end on 2 November 2026: the real dashboard page in Google Chrome 156 (its AudioWorklet and WebSocket), this server, and the real worker (mlx). A Korean sentence fed as the microphone grew in the field every half second, settled at the pause, and a press finished it.
 
+## Browser Whisper (2 November 2026, #740)
+
+With 브라우저 위스퍼 chosen, Whisper runs in the page's own browser, so the speech never leaves the device.
+
+- A Web Worker runs transformers.js 4.3.2 (pinned) with an ONNX Whisper from onnx-community: on WebGPU when the browser has it (half-precision encoder, 4-bit decoder; 4-bit encoder for the large model), else WebAssembly (8-bit).
+- Each device chooses the model size: 작게 whisper-base (about 165 MB on WebGPU, 77 MB on WebAssembly), 보통 whisper-small (410 / 249 MB, the WebGPU default), 크게 whisper-large-v3-turbo (759 / 1085 MB). The first press downloads it, with progress on the status line, and the browser keeps it for later presses.
+- The worker runs the server's stream policy from its own source (DictationStream as written for #739), fed by the same 16 kHz worklet, so segments settle the same way on both engines.
+- Measured in Google Chrome 156 on an M5 Max (WebGPU, Korean TTS fed as the microphone): whisper-base downloaded in about 16 seconds and wrote the sentence live, with weak Korean ("받아쓰기" → "바닷스기"); whisper-small took about 40 seconds to download and was closer. The server's large-v3-turbo was the most accurate of the three.
+- The runs showed Whisper re-spacing words between transcriptions ("받아쓰기를" ↔ "받아 쓰기를"). The policy now places the words still being heard after the settled ones by letters, anchored on the last settled word, so a re-spaced settled word does not show again.
+
 ## Follow-up candidates
 
 - On this emulator a session ended after about 5 seconds of silence and took about half a second to restart. If phones do the same, words spoken in that gap are lost.
