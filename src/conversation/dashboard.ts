@@ -427,6 +427,8 @@ export interface KanbanSession {
   /** E4 ① — a child task's epic (task id) and plan node. Absent otherwise. */
   parentTaskId?: string;
   planNodeId?: string;
+  /** E4 ⑨c — set on a child card sent in its epic's bundle: the board draws it right under the epic. */
+  underEpic?: true;
   /** E4 ⑦ — a child its epic's close cancelled (the outcome stays `cancelled`). Absent otherwise. */
   closedBy?: { by: 'parent'; at: number };
   /**
@@ -2527,7 +2529,9 @@ function shownActivity(card: KanbanSession): ConversationSession['activityState'
 /** E4 ⑧ (D11) — an epic's bundle: its view and its children's cards (every card of an epic carries it). */
 function epicBundle(epic: ConversationSession): NonNullable<KanbanSession['epic']> {
   const entries = bundledChildrenOf(epic);
-  const cards = new Map(entries.map(([key, child]) => [child, sessionToKanban(key, child)]));
+  const cards = new Map(
+    entries.map(([key, child]) => [child, { ...sessionToKanban(key, child), underEpic: true as const }]),
+  );
   const view = epicBoardView(
     epic,
     entries.map(([, child]) => child),
@@ -8290,13 +8294,15 @@ function renderBoard(board, partial) {
   _epicKidsDrawn = Object.create(null);
   // Each list's cards, an epic's children right after its card (E4 ⑨c, withEpicChildren);
   // what each epic's children are, as placed, for the push path (applyEpicPush).
+  var hideKids = showSleeping === false;
   function place(items, host, drawn) {
-    return withEpicChildren(items).map(function(it) {
+    return withEpicChildren(items, hideKids, _revealedKey).map(function(it) {
       placeCard(it.s, it.col, host, drawn);
-      if (it.s.kind === 'epic') _epicKidsDrawn[it.s.key] = epicChildrenOf(it.s).map(function(c) { return c.key; }).join(' ');
+      if (it.s.kind === 'epic') _epicKidsDrawn[it.s.key] = epicKidsSig(it.s, hideKids, _revealedKey);
       return it.s.key;
     });
   }
+  var kidCounts = epicKidsCounts(board);
   function keys(list, col, host) {
     return place((list || []).map(function(s) { return { s: s, col: col }; }), host, true);
   }
@@ -8323,7 +8329,8 @@ function renderBoard(board, partial) {
       load: partial ? (_boardLoad === 'loading' ? 'loading' : 'failed') : 'ready',
       // D6: how many need you and how many run — the data as it came (CRON runs
       // waiting on a reply included), before the lane takes its runs and any hold.
-      announce: { needs: (board.waiting || []).length, running: (board.working || []).length },
+      // E4 ⑨c: an epic's children are in no column of the data but drawn in one — counted too.
+      announce: { needs: (board.waiting || []).length + kidCounts.needs, running: (board.working || []).length + kidCounts.running },
     };
     inboxPaint(kb);
   }
@@ -8343,7 +8350,7 @@ function renderBoard(board, partial) {
   _expanded.forEach(function(key) { if (_cardDrawn[key]) ensureCardIo(key, false); });
   syncHasCards();
   renderArchivesToggle(plan.archivedCount);
-  renderSleepingToggle(plan.sleepingCount);
+  renderSleepingToggle(plan.sleepingCount + kidCounts.sleeping);
   paintCronDrawer();
   // The #814 tokens tooltip describes this board (user switch, WS push).
   updateTokenBreakdown();
@@ -8857,8 +8864,11 @@ function cardOf(s, col) {
   // A cron run leads with the CRON badge instead of the spark (SSOT 2026-10-23 T3).
   if (s.cronJob && s.cronJob.name) card.lead = { text: 'CRON', glyph: 'clock', title: '크론 잡: ' + s.cronJob.name };
   // A child of an epic (E4 ⑨b) leads with its plan node, the ref its epic's plan tree shows —
-  // after ↳: it sits right under its epic's card (E4 ⑨c, withEpicChildren).
-  if (s.parentTaskId && s.planNodeId && !card.lead) card.lead = { text: '\u21b3 #' + String(s.planNodeId), glyph: 'tasks', title: '위 에픽의 노드 ' + String(s.planNodeId) };
+  // after ↳ when it sits right under its epic's card (E4 ⑨c: a card from the epic's bundle).
+  if (s.parentTaskId && s.planNodeId && !card.lead) {
+    var under = s.underEpic === true;
+    card.lead = { text: (under ? '\u21b3 #' : '#') + String(s.planNodeId), glyph: 'tasks', title: (under ? '위 에픽의 노드 ' : '에픽의 노드 ') + String(s.planNodeId) };
+  }
   // An epic (E4 ⑨a) leads with EPIC and says its state; its progress is accepted nodes of all.
   if (s.kind === 'epic' && s.epic) {
     var epicLabel = EPIC_STATE_LABEL[epicStateOf(s.epic.state)];
@@ -16524,12 +16534,12 @@ function cronLaneSlots(plan) {
 // epic's own card, in the same list — its column, or its DONE day group — each the
 // same card as anywhere (cardOf), in its own activity as its column (epicChildCol).
 // There is no lane above the board: the epic and its children stay together.
-function withEpicChildren(items) {
+function withEpicChildren(items, hideSleeping, revealKey) {
   var out = [];
   for (var i = 0; i < items.length; i++) {
     var it = items[i];
     out.push(it);
-    var kids = epicChildrenOf(it && it.s);
+    var kids = epicKidsShown(it && it.s, hideSleeping, revealKey);
     for (var j = 0; j < kids.length; j++) out.push({ s: kids[j], col: epicChildCol(kids[j]) });
   }
   return out;
@@ -16538,6 +16548,35 @@ function withEpicChildren(items) {
 function epicChildrenOf(s) {
   if (!s || s.kind !== 'epic' || !s.epic || !Array.isArray(s.epic.children)) return [];
   return s.epic.children.filter(function(c) { return !!(c && c.key); });
+}
+// The children the board draws under the epic: a sleeping one only while 휴면 is shown
+// (as planDoneColumn hides a sleeping card), or when a deep link revealed it.
+function epicKidsShown(s, hideSleeping, revealKey) {
+  return epicChildrenOf(s).filter(function(c) {
+    return !hideSleeping || c.sessionState !== 'SLEEPING' || (!!revealKey && c.key === revealKey);
+  });
+}
+// What the board drew under an epic: each shown child and its column. A push whose children
+// differ — a child made or gone, or one whose column changed — redraws (applyEpicPush).
+function epicKidsSig(s, hideSleeping, revealKey) {
+  return epicKidsShown(s, hideSleeping, revealKey).map(function(c) { return c.key + ':' + epicChildCol(c); }).join(' ');
+}
+// How many of the board's epic children need the person and how many run (the announcement).
+function epicKidsCounts(board) {
+  var n = { needs: 0, running: 0, sleeping: 0 };
+  ['waiting', 'working', 'idle', 'closed'].forEach(function(col) {
+    var arr = (board && board[col]) || [];
+    for (var i = 0; i < arr.length; i++) {
+      var kids = epicChildrenOf(arr[i]);
+      for (var j = 0; j < kids.length; j++) {
+        var c = epicChildCol(kids[j]);
+        if (c === 'waiting') n.needs++;
+        else if (c === 'working') n.running++;
+        else if (c === 'closed') n.sleeping++;
+      }
+    }
+  });
+  return n;
 }
 // An epic's state as one the page knows ('idle' otherwise — never a prototype key).
 function epicStateOf(state) {
@@ -16589,8 +16628,9 @@ function epicChildOf(s, key) {
 }
 // A single-session push (an epic's carries its bundle; a child's push arrives as its
 // epic's card). Its children are drawn right under its card (renderBoard): a push
-// whose children are not the ones the last render placed there redraws the board
-// from the patched data; otherwise each child card on the board is refreshed.
+// whose children or their columns are not the ones the last render drew there
+// (epicKidsSig) redraws the board from the patched data; otherwise each child card on
+// the board is refreshed in place from the pushed card (cached above), in the same column.
 function applyEpicPush(s) {
   if (!s || !s.key) return;
   var children = epicChildrenOf(s);
@@ -16598,7 +16638,7 @@ function applyEpicPush(s) {
   for (var i = 0; i < children.length; i++) _sessionCache[children[i].key] = children[i];
   if (!_lastBoardData) return;
   var placed = _epicKidsDrawn[s.key];
-  var now = children.map(function(c) { return c.key; }).join(' ');
+  var now = epicKidsSig(s, showSleeping === false, _revealedKey);
   if ((placed === undefined ? '' : placed) !== now) {
     // An epic the last render did not place (hidden, or not on the board) has nothing drawn to change.
     if (placed !== undefined || _cardHost[s.key]) renderBoard(_lastBoardData);
