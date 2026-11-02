@@ -263,66 +263,85 @@ describe('resumeActiveGoals (T1)', () => {
   /**
    * 2026-11-02: "서비스 재시작하면 자동으로 진행중이던 작업 재시작되도록해줘". A turn the
    * restart cut short never finished, so it does not spend the continuation
-   * budget. Without the refund, a goal whose 10th continuation was cut
-   * (1793150219.639969, cut at 05:08Z on 10/10) resumes straight into the cap
-   * question and stays stopped.
+   * budget. Without the refund, every deploy costs each running goal one turn,
+   * and a goal cut on its 10th continuation (1793150219.639969, 05:08Z) resumes
+   * straight into the cap question. "Cut by the restart" is the shutdown's own
+   * record (`wasWorkingAtShutdown` → `shouldAutoResume`), read by crash
+   * recovery before it clears the marker — not "the summary is empty".
    */
-  it('gives back the continuation a restart cut short (no turn text)', () => {
+  function recovered(sessionKey: string, working: boolean) {
+    return {
+      channelId: 'C1',
+      threadTs: 'T1',
+      ownerId: 'U1',
+      activityState: working ? 'working' : 'idle',
+      shouldAutoResume: working,
+      sessionKey,
+    };
+  }
+
+  async function bootWith(sessions: Map<string, ConversationSession>, cut: ReturnType<typeof recovered>[]) {
+    const { handler, claudeHandler } = createHandler(sessions);
+    claudeHandler.getCrashRecoveredSessions.mockReturnValue(cut);
+    (handler as any).handleMessage = vi.fn().mockResolvedValue(undefined);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+    await handler.notifyCrashRecovery();
+    const resumed = handler.resumeActiveGoals();
+    return { handler, claudeHandler, settled, resumed };
+  }
+
+  it('gives back the continuation of a goal turn the restart cut short', async () => {
     const cut = activeGoalSession({ activityState: 'working' });
     const goal = cut.goal as NonNullable<ConversationSession['goal']>;
     goal.continuationCount = 10;
-    goal.lastAssistantTurnSummary = '';
-    goal.lastEvalReason = 'CI is still red on PR #12';
-    const sessions = new Map<string, ConversationSession>([['C1-T1', cut]]);
-    const { handler, claudeHandler } = createHandler(sessions);
-    const settled = vi.fn();
-    handler.setGoalTurnSettledHandler(settled);
+    const { settled, resumed, claudeHandler } = await bootWith(new Map([['C1-T1', cut]]), [recovered('C1-T1', true)]);
 
-    expect(handler.resumeActiveGoals()).toBe(1);
-
+    expect(resumed).toBe(1);
     expect(goal.continuationCount).toBe(9);
     expect(settled).toHaveBeenCalledWith('C1-T1', { cause: 'kick' });
     expect(claudeHandler.saveSessions).toHaveBeenCalled();
   });
 
-  it('keeps the budget of a goal whose last turn finished (turn text present)', () => {
-    const done = activeGoalSession();
-    (done.goal as NonNullable<ConversationSession['goal']>).continuationCount = 4;
-    const { handler } = createHandler(new Map([['C1-T1', done]]));
-    handler.setGoalTurnSettledHandler(vi.fn());
+  it('keeps the budget of a goal that was idle at shutdown — even with an empty summary', async () => {
+    const idle = activeGoalSession();
+    const goal = idle.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 4;
+    goal.lastAssistantTurnSummary = '';
+    await bootWith(new Map([['C1-T1', idle]]), [recovered('C1-T1', false)]);
 
-    handler.resumeActiveGoals();
-
-    expect(done.goal?.continuationCount).toBe(4);
+    expect(goal.continuationCount).toBe(4);
   });
 
-  it('keeps the budget of a goal whose cap decision is open — the owner decides, not the restart', () => {
-    const capped = activeGoalSession();
+  it('keeps the budget of a goal whose cap decision is open — the owner decides, not the restart', async () => {
+    const capped = activeGoalSession({ activityState: 'working' });
     const goal = capped.goal as NonNullable<ConversationSession['goal']>;
     goal.continuationCount = 10;
-    goal.lastAssistantTurnSummary = '';
     goal.capDmPendingAt = 5;
     goal.capDecisionId = 'd1';
-    const { handler } = createHandler(new Map([['C1-T1', capped]]));
-    handler.setGoalTurnSettledHandler(vi.fn());
-
-    handler.resumeActiveGoals();
+    await bootWith(new Map([['C1-T1', capped]]), [recovered('C1-T1', true)]);
 
     expect(goal.continuationCount).toBe(10);
   });
 
-  it('never takes the budget below zero (the opening turn was cut)', () => {
-    const opening = activeGoalSession({ activityState: 'working' });
-    (opening.goal as NonNullable<ConversationSession['goal']>).lastAssistantTurnSummary = '';
-    const { handler } = createHandler(new Map([['C1-T1', opening]]));
-    handler.setGoalTurnSettledHandler(vi.fn());
+  it('never takes the budget below zero (a user turn was cut — it spent nothing)', async () => {
+    const userTurn = activeGoalSession({ activityState: 'working' });
+    await bootWith(new Map([['C1-T1', userTurn]]), [recovered('C1-T1', true)]);
 
-    handler.resumeActiveGoals();
-
-    expect(opening.goal?.continuationCount).toBe(0);
+    expect(userTurn.goal?.continuationCount).toBe(0);
   });
 
-  it('a false stall at 10/10 resumes with its cut continuation given back', () => {
+  it('gives back once per restart — a second resume pass refunds nothing', async () => {
+    const cut = activeGoalSession({ activityState: 'working' });
+    const goal = cut.goal as NonNullable<ConversationSession['goal']>;
+    goal.continuationCount = 6;
+    const { handler } = await bootWith(new Map([['C1-T1', cut]]), [recovered('C1-T1', true)]);
+    handler.resumeActiveGoals();
+
+    expect(goal.continuationCount).toBe(5);
+  });
+
+  it('a false stall at 10/10 cut by the restart resumes with its continuation given back', async () => {
     const stalled = activeGoalSession({
       activityState: 'waiting',
       actionPanel: {
@@ -353,6 +372,8 @@ describe('resumeActiveGoals (T1)', () => {
         return Promise.resolve();
       }),
     };
+    // The 10th continuation was the turn the restart cut.
+    (handler as any).restartCutSessionKeys = new Set(['C1-T1']);
     const settled = vi.fn();
     handler.setGoalTurnSettledHandler(settled);
 

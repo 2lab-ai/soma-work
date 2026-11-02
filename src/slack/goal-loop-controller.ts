@@ -178,14 +178,6 @@ export interface GoalLoopControllerDeps {
 }
 
 /**
- * The gap recorded when an interrupted turn left no text and no earlier
- * verdict exists (the goal's first turn was cut short): the next continuation
- * picks the work up from there.
- */
-export const GOAL_NO_TURN_TEXT_REASON =
-  'The previous work turn was interrupted before it produced any output (service restart or abort). Pick the work up where it stopped.';
-
-/**
  * What woke the loop. `turn`: a work turn ended (its output is new evidence).
  * `kick`: no turn ran — the owner went on (`goal resume`, Continue, a goal
  * added) or the process restarted; an unchanged summary is not re-judged.
@@ -334,11 +326,14 @@ export class GoalLoopController {
     const summaryHash = this.hashSummary(workSummaryRaw.slice(0, GOAL_SUMMARY_PERSIST_MAX).trim());
 
     // Nothing new to judge → reuse the last gap and run the next turn, no eval:
-    //  - No turn text. A turn a restart or an abort cut short leaves none, and
-    //    an empty summary is no evidence either way: the evaluator can only
-    //    restate the last gap — and, shown its previous "no output" verdict,
-    //    called the silence "the same failure" and stopped every goal a restart
-    //    interrupted (2026-11-02, owner-mac dev, restarts 05:08Z/05:44Z/06:23Z).
+    //  - No turn text, over a real earlier gap. A turn a restart or an abort
+    //    cut short leaves none, and an empty summary is no evidence either way:
+    //    the evaluator can only restate the last gap — and, shown its previous
+    //    "no output" verdict, called the silence "the same failure" and stopped
+    //    every goal a restart interrupted (2026-11-02, owner-mac dev, restarts
+    //    05:08Z/05:44Z/06:23Z/06:51Z/07:38Z). With no earlier gap there is
+    //    nothing to reuse: the eval runs as before #746, and with no previous
+    //    verdict it cannot stall.
     //  - A kick (the owner went on — `goal resume`, Continue, a goal added — or
     //    a restart) over text already judged (S9). A NEW turn with the same
     //    output — at the cap too — is exactly the repeat the stall check exists
@@ -346,9 +341,10 @@ export class GoalLoopController {
     //    instructions) instead of the generic cap question: the dispatch is
     //    worth it.
     // The last real gap stays the reason the next continuation is asked to close.
+    const hasGap = !!activeGoal.lastEvalReason?.trim();
     const noTurnText = workSummaryRaw === '';
-    const alreadyJudged = activeGoal.lastEvalSummaryHash === summaryHash && !!activeGoal.lastEvalReason;
-    if (noTurnText || (cause === 'kick' && alreadyJudged)) {
+    const alreadyJudged = activeGoal.lastEvalSummaryHash === summaryHash;
+    if (hasGap && (noTurnText || (cause === 'kick' && alreadyJudged))) {
       logger.info(
         noTurnText
           ? 'Goal eval skipped — the last turn left no text (interrupted); resuming the work'
@@ -361,7 +357,7 @@ export class GoalLoopController {
         activeGoal,
         {
           completed: false,
-          reason: activeGoal.lastEvalReason?.trim() ? activeGoal.lastEvalReason : GOAL_NO_TURN_TEXT_REASON,
+          reason: activeGoal.lastEvalReason as string,
           remaining: activeGoal.lastEvalRemaining ?? [],
         },
         summaryHash,
@@ -384,7 +380,7 @@ export class GoalLoopController {
       'Eval trigger: idle-settle (work turn ended)',
       '',
       '## Assistant turn output (latest work turn)',
-      workSummaryRaw.slice(0, 16_000),
+      workSummaryRaw ? workSummaryRaw.slice(0, 16_000) : '(no assistant text was produced this turn)',
     ].join('\n');
 
     logger.info('Goal session settled idle — dispatching completion eval', { sessionKey });
