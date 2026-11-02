@@ -276,6 +276,7 @@ function boardFlow(cardOf?: (s: { key: string }, col: string) => unknown, over: 
       scheduleLayoutRefresh: () => {},
       MOTION: { move: 320 },
       openDeepLinkedSession: () => {},
+      ntPendingPlace: () => [],
       ...over,
     },
   );

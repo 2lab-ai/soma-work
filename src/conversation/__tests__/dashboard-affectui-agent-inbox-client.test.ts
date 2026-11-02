@@ -464,6 +464,8 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       openDeepLinkedSession: () => {
         calls.deepLink++;
       },
+      // No launch from the new task dialog on its way (SSOT 2026-11-02): no 시작 중 cards.
+      ntPendingPlace: () => [],
     },
     'function state() { return { host: _cardHost, drawn: _cardDrawn, data: _cardData }; }',
   );
