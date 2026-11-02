@@ -4866,7 +4866,7 @@ function withPickerPrice<T extends { model: string }>(m: T): T | (T & { price: {
   return pricing ? { ...m, price: { input: pricing.inputPerMTok, output: pricing.outputPerMTok } } : m;
 }
 
-function renderDashboardPage(userId?: string): string {
+export function renderDashboardPage(userId?: string): string {
   // `<` escaped like every other injected constant: the userId is the URL's, a `</script>` in it must stay data.
   const initUser = userId ? JSON.stringify(userId).replace(/</g, '\\u003c') : 'null';
   // #814 — inject the local instance's name so the frontend can identify
@@ -5074,6 +5074,10 @@ ui-app-bar[narrow] .nt-btn-label { display: none; }
    write-anything mode, so the chip takes the fail tint instead of the kit's neutral "on" (colour where it carries
    status), its word pulled toward the ink (≥ 4.5:1 both themes). ── */
 .topbar .admin-toggle { flex: none; }
+/* Display language (#773): EN | KO, the pressed one is the page's language. */
+.lang-toggle { display: inline-flex; gap: 2px; flex: none; }
+.lang-toggle .lang-opt { min-width: 36px; justify-content: center; font-weight: 600; letter-spacing: 0.02em; }
+.lang-toggle .lang-opt[aria-pressed="true"] { background: var(--ib-seg-on); box-shadow: var(--ib-shadow); }
 .topbar .admin-toggle[aria-pressed="true"] { background: var(--tint-fail-bg); border-color: var(--tint-fail-line); color: var(--tint-fail-fg); }
 /* Admin approvals (#620): the admins' Slack DM requests, counted in the top bar (a kit chip with a kit count badge,
    the wait tone while any wait), answered in a sheet. */
@@ -6054,6 +6058,9 @@ ${pageTokenAliases()}
          A button that behaves like a toggle (HIG Toggles: the background tells the state, aria-pressed), saved per
          user (the dashboardMode setting). -->
     <button type="button" class="ui-chip view-mode-toggle" id="view-mode-toggle" slot="actions" aria-pressed="false" title="어드밴스드 모드 — 켜면 통계, 토큰, 에이전트 트리, 작업 로그까지 모두 보여 줍니다" onclick="toggleViewMode()"><i data-ui-icon="list"></i><span class="vm-label">어드밴스드</span></button>
+    <!-- Display language (#773): en / ko at the top right. The server renders the page in the user's language (the saved
+         setting — the one Slack's \`lang ko|en\` changes — else the soma_lang cookie); a switch saves both and reloads. -->
+    <div class="lang-toggle" id="lang-toggle" slot="actions" role="group" aria-label="표시 언어"><button type="button" class="ui-chip lang-opt" data-lang="en" aria-pressed="false" title="English" onclick="setDisplayLang('en')">EN</button><button type="button" class="ui-chip lang-opt" data-lang="ko" aria-pressed="true" title="한국어" onclick="setDisplayLang('ko')">KO</button></div>
     </ui-app-bar>
   </header>
 
@@ -10217,6 +10224,21 @@ async function toggleViewMode() {
   setViewMode(next);
   if (!_viewModeOnServer) { _viewModeChosen = true; return; }
   await saveViewMode();
+}
+// Display language (#773): the page comes rendered in it (<html lang>). A switch saves the user's setting (the same
+// one Slack's lang ko|en changes) and the soma_lang cookie (a session with no Slack user has only the cookie), then
+// reloads the page in the new language.
+function pageDisplayLang() { return document.documentElement.lang === 'en' ? 'en' : 'ko'; }
+function paintLangToggle() {
+  var cur = pageDisplayLang();
+  var opts = document.querySelectorAll('#lang-toggle .lang-opt');
+  for (var i = 0; i < opts.length; i++) opts[i].setAttribute('aria-pressed', opts[i].getAttribute('data-lang') === cur ? 'true' : 'false');
+}
+async function setDisplayLang(lang) {
+  if ((lang !== 'en' && lang !== 'ko') || lang === pageDisplayLang()) return;
+  document.cookie = 'soma_lang=' + lang + '; path=/; max-age=31536000; samesite=lax';
+  try { await patchSetting('displayLanguage', lang); } catch (_e) {}
+  location.reload();
 }
 // Saves the page's current mode — one write at a time, so the last switch is the one saved.
 async function saveViewMode() {
@@ -20584,6 +20606,7 @@ _viewMode = readViewMode();
 _viewPlan = readViewPlan();
 _viewLayout = readViewLayout();
 applyViewMode();
+paintLangToggle();
 syncBoardScope();
 // The user's settings (the view mode, the plan, the default model chips) once the view state above exists: a load
 // started earlier captured _viewModeSeq before its var ran and never applied the server's mode.
