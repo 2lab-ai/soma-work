@@ -144,7 +144,7 @@ describe('dashboard rollback picker (client)', () => {
     mod.onRollbackClick({ target: row });
     await vi.waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0].url).toBe('/api/dashboard/session/C1%3AT1/rollback');
-    expect(posts[0].body).toEqual({ anchor: 'sid~0~a', label: '입력 직전: 배포해', source: 'input' });
+    expect(posts[0].body).toEqual({ anchor: 'sid~0~a', label: '입력 직전: 배포해', source: 'input', at: 1 });
   });
 
   it('a refusal locks the rows and says why; a waiting rollback can be cancelled', async () => {
@@ -178,5 +178,30 @@ describe('dashboard rollback picker (client)', () => {
     await mod.openRollbackDialog('C1:T1');
     await mod.sendRollback('C1:T1', { anchor: 'x', label: 'y', source: 'input' }, 'done');
     expect(nodes['rollback-status'].textContent).toContain('/compact');
+  });
+});
+
+describe('marks on what a rollback dropped (client)', () => {
+  const fn = new Function(`${clientFn('rewoundBy')}\nreturn rewoundBy;`)() as (r: unknown, ts: number) => unknown;
+  const spans = [
+    { from: 10, to: 20, label: 'a', at: 21 },
+    { from: 30, to: 40, label: 'b', at: 41 },
+  ];
+  it('an entry or turn made after the kept point and up to the request is dropped', () => {
+    expect(fn(spans, 10)).toBeNull();
+    expect(fn(spans, 11)).toEqual(spans[0]);
+    expect(fn(spans, 20)).toEqual(spans[0]);
+    expect(fn(spans, 25)).toBeNull();
+    expect(fn(spans, 35)).toEqual(spans[1]);
+    expect(fn(undefined, 15)).toBeNull();
+    expect(fn(spans, Number.NaN)).toBeNull();
+  });
+  it('the work log and the conversation both draw the mark', () => {
+    const wl = clientFn('wlEntryOf');
+    expect(wl).toContain('rewoundBy(');
+    expect(wl).toContain('REWOUND_MARK');
+    const conv = clientFn('convTurnsOf');
+    expect(conv).toContain('rewoundBy(');
+    expect(TEMPLATE).toContain("var REWOUND_MARK = '↩︎ 문맥에서 빠짐';");
   });
 });

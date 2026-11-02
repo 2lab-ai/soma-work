@@ -97,12 +97,12 @@ describe('Dashboard — context rollback routes (#744)', () => {
         payload,
       });
 
-    const ok = await post({ anchor: 'sid1~0~u', label: '입력 직전: x', source: 'input' });
+    const ok = await post({ anchor: 'sid1~0~u', label: '입력 직전: x', source: 'input', at: 50 });
     expect(ok.statusCode).toBe(200);
     expect(request).toHaveBeenNthCalledWith(
       1,
       'C1:t1',
-      { anchor: 'sid1~0~u', label: '입력 직전: x', source: 'input' },
+      { anchor: 'sid1~0~u', label: '입력 직전: x', source: 'input', at: 50 },
       undefined,
     );
 
@@ -126,6 +126,13 @@ describe('Dashboard — context rollback routes (#744)', () => {
       payload: { anchor: 'x', source: 'elsewhere' },
     });
     expect(res.statusCode).toBe(400);
+    const badAt = await web.injectWebServer({
+      method: 'POST',
+      url: `/api/dashboard/session/${encodeURIComponent('C1:t1')}/rollback`,
+      headers: AUTH_HEADER,
+      payload: { anchor: 'sid1~0~u', label: 'x', source: 'input', at: 'yesterday' },
+    });
+    expect(badAt.statusCode).toBe(400);
     expect(request).not.toHaveBeenCalled();
   });
 
@@ -153,5 +160,16 @@ describe('Dashboard — context rollback routes (#744)', () => {
     const card = all.find((c: any) => c && c.key === 'C1:t1');
     expect(card.rollbackAvailable).toBe(true);
     expect(card.pendingRewind).toEqual({ label: '입력 직전: 배포', requestedAt: 9 });
+  });
+
+  it('the card carries what earlier rollbacks dropped, for the log and the conversation marks', async () => {
+    dashboard.setDashboardSessionAccessor(
+      () =>
+        new Map([['C1:t1', liveSession({ contextRewinds: [{ from: 10, to: 20, label: '입력 직전: 배포', at: 21 }] })]]),
+    );
+    const res = await web.injectWebServer({ method: 'GET', url: '/api/dashboard/sessions', headers: AUTH_HEADER });
+    const all = Object.values(JSON.parse(res.body).board).flat() as any[];
+    const card = all.find((c: any) => c && c.key === 'C1:t1');
+    expect(card.contextRewinds).toEqual([{ from: 10, to: 20, label: '입력 직전: 배포', at: 21 }]);
   });
 });

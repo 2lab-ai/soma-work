@@ -53,6 +53,7 @@ import {
   CONTEXT_ROLLBACK_REFUSAL_TEXT,
   type ContextRollbackRefusal,
   cancelContextRollback,
+  keptUntilOf,
   type RollbackPointsView,
   requestContextRollback,
   rollbackInputPoints,
@@ -6813,7 +6814,7 @@ export class SlackHandler {
    */
   async handleContextRollback(
     sessionKey: string,
-    body: { anchor: string; label: string; source: 'input' | 'worklog' } | { cancel: true },
+    body: { anchor: string; label: string; source: 'input' | 'worklog'; at?: number } | { cancel: true },
     actorUserId?: string,
   ): Promise<{ ok: true; cancelled?: boolean } | { ok: false; reason: ContextRollbackRefusal | 'not-found' }> {
     const session = this.claudeHandler.getSessionByKey(sessionKey);
@@ -6835,7 +6836,13 @@ export class SlackHandler {
       }
       return { ok: true, cancelled: had };
     }
-    const result = requestContextRollback(session, body, actor, {
+    const target = {
+      anchor: body.anchor,
+      label: body.label,
+      source: body.source,
+      keptUntil: keptUntilOf(body.source, body.at),
+    };
+    const result = requestContextRollback(session, target, actor, {
       requestActive: this.requestCoordinator.isRequestActive(sessionKey),
     });
     if (!result.ok) return result;

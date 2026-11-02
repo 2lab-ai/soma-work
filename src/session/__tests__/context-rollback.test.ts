@@ -8,6 +8,7 @@ import type { ConversationTurn } from '../../conversation/types';
 import type { ConversationSession } from '../../types';
 import {
   cancelContextRollback,
+  keptUntilOf,
   requestContextRollback,
   rollbackInputLabel,
   rollbackInputPoints,
@@ -155,5 +156,27 @@ describe('buildRollbackPointsView', () => {
     expect(v.inputs[0]).toEqual({ anchor: A(1), label: '입력 직전: 배포해', at: 1 });
     expect(v.worklog[0].label).toBe('툴 결과까지: ok');
     expect(buildRollbackPointsView(s, [], [], { actor: 'U1', requestActive: true }).refusal).toBe('busy');
+  });
+});
+
+describe('what the rollback keeps (#744 marks what it dropped)', () => {
+  it('a request carries keptUntil when it is a time up to now', () => {
+    const s = session();
+    requestContextRollback(s, { anchor: A(3), label: 'x', source: 'input', keptUntil: 4 }, 'U1', ok);
+    expect(s.pendingRewind?.keptUntil).toBe(4);
+    const later = session();
+    requestContextRollback(later, { anchor: A(3), label: 'x', source: 'input', keptUntil: 99 }, 'U1', ok);
+    expect(later.pendingRewind?.keptUntil).toBeUndefined();
+    const bad = session();
+    requestContextRollback(bad, { anchor: A(3), label: 'x', source: 'input', keptUntil: Number.NaN }, 'U1', ok);
+    expect(bad.pendingRewind?.keptUntil).toBeUndefined();
+  });
+
+  it('an input is dropped with what came after it; a work-log point stays', () => {
+    expect(keptUntilOf('input', 50)).toBe(49);
+    expect(keptUntilOf('worklog', 50)).toBe(50);
+    expect(keptUntilOf('goal', 50)).toBe(50);
+    expect(keptUntilOf('input', undefined)).toBeUndefined();
+    expect(keptUntilOf('worklog', 'x' as unknown as number)).toBeUndefined();
   });
 });

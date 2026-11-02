@@ -390,6 +390,11 @@ export interface KanbanSession {
   rollbackAvailable?: boolean;
   pendingRewind?: { label: string; requestedAt: number };
   /**
+   * What applied rollbacks dropped from the model's context: work-log entries
+   * and turns made after `from` and up to `to` are marked "문맥에서 빠짐".
+   */
+  contextRewinds?: Array<{ from: number; to: number; label: string; at: number }>;
+  /**
    * Set when the session is idle only because the system will start it again
    * by itself (see {@link KanbanAutoResume}). Such a card is unfinished work:
    * the board puts it in `working`, not `idle`. Absent otherwise.
@@ -1551,7 +1556,8 @@ export interface DashboardRollbackHandler {
   points(sessionKey: string, actorUserId: string | undefined): Promise<unknown>;
   request(
     sessionKey: string,
-    body: { anchor: string; label: string; source: 'input' | 'worklog' } | { cancel: true },
+    /** `at`: the point's time from the picker (marks what the rollback drops). */
+    body: { anchor: string; label: string; source: 'input' | 'worklog'; at?: number } | { cancel: true },
     actorUserId: string | undefined,
   ): Promise<{ ok: true; cancelled?: boolean } | { ok: false; reason: string }>;
 }
@@ -2387,6 +2393,18 @@ function sessionToKanban(key: string, s: any): KanbanSession {
             label: String(s.pendingRewind.label).slice(0, 300),
             requestedAt: Number(s.pendingRewind.requestedAt) || 0,
           },
+        }
+      : {}),
+    ...(Array.isArray(s.contextRewinds) && s.contextRewinds.length
+      ? {
+          contextRewinds: s.contextRewinds
+            .slice(-10)
+            .map((r: { from?: unknown; to?: unknown; label?: unknown; at?: unknown }) => ({
+              from: Number(r.from) || 0,
+              to: Number(r.to) || 0,
+              label: String(r.label ?? '').slice(0, 300),
+              at: Number(r.at) || 0,
+            })),
         }
       : {}),
     ...(autoResume ? { autoResume } : {}),
@@ -4084,12 +4102,12 @@ export async function registerDashboardRoutes(
 
   server.post<{
     Params: { key: string };
-    Body: { anchor?: unknown; label?: unknown; source?: unknown; cancel?: unknown };
+    Body: { anchor?: unknown; label?: unknown; source?: unknown; at?: unknown; cancel?: unknown };
   }>(
     '/api/dashboard/session/:key/rollback',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { anchor, label, source, cancel } = request.body || {};
+      const { anchor, label, source, at, cancel } = request.body || {};
       const isCancel = cancel === true;
       if (
         !isCancel &&
@@ -4098,7 +4116,8 @@ export async function registerDashboardRoutes(
           anchor.length > 200 ||
           typeof label !== 'string' ||
           label.length > 300 ||
-          (source !== 'input' && source !== 'worklog'))
+          (source !== 'input' && source !== 'worklog') ||
+          (at !== undefined && (typeof at !== 'number' || !Number.isFinite(at) || at < 0)))
       ) {
         reply
           .status(400)
@@ -4117,7 +4136,12 @@ export async function registerDashboardRoutes(
           resolved.originalKey,
           isCancel
             ? { cancel: true }
-            : { anchor: anchor as string, label: label as string, source: source as 'input' | 'worklog' },
+            : {
+                anchor: anchor as string,
+                label: label as string,
+                source: source as 'input' | 'worklog',
+                ...(typeof at === 'number' ? { at } : {}),
+              },
           actor,
         );
         if (result.ok) {
@@ -12541,6 +12565,21 @@ function closeLifecycleDialog() {
 // The picker reads its points from the server (the owner's inputs and the work log's cut points of
 // this context, from GET …/rollback-points) and asks with POST …/rollback; the thread is told there.
 var _rollbackKey = null;
+// #744 — what an applied rollback dropped: entries and turns made after a span's
+// kept point and up to its request (the card's contextRewinds) read "문맥에서 빠짐".
+var REWOUND_MARK = '↩︎ 문맥에서 빠짐';
+function rewoundBy(spans, ts) {
+  if (!Array.isArray(spans) || typeof ts !== 'number' || !isFinite(ts)) return null;
+  for (var i = 0; i < spans.length; i++) {
+    var r = spans[i];
+    if (r && ts > r.from && ts <= r.to) return r;
+  }
+  return null;
+}
+function panelRewinds() {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  return s && Array.isArray(s.contextRewinds) ? s.contextRewinds : null;
+}
 function setRollbackStatus(text, isError) {
   var el = document.getElementById('rollback-status');
   if (!el) return;
@@ -12618,7 +12657,7 @@ function onRollbackClick(e) {
     return;
   }
   body._armed = null;
-  sendRollback(key, { anchor: p.anchor, label: p.label, source: source }, '다음 턴부터 문맥을 되돌려요');
+  sendRollback(key, { anchor: p.anchor, label: p.label, source: source, at: p.at }, '다음 턴부터 문맥을 되돌려요');
 }
 async function sendRollback(key, payload, doneTitle) {
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/rollback';
@@ -14333,6 +14372,7 @@ function wlEntryOf(st, e) {
   var kind = Object.prototype.hasOwnProperty.call(WL_LABELS, e.kind) ? e.kind : 'narration';
   var x = { id: String(seq) };
   if (typeof e.ts === 'number' && isFinite(e.ts)) x.at = e.ts;
+  var rewound = rewoundBy(panelRewinds(), Number(e.ts));
   var text = String(e.text || '');
   var tool = e.tool ? String(e.tool) : '';
   if ((kind === 'tool' || kind === 'tool_result') && !e._role) {
@@ -14341,6 +14381,7 @@ function wlEntryOf(st, e) {
     x.tool = { name: tool || '툴', status: card ? card.status : 'interrupted' };
     var sum = kind === 'tool' ? wlToolSummary(tool, text) : e.ok === false ? '실패' : '완료';
     if (sum) x.tool.summary = sum;
+    if (rewound) x.tool.summary = REWOUND_MARK + (sum ? ' · ' + sum : '');
     if (kind === 'tool' && e.agentRef) x.agent = wlAgentOf(String(e.agentRef));
     return x;
   }
@@ -14377,6 +14418,7 @@ function wlEntryOf(st, e) {
     x.kind = kind;
     x.text = text;
   }
+  if (rewound) x.text = REWOUND_MARK + ' · ' + (x.text || '');
   x.hasRaw = true;
   if (st.open && st.open.has(seq)) x.raw = wlRawView(st, e);
   return x;
@@ -15779,9 +15821,15 @@ function convTurnsOf(list, c) {
         u.media = true;
         slots.push({ name: 'media-' + id, kind: 'media', list: atts, turn: t });
       }
+      // #744: a turn a rollback dropped says so (a person's by its name, a system turn in its line).
+      if (rewoundBy(c.rewinds, ts)) {
+        if (u.role === 'user') u.name = u.name + ' · ' + REWOUND_MARK;
+        else u.text = REWOUND_MARK + ' · ' + (u.text || '');
+      }
       turns.push(u);
     } else {
       var a = { id: id, role: 'assistant', name: c.bot };
+      if (rewoundBy(c.rewinds, ts)) a.name = (c.bot || '') + ' · ' + REWOUND_MARK;
       if (at) a.at = at;
       var sum = convSummaryOf(t, c);
       if (sum.title || sum.text || sum.error) a.summary = sum;
@@ -15903,6 +15951,7 @@ function convPaint() {
   var working = s ? s.activityState === 'working' : Object.keys(_sessionCache).length === 0;
   var built = convTurnsOf(_panelTurnsList, {
     cid: cid, bot: botNameOf(s), now: Date.now(), working: working,
+    rewinds: s && Array.isArray(s.contextRewinds) ? s.contextRewinds : null,
     answers: _rawLoadedCache, failed: _ansFailed, resum: _resumSent,
     arts: cid && _artCache[cid] ? _artCache[cid].list || [] : [],
     titles: ansLinkTitles(ansSession(cid)),
