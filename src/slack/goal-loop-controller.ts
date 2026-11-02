@@ -59,7 +59,7 @@ import { GOAL_CONTINUATION_TEXT_PREFIX, GOAL_SUMMARY_PERSIST_MAX } from './goal-
 
 export { GOAL_SUMMARY_PERSIST_MAX };
 
-import { openGoalStall } from './goal-stall';
+import { goalStallRollbackOffer, openGoalStall, trackGoalFirstFailure } from './goal-stall';
 import { advanceGoalQueue, formatGoalObjectiveForSlack } from './session-goal';
 import { announceSessionNotice, recordSessionNotice } from './session-notice';
 
@@ -200,6 +200,8 @@ export interface GoalStallQuestion {
   objective: string;
   reason: string;
   actions: string[];
+  /** #745: also ask whether to roll the context back to the first failure (turns that would leave it). */
+  rollback?: { turns: number };
 }
 
 /**
@@ -363,6 +365,7 @@ export class GoalLoopController {
           remaining: activeGoal.lastEvalRemaining ?? [],
         },
         summaryHash,
+        { reused: true },
       );
       return;
     }
@@ -429,10 +432,9 @@ export class GoalLoopController {
     // again": no turn ran since that decision. The next real turn can stall.
     if (cause === 'kick' && verdict.sameAsPrevious) {
       logger.info('Goal stall check skipped — a kick, not a repeated turn', { sessionKey });
-      verdict = { ...verdict, sameAsPrevious: false };
     }
 
-    await this.handleVerdict(sessionKey, session, activeGoal, verdict, summaryHash);
+    await this.handleVerdict(sessionKey, session, activeGoal, verdict, summaryHash, { stallAllowed: cause !== 'kick' });
   }
 
   /**
@@ -446,9 +448,15 @@ export class GoalLoopController {
     activeGoal: SessionGoal,
     verdict: GoalEvalVerdict,
     summaryHash: string,
+    opts: { reused?: boolean; stallAllowed?: boolean } = {},
   ): Promise<void> {
     const { requestCoordinator, logger } = this.deps;
-    const outcome = decideGoalEvalOutcome(activeGoal, verdict, this.now());
+    // #745: where the current failure started — a reused verdict judged no new turn.
+    if (!opts.reused) trackGoalFirstFailure(session, activeGoal, verdict, this.now());
+    // A kick may not stall (runOnce); the repeat still counted toward the first failure above.
+    const judged =
+      opts.stallAllowed === false && verdict.sameAsPrevious ? { ...verdict, sameAsPrevious: false } : verdict;
+    const outcome = decideGoalEvalOutcome(activeGoal, judged, this.now());
     // Remember which summary produced this verdict so an identical next turn
     // can short-circuit (S9). A `complete` verdict stops the loop, so clear it.
     activeGoal.lastEvalSummaryHash = outcome.action === 'complete' ? undefined : summaryHash;
@@ -607,7 +615,7 @@ export class GoalLoopController {
     // restart re-ran the eval at the cap) ends here — its Continue would only
     // land on a goal the stall holds.
     retireGoalCapDecision(activeGoal);
-    const stall = openGoalStall(activeGoal, verdict, this.now());
+    const stall = openGoalStall(activeGoal, verdict, this.now(), goalStallRollbackOffer(session, activeGoal, verdict));
     this.persist();
     logger.info('Goal loop stopped — same failure as the previous evaluation', {
       sessionKey,
@@ -618,10 +626,14 @@ export class GoalLoopController {
     // The notice carries the three actions too: it stands in for the question
     // when the question cannot be posted (another question is open, Slack failed).
     const actionLines = stall.actions.map((a, i) => `${i + 1}. ${a}`).join('\n');
+    // #745: the rollback offer too, for the same reason (`rollback goal` is its thread form).
+    const rollbackLine = stall.rollbackAnchor
+      ? `\n↩︎ 처음 실패한 뒤 ${stall.rollbackTurns ?? 0}턴 동안 한 일이 없습니다 — \`rollback goal\` 로 그 지점까지 문맥을 되돌릴 수 있습니다.`
+      : '';
     try {
       await this.postResultNotice(
         session,
-        `🛑 Goal 자동 진행을 멈췄습니다 — 지난번과 같은 이유로 다시 실패했습니다 (확신 ${Math.round(stall.confidence * 100)}%).\n*Objective:* ${formatGoalObjectiveForSlack(activeGoal.objective)}\n*Reason:* ${verdict.reason}\n*다음 지시 후보:*\n${actionLines}\n하나를 고르거나 직접 지시하세요 — 어떤 메시지든 goal을 이어갑니다. 멈추려면 \`goal pause\`.`,
+        `🛑 Goal 자동 진행을 멈췄습니다 — 지난번과 같은 이유로 다시 실패했습니다 (확신 ${Math.round(stall.confidence * 100)}%).\n*Objective:* ${formatGoalObjectiveForSlack(activeGoal.objective)}\n*Reason:* ${verdict.reason}\n*다음 지시 후보:*\n${actionLines}\n하나를 고르거나 직접 지시하세요 — 어떤 메시지든 goal을 이어갑니다. 멈추려면 \`goal pause\`.${rollbackLine}`,
       );
     } catch (err: unknown) {
       // Never let a failed notice keep the question from being asked.
@@ -639,6 +651,7 @@ export class GoalLoopController {
         objective: activeGoal.objective,
         reason: verdict.reason,
         actions: stall.actions,
+        ...(stall.rollbackAnchor ? { rollback: { turns: stall.rollbackTurns ?? 0 } } : {}),
       });
     } catch (err: unknown) {
       logger.warn('Goal stall question could not be posted — the notice still asks', {

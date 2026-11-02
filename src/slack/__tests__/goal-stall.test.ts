@@ -529,6 +529,22 @@ describe('restart and interrupted turns never stall (2026-11-02 incident)', () =
     expect(h.injected).toHaveLength(1);
   });
 
+  it('a kick that cannot stall still counts the repeat toward the first failure (#745)', async () => {
+    const h = makeHarness(
+      makeGoal({
+        lastEvalReason: 'x',
+        lastEvalSummaryHash: 'judged-before',
+        firstFailure: { anchor: 'a1', at: 1, turns: 1, progressed: false },
+      }),
+      [sameAgain],
+    );
+    h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.stall).toBeUndefined();
+    expect(h.goal.firstFailure?.anchor).toBe('a1');
+    expect(h.goal.firstFailure?.turns).toBe(2);
+  });
+
   it('a real turn that repeats the same failure still stalls', async () => {
     const h = makeHarness(makeGoal({ lastEvalReason: 'dev has 0 epics' }), [sameAgain]);
     h.controller.onTurnSettled(SESSION_KEY);
