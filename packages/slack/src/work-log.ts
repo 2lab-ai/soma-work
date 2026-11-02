@@ -16,7 +16,34 @@
  */
 export const WORK_LOG_RAW_MAX_BYTES = 256 * 1024;
 
-export type WorkLogKind = 'instruction' | 'narration' | 'tool' | 'tool_result' | 'final' | 'notice' | 'error';
+export type WorkLogKind =
+  | 'instruction'
+  | 'narration'
+  | 'tool'
+  | 'tool_result'
+  | 'final'
+  | 'notice'
+  | 'error'
+  /** SSOT 2026-11-02 T1 — a person's answer to a permission prompt (see `permission`). */
+  | 'permission';
+
+/** The answers a permission prompt can get (the answer path's `PermissionPromptDecision`). */
+export const WORK_LOG_PERMISSION_DECISIONS = [
+  'approve',
+  'deny',
+  'explain',
+  'approve_disable_rule',
+  'approve_confirmed',
+] as const;
+
+/** SSOT 2026-11-02 T1 — a `permission` entry's answer: what was decided, by whom, and what the AI advised. */
+export interface WorkLogPermission {
+  decision: (typeof WORK_LOG_PERMISSION_DECISIONS)[number];
+  /** Slack user id of who answered (the prompt's requester). */
+  by?: string;
+  /** The AI's recommendation shown on the prompt; absent when it gave none. */
+  ai?: 'approve' | 'deny';
+}
 
 export interface WorkLogInput {
   kind: WorkLogKind;
@@ -66,6 +93,8 @@ export interface WorkLogInput {
    * call card pairs a result with its call by it; older logs have none.
    */
   toolUseId?: string;
+  /** A `permission` entry's answer (SSOT 2026-11-02 T1). */
+  permission?: WorkLogPermission;
 }
 
 /** An entry as pages and the live broadcast carry it: its raw is described, never included. */

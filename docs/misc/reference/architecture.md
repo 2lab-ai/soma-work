@@ -208,6 +208,12 @@ updates inside its terminal-cleanup boundary, including setup failures.
   `StreamContext.workLog` → `streamExecutorProviders.appendWorkLog(conversationId, entry)`로 턴의 `turnId`와 함께,
   대화 단위인 압축 시작/완료 공지는 compact-hooks가 `recordConversationWorkLog`로 `turnId` 없이 같은 provider에 넣는다. 출력 수준과 무관하게 항상 방출된다
   (타입 `packages/slack/src/work-log.ts`).
+  권한 프롬프트 응답(2026-11-02)은 `answerPermissionPrompt`가 저장한 뒤 `permission` 항목(결정·도구·호출·AI 권고·응답자)으로 같은 provider에 넣는다 — 슬랙 프롬프트는 대화 단위, 태스크 프롬프트는 물어본 턴의 `turnId`로.
+- 권한 프롬프트의 AI 권고(2026-11-02): 정책 훅이 `classify → ask`로 사람에게 넘길 때 가디언 판정의 권고(`recommendation`·`summary`·`risk`)를
+  `permissionAdviceBoard`(`src/agent-runtime/policy/permission-advice.ts`)에 세션 키·도구·입력으로 남기고, 권한 프롬프트 도구가
+  `McpConfigBuilder.setPermissionAdvisor`(ClaudeHandler가 연결)로 가져간다. 남은 게 없으면(legacy 모드) 가디언에게 직접 묻는다(최대 30초).
+  권고는 `PendingApproval.advice`로 저장돼 슬랙 카드(초록/빨강 막대)와 대시보드 카드가 같은 권고를 보이고, `deny` 권고면
+  `answerPermissionPrompt`가 첫 승인을 `confirm_required`로 돌려보내 `approve_confirmed`(2차 확인)만 실행한다.
 - 에이전트 귀속 (spec 12, `.prd/12-dashboard-agent-tree-spec.md`): SDK 프레임의 `parent_tool_use_id`를 매퍼가 중립 이벤트의
   `parentToolUseId`로 싣고, 스트림 프로세서가 서브에이전트의 작업 로그 항목에 `agentId`(스폰 호출과 그 결과에는 `agentRef`)를 붙인다.
   서브의 TodoWrite는 `onTodoUpdate`(Slack 플랜 블록·세션 task ledger)가 아니라 `StreamCallbacks.onAgentEvent` →
