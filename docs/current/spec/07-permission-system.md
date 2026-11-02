@@ -468,11 +468,11 @@ this.app.action('deny_tool', async ({ ack, body, respond }) => {
 | Lean | `evaluateToolPolicyPlan` (`Model.lean`), `ProofsPlan.lean` — 사유가 있으면 항상 거부, 없으면 `evaluateToolPolicyWith`와 같음, 좁히기만 함 |
 
 - 거부: 연구 도구 허용 목록(`PLAN_RESEARCH_TOOLS`) 밖의 모든 도구(쓰기 도구·서브에이전트·`Workflow`·`Monitor`·SDK가 새로 낼 도구 포함 —
-  계획 턴의 훅은 catch-all), 셸이 해석한 대로 모든 구간이 허용된 읽기가 아닌 셸 명령(`lexCommand`가 따옴표를 셸처럼 벗기고, `$`·`\`·중괄호·괄호·
-  `<`·`/dev/null` 밖 리다이렉션·백그라운드 `&`·환경 할당·경로 실행은 거부, `find`·`sed`·`git`·`gh`에는 글롭도 거부, git 거부 옵션은 줄임말까지(`--open-files-in-page`), `rg`·`git grep`은 없음(검색은 Grep 도구), `cd`는 폴더 안 상대 경로만, clone은 `-C` 없이 폴더 안으로, `gh … --web` 거부, `git clone/fetch`는 허용 옵션만·`ext::` 거부,
-  `gh api`는 GET만), 정확한 읽기 목록(`PLAN_READ_MCP_TOOLS`) 밖의 MCP 도구 — 이름이 읽기처럼 보여도(`redis_query`) 거부.
-- 통과: `Read`·`Glob`·`Grep`·`WebFetch`·`WebSearch`·`Skill`, 읽기 전용 명령(`ls`·`cat`·`grep`·`find`·`sed -n 'N,Mp'`·`git log/show/diff/status`·
-  `git clone/fetch`·`gh … view/list`·`gh api` GET), `mcp__plan__plan_submit`(계획 제출), github·filesystem 읽기 MCP와 `mcp__model-command__list`(정확한 이름).
+  계획 턴의 훅은 catch-all), **셸(Bash) 전부**, 정확한 읽기 목록(`PLAN_READ_MCP_TOOLS`) 밖의 MCP 도구 — 이름이 읽기처럼 보여도(`redis_query`) 거부.
+  셸을 통째로 막는 이유: 리뷰 4라운드 동안 "읽기 전용" 명령 분류기마다 우회로가 나왔다(따옴표 `-de'lete'`, 옵션 묶음 `sort -ro`, git 옵션 줄임말,
+  `rg --hostname-bin`, zsh `printf '%n' 'a[$(…)]'`, `printf -v PATH`, 심볼릭 링크 너머 clone, `gh … --web=true`). 회귀 테스트로 남겼다.
+- 통과: `Read`·`Glob`·`Grep`·`WebFetch`·`WebSearch`·`Skill`·할 일 도구, `mcp__plan__plan_submit`(계획 제출), github·filesystem 읽기 MCP와
+  `mcp__model-command__list`(정확한 이름). clone·빌드·테스트가 필요하면 계획의 첫 단계로 넣는다.
 - 거부 메시지는 모델에게 그 변경을 계획에 넣고 `plan_submit`하라고 알린다. 시작(`approved`) 뒤 턴에는 체크가 실리지 않는다.
 
 ## 7. User Bypass System
