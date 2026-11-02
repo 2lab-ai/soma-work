@@ -67,7 +67,26 @@ function session(ownerId: string): ConversationSession {
       totalCostUsd: 6.2,
     },
     taskLedger: ledger,
+    // 작업 카드의 연결 (.prd/22): an issue, a PR and a wiki — the card's 연결 row brings the link history.
     linkHistory: {
+      issues: [
+        {
+          url: 'https://2lab.atlassian.net/browse/PAY-12',
+          label: 'PAY-12',
+          provider: 'jira',
+          type: 'issue',
+          status: 'In Progress',
+        },
+      ],
+      docs: [
+        {
+          url: 'https://2lab.atlassian.net/wiki/spaces/PAY/pages/123456/Payment+Form+Design',
+          label: 'Confluence',
+          provider: 'confluence',
+          type: 'doc',
+          title: '결제 폼 설계',
+        },
+      ],
       prs: [
         {
           url: 'https://github.com/2lab-ai/soma-work/pull/733',

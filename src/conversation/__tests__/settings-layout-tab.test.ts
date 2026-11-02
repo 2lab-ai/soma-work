@@ -164,7 +164,7 @@ describe('E2 — every item, locks and moves', () => {
     expect(html()).toContain('<span class="lay-lock">항상</span>');
     // The first item cannot go up, the last cannot go down.
     expect(html()).toMatch(/data-lay="up" data-zone="rows" data-id="[^"]+" data-idx="0"[^>]*disabled/);
-    expect(html()).toMatch(/data-lay="down" data-zone="rows" data-id="[^"]+" data-idx="4"[^>]*disabled/);
+    expect(html()).toMatch(/data-lay="down" data-zone="rows" data-id="[^"]+" data-idx="5"[^>]*disabled/);
     for (const [surface, cat] of [
       ['open', LAYOUT_CATALOG.open.parts],
       ['detail', LAYOUT_CATALOG.detail.top],
@@ -185,9 +185,9 @@ describe('E3 — editing saves at once', () => {
   it('↑ ↓ move an item in its list; the edit is the preset’s, in the mode being edited; one PUT saves it', async () => {
     const { api, puts, stored, flush, els } = editor();
     await api.loadLayout();
-    api.layMove('rows', 2, 0); // 산출물 줄 to the top
+    api.layMove('rows', 3, 0); // 산출물 줄 to the top
     const card = api.get('_layDoc').presets['1'].minimal.card;
-    expect(card.rows.map((r: { id: string }) => r.id)).toEqual(['arts', 'summary', 'task', 'agents', 'usage']);
+    expect(card.rows.map((r: { id: string }) => r.id)).toEqual(['arts', 'summary', 'task', 'links', 'agents', 'usage']);
     expect(els['lay-live'].textContent === '' || true).toBe(true);
     await flush();
     expect(puts).toHaveLength(1);
@@ -371,10 +371,16 @@ describe('E5 — the preview is the dashboard’s face', () => {
   it('the sample card in the layout’s order, the open card with its schematic body', async () => {
     const { api, els } = editor();
     await api.loadLayout();
-    api.layMove('rows', 2, 0);
+    api.layMove('rows', 3, 0);
     const card = els['lay-inbox'].data.columns[0].cards[0];
-    expect(card.rows).toEqual(['artifacts', 'task']);
-    expect(card.metrics.map((m: { text: string }) => m.text)).toEqual(['#700 열림', '$6.20', 'Opus 5.5']);
+    expect(card.rows).toEqual(['artifacts', 'task', 'links']);
+    // 작업 카드의 연결: the preview shows the linked issue, PR and wiki with their states; no PR chip (the row has it).
+    expect(card.links.map((l: { text: string; status?: string }) => [l.text, l.status])).toEqual([
+      ['PAY-12', 'In Progress'],
+      ['#700', '열림'],
+      ['결제 폼 설계', undefined],
+    ]);
+    expect(card.metrics.map((m: { text: string }) => m.text)).toEqual(['$6.20', 'Opus 5.5']);
     api.set('_laySurface', 'open');
     api.layPaint();
     const open = els['lay-inbox'];

@@ -330,9 +330,19 @@ describe('expanded body — face + delta, sections keyed on state', () => {
         'sessionActionHtml',
         'cardGoalLine',
         'renderEpicPlan',
+        'cardLinksFace',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy'],
+      [
+        'CARD_LINK_KIND',
+        'CARD_LINK_TONES',
+        'RESUME_SVG',
+        'GOAL_STATUS_LABELS',
+        'GOAL_STATUS_TONE',
+        'GOAL_SVG',
+        'SESSION_ACTION_TONE',
+        '_busy',
+      ],
       { ...STUBS, ...inject },
     ).renderCardBody(s, col);
 
@@ -1953,6 +1963,7 @@ const CARD_OF_FNS = [
   'ctxPercent',
   'cardCtxTitle',
   'cardPrMetric',
+  'cardLinksFace',
   '_hashStr',
   'ownerBadgeHue',
   'isSiblingSession',
@@ -1960,6 +1971,8 @@ const CARD_OF_FNS = [
 ];
 const CARD_OF_VARS = [
   'PR_STATE_LABEL',
+  'CARD_LINK_KIND',
+  'CARD_LINK_TONES',
   'PR_STATE_TONE',
   'AGENT_STATUS_LABEL',
   'AGENT_STATUS_TONE',
