@@ -6028,6 +6028,167 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
     });
 
+    // astra review P1 (second round): one answer per question across Slack AND the dashboard.
+    describe('one answer per question across Slack and the dashboard', () => {
+      const QUESTION_TS = 'q-msg';
+      let gate: Deferred<void>;
+      let forms: Map<string, any>;
+      let surfaces: ChoiceActionHandler;
+
+      beforeEach(() => {
+        gate = deferred<void>();
+        forms = new Map();
+        const formStore = {
+          get: (id: string) => forms.get(id),
+          set: (id: string, f: any) => forms.set(id, f),
+          delete: (id: string) => forms.delete(id),
+          getFormsBySession: (key: string) => new Map([...forms].filter(([, f]) => f.sessionKey === key)),
+        };
+        surfaces = new ChoiceActionHandler(
+          {
+            slackApi: handlerAny.slackApi,
+            claudeHandler,
+            messageHandler: (event: any, s: any) => handler.handleMessage(event, s),
+            threadPanel: handlerAny.threadPanel,
+          } as any,
+          formStore as any,
+        );
+      });
+
+      const slackClick = () =>
+        surfaces.handleUserChoice({
+          actions: [
+            {
+              value: JSON.stringify({
+                sessionKey: SESSION_KEY,
+                choiceId: 'merge-and-deploy',
+                label: '머지하고 배포',
+                question: 'Q?',
+                turnId: 't-q',
+              }),
+            },
+          ],
+          user: { id: 'U_OWNER' },
+          channel: { id: CHANNEL },
+          message: { ts: QUESTION_TS, thread_ts: THREAD_TS },
+        });
+      const dashboardAnswer = () =>
+        surfaces.handleChoiceFromDashboard(SESSION_KEY, 'merge-and-deploy', '머지하고 배포', 'Q?', 'U_OWNER');
+
+      function openSingle(): void {
+        registrySession.actionPanel = {
+          waitingForChoice: false,
+          pendingQuestion: singleQuestion(),
+          pendingChoice: { turnId: 't-q', kind: 'single', choiceTs: QUESTION_TS, formIds: [] },
+        };
+        // The real resolve: rewrite the Slack message (held), then drop the P3 record.
+        handlerAny.threadPanel.resolveChoice = vi.fn(async (session: any) => {
+          await gate.promise;
+          session.actionPanel.pendingChoice = undefined;
+          session.actionPanel.waitingForChoice = false;
+          return true;
+        });
+      }
+
+      function openMulti(): void {
+        registrySession.actionPanel = {
+          waitingForChoice: false,
+          pendingQuestion: multiQuestion(),
+          choiceMessageTs: 'form-msg',
+        };
+        forms.set('form-1', {
+          formId: 'form-1',
+          sessionKey: SESSION_KEY,
+          channel: CHANNEL,
+          threadTs: THREAD_TS,
+          messageTs: 'form-msg',
+          questions: multiQuestion().questions,
+          selections: {
+            q1: { choiceId: 'admin-only', label: 'admin만' },
+            q2: { choiceId: 'slack-and-dashboard', label: '슬랙과 대시보드' },
+          },
+          createdAt: 1,
+        });
+        // Every Slack message rewrite is held until the gate opens.
+        handlerAny.slackApi.updateMessage = vi.fn(() => gate.promise);
+      }
+      const formSubmit = () =>
+        surfaces.handleFormSubmit({
+          actions: [{ value: JSON.stringify({ formId: 'form-1', sessionKey: SESSION_KEY }) }],
+          user: { id: 'U_OWNER' },
+          channel: { id: CHANNEL },
+          message: { ts: 'form-msg', thread_ts: THREAD_TS },
+        });
+      const dashboardMulti = () =>
+        surfaces.handleMultiChoiceFromDashboard(
+          SESSION_KEY,
+          {
+            q1: { choiceId: 'anyone', label: '누구나' },
+            q2: { choiceId: 'slack-only', label: '슬랙만' },
+          },
+          'U_OWNER',
+        );
+
+      async function race(first: () => Promise<unknown>, second: () => Promise<unknown>) {
+        const a = first();
+        await tick();
+        const b = second();
+        await tick();
+        gate.resolve();
+        return Promise.allSettled([a, b]);
+      }
+
+      it('a Slack click on the question the dashboard is answering is refused — the answer runs once', async () => {
+        openSingle();
+        const [dashboard] = await race(dashboardAnswer, slackClick);
+
+        expect(dashboard.status).toBe('fulfilled');
+        expect(startWithContinuation).toHaveBeenCalledTimes(1);
+        expect(handlerAny.slackApi.postEphemeral).toHaveBeenCalledWith(
+          CHANNEL,
+          'U_OWNER',
+          expect.stringContaining('이미 답변'),
+        );
+      });
+
+      it('a dashboard answer to the question a Slack click is answering is refused — the answer runs once', async () => {
+        openSingle();
+        const [, dashboard] = await race(slackClick, dashboardAnswer);
+
+        expect(dashboard).toMatchObject({
+          status: 'rejected',
+          reason: expect.objectContaining({ message: 'Session is not waiting for a choice' }),
+        });
+        expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      });
+
+      it('a dashboard multi-choice answer while the Slack form is submitting is refused — the answer runs once', async () => {
+        openMulti();
+        const [, dashboard] = await race(formSubmit, dashboardMulti);
+
+        expect(dashboard).toMatchObject({
+          status: 'rejected',
+          reason: expect.objectContaining({ message: 'Session is not waiting for a choice' }),
+        });
+        expect(startWithContinuation).toHaveBeenCalledTimes(1);
+        expect(startWithContinuation.mock.calls[0][0]).toContain('admin-only. admin만');
+      });
+
+      it('a Slack form submit while the dashboard answers the same question is refused — the answer runs once', async () => {
+        openMulti();
+        const [dashboard] = await race(dashboardMulti, formSubmit);
+
+        expect(dashboard.status).toBe('fulfilled');
+        expect(startWithContinuation).toHaveBeenCalledTimes(1);
+        expect(startWithContinuation.mock.calls[0][0]).toContain('anyone. 누구나');
+        expect(handlerAny.slackApi.postEphemeral).toHaveBeenCalledWith(
+          CHANNEL,
+          'U_OWNER',
+          expect.stringContaining('이미 답변'),
+        );
+      });
+    });
+
     // astra review P1: two submissions of one answer must run it once.
     it.each([
       [
