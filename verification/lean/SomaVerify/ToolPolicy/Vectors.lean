@@ -5,7 +5,7 @@ import SomaVerify.ToolPolicy.Model
 /-!
 # Conformance vectors for `SomaVerify.ToolPolicy`
 
-`verification/vectors/tool-policy.json` holds eight kinds of case, told apart by `kind`.
+`verification/vectors/tool-policy.json` holds nine kinds of case, told apart by `kind`.
 
 Replayed by `tool-policy.lean-conformance.test.ts`, which mocks the guard primitives with each
 row's `prims` and calls the real `evaluateToolPolicy` once per entry of `calls`. Every call also
@@ -25,9 +25,10 @@ other, so a wrong argument or a wrong check fails the replay.
 * `tool-names`: every native tool and a set of near misses (case, spacing, look-alike letters,
   prefixes, the empty name), with no primitive firing, each firing alone, and all firing, in
   every mode, for admins and non-admins.
-* Every `expect` is the output of `evaluateToolPolicyWith`, the model of the whole TS function
-  (phase 4 with the native write boundary); a row without `checkNativeWrite` gets
-  `evaluateToolPolicyEnv`'s, which `ProofsNativeWrite.lean` proves equal.
+* Every `expect` is the output of `evaluateToolPolicyPlan`, the model of the whole TS function
+  (phase 4 with the native write boundary and plan mode); a row without `checkPlanPending` gets
+  `evaluateToolPolicyWith`'s (`ProofsPlan.lean`), and one without `checkNativeWrite` either
+  `evaluateToolPolicyEnv`'s (`ProofsNativeWrite.lean`).
 * `boundary`: the payloads the table holds fixed. A sensitive result without a reason or with
   an empty one, an empty MCP, devops-secret or environment-skill reason (and the environment-skill
   check firing for admins and alongside every other primitive), PR-issue results without a reason or a message,
@@ -49,6 +50,10 @@ other, so a wrong argument or a wrong check fails the replay.
   native write tools, with and without a target, near misses of their names, and the tools of the
   other steps. The replay answers every call with the row's value and fails when the policy asks
   for a tool outside `NATIVE_WRITE_TOOLS`.
+* `plan-pending`: the only rows with `ctx.checkPlanPending` set, as `checkPlanPending`: what it
+  returns (`null`, a reason, the empty reason) with every pattern of `patterns`, in every mode, for
+  admins and non-admins, with and without the live incident context, over the calls of the
+  `native-write` rows. The replay answers every call with the row's value.
 
 Replayed by `tool-policy.concrete.lean-conformance.test.ts` against the real modules, no mocks:
 
@@ -146,6 +151,12 @@ def nativeWriteProp : Option (Option String) → List (String × Json)
   | some v => [("checkNativeWrite", (v.map .str).getD .null)]
   | none => []
 
+/-- The `checkPlanPending` property: what `ctx.checkPlanPending` returns (`null` for `none`), or
+left out when the property is undefined. -/
+def planProp : Option (Option String) → List (String × Json)
+  | some v => [("checkPlanPending", (v.map .str).getD .null)]
+  | none => []
+
 def primsJson (p : Primitives) : Json :=
   .obj [("ssh", .bool p.ssh), ("sensitive", sensitiveJson p.sensitive),
     ("crossUser", .bool p.crossUser), ("mcpDenied", mcpJson p.mcpDenied),
@@ -165,6 +176,8 @@ structure Row where
   incident : Option IncidentReadOnly := none
   /-- what `ctx.checkNativeWrite` returns; `none` leaves it undefined -/
   nativeWrite : Option (Option String) := none
+  /-- what `ctx.checkPlanPending` returns; `none` leaves it undefined -/
+  plan : Option (Option String) := none
 
 /-- A call: the tool name and the exact `toolInput` handed to the TS (`none` is `undefined`). -/
 structure Call where
@@ -181,12 +194,12 @@ def callJson (r : Row) (c : Call) : Json :=
   .obj [("tool", .str c.tool), ("input", c.input.getD .null),
     ("sensitiveCall", sensitiveCallJson (sensitiveCall (r.toInput c))),
     ("devopsCall", devopsCallJson (devopsCall (r.toInput c))),
-    ("expect", resultJson (evaluateToolPolicyWith r.nativeWrite r.incident (r.toInput c)))]
+    ("expect", resultJson (evaluateToolPolicyPlan r.nativeWrite r.plan r.incident (r.toInput c)))]
 
 def rowJson (kind : String) (calls : List Call) (r : Row) : Json :=
   .obj ([("kind", .str kind), ("mode", .str (modeName r.mode)), ("isAdmin", .bool r.isAdmin),
     ("aborted", .bool r.aborted), ("handoff", .bool r.handoff), ("prims", primsJson r.prims)] ++
-    incidentProp r.incident ++ nativeWriteProp r.nativeWrite ++
+    incidentProp r.incident ++ nativeWriteProp r.nativeWrite ++ planProp r.plan ++
     [("calls", .arr (calls.map (callJson r)))])
 
 /-- Every primitive silent: nothing sensitive, no deny reason, not blocked, not dangerous. -/
@@ -491,6 +504,23 @@ def nativeWriteRows : List Row :=
   bools.flatMap fun isAdmin =>
   patterns.map fun (aborted, handoff, prims) =>
     { mode, isAdmin, aborted, handoff, prims, incident, nativeWrite := some v }
+
+/-! ## Plan mode (step 6c) -/
+
+/-- What `ctx.checkPlanPending` returns on the `plan-pending` rows: clear, a reason, the empty
+reason (still a denial: `planDenied !== null`). -/
+def planValues : List (Option String) :=
+  [none, some "plan-reason", some ""]
+
+/-- Every `planValues` × `patterns` × mode × `isAdmin`, without and with the live incident
+context: the step runs after every other deny step and before the incident and mode tiers. -/
+def planRows : List Row :=
+  planValues.flatMap fun v =>
+  [none, some { allowedMcpTools := [evidenceTool] }].flatMap fun incident =>
+  modes.flatMap fun mode =>
+  bools.flatMap fun isAdmin =>
+  patterns.map fun (aborted, handoff, prims) =>
+    { mode, isAdmin, aborted, handoff, prims, incident, plan := some v }
 
 /-! ## Constants -/
 
@@ -835,6 +865,7 @@ def cases : List Json :=
   argumentRows.map (rowJson "arguments" argumentCalls) ++
   incidentRows.map (rowJson "incident" incidentCalls) ++
   nativeWriteRows.map (rowJson "native-write" nativeWriteCalls) ++
+  planRows.map (rowJson "plan-pending" nativeWriteCalls) ++
   [constantsJson] ++
   concreteCases.map concreteJson
 
