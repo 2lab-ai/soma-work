@@ -290,10 +290,14 @@ export class GoalHandler implements CommandHandler {
     const needsOpening = goal.status === 'paused' && goal.openingPending === true;
     const snapshot = needsOpening && admitOpening ? snapshotGoalState(session) : undefined;
     // `goal resume` on a goal the loop stopped on a repeated failure: the owner
-    // chose to go on — the stall ends (its question is retracted) and the loop
-    // runs again below.
+    // chose to go on — the stall ends (its question is retracted), the budget
+    // comes back (a stall at the last continuation would otherwise ask the cap
+    // question right away), and the loop runs again below.
     const wasStalled = !!goal.stall;
-    if (wasStalled) retireGoalCapDecision(goal);
+    if (wasStalled) {
+      retireGoalCapDecision(goal);
+      goal.continuationCount = 0;
+    }
     goal.status = 'active';
     goal.updatedAt = Date.now();
     this.persistGoalChange(session);
