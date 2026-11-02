@@ -19,6 +19,7 @@ import type { RequestAbortReason, RequestCoordinator } from '../request-coordina
 import type { SlackApiHelper } from '../slack-api-helper';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import type { ThreadPanel } from '../thread-panel';
+import type { GateDecision, GateInput } from '../work-queue/service';
 import { resolveCronOrigin, skipDispatchTitle } from './cron-origin';
 import type { ConversationSession, MessageEvent, SayFn, SessionInitResult } from './types';
 
@@ -126,6 +127,12 @@ export interface SessionInitializerProviders {
   getDispatchService?: () => DispatchServiceLike;
   getUserSettings?: (userId: string) => any;
   createPendingUser?: (userId: string, userName: string) => void;
+  /**
+   * Ask the admins to accept a new user. The composition root supplies the one
+   * that records where each DM landed (so the dashboard and every admin's copy
+   * stay in sync, #622); without it, the DMs are posted here.
+   */
+  notifyAdminsNewUser?: ((slackApi: any, userId: string, userName: string) => Promise<unknown>) | null;
   getUserSessionTheme?: (userId: string) => any;
   buildChannelRouteBlocks?: (params: ChannelRouteBlockParams) => { text: string; blocks: any[] };
   getDefaultUpdateChannel?: () => string | undefined;
@@ -158,10 +165,65 @@ const providers: Required<SessionInitializerProviders> = {
   getDispatchService: () => missingProvider('getDispatchService'),
   getUserSettings: () => undefined,
   createPendingUser: () => undefined,
+  notifyAdminsNewUser: null,
   getUserSessionTheme: () => undefined,
   buildChannelRouteBlocks: () => missingProvider('buildChannelRouteBlocks'),
   getDefaultUpdateChannel: () => undefined,
 };
+
+/** E2 ⑦ — what the gate tells a new user (the pending record was made and the admins asked). */
+export const NEW_USER_PENDING_TEXT = '⏳ 승인 대기 중입니다. 관리자에게 요청이 전달되었습니다.';
+/** E2 ⑦ — what the gate tells a user whose request is still pending. */
+export const USER_STILL_PENDING_TEXT = '⏳ 아직 승인 대기 중입니다. 관리자의 승인을 기다려주세요.';
+
+export interface NewUserGateDeps {
+  getUserSettings(userId: string): { accepted?: boolean } | null | undefined;
+  createPendingUser(userId: string, userName: string): void;
+  notifyAdmins(userId: string, userName: string): Promise<unknown>;
+  postMessage(channel: string, text: string, options: { threadTs?: string }): Promise<unknown>;
+  logger: {
+    info(msg: string, meta?: unknown): void;
+    debug(msg: string, meta?: unknown): void;
+    error(msg: string, meta?: unknown): void;
+  };
+}
+
+/**
+ * E2 ⑦ — the new-user approval gate, before anything is made for the user
+ * (.prd/18 D2 (4)): the Slack session path runs it on a new session, and the
+ * task entry (⑧) runs it before a folder or a task exists.
+ *
+ * - `pass`: an accepted user.
+ * - `new`: no record yet — a pending record is made, the user told to wait,
+ *   the admins asked. A failure in there is logged, never thrown: the user is
+ *   halted either way.
+ * - `pending`: the request is still open — the user is told to wait again. A
+ *   post that fails throws.
+ */
+export async function runNewUserGate(
+  deps: NewUserGateDeps,
+  at: { user: string; userName: string; channel: string; threadTs?: string; sessionKey?: string },
+): Promise<'pass' | 'new' | 'pending'> {
+  const { user, userName, channel, threadTs, sessionKey } = at;
+  const settings = deps.getUserSettings(user);
+  if (!settings) {
+    deps.logger.info('New user detected, creating pending record', { sessionKey, user, userName });
+    try {
+      deps.createPendingUser(user, userName);
+      await deps.postMessage(channel, NEW_USER_PENDING_TEXT, { threadTs });
+      await deps.notifyAdmins(user, userName);
+    } catch (error) {
+      deps.logger.error('New user gate: notifying failed — the session is closed anyway', { user, error });
+    }
+    return 'new';
+  }
+  if (!settings.accepted) {
+    deps.logger.debug('Pending user re-message blocked', { sessionKey, user });
+    await deps.postMessage(channel, USER_STILL_PENDING_TEXT, { threadTs });
+    return 'pending';
+  }
+  return 'pass';
+}
 
 export function setSessionInitializerProviders(next: SessionInitializerProviders): void {
   if (next.expectedHandoffKind) providers.expectedHandoffKind = next.expectedHandoffKind;
@@ -181,6 +243,7 @@ export function setSessionInitializerProviders(next: SessionInitializerProviders
   if (next.getDispatchService) providers.getDispatchService = next.getDispatchService;
   if (next.getUserSettings) providers.getUserSettings = next.getUserSettings;
   if (next.createPendingUser) providers.createPendingUser = next.createPendingUser;
+  if (next.notifyAdminsNewUser) providers.notifyAdminsNewUser = next.notifyAdminsNewUser;
   if (next.getUserSessionTheme) providers.getUserSessionTheme = next.getUserSessionTheme;
   if (next.buildChannelRouteBlocks) providers.buildChannelRouteBlocks = next.buildChannelRouteBlocks;
   if (next.getDefaultUpdateChannel) providers.getDefaultUpdateChannel = next.getDefaultUpdateChannel;
@@ -225,6 +288,17 @@ interface SessionInitializerDeps {
   requestCoordinator: RequestCoordinator;
   assistantStatusManager?: AssistantStatusManager;
   threadPanel?: ThreadPanel;
+  /**
+   * Work queue gate (`@soma/slack/work-queue`). Consulted right before every
+   * `handleConcurrency`: a full queue halts the turn before the model runs.
+   */
+  workQueue?: WorkQueueGate;
+}
+
+/** What the session initializer needs from the work queue. */
+export interface WorkQueueGate {
+  decide(input: GateInput): GateDecision;
+  notifyBlocked(decision: GateDecision): Promise<void>;
 }
 
 /**
@@ -452,34 +526,22 @@ export class SessionInitializer {
         this.logger.error('Failed to create conversation record (non-critical)', error);
       }
 
-      // User acceptance gate + first-time detection
-      const userSettings = providers.getUserSettings(user);
-      if (!userSettings) {
-        // New user: create pending record + notify admins
-        this.logger.info('New user detected, creating pending record', { sessionKey, user, userName });
-        providers.createPendingUser(user, userName);
-        await this.deps.slackApi.postMessage(channel, '⏳ 승인 대기 중입니다. 관리자에게 요청이 전달되었습니다.', {
-          threadTs,
-        });
-        await this.notifyAdminsNewUser(user, userName);
-        // Terminate the just-created session so next message also triggers gate
-        this.deps.claudeHandler.terminateSession(sessionKey);
-        return {
-          session,
-          sessionKey,
-          isNewSession,
-          userName,
-          workingDirectory,
-          abortController: new AbortController(),
-          halted: true,
-        };
-      }
-      if (!userSettings.accepted) {
-        // Existing pending user re-messaging
-        this.logger.debug('Pending user re-message blocked', { sessionKey, user });
-        await this.deps.slackApi.postMessage(channel, '⏳ 아직 승인 대기 중입니다. 관리자의 승인을 기다려주세요.', {
-          threadTs,
-        });
+      // User acceptance gate + first-time detection (E2 ⑦: `runNewUserGate`).
+      // Either halt closes the just-created session, so the next message also
+      // hits the gate (a session left behind would skip this new-session-only
+      // check). A new user's halt never throws; a pending user's failed post
+      // does, and leaves the session as it was.
+      const gate = await runNewUserGate(
+        {
+          getUserSettings: (u) => providers.getUserSettings(u),
+          createPendingUser: (u, n) => providers.createPendingUser(u, n),
+          notifyAdmins: (u, n) => this.notifyAdminsNewUser(u, n),
+          postMessage: (c, text, options) => this.deps.slackApi.postMessage(c, text, options),
+          logger: this.logger,
+        },
+        { user, userName, channel, threadTs, sessionKey },
+      );
+      if (gate !== 'pass') {
         this.deps.claudeHandler.terminateSession(sessionKey);
         return {
           session,
@@ -777,6 +839,7 @@ export class SessionInitializer {
             userName,
             effectiveWorkingDir,
             hasSourceThread,
+            dispatchText ?? '',
           );
           if (migrated) {
             return migrated;
@@ -799,6 +862,7 @@ export class SessionInitializer {
           userName,
           effectiveWorkingDir,
           hasSourceThread,
+          dispatchText ?? '',
         );
         if (migrated) {
           return migrated;
@@ -893,6 +957,21 @@ export class SessionInitializer {
       };
     }
 
+    // Work queue — a full queue (e.g. a dev2 deploy already running) halts
+    // this turn before the model starts. Decided synchronously, so on pass
+    // the slot and this turn's controller are registered in the same tick.
+    if (await this.haltedByWorkQueue(session, sessionKey, channel, threadTs, user, dispatchText ?? '')) {
+      return {
+        session,
+        sessionKey,
+        isNewSession,
+        userName,
+        workingDirectory: effectiveWorkingDir,
+        abortController: new AbortController(),
+        halted: true,
+      };
+    }
+
     // Handle concurrency control
     const abortController = this.handleConcurrency(sessionKey, channel, threadTs, user, userName, session);
 
@@ -904,6 +983,40 @@ export class SessionInitializer {
       workingDirectory: effectiveWorkingDir,
       abortController,
     };
+  }
+
+  /**
+   * Run the work queue gate for this turn. `false` = go on (the caller calls
+   * `handleConcurrency` next, with no await in between on the pass path);
+   * `true` = the queue is full, the requester was told, the turn is halted.
+   * A gate error lets the turn through (logged): a bug in the queue must not
+   * stop every deploy.
+   */
+  private async haltedByWorkQueue(
+    session: ConversationSession,
+    sessionKey: string,
+    channel: string,
+    threadTs: string,
+    user: string,
+    text: string,
+  ): Promise<boolean> {
+    const gate = this.deps.workQueue;
+    if (!gate) return false;
+    let decision: GateDecision;
+    try {
+      decision = gate.decide({ session: session as any, sessionKey, channel, threadTs, user, text });
+    } catch (error) {
+      this.logger.error('Work queue gate failed — letting the turn through', { sessionKey, error });
+      return false;
+    }
+    if (decision.kind === 'pass') return false;
+    this.logger.info('⏳ Session halted — work queue full', { sessionKey, queue: decision.queue.id });
+    try {
+      await gate.notifyBlocked(decision);
+    } catch (error) {
+      this.logger.warn('Work queue notice failed', { sessionKey, error });
+    }
+    return true;
   }
 
   /**
@@ -1246,6 +1359,7 @@ export class SessionInitializer {
     userName: string,
     workingDirectory: string,
     hasSourceThread: boolean = false,
+    gateText: string = '',
   ): Promise<SessionInitResult | undefined> {
     const headerPayload = ThreadHeaderBuilder.build({
       title: session.title || session.links?.pr?.label || session.links?.issue?.label,
@@ -1272,6 +1386,10 @@ export class SessionInitializer {
       return undefined;
     }
 
+    // Same task, new thread (#595): the task id moves to the bot-thread session
+    // only after the original is terminated below — a refused termination must
+    // leave the id (and the task-id lookup) on the still-live original.
+    const inheritedTaskId: string | undefined = session.taskId;
     const botSession = this.deps.claudeHandler.createSession(user, userName, channel, rootResult.ts, session.model);
     botSession.threadModel = 'bot-initiated';
     botSession.threadRootTs = rootResult.ts;
@@ -1309,6 +1427,15 @@ export class SessionInitializer {
 
     const origSessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
     this.deps.claudeHandler.terminateSession(origSessionKey);
+    if (inheritedTaskId) {
+      const adopted = this.deps.claudeHandler.adoptTaskId(
+        this.deps.claudeHandler.getSessionKey(channel, rootResult.ts),
+        inheritedTaskId,
+      );
+      if (!adopted) {
+        this.logger.warn('🧵 Task id not moved to the bot-thread session', { channel, taskId: inheritedTaskId });
+      }
+    }
 
     // 1. Clean up only the init clutter we posted (dispatch status, conversation-history link).
     //    Deleting all bot-authored messages here would also wipe prior model replies
@@ -1335,6 +1462,19 @@ export class SessionInitializer {
     }
 
     const newSessionKey = this.deps.claudeHandler.getSessionKey(channel, rootResult.ts);
+    // Work queue gate on the migrated session — its key is the one the slot
+    // must be held under (the original thread's session is gone).
+    if (await this.haltedByWorkQueue(botSession, newSessionKey, channel, rootResult.ts, user, gateText)) {
+      return {
+        session: botSession,
+        sessionKey: newSessionKey,
+        isNewSession: true,
+        userName,
+        workingDirectory,
+        abortController: new AbortController(),
+        halted: true,
+      };
+    }
     const abortController = this.handleConcurrency(newSessionKey, channel, rootResult.ts, user, userName, botSession);
     this.deps.reactionManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
     await this.deps.contextWindowManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
@@ -1476,6 +1616,10 @@ export class SessionInitializer {
    * Send admin DM notifications with Accept/Deny buttons for a new user.
    */
   private async notifyAdminsNewUser(userId: string, userName: string): Promise<void> {
+    if (providers.notifyAdminsNewUser) {
+      await providers.notifyAdminsNewUser(this.deps.slackApi, userId, userName);
+      return;
+    }
     const adminUsers = providers.getAdminUsers();
     if (adminUsers.size === 0) {
       this.logger.warn('No admin users configured, cannot notify about new user', { userId });

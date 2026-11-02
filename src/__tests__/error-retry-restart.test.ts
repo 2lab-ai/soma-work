@@ -513,6 +513,20 @@ describe('#351 resumePendingErrorRetries: re-arm after restart', () => {
     expect(autoResume).not.toHaveBeenCalled();
   });
 
+  it('skips a Slack-less task (#612 R2): it is not runnable before the execution context exists', () => {
+    const session = liveSession({
+      ...pendingRetry(Date.now() + 60_000),
+      channelId: '',
+      threadTs: undefined,
+      slackless: true,
+    } as Partial<ConversationSession>);
+    const { handler, autoResume } = createHandler(new Map([['task:t1', session]]));
+
+    expect(handler.resumePendingErrorRetries()).toBe(0);
+    vi.advanceTimersByTime(120_000);
+    expect(autoResume).not.toHaveBeenCalled();
+  });
+
   it('ignores sessions with no pending retry', () => {
     const { handler, claudeHandler, autoResume } = createHandler(new Map([['k1', liveSession()]]));
 
@@ -562,7 +576,7 @@ describe('#351 goal sessions: the retry belongs to whoever actually claims the s
     handler.setGoalTurnSettledHandler(settled);
 
     expect(handler.resumeActiveGoals()).toBe(1);
-    expect(settled).toHaveBeenCalledWith('k1');
+    expect(settled).toHaveBeenCalledWith('k1', { cause: 'kick' });
     expect(session.pendingRetryAt).toBeUndefined();
     expect(session.pendingRetrySessionId).toBeUndefined();
     expect(claudeHandler.saveSessions).toHaveBeenCalledTimes(1);

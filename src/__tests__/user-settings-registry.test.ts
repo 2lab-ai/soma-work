@@ -57,8 +57,28 @@ function memoryStore(): SettingsStoreLike & { data: Record<string, any> } {
       return { from, to: r };
     },
     getUserPermissionMode: (id) => u(id).mode ?? 'auto',
+    getUserSlackTaskEntry: (id) => !!u(id).slackTaskEntry,
+    getUserEpicTasks: (id) => !!u(id).epicTasks,
+    setUserEpicTasks: (id, v) => {
+      u(id).epicTasks = v;
+    },
+    setUserSlackTaskEntry: (id, v) => {
+      u(id).slackTaskEntry = v;
+    },
     getUserSandboxDisabled: (id) => !!u(id).sandboxOff,
     getUserNetworkDisabled: (id) => !!u(id).networkOff,
+    getUserDashboardMode: (id) => u(id).dashboardMode ?? 'minimal',
+    setUserDashboardMode: (id, m) => {
+      u(id).dashboardMode = m;
+    },
+    getUserDashboardLayout: (id) => u(id).dashboardLayout ?? { v: 1 },
+    setUserDashboardLayout: (id, doc) => {
+      u(id).dashboardLayout = doc;
+    },
+    getUserDashboardPlan: (id) => u(id).dashboardPlan ?? '1',
+    setUserDashboardPlan: (id, p) => {
+      u(id).dashboardPlan = p;
+    },
   };
 }
 
@@ -153,12 +173,18 @@ describe('settings registry — read', () => {
       'email',
       'rating',
       'workingDirectory',
+      'slackTaskEntry',
+      'epicTasks',
       'permissionMode',
       'sandbox',
       'sandboxNetwork',
+      'dashboardMode',
+      'dashboardPlan',
     ]);
     for (const s of snap.settings) {
-      expect(s.slackCommand).toBeTruthy();
+      // A dashboard-only setting (the dashboard's own view) has no Slack command; every other one names it.
+      if (s.group === 'dashboard') expect(s.slackCommand).toBeUndefined();
+      else expect(s.slackCommand).toBeTruthy();
       expect(snap.groups.map((g) => g.id)).toContain(s.group);
     }
   });
@@ -259,6 +285,117 @@ describe('settings registry — write', () => {
     expect(apply.sandbox).toHaveBeenCalledWith({ userId: 'U1', value: 'network_off' });
   });
 
+  it('slackTaskEntry (E2 ⑧): off by default, a toggle in account, written through the store setter', async () => {
+    const { registry, store } = setup();
+    const row = registry.read('U1').settings.find((s) => s.key === 'slackTaskEntry')!;
+    expect(row).toMatchObject({ kind: 'toggle', group: 'account', value: false, modified: false, editable: true });
+    expect(row.slackCommand).toBe('taskentry on|off');
+    const v = await registry.write('U1', 'slackTaskEntry', true);
+    expect(store.data.U1.slackTaskEntry).toBe(true);
+    expect(v).toMatchObject({ value: true, modified: true });
+    await refused(registry.write('U1', 'slackTaskEntry', 'on'), 400);
+  });
+
+  it('epicTasks (E4 ④a-2): off by default, a toggle in account, written through the store setter', async () => {
+    const { registry, store } = setup();
+    const row = registry.read('U1').settings.find((s) => s.key === 'epicTasks')!;
+    expect(row).toMatchObject({ kind: 'toggle', group: 'account', value: false, modified: false, editable: true });
+    expect(row.slackCommand).toBe('epictasks on|off');
+    const v = await registry.write('U1', 'epicTasks', true);
+    expect(store.data.U1.epicTasks).toBe(true);
+    expect(v).toMatchObject({ value: true, modified: true });
+    await refused(registry.write('U1', 'epicTasks', 'on'), 400);
+  });
+
+  it('dashboardMode (SSOT 2026-11-01): minimal by default, a choice in its own dashboard group, saved per user', async () => {
+    const { registry, store } = setup();
+    const row = registry.read('U1').settings.find((s) => s.key === 'dashboardMode')!;
+    expect(row).toMatchObject({
+      kind: 'choice',
+      group: 'dashboard',
+      value: 'minimal',
+      defaultValue: 'minimal',
+      modified: false,
+      editable: true,
+    });
+    expect(row.options!.map((o) => o.value)).toEqual(['minimal', 'advanced']);
+    expect(registry.read('U1').groups.map((g) => g.id)).toContain('dashboard');
+    const v = await registry.write('U1', 'dashboardMode', 'advanced');
+    expect(store.data.U1.dashboardMode).toBe('advanced');
+    expect(v).toMatchObject({ value: 'advanced', modified: true });
+    // Another user keeps the default — the choice is per user.
+    expect(registry.read('U2').settings.find((s) => s.key === 'dashboardMode')!.value).toBe('minimal');
+    await registry.write('U1', 'dashboardMode', 'minimal');
+    expect(store.data.U1.dashboardMode).toBe('minimal');
+    await refused(registry.write('U1', 'dashboardMode', 'detail'), 400);
+    await refused(registry.write('U1', 'dashboardMode', true), 400);
+    // A denied user cannot write it either (a write must not re-create the record).
+    await refused(registry.write('U_DENIED', 'dashboardMode', 'advanced'), 403);
+    expect(store.data.U_DENIED).toBeUndefined();
+  });
+
+  it('dashboardPlan (SSOT 2026-11-01 ④, .prd/20): 1안 by default, 1 · 2 · 3 in the dashboard group, saved per user', async () => {
+    const { registry, store } = setup();
+    const row = registry.read('U1').settings.find((s) => s.key === 'dashboardPlan')!;
+    expect(row).toMatchObject({
+      kind: 'choice',
+      group: 'dashboard',
+      label: '화면 구성안',
+      value: '1',
+      defaultValue: '1',
+      modified: false,
+      editable: true,
+    });
+    expect(row.slackCommand).toBeUndefined();
+    expect(row.options!.map((o) => o.value)).toEqual(['1', '2', '3']);
+    // Each option says what it is in both modes.
+    for (const o of row.options!) expect(o.description).toMatch(/미니멀.*어드밴스드/);
+    const v = await registry.write('U1', 'dashboardPlan', '3');
+    expect(store.data.U1.dashboardPlan).toBe('3');
+    expect(v).toMatchObject({ value: '3', modified: true });
+    expect(registry.read('U2').settings.find((s) => s.key === 'dashboardPlan')!.value).toBe('1');
+    await refused(registry.write('U1', 'dashboardPlan', '4'), 400);
+    await refused(registry.write('U1', 'dashboardPlan', 2), 400);
+    await refused(registry.write('U_DENIED', 'dashboardPlan', '2'), 403);
+    expect(store.data.U_DENIED).toBeUndefined();
+  });
+
+  it('dashboard layouts (.prd/21): read with the built-ins and the catalog; a write is checked and accepted-only', () => {
+    const { registry, store } = setup();
+    const snap = registry.readLayout('U1');
+    expect(snap).toMatchObject({ userId: 'U1', accepted: true, doc: { v: 1 }, plan: '1', mode: 'minimal' });
+    expect(Object.keys(snap.builtins)).toEqual(['1', '2', '3']);
+    expect(snap.catalog.card.rows.length).toBeGreaterThan(0);
+    const written = registry.writeLayout('U1', {
+      active: { card: '2' },
+      presets: {
+        '1': {
+          minimal: {
+            card: {
+              rows: [
+                { id: 'task', on: true },
+                { id: 'nope', on: true },
+              ],
+            },
+          },
+        },
+      },
+    });
+    expect(store.data.U1.dashboardLayout.active).toEqual({ card: '2' });
+    // Checked on the way in: the unknown id is gone; the missing ones take the built-in's state at the built-in's
+    // place (.prd/22 §5) — the saved item keeps its state.
+    const rows = written.doc.presets!['1']!.minimal!.card!.rows;
+    expect(rows.find((r) => r.id === 'task')).toEqual({ id: 'task', on: true });
+    expect(rows.map((r) => r.id)).not.toContain('nope');
+    expect(rows.map((r) => r.id)).toEqual(['summary', 'task', 'links', 'arts', 'agents', 'usage']);
+    expect(rows.find((r) => r.id === 'links')!.on).toBe(true);
+    expect(() => registry.writeLayout('U1', 'x')).toThrow(expect.objectContaining({ statusCode: 400 }));
+    expect(() => registry.writeLayout('U_DENIED', { active: { card: '3' } })).toThrow(
+      expect.objectContaining({ statusCode: 403 }),
+    );
+    expect(store.data.U_DENIED).toBeUndefined();
+  });
+
   it('read-only and unknown keys are refused; wrong value types are 400', async () => {
     const { registry } = setup();
     await refused(registry.write('U1', 'workingDirectory', '/tmp'), 403);
@@ -310,5 +447,64 @@ describe('settings registry — write', () => {
     const { registry, apply } = setup();
     await registry.write('U1', 'email', '  ');
     expect(apply.email).toHaveBeenCalledWith({ userId: 'U1', value: 'clear' });
+  });
+});
+
+// The default effort is kept to the default model's levels: ultra only on a model whose menu lists it.
+describe('default model and effort — the effort the default model runs', () => {
+  const ALL = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+  const menus: Record<string, string[]> = {
+    'gpt-6.1-sol[1m]': ALL,
+    'grok-4.6': ['low', 'medium', 'high', 'xhigh'],
+    'claude-opus-5-5[1m]': ['low', 'medium', 'high', 'xhigh', 'max'],
+  };
+  const effortSetup = () => {
+    const ctx = setup({
+      effortLevels: ALL,
+      effortMenu: (model) => menus[model],
+      listModels: () => [
+        { nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', label: 'Opus 5.5' },
+        { nickname: 'sol[1m]', model: 'gpt-6.1-sol[1m]', label: 'Sol 6.1' },
+        { nickname: 'grok[1m]', model: 'grok-4.6', label: 'Grok 4.6' },
+      ],
+    });
+    // The test store knows the six levels (the production store resolves soma-lib EFFORT_LEVELS).
+    ctx.store.resolveEffortInput = (input: string) => {
+      const v = input.toLowerCase().trim();
+      return (ALL.includes(v) ? v : null) as never;
+    };
+    return ctx;
+  };
+
+  it('ultra is taken for a default model whose menu lists it, refused (400) for one that stops below it', async () => {
+    const { registry, store } = effortSetup();
+    store.data.U1 = { ...(store.data.U1 ?? {}), model: 'gpt-6.1-sol[1m]' };
+    await registry.write('U1', 'defaultEffort', 'ultra');
+    expect(store.data.U1.effort).toBe('ultra');
+    store.data.U1.model = 'grok-4.6';
+    const msg = await refused(registry.write('U1', 'defaultEffort', 'max'), 400);
+    expect(msg).toContain('low, medium, high, xhigh');
+    expect(store.data.U1.effort).toBe('ultra');
+  });
+
+  it('a default-model change carries the default effort over to the nearest level the new model runs', async () => {
+    const { registry, store } = effortSetup();
+    store.data.U1 = { ...(store.data.U1 ?? {}), model: 'gpt-6.1-sol[1m]', effort: 'ultra' };
+    await registry.write('U1', 'defaultModel', 'grok[1m]');
+    expect(store.data.U1).toMatchObject({ model: 'grok-4.6', effort: 'xhigh' });
+    // A level the new model runs is kept.
+    await registry.write('U1', 'defaultModel', 'sol[1m]');
+    expect(store.data.U1).toMatchObject({ model: 'gpt-6.1-sol[1m]', effort: 'xhigh' });
+  });
+
+  it('the effort row offers only the levels the default model runs', async () => {
+    const { registry, store } = effortSetup();
+    store.data.U1 = { ...(store.data.U1 ?? {}), model: 'gpt-6.1-sol[1m]', effort: 'high' };
+    const row = (await registry.read('U1')).settings.find((r) => r.key === 'defaultEffort');
+    expect(row?.options?.map((o) => o.value)).toEqual(ALL);
+    expect(row?.options?.find((o) => o.value === 'ultra')?.label).toBe('Ultra');
+    store.data.U1.model = 'grok-4.6';
+    const grok = (await registry.read('U1')).settings.find((r) => r.key === 'defaultEffort');
+    expect(grok?.options?.map((o) => o.value)).toEqual(['low', 'medium', 'high', 'xhigh']);
   });
 });

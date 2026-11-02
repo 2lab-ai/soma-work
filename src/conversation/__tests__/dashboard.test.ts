@@ -994,9 +994,9 @@ describe('Dashboard API', () => {
     // NOT '' (empty string concat) which was the bug before PR #280
     // Check doAction onclick builders have properly escaped quotes
     expect(script).toContain("doAction(\\''");
-    // Spec 13: one builder (sessionActionHtml) serves the card and the panel head;
-    // the action name is a closed set (stop · close · trash) joined in escaped quotes.
-    expect(script).toContain("\\',\\'' + kind + '\\')");
+    // Spec 13: one decision (sessionActionsOf) serves the card and the panel head; the
+    // card's builder joins the action name — a closed set (stop · close · trash) — in escaped quotes.
+    expect(script).toContain("\\',\\'' + a.id + '\\')");
     expect(script).toContain("var kind = running ? 'stop' : (col === 'closed' && s.terminated ? 'trash' : 'close');");
     // Check openPanel onclick builder
     expect(script).toContain("openPanel(\\''");
@@ -1122,10 +1122,20 @@ describe('Dashboard API', () => {
     // A card click no longer opens the panel — it expands the card in place
     // through a delegated listener (.prd/10 §3.1-4), so it has no inline handler.
     // Spec 13: exactly 1 doAction builder (sessionActionHtml — stop / close / trash, shared by the
-    // open card and the panel head) and 5 openPanel builders: 작업 로그, 답변하기, 전체 task N개 →,
-    // the goal line's 관리 → / 보기 →, the artifacts' 전체 N개 →.
+    // open card and the panel head) and 4 openPanel builders: 답변하기, 전체 task N개 →, the goal
+    // line's 관리 → / 보기 →, the artifacts' 전체 N개 →. SSOT 2026-10-29 T2 removed the open card's
+    // 작업 로그 button (openPanel(key,true,'',…) — an open card's detail card is always beside the
+    // board now, the detail deck); the three left that pass an empty agent id still pin its \'\'.
     expect(correctDoAction!.length).toBe(1);
-    expect(correctOpenPanel!.length).toBe(5);
+    expect(correctOpenPanel!.length).toBe(4);
+    expect(script.match(/\\',\\'\\',event\.detail===0\)/g)?.length).toBe(3);
+    expect(script).not.toContain("',true,\\'\\',event.detail===0)");
+    // The panel's ✕ and the drawer's scrim / Esc (ui-close) close the front detail card (and fold its card): no string arguments.
+    expect(html).toContain("d.addEventListener('ui-close', function(e) { e.preventDefault(); closeDetailCard(); })");
+    expect(html).not.toContain('slide-panel-overlay');
+    expect(html).toMatch(
+      /<button type="button" class="ui-icon-btn is-bordered panel-close"[^>]*onclick="closeDetailCard\(\)">/,
+    );
   });
 
   it('should have all inline handlers escaped consistently', async () => {
@@ -1144,16 +1154,33 @@ describe('Dashboard API', () => {
     // Count action closings — each doAction has 2 escaped quote pairs (key + action)
     const actionClosings = script.match(/\\',\\'/g);
     expect(actionClosings).not.toBeNull();
-    // 1 doAction builder + 1 resummarize + the intent of 전체 task (2), the goal line (2) and the
-    // artifacts link (2) — every argument of every builder closes in escaped quotes = 8.
-    // The 4 answerChoice sites (card/panel × recommended/other) and the selectMc
-    // site no longer build inline JS strings: their model-written question /
-    // label / id travel in attribute-escaped data-choice-* attributes read by
-    // one delegated click handler, because escJs() inside a double-quoted
+    // 1 doAction builder + the intent of 전체 task (2), the goal line (2) and the artifacts link (2) —
+    // every argument of every builder closes in escaped quotes = 7 (D3: the turn's resummarize button went
+    // with the inline turn renderer; 지시와 답변 is <ui-conversation> data).
+    // The answerChoice sites and the multi-question form build no inline JS
+    // strings: the single choice is <ui-approval-card> (ui-answer) and the form
+    // <ui-choice-form> (ui-submit, D3 E-15) — model-written question / label /
+    // id travel as element data, because escJs() inside a double-quoted
     // onclick could not carry " or newlines safely (.prd/10 round-2 review).
-    expect(actionClosings!.length).toBe(8);
+    // (#637's askId rides as element data — data-mc-ask — not as an inline argument.)
+    expect(actionClosings!.length).toBe(7);
     expect(script).not.toMatch(/answerChoice\(\\'/);
     expect(script).not.toMatch(/selectMc\(\\'/);
+  });
+
+  // #637 R2 (astra P1) — a form's actions carry the ask the form shows, and the
+  // question is repainted on every cache update (poll and single-session push).
+  it('form actions carry the shown askId; the panel question follows every cache update', async () => {
+    const res = await injectWebServer({ method: 'GET', url: '/dashboard', headers: AUTH_HEADER });
+    const script = (res.body as string).match(/<script>([\s\S]*?)<\/script>/)![1];
+    // The <ui-choice-form> carries the ask it was drawn for; its picks and its submit are refused for another.
+    expect(script).toContain("el.setAttribute('data-mc-ask', q.askId || '');");
+    expect(script).toContain('if (!q || !q.questions || !mcAskShown(el, q)) return;');
+    expect(script).toContain('if (!mcAskShown(el, q)) {\n    e.preventDefault();\n    mcAskChanged(key);');
+    // A new ask is a new form (its own answers), even when it reads the same.
+    expect(script).toContain("(q.askId ? 'a|' + q.askId + '|' : '')");
+    expect(script).toContain('renderPanelQuestion(_sessionCache[panelSessionKey]);');
+    expect(script).toContain('renderPanelQuestion(msg.session); // the form shows the ask');
   });
 
   // ── Guard: detect unescaped inline handlers if new ones are added ──
@@ -1248,7 +1275,9 @@ describe('Dashboard API', () => {
     expect(html.substring(foucIdx, styleIdx)).toContain('data-theme');
   });
 
-  it('should have theme toggle button with aria-label and no hardcoded emoji', async () => {
+  // Tone pass P4: the theme toggle is the site's 34px icon button — the sun / moon are 16-grid SVGs
+  // (no emoji, no ::before content), the visible one chosen by data-theme in CSS; Korean label.
+  it("the theme toggle is the app bar's (sun / moon glyph, action-named label); the page answers ui-theme-change", async () => {
     const res = await injectWebServer({
       method: 'GET',
       url: '/dashboard',
@@ -1256,26 +1285,12 @@ describe('Dashboard API', () => {
     });
 
     const html: string = res.body;
-    // Button must exist with aria-label
-    expect(html).toContain('id="theme-toggle"');
-    expect(html).toContain('aria-label="Toggle theme"');
-    // Button content must be empty — icon is rendered via CSS ::before
-    const btnMatch = html.match(/<button[^>]*id="theme-toggle"[^>]*>(.*?)<\/button>/);
-    expect(btnMatch).not.toBeNull();
-    expect(btnMatch![1].trim()).toBe('');
-  });
-
-  it('should have CSS pseudo-element rules for theme icon', async () => {
-    const res = await injectWebServer({
-      method: 'GET',
-      url: '/dashboard',
-      headers: AUTH_HEADER,
-    });
-
-    const html: string = res.body;
-    // CSS must define ::before for theme-toggle
-    expect(html).toContain('#theme-toggle::before');
-    expect(html).toContain('[data-theme="light"] #theme-toggle::before');
+    // D2 (A-14): <ui-app-bar> draws the toggle from data.theme and asks with ui-theme-change.
+    expect(html).toContain('<ui-app-bar id="app-bar" lang="ko">');
+    expect(html).not.toContain('id="theme-toggle"');
+    expect(html).not.toContain('#theme-toggle');
+    expect(html).toContain("bar.addEventListener('ui-theme-change', function(e) {");
+    expect(html).not.toContain('\\1F319');
   });
 
   it('should have theme JS functions in inline script', async () => {
@@ -1302,15 +1317,16 @@ describe('Dashboard API', () => {
     });
 
     const html: string = res.body;
-    // Light theme block must override functional colors
-    const lightBlock = html.match(/\[data-theme="light"\]\s*\{([^}]+)\}/);
+    // P10 (tone pass): the light theme block is @2lab.ai/ui's tokens.css — it overrides the
+    // functional colors as --ui-*, and the dashboard's names are aliases of them.
+    const tokens = html.slice(html.indexOf('<style id="ui-tokens">'));
+    const lightBlock = tokens.match(/\[data-theme="light"\]\s*\{([^}]+)\}/);
     expect(lightBlock).not.toBeNull();
     const block = lightBlock![1];
-    expect(block).toContain('--green:');
-    expect(block).toContain('--yellow:');
-    expect(block).toContain('--red:');
-    expect(block).toContain('--purple:');
-    expect(block).toContain('--orange:');
+    for (const c of ['green', 'yellow', 'red', 'purple', 'orange']) {
+      expect(block).toContain(`--ui-${c}:`);
+      expect(html).toContain(`--${c}: var(--ui-${c});`);
+    }
   });
 
   it('should auto-clear localStorage when toggled theme matches OS preference', async () => {
@@ -1324,11 +1340,13 @@ describe('Dashboard API', () => {
     const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
     expect(scriptMatch).not.toBeNull();
     const script = scriptMatch![1];
-    // toggleTheme must contain removeItem for auto-clear logic
-    const toggleFn = script.match(/function toggleTheme\(\)\s*\{([\s\S]*?)\n\}/);
-    expect(toggleFn).not.toBeNull();
-    expect(toggleFn![1]).toContain('removeItem');
-    expect(toggleFn![1]).toContain('osTheme');
+    // setTheme (the bar's ui-theme-change and toggleTheme both go through it) clears the stored theme
+    // when it matches the OS
+    const setFn = script.match(/function setTheme\(next\)\s*\{([\s\S]*?)\n\}/);
+    expect(setFn).not.toBeNull();
+    expect(setFn![1]).toContain('removeItem');
+    expect(setFn![1]).toContain('osTheme');
+    expect(script).toMatch(/function toggleTheme\(\) \{[\s\S]*?setTheme\(/);
   });
 
   // ── Hero "Submit All Recommended" endpoint (#581) ──
@@ -1353,7 +1371,8 @@ describe('Dashboard API', () => {
 
       expect(res.statusCode).toBe(200);
       expect(JSON.parse(res.body)).toEqual({ ok: true });
-      expect(handler).toHaveBeenCalledWith('C1:t1');
+      // The viewer token names nobody: no actor, the handler runs it as the owner (SSOT 2026-11-02).
+      expect(handler).toHaveBeenCalledWith('C1:t1', undefined);
     });
 
     it('Test 13b — returns 401 without auth', async () => {
@@ -1500,7 +1519,9 @@ describe('Dashboard API', () => {
   // ── Hero button render (Test 10) ──
 
   describe('renderMultiChoicePanel hero button', () => {
-    it('Test 10 — inline JS includes submitAllRecommended function and hero button branches', async () => {
+    // D3 E-15: the form is <ui-choice-form>; its hero (추천대로 모두 제출) is the element's. The page answers
+    // its ui-submit: source 'recommended' with every answer the recommended one → the one-click route.
+    it('Test 10 — the hero press reaches submitAllRecommended (CSRF header, the 직접입력 sentinel never recommended)', async () => {
       const res = await injectWebServer({
         method: 'GET',
         url: '/dashboard',
@@ -1513,22 +1534,18 @@ describe('Dashboard API', () => {
       expect(scriptMatch).not.toBeNull();
       const script = scriptMatch![1];
 
-      // submitAllRecommended function exists
       expect(script).toContain('function submitAllRecommended');
-      // POSTs to the new endpoint
       expect(script).toContain('/submit-recommended');
-      // CSRF header is set in the action
       expect(script).toContain('X-CSRF-Token');
-      // Active branch button class + onclick wiring
-      expect(script).toContain('btn-hero-recommended');
-      // Active branch label (escaped Unicode for ⭐ 추천대로 모두 선택)
-      expect(script).toContain('\\u2B50');
-      // Blocked branch label sentinel (🔒 추천 부족)
-      expect(script).toContain('\\uD83D\\uDD12');
-      // Skips 직접입력 sentinel when counting
+      expect(script).toContain("e.detail.source === 'recommended'");
+      expect(script).toContain('if (allRec) submitAllRecommended(key);');
+      // The 직접입력 sentinel (escaped Unicode) is never a recommendation.
       expect(script).toContain('\\uC9C1\\uC811\\uC785\\uB825');
-      // CSS class definition is present in the page (style tag)
-      expect(html).toContain('.btn-hero-recommended');
+      expect(script).toContain('if (rec === MC_CUSTOM_ID) rec = null;');
+      expect(script).not.toContain('\\u2B50');
+      // The element is loaded; the page's own hero is gone.
+      expect(html).toContain('/dashboard/ui/choice-form.js');
+      expect(html).not.toContain('btn-hero-recommended');
     });
   });
 });
@@ -1978,5 +1995,103 @@ describe('DASHBOARD_HEADER_CONFIG injection', () => {
     expect(match![1]).not.toContain('</script>');
     const lines = JSON.parse(match![1]);
     expect(lines[0].fields[0].label).toBe('</script><b>');
+  });
+});
+
+// ── SSOT 2026-10-29 T8 — the Slack bot's name (setDashboardBotName) ──
+// The answers in the dashboard's chat carry the bot's Slack name: the page gets
+// this instance's as `const BOT_NAME` (the client's fallback), and every card
+// this instance serves carries it as `botName` (a sibling's cards bring theirs).
+describe('BOT_NAME injection (SSOT 2026-10-29 T8)', () => {
+  let webServer: typeof import('../web-server');
+  let setDashboardBotName: typeof import('../dashboard')['setDashboardBotName'];
+  let setDashboardSessionAccessor: typeof import('../dashboard')['setDashboardSessionAccessor'];
+
+  beforeEach(async () => {
+    vi.resetModules();
+    mockConfig.conversation.viewerToken = 'test-token';
+
+    webServer = await import('../web-server');
+    // The same module instance the served page reads (resetModules: fresh per test).
+    const dashboard = await import('../dashboard');
+    setDashboardBotName = dashboard.setDashboardBotName;
+    setDashboardSessionAccessor = dashboard.setDashboardSessionAccessor;
+
+    await webServer.startWebServer({ listen: false });
+  });
+
+  afterEach(async () => {
+    // The name is module state: never let one test's bot name another's page.
+    setDashboardBotName('');
+    await webServer.stopWebServer();
+  });
+
+  async function servedBotNameLine(): Promise<string> {
+    const res = await webServer.injectWebServer({ method: 'GET', url: '/dashboard', headers: AUTH_HEADER });
+    expect(res.statusCode).toBe(200);
+    const match = res.body.match(/^const BOT_NAME = .*;$/m);
+    expect(match, 'BOT_NAME assignment not found in served HTML').toBeTruthy();
+    return (match as RegExpMatchArray)[0];
+  }
+
+  it('serves the bot’s Slack name as a JSON string literal', async () => {
+    setDashboardBotName('Soma Dev (Beta)');
+    expect(await servedBotNameLine()).toBe('const BOT_NAME = "Soma Dev (Beta)";');
+  });
+
+  it('escapes < in the name (it comes from Slack) — no </script> can end the page script', async () => {
+    setDashboardBotName('<b>x');
+    expect(await servedBotNameLine()).toBe('const BOT_NAME = "\\u003cb>x";');
+    setDashboardBotName('</script><img src=x onerror=alert(1)>');
+    const line = await servedBotNameLine();
+    expect(line).not.toContain('</script>');
+    // Still the same name once the browser reads the literal.
+    expect(JSON.parse(line.slice('const BOT_NAME = '.length, -1))).toBe('</script><img src=x onerror=alert(1)>');
+  });
+
+  it('null until the name resolves (empty, blank or absent) — the client then says Assistant', async () => {
+    expect(await servedBotNameLine()).toBe('const BOT_NAME = null;');
+    for (const name of ['', '   ', undefined]) {
+      setDashboardBotName(name);
+      expect(await servedBotNameLine()).toBe('const BOT_NAME = null;');
+    }
+  });
+
+  it('trims the name and caps it at 80 characters', async () => {
+    setDashboardBotName('  Soma Dev (Beta)  ');
+    expect(await servedBotNameLine()).toBe('const BOT_NAME = "Soma Dev (Beta)";');
+    setDashboardBotName('x'.repeat(100));
+    expect(await servedBotNameLine()).toBe(`const BOT_NAME = "${'x'.repeat(80)}";`);
+  });
+
+  it('every card this instance serves carries the name as botName (absent until it resolves)', async () => {
+    const sessions = new Map<string, Record<string, unknown>>();
+    sessions.set('C1:t1', {
+      sessionId: 'sid1',
+      title: 'Working session',
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      workflow: 'default',
+      model: 'claude-opus-4-6',
+      channelId: 'C1',
+      threadTs: 't1',
+      activityState: 'working',
+      state: 'MAIN',
+      lastActivity: new Date('2026-03-29T10:00:00Z'),
+    });
+    setDashboardSessionAccessor(() => sessions);
+    const board = async () => {
+      const res = await webServer.injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/sessions',
+        headers: AUTH_HEADER,
+      });
+      expect(res.statusCode).toBe(200);
+      return JSON.parse(res.body).board;
+    };
+
+    expect((await board()).working[0]).not.toHaveProperty('botName');
+    setDashboardBotName('Soma Dev (Beta)');
+    expect((await board()).working[0].botName).toBe('Soma Dev (Beta)');
   });
 });

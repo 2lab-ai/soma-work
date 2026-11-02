@@ -30,6 +30,7 @@ import { fetchBatchLinkMetadata } from '../../link-metadata-fetcher';
 import type { ConversationSession, SessionLink } from '../../types';
 import {
   type LinkDerivedTitleHandler,
+  scheduleLinkDerivedTitleRefreshByKey,
   stampLinkTitlesAndDeriveSessionTitle,
   summarizeIssueAndPrTitles,
 } from '../link-derived-title';
@@ -317,5 +318,53 @@ describe('summarizeIssueAndPrTitles', () => {
     summarizeMock.mockRejectedValueOnce(new Error('boom'));
     const result = await summarizeIssueAndPrTitles('A', 'B');
     expect(result).toBe('A · B');
+  });
+});
+
+describe('scheduleLinkDerivedTitleRefreshByKey — a Slack-less task (#598 ④a)', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    broadcastMock.mockReset();
+    summarizeMock.mockReset();
+  });
+
+  it('reads and writes the task by its key — never through a channel/thread key', async () => {
+    const TASK_KEY = 'task:11111111-2222-4333-8444-555555555555';
+    const ISSUE = 'https://github.com/org/repo/issues/1';
+    const session = makeSession({
+      channelId: '',
+      threadTs: undefined,
+      slackless: true,
+      links: { issue: { url: ISSUE, type: 'issue', provider: 'github' } },
+    } as Partial<ConversationSession>);
+    const slackForm = () => {
+      throw new Error('Invalid channelId (IDENTITY_EMPTY): ""');
+    };
+    const handler = {
+      getSession: slackForm,
+      getSessionKey: slackForm,
+      setSessionLink: slackForm,
+      setSessionTitle: slackForm,
+      getSessionByKey: vi.fn((key: string) => (key === TASK_KEY ? session : undefined)),
+      setSessionLinksByKey: vi.fn((_key: string, links: { issue?: SessionLink }) => {
+        session.links = { ...session.links, ...links };
+      }),
+      setSessionTitleByKey: vi.fn((_key: string, title: string) => {
+        session.title = title;
+      }),
+    };
+    fetchMock.mockResolvedValueOnce([
+      { url: ISSUE, type: 'issue', provider: 'github', title: 'Fix login', status: 'open' },
+    ]);
+
+    scheduleLinkDerivedTitleRefreshByKey(handler as never, TASK_KEY, 'mid-conversation');
+    await vi.waitFor(() => expect(handler.setSessionTitleByKey).toHaveBeenCalled());
+
+    expect(handler.setSessionLinksByKey).toHaveBeenCalledWith(
+      TASK_KEY,
+      expect.objectContaining({ issue: expect.objectContaining({ title: 'Fix login' }) }),
+    );
+    expect(handler.setSessionTitleByKey).toHaveBeenCalledWith(TASK_KEY, 'Fix login');
+    expect(broadcastMock).toHaveBeenCalledWith(TASK_KEY);
   });
 });

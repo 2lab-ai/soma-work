@@ -17,8 +17,23 @@
  */
 
 import type { LogVerbosity } from '@soma/slack/output-flags';
+import { clampEffortToSupported } from 'soma-lib';
 import type { PermissionMode } from './agent-runtime/policy/permission-mode';
-import type { EffortLevel, NotificationSettings, SessionTheme } from './user-settings-store';
+import type {
+  DashboardMode,
+  DashboardPlan,
+  EffortLevel,
+  NotificationSettings,
+  SessionTheme,
+} from './user-settings-store';
+import {
+  BUILTIN_PRESETS,
+  type DashboardLayoutDoc,
+  LAYOUT_CATALOG,
+  LayoutError,
+  normalizeLayoutDoc,
+  type PresetLayouts,
+} from './view-layout';
 
 export type SettingKey =
   | 'defaultModel'
@@ -35,11 +50,15 @@ export type SettingKey =
   | 'email'
   | 'rating'
   | 'workingDirectory'
+  | 'slackTaskEntry'
+  | 'epicTasks'
   | 'permissionMode'
   | 'sandbox'
-  | 'sandboxNetwork';
+  | 'sandboxNetwork'
+  | 'dashboardMode'
+  | 'dashboardPlan';
 
-export type SettingGroup = 'model' | 'output' | 'notify' | 'goal' | 'skills' | 'account' | 'permissions';
+export type SettingGroup = 'model' | 'output' | 'notify' | 'goal' | 'skills' | 'account' | 'permissions' | 'dashboard';
 
 export const SETTING_GROUPS: ReadonlyArray<{ id: SettingGroup; label: string; description: string }> = [
   { id: 'model', label: '모델 · effort', description: '새 세션이 시작할 때 쓰는 기본값입니다.' },
@@ -53,6 +72,7 @@ export const SETTING_GROUPS: ReadonlyArray<{ id: SettingGroup; label: string; de
     label: '권한',
     description: '에이전트가 도구를 얼마나 자유롭게 쓰는지 정합니다. 바꾸기 전에 설명을 읽으세요.',
   },
+  { id: 'dashboard', label: '대시보드', description: '대시보드 화면의 모양입니다. Slack에는 영향이 없습니다.' },
 ];
 
 export type SettingKind = 'choice' | 'toggle' | 'text' | 'number' | 'list' | 'readonly';
@@ -86,8 +106,8 @@ export interface SettingView {
   lockedReason?: string;
   /** Consequential setting — shown in the danger zone, confirmed before saving. */
   danger?: boolean;
-  /** The equivalent Slack command. */
-  slackCommand: string;
+  /** The equivalent Slack command — absent for a dashboard-only setting (group `dashboard`). */
+  slackCommand?: string;
 }
 
 export interface SettingsSnapshot {
@@ -140,8 +160,30 @@ export interface SettingsStoreLike {
   getUserRating(userId: string): number;
   changeUserRating(userId: string, rating: number): { from: number; to: number };
   getUserPermissionMode(userId: string): PermissionMode;
+  getUserSlackTaskEntry(userId: string): boolean;
+  getUserEpicTasks(userId: string): boolean;
+  setUserEpicTasks(userId: string, enabled: boolean): void;
+  setUserSlackTaskEntry(userId: string, enabled: boolean): void;
   getUserSandboxDisabled(userId: string): boolean;
   getUserNetworkDisabled(userId: string): boolean;
+  getUserDashboardMode(userId: string): DashboardMode;
+  setUserDashboardMode(userId: string, mode: DashboardMode): void;
+  getUserDashboardPlan(userId: string): DashboardPlan;
+  setUserDashboardPlan(userId: string, plan: DashboardPlan): void;
+  getUserDashboardLayout(userId: string): DashboardLayoutDoc;
+  setUserDashboardLayout(userId: string, doc: DashboardLayoutDoc): void;
+}
+
+/** The 대시보드 화면 editor's data (.prd/21): what the user saved, the built-ins and the catalog to edit with. */
+export interface LayoutSnapshot {
+  userId: string;
+  accepted: boolean;
+  doc: DashboardLayoutDoc;
+  /** The quick switch (`dashboardPlan`): each surface's preset when it has no default of its own. */
+  plan: DashboardPlan;
+  mode: DashboardMode;
+  builtins: Record<string, PresetLayouts>;
+  catalog: typeof LAYOUT_CATALOG;
 }
 
 export interface SettingsRegistryDeps {
@@ -163,6 +205,12 @@ export interface SettingsRegistryDeps {
     email: ApplyFn;
   };
   effortLevels: readonly string[];
+  /**
+   * The effort levels `model` runs (its catalog menu ∩ `effortLevels`), or
+   * undefined when nothing is known — then every level is offered and the
+   * runtime clamp decides. The default effort is kept to the default model's.
+   */
+  effortMenu?(model: string): readonly string[] | undefined;
   verbosityLevels: readonly string[];
   themes: Readonly<Record<string, string>>;
   defaults: { model: string; effort: string; verbosity: string; theme: string; goalMaxContinuations: number };
@@ -191,6 +239,7 @@ const EFFORT_LABELS: Record<string, string> = {
   high: 'High',
   xhigh: 'Extra high',
   max: 'Max',
+  ultra: 'Ultra',
 };
 const VERBOSITY_LABELS: Record<string, string> = {
   minimal: 'Minimal — 결과만',
@@ -199,6 +248,31 @@ const VERBOSITY_LABELS: Record<string, string> = {
   verbose: 'Verbose — 전부',
 };
 const TELEGRAM_CHAT_ID = /^-?\d{1,20}$/;
+const DASHBOARD_MODE_OPTIONS: SettingOption[] = [
+  { value: 'minimal', label: '미니멀', description: '보드와, 상세 카드의 작업 목록과 채팅만 보여 줍니다.' },
+  { value: 'advanced', label: '어드밴스드', description: '통계, 토큰, 에이전트 트리, 작업 로그까지 모두 보여 줍니다.' },
+];
+// The three layouts of .prd/20 §5 — one number for both modes; each option says what it is in each.
+const DASHBOARD_PLAN_OPTIONS: SettingOption[] = [
+  {
+    value: '1',
+    label: '1안 (기본)',
+    description:
+      '미니멀 결과 우선: 현재 작업 · 산출물 · PR · 비용 · 모델, 펼치면 링크와 모델 전환. 어드밴스드 정리: 지금 화면에서 중복 별 버튼을 빼고 모델을 더함.',
+  },
+  {
+    value: '2',
+    label: '2안',
+    description:
+      '미니멀 진행 우선: 진행 n/m · 요약, 펼치면 작업 창, 상세에 서브에이전트 탭. 어드밴스드 원본: 바꾸기 전 화면 그대로.',
+  },
+  {
+    value: '3',
+    label: '3안',
+    description:
+      '미니멀 한눈에: 제목 · 상태 · 비용 · 모델만, 상세의 작업은 한 줄. 어드밴스드 압축: 숫자는 바닥 줄로, 펼치면 조작만, 상세는 접혀서 열림.',
+  },
+];
 
 /**
  * Every `UserSettingsStore` mutator a Slack surface (`src/slack/**`) calls,
@@ -223,12 +297,18 @@ export const SLACK_SETTER_COVERAGE: Readonly<Record<string, SettingKey | { exclu
   setPendingRatingChange: 'rating',
   changeUserRating: 'rating',
   setUserPermissionMode: 'permissionMode',
+  setUserSlackTaskEntry: 'slackTaskEntry',
+  setUserEpicTasks: 'epicTasks',
   setUserSandboxDisabled: 'sandbox',
   setUserNetworkDisabled: 'sandboxNetwork',
   clearUserCompactThreshold: {
     excluded: 'deprecated: `compact-threshold` only clears it and moves the value onto the session',
   },
+  setUserEpicCostLimitUsd: {
+    excluded: 'E4 ③ — read by the epic cost cap; shown and edited with the epic lane (E4 ⑨), no Slack command yet',
+  },
   acceptUser: { excluded: 'admin action on another user (accept / deny), not a personal setting' },
+  settlePendingUser: { excluded: 'admin decision on a pending sign-up (accept / deny), not a personal setting' },
   removeUserSettings: { excluded: 'admin action on another user (deny), not a personal setting' },
   createPendingUser: { excluded: 'onboarding bookkeeping, not a personal setting' },
   ensureUserExists: { excluded: 'onboarding bookkeeping, not a personal setting' },
@@ -263,6 +343,10 @@ function expectBoolean(value: unknown, key: SettingKey): boolean {
 export interface SettingsRegistry {
   read(userId: string): SettingsSnapshot;
   write(userId: string, key: string, value: unknown): Promise<SettingView>;
+  /** The user's surface layouts for the editor and the dashboard (.prd/21). */
+  readLayout(userId: string): LayoutSnapshot;
+  /** Replace the user's surface layouts — checked (400) and only for an accepted user (403). */
+  writeLayout(userId: string, doc: unknown): LayoutSnapshot;
 }
 
 export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegistry {
@@ -298,6 +382,8 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
       }
       case 'defaultEffort': {
         const value = store.getUserDefaultEffort(userId);
+        // Only the levels the default model runs (a model change fits the effort to them).
+        const levels = deps.effortMenu?.(store.getUserDefaultModel(userId)) ?? deps.effortLevels;
         return {
           key,
           group: 'model',
@@ -307,9 +393,9 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
           value,
           defaultValue: deps.defaults.effort,
           modified: value !== deps.defaults.effort,
-          options: deps.effortLevels.map((l) => ({ value: l, label: EFFORT_LABELS[l] ?? l })),
+          options: levels.map((l) => ({ value: l, label: EFFORT_LABELS[l] ?? l })),
           editable: true,
-          slackCommand: 'effort <low|medium|high|xhigh|max>',
+          slackCommand: `effort <${deps.effortLevels.join('|')}>`,
         };
       }
       case 'logVerbosity': {
@@ -334,7 +420,8 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
           key,
           group: 'output',
           label: '스레드 헤더 테마',
-          description: 'Slack 스레드 헤더와 턴 종료 카드의 모양입니다.',
+          description:
+            'Slack 턴 종료 카드의 모양입니다. 스레드 헤더는 대시보드 화면 › 스레드 카드가 "서버 슬랙 테마"일 때 이 테마를 씁니다.',
           kind: 'choice',
           value,
           defaultValue: deps.defaults.theme,
@@ -403,6 +490,69 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
           modified: value !== '',
           editable: true,
           slackCommand: 'webhook register <url> | webhook remove',
+        };
+      }
+      case 'slackTaskEntry': {
+        const value = store.getUserSlackTaskEntry(userId);
+        return {
+          key,
+          group: 'account',
+          label: 'Slack 지시 → 대시보드 작업',
+          description:
+            '채널에서 봇에게 보낸 지시가 대시보드 작업이 됩니다. 스레드에는 카드 링크, 결과, 답이 필요한 질문만 남깁니다. 진행 중인 슬랙 세션은 그대로입니다.',
+          kind: 'toggle',
+          value,
+          defaultValue: false,
+          modified: value,
+          editable: true,
+          slackCommand: 'taskentry on|off',
+        };
+      }
+      case 'epicTasks': {
+        const value = store.getUserEpicTasks(userId);
+        return {
+          key,
+          group: 'account',
+          label: '에픽 작업 (실험)',
+          description:
+            '대시보드에서 에픽 작업을 만들 수 있습니다. 에픽은 계획을 세우고 하위 작업을 맡깁니다. 이미 만든 에픽은 꺼도 그대로입니다.',
+          kind: 'toggle',
+          value,
+          defaultValue: false,
+          modified: value,
+          editable: true,
+          slackCommand: 'epictasks on|off',
+        };
+      }
+      case 'dashboardMode': {
+        const value = store.getUserDashboardMode(userId);
+        return {
+          key,
+          group: 'dashboard',
+          label: '화면 모드',
+          description: '대시보드 오른쪽 위 어드밴스드 버튼과 같은 설정입니다.',
+          kind: 'choice',
+          value,
+          defaultValue: 'minimal',
+          modified: value !== 'minimal',
+          options: DASHBOARD_MODE_OPTIONS,
+          editable: true,
+        };
+      }
+      case 'dashboardPlan': {
+        const value = store.getUserDashboardPlan(userId);
+        return {
+          key,
+          group: 'dashboard',
+          label: '화면 구성안',
+          description:
+            '화면에 무엇을 보여 줄지 고르는 안입니다. 1안: 미니멀 결과 우선 · 어드밴스드 정리(기본). 2안: 미니멀 진행 우선 · 어드밴스드 원본(바꾸기 전 화면). 3안: 미니멀 한눈에 · 어드밴스드 압축. 칸별 표는 .prd/20.',
+          kind: 'choice',
+          value,
+          defaultValue: '1',
+          modified: value !== '1',
+          options: DASHBOARD_PLAN_OPTIONS,
+          editable: true,
         };
       }
       case 'autoGoal': {
@@ -581,9 +731,13 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
     'email',
     'rating',
     'workingDirectory',
+    'slackTaskEntry',
+    'epicTasks',
     'permissionMode',
     'sandbox',
     'sandboxNetwork',
+    'dashboardMode',
+    'dashboardPlan',
   ];
 
   async function apply(userId: string, key: SettingKey, value: unknown): Promise<void> {
@@ -603,11 +757,27 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
         // accepted, so check again right before the synchronous save.
         assertAccepted(userId);
         store.setUserDefaultModel(userId, choice.modelId);
+        // The default effort follows the model: a level it does not run becomes
+        // the nearest one it does (the runtime clamp's rule).
+        const menu = deps.effortMenu?.(choice.modelId);
+        const effort = store.getUserDefaultEffort(userId);
+        if (menu && menu.length > 0 && !menu.includes(effort)) {
+          const fitted = store.resolveEffortInput(clampEffortToSupported(menu, effort));
+          if (fitted) store.setUserDefaultEffort(userId, fitted);
+        }
         return;
       }
       case 'defaultEffort': {
         const effort = store.resolveEffortInput(expectString(value, key));
         if (!effort) throw new SettingsError(400, `effort는 ${deps.effortLevels.join(', ')} 중 하나여야 합니다`);
+        const model = store.getUserDefaultModel(userId);
+        const menu = deps.effortMenu?.(model);
+        if (menu && menu.length > 0 && !menu.includes(effort)) {
+          throw new SettingsError(
+            400,
+            `${store.getModelDisplayName(model)}은(는) effort ${effort}를 지원하지 않습니다 — ${menu.join(', ')} 중 하나`,
+          );
+        }
         store.setUserDefaultEffort(userId, effort);
         return;
       }
@@ -640,6 +810,28 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
       case 'autoGoal':
         store.setUserAutoGoalEnabled(userId, expectBoolean(value, key));
         return;
+      case 'slackTaskEntry':
+        store.setUserSlackTaskEntry(userId, expectBoolean(value, key));
+        return;
+      case 'epicTasks':
+        store.setUserEpicTasks(userId, expectBoolean(value, key));
+        return;
+      case 'dashboardMode': {
+        const mode = expectString(value, key);
+        if (mode !== 'minimal' && mode !== 'advanced') {
+          throw new SettingsError(400, 'dashboardMode는 minimal 또는 advanced여야 합니다');
+        }
+        store.setUserDashboardMode(userId, mode);
+        return;
+      }
+      case 'dashboardPlan': {
+        const plan = expectString(value, key);
+        if (plan !== '1' && plan !== '2' && plan !== '3') {
+          throw new SettingsError(400, 'dashboardPlan은 1, 2, 3 중 하나여야 합니다');
+        }
+        store.setUserDashboardPlan(userId, plan);
+        return;
+      }
       case 'goalMaxContinuations': {
         let n: number;
         try {
@@ -695,6 +887,29 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
         groups: SETTING_GROUPS,
         settings: ORDER.map((k) => view(userId, k)),
       };
+    },
+    readLayout(userId) {
+      return {
+        userId,
+        accepted: deps.isAccepted(userId),
+        doc: store.getUserDashboardLayout(userId),
+        plan: store.getUserDashboardPlan(userId),
+        mode: store.getUserDashboardMode(userId),
+        builtins: BUILTIN_PRESETS,
+        catalog: LAYOUT_CATALOG,
+      };
+    },
+    writeLayout(userId, input) {
+      let doc: DashboardLayoutDoc;
+      try {
+        doc = normalizeLayoutDoc(input);
+      } catch (e) {
+        if (e instanceof LayoutError) throw new SettingsError(400, e.message);
+        throw e;
+      }
+      assertAccepted(userId);
+      store.setUserDashboardLayout(userId, doc);
+      return this.readLayout(userId);
     },
     async write(userId, key, value) {
       if (!(ORDER as string[]).includes(key)) throw new SettingsError(400, `알 수 없는 설정: ${key}`);

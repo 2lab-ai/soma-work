@@ -164,6 +164,15 @@ export interface Config {
    * the pre-substitution object, so no resolved `${VAR}` value is persisted.
    */
   deploySandbox?: Record<string, unknown>;
+  /**
+   * Work queues (`@soma/slack/work-queue`): which work runs at most N at a
+   * time across all users — the built-in one serialises dev2 deploys. Kept
+   * OPAQUE here; `parseWorkQueuesConfig` owns validation (and keeps the
+   * built-in queue when the value is malformed). Passed through for the same
+   * round-trip reason as `ui`/`deploySandbox`, from the pre-substitution
+   * object. Absent key = built-in queues; `[]` = none.
+   */
+  workQueues?: unknown;
 }
 
 /**
@@ -596,6 +605,14 @@ export function loadConfig(configFile: string, opts: LoadConfigOptions = {}): Co
         logger.warn(
           `Ignoring config.json#"deploySandbox": expected a JSON object, got ${describeKind(rawDeploySandbox)}`,
         );
+      }
+
+      // Pass through `workQueues` opaquely, pre-substitution, like
+      // `deploySandbox` (see Config.workQueues). Any JSON value is kept —
+      // `parseWorkQueuesConfig` decides what a malformed one means.
+      const rawWorkQueues = (rawParsed as Record<string, unknown>).workQueues;
+      if (rawWorkQueues !== undefined) {
+        result.workQueues = rawWorkQueues;
       }
 
       const rawUi = (rawParsed as Record<string, unknown>).ui;

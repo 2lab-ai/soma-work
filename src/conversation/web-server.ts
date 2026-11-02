@@ -12,6 +12,7 @@ import Fastify, {
   type LightMyRequestResponse,
 } from 'fastify';
 import * as jwt from 'jsonwebtoken';
+import { dictationA2tError, getDictationA2tService } from '../a2t/a2t-service';
 import { isAdminUser } from '../admin-utils';
 import { config } from '../config';
 import { IS_DEV } from '../env-paths';
@@ -21,9 +22,12 @@ import { registerArtifactRoutes } from './artifact-routes';
 import {
   registerDashboardRoutes,
   setSelfInstanceEnv,
+  startDashboardAdminApprovalWatch,
   startDashboardPermissionWatch,
+  stopDashboardAdminApprovalWatch,
   stopDashboardPermissionWatch,
 } from './dashboard';
+import { dictationWhisperFromA2t, registerDictationRoutes } from './dictation-routes';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
 import { registerMemoryRoutes } from './memory-routes';
 import {
@@ -491,6 +495,16 @@ export function getConversationUrl(conversationId: string): string {
  * viewer failed to start or has stopped — or when there is no owner or key.
  * @public — injected once in src/index.ts (`setThreadHeaderProviders`).
  */
+/**
+ * E2 ⑧ (.prd/18 D12) — the dashboard is listening (so `getDashboardSessionUrl`
+ * hands out card links). The Slack entry asks this before making a task: with no
+ * dashboard there is no surface to answer, approve or stop, so it stays on the
+ * Slack session path.
+ */
+export function isDashboardListening(): boolean {
+  return listening;
+}
+
 export function getDashboardSessionUrl(ownerId: string, sessionKey: string): string | undefined {
   if (!listening || !ownerId || !sessionKey) return undefined;
   const base = getViewerBaseUrl().replace(/\/+$/, '');
@@ -556,7 +570,12 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
           reply.status(404).send('Conversation not found');
           return;
         }
-        const html = renderConversationViewPage(record);
+        // The list beside it (M-08, the archive page); a list that fails to load leaves the conversation alone.
+        const conversations = await listConversations().catch((error) => {
+          logger.warn('Conversation list unavailable beside a conversation', error);
+          return undefined;
+        });
+        const html = renderConversationViewPage(record, conversations);
         reply.type('text/html; charset=utf-8').send(html);
       } catch (error) {
         logger.error('Error rendering conversation', error);
@@ -693,6 +712,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
   // ---- Dashboard Routes ----
   await registerDashboardRoutes(server, authMiddleware, csrfMiddleware);
+  // 받아쓰기 — the server's Whisper (epic #737, #739): after the dashboard routes, which register @fastify/websocket.
+  registerDictationRoutes(server, authMiddleware, dictationWhisperFromA2t(getDictationA2tService, dictationA2tError));
   await registerWorkLogRoutes(server, authMiddleware);
   await registerArtifactRoutes(server, authMiddleware);
   await registerUserMediaRoutes(server, authMiddleware);
@@ -776,6 +797,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
       // Permission prompts waiting in the shared store → cards (SSOT 2026-10-24).
       startDashboardPermissionWatch();
+      startDashboardAdminApprovalWatch();
 
       return;
     } catch (error) {
@@ -798,6 +820,7 @@ export async function stopWebServer(): Promise<void> {
   listening = false;
   stopPublicUrlCheck();
   stopDashboardPermissionWatch();
+  stopDashboardAdminApprovalWatch();
   if (server) {
     // Flush hook state before closing
     try {

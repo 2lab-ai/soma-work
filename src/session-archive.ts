@@ -11,22 +11,31 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { sumLiveUsage } from '@soma/slack/live-usage';
+import { findTranscriptPath } from '@soma/slack/pipeline/transcript-sanitizer';
 import type { TaskUsage } from '@soma/slack/session-usage-math';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { calculateTokenCost } from './metrics/model-registry';
+import { isSafePathSegment, normalizeTmpPath } from './path-utils';
 import type { AgentRegistry } from './session/agent-registry';
 import type { TaskLedger } from './session/task-ledger';
 import type {
   ActivityState,
+  ClosedByParent,
   ConversationSession,
+  EpicEvent,
+  EpicPlan,
+  HandoffContext,
+  OriginThread,
   SessionCronJob,
   SessionGoal,
+  SessionIncidentRequest,
   SessionInstruction,
   SessionLinkHistory,
   SessionLinks,
   SessionState,
   SessionUsage,
+  TaskInputContext,
   WorkflowType,
 } from './types';
 
@@ -45,6 +54,24 @@ export interface ArchivedSession {
   sessionKey: string;
   sessionId?: string;
   conversationId?: string; // → conversations/{id}.json
+  /** Task id (#595) — a revive brings it back. Absent in archives written before it existed. */
+  taskId?: string;
+  /** A Slack-less task (#596): no channel/thread to revive into — keyed `task:<taskId>`. */
+  slackless?: true;
+  /** E2 ① — the instruction thread of a Slack-less task; a revive brings it back while it is free. */
+  originThread?: OriginThread;
+  /** E2 ② — a Slack-instructed task's channel context. */
+  inputContext?: TaskInputContext;
+  /** E4 ① — the epic relation (validated on revive). */
+  kind?: 'epic';
+  parentTaskId?: string;
+  planNodeId?: string;
+  childTaskIds?: string[];
+  /** E4 ② — an epic's plan and events (validated on revive). */
+  plan?: EpicPlan;
+  epicEvents?: EpicEvent[];
+  /** E4 ⑦ — a child closed by its epic's close. */
+  closedBy?: ClosedByParent;
 
   // Owner
   ownerId: string;
@@ -106,6 +133,21 @@ export interface ArchivedSession {
   cronJob?: SessionCronJob;
   // Spec 12 — so a closed card keeps its subagents.
   agents?: AgentRegistry;
+
+  // SSOT 2026-10-30 T4.2 — what a revive needs to continue the conversation.
+  /** The session's cwd: the SDK files its transcript under this directory's encoding. */
+  sessionWorkingDir?: string;
+  /** Incident ownership: a revived incident session must stay restricted. */
+  incidentRequest?: SessionIncidentRequest;
+  incidentAttemptFinishedId?: string;
+  /**
+   * Handoff enforcement state: the context drives the PR-issue precondition
+   * (tool-policy) and the budget caps automatic handoffs. A revive restores
+   * both as they were; an archive written before they were kept has no
+   * `autoHandoffBudget` field (see resolveArchivedResume).
+   */
+  handoffContext?: HandoffContext;
+  autoHandoffBudget?: number;
 }
 
 /**
@@ -138,6 +180,17 @@ function sessionToArchive(
     sessionKey,
     sessionId: session.sessionId,
     conversationId: session.conversationId,
+    taskId: session.taskId,
+    slackless: session.slackless === true ? true : undefined,
+    originThread: session.originThread,
+    inputContext: session.inputContext,
+    kind: session.kind,
+    parentTaskId: session.parentTaskId,
+    planNodeId: session.planNodeId,
+    childTaskIds: session.childTaskIds ? [...session.childTaskIds] : undefined,
+    plan: session.plan,
+    epicEvents: session.epicEvents,
+    closedBy: session.closedBy,
 
     ownerId: session.ownerId,
     ownerName: session.ownerName,
@@ -175,6 +228,11 @@ function sessionToArchive(
     taskLedger: session.taskLedger ? JSON.parse(JSON.stringify(session.taskLedger)) : undefined,
     cronJob: session.cronJob ? { ...session.cronJob } : undefined,
     agents: session.agents ? JSON.parse(JSON.stringify(session.agents)) : undefined,
+    sessionWorkingDir: session.sessionWorkingDir,
+    incidentRequest: session.incidentRequest ? JSON.parse(JSON.stringify(session.incidentRequest)) : undefined,
+    incidentAttemptFinishedId: session.incidentAttemptFinishedId,
+    handoffContext: session.handoffContext ? JSON.parse(JSON.stringify(session.handoffContext)) : undefined,
+    autoHandoffBudget: session.autoHandoffBudget,
   };
 }
 
@@ -214,17 +272,25 @@ export class SessionArchiveStore {
    * Returns null if no archive exists.
    */
   private findLatestArchive(sessionKey: string): string | null {
-    if (!fs.existsSync(this.archiveDir)) return null;
+    return this.archiveFiles(sessionKey)[0] ?? null;
+  }
+
+  /**
+   * A key's archive files, newest first. Exactly `{sanitizedKey}_{digits}.json`:
+   * a key that extends this one (`task-c1_x_…`) is another key's file (E4 ③ R1).
+   */
+  private archiveFiles(sessionKey: string): string[] {
+    if (!fs.existsSync(this.archiveDir)) return [];
     const prefix = `${sanitizeKey(sessionKey)}_`;
     try {
-      const files = fs
+      return fs
         .readdirSync(this.archiveDir)
-        .filter((f) => f.startsWith(prefix) && f.endsWith('.json'))
-        .sort()
-        .reverse(); // newest first (lexicographic sort on timestamp suffix)
-      return files.length > 0 ? path.join(this.archiveDir, files[0]) : null;
+        .filter((f) => f.startsWith(prefix) && /^\d+\.json$/.test(f.slice(prefix.length)))
+        .map((f) => ({ f, at: Number(f.slice(prefix.length, -'.json'.length)) }))
+        .sort((a, b) => b.at - a.at)
+        .map(({ f }) => path.join(this.archiveDir, f));
     } catch {
-      return null;
+      return [];
     }
   }
 
@@ -272,10 +338,49 @@ export class SessionArchiveStore {
   }
 
   /**
+   * The exact archive a board card names (`archived_<sessionKey>_<archivedAt>`),
+   * or null. Never "the latest for the thread": a thread archived twice has two
+   * snapshots, and reviving a card must bring back the one it shows. A file
+   * whose content names another session is not this card's archive.
+   */
+  load(sessionKey: string, archivedAt: number): ArchivedSession | null {
+    if (!Number.isSafeInteger(archivedAt) || archivedAt <= 0) return null;
+    const file = this.filePath(sessionKey, archivedAt);
+    try {
+      if (!fs.existsSync(file)) return null;
+      const archived = JSON.parse(fs.readFileSync(file, 'utf-8')) as ArchivedSession;
+      if (!archived || archived.sessionKey !== sessionKey || archived.archivedAt !== archivedAt) return null;
+      return archived;
+    } catch (err) {
+      logger.warn('Failed to read archive file', { sessionKey, archivedAt, error: err });
+      return null;
+    }
+  }
+
+  /**
    * Check if an archive exists for a session key.
    */
   exists(sessionKey: string): boolean {
     return this.findLatestArchive(sessionKey) !== null;
+  }
+
+  /**
+   * E4 ③ — the newest archive of a session key, or null (unreadable or not
+   * this key's). A task keeps its key across revives, so this is its last
+   * close; an epic's cost cap reads a closed child's spend from it.
+   */
+  latest(sessionKey: string): ArchivedSession | null {
+    // Newest first; a file that cannot be read, or names another session, is skipped — an
+    // older snapshot of this key is still this key's spend (E4 ③ R1).
+    for (const file of this.archiveFiles(sessionKey)) {
+      try {
+        const archived = JSON.parse(fs.readFileSync(file, 'utf-8')) as ArchivedSession;
+        if (archived?.sessionKey === sessionKey) return archived;
+      } catch (err) {
+        logger.warn('Failed to read archive file', { sessionKey, error: err });
+      }
+    }
+    return null;
   }
 
   /**
@@ -319,6 +424,132 @@ export class SessionArchiveStore {
 
     return results;
   }
+}
+
+// ── Revive (SSOT 2026-10-30 T4) ─────────────────────────────
+
+/**
+ * What a star / revive did, or why it refused. Shared by the registry (which
+ * acts) and the dashboard (which answers the request with it).
+ */
+export type SessionLifecycleOutcome =
+  | { ok: true; sessionKey: string; starred: boolean; revived: boolean }
+  | {
+      ok: false;
+      code:
+        | 'not_found'
+        | 'forbidden'
+        | 'terminated'
+        | 'conflict'
+        | 'no_conversation'
+        | 'transcript_missing'
+        | 'invalid_cwd'
+        | 'incident_provenance'
+        | 'handoff_provenance';
+      message: string;
+    };
+
+/** Workflows a forced handoff enters; their sessions carry `handoffContext` (session-initializer). */
+const HANDOFF_WORKFLOWS: ReadonlySet<string> = new Set(['z-plan-to-work', 'z-epic-update']);
+
+type ResumeRefusal = Extract<SessionLifecycleOutcome, { ok: false }>;
+
+/** A transcript head holds the cwd in its first lines; this much is plenty. */
+const TRANSCRIPT_HEAD_BYTES = 256 * 1024;
+
+/** The SDK's project directory name for a cwd: every non-alphanumeric character becomes `-`. */
+function sdkProjectDirName(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+/** The first `cwd` the transcript records (its head only), or undefined. */
+function transcriptCwd(file: string): string | undefined {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(TRANSCRIPT_HEAD_BYTES);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    for (const line of buf.subarray(0, n).toString('utf-8').split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const row = JSON.parse(line) as { cwd?: unknown };
+        if (typeof row.cwd === 'string' && row.cwd) return row.cwd;
+      } catch {
+        // a line cut by the head limit, or not JSON — keep looking
+      }
+    }
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+  return undefined;
+}
+
+/**
+ * A cwd the revived session may run in: a session directory of its owner
+ * (`/tmp/<ownerId>/<dir>`, no traversal), whose SDK project directory is the
+ * one the transcript lives in — so `resume` finds exactly this conversation.
+ */
+function provenCwd(candidate: string | undefined, ownerId: string, projectDir: string): string | undefined {
+  if (!candidate || !isSafePathSegment(ownerId)) return undefined;
+  const cwd = normalizeTmpPath(candidate).replace(/\/+$/, '');
+  if (cwd.includes('..') || !cwd.startsWith(`/tmp/${ownerId}/`)) return undefined;
+  if (cwd.split('/').filter(Boolean).length < 3) return undefined;
+  const resolves = sdkProjectDirName(cwd) === projectDir || sdkProjectDirName(`/private${cwd}`) === projectDir;
+  return resolves ? cwd : undefined;
+}
+
+/**
+ * Whether an archived session can be brought back to continue its
+ * conversation, and the cwd it must run in. Never a silent fresh start: no SDK
+ * session, no transcript, or a cwd that does not provably resolve to the
+ * transcript is a refusal the user sees.
+ *
+ * The kept `sessionWorkingDir` is the source; an archive written before that
+ * field falls back to the cwd the transcript itself records — accepted only
+ * when it passes the same proof (owner's /tmp dir, encodes to the transcript's
+ * project directory), so it is the SDK's own lookup key, not a guess.
+ *
+ * An archive from an incident channel without its incident ownership cannot be
+ * revived: it would come back as an ordinary, steerable session.
+ */
+export function resolveArchivedResume(
+  archived: ArchivedSession,
+  opts: { configDir?: string; incidentChannelIds?: readonly string[] } = {},
+): { ok: true; cwd: string } | ResumeRefusal {
+  if (!archived.sessionId) {
+    return { ok: false, code: 'no_conversation', message: '이어갈 대화가 없는 세션이에요 (모델과 대화한 적이 없음)' };
+  }
+  if (!archived.incidentRequest && opts.incidentChannelIds?.includes(archived.channelId)) {
+    return { ok: false, code: 'incident_provenance', message: '인시던트 채널의 세션은 소유 정보 없이 살릴 수 없어요' };
+  }
+  // A handoff session archived before its handoff state was kept would come
+  // back without the PR-issue precondition it ran under. Fail closed.
+  if (
+    archived.workflow &&
+    HANDOFF_WORKFLOWS.has(archived.workflow) &&
+    !archived.handoffContext &&
+    archived.autoHandoffBudget === undefined
+  ) {
+    return {
+      ok: false,
+      code: 'handoff_provenance',
+      message: '핸드오프 세션은 핸드오프 정보가 남아 있지 않아 살릴 수 없어요',
+    };
+  }
+  const transcript = findTranscriptPath(archived.sessionId, opts.configDir);
+  if (!transcript) {
+    return { ok: false, code: 'transcript_missing', message: '대화 기록(transcript)을 찾을 수 없어 이어갈 수 없어요' };
+  }
+  const projectDir = path.basename(path.dirname(transcript));
+  const cwd = archived.sessionWorkingDir
+    ? provenCwd(archived.sessionWorkingDir, archived.ownerId, projectDir)
+    : provenCwd(transcriptCwd(transcript), archived.ownerId, projectDir);
+  if (!cwd) {
+    return { ok: false, code: 'invalid_cwd', message: '세션 작업 폴더가 대화 기록과 맞지 않아 이어갈 수 없어요' };
+  }
+  return { ok: true, cwd };
 }
 
 // ── Singleton ───────────────────────────────────────────────

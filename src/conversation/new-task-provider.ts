@@ -20,12 +20,19 @@ import { fetchLlmuxStatus } from '../auth/llmux-client';
 import { getAllChannels } from '../channel-registry';
 import { getLastCommandChannelStore } from '../last-command-channel-store';
 import { Logger } from '../logger';
+import { allowedEffortsFor } from '../session/effort-menu';
 import { productionModelCatalogDeps } from '../session/model-catalog-deps';
 import { listRepresentativeModels } from '../session/model-switch';
 import { getTokenManager } from '../token-manager';
 import { EFFORT_LEVELS, userSettingsStore } from '../user-settings-store';
 import type { DashboardNewTaskProvider } from './dashboard';
-import { buildNewTaskContext, isSlackFileUrl, type NewTaskAttachment, type UsageAccountView } from './new-task';
+import {
+  buildNewTaskContext,
+  isSlackFileUrl,
+  type NewTaskAttachment,
+  newTaskModelOptions,
+  type UsageAccountView,
+} from './new-task';
 import {
   launchNewTask,
   type NewTaskEvent,
@@ -150,6 +157,42 @@ export function createSlackSteerUploader(client: WebClient, opts?: SteerUploader
   );
 }
 
+/**
+ * The models the dialog offers `userId` (nickname → id), from the model catalog
+ * and the user's settings alone — no Slack call, no usage fetch. A dashboard
+ * task resolves its model with this (#640 R2).
+ */
+export function offeredNewTaskModels(userId: string): Array<{ nickname: string; model: string }> {
+  const { representativeModels, userDefaultModel, userDefaultModelLabel } = newTaskModelInputs(userId);
+  return newTaskModelOptions(representativeModels, userDefaultModel, userDefaultModelLabel).options.map((m) => ({
+    nickname: m.nickname,
+    model: m.model,
+  }));
+}
+
+/** The dialog's model inputs — one source for the context and the task launcher (#640 R3). */
+function newTaskModelInputs(userId: string): {
+  representativeModels: Array<{ nickname: string; model: string; label: string; effortLevels?: string[] }>;
+  userDefaultModel: string;
+  userDefaultModelLabel: string;
+  userDefaultModelEffortLevels?: string[];
+} {
+  let representativeModels: Array<{ nickname: string; model: string; label: string; effortLevels?: string[] }> = [];
+  try {
+    representativeModels = listRepresentativeModels(productionModelCatalogDeps(), userId);
+  } catch (error) {
+    logger.warn('New task: representative models unavailable', { error: String(error) });
+  }
+  const userDefaultModel = userSettingsStore.getUserDefaultModel(userId);
+  const userDefaultModelEffortLevels = [...allowedEffortsFor(userDefaultModel)];
+  return {
+    representativeModels,
+    userDefaultModel,
+    userDefaultModelLabel: userSettingsStore.getModelDisplayName(userDefaultModel),
+    ...(userDefaultModelEffortLevels ? { userDefaultModelEffortLevels } : {}),
+  };
+}
+
 export function createNewTaskProvider(deps: NewTaskProviderDeps): DashboardNewTaskProvider {
   const { client } = deps;
   const membership = createTtlCache((userId: string) => memberChannelIds(client, userId), MEMBERSHIP_TTL_MS);
@@ -169,17 +212,13 @@ export function createNewTaskProvider(deps: NewTaskProviderDeps): DashboardNewTa
       } catch (error) {
         logger.warn('New task: usage unavailable — battery unknown', { error: String(error) });
       }
-      let representativeModels: Array<{ nickname: string; model: string; label: string }> = [];
-      try {
-        representativeModels = listRepresentativeModels(productionModelCatalogDeps(), userId);
-      } catch (error) {
-        logger.warn('New task: representative models unavailable', { error: String(error) });
-      }
-      const userDefaultModel = userSettingsStore.getUserDefaultModel(userId);
+      const { representativeModels, userDefaultModel, userDefaultModelLabel, userDefaultModelEffortLevels } =
+        newTaskModelInputs(userId);
       return buildNewTaskContext({
         representativeModels,
         userDefaultModel,
-        userDefaultModelLabel: userSettingsStore.getModelDisplayName(userDefaultModel),
+        userDefaultModelLabel,
+        userDefaultModelEffortLevels,
         userDefaultEffort: userSettingsStore.getUserDefaultEffort(userId),
         efforts: EFFORT_LEVELS,
         autogoalDefault: userSettingsStore.getUserAutoGoalEnabled(userId),

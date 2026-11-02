@@ -195,6 +195,36 @@ describe('ConversationWebServer Authentication', () => {
       });
       expect(authResponse.statusCode).toBe(200);
     });
+
+    it('M-08: one conversation is drawn with the list beside it; a list that fails to load leaves it alone', async () => {
+      mockConfig.conversation.viewerToken = TEST_TOKEN;
+      const recorder = await import('../recorder');
+      const viewer = await import('../viewer');
+      const record = { id: 'c1', ownerId: 'U1', ownerName: 'Z', turns: [] };
+      vi.mocked(recorder.getConversation).mockResolvedValue(record as any);
+      vi.mocked(recorder.listConversations).mockResolvedValueOnce([{ id: 'c1', ownerId: 'U1', turnCount: 0 }] as any);
+
+      const { startWebServer, injectWebServer } = await import('../web-server');
+      await startWebServer({ listen: false });
+      server = true;
+      const headers = { Authorization: `Bearer ${TEST_TOKEN}` };
+
+      const withList = await injectWebServer({ method: 'GET', url: '/conversations/c1', headers });
+      expect(withList.statusCode).toBe(200);
+      expect(withList.headers['content-type']).toContain('text/html');
+      expect(viewer.renderConversationViewPage).toHaveBeenLastCalledWith(record, [
+        { id: 'c1', ownerId: 'U1', turnCount: 0 },
+      ]);
+
+      vi.mocked(recorder.listConversations).mockRejectedValueOnce(new Error('index unreadable'));
+      const alone = await injectWebServer({ method: 'GET', url: '/conversations/c1', headers });
+      expect(alone.statusCode).toBe(200);
+      expect(viewer.renderConversationViewPage).toHaveBeenLastCalledWith(record, undefined);
+
+      vi.mocked(recorder.getConversation).mockResolvedValue(null);
+      const missing = await injectWebServer({ method: 'GET', url: '/conversations/nope', headers });
+      expect(missing.statusCode).toBe(404);
+    });
   });
 
   describe('Slack SSO /auth/sso (#704)', () => {

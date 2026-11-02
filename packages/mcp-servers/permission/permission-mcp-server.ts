@@ -8,6 +8,7 @@ import { overridableMatchedRuleIds, overridableRulesByIds } from '@soma/process-
 import {
   PERMISSION_PROMPT_KIND,
   type PendingApproval,
+  type PermissionAdvice,
   type PermissionResponse,
   sharedStore,
 } from '@soma/process-shared/permission/shared-store.js';
@@ -27,9 +28,29 @@ export interface PermissionSlackContext {
   user: string;
 }
 
+/** What the advisor is asked about: the call the prompt is for. */
+export interface PermissionAdviceRequest {
+  toolName: string;
+  input: unknown;
+  /** Overridable dangerous-rule ids the call matched (Bash only). */
+  ruleIds: string[];
+  /** The turn's abort: stops the advisor (and its guardian call) when the turn stops. */
+  signal?: AbortSignal;
+}
+
+/**
+ * SSOT 2026-11-02 T2 — the AI's advice for a prompt (what the call does, why it
+ * is risky, approve or deny); null when it has none. Injected by the host,
+ * which owns the guardian. Never trusted to settle anything: it only colours
+ * the card, and a `deny` makes the answer path ask twice.
+ */
+export type PermissionAdviceResolver = (req: PermissionAdviceRequest) => Promise<PermissionAdvice | null | undefined>;
+
 export interface PermissionMCPServerOptions {
   slackToken?: string;
   slackContext?: PermissionSlackContext;
+  /** No resolver (the stdio entry point) → every prompt says the AI gave no advice. */
+  resolveAdvice?: PermissionAdviceResolver;
 }
 
 export interface PermissionRequestContext {
@@ -40,12 +61,14 @@ class PermissionMCPServer extends BaseMcpServer {
   private slack: WebClient;
   private messenger: SlackPermissionMessenger;
   private slackContext?: PermissionSlackContext;
+  private resolveAdvice?: PermissionAdviceResolver;
 
   constructor(options: PermissionMCPServerOptions = {}) {
     super('permission-prompt');
     this.slack = new WebClient(options.slackToken ?? process.env.SLACK_BOT_TOKEN);
     this.messenger = new SlackPermissionMessenger(this.slack);
     this.slackContext = options.slackContext;
+    this.resolveAdvice = options.resolveAdvice;
   }
 
   defineTools(): ToolDefinition[] {
@@ -120,7 +143,17 @@ class PermissionMCPServer extends BaseMcpServer {
     // @soma/process-shared/permission/dangerous-rules.ts for the lockdown isolation invariant.
     const overridableRules = overridableRulesByIds(ruleIds);
 
-    const blocks = this.messenger.buildRequestBlocks(tool_name, input, approvalId, user, overridableRules);
+    // SSOT 2026-11-02 T2 — the AI's advice, asked before the prompt exists, so
+    // the record (the dashboard's copy) and the card carry the same advice.
+    const advice = await this.adviceFor({
+      toolName: tool_name,
+      input,
+      ruleIds,
+      ...(context.signal ? { signal: context.signal } : {}),
+    });
+    // The turn may have stopped while the guardian thought: raise no prompt nobody waits for.
+    if (context.signal?.aborted) throw new Error('Permission request aborted before it was raised');
+    const blocks = this.messenger.buildRequestBlocks(tool_name, input, approvalId, user, overridableRules, advice);
     let permissionMessage: { ts?: string; channel?: string } | undefined;
 
     try {
@@ -141,6 +174,7 @@ class PermissionMCPServer extends BaseMcpServer {
         created_at: Date.now(),
         expires_at: Date.now() + 5 * 60 * 1000,
         rule_ids: ruleIds.length > 0 ? ruleIds : undefined,
+        ...(advice ? { advice } : {}),
       };
 
       await sharedStore.storePendingApproval(approvalId, pendingApproval);
@@ -149,6 +183,7 @@ class PermissionMCPServer extends BaseMcpServer {
         { channel, threadTs: thread_ts, user },
         blocks,
         tool_name,
+        advice,
       );
 
       const response = await this.waitForApproval(approvalId, context.signal);
@@ -172,6 +207,17 @@ class PermissionMCPServer extends BaseMcpServer {
       };
 
       return { content: [{ type: 'text', text: JSON.stringify(response) }] };
+    }
+  }
+
+  /** The advice for this prompt, or null — a failing advisor never holds the prompt back. */
+  private async adviceFor(req: PermissionAdviceRequest): Promise<PermissionAdvice | null> {
+    if (!this.resolveAdvice) return null;
+    try {
+      return (await this.resolveAdvice(req)) ?? null;
+    } catch (error) {
+      this.logger.warn('Permission advice failed; the prompt goes out without it', error);
+      return null;
     }
   }
 

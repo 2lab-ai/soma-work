@@ -260,7 +260,10 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
           aliases,
           current: str(params.current),
           history: str(params.history),
-          content: str(params.content),
+          // `text` is the spelling models reach for (41 of 43 episodic_append
+          // failures in production), then `body` (the other 2); in this
+          // rebuild either can only mean the observation.
+          content: str(params.content) ?? str(params.text) ?? str(params.body),
           date: str(params.date),
           query: str(params.query),
         },
@@ -512,7 +515,10 @@ function parseSessionOperation(
   }
 
   if (action === 'add') {
-    const link = normalizeLink(raw.link, resourceType as SessionResourceType);
+    // The advertised schema puts `url` on every operation (remove/set_active
+    // read it), so accept it here too as shorthand for `link: { url }`.
+    const rawLink = raw.link ?? (typeof raw.url === 'string' ? { url: raw.url } : undefined);
+    const link = normalizeLink(rawLink, resourceType as SessionResourceType);
     if (!link) {
       return invalidArgs('add operation requires link with url');
     }
@@ -570,6 +576,12 @@ function parseAskUserQuestionParams(
     payload = { ...raw, type: typeof raw.type === 'string' ? raw.type : 'user_choice' };
   } else {
     return invalidAskUserQuestionArgs(raw, 'missing_payload');
+  }
+  if (payload.type === 'user_choices') {
+    // `user_choices` is the internal normalized type, not an input type, but
+    // models send it. Its body's shape says which input type was meant.
+    const inferred = inferChoicePayloadType(payload);
+    if (inferred) payload = { ...payload, type: inferred };
   }
   if (payload.type !== ASK_USER_QUESTION_ALLOWED_TYPES[0] && payload.type !== ASK_USER_QUESTION_ALLOWED_TYPES[1]) {
     return invalidAskUserQuestionArgs(raw, 'invalid_payload_type');
@@ -962,6 +974,21 @@ function normalizeLink(raw: unknown, resourceType: SessionResourceType): Session
     status: toOptionalString(raw.status),
     statusCheckedAt: Number.isFinite(raw.statusCheckedAt) ? Number(raw.statusCheckedAt) : undefined,
   };
+}
+
+/**
+ * Input type implied by a payload's body: choices that each carry their own
+ * `question` are a group; a top-level `question` over labelled choices is a
+ * single question. Anything else stays unresolved (and is rejected).
+ */
+function inferChoicePayloadType(payload: Record<string, unknown>): 'user_choice' | 'user_choice_group' | null {
+  const choices = Array.isArray(payload.choices) ? payload.choices : [];
+  if (choices.length === 0) return null;
+  if (choices.every((c) => isRecord(c) && typeof c.question === 'string')) return 'user_choice_group';
+  if (typeof payload.question === 'string' && choices.every((c) => isRecord(c) && typeof c.label === 'string')) {
+    return 'user_choice';
+  }
+  return null;
 }
 
 function normalizeChoicePayload(raw: unknown): UserChoice | UserChoices | null {

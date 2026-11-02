@@ -13,6 +13,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { viewerScope } from '../__fixtures__/viewer-scope';
+import { pageTokenAliases, uiLibTokensCss } from '../ui-lib';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -22,6 +24,10 @@ function cook(fragment: string): string {
   if (fragment.includes('`') || fragment.includes('${')) throw new Error('fragment is not a plain template slice');
   return new Function(`return \`${fragment}\`;`)() as string;
 }
+/** The page's chrome words (STRINGS — tone pass P8: Korean, "…", no emoji), as served. */
+const STRINGS = new Function(
+  `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
+)() as Record<string, string>;
 /** Source of a top-level client function, as served. */
 /** Every top-level declaration of NAME in the template (function / async function / var / let / const). */
 function declarationCount(name: string): number {
@@ -55,6 +61,8 @@ function clientVar(name: string): string {
  * reach shipped vars) and returned next to the shipped ones.
  */
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, seams: string[] = []): T {
+  ({ fns, inject } = viewerScope(fns, inject));
+  inject = { STRINGS: STRINGS, ...inject };
   const names = Object.keys(inject);
   const seamNames = seams.map((src) => /^function (\w+)/.exec(src)?.[1] ?? '');
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${seams.join('\n')}\nreturn { ${[...fns, ...seamNames].join(', ')} };`;
@@ -82,6 +90,7 @@ describe('work log core (shipped wl* functions)', () => {
     [
       'wlNewState',
       'wlUrl',
+      'wlLatestUrl',
       'wlValidSeq',
       'wlMerge',
       'wlPageMaxSeq',
@@ -94,7 +103,7 @@ describe('work log core (shipped wl* functions)', () => {
       'wlOnLive',
       'wlRecover',
     ],
-    ['WL_BACKFILL_MAX_PAGES'],
+    ['WL_BACKFILL_MAX_PAGES', 'WL_PAGE'],
   );
   const seqs = (s: WlState) => s.entries.map((e) => e.seq);
   const range = (a: number, b: number): Entry[] => Array.from({ length: b - a + 1 }, (_, i) => ({ seq: a + i }));
@@ -607,93 +616,111 @@ const WL_INSTRUCTION_FNS = [
   'splitInvokedSkills',
   'skillBadgesHtml',
   'wlInstructionTurn',
-  'wlEntryFactsHtml',
+  'wlEntryFactsText',
   'wlCutSkills',
-  'wlCutSkillsHtml',
+  'wlFullText',
+  'wlRawView',
 ];
-const WL_INSTRUCTION_VARS = ['SYS_RESTART_HEADS', 'SYS_RESUME_CONTEXT', 'SYS_RETRY_MARK', '_skillBodies', '_skillSeq'];
+const WL_INSTRUCTION_VARS = [
+  'SYS_RESTART_HEADS',
+  'SYS_RESUME_CONTEXT',
+  'SYS_RETRY_MARK',
+  '_skillBodies',
+  '_skillSeq',
+  'WL_RAW_MISSING_MSG',
+  'WL_RAW_ERROR_MSG',
+  'WL_RAW_DAMAGED_MSG',
+  'WL_FORBIDDEN_MSG',
+];
 
-describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEntry + esc)', () => {
-  const { renderWorkLogEntry } = load<{ renderWorkLogEntry(e: unknown): string }>(
-    ['decodeSlackEntities', 'esc', 'escAttr', ...WL_INSTRUCTION_FNS, 'wlToolSummary', 'renderWorkLogEntry'],
+describe('work-log entries are <ui-work-log> data (the element escapes them); the card fallback is escaped text (shipped wlEntryOf, wlCardSlots)', () => {
+  type Entry = Record<string, unknown> & { id: string; kind: string };
+  const { wlEntryOf } = load<{ wlEntryOf(st: unknown, e: unknown): Entry }>(
+    ['decodeSlackEntities', 'esc', 'escAttr', ...WL_INSTRUCTION_FNS, 'wlToolSummary', 'wlEntryOf'],
     ['WL_LABELS', ...WL_INSTRUCTION_VARS],
+    {
+      wlCardData: (_st: unknown, key: number) => ({ status: key === 9 ? 'error' : 'success' }),
+      wlAgentOf: (id: string) => ({ id, name: 'A2 librarian', status: 'done' }),
+    },
   );
-  /** Every " left after removing the attributes we emit would be an attribute break-out. */
-  const strayQuotes = (html: string) =>
-    html
-      .replace(/\s(class|title|data-seq|role|tabindex|aria-expanded|aria-controls|aria-live|id)="[^"]*"/g, '')
-      .includes('"');
-  const tags = (html: string) =>
-    (html.match(/<\/?([a-z0-9]+)/gi) ?? []).map((t) => t.replace(/[</]/g, '').toLowerCase());
+  const ST = { entries: [] };
 
-  it('a tool call is one card element; its fallback text (shown only if the element never loads) is escaped', () => {
-    for (const kind of ['tool', 'tool_result']) {
-      const html = renderWorkLogEntry({
-        seq: 1,
-        ts: 0,
-        kind,
-        tool: '<img src=x onerror=alert(1)>',
-        text: '"><script>alert(1)</script><a href="javascript:x">',
-      });
-      const all = (html.match(/<\/?([a-z0-9-]+)/gi) ?? []).map((t) => t.replace(/[</]/g, '').toLowerCase());
-      expect(new Set(all)).toEqual(new Set(['div', 'ui-tool-call-card', 'span']));
-      expect(html).not.toContain('<img');
-      expect(html).not.toContain('<script');
-      expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
-      // Every " left after removing the attributes we emit (and the escaped text) would be a break-out.
-      expect(html.replace(/\s(class|data-seq|lang|data-key)="[^"]*"/g, '')).not.toContain('"');
-    }
-    // A hostile seq cannot reach data-seq / data-key.
-    expect(renderWorkLogEntry({ seq: '5" onmouseover="x', kind: 'tool', text: 'x' })).toContain('data-key="0"');
+  it('hostile text and kinds stay plain data (no markup is built here); an odd kind reads as progress; a hostile seq is 0', () => {
+    const tool = wlEntryOf(ST, {
+      seq: 1,
+      ts: 0,
+      kind: 'tool',
+      tool: '<img src=x onerror=alert(1)>',
+      text: '"><script>alert(1)</script>',
+    });
+    expect(tool).toEqual({
+      id: '1',
+      at: 0,
+      kind: 'tool',
+      tool: { name: '<img src=x onerror=alert(1)>', status: 'success', summary: '"><script>alert(1)</script>' },
+    });
+    expect(wlEntryOf(ST, { seq: 2, kind: 'narration', text: '<b onmouseover="x">hi</b>' })).toMatchObject({
+      kind: 'narration',
+      text: '<b onmouseover="x">hi</b>',
+    });
+    // Slack-encoded instruction text is decoded to the words (the element escapes them).
+    expect(wlEntryOf(ST, { seq: 3, kind: 'instruction', text: '&lt;script&gt;x', by: 'user' }).text).toBe('<script>x');
+    expect(wlEntryOf(ST, { seq: 4, kind: '"><svg onload=alert(1)>', text: 'x' }).kind).toBe('narration');
+    expect(wlEntryOf(ST, { seq: 6, kind: '__proto__', text: '"' }).kind).toBe('narration');
+    expect(wlEntryOf(ST, { seq: '5" onmouseover="x', kind: 'final', text: 'x' }).id).toBe('0');
   });
 
-  it('narration, Slack-encoded instructions, odd kinds and seqs stay inert', () => {
-    for (const e of [
-      { seq: 2, kind: 'narration', text: '<b onmouseover="x">hi</b>' },
-      { seq: 3, kind: 'instruction', text: '&lt;script&gt;alert(1)&lt;/script&gt;' },
-      { seq: 4, kind: '"><svg onload=alert(1)>', text: 'x' },
-      { seq: '5" onmouseover="x', kind: 'final', text: '</div><iframe src=//x>' },
-      { seq: 6, kind: '__proto__', tool: '"x', text: '"' },
-    ]) {
-      const html = renderWorkLogEntry(e);
-      expect(
-        tags(html).every((t) => t === 'div' || t === 'span'),
-        html,
-      ).toBe(true);
-      expect(strayQuotes(html), html).toBe(false);
-    }
-  });
-
-  it('every entry is one root: a keyboard-reachable row that controls its (empty, hidden) detail block', () => {
-    expect(renderWorkLogEntry({ seq: 7, kind: 'tool', tool: 'Bash', text: 'Bash {"command":"ls"}' })).toBe(
-      '<div class="wl-entry wl-toolcall" data-seq="7"><ui-tool-call-card class="wl-card" lang="ko" data-key="7">' +
-        '<span class="wl-card-fallback"><span class="wl-tool-name">Bash</span> {&quot;command&quot;:&quot;ls&quot;}</span>' +
-        '</ui-tool-call-card></div>',
-    );
-    expect(renderWorkLogEntry({ seq: 9, kind: 'tool_result', tool: 'Bash', ok: false, text: 'Bash error' })).toBe(
-      '<div class="wl-entry wl-toolcall is-orphan" data-seq="9"><ui-tool-call-card class="wl-card" lang="ko" data-key="9">' +
-        '<span class="wl-card-fallback"><span class="wl-tool-name">Bash</span> 실패</span></ui-tool-call-card></div>',
-    );
+  it('a tool call is the entry the page’s card fills (status from the card); a result alone is its own card; a spawn carries its child', () => {
+    expect(wlEntryOf(ST, { seq: 7, kind: 'tool', tool: 'Bash', text: 'Bash {"command":"ls"}' })).toEqual({
+      id: '7',
+      kind: 'tool',
+      tool: { name: 'Bash', status: 'success', summary: '{"command":"ls"}' },
+    });
+    expect(wlEntryOf(ST, { seq: 9, kind: 'tool_result', tool: 'Bash', ok: false, text: 'Bash error' })).toEqual({
+      id: '9',
+      kind: 'tool',
+      tool: { name: 'Bash', status: 'error', summary: '실패' },
+    });
+    expect(
+      wlEntryOf(ST, { seq: 10, kind: 'tool', tool: 'Agent', text: 'Agent x', agentRef: 'toolu_lib' }).agent,
+    ).toEqual({
+      id: 'toolu_lib',
+      name: 'A2 librarian',
+      status: 'done',
+    });
+    // Every other entry opens to its raw output (the element's viewer; raw only while open).
     for (const e of [
       { seq: 8, kind: 'narration', text: 'Reading the schema.' },
-      { seq: 9, kind: 'final', text: 'Done.' },
+      { seq: 11, kind: 'final', text: 'Done.' },
     ]) {
-      const html = renderWorkLogEntry(e);
-      expect(html.startsWith(`<div class="wl-entry wl-${e.kind}`), html).toBe(true);
-      expect(html).toContain(` data-seq="${e.seq}">`);
-      expect(html).toContain(
-        // Roving tabindex: rows render out of the tab order; the list keeps one stop (wlEnsureTabStop).
-        `<div class="wl-row${e.kind === 'narration' ? ' wl-line' : ''}" role="button" tabindex="-1" aria-expanded="false" aria-controls="wl-detail-${e.seq}">`,
-      );
-      // aria-live="off": an opened raw output (up to 256 KiB) is not read out by the role=log list.
-      expect(
-        html.endsWith(`<div class="wl-detail" id="wl-detail-${e.seq}" aria-live="off" hidden></div></div>`),
-        html,
-      ).toBe(true);
+      expect(wlEntryOf(ST, e)).toEqual({ id: String(e.seq), kind: e.kind, text: e.text, hasRaw: true });
     }
-    // A hostile seq cannot reach the id / aria-controls values.
-    expect(renderWorkLogEntry({ seq: '5" onmouseover="x', kind: 'final', text: 'x' })).toContain(
-      'aria-controls="wl-detail-0"',
+  });
+
+  it('the card’s light-DOM fallback (shown only until the element is defined) is escaped text, in the entry’s tool slot', () => {
+    const made: { tag: string; attrs: Record<string, string>; className: string; innerHTML: string }[] = [];
+    const el = {
+      querySelectorAll: () => [],
+      appendChild: (c: (typeof made)[number]) => made.push(c),
+    };
+    const document = {
+      createElement: (tag: string) => {
+        const attrs: Record<string, string> = {};
+        return { tag, attrs, className: '', innerHTML: '', setAttribute: (k: string, v: string) => (attrs[k] = v) };
+      },
+    };
+    const { wlCardSlots } = load<{ wlCardSlots(el: unknown, d: unknown): void }>(['esc', 'wlCardSlots'], [], {
+      document,
+    });
+    wlCardSlots(el, {
+      groups: [{ id: 'g', entries: [{ id: '7', kind: 'tool', tool: { name: '<img src=x>', summary: '"><script>' } }] }],
+    });
+    expect(made).toHaveLength(1);
+    expect(made[0].tag).toBe('ui-tool-call-card');
+    // No data-stop: the log sets the card's head-tabindex itself (one tab stop across rows and cards — D3-GAPS G2-3).
+    expect(made[0].attrs).toEqual({ lang: 'ko', slot: 'tool-7', 'data-key': '7' });
+    expect(made[0].innerHTML).toBe(
+      '<span class="wl-card-fallback"><span class="wl-tool-name">&lt;img src=x&gt;</span> &quot;&gt;&lt;script&gt;</span>',
     );
   });
 });
@@ -760,7 +787,8 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     };
     const env = {
       _sessionCache: Object.create(null),
-      _cardEls: Object.create(null),
+      _cardHost: Object.create(null),
+      _cardDrawn: Object.create(null),
       _expanded: new Set<string>(),
       _ioCache: Object.create(null),
       isSiblingSession: () => false,
@@ -780,6 +808,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     const io = load<{
       ensureCardIo(key: string, force?: boolean): void;
       invalidateCardIo(cid: string): void;
+      cardIoConsumer(cid: string): string | null;
       ioNeedsFetch(c: unknown, stamp: string, force: boolean, now: number, fromTimer?: boolean): boolean;
       releaseCardIoTimer(cid: string): void;
     }>(
@@ -808,8 +837,19 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
         lastActivity: '2026-10-16T01:00:00.000Z',
         activityState: 'waiting',
       };
-      env._cardEls[key] = { _cid: cid };
+      env._cardHost[key] = {}; // drawn by the board element
+      env._cardDrawn[key] = true;
       env._expanded.add(key);
+    };
+    // #560 review P3: a card in a closed DONE day is placed (in _cardHost) but not drawn.
+    const addStub = (key: string, cid: string) => {
+      addCard(key, cid);
+      delete env._cardDrawn[key];
+    };
+    // A card that left the board: renderBoard rebuilds both maps without it.
+    const leave = (key: string) => {
+      delete env._cardHost[key];
+      delete env._cardDrawn[key];
     };
     // Fire only the timers that are due; later ones stay pending.
     const advance = async (ms: number) => {
@@ -823,6 +863,8 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
       env,
       io,
       addCard,
+      addStub,
+      leave,
       advance,
       fetchCalls,
       fetchTimes,
@@ -842,6 +884,20 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
       },
     };
   }
+
+  it('a card left open in a closed DONE day (a stub, not drawn) consumes no 지시/응답 fetch or retry timer', async () => {
+    const h = harness();
+    h.setMode('up');
+    h.addStub('ks', 'cs');
+    expect(h.io.cardIoConsumer('cs')).toBeNull();
+    h.env._ioCache.cs = { state: 'ok', stamp: 'old', data: null, fails: 0, step: 0, retryAt: 0 };
+    h.io.invalidateCardIo('cs'); // a turn landed in its conversation
+    await flush();
+    expect(h.fetchCalls).toEqual([]);
+    // Drawn (its day opened): it is the consumer again.
+    h.env._cardDrawn.ks = true;
+    expect(h.io.cardIoConsumer('cs')).toBe('ks');
+  });
 
   it('a partial result (instruction ok, raw response failed) is kept and retried until the response loads', async () => {
     const h = harness({ noSummary: true });
@@ -929,7 +985,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     // Let every backoff timer fire, interleaved with board re-renders.
     for (let i = 0; i < 12; i++) {
       await h.advance(60_000);
-      h.io.ensureCardIo('kc', false); // reconcileBoard on every push
+      h.io.ensureCardIo('kc', false); // renderBoard on every push
       await flush();
     }
     const cap = Number(clientVar('IO_AUTO_RETRIES').match(/\d+/)?.[0]);
@@ -979,7 +1035,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     await flush();
     expect(h.env._ioCache.c2.state).toBe('error');
     h.setMode('up');
-    h.io.ensureCardIo('k2', true); // toggleCard(open) passes force
+    h.io.ensureCardIo('k2', true); // ui-toggle (open) passes force
     await flush();
     expect(h.fetchCalls).toHaveLength(2);
     expect(h.env._ioCache.c2.state).toBe('ok');
@@ -1097,7 +1153,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     h.env._expanded.delete('kx');
     h.io.releaseCardIoTimer('cx'); // ky still shows it → kept
     expect(h.pendingTimers()).toEqual([1000]);
-    delete h.env._cardEls.ky; // ky left the board
+    h.leave('ky'); // ky left the board
     h.io.releaseCardIoTimer('cx');
     expect(h.pendingTimers()).toEqual([]);
     const n = h.fetchCalls.length;
@@ -1107,7 +1163,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
 
   it.each<[string, (h: ReturnType<typeof harness>) => void]>([
     ['closed', (h) => h.env._expanded.delete('kd')],
-    ['removed from the board', (h) => delete h.env._cardEls.kd],
+    ['removed from the board', (h) => h.leave('kd')],
   ])('a request that fails after its last card was %s arms no retry timer', async (_how, goAway) => {
     const h = harness();
     h.addCard('kd', 'cd');
@@ -1115,7 +1171,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     h.io.ensureCardIo('kd', true); // the opening fetch is in flight
     await flush();
     goAway(h);
-    h.io.releaseCardIoTimer('cd'); // what toggleCard / applyBoardPlan do; nothing is pending yet
+    h.io.releaseCardIoTimer('cd'); // what ui-toggle (closed) / renderBoard (gone) do; nothing is pending yet
     inFlight.reject();
     await flush();
     expect(h.env._ioCache.cd.state).toBe('error');
@@ -1148,7 +1204,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     const newStampAndRender = async () => {
       stampN++;
       h.env._sessionCache.ko.lastActivity = new Date(Date.UTC(2026, 9, 16, 1, 0, stampN)).toISOString();
-      h.io.ensureCardIo('ko', false); // reconcileBoard on a board push
+      h.io.ensureCardIo('ko', false); // renderBoard on a board push
       await flush();
     };
     h.io.ensureCardIo('ko', true); // opening fetch fails at t0
@@ -1212,82 +1268,206 @@ const HOSTILE = [
   '&quot; already-encoded &amp;',
 ];
 
+/** The board's card mapper (cardOf → <ui-agent-inbox> card data) and what it reads, as shipped. */
+const CARD_OF_FNS = [
+  'toNum',
+  'formatTokens',
+  'formatTaskTime',
+  'permissionSummary',
+  'cardSummary',
+  'pendingAutoResume',
+  'autoResumeLabel',
+  'cardCurrentTask',
+  'cardTaskRow',
+  'agentStatusOf',
+  'agentCounts',
+  'agentDotOf',
+  'cardTotalTokens',
+  'ctxLevel',
+  'ctxPercent',
+  'cardCtxTitle',
+  'cardPrMetric',
+  'cardLinksFace',
+  '_hashStr',
+  'ownerBadgeHue',
+  'isSiblingSession',
+  'cardOf',
+];
+const CARD_OF_VARS = [
+  'PR_STATE_LABEL',
+  'CARD_LINK_KIND',
+  'CARD_LINK_TONES',
+  'PR_STATE_TONE',
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'OWNER_BADGE_HUES',
+];
+type CardData = Record<string, unknown> & {
+  badge?: { text: string; hue: number; title: string };
+  since?: number;
+  elapsedMs?: number;
+};
+
 describe('model-controlled values in card markup (shipped renderers)', () => {
   const cards = load<{
-    renderTimeline(s: unknown): string;
-    renderCardStatus(s: unknown, col: string): string;
+    renderCardTasks(s: unknown): string;
+    cardTaskPlanData(s: unknown): { steps: Array<Record<string, unknown>> };
+    cardOf(s: unknown, col: string): CardData;
   }>(
     [
       'esc',
       'escAttr',
       'escJs',
-      'toNum',
       'formatDuration',
-      'formatTaskTime',
-      // Task view T2: the meta and the 전체 task count read each task's fate.
+      // Task view T2: the steps and the 전체 task count read each task's fate.
       'taskFateOf',
-      'renderTaskMeta',
-      'renderTimelineItem',
-      'renderTimeline',
-      'pendingAutoResume',
-      'autoResumeLabel',
-      'renderCardStatus',
+      'cardTaskStep',
+      'cardTaskHidden',
+      'cardTasksRan',
+      'cardTaskPlanData',
+      'renderCardTasks',
+      ...CARD_OF_FNS,
     ],
-    ['WAIT_SVG', 'RESUME_SVG', 'TASK_FATE_LABEL'],
+    ['CARD_TASK_ROWS', 'CARD_TASK_STATUS', ...CARD_OF_VARS],
     {
       dhShow: () => true,
+      dhTruncate: () => null,
       dhMax: (_f: string, d: number) => d,
+      currentUserId: 'U1',
+      _ownerIndex: null,
+      SELF_INSTANCE_NAME: '',
     },
   );
   const tags = (html: string) => (html.match(/<([a-z0-9]+)/gi) ?? []).map((t) => t.slice(1).toLowerCase());
 
-  it('a string startedAt / completedAt cannot open a tag or an attribute in the task timeline', () => {
+  it('a string startedAt / completedAt never reaches the task window: the steps carry numbers or nothing; a hostile key is an attribute, escaped', () => {
     for (const bad of HOSTILE) {
-      const html = cards.renderTimeline({
+      const d = cards.cardTaskPlanData({
+        key: bad,
         tasks: [
           { content: 'running', status: 'in_progress', startedAt: bad },
           { content: 'done', status: 'completed', startedAt: bad, completedAt: bad },
         ],
       });
-      expect(
-        tags(html).every((t) => ['div', 'ul', 'li', 'span'].includes(t)),
-        html,
-      ).toBe(true);
-      expect(html).not.toMatch(/onerror|onmouseover/);
-      for (const m of html.matchAll(/data-since="([^"]*)"/g)) expect(m[1]).toMatch(/^\d+$/);
+      for (const step of d.steps)
+        for (const k of ['startedAt', 'endedAt'])
+          expect(step[k] === undefined || Number.isFinite(step[k]), `${k}=${String(step[k])}`).toBe(true);
+      const html = cards.renderCardTasks({ key: bad, tasks: [{ content: 'x', status: 'pending' }] });
+      // The key is one attribute value, escaped: no tag of the key's own, no attribute it closes.
+      expect((html.match(/<([a-z0-9-]+)/gi) ?? []).map((t) => t.slice(1))).toEqual(['ui-task-plan']);
+      expect(html).toContain(
+        `data-tp-key="${bad.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}"`,
+      );
     }
   });
 
-  it('timer data attributes on the status line are always plain numbers', () => {
+  it('the status clock takes plain numbers only — a hostile stamp never reaches the card (the element writes text)', () => {
     for (const bad of HOSTILE) {
-      const html = cards.renderCardStatus({ activeLegStartedAtMs: bad, activeAccumulatedMs: bad }, 'working');
-      expect(html).not.toMatch(/onerror|onmouseover|<img/);
-      expect(html).toMatch(/data-leg-started="\d+" data-accumulated="\d+"/);
+      for (const col of ['working', 'waiting', 'idle', 'closed']) {
+        const card = cards.cardOf(
+          { key: 'k', activeLegStartedAtMs: bad, activeAccumulatedMs: bad, waitingSince: bad, finishedAt: bad },
+          col,
+        );
+        for (const v of [card.since, card.elapsedMs])
+          expect(v === undefined || Number.isFinite(v), String(v)).toBe(true);
+      }
     }
   });
 });
 
-describe('pending-question choices carry their values in data attributes (shipped choiceDataAttrs)', () => {
-  const { choiceDataAttrs } = load<{ choiceDataAttrs(key: string, id: string, label: string, q: string): string }>(
-    ['esc', 'escAttr', 'choiceDataAttrs'],
-    [],
+// D3 E-15: the multi-question form is <ui-choice-form>. The questions reach it as data (never markup the page
+// builds), and its answers come back by question id to the route — a hostile key / id / label / question
+// round-trips exactly.
+describe('pending-question choices reach the form as data and come back exactly (shipped mcFormData / mcSelectionsOf)', () => {
+  type McSession = { key: string; pendingQuestion: { type: string; questions: unknown[] } };
+  type McData = {
+    id: string;
+    questions: Array<{
+      id: string;
+      title: string;
+      allowCustom: boolean;
+      choices: Array<{ id: string; label: string; recommended?: boolean }>;
+    }>;
+    submitOnPick: boolean;
+  };
+  const m = load<{
+    mcFormData(s: McSession, q: McSession['pendingQuestion']): McData;
+    mcSelectionsOf(s: McSession, list: unknown[]): Record<string, { choiceId: string; label: string }>;
+    mcAnswersIn(list: unknown[]): Record<string, unknown>;
+  }>(
+    [
+      'mcFormId',
+      'mcStateOf',
+      'mcFormData',
+      'mcSelectionsOf',
+      'mcAnswersIn',
+      'stripRecommendedMarker',
+      'resolveRecommendedId',
+    ],
+    ['_mcState', 'MC_CUSTOM_ID'],
+    { STRINGS: { mcCustomPlaceholder: '직접 입력…' }, acQuestionLock: () => '' },
   );
+  const session = (v: string): McSession => ({
+    key: `C1:t1'\\${v}`,
+    pendingQuestion: {
+      type: 'user_choices',
+      questions: [
+        {
+          id: `q-${v}`,
+          question: `Q ${v}?`,
+          choices: [{ id: `id-${v}`, label: `label ${v} (Recommended)` }],
+          recommendedChoiceId: `id-${v}`,
+        },
+      ],
+    },
+  });
 
-  it('any key / id / label / question round-trips exactly and injects nothing', () => {
+  it('any key / id / label / question round-trips exactly (the recommended marker leaves the label, the flag stays; the element numbers the choices)', () => {
     for (const v of HOSTILE) {
-      const attrs = choiceDataAttrs(`C1:t1'\\${v}`, `id-${v}`, `label ${v}`, `Q ${v}?`);
-      // Only the four data attributes, each a plain double-quoted value.
-      const parsed = [...attrs.matchAll(/\s(data-[a-z-]+)="([^"]*)"/g)];
-      expect(attrs.replace(/\s(data-[a-z-]+)="[^"]*"/g, '')).toBe('');
-      expect(parsed.map((m) => m[1])).toEqual([
-        'data-choice-key',
-        'data-choice-id',
-        'data-choice-label',
-        'data-choice-question',
-      ]);
-      expect(parsed.map((m) => decodeAttr(m[2]))).toEqual([`C1:t1'\\${v}`, `id-${v}`, `label ${v}`, `Q ${v}?`]);
-      expect(attrs).not.toMatch(/[<>]/);
+      const s = session(v);
+      const d = m.mcFormData(s, s.pendingQuestion);
+      expect(d.questions[0]).toMatchObject({ id: `q-${v}`, title: `Q ${v}?`, allowCustom: true });
+      expect(d.questions[0].choices[0]).toEqual({ id: `id-${v}`, label: `label ${v}`, recommended: true });
+      expect(d.submitOnPick).toBe(false);
+      expect(m.mcSelectionsOf(s, [{ questionId: `q-${v}`, choiceId: `id-${v}`, label: 'shown' }])).toEqual({
+        [`q-${v}`]: { choiceId: `id-${v}`, label: `label ${v}` },
+      });
     }
+  });
+
+  it("an own answer is the 직접입력 choice with its text (the route's sentinel), and seeds the form back as custom", () => {
+    const s = session('x');
+    const list = [{ questionId: 'q-x', custom: 'my own', label: 'my own' }];
+    expect(m.mcSelectionsOf(s, list)).toEqual({ 'q-x': { choiceId: '직접입력', label: 'my own' } });
+    expect(m.mcAnswersIn(list)).toEqual({ 'q-x': { custom: 'my own' } });
+    expect(m.mcAnswersIn([{ questionId: 'q-x', choiceId: '2', label: '2. b' }])).toEqual({ 'q-x': { choiceId: '2' } });
+  });
+
+  it('the 직접입력 sentinel is never the recommended choice', () => {
+    const s: McSession = {
+      key: 'k',
+      pendingQuestion: {
+        type: 'user_choices',
+        questions: [
+          { id: 'q', question: 'Q', choices: [{ id: '직접입력', label: 'x' }], recommendedChoiceId: '직접입력' },
+        ],
+      },
+    };
+    expect(m.mcFormData(s, s.pendingQuestion).questions[0].choices[0].recommended).toBeUndefined();
+  });
+
+  it('D6b (D3-GAPS G3-1): a reader who cannot answer here gets the form locked with the reason (canAnswer); the owner gets none', () => {
+    const locked = load<{ mcFormData(s: McSession, q: McSession['pendingQuestion']): McData & { canAnswer?: string } }>(
+      ['mcFormId', 'mcStateOf', 'mcFormData', 'stripRecommendedMarker', 'resolveRecommendedId'],
+      ['_mcState', 'MC_CUSTOM_ID'],
+      { STRINGS: { mcCustomPlaceholder: '직접 입력…' }, acQuestionLock: () => '세션 소유자만 답할 수 있어요' },
+    );
+    const s = session('x');
+    expect(locked.mcFormData(s, s.pendingQuestion).canAnswer).toBe('세션 소유자만 답할 수 있어요');
+    expect('canAnswer' in m.mcFormData(s, s.pendingQuestion)).toBe(false);
+    // The same lock as the single-choice card's (the owner, on this instance; the server re-checks).
+    expect(clientFn('mcFormData')).toContain('var lock = acQuestionLock(s);');
   });
 
   it('no answerChoice / selectMc call is built as an inline JS string any more', () => {
@@ -1328,7 +1508,7 @@ describe('numbers in panel / topbar markup (shipped toNum + formatTokens)', () =
   });
 });
 
-describe('top-bar user names keep their full text in title (shipped syncUserSelectLabel + _applyUserPill)', () => {
+describe('top-bar user names keep their full text (shipped syncUserSelectLabel + _applyUserPill)', () => {
   const LONG = '가나다라마바사아자차카타파하가나다라마바사아자차카타파하가나다라';
   /** Just enough DOM for the two functions: a select with options, the label, the pill. */
   function dom() {
@@ -1358,34 +1538,39 @@ describe('top-bar user names keep their full text in title (shipped syncUserSele
     return { document, select, label, nameEl };
   }
 
-  it('the label over the select shows the selected option; the select title carries it in full', () => {
+  it('the select (a kit select chip, D7 A-11) carries the selected name in full in its title; no label of the page’s', () => {
     const d = dom();
-    const { syncUserSelectLabel } = load<{ syncUserSelectLabel(): void }>(['syncUserSelectLabel'], [], {
+    const { syncUserSelectTitle } = load<{ syncUserSelectTitle(): void }>(['syncUserSelectTitle'], [], {
       document: d.document,
     });
     d.select.selectedIndex = 1;
-    syncUserSelectLabel();
-    expect(d.label.textContent).toBe(LONG);
+    syncUserSelectTitle();
     expect(d.select.title).toBe(LONG);
+    expect(d.label.textContent).toBe('All Users'); // untouched: the page has no label over the select any more
     d.select.selectedIndex = 0;
-    syncUserSelectLabel();
-    expect(d.label.textContent).toBe('All Users');
+    syncUserSelectTitle();
     expect(d.select.title).toBe('All Users');
   });
 
-  it('selectUser and loadUsers keep the label in sync', () => {
-    expect(clientFn('selectUser')).toMatch(/^function selectUser\(userId\) \{\n {2}syncUserSelectLabel\(\);/);
-    expect(clientFn('loadUsers')).toMatch(/\n {2}syncUserSelectLabel\(\);\n\}$/);
+  it('selectUser and loadUsers keep the title in sync', () => {
+    // The picker first shows the board it selects (카드 열기 calls selectUser too — #747 review R2 N4), then its title.
+    const select = clientFn('selectUser');
+    expect(select).toContain('if (select && select.value !== userId) select.value = userId;\n  syncUserSelectTitle();');
+    expect(select.indexOf('syncUserSelectTitle();')).toBeLessThan(select.indexOf('currentUserId = userId;'));
+    expect(clientFn('loadUsers')).toMatch(/\n {2}syncUserSelectTitle\(\);\n\}$/);
   });
 
-  it('the pill name carries the full name in title (it may end in an ellipsis)', () => {
+  it('the account pill gets the full name (the app bar ellipsizes it and names the pill with it in full)', () => {
     const d = dom();
-    const { _applyUserPill } = load<{ _applyUserPill(data: unknown): void }>(['_applyUserPill'], [], {
-      document: d.document,
-    });
-    _applyUserPill({ user: { name: LONG } });
-    expect(d.nameEl.textContent).toBe(LONG);
-    expect(d.nameEl.title).toBe(LONG);
+    const m = load<{ _applyUserPill(data: unknown): void; account(): unknown }>(
+      ['_applyUserPill'],
+      ['_appBarAccount'],
+      // View mode (SSOT 2026-11-01): learning the viewer re-says whose board this is (none in this harness).
+      { document: d.document, paintAppBar: () => {}, syncBoardScope: () => {} },
+      ['function account() { return _appBarAccount; }'],
+    );
+    m._applyUserPill({ user: { name: LONG } });
+    expect(m.account()).toEqual({ name: LONG, href: '/login' });
   });
 });
 
@@ -1430,7 +1615,8 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
         _viewerUserId: 'U1',
         _viewerIsAdmin: false,
         _isAdminModeOn: () => false,
-        READ_ONLY_MSG: 'Read-only — not your session',
+        READ_ONLY_MSG: '읽기 전용 — 내 세션이 아닙니다',
+        STRINGS,
       },
       // What openPanel / closePanel do to the panel identity (dashboard.ts: _panelGen++).
       ['function switchPanel() { _panelGen++; }'],
@@ -1443,7 +1629,7 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
     const h = harness();
     const a = h.io.generateTitleSub('conv-a'); // panel A: its title request is held
     await flush();
-    expect(h.textEl.textContent).toBe('Generating title...');
+    expect(h.textEl.textContent).toBe('부제 만드는 중…');
     h.io.switchPanel(); // open panel B
     h.answers['conv-b'] = () => h.ok('B subtitle');
     await h.io.generateTitleSub('conv-b');
@@ -1456,7 +1642,7 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
     expect(h.btn.style.display).toBe('marker');
   });
 
-  it("A's late failure does not write 'Error' into B's subtitle", async () => {
+  it("A's late failure does not write 오류 into B's subtitle", async () => {
     const h = harness();
     const a = h.io.generateTitleSub('conv-a');
     await flush();
@@ -1475,7 +1661,7 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
     h.io.switchPanel(); // the panel changes before the 403 lands
     await a;
     expect(h.posts).toHaveLength(1);
-    expect(h.textEl.textContent).toBe('Generating title...');
+    expect(h.textEl.textContent).toBe('부제 만드는 중…');
   });
 
   it('the current panel still gets its subtitle (and its stale-CSRF retry)', async () => {
@@ -1489,13 +1675,13 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
     expect(h.textEl.textContent).toBe('A subtitle');
   });
 
-  it('a permission 403 is not retried and is not shown as "Title generation failed"', async () => {
+  it('a permission 403 is not retried and is not shown as a generation failure', async () => {
     const h = harness();
     h.answers['conv-a'] = () => ({ status: 403, json: async () => ({ error: 'Forbidden — write requires …' }) });
     await h.io.generateTitleSub('conv-a');
     expect(h.posts).toHaveLength(1);
     expect(h.csrfRefreshes()).toBe(0);
-    expect(h.textEl.textContent).not.toBe('Title generation failed');
+    expect(h.textEl.textContent).not.toBe(STRINGS.titleFailed);
     expect(h.btn.style.display).toBe('none');
   });
 
@@ -1515,10 +1701,11 @@ describe('escaping order and inline-handler escaping in the template', () => {
   it('text is sliced before it is escaped (an entity is never cut in half)', () => {
     expect(TEMPLATE).not.toMatch(/esc\([^()]*\)\.slice\(/);
   });
-  it('the resummarize handler escapes its single-quoted JS arguments with escJs', () => {
-    expect(TEMPLATE).toContain(
-      "resummarize(\\\\'' + escJs(convId || panelConvId) + '\\\\',\\\\'' + escJs(t.id) + '\\\\',this)",
-    );
+  it('no inline handler string carries a turn’s ids (요약 다시 시도 is <ui-conversation>’s Retry: ui-retry what: summary → convResummarize)', () => {
+    expect(TEMPLATE).not.toContain('resummarize(\\\\');
+    expect(TEMPLATE).not.toContain('onclick="resummarize');
+    expect(TEMPLATE).not.toContain('data-resum');
+    expect(TEMPLATE).toContain("if (d.what === 'summary') convResummarize(d.id);");
   });
 });
 
@@ -1655,16 +1842,33 @@ describe('work-log raw output: fetched once per entry, failures retryable (shipp
   });
 });
 
-describe('work-log raw detail markup (shipped renderWorkLogDetail + formatBytes)', () => {
-  const { renderWorkLogDetail, formatBytes } = load<{
-    renderWorkLogDetail(r: RawResult): string;
+describe('work-log raw output as <ui-work-log>’s viewer data (shipped wlRawView + formatBytes)', () => {
+  const { wlRawView, formatBytes } = load<{
+    wlRawView(st: unknown, e: unknown): Record<string, unknown>;
     formatBytes(n: unknown): string;
   }>(
-    ['esc', 'toNum', 'formatBytes', 'renderWorkLogDetail'],
-    ['WL_FORBIDDEN_MSG', 'WL_RAW_MISSING_MSG', 'WL_RAW_ERROR_MSG', 'WL_RAW_DAMAGED_MSG'],
+    [
+      'esc',
+      'toNum',
+      'formatBytes',
+      ...WL_INSTRUCTION_FNS.filter((f) => f !== 'toNum' && f !== 'wlRawView'),
+      'wlRawView',
+    ],
+    [
+      'WL_FORBIDDEN_MSG',
+      'WL_RAW_MISSING_MSG',
+      'WL_RAW_ERROR_MSG',
+      'WL_RAW_DAMAGED_MSG',
+      'SYS_RESTART_HEADS',
+      'SYS_RESUME_CONTEXT',
+      'SYS_RETRY_MARK',
+    ],
+    { decodeSlackEntities: (x: string) => x },
   );
+  const E = { seq: 4, kind: 'final', text: 'Done.', rawBytes: 22 };
+  const st = (r?: unknown) => ({ rawDone: r ? { 4: r } : {} });
 
-  it('formats byte counts in B / KiB / MiB / GiB', () => {
+  it('formats byte counts in B / KiB / MiB / GiB (the cards’ truncation note)', () => {
     expect(formatBytes(0)).toBe('0 B');
     expect(formatBytes(1023)).toBe('1023 B');
     expect(formatBytes(1536)).toBe('1.5 KiB');
@@ -1673,35 +1877,51 @@ describe('work-log raw detail markup (shipped renderWorkLogDetail + formatBytes)
     expect(formatBytes('<b>')).toBe('0 B');
   });
 
-  it('the full output in an escaped <pre>, with a copy button', () => {
-    const html = renderWorkLogDetail({ status: 'ok', raw: '{\n  "a": "<script>"\n}', bytes: 22, truncated: false });
-    expect(html).toBe(
-      '<div class="wl-detail-bar"><button type="button" class="wl-detail-btn" data-wl-act="copy">복사</button></div>' +
-        '<pre class="wl-raw">{\n  &quot;a&quot;: &quot;&lt;script&gt;&quot;\n}</pre>',
-    );
+  it('the full output as text (the element escapes it, with its size and 복사)', () => {
+    expect(wlRawView(st({ status: 'ok', raw: '{\n  "a": "<script>"\n}', bytes: 22, truncated: false }), E)).toEqual({
+      state: 'ready',
+      text: '{\n  "a": "<script>"\n}',
+      bytes: 22,
+    });
   });
 
-  it('a truncated output says how much is shown and the original size', () => {
-    const html = renderWorkLogDetail({ status: 'ok', raw: 'x', bytes: 3 * 1048576, truncated: true });
-    expect(html.startsWith('<div class="wl-detail-note">저장된 앞 256 KiB만 표시 — 원본 3.0 MiB</div>')).toBe(true);
+  it('a truncated output says so (the element’s note with the original size)', () => {
+    expect(wlRawView(st({ status: 'ok', raw: 'x', bytes: 3 * 1048576, truncated: true }), E)).toEqual({
+      state: 'ready',
+      text: 'x',
+      bytes: 3 * 1048576,
+      truncated: true,
+    });
   });
 
-  it('loading, 404, 403 and retryable failures each have their line', () => {
-    expect(renderWorkLogDetail({ status: 'loading' })).toContain('불러오는 중');
-    expect(renderWorkLogDetail({ status: 'missing' })).toBe(
-      '<div class="wl-detail-msg">원본 출력이 저장되어 있지 않습니다</div>',
-    );
-    expect(renderWorkLogDetail({ status: 'denied' })).toBe(
-      '<div class="wl-detail-msg">작업 로그는 세션 소유자만 볼 수 있어요</div>',
-    );
-    const err = renderWorkLogDetail({ status: 'error' });
-    expect(err).toContain('원본 출력을 불러오지 못했어요');
-    expect(err).toContain('<button type="button" class="wl-detail-btn" data-wl-act="retry">다시 시도</button>');
-    expect(err).not.toContain('<pre');
+  it('loading, 404, 403, a damaged log and retryable failures each have their state', () => {
+    expect(wlRawView(st(), E)).toEqual({ state: 'loading' });
+    expect(wlRawView(st({ status: 'missing' }), E)).toEqual({
+      state: 'missing',
+      note: '원본 출력이 저장되어 있지 않습니다',
+    });
+    expect(wlRawView(st({ status: 'denied' }), E)).toEqual({
+      state: 'denied',
+      note: '작업 로그는 세션 소유자만 볼 수 있어요',
+    });
+    expect(wlRawView(st({ status: 'error', error: 'HTTP 502' }), E)).toEqual({
+      state: 'error',
+      note: '원본 출력을 불러오지 못했어요',
+      canRetry: true,
+    });
     // 503: the log is damaged and the answer stays the same until repair — no retry.
-    expect(renderWorkLogDetail({ status: 'damaged' })).toBe(
-      '<div class="wl-detail-msg">로그가 손상되어 원본을 읽을 수 없습니다</div>',
-    );
+    expect(wlRawView(st({ status: 'damaged' }), E)).toEqual({
+      state: 'error',
+      note: '로그가 손상되어 원본을 읽을 수 없습니다',
+      canRetry: false,
+    });
+  });
+
+  it('an entry with nothing stored opens to its own text', () => {
+    expect(wlRawView(st(), { seq: 5, kind: 'narration', text: 'Reading.' })).toEqual({
+      state: 'ready',
+      text: 'Reading.',
+    });
   });
 });
 
@@ -1787,118 +2007,114 @@ function fakeEl(over: Partial<FakeEl> = {}): FakeEl {
   return el;
 }
 
-describe('work-log entries open their raw output in place (shipped toggleWorkLogEntry and friends)', () => {
+describe('work-log rows open their raw output in place (shipped initWorkLog listeners, wlRawFetch, wlRawView)', () => {
   type Entry = { seq: number; kind: string; text: string; rawBytes?: number; tool?: string };
+  const INIT = (() => {
+    const at = TEMPLATE.indexOf('(function initWorkLog() {');
+    return TEMPLATE.slice(at, TEMPLATE.indexOf('\n})();', at) + 6).replace(/\\\\/g, '\\');
+  })();
   function page(entries: Entry[], fetchImpl: (url: string) => Promise<unknown>) {
-    const rows: Record<number, { row: FakeEl; detail: FakeEl }> = {};
-    for (const e of entries) rows[e.seq] = { row: fakeEl(), detail: fakeEl({ hidden: true }) };
-    const list = fakeEl({
-      querySelector: (sel: string) => {
-        const seq = Number(/data-seq="(\d+)"/.exec(sel)?.[1]);
-        const r = rows[seq];
-        if (!r) return null;
-        return fakeEl({
-          querySelector: (inner: string) => (inner === '.wl-row' ? r.row : inner === '.wl-detail' ? r.detail : null),
-        });
-      },
-    });
-    const document = { getElementById: (id: string) => (id === 'worklog-list' ? list : null) };
+    const on: Record<string, (e: unknown) => void> = {};
+    const el = { addEventListener: (n: string, fn: (e: unknown) => void) => (on[n] = fn) };
     const calls: string[] = [];
-    const wlFetchJson = (url: string) => {
-      calls.push(url);
-      return fetchImpl(url);
-    };
-    const st = { convId: 'c1', closed: false, entries, seen: new Set(entries.map((e) => e.seq)) };
+    let paints = 0;
+    const st = { convId: 'c1', closed: false, entries, seen: new Set(entries.map((e) => e.seq)) } as Record<
+      string,
+      unknown
+    >;
     const m = load<{
-      toggleWorkLogEntry(seq: number): void;
-      retryWorkLogDetail(seq: number): void;
+      wlRawFetch(st: unknown, seq: number): void;
+      wlRawView(st: unknown, e: unknown): Record<string, unknown>;
       setWl(s: unknown): void;
+      init(): void;
     }>(
       [
-        'esc',
         'toNum',
         'decodeSlackEntities',
         'wlUrl',
         'wlRawUrl',
         'wlRawLoad',
-        'formatBytes',
-        'renderWorkLogDetail',
-        'wlEntryEl',
         'wlEntryBySeq',
         'wlFullText',
-        'escAttr',
-        ...WL_INSTRUCTION_FNS.filter((f) => f !== 'toNum'),
-        'paintWorkLogDetail',
-        'loadWorkLogDetail',
-        'toggleWorkLogEntry',
-        'retryWorkLogDetail',
+        'wlRawFetch',
+        ...WL_INSTRUCTION_FNS.filter((f) => f !== 'toNum' && f !== 'wlFullText'),
       ],
       ['WL_FORBIDDEN_MSG', 'WL_RAW_MISSING_MSG', 'WL_RAW_ERROR_MSG', 'WL_RAW_DAMAGED_MSG', ...WL_INSTRUCTION_VARS],
-      { document, wlFetchJson, _wl: st },
-      ['function setWl(s) { _wl = s; }'],
+      {
+        _wl: st,
+        wlFetchJson: (url: string) => {
+          calls.push(url);
+          return fetchImpl(url);
+        },
+        wlPaintSoon: () => paints++,
+        wlPaint: () => paints++,
+        wlEl: () => el,
+        wlIsCard: () => false,
+        wlToggleCard: () => {},
+        wlLoadCardDetail: () => {},
+        selectPanelAgent: () => {},
+        loadOlderWorkLog: () => {},
+        window: {},
+      },
+      ['function setWl(s) { _wl = s; }', `function init() { ${INIT} }`],
     );
-    return { m, rows, calls, st };
+    m.init();
+    const toggle = (seq: number, open: boolean) =>
+      on['ui-toggle']({
+        target: el,
+        detail: { kind: 'entry', id: String(seq), group: 'g', open },
+        preventDefault() {},
+      });
+    const view = (seq: number) =>
+      m.wlRawView(
+        st,
+        entries.find((e) => e.seq === seq),
+      );
+    return { m, on, el, calls, st, toggle, view, paints: () => paints };
   }
   const RAW = { seq: 3, raw: '{\n  "file_path": "db/schema.sql"\n}', rawBytes: 34, rawTruncated: false };
 
-  it('with rawBytes: loading, then the fetched raw; collapse and reopen without a second fetch', async () => {
-    const p = page([{ seq: 3, kind: 'tool', tool: 'Read', text: 'Read {...}', rawBytes: 34 }], async () => RAW);
-    p.m.toggleWorkLogEntry(3);
-    expect(p.rows[3].row.attrs['aria-expanded']).toBe('true');
-    expect(p.rows[3].detail.hidden).toBe(false);
-    expect(p.rows[3].detail.innerHTML).toContain('불러오는 중');
+  it('with rawBytes: opening fetches it once (loading, then the raw); closing and reopening fetches nothing', async () => {
+    const p = page([{ seq: 3, kind: 'tool_result', tool: 'Read', text: 'Read ok', rawBytes: 34 }], async () => RAW);
+    p.toggle(3, true);
+    expect((p.st.open as Set<number>).has(3)).toBe(true);
+    expect(p.view(3)).toEqual({ state: 'loading' });
     await flush();
-    expect(p.rows[3].detail.innerHTML).toContain(
-      '<pre class="wl-raw">{\n  &quot;file_path&quot;: &quot;db/schema.sql&quot;\n}</pre>',
-    );
-    p.m.toggleWorkLogEntry(3);
-    expect(p.rows[3].row.attrs['aria-expanded']).toBe('false');
-    expect(p.rows[3].detail).toMatchObject({ hidden: true, innerHTML: '' });
-    p.m.toggleWorkLogEntry(3);
+    expect(p.view(3)).toEqual({ state: 'ready', text: RAW.raw, bytes: 34 });
+    p.toggle(3, false);
+    expect((p.st.open as Set<number>).has(3)).toBe(false);
+    p.toggle(3, true);
     await flush();
-    expect(p.rows[3].detail.innerHTML).toContain('<pre class="wl-raw">');
     expect(p.calls).toEqual(['/api/dashboard/session/c1/worklog/3/raw']);
+    expect(p.paints()).toBeGreaterThanOrEqual(3);
   });
 
   it('without rawBytes: the entry’s own full text, no fetch (narration, older entries)', () => {
     const long = `Reading the current schema ${'and the migration history '.repeat(20)}first.`;
     const p = page([{ seq: 2, kind: 'narration', text: long }], async () => RAW);
-    p.m.toggleWorkLogEntry(2);
-    expect(p.rows[2].detail.innerHTML).toContain(`<pre class="wl-raw">${long}</pre>`);
+    p.toggle(2, true);
+    expect(p.view(2)).toEqual({ state: 'ready', text: long });
     expect(p.calls).toEqual([]);
   });
 
-  it('a late answer for a collapsed row, or for another conversation, is dropped', async () => {
+  it('a late answer for another conversation is dropped', async () => {
     let release: (v: unknown) => void = () => {};
-    const held = () =>
-      new Promise((r) => {
-        release = r;
-      });
-    const p = page([{ seq: 3, kind: 'tool', text: 'x', rawBytes: 34 }], held);
-    p.m.toggleWorkLogEntry(3); // open, request in flight
-    p.m.toggleWorkLogEntry(3); // collapsed again
+    const p = page([{ seq: 3, kind: 'tool_result', text: 'x', rawBytes: 34 }], () => new Promise((r) => (release = r)));
+    p.toggle(3, true);
+    p.st.closed = true; // the panel moved to another conversation (resetWorkLog)
+    p.m.setWl({ convId: 'c2', closed: false, entries: [], open: new Set([3]) });
     release(RAW);
     await flush();
-    expect(p.rows[3].detail).toMatchObject({ hidden: true, innerHTML: '' });
-
-    const q = page([{ seq: 3, kind: 'tool', text: 'x', rawBytes: 34 }], held);
-    q.m.toggleWorkLogEntry(3);
-    q.st.closed = true; // the panel moved to another conversation (resetWorkLog)
-    q.m.setWl({ convId: 'c2', closed: false, entries: [], open: new Set([3]) });
-    release(RAW);
-    await flush();
-    expect(q.rows[3].detail.innerHTML).toContain('불러오는 중');
-    expect(q.rows[3].detail.innerHTML).not.toContain('<pre');
+    expect(p.st.rawDone).toEqual({});
   });
 
   it('the server’s 503 {error:"unavailable"} says the log is damaged, with no 다시 시도', async () => {
     const p = page([{ seq: 12, kind: 'tool_result', text: 'exit 0', rawBytes: 40 }], async () => {
       throw httpErr(503, 'unavailable');
     });
-    p.m.toggleWorkLogEntry(12);
+    p.toggle(12, true);
     await flush();
-    expect(p.rows[12].detail.innerHTML).toContain('로그가 손상되어 원본을 읽을 수 없습니다');
-    expect(p.rows[12].detail.innerHTML).not.toContain('data-wl-act="retry"');
+    expect(p.view(12)).toEqual({ state: 'error', note: '로그가 손상되어 원본을 읽을 수 없습니다', canRetry: false });
   });
 
   it('a 503 without that code (a proxy) and a 500 are generic failures with 다시 시도', async () => {
@@ -1906,164 +2122,191 @@ describe('work-log entries open their raw output in place (shipped toggleWorkLog
       const p = page([{ seq: 12, kind: 'tool_result', text: 'exit 0', rawBytes: 40 }], async () => {
         throw err;
       });
-      p.m.toggleWorkLogEntry(12);
+      p.toggle(12, true);
       await flush();
-      expect(p.rows[12].detail.innerHTML).toContain('원본 출력을 불러오지 못했어요');
-      expect(p.rows[12].detail.innerHTML).toContain('data-wl-act="retry"');
+      expect(p.view(12)).toEqual({ state: 'error', note: '원본 출력을 불러오지 못했어요', canRetry: true });
     }
   });
 
-  it('a network failure shows 다시 시도; the retry refetches and paints the raw', async () => {
+  it('a network failure offers 다시 시도; the element’s ui-retry refetches and the raw lands', async () => {
     let n = 0;
     const p = page([{ seq: 12, kind: 'tool_result', text: 'exit 0', rawBytes: 40 }], async () => {
       n++;
       if (n === 1) throw new TypeError('Failed to fetch');
       return { seq: 12, raw: 'exit 0 (41s)', rawBytes: 12 };
     });
-    p.m.toggleWorkLogEntry(12);
+    p.toggle(12, true);
     await flush();
-    expect(p.rows[12].detail.innerHTML).toContain('data-wl-act="retry"');
-    p.m.retryWorkLogDetail(12);
-    expect(p.rows[12].detail.innerHTML).toContain('불러오는 중');
+    expect(p.view(12)).toMatchObject({ state: 'error', canRetry: true });
+    p.on['ui-retry']({ target: p.el, detail: { id: '12', group: 'g' } });
+    expect(p.view(12)).toEqual({ state: 'loading' });
     await flush();
-    expect(p.rows[12].detail.innerHTML).toContain('<pre class="wl-raw">exit 0 (41s)</pre>');
+    expect(p.view(12)).toEqual({ state: 'ready', text: 'exit 0 (41s)', bytes: 12 });
     expect(p.calls.length).toBe(2);
   });
-});
 
-describe('work-log rows: one tab stop, arrows move it (shipped wlRovingIndex)', () => {
-  const { wlRovingIndex } = load<{ wlRovingIndex(key: string, i: number, n: number): number }>(['wlRovingIndex'], []);
-
-  it('ArrowDown / ArrowUp step and stop at the ends; Home / End jump; other keys do nothing', () => {
-    expect(wlRovingIndex('ArrowDown', 0, 5)).toBe(1);
-    expect(wlRovingIndex('ArrowDown', 4, 5)).toBe(4);
-    expect(wlRovingIndex('ArrowUp', 3, 5)).toBe(2);
-    expect(wlRovingIndex('ArrowUp', 0, 5)).toBe(0);
-    expect(wlRovingIndex('Home', 3, 5)).toBe(0);
-    expect(wlRovingIndex('End', 1, 5)).toBe(4);
-    expect(wlRovingIndex('Tab', 1, 5)).toBe(-1);
-    expect(wlRovingIndex('a', 1, 5)).toBe(-1);
-    expect(wlRovingIndex('ArrowDown', 0, 0)).toBe(-1);
+  it('a group opened / closed by the reader stays so across repaints and tab switches (the page keeps it)', () => {
+    const p = page([], async () => RAW);
+    p.on['ui-toggle']({
+      target: p.el,
+      detail: { kind: 'group', id: 'task:T3', group: 'task:T3', open: true },
+      preventDefault() {},
+    });
+    expect(p.st.groupOpen).toEqual({ 'task:T3': true });
   });
 });
-
-describe('work-log section collapses; the count and tail-follow keep working (shipped setWorkLogOpen + paintWorkLog)', () => {
-  function page(state: Record<string, unknown>) {
-    const toggle = fakeEl();
-    const count = fakeEl();
-    const list = fakeEl({ hidden: true, scrollHeight: 900, clientHeight: 300, scrollTop: 600 });
-    (list as unknown as { appendChild(n: unknown): void }).appendChild = (n: unknown) => list.children.push(n);
-    const document = {
-      getElementById: (id: string) =>
-        ({ 'worklog-toggle': toggle, 'worklog-count': count, 'worklog-list': list })[id] ?? null,
-      createElement: () => {
-        const tmp: Record<string, unknown> = {};
-        Object.defineProperty(tmp, 'innerHTML', {
-          set(v: string) {
-            tmp.firstElementChild = { html: v };
-          },
-        });
-        return tmp;
-      },
-    };
-    const m = load<{ setWorkLogOpen(open: boolean): void; paintWorkLog(s: unknown, added: unknown[]): void }>(
-      [
-        'esc',
-        'escAttr',
-        'toNum',
-        'formatDuration',
-        'decodeSlackEntities',
-        'setTextIfChanged',
-        'renderTaskMeta',
-        'wlToolSummary',
-        ...WL_INSTRUCTION_FNS.filter((f) => f !== 'toNum'),
-        'renderWorkLogEntry',
-        'wlGroupOf',
-        'wlBuildRows',
-        'wlTaskInfo',
-        'renderWorkLogGroupHead',
-        'renderWorkLogGroup',
-        'wlGroupOpen',
-        'wlGroupEl',
-        // Spec 12: the list shows the scope of the agent the panel shows (main here).
-        'wlScopeEntry',
-        'wlScopeEntries',
-        'wlLegacyMixed',
-        // Tool call cards: a paired result is not a row (pure pairing).
-        'wlPairKey',
-        'wlPairTools',
-        'wlPairsOf',
-        'wlCardHidden',
-        'wlVisible',
-        'wlIsCard',
-        'wlMarkStop',
-        'wlRenderList',
-        'wlAppendTail',
-        'wlDetailOpen',
-        'wlNavRows',
-        'wlEnsureTabStop',
-        'wlNamesNewAgent',
-        'setWorkLogOpen',
-        'paintWorkLog',
-      ],
-      ['WL_LABELS', 'WL_STOP_SEL', ...WL_INSTRUCTION_VARS],
-      {
-        document,
-        _wl: state,
-        // The cards' data needs the element (covered by the card suite below).
-        wlHydrateCards: () => {},
-        wlOnToolResult: () => false,
-        wlPaintCard: () => {},
-        panelSessionKey: null,
-        _sessionCache: {},
-        updateTimersIn: () => {},
-        _panelAgent: '',
-        _panelAgentIdsShown: {},
-        renderPanelAgents: () => {},
-      },
-    );
-    return { m, toggle, count, list };
+describe('work-log rows rove inside <ui-work-log> (one tab stop, arrows); the page keeps no roving code of its own', () => {
+  it('the page’s roving helpers are gone; the slotted cards rove with the rows (D3-GAPS G2-3 closed by 0.12.0)', () => {
+    for (const gone of ['wlRovingIndex', 'wlNavRows', 'wlMarkStop', 'wlEnsureTabStop', 'wlSetTabStop', 'WL_STOP_SEL']) {
+      expect(TEMPLATE, gone).not.toMatch(new RegExp(`^(?:function|var) ${gone}\\b`, 'm'));
+    }
+    expect(clientFn('wlCardSlots')).not.toContain('data-stop');
+  });
+});
+describe('작업 로그 is a section tab: painted only while shown; <ui-work-log> follows the newest and counts the rest (shipped paintWorkLog, wlLogData; SSOT 2026-10-29)', () => {
+  function paint(shown = 'log') {
+    const calls: string[] = [];
+    const m = load<{ paintWorkLog(s: unknown, added: unknown[]): void }>(['paintWorkLog'], [], {
+      _wl: null,
+      _psec: shown,
+      _panelAgent: '',
+      wlNamesNewAgent: () => false,
+      renderPanelAgents: () => calls.push('agents'),
+      paintTreeTab: () => calls.push('tree'),
+      renderAgentConv: () => calls.push('agentConv'),
+      wlCardHidden: (_st: unknown, e: { kind: string }) => e.kind === 'tool_result',
+      wlOnToolResult: (_st: unknown, e: { seq: number }) => calls.push(`result ${e.seq}`),
+      wlPaint: () => calls.push('paint'),
+    });
+    return { m, calls };
   }
 
-  it('collapsed / expanded follows aria-expanded; expanding shows the newest entries', () => {
-    const p = page({});
-    p.m.setWorkLogOpen(false);
-    expect(p.toggle.attrs['aria-expanded']).toBe('false');
-    expect(p.list.hidden).toBe(true);
-    p.m.setWorkLogOpen(true);
-    expect(p.toggle.attrs['aria-expanded']).toBe('true');
-    expect(p.list.hidden).toBe(false);
-    expect(p.list.scrollTop).toBe(900);
-  });
-
-  it('entries painted while collapsed still update the count', () => {
+  it('another section shown: the entries stay in the state, nothing is painted — the tab paints them when opened', () => {
+    const p = paint('conv');
     const st = { entries: [{ seq: 1 }, { seq: 2 }], painted: true };
-    const p = page(st);
-    p.m.paintWorkLog(st, [{ entry: { seq: 2, kind: 'notice', text: 'live' }, index: 1 }]);
-    expect(p.count.textContent).toBe('2');
-    expect(p.list.hidden).toBe(true);
+    (p.m as unknown as { paintWorkLog(s: unknown, a: unknown[]): void }).paintWorkLog.call(null, st, []);
+    expect(p.calls).toEqual([]);
+    const live = load<{ paintWorkLog(s: unknown, added: unknown[]): void }>(['paintWorkLog'], [], {
+      _wl: st,
+      _psec: 'conv',
+      _panelAgent: '',
+      wlNamesNewAgent: () => false,
+      wlPaint: () => {
+        throw new Error('painted while hidden');
+      },
+    });
+    live.paintWorkLog(st, [{ entry: { seq: 2, kind: 'notice', text: 'live' }, index: 1 }]);
+    expect(st.painted).toBe(false); // the tab renders the whole state when it opens (wlPaint)
   });
 
-  it('tail-follow stops while an entry’s detail is open', () => {
-    // As wlMerge leaves it: state.entries already holds the added entry.
-    const st = { entries: [{ seq: 1 }, { seq: 2 }] as Array<{ seq: number }>, painted: true, open: new Set([1]) };
-    const p = page(st);
-    p.list.hidden = false;
-    p.list.scrollTop = 600; // at the bottom (900 - 600 <= 300 + 40)
-    p.m.paintWorkLog(st, [{ entry: { seq: 2, kind: 'tool', text: 'x' }, index: 1 }]);
-    expect(p.list.scrollTop).toBe(600);
-    st.open.clear();
-    st.entries.push({ seq: 3 });
-    p.m.paintWorkLog(st, [{ entry: { seq: 3, kind: 'tool', text: 'y' }, index: 2 }]);
-    expect(p.list.scrollTop).toBe(900);
+  it('shown: a result for a card on screen goes to that card, then the log is painted (the element keeps the place)', () => {
+    const st = { entries: [{ seq: 1 }, { seq: 2 }], painted: true };
+    const m = load<{ paintWorkLog(s: unknown, added: unknown[]): void }>(['paintWorkLog'], [], {
+      _wl: st,
+      _psec: 'log',
+      _panelAgent: '',
+      wlNamesNewAgent: () => false,
+      wlCardHidden: (_st: unknown, e: { kind: string }) => e.kind === 'tool_result',
+      wlOnToolResult: (_st: unknown, e: { seq: number }) => calls.push(`result ${e.seq}`),
+      wlPaint: () => calls.push('paint'),
+    });
+    const calls: string[] = [];
+    m.paintWorkLog(st, [
+      { entry: { seq: 2, kind: 'tool_result', text: 'ok' }, index: 1 },
+      { entry: { seq: 3, kind: 'notice', text: 'x' }, index: 2 },
+    ]);
+    expect(calls).toEqual(['result 2', 'paint']);
+    // Following the newest, keeping a reader's place and the "new" pill are the element's (its <ui-log-scroller>).
+    expect(clientFn('paintWorkLog')).not.toMatch(/psec(SetTop|OnAppended|HoldPlace)/);
+  });
+
+  it('the data: a group per task (#id · ledger title; the newest open at first sight), entries outside a task in runs (open); a folded group carries its count, not its entries', () => {
+    const E = (seq: number, o: Record<string, unknown> = {}) => ({
+      seq,
+      ts: 1000 + seq,
+      kind: 'tool',
+      text: 'x',
+      ...o,
+    });
+    const entries = [
+      E(1, { kind: 'instruction', text: '첫 지시\n둘째 줄' }),
+      E(2, { taskId: 'T1', taskTitle: 'old title' }),
+      E(3, { taskId: 'T1', taskTitle: '읽기' }),
+      E(4, { kind: 'final', text: '응답' }),
+      E(5, { taskId: 'T2', taskTitle: '고치기' }),
+      E(6, { taskId: 'T2' }),
+    ];
+    const st: Record<string, unknown> = { entries, loaded: true, latestOk: true, olderPending: true };
+    const m = load<{ wlLogData(st: unknown): Record<string, unknown> & { groups: Record<string, unknown>[] } }>(
+      ['wlGroupOf', 'wlGroupOpen', 'wlGroupsOf', 'wlLogData'],
+      ['WL_EMPTY_MSG', 'WL_FORBIDDEN_MSG'],
+      {
+        _panelAgent: '',
+        wlScopeEntries: (list: unknown[]) => list,
+        wlVisible: (_st: unknown, list: unknown[]) => list,
+        wlLegacyMixed: () => false,
+        wlTaskMeta: () => ['3m 만에 완료', { label: '툴', value: '4회' }],
+        wlTaskInfo: (id: string) => (id === 'T2' ? { content: '고치기 (ledger)' } : null),
+        wlEntryOf: (_st: unknown, e: { seq: number; kind: string; text: string }) => ({
+          id: String(e.seq),
+          kind: e.kind,
+          text: e.text,
+        }),
+      },
+    );
+    const d = m.wlLogData(st);
+    expect(d).toMatchObject({ label: '작업 로그', startText: '작업 로그의 시작', hasMore: true, loading: false });
+    // Runs outside a task are headless groups (no head to title or fold; always in line); a task the ledger knows
+    // carries its meta line (D3-GAPS G2-2).
+    expect(
+      d.groups.map((g) => [g.id, g.ref, g.title, g.open, g.count, g.headless, g.meta, (g.entries as unknown[]).length]),
+    ).toEqual([
+      ['run:1', undefined, undefined, undefined, undefined, true, undefined, 1],
+      ['task:T1', '#T1', '읽기', false, 2, undefined, undefined, 0],
+      ['run:4', undefined, undefined, undefined, undefined, true, undefined, 1],
+      ['task:T2', '#T2', '고치기 (ledger)', true, 2, undefined, ['3m 만에 완료', { label: '툴', value: '4회' }], 2],
+    ]);
+    // The reader's choice (ui-toggle) sticks.
+    (st.groupOpen as Record<string, boolean>)['task:T1'] = true;
+    expect(m.wlLogData(st).groups[1]).toMatchObject({ open: true, count: 2 });
+    expect((m.wlLogData(st).groups[1].entries as unknown[]).length).toBe(2);
+    // An older page on its way; owner-only; nothing logged; no conversation.
+    expect(m.wlLogData({ ...st, olderLoading: {} }).loading).toBe(true);
+    expect(m.wlLogData({ ...st, denied: true })).toMatchObject({
+      groups: [],
+      denied: '작업 로그는 세션 소유자만 볼 수 있어요',
+    });
+    expect(m.wlLogData({ entries: [], loaded: true, latestOk: true })).toMatchObject({
+      groups: [],
+      emptyText: '작업 로그 없음',
+      hasMore: false,
+    });
+    expect(m.wlLogData(null)).toMatchObject({ groups: [], emptyText: '작업 로그 없음' });
+  });
+});
+
+describe("older agents keep the reader's tree row in place — <ui-log-scroller>'s own (D3-GAPS G1-1 closed by 0.12.0; shipped paintTreeTab / showMoreTree)", () => {
+  it('the tree is the scroller’s one item (its rows carry data-anchor in its shadow root); a page lands with prependItems, a live arrival is noteUnread', () => {
+    const paint = clientFn('paintTreeTab');
+    expect(paint).toContain("host.upsertItem('tree', tree, { animate: false })");
+    expect(paint).toContain("tree.setAttribute('data-item', 'tree');");
+    expect(paint).toContain('host.noteUnread(newer)');
+    expect(paint).toContain('treeScrollerData(host, win.hidden > 0);');
+    const more = clientFn('showMoreTree');
+    expect(more).toContain('host.prependItems([], { hasMore: host._hidden > 0 })');
+    expect(more).toContain('_treeWindow += AT_PANEL_WINDOW;');
+    for (const gone of ['psecViewAnchor', 'psecRestoreAnchor', 'psecTreeRoot', 'PSEC_ANCHOR_MAX', 'psecHoldPlace']) {
+      expect(TEMPLATE, gone).not.toContain(gone);
+    }
   });
 });
 
 describe('panel Tasks always render, also with no tasks (shipped renderPanelTasks)', () => {
   // Task view T1.3: the Tasks section is a disclosure in the focused tab,
-  // folded by default (_panelTasksOpen); opened, the empty line shows.
+  // folded by default (_panelTasksOpen); opened, the plan element's empty state shows (D3 E-22).
   const tasksSection = (open: boolean) => {
     const container = fakeEl({ style: { display: 'none' } });
+    const planEl: { data?: unknown } = {};
     const { renderPanelTasks } = load<{ renderPanelTasks(t: unknown): void }>(
       [
         'esc',
@@ -2071,16 +2314,34 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
         'toNum',
         'agentIconHtml',
         'taskFateOf',
+        // SSOT 2026-10-29 T5: the head and the body read the runs (taskRunsOf); the skipped
+        // toggle replaced the earlier plans (planEarlier* are gone).
+        'taskIdNum',
+        'taskRunStart',
+        'taskRunsOf',
         'planSummaryHtml',
-        'planEarlierCounts',
-        'planEarlierGroups',
-        'planEarlierHtml',
-        'renderPanelTaskItem',
+        'taskTotalsOf',
+        'taskOutsideText',
+        'taskOutsideNote',
+        'taskOutsideHtml',
+        'taskPlanRestore',
+        'taskElData',
+        'taskRunsData',
+        'taskPlanData',
+        'taskRunsRestore',
         'renderPanelTasks',
       ],
-      ['TASK_FATE_LABEL', 'PI_CHEV_SVG'],
+      ['TASK_FATE_LABEL', 'TASK_RUNS_SHOWN', 'TASK_RUN_STATUS'],
       {
-        document: { getElementById: (id: string) => (id === 'panel-tasks' ? container : null) },
+        document: {
+          getElementById: (id: string) =>
+            id === 'panel-tasks'
+              ? container
+              : id === 'panel-task-plan' && container.innerHTML.includes(id)
+                ? planEl
+                : null,
+        },
+        _panelTaskOpen: {},
         _panelTasksOpen: open,
         _panelTasksExpanded: false,
         _panelTasksEarlier: false,
@@ -2088,22 +2349,18 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
         morphInnerHtml: (el: { innerHTML: string }, html: string) => {
           el.innerHTML = html;
         },
-        updateTimersIn: () => {},
       },
     );
-    return { container, renderPanelTasks };
+    return { container, renderPanelTasks, planEl };
   };
-  const CHEV = new Function(`${clientVar('PI_CHEV_SVG')}\nreturn PI_CHEV_SVG;`)() as string;
+  // D4 K-06: the head is <ui-disclosure>'s row (the title and the summary slotted in); the body is its region.
   const head = (expanded: boolean) =>
-    `<button type="button" class="panel-sec-head panel-tasks-header" aria-expanded="${expanded}"` +
-    (expanded ? ' aria-controls="panel-tasks-body"' : '') +
-    ` onclick="togglePanelTasks()"><span class="ps-sec-title">Tasks</span><span class="ps-sec-sum">목록 없음</span>${CHEV}</button>`;
-  const LIVE = '<span class="ar-vh pl-live" role="status" aria-live="polite"></span>';
+    `<ui-disclosure class="panel-tasks-dc" flush${expanded ? ' open' : ''}><span slot="summary" class="panel-tasks-header"><span class="ps-sec-title">작업</span><span class="ps-sec-sum">목록 없음</span></span>`;
+  const LIVE = '<span class="ui-sr-only pl-live" role="status" aria-live="polite"></span>';
 
-  it('zero or missing tasks show the header (folded: 목록 없음) and, opened, an empty line', () => {
-    expect(CHEV).toContain('<svg class="pi-chev"');
+  it("zero or missing tasks show the header (folded: 목록 없음) and, opened, the plan element's empty state", () => {
     for (const open of [false, true]) {
-      const { container, renderPanelTasks } = tasksSection(open);
+      const { container, renderPanelTasks, planEl } = tasksSection(open);
       for (const t of [[], undefined, null]) {
         container.innerHTML = '';
         (container as { _html?: string })._html = undefined; // a fresh block (the same data on a live block writes nothing)
@@ -2111,9 +2368,10 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
         expect(container.style.display).toBe('');
         expect(container.innerHTML).toBe(
           open
-            ? `${head(true)}<div class="panel-tasks-body" id="panel-tasks-body"><div class="panel-tasks-empty">아직 작업 목록이 없습니다</div></div>${LIVE}`
-            : `${head(false)}${LIVE}`,
+            ? `${head(true)}<div class="panel-tasks-body ui-tok" id="panel-tasks-body"><ui-task-plan class="panel-task-plan" id="panel-task-plan" lang="ko"></ui-task-plan></div></ui-disclosure>${LIVE}`
+            : `${head(false)}</ui-disclosure>${LIVE}`,
         );
+        if (open) expect(planEl.data).toEqual({ title: '계획', steps: [] });
       }
     }
   });
@@ -2134,11 +2392,19 @@ describe('stats: only the latest period / user selection paints (shipped loadSta
     const painted: string[] = [];
     const m = load<{ loadStats(): Promise<void>; select(p: string, u: string): void }>(
       ['statsJson', 'loadStats', 'markStatsLoading'],
-      ['_statsGen', 'STAT_IDS'],
+      ['_statsGen'],
       {
         fetch,
-        // The loading bars (markStatsLoading) find no elements in this harness.
+        // The loading bars (markStatsLoading) find no elements in this harness; the strip and the charts
+        // (<ui-stat-strip>, <ui-bar-chart>, D2) are painted elsewhere.
         document: { getElementById: () => null },
+        setStripFigure: () => {},
+        paintStatsStrip: () => {},
+        paintStatCards: () => {},
+        _statCards: {},
+        paintCharts: () => {},
+        _strip: { sessions: { value: null }, tokens: { value: null }, cost: { value: null } },
+        _chartDays: [],
         currentPeriod: 'day',
         currentUserId: '',
         paintStats: (d: { tag?: string } | null) => painted.push(`stats:${d ? d.tag : 'dash'}`),
@@ -2227,72 +2493,21 @@ describe('stats: only the latest period / user selection paints (shipped loadSta
   });
 });
 
-describe('panel landing and older-turn loading (shipped workLogLandingTop + olderTurnsZone + panelOlderStep)', () => {
+describe('panel landing (shipped psecLandingTop; SSOT 2026-10-29) — the older pages are each element’s own (ui-load-older)', () => {
   const m = load<{
-    workLogLandingTop(sectionTop: number, headerHeight: number, viewHeight: number): number;
-    olderTurnsZone(firstTurnTop: number, areaTop: number): boolean;
-    panelOlderStep(armed: boolean, inZone: boolean, canLoad: boolean): { load: boolean; armed: boolean };
-  }>(['workLogLandingTop', 'olderTurnsZone', 'panelOlderStep'], []);
+    psecLandingTop(secTop: number, boxBottom: number, view: number, under: number): number;
+  }>(['psecLandingTop'], []);
 
-  it('작업 로그 / ?session= land at the top when the collapsed header fits there, else on the header', () => {
-    expect(m.workLogLandingTop(0, 40, 400)).toBe(0); // no question: the log heads the scroll area
-    expect(m.workLogLandingTop(180, 40, 400)).toBe(0); // a short question above it: both in view
-    expect(m.workLogLandingTop(520, 40, 400)).toBe(520); // a tall question: bring the header up
+  it('작업 로그 / ?session= land at the top when the section box ends in view, else on the section tabs under the agent tabs', () => {
+    expect(m.psecLandingTop(80, 560, 600, 44)).toBe(0); // no question: the tabs and the box fit
+    expect(m.psecLandingTop(260, 600, 600, 44)).toBe(0); // a short question above it: all in view
+    expect(m.psecLandingTop(520, 1100, 600, 44)).toBe(476); // a tall question: bring the tabs up
   });
 
-  it('the first turn within 100px of the area top (or below it) is the load-older zone', () => {
-    expect(m.olderTurnsZone(300, 300)).toBe(true);
-    expect(m.olderTurnsZone(350, 300)).toBe(true); // header above it, turn in view
-    expect(m.olderTurnsZone(201, 300)).toBe(true);
-    expect(m.olderTurnsZone(199, 300)).toBe(false);
-    expect(m.olderTurnsZone(-4000, 300)).toBe(false); // far above: reading newer turns
-  });
-
-  it('one load per approach: entering the zone loads once, leaving it re-arms; a landing never loads', () => {
-    const run = (events: Array<[boolean, boolean]>) => {
-      let armed = false; // openPanel starts disarmed
-      const loads: number[] = [];
-      events.forEach(([inZone, canLoad], i) => {
-        const step = m.panelOlderStep(armed, inZone, canLoad);
-        armed = step.armed;
-        if (step.load) loads.push(i);
-      });
-      return loads;
-    };
-    // Landing at the top (작업 로그): in the zone from the start → nothing loads.
-    expect(
-      run([
-        [true, true],
-        [true, true],
-        [true, true],
-      ]),
-    ).toEqual([]);
-    // Landing at the bottom, scrolling up into the zone, staying there (anchored insert) → one load.
-    expect(
-      run([
-        [false, true],
-        [true, true],
-        [true, true],
-        [true, true],
-      ]),
-    ).toEqual([1]);
-    // Out and back in → the next page.
-    expect(
-      run([
-        [false, true],
-        [true, true],
-        [false, true],
-        [true, true],
-      ]),
-    ).toEqual([1, 3]);
-    // In the zone while a load is in flight: the arm is kept for when it can load.
-    expect(
-      run([
-        [false, true],
-        [true, false],
-        [true, true],
-      ]),
-    ).toEqual([2]);
+  it('the page keeps no page-due rule or sentinel of its own (the scroller asks: ui-load-older → loadMorePanelTurns / loadOlderWorkLog / showMoreTree)', () => {
+    for (const gone of ['psecPageDue', 'psecMaybeFill', 'psecLoadOlder', 'psecOlderState', 'psecFillSoon']) {
+      expect(TEMPLATE, gone).not.toContain(gone);
+    }
   });
 });
 
@@ -2402,27 +2617,29 @@ describe('Show archives choice persists (shipped readShowArchives + toggleArchiv
 
 describe('deep link to a hidden archived card still opens it (shipped openDeepLinkedSession)', () => {
   type Card = { key: string; terminated?: boolean; lastActivity?: string };
-  function page(card: Card, opts: { showArchives?: boolean } = {}) {
-    const calls = { loads: 0, toggled: [] as string[], panel: [] as unknown[][], scrolled: 0, stored: 0 };
-    const cardEls: Record<string, { scrollIntoView(): void }> = Object.create(null);
-    const dayOpen: Record<string, boolean> = Object.create(null);
+  // SSOT 2026-10-29 T2: `panelOn` is the session the panel already shows (on the page, reveal opens
+  // the card → ui-toggle → openPanel(key); the reveal stub below does not).
+  function page(card: Card, opts: { showArchives?: boolean; panelOn?: string } = {}) {
+    const calls = { loads: 0, revealed: [] as string[], panel: [] as unknown[][], stored: 0 };
+    // The element each card is drawn by (_cardHost): a closed DONE day's card is on it too, as a stub.
+    const hosts: Record<string, { reveal?(k: string): boolean }> = Object.create(null);
+    let whenDefined: (() => void) | null = null;
     const m = load<{
       openDeepLinkedSession(): void;
-      state(): { revealed: string | null; dayOpen: string[]; link: string | null; showArchives: boolean };
+      state(): { revealed: string | null; link: string | null; showArchives: boolean };
     }>(
-      ['toNum', 'doneTimeOf', 'dayKeyOf', 'resolveDeepLinkKey', 'openDeepLinkedSession'],
-      [],
+      ['resolveDeepLinkKey', 'openDeepLinkedSession'],
+      ['_deepLinkWaiting'],
       {
         _deepLinkSession: 'work:C1:1700000000.000700',
         _deepLinkDeadline: Date.now() + 10_000,
         _sessionCache: { [card.key]: card },
         SELF_INSTANCE_NAME: 'inst',
-        _cardEls: cardEls,
-        _expanded: new Set<string>(),
+        _cardHost: hosts,
         showArchives: !!opts.showArchives,
         showSleeping: true,
-        _doneGroupOpen: dayOpen,
         _revealedKey: null,
+        _cronRevealKey: null,
         localStorage: {
           setItem: () => {
             calls.stored++;
@@ -2431,88 +2648,124 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
         loadSessions: () => {
           calls.loads++;
         },
-        toggleCard: (k: string) => calls.toggled.push(k),
         openPanel: (...a: unknown[]) => calls.panel.push(a),
-      },
-      [
-        'function state() { return { revealed: _revealedKey, dayOpen: Object.keys(_doneGroupOpen), link: _deepLinkSession, showArchives: showArchives }; }',
-      ],
-    );
-    const render = () => {
-      cardEls[card.key] = {
-        scrollIntoView: () => {
-          calls.scrolled++;
+        panelOpen: !!opts.panelOn,
+        panelSessionKey: opts.panelOn ?? null,
+        window: { customElements: {} },
+        customElements: {
+          whenDefined: () => ({
+            // biome-ignore lint/suspicious/noThenProperty: a hand-driven thenable — the test decides when the element is defined
+            then: (fn: () => void) => {
+              whenDefined = fn;
+            },
+          }),
         },
-      };
+      },
+      ['function state() { return { revealed: _revealedKey, link: _deepLinkSession, showArchives: showArchives }; }'],
+    );
+    const render = (defined = true) => {
+      hosts[card.key] = defined
+        ? {
+            reveal: (k: string) => {
+              calls.revealed.push(k);
+              return true;
+            },
+          }
+        : {};
     };
-    return { m, calls, render };
+    return { m, calls, render, defined: () => whenDefined?.() };
   }
   // The board key of an archived session (archivedToKanban): "<inst>::archived_<registry key>_<archivedAt>".
   const KEY = 'inst::archived_work:C1:1700000000.000700_1792000000000';
 
-  it('reveals just that archive for this page load, then expands it and opens the panel', () => {
+  it('reveals just that archive for this page load, then reveals it on its element and opens the panel', () => {
     const p = page({ key: KEY, terminated: true });
     p.m.openDeepLinkedSession(); // the card is hidden: reveal + re-render
-    expect(p.m.state()).toEqual({
-      revealed: KEY,
-      dayOpen: [],
-      link: 'work:C1:1700000000.000700',
-      showArchives: false,
-    });
+    expect(p.m.state()).toEqual({ revealed: KEY, link: 'work:C1:1700000000.000700', showArchives: false });
     expect(p.calls.loads).toBe(1);
     p.render(); // the re-render drew it (planDoneColumn keeps a revealed key, any age)
     p.m.openDeepLinkedSession();
-    expect(p.calls.toggled).toEqual([KEY]);
-    expect(p.calls.scrolled).toBe(1);
-    expect(p.calls.panel).toEqual([[KEY, true]]);
+    // el.reveal: opens its closed DONE day if it is in one, opens the card, scrolls it to the centre
+    // (@2lab.ai/ui agent-inbox.test.ts owns that).
+    expect(p.calls.revealed).toEqual([KEY]);
+    // SSOT 2026-10-29 T2: the panel opens with the key alone — no `true` (the 작업 로그
+    // landing): a deep link lands on the detail card's default, Chat.
+    expect(p.calls.panel).toEqual([[KEY]]);
     expect(p.m.state().link).toBeNull();
     expect(p.calls.stored).toBe(0); // the stored Show archives choice is untouched
   });
 
-  it('a card in a closed DONE day opens that day (T12), then gives up if it still is not drawn', () => {
+  it('a link to the session the panel already shows does not open it twice (SSOT 2026-10-29 T2)', () => {
+    // Revealing the card opened it, and its detail card with it (ui-toggle → openPanel): the
+    // link only reveals — a second openPanel would reset the landing.
+    const p = page({ key: KEY, terminated: true }, { showArchives: true, panelOn: KEY });
+    p.render();
+    p.m.openDeepLinkedSession();
+    expect(p.calls.revealed).toEqual([KEY]);
+    expect(p.calls.panel).toEqual([]);
+    // Another session in front (the card was open already, its detail card behind): brought there.
+    const q = page({ key: KEY, terminated: true }, { showArchives: true, panelOn: 'inst::other' });
+    q.render();
+    q.m.openDeepLinkedSession();
+    expect(q.calls.panel).toEqual([[KEY]]);
+  });
+
+  it('waits for <ui-agent-inbox> to be defined before it reveals (the module can land after the first answer)', () => {
+    const p = page({ key: KEY, lastActivity: '2026-10-01T03:00:00.000Z' });
+    p.render(false);
+    p.m.openDeepLinkedSession();
+    expect(p.calls.revealed).toEqual([]);
+    expect(p.m.state().link).toBe('work:C1:1700000000.000700');
+    p.render(true);
+    p.defined();
+    expect(p.calls.revealed).toEqual([KEY]);
+    expect(p.calls.panel).toEqual([[KEY]]); // SSOT 2026-10-29 T2: on Chat (no `true`)
+  });
+
+  it('a card on no element that no toggle hides is given up', () => {
     const p = page({ key: KEY, lastActivity: '2026-10-01T03:00:00.000Z' });
     p.m.openDeepLinkedSession();
-    expect(p.m.state().revealed).toBeNull();
-    expect(p.m.state().dayOpen).toHaveLength(1);
-    expect(p.calls.loads).toBe(1);
-    p.m.openDeepLinkedSession();
     expect(p.m.state().link).toBeNull();
-    expect(p.calls.loads).toBe(1);
+    expect(p.calls.loads).toBe(0);
+    expect(p.calls.revealed).toEqual([]);
   });
 });
 
-describe('All Users: owner badge on every card (shipped assignOwnerHues + ownerBadgeHue + renderOwnerBadge)', () => {
+describe('All Users: owner badge on every card (shipped assignOwnerHues + ownerBadgeHue + cardOf)', () => {
   type Badge = {
     assignOwnerHues(ids: string[]): Record<string, number>;
     ownerBadgeHue(id: string): number;
-    renderOwnerBadge(s: Record<string, unknown>): string;
+    cardOf(s: Record<string, unknown>, col: string): CardData;
   };
   const badge = (currentUserId: string, owners: string[] = []) => {
     const m = load<Badge>(
-      ['esc', 'escAttr', '_hashStr', 'assignOwnerHues', 'ownerBadgeHue', 'renderOwnerBadge'],
-      ['OWNER_BADGE_HUES'],
-      { currentUserId, _ownerIndex: null },
+      ['assignOwnerHues', ...CARD_OF_FNS],
+      CARD_OF_VARS,
+      { currentUserId, _ownerIndex: null, dhShow: () => true, dhTruncate: () => null, SELF_INSTANCE_NAME: '' },
       ['function setIndex(i) { _ownerIndex = i; }'],
     ) as Badge & { setIndex(i: unknown): void };
     m.setIndex(m.assignOwnerHues(owners));
     return m;
   };
+  const badgeOf = (m: Badge, s: Record<string, unknown>) => m.cardOf({ key: 'k', ...s }, 'idle').badge;
   // Slack-style member ids. Under a bare hash % 8 the first two pairs collide
   // (U01ZHG7K2QD / U07KQ2M4XR1 on 3, U05HJ1WQ9DA / U06TF4YQ8BN on 0).
   const TEAM = ['U01ZHG7K2QD', 'U07KQ2M4XR1', 'U03BN8TZP6E', 'U05HJ1WQ9DA', 'U06TF4YQ8BN'];
   const all = badge('', TEAM);
 
-  it('shows the owner name in All Users mode only, full name in title', () => {
-    const html = all.renderOwnerBadge({ ownerId: TEAM[1], ownerName: 'Alice' });
-    expect(html).toBe(`<span class="owner-badge" data-hue="${all.ownerBadgeHue(TEAM[1])}" title="Alice">Alice</span>`);
-    expect(badge(TEAM[1], TEAM).renderOwnerBadge({ ownerId: TEAM[1], ownerName: 'Alice' })).toBe('');
-    expect(all.renderOwnerBadge({})).toBe('');
+  it('names the owner in All Users mode only, full name in title (the element draws badge, right end of the head)', () => {
+    expect(badgeOf(all, { ownerId: TEAM[1], ownerName: 'Alice' })).toEqual({
+      text: 'Alice',
+      hue: all.ownerBadgeHue(TEAM[1]),
+      title: 'Alice',
+    });
+    expect(badgeOf(badge(TEAM[1], TEAM), { ownerId: TEAM[1], ownerName: 'Alice' })).toBeUndefined();
+    expect(badgeOf(all, {})).toBeUndefined();
   });
 
-  it('escapes the name in text and title', () => {
-    const html = all.renderOwnerBadge({ ownerId: 'U0BADNAME01', ownerName: '<img src=x onerror=alert(1)> "q" \'s' });
-    expect(html).not.toContain('<img');
-    expect(html).toContain('title="&lt;img src=x onerror=alert(1)&gt; &quot;q&quot; &#39;s"');
+  it('hands the name over as text — the element escapes it (badge is text only, @2lab.ai/ui agent-inbox.test.ts)', () => {
+    const name = '<img src=x onerror=alert(1)> "q" \'s';
+    expect(badgeOf(all, { ownerId: 'U0BADNAME01', ownerName: name })).toMatchObject({ text: name, title: name });
   });
 
   it('owners on the board never share a colour while there are ≤ 8 of them; hash slot first, then probing', () => {
@@ -2533,23 +2786,31 @@ describe('All Users: owner badge on every card (shipped assignOwnerHues + ownerB
     const a = all.assignOwnerHues(TEAM);
     const b = all.assignOwnerHues([...TEAM].reverse().concat(TEAM[0], TEAM[2], ''));
     expect(b).toEqual(a);
-    const x = all.renderOwnerBadge({ ownerId: TEAM[2], ownerName: 'Bob' });
-    const y = all.renderOwnerBadge({ ownerId: TEAM[2], ownerName: 'Bob (renamed)' });
-    expect(x.match(/data-hue="(\d)"/)?.[1]).toBe(y.match(/data-hue="(\d)"/)?.[1]);
+    const x = badgeOf(all, { ownerId: TEAM[2], ownerName: 'Bob' });
+    const y = badgeOf(all, { ownerId: TEAM[2], ownerName: 'Bob (renamed)' });
+    expect(x?.hue).toBe(y?.hue);
     // An owner not on the board (yet) falls back to the hash slot.
     expect(all.ownerBadgeHue('U0NOTONBRD1')).toBe(all.assignOwnerHues(['U0NOTONBRD1']).U0NOTONBRD1);
   });
 });
 
 describe('muted text contrast ≥ 4.5:1 on every surface it sits on (CSS tokens)', () => {
+  // Tone pass P10: the page's colours are @2lab.ai/ui's tokens.css (the dashboard names alias the
+  // library's --ui-*), so the pairs are checked on the values the page actually emits.
   function tokens(selector: RegExp): Record<string, string> {
-    const block = TEMPLATE.match(selector)?.[1] ?? '';
+    const block = uiLibTokensCss().match(selector)?.[1] ?? '';
     const out: Record<string, string> = {};
-    for (const m of block.matchAll(/--([a-z0-9-]+):\s*(#[0-9a-f]{6})\b/gi)) out[m[1]] = m[2];
+    for (const m of block.matchAll(/--ui-([a-z0-9-]+):\s*(#[0-9a-f]{6})\b/gi)) out[m[1]] = m[2];
     return out;
   }
-  const dark = tokens(/:root \{([^}]+)\}/);
-  const light = { ...dark, ...tokens(/\[data-theme="light"\] \{([^}]+)\}/) };
+  it('the page emits those tokens and aliases its names to them', () => {
+    expect(TEMPLATE).toContain('${uiLibTokensCss()}');
+    expect(TEMPLATE).toContain('${pageTokenAliases()}');
+    for (const n of ['ib-muted', 'ib-text-2', 'text-tertiary', 'text-secondary', 'st-fail', 'st-done', 'accent', 'red'])
+      expect(pageTokenAliases()).toContain(`--${n}: var(--ui-${n});`);
+  });
+  const dark = tokens(/\[data-theme="dark"\] \{([^}]+)\}/);
+  const light = tokens(/:root, \[data-theme="light"\] \{([^}]+)\}/);
   const lum = (hex: string) => {
     const [r, g, b] = [1, 3, 5].map((i) => {
       const c = Number.parseInt(hex.slice(i, i + 2), 16) / 255;
@@ -2585,14 +2846,8 @@ describe('muted text contrast ≥ 4.5:1 on every surface it sits on (CSS tokens)
         });
       }
     }
-    // Owner badges (All Users): each of the 8 hues, its text on its own fill.
-    it(`${theme}: owner badge text on its fill, all 8 hues`, () => {
-      for (let i = 0; i < 8; i++) {
-        expect(t[`ob-${i}-fg`], `--ob-${i}-fg`).toMatch(/^#/);
-        expect(t[`ob-${i}-bg`], `--ob-${i}-bg`).toMatch(/^#/);
-        expect(ratio(t[`ob-${i}-fg`], t[`ob-${i}-bg`]), `hue ${i}`).toBeGreaterThanOrEqual(4.5);
-      }
-    });
+    // Owner badges (All Users) are <ui-agent-inbox>'s badge.hue tints now — eight hues mixed from the card and
+    // the ink (@2lab.ai/ui agent-inbox styles.ts, docs 'badge': ≥ 4.5:1 in both themes); the page keeps no --ob-* pair.
   }
 });
 
@@ -2690,30 +2945,30 @@ describe('deep link to a hidden sleeping card reveals it (shipped openDeepLinked
   it('reveals the sleeping card for this page load without touching the stored choice', () => {
     const KEY = 'inst::work:C1:1700000000.000900';
     let loads = 0;
-    const m = load<{ openDeepLinkedSession(): void; state(): { revealed: string | null; dayOpen: string[] } }>(
-      ['toNum', 'doneTimeOf', 'dayKeyOf', 'resolveDeepLinkKey', 'openDeepLinkedSession'],
-      [],
+    const m = load<{ openDeepLinkedSession(): void; state(): { revealed: string | null } }>(
+      ['resolveDeepLinkKey', 'openDeepLinkedSession'],
+      ['_deepLinkWaiting'],
       {
         _deepLinkSession: 'work:C1:1700000000.000900',
         _deepLinkDeadline: Date.now() + 10_000,
         _sessionCache: { [KEY]: { key: KEY, lastActivity: new Date().toISOString() } },
         SELF_INSTANCE_NAME: 'inst',
-        _cardEls: Object.create(null),
-        _expanded: new Set<string>(),
+        _cardHost: Object.create(null),
         showArchives: false,
         showSleeping: false,
-        _doneGroupOpen: Object.create(null),
         _revealedKey: null,
+        _cronRevealKey: null,
         loadSessions: () => {
           loads++;
         },
-        toggleCard: () => {},
         openPanel: () => {},
+        panelOpen: false,
+        panelSessionKey: null,
       },
-      ['function state() { return { revealed: _revealedKey, dayOpen: Object.keys(_doneGroupOpen) }; }'],
+      ['function state() { return { revealed: _revealedKey }; }'],
     );
     m.openDeepLinkedSession();
-    expect(m.state()).toEqual({ revealed: KEY, dayOpen: [] });
+    expect(m.state()).toEqual({ revealed: KEY });
     expect(loads).toBe(1);
   });
 });
@@ -2770,24 +3025,24 @@ describe('admin lifecycle form (shipped lifecycleToForm + lifecycleFromForm)', (
 });
 
 describe('답변하기 opens the panel on the open question (shipped renderMultiChoiceCard → openPanel)', () => {
-  // A panel-scroll model: question (when shown) · collapsed work-log header · turns,
-  // in that order (the template's #panel-scroll). The browser clamps scrollTop to
-  // the content, so a stale position from the previous opening shrinks with it.
+  // A panel-scroll model: question (when shown) · the section tabs · the section
+  // box, in that order (the template's #panel-scroll; SSOT 2026-10-29 — the turns
+  // scroll in the box, not in the panel). The browser clamps scrollTop to the
+  // content, so a stale position from the previous opening shrinks with it.
   const KEY = 'inst::work:C1:1700000000.000100';
   const AREA_TOP = 200;
   const VIEW = 600;
-  const WL_HEADER = 40;
-  const TURNS_LOADED = 4000;
-  const TURNS_PLACEHOLDER = 60;
+  const SEC_TABS = 40;
+  const SEC_BOX = 300;
   type Session = Record<string, unknown>;
   type Panel = {
     openPanel(key: string, focusWorkLog?: boolean): void;
     renderMultiChoiceCard(s: Session, faceSummary: string): string;
     renderPanelQuestion(s: Session): void;
-    olderTurnsZone(firstTurnTop: number, areaTop: number): boolean;
-    panelOlderStep(armed: boolean, inZone: boolean, canLoad: boolean): { load: boolean; armed: boolean };
-    stick(): boolean;
-    armed(): boolean;
+    section(): string;
+    turnsMsg(): string;
+    turnsHeld(): number;
+    deck(): string[];
   };
 
   const waitingMulti = (over: Session = {}): Session => ({
@@ -2829,29 +3084,37 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       els[id] ??= Object.assign(fakeEl({ id }), { classList: { add() {}, remove() {} } });
       return els[id];
     };
+    // D4 E-01: the panel is <ui-drawer> — openPanel opens it with the element's show() (closePanel: hide());
+    // its open state is the element's own property and attribute, as the host contract says.
+    const drawer = el('slide-panel');
+    Object.assign(drawer, {
+      open: false,
+      show() {
+        drawer.open = true;
+        drawer.setAttribute('open', '');
+      },
+      hide() {
+        drawer.open = false;
+        drawer.removeAttribute('open');
+      },
+    });
     const question = el('panel-question');
     question.style.display = 'none';
-    el('panel-worklog').style.display = '';
-    const turns = el('panel-turns');
+    // D3 E-15: the form is a <ui-choice-form> the page creates in the box.
+    Object.assign(question, {
+      appendChild(node: unknown) {
+        question.children.push(node);
+        (question as Record<string, unknown>).firstElementChild = node;
+      },
+    });
     // openPanel's .then and .catch both end in a landing, so a harness gap (a new
     // dependency of openPanel that is not injected) would silently run the
-    // failure path and still land. Make that loud: only a 'fail' run may show it.
+    // failure path and still land. Make that loud: only a 'fail' run may end failed.
     const outcome = opts.turns === 'held' ? (opts.settle ?? 'ok') : (opts.turns ?? 'ok');
-    let turnsHtml = '';
-    Object.defineProperty(turns, 'innerHTML', {
-      get: () => turnsHtml,
-      set: (v: string) => {
-        if (v.includes('Failed to load conversation') && outcome !== 'fail')
-          throw new Error('openPanel took its failure path on a successful load: the harness is missing a dependency');
-        turnsHtml = v;
-      },
-      configurable: true,
-    });
     const qH = () => (question.style.display === 'none' ? 0 : (opts.questionHeight ?? 420));
-    const tH = () => (turns.innerHTML.includes('class="turn') ? TURNS_LOADED : TURNS_PLACEHOLDER);
     const scroll = el('panel-scroll');
     let stored = opts.prevScrollTop ?? 0;
-    const height = () => qH() + WL_HEADER + tH();
+    const height = () => qH() + SEC_TABS + SEC_BOX;
     const max = () => Math.max(0, height() - VIEW);
     Object.defineProperties(scroll, {
       scrollHeight: { get: height, configurable: true },
@@ -2871,10 +3134,19 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       getBoundingClientRect: () => ({ top: AREA_TOP, bottom: AREA_TOP + VIEW, height: VIEW }),
     });
     Object.assign(question, { getBoundingClientRect: () => ({ top: AREA_TOP - scroll.scrollTop, height: qH() }) });
-    Object.assign(el('panel-worklog'), {
-      getBoundingClientRect: () => ({ top: AREA_TOP + qH() - scroll.scrollTop, height: WL_HEADER }),
+    // D4 E-19: the agent strip is <ui-tabs>' sticky list — none in this rig (its shared panel starts at its host's top).
+    for (const id of ['panel-tabs', 'panel-tabpanel']) {
+      Object.assign(el(id), { getBoundingClientRect: () => ({ top: AREA_TOP + qH() - scroll.scrollTop, height: 0 }) });
+    }
+    Object.assign(el('panel-sections'), {
+      getBoundingClientRect: () => ({ top: AREA_TOP + qH() - scroll.scrollTop, height: SEC_TABS }),
     });
-    Object.assign(el('worklog-toggle'), { getBoundingClientRect: () => ({ top: 0, height: WL_HEADER }) });
+    Object.assign(el('panel-sections-body'), {
+      getBoundingClientRect: () => {
+        const top = AREA_TOP + qH() + SEC_TABS - scroll.scrollTop;
+        return { top, bottom: top + SEC_BOX, height: SEC_BOX };
+      },
+    });
 
     let release: () => void = () => {};
     const payload = { id: 'conv1', titleSub: 'sub', hasMore: false, turns: [{ id: 't1', role: 'assistant' }] };
@@ -2889,43 +3161,84 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     const m = load<Panel>(
       [
         'openPanel',
-        'turnsSkeletonHtml',
+        'loadPanelTurns',
         'renderPanelPermission',
-        'renderPermissionBlock',
+        // affectUI batch 1: the prompts are <ui-approval-card> slots (none in this harness).
+        'acPermissionsHtml',
+        'acGoalDecisionHtml',
+        'acSlotHtml',
+        'acQuestionId',
+        'acQuestionHtml',
+        'acHydrate',
+        'apSafeFocus',
+        'apAnnounce',
         'renderPanelQuestion',
         // re-agent-run D9: both slots keep the 입력 필요 head in step.
         'renderPanelNeedsHead',
         'panelQuestionShown',
         'renderMultiChoicePanel',
         'renderMultiChoiceCard',
+        'mcFormData',
+        'acQuestionLock',
+        'mcStateOf',
         'esc',
         'escAttr',
         'escJs',
-        'choiceDataAttrs',
+        'mcFormId',
         'stripRecommendedMarker',
         'resolveRecommendedId',
-        'scrollPanelToWorkLog',
-        'workLogLandingTop',
+        'psecForLanding',
+        // View mode (SSOT 2026-11-01): an opening's section goes through the mode — this harness is 어드밴스드.
+        'psecForMode',
+        'psecLandingTop',
+        'panelTabsHeight',
         'landPanel',
-        'olderTurnsZone',
-        'panelOlderStep',
+        'ptUpsert',
+        // SSOT 2026-11-02 T1: a fetched page drops the optimistic instruction it already records.
+        'decodeSlackEntities',
+        'ptSentKey',
+        'ptRecorded',
+        'ptMergeFetched',
+        // SSOT 2026-10-29 T2: every opening puts the session's detail card in the deck.
+        'deckAdd',
       ],
       [
+        '_deck',
         '_mcState',
+        'MC_CUSTOM_ID',
         '_panelLand',
         '_panelLanded',
+        '_panelLandAt',
         '_panelReturnFocus',
         '_panelTurnsHasMore',
         '_panelTurnsLoading',
         '_panelTurnsOldestId',
+        '_panelTurnsList',
+        '_panelTurnsCid',
+        '_panelTurnsMsg',
+        '_panelTurnsWhy',
+        '_panelOlderWhy',
+        '_ansFailed',
         '_panelGen',
-        '_panelOlderArmed',
-        '_panelStickBottom',
         '_panelOnQuestion',
+        'PANEL_TURNS_PAGE',
+        'AT_PANEL_WINDOW',
+        '_psec',
+        '_treeWindow',
+        '_treeMaxN',
       ],
       {
-        document: { getElementById: el },
+        // affectUI batch 2b: openPanel gives each opening a fresh <ui-agent-steering>; this harness has no composer.
+        pcFreshSteer: () => {},
+        document: {
+          getElementById: el,
+          createElement: (tag: string) => Object.assign(fakeEl(), { tagName: tag.toUpperCase() }),
+        },
         fetch: fetchImpl,
+        // The single-choice question's approval-card slot is written by a morph.
+        morphInnerHtml: (e: { innerHTML: string }, h: string) => {
+          e.innerHTML = h;
+        },
         _sessionCache: cache,
         currentUserId: 'U1',
         READ_ONLY_MSG: 'read-only',
@@ -2934,29 +3247,45 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         panelConvId: null,
         _panelTasksExpanded: false,
         resetWorkLog: () => {},
-        setWorkLogOpen: () => {},
         renderPanelTasks: () => {},
-        // Task view: openPanel resets the composer's attachments, the sections
-        // (folded; 자세히 opens them) and the 지시와 답변 disclosure.
+        // Task view: openPanel resets the composer's attachments and the sections
+        // (folded; 자세히 opens them); the section tab of the opening is painted
+        // from its data (covered in dashboard-panel-sections-client.test.ts).
         pcReset: () => {},
         resetPanelSections: () => {},
-        applyPanelConv: () => {},
+        // The top bar's "열린 세션에도" switch follows the panel.
+        paintDefaultsScope: () => {},
+        selectPanelSection: () => {},
+        sizePanelSections: () => {},
+        // D3: 지시와 답변 is <ui-conversation>, painted from the data (convPaint; none in this harness).
+        convPaint: () => {},
+        psecSyncControls: () => {},
+        psecToNewest: () => {},
+        psecMaybeFill: () => {},
         _panelDetail: !!opts.detail,
+        isAdvanced: () => true,
+        // The view plan (.prd/20): advanced 2안 원본 — no spec, the open card and the face as they were.
+        viewSpec: () => ({
+          detail: {
+            show: ['subtitle', 'info', 'goal', 'artifacts', 'agenthead', 'agenttabs', 'sections', 'controls'],
+            tasks: 'runs',
+            open: true,
+          },
+        }),
+        detailShows: () => true,
+        faceOf: (c: unknown) => c,
+        cardAsks: () => false,
         _panelTasksOpen: false,
         _agentConvRaw: null,
+        _agentConvFailed: null,
         // The previous opening's answer observer (none in this harness).
         _ansIo: null,
         _panelScrollGen: 0, // #488: every landing scroll starts a new panel scroll generation
         _panelAgent: '',
         _panelAgentListOpen: false,
-        renderTurn: (t: { id: string }) => `<div class="turn assistant" data-turn-id="${t.id}"></div>`,
-        attachRawToggleHandlers: () => {},
         // Session artifacts (SSOT 2026-10-23): the panel strip and per-answer chips.
         renderPanelArtifactsSection: () => {},
         ensureArtifacts: () => {},
-        decoratePanelTurns: () => {},
-        // Task view: openPanel re-counts the 이전 대화 button when it replaces the turns.
-        renderConvEarlier: () => {},
         isSiblingSession: () => false,
         // main's own openPanel deps since this harness was written (#372 panel controls, spec 12 agent views).
         renderPanelControls: () => {},
@@ -2967,6 +3296,9 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         _panelTasksEarlier: false,
         // SSOT 2026-10-24: openPanel marks the layout before the drawer changes it (layout-shift FLIP).
         layoutBeforeChange: () => {},
+        // D4 E-01: the open drawer's width goes to the board beside it (--panel-w on the root: the window's
+        // concern, covered in dashboard-responsive.test.ts — no window in this rig).
+        syncPanelWidth: () => {},
         renderPanelAgents: () => {},
         panelAgentTasks: () => [],
         panelAgentLabel: () => '',
@@ -2974,19 +3306,30 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         _panelTitleSub: '',
         panelTitleSubCanRegen: () => true,
         loadWorkLog: () => {},
-        renderMdBasic: String, // carries backticks, so it cannot be cooked; no question here has context
+        // SSOT 2026-10-29 T2: the deck's ‹ n / m › and peeking edges (none in this harness).
+        renderDeckNav: () => {},
         timeAgo: () => '',
         safeHref: (u: string) => u,
         formatTokens: String,
         toNum: Number,
+        // Tone pass P8: the panel's chrome words come from the page's STRINGS table (as served).
+        STRINGS,
       },
-      ['function stick() { return _panelStickBottom; }', 'function armed() { return _panelOlderArmed; }'],
+      [
+        'function section() { return _psec; }',
+        'function turnsMsg() { return _panelTurnsMsg; }',
+        'function turnsHeld() { return _panelTurnsList.length; }',
+        'function deck() { return _deck.slice(); }',
+      ],
     );
     /** Click the card's 답변하기 button: run its shipped onclick against the shipped openPanel. */
     const clickAnswer = () => {
       const html = m.renderMultiChoiceCard(cache[KEY], '');
-      // re-agent-inbox D10: the button is the card's primary (btn-choice btn-choice-primary).
-      const btn = /<button class="btn-choice[^"]*" onclick="([^"]+)"[^>]*>답변하기<\/button>/.exec(html);
+      // re-agent-inbox D10: the button is the card's primary — the kit's ink button (D3 E-16).
+      const btn =
+        /<button type="button" class="ui-btn is-primary card-mc-go" onclick="([^"]+)"[^>]*>답변하기<\/button>/.exec(
+          html,
+        );
       if (!btn) throw new Error('no 답변하기 button on the card');
       new Function('event', 'openPanel', btn[1])({ stopPropagation() {} }, m.openPanel);
     };
@@ -2995,7 +3338,25 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       const top = AREA_TOP - scroll.scrollTop;
       return question.style.display !== 'none' && top >= AREA_TOP && top < AREA_TOP + VIEW;
     };
-    return { m, scroll, question, cache, clickAnswer, formInView, release: () => release(), bottom: max };
+    /** The turns' outcome as 지시와 답변 holds it — only a 'fail' run may end failed (see above). */
+    const settled = () => {
+      const msg = m.turnsMsg();
+      if (msg === 'failed' && outcome !== 'fail')
+        throw new Error('openPanel took its failure path on a successful load: the harness is missing a dependency');
+      return msg;
+    };
+    return {
+      m,
+      scroll,
+      question,
+      cache,
+      drawer,
+      clickAnswer,
+      formInView,
+      settled,
+      release: () => release(),
+      bottom: max,
+    };
   }
 
   it('lands on the answer form, not on the newest turns, and stays there while the panel settles', async () => {
@@ -3003,15 +3364,47 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     p.clickAnswer();
     await flush();
     await flush();
+    // D4 E-01: the opening is the drawer's show() — it is open, labelled with the panel's title.
+    expect(p.drawer.open).toBe(true);
+    expect(p.drawer.getAttribute('open')).toBe('');
     expect(p.formInView()).toBe(true);
     expect(p.scroll.scrollTop).toBe(0);
-    // A later resize (subtitle, Tasks) must not drag the reader to the bottom.
-    expect(p.m.stick()).toBe(false);
-    // The first scroll event after this landing (first turn right under the form)
-    // loads no older turns by itself, like the 작업 로그 landing at the top.
-    const firstTurnTop = AREA_TOP + 420 + WL_HEADER - p.scroll.scrollTop;
-    const step = p.m.panelOlderStep(p.m.armed(), p.m.olderTurnsZone(firstTurnTop, AREA_TOP), true);
-    expect(step).toEqual({ load: false, armed: false });
+    // 답변하기 opens on 지시와 답변, its turns held as its data (the box holds their scroll).
+    expect(p.m.section()).toBe('conv');
+    expect(p.settled()).toBe('');
+    expect(p.m.turnsHeld()).toBe(1);
+    // SSOT 2026-10-29 T2: the opening put the session's detail card in the deck — once.
+    expect(p.m.deck()).toEqual([KEY]);
+    p.clickAnswer();
+    await flush();
+    expect(p.m.deck()).toEqual([KEY]);
+  });
+
+  // affectUI batch 1: the single-choice question is a <ui-approval-card> in the same slot — the
+  // opening lands on it as on the form (the brief's suspected lost landing anchor: it is not lost).
+  it('a single-choice question (an approval card) is where the panel lands, before and after the turns arrive', async () => {
+    const single = waitingMulti({
+      pendingQuestion: {
+        type: 'user_choice',
+        question: '배포할까요?',
+        choices: [
+          { id: '1', label: '지금' },
+          { id: '2', label: '나중에' },
+        ],
+        recommendedChoiceId: '1',
+      },
+    });
+    const p = page({ session: single, prevScrollTop: 3000, turns: 'held' });
+    p.m.openPanel(KEY);
+    expect(p.question.innerHTML).toContain(
+      '<ui-approval-card lang="ko" data-ac-key="' + KEY + '" data-ac-kind="question">',
+    );
+    expect(p.formInView()).toBe(true);
+    p.release();
+    await flush();
+    await flush();
+    expect(p.formInView()).toBe(true);
+    expect(p.m.section()).toBe('conv');
   });
 
   it('lands on the form even when the panel was left scrolled down by the previous opening', async () => {
@@ -3076,13 +3469,14 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     expect(p.formInView()).toBe(true);
   });
 
-  // Task view (T1.1 / T1.6): with no question the minimal panel lands at its top —
-  // the common surface, the tabs, the latest exchange; 자세히 lands on the newest turns.
+  // Task view (T1.1 / T1.6; section tabs 2026-10-29): with no question the panel
+  // lands with the section tabs in view — the top when the section box ends in
+  // view — minimal or 자세히 alike: the newest turns are the box's own bottom.
   it.each([
     [false, 'the top'],
-    [true, 'the newest turns (자세히)'],
+    [true, 'the top (자세히 too)'],
   ] as const)('a question answered before the turns arrive lands on %s instead', async (detail, _where) => {
-    const p = page({ session: waitingMulti(), turns: 'held', detail });
+    const p = page({ session: waitingMulti(), turns: 'held', detail, prevScrollTop: 3000 });
     p.clickAnswer();
     // The answer lands (here or in Slack): the WS session_update re-renders the panel question.
     p.cache[KEY] = waitingMulti({ activityState: 'working', pendingQuestion: undefined });
@@ -3090,32 +3484,134 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     p.release();
     await flush();
     await flush();
-    expect(p.scroll.scrollTop).toBe(detail ? p.bottom() : 0);
-    expect(p.m.stick()).toBe(detail);
+    expect(p.scroll.scrollTop).toBe(0);
+    expect(p.m.section()).toBe('conv');
   });
 
   it.each([
-    [false, 'the top, and does not hold the bottom'],
-    [true, 'the newest turns and holds them (자세히)'],
-  ] as const)('an opening without an open question lands on %s', async (detail, _where) => {
+    [false, 'the top'],
+    [true, 'the top (자세히 too)'],
+  ] as const)('an opening without an open question lands on %s, on 지시와 답변', async (detail, _where) => {
     const p = page({ session: waitingMulti({ activityState: 'idle', pendingQuestion: undefined }), detail });
     p.m.openPanel(KEY);
     await flush();
     await flush();
-    expect(p.scroll.scrollTop).toBe(detail ? p.bottom() : 0);
-    expect(p.m.stick()).toBe(detail);
+    expect(p.scroll.scrollTop).toBe(0);
+    expect(p.m.section()).toBe('conv');
+    expect(p.settled()).toBe('');
   });
 
-  it('작업 로그 on a waiting session keeps the work-log landing (top, or the header for a tall question)', async () => {
-    const short = page({ session: waitingMulti() });
+  it('작업 로그 on a waiting session opens on the 작업 로그 tab (the top while its box fits, else the box brought into view)', async () => {
+    const short = page({ session: waitingMulti(), questionHeight: 200 }); // 200 + tabs + box ends at 540 ≤ 600
     short.m.openPanel(KEY, true);
     await flush();
     await flush();
     expect(short.scroll.scrollTop).toBe(0);
+    expect(short.m.section()).toBe('log');
+    // A tall question: the section tabs go up toward the top — as far as the panel
+    // scrolls, which leaves the whole box in view at its foot.
     const tall = page({ session: waitingMulti(), questionHeight: 900 });
     tall.m.openPanel(KEY, true);
     await flush();
     await flush();
-    expect(tall.scroll.scrollTop).toBe(900);
+    expect(tall.scroll.scrollTop).toBe(tall.bottom());
+    expect(tall.scroll.scrollTop).toBeGreaterThan(0);
+    expect(tall.m.section()).toBe('log');
+  });
+});
+
+describe('D4 review (P1): an opening asked for before <ui-drawer> is defined waits for the element', () => {
+  it('a deep link or a fast click on a cold load: one wait for ui-drawer, the latest opening runs once it is defined', async () => {
+    let resolve: (() => void) | null = null;
+    const asked: string[] = [];
+    const drawer: Record<string, unknown> = { id: 'slide-panel' };
+    const document = { getElementById: (id: string) => (id === 'slide-panel' ? drawer : null) };
+    // Past the guard the opening reads the session first: record which one (none in this rig, so it stops there).
+    const looked: string[] = [];
+    const _sessionCache = new Proxy(
+      {},
+      {
+        get: (_t, k) => {
+          looked.push(String(k));
+          return undefined;
+        },
+      },
+    );
+    const customElements = {
+      whenDefined: (name: string) => {
+        asked.push(name);
+        return new Promise<void>((r) => {
+          resolve = r;
+        });
+      },
+    };
+    // Only the guard runs while the element is undefined: anything else openPanel needs is not injected here,
+    // so reaching past the guard would throw.
+    const m = load<{ openPanel(k: string, w?: boolean, a?: string, b?: boolean): void; waiting(): unknown }>(
+      ['openPanel'],
+      ['_panelOpenWaiting'],
+      { document, customElements, _sessionCache },
+      ['function waiting() { return _panelOpenWaiting; }'],
+    );
+    m.openPanel('k1');
+    m.openPanel('k2', true, 'a1', true);
+    expect(asked).toEqual(['ui-drawer']);
+    expect(m.waiting()).toEqual(['k2', true, 'a1', true]);
+    expect(looked).toEqual([]);
+    // Defined: the drawer has its methods now; the opening runs once, with the latest arguments.
+    drawer.show = () => {};
+    expect(resolve).not.toBeNull();
+    (resolve as unknown as () => void)();
+    await flush();
+    expect(m.waiting()).toBe(null);
+    expect(looked).toEqual(['k2']);
+  });
+
+  it('closePanel drops a waiting opening and never calls hide on an element not yet defined', () => {
+    const src = clientFn('closePanel');
+    expect(src).toContain('_panelOpenWaiting = null;');
+    expect(src).toContain("if (drawerEl && typeof drawerEl.hide === 'function') drawerEl.hide();");
+    // D6b group 6: the artifact viewer draws every body itself (items[].scripts / frame) — the page slots nothing
+    // before a step, so it listens on ui-view alone (one listener, one document fetch).
+    expect(TEMPLATE).not.toContain('ui-before-view');
+    expect(TEMPLATE).toContain("viewer.addEventListener('ui-view', function(e) { syncArtViewer(e.detail); });");
+  });
+
+  it('P3: a waiting opening for a card that leaves the deck is dropped with it; one for an archived key follows the live key', () => {
+    const opened: string[] = [];
+    const m = load<{
+      deckDrop(key: string): void;
+      followSessionKey(oldKey: string, newKey: string): void;
+      setWaiting(v: unknown): void;
+      waiting(): unknown;
+    }>(
+      ['deckRemove', 'deckNextAfter', 'deckDrop', 'followSessionKey'],
+      ['_deck', '_panelOpenWaiting'],
+      {
+        _sessionCache: { k1: {}, k2: {}, live: {} },
+        panelOpen: false,
+        panelSessionKey: null,
+        renderDeckNav: () => {},
+        openPanel: (k: string) => opened.push(k),
+        closePanel: () => opened.push('close'),
+      },
+      ['function setWaiting(v) { _panelOpenWaiting = v; }', 'function waiting() { return _panelOpenWaiting; }'],
+    );
+    // The waiting card folds (its ui-toggle → deckDrop): the opening would reopen a card the reader closed.
+    m.setWaiting(['k1', false, undefined, undefined]);
+    m.deckDrop('k1');
+    expect(m.waiting()).toBe(null);
+    // Another card leaving the deck leaves the wait alone.
+    m.setWaiting(['k2', true, 'a1', true]);
+    m.deckDrop('k1');
+    expect(m.waiting()).toEqual(['k2', true, 'a1', true]);
+    // The waiting key was an archive that came back live under another key: the opening lands on the live one.
+    m.setWaiting(['k2', true, 'a1', true]);
+    m.followSessionKey('k2', 'live');
+    expect(m.waiting()).toEqual(['live', true, 'a1', true]);
+    m.followSessionKey('k1', 'live');
+    expect(m.waiting()).toEqual(['live', true, 'a1', true]);
+    // Nothing was open: the panel was neither opened nor closed by either.
+    expect(opened).toEqual([]);
   });
 });
