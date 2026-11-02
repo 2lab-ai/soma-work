@@ -97,6 +97,49 @@ describe('resumeActiveGoals (T1)', () => {
     expect(stale.activityState).toBe('idle');
   });
 
+  /**
+   * SSOT 2026-11-02 (T3). A goal session waiting on its user's answer is not a
+   * stale turn: no turn has to run for the question to stay open. Forcing it
+   * idle let the loop run ten continuations over the unanswered question until
+   * the cap decision asked "keep going?" next to it (fable-m5max dev,
+   * 1792795612.514029: asked 02:32Z, restart 04:12Z, cap 04:32Z).
+   */
+  it('keeps a session waiting on its question waiting — the goal goes on once the user answers', () => {
+    const asking = activeGoalSession({
+      activityState: 'waiting',
+      actionPanel: {
+        waitingForChoice: true,
+        pendingQuestion: {
+          type: 'user_choice',
+          question: 'PR #402 머지할까요?',
+          choices: [{ id: 'go', label: '진행' }],
+        },
+      },
+    } as Partial<ConversationSession>);
+    const sessions = new Map<string, ConversationSession>([['C1-T1', asking]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+
+    expect(handler.resumeActiveGoals()).toBe(0);
+
+    expect(settled).not.toHaveBeenCalled();
+    expect(asking.activityState).toBe('waiting');
+  });
+
+  it('still forces a waiting state with no question left to idle', () => {
+    const stale = activeGoalSession({ activityState: 'waiting', actionPanel: { waitingForChoice: false } } as any);
+    const sessions = new Map<string, ConversationSession>([['C1-T1', stale]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+
+    expect(handler.resumeActiveGoals()).toBe(1);
+
+    expect(stale.activityState).toBe('idle');
+    expect(settled).toHaveBeenCalledWith('C1-T1');
+  });
+
   it('repairs a stranded queue (complete goal + non-empty queue) by promoting the next goal', () => {
     // Simulates the eval-complete crash window: disk persisted a completed goal
     // with the queued goal still pending. resumeActiveGoals must promote it.
