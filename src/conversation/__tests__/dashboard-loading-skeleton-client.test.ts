@@ -1093,6 +1093,8 @@ describe('[T3] session panel — turn-shaped skeleton instead of "Loading..."', 
         _rawLoadedCache: {},
         _ansFailed: {},
         _artCache: {},
+        // No work log open: no permission-warning lines.
+        _wl: null,
         botNameOf: () => 'Soma',
         ansLinkTitles: () => ({}),
         ansSession: () => null,

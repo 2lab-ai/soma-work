@@ -3,7 +3,7 @@
 ## Version
 - Document Version: 1.0
 - Source Files: `src/permission-mcp-server.ts`, `src/shared-store.ts`
-- Last Updated: 2026-03-06
+- Last Updated: 2026-10-27
 
 ## 1. Overview
 
@@ -455,41 +455,47 @@ this.app.action('deny_tool', async ({ ack, body, respond }) => {
 - 허용 뒤 이행은 요청자 이름으로 원문(또는 "이어서 진행" 메시지)을 다시 보내는 것이다 — 다시 보낸 턴이 같은 게이트를
   지나며 이번에는 허용을 본다.
 
-## 7. User Bypass System
+## 7. Permission Modes (auto · bypass · legacy)
 
-### 7.1 Bypass Setting
+정본: `src/agent-runtime/policy/permission-mode.ts`, 결정 함수: `src/agent-runtime/policy/tool-policy.ts`.
 
-사용자별 권한 우회 설정:
+### 7.1 Modes
 
-```typescript
-// Claude Handler에서
-const userBypass = userSettingsStore.getUserBypassPermission(slackContext.user);
+| Mode | 누가 | Bash 처리 |
+|---|---|---|
+| `auto` (기본) | 모두 | 위험 규칙에 안 걸리면 실행. 걸리면 safety classifier(model)가 질문할지 정한다 — 정규식이 직접 묻는 일은 없다. |
+| `bypass` | **admin만** | 검사 없이 실행(하드 거부 계층은 그대로). admin이 아닌 유저의 저장값 `bypass`(명시 또는 레거시 `bypassPermission:true`)는 `auto`로 해석된다(`effectivePermissionMode`). |
+| `legacy` | 명시 설정만 | SDK가 모든 도구마다 묻는다. 버튼으로는 고를 수 없다. |
 
-if (userBypass) {
-  options.permissionMode = 'bypassPermissions';
-  // permission-prompt 서버 추가하지 않음
-}
+모델 컨텍스트에는 실제 적용 모드가 `<user-permission-mode>`로 들어간다.
+
+### 7.2 Auto mode: model decides, mechanical check warns
+
+```
+Bash 호출 → 하드 거부 계층 → 위험 규칙 매칭(soma-lib 카탈로그)
+   ├─ 매칭 없음 → 실행
+   └─ 그 밖의 매칭 → safety classifier (owner 본인이 요청한 턴이면 owner의 Slack 원문만 데이터로 인용 — 스킬 본문 제외, steer 포함,
+            긴 글은 앞뒤만 남기고 잘림을 명시. 20s 타임아웃 = 실제 abort, 실패·예외는 ask)
+        ├─ ask   → 🔐 Permission Request 카드 (Slack + 대시보드 "입력 필요", #754의 AI 권고 포함)
+        └─ allow → 실행 + 기계 검사(permission-warning.ts)
+                    └─ 여전히 문제(데이터 파이프만 제외: `| python3 -c` / `| node -e` 한 줄짜리가
+                       허용 모듈만 import하고, 허용 어휘만 쓰고, 실행·쓰기·로드가 없을 때. perl·ruby·php·다른 플래그·추가 인자·경로나 env가 붙은 인터프리터는 모두 경고) →
+                       ⚠️ Permission Warning: Slack 스레드 카드(버튼 없음) + 대시보드 작업 로그의 "퍼미션 경고" 줄과
+                       지시와 답변의 같은 시각 시스템 줄(work-log kind `permission_warning`). Slack 없는 task 턴은 대시보드만.
 ```
 
-### 7.2 Bypass Commands
+- owner가 직접 부른 스킬만 classifier에 넘긴다. 근거는 owner 본인 메시지의 `$스킬`·`$local:스킬` 토큰과, owner가 Slack 명령·버튼·대시보드로 등록한 autoskill 두 가지뿐이다(`src/slack/owner-skill-invocations.ts`). 호스트가 붙인 `<invoked_skills>` 블록 텍스트는 근거로 쓰지 않는다. 스킬 본문이 섹션 경계를 흉내 낼 수 있고, 다른 스킬의 `$참조`는 owner가 입력하지 않은 의존성으로 펼쳐지기 때문이다. 위임 범위는 호스트 코드(`safety-classifier.ts`의 `SKILL_DELEGATIONS`)가 정한다. 지금은 `local:autoz` 하나로, 세션이 작업하는 저장소에서 이슈와 PR을 열고 자체 리뷰 게이트 뒤에 승인하고 머지하는 것까지다. 다른 사람이나 다른 계정의 자격증명을 쓰는 일은 어떤 스킬도 위임하지 않는다.
+- classifier가 판단하는 동안 owner 지시가 바뀌면(예: 끼어든 "삭제하지 마") 그 승인은 쓰지 않고 묻는다. 취소되거나 큐로 돌아간 steer는 지시에서 빠진다. 지시 이력이 불완전할 수 있으면(재시작으로 복원된 세션, 50개 상한, 스킬 블록 뒤에 남은 텍스트) 파괴적 작업은 그 지시만으로 허용하지 않는다.
+- 경고는 결정을 바꾸지 않는다. 훅이 `allow`를 반환한 뒤 fire-and-forget으로 게시되고, 실패는 로그만 남는다.
+- 같은 명령 + 같은 규칙은 세션당 10분에 한 번만 경고한다.
+- C1(데이터 읽기 파이프, Z 2026-11-02 D1-A·D2-A) — **철회**. 처음에는 걸린 규칙이 데이터 읽기 파이프뿐이면 classifier를 건너뛰도록 만들었다. 실제 질문 64건 재생에서 이 방식은 21건을 건너뛰었는데, 그중 7건은 모델이 묻는 명령이었다(토큰을 쓴 `curl -X PUT …/merge`, 리뷰 승인 POST, git config 토큰 추출). 그래서 "원격 조회 | 읽기" 두 단계로 좁혔고, 좁힌 뒤에는 64건 중 0건에 적용됐다. 리뷰 r6–r8에서 이 건너뛰기를 명령 텍스트만으로는 안전하다고 증명할 수 없다는 것이 드러났다. 앞선 Bash 호출이 `.curlrc`(url·request·data·output 덮어쓰기), `GH_HOST`, PATH, NODE_OPTIONS, PYTHONPATH, 작업 폴더의 `json.py`를 심어 두면 "읽기 파이프"가 전송, 파일 쓰기, 코드 실행으로 바뀐다. 리뷰 패널(grok·astra·fable)이 만장일치로 철회를 골랐다. 지금은 위험 규칙에 걸린 모든 호출을 데이터 파이프까지 포함해 classifier가 판단한다. 질문 수 감소는 C2(owner 지시·스킬 위임 인식, 재생 55→14)가 맡는다. 데이터 리더 판정은 경고를 띄울지 고르는 데만 쓴다. 놓쳐도 카드 하나가 안 보일 뿐 실행 여부는 바뀌지 않는다. 이 판정은 허용 어휘 방식이다. 문자열 리터럴을 뺀 모든 식별자가 정해진 어휘(리더 모듈의 속성, 데이터 메서드, 흔한 변수명, 한 글자 이름)에 있어야 한다. `sys`·`process`는 stdio 멤버로만 쓸 수 있고, 모듈 이름은 바로 뒤에 `.`가 붙을 때만 허용한다(값으로 넘기지 못함). `format`, `help`, `input`, `vars`, `Object` 리플렉션, alias, 주석·삼중따옴표·JS `/`·문자열 밖 비ASCII는 리더로 보지 않는다. 경로나 `env`가 붙은 인터프리터도 리더가 아니다.
+- 질문 결과(C3): 퍼미션 서버가 질문마다 `Permission prompt outcome` 한 줄을 남긴다(도구, 규칙, allow/deny, 시간 초과 여부, 기다린 시간, AI 권고). 누가 답했는지는 #754의 `permission` 작업 로그 항목에 있다.
 
-**Check Status**:
-```
-bypass
-/bypass
-```
+### 7.3 Commands
 
-**Enable**:
-```
-bypass on
-```
+`/z bypass` 카드: Auto 버튼은 모두에게, Bypass 버튼은 admin에게만 보인다. `bypass on`/`set bypass`는 admin이 아니면 거부된다. 대시보드 설정 페이지도 같은 규칙.
 
-**Disable**:
-```
-bypass off
-```
-
-### 7.3 Response Messages
+### 7.4 Response Messages
 
 **Status Check**:
 ```

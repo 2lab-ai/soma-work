@@ -5,7 +5,8 @@
  * selector. Only two modes are user-selectable:
  *   • `auto`   (default) — a safety classifier judges dangerous operations and
  *     auto-approves the safe ones, asking the human only when unsure.
- *   • `bypass` (unsafe)  — everything runs with no prompt.
+ *   • `bypass` (unsafe, admin only) — everything runs with no prompt. Hidden
+ *     from non-admins and rejected by `applyBypass` for them.
  * The third mode, `legacy` (ask-for-every-tool), is intentionally NOT offered as
  * a button — it is reachable only via `/z bypass set legacy` for escape-hatch
  * parity with the old "ask before every tool" behaviour.
@@ -15,10 +16,11 @@
  * accepted and mapped to `bypass`/`auto`.
  */
 
+import { isAdminUser } from '../../../admin-utils';
 import {
   isPermissionMode,
   type PermissionMode,
-  SELECTABLE_PERMISSION_MODES,
+  selectablePermissionModesFor,
 } from '../../../agent-runtime/policy/permission-mode';
 import { userSettingsStore } from '../../../user-settings-store';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
@@ -49,20 +51,23 @@ function modeDescription(mode: PermissionMode): string {
 export async function renderBypassCard(args: { userId: string; issuedAt: number }): Promise<RenderResult> {
   const { userId, issuedAt } = args;
   const current = userSettingsStore.getUserPermissionMode(userId);
+  const admin = isAdminUser(userId);
 
-  const options = [
+  const options: Array<{ id: string; label: string; description: string; style?: 'danger' }> = [
     {
       id: 'auto',
       label: '🤖 Auto (default)',
       description: '안전 분류기가 위험 작업만 판단 — 안전하면 자동 승인, 애매하면 질문',
     },
-    {
-      id: 'bypass',
-      label: '🔓 Bypass (unsafe)',
-      description: '⚠️ 위험한 명령까지 확인 없이 실행. 주의!',
-      style: 'danger' as const,
-    },
   ];
+  if (admin) {
+    options.push({
+      id: 'bypass',
+      label: '🔓 Bypass (unsafe, admin only)',
+      description: '⚠️ 위험한 명령까지 확인 없이 실행. 주의!',
+      style: 'danger',
+    });
+  }
 
   const blocks = buildSettingCard({
     topic: 'bypass',
@@ -71,7 +76,9 @@ export async function renderBypassCard(args: { userId: string; issuedAt: number 
     currentLabel: modeLabel(current),
     currentDescription: modeDescription(current),
     options,
-    additionalCommands: ['버튼으로 `Auto`/`Bypass` 선택, 또는 텍스트 `bypass off`(=Auto) / `bypass on`(=Bypass)'],
+    additionalCommands: admin
+      ? ['버튼으로 `Auto`/`Bypass` 선택, 또는 텍스트 `bypass off`(=Auto) / `bypass on`(=Bypass)']
+      : ['Bypass는 관리자만 쓸 수 있습니다. 텍스트 `bypass off`(=Auto)'],
     issuedAt,
   });
   return {
@@ -102,9 +109,12 @@ export async function applyBypass(args: { userId: string; value: string }): Prom
       summary: `❌ Expected \`auto\` or \`bypass\`, got \`${value}\``,
     };
   }
+  if (mode === 'bypass' && !isAdminUser(userId)) {
+    return { ok: false, summary: '❌ Bypass는 관리자만 켤 수 있습니다. 지금 모드는 Auto입니다.' };
+  }
   // `legacy` is reachable only via the explicit `set legacy` escape hatch, never
   // a button — but if a user types it we honour it.
-  if (mode !== 'legacy' && !SELECTABLE_PERMISSION_MODES.includes(mode)) {
+  if (mode !== 'legacy' && !selectablePermissionModesFor(true).includes(mode)) {
     return { ok: false, summary: `❌ Unsupported mode: \`${value}\`` };
   }
   userSettingsStore.setUserPermissionMode(userId, mode);

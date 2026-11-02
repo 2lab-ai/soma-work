@@ -18,6 +18,7 @@ Guide users through setup and operation basics. This workflow can run for first-
 Inspect `<context>` and summarize current status first:
 - `<user-default-model>`
 - `<user-persona>`
+- `<user-permission-mode>` (`auto` | `bypass` (admin only) | `legacy`)
 - `<user-bypass-permission>`
 - `<jira-name>`, `<jira-account-id>` (if available)
 - `<cwd>`

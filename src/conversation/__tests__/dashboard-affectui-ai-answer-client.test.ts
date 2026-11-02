@@ -333,6 +333,8 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
         _rawLoadedCache: {},
         _ansFailed: {},
         _artCache: {},
+        // No work log open: no permission-warning lines (dashboard-permission-warning-client covers them).
+        _wl: null,
         convTurnsOf: (list: unknown[], c: Env) => ({ turns: list.map((t) => ({ ...(t as object), c })), slots: [] }),
         convSlots: (_el: unknown, s: unknown) => slots.push(s),
         convSetData: (_el: unknown, d: Record<string, unknown>) => sets.push(d),

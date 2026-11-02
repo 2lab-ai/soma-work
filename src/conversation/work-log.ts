@@ -111,8 +111,16 @@ export type WorkLogKind =
   | 'final'
   | 'notice'
   | 'error'
+  /** SSOT_2 #3 — auto mode allowed a call the mechanical check flags; `text` is the command, `warning` the card. */
+  | 'permission_warning'
   /** SSOT 2026-11-02 T1 — a person's answer to a permission prompt (see `permission`). */
   | 'permission';
+
+/** The card a `permission_warning` entry carries: the rules the mechanical check matched and the model's reason. */
+export interface WorkLogPermissionWarning {
+  rules: Array<{ id: string; label: string; description: string }>;
+  reason: string;
+}
 
 export interface WorkLogInput {
   kind: WorkLogKind;
@@ -146,6 +154,8 @@ export interface WorkLogInput {
    * `Task` call and on its tool result, whoever made the call.
    */
   agentRef?: string;
+  /** Set on `permission_warning` entries only. */
+  warning?: WorkLogPermissionWarning;
   /** Full content behind `text` (tool input / result); stored apart, served only by readWorkLogRaw. */
   raw?: string;
   /** UTF-8 size of the original when the emitter already cut `raw`; ignored unless larger than `raw`. */
@@ -1234,6 +1244,22 @@ function permissionFields(p: WorkLogInput['permission']): WorkLogPermission | un
  * over the line limit, or the write fails. A `text` over WORK_LOG_TEXT_MAX with
  * no `raw` keeps its full form as the raw.
  */
+/** A permission warning keeps at most this many rules and this much reason text. */
+const WARNING_RULES_MAX = 10;
+const WARNING_REASON_MAX = 1000;
+
+function clampWarning(w: WorkLogPermissionWarning): WorkLogPermissionWarning {
+  const rules = Array.isArray(w.rules) ? w.rules.slice(0, WARNING_RULES_MAX) : [];
+  return {
+    rules: rules.map((r) => ({
+      id: clampChars(String(r?.id ?? ''), WORK_LOG_FIELD_MAX),
+      label: clampChars(String(r?.label ?? ''), WORK_LOG_FIELD_MAX),
+      description: clampChars(String(r?.description ?? ''), WORK_LOG_FIELD_MAX),
+    })),
+    reason: clampChars(String(w.reason ?? ''), WARNING_REASON_MAX),
+  };
+}
+
 export function appendWorkLog(conversationId: string, input: WorkLogInput): Promise<WorkLogEntry> {
   const files = workLogPaths(conversationId);
   if (!files) {
@@ -1255,6 +1281,7 @@ export function appendWorkLog(conversationId: string, input: WorkLogInput): Prom
   if (input.taskTitle !== undefined) fields.taskTitle = clampChars(String(input.taskTitle), WORK_LOG_FIELD_MAX);
   if (input.agentId !== undefined) fields.agentId = clampChars(String(input.agentId), WORK_LOG_FIELD_MAX);
   if (input.agentRef !== undefined) fields.agentRef = clampChars(String(input.agentRef), WORK_LOG_FIELD_MAX);
+  if (input.warning !== undefined) fields.warning = clampWarning(input.warning);
   if (input.toolUseId !== undefined) fields.toolUseId = clampChars(String(input.toolUseId), WORK_LOG_FIELD_MAX);
   if (typeof input.anchor === 'string' && input.anchor.length <= WORK_LOG_FIELD_MAX) fields.anchor = input.anchor;
   if (input.by === 'user' || input.by === 'system') fields.by = input.by;

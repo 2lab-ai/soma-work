@@ -946,72 +946,87 @@ async function start() {
         return undefined;
       }
 
-      // The composer's files (T1.5) go into the thread first — the pipeline
-      // reads them from Slack like files the user attached there. A failed
-      // upload fails the instruction (the dashboard offers a retry); it is
-      // never sent without the files the user meant it to carry.
-      const files = attachments.length
-        ? await uploadSteerFiles(session.channelId, session.threadTs, attachments)
-        : undefined;
-      // A files-only instruction still echoes a line (a section needs text).
-      const echoed = message.trim() ? message : `📎 ${attachments.length}개 파일`;
-
-      let echoTs: string | undefined;
-      try {
-        const echoResult = await app.client.chat.postMessage({
-          channel: session.channelId,
-          thread_ts: session.threadTs,
-          text: echoed.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
-          blocks: [
-            {
-              type: 'context',
-              elements: [{ type: 'mrkdwn', text: `💬 *<@${sender}>* via Dashboard` }],
-            },
-            {
-              type: 'section',
-              text: { type: 'plain_text', text: echoed.length > 3000 ? `${echoed.slice(0, 2997)}...` : echoed },
-            },
-          ],
-        });
-        echoTs = echoResult.ts as string | undefined;
-      } catch (err) {
-        logger.warn('Dashboard: failed to echo user message to Slack', { sessionKey, error: err });
-      }
-
-      const dashboardSay = async (args: any) => {
-        const text = typeof args === 'string' ? args : args?.text;
-        const result = await app.client.chat.postMessage({
-          channel: session.channelId,
-          text: text || ' ',
-          thread_ts: typeof args === 'string' ? session.threadTs : args?.thread_ts || session.threadTs,
-          blocks: typeof args === 'string' ? undefined : args?.blocks,
-          attachments: typeof args === 'string' ? undefined : args?.attachments,
-        });
-        return { ts: result.ts as string | undefined };
-      };
-      if (!echoTs) {
-        logger.warn('Dashboard echo: using fabricated timestamp (echo failed or was skipped)', { sessionKey });
-      }
-      const ts = echoTs || String(Date.now() / 1000);
-      onSent?.({ channel: session.channelId, ts });
-      await slackHandler.handleMessage(
-        {
-          type: 'message',
-          channel: session.channelId,
-          thread_ts: session.threadTs,
-          text: message,
-          user: sender,
-          ts,
-          ...(files ? { files } : {}),
-        } as any,
-        dashboardSay,
-      );
-      logger.info('Dashboard: command sent to session', {
+      // Register the owner's input before the first await (file upload, echo): an
+      // auto-mode approval being decided right now must not be used without it.
+      // Only the owner's own words count — another sender registers nothing.
+      const ownerInput = slackHandler.beginOwnerInput(
         sessionKey,
-        messageLength: message.length,
-        files: attachments.length,
-      });
-      return { channel: session.channelId, ts };
+        sender,
+        `dashboard:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+      );
+      try {
+        // The composer's files (T1.5) go into the thread first — the pipeline
+        // reads them from Slack like files the user attached there. A failed
+        // upload fails the instruction (the dashboard offers a retry); it is
+        // never sent without the files the user meant it to carry.
+        const files = attachments.length
+          ? await uploadSteerFiles(session.channelId, session.threadTs, attachments)
+          : undefined;
+        // A files-only instruction still echoes a line (a section needs text).
+        const echoed = message.trim() ? message : `📎 ${attachments.length}개 파일`;
+
+        let echoTs: string | undefined;
+        try {
+          const echoResult = await app.client.chat.postMessage({
+            channel: session.channelId,
+            thread_ts: session.threadTs,
+            text: echoed.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+            blocks: [
+              {
+                type: 'context',
+                elements: [{ type: 'mrkdwn', text: `💬 *<@${sender}>* via Dashboard` }],
+              },
+              {
+                type: 'section',
+                text: { type: 'plain_text', text: echoed.length > 3000 ? `${echoed.slice(0, 2997)}...` : echoed },
+              },
+            ],
+          });
+          echoTs = echoResult.ts as string | undefined;
+        } catch (err) {
+          logger.warn('Dashboard: failed to echo user message to Slack', { sessionKey, error: err });
+        }
+
+        const dashboardSay = async (args: any) => {
+          const text = typeof args === 'string' ? args : args?.text;
+          const result = await app.client.chat.postMessage({
+            channel: session.channelId,
+            text: text || ' ',
+            thread_ts: typeof args === 'string' ? session.threadTs : args?.thread_ts || session.threadTs,
+            blocks: typeof args === 'string' ? undefined : args?.blocks,
+            attachments: typeof args === 'string' ? undefined : args?.attachments,
+          });
+          return { ts: result.ts as string | undefined };
+        };
+        if (!echoTs) {
+          logger.warn('Dashboard echo: using fabricated timestamp (echo failed or was skipped)', { sessionKey });
+        }
+        const ts = echoTs || String(Date.now() / 1000);
+        onSent?.({ channel: session.channelId, ts });
+        // Hands the early registration over to this message's ts (no gap), so it
+        // does not stay pending for the whole turn the message starts.
+        await slackHandler.handleMessageHandingOff(
+          {
+            type: 'message',
+            channel: session.channelId,
+            thread_ts: session.threadTs,
+            text: message,
+            user: sender,
+            ts,
+            ...(files ? { files } : {}),
+          } as any,
+          dashboardSay,
+          ownerInput,
+        );
+        logger.info('Dashboard: command sent to session', {
+          sessionKey,
+          messageLength: message.length,
+          files: attachments.length,
+        });
+        return { channel: session.channelId, ts };
+      } finally {
+        ownerInput?.settle();
+      }
     };
     setDashboardCommandHandler(async (sessionKey, message, attachments, actorUserId) => {
       await injectDashboardMessage(sessionKey, message, undefined, attachments, actorUserId);

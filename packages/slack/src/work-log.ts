@@ -24,8 +24,16 @@ export type WorkLogKind =
   | 'final'
   | 'notice'
   | 'error'
+  /** SSOT_2 #3 — auto mode allowed a call the mechanical check flags; `text` is the command, `warning` the card. */
+  | 'permission_warning'
   /** SSOT 2026-11-02 T1 — a person's answer to a permission prompt (see `permission`). */
   | 'permission';
+
+/** The card a `permission_warning` entry carries: the rules the mechanical check matched and the model's reason. */
+export interface WorkLogPermissionWarning {
+  rules: Array<{ id: string; label: string; description: string }>;
+  reason: string;
+}
 
 /** The answers a permission prompt can get (the answer path's `PermissionPromptDecision`). */
 export const WORK_LOG_PERMISSION_DECISIONS = [
@@ -77,6 +85,8 @@ export interface WorkLogInput {
    * `Task` call and on its tool result, whoever made the call.
    */
   agentRef?: string;
+  /** Set on `permission_warning` entries only. */
+  warning?: WorkLogPermissionWarning;
   /**
    * The full content behind the one-line `text`: a tool call's whole input, a
    * tool result's output. The store keeps it (size-capped, in a file of its

@@ -87,6 +87,42 @@ describe('dispatch-backed classifier', () => {
   });
 });
 
+// rules/permission.md: "타임아웃은 실제 AbortController로 강제(선언만 하고 미연결 금지)".
+describe('dispatch-backed classifier — timeout is enforced (T7.1)', () => {
+  it('aborts a hung dispatch at the timeout and fails closed to ask', async () => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      const dispatch = vi.fn((_u: string, _s: string, opts: { abortController?: AbortController }) => {
+        signal = opts.abortController?.signal;
+        return new Promise<string>(() => {});
+      });
+      const pending = buildSafetyClassifier({
+        env: { PERMISSION_AUTO_CLASSIFIER_TIMEOUT_MS: '50' },
+        dispatch,
+      }).classify(REQ);
+      await vi.advanceTimersByTimeAsync(60);
+      const verdict = await pending;
+      expect(verdict.verdict).toBe('ask');
+      expect(verdict.reason).toMatch(/timed out/i);
+      expect(signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a dispatch that answers in time is not aborted', async () => {
+    let signal: AbortSignal | undefined;
+    const dispatch = vi.fn(async (_u: string, _s: string, opts: { abortController?: AbortController }) => {
+      signal = opts.abortController?.signal;
+      return '{"verdict":"allow","reason":"ok"}';
+    });
+    expect((await buildSafetyClassifier({ dispatch }).classify(REQ)).verdict).toBe('allow');
+    expect(signal).toBeDefined();
+    expect(signal?.aborted).toBe(false);
+  });
+});
+
 // Review R1 (astra P2): a caller's abort reaches the one-shot dispatch.
 describe('buildSafetyClassifier — abort', () => {
   it('passes an AbortController to dispatch that the request signal aborts', async () => {

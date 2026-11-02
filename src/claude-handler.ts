@@ -20,10 +20,12 @@ import { liveAgentIds } from './agent-runtime/background-keepalive';
 import {
   buildStreamOptions,
   type EnvSkillDenial,
+  type SteerRef,
   type TaskApprover,
 } from './agent-runtime/claude-code/build-stream-options';
 import { type ExecutionContext, ExecutionContextMissingError } from './agent-runtime/execution-context';
 import { permissionAdviceBoard, resolvePermissionAdvice } from './agent-runtime/policy/permission-advice';
+import type { PermissionWarningEvent } from './agent-runtime/policy/permission-warning';
 import type { SafetyClassifier } from './agent-runtime/policy/safety-classifier';
 import { buildSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
 import { readUuidList, STEER_SETTLEMENT_SUBTYPE } from './agent-runtime/steer-settlement';
@@ -113,6 +115,7 @@ import {
   SessionExpiryCallbacks,
   SessionRegistry,
 } from './session-registry';
+import { ownerInvokedSkills } from './slack/owner-skill-invocations';
 import { getTokenManager } from './token-manager';
 import { DEFAULT_SHOW_THINKING, type EffortLevel, userSettingsStore } from './user-settings-store';
 
@@ -519,6 +522,9 @@ export class ClaudeHandler implements TurnSteeringPort {
   // path with no thread-side post.
   private compactHookBuilder?: CompactHookBuilder;
 
+  // Auto-mode permission warning publisher (SSOT_2 #3). Set by SlackHandler
+  // during bootstrap; undefined in unit tests / non-Slack callers → no warning.
+  private permissionWarningNotifier?: (warning: PermissionWarningEvent) => void | Promise<void>;
   // Environment-skill gate (step 6b of the tool policy): asks the admins when a
   // non-admin's `Skill` call is denied. Set by SlackHandler during bootstrap,
   // which owns the Slack API; undefined in unit tests (the denial still holds).
@@ -553,6 +559,18 @@ export class ClaudeHandler implements TurnSteeringPort {
    */
   setCompactHookBuilder(builder: CompactHookBuilder): void {
     this.compactHookBuilder = builder;
+  }
+
+  private steerStandingResolver?: (steer: SteerRef) => boolean;
+
+  /** Register the follow-up queue's answer to "does this steered message still stand?". */
+  setSteerStandingResolver(resolver: (steer: SteerRef) => boolean): void {
+    this.steerStandingResolver = resolver;
+  }
+
+  /** Register where auto-mode permission warnings go (Slack thread + dashboard work log). */
+  setPermissionWarningNotifier(notifier: (warning: PermissionWarningEvent) => void | Promise<void>): void {
+    this.permissionWarningNotifier = notifier;
   }
 
   /** Register who asks the admins for an environment skill step 6b denied. Called once during bootstrap. */
@@ -1363,6 +1381,9 @@ export class ClaudeHandler implements TurnSteeringPort {
           getEnvSkillRegistry: () => envSkillRegistry(this.mcpManager.getPluginManager()),
           onEnvSkillDenied: this.envSkillPermissionRequester,
           safetyClassifier: this.getSafetyClassifier(),
+          onPermissionWarning: this.permissionWarningNotifier,
+          isSteerStanding: this.steerStandingResolver,
+          resolveOwnerSkills: ownerInvokedSkills,
           // Consulted only by a Slack-less task's escalation (#599 ⑤).
           taskApprover: this.getTaskApprover(),
           // Consulted only on the incident branch of the builder; passing them

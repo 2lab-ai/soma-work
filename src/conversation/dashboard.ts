@@ -14286,7 +14286,7 @@ function updateTokenBreakdown() {
 var WL_BACKFILL_MAX_PAGES = 2000;
 // The latest window an opening loads, and each older page (SSOT 2026-10-29).
 var WL_PAGE = 100;
-var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류', permission: '권한' };
+var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류', permission: '권한', permission_warning: '퍼미션 경고' };
 var WL_PERMISSION_LABELS = { approve: '권한 승인', approve_disable_rule: '권한 승인 · 규칙 끔', approve_confirmed: '2차 확인 승인', deny: '권한 거부', explain: '설명 요청' };
 var WL_EMPTY_MSG = '작업 로그 없음';
 var _wlCardsWait = false;
@@ -14801,6 +14801,18 @@ function wlEntryOf(st, e) {
     x.text = text;
     return x;
   }
+  if (kind === 'permission_warning') {
+    // SSOT_2 #3 — auto mode let a call run that the mechanical check flags: a
+    // badge row (no question) naming the rules; it opens to the full command.
+    var pw = e.warning && typeof e.warning === 'object' ? e.warning : {};
+    var pwIds = (Array.isArray(pw.rules) ? pw.rules : []).map(function(r) { return r && r.id ? String(r.id) : ''; }).filter(Boolean);
+    x.kind = 'system';
+    x.system = { kind: 'permission', label: WL_LABELS.permission_warning };
+    x.text = (pwIds.length ? pwIds.join(', ') + ' · ' : '') + sysOneLine(text, 160);
+    x.hasRaw = true;
+    if (st.open && st.open.has(seq)) x.raw = wlRawView(st, e);
+    return x;
+  }
   if ((kind === 'tool' || kind === 'tool_result') && !e._role) {
     var card = wlCardData(st, seq);
     x.kind = 'tool';
@@ -15030,6 +15042,8 @@ function paintWorkLog(state, added) {
   // Task view T1.3: a subagent tab's 지시와 답변 comes from these entries — the
   // tab may have opened (or the result may land) before they did.
   if (_panelAgent) renderAgentConv();
+  // SSOT_2 #3: a permission warning is also a line in 지시와 답변.
+  if (added.some(function(a) { return a && a.entry && a.entry.kind === 'permission_warning'; })) convPaintSoon();
   if (_psec !== 'log') {
     state.painted = false;
     return;
@@ -15044,9 +15058,11 @@ function paintWorkLog(state, added) {
 // Owner-only log (403 on any path) — only for the conversation still open.
 function showWorkLogDenied(state) {
   if (state !== _wl || state.closed) return;
-  // Live entries painted before the 403 go too: the log is owner-only.
+  // Live entries painted before the 403 go too: the log is owner-only — and
+  // so do their permission-warning lines in 지시와 답변.
   state.entries = [];
   wlPaint();
+  convPaintSoon();
 }
 
 // ── Tool calls as cards (@2lab.ai/ui <ui-tool-call-card>) ──
@@ -16222,6 +16238,37 @@ function convSysTurn(t, info, id, at, c, notLast) {
 // (attachments-<id>: an artifact goes to the first answer whose turn window
 // holds its turn start). c: { cid, bot, now, working, answers (cache key → raw),
 // failed (cache key → why), arts, titles, resum (summary retries asked for) }.
+// SSOT_2 #3 — the open conversation's permission warnings (work-log entries of the
+// main agent) as 지시와 답변 system lines: the command, the rules it matched, the
+// model's reason, and that nothing needs an answer.
+function permissionWarningTurns(entries) {
+  var out = [];
+  var list = entries || [];
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    if (!e || e.kind !== 'permission_warning' || e.agentId) continue;
+    var w = e.warning && typeof e.warning === 'object' ? e.warning : {};
+    var rules = Array.isArray(w.rules) ? w.rules : [];
+    var cmd = String(e.text || '');
+    var t = {
+      id: 'pw-' + Math.floor(Number(e.seq) || 0),
+      role: 'system',
+      kind: 'permission',
+      label: '퍼미션 경고',
+      text: '묻지 않고 실행 · ' + String(e.tool || 'Bash') + ' · ' + sysOneLine(cmd, 120),
+      facts: [
+        ['명령', cmd],
+        ['걸린 규칙', rules.map(function(r) { return String((r && r.id) || '') + (r && r.label ? ' — ' + String(r.label) : ''); }).join(' · ') || '—'],
+        ['모델 판단', String(w.reason || '') || '—'],
+        ['응답', '필요 없음 — 경고만 표시합니다'],
+      ],
+      raw: cmd,
+    };
+    if (typeof e.ts === 'number' && isFinite(e.ts)) t.at = e.ts;
+    out.push(t);
+  }
+  return out;
+}
 function convTurnsOf(list, c) {
   var turns = [];
   var slots = [];
@@ -16286,6 +16333,24 @@ function convTurnsOf(list, c) {
       turns.push(a);
     }
     start = ts;
+  }
+  // SSOT_2 #3 — permission warnings at their time: before the first turn after
+  // them; one older than every loaded turn waits while older pages remain.
+  var ws = (c.warnings || []).slice();
+  if (ws.length) {
+    var firstAt = 0;
+    for (var f = 0; f < turns.length; f++) if (turns[f].at) { firstAt = turns[f].at; break; }
+    ws = ws.filter(function(w) { return !(c.hasMore && (!firstAt || (w.at || 0) < firstAt)); });
+    ws.sort(function(x, y) { return (x.at || 0) - (y.at || 0) || toNum(String(x.id).slice(3)) - toNum(String(y.id).slice(3)); });
+    var merged = [];
+    var wi = 0;
+    for (var k = 0; k < turns.length; k++) {
+      var tat = turns[k].at || 0;
+      while (wi < ws.length && tat && (ws[wi].at || 0) < tat) merged.push(ws[wi++]);
+      merged.push(turns[k]);
+    }
+    while (wi < ws.length) merged.push(ws[wi++]);
+    turns = merged;
   }
   return { turns: turns, slots: slots };
 }
@@ -16383,6 +16448,8 @@ function convPaint() {
     answers: _rawLoadedCache, failed: _ansFailed, resum: _resumSent,
     arts: cid && _artCache[cid] ? _artCache[cid].list || [] : [],
     titles: ansLinkTitles(ansSession(cid)),
+    warnings: _wl && _wl.convId === cid ? permissionWarningTurns(_wl.entries) : [],
+    hasMore: !!_panelTurnsHasMore,
   });
   var last = _panelTurnsList.length ? _panelTurnsList[_panelTurnsList.length - 1] : null;
   var msg = _panelTurnsMsg;

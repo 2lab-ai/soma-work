@@ -90,7 +90,7 @@ Connect any MCP-compatible server (stdio/SSE/HTTP) to extend Claude's capabiliti
 
 ### 🔐 Interactive Permissions
 
-Slack-native button/form UX for permission approvals, option selection, and session management. Bypass mode available for trusted users.
+Slack-native button/form UX for permission approvals, option selection, and session management. Auto mode (default) lets a safety classifier decide whether a flagged command needs your approval (data pipes included), and shows a buttonless warning card in the thread and the dashboard chat when it lets a flagged command run. Bypass mode (no checks) is admin-only.
 In every mode a non-admin session writes files only where its sandboxed shell may: the native `Write` / `Edit` / `NotebookEdit` tools, new git worktrees and switches of the working directory (into a worktree, or a subagent's) are held to the working directory and the user's own temp directory, like Bash, and `Artifact` saves only into its own scratchpad (`out_dir` is refused). A symbolic link the session puts on the way to those directories does not move that boundary (native writes stop until it is removed), and two spellings of one directory (`/tmp` and `/private/tmp`) count as one place.
 
 ### 📎 File Analysis
@@ -248,7 +248,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z help` | Show all topics |
 | `/z cwd [set <path>]` | Show / set working directory |
 | `/z mcp [list\|reload]` | List MCP servers / reload config |
-| `/z bypass [set on\|off]` | Toggle permission bypass |
+| `/z bypass [set on\|off]` | Permission mode: `off` = Auto (default), `on` = Bypass (admin only) |
 | `/z lang [set ko\|en]` | Display language for the dashboard, the Slack thread and the answers (per user, Korean by default; naked `lang ko\|en` / `language ko\|en` also accepted) |
 | `/z taskentry [set on\|off]` | A plain channel instruction becomes a dashboard task (per user, off by default; naked `taskentry on\|off` also accepted) |
 | `/z epictasks [set on\|off]` | Allow making epic tasks on the dashboard (`kind: 'epic'` on the new-task API; per user, off by default, experimental; naked `epictasks on\|off` also accepted) |
