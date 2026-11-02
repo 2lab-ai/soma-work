@@ -54,6 +54,7 @@ import type {
 } from 'somalib/model-commands/session-types';
 import type { AgentRegistry } from './session/agent-registry';
 import type { TaskLedger } from './session/task-ledger';
+import type { TaskPlanGate } from './task-turn/task-plan';
 import type { EffortLevel } from './user-settings-store';
 
 /**
@@ -525,6 +526,13 @@ export interface ConversationSession {
   plan?: EpicPlan;
   /** E4 ② (.prd/19 D6) — what the epic's children owe it, at most 100; no child text. */
   epicEvents?: EpicEvent[];
+  /**
+   * Plan mode (SSOT 2026-11-02) — a Slack-less task made with the plan toggle
+   * on: its plan gate (drafting → awaiting → approved / cancelled). Until it is
+   * approved the task's turns plan instead of work. Saved strictly by the
+   * registry (`submitTaskPlan`, `setTaskPlanGate`); validated on load.
+   */
+  taskPlan?: TaskPlanGate;
   /**
    * E2 ③ — the chain a Slack-less task is running (its id), saved by the
    * chain's first turn start and kept across `/compact` hops; cleared by the

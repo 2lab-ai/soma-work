@@ -14,6 +14,7 @@ import * as path from 'node:path';
 import { isAdminUser } from '../admin-utils';
 import { isSafePathSegment, normalizeTmpPath } from '../path-utils';
 import { buildTaskSessionKey } from '../session-identity';
+import { isPlanPending } from '../task-turn/task-plan';
 import type { ConversationSession } from '../types';
 import { userSettingsStore } from '../user-settings-store';
 import type { PermissionMode } from './policy/permission-mode';
@@ -55,6 +56,11 @@ export interface TaskExecutionContext extends ExecutionContext {
   /** E4 ④a (.prd/19 D3) — from the saved task: an epic, or a child's epic. The epic server attaches on these. */
   readonly kind?: 'epic';
   readonly parentTaskId?: string;
+  /**
+   * Plan mode (SSOT 2026-11-02) — the task's plan is not started yet: the turn
+   * plans instead of working (the `plan` server attaches, the epic server does not).
+   */
+  readonly planPending?: true;
 }
 
 /** A turn was asked to run without a context the server can vouch for. */
@@ -128,6 +134,8 @@ export function executionContextForTask(session: ConversationSession, actorUserI
     // E4 ④a — the epic relation as saved (only a Slack-less record carries it).
     ...(session.kind === 'epic' ? { kind: 'epic' as const } : {}),
     ...(session.parentTaskId ? { parentTaskId: session.parentTaskId } : {}),
+    // Plan mode — as saved: a gate not yet started.
+    ...(isPlanPending(session.taskPlan) ? { planPending: true as const } : {}),
   }) as TaskExecutionContext;
 }
 

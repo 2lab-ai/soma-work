@@ -60,8 +60,14 @@ import {
 } from '../execution-context';
 import { createNativeWriteCheck } from '../policy/native-write-boundary';
 import { permissionAdviceBoard } from '../policy/permission-advice';
+import { checkPlanPendingCall } from '../policy/plan-pending-guard';
 import type { SafetyClassifier } from '../policy/safety-classifier';
-import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
+import {
+  evaluateToolPolicy,
+  INCIDENT_TOOL_POLICY_MATCHERS,
+  TOOL_POLICY_MATCHERS,
+  type ToolPolicyContext,
+} from '../policy/tool-policy';
 
 /** The llmux catalog group whose streams report each call's usage on `message_start`. */
 const CLAUDE_GROUP = 'claude';
@@ -393,6 +399,8 @@ export async function buildStreamOptions(
       ? { channel: slackContext.channel, threadTs: slackContext.threadTs }
       : { channel: execCtx.sessionKey };
     const envRegistry = deps.getEnvSkillRegistry?.();
+    // Plan mode (SSOT 2026-11-02): a task whose plan is not started researches; step 6c refuses the work.
+    const planPending = execCtx.origin === 'task' && (execCtx as { planPending?: true }).planPending === true;
 
     const policyHook = async (
       input: HookInput,
@@ -427,6 +435,7 @@ export async function buildStreamOptions(
           envRegistry
             ? checkEnvSkillAccess(tool, toolInput, policyUser, envSkillScope, envRegistry, workingDirectory)
             : null,
+        ...(planPending ? { checkPlanPending: checkPlanPendingCall } : {}),
       };
 
       const result = evaluateToolPolicy(toolName, toolInput, ctx);
@@ -572,8 +581,11 @@ export async function buildStreamOptions(
 
     options.hooks = {
       ...options.hooks,
-      PreToolUse: TOOL_POLICY_MATCHERS.map((matcher) => ({
-        matcher,
+      // A planning turn's hook sees every tool (the incident session's one catch-all entry): step 6c
+      // allow-lists research, so a tool outside TOOL_POLICY_MATCHERS (Monitor, Workflow, …) is refused
+      // instead of running unhooked under bypassPermissions.
+      PreToolUse: (planPending ? INCIDENT_TOOL_POLICY_MATCHERS : TOOL_POLICY_MATCHERS).map((matcher) => ({
+        ...(matcher === undefined ? {} : { matcher }),
         hooks: [policyHook],
         // A task's escalation may wait for the dashboard approval (#599 ⑤).
         ...(taskApprover ? { timeout: TASK_APPROVAL_HOOK_TIMEOUT_S } : {}),
