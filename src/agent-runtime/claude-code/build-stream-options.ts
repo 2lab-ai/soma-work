@@ -588,6 +588,31 @@ export async function buildStreamOptions(
           // owner is asked (SSOT_2 #2), with the owner's own words as context;
           // fail closed to `ask` when no classifier is wired or it errors.
           const command = typeof toolInput?.command === 'string' ? toolInput.command : '';
+          // C1 (Z 2026-11-02, D1-A / D2-A): the rules flagged only a pipe that feeds
+          // data to an interpreter which READS it (`| python3 -c` JSON parsing): the
+          // mechanical reader check (permission-warning.ts) leaves nothing to judge,
+          // so it runs without a model call — and with nothing to warn about. A check
+          // that fails leaves the call to the classifier (never an allow).
+          const flaggedIds = result.matchedRuleIds ?? [];
+          let dataPipeOnly = false;
+          try {
+            dataPipeOnly =
+              flaggedIds.length > 0 && command.length > 0 && permissionWarningRuleIds(command, flaggedIds).length === 0;
+          } catch (err) {
+            logger.warn('Data-pipe check failed — the classifier decides', {
+              tool: toolName,
+              user: policyUser,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+          if (dataPipeOnly) {
+            logger.info('Auto-mode data pipe allowed without the classifier', {
+              tool: toolName,
+              user: policyUser,
+              rules: [...flaggedIds],
+            });
+            return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
+          }
           const liveSession = hookSession();
           const intent = ownerIntent(liveSession, policyUser, deps.isSteerStanding, deps.resolveOwnerSkills);
           const revisionBefore = liveSession?.ownerInputRevision ?? 0;

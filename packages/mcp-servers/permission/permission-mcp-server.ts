@@ -186,7 +186,19 @@ class PermissionMCPServer extends BaseMcpServer {
         advice,
       );
 
+      const askedAt = Date.now();
       const response = await this.waitForApproval(approvalId, context.signal);
+      // C3 (Z 2026-11-02): one line per question — the outcome, how long the person
+      // was waited on, the rules, the AI's advice — so asks can be counted.
+      this.logger.info('Permission prompt outcome', {
+        tool: tool_name,
+        user,
+        rules: ruleIds,
+        behavior: response.behavior,
+        timedOut: response.behavior === 'deny' && response.message === 'Permission request timed out',
+        waitedMs: Date.now() - askedAt,
+        ...(advice ? { ai: advice.recommendation } : {}),
+      });
 
       await this.deletePermissionMessage(permissionMessage);
 
