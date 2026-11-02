@@ -496,7 +496,10 @@ describe('N4 — the page: no lane; renderBoard places the children', () => {
     // The push computes the same signature with the same filter.
     expect(fn('applyEpicPush')).toContain('var now = epicKidsSig(s, showSleeping === false, _revealedKey);');
     expect(rb).toContain('keys: place(g.items, kb, g.open),');
-    expect(rb).toContain("{ id: 'working', label: BOARD_LABELS.working, keys: keys(rest.working, 'working', kb) },");
+    // RUNNING leads with the new task dialog's 시작 중 cards (SSOT 2026-11-02 T1), then its own list.
+    expect(rb).toContain(
+      "{ id: 'working', label: BOARD_LABELS.working, keys: pending.working.concat(keys(rest.working, 'working', kb)) },",
+    );
   });
 
   it('renderBoard caches the children in its first walk, before the answer states are evicted (fable #706 R1 P1)', () => {
