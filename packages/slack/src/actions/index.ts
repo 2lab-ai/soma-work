@@ -2,6 +2,7 @@ import type { App } from '@slack/bolt';
 import { Logger } from '@soma/common/logger';
 import { TURN_DISMISS_ACTION_ID, TURN_FEEDBACK_ACTION_ID } from '../turn-feedback-block-builder';
 import { TurnFeedbackStore } from '../turn-feedback-store';
+import { EXPIRED_CLICK_TEXT, WORK_QUEUE_CANCEL_ACTION, WORK_QUEUE_WAIT_ACTION } from '../work-queue/blocks';
 import { type PendingChoiceFormData, PendingFormStore } from './pending-form-store';
 import { PendingInstructionConfirmStore } from './pending-instruction-confirm-store';
 
@@ -49,6 +50,8 @@ export interface ActionHandlerContext {
   completionMessageTracker?: any;
   mcpManager?: any;
   pendingInstructionConfirmStore?: PendingInstructionConfirmStore;
+  /** Work queue busy card (`work_queue_wait` / `work_queue_cancel`), #726. */
+  workQueue?: { handleClick(body: any, respond: RespondFn): Promise<void> };
 }
 
 export interface ActionHandlersStores {
@@ -425,6 +428,19 @@ export class ActionHandlers {
       await ack();
       await this.delegates.mcpToolPermissionHandler.handleDeny(body, respond as RespondFn);
     });
+
+    // Work queue busy card: "deploy after the current one" / "cancel" (#726).
+    app.action(
+      new RegExp(`^(${WORK_QUEUE_WAIT_ACTION}|${WORK_QUEUE_CANCEL_ACTION})$`),
+      async ({ ack, body, respond }) => {
+        await ack();
+        if (!this.ctx.workQueue) {
+          await (respond as RespondFn)({ replace_original: true, text: EXPIRED_CLICK_TEXT });
+          return;
+        }
+        await this.ctx.workQueue.handleClick(body, respond as RespondFn);
+      },
+    );
 
     app.action('channel_route_move', async ({ ack, body, respond }) => {
       await ack();
