@@ -24,6 +24,8 @@ describe('isReadOnlyCommand — reads pass, everything else is refused', () => {
     'git branch -a',
     'git clone https://github.com/2lab-ai/soma-work.git',
     'git fetch origin main',
+    'git fetch https://github.com/2lab-ai/soma-work.git',
+    'git clone git@github.com:2lab-ai/soma-work.git repo',
     'cd repo && git log -3',
     'gh pr view 758 --json title,body',
     'gh issue list --state open',
@@ -97,6 +99,18 @@ describe('isReadOnlyCommand — reads pass, everything else is refused', () => {
     'file -C -m magic',
     'cat "unterminated',
     'ls ; ; ls',
+    // Trinity R3 (fable P1/P2/P3): a pager program, gh's pass-through to git, clusters, where clone writes.
+    "git grep -Oecho -e 'def planGuard' -- verification",
+    "git grep -Orm -e . -- 'src/*'",
+    "git grep -O'sed -i s/a/b/' -e x",
+    "git grep --open-files-in-pager=sh -e '#!' -- '*.sh'",
+    "gh repo clone 2lab-ai/soma-work x -- -c 'core.fsmonitor=sh scripts/deploy.sh'",
+    'gh repo clone 2lab-ai/soma-work x -- --template=/tmp/hooks',
+    'fd -Hx rm',
+    'git clone https://github.com/2lab-ai/soma-work.git /tmp/elsewhere',
+    'git clone https://github.com/2lab-ai/soma-work.git ../up',
+    'git clone --separate-git-dir=/tmp/g https://github.com/2lab-ai/soma-work.git',
+    'git fetch origin main:refs/heads/main',
   ])('refused: %s', (cmd) => {
     expect(isReadOnlyCommand(cmd)).toBe(false);
   });

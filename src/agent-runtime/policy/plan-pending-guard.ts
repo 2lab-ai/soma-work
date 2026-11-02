@@ -247,6 +247,39 @@ function isOption(t: string, opt: string): boolean {
   return opt.startsWith('--') ? t.startsWith(opt) : t.startsWith(opt) && t.length > opt.length;
 }
 
+/** A URL-ish repository argument (`https://…`, `ssh://…`, `git@host:owner/repo`). */
+function isRemoteUrl(t: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(t) || /^[\w.-]+@[\w.-]+:/.test(t);
+}
+
+/**
+ * `git clone <repo> [<dir>]` / `git fetch [<remote>] [<refspec>…]` — getting the code to read, into
+ * the task folder only: listed options only, no transport helper (`ext::…` runs a command), a clone
+ * directory relative and inside the folder (no `/…`, `~…`, `..`), and no refspec that moves a local
+ * ref (`a:b`) (trinity R3, fable P3).
+ */
+function gitFetchIsRead(sub: 'clone' | 'fetch', rest: string[]): boolean {
+  const positionals: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i];
+    if (t.startsWith('-')) {
+      if (GIT_FETCH_VALUED.some((v) => t.startsWith(v))) continue;
+      if (!GIT_FETCH_OPTIONS.has(t)) return false;
+      if (t === '--depth' || t === '-b' || t === '--branch') i++; // its value
+      continue;
+    }
+    if (t.includes('::')) return false;
+    positionals.push(t);
+  }
+  if (sub === 'clone') {
+    const [repo, dir, ...extra] = positionals;
+    if (!repo || extra.length > 0) return false;
+    if (dir === undefined) return true;
+    return !dir.startsWith('/') && !dir.startsWith('~') && !dir.split('/').includes('..');
+  }
+  return positionals.every((t, n) => !t.includes(':') || (n === 0 && isRemoteUrl(t)));
+}
+
 function gitIsRead(args: string[]): boolean {
   let i = 0;
   // Global options that only change where or how it reads.
@@ -262,12 +295,7 @@ function gitIsRead(args: string[]): boolean {
   if (GIT_READS.has(sub)) {
     return !rest.some((t) => GIT_READ_REFUSED.some((opt) => isOption(t, opt)) || /^-[A-Za-z]*O/.test(t));
   }
-  if (sub === 'clone' || sub === 'fetch') {
-    // A transport helper (`ext::…`, `fd::…`) runs a command: refused, as is any option not listed.
-    return rest.every((t) =>
-      t.startsWith('-') ? GIT_FETCH_OPTIONS.has(t) || GIT_FETCH_VALUED.some((v) => t.startsWith(v)) : !t.includes('::'),
-    );
-  }
+  if (sub === 'clone' || sub === 'fetch') return gitFetchIsRead(sub, rest);
   // List-only forms of the subcommands that also change refs.
   if (sub === 'branch' || sub === 'tag') {
     const listing = ['--list', '-l', '-a', '-r', '-v', '-vv', '--all', '--remotes', '--show-current'];
