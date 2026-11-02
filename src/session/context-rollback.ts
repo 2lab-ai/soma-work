@@ -36,6 +36,18 @@ export interface ContextRollbackTarget {
   anchor: string;
   label: string;
   source: PendingRewind['source'];
+  /** The time of the last entry the rollback keeps (see `keptUntilOf`); marks what it drops. */
+  keptUntil?: number;
+}
+
+/**
+ * The last moment a rollback to a point keeps. An input point rolls back to
+ * just before the input, so the input itself leaves; a work-log point and the
+ * goal's first failure keep their own entry.
+ */
+export function keptUntilOf(source: PendingRewind['source'], at: number | undefined): number | undefined {
+  if (typeof at !== 'number' || !Number.isFinite(at) || at <= 0) return undefined;
+  return source === 'input' ? at - 1 : at;
 }
 
 export interface ContextRollbackDeps {
@@ -77,12 +89,17 @@ export function requestContextRollback(
   const { uuid } = decodeContextAnchor(target.anchor)!;
   const has = deps.transcriptHas ?? transcriptHasUuid;
   if (!has(session.sessionId as string, uuid)) return { ok: false, reason: 'not-in-transcript' };
+  const requestedAt = (deps.now ?? Date.now)();
+  const kept = target.keptUntil;
   const rewind: PendingRewind = {
     anchor: target.anchor,
     label: target.label.slice(0, 300),
-    requestedAt: (deps.now ?? Date.now)(),
+    requestedAt,
     requestedBy: actor,
     source: target.source,
+    ...(typeof kept === 'number' && Number.isFinite(kept) && kept >= 0 && kept <= requestedAt
+      ? { keptUntil: kept }
+      : {}),
   };
   session.pendingRewind = rewind;
   return { ok: true, rewind };
