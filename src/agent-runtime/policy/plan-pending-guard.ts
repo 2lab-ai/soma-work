@@ -5,7 +5,7 @@
  * call in every permission mode, for admins too (trinity R2, astra P1).
  *
  * An allow-list of research, and nothing else: reading files (Read, Glob, Grep),
- * the web (WebFetch, WebSearch), skills, the turn's own to-do list, the exact
+ * the web (WebFetch, WebSearch), the two planning skills, the turn's own to-do list, the exact
  * read MCP tools and the plan tool. Everything else is refused — the native
  * write tools, subagents and workflows, any tool a future SDK adds, any MCP
  * tool not on the read list, and **the shell**.
@@ -23,7 +23,7 @@
  */
 
 /**
- * The native tools a planning turn may call: reading, searching, the web, skills (instructions), its
+ * The native tools a planning turn may call: reading, searching, the web, its
  * own to-do list, MCP resource reads. Every other tool — Bash, a writer, a subagent or workflow, a tool
  * that runs a command (`Monitor`), schedules, notifies or triggers, and any tool a future SDK adds — is
  * refused: an allow-list, so a tool nobody listed fails closed. The policy hook of a planning turn sees
@@ -35,7 +35,6 @@ export const PLAN_RESEARCH_TOOLS: readonly string[] = [
   'Grep',
   'WebFetch',
   'WebSearch',
-  'Skill',
   'TodoWrite',
   'TaskCreate',
   'TaskGet',
@@ -45,6 +44,15 @@ export const PLAN_RESEARCH_TOOLS: readonly string[] = [
   'ListMcpResourcesTool',
   'ReadMcpResourceTool',
 ];
+
+/**
+ * The skills a planning turn may load — the planning disciplines the plan-mode notice names, from
+ * soma's own plugin (`src/local/skills`). Any other skill waits for 시작: a skill can run shell lines
+ * while it loads (`!` lines) and register command hooks (`hooks:` frontmatter) that run on later,
+ * permitted calls, outside this check (trinity R5, astra P1). These two carry neither — a contract
+ * test (`plan-pending-guard.test.ts`) fails an edit that adds one.
+ */
+export const PLAN_SKILLS: readonly string[] = ['zworkflow:using-ssot', 'zworkflow:using-intentfirst'];
 
 /**
  * The MCP tools a planning turn may call: the plan tool and tools whose whole contract is a read,
@@ -84,8 +92,12 @@ export const PLAN_READ_MCP_TOOLS: readonly string[] = [
  * Step 6c's check: a reason when a planning turn's call would do the work (or could, as any shell
  * command could), else null. The plan tool (`mcp__plan__plan_submit`) always runs.
  */
-export function checkPlanPendingCall(toolName: string, _toolInput: Record<string, unknown>): string | null {
+export function checkPlanPendingCall(toolName: string, toolInput: Record<string, unknown>): string | null {
   if (toolName === 'Bash') return 'the shell runs once the plan is started — read with Read, Glob and Grep';
+  if (toolName === 'Skill') {
+    const skill = typeof toolInput.skill === 'string' ? toolInput.skill : '';
+    return PLAN_SKILLS.includes(skill) ? null : `the skill ${skill || '(none)'} loads once the plan is started`;
+  }
   if (toolName.startsWith('mcp__')) {
     return PLAN_READ_MCP_TOOLS.includes(toolName) ? null : `${toolName} is not one of the read tools`;
   }

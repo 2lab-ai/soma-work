@@ -6,9 +6,16 @@
  *
  * ssot-task map: T2 (the model plans, it does not work) · T4 (the work starts on 시작).
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PLAN_SUBMIT_TOOL } from '../../task-turn/task-plan';
-import { checkPlanPendingCall, PLAN_READ_MCP_TOOLS, PLAN_RESEARCH_TOOLS } from '../policy/plan-pending-guard';
+import {
+  checkPlanPendingCall,
+  PLAN_READ_MCP_TOOLS,
+  PLAN_RESEARCH_TOOLS,
+  PLAN_SKILLS,
+} from '../policy/plan-pending-guard';
 
 describe('checkPlanPendingCall — the shell waits for 시작', () => {
   it.each([
@@ -43,7 +50,7 @@ describe('checkPlanPendingCall — the shell waits for 시작', () => {
 
 describe('checkPlanPendingCall — the tools of a planning turn', () => {
   it('lets reading and research run', () => {
-    for (const tool of ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'TodoWrite', 'Skill']) {
+    for (const tool of ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'TodoWrite']) {
       expect(PLAN_RESEARCH_TOOLS).toContain(tool);
       expect(checkPlanPendingCall(tool, {})).toBeNull();
     }
@@ -109,6 +116,29 @@ describe('checkPlanPendingCall — the tools of a planning turn', () => {
       'mcp__weird',
     ]) {
       expect(checkPlanPendingCall(tool, {}), tool).not.toBeNull();
+    }
+  });
+});
+
+describe('checkPlanPendingCall — skills (trinity R5, astra P1)', () => {
+  // A skill can run shell lines while it loads (`!` lines) and register command hooks (`hooks:`
+  // frontmatter) that run on later, permitted calls — outside the plan check. Only the planning
+  // skills the notice names load while a plan waits.
+  it('loads only the planning skills the notice names', () => {
+    expect(PLAN_SKILLS).toEqual(['zworkflow:using-ssot', 'zworkflow:using-intentfirst']);
+    for (const skill of PLAN_SKILLS) expect(checkPlanPendingCall('Skill', { skill })).toBeNull();
+    for (const skill of ['prepare-preview', 'zworkflow:autoz', 'using-ssot', 'zworkflow:using-ssot ', '', undefined]) {
+      expect(checkPlanPendingCall('Skill', { skill }), String(skill)).not.toBeNull();
+    }
+    expect(checkPlanPendingCall('Skill', {})).not.toBeNull();
+  });
+
+  it('the planning skills carry no shell line and no hooks (a contract: an edit that adds one fails here)', () => {
+    for (const name of ['using-ssot', 'using-intentfirst']) {
+      const text = readFileSync(join(__dirname, '..', '..', 'local', 'skills', name, 'SKILL.md'), 'utf8');
+      const frontmatter = text.startsWith('---') ? text.slice(3, text.indexOf('\n---', 3)) : '';
+      expect(/^hooks\s*:/m.test(frontmatter), `${name} hooks`).toBe(false);
+      expect(/!`|^```!/m.test(text), `${name} inline shell`).toBe(false);
     }
   });
 });
