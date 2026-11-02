@@ -78,6 +78,19 @@ The emulator has no Google account (`Accounts: 0`) and a side-loaded 2024 Speech
 
 Runs through the dashboard add a harness effect. The harness waits 2.5 seconds after the new task opens, then checks permission and microphone readiness before starting the audio; the total startup delay was not measured. On this emulator a session ended after about 5 seconds without speech and took about half a second to restart, so the first session could end before the sentence arrived, and the restart could cut its start.
 
+## Engine choice per device (2 November 2026, epic #737)
+
+Settings › 받아쓰기 chooses one of three engines for this device: the browser's own recogniser (the default above), the server's Whisper, or Whisper in the browser. The choice is kept in this browser's storage under `soma-dictation-engine` and is never sent, so other devices and the server keep their own.
+
+The same tab shows what a page can learn about this device's recogniser. Browsers do not tell a page the system recogniser's model name, version or size, so the tab says so instead of guessing.
+
+- Browser and system: from the user-agent string, refined by Chromium's client hints (the real Android and macOS versions, the phone model, full versions).
+- Where speech is processed: the same split as the dashboard (Apple's engine, the phone's own speech app, Chrome's recogniser, another browser's service).
+- Chrome's on-device model per language (`available({ langs, processLocally: true })`), with a download button (`install()`) when Chrome says it is downloadable.
+- Microphone permission, secure context, WebGPU adapter, memory and cores.
+
+Checked in Google Chrome 156 on macOS 26.7.1: the tab showed the Korean model as downloadable, WebGPU as Apple Metal 3, and 말해서 시험 wrote a Korean sentence as it was spoken (first word after 1.9 seconds).
+
 ## Follow-up candidates
 
 - On this emulator a session ended after about 5 seconds of silence and took about half a second to restart. If phones do the same, words spoken in that gap are lost.

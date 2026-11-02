@@ -76,6 +76,7 @@ describe('settings page shell', () => {
       { id: 'preferences', label: '개인 설정', icon: 'gear' },
       { id: 'memory', label: '기억', icon: 'brain' },
       { id: 'layout', label: '대시보드 화면', icon: 'board' },
+      { id: 'dictation', label: '받아쓰기', icon: 'mic' },
     ]);
     expect(renderSettingsPage([{ id: 'x', label: '</script><b>' }])).toContain('"label":"\\u003c/script>\\u003cb>"');
     // the kit sheet comes before the page sheet, the tokens after it
