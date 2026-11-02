@@ -457,20 +457,33 @@ describe('D7 — the settings page carries the tab', () => {
 });
 
 describe('D8 — 말해서 시험', () => {
-  function testEnv() {
+  function testEnv(info: Record<string, unknown> = { path: 'chrome', langs: {} }, ua = UA.macChrome) {
     const doc = fakeDoc();
-    const win = { navigator: { userAgent: UA.macChrome }, webkitSpeechRecognition: FakeRec, localStorage: memStore() };
-    return { doc, win, api: load(win, doc) };
+    const win = { navigator: { userAgent: ua }, webkitSpeechRecognition: FakeRec, localStorage: memStore() };
+    const api = load(win, doc);
+    if (info) api.__peek(`_dicInfo = ${JSON.stringify(info)}`);
+    return { doc, win, api };
   }
 
-  it('shows the words while they are said, then the time to the first word', () => {
+  it('waits for this device’s details (where the speech may go is decided from them)', () => {
+    const { doc, api } = testEnv(null as never);
+    api.dicTestStart();
+    expect(FakeRec.made).toEqual([]);
+    expect(doc.el('dic-test-result').textContent).toContain('확인하는 중');
+    expect(DICTATION_TAB_HTML).toContain('id="dic-test-btn" disabled');
+  });
+
+  it('the eight seconds start when the microphone opens; the words while said; the time to the first word', () => {
     vi.useFakeTimers();
     const { doc, api } = testEnv();
     api.dicTestStart();
     const rec = FakeRec.made[0];
-    expect(rec).toMatchObject({ lang: 'ko-KR', interimResults: true, continuous: false, started: 1 });
-    expect(doc.el('dic-test-result').textContent).toContain('듣는 중');
+    expect(rec).toMatchObject({ lang: 'ko-KR', interimResults: true, continuous: true, started: 1 });
+    expect(doc.el('dic-test-result').textContent).toBe('마이크를 여는 중…');
     expect(doc.el('dic-test-btn').textContent).toBe('멈추기');
+    vi.advanceTimersByTime(4000); // a permission prompt being read: not counted
+    rec.onaudiostart?.();
+    expect(doc.el('dic-test-result').textContent).toContain('듣는 중');
     vi.advanceTimersByTime(1200);
     rec.onresult?.({ results: [res('')] });
     vi.advanceTimersByTime(300);
@@ -478,28 +491,93 @@ describe('D8 — 말해서 시험', () => {
     expect(doc.el('dic-test-live').textContent).toBe('대시보드');
     vi.advanceTimersByTime(900);
     rec.onresult?.({ results: [res('대시보드 새 작업', true)] });
-    rec.onend?.();
+    vi.advanceTimersByTime(5600); // eight seconds after the mic opened
+    expect(rec.stopped).toBe(1);
     expect(doc.el('dic-test-live').textContent).toBe('대시보드 새 작업');
-    expect(doc.el('dic-test-result').textContent).toBe('첫 글자까지 1.5초 · 2.4초 동안 들음 · 기기 기본 음성 인식');
+    expect(doc.el('dic-test-result').textContent).toBe('첫 글자까지 1.5초 · 8.0초 동안 들음 · 기기 기본 음성 인식');
     expect(doc.el('dic-test-btn').textContent).toBe('말해서 시험');
     expect(api.__peek('_dicTest')).toBeNull();
   });
 
-  it('stops after 8 seconds, and a press while it listens stops it', () => {
+  it('continuous where the recogniser keeps listening: one utterance does not end the test', () => {
     vi.useFakeTimers();
+    const { doc, api } = testEnv();
+    api.dicTestStart();
+    const rec = FakeRec.made[0];
+    rec.onaudiostart?.();
+    rec.onresult?.({ results: [res('첫 문장.', true)] });
+    vi.advanceTimersByTime(2000);
+    rec.onresult?.({ results: [res('첫 문장.', true), res(' 두 번째', false)] });
+    expect(doc.el('dic-test-live').textContent).toBe('첫 문장. 두 번째');
+    expect(api.__peek('_dicTest')).not.toBeNull();
+  });
+
+  it('Android: one utterance per session, listened to again with the words kept; its longer copies do not double', () => {
+    vi.useFakeTimers();
+    const { doc, api } = testEnv({ path: 'android', langs: {} }, UA.samsung);
+    api.dicTestStart();
+    const rec = FakeRec.made[0];
+    expect(rec.continuous).toBe(false);
+    rec.onaudiostart?.();
+    // Android Chrome resends what it settled inside a longer copy
+    rec.onresult?.({ results: [res('대시보드', true), res('대시보드 새 작업', true)] });
+    expect(doc.el('dic-test-live').textContent).toBe('대시보드 새 작업');
+    vi.advanceTimersByTime(2000);
+    rec.onend?.(); // the utterance ended with time left: listened to again
+    expect(rec.started).toBe(2);
+    rec.onresult?.({ results: [res('화면에서', true)] });
+    expect(doc.el('dic-test-live').textContent).toBe('대시보드 새 작업 화면에서');
+    vi.advanceTimersByTime(6000);
+    expect(rec.stopped).toBe(1); // stop() ends it (the fake's end): no restart after the eight seconds
+    expect(api.__peek('_dicTest')).toBeNull();
+  });
+
+  it('a stop or an error the recogniser never ends does not hold the test', () => {
+    vi.useFakeTimers();
+    const { doc, api } = testEnv();
+    api.dicTestStart();
+    const rec = FakeRec.made[0];
+    rec.onaudiostart?.();
+    rec.onerror?.({ error: 'network' }); // and no end
+    vi.advanceTimersByTime(3000);
+    expect(api.__peek('_dicTest')).toBeNull();
+    expect(doc.el('dic-test-result').textContent).toBe(
+      '글자가 나오지 않았습니다 — 음성 인식 서비스에 연결하지 못했습니다 · 기기 기본 음성 인식',
+    );
+  });
+
+  it('a recogniser that never opens the microphone is stopped and said', () => {
+    vi.useFakeTimers();
+    const { doc, api } = testEnv();
+    FakeRec.prototype.stop = function () {
+      this.stopped++;
+    }; // and it never ends either
+    try {
+      api.dicTestStart();
+      vi.advanceTimersByTime(10000);
+      expect(FakeRec.made[0].stopped).toBe(1);
+      vi.advanceTimersByTime(3000);
+      expect(doc.el('dic-test-result').textContent).toContain('마이크를 열지 않았습니다');
+    } finally {
+      FakeRec.prototype.stop = function () {
+        this.stopped++;
+        this.onend?.();
+      };
+    }
+  });
+
+  it('a press while it listens stops it', () => {
     const { api } = testEnv();
     api.dicTestStart();
-    vi.advanceTimersByTime(8000);
+    api.dicTestStart();
     expect(FakeRec.made[0].stopped).toBe(1);
-    api.dicTestStart();
-    api.dicTestStart();
-    expect(FakeRec.made[1].stopped).toBe(1);
   });
 
   it('says why nothing came', () => {
     const { doc, api } = testEnv();
     api.dicTestStart();
     const rec = FakeRec.made[0];
+    rec.onaudiostart?.();
     rec.onerror?.({ error: 'not-allowed' });
     rec.onend?.();
     expect(doc.el('dic-test-result').textContent).toBe(
@@ -508,8 +586,7 @@ describe('D8 — 말해서 시험', () => {
   });
 
   it('keeps Korean on the device when Chrome has its model', () => {
-    const { api } = testEnv();
-    api.__peek("_dicInfo = { path: 'chrome', langs: { 'ko-KR': 'available' } }");
+    const { api } = testEnv({ path: 'chrome', langs: { 'ko-KR': 'available' } });
     api.dicTestStart();
     expect(FakeRec.made[0].processLocally).toBe(true);
   });
@@ -517,13 +594,19 @@ describe('D8 — 말해서 시험', () => {
   it('nothing to test without a recogniser', () => {
     const doc = fakeDoc();
     const api = load({ navigator: { userAgent: UA.firefox }, localStorage: memStore() }, doc);
+    api.__peek("_dicInfo = { path: 'none', langs: {} }");
     api.dicTestStart();
     expect(doc.el('dic-test-result').textContent).toBe('이 기기에서는 시험할 엔진이 없습니다');
   });
 
-  it('the words of a result list: finals then what is still heard', () => {
+  it('the words of a result list: finals then what is still heard, spaced', () => {
     const api = load();
     expect(api.dicTestText([res('대시보드 ', true), res('새 작업')])).toBe('대시보드 새 작업');
+    expect(api.dicTestText([res('대시보드', true), res('새 작업')])).toBe('대시보드 새 작업');
     expect(api.dicTestText([res('  ')])).toBe('');
+    // Android's longer copy replaces what it repeats
+    expect(api.dicTestText([res('하나', true), res('하나 둘', true), res('하나 둘 셋')], true)).toBe('하나 둘 셋');
+    // elsewhere a phrase said twice stays as said
+    expect(api.dicTestText([res('아니', true), res('아니요', true)], false)).toBe('아니 아니요');
   });
 });
