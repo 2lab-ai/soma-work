@@ -9674,7 +9674,9 @@ function cardLinksFace(s) {
   var out = [];
   for (var i = 0; i < s.cardLinks.length; i++) {
     var l = s.cardLinks[i];
-    if (!l || !CARD_LINK_KIND[l.kind] || !l.url || !l.text) continue;
+    // The library's own filter (cardLinks: a known kind, a text, an absolute http(s) URL), so the face's first
+    // FACE_LINK_MAX chips are exactly this list's first FACE_LINK_MAX.
+    if (!l || !CARD_LINK_KIND[l.kind] || !l.text || !/^https?:\\/\\/[^\\s]+$/i.test(String(l.url || ''))) continue;
     var link = { kind: l.kind, href: String(l.url), text: String(l.text) };
     if (l.status) link.status = String(l.status);
     if (l.tone && CARD_LINK_TONES[l.tone]) link.tone = l.tone;

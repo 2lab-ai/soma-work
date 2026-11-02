@@ -112,6 +112,17 @@ describe('C1 — the board’s links as the card’s', () => {
     expect(env(false).cardLinksFace({ cardLinks: LINKS })).toEqual([]);
     expect(env().cardLinksFace({ cardLinks: [{ kind: 'nope', url: 'x', text: 'y' }, null, LINKS[2]] })).toHaveLength(1);
     expect(env().cardLinksFace({})).toEqual([]);
+    // As the library filters (an absolute http(s) URL), so the face's first chips are this list's first entries.
+    expect(
+      env().cardLinksFace({ cardLinks: [{ kind: 'issue', url: 'javascript:alert(1)', text: '#1' }, LINKS[2]] }),
+    ).toHaveLength(1);
+  });
+
+  it('FACE_LINK_MAX is the library’s own chip count (@2lab.ai/ui agent-inbox MAX_LINKS), read from its build', () => {
+    const dist = readFileSync(join(process.cwd(), 'node_modules/@2lab.ai/ui/dist/agent-inbox.js'), 'utf8');
+    const lib = /const MAX_LINKS = (\d+);/.exec(dist);
+    expect(lib, 'MAX_LINKS in dist/agent-inbox.js').not.toBeNull();
+    expect(TEMPLATE).toContain(`var FACE_LINK_MAX = ${lib?.[1]};`);
   });
 });
 
