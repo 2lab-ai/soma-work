@@ -13,6 +13,8 @@
  * production wiring lives in `src/index.ts`.
  */
 
+import { clampEffortToSupported } from 'soma-lib';
+
 /** Upload / text limits. The client enforces them before sending; the server again after decoding. */
 export const NEW_TASK_LIMITS = Object.freeze({
   maxPromptChars: 12_000,
@@ -128,8 +130,12 @@ export interface NewTaskModelOption {
   nickname: string;
   model: string;
   label: string;
+  /** The effort levels the model runs, in level order; absent when the catalog has no menu for it. */
+  effortLevels?: string[];
   battery: ModelBattery;
 }
+
+type ModelInput = { nickname: string; model: string; label: string; effortLevels?: string[] };
 
 export interface NewTaskContext {
   models: NewTaskModelOption[];
@@ -147,9 +153,11 @@ export interface NewTaskContext {
 }
 
 export interface NewTaskContextInput {
-  representativeModels: Array<{ nickname: string; model: string; label: string }>;
+  representativeModels: ModelInput[];
   userDefaultModel: string;
   userDefaultModelLabel: string;
+  /** The levels the user's default model runs, when it is not a representative model. */
+  userDefaultModelEffortLevels?: string[];
   userDefaultEffort: string;
   efforts: readonly string[];
   autogoalDefault: boolean;
@@ -172,21 +180,33 @@ export interface NewTaskContextInput {
  * and the dashboard-task launcher, which resolves a nickname with it (#640 R2).
  */
 export function newTaskModelOptions(
-  representativeModels: Array<{ nickname: string; model: string; label: string }>,
+  representativeModels: ModelInput[],
   userDefaultModel: string,
   userDefaultModelLabel: string,
-): { options: Array<{ nickname: string; model: string; label: string }>; defaultModel: string } {
-  const options = representativeModels.map((m) => ({ nickname: m.nickname, model: m.model, label: m.label }));
+  userDefaultModelEffortLevels?: string[],
+): { options: ModelInput[]; defaultModel: string } {
+  const options: ModelInput[] = representativeModels.map((m) => ({
+    nickname: m.nickname,
+    model: m.model,
+    label: m.label,
+    ...(m.effortLevels ? { effortLevels: [...m.effortLevels] } : {}),
+  }));
   let defaultModel = options.find((m) => m.model === userDefaultModel)?.nickname;
   if (!defaultModel) {
     options.unshift({
       nickname: userDefaultModel,
       model: userDefaultModel,
       label: userDefaultModelLabel || userDefaultModel,
+      ...(userDefaultModelEffortLevels ? { effortLevels: [...userDefaultModelEffortLevels] } : {}),
     });
     defaultModel = userDefaultModel;
   }
   return { options, defaultModel };
+}
+
+/** `effort` carried over to a model's levels (unchanged when it runs it or has no menu) — the runtime clamp's rule. */
+function fitToLevels(levels: readonly string[] | undefined, effort: string): string {
+  return levels && levels.length > 0 && !levels.includes(effort) ? clampEffortToSupported(levels, effort) : effort;
 }
 
 export function buildNewTaskContext(input: NewTaskContextInput): NewTaskContext {
@@ -194,6 +214,7 @@ export function buildNewTaskContext(input: NewTaskContextInput): NewTaskContext 
     input.representativeModels,
     input.userDefaultModel,
     input.userDefaultModelLabel,
+    input.userDefaultModelEffortLevels,
   );
   const models = options.map((m) => ({ ...m, battery: computeModelBattery(m.model, input.usageAccounts) }));
 
@@ -226,11 +247,14 @@ export function buildNewTaskContext(input: NewTaskContextInput): NewTaskContext 
   );
 
   const efforts = [...input.efforts];
+  // The default effort, kept to the default model's levels (what it would run anyway).
+  const userEffort = efforts.includes(input.userDefaultEffort) ? input.userDefaultEffort : (efforts[0] ?? '');
+  const defaultLevels = options.find((m) => m.nickname === defaultModel)?.effortLevels;
   return {
     models,
     defaultModel,
     efforts,
-    defaultEffort: efforts.includes(input.userDefaultEffort) ? input.userDefaultEffort : (efforts[0] ?? ''),
+    defaultEffort: userEffort ? fitToLevels(defaultLevels, userEffort) : userEffort,
     channels,
     defaultChannelId,
     membershipUnknown: members === null,
@@ -393,6 +417,12 @@ export function parseNewTaskSubmission(body: unknown, ctx: NewTaskContext): NewT
   if (!model) return { ok: false, error: 'model is not one of the offered models' };
   if (typeof b.effort !== 'string' || !ctx.efforts.includes(b.effort)) {
     return { ok: false, error: 'effort is not one of the offered efforts' };
+  }
+  if (model.effortLevels && model.effortLevels.length > 0 && !model.effortLevels.includes(b.effort)) {
+    return {
+      ok: false,
+      error: `${model.nickname} does not run effort ${b.effort}: one of ${model.effortLevels.join(', ')}`,
+    };
   }
   if (typeof b.channelId !== 'string' || !ctx.channels.some((c) => c.id === b.channelId)) {
     return { ok: false, error: 'channel is not one of the channels offered to you' };

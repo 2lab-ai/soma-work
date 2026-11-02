@@ -36,6 +36,7 @@ import type { FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { sumLiveUsage } from '@soma/slack/live-usage';
 import { livePendingModelSwitch } from '@soma/slack/model-switch';
 import type { FastifyInstance } from 'fastify';
+import { SDK_EFFORT_LEVELS } from 'soma-lib';
 import type { CronExecutionRecord, CronJob } from 'somalib/cron/cron-storage';
 import {
   type AdminApprovalSnapshot,
@@ -75,6 +76,7 @@ import {
 } from '../session/agent-registry';
 import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
 import { sanitizeCronJob } from '../session/cron-job';
+import { effortMenuOf } from '../session/effort-menu';
 import { EffortSwitchError, type EffortSwitchResult } from '../session/effort-switch';
 import { productionModelCatalogDeps } from '../session/model-catalog-deps';
 import {
@@ -613,6 +615,8 @@ export interface KanbanGoal {
     maxContinuations: number;
     /** The last completion-eval verdict that said "not yet" — what is still missing. */
     lastEvalReason?: string;
+    /** The loop stopped: the goal failed again for the same reason; the owner was asked what to do next. */
+    stalled?: { at: number; reason: string; actions: string[] };
   };
   queue: Array<{ goalId: string; objective: string }>;
   completedCount: number;
@@ -1840,16 +1844,11 @@ export function extractPrShortRef(url?: string): string | undefined {
 
 /**
  * affectUI model picker D6 — the effort levels a model runs: its catalog menu
- * ∩ EFFORT_LEVELS, in EFFORT_LEVELS order. Undefined when the catalog has no
- * menu for the model (the picker then offers every level and the runtime
- * clamp decides, as before).
+ * ∩ EFFORT_LEVELS (`ultra` included), in EFFORT_LEVELS order. Undefined when
+ * the catalog has no menu for the model (the picker then offers the SDK levels
+ * and the runtime clamp decides). One rule with the setters: `effortMenuOf`.
  */
-export function pickerEffortLevels(catalogEfforts: readonly string[] | null | undefined): EffortLevel[] | undefined {
-  if (!catalogEfforts || catalogEfforts.length === 0) return undefined;
-  const menu = new Set(catalogEfforts.map((e) => String(e).toLowerCase()));
-  const levels = EFFORT_LEVELS.filter((level) => menu.has(level));
-  return levels.length > 0 ? levels : undefined;
-}
+export const pickerEffortLevels = effortMenuOf;
 
 /**
  * Card-derived UI fields shared between live (sessionToKanban) and archived
@@ -2009,6 +2008,17 @@ function goalToKanban(s: any): KanbanGoal | undefined {
             maxContinuations: Number(goal.maxContinuations) || 0,
             ...(typeof goal.lastEvalReason === 'string' && goal.lastEvalReason
               ? { lastEvalReason: goal.lastEvalReason }
+              : {}),
+            ...(goal.stall && typeof goal.stall.reason === 'string'
+              ? {
+                  stalled: {
+                    at: Number(goal.stall.stalledAt) || 0,
+                    reason: goal.stall.reason.slice(0, GOAL_REASON_MAX),
+                    actions: Array.isArray(goal.stall.actions)
+                      ? goal.stall.actions.filter((a: unknown) => typeof a === 'string').slice(0, 3)
+                      : [],
+                  },
+                }
               : {}),
           }
         : undefined,
@@ -4431,9 +4441,10 @@ export async function registerDashboardRoutes(
     async (request, reply) => {
       const { approvalId, decision } = request.body || {};
       if (!isApprovalId(approvalId) || !isPermissionPromptDecision(decision)) {
-        reply
-          .status(400)
-          .send({ error: 'approvalId and decision (approve | deny | explain | approve_disable_rule) are required' });
+        reply.status(400).send({
+          error:
+            'approvalId and decision (approve | deny | explain | approve_disable_rule | approve_confirmed) are required',
+        });
         return;
       }
       if (!_permissionAnswerHandlerFn) {
@@ -4464,6 +4475,13 @@ export async function registerDashboardRoutes(
             return;
           case 'not_requester':
             reply.status(403).send({ error: 'Only the user this permission request is for can answer it' });
+            return;
+          case 'confirm_required':
+            // SSOT 2026-11-02 T4 — the AI advised against it: the card asks again, then sends approve_confirmed.
+            reply.status(428).send({
+              error: '🔴 AI가 실행하지 말라고 권고한 요청입니다 — 정말 실행하려면 승인을 한 번 더 누르세요',
+              code: 'confirm_required',
+            });
             return;
           default:
             reply.status(404).send({ error: 'Permission request not found or expired' });
@@ -4658,6 +4676,7 @@ function renderDashboardPage(userId?: string): string {
   }
   const initRepresentativeModels = JSON.stringify(representativeModels).replace(/</g, '\\u003c');
   const initEffortLevels = JSON.stringify(EFFORT_LEVELS);
+  const initSdkEffortLevels = JSON.stringify(SDK_EFFORT_LEVELS);
   // T8: the bot's Slack name (escaped like the header config — it comes from Slack).
   const initBotName = JSON.stringify(_botDisplayName || null).replace(/</g, '\\u003c');
   // Icon slots (<i data-ui-icon="…">) are filled from @2lab.ai/ui's icon set (fillUiIcons).
@@ -4820,17 +4839,13 @@ ui-app-bar[narrow] .nt-btn-label { display: none; }
    clickable while a session panel is open — that is when "열린 세션에도 적용" exists. */
 .topbar .topbar-defaults { position: relative; z-index: 101; display: flex; gap: 6px; align-items: center; flex: none; }
 .topbar .topbar-defaults[hidden] { display: none; }
-/* The defaults are kit chips (.ui-chip, D7 A-06) that open the library menu (A-07): the word before the value is
-   quiet; while the menu is open the chip wears the kit's "on" look and its chevron is turned. */
-.topbar .td-prefix { color: var(--ib-muted); }
-.topbar .td-chip[aria-expanded="true"] { background: var(--ib-seg-on); box-shadow: var(--ib-shadow); }
-.topbar .td-caret { transition: transform var(--dur-move) var(--ease-out); }
-.topbar .td-chip[aria-expanded="true"] .td-caret { transform: rotate(180deg); }
-/* The menu pops from its trigger's corner (the library menu / model-picker popover): in from translateY(-4px)
-   scale(.96) with opacity 160ms + transform 220ms ease-out, out in 180ms; display is discrete, so after the
-   exit a closed menu takes no hits and no room. */
-/* The defaults menu is @2lab.ai/ui <ui-menu id="td-menu"> (A-07): it hangs from the chip that opened it. */
-#td-menu { position: absolute; }
+/* The default model and effort are one @2lab.ai/ui <ui-model-picker id="td-picker"> — the session menu's element:
+   the models with window · auto-compact · cost and only the levels the model runs, both set in one menu. The word
+   before it is quiet; "열린 세션에도" (a kit switch) shows only while a session the owner may switch is open. */
+.topbar .td-prefix { font-size: 12px; color: var(--ib-muted); }
+.topbar .td-also { font-size: 12px; white-space: nowrap; }
+/* The kit's .ui-switch sets a display of its own, which beats the hidden attribute: say it again. */
+.topbar .td-also[hidden] { display: none; }
 /* The save line is the kit's status line (.ui-status-line, data-tone="fail" for a refused write), capped in the bar. */
 .topbar .td-status { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The user switcher is the kit's select chip (select.ui-select-chip, D7 A-11): a native <select> read as a label,
@@ -5086,6 +5101,20 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* The <ui-approval-card> slots (batch 1): a gap between two prompts, and the open card's off what follows. */
 .ac-slot + .ac-slot { margin-top: 10px; }
 .card-body > .ac-slot { margin-bottom: 10px; }
+/* SSOT 2026-11-02 T2–T4 — a permission prompt's AI advice, in the page's status colours (red = the AI says do not
+   run, green = it recommends). The card takes the colour through its own tokens (its Approve turns red or green);
+   the box under it says what the call does and why it is risky. */
+ui-approval-card[data-ai="deny"] { --ac-primary: var(--st-fail); --ac-primary-hover: color-mix(in srgb, var(--st-fail) 86%, var(--text)); --ac-line: color-mix(in srgb, var(--st-fail) 45%, var(--border)); }
+ui-approval-card[data-ai="approve"] { --ac-primary: var(--st-done); --ac-primary-hover: color-mix(in srgb, var(--st-done) 86%, var(--text)); --ac-line: color-mix(in srgb, var(--st-done) 45%, var(--border)); }
+.ac-advice { margin-top: 6px; padding: 9px 12px; border-left: 4px solid transparent; border-radius: 10px; font-size: 13px; line-height: 19px; overflow-wrap: anywhere; }
+.ac-advice[data-ai="deny"] { border-left-color: var(--st-fail); background: color-mix(in srgb, var(--st-fail) 9%, var(--surface)); }
+.ac-advice[data-ai="approve"] { border-left-color: var(--st-done); background: color-mix(in srgb, var(--st-done) 9%, var(--surface)); }
+.ac-advice-head { font-weight: 650; }
+.ac-advice[data-ai="deny"] .ac-advice-head, .ac-advice[data-ai="deny"] .ac-advice-note { color: var(--st-fail-text); }
+.ac-advice[data-ai="approve"] .ac-advice-head { color: var(--st-done); }
+.ac-advice-row { color: var(--text-secondary); }
+.ac-advice-row b { margin-right: 4px; color: var(--text); font-weight: 600; }
+.ac-advice-note { margin-top: 2px; font-weight: 600; }
 
 /* ── CHARTS — @2lab.ai/ui <ui-bar-chart> (B-08): 세션 and 코드 변경 (머지) per day, side by side behind 자세히.
    Each element is its own 12px card on the resting shadow, with dashed gridlines, a tooltip that follows the hot
@@ -5759,9 +5788,9 @@ ${pageTokenAliases()}
     <ui-app-bar id="app-bar" lang="ko">
     <div class="topbar-scope" id="topbar-scope" slot="toolbar">
     <div class="topbar-defaults" id="topbar-defaults" hidden>
-      <button type="button" class="ui-chip td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
-      <button type="button" class="ui-chip td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 추론 강도 — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">추론 </span><b id="td-effort-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
-      <ui-menu id="td-menu" lang="ko"></ui-menu>
+      <span class="td-prefix" aria-hidden="true">기본</span>
+      <ui-model-picker id="td-picker" class="td-picker" lang="ko" title="새 세션의 기본 모델 · 추론 강도"><span class="mp-fallback">기본 모델</span></ui-model-picker>
+      <label class="ui-switch td-also" id="td-also" hidden title="켜 두면 고른 기본값을 패널에 열린 세션에도 바로 적용합니다"><input type="checkbox" role="switch" id="td-also-session" checked onchange="tdOnAlsoChange(this.checked)"><span>열린 세션에도</span></label>
       <span class="ui-status-line td-status" id="td-status" role="status" aria-live="polite"></span>
     </div>
     <select class="ui-select-chip user-select" id="user-select" title="모든 사용자" aria-label="보드에 보일 사용자" onchange="selectUser(this.value)">
@@ -5993,10 +6022,11 @@ ${pageTokenAliases()}
           <button type="button" class="ui-chip" id="nt-kind-epic" aria-pressed="false" hidden title="계획을 쓰고 자식 작업을 만들어 끝까지 모는 에픽" onclick="ntToggleEpic()"><span>에픽</span></button>
         </div>
         <div class="nt-config" role="group" aria-label="작업 설정">
-          <!-- Kit select chips (.ui-select-chip, D7 H-02): the word, then the native select sized to its option; the model's
-               remaining usage beside it is @2lab.ai/ui <ui-meter shape="battery"> (H-03) in a button that opens the usage line. -->
-          <label class="ui-select-chip"><span>모델</span><select id="nt-model" onchange="ntOnModelChange()"></select></label><button type="button" class="nt-battery-btn" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><ui-meter id="nt-battery" shape="battery" low="0.2" high="0.5" label="모델 잔여량" lang="ko"></ui-meter></button>
-          <label class="ui-select-chip nt-chip-effort"><span>추론</span><select id="nt-effort" onchange="ntOnEffortChange()"></select></label>
+          <!-- The task's model and effort: @2lab.ai/ui <ui-model-picker> (the session menu's element) — one trigger, one menu
+               with each model's window · auto-compact · cost and only the levels that model runs; a model pick carries
+               the effort over to them (ntOnPick). The model's remaining usage beside it is @2lab.ai/ui
+               <ui-meter shape="battery"> (H-03) in a button that opens the usage line. The rest are kit select chips. -->
+          <ui-model-picker id="nt-picker" class="nt-picker" lang="ko"><span class="mp-fallback">모델</span></ui-model-picker><button type="button" class="nt-battery-btn" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><ui-meter id="nt-battery" shape="battery" low="0.2" high="0.5" label="모델 잔여량" lang="ko"></ui-meter></button>
           <label class="ui-select-chip nt-chip-folder" id="nt-folder-chip" hidden><span>폴더</span><select id="nt-folder" onchange="ntOnFolderChange()"></select></label>
           <label class="ui-select-chip nt-chip-channel"><span>채널</span><select id="nt-channel" onchange="ntOnChannelChange()"></select></label>
         </div>
@@ -6086,6 +6116,8 @@ const DASHBOARD_HEADER_CONFIG = ${initDashboardHeaderConfig};
 // SSOT 2026-10-22 T4: [{ nickname, model, label, contextWindow, autoCompactTokens }]
 const REPRESENTATIVE_MODELS = ${initRepresentativeModels};
 const EFFORT_LEVELS = ${initEffortLevels};
+// The levels a model without a catalog menu runs — never ultra (only a model whose menu lists it runs that).
+const SDK_EFFORT_LEVELS = ${initSdkEffortLevels};
 // field → first config entry map (show/max/truncate lookups in renderCard).
 const _dhFieldMap = {};
 for (const _dhLine of DASHBOARD_HEADER_CONFIG) {
@@ -6300,7 +6332,7 @@ function acDetailDue(detail, now) {
 // Per session: a question has no request id (its id is its content), so two
 // sessions asking the same thing are two requests (PR #536 review P1).
 var _acState = Object.create(null);
-var AC_SENT = { approve: '승인을 보냈어요', deny: '거부를 보냈어요', explain: '설명을 요청했어요', approve_disable_rule: '승인을 보냈어요 · 규칙 끔' };
+var AC_SENT = { approve: '승인을 보냈어요', deny: '거부를 보냈어요', explain: '설명을 요청했어요', approve_disable_rule: '승인을 보냈어요 · 규칙 끔', approve_confirmed: '2차 확인 후 승인을 보냈어요' };
 var AC_SIBLING = '다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요';
 
 function isPermissionRequester(p) {
@@ -6327,8 +6359,24 @@ function acQuestionLock(s) {
 }
 
 // DashboardPermissionRequest (+ the requester's input, + this page's answer) → the card's data.
+// SSOT 2026-11-02 T2–T4 — a prompt's AI advice as the page shows it: the recommendation (red = do not run,
+// green = approve) for every viewer; what the call does and why it is risky only once the requester's detail is
+// in (it can quote the command). Null when the AI gave none.
+function acPermissionAdvice(s, p) {
+  var rec = p.aiRecommendation === 'deny' || p.aiRecommendation === 'approve' ? p.aiRecommendation : '';
+  if (!rec) return null;
+  var detail = acPermissionLock(s, p) ? null : _permDetails[p.approvalId];
+  var adv = detail && detail.advice ? detail.advice : null;
+  var a = { rec: rec, head: rec === 'deny' ? '🔴 AI 권고: 실행하지 마세요' : '🟢 AI 추천: 승인해도 됩니다' };
+  if (adv && adv.summary) a.summary = String(adv.summary);
+  if (adv && adv.risk) a.risk = String(adv.risk);
+  if (rec === 'deny') a.note = '승인하면 한 번 더 묻습니다';
+  return a;
+}
 function acPermissionData(s, p) {
-  var d = { kind: 'permission', id: String(p.approvalId), tool: p.toolName || 'tool', canExplain: true, canDisableRule: !!p.canDisableRule };
+  var advice = acPermissionAdvice(s, p);
+  var rec = advice ? advice.rec : '';
+  var d = { kind: 'permission', id: String(p.approvalId), tool: p.toolName || 'tool', canExplain: true, canDisableRule: !!p.canDisableRule && rec !== 'deny' };
   var rules = (p.rules || []).map(function(r) {
     var o = { id: String(r.id), label: String(r.label || r.id) };
     if (r.description) o.description = String(r.description);
@@ -6352,6 +6400,16 @@ function acPermissionData(s, p) {
       d.input = detail.input;
       if (detail.truncated) d.truncated = true;
     }
+  }
+  if (advice) {
+    // The line under the title (one line on the card, whole in its tooltip); the box under the card
+    // (acPaintAdvice) shows every line.
+    var lines = [advice.head];
+    if (advice.summary) lines.push('무엇을 하나: ' + advice.summary);
+    if (advice.risk) lines.push('왜 위험한가: ' + advice.risk);
+    if (advice.note) lines.push(advice.note);
+    d.risk = rec === 'deny' ? 'high' : 'low';
+    d.description = lines.join('\\n');
   }
   var st = _acState[s.key] && _acState[s.key]['p|' + p.approvalId];
   if (st) d.state = st;
@@ -6420,7 +6478,8 @@ function acEvict(key, s) {
 function acSlotHtml(key, kind, mk, id, fallback) {
   return '<div class="ui-tok ac-slot" data-mk="' + escAttr('ac|' + mk) + '">'
     + '<ui-approval-card lang="ko" data-ac-key="' + escAttr(key) + '" data-ac-kind="' + kind + '"' + (id ? ' data-ac-id="' + escAttr(id) + '"' : '') + '>'
-    + '<span class="ac-fallback">' + esc(fallback) + '</span></ui-approval-card></div>';
+    + '<span class="ac-fallback">' + esc(fallback) + '</span></ui-approval-card>'
+    + (kind === 'perm' ? '<div class="ac-advice" hidden></div>' : '') + '</div>';
 }
 function acPermissionsHtml(s) {
   return ((s && s.pendingPermissions) || []).map(function(p) {
@@ -6491,10 +6550,49 @@ function acDataFor(el) {
     var gd = s.pendingGoalDecision;
     return gd && String(gd.decisionId) === el.getAttribute('data-ac-id') ? acGoalDecisionData(s, gd) : null;
   }
-  var id = el.getAttribute('data-ac-id');
-  var list = s.pendingPermissions || [];
-  for (var i = 0; i < list.length; i++) if (String(list[i].approvalId) === id) return acPermissionData(s, list[i]);
+  var p = acPermissionOf(s, el.getAttribute('data-ac-id'));
+  return p ? acPermissionData(s, p) : null;
+}
+function acPermissionOf(s, id) {
+  var list = (s && s.pendingPermissions) || [];
+  for (var i = 0; i < list.length; i++) if (String(list[i].approvalId) === id) return list[i];
   return null;
+}
+// SSOT 2026-11-02 T2–T4 — the advice box under a permission card, and the card's colour: the element's own
+// --ac-* tokens follow data-ai (the page's CSS), so Approve is red when the AI says not to run and green when it
+// recommends. The box is the page's (the card shows one line): the head, what the call does, why it is risky —
+// model text, so only ever textContent.
+function acPaintAdvice(el, a) {
+  if (a) el.setAttribute('data-ai', a.rec);
+  else el.removeAttribute('data-ai');
+  var box = el.nextElementSibling;
+  if (!box || !box.classList || !box.classList.contains('ac-advice')) return;
+  var sig = a ? JSON.stringify(a) : '';
+  if (box._adviceSig === sig) return;
+  box._adviceSig = sig;
+  box.textContent = '';
+  if (!a) {
+    box.hidden = true;
+    box.removeAttribute('data-ai');
+    return;
+  }
+  box.hidden = false;
+  box.setAttribute('data-ai', a.rec);
+  var add = function(cls, label, text) {
+    var row = document.createElement('div');
+    row.className = cls;
+    if (label) {
+      var b = document.createElement('b');
+      b.textContent = label;
+      row.appendChild(b);
+    }
+    row.appendChild(document.createTextNode(text));
+    box.appendChild(row);
+  };
+  add('ac-advice-head', '', a.head);
+  if (a.summary) add('ac-advice-row', '무엇을 하나 ', a.summary);
+  if (a.risk) add('ac-advice-row', '왜 위험한가 ', a.risk);
+  if (a.note) add('ac-advice-note', '', a.note);
 }
 // Set every approval card's data under root — only what changed (a push that
 // changes nothing on a card does not re-render it). Data set before the
@@ -6503,6 +6601,11 @@ function acHydrate(root) {
   if (!root || !root.querySelectorAll) return;
   var els = root.querySelectorAll('ui-approval-card[data-ac-key]');
   for (var i = 0; i < els.length; i++) {
+    if (els[i].getAttribute('data-ac-kind') === 'perm') {
+      var ps = _sessionCache[els[i].getAttribute('data-ac-key')];
+      var pp = ps ? acPermissionOf(ps, els[i].getAttribute('data-ac-id')) : null;
+      acPaintAdvice(els[i], pp ? acPermissionAdvice(ps, pp) : null);
+    }
     var d = acDataFor(els[i]);
     if (!d) continue;
     var sig = JSON.stringify(d);
@@ -6665,6 +6768,7 @@ function loadPermissionDetail(key, approvalId) {
       return res.json().catch(function() { return {}; }).then(function(body) {
         if (res.ok && typeof body.input === 'string') {
           _permDetails[approvalId] = { input: body.input, truncated: !!body.truncated };
+          if (body.advice && typeof body.advice === 'object') _permDetails[approvalId].advice = body.advice;
         } else if (res.status === 404) {
           _permDetails[approvalId] = { error: '이미 응답되었거나 만료된 요청입니다' };
         } else {
@@ -6697,7 +6801,10 @@ async function acPost(url, body) {
 async function acRefusal(res) {
   var data = {};
   try { data = await res.json(); } catch (_e) {}
-  return { status: 'error', message: (data && data.error) || ('응답을 보내지 못했어요 (HTTP ' + res.status + ')'), retry: res.status !== 409 && res.status !== 404 };
+  var st = { status: 'error', message: (data && data.error) || ('응답을 보내지 못했어요 (HTTP ' + res.status + ')'), retry: res.status !== 409 && res.status !== 404 };
+  // SSOT 2026-11-02 T4 — the AI advised against it: the next Approve on this card is the second, confirmed one.
+  if (data && data.code === 'confirm_required') st.confirm = true;
+  return st;
 }
 function acToolOf(key, approvalId) {
   var s = _sessionCache[key];
@@ -6770,20 +6877,25 @@ async function answerPermission(key, approvalId, decision) {
   var states = _acState[key] || (_acState[key] = Object.create(null));
   var cur = states[sk];
   if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
+  // SSOT 2026-11-02 T4 — the server asked again (the AI advised against the call): this Approve is the confirmed one.
+  var send = cur && cur.confirm && (decision === 'approve' || decision === 'approve_disable_rule') ? 'approve_confirmed' : decision;
   states[sk] = { status: 'sending', decision: decision };
   acRepaint(key);
   var st;
   try {
-    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/permission', JSON.stringify({ approvalId: approvalId, decision: decision }));
+    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/permission', JSON.stringify({ approvalId: approvalId, decision: send }));
     if (res.ok) {
       st = { status: 'resolved', outcome: decision === 'deny' ? 'denied' : decision === 'explain' ? 'explained' : 'approved', at: Date.now() };
-      if (decision === 'approve_disable_rule') st.ruleDisabled = true;
-      dashToast({ title: AC_SENT[decision] || '응답을 보냈어요', description: acToolOf(key, approvalId), tone: 'success' });
+      if (send === 'approve_disable_rule') st.ruleDisabled = true;
+      dashToast({ title: AC_SENT[send] || '응답을 보냈어요', description: acToolOf(key, approvalId), tone: 'success' });
     } else st = await acRefusal(res);
   } catch (e) {
     console.error('Permission answer error', e);
     st = { status: 'error', message: '네트워크 오류 — 다시 시도하세요', retry: true };
   }
+  // A second answer that failed for another reason keeps the card on its second ask: the next Approve still
+  // sends the confirmed answer (the server remembers it asked).
+  if (cur && cur.confirm && st.status === 'error') st.confirm = true;
   // Kept only while the session still asks it (a push may have taken it meanwhile).
   var still = ((_sessionCache[key] && _sessionCache[key].pendingPermissions) || []).some(function(p) { return String(p.approvalId) === String(approvalId); });
   if (still) (_acState[key] || (_acState[key] = Object.create(null)))[sk] = st;
@@ -7672,14 +7784,14 @@ async function refreshCsrfToken() {
 refreshCsrfToken();
 
 // ── Top bar: the owner's default model / effort (SSOT 2026-10-23 T6) ──
-// One click opens a menu; picking saves the default at once (PATCH
-// /api/settings/:key — the same path as Slack "model set" / "effort"). When the
-// owner has a session panel open, "이 세션에도 적용" (on by default) also
-// switches that session, like Slack's bare "effort <level>" applies to the
-// current thread. Hidden when there is no signed-in Slack user (viewer token).
+// One picker (<ui-model-picker id="td-picker">) sets the default model and
+// effort together; a pick saves at once (PATCH /api/settings/:key — the same
+// path as Slack "model set" / "effort"). When the owner has a session panel
+// open, "열린 세션에도" (on by default) also switches that session, like Slack's
+// bare "effort <level>" applies to the current thread. Hidden when there is no
+// signed-in Slack user (viewer token).
 var _myDefaults = null; // { model: settingRow, effort: settingRow }
 var _settingsLoads = 0; // settings loads started: an answer older than a later one's does not set the plan
-var _tdMenuKind = null;
 async function loadMyDefaults() {
   var box = document.getElementById('topbar-defaults');
   if (!box) return;
@@ -7719,7 +7831,7 @@ async function loadMyDefaults() {
     }
     if (!model || !effort) { box.hidden = true; return; }
     _myDefaults = { model: model, effort: effort };
-    renderDefaultsChips();
+    renderDefaultsPicker();
     box.hidden = false;
   } catch (_e) { box.hidden = true; }
 }
@@ -7727,13 +7839,6 @@ function optionLabel(row, value) {
   var opts = (row && row.options) || [];
   for (var i = 0; i < opts.length; i++) if (opts[i].value === value) return opts[i].label;
   return String(value || '');
-}
-function renderDefaultsChips() {
-  if (!_myDefaults) return;
-  var m = document.getElementById('td-model-value');
-  var e = document.getElementById('td-effort-value');
-  if (m) m.textContent = optionLabel(_myDefaults.model, _myDefaults.model.value);
-  if (e) e.textContent = optionLabel(_myDefaults.effort, _myDefaults.effort.value);
 }
 // The session model switch takes representative nicknames only.
 function sessionAcceptsModel(value) {
@@ -7748,64 +7853,52 @@ function defaultsScopeSession() {
   if (!s || !viewerOwns(s) || s.terminated || isSiblingSession(s)) return null;
   return s;
 }
-// <ui-menu id="td-menu"> (A-07): the page hands it the rows — a heading, the options as one radio group (the
-// current one checked) and, for the open session the owner may switch too, a checkbox "열린 세션에도 적용" that is
-// on each time the menu opens — and answers ui-select. The element hangs from the chip, moves focus to the checked
-// row, does the arrows / typeahead / Esc / outside press, and gives focus back to the chip.
-var TD_ALSO_SESSION = 'td-also-session';
+// "열린 세션에도" (on by default): a pick also switches the session open in the panel. Shown only while there is one.
 var _tdAlsoSession = true;
-function defaultsMenuData(kind) {
-  var row = _myDefaults && (kind === 'model' ? _myDefaults.model : _myDefaults.effort);
-  if (!row) return null;
-  var title = kind === 'model' ? '새 세션 기본 모델' : '새 세션 기본 추론 강도';
-  var items = [{ kind: 'heading', label: title }];
-  var opts = row.options || [];
-  for (var i = 0; i < opts.length; i++) {
-    var o = opts[i];
-    var it = { kind: 'radio', value: String(o.value), label: String(o.label), checked: o.value === row.value };
-    if (o.description && kind === 'model') it.description = String(o.description);
-    items.push(it);
-  }
-  var s = defaultsScopeSession();
-  if (s) {
-    items.push({ kind: 'separator' });
-    items.push({ kind: 'checkbox', value: TD_ALSO_SESSION, label: '열린 세션에도 적용', description: String(s.displayHeadline || s.title || s.key), checked: _tdAlsoSession });
-  }
-  return { label: title, items: items };
+function tdOnAlsoChange(on) {
+  _tdAlsoSession = !!on;
 }
-function openDefaultsMenu(kind, btn) {
-  var menu = document.getElementById('td-menu');
-  if (!menu || !_myDefaults || typeof menu.show !== 'function') return;
-  if (menu.open && _tdMenuKind === kind) { closeDefaultsMenu(); return; }
-  _tdAlsoSession = true;
-  var d = defaultsMenuData(kind);
-  if (!d) return;
-  _tdMenuKind = kind;
-  menu.data = d;
-  menu.show(btn);
+function paintDefaultsScope() {
+  var sw = document.getElementById('td-also');
+  if (!sw) return;
+  var s = _myDefaults ? defaultsScopeSession() : null;
+  sw.hidden = !s;
+  if (s) sw.title = '켜 두면 고른 기본값을 열린 세션(' + String(s.displayHeadline || s.title || s.key) + ')에도 바로 적용합니다';
 }
-function closeDefaultsMenu() {
-  var menu = document.getElementById('td-menu');
-  if (menu && menu.open) menu.hide();
-  _tdMenuKind = null;
+// <ui-model-picker id="td-picker">: the representative models (mpRows — each with the levels it runs), the
+// default model (a model outside them is the element's first, current, unselectable row) and the default effort,
+// with the levels the server offers for the default model (the settings row's options). A model pick carries the
+// effort over on the server; the picker shows the writes in flight and the last refusal.
+var _tdBusy = { model: false, effort: false };
+var _tdError = '';
+function defaultsPickerData() {
+  if (!_myDefaults) return null;
+  var levels = ((_myDefaults.effort && _myDefaults.effort.options) || []).map(function(o) { return String(o.value); });
+  var value = { model: String(_myDefaults.model.value || ''), effort: String(_myDefaults.effort.value || '') };
+  if (levels.length) value.effortLevels = levels;
+  var d = { models: mpRows(REPRESENTATIVE_MODELS || []), value: value, heading: '새 세션 기본값', busy: { model: _tdBusy.model, effort: _tdBusy.effort } };
+  if (_tdError) d.error = _tdError;
+  return d;
 }
-(function initDefaultsMenu() {
-  var menu = document.getElementById('td-menu');
-  if (!menu) return;
-  menu.addEventListener('ui-select', function(e) {
-    var d = e.detail || {};
-    if (d.kind === 'checkbox' && d.value === TD_ALSO_SESSION) { _tdAlsoSession = !!d.checked; return; }
-    if (d.kind === 'radio' && _tdMenuKind) pickDefault(_tdMenuKind, d.value);
+function renderDefaultsPicker() {
+  var el = document.getElementById('td-picker');
+  var d = defaultsPickerData();
+  if (el && d) el.data = d;
+  paintDefaultsScope();
+}
+(function initDefaultsPicker() {
+  var el = document.getElementById('td-picker');
+  if (!el) return;
+  // The page holds the default: the element shows the saved value until the server agrees.
+  el.addEventListener('ui-change', function(e) {
+    if (!e.detail) return;
+    e.preventDefault();
+    if (e.detail.changed === 'model') pickDefault('model', String(e.detail.model || ''));
+    else if (e.detail.changed === 'effort') pickDefault('effort', String(e.detail.effort || ''));
   });
-  // Closed by the element (Esc, an outside press, focus leaving): the page forgets which chip it was.
-  menu.addEventListener('ui-open-change', function(e) {
-    var open = !!(e.detail && e.detail.open);
-    if (!open) _tdMenuKind = null;
-    // The element marks only the chip it hangs from; the other chip keeps saying it is collapsed.
-    ['td-model', 'td-effort'].forEach(function(id) {
-      var chip = document.getElementById(id);
-      if (chip && (!open || chip.getAttribute('aria-expanded') !== 'true')) chip.setAttribute('aria-expanded', 'false');
-    });
+  // Opening the menu re-reads whether a session is open (the switch beside it).
+  el.addEventListener('ui-open-change', function(e) {
+    if (e.detail && e.detail.open) paintDefaultsScope();
   });
 })();
 // Settings changed in Slack — or on the settings page (the plan) — show up when the tab comes back, and when the
@@ -7836,38 +7929,63 @@ function setDefaultsStatus(text, isError) {
   if (isError) el.setAttribute('data-tone', 'fail'); else el.removeAttribute('data-tone');
 }
 async function pickDefault(kind, value) {
+  if (!value || !_myDefaults || _tdBusy[kind]) return;
   var session = _tdAlsoSession ? defaultsScopeSession() : null;
   var skipSession = !!session && kind === 'model' && !sessionAcceptsModel(value);
   if (skipSession) session = null;
-  closeDefaultsMenu();
   var key = kind === 'model' ? 'defaultModel' : 'defaultEffort';
+  _tdBusy[kind] = true;
+  _tdError = '';
+  renderDefaultsPicker();
   setDefaultsStatus('저장 중…', false);
   var r;
   try { r = await patchSetting(key, value); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
-  if (!r.ok) { setDefaultsStatus('저장하지 못했습니다: ' + r.error, true); return; }
+  _tdBusy[kind] = false;
+  if (!r.ok) {
+    _tdError = '저장하지 못했습니다: ' + r.error;
+    renderDefaultsPicker();
+    setDefaultsStatus(_tdError, true);
+    return;
+  }
   _myDefaults[kind] = r.setting;
-  renderDefaultsChips();
+  // A model change carries the default effort over to the levels the new model runs (the server's rule): read both back.
+  if (kind === 'model') await refreshDefaultEffort();
+  renderDefaultsPicker();
   var msg = '기본 ' + (kind === 'model' ? '모델' : '추론 강도') + ' → ' + optionLabel(r.setting, r.setting.value) + ' (새 세션부터)';
+  if (kind === 'model' && _myDefaults.effort) msg += ' · 추론 강도 ' + optionLabel(_myDefaults.effort, _myDefaults.effort.value);
   if (skipSession) msg += ' · 이 모델은 세션 전환 목록에 없어 열린 세션은 그대로';
   if (session && isBusy(session.key, kind)) {
     // The session is already switching (from its card or panel): one switch at a time.
     msg += ' · 열린 세션은 전환 중이라 그대로';
   } else if (session) {
+    // An effort goes to the session as the nearest level its own model runs.
+    var target = kind === 'model' ? value : fitEffortLevel(mpEffortLevels(session), value);
     var sr;
     setBusy(session.key, kind, true);
     refreshCard(session.key);
     repaintPanelControlsFor(session.key);
     try {
-      sr = kind === 'model' ? await postModelSwitch(session.key, value) : await postEffortSwitch(session.key, value);
+      sr = kind === 'model' ? await postModelSwitch(session.key, target) : await postEffortSwitch(session.key, target);
     } catch (e) { sr = { ok: false, error: String(e && e.message || e) }; }
     setBusy(session.key, kind, false);
     _modelNotes[session.key] = kind === 'model' ? modelSwitchNote(sr) : effortSwitchNote(sr);
-    msg += sr.ok ? ' · 열린 세션에도 적용' : ' · 열린 세션은 바꾸지 못함: ' + sr.error;
+    if (kind === 'effort') mpApplyEffort(session.key, sr);
+    msg += sr.ok ? ' · 열린 세션에도 적용' + (target !== value ? ' (' + effortLabel(target) + ')' : '') : ' · 열린 세션은 바꾸지 못함: ' + sr.error;
     refreshCard(session.key);
     repaintPanelControlsFor(session.key);
     loadSessions();
   }
   setDefaultsStatus(msg, false);
+}
+// The default effort row after a model change (its value and the levels it offers follow the model).
+async function refreshDefaultEffort() {
+  try {
+    var res = await fetch('/api/settings');
+    if (!res.ok) return;
+    var data = await res.json();
+    var rows = (data && data.settings) || [];
+    for (var i = 0; i < rows.length; i++) if (rows[i].key === 'defaultEffort' && _myDefaults) _myDefaults.effort = rows[i];
+  } catch (_e) {}
 }
 
 // ── Utility ──
@@ -8032,6 +8150,9 @@ function syncBoardScope() {
   document.body.toggleAttribute('data-board-mine', !!currentUserId && currentUserId === _viewerUserId);
 }
 function selectUser(userId) {
+  // Called from the picker (its value already set) and from 카드 열기 (#747 review R2 N4): the picker shows the board.
+  const select = document.getElementById('user-select');
+  if (select && select.value !== userId) select.value = userId;
   syncUserSelectTitle();
   currentUserId = userId;
   syncBoardScope();
@@ -8411,6 +8532,9 @@ function renderBoard(board, partial) {
   _cardData = Object.create(null);
   _cardDrawn = Object.create(null);
   _epicKidsDrawn = Object.create(null);
+  // SSOT 2026-11-02 T1: launches from the new task dialog lead RUNNING as 시작 중 cards until their own card is
+  // in this board (ntPendingPlace settles them against it first); one that did not start leads NEEDS YOU.
+  var pending = ntPendingPlace(kb);
   // Each list's cards, an epic's children right after its card (E4 ⑨c, withEpicChildren);
   // what each epic's children are, as placed, for the push path (applyEpicPush).
   var hideKids = showSleeping === false;
@@ -8430,8 +8554,8 @@ function renderBoard(board, partial) {
   if (kb) {
     kb._ibPlan = {
       cols: [
-        { id: 'waiting', label: BOARD_LABELS.waiting, keys: keys(rest.waiting, 'waiting', kb) },
-        { id: 'working', label: BOARD_LABELS.working, keys: keys(rest.working, 'working', kb) },
+        { id: 'waiting', label: BOARD_LABELS.waiting, keys: pending.waiting.concat(keys(rest.waiting, 'waiting', kb)) },
+        { id: 'working', label: BOARD_LABELS.working, keys: pending.working.concat(keys(rest.working, 'working', kb)) },
         {
           id: 'done',
           label: BOARD_LABELS.done,
@@ -8480,6 +8604,8 @@ function renderBoard(board, partial) {
   // element's enter / move animations have settled (SSOT 2026-10-24).
   scheduleLayoutRefresh(MOTION.move + 40);
   openDeepLinkedSession();
+  // T2: a launch's card 카드 열기 asked for, now that a render may have brought it.
+  ntOpenArrivals();
 }
 
 // One card on an element this render: where it is, with what, and its data —
@@ -8577,6 +8703,9 @@ function wireInbox(host) {
     // drops it) has nothing to build: it stays closed instead of growing an empty body.
     if (open && !s) {
       e.preventDefault();
+      // A 시작 중 card (SSOT 2026-11-02 T2) has no session yet: its own card opens as soon as it is on the board.
+      var launch = ntPendingOf(key);
+      if (launch) ntOpenLaunch(launch);
       return;
     }
     if (open) _expanded.add(key);
@@ -11699,13 +11828,49 @@ function renderModelPicker(s, canSwitch, modelShort, surface) {
 function mpShort(s) {
   return String((s && s.model) || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
 }
-// The levels the session's model runs (all of them when the catalog has no menu for it) — re-model-picker D6/D7.
+// The levels the session's model runs (the SDK levels — never ultra — when the catalog has no menu for it) — re-model-picker D6/D7.
 function mpEffortLevels(s) {
+  return mpLevelsOf(s && s.effortLevels);
+}
+// A model's levels in level order: its menu ∩ EFFORT_LEVELS, or the SDK levels without a menu.
+function mpLevelsOf(menu) {
   var all = EFFORT_LEVELS || [];
-  var menu = s.effortLevels && s.effortLevels.length ? s.effortLevels : null;
+  if (!menu || !menu.length) return (SDK_EFFORT_LEVELS || all).slice();
   var out = [];
-  for (var i = 0; i < all.length; i++) if (!menu || menu.indexOf(all[i]) >= 0) out.push(all[i]);
-  return out.length ? out : all.slice();
+  for (var i = 0; i < all.length; i++) if (menu.indexOf(all[i]) >= 0) out.push(all[i]);
+  return out.length ? out : (SDK_EFFORT_LEVELS || all).slice();
+}
+// An effort carried over to a model's levels: kept when the model runs it, else the strongest level it runs that is
+// not stronger, else its weakest (the server's and the library's rule) — a model change never keeps a level the
+// new model cannot take.
+function fitEffortLevel(levels, effort) {
+  if (!effort || !levels || !levels.length || levels.indexOf(effort) >= 0) return effort;
+  var order = EFFORT_LEVELS || [];
+  var at = order.indexOf(effort);
+  var best = '';
+  for (var i = 0; i < levels.length; i++) {
+    var r = order.indexOf(levels[i]);
+    if (r >= 0 && r <= at && (!best || r > order.indexOf(best))) best = levels[i];
+  }
+  if (best) return best;
+  var low = '';
+  for (var j = 0; j < levels.length; j++) {
+    var q = order.indexOf(levels[j]);
+    if (q >= 0 && (!low || q < order.indexOf(low))) low = levels[j];
+  }
+  return low || levels[0];
+}
+// The representative models as picker rows: named by nickname (what every write takes), with window,
+// auto-compact point, price and the levels each model runs (a pick of a row fits the effort to them).
+function mpRows(models) {
+  var rows = [];
+  for (var i = 0; i < (models || []).length; i++) {
+    var m = models[i];
+    var row = { id: m.nickname, label: m.label || m.nickname, short: m.nickname, window: toNum(m.contextWindow), autoCompactAt: toNum(m.autoCompactTokens), price: m.price || null };
+    row.effortLevels = mpLevelsOf(m.effortLevels);
+    rows.push(row);
+  }
+  return rows;
 }
 // What the picker shows of one session: the representative models in server
 // order, each named by its nickname (what POST /model takes); the session's
@@ -11716,13 +11881,9 @@ function mpEffortLevels(s) {
 // compaction locks the rows and says so under the trigger — and the last refusal.
 function mpData(s) {
   var models = REPRESENTATIVE_MODELS || [];
-  var rows = [];
+  var rows = mpRows(models);
   var cur = '';
-  for (var i = 0; i < models.length; i++) {
-    var m = models[i];
-    if (m.model === s.model) cur = m.nickname;
-    rows.push({ id: m.nickname, label: m.label || m.nickname, short: m.nickname, window: toNum(m.contextWindow), autoCompactAt: toNum(m.autoCompactTokens), price: m.price || null });
-  }
+  for (var i = 0; i < models.length; i++) if (models[i].model === s.model) cur = models[i].nickname;
   var value = { model: cur || mpShort(s), effortLevels: mpEffortLevels(s) };
   if (s.effort) value.effort = s.effort;
   if (s.effortEffective) value.effectiveEffort = s.effortEffective;
@@ -11770,7 +11931,8 @@ function mpHydrate(root) {
 // changeModel, a level to changeEffort (each one write per session at a time).
 function mpOnChange(e) {
   var el = e.target;
-  if (!el || el.tagName !== 'UI-MODEL-PICKER' || !e.detail) return;
+  // Only a session's picker (the new task's and the defaults' answer their own ui-change).
+  if (!el || el.tagName !== 'UI-MODEL-PICKER' || !e.detail || !el.hasAttribute('data-mp-key')) return;
   e.preventDefault();
   var key = el.getAttribute('data-mp-key');
   if (e.detail.changed === 'model') changeModel(key, String(e.detail.model || ''));
@@ -11781,7 +11943,7 @@ document.addEventListener('ui-change', mpOnChange);
 // and the panel controls held their live updates while it was open (D12).
 function mpOnOpenChange(e) {
   var el = e.target;
-  if (!el || el.tagName !== 'UI-MODEL-PICKER' || !e.detail || e.detail.open) return;
+  if (!el || el.tagName !== 'UI-MODEL-PICKER' || !e.detail || e.detail.open || !el.hasAttribute('data-mp-key')) return;
   var key = el.getAttribute('data-mp-key');
   refreshCard(key);
   repaintPanelControlsFor(key);
@@ -11843,16 +12005,21 @@ async function changeModel(key, nickname) {
 // The owner picks one of the five levels; the session runs it from the next
 // turn (the %effort scope — the owner's default stays). When the session's
 // model caps the level, the note says what actually runs.
-var EFFORT_LABELS = { low: '낮음', medium: '보통', high: '높음', xhigh: '매우 높음', max: '최대' };
+var EFFORT_LABELS = { low: '낮음', medium: '보통', high: '높음', xhigh: '매우 높음', max: '최대', ultra: '울트라' };
 function effortLabel(level) {
   return EFFORT_LABELS[level] || String(level || '');
+}
+// One effort word with its level's look — XHigh a red gradient, Max a gold foil, Ultra a holographic foil
+// (@2lab.ai/ui kit .ui-effort, the same as the model menu's).
+function effortWord(level) {
+  return '<span class="ui-effort" data-effort="' + escAttr(level) + '">' + esc(effortLabel(level)) + '</span>';
 }
 function renderEffortPicker(s) {
   // The owner's control lives in the model menu (<ui-model-picker>); others read the level.
   var capped = s.effortEffective && s.effortEffective !== s.effort
     ? ' title="이 모델은 ' + escAttr(effortLabel(s.effortEffective)) + '까지 실행합니다"' : ' title="' + STRINGS.effortTitle + '"';
-  return '<span class="meta-effort"' + capped + '>' + esc(effortLabel(s.effort))
-    + (s.effortEffective && s.effortEffective !== s.effort ? ' &rarr; ' + esc(effortLabel(s.effortEffective)) : '') + '</span>';
+  return '<span class="meta-effort"' + capped + '>' + effortWord(s.effort)
+    + (s.effortEffective && s.effortEffective !== s.effort ? ' &rarr; ' + effortWord(s.effortEffective) : '') + '</span>';
 }
 async function postEffortSwitch(key, effort) {
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/effort';
@@ -11876,7 +12043,9 @@ function effortSwitchNote(r) {
   var res = r.result || {};
   if (res.status === 'unchanged') return { text: '이미 추론 강도 ' + effortLabel(res.effort) + '입니다', error: false };
   var capped = res.effective && res.effective !== res.effort ? ' (이 모델은 ' + effortLabel(res.effective) + '까지 실행)' : '';
-  return { text: '추론 강도 ' + effortLabel(res.effort) + ' · 다음 턴부터 적용' + capped, error: false };
+  // Ultra is codex's top setting; its backend takes max as the strongest reasoning level (llmux sends that).
+  var wire = (res.effective || res.effort) === 'ultra' ? ' · 백엔드에는 최대(max)로 전달' : '';
+  return { text: '추론 강도 ' + effortLabel(res.effort) + ' · 다음 턴부터 적용' + capped + wire, error: false };
 }
 async function changeEffort(key, effort) {
   if (!effort) return;
@@ -11982,6 +12151,12 @@ function goalCardData(s, canEdit) {
       // The auto-continue count is a budget, not progress: the quiet meta line, never the bar.
       if (toNum(cur.maxContinuations) > 0) d.current.meta = [{ label: '이어하기', value: toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) }];
       if (cur.lastEvalReason) d.current.note = '남은 것: ' + String(cur.lastEvalReason).slice(0, 300);
+      // Same failure twice: the loop waits for the owner's answer to the stall question.
+      if (cur.stalled) {
+        (d.current.meta = d.current.meta || []).push({ label: '멈춤', value: '같은 이유로 다시 실패 — 답을 기다림' });
+        d.current.note = '멈춘 이유: ' + String(cur.stalled.reason).slice(0, 300) +
+          ((cur.stalled.actions || []).length ? ' · 다음 지시 후보: ' + cur.stalled.actions.map(function(a, i) { return (i + 1) + '. ' + a; }).join(' / ') : '');
+      }
     }
   }
   d.queue = ((g && g.queue) || []).map(function(q) { return { id: String(q.goalId), objective: String(q.objective || '') }; });
@@ -13262,7 +13437,8 @@ function hasUnsentInput() {
   // … a dictation listening now (its words are still arriving) …
   if (_ntDictation) return true;
   for (var fr in _pcFailed) return true;
-  // … a new task being launched (its dialog may already be closed), an answer on its way (an approval card sending) …
+  // … a new task being launched (its dialog may already be closed) or one that did not start (its 시작 실패 card holds
+  // the instruction), an answer on its way (an approval card sending) …
   if (_ntBusy) return true;
   for (var ak in _acState) {
     for (var aid in _acState[ak]) if (_acState[ak][aid] && _acState[ak][aid].status === 'sending') return true;
@@ -13570,7 +13746,8 @@ function updateTokenBreakdown() {
 var WL_BACKFILL_MAX_PAGES = 2000;
 // The latest window an opening loads, and each older page (SSOT 2026-10-29).
 var WL_PAGE = 100;
-var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류' };
+var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류', permission: '권한' };
+var WL_PERMISSION_LABELS = { approve: '권한 승인', approve_disable_rule: '권한 승인 · 규칙 끔', approve_confirmed: '2차 확인 승인', deny: '권한 거부', explain: '설명 요청' };
 var WL_EMPTY_MSG = '작업 로그 없음';
 var _wlCardsWait = false;
 var _wlDetailRev = 0;
@@ -14073,6 +14250,15 @@ function wlEntryOf(st, e) {
   if (typeof e.ts === 'number' && isFinite(e.ts)) x.at = e.ts;
   var text = String(e.text || '');
   var tool = e.tool ? String(e.tool) : '';
+  if (kind === 'permission') {
+    // SSOT 2026-11-02 T1 — a person's answer to a permission prompt: a badge naming the
+    // decision, and the server's line (decision · tool · call · the AI's advice). No raw behind it.
+    var pd = e.permission && typeof e.permission === 'object' ? String(e.permission.decision || '') : '';
+    x.kind = 'system';
+    x.system = { kind: 'permission', label: Object.prototype.hasOwnProperty.call(WL_PERMISSION_LABELS, pd) ? WL_PERMISSION_LABELS[pd] : '권한' };
+    x.text = text;
+    return x;
+  }
   if ((kind === 'tool' || kind === 'tool_result') && !e._role) {
     var card = wlCardData(st, seq);
     x.kind = 'tool';
@@ -14845,6 +15031,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   layoutBeforeChange();
   panel.show();
   panelOpen = true;
+  paintDefaultsScope();
   panel.setAttribute('label', document.getElementById('panel-title').textContent);
   syncPanelWidth();
 
@@ -15956,6 +16143,7 @@ function closePanel() {
   panelOpen = false;
   panelSessionKey = null;
   panelConvId = null;
+  paintDefaultsScope();
   // The 산출물 part is written through writePanelPart (nothing when unchanged): emptied here, it forgets what it
   // last wrote too, so the same card reopened paints its strip again (D4 K-06 review).
   var panelArts = document.getElementById('panel-artifacts');
@@ -17693,8 +17881,37 @@ paintTrail();
 var NT_DRAFT_KEY = 'soma-nt-draft';
 var _ntCtx = null;
 var _ntState = null;
+// A launch on its way (its POST not answered yet), or one that did not start and waits on its 시작 실패 card
+// (ntPendingUnsent). The dialog has already closed and emptied for the next task (SSOT 2026-11-02 T1), so this holds
+// nothing in the dialog: it is what a reload would lose (hasUnsentInput).
 var _ntBusy = false;
 var _ntRequestId = null;
+// SSOT 2026-11-02 T1 — the launches the board shows as 시작 중 cards (first in RUNNING) until their own card is on
+// it, newest first: { id, requestId, state (what was sent), files, at, inFlight, sessionKey, answeredAt, phase,
+// wantOpen }. A launch that fails leaves (ntLaunchFailed); an answered one leaves when its card arrives
+// (ntPendingSettle) or after NT_PENDING_MAX_MS, while the board is asked again every NT_PENDING_POLL_MS.
+var _ntPending = [];
+var NT_PENDING_PREFIX = 'nt-launch:';
+var NT_PENDING_MAX_MS = 120000;
+var NT_PENDING_POLL_MS = 1000;
+var _ntPendingTimer = 0;
+// The server takes one launch per user at a time (createNewTaskGate: a second one in flight is refused with 429).
+// The dialog no longer holds a launch until its answer, so the launches are sent one after another: each posts
+// once the one before it has been answered (#747 review R1).
+var _ntLaunchQueue = Promise.resolve();
+// T2 — 카드 열기 waits as long as a 시작 중 card does for the launch's card (ntOpenArrivals), then gives up. The asks
+// to open still waiting ({ launch } with wantOpen, openFrom, openUntil), and whether the watch's board ask is out.
+var NT_OPEN_WAIT_MS = NT_PENDING_MAX_MS;
+var _ntOpening = [];
+// The watch's board ask still out ({ at }), or null; one out longer than NT_WATCH_ASK_STALE_MS no longer holds the
+// next (a ready-state ask has no deadline of its own — #747 review R2 N6).
+var _ntWatchAsk = null;
+var NT_WATCH_ASK_STALE_MS = 30000;
+// A launch's POST is given up (and the launch kept, ntLaunchFailed) when its upload makes no progress for
+// NT_POST_STALL_MS, or the answer does not come NT_POST_ANSWER_MS after the upload — a launch that hangs never holds
+// the ones queued behind it (#747 review R2 N2). A retry under the same request id never runs it twice.
+var NT_POST_STALL_MS = 60000;
+var NT_POST_ANSWER_MS = 60000;
 // The text handed to <ui-composer> (a saved draft at first, '' after a launch): it applies a value only when it
 // differs from the last one, so a repaint while someone types never resets the field.
 var _ntValue = null;
@@ -17911,6 +18128,11 @@ function ntReconcile(state, ctx) {
   });
   if (!hasModel) state.model = ctx.defaultModel;
   if (ctx.efforts.indexOf(state.effort) < 0) state.effort = ctx.defaultEffort;
+  // An effort the chosen model does not run is carried over to the levels it runs.
+  var chosen = ctx.models.find(function (m) {
+    return m.nickname === state.model;
+  });
+  state.effort = fitEffortLevel(mpLevelsOf(chosen && chosen.effortLevels), state.effort);
   var hasChannel = ctx.channels.some(function (c) {
     return c.id === state.channelId;
   });
@@ -17927,19 +18149,9 @@ function ntReconcile(state, ctx) {
 
 function ntRender() {
   if (!_ntCtx || !_ntState) return;
-  ntEl('nt-model').innerHTML = _ntCtx.models
-    .map(function (m) {
-      var sel = m.nickname === _ntState.model ? ' selected' : '';
-      return '<option value="' + escAttr(m.nickname) + '" title="' + escAttr(m.label) + '"' + sel + '>' + esc(m.nickname) + '</option>';
-    })
-    .join('');
-  ntEl('nt-effort').innerHTML = _ntCtx.efforts
-    .map(function (e) {
-      return '<option value="' + escAttr(e) + '"' + (e === _ntState.effort ? ' selected' : '') + '>' + esc(effortLabel(e)) + '</option>';
-    })
-    .join('');
   // #600 ⑥ — where the task goes: offered when the context lists task folders.
   var isTask = _ntState.destination === 'task';
+  ntPaintPicker();
   var dest = ntEl('nt-dest');
   if (dest) dest.hidden = !_ntCtx.taskFolders;
   var dSlack = ntEl('nt-dest-slack');
@@ -17966,7 +18178,7 @@ function ntRender() {
   }
   // A dashboard task has no channel, effort or autogoal / autoz (D8). The destination
   // row is an .nt-toggles too: hide the autogoal / autoz row, not it.
-  ['.nt-chip-channel', '.nt-chip-effort', '.nt-toggles:not(.nt-dest)'].forEach(function (sel) {
+  ['.nt-chip-channel', '.nt-toggles:not(.nt-dest)'].forEach(function (sel) {
     var el = document.querySelector(sel);
     if (el) el.hidden = isTask;
   });
@@ -18015,7 +18227,7 @@ function ntComposerData() {
     value: _ntValue,
     image: false,
     submitLabel: '작업 시작',
-    busy: _ntBusy,
+    // No busy state: a launch leaves the dialog at once (SSOT 2026-11-02 T1) — the composer is the next task's.
     minRows: 6,
     maxRows: 14,
     enter: 'newline',
@@ -18315,7 +18527,9 @@ async function ntDictateStart(host, auto) {
   var w = typeof window !== 'undefined' ? window : null;
   var Rec = ntDictationEngine(w);
   var el = host.el();
-  if (!Rec || !el || (host.id === 'nt' ? _ntBusy : _pcSending)) return;
+  // The new task's composer is never held by a launch (it left the dialog at once — SSOT 2026-11-02 T1); a session
+  // note is, while its files are read.
+  if (!Rec || !el || (host.id !== 'nt' && _pcSending)) return;
   // One microphone: a voice note recording keeps it.
   if (ntRecordingNow()) {
     host.status('음성 녹음 중에는 받아쓸 수 없습니다 — 녹음을 마치고 눌러 주세요', true);
@@ -18764,14 +18978,59 @@ function ntToggleUsage() {
   ntEl('nt-battery-btn').setAttribute('aria-expanded', u.hidden ? 'false' : 'true');
 }
 
-function ntOnModelChange() {
-  _ntState.model = ntEl('nt-model').value;
-  ntRenderBattery();
+// The levels a model the dialog offers runs (its own list from the context; the SDK levels without one).
+function ntLevelsOf(nickname) {
+  var m = (_ntCtx && _ntCtx.models || []).find(function (x) {
+    return x.nickname === nickname;
+  });
+  return mpLevelsOf(m && m.effortLevels);
 }
 
-function ntOnEffortChange() {
-  _ntState.effort = ntEl('nt-effort').value;
+// The picker's rows: the offered models in context order, each with the window, auto-compact point and price of its
+// representative row when it has one (the user's own default outside them has none) and the levels it runs.
+function ntPickerData() {
+  var reps = REPRESENTATIVE_MODELS || [];
+  var models = (_ntCtx.models || []).map(function (m) {
+    var rep = reps.find(function (r) {
+      return r.nickname === m.nickname;
+    });
+    var row = rep ? mpRows([rep])[0] : { id: m.nickname, label: m.label || m.nickname, short: m.nickname, price: null };
+    row.label = m.label || row.label;
+    row.effortLevels = mpLevelsOf(m.effortLevels);
+    return row;
+  });
+  // A dashboard task has no effort (D8): the menu hides its control and the trigger names no level.
+  var value = { model: _ntState.model };
+  if (_ntState.destination === 'task') value.effortLevels = [];
+  else value.effort = _ntState.effort;
+  return { models: models, value: value, heading: '이 작업의 모델 · 추론 강도' };
 }
+
+function ntPaintPicker() {
+  var el = ntEl('nt-picker');
+  if (!el || !_ntCtx || !_ntState) return;
+  el.data = ntPickerData();
+}
+
+// A pick in the task's menu (ui-change): the page holds the choice — a model carries the effort over to the levels
+// it runs, so the dialog can never send a level its model cannot take — and redraws the menu from it.
+function ntOnPick(e) {
+  if (!e.detail || !_ntState) return;
+  e.preventDefault();
+  if (e.detail.changed === 'model') {
+    _ntState.model = String(e.detail.model || '');
+    _ntState.effort = fitEffortLevel(ntLevelsOf(_ntState.model), _ntState.effort);
+    ntRenderBattery();
+  } else if (e.detail.changed === 'effort') {
+    var level = String(e.detail.effort || '');
+    if (ntLevelsOf(_ntState.model).indexOf(level) >= 0) _ntState.effort = level;
+  }
+  ntPaintPicker();
+}
+(function initNtPicker() {
+  var el = document.getElementById('nt-picker');
+  if (el) el.addEventListener('ui-change', ntOnPick);
+})();
 
 function ntOnChannelChange() {
   _ntState.channelId = ntEl('nt-channel').value || null;
@@ -18848,10 +19107,13 @@ function ntReadFile(f) {
   });
 }
 
-// ui-submit (cancelled: the page sends, and the composer keeps the text and files until the task is launched).
+// ui-submit (cancelled: the page sends). SSOT 2026-11-02 T1: once the instruction passes the checks the launch
+// leaves the dialog at once — the dialog closes and empties for the next task, and the board shows the launch as a
+// 시작 중 card (ntBeginLaunch) while its files are read and it is posted. What was submitted is what is sent
+// (#640 R2). A launch that fails takes its card back and gives its instruction back to the dialog (ntLaunchFailed).
 async function submitNewTask(detail) {
   var el = ntEl('nt-composer');
-  if (_ntBusy || !_ntCtx || !_ntState || !el) return;
+  if (!_ntCtx || !_ntState || !el) return;
   var files = (detail && detail.files) || el.files || [];
   _ntState.prompt = detail ? String(detail.text || '') : el.value;
   var tooLong = ntTooLong(_ntState.prompt);
@@ -18869,61 +19131,119 @@ async function submitNewTask(detail) {
     );
     return;
   }
-  // What was submitted is what is sent: a switch of the destination while the
-  // files are read does not change this launch (#640 R2).
-  var submitted = Object.assign({}, _ntState);
-  _ntBusy = true;
-  ntSetError('');
-  paintNtComposer();
+  var waitsFor = ntPendingInFlight();
+  var launch = ntBeginLaunch(Object.assign({}, _ntState), files);
+  var submitted = launch.state;
+  // Its turn comes when the launch before it has its answer (_ntLaunchQueue); the next one waits for this one.
+  var turn = _ntLaunchQueue;
+  var release;
+  _ntLaunchQueue = new Promise(function (r) {
+    release = r;
+  });
+  // Whether its turn has come: the card says it waits only while it really does (#747 review R2) — the launch before
+  // it may be answered while this one's files are read.
+  var turnCame = false;
+  turn.then(function () {
+    turnCame = true;
+  });
+  var data;
   try {
-    if (files.length) ntSetStatus('첨부 준비 중…');
+    if (files.length) ntPendingStatus(launch, '첨부 준비 중…');
     var attachments;
     try {
       attachments = submitted.destination === 'task' ? [] : await Promise.all(files.map(ntReadFile));
     } catch (readErr) {
-      ntSetStatus('');
-      ntSetError(String(readErr.message || '').slice(5) + ' — 파일을 읽지 못했습니다');
+      ntLaunchFailed(launch, String(readErr.message || '').slice(5) + ' — 파일을 읽지 못했습니다');
       return;
     }
-    var body = JSON.stringify(ntBuildPayload(submitted, attachments, _ntRequestId));
-    ntSetStatus('작업을 올리는 중…');
-    var res = await ntPostTask(body);
+    if (waitsFor && !turnCame) ntPendingStatus(launch, '앞 작업이 시작되면 올려요…');
+    await turn;
+    var body = JSON.stringify(ntBuildPayload(submitted, attachments, launch.requestId));
+    ntPendingStatus(launch, '작업을 올리는 중…');
+    var res = await ntPostTask(body, launch);
     // Only a stale CSRF token is worth one retry (not "no Slack identity").
     if (res.status === 403 && res.data && /CSRF/i.test(String(res.data.error || ''))) {
       await refreshCsrfToken();
-      res = await ntPostTask(body);
+      res = await ntPostTask(body, launch);
     }
-    var data = res.data || {};
+    data = res.data || {};
     if (res.status < 200 || res.status >= 300 || !data.ok) {
-      ntSetStatus('');
-      ntSetError(data.error || '작업을 시작하지 못했습니다 (' + res.status + ')');
+      ntLaunchFailed(launch, data.error || '작업을 시작하지 못했습니다 (' + res.status + ')');
       return;
     }
-    ntOnLaunched(data, submitted);
   } catch (e) {
-    ntSetStatus('');
-    ntSetError('작업을 시작하지 못했습니다 — 네트워크를 확인하고 다시 눌러 주세요 (같은 요청은 두 번 실행되지 않습니다)');
+    ntLaunchFailed(launch, '작업을 시작하지 못했습니다 — 네트워크를 확인하고 다시 눌러 주세요 (같은 요청은 두 번 실행되지 않습니다)');
+    return;
   } finally {
-    _ntBusy = false;
-    paintNtComposer();
+    // Only after the launch before it: one that fails before its turn (a file unread) must not let the next one past
+    // a launch still in flight (#747 review R2 N1).
+    turn.then(release, release);
   }
+  // Started: never reported as a failure, whatever follows.
+  ntOnLaunched(data, submitted, launch);
 }
 
-function ntPostTask(body) {
+// T1 — the launch leaves the dialog in the press itself: a 시작 중 card on the board (first in RUNNING), and the
+// dialog closed and emptied for the next task (a new request id; the channel just used stays selected, a dashboard
+// task stays a dashboard task). The launch keeps what it needs to be given back if it fails: what was sent, its
+// files and its request id (a retry under it never runs twice — the server's request gate).
+function ntBeginLaunch(submitted, files) {
+  var launch = {
+    id: NT_PENDING_PREFIX + _ntRequestId,
+    requestId: _ntRequestId,
+    state: submitted,
+    files: (files || []).slice(),
+    at: Date.now(),
+    inFlight: true,
+    sessionKey: '',
+    phase: '',
+  };
+  _ntPending.unshift(launch);
+  _ntBusy = true;
+  _ntRequestId = ntNewRequestId();
+  _ntState = ntStateAfterLaunch(submitted, submitted.destination === 'task' ? {} : { channel: submitted.channelId }, _ntCtx);
+  var composer = ntEl('nt-composer');
+  if (composer && typeof composer.clear === 'function') composer.clear();
+  _ntValue = '';
+  try {
+    localStorage.removeItem(NT_DRAFT_KEY);
+  } catch (e) {}
+  ntSetError('');
+  ntSetStatus('');
+  ntRender();
+  closeNewTask();
+  ntPendingRepaint();
+  return launch;
+}
+
+function ntPostTask(body, launch) {
   return new Promise(function (resolve, reject) {
     var xhr = new XMLHttpRequest();
+    var stall = 0;
+    // The deadline: no upload progress for NT_POST_STALL_MS, or no answer NT_POST_ANSWER_MS after the upload.
+    function arm(ms) {
+      clearTimeout(stall);
+      stall = setTimeout(function () {
+        xhr.abort();
+      }, ms);
+    }
     xhr.open('POST', '/api/dashboard/new-task');
     xhr.setRequestHeader('Content-Type', 'application/json');
     xhr.setRequestHeader('X-CSRF-Token', _csrfToken);
+    // Where it stands is said on the launch's 시작 중 card — the dialog has closed (and holds the next task).
     xhr.upload.onprogress = function (e) {
+      arm(NT_POST_STALL_MS);
       if (e.lengthComputable && e.total > 65536) {
-        ntSetStatus('업로드 중… ' + Math.round((e.loaded / e.total) * 100) + '%');
+        ntPendingStatus(launch, '업로드 중… ' + Math.round((e.loaded / e.total) * 100) + '%');
       }
     };
     xhr.upload.onload = function () {
-      ntSetStatus(_ntState && _ntState.destination === 'task' ? '작업을 만드는 중…' : 'Slack에 작업을 올리는 중…');
+      arm(NT_POST_ANSWER_MS);
+      var toTask = launch && launch.state && launch.state.destination === 'task';
+      ntPendingStatus(launch, toTask ? '작업을 만드는 중…' : 'Slack에 작업을 올리는 중…');
     };
     xhr.onload = function () {
+      clearTimeout(stall);
       var data = null;
       try {
         data = JSON.parse(xhr.responseText);
@@ -18931,40 +19251,50 @@ function ntPostTask(body) {
       resolve({ status: xhr.status, data: data });
     };
     xhr.onerror = function () {
+      clearTimeout(stall);
       reject(new Error('network'));
     };
+    xhr.onabort = function () {
+      clearTimeout(stall);
+      reject(new Error('timeout'));
+    };
+    arm(NT_POST_STALL_MS);
     xhr.send(body);
   });
 }
 
-function ntOnLaunched(data, submitted) {
-  // The next task starts clean: a new idempotency key, no text, no files; the
-  // channel just used stays selected, a dashboard task stays a dashboard task.
-  // A task created but not started keeps its instruction (#640 R1): the text,
-  // the folder, the model and the draft.
-  _ntRequestId = ntNewRequestId();
-  var keep = data.status === 'not-started';
-  _ntState = ntStateAfterLaunch(submitted || _ntState, data, _ntCtx);
-  if (!keep) {
-    var composer = ntEl('nt-composer');
-    if (composer && typeof composer.clear === 'function') composer.clear();
-    _ntValue = '';
-    try {
-      localStorage.removeItem(NT_DRAFT_KEY);
-    } catch (e) {}
-  }
-  ntSetStatus('');
-  ntRender();
-  closeNewTask();
+// The server answered: the task exists (running, accepted, or — a dashboard task — created but not started). Its
+// 시작 중 card waits for the task's own card under the session key (ntPendingPrune); the toast's 카드 열기 opens
+// that card (T2). A task created but not started is no task starting (#747 review R1): its card leaves, and its
+// instruction goes back to the dialog as a new request (#640 R1) — or, when the dialog holds another instruction,
+// waits on a 시작 실패 card.
+function ntOnLaunched(data, submitted, launch) {
+  launch.inFlight = false;
+  launch.sessionKey = String(data.sessionKey || '');
+  launch.answeredAt = Date.now();
+  launch.permalink = data.permalink ? String(data.permalink) : '';
+  launch.phase = '에이전트를 시작하는 중…';
+  var notStarted = data.status === 'not-started';
+  var restored = notStarted ? ntRestoreLaunch(launch, true) : true;
+  if (!restored) ntKeepFailed(launch, String(data.reason || '시작하지 못했어요'), true);
+  else if (!launch.sessionKey || notStarted) ntPendingDrop(launch);
+  // No 시작 중 card waits on the board for a task made but not started: the board is asked once for its card.
+  if (notStarted && launch.sessionKey && typeof loadSessions === 'function') loadSessions();
+  _ntBusy = ntPendingUnsent();
+  ntPendingRepaint();
   var channel = data.channel
-    ? _ntCtx.channels.find(function (c) {
+    ? ((_ntCtx && _ntCtx.channels) || []).find(function (c) {
         return c.id === data.channel;
       })
     : null;
-  // A toast on the page's <ui-toaster>: 카드 열기 opens this launch's card
-  // (not a later launch's), Slack에서 보기 its thread.
-  dashToast(ntLaunchToast(data, channel ? channel.name : null), function () { ntOpenLaunched(data); });
-  if (typeof loadSessions === 'function') setTimeout(loadSessions, 800);
+  // A toast on the page's <ui-toaster>: 카드 열기 opens this launch's card (not a later launch's), Slack에서 보기
+  // its thread.
+  dashToast(ntLaunchToast(data, channel ? channel.name : null, restored), function () {
+    ntOpenLaunch(launch);
+  });
+  // Its 시작 중 card was pressed while it was on its way: the same ask goes on now that it has a key.
+  if (launch.wantOpen && !launch.failed) ntOpenLaunch(launch, true);
+  ntPendingWatch();
 }
 
 // What the dialog holds after a launch: a started task starts the next one clean
@@ -18985,15 +19315,18 @@ function ntStateAfterLaunch(prev, data, ctx) {
 
 // The launch toast: a Slack launch names its channel and links its thread; a
 // dashboard task (#600 ⑥, no channel) opens its card, and one that was created
-// but not started says why.
-function ntLaunchToast(data, channelName) {
+// but not started says why and where its instruction is (the dialog, or its 시작 실패 card).
+function ntLaunchToast(data, channelName, restored) {
   if (!data.channel) {
     if (data.status === 'not-started') {
       return {
         title: '작업을 만들었지만 아직 시작하지 못했어요',
-        description: String(data.reason || '') + ' — 지시는 새 작업 창에 남겨 두었어요',
+        description:
+          String(data.reason || '') +
+          (restored === false ? ' — 지시는 “시작 실패” 카드에 남겨 두었어요' : ' — 지시는 새 작업 창에 남겨 두었어요'),
         tone: 'warning',
-        action: { id: 'open', label: '카드 열기' },
+        // Kept on a 시작 실패 card, the press takes the instruction back (ntOpenLaunch → ntRetakeLaunch — R2 N8).
+        action: { id: 'open', label: restored === false ? '지시 가져오기' : '카드 열기' },
         duration: 12000,
       };
     }
@@ -19016,22 +19349,371 @@ function ntLaunchToast(data, channelName) {
   return toast;
 }
 
-async function ntOpenLaunched(launch) {
-  var key = launch && launch.sessionKey;
-  if (!key) return;
-  var find = function () {
-    var cache = typeof _sessionCache === 'object' && _sessionCache ? _sessionCache : {};
-    return Object.keys(cache).find(function (k) {
-      return k === key || k.slice(-(key.length + 2)) === '::' + key;
+// A launch that did not start (refused, a file unread, no network): what was sent goes back to the dialog — the
+// instruction, its files and choices, the same request id — and its card leaves. When the dialog holds another
+// instruction nothing is replaced and nothing is lost (#747 review R1): the launch stays on the board as a 시작 실패
+// card (NEEDS YOU) until it is taken back (ntRetakeLaunch). The toast says why.
+function ntLaunchFailed(launch, message) {
+  launch.inFlight = false;
+  launch.wantOpen = false;
+  var restored = ntRestoreLaunch(launch, false);
+  if (restored) ntPendingDrop(launch);
+  else ntKeepFailed(launch, message, false);
+  _ntBusy = ntPendingUnsent();
+  ntPendingRepaint();
+  var dlg = ntEl('nt-dialog');
+  if (restored && dlg && dlg.open) ntSetError(message);
+  if (restored) {
+    dashToast({ title: '작업을 시작하지 못했어요', description: message, tone: 'error', action: { id: 'open', label: '다시 열기' } }, function () {
+      ntReopenWithError(message);
     });
-  };
-  var found = find();
-  if (!found && typeof loadSessions === 'function') {
-    await loadSessions();
-    found = find();
+    return;
   }
-  if (found) openPanel(found);
-  else if (launch.permalink) window.open(launch.permalink, '_blank', 'noopener');
+  dashToast(
+    {
+      title: '작업을 시작하지 못했어요',
+      description: message + ' — 지시는 “시작 실패” 카드에 남겨 두었어요',
+      tone: 'error',
+      action: { id: 'open', label: '지시 가져오기' },
+    },
+    function () {
+      ntRetakeLaunch(launch);
+    },
+  );
+}
+
+// The dialog shows the given-back launch with why it did not start.
+function ntReopenWithError(message) {
+  openNewTask();
+  ntSetError(message);
+}
+
+// A launch that did not start and could not go back to the dialog: kept, as a 시작 실패 card. asNew: a task was
+// made (not started), so taking it back makes a new request.
+function ntKeepFailed(launch, message, asNew) {
+  launch.failed = true;
+  launch.wantOpen = false;
+  launch.reason = message;
+  launch.asNew = !!asNew;
+  launch.failedAt = Date.now();
+  if (_ntPending.indexOf(launch) < 0) _ntPending.unshift(launch);
+}
+
+// A 시작 실패 card pressed (or its toast's 지시 가져오기): its instruction goes back to the dialog once the dialog is
+// free; while it holds another instruction, the dialog says so and the card stays.
+function ntRetakeLaunch(launch) {
+  // Only a card still on the board: a second press of the toast after it was taken back does nothing (R2 N5).
+  if (!launch || !launch.failed || _ntPending.indexOf(launch) < 0) return;
+  if (ntRestoreLaunch(launch, launch.asNew)) {
+    ntPendingDrop(launch);
+    _ntBusy = ntPendingUnsent();
+    ntPendingRepaint();
+    ntReopenWithError(launch.reason);
+    return;
+  }
+  openNewTask();
+  ntSetError('새 작업 창에 쓰던 지시가 있어요 — 보내거나 비운 뒤 “시작 실패” 카드를 다시 눌러 주세요');
+}
+
+// Put a launch back in the dialog — only into a free one: no text, no files, no voice note being recorded. What
+// someone writes meanwhile is never replaced; a dictation listening into the empty field has heard nothing and stops.
+// asNew: a task was made (not started), so a resend is a new request.
+function ntRestoreLaunch(launch, asNew) {
+  var el = ntEl('nt-composer');
+  if (!ntComposerPristine(el)) return false;
+  if (ntDictating('nt')) ntDictateStopIn('nt');
+  _ntState = Object.assign({}, launch.state);
+  if (_ntCtx) ntReconcile(_ntState, _ntCtx);
+  if (!asNew) _ntRequestId = launch.requestId;
+  _ntValue = String(_ntState.prompt || '');
+  ntSaveDraft(_ntValue);
+  ntRender();
+  if (_ntState.destination !== 'task' && launch.files && launch.files.length && typeof el.addFiles === 'function') {
+    el.addFiles(launch.files);
+  }
+  return true;
+}
+
+function ntComposerPristine(el) {
+  if (!el || ntRecordingNow()) return false;
+  return !String(el.value || '').trim() && !(el.files && el.files.length);
+}
+
+// ── SSOT 2026-11-02 — the 시작 중 cards ──
+
+// What a launch is called before its task has a title: the instruction's first line (as the task's card will be),
+// else its files.
+function ntLaunchTitle(launch) {
+  var st = (launch && launch.state) || {};
+  var first = String(st.prompt || '')
+    .split('\\n')
+    .map(function (l) {
+      return l.trim();
+    })
+    .filter(function (l) {
+      return l.length > 0;
+    })[0];
+  if (first) return first.slice(0, 80);
+  var n = (launch && launch.files ? launch.files.length : 0) || 0;
+  return n ? '첨부 ' + n + '개' : '새 작업';
+}
+
+// A launch's card (T1): RUNNING with the status 시작 중 and the clock from the press; where it goes and what it is
+// doing now as its summary. It has no body (no session yet): pressing it arms 카드 열기 instead (wireInbox). A launch
+// that did not start and waits to be taken back (ntKeepFailed) is a 시작 실패 card with its reason.
+function ntPendingCardOf(launch, channelName) {
+  if (launch.failed) {
+    return {
+      id: launch.id,
+      title: ntLaunchTitle(launch),
+      summary: String(launch.reason || '') + ' · 눌러서 지시를 작성 창으로 가져오기',
+      status: 'failed',
+      statusText: '시작 실패',
+      since: launch.failedAt,
+      bodyMode: 'slot',
+    };
+  }
+  var st = launch.state || {};
+  var where =
+    st.destination === 'task'
+      ? st.kind === 'epic'
+        ? '대시보드 에픽'
+        : '대시보드 작업'
+      : '#' + String(channelName || st.channelId || '');
+  return {
+    id: launch.id,
+    title: ntLaunchTitle(launch),
+    summary: where + (launch.phase ? ' · ' + launch.phase : ''),
+    status: 'running',
+    statusText: '시작 중',
+    since: launch.at,
+    bodyMode: 'slot',
+  };
+}
+
+// The launches still to show (pure): one on its way stays (a failure takes it back itself), and so does one that
+// did not start (until it is taken back); an answered one leaves once its card is among the board's keys (this
+// instance's prefixed key too) or after NT_PENDING_MAX_MS.
+function ntPendingSettle(list, keys, selfInstance, now) {
+  return list.filter(function (p) {
+    if (p.failed || !p.sessionKey) return true;
+    if (resolveDeepLinkKey(p.sessionKey, keys, selfInstance)) return false;
+    return now - (p.answeredAt || p.at) < NT_PENDING_MAX_MS;
+  });
+}
+
+function ntPendingInFlight() {
+  return _ntPending.some(function (p) {
+    return p.inFlight;
+  });
+}
+
+// What a reload would lose (hasUnsentInput, through _ntBusy): a launch on its way, or one that did not start.
+function ntPendingUnsent() {
+  return _ntPending.some(function (p) {
+    return p.inFlight || p.failed;
+  });
+}
+
+function ntPendingDrop(launch) {
+  _ntPending = _ntPending.filter(function (p) {
+    return p !== launch;
+  });
+}
+
+function ntPendingOf(id) {
+  for (var i = 0; i < _ntPending.length; i++) if (_ntPending[i].id === id) return _ntPending[i];
+  return null;
+}
+
+function ntChannelName(id) {
+  var chans = (_ntCtx && _ntCtx.channels) || [];
+  for (var i = 0; i < chans.length; i++) if (chans[i].id === id) return chans[i].name;
+  return null;
+}
+
+// The board shows the viewer's own cards — theirs, or All Users — so a launch's card lands on it.
+function ntBoardIsViewers() {
+  return !(currentUserId && _viewerUserId && currentUserId !== _viewerUserId);
+}
+
+// Settle the launches against the board (the viewer's): the ones whose card is there leave; one whose card did not
+// come within NT_PENDING_MAX_MS leaves with a toast that says so (and links its thread). True when one left.
+function ntPendingPrune() {
+  var keys = Object.keys(_sessionCache);
+  var kept = ntPendingSettle(_ntPending, keys, SELF_INSTANCE_NAME, Date.now());
+  if (kept.length === _ntPending.length) return false;
+  _ntPending.forEach(function (p) {
+    if (kept.indexOf(p) >= 0 || resolveDeepLinkKey(p.sessionKey, keys, SELF_INSTANCE_NAME)) return;
+    var toast = { title: '작업 카드가 아직 보드에 오지 않았어요', description: ntLaunchTitle(p), tone: 'warning' };
+    if (p.permalink) toast.link = { label: 'Slack에서 보기', href: p.permalink };
+    dashToast(toast);
+  });
+  _ntPending = kept;
+  return true;
+}
+
+// The launch cards a board render draws (renderBoard, after its per-render maps were reset), settled first: 시작 중
+// cards first in RUNNING, 시작 실패 cards first in NEEDS YOU. Only on the viewer's own board — another user's board
+// neither draws nor settles them.
+function ntPendingPlace(host) {
+  var out = { working: [], waiting: [] };
+  if (!host || !_ntPending.length || !ntBoardIsViewers()) return out;
+  ntPendingPrune();
+  _ntPending.forEach(function (p) {
+    var col = p.failed ? 'waiting' : 'working';
+    _cardHost[p.id] = host;
+    _cardCol[p.id] = col;
+    _cardData[p.id] = ntPendingCardOf(p, ntChannelName(p.state && p.state.channelId));
+    _cardDrawn[p.id] = true;
+    out[col].push(p.id);
+  });
+  ntPendingWatch();
+  return out;
+}
+
+// The board again with the launches as they are now (begun, answered, failed). Before the first board answer there
+// is nothing to draw on — the first render draws them.
+function ntPendingRepaint() {
+  if (_lastBoardData) renderBoard(_lastBoardData);
+}
+
+// What a launch on its way is doing now, on its card — that card's face only, not the whole board.
+function ntPendingStatus(launch, text) {
+  if (!launch || launch.phase === text) return;
+  launch.phase = text;
+  var kb = document.getElementById('kanban');
+  if (!kb || _cardHost[launch.id] !== kb || !_cardData[launch.id]) return;
+  _cardData[launch.id] = ntPendingCardOf(launch, ntChannelName(launch.state && launch.state.channelId));
+  inboxPaint(kb);
+}
+
+// A card the page waits for: an answered launch's (its 시작 중 card), or one 카드 열기 asked to open (for
+// NT_OPEN_WAIT_MS).
+function ntCardsAwaited() {
+  var now = Date.now();
+  return (
+    _ntPending.some(function (p) {
+      return !!p.sessionKey && !p.failed;
+    }) ||
+    _ntOpening.some(function (l) {
+      return !!l.sessionKey && now <= l.openUntil;
+    })
+  );
+}
+
+// While a card is awaited on the viewer's board, the board is asked again every NT_PENDING_POLL_MS — a Slack session
+// joins the board once its agent has started, seconds after the server answered. One ask at a time, and an ask that
+// never answers does not hold the watch: each tick settles the launches and the asks to open (their deadlines end the
+// watch), and the next tick comes regardless. A board of another user is not watched; returning to one's own board
+// (its render) starts it again.
+function ntPendingWatch() {
+  if (_ntPendingTimer || !ntBoardIsViewers() || !ntCardsAwaited()) return;
+  _ntPendingTimer = setTimeout(function () {
+    _ntPendingTimer = 0;
+    if (!ntBoardIsViewers()) return;
+    var now = Date.now();
+    if ((!_ntWatchAsk || now - _ntWatchAsk.at > NT_WATCH_ASK_STALE_MS) && typeof loadSessions === 'function') {
+      var ask = (_ntWatchAsk = { at: now });
+      Promise.resolve(loadSessions())
+        .catch(function () {})
+        .then(function () {
+          if (_ntWatchAsk === ask) _ntWatchAsk = null;
+        });
+    }
+    if (ntPendingPrune()) ntPendingRepaint();
+    ntOpenArrivals();
+    ntPendingWatch();
+  }, NT_PENDING_POLL_MS);
+}
+
+// The detail card the reader has open now ('' none) — 카드 열기 notes it, to tell later whether they moved on.
+function ntPanelNow() {
+  return panelOpen ? String(panelSessionKey || '') : '';
+}
+
+// Something is being written or sent in the open detail card: opening another card would replace it (pcFreshSteer).
+function ntPanelHasInput() {
+  if (!panelOpen) return false;
+  if (_pcSending || _pcInFlight > 0) return true;
+  var c = document.getElementById('pc-composer');
+  return !!(c && (String(c.value || '').trim() || (c.files && c.files.length)));
+}
+
+// T2 — 카드 열기 (the launch toast), or a press on the launch's 시작 중 card: the launch's own card opens on the
+// board with its detail card — never Slack. Not on the board yet: its 시작 중 card comes into view and the card opens
+// as soon as a render brings it (ntOpenArrivals, at every render's end), for NT_OPEN_WAIT_MS from the press (or the
+// answer, for a press before it). From another user's board the viewer's own board comes first — the card lands
+// there. keepAsk: the same ask goes on (the answer came), so what the reader had open then still counts. A 시작 실패
+// card is taken back instead (ntRetakeLaunch).
+function ntOpenLaunch(launch, keepAsk) {
+  if (!launch) return;
+  if (launch.failed) {
+    ntRetakeLaunch(launch);
+    return;
+  }
+  if (!keepAsk || !launch.wantOpen) launch.openFrom = ntPanelNow();
+  launch.wantOpen = true;
+  launch.openUntil = Date.now() + NT_OPEN_WAIT_MS;
+  if (_ntOpening.indexOf(launch) < 0) _ntOpening.push(launch);
+  if (!keepAsk && !ntBoardIsViewers() && typeof selectUser === 'function') {
+    selectUser(_viewerUserId);
+    return;
+  }
+  if (ntOpenArrived(launch)) {
+    _ntOpening = _ntOpening.filter(function (l) {
+      return l !== launch;
+    });
+    return;
+  }
+  var kb = document.getElementById('kanban');
+  if (kb && typeof kb.reveal === 'function' && _cardHost[launch.id] === kb) kb.reveal(launch.id, { open: false });
+  ntPendingWatch();
+}
+
+// The launch's card, when it is on the board: in view and open with its detail card (the deep link's way) — unless the
+// reader opened or closed another detail card since the press (#747 review R1): then the card only comes into view,
+// and the panel and what is being written there stay theirs. True once the card was there.
+function ntOpenArrived(launch) {
+  if (!launch.sessionKey) return false;
+  var key = resolveDeepLinkKey(launch.sessionKey, Object.keys(_sessionCache), SELF_INSTANCE_NAME);
+  var host = key ? _cardHost[key] : null;
+  if (key && !host) {
+    // On the board's data but not drawn — hidden by the 휴면 / 보관 toggle: shown just for this page load, as a deep
+    // link does (openDeepLinkedSession), and opened on that render (#747 review R2 N7).
+    var s = _sessionCache[key];
+    var hidden = s && (s.terminated === true ? !showArchives : !showSleeping);
+    if (hidden && _revealedKey !== key) {
+      _revealedKey = key;
+      loadSessions();
+    }
+    return false;
+  }
+  if (!host || typeof host.reveal !== 'function') return false;
+  launch.wantOpen = false;
+  // The reader moved to (or closed) another detail card, or is writing in the open one (R2 N3): in view only.
+  if (ntPanelNow() !== launch.openFrom || ntPanelHasInput()) {
+    host.reveal(key, { open: false });
+    return true;
+  }
+  host.reveal(key);
+  if (!panelOpen || panelSessionKey !== key) openPanel(key);
+  return true;
+}
+
+// Every render's end: the launches 카드 열기 asked to open whose card has come, opened; asks past their deadline,
+// dropped.
+function ntOpenArrivals() {
+  if (!_ntOpening.length) return;
+  var now = Date.now();
+  _ntOpening = _ntOpening.filter(function (l) {
+    if (!l.wantOpen || l.failed) return false;
+    if (l.sessionKey && now > l.openUntil) {
+      l.wantOpen = false;
+      return false;
+    }
+    return !ntOpenArrived(l);
+  });
 }
 
 function ntInit() {

@@ -5610,7 +5610,8 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'active', continuationCount: 0 });
       expect(registrySession.goal.capDmPendingAt).toBeUndefined();
       expect(registrySession.goalQueue?.[0]).toMatchObject({ objective: '다음 목표', status: 'queued' });
-      expect(settled).toHaveBeenCalledWith(SESSION_KEY);
+      // No turn ran: a kick (the unchanged summary is not re-judged).
+      expect(settled).toHaveBeenCalledWith(SESSION_KEY, { cause: 'kick' });
       expect(postSystemMessage).toHaveBeenLastCalledWith(
         CHANNEL,
         expect.stringContaining('runs again'),

@@ -11,6 +11,7 @@
  */
 
 import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
+import { isSdkEffortLevel } from 'soma-lib';
 import type { AgentRunOptions } from './agent-runner';
 import { createTrackedClaudeProcessSpawner } from './claude-child-process-registry';
 
@@ -41,7 +42,9 @@ export function toSdkOptions(opts: AgentRunOptions): Options {
   };
   // One-shot dispatch knobs (#model-call-unify) — only set when supplied so the
   // existing one-shot helpers' SDK Options stay byte-for-byte unchanged.
-  if (ext.effort !== undefined) sdk.effort = ext.effort as Options['effort'];
+  // `ultra` (the goal evaluator matching an ultra work session) is not a CLI `--effort` value and no backend takes
+  // it on the wire: it runs as `max`, the strongest level (build-stream-options does the same).
+  if (ext.effort !== undefined) sdk.effort = (isSdkEffortLevel(ext.effort) ? ext.effort : 'max') as Options['effort'];
   if (ext.cwd !== undefined) sdk.cwd = ext.cwd;
   if (ext.abortController !== undefined) sdk.abortController = ext.abortController;
   if (ext.resume !== undefined) sdk.resume = ext.resume;

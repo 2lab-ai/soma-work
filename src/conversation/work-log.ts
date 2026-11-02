@@ -92,7 +92,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { atomicWriteJson, readJsonWithBackup } from '@soma/common/atomic-json';
-import { WORK_LOG_RAW_MAX_BYTES } from '@soma/slack/work-log';
+import { WORK_LOG_PERMISSION_DECISIONS, WORK_LOG_RAW_MAX_BYTES, type WorkLogPermission } from '@soma/slack/work-log';
 import { DATA_DIR } from '../env-paths';
 import { Logger } from '../logger';
 
@@ -103,7 +103,17 @@ const logger = new Logger('WorkLog');
 // Kept local so this module compiles on its own; dedupe to an import once both
 // sides are on main.
 
-export type WorkLogKind = 'instruction' | 'narration' | 'tool' | 'tool_result' | 'final' | 'notice' | 'error';
+export type WorkLogKind =
+  | 'instruction'
+  | 'narration'
+  | 'tool'
+  | 'tool_result'
+  | 'final'
+  | 'notice'
+  | 'error'
+  /** SSOT 2026-11-02 T1 — a person's answer to a permission prompt (see `permission`). */
+  | 'permission';
+
 export interface WorkLogInput {
   kind: WorkLogKind;
   text: string;
@@ -153,6 +163,8 @@ export interface WorkLogInput {
    * next turn there. Entries written before it was kept have none.
    */
   anchor?: string;
+  /** A `permission` entry's answer (SSOT 2026-11-02 T1). */
+  permission?: WorkLogPermission;
 }
 /** An entry as pages and the broadcast carry it: its raw is described, never included. */
 export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes'> {
@@ -1203,6 +1215,16 @@ async function writeEntry(
   return entry;
 }
 
+/** A permission answer as stored: a known decision, a clamped id, a known advice — else none. */
+function permissionFields(p: WorkLogInput['permission']): WorkLogPermission | undefined {
+  if (!p || !(WORK_LOG_PERMISSION_DECISIONS as readonly string[]).includes(p.decision)) return undefined;
+  return {
+    decision: p.decision,
+    ...(p.by !== undefined ? { by: clampChars(String(p.by), WORK_LOG_FIELD_MAX) } : {}),
+    ...(p.ai === 'approve' || p.ai === 'deny' ? { ai: p.ai } : {}),
+  };
+}
+
 /**
  * Append one entry. `ts` defaults to the call time; `seq` is assigned when the
  * entry reaches the front of this conversation's write queue. Resolves with the
@@ -1237,6 +1259,8 @@ export function appendWorkLog(conversationId: string, input: WorkLogInput): Prom
   if (typeof input.anchor === 'string' && input.anchor.length <= WORK_LOG_FIELD_MAX) fields.anchor = input.anchor;
   if (input.by === 'user' || input.by === 'system') fields.by = input.by;
   if (input.compactTurn === true) fields.compactTurn = true;
+  const permission = permissionFields(input.permission);
+  if (permission) fields.permission = permission;
   const raw =
     input.raw != null
       ? pendingRaw(String(input.raw), input.rawBytes)
