@@ -391,7 +391,7 @@ describe('T3 — minimal: a card shows what matters', () => {
   it('no spec is the card body as it was', () => {
     const html = body(card(), 'working', false);
     for (const kept of ['[TASKS]', '[AGENTS]', '[IO]', '[MODEL]', 'card-foot-bar']) expect(html).toContain(kept);
-    expect(clientFn('paintCardBody')).toContain('var html = renderCardBody(s, col, viewSpec().body);');
+    expect(clientFn('paintCardBody')).toContain('var html = renderCardBody(s, col, viewSpec().body, viewSpec().face);');
   });
 });
 
