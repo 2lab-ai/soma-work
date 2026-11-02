@@ -278,7 +278,8 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
   });
 
   it('the multi-question form does not repeat the question the face already shows', () => {
-    expect(fnBody('renderCardBody')).toContain('renderMultiChoiceCard(s, faceSummary)');
+    // …as the face shows it: only when the layout keeps the summary row on (summaryOnFace).
+    expect(fnBody('renderCardBody')).toContain('renderMultiChoiceCard(s, summaryOnFace)');
     expect(fnBody('renderMultiChoiceCard')).toContain('=== faceSummary');
     // affectUI batch 1: the single-choice question is a <ui-approval-card>, titled with the whole
     // question (the element has no untitled form), so there the face's summary is read again.

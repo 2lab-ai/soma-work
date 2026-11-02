@@ -617,7 +617,7 @@ describe('U6 — 시작 / 취소 post the revision; 직접 입력 opens the comp
 });
 
 describe('U7 — a simple question is buttons on the task card (T7)', () => {
-  const m = load<{ quickChoicesOf(q: any): any[] | null; quickChoiceHtml(s: any, q: any): string }>(
+  const m = load<{ quickChoicesOf(q: any): any[] | null; quickChoiceHtml(s: any, q: any, onFace?: boolean): string }>(
     ['quickChoicesOf', 'quickChoiceHtml'],
     {
       esc,
@@ -687,10 +687,24 @@ describe('U7 — a simple question is buttons on the task card (T7)', () => {
     expect(html).toMatch(/class="ui-btn is-primary card-quick-choice"[^>]*>예</);
     expect(html).not.toContain('(추천)');
   });
+  it('says the question once: with the question on the face, the buttons keep it as their name only', () => {
+    const question = q([
+      { id: 'yes', label: '예' },
+      { id: 'no', label: '아니오' },
+    ]);
+    const onFace = m.quickChoiceHtml({ key: 'task:a' }, question, true);
+    expect(onFace).not.toContain('card-question-text');
+    expect(onFace).toContain('aria-label="진행할까요?"');
+    expect(onFace).toContain('data-quick-choice="yes"');
+    // A face showing something else (a permission ask leads it) keeps the question in the body.
+    expect(m.quickChoiceHtml({ key: 'task:a' }, question, false)).toContain(
+      '<div class="card-question-text">진행할까요?</div>',
+    );
+  });
   it('the open card uses the buttons for a simple question, the approval card otherwise', () => {
     const body = clientFn('renderCardBody');
     expect(body).toContain(
-      'if (quickChoicesOf(s.pendingQuestion)) questionHtml = quickChoiceHtml(s, s.pendingQuestion);',
+      'if (quickChoicesOf(s.pendingQuestion)) questionHtml = quickChoiceHtml(s, s.pendingQuestion, !!summaryOnFace && summaryOnFace === s.pendingQuestion.question);',
     );
     expect(body).toContain('else questionHtml = acQuestionHtml(s, s.pendingQuestion);');
   });
