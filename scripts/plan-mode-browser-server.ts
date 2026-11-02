@@ -19,6 +19,8 @@ import * as path from 'node:path';
 const OWNER = 'U0PLANVIEWER';
 
 async function main() {
+  // The English catalogs, as src/index.ts loads them: an en cookie sees the page in English (#773).
+  await import('@soma/common/i18n-en');
   const { SessionRegistry } = await import('../src/session-registry');
   const dashboard = await import('../src/conversation/dashboard');
   const webServer = await import('../src/conversation/web-server');
