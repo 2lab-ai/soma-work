@@ -4082,7 +4082,10 @@ export async function registerDashboardRoutes(
     },
   );
 
-  server.post<{ Params: { key: string }; Body: { anchor?: unknown; label?: unknown; source?: unknown; cancel?: unknown } }>(
+  server.post<{
+    Params: { key: string };
+    Body: { anchor?: unknown; label?: unknown; source?: unknown; cancel?: unknown };
+  }>(
     '/api/dashboard/session/:key/rollback',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
@@ -4097,7 +4100,9 @@ export async function registerDashboardRoutes(
           label.length > 300 ||
           (source !== 'input' && source !== 'worklog'))
       ) {
-        reply.status(400).send({ error: "anchor, label and source ('input' | 'worklog') — or cancel: true — are required" });
+        reply
+          .status(400)
+          .send({ error: "anchor, label and source ('input' | 'worklog') — or cancel: true — are required" });
         return;
       }
       const resolved = resolveSelfActionKeyAndOwner(request, reply);
@@ -4119,14 +4124,12 @@ export async function registerDashboardRoutes(
           reply.send(result);
           return;
         }
-        reply
-          .status(ROLLBACK_REFUSAL_STATUS[result.reason] ?? 409)
-          .send({
-            error:
-              (CONTEXT_ROLLBACK_REFUSAL_TEXT as Record<string, string>)[result.reason] ??
-              (result.reason === 'not-found' ? '세션을 찾을 수 없습니다' : '되돌릴 수 없습니다'),
-            reason: result.reason,
-          });
+        reply.status(ROLLBACK_REFUSAL_STATUS[result.reason] ?? 409).send({
+          error:
+            (CONTEXT_ROLLBACK_REFUSAL_TEXT as Record<string, string>)[result.reason] ??
+            (result.reason === 'not-found' ? '세션을 찾을 수 없습니다' : '되돌릴 수 없습니다'),
+          reason: result.reason,
+        });
       } catch (error) {
         logger.error('Error requesting a context rollback', error);
         reply.status(500).send({ error: 'Internal Server Error' });

@@ -33,16 +33,6 @@ import type { ClaudeHandler } from './claude-handler';
 import { getFollowupQueueCapacity, getReleaseNotesChannels } from './config';
 import { captureUserMedia, getConversation, recordUserTurn } from './conversation/recorder';
 import { readWorkLog } from './conversation/work-log';
-import {
-  buildRollbackPointsView,
-  CONTEXT_ROLLBACK_REFUSAL_TEXT,
-  type ContextRollbackRefusal,
-  cancelContextRollback,
-  type RollbackPointsView,
-  requestContextRollback,
-  rollbackInputPoints,
-  rollbackWorkLogPoints,
-} from './session/context-rollback';
 import { FileHandler, type ProcessedFile } from './file-handler';
 import { getLastCommandChannelStore } from './last-command-channel-store';
 import { Logger } from './logger';
@@ -58,6 +48,16 @@ import { WebhookChannel } from './notification-channels/webhook-channel';
 import { validateSessionGoalObjective } from './prompt/session-goal-block';
 import { routeReleaseNotes } from './release-notes-routes';
 import { retryReasonLine } from './retry-reason';
+import {
+  buildRollbackPointsView,
+  CONTEXT_ROLLBACK_REFUSAL_TEXT,
+  type ContextRollbackRefusal,
+  cancelContextRollback,
+  type RollbackPointsView,
+  requestContextRollback,
+  rollbackInputPoints,
+  rollbackWorkLogPoints,
+} from './session/context-rollback';
 import {
   type ActionHandlerContext,
   ActionHandlers,
@@ -6795,10 +6795,15 @@ export class SlackHandler {
     if (!session) return undefined;
     const record = session.conversationId ? await getConversation(session.conversationId) : null;
     const page = session.conversationId ? await readWorkLog(session.conversationId, { limit: 500 }) : { entries: [] };
-    return buildRollbackPointsView(session, rollbackInputPoints(session, record), rollbackWorkLogPoints(session, page.entries), {
-      actor: actorUserId || session.ownerId,
-      requestActive: this.requestCoordinator.isRequestActive(sessionKey),
-    });
+    return buildRollbackPointsView(
+      session,
+      rollbackInputPoints(session, record),
+      rollbackWorkLogPoints(session, page.entries),
+      {
+        actor: actorUserId || session.ownerId,
+        requestActive: this.requestCoordinator.isRequestActive(sessionKey),
+      },
+    );
   }
 
   /**

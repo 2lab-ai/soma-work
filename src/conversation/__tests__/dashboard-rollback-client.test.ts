@@ -58,7 +58,10 @@ function el() {
   };
 }
 
-function setup(points: unknown, post: (body: any) => { status: number; body: unknown } = () => ({ status: 200, body: { ok: true } })) {
+function setup(
+  points: unknown,
+  post: (body: any) => { status: number; body: unknown } = () => ({ status: 200, body: { ok: true } }),
+) {
   const nodes: Record<string, ReturnType<typeof el>> = {
     'rollback-dialog': el(),
     'rollback-body': el(),
@@ -101,7 +104,13 @@ const POINTS = {
 };
 
 function button(attrs: Record<string, string>) {
-  return { disabled: false, getAttribute: (k: string) => attrs[k] ?? null, closest: function () { return this; } };
+  return {
+    disabled: false,
+    getAttribute: (k: string) => attrs[k] ?? null,
+    closest: function () {
+      return this;
+    },
+  };
 }
 
 describe('dashboard rollback picker (client)', () => {
@@ -148,7 +157,10 @@ describe('dashboard rollback picker (client)', () => {
   });
 
   it('a server refusal is shown in the status line', async () => {
-    const { mod, nodes } = setup(POINTS, () => ({ status: 422, body: { error: '이 지점 뒤에 문맥 압축(/compact)이 있어 되돌릴 수 없습니다.' } }));
+    const { mod, nodes } = setup(POINTS, () => ({
+      status: 422,
+      body: { error: '이 지점 뒤에 문맥 압축(/compact)이 있어 되돌릴 수 없습니다.' },
+    }));
     await mod.openRollbackDialog('C1:T1');
     await mod.sendRollback('C1:T1', { anchor: 'x', label: 'y', source: 'input' }, 'done');
     expect(nodes['rollback-status'].textContent).toContain('/compact');

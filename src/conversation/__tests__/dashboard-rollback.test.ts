@@ -136,7 +136,13 @@ describe('Dashboard — context rollback routes (#744)', () => {
           [
             'C1:t1',
             liveSession({
-              pendingRewind: { anchor: 'a', label: '입력 직전: 배포', requestedAt: 9, requestedBy: 'U1', source: 'input' },
+              pendingRewind: {
+                anchor: 'a',
+                label: '입력 직전: 배포',
+                requestedAt: 9,
+                requestedBy: 'U1',
+                source: 'input',
+              },
             }),
           ],
         ]),
