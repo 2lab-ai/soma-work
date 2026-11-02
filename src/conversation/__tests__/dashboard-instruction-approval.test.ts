@@ -302,7 +302,8 @@ describe('dashboard instruction approvals — board, route, shipped client (#767
     expect(st).toMatchObject({ status: 'resolved', choiceId: 'approve' });
     expect(calls[0]).toEqual({
       url: `/api/dashboard/session/${encodeURIComponent(key)}/instruction-approval`,
-      body: { requestId, decision: 'approve' },
+      // The card's version (how many instructions it shows) rides along: astra R3.
+      body: { requestId, decision: 'approve', revision: 1 },
     });
     expect(toasts[0]).toMatchObject({ tone: 'success' });
     const again = await client.answerInstructionApproval(key, requestId, 'deny');

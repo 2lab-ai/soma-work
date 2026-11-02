@@ -155,7 +155,16 @@ export type InstructionApprovalAnswer =
     }
   | {
       ok: false;
-      reason: 'invalid' | 'not_found' | 'not_owner' | 'already_answered' | 'expired' | 'session_gone' | 'unavailable';
+      /** `changed`: more words joined the request after the version the owner answered — asked again with them. */
+      reason:
+        | 'invalid'
+        | 'not_found'
+        | 'not_owner'
+        | 'already_answered'
+        | 'expired'
+        | 'session_gone'
+        | 'unavailable'
+        | 'changed';
       request?: InstructionApprovalRequest;
     };
 
@@ -290,6 +299,8 @@ export class InstructionApprovals {
     senderId: string | undefined;
     approvalId?: string;
     ts?: string;
+    /** The message's words now: a one-time approval covers only the words the owner was shown. */
+    text?: string;
   }): boolean {
     const { session, senderId } = input;
     const ownerId = session?.ownerId;
@@ -307,7 +318,9 @@ export class InstructionApprovals {
         r.ownerId === ownerId &&
         r.requesterId === senderId &&
         input.ts !== undefined &&
-        r.held.some((h) => h.kind === 'message' && h.ts === input.ts)
+        // The very message, with the very words approved — an edit after the approval (a queued
+        // note's Edit) is new words, asked again (astra R3).
+        r.held.some((h) => h.kind === 'message' && h.ts === input.ts && h.text === (input.text ?? ''))
       ) {
         return true;
       }
@@ -415,6 +428,7 @@ export class InstructionApprovals {
 
   private async askOwner(request: InstructionApprovalRequest): Promise<void> {
     if (!this.deps.postOwnerDm) return;
+    const shown = request.held.length;
     let ref: { channel: string; ts: string } | undefined;
     try {
       ref = await this.deps.postOwnerDm(request.ownerId, buildInstructionApprovalDm(this.viewOf(request)));
@@ -433,6 +447,13 @@ export class InstructionApprovals {
     }
     request.dmRef = ref;
     this.saveQuietly('DM ref');
+    // Words that joined while the DM was on its way: the DM shows them now (its buttons name the new version).
+    if (request.held.length !== shown) {
+      const posted = ref;
+      await this.bestEffort('DM refresh', () =>
+        this.deps.updateDm?.(posted, buildInstructionApprovalDm(this.viewOf(request))),
+      );
+    }
   }
 
   private endedDm(r: InstructionApprovalRequest): SlackMessage {
@@ -467,6 +488,11 @@ export class InstructionApprovals {
     decision: InstructionApprovalDecision;
     actor: string | undefined;
     surface: InstructionApprovalSurface;
+    /**
+     * The version the owner answered: how many held instructions the DM or the
+     * card showed. One answer never covers words the owner was not shown (astra R3).
+     */
+    revision?: number;
   }): InstructionApprovalAnswer {
     const { requestId, decision, actor, surface } = input;
     if (!actor || !isInstructionApprovalDecision(decision)) return { ok: false, reason: 'invalid' };
@@ -477,6 +503,14 @@ export class InstructionApprovals {
       return { ok: false, reason: request.status === 'expired' ? 'expired' : 'already_answered', request };
     }
     if (request.expiresAt <= this.now()) return { ok: false, reason: 'expired', request };
+    if (input.revision !== undefined && input.revision !== request.held.length) {
+      const ref = request.dmRef;
+      if (ref)
+        void this.bestEffort('DM refresh', () =>
+          this.deps.updateDm?.(ref, buildInstructionApprovalDm(this.viewOf(request))),
+        );
+      return { ok: false, reason: 'changed', request };
+    }
     const session = this.deps.getSession(request.sessionKey);
     if (decision !== 'deny' && (!session || session.ownerId !== request.ownerId)) {
       // Closed (or handed to someone else) since: there is nothing to run the words in.

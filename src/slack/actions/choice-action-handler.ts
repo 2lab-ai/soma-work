@@ -337,6 +337,12 @@ export class ChoiceActionHandler {
 
       this.logger.info('Multi-choice selection', { formId, questionId, choiceId, label, userId });
 
+      if (this.needsOwnerApproval(session, sessionKey, userId)) {
+        // #767 — someone else may not change the owner's form: the owner would submit their answer as their own.
+        if (channel && userId) await this.ctx.slackApi.postEphemeral(channel, userId, FORM_OWNER_ONLY_TEXT);
+        return;
+      }
+
       const pendingForm = this.formStore.get(formId);
       if (!pendingForm) {
         this.logger.warn('Pending form not found', { formId });
@@ -392,6 +398,12 @@ export class ChoiceActionHandler {
       const messageTs = body.message?.ts;
 
       this.logger.info('Edit choice requested', { formId, questionId, userId });
+
+      if (this.needsOwnerApproval(session, sessionKey, userId)) {
+        // #767 — someone else may not change the owner's form: the owner would submit their answer as their own.
+        if (channel && userId) await this.ctx.slackApi.postEphemeral(channel, userId, FORM_OWNER_ONLY_TEXT);
+        return;
+      }
 
       const pendingForm = this.formStore.get(formId);
       if (!pendingForm) {
@@ -557,6 +569,12 @@ export class ChoiceActionHandler {
       const messageTs = body.message?.ts;
 
       this.logger.info('Form reset requested', { formId, userId });
+
+      if (this.needsOwnerApproval(session, sessionKey, userId)) {
+        // #767 — someone else may not change the owner's form: the owner would submit their answer as their own.
+        if (channel && userId) await this.ctx.slackApi.postEphemeral(channel, userId, FORM_OWNER_ONLY_TEXT);
+        return;
+      }
 
       const pendingForm = this.formStore.get(formId);
       if (!pendingForm) {

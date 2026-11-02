@@ -27,6 +27,7 @@ const REFUSAL_TEXT: Record<Extract<InstructionApprovalAnswer, { ok: false }>['re
   expired: '⌛ 이미 끝난 요청입니다 — 응답 시간이 지났습니다.',
   session_gone: '⌛ 이 작업 세션이 끝나 지시를 실행할 수 없습니다.',
   unavailable: '⚠️ 지금은 처리할 수 없습니다 — 잠시 후 다시 눌러 주세요.',
+  changed: '🔄 그사이 같은 사람의 지시가 더 들어왔습니다 — 갱신된 DM에서 다시 응답해 주세요.',
 };
 
 export class InstructionApprovalActionHandler {
