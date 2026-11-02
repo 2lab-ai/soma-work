@@ -99,6 +99,7 @@ import {
   setDashboardTaskAnswerHandler,
   setDashboardTaskCommandHandler,
   setDashboardTaskLauncher,
+  setDashboardTaskPlanHandler,
   setDashboardTrashHandler,
   setOAuthDirectoryLookup,
   setOAuthUserLookup,
@@ -196,6 +197,7 @@ import { ensureChildFolder } from './task-turn/epic-child-folder';
 import { archivedCostUsd, epicTreeCostUsd } from './task-turn/epic-cost';
 import { setEpicHost } from './task-turn/epic-server';
 import { createEpicWaker } from './task-turn/epic-wake';
+import { setPlanHost } from './task-turn/plan-server';
 import { composeTaskApprovalListeners } from './task-turn/task-approver';
 import { createDashboardCloseHandler } from './task-turn/task-close';
 import { createTaskLauncher } from './task-turn/task-launcher';
@@ -205,6 +207,7 @@ import {
   type TaskNoticeDeliverer,
 } from './task-turn/task-notice-deliverer';
 import { TASK_NOTIFICATION_LEDGER_FILENAME, TaskNotificationLedger } from './task-turn/task-notification-ledger';
+import { createTaskPlanDecider } from './task-turn/task-plan-decision';
 import {
   createTaskTurnController,
   type TaskCommandResponse,
@@ -1481,6 +1484,22 @@ async function start() {
       });
       return held ?? taskController.answer({ sessionKey, askId, answer, actorUserId });
     });
+    // Plan mode (SSOT 2026-11-02) — the `plan` tool saves through the registry; the dashboard's
+    // 시작 / 취소 decide the revision the user saw (시작 starts the work with the plan).
+    setPlanHost({
+      submitTaskPlan: (taskId, input) => claudeHandler.getSessionRegistry().submitTaskPlan(taskId, input),
+    });
+    setDashboardTaskPlanHandler(
+      createTaskPlanDecider({
+        getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+        setTaskPlanGate: (taskId, gate) => claudeHandler.getSessionRegistry().setTaskPlanGate(taskId, gate),
+        controller: taskController,
+        // #777 — 시작 · 취소 are the owner's call: someone the owner has not approved is refused, not held.
+        mayDecide: (sessionKey, session, actorUserId) =>
+          instructionApprovals.allows({ sessionKey, session, senderId: actorUserId }),
+        logger: new Logger('TaskPlanDecider'),
+      }),
+    );
     // #600 ⑥ — the dashboard's "new task" as a Slack-less task: folder, task, first instruction.
     const taskLauncher = createTaskLauncher({
       controller: taskController,

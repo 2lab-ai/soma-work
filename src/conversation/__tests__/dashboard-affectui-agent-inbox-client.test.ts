@@ -416,6 +416,7 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       _sessionCache: Object.create(null),
       _acState: {},
       acEvict: () => {},
+      autoOpenDecisions: () => {},
       _envIndex: null,
       _buildEnvIndex: () => ({}),
       _ownerIndex: null,
@@ -939,7 +940,7 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
     };
     const { wireInbox } = load<{ wireInbox(h: unknown): void }>(
       ['placeCard', 'viewCardOf', 'inboxPaint', 'inboxChipOf', 'syncHasCards', 'wireInbox'],
-      [],
+      ['_quietOpen'],
       env,
     );
     wireInbox(host);
@@ -1078,6 +1079,9 @@ describe('D10 — one primary button per open card', () => {
         'renderCardResume',
         'taskOutcomeHtml',
         'taskNoticeFailHtml',
+        'taskPlanCardHtml',
+        'quickChoicesOf',
+        'stripRecommendedMarker',
         'isBusy',
         'sessionActionsOf',
         'sessionActionHtml',
@@ -1176,9 +1180,11 @@ describe('D10 — one primary button per open card', () => {
       type: 'user_choice',
       question: 'Ship it?',
       recommendedChoiceId: '1',
+      // Labels too long for the task card's one-press buttons (SSOT 2026-11-02: a short 2–4 choice question
+      // is buttons — dashboard-task-plan-client U7); any other question is the approval card.
       choices: [
-        { id: '1', label: 'Yes' },
-        { id: '2', label: 'No' },
+        { id: '1', label: 'Yes — ship it to production now' },
+        { id: '2', label: 'No — hold it for another review' },
       ],
     };
     const slot = (html: string) =>
@@ -1288,6 +1294,8 @@ describe('D10 — the open card renders one approval card per prompt; only what 
         'renderCardResume',
         'taskOutcomeHtml',
         'taskNoticeFailHtml',
+        'taskPlanCardHtml',
+        'quickChoicesOf',
         'isBusy',
         'sessionActionsOf',
         'sessionActionHtml',

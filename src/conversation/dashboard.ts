@@ -113,6 +113,7 @@ import { getSurfaceLines } from '../slack/surface-config';
 import { type EpicBoardView, epicBoardView } from '../task-turn/epic-board';
 import { sessionCostUsd } from '../task-turn/epic-cost';
 import type { TaskAnswer } from '../task-turn/task-answer';
+import type { PlanDecision, TaskPlanGate, TaskPlanState } from '../task-turn/task-plan';
 import { buildThreadPermalink } from '../turn-notifier';
 import type { ConversationSession } from '../types';
 import { coerceEffort, EFFORT_LEVELS, type EffortLevel, userSettingsStore } from '../user-settings-store';
@@ -152,6 +153,7 @@ import {
 } from './permission-prompts';
 import { getConversation, resummarizeTurn } from './recorder';
 import { soundClientJs } from './sound-client';
+import { renderTaskPlanHtml, renderTaskPlanPage, TASK_PLAN_CSS, TASK_PLAN_PAGE_CSP } from './task-plan-html';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
 import {
   fillUiIcons,
@@ -488,6 +490,13 @@ export interface KanbanSession {
    * posted (attempts spent). Absent when there are none, and for Slack sessions.
    */
   noticeFailures?: Array<{ kind: string; error: string }>;
+  /**
+   * Plan mode (SSOT 2026-11-02) — a plan-mode task's gate as the card shows it:
+   * its state, the latest revision, the conclusion and its size. The plan
+   * itself is fetched (`GET /api/dashboard/session/:key/plan`) when a card or
+   * the panel draws it. Absent for every other session.
+   */
+  taskPlan?: KanbanTaskPlan;
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -1672,6 +1681,22 @@ export function setDashboardTaskAnswerHandler(fn: TaskAnswerHandler | null): voi
 }
 
 /**
+ * Plan mode (SSOT 2026-11-02) — 시작 / 취소 on a task's plan, for the revision
+ * the deciding user saw (`createTaskPlanDecider`, wired in src/index.ts).
+ */
+type TaskPlanHandler = (request: {
+  sessionKey: string;
+  decision: PlanDecision;
+  revision: number;
+  /** The signed-in user deciding — the work runs as them. */
+  actorUserId: string;
+}) => Promise<{ status: number; body: Record<string, unknown> }>;
+let _taskPlanHandlerFn: TaskPlanHandler | null = null;
+export function setDashboardTaskPlanHandler(fn: TaskPlanHandler | null): void {
+  _taskPlanHandlerFn = fn;
+}
+
+/**
  * #599 ⑤ — on a Slack-less task, an answer route hands the answer to the task
  * answer handler (askId required) and returns true; on a Slack session it
  * returns false and the route goes on as before.
@@ -1853,6 +1878,8 @@ interface DashboardTaskLauncher {
     model?: string;
     /** E4 ④a-2 — an epic (the launcher checks the user's flag). */
     kind?: 'epic';
+    /** Plan mode (SSOT 2026-11-02) — plan first, work once the owner starts it. */
+    plan?: boolean;
   }): Promise<{ status: number; body: Record<string, unknown> }>;
   /** The folders a user may name for a task (`listTaskFolders`). */
   folders(ownerId: string): Array<{ name: string }>;
@@ -2345,6 +2372,47 @@ export function broadcastArtifactUpdate(artifact: SessionArtifact): void {
   }
 }
 
+/** Plan mode — the gate as a card carries it (no plan body: that is fetched). */
+export interface KanbanTaskPlan {
+  state: TaskPlanState;
+  revision: number;
+  updatedAt: number;
+  summary?: string;
+  /** How many phases and steps the latest plan has. */
+  phases?: number;
+  steps?: number;
+  submittedAt?: number;
+  decidedAt?: number;
+  decidedBy?: string;
+}
+
+/** Plan mode — a Slack-less task's gate for its card; undefined for any other session. */
+export function taskPlanToKanban(s: { slackless?: boolean; taskPlan?: TaskPlanGate }): KanbanTaskPlan | undefined {
+  const gate = s.slackless === true ? s.taskPlan : undefined;
+  if (!gate) return undefined;
+  const plan = gate.plan;
+  return {
+    state: gate.state,
+    revision: gate.revision,
+    updatedAt: gate.updatedAt,
+    ...(plan
+      ? {
+          summary: plan.summary,
+          phases: plan.phases.length,
+          steps: plan.phases.reduce((n, p) => n + p.steps.length, 0),
+          submittedAt: plan.submittedAt,
+        }
+      : {}),
+    ...(gate.decidedAt !== undefined ? { decidedAt: gate.decidedAt } : {}),
+    ...(gate.decidedBy ? { decidedBy: gate.decidedBy } : {}),
+  };
+}
+
+/** Plan mode — an idle task whose plan waits for its owner asks for them (NEEDS YOU). */
+function planAsks(s: { slackless?: boolean; taskPlan?: TaskPlanGate; activityState?: string }): boolean {
+  return s.slackless === true && s.taskPlan?.state === 'awaiting' && (s.activityState || 'idle') === 'idle';
+}
+
 /**
  * A live card's links with the freshest state the host has without waiting: the thread's live PR check, the
  * link-metadata cache, the state recorded with the link. Stale or missing states are fetched in the background
@@ -2418,7 +2486,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     threadTs: s.threadTs,
     // A turn blocked on a permission prompt waits for its user (projection
     // only — the session's own activityState is untouched).
-    activityState: asks.length > 0 ? 'waiting' : s.activityState || 'idle',
+    // A plan waiting for its owner (plan mode) waits too.
+    activityState: asks.length > 0 || planAsks(s) ? 'waiting' : s.activityState || 'idle',
     sessionState: s.state || 'MAIN',
     terminated: s.terminated === true,
     trashed: s.trashed === true,
@@ -2444,7 +2513,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
       : undefined,
     tokenUsage: tokenUsageOf(s),
     doneAt: liveDoneAt(s),
-    waitingSince: liveWaitingSince(s, asks),
+    waitingSince: planAsks(s) ? (s.taskPlan?.updatedAt ?? liveWaitingSince(s, asks)) : liveWaitingSince(s, asks),
     finishedAt: liveFinishedAt(s),
     ...modelFields(s),
     ...contextFields(s),
@@ -2504,6 +2573,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     followups: followupsOf(key, s.ownerId),
     ...(s.slackless === true ? { slackless: true as const, ...noticeFailuresOf(key) } : {}),
     ...(s.slackless === true && s.kind === 'epic' ? { kind: 'epic' as const, epic: epicBundle(s) } : {}),
+    // Plan mode — the gate (its plan is fetched).
+    ...(s.slackless === true && s.taskPlan ? { taskPlan: taskPlanToKanban(s) } : {}),
     ...(s.slackless === true && s.parentTaskId
       ? {
           parentTaskId: s.parentTaskId,
@@ -4202,6 +4273,90 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── Plan mode (SSOT 2026-11-02): a task's plan, its full page, and 시작 / 취소 ──
+
+  /** A plan-mode task's live record for a read of its plan (any signed-in viewer of the board). */
+  const planTaskOf = (wireKey: string, reply: any): { key: string; session: any } | null => {
+    const key = resolveSelfActionKey(wireKey, reply);
+    if (key === null) return null;
+    const session = _getSessionsFn?.()?.get(key);
+    if (!session || session.slackless !== true || !session.taskPlan) {
+      reply.status(404).send({ error: 'no plan for this task' });
+      return null;
+    }
+    return { key, session };
+  };
+
+  server.get<{ Params: { key: string } }>(
+    '/api/dashboard/session/:key/plan',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const found = planTaskOf(String(request.params?.key ?? ''), reply);
+      if (!found) return;
+      const gate = found.session.taskPlan as TaskPlanGate;
+      reply.header('Cache-Control', 'no-store');
+      reply.send({
+        state: gate.state,
+        revision: gate.revision,
+        html: gate.plan ? renderTaskPlanHtml(gate.plan, { state: gate.state }) : null,
+      });
+    },
+  );
+
+  server.get<{ Params: { key: string } }>(
+    '/dashboard/plan/:key',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const found = planTaskOf(String(request.params?.key ?? ''), reply);
+      if (!found) return;
+      const gate = found.session.taskPlan as TaskPlanGate;
+      if (!gate.plan) {
+        reply.status(404).send({ error: 'the plan is still being written' });
+        return;
+      }
+      reply
+        .header('Content-Security-Policy', TASK_PLAN_PAGE_CSP)
+        .header('X-Content-Type-Options', 'nosniff')
+        .header('Cache-Control', 'no-store')
+        .type('text/html; charset=utf-8')
+        .send(renderTaskPlanPage(gate.plan, { title: displayTitle(found.session), state: gate.state }));
+    },
+  );
+
+  server.post<{ Params: { key: string }; Body: { decision?: unknown; revision?: unknown } }>(
+    '/api/dashboard/session/:key/plan',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { decision, revision } = request.body || {};
+      if ((decision !== 'start' && decision !== 'cancel') || !Number.isInteger(revision) || (revision as number) < 0) {
+        reply
+          .status(400)
+          .send({ error: "decision ('start' | 'cancel') and revision (the plan's number) are required" });
+        return;
+      }
+      // Who may: whoever may instruct the task (SSOT 2026-11-02) — 시작 runs the work as them.
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, instruct: true });
+      if (!resolved) return;
+      if (!_taskPlanHandlerFn) {
+        reply.status(501).send({ error: 'Task plan handler not configured' });
+        return;
+      }
+      try {
+        const outcome = await _taskPlanHandlerFn({
+          sessionKey: resolved.originalKey,
+          decision,
+          revision: revision as number,
+          actorUserId: signedInUserId(request) ?? '',
+        });
+        reply.status(outcome.status).send(outcome.body);
+        if (outcome.status < 400) broadcastSessionUpdate();
+      } catch (error) {
+        logger.error('Error deciding a task plan from the dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
   // ── Context rollback (#744): roll the model's context back to an input or a work-log point ──
 
   server.get<{ Params: { key: string } }>(
@@ -5090,6 +5245,10 @@ window.uiPeek = { html: peekHtml, kind: fileItemKind };
 <style id="ui-kit">
 ${uiLibKitCss()}
 </style>
+<!-- Plan mode (SSOT 2026-11-02): the server-drawn task plan's look (src/conversation/task-plan-html.ts). -->
+<style id="task-plan-css">
+${TASK_PLAN_CSS}
+</style>
 <style>
 /* ═══ @2lab.ai/ui language (ui.2lab.ai) ═══ Calm neutral planes, soft 6–16px rounding, medium weights,
    colour only where it carries status, one ink primary per surface, short ease-out motion. */
@@ -5706,7 +5865,7 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 .panel-surface { display: flex; flex-direction: column; }
 .panel-surface > #panel-info { order: var(--o-info, 1); }
 .panel-surface > #panel-goal { order: var(--o-goal, 2); }
-.panel-surface > #panel-needs-head, .panel-surface > #panel-permission, .panel-surface > #panel-question, .panel-surface > #panel-needs-status { order: var(--o-needs, 3); }
+.panel-surface > #panel-needs-head, .panel-surface > #panel-permission, .panel-surface > #panel-question, .panel-surface > #panel-plan, .panel-surface > #panel-needs-status { order: var(--o-needs, 3); }
 .panel-surface > #panel-artifacts { order: var(--o-artifacts, 4); }
 /* 3안's task line: one row — how far, the running task — a press opens the checklist under it. */
 .ptl-line { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 4px 0; border: 0; background: var(--surface); color: inherit; font: inherit; text-align: left; cursor: pointer; position: sticky; top: -8px; z-index: 1; }
@@ -6133,6 +6292,31 @@ body.nt-open .new-task-fab { display: none !important; }
   .panel-arts-hint { display: none; }
   .art-strip-panel { flex: 1 1 auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; }
 }
+/* Plan mode (SSOT 2026-11-02): the plan on the open task card, the detail card's plan and its bottom bar; a simple
+   question's choices as buttons on the task card. */
+.card-body .card-plan { margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--tint-wait-soft); border: 1px solid var(--tint-wait-line); display: flex; flex-direction: column; gap: 6px; }
+.card-plan[data-state="drafting"], .card-plan[data-state="approved"], .card-plan[data-state="cancelled"] { background: var(--ib-pill); border-color: var(--ib-card-border); }
+.card-plan-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.card-plan-kicker { font-size: 12px; font-weight: 600; color: var(--tint-wait-fg); }
+.card-plan[data-state="drafting"] .card-plan-kicker, .card-plan[data-state="approved"] .card-plan-kicker, .card-plan[data-state="cancelled"] .card-plan-kicker { color: var(--ib-text-2); }
+.card-plan-size { font-size: 12px; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
+.card-plan-link, .pp-full { margin-left: auto; font-size: 12px; color: var(--accent); text-decoration: none; white-space: nowrap; }
+.card-plan-summary { font-size: 13.5px; font-weight: 600; color: var(--ib-text); line-height: 1.4; overflow-wrap: anywhere; }
+.card-plan-note, .card-quick-note { font-size: 12px; color: var(--ib-muted); }
+.card-quick-note[role="alert"] { color: var(--st-fail-text); }
+.card-plan-actions, .ppb-actions, .card-quick-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.card-quick-row { margin-top: 2px; }
+.panel-plan { padding: 12px 16px 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+/* The panel's head names the revision and state: the drawing's own kicker would say it twice. */
+.panel-plan .tp-kicker { display: none; }
+.panel-plan[hidden], .panel-plan-bar[hidden] { display: none; }
+.pp-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pp-title { font-size: 13px; font-weight: 650; color: var(--ib-text); }
+.pp-note { font-size: 13px; color: var(--ib-muted); line-height: 1.5; }
+.pp-fold > summary { cursor: pointer; font-size: 12.5px; color: var(--ib-muted); margin-bottom: 8px; }
+.panel-plan-bar { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; padding: 8px 12px; margin-bottom: 8px; border-radius: 10px; background: var(--tint-wait-soft); border: 1px solid var(--tint-wait-line); }
+.ppb-label { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: var(--tint-wait-fg); }
+@media (hover: hover) and (pointer: fine) { .card-plan-link:hover, .pp-full:hover { text-decoration: underline; } }
 </style>
 <!-- Tokens — @2lab.ai/ui is the single source (P10): its tokens.css puts every --ui-* on :root and
      [data-theme="light|dark"] (the light and dark palettes, geometry, type and motion), and the
@@ -6319,6 +6503,8 @@ ${pageTokenAliases()}
         <div class="ui-section-head panel-needs-head" id="panel-needs-head" tabindex="-1" hidden><h4>입력 필요</h4><span class="ui-count" id="panel-needs-count" data-tone="wait" data-pop></span></div>
         <div class="panel-permission" id="panel-permission" style="display:none"></div>
         <div class="panel-question" id="panel-question" style="display:none"></div>
+        <!-- 작업 계획 (plan mode, SSOT 2026-11-02): the task's plan, drawn by the server — high level to detail — at once when the card opens. -->
+        <div class="panel-plan" id="panel-plan" role="region" aria-label="작업 계획" hidden></div>
         <p class="ui-sr-only" id="panel-needs-status" role="status" aria-live="polite"></p>
         <!-- 산출물 (SSOT 2026-10-23 T6): what the task produced, and the files the user attached. -->
         <div class="panel-artifacts" id="panel-artifacts" style="display:none"></div>
@@ -6369,6 +6555,8 @@ ${pageTokenAliases()}
     </div>
     <!-- Command row is always visible: read-only for a viewer who is not the owner, off once the session ended. -->
     <div class="panel-command" id="panel-command">
+      <!-- Plan mode: 시작 · 취소 · 직접 입력 at the bottom while a plan waits (the composer right under it is the direct input). -->
+      <div class="panel-plan-bar" id="panel-plan-bar" role="group" aria-label="작업 계획 결정" hidden></div>
       <!-- Model · effort beside the composer (spec 13): their own container — the input is never morphed. -->
       <div class="panel-controls" id="panel-controls" aria-label="이 세션의 모델과 추론 강도"></div>
       <!-- The composer and the session's follow-up queue — @2lab.ai/ui <ui-agent-steering> (dashboard batch 2) with
@@ -6396,6 +6584,7 @@ ${pageTokenAliases()}
           <button type="button" class="ui-chip" id="nt-dest-slack" aria-pressed="true" onclick="ntSetDestination('slack')"><span>Slack 채널</span></button>
           <button type="button" class="ui-chip" id="nt-dest-task" aria-pressed="false" title="슬랙 스레드 없이 대시보드에서만 진행하는 작업" onclick="ntSetDestination('task')"><span>대시보드 작업</span></button>
           <button type="button" class="ui-chip" id="nt-kind-epic" aria-pressed="false" hidden title="계획을 쓰고 자식 작업을 만들어 끝까지 모는 에픽" onclick="ntToggleEpic()"><span>에픽</span></button>
+          <label class="ui-switch nt-plan-switch" id="nt-plan-wrap" title="켜면 먼저 전체 작업 계획(SSOT · 의도 → 단계 → 작업 → 디테일)을 세워 보여 주고, 시작을 눌러야 작업합니다" hidden><input type="checkbox" role="switch" id="nt-plan" onchange="ntToggle('plan')"><span>작업 계획</span></label>
         </div>
         <div class="nt-config" role="group" aria-label="작업 설정">
           <!-- The task's model and effort: @2lab.ai/ui <ui-model-picker> (the session menu's element) — one trigger, one menu
@@ -7093,6 +7282,8 @@ function renderPanelQuestion(s) {
     container.style.display = 'none';
   }
   if (had && !container.contains(document.activeElement)) apSafeFocus();
+  // Plan mode — the plan sits with what the task asks (it is painted wherever the question is).
+  renderPanelPlan(s);
 }
 
 // The prompts in the panel. A prompt that arrives while the panel is open is
@@ -7164,7 +7355,7 @@ function panelQuestionShown(s) {
 function renderPanelNeedsHead(s) {
   var head = document.getElementById('panel-needs-head');
   if (!head) return;
-  var n = s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (s.pendingInstructionApprovals || []).length + (panelQuestionShown(s) ? 1 : 0)) : 0;
+  var n = s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (s.pendingInstructionApprovals || []).length + (panelQuestionShown(s) ? 1 : 0) + (s.taskPlan && s.taskPlan.state === 'awaiting' ? 1 : 0)) : 0;
   head.hidden = n === 0;
   var count = document.getElementById('panel-needs-count');
   if (count && count.textContent !== String(n)) count.textContent = String(n);
@@ -8130,6 +8321,8 @@ function _applyUserPill(data) {
   if (typeof paintUsageBreakdown === 'function') paintUsageBreakdown(); // the by-user view is an admin's
   _viewerUserId = (data && data.user && data.user.slackUserId) || '';
   syncBoardScope();
+  // Plan mode: the viewer is known now — their cards that wait on a decision open (autoOpenDecisions).
+  autoOpenDecisions();
   const lifecycleBtn = document.getElementById('lifecycle-btn');
   if (lifecycleBtn) lifecycleBtn.style.display = isAdminCapable ? 'inline-flex' : 'none';
   // Admin approvals (#620): a Slack-signed-in admin only (a viewer token names nobody — the
@@ -9065,6 +9258,8 @@ function renderBoard(board, partial) {
   // The board moved: the layout-shift cache measures it again once the
   // element's enter / move animations have settled (SSOT 2026-10-24).
   scheduleLayoutRefresh(MOTION.move + 40);
+  // Plan mode · simple questions (SSOT 2026-11-02): a card that newly needs a decision opens by itself, once.
+  if (!partial) autoOpenDecisions();
   openDeepLinkedSession();
   // T2: a launch's card 카드 열기 asked for, now that a render may have brought it.
   ntOpenArrivals();
@@ -9178,7 +9373,8 @@ function wireInbox(host) {
       ensureCardIo(key, true);
       if (s && s.conversationId && s.artifacts && !isSiblingSession(s)) ensureArtifacts(s.conversationId);
       // SSOT 2026-10-29 T2: its detail card opens beside the board, in front of the deck (focus stays on the card).
-      openPanel(key);
+      // A card the page opened by itself for a decision (autoOpenDecisions) leaves the panel alone.
+      if (_quietOpen.key !== key) openPanel(key);
     } else {
       // Folded: its detail card leaves the deck (the next one comes forward, or the panel closes).
       deckDrop(key);
@@ -9331,6 +9527,9 @@ function cardSummary(s, col, headline) {
   var current = cardCurrentTask(s);
   if (col !== 'closed' && s.pendingPermissions && s.pendingPermissions.length) return permissionSummary(s);
   if (col !== 'closed' && s.pendingGoalDecision) return '목표 계속 진행할까요? — 응답 대기';
+  // Plan mode — a plan waiting for its start leads the face.
+  var tp = s.taskPlan;
+  if (col !== 'closed' && tp && tp.state === 'awaiting') return '작업 계획 v' + tp.revision + ' — 시작할까요?' + (tp.summary ? ' · ' + tp.summary : '');
   var ia = col === 'closed' ? [] : s.pendingInstructionApprovals || [];
   if (ia.length) return (ia[0].requesterName || ia[0].requesterId || '') + '님의 지시 승인 대기' + (ia.length > 1 ? ' 외 ' + (ia.length - 1) + '건' : '');
   var q = s.pendingQuestion;
@@ -9680,6 +9879,7 @@ function cardStarOf(s, col) {
 function cardAsks(s, col) {
   if (col !== 'closed' && s.pendingPermissions && s.pendingPermissions.length) return true;
   if (col !== 'closed' && s.pendingGoalDecision) return true;
+  if (col !== 'closed' && s.taskPlan && s.taskPlan.state === 'awaiting') return true;
   if (col !== 'closed' && s.pendingInstructionApprovals && s.pendingInstructionApprovals.length) return true;
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return true;
@@ -10430,7 +10630,7 @@ function viewModeOfSettings(snapshot) {
 var PANEL_SURFACE_PARTS = {
   info: ['panel-info'],
   goal: ['panel-goal'],
-  needs: ['panel-needs-head', 'panel-permission', 'panel-question', 'panel-needs-status'],
+  needs: ['panel-needs-head', 'panel-permission', 'panel-question', 'panel-plan', 'panel-needs-status'],
   artifacts: ['panel-artifacts'],
 };
 function orderPanelSurface(order) {
@@ -11250,6 +11450,7 @@ function repaintPanelSession() {
   renderPanelGoal();
   renderPanelControls(s);
   renderPanelComposer(s);
+  renderPanelPlan(s);
   repaintPanelScope();
   convPaint(); // re-ai-answer D12 — the 응답 작성 중 row (and a /compact's progress) follow the session state
   restorePanelLiveAnchor(anchor);
@@ -11381,7 +11582,8 @@ function panelHeadData(s, col) {
   if (leg) d.startedAt = leg;
   else if (acc) d.activeMs = acc;
   if (s.slackThreadUrl) d.link = { id: 'slack', href: String(s.slackThreadUrl), label: 'Slack' };
-  d.actions = sessionActionsOf(s, col).map(function(a) {
+  // Plan mode — 시작 · 취소 lead the bar while a plan waits (the bottom bar has them too, with 직접 입력).
+  d.actions = planHeadActions(s).concat(sessionActionsOf(s, col).map(function(a) {
     var x = { id: a.id, label: a.label };
     if (SESSION_ACTION_ARIA[a.id] && !a.sibling) x.ariaLabel = SESSION_ACTION_ARIA[a.id];
     if (a.id === 'stop' && !a.sibling) { x.tone = 'danger'; x.icon = 'stop'; }
@@ -11391,7 +11593,7 @@ function panelHeadData(s, col) {
     if (a.lock) x.disabled = a.lock;
     if (a.busy) x.busy = true;
     return x;
-  });
+  }));
   return d;
 }
 // The bar's slot: an armed resume (what starts the session again, when, which attempt; why on hover).
@@ -11428,7 +11630,9 @@ function onPanelHeadAction(e) {
   var key = e.currentTarget && e.currentTarget._key;
   var s = key ? _sessionCache[key] : null;
   if (!s || !id || id === 'slack') return;
-  if (id === 'star') doStar(key, s.starred !== true);
+  if (id === 'plan-start') doPlanDecision(key, 'start');
+  else if (id === 'plan-cancel') doPlanDecision(key, 'cancel');
+  else if (id === 'star') doStar(key, s.starred !== true);
   else if (id === 'revive') doRevive(key);
   else if (id === 'rollback') openRollbackDialog(key);
   else if (id === 'stop' || id === 'close' || id === 'trash') doAction(key, id);
@@ -12349,7 +12553,9 @@ function renderCardBody(s, col, spec) {
   let questionHtml = '';
   if (s.pendingQuestion && col === 'waiting') {
     if (s.pendingQuestion.type === 'user_choice' && s.pendingQuestion.choices) {
-      questionHtml = acQuestionHtml(s, s.pendingQuestion);
+      // SSOT 2026-11-02 — a simple question (예 / 아니오, 시작 / 취소) is its choices as buttons: one press answers.
+      if (quickChoicesOf(s.pendingQuestion)) questionHtml = quickChoiceHtml(s, s.pendingQuestion);
+      else questionHtml = acQuestionHtml(s, s.pendingQuestion);
     } else if (s.pendingQuestion.type === 'user_choices') {
       questionHtml = renderMultiChoiceCard(s, faceSummary);
     }
@@ -12372,6 +12578,7 @@ function renderCardBody(s, col, spec) {
   const needsHtml = actionsHtml
     + permissionHtml
     + renderCardResume(s, col)
+    + taskPlanCardHtml(s)
     + taskOutcomeHtml(s)
     + taskNoticeFailHtml(s)
     + questionHtml;
@@ -12401,6 +12608,349 @@ function renderCardBody(s, col, spec) {
 function renderEpicPlan(s) {
   if (!s || s.kind !== 'epic' || !s.epic || !Array.isArray(s.epic.nodes) || s.epic.nodes.length === 0) return '';
   return '<ui-task-plan class="card-task-plan epic-plan" lang="ko" flush foot="none" data-epic-plan-key="' + escAttr(s.key) + '"></ui-task-plan>';
+}
+
+// ── Plan mode (SSOT 2026-11-02 — 작업 계획 모드) ──
+// A dashboard task made with the 작업 계획 switch plans first. Its card and its detail card show the plan
+// (taskPlan: state · revision · summary; the plan itself, drawn by the server, fetched by revision) and
+// 시작 · 취소 · 직접 입력: in the open card, at the top of the detail card (the status bar) and at its bottom
+// (above the composer, which is the direct input). 시작 / 취소 decide the revision the user saw.
+var TASK_PLAN_STATE_LABEL = { drafting: '계획 작성 중', awaiting: '승인 대기', approved: '시작됨', cancelled: '취소됨' };
+var TASK_PLAN_TONE = { drafting: 'run', awaiting: 'wait', approved: 'done', cancelled: 'idle' };
+var _planDocs = Object.create(null); // card key → { revision, state, html | error, loading } (GET …/plan)
+var _autoOpened = Object.create(null); // card key → the decision autoOpenDecisions opened it for
+var _quietOpen = { key: '' }; // the card autoOpenDecisions opens right now: its ui-toggle opens no panel
+// Who may decide here: whoever may instruct the task (the server's requireInstructAccess), on this instance.
+// decide — 시작 · 취소, on every surface (the card, the top, the bottom): not while the turn that wrote the plan
+// is still finishing either; the server answers a decision 409 until it ends (review R2). 직접 입력 asks
+// planLock(s): it only opens the composer.
+function planLock(s, decide) {
+  if (isSiblingSession(s)) return AC_SIBLING;
+  if (!viewerCanInstruct(s)) return READ_ONLY_MSG;
+  return decide && s && s.activityState === 'working' ? '작업이 끝나면 결정할 수 있어요' : '';
+}
+// The plan the detail card shows against the board's (review R2, P1): 시작 there approves what the user can
+// see, so it waits until the card shows the board's revision, loaded — '' then; else why 시작 waits.
+function planShownLag(s) {
+  var tp = s && s.taskPlan;
+  if (!tp) return '';
+  var doc = _planDocs[s.key];
+  if (doc && !doc.loading && doc.html && doc.revision === tp.revision) return '';
+  if (doc && !doc.loading && doc.error) return '계획 v' + tp.revision + ' 불러오지 못했어요 — 다시 시도하세요';
+  return '계획 v' + tp.revision + ' 불러오는 중이에요 — 보이면 시작하세요';
+}
+// 시작 · 취소 · 직접 입력 — one press each (a write in flight holds 시작 and 취소; planLock(s, true) says why
+// they wait). A plan still being written has 취소 alone: nothing to start yet. hold: why 시작 waits besides
+// (the detail card's bottom: planShownLag). The key and the decision ride as data (planButton reads them):
+// no value is built into inline JS.
+function planButtonsHtml(s, hold) {
+  var key = escAttr(s.key);
+  var lock = planLock(s, true);
+  var busy = isBusy(s.key, 'plan');
+  var held = function(why) { return why ? ' disabled title="' + escAttr(why) + '"' : busy ? ' disabled aria-busy="true"' : ''; };
+  var press = ' data-plan-key="' + key + '" onclick="event.stopPropagation();planButton(this)"';
+  var cancel = '<button type="button" class="ui-btn plan-btn" data-plan="cancel"' + held(lock) + press + '>취소</button>';
+  if (s.taskPlan && s.taskPlan.state === 'drafting') return cancel;
+  var inputLock = planLock(s);
+  return '<button type="button" class="ui-btn is-primary plan-btn" data-plan="start"' + held(lock || hold) + press + '>▶ 시작</button>'
+    + cancel
+    + '<button type="button" class="ui-btn plan-btn" data-plan="input"' + (inputLock ? ' disabled title="' + escAttr(inputLock) + '"' : '') + press + '>직접 입력</button>';
+}
+function planButton(btn) {
+  var key = btn && btn.getAttribute('data-plan-key');
+  var what = btn && btn.getAttribute('data-plan');
+  if (!key || !what) return;
+  if (what === 'input') planDirectInput(key);
+  else if (what === 'start' || what === 'cancel') doPlanDecision(key, what);
+}
+// The open task card: where the plan stands, its conclusion and size, and — while it waits — the three buttons.
+function taskPlanCardHtml(s) {
+  var tp = s && s.taskPlan;
+  if (!tp) return '';
+  var label = TASK_PLAN_STATE_LABEL[tp.state] || String(tp.state);
+  var head = tp.state === 'drafting'
+    ? (tp.revision > 0 ? '작업 계획 v' + tp.revision + ' 고치는 중' : '작업 계획을 세우는 중')
+    : '작업 계획 v' + tp.revision + ' · ' + label;
+  var size = tp.phases ? '단계 ' + tp.phases + ' · 작업 ' + (tp.steps || 0) : '';
+  var html = '<div class="card-plan" data-state="' + escAttr(tp.state) + '">'
+    + '<div class="card-plan-head"><span class="card-plan-kicker">' + esc(head) + '</span>'
+    + (size ? '<span class="card-plan-size">' + esc(size) + '</span>' : '')
+    + (tp.revision > 0 ? '<a class="card-plan-link" href="/dashboard/plan/' + encodeURIComponent(s.key) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">계획 전체 보기 ↗</a>' : '')
+    + '</div>';
+  if (tp.summary) html += '<div class="card-plan-summary">' + esc(tp.summary) + '</div>';
+  // A plan still being written while the task is not running (its turn ended without one): 취소 is the way
+  // out — the server takes it while drafting (review R2).
+  var stuck = tp.state === 'drafting' && s.activityState !== 'working';
+  if (tp.state === 'awaiting' || stuck) html += '<div class="card-plan-actions">' + planButtonsHtml(s) + '</div>';
+  else if (tp.state === 'cancelled') html += '<div class="card-plan-note">새 지시를 보내면 다시 계획합니다</div>';
+  return html + '</div>';
+}
+// The detail card's top: 시작 (the bar's one primary) and 취소 lead its actions while a plan waits — 시작 once the
+// card shows the board's revision (planShownLag); 취소 alone while a plan is being written and the task is not
+// running (review R2).
+function planHeadActions(s) {
+  var tp = s && s.taskPlan;
+  if (!tp) return [];
+  var stuck = tp.state === 'drafting' && s.activityState !== 'working';
+  if (tp.state !== 'awaiting' && !stuck) return [];
+  var lock = planLock(s, true);
+  var busy = isBusy(s.key, 'plan');
+  var cancel = { id: 'plan-cancel', label: '취소', title: '이 계획을 취소합니다 — 새 지시를 보내면 다시 계획합니다' };
+  var acts = stuck ? [cancel] : [
+    { id: 'plan-start', label: '▶ 시작', primary: true, title: '작업 계획 v' + tp.revision + '대로 작업을 시작합니다' },
+    cancel,
+  ];
+  var lag = stuck ? '' : planShownLag(s);
+  acts.forEach(function(a) {
+    var why = lock || (a.id === 'plan-start' ? lag : '');
+    if (why) a.disabled = why;
+    else if (busy) a.busy = true;
+  });
+  return acts;
+}
+// The detail card's bottom: the same three, right above the composer (시작 waiting as at the top).
+function planBarHtml(s) {
+  var tp = s && s.taskPlan;
+  if (!tp || tp.state !== 'awaiting') return '';
+  return '<span class="ppb-label">작업 계획 v' + tp.revision + ' — 시작할까요?</span><span class="ppb-actions">' + planButtonsHtml(s, planShownLag(s)) + '</span>';
+}
+// The plan in the detail card's 입력 필요: shown the moment the card opens — the server's drawing of the
+// revision the card names, a full-page link, the plan folded once decided. Fetched once for each revision and
+// state the board names (doc.asked): a server ahead of the board answers once, not again and again (review R1).
+function planAskKey(tp) {
+  return (tp ? tp.revision : '') + ':' + (tp ? tp.state : '');
+}
+function panelPlanHtml(s, tp) {
+  var key = s.key;
+  var head = '<div class="pp-head"><span class="pp-title">작업 계획' + (tp.revision > 0 ? ' v' + tp.revision : '') + '</span>'
+    + '<span class="ui-status pp-state" data-tone="' + (TASK_PLAN_TONE[tp.state] || 'idle') + '">' + esc(TASK_PLAN_STATE_LABEL[tp.state] || tp.state) + '</span>'
+    + (tp.revision > 0 ? '<a class="pp-full" href="/dashboard/plan/' + encodeURIComponent(key) + '" target="_blank" rel="noopener">전체 화면 ↗</a>' : '')
+    + '</div>';
+  if (!(tp.revision > 0)) {
+    return head + '<p class="pp-note">지시를 SSOT로 고정하고 의도를 정리해 전체 계획(결론 → 단계 → 작업 → 디테일)을 세우는 중입니다. 제출되면 여기에 바로 보입니다.</p>';
+  }
+  var doc = _planDocs[key];
+  if (!doc || (!doc.loading && doc.asked !== planAskKey(tp))) {
+    loadPanelPlan(s);
+    doc = _planDocs[key];
+  }
+  var body = doc && doc.html ? doc.html
+    : doc && doc.error ? '<p class="pp-note" role="alert">계획을 불러오지 못했어요 — ' + esc(doc.error) + ' <button type="button" class="ui-btn is-sm" data-plan-key="' + escAttr(key) + '" onclick="retryPanelPlan(this.getAttribute(\\'data-plan-key\\'))">다시 시도</button></p>'
+    : '<p class="pp-note">작업 계획 불러오는 중…</p>';
+  // The board names a newer revision than the one on the card: said above it until that one arrives (review R2, P1).
+  var shown = doc && doc.html ? doc.revision : tp.revision;
+  if (shown < tp.revision) body = '<p class="pp-note pp-lag">v' + tp.revision + ' 불러오는 중 — 아래는 v' + shown + '</p>' + body;
+  if (tp.state === 'approved' || tp.state === 'cancelled') return head + '<details class="pp-fold"><summary>계획 펼치기</summary>' + body + '</details>';
+  if (tp.state === 'drafting') return head + '<p class="pp-note">직접 입력을 반영해 다음 버전을 쓰는 중 — 아래는 v' + shown + '</p>' + body;
+  return head + body;
+}
+function loadPanelPlan(s) {
+  var key = s.key;
+  var cur = _planDocs[key];
+  if (cur && cur.loading) return;
+  var asked = s.taskPlan || {};
+  var askKey = planAskKey(s.taskPlan);
+  _planDocs[key] = { revision: cur ? cur.revision : -1, state: cur ? cur.state : '', html: cur ? cur.html : '', loading: true, asked: askKey };
+  fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/plan')
+    .then(function(r) {
+      if (!r || !r.ok) throw new Error('HTTP ' + (r ? r.status : '?'));
+      return r.json();
+    })
+    .then(function(d) {
+      var html = d && typeof d.html === 'string' ? d.html : '';
+      // A saved plan the server could not read back (dropped on load) answers without one: a note with
+      // 다시 시도, not 불러오는 중 forever (review R2).
+      if (!html) throw new Error('이 버전의 계획을 찾지 못했어요');
+      _planDocs[key] = { revision: Number(d.revision) || 0, state: String(d.state || ''), html: html, asked: askKey };
+    })
+    .catch(function(e) {
+      _planDocs[key] = { revision: Number(asked.revision) || 0, state: String(asked.state || ''), html: '', error: String((e && e.message) || e), asked: askKey };
+    })
+    .then(function() {
+      if (panelSessionKey !== key) return;
+      // The top's 시작 waits for this document too (planShownLag): it repaints with the plan.
+      renderPanelHead();
+      renderPanelPlan(_sessionCache[key] || s);
+    });
+}
+function retryPanelPlan(key) {
+  delete _planDocs[key];
+  var s = _sessionCache[key];
+  if (s && panelSessionKey === key) renderPanelPlan(s);
+}
+// Paint the panel's plan and its bottom bar for the session it shows (written only when they changed).
+function renderPanelPlan(s) {
+  var box = document.getElementById('panel-plan');
+  var bar = document.getElementById('panel-plan-bar');
+  var tp = s && s.taskPlan;
+  if (box) {
+    var html = tp ? panelPlanHtml(s, tp) : '';
+    box.hidden = !html;
+    if (box.setAttribute) box.setAttribute('data-waiting', tp && tp.state === 'awaiting' ? 'true' : 'false');
+    if (box._html !== html) {
+      box.innerHTML = html;
+      box._html = html;
+    }
+  }
+  if (bar) {
+    var b = planBarHtml(s);
+    bar.hidden = !b;
+    if (bar._html !== b) {
+      bar.innerHTML = b;
+      bar._html = b;
+    }
+  }
+}
+// 시작 / 취소: the revision the user saw (a newer one meanwhile is a 409 that says so). With the detail card
+// open, 시작 approves the plan it shows — only once that is the board's revision, loaded (planShownLag), so the
+// revision posted is the card's; until then it asks for that plan and says so (review R2, P1). With the card
+// closed, 시작 is the task card's, which shows the board's own summary of the board's revision. 취소 needs no plan.
+async function doPlanDecision(key, decision) {
+  var s = _sessionCache[key];
+  var tp = s && s.taskPlan;
+  if (!tp || isBusy(key, 'plan')) return;
+  if (decision === 'start' && panelOpen && panelSessionKey === key && planShownLag(s)) {
+    loadPanelPlan(s);
+    renderPanelPlan(s);
+    dashToast({ title: planShownLag(s), description: s.title || undefined, tone: 'neutral' });
+    return;
+  }
+  setBusy(key, 'plan', true);
+  function repaint() {
+    refreshCard(key);
+    if (panelOpen && panelSessionKey === key) {
+      renderPanelHead();
+      renderPanelPlan(_sessionCache[key] || s);
+    }
+  }
+  repaint();
+  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/plan';
+  var body = JSON.stringify({ decision: decision, revision: tp.revision });
+  var failed = decision === 'start' ? '계획을 시작하지 못했어요' : '계획을 취소하지 못했어요';
+  try {
+    var headers = { 'Content-Type': 'application/json' };
+    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+    var res = await fetch(url, { method: 'POST', headers: headers, body: body });
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      var again = { 'Content-Type': 'application/json' };
+      if (_csrfToken) again['X-CSRF-Token'] = _csrfToken;
+      res = await fetch(url, { method: 'POST', headers: again, body: body });
+    }
+    var data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (res.ok) dashToast({ title: decision === 'start' ? '계획대로 작업을 시작했어요' : '계획을 취소했어요', description: s.title || undefined, tone: 'success' });
+    else dashToast({ title: failed, description: (data && data.error) || 'HTTP ' + res.status, tone: 'error' });
+  } catch (e) {
+    dashToast({ title: failed, description: '네트워크 오류 — 다시 시도하세요', tone: 'error' });
+  }
+  setBusy(key, 'plan', false);
+  repaint();
+  loadSessions();
+}
+// 직접 입력: the detail card's composer — what is sent there while the plan waits is the direct input
+// (the model revises the plan and sends the next revision).
+function planDirectInput(key) {
+  if (!(panelOpen && panelSessionKey === key)) openPanel(key);
+  focusPanelComposer('계획에 고칠 점이나 더할 지시를 아래 입력창에 적어 보내면, 모델이 반영해 다음 버전의 계획을 올립니다');
+}
+function focusPanelComposer(hint) {
+  if (hint) dashToast({ title: '직접 입력', description: hint, tone: 'neutral' });
+  setTimeout(function() {
+    var c = document.getElementById('pc-composer');
+    if (c && typeof c.focus === 'function') c.focus();
+  }, 120);
+}
+
+// SSOT 2026-11-02 — a question whose choices are few and short (예 / 아니오, 시작 / 취소 / 직접 입력) is answered
+// on the task card by one press: its choices as buttons. Anything else keeps the approval card (pick, then 제출).
+function quickChoicesOf(q) {
+  if (!q || q.type !== 'user_choice' || !Array.isArray(q.choices)) return null;
+  var n = q.choices.length;
+  if (n < 2 || n > 4) return null;
+  for (var i = 0; i < n; i++) {
+    var label = stripRecommendedMarker(String((q.choices[i] && q.choices[i].label) || ''));
+    if (!label || label.length > 16) return null;
+  }
+  return q.choices;
+}
+function quickChoiceHtml(s, q) {
+  var qid = acQuestionId(q);
+  var lock = acQuestionLock(s);
+  var st = _acState[s.key] && _acState[s.key][qid];
+  var sending = !!(st && st.status === 'sending');
+  var rec = resolveRecommendedId(q.recommendedChoiceId, q.choices);
+  var key = escAttr(s.key);
+  var id = escAttr(qid);
+  var buttons = q.choices.map(function(c) {
+    var cid = String(c.id);
+    var cls = 'ui-btn' + (rec !== undefined && rec !== null && String(rec) === cid ? ' is-primary' : '') + ' card-quick-choice';
+    var held = lock ? ' disabled title="' + escAttr(lock) + '"' : sending ? ' disabled' + (st.choiceId === cid ? ' aria-busy="true"' : '') : '';
+    var tip = !lock && c.description ? ' title="' + escAttr(c.description) + '"' : '';
+    // The model's ids travel as attribute data (cardQuickAnswer reads them), never as inline JS (.prd/10 round 2).
+    return '<button type="button" class="' + cls + '"' + held + tip + ' data-quick-key="' + key + '" data-quick-ask="' + id + '" data-quick-choice="' + escAttr(cid) + '" onclick="event.stopPropagation();cardQuickAnswer(this)">' + esc(stripRecommendedMarker(c.label)) + '</button>';
+  }).join('');
+  var note = st && st.status === 'error' ? '<div class="card-quick-note" role="alert">' + esc(st.message || '보내지 못했어요') + '</div>'
+    : st && st.status === 'resolved' ? '<div class="card-quick-note">답을 보냈어요</div>' : '';
+  return '<div class="card-question card-quick" role="group" aria-label="' + escAttr(q.question || '') + '"><div class="card-question-text">' + esc(q.question || '') + '</div><div class="card-quick-row">' + buttons + '</div>' + note + '</div>';
+}
+function cardQuickAnswer(btn) {
+  if (!btn || btn.disabled) return;
+  answerChoice(btn.getAttribute('data-quick-key'), btn.getAttribute('data-quick-ask'), btn.getAttribute('data-quick-choice'));
+}
+var _autoOpenWait = false;
+function autoOpenWhenDefined() {
+  if (_autoOpenWait || typeof customElements === 'undefined' || !customElements.whenDefined) return;
+  _autoOpenWait = true;
+  customElements.whenDefined('ui-agent-inbox').then(function() {
+    _autoOpenWait = false;
+    setTimeout(autoOpenDecisions, 0);
+  });
+}
+// The decision a card asks for now ('' = none): a waiting plan (by revision), or a simple question (by its id).
+function decisionSigOf(s) {
+  if (!s) return '';
+  var tp = s.taskPlan;
+  if (tp && tp.state === 'awaiting') return 'plan|' + tp.revision;
+  var q = s.pendingQuestion;
+  if (s.activityState === 'waiting' && q && quickChoicesOf(q)) return 'ask|' + (q.askId || q.question || '');
+  return '';
+}
+// A card of the viewer's that newly asks for one opens on the board by itself, once per decision — its buttons in
+// view without a click. The detail card does not open with it (the reader's place stays); a card the reader folded
+// again stays folded until the next decision.
+function autoOpenDecisions() {
+  for (var key in _sessionCache) {
+    var s = _sessionCache[key];
+    var sig = decisionSigOf(s);
+    if (!sig) {
+      delete _autoOpened[key];
+      continue;
+    }
+    if (_autoOpened[key] === sig) continue;
+    // Open already: nothing to do for this decision.
+    if (_expanded.has(key)) {
+      _autoOpened[key] = sig;
+      continue;
+    }
+    // Not the viewer's (or the viewer not known yet — /auth/me), another instance's, or not drawn yet:
+    // not recorded, so a later render (the viewer known, the card drawn) still opens it once.
+    if (!viewerOwns(s) || isSiblingSession(s)) continue;
+    var host = _cardHost[key];
+    if (!host || _cardCol[key] !== 'waiting') continue;
+    // The board element not upgraded yet (its module still loading): once it is, try again.
+    if (typeof host.reveal !== 'function') {
+      autoOpenWhenDefined();
+      continue;
+    }
+    _autoOpened[key] = sig;
+    _quietOpen.key = key;
+    try {
+      host.reveal(key, { open: true, scroll: false });
+    } finally {
+      _quietOpen.key = '';
+    }
+  }
 }
 
 // #600 ⑥ — a dashboard task's last turn as its card says it: how it ended, why,
@@ -14386,6 +14936,8 @@ function connectWs() {
         acEvict(updatedKey, msg.session);
         patchLastBoard(msg.session);
         if (_cardHost[updatedKey]) refreshCard(updatedKey);
+        // Plan mode · simple questions: the card that now asks for a decision opens by itself, once.
+        autoOpenDecisions();
         // E4 ⑨a — an epic's push carries its children (a child's push arrives as its epic's card).
         applyEpicPush(msg.session);
         // A panel open on one of those children follows it (its cache entry was refreshed above).
@@ -15601,8 +16153,10 @@ function landPanel() {
     // or an open question. Either is where the panel lands.
     var permission = document.getElementById('panel-permission');
     var question = document.getElementById('panel-question');
+    var planBox = document.getElementById('panel-plan');
     var target = permission && permission.style.display !== 'none' ? permission
-      : question && question.style.display !== 'none' ? question : null;
+      : question && question.style.display !== 'none' ? question
+      : planBox && !planBox.hidden && planBox.getAttribute('data-waiting') === 'true' ? planBox : null;
     var onQuestion = !!target;
     if (onQuestion && _panelOnQuestion) return;
     _panelOnQuestion = onQuestion;
@@ -18716,6 +19270,8 @@ function ntDefaultState(ctx, draft) {
     // #600 ⑥: a Slack channel (the default) or a dashboard task, and its folder by name ('' = a new folder).
     destination: 'slack',
     folder: '',
+    // Plan mode (SSOT 2026-11-02): a dashboard task plans first and works once it is started — on by default.
+    plan: true,
   };
 }
 
@@ -18729,6 +19285,8 @@ function ntBuildPayload(state, attachments, requestId) {
     if (state.folder) body.folder = state.folder;
     // E4 ⑨b — an epic (offered only behind the user's flag; the server checks it again).
     if (state.kind === 'epic') body.kind = 'epic';
+    // Plan mode: the 작업 계획 switch, always sent (off is a choice too).
+    body.plan = state.plan !== false;
     return body;
   }
   return {
@@ -18927,6 +19485,12 @@ function ntRender() {
   if (epicChip) {
     epicChip.hidden = !(isTask && _ntCtx.epicTasks);
     epicChip.setAttribute('aria-pressed', isTask && _ntCtx.epicTasks && _ntState.kind === 'epic' ? 'true' : 'false');
+  }
+  // Plan mode — the 작업 계획 switch, for a dashboard task (on unless turned off).
+  var planWrap = ntEl('nt-plan-wrap');
+  if (planWrap) {
+    planWrap.hidden = !isTask;
+    ntEl('nt-plan').checked = _ntState.plan !== false;
   }
   var folderSel = ntEl('nt-folder');
   if (folderSel && isTask) {

@@ -51,7 +51,7 @@ describe('프로젝트 메모리 tab', () => {
     const html = renderSettingsPage();
     // the tab is an entry of the <ui-tabs> list data, and its page is a slotted panel
     const tabs = JSON.parse(
-      /<script type="application\/json" id="settings-tabs-data">([^<]*)<\/script>/.exec(html)![1],
+      /<script type="application\/json" id="settings-tabs-data"[^>]*>([^<]*)<\/script>/.exec(html)![1],
     );
     expect(tabs).toContainEqual({ id: 'project', label: '프로젝트 메모리', icon: 'file-text' });
     expect(html).toContain('<div slot="project" data-tab="project" class="page" hidden>');

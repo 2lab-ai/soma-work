@@ -18,7 +18,8 @@
  * what the incident tier does). The `native-write` rows are the only ones with
  * `ctx.checkNativeWrite` set, answering every call with the row's value; the replay fails when
  * the policy asks it about a tool outside `NATIVE_WRITE_TOOLS` (`ProofsNativeWrite.lean` proves
- * what the boundary does).
+ * what the boundary does). The `plan-pending` rows are the only ones with `ctx.checkPlanPending`
+ * set (`ProofsPlan.lean` proves what step 6c does).
  *
  * The sensitive-path and devops-secret checks are held to their arguments as well: each call
  * carries the check and arguments the model says the policy passes (`sensitiveCall`,
@@ -121,7 +122,7 @@ interface MockedCall {
 }
 
 interface MockedRow {
-  kind: 'table' | 'tool-names' | 'boundary' | 'arguments' | 'incident' | 'native-write';
+  kind: 'table' | 'tool-names' | 'boundary' | 'arguments' | 'incident' | 'native-write' | 'plan-pending';
   mode: PermissionMode;
   isAdmin: boolean;
   aborted: boolean;
@@ -134,6 +135,11 @@ interface MockedRow {
    * property stays undefined.
    */
   checkNativeWrite?: string | null;
+  /**
+   * Present only on `plan-pending` rows: what `ctx.checkPlanPending` returns. Absent means the
+   * property stays undefined.
+   */
+  checkPlanPending?: string | null;
   calls: MockedCall[];
 }
 
@@ -149,7 +155,7 @@ const vectors = JSON.parse(
   fs.readFileSync(path.join(repoRoot, 'verification/vectors/tool-policy.json'), 'utf8'),
 ) as VectorFile;
 
-const MOCKED_KINDS = ['table', 'tool-names', 'boundary', 'arguments', 'incident', 'native-write'];
+const MOCKED_KINDS = ['table', 'tool-names', 'boundary', 'arguments', 'incident', 'native-write', 'plan-pending'];
 const rows = vectors.cases.filter((c) => MOCKED_KINDS.includes(c.kind)) as MockedRow[];
 
 /**
@@ -234,6 +240,7 @@ function contextOf(row: MockedRow): ToolPolicyContext {
           },
         }
       : {}),
+    ...('checkPlanPending' in row ? { checkPlanPending: () => row.checkPlanPending ?? null } : {}),
   };
 }
 
@@ -304,11 +311,15 @@ describe('tool-policy Lean conformance vectors (mocked primitives)', () => {
     expect(table[0].calls).toHaveLength(9);
   });
 
-  it('set incidentReadOnly on every incident row and otherwise only on native-write rows', () => {
+  it('set incidentReadOnly on every incident row and otherwise only on native-write and plan-pending rows', () => {
     expect(rows.filter((row) => row.kind === 'incident' && row.incidentReadOnly === undefined)).toEqual([]);
     expect(
       rows.filter(
-        (row) => row.incidentReadOnly !== undefined && row.kind !== 'incident' && row.kind !== 'native-write',
+        (row) =>
+          row.incidentReadOnly !== undefined &&
+          row.kind !== 'incident' &&
+          row.kind !== 'native-write' &&
+          row.kind !== 'plan-pending',
       ),
     ).toEqual([]);
     const incident = rowsOf('incident');
@@ -330,6 +341,23 @@ describe('tool-policy Lean conformance vectors (mocked primitives)', () => {
     expect(reasons.some((reason) => reason === 'write-boundary: outside-reason')).toBe(true);
     expect(reasons.some((reason) => reason === 'write-boundary: ')).toBe(true);
     expect(reasons.some((reason) => !reason.startsWith('write-boundary: '))).toBe(true);
+  });
+
+  it('set checkPlanPending on exactly the plan-pending rows, in every mode, for admins and non-admins (step 6c)', () => {
+    expect(rows.filter((row) => 'checkPlanPending' in row !== (row.kind === 'plan-pending'))).toEqual([]);
+    const plan = rowsOf('plan-pending');
+    expect(new Set(plan.map((row) => `${row.mode}/${row.isAdmin}/${row.incidentReadOnly !== undefined}`)).size).toBe(
+      12,
+    );
+    expect(new Set(plan.map((row) => row.checkPlanPending))).toEqual(new Set([null, 'plan-reason', '']));
+    // A reason denies every call, admins and bypass included; with the check clear, other steps decide.
+    for (const row of plan.filter((r) => typeof r.checkPlanPending === 'string')) {
+      expect(row.calls.filter((call) => call.expect.decision !== 'deny')).toEqual([]);
+    }
+    const reasons = plan.flatMap((row) => row.calls.map((call) => String(call.expect.reason)));
+    expect(reasons.some((reason) => reason === 'plan-pending: plan-reason')).toBe(true);
+    expect(reasons.some((reason) => reason === 'plan-pending: ')).toBe(true);
+    expect(reasons.some((reason) => !reason.startsWith('plan-pending: '))).toBe(true);
   });
 
   it('fire the environment-skill step (phase 4) on non-admin ENV_GATED_TOOLS calls only', () => {

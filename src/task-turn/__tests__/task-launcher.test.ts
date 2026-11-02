@@ -416,3 +416,24 @@ describe('taskDirectoryFor (#600 ⑥ — shared with executionContextForTask)', 
     expect(() => taskDirectoryFor(OWNER, path.join(ROOT, `${RUN}_link`))).toThrow(ExecutionContextMissingError);
   });
 });
+
+describe('createTaskLauncher — plan mode (SSOT 2026-11-02, T1)', () => {
+  it('the toggle on makes a plan-mode task; off or absent makes an ordinary one', async () => {
+    const on = harness();
+    await on.launcher.launch({ ...REQ, plan: true });
+    expect(on.created[0]).toMatchObject({ planMode: true });
+    // The first instruction is the user's own words; the plan notice rides the prompt, not the text.
+    expect(on.controller.start).toHaveBeenCalledWith(expect.objectContaining({ text: REQ.prompt, newTask: true }));
+    for (const plan of [false, undefined]) {
+      const off = harness();
+      await off.launcher.launch({ ...REQ, ...(plan === undefined ? {} : { plan }) });
+      expect(off.created[0].planMode, String(plan)).toBeUndefined();
+    }
+  });
+
+  it('an epic can plan first too', async () => {
+    const h = harness({ epicTasks: true });
+    await h.launcher.launch({ ...REQ, kind: 'epic', plan: true });
+    expect(h.created[0]).toMatchObject({ kind: 'epic', planMode: true });
+  });
+});

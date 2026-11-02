@@ -455,6 +455,26 @@ this.app.action('deny_tool', async ({ ack, body, respond }) => {
 - 허용 뒤 이행은 요청자 이름으로 원문(또는 "이어서 진행" 메시지)을 다시 보내는 것이다 — 다시 보낸 턴이 같은 게이트를
   지나며 이번에는 허용을 본다.
 
+## 6c. Plan Mode — No Work Before 시작
+
+대시보드 작업을 "작업 계획" 모드로 만들면, 소유자가 계획을 시작하기 전의 턴은 계획만 세운다(SSOT 2026-11-02).
+이 금지는 안내문이 아니라 정책 단계로 강제된다 — 모든 모드, 어드민까지(소유자의 계약이지 권한 문제가 아니다).
+
+| 부분 | 위치 |
+|---|---|
+| 판정 (순수, fail-closed) | `src/agent-runtime/policy/plan-pending-guard.ts` (`checkPlanPendingCall`, `isReadOnlyCommand`, `PLAN_PENDING_DENIED_TOOLS`) |
+| 결정 | `evaluateToolPolicy` 6c단계 (`ctx.checkPlanPending`, `PLAN_PENDING_DENY_MESSAGE`) — 6단계(PR-이슈) 다음, 인시던트·모드 단계 앞 |
+| 배선 | `build-stream-options.ts` — 실행 문맥이 `origin: 'task'` + `planPending`일 때만 체크를 싣는다 |
+| Lean | `evaluateToolPolicyPlan` (`Model.lean`), `ProofsPlan.lean` — 사유가 있으면 항상 거부, 없으면 `evaluateToolPolicyWith`와 같음, 좁히기만 함 |
+
+- 거부: 연구 도구 허용 목록(`PLAN_RESEARCH_TOOLS`) 밖의 모든 도구(쓰기 도구·서브에이전트·`Workflow`·`Monitor`·SDK가 새로 낼 도구 포함 —
+  계획 턴의 훅은 catch-all), **셸(Bash) 전부**, 정확한 읽기 목록(`PLAN_READ_MCP_TOOLS`) 밖의 MCP 도구 — 이름이 읽기처럼 보여도(`redis_query`) 거부.
+  셸을 통째로 막는 이유: 리뷰 4라운드 동안 "읽기 전용" 명령 분류기마다 우회로가 나왔다(따옴표 `-de'lete'`, 옵션 묶음 `sort -ro`, git 옵션 줄임말,
+  `rg --hostname-bin`, zsh `printf '%n' 'a[$(…)]'`, `printf -v PATH`, 심볼릭 링크 너머 clone, `gh … --web=true`). 회귀 테스트로 남겼다.
+- 통과: `Read`·`Glob`·`Grep`·`WebFetch`·`WebSearch`·`Skill`·할 일 도구, `mcp__plan__plan_submit`(계획 제출), github·filesystem 읽기 MCP와
+  `mcp__model-command__list`(정확한 이름). clone·빌드·테스트가 필요하면 계획의 첫 단계로 넣는다.
+- 거부 메시지는 모델에게 그 변경을 계획에 넣고 `plan_submit`하라고 알린다. 시작(`approved`) 뒤 턴에는 체크가 실리지 않는다.
+
 ## 7. User Bypass System
 
 ### 7.1 Bypass Setting

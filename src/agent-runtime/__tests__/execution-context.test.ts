@@ -59,6 +59,15 @@ describe('executionContextForTask (#597)', () => {
     expect('kind' in plain || 'parentTaskId' in plain).toBe(false);
   });
 
+  it('plan mode — carries planPending while the task’s plan is not started; a started plan or none does not', () => {
+    const gate = (state: string) => ({ state, revision: 1, updatedAt: 1 }) as any;
+    for (const state of ['drafting', 'awaiting', 'cancelled']) {
+      expect(executionContextForTask(task({ taskPlan: gate(state) })).planPending, state).toBe(true);
+    }
+    expect('planPending' in executionContextForTask(task({ taskPlan: gate('approved') }))).toBe(false);
+    expect('planPending' in executionContextForTask(task())).toBe(false);
+  });
+
   it('is frozen — nothing downstream can swap the user or the directory', () => {
     const ctx = executionContextForTask(task());
     expect(Object.isFrozen(ctx)).toBe(true);

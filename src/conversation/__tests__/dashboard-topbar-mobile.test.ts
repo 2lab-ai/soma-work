@@ -211,6 +211,7 @@ describe('paintAppBar — the data the page hands the bar', () => {
         adminInboxLoad: () => {},
         // View mode (SSOT 2026-11-01): learning the viewer re-says whose board this is (none in this harness).
         syncBoardScope: () => {},
+        autoOpenDecisions: () => {},
       },
       ['function account() { return _appBarAccount; }'],
     );

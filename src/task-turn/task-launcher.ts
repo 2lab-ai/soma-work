@@ -37,6 +37,13 @@ export interface TaskLaunchRequest {
   inputContext?: TaskInputContext;
   /** E4 ④a-2 (.prd/19 D12) — make an epic: only for an owner whose `epicTasks` flag is on. */
   kind?: 'epic';
+  /**
+   * Plan mode (SSOT 2026-11-02) — the composer's plan toggle: the task plans
+   * first and works only once its owner starts the plan (task-plan.ts). The
+   * first instruction stays the user's own words; the plan notice rides the
+   * turn's prompt.
+   */
+  plan?: boolean;
 }
 
 export interface TaskLauncherDeps {
@@ -201,6 +208,7 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
           ...(request.originThread ? { originThread: request.originThread } : {}),
           ...(request.inputContext ? { inputContext: request.inputContext } : {}),
           ...(epic ? { kind: 'epic' as const } : {}),
+          ...(request.plan === true ? { planMode: true } : {}),
         });
       } catch (error) {
         // A fresh folder no task was made for is not left behind (#640 R1). A named one is the owner's.

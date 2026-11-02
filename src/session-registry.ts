@@ -13,6 +13,7 @@ import {
 } from '@soma/slack/context-anchor';
 import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
 import { endGoalCapDecision } from '@soma/slack/session-goal';
+import { canonicalLinkUrl } from '@soma/slack/session-link-capture';
 import {
   sanitizeSdkUsageBaseline,
   sanitizeSessionUsage,
@@ -63,6 +64,13 @@ import {
   sanitizeEpicPlan,
   withEpicEvent,
 } from './task-turn/epic-plan';
+import {
+  applyPlanSubmission,
+  checkPlanSubmission,
+  newPlanGate,
+  sanitizeTaskPlanGate,
+  type TaskPlanGate,
+} from './task-turn/task-plan';
 import type {
   ActionPanelState,
   ActivityState,
@@ -111,6 +119,11 @@ const WARNING_INTERVALS = [
   12 * 60 * 60 * 1000, // 12 hours remaining - idle check (ask if session is done)
   10 * 60 * 1000, // 10 minutes remaining - final warning
 ];
+
+/** A session's history keeps at most this many links of each kind (세션 링크 자동 기록): the oldest go first. */
+export const MAX_NOTED_LINKS = 30;
+/** Which noted link becomes the current one: see SessionRegistry.noteSessionLinks. */
+export type NoteLinksMode = 'first' | 'always' | 'if-empty';
 
 const HISTORY_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinkHistory> = {
   issue: 'issues',
@@ -252,6 +265,8 @@ interface SerializedSession {
   epicEvents?: unknown;
   /** E4 ⑦ — a child closed by its epic's close; validated on load. */
   closedBy?: unknown;
+  /** Plan mode — a plan-mode task's gate; validated on load (`sanitizeTaskPlanGate`). */
+  taskPlan?: unknown;
   /** E2 ③ — the open chain and owed notices of a Slack-less task; validated on load. */
   openChain?: unknown;
   notices?: unknown;
@@ -343,6 +358,8 @@ export interface CreateTaskInput {
   /** E4 ① — a child task: its live epic (same owner) and the plan node it was made for. */
   parentTaskId?: string;
   planNodeId?: string;
+  /** Plan mode — the dashboard's plan toggle: the task plans first and works only once its owner starts it. */
+  planMode?: boolean;
 }
 
 /** E4 ① — a plan node id: a short slug, unique within its epic (one rule with the plan's, E4 ②). */
@@ -1311,6 +1328,8 @@ export class SessionRegistry {
     if (session.taskId) this.sessionsByTaskId.set(session.taskId, session);
     // E2 ② — only a Slack-less task carries an input context.
     if (session.inputContext && session.slackless !== true) session.inputContext = undefined;
+    // Plan mode — only a Slack-less task carries a plan gate.
+    if (session.taskPlan && session.slackless !== true) session.taskPlan = undefined;
     // E4 ① — only a Slack-less task carries the epic relation.
     if (session.slackless !== true) {
       session.kind = undefined;
@@ -1396,6 +1415,42 @@ export class SessionRegistry {
       throw error;
     }
     return next;
+  }
+
+  /**
+   * Plan mode — the plan the model submitted (`plan_submit`), checked
+   * (`checkPlanSubmission`) and saved strictly as the next revision awaiting
+   * its owner. A refusal (`TaskPlanError`, a task that is not in plan mode)
+   * or a failed save leaves the gate as it was. Returns the gate now saved.
+   */
+  submitTaskPlan(taskId: string, input: unknown): TaskPlanGate {
+    const task = this.sessionsByTaskId.get(taskId);
+    if (!task || task.slackless !== true || !task.taskPlan || task.terminated || task.closing) {
+      throw new Error(`submitTaskPlan: ${taskId} is not a plan-mode task`);
+    }
+    const next = applyPlanSubmission(task.taskPlan, checkPlanSubmission(input), Date.now());
+    this.setTaskPlanGate(taskId, next);
+    return next;
+  }
+
+  /**
+   * Plan mode — replace a task's plan gate and save it strictly (a decision,
+   * or the controller putting back a start that did not happen). A failed
+   * save puts the previous gate back and throws.
+   */
+  setTaskPlanGate(taskId: string, next: TaskPlanGate): void {
+    const task = this.sessionsByTaskId.get(taskId);
+    if (!task || task.slackless !== true || !task.taskPlan) {
+      throw new Error(`setTaskPlanGate: ${taskId} is not a plan-mode task`);
+    }
+    const previous = task.taskPlan;
+    task.taskPlan = next;
+    try {
+      this.saveSessionsOrThrow();
+    } catch (error) {
+      task.taskPlan = previous;
+      throw error;
+    }
   }
 
   /**
@@ -1691,6 +1746,8 @@ export class SessionRegistry {
       this.addTaskNotice(session, { id: `${session.taskId}:create:link`, kind: 'link', at: Date.now() });
     }
     if (input.kind === 'epic') session.kind = 'epic';
+    // Plan mode — the task plans first (drafting), in this first strict save.
+    if (input.planMode === true) session.taskPlan = newPlanGate(Date.now());
     if (parent) {
       session.parentTaskId = parent.taskId;
       session.planNodeId = input.planNodeId;
@@ -2030,6 +2087,7 @@ export class SessionRegistry {
       originThread: sanitizeOriginThread(archived.originThread),
       inputContext: sanitizeTaskInputContext(archived.inputContext),
       ...sanitizeEpicRelation(archived as unknown as Record<string, unknown>, slackless),
+      taskPlan: slackless ? sanitizeTaskPlanGate(archived.taskPlan) : undefined,
       // A task runs in its own directory: the one its transcript proves it ran in (#612 R4).
       ...(slackless ? { workingDirectory: cwd } : {}),
       sessionId: archived.sessionId,
@@ -2364,6 +2422,80 @@ export class SessionRegistry {
         },
       ],
     });
+  }
+
+  /**
+   * Record the links a conversation names (세션 링크 자동 기록, SSOT 2026-11-02): each new one joins its kind's
+   * history; which becomes the current link depends on where it came from —
+   *   'first'    a user message: the first link of each kind (as the dispatch does with the first message);
+   *   'always'   a PR or issue the session just created;
+   *   'if-empty' an assistant reply: only when the kind has no current link, so a PR mentioned in passing does not
+   *              replace the one the session works on.
+   * Links compare by their canonical URL (`/pull/12/files?x` is `/pull/12`), so a link the dispatch or the model
+   * already set is not recorded twice. A known link changes nothing. A recorded link is tagged `auto`; only those are
+   * trimmed, to the newest {@link MAX_NOTED_LINKS} of a kind (the current one always stays). The sequence the model's
+   * `UPDATE_SESSION` compares against does not move — this bookkeeping must not fail the model's own update.
+   * Returns whether anything changed (then the sessions are saved).
+   */
+  noteSessionLinks(
+    channelId: string,
+    threadTs: string | undefined,
+    links: ReadonlyArray<SessionLink>,
+    mode: NoteLinksMode,
+  ): boolean {
+    return this.noteSessionLinksOn(this.getSession(channelId, threadTs), links, mode);
+  }
+
+  /** {@link noteSessionLinks} for a session by its key (a Slack-less task). */
+  noteSessionLinksByKey(sessionKey: string, links: ReadonlyArray<SessionLink>, mode: NoteLinksMode): boolean {
+    return this.noteSessionLinksOn(this.getSessionByKey(sessionKey), links, mode);
+  }
+
+  private noteSessionLinksOn(
+    session: ConversationSession | undefined,
+    links: ReadonlyArray<SessionLink>,
+    mode: NoteLinksMode,
+  ): boolean {
+    if (!session || !Array.isArray(links) || links.length === 0) return false;
+    this.ensureSessionLinkState(session);
+    let changed = false;
+    const firstTaken = new Set<SessionResourceType>();
+    for (const raw of links) {
+      const type = raw?.type as SessionResourceType | undefined;
+      if (!raw?.url || !type || !(type in HISTORY_KEY_BY_RESOURCE)) continue;
+      const history = session.linkHistory![HISTORY_KEY_BY_RESOURCE[type]]!;
+      const activeKey = ACTIVE_KEY_BY_RESOURCE[type];
+      const link: SessionLink = { ...this.normalizeSessionLink(raw, type), auto: true };
+      const canon = canonicalLinkUrl(link.url);
+      const at = history.findIndex((l) => !!l?.url && canonicalLinkUrl(l.url) === canon);
+      const current = session.links![activeKey];
+      const isCurrent = !!current?.url && canonicalLinkUrl(current.url) === canon;
+      const makeCurrent =
+        mode === 'always' || (mode === 'first' && !firstTaken.has(type)) || (mode === 'if-empty' && !current?.url);
+      if (mode === 'first') firstTaken.add(type);
+      if (makeCurrent && !isCurrent) {
+        // The history's entry (its URL, a fetched title or state, whether it was set on purpose) stays; it moves to
+        // the newest place.
+        const entry = at >= 0 ? history[at] : link;
+        if (at >= 0) history.splice(at, 1);
+        history.push(entry);
+        session.links![activeKey] = { ...entry };
+        changed = true;
+      } else if (at < 0) {
+        history.push(link);
+        changed = true;
+      }
+      const keep = session.links![activeKey]?.url;
+      let recorded = history.filter((l) => l?.auto === true).length;
+      while (recorded > MAX_NOTED_LINKS) {
+        const drop = history.findIndex((l) => l?.auto === true && l.url !== keep);
+        if (drop < 0) break;
+        history.splice(drop, 1);
+        recorded--;
+      }
+    }
+    if (changed) this.saveSessions();
+    return changed;
   }
 
   /**
@@ -3526,6 +3658,7 @@ export class SessionRegistry {
             childTaskIds: session.childTaskIds,
             plan: session.plan,
             epicEvents: session.epicEvents,
+            taskPlan: session.slackless === true ? session.taskPlan : undefined,
             closedBy: session.closedBy,
             // Merge code change stats
             mergeStats: session.mergeStats,
@@ -3672,6 +3805,7 @@ export class SessionRegistry {
         originThread: sanitizeOriginThread(serialized.originThread),
         inputContext: sanitizeTaskInputContext(serialized.inputContext),
         ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, serialized.slackless === true),
+        taskPlan: serialized.slackless === true ? sanitizeTaskPlanGate(serialized.taskPlan) : undefined,
         lastTurnOutcome: sanitizeTaskTurnOutcome(serialized.lastTurnOutcome),
         sessionId: serialized.sessionId,
         isActive: false,
@@ -3920,6 +4054,7 @@ export class SessionRegistry {
           originThread: sanitizeOriginThread(serialized.originThread),
           inputContext: sanitizeTaskInputContext(serialized.inputContext),
           ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, slackless),
+          taskPlan: slackless ? sanitizeTaskPlanGate(serialized.taskPlan) : undefined,
           openChain:
             slackless && typeof serialized.openChain === 'string' && serialized.openChain !== ''
               ? serialized.openChain

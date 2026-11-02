@@ -232,6 +232,7 @@ function boardFlow(cardOf?: (s: { key: string }, col: string) => unknown, over: 
       _sessionCache: Object.create(null),
       _acState: {},
       acEvict: () => {},
+      autoOpenDecisions: () => {},
       _envIndex: null,
       _buildEnvIndex: () => ({}),
       _ownerIndex: null,

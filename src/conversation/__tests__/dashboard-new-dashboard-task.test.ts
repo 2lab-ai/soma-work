@@ -124,6 +124,23 @@ describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () 
     expect(launcher.mock.calls[0][0]).not.toHaveProperty('kind');
   });
 
+  it('plan mode (SSOT 2026-11-02, T1) — plan: true/false reaches the launcher; anything else is 400', async () => {
+    const res = await post(await signIn(), task({ plan: true }));
+    expect(res.statusCode).toBe(200);
+    expect(launcher.mock.calls[0][0]).toMatchObject({ plan: true });
+    launcher.mockClear();
+    await post(await signIn(), task({ plan: false, requestId: 'req-task-0123460' }));
+    expect(launcher.mock.calls[0][0]).toMatchObject({ plan: false });
+    launcher.mockClear();
+    const bad = await post(await signIn(), task({ plan: 'yes', requestId: 'req-task-0123461' }));
+    expect(bad.statusCode).toBe(400);
+    expect(JSON.parse(bad.body).error).toMatch(/plan/);
+    expect(launcher).not.toHaveBeenCalled();
+    // Absent (an older client): no plan — the dashboard's composer always sends it.
+    await post(await signIn(), task({ requestId: 'req-task-0123462' }));
+    expect(launcher.mock.calls[0][0]).not.toHaveProperty('plan');
+  });
+
   it('no model: the task takes the default', async () => {
     const res = await post(await signIn(), task());
     expect(res.statusCode).toBe(200);
