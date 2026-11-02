@@ -222,15 +222,36 @@ function matchTemplate(s: string, depth: number): string | null {
     tpl.slots.forEach((slot, i) => {
       const v = captured[i];
       const t = depth < 2 && HANGUL.test(v) ? translateUnit(v, depth + 1) : null;
-      // A slot that ran across a separator into Korean it cannot place took another part's words:
-      // leave the line to the part-by-part pass.
-      if (t === null && HANGUL.test(v) && SEPARATORS.some((sep) => v.includes(sep))) swallowed = true;
+      if (depth < 2 && t === null && HANGUL.test(v) && SEPARATORS.some((sep) => v.includes(sep))) swallowed = true;
       values[slot] = t ?? v;
     });
-    if (swallowed) continue;
+    // A slot that ran across a separator into Korean it cannot place may have taken other units' words
+    // (`<{0}|대시보드에서 보기>` over `<url|작업 스레드>  ·  <url|대시보드에서 보기>`). Give the line to the
+    // part-by-part pass only when every part is wholly the bot's; a person's text with a separator in it
+    // (a title `리뷰 · 수정`, even `응답 · 작업 중`) keeps the template — their words stay as written.
+    if (swallowed && partsAreBotText(s)) continue;
     return fill(tpl.text, values);
   }
   return null;
+}
+
+/**
+ * Whether some separator splits `s` into parts that are each wholly the bot's: an exact key, or a
+ * template whose slots hold no Korean (translated without filling, so a person's words in a slot —
+ * even words the catalog happens to know — leave Korean behind and fail the test).
+ */
+function partsAreBotText(s: string): boolean {
+  return SEPARATORS.some((sep) => {
+    if (!s.includes(sep)) return false;
+    const parts = s.split(sep).filter((p) => HANGUL.test(p));
+    return (
+      parts.length > 0 &&
+      parts.every((p) => {
+        const t = translateUnit(p.trim(), 2);
+        return t !== null && !HANGUL.test(t);
+      })
+    );
+  });
 }
 
 function translateUnit(s: string, depth: number): string | null {
