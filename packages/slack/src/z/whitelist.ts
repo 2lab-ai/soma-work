@@ -32,7 +32,7 @@ import { stripZPrefix } from './strip-z-prefix';
  * `/z sessions public`, `/z theme set dark`, `/z model haiku`).
  */
 const SAFE_Z_TOPICS =
-  /^(?:help|sessions?|theme|persona|model|verbosity|effort|cwd|email|memory|notify|sandbox|cct|auth|bypass)(?:\s+.*)?$/;
+  /^(?:help|sessions?|theme|persona|model|verbosity|effort|cwd|email|memory|notify|sandbox|cct|auth|bypass|lang|language)(?:\s+.*)?$/;
 
 /**
  * Non-admin DM policy gate (Issue #553).
@@ -72,6 +72,8 @@ export function isDmAllowedForNonAdmin(text: string): boolean {
   if (/^sessions?\s+terminate\s+\S+$/.test(lower)) return true;
   if (/^sessions?\s+theme(?:\s+(?:set\s+)?\S+|\s*=\s*\S+)?$/.test(lower)) return true;
   if (/^theme(?:\s+(?:set\s+)?\S+|\s*=\s*\S+)?$/.test(lower)) return true;
+  // Display language (#772) — grammar mirrors LangHandler exactly; a setting, never a prompt.
+  if (/^\/?(?:lang|language)(?:\s+(?:set\s+)?\S+)?$/.test(lower)) return true;
   // `%` is primary, `$` is deprecated (SessionCommandHandler still accepts both).
   if (/^[%$](?:model|verbosity|effort|thinking_summary|thinking)?(?:\s+\S+)?$/.test(lower)) return true;
   // autocompact [tokens|reset] — session-scoped threshold config, not a
