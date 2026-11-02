@@ -364,6 +364,8 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
   const expanded = new Set<string>(opts.expanded ?? []);
   const m = loadWithState<{
     renderBoard(board: unknown, partial?: boolean): void;
+    patchLastBoard(s: unknown): void;
+    applyEpicPush(s: unknown): void;
     state(): { host: Record<string, unknown>; drawn: Record<string, boolean>; data: Record<string, Card> };
   }>(
     [
@@ -380,12 +382,18 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       'cardBodyShown',
       'epicChildCol',
       'epicChildrenOf',
+      'epicKidsShown',
+      'epicKidsSig',
+      'epicKidsCounts',
       'withEpicChildren',
       'placeCard',
       'viewCardOf',
       'inboxPaint',
       'syncHasCards',
       'renderBoard',
+      'refreshCard',
+      'patchLastBoard',
+      'applyEpicPush',
     ],
     [
       'BOARD_LABELS',
@@ -437,6 +445,7 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       acPrefetch: () => {},
       releaseCardIoTimer: (cid: unknown) => calls.released.push(cid),
       syncCardBodies: () => {},
+      paintCardBody: () => {},
       ensureCardIo: (k: string) => calls.ensureIo.push(k),
       renderArchivesToggle: () => {},
       renderSleepingToggle: () => {},
@@ -580,6 +589,48 @@ describe('renderBoard → an epic’s children right under its card (E4 ⑨c, #7
     const st = h.m.state();
     expect(st.host.c2).toBe(h.kanban);
     expect(st.drawn.c3).toBe(true);
+  });
+
+  it('a push after the render: a child’s new column redraws its face; the same column refreshes it in place', () => {
+    const h = boardHarness();
+    const b = { waiting: [], working: [epic('E', [kid('c1', { activityState: 'working' })])], idle: [], closed: [] };
+    h.m.renderBoard(b, false);
+    const face = (id: string) =>
+      ((h.kanban.data?.columns ?? [])[1].cards as Card[]).find((c) => c.id === id) as Card & { title: string };
+    expect(face('c1').status).toBe('working');
+    // The server pushes the child's change as its epic's card (sessionUpdated): patch, then apply.
+    const asks = epic('E', [kid('c1', { activityState: 'waiting' })]);
+    h.m.patchLastBoard(asks);
+    h.m.applyEpicPush(asks);
+    expect(face('c1').status).toBe('waiting');
+    // Same column, new face data (the harness cardOf titles a card by its key: give it a new key? no — same key):
+    // the card is refreshed in place from the pushed card, in its column.
+    const again = epic('E', [kid('c1', { activityState: 'waiting', title: 'x' })]);
+    h.m.patchLastBoard(again);
+    h.m.applyEpicPush(again);
+    expect(face('c1').status).toBe('waiting');
+    expect(h.m.state().drawn.c1).toBe(true);
+  });
+
+  it('the announcement counts the children drawn in the columns; 휴면 hidden hides a sleeping child', () => {
+    const h = boardHarness();
+    h.m.renderBoard(
+      {
+        waiting: [],
+        working: [
+          epic('E', [
+            kid('c1', { activityState: 'working' }),
+            kid('c2', { activityState: 'waiting' }),
+            kid('zz', { sessionState: 'SLEEPING' }),
+          ]),
+        ],
+        idle: [],
+        closed: [],
+      },
+      false,
+    );
+    expect(h.kanban.data?.announce).toEqual({ needs: 1, running: 2 });
+    expect((h.kanban._ibPlan as Plan).cols[1].keys).toEqual(['E', 'c1', 'c2', 'zz']);
   });
 
   it('in DONE: the children follow the epic in its day group; a closed day counts them as stubs', () => {

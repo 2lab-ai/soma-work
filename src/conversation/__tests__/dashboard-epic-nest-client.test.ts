@@ -67,10 +67,17 @@ const epicCard = (key: string, state: string, children: unknown[], over: Record<
 
 describe('N1, L2 — the children after their epic, each in its own column', () => {
   const m = load<{
-    withEpicChildren(items: Array<{ s: unknown; col: string }>): Array<{ s: { key: string }; col: string }>;
+    withEpicChildren(
+      items: Array<{ s: unknown; col: string }>,
+      hideSleeping?: boolean,
+      revealKey?: string | null,
+    ): Array<{ s: { key: string }; col: string }>;
     epicChildrenOf(s: unknown): Array<{ key: string }>;
+    epicKidsShown(s: unknown, hideSleeping?: boolean, revealKey?: string | null): Array<{ key: string }>;
+    epicKidsSig(s: unknown, hideSleeping?: boolean, revealKey?: string | null): string;
+    epicKidsCounts(board: unknown): { needs: number; running: number; sleeping: number };
     epicChildCol(c: unknown): string;
-  }>(['epicChildCol', 'epicChildrenOf', 'withEpicChildren'], []);
+  }>(['epicChildCol', 'epicChildrenOf', 'epicKidsShown', 'epicKidsSig', 'epicKidsCounts', 'withEpicChildren'], []);
   const keysCols = (items: Array<{ s: { key: string }; col: string }>) => items.map((it) => [it.s.key, it.col]);
 
   it('N1 — an epic is followed by its children; plain cards and a bundle-less epic are left as they are', () => {
@@ -111,6 +118,41 @@ describe('N1, L2 — the children after their epic, each in its own column', () 
     expect(m.epicChildrenOf({ key: 'E', kind: 'epic', epic: { children: 'bad' } })).toEqual([]);
   });
 
+  it('N1 — 휴면 hidden: a sleeping child is not drawn under its epic, unless a deep link revealed it', () => {
+    const e = epicCard('E', 'running', [child('c1'), child('zz', { sessionState: 'SLEEPING' })]);
+    const items = [{ s: e, col: 'working' }];
+    expect(keysCols(m.withEpicChildren(items, true))).toEqual([
+      ['E', 'working'],
+      ['c1', 'idle'],
+    ]);
+    expect(keysCols(m.withEpicChildren(items, true, 'zz')).map((x) => x[0])).toEqual(['E', 'c1', 'zz']);
+    expect(keysCols(m.withEpicChildren(items, false)).map((x) => x[0])).toEqual(['E', 'c1', 'zz']);
+    expect(m.epicKidsShown(e, true, 'other').map((c) => c.key)).toEqual(['c1']);
+  });
+
+  it('N1 — the signature: each shown child and its column, in order; the same filter as the drawing', () => {
+    const e = epicCard('E', 'running', [
+      child('c1', { activityState: 'working' }),
+      child('c2', { activityState: 'waiting' }),
+      child('zz', { sessionState: 'SLEEPING' }),
+    ]);
+    expect(m.epicKidsSig(e)).toBe('c1:working c2:waiting zz:closed');
+    expect(m.epicKidsSig(e, true)).toBe('c1:working c2:waiting');
+    expect(m.epicKidsSig({ key: 'p' })).toBe('');
+  });
+
+  it('N1 — the announcement counts: children that wait, run and sleep, from every column’s epics', () => {
+    const board = {
+      working: [
+        epicCard('E1', 'running', [child('a', { activityState: 'working' }), child('b', { activityState: 'waiting' })]),
+      ],
+      waiting: [epicCard('E2', 'needs-input', [child('c', { activityState: 'waiting' })])],
+      idle: [epicCard('E3', 'done', [child('d'), child('e', { sessionState: 'SLEEPING' })]), { key: 'plain' }],
+    };
+    expect(m.epicKidsCounts(board)).toEqual({ needs: 2, running: 1, sleeping: 1 });
+    expect(m.epicKidsCounts({})).toEqual({ needs: 0, running: 0, sleeping: 0 });
+  });
+
   it('L2 — a child reads its own activity; a sleeping one is closed', () => {
     expect(m.epicChildCol(child('a', { activityState: 'working' }))).toBe('working');
     expect(m.epicChildCol(child('a', { activityState: 'waiting' }))).toBe('waiting');
@@ -132,10 +174,12 @@ describe('N2 — the push path', () => {
       epicChildOf(s: unknown, key: string): unknown;
       setBoard(b: unknown): void;
     }>(
-      ['epicChildrenOf', 'applyEpicPush', 'epicChildOf'],
+      ['epicChildCol', 'epicChildrenOf', 'epicKidsShown', 'epicKidsSig', 'applyEpicPush', 'epicChildOf'],
       [],
       {
         ...state,
+        showSleeping: true,
+        _revealedKey: null,
         renderBoard: (b: unknown) => calls.boards.push(b),
         refreshCard: (k: string) => calls.refreshed.push(k),
         _lastBoardData: null,
@@ -164,7 +208,7 @@ describe('N2 — the push path', () => {
     h.m.applyEpicPush(epicCard('task:e', 'running', [child('task:c1')]));
     expect(h.calls.boards).toEqual([board]);
     // A child that left (closed): redrawn too.
-    h.state._epicKidsDrawn['task:e'] = 'task:c1 task:c2';
+    h.state._epicKidsDrawn['task:e'] = 'task:c1:idle task:c2:idle';
     h.m.applyEpicPush(epicCard('task:e', 'running', [child('task:c1')]));
     expect(h.calls.boards).toHaveLength(2);
     // The epic's card comes back with no bundle (closed): its children go, redrawn.
@@ -173,18 +217,32 @@ describe('N2 — the push path', () => {
     expect(h.calls.refreshed).toHaveLength(0);
   });
 
-  it('the same children: each child card on the board refreshes in place, no redraw', () => {
+  it('the same children in the same columns: each child card on the board refreshes in place, no redraw', () => {
     const h = pushHarness();
     h.m.setBoard({});
-    h.state._epicKidsDrawn['task:e'] = 'task:c1 task:c2';
+    h.state._epicKidsDrawn['task:e'] = 'task:c1:working task:c2:idle';
     h.state._cardHost['task:e'] = {};
     h.state._cardHost['task:c1'] = {};
-    const fresh = child('task:c1', { activityState: 'working' });
+    const fresh = child('task:c1', { activityState: 'working', title: 'new title' });
     h.m.applyEpicPush(epicCard('task:e', 'running', [fresh, child('task:c2')]));
     expect(h.calls.boards).toHaveLength(0);
     // Only a child with a host (placed by the last render) refreshes; c2 has none here.
     expect(h.calls.refreshed).toEqual(['task:c1']);
+    // The refresh reads the pushed card (cached first).
     expect(h.state._sessionCache['task:c1']).toBe(fresh);
+  });
+
+  it('a child whose column changed (working → waiting, → sleeping) redraws — its face is drawn with its new column', () => {
+    const h = pushHarness();
+    h.m.setBoard({});
+    h.state._epicKidsDrawn['task:e'] = 'task:c1:working';
+    h.state._cardHost['task:e'] = {};
+    h.state._cardHost['task:c1'] = {};
+    h.m.applyEpicPush(epicCard('task:e', 'running', [child('task:c1', { activityState: 'waiting' })]));
+    expect(h.calls.boards).toHaveLength(1);
+    h.m.applyEpicPush(epicCard('task:e', 'running', [child('task:c1', { sessionState: 'SLEEPING' })]));
+    expect(h.calls.boards).toHaveLength(2);
+    expect(h.calls.refreshed).toHaveLength(0);
   });
 
   it('an epic the last render did not place, and a plain card: nothing redrawn', () => {
@@ -370,14 +428,22 @@ describe('L7 — the epic’s own card', () => {
     expect(done.lead.title).toBe('에픽 — 완료');
     expect(done.statusText).not.toBe('완료');
     expect(cardOf({ ...base, ...epicCard('task:e', 'constructor', []) }, 'idle').lead.title).toBe('에픽 — 대기');
-    // A child leads with its node, the ref its epic's plan tree shows (fable #707 R1), after ↳:
-    // it sits right under its epic's card (E4 ⑨c).
+    // A child leads with its node, the ref its epic's plan tree shows (fable #707 R1) — after ↳ when
+    // it came in its epic's bundle (E4 ⑨c: drawn right under the epic); without, no arrow to nothing.
     expect(
-      cardOf({ ...base, key: 'task:c', title: 'C', parentTaskId: 'e', planNodeId: 'login' }, 'working').lead,
+      cardOf({ ...base, key: 'task:c', title: 'C', parentTaskId: 'e', planNodeId: 'login', underEpic: true }, 'working')
+        .lead,
     ).toEqual({
       text: '\u21b3 #login',
       glyph: 'tasks',
       title: '위 에픽의 노드 login',
+    });
+    expect(
+      cardOf({ ...base, key: 'task:c', title: 'C', parentTaskId: 'e', planNodeId: 'login' }, 'closed').lead,
+    ).toEqual({
+      text: '#login',
+      glyph: 'tasks',
+      title: '에픽의 노드 login',
     });
     const plain = cardOf({ ...base, key: 'task:p', title: 'P' }, 'idle');
     expect(plain.lead).toBeUndefined();
@@ -413,10 +479,14 @@ describe('N4 — the page: no lane; renderBoard places the children', () => {
   it('renderBoard places every list through withEpicChildren and records each epic’s children', () => {
     const rb = fn('renderBoard');
     expect(rb).toContain('_epicKidsDrawn = Object.create(null);');
-    expect(rb).toContain('return withEpicChildren(items).map(function(it) {');
+    expect(rb).toContain('return withEpicChildren(items, hideKids, _revealedKey).map(function(it) {');
     expect(rb).toContain(
-      "if (it.s.kind === 'epic') _epicKidsDrawn[it.s.key] = epicChildrenOf(it.s).map(function(c) { return c.key; }).join(' ');",
+      "if (it.s.kind === 'epic') _epicKidsDrawn[it.s.key] = epicKidsSig(it.s, hideKids, _revealedKey);",
     );
+    expect(rb).toContain('var hideKids = showSleeping === false;');
+    expect(rb).toContain('renderSleepingToggle(plan.sleepingCount + kidCounts.sleeping);');
+    // The push computes the same signature with the same filter.
+    expect(fn('applyEpicPush')).toContain('var now = epicKidsSig(s, showSleeping === false, _revealedKey);');
     expect(rb).toContain('keys: place(g.items, kb, g.open),');
     expect(rb).toContain("{ id: 'working', label: BOARD_LABELS.working, keys: keys(rest.working, 'working', kb) },");
   });
