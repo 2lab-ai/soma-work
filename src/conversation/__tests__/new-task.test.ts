@@ -439,3 +439,58 @@ describe('isSlackFileUrl — the bot token is only ever sent to Slack', () => {
     expect(isSlackFileUrl(url)).toBe(ok);
   });
 });
+
+// The task's effort must be one its model runs: the dialog's picker offers only those, the server checks again.
+describe('new task — the effort the chosen model runs', () => {
+  const ALL = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+  const MENUS = [
+    { nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', label: 'Opus 5.5 (1M)', effortLevels: [...EFFORTS] },
+    { nickname: 'sol[1m]', model: 'gpt-6.1-sol[1m]', label: 'Sol 6.1 (1M)', effortLevels: ALL },
+    { nickname: 'grok[1m]', model: 'grok-4.6', label: 'Grok 4.6', effortLevels: ['low', 'medium', 'high', 'xhigh'] },
+  ];
+  const ctxWith = (over: Partial<NewTaskContextInput> = {}) =>
+    buildNewTaskContext(input({ representativeModels: MENUS, efforts: ALL, ...over }));
+
+  it('each offered model carries the levels it runs (the user’s own default outside them too)', () => {
+    const ctx = ctxWith({
+      userDefaultModel: 'claude-haiku-4-5',
+      userDefaultModelLabel: 'Haiku',
+      userDefaultModelEffortLevels: ['low', 'high'],
+    });
+    expect(ctx.models.map((m) => [m.nickname, m.effortLevels])).toEqual([
+      ['claude-haiku-4-5', ['low', 'high']],
+      ['opus[1m]', [...EFFORTS]],
+      ['sol[1m]', ALL],
+      ['grok[1m]', ['low', 'medium', 'high', 'xhigh']],
+    ]);
+  });
+
+  it('the default effort is kept to the default model’s levels', () => {
+    expect(ctxWith({ userDefaultModel: 'gpt-6.1-sol[1m]', userDefaultEffort: 'ultra' }).defaultEffort).toBe('ultra');
+    expect(ctxWith({ userDefaultModel: 'grok-4.6', userDefaultEffort: 'ultra' }).defaultEffort).toBe('xhigh');
+    expect(ctxWith({ userDefaultModel: 'claude-opus-5-5[1m]', userDefaultEffort: 'ultra' }).defaultEffort).toBe('max');
+  });
+
+  it('a submission with a level its model does not run is refused; one it runs is taken', () => {
+    const ctx = ctxWith();
+    const body = (model: string, effort: string) => ({
+      requestId: 'req-0123456789',
+      prompt: 'go',
+      model,
+      effort,
+      channelId: 'C_ALPHA',
+      autogoal: false,
+      autoz: false,
+      attachments: [],
+    });
+    expect(parseNewTaskSubmission(body('sol[1m]', 'ultra'), ctx)).toMatchObject({
+      ok: true,
+      value: { effort: 'ultra' },
+    });
+    expect(parseNewTaskSubmission(body('grok[1m]', 'max'), ctx)).toEqual({
+      ok: false,
+      error: 'grok[1m] does not run effort max: one of low, medium, high, xhigh',
+    });
+    expect(parseNewTaskSubmission(body('opus[1m]', 'ultra'), ctx)).toMatchObject({ ok: false });
+  });
+});

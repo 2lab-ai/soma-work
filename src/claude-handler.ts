@@ -23,6 +23,7 @@ import {
   type TaskApprover,
 } from './agent-runtime/claude-code/build-stream-options';
 import { type ExecutionContext, ExecutionContextMissingError } from './agent-runtime/execution-context';
+import { permissionAdviceBoard, resolvePermissionAdvice } from './agent-runtime/policy/permission-advice';
 import type { SafetyClassifier } from './agent-runtime/policy/safety-classifier';
 import { buildSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
 import { readUuidList, STEER_SETTLEMENT_SUBTYPE } from './agent-runtime/steer-settlement';
@@ -528,6 +529,22 @@ export class ClaudeHandler implements TurnSteeringPort {
     this.sessionRegistry = new SessionRegistry();
     this.promptBuilder = new PromptBuilder();
     this.mcpConfigBuilder = new McpConfigBuilder(mcpManager);
+    // SSOT 2026-11-02 T2 — every permission prompt shows the guardian's advice: the
+    // escalation's (left on the board by the policy hook), else a fresh one.
+    this.mcpConfigBuilder.setPermissionAdvisor((req) =>
+      resolvePermissionAdvice({
+        board: permissionAdviceBoard,
+        scope: req.scope,
+        toolName: req.toolName,
+        input: req.input,
+        user: req.user,
+        cwd: req.cwd,
+        matchedRuleIds: req.ruleIds,
+        model: this.sessionRegistry.getSessionByKey(req.scope)?.model,
+        classifier: this.getSafetyClassifier(),
+        ...(req.signal ? { signal: req.signal } : {}),
+      }),
+    );
   }
 
   /**

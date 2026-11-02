@@ -106,8 +106,15 @@ import { requestEnvSkillPermission } from './slack/env-skill-permission-request'
 import { mintEventTs } from './slack/event-ts';
 import { type FollowupReactionRole, FollowupReactionSurface, rolesForFollowupState } from './slack/followup-reactions';
 import { retireGoalCapDecision } from './slack/goal-cap-decision';
-import { bumpGoalEpoch, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
+import { bumpGoalEpoch, GOAL_SUMMARY_PERSIST_MAX, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from './slack/goal-host-actions';
+import type { GoalStallQuestion } from './slack/goal-loop-controller';
+import {
+  buildGoalStallQuestion,
+  type GoalStallRetireCause,
+  setGoalStallRetiredListener,
+  shouldAskGoalStallQuestion,
+} from './slack/goal-stall';
 import {
   checkAndConsumeBudget,
   formatBudgetExhaustedMessage,
@@ -134,7 +141,7 @@ import { DmZRespond } from './slack/z/respond';
 import { isDmAllowedForNonAdmin } from './slack/z/whitelist';
 import { TodoManager } from './todo-manager';
 import { TurnNotifier } from './turn-notifier';
-import type { ConversationSession, SessionIncidentRequest } from './types';
+import type { ConversationSession, SessionGoal, SessionGoalStall, SessionIncidentRequest } from './types';
 import { userSettingsStore } from './user-settings-store';
 import { WorkingDirectoryManager } from './working-directory-manager';
 
@@ -694,6 +701,8 @@ export class SlackHandler {
       // for deploy-workflow sessions.
       routeReleaseNotes: (repo, target) => routeReleaseNotes(getReleaseNotesChannels(), repo, target),
     });
+    // Goal stall: a question whose round ended without an answer is retracted.
+    setGoalStallRetiredListener((goal, stall, cause) => this.onGoalStallRetired(goal, stall, cause));
 
     // EventRouter for event handling
     const eventRouterDeps: EventRouterDeps = {
@@ -2561,10 +2570,10 @@ export class SlackHandler {
    * has released its request-coordinator slot — so the driver can run
    * the completion eval without racing/superseding the work turn.
    */
-  setGoalTurnSettledHandler(handler: (sessionKey: string) => void): void {
+  setGoalTurnSettledHandler(handler: (sessionKey: string, opts?: { cause?: 'turn' | 'kick' }) => void): void {
     this.goalTurnSettledHandler = handler;
   }
-  private goalTurnSettledHandler?: (sessionKey: string) => void;
+  private goalTurnSettledHandler?: (sessionKey: string, opts?: { cause?: 'turn' | 'kick' }) => void;
 
   /**
    * Post-turn hook fired by the TurnRunner surface. While a goal is
@@ -2623,7 +2632,7 @@ export class SlackHandler {
       // Persisted, bounded mirror (S8) so an eval that first runs after a
       // restart still has real evidence instead of an empty stash. Persisted
       // via the `goal` serializer; the runtime stash above takes precedence.
-      goal.lastAssistantTurnSummary = turnText.slice(0, 16_000);
+      goal.lastAssistantTurnSummary = turnText.slice(0, GOAL_SUMMARY_PERSIST_MAX);
       this.claudeHandler.saveSessions();
     }
     // §3.6 priority: a human follow-up goes before the next autogoal turn. The
@@ -6511,7 +6520,8 @@ export class SlackHandler {
         queued: session.goalQueue?.length ?? 0,
       });
       try {
-        handler(sessionKey);
+        // A restart is a kick: no turn ran, the last summary was already judged.
+        handler(sessionKey, { cause: 'kick' });
         resumed++;
         // #351 no-double-resume: the goal loop now drives this session, so a
         // pending error auto-retry must not fire a second turn. Only a claim
@@ -6854,6 +6864,57 @@ export class SlackHandler {
   }
 
   /**
+   * Goal stall (same failure twice): ask the owner which next instruction to
+   * give, through the same question surface as a model's ASK_USER_QUESTION —
+   * the thread form and the dashboard card, answered as a real user turn.
+   * Skipped when a turn started in the meantime (the user is already steering)
+   * or a question is already open (never supersede one the model asked).
+   */
+  async askGoalStallQuestion(input: GoalStallQuestion): Promise<void> {
+    const session = this.claudeHandler.getSessionByKey(input.sessionKey);
+    if (!shouldAskGoalStallQuestion(session, input, this.requestCoordinator.isRequestActive(input.sessionKey))) return;
+    // Re-checked after the Slack post: the owner may have moved on meanwhile.
+    const roundOpen = () =>
+      this.claudeHandler.getSessionByKey(input.sessionKey)?.goal?.stall?.stallId === input.stallId &&
+      !this.requestCoordinator.isRequestActive(input.sessionKey);
+    const turnId = await this.streamExecutor.askUserQuestionFromHost(input.sessionKey, buildGoalStallQuestion(input), {
+      stillWanted: roundOpen,
+    });
+    if (!turnId) return;
+    const stall = this.claudeHandler.getSessionByKey(input.sessionKey)?.goal?.stall;
+    if (stall?.stallId === input.stallId) {
+      // Bound to its round: when the round ends without an answer, it is retracted.
+      stall.questionTurnId = turnId;
+      this.claudeHandler.saveSessions();
+    } else {
+      await this.streamExecutor.retractHostQuestion(input.sessionKey, turnId);
+    }
+  }
+
+  /**
+   * A stall round ended without an answer (pause, done, delete, resume, an
+   * objective update, a goal added): its question stops accepting answers.
+   * A round the owner ended by writing needs nothing — that turn clears it.
+   */
+  private onGoalStallRetired(goal: SessionGoal, stall: SessionGoalStall, cause: GoalStallRetireCause): void {
+    if (cause === 'user-message' || !stall.questionTurnId) return;
+    const turnId = stall.questionTurnId;
+    for (const [sessionKey, session] of this.claudeHandler.getSessionRegistry().getAllSessions()) {
+      if (session.goal !== goal && session.goal?.goalId !== goal.goalId) continue;
+      // Not deferred: the retraction frees the session synchronously (before any
+      // Slack call), so the caller's loop kick right after — goal resume, an
+      // objective update — finds it idle instead of waiting. The caller persists.
+      void this.streamExecutor.retractHostQuestion(sessionKey, turnId).catch((err: unknown) =>
+        this.logger.warn('Retracting a goal stall question failed', {
+          sessionKey,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+      return;
+    }
+  }
+
+  /**
    * Handle choice answer from dashboard — delegates to ChoiceActionHandler for full Slack UI cleanup.
    * `actorUserId` — the signed-in user who answered: the answer runs as them, as a Slack
    * button click runs as its clicker (SSOT 2026-11-02). None (a viewer token) is the owner.
@@ -6986,7 +7047,7 @@ export class SlackHandler {
         if (result.resumedCurrent) {
           // The current goal was stopped at its budget; the add gave it the
           // budget back. No turn ends from a dashboard add, so drive the loop.
-          this.goalTurnSettledHandler?.(sessionKey);
+          this.goalTurnSettledHandler?.(sessionKey, { cause: 'kick' });
         }
         return { outcome: 'queued', goalId: result.goal.goalId, position };
       }

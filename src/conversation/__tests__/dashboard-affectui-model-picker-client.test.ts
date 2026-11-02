@@ -90,6 +90,8 @@ const MODELS = [
   },
 ];
 const LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+// Every level the app sets (soma-lib EFFORT_LEVELS): the SDK five, then ultra (only a model whose menu lists it).
+const ALL_LEVELS = [...LEVELS, 'ultra'];
 const KEY = 'inst::C1:t1';
 const sess = (over: Record<string, unknown> = {}) => ({
   key: KEY,
@@ -120,13 +122,15 @@ function mapper(notes: Record<string, unknown> = {}) {
       'isBusy',
       'setBusy',
       'mpShort',
+      'mpLevelsOf',
       'mpEffortLevels',
+      'mpRows',
       'mpData',
       'renderModelPicker',
       'renderModelNote',
     ],
     ['_busy'],
-    { REPRESENTATIVE_MODELS: MODELS, EFFORT_LEVELS: LEVELS, _modelNotes: notes },
+    { REPRESENTATIVE_MODELS: MODELS, EFFORT_LEVELS: ALL_LEVELS, SDK_EFFORT_LEVELS: LEVELS, _modelNotes: notes },
   );
 }
 
@@ -184,6 +188,7 @@ describe('mpData — the session as the element’s data', () => {
         window: 1_000_000,
         autoCompactAt: 750_000,
         price: { input: 5, output: 25 },
+        effortLevels: LEVELS,
       },
       {
         id: 'sonnet[1m]',
@@ -192,6 +197,7 @@ describe('mpData — the session as the element’s data', () => {
         window: 1_000_000,
         autoCompactAt: 750_000,
         price: { input: 3, output: 15 },
+        effortLevels: LEVELS,
       },
       {
         id: 'grok[1m]',
@@ -200,9 +206,25 @@ describe('mpData — the session as the element’s data', () => {
         window: 500_000,
         autoCompactAt: 450_000,
         price: null,
+        effortLevels: LEVELS,
       },
     ]);
     expect(d.contextTokens).toBe(500_000);
+  });
+
+  it('each row carries the levels its model runs, so a row pick shows (and fits to) them — ultra only where listed', () => {
+    const models = [
+      { ...MODELS[0], effortLevels: LEVELS },
+      { nickname: 'sol[1m]', model: 'gpt-6.1-sol[1m]', label: 'Sol 6.1 (1M)', effortLevels: ALL_LEVELS },
+      { ...MODELS[2], effortLevels: ['high', 'low', 'medium', 'xhigh'] },
+    ];
+    const m = load<{ mpData(s: unknown): Data }>(
+      ['toNum', 'isBusy', 'mpShort', 'mpLevelsOf', 'mpEffortLevels', 'mpRows', 'mpData'],
+      ['_busy'],
+      { REPRESENTATIVE_MODELS: models, EFFORT_LEVELS: ALL_LEVELS, SDK_EFFORT_LEVELS: LEVELS, _modelNotes: {} },
+    );
+    const rows = m.mpData(sess()).models;
+    expect(rows.map((r) => r.effortLevels)).toEqual([LEVELS, ALL_LEVELS, ['low', 'medium', 'high', 'xhigh']]);
   });
 
   it('value: the nickname of the row the session runs, the level set and the level that runs', () => {
@@ -216,7 +238,7 @@ describe('mpData — the session as the element’s data', () => {
     expect(d.models.map((x) => x.id)).not.toContain('haiku-4-5');
   });
 
-  it('value.effortLevels: the levels the session’s model runs (catalog ∩ levels), all five without a menu — also outside the list', () => {
+  it('value.effortLevels: the levels the session’s model runs (catalog ∩ levels, ultra included), the SDK five without a menu — also outside the list', () => {
     const m = mapper();
     expect(m.mpData(sess({ effortLevels: ['high', 'low'] })).value.effortLevels).toEqual(['low', 'high']);
     expect(
@@ -224,7 +246,13 @@ describe('mpData — the session as the element’s data', () => {
     ).toMatchObject({ model: 'haiku-4-5', effortLevels: ['low', 'medium', 'high'] });
     expect(m.mpData(sess()).value.effortLevels).toEqual(LEVELS);
     expect(m.mpData(sess({ effortLevels: [] })).value.effortLevels).toEqual(LEVELS);
-    expect(m.mpData(sess({ effortLevels: ['ultra'] })).value.effortLevels).toEqual(LEVELS);
+    // A model whose menu lists ultra offers it; without a menu ultra is never offered.
+    expect(m.mpData(sess({ effortLevels: ['ultra', 'max', 'low'] })).value.effortLevels).toEqual([
+      'low',
+      'max',
+      'ultra',
+    ]);
+    expect(m.mpData(sess()).value.effortLevels).not.toContain('ultra');
   });
 
   it('busy: a switch waiting for its compaction says so; a write in flight locks its part', () => {
@@ -292,9 +320,26 @@ describe('mpHydrate — every picker under a root takes its session’s data, on
       },
     };
     const m = load<{ mpHydrate(root: unknown): void; setBusy(k: string, op: string, on: boolean): void }>(
-      ['toNum', 'isBusy', 'setBusy', 'mpShort', 'mpEffortLevels', 'mpData', 'mpDataSig', 'mpHydrate'],
+      [
+        'toNum',
+        'isBusy',
+        'setBusy',
+        'mpShort',
+        'mpLevelsOf',
+        'mpEffortLevels',
+        'mpRows',
+        'mpData',
+        'mpDataSig',
+        'mpHydrate',
+      ],
       ['_busy'],
-      { REPRESENTATIVE_MODELS: MODELS, EFFORT_LEVELS: LEVELS, _modelNotes: {}, _sessionCache: cache },
+      {
+        REPRESENTATIVE_MODELS: MODELS,
+        EFFORT_LEVELS: ALL_LEVELS,
+        SDK_EFFORT_LEVELS: LEVELS,
+        _modelNotes: {},
+        _sessionCache: cache,
+      },
     );
     return { m, a, gone, root, cache, selector: () => selector };
   }
@@ -440,7 +485,11 @@ describe('ui-change → the existing writes; the server decides', () => {
     const changeModel = vi.fn();
     const changeEffort = vi.fn();
     const m = load<{ mpOnChange(e: unknown): void }>(['mpOnChange'], [], { changeModel, changeEffort });
-    const picker = { tagName: 'UI-MODEL-PICKER', getAttribute: (n: string) => (n === 'data-mp-key' ? KEY : null) };
+    const picker = {
+      tagName: 'UI-MODEL-PICKER',
+      getAttribute: (n: string) => (n === 'data-mp-key' ? KEY : null),
+      hasAttribute: (n: string) => n === 'data-mp-key',
+    };
     const fire = (detail: unknown, target: unknown = picker) => {
       const e = { target, detail, preventDefault: vi.fn() };
       m.mpOnChange(e);
@@ -463,6 +512,16 @@ describe('ui-change → the existing writes; the server decides', () => {
     expect(e.preventDefault).toHaveBeenCalled();
     expect(changeEffort).toHaveBeenCalledWith(KEY, 'low');
     expect(changeModel).not.toHaveBeenCalled();
+  });
+
+  it('a picker without a session (the new task’s, the defaults’) answers its own ui-change — no session write', () => {
+    const { changeModel, changeEffort, fire } = setup();
+    const own = { tagName: 'UI-MODEL-PICKER', id: 'nt-picker', getAttribute: () => null, hasAttribute: () => false };
+    const e = fire({ model: 'grok[1m]', effort: 'high', changed: 'model' }, own);
+    expect(e.preventDefault).not.toHaveBeenCalled();
+    fire({ model: 'opus[1m]', effort: 'low', changed: 'effort' }, own);
+    expect(changeModel).not.toHaveBeenCalled();
+    expect(changeEffort).not.toHaveBeenCalled();
   });
 
   it('another element’s ui-change (the usage breakdown) is not the picker’s', () => {
@@ -490,13 +549,22 @@ describe('ui-open-change — a closed menu lets its surfaces catch up (D12)', ()
       refreshCard,
       repaintPanelControlsFor,
     });
-    const picker = { tagName: 'UI-MODEL-PICKER', getAttribute: (n: string) => (n === 'data-mp-key' ? KEY : null) };
+    const picker = {
+      tagName: 'UI-MODEL-PICKER',
+      getAttribute: (n: string) => (n === 'data-mp-key' ? KEY : null),
+      hasAttribute: (n: string) => n === 'data-mp-key',
+    };
     m.mpOnOpenChange({ target: picker, detail: { open: true } });
     expect(refreshCard).not.toHaveBeenCalled();
     m.mpOnOpenChange({ target: picker, detail: { open: false } });
     expect(refreshCard).toHaveBeenCalledWith(KEY);
     expect(repaintPanelControlsFor).toHaveBeenCalledWith(KEY);
     m.mpOnOpenChange({ target: { tagName: 'UI-AGENT-TREE', getAttribute: () => KEY }, detail: { open: false } });
+    // A picker without a session (new task, defaults) repaints no card.
+    m.mpOnOpenChange({
+      target: { tagName: 'UI-MODEL-PICKER', getAttribute: () => null, hasAttribute: () => false },
+      detail: { open: false },
+    });
     expect(refreshCard).toHaveBeenCalledTimes(1);
   });
 });
