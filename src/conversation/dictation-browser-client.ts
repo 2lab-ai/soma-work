@@ -123,7 +123,7 @@ var DICTATION_BROWSER_MODELS = ${JSON.stringify(BROWSER_WHISPER_MODELS)};
 var _dictationBrowserWorker = null;
 var _dictationBrowserLoaded = '';
 var _dictationBrowserUrl = '';
-// WebGPU failed to load a model on this page: WebAssembly from then on.
+// WebGPU failed to load a model on this page while WebAssembly loaded it: WebAssembly from then on.
 var _dictationBrowserNoGpu = false;
 var _dictationBrowserSeq = 0;
 
@@ -245,6 +245,8 @@ function dictationBrowserStart(cb, env) {
         for (var k in files) { got += files[k].loaded; all += files[k].total; }
         if (all) cb.onProgress && cb.onProgress(Math.min(99, Math.floor((got / all) * 100)));
       } else if (m.type === 'loaded') {
+        // WebAssembly loaded after WebGPU failed: the GPU was the trouble (not the network) — WebAssembly from now on.
+        if (c.retried) _dictationBrowserNoGpu = true;
         openMic(label);
       } else if (m.type === 'text') {
         cb.onText && cb.onText(String(m.final || ''), String(m.interim || ''));
@@ -259,7 +261,6 @@ function dictationBrowserStart(cb, env) {
         // WebGPU that cannot run the model (no adapter after all, a precision it lacks): once more on WebAssembly.
         if (device === 'webgpu' && !c.retried) {
           c.retried = true;
-          _dictationBrowserNoGpu = true;
           return boot('wasm', false);
         }
         end('error', 'model', '브라우저 위스퍼 모델을 불러오지 못했습니다 — ' + (m.message || '알 수 없는 오류'));
@@ -273,7 +274,9 @@ function dictationBrowserStart(cb, env) {
     worker.postMessage({ type: 'load', model: info.id, device: device, dtype: dictationBrowserDtype(model, device, f16) });
   }
   function openMic(label) {
-    if (c.ended || c.stream) return;
+    // Once: a second loaded (an aborted dictation's load completing, then this one's) does not open another capture.
+    if (c.ended || c.opening) return;
+    c.opening = true;
     var worker = c.worker;
     nav.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } }).then(
       function (stream) {

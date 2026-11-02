@@ -511,6 +511,25 @@ describe('B5 — review (PR #765)', () => {
     g.workers[0].reply({ type: 'error', message: 'fp16 is not supported' });
     g.workers[1].reply({ type: 'error', message: 'out of memory' });
     expect(two.got.errors).toEqual([['model', '브라우저 위스퍼 모델을 불러오지 못했습니다 — out of memory']]);
+    // both failed (a network that is down, not the GPU): the next press tries WebGPU again
+    expect(await page.dictationBrowserRuntime(g.w)).toEqual({ device: 'webgpu', f16: true });
+  });
+
+  it('two loaded messages (an aborted load completing, then this one’s): the microphone opens once (re-review)', async () => {
+    page.reset();
+    const e = env({ gpu: true });
+    const first = page.dictationBrowserStart(callbacks().cb, e.w);
+    await flush();
+    first.abort();
+    const { got, cb } = callbacks();
+    page.dictationBrowserStart(cb, e.w);
+    await flush();
+    e.workers[0].reply({ type: 'loaded' });
+    e.workers[0].reply({ type: 'loaded' });
+    await flush();
+    await flush();
+    expect(e.w.navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+    expect(got.ready.length).toBe(1);
   });
 
   it('a Worker that cannot be made: an error through the usual path, and the next press tries again', async () => {
