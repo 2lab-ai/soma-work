@@ -134,6 +134,21 @@ describe('what each card shows (shipped wlCardData)', () => {
     });
   });
 
+  it('#744: a card a rollback dropped says so in its summary (the slotted card is what the reader sees)', () => {
+    const m = load<{ wlCardData(st: unknown, key: number): Record<string, unknown> | null }>(
+      [...PAIR_FNS, 'wlEntryBySeq', 'wlToolSummary', 'wlCallLive', 'rewoundBy', 'wlCardData'],
+      ['REWOUND_MARK'],
+    );
+    const st = {
+      entries: [call, { seq: 2, ts: 1200, kind: 'tool_result', tool: 'Read', ok: true, toolUseId: 'a' }],
+      rewinds: [{ from: 900, to: 1100, label: 'x', at: 1101 }],
+    };
+    expect(m.wlCardData(st, 1)).toMatchObject({ summary: '↩︎ 문맥에서 빠짐 · src/app.ts' });
+    expect(m.wlCardData({ ...st, rewinds: [{ from: 1000, to: 1100, label: 'x', at: 1101 }] }, 1)).toMatchObject({
+      summary: 'src/app.ts',
+    });
+  });
+
   it('a failed call: status error, a placeholder message until its output is loaded, then the output', () => {
     const st: Record<string, unknown> = {
       entries: [call, { seq: 2, ts: 1500, kind: 'tool_result', tool: 'Read', ok: false, toolUseId: 'a' }],

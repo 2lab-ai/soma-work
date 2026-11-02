@@ -39,7 +39,24 @@ export interface ContextAnchorSession {
   contextAnchor?: string;
   /** A rollback waiting for the next turn. Persisted. */
   pendingRewind?: PendingRewind;
+  /** What applied rollbacks dropped from the context, oldest first (the dashboard marks it). Persisted. */
+  contextRewinds?: ContextRewindRecord[];
 }
+
+/**
+ * One applied rollback: entries and turns made after `from` and up to `to`
+ * (when it was asked for — the session is idle until the next turn applies
+ * it) left the model's context. `at` is when it was applied.
+ */
+export interface ContextRewindRecord {
+  from: number;
+  to: number;
+  label: string;
+  at: number;
+}
+
+/** Applied rollbacks a session keeps for the marks. */
+export const CONTEXT_REWIND_HISTORY_MAX = 10;
 
 /** A rollback requested by the owner, applied as `resumeSessionAt` on the next turn. */
 export interface PendingRewind {
@@ -50,6 +67,11 @@ export interface PendingRewind {
   requestedBy: string;
   /** `input`: just before a user input. `worklog`: a point in the work log. `goal`: the goal's first failure. */
   source: 'input' | 'worklog' | 'goal';
+  /**
+   * The time of the last entry the rollback keeps: what was made after it
+   * leaves the context. Absent when unknown (no marks are drawn then).
+   */
+  keptUntil?: number;
 }
 
 const SEP = '~';
@@ -144,6 +166,7 @@ export function trackChainPoint(session: ContextAnchorSession, raw: Record<strin
  */
 export function consumePendingRewind(
   session: ContextAnchorSession,
+  now: () => number = Date.now,
 ): { uuid: string; rewind: PendingRewind } | undefined {
   const rewind = session.pendingRewind;
   if (!rewind) return undefined;
@@ -152,6 +175,15 @@ export function consumePendingRewind(
   const a = decodeContextAnchor(rewind.anchor) as ContextAnchor;
   // The conversation continues from the anchor: it is the new tail.
   session.contextAnchor = rewind.anchor;
+  if (typeof rewind.keptUntil === 'number' && rewind.keptUntil <= rewind.requestedAt) {
+    const span: ContextRewindRecord = {
+      from: rewind.keptUntil,
+      to: rewind.requestedAt,
+      label: rewind.label,
+      at: now(),
+    };
+    session.contextRewinds = [...(session.contextRewinds ?? []), span].slice(-CONTEXT_REWIND_HISTORY_MAX);
+  }
   return { uuid: a.uuid, rewind };
 }
 
@@ -167,5 +199,23 @@ export function sanitizePendingRewind(raw: unknown): PendingRewind | undefined {
     requestedAt: typeof r.requestedAt === 'number' ? r.requestedAt : 0,
     requestedBy: typeof r.requestedBy === 'string' ? r.requestedBy : '',
     source: r.source,
+    ...(isTime(r.keptUntil) ? { keptUntil: r.keptUntil } : {}),
   };
+}
+
+function isTime(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0;
+}
+
+/** Restore the persisted spans; malformed ones are dropped. */
+export function sanitizeContextRewinds(raw: unknown): ContextRewindRecord[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: ContextRewindRecord[] = [];
+  for (const x of raw) {
+    if (!x || typeof x !== 'object') continue;
+    const r = x as Record<string, unknown>;
+    if (!isTime(r.from) || !isTime(r.to) || !isTime(r.at) || r.from > r.to) continue;
+    out.push({ from: r.from, to: r.to, label: typeof r.label === 'string' ? r.label.slice(0, 300) : '', at: r.at });
+  }
+  return out.length ? out.slice(-CONTEXT_REWIND_HISTORY_MAX) : undefined;
 }

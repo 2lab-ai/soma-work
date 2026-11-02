@@ -1,6 +1,6 @@
 // Session types live in somalib (shared with mcp-servers).
 // Re-export for backward compatibility — all src/ files import from './types'.
-import type { PendingRewind } from '@soma/slack/context-anchor';
+import type { ContextRewindRecord, PendingRewind } from '@soma/slack/context-anchor';
 import type { SessionGoalStall } from '@soma/slack/session-goal';
 
 export type {
@@ -925,6 +925,8 @@ export interface ConversationSession {
   contextAnchor?: string;
   /** Context rollback (#743) — applied as `resumeSessionAt` on the next turn, then cleared. */
   pendingRewind?: PendingRewind;
+  /** Context rollback (#744) — what applied rollbacks dropped, for the dashboard's marks. */
+  contextRewinds?: ContextRewindRecord[];
   // Compaction Tracking (#617):
   // Monotonically-incrementing epoch; bumped by START signals (PreCompact hook or `status==='compacting'` fallback).
   compactEpoch?: number;
