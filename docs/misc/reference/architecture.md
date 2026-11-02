@@ -20,6 +20,7 @@ soma-work (Slack multi-tenant AI Assistant) 아키텍처 문서. 2026-06-10 기�
 | AgentManager | 멀티 에이전트 인스턴스 기동 | `src/agent-manager.ts`, `src/agent-instance.ts` |
 | Claude Child Registry | Agent SDK 자식 프로세스 소유, 종료 시 bounded TERM→KILL 회수 | `src/agent-runtime/claude-child-process-registry.ts` |
 | A2T Service | 음성→텍스트 (Python worker — faster-whisper, Apple Silicon에서는 mlx-whisper). 음성 메모용 1개 + 받아쓰기(서버 위스퍼)용 1개 | `services/a2t/worker.py`, `src/a2t/` |
+| 브라우저 위스퍼 | 브라우저 Web Worker에서 transformers.js Whisper(WebGPU/WebAssembly) + 같은 `DictationStream` 소스(`dictationStreamSource()`) | `src/conversation/dictation-browser-client.ts` |
 | 받아쓰기 스트림 | 브라우저 마이크(16 kHz) → `/ws/dictation` → `DictationStream`(0.5초마다 재전사, 연속 두 가설이 일치하는 앞부분 확정, 쉬면 구간 확정) → 글자 | `src/conversation/dictation-routes.ts`, `src/a2t/dictation-stream.ts`, `src/conversation/dictation-server-client.ts` |
 | CronScheduler | 예약 synthetic 메시지 트리거 | `src/cron-scheduler.ts` |
 | Release notes | deploy 워크플로우의 `release_notes` 디렉티브 → `StreamExecutor` (deploy 세션만 `routeReleaseNotes` 조회) → `postReleaseNotes`: 채널 루트 헤더 + 스레드 전문. 채널은 `SOMA_RELEASE_NOTES_CHANNELS` (`config.getReleaseNotesChannels` → `routeReleaseNotes`) | `packages/slack/src/directives/release-notes-directive.ts`, `packages/slack/src/release-notes-poster.ts`, `src/release-notes-routes.ts` |
