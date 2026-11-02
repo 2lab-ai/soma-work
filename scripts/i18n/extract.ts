@@ -247,6 +247,8 @@ export async function renderPages(): Promise<Record<string, string>> {
     list: viewer.renderConversationListPage([
       { id: 'c1', ownerName: 'owner', title: 'title', createdAt: now, updatedAt: now, turnCount: 0 } as never,
     ]),
+    // No conversations: the page's one empty state (the list above never renders it).
+    listEmpty: viewer.renderConversationListPage([]),
     view: viewer.renderConversationViewPage(record as never, []),
     viewSolo: viewer.renderConversationViewPage(record as never),
     login: auth.renderLoginPage({ googleEnabled: true, microsoftEnabled: true, session: null, error: 'x' }),
