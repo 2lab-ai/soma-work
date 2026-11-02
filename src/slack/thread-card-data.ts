@@ -4,7 +4,7 @@
  * `setThreadHeaderProviders`.
  */
 import type { SurfaceLineConfig } from '@soma/slack/surface-config';
-import type { ThreadCardData } from '@soma/slack/thread-header-builder';
+import type { ThreadCardData, ThreadHeaderProviders } from '@soma/slack/thread-header-builder';
 import { ledgerTasks, type TaskLedger } from '../session/task-ledger';
 import { type DashboardLayoutDoc, threadCardLines, type ViewMode } from '../view-layout';
 
@@ -56,4 +56,17 @@ export function ownerThreadCardLines(store: LayoutStore, ownerId: string): Surfa
     store.getUserDashboardMode(ownerId),
     store.getUserDashboardPlan(ownerId),
   );
+}
+
+/**
+ * The host's two thread-card providers for `setThreadHeaderProviders` (src/index.ts wires exactly this): the owner's
+ * lines from their dashboard layout, and the session's numbers and tasks.
+ */
+export function threadCardProviders(
+  store: LayoutStore,
+): Required<Pick<ThreadHeaderProviders, 'getThreadCardLines' | 'getThreadCardData'>> {
+  return {
+    getThreadCardLines: (ownerId) => ownerThreadCardLines(store, ownerId),
+    getThreadCardData: (session) => threadCardDataOf(session as CardSession),
+  };
 }
