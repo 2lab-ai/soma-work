@@ -767,12 +767,6 @@ export async function buildStreamOptions(
     if (contextUser && !isAdminUser(contextUser)) {
       options.settings = { plansDirectory: '.claude/plans' };
     }
-    // Plan mode (SSOT 2026-11-02): a planning turn runs no shell — a skill's or command's inline
-    // `!` lines included, which the SDK runs before the content reaches the model (trinity R5, fable P2).
-    if (execCtx?.origin === 'task' && (execCtx as { planPending?: true }).planPending === true) {
-      const base = options.settings && typeof options.settings === 'object' ? options.settings : {};
-      options.settings = { ...base, disableSkillShellExecution: true };
-    }
     const networkDisabled = contextUser ? userSettingsStore.getUserNetworkDisabled(contextUser) : false;
     if (!networkDisabled) {
       sandboxConfig.network = { allowedDomains: [...DEV_DOMAIN_ALLOWLIST] };
@@ -819,6 +813,13 @@ export async function buildStreamOptions(
     });
   } else {
     logger.info('Sandbox disabled by admin setting', { user: contextUser });
+  }
+  // Plan mode (SSOT 2026-11-02): a planning turn runs no shell — a skill's or command's inline `!` lines
+  // included, which the SDK runs before the content reaches the model and without the PreToolUse hook
+  // (trinity R5, fable P2 · astra P1). Every planning turn, the sandbox on or off.
+  if (execCtx?.origin === 'task' && (execCtx as { planPending?: true }).planPending === true) {
+    const base = options.settings && typeof options.settings === 'object' ? options.settings : {};
+    options.settings = { ...base, disableSkillShellExecution: true };
   }
 
   // Build system prompt with persona and workflow.
