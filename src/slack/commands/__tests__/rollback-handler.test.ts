@@ -105,6 +105,8 @@ describe('RollbackHandler', () => {
   it('rollback <n> stores the request for the next turn and says what leaves the context', async () => {
     await handler.execute(ctx('rollback 1'));
     expect(session.pendingRewind).toMatchObject({ anchor: A(1), source: 'input', requestedBy: 'U1' });
+    // The input itself (timestamp 3) leaves the context with what came after it.
+    expect(session.pendingRewind?.keptUntil).toBe(2);
     expect(saves).toBe(1);
     expect(posted[0]).toContain('배포해줘');
     expect(posted[0]).toContain('이후 입력 2개');
