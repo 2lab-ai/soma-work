@@ -25,6 +25,14 @@ import type {
   NotificationSettings,
   SessionTheme,
 } from './user-settings-store';
+import {
+  BUILTIN_PRESETS,
+  type DashboardLayoutDoc,
+  LAYOUT_CATALOG,
+  LayoutError,
+  normalizeLayoutDoc,
+  type PresetLayouts,
+} from './view-layout';
 
 export type SettingKey =
   | 'defaultModel'
@@ -161,6 +169,20 @@ export interface SettingsStoreLike {
   setUserDashboardMode(userId: string, mode: DashboardMode): void;
   getUserDashboardPlan(userId: string): DashboardPlan;
   setUserDashboardPlan(userId: string, plan: DashboardPlan): void;
+  getUserDashboardLayout(userId: string): DashboardLayoutDoc;
+  setUserDashboardLayout(userId: string, doc: DashboardLayoutDoc): void;
+}
+
+/** The 대시보드 화면 editor's data (.prd/21): what the user saved, the built-ins and the catalog to edit with. */
+export interface LayoutSnapshot {
+  userId: string;
+  accepted: boolean;
+  doc: DashboardLayoutDoc;
+  /** The quick switch (`dashboardPlan`): each surface's preset when it has no default of its own. */
+  plan: DashboardPlan;
+  mode: DashboardMode;
+  builtins: Record<string, PresetLayouts>;
+  catalog: typeof LAYOUT_CATALOG;
 }
 
 export interface SettingsRegistryDeps {
@@ -313,6 +335,10 @@ function expectBoolean(value: unknown, key: SettingKey): boolean {
 export interface SettingsRegistry {
   read(userId: string): SettingsSnapshot;
   write(userId: string, key: string, value: unknown): Promise<SettingView>;
+  /** The user's surface layouts for the editor and the dashboard (.prd/21). */
+  readLayout(userId: string): LayoutSnapshot;
+  /** Replace the user's surface layouts — checked (400) and only for an accepted user (403). */
+  writeLayout(userId: string, doc: unknown): LayoutSnapshot;
 }
 
 export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegistry {
@@ -834,6 +860,29 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
         groups: SETTING_GROUPS,
         settings: ORDER.map((k) => view(userId, k)),
       };
+    },
+    readLayout(userId) {
+      return {
+        userId,
+        accepted: deps.isAccepted(userId),
+        doc: store.getUserDashboardLayout(userId),
+        plan: store.getUserDashboardPlan(userId),
+        mode: store.getUserDashboardMode(userId),
+        builtins: BUILTIN_PRESETS,
+        catalog: LAYOUT_CATALOG,
+      };
+    },
+    writeLayout(userId, input) {
+      let doc: DashboardLayoutDoc;
+      try {
+        doc = normalizeLayoutDoc(input);
+      } catch (e) {
+        if (e instanceof LayoutError) throw new SettingsError(400, e.message);
+        throw e;
+      }
+      assertAccepted(userId);
+      store.setUserDashboardLayout(userId, doc);
+      return this.readLayout(userId);
     },
     async write(userId, key, value) {
       if (!(ORDER as string[]).includes(key)) throw new SettingsError(400, `알 수 없는 설정: ${key}`);

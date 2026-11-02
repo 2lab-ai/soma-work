@@ -3259,6 +3259,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         }),
         detailShows: () => true,
         faceOf: (c: unknown) => c,
+        cardAsks: () => false,
         _panelTasksOpen: false,
         _agentConvRaw: null,
         _agentConvFailed: null,
