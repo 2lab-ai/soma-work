@@ -145,6 +145,7 @@ var _laySaveTimer = 0;
 var _laySaving = false;
 var _layResave = false;
 var _layRev = 0; // bumped by every edit — a save applies its answer only when no edit came after it
+var _layPending = false; // an edit the server has not confirmed yet: a reload must not drop it
 var _layLoaded = false;
 var _layDrag = null;        // { zone, from } while a handle is dragged
 
@@ -188,7 +189,8 @@ async function loadLayout() {
     setLayStatus('');
     return;
   }
-  _layDoc = layClone(_lay.doc || { v: 1 });
+  // An edit not yet saved (waiting for its debounce, or its PUT on the way) is newer than what the server sent.
+  if (!_layPending && !_laySaving) _layDoc = layClone(_lay.doc || { v: 1 });
   _layMode = _lay.mode === 'advanced' ? 'advanced' : 'minimal';
   _layPreset = layoutPreset(_layDoc, 'card', _lay.plan);
   _layLoaded = true;
@@ -237,6 +239,7 @@ function laySet(layout) {
 }
 function layChanged() {
   _layRev++;
+  _layPending = true;
   layPaint();
   setLayStatus('저장 중…');
   clearTimeout(_laySaveTimer);
@@ -260,7 +263,7 @@ async function saveLayout() {
         _layDoc = layClone(r.data.layout.doc);
         try { localStorage.setItem('soma-view-layout', JSON.stringify(_layDoc)); } catch (_e) {}
       }
-      if (!_layResave) break;
+      if (!_layResave) { _layPending = false; break; }
     }
   } catch (e) { why = String((e && e.message) || e); }
   finally { _laySaving = false; }
