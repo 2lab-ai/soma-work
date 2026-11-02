@@ -75,6 +75,7 @@ describe('settings page shell', () => {
     expect(JSON.parse(json)).toEqual([
       { id: 'preferences', label: '개인 설정', icon: 'gear' },
       { id: 'memory', label: '기억', icon: 'brain' },
+      { id: 'project', label: '프로젝트 메모리', icon: 'file-text' },
       { id: 'layout', label: '대시보드 화면', icon: 'board' },
       { id: 'dictation', label: '받아쓰기', icon: 'mic' },
     ]);
@@ -324,6 +325,36 @@ describe('개인 설정 rows — <ui-setting-row> (M-02)', () => {
     expect(list).toContain('<select class="ui-input" id="f-autoskills"');
     expect(list).toContain('<option value="local:autoz">');
     expect(list).not.toContain('<option value="local:z">');
+  });
+
+  it('#767 — a remove-only list (항상 승인하는 사람) shows names and offers no way to add', () => {
+    const html = r.renderRow(
+      row({
+        key: 'trustedInstructors',
+        group: 'permissions',
+        kind: 'list',
+        value: ['U_A', 'U_B'],
+        defaultValue: [],
+        modified: true,
+        options: [
+          { value: 'U_A', label: 'Alice' },
+          { value: 'U_B', label: 'U_B' },
+        ],
+        removeOnly: true,
+        slackCommand: undefined,
+      }),
+    );
+    expect(html).toContain('Alice');
+    expect(html).toContain('data-item="U_A"');
+    expect(html).toContain('aria-label="Alice 빼기"');
+    expect(html).toContain('removeListItem(this)');
+    expect(html).not.toContain('<select');
+    expect(html).not.toContain('addListItem');
+    const empty = r.renderRow(
+      row({ key: 'trustedInstructors', kind: 'list', value: [], defaultValue: [], options: [], removeOnly: true }),
+    );
+    expect(empty).toContain('없음');
+    expect(empty).not.toContain('<select');
   });
 
   it('without admin acceptance every row is locked with the reason (the server refuses writes)', () => {

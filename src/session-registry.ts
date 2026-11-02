@@ -142,6 +142,8 @@ interface SerializedSession {
   titleProvisional?: boolean;
   /** The work queue the session's work belongs to (see ConversationSession.workQueueId). */
   workQueueId?: string;
+  /** #767 — people the owner approved for this session (see ConversationSession.approvedInstructors). */
+  approvedInstructors?: string[];
   /** SSOT 2026-10-30 — the dashboard star (kept alive) and when it was last removed. */
   starred?: boolean;
   starClearedAt?: number;
@@ -602,6 +604,13 @@ function restorePendingRetryDetail(raw: unknown): ConversationSession['pendingRe
 /** A saved epoch-ms stamp, or undefined when it is not a finite number. */
 function finiteStamp(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+/** #767 — a saved session approval list: user ids only, deduplicated; anything else reads as none. */
+function sanitizeApprovedInstructors(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const ids = [...new Set(v.filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 64))];
+  return ids.length ? ids : undefined;
 }
 
 /** E4 ⑤ (D6) — a child's chain end as its epic's event: ids and the outcome enum only, never its text. */
@@ -1550,6 +1559,22 @@ export class SessionRegistry {
     if (count > 0) {
       this.logger.debug('Invalidated systemPrompt for user sessions', { userId, count });
     }
+    return count;
+  }
+
+  /**
+   * Clear the cached `systemPrompt` of every session `pick` selects — for SSOT
+   * that is not per-owner, e.g. a repo's shared project memory (SSOT
+   * 2026-10-23 T4). Returns the number of sessions touched.
+   */
+  invalidateSystemPromptWhere(pick: (session: ConversationSession) => boolean): number {
+    let count = 0;
+    for (const session of this.sessions.values()) {
+      if (session.systemPrompt === undefined || !pick(session)) continue;
+      session.systemPrompt = undefined;
+      count += 1;
+    }
+    if (count > 0) this.logger.debug('Invalidated systemPrompt for selected sessions', { count });
     return count;
   }
 
@@ -3399,6 +3424,8 @@ export class SessionRegistry {
           session.agents?.agents.length ||
           // A star is a direct instruction to keep the session (SSOT 2026-10-30).
           session.starred ||
+          // #767 — the owner's "이 세션에서 항상 승인" is a direct instruction too.
+          session.approvedInstructors?.length ||
           // A Slack-less task is saved from creation, never-run included (#596):
           // createTask reported it created only because it was saved.
           session.slackless
@@ -3546,6 +3573,7 @@ export class SessionRegistry {
             cronJob: session.cronJob,
             titleProvisional: session.titleProvisional || undefined,
             workQueueId: session.workQueueId,
+            approvedInstructors: session.approvedInstructors?.length ? [...session.approvedInstructors] : undefined,
             starred: session.starred === true ? true : undefined,
             starClearedAt: session.starClearedAt,
             lastTurnOutcome: session.lastTurnOutcome,
@@ -3910,6 +3938,7 @@ export class SessionRegistry {
           cronJob: sanitizeCronJob(serialized.cronJob),
           titleProvisional: serialized.titleProvisional === true ? true : undefined,
           workQueueId: typeof serialized.workQueueId === 'string' ? serialized.workQueueId : undefined,
+          approvedInstructors: sanitizeApprovedInstructors(serialized.approvedInstructors),
           starred: starred ? true : undefined,
           starClearedAt: finiteStamp(serialized.starClearedAt),
           lastTurnOutcome: sanitizeTaskTurnOutcome(serialized.lastTurnOutcome),

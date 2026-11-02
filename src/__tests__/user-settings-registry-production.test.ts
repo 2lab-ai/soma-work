@@ -28,6 +28,13 @@ describe('production settings registry', () => {
     await registry.write('UREGPROD1', 'dashboardPlan', '2');
     expect(userSettingsStore.getUserDashboardPlan('UREGPROD1')).toBe('2');
 
+    // #767 — the always-approve list: an approval adds a person, the page takes them off.
+    userSettingsStore.addUserTrustedInstructor('UREGPROD1', { userId: 'UREGPRODX', name: 'Helper' });
+    const trusted = registry.read('UREGPROD1').settings.find((s) => s.key === 'trustedInstructors')!;
+    expect(trusted).toMatchObject({ value: ['UREGPRODX'], options: [{ value: 'UREGPRODX', label: 'Helper' }] });
+    await registry.write('UREGPROD1', 'trustedInstructors', []);
+    expect(userSettingsStore.isUserTrustedInstructor('UREGPROD1', 'UREGPRODX')).toBe(false);
+
     await expect(registry.write('UREGPROD1', 'persona', 'no-such-persona')).rejects.toMatchObject({ statusCode: 400 });
     await expect(registry.write('UREGPROD1', 'sandbox', false)).rejects.toMatchObject({ statusCode: 403 });
   });
