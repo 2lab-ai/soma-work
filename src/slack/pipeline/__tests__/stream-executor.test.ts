@@ -4554,7 +4554,13 @@ describe('stream-executor — B3 choice wiring', () => {
     expect(session.actionPanel.waitingForChoice).toBe(false);
     expect(deps.claudeHandler.setActivityState).not.toHaveBeenCalledWith('C1', '171.100', 'waiting');
     expect(deps.actionHandlers.deletePendingForm).toHaveBeenCalled();
-    expect(deps.slackApi.updateMessage).toHaveBeenCalledWith('C1', 'form-ts', expect.any(String), expect.any(Array), []);
+    expect(deps.slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      'form-ts',
+      expect.any(String),
+      expect.any(Array),
+      [],
+    );
   });
 
   it('retractHostQuestion leaves a newer question alone', async () => {
