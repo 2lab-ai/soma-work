@@ -428,7 +428,12 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       _doneGroupOpen: opts.groupOpen ?? Object.create(null),
       _expanded: expanded,
       BOARD_STRINGS: {},
-      cardOf: (s: { key: string }, col: string) => ({ id: s.key, title: s.key, status: col, bodyMode: 'slot' }),
+      cardOf: (s: { key: string; title?: string }, col: string) => ({
+        id: s.key,
+        title: s.title ?? s.key,
+        status: col,
+        bodyMode: 'slot',
+      }),
       // View mode (SSOT 2026-11-01): the board maps each card through the mode — this harness is 어드밴스드.
       isAdvanced: () => true,
       // The view plan (.prd/20): advanced 2안 원본 — no spec, the open card and the face as they were.
@@ -603,13 +608,30 @@ describe('renderBoard → an epic’s children right under its card (E4 ⑨c, #7
     h.m.patchLastBoard(asks);
     h.m.applyEpicPush(asks);
     expect(face('c1').status).toBe('waiting');
-    // Same column, new face data (the harness cardOf titles a card by its key: give it a new key? no — same key):
-    // the card is refreshed in place from the pushed card, in its column.
-    const again = epic('E', [kid('c1', { activityState: 'waiting', title: 'x' })]);
+    // Same column, new face data: refreshed in place from the pushed card (no redraw needed).
+    const again = epic('E', [kid('c1', { activityState: 'waiting', title: 'asks: which file?' })]);
     h.m.patchLastBoard(again);
     h.m.applyEpicPush(again);
     expect(face('c1').status).toBe('waiting');
+    expect(face('c1').title).toBe('asks: which file?');
     expect(h.m.state().drawn.c1).toBe(true);
+  });
+
+  it('the announcement counts children from the board the columns draw — not a card the CRON lane took (grok #727 R2)', () => {
+    const h = boardHarness();
+    h.m.renderBoard(
+      {
+        waiting: [],
+        working: [
+          epic('Ecron', [kid('k1', { activityState: 'waiting' })], { cronJob: { id: 'j9', name: 'odd' } }),
+          epic('E', [kid('c1', { activityState: 'working' })]),
+        ],
+        idle: [],
+        closed: [],
+      },
+      false,
+    );
+    expect(h.kanban.data?.announce).toEqual({ needs: 0, running: 3 });
   });
 
   it('the announcement counts the children drawn in the columns; 휴면 hidden hides a sleeping child', () => {
