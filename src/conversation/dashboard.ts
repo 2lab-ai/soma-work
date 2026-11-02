@@ -5094,6 +5094,20 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* The <ui-approval-card> slots (batch 1): a gap between two prompts, and the open card's off what follows. */
 .ac-slot + .ac-slot { margin-top: 10px; }
 .card-body > .ac-slot { margin-bottom: 10px; }
+/* SSOT 2026-11-02 T2–T4 — a permission prompt's AI advice, in the page's status colours (red = the AI says do not
+   run, green = it recommends). The card takes the colour through its own tokens (its Approve turns red or green);
+   the box under it says what the call does and why it is risky. */
+ui-approval-card[data-ai="deny"] { --ac-primary: var(--st-fail); --ac-primary-hover: color-mix(in srgb, var(--st-fail) 86%, var(--text)); --ac-line: color-mix(in srgb, var(--st-fail) 45%, var(--border)); }
+ui-approval-card[data-ai="approve"] { --ac-primary: var(--st-done); --ac-primary-hover: color-mix(in srgb, var(--st-done) 86%, var(--text)); --ac-line: color-mix(in srgb, var(--st-done) 45%, var(--border)); }
+.ac-advice { margin-top: 6px; padding: 9px 12px; border-left: 4px solid transparent; border-radius: 10px; font-size: 13px; line-height: 19px; overflow-wrap: anywhere; }
+.ac-advice[data-ai="deny"] { border-left-color: var(--st-fail); background: color-mix(in srgb, var(--st-fail) 9%, var(--surface)); }
+.ac-advice[data-ai="approve"] { border-left-color: var(--st-done); background: color-mix(in srgb, var(--st-done) 9%, var(--surface)); }
+.ac-advice-head { font-weight: 650; }
+.ac-advice[data-ai="deny"] .ac-advice-head, .ac-advice[data-ai="deny"] .ac-advice-note { color: var(--st-fail-text); }
+.ac-advice[data-ai="approve"] .ac-advice-head { color: var(--st-done); }
+.ac-advice-row { color: var(--text-secondary); }
+.ac-advice-row b { margin-right: 4px; color: var(--text); font-weight: 600; }
+.ac-advice-note { margin-top: 2px; font-weight: 600; }
 
 /* ── CHARTS — @2lab.ai/ui <ui-bar-chart> (B-08): 세션 and 코드 변경 (머지) per day, side by side behind 자세히.
    Each element is its own 12px card on the resting shadow, with dashed gridlines, a tooltip that follows the hot
@@ -6335,9 +6349,23 @@ function acQuestionLock(s) {
 }
 
 // DashboardPermissionRequest (+ the requester's input, + this page's answer) → the card's data.
-function acPermissionData(s, p) {
-  // SSOT 2026-11-02 T2–T4 — the AI's recommendation: red (do not run) or green (approve).
+// SSOT 2026-11-02 T2–T4 — a prompt's AI advice as the page shows it: the recommendation (red = do not run,
+// green = approve) for every viewer; what the call does and why it is risky only once the requester's detail is
+// in (it can quote the command). Null when the AI gave none.
+function acPermissionAdvice(s, p) {
   var rec = p.aiRecommendation === 'deny' || p.aiRecommendation === 'approve' ? p.aiRecommendation : '';
+  if (!rec) return null;
+  var detail = acPermissionLock(s, p) ? null : _permDetails[p.approvalId];
+  var adv = detail && detail.advice ? detail.advice : null;
+  var a = { rec: rec, head: rec === 'deny' ? '🔴 AI 권고: 실행하지 마세요' : '🟢 AI 추천: 승인해도 됩니다' };
+  if (adv && adv.summary) a.summary = String(adv.summary);
+  if (adv && adv.risk) a.risk = String(adv.risk);
+  if (rec === 'deny') a.note = '승인하면 한 번 더 묻습니다';
+  return a;
+}
+function acPermissionData(s, p) {
+  var advice = acPermissionAdvice(s, p);
+  var rec = advice ? advice.rec : '';
   var d = { kind: 'permission', id: String(p.approvalId), tool: p.toolName || 'tool', canExplain: true, canDisableRule: !!p.canDisableRule && rec !== 'deny' };
   var rules = (p.rules || []).map(function(r) {
     var o = { id: String(r.id), label: String(r.label || r.id) };
@@ -6363,14 +6391,13 @@ function acPermissionData(s, p) {
       if (detail.truncated) d.truncated = true;
     }
   }
-  if (rec) {
-    // The line under the title: the recommendation for every viewer; what the call
-    // does and why it is risky once the requester's detail is in (it can quote the command).
-    var adv = !lock && detail && detail.advice ? detail.advice : null;
-    var lines = [rec === 'deny' ? '🔴 AI 권고: 실행하지 마세요' : '🟢 AI 추천: 승인해도 됩니다'];
-    if (adv && adv.summary) lines.push('무엇을 하나: ' + adv.summary);
-    if (adv && adv.risk) lines.push('왜 위험한가: ' + adv.risk);
-    if (rec === 'deny') lines.push('승인하면 한 번 더 묻습니다');
+  if (advice) {
+    // The line under the title (one line on the card, whole in its tooltip); the box under the card
+    // (acPaintAdvice) shows every line.
+    var lines = [advice.head];
+    if (advice.summary) lines.push('무엇을 하나: ' + advice.summary);
+    if (advice.risk) lines.push('왜 위험한가: ' + advice.risk);
+    if (advice.note) lines.push(advice.note);
     d.risk = rec === 'deny' ? 'high' : 'low';
     d.description = lines.join('\\n');
   }
@@ -6441,7 +6468,8 @@ function acEvict(key, s) {
 function acSlotHtml(key, kind, mk, id, fallback) {
   return '<div class="ui-tok ac-slot" data-mk="' + escAttr('ac|' + mk) + '">'
     + '<ui-approval-card lang="ko" data-ac-key="' + escAttr(key) + '" data-ac-kind="' + kind + '"' + (id ? ' data-ac-id="' + escAttr(id) + '"' : '') + '>'
-    + '<span class="ac-fallback">' + esc(fallback) + '</span></ui-approval-card></div>';
+    + '<span class="ac-fallback">' + esc(fallback) + '</span></ui-approval-card>'
+    + (kind === 'perm' ? '<div class="ac-advice" hidden></div>' : '') + '</div>';
 }
 function acPermissionsHtml(s) {
   return ((s && s.pendingPermissions) || []).map(function(p) {
@@ -6512,10 +6540,49 @@ function acDataFor(el) {
     var gd = s.pendingGoalDecision;
     return gd && String(gd.decisionId) === el.getAttribute('data-ac-id') ? acGoalDecisionData(s, gd) : null;
   }
-  var id = el.getAttribute('data-ac-id');
-  var list = s.pendingPermissions || [];
-  for (var i = 0; i < list.length; i++) if (String(list[i].approvalId) === id) return acPermissionData(s, list[i]);
+  var p = acPermissionOf(s, el.getAttribute('data-ac-id'));
+  return p ? acPermissionData(s, p) : null;
+}
+function acPermissionOf(s, id) {
+  var list = (s && s.pendingPermissions) || [];
+  for (var i = 0; i < list.length; i++) if (String(list[i].approvalId) === id) return list[i];
   return null;
+}
+// SSOT 2026-11-02 T2–T4 — the advice box under a permission card, and the card's colour: the element's own
+// --ac-* tokens follow data-ai (the page's CSS), so Approve is red when the AI says not to run and green when it
+// recommends. The box is the page's (the card shows one line): the head, what the call does, why it is risky —
+// model text, so only ever textContent.
+function acPaintAdvice(el, a) {
+  if (a) el.setAttribute('data-ai', a.rec);
+  else el.removeAttribute('data-ai');
+  var box = el.nextElementSibling;
+  if (!box || !box.classList || !box.classList.contains('ac-advice')) return;
+  var sig = a ? JSON.stringify(a) : '';
+  if (box._adviceSig === sig) return;
+  box._adviceSig = sig;
+  box.textContent = '';
+  if (!a) {
+    box.hidden = true;
+    box.removeAttribute('data-ai');
+    return;
+  }
+  box.hidden = false;
+  box.setAttribute('data-ai', a.rec);
+  var add = function(cls, label, text) {
+    var row = document.createElement('div');
+    row.className = cls;
+    if (label) {
+      var b = document.createElement('b');
+      b.textContent = label;
+      row.appendChild(b);
+    }
+    row.appendChild(document.createTextNode(text));
+    box.appendChild(row);
+  };
+  add('ac-advice-head', '', a.head);
+  if (a.summary) add('ac-advice-row', '무엇을 하나 ', a.summary);
+  if (a.risk) add('ac-advice-row', '왜 위험한가 ', a.risk);
+  if (a.note) add('ac-advice-note', '', a.note);
 }
 // Set every approval card's data under root — only what changed (a push that
 // changes nothing on a card does not re-render it). Data set before the
@@ -6524,6 +6591,11 @@ function acHydrate(root) {
   if (!root || !root.querySelectorAll) return;
   var els = root.querySelectorAll('ui-approval-card[data-ac-key]');
   for (var i = 0; i < els.length; i++) {
+    if (els[i].getAttribute('data-ac-kind') === 'perm') {
+      var ps = _sessionCache[els[i].getAttribute('data-ac-key')];
+      var pp = ps ? acPermissionOf(ps, els[i].getAttribute('data-ac-id')) : null;
+      acPaintAdvice(els[i], pp ? acPermissionAdvice(ps, pp) : null);
+    }
     var d = acDataFor(els[i]);
     if (!d) continue;
     var sig = JSON.stringify(d);
@@ -6811,6 +6883,9 @@ async function answerPermission(key, approvalId, decision) {
     console.error('Permission answer error', e);
     st = { status: 'error', message: '네트워크 오류 — 다시 시도하세요', retry: true };
   }
+  // A second answer that failed for another reason keeps the card on its second ask: the next Approve still
+  // sends the confirmed answer (the server remembers it asked).
+  if (cur && cur.confirm && st.status === 'error') st.confirm = true;
   // Kept only while the session still asks it (a push may have taken it meanwhile).
   var still = ((_sessionCache[key] && _sessionCache[key].pendingPermissions) || []).some(function(p) { return String(p.approvalId) === String(approvalId); });
   if (still) (_acState[key] || (_acState[key] = Object.create(null)))[sk] = st;

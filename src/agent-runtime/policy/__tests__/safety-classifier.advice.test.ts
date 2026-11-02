@@ -49,6 +49,13 @@ describe('parseSafetyVerdict — advice (T2)', () => {
     expect(v.advice?.risk.length).toBeLessThanOrEqual(400);
   });
 
+  // Review R1 (astra P1): "allow" with a "deny" recommendation contradicts itself — never auto-approve on it.
+  it('closes a contradictory reply (allow + recommendation deny) to ask, keeping the red advice', () => {
+    const v = parseSafetyVerdict('{"verdict":"allow","recommendation":"deny","summary":"s","risk":"r","reason":"x"}');
+    expect(v.verdict).toBe('ask');
+    expect(v.advice?.recommendation).toBe('deny');
+  });
+
   it('still fails closed to ask, with no advice, on garbage', () => {
     const v = parseSafetyVerdict('not json');
     expect(v.verdict).toBe('ask');

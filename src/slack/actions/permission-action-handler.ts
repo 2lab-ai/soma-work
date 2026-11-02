@@ -1,5 +1,5 @@
 import type { PermissionAdvice } from 'somalib/permission/shared-store';
-import { escapeMrkdwn } from 'somalib/permission/slack-messenger';
+import { permissionAdviceDetailBlocks } from 'somalib/permission/slack-messenger';
 import { Logger } from '../../logger';
 import {
   answerPermissionPrompt,
@@ -169,12 +169,14 @@ export class PermissionActionHandler {
  * the card itself.
  */
 export function buildSecondConfirmBlocks(approvalId: string, advice: PermissionAdvice): any[] {
-  const lines = ['🔴 *AI가 실행하지 말라고 권고한 요청입니다. 정말 실행할까요?*'];
-  if (advice.summary) lines.push(`*무엇을 하나:* ${escapeMrkdwn(advice.summary)}`);
-  if (advice.risk) lines.push(`*왜 위험한가:* ${escapeMrkdwn(advice.risk)}`);
-  lines.push('멈추려면 권한 카드의 ❌ Deny를 누르세요.');
   return [
-    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: '🔴 *AI가 실행하지 말라고 권고한 요청입니다. 정말 실행할까요?*' },
+    },
+    // The model's words as plain_text (never mrkdwn).
+    ...permissionAdviceDetailBlocks(advice),
+    { type: 'section', text: { type: 'mrkdwn', text: '멈추려면 권한 카드의 ❌ Deny를 누르세요.' } },
     {
       type: 'actions',
       elements: [

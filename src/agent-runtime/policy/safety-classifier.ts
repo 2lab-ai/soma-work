@@ -53,6 +53,8 @@ export interface SafetyClassifyRequest {
   cwd?: string;
   /** Slack user id that owns the session (its sandbox is scoped to /tmp/<user>). */
   user: string;
+  /** Aborts the guardian call (its one-shot dispatch) when the caller stops waiting. */
+  signal?: AbortSignal;
   /**
    * The model the session is CURRENTLY using. This is the default classifier
    * model (the auto-mode reviewer runs on the same model as the work), unless
@@ -70,6 +72,8 @@ export interface SafetyChatOptions {
   timeoutMs: number;
   /** Per-call model = the session's current model (see SafetyClassifyRequest.model). */
   model?: string;
+  /** The caller's abort (SafetyClassifyRequest.signal). */
+  signal?: AbortSignal;
 }
 
 /**
@@ -165,6 +169,15 @@ export function parseSafetyVerdict(raw: string): SafetyVerdict {
     };
     const advice = adviceOf(parsed);
     const withAdvice = advice ? { advice } : {};
+    // A reply that allows the call yet tells the person not to run it contradicts itself: uncertain, so it is an
+    // ask, and the person sees the red advice (review R1, astra P1). Never auto-approve on it.
+    if (parsed.verdict === 'allow' && advice?.recommendation === 'deny') {
+      return {
+        verdict: 'ask',
+        reason: 'contradictory classifier reply: allow with a deny recommendation (fail-closed)',
+        ...withAdvice,
+      };
+    }
     if (parsed.verdict === 'allow') {
       return {
         verdict: 'allow',
@@ -200,7 +213,11 @@ export class LlmSafetyClassifier implements SafetyClassifier {
 
   async classify(req: SafetyClassifyRequest): Promise<SafetyVerdict> {
     try {
-      const raw = await this.chat(buildSafetyPrompt(req), { timeoutMs: this.timeoutMs, model: req.model });
+      const raw = await this.chat(buildSafetyPrompt(req), {
+        timeoutMs: this.timeoutMs,
+        model: req.model,
+        ...(req.signal ? { signal: req.signal } : {}),
+      });
       return parseSafetyVerdict(raw);
     } catch (err) {
       return {

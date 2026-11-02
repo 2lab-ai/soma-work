@@ -40,23 +40,38 @@ export function permissionAdviceColor(advice: PermissionAdvice | null | undefine
   return advice ? PERMISSION_ADVICE_COLORS[advice.recommendation] : undefined;
 }
 
+/** Longest model text one advice block carries (the guardian's text is already capped well below this). */
+const ADVICE_BLOCK_TEXT_MAX = 600;
+
 /**
- * Model text in mrkdwn: `&`, `<`, `>` escaped, so it can never mention a
- * person or channel (`<!channel>`, `<@U…>`) or carry a link.
+ * What the call does and why it is risky, as `plain_text` blocks: model text never goes through mrkdwn, so it
+ * cannot bold, strike out, link or mention anything (review R1, astra P1). Shared by the card and the second
+ * question.
  */
-export function escapeMrkdwn(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+export function permissionAdviceDetailBlocks(advice: PermissionAdvice): any[] {
+  const row = (label: string, text: string) => ({
+    type: 'section',
+    text: { type: 'plain_text', emoji: true, text: `${label}: ${text}`.slice(0, ADVICE_BLOCK_TEXT_MAX) },
+  });
+  const blocks: any[] = [];
+  if (advice.summary) blocks.push(row('무엇을 하나', advice.summary));
+  if (advice.risk) blocks.push(row('왜 위험한가', advice.risk));
+  return blocks;
 }
 
-/** The AI's advice as the card's mrkdwn section. */
-export function permissionAdviceText(advice: PermissionAdvice | null | undefined): string {
-  if (!advice) return '⚪ *AI 추천 없음* — AI 검토를 받지 못했습니다. 아래 내용을 직접 확인하세요.';
-  const lines =
-    advice.recommendation === 'deny' ? ['🔴 *AI 권고: 실행하지 마세요*'] : ['🟢 *AI 추천: 승인해도 됩니다*'];
-  if (advice.summary) lines.push(`*무엇을 하나:* ${escapeMrkdwn(advice.summary)}`);
-  if (advice.risk) lines.push(`*왜 위험한가:* ${escapeMrkdwn(advice.risk)}`);
-  if (advice.recommendation === 'deny') lines.push('⚠️ 그래도 승인하면 실행 전에 한 번 더 묻습니다.');
-  return lines.join('\n');
+/**
+ * The AI's advice as the card's blocks: a fixed mrkdwn head (🟢 / 🔴 / ⚪), the model's text as plain_text, and
+ * on red the note that approving asks again.
+ */
+export function permissionAdviceBlocks(advice: PermissionAdvice | null | undefined): any[] {
+  const head = (text: string) => ({ type: 'section', text: { type: 'mrkdwn', text } });
+  if (!advice) return [head('⚪ *AI 추천 없음* — AI 검토를 받지 못했습니다. 아래 내용을 직접 확인하세요.')];
+  const blocks = [
+    head(advice.recommendation === 'deny' ? '🔴 *AI 권고: 실행하지 마세요*' : '🟢 *AI 추천: 승인해도 됩니다*'),
+    ...permissionAdviceDetailBlocks(advice),
+  ];
+  if (advice.recommendation === 'deny') blocks.push(head('⚠️ 그래도 승인하면 실행 전에 한 번 더 묻습니다.'));
+  return blocks;
 }
 
 /**
@@ -126,10 +141,7 @@ export class SlackPermissionMessenger {
           text: `🔐 Permission Request — ${toolName}`,
         },
       },
-      {
-        type: 'section',
-        text: { type: 'mrkdwn', text: permissionAdviceText(advice) },
-      },
+      ...permissionAdviceBlocks(advice),
       {
         type: 'section',
         text: {

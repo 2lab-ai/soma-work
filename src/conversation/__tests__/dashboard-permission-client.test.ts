@@ -76,6 +76,7 @@ const FNS = [
   'permissionSummary',
   'acPermissionLock',
   'acDetailDue',
+  'acPermissionAdvice',
   'acPermissionData',
   'acSlotHtml',
   'acPermissionsHtml',
@@ -431,6 +432,35 @@ describe('dashboard permission prompt → real server (shipped client code)', ()
     const second = await c.answerPermission(key, id, 'approve');
     expect(second).toMatchObject({ status: 'resolved', outcome: 'approved' });
     expect((await sharedStore.waitForPermissionResponse(id, 1500)).behavior).toBe('allow');
+  });
+
+  // Review R1 (fable P3): a second answer that fails for another reason keeps the card on its second ask.
+  it('T4 — red: a failed second answer keeps the second ask — the next Approve is still the confirmed one', async () => {
+    const id = await seed({ advice: RED });
+    const c = client('U1');
+    expect(await c.answerPermission(key, id, 'approve')).toMatchObject({ status: 'error', confirm: true });
+    // The second answer fails on the network.
+    const realFetch = fetchCalls;
+    const failing = load({
+      fetch: async () => {
+        throw new Error('offline');
+      },
+      console: { error() {}, warn() {} },
+      currentUserId: 'U1',
+      _csrfToken: session.csrf,
+      refreshCsrfToken: async () => {},
+      acRepaint: repaint,
+      dashToast: () => {},
+      _sessionCache: { [key]: card(id) },
+      isSiblingSession: () => false,
+    });
+    failing.state._acState[key] = { ...c.state._acState[key] };
+    const failed = await failing.answerPermission(key, id, 'approve');
+    expect(failed).toMatchObject({ status: 'error', confirm: true, retry: true });
+    void realFetch;
+    // Back online: the next Approve sends the confirmed answer and runs it.
+    c.state._acState[key][`p|${id}`] = failed;
+    expect(await c.answerPermission(key, id, 'approve')).toMatchObject({ status: 'resolved', outcome: 'approved' });
   });
 
   it('T4 — red: Deny needs no second answer', async () => {

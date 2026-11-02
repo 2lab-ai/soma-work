@@ -74,6 +74,16 @@ describe('PermissionActionHandler — second confirmation', () => {
   });
 });
 
+describe('the second question shows the model text as plain_text', () => {
+  it('summary and risk are plain_text blocks', async () => {
+    const { buildSecondConfirmBlocks } = await import('../permission-action-handler');
+    const blocks = buildSecondConfirmBlocks('approval_9', { recommendation: 'deny', summary: '~s~', risk: '*r*' });
+    const model = blocks.filter((b: any) => b.text && /~s~|\*r\*/.test(b.text.text));
+    expect(model.length).toBe(2);
+    for (const b of model) expect(b.text.type).toBe('plain_text');
+  });
+});
+
 describe('ActionHandlers — the confirm button is wired', () => {
   it('registers approve_tool_confirmed to handleApproveConfirmed', async () => {
     const permissionHandler = {

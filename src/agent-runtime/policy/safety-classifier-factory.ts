@@ -74,7 +74,17 @@ export function buildSafetyClassifier(args: BuildSafetyClassifierArgs = {}): Saf
   const envModel = env.PERMISSION_AUTO_CLASSIFIER_MODEL || undefined;
   const timeoutMs = Number(env.PERMISSION_AUTO_CLASSIFIER_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
 
-  const chat: SafetyChatFn = (prompt, opts) =>
-    dispatch(prompt, SAFETY_SYSTEM_PROMPT, { model: envModel || opts.model });
+  const chat: SafetyChatFn = (prompt, opts) => {
+    // The caller's abort stops the one-shot dispatch itself, not only the caller's wait (review R1, astra P2).
+    if (!opts.signal) return dispatch(prompt, SAFETY_SYSTEM_PROMPT, { model: envModel || opts.model });
+    const abortController = new AbortController();
+    const signal = opts.signal;
+    const onAbort = () => abortController.abort(signal.reason);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+    return dispatch(prompt, SAFETY_SYSTEM_PROMPT, { model: envModel || opts.model, abortController }).finally(() =>
+      signal.removeEventListener('abort', onAbort),
+    );
+  };
   return new LlmSafetyClassifier(chat, { timeoutMs });
 }
