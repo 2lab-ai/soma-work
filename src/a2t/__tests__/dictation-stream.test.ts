@@ -92,6 +92,26 @@ describe('S2 — words settle when two hypotheses agree', () => {
     expect(t.final + ' ' + t.interim).toContain('합니다');
   });
 
+  it('a re-spaced settled word does not show again as still heard (measured: whisper-base in Chrome)', async () => {
+    const h = harness([
+      '대시보드 실시간 받아쓰기를',
+      '대시보드 실시간 받아쓰기를 테스트',
+      '대시보드 실시간 받아 쓰기를 테스트하고 있습니다',
+    ]);
+    await feed(h.stream, 1600, true);
+    expect(h.last()).toEqual({ final: '대시보드 실시간 받아쓰기를', interim: '테스트하고 있습니다' });
+  });
+
+  it('an earlier word heard with other letters does not repeat the last settled word (measured: whisper-small)', async () => {
+    const h = harness([
+      '대시 보듯의 작업 실시간 바다',
+      '대시 보듯의 작업 실시간 바다 쓰기',
+      '대시 보드 새로운 작업 실시간 바다 쓰기를 테스트하고',
+    ]);
+    await feed(h.stream, 1600, true);
+    expect(h.last()).toEqual({ final: '대시 보듯의 작업 실시간 바다', interim: '쓰기를 테스트하고' });
+  });
+
   it('punctuation does not stop agreement', async () => {
     const h = harness(['테스트하고 있습니다', '테스트하고 있습니다. 풀']);
     await feed(h.stream, 1100, true);

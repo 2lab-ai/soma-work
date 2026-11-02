@@ -16,6 +16,8 @@ export type DictationEngineId = (typeof DICTATION_ENGINE_IDS)[number];
 
 /** The localStorage key of a device's choice. */
 export const DICTATION_ENGINE_KEY = 'soma-dictation-engine';
+/** The localStorage key of a device's 브라우저 위스퍼 model size. */
+export const DICTATION_BROWSER_MODEL_KEY = 'soma-dictation-browser-model';
 
 export const DICTATION_PREF_JS = String.raw`
 var DICTATION_ENGINE_KEY = 'soma-dictation-engine';
@@ -35,5 +37,18 @@ function dictationEngineChoice(store) {
 function dictationSaveEngine(store, v) {
   if (DICTATION_ENGINE_IDS.indexOf(v) < 0 || !store) return false;
   try { store.setItem(DICTATION_ENGINE_KEY, v); return true; } catch (_e) { return false; }
+}
+
+// 브라우저 위스퍼's model size on this device: 'base' · 'small' · 'turbo', or '' (not chosen — the device's default).
+var DICTATION_BROWSER_MODEL_KEY = 'soma-dictation-browser-model';
+var DICTATION_BROWSER_MODEL_IDS = ['base', 'small', 'turbo'];
+function dictationBrowserModelChoice(store) {
+  var v = null;
+  try { v = store ? store.getItem(DICTATION_BROWSER_MODEL_KEY) : null; } catch (_e) { v = null; }
+  return DICTATION_BROWSER_MODEL_IDS.indexOf(v) >= 0 ? v : '';
+}
+function dictationSaveBrowserModel(store, v) {
+  if (DICTATION_BROWSER_MODEL_IDS.indexOf(v) < 0 || !store) return false;
+  try { store.setItem(DICTATION_BROWSER_MODEL_KEY, v); return true; } catch (_e) { return false; }
 }
 `;
