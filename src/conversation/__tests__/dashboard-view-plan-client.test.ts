@@ -438,6 +438,7 @@ describe('P3 — the open card follows the plan', () => {
     renderCardTasks: () => '[TASKS]',
     renderMultiChoiceCard: () => '[MC]',
     renderModelNote: () => '',
+    mpReadOnlyWhy: () => '',
     renderModelPicker: () => '[MODEL]',
     renderEffortPicker: () => '[EFFORT]',
     currentUserId: 'U1',
