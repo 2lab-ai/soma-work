@@ -14,7 +14,7 @@
  *   R7  the thread card: 따로 설정 starts from the task card; a switch adds the steps to the Slack preview
  *   R8  defaults per surface: the detail card's default preset
  *   R9  되돌리기 takes the last change back
- *   R10 the dashboard draws what was saved: the board card's rows in the new order, the new chip, the detail
+ *   R10 the dashboard draws what was saved: the board card's rows in the new order (연결 included), the new chip, the detail
  *       card's task line
  *
  * Run from the repo root with a clean env:
@@ -84,6 +84,18 @@ function board() {
     prUrl: 'https://github.com/2lab-ai/soma-work/pull/700',
     prShortRef: 'PR-700',
     prStatus: 'open',
+    // 작업 카드의 연결 (sessionToKanban's cardLinks): the default face's 연결 row.
+    cardLinks: [
+      {
+        kind: 'issue',
+        url: 'https://2lab.atlassian.net/browse/PAY-12',
+        text: 'PAY-12',
+        status: 'In Progress',
+        tone: 'run',
+      },
+      { kind: 'pr', url: 'https://github.com/2lab-ai/soma-work/pull/700', text: '#700', status: '열림', tone: 'run' },
+      { kind: 'wiki', url: 'https://2lab.atlassian.net/wiki/spaces/PAY/pages/1/Payment+Form', text: '결제 폼 설계' },
+    ],
     tokenUsage: {
       totalInputTokens: 300_000,
       totalOutputTokens: 40_000,
@@ -236,14 +248,14 @@ async function run(browser: import('playwright').Browser, width: number, height:
     r1,
   );
   check(
-    r1.zones.join() === '머리,본문 줄,맨 아래 오른쪽' && r1.items === 18,
-    `${tag} R1 the card's zones list every item (5 head + 5 rows + 8 chips)`,
+    r1.zones.join() === '머리,본문 줄,맨 아래 오른쪽' && r1.items === 19,
+    `${tag} R1 the card's zones list every item (5 head + 6 rows + 8 chips)`,
     r1,
   );
   const f0 = await previewFace(page);
   check(
-    !!f0 && f0.rows.join() === 'ib-task,ib-arts' && f0.chips.join('|').includes('$6.20'),
-    `${tag} R1 the preview is the 1안 face`,
+    !!f0 && f0.rows.join() === 'ib-task,ib-links,ib-arts' && f0.chips.join('|').includes('$6.20'),
+    `${tag} R1 the preview is the 1안 face (연결 on by default, right after the task)`,
     f0,
   );
   await fullShot(page, `${tag}-1-card.png`);
@@ -255,13 +267,19 @@ async function run(browser: import('playwright').Browser, width: number, height:
   check(!!f1 && f1.chips.some((c) => /토큰/.test(c)), `${tag} R2 the 토큰 switch adds the chip to the preview`, f1);
   check(store.puts.length === 1, `${tag} R2 the change saved at once (one PUT)`, store.puts.length);
 
-  // R3 — ↑ twice: 산출물 줄 to the top of the rows.
+  // R3 — ↑ three times: 산출물 줄 to the top of the rows.
+  await page.click('#lay-controls button[data-lay="up"][data-zone="rows"][data-idx="3"]');
+  await sleep(150);
   await page.click('#lay-controls button[data-lay="up"][data-zone="rows"][data-idx="2"]');
   await sleep(150);
   await page.click('#lay-controls button[data-lay="up"][data-zone="rows"][data-idx="1"]');
   await saved(page);
   const f2 = await previewFace(page);
-  check(!!f2 && f2.rows.join() === 'ib-arts,ib-task', `${tag} R3 ↑ moves 산출물 줄 above 현재 작업 in the preview`, f2);
+  check(
+    !!f2 && f2.rows.join() === 'ib-arts,ib-task,ib-links',
+    `${tag} R3 ↑ moves 산출물 줄 above 현재 작업 in the preview`,
+    f2,
+  );
   const focused = await page.evaluate(() => document.activeElement?.getAttribute('aria-label'));
   check(/산출물 줄/.test(String(focused)), `${tag} R3 focus stays on the moved item's control`, focused);
 
@@ -338,7 +356,7 @@ async function run(browser: import('playwright').Browser, width: number, height:
       chips: Array.from(face.querySelectorAll<HTMLElement>('.ib-foot .ib-metric')).map((m) => m.innerText.trim()),
     };
   }, KEY_A);
-  check(b.rows.join() === 'ib-arts,ib-task', `${tag} R10 the board card's rows follow the saved order`, b);
+  check(b.rows.join() === 'ib-arts,ib-task,ib-links', `${tag} R10 the board card's rows follow the saved order`, b);
   check(
     /Opus/.test(b.chips[0] || '') && b.chips.some((c) => /토큰/.test(c)),
     `${tag} R10 the board card's foot: the model first, the tokens chip`,
@@ -358,7 +376,12 @@ async function run(browser: import('playwright').Browser, width: number, height:
     return { line: !!line && line.checkVisibility(), text: line ? line.innerText : '' };
   });
   check(
-    /중지/.test(body) && /PR-700/.test(body) && /\[작업 창\]/.test(body) && detail.line,
+    /중지/.test(body) &&
+      // The refs wrap on a phone: one space for any run of white space.
+      /#700 열림/.test(body.replace(/\s+/g, ' ')) &&
+      /PAY-12 In Progress/.test(body.replace(/\s+/g, ' ')) &&
+      /\[작업 창\]/.test(body) &&
+      detail.line,
     `${tag} R10 the open card (actions, links, the task window) and its detail card (the task line)`,
     { body: body.slice(0, 200), detail },
   );

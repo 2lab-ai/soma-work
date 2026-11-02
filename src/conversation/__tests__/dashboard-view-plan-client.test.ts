@@ -242,15 +242,16 @@ describe('P2 — the card face follows the plan', () => {
 
   it('minimal 1안 결과 우선: the task row, three artifacts, the summary only when it asks; PR · cost · model', () => {
     const m = face('minimal', '1');
-    expect(m.rows).toEqual(['task', 'artifacts']);
+    // 작업 카드의 연결 (SSOT 2026-11-02): the links row after the task in every plan; it carries the PR.
+    expect(m.rows).toEqual(['task', 'links', 'artifacts']);
     expect(m.task).toEqual(full.task);
     expect(m.artifacts.map((a: { id: string }) => a.id)).toEqual(['a', 'b', 'c']);
     expect(m.artifactsCount).toBe(5);
     expect(m.summary).toBeUndefined();
     const asking = face('minimal', '1', true);
     expect(asking.summary).toBe('원래 제목');
-    expect(asking.rows).toEqual(['summary', 'task', 'artifacts']);
-    expect(m.metrics).toEqual([PR, COST, MODEL]);
+    expect(asking.rows).toEqual(['summary', 'task', 'links', 'artifacts']);
+    expect(m.metrics).toEqual([COST, MODEL]);
     for (const gone of ['agents', 'tokens', 'costUsd', 'steps', 'contextPct']) expect(m[gone], gone).toBeUndefined();
     expect(m.lead).toEqual({ glyph: 'task', title: '일반 작업' });
     expect(m.star).toEqual(full.star);
@@ -259,7 +260,7 @@ describe('P2 — the card face follows the plan', () => {
 
   it('minimal 2안 진행 우선: the summary always, the task row; steps · artifacts n · cost · model at the foot', () => {
     const m = face('minimal', '2');
-    expect(m.rows).toEqual(['summary', 'task']);
+    expect(m.rows).toEqual(['summary', 'task', 'links']);
     expect(m.summary).toBe('원래 제목');
     expect(m.artifacts).toBeUndefined();
     expect(m.metrics).toEqual([STEPS, ARTS, COST, MODEL]);
@@ -267,7 +268,7 @@ describe('P2 — the card face follows the plan', () => {
 
   it('minimal 3안 한눈에: title · status · time; the summary only when it asks; cost · model', () => {
     const m = face('minimal', '3');
-    expect(m.rows).toEqual([]);
+    expect(m.rows).toEqual(['links']);
     for (const gone of ['task', 'artifacts', 'steps', 'summary', 'agents']) expect(m[gone], gone).toBeUndefined();
     expect(m.metrics).toEqual([COST, MODEL]);
     expect(face('minimal', '3', true).summary).toBe('원래 제목');
@@ -275,26 +276,26 @@ describe('P2 — the card face follows the plan', () => {
 
   it('advanced 1안 정리: every row, the kind mark instead of ✦, the model at the foot’s end', () => {
     const m = face('advanced', '1');
-    expect(m.rows).toEqual(['summary', 'task', 'agents', 'usage', 'artifacts']);
+    expect(m.rows).toEqual(['summary', 'task', 'links', 'agents', 'usage', 'artifacts']);
     for (const kept of ['summary', 'task', 'agents', 'tokens', 'costUsd', 'artifacts'])
       expect(m[kept], kept).toBeDefined();
     expect(m.artifacts).toHaveLength(4);
     expect(m.lead).toEqual({ glyph: 'task', title: '일반 작업' });
-    expect(m.metrics).toEqual([STEPS, CTX, MEDIA, PR, MODEL]);
+    expect(m.metrics).toEqual([STEPS, CTX, MEDIA, MODEL]);
   });
 
   it('advanced 2안 원본: the face as it was — every row, ✦ (no lead), steps · context · attachments · PR', () => {
     const m = face('advanced', '2');
-    expect(m.rows).toEqual(['summary', 'task', 'agents', 'usage', 'artifacts']);
+    expect(m.rows).toEqual(['summary', 'task', 'links', 'agents', 'usage', 'artifacts']);
     expect(m.lead).toBeUndefined();
-    expect(m.metrics).toEqual([STEPS, CTX, MEDIA, PR]);
+    expect(m.metrics).toEqual([STEPS, CTX, MEDIA]);
   });
 
   it('advanced 3안 압축: no sub-agent or token rows; the numbers at the foot', () => {
     const m = face('advanced', '3');
-    expect(m.rows).toEqual(['task']);
+    expect(m.rows).toEqual(['task', 'links']);
     for (const gone of ['agents', 'tokens', 'costUsd', 'artifacts', 'summary']) expect(m[gone], gone).toBeUndefined();
-    expect(m.metrics).toEqual([STEPS, CTX, ARTS, PR, COST, MODEL]);
+    expect(m.metrics).toEqual([STEPS, CTX, ARTS, COST, MODEL]);
   });
 
   it('a user’s layout: the rows in its order, the head’s switches, a hidden chip gone (.prd/21)', () => {
@@ -389,9 +390,19 @@ describe('P3 — the open card follows the plan', () => {
       'acGoalDecisionHtml',
       'acQuestionHtml',
       'renderEpicPlan',
+      'cardLinksFace',
       'renderCardBody',
     ],
-    ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy'],
+    [
+      'CARD_LINK_KIND',
+      'CARD_LINK_TONES',
+      'RESUME_SVG',
+      'GOAL_STATUS_LABELS',
+      'GOAL_STATUS_TONE',
+      'GOAL_SVG',
+      'SESSION_ACTION_TONE',
+      '_busy',
+    ],
     STUBS,
   );
   const openParts = env.__get('openPartsOf') as (open: unknown, col: string) => string[];

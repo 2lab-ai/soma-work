@@ -104,6 +104,12 @@ export async function fetchLinkMetadata(link: SessionLink): Promise<{ title?: st
       metadata.title && metadata.title.length > MAX_CACHED_TITLE_LENGTH
         ? metadata.title.slice(0, MAX_CACHED_TITLE_LENGTH)
         : metadata.title;
+    // An empty answer (a refused or rate-limited request, no credentials) does not erase a good one: the last
+    // known title and state stay, marked as checked now so the next reader does not ask again at once.
+    if (!cachedTitle && !metadata.status && cached && (cached.title || cached.status)) {
+      metadataCache.set(link.url, { ...cached, fetchedAt: Date.now() });
+      return { title: cached.title || link.title, status: cached.status || link.status };
+    }
     metadataCache.set(link.url, {
       title: cachedTitle,
       status: metadata.status,
@@ -132,6 +138,102 @@ export async function fetchBatchLinkMetadata(links: SessionLink[]): Promise<Sess
     }),
   );
   return results.map((r, i) => (r.status === 'fulfilled' ? r.value : { ...links[i] }));
+}
+
+/**
+ * The cache's last answer for a URL (title and state), whatever its age — undefined when it was never fetched.
+ * For readers that must not wait (the dashboard board); {@link warmLinkMetadata} keeps it fresh.
+ */
+export function peekLinkMetadata(url: string): { title?: string; status?: string } | undefined {
+  const cached = metadataCache.get(url);
+  if (!cached || (!cached.title && !cached.status)) return undefined;
+  return { ...(cached.title ? { title: cached.title } : {}), ...(cached.status ? { status: cached.status } : {}) };
+}
+
+const WARM_PER_CALL = 8;
+/** Background fetches running at once, across every board. */
+const WARM_MAX_IN_FLIGHT = 8;
+/** Background fetches started per minute, across every board. */
+const WARM_PER_MINUTE = 40;
+/** A slot is given back after this long even when its request has not answered. */
+const WARM_SLOT_TIMEOUT = 15_000;
+/** A state that rarely changes again (a closed or done issue, a closed PR) is checked at most this often. */
+const FINAL_TTL = 60 * 60 * 1000;
+const FINAL_STATE = /^(closed|done|resolved|complete(d)?|fixed|released|완료|종료|해결(됨)?|닫힘)$/i;
+const lastWarmAt = new Map<string, number>();
+let warmInFlight = 0;
+let warmWindow = { start: 0, count: 0 };
+
+/** How long a cached answer is good for: a merged PR never changes; other final states are checked hourly. */
+function warmTtl(link: Pick<SessionLink, 'type'>, cached: LinkMetadata | undefined): number {
+  const status = cached?.status?.trim() ?? '';
+  if (link.type === 'pr' && status.toLowerCase() === 'merged') return Number.POSITIVE_INFINITY;
+  return FINAL_STATE.test(status) ? FINAL_TTL : CACHE_TTL;
+}
+
+/**
+ * Fetch, in the background, the GitHub / Jira issues and PRs whose cached answer is missing or stale (작업 카드의
+ * 연결, SSOT 2026-11-02): the board shows what the cache has now and the fresh state on its next draw.
+ *
+ * Bounded across every board: each URL is tried at most once per TTL (a failed fetch is not retried at every
+ * board; a merged PR is never fetched again, other final states hourly), at most {@link WARM_PER_CALL} per call,
+ * {@link WARM_MAX_IN_FLIGHT} at once and {@link WARM_PER_MINUTE} per minute. The cache is written by
+ * fetchLinkMetadata alone (an injected `fetch` — tests, receipts — is written here). Returns how many fetches
+ * started. Never throws, never waits.
+ */
+export function warmLinkMetadata(
+  links: ReadonlyArray<Pick<SessionLink, 'url' | 'type' | 'provider'>>,
+  opts: { now?: number; fetch?: (link: SessionLink) => Promise<{ title?: string; status?: string }> } = {},
+): number {
+  const now = opts.now ?? Date.now();
+  if (lastWarmAt.size > 2000) {
+    for (const [url, at] of lastWarmAt) if (now - at >= FINAL_TTL) lastWarmAt.delete(url);
+  }
+  if (now - warmWindow.start >= 60_000 || now < warmWindow.start) warmWindow = { start: now, count: 0 };
+  let started = 0;
+  for (const link of links) {
+    if (started >= WARM_PER_CALL || warmInFlight >= WARM_MAX_IN_FLIGHT || warmWindow.count >= WARM_PER_MINUTE) break;
+    if (!link?.url || (link.type !== 'issue' && link.type !== 'pr')) continue;
+    if (link.provider !== 'github' && link.provider !== 'jira') continue;
+    const cached = metadataCache.get(link.url);
+    const ttl = warmTtl(link, cached);
+    if (cached && now - cached.fetchedAt < ttl) continue;
+    const tried = lastWarmAt.get(link.url);
+    if (tried !== undefined && now - tried < ttl) continue;
+    lastWarmAt.set(link.url, now);
+    started++;
+    warmWindow.count++;
+    warmInFlight++;
+    let pending: Promise<{ title?: string; status?: string }>;
+    try {
+      pending = Promise.resolve(opts.fetch ? opts.fetch(link as SessionLink) : fetchLinkMetadata(link as SessionLink));
+    } catch (error) {
+      pending = Promise.reject(error);
+    }
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      warmInFlight--;
+    };
+    const slot = setTimeout(release, WARM_SLOT_TIMEOUT);
+    if (typeof slot === 'object' && slot && 'unref' in slot) slot.unref();
+    pending
+      .then((meta) => {
+        if (!opts.fetch || !meta || (!meta.title && !meta.status)) return;
+        const prev = metadataCache.get(link.url);
+        if (!prev || prev.fetchedAt <= now) {
+          // Dated when the fetch began (the injected clock): a later entry is kept.
+          metadataCache.set(link.url, { title: meta.title, status: meta.status, fetchedAt: now });
+        }
+      })
+      .catch((error) => logger.debug('Background link metadata fetch failed', { url: link.url, error: String(error) }))
+      .finally(() => {
+        clearTimeout(slot);
+        release();
+      });
+  }
+  return started;
 }
 
 /**

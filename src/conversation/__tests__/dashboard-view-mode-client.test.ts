@@ -233,7 +233,7 @@ describe('T3 — minimal: a card shows what matters', () => {
   const minimalFace = (c: unknown, sess: unknown = {}, col = 'working') =>
     faces.__get('faceOf')(c, (sess as { model?: string }).model, faces.viewSpec().face, faces.cardAsks(sess, col));
 
-  it('the face keeps title · status · time · the task in progress · lead · owner · artifacts; the summary when it asks; the foot is PR · cost · model', () => {
+  it('the face keeps title · status · time · the task in progress · the links · lead · owner · artifacts; the summary when it asks; the foot is cost · model', () => {
     const m = minimalFace(full);
     expect(Object.keys(m).sort()).toEqual(
       [
@@ -257,11 +257,9 @@ describe('T3 — minimal: a card shows what matters', () => {
     expect(m.task).toEqual(full.task);
     // What the card asks is the summary; otherwise it would be the title once more (.prd/20 G2).
     expect(minimalFace(full, { pendingQuestion: { question: '질문' } }, 'waiting').summary).toBe('질문');
-    // The foot's right end: the PR (the outcome, .prd/20 G3), then the price.
-    expect(m.metrics).toEqual([
-      { text: '#700 열림', glyph: 'pr' },
-      { text: '$6.20', title: 'c\nt' },
-    ]);
+    // The foot's right end: the price. The PR (the outcome, .prd/20 G3) is in the links row now, with the issues
+    // and wikis and their states (작업 카드의 연결, SSOT 2026-11-02) — not a chip as well.
+    expect(m.metrics).toEqual([{ text: '$6.20', title: 'c\nt' }]);
     // Absent fields stay absent (no undefined keys for the element to read); a plain task gets its mark.
     expect(minimalFace({ id: 'k', title: 't', status: 'done', bodyMode: 'slot' })).toEqual({
       id: 'k',
@@ -269,7 +267,7 @@ describe('T3 — minimal: a card shows what matters', () => {
       status: 'done',
       bodyMode: 'slot',
       // The layout's rows by name; a row without its data draws nothing (the element skips it).
-      rows: ['task', 'artifacts'],
+      rows: ['task', 'links', 'artifacts'],
       lead: { glyph: 'task', title: '일반 작업' },
     });
   });
@@ -341,9 +339,19 @@ describe('T3 — minimal: a card shows what matters', () => {
         'acGoalDecisionHtml',
         'acQuestionHtml',
         'renderEpicPlan',
+        'cardLinksFace',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy'],
+      [
+        'CARD_LINK_KIND',
+        'CARD_LINK_TONES',
+        'RESUME_SVG',
+        'GOAL_STATUS_LABELS',
+        'GOAL_STATUS_TONE',
+        'GOAL_SVG',
+        'SESSION_ACTION_TONE',
+        '_busy',
+      ],
       STUBS,
       // minimal: the leanest plan (3안) — the actions and what asks, nothing more (.prd/20 §5.1).
     ).renderCardBody(s, col, minimal ? { star: false, work: [], wait: [], done: [] } : undefined);

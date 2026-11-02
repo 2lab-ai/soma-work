@@ -2,7 +2,10 @@
  * Dashboard surface layouts (SSOT 2026-11-02, .prd/21): the model behind the 대시보드 화면 editor.
  *
  *   L1  the built-in presets are .prd/20 §5, cell for cell, and every list holds its whole catalog
- *   L2  a saved document is checked: wrong shapes refused, unknown ids dropped, missing ones appended off
+ *   L2  a saved document is checked: wrong shapes refused, unknown ids dropped, a missing item takes the
+ *       built-in's state at the built-in's place (an item added later shows as its preset meant)
+ *   L6  작업 카드의 연결 (SSOT 2026-11-02): the links row (issues · PRs · wikis with their states) is on in every
+ *       preset and mode; the PR chip it covers is off; a saved card without it gets it
  *   L3  each surface resolves to its preset — the user's default per surface, else the quick switch, else 1
  *   L4  the thread card follows the task card by default; theme keeps the server's Slack theme; custom is its own
  */
@@ -43,12 +46,12 @@ describe('L1 — built-in presets', () => {
       }
   });
 
-  it('they are .prd/20 §5: minimal 1안 = task · artifacts (3); PR · cost · model; links + model switch; checklist 34%', () => {
+  it('they are .prd/20 §5 with .prd/22: minimal 1안 = task · 연결 · artifacts (3); cost · model; links + model switch; checklist 34%', () => {
     const m1 = BUILTIN_PRESETS['1'].minimal;
-    expect(shown(m1.card.rows)).toEqual(['summary', 'task', 'arts']);
+    expect(shown(m1.card.rows)).toEqual(['summary', 'task', 'links', 'arts']);
     expect(m1.card.rows[0].opt).toBe('asks');
     expect(m1.card.rows.find((r) => r.id === 'arts')!.opt).toBe('3');
-    expect(shown(m1.card.foot)).toEqual(['pr', 'cost', 'model']);
+    expect(shown(m1.card.foot)).toEqual(['cost', 'model']);
     expect(shown(m1.open.parts)).toEqual(['refs', 'model']);
     expect(m1.open.star).toBe(false);
     expect([m1.detail.tasks, m1.detail.tasksMax, m1.detail.agents, m1.detail.open]).toEqual([
@@ -69,7 +72,7 @@ describe('L1 — built-in presets', () => {
     // advanced 2안 원본: the ✦, no model, the ☆ button, every section unfolded.
     const a2 = BUILTIN_PRESETS['2'].advanced;
     expect(a2.card.kind).toBe(false);
-    expect(shown(a2.card.foot)).toEqual(['steps', 'ctx', 'media', 'pr']);
+    expect(shown(a2.card.foot)).toEqual(['steps', 'ctx', 'media']);
     expect(a2.open.star).toBe(true);
     expect(a2.detail.open).toBe(true);
     expect(a2.open.byCol?.work).toEqual(['tasks', 'agents', 'io', 'goal', 'refs', 'model']);
@@ -108,7 +111,7 @@ describe('L2 — a saved document is checked', () => {
       expect(() => normalizeLayoutDoc(bad), JSON.stringify(bad)).toThrow(LayoutError);
   });
 
-  it('a list keeps its order, drops unknown ids and repeats, and appends what it misses — off', () => {
+  it('a list keeps its order, drops unknown ids and repeats; what it misses takes the built-in’s state and place', () => {
     const doc = normalizeLayoutDoc({
       presets: {
         '2': {
@@ -130,17 +133,29 @@ describe('L2 — a saved document is checked', () => {
     const card = doc.presets!['2']!.minimal!.card!;
     expect(card.kind).toBe(false);
     expect(card.star).toBe(true);
+    // 2안 minimal's built-in rows: summary · task · links · agents · usage · arts — each missing one goes after the
+    // built-in item before it (or first), as on or off as the built-in has it.
     expect(card.rows.map((r) => [r.id, r.on])).toEqual([
+      ['summary', true],
       ['arts', true],
       ['task', true],
-      ['summary', false],
+      ['links', true],
       ['agents', false],
       ['usage', false],
     ]);
-    expect(card.rows[0].opt).toBe('2');
+    expect(card.rows[1].opt).toBe('2');
     // A missing summary takes its built-in rule; a bad option takes the built-in's.
     expect(card.rows.find((r) => r.id === 'summary')!.opt).toBe('all');
-    expect(card.foot[0]).toEqual({ id: 'model', on: true });
+    expect(card.foot.map((c) => [c.id, c.on])).toEqual([
+      ['steps', true],
+      ['arts', true],
+      ['cost', true],
+      ['model', true],
+      ['ctx', false],
+      ['media', false],
+      ['pr', false],
+      ['tokens', false],
+    ]);
     expect(card.foot).toHaveLength(CARD_CHIPS.length);
     // Only what was edited is kept: the other surfaces stay the built-in.
     expect(Object.keys(doc.presets!['2']!.minimal!)).toEqual(['card']);
@@ -163,7 +178,20 @@ describe('L2 — a saved document is checked', () => {
     expect(d.tasksMax).toBe(70);
     const o = doc.presets!['1']!.advanced!.open!;
     expect(o.byCol).toBeUndefined();
-    expect(o.parts[0]).toEqual({ id: 'model', on: true });
+    // The saved part is kept; the parts it misses take the built-in's state and place.
+    expect(o.parts.find((x) => x.id === 'model')).toEqual({ id: 'model', on: true });
+    expect(o.parts.map((x) => x.id).sort()).toEqual([...OPEN_PARTS].sort());
+    expect(
+      o.parts
+        .filter((x) => x.on)
+        .map((x) => x.id)
+        .sort(),
+    ).toEqual(
+      BUILTIN_PRESETS['1'].advanced.open.parts
+        .filter((x) => x.on || x.id === 'model')
+        .map((x) => x.id)
+        .sort(),
+    );
   });
 
   it('the defaults per surface and the thread card', () => {
@@ -239,6 +267,53 @@ describe('L4 — the thread card (스레드 태스크 카드)', () => {
     });
     const lines = threadCardLines(doc, 'advanced')!;
     expect(lines.map((l) => l.fields.map((f) => f.field))).toEqual([['title'], ['steps', 'owner'], ['links']]);
+  });
+});
+
+describe('L6 — 작업 카드의 연결: issues · PRs · wikis on every card by default', () => {
+  it('the links row is on in every preset and mode, right after the task; the PR chip it covers is off', () => {
+    for (const p of PRESET_IDS)
+      for (const m of VIEW_MODES) {
+        const card = BUILTIN_PRESETS[p][m].card;
+        const ids = card.rows.map((r) => r.id);
+        expect(card.rows.find((r) => r.id === 'links')?.on, `${p} ${m}`).toBe(true);
+        expect(ids.indexOf('links'), `${p} ${m}`).toBe(ids.indexOf('task') + 1);
+        expect(card.foot.find((c) => c.id === 'pr')?.on, `${p} ${m}`).toBe(false);
+      }
+    expect(LAYOUT_CATALOG.card.rows.find((r) => r.id === 'links')?.label).toBe('연결 — 이슈 · PR · 위키');
+  });
+
+  it('a card saved before the row existed gets it, on, after its task', () => {
+    const saved = {
+      kind: true,
+      star: true,
+      owner: true,
+      rows: [
+        { id: 'summary', on: true, opt: 'asks' },
+        { id: 'task', on: false },
+        { id: 'arts', on: false, opt: '3' },
+        { id: 'agents', on: false },
+        { id: 'usage', on: false },
+      ],
+      foot: CARD_CHIPS.map((id) => ({ id, on: id === 'cost' })),
+    };
+    const doc = normalizeLayoutDoc({ v: 1, presets: { '3': { minimal: { card: saved } } } });
+    const rows = doc.presets!['3']!.minimal!.card!.rows;
+    expect(rows.map((r) => [r.id, r.on])).toEqual([
+      ['summary', true],
+      ['task', false],
+      ['links', true],
+      ['arts', false],
+      ['agents', false],
+      ['usage', false],
+    ]);
+  });
+
+  it('the thread card follows: the links row brings the link history (issues · PRs · docs with their states)', () => {
+    const face = BUILTIN_PRESETS['1'].minimal.card;
+    expect(followThreadLayout(face).nav.find((x) => x.id === 'linkhistory')?.on).toBe(true);
+    const off = { ...face, rows: face.rows.map((r) => (r.id === 'links' ? { ...r, on: false } : r)) };
+    expect(followThreadLayout(off).nav.find((x) => x.id === 'linkhistory')?.on).toBe(false);
   });
 });
 
