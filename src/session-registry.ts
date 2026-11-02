@@ -112,6 +112,11 @@ const WARNING_INTERVALS = [
   10 * 60 * 1000, // 10 minutes remaining - final warning
 ];
 
+/** A session's history keeps at most this many links of each kind (세션 링크 자동 기록): the oldest go first. */
+export const MAX_NOTED_LINKS = 30;
+/** Which noted link becomes the current one: see SessionRegistry.noteSessionLinks. */
+export type NoteLinksMode = 'first' | 'always' | 'if-empty';
+
 const HISTORY_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinkHistory> = {
   issue: 'issues',
   pr: 'prs',
@@ -2327,6 +2332,75 @@ export class SessionRegistry {
         },
       ],
     });
+  }
+
+  /**
+   * Record the links a conversation names (세션 링크 자동 기록, SSOT 2026-11-02): each new one joins its kind's
+   * history; which becomes the current link depends on where it came from —
+   *   'first'    a user message: the first link of each kind (as the dispatch does with the first message);
+   *   'always'   a PR or issue the session just created;
+   *   'if-empty' an assistant reply: only when the kind has no current link, so a PR mentioned in passing does not
+   *              replace the one the session works on.
+   * A known link changes nothing. A history keeps the newest {@link MAX_NOTED_LINKS} (the current one always).
+   * Returns whether anything changed (then the sequence moves and the sessions are saved).
+   */
+  noteSessionLinks(
+    channelId: string,
+    threadTs: string | undefined,
+    links: ReadonlyArray<SessionLink>,
+    mode: NoteLinksMode,
+  ): boolean {
+    return this.noteSessionLinksOn(this.getSession(channelId, threadTs), links, mode);
+  }
+
+  /** {@link noteSessionLinks} for a session by its key (a Slack-less task). */
+  noteSessionLinksByKey(sessionKey: string, links: ReadonlyArray<SessionLink>, mode: NoteLinksMode): boolean {
+    return this.noteSessionLinksOn(this.getSessionByKey(sessionKey), links, mode);
+  }
+
+  private noteSessionLinksOn(
+    session: ConversationSession | undefined,
+    links: ReadonlyArray<SessionLink>,
+    mode: NoteLinksMode,
+  ): boolean {
+    if (!session || !Array.isArray(links) || links.length === 0) return false;
+    this.ensureSessionLinkState(session);
+    let changed = false;
+    const firstTaken = new Set<SessionResourceType>();
+    for (const raw of links) {
+      const type = raw?.type as SessionResourceType | undefined;
+      if (!raw?.url || !type || !(type in HISTORY_KEY_BY_RESOURCE)) continue;
+      const history = session.linkHistory![HISTORY_KEY_BY_RESOURCE[type]]!;
+      const activeKey = ACTIVE_KEY_BY_RESOURCE[type];
+      const link = this.normalizeSessionLink(raw, type);
+      const at = history.findIndex((l) => l.url === link.url);
+      const current = session.links![activeKey];
+      const makeCurrent =
+        mode === 'always' || (mode === 'first' && !firstTaken.has(type)) || (mode === 'if-empty' && !current?.url);
+      if (mode === 'first') firstTaken.add(type);
+      if (makeCurrent && current?.url !== link.url) {
+        // What the history already knows (a fetched title or state) stays; the link moves to the newest place.
+        const entry = at >= 0 ? { ...link, ...history[at] } : link;
+        if (at >= 0) history.splice(at, 1);
+        history.push(entry);
+        session.links![activeKey] = { ...entry };
+        changed = true;
+      } else if (at < 0) {
+        history.push(link);
+        changed = true;
+      }
+      const keep = session.links![activeKey]?.url;
+      while (history.length > MAX_NOTED_LINKS) {
+        const drop = history.findIndex((l) => l.url !== keep);
+        if (drop < 0) break;
+        history.splice(drop, 1);
+      }
+    }
+    if (changed) {
+      session.linkSequence = (session.linkSequence ?? 0) + 1;
+      this.saveSessions();
+    }
+    return changed;
   }
 
   /**

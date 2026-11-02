@@ -12,7 +12,8 @@
 ├─ 4. 화면            ─ @2lab.ai/ui 0.19.0 card.links · 펼친 카드 · 편집기 · 스레드 카드
 ├─ 5. 기존 레이아웃   ─ 저장된 유저에게도 새 줄이 켜진 채 나타나는 이유
 ├─ 6. 구현 지도
-└─ 7. 검증            ─ 단위 테스트 · 실서버 하네스 L1–L8
+├─ 7. 검증            ─ 단위 테스트 · 실서버 하네스 L1–L8
+└─ 8. 링크 자동 기록  ─ 대화에 나온 이슈 · PR · 위키를 세션에 기록 (없으면 줄이 늘 비어 있다)
 ```
 
 이 문서를 읽는 법: 무엇이 기본인지는 §2, 상태가 어디서 오는지는 §3, 이미 레이아웃을 저장한 유저에게 무엇이 바뀌는지는 §5를 본다.
@@ -92,3 +93,21 @@
   - L6: 펼친 카드의 refs에 같은 링크와 상태가 있다.
   - L7: PR이 머지되면(스레드의 실시간 확인) 다음 보드에 `#733 머지됨`이 뜬다.
   - L8: 390px에서 옆으로 스크롤되지 않는다.
+
+## 8. 링크 자동 기록 (`packages/slack/src/session-link-capture.ts`)
+
+**문제.** 카드는 세션에 기록된 링크(`links` · `linkHistory`)만 그린다. 그런데 링크는 세 경로로만 기록됐다. 첫 메시지의 디스패치, 모델의 `session_links` 지시문, 유저의 `link` 명령이다. dev 실측(2026-11-02)으로 보관 세션 1423개 중 95개, 최근 7일 55개 중 2개(4%)만 링크가 있었다. 연결 줄이 기본으로 켜져 있어도 거의 늘 비어 있었다.
+
+**결정.** 대화가 이미 말한 링크를 기록한다. 출처마다 지금 링크를 바꾸는 규칙이 다르다(`SessionRegistry.noteSessionLinks`).
+
+| 출처 | 무엇을 | 지금 링크 |
+|---|---|---|
+| 유저 메시지(매 턴, 호스트 턴 제외) | 메시지의 이슈 · PR · 위키 URL | 종류마다 첫 번째(`first`, 디스패치와 같은 규칙) |
+| `gh pr create` · `gh issue create` (Bash 출력의 마지막 줄이 GitHub PR · 이슈 URL) | 세션이 방금 만든 PR · 이슈 | 그것(`always`) |
+| 봇 답변 | 답변이 이름 붙인 URL | 그 종류에 지금 링크가 없을 때만(`if-empty`). 지나가며 언급한 옛 PR이 지금 PR을 덮지 않는다 |
+
+- 알아보는 URL: GitHub PR · 이슈, GitLab MR, Jira 이슈(`/browse/KEY-1`), Linear 이슈, Confluence 페이지, Notion 페이지. 저장소, 커밋, 파일, 검색 URL은 링크가 아니다. Slack(`<url|label>`)과 Markdown 래퍼, 끝의 구두점은 URL에 넣지 않는다. 한 텍스트에서 최대 10개를 받는다.
+- 이미 아는 링크는 아무것도 바꾸지 않는다(저장도, 순서 번호도 그대로). 기록은 종류마다 최근 30개까지 남기고, 지금 링크는 늘 남긴다.
+- 목록 출력(`gh pr list`)처럼 PR을 이름만 대는 도구 결과는 기록하지 않는다. 마지막 줄이 URL 하나일 때만 "만든 것"으로 본다.
+- 연결부: `stream-executor`가 유저 메시지(`first`)와 도구 결과(`always`)를 기록한다. `stream-processor`의 새 콜백 `onLinksMentioned`가 답변 텍스트의 링크를 넘기고, 실행기가 `if-empty`로 기록한다. 기록은 부수 작업이라 실패해도 턴을 깨지 않는다.
+- 테스트: `session-link-capture.test.ts` A1–A4, `session-registry.note-links.test.ts` N1–N5, `stream-processor.links-mentioned.test.ts` P1–P2, `stream-executor.session-links.test.ts` E1–E4.
