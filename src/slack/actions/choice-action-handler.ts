@@ -953,6 +953,10 @@ export class ChoiceActionHandler {
         } catch (error) {
           this.logger.error('Error processing dashboard choice (P3)', { sessionKey, choiceId, error });
           try {
+            // afterP3Resolve cleared the question: put it back so it can be answered again.
+            if (session.actionPanel && savedPendingQuestion) {
+              session.actionPanel.pendingQuestion = savedPendingQuestion;
+            }
             this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
           } catch (rollbackError) {
             this.logger.error('Failed to rollback activity state after dashboard choice (P3)', {
