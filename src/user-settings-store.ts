@@ -10,6 +10,7 @@ import { isRejectedModelInput, resolveModelInputCompatibility } from './metrics/
 import { modelCatalog } from './model-catalog';
 import { createPromptInvalidator } from './prompt-cache-invalidation';
 import { maskUrl } from './turn-notifier.js';
+import { type DashboardLayoutDoc, normalizeLayoutDoc } from './view-layout';
 
 const logger = new Logger('UserSettingsStore');
 
@@ -469,6 +470,8 @@ export interface UserSettings {
   dashboardMode?: DashboardMode;
   /** The dashboard's layout plan (.prd/20). Undefined (or unknown) ⇒ `'1'`. */
   dashboardPlan?: DashboardPlan;
+  /** The user's surface layouts (.prd/21): edited presets, defaults per surface, the thread card. */
+  dashboardLayout?: DashboardLayoutDoc;
   /**
    * E4 ③ (.prd/19 D9 e) — the most one epic tree may spend (USD) before the
    * host stops starting its children and waking it; the owner's own
@@ -1095,6 +1098,27 @@ export class UserSettingsStore {
       return;
     }
     existing.dashboardPlan = plan;
+    existing.lastUpdated = new Date().toISOString();
+    this.saveSettings();
+  }
+
+  /** The user's surface layouts (.prd/21), checked on the way out; a stored value that no longer checks is empty. */
+  getUserDashboardLayout(userId: string): DashboardLayoutDoc {
+    try {
+      return normalizeLayoutDoc(this.settings[userId]?.dashboardLayout);
+    } catch {
+      return { v: 1 };
+    }
+  }
+
+  /** Save the user's surface layouts (already checked by the registry) — no prompt reads them. */
+  setUserDashboardLayout(userId: string, doc: DashboardLayoutDoc): void {
+    const existing = this.settings[userId];
+    if (!existing) {
+      this.patchUserSettings(userId, { dashboardLayout: doc });
+      return;
+    }
+    existing.dashboardLayout = doc;
     existing.lastUpdated = new Date().toISOString();
     this.saveSettings();
   }

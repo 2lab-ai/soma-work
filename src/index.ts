@@ -166,6 +166,7 @@ import { type StreamExecutorProviders, setStreamExecutorProviders } from './slac
 import { setGoalCapDecisionRetirer } from './slack/session-goal';
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { createSlackTaskEntry } from './slack/task-entry';
+import { ownerThreadCardLines, threadCardDataOf } from './slack/thread-card-data';
 import { setThreadHeaderProviders } from './slack/thread-header-builder';
 import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
@@ -582,7 +583,13 @@ async function start() {
     // The one injection point for the dashboard deep link: the thread header
     // `dashboardLink` field and the user-started thread link both resolve
     // through it (undefined = viewer not listening = no link).
-    setThreadHeaderProviders({ getDashboardSessionUrl });
+    setThreadHeaderProviders({
+      getDashboardSessionUrl,
+      // 스레드 태스크 카드 (.prd/21): the owner's thread card (by default their dashboard's task card), and the
+      // session's numbers and tasks for its fields.
+      getThreadCardLines: (ownerId) => ownerThreadCardLines(userSettingsStore, ownerId),
+      getThreadCardData: (session) => threadCardDataOf(session as Parameters<typeof threadCardDataOf>[0]),
+    });
 
     // Install operator-controlled additional env (config.json#claude.env)
     // BEFORE any ClaudeHandler / SDK consumers are constructed, so every

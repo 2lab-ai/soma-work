@@ -750,8 +750,12 @@ async function plansPass(browser: import('playwright').Browser, board: unknown) 
           f,
         );
         check(
-          f.foot[0]?.text === '2' && f.foot[1]?.text === '$6.20' && /opus/i.test(f.foot[2]?.text || ''),
-          `${t} P2 foot: artifacts n · cost · model`,
+          // Steps and context are foot chips of their own since the layouts (.prd/21): ordered with the rest.
+          f.foot[0]?.text === '2/4' &&
+            f.foot[1]?.text === '2' &&
+            f.foot[2]?.text === '$6.20' &&
+            /opus/i.test(f.foot[3]?.text || ''),
+          `${t} P2 foot: steps · artifacts n · cost · model`,
           f.foot,
         );
       } else if (mode === 'minimal' && plan === '3') {
@@ -782,8 +786,8 @@ async function plansPass(browser: import('playwright').Browser, board: unknown) 
           f.foot
             .map((m) => m.text)
             .join('|')
-            .match(/^2\|#700[^|]*\|\$6\.20\|.*opus/i) !== null,
-          `${t} P2 foot: artifacts n · PR · cost · model`,
+            .match(/^2\/4\|64%\|2\|#700[^|]*\|\$6\.20\|.*opus/i) !== null,
+          `${t} P2 foot: steps · context · artifacts n · PR · cost · model`,
           f.foot,
         );
       }

@@ -466,6 +466,18 @@ describe('Slack instruction → dashboard task flag (E2 ⑦, D1)', () => {
   });
 });
 
+describe('dashboard surface layouts (.prd/21)', () => {
+  it('empty by default, per user; a saved document is read back checked; a broken stored value reads as empty', () => {
+    const store = makeStore();
+    expect(store.getUserDashboardLayout('U1')).toEqual({ v: 1 });
+    store.setUserDashboardLayout('U1', { v: 1, active: { card: '3' }, thread: { mode: 'theme' } });
+    expect(store.getUserDashboardLayout('U1')).toEqual({ v: 1, active: { card: '3' }, thread: { mode: 'theme' } });
+    expect(store.getUserDashboardLayout('U2')).toEqual({ v: 1 });
+    (store as any).settings.U1.dashboardLayout = { v: 9 };
+    expect(store.getUserDashboardLayout('U1')).toEqual({ v: 1 });
+  });
+});
+
 describe('dashboard view plan (SSOT 2026-11-01 ④, .prd/20)', () => {
   it('is 1안 by default, per user; 2 and 3 are kept; anything else reads as 1', () => {
     const store = makeStore();
