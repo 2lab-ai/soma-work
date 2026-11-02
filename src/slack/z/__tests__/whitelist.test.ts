@@ -37,3 +37,27 @@ describe('isDmAllowedForNonAdmin — autocompact (config-only, never spawns a pr
     expect(isDmAllowedForNonAdmin('autocompacting now')).toBe(false);
   });
 });
+
+describe('isDmAllowedForNonAdmin — lang (#772, a personal setting, never a prompt)', () => {
+  it('allows the naked and `/z` forms the LangHandler routes', () => {
+    for (const t of [
+      'lang',
+      'lang ko',
+      'lang en',
+      'LANG EN',
+      '/lang en',
+      'lang set en',
+      'language en',
+      '/z lang en',
+      '/z lang',
+    ])
+      expect(isDmAllowedForNonAdmin(t), t).toBe(true);
+  });
+
+  it('still rejects prose that starts with the word', () => {
+    expect(isDmAllowedForNonAdmin('language model 비교해줘')).toBe(false);
+    expect(isDmAllowedForNonAdmin('lang en please')).toBe(false);
+    expect(isDmAllowedForNonAdmin('/z lang en please')).toBe(false);
+    expect(isDmAllowedForNonAdmin('/z language model 비교해줘')).toBe(false);
+  });
+});

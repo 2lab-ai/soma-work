@@ -60,16 +60,28 @@ describe('local:html skill — RED contract', () => {
     expect(existsSync(SKILL_MD)).toBe(true);
   });
 
-  it('SKILL.md frontmatter has name: html and description covering HTML+PNG+Slack', () => {
+  it('SKILL.md frontmatter has name: html and description covering HTML + Slack upload (the HTML only)', () => {
     const md = readFileSync(SKILL_MD, 'utf8');
     const fm = parseFrontmatter(md);
     expect(fm.name).toBe('html');
     expect(fm.description).toBeDefined();
     const desc = (fm.description ?? '').toLowerCase();
     expect(desc).toMatch(/html/);
-    expect(desc).toMatch(/png/);
     // Slack upload is the whole point — must be advertised in the trigger description.
     expect(desc).toMatch(/slack|thread|upload|file/);
+    // SSOT 2026-11-02 T2: a visualization ships as HTML only — the PNG is a local QA snapshot.
+    expect(desc).toContain('upload the html only');
+    expect(desc).not.toMatch(/upload both files/);
+  });
+
+  it('SSOT 2026-11-02 T2 — delivery uploads the HTML only; the PNG is a QA snapshot that is never uploaded', () => {
+    const md = readFileSync(SKILL_MD, 'utf8');
+    const step8 = md.slice(md.indexOf('### 8.'), md.indexOf('### 9.'));
+    expect(step8).toContain('mcp__slack-mcp__send_file(');
+    expect(step8).not.toContain('mcp__slack-mcp__send_media(');
+    expect(step8).toMatch(/Do \*\*not\*\* upload the PNG/);
+    expect(md).toContain('### 5. Render a QA snapshot (PNG, never uploaded)');
+    expect(md).not.toMatch(/Dual upload/i);
   });
 
   it('SKILL.md encodes the global anti-AI-slop design discipline', () => {

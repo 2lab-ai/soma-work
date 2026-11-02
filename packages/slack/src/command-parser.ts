@@ -1314,6 +1314,9 @@ export class CommandParser {
     // Notification
     'notify',
     'webhook',
+    // Display language (#772)
+    'lang',
+    'language',
     // Slack instructions → dashboard tasks (E2 ⑧)
     'taskentry',
     // Epic tasks on the dashboard (E4 ④a-2)
@@ -1443,6 +1446,10 @@ export class CommandParser {
       '• `link issue <url>` - Attach issue link to current session',
       '• `link pr <url>` - Attach PR link to current session',
       '• `link doc <url>` - Attach doc link to current session',
+      '',
+      '*Display language:*',
+      '• `lang` - Show your display language (dashboard, thread, answers)',
+      '• `lang ko|en` - Switch it (Korean by default)',
       '',
       '*Dashboard Tasks:*',
       '• `taskentry` - Show whether your channel instructions become dashboard tasks',

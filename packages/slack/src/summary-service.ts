@@ -245,6 +245,17 @@ export function parseExecutiveSummary(raw: string): ParsedExecutiveSummary {
  * followed by the whole document. Rendered through `buildSummaryBlocks`, so
  * it gets the same markdown rewrite and 3000-char chunking.
  */
+/**
+ * SSOT 2026-11-02 T7 — the whole Executive Summary as the dashboard's chat shows it: the TL;DR
+ * as a markdown list, then the document with the `<tldr>` envelope removed.
+ */
+export function composeExecutiveSummaryMarkdown(raw: string): string {
+  const { tldr, body } = parseExecutiveSummary(raw);
+  if (tldr.length === 0) return body;
+  const head = ['**TL;DR**', ...tldr.map((line) => `- ${line}`)].join('\n');
+  return body ? `${head}\n\n${body}` : head;
+}
+
 function composeInThreadSummary({ tldr, body }: ParsedExecutiveSummary): string {
   if (tldr.length === 0) return body;
   const tldrSection = ['**TL;DR**', ...tldr.map((line) => `• ${line}`)].join('\n');
@@ -380,6 +391,11 @@ export interface SummarySessionInfo {
    * `SummaryService.displayOnThread` after a successful render.
    */
   lastSummaryMode?: ExecutiveSummaryMode;
+  /**
+   * SSOT 2026-11-02 T7 — the TL;DR the thread head shows, for the dashboard's task card: set by
+   * `displayOnThread` (only when the summary has one), cleared by `clearDisplay` on the next input.
+   */
+  executiveSummary?: { tldr: string[]; at: number };
   actionPanel?: {
     summaryBlocks?: any[];
     [key: string]: any;
@@ -550,14 +566,19 @@ export class SummaryService {
    * Trace: S3, Section 3c
    */
   displayOnThread(session: SummarySessionInfo, summaryText: string): void {
+    // The surface is the channel-visible thread root, so it carries only the
+    // TL;DR. The full ES goes inside the thread via `postInThread`.
+    const { tldr, tldrSource } = parseExecutiveSummary(summaryText);
+    // The dashboard's task card shows the same lines (SSOT 2026-11-02 T7) — a task with no
+    // Slack thread (a dashboard task) included, so this comes before the thread-head guard.
+    if (tldr.length > 0) session.executiveSummary = { tldr, at: Date.now() };
+    else session.executiveSummary = undefined;
+
     if (!session.actionPanel) {
       logger.warn('Cannot display summary — no actionPanel on session');
       return;
     }
 
-    // The surface is the channel-visible thread root, so it carries only the
-    // TL;DR. The full ES goes inside the thread via `postInThread`.
-    const { tldr, tldrSource } = parseExecutiveSummary(summaryText);
     const summaryBlocks = this.buildTldrBlocks(tldr);
     session.actionPanel.summaryBlocks = summaryBlocks;
     session.lastSummaryMode = selectExecutiveSummaryMode(session);
@@ -635,6 +656,8 @@ export class SummaryService {
    * Trace: S5, Section 3b
    */
   clearDisplay(session: SummarySessionInfo): void {
+    // The dashboard card's TL;DR goes with the thread head's — even where there is no head to clear.
+    session.executiveSummary = undefined;
     if (!session.actionPanel) return;
     if (!session.actionPanel.summaryBlocks) return;
 

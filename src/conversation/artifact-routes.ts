@@ -3,7 +3,7 @@
  * full-size viewer read.
  *
  *   GET /api/dashboard/session/:conversationId/artifacts
- *     → 200 { artifacts: SessionArtifact[] }   (oldest first; [] when none)
+ *     → 200 { artifacts: SessionArtifact[] }   (newest first; [] when none)
  *   GET /api/dashboard/session/:conversationId/artifacts/:artifactId/content[?download=1]
  *     → 200 the stored bytes, or 206 for a `Range: bytes=…` request (audio/video
  *       seeking needs it — Safari will not play <audio> without range support).

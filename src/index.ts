@@ -37,6 +37,8 @@ registerSkillStore({
   copySkill: (user, sourceUser, name, newName) => gatedManageSkillCopy(user, sourceUser, name, newName),
 });
 
+// #771 — the English display catalogs (dashboard pages, Slack text): loading registers them.
+import '@soma/common/i18n-en';
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import type { AgentTreeEvent } from '@soma/slack/agent-tree';
@@ -72,6 +74,7 @@ import {
   initRecorder,
   isDashboardListening,
   matchSlackUsersByEmail,
+  recordExecutiveSummaryTurn,
   scheduleLiveSessionUpdate,
   setDashboardBotName,
   setDashboardChoiceAnswerHandler,
@@ -161,6 +164,11 @@ import { getArchiveStore, resolveArchivedResume } from './session-archive';
 import { buildTaskSessionKey } from './session-identity';
 import { applySummaryTitle } from './session-title-policy';
 import {
+  displayLangMiddleware,
+  installRespondTranslation,
+  installSlackDisplayTranslation,
+} from './slack/display-translate';
+import {
   answerGoalCapDecision,
   flushGoalCapDmSync,
   retireGoalCapDecision,
@@ -171,6 +179,7 @@ import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal
 import { createPendingUserRequest, notifyAdminsNewUser } from './slack/new-user-decision';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
 import { setGoalCapDecisionRetirer } from './slack/session-goal';
+import { composeExecutiveSummaryMarkdown, parseExecutiveSummary } from './slack/summary-service';
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { createSlackTaskEntry } from './slack/task-entry';
 import { threadCardProviders } from './slack/thread-card-data';
@@ -538,6 +547,15 @@ async function start() {
       },
     });
     timing('OAuth refresh scheduler wired');
+
+    // #774 — the bot's Slack text in each user's display language: every
+    // Web API call and respond() is translated on the way out, in the language
+    // of the request's user (the middleware below) or of the turn (the stream
+    // executor). Korean users' text passes through untouched.
+    const displayLangOf = (userId: string) => userSettingsStore.getUserDisplayLanguage(userId);
+    installSlackDisplayTranslation(displayLangOf);
+    installRespondTranslation(app);
+    app.use(displayLangMiddleware(displayLangOf));
 
     // Log ALL incoming events (before any handler)
     type SlackEventBody = {
@@ -1433,6 +1451,18 @@ async function start() {
         t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
       ) => number;
     } = {
+      // SSOT 2026-11-02 T7 — an Executive Summary landed: the whole document goes in the dashboard's
+      // chat (지시와 답변), and the card is pushed — the session now holds its TL;DR (esTldr).
+      recordExecutiveSummary: (sessionKey: string, conversationId: string | undefined, text: string) => {
+        if (conversationId) {
+          recordExecutiveSummaryTurn(
+            conversationId,
+            composeExecutiveSummaryMarkdown(text),
+            parseExecutiveSummary(text).tldr,
+          );
+        }
+        scheduleLiveSessionUpdate(sessionKey);
+      },
       // SSOT 2026-10-22 T1/T2 — a running turn made another API call: push the
       // card (≤ 1/s per session) so its token / cost totals grow live.
       // 2026-10-29 T5: the call also counts on the tasks in progress — tokens

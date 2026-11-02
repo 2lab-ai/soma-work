@@ -851,3 +851,29 @@ describe('FollowupQueueStore', () => {
     });
   });
 });
+
+/**
+ * `deliveredAt` (2026-11-02): a restart takeover reads it off the RESTORED
+ * snapshot, so the gate must carry it through unchanged. It is advisory and
+ * deliberately unvalidated — a malformed value must not fail the whole queue
+ * closed; `isFollowupDelivered` reads anything but a finite number as "no
+ * evidence".
+ */
+describe('parseFollowupQueueSnapshot — delivery evidence', () => {
+  it('carries deliveredAt through a load unchanged', () => {
+    const stored = snapshot([item({ state: 'uncertain', deliveredAt: 1_700_000_000_500 })]);
+
+    const parsed = parseFollowupQueueSnapshot(JSON.parse(JSON.stringify(stored)));
+
+    expect(parsed.sessions[0].items[0].deliveredAt).toBe(1_700_000_000_500);
+  });
+
+  it('a malformed value loads (the queue stays up) and reads as no evidence', async () => {
+    const { isFollowupDelivered } = await import('../followup-queue');
+    const stored = snapshot([item({ state: 'uncertain', deliveredAt: 'yesterday' as never })]);
+
+    const parsed = parseFollowupQueueSnapshot(JSON.parse(JSON.stringify(stored)));
+
+    expect(isFollowupDelivered(parsed.sessions[0].items[0])).toBe(false);
+  });
+});

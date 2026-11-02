@@ -133,6 +133,7 @@ describe('ActionHandlers', () => {
           'email',
           'epictasks',
           'goal',
+          'lang',
           'memory',
           'model',
           'notify',

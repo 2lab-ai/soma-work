@@ -20,6 +20,7 @@ import { EpicTasksHandler } from './epictasks-handler';
 import { GoalHandler } from './goal-handler';
 import { HelpHandler } from './help-handler';
 import { InstructionsHandler } from './instructions-handler';
+import { LangHandler } from './lang-handler';
 import { LinkHandler } from './link-handler';
 import { MarketplaceHandler } from './marketplace-handler';
 import { McpHandler } from './mcp-handler';
@@ -122,6 +123,8 @@ setCommandRouterProviders({
         new NotifyHandler(),
         // E2 ⑧ — `taskentry on|off`: Slack instructions → dashboard tasks (per user).
         new TaskEntryHandler(),
+        // #772 — `lang ko|en`: the user's display language (dashboard, thread, answers).
+        new LangHandler(),
         // E4 ④a-2 — `epictasks on|off`: may this user make epic tasks (per user, off by default).
         new EpicTasksHandler(),
         new WebhookHandler(),

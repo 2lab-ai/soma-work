@@ -3197,6 +3197,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         // SSOT 2026-11-02 T1: a fetched page drops the optimistic instruction it already records.
         'decodeSlackEntities',
         'ptSentKey',
+        'ptSameSend',
         'ptRecorded',
         'ptMergeFetched',
         // SSOT 2026-10-29 T2: every opening puts the session's detail card in the deck.

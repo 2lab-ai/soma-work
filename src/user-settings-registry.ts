@@ -16,6 +16,7 @@
  * starts calling a mutator this table does not know about.
  */
 
+import { type DisplayLang, parseDisplayLang } from '@soma/common/i18n';
 import type { LogVerbosity } from '@soma/slack/output-flags';
 import { clampEffortToSupported } from 'soma-lib';
 import type { PermissionMode } from './agent-runtime/policy/permission-mode';
@@ -41,6 +42,7 @@ export type SettingKey =
   | 'logVerbosity'
   | 'sessionTheme'
   | 'persona'
+  | 'displayLanguage'
   | 'notifySlackDm'
   | 'notifyTelegram'
   | 'notifyWebhook'
@@ -168,6 +170,8 @@ export interface SettingsStoreLike {
   getUserNetworkDisabled(userId: string): boolean;
   getUserDashboardMode(userId: string): DashboardMode;
   setUserDashboardMode(userId: string, mode: DashboardMode): void;
+  getUserDisplayLanguage(userId: string): DisplayLang;
+  setUserDisplayLanguage(userId: string, lang: DisplayLang): void;
   getUserDashboardPlan(userId: string): DashboardPlan;
   setUserDashboardPlan(userId: string, plan: DashboardPlan): void;
   getUserDashboardLayout(userId: string): DashboardLayoutDoc;
@@ -248,6 +252,10 @@ const VERBOSITY_LABELS: Record<string, string> = {
   verbose: 'Verbose — 전부',
 };
 const TELEGRAM_CHAT_ID = /^-?\d{1,20}$/;
+const DISPLAY_LANGUAGE_OPTIONS: SettingOption[] = [
+  { value: 'ko', label: '한국어', description: '기본값입니다.' },
+  { value: 'en', label: 'English', description: 'Dashboard, Slack thread and answers in English.' },
+];
 const DASHBOARD_MODE_OPTIONS: SettingOption[] = [
   { value: 'minimal', label: '미니멀', description: '보드와, 상세 카드의 작업 목록과 채팅만 보여 줍니다.' },
   { value: 'advanced', label: '어드밴스드', description: '통계, 토큰, 에이전트 트리, 작업 로그까지 모두 보여 줍니다.' },
@@ -299,6 +307,7 @@ export const SLACK_SETTER_COVERAGE: Readonly<Record<string, SettingKey | { exclu
   setUserPermissionMode: 'permissionMode',
   setUserSlackTaskEntry: 'slackTaskEntry',
   setUserEpicTasks: 'epicTasks',
+  setUserDisplayLanguage: 'displayLanguage',
   setUserSandboxDisabled: 'sandbox',
   setUserNetworkDisabled: 'sandboxNetwork',
   clearUserCompactThreshold: {
@@ -524,6 +533,23 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
           slackCommand: 'epictasks on|off',
         };
       }
+      case 'displayLanguage': {
+        const value = store.getUserDisplayLanguage(userId);
+        return {
+          key,
+          group: 'output',
+          label: '표시 언어',
+          description:
+            '대시보드, 슬랙 스레드의 봇 문구, 모델의 답변이 쓰는 언어입니다. 대시보드 오른쪽 위 en / ko 토글과 같은 설정입니다.',
+          kind: 'choice',
+          value,
+          defaultValue: 'ko',
+          modified: value !== 'ko',
+          options: DISPLAY_LANGUAGE_OPTIONS,
+          editable: true,
+          slackCommand: 'lang ko|en',
+        };
+      }
       case 'dashboardMode': {
         const value = store.getUserDashboardMode(userId);
         return {
@@ -722,6 +748,7 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
     'logVerbosity',
     'sessionTheme',
     'persona',
+    'displayLanguage',
     'notifySlackDm',
     'notifyTelegram',
     'notifyWebhook',
@@ -816,6 +843,12 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
       case 'epicTasks':
         store.setUserEpicTasks(userId, expectBoolean(value, key));
         return;
+      case 'displayLanguage': {
+        const lang = typeof value === 'string' ? parseDisplayLang(value) : null;
+        if (!lang) throw new SettingsError(400, 'displayLanguage는 ko 또는 en이어야 합니다');
+        store.setUserDisplayLanguage(userId, lang);
+        return;
+      }
       case 'dashboardMode': {
         const mode = expectString(value, key);
         if (mode !== 'minimal' && mode !== 'advanced') {

@@ -1772,3 +1772,130 @@ describe('FollowupQueue holdsPending (dashboard model switch, review R3-2)', () 
     expect(queue.holdsPending('C1', '1.1')).toBe(false);
   });
 });
+
+/**
+ * Delivery evidence and the restart takeover (work-m64 dev, 2026-11-02).
+ *
+ * A follow-up was dispatched, its turn was running, and a deploy restarted the
+ * service. The stop froze it `uncertain` — correct: nobody knew what it had
+ * done. After the restart the goal loop resumed the SAME conversation and the
+ * model carried on with that very instruction, but the row kept saying
+ * 보내지 못했습니다 with a Retry that would have delivered it a second time.
+ *
+ * Two facts close that gap. `markDelivered` records that the item's turn
+ * really reached the model (the first SDK event — not `markDispatched`, which
+ * precedes seconds of setup). `resumeInterrupted` lets the run that resumes
+ * the conversation take such an item over (`uncertain → dispatched`), so that
+ * run's outcome settles it like any other dispatch. An item with no delivery
+ * evidence is never taken over: its words may never have reached the model.
+ */
+describe('FollowupQueue delivery evidence and the restart takeover', () => {
+  it('markDelivered records the evidence on a dispatched item without moving its epoch', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    const running = dispatchFirst(queue);
+
+    const marked = queue.markDelivered(SESSION, running.id, running.epoch);
+
+    expect(marked.ok).toBe(true);
+    const item = queue.get(SESSION, running.id);
+    expect(typeof item?.deliveredAt).toBe('number');
+    // Not a state change: the run that holds `running.epoch` must still be able to settle it.
+    expect(item?.epoch).toBe(running.epoch);
+    expect(queue.settle(SESSION, running.id, running.epoch, 'resolved').ok).toBe(true);
+  });
+
+  it('markDelivered is idempotent and refuses anything that is not running', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.enqueue(SESSION, event({ ts: '1.2' }));
+    const running = dispatchFirst(queue);
+    queue.markDelivered(SESSION, running.id, running.epoch);
+    const first = queue.get(SESSION, running.id)?.deliveredAt;
+
+    expect(queue.markDelivered(SESSION, running.id, running.epoch).ok).toBe(true);
+    expect(queue.get(SESSION, running.id)?.deliveredAt).toBe(first);
+
+    const waiting = queue.list(SESSION)[1];
+    expect(queue.markDelivered(SESSION, waiting.id, waiting.epoch)).toEqual({ ok: false, reason: 'invalid-state' });
+    expect(queue.get(SESSION, waiting.id)?.deliveredAt).toBeUndefined();
+  });
+
+  it('the evidence survives the stop freeze and the restart snapshot', () => {
+    const source = new FollowupQueue();
+    source.enqueue(SESSION, event({ ts: '1.1' }));
+    const running = dispatchFirst(source);
+    source.markDelivered(SESSION, running.id, running.epoch);
+    source.freeze(SESSION, '실행이 중단되었습니다 (shutdown)');
+
+    const restarted = new FollowupQueue({ snapshot: source.snapshot() });
+    restarted.recover('process restart');
+
+    const item = restarted.get(SESSION, running.id);
+    expect(item?.state).toBe('uncertain');
+    expect(typeof item?.deliveredAt).toBe('number');
+  });
+
+  it('resumeInterrupted hands a delivered uncertain item to the resuming run and lifts the freeze', () => {
+    const source = new FollowupQueue();
+    source.enqueue(SESSION, event({ ts: '1.1' }));
+    const running = dispatchFirst(source);
+    source.markDelivered(SESSION, running.id, running.epoch);
+    source.freeze(SESSION, '실행이 중단되었습니다 (shutdown)');
+    const restarted = new FollowupQueue({ snapshot: source.snapshot() });
+    restarted.recover('process restart');
+    const parked = restarted.get(SESSION, running.id);
+    if (!parked) throw new Error('missing item');
+
+    const taken = restarted.resumeInterrupted(SESSION, parked.id, parked.epoch);
+
+    expect(taken.ok).toBe(true);
+    const item = restarted.get(SESSION, parked.id);
+    expect(item?.state).toBe('dispatched');
+    // Nothing is parked any more, so nothing holds the session back.
+    expect(restarted.freezeReason(SESSION)).toBeUndefined();
+    // The resuming run settles it like any dispatch.
+    expect(restarted.settle(SESSION, parked.id, item?.epoch ?? -1, 'resolved').ok).toBe(true);
+    expect(restarted.get(SESSION, parked.id)?.state).toBe('resolved');
+  });
+
+  it('resumeInterrupted refuses an item with no delivery evidence — it may never have reached the model', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    dispatchFirst(queue); // the turn was still being set up when the stop came
+    queue.freeze(SESSION, '실행이 중단되었습니다 (shutdown)');
+    const parked = queue.list(SESSION)[0];
+    expect(parked.state).toBe('uncertain');
+
+    expect(queue.resumeInterrupted(SESSION, parked.id, parked.epoch)).toEqual({ ok: false, reason: 'invalid-state' });
+    expect(queue.get(SESSION, parked.id)?.state).toBe('uncertain');
+  });
+
+  it('resumeInterrupted refuses while another item of the session is running', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    const first = dispatchFirst(queue);
+    queue.markDelivered(SESSION, first.id, first.epoch);
+    queue.markInterrupted(SESSION, first.id, first.epoch, 'user-interrupted');
+    queue.enqueue(SESSION, event({ ts: '1.2' }));
+    dispatchFirst(queue); // 1.2 now owns the lane
+    const parked = queue.get(SESSION, first.id);
+    if (!parked) throw new Error('missing item');
+
+    expect(queue.resumeInterrupted(SESSION, parked.id, parked.epoch)).toEqual({ ok: false, reason: 'busy' });
+  });
+
+  it('an explicit retry drops the old evidence — the next run has to earn its own', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    const running = dispatchFirst(queue);
+    queue.markDelivered(SESSION, running.id, running.epoch);
+    queue.markInterrupted(SESSION, running.id, running.epoch, 'user-interrupted');
+    const parked = queue.get(SESSION, running.id);
+    if (!parked) throw new Error('missing item');
+
+    expect(queue.retry(SESSION, parked.id, parked.epoch).ok).toBe(true);
+    expect(queue.get(SESSION, parked.id)?.state).toBe('queued');
+    expect(queue.get(SESSION, parked.id)?.deliveredAt).toBeUndefined();
+  });
+});

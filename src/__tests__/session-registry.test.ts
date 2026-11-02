@@ -585,6 +585,20 @@ describe('SessionRegistry persistence', () => {
     expect(session.errorRetryCount).toBe(0);
   });
 
+  it('#772 — a new model context (clearSessionId, resetSessionContext) is told the display language again', () => {
+    const registry = new SessionRegistry();
+    const a = registry.createSession('U123', 'Tester', 'C_DL', '171.DL1');
+    a.sessionId = 'session-dl';
+    a.displayLangSent = 'en';
+    registry.clearSessionId('C_DL', '171.DL1');
+    expect(a.displayLangSent).toBeUndefined();
+    const b = registry.createSession('U123', 'Tester', 'C_DL', '171.DL2');
+    b.sessionId = 'session-dl2';
+    b.displayLangSent = 'ko';
+    registry.resetSessionContext('C_DL', '171.DL2');
+    expect(b.displayLangSent).toBeUndefined();
+  });
+
   it('resetSessionContext clears file-access retry state', () => {
     const registry = new SessionRegistry();
     const session = registry.createSession('U123', 'Tester', 'C_FA', '171.FA2');

@@ -1,11 +1,13 @@
 /**
- * Session artifacts — the files the model sends to Slack (html, png, wav, …)
- * and the markdown final answers it writes, kept per conversation so the
- * dashboard can preview them on hover and open them full size.
+ * Session artifacts — the files the model sends to Slack (html, png, wav, …),
+ * kept per conversation so the dashboard can preview them on hover and open
+ * them full size. A markdown final answer is the chat's (지시와 답변), never an
+ * artifact (SSOT 2026-11-02 T6): answers recorded before that stay on disk but
+ * are hidden from every read.
  *
  * Layout under `DATA_DIR/artifacts/<conversationId>/`:
  *   index.json   — { version, backfilled, artifacts: SessionArtifact[] } in recording
- *                  order, written with `atomicWriteJson` (+ `.bak`, rules/config.md)
+ *                  order (read newest first), written with `atomicWriteJson` (+ `.bak`, rules/config.md)
  *   <artifactId> — the stored copy of the bytes (no extension; `mime` says what it is)
  *
  * The upload source lives under /tmp and is cleaned with the session's working
@@ -15,9 +17,9 @@
  * bytes are gone, keep their metadata and Slack permalink (`stored: false`): the
  * dashboard still lists every file sent to Slack, it just cannot preview those.
  *
- * Scope: files the MODEL sent (slack-mcp send_file / send_media) and its markdown
- * final answers. The daemon's own uploads (usage cards, the system-prompt file,
- * skill files) are not session output and are not recorded.
+ * Scope: files the MODEL sent (slack-mcp send_file / send_media). The daemon's
+ * own uploads (usage cards, the system-prompt file, skill files) are not session
+ * output and are not recorded.
  */
 
 import * as fs from 'node:fs';
@@ -30,17 +32,18 @@ import { Logger } from '../logger';
 const logger = new Logger('SessionArtifacts');
 
 export type ArtifactKind = 'image' | 'audio' | 'video' | 'html' | 'markdown' | 'pdf' | 'text' | 'file';
+/** `final_answer` — a markdown answer recorded before SSOT 2026-11-02 T6: kept on disk, hidden from every read. */
 export type ArtifactSource = 'slack_upload' | 'final_answer';
 
 export interface SessionArtifact {
   id: string;
   conversationId: string;
   kind: ArtifactKind;
-  /** Display name — the Slack filename, or a title derived from the answer. */
+  /** Display name — the Slack filename. */
   name: string;
   title?: string;
   mime: string;
-  /** Bytes of the original (for answers: UTF-8 bytes of the markdown). */
+  /** Bytes of the original. */
   size: number;
   createdAt: number;
   source: ArtifactSource;
@@ -54,16 +57,14 @@ export interface SessionArtifact {
   turnId?: string;
   /** Start of that turn (ms) — the dashboard files the artifact under the turn's answer. */
   turnStartedAt?: number;
-  /** One-line preview text (answers: first heading or line). */
+  /** One-line preview text (legacy answers only). */
   excerpt?: string;
 }
 
 /** What a kanban card carries: the count plus the few newest for the face row. */
 export interface ArtifactSummary {
   count: number;
-  files: number;
-  answers: number;
-  /** Newest files first, then the latest answer; at most SUMMARY_RECENT entries. */
+  /** Newest first; at most SUMMARY_RECENT entries. */
   recent: SessionArtifact[];
 }
 
@@ -87,7 +88,6 @@ const SUMMARY_RECENT = 4;
 const PENDING_PREFIX = '.pending-';
 /** A pending snapshot older than this lost its result (abort, crash, restart) and is swept. */
 const PENDING_TTL_MS = 60 * 60 * 1000;
-const EXCERPT_MAX = 140;
 
 const EXT_TABLE: Record<string, [ArtifactKind, string]> = {
   png: ['image', 'image/png'],
@@ -165,36 +165,9 @@ export function classifyArtifact(name: string): { kind: ArtifactKind; mime: stri
   return hit ? { kind: hit[0], mime: hit[1] } : { kind: 'file', mime: 'application/octet-stream' };
 }
 
-const MD_BLOCK = [
-  /^#{1,6}\s+\S/m, // heading
-  /^\s{0,3}(?:[-*+]|\d{1,3}[.)])\s+\S/m, // list item
-  /^\s{0,3}(?:```|~~~)/m, // code fence
-  /^\s{0,3}\|.*\|\s*$\n^\s{0,3}\|?\s*:?-{3,}/m, // table header + rule
-  /^\s{0,3}>\s?\S/m, // blockquote
-];
-
-/**
- * A "markdown answer" is a final answer that uses block structure — a heading,
- * list, code fence, table or quote. Plain one-paragraph replies are not
- * artifacts: they are already the turn summary.
- */
-export function isMarkdownAnswer(text: string): boolean {
-  if (!text || text.trim().length < 20) return false;
-  return MD_BLOCK.some((re) => re.test(text));
-}
-
-/** First heading, else the first non-empty line, stripped of markdown marks. */
-export function answerExcerpt(text: string): string {
-  const lines = text.split('\n').map((l) => l.trim());
-  const heading = lines.find((l) => /^#{1,6}\s+\S/.test(l));
-  const first = heading ?? lines.find((l) => l.length > 0 && !/^(?:```|~~~|[-|:\s]+$)/.test(l)) ?? '';
-  const clean = first
-    .replace(/^#{1,6}\s+/, '')
-    .replace(/^\s*(?:[-*+]|\d{1,3}[.)]|>)\s+/, '')
-    .replace(/[*_`~]/g, '')
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .trim();
-  return clean.length > EXCERPT_MAX ? `${clean.slice(0, EXCERPT_MAX - 1)}…` : clean;
+/** Newest first, by when each file was made (a stable sort keeps a tie in the order it is given). */
+export function newestFirst(a: SessionArtifact, b: SessionArtifact): number {
+  return (b.createdAt || 0) - (a.createdAt || 0);
 }
 
 /** `<sessionKey>:<startMs>:<uuid>` → startMs; anything else → undefined. */
@@ -286,10 +259,16 @@ export class ArtifactStore {
     atomicWriteJson(path.join(dir, 'index.json'), this.index(conversationId), { validatePrevious: isIndexShape });
   }
 
-  /** All artifacts of a conversation, oldest first. Unknown/unsafe → []. */
-  list(conversationId: string): SessionArtifact[] {
+  /** The recorded files, recording order — a legacy final answer (T6) is never one of them. */
+  private files(conversationId: string): SessionArtifact[] {
     if (!this.dir(conversationId)) return [];
-    return this.index(conversationId).artifacts;
+    return this.index(conversationId).artifacts.filter((a) => a.source !== 'final_answer');
+  }
+
+  /** All artifacts of a conversation, newest first (SSOT 2026-11-02 T3). Unknown/unsafe → []. */
+  list(conversationId: string): SessionArtifact[] {
+    // Reversed first: files made in the same millisecond list the later-recorded one first.
+    return this.files(conversationId).reverse().sort(newestFirst);
   }
 
   isBackfilled(conversationId: string): boolean {
@@ -307,18 +286,11 @@ export class ArtifactStore {
     if (!conversationId) return undefined;
     const all = this.list(conversationId);
     if (all.length === 0) return undefined;
-    // Newest files first, then the newest answer — a long chat must not bury the
-    // html/png the user is looking for under a stack of answers.
-    const newestFirst = [...all].reverse();
-    const files = newestFirst.filter((a) => a.source === 'slack_upload');
-    const latestAnswer = newestFirst.find((a) => a.source === 'final_answer');
-    const recent = files.slice(0, SUMMARY_RECENT);
-    if (recent.length < SUMMARY_RECENT && latestAnswer) recent.push(latestAnswer);
-    return { count: all.length, files: files.length, answers: all.length - files.length, recent };
+    return { count: all.length, recent: all.slice(0, SUMMARY_RECENT) };
   }
 
   get(conversationId: string, artifactId: string): SessionArtifact | undefined {
-    return this.list(conversationId).find((a) => a.id === artifactId);
+    return this.files(conversationId).find((a) => a.id === artifactId);
   }
 
   /** Absolute path of the stored bytes, or null when not stored / unsafe id. */
@@ -400,7 +372,10 @@ export class ArtifactStore {
     const { conversationId } = input;
     if (!this.dir(conversationId)) return null;
     const key = input.slackFileId ? `${conversationId}|file:${input.slackFileId}` : undefined;
-    if (key && (this.reserved.has(key) || this.list(conversationId).some((a) => a.slackFileId === input.slackFileId))) {
+    if (
+      key &&
+      (this.reserved.has(key) || this.files(conversationId).some((a) => a.slackFileId === input.slackFileId))
+    ) {
       await this.discardSnapshot(conversationId, input.snapshot);
       return null;
     }
@@ -434,51 +409,6 @@ export class ArtifactStore {
       return artifact;
     } finally {
       if (key) this.reserved.delete(key);
-    }
-  }
-
-  /** Record a markdown final answer. Non-markdown text or the same turn twice → null. */
-  async recordAnswer(input: {
-    conversationId: string;
-    turnId: string;
-    markdown: string;
-    now?: number;
-  }): Promise<SessionArtifact | null> {
-    const { conversationId, turnId } = input;
-    const dir = this.dir(conversationId);
-    if (!dir || !isMarkdownAnswer(input.markdown)) return null;
-    const key = `${conversationId}|turn:${turnId}`;
-    if (
-      this.reserved.has(key) ||
-      this.list(conversationId).some((a) => a.turnId === turnId && a.source === 'final_answer')
-    ) {
-      return null;
-    }
-    this.reserved.add(key);
-    try {
-      const id = ulid();
-      const excerpt = answerExcerpt(input.markdown);
-      await fs.promises.mkdir(dir, { recursive: true });
-      await fs.promises.writeFile(path.join(dir, id), input.markdown, 'utf-8');
-      const turnStartedAt = turnStartFromTurnId(turnId);
-      const artifact: SessionArtifact = {
-        id,
-        conversationId,
-        kind: 'markdown',
-        name: excerpt || '최종 답변',
-        mime: 'text/markdown',
-        size: Buffer.byteLength(input.markdown, 'utf-8'),
-        createdAt: input.now ?? Date.now(),
-        source: 'final_answer',
-        stored: true,
-        turnId,
-        ...(turnStartedAt ? { turnStartedAt } : {}),
-        excerpt,
-      };
-      this.append(conversationId, artifact);
-      return artifact;
-    } finally {
-      this.reserved.delete(key);
     }
   }
 

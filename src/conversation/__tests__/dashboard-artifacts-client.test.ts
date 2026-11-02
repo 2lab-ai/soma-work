@@ -13,7 +13,9 @@
  *       page's own cards with open(items, index, opener); the page hands it the items (url, kind word, the
  *       Slack action, a document's text, scripts for the model's HTML, frame for a stored PDF — D6b, 0.12.0)
  *   T8  html / png / wav: viewable at once; audio plays in place on its <ui-file-card playable>
- *   T1  markdown final answers are the viewer's document (the library's renderer; the page keeps none)
+ *   T1  a markdown document is the viewer's document (the library's renderer; the page keeps none)
+ *   SSOT 2026-11-02 T3  every list is newest first, by when each file was made
+ *   SSOT 2026-11-02 T6  a markdown final answer (recorded by an older server) is never listed
  */
 
 import { readFileSync } from 'node:fs';
@@ -173,18 +175,18 @@ describe('T5 — collapsed card face: artifacts visible on the board itself', ()
   });
   const face = (over: Record<string, unknown>) => cardOf({ key: 'inst::C1:t1', displayHeadline: 'h', ...over }, 'idle');
 
-  it('a card with artifacts gets a row of chips with the count; none → nothing', () => {
+  it('a card with artifacts gets a row of chips with the count, newest first; none → nothing', () => {
     const c = face({
       conversationId: 'conv-1',
-      artifacts: { count: 6, files: 5, answers: 1, recent: [html, png, wav, answer, bigMov] },
+      artifacts: { count: 6, recent: [bigMov, wav, png, html] },
     });
-    // The newest four, by id, name and kind; the element shows "+2" from the count.
+    // The server's newest four (SSOT 2026-11-02 T3), by id, name and kind; the element shows "+2" from the count.
     expect(c.artifactsCount).toBe(6);
     expect(c.artifacts).toEqual([
-      { id: 'A1', name: 'report.html', kind: 'html' },
-      { id: 'A2', name: 'chart.png', kind: 'image' },
+      { id: 'A5', name: 'huge.mov', kind: 'video' },
       { id: 'A3', name: 'voice.wav', kind: 'audio' },
-      { id: 'A4', name: '배포 결과', kind: 'markdown' },
+      { id: 'A2', name: 'chart.png', kind: 'image' },
+      { id: 'A1', name: 'report.html', kind: 'html' },
     ]);
     // The face never pulls full images: no content route on the board (thumbnails start in the open body).
     expect(JSON.stringify(c)).not.toContain('/artifacts/');
@@ -261,15 +263,17 @@ describe('T5 — expanded card: the 산출물 strip', () => {
       { _artCache: cache },
     );
 
-  it('lists the full cached list: files newest first, then answers; image tiles are real thumbnails', () => {
+  it('lists the full cached list newest first (no final answer); image tiles are real thumbnails', () => {
     const out = body({ 'conv-1': { state: 'ok', list: [html, answer, png, wav] } }).renderCardArtifacts({
       conversationId: 'conv-1',
-      artifacts: { count: 4, recent: [wav] },
+      artifacts: { count: 3, recent: [wav] },
     });
     expect(out).toContain('산출물');
-    expect(out).toContain('4');
-    const order = ['A3', 'A2', 'A1', 'A4'].map((id) => out.indexOf(`data-art-id="${id}"`));
+    expect(out).toContain('<span class="art-count">3</span>');
+    const order = ['A3', 'A2', 'A1'].map((id) => out.indexOf(`data-art-id="${id}"`));
+    expect(order.every((i) => i >= 0)).toBe(true);
     expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(out).not.toContain('data-art-id="A4"');
     // D2 (I-01..I-03): each tile is @2lab.ai/ui <ui-file-card>, keyed for the page's hydration; the element draws
     // the thumbnail (an image's url), the kind's glyph and wash, the name and the meta.
     expect(out).toContain(
@@ -387,11 +391,14 @@ describe('T6 — right panel: pinned strip and per-answer attachments', () => {
       BASE_VARS,
     );
 
-  it('the strip has a count header and every artifact', () => {
-    const out = panel().renderPanelArtifacts([html, png, wav, answer], 'conv-9');
+  it('the strip has a count header and every file, newest first — never a final answer', () => {
+    const out = panel().renderPanelArtifacts([html, png, answer, wav], 'conv-9');
     expect(out).toContain('산출물');
-    expect(out).toContain('art-count');
-    for (const id of ['A1', 'A2', 'A3', 'A4']) expect(out).toContain(`data-art-id="${id}"`);
+    expect(out).toContain('<span class="art-count">3</span>');
+    const order = ['A3', 'A2', 'A1'].map((id) => out.indexOf(`data-art-id="${id}"`));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(out).not.toContain('data-art-id="A4"');
     expect(panel().renderPanelArtifacts([], 'conv-9')).toBe('');
   });
 
@@ -543,7 +550,7 @@ describe('T2 — hover peek: @2lab.ai/ui <ui-hovercard>, one card for every tile
     expect(p.artPeekItem('c', html)).toMatchObject({ scripts: true });
     expect(p.artPeekItem('c', { ...html, source: 'user_upload' })).not.toHaveProperty('scripts');
     // The head cached by the peek's own fetch; the whole text once the viewer fetched it (then no head).
-    expect(p.artPeekItem('c', answer)).toMatchObject({ kindLabel: '답변', head: '# 결과' });
+    expect(p.artPeekItem('c', answer)).toMatchObject({ head: '# 결과' });
     expect(p.artPeekItem('c', answer)).not.toHaveProperty('text');
     const whole = peek({ 'c|A4': '# 결과\n\n배포 완료', 'c|A4|head': '# 결과' });
     expect(whole.artPeekItem('c', answer)).toMatchObject({ text: '# 결과\n\n배포 완료' });
@@ -685,7 +692,7 @@ describe('T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles="none"> over 
     expect(TEMPLATE).not.toMatch(/\.art-modal\b|\.art-full-(img|imgwrap|audio|video|meta|doc)\b/);
   });
 
-  it('the item the viewer pages: url, size, time; a final answer keeps its kind word 답변; a document carries its text once fetched', () => {
+  it('the item the viewer pages: url, size, time; a document carries its text once fetched', () => {
     expect(api().artViewItem('c', png)).toEqual({
       id: 'A2',
       name: 'chart.png',
@@ -694,7 +701,8 @@ describe('T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles="none"> over 
       time: 1792733001000,
       url: '/api/dashboard/session/c/artifacts/A2/content',
     });
-    expect(api().artViewItem('c', answer)).toMatchObject({ id: 'A4', kind: 'markdown', kindLabel: '답변' });
+    expect(api().artViewItem('c', answer)).toMatchObject({ id: 'A4', kind: 'markdown' });
+    expect(api().artViewItem('c', answer)).not.toHaveProperty('kindLabel');
     expect(api().artViewItem('c', answer)).not.toHaveProperty('text');
     expect(api({ 'c|A4': '# 결과\n\n배포 완료' }).artViewItem('c', answer)).toMatchObject({
       text: '# 결과\n\n배포 완료',
@@ -803,7 +811,7 @@ describe('T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles="none"> over 
     expect(viewer.data).toBeNull();
   });
 
-  it('opens over the conversation (files newest first, then answers) at the file, with the opener; a file not yet listed joins; the list is fetched', () => {
+  it('opens over the conversation (newest first, no final answer) at the file, with the opener; a file not yet listed joins; the list is fetched', () => {
     const opened: unknown[] = [];
     const fetched: string[] = [];
     const paused: number[] = [];
@@ -839,9 +847,9 @@ describe('T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles="none"> over 
     run({ c: { state: 'ok', list: [html, answer, png] } }, 'A2', opener);
     expect(opened).toHaveLength(1);
     const [items, at, who] = opened[0] as [Array<{ id: string; scripts?: boolean }>, number, unknown];
-    expect(items.map((i) => i.id)).toEqual(['A2', 'A1', 'A4']);
+    expect(items.map((i) => i.id)).toEqual(['A2', 'A1']);
     // The model's page goes in with its scripts flag: the element's own frame runs it (nothing slotted first).
-    expect(items.map((i) => i.scripts)).toEqual([undefined, true, undefined]);
+    expect(items.map((i) => i.scripts)).toEqual([undefined, true]);
     expect(at).toBe(0);
     expect(who).toBe(opener);
     expect(fetched).toEqual([]);
@@ -950,8 +958,8 @@ describe('review gate — the open viewer follows the list', () => {
 
   it('a new list (a push, the fetch after a face chip opened it) is handed to the viewer, sorted; the element keeps the shown file', () => {
     const { fake, live } = settle('conversation', { c1: { state: 'ok', list: [answer, html, png] } });
-    expect(fake.data).toEqual({ items: ['A2', 'A1', 'A4'] });
-    expect((live.list as Art[]).map((a) => a.id)).toEqual(['A2', 'A1', 'A4']);
+    expect(fake.data).toEqual({ items: ['A2', 'A1'] });
+    expect((live.list as Art[]).map((a) => a.id)).toEqual(['A2', 'A1']);
   });
 
   it("an instruction's attachments are not the conversation's list: left alone", () => {

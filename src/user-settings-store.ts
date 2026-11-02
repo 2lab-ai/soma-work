@@ -1,4 +1,5 @@
 import { atomicWriteJson } from '@soma/common/atomic-json';
+import { type DisplayLang, displayLangOf } from '@soma/common/i18n';
 import { DEFAULT_LOG_VERBOSITY, getVerbosityFlags, type LogVerbosity, VERBOSITY_NAMES } from '@soma/slack/output-flags';
 import fs from 'fs';
 import path from 'path';
@@ -471,6 +472,12 @@ export interface UserSettings {
   slackTaskEntry?: boolean;
   /** The web dashboard's view (SSOT 2026-11-01). Undefined (or unknown) ⇒ `minimal`. */
   dashboardMode?: DashboardMode;
+  /**
+   * #771 — the language the dashboard, the Slack thread's bot text and the
+   * model's answers use. Undefined (or unknown) ⇒ `ko`. Set by `lang ko|en`,
+   * the dashboard's top-right toggle and the settings page.
+   */
+  displayLanguage?: DisplayLang;
   /** The dashboard's layout plan (.prd/20). Undefined (or unknown) ⇒ `'1'`. */
   dashboardPlan?: DashboardPlan;
   /** The user's surface layouts (.prd/21): edited presets, defaults per surface, the thread card. */
@@ -1062,6 +1069,28 @@ export class UserSettingsStore {
   setUserEpicTasks(userId: string, enabled: boolean): void {
     this.patchUserSettings(userId, { epicTasks: enabled });
     logger.info('Set user epic tasks', { userId, enabled });
+  }
+
+  /** #771 — the user's display language. Default — and any value it does not know — `ko`. */
+  getUserDisplayLanguage(userId: string): DisplayLang {
+    return displayLangOf(this.settings[userId]?.displayLanguage);
+  }
+
+  /**
+   * Save the display language. It feeds no system prompt (the model is told
+   * with `<display-lang>` on the next instruction), so like the dashboard's
+   * view it drops no cached prompt.
+   */
+  setUserDisplayLanguage(userId: string, lang: DisplayLang): void {
+    const existing = this.settings[userId];
+    if (!existing) {
+      this.patchUserSettings(userId, { displayLanguage: lang });
+      return;
+    }
+    existing.displayLanguage = lang;
+    existing.lastUpdated = new Date().toISOString();
+    this.saveSettings();
+    logger.info('Set user display language', { userId, lang });
   }
 
   /** The web dashboard's view (SSOT 2026-11-01). Default — and any value it does not know — `minimal`. */

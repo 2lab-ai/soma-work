@@ -1,7 +1,9 @@
 /**
  * SSOT 2026-10-23 — dashboard artifacts, server half.
  *
- *   T1  the model's markdown final answers and the html/png it sends mid-turn are recorded per session
+ *   T1  the html/png the model sends mid-turn are recorded per session
+ *   SSOT 2026-11-02 T6  a markdown final answer is shown in the chat — never an artifact (old records hidden)
+ *   SSOT 2026-11-02 T3  the list is newest first
  *   T7  every file sent to Slack is listed — even one whose bytes could not be kept
  *   T8  html / png / wav are classified so the viewer can show or play them
  */
@@ -16,7 +18,7 @@ import {
   resetArtifactCaptureForTests,
   type WorkLogReader,
 } from '../artifact-capture';
-import { ArtifactStore, answerExcerpt, classifyArtifact, isMarkdownAnswer } from '../artifacts';
+import { ArtifactStore, classifyArtifact } from '../artifacts';
 
 let root: string;
 let srcDir: string;
@@ -58,33 +60,57 @@ describe('T8 — kinds the viewer can show or play', () => {
   });
 });
 
-describe('T1 — markdown final answers', () => {
-  it('counts block structure (heading, list, table, fence, quote) as markdown', () => {
-    expect(isMarkdownAnswer('## 결과\n\n배포가 끝났습니다. 다음 단계를 확인하세요.')).toBe(true);
-    expect(isMarkdownAnswer('변경 사항은 다음과 같습니다:\n- 라우트 추가\n- 테스트 추가')).toBe(true);
-    expect(isMarkdownAnswer('| a | b |\n|---|---|\n| 1 | 2 |\n이 표가 전체 결과 요약입니다.')).toBe(true);
-    expect(isMarkdownAnswer('코드는 아래와 같습니다.\n```ts\nconst a = 1;\n```')).toBe(true);
+describe('SSOT 2026-11-02 T6 — a final answer is the chat’s, not an artifact', () => {
+  it('a markdown final answer in the work log records nothing', async () => {
+    await captureArtifactFromWorkLog(
+      'c',
+      { kind: 'final', turnId: 'k:1:u', text: '# 완료\n\n| 항목 | 상태 |\n|---|---|\n| 배포 | 완료 |', ts: 9 },
+      store,
+    );
+    expect(store.list('c')).toEqual([]);
+    expect(store.summary('c')).toBeUndefined();
   });
 
-  it('leaves a plain one-paragraph reply alone', () => {
-    expect(isMarkdownAnswer('네, 확인했습니다. 지금 바로 진행하겠습니다. 끝나면 알려드릴게요.')).toBe(false);
-    expect(isMarkdownAnswer('## 짧음')).toBe(false);
-  });
-
-  it('excerpt is the first heading, stripped of marks', () => {
-    expect(answerExcerpt('intro line\n## **배포** 결과\n- a')).toBe('배포 결과');
-    expect(answerExcerpt('- [링크](https://x.y) 하나\n- 둘')).toBe('링크 하나');
-  });
-
-  it('records a markdown answer once per turn and stores its text', async () => {
-    const md = '## 요약\n- 라우트를 추가했습니다\n- 테스트를 추가했습니다';
-    const a = await store.recordAnswer({ conversationId: 'conv-1', turnId: 'turn-1', markdown: md, now: 1000 });
-    expect(a).toMatchObject({ kind: 'markdown', source: 'final_answer', stored: true, name: '요약', turnId: 'turn-1' });
-    expect(await store.recordAnswer({ conversationId: 'conv-1', turnId: 'turn-1', markdown: md })).toBeNull();
-    expect(fs.readFileSync(store.blobPath('conv-1', a!.id)!, 'utf-8')).toBe(md);
-    expect(
-      await store.recordAnswer({ conversationId: 'conv-1', turnId: 'turn-2', markdown: 'plain short reply' }),
-    ).toBe(null);
+  it('answers recorded before this change are hidden from the list, the count and the content route', async () => {
+    const dir = path.join(root, 'store', 'legacy');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'ANS'), '## 답\n- 하나');
+    fs.writeFileSync(
+      path.join(dir, 'index.json'),
+      JSON.stringify({
+        version: 1,
+        backfilled: true,
+        artifacts: [
+          {
+            id: 'ANS',
+            conversationId: 'legacy',
+            kind: 'markdown',
+            name: '답',
+            mime: 'text/markdown',
+            size: 9,
+            createdAt: 2,
+            source: 'final_answer',
+            stored: true,
+          },
+          {
+            id: 'PNG',
+            conversationId: 'legacy',
+            kind: 'image',
+            name: 'a.png',
+            mime: 'image/png',
+            size: 1,
+            createdAt: 1,
+            source: 'slack_upload',
+            stored: false,
+          },
+        ],
+      }),
+    );
+    const fresh = new ArtifactStore(path.join(root, 'store'));
+    expect(fresh.list('legacy').map((a) => a.name)).toEqual(['a.png']);
+    expect(fresh.summary('legacy')).toMatchObject({ count: 1 });
+    expect(fresh.get('legacy', 'ANS')).toBeUndefined();
+    expect(fresh.blobPath('legacy', 'ANS')).toBeNull();
   });
 });
 
@@ -134,18 +160,16 @@ describe('T1/T7 — files sent to Slack', () => {
     expect(again.list('conv-9').map((a) => a.name)).toEqual(['r.html']);
   });
 
-  it('summary for the card: count, files vs answers, newest files first then the latest answer', async () => {
+  it('SSOT 2026-11-02 T3 — the list and the card summary are newest first, by when each file was made', async () => {
     await store.recordSlackUpload({ conversationId: 'c', filename: 'one.png', slackFileId: 'A', now: 1 });
-    await store.recordAnswer({
-      conversationId: 'c',
-      turnId: 't',
-      markdown: '## 답\n- 하나\n- 둘\n- 셋 넷 다섯 여섯',
-      now: 2,
-    });
-    await store.recordSlackUpload({ conversationId: 'c', filename: 'two.html', slackFileId: 'B', now: 3 });
+    await store.recordSlackUpload({ conversationId: 'c', filename: 'three.wav', slackFileId: 'C', now: 30 });
+    await store.recordSlackUpload({ conversationId: 'c', filename: 'two.html', slackFileId: 'B', now: 20 });
+    await store.recordSlackUpload({ conversationId: 'c', filename: 'four.md', slackFileId: 'D', now: 40 });
+    await store.recordSlackUpload({ conversationId: 'c', filename: 'five.pdf', slackFileId: 'E', now: 50 });
+    expect(store.list('c').map((a) => a.name)).toEqual(['five.pdf', 'four.md', 'three.wav', 'two.html', 'one.png']);
     const s = store.summary('c')!;
-    expect(s).toMatchObject({ count: 3, files: 2, answers: 1 });
-    expect(s.recent.map((a) => a.name)).toEqual(['two.html', 'one.png', '답']);
+    expect(s.count).toBe(5);
+    expect(s.recent.map((a) => a.name)).toEqual(['five.pdf', 'four.md', 'three.wav', 'two.html']);
     expect(store.summary('nothing-here')).toBeUndefined();
   });
 
@@ -289,8 +313,8 @@ describe('T1/T7 — capture from the work-log stream', () => {
       store,
     );
     expect(store.list('c').map((a) => [a.name, a.stored])).toEqual([
-      ['hosts', false],
       ['link.txt', false],
+      ['hosts', false],
     ]);
   });
 
@@ -312,20 +336,6 @@ describe('T1/T7 — capture from the work-log stream', () => {
     const dir = path.join(root, 'store', 'c');
     const left = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => !f.endsWith('.json')) : [];
     expect(left).toEqual([]);
-  });
-
-  it('a markdown final answer becomes an answer artifact; a plain one does not', async () => {
-    await captureArtifactFromWorkLog(
-      'c',
-      { kind: 'final', turnId: 'k:1:u', text: '# 완료\n\n| 항목 | 상태 |\n|---|---|\n| 배포 | 완료 |', ts: 9 },
-      store,
-    );
-    await captureArtifactFromWorkLog(
-      'c',
-      { kind: 'final', turnId: 'k:2:u', text: '알겠습니다, 바로 하겠습니다.' },
-      store,
-    );
-    expect(store.list('c').map((a) => [a.kind, a.name, a.source])).toEqual([['markdown', '완료', 'final_answer']]);
   });
 });
 
@@ -349,7 +359,7 @@ describe('T7 — uploads made before this feature: backfill from the work log', 
     };
   }
 
-  it('lists every past upload and markdown answer once; bytes are kept when the file still exists', async () => {
+  it('lists every past upload once (never a final answer); bytes are kept when the file still exists', async () => {
     const still = srcFile('kept.png', 'PNG!');
     const reader = fakeLog([
       {
@@ -387,25 +397,25 @@ describe('T7 — uploads made before this feature: backfill from the work log', 
     await backfillArtifactsFromWorkLog('conv-old', store, reader);
     await backfillArtifactsFromWorkLog('conv-old', store, reader); // idempotent
     expect(store.list('conv-old').map((a) => [a.name, a.kind, a.stored])).toEqual([
-      ['kept.png', 'image', true],
       ['gone.html', 'html', false],
-      ['끝', 'markdown', true],
+      ['kept.png', 'image', true],
     ]);
     expect(store.isBackfilled('conv-old')).toBe(true);
   });
 });
 
 describe('review gate — concurrent records never lose an index entry', () => {
-  it('two uploads and an answer finishing together are all in index.json', async () => {
+  it('uploads finishing together are all in index.json', async () => {
     const a = srcFile('a.png', 'A');
     const b = srcFile('b.wav', 'B');
+    const c = srcFile('c.html', 'C');
     await Promise.all([
       store.recordSlackUpload({ conversationId: 'race', filePath: a, filename: 'a.png', slackFileId: 'FA' }),
       store.recordSlackUpload({ conversationId: 'race', filePath: b, filename: 'b.wav', slackFileId: 'FB' }),
-      store.recordAnswer({ conversationId: 'race', turnId: 't1', markdown: '## 결과\n- 하나\n- 둘 셋 넷 다섯' }),
+      store.recordSlackUpload({ conversationId: 'race', filePath: c, filename: 'c.html', slackFileId: 'FC' }),
     ]);
     const onDisk = JSON.parse(fs.readFileSync(path.join(root, 'store', 'race', 'index.json'), 'utf-8'));
-    expect(onDisk.artifacts.map((x: { name: string }) => x.name).sort()).toEqual(['a.png', 'b.wav', '결과']);
+    expect(onDisk.artifacts.map((x: { name: string }) => x.name).sort()).toEqual(['a.png', 'b.wav', 'c.html']);
     const fresh = new ArtifactStore(path.join(root, 'store'));
     expect(fresh.list('race')).toHaveLength(3);
   });

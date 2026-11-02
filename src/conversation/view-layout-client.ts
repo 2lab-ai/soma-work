@@ -60,6 +60,12 @@ function faceOf(card, model, face, asks) {
     if (row.id === 'arts' && out.artifacts) out.artifacts = out.artifacts.slice(0, Math.max(1, Number(row.opt) || 4));
     rows.push(FACE_ROW_NAME[row.id]);
   }
+  // The Executive Summary's TL;DR (SSOT 2026-11-02 T7) is not a layout row: a face that has one shows it after
+  // the summary row (first when the layout shows none) until its × or the next turn drops it.
+  if (card && card.tldr) {
+    out.tldr = card.tldr;
+    rows.splice(rows.indexOf('summary') + 1, 0, 'tldr');
+  }
   out.rows = rows;
   // What the card is: an epic, a plan node or a cron run lead with their own; a plain task with the task mark.
   if (f.kind && !out.lead) out.lead = { glyph: 'task', title: '일반 작업' };

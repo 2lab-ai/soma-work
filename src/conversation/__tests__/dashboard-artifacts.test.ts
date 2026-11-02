@@ -121,7 +121,7 @@ describe('dashboard artifacts API', () => {
     const res = await web.injectWebServer({ method: 'GET', url: '/api/dashboard/sessions', headers: AUTH });
     const cards = JSON.parse(res.body).board.working;
     const withArt = cards.find((c: any) => c.conversationId === 'conv-a');
-    expect(withArt.artifacts).toMatchObject({ count: 1, files: 1, answers: 0 });
+    expect(withArt.artifacts).toEqual({ count: 1, recent: [expect.objectContaining({ name: 'r.html' })] });
     expect(withArt.artifacts.recent[0]).toMatchObject({ name: 'r.html', kind: 'html', stored: true });
     expect(cards.find((c: any) => c.conversationId === 'conv-empty').artifacts).toBeUndefined();
   });
@@ -153,20 +153,16 @@ describe('dashboard artifacts API', () => {
     ]);
   });
 
-  it('T1 — list API returns every artifact of the conversation; needs sign-in', async () => {
-    await store.recordSlackUpload({ conversationId: 'conv-b', filename: 'a.png', slackFileId: 'A' });
-    await store.recordAnswer({
-      conversationId: 'conv-b',
-      turnId: 't',
-      markdown: '## 결과\n- 하나\n- 둘 셋 넷 다섯 여섯',
-    });
+  it('T1 — list API returns every artifact of the conversation, newest first (SSOT 2026-11-02 T3); needs sign-in', async () => {
+    await store.recordSlackUpload({ conversationId: 'conv-b', filename: 'a.png', slackFileId: 'A', now: 1 });
+    await store.recordSlackUpload({ conversationId: 'conv-b', filename: 'b.md', slackFileId: 'B', now: 2 });
     const res = await web.injectWebServer({
       method: 'GET',
       url: '/api/dashboard/session/conv-b/artifacts',
       headers: AUTH,
     });
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body).artifacts.map((a: any) => a.kind)).toEqual(['image', 'markdown']);
+    expect(JSON.parse(res.body).artifacts.map((a: any) => a.kind)).toEqual(['markdown', 'image']);
     const anon = await web.injectWebServer({ method: 'GET', url: '/api/dashboard/session/conv-b/artifacts' });
     expect(anon.statusCode).toBe(401);
   });

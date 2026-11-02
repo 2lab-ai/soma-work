@@ -31,6 +31,9 @@ import { stripZPrefix } from './strip-z-prefix';
  * marker. The trailing `(?:\s+.*)?` allows subcommands/args (e.g.
  * `/z sessions public`, `/z theme set dark`, `/z model haiku`).
  */
+/** `lang`, `lang ko|en`, `lang set en`, `language …` — the LangHandler grammar (src/slack/commands/lang-handler.ts). */
+const LANG_COMMAND = /^\/?(?:lang|language)(?:\s+(?:set\s+)?\S+)?$/;
+
 const SAFE_Z_TOPICS =
   /^(?:help|sessions?|theme|persona|model|verbosity|effort|cwd|email|memory|notify|sandbox|cct|auth|bypass)(?:\s+.*)?$/;
 
@@ -54,6 +57,8 @@ export function isDmAllowedForNonAdmin(text: string): boolean {
   if (zStripped !== null) {
     const t = zStripped.trim().toLowerCase();
     if (!t) return true; // bare `/z` → help card
+    // Display language (#772): exactly the LangHandler grammar, nothing after the language.
+    if (/^(?:lang|language)\b/.test(t)) return LANG_COMMAND.test(t);
     return SAFE_Z_TOPICS.test(t);
   }
 
@@ -72,6 +77,8 @@ export function isDmAllowedForNonAdmin(text: string): boolean {
   if (/^sessions?\s+terminate\s+\S+$/.test(lower)) return true;
   if (/^sessions?\s+theme(?:\s+(?:set\s+)?\S+|\s*=\s*\S+)?$/.test(lower)) return true;
   if (/^theme(?:\s+(?:set\s+)?\S+|\s*=\s*\S+)?$/.test(lower)) return true;
+  // Display language (#772) — grammar mirrors LangHandler exactly; a setting, never a prompt.
+  if (LANG_COMMAND.test(lower)) return true;
   // `%` is primary, `$` is deprecated (SessionCommandHandler still accepts both).
   if (/^[%$](?:model|verbosity|effort|thinking_summary|thinking)?(?:\s+\S+)?$/.test(lower)) return true;
   // autocompact [tokens|reset] — session-scoped threshold config, not a
