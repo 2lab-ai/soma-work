@@ -41,6 +41,12 @@ export interface ContextAnchorSession {
   pendingRewind?: PendingRewind;
   /** What applied rollbacks dropped from the context, oldest first (the dashboard marks it). Persisted. */
   contextRewinds?: ContextRewindRecord[];
+  /**
+   * Redo: the waiting rollback each request replaced (`null` = none), newest last. Redo restores
+   * the last one. Only until the next turn runs — that turn applies the rollback and clears it,
+   * as a new edit clears an editor's redo. Persisted.
+   */
+  rewindRedo?: Array<PendingRewind | null>;
 }
 
 /**
@@ -57,6 +63,9 @@ export interface ContextRewindRecord {
 
 /** Applied rollbacks a session keeps for the marks. */
 export const CONTEXT_REWIND_HISTORY_MAX = 10;
+
+/** Redo steps a session keeps. */
+export const CONTEXT_REWIND_REDO_MAX = 20;
 
 /** A rollback requested by the owner, applied as `resumeSessionAt` on the next turn. */
 export interface PendingRewind {
@@ -218,4 +227,18 @@ export function sanitizeContextRewinds(raw: unknown): ContextRewindRecord[] | un
     out.push({ from: r.from, to: r.to, label: typeof r.label === 'string' ? r.label.slice(0, 300) : '', at: r.at });
   }
   return out.length ? out.slice(-CONTEXT_REWIND_HISTORY_MAX) : undefined;
+}
+
+/** The persisted redo stack, or undefined: entries a sanitized rollback cannot read are dropped. */
+export function sanitizeRewindRedo(raw: unknown): Array<PendingRewind | null> | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: Array<PendingRewind | null> = [];
+  for (const x of raw) {
+    if (x === null) out.push(null);
+    else {
+      const r = sanitizePendingRewind(x);
+      if (r) out.push(r);
+    }
+  }
+  return out.length ? out.slice(-CONTEXT_REWIND_REDO_MAX) : undefined;
 }
