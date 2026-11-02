@@ -313,6 +313,72 @@ describe('WorkQueueService', () => {
     expect(h.terminateSession).toHaveBeenCalledWith('C1:200');
   });
 
+  it('admits the queued request before editing its card, so nothing can slip in between (trinity R2, astra P1)', async () => {
+    h.service.decide(input('C1:100', session()));
+    h.probes.set('C1:100', { exists: true, active: true, activity: 'working', workflow: 'deploy' });
+    const queued = h.service.decide(input('C1:200', session(), TRIGGER, 'UB'));
+    await h.service.notifyBlocked(queued);
+    await h.service.handleClick(
+      click('work_queue_wait', queued.kind === 'blocked' ? queued.waiter.id : '', 'UB'),
+      vi.fn(),
+    );
+    // The card edit never returns.
+    h.slackApi.updateMessage.mockImplementation(() => new Promise(() => undefined));
+    h.probes.set('C1:200', {
+      exists: true,
+      active: false,
+      activity: 'idle',
+      workflow: 'deploy',
+      workQueueId: 'deploy-dev2',
+    });
+    h.probes.set('C1:100', { exists: true, active: false, activity: 'idle', workflow: 'deploy' });
+    h.fireIdle('C1:100');
+    await flush();
+    expect(h.replay).toHaveBeenCalledTimes(1);
+  });
+
+  it('a held request keeps its own queue binding when the thread mentions another queue (trinity R2, fable P2)', async () => {
+    const queues = parseWorkQueuesConfig([
+      { id: 'q-dev2', workflow: 'deploy', targets: ['dev2'] },
+      { id: 'q-dev3', workflow: 'deploy', targets: ['dev3'] },
+    ]).queues;
+    let now = 1;
+    const probes = new Map<string, SessionProbe>();
+    const replay = vi.fn(async () => undefined);
+    const svc = new WorkQueueService({
+      slackApi: { postMessage: vi.fn(async () => ({ ts: '1' })), updateMessage: vi.fn(async () => undefined) },
+      getQueues: () => queues,
+      probe: (key) => probes.get(key) ?? { exists: false, active: false },
+      defer: (fn) => fn(),
+      now: () => now,
+    });
+    svc.setReplay(replay);
+    svc.decide(input('C1:100', session(), 'r develop -> dev2'));
+    const s = session();
+    const held = svc.decide(input('C1:200', s, 'r develop -> dev2', 'UB'));
+    await svc.handleClick(click('work_queue_wait', held.kind === 'blocked' ? held.waiter.id : '', 'UB'), vi.fn());
+    expect(svc.decide(input('C1:200', s, 'r develop -> dev3', 'UB')).kind).toBe('already-waiting');
+    expect(s.workQueueId).toBe('q-dev2');
+    now += 1;
+    probes.set('C1:200', {
+      exists: true,
+      active: false,
+      activity: 'idle',
+      workflow: 'deploy',
+      workQueueId: s.workQueueId,
+    });
+    svc.onSessionDeleted('C1:100');
+    await flush();
+    expect(replay).toHaveBeenCalledTimes(1);
+  });
+
+  it('registers one idle hook per holder, not one per turn (trinity R2, fable P3)', () => {
+    h.service.decide(input('C1:100', session()));
+    h.service.decide(input('C1:100', session({ workQueueId: 'deploy-dev2' }), 'next turn'));
+    h.service.decide(input('C1:100', session({ workQueueId: 'deploy-dev2' }), 'another turn'));
+    expect(h.idleCallbacks('C1:100')).toBe(1);
+  });
+
   it('does not replay into a session that was reset in the meantime', async () => {
     h.service.decide(input('C1:100', session()));
     h.probes.set('C1:100', { exists: true, active: true, activity: 'working', workflow: 'deploy' });

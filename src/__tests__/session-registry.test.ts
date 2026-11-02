@@ -72,6 +72,19 @@ describe('SessionRegistry persistence', () => {
     expect(reader.getSession('C123', '171.0021')?.workQueueId).toBeUndefined();
   });
 
+  // Trinity R2 (astra P1): a deploy held by the work queue before its first
+  // turn has no sessionId — `new` must still reset it, or its stale queued
+  // request would run in the new conversation.
+  it('resets a never-run session that is bound to a work queue', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C123', '171.0022');
+    session.workflow = 'deploy';
+    session.workQueueId = 'deploy-dev2';
+    expect(registry.resetSessionContext('C123', '171.0022')).toBe(true);
+    expect(registry.getSession('C123', '171.0022')?.workQueueId).toBeUndefined();
+    expect(registry.getSession('C123', '171.0022')?.workflow).toBeUndefined();
+  });
+
   it('restores bot-initiated thread metadata', () => {
     const writer = new SessionRegistry();
     const session = writer.createSession('U123', 'Tester', 'C123', '171.002');
