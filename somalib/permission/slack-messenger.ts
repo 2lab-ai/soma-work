@@ -51,7 +51,8 @@ const ADVICE_BLOCK_TEXT_MAX = 600;
 export function permissionAdviceDetailBlocks(advice: PermissionAdvice): any[] {
   const row = (label: string, text: string) => ({
     type: 'section',
-    text: { type: 'plain_text', emoji: true, text: `${label}: ${text}`.slice(0, ADVICE_BLOCK_TEXT_MAX) },
+    // emoji: false — no shortcodes either: a red card cannot carry a model-written ✅.
+    text: { type: 'plain_text', emoji: false, text: `${label}: ${text}`.slice(0, ADVICE_BLOCK_TEXT_MAX) },
   });
   const blocks: any[] = [];
   if (advice.summary) blocks.push(row('무엇을 하나', advice.summary));

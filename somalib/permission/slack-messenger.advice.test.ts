@@ -90,6 +90,8 @@ describe('buildRequestBlocks — AI advice', () => {
     );
     expect(modelBlocks.length).toBeGreaterThan(0);
     for (const b of modelBlocks) expect(b.text.type).toBe('plain_text');
+    // Review R2 (fable P3): no emoji shortcodes either — a red card cannot show a model-written ✅.
+    for (const b of modelBlocks) expect(b.text.emoji).toBe(false);
   });
 
   it('escapes the advice so it cannot mention or link anyone', () => {

@@ -90,6 +90,28 @@ describe('the escalation leaves the advice for the prompt', () => {
     expect(permissionAdviceBoard.take(SESSION_KEY, 'Bash', { command: 'rm -rf /var' })).toEqual({ advice: null });
   });
 
+  // Review R2 (fable P3): the SDK's hook signal reaches the guardian call, so a stopped turn stops it.
+  it("passes the hook's abort signal to the guardian", async () => {
+    const classify = vi.fn(async (_req: { signal?: AbortSignal }) => ({ verdict: 'ask' as const, reason: 'x' }));
+    const { options } = await buildStreamOptions(
+      {
+        queryEnv: {},
+        workingDirectory: WORK_DIR,
+        slackContext: { user: USER, channel: 'C777', threadTs: '1700000000.0007' } as SlackContext,
+      },
+      makeDeps({ safetyClassifier: { classify } }),
+    );
+    const ac = new AbortController();
+    const hook = (
+      (options.hooks?.PreToolUse ?? []) as Array<{
+        hooks: Array<(i: unknown, id?: string, o?: unknown) => Promise<unknown>>;
+      }>
+    )[0].hooks[0];
+    await hook(call('rm -rf /opt'), 'toolu_1', { signal: ac.signal });
+    expect(classify.mock.calls[0][0].signal).toBe(ac.signal);
+    permissionAdviceBoard.take(SESSION_KEY, 'Bash', { command: 'rm -rf /opt' });
+  });
+
   it('task turn: the dashboard approval request carries the advice', async () => {
     const classify = vi.fn(async () => ({ verdict: 'ask' as const, reason: 'broad', advice: DENY }));
     const request = vi.fn(async (_req: unknown) => ({ behavior: 'deny' as const }));
