@@ -71,6 +71,7 @@ import {
   AgentStreamProcessor,
   type InterruptFlushFailure,
   readIdleTimeoutMs,
+  type SayFunction,
   type StreamCallbacks,
   type StreamContext,
   sayPostSwitches,
@@ -6338,6 +6339,126 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     });
   }
 
+  /**
+   * A question the HOST asks (goal stall — same failure twice), rendered and
+   * recorded exactly like a model's ASK_USER_QUESTION: the Slack form, the
+   * session's `pendingChoice` / `pendingQuestion`, activity `waiting` — so the
+   * thread and the dashboard both answer it, and the answer is a real user
+   * turn. Ask only while the session is idle: an open question is superseded.
+   *
+   * `stillWanted` is re-checked after the Slack post: when the owner moved on
+   * while it was in flight (a new message, a goal change), the question is
+   * retracted instead of re-opening the session as `waiting`.
+   * Returns the question's turn id, or undefined when nothing was left open.
+   */
+  async askUserQuestionFromHost(
+    sessionKey: string,
+    question: UserChoices,
+    opts: { stillWanted?: () => boolean } = {},
+  ): Promise<string | undefined> {
+    const session = this.deps.claudeHandler.getSessionByKey(sessionKey);
+    const channel = session?.channelId;
+    const threadTs = session?.threadRootTs || session?.threadTs;
+    if (!session || !channel || !threadTs) return undefined;
+    const say: SayFunction = async (message) => {
+      const posted = await this.deps.slackApi.postMessage(channel, message.text, {
+        threadTs: message.thread_ts || threadTs,
+        blocks: message.blocks,
+        attachments: message.attachments,
+      });
+      return { ts: posted.ts };
+    };
+    // Unique per ask: a click is matched to its question by this id alone.
+    const turnId = `host:${sessionKey}:${Date.now()}`;
+    // Stamped on the question too: a fallback render leaves no pendingChoice,
+    // and the question is all retractHostQuestion can recognise it by.
+    const asked: UserChoices & { hostTurnId: string } = { ...question, hostTurnId: turnId };
+    const committed = await this.renderAskUserQuestionFromCommand(
+      turnId,
+      asked,
+      session,
+      { channel, threadTs, sessionKey, say, turnId, incidentAttempt: session.incidentRequest !== undefined },
+      undefined,
+      opts.stillWanted,
+    );
+    if (!committed) {
+      await this.retractHostQuestion(sessionKey, turnId);
+      return undefined;
+    }
+    return turnId;
+  }
+
+  /**
+   * Withdraw a host question that no longer applies (its goal stall ended
+   * without an answer): its forms stop accepting answers, the session stops
+   * waiting on it. A newer question (another turn id) is left alone, and a
+   * running turn keeps its activity state.
+   */
+  async retractHostQuestion(sessionKey: string, turnId: string): Promise<void> {
+    const session = this.deps.claudeHandler.getSessionByKey(sessionKey);
+    const panel = session?.actionPanel;
+    if (!session || !panel) return;
+    // Its own question: by the form's turn id, or — a fallback that never got a
+    // form (no pendingChoice) — by the turn id stamped on the question.
+    const ownChoice = panel.pendingChoice?.turnId === turnId;
+    const ownQuestion = (panel.pendingQuestion as { hostTurnId?: string } | undefined)?.hostTurnId === turnId;
+    if (!ownChoice && !(ownQuestion && !panel.pendingChoice)) return;
+    // Synchronously, before any Slack call: the session stops waiting on it now,
+    // so a loop kick right after (goal resume, an objective update) is not
+    // dropped as "waiting", and no click lands on a withdrawn question.
+    const formIds: string[] = ownChoice ? (panel.pendingChoice?.formIds ?? []) : [];
+    const forms = formIds.map((formId: string) => {
+      const form = this.deps.actionHandlers.getPendingForm(formId);
+      this.deps.actionHandlers.deletePendingForm(formId);
+      return form;
+    });
+    panel.pendingChoice = undefined;
+    panel.pendingQuestion = undefined;
+    panel.waitingForChoice = false;
+    panel.choiceMessageTs = undefined;
+    panel.choiceBlocks = undefined;
+    const channel = session.channelId;
+    const threadTs = session.threadRootTs || session.threadTs;
+    const wasWaiting =
+      !!channel &&
+      !!threadTs &&
+      this.deps.claudeHandler.getSessionRegistry?.().getActivityStateByKey?.(sessionKey) === 'waiting' &&
+      !this.deps.requestCoordinator.isRequestActive?.(sessionKey);
+    if (wasWaiting) this.setActivity(session, sessionKey, channel as string, threadTs as string, 'idle');
+    // Then the Slack side: the form loses its buttons (blocks AND attachments).
+    for (const form of forms) {
+      if (!form?.messageTs) continue;
+      try {
+        await this.deps.slackApi.updateMessage(
+          form.channel,
+          form.messageTs,
+          '⏱️ 더 이상 유효하지 않은 질문입니다.',
+          [{ type: 'section', text: { type: 'mrkdwn', text: '⏱️ _더 이상 유효하지 않은 질문입니다._' } }],
+          [],
+        );
+      } catch (err) {
+        this.logger.debug('retractHostQuestion: form rewrite failed', {
+          sessionKey,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+    }
+    if (wasWaiting) {
+      // The runtime status said '입력 대기' for this question.
+      await this.updateRuntimeStatus(session, sessionKey, { agentPhase: undefined, waitingForChoice: false }).catch(
+        () => undefined,
+      );
+    }
+    try {
+      this.deps.claudeHandler.getSessionRegistry?.().persistAndBroadcast?.(sessionKey);
+    } catch (err) {
+      this.logger.debug('retractHostQuestion: persistAndBroadcast failed', {
+        sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+  }
+
   private async renderAskUserQuestionFromCommand(
     turnId: string | undefined,
     question: UserChoice | UserChoices,
@@ -6345,7 +6466,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     context: StreamContext,
     /** A28 — turn generation captured at `execute()` entry. */
     expectedTurnEpoch?: number,
-  ): Promise<void> {
+    /** Host questions: re-checked after the post; false = do not open the session as waiting. */
+    commitGuard?: () => boolean,
+  ): Promise<boolean> {
     try {
       if (question.type === 'user_choices') {
         await this.renderMultiChoiceFromCommand(turnId, question, context);
@@ -6360,6 +6483,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         error: (error as Error).message,
       });
     }
+    if (commitGuard && !commitGuard()) return false;
 
     // Store raw question data on session for dashboard access (before setActivityState triggers broadcast)
     if (session.actionPanel) {
@@ -6394,6 +6518,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         error: (err as Error)?.message ?? String(err),
       });
     }
+    return true;
   }
 
   /**

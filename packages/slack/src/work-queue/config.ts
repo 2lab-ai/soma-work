@@ -3,13 +3,13 @@
  *
  * A work queue caps how many sessions of one kind of work run at once across
  * every user of this bot. The built-in queue serialises dev2 deploys
- * (`develop -> deploy/dev2`, one at a time). Each entry:
+ * (`develop -> dev2`, one at a time). Each entry:
  *
  *   {
  *     "id": "deploy-dev2",            // stable id, persisted with the queue state
- *     "label": "deploy/dev2 배포",     // shown to people on the busy card
+ *     "label": "dev2 배포",            // shown to people on the busy card
  *     "workflow": "deploy",           // dispatch workflow the queue applies to
- *     "targets": ["deploy/dev2"],     // target branches (`dev2` ≡ `deploy/dev2`)
+ *     "targets": ["dev2"],            // target branches (the `deploy/` prefix is optional)
  *     "repos": ["Projalpha"],             // optional: only these repos (any when absent)
  *     "concurrency": 1,               // sessions allowed to run at once
  *     "askTimeoutMinutes": 10,        // unanswered "cancel / deploy after" card → cancelled
@@ -20,6 +20,10 @@
  * No key → the built-in dev2 queue. `[]` → no queues. A value that is not an
  * array keeps the built-in queue (and warns): a typo must never silently drop
  * the dev2 guard.
+ *
+ * The built-in entry names its target in the normalised form (`dev2`, the form the queue matches on): the
+ * deploy bundle's staged-artifact check refuses the full private branch path in shipped code
+ * (scripts/smoke/setup-package.js, "private deployment branch").
  *
  * The queue matches on the target, not the source: two deploys collide on the
  * branch and environment they write to, whatever they were merged from.
@@ -47,9 +51,9 @@ const DEFAULT_HOLDER_IDLE_MINUTES = 10;
 export const DEFAULT_WORK_QUEUES_CONFIG: ReadonlyArray<Record<string, unknown>> = Object.freeze([
   Object.freeze({
     id: 'deploy-dev2',
-    label: 'deploy/dev2 배포',
+    label: 'dev2 배포',
     workflow: 'deploy',
-    targets: ['deploy/dev2'],
+    targets: ['dev2'],
     concurrency: 1,
     askTimeoutMinutes: DEFAULT_ASK_TIMEOUT_MINUTES,
     holderIdleMinutes: DEFAULT_HOLDER_IDLE_MINUTES,
