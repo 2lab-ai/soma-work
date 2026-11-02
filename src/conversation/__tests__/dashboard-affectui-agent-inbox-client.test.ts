@@ -448,6 +448,7 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       }),
       detailShows: () => true,
       faceOf: (c: unknown) => c,
+      cardAsks: () => false,
       cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
       acPrefetch: () => {},
       releaseCardIoTimer: (cid: unknown) => calls.released.push(cid),
@@ -770,6 +771,7 @@ function bodyHarness() {
     }),
     detailShows: () => true,
     faceOf: (c: unknown) => c,
+    cardAsks: () => false,
     cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
     isPickingModel: () => false,
     morphInnerHtml: (el: FakeEl, html: string) => {
@@ -918,6 +920,7 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
       }),
       detailShows: () => true,
       faceOf: (c: unknown) => c,
+      cardAsks: () => false,
       cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
       cardBodyShown: () => false,
       acPrefetch: () => {},

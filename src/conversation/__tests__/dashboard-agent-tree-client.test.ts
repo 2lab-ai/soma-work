@@ -653,6 +653,7 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
         }),
         detailShows: () => true,
         faceOf: (c: unknown) => c,
+        cardAsks: () => false,
         cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
         isPickingModel: () => false,
         morphInnerHtml: (_el: unknown, html: string) => markup.push(html),
@@ -921,6 +922,7 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
       }),
       detailShows: () => true,
       faceOf: (c: unknown) => c,
+      cardAsks: () => false,
       cardStarOf: () => undefined, // the face's star toggle (SSOT 2026-11-01) — none in this harness
     };
     const fns = load<{

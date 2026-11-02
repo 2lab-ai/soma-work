@@ -110,6 +110,7 @@ import type { TaskAnswer } from '../task-turn/task-answer';
 import { buildThreadPermalink } from '../turn-notifier';
 import type { ConversationSession } from '../types';
 import { coerceEffort, EFFORT_LEVELS, type EffortLevel, userSettingsStore } from '../user-settings-store';
+import { BUILTIN_PRESETS } from '../view-layout';
 import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggregate } from './aggregator';
 import { backfillArtifactsFromWorkLog } from './artifact-capture';
 import { type ArtifactSummary, getArtifactStore, type SessionArtifact } from './artifacts';
@@ -152,6 +153,7 @@ import {
   uiLibTokensCss,
 } from './ui-lib';
 import { getUserMediaStore } from './user-media';
+import { VIEW_LAYOUT_CLIENT_JS } from './view-layout-client';
 import type { WorkLogEntry } from './work-log';
 
 const logger = new Logger('Dashboard');
@@ -5288,7 +5290,7 @@ body[data-view-mode="minimal"] #topbar-defaults,
 body[data-view-mode="minimal"][data-board-mine] #user-select,
 body[data-view-mode="minimal"] #lifecycle-btn { display: none !important; }
 /* ── VIEW PLANS (SSOT 2026-11-01 ④, .prd/20 §5) — the detail card's sections are the plan's: body[data-detail]
-   lists the ones it shows (VIEW_PLANS detail.show, applyViewMode), and every other one steps aside here. What
+   lists the ones it shows (the layout's detail card, detailSpecOf → applyViewMode), and every other one steps aside here. What
    needs the user — the status bar, the approvals, the question, the composer — is in no list: never hidden. ── */
 body:not([data-detail~="subtitle"]) #panel-title-sub,
 body:not([data-detail~="info"]) #panel-info,
@@ -5305,6 +5307,14 @@ body:not([data-detail~="sections"]) .panel-sections::part(list) { display: none;
    (--ptl-max), then it scrolls in its own box. */
 body:not([data-tasks="runs"]) .panel-tasks { max-height: var(--ptl-max, 34cqh); overflow-y: auto; overscroll-behavior: contain; padding: 8px 16px 6px; }
 .ptl-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+/* A layout without the task list (.prd/21 detail.tasks = none). */
+body[data-tasks="none"] #panel-tasks { display: none !important; }
+/* The detail card's top sections in the layout's order (applyViewMode sets --o-<id>); 입력 필요 moves as one. */
+.panel-surface { display: flex; flex-direction: column; }
+.panel-surface > #panel-info { order: var(--o-info, 1); }
+.panel-surface > #panel-goal { order: var(--o-goal, 2); }
+.panel-surface > #panel-needs-head, .panel-surface > #panel-permission, .panel-surface > #panel-question, .panel-surface > #panel-needs-status { order: var(--o-needs, 3); }
+.panel-surface > #panel-artifacts { order: var(--o-artifacts, 4); }
 /* 3안's task line: one row — how far, the running task — a press opens the checklist under it. */
 .ptl-line { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 4px 0; border: 0; background: var(--surface); color: inherit; font: inherit; text-align: left; cursor: pointer; position: sticky; top: -8px; z-index: 1; }
 .ptl-line .ptl-now { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 12px; }
@@ -7252,10 +7262,11 @@ function panelAgentEarlier() {
   var a = panelAgentOf(s);
   return (a && a.earlierTasks) || [];
 }
-// The plan's tasks (VIEW_PLANS detail.tasks): the checklist (list), one line that opens it (line), or the full
+// The layout's tasks (detail.tasks): the checklist (list), one line that opens it (line), or the full
 // Tasks section — the runs table, the plan left, the earlier plans (runs).
 function repaintPanelTasks() {
   var t = viewSpec().detail.tasks;
+  if (t === 'none') return; // hidden by the layout (body[data-tasks="none"])
   if (t === 'list') { renderPanelTaskList(panelAgentTasks()); return; }
   if (t === 'line') { renderPanelTaskLine(panelAgentTasks()); return; }
   renderPanelTasks(panelAgentTasks(), panelAgentLabel(), panelAgentEarlier(), panelAgentOutside());
@@ -7696,6 +7707,8 @@ async function loadMyDefaults() {
     // to an earlier load that lands after a later one (the tab shown twice, pageshow) is not applied.
     var vp = viewPlanOfSettings(data);
     if (vp !== null && load === _settingsLoads && vp !== _viewPlan) setViewPlan(vp);
+    // The user's surface layouts (.prd/21): the settings page's 대시보드 화면 writes them.
+    loadViewLayout();
     // Without admin acceptance the server refuses every settings write.
     if (data && data.accepted === false) { box.hidden = true; return; }
     var rows = (data && data.settings) || [];
@@ -9002,31 +9015,9 @@ function cardStarOf(s, col) {
   else if (a.busy) st.disabled = true;
   return st;
 }
-// The card face (SSOT 2026-11-01 ④, .prd/20 §5): the plan's face spec (VIEW_PLANS face) picks what of the full
-// card (cardOf) a face keeps. Always: what the card is (its lead), its title, its status and time, the owner in the
-// All Users view, the star toggle; the rest is the plan's parts, the summary rule (all · asks: only when the card
-// asks — a permission, a goal decision, the question, a retry's error; else it is the original title once more),
-// the artifact chips, the kind mark for a plain task instead of the ✦, and the foot's right end in its order.
-var FACE_KEEP = ['id', 'title', 'status', 'statusText', 'bodyMode', 'since', 'elapsedMs', 'lead', 'badge', 'star', 'titles'];
-var FACE_PARTS = { task: ['task'], agents: ['agents'], usage: ['tokens', 'costUsd'], steps: ['steps'], ctx: ['contextPct', 'contextLevel'], arts: ['artifacts', 'artifactsCount'] };
-function faceOf(card, s, col, face) {
-  var f = face || {};
-  var keys = FACE_KEEP.slice();
-  if (f.summary === 'all' || (f.summary === 'asks' && cardAsks(s || {}, col))) keys.push('summary');
-  var show = f.show || [];
-  for (var i = 0; i < show.length; i++) keys = keys.concat(FACE_PARTS[show[i]] || []);
-  var out = {};
-  for (var j = 0; j < keys.length; j++) {
-    var k = keys[j];
-    if (card && Object.prototype.hasOwnProperty.call(card, k) && card[k] !== undefined) out[k] = card[k];
-  }
-  if (out.artifacts && f.arts > 0) out.artifacts = out.artifacts.slice(0, f.arts);
-  // What the card is: an epic, a plan node or a cron run lead with their own; a plain task with the task mark.
-  if (f.kind && !out.lead) out.lead = { glyph: 'task', title: '일반 작업' };
-  var foot = faceFootMetrics(card, s, f.foot || []);
-  if (foot.length) out.metrics = foot;
-  return out;
-}
+// The card face (SSOT 2026-11-02, .prd/21): the user's layout of the face (viewSpec().face) picks what of the full
+// card (cardOf) shows, in which order — faceOf and its foot chips are the shared layout script's
+// (view-layout-client.ts), the same that draws the settings page's preview.
 // Whether the card asks the user something now — cardSummary's first lines.
 function cardAsks(s, col) {
   if (col !== 'closed' && s.pendingPermissions && s.pendingPermissions.length) return true;
@@ -9036,60 +9027,12 @@ function cardAsks(s, col) {
   var r = pendingAutoResume(s, col);
   return !!(r && r.reason);
 }
-// The foot's right end, in the plan's order: media (the instruction's attachments) · pr · arts (the artifact
-// count) · cost (the price; its tooltip also says the tokens) · model (its name with its vendor's mark).
-function faceFootMetrics(card, s, foot) {
-  var out = [];
-  var host = (card && card.metrics) || [];
-  var hostOf = function(glyph) {
-    for (var h = 0; h < host.length; h++) if (host[h] && host[h].glyph === glyph) return host[h];
-    return null;
-  };
-  var titles = (card && card.titles) || {};
-  for (var i = 0; i < (foot || []).length; i++) {
-    var k = foot[i];
-    var m = null;
-    if (k === 'media') m = hostOf('attach');
-    else if (k === 'pr') m = hostOf('pr');
-    else if (k === 'arts') {
-      var n = card ? toNum(card.artifactsCount) : 0;
-      if (n > 0) m = { text: String(n), glyph: 'file', title: '산출물 ' + n + '개', label: '산출물 ' + n + '개' };
-    } else if (k === 'cost') {
-      var cost = card ? toNum(card.costUsd) : 0;
-      if (cost > 0) {
-        var price = cost < 0.01 ? '<$0.01' : '$' + (cost >= 100 ? cost.toFixed(0) : cost.toFixed(2));
-        m = { text: price, title: (titles.cost || 'API 환산 비용') + (titles.tokens ? '\\n' + titles.tokens : '') };
-      }
-    } else if (k === 'model') {
-      // 'unknown' is the server's placeholder for a model it does not know — no name to show.
-      var model = s && s.model && s.model !== 'unknown' ? String(s.model) : '';
-      if (model) m = { text: modelLabelOf(model), glyph: modelVendorOf(model), title: model };
-    }
-    if (m) out.push(m);
-  }
-  return out;
-}
-// Whose model it is, for its mark: claude · openai · grok · gemini · model (any other).
-function modelVendorOf(model) {
-  var m = String(model || '').toLowerCase();
-  if (/claude|opus|sonnet|haiku|fable/.test(m)) return 'claude';
-  if (/^gpt|^o[0-9]|codex|openai/.test(m)) return 'openai';
-  if (/grok/.test(m)) return 'grok';
-  if (/gemini/.test(m)) return 'gemini';
-  return 'model';
-}
-// The model's name: the representative label (Opus 5.5), else its id without claude- and a date.
-function modelLabelOf(model) {
-  var models = REPRESENTATIVE_MODELS || [];
-  for (var i = 0; i < models.length; i++) if (models[i].model === model && models[i].label) return String(models[i].label);
-  return String(model || '').replace(/^claude-/, '').replace(/-[0-9]{8}(?=\\[|$)/, '');
-}
 function viewCardOf(s, col) {
   var c = cardOf(s, col);
   // The star is a toggle on every face, in both modes: on or off at a press, inert with its reason for anyone
   // but the owner (and on a sibling instance's card).
   c.star = cardStarOf(s, col);
-  return faceOf(c, s, col, viewSpec().face);
+  return faceOf(c, s.model, viewSpec().face, cardAsks(s, col));
 }
 
 // Task window on the open card (§3.1-4, spec 13) — @2lab.ai/ui <ui-task-plan> in window mode (0.14.1, D8b
@@ -9791,7 +9734,7 @@ function repaintPanelScope() {
   renderAgentConv();
 }
 // ── View mode (SSOT 2026-11-01) — 미니멀 / 어드밴스드, per user ──
-// 미니멀, the default: the board with cards that say what matters (minimalCard),
+// 미니멀, the default: the board with cards that say what matters (the user's layout, .prd/21),
 // an open card with its actions and what it asks, and a detail card that is the
 // task list and the chat. 어드밴스드: everything — the old 자세히 on (every
 // section of the detail card open, the agent tabs, the work log, the tree).
@@ -9820,6 +9763,33 @@ function viewModeOfSettings(snapshot) {
   for (var i = 0; i < rows.length; i++) if (rows[i] && rows[i].key === 'dashboardMode') return viewModeFrom(rows[i].value);
   return null;
 }
+// The detail card's top sections, moved in the DOM too, so the separator rule (a border on a section that follows
+// another) draws between the sections as they read, not as they were written. Nothing moves when already in order.
+var PANEL_SURFACE_PARTS = {
+  info: ['panel-info'],
+  goal: ['panel-goal'],
+  needs: ['panel-needs-head', 'panel-permission', 'panel-question', 'panel-needs-status'],
+  artifacts: ['panel-artifacts'],
+};
+function orderPanelSurface(order) {
+  var surf = document.getElementById('panel-surface');
+  if (!surf || !surf.children || !surf.appendChild) return;
+  var want = [];
+  for (var i = 0; i < order.length; i++) {
+    var ids = PANEL_SURFACE_PARTS[order[i]] || [];
+    for (var k = 0; k < ids.length; k++) {
+      var el = document.getElementById(ids[k]);
+      if (el && el.parentNode === surf) want.push(el);
+    }
+  }
+  var now = [];
+  for (var c = 0; c < surf.children.length; c++) if (want.indexOf(surf.children[c]) >= 0) now.push(surf.children[c]);
+  var same = now.length === want.length;
+  for (var j = 0; same && j < want.length; j++) if (now[j] !== want[j]) same = false;
+  if (same) return;
+  for (var m = 0; m < want.length; m++) surf.appendChild(want[m]);
+}
+
 // The mode and its plan on the page: <body data-view-mode · data-view-plan>, the detail card's sections and how its
 // tasks read (data-detail · data-tasks · --ptl-max, the CSS of VIEW PLANS), and whether its sections open unfolded.
 function applyViewMode() {
@@ -9831,6 +9801,10 @@ function applyViewMode() {
   b.setAttribute('data-tasks', spec.detail.tasks);
   if (spec.detail.tasksMax) b.style.setProperty('--ptl-max', spec.detail.tasksMax + 'cqh');
   else b.style.removeProperty('--ptl-max');
+  // The detail card's top sections in the layout's order (CSS order on .panel-surface's children).
+  var order = spec.detail.order || [];
+  for (var o = 0; o < order.length; o++) b.style.setProperty('--o-' + order[o], String(o + 1));
+  orderPanelSurface(order);
   var btn = document.getElementById('view-mode-toggle');
   if (btn) btn.setAttribute('aria-pressed', _viewMode === 'advanced' ? 'true' : 'false');
   _panelDetail = !!spec.detail.open;
@@ -9880,71 +9854,17 @@ function rerenderForViewMode() {
   repaintPanelTasks();
   sizePanelSections();
 }
-// ── View plans (SSOT 2026-11-01 ④, .prd/20 §5) — 1안 · 2안 · 3안 of each mode ──
-// One spec per surface, the .prd's tables cell for cell:
-//   face   — the card face (faceOf): the parts it keeps (show), the summary rule (summary: all · asks), the
-//            artifact chips (arts), the task mark for a plain task instead of the ✦ (kind), the foot's right end
-//            in order (foot);
-//   body   — the open card (renderCardBody): its ☆ button (star) and its parts after the actions and what asks,
-//            per column (work · wait · done);
-//   detail — the detail card: the sections it shows (show → <body data-detail>), how its tasks read (tasks: runs ·
-//            list · line → <body data-tasks>), the list's share of the body (tasksMax, in cqh), and whether its
-//            sections open unfolded (open — the old 자세히).
-// What needs the user — the actions, approvals, the question, the composer — is in no list: every plan keeps it.
-// The choice is the user's dashboardPlan setting (설정 › 대시보드 › 화면 구성안); the device keeps a copy for the
-// first paint.
-var VIEW_PLANS = {
-  minimal: {
-    '1': {
-      name: '결과 우선',
-      face: { show: ['task', 'arts'], summary: 'asks', arts: 3, kind: true, foot: ['pr', 'cost', 'model'] },
-      body: { star: false, work: ['refs', 'model'], wait: ['refs', 'model'], done: ['refs', 'model'] },
-      detail: { show: [], tasks: 'list', tasksMax: 34, open: false },
-    },
-    '2': {
-      name: '진행 우선',
-      face: { show: ['task', 'steps'], summary: 'all', kind: true, foot: ['arts', 'cost', 'model'] },
-      body: { star: false, work: ['tasks'], wait: ['tasks'], done: [] },
-      detail: { show: ['subtabs', 'controls'], tasks: 'list', tasksMax: 50, open: false },
-    },
-    '3': {
-      name: '한눈에',
-      face: { show: [], summary: 'asks', kind: true, foot: ['cost', 'model'] },
-      body: { star: false, work: [], wait: [], done: [] },
-      detail: { show: [], tasks: 'line', open: false },
-    },
-  },
-  advanced: {
-    '1': {
-      name: '정리',
-      face: { show: ['task', 'agents', 'usage', 'arts', 'steps', 'ctx'], summary: 'all', arts: 4, kind: true, foot: ['media', 'pr', 'model'] },
-      body: {
-        star: false,
-        work: ['tasks', 'agents', 'io', 'goal', 'refs', 'model'],
-        wait: ['io', 'arts', 'tasks', 'agents', 'goal', 'refs', 'model'],
-        done: ['io', 'arts', 'agents', 'goal', 'refs', 'model'],
-      },
-      detail: { show: ['subtitle', 'info', 'goal', 'artifacts', 'agenthead', 'agenttabs', 'sections', 'controls'], tasks: 'runs', open: true },
-    },
-    '2': {
-      name: '원본',
-      face: { show: ['task', 'agents', 'usage', 'arts', 'steps', 'ctx'], summary: 'all', arts: 4, kind: false, foot: ['media', 'pr'] },
-      body: {
-        star: true,
-        work: ['tasks', 'agents', 'io', 'goal', 'refs', 'model'],
-        wait: ['io', 'arts', 'tasks', 'agents', 'goal', 'refs', 'model'],
-        done: ['io', 'arts', 'agents', 'goal', 'refs', 'model'],
-      },
-      detail: { show: ['subtitle', 'info', 'goal', 'artifacts', 'agenthead', 'agenttabs', 'sections', 'controls'], tasks: 'runs', open: true },
-    },
-    '3': {
-      name: '압축',
-      face: { show: ['task', 'steps', 'ctx'], summary: 'asks', kind: true, foot: ['arts', 'pr', 'cost', 'model'] },
-      body: { star: false, work: ['goal', 'refs', 'model'], wait: ['goal', 'refs', 'model'], done: ['goal', 'refs', 'model'] },
-      detail: { show: ['subtitle', 'info', 'goal', 'artifacts', 'agenthead', 'agenttabs', 'sections', 'controls'], tasks: 'runs', open: false },
-    },
-  },
-};
+// ── Surface layouts (SSOT 2026-11-02, .prd/21) — the user's 1안 · 2안 · 3안 and their defaults ──
+// What each surface shows is the user's layout: presets 1 · 2 · 3 (the built-ins, VIEW_BUILTINS, are .prd/20 §5;
+// the user edits them on the settings page, 대시보드 화면), the task card (its face and its open card) and the
+// detail card each from their default preset, else the quick switch (dashboardPlan), else 1. What needs the user —
+// the actions, approvals, the question, the composer — is in no layout: every one keeps it. The shared layout
+// script (view-layout-client.ts) turns a layout into a face, the open card's parts and the detail card's switches.
+var VIEW_BUILTINS = ${JSON.stringify(BUILTIN_PRESETS)};
+${VIEW_LAYOUT_CLIENT_JS}
+var VIEW_LAYOUT_KEY = 'soma-view-layout';
+var _viewLayout = { v: 1 }; // the user's saved layouts (GET /api/settings/dashboard-layout); the device keeps a copy
+var _layoutLoads = 0; // layout loads started: only the newest answer is drawn
 var VIEW_PLAN_KEY = 'soma-view-plan';
 var _viewPlan = '1';
 function viewPlanFrom(v) {
@@ -9960,10 +9880,42 @@ function viewPlanOfSettings(snapshot) {
   for (var i = 0; i < rows.length; i++) if (rows[i] && rows[i].key === 'dashboardPlan') return viewPlanFrom(rows[i].value);
   return null;
 }
-// The current mode's plan.
+// What the page draws in the current mode: the face, the open card's parts per column, the detail card.
 function viewSpec() {
-  var m = VIEW_PLANS[viewModeFrom(_viewMode)];
-  return m[viewPlanFrom(_viewPlan)] || m['1'];
+  var mode = viewModeFrom(_viewMode);
+  var l = layoutsFor(_viewLayout, VIEW_BUILTINS, mode, viewPlanFrom(_viewPlan));
+  return {
+    name: VIEW_BUILTINS[l.cardPreset].name[mode],
+    face: l.card,
+    body: { star: !!(l.open && l.open.star), work: openPartsOf(l.open, 'working'), wait: openPartsOf(l.open, 'waiting'), done: openPartsOf(l.open, 'idle') },
+    detail: detailSpecOf(l.detail),
+  };
+}
+function readViewLayout() {
+  try {
+    var v = JSON.parse(localStorage.getItem(VIEW_LAYOUT_KEY) || 'null');
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : { v: 1 };
+  } catch (_e) { return { v: 1 }; }
+}
+// The user's layouts arrived (or changed on the settings page): the page draws them and keeps the copy.
+function setViewLayout(doc) {
+  var next = JSON.stringify(doc && typeof doc === 'object' ? doc : { v: 1 });
+  if (next === JSON.stringify(_viewLayout)) return;
+  _viewLayout = JSON.parse(next);
+  try { localStorage.setItem(VIEW_LAYOUT_KEY, next); } catch (_e) {}
+  applyViewMode();
+  rerenderForViewMode();
+}
+async function loadViewLayout() {
+  var load = ++_layoutLoads;
+  try {
+    var res = await fetch('/api/settings/dashboard-layout');
+    if (!res.ok) return;
+    var data = await res.json();
+    // An answer to an earlier load that lands after a later one is not drawn.
+    if (load !== _layoutLoads || !data || !data.doc) return;
+    setViewLayout(data.doc);
+  } catch (_e) {}
 }
 function detailShows(tok) {
   return viewSpec().detail.show.indexOf(tok) >= 0;
@@ -10038,7 +9990,7 @@ function renderPanelTabs() {
   if (!el) return;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var d = s ? panelTabsData(s, _panelAgent, rootStatusOf(s, sessionColOf(panelSessionKey))) : panelTabsData(null, '', '');
-  // A plan that shows the strip only with a subagent (VIEW_PLANS detail subtabs) reads this.
+  // A layout that shows the strip only with a subagent (detail agents = sub → subtabs) reads this.
   var panel = document.getElementById('slide-panel');
   if (panel) panel.toggleAttribute('data-subagents', d.tabs.length > 1);
   var sig = JSON.stringify(d);
@@ -11571,7 +11523,7 @@ function cardGoalLine(s, col, canEdit) {
 //   Slack, 작업 로그.
 // The complete record — meta, every number, titled links, the goal editor, the
 // whole task ledger, the rich agent tree — is the panel's.
-// The plan (SSOT 2026-11-01 ④, .prd/20 §5): spec is the plan's open card (VIEW_PLANS body) — its ☆ button (the
+// The plan (SSOT 2026-11-01 ④, .prd/20 §5): spec is the layout's open card (viewSpec().body) — its ☆ button (the
 // face has the star toggle) and its parts after the actions and what asks, per column; no spec — any other
 // caller — is the open card as it was.
 function renderCardBody(s, col, spec) {
@@ -19356,6 +19308,7 @@ pcInit();
 // View mode: the device's copy first (the user's setting answers in loadMyDefaults); the agent tabs answer clicks and arrows.
 _viewMode = readViewMode();
 _viewPlan = readViewPlan();
+_viewLayout = readViewLayout();
 applyViewMode();
 syncBoardScope();
 // The user's settings (the view mode, the plan, the default model chips) once the view state above exists: a load
