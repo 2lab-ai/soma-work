@@ -1401,6 +1401,19 @@ function shellLineOf(chain: string, name: string, args: Arg[], dotted: boolean):
 }
 
 /**
+ * Whether the Node request created by the call at `at` (its `(` at `open`) is ended — chained (`https.request(…).end()`)
+ * or through the variable it is assigned to (`const r = https.request(…); … r.end()`). Created and never ended (or
+ * destroyed), it sends nothing.
+ */
+function endsRequest(masked: string, at: number, open: number): boolean {
+  const close = closing(masked, open);
+  if (close < 0) return false;
+  if (/^\s*\.end\s*\(/.test(masked.slice(close + 1, close + 64))) return true;
+  const bound = masked.slice(Math.max(0, at - 80), at).match(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*$/);
+  return !!bound && new RegExp(`\\b${bound[1]}\\.end\\s*\\(`).test(masked.slice(close));
+}
+
+/**
  * Whether a call at a position of masked code certainly runs when the program runs: at the top level — not inside a
  * function, a block, another call's arguments, an arrow function, a condition (`if`, `&&`, `||`, `?`), a lambda, or
  * an indented Python block. Anything else may never run: not read.
@@ -1492,7 +1505,7 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
       w = writeAt(str(positional(args)[0]?.value), name.toUpperCase(), true);
     else if ((chain === 'https.' || chain === 'http.') && name === 'request')
       // A Node request is sent when it is ended (`.end()`): without one, nothing goes out.
-      w = /\.end\s*\(/.test(masked.slice(open)) ? nodeRequestWrite(args) : { op: 'read', kind: 'pr' };
+      w = endsRequest(masked, m.index ?? 0, open) ? nodeRequestWrite(args) : { op: 'read', kind: 'pr' };
     else if (name === 'request') w = routeWrite(args);
     // A request the grammar does not read as a GitHub write still printed something: mark it, so a receipt in the
     // same call is not taken from its output.

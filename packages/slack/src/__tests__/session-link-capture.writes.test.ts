@@ -952,6 +952,31 @@ describe('W12 — review round 12 (astra-zhuge)', () => {
     ).toEqual([]);
   });
 
+  it('malformed JSON is scanned once: 30,000 unclosed openings stay linear (P2)', () => {
+    const started = Date.now();
+    expect(effectsOf(bash(`curl -s -X POST ${P} -d @p`, '[\n'.repeat(30_000)))).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  it('a Node request ended through another object, or destroyed, sends nothing; ended through its own variable, it does', () => {
+    expect(
+      effectsOf(
+        bash(
+          `node -e 'const r = https.request("${P}", {method:"POST"}); r.on("error", () => {}); r.destroy(); s.end(); console.log("${U}")'`,
+          U,
+        ),
+      ),
+    ).toEqual([]);
+    expect(
+      effectsOf(
+        bash(
+          `node -e 'const r = https.request("${P}", {method:"POST"}, (res) => res.pipe(process.stdout)); r.end("{}")'`,
+          '{"number":14,"html_url":"https://github.com/a/b/pull/14"}',
+        ),
+      ).map(short),
+    ).toEqual([['create', 'pr', 'https://github.com/a/b/pull/14']]);
+  });
+
   it('an unclosed JSON listing: its elements, one per line, are not objects of the call', () => {
     expect(
       effectsOf(
