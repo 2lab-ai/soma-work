@@ -121,7 +121,7 @@
   "#700 열림": "#700 open",
   "% (처음 한 번만)": "% (first time only)",
   "')\">답변하기</button>": "')\">Answer</button>",
-  "','','',event.detail===0)\">전체 ": "','','',event.detail===0)\">View all ",
+  "','artifacts','',event.detail===0)\">전체 ": "','artifacts','',event.detail===0)\">View all ",
   "(으)로 전환 · 자동 압축 ": ": switched · auto-compact ",
   "(으)로 전환 대기 중": "…",
   "(으)로 전환합니다…</div>": "…</div>",
