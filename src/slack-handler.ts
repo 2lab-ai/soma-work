@@ -116,6 +116,7 @@ import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch
 import { requestEnvSkillPermission } from './slack/env-skill-permission-request';
 import { mintEventTs } from './slack/event-ts';
 import { type FollowupReactionRole, FollowupReactionSurface, rolesForFollowupState } from './slack/followup-reactions';
+import { isRestartCutUndelivered, restartCutVerdict } from './slack/followup-restart-redelivery';
 import { isGoalCapDecisionPending, retireGoalCapDecision } from './slack/goal-cap-decision';
 import { bumpGoalEpoch, GOAL_SUMMARY_PERSIST_MAX, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from './slack/goal-host-actions';
@@ -298,6 +299,12 @@ export interface SlackHandlerOptions {
    * here, so `rules/config.md` §절대규칙 2 keeps a single path owner.
    */
   followupQueueStore?: FollowupQueueStorePort;
+  /**
+   * The session's Claude transcript text by SDK session id — what the boot
+   * reads to tell whether a message a restart cut had reached the model
+   * (`redeliverRestartCutFollowups`). Defaults to the SDK's `.jsonl`.
+   */
+  followupTranscriptReader?: (sessionId: string) => string | undefined;
 }
 
 /**
@@ -521,6 +528,21 @@ export class SlackHandler {
    * the moment it does ({@link onFollowupTurnReachedModel}).
    */
   private readonly followupResumeRun = new Map<string, { turnEpoch: number; items: FollowupCutRef[] }>();
+  /**
+   * Rows a restart cut while they were steered into a turn, put back in line by
+   * the boot because the model had not read them (SSOT 2026-11-03): pushed into
+   * the session's next turn the moment it reaches the model, as they were before
+   * the restart — else they wait for that turn to end. Spent by that turn.
+   */
+  private readonly followupRestartSteerBack = new Map<string, string[]>();
+  /**
+   * Sessions holding rows the boot put back in line that no resume will carry
+   * on (the session was not working, has no active goal, no pending retry):
+   * drained once the boot's resumes are under way — {@link drainRestartRequeuedFollowups}.
+   */
+  private readonly followupRestartKick = new Set<string>();
+  /** See `SlackHandlerOptions.followupTranscriptReader`. */
+  private readonly readFollowupTranscript: (sessionId: string) => string | undefined;
   /** The startup reconcile has run (or was deliberately skipped) — see {@link reconcileFollowupSessionsOnce}. */
   private followupReconciled?: boolean;
   /** The RESTORED state had something to reconcile — see {@link warnIfReconcileSkipped}. */
@@ -900,6 +922,7 @@ export class SlackHandler {
       }),
     );
 
+    this.readFollowupTranscript = options.followupTranscriptReader ?? readTranscriptText;
     this.initializeFollowupQueue(options.followupQueueStore);
   }
 
@@ -1257,6 +1280,132 @@ export class SlackHandler {
         sessionKey: session.sessionKey,
         items: session.items.length,
       });
+    }
+    this.redeliverRestartCutFollowups();
+  }
+
+  /**
+   * SSOT 2026-11-03 (owner): a message a restart kept from being processed is
+   * sent afterwards, unless a person stopped the work. Runs once per boot, with
+   * the registry loaded.
+   *
+   * For every row the shutdown's stop or the crash recovery parked before its
+   * words reached the model (`isRestartCutUndelivered` — never a row a person
+   * stopped, never one whose own turn the resume takes over), the session's
+   * transcript decides: the model had read it → `resolved`; it had not, or no
+   * transcript answers → back in line (`settleRestartCut`). What goes back in
+   * line is delivered by the session's resume (steered into it when it was a
+   * steer, else drained when it ends), or — when nothing resumes the session —
+   * by {@link drainRestartRequeuedFollowups}.
+   */
+  private redeliverRestartCutFollowups(): void {
+    const queue = this.followupQueue;
+    if (!queue || this.followupReadFailed) return;
+    const now = Date.now();
+    for (const snapshot of queue.snapshot().sessions) {
+      const cut = snapshot.items.filter((item) => isRestartCutUndelivered(item, now));
+      if (cut.length === 0) continue;
+      const sessionKey = snapshot.sessionKey;
+      const live = this.claudeHandler?.getSessionByKey?.(sessionKey);
+      if (!live || live.terminated) continue;
+      let transcript: string | undefined | null = null;
+      const transcriptOf = (): string | undefined => {
+        if (transcript === null) {
+          try {
+            transcript = live.sessionId ? this.readFollowupTranscript(live.sessionId) : undefined;
+          } catch {
+            transcript = undefined;
+          }
+        }
+        return transcript;
+      };
+      const steerBack: string[] = [];
+      let requeued = 0;
+      for (const item of cut) {
+        const verdict = restartCutVerdict(item, transcriptOf);
+        const settled = queue.settleRestartCut(sessionKey, item.id, item.epoch, verdict);
+        if (!settled.ok) {
+          this.logger.warn('Restart-cut follow-up not settled', {
+            sessionKey,
+            itemId: item.id,
+            reason: settled.reason,
+          });
+          continue;
+        }
+        this.logger.info(
+          verdict === 'read'
+            ? 'Restart-cut follow-up was read before the restart — closed'
+            : 'Restart-cut follow-up was not processed — sending it again',
+          { sessionKey, itemId: item.id, was: item.state, steered: item.cutSteerUuid !== undefined },
+        );
+        void this.syncFollowupReactions(sessionKey, item.id);
+        if (verdict === 'unread') {
+          requeued++;
+          if (item.cutSteerUuid !== undefined) steerBack.push(item.id);
+        }
+      }
+      if (steerBack.length > 0) this.followupRestartSteerBack.set(sessionKey, steerBack);
+      const resumes =
+        live.wasWorkingAtShutdown === true ||
+        (live.goal as { status?: string } | undefined)?.status === 'active' ||
+        live.pendingRetryAt !== undefined;
+      if (requeued > 0 && !resumes) this.followupRestartKick.add(sessionKey);
+    }
+  }
+
+  /**
+   * Boot, after the crash-recovery resumes and the goal resumes are under way:
+   * a session holding rows the restart cut that nothing resumes runs them now,
+   * oldest first, as their writers' turns. A session that resumes delivers its
+   * rows at its resume turn's end (or steers them into it). Returns how many
+   * sessions started draining.
+   */
+  drainRestartRequeuedFollowups(): number {
+    const dispatcher = this.followupDispatcher;
+    let started = 0;
+    for (const sessionKey of this.followupRestartKick) {
+      if (!dispatcher || dispatcher.isBusy(sessionKey) || this.requestCoordinator.isRequestActive(sessionKey)) continue;
+      started++;
+      void this.runFollowupDrainLoop(sessionKey)
+        .then((last) => {
+          if (last) this.releaseDeferredGoalDriver(sessionKey, last);
+        })
+        .catch((error) =>
+          this.logger.error('Restart-cut follow-ups could not be drained', {
+            sessionKey,
+            error: (error as Error)?.message ?? String(error),
+          }),
+        );
+    }
+    this.followupRestartKick.clear();
+    if (started > 0) this.logger.info('Sending follow-ups the restart kept from running', { sessions: started });
+    return started;
+  }
+
+  /**
+   * The session's first turn after the boot reached the model: push into it the
+   * rows the restart cut while they were steered and the boot put back in line,
+   * as the user had pushed them before the restart. A row that cannot be steered
+   * (a command, an author who may not interrupt, a turn that just ended) stays
+   * queued for the drain at that turn's end.
+   */
+  private async steerBackRestartCutFollowups(slotKey: string, itemIds: readonly string[]): Promise<void> {
+    const queue = this.followupQueue;
+    if (!queue) return;
+    for (const itemId of itemIds) {
+      const item = queue.get(slotKey, itemId);
+      if (item?.state !== 'queued') continue;
+      try {
+        const steered = await this.trySteerFollowup(slotKey, item.message as MessageEvent, item);
+        this.logger.info('Restart-cut follow-up handed to the resumed turn', { sessionKey: slotKey, itemId, steered });
+        await this.syncFollowupReactions(slotKey, itemId);
+      } catch (error) {
+        this.logger.warn('Restart-cut follow-up could not be steered — left for the drain', {
+          sessionKey: slotKey,
+          itemId,
+          error: (error as Error)?.message ?? String(error),
+        });
+      }
     }
   }
 
@@ -5611,6 +5760,11 @@ export class SlackHandler {
     const marked = dispatcher.noteTurnReachedModel(slotKey, turnEpoch);
     if (marked.status === 'failed') {
       this.logger.warn('Follow-up delivery evidence not recorded', { sessionKey: slotKey, detail: marked.detail });
+    }
+    const steerBack = this.followupRestartSteerBack.get(slotKey);
+    if (steerBack) {
+      this.followupRestartSteerBack.delete(slotKey);
+      void this.steerBackRestartCutFollowups(slotKey, steerBack);
     }
     const resume = this.followupResumeRun.get(slotKey);
     if (resume?.turnEpoch !== turnEpoch) return;
