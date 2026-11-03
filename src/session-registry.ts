@@ -691,6 +691,12 @@ export class SessionRegistry {
   /** E2 ⑤ — told after a save that added notices a task owes its instruction thread. */
   private taskNoticeListener?: (session: ConversationSession, sessionKey: string) => void;
   private _crashRecoveredSessions: CrashRecoveredSession[] = [];
+  /**
+   * Slack-less tasks whose turn the restart cut (reconciled `interrupted` on load). A task has no
+   * `wasWorkingAtShutdown` marker and is not crash-recovered, so this is the restart's record of it
+   * — read once by the goal resume, which gives the cut turn's continuation back (SSOT 2026-11-03).
+   */
+  private _restartCutTaskKeys = new Set<string>();
 
   /**
    * onIdle callback registry — fired when session transitions to idle.
@@ -3581,6 +3587,13 @@ export class SessionRegistry {
     this._crashRecoveredSessions = [];
   }
 
+  /** The Slack-less tasks whose turn the restart cut — returned once, then cleared (a later read gets none). */
+  takeRestartCutTaskKeys(): Set<string> {
+    const keys = this._restartCutTaskKeys;
+    this._restartCutTaskKeys = new Set<string>();
+    return keys;
+  }
+
   /**
    * Save all sessions to file for persistence across restarts. A failure is
    * logged, not thrown — a caller that must know uses saveSessionsOrThrow.
@@ -3987,6 +4000,7 @@ export class SessionRegistry {
       // same registry is not a duplicate; a second record with one task id in one file is).
       const slacklessKeysThisLoad = new Set<string>();
       this._crashRecoveredSessions = [];
+      this._restartCutTaskKeys = new Set<string>();
 
       for (const serialized of sessionsArray) {
         const lastActivity = new Date(serialized.lastActivity);
@@ -4413,6 +4427,7 @@ export class SessionRegistry {
             session.activityState = 'idle';
             session.activityStateChangedAt = now;
             session.activeTaskTurnId = undefined;
+            this._restartCutTaskKeys.add(derivedKey);
             reconciledTaskTurnCount++;
           }
         } else if (serialized.shutdownNotificationSent) {

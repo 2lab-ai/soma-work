@@ -859,6 +859,11 @@ export class ClaudeHandler implements TurnSteeringPort {
     return this.sessionRegistry.getCrashRecoveredSessions();
   }
 
+  /** The Slack-less tasks whose turn the restart cut — returned once (goal resume refunds their continuation). */
+  takeRestartCutTaskKeys(): Set<string> {
+    return this.sessionRegistry.takeRestartCutTaskKeys();
+  }
+
   clearCrashRecoveredSessions(): void {
     this.sessionRegistry.clearCrashRecoveredSessions();
   }
