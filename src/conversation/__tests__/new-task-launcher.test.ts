@@ -225,6 +225,22 @@ describe('launchNewTask', () => {
  * downloads video (or audio it cannot transcribe), so the Slack permalink is the
  * only way the dashboard can open one — it must survive the mapping.
  */
+describe('#853 — launchNewTask with the plan switch', () => {
+  it('the message carries planModeOverride, so the session plans before it works', async () => {
+    const d = deps();
+    await launchNewTask('U123', submission({ plan: true, autogoal: false, autoz: false }), d);
+    const event = (d.handleMessage as any).mock.calls[0][0];
+    expect(event.planModeOverride).toBe(true);
+    expect(event.autoGoalOverride).toBe(false);
+  });
+
+  it('without it the message carries no plan flag', async () => {
+    const d = deps();
+    await launchNewTask('U123', submission(), d);
+    expect((d.handleMessage as any).mock.calls[0][0].planModeOverride).toBeUndefined();
+  });
+});
+
 describe('slackEventFileFrom — the composer upload as the pipeline sees it', () => {
   it('keeps the Slack permalink (https only) with the download fields', async () => {
     const { slackEventFileFrom } = await import('../new-task-launcher');

@@ -153,6 +153,7 @@ import type { SlackTaskEntry } from './slack/task-entry';
 import { normalizeZInvocation, stripZPrefix } from './slack/z/normalize';
 import { DmZRespond } from './slack/z/respond';
 import { isDmAllowedForNonAdmin } from './slack/z/whitelist';
+import { applySessionPlanTurn, isPlanPending } from './task-turn/task-plan';
 import { TodoManager } from './todo-manager';
 import { TurnNotifier } from './turn-notifier';
 import type { ConversationSession, SessionGoal, SessionGoalStall, SessionIncidentRequest } from './types';
@@ -2030,6 +2031,8 @@ export class SlackHandler {
 
       // Channel routing check: if session was halted due to wrong channel, stop processing
       if (sessionResult.halted) {
+        // Never taken (#853), the compaction stash included: it lives in memory only, and a
+        // restart drops it — a plan start counted as taken there could be lost with no way back.
         await this.slackApi.removeReaction(channel, ts, 'eyes');
         // Halted covers the acceptance gate too (`session-initializer.ts:403-440`)
         // — never a success, so the drain stays shut.
@@ -2160,6 +2163,30 @@ export class SlackHandler {
         }
       }
 
+      // The user's own word in this turn. Not every turn is: a host turn (synthetic, or a
+      // post-compaction replay of one — `routeContext.hostTurn`) and a maintenance turn
+      // (`/compact`, forwarded to the SDK as a local slash command) are not. Only the user's word
+      // answers an open question (below) or revises a waiting plan.
+      const userWord =
+        !event.synthetic &&
+        event.routeContext?.hostTurn !== true &&
+        !shouldForwardAsLocalSlashCommand(effectiveText.trim(), literalPrompt);
+
+      // #853 — plan mode on a Slack session: a new task opened with the plan switch starts a
+      // drafting plan, and while the plan is not started every turn plans (the notice below; the
+      // turn's context makes the plan tool attach and step 6c refuse the work). The user's own
+      // word while a plan waits is direct input (back to drafting). Saved before the turn runs.
+      const planSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
+      const planTurn = planSession
+        ? applySessionPlanTurn(planSession, {
+            planModeOverride: event.planModeOverride === true,
+            userInput: userWord,
+            now: Date.now(),
+          })
+        : { notice: undefined, changed: false };
+      if (planTurn.changed) this.claudeHandler.saveSessions();
+      const planning = isPlanPending(planSession?.taskPlan);
+
       // S2 — Autogoal mode: when the user has autogoal ON and this session has
       // NO goal in flight (no active/paused goal, no queue), the first real
       // instruction is promoted to the session goal automatically and then
@@ -2184,6 +2211,8 @@ export class SlackHandler {
         // A typed SDK slash command (`/compact focus on X`) is a request to the
         // CLI, not an instruction — promoting it would name a goal after it.
         !isLocalSlashCommand(effectiveText.trim()) &&
+        // #853 — a session that plans is not a goal yet: the goal loop would drive work the plan holds back.
+        !planning &&
         // A dashboard task carries its composer toggle (SSOT 2026-10-23 T6):
         // per task, in both directions; otherwise the user's setting decides.
         (typeof event.autoGoalOverride === 'boolean'
@@ -2300,12 +2329,8 @@ export class SlackHandler {
       // 2026-11-02). Not every turn is the user's answer, and those leave the
       // question: a host turn (synthetic, or a post-compaction replay of one —
       // `routeContext.hostTurn`) and a maintenance turn (`/compact`, forwarded
-      // to the SDK as a local slash command).
-      const answersOpenQuestion =
-        !event.synthetic &&
-        event.routeContext?.hostTurn !== true &&
-        !shouldForwardAsLocalSlashCommand(effectiveText.trim(), literalPrompt);
-      if (answersOpenQuestion && sessionResult.session.actionPanel?.pendingQuestion) {
+      // to the SDK as a local slash command) — `userWord` above.
+      if (userWord && sessionResult.session.actionPanel?.pendingQuestion) {
         sessionResult.session.actionPanel.pendingQuestion = undefined;
       }
 
@@ -2337,6 +2362,8 @@ export class SlackHandler {
       }
       // The opening reaches the model now: the goal has had its first turn.
       this.markGoalOpeningStarted(event, channel, originalThreadTs);
+      // The message is taken: its turn runs now (a host waiting on it — `onTurnAccepted` — hears so).
+      this.noteTurnAccepted(event.channel, event.ts);
 
       agentSession = this.createAgentSession(sessionResult, wrappedSay, {
         channel: activeChannel,
@@ -2359,6 +2386,8 @@ export class SlackHandler {
         // #785: a dashboard send's ref — survives the text rewrites above (routed continuation,
         // follow-up prompt, directive remainder), so the panel still finds its own instruction.
         clientRef: isClientRef(event.dashboardClientRef) ? event.dashboardClientRef : undefined,
+        // #853 — the plan-mode notice, prepended to the model's prompt (never recorded as the user's words).
+        promptNotice: planTurn.notice,
       });
 
       const continuationHandler: ContinuationHandler = {
@@ -2645,6 +2674,8 @@ export class SlackHandler {
       literalPrompt?: boolean;
       /** #785 — the dashboard send's ref (`event.dashboardClientRef`), recorded on its user turn. */
       clientRef?: string;
+      /** #853 — the plan-mode notice of a session whose plan is not started (`applySessionPlanTurn`). */
+      promptNotice?: string;
       /**
        * Turn generation this dispatch owns (`ssot.md:116-120`, A28). Captured
        * from the dispatch request and passed down verbatim — the surface
@@ -2700,6 +2731,7 @@ export class SlackHandler {
       hostTurn: context.hostTurn === true,
       literalPrompt: context.literalPrompt === true,
       clientRef: context.clientRef,
+      ...(context.promptNotice ? { promptNotice: context.promptNotice } : {}),
       // Same captured token, for the executor's own late-write fence.
       followupTurnEpoch: expectedTurnEpoch,
     };
@@ -2829,6 +2861,39 @@ export class SlackHandler {
    * run? `handleMessage` returns once a message behind a busy slot is queued,
    * so a host that injected one asks this to tell "ran" from "still ahead".
    */
+  /**
+   * #853 — hear when the message `channel:ts`, one a host hands to `handleMessage`, is taken:
+   * its turn reaches the model, or it is stored in the durable follow-up queue (behind a running
+   * turn, or parked for the restart's Resume). Taken means running or durably stored — never
+   * held in memory only. `handleMessage` itself resolves only after the whole run (and its
+   * drain), so it is no receipt. A message the pipeline refuses, halts, drops or keeps only in
+   * memory (a compaction stash) never calls back. Returns the unregister (call it once
+   * `handleMessage` settled).
+   */
+  onTurnAccepted(channel: string, ts: string, accepted: () => void): () => void {
+    const key = `${channel}:${ts}`;
+    const waiters = (this.turnAcceptanceWaiters ??= new Map());
+    waiters.set(key, accepted);
+    return () => {
+      if (waiters.get(key) === accepted) waiters.delete(key);
+    };
+  }
+
+  private turnAcceptanceWaiters?: Map<string, () => void>;
+
+  /** The message `channel:ts` was taken (see {@link onTurnAccepted}): its waiter, once. Never throws. */
+  private noteTurnAccepted(channel: string, ts: string): void {
+    const key = `${channel}:${ts}`;
+    const waiter = this.turnAcceptanceWaiters?.get(key);
+    if (!waiter) return;
+    this.turnAcceptanceWaiters?.delete(key);
+    try {
+      waiter();
+    } catch (error) {
+      this.logger.warn('A turn-acceptance waiter raised', { key, error: (error as Error)?.message ?? String(error) });
+    }
+  }
+
   isFollowupPending(channel: string, ts: string): boolean {
     return this.followupQueue?.holdsPending(channel, ts) ?? false;
   }
@@ -4094,8 +4159,11 @@ export class SlackHandler {
     if (result.status === 'duplicate') {
       // Slack redelivery of an event already parked — one item, one receipt.
       this.logger.debug('Follow-up duplicate event ignored', { sessionKey, itemId: result.item.id });
+      this.noteTurnAccepted(event.channel, event.ts);
       return;
     }
+    // Stored: the message will run behind the turn in flight (#853 — a host waiting on it hears so).
+    this.noteTurnAccepted(event.channel, event.ts);
 
     // The receipt AND both controls, in ONE paint, BEFORE the steer (09 §3.1,
     // corrected 2026-09-21). The controls used to wait for the steer to answer,
@@ -5347,6 +5415,9 @@ export class SlackHandler {
         channel: event.channel,
         ts: event.ts,
       });
+      // Stored in the queue: taken, as a queued message is (#853 — a plan's 시작 must not be put
+      // back while its words wait in the queue for the restart's Resume).
+      this.noteTurnAccepted(event.channel, event.ts);
     } else {
       this.logger.warn('Message refused — shutdown preparation in progress', {
         channel: event.channel,

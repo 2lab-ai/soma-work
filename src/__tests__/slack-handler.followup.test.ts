@@ -431,6 +431,102 @@ describe('SlackHandler — follow-up queue host', () => {
     expect(items()[0].state).toBe('resolved');
   });
 
+  /**
+   * #853 — a host that hands a message to `handleMessage` (the dashboard's 시작 of a plan) needs
+   * a receipt: `handleMessage` resolves only after the whole run. Taken = its turn reaches the
+   * model, or it is stored behind the running turn. A message that never ran is not taken.
+   */
+  describe('turn acceptance (#853)', () => {
+    it('A1 — an idle message is taken when its turn reaches the model, before the turn ends', async () => {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const taken = vi.fn();
+      handler.onTurnAccepted(CHANNEL, '222.333', taken);
+      const run = handler.handleMessage(message({ ts: '222.333' }), say());
+      await tick();
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(taken).toHaveBeenCalledTimes(1);
+      gate.resolve({ hasPendingChoice: false });
+      await run;
+      expect(taken).toHaveBeenCalledTimes(1);
+    });
+
+    it('A2 — a message behind a running turn is taken once it is stored in the queue', async () => {
+      const { settle } = await startBusyTurn();
+      const taken = vi.fn();
+      handler.onTurnAccepted(CHANNEL, '333.444', taken);
+      await handler.handleMessage(message({ ts: '333.444', text: '다음' }), say());
+      expect(items()).toHaveLength(1);
+      expect(taken).toHaveBeenCalledTimes(1);
+      await settle();
+    });
+
+    it('A3 — a message whose session init halts is never taken; the unregister forgets the waiter', async () => {
+      initialize.mockImplementationOnce(async () => ({
+        session: registrySession,
+        sessionKey: SESSION_KEY,
+        isNewSession: false,
+        userName: 'Owner',
+        workingDirectory: '/tmp/work',
+        abortController: new AbortController(),
+        halted: true,
+      }));
+      const taken = vi.fn();
+      const unwatch = handler.onTurnAccepted(CHANNEL, '444.555', taken);
+      await handler.handleMessage(message({ ts: '444.555' }), say());
+      expect(startWithContinuation).not.toHaveBeenCalled();
+      expect(taken).not.toHaveBeenCalled();
+      unwatch();
+      await handler.handleMessage(message({ ts: '444.555' }), say());
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(taken).not.toHaveBeenCalled();
+    });
+
+    it('A5 — a message parked while the host prepares to shut down is taken: it waits in the queue (review #858 R2)', async () => {
+      handler.prepareFollowupShutdown();
+      const taken = vi.fn();
+      handler.onTurnAccepted(CHANNEL, '666.777', taken);
+      await handler.handleMessage(message({ ts: '666.777', text: '# 작업 계획 v2 — 시작' }), say());
+      expect(startWithContinuation).not.toHaveBeenCalled();
+      expect(items().map((i: any) => i.message.ts)).toEqual(['666.777']);
+      expect(taken).toHaveBeenCalledTimes(1);
+    });
+
+    it('A6 — a halted message is never taken, a compaction stash included: it lives in memory only (review #858 R3)', async () => {
+      initialize.mockImplementationOnce(async () => ({
+        session: registrySession,
+        sessionKey: SESSION_KEY,
+        isNewSession: false,
+        userName: 'Owner',
+        workingDirectory: '/tmp/work',
+        abortController: new AbortController(),
+        halted: true,
+        // Whatever an initializer might say about a stash: a restart drops it.
+        stashed: true,
+      }));
+      const taken = vi.fn();
+      handler.onTurnAccepted(CHANNEL, '777.888', taken);
+      await handler.handleMessage(message({ ts: '777.888' }), say());
+      expect(startWithContinuation).not.toHaveBeenCalled();
+      expect(taken).not.toHaveBeenCalled();
+    });
+
+    it('A4 — the host’s verbatim message (a plan start) is never pushed into the running turn', async () => {
+      const steerTurn = vi.fn();
+      claudeHandler.steerTurn = steerTurn;
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(
+        message({ ts: '555.666', text: '# 작업 계획 v2 — 시작', routeContext: { verbatimPrompt: true } }),
+        say(),
+      );
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(items().map((i: any) => i.state)).toEqual(['queued']);
+      await settle();
+      // Its own turn, once the running one ended.
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it('fences two near-simultaneous messages — one dispatches, the other queues', async () => {
     const gate = deferred<any>();
     startWithContinuation.mockImplementationOnce(() => gate.promise);

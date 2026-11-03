@@ -5,7 +5,8 @@
  *   R2 without it: no gate, nothing saved.
  *   R3 `submitTaskPlan` saves the checked plan (awaiting, next revision); a refusal changes nothing.
  *   R4 `setTaskPlanGate` saves strictly; a failed save puts the previous gate back.
- *   R5 archive and revive keep the gate; load drops a malformed one and never gives a Slack session one.
+ *   R5 archive and revive keep the gate; load drops a malformed one.
+ *   R6 a Slack session keeps its gate too (#853): saved, loaded, submitted and decided by its key.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -90,8 +91,8 @@ describe('SessionRegistry — a task’s plan gate (plan mode)', () => {
     expect(fs.readFileSync(SESSIONS_FILE, 'utf8')).toBe(approved);
     // A task with no gate, or no task: refused.
     const plain = reg.createTask(BASE);
-    expect(() => reg.submitTaskPlan(plain.taskId!, PLAN)).toThrow(/not a plan-mode task/);
-    expect(() => reg.submitTaskPlan('99999999-9999-4999-8999-999999999999', PLAN)).toThrow(/not a plan-mode task/);
+    expect(() => reg.submitTaskPlan(plain.taskId!, PLAN)).toThrow(/not a plan-mode session/);
+    expect(() => reg.submitTaskPlan('99999999-9999-4999-8999-999999999999', PLAN)).toThrow(/not a plan-mode session/);
   });
 
   it('R4 — a failed save puts the previous gate back', () => {
@@ -108,7 +109,7 @@ describe('SessionRegistry — a task’s plan gate (plan mode)', () => {
     save.mockRestore();
   });
 
-  it('R5 — archive and revive keep it; load drops a malformed gate and never gives a Slack session one', () => {
+  it('R5 — archive and revive keep it; load drops a malformed gate, and keeps a Slack session’s (#853)', () => {
     const reg = new SessionRegistry();
     const task = reg.createTask({ ...BASE, planMode: true });
     const gate = reg.submitTaskPlan(task.taskId!, PLAN);
@@ -160,6 +161,36 @@ describe('SessionRegistry — a task’s plan gate (plan mode)', () => {
     expect(loaded.loadSessions()).toBe(3);
     expect(loaded.getSessionByTaskId('55555550-5555-4555-8555-555555555555')?.taskPlan).toBeUndefined();
     expect(loaded.getSessionByTaskId('55555551-5555-4555-8555-555555555555')?.taskPlan).toEqual(gate);
-    expect(loaded.getSession('C555', '1700000005.000100')?.taskPlan).toBeUndefined();
+    expect(loaded.getSession('C555', '1700000005.000100')?.taskPlan).toEqual(gate);
+  });
+
+  it('R6 — a Slack session in plan mode: saved, back after a restart, submitted and decided by its key (#853)', () => {
+    const reg = new SessionRegistry();
+    const session = reg.createSession('U1', 'User', 'C777', '1700000007.000100');
+    const key = reg.getSessionKey('C777', '1700000007.000100');
+    session.taskPlan = { state: 'drafting', revision: 0, updatedAt: 1 };
+    reg.saveSessions();
+    const gate = reg.submitSessionPlan(key, PLAN);
+    expect(gate).toMatchObject({ state: 'awaiting', revision: 1, plan: { summary: '계획 모드를 넣는다' } });
+    expect(session.taskPlan).toEqual(gate);
+    const after = new SessionRegistry();
+    after.loadSessions();
+    expect(after.getSession('C777', '1700000007.000100')?.taskPlan).toEqual(gate);
+
+    reg.setSessionPlanGate(key, { ...gate, state: 'approved' });
+    expect(session.taskPlan?.state).toBe('approved');
+    // A failed save puts the previous gate back.
+    const save = vi.spyOn(reg as any, 'saveSessionsOrThrow').mockImplementation(() => {
+      throw new Error('ENOSPC');
+    });
+    expect(() => reg.setSessionPlanGate(key, { ...gate, state: 'cancelled' })).toThrow('ENOSPC');
+    expect(session.taskPlan?.state).toBe('approved');
+    save.mockRestore();
+    // A session with no plan mode, or none at all: refused.
+    reg.createSession('U1', 'User', 'C778', '1700000008.000100');
+    expect(() => reg.submitSessionPlan(reg.getSessionKey('C778', '1700000008.000100'), PLAN)).toThrow(
+      /not a plan-mode session/,
+    );
+    expect(() => reg.setSessionPlanGate('work:C9:9.9', gate)).toThrow(/not a plan-mode session/);
   });
 });

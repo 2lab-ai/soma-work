@@ -227,7 +227,7 @@ import {
   type TaskNoticeDeliverer,
 } from './task-turn/task-notice-deliverer';
 import { TASK_NOTIFICATION_LEDGER_FILENAME, TaskNotificationLedger } from './task-turn/task-notification-ledger';
-import { createTaskPlanDecider } from './task-turn/task-plan-decision';
+import { createSlackPlanDecider, createTaskPlanDecider } from './task-turn/task-plan-decision';
 import {
   createTaskTurnController,
   type TaskCommandResponse,
@@ -242,6 +242,11 @@ import { productionSettingsRegistry } from './user-settings-registry-production'
 import { WorkingDirectoryManager } from './working-directory-manager';
 
 const logger = new Logger('Main');
+
+/** #853 — the thread note when a Slack session's plan waits for its owner. */
+const PLAN_WAITING_NOTE =
+  '📋 작업 계획이 올라왔어요 — 대시보드에서 확인하고 시작·취소하거나, 고칠 점을 이 스레드에 보내세요';
+const PLAN_WAITING_LINK = '카드 열기';
 
 async function start() {
   const startTime = Date.now();
@@ -957,6 +962,13 @@ async function start() {
       actorUserId?: string,
       /** #785 — the ref the panel gave its pending copy; recorded on the turn this send becomes. */
       clientRef?: string,
+      /**
+       * #853 — `onAccepted`: called once the message is taken (its turn reaches the model, or it is
+       * queued behind a running turn) — `handleMessage` resolves only after the whole run.
+       * `verbatim`: the host's own words, dispatched as written (no command routing, no `!`
+       * steer, never pushed into a running turn — its own turn, like a goal's opening).
+       */
+      extra: { onAccepted?: () => void; verbatim?: true } = {},
     ): Promise<{ channel: string; ts: string } | undefined> => {
       const session = claudeHandler.getSessionByKey(sessionKey);
       if (!session) {
@@ -1026,19 +1038,27 @@ async function start() {
       }
       const ts = echoTs || String(Date.now() / 1000);
       onSent?.({ channel: session.channelId, ts });
-      await slackHandler.handleMessage(
-        {
-          type: 'message',
-          channel: session.channelId,
-          thread_ts: session.threadTs,
-          text: message,
-          user: sender,
-          ts,
-          ...(files ? { files } : {}),
-          ...(clientRef ? { dashboardClientRef: clientRef } : {}),
-        } as any,
-        dashboardSay,
-      );
+      const unwatch = extra.onAccepted
+        ? slackHandler.onTurnAccepted(session.channelId, ts, extra.onAccepted)
+        : undefined;
+      try {
+        await slackHandler.handleMessage(
+          {
+            type: 'message',
+            channel: session.channelId,
+            thread_ts: session.threadTs,
+            text: message,
+            user: sender,
+            ts,
+            ...(files ? { files } : {}),
+            ...(clientRef ? { dashboardClientRef: clientRef } : {}),
+            ...(extra.verbatim ? { routeContext: { verbatimPrompt: true } } : {}),
+          } as any,
+          dashboardSay,
+        );
+      } finally {
+        unwatch?.();
+      }
       logger.info('Dashboard: command sent to session', {
         sessionKey,
         messageLength: message.length,
@@ -1554,21 +1574,66 @@ async function start() {
       });
       return held ?? taskController.answer({ sessionKey, askId, answer, actorUserId });
     });
-    // Plan mode (SSOT 2026-11-02) — the `plan` tool saves through the registry; the dashboard's
-    // 시작 / 취소 decide the revision the user saw (시작 starts the work with the plan).
+    // Plan mode (SSOT 2026-11-02; every session since #853) — the `plan` tool saves through the
+    // registry by session key; a Slack thread hears that a plan waits. The dashboard's 시작 / 취소
+    // decide the revision the user saw (시작 starts the work with the plan).
+    /** #853 — a Slack session's thread: a plan is waiting for its owner (the card link). Never throws. */
+    const notifyPlanWaiting = (sessionKey: string, revision: number): void => {
+      const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
+      if (!session || session.slackless === true || !session.channelId || !session.threadTs) return;
+      const url = session.ownerId ? getDashboardSessionUrl(session.ownerId, sessionKey) : undefined;
+      const text = `${PLAN_WAITING_NOTE} (v${revision})${url ? ` <${url}|${PLAN_WAITING_LINK}>` : ''}`;
+      void slackHandler
+        .getSlackApi()
+        .postSystemMessage(session.channelId, text, { threadTs: session.threadTs })
+        .catch((error: unknown) => logger.warn('Plan waiting note not posted', { sessionKey, error }));
+    };
     setPlanHost({
-      submitTaskPlan: (taskId, input) => claudeHandler.getSessionRegistry().submitTaskPlan(taskId, input),
+      submitPlan: (sessionKey, input) => {
+        const gate = claudeHandler.getSessionRegistry().submitSessionPlan(sessionKey, input);
+        notifyPlanWaiting(sessionKey, gate.revision);
+        return gate;
+      },
     });
-    setDashboardTaskPlanHandler(
-      createTaskPlanDecider({
-        getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
-        setTaskPlanGate: (taskId, gate) => claudeHandler.getSessionRegistry().setTaskPlanGate(taskId, gate),
-        controller: taskController,
-        // #777 — 시작 · 취소 are the owner's call: someone the owner has not approved is refused, not held.
-        mayDecide: (sessionKey, session, actorUserId) =>
-          instructionApprovals.allows({ sessionKey, session, senderId: actorUserId }),
-        logger: new Logger('TaskPlanDecider'),
-      }),
+    const taskPlanDecider = createTaskPlanDecider({
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      setTaskPlanGate: (taskId, gate) => claudeHandler.getSessionRegistry().setTaskPlanGate(taskId, gate),
+      controller: taskController,
+      // #777 — 시작 · 취소 are the owner's call: someone the owner has not approved is refused, not held.
+      mayDecide: (sessionKey, session, actorUserId) =>
+        instructionApprovals.allows({ sessionKey, session, senderId: actorUserId }),
+      logger: new Logger('TaskPlanDecider'),
+    });
+    // #853 — a Slack session's plan: 시작 sends it into the thread as the decider's instruction (the Slack path).
+    const slackPlanDecider = createSlackPlanDecider({
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      setPlanGate: (key, gate) => claudeHandler.getSessionRegistry().setSessionPlanGate(key, gate),
+      // Taken (its turn runs, or it waits in the queue behind a running one) — not the whole run:
+      // a turn that fails after it started is the work's failure, not a start that did not happen.
+      sendPlan: (key, text, actorUserId) =>
+        new Promise<boolean>((resolve) => {
+          injectDashboardMessage(key, text, undefined, [], actorUserId, undefined, {
+            onAccepted: () => resolve(true),
+            verbatim: true,
+          }).then(
+            () => resolve(false),
+            (error) => {
+              logger.warn('Plan start: the plan could not be sent into the thread', {
+                sessionKey: key,
+                error: (error as Error)?.message ?? String(error),
+              });
+              resolve(false);
+            },
+          );
+        }),
+      mayDecide: (sessionKey, session, actorUserId) =>
+        instructionApprovals.allows({ sessionKey, session, senderId: actorUserId }),
+      logger: new Logger('SlackPlanDecider'),
+    });
+    setDashboardTaskPlanHandler((request) =>
+      claudeHandler.getSessionRegistry().getSessionByKey(request.sessionKey)?.slackless === true
+        ? taskPlanDecider(request)
+        : slackPlanDecider(request),
     );
     // #600 ⑥ — the dashboard's "new task" as a Slack-less task: folder, task, first instruction.
     const taskLauncher = createTaskLauncher({

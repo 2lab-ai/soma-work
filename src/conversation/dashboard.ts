@@ -2477,9 +2477,9 @@ export interface KanbanTaskPlan {
   decidedBy?: string;
 }
 
-/** Plan mode — a Slack-less task's gate for its card; undefined for any other session. */
-export function taskPlanToKanban(s: { slackless?: boolean; taskPlan?: TaskPlanGate }): KanbanTaskPlan | undefined {
-  const gate = s.slackless === true ? s.taskPlan : undefined;
+/** Plan mode — a session's plan gate for its card (a task or a Slack thread — #853); none without plan mode. */
+export function taskPlanToKanban(s: { taskPlan?: TaskPlanGate }): KanbanTaskPlan | undefined {
+  const gate = s.taskPlan;
   if (!gate) return undefined;
   const plan = gate.plan;
   return {
@@ -2514,9 +2514,9 @@ function followUpOf(s: {
   return { reason: f.reason.trim(), at: finiteNumber(f.at) ?? 0 };
 }
 
-/** Plan mode — an idle task whose plan waits for its owner asks for them (NEEDS YOU). */
-function planAsks(s: { slackless?: boolean; taskPlan?: TaskPlanGate; activityState?: string }): boolean {
-  return s.slackless === true && s.taskPlan?.state === 'awaiting' && (s.activityState || 'idle') === 'idle';
+/** Plan mode — an idle session whose plan waits for its owner asks for them (NEEDS YOU), Slack thread or task (#853). */
+function planAsks(s: { taskPlan?: TaskPlanGate; activityState?: string }): boolean {
+  return s.taskPlan?.state === 'awaiting' && (s.activityState || 'idle') === 'idle';
 }
 
 /**
@@ -2691,7 +2691,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...(s.slackless === true ? { slackless: true as const, ...noticeFailuresOf(key) } : {}),
     ...(s.slackless === true && s.kind === 'epic' ? { kind: 'epic' as const, epic: epicBundle(s) } : {}),
     // Plan mode — the gate (its plan is fetched).
-    ...(s.slackless === true && s.taskPlan ? { taskPlan: taskPlanToKanban(s) } : {}),
+    ...(s.taskPlan ? { taskPlan: taskPlanToKanban(s) } : {}),
     ...(s.slackless === true && s.parentTaskId
       ? {
           parentTaskId: s.parentTaskId,
@@ -4402,12 +4402,12 @@ export async function registerDashboardRoutes(
 
   // ── Plan mode (SSOT 2026-11-02): a task's plan, its full page, and 시작 / 취소 ──
 
-  /** A plan-mode task's live record for a read of its plan (any signed-in viewer of the board). */
+  /** A plan-mode session's live record for a read of its plan (any signed-in viewer of the board) — a task or a Slack thread (#853). */
   const planTaskOf = (wireKey: string, reply: any): { key: string; session: any } | null => {
     const key = resolveSelfActionKey(wireKey, reply);
     if (key === null) return null;
     const session = _getSessionsFn?.()?.get(key);
-    if (!session || session.slackless !== true || !session.taskPlan) {
+    if (!session || !session.taskPlan) {
       reply.status(404).send({ error: 'no plan for this task' });
       return null;
     }
@@ -19731,14 +19731,18 @@ function ntBuildPayload(state, attachments, requestId) {
     body.plan = state.plan !== false;
     return body;
   }
+  // #853 — the 작업 계획 switch rides a Slack task too (always sent: off is a choice too). While it
+  // plans, autogoal and autoz are off — a goal or a forced skill would drive work the plan holds back.
+  var planOn = state.plan !== false;
   return {
     requestId: requestId,
     prompt: state.prompt,
     model: state.model,
     effort: state.effort,
     channelId: state.channelId,
-    autogoal: state.autogoal,
-    autoz: state.autoz,
+    autogoal: planOn ? false : state.autogoal,
+    autoz: planOn ? false : state.autoz,
+    plan: planOn,
     attachments: attachments.map(function (a) {
       return { name: a.name, mimetype: a.mimetype, data: a.data };
     }),
@@ -19928,10 +19932,10 @@ function ntRender() {
     epicChip.hidden = !(isTask && _ntCtx.epicTasks);
     epicChip.setAttribute('aria-pressed', isTask && _ntCtx.epicTasks && _ntState.kind === 'epic' ? 'true' : 'false');
   }
-  // Plan mode — the 작업 계획 switch, for a dashboard task (on unless turned off).
+  // Plan mode — the 작업 계획 switch, for every new task (on unless turned off; #853).
   var planWrap = ntEl('nt-plan-wrap');
   if (planWrap) {
-    planWrap.hidden = !isTask;
+    planWrap.hidden = false;
     ntEl('nt-plan').checked = _ntState.plan !== false;
   }
   var folderSel = ntEl('nt-folder');
@@ -19973,8 +19977,16 @@ function ntRender() {
         : '작업을 올릴 수 있는 채널이 없습니다 — repo가 연결된 Slack 채널에 참여해 주세요',
     );
   }
-  ntEl('nt-autogoal').checked = !!_ntState.autogoal;
-  ntEl('nt-autoz').checked = !!_ntState.autoz;
+  // #853 — while the task plans first, autogoal and autoz do not apply: shown off and locked (the server agrees).
+  var planning = _ntState.plan !== false;
+  ['autogoal', 'autoz'].forEach(function (k) {
+    var sw = ntEl('nt-' + k);
+    if (!sw) return;
+    sw.checked = !planning && !!_ntState[k];
+    sw.disabled = planning;
+    var wrap = sw.closest ? sw.closest('label') : null;
+    if (wrap) wrap.classList.toggle('is-off-by-plan', planning);
+  });
   ntRenderBattery();
   paintNtComposer();
 }
@@ -20965,6 +20977,8 @@ function ntToggle(which) {
   if (!_ntState) return;
   var sw = ntEl('nt-' + which);
   _ntState[which] = !!(sw && sw.checked);
+  // #853 — the plan switch locks or frees autogoal / autoz.
+  if (which === 'plan') ntRender();
   if (navigator.vibrate) {
     try {
       navigator.vibrate(8);

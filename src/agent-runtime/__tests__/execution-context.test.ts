@@ -217,6 +217,13 @@ describe('executionContextForTask — symlinks (#613 R1)', () => {
 });
 
 describe('executionContextFromSlack (#597)', () => {
+  it('#853 — carries planPending when the session’s plan is not started; none otherwise', () => {
+    const planning = executionContextFromSlack({ user: 'U1', sessionKey: 'work:C1:1.1', planPending: true });
+    expect((planning as { planPending?: true }).planPending).toBe(true);
+    const plain = executionContextFromSlack({ user: 'U1', sessionKey: 'work:C1:1.1' });
+    expect((plain as { planPending?: true }).planPending).toBeUndefined();
+  });
+
   it('uses the Slack event user, the thread key and the turn directory', () => {
     const ctx = executionContextFromSlack({
       user: 'U1',
