@@ -123,8 +123,9 @@ export function buildModelCommandRunResponse(args: unknown, context: ModelComman
       // server's write or a superseded turn's late callback can replace).
       const own = context.lastReceiptId ? host.acks?.[context.lastReceiptId] : undefined;
       const caughtUp = own !== undefined;
-      const { acks: _acks, ...hostView } = host;
-      result.payload.host = context.lastReceiptId ? { ...hostView, lastWrite: own } : hostView;
+      // `lastWrite` is only ever this server's own write — the file's latest may be another turn's.
+      const { acks: _acks, lastWrite: _latest, ...hostView } = host;
+      result.payload.host = own ? { ...hostView, lastWrite: own } : hostView;
       result.payload.hostPending = !!context.lastReceiptId && !caughtUp;
       if (caughtUp) {
         // The host handled THIS server's last write: its snapshot is the truth, and later writes lock against its

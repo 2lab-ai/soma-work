@@ -723,6 +723,26 @@ describe('host-confirmed receipt', () => {
     expect(gb.payload.host.lastWrite).toMatchObject({ receiptId: wb.payload.receiptId, ok: false });
   });
 
+  it('before this server writes, `host.lastWrite` is absent — a previous turn’s write is not yours (fable R3 P3)', () => {
+    const c = ctx();
+    fs.writeFileSync(file, JSON.stringify(hostReceipt('r_from_another_turn', 3)));
+    const g = buildModelCommandRunResponse({ commandId: 'GET_SESSION' }, c) as any;
+    expect(g.payload.host.sequence).toBe(3);
+    expect(g.payload.host).not.toHaveProperty('lastWrite');
+    expect(g.payload.hostPending).toBe(false);
+  });
+
+  it('a receipt with a corrupt link never breaks GET_SESSION (astra R3 P2)', () => {
+    const c = ctx();
+    const w = buildModelCommandRunResponse(add, c) as any;
+    const r = hostReceipt(w.payload.receiptId, 9);
+    fs.writeFileSync(file, JSON.stringify({ ...r, session: { ...r.session, prs: [null] } }));
+    const g = buildModelCommandRunResponse({ commandId: 'GET_SESSION' }, c) as any;
+    expect(g.ok).toBe(true);
+    expect(g.payload.host).toBeUndefined();
+    expect(c.session?.sequence).not.toBe(9);
+  });
+
   it('no receipt file (or none yet): GET_SESSION is the server copy as before', () => {
     const c = parseModelCommandContext(JSON.stringify({ channel: 'C1', threadTs: '1.1', user: 'U1' }));
     const g = buildModelCommandRunResponse({ commandId: 'GET_SESSION' }, c) as any;
