@@ -18,8 +18,22 @@ function layoutPreset(doc, surface, plan) {
 function layoutOf(doc, builtins, preset, mode, surface) {
   var p = doc && doc.presets ? doc.presets[preset] : null;
   var m = p ? p[mode] : null;
-  if (m && m[surface]) return m[surface];
-  return builtins[preset][mode === 'advanced' ? 'advanced' : 'minimal'][surface];
+  var b = builtins[preset][mode === 'advanced' ? 'advanced' : 'minimal'][surface];
+  if (m && m[surface]) return surface === 'detail' ? detailWithZones(m[surface], b) : m[surface];
+  return b;
+}
+// A detail card saved before its zones (SSOT 2026-11-03 — a device copy older than the server's answer): the
+// preset's title bar and tab bar, a hidden task list as the 작업 tab off — view-layout.ts normalizeDetail's rule.
+function detailWithZones(d, b) {
+  if (!d || typeof d !== 'object' || (Array.isArray(d.head) && Array.isArray(d.tabs))) return d;
+  var out = {};
+  for (var k in d) if (Object.prototype.hasOwnProperty.call(d, k)) out[k] = d[k];
+  if (!Array.isArray(d.head)) out.head = b.head;
+  if (!Array.isArray(d.tabs)) {
+    out.tabs = [];
+    for (var i = 0; i < b.tabs.length; i++) out.tabs.push(d.tasks === 'none' && b.tabs[i].id === 'tasks' ? { id: 'tasks', on: false } : b.tabs[i]);
+  }
+  return out;
 }
 // What a mode draws: the task card (face + open card) from its preset, the detail card from its own.
 function layoutsFor(doc, builtins, mode, plan) {
