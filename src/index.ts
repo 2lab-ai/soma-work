@@ -235,7 +235,7 @@ import {
 import { TASK_NOTIFICATION_LEDGER_FILENAME, TaskNotificationLedger } from './task-turn/task-notification-ledger';
 import type { TaskPlanDoc } from './task-turn/task-plan';
 import { createSlackPlanDecider, createTaskPlanDecider } from './task-turn/task-plan-decision';
-import { createRestartNoticeStart, createTaskRestartResumer } from './task-turn/task-restart-resume';
+import { createRestartNoticeStart, createTaskRestartResumer, cutTurnAuthor } from './task-turn/task-restart-resume';
 import {
   createTaskTurnController,
   type TaskCommandRequest,
@@ -2436,10 +2436,9 @@ async function start() {
               logger: new Logger('TaskRestartResume'),
               goalsResumed: () => goalsResumedAtBoot,
               // A record saved before the turn's initiator was kept: the cut turn's author, from its conversation.
-              readCutTurnAuthor: async (session) => {
+              readCutTurnAuthor: async (session, cutTurnId) => {
                 const record = session.conversationId ? await getConversation(session.conversationId) : null;
-                const lastUserTurn = record?.turns.filter((turn) => turn.role === 'user').slice(-1)[0];
-                return lastUserTurn?.userId || undefined;
+                return record ? cutTurnAuthor(record.turns, cutTurnId) : undefined;
               },
             })
               .resume(cutTasks)

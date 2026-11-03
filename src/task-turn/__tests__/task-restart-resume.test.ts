@@ -25,10 +25,12 @@ import { TASK_GOAL_START_MAX_RETRIES } from '../task-goal-loop';
 import {
   createRestartNoticeStart,
   createTaskRestartResumer,
+  cutTurnAuthor,
   type RestartCutTaskRef,
   restartResumeSkip,
   TASK_RESTART_NOTICE,
   TASK_RESTART_TEXT,
+  taskTurnStartedAt,
 } from '../task-restart-resume';
 import { createTaskTurnController, type TaskCommandRequest, type TaskCommandResponse } from '../task-turn-controller';
 import { createTaskTurnExecutor } from '../task-turn-executor';
@@ -224,6 +226,50 @@ describe('R9 — a record saved before the initiator was kept: the cut turn’s 
     const h = resumer(undefined);
     expect((await h.resumer.resume([legacy])).get('task:a')).toMatchObject({ status: 'skipped' });
     expect(h.start).not.toHaveBeenCalled();
+  });
+});
+
+describe('R10 — the author is the cut turn’s, never an earlier input (trinity R4, astra P1)', () => {
+  const cut = 'task:11111111-2222-4333-8444-555555555555:1793691894606:d8316ab4-aace-43e4-839e-c56585058e50';
+  it('reads the start time the turn id carries', () => {
+    expect(taskTurnStartedAt(cut)).toBe(1793691894606);
+    expect(taskTurnStartedAt('nonsense')).toBeUndefined();
+  });
+  it('the last user turn recorded at or after the cut turn started — its author', () => {
+    const turns = [
+      { role: 'user', timestamp: 1793691000000, userId: 'UADMIN' },
+      { role: 'assistant', timestamp: 1793691000500 },
+      { role: 'user', timestamp: 1793691894700, userId: 'U0APPROVEDWRITER' },
+      { role: 'assistant', timestamp: 1793691895000 },
+    ];
+    expect(cutTurnAuthor(turns, cut)).toBe('U0APPROVEDWRITER');
+  });
+  it('the cut turn’s input never reached the disk: the earlier input is no proof — none', () => {
+    const turns = [
+      { role: 'user', timestamp: 1793691000000, userId: 'UADMIN' },
+      { role: 'assistant', timestamp: 1793691000500 },
+    ];
+    expect(cutTurnAuthor(turns, cut)).toBeUndefined();
+  });
+  it('the read awaited and the plan was cancelled meanwhile: not resumed', async () => {
+    const live: Record<string, unknown> = {
+      slackless: true,
+      activityState: 'idle',
+      lastTurnOutcome: { turnId: 't1', outcome: 'interrupted' },
+    };
+    const start = vi.fn(async () => ({ status: 202, body: {} }));
+    const out = await createTaskRestartResumer({
+      controller: { start },
+      getSession: () => live as unknown as ConversationSession,
+      logger: { info: vi.fn(), warn: vi.fn() },
+      schedule: () => {},
+      readCutTurnAuthor: async () => {
+        live.taskPlan = { state: 'cancelled', revision: 1 };
+        return OWNER;
+      },
+    }).resume([{ sessionKey: 'task:a', ownerId: OWNER, turnId: 't1' }]);
+    expect(out.get('task:a')).toMatchObject({ status: 'skipped' });
+    expect(start).not.toHaveBeenCalled();
   });
 });
 
