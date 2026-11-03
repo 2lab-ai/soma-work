@@ -197,14 +197,14 @@ function plain(title: string | undefined): string {
   return title ? escapeSlackMrkdwn(title) : '';
 }
 
-/** Slack takes 50 blocks a message; the summary and per-session context keep a few. */
-const MAX_LIST_BLOCKS = 40;
+/** Slack takes 50 blocks a message; the summary keeps one. */
+const MAX_LIST_BLOCKS = 49;
 
 /**
  * Every line under a heading, whole lines only, as many mrkdwn texts as it takes (each within Slack's 3,000-character
- * limit). Only past MAX_LIST_BLOCKS texts would the rest be counted instead of listed.
+ * limit), and whether all fit in `maxTexts`. Past it the rest are counted instead of listed.
  */
-function listTexts(heading: string, lines: string[], maxTexts = MAX_LIST_BLOCKS): string[] {
+function listTexts(heading: string, lines: string[], maxTexts: number): { texts: string[]; complete: boolean } {
   const budget = 2800;
   const texts: string[] = [];
   let cur = [`*${heading}*`];
@@ -224,7 +224,42 @@ function listTexts(heading: string, lines: string[], maxTexts = MAX_LIST_BLOCKS)
   }
   if (shown < lines.length) cur.push(`… and ${lines.length - shown} more`);
   texts.push(cur.join('\n'));
-  return texts;
+  return { texts, complete: shown === lines.length };
+}
+
+/** The item lists, full lines when they all fit in the message, else compact ones (number only) so every item is named. */
+function listSections(report: LeakReport): string[] {
+  const missedLines = (full: boolean) =>
+    report.missed.map(
+      (i) => `• ${ref(i)}${i.unverified ? ' (not read)' : ''}${full && i.title ? ` ${plain(i.title)}` : ''}`,
+    );
+  const wrongLines = (full: boolean) =>
+    report.wrongCard.map(
+      (w) => `• ${ref(w.item)} made by \`${w.creator}\`${full ? `, on \`${w.cards.join('`, `')}\`` : ''}`,
+    );
+  const sessionLines = report.bySession.map((r) => `\`${r.sessionKey}\`: ${r.missed} missed, ${r.wrong} wrong card`);
+  const build = (full: boolean) => {
+    const out: string[] = [];
+    let complete = true;
+    for (const [heading, lines] of [
+      ['Missed', missedLines(full)],
+      ['On the wrong card', wrongLines(full)],
+      ['Per session', sessionLines],
+    ] as const) {
+      if (lines.length === 0) continue;
+      const left = MAX_LIST_BLOCKS - out.length;
+      if (left <= 0) {
+        complete = false;
+        break;
+      }
+      const r = listTexts(heading, [...lines], left);
+      out.push(...r.texts);
+      complete &&= r.complete;
+    }
+    return { out, complete };
+  };
+  const full = build(true);
+  return full.complete ? full.out : build(false).out;
 }
 
 const section = (text: string) => ({ type: 'section', text: { type: 'mrkdwn', text } });
@@ -248,40 +283,10 @@ export function formatLinkLeakReport(
     );
   }
   lines.push(`Days in a row with nothing missed: ${opts.streak}.`);
+  // `baselineDays` counts days with bot items, as the alert does.
   if (opts.baselineDays < BASELINE_DAYS)
-    lines.push(`Baseline: day ${opts.baselineDays} of ${BASELINE_DAYS}, no alerts yet.`);
-  const blocks: any[] = [section(lines.join('\n'))];
-  const missedTexts =
-    missedCount > 0
-      ? listTexts(
-          'Missed',
-          report.missed.map((i) => `• ${ref(i)}${i.unverified ? ' (not read)' : ''} ${plain(i.title)}`.trim()),
-        )
-      : [];
-  const wrongTexts =
-    report.wrongCard.length > 0
-      ? listTexts(
-          'On the wrong card',
-          report.wrongCard.map((w) => `• ${ref(w.item)} made by \`${w.creator}\`, on \`${w.cards.join('`, `')}\``),
-          MAX_LIST_BLOCKS - missedTexts.length,
-        )
-      : [];
-  for (const text of [...missedTexts, ...wrongTexts]) blocks.push(section(text));
-  if (report.bySession.length > 0) {
-    blocks.push({
-      type: 'context',
-      elements: [
-        {
-          type: 'mrkdwn',
-          text: listTexts(
-            'Per session',
-            report.bySession.map((r) => `\`${r.sessionKey}\`: ${r.missed} missed, ${r.wrong} wrong card`),
-            1,
-          )[0],
-        },
-      ],
-    });
-  }
+    lines.push(`Baseline: day ${opts.baselineDays} of ${BASELINE_DAYS} with bot items, no alerts yet.`);
+  const blocks: any[] = [section(lines.join('\n')), ...listSections(report).map(section)];
   return { text, blocks };
 }
 
@@ -490,7 +495,7 @@ export class LinkLeakReporter {
       date: this.clock().date,
       alert: false,
       streak: zeroStreak(state.history),
-      baselineDays: state.history.length,
+      baselineDays: state.history.filter((h) => h.total > 0).length,
     });
   }
 
@@ -521,7 +526,7 @@ export class LinkLeakReporter {
         date,
         alert: shouldAlert(state.history, today),
         streak: zeroStreak(history),
-        baselineDays: history.length,
+        baselineDays: history.filter((h) => h.total > 0).length,
       });
       if (!(await this.deps.publish(formatted.text, formatted.blocks))) return;
       // The .bak holds the same good state, so a damaged live file never resets the baseline or re-posts the day.

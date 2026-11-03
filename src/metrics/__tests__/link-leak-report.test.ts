@@ -457,6 +457,52 @@ describe('link leak report (#835)', () => {
     }
   });
 
+  describe('K9 — review round 4 (astra-zhuge)', () => {
+    it('every item is named up to the collector’s 1,000: long titles fall back to compact lines (P2)', () => {
+      const many = Array.from({ length: 1000 }, (_, i) => ({
+        ...pr('2lab-ai/soma-work', 10_000 + i),
+        title: 'x'.repeat(200),
+      }));
+      const sessions = Array.from({ length: 40 }, (_, i) => `S${i}`);
+      const creators = new Map(many.map((m, i) => [m.url, sessions[i % 40]] as const));
+      const { blocks } = formatLinkLeakReport(computeLinkLeakReport(many, [], creators), {
+        date: '2026-11-03',
+        alert: false,
+        streak: 0,
+        baselineDays: 7,
+      });
+      expect(blocks.length).toBeLessThanOrEqual(50);
+      const text = blocks.map((b) => b.text?.text ?? '').join('\n');
+      for (let i = 0; i < 1000; i++) expect(text).toContain(`soma-work#${10_000 + i}>`);
+      expect(text).not.toMatch(/and \d+ more/);
+      for (const b of blocks) expect((b.text?.text ?? '').length).toBeLessThanOrEqual(3000);
+    });
+
+    it('the baseline notice counts days with bot items, as the alert does (P3)', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-base-'));
+      try {
+        const statePath = path.join(dir, 'link-leak-report.json');
+        const d = (n: number, total: number) => ({ date: `2026-10-${20 + n}`, total, missed: 0, wrong: 0 });
+        const history = [d(1, 0), d(2, 0), d(3, 0), d(4, 0), d(5, 3), d(6, 3), d(7, 3)];
+        fs.writeFileSync(statePath, JSON.stringify({ lastRunDate: '2026-10-27', history }));
+        const reporter = new LinkLeakReporter({
+          collectItems: vi.fn(async () => [pr('a/b', 1)]),
+          collectCards: () => [],
+          collectCreators: async () => new Map(),
+          publish: vi.fn(async () => true),
+          statePath,
+          timezone: 'Asia/Seoul',
+          hour: 9,
+          now: () => Date.parse('2026-11-03T00:30:00Z'),
+        });
+        const now = await reporter.runNow();
+        expect(now?.blocks[0].text.text).toContain('Baseline: day 3 of 7');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('K6 — LinkLeakReporter', () => {
     const dirs: string[] = [];
     afterEach(() => {
