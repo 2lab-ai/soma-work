@@ -1,6 +1,6 @@
 /**
- * Plan mode (SSOT 2026-11-02 — 작업 계획 모드) — a dashboard task made with the
- * plan toggle on is gated before it works.
+ * Plan mode (SSOT 2026-11-02 — 작업 계획 모드; every session since #853) — a session
+ * made with the plan toggle on is gated before it works.
  *
  *   drafting ──plan_submit──▶ awaiting ──시작──▶ approved   (the work starts)
  *      ▲                        │  └──취소──▶ cancelled

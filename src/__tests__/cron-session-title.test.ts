@@ -139,17 +139,6 @@ describe('applySummaryTitle — by registry key, so a Slack-less task works too 
     };
   }
 
-  it('a task: written by its task key, no Slack thread render', () => {
-    const task = { conversationId: 'conv-t', slackless: true, channelId: '' };
-    const registry = registryWith([['task:abc', task]]);
-    const hooks = { renderThread: vi.fn(), scheduleLiveUpdate: vi.fn() };
-    const out = applySummaryTitle(registry, 'conv-t', 'Summarized', hooks);
-    expect(out).toMatchObject({ outcome: 'applied', sessionKey: 'task:abc' });
-    expect(registry.updateSessionTitleByKey).toHaveBeenCalledWith('task:abc', 'Summarized');
-    expect(hooks.renderThread).not.toHaveBeenCalled();
-    expect(hooks.scheduleLiveUpdate).toHaveBeenCalledWith('task:abc');
-  });
-
   it('a Slack session: written by its key and its thread re-rendered (as before)', () => {
     const slack = { conversationId: 'conv-s', channelId: 'C1', threadTs: '1.1' };
     const registry = registryWith([['work:C1:1.1', slack]]);

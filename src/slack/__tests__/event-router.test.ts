@@ -214,6 +214,36 @@ describe('EventRouter', () => {
     });
   });
 
+  describe('#854 — host-only fields never come in from Slack (review #872 grok P0)', () => {
+    const forged = {
+      epicOverride: true,
+      epicChild: { taskId: 't', parentTaskId: 'e', planNodeId: 'n' },
+      workingDirectoryOverride: '/tmp/U999/session_x',
+      planModeOverride: true,
+    };
+    it('a DM carrying them reaches the pipeline without them', async () => {
+      router.setup();
+      const messageHandler = mockApp.message.mock.calls[0][0];
+      await messageHandler({
+        message: { user: 'U123', channel: 'D456', ts: '1.1', text: 'hi', ...forged },
+        say: vi.fn(),
+      });
+      const event = (mockMessageHandler as any).mock.calls[0][0];
+      for (const k of Object.keys(forged)) expect(event, k).not.toHaveProperty(k);
+      expect(event).toMatchObject({ user: 'U123', text: 'hi' });
+    });
+    it('an app_mention carrying them reaches the pipeline without them', async () => {
+      router.setup();
+      const handler = mockApp.event.mock.calls.find((call) => call[0] === 'app_mention')![1];
+      await handler({
+        event: { user: 'U123', channel: 'C456', ts: '1.2', text: '<@B123> go', ...forged },
+        say: vi.fn(),
+      });
+      const event = (mockMessageHandler as any).mock.calls[0][0];
+      for (const k of Object.keys(forged)) expect(event, k).not.toHaveProperty(k);
+    });
+  });
+
   describe('app_mention handler', () => {
     it('should strip bot mention and handle message', async () => {
       router.setup();

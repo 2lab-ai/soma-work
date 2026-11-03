@@ -793,3 +793,107 @@ describe('failed /compact does not re-arm auto-compact (compact retry loop)', ()
     expect(session.autoCompactSuppressedUntilMs).toBeNull();
   });
 });
+
+/**
+ * #891 T3 — the compaction is a step inside the user's turn, not its end. A
+ * `/compact` turn whose intercepted message still waits for its replay ended
+ * like finished work: the session went idle (the dashboard card read "완료")
+ * and the executive-summary countdown started, while the replay ran only once
+ * this turn's teardown let go — 2m20s later on a busy host (dev
+ * 2026-11-03 12:44:03 → 12:46:22Z). Like a turn with a continuation (#391),
+ * it keeps the session working until the replay takes over.
+ */
+describe('a /compact turn with a replay waiting is not the end of the work (#891)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function trackActivity(deps: any): string[] {
+    const states: string[] = [];
+    deps.claudeHandler.setActivityState.mockImplementation((_channel: string, _thread: string, state: string) => {
+      states.push(state);
+    });
+    return states;
+  }
+
+  it('stays working until the replay is handed off — no idle flash, no summary countdown', async () => {
+    let statesAtHandoff: string[] = [];
+    const rec = createDispatchRecorder();
+    let states: string[] = [];
+    const dispatch = vi.fn(async (ctx: any, text: string, opts?: any) => {
+      statesAtHandoff = [...states];
+      return rec.fn(ctx, text, opts);
+    });
+    const deps = createDeps(() => toAgentEvents(compactBoundarySdk()), dispatch);
+    states = trackActivity(deps);
+    deps.summaryTimer = { start: vi.fn(), cancel: vi.fn() };
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await new StreamExecutor(deps).execute(executeParams(thresholdSession(), say, '/compact'));
+
+    expect(rec.delivered).toEqual([STASHED]);
+    expect(statesAtHandoff).not.toContain('idle');
+    expect(deps.summaryTimer.start).not.toHaveBeenCalled();
+  });
+
+  it('goes idle when the replay cannot be handed off — never stuck "working"', async () => {
+    const rec = createDispatchRecorder(() => true);
+    const deps = createDeps(() => toAgentEvents(compactBoundarySdk()), rec.fn);
+    const states = trackActivity(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = thresholdSession();
+
+    await new StreamExecutor(deps).execute(executeParams(session, say, '/compact'));
+
+    expect(rec.delivered).toEqual([]);
+    expect(session.compactPendingDispatches).toHaveLength(1);
+    expect(states[states.length - 1]).toBe('idle');
+  });
+
+  it('leaves the replay turn its own end state — the handoff resolves only after that turn ended', async () => {
+    const rec = createDispatchRecorder();
+    let states: string[] = [];
+    // `dispatchPendingUserMessage` → `handleMessage` resolves after the replayed
+    // turn ran to its end (busy fence → `await processMessage`, or
+    // `await run.settled`): here it ended waiting on a question.
+    const dispatch = vi.fn(async (ctx: any, text: string, opts?: any) => {
+      states.push('working', 'waiting');
+      return rec.fn(ctx, text, opts);
+    });
+    const deps = createDeps(() => toAgentEvents(compactBoundarySdk()), dispatch);
+    states = trackActivity(deps);
+    deps.claudeHandler.getSessionRegistry().getActivityStateByKey = vi.fn(() => states[states.length - 1]);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await new StreamExecutor(deps).execute(executeParams(thresholdSession(), say, '/compact'));
+
+    expect(rec.delivered).toEqual([STASHED]);
+    expect(states[states.length - 1]).toBe('waiting');
+  });
+
+  it('goes idle when the handoff started no turn and nothing else runs', async () => {
+    const rec = createDispatchRecorder();
+    const deps = createDeps(() => toAgentEvents(compactBoundarySdk()), rec.fn);
+    const states = trackActivity(deps);
+    deps.claudeHandler.getSessionRegistry().getActivityStateByKey = vi.fn(() => states[states.length - 1]);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await new StreamExecutor(deps).execute(executeParams(thresholdSession(), say, '/compact'));
+
+    expect(rec.delivered).toEqual([STASHED]);
+    expect(states[states.length - 1]).toBe('idle');
+  });
+
+  it('an ordinary turn still goes idle and starts the countdown', async () => {
+    const deps = createDeps(() => toAgentEvents(successSdk()), createDispatchRecorder().fn);
+    const states = trackActivity(deps);
+    deps.summaryTimer = { start: vi.fn(), cancel: vi.fn() };
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = thresholdSession({ autoCompactPending: false, pendingUserText: null, pendingEventContext: null });
+
+    await new StreamExecutor(deps).execute(executeParams(session, say, '작업 계속'));
+
+    expect(states[states.length - 1]).toBe('idle');
+    expect(deps.summaryTimer.start).toHaveBeenCalledTimes(1);
+  });
+});

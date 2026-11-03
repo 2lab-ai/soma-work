@@ -1,43 +1,48 @@
 /**
- * E4 ④b — the epic makes and instructs its children (.prd/19 D4 · D8 · D9 a, §5 ④b).
+ * E4 ④b — the epic makes and instructs its children (.prd/19 D4 · D8 · D9 a), on the Slack path
+ * since #854: a child is its own Slack thread, an instruction is a message into it.
  *
  *   K1 the same node twice → one child (the second call returns it).
- *   K2 a child made but not started (the turn ended) → a re-call returns the same child.
  *   K3 the 8th child is refused; nothing is made.
- *   K4 folder: a sub-path of the epic's folder, or a fresh one; out of it, or
- *      shared with a running sibling (same, or one holding the other), refused.
- *   K5 arguments cannot change the owner: the child is the epic owner's, under the epic.
- *   K6 the start is a host start of the tree (E4 ③): its dry run first, refusals passed on.
- *   K7 a failed create: nothing started, the refusal says so.
- *   I1 instruct_child: plain text only; a running child is busy (409 passed on);
- *      only this epic's live children; a running sibling in its folder refuses.
+ *   K4 folder: a sub-path of the epic's folder (made, handed to the child), or none — the child's
+ *      thread gets a fresh one; out of it, or shared with a running sibling, refused.
+ *   K5 no argument names an owner: the host makes the child from the epic's own record.
+ *   K6 the tree's limits come first: a refusal is passed on and nothing is made.
+ *   K7 the host's refusal is passed on; a folder this call made is removed again.
+ *   K8 an empty, over-long or command-like instruction is refused before anything is made.
+ *   K10 the title is the card rule; none falls back to the node's.
+ *   K12 a closed child is not live: instruct_child calls it closed.
+ *   I1 an idle child: the tree's limits, then the instruction — it runs now.
+ *   I2 a working child takes the instruction in its queue: queued, never refused as busy (the
+ *      bug #854 removes — the epic's word to a busy child is not lost).
+ *   I3 only this epic's live children.
+ *   I4 a running sibling in an idle child's folder refuses the restart (D4).
+ *   I5 an instruction that went nowhere says so.
  */
 import fs from 'node:fs';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { TaskExecutionContext } from '../../agent-runtime/execution-context';
 import { applyPlanWrite } from '../epic-plan';
-import { EPIC_CHILD_MAX, type EpicHost, epicTools, setEpicHost } from '../epic-server';
+import { EPIC_CHILD_MAX, type EpicExecutionContext, type EpicHost, epicTools, setEpicHost } from '../epic-server';
 
 const OWNER = `UEPICS${process.pid}`;
-const EPIC_DIR = `/tmp/${OWNER}/epic_1`;
+const EPIC_DIR = `/tmp/${OWNER}/session_epic`;
 const EPIC_ID = 'e1';
 
 beforeAll(() => fs.mkdirSync(`${EPIC_DIR}/work`, { recursive: true }));
 afterAll(() => fs.rmSync(`/tmp/${OWNER}`, { recursive: true, force: true }));
 afterEach(() => setEpicHost(undefined));
 
-// The turn runs as someone else in its context: the child must still be the epic owner's.
-const ctx = { origin: 'task', userId: 'U_CTX', taskId: EPIC_ID, kind: 'epic' } as unknown as TaskExecutionContext;
+// The turn runs as someone in its context: the child is still made from the epic's own record.
+const ctx = { origin: 'slack', userId: 'U_CTX', epicTaskId: EPIC_ID } as unknown as EpicExecutionContext;
 const parse = (r: any) => JSON.parse(r.content[0].text);
 
 function world() {
   const epic: any = {
     taskId: EPIC_ID,
     ownerId: OWNER,
-    ownerName: 'Owner',
-    slackless: true,
+    channelId: 'C1',
     kind: 'epic',
-    workingDirectory: EPIC_DIR,
+    sessionWorkingDir: EPIC_DIR,
     childTaskIds: [],
     plan: applyPlanWrite(
       undefined,
@@ -53,339 +58,228 @@ function world() {
   const children: any[] = [];
   const running = new Set<string>();
   let n = 0;
-  const controller = {
-    canStart: vi.fn((): any => null),
-    start: vi.fn(async (_req: any): Promise<any> => ({ status: 202, body: { ok: true } })),
-    isRunning: vi.fn((key: string) => running.has(key)),
-  };
   const host: EpicHost = {
     getTask: (id) => (id === EPIC_ID ? epic : children.find((c) => c.taskId === id)),
     getChildTasks: (id) => (id === EPIC_ID ? children : []),
     setEpicPlan: vi.fn() as any,
     readChildFinal: vi.fn(async () => undefined),
-    createTask: vi.fn((input: any) => {
-      const child = { ...input, taskId: `c${++n}`, slackless: true, activityState: 'idle' };
+    isRunning: vi.fn((s: any) => running.has(s.taskId)),
+    admit: vi.fn((): string | undefined => undefined),
+    spawnChild: vi.fn(async (_epic: any, spec: any): Promise<any> => {
+      const child = {
+        taskId: `c${++n}`,
+        ownerId: OWNER,
+        parentTaskId: EPIC_ID,
+        planNodeId: spec.planNodeId,
+        title: spec.title,
+        sessionWorkingDir: spec.workingDirectory ?? `/tmp/${OWNER}/session_fresh${n}`,
+        activityState: 'working',
+      };
       children.push(child);
       epic.childTaskIds = [...epic.childTaskIds, child.taskId];
-      return child;
+      return { ok: true, childId: child.taskId, started: true };
     }),
-    createFreshDirectory: vi.fn((ownerId: string) => `/tmp/${ownerId}/session_fresh${n + 1}`),
-    ensureDirectory: vi.fn(),
-    controller,
+    instructChild: vi.fn(
+      async (_epic: any, child: any): Promise<any> => ({
+        taken: true,
+        queued: running.has(child.taskId),
+      }),
+    ),
+    ensureDirectory: vi.fn((dir: string) => {
+      if (fs.existsSync(dir)) return undefined;
+      fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    }),
   };
   setEpicHost(host);
   const [, , spawn, instruct] = epicTools(ctx);
-  return { epic, children, running, controller, host, spawn, instruct };
+  return { epic, children, running, host, spawn, instruct };
 }
 
-describe('spawn_child (E4 ④b)', () => {
+describe('epic children on the Slack path (E4 ④b, #854)', () => {
   it('K1 — the same node twice is one child: the second call returns it', async () => {
     const w = world();
-    const first = parse(await w.spawn.handler({ planNodeId: 'login', instruction: 'fix it' } as any, {}));
-    expect(first).toMatchObject({ ok: true, made: true, childId: 'c1', started: true });
-    const again = parse(await w.spawn.handler({ planNodeId: 'login', instruction: 'fix it' } as any, {}));
-    expect(again).toMatchObject({ ok: true, made: false, childId: 'c1' });
-    expect(w.host.createTask).toHaveBeenCalledTimes(1);
-    expect(w.controller.start).toHaveBeenCalledTimes(1);
-  });
-
-  it('K2 — made but not started (the turn ended before): a re-call returns the same child', async () => {
-    const w = world();
-    w.controller.start.mockResolvedValueOnce({ status: 500, body: { error: 'the task turn could not start' } });
-    const first = parse(await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {}));
-    expect(first).toMatchObject({ made: true, childId: 'c1', started: false, reason: 'the task turn could not start' });
-    const again = parse(await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {}));
-    expect(again).toMatchObject({ made: false, childId: 'c1', state: 'idle' });
+    const first = parse(await w.spawn.handler({ planNodeId: 'login', instruction: '로그인 고쳐' } as any, {}));
+    expect(first).toEqual({ ok: true, made: true, childId: 'c1', started: true });
+    const again = parse(await w.spawn.handler({ planNodeId: 'login', instruction: '또' } as any, {}));
+    expect(again).toEqual({ ok: true, made: false, childId: 'c1', state: 'working' });
+    expect(w.host.spawnChild).toHaveBeenCalledTimes(1);
   });
 
   it(`K3 — the ${EPIC_CHILD_MAX + 1}th child is refused, closed children counted; nothing is made`, async () => {
     const w = world();
-    w.epic.childTaskIds = Array.from({ length: EPIC_CHILD_MAX }, (_, i) => `old${i}`);
+    w.epic.childTaskIds = Array.from({ length: EPIC_CHILD_MAX }, (_, i) => `gone${i}`);
+    const r = await w.spawn.handler({ planNodeId: 'docs', instruction: 'go' } as any, {});
+    expect(parse(r)).toMatchObject({ ok: false, code: 'too-many-children' });
+    expect(w.host.spawnChild).not.toHaveBeenCalled();
+  });
+
+  it('K4 — folder: a sub-path of the epic’s folder is made and handed over; none → a fresh one; out of it, or a running sibling’s, refused', async () => {
+    const w = world();
+    parse(await w.spawn.handler({ planNodeId: 'login', instruction: 'a', folder: 'work/login' } as any, {}));
+    expect((w.host.spawnChild as any).mock.calls[0][1]).toMatchObject({ workingDirectory: `${EPIC_DIR}/work/login` });
+    expect(fs.existsSync(`${EPIC_DIR}/work/login`)).toBe(true);
+    // No folder: the child's own thread gets a fresh session folder.
+    parse(await w.spawn.handler({ planNodeId: 'docs', instruction: 'b' } as any, {}));
+    expect((w.host.spawnChild as any).mock.calls[1][1].workingDirectory).toBeUndefined();
+
+    const out = world();
+    const escape = await out.spawn.handler({ planNodeId: 'login', instruction: 'a', folder: '../../etc' } as any, {});
+    expect(parse(escape).ok).toBe(false);
+    expect(out.host.spawnChild).not.toHaveBeenCalled();
+
+    const shared = world();
+    shared.children.push({
+      taskId: 'busy',
+      ownerId: OWNER,
+      parentTaskId: EPIC_ID,
+      planNodeId: 'docs',
+      sessionWorkingDir: `${EPIC_DIR}/work`,
+    });
+    shared.running.add('busy');
+    const overlap = await shared.spawn.handler(
+      { planNodeId: 'login', instruction: 'a', folder: 'work/login' } as any,
+      {},
+    );
+    expect(parse(overlap)).toMatchObject({ ok: false, code: 'folder-overlap' });
+    expect(shared.host.spawnChild).not.toHaveBeenCalled();
+  });
+
+  it('K5 — the host makes the child from the epic’s own record; no argument names an owner', async () => {
+    const w = world();
+    expect(Object.keys((w.spawn as any).inputSchema).sort()).toEqual(['folder', 'instruction', 'planNodeId', 'title']);
+    await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {});
+    expect((w.host.spawnChild as any).mock.calls[0][0]).toBe(w.epic);
+  });
+
+  it('K6 — the tree’s limits come first: their refusal is passed on and nothing is made; an unknown node is refused', async () => {
+    const w = world();
+    (w.host.admit as any).mockReturnValue('at most 3 children of an epic run at once — wait for one to finish');
     const r = await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {});
-    expect(r.isError).toBe(true);
-    expect(parse(r)).toMatchObject({ code: 'too-many-children' });
-    expect(w.host.createTask).not.toHaveBeenCalled();
+    expect(parse(r)).toMatchObject({ ok: false, code: 'start-429', error: expect.stringMatching(/at most 3/) });
+    expect(w.host.spawnChild).not.toHaveBeenCalled();
+    const unknown = await w.spawn.handler({ planNodeId: 'nope', instruction: 'go' } as any, {});
+    expect(parse(unknown)).toMatchObject({ code: 'no-such-node' });
   });
 
-  it('K4 — folder: a sub-path of the epic’s folder or a fresh one; out of it or shared with a running sibling refused', async () => {
+  it('K7 — the host’s refusal is passed on; a folder this call made is removed again', async () => {
     const w = world();
-    const named = parse(
-      await w.spawn.handler({ planNodeId: 'login', instruction: 'go', folder: 'work/login' } as any, {}),
-    );
-    expect(named).toMatchObject({ made: true, childId: 'c1' });
-    expect(w.children[0].workingDirectory).toBe(`${EPIC_DIR}/work/login`);
-    expect(w.host.ensureDirectory).toHaveBeenCalledWith(`${EPIC_DIR}/work/login`);
-    // Out of the epic's folder: refused, nothing made.
-    for (const folder of ['../elsewhere', '/tmp/x', 'a/../../b']) {
-      const r = parse(await w.spawn.handler({ planNodeId: 'docs', instruction: 'go', folder } as any, {}));
-      expect(r.code, folder).toBe('bad-folder');
-    }
-    // A running sibling in the same folder, or one holding it: refused.
-    w.running.add('task:c1');
-    for (const folder of ['work/login', 'work/login/sub', 'work']) {
-      const r = parse(await w.spawn.handler({ planNodeId: 'docs', instruction: 'go', folder } as any, {}));
-      expect(r.code, folder).toBe('folder-overlap');
-    }
-    // A folder that only shares a prefix is not the same folder.
-    const apart = parse(
-      await w.spawn.handler({ planNodeId: 'docs', instruction: 'go', folder: 'work/login2' } as any, {}),
-    );
-    expect(apart).toMatchObject({ made: true });
-    expect(w.host.createTask).toHaveBeenCalledTimes(2);
-    // No folder: a fresh one.
-    const w2 = world();
-    await w2.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {});
-    expect(w2.host.createFreshDirectory).toHaveBeenCalledWith(OWNER);
-    expect(w2.children[0].workingDirectory).toMatch(new RegExp(`^/tmp/${OWNER}/session_fresh`));
-  });
-
-  it('K5 — the child is the epic owner’s, under the epic, for that node; no argument names an owner or mode', async () => {
-    const w = world();
-    const [, , spawn] = epicTools(ctx);
-    expect(Object.keys(spawn.inputSchema).sort()).toEqual(['folder', 'instruction', 'planNodeId', 'title']);
-    await w.spawn.handler({ planNodeId: 'login', instruction: 'go', ownerId: 'U_EVIL', isAdmin: true } as any, {});
-    expect(w.host.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({ ownerId: OWNER, parentTaskId: EPIC_ID, planNodeId: 'login', title: 'Fix login' }),
-    );
-    expect(w.controller.start).toHaveBeenCalledWith(
-      expect.objectContaining({ actorUserId: OWNER, initiator: 'host', sessionKey: 'task:c1', text: 'go' }),
-    );
-  });
-
-  it('K6 — the tree’s dry run comes first; its refusal is passed on and nothing is made; an unknown node is refused', async () => {
-    const w = world();
-    w.controller.canStart.mockReturnValueOnce({
-      status: 429,
-      body: { error: 'at most 3 children of an epic run at once' },
+    (w.host.spawnChild as any).mockResolvedValueOnce({
+      ok: false,
+      code: 'no-thread',
+      error: 'the child’s thread could not be made — nothing changed; try again',
     });
-    const r = parse(await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {}));
-    expect(r).toMatchObject({ ok: false, code: 'start-429', error: 'at most 3 children of an epic run at once' });
-    expect(w.controller.canStart).toHaveBeenCalledWith(OWNER, 'go', {
-      root: 'task:e1',
-      role: 'child',
-      initiator: 'host',
-    });
-    expect(w.host.createTask).not.toHaveBeenCalled();
-    expect(w.host.createFreshDirectory).not.toHaveBeenCalled();
-    expect(parse(await w.spawn.handler({ planNodeId: 'nope', instruction: 'go' } as any, {}))).toMatchObject({
-      code: 'no-such-node',
-    });
-  });
-
-  it('K7 — a failed create starts nothing and says so (no internal message)', async () => {
-    const w = world();
-    (w.host.createTask as any).mockImplementationOnce(() => {
-      throw new Error('ENOSPC /secret');
-    });
-    const r = await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {});
-    expect(parse(r)).toMatchObject({ code: 'not-saved' });
-    expect(JSON.stringify(r.content)).not.toMatch(/ENOSPC|secret/);
-    expect(w.controller.start).not.toHaveBeenCalled();
-  });
-});
-
-describe('spawn_child — fable #700 R1', () => {
-  it('K8 — an empty, blank, over-long or command instruction is refused before anything is made', async () => {
-    for (const [instruction, code] of [
-      ['', 'empty-instruction'],
-      ['  \n ', 'empty-instruction'],
-      ['x'.repeat(12_001), 'too-long'],
-      ['/compact', 'command'],
-      [' %effort high', 'command'],
-    ] as const) {
-      const w = world();
-      const r = await w.spawn.handler({ planNodeId: 'login', instruction } as any, {});
-      expect(parse(r), instruction.slice(0, 10)).toMatchObject({ ok: false, code });
-      expect(w.controller.canStart).not.toHaveBeenCalled();
-      expect(w.host.createFreshDirectory).not.toHaveBeenCalled();
-      expect(w.host.createTask).not.toHaveBeenCalled();
-      expect(w.controller.start).not.toHaveBeenCalled();
-    }
-    // At the limit is accepted.
-    const w = world();
-    expect(
-      parse(await w.spawn.handler({ planNodeId: 'login', instruction: 'y'.repeat(12_000) } as any, {})),
-    ).toMatchObject({
-      ok: true,
-      made: true,
-    });
-  });
-
-  it('K9 — a refused create removes the folder it made: a fresh one, a named one; a folder already there stays', async () => {
-    const w = world();
-    const fresh = `/tmp/${OWNER}/session_k9`;
-    (w.host.createFreshDirectory as any).mockImplementationOnce(() => {
-      fs.mkdirSync(fresh, { recursive: true });
-      return fresh;
-    });
-    (w.host.ensureDirectory as any).mockImplementation((dir: string) => fs.mkdirSync(dir, { recursive: true }));
-    (w.host.createTask as any).mockImplementation(() => {
-      throw new Error('ENOSPC');
-    });
-    expect(parse(await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {}))).toMatchObject({
-      code: 'not-saved',
-    });
-    expect(fs.existsSync(fresh)).toBe(false);
-
-    expect(
-      parse(await w.spawn.handler({ planNodeId: 'login', instruction: 'go', folder: 'new/deep' } as any, {})),
-    ).toMatchObject({ code: 'not-saved' });
-    expect(fs.existsSync(`${EPIC_DIR}/new`)).toBe(false);
-
-    expect(
-      parse(await w.spawn.handler({ planNodeId: 'login', instruction: 'go', folder: 'work' } as any, {})),
-    ).toMatchObject({
-      code: 'not-saved',
-    });
+    const r = await w.spawn.handler({ planNodeId: 'login', instruction: 'go', folder: 'work/k7' } as any, {});
+    expect(parse(r)).toMatchObject({ ok: false, code: 'no-thread' });
+    expect(fs.existsSync(`${EPIC_DIR}/work/k7`)).toBe(false);
     expect(fs.existsSync(`${EPIC_DIR}/work`)).toBe(true);
   });
 
-  it('K10 — the title is the card rule (first non-empty line, 80 chars); none or blank falls back to the node', async () => {
+  it('K8 — an empty, blank, over-long or command instruction is refused before anything is made', async () => {
     const w = world();
-    await w.spawn.handler({ planNodeId: 'login', instruction: 'go', title: '\n  Fix it\nmore' } as any, {});
-    await w.spawn.handler({ planNodeId: 'docs', instruction: 'go', title: ' \n ' } as any, {});
-    expect((w.host.createTask as any).mock.calls.map((c: any[]) => c[0].title)).toEqual(['Fix it', 'Docs']);
+    for (const instruction of ['', '   ', '/compact', '%model x', '!stop', '$autoz go', 'x'.repeat(40_001)]) {
+      const r = await w.spawn.handler({ planNodeId: 'login', instruction } as any, {});
+      expect(r.isError, instruction.slice(0, 10)).toBe(true);
+    }
+    expect(w.host.spawnChild).not.toHaveBeenCalled();
   });
 
-  it('K11 — two parallel calls (the real start marks the child running at once): one child per node, no shared folder', async () => {
+  it('K10 — the title is the card rule (first non-empty line, 80 chars); none falls back to the node', async () => {
     const w = world();
-    w.controller.start.mockImplementation(async (req: any) => {
-      w.running.add(req.sessionKey);
-      return { status: 202, body: { ok: true } };
-    });
-    const [a, b] = await Promise.all([
-      w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {}),
-      w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {}),
-    ]);
-    expect([parse(a).made, parse(b).made].sort()).toEqual([false, true]);
-    // Two different nodes in overlapping folders (fable #700 R2 P3): the second meets the
-    // first as a running sibling and is refused; nothing more is made.
-    w.epic.plan = applyPlanWrite(
-      undefined,
+    await w.spawn.handler(
+      { planNodeId: 'login', instruction: 'go', title: `\n  첫 줄 ${'가'.repeat(90)}\n둘째` } as any,
+      {},
+    );
+    await w.spawn.handler({ planNodeId: 'docs', instruction: 'go' } as any, {});
+    const titles = (w.host.spawnChild as any).mock.calls.map((c: any[]) => c[1].title);
+    expect(titles[0]).toHaveLength(80);
+    expect(titles[0].startsWith('첫 줄')).toBe(true);
+    expect(titles[1]).toBe('Docs');
+  });
+
+  it('K12 — a closed child is not live: its node may get a new one, instruct_child calls it closed', async () => {
+    const w = world();
+    w.epic.childTaskIds = ['c-old'];
+    w.children.push({ taskId: 'c-old', ownerId: OWNER, parentTaskId: EPIC_ID, planNodeId: 'login', terminated: true });
+    const r = parse(await w.instruct.handler({ childId: 'c-old', instruction: 'go' } as any, {}));
+    expect(r).toMatchObject({ ok: false, code: 'closed' });
+    const made = parse(await w.spawn.handler({ planNodeId: 'login', instruction: 'again' } as any, {}));
+    expect(made).toMatchObject({ ok: true, made: true });
+  });
+
+  it('I1 — an idle child: the tree’s limits, then the instruction into its thread — it runs now', async () => {
+    const w = world();
+    await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {});
+    w.children[0].activityState = 'idle';
+    (w.host.admit as any).mockClear();
+    const r = parse(await w.instruct.handler({ childId: 'c1', instruction: '테스트도 추가해' } as any, {}));
+    expect(r).toEqual({ ok: true, childId: 'c1', started: true, queued: false });
+    expect(w.host.admit).toHaveBeenCalledWith(w.epic, { child: w.children[0] });
+    expect(w.host.instructChild).toHaveBeenCalledWith(w.epic, w.children[0], '테스트도 추가해');
+  });
+
+  it('I2 — a working child takes the instruction in its queue: queued, never refused as busy', async () => {
+    const w = world();
+    await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {});
+    w.running.add('c1');
+    (w.host.admit as any).mockClear();
+    // Queueing takes no new place (the gate does not count the running child against itself, G1) —
+    // but it is a start of the tree's work, so the tree's spend and window still answer (review #872 astra R6).
+    const r = parse(await w.instruct.handler({ childId: 'c1', instruction: '이것도' } as any, {}));
+    expect(r).toEqual({ ok: true, childId: 'c1', started: false, queued: true });
+    expect(w.host.admit).toHaveBeenCalledWith(w.epic, { child: w.children[0] });
+  });
+
+  it('I6 — a tree past its cost cap queues nothing either: the working child’s instruction is refused, nothing sent', async () => {
+    const w = world();
+    await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {});
+    w.running.add('c1');
+    (w.host.instructChild as any).mockClear();
+    (w.host.admit as any).mockReturnValue(
+      'this epic reached its cost limit ($50) — an instruction from its owner still runs',
+    );
+    const r = parse(await w.instruct.handler({ childId: 'c1', instruction: '이것도' } as any, {}));
+    expect(r).toMatchObject({ ok: false, code: 'start-429' });
+    expect(w.host.instructChild).not.toHaveBeenCalled();
+  });
+
+  it('I3 — only this epic’s live children: a stranger is refused, nothing is sent', async () => {
+    const w = world();
+    const r = parse(await w.instruct.handler({ childId: 'someone', instruction: 'go' } as any, {}));
+    expect(r).toMatchObject({ ok: false, code: 'not-a-child' });
+    expect(w.host.instructChild).not.toHaveBeenCalled();
+  });
+
+  it('I4 — a running sibling in an idle child’s folder refuses its restart (D4)', async () => {
+    const w = world();
+    w.epic.childTaskIds = ['idle', 'busy'];
+    w.children.push(
       {
-        nodes: [
-          { id: 'login', title: 'Fix login', kind: 'issue' },
-          { id: 'docs', title: 'Docs', kind: 'issue' },
-          { id: 'api', title: 'API', kind: 'issue' },
-        ],
+        taskId: 'idle',
+        ownerId: OWNER,
+        parentTaskId: EPIC_ID,
+        planNodeId: 'login',
+        sessionWorkingDir: `${EPIC_DIR}/work`,
       },
-      { now: 2, by: 'epic', children: [] },
+      {
+        taskId: 'busy',
+        ownerId: OWNER,
+        parentTaskId: EPIC_ID,
+        planNodeId: 'docs',
+        sessionWorkingDir: `${EPIC_DIR}/work`,
+      },
     );
-    const [c, d] = await Promise.all([
-      w.spawn.handler({ planNodeId: 'docs', instruction: 'go', folder: 'work' } as any, {}),
-      w.spawn.handler({ planNodeId: 'api', instruction: 'go', folder: 'work/api' } as any, {}),
-    ]);
-    expect(parse(c)).toMatchObject({ made: true });
-    expect(d.isError).toBe(true);
-    expect(parse(d)).toMatchObject({ code: 'folder-overlap' });
-    expect(w.host.createTask).toHaveBeenCalledTimes(2);
-    expect(w.children.map((x) => x.planNodeId)).toEqual(['login', 'docs']);
+    w.running.add('busy');
+    const r = parse(await w.instruct.handler({ childId: 'idle', instruction: 'go' } as any, {}));
+    expect(r).toMatchObject({ ok: false, code: 'folder-overlap' });
+    expect(w.host.instructChild).not.toHaveBeenCalled();
   });
 
-  it('K12 — a closing child is not live: its node gets no stale answer, instruct_child calls it closed', async () => {
+  it('I5 — an instruction that went nowhere says so', async () => {
     const w = world();
     await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {});
-    w.children[0].terminated = true;
-    expect(parse(await w.instruct.handler({ childId: 'c1', instruction: 'more' } as any, {}))).toMatchObject({
-      code: 'closed',
-    });
-    expect(parse(await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {}))).toMatchObject({
-      made: true,
-      childId: 'c2',
-    });
-  });
-});
-
-describe('instruct_child (E4 ④b, D8)', () => {
-  async function withChild() {
-    const w = world();
-    await w.spawn.handler({ planNodeId: 'login', instruction: 'first', folder: 'work/login' } as any, {});
-    w.controller.start.mockClear();
-    return w;
-  }
-
-  it('I1 — a plain instruction starts the child as a host start; / or % is refused with its reason', async () => {
-    const w = await withChild();
-    expect(parse(await w.instruct.handler({ childId: 'c1', instruction: 'next step' } as any, {}))).toEqual({
-      ok: true,
-      childId: 'c1',
-      started: true,
-    });
-    expect(w.controller.start).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionKey: 'task:c1', text: 'next step', actorUserId: OWNER, initiator: 'host' }),
-    );
-    for (const instruction of ['/compact', '  %model x']) {
-      const r = parse(await w.instruct.handler({ childId: 'c1', instruction } as any, {}));
-      expect(r.code, instruction).toBe('command');
-    }
-    expect(w.controller.start).toHaveBeenCalledTimes(1);
-  });
-
-  it('I2 — a running child is busy (the controller’s 409 passed on); other refusals keep their status', async () => {
-    const w = await withChild();
-    w.controller.start.mockResolvedValueOnce({
-      status: 409,
-      body: { error: 'a turn is already running on this task' },
-    });
-    expect(parse(await w.instruct.handler({ childId: 'c1', instruction: 'x' } as any, {}))).toMatchObject({
-      code: 'busy',
-      error: 'a turn is already running on this task',
-    });
-    w.controller.start.mockResolvedValueOnce({
-      status: 429,
-      body: { error: 'this epic reached its cost limit ($50)' },
-    });
-    expect(parse(await w.instruct.handler({ childId: 'c1', instruction: 'x' } as any, {}))).toMatchObject({
-      code: 'start-429',
-    });
-  });
-
-  it('I2b — a running child is busy, not in its own way: its own folder is not a sibling’s', async () => {
-    const w = await withChild();
-    w.running.add('task:c1');
-    w.controller.start.mockResolvedValueOnce({
-      status: 409,
-      body: { error: 'a turn is already running on this task' },
-    });
-    expect(parse(await w.instruct.handler({ childId: 'c1', instruction: 'x' } as any, {}))).toMatchObject({
-      code: 'busy',
-    });
-  });
-
-  it('I3 — only this epic’s live children: a stranger, or a closed child, is refused', async () => {
-    const w = await withChild();
-    expect(parse(await w.instruct.handler({ childId: 'zz', instruction: 'x' } as any, {}))).toMatchObject({
-      code: 'not-a-child',
-    });
-    w.children.splice(0, 1); // c1 closed (still counted in childTaskIds)
-    expect(parse(await w.instruct.handler({ childId: 'c1', instruction: 'x' } as any, {}))).toMatchObject({
-      code: 'closed',
-    });
-    expect(w.controller.start).not.toHaveBeenCalled();
-  });
-
-  it('I5 — an empty or over-long instruction is refused and nothing starts (fable #700 R1)', async () => {
-    const w = world();
-    await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {});
-    w.controller.start.mockClear();
-    for (const [instruction, code] of [
-      [' ', 'empty-instruction'],
-      ['z'.repeat(12_001), 'too-long'],
-    ] as const) {
-      expect(parse(await w.instruct.handler({ childId: 'c1', instruction } as any, {}))).toMatchObject({ code });
-    }
-    expect(w.controller.start).not.toHaveBeenCalled();
-  });
-
-  it('I4 — a running sibling in its folder refuses the restart (D4)', async () => {
-    const w = await withChild();
-    // A second child made in a folder that holds c1's, while c1 was idle.
-    await w.spawn.handler({ planNodeId: 'docs', instruction: 'go', folder: 'work' } as any, {});
-    w.running.add('task:c2');
-    w.controller.start.mockClear();
-    expect(parse(await w.instruct.handler({ childId: 'c1', instruction: 'x' } as any, {}))).toMatchObject({
-      code: 'folder-overlap',
-    });
-    expect(w.controller.start).not.toHaveBeenCalled();
+    (w.host.instructChild as any).mockResolvedValueOnce({ taken: false, queued: false, reason: 'the thread is gone' });
+    const r = parse(await w.instruct.handler({ childId: 'c1', instruction: 'go' } as any, {}));
+    expect(r).toMatchObject({ ok: false, code: 'not-sent', error: 'the thread is gone' });
   });
 });

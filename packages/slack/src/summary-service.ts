@@ -714,8 +714,8 @@ export class SummaryService {
     // host fork of the same turn leaves the card alone, TL;DR and verdict as one pair. The user's next input
     // (`clearDisplay`) drops that TL;DR, so the next summary decides again.
     if (session.executiveSummary?.source !== 'es') {
-      // The dashboard's task card shows the same lines (SSOT 2026-11-02 T7) — a task with no
-      // Slack thread (a dashboard task) included, so this comes before the thread-head guard.
+      // The dashboard's task card shows the same lines (SSOT 2026-11-02 T7), so this comes
+      // before the thread-head guard.
       const at = Date.now();
       if (tldr.length > 0) session.executiveSummary = { tldr, at };
       else session.executiveSummary = undefined;

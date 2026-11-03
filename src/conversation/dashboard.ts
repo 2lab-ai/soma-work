@@ -98,7 +98,7 @@ import {
   type TaskWork,
 } from '../session/task-ledger';
 import { type ArchivedSession, getArchiveStore, type SessionLifecycleOutcome } from '../session-archive';
-import { buildTaskSessionKey, buildWorkSessionKey, normalizeSessionKey } from '../session-identity';
+import { buildWorkSessionKey, normalizeSessionKey } from '../session-identity';
 import {
   countLifecycleTransitions,
   getSessionLifecyclePolicy,
@@ -113,7 +113,6 @@ import { isInstructionApprovalDecision } from '../slack/instruction-approval-blo
 import { getSurfaceLines } from '../slack/surface-config';
 import { type EpicBoardView, epicBoardView } from '../task-turn/epic-board';
 import { sessionCostUsd } from '../task-turn/epic-cost';
-import type { TaskAnswer } from '../task-turn/task-answer';
 import type { PlanDecision, TaskPlanGate, TaskPlanState } from '../task-turn/task-plan';
 import { buildThreadPermalink } from '../turn-notifier';
 import type { ConversationSession } from '../types';
@@ -139,7 +138,6 @@ import {
   NewTaskError,
   type NewTaskSubmission,
   parseAttachments,
-  parseDashboardTaskSubmission,
   parseNewTaskSubmission,
 } from './new-task';
 import type { NewTaskLaunchResult } from './new-task-launcher';
@@ -147,7 +145,6 @@ import { verifyDashboardTokenRaw } from './oauth';
 import {
   type DashboardPermissionRequest,
   pendingPermissionsFor,
-  pendingTaskPermissionsFor,
   permissionPromptDetail,
   refreshPendingPermissions,
   startPermissionPromptWatch,
@@ -473,8 +470,6 @@ export interface KanbanSession {
    * (NEEDS YOU) instead of DONE.
    */
   pendingFollowUp?: { reason: string; at: number };
-  /** #600 ⑥ — a Slack-less dashboard task (the client gates task-only UI on it). Absent for Slack sessions. */
-  slackless?: true;
   /** E4 ① (.prd/19 D1) — an epic task. Absent otherwise. */
   kind?: 'epic';
   /**
@@ -491,8 +486,8 @@ export interface KanbanSession {
   /** E4 ⑦ — a child its epic's close cancelled (the outcome stays `cancelled`). Absent otherwise. */
   closedBy?: { by: 'parent'; at: number };
   /**
-   * #598 ④c — a Slack-less task's last turn outcome (D10): what the last turn
-   * ended as, why, and whether recording it failed. Absent for Slack sessions.
+   * #854 — an epic child's last chain outcome: what it ended as and why. Absent on
+   * every other session.
    */
   lastTurnOutcome?: {
     outcome: 'completed' | 'failed' | 'cancelled' | 'waiting' | 'interrupted';
@@ -501,11 +496,6 @@ export interface KanbanSession {
     recordFailure?: string;
     at: number;
   };
-  /**
-   * E2 ⑤ — notices this task owed its instruction thread that could not be
-   * posted (attempts spent). Absent when there are none, and for Slack sessions.
-   */
-  noticeFailures?: Array<{ kind: string; error: string }>;
   /**
    * Plan mode (SSOT 2026-11-02) — a plan-mode task's gate as the card shows it:
    * its state, the latest revision, the conclusion and its size. The plan
@@ -516,8 +506,6 @@ export interface KanbanSession {
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
-    /** #599 ⑤ — a Slack-less task's question id, sent back with the answer. */
-    askId?: string;
     question: string;
     choices?: Array<{ id: string; label: string; description?: string }>;
     /** ID of the recommended choice (single-choice) */
@@ -914,7 +902,7 @@ function resolveSelfActionKey(wireKey: string, reply: any): string | null {
 function resolveSelfActionKeyAndOwner(
   request: any,
   reply: any,
-  opts: { allowSlackless?: boolean; instruct?: boolean } = {},
+  opts: { instruct?: boolean } = {},
 ): { wireKey: string; originalKey: string } | null {
   const wireKey: string = request.params?.key ?? '';
   const originalKey = resolveSelfActionKey(wireKey, reply);
@@ -927,14 +915,6 @@ function resolveSelfActionKeyAndOwner(
       ? !requireInstructAccess(request, reply, originalKey)
       : !requireSessionOwner(request, reply, originalKey)
   ) {
-    return null;
-  }
-  // Fail closed (#612 review): a Slack-less task takes only the routes that opt in —
-  // stop / close / trash, and `command`, which hands it to the task turn
-  // controller (#598 ④c), and the goal list (#865, the task's goal commands).
-  // Routes that do not opt in answer 409 for a task.
-  if (!opts.allowSlackless && _getSessionsFn?.()?.get(originalKey)?.slackless === true) {
-    reply.status(409).send({ error: 'not supported on a dashboard task yet' });
     return null;
   }
   return { wireKey, originalKey };
@@ -1265,9 +1245,8 @@ function signedInUserId(request: any): string | undefined {
  * Slack rule: anyone may write in anyone's thread, and the turn runs as the
  * user who wrote. So every signed-in user passes, and the handler runs the
  * turn as them (`signedInUserId`), never as the owner.
- *   - A viewer token names nobody: it keeps the #716 write access to a Slack
- *     session (sent as its owner, as before), and is refused on a dashboard
- *     task, which has no owner's thread to fall back on — it runs as its sender.
+ *   - A viewer token names nobody: it keeps the #716 write access (sent as the
+ *     session's owner, as before).
  *   - An epic tree (an epic, or an epic's child): its children start as the
  *     owner (host starts), so another user's word would run as the owner one
  *     hop later — the owner, or an admin in admin mode, only.
@@ -1275,13 +1254,13 @@ function signedInUserId(request: any): string | undefined {
 function requireInstructAccess(request: any, reply: any, sessionKey: string): boolean {
   const target = _getSessionsFn?.()?.get(sessionKey);
   const actor = signedInUserId(request);
-  const task = target?.slackless === true;
   if (!actor) {
-    if (!task && _hasWriteAccess(request, target?.ownerId)) return true;
+    if (_hasWriteAccess(request, target?.ownerId)) return true;
     reply.status(403).send({ error: 'Forbidden — sign in with Slack to instruct a task: it runs as you' });
     return false;
   }
-  const epicTree = task && (target?.kind === 'epic' || !!target?.parentTaskId);
+  // #854 — a Slack epic tree too: the epic's tools act as its owner.
+  const epicTree = target?.kind === 'epic' || !!target?.parentTaskId;
   if (epicTree && actor !== target?.ownerId && !_hasWriteAccess(request, target?.ownerId)) {
     reply.status(403).send({
       error: 'Forbidden — an epic and its children take instructions from their owner, or an admin in admin mode',
@@ -1289,7 +1268,7 @@ function requireInstructAccess(request: any, reply: any, sessionKey: string): bo
     return false;
   }
   // A DM with the bot: in Slack nobody else can write there — its owner, or an admin in admin mode, only.
-  if (!task && isDirectMessageChannel(target?.channelId) && actor !== target?.ownerId) {
+  if (isDirectMessageChannel(target?.channelId) && actor !== target?.ownerId) {
     if (!_hasWriteAccess(request, target?.ownerId)) {
       reply
         .status(403)
@@ -1391,23 +1370,10 @@ type CommandHandler = (
   /** #785 — the ref the panel gave its pending copy; the recorded turn carries it back. */
   clientRef?: string,
 ) => Promise<void>;
-/**
- * #598 ④c — a Slack-less task's instruction: the task turn controller refuses
- * (D8, D9) or accepts it, and the route answers with its status and body.
- */
-type TaskCommandHandler = (
-  sessionKey: string,
-  message: string,
-  files: NewTaskAttachment[],
-  /** The signed-in user sending it — any user (SSOT 2026-11-02); the turn runs as them. */
-  actorUserId: string,
-) => Promise<{ status: number; body: Record<string, unknown> }>;
-
 let _stopHandlerFn: StopHandler | null = null;
 let _closeHandlerFn: CloseHandler | null = null;
 let _trashHandlerFn: TrashHandler | null = null;
 let _commandHandlerFn: CommandHandler | null = null;
-let _taskCommandHandlerFn: TaskCommandHandler | null = null;
 
 export function setDashboardStopHandler(fn: StopHandler): void {
   _stopHandlerFn = fn;
@@ -1420,9 +1386,6 @@ export function setDashboardTrashHandler(fn: TrashHandler): void {
 }
 export function setDashboardCommandHandler(fn: CommandHandler): void {
   _commandHandlerFn = fn;
-}
-export function setDashboardTaskCommandHandler(fn: TaskCommandHandler | null): void {
-  _taskCommandHandlerFn = fn;
 }
 
 /**
@@ -1497,18 +1460,6 @@ let _followupHandler: DashboardFollowupHandler | null = null;
 export function setDashboardFollowupHandler(handler: DashboardFollowupHandler | null): void {
   _followupHandler = handler;
 }
-/**
- * A dashboard task's follow-up queue (2026-11-03) — Send now / Cancel / Edit on
- * a word in `taskFollowups` (wired in src/index.ts to the task turn
- * controller's `actOnQueue`). A task's queue is read from the session itself
- * (`followupsOf`); the Slack queue never sees a task.
- */
-type TaskQueueHandler = (request: DashboardFollowupRequest) => Promise<DashboardFollowupOutcome>;
-let _taskQueueHandlerFn: TaskQueueHandler | null = null;
-export function setDashboardTaskQueueHandler(fn: TaskQueueHandler | null): void {
-  _taskQueueHandlerFn = fn;
-}
-
 /** States a note still has a control in; `failed` keeps Retry / Cancel until one is used. */
 const FOLLOWUP_SHOWN_STATES: readonly FollowupItemState[] = [
   'queued',
@@ -1525,26 +1476,8 @@ const FOLLOWUP_SHOWN_FAILED = 5;
 /** A reason that only repeats the state (`steered`) says nothing the state does not. */
 const FOLLOWUP_STATE_ECHO = new Set<string>(['steered', 'consumed']);
 
-/** E2 ⑤ — a task card's undelivered thread notices (the notice deliverer, when wired). */
-let _taskNoticeFailures: ((sessionKey: string) => Array<{ kind: string; error: string }>) | null = null;
-export function setTaskNoticeFailureProvider(
-  provider: ((sessionKey: string) => Array<{ kind: string; error: string }>) | null,
-): void {
-  _taskNoticeFailures = provider;
-}
-function noticeFailuresOf(sessionKey: string): { noticeFailures?: Array<{ kind: string; error: string }> } {
-  try {
-    const failures = _taskNoticeFailures?.(sessionKey) ?? [];
-    return failures.length > 0 ? { noticeFailures: failures } : {};
-  } catch {
-    return {};
-  }
-}
-
 /** The session payload's queue: what the panel lists, oldest first (the queue's arrival order). */
 export function followupsOf(sessionKey: string, ownerId: string | undefined): DashboardFollowups | undefined {
-  const task = _getSessionsFn?.()?.get(sessionKey);
-  if (task?.slackless === true) return taskFollowupsOf(task.taskFollowups, ownerId);
   const view = _followupHandler?.view(sessionKey);
   if (!view) return undefined;
   const failed = view.items.filter((item) => item.state === 'failed').slice(-FOLLOWUP_SHOWN_FAILED);
@@ -1576,49 +1509,6 @@ export function followupsOf(sessionKey: string, ownerId: string | undefined): Da
       };
       if (author && author !== ownerId) out.author = nameOf(author);
       if (item.stateReason && !FOLLOWUP_STATE_ECHO.has(item.stateReason)) out.stateReason = item.stateReason;
-      return out;
-    }),
-  };
-}
-
-/**
- * A dashboard task's queue on its card (2026-11-03): every word it holds, in
- * order — `queued` runs at the next chain end that ended well, `paused` waits
- * for Send now (the panel reads both as waiting). The writer edits their own;
- * the task's queue has no turn generation of its own (Send now on a busy task
- * puts the word first in line), so `turnEpoch` is 0.
- */
-function taskFollowupsOf(
-  items: ConversationSession['taskFollowups'],
-  ownerId: string | undefined,
-): DashboardFollowups | undefined {
-  if (!Array.isArray(items) || items.length === 0) return undefined;
-  let names: Map<string, string> | undefined;
-  const nameOf = (userId: string): string => {
-    if (!names) {
-      names = new Map();
-      for (const [, s] of getAllSessions()) if (s?.ownerId && s.ownerName) names.set(s.ownerId, s.ownerName);
-    }
-    return names.get(userId) ?? userId;
-  };
-  return {
-    turnEpoch: 0,
-    items: items.map((item) => {
-      // In flight (being started or handed to the owner): the panel's "sending" row.
-      const sending = item.state === 'sending';
-      const out: DashboardFollowupItem = {
-        id: item.id,
-        text: item.text,
-        files: [],
-        enqueuedAt: item.enqueuedAt,
-        state: item.state === 'sending' ? 'dispatched' : item.state,
-        epoch: item.epoch,
-        // A goal's first turn is its objective: it is not edited (#865 — cancel it, the goal pauses).
-        editable: !sending && item.goalOpeningId === undefined,
-        authorId: item.authorId,
-      };
-      if (item.authorId !== ownerId) out.author = nameOf(item.authorId);
-      if (item.stateReason) out.stateReason = item.stateReason;
       return out;
     }),
   };
@@ -1746,24 +1636,8 @@ type ChoiceAnswerHandler = (
 ) => Promise<void>;
 let _choiceAnswerHandlerFn: ChoiceAnswerHandler | null = null;
 /**
- * #599 ⑤ — a Slack-less task's answer, bound to the question's `askId`; the
- * task turn controller answers with the route's status and body.
- */
-type TaskAnswerHandler = (
-  sessionKey: string,
-  askId: string,
-  answer: TaskAnswer,
-  /** The signed-in user answering — any user (SSOT 2026-11-02); the answer runs as them. */
-  actorUserId: string,
-) => Promise<{ status: number; body: Record<string, unknown> }>;
-let _taskAnswerHandlerFn: TaskAnswerHandler | null = null;
-export function setDashboardTaskAnswerHandler(fn: TaskAnswerHandler | null): void {
-  _taskAnswerHandlerFn = fn;
-}
-
-/**
- * Plan mode (SSOT 2026-11-02) — 시작 / 취소 on a task's plan, for the revision
- * the deciding user saw (`createTaskPlanDecider`, wired in src/index.ts).
+ * Plan mode (SSOT 2026-11-02; every session since #853) — 시작 / 취소 on a session's plan, for the
+ * revision the deciding user saw (`createSlackPlanDecider`, wired in src/index.ts).
  */
 type TaskPlanHandler = (request: {
   sessionKey: string;
@@ -1775,32 +1649,6 @@ type TaskPlanHandler = (request: {
 let _taskPlanHandlerFn: TaskPlanHandler | null = null;
 export function setDashboardTaskPlanHandler(fn: TaskPlanHandler | null): void {
   _taskPlanHandlerFn = fn;
-}
-
-/**
- * #599 ⑤ — on a Slack-less task, an answer route hands the answer to the task
- * answer handler (askId required) and returns true; on a Slack session it
- * returns false and the route goes on as before.
- */
-async function routeTaskAnswer(request: any, reply: any, sessionKey: string, answer: TaskAnswer): Promise<boolean> {
-  if (_getSessionsFn?.()?.get(sessionKey)?.slackless !== true) return false;
-  const askId = (request.body as { askId?: unknown } | undefined)?.askId;
-  if (typeof askId !== 'string' || !askId || askId.length > 200) {
-    reply.status(400).send({ error: 'askId is required to answer a dashboard task' });
-    return true;
-  }
-  if (!_taskAnswerHandlerFn) {
-    reply.status(501).send({ error: 'Task answer handler not configured' });
-    return true;
-  }
-  try {
-    const outcome = await _taskAnswerHandlerFn(sessionKey, askId, answer, signedInUserId(request) ?? '');
-    reply.status(outcome.status).send(outcome.body);
-  } catch (error) {
-    logger.error('Error answering a dashboard task', error);
-    reply.status(500).send({ error: 'Internal Server Error' });
-  }
-  return true;
 }
 
 export function setDashboardChoiceAnswerHandler(fn: ChoiceAnswerHandler): void {
@@ -1949,27 +1797,21 @@ export function setDashboardNewTaskProvider(provider: DashboardNewTaskProvider |
   _newTaskProvider = provider;
 }
 
-/** #600 ⑥ — makes and starts a Slack-less dashboard task (`createTaskLauncher`), and lists its folders. */
-interface DashboardTaskLauncher {
-  launch(request: {
-    ownerId: string;
-    ownerName: string;
-    prompt: string;
-    folder?: string;
-    model?: string;
-    /** E4 ④a-2 — an epic (the launcher checks the user's flag). */
-    kind?: 'epic';
-    /** Plan mode (SSOT 2026-11-02) — plan first, work once the owner starts it. */
-    plan?: boolean;
-  }): Promise<{ status: number; body: Record<string, unknown> }>;
-  /** The folders a user may name for a task (`listTaskFolders`). */
-  folders(ownerId: string): Array<{ name: string }>;
-  /** E4 ⑨b — whether the user may make an epic (their flag). */
-  epicTasks?(ownerId: string): boolean;
+/**
+ * E4 ⑨b / #854 — whether a user may make an epic (their `/z epictasks` flag): the new-task
+ * context offers the epic switch only then, and a launch asking for one is refused (403) otherwise.
+ * (It replaced the dashboard-task launcher, removed in #855.)
+ */
+let _epicTasksFn: ((userId: string) => boolean) | null = null;
+export function setDashboardEpicTasks(fn: ((userId: string) => boolean) | null): void {
+  _epicTasksFn = fn;
 }
-let _taskLauncher: DashboardTaskLauncher | null = null;
-export function setDashboardTaskLauncher(launcher: DashboardTaskLauncher | null): void {
-  _taskLauncher = launcher;
+function epicTasksFor(userId: string): boolean {
+  try {
+    return _epicTasksFn?.(userId) === true;
+  } catch {
+    return false;
+  }
 }
 
 /** The signed-in Slack user a task runs as — never a body field, never the admin-mode target. */
@@ -2550,21 +2392,9 @@ function archivedCardLinks(archived: ArchivedSession): Pick<KanbanSession, 'card
 function sessionToKanban(key: string, s: any): KanbanSession {
   const autoResume = deriveAutoResume(s, Date.now());
   const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
-  // A Slack-less task (#596) has no thread to share: its aggregate is its own,
-  // not that of every other task with no channel either.
-  const aggregate = computeThreadAggregate(
-    s.channelId,
-    s.threadTs,
-    s.slackless === true ? new Map([[key, s]]) : getAllSessions(),
-    Date.now(),
-  );
+  const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
   const headline = displayTitle(s);
-  // A Slack-less task's (#599 ⑤b) prompts are keyed by its own session key: it
-  // has no thread, and a thread lookup ('' : '') would match every task.
-  const permissions =
-    s.slackless === true
-      ? pendingTaskPermissionsFor(key, s.activeTaskTurnId)
-      : pendingPermissionsFor(s.channelId, s.threadTs);
+  const permissions = pendingPermissionsFor(s.channelId, s.threadTs);
   const goalDecision = goalDecisionToKanban(s);
   // #767 — someone else's instructions waiting on the owner.
   const instructionApprovals = _instructionApprovals?.pendingFor(key) ?? [];
@@ -2656,9 +2486,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     // aggregator's mergeBoards stamp.
     environment: _selfInstanceEnv ? { ..._selfInstanceEnv } : undefined,
     goal: goalToKanban(s),
-    ...(typeof s.sessionId === 'string' && s.sessionId && s.conversationId && s.slackless !== true
-      ? { rollbackAvailable: true }
-      : {}),
+    ...(typeof s.sessionId === 'string' && s.sessionId && s.conversationId ? { rollbackAvailable: true } : {}),
     ...(s.pendingRewind && typeof s.pendingRewind.label === 'string'
       ? {
           pendingRewind: {
@@ -2689,18 +2517,18 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     userMedia: cardUserMedia(s.conversationId),
     ...esTldrOf(s),
     followups: followupsOf(key, s.ownerId),
-    ...(s.slackless === true ? { slackless: true as const, ...noticeFailuresOf(key) } : {}),
-    ...(s.slackless === true && s.kind === 'epic' ? { kind: 'epic' as const, epic: epicBundle(s) } : {}),
+    // #854 — an epic and its children are Slack sessions too.
+    ...(s.kind === 'epic' ? { kind: 'epic' as const, epic: epicBundle(s) } : {}),
     // Plan mode — the gate (its plan is fetched).
     ...(s.taskPlan ? { taskPlan: taskPlanToKanban(s) } : {}),
-    ...(s.slackless === true && s.parentTaskId
+    ...(s.parentTaskId
       ? {
           parentTaskId: s.parentTaskId,
           planNodeId: s.planNodeId,
           ...(s.closedBy ? { closedBy: { by: s.closedBy.by, at: s.closedBy.at } } : {}),
         }
       : {}),
-    ...(s.slackless === true && s.lastTurnOutcome
+    ...(s.parentTaskId && s.lastTurnOutcome
       ? {
           lastTurnOutcome: {
             outcome: s.lastTurnOutcome.outcome,
@@ -2724,7 +2552,6 @@ function sessionToKanban(key: string, s: any): KanbanSession {
             ...(s.actionPanel.pendingQuestion.recommendedChoiceId
               ? { recommendedChoiceId: s.actionPanel.pendingQuestion.recommendedChoiceId }
               : {}),
-            ...taskAskId(s),
           }
         : s.actionPanel.pendingQuestion.type === 'user_choices'
           ? {
@@ -2744,19 +2571,10 @@ function sessionToKanban(key: string, s: any): KanbanSession {
                 context: q.context,
                 ...(q.recommendedChoiceId ? { recommendedChoiceId: q.recommendedChoiceId } : {}),
               })),
-              ...taskAskId(s),
             }
           : undefined // Unknown question type — skip
       : undefined,
   };
-}
-
-/** #599 ⑤ — a Slack-less task's question carries its `askId`; the panel echoes it with the answer. */
-function taskAskId(s: { slackless?: boolean; actionPanel?: { pendingQuestion?: { askId?: unknown } } }): {
-  askId?: string;
-} {
-  const askId = s.actionPanel?.pendingQuestion?.askId;
-  return s.slackless === true && typeof askId === 'string' && askId ? { askId } : {};
 }
 
 /** The task ledger an archive kept (T7/T8), as the card carries it. */
@@ -2798,8 +2616,8 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
     sessionState: archived.archiveReason === 'sleep_expired' ? 'SLEEPING' : 'TERMINATED',
     terminated: true,
     // E4 ⑧ — a closed epic or child keeps its relation: it stays in CLOSED, tagged (D1, D10 b).
-    ...(archived.slackless === true && archived.kind === 'epic' ? { kind: 'epic' as const } : {}),
-    ...(archived.slackless === true && archived.parentTaskId
+    ...(archived.kind === 'epic' ? { kind: 'epic' as const } : {}),
+    ...(archived.parentTaskId
       ? {
           parentTaskId: archived.parentTaskId,
           planNodeId: archived.planNodeId,
@@ -2896,12 +2714,20 @@ function launchedFromDashboard(key: string | undefined): boolean {
 /**
  * A session the board shows: one that has run an SDK session — or, after a
  * `/new` cleared that, one whose task has already spent (SSOT 2026-10-26 T3:
- * the task total outlives the reset, so the card does too) — or a Slack-less
- * task, from its creation on, before it has run (#596) — or one the dashboard
+ * the task total outlives the reset, so the card does too) — or one the dashboard
  * launched (its registry key), from its creation on (SSOT 2026-11-02).
  */
-function onBoard(s: { sessionId?: string; taskUsage?: unknown; slackless?: boolean }, key?: string): boolean {
-  return !!s.sessionId || !!s.taskUsage || s.slackless === true || launchedFromDashboard(key);
+function onBoard(s: { sessionId?: string; taskUsage?: unknown }, key?: string): boolean {
+  return !!s.sessionId || !!s.taskUsage || launchedFromDashboard(key);
+}
+
+/**
+ * An archive the closed column shows: as {@link onBoard} — and a dashboard task's (#855: that
+ * stack was removed and its tasks archived at load), never-run ones included, so its card stays
+ * readable in CLOSED.
+ */
+function archiveOnBoard(archived: ArchivedSession): boolean {
+  return onBoard(archived) || archived.slackless === true;
 }
 
 /** A card's column. An epic's follows its `epicState` while a child works or waits (E4 ⑧, D11). */
@@ -2937,7 +2763,7 @@ function placeOnBoard(board: KanbanBoard, kanban: KanbanSession, session: { stat
 
 /**
  * E4 ⑧ — the children an epic's bundle shows, the one predicate for its view and
- * its cards: live Slack-less tasks under it, of its own owner, not trashed or
+ * its cards: live sessions under it, of its own owner, not trashed or
  * terminated. Anything else under its id keeps a column of its own.
  */
 function bundledChildrenOf(epic: { taskId?: string; ownerId?: string }): Array<[string, ConversationSession]> {
@@ -2945,7 +2771,6 @@ function bundledChildrenOf(epic: { taskId?: string; ownerId?: string }): Array<[
   const out: Array<[string, ConversationSession]> = [];
   for (const [key, s] of getAllSessions()) {
     if (
-      s.slackless === true &&
       s.parentTaskId === epic.taskId &&
       s.ownerId === epic.ownerId &&
       s.trashed !== true &&
@@ -2978,18 +2803,18 @@ function epicBundle(epic: ConversationSession): NonNullable<KanbanSession['epic'
 
 /** E4 ⑧ — the epic whose bundle carries this child's card, if any. */
 function bundlingEpicOf(child: ConversationSession): [string, ConversationSession] | undefined {
-  if (child.slackless !== true || !child.parentTaskId || child.trashed === true || child.terminated) return undefined;
-  let key: string;
-  try {
-    key = buildTaskSessionKey(child.parentTaskId);
-  } catch {
-    // A forged parent id (one with a key separator) names no epic: the child pushes its own card (fable #704 R2 P3-3).
-    return undefined;
+  if (!child.parentTaskId || child.trashed === true || child.terminated) return undefined;
+  let found: [string, ConversationSession] | undefined;
+  // #854 — a child's epic is a Slack session: found by its task id.
+  for (const [k, s] of getAllSessions()) {
+    if (s.taskId === child.parentTaskId) {
+      found = [k, s];
+      break;
+    }
   }
-  const epic = getAllSessions().get(key);
+  const [key, epic] = found ?? ['', undefined];
   if (
     !epic ||
-    epic.slackless !== true ||
     epic.kind !== 'epic' ||
     epic.trashed === true ||
     epic.ownerId !== child.ownerId
@@ -3011,7 +2836,7 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
     if (userId && session.ownerId !== userId) continue;
     if (session.trashed === true) continue;
 
-    if (session.slackless === true && session.parentTaskId) {
+    if (session.parentTaskId) {
       children.push([key, session]);
       continue;
     }
@@ -3050,7 +2875,7 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
     for (const archived of sortedArchives) {
       // Fix #438: Skip archives without sessionId — these sessions were terminated
       // before any Claude interaction (e.g., bot-thread migration source sessions)
-      if (!onBoard(archived)) continue;
+      if (!archiveOnBoard(archived)) continue;
       if (userId && archived.ownerId !== userId) continue;
       // Skip if a live session exists in the same thread
       if (archived.channelId && archived.threadTs && liveThreadKeys.has(`${archived.channelId}:${archived.threadTs}`)) {
@@ -3942,7 +3767,7 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/stop',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
       if (!resolved) return;
       const { wireKey: key, originalKey } = resolved;
       try {
@@ -3964,7 +3789,7 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/close',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
       if (!resolved) return;
       const { wireKey: key, originalKey } = resolved;
       try {
@@ -3991,7 +3816,7 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/trash',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
       if (!resolved) return;
       const { wireKey: key, originalKey } = resolved;
       // A starred session is pinned on top of the board; hiding it would
@@ -4130,28 +3955,12 @@ export async function registerDashboardRoutes(
         return;
       }
       // Only a sender the gate let through gets their files decoded (up to the new-task limits).
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, instruct: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { instruct: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       const files = parseAttachments(attachments);
       if (!files.ok) {
         reply.status(400).send({ error: files.error });
-        return;
-      }
-      // #598 ④c — a Slack-less task's instruction runs through the task turn
-      // controller, which answers 202 once the turn's start is saved.
-      if (_getSessionsFn?.()?.get(originalKey)?.slackless === true) {
-        if (!_taskCommandHandlerFn) {
-          reply.status(501).send({ error: 'Task turn handler not configured' });
-          return;
-        }
-        try {
-          const outcome = await _taskCommandHandlerFn(originalKey, message, files.value, signedInUserId(request) ?? '');
-          reply.status(outcome.status).send(outcome.body);
-        } catch (error) {
-          logger.error('Error starting a dashboard task turn', error);
-          reply.status(500).send({ error: 'Internal Server Error' });
-        }
         return;
       }
       try {
@@ -4220,15 +4029,13 @@ export async function registerDashboardRoutes(
         }
         text = body.text.trim();
       }
-      // A dashboard task's queue (2026-11-03) is the task turn controller's, not the Slack queue's.
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { instruct: true, allowSlackless: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { instruct: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       const actorUserId = signedInUserId(request);
       const target = _getSessionsFn?.()?.get(originalKey);
       const manages = _hasWriteAccess(request, target?.ownerId);
-      const act =
-        target?.slackless === true ? _taskQueueHandlerFn : _followupHandler ? _followupHandler.act.bind(_followupHandler) : null;
+      const act = _followupHandler ? _followupHandler.act.bind(_followupHandler) : null;
       if (!act) {
         reply.status(501).send({ error: 'Follow-up queue handler not configured' });
         return;
@@ -4290,8 +4097,7 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: "action must be 'add' or 'delete'" });
         return;
       }
-      // #865 — a task's goal list too: the handler routes it to the task's goal commands.
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
       if (!resolved) return;
       const { originalKey } = resolved;
       if (!_goalActionHandlerFn) {
@@ -4464,7 +4270,7 @@ export async function registerDashboardRoutes(
         return;
       }
       // Who may: whoever may instruct the task (SSOT 2026-11-02) — 시작 runs the work as them.
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, instruct: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { instruct: true });
       if (!resolved) return;
       if (!_taskPlanHandlerFn) {
         reply.status(501).send({ error: 'Task plan handler not configured' });
@@ -4786,13 +4592,10 @@ export async function registerDashboardRoutes(
     }
     try {
       const context = await _newTaskProvider.context(userId);
-      // #600 ⑥ — with dashboard tasks wired, the folders a task may name (names only).
-      const taskFolders = _taskLauncher?.folders(userId).map((f) => ({ name: f.name }));
-      // E4 ⑨b — and whether this user may make an epic (their flag): the composer offers "에픽" then.
-      const epicTasks = taskFolders !== undefined && _taskLauncher?.epicTasks?.(userId) === true;
-      reply.send({
-        context: taskFolders ? { ...context, taskFolders, ...(epicTasks ? { epicTasks: true } : {}) } : context,
-      });
+      // #854 — one kind of work session: no dashboard-task destination (no task folders offered).
+      // E4 ⑨b — whether this user may make an epic (their flag): the composer offers "에픽" then.
+      const epicTasks = epicTasksFor(userId);
+      reply.send({ context: epicTasks ? { ...context, epicTasks: true } : context });
     } catch (error) {
       logger.error('Error building the new-task context', error);
       reply.status(500).send({ error: 'Internal Server Error' });
@@ -4814,40 +4617,10 @@ export async function registerDashboardRoutes(
         return;
       }
       const requestId = (request.body as { requestId?: unknown } | null)?.requestId;
-      // #600 ⑥ — a Slack-less dashboard task: no channel, no Slack provider.
+      // #854 — one kind of work session: every task is a Slack thread. A dashboard task (no Slack
+      // thread) is no longer made; an old client that asks for one is told so.
       if ((request.body as { destination?: unknown } | null)?.destination === 'task') {
-        const launcher = _taskLauncher;
-        if (!launcher) {
-          reply.status(501).send({ error: 'Dashboard tasks are not configured' });
-          return;
-        }
-        const parsed = parseDashboardTaskSubmission(request.body);
-        if (!parsed.ok) {
-          reply.status(400).send({ error: parsed.error });
-          return;
-        }
-        const ownerName = (request as { authContext?: { name?: string } }).authContext?.name || userId;
-        try {
-          const result = await _newTaskGate.run(userId, parsed.value.requestId, async () => {
-            const { requestId: _rid, ...rest } = parsed.value;
-            // The model nickname is resolved by the launcher from the model catalog —
-            // never through the Slack-dependent new-task context (#640 R2).
-            const outcome = await launcher.launch({ ownerId: userId, ownerName, ...rest });
-            // A refusal is not remembered by the gate, so the same request may be retried.
-            if (outcome.status >= 400) {
-              throw new NewTaskError(outcome.status, String(outcome.body.error ?? 'refused'));
-            }
-            return outcome.body;
-          });
-          reply.send({ ok: true, ...result });
-        } catch (error) {
-          if (error instanceof NewTaskError) {
-            reply.status(error.statusCode).send({ error: error.message });
-            return;
-          }
-          logger.error('Error starting a dashboard task', error);
-          reply.status(500).send({ error: 'Internal Server Error' });
-        }
+        reply.status(410).send({ error: '대시보드 작업은 없어졌습니다 — Slack 채널을 골라 작업을 시작하세요' });
         return;
       }
       const provider = _newTaskProvider;
@@ -4862,6 +4635,10 @@ export async function registerDashboardRoutes(
           const context = await provider.context(userId, { fresh: true });
           const parsed = parseNewTaskSubmission(request.body, context);
           if (!parsed.ok) throw new NewTaskError(400, parsed.error);
+          // #854 — an epic only behind the owner's flag (the composer offers it only then).
+          if (parsed.value.epic === true && !epicTasksFor(userId)) {
+            throw new NewTaskError(403, '에픽은 꺼져 있습니다 — `/z epictasks on`으로 켜세요');
+          }
           return provider.start(userId, parsed.value);
         });
         // Its session is on the board from its creation, before its SDK session (SSOT 2026-11-02).
@@ -4900,10 +4677,9 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'Field length exceeded' });
         return;
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, instruct: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { instruct: true });
       if (!resolved) return;
       const { originalKey } = resolved;
-      if (await routeTaskAnswer(request, reply, originalKey, { kind: 'single', choiceId })) return;
       try {
         if (_choiceAnswerHandlerFn) {
           await _choiceAnswerHandlerFn(originalKey, choiceId, label, question, signedInUserId(request));
@@ -4971,10 +4747,9 @@ export async function registerDashboardRoutes(
           return;
         }
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, instruct: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { instruct: true });
       if (!resolved) return;
       const { originalKey } = resolved;
-      if (await routeTaskAnswer(request, reply, originalKey, { kind: 'multi', selections })) return;
       try {
         if (_multiChoiceAnswerHandlerFn) {
           await _multiChoiceAnswerHandlerFn(originalKey, selections, signedInUserId(request));
@@ -5028,17 +4803,14 @@ export async function registerDashboardRoutes(
     const originalKey = resolveSelfActionKey(request.params?.key ?? '', reply);
     if (originalKey === null) return null;
     const session = getAllSessions().get(originalKey);
-    // A Slack-less task (#599 ⑤b) answers its own prompts, keyed by its session key.
-    const slackless = session?.slackless === true;
-    if (!session || (!slackless && !session.channelId)) {
+    if (!session || !session.channelId) {
       reply.status(404).send({ error: 'Session not found' });
       return null;
     }
-    // A task's prompt is answerable only while the turn that raised it runs:
-    // that turn's hook is its only waiter.
-    const thread: PermissionPromptTarget = slackless
-      ? { taskKey: originalKey, turnId: String(session.activeTaskTurnId ?? '') }
-      : { channel: String(session.channelId), threadTs: session.threadTs || undefined };
+    const thread: PermissionPromptTarget = {
+      channel: String(session.channelId),
+      threadTs: session.threadTs || undefined,
+    };
     const pending = await loadPermissionPrompt(approvalId);
     if (!pending || !promptBelongsToThread(pending, thread)) {
       reply.status(404).send({ error: 'Permission request not found or expired' });
@@ -5141,10 +4913,9 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/submit-recommended',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true, instruct: true });
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { instruct: true });
       if (!resolved) return;
       const { originalKey } = resolved;
-      if (await routeTaskAnswer(request, reply, originalKey, { kind: 'recommended' })) return;
       try {
         if (!_submitRecommendedHandlerFn) {
           reply.status(501).send({ error: 'Submit-recommended handler not configured' });
@@ -5617,11 +5388,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-foot-bar .card-actions { margin: 0 0 0 auto; }
 /* SSOT 2026-10-29 T1: the open card's actions (Stop · Close · Slack) — first row under the face. */
 .card-actions-bar { display: flex; justify-content: flex-end; margin: 0 0 10px; padding-bottom: 10px; border-bottom: 1px dashed var(--ib-card-border); }
-/* #600 ⑥ — a dashboard task's last turn on its card */
-.card-task-outcome { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 0 0 8px; font-size: 12px; color: var(--text-secondary); }
-.card-task-outcome .cto-label { font-weight: 600; }
-.card-task-outcome[data-outcome="failed"] .cto-label, .card-task-outcome[data-outcome="interrupted"] .cto-label { color: var(--red); }
-.card-task-outcome .cto-warn { color: var(--red); font-weight: 600; }
 .card-actions-bar .card-actions { margin: 0; }
 /* An open card with nothing under its actions (미니멀, SSOT 2026-11-01): no divider over an empty body. */
 .card-actions-bar:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: 0; }
@@ -6887,9 +6653,9 @@ function viewerCanManage(s) {
 }
 function viewerCanInstruct(s) {
   if (!s) return false;
-  if (s.slackless && (s.kind === 'epic' || s.parentTaskId)) return !!_viewerUserId && viewerCanManage(s);
-  if (!s.slackless && typeof s.channelId === 'string' && s.channelId.charAt(0) === 'D') return viewerCanManage(s);
-  return !!_viewerUserId || (!s.slackless && viewerCanManage(s));
+  if (s.kind === 'epic' || s.parentTaskId) return !!_viewerUserId && viewerCanManage(s);
+  if (typeof s.channelId === 'string' && s.channelId.charAt(0) === 'D') return viewerCanManage(s);
+  return !!_viewerUserId || viewerCanManage(s);
 }
 
 // ── Top bar — @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14) ──
@@ -7102,9 +6868,7 @@ function acPermissionData(s, p) {
 // rewritten in place is another card, never the old one's answer or focus
 // (review R2 P1).
 function acQuestionId(q) {
-  // A dashboard task's question names itself (#599): the same text asked twice is
-  // two questions, so a late answer to the first never resolves the second (#637 R1).
-  return (q.askId ? 'a|' + q.askId + '|' : '') + 'q|' + JSON.stringify([q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })]);
+  return 'q|' + JSON.stringify([q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })]);
 }
 // pendingQuestion (single choice) → the card's data. The choices read as
 // before ("1. label", the recommended marker stripped); the route takes one
@@ -7995,8 +7759,6 @@ async function answerChoice(key, qid, choiceId) {
   var st;
   try {
     var acBody = { choiceId: choiceId, label: label, question: q.question };
-    // #599 — a dashboard task's question names itself; the answer carries its id back.
-    if (q.askId) acBody.askId = q.askId;
     var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice', JSON.stringify(acBody));
     if (res.ok) {
       st = { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() };
@@ -11699,8 +11461,6 @@ function renderPanelComposer(s, force) {
   var mode = pcModeOf(s);
   if (force || host._mode !== mode) {
     host._mode = mode;
-    // A dashboard task takes no attachments yet (D8, #600 ⑥): the composer's
-    // tools are off and a pasted or dropped file is refused (#640 R2).
     host._takesFiles = pcToolsOpen(s, mode);
     pcComposerSetup(document.getElementById('pc-composer'), host._takesFiles);
     if (mode !== 'open') pcReset();
@@ -11711,10 +11471,9 @@ function renderPanelComposer(s, force) {
   el._sig = sig;
   el.data = data;
 }
-// The composer's attach / image / mic: an open session's — but not a dashboard
-// task's, which takes no attachments yet (D8, #600 ⑥).
+// The composer's attach / image / mic: an open session's.
 function pcToolsOpen(s, mode) {
-  return mode === 'open' && !(s && s.slackless);
+  return mode === 'open';
 }
 function pcModeOf(s) {
   var isClosed = s.terminated || s.sessionState === 'SLEEPING';
@@ -11959,8 +11718,6 @@ function cwPhase(s, now) {
 // Closed is the composer's rule: terminated or sleeping (a press would wake it).
 function cwCanCompact(s) {
   if (!s || s.terminated || s.sessionState === 'SLEEPING') return '종료된 세션';
-  // A task turn refuses commands (D8): "compact now" would run as an instruction (#600 ⑥).
-  if (s.slackless) return '대시보드 작업에서는 아직 지원하지 않아요';
   var env = s.environment;
   if (isSiblingSession(s)) return STRINGS.siblingLock(env);
   if (!viewerCanManage(s)) return OWNER_ONLY_MSG;
@@ -12795,8 +12552,6 @@ function renderCardBody(s, col, spec, face) {
     + permissionHtml
     + renderCardResume(s, col)
     + taskPlanCardHtml(s)
-    + taskOutcomeHtml(s)
-    + taskNoticeFailHtml(s)
     + questionHtml;
 
   const lane = col === 'working' ? 'work' : col === 'waiting' ? 'wait' : 'done';
@@ -12827,7 +12582,7 @@ function renderEpicPlan(s) {
 }
 
 // ── Plan mode (SSOT 2026-11-02 — 작업 계획 모드) ──
-// A dashboard task made with the 작업 계획 switch plans first. Its card and its detail card show the plan
+// A session made with the 작업 계획 switch plans first. Its card and its detail card show the plan
 // (taskPlan: state · revision · summary; the plan itself, drawn by the server, fetched by revision) and
 // 시작 · 취소 · 직접 입력: in the open card, at the top of the detail card (the status bar) and at its bottom
 // (above the composer, which is the direct input). 시작 / 취소 decide the revision the user saw.
@@ -13131,7 +12886,7 @@ function decisionSigOf(s) {
   var tp = s.taskPlan;
   if (tp && tp.state === 'awaiting') return 'plan|' + tp.revision;
   var q = s.pendingQuestion;
-  if (s.activityState === 'waiting' && q && quickChoicesOf(q)) return 'ask|' + (q.askId || q.question || '');
+  if (s.activityState === 'waiting' && q && quickChoicesOf(q)) return 'ask|' + (q.question || '');
   return '';
 }
 // A card of the viewer's that newly asks for one opens on the board by itself, once per decision — its buttons in
@@ -13169,33 +12924,6 @@ function autoOpenDecisions() {
       _quietOpen.key = '';
     }
   }
-}
-
-// #600 ⑥ — a dashboard task's last turn as its card says it: how it ended, why,
-// and a recording failure (the outcome was not saved).
-var TASK_OUTCOME_LABEL = { completed: '완료', failed: '실패', cancelled: '중지됨', interrupted: '중단됨', waiting: '입력 대기' };
-function taskOutcomeHtml(s) {
-  var o = s && s.slackless && s.lastTurnOutcome;
-  if (!o) return '';
-  var kind = String(o.outcome || '');
-  return '<div class="card-task-outcome" data-outcome="' + escAttr(kind) + '">'
-    + '<span class="cto-label">마지막 턴 · ' + esc(TASK_OUTCOME_LABEL[kind] || kind) + '</span>'
-    + (o.reason ? '<span class="cto-reason">' + esc(o.reason) + '</span>' : '')
-    + (o.recordFailure ? '<span class="cto-warn" role="alert">기록하지 못함 · ' + esc(o.recordFailure) + '</span>' : '')
-    + '</div>';
-}
-
-// E2 ⑤ — a notice the task owed its Slack instruction thread that could not be
-// posted: the card says which and why (the thread will not get it).
-var TASK_NOTICE_LABEL = { link: '카드 링크', result: '결과', question: '질문', approval: '승인 요청', failure: '실패 알림', interrupted: '중단 알림' };
-function taskNoticeFailHtml(s) {
-  var f = s && s.slackless && s.noticeFailures;
-  if (!f || !f.length) return '';
-  return '<div class="card-task-outcome" data-outcome="notice-failed">'
-    + f.map(function (n) {
-      return '<span class="cto-warn" role="alert">슬랙 스레드에 못 보냄 · ' + esc(TASK_NOTICE_LABEL[n.kind] || n.kind) + ' · ' + esc(n.error) + '</span>';
-    }).join('')
-    + '</div>';
 }
 
 // ── Model · effort on the open card and beside the panel's composer ──
@@ -14731,21 +14459,9 @@ function followSessionKey(oldKey, newKey) {
 var _mcState = Object.create(null);
 var MC_CUSTOM_ID = '\\uC9C1\\uC811\\uC785\\uB825';
 // The form's identity: a different question (or another session) starts clean.
-// A dashboard task's question carries its askId (#599 ⑤): a new ask is a new
-// form, even when it reads the same — picks for one ask never carry to the next.
 function mcFormId(s, q) {
-  return 'mc|' + s.key + '|' + (q.askId ? 'a|' + q.askId + '|' : '')
+  return 'mc|' + s.key + '|'
     + JSON.stringify([q.title || q.question || '', (q.questions || []).map(function(x) { return [x.id, x.question]; })]);
-}
-// The ask a form was drawn for (#637 R2): an action from a form whose ask is no
-// longer the session's (a push the panel has not painted yet) answers nothing.
-function mcAskShown(el, q) {
-  return (el.getAttribute('data-mc-ask') || '') === ((q && q.askId) || '');
-}
-function mcAskChanged(key) {
-  dashToast({ title: '\uC9C8\uBB38\uC774 \uBC14\uB00C\uC5C8\uC5B4\uC694 \u2014 \uB2E4\uC2DC \uD655\uC778\uD574\uC8FC\uC138\uC694.', tone: 'error' });
-  var s = _sessionCache[key];
-  if (s && mcFormEl(key)) renderMultiChoicePanel(s);
 }
 // The session's form state, reset when its question is another one.
 function mcStateOf(s, q) {
@@ -14882,7 +14598,6 @@ function renderMultiChoicePanel(s) {
     container.appendChild(el);
   }
   el.setAttribute('data-mc-key', s.key);
-  el.setAttribute('data-mc-ask', q.askId || '');
   var d = mcFormData(s, q);
   var sig = JSON.stringify(d);
   if (el._mcSig !== sig) {
@@ -14911,7 +14626,7 @@ function mcOnChange(e) {
   if (!el || el.tagName !== 'UI-CHOICE-FORM' || !e.detail) return;
   var s = _sessionCache[el.getAttribute('data-mc-key')];
   var q = s && s.pendingQuestion;
-  if (!q || !q.questions || !mcAskShown(el, q)) return;
+  if (!q || !q.questions) return;
   mcStateOf(s, q).answers = mcAnswersIn(e.detail.answers);
   refreshCard(s.key);
 }
@@ -14923,11 +14638,6 @@ function mcOnSubmit(e) {
   var q = s && s.pendingQuestion;
   if (!q || !q.questions) {
     e.preventDefault();
-    return;
-  }
-  if (!mcAskShown(el, q)) {
-    e.preventDefault();
-    mcAskChanged(key);
     return;
   }
   var list = e.detail.answers || [];
@@ -15002,19 +14712,13 @@ function submitMultiChoice(key, selections) {
   }
   var sel = selections || {};
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/answer-multi-choice';
-  // A dashboard task's answer names its ask (#599 ⑤); a Slack session's has none.
-  var askId = s.pendingQuestion.askId;
-  return mcSend(key, url, JSON.stringify(askId ? { selections: sel, askId: askId } : { selections: sel }));
+  return mcSend(key, url, JSON.stringify({ selections: sel }));
 }
 // 추천대로 모두 제출 (group-only one-click): the server derives the selections
 // from the session, so the request has no body.
 function submitAllRecommended(key) {
-  var s = _sessionCache[key];
-  var askId = s && s.pendingQuestion && s.pendingQuestion.askId;
-  // A dashboard task's question names itself (#599 ⑤): its id as JSON. A Slack
-  // session's request stays body-less (mcPost sends no Content-Type then).
-  var body = askId ? JSON.stringify({ askId: askId }) : undefined;
-  return mcSend(key, '/api/dashboard/session/' + encodeURIComponent(key) + '/submit-recommended', body);
+  // Body-less (mcPost sends no Content-Type then): the server derives the selections.
+  return mcSend(key, '/api/dashboard/session/' + encodeURIComponent(key) + '/submit-recommended', undefined);
 }
 
 // ── Stats ──
@@ -17079,7 +16783,8 @@ async function loadMorePanelTurns() {
 // dashboard-system-turns-client.test.ts. A turn a person sent (origin.by
 // 'user') is never read as one of the injected kinds; a command they may type
 // themselves (/compact, /renew) is classified whoever sent it.
-// The third: a dashboard task's restart resume (TASK_RESTART_TEXT, task-restart-resume.ts).
+// The third: a dashboard task's restart resume — that stack was removed in #855; its archived
+// conversations still carry the line.
 var SYS_RESTART_HEADS = ['The service was restarted and the previous task was interrupted.', '서비스가 재시작되어 이전 작업이 중단되었다.', '[재시작 후 자동 재개]'];
 var SYS_RESUME_CONTEXT = '--- 중단 시점 컨텍스트 ---';
 var SYS_RETRY_MARK = '⚠️ 이전 시도 중 오류 발생:';
@@ -18101,7 +17806,6 @@ async function sendCommand(text, ref, files) {
 
   var why = '';
   var awaitsOwner = false;
-  var goalSaid = ''; // #865 — a task's goal command: the host's answer, no turn of its own
   _pcInFlight++; // until the server answered: a reload now would drop a note the composer no longer holds
   try {
     const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
@@ -18111,22 +17815,12 @@ async function sendCommand(text, ref, files) {
     if (!res.ok) why = ((data && data.error) || '') + ' (HTTP ' + res.status + ')';
     // #767 — someone else's task: the words wait for its owner's approval.
     else if (data && data.pendingApproval) awaitsOwner = true;
-    else if (data && data.goalCommand) goalSaid = String(data.message || '');
   } catch (e) {
     why = (e && e.message) || '네트워크 오류';
   } finally {
     _pcInFlight--;
   }
   if (awaitsOwner) dashToast({ title: '작업 소유자의 승인을 기다려요', description: '소유자가 승인하면 실행됩니다 — 소유자에게 DM과 대시보드로 요청했어요', tone: 'wait' });
-  // A goal command is the host's, not a turn: its words leave the transcript (the work log has the notice);
-  // a goal it started brings its own turn — the objective — when that turn is recorded.
-  if (goalSaid) {
-    if (optimisticId && panelSessionKey === sendingSessionKey) dropTurnFromPanel(optimisticId);
-    // Sent while a turn ran: the steering row it made waits for a queue entry that never comes
-    // (the command applied at once) — unless a goal it started queued its first turn there.
-    if (ref && !(data && data.queued)) el.setItemState(ref, 'cancelled');
-    dashToast({ title: '목표', description: goalSaid, tone: 'success' });
-  }
   // Sent: its files went with it. Failed: they stay kept by ref for the Retry.
   if (!why && ref) {
     delete _pcNoteFiles[ref];
@@ -19798,6 +19492,8 @@ function ntBuildPayload(state, attachments, requestId) {
     autogoal: planOn ? false : state.autogoal,
     autoz: planOn ? false : state.autoz,
     plan: planOn,
+    // #854 — an epic is a Slack thread too (offered behind the user's flag; the server checks it again).
+    ...(state.kind === 'epic' ? { epic: true } : {}),
     attachments: attachments.map(function (a) {
       return { name: a.name, mimetype: a.mimetype, data: a.data };
     }),
@@ -19964,8 +19660,8 @@ function ntReconcile(state, ctx) {
     return f.name === state.folder;
   });
   if (!hasFolder) state.folder = '';
-  // E4 ⑨b — an epic only while it is offered: a dashboard task with the user's flag (grok, fable #707 R1).
-  if (!ctx.epicTasks || state.destination !== 'task') state.kind = '';
+  // E4 ⑨b — an epic only while it is offered: the user's flag (grok, fable #707 R1); any destination (#854).
+  if (!ctx.epicTasks) state.kind = '';
 }
 
 function ntRender() {
@@ -19973,19 +19669,27 @@ function ntRender() {
   // #600 ⑥ — where the task goes: offered when the context lists task folders.
   var isTask = _ntState.destination === 'task';
   ntPaintPicker();
+  // The row also holds the plan switch and the epic chip (#854): it shows; only the destination chips
+  // wait for task folders, which are no longer offered (one kind of work session).
   var dest = ntEl('nt-dest');
-  if (dest) dest.hidden = !_ntCtx.taskFolders;
+  if (dest) dest.hidden = false;
   var dSlack = ntEl('nt-dest-slack');
   var dTask = ntEl('nt-dest-task');
-  if (dSlack) dSlack.setAttribute('aria-pressed', isTask ? 'false' : 'true');
-  if (dTask) dTask.setAttribute('aria-pressed', isTask ? 'true' : 'false');
+  if (dSlack) {
+    dSlack.hidden = !_ntCtx.taskFolders;
+    dSlack.setAttribute('aria-pressed', isTask ? 'false' : 'true');
+  }
+  if (dTask) {
+    dTask.hidden = !_ntCtx.taskFolders;
+    dTask.setAttribute('aria-pressed', isTask ? 'true' : 'false');
+  }
   var folderChip = ntEl('nt-folder-chip');
   if (folderChip) folderChip.hidden = !isTask;
-  // E4 ⑨b — "에픽" only for a dashboard task, and only when the user may make one.
+  // E4 ⑨b — "에픽" only when the user may make one; a Slack task too (#854).
   var epicChip = ntEl('nt-kind-epic');
   if (epicChip) {
-    epicChip.hidden = !(isTask && _ntCtx.epicTasks);
-    epicChip.setAttribute('aria-pressed', isTask && _ntCtx.epicTasks && _ntState.kind === 'epic' ? 'true' : 'false');
+    epicChip.hidden = !_ntCtx.epicTasks;
+    epicChip.setAttribute('aria-pressed', _ntCtx.epicTasks && _ntState.kind === 'epic' ? 'true' : 'false');
   }
   // Plan mode — the 작업 계획 switch, for every new task (on unless turned off; #853).
   var planWrap = ntEl('nt-plan-wrap');
@@ -20985,18 +20689,16 @@ function ntOnChannelChange() {
 }
 
 // #600 ⑥ — the destination: a Slack channel or a dashboard task (only when offered).
-// E4 ⑨b — the composer's "에픽": a dashboard task that writes a plan and drives children, offered when the
-// context says the user may make one (their epicTasks flag).
+// E4 ⑨b — the composer's "에픽": a task that writes a plan and drives children in their own threads,
+// offered when the context says the user may make one (their epicTasks flag) — a Slack task (#854).
 function ntToggleEpic() {
-  if (!_ntState || !_ntCtx || !_ntCtx.epicTasks || _ntState.destination !== 'task') return;
+  if (!_ntState || !_ntCtx || !_ntCtx.epicTasks) return;
   _ntState.kind = _ntState.kind === 'epic' ? '' : 'epic';
   ntRender();
 }
 function ntSetDestination(dest) {
   if (!_ntState || !_ntCtx) return;
   _ntState.destination = dest === 'task' && _ntCtx.taskFolders ? 'task' : 'slack';
-  // An epic is a dashboard task: leaving the task destination drops it.
-  if (_ntState.destination !== 'task') _ntState.kind = '';
   ntSetError(ntBlockedHint(_ntState, ntComposerFiles()));
   ntRender();
 }
@@ -21258,7 +20960,7 @@ function ntStateAfterLaunch(prev, data, ctx) {
     next.prompt = prev.prompt;
     next.folder = prev.folder;
     next.model = prev.model;
-    if (prev.kind === 'epic' && next.destination === 'task') next.kind = 'epic';
+    if (prev.kind === 'epic' && ctx.epicTasks) next.kind = 'epic';
   }
   return next;
 }

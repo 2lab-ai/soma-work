@@ -323,46 +323,37 @@ describe('InstructionApprovals (#767)', () => {
     });
   });
 
-  describe('#842 R3 — a strict hold is saved or refused (a dashboard task’s word must not end up nowhere)', () => {
-    it('a strict hold whose save fails keeps nothing, asks nobody and says so', async () => {
-      const approvals = new InstructionApprovals(deps());
-      // The store cannot be written: its path is a directory.
-      fs.mkdirSync(storeFile);
-      const r = await approvals.hold({
-        sessionKey: KEY,
-        session: sessions.get(KEY),
-        senderId: OTHER,
-        instruction: { kind: 'task-command', text: '배포해줘', at: 1 },
-        strict: true,
-      });
-      expect(r.refused).toBe('unsaved');
-      expect(approvals.pendingFor(KEY)).toEqual([]);
-      expect(dms).toEqual([]);
-      expect(notices).toEqual([]);
-    });
-
-    it('a strict hold joining a pending request takes back only its own words when the save fails', async () => {
-      const approvals = new InstructionApprovals(deps());
-      const first = await holdOne(approvals, '101.000', '먼저');
-      fs.rmSync(storeFile);
-      fs.mkdirSync(storeFile);
-      const r = await approvals.hold({
-        sessionKey: KEY,
-        session: sessions.get(KEY),
-        senderId: OTHER,
-        instruction: { kind: 'task-command', text: '나중', at: 2 },
-        strict: true,
-      });
-      expect(r).toMatchObject({ requestId: first.requestId, refused: 'unsaved' });
-      expect(approvals.pendingFor(KEY)[0].count).toBe(1);
-    });
-
-    it('a hold that is not strict keeps its in-memory hold as before', async () => {
+  describe('the store on disk', () => {
+    it('a hold whose save fails stays held in memory (lost on a restart, never run)', async () => {
       const approvals = new InstructionApprovals(deps());
       fs.mkdirSync(storeFile);
       const r = await holdOne(approvals);
       expect(r.refused).toBeUndefined();
       expect(approvals.pendingFor(KEY)).toHaveLength(1);
+    });
+
+    it('#855 — a stored request holding a dashboard task’s instruction or answer is dropped on load; the rest load', async () => {
+      const first = new InstructionApprovals(deps());
+      const kept = await holdOne(first);
+      const doc = JSON.parse(fs.readFileSync(storeFile, 'utf8'));
+      const base = doc.requests[kept.requestId];
+      doc.requests.iap_task_command = {
+        ...base,
+        requestId: 'iap_task_command',
+        sessionKey: 'task:t-1',
+        held: [{ kind: 'task-command', text: '배포해줘', at: 1 }],
+      };
+      doc.requests.iap_task_answer = {
+        ...base,
+        requestId: 'iap_task_answer',
+        sessionKey: 'task:t-2',
+        held: [{ kind: 'task-answer', askId: 'a1', answer: { kind: 'recommended' }, at: 1 }],
+      };
+      fs.writeFileSync(storeFile, JSON.stringify(doc));
+      const loaded = new InstructionApprovals(deps());
+      expect(loaded.pendingFor(KEY).map((p) => p.requestId)).toEqual([kept.requestId]);
+      expect(loaded.pendingFor('task:t-1')).toEqual([]);
+      expect(loaded.pendingFor('task:t-2')).toEqual([]);
     });
   });
 

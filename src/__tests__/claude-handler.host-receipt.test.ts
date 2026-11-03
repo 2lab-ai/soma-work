@@ -10,13 +10,8 @@ function registry() {
     getSessionResourceSnapshot: vi
       .fn()
       .mockReturnValue({ issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 2 }),
-    getSessionResourceSnapshotByKey: vi
-      .fn()
-      .mockReturnValue({ issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 5 }),
     modelCommandReceiptFile: vi.fn((c: string, t?: string) => `/data/model-command-receipts/${c}-${t}.json`),
-    modelCommandReceiptFileByKey: vi.fn((k: string) => `/data/model-command-receipts/${k}.json`),
     writeModelCommandReceipt: vi.fn(),
-    writeModelCommandReceiptByKey: vi.fn(),
   };
 }
 const build = (self: { sessionRegistry: ReturnType<typeof registry> }, ...args: unknown[]) =>
@@ -30,17 +25,9 @@ describe('buildModelCommandContext — the host receipt', () => {
     expect(self.sessionRegistry.writeModelCommandReceipt).toHaveBeenCalledWith('C1', '1.1');
   });
 
-  it('a Slack-less task: by its key', () => {
-    const self = { sessionRegistry: registry() };
-    const ctx = build(self, { title: 'T' }, undefined, { origin: 'task', sessionKey: 'task:k1', userId: 'U1' });
-    expect(ctx.receiptFile).toBe('/data/model-command-receipts/task:k1.json');
-    expect(self.sessionRegistry.writeModelCommandReceiptByKey).toHaveBeenCalledWith('task:k1');
-  });
-
-  it('no context (not Slack, not a task): nothing written', () => {
+  it('no Slack context: nothing written', () => {
     const self = { sessionRegistry: registry() };
     expect(build(self, undefined, undefined, undefined)).toBeUndefined();
     expect(self.sessionRegistry.writeModelCommandReceipt).not.toHaveBeenCalled();
-    expect(self.sessionRegistry.writeModelCommandReceiptByKey).not.toHaveBeenCalled();
   });
 });

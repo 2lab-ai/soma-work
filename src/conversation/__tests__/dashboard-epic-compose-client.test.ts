@@ -1,13 +1,16 @@
 /**
- * E4 ⑨b (.prd/19 D12) — the composer's "에픽": a dashboard task made as an epic, offered only when the
- * new-task context says the user may make one (their epicTasks flag; the server checks it again).
+ * E4 ⑨b (.prd/19 D12) — the composer's "에픽", offered only when the new-task context says the user
+ * may make one (their epicTasks flag; the server checks it again). Since #854 an epic is a Slack
+ * task like any other: the chip rides the Slack destination.
  * Runs the shipped client code cut out of renderDashboardPage()'s template, with fakes — no DOM.
  *
- *   C1 the task body carries kind: 'epic' only for an epic; a Slack body never does.
- *   C2 the chip toggles only for a dashboard task with the flag; leaving the task destination drops it.
- *   C3 ntRender shows the chip only for a dashboard task with the flag, pressed when chosen.
+ *   C1 the Slack body carries epic: true only for an epic.
+ *   C2 the chip toggles with the flag, whatever the destination; no flag, nothing changes.
+ *   C3 ntRender shows the chip with the flag, pressed when chosen; the row (with the plan switch)
+ *      shows while the destination chips wait for task folders that are no longer offered.
  *   C4 a launch that did not start keeps the epic choice; a started one does not.
- *   C5 the markup carries the chip in the destination row.
+ *   C5 the markup carries the chip in the row with the plan switch.
+ *   C6 reconcile keeps an epic only while the flag is on.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -40,24 +43,21 @@ describe('C1 — the request body', () => {
     'ntDefaultState',
     'ntBuildPayload',
   ]);
-  const task = (over: Record<string, unknown> = {}) => ({
+  const slack = (over: Record<string, unknown> = {}) => ({
     ...m.ntDefaultState(ctx, null),
-    destination: 'task',
     prompt: '로그인 고쳐줘',
     ...over,
   });
-  it('an epic task says so; a plain task and a Slack launch never do', () => {
-    expect(m.ntBuildPayload(task({ kind: 'epic' }), [], 'req-1')).toEqual({
+  it('an epic Slack task says so; a plain one never does', () => {
+    expect(m.ntBuildPayload(slack({ kind: 'epic' }), [], 'req-1')).toMatchObject({
       requestId: 'req-1',
-      destination: 'task',
       prompt: '로그인 고쳐줘',
-      model: 'opus',
-      kind: 'epic',
+      channelId: 'C1',
+      epic: true,
       plan: true, // plan mode is on by default; an epic plans before it makes children
     });
-    expect(m.ntBuildPayload(task(), [], 'req-1').kind).toBeUndefined();
-    expect(m.ntBuildPayload(task({ kind: 'bogus' }), [], 'req-1').kind).toBeUndefined();
-    expect(m.ntBuildPayload({ ...task({ kind: 'epic' }), destination: 'slack' }, [], 'req-1').kind).toBeUndefined();
+    expect(m.ntBuildPayload(slack(), [], 'req-1').epic).toBeUndefined();
+    expect(m.ntBuildPayload(slack({ kind: 'bogus' }), [], 'req-1').epic).toBeUndefined();
   });
 });
 
@@ -97,52 +97,65 @@ function composer(ntCtx: Record<string, unknown>, state: Record<string, unknown>
 }
 
 describe('C2 — the chip toggles only where an epic can be made', () => {
-  it('a dashboard task with the flag toggles epic on and off', () => {
-    const state = { destination: 'task' } as Record<string, unknown>;
-    const c = composer({ taskFolders: [], epicTasks: true }, state);
+  it('with the flag, a Slack task toggles epic on and off', () => {
+    const state = { destination: 'slack' } as Record<string, unknown>;
+    const c = composer({ epicTasks: true }, state);
     c.m.ntToggleEpic();
     expect(state.kind).toBe('epic');
     c.m.ntToggleEpic();
     expect(state.kind).toBe('');
     expect(c.renders()).toBe(2);
   });
-  it('no flag, or a Slack launch: nothing changes', () => {
-    const noFlag = { destination: 'task' } as Record<string, unknown>;
-    composer({ taskFolders: [] }, noFlag).m.ntToggleEpic();
+  it('no flag: nothing changes', () => {
+    const noFlag = { destination: 'slack' } as Record<string, unknown>;
+    composer({}, noFlag).m.ntToggleEpic();
     expect(noFlag.kind).toBeUndefined();
-    const slack = { destination: 'slack' } as Record<string, unknown>;
-    composer({ taskFolders: [], epicTasks: true }, slack).m.ntToggleEpic();
-    expect(slack.kind).toBeUndefined();
   });
-  it('leaving the task destination drops the epic; staying keeps it', () => {
-    const state = { destination: 'task', kind: 'epic' } as Record<string, unknown>;
-    const c = composer({ taskFolders: [], epicTasks: true }, state);
+  it('the destination never drops the epic (one kind of work session); no task folders → Slack', () => {
+    const state = { destination: 'slack', kind: 'epic' } as Record<string, unknown>;
+    const c = composer({ epicTasks: true }, state);
     c.m.ntSetDestination('task');
-    expect(state.kind).toBe('epic');
-    c.m.ntSetDestination('slack');
     expect(state.destination).toBe('slack');
-    expect(state.kind).toBe('');
+    expect(state.kind).toBe('epic');
   });
 });
 
 describe('C3 — ntRender shows and presses the chip', () => {
   const body = clientFn('ntRender');
-  it('hidden unless a dashboard task with the flag; pressed when chosen', () => {
+  it('hidden unless the flag is on; pressed when chosen — any destination', () => {
     const block = body.slice(body.indexOf("var epicChip = ntEl('nt-kind-epic');"), body.indexOf('var folderSel'));
-    expect(block).toContain('epicChip.hidden = !(isTask && _ntCtx.epicTasks);');
-    expect(block).toContain("isTask && _ntCtx.epicTasks && _ntState.kind === 'epic' ? 'true' : 'false'");
+    expect(block).toContain('epicChip.hidden = !_ntCtx.epicTasks;');
+    expect(block).toContain("_ntCtx.epicTasks && _ntState.kind === 'epic' ? 'true' : 'false'");
     // Executed: the four cases.
     const run = new Function('ntEl', 'isTask', '_ntCtx', '_ntState', `${block}\nreturn true;`);
     for (const [isTask, flag, kind, hidden, pressed] of [
+      [false, true, 'epic', false, 'true'],
+      [false, true, '', false, 'false'],
+      [false, false, 'epic', true, 'false'],
       [true, true, 'epic', false, 'true'],
-      [true, true, '', false, 'false'],
-      [true, false, 'epic', true, 'false'],
-      [false, true, 'epic', true, 'false'],
     ] as const) {
       const c = chip();
       run((id: string) => (id === 'nt-kind-epic' ? c : null), isTask, { epicTasks: flag }, { kind });
       expect([c.hidden, c.attrs['aria-pressed']]).toEqual([hidden, pressed]);
     }
+  });
+});
+
+describe('C3b — the row with the plan switch and the epic chip shows; the destination chips do not (#854)', () => {
+  it('the row is never hidden; the two destination chips wait for task folders, no longer offered', () => {
+    const body = clientFn('ntRender');
+    const block = body.slice(
+      body.indexOf("var dest = ntEl('nt-dest');"),
+      body.indexOf("var folderChip = ntEl('nt-folder-chip');"),
+    );
+    const run = new Function('ntEl', 'isTask', '_ntCtx', `${block}\nreturn true;`);
+    const els: Record<string, Chip> = { 'nt-dest': chip(), 'nt-dest-slack': chip(), 'nt-dest-task': chip() };
+    els['nt-dest'].hidden = true;
+    els['nt-dest-slack'].hidden = false;
+    run((id: string) => els[id] ?? null, false, {});
+    expect(els['nt-dest'].hidden).toBe(false);
+    expect(els['nt-dest-slack'].hidden).toBe(true);
+    expect(els['nt-dest-task'].hidden).toBe(true);
   });
 });
 
@@ -152,12 +165,12 @@ describe('C4 — after a launch', () => {
     'ntStateAfterLaunch',
   ]);
   const taskCtx = { ...ctx, taskFolders: [] };
-  it('a task that did not start keeps the epic choice; a started one starts fresh', () => {
-    const prev = { ...m.ntDefaultState(taskCtx, null), destination: 'task', kind: 'epic', prompt: 'x' };
-    expect(m.ntStateAfterLaunch(prev, { status: 'not-started' }, taskCtx).kind).toBe('epic');
-    expect(m.ntStateAfterLaunch(prev, { status: 'running' }, taskCtx).kind).toBeUndefined();
-    const slackPrev = { ...prev, destination: 'slack' };
-    expect(m.ntStateAfterLaunch(slackPrev, { status: 'not-started' }, taskCtx).kind).toBeUndefined();
+  it('a task that did not start keeps the epic choice while the flag is on; a started one starts fresh', () => {
+    const epicCtx = { ...taskCtx, epicTasks: true };
+    const prev = { ...m.ntDefaultState(epicCtx, null), kind: 'epic', prompt: 'x' };
+    expect(m.ntStateAfterLaunch(prev, { status: 'not-started' }, epicCtx).kind).toBe('epic');
+    expect(m.ntStateAfterLaunch(prev, { status: 'running' }, epicCtx).kind).toBeUndefined();
+    expect(m.ntStateAfterLaunch(prev, { status: 'not-started' }, taskCtx).kind).toBeUndefined();
   });
 });
 
@@ -177,20 +190,17 @@ describe('C6 — reconcile: an epic only while it is offered (grok, fable #707 R
     taskFolders: [],
     epicTasks: true,
   };
-  const epicTask = () => ({ ...m.ntDefaultState(offered, null), destination: 'task', kind: 'epic' });
-  it('kept while the flag is on and the destination is a dashboard task', () => {
+  const epicTask = () => ({ ...m.ntDefaultState(offered, null), kind: 'epic' });
+  it('kept while the flag is on — a Slack task too; no task folders → the Slack destination', () => {
     const s = epicTask();
-    m.ntReconcile(s, offered);
+    m.ntReconcile(s, { ...offered, taskFolders: undefined });
     expect(s.kind).toBe('epic');
+    expect(s.destination).toBe('slack');
   });
-  it('dropped when the flag is gone, or the dashboard task is no longer offered', () => {
+  it('dropped when the flag is gone', () => {
     const noFlag = epicTask();
     m.ntReconcile(noFlag, { ...offered, epicTasks: undefined });
     expect(noFlag.kind).toBe('');
-    const noTasks = epicTask();
-    m.ntReconcile(noTasks, { ...offered, taskFolders: undefined });
-    expect(noTasks.destination).toBe('slack');
-    expect(noTasks.kind).toBe('');
   });
 });
 

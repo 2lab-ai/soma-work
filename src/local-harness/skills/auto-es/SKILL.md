@@ -110,8 +110,6 @@ same turn:
      model-command server's own copy, not the host's; the thread's `⚠️ Session update could not be applied on host
      (<reason>)` is then the only sign of a failed write.
 
-A Slack-less dashboard task makes the same calls: the host writes them by the task's session key.
-
 **Path B (host-run, no tools)** — §Turn end.
 
 ## Card check

@@ -51,24 +51,8 @@ export const PERMISSION_EXPLAIN_MESSAGE =
 export interface DangerousRuleSessions {
   getSessionKey(channel: string, threadTs?: string): string;
   disableDangerousRules(sessionKey: string, ruleIds: string[]): void;
-  /**
-   * A Slack-less task's live record — its running turn (#637 R1) and its
-   * conversation (the work log). Without it a task's rules are never disabled
-   * (fail-closed) and its answers are not recorded.
-   */
-  getSessionByKey?(sessionKey: string): { activeTaskTurnId?: string; conversationId?: string } | undefined;
   /** A Slack session's record — its conversation, where the answer is recorded. */
   getSession?(channel: string, threadTs?: string): { conversationId?: string } | undefined;
-}
-
-/**
- * A task prompt's turn is still the task's running turn — read live, after the
- * caller's awaits. A Slack prompt has no turn to check.
- */
-function taskTurnStillRunning(pending: PendingApproval, sessions: DangerousRuleSessions | undefined): boolean {
-  if (!pending.task_key) return true;
-  const live = sessions?.getSessionByKey?.(pending.task_key)?.activeTaskTurnId;
-  return !!pending.turn_id && live === pending.turn_id;
 }
 
 export interface AnswerPermissionPromptArgs {
@@ -126,32 +110,19 @@ export async function loadPermissionPrompt(approvalId: string): Promise<PendingA
   return pending && pending.kind === PERMISSION_PROMPT_KIND ? pending : null;
 }
 
-/**
- * Where a prompt is answered: a Slack session's thread, or a Slack-less task's
- * key and the turn it is running now (#599 ⑤) — only that turn waits for it.
- */
-export type PermissionPromptTarget = { channel: string; threadTs?: string } | { taskKey: string; turnId: string };
+/** Where a prompt is answered: a Slack session's thread. */
+export type PermissionPromptTarget = { channel: string; threadTs?: string };
 
-/** True when `pending` was raised in the given session thread — or, for a task, by that task's running turn. */
+/** True when `pending` was raised in the given session thread. */
 export function promptBelongsToThread(
-  pending: Pick<PendingApproval, 'channel' | 'thread_ts' | 'task_key' | 'turn_id'>,
+  pending: Pick<PendingApproval, 'channel' | 'thread_ts'>,
   thread: PermissionPromptTarget,
 ): boolean {
-  if ('taskKey' in thread) {
-    return (
-      !!pending.task_key &&
-      pending.task_key === thread.taskKey &&
-      !!pending.turn_id &&
-      pending.turn_id === thread.turnId
-    );
-  }
-  if (pending.task_key) return false;
   return pending.channel === thread.channel && (pending.thread_ts ?? '') === (thread.threadTs ?? '');
 }
 
 /** The session whose dangerous rules an approve-and-disable silences, if any. */
 function ruleScopeKey(pending: PendingApproval, sessions: DangerousRuleSessions): string | undefined {
-  if (pending.task_key) return pending.task_key;
   return pending.channel ? sessions.getSessionKey(pending.channel, pending.thread_ts) : undefined;
 }
 
@@ -178,11 +149,6 @@ export async function answerPermissionPrompt(args: AnswerPermissionPromptArgs): 
   // The MCP server may have timed out between the load and the claim. The
   // claim stays, so nobody else answers it either.
   if (!(await sharedStore.getPendingApproval(approvalId))) return { ok: false, reason: 'not_found' };
-  // A task's turn may have ended during those awaits (#637 R1): its hook was
-  // the only waiter, so the answer is stale. The claim stays.
-  if (pending.task_key && sessions?.getSessionByKey && !taskTurnStillRunning(pending, sessions)) {
-    return { ok: false, reason: 'not_found' };
-  }
 
   const { response, disabledRuleIds } = responseFor(decision, pending, sessions);
   try {
@@ -201,11 +167,8 @@ export async function answerPermissionPrompt(args: AnswerPermissionPromptArgs): 
     actor,
     sessions,
   );
-  // Only the winner, and only once its answer is stored: silence the rules —
-  // for a task, only while the turn that asked is still running (read again
-  // after the store's await, with no await before the change).
+  // Only the winner, and only once its answer is stored: silence the rules.
   if (sessions && disabledRuleIds.length > 0) {
-    if (!taskTurnStillRunning(pending, sessions)) return { ok: true, pending, disabledRuleIds: [] };
     const scope = ruleScopeKey(pending, sessions);
     if (scope) sessions.disableDangerousRules(scope, disabledRuleIds);
   }
@@ -244,8 +207,7 @@ function callSummary(input: unknown): string {
 /**
  * Record a stored answer in the session's work log (SSOT 2026-11-02 T1): a
  * `permission` entry — the decision, the tool and call, the AI's advice, who
- * answered. A Slack prompt is conversation-level; a task prompt is filed on
- * the turn that asked. Never throws: the answer is already stored.
+ * answered. A prompt's answer is conversation-level. Never throws: the answer is already stored.
  */
 function recordAnswer(
   pending: PendingApproval,
@@ -254,11 +216,7 @@ function recordAnswer(
   sessions: DangerousRuleSessions | undefined,
 ): void {
   try {
-    const session = pending.task_key
-      ? sessions?.getSessionByKey?.(pending.task_key)
-      : pending.channel
-        ? sessions?.getSession?.(pending.channel, pending.thread_ts)
-        : undefined;
+    const session = pending.channel ? sessions?.getSession?.(pending.channel, pending.thread_ts) : undefined;
     const conversationId = session?.conversationId;
     if (!conversationId) return;
     const line = ANSWER_LINES[decision];
@@ -273,10 +231,9 @@ function recordAnswer(
         text,
         tool,
         ok: line.ok,
-        ...(pending.task_key && pending.turn_id ? { turnId: pending.turn_id } : {}),
         permission: { decision, by: actor, ...(ai ? { ai } : {}) },
       },
-      { sessionKey: pending.task_key ?? sessions?.getSessionKey(pending.channel ?? '', pending.thread_ts) },
+      { sessionKey: sessions?.getSessionKey(pending.channel ?? '', pending.thread_ts) },
     );
   } catch {
     // The work log is a record, never a reason to lose an answer that is stored.
@@ -309,7 +266,7 @@ function responseFor(
       return { response: { behavior: 'deny', message: PERMISSION_EXPLAIN_MESSAGE }, disabledRuleIds: [] };
     case 'approve_disable_rule': {
       const ruleIds = pending.rule_ids ?? [];
-      if (!sessions || ruleIds.length === 0 || (!pending.channel && !pending.task_key)) {
+      if (!sessions || ruleIds.length === 0 || !pending.channel) {
         return { response: { behavior: 'allow', message: 'Approved by user' }, disabledRuleIds: [] };
       }
       return {

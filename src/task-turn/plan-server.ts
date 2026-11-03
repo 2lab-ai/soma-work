@@ -7,7 +7,7 @@
  *
  * - The tool carries no identity: the task id comes from the turn's own
  *   context, and every call re-reads the task through the host.
- * - The host (the registry's `submitTaskPlan`) is set by `index.ts` through
+ * - The host (the registry's `submitSessionPlan`) is set by `index.ts` through
  *   `setPlanHost` — no import of the registry here (the epic server's shape).
  */
 import { createSdkMcpServer, type McpSdkServerConfigWithInstance, tool } from '@anthropic-ai/claude-agent-sdk';

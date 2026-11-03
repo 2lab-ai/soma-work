@@ -172,28 +172,6 @@ describe('epicNodeStatus (D5)', () => {
     expect(epicNodeStatus({ ...node, spawned: ['c0'] }, [], [])).toBe('closed');
   });
 
-  it('a running child: an open approval of its current chain makes it needs-input, otherwise running', () => {
-    const running = child({ activityState: 'working', openChain: 'ch1' });
-    expect(epicNodeStatus(node, [running], [])).toBe('running');
-    const open = {
-      id: 'e1',
-      childTaskId: 'c1',
-      planNodeId: 'a',
-      outcome: 'needs-input',
-      approvalId: 'p1',
-      chainId: 'ch1',
-      at: 1,
-      state: 'pending',
-    };
-    expect(epicNodeStatus(node, [running], [open as any])).toBe('needs-input');
-    expect(epicNodeStatus(node, [running], [{ ...open, resolvedAt: 2 } as any])).toBe('running');
-    // An approval an earlier chain left open (a crash) is not this run's; nor one with no chain.
-    expect(epicNodeStatus(node, [running], [{ ...open, chainId: 'ch0' } as any])).toBe('running');
-    expect(epicNodeStatus(node, [running], [{ ...open, chainId: undefined } as any])).toBe('running');
-    // Another child's approval does not count.
-    expect(epicNodeStatus(node, [running], [{ ...open, childTaskId: 'c9' } as any])).toBe('running');
-  });
-
   it('a child that is not running: its last chain result decides', () => {
     expect(epicNodeStatus(node, [child(outcome('completed'))], [])).toBe('finished');
     expect(epicNodeStatus(node, [child(outcome('failed'))], [])).toBe('failed');

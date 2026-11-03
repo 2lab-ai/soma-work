@@ -241,6 +241,20 @@ describe('#853 — launchNewTask with the plan switch', () => {
   });
 });
 
+describe('#854 — launchNewTask with the epic switch', () => {
+  it('the message carries epicOverride, so the new session is an epic', async () => {
+    const d = deps();
+    await launchNewTask('U123', submission({ epic: true, autogoal: false, autoz: false }), d);
+    expect((d.handleMessage as any).mock.calls[0][0].epicOverride).toBe(true);
+  });
+
+  it('without it the message carries no epic flag', async () => {
+    const d = deps();
+    await launchNewTask('U123', submission(), d);
+    expect((d.handleMessage as any).mock.calls[0][0].epicOverride).toBeUndefined();
+  });
+});
+
 describe('slackEventFileFrom — the composer upload as the pipeline sees it', () => {
   it('keeps the Slack permalink (https only) with the download fields', async () => {
     const { slackEventFileFrom } = await import('../new-task-launcher');

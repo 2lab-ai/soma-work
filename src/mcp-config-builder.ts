@@ -154,8 +154,8 @@ export class McpConfigBuilder {
     modelCommandContext?: ModelCommandContext,
     executionContext?: ExecutionContext,
   ): Promise<McpConfig> {
-    // Whose turn this is (#597): the execution context when there is one (a
-    // Slack-less task, or a Slack turn's context), else the Slack event user.
+    // Whose turn this is (#597): the execution context when there is one (the
+    // Slack turn's), else the Slack event user.
     const contextUser = executionContext?.userId ?? (slackContext?.user || undefined);
     // Resolve the permission mode (auto | bypass | legacy). With no user at all
     // there is nobody to vouch for the turn: fail closed (NO_CONTEXT_PERMISSION_MODE,
@@ -193,15 +193,6 @@ export class McpConfigBuilder {
 
     if (slackContext) {
       internalServers['model-command'] = this.buildModelCommandServer(slackContext, modelCommandContext);
-    } else if (executionContext?.origin === 'task') {
-      // A dashboard task gets it too: session links and title, memory, skills and SET_GOAL are not
-      // Slack features. Its user is the context's (server-built), and `surface: 'task'` hides the
-      // commands only a Slack thread can carry out (ASK_USER_QUESTION's form, CONTINUE_SESSION, renew).
-      internalServers['model-command'] = this.modelCommandServerFor({
-        ...(modelCommandContext ?? {}),
-        user: executionContext.userId,
-        surface: 'task',
-      });
     }
 
     // Add slack-mcp server only for mid-thread mentions (mentionTs !== threadTs)
@@ -232,9 +223,9 @@ export class McpConfigBuilder {
       internalServers['mcp-tool-permission'] = this.buildMcpToolPermissionServer(slackContext);
     }
 
-    // E4 ④a (.prd/19 D3) — the epic's host tools, on an epic's own task turn only (never a
-    // child's: depth 1). Allowed below, so a `legacy` task turn (no prompt server) can use them.
-    // Plan mode (SSOT 2026-11-02) — a task whose plan is not started plans: the `plan` server
+    // E4 ④a (.prd/19 D3) — the epic's host tools, on an epic's own turn only (never a
+    // child's: depth 1). Allowed below, so a `legacy` turn (no prompt server) can use them.
+    // Plan mode (SSOT 2026-11-02) — a session whose plan is not started plans: the `plan` server
     // instead, and no epic server — an epic makes no child before its owner starts its plan.
     if (attachesPlanServer(executionContext)) {
       internalServers[PLAN_SERVER] = buildPlanServer(executionContext);
@@ -295,12 +286,6 @@ export class McpConfigBuilder {
           if (!replaced) {
             fsConfig.args.push(userTmpDir);
           }
-          // A task turn run by someone other than its owner (SSOT 2026-11-02) works in the owner's task
-          // folder: that one folder too (validated by its context), never the owner's whole root.
-          const taskDir = executionContext?.origin === 'task' ? executionContext.workingDirectory : undefined;
-          if (taskDir && !taskDir.startsWith(`${userTmpDir}/`) && !fsConfig.args.includes(taskDir)) {
-            fsConfig.args.push(taskDir);
-          }
           this.logger.debug('Filesystem MCP restricted to user directory', {
             user: userId,
             userTmpDir,
@@ -314,7 +299,6 @@ export class McpConfigBuilder {
     // whether any MCP server happened to be registered (the retired `llm`
     // server used to make that condition unconditionally true).
     config.allowedTools = this.buildAllowedTools(slackContext, userBypass, contextUser, !!executionContext);
-    if (!slackContext && internalServers['model-command']) config.allowedTools.push('mcp__model-command');
     if (internalServers[EPIC_SERVER]) config.allowedTools.push(`mcp__${EPIC_SERVER}`);
     if (internalServers[PLAN_SERVER]) config.allowedTools.push(`mcp__${PLAN_SERVER}`);
 
@@ -330,7 +314,6 @@ export class McpConfigBuilder {
     // Disallow native interactive tools and SDK cron tools in Slack context
     // Interactive tools expect terminal input; cron tools conflict with soma's CronScheduler
     // Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 1
-    // A Slack-less task has neither a terminal nor a Slack thread, so the same holds.
     if (slackContext || executionContext) {
       config.disallowedTools = [...NATIVE_INTERACTIVE_TOOLS, ...NATIVE_CRON_TOOLS];
     }
@@ -411,7 +394,7 @@ export class McpConfigBuilder {
     );
   }
 
-  /** The model-command server process for `context` (a Slack thread's, or a dashboard task's). */
+  /** The model-command server process for `context` (a Slack thread's). */
   private modelCommandServerFor(context: ModelCommandContext): Record<string, any> {
     const command = this.getInternalServerCommand('model-command');
     return {
@@ -590,8 +573,6 @@ export class McpConfigBuilder {
     // `Bash` is intentionally excluded — its bypass-Bash-gate hook emits
     // `'ask'` for dangerous commands, which would be defeated by an
     // unconditional allowlist entry.
-    // A Slack-less task in auto/bypass mode gets the same short-circuit: its
-    // policy hook runs first and still denies (deny > allow), as for Slack.
     if ((slackContext || hasExecutionContext) && userBypass) {
       allowedTools.push(...NATIVE_BYPASS_TOOLS);
     }

@@ -187,10 +187,9 @@ describe('T3 â€” every signed-in user instructs every task; only the owner or ê´
     expect(page('U3', '').pcModeOf(mine({ ownerId: 'U2', channelId: 'C0CHAN' }))).toBe('open');
   });
 
-  it('nobody signed in (a viewer token): a Slack session takes instructions only in admin mode, a task never', () => {
+  it('nobody signed in (a viewer token): a session takes instructions only in admin mode', () => {
     expect(page('', '').pcModeOf(theirs)).toBe('readonly');
     const token = page('', '', { admin: true, adminMode: true });
     expect(token.pcModeOf(theirs)).toBe('open');
-    expect(token.pcModeOf({ ...theirs, slackless: true })).toBe('readonly');
   });
 });

@@ -27,7 +27,6 @@ import type {
   EpicEvent,
   EpicPlan,
   HandoffContext,
-  OriginThread,
   SessionCronJob,
   SessionGoal,
   SessionIncidentRequest,
@@ -36,7 +35,6 @@ import type {
   SessionLinks,
   SessionState,
   SessionUsage,
-  TaskInputContext,
   WorkflowType,
 } from './types';
 
@@ -57,12 +55,11 @@ export interface ArchivedSession {
   conversationId?: string; // → conversations/{id}.json
   /** Task id (#595) — a revive brings it back. Absent in archives written before it existed. */
   taskId?: string;
-  /** A Slack-less task (#596): no channel/thread to revive into — keyed `task:<taskId>`. */
+  /**
+   * A dashboard task of the stack removed in #855 (no Slack thread), keyed `task:<taskId>`:
+   * the board's closed column shows it, read-only — there is no thread to revive it into.
+   */
   slackless?: true;
-  /** E2 ① — the instruction thread of a Slack-less task; a revive brings it back while it is free. */
-  originThread?: OriginThread;
-  /** E2 ② — a Slack-instructed task's channel context. */
-  inputContext?: TaskInputContext;
   /** E4 ① — the epic relation (validated on revive). */
   kind?: 'epic';
   parentTaskId?: string;
@@ -175,10 +172,16 @@ function archiveDoneAt(session: ConversationSession, now: number): number | unde
   return typeof changed === 'number' && Number.isFinite(changed) ? changed : undefined;
 }
 
+/** What only the load-time archive of an old record knows (#855): its dashboard-task mark. */
+export interface ArchiveMarks {
+  slackless?: true;
+}
+
 function sessionToArchive(
   session: ConversationSession,
   sessionKey: string,
   reason: 'terminated' | 'sleep_expired',
+  marks?: ArchiveMarks,
 ): ArchivedSession {
   const now = Date.now();
   return {
@@ -189,9 +192,7 @@ function sessionToArchive(
     sessionId: session.sessionId,
     conversationId: session.conversationId,
     taskId: session.taskId,
-    slackless: session.slackless === true ? true : undefined,
-    originThread: session.originThread,
-    inputContext: session.inputContext,
+    slackless: marks?.slackless === true ? true : undefined,
     kind: session.kind,
     parentTaskId: session.parentTaskId,
     planNodeId: session.planNodeId,
@@ -307,14 +308,19 @@ export class SessionArchiveStore {
   /**
    * Archive a session to disk.
    * MUST be called before the session is deleted from the Map.
-   * Never throws — errors are logged and swallowed.
+   * Never throws — errors are logged and swallowed; the result says whether the file was written.
    *
    * Trace: Scenario 1 Section 3b, Scenario 2 Section 3a
    */
-  archive(session: ConversationSession, sessionKey: string, reason: 'terminated' | 'sleep_expired'): void {
+  archive(
+    session: ConversationSession,
+    sessionKey: string,
+    reason: 'terminated' | 'sleep_expired',
+    marks?: ArchiveMarks,
+  ): boolean {
     try {
       this.ensureDir();
-      const archived = sessionToArchive(session, sessionKey, reason);
+      const archived = sessionToArchive(session, sessionKey, reason, marks);
       const data = JSON.stringify(archived, null, 2);
       const finalPath = this.filePath(sessionKey, archived.archivedAt);
       const tmpPath = `${finalPath}.tmp`;
@@ -322,8 +328,14 @@ export class SessionArchiveStore {
       // Atomic write: tmp → rename
       fs.writeFileSync(tmpPath, data, 'utf-8');
       fs.renameSync(tmpPath, finalPath);
+      // The newest archive of its task id (#854): a child revived and closed again reads its new spend.
+      if (archived.taskId) {
+        this.noArchive.delete(archived.taskId);
+        this.byTaskId.set(archived.taskId, archived);
+      }
 
       logger.info('Session archived', { sessionKey, reason });
+      return true;
     } catch (err) {
       logger.error('Failed to archive session', { sessionKey, error: err });
       // Clean up orphaned tmp file (best-effort)
@@ -333,6 +345,7 @@ export class SessionArchiveStore {
       } catch {
         /* ignore cleanup errors */
       }
+      return false;
     }
   }
 
@@ -391,6 +404,33 @@ export class SessionArchiveStore {
       }
     }
     return null;
+  }
+
+  /** #854 — archives found by task id (an archive never changes once written; a newer one replaces it). */
+  private readonly byTaskId = new Map<string, ArchivedSession>();
+  /** #854 — ids a scan found no archive for; cleared for an id when this store archives it. */
+  private readonly noArchive = new Set<string>();
+
+  /**
+   * #854 — the newest archive of the session that held this task id, or null. A Slack epic's
+   * closed child is archived under its thread's key, which its epic does not keep: the epic's
+   * cost cap finds the child's spend by its id. Scans the archive folder once per id — a hit or a
+   * miss is kept (the tree's gate asks on every spawn, instruction and wake; review #872 fable
+   * P2-3). Every archive is written by `archive()`, which keeps both current.
+   */
+  latestByTaskId(taskId: string): ArchivedSession | null {
+    if (!taskId) return null;
+    const known = this.byTaskId.get(taskId);
+    if (known) return known;
+    if (this.noArchive.has(taskId)) return null;
+    const found = this.listWithFilter((a) => a?.taskId === taskId);
+    if (found.length === 0) {
+      this.noArchive.add(taskId);
+      return null;
+    }
+    const newest = found.reduce((a, b) => ((b.archivedAt ?? 0) > (a.archivedAt ?? 0) ? b : a));
+    this.byTaskId.set(taskId, newest);
+    return newest;
   }
 
   /**

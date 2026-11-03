@@ -40,8 +40,10 @@ describe('index.ts — plan mode on every session (#853)', () => {
     expect(decider).toMatch(
       /sendPlan: \(key, text, actorUserId\) =>[\s\S]*injectDashboardMessage\(key, text, undefined, \[\], actorUserId, undefined, \{\s*onAccepted: \(\) => resolve\(true\),\s*verbatim: true,\s*\}\)\.then\(\s*\(\) => resolve\(false\)/,
     );
+    // #855 — one kind of work session: every plan is a Slack session's.
     const handler = section('setDashboardTaskPlanHandler(', ');\n');
-    expect(handler).toMatch(/slackless === true\s*\?\s*taskPlanDecider\(request\)\s*:\s*slackPlanDecider\(request\)/);
+    expect(handler).toMatch(/\(request\) => slackPlanDecider\(request\)/);
+    expect(source).not.toMatch(/taskPlanDecider/);
   });
 
   it('W3 — the injection watches the message it sends, verbatim on request, and forgets the waiter', () => {
@@ -49,7 +51,10 @@ describe('index.ts — plan mode on every session (#853)', () => {
     expect(inject).toMatch(
       /const unwatch = extra\.onAccepted\s*\?\s*slackHandler\.onTurnAccepted\(session\.channelId, ts, extra\.onAccepted\)\s*:\s*undefined;/,
     );
-    expect(inject).toMatch(/\.\.\.\(extra\.verbatim \? \{ routeContext: \{ verbatimPrompt: true \} \} : \{\}\)/);
+    // Verbatim on request; a host turn too when the host says so (#854 — an epic's wake or instruction).
+    expect(inject).toMatch(
+      /\.\.\.\(extra\.verbatim\s*\?\s*\{ routeContext: \{ verbatimPrompt: true, \.\.\.\(extra\.hostTurn \? \{ hostTurn: true \} : \{\}\) \} \}\s*:\s*\{\}\)/,
+    );
     expect(inject).toMatch(/\} finally \{\s*unwatch\?\.\(\);\s*\}/);
   });
 });

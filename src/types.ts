@@ -407,62 +407,8 @@ export interface SessionIncidentRequest {
 }
 
 /**
- * E2 ① — where a Slack-less task's instruction came from: the channel, the
- * thread's root (`thread_ts ?? ts`), the instruction message itself (a
- * redelivered event is recognised by it) and, when not the main bot, the
- * agent instance that received it.
- */
-export interface OriginThread {
-  channel: string;
-  threadTs: string;
-  messageTs: string;
-  agent?: string;
-}
-
-/** E2 ③ — what a notice to the instruction thread is about. */
-export type TaskNoticeKind = 'link' | 'result' | 'question' | 'failure' | 'interrupted';
-
-/**
- * E2 ③ — one notice owed to a task's instruction thread. Its id is
- * deterministic (`<taskId>:<chain or turn>:<kind>[:<askId>]`), so producing
- * it twice is one notice.
- */
-export interface TaskNoticeIntent {
-  id: string;
-  kind: TaskNoticeKind;
-  chainId?: string;
-  turnId?: string;
-  askId?: string;
-  outcome?: TaskTurnOutcomeRecord['outcome'];
-  reason?: string;
-  at: number;
-}
-
-/** E2 ③ — how a turn's outcome commit relates to its chain. */
-export interface TaskChainSettle {
-  chainId: string;
-  /** False only for a completed `/compact` hop the chain re-runs after. */
-  ends: boolean;
-  /**
-   * The notice this end owes, when not the outcome's own — a completed
-   * `/compact` hop with nothing to re-run is a failure, never a result.
-   */
-  notice?: { kind: TaskNoticeKind; reason: string };
-}
-
-/** E2 ② — a Slack-instructed task's channel context (see `ConversationSession.inputContext`). */
-export interface TaskInputContext {
-  channelName?: string;
-  channelDescription?: string;
-  repos?: string[];
-  confluenceUrl?: string;
-}
-
-/**
- * E4 ⑦ (D10 b) — a child's "closed by its parent" mark. `chain` is the chain the
- * close cancelled (the controller's id, also when the close lands before that
- * chain's first hop is saved): another chain starting ends the mark. A mark with
- * no chain (an older record) ends with any new chain.
+ * E4 ⑦ (D10 b) — a child's "closed by its parent" mark. `chain` names the chain the
+ * close cancelled on an older record; a Slack child's mark has none (#854).
  */
 export interface ClosedByParent {
   by: 'parent';
@@ -491,35 +437,15 @@ export interface ConversationSession {
   ownerName?: string; // Display name of owner
   currentInitiatorId?: string; // User who triggered the current response
   currentInitiatorName?: string; // Display name of current initiator
-  // '' (and no threadTs) for a Slack-less task — see `slackless`.
   channelId: string;
   threadTs?: string;
-  /**
-   * A task with no Slack channel/thread (#596, `SessionRegistry.createTask`).
-   * Its registry key is `task:<taskId>`, not `work:<channel>:<thread>`, and it
-   * is saved and on the board from creation, before any SDK session.
-   */
-  slackless?: boolean;
-  /**
-   * E2 ① — the Slack thread a Slack-less task was instructed from. Only a
-   * Slack-less task carries it; it is NOT a Slack binding (`channelId` /
-   * `threadTs` stay empty) and not `sourceThread` (a migrated session's
-   * back-pointer). One live task per instruction thread.
-   */
-  originThread?: OriginThread;
-  /**
-   * E2 ② — the channel a Slack-instructed task was created in, snapshotted at
-   * creation: what a Slack session there gets in its system prompt (channel
-   * description, repos, wiki). Prompt text only — never a Slack context.
-   */
-  inputContext?: TaskInputContext;
   /**
    * E4 ① (.prd/19 D1) — `'epic'` on an epic task; absent on every other
    * session. Set by the host at creation only and never changed. A child is
    * never an epic (depth 1).
    */
   kind?: 'epic';
-  /** E4 ① — a child task's epic (its task id). Slack-less tasks only. */
+  /** E4 ① — a child's epic (its task id). */
   parentTaskId?: string;
   /** E4 ① — the plan node a child task was made for (a short slug). Set with `parentTaskId`. */
   planNodeId?: string;
@@ -546,32 +472,12 @@ export interface ConversationSession {
   /** E4 ② (.prd/19 D6) — what the epic's children owe it, at most 100; no child text. */
   epicEvents?: EpicEvent[];
   /**
-   * Plan mode (SSOT 2026-11-02) — a Slack-less task made with the plan toggle
-   * on: its plan gate (drafting → awaiting → approved / cancelled). Until it is
-   * approved the task's turns plan instead of work. Saved strictly by the
-   * registry (`submitTaskPlan`, `setTaskPlanGate`); validated on load.
+   * Plan mode (SSOT 2026-11-02; any session since #853) — the session's plan gate
+   * (drafting → awaiting → approved / cancelled). Until it is approved the turns plan
+   * instead of work. Saved strictly by the registry (`submitSessionPlan`,
+   * `setSessionPlanGate`); validated on load.
    */
   taskPlan?: TaskPlanGate;
-  /**
-   * E2 ③ — the chain a Slack-less task is running (its id), saved by the
-   * chain's first turn start and kept across `/compact` hops; cleared by the
-   * chain's last outcome commit or by restart reconciliation. A task still
-   * holding one after a restart lost its chain: it is reconciled `interrupted`.
-   */
-  openChain?: string;
-  /**
-   * E2 ③ — notices owed to the task's instruction thread, written in the same
-   * strict save as the state they describe (only a task with `originThread`).
-   * Delivery state lives in the notification ledger, not here.
-   */
-  notices?: TaskNoticeIntent[];
-  /**
-   * A dashboard task's follow-up queue (2026-11-03): words sent while its chain
-   * runs, waiting for its next step (the oldest runs when a chain ends well).
-   * Written only by the task turn controller; saved with the session and
-   * validated on load, where every word is paused (no chain is left to end).
-   */
-  taskFollowups?: TaskFollowupItem[];
   sessionId?: string;
   isActive: boolean;
   lastActivity: Date;
@@ -674,19 +580,11 @@ export interface ConversationSession {
    */
   starClearedAt?: number;
   /**
-   * #598 ④b — the latest turn's outcome of a Slack-less task (D10), written once
-   * per terminal turn by the task runner's strict commit. Current activity wins
-   * over it on the dashboard: `working` shows running, `waiting` shows waiting,
-   * `idle` reads this.
+   * #854 — an epic child's last chain outcome (`SessionRegistry.recordSessionChainEnd`).
+   * Current activity wins over it on the dashboard: `working` shows running, `waiting`
+   * shows waiting, `idle` reads this.
    */
-  lastTurnOutcome?: TaskTurnOutcomeRecord;
-  /**
-   * #598 ④c — the turn a Slack-less task is running, saved when it starts
-   * (`SessionRegistry.beginTaskTurn`) and cleared by its outcome's commit. A
-   * task loaded `working` names the turn the process lost (restart
-   * reconciliation records it `interrupted`).
-   */
-  activeTaskTurnId?: string;
+  lastTurnOutcome?: TurnOutcomeRecord;
   // Sleep mode
   sleepStartedAt?: Date;
   // Conversation history recording ID
@@ -1302,7 +1200,7 @@ export interface EpicEvent {
   id: string;
   childTaskId: string;
   planNodeId: string;
-  outcome: TaskTurnOutcomeRecord['outcome'] | 'needs-input' | 'closed';
+  outcome: TurnOutcomeRecord['outcome'] | 'needs-input' | 'closed';
   chainId?: string;
   turnId?: string;
   approvalId?: string;
@@ -1314,40 +1212,8 @@ export interface EpicEvent {
   resolvedAt?: number;
 }
 
-/**
- * One word in a dashboard task's follow-up queue (`ConversationSession.taskFollowups`).
- * `queued` runs at the next chain end that ended well; `paused` (a chain that
- * did not end well, a refused start, a restart) runs only on Send now;
- * `sending` is in flight and leaves the queue once its handoff is confirmed.
- */
-export interface TaskFollowupItem {
-  id: string;
-  /** The instruction as it will run (an edit replaces it). */
-  text: string;
-  /** Who wrote it: the turn it becomes runs as them, and only they edit it. */
-  authorId: string;
-  enqueuedAt: number;
-  /** The item's CAS generation: every change bumps it; a control sends back the one it showed. */
-  epoch: number;
-  /** `sending`: being handed to a start or the owner's approval — still on record until that is confirmed. */
-  state: 'queued' | 'paused' | 'sending';
-  /** Why it waits (a paused word always says). */
-  stateReason?: string;
-  /**
-   * #767 — the words a one-time owner approval released into the queue. While
-   * `text` is still exactly these, the word runs without asking again; an edit
-   * makes it new words, asked again at the drain.
-   */
-  approvedText?: string;
-  /**
-   * #865 — the opening turn of a goal set while the task worked: the goal's
-   * id. `text` is the goal's objective, never read as a goal command again; it
-   * runs only while that goal is still the active goal.
-   */
-  goalOpeningId?: string;
-}
-
-export interface TaskTurnOutcomeRecord {
+/** A chain's outcome as a session records it (an epic child's last outcome, #854). */
+export interface TurnOutcomeRecord {
   turnId: string;
   outcome: 'completed' | 'failed' | 'cancelled' | 'waiting' | 'interrupted';
   category: 'UIUserAskQuestion' | 'WorkflowComplete' | 'Exception' | 'Stalled';

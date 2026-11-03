@@ -54,12 +54,7 @@ import { isPlanPending } from '../../task-turn/task-plan';
 import type { ConversationSession, WorkflowType } from '../../types';
 import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings-store';
 import { createTrackedClaudeProcessSpawner } from '../claude-child-process-registry';
-import {
-  type ExecutionContext,
-  ExecutionContextMissingError,
-  executionContextFromSlack,
-  revalidateTaskDirectory,
-} from '../execution-context';
+import { type ExecutionContext, executionContextFromSlack } from '../execution-context';
 import { createNativeWriteCheck } from '../policy/native-write-boundary';
 import { permissionAdviceBoard } from '../policy/permission-advice';
 import { checkPlanPendingCall } from '../policy/plan-pending-guard';
@@ -98,6 +93,21 @@ function needsStreamedCallUsage(model: string): boolean {
  * Structural logger surface used by the builder. The concrete `Logger`
  * (`src/logger.ts`) satisfies this; kept local to avoid a hard dependency.
  */
+/**
+ * #854 — the task id of a Slack session that is an epic (a live root, not a child), when its owner
+ * speaks; else undefined. The epic's tools act as its owner (its children start as the owner), so
+ * they ride the owner's turns and the epic's wakes (sent as the owner) only — another user's word
+ * in the thread runs as them, without them: the dashboard's rule for an epic tree (review #872).
+ */
+function slackEpicTaskId(
+  session: { kind?: string; parentTaskId?: string; taskId?: string; ownerId?: string } | undefined,
+  speaker: string,
+): string | undefined {
+  if (!session || session.kind !== 'epic' || session.parentTaskId) return undefined;
+  if (!session.ownerId || session.ownerId !== speaker) return undefined;
+  return session.taskId || undefined;
+}
+
 export interface BuildStreamOptionsDeps {
   logger: {
     debug(message: string, data?: unknown): void;
@@ -109,8 +119,6 @@ export interface BuildStreamOptionsDeps {
   buildModelCommandContext: (
     session: ConversationSession | undefined,
     slackContext: SlackContext | undefined,
-    /** A Slack-less task's context: its model-command context is built from it (by key). */
-    executionContext?: ExecutionContext,
   ) => ModelCommandContext | undefined;
   mcpConfigBuilder: {
     buildConfig(
@@ -148,14 +156,6 @@ export interface BuildStreamOptionsDeps {
    */
   safetyClassifier?: SafetyClassifier;
   /**
-   * #599 ⑤ — the dashboard approver of a Slack-less task's escalations. A
-   * `classify` call the classifier did not allow waits here for the task
-   * owner's answer on the dashboard (bound to the task, its turn and the
-   * request). Absent → the escalation is denied (no approver). Any failure —
-   * expiry, abort, a store error — is a deny: nothing runs unapproved.
-   */
-  taskApprover?: TaskApprover;
-  /**
    * Operator config for the incident evidence collector (`rules/config.md` owns
    * the getter's name; this dep only needs the value). Consulted **only** on the
    * incident path. Absent there is fatal, not a fallback — see
@@ -171,35 +171,6 @@ export interface BuildStreamOptionsDeps {
    */
   onIncidentEvidence?: (request: IncidentRequestLike, evidence: IncidentEvidence) => void;
 }
-
-/** #599 ⑤ — what a task's escalation asks the dashboard approver for. */
-export interface TaskApprovalRequest {
-  sessionKey: string;
-  userId: string;
-  toolName: string;
-  toolInput: Record<string, unknown>;
-  ruleIds: string[];
-  /** SSOT 2026-11-02 — the guardian's advice, shown on the dashboard card (absent when it gave none). */
-  advice?: PermissionAdvice;
-  signal?: AbortSignal;
-  /**
-   * When the SDK cancels this hook (epoch ms, its timeout less a margin): the
-   * approver's wait must end before it, or an approval given late is lost.
-   */
-  deadlineAt?: number;
-}
-
-export interface TaskApprover {
-  request(req: TaskApprovalRequest): Promise<{ behavior: 'allow' | 'deny'; message?: string }>;
-}
-
-/**
- * A task turn's PreToolUse hook may wait for a dashboard approval (5 min):
- * the SDK's hook timeout (seconds) is set above that window.
- */
-export const TASK_APPROVAL_HOOK_TIMEOUT_S = 330;
-/** Kept between the approver's last poll and the SDK's cancellation of the hook. */
-export const TASK_APPROVAL_HOOK_MARGIN_MS = 10_000;
 
 /** A `Skill` call step 6b denied: who asked, for which environment skill, in which thread. */
 export interface EnvSkillDenial {
@@ -218,14 +189,8 @@ export interface BuildStreamOptionsInput {
   session?: ConversationSession;
   abortController?: AbortController;
   workingDirectory?: string;
+  /** The turn's Slack event: its user is the context the turn runs under (#597); none → no tools, no bypass. */
   slackContext?: SlackContext;
-  /**
-   * The context the turn runs under (#597). A Slack turn derives one from
-   * `slackContext`; a Slack-less task passes the one built from its saved
-   * record (`executionContextForTask`). With neither, the options carry no
-   * tools and no bypass.
-   */
-  executionContext?: ExecutionContext;
 }
 
 export interface BuildStreamOptionsResult {
@@ -249,27 +214,7 @@ export async function buildStreamOptions(
   const { queryEnv, session, abortController, slackContext } = input;
   const { logger } = deps;
 
-  // A task turn has no Slack thread (#613 R2): its skill scope, approval path and
-  // Slack-only servers must never come from one.
-  if (input.executionContext?.origin === 'task' && slackContext) {
-    throw new ExecutionContextMissingError('a task turn carries no Slack context');
-  }
-  // A context and a Slack event that name different users cannot both be right.
-  if (input.executionContext && slackContext?.user && input.executionContext.userId !== slackContext.user) {
-    throw new ExecutionContextMissingError('the execution context and the Slack event name different users');
-  }
-  // A task runs in the directory its context validated — never in a caller's
-  // argument (#613 R1, .prd/17 D6/T8): a different one is refused, a missing
-  // one is the task's.
-  let workingDirectory = input.workingDirectory;
-  if (input.executionContext?.origin === 'task') {
-    const taskDirectory = input.executionContext.workingDirectory;
-    if (!taskDirectory) throw new ExecutionContextMissingError('task context has no working directory');
-    if (workingDirectory && normalizeTmpPath(path.resolve(workingDirectory)) !== taskDirectory) {
-      throw new ExecutionContextMissingError('working directory differs from the task’s');
-    }
-    workingDirectory = taskDirectory;
-  }
+  const workingDirectory = input.workingDirectory;
 
   // SDK 0.3 child-process env, set BEFORE the incident branch on purpose: both
   // flags remove behaviour rather than grant capability, and the incident path
@@ -309,21 +254,20 @@ export async function buildStreamOptions(
     env: queryEnv,
   };
 
-  // The context this turn runs under (#597, .prd/17 D2). A Slack turn derives
-  // it from the Slack-signed event; a Slack-less task passes the one built from
-  // its saved record. No context → no tools and no bypass: the old
+  // The context this turn runs under (#597, .prd/17 D2), derived from the
+  // Slack-signed event. No context → no tools and no bypass: the old
   // `!slackContext → bypass` with no policy hook is gone (fail closed).
-  const execCtx: ExecutionContext | undefined =
-    input.executionContext ??
-    (slackContext?.user
-      ? executionContextFromSlack({
-          user: slackContext.user,
-          sessionKey: deps.sessionRegistry.getSessionKey(slackContext.channel, slackContext.threadTs),
-          workingDirectory,
-          // #853 — plan mode on a Slack session too.
-          planPending: isPlanPending(input.session?.taskPlan),
-        })
-      : undefined);
+  const execCtx: ExecutionContext | undefined = slackContext?.user
+    ? executionContextFromSlack({
+        user: slackContext.user,
+        sessionKey: deps.sessionRegistry.getSessionKey(slackContext.channel, slackContext.threadTs),
+        workingDirectory,
+        // #853 — plan mode on a Slack session too.
+        planPending: isPlanPending(input.session?.taskPlan),
+        // #854 — an epic's own turn (never a child's): the epic's tools ride it.
+        epicTaskId: slackEpicTaskId(input.session, slackContext.user),
+      })
+    : undefined;
   const contextUser = execCtx?.userId;
 
   let mcpConfig: McpConfig | undefined;
@@ -333,7 +277,7 @@ export async function buildStreamOptions(
     options.permissionMode = 'default';
   } else {
     // Get MCP configuration
-    const modelCommandContext = deps.buildModelCommandContext(session, slackContext, execCtx);
+    const modelCommandContext = deps.buildModelCommandContext(session, slackContext);
     mcpConfig = await deps.mcpConfigBuilder.buildConfig(slackContext, modelCommandContext, execCtx);
     options.permissionMode = mcpConfig.permissionMode;
     if (mcpConfig.allowDangerouslySkipPermissions) {
@@ -365,18 +309,13 @@ export async function buildStreamOptions(
   // confines the native file tools of a non-admin to the same roots
   // (`native-write-boundary.ts`); with the sandbox off neither is confined.
   const sandboxDisabled = contextUser ? userSettingsStore.getUserSandboxDisabled(contextUser) : false;
-  // A task turn run by a user other than its owner (SSOT 2026-11-02): it works in the owner's task folder.
-  const isOtherUsersTaskTurn =
-    execCtx?.origin === 'task' &&
-    (execCtx as { ownerId?: string }).ownerId !== undefined &&
-    (execCtx as { ownerId?: string }).ownerId !== execCtx.userId;
   const sandboxUserDir =
     contextUser && isSafePathSegment(contextUser) ? normalizeTmpPath(path.join('/tmp', contextUser)) : undefined;
   const nativeWriteRoots: readonly string[] | undefined = sandboxDisabled
     ? undefined
     : [...(workingDirectory ? [workingDirectory] : []), ...(sandboxUserDir ? [sandboxUserDir] : [])];
 
-  // PreToolUse hooks — for every turn that has a context, Slack or not (D3).
+  // PreToolUse hooks — for every turn that has a context (D3).
   if (execCtx && mcpConfig) {
     const somaPermissionMode = mcpConfig.somaPermissionMode;
     // PreToolUse: a single unified policy hook (epic #1023 P5). All tool guards
@@ -387,20 +326,11 @@ export async function buildStreamOptions(
     // in auto mode goes to the safety classifier). Live state (abort signal, handoff
     // context) is resolved per call so mid-session aborts and handoff changes are honored.
     const policyUser = execCtx.userId;
-    // The owner's root only while the OS sandbox holds Bash's writes to the task folder and the sender's
-    // root (trinity R2, fable P2): with the sandbox off the cross-user text check is the only Bash guard left.
-    const crossUserRoot =
-      execCtx.origin === 'task' && !sandboxDisabled
-        ? (execCtx as { ownerId?: string }).ownerId || policyUser
-        : policyUser;
     const policyIsAdmin = execCtx.isAdmin;
     const cachedPermConfig = CONFIG_FILE ? loadMcpToolPermissions(CONFIG_FILE) : {};
     const gatedServerNames = getPermissionGatedServers(cachedPermConfig);
     const hookSessionKey = execCtx.sessionKey;
-    // Only a Slack-less task's escalation waits for the dashboard (#599 ⑤).
-    const taskApprover = execCtx.origin === 'task' && !slackContext ? deps.taskApprover : undefined;
-    // A Slack thread grant applies to its thread; a task's scope is its own key,
-    // which no Slack thread grant can match (the user's standing grants still apply).
+    // A Slack thread grant applies to its thread (the user's standing grants still apply).
     const envSkillScope = slackContext
       ? { channel: slackContext.channel, threadTs: slackContext.threadTs }
       : { channel: execCtx.sessionKey };
@@ -413,18 +343,14 @@ export async function buildStreamOptions(
       _toolUseId?: string,
       hookOptions?: { signal?: AbortSignal },
     ): Promise<HookJSONOutput> => {
-      // The SDK's clock for this hook starts now; the classifier may spend part of it.
-      const hookDeadlineAt = Date.now() + TASK_APPROVAL_HOOK_TIMEOUT_S * 1000 - TASK_APPROVAL_HOOK_MARGIN_MS;
       const toolName = (input as { tool_name?: string }).tool_name || '';
       const toolInput = (input as { tool_input?: Record<string, unknown> }).tool_input;
       // The session's directory now (a worktree switch moves it): relative targets and
       // the repository of a new worktree are resolved from it, as the SDK does.
       const hookCwd = (input as { cwd?: string }).cwd || workingDirectory || process.cwd();
       const ctx: ToolPolicyContext = {
-        // The /tmp root the cross-user guard holds the turn to: a task's owner's, the root the task lives in
-        // (SSOT 2026-11-02 — another user who instructs it works in that folder). Writes stay held to the task
-        // folder and the sender's own root (`nativeWriteRoots`, the sandbox); grants and approvals stay the sender's.
-        user: crossUserRoot,
+        // The /tmp root the cross-user guard holds the turn to: the speaker's.
+        user: policyUser,
         isAdmin: policyIsAdmin,
         mode: somaPermissionMode,
         aborted: abortController?.signal.aborted ?? false,
@@ -454,7 +380,6 @@ export async function buildStreamOptions(
           // Enforce step 6b: ask the admins — only for a denial that names one skill (`plugin:skill`);
           // a read of other plugin files or an unnamed `Skill` call has no skill to grant. Never
           // awaited — the denial must reach the model now.
-          // A task has no thread to post the ask in: the denial stands, nobody is asked.
           if (envSkillKey?.includes(':') && deps.onEnvSkillDenied && slackContext) {
             void deps
               .onEnvSkillDenied({
@@ -513,59 +438,6 @@ export async function buildStreamOptions(
             });
             return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
           }
-          if (taskApprover) {
-            // #599 ⑤ — the same escalation a Slack turn would ask about waits for
-            // the answer of the turn's user (the owner, or whoever instructed it — SSOT
-            // 2026-11-02) on the dashboard. Fail closed on anything else.
-            logger.warn('Escalation waiting for the dashboard approval (#599)', {
-              tool: toolName,
-              user: policyUser,
-              rule: result.reason,
-            });
-            const answer = await taskApprover
-              .request({
-                sessionKey: hookSessionKey,
-                userId: policyUser,
-                toolName,
-                toolInput: toolInput ?? {},
-                ruleIds: [...(result.matchedRuleIds ?? [])],
-                ...(advice ? { advice } : {}),
-                deadlineAt: hookDeadlineAt,
-                ...(hookOptions?.signal ? { signal: hookOptions.signal } : {}),
-              })
-              .catch((err: unknown) => ({
-                behavior: 'deny' as const,
-                message: `The approval could not be completed (${err instanceof Error ? err.message : String(err)}) — it was not run.`,
-              }));
-            if (answer.behavior === 'allow') {
-              return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
-            }
-            return {
-              hookSpecificOutput: {
-                hookEventName: 'PreToolUse',
-                permissionDecision: 'deny',
-                permissionDecisionReason:
-                  answer.message || 'The task owner did not approve this call — it was not run.',
-              },
-            };
-          }
-          if (!slackContext) {
-            // The same escalation a Slack turn would ask the user about. A task has
-            // no approver wired: deny, explicitly.
-            logger.warn('Escalation denied: a Slack-less task has no approver (#599)', {
-              tool: toolName,
-              user: policyUser,
-              rule: result.reason,
-            });
-            return {
-              hookSpecificOutput: {
-                hookEventName: 'PreToolUse',
-                permissionDecision: 'deny',
-                permissionDecisionReason:
-                  'This call needs approval, and a task without a Slack thread has no approver yet — it was not run.',
-              },
-            };
-          }
           logger.warn('Auto-mode classifier escalating to Slack permission UI', {
             tool: toolName,
             user: policyUser,
@@ -593,8 +465,6 @@ export async function buildStreamOptions(
       PreToolUse: (planPending ? INCIDENT_TOOL_POLICY_MATCHERS : TOOL_POLICY_MATCHERS).map((matcher) => ({
         ...(matcher === undefined ? {} : { matcher }),
         hooks: [policyHook],
-        // A task's escalation may wait for the dashboard approval (#599 ⑤).
-        ...(taskApprover ? { timeout: TASK_APPROVAL_HOOK_TIMEOUT_S } : {}),
       })),
     };
 
@@ -757,9 +627,7 @@ export async function buildStreamOptions(
     const sandboxConfig: NonNullable<Options['sandbox']> = {
       enabled: true,
       autoAllowBashIfSandboxed: true,
-      // A task turn run by someone other than its owner never runs unsandboxed: its cross-user Bash check
-      // holds to the owner's root, so the OS sandbox is what keeps its writes to the task folder (SSOT 2026-11-02).
-      failIfUnavailable: isOtherUsersTaskTurn,
+      failIfUnavailable: false,
       allowUnsandboxedCommands: false,
     };
     // Mount only the user's /tmp/{userId} directory for writes.
@@ -842,10 +710,8 @@ export async function buildStreamOptions(
   const promptUserId = session?.ownerId || contextUser;
   const shouldRebuild = !session || !session.systemPrompt || session.compactionOccurred === true || !session.sessionId;
 
-  // The channel's context: a Slack turn's from its Slack context; a task
-  // turn's from the snapshot stored with the task (E2 ② — the same blocks,
-  // byte for byte, and still no Slack context on a task turn).
-  const channelContext = execCtx?.origin === 'task' ? session?.inputContext : slackContext;
+  // The channel's context: the Slack turn's.
+  const channelContext = slackContext;
 
   let builtSystemPrompt: string | undefined;
   if (shouldRebuild) {
@@ -900,13 +766,7 @@ export async function buildStreamOptions(
 
   // Set working directory \u2014 ensure it exists to prevent ENOENT on spawn
   if (workingDirectory) {
-    if (execCtx?.origin === 'task') {
-      // A task's directory exists before its turn (the run entry point makes it):
-      // nothing is created here, so no recursive mkdir can follow a link out (#613 R3).
-      if (!fs.existsSync(workingDirectory)) {
-        throw new ExecutionContextMissingError('task working directory does not exist');
-      }
-    } else if (!fs.existsSync(workingDirectory)) {
+    if (!fs.existsSync(workingDirectory)) {
       logger.warn('Working directory does not exist, recreating', { workingDirectory });
       try {
         fs.mkdirSync(workingDirectory, { recursive: true });
@@ -915,13 +775,7 @@ export async function buildStreamOptions(
       }
     }
     if (fs.existsSync(workingDirectory)) {
-      // Right before the SDK child gets it: a task's directory must still be where its context put it.
-      if (execCtx?.origin === 'task') revalidateTaskDirectory(execCtx);
       options.cwd = workingDirectory;
-    } else if (execCtx?.origin === 'task') {
-      // A task runs in its validated directory or not at all — never in the
-      // server's directory, which an unset cwd would hand the SDK child (#613 R2).
-      throw new ExecutionContextMissingError('task working directory cannot be created');
     }
 
     // Expand SDK's allowed directory scope to user's root /tmp/{userId} directory.

@@ -61,25 +61,6 @@ describe('epicBoardView (E4 ⑧)', () => {
     ['a child waits on a question', [child('c1', 'login', { activityState: 'waiting' })], {}, 'needs-input'],
     ['the epic waits on its owner', [], { activityState: 'waiting' }, 'needs-input'],
     [
-      'a running child’s approval is open — owner attention wins over running',
-      [child('c1', 'login', { activityState: 'working', openChain: 'ch' })],
-      {
-        epicEvents: [
-          {
-            id: 'c1:ap',
-            childTaskId: 'c1',
-            planNodeId: 'login',
-            outcome: 'needs-input',
-            approvalId: 'ap',
-            chainId: 'ch',
-            at: 1,
-            state: 'pending',
-          },
-        ],
-      },
-      'needs-input',
-    ],
-    [
       'nothing holds, plan done',
       [],
       { plan: { nodes: [{ id: 'a', title: 'A', kind: 'issue' }], done: { by: 'epic', at: 1 } } },

@@ -29,7 +29,6 @@ import { buildBackgroundWaitPrompt } from '@soma/slack/pipeline/background-wait'
 import { describe, expect, it, vi } from 'vitest';
 import { buildGoalContinuationPrompt } from '../../prompt/session-goal-block';
 import { GOAL_CONTINUATION_TEXT_PREFIX } from '../../slack/goal-continuation';
-import { TASK_RESTART_TEXT } from '../../task-turn/task-restart-resume';
 import type { SessionGoal } from '../../types';
 
 const ROOT = join(__dirname, '..', '..', '..');
@@ -214,8 +213,10 @@ describe('C1 — what soma-work injected, by its own wording', () => {
     expect(sysTurnInfo(user(`${fallbackHead} 아래 순서로 작업을 이어가라:`))).toMatchObject({ kind: 'restart' });
   });
 
-  it('restart resume of a dashboard task — the resumer’s one line reads as a restart (trinity R4, grok P3)', () => {
+  it('restart resume of a dashboard task — an archived conversation’s line still reads as a restart (#855)', () => {
     const { sysTurnInfo } = api();
+    // The resumer's own line, as the dashboard-task stack wrote it before #855 removed it.
+    const TASK_RESTART_TEXT = '[재시작 후 자동 재개] 서비스가 재시작되어 중단된 작업을 이어서 진행합니다.';
     expect(sysTurnInfo(user(TASK_RESTART_TEXT, SYSTEM))).toMatchObject({
       kind: 'restart',
       label: '시스템 재시작',

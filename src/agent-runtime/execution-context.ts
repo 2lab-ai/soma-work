@@ -4,27 +4,25 @@
  * Permission decisions read this — the user, whether they are an admin, their
  * permission mode, the session key and the working directory — and nothing the
  * model or a request body supplies. The server builds it from what it already
- * trusts: the Slack-signed event for a Slack turn, the saved task for a
- * Slack-less one. A turn with no context is refused; it never falls back to
- * `bypass` (the old `!slackContext → bypass` default in mcp-config-builder).
+ * trusts: the Slack-signed event. A turn with no context is refused; it never
+ * falls back to `bypass` (the old `!slackContext → bypass` default in
+ * mcp-config-builder). Every turn is a Slack turn since #855 (the Slack-less
+ * dashboard task and its context are gone).
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { isAdminUser } from '../admin-utils';
 import { isSafePathSegment, normalizeTmpPath } from '../path-utils';
-import { buildTaskSessionKey } from '../session-identity';
-import { isPlanPending } from '../task-turn/task-plan';
-import type { ConversationSession } from '../types';
 import { userSettingsStore } from '../user-settings-store';
 import type { PermissionMode } from './policy/permission-mode';
 
-export type ExecutionOrigin = 'slack' | 'task';
+export type ExecutionOrigin = 'slack';
 
 declare const vouchedByServer: unique symbol;
 
 /**
- * Built once per turn by one of the two factories below — never assembled by
+ * Built once per turn by the factory below — never assembled by
  * hand, never cached across turns (an admin removal or a mode change applies
  * from the next turn). The brand makes "the server built it" a type: a plain
  * object literal is not an ExecutionContext (#613 R1).
@@ -35,32 +33,20 @@ export interface ExecutionContext {
   readonly userId: string;
   readonly isAdmin: boolean;
   readonly permissionMode: PermissionMode;
-  /** The registry key: `work:<channel>:<thread>` (Slack) or `task:<taskId>`. */
+  /** The registry key: `work:<channel>:<thread>`. */
   readonly sessionKey: string;
-  readonly taskId?: string;
-  /** A task's is always set and validated; a Slack turn's is the one the pipeline chose. */
+  /** The one the pipeline chose for the turn. */
   readonly workingDirectory?: string;
   /**
    * Plan mode (SSOT 2026-11-02; any session since #853) — the session's plan is not started yet:
    * the turn plans instead of working (the `plan` server attaches; step 6c refuses the work).
    */
   readonly planPending?: true;
-}
-
-/** A Slack-less task's context: its id and its validated directory are always there. */
-export interface TaskExecutionContext extends ExecutionContext {
-  readonly origin: 'task';
-  readonly taskId: string;
   /**
-   * The task's owner — whose `/tmp/<ownerId>/` root holds `workingDirectory`.
-   * `userId` is the user the turn runs as: the owner, or another signed-in user
-   * who instructed it (SSOT 2026-11-02 — as a Slack turn runs as its speaker).
+   * #854 — a Slack turn of an epic (not a child: depth 1): the epic's task id. The `epic`
+   * server attaches on it, and its tools act on this epic only — never on an argument.
    */
-  readonly ownerId: string;
-  readonly workingDirectory: string;
-  /** E4 ④a (.prd/19 D3) — from the saved task: an epic, or a child's epic. The epic server attaches on these. */
-  readonly kind?: 'epic';
-  readonly parentTaskId?: string;
+  readonly epicTaskId?: string;
 }
 
 /** A turn was asked to run without a context the server can vouch for. */
@@ -92,61 +78,23 @@ export function executionContextFromSlack(input: {
   workingDirectory?: string;
   /** #853 — the session's plan is not started yet (`isPlanPending(session.taskPlan)`). */
   planPending?: boolean;
+  /** #854 — the session is an epic (not a child): its task id. */
+  epicTaskId?: string;
 }): ExecutionContext {
   if (!input.user) throw new ExecutionContextMissingError('Slack turn with no user');
   return Object.freeze({
     ...contextFor('slack', input.user, input.sessionKey),
     ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {}),
     ...(input.planPending === true ? { planPending: true as const } : {}),
+    ...(input.epicTaskId ? { epicTaskId: input.epicTaskId } : {}),
   }) as ExecutionContext;
 }
 
 /**
- * A Slack-less task: the owner, the task key and the working directory all
- * come from the saved task. The directory must be a task directory inside the
- * owner's `/tmp/<ownerId>/` root (the root the sandbox mounts for writing and
- * the cross-user check guards) — not a channel's repo, not another user's
- * directory, not the root itself (D6).
- *
- * `actorUserId` — the signed-in user who instructs it (SSOT 2026-11-02): the
- * turn runs as them, as a Slack turn runs as the user who wrote in the thread —
- * their admin flag and permission mode, never the owner's. The directory stays
- * the owner's task directory, checked against the owner's root. None (a host
- * start) is the owner.
- */
-export function executionContextForTask(session: ConversationSession, actorUserId?: string): TaskExecutionContext {
-  if (session.slackless !== true) throw new ExecutionContextMissingError('not a Slack-less task');
-  const ownerId = session.ownerId;
-  if (!ownerId || !isSafePathSegment(ownerId)) throw new ExecutionContextMissingError('task has no usable owner');
-  const userId = actorUserId || ownerId;
-  if (!isSafePathSegment(userId)) throw new ExecutionContextMissingError('task has no usable actor');
-  if (!session.taskId) throw new ExecutionContextMissingError('task has no id');
-  let sessionKey: string;
-  try {
-    sessionKey = buildTaskSessionKey(session.taskId);
-  } catch {
-    throw new ExecutionContextMissingError('task id is not a valid key');
-  }
-  const workingDirectory = taskDirectoryFor(ownerId, session.workingDirectory);
-  return Object.freeze({
-    ...contextFor('task', userId, sessionKey),
-    origin: 'task',
-    taskId: session.taskId,
-    ownerId,
-    workingDirectory,
-    // E4 ④a — the epic relation as saved (only a Slack-less record carries it).
-    ...(session.kind === 'epic' ? { kind: 'epic' as const } : {}),
-    ...(session.parentTaskId ? { parentTaskId: session.parentTaskId } : {}),
-    // Plan mode — as saved: a gate not yet started.
-    ...(isPlanPending(session.taskPlan) ? { planPending: true as const } : {}),
-  }) as TaskExecutionContext;
-}
-
-/**
- * Where a task of `ownerId` may work: the real location of `raw`, which must be
- * absolute and strictly inside the owner's `/tmp/<ownerId>/` root (D6). Shared
- * by the turn's context and by task creation (#600 ⑥), so a folder that could
- * not run is refused before a task is made with it.
+ * Where work of `ownerId` may run: the real location of `raw`, which must be
+ * absolute and strictly inside the owner's `/tmp/<ownerId>/` root (D6). An epic
+ * child's folder is checked with it (`epic-child-folder.ts`, and the Slack
+ * session initializer's placed folder, #854).
  */
 export function taskDirectoryFor(ownerId: string, raw: string | undefined): string {
   if (!ownerId || !isSafePathSegment(ownerId)) throw new ExecutionContextMissingError('task has no usable owner');
@@ -158,23 +106,6 @@ export function taskDirectoryFor(ownerId: string, raw: string | undefined): stri
     throw new ExecutionContextMissingError('task working directory is outside the owner’s /tmp root');
   }
   return workingDirectory;
-}
-
-/**
- * Re-check a task's directory right before the turn uses it (#613 R2): it must
- * still resolve to the same place inside the owner's root. A directory swapped
- * for a link out of the root after the context was built is refused.
- */
-export function revalidateTaskDirectory(ctx: ExecutionContext): void {
-  if (ctx.origin !== 'task' || !ctx.workingDirectory) {
-    throw new ExecutionContextMissingError('not a task context with a directory');
-  }
-  // The owner's root: the turn may run as another user who instructed the task (SSOT 2026-11-02).
-  const ownerId = (ctx as Partial<TaskExecutionContext>).ownerId || ctx.userId;
-  const now = realDirectory(ctx.workingDirectory);
-  if (now !== ctx.workingDirectory || !now.startsWith(`/tmp/${ownerId}/`)) {
-    throw new ExecutionContextMissingError('task working directory moved since its context was built');
-  }
 }
 
 /**

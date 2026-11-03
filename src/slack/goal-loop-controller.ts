@@ -138,18 +138,13 @@ export interface GoalLoopControllerDeps {
   dispatcher: GoalEvalDispatcher;
   /**
    * Injects a synthetic continuation turn (production: the Slack handleMessage
-   * path, or — for a Slack-less dashboard task, which has no thread — the task
-   * controller's host start). `target` names the session the event is for: a
-   * task's event carries no channel to find it by.
+   * path). `target` names the session the event is for.
    */
   injectContinuation: (
     event: SyntheticMessageEvent,
     target: { sessionKey: string; session: ConversationSession },
   ) => Promise<void>;
-  /**
-   * Posts an in-thread system notice. Never called for a Slack-less dashboard
-   * task: its notices go to its work log only (the dashboard shows them).
-   */
+  /** Posts an in-thread system notice. */
   postNotice: (channel: string, threadTs: string | undefined, text: string) => Promise<unknown>;
   /**
    * DMs the goal owner a Block Kit message (S3). Used when the
@@ -691,9 +686,7 @@ export class GoalLoopController {
         error: err instanceof Error ? err.message : String(err),
       });
     }
-    // A dashboard task has no thread form: the notice above (in its work log) lists the
-    // next instructions, and any instruction from the owner continues the goal.
-    if (!this.deps.askStallQuestion || session.slackless === true) return;
+    if (!this.deps.askStallQuestion) return;
     try {
       await this.deps.askStallQuestion({
         sessionKey,
@@ -722,25 +715,13 @@ export class GoalLoopController {
     return announceSessionNotice(session, OutputFlag.STATUS_MESSAGE, text, () => this.threadPost(session, text));
   }
 
-  /**
-   * The thread half of a notice. A Slack-less dashboard task has no thread:
-   * nothing is posted — its callers already recorded the notice in the work
-   * log, which is where the dashboard shows it.
-   */
+  /** The thread half of a notice. */
   private threadPost(session: ConversationSession, text: string): Promise<unknown> {
-    if (session.slackless === true) return Promise.resolve(undefined);
     return this.deps.postNotice(session.channelId, session.threadTs, text);
   }
 
-  /**
-   * A notice no other path records (eval failure / retry, injection failure):
-   * a Slack session's goes to its thread as before; a task's to its work log.
-   */
+  /** A notice no other path records (eval failure / retry, injection failure): posted to the thread. */
   private postLooseNotice(session: ConversationSession, text: string): Promise<unknown> {
-    if (session.slackless === true) {
-      recordSessionNotice(session, text);
-      return Promise.resolve(undefined);
-    }
     return this.deps.postNotice(session.channelId, session.threadTs, text);
   }
 
@@ -994,9 +975,7 @@ export class GoalLoopController {
       try {
         await this.postLooseNotice(
           session,
-          `⚠️ Goal continuation failed to start: ${injectErr}. The loop is paused — ${
-            session.slackless === true ? 'send the task an instruction' : 'send a message in this thread'
-          } to resume, or use \`goal pause\` / \`goal clear\`.`,
+          `⚠️ Goal continuation failed to start: ${injectErr}. The loop is paused — send a message in this thread to resume, or use \`goal pause\` / \`goal clear\`.`,
         );
       } catch (noticeErr: unknown) {
         this.deps.logger.error('Failed to post goal continuation-failure notice', {

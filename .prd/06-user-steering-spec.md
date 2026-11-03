@@ -67,6 +67,7 @@ Status: **in-progress** (2026-09-17, D1–D3 유저 확정) · 기준 커밋 mai
 - 전달 확인: 턴 프레임의 `user_message_uuids` 또는 `command_lifecycle started/completed`에 그 uuid가 보이면 `steered → consumed` → **큐에서 제거**(이력만 남김). 확인 전까지는 `steered`로 표시.
 - 턴이 끝났는데 `steered`인 항목이 남으면(모델이 읽기 전 종료) → `queued`로 되돌리고 기존 FIFO 드레인 규칙 적용. 중복 전달 금지: uuid 기준 1회.
 - 자동 스티어링 대상이 아닌 것: 컨트롤(`/`·`%` 명령, 승인 버튼 응답), 봇 합성 메시지. 첨부가 있는 메시지는 D2에 따라 대상이다.
+- 전용 `/compact` 턴(`compactTurnActive`)에는 밀어 넣지 않는다(#891). 그 query는 압축의 `result`에서 끝나므로, 밀어 넣은 메시지는 CLI가 압축 뒤 시작했다가 query와 함께 잘리고 행은 `consumed`로 끝났다. `queued`로 두고 그 run 뒤 드레인에서 자기 턴으로 실행한다 — 세션 초기화가 압축 중 도착한 메시지를 stash하는 규칙과 같다.
 
 ### 3.3 Send now (명시적 중단)
 - `Send now` / `!{prompt}` = 현재 동작을 **중지**하고 그 항목을 즉시 새 턴으로 실행. 부분 출력 보존·헤더 "사용자 요청으로 중단"은 지금 규칙 유지.

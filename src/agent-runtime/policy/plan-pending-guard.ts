@@ -1,5 +1,5 @@
 /**
- * Plan mode (SSOT 2026-11-02 — 작업 계획 모드): while a dashboard task's plan is
+ * Plan mode (SSOT 2026-11-02 — 작업 계획 모드): while a session's plan is
  * not started, its turns plan; they do not do the work. `evaluateToolPolicy`
  * (step 6c) asks this check about every call of such a turn; a reason denies the
  * call in every permission mode, for admins too (trinity R2, astra P1).

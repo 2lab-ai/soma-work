@@ -1,9 +1,9 @@
 /**
  * The turn gate (#597, .prd/17 D2, T6): `ClaudeHandler.streamQuery` runs a turn
- * only under a context the server vouches for — the Slack event's user, or a
- * Slack-less task's execution context. Without one the turn is refused before
- * a credential slot is leased or the SDK is called; it never falls back to the
- * old "no Slack context → bypass, no policy hook" options.
+ * only under a context the server vouches for — the Slack event's user. Without
+ * one the turn is refused before a credential slot is leased or the SDK is
+ * called; it never falls back to the old "no Slack context → bypass, no policy
+ * hook" options. (#855 — the Slack-less task's context is gone.)
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -28,27 +28,14 @@ vi.mock('../auth/llmux-tenant-keys', () => ({ ensureTenantKey: tenantMock }));
 vi.mock('../auth/query-env-builder', () => ({ buildQueryEnv: () => ({ env: {} }) }));
 vi.mock('../agent-runtime/claude-code/build-stream-options', () => ({ buildStreamOptions: buildOptionsMock }));
 
-import {
-  type ExecutionContext,
-  ExecutionContextMissingError,
-  executionContextForTask,
-} from '../agent-runtime/execution-context';
+import { ExecutionContextMissingError } from '../agent-runtime/execution-context';
 import { ClaudeHandler } from '../claude-handler';
 import type { SlackContext } from '../mcp-config-builder';
 import type { McpManager } from '../mcp-manager';
-import type { ConversationSession } from '../types';
 
 function newHandler(): ClaudeHandler {
   return new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
 }
-
-const taskContext: ExecutionContext = executionContextForTask({
-  ownerId: 'U1',
-  slackless: true,
-  taskId: '11111111-2222-4333-8444-555555555555',
-  channelId: '',
-  workingDirectory: '/tmp/U1/session_x',
-} as ConversationSession);
 
 describe('ClaudeHandler.streamQuery — the execution-context gate (#597)', () => {
   beforeEach(() => {
@@ -58,7 +45,7 @@ describe('ClaudeHandler.streamQuery — the execution-context gate (#597)', () =
     tenantMock.mockClear();
   });
 
-  it('T6 — no Slack user and no task context: refused before a slot lease, options or the SDK', async () => {
+  it('T6 — no Slack user: refused before a slot lease, options or the SDK', async () => {
     const it = newHandler().streamQuery('hi', undefined, undefined, '/tmp/x', undefined, 'task:x');
     await expect(it.next()).rejects.toBeInstanceOf(ExecutionContextMissingError);
     expect(leaseMock).not.toHaveBeenCalled();
@@ -77,185 +64,5 @@ describe('ClaudeHandler.streamQuery — the execution-context gate (#597)', () =
     const slack = { user: 'U1', channel: 'C1', threadTs: '1.1' } as SlackContext;
     const it = newHandler().streamQuery('hi', undefined, undefined, '/tmp/x', slack, 'work:C1:1.1');
     await expect(it.next()).rejects.toThrow('options-built');
-  });
-
-  it('a Slack-less task passes the gate, and its context reaches the option builder', async () => {
-    const session = {
-      ownerId: 'U1',
-      userId: 'U1',
-      slackless: true,
-      taskId: taskContext.taskId,
-      channelId: '',
-    } as unknown as ConversationSession;
-    const it = newHandler().streamQuery(
-      'hi',
-      session,
-      undefined,
-      taskContext.workingDirectory,
-      undefined,
-      taskContext.sessionKey,
-      taskContext,
-    );
-    await expect(it.next()).rejects.toThrow('options-built');
-    expect(buildOptionsMock).toHaveBeenCalledTimes(1);
-    expect((buildOptionsMock.mock.calls[0] as unknown[])[0]).toMatchObject({ executionContext: taskContext });
-  });
-
-  // #599 ⑤b — the host hands the option builder the dashboard approver: an
-  // escalation of a task turn is written to the shared approval store bound
-  // to that task and the turn it is running, raised for the task's owner.
-  it('a task turn’s options get the dashboard approver, bound to the task and its running turn', async () => {
-    const { sharedStore } = await import('somalib/permission/shared-store');
-    const stored = vi.spyOn(sharedStore, 'storePendingApproval').mockRejectedValueOnce(new Error('stored'));
-    try {
-      const handler = newHandler();
-      vi.spyOn(handler.getSessionRegistry(), 'getSessionByKey').mockImplementation((key: string) =>
-        key === taskContext.sessionKey ? ({ activeTaskTurnId: 'turn-9' } as any) : undefined,
-      );
-      const session = { ownerId: 'U1', userId: 'U1', slackless: true, taskId: taskContext.taskId, channelId: '' };
-      const it = handler.streamQuery(
-        'hi',
-        session as unknown as ConversationSession,
-        undefined,
-        taskContext.workingDirectory,
-        undefined,
-        taskContext.sessionKey,
-        taskContext,
-      );
-      await expect(it.next()).rejects.toThrow('options-built');
-      const deps = (buildOptionsMock.mock.calls[0] as unknown[])[1] as {
-        taskApprover?: { request(r: unknown): Promise<unknown> };
-      };
-      expect(deps.taskApprover).toBeDefined();
-      await expect(
-        deps.taskApprover!.request({
-          sessionKey: taskContext.sessionKey,
-          userId: 'U1',
-          toolName: 'Bash',
-          toolInput: { command: 'rm -rf /' },
-          ruleIds: [],
-        }),
-      ).rejects.toThrow('stored');
-      expect(stored).toHaveBeenCalledWith(
-        expect.stringMatching(/^approval_[A-Za-z0-9_]+$/),
-        expect.objectContaining({
-          kind: 'tool_permission',
-          task_key: taskContext.sessionKey,
-          turn_id: 'turn-9',
-          user: 'U1',
-          tool_name: 'Bash',
-        }),
-      );
-    } finally {
-      stored.mockRestore();
-    }
-  });
-
-  // E2 ⑥ — the same approver tells the notice deliverer what each approval did.
-  it('the task approver’s events reach the listener, and an approval being asked is open', async () => {
-    const { sharedStore } = await import('somalib/permission/shared-store');
-    const stored = vi.spyOn(sharedStore, 'storePendingApproval').mockResolvedValue(undefined as never);
-    let answer!: (r: { behavior: 'allow' }) => void;
-    const waited = vi
-      .spyOn(sharedStore, 'waitForPermissionResponse')
-      .mockImplementation(() => new Promise((r) => (answer = r as typeof answer)));
-    try {
-      const handler = newHandler();
-      vi.spyOn(handler.getSessionRegistry(), 'getSessionByKey').mockImplementation((key: string) =>
-        key === taskContext.sessionKey ? ({ activeTaskTurnId: 'turn-9' } as any) : undefined,
-      );
-      const events: Array<{ type: string; approvalId: string }> = [];
-      handler.setTaskApprovalListener((e) => void events.push(e));
-      const session = { ownerId: 'U1', userId: 'U1', slackless: true, taskId: taskContext.taskId, channelId: '' };
-      const it = handler.streamQuery(
-        'hi',
-        session as unknown as ConversationSession,
-        undefined,
-        taskContext.workingDirectory,
-        undefined,
-        taskContext.sessionKey,
-        taskContext,
-      );
-      await expect(it.next()).rejects.toThrow('options-built');
-      const deps = (buildOptionsMock.mock.calls.slice(-1)[0] as unknown[])[1] as {
-        taskApprover: { request(r: unknown): Promise<unknown> };
-      };
-      const pending = deps.taskApprover.request({
-        sessionKey: taskContext.sessionKey,
-        userId: 'U1',
-        toolName: 'Bash',
-        toolInput: { command: 'ls' },
-        ruleIds: [],
-      });
-      await vi.waitFor(() => expect(events.map((e) => e.type)).toEqual(['requested']));
-      expect(handler.isTaskApprovalOpen(events[0].approvalId)).toBe(true);
-      answer({ behavior: 'allow' });
-      await pending;
-      expect(events.map((e) => e.type)).toEqual(['requested', 'resolved']);
-      expect(handler.isTaskApprovalOpen(events[0].approvalId)).toBe(false);
-    } finally {
-      stored.mockRestore();
-      waited.mockRestore();
-    }
-  });
-
-  describe('a task context is bound to the session it runs (#613 R2)', () => {
-    const taskSession = (over: Record<string, unknown> = {}) =>
-      ({
-        ownerId: 'U1',
-        userId: 'U1',
-        slackless: true,
-        taskId: taskContext.taskId,
-        channelId: '',
-        ...over,
-      }) as unknown as ConversationSession;
-    const run = (session: ConversationSession | undefined, sessionKey: string, slack?: SlackContext) =>
-      newHandler().streamQuery('hi', session, undefined, undefined, slack, sessionKey, taskContext);
-
-    it('a different session key is refused before a lease', async () => {
-      await expect(run(taskSession(), 'task:22222222-2222-4222-8222-222222222222').next()).rejects.toBeInstanceOf(
-        ExecutionContextMissingError,
-      );
-      expect(leaseMock).not.toHaveBeenCalled();
-    });
-
-    it('another task’s session is refused', async () => {
-      const other = taskSession({ taskId: '22222222-2222-4222-8222-222222222222' });
-      await expect(run(other, taskContext.sessionKey).next()).rejects.toBeInstanceOf(ExecutionContextMissingError);
-      expect(leaseMock).not.toHaveBeenCalled();
-    });
-
-    it('a session owned by someone else is refused', async () => {
-      await expect(run(taskSession({ ownerId: 'U2' }), taskContext.sessionKey).next()).rejects.toBeInstanceOf(
-        ExecutionContextMissingError,
-      );
-    });
-
-    it('a Slack context alongside a task context is refused — a task turn has no Slack thread', async () => {
-      const slack = { user: 'U1', channel: 'C1', threadTs: '1.1' } as SlackContext;
-      await expect(run(taskSession(), taskContext.sessionKey, slack).next()).rejects.toBeInstanceOf(
-        ExecutionContextMissingError,
-      );
-    });
-
-    it('a task turn without its session or its key is refused — both are required (#613 R3)', async () => {
-      await expect(run(undefined, taskContext.sessionKey).next()).rejects.toBeInstanceOf(ExecutionContextMissingError);
-      await expect(
-        newHandler().streamQuery('hi', taskSession(), undefined, undefined, undefined, undefined, taskContext).next(),
-      ).rejects.toBeInstanceOf(ExecutionContextMissingError);
-      expect(leaseMock).not.toHaveBeenCalled();
-    });
-
-    it('a session that is not Slack-less is refused for a task context (#613 R3)', async () => {
-      await expect(run(taskSession({ slackless: undefined }), taskContext.sessionKey).next()).rejects.toBeInstanceOf(
-        ExecutionContextMissingError,
-      );
-    });
-
-    it('the matching session passes, and the usage tenant is the task’s user', async () => {
-      const session = taskSession({ currentInitiatorId: 'U9' });
-      await expect(run(session, taskContext.sessionKey).next()).rejects.toThrow('options-built');
-      expect(tenantMock.mock.calls[0][0]).toBe('U1');
-    });
   });
 });

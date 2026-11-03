@@ -11,7 +11,7 @@ export { AssistantStatusManager } from './assistant-status-manager';
 // Phase 3: Command routing
 export { CommandDependencies, CommandRouter } from './commands';
 export { ContextWindowManager } from './context-window-manager';
-export { EventRouter, EventRouterDeps } from './event-router';
+export { EventRouter, EventRouterDeps, withoutHostOnlyFields } from './event-router';
 export { McpHealthMonitor } from './mcp-health-monitor';
 export { McpStatusDisplay } from './mcp-status-tracker';
 // Phase 6: Message validation, status reporting, and todo display

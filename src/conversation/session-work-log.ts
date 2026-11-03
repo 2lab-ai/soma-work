@@ -1,13 +1,12 @@
 /**
  * The work-log pipeline a turn's entry goes through (#598 ④b, design 598b
- * v5 §4.1), extracted from the process-wide `appendWorkLog` provider so a
- * Slack-less task's writer can keep the store's promise.
+ * v5 §4.1), behind the process-wide `appendWorkLog` provider.
  *
  * Before the store sees the entry: stamp the agent that made it (spec 12), push
  * the card when a tool count grew, refresh a working subagent's spend, and
  * capture the model's files and markdown answers as dashboard artifacts
- * (SSOT 2026-10-23 T1/T7). Then append. The Slack provider swallows the
- * returned promise as before; the task writer tracks it as a receipt.
+ * (SSOT 2026-10-23 T1/T7). Then append. The provider swallows the returned
+ * promise.
  */
 import { stampWorkLogAgent } from '../session/agent-registry';
 import type { ConversationSession } from '../types';

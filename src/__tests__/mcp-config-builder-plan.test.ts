@@ -57,12 +57,22 @@ describe('McpConfigBuilder — the plan server (plan mode)', () => {
     expect(config.allowedTools).toContain('mcp__plan');
   });
 
-  it('B2 — an epic waits for its owner: no epic server while its plan is not started', async () => {
-    const pending = await build(taskCtx({ kind: 'epic', planPending: true }));
+  it('B2 — an epic waits for its owner: no epic server while its plan is not started (a Slack epic, #854)', async () => {
+    const epicCtx = (planPending?: true) =>
+      ({
+        origin: 'slack',
+        userId: 'U1',
+        isAdmin: false,
+        permissionMode: 'legacy',
+        sessionKey: 'work:C1:1.1',
+        epicTaskId: 'e1',
+        ...(planPending ? { planPending } : {}),
+      }) as unknown as ExecutionContext;
+    const pending = await build(epicCtx(true));
     expect(pending.mcpServers ?? {}).not.toHaveProperty('epic');
     expect(pending.allowedTools ?? []).not.toContain('mcp__epic');
     expect(Object.keys(pending.mcpServers ?? {})).toContain('plan');
-    const started = await build(taskCtx({ kind: 'epic' }));
+    const started = await build(epicCtx());
     expect(Object.keys(started.mcpServers ?? {})).toContain('epic');
     expect(started.mcpServers ?? {}).not.toHaveProperty('plan');
   });

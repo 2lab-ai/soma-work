@@ -16,15 +16,15 @@
 
 ## 1. What runs where
 
-- **Making an epic:** the dashboard composer's 에픽 chip, shown only to users whose flag is on, sends `kind: 'epic'` to the new-task API. The launcher (`src/task-turn/task-launcher.ts`) checks the flag again. If the flag is off, the API answers 403.
-- **The epic's tools:** the `epic` MCP server (`src/task-turn/epic-server.ts`) is attached on the epic's own turns only. It has four tools:
+- **Making an epic:** the dashboard composer's 에픽 chip, shown only to users whose flag is on, sends `epic: true` to the new-task API. The route checks the flag again; if it is off, the API answers 403. The epic is a Slack thread in the chosen channel (#854): `SlackHandler.placeInEpicTree` saves it as an epic before its first turn.
+- **The epic's tools:** the `epic` MCP server (`src/task-turn/epic-server.ts`) is attached on the epic's own turns only — the owner's own messages and the epic's wakes, never another user's word in the thread. It has four tools:
   - `plan_write` writes the whole node tree;
   - `spawn_child` makes one child per node, at most 7 per epic;
   - `child_status` reads the tree and the children;
   - `instruct_child` gives a child its next instruction or an answer.
-- **Children** are Slack-less tasks with `parentTaskId` and `planNodeId`. At most 3 run at once per epic tree. A tree is limited to 30 starts per 10 minutes and has a cost limit (`epicCostLimitUsd`, default $50). The 3, the 30 and the $50 live in `src/task-turn/task-turn-controller.ts`. The 7 is `EPIC_CHILD_MAX` in `src/task-turn/epic-server.ts`.
-- **Waking** (`src/task-turn/epic-wake.ts`): when a child's chain ends, the epic gets an event. An idle epic that is not done then gets one host turn whose text is `Epic wake: N events — <node>:<word>, …`. That turn's start consumes the events. A restart puts the events that an unfinished epic turn consumed back to pending, and the boot scan wakes the epic again.
-- **Closing** (`src/task-turn/task-close.ts`): closing an epic marks each running child "closed by its parent", cancels them all, then closes the epic. The mark names the chain it cancelled. Closing a child records a `closed` event on its epic. A close never wakes the epic.
+- **Children** are Slack threads in the epic's channel, with `parentTaskId` and `planNodeId` (`src/task-turn/epic-slack.ts`). An instruction to a working child waits in that child's follow-up queue. At most 3 run at once per epic tree (children still being made count). A tree is limited to 30 starts per 10 minutes and has a cost limit (`epicCostLimitUsd`, default $50); a queued instruction counts too. The 3, the 30 and the $50 live in `src/task-turn/epic-tree-gate.ts`. The 7 is `EPIC_CHILD_MAX` in `src/task-turn/epic-server.ts`.
+- **Waking** (`createSlackEpicWaker`, `src/task-turn/epic-slack.ts`): when a child's chain ends, the epic gets an event. An idle epic that is not done then gets one message in its thread, `Epic wake: N events — <node>:<word>, …` (a host turn). The events stay tied to that wake until the epic's chain ends; a restart before that puts them back to pending, and the boot scan wakes the epic again (at least once).
+- **Closing** (`src/task-turn/task-close.ts`): closing an epic marks each running child "closed by its parent" and stops its turn, then closes the epic. A folder a live child still works in is kept. Closing a child records a `closed` event on its epic. A close never wakes the epic.
 - **The board:** an epic is one card in its column, like any task. Its children's cards follow it, right under it, in the same column or DONE day group (#725). There is no lane above the columns.
   - The epic's card leads with EPIC and shows its state (자식 실행 중 or 입력 필요 while a child works or waits) and its progress (accepted nodes of all nodes).
   - Each child's card leads with `↳ #<node>` and shows its own state.
@@ -38,14 +38,14 @@
 | `<DATA_DIR>/user-settings.json` | `epicTasks: true` per user (off when absent) |
 | `<DATA_DIR>/sessions.json` | epic: `kind: 'epic'`, `plan` (nodes, `accepted`, `done`, `retired`), `epicEvents` (`state` pending/delivered, `consumedBy`), `childTaskIds`. Child: `parentTaskId`, `planNodeId`, `closedBy` (`by`, `at`, `chain`) |
 | `<DATA_DIR>/archives/*.json` | the same fields, after the normal clock archives a done tree |
-| `<DATA_DIR>/conversations/<id>.json` | the epic's turns. Each wake turn is a user turn starting with `Epic wake:` |
+| `<DATA_DIR>/conversations/<id>.json` | the epic's turns. Each wake turn is a host (`system`) turn starting with `Epic wake:` |
 
 **Log lines** (in `logs/stdout.log` and `logs/stderr.log`):
-- `Epic wake not started — its events stay pending`: the start was refused. On 429, 500 or 503 it retries once after a minute.
+- `Epic wake not started — its events stay pending`: the tree's limits refused it. It retries once after a minute.
+- `Epic wake not taken — its events are pending again`: the wake message was not taken. It retries once after a minute.
 - `Epic wake failed — its events stay pending`: the wake threw.
 - `Epic event dropped — the epic is closing`: logged at info. This is by design while an epic closes.
 - `Epic event dropped — the epic is gone`: logged at warn. A child reported to an epic that no longer exists.
-- `A Slack-less task turn tried to call Slack — a missed seam`: a task turn called Slack. This must never appear (T9).
 
 ## 3. Rollback
 

@@ -325,8 +325,6 @@ describe('expanded body — face + delta, sections keyed on state', () => {
         'cardSummary',
         'cardCurrentTask',
         'renderCardResume',
-        'taskOutcomeHtml',
-        'taskNoticeFailHtml',
         'taskPlanCardHtml',
         'quickChoicesOf',
         'isBusy',
@@ -1703,42 +1701,6 @@ describe('the composer follows the session live (executed)', () => {
   // #640 R2 (astra): a dashboard task takes no attachments (D8) — not by the
   // composer's tools, and not by a paste or a drop on it either (the composer
   // takes those itself: its accept refuses every file).
-  it('a dashboard task’s composer takes no files: no attach / image / voice tools, every file refused by type', () => {
-    const el: Record<string, unknown> = {};
-    const host: Record<string, unknown> = {};
-    const composer: { data?: Record<string, unknown> } = {};
-    const els: Record<string, unknown> = { 'panel-command': host, 'cmd-steer': el, 'pc-composer': composer };
-    const m = load<{ renderPanelComposer(s: unknown, force?: boolean): void }>(
-      ['renderPanelComposer', 'pcModeOf', 'pcToolsOpen', 'steeringData', 'pcComposerSetup', 'pcComposerData'],
-      ['STEER_STATE', 'PC_LIMITS', 'PC_NO_FILES'],
-      {
-        document: { getElementById: (id: string) => els[id] ?? null },
-        currentUserId: 'U1',
-        pcReset: () => {},
-        paintDefaultsScope: () => {},
-        ntDictationEngine: () => null,
-        ntDictationUsable: () => false, // 받아쓰기 has its own suite: no recogniser here
-      },
-    );
-    m.renderPanelComposer({ ownerId: 'U1', activityState: 'idle' }, true);
-    expect(host._takesFiles).toBe(true);
-    expect(composer.data).not.toHaveProperty('accept'); // the element's defaults: every tool, any file
-    expect(composer.data).not.toHaveProperty('attach');
-    m.renderPanelComposer({ ownerId: 'U1', activityState: 'idle', slackless: true }, true); // another card: forced
-    expect(host._mode).toBe('open');
-    expect(host._takesFiles).toBe(false);
-    expect(composer.data).toMatchObject({
-      attach: false,
-      image: false,
-      voice: false,
-      accept: 'application/x-soma-no-attachments',
-    });
-    // Back on a Slack session: the tools and every file type return (the task keys are dropped).
-    m.renderPanelComposer({ ownerId: 'U1', activityState: 'idle' }, true);
-    expect(composer.data).not.toHaveProperty('accept');
-    expect(composer.data).not.toHaveProperty('attach');
-    expect(composer.data).toMatchObject({ maxFiles: 10 });
-  });
 });
 
 describe('the model menu closes on Escape before the panel does (executed)', () => {

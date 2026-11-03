@@ -19,9 +19,7 @@ export function canApplySummaryTitle(session: SummaryTitleTarget): boolean {
   return session.titleProvisional === true;
 }
 
-export interface SummaryTitleSession extends SummaryTitleTarget {
-  slackless?: boolean;
-}
+export type SummaryTitleSession = SummaryTitleTarget;
 
 export type SummaryTitleResult<S> =
   | { outcome: 'no-session' }
@@ -29,10 +27,8 @@ export type SummaryTitleResult<S> =
   | { outcome: 'applied'; sessionKey: string; session: S };
 
 /**
- * Apply a turn summary's title to the session whose conversation it is. The
- * session is addressed by its registry key throughout, so a Slack-less task
- * (`task:<taskId>`, no channel/thread) works the same as a Slack session
- * (#615 R1); only a Slack session re-renders its thread.
+ * Apply a turn summary's title to the session whose conversation it is, by its
+ * registry key, and re-render its thread.
  */
 export function applySummaryTitle<S extends SummaryTitleSession>(
   registry: {
@@ -48,7 +44,7 @@ export function applySummaryTitle<S extends SummaryTitleSession>(
   const [sessionKey, session] = found;
   if (!canApplySummaryTitle(session)) return { outcome: 'kept', sessionKey, session };
   registry.updateSessionTitleByKey(sessionKey, summaryTitle);
-  if (session.slackless !== true) hooks.renderThread(session);
+  hooks.renderThread(session);
   // The dashboard card shows the new headline now, not at the next poll.
   hooks.scheduleLiveUpdate(sessionKey);
   return { outcome: 'applied', sessionKey, session };

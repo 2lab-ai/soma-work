@@ -368,6 +368,26 @@ describe('#853 — the plan switch on a task that opens a Slack thread', () => {
     expect(parseNewTaskSubmission(body({ plan: 'yes' }), ctx)).toMatchObject({ ok: false });
   });
 
+  it('#854 — epic on: the session is an epic; autogoal and autoz are off (its wakes drive it)', () => {
+    expect(parseNewTaskSubmission(body({ epic: true }), ctx)).toMatchObject({
+      ok: true,
+      value: { epic: true, autogoal: false, autoz: false },
+    });
+    expect((parseNewTaskSubmission(body({ epic: false }), ctx) as any).value.epic).toBeUndefined();
+    expect(parseNewTaskSubmission(body({ epic: 'yes' }), ctx)).toMatchObject({ ok: false });
+    const msg = buildNewTaskRootMessage({
+      userId: 'U123',
+      prompt: '로그인 전부',
+      nickname: 'opus[1m]',
+      effort: 'xhigh',
+      autogoal: false,
+      autoz: false,
+      epic: true,
+      attachmentNames: [],
+    });
+    expect(JSON.stringify(msg.blocks)).toContain('🧩 에픽');
+  });
+
   it('the root message says the task plans first', () => {
     const msg = buildNewTaskRootMessage({
       userId: 'U123',

@@ -4,9 +4,8 @@
  * Exactly the ThreadPanel methods the executor calls on a turn — nothing the
  * host's TurnRunner, the todo display or the action handlers call
  * (`finalizeOnEndTurn`, `renderTasks`, `resolveChoice`, `clearChoice`, `close`, …). The Slack implementation is
- * `ThreadPanel` (today's behaviour); a Slack-less task's executor gets a
- * dashboard implementation. Picked from ThreadPanel so the signatures cannot
- * drift from the Slack panel.
+ * `ThreadPanel`. Picked from ThreadPanel so the signatures cannot drift from
+ * the Slack panel.
  */
 import type { ThreadPanel } from './thread-panel';
 

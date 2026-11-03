@@ -35,6 +35,7 @@ These are not the default starting point for current implementation work. Use th
 | Feature | Location |
 |---------|----------|
 | Admin commands | [archive/features/admin-commands/](./features/admin-commands/) |
+| Slack instruction → dashboard task (E2, removed in #855) | [archive/features/e2-slack-task-entry/](./features/e2-slack-task-entry/) |
 | A2T audio-to-text service | [archive/features/a2t/](./features/a2t/) |
 | Cron scheduler | [archive/features/cron-scheduler/](./features/cron-scheduler/) |
 | Disallow native interactive tools | [archive/features/disallow-native-interactive-tools/](./features/disallow-native-interactive-tools/) |
