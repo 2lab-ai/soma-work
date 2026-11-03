@@ -9,6 +9,7 @@
  */
 
 import { type AuthCardData, type AuthProvider, authCardHtml, esc } from '@2lab.ai/ui/server';
+import { themeClientJs } from './theme-client';
 import { UI_LIB_VERSION, uiLibTokensCss } from './ui-lib';
 
 // ── The page around the card ──
@@ -19,7 +20,7 @@ function withSlotted(card: string, slotted: string): string {
 }
 
 /**
- * The page: the dashboard's theme choice (soma-theme, else the OS) on <html>, @2lab.ai/ui's tokens.css as the
+ * The page: the dashboard's theme choice (themeClientJs: soma-theme / soma-palette, else the OS) on <html>, @2lab.ai/ui's tokens.css as the
  * only palette, the server-rendered card filling the viewport, and the element script. With JavaScript off the
  * tokens follow the OS theme and the card is the same one. A Korean page breaks its prose between words:
  * `word-break` inherits into the card, whose own keep-all is keyed on its `lang` attribute (en — its strings
@@ -32,9 +33,8 @@ function authPage(opts: { lang: 'ko' | 'en'; title: string; card: string }): str
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${esc(opts.title)}</title>
-<script data-fouc>
-(function(){var t=null;try{t=localStorage.getItem('soma-theme')}catch(_e){}if(t!=='light'&&t!=='dark'){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
-</script>
+<!-- The theme (soma-work 830): the dashboard's choice — light · dark · light·mono · dark·mono — on <html> before paint. -->
+<script data-fouc>${themeClientJs()}</script>
 <style id="ui-tokens">
 ${uiLibTokensCss()}
 </style>

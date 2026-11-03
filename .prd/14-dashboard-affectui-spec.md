@@ -44,6 +44,7 @@ affectUI의 에이전트 UI 일곱 개를 해부해 레퍼런스마다 문서 �
 | C2 | 키보드 — 레퍼런스 문서의 keyboard 표를 대시보드 상호작용에 옮긴다. 열린 것은 Esc로 닫고 포커스를 연 자리로 돌린다. | [REF] 7종 모두 keyboard 절 |
 | C3 | 움직임 — 상태 변화는 제자리에서 먼저 보이고 그다음 움직인다. 시간·easing은 대시보드 모션 토큰. `prefers-reduced-motion`에서 움직임 없이 바뀐다. | [REF] motion 절 · `.prd/10` §4 |
 | C4 | 다크·라이트 — 새 색은 다크 기본값 + `[data-theme="light"]` 덮어쓰기를 함께 둔다. 13px 글자는 4.5:1. | [CODE] `:root` · light 블록 |
+| C4a | 네 테마 (#830) — 앱 바 토글은 라이트 → 다크 → 라이트·모노 → 다크·모노 순으로 돈다. 라이트·다크는 그대로 둔다. 모노 쌍(`data-palette="mono"`, @2lab.ai/ui ≥ 0.25.0)은 작업 상태 넷(노랑 = 입력 필요, 파랑 = 작업 중, 초록 = 완료, 빨강 = 에러)에만 색을 쓰고, 그 색은 아이콘·점·막대·테두리에만 둔다. 상태색을 배경(fill)이나 글자에 섞을 때는 `calc(N% * var(--chroma, 1))`로 쓴다. 이렇게 하면 모노에서 면은 표면색, 글자는 잉크가 된다. 아이콘이 그 글자색을 물려받으면 아이콘에 상태색을 따로 준다. 선택은 이 브라우저에 저장한다: `soma-theme`(OS와 다를 때만), `soma-palette`(`mono`일 때만). 네 페이지(대시보드·설정·대화·로그인)가 같은 헤드 스크립트(`theme-client.ts`)를 쓴다. | [CODE] `theme-client.ts` · `mono-palette-pages.test.ts` |
 | C5 | 반응형 — 폰(390px)에서 잘리지 않는다. 터치 기기는 버튼 높이를 키운다. | [REF] responsive 절 |
 | C6 | 접근성 — 버튼은 이름을 갖고, 상태 변화는 polite live region으로 한 번 알린다. 장식 아이콘은 `aria-hidden`. | [REF] accessibility 절 |
 | C7 | 시험 — 문서 §4의 결정 번호(D1…)마다 시험이 있고, 수정 전 실패한다(RED). | `CLAUDE.md` TDD |

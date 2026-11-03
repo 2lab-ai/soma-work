@@ -155,6 +155,7 @@ import {
 } from './permission-prompts';
 import { getConversation, resummarizeTurn } from './recorder';
 import { soundClientJs } from './sound-client';
+import { themeClientJs } from './theme-client';
 import { renderTaskPlanHtml, renderTaskPlanPage, TASK_PLAN_CSS, TASK_PLAN_PAGE_CSP } from './task-plan-html';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
 import {
@@ -5374,10 +5375,8 @@ window.uiPeek = { html: peekHtml, kind: fileItemKind };
 <script type="module" src="/dashboard/ui/elapsed.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/meter.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/media-grid.js?v=${UI_LIB_VERSION}"></script>
-<script data-fouc>
-// FOUC prevention — apply theme before CSS paints
-(function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
-</script>
+<!-- The theme (soma-work 830): light · dark · light·mono · dark·mono on <html> before CSS paints, and the bar's toggle. -->
+<script data-fouc>${themeClientJs()}</script>
 <!-- Interface sound (@2lab.ai/ui/sound, sound-cuelume): off until the speaker beside the theme switch turns it on. -->
 <script data-sound>${soundClientJs(UI_LIB_VERSION)}</script>
 <!-- @2lab.ai/ui kit (ui-kit.css): the light-DOM button, icon button, chip, status, kbd … classes on the
@@ -5397,20 +5396,22 @@ ${TASK_PLAN_CSS}
 :root {
   /* Dashboard-only (no library counterpart). Motion is the contract's alone: --dur-press / -fade /
      -expand / -move with --ease-out / --ease-in-out; colour and border changes are 150ms ease. */
-  /* Status tints — the library recipe (agent-inbox / context-window styles): a 14% wash of the status
+  /* Mono pair (soma-work 830, @2lab.ai/ui ≥ 0.25.0): --chroma is 1 in light / dark and 0 under data-palette="mono", so every
+     wash and text tint below is the plain surface / ink in mono, and only the -line borders keep the status colour.
+     Status tints — the library recipe (agent-inbox / context-window styles): a 14% wash of the status
      into the surface, the word 70% of the status toward the ink. Every pair is ≥ 4.5:1 in light and
      dark (numbers in the P5 commit). Derived here once so no rule below hard-codes a colour. */
-  --tint-wait-bg: color-mix(in srgb, var(--st-wait) 14%, var(--surface));
-  --tint-wait-soft: color-mix(in srgb, var(--st-wait) 8%, var(--surface));
+  --tint-wait-bg: color-mix(in srgb, var(--st-wait) calc(14% * var(--chroma, 1)), var(--surface));
+  --tint-wait-soft: color-mix(in srgb, var(--st-wait) calc(8% * var(--chroma, 1)), var(--surface));
   --tint-wait-line: color-mix(in srgb, var(--st-wait) 40%, var(--border));
-  --tint-wait-fg: color-mix(in srgb, var(--st-wait) 70%, var(--text));
-  --tint-done-soft: color-mix(in srgb, var(--st-done) 8%, var(--surface));
+  --tint-wait-fg: color-mix(in srgb, var(--st-wait) calc(70% * var(--chroma, 1)), var(--text));
+  --tint-done-soft: color-mix(in srgb, var(--st-done) calc(8% * var(--chroma, 1)), var(--surface));
   --tint-done-line: color-mix(in srgb, var(--st-done) 40%, var(--border));
-  --tint-done-fg: color-mix(in srgb, var(--st-done) 70%, var(--text));
-  --tint-fail-bg: color-mix(in srgb, var(--st-fail) 14%, var(--surface));
-  --tint-fail-bg-2: color-mix(in srgb, var(--st-fail) 22%, var(--surface));
+  --tint-done-fg: color-mix(in srgb, var(--st-done) calc(70% * var(--chroma, 1)), var(--text));
+  --tint-fail-bg: color-mix(in srgb, var(--st-fail) calc(14% * var(--chroma, 1)), var(--surface));
+  --tint-fail-bg-2: color-mix(in srgb, var(--st-fail) calc(22% * var(--chroma, 1)), var(--surface));
   --tint-fail-line: color-mix(in srgb, var(--st-fail) 55%, var(--border));
-  --tint-fail-fg: color-mix(in srgb, var(--st-fail-text) 70%, var(--text));
+  --tint-fail-fg: color-mix(in srgb, var(--st-fail-text) calc(70% * var(--chroma, 1)), var(--text));
   --tint-accent-soft: color-mix(in srgb, var(--accent) 8%, var(--surface));
   --tint-accent-fg: color-mix(in srgb, var(--accent) 70%, var(--text));
   /* Scrim under overlays and dialogs (@2lab.ai/ui 0.5 --scrim; the installed 0.4.4 lacks it — once
@@ -5602,7 +5603,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .ag-id { flex-shrink: 0; font-size: 11.5px; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
 .ag-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .ag-model { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ib-text-2); }
-.ag-st { color: var(--ag-c); font-weight: 600; }
+.ag-st { color: color-mix(in srgb, var(--ag-c) calc(100% * var(--chroma, 1)), var(--text)); font-weight: 600; }
 .ag-more { margin: 4px 2px 0; font-size: 12px; color: var(--ib-muted); }
 /* Armed automatic resume (turn retry / goal re-check): the open card's resume row is the kit's notice in the
    "waiting" tone (.ui-notice[data-tone="wait"], D7 D-10), not the run hue. */
@@ -5669,10 +5670,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-body .card-refs .ref-sep { color: var(--ib-muted); opacity: 0.6; }
 /* 작업 카드의 연결: a linked page's state after its reference, in its tone. */
 .card-body .card-refs .card-ref-st { color: var(--ib-text-2, var(--text-secondary)); font-weight: 400; }
-.card-body .card-refs .card-ref-st[data-tone="run"] { color: var(--ib-run-fg, var(--ui-st-run)); }
-.card-body .card-refs .card-ref-st[data-tone="done"] { color: var(--ib-done-fg, var(--ui-st-done)); }
-.card-body .card-refs .card-ref-st[data-tone="fail"] { color: var(--ib-fail-fg, var(--ui-st-fail)); }
-.card-body .card-refs .card-ref-st[data-tone="wait"] { color: var(--ib-wait-fg, var(--ui-st-wait)); }
+.card-body .card-refs .card-ref-st[data-tone="run"] { color: color-mix(in srgb, var(--ib-run-fg, var(--ui-st-run)) calc(100% * var(--chroma, 1)), var(--ib-text-2, var(--text-secondary))); }
+.card-body .card-refs .card-ref-st[data-tone="done"] { color: color-mix(in srgb, var(--ib-done-fg, var(--ui-st-done)) calc(100% * var(--chroma, 1)), var(--ib-text-2, var(--text-secondary))); }
+.card-body .card-refs .card-ref-st[data-tone="fail"] { color: color-mix(in srgb, var(--ib-fail-fg, var(--ui-st-fail)) calc(100% * var(--chroma, 1)), var(--ib-text-2, var(--text-secondary))); }
+.card-body .card-refs .card-ref-st[data-tone="wait"] { color: color-mix(in srgb, var(--ib-wait-fg, var(--ui-st-wait)) calc(100% * var(--chroma, 1)), var(--ib-text-2, var(--text-secondary))); }
 
 /* ── ENV BADGE — multi-instance origin tag (#814): the kit's toned chip (.ui-chip.is-toned.is-sm, D8b D-15) — its
    --ui-tone set inline from getEnvBadgeColor() (ENV_BADGE_PALETTE); the kit draws the 14% tint, the word 70%
@@ -5702,8 +5703,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* ── ACTION BUTTONS — secondary outline + one solid primary (reference "Approve") ── */
 .card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; justify-content: flex-end; }
 /* SSOT 2026-10-30 — ★ Star (pressed = amber) and 살리기 (the run tint), on the kit button. */
-.ui-btn[data-action="star"][aria-pressed="true"] { color: var(--st-wait); border-color: var(--st-wait); }
-.ui-btn[data-action="revive"] { color: var(--st-run); }
+.ui-btn[data-action="star"][aria-pressed="true"] { color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text)); border-color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text)); }
+.ui-btn[data-action="revive"] { color: color-mix(in srgb, var(--st-run) calc(100% * var(--chroma, 1)), var(--text)); }
 
 /* ── PENDING QUESTION (dashboard choice buttons) ── */
 .card-question {
@@ -5767,14 +5768,14 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* SSOT 2026-11-02 T2–T4 — a permission prompt's AI advice, in the page's status colours (red = the AI says do not
    run, green = it recommends). The card takes the colour through its own tokens (its Approve turns red or green);
    the box under it says what the call does and why it is risky. */
-ui-approval-card[data-ai="deny"] { --ac-primary: var(--st-fail); --ac-primary-hover: color-mix(in srgb, var(--st-fail) 86%, var(--text)); --ac-line: color-mix(in srgb, var(--st-fail) 45%, var(--border)); }
-ui-approval-card[data-ai="approve"] { --ac-primary: var(--st-done); --ac-primary-hover: color-mix(in srgb, var(--st-done) 86%, var(--text)); --ac-line: color-mix(in srgb, var(--st-done) 45%, var(--border)); }
+ui-approval-card[data-ai="deny"] { --ac-primary: color-mix(in srgb, var(--st-fail) calc(100% * var(--chroma, 1)), var(--text)); --ac-primary-hover: color-mix(in srgb, var(--st-fail) calc(86% * var(--chroma, 1)), var(--text)); --ac-line: color-mix(in srgb, var(--st-fail) 45%, var(--border)); }
+ui-approval-card[data-ai="approve"] { --ac-primary: color-mix(in srgb, var(--st-done) calc(100% * var(--chroma, 1)), var(--text)); --ac-primary-hover: color-mix(in srgb, var(--st-done) calc(86% * var(--chroma, 1)), var(--text)); --ac-line: color-mix(in srgb, var(--st-done) 45%, var(--border)); }
 .ac-advice { margin-top: 6px; padding: 9px 12px; border-left: 4px solid transparent; border-radius: 10px; font-size: 13px; line-height: 19px; overflow-wrap: anywhere; }
-.ac-advice[data-ai="deny"] { border-left-color: var(--st-fail); background: color-mix(in srgb, var(--st-fail) 9%, var(--surface)); }
-.ac-advice[data-ai="approve"] { border-left-color: var(--st-done); background: color-mix(in srgb, var(--st-done) 9%, var(--surface)); }
+.ac-advice[data-ai="deny"] { border-left-color: var(--st-fail); background: color-mix(in srgb, var(--st-fail) calc(9% * var(--chroma, 1)), var(--surface)); }
+.ac-advice[data-ai="approve"] { border-left-color: var(--st-done); background: color-mix(in srgb, var(--st-done) calc(9% * var(--chroma, 1)), var(--surface)); }
 .ac-advice-head { font-weight: 650; }
 .ac-advice[data-ai="deny"] .ac-advice-head, .ac-advice[data-ai="deny"] .ac-advice-note { color: var(--st-fail-text); }
-.ac-advice[data-ai="approve"] .ac-advice-head { color: var(--st-done); }
+.ac-advice[data-ai="approve"] .ac-advice-head { color: color-mix(in srgb, var(--st-done) calc(100% * var(--chroma, 1)), var(--text)); }
 .ac-advice-row { color: var(--text-secondary); }
 .ac-advice-row b { margin-right: 4px; color: var(--text); font-weight: 600; }
 .ac-advice-note { margin-top: 2px; font-weight: 600; }
@@ -6037,8 +6038,8 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 /* ── SESSION HEAD — the panel head (spec 13, D3 E-08): <ui-status-bar> draws status · time · Slack · actions
    (44px targets on coarse pointers, reduced motion); the page adds only an armed resume in its slot. ── */
 .panel-status { flex-basis: 100%; min-width: 0; }
-.ps-resume { min-width: 0; font-size: 12px; color: var(--st-wait); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ps-resume > svg { width: 12px; height: 12px; margin-right: 4px; vertical-align: -2px; }
+.ps-resume { min-width: 0; font-size: 12px; color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text-secondary)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-resume > svg { width: 12px; height: 12px; margin-right: 4px; vertical-align: -2px; color: color-mix(in srgb, currentColor calc(100% * var(--chroma, 1)), var(--st-wait)); }
 /* ── 세션 정보 — one summary line + the links; opened, every number (spec 13) ── */
 .panel-info { padding: 6px 16px 8px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); }
 .panel-info:empty { display: none; }
@@ -6056,9 +6057,9 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 /* 세부 (re-agent-run D19): label left, value right. */
 /* 세부 and the token rows are the kit's fact list (.ui-dl, D3 E-10 — the disclosure itself stays: see D3-GAPS G6-2). */
 .pi-thread { font-variant-numeric: tabular-nums; }
-.pi-resume { color: var(--st-wait); overflow-wrap: anywhere; }
+.pi-resume { color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text-secondary)); overflow-wrap: anywhere; }
 /* The summary line's ctx % carries the context level (re-context-window D16). */
-.pi-cs.ctx-warn { color: var(--cw-warn); }
+.pi-cs.ctx-warn { color: color-mix(in srgb, var(--cw-warn) calc(100% * var(--chroma, 1)), var(--text)); }
 .pi-cs.ctx-danger { color: var(--st-fail-text); font-weight: 600; }
 /* The summary's ctx % in amber: the light theme's darker yellow keeps it at 4.5:1. */
 :root { --cw-warn: var(--st-wait); }
@@ -6910,7 +6911,9 @@ function paintAppBar() {
     navLabel: '주 메뉴',
     toolbarAt: APP_BAR_TOOLBAR_AT,
     status: _appBarStatus,
-    theme: document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
+    // The theme and its palette (soma-work 830): the head script's (themeClientJs), which also answers the toggle.
+    theme: somaThemeNow().theme,
+    palette: somaThemeNow().palette,
     // The speaker before the theme toggle (interface sound, #614): the head script's choice; its
     // ui-sound-change is answered there (somaSoundBindBar), which also re-hands the bar its state.
     sound: typeof _somaOn !== 'undefined' && !!_somaOn,
@@ -6918,45 +6921,9 @@ function paintAppBar() {
   if (_appBarAccount) data.account = _appBarAccount;
   bar.data = data;
 }
-// ── Theme — the bar's sun / moon; stored only while it differs from the OS ──
-function getPreferredTheme() {
-  var saved = localStorage.getItem('soma-theme');
-  if (saved) return saved;
-  return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-}
-function applyTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme);
-  paintAppBar();
-}
-function setTheme(next) {
-  var osTheme = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-  if (next === osTheme) {
-    localStorage.removeItem('soma-theme');
-  } else {
-    localStorage.setItem('soma-theme', next);
-  }
-  applyTheme(next);
-}
-function toggleTheme() {
-  var current = document.documentElement.getAttribute('data-theme') || 'dark';
-  setTheme(current === 'dark' ? 'light' : 'dark');
-}
-// Sync the bar on load
-applyTheme(getPreferredTheme());
-// Listen for OS theme changes (if user hasn't manually chosen)
-window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function(e) {
-  if (!localStorage.getItem('soma-theme')) {
-    applyTheme(e.matches ? 'light' : 'dark');
-  }
-});
-(function initAppBar() {
-  var bar = document.getElementById('app-bar');
-  if (!bar) return;
-  bar.addEventListener('ui-theme-change', function(e) {
-    var t = e.detail && e.detail.theme;
-    if (t === 'light' || t === 'dark') setTheme(t);
-  });
-})();
+// ── Theme — the head script owns it (themeClientJs, soma-work 830): <html>'s data-theme / data-palette, this browser's
+// choice, the OS follow and the bar's ui-theme-change. The bar's first data comes from paintAppBar. ──
+paintAppBar();
 // ── Panel width — the docked drawer's inner edge (SSOT 2026-10-24, D4 E-01) ──
 // The drag and the handle's arrow keys are <ui-drawer resizable>'s: it clamps the width to
 // [min-width, min(max-width, viewport − 48)] and says ui-resize. The page keeps the saved

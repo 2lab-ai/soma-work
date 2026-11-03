@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { type AuthCardData, authCardHtml } from '@2lab.ai/ui/server';
 import { describe, expect, it } from 'vitest';
 import { loginErrorMessage, renderLoginPage, renderSsoConfirmPage } from '../auth-pages';
+import { themeClientJs } from '../theme-client';
 import * as uiLib from '../ui-lib';
 
 // The pages are a host of @2lab.ai/ui's <ui-auth-card>: the server hands the library's own `authCardHtml`
@@ -233,8 +234,8 @@ describe('auth pages — a host of @2lab.ai/ui <ui-auth-card>, rendered by the l
         .replace(/<svg slot="logo-[\s\S]*?<\/svg>/g, '');
       expect(own).not.toMatch(/#[0-9a-f]{3,8}\b/i);
       // The page's theme choice goes on <html> before paint, and onto the card after it.
-      expect(html).toContain("localStorage.getItem('soma-theme')");
-      expect(html).toContain("document.documentElement.setAttribute('data-theme',t)");
+      // The dashboard's theme script (themeClientJs: soma-theme / soma-palette, else the OS), byte for byte.
+      expect(html).toContain(`<script data-fouc>${themeClientJs()}</script>`);
       expect(html).toContain("c.setAttribute('theme', document.documentElement.getAttribute('data-theme') || 'dark')");
       expect(html).toMatch(/<ui-auth-card lang="en" page><template shadowrootmode="open">/);
       expect(html).toContain(

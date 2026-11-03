@@ -145,7 +145,12 @@ describe('dashboard permission advice box', () => {
   });
 
   it('the page colours the card through its own tokens, by data-ai', () => {
-    expect(TEMPLATE).toContain('ui-approval-card[data-ai="deny"] { --ac-primary: var(--st-fail);');
-    expect(TEMPLATE).toContain('ui-approval-card[data-ai="approve"] { --ac-primary: var(--st-done);');
+    // The state colour in light / dark, the ink under the mono pair (--chroma 0, soma-work 830).
+    expect(TEMPLATE).toContain(
+      'ui-approval-card[data-ai="deny"] { --ac-primary: color-mix(in srgb, var(--st-fail) calc(100% * var(--chroma, 1)), var(--text));',
+    );
+    expect(TEMPLATE).toContain(
+      'ui-approval-card[data-ai="approve"] { --ac-primary: color-mix(in srgb, var(--st-done) calc(100% * var(--chroma, 1)), var(--text));',
+    );
   });
 });

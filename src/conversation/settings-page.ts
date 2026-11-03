@@ -30,6 +30,7 @@ import { LAYOUT_CLIENT_JS, LAYOUT_TAB_CSS, LAYOUT_TAB_HTML } from './settings-la
 import { MEMORY_CLIENT_JS, MEMORY_TAB_CSS, MEMORY_TAB_HTML } from './settings-memory-tab';
 import { PROJECT_CLIENT_JS, PROJECT_TAB_CSS, PROJECT_TAB_HTML } from './settings-project-tab';
 import { soundClientJs } from './sound-client';
+import { themeClientJs } from './theme-client';
 import { pageTokenAliases, UI_LIB_VERSION, uiLibKitCss, uiLibTokensCss } from './ui-lib';
 import { VIEW_LAYOUT_CLIENT_JS } from './view-layout-client';
 
@@ -59,9 +60,9 @@ export const SETTINGS_PAGE_CSS = String.raw`
 :root {
   /* Status tints — the library recipe: a wash of the status into the surface, the word 70% of the status
      toward the ink. Every text pair is ≥ 4.5:1 in light and dark (numbers in the P9 commit). */
-  --tint-done-fg: color-mix(in srgb, var(--st-done) 70%, var(--text));
-  --tint-fail-fg: color-mix(in srgb, var(--st-fail-text) 70%, var(--text));
-  --tint-fail-soft: color-mix(in srgb, var(--st-fail) 6%, var(--surface));
+  --tint-done-fg: color-mix(in srgb, var(--st-done) calc(70% * var(--chroma, 1)), var(--text));
+  --tint-fail-fg: color-mix(in srgb, var(--st-fail-text) calc(70% * var(--chroma, 1)), var(--text));
+  --tint-fail-soft: color-mix(in srgb, var(--st-fail) calc(6% * var(--chroma, 1)), var(--surface));
   --tint-fail-line: color-mix(in srgb, var(--st-fail) 55%, var(--border));
   /* Scrim under the confirm dialog (the dashboard's, until @2lab.ai/ui ships --scrim). */
   --scrim: rgba(20, 20, 22, 0.32);
@@ -135,7 +136,8 @@ section.group > header p { font-size: 12px; color: var(--text-secondary); margin
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font: inherit; font-size: 13px; font-weight: 500; line-height: 1.2; color: var(--ib-text); background: var(--ib-card); border: 1px solid var(--ib-card-border); border-radius: 8px; padding: 6px 12px; min-height: 34px; white-space: nowrap; cursor: pointer; transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, opacity 150ms ease, transform var(--dur-press) var(--ease-out); }
 .btn.primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); }
 .btn.link { background: none; border: 0; padding: 0; min-height: 0; color: var(--accent); font-weight: 500; }
-.btn.danger { background: var(--st-fail); border-color: var(--st-fail); color: var(--ib-card); }
+/* Mono (soma-work 830): the danger button is the ink primary — red marks only. */
+.btn.danger { background: color-mix(in srgb, var(--st-fail) calc(100% * var(--chroma, 1)), var(--text)); border-color: color-mix(in srgb, var(--st-fail) calc(100% * var(--chroma, 1)), var(--text)); color: var(--ib-card); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 :is(.btn, .side nav .navbtn, .chip button):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 .btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
@@ -174,7 +176,7 @@ dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
   .btn:hover:not(:disabled) { border-color: var(--ib-muted); }
   .btn.primary:hover:not(:disabled), .btn.danger:hover:not(:disabled) { opacity: 0.88; }
   .btn.primary:hover:not(:disabled) { border-color: var(--ib-text); }
-  .btn.danger:hover:not(:disabled) { border-color: var(--st-fail); }
+  .btn.danger:hover:not(:disabled) { border-color: color-mix(in srgb, var(--st-fail) calc(100% * var(--chroma, 1)), var(--text)); }
   .btn.link:hover { text-decoration: underline; }
   fieldset.seg input:not(:checked):hover + span { color: var(--text); }
   .chip button:hover { background: var(--ib-card); color: var(--ib-text); }
@@ -600,7 +602,7 @@ function initPreferences() {
 
 // ── App bar (M-01) — @2lab.ai/ui <ui-app-bar id="app-bar"> ──
 // The page hands the bar its data — brand, the page links, the signed-in account, the current theme and the
-// sound choice — and answers ui-theme-change (the page owns the theme and its storage). The speaker is the
+// sound choice. Its ui-theme-change is answered by the head's theme script (themeClientJs, soma-work 830). The speaker is the
 // bar's own: its ui-sound-change is answered by the head's sound script (somaSoundBindBar, bound to #app-bar
 // at DOMContentLoaded), which keeps the choice and re-hands the bar its state. Links are real links:
 // ui-navigate is not cancelled.
@@ -610,9 +612,6 @@ var APP_BAR_NAV = [
   { id: 'settings', label: '설정', href: '/dashboard/settings', icon: 'gear', current: true },
 ];
 var _appBarAccount = null; // { name, href, role? } once /auth/me answers
-function currentTheme() {
-  return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
-}
 function paintAppBar() {
   var bar = document.getElementById('app-bar');
   if (!bar) return;
@@ -620,20 +619,14 @@ function paintAppBar() {
     brand: { label: 'soma-work', mark: true, href: '/dashboard' },
     nav: APP_BAR_NAV,
     navLabel: '주 메뉴',
-    theme: currentTheme(),
+    // The theme and its palette (soma-work 830): the head script's (themeClientJs), which also answers the toggle.
+    theme: somaThemeNow().theme,
+    palette: somaThemeNow().palette,
     // The speaker before the theme toggle (interface sound, #614): the head script's choice (_somaOn).
     sound: typeof _somaOn !== 'undefined' && !!_somaOn,
   };
   if (_appBarAccount) data.account = _appBarAccount;
   bar.data = data;
-}
-function setTheme(next) {
-  document.documentElement.setAttribute('data-theme', next);
-  try { localStorage.setItem('soma-theme', next); } catch (_e) {}
-  paintAppBar();
-}
-function toggleTheme() {
-  setTheme(currentTheme() === 'light' ? 'dark' : 'light');
 }
 
 // ── Tabs — @2lab.ai/ui <ui-tabs id="settings-tabs"> over the tab pages (each a slotted [data-tab] panel) ──
@@ -665,11 +658,6 @@ function initShell() {
     if (!v) return;
     showTab(v);
     if (location.hash.slice(1) !== v) location.hash = v;
-  });
-  var bar = document.getElementById('app-bar');
-  if (bar) bar.addEventListener('ui-theme-change', function (e) {
-    var t = e.detail && e.detail.theme;
-    if (t === 'light' || t === 'dark') setTheme(t);
   });
   paintAppBar();
 }
@@ -723,9 +711,8 @@ export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS): str
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>soma-work 설정</title>
-<script data-fouc>
-(function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
-</script>
+<!-- The theme (soma-work 830): light · dark · light·mono · dark·mono on <html> before CSS paints, and the bar's toggle. -->
+<script data-fouc>${themeClientJs()}</script>
 <!-- Interface sound (@2lab.ai/ui/sound, sound-cuelume): off until the app bar's speaker turns it on; the script
      binds the bar's ui-sound-change (somaSoundBindBar) and the page's own data-ui-sound controls (bindSound). -->
 <script data-sound>${soundClientJs(UI_LIB_VERSION)}</script>

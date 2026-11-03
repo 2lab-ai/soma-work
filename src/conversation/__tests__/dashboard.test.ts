@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { themeClientJs } from '../theme-client';
 
 // ── Mocks ──
 
@@ -1277,7 +1278,7 @@ describe('Dashboard API', () => {
 
   // Tone pass P4: the theme toggle is the site's 34px icon button — the sun / moon are 16-grid SVGs
   // (no emoji, no ::before content), the visible one chosen by data-theme in CSS; Korean label.
-  it("the theme toggle is the app bar's (sun / moon glyph, action-named label); the page answers ui-theme-change", async () => {
+  it("the theme toggle is the app bar's (sun / moon glyph, action-named label); the head's theme script answers ui-theme-change", async () => {
     const res = await injectWebServer({
       method: 'GET',
       url: '/dashboard',
@@ -1289,11 +1290,12 @@ describe('Dashboard API', () => {
     expect(html).toContain('<ui-app-bar id="app-bar" lang="ko">');
     expect(html).not.toContain('id="theme-toggle"');
     expect(html).not.toContain('#theme-toggle');
-    expect(html).toContain("bar.addEventListener('ui-theme-change', function(e) {");
+    // #830: the head's theme script (themeClientJs) binds the bar and walks the four themes it asks for.
+    expect(html).toContain("document.addEventListener('ui-theme-change', function (e) {");
     expect(html).not.toContain('\\1F319');
   });
 
-  it('should have theme JS functions in inline script', async () => {
+  it('runs the theme script first in <head>, before the sheets paint (#830)', async () => {
     const res = await injectWebServer({
       method: 'GET',
       url: '/dashboard',
@@ -1301,12 +1303,11 @@ describe('Dashboard API', () => {
     });
 
     const html: string = res.body;
-    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
-    expect(scriptMatch).not.toBeNull();
-    const script = scriptMatch![1];
-    expect(script).toContain('function getPreferredTheme()');
-    expect(script).toContain('function applyTheme(');
-    expect(script).toContain('function toggleTheme()');
+    const head = html.slice(html.indexOf('<head>'), html.indexOf('</head>'));
+    const fouc = head.match(/<script data-fouc>([\s\S]*?)<\/script>/);
+    expect(fouc).not.toBeNull();
+    expect(fouc![1]).toBe(themeClientJs());
+    expect(head.indexOf('<script data-fouc>')).toBeLessThan(head.indexOf('<style'));
   });
 
   it('should have light theme functional color overrides for WCAG AA', async () => {
@@ -1329,25 +1330,7 @@ describe('Dashboard API', () => {
     }
   });
 
-  it('should auto-clear localStorage when toggled theme matches OS preference', async () => {
-    const res = await injectWebServer({
-      method: 'GET',
-      url: '/dashboard',
-      headers: AUTH_HEADER,
-    });
-
-    const html: string = res.body;
-    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
-    expect(scriptMatch).not.toBeNull();
-    const script = scriptMatch![1];
-    // setTheme (the bar's ui-theme-change and toggleTheme both go through it) clears the stored theme
-    // when it matches the OS
-    const setFn = script.match(/function setTheme\(next\)\s*\{([\s\S]*?)\n\}/);
-    expect(setFn).not.toBeNull();
-    expect(setFn![1]).toContain('removeItem');
-    expect(setFn![1]).toContain('osTheme');
-    expect(script).toMatch(/function toggleTheme\(\) \{[\s\S]*?setTheme\(/);
-  });
+  // The stored-only-while-it-differs-from-the-OS rule (and the palette) is pinned where it lives: theme-client.test.ts.
 
   // ── Hero "Submit All Recommended" endpoint (#581) ──
 

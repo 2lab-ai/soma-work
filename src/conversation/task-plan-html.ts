@@ -96,7 +96,8 @@ export function renderTaskPlanHtml(plan: TaskPlanDoc, opts: { state?: TaskPlanSt
 
 /**
  * The plan's look. Dashboard tokens with fallbacks, so the same rules serve the
- * dashboard (its theme) and the standalone page (its own light / dark).
+ * dashboard (its theme) and the standalone page (its own light / dark). In the dashboard's mono pair (#830,
+ * --chroma 0) the head keeps no wash: the card's surface inside its hairline border.
  */
 export const TASK_PLAN_CSS = `
 .tp { --tp-text: var(--ib-text, #1d1d1f); --tp-muted: var(--ib-muted, #6e6e73); --tp-line: var(--ib-card-border, #e5e5ea);
@@ -104,7 +105,7 @@ export const TASK_PLAN_CSS = `
   color: var(--tp-text); font-size: 13.5px; line-height: 1.55; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .tp p { margin: 0; }
 .tp-l0 { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px; border-radius: 12px;
-  background: color-mix(in srgb, var(--tp-accent) 7%, var(--tp-card)); border: 1px solid color-mix(in srgb, var(--tp-accent) 22%, var(--tp-line)); }
+  background: color-mix(in srgb, var(--tp-accent) calc(7% * var(--chroma, 1)), var(--tp-card)); border: 1px solid color-mix(in srgb, var(--tp-accent) 22%, var(--tp-line)); }
 .tp-kicker { font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; color: color-mix(in srgb, var(--tp-accent) 70%, var(--tp-text)); }
 .tp-summary { font-size: 16.5px; font-weight: 650; line-height: 1.4; letter-spacing: -0.01em; text-wrap: balance; }
 .tp-intent { color: var(--tp-text); }
@@ -143,7 +144,7 @@ export const TASK_PLAN_CSS = `
 .tp-questions { border-color: color-mix(in srgb, var(--tp-accent) 40%, var(--tp-line)); }
 .tp-questions h5 { color: color-mix(in srgb, var(--tp-accent) 75%, var(--tp-text)); }
 .tp-risks { border-color: color-mix(in srgb, var(--tp-warn) 45%, var(--tp-line)); }
-.tp-risks h5 { color: color-mix(in srgb, var(--tp-warn) 75%, var(--tp-text)); }
+.tp-risks h5 { color: color-mix(in srgb, var(--tp-warn) calc(75% * var(--chroma, 1)), var(--tp-text)); }
 `;
 
 /**
