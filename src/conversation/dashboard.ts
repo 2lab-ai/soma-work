@@ -931,8 +931,8 @@ function resolveSelfActionKeyAndOwner(
   }
   // Fail closed (#612 review): a Slack-less task takes only the routes that opt in —
   // stop / close / trash, and `command`, which hands it to the task turn
-  // controller (#598 ④c). Goal, model, effort, the queue and answers are not
-  // supported on a task yet (answers: ⑤ #599).
+  // controller (#598 ④c), and the goal list (#865, the task's goal commands).
+  // Routes that do not opt in answer 409 for a task.
   if (!opts.allowSlackless && _getSessionsFn?.()?.get(originalKey)?.slackless === true) {
     reply.status(409).send({ error: 'not supported on a dashboard task yet' });
     return null;
@@ -1613,7 +1613,8 @@ function taskFollowupsOf(
         enqueuedAt: item.enqueuedAt,
         state: item.state === 'sending' ? 'dispatched' : item.state,
         epoch: item.epoch,
-        editable: !sending,
+        // A goal's first turn is its objective: it is not edited (#865 — cancel it, the goal pauses).
+        editable: !sending && item.goalOpeningId === undefined,
         authorId: item.authorId,
       };
       if (item.authorId !== ownerId) out.author = nameOf(item.authorId);
@@ -4289,7 +4290,8 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: "action must be 'add' or 'delete'" });
         return;
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      // #865 — a task's goal list too: the handler routes it to the task's goal commands.
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       if (!_goalActionHandlerFn) {
@@ -6457,6 +6459,11 @@ body.nt-open .new-task-fab { display: none !important; }
 .pp-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .pp-title { font-size: 13px; font-weight: 650; color: var(--ib-text); }
 .pp-note { font-size: 13px; color: var(--ib-muted); line-height: 1.5; }
+/* #846 — the follow-up row in 입력 필요 (read-only). */
+.pf-row { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--tint-wait-line); background: var(--tint-wait-soft); }
+.pf-head { font-size: 12px; font-weight: 600; color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text)); }
+.pf-reason { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.pf-hint { font-size: 12px; color: var(--ib-muted); }
 .pp-fold > summary { cursor: pointer; font-size: 12.5px; color: var(--ib-muted); margin-bottom: 8px; }
 .panel-plan-bar { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; padding: 8px 12px; margin-bottom: 8px; border-radius: 10px; background: var(--tint-wait-soft); border: 1px solid var(--tint-wait-line); }
 .ppb-label { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: var(--tint-wait-fg); }
@@ -7422,10 +7429,14 @@ function renderPanelPermission(s) {
     ids['i|' + ia[j].requestId] = true;
     if (seen && !seen['i|' + ia[j].requestId]) said.push('지시 승인 요청 — ' + (ia[j].requesterName || ia[j].requesterId || ''));
   }
+  if (panelFollowUpShown(s)) {
+    ids['f|' + (s.pendingFollowUp.at || 0)] = true;
+    if (seen && !seen['f|' + (s.pendingFollowUp.at || 0)]) said.push('후속 작업 필요 — ' + s.pendingFollowUp.reason.trim());
+  }
   container._seenKey = key;
   container._seen = ids;
   renderPanelNeedsHead(s);
-  var html = s ? acPermissionsHtml(s) + acGoalDecisionHtml(s) + acInstructionApprovalsHtml(s) : '';
+  var html = s ? acPermissionsHtml(s) + acGoalDecisionHtml(s) + acInstructionApprovalsHtml(s) + acFollowUpHtml(s) : '';
   var ae = document.activeElement;
   var had = !!(ae && container.contains(ae));
   if (!html) {
@@ -7462,10 +7473,24 @@ function panelQuestionShown(s) {
   if (!q || s.activityState !== 'waiting') return false;
   return (q.type === 'user_choice' && !!q.choices) || q.type === 'user_choices';
 }
+// #846 — the follow-up the last Executive Summary left (an own issue/PR/doc not complete). Not on a sleeping or
+// closed session: the server keeps sending pendingFollowUp there, and its card sits in closed.
+function panelFollowUpShown(s) {
+  var f = s && s.pendingFollowUp;
+  if (!f || typeof f.reason !== 'string' || !f.reason.trim()) return false;
+  return s.sessionState !== 'SLEEPING' && !s.terminated;
+}
+// One read-only row in 입력 필요: the user acts outside the panel; the steps are in the summary's last section.
+function acFollowUpHtml(s) {
+  if (!panelFollowUpShown(s)) return '';
+  return '<div class="pf-row" data-pf="followup" role="note"><span class="pf-head">' + '후속 작업 필요' + '</span>'
+    + '<span class="pf-reason">' + esc(s.pendingFollowUp.reason.trim()) + '</span>'
+    + '<span class="pf-hint">' + '처리 방법은 Executive Summary 맨 아래 ⚠️ 섹션에 있어요' + '</span></div>';
+}
 function renderPanelNeedsHead(s) {
   var head = document.getElementById('panel-needs-head');
   if (!head) return;
-  var n = s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (s.pendingInstructionApprovals || []).length + (panelQuestionShown(s) ? 1 : 0) + (s.taskPlan && s.taskPlan.state === 'awaiting' ? 1 : 0)) : 0;
+  var n = s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (s.pendingInstructionApprovals || []).length + (panelQuestionShown(s) ? 1 : 0) + (s.taskPlan && s.taskPlan.state === 'awaiting' ? 1 : 0) + (panelFollowUpShown(s) ? 1 : 0)) : 0;
   head.hidden = n === 0;
   var count = document.getElementById('panel-needs-count');
   if (count && count.textContent !== String(n)) count.textContent = String(n);
@@ -18076,6 +18101,7 @@ async function sendCommand(text, ref, files) {
 
   var why = '';
   var awaitsOwner = false;
+  var goalSaid = ''; // #865 — a task's goal command: the host's answer, no turn of its own
   _pcInFlight++; // until the server answered: a reload now would drop a note the composer no longer holds
   try {
     const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
@@ -18085,12 +18111,22 @@ async function sendCommand(text, ref, files) {
     if (!res.ok) why = ((data && data.error) || '') + ' (HTTP ' + res.status + ')';
     // #767 — someone else's task: the words wait for its owner's approval.
     else if (data && data.pendingApproval) awaitsOwner = true;
+    else if (data && data.goalCommand) goalSaid = String(data.message || '');
   } catch (e) {
     why = (e && e.message) || '네트워크 오류';
   } finally {
     _pcInFlight--;
   }
   if (awaitsOwner) dashToast({ title: '작업 소유자의 승인을 기다려요', description: '소유자가 승인하면 실행됩니다 — 소유자에게 DM과 대시보드로 요청했어요', tone: 'wait' });
+  // A goal command is the host's, not a turn: its words leave the transcript (the work log has the notice);
+  // a goal it started brings its own turn — the objective — when that turn is recorded.
+  if (goalSaid) {
+    if (optimisticId && panelSessionKey === sendingSessionKey) dropTurnFromPanel(optimisticId);
+    // Sent while a turn ran: the steering row it made waits for a queue entry that never comes
+    // (the command applied at once) — unless a goal it started queued its first turn there.
+    if (ref && !(data && data.queued)) el.setItemState(ref, 'cancelled');
+    dashToast({ title: '목표', description: goalSaid, tone: 'success' });
+  }
   // Sent: its files went with it. Failed: they stay kept by ref for the Retry.
   if (!why && ref) {
     delete _pcNoteFiles[ref];

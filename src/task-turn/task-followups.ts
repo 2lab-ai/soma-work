@@ -84,6 +84,10 @@ export function sanitizeTaskFollowups(raw: unknown, now: number = Date.now()): T
       ...(typeof e.approvedText === 'string' && e.approvedText.length <= MAX_TEXT
         ? { approvedText: e.approvedText }
         : {}),
+      // #865 — a goal's opening stays one across a restart (its objective is never read as a goal command).
+      ...(typeof e.goalOpeningId === 'string' && e.goalOpeningId && e.goalOpeningId.length <= 200
+        ? { goalOpeningId: e.goalOpeningId }
+        : {}),
     };
     if (e.state === 'queued' || pausedByEarlierRestart) {
       out.push({ ...word, epoch: epoch + 1, state: 'queued' });

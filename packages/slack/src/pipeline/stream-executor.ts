@@ -52,6 +52,7 @@ import type { RequestAbortReason, RequestCoordinator } from '../request-coordina
 import {
   enqueueOrActivateGoal,
   findGoalById,
+  findPendingGoalPosition,
   formatGoalObjectiveForSlack,
   formatResumedGoalLine,
   type GoalQueueSession,
@@ -6448,6 +6449,32 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           (session.slackless === true && context.turnUserId) ||
           (session.ownerId as string) ||
           (session.userId as string);
+        // The same goal already running or waiting is not set again (#865): a model that reads the
+        // user's request again on a later turn calls SET_GOAL again, and the goal would queue behind
+        // itself. No state changes; the notice says where it already is.
+        const samePosition = findPendingGoalPosition(session as unknown as GoalQueueSession, objective);
+        if (samePosition !== undefined) {
+          this.logger.info('Skipped SET_GOAL — the same goal is already set', {
+            sessionKey: context.sessionKey,
+            position: samePosition,
+            objectivePreview: objective.slice(0, 120),
+          });
+          await this.reportModelCommandOutcome(
+            {
+              kind: 'notice',
+              text:
+                samePosition > 0
+                  ? `📋 Goal already queued at position ${samePosition} — not added again: ${formatGoalObjectiveForSlack(objective)}`
+                  : session.goal?.status === 'paused'
+                    ? `🎯 Goal already set (paused — \`goal resume\` runs it) — not added again: ${formatGoalObjectiveForSlack(objective)}`
+                    : `🎯 Goal already set — not added again: ${formatGoalObjectiveForSlack(objective)}`,
+            },
+            session,
+            context,
+            { flag: OutputFlag.STATUS_MESSAGE },
+          );
+          continue;
+        }
         const applied = enqueueOrActivateGoal(
           session as unknown as GoalQueueSession,
           objective,
@@ -6484,6 +6511,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         const hasResourceOps = request.operations && request.operations.length > 0;
         const hasInstructionOps = request.instructionOperations && request.instructionOperations.length > 0;
         let operationsOk = true;
+        // #846 — how this write went, for the host receipt the model reads back.
+        let failReason: string | undefined;
+        let tldrApplied: boolean | undefined;
         // #829 review — a Slack-less task runs with channel '' and no thread: its session is reachable only by
         // key (a channel lookup with '' throws). Every write below goes by key there.
         const handler = this.deps.claudeHandler;
@@ -6505,6 +6535,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             : handler.updateSessionResources(context.channel, context.threadTs, resourceOnly);
           if (!updateResult.ok) {
             operationsOk = false;
+            failReason = updateResult.reason || 'UNKNOWN';
             this.logger.warn('Failed to apply UPDATE_SESSION resource ops on host', {
               sessionKey: context.sessionKey,
               reason: updateResult.reason,
@@ -6583,12 +6614,27 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           const applied = byKey
             ? handler.setExecutiveSummaryByKey?.(context.sessionKey, tldr)
             : handler.setExecutiveSummary?.(context.channel, context.threadTs, tldr);
+          tldrApplied = applied === true;
           this.logger.info('Applied card TL;DR from UPDATE_SESSION', {
             sessionKey: context.sessionKey,
             lines: tldr.length,
             applied: applied === true,
           });
         }
+
+        // #846 — the host's receipt: what it holds now and how it handled this write (GET_SESSION `host`).
+        const lastWrite = {
+          ...(typeof payload.receiptId === 'string' ? { receiptId: payload.receiptId } : {}),
+          ok: operationsOk,
+          ...(failReason ? { reason: failReason } : {}),
+          ...(tldrApplied !== undefined ? { tldrApplied } : {}),
+          ...(hasInstructionOps
+            ? { instructions: byKey ? ('refused' as const) : ('pending_confirmation' as const) }
+            : {}),
+          at: Date.now(),
+        };
+        if (byKey) handler.writeModelCommandReceiptByKey?.(context.sessionKey, lastWrite);
+        else handler.writeModelCommandReceipt?.(context.channel, context.threadTs, lastWrite);
       }
     }
 

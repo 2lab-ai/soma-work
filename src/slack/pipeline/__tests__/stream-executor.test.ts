@@ -1554,6 +1554,98 @@ describe('model-command integration', () => {
     expect(deps.claudeHandler.setExecutiveSummary).not.toHaveBeenCalled();
   });
 
+  // #846 item 2 — after handling a model write the host writes its receipt (what it applied + how this write went),
+  // which the model-command server answers GET_SESSION with.
+  it('writes the host receipt after an UPDATE_SESSION: the receiptId, ok, the TL;DR applied', async () => {
+    const deps = createExecutorDeps();
+    deps.claudeHandler.setExecutiveSummary = vi.fn().mockReturnValue(true);
+    deps.claudeHandler.writeModelCommandReceipt = vi.fn();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({ executiveSummary: { tldr: ['a', '⚠️ **b**', 'c'] }, receiptId: 'r_42' }),
+      createSession(),
+      { channel: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100', say },
+    );
+
+    expect(deps.claudeHandler.writeModelCommandReceipt).toHaveBeenCalledWith(
+      'C1',
+      '171.100',
+      expect.objectContaining({ receiptId: 'r_42', ok: true, tldrApplied: true }),
+    );
+  });
+
+  it('a write the host could not apply is receipted as failed, with the reason', async () => {
+    const deps = createExecutorDeps();
+    deps.claudeHandler.writeModelCommandReceipt = vi.fn();
+    deps.claudeHandler.updateSessionResources = vi.fn().mockReturnValue({
+      ok: false,
+      reason: 'SEQUENCE_MISMATCH',
+      error: 'x',
+      snapshot: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 3 },
+    });
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({
+        operations: [{ action: 'add', resourceType: 'pr', link: { url: 'https://github.com/a/b/pull/1' } }],
+        receiptId: 'r_43',
+      }),
+      createSession(),
+      { channel: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100', say },
+    );
+
+    expect(deps.claudeHandler.writeModelCommandReceipt).toHaveBeenCalledWith(
+      'C1',
+      '171.100',
+      expect.objectContaining({ receiptId: 'r_43', ok: false, reason: 'SEQUENCE_MISMATCH' }),
+    );
+  });
+
+  it('instruction writes are receipted as waiting for the y/n (ok covers resource ops only)', async () => {
+    const deps = createExecutorDeps();
+    deps.claudeHandler.writeModelCommandReceipt = vi.fn();
+    const executor = new StreamExecutor(deps);
+    (executor as any).interceptInstructionOperationsForConfirm = vi.fn().mockResolvedValue(undefined);
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({ instructionOperations: [{ action: 'add', text: 'rule' }], receiptId: 'r_45' }),
+      createSession(),
+      { channel: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100', say: vi.fn() },
+    );
+
+    expect(deps.claudeHandler.writeModelCommandReceipt).toHaveBeenCalledWith(
+      'C1',
+      '171.100',
+      expect.objectContaining({ receiptId: 'r_45', ok: true, instructions: 'pending_confirmation' }),
+    );
+  });
+
+  it('a Slack-less task writes its receipt by key', async () => {
+    const deps = createExecutorDeps();
+    Object.assign(deps.claudeHandler, {
+      writeModelCommandReceipt: vi.fn(),
+      writeModelCommandReceiptByKey: vi.fn(),
+      setExecutiveSummaryByKey: vi.fn().mockReturnValue(true),
+    });
+    const executor = new StreamExecutor(deps);
+    const task = { ...createSession(), channelId: '', threadTs: undefined, slackless: true };
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({ executiveSummary: { tldr: ['a'] }, receiptId: 'r_44' }),
+      task,
+      { channel: '', threadTs: undefined, sessionKey: 'task:t-1', say: vi.fn() },
+    );
+
+    expect(deps.claudeHandler.writeModelCommandReceiptByKey).toHaveBeenCalledWith(
+      'task:t-1',
+      expect.objectContaining({ receiptId: 'r_44', ok: true, tldrApplied: true }),
+    );
+    expect(deps.claudeHandler.writeModelCommandReceipt).not.toHaveBeenCalled();
+  });
+
   it('does not write the card TL;DR when the resource ops in the same update failed', async () => {
     const deps = createExecutorDeps();
     deps.claudeHandler.setExecutiveSummary = vi.fn().mockReturnValue(true);
@@ -6296,6 +6388,74 @@ describe('SET_GOAL host-apply (#1082)', () => {
     const sayCalls = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
     expect(sayCalls.some((t: string) => t.includes('🎯'))).toBe(true);
     expect(deps.slackApi.updateMessage).not.toHaveBeenCalled();
+  });
+
+  // #865 (live on dev 2026-11-03): the model read the user's request again on its next turn and
+  // called SET_GOAL again — the same goal queued behind itself. The same goal is not set twice.
+  describe('the same goal again (#865)', () => {
+    const turn = () => makeContext({ currentUserText: 'goal로 잡아줘: ship the goal feature', isUserInputTurn: true });
+    const apply = (executor: any, session: any, context: any, objective = 'ship the goal feature') =>
+      executor.handleModelCommandToolResults(
+        [makeSetGoalToolResult(objective, 'goal로 잡아줘: ship the goal feature')],
+        session,
+        context,
+      );
+
+    it('the goal in flight: nothing is queued, the goal is untouched, the notice says it is set', async () => {
+      const deps = createExecutorDeps();
+      const executor = new StreamExecutor(deps);
+      const session = createSession();
+      await apply(executor, session, turn());
+      const goal = session.goal;
+      const epoch = goal.epoch;
+      const context = turn();
+      await apply(executor, session, context, '  ship   the goal feature ');
+      expect(session.goal).toBe(goal);
+      expect(goal.epoch).toBe(epoch);
+      expect(session.goalQueue ?? []).toHaveLength(0);
+      const texts = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
+      expect(texts.some((t: string) => t.includes('Goal already set — not added again'))).toBe(true);
+    });
+
+    it('a paused goal in flight is the same goal too', async () => {
+      const deps = createExecutorDeps();
+      const executor = new StreamExecutor(deps);
+      const session = createSession();
+      await apply(executor, session, turn());
+      session.goal.status = 'paused';
+      const context = turn();
+      await apply(executor, session, context);
+      expect(session.goalQueue ?? []).toHaveLength(0);
+      // #876 R2 (fable P3): a paused goal is not running — the notice says how to run it.
+      const texts = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
+      expect(texts.some((t: string) => t.includes('paused — `goal resume` runs it'))).toBe(true);
+    });
+
+    it('a goal already queued: not queued again, the notice gives its position', async () => {
+      const deps = createExecutorDeps();
+      const executor = new StreamExecutor(deps);
+      const session = createSession();
+      await apply(executor, session, turn(), 'the first goal');
+      await apply(executor, session, turn());
+      expect(session.goalQueue.map((g: any) => g.objective)).toEqual(['ship the goal feature']);
+      const context = turn();
+      await apply(executor, session, context);
+      expect(session.goalQueue).toHaveLength(1);
+      const texts = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
+      expect(texts.some((t: string) => t.includes('Goal already queued at position 1 — not added again'))).toBe(true);
+    });
+
+    it('a completed goal with the same objective is no obstacle — it starts again', async () => {
+      const deps = createExecutorDeps();
+      const executor = new StreamExecutor(deps);
+      const session = createSession();
+      await apply(executor, session, turn());
+      const first = session.goal;
+      first.status = 'complete';
+      await apply(executor, session, turn());
+      expect(session.goal).not.toBe(first);
+      expect(session.goal).toMatchObject({ objective: 'ship the goal feature', status: 'active' });
+    });
   });
 
   // #861 R1 (astra-zhuge P1): a user who instructed someone else's task sets a goal that is theirs —
