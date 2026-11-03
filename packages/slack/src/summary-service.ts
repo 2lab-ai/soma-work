@@ -934,7 +934,10 @@ export class SummaryService {
         // Bold only. Double underscores stay as written: they belong to identifiers (`__init__`, `obj.__dict__`),
         // as on the TL;DR line (#871); inline code is never rewritten (#881 B3).
         return outsideInlineCode(
-          line.replace(/^(\s*)#{1,6}\s+(.+?)\s*#*\s*$/, (_m, indent: string, content: string) => `${indent}*${content}*`),
+          line.replace(
+            /^(\s*)#{1,6}\s+(.+?)\s*#*\s*$/,
+            (_m, indent: string, content: string) => `${indent}*${content}*`,
+          ),
           (part) => part.replace(/\*\*([^*]+)\*\*/g, '*$1*'),
         );
       })

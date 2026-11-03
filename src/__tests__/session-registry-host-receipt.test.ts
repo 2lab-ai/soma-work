@@ -180,7 +180,12 @@ describe('SessionRegistry — the model-command host receipt', () => {
     const file = reg.modelCommandReceiptFile('C1', '100.011');
     expect(readHostReceipt(file)?.session.prs).toEqual([]);
     expect(
-      reg.noteSessionLinks('C1', '100.011', [{ url: 'https://github.com/o/r/pull/5', type: 'pr', provider: 'github' }], 'always'),
+      reg.noteSessionLinks(
+        'C1',
+        '100.011',
+        [{ url: 'https://github.com/o/r/pull/5', type: 'pr', provider: 'github' }],
+        'always',
+      ),
     ).toBe(true);
     const r = readHostReceipt(file);
     expect(r?.session.prs.map((l) => l.url)).toEqual(['https://github.com/o/r/pull/5']);
@@ -201,4 +206,3 @@ describe('SessionRegistry — the model-command host receipt', () => {
     expect(r?.tldr).toBeUndefined();
   });
 });
-

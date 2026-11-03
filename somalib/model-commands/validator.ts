@@ -131,7 +131,10 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     }
     return {
       ok: true,
-      request: { commandId: 'GET_SESSION', params: { waitForAckMs: Math.min(Math.floor(wait), GET_SESSION_MAX_WAIT_MS) } },
+      request: {
+        commandId: 'GET_SESSION',
+        params: { waitForAckMs: Math.min(Math.floor(wait), GET_SESSION_MAX_WAIT_MS) },
+      },
     };
   }
 
