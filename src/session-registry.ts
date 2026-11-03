@@ -297,6 +297,12 @@ interface SerializedSession {
   notices?: unknown;
   /** A Slack-less task's follow-up queue; validated (and paused) on load (`sanitizeTaskFollowups`). */
   taskFollowups?: unknown;
+  /**
+   * A Slack-less task's turn's initiator (`currentInitiatorId`), saved with the turn's start: the
+   * restart resume continues a cut turn as the person who started it (never more privileged —
+   * trinity R4, astra P1). Read only by the load's reconciliation; not restored into the session.
+   */
+  taskTurnActorId?: unknown;
   // Merge code change stats
   mergeStats?: {
     totalLinesAdded: number;
@@ -630,6 +636,16 @@ export interface CrashRecoveredSession {
   shouldAutoResume: boolean;
 }
 
+/** A Slack-less task the last restart cut mid-turn — its turn reconciled `interrupted` on load. */
+export interface RestartCutTask {
+  sessionKey: string;
+  ownerId: string;
+  /** Who started the cut turn: the resume runs as them. Absent on a record saved before it was kept. */
+  actorId?: string;
+  /** The turn the restart cut (its `lastTurnOutcome`): a later turn means someone went on — no resume. */
+  turnId: string;
+}
+
 /**
  * A persisted `pendingRetryDetail` back as the session carries it — finite
  * counts and a string reason only; anything else is dropped (disk JSON is
@@ -693,6 +709,12 @@ export class SessionRegistry {
   /** E2 ⑤ — told after a save that added notices a task owes its instruction thread. */
   private taskNoticeListener?: (session: ConversationSession, sessionKey: string) => void;
   private _crashRecoveredSessions: CrashRecoveredSession[] = [];
+  /**
+   * Slack-less tasks whose turn the last restart cut (saved `working`, reconciled `interrupted`
+   * on load): the host resumes each one after boot (`task-restart-resume.ts`), as
+   * `notifyCrashRecovery` does for a Slack thread. Populated by loadSessions(), cleared after.
+   */
+  private _restartCutTasks: RestartCutTask[] = [];
   /**
    * Slack-less tasks whose turn the restart cut (reconciled `interrupted` on load). A task has no
    * `wasWorkingAtShutdown` marker and is not crash-recovered, so this is the restart's record of it
@@ -3882,6 +3904,15 @@ export class SessionRegistry {
     this._crashRecoveredSessions = [];
   }
 
+  /** Slack-less tasks the last restart cut mid-turn (loadSessions), for the host's resume after boot. */
+  getRestartCutTasks(): RestartCutTask[] {
+    return this._restartCutTasks;
+  }
+
+  clearRestartCutTasks(): void {
+    this._restartCutTasks = [];
+  }
+
   /** The Slack-less tasks whose turn the restart cut — returned once, then cleared (a later read gets none). */
   takeRestartCutTaskKeys(): Set<string> {
     const keys = this._restartCutTaskKeys;
@@ -4065,6 +4096,7 @@ export class SessionRegistry {
             taskPlan: session.taskPlan,
             taskFollowups:
               session.slackless === true && session.taskFollowups?.length ? session.taskFollowups : undefined,
+            taskTurnActorId: session.slackless === true ? session.currentInitiatorId : undefined,
             closedBy: session.closedBy,
             // Merge code change stats
             mergeStats: session.mergeStats,
@@ -4732,6 +4764,21 @@ export class SessionRegistry {
             session.activeTaskTurnId = undefined;
             this._restartCutTaskKeys.add(derivedKey);
             reconciledTaskTurnCount++;
+            // The host resumes it after boot, as a Slack thread is (notifyCrashRecovery). Not an
+            // epic (its released events wake it) or an epic's child (its epic hears `interrupted`
+            // and decides), not one that slept while the process was down, not a closed one.
+            if (!sleptOnLoad && session.kind !== 'epic' && !session.parentTaskId && !session.terminated) {
+              const actor = serialized.taskTurnActorId;
+              this._restartCutTasks.push({
+                sessionKey: derivedKey,
+                ownerId: session.ownerId,
+                // The cut turn's initiator (an approved writer is not lifted to the owner). A record from
+                // before it was kept has none: the resume reads the turn's author from its conversation
+                // instead — never the owner by default (trinity R4, astra P1).
+                ...(typeof actor === 'string' && actor !== '' ? { actorId: actor } : {}),
+                turnId,
+              });
+            }
           }
         } else if (serialized.shutdownNotificationSent) {
           this._crashRecoveredSessions.push({
