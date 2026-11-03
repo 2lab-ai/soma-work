@@ -639,7 +639,8 @@ function splitShell(
     }
     // A `( … )` subshell where a word starts (`( … )`, `time ( … )`, `! ( … )`): an exit or `set` inside it stops only
     // the subshell, which the level's status does not show. Not `$(`, `<(`, `>(`, `=(` (read above), not `f ()`.
-    if (c === '(' && /^$|[\s;&|!]$/.test(tail.slice(-1))) {
+    // After a word too (`time(`, a glued keyword) and after `{` (`{( … )}`): bash reads either as a subshell.
+    if (c === '(' && /^$|[\s;&|!{\w]$/.test(tail.slice(-1))) {
       let j = i + 1;
       while (text[j] === ' ' || text[j] === '\t') j++;
       if (text[j] !== ')') complex = true;
@@ -760,7 +761,9 @@ function ghCliWrite(command: string): GitHubWrite | undefined {
   if (!m) return undefined;
   // `--help` / `-h` prints help, `--dry-run` prints what it would create (the body verbatim), `--web` / `-w` opens a
   // browser: nothing is written.
-  if (/(?:^|\s)(?:--help|-h|--dry-run|--web|-w)(?==|\s|$)/.test(m[3] ?? ''))
+  // Read outside quotes: `--title "add a --dry-run flag"` is a title, not the flag (fable-zhuge, round 18).
+  const unquoted = (m[3] ?? '').replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""');
+  if (/(?:^|\s)(?:--help|-h|--dry-run|--web|-w)(?==|\s|$)/.test(unquoted))
     return { op: 'read', kind: m[1] === 'pr' ? 'pr' : 'issue' };
   const kind = m[1] === 'pr' ? 'pr' : 'issue';
   const action = m[2] as 'create' | 'merge' | 'close';
@@ -970,7 +973,7 @@ function unquotedExpansion(text: string): boolean {
       if (c === '\\') i++;
       else if (c === '"') quote = '';
       // `"$@"` and `"${arr[@]}"` expand to several words even when quoted.
-      else if (c === '$' && /^\$(?:@|\{@\}|\{[A-Za-z_]\w*\[@\]\})/.test(text.slice(i, i + 72))) return true;
+      else if (c === '$' && /^\$(?:@|\{@\}|\{!?[A-Za-z_]\w*\[@\]\})/.test(text.slice(i, i + 72))) return true;
     } else if (c === '\\') i++;
     else if (c === "'" || c === '"') quote = c;
     else if (c === '$' || c === '`') return true;

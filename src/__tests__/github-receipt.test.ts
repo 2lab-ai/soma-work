@@ -174,6 +174,75 @@ describe('createGithubReceiptChecker — GitHub confirms what a call wrote', () 
     expect(calls).toEqual([]);
   });
 
+  it('R10 — a call that names no head (`gh pr create --fill`, a body from a file) is taken on the window (fable-zhuge, round 18)', async () => {
+    for (const input of [
+      'gh pr create --fill',
+      'gh pr create --title "feat: x" --body-file body.md --base main',
+      'curl -s -X POST https://api.github.com/repos/a/b/pulls -d @pr.json | jq .html_url',
+      // A head that is a variable names nothing.
+      'node -e \'fetch(u, {method: "POST", body: JSON.stringify({title, head: branch, base: "main"})})\'',
+    ]) {
+      const { result } = check(
+        [effect('create', PR)],
+        { 'a/b pr 12': { createdAt: iso(T0 + 1_000), headRef: 'feat/x', state: 'open' } },
+        { input },
+      );
+      expect(short(await result), input).toEqual([`create ${PR}`]);
+    }
+  });
+
+  it('R11 — a named head confirms in every spelling: a quoted key, -f head=, --head, owner:branch', async () => {
+    for (const input of [
+      `jq -n '{title:"x",head:"feat/x",base:"main"}' | curl -s -X POST https://api.github.com/repos/a/b/pulls -d @-`,
+      'gh api -X POST repos/a/b/pulls -f head=feat/x -f base=main',
+      'gh pr create --head feat/x --fill',
+      'gh pr create -H zhuge:feat/x --fill',
+    ]) {
+      const { result } = check(
+        [effect('create', PR)],
+        { 'a/b pr 12': { createdAt: iso(T0 + 1_000), headRef: 'feat/x', state: 'open' } },
+        { input },
+      );
+      expect(short(await result), input).toEqual([`create ${PR}`]);
+    }
+  });
+
+  it('R12 — an issue: a short title the input names, or no title in the input at all, is confirmed', async () => {
+    const obj = { 'a/b issue 30': { createdAt: iso(T0 + 1_000), title: 'Bug', state: 'open' } };
+    expect(
+      short(await check([effect('create', ISSUE)], obj, { input: 'gh issue create -R a/b -t "Bug" -b x' }).result),
+    ).toEqual([`create ${ISSUE}`]);
+    expect(
+      short(
+        await check([effect('create', ISSUE)], obj, {
+          input: 'curl -s -X POST https://api.github.com/repos/a/b/issues -d @issue.json',
+        }).result,
+      ),
+    ).toEqual([`create ${ISSUE}`]);
+    // …but a title the input names that is not the issue's: another session's issue.
+    expect(
+      await check([effect('create', ISSUE)], obj, { input: 'gh issue create -R a/b -t "Crash on start" -b x' }).result,
+    ).toEqual([]);
+  });
+
+  it('R13 — a GitHub answer that never comes (a hung token or GET) confirms nothing, and the others still answer', async () => {
+    const confirm = createGithubReceiptChecker({
+      fetchObject: (_o, _r, _k, number) =>
+        number === 12
+          ? new Promise(() => {})
+          : Promise.resolve({ createdAt: iso(T0 - 86_400_000), mergedAt: iso(T0 + 1_000), state: 'closed' }),
+      now: () => T0 + 3_200,
+      timeoutMs: 20,
+    });
+    const out = await confirm({
+      effects: [effect('merge', PR), effect('merge', 'https://github.com/a/b/pull/13')],
+      startedAt: new Map([['tu1', T0]]),
+      inputs: new Map([['tu1', 'gh pr merge 12 && gh pr merge 13']]),
+      endedAt: T0 + 3_000,
+    });
+    expect(short(out)).toEqual(['merge https://github.com/a/b/pull/13']);
+  });
+
   it('R9 — at most MAX_CHECKS GETs per batch', async () => {
     const many = Array.from({ length: MAX_CHECKS + 5 }, (_, i) =>
       effect('merge', `https://github.com/a/b/pull/${i + 1}`),

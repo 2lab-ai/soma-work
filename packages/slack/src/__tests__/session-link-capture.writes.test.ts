@@ -1231,8 +1231,20 @@ describe('W17 — review round 17 (fable-zhuge, astra-zhuge)', () => {
         bash('gh pr create --web --fill', `Opening ${U} in your browser.\n`),
         bash(`curl -X POST ${P} -H "\${H[@]}" -d @p`, made),
         bash(`curl -X POST ${P} -H "$@" -d @p`, made),
+        // grok-elon round 16 P2: a subshell glued to `{` or to a word.
+        bash(`{(false || exit 1; gh pr create -R a/b --fill; );}; printf '%s\\n' ${U}`, U),
+        bash(`time(false || exit 1; gh pr create -R a/b --fill); printf '%s\\n' ${U}`, U),
+        bash(`{(false || exit 1; curl -s -X POST ${P} -d @p.json; );}`, made),
+        // fable-zhuge round 17 P3: `"${!arr[@]}"` expands to the indices, several words.
+        bash(`curl -X POST ${P} -H "\${!H[@]}" -d @p`, made),
       ),
     ).toEqual([]);
+    // fable-zhuge round 18 P2-1: a flag word inside a quoted title is the title, not the flag.
+    expect(
+      effectsOf(
+        bash('gh pr create -R a/b --title "feat(cli): add a --dry-run flag" --body "use -w" --fill', `${U}\n`),
+      ).map(short),
+    ).toEqual([['create', 'pr', U]]);
   });
 
   it('a require on its own line still binds; a GitHub MCP number that is not a primitive does not throw', () => {

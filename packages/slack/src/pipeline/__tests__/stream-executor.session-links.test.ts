@@ -365,7 +365,19 @@ describe('StreamExecutor — the links a turn names are recorded on its session'
     ];
     let release: (v: ReadonlyArray<unknown>) => void = () => {};
     const asked: unknown[] = [];
+    const intercepted: Array<[number, string[]]> = [];
     setStreamExecutorProviders({
+      // Metrics: the batch's results at once, the PR effects when GitHub answers (fable-zhuge, round 18).
+      interceptToolResults: (
+        results: unknown[],
+        _u: string,
+        _n: string,
+        _k: string,
+        _cb: unknown,
+        effects: Array<{ op: string }>,
+      ) => {
+        intercepted.push([results.length, (effects ?? []).map((e) => e.op)]);
+      },
       confirmGithubEffects: (args) => {
         asked.push(args);
         return new Promise((resolve) => {
@@ -378,19 +390,27 @@ describe('StreamExecutor — the links a turn names are recorded on its session'
       const deps = createDeps('끝.');
       const session = createSession();
       deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+      const turnStart = Date.now();
       await new StreamExecutor(deps).execute({ ...createParams(session), isUserInput: false });
       await settle();
       expect(deps.claudeHandler.noteSessionLinks).not.toHaveBeenCalled();
+      expect(intercepted).toEqual([[1, []]]);
       const a = asked[0] as {
         effects: Array<{ op: string; toolUseId: string }>;
         startedAt: Map<string, number>;
         inputs: Map<string, string>;
       };
       expect(a.effects.map((e) => [e.op, e.toolUseId])).toEqual([['create', 'r1']]);
-      expect(typeof a.startedAt.get('r1')).toBe('number');
+      // The lower bound is the turn's start, not when the host saw the call (fable-zhuge, round 18).
+      expect(a.startedAt.get('r1')).toBeGreaterThanOrEqual(turnStart);
+      expect(a.startedAt.get('r1')).toBeLessThanOrEqual(Date.now());
       expect(a.inputs.get('r1')).toContain('head:"fix/x"');
       release(a.effects);
       await settle();
+      expect(intercepted).toEqual([
+        [1, []],
+        [0, ['create']],
+      ]);
       expect(
         deps.claudeHandler.noteSessionLinks.mock.calls.map((c: any[]) => [c[3], c[2].map((l: any) => l.url)]),
       ).toEqual([['always', [created]]]);
@@ -415,7 +435,7 @@ describe('StreamExecutor — the links a turn names are recorded on its session'
       await settle();
       expect(deps3.claudeHandler.noteSessionLinks).not.toHaveBeenCalled();
     } finally {
-      setStreamExecutorProviders({ confirmGithubEffects: ({ effects }) => effects });
+      setStreamExecutorProviders({ confirmGithubEffects: ({ effects }) => effects, interceptToolResults: () => {} });
     }
   });
 });

@@ -1289,9 +1289,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   }
 
   /**
-   * #832 — asks the host which proposed writes GitHub confirms, then records them: the metrics always (the user did the
-   * work), the card only while the session is still the one registered under its key (a reset or a replacement session
-   * gets nothing). Once per batch. Bookkeeping: never throws, never blocks the turn.
+   * #832 — asks the host which proposed writes GitHub confirms, then records them: the PR metrics always (the user did
+   * the work), the card only while the session is still the one registered under its key (a reset or a replacement
+   * session gets nothing). Once per batch. Bookkeeping: never throws, never blocks the turn.
    */
   private confirmAndApplyGithubEffects(
     args: Parameters<NonNullable<StreamExecutorProviders['confirmGithubEffects']>>[0],
@@ -1929,7 +1929,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // The GitHub writes this turn's tool calls make, by tool-use id (#832): read from each call's input, proven by its
       // result — a create becomes the current link, a merge or close updates a link already on the card.
       const githubWrites = new Map<string, GitHubWrite[]>();
-      // …and, for GitHub's receipt (#832), when each such call started and what its input said.
+      // …and, for GitHub's receipt (#832), a lower bound for when each such call started — this turn's start: the host
+      // reads the SDK's events in turn and can see a call long after it ran (review round 18) — and what its input said.
+      const githubTurnStartedAt = Date.now();
       const githubWriteStarts = new Map<string, number>();
       const githubWriteInputs = new Map<string, string>();
 
@@ -2167,7 +2169,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               const writes = githubWritesOf(tu.name, tu.input);
               if (writes.length > 0) {
                 githubWrites.set(tu.id, writes);
-                githubWriteStarts.set(tu.id, Date.now());
+                githubWriteStarts.set(tu.id, githubTurnStartedAt);
                 const input = tu.input as Record<string, unknown> | undefined;
                 githubWriteInputs.set(
                   tu.id,
@@ -2301,11 +2303,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             githubWriteStarts.delete(tr.toolUseId);
             githubWriteInputs.delete(tr.toolUseId);
           }
-          // Metrics and the card take what GitHub confirms; with nothing proposed, at once.
-          const recordMetrics = (confirmed: ReadonlyArray<GitHubEffect>) => {
-            // Metrics: detect git/gh commands in Bash output (fire-and-forget) — every agent's.
+          // Metrics: the git commands in Bash output now (fire-and-forget) — every agent's; the PR effects (pr_created,
+          // pr_merged) when GitHub confirms them, like the card.
+          const recordMetrics = (results: typeof allToolResults, confirmed: ReadonlyArray<GitHubEffect>) => {
             interceptToolResults(
-              allToolResults,
+              results,
               session.ownerId,
               session.ownerName || 'unknown',
               ctx.sessionKey,
@@ -2320,8 +2322,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               confirmed,
             );
           };
+          recordMetrics(allToolResults, []);
           const noteOnCard = (confirmed: ReadonlyArray<GitHubEffect>) => {
             // A PR or issue the session just created is its current one; one it merged or closed shows that state.
+            // (A late answer can land during the next turn: a create then becomes current over that turn's link —
+            // as if the write had been seen then.)
             this.noteLinks(
               session,
               ctx.sessionKey,
@@ -2341,14 +2346,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               'update',
             );
           };
-          if (githubEffects.length === 0) {
-            recordMetrics([]);
-          } else {
+          if (githubEffects.length > 0) {
             this.confirmAndApplyGithubEffects(
               { effects: githubEffects, startedAt, inputs, endedAt: Date.now() },
               session,
               ctx.sessionKey,
-              recordMetrics,
+              (confirmed) => recordMetrics([], confirmed),
               noteOnCard,
             );
           }
