@@ -36,12 +36,13 @@ export interface BrokerPolicy {
 }
 
 export const DEFAULT_LEASE_TTL_SECONDS = 3600;
-export const DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300;
+export const DEFAULT_APPROVAL_TIMEOUT_SECONDS = 600;
 /**
- * 5 minutes, the permission-request ceiling (16 §5.3). The MCP server waits until expiry + 30 s and
- * the bot's SDK ends the tool call at 360 s, so a longer card would outlive the call waiting on it.
+ * 10 minutes (16 §5.3) — its own ceiling, not the bot's 5-minute permission-request one. The card expires at
+ * E = request + this; the broker answers by E + 25 s, the MCP server waits until min(call start + 655 s, E + 30 s)
+ * and the bot's SDK ends the tool call at 660 s, so a longer card would outlive the call waiting on it.
  */
-export const MAX_APPROVAL_TIMEOUT_SECONDS = 300;
+export const MAX_APPROVAL_TIMEOUT_SECONDS = 600;
 export const DEFAULT_MAX_PENDING_APPROVALS = 3;
 export const MAX_PENDING_APPROVALS_LIMIT = 20;
 
@@ -225,7 +226,7 @@ function parseCloudflare(value: unknown): Record<string, CfEnvPolicy> {
 /**
  * Validates the on-disk policy (16 §8) and returns it with durations in seconds and defaults filled:
  * allowedOwners = [org], restWriteAllowlist = [], defaultTtl 1h (capped at maxTtl), maxTtl 71h,
- * ipCondition false, approvalTimeout 5m (at most 5m), maxPendingApprovals 3 (1-20).
+ * ipCondition false, approvalTimeout 10m (at most 10m), maxPendingApprovals 3 (1-20).
  */
 export function parsePolicy(json: unknown): BrokerPolicy {
   const policy = object(json, 'policy', ['admins', 'gh'], ['cloudflare', 'approvalTimeout', 'maxPendingApprovals']);
