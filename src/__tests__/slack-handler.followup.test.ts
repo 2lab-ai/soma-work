@@ -771,6 +771,75 @@ describe('SlackHandler — follow-up queue host', () => {
   });
 
   /**
+   * #891 T1 — a goal turn that ends with NO text (an auto-compact stop, any cut
+   * turn) skips the eval (#788) and injects its continuation within a second —
+   * while its OWN run still holds the dispatch slot. The ingress fence dropped
+   * that continuation (`Synthetic turn blocked`) and the goal sat idle until a
+   * person wrote (two dev hosts, 2026-11-02/03: 15 of 15 such turns).
+   */
+  describe('goal continuation after a turn that left no text (#891)', () => {
+    const goalContinuation = () =>
+      message({
+        ts: '',
+        text: '[goal-continuation] Continue working toward the active session goal.',
+        synthetic: true,
+        skipDispatch: true,
+        routeContext: { skipAutoBotThread: true, goalContinuation: true },
+      });
+
+    it('runs the continuation once its own run has released the slot — never dropped by that run', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      // The goal loop's no-eval short-circuit: decide and inject at once.
+      const injected: Promise<void>[] = [];
+      const busyAtFire: boolean[] = [];
+      handler.setGoalTurnSettledHandler(() => {
+        busyAtFire.push(handlerAny.followupDispatcher.isBusy(SESSION_KEY));
+        injected.push(handler.handleMessage(goalContinuation(), say()));
+      });
+      const { settle } = await startBusyTurn();
+
+      // The cut turn settles inside its run (TurnRunner.finish), with no text.
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+      await settle();
+      await Promise.all(injected);
+
+      expect(busyAtFire).toEqual([false]);
+      // The first turn, then the goal's continuation — it was not dropped.
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    });
+
+    it('releases the held driver at an auto-compact stop boundary (drainable)', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const { settle } = await startBusyTurn();
+
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['', '  ']);
+      expect(goalDriver).not.toHaveBeenCalled();
+      handlerAny.releaseDeferredGoalDriver(SESSION_KEY, {
+        canDrain: true,
+        outcome: { result: 'interrupted', reason: 'auto-compact' },
+      });
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+      await settle();
+      // Released once: the run's own drain epilogue does not fire it again.
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+    });
+
+    it('still drives the loop at once for a turn that left text (the eval outlasts the teardown)', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const { settle } = await startBusyTurn();
+
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['turn text']);
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+      await settle();
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  /**
    * A cross-user `$skill` parked behind its owner's permission is neither
    * answered nor dropped — it stays `blocked` so a drained copy is `uncertain`
    * (Retry re-sends it once the grant lands), never `resolved`.
@@ -2613,6 +2682,32 @@ describe('SlackHandler — follow-up queue host', () => {
         await settle();
       });
     }
+
+    /**
+     * #891 T2 — a dedicated `/compact` turn ends at the compaction's result. A
+     * message pushed into it was run by the CLI after compacting, then cut off
+     * when the host closed that query (dev 2026-11-03 12:42–12:44Z: one
+     * tool call, no answer, and the row was marked consumed). It waits for the
+     * drain instead, like a message the session initializer stashes during
+     * compaction.
+     */
+    it('queues a follow-up instead of steering it into a /compact turn', async () => {
+      const steerTurn = withLiveTurn();
+      const { settle } = await startBusyTurn();
+      registrySession.compactTurnActive = true;
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'PR 이것도 하고 그 다음 것도 해줘' }), say());
+
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(items()).toHaveLength(1);
+      expect(items()[0].state).toBe('queued');
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
+
+      registrySession.compactTurnActive = false;
+      await settle();
+      // Drained after the compaction turn: it ran as a turn of its own.
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    });
 
     /**
      * `/z <instruction>` is the SAME turn with a routing prefix the dispatch
