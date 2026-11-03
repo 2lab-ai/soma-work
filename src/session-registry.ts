@@ -4,6 +4,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { atomicWriteJson } from '@soma/common/atomic-write';
 import {
   type ContextRewindRecord,
   decodeContextAnchor,
@@ -22,10 +23,17 @@ import {
   type TaskUsage,
   toPersistedSessionUsage,
 } from '@soma/slack/session-usage-math';
-import { cleanTldrLine, followUpFromTldr } from '@soma/slack/summary-service';
+import { applyFollowUp, cleanTldrLine, followUpFromTldr } from '@soma/slack/summary-service';
 import * as fs from 'fs';
 import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
+import {
+  type HostReceipt,
+  type HostWriteReceipt,
+  hostReceiptPath,
+  readHostReceipt,
+  withAck,
+} from 'somalib/model-commands/host-receipt';
 import { DATA_DIR } from './env-paths';
 import { isPlaceholderSessionTitle, sanitizeSessionTitle } from './format/display-title';
 import { Logger } from './logger';
@@ -297,7 +305,7 @@ interface SerializedSession {
   /** E2 ③ — the open chain and owed notices of a Slack-less task; validated on load. */
   openChain?: unknown;
   notices?: unknown;
-  /** A Slack-less task's follow-up queue; validated (and paused) on load (`sanitizeTaskFollowups`). */
+  /** A Slack-less task's follow-up queue; validated on load — queued words stay queued (`sanitizeTaskFollowups`). */
   taskFollowups?: unknown;
   /**
    * A Slack-less task's turn's initiator (`currentInitiatorId`), saved with the turn's start: the
@@ -1425,6 +1433,12 @@ export class SessionRegistry {
     const session = this.sessions.get(key);
     this.sessions.delete(key);
     if (session) this.unindexTask(session);
+    // #846 — the model-command receipt goes with the session (a later session under the key writes its own).
+    try {
+      fs.unlinkSync(hostReceiptPath(DATA_DIR, key));
+    } catch {
+      // none written, or already gone
+    }
   }
 
   /** Drop the task-id and instruction-thread entries only while they still name this session — an inheritor keeps its own. */
@@ -3007,10 +3021,66 @@ export class SessionRegistry {
     // `source: 'es'` — checked with tools by the model-run es: the same turn's host summary keeps this card
     // (TL;DR and verdict as one pair); the user's next input drops the TL;DR and with it the mark.
     session.executiveSummary = { tldr: lines, at, source: 'es' };
-    const followUp = followUpFromTldr(lines);
-    session.followUp = followUp ? { reason: followUp.reason, at } : undefined;
+    applyFollowUp(session, lines, at);
     this.saveSessions();
     return true;
+  }
+
+  /** #846 — the receipt file the model-command server reads back on GET_SESSION (`host`), for a Slack session. */
+  modelCommandReceiptFile(channelId: string, threadTs?: string): string {
+    return hostReceiptPath(DATA_DIR, this.getSessionKey(channelId, threadTs));
+  }
+
+  /** The same by session key — a Slack-less task. */
+  modelCommandReceiptFileByKey(sessionKey: string): string {
+    return hostReceiptPath(DATA_DIR, sessionKey);
+  }
+
+  /**
+   * #846 — write what the host holds for this session (links, sequence, card TL;DR, NEEDS YOU reason) and, after a
+   * model write, how the host handled it. The model-command server answers GET_SESSION with it, so the model reads
+   * the host's word instead of its own server's copy.
+   */
+  writeModelCommandReceipt(channelId: string, threadTs: string | undefined, lastWrite?: HostWriteReceipt): void {
+    this.writeModelCommandReceiptFor(
+      this.getSessionKey(channelId, threadTs),
+      this.getSession(channelId, threadTs),
+      lastWrite,
+    );
+  }
+
+  /** The same by session key — the only way to reach a Slack-less task (channel '' throws on lookup). */
+  writeModelCommandReceiptByKey(sessionKey: string, lastWrite?: HostWriteReceipt): void {
+    this.writeModelCommandReceiptFor(sessionKey, this.getSessionByKey(sessionKey), lastWrite);
+  }
+
+  private writeModelCommandReceiptFor(
+    key: string,
+    session: ConversationSession | undefined,
+    lastWrite: HostWriteReceipt | undefined,
+  ): void {
+    if (!session) return;
+    const file = hostReceiptPath(DATA_DIR, key);
+    try {
+      // The ack ledger survives every rewrite (turn start, another server's write, a late callback): each write keeps
+      // its own ack, so no server's check depends on being the last writer.
+      const acks = withAck(readHostReceipt(file)?.acks, lastWrite);
+      const receipt: HostReceipt = {
+        sequence: session.linkSequence ?? 0,
+        session: this.buildSessionResourceSnapshot(session),
+        ...(session.title ? { title: session.title } : {}),
+        ...(session.executiveSummary?.tldr?.length ? { tldr: [...session.executiveSummary.tldr] } : {}),
+        ...(session.followUp?.reason ? { followUp: session.followUp.reason } : {}),
+        ...(lastWrite ? { lastWrite } : {}),
+        ...(acks ? { acks } : {}),
+        at: Date.now(),
+      };
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      atomicWriteJson(file, receipt);
+    } catch (error) {
+      // The model then reads no receipt (or an older one) — GET_SESSION says so; the session itself is unaffected.
+      this.logger.warn('Model-command host receipt not written', { sessionKey: key, error: (error as Error).message });
+    }
   }
 
   updateSessionResources(
@@ -4288,6 +4358,17 @@ export class SessionRegistry {
     lastActivity: Date,
     reason: 'terminated' | 'sleep_expired',
   ): void {
+    // #846 — an ended session's model-command receipt goes with it (removeSession is not on this path). The receipt
+    // is named by the live key the loader derives, not the persisted `key` field (kept in the legacy form).
+    try {
+      const liveKey =
+        serialized.slackless === true
+          ? buildTaskSessionKey(serialized.taskId ?? '')
+          : this.getSessionKey(serialized.channelId, serialized.threadTs);
+      fs.unlinkSync(hostReceiptPath(DATA_DIR, liveKey));
+    } catch {
+      // none written, already gone, or no derivable key
+    }
     try {
       // Skip if already archived (prevents duplicates on repeated restarts)
       if (getArchiveStore().exists(serialized.key)) return;
@@ -4432,7 +4513,13 @@ export class SessionRegistry {
           // the same step the sweep takes when it notices — asleep from now, ended
           // only after archiveAfter more. Never ended outright on load, so a
           // restart cannot shorten the sleep a running process would have given.
-          const sessionAge = now - idleSinceMs({ lastActivity, starClearedAt: serialized.starClearedAt });
+          const sessionAge =
+            now -
+            idleSinceMs({
+              lastActivity,
+              starClearedAt: serialized.starClearedAt,
+              followUp: serialized.followUp,
+            });
           // A session with an active goal is resumed after restart (resumeActiveGoals),
           // which runs turns without waking a sleeper — leave it awake for that.
           const hasActiveGoal = serialized.goal?.status === 'active';
@@ -4560,7 +4647,7 @@ export class SessionRegistry {
           inputContext: sanitizeTaskInputContext(serialized.inputContext),
           ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>),
           taskPlan: sanitizeTaskPlanGate(serialized.taskPlan),
-          // Paused on load: the chain each word waited for did not survive the restart.
+          // Queued words stay queued: the boot sends them (owner directive 2026-11-03); a word caught sending pauses.
           taskFollowups: slackless ? sanitizeTaskFollowups(serialized.taskFollowups) : undefined,
           openChain:
             slackless && typeof serialized.openChain === 'string' && serialized.openChain !== ''

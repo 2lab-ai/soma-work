@@ -192,6 +192,8 @@ export interface LifecycleSessionView {
   starred?: boolean;
   /** When the star was last removed (epoch ms) — see {@link idleSinceMs}. */
   starClearedAt?: number;
+  /** #846 — the follow-up the last Executive Summary left (an own artifact not complete) — see {@link idleSinceMs}. */
+  followUp?: { reason?: string; at?: number };
 }
 
 function ms(v: Date | string | undefined): number {
@@ -201,14 +203,17 @@ function ms(v: Date | string | undefined): number {
 
 /**
  * Where a session's idle clock starts: its last user input, or — when later —
- * the moment its star was removed. An unstarred session thereby gets a full
- * sleep period instead of sleeping on the next sweep, and `lastActivity` (the
- * board's "last instruction" time) is never rewritten to grant it.
+ * the moment its star was removed, or the moment its last Executive Summary
+ * raised a follow-up (#846: an own issue/PR/doc not complete, the card in NEEDS
+ * YOU). Each gets a full sleep period instead of sleeping on the next sweep,
+ * and `lastActivity` (the board's "last instruction" time) is never rewritten
+ * to grant it. Bounded: one period from the ⚠️ line, then the usual sleep.
  */
-export function idleSinceMs(s: Pick<LifecycleSessionView, 'lastActivity' | 'starClearedAt'>): number {
+export function idleSinceMs(s: Pick<LifecycleSessionView, 'lastActivity' | 'starClearedAt' | 'followUp'>): number {
   const last = ms(s.lastActivity);
-  const cleared = typeof s.starClearedAt === 'number' && Number.isFinite(s.starClearedAt) ? s.starClearedAt : -Infinity;
-  return Number.isFinite(last) ? Math.max(last, cleared) : cleared;
+  const finite = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : -Infinity);
+  const since = Math.max(finite(s.starClearedAt), finite(s.followUp?.at));
+  return Number.isFinite(last) ? Math.max(last, since) : since;
 }
 
 /**
