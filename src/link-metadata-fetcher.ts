@@ -5,6 +5,7 @@
 
 import { config } from './config';
 import { getGitHubAppAuth } from './github-auth';
+import type { GitHubReceiptObject } from './github-receipt';
 import { Logger } from './logger';
 import type { SessionLink } from './types';
 
@@ -505,6 +506,67 @@ export async function fetchGitHubPRReviewStatus(
     return 'pending';
   } catch (error) {
     logger.warn('Failed to fetch GitHub PR review status', { url: link.url, error: (error as Error).message });
+    return undefined;
+  }
+}
+
+/**
+ * #832 — what GitHub says about one PR or issue, for the write receipt (`github-receipt.ts`): when it was created,
+ * merged and closed, its head branch and title, and GitHub's clock (`Date`). Undefined on any failure; never throws.
+ * A 5-second cap: the receipt runs after the tool result and must not pile up.
+ */
+export async function fetchGitHubReceiptObject(
+  owner: string,
+  repo: string,
+  kind: 'pr' | 'issue',
+  number: number,
+): Promise<GitHubReceiptObject | undefined> {
+  try {
+    const token = await getGitHubToken();
+    if (!token) return undefined;
+    const path = kind === 'pr' ? 'pulls' : 'issues';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort('timeout'), 5_000);
+    try {
+      const response = await fetch(
+        `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${path}/${number}`,
+        {
+          headers: {
+            Authorization: `token ${token}`,
+            Accept: 'application/vnd.github.v3+json',
+            'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+          },
+          signal: controller.signal,
+        },
+      );
+      if (!response.ok) return undefined;
+      const date = Date.parse(response.headers.get('date') ?? '');
+      const data = (await response.json()) as {
+        created_at?: unknown;
+        merged_at?: unknown;
+        closed_at?: unknown;
+        state?: unknown;
+        title?: unknown;
+        head?: { ref?: unknown };
+        pull_request?: unknown;
+      };
+      // The issues endpoint also answers for a PR number: an issue receipt is not a PR's.
+      if (kind === 'issue' && data.pull_request) return undefined;
+      const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+      return {
+        createdAt: str(data.created_at),
+        mergedAt: str(data.merged_at) ?? null,
+        closedAt: str(data.closed_at) ?? null,
+        state: str(data.state),
+        headRef: str(data.head?.ref),
+        title: str(data.title),
+        ...(Number.isFinite(date) ? { serverNowMs: date } : {}),
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (error) {
+    logger.debug('Failed to fetch the GitHub write receipt', { owner, repo, number, error: (error as Error).message });
     return undefined;
   }
 }
