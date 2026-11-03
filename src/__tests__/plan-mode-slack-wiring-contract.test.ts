@@ -5,7 +5,9 @@
  *   W1 the plan tool saves through the registry by session key, and a Slack session's thread
  *      hears that a plan is waiting (with its link).
  *   W2 시작 / 취소 on a Slack session go to the Slack decider: the plan is sent into the thread as
- *      the decider's instruction (the normal Slack path), "busy" is the request coordinator's.
+ *      the decider's instruction (the normal Slack path), verbatim, and 시작 answers once the
+ *      message is taken (`onAccepted`) — not after the whole turn (review #858).
+ *   W3 the injection watches the message it sends and forgets the waiter once the run settles.
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -34,11 +36,20 @@ describe('index.ts — plan mode on every session (#853)', () => {
     expect(decider).toMatch(
       /setPlanGate: \(key, gate\) => claudeHandler\.getSessionRegistry\(\)\.setSessionPlanGate\(key, gate\)/,
     );
-    expect(decider).toMatch(/isBusy: \(key\) => slackHandler\.getRequestCoordinator\(\)\.isRequestActive\(key\)/);
+    expect(decider).not.toMatch(/isBusy/);
     expect(decider).toMatch(
-      /sendPlan: async \(key, text, actorUserId\) =>[\s\S]*injectDashboardMessage\(key, text, undefined, \[\], actorUserId\)/,
+      /sendPlan: \(key, text, actorUserId\) =>[\s\S]*injectDashboardMessage\(key, text, undefined, \[\], actorUserId, undefined, \{\s*onAccepted: \(\) => resolve\(true\),\s*verbatim: true,\s*\}\)\.then\(\s*\(\) => resolve\(false\)/,
     );
     const handler = section('setDashboardTaskPlanHandler(', ');\n');
     expect(handler).toMatch(/slackless === true\s*\?\s*taskPlanDecider\(request\)\s*:\s*slackPlanDecider\(request\)/);
+  });
+
+  it('W3 — the injection watches the message it sends, verbatim on request, and forgets the waiter', () => {
+    const inject = section('const injectDashboardMessage = async (', 'setDashboardCommandHandler(');
+    expect(inject).toMatch(
+      /const unwatch = extra\.onAccepted\s*\?\s*slackHandler\.onTurnAccepted\(session\.channelId, ts, extra\.onAccepted\)\s*:\s*undefined;/,
+    );
+    expect(inject).toMatch(/\.\.\.\(extra\.verbatim \? \{ routeContext: \{ verbatimPrompt: true \} \} : \{\}\)/);
+    expect(inject).toMatch(/\} finally \{\s*unwatch\?\.\(\);\s*\}/);
   });
 });
