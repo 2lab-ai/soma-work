@@ -5,7 +5,7 @@
  * and inline code spans are left exactly as written.
  */
 import { describe, expect, it } from 'vitest';
-import { SummaryService } from '../../../packages/slack/src/summary-service';
+import { SummaryService } from '../summary-service';
 
 const fmt = (s: string) => SummaryService.formatSummaryForSlack(s);
 

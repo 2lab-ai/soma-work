@@ -96,8 +96,8 @@ same turn:
    `host.session` with the state you wrote, `host.tldr` is your TL;DR, and `host.followUp` is your ⚠️ reason when
    you wrote one. `prs: []` after you created a PR is an alarm: fix the write before you finish. Write full URLs in
    the document too (short refs like `#830` are not captured).
-   - `host` is the host's state at the turn start and right after each of your writes. A link the host noted on its
-     own since then (a PR it saw you open) can be missing until your next write — that is not a failed write.
+   - `host` is the host's state: written at the turn start, after each of your writes, when the host notes a link
+     itself (a PR it saw you open) and on `/new` (#881).
    - `hostPending: true` after the wait (`hostWaitedMs` says how long) — the host has not handled your last write:
      say in the document that the card is unconfirmed; do not loop.
    - `host.lastWrite` is your own last write as the host handled it (looked up by its `receiptId`).
