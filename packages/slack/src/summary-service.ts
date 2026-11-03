@@ -437,13 +437,13 @@ export interface SummarySessionInfo {
    * SSOT 2026-11-02 T7 — the TL;DR the thread head shows, for the dashboard's task card: set by
    * `displayOnThread` (only when the summary has one), cleared by `clearDisplay` on the next input.
    */
-  executiveSummary?: { tldr: string[]; at: number };
+  executiveSummary?: { tldr: string[]; at: number; source?: 'es' };
   /**
    * #829 — the latest Executive Summary left an own issue/PR unfinished (its ⚠️ TL;DR line): the dashboard
    * keeps the task card in NEEDS YOU with this reason. Set and cleared only by an Executive Summary
    * (`displayOnThread`, or the model-run es through UPDATE_SESSION) — the next user input does not clear it.
    */
-  followUp?: { reason: string; at: number; source?: 'es' };
+  followUp?: { reason: string; at: number };
   actionPanel?: {
     summaryBlocks?: any[];
     [key: string]: any;
@@ -617,18 +617,21 @@ export class SummaryService {
     // The surface is the channel-visible thread root, so it carries only the
     // TL;DR. The full ES goes inside the thread via `postInThread`.
     const { tldr, tldrSource } = parseExecutiveSummary(summaryText);
-    // The dashboard's task card shows the same lines (SSOT 2026-11-02 T7) — a task with no
-    // Slack thread (a dashboard task) included, so this comes before the thread-head guard.
-    const at = Date.now();
-    if (tldr.length > 0) session.executiveSummary = { tldr, at };
-    else session.executiveSummary = undefined;
-    // #829 — a well-formed TL;DR decides whether the card waits on its user; a reply with none keeps the
-    // previous verdict (a malformed summary is no evidence the work got finished).
-    // A verdict the model-run es wrote this turn (`source: 'es'`, checked with tools) stands against the
-    // tool-less host fork of the same turn; the user's next input (`clearDisplay`) makes it an ordinary one.
-    if (tldr.length > 0 && session.followUp?.source !== 'es') {
-      const followUp = followUpFromTldr(tldr);
-      session.followUp = followUp ? { reason: followUp.reason, at } : undefined;
+    // #829 — the model-run es wrote this turn's card with tools (`executiveSummary.source: 'es'`): the tool-less
+    // host fork of the same turn leaves the card alone, TL;DR and verdict as one pair. The user's next input
+    // (`clearDisplay`) drops that TL;DR, so the next summary decides again.
+    if (session.executiveSummary?.source !== 'es') {
+      // The dashboard's task card shows the same lines (SSOT 2026-11-02 T7) — a task with no
+      // Slack thread (a dashboard task) included, so this comes before the thread-head guard.
+      const at = Date.now();
+      if (tldr.length > 0) session.executiveSummary = { tldr, at };
+      else session.executiveSummary = undefined;
+      // #829 — a well-formed TL;DR decides whether the card waits on its user; a reply with none keeps the
+      // previous verdict (a malformed summary is no evidence the work got finished).
+      if (tldr.length > 0) {
+        const followUp = followUpFromTldr(tldr);
+        session.followUp = followUp ? { reason: followUp.reason, at } : undefined;
+      }
     }
 
     if (!session.actionPanel) {
@@ -715,8 +718,7 @@ export class SummaryService {
   clearDisplay(session: SummarySessionInfo): void {
     // The dashboard card's TL;DR goes with the thread head's — even where there is no head to clear.
     session.executiveSummary = undefined;
-    // #829 — the follow-up stays (the card keeps waiting); an es verdict becomes one the next summary may judge.
-    if (session.followUp?.source) session.followUp = { reason: session.followUp.reason, at: session.followUp.at };
+    // #829 — the follow-up stays: the card keeps waiting until a summary judges the work again.
     if (!session.actionPanel) return;
     if (!session.actionPanel.summaryBlocks) return;
 

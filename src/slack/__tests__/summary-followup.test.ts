@@ -131,17 +131,33 @@ describe('displayOnThread — the latest Executive Summary decides the follow-up
     expect(s.followUp?.reason).toContain('PR #12');
   });
 
-  it("the model-run es's verdict (source es) survives the same turn's host summary, then the next one decides", () => {
+  // trinity R2 (astra/fable P2): the es turn's card is one pair — TL;DR and verdict are kept or replaced together.
+  it("the model-run es's card (TL;DR + verdict) survives the same turn's host summary, then the next one decides", () => {
     const svc = new SummaryService();
-    const s = session({ followUp: { reason: 'PR #12 not merged (checked with gh)', at: 1, source: 'es' } });
-    svc.displayOnThread(s, DONE); // same turn: the host fork has no tools — the es verdict stands
-    expect(s.followUp).toEqual({ reason: 'PR #12 not merged (checked with gh)', at: 1, source: 'es' });
-    svc.displayOnThread(s, BLOCKED); // nor does a host ⚠️ line replace it in that turn
-    expect(s.followUp?.reason).toBe('PR #12 not merged (checked with gh)');
-    svc.clearDisplay(s); // the user's next input: an ordinary verdict now
+    const esTldr = ['PR #12 opened.', '⚠️ **PR #12 not merged (checked with gh)**', 'Next: merge #12.'];
+    const s = session({
+      executiveSummary: { tldr: esTldr, at: 1, source: 'es' },
+      followUp: { reason: 'PR #12 not merged (checked with gh)', at: 1 },
+    });
+    svc.displayOnThread(s, DONE); // same turn: the host fork has no tools — the es card stands as a pair
+    expect(s.executiveSummary).toEqual({ tldr: esTldr, at: 1, source: 'es' });
+    expect(s.followUp).toEqual({ reason: 'PR #12 not merged (checked with gh)', at: 1 });
+    svc.clearDisplay(s); // the user's next input: the box goes, the verdict stays until a summary judges it
+    expect(s.executiveSummary).toBeUndefined();
     expect(s.followUp).toEqual({ reason: 'PR #12 not merged (checked with gh)', at: 1 });
     svc.displayOnThread(s, DONE);
     expect(s.followUp).toBeUndefined();
+    expect(s.executiveSummary?.tldr[0]).toBe('PR #12 merged: login error fixed.');
+  });
+
+  it("the reverse: es said everything is complete — the same turn's host ⚠️ line does not add a follow-up", () => {
+    const svc = new SummaryService();
+    const s = session({
+      executiveSummary: { tldr: ['PR #12 merged.', 'CI green.', 'Next: deploy.'], at: 1, source: 'es' },
+    });
+    svc.displayOnThread(s, BLOCKED);
+    expect(s.followUp).toBeUndefined();
+    expect(s.executiveSummary?.tldr[0]).toBe('PR #12 merged.');
   });
 
   it('a list marker before the ⚠️ line does not hide the signal (both paths normalize the same way)', () => {
