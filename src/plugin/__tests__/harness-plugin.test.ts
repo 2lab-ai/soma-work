@@ -42,6 +42,21 @@ describe('T7 — the harness plugin', () => {
     expect(DEFAULT_PLUGINS).toContain('local@soma-work');
   });
 
+  // trinity R1 (fable P2): the no-PluginManager fallback guaranteed zworkflow only — every bundled plugin is guaranteed.
+  it('withBundledPlugins prepends every bundled plugin the resolved list lacks, once', async () => {
+    const { BUNDLED_PLUGINS, withBundledPlugins } = await import('../bundled');
+    const all = Object.values(BUNDLED_PLUGINS);
+    expect(withBundledPlugins([]).map((p) => p.path)).toEqual(all);
+    const other = { type: 'local' as const, path: '/plugins/stv' };
+    const zwf = { type: 'local' as const, path: BUNDLED_PLUGINS.zworkflow };
+    const out = withBundledPlugins([zwf, other, other]).map((p) => p.path);
+    expect(out).toEqual([BUNDLED_PLUGINS.local, BUNDLED_PLUGINS.zworkflow, '/plugins/stv']);
+  });
+
+  it('the session plugin list goes through withBundledPlugins', () => {
+    expect(read('src', 'claude-handler.ts')).toMatch(/withBundledPlugins\(/);
+  });
+
   it('the build copies it next to dist/local', () => {
     const build = JSON.parse(read('package.json')).scripts.build as string;
     expect(build).toContain('cp -r src/local-harness dist/');
