@@ -217,4 +217,3 @@ describe('SessionRegistry — the model-command host receipt', () => {
     expect(s.executiveSummary?.issuedAt).toBeUndefined();
   });
 });
-

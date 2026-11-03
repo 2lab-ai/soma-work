@@ -87,7 +87,7 @@ import {
   sayPostSwitches,
   type UsageData,
 } from '../stream-processor';
-import { esWroteCardThisTurn, releaseEsCard, steerAfterEs, type SummaryService } from '../summary-service';
+import { esWroteCardThisTurn, releaseEsCard, type SummaryService, steerAfterEs } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer';
 import { NO_POST_SLACK } from '../task-turn/no-post-slack';
 import { createTaskSay, type TaskTurnBinding, type TaskWorkLogWrite } from '../task-turn/task-say';
