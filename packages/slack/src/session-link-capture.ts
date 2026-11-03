@@ -190,6 +190,8 @@ export interface GitHubWrite {
 export interface GitHubEffect {
   op: 'create' | 'merge' | 'close';
   link: CapturedLink;
+  /** The call whose result proposed it — GitHub confirms it against that call's window and input (src/github-receipt). */
+  toolUseId?: string;
 }
 
 // ── Reading a shell command ──────────────────────────────────────────────────────────────────────────────────────────
@@ -756,8 +758,10 @@ function ghCliRead(command: string): GitHubWrite | undefined {
 function ghCliWrite(command: string): GitHubWrite | undefined {
   const m = command.match(GH_CLI);
   if (!m) return undefined;
-  // `--help` / `-h` prints help; nothing is written.
-  if (/(?:^|\s)(?:--help|-h)(?=\s|$)/.test(m[3] ?? '')) return { op: 'read', kind: m[1] === 'pr' ? 'pr' : 'issue' };
+  // `--help` / `-h` prints help, `--dry-run` prints what it would create (the body verbatim), `--web` / `-w` opens a
+  // browser: nothing is written.
+  if (/(?:^|\s)(?:--help|-h|--dry-run|--web|-w)(?==|\s|$)/.test(m[3] ?? ''))
+    return { op: 'read', kind: m[1] === 'pr' ? 'pr' : 'issue' };
   const kind = m[1] === 'pr' ? 'pr' : 'issue';
   const action = m[2] as 'create' | 'merge' | 'close';
   const args = m[3] ?? '';
@@ -965,6 +969,8 @@ function unquotedExpansion(text: string): boolean {
     } else if (quote === '"') {
       if (c === '\\') i++;
       else if (c === '"') quote = '';
+      // `"$@"` and `"${arr[@]}"` expand to several words even when quoted.
+      else if (c === '$' && /^\$(?:@|\{@\}|\{[A-Za-z_]\w*\[@\]\})/.test(text.slice(i, i + 72))) return true;
     } else if (c === '\\') i++;
     else if (c === "'" || c === '"') quote = c;
     else if (c === '$' || c === '`') return true;
@@ -1509,29 +1515,37 @@ function certainCalls(masked: string, lang: CodeLang): (at: number) => boolean {
     else if (c === '}' && d > 0) d--;
   }
   depth[masked.length] = d;
-  // Python: parenthesis / bracket depth, to find the expression a call sits in.
+  // Parenthesis / bracket depth: the expression a call sits in, and a JS `for (…;…;…)` header's `;`.
   const pdepth = new Int32Array(masked.length + 1);
+  // Python joins physical lines inside `(`, `[` and `{`: its logical line ends only at depth 0 of all three.
+  const ldepth = new Int32Array(masked.length + 1);
   let q = 0;
+  let l = 0;
   for (let j = 0; j < masked.length; j++) {
     pdepth[j] = q;
+    ldepth[j] = l;
     const c = masked[j];
     if (c === '(' || c === '[') q++;
     else if ((c === ')' || c === ']') && q > 0) q--;
+    if (c === '(' || c === '[' || c === '{') l++;
+    else if ((c === ')' || c === ']' || c === '}') && l > 0) l--;
   }
   pdepth[masked.length] = q;
+  ldepth[masked.length] = l;
   const js = /=>|&&|\|\||\?|\b(?:if|else|while|for|do|switch|case|function|return|catch|yield)\b/;
   const py = /\b(?:lambda|if|else|elif|and|or|while|for|def|class|return|yield|except|try)\b/;
   // Code after an exit or a throw may never run.
   const stop = masked.search(/\b(?:process\.exit|process\.kill|throw|sys\.exit|os\._exit|exit|quit)\b/);
   return (at: number) => {
     if (depth[at] !== 0 || (stop >= 0 && stop < at)) return false;
-    // A JS statement runs to `;` or a brace (a condition on the line before still governs it); Python's to the end of
-    // its logical line (a trailing `\` or an open bracket joins the next physical line).
+    // A JS statement runs to `;` or a brace outside parentheses (a condition on the line before, or a `for (…;…;…)`
+    // header, still governs it); Python's to the end of its logical line (a trailing `\` or an open bracket or brace
+    // joins the next physical line).
     let k = at - 1;
     if (lang === 'py') {
-      while (k >= 0 && !(masked[k] === '\n' && masked[k - 1] !== '\\' && pdepth[k] === 0)) k--;
+      while (k >= 0 && !(masked[k] === '\n' && masked[k - 1] !== '\\' && ldepth[k] === 0)) k--;
     } else {
-      while (k >= 0 && !/[;{}]/.test(masked[k])) k--;
+      while (k >= 0 && !(/[;{}]/.test(masked[k]) && pdepth[k] === 0)) k--;
     }
     const prefix = masked.slice(k + 1, at);
     if (lang === 'py') {
@@ -1541,7 +1555,7 @@ function certainCalls(masked: string, lang: CodeLang): (at: number) => boolean {
       // A ternary (`x if c else y`), a comprehension or a generator (`(post(u) for u in [])`) anywhere on the logical
       // line — or anywhere in the bracketed expression that holds the call.
       let end = at;
-      while (end < masked.length && !(masked[end] === '\n' && masked[end - 1] !== '\\' && pdepth[end] === 0)) end++;
+      while (end < masked.length && !(masked[end] === '\n' && masked[end - 1] !== '\\' && ldepth[end] === 0)) end++;
       if (/\b(?:if|else|for|lambda|while)\b/.test(masked.slice(line, end))) return false;
       if (pdepth[at] > 0) {
         let open = at - 1;
@@ -1592,7 +1606,7 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
     // `require("axios")`, `require("axios").default`, `require("child_process").execSync` for `execSync`.
     const ownModule = clientModule
       ? new RegExp(
-          `^\\s*(?:require|await\\s+import)\\s*\\(\\s*["'\`](?:node:)?${clientModule}["'\`]\\s*\\)(?:\\.default|\\.${root})?(?:\\s*;|\\s*$|[ \\t]*\\n(?![ \\t]*[.([\`+\\-*/?]))`,
+          `^\\s*(?:require|await\\s+import)\\s*\\(\\s*["'\`](?:node:)?${clientModule}["'\`]\\s*\\)(?:\\.default|\\.${root})?(?:\\s*;|\\s*$|[ \\t]*\\n(?!\\s*(?:[.([\`+\\-*/%<>=!&|^?,:]|in\\b|instanceof\\b)))`,
         )
       : undefined;
     const rebinds = [...masked.matchAll(new RegExp(`\\b${root}\\s*=(?!=)`, 'g'))].some(
@@ -1685,7 +1699,9 @@ function mcpWrite(toolName: string, input: Record<string, unknown>): GitHubWrite
   const m = toolName.match(MCP_TOOL);
   if (!m || typeof input.owner !== 'string' || typeof input.repo !== 'string') return undefined;
   const repo = `${input.owner}/${input.repo}`.toLowerCase();
-  const num = Number(input.pull_number ?? input.issue_number ?? input.number);
+  // A primitive only: `Number()` of an object with a broken `toString` throws (astra-zhuge P2).
+  const raw = input.pull_number ?? input.issue_number ?? input.number;
+  const num = typeof raw === 'number' || typeof raw === 'string' ? Number(raw) : Number.NaN;
   const number = Number.isInteger(num) && num > 0 ? num : undefined;
   switch (m[1]) {
     case 'create_pull_request':
@@ -1992,7 +2008,7 @@ export function githubEffectsOf(
     const text = resultText(r.result);
     if (!text) continue;
     const idx = indexResult(text);
-    for (const e of createEffects(ws, idx)) add(e);
+    for (const e of createEffects(ws, idx)) add({ ...e, toolUseId: r.toolUseId });
     const merges = ws.filter((x) => x.op === 'merge').length;
     for (const w of ws) {
       if (w.op === 'create' || w.op === 'read') continue;
@@ -2000,7 +2016,8 @@ export function githubEffectsOf(
       // carry no identity another request's output (any repo — a quoted body, a projection) could not imitate.
       const onlyCreates = ws.every((o) => o === w || o.op === 'create');
       if (ws.some((o) => o !== w) && !(onlyCreates && w.via === 'cli' && gh(w, idx))) continue;
-      add(effectOf(w, idx, w.op === 'merge' ? merges : 0));
+      const e = effectOf(w, idx, w.op === 'merge' ? merges : 0);
+      add(e && { ...e, toolUseId: r.toolUseId });
     }
   }
   return out;

@@ -58,6 +58,7 @@ import {
 } from '../session-goal';
 import {
   type CapturedLink,
+  type GitHubEffect,
   type GitHubWrite,
   githubEffectsOf,
   githubWritesOf,
@@ -301,6 +302,18 @@ export interface StreamExecutorProviders {
    */
   notifyLiveUsage?: (sessionKey: string, call?: LiveUsageCall) => void;
   /**
+   * #832 — GitHub as the receipt: of the writes the parser proposes, the ones GitHub confirms (created, merged or
+   * closed inside the call's window; a create also names its head branch or title in the call's input). Only those
+   * reach the card and the metrics. An array is applied at once; a promise when it settles. Must never throw.
+   * Default (no host): every proposal, at once.
+   */
+  confirmGithubEffects?: (args: {
+    effects: ReadonlyArray<GitHubEffect>;
+    startedAt: ReadonlyMap<string, number>;
+    inputs: ReadonlyMap<string, string>;
+    endedAt: number;
+  }) => ReadonlyArray<GitHubEffect> | Promise<ReadonlyArray<GitHubEffect>>;
+  /**
    * Spec 12 — one agent-tree event of this session's turn (a subagent
    * started, listed its tasks, returned, changed task state; the turn ended).
    * The host folds it into the session's agent registry. Must be cheap and
@@ -371,6 +384,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   postCompactCompleteIfNeeded: async () => undefined,
   postCompactStartingIfNeeded: async () => undefined,
   notifyLiveUsage: () => {},
+  confirmGithubEffects: ({ effects }) => effects,
   priceLiveUsage: () => 0,
 };
 
@@ -1274,6 +1288,52 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
   }
 
+  /**
+   * #832 — asks the host which proposed writes GitHub confirms, then records them: the metrics always (the user did the
+   * work), the card only while the session is still the one registered under its key (a reset or a replacement session
+   * gets nothing). Once per batch. Bookkeeping: never throws, never blocks the turn.
+   */
+  private confirmAndApplyGithubEffects(
+    args: Parameters<NonNullable<StreamExecutorProviders['confirmGithubEffects']>>[0],
+    session: ConversationSession,
+    sessionKey: string,
+    recordMetrics: (confirmed: ReadonlyArray<GitHubEffect>) => void,
+    noteOnCard: (confirmed: ReadonlyArray<GitHubEffect>) => void,
+  ): void {
+    const settle = (confirmed: ReadonlyArray<GitHubEffect>, late: boolean) => {
+      try {
+        recordMetrics(confirmed);
+        if (late) {
+          const current = this.deps.claudeHandler.getSessionByKey?.(sessionKey);
+          if (current !== session || session.terminated) {
+            this.logger.debug('GitHub receipt arrived after the session changed; not on its card', { sessionKey });
+            return;
+          }
+        }
+        noteOnCard(confirmed);
+      } catch (error) {
+        this.logger.debug('Applying confirmed GitHub writes failed', { sessionKey, error: (error as Error)?.message });
+      }
+    };
+    try {
+      const answer = streamExecutorProviders.confirmGithubEffects(args);
+      if (Array.isArray(answer)) {
+        settle(answer, false);
+        return;
+      }
+      Promise.resolve(answer).then(
+        (confirmed) => settle(Array.isArray(confirmed) ? confirmed : [], true),
+        (error: unknown) => {
+          this.logger.debug('GitHub receipt failed', { sessionKey, error: (error as Error)?.message });
+          settle([], true);
+        },
+      );
+    } catch (error) {
+      this.logger.debug('GitHub receipt threw', { sessionKey, error: (error as Error)?.message });
+      settle([], false);
+    }
+  }
+
   async execute(params: StreamExecuteParams): Promise<ExecuteResult> {
     const lang = displayLangOf(userSettingsStore.getUserDisplayLanguage?.(params.user));
     return runWithDisplayLang(lang, () => this.executeTurn(params));
@@ -1869,6 +1929,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // The GitHub writes this turn's tool calls make, by tool-use id (#832): read from each call's input, proven by its
       // result — a create becomes the current link, a merge or close updates a link already on the card.
       const githubWrites = new Map<string, GitHubWrite[]>();
+      // …and, for GitHub's receipt (#832), when each such call started and what its input said.
+      const githubWriteStarts = new Map<string, number>();
+      const githubWriteInputs = new Map<string, string>();
 
       this.logger.info('Sending query to Claude Code SDK', {
         prompt: finalPrompt.substring(0, 200) + (finalPrompt.length > 200 ? '...' : ''),
@@ -2102,7 +2165,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           try {
             for (const tu of allToolUses) {
               const writes = githubWritesOf(tu.name, tu.input);
-              if (writes.length > 0) githubWrites.set(tu.id, writes);
+              if (writes.length > 0) {
+                githubWrites.set(tu.id, writes);
+                githubWriteStarts.set(tu.id, Date.now());
+                const input = tu.input as Record<string, unknown> | undefined;
+                githubWriteInputs.set(
+                  tu.id,
+                  typeof input?.command === 'string' ? input.command : JSON.stringify(input ?? {}),
+                );
+              }
             }
           } catch (error) {
             this.logger.debug('githubWritesOf failed', { error: (error as Error)?.message });
@@ -2212,49 +2283,75 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               // so sink-side lookups stay on one B1 stream handle.
               turnId,
             });
-          // The GitHub writes these results prove (#832) — one parser for the card and the metrics.
+          // The GitHub writes these results propose (#832) — one parser for the card and the metrics.
           let githubEffects: ReturnType<typeof githubEffectsOf> = [];
           try {
             githubEffects = githubEffectsOf(allToolResults, githubWrites);
           } catch (error) {
             this.logger.debug('githubEffectsOf failed', { error: (error as Error)?.message });
           }
-          for (const tr of allToolResults) githubWrites.delete(tr.toolUseId);
-          // Metrics: detect git/gh commands in Bash output (fire-and-forget) — every agent's.
-          interceptToolResults(
-            allToolResults,
-            session.ownerId,
-            session.ownerName || 'unknown',
-            ctx.sessionKey,
-            // Callback to record merge stats into session
-            (_sessionKey: string, prNumber: number, linesAdded: number, linesDeleted: number) => {
-              if (session.slackless === true) {
-                this.deps.claudeHandler.addMergeStatsByKey(ctx.sessionKey, prNumber, linesAdded, linesDeleted);
-              } else {
-                this.deps.claudeHandler.addMergeStats(ctx.channel, ctx.threadTs, prNumber, linesAdded, linesDeleted);
-              }
-            },
-            githubEffects,
-          );
-          // A PR or issue the session just created is its current one; one it merged or closed shows that state.
-          this.noteLinks(
-            session,
-            ctx.sessionKey,
-            ctx.channel,
-            ctx.threadTs,
-            githubEffects.filter((e) => e.op === 'create').map((e) => e.link),
-            'always',
-          );
-          this.noteLinks(
-            session,
-            ctx.sessionKey,
-            ctx.channel,
-            ctx.threadTs,
-            githubEffects
-              .filter((e) => e.op !== 'create')
-              .map((e) => ({ ...e.link, status: e.op === 'merge' ? 'merged' : 'closed' })),
-            'update',
-          );
+          const startedAt = new Map<string, number>();
+          const inputs = new Map<string, string>();
+          for (const tr of allToolResults) {
+            const started = githubWriteStarts.get(tr.toolUseId);
+            const input = githubWriteInputs.get(tr.toolUseId);
+            if (started !== undefined) startedAt.set(tr.toolUseId, started);
+            if (input !== undefined) inputs.set(tr.toolUseId, input);
+            githubWrites.delete(tr.toolUseId);
+            githubWriteStarts.delete(tr.toolUseId);
+            githubWriteInputs.delete(tr.toolUseId);
+          }
+          // Metrics and the card take what GitHub confirms; with nothing proposed, at once.
+          const recordMetrics = (confirmed: ReadonlyArray<GitHubEffect>) => {
+            // Metrics: detect git/gh commands in Bash output (fire-and-forget) — every agent's.
+            interceptToolResults(
+              allToolResults,
+              session.ownerId,
+              session.ownerName || 'unknown',
+              ctx.sessionKey,
+              // Callback to record merge stats into session
+              (_sessionKey: string, prNumber: number, linesAdded: number, linesDeleted: number) => {
+                if (session.slackless === true) {
+                  this.deps.claudeHandler.addMergeStatsByKey(ctx.sessionKey, prNumber, linesAdded, linesDeleted);
+                } else {
+                  this.deps.claudeHandler.addMergeStats(ctx.channel, ctx.threadTs, prNumber, linesAdded, linesDeleted);
+                }
+              },
+              confirmed,
+            );
+          };
+          const noteOnCard = (confirmed: ReadonlyArray<GitHubEffect>) => {
+            // A PR or issue the session just created is its current one; one it merged or closed shows that state.
+            this.noteLinks(
+              session,
+              ctx.sessionKey,
+              ctx.channel,
+              ctx.threadTs,
+              confirmed.filter((e) => e.op === 'create').map((e) => e.link),
+              'always',
+            );
+            this.noteLinks(
+              session,
+              ctx.sessionKey,
+              ctx.channel,
+              ctx.threadTs,
+              confirmed
+                .filter((e) => e.op !== 'create')
+                .map((e) => ({ ...e.link, status: e.op === 'merge' ? 'merged' : 'closed' })),
+              'update',
+            );
+          };
+          if (githubEffects.length === 0) {
+            recordMetrics([]);
+          } else {
+            this.confirmAndApplyGithubEffects(
+              { effects: githubEffects, startedAt, inputs, endedAt: Date.now() },
+              session,
+              ctx.sessionKey,
+              recordMetrics,
+              noteOnCard,
+            );
+          }
           const commandResult = await this.handleModelCommandToolResults(allToolResults, session, ctx, turnEpochToken);
           if (commandResult.hasPendingChoice) {
             toolChoicePending = true;

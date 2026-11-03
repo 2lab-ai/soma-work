@@ -113,7 +113,7 @@
 - 자동 기록은 모델의 `UPDATE_SESSION`이 비교하는 순서 번호(`linkSequence`)를 올리지 않는다. 이 부수 작업 때문에 모델의 갱신이 `SEQUENCE_MISMATCH`로 실패하면 안 된다.
 - 자동 기록한 링크에는 `auto: true`가 붙는다. 상한(종류마다 30개)은 이것들만 줄이고, 모델이나 유저가 넣은 링크와 지금 링크는 지우지 않는다.
 - 목록 출력(`gh pr list`)처럼 PR을 이름만 대는 도구 결과는 기록하지 않는다.
-- 연결부: `stream-executor`가 유저 메시지와 GitHub 쓰기의 결과를 기록한다(`onToolUse`에서 `githubWritesOf`로 호출마다 쓰기를 읽어 두고, `onToolResult`에서 `githubEffectsOf`가 결과로 증명한다). 메트릭의 `pr_created` · `pr_merged`도 같은 효과에서 나온다(파서 하나). `stream-processor`의 새 콜백 `onLinksMentioned`는 지시문을 뺀 답변 텍스트의 링크를 넘기고, 실행기가 `if-empty`로 기록한다. 기록은 부수 작업이라 실패해도 턴을 깨지 않는다.
+- 연결부: `stream-executor`가 유저 메시지와 GitHub 쓰기의 결과를 기록한다(`onToolUse`에서 `githubWritesOf`로 호출마다 쓰기를 읽어 두고, `onToolResult`에서 `githubEffectsOf`가 결과로 후보를 고른다). 후보는 GitHub가 확인해야 기록된다(`src/github-receipt.ts`, #832 리뷰 17차): PR · 이슈를 한 번 GET 해서 만든 것은 호출 시간(시작 − 5초 … 결과 + 5초, GitHub `Date` 헤더로 시계 차이 보정) 안에 만들어졌고 PR의 head 브랜치나 이슈 제목이 그 호출 입력에 있어야 하며, 머지는 `merged_at`, 닫기는 머지되지 않은 채 `closed_at`이 그 안에 있어야 한다. 확인 못 한 후보는 기록하지 않는다(턴 끝 GitHub 대조 #833이 실제 PR을 찾는다). 늦게 온 확인은 세션이 바뀌었으면 버린다. 구문으로는 '실행됐다'를 증명할 수 없어서다 — 16차까지 리뷰마다 실행되지 않은 호출의 새 변형이 나왔다. 메트릭의 `pr_created` · `pr_merged`도 같은 효과에서 나온다(파서 하나). `stream-processor`의 새 콜백 `onLinksMentioned`는 지시문을 뺀 답변 텍스트의 링크를 넘기고, 실행기가 `if-empty`로 기록한다. 기록은 부수 작업이라 실패해도 턴을 깨지 않는다.
 - 테스트:
   - `session-link-capture.test.ts` A1–A5: 생성 명령 검사, 코드와 인용 제외, 정규형, 긴 입력에서도 선형.
   - `session-link-capture.writes.test.ts` W1–W5(#832): 실제로 새어 나간 REST 생성 9건 재생(`fixtures/github-write-leaks.json`), 같은 세션의 댓글 POST 3건은 기록 안 함, 읽기 · 오류 · 다른 저장소 · 리뷰 · 라벨 제외, 모든 생성 표기, 머지 · 닫기.
