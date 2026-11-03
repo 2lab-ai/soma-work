@@ -1,10 +1,10 @@
 /**
  * E4 ④a — the `epic` server in the turn's MCP config (.prd/19 D3, §5 ④a).
  *
- *   B1 an epic's own task turn gets the `epic` server, and its tools are in
- *      `allowedTools`, so a `legacy` task turn (no prompt server) never asks.
- *   B2 a child's turn, an ordinary task's turn and a Slack turn never get it
- *      (depth 1: a child cannot make children).
+ *   B1 an epic's own Slack turn (its context names the epic, #854) gets the `epic` server, and
+ *      its tools are in `allowedTools`, so a `legacy` turn never asks.
+ *   B2 a turn that names no epic (a child's, an ordinary session's) and a dashboard task's turn
+ *      never get it (depth 1: a child cannot make children).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -57,20 +57,29 @@ function taskCtx(overrides: Record<string, unknown> = {}): ExecutionContext {
 describe('McpConfigBuilder — the epic server (E4 ④a)', () => {
   beforeEach(() => modeMock.mockReset().mockReturnValue('legacy'));
 
-  it('B1 — an epic’s own turn gets the epic server, allowed so a legacy turn never asks', async () => {
-    const config = await new McpConfigBuilder(manager()).buildConfig(undefined, undefined, taskCtx({ kind: 'epic' }));
-    expect(config.permissionMode).toBe('default');
+  const slackEpicCtx = (overrides: Record<string, unknown> = {}) =>
+    ({
+      origin: 'slack',
+      userId: 'U1',
+      isAdmin: false,
+      permissionMode: 'legacy',
+      sessionKey: 'work:C1:1.1',
+      epicTaskId: 'e1',
+      ...overrides,
+    }) as unknown as ExecutionContext;
+
+  it('B1 — an epic’s own Slack turn gets the epic server, allowed so a legacy turn never asks', async () => {
+    const config = await new McpConfigBuilder(manager()).buildConfig(undefined, undefined, slackEpicCtx());
     expect(Object.keys(config.mcpServers ?? {})).toContain('epic');
     expect((config.mcpServers as any).epic.type).toBe('sdk');
     expect(config.allowedTools).toContain('mcp__epic');
-    // Still no Slack prompt server on a task turn.
-    expect(config.mcpServers).not.toHaveProperty('permission-prompt');
   });
 
   it.each([
     ['a child’s turn', taskCtx({ parentTaskId: 'e0' })],
     ['a child claiming to be an epic', taskCtx({ kind: 'epic', parentTaskId: 'e0' })],
     ['an ordinary task’s turn', taskCtx()],
+    ['a dashboard task’s epic (#854: archived with its stack)', taskCtx({ kind: 'epic' })],
     [
       'a Slack turn',
       {

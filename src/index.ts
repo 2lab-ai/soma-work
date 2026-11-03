@@ -221,6 +221,8 @@ import { notifyStartup } from './startup-notifier';
 import { ensureChildFolder } from './task-turn/epic-child-folder';
 import { archivedCostUsd, epicTreeCostUsd } from './task-turn/epic-cost';
 import { setEpicHost } from './task-turn/epic-server';
+import { chainEndOf, createSlackEpicHost, createSlackEpicWaker } from './task-turn/epic-slack';
+import { createEpicTreeGate } from './task-turn/epic-tree-gate';
 import { createEpicWaker } from './task-turn/epic-wake';
 import { setPlanHost } from './task-turn/plan-server';
 import { composeTaskApprovalListeners } from './task-turn/task-approver';
@@ -935,6 +937,13 @@ async function start() {
           claudeHandler.getSessionRegistry().markClosedByParent(key, Date.now(), chain),
         recordChildClosed: (key) => claudeHandler.getSessionRegistry().recordEpicChildClosed(key),
         markClosing: (key, closing) => claudeHandler.getSessionRegistry().markClosing(key, closing),
+        // #854 — a Slack epic's children: their keys, whether a turn runs, and stopping it.
+        keyOf: (s) =>
+          s.channelId && s.slackless !== true
+            ? claudeHandler.getSessionRegistry().getSessionKey(s.channelId, s.threadTs)
+            : undefined,
+        isSlackRunning: (key) => slackHandler.getRequestCoordinator().isRequestActive(key),
+        abortSlack: (key) => slackHandler.getRequestCoordinator().abortSession(key, 'user-stop'),
         logger,
       }),
     );
@@ -986,8 +995,10 @@ async function start() {
        * queued behind a running turn) — `handleMessage` resolves only after the whole run.
        * `verbatim`: the host's own words, dispatched as written (no command routing, no `!`
        * steer, never pushed into a running turn — its own turn, like a goal's opening).
+       * `hostTurn` (#854, with `verbatim`): soma-work's words, not the sender's — an epic's wake or its
+       * word to a child. It answers no open question, revises no waiting plan, and is recorded as soma-work's.
        */
-      extra: { onAccepted?: () => void; verbatim?: true } = {},
+      extra: { onAccepted?: () => void; verbatim?: true; hostTurn?: true; echoLabel?: string } = {},
     ): Promise<{ channel: string; ts: string } | undefined> => {
       const session = claudeHandler.getSessionByKey(sessionKey);
       if (!session) {
@@ -1028,7 +1039,7 @@ async function start() {
           blocks: [
             {
               type: 'context',
-              elements: [{ type: 'mrkdwn', text: `💬 *<@${sender}>* via Dashboard` }],
+              elements: [{ type: 'mrkdwn', text: extra.echoLabel ?? `💬 *<@${sender}>* via Dashboard` }],
             },
             {
               type: 'section',
@@ -1071,7 +1082,9 @@ async function start() {
             ts,
             ...(files ? { files } : {}),
             ...(clientRef ? { dashboardClientRef: clientRef } : {}),
-            ...(extra.verbatim ? { routeContext: { verbatimPrompt: true } } : {}),
+            ...(extra.verbatim
+              ? { routeContext: { verbatimPrompt: true, ...(extra.hostTurn ? { hostTurn: true } : {}) } }
+              : {}),
           } as any,
           dashboardSay,
         );
@@ -1480,20 +1493,103 @@ async function start() {
     setDashboardTaskQueueHandler((request) => taskController.actOnQueue(request));
     // E4 ④a (.prd/19 D3) — the host the epic's tools call: registry reads, the plan writer,
     // a child's last final from its work log. Set here, not imported there (no cycle).
-    setEpicHost({
-      getTask: (taskId) => claudeHandler.getSessionRegistry().getSessionByTaskId(taskId),
-      getChildTasks: (parentTaskId) => claudeHandler.getSessionRegistry().getChildTasks(parentTaskId),
-      setEpicPlan: (taskId, input, by) => claudeHandler.getSessionRegistry().setEpicPlan(taskId, input, by),
-      readChildFinal: async (child) => {
-        const turnId = child.lastTurnOutcome?.turnId;
-        if (!child.conversationId || !turnId) return undefined;
-        return readTurnFinal(readWorkLog, child.conversationId, turnId);
+    // #854 — an epic and its children are Slack sessions: the epic's tools act through the Slack
+    // path (a child is its own thread; an instruction is a message into it, queued while the child
+    // works), bounded by the tree's limits.
+    const epicRegistry = claudeHandler.getSessionRegistry();
+    const slackKeyOf = (s: ConversationSession): string | undefined =>
+      s.channelId && s.slackless !== true ? epicRegistry.getSessionKey(s.channelId, s.threadTs) : undefined;
+    const slackSessionBusy = (key: string): boolean =>
+      slackHandler.getRequestCoordinator().isRequestActive(key) ||
+      (slackHandler.getFollowupView(key)?.items ?? []).some((item: { state: string }) =>
+        ['queued', 'steered', 'reserved', 'claimed', 'dispatched'].includes(item.state),
+      );
+    const epicTreeGate = createEpicTreeGate({
+      getChildTasks: (parentTaskId) => epicRegistry.getChildTasks(parentTaskId),
+      isRunning: (s) => {
+        const key = slackKeyOf(s);
+        return !!key && slackHandler.getRequestCoordinator().isRequestActive(key);
       },
-      // E4 ④b — making and starting children (D4 · D8 · D9).
-      createTask: (input) => claudeHandler.createTask(input),
-      createFreshDirectory: (ownerId) => new WorkingDirectoryManager().createSessionBaseDir(ownerId),
-      ensureDirectory: ensureChildFolder,
-      controller: taskController,
+      // D9 e — the tree's spend: the epic, its live children, and the closed ones from their latest archive.
+      treeCostUsd: (epic) =>
+        epicTreeCostUsd(epic, {
+          live: (taskId) => epicRegistry.getSessionByTaskId(taskId),
+          archived: (taskId) => archivedCostUsd(getArchiveStore().latestByTaskId(taskId)),
+        }),
+      costLimitUsd: (ownerId) => userSettingsStore.getUserEpicCostLimitUsd(ownerId),
+    });
+    const sendAsOwner = (key: string, text: string, opts: { onAccepted: () => void; label: string; hostTurn?: true }) =>
+      injectDashboardMessage(key, text, undefined, [], undefined, undefined, {
+        onAccepted: opts.onAccepted,
+        verbatim: true,
+        // An epic's wake is soma-work's word, not the owner's: it answers no question the epic asked
+        // (review #872 astra). Its word to a child is the owner's, delegated: it answers the child's.
+        ...(opts.hostTurn ? { hostTurn: true as const } : {}),
+        echoLabel: opts.label,
+      });
+    setEpicHost(
+      createSlackEpicHost({
+        getSessionByTaskId: (taskId) => epicRegistry.getSessionByTaskId(taskId),
+        getChildTasks: (parentTaskId) => epicRegistry.getChildTasks(parentTaskId),
+        setEpicPlan: (taskId, input, by) => epicRegistry.setEpicPlan(taskId, input, by),
+        reserveEpicChild: (epicTaskId, planNodeId) => epicRegistry.reserveEpicChild(epicTaskId, planNodeId),
+        unreserveEpicChild: (epicTaskId, childId) => epicRegistry.unreserveEpicChild(epicTaskId, childId),
+        keyOf: slackKeyOf,
+        postMessage: async (channel, text, blocks) => {
+          const posted = await app.client.chat.postMessage({ channel, text, blocks: blocks as any });
+          return { ts: posted.ts as string | undefined };
+        },
+        handleMessage: (event) =>
+          slackHandler.handleMessage(event as any, async (args: any) => {
+            const result = await app.client.chat.postMessage({
+              channel: String(event.channel),
+              text: (typeof args === 'string' ? args : args?.text) || ' ',
+              thread_ts: (typeof args === 'string' ? undefined : args?.thread_ts) || String(event.thread_ts),
+              blocks: typeof args === 'string' ? undefined : args?.blocks,
+            });
+            return { ts: result.ts as string | undefined };
+          }),
+        onTurnAccepted: (channel, ts, accepted) => slackHandler.onTurnAccepted(channel, ts, accepted),
+        sendToThread: sendAsOwner,
+        isRunning: (key) => slackHandler.getRequestCoordinator().isRequestActive(key),
+        readWorkLog,
+        gate: epicTreeGate,
+        ensureDirectory: ensureChildFolder,
+        logger: new Logger('EpicHost'),
+      }),
+    );
+    // #854 — a Slack epic wakes when it is idle and its children's ends wait: after its own chain
+    // settles, right after an event, and at boot (below). The wake is a message into its thread.
+    const slackEpicWaker = createSlackEpicWaker({
+      getSession: (key) => epicRegistry.getSessionByKey(key),
+      isBusy: slackSessionBusy,
+      gate: epicTreeGate,
+      consume: (key, ids, by) => epicRegistry.consumeEpicWake(key, ids, by),
+      release: (key, by) => epicRegistry.releaseEpicWake(key, by),
+      settle: (key, keep) => epicRegistry.settleEpicWakes(key, keep),
+      send: sendAsOwner,
+      logger: new Logger('SlackEpicWaker'),
+    });
+    // #854 — a chain settled: a child reports its end to its epic; an epic may wake.
+    slackHandler.setChainSettledListener((key, outcome) => {
+      const session = epicRegistry.getSessionByKey(key);
+      if (!session || session.slackless === true) return;
+      if (session.parentTaskId) {
+        const end = chainEndOf(outcome);
+        if (end) {
+          try {
+            epicRegistry.recordSessionChainEnd(key, end);
+          } catch (error) {
+            logger.warn('Epic child: its chain end could not be recorded on its epic', {
+              sessionKey: key,
+              error: (error as Error)?.message ?? String(error),
+            });
+          }
+        }
+      }
+      // Its chain ended: the wakes it ran are done (a restart before this delivers them again; one still
+      // being sent is kept), then it may wake again.
+      if (session.kind === 'epic') slackEpicWaker.chainEnded(key);
     });
     // E4 ⑥ (.prd/19 D7) — an epic with pending events wakes when it is idle: when a chain
     // of its ends (the controller's onChainEnd, above — the post-drain idle hook fires inside
@@ -1504,7 +1600,14 @@ async function start() {
       controller: taskController,
       logger: new Logger('EpicWaker'),
     });
-    claudeHandler.getSessionRegistry().setEpicEventListener((key) => epicWaker.wake(key));
+    // An event on an epic: a dashboard task's epic wakes on the task path, a Slack epic on the Slack path.
+    claudeHandler
+      .getSessionRegistry()
+      .setEpicEventListener((key) =>
+        claudeHandler.getSessionRegistry().getSessionByKey(key)?.slackless === true
+          ? epicWaker.wake(key)
+          : slackEpicWaker.wake(key),
+      );
     // #767 — an instruction sent into someone else's work thread waits for the
     // thread owner's approval: one store for every entry (a Slack reply, a
     // dashboard instruction, a drained queue item, a Slack-less task), the owner
@@ -2087,6 +2190,7 @@ async function start() {
     // E4 ⑥ (D7) — boot scan, with the dashboard up: an epic left with pending events wakes.
     for (const [key, session] of claudeHandler.getAllSessions()) {
       if (session.slackless === true && session.kind === 'epic') epicWaker.wake(key);
+      else if (session.kind === 'epic' && !session.parentTaskId) slackEpicWaker.wake(key);
     }
 
     // E2 ⑤ / D13 — after the load and its reconciliation save, and with the

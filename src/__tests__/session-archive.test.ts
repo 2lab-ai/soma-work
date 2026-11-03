@@ -281,3 +281,40 @@ describe('SessionArchiveStore', () => {
     expect(recent).toEqual([]);
   });
 });
+
+describe('SessionArchiveStore.latestByTaskId — an epic tree’s spend lookup (#854, review #872 fable P2-3)', () => {
+  const DIR = path.join(TEST_DATA_DIR, 'by-task-id');
+  beforeEach(() => {
+    if (fs.existsSync(DIR)) fs.rmSync(DIR, { recursive: true });
+    fs.mkdirSync(DIR, { recursive: true });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (fs.existsSync(DIR)) fs.rmSync(DIR, { recursive: true });
+  });
+
+  it('B1 — an id with no archive scans the folder once, not on every gate check', () => {
+    const store = new SessionArchiveStore(DIR);
+    store.archive(makeTestSession({ taskId: 'other' } as any), 'C1-1.0', 'terminated');
+    expect(store.latestByTaskId('child-x')).toBeNull();
+    // A file this store did not write appears: a cached miss does not read the folder again.
+    const other = new SessionArchiveStore(DIR);
+    other.archive(makeTestSession({ taskId: 'child-x' } as any), 'C1-9.0', 'terminated');
+    expect(store.latestByTaskId('child-x')).toBeNull();
+    // A fresh store (a restart) scans once and finds it.
+    expect(new SessionArchiveStore(DIR).latestByTaskId('child-x')?.taskId).toBe('child-x');
+  });
+
+  it('B2 — an archive written later is found, and a child archived again reads its newest spend', () => {
+    const store = new SessionArchiveStore(DIR);
+    expect(store.latestByTaskId('child-1')).toBeNull();
+    store.archive(makeTestSession({ taskId: 'child-1', usage: { totalCostUsd: 1 } } as any), 'C1-2.0', 'terminated');
+    expect(store.latestByTaskId('child-1')?.taskId).toBe('child-1');
+    const first = store.latestByTaskId('child-1');
+    // Revived and closed again: the newer archive replaces the cached one.
+    store.archive(makeTestSession({ taskId: 'child-1', usage: { totalCostUsd: 3 } } as any), 'C1-2.0', 'terminated');
+    const second = store.latestByTaskId('child-1');
+    expect(second).not.toBe(first);
+    expect((second?.archivedAt ?? 0) >= (first?.archivedAt ?? 0)).toBe(true);
+  });
+});

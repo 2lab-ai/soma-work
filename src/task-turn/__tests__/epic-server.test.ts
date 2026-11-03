@@ -1,8 +1,8 @@
 /**
- * E4 ④a — the epic's host tools (.prd/19 D3 · D8).
+ * E4 ④a — the epic's host tools (.prd/19 D3 · D8), on a Slack epic since #854.
  *
- *   S1 the server rides an epic's own task turn only: not a child's, an
- *      ordinary task's, or a Slack turn.
+ *   S1 the server rides an epic's own Slack turn only (the context names the epic):
+ *      not a child's, an ordinary session's, or a dashboard task's.
  *   S2 the tools carry no identity: no owner, task id or mode argument; the
  *      epic is the turn's own.
  *   S3 plan_write saves through the host's plan writer as the epic; a refusal
@@ -14,9 +14,15 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { TaskExecutionContext } from '../../agent-runtime/execution-context';
 import { applyPlanWrite, EpicPlanError } from '../epic-plan';
-import { attachesEpicServer, buildEpicServer, type EpicHost, epicTools, setEpicHost } from '../epic-server';
+import {
+  attachesEpicServer,
+  buildEpicServer,
+  type EpicExecutionContext,
+  type EpicHost,
+  epicTools,
+  setEpicHost,
+} from '../epic-server';
 
 // The real server, but its config is kept so the tools it carries can be read.
 vi.mock('@anthropic-ai/claude-agent-sdk', async (original) => {
@@ -27,19 +33,18 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (original) => {
 const EPIC_ID = 'e1';
 const ctx = (extra: Record<string, unknown> = {}) =>
   ({
-    origin: 'task',
+    origin: 'slack',
     userId: 'U1',
     isAdmin: false,
     permissionMode: 'legacy',
-    sessionKey: `task:${EPIC_ID}`,
-    taskId: EPIC_ID,
-    workingDirectory: '/tmp/U1/e',
-    kind: 'epic',
+    sessionKey: 'C1-1700000000.000100',
+    workingDirectory: '/tmp/U1/session_e',
+    epicTaskId: EPIC_ID,
     ...extra,
-  }) as unknown as TaskExecutionContext;
+  }) as unknown as EpicExecutionContext;
 
 function fakeHost(over: Partial<EpicHost> = {}) {
-  const epic: any = { taskId: EPIC_ID, ownerId: 'U1', slackless: true, kind: 'epic', childTaskIds: [] };
+  const epic: any = { taskId: EPIC_ID, ownerId: 'U1', channelId: 'C1', kind: 'epic', childTaskIds: [] };
   const children: any[] = [];
   const host: EpicHost = {
     getTask: vi.fn((id: string) => (id === EPIC_ID ? epic : children.find((c) => c.taskId === id))),
@@ -49,16 +54,15 @@ function fakeHost(over: Partial<EpicHost> = {}) {
       return epic.plan;
     }),
     readChildFinal: vi.fn(async () => ({ text: 'the end of its answer', clipped: true })),
-    createTask: vi.fn(() => {
+    isRunning: vi.fn(() => false),
+    admit: vi.fn(() => undefined),
+    spawnChild: vi.fn(async () => {
       throw new Error('not in this test');
     }),
-    createFreshDirectory: vi.fn(() => undefined),
+    instructChild: vi.fn(async () => {
+      throw new Error('not in this test');
+    }),
     ensureDirectory: vi.fn(),
-    controller: {
-      canStart: vi.fn(() => null),
-      start: vi.fn(async () => ({ status: 202, body: {} })),
-      isRunning: vi.fn(() => false),
-    },
     ...over,
   };
   return { host, epic, children };
@@ -73,13 +77,12 @@ const parse = (r: any) => JSON.parse(r.content[0].text);
 afterEach(() => setEpicHost(undefined));
 
 describe('the epic server (E4 ④a, D3 · D8)', () => {
-  it('S1 — rides an epic’s own task turn only', () => {
+  it('S1 — rides an epic’s own Slack turn only', () => {
     expect(attachesEpicServer(ctx())).toBe(true);
-    // A child (even one claiming to be an epic), an ordinary task, a Slack turn, no context.
-    expect(attachesEpicServer(ctx({ kind: undefined, parentTaskId: EPIC_ID }))).toBe(false);
-    expect(attachesEpicServer(ctx({ parentTaskId: EPIC_ID }))).toBe(false);
-    expect(attachesEpicServer(ctx({ kind: undefined }))).toBe(false);
-    expect(attachesEpicServer(ctx({ origin: 'slack' }))).toBe(false);
+    // A turn that names no epic (a child's, an ordinary session's), a dashboard task's, no context.
+    expect(attachesEpicServer(ctx({ epicTaskId: undefined }))).toBe(false);
+    expect(attachesEpicServer(ctx({ epicTaskId: '' }))).toBe(false);
+    expect(attachesEpicServer(ctx({ origin: 'task' }))).toBe(false);
     expect(attachesEpicServer(undefined)).toBe(false);
   });
 
@@ -268,6 +271,10 @@ describe('the epic server (E4 ④a, D3 · D8)', () => {
     expect(host.setEpicPlan).not.toHaveBeenCalled();
     epic.closing = undefined;
     epic.kind = undefined;
+    expect(parse(await childStatus.handler({} as any, {}))).toMatchObject({ code: 'not-an-epic' });
+    // A dashboard task's epic is not served on this path (#854: it is archived with its stack).
+    epic.kind = 'epic';
+    epic.slackless = true;
     expect(parse(await childStatus.handler({} as any, {}))).toMatchObject({ code: 'not-an-epic' });
   });
 });
