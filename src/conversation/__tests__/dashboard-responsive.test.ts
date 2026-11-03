@@ -215,12 +215,15 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
     expect(panel.slice(0, at('id="panel-command"')).split('class="panel-scroll"').length - 1).toBe(1);
   });
 
-  it('the static session info (세션 정보, goal) scrolls with the conversation, above it; agents follow the question (spec 13)', () => {
+  it('the static session info (세션 정보, goal) scrolls with the conversation, under 입력 필요 and its tab bar; agents follow (SSOT 2026-11-03)', () => {
     const scroll = at('<div class="panel-scroll" id="panel-scroll">');
     const question = at('id="panel-question"');
+    const bar = at('id="panel-midbar"');
+    expect(bar).toBeGreaterThan(question);
     for (const id of ['panel-info', 'panel-goal']) {
       expect(at(`id="${id}"`), id).toBeGreaterThan(scroll);
-      expect(at(`id="${id}"`), id).toBeLessThan(question);
+      expect(at(`id="${id}"`), id).toBeGreaterThan(bar);
+      expect(at(`id="${id}"`), id).toBeLessThan(at('id="panel-agents"'));
     }
     expect(at('id="panel-agents"')).toBeGreaterThan(question);
     // SSOT 2026-10-29: then the section tabs (T6: Chat · 작업 로그 · 에이전트 트리).
