@@ -8,6 +8,8 @@
  *   E2  the reply: the links it names, current only where none is ('if-empty')
  *   E3  a `gh pr create`: the new PR, current ('always'); `gh pr view` and a listing record nothing
  *   E4  a host turn (not the user's words) records nothing from its text
+ *   E5  a REST write (#832): a `curl -X POST …/pulls` is recorded as created ('always'), a merge updates the PR's state
+ *       ('update'), a comment POST records nothing — every agent's calls, a subagent's included
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -275,5 +277,69 @@ describe('StreamExecutor — the links a turn names are recorded on its session'
     await new StreamExecutor(deps).execute({ ...createParams(createSession()), isUserInput: false });
     await settle();
     expect(deps.claudeHandler.noteSessionLinks).not.toHaveBeenCalled();
+  });
+
+  it('E5 — a REST create is current, a merge updates the state, a comment records nothing (#832)', async () => {
+    const created = 'https://github.com/2lab-ai/soma-work/pull/823';
+    streamEvents = () => [
+      {
+        type: 'tool_call',
+        toolCallId: 'r1',
+        name: 'Bash',
+        input: {
+          command:
+            'jq -n --rawfile b body.md \'{title:"x",head:"fix/x",base:"main",body:$b}\' | curl -s -X POST -H "Authorization: Bearer $T" https://api.github.com/repos/2lab-ai/soma-work/pulls -d @- | jq \'{number,html_url}\'',
+        },
+      },
+      {
+        type: 'tool_result',
+        toolCallId: 'r1',
+        name: 'Bash',
+        content: [{ type: 'text', text: `{\n  "number": 823,\n  "html_url": "${created}"\n}` }],
+      },
+      {
+        type: 'tool_call',
+        toolCallId: 'r2',
+        name: 'Bash',
+        input: {
+          command:
+            'curl -s -X POST https://api.github.com/repos/2lab-ai/soma-work/issues/823/comments -d @c.json | jq -r .html_url',
+        },
+      },
+      {
+        type: 'tool_result',
+        toolCallId: 'r2',
+        name: 'Bash',
+        content: [{ type: 'text', text: `${created}#issuecomment-1` }],
+      },
+      // A subagent merges it: the host's own bookkeeping takes every agent's calls.
+      {
+        type: 'tool_call',
+        toolCallId: 'r3',
+        name: 'Bash',
+        parentToolUseId: 'task1',
+        input: { command: 'curl -s -X PUT https://api.github.com/repos/2lab-ai/soma-work/pulls/823/merge' },
+      },
+      {
+        type: 'tool_result',
+        toolCallId: 'r3',
+        name: 'Bash',
+        parentToolUseId: 'task1',
+        content: [{ type: 'text', text: '{"sha":"abc","merged":true,"message":"Pull Request successfully merged"}' }],
+      },
+      { type: 'assistant_delta', text: '끝.' },
+      { type: 'result', stopReason: 'end_turn', finalText: '끝.' },
+    ];
+    const deps = createDeps('끝.');
+    await new StreamExecutor(deps).execute({ ...createParams(createSession()), isUserInput: false });
+    await settle();
+    const calls = deps.claudeHandler.noteSessionLinks.mock.calls.map((c: any[]) => [
+      c[3],
+      c[2].map((l: { url: string; status?: string }) => (l.status ? `${l.url} ${l.status}` : l.url)),
+    ]);
+    expect(calls).toEqual([
+      ['always', [created]],
+      ['update', [`${created} merged`]],
+    ]);
   });
 });

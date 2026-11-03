@@ -56,7 +56,13 @@ import {
   formatResumedGoalLine,
   type GoalQueueSession,
 } from '../session-goal';
-import { type CapturedLink, isCreateCommand, linksCreatedByTools, linksInText } from '../session-link-capture';
+import {
+  type CapturedLink,
+  type GitHubWrite,
+  githubEffectsOf,
+  githubWritesOf,
+  linksInText,
+} from '../session-link-capture';
 import {
   accumulateModelTotals,
   addSessionSpend,
@@ -1238,7 +1244,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    */
   /**
    * 세션 링크 자동 기록 (SSOT 2026-11-02): record links a turn names on its session (SessionRegistry.noteSessionLinks —
-   * 'first' a user message, 'always' a PR or issue just created, 'if-empty' a reply). Bookkeeping: never throws.
+   * 'first' a user message, 'always' a PR or issue just created, 'if-empty' a reply, 'update' the state of a PR or issue
+   * just merged or closed, #832). Bookkeeping: never throws.
    */
   private noteLinks(
     session: ConversationSession,
@@ -1246,7 +1253,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     channel: string,
     threadTs: string | undefined,
     links: CapturedLink[],
-    mode: 'first' | 'always' | 'if-empty',
+    mode: 'first' | 'always' | 'if-empty' | 'update',
   ): void {
     if (links.length === 0) return;
     try {
@@ -1859,8 +1866,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       if (session && text && params.isUserInput !== false && params.hostTurn !== true) {
         this.noteLinks(session, sessionKey, channel, threadTs, linksInText(text), followUpTurn ? 'first' : 'if-empty');
       }
-      // The Bash calls of this turn that create a PR or an issue (their results are recorded as the current link).
-      const createCalls = new Set<string>();
+      // The GitHub writes this turn's tool calls make, by tool-use id (#832): read from each call's input, proven by its
+      // result — a create becomes the current link, a merge or close updates a link already on the card.
+      const githubWrites = new Map<string, GitHubWrite[]>();
 
       this.logger.info('Sending query to Claude Code SDK', {
         prompt: finalPrompt.substring(0, 200) + (finalPrompt.length > 200 ? '...' : ''),
@@ -2091,9 +2099,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             return;
           }
           for (const tu of allToolUses) {
-            if (tu.name === 'Bash' && isCreateCommand((tu.input as { command?: unknown } | undefined)?.command)) {
-              createCalls.add(tu.id);
-            }
+            const writes = githubWritesOf(tu.name, tu.input);
+            if (writes.length > 0) githubWrites.set(tu.id, writes);
           }
           // Spec 12 §2.2: what the main agent is doing — the thread header's
           // current tool, the Slack tool rows, the request's tool stats — is
@@ -2200,6 +2207,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               // so sink-side lookups stay on one B1 stream handle.
               turnId,
             });
+          // The GitHub writes these results prove (#832) — one parser for the card and the metrics.
+          const githubEffects = githubEffectsOf(allToolResults, githubWrites);
+          for (const tr of allToolResults) githubWrites.delete(tr.toolUseId);
           // Metrics: detect git/gh commands in Bash output (fire-and-forget) — every agent's.
           interceptToolResults(
             allToolResults,
@@ -2214,15 +2224,26 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
                 this.deps.claudeHandler.addMergeStats(ctx.channel, ctx.threadTs, prNumber, linesAdded, linesDeleted);
               }
             },
+            githubEffects,
           );
-          // The PR or issue a `gh pr create` / `gh issue create` just made is the session's current one.
+          // A PR or issue the session just created is its current one; one it merged or closed shows that state.
           this.noteLinks(
             session,
             ctx.sessionKey,
             ctx.channel,
             ctx.threadTs,
-            linksCreatedByTools(allToolResults, createCalls),
+            githubEffects.filter((e) => e.op === 'create').map((e) => e.link),
             'always',
+          );
+          this.noteLinks(
+            session,
+            ctx.sessionKey,
+            ctx.channel,
+            ctx.threadTs,
+            githubEffects
+              .filter((e) => e.op !== 'create')
+              .map((e) => ({ ...e.link, status: e.op === 'merge' ? 'merged' : 'closed' })),
+            'update',
           );
           const commandResult = await this.handleModelCommandToolResults(allToolResults, session, ctx, turnEpochToken);
           if (commandResult.hasPendingChoice) {
