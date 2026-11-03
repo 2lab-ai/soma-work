@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { getDefaultSessionSnapshot } from './catalog';
-import { type HostReceipt, hostReceiptPath, readHostReceipt } from './host-receipt';
+import { type HostReceipt, hostReceiptPath, readHostReceipt, withAck } from './host-receipt';
 
 /**
  * #846 item 2 — the host-confirmed card receipt.
@@ -42,6 +42,31 @@ describe('readHostReceipt', () => {
     const file = path.join(dir, 'ok.json');
     fs.writeFileSync(file, JSON.stringify(receipt()));
     expect(readHostReceipt(file)).toEqual(receipt());
+  });
+
+  it('drops malformed acks instead of trusting them (astra R2 P2)', () => {
+    const file = path.join(dir, 'acks.json');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        ...receipt(),
+        acks: {
+          r_ok: { receiptId: 'r_ok', ok: true, at: 3 },
+          r_null: null,
+          r_bad: { ok: 'yes' },
+          r_noat: { ok: true },
+        },
+      }),
+    );
+    expect(readHostReceipt(file)?.acks).toEqual({ r_ok: { receiptId: 'r_ok', ok: true, at: 3 } });
+    fs.writeFileSync(file, JSON.stringify({ ...receipt(), acks: 'nope' }));
+    expect(readHostReceipt(file)?.acks).toBeUndefined();
+  });
+
+  it('withAck tolerates a broken ledger', () => {
+    expect(withAck({ r_x: null } as never, { receiptId: 'r_y', ok: true, at: 1 })).toEqual({
+      r_y: { receiptId: 'r_y', ok: true, at: 1 },
+    });
   });
 
   it('is undefined for a missing, unreadable or malformed file — never a guess', () => {

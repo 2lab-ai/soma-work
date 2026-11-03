@@ -93,10 +93,10 @@ describe('SessionRegistry — the model-command host receipt', () => {
 
   it('an ended session archived on load takes its receipt with it', () => {
     const now = Date.now();
-    const key = new SessionRegistry().getSessionKey('C1', '100.006');
     const saved = [
       {
-        key,
+        // The persisted `key` field stays in the legacy form; the loader derives the live key (grok R2 P2).
+        key: 'C1-100.006',
         ownerId: 'U1',
         userId: 'U1',
         channelId: 'C1',
@@ -158,5 +158,18 @@ describe('SessionRegistry — the model-command host receipt', () => {
     expect(Object.keys(acks)).toHaveLength(20);
     expect(acks.r_24).toBeDefined();
     expect(acks.r_0).toBeUndefined();
+  });
+
+  it('a corrupt receipt on disk never breaks the write (astra R2 P2)', () => {
+    const reg = new SessionRegistry();
+    reg.createSession('U1', 'User', 'C1', '100.010');
+    const file = reg.modelCommandReceiptFile('C1', '100.010');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ sequence: 1, at: 1, session: { issues: [], prs: [], docs: [] }, acks: { r_null: null } }),
+    );
+    expect(() => reg.writeModelCommandReceipt('C1', '100.010', { receiptId: 'r_1', ok: true, at: 2 })).not.toThrow();
+    expect(readHostReceipt(file)?.acks).toEqual({ r_1: { receiptId: 'r_1', ok: true, at: 2 } });
   });
 });

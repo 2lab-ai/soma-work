@@ -2759,20 +2759,20 @@ export class SessionRegistry {
   ): void {
     if (!session) return;
     const file = hostReceiptPath(DATA_DIR, key);
-    // The ack ledger survives every rewrite (turn start, another server's write, a late callback): each write keeps
-    // its own ack, so no server's check depends on being the last writer.
-    const acks = withAck(readHostReceipt(file)?.acks, lastWrite);
-    const receipt: HostReceipt = {
-      sequence: session.linkSequence ?? 0,
-      session: this.buildSessionResourceSnapshot(session),
-      ...(session.title ? { title: session.title } : {}),
-      ...(session.executiveSummary?.tldr?.length ? { tldr: [...session.executiveSummary.tldr] } : {}),
-      ...(session.followUp?.reason ? { followUp: session.followUp.reason } : {}),
-      ...(lastWrite ? { lastWrite } : {}),
-      ...(acks ? { acks } : {}),
-      at: Date.now(),
-    };
     try {
+      // The ack ledger survives every rewrite (turn start, another server's write, a late callback): each write keeps
+      // its own ack, so no server's check depends on being the last writer.
+      const acks = withAck(readHostReceipt(file)?.acks, lastWrite);
+      const receipt: HostReceipt = {
+        sequence: session.linkSequence ?? 0,
+        session: this.buildSessionResourceSnapshot(session),
+        ...(session.title ? { title: session.title } : {}),
+        ...(session.executiveSummary?.tldr?.length ? { tldr: [...session.executiveSummary.tldr] } : {}),
+        ...(session.followUp?.reason ? { followUp: session.followUp.reason } : {}),
+        ...(lastWrite ? { lastWrite } : {}),
+        ...(acks ? { acks } : {}),
+        at: Date.now(),
+      };
       fs.mkdirSync(path.dirname(file), { recursive: true });
       atomicWriteJson(file, receipt);
     } catch (error) {
@@ -4023,11 +4023,16 @@ export class SessionRegistry {
     lastActivity: Date,
     reason: 'terminated' | 'sleep_expired',
   ): void {
-    // #846 — an ended session's model-command receipt goes with it (removeSession is not on this path).
+    // #846 — an ended session's model-command receipt goes with it (removeSession is not on this path). The receipt
+    // is named by the live key the loader derives, not the persisted `key` field (kept in the legacy form).
     try {
-      fs.unlinkSync(hostReceiptPath(DATA_DIR, serialized.key));
+      const liveKey =
+        serialized.slackless === true
+          ? buildTaskSessionKey(serialized.taskId ?? '')
+          : this.getSessionKey(serialized.channelId, serialized.threadTs);
+      fs.unlinkSync(hostReceiptPath(DATA_DIR, liveKey));
     } catch {
-      // none written, or already gone
+      // none written, already gone, or no derivable key
     }
     try {
       // Skip if already archived (prevents duplicates on repeated restarts)

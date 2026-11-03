@@ -58,7 +58,8 @@ export function withAck(
   acks: Record<string, HostWriteReceipt> | undefined,
   write: HostWriteReceipt | undefined,
 ): Record<string, HostWriteReceipt> | undefined {
-  const all = { ...(acks ?? {}) };
+  const all: Record<string, HostWriteReceipt> = {};
+  for (const [id, ack] of Object.entries(acks ?? {})) if (isAck(ack)) all[id] = ack;
   if (write?.receiptId) all[write.receiptId] = write;
   const kept = Object.entries(all)
     .sort(([, a], [, b]) => (b.at ?? 0) - (a.at ?? 0))
@@ -70,6 +71,13 @@ export function withAck(
 export function hostReceiptPath(dataDir: string, sessionKey: string): string {
   const name = createHash('sha256').update(sessionKey).digest('hex').slice(0, 24);
   return path.join(dataDir, HOST_RECEIPT_DIR, `${name}.json`);
+}
+
+/** One write ack as the host writes it — anything else in a ledger is dropped, never trusted. */
+function isAck(v: unknown): v is HostWriteReceipt {
+  if (!v || typeof v !== 'object') return false;
+  const a = v as Partial<HostWriteReceipt>;
+  return typeof a.ok === 'boolean' && typeof a.at === 'number' && Number.isFinite(a.at);
 }
 
 /** The receipt in `file`, or undefined when it is missing, unreadable or not a receipt — never a guess. */
@@ -85,5 +93,10 @@ export function readHostReceipt(file: string): HostReceipt | undefined {
   if (typeof r.sequence !== 'number' || typeof r.at !== 'number') return undefined;
   const s = r.session as Partial<SessionResourceSnapshot> | undefined;
   if (!s || !Array.isArray(s.issues) || !Array.isArray(s.prs) || !Array.isArray(s.docs)) return undefined;
-  return r as HostReceipt;
+  const { acks: rawAcks, ...rest } = r;
+  const acks: Record<string, HostWriteReceipt> = {};
+  if (rawAcks && typeof rawAcks === 'object' && !Array.isArray(rawAcks)) {
+    for (const [id, ack] of Object.entries(rawAcks)) if (isAck(ack)) acks[id] = ack;
+  }
+  return { ...(rest as HostReceipt), ...(Object.keys(acks).length ? { acks } : {}) };
 }
