@@ -1,0 +1,8 @@
+{
+  "name": "local",
+  "version": "1.0.2",
+  "description": "soma-work harness skills — they call soma-work's own MCP (model-command: the session task card, NEEDS YOU) and run only inside soma-work. Bundled with soma-work and loaded by default; never published in the marketplace. The portable skills are the zworkflow plugin (src/local).",
+  "author": {
+    "name": "2lab-ai"
+  }
+}

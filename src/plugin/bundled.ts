@@ -24,6 +24,13 @@ import * as path from 'node:path';
 export const BUNDLED_PLUGINS_DIR = path.join(__dirname, '..', 'local');
 
 /**
+ * #857 — the soma-work harness plugin (`local`): skills that call soma-work's own MCP (the session task card) and so
+ * run only here. Bundled and loaded like zworkflow, but absent from `.claude-plugin/marketplace.json` — external
+ * installs never get it. Copied to dist/local-harness by the build.
+ */
+export const BUNDLED_HARNESS_PLUGIN_DIR = path.join(__dirname, '..', 'local-harness');
+
+/**
  * Map of bundled plugin name → absolute local path.
  *
  * Consumed by PluginManager: any plugin ref whose name is a key here is
@@ -31,4 +38,24 @@ export const BUNDLED_PLUGINS_DIR = path.join(__dirname, '..', 'local');
  */
 export const BUNDLED_PLUGINS: Record<string, string> = {
   zworkflow: BUNDLED_PLUGINS_DIR,
+  local: BUNDLED_HARNESS_PLUGIN_DIR,
 };
+
+/**
+ * The plugin list a session loads: the resolved list, with every bundled plugin it lacks prepended (a missing
+ * PluginManager or a failed resolution must never drop zworkflow or the harness plugin), de-duplicated by path so
+ * the same directory never loads twice (duplicate skill names break the session).
+ */
+export function withBundledPlugins<T extends { type: 'local'; path: string }>(
+  paths: readonly T[],
+): Array<T | { type: 'local'; path: string }> {
+  const missing = Object.values(BUNDLED_PLUGINS)
+    .filter((dir) => !paths.some((p) => p.path === dir))
+    .map((dir) => ({ type: 'local' as const, path: dir }));
+  const seen = new Set<string>();
+  return [...missing, ...paths].filter((p) => {
+    if (seen.has(p.path)) return false;
+    seen.add(p.path);
+    return true;
+  });
+}
