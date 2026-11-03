@@ -48,6 +48,8 @@ const RUN = `goal_${process.pid}_${Math.random().toString(36).slice(2, 8)}`;
 const made: string[] = [];
 afterAll(() => {
   for (const dir of made) fs.rmSync(dir, { recursive: true, force: true });
+  // The fake owner's root too (fable-zhuge #870 R1 P3) — a fake id, never a person's.
+  fs.rmSync(path.join('/tmp', OWNER), { recursive: true, force: true });
 });
 
 const OBJECTIVE = 'de-aislop #830 완료';
@@ -306,17 +308,23 @@ describe('SET_GOAL on a dashboard task — set, continued by the loop, completed
     expect(evals[1]).toContain('단계 2 완료');
     expect(evals[1]).not.toContain('골을 설정했습니다');
 
-    // The work log says it all — the owner's instruction, the 🎯 notice, the system's goal turn.
+    // The work log says it all — the owner's instruction, the 🎯 notice, the system's goal turn, ✅ done.
+    // Read until it is there: a notice's append is fire-and-forget (fable-zhuge #870 R1 P2).
     const conversationId = registry.getSessionByKey(key)!.conversationId!;
-    const { entries } = await readWorkLog(conversationId, { limit: 200 });
-    const instructions = entries.filter((e: any) => e.kind === 'instruction');
-    expect(instructions[0]).toMatchObject({ by: 'user' });
-    expect(instructions[0].text).toContain('set goal 해줘');
-    expect(instructions[1]).toMatchObject({ by: 'system' });
-    expect(instructions[1].text).toContain('[goal-continuation]');
-    const notices = entries.filter((e: any) => e.kind === 'notice').map((e: any) => e.text);
-    expect(notices.some((t: string) => t.includes('🎯') && t.includes(OBJECTIVE))).toBe(true);
-    expect(notices.some((t: string) => t.includes('✅ Goal completed'))).toBe(true);
+    await vi.waitFor(
+      async () => {
+        const { entries } = await readWorkLog(conversationId, { limit: 200 });
+        const instructions = entries.filter((e: any) => e.kind === 'instruction');
+        expect(instructions[0]).toMatchObject({ by: 'user' });
+        expect(instructions[0].text).toContain('set goal 해줘');
+        expect(instructions[1]).toMatchObject({ by: 'system' });
+        expect(instructions[1].text).toContain('[goal-continuation]');
+        const notices = entries.filter((e: any) => e.kind === 'notice').map((e: any) => e.text);
+        expect(notices.some((t: string) => t.includes('🎯') && t.includes(OBJECTIVE))).toBe(true);
+        expect(notices.some((t: string) => t.includes('✅ Goal completed'))).toBe(true);
+      },
+      { timeout: 10_000 },
+    );
 
     // A dashboard task never calls Slack: no thread notice, no Slack API call.
     expect(slackNotices).toEqual([]);
