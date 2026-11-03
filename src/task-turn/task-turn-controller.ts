@@ -163,7 +163,7 @@ export interface TaskTurnControllerDeps {
    * never started is not a cause to wake again (that would loop on a start
    * that keeps failing — fable #702 R2). Never throws into the chain.
    */
-  onChainEnd?: (sessionKey: string, info: { started: boolean }) => void;
+  onChainEnd?: (sessionKey: string, info: { started: boolean; stopped?: boolean }) => void;
   /** The task's follow-up queue changed (a word queued, run, paused, edited or cancelled): save and show it. Never throws into the caller. */
   onFollowupsChanged?: (sessionKey: string) => void;
   /** Words one task's queue holds at most. Default {@link TASK_FOLLOWUP_CAPACITY}. */
@@ -575,7 +575,11 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
         outcome: progress.lastOutcome,
       });
       try {
-        deps.onChainEnd?.(sessionKey, { started: chainStarted });
+        // `stopped`: the owner's Stop (`user-stop`) ended it — a plan's goal waits for the owner then.
+        deps.onChainEnd?.(sessionKey, {
+          started: chainStarted,
+          stopped: abort.signal.aborted && abort.signal.reason === 'user-stop',
+        });
       } catch (error) {
         deps.logger.warn('onChainEnd raised', { sessionKey, error: (error as Error)?.message });
       }
