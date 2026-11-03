@@ -298,7 +298,7 @@ function layZones(l) {
       { key: 'tasks', label: '작업 목록', opts: cat.detail.tasks, value: l.tasks },
       { key: 'tasksMax', label: '작업 목록 높이', opts: [{ value: '34', label: '3분의 1' }, { value: '50', label: '절반' }, { value: '70', label: '3분의 2' }], value: String(l.tasksMax), off: l.tasks !== 'list' && l.tasks !== 'line' },
       { key: 'agents', label: '에이전트 탭', opts: cat.detail.agents, value: l.agents }],
-      flags: [{ key: 'agenthead', entry: cat.detail.toggles[1] }, { key: 'sections', entry: cat.detail.toggles[2] }, { key: 'open', entry: cat.detail.toggles[4] }],
+      flags: [{ key: 'agenthead', entry: cat.detail.toggles[1] }, { key: 'sections', entry: cat.detail.toggles[2] }, { key: 'logtab', entry: cat.detail.toggles[5] }, { key: 'open', entry: cat.detail.toggles[4] }],
       fixed: [cat.detail.fixed[1]] },
     { title: '아래', fixed: [cat.detail.fixed[2]], flags: [{ key: 'controls', entry: cat.detail.toggles[3] }] },
   ];
@@ -544,6 +544,7 @@ function layDetailHtml(d) {
   else if (spec.tasks === 'line') html += '<div><b>작업 2 / 4</b> 지금: 카드 폼 검증 추가 ▾</div>';
   else if (spec.tasks === 'runs') html += '<div><b>작업</b> ' + (spec.open ? '실행 표 — T1 요구 정리 8분 · T2 화면 설계 12분 · T3 카드 폼 검증 추가 5분… · 남은 계획 1 · 이전 계획' : '카드 폼 검증 추가 · 실행 3 · 완료 2 · 남은 1 ▸') + '</div>';
   if (has('sections')) html += '<div class="pv-tabs"><span>대화</span><span>작업 로그</span><span>에이전트 트리</span></div>';
+  else if (has('logtab')) html += '<div class="pv-tabs"><span>대화</span><span>작업 로그</span></div>';
   html += '<div class="pv-chat"><div class="pv-msg">폼 검증도 넣어 줘</div><div class="pv-msg is-bot">검증 규칙 4개를 추가했습니다. 카드 번호 · 만료일 · CVC · 이름…</div></div>';
   if (has('controls')) html += '<div class="pv-sub">이 세션 · Opus 5.5 · 높음 ▾</div>';
   html += '<div class="pv-composer">작업 중인 에이전트에 지시…</div>';

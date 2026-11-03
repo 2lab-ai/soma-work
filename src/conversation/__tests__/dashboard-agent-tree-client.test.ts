@@ -2233,7 +2233,10 @@ describe('live morph (review B r2) — a live update keeps the nodes that did no
 describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the arrow path', () => {
   it('the child row is on <ui-work-log>’s arrow path (its own data-nav); 열기 opens that agent (ui-open)', () => {
     const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initWorkLog() {'));
-    expect(init.slice(0, init.indexOf('\n})();'))).toContain('if (id) selectPanelAgent(String(id));');
+    // 열기 opens that agent where the strip shows a way back (panelAgentOpenable, #862); else it stays put.
+    const body = init.slice(0, init.indexOf('\n})();'));
+    expect(body).toContain('selectPanelAgent(String(id));');
+    expect(body).toContain('if (!id || !panelAgentOpenable(String(id))) { e.preventDefault(); return; }');
     expect(TEMPLATE).not.toMatch(/^var WL_STOP_SEL/m);
   });
   it('choosing an agent by keyboard leaves focus on the agent now shown, not on <body> (review B r3)', () => {

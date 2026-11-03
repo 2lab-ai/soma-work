@@ -433,9 +433,12 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     const body = fnBody('openPanel');
     const reset = body.indexOf('resetWorkLog(panelConvId);');
     expect(reset).toBeGreaterThan(-1);
-    // View mode (SSOT 2026-11-01): 어드밴스드 lands on the section the opening names; 미니멀 on the chat.
+    // View mode (SSOT 2026-11-01): an opening lands on the section it names when the layout's strip shows it —
+    // 어드밴스드 all three, 미니멀 대화 · 작업 로그 (SSOT 2026-11-03) — else on the chat.
     expect(body.indexOf('_psec = psecForMode(_panelLand);')).toBeGreaterThan(-1);
-    expect(fnBody('psecForMode')).toContain("return detailShows('sections') ? psecForLanding(land) : 'conv';");
+    expect(fnBody('psecForMode')).toContain('var sec = psecForLanding(land);');
+    expect(fnBody('psecForMode')).toContain("return psecShown().indexOf(sec) >= 0 ? sec : 'conv';");
+    expect(fnBody('psecShown')).toContain("return detailShows('logtab') ? ['conv', 'log'] : ['conv'];");
     expect(body.indexOf('selectPanelSection(_psec);')).toBeGreaterThan(reset);
     expect(fnBody('psecForLanding')).toContain("land === 'worklog' ? 'log'");
     expect(TEMPLATE).toMatch(/^var _panelDetail = false;/m);

@@ -3189,7 +3189,9 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'stripRecommendedMarker',
         'resolveRecommendedId',
         'psecForLanding',
-        // View mode (SSOT 2026-11-01): an opening's section goes through the mode — this harness is 어드밴스드.
+        // View mode (SSOT 2026-11-01): an opening's section goes through the mode — this harness is 어드밴스드
+        // (the whole section strip, psecShown).
+        'psecShown',
         'psecForMode',
         'psecLandingTop',
         'panelTabsHeight',
@@ -3225,6 +3227,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         '_panelOnQuestion',
         'PANEL_TURNS_PAGE',
         'AT_PANEL_WINDOW',
+        'PSEC_ORDER',
         '_psec',
         '_treeWindow',
         '_treeMaxN',

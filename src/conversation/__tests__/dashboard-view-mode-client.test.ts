@@ -11,8 +11,9 @@
  *   T3  minimal: a card face keeps what matters (title · status · time · the
  *       task in progress · what it asks); the open card keeps its actions and
  *       what needs the user
- *   T4  minimal: the detail card is a task list and the chat — its top part is
- *       the header and what needs the user; the page's extras step aside
+ *   T4  minimal: the detail card is a task list and the chat, a tab view with the
+ *       work log (대화 · 작업 로그, SSOT 2026-11-03) — its top part is the header
+ *       and what needs the user; the page's extras step aside
  *   T5  advanced: everything the page showed, every section open (the old 자세히)
  */
 
@@ -426,13 +427,16 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
     expect(list).toContain("container.style.display = list.length ? '' : 'none';");
   });
 
-  it('an opening in minimal mode lands on the chat of the main agent', () => {
+  it('an opening in minimal mode lands on the chat of the main agent — 작업 로그 on its tab (SSOT 2026-11-03)', () => {
     const env = load<{ psecForMode(land: string): string; __set(n: string, v: unknown): void }>(
-      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'detailShows', 'psecForLanding', 'psecForMode'],
-      ['_viewMode', '_viewPlan', '_viewLayout'],
+      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'detailShows', 'psecForLanding', 'psecShown', 'psecForMode'],
+      ['_viewMode', '_viewPlan', '_viewLayout', 'PSEC_ORDER'],
     );
-    expect(env.psecForMode('worklog')).toBe('conv');
+    // The chat is a tab view with the work log (대화 · 작업 로그): an opening toward the work log lands there; the
+    // agent tree is 어드밴스드's, so a tree item opens the chat.
+    expect(env.psecForMode('worklog')).toBe('log');
     expect(env.psecForMode('agent')).toBe('conv');
+    expect(env.psecForMode('')).toBe('conv');
     env.__set('_viewMode', 'advanced');
     expect(env.psecForMode('worklog')).toBe('log');
     expect(env.psecForMode('agent')).toBe('tree');
@@ -444,12 +448,12 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
     expect(open.indexOf("if (!detailShows('agenttabs') && !detailShows('subtabs')) _panelAgent = '';")).toBeGreaterThan(
       agentAt,
     );
-    // Switching to minimal with a subagent or another section shown brings the main agent's chat back.
+    // Switching to minimal with a subagent or the tree shown brings the main agent's chat back.
     const re = clientFn('rerenderForViewMode');
     expect(re).toContain(
       "if (!detailShows('agenttabs') && !detailShows('subtabs') && _panelAgent) selectPanelAgent('');",
     );
-    expect(re).toContain("if (!detailShows('sections') && _psec !== 'conv') selectPanelSection('conv');");
+    expect(re).toContain("if (psecShown().indexOf(_psec) < 0) selectPanelSection('conv');");
     expect(re).toContain('renderBoardForLayout();');
   });
 
@@ -461,14 +465,15 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
       expect(CSS, sel).toMatch(minimalRule(sel));
   });
 
-  it('the detail card’s top keeps the header and what needs the user; info · goal · artifacts · tabs go, the model stays (1안, #805)', () => {
-    // The layout says which sections show (detailSpecOf → body[data-detail]); minimal 1안 shows only the model ·
-    // effort line — the task card shows the model as icons only, so the detail card is where its name is (#805).
+  it('the detail card’s top keeps the header and what needs the user; info · goal · artifacts · agent tabs go, the model stays (1안, #805)', () => {
+    // The layout says which sections show (detailSpecOf → body[data-detail]); minimal 1안 shows the model · effort
+    // line — the task card shows the model as icons only, so the detail card is where its name is (#805) — and the
+    // 대화 · 작업 로그 tabs over the chat (logtab, SSOT 2026-11-03).
     const env = load<{ viewSpec(): any }>(
       ['viewModeFrom', 'viewPlanFrom', 'viewSpec'],
       ['_viewMode', '_viewPlan', '_viewLayout'],
     );
-    expect(env.viewSpec().detail.show).toEqual(['controls']);
+    expect(env.viewSpec().detail.show).toEqual(['logtab', 'controls']);
     for (const [tok, sel] of [
       ['subtitle', '#panel-title-sub'],
       ['info', '#panel-info'],
@@ -479,7 +484,9 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
     ])
       expect(CSS, sel).toContain(`body:not([data-detail~="${tok}"]) ${sel}`);
     expect(CSS).toContain('.panel-tabs::part(list)');
-    expect(CSS).toContain('body:not([data-detail~="sections"]) .panel-sections::part(list)');
+    expect(CSS).toContain(
+      'body:not([data-detail~="sections"]):not([data-detail~="logtab"]) .panel-sections::part(list)',
+    );
     // What needs the user is never hidden by the mode or the plan.
     for (const sel of ['#panel-permission', '#panel-question', '#panel-needs-head', '#panel-status', '#pc-composer']) {
       expect(CSS, sel).not.toMatch(minimalRule(sel));

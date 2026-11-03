@@ -541,7 +541,10 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
     expect(tabs).toContain("{ id: 'tree', label: '에이전트 트리', icon: 'tree', end: true },");
     expect(tabs.indexOf("id: 'log'")).toBeGreaterThan(tabs.indexOf("id: 'conv'"));
     expect(tabs.indexOf("id: 'tree'")).toBeGreaterThan(tabs.indexOf("id: 'log'"));
-    expect(clientFn('renderPanelSections')).toContain("el.data = { label: '섹션', value: _psec, tabs: PSEC_TABS };");
+    // The layout's strip (psecShown): all three in 어드밴스드, 대화 · 작업 로그 in 미니멀 (SSOT 2026-11-03).
+    const render = clientFn('renderPanelSections');
+    expect(render).toContain('var tabs = PSEC_TABS.filter(function(t) { return shown.indexOf(t.id) >= 0; });');
+    expect(render).toContain("el.data = { label: '섹션', value: _psec, tabs: tabs };");
     // D6b (D3 G1-1): 에이전트 트리's box is <ui-log-scroller>'s own too (the tree its one item).
     expect(panel).toMatch(
       /<div class="psec psec-el ui-tok" id="psec-tree" slot="tree">\s*<ui-log-scroller class="panel-tree" id="panel-tree" lang="ko"><\/ui-log-scroller>\s*<\/div>/,

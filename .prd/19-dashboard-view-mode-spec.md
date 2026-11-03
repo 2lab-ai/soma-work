@@ -19,7 +19,7 @@ Status: 구현 · Date: 2026-11-01
 | T1 | 상세 카드의 디테일 옵션(자세히) 삭제 | `#panel-detail-toggle` · `togglePanelDetail` · `soma-panel-detail` 삭제. `.is-detail`은 어드밴스드가 켠다(`applyViewMode`) |
 | T2 | 우상단 어드밴스드 온오프, 기본 꺼짐(미니멀), 유저마다 | `#view-mode-toggle`(app bar `slot="actions"`, `aria-pressed`). 설정 레지스트리 `dashboardMode`(그룹 `dashboard`, `minimal` · `advanced`), 저장소 `UserSettings.dashboardMode`. `PATCH /api/settings/dashboardMode`. 기기 사본 `soma-view-mode`는 첫 그림과 Slack 사용자가 없는 뷰어용 |
 | T3 | 카드에는 가장 중요한 것만 | `minimalCard`: 제목 · 상태와 시간 · 진행 중 작업 · 요약(질문) · ★/CRON · 소유자. 펼친 카드(`renderCardBody(s, col, true)`): 액션(중지 · Slack) · 승인 · 질문 · 재개 · 결과 |
-| T4 | 디테일을 눌러도 중요한 것만. 채팅과 작업 목록이 크게, 위 20%만 다른 것 | 미니멀 상세 카드: 부제 · 세션 정보 · goal · 산출물 · 에이전트 탭 · 섹션 탭 · 모델 숨김(모델은 T14 #805부터 다시 보임). 작업 목록 = 현재 목록 전체를 체크리스트로(`renderPanelTaskList`, 본문의 최대 34%, 넘치면 자기 상자에서 스크롤). 나머지는 채팅. 열면 언제나 메인 에이전트의 채팅 |
+| T4 | 디테일을 눌러도 중요한 것만. 채팅과 작업 목록이 크게, 위 20%만 다른 것 | 미니멀 상세 카드: 부제 · 세션 정보 · goal · 산출물 · 에이전트 탭 · 섹션 탭 · 모델 숨김(모델은 T14 #805부터 다시 보임. 섹션 탭은 2026-11-03부터 대화 · 작업 로그 두 개가 보임 — `.prd/20` §2.3). 작업 목록 = 현재 목록 전체를 체크리스트로(`renderPanelTaskList`, 본문의 최대 34%, 넘치면 자기 상자에서 스크롤). 나머지는 채팅. 열면 언제나 메인 에이전트의 채팅(작업 로그로 연 카드는 작업 로그 탭) |
 | T5 | 미니멀에서도 작업은 된다 | 승인 요청 · 질문 카드 · 입력칸 · 중지 · Slack은 숨기지 않는다 |
 | T6 | 어드밴스드 = 지금 화면 | 페이지 전부(통계, 용량, CRON, 기본 모델 칩, 사용자 선택) + 예전 자세히 켬 |
 

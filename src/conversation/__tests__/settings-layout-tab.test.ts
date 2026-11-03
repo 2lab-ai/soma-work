@@ -7,6 +7,7 @@
  *   E3  moves (↑ ↓, drag), switches, options and selects edit the preset being edited — saved at once (one PUT)
  *   E4  defaults per surface, the quick switch, the thread card's modes; 되돌리기 and 기본값으로
  *   E5  the preview is the dashboard's own face of the sample card in the layout's order
+ *   E6  미니멀 상세 카드: the 대화 · 작업 로그 tab switch (on in minimal) and its preview row
  */
 
 import { describe, expect, it } from 'vitest';
@@ -399,5 +400,33 @@ describe('E5 — the preview is the dashboard’s face', () => {
     api.set('_laySurface', 'thread');
     api.layPaint();
     expect(els['lay-preview'].innerHTML).toContain('▶ 카드 폼 검증 추가');
+  });
+});
+
+describe('E6 — 미니멀 상세 카드의 대화 · 작업 로그 탭 (SSOT 2026-11-03)', () => {
+  it('the detail card lists the switch, on in minimal; the preview shows the two tabs, advanced the whole strip', async () => {
+    const { api, els } = editor();
+    await api.loadLayout();
+    api.set('_laySurface', 'detail');
+    api.layPaint();
+    const controls = () => els['lay-controls'].innerHTML as string;
+    const preview = () => els['lay-preview'].innerHTML as string;
+    const TWO = '<div class="pv-tabs"><span>대화</span><span>작업 로그</span></div>';
+    const ALL = '<div class="pv-tabs"><span>대화</span><span>작업 로그</span><span>에이전트 트리</span></div>';
+    expect(controls()).toContain('대화 · 작업 로그 탭');
+    expect(controls()).toContain('data-lay="flag" data-key="logtab" checked');
+    expect(preview()).toContain(TWO);
+    expect(preview()).not.toContain(ALL);
+    // Off: the chat alone, no tab row.
+    api.layFlag('logtab', false);
+    api.layPaint();
+    expect(api.get('_layDoc').presets['1'].minimal.detail.logtab).toBe(false);
+    expect(preview()).not.toContain('<div class="pv-tabs"><span>대화</span>');
+    api.set('_layMode', 'advanced');
+    api.layPaint();
+    expect(controls()).toContain('data-lay="flag" data-key="logtab"');
+    expect(controls()).not.toContain('data-lay="flag" data-key="logtab" checked');
+    expect(preview()).toContain(ALL);
+    expect(preview()).not.toContain(TWO);
   });
 });
