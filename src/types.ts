@@ -1334,6 +1334,11 @@ export interface TaskFollowupItem {
    * makes it new words, asked again at the drain.
    */
   approvedText?: string;
+  /**
+   * #865 — the opening turn of a goal set while the task worked: `text` is the
+   * goal's objective, never read as a goal command again. An edit drops it.
+   */
+  goalOpening?: true;
 }
 
 export interface TaskTurnOutcomeRecord {

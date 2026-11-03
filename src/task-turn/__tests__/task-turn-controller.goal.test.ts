@@ -131,6 +131,140 @@ describe('TaskTurnController — goal loop turns (SSOT 2026-11-03)', () => {
     expect(ends).toEqual([{ started: true, stopped: false, outcome: 'completed' }]);
   });
 
+  // #865 — `goal …` is the host's goal command on a task, never the model's text.
+  describe('a person’s `goal …` (#865)', () => {
+    const goalHarness = (steps: RunTaskTurnResult[] = []) => {
+      const ran: Array<{ text: string; actor: string }> = [];
+      const goalCommands = {
+        matches: (text: string) => /^\/?goal(\s|$)/i.test(text.trim()),
+        run: vi.fn(async (request: { text: string; actorUserId: string }) => {
+          ran.push({ text: request.text, actor: request.actorUserId });
+          return { status: 200, body: { ok: true, goalCommand: true, message: 'done' } };
+        }),
+      };
+      const h = harness({ goalCommands }, steps);
+      return { ...h, ran, goalCommands };
+    };
+
+    it('runs as the goal command: no turn, nothing to the model, the user hook not told', async () => {
+      const h = goalHarness();
+      const r = await h.controller.start({ sessionKey: KEY, text: '  goal clear ', actorUserId: 'UOWNER' });
+      expect(r).toEqual({ status: 200, body: { ok: true, goalCommand: true, message: 'done' } });
+      expect(h.ran).toEqual([{ text: 'goal clear', actor: 'UOWNER' }]);
+      expect(h.inputs).toHaveLength(0);
+      expect(h.onUserInstruction).not.toHaveBeenCalled();
+    });
+
+    it('`/goal …` is the goal command, not a refused slash command', async () => {
+      const h = goalHarness();
+      const r = await h.controller.start({ sessionKey: KEY, text: '/goal pause', actorUserId: 'UOWNER' });
+      expect(r.status).toBe(200);
+      expect(h.ran).toHaveLength(1);
+    });
+
+    it('applies at once while a turn runs — not queued behind it', async () => {
+      let release!: () => void;
+      const h = goalHarness();
+      const blocking = createTaskTurnController({
+        runner: {
+          runTaskTurn: vi.fn(async (input: RunTaskTurnInput) => {
+            input.onStarted?.();
+            await new Promise<void>((r) => {
+              release = r;
+            });
+            return completed();
+          }),
+          abandonTurn: vi.fn(),
+        },
+        getSession: (k) => (k === KEY ? h.session : undefined),
+        coordinator: { setController: () => {}, removeController: () => {} },
+        buildExecutionContext: () => CTX,
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+        goalCommands: h.goalCommands,
+      });
+      const first = await blocking.start({ sessionKey: KEY, text: 'work', actorUserId: 'UOWNER' });
+      expect(first.status).toBe(202);
+      const r = await blocking.start({
+        sessionKey: KEY,
+        text: 'goal pause',
+        actorUserId: 'UOWNER',
+        queueWhileRunning: true,
+      });
+      expect(r.status).toBe(200);
+      expect(h.ran).toEqual([{ text: 'goal pause', actor: 'UOWNER' }]);
+      expect(h.session.taskFollowups ?? []).toHaveLength(0);
+      release();
+      await first.done;
+    });
+
+    it('the sender is admitted first: signed out or another user on an epic tree is refused before it runs', async () => {
+      const h = goalHarness();
+      const signedOut = await h.controller.start({ sessionKey: KEY, text: 'goal clear', actorUserId: '' });
+      expect(signedOut.status).toBe(403);
+      h.session.kind = 'epic';
+      const stranger = await h.controller.start({ sessionKey: KEY, text: 'goal clear', actorUserId: 'USTRANGER' });
+      expect(stranger.status).toBe(403);
+      expect(h.ran).toHaveLength(0);
+    });
+
+    it('a goal’s opening, a goal continuation and a host start are turns, never goal commands', async () => {
+      const h = goalHarness();
+      for (const extra of [
+        { goalOpening: true },
+        { goalContinuation: true, initiator: 'host' as const },
+        { initiator: 'host' as const },
+      ]) {
+        const r = await h.controller.start({ sessionKey: KEY, text: 'goal ship it', actorUserId: 'UOWNER', ...extra });
+        expect(r.status).toBe(202);
+        await r.done;
+      }
+      expect(h.ran).toHaveLength(0);
+      expect(h.inputs.map((i) => i.text)).toEqual(['goal ship it', 'goal ship it', 'goal ship it']);
+    });
+
+    it('a goal’s opening queued behind a running turn keeps its mark, and drains as the opening', async () => {
+      let release!: () => void;
+      const h = goalHarness();
+      const inputs: RunTaskTurnInput[] = [];
+      let calls = 0;
+      const blocking = createTaskTurnController({
+        runner: {
+          runTaskTurn: vi.fn(async (input: RunTaskTurnInput) => {
+            inputs.push(input);
+            input.onStarted?.();
+            if (calls++ === 0) {
+              await new Promise<void>((r) => {
+                release = r;
+              });
+            }
+            return completed(`t${calls}`);
+          }),
+          abandonTurn: vi.fn(),
+        },
+        getSession: (k) => (k === KEY ? h.session : undefined),
+        coordinator: { setController: () => {}, removeController: () => {} },
+        buildExecutionContext: () => CTX,
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+        goalCommands: h.goalCommands,
+      });
+      const first = await blocking.start({ sessionKey: KEY, text: 'work', actorUserId: 'UOWNER' });
+      const opening = await blocking.start({
+        sessionKey: KEY,
+        text: 'goal of the goal',
+        actorUserId: 'UOWNER',
+        queueWhileRunning: true,
+        goalOpening: true,
+      });
+      expect(opening.body).toMatchObject({ queued: true });
+      expect(h.session.taskFollowups).toMatchObject([{ text: 'goal of the goal', goalOpening: true }]);
+      release();
+      await first.done;
+      await vi.waitFor(() => expect(inputs).toHaveLength(2));
+      expect(inputs[1].text).toBe('goal of the goal');
+      expect(h.ran).toHaveLength(0);
+    });
+  });
+
   it('a throwing user hook never blocks the start', async () => {
     const h = harness({
       onUserInstruction: () => {

@@ -81,6 +81,12 @@ export interface TaskCommandRequest {
    * refused while the task runs (it never supersedes a turn).
    */
   goalContinuation?: boolean;
+  /**
+   * #865 — a goal's opening turn (host code only): `text` is the goal's
+   * objective, run as the user's words — never read as a goal command again,
+   * even when the objective itself begins with `goal`.
+   */
+  goalOpening?: boolean;
 }
 
 /** A control on a word in a task's follow-up queue (the dashboard's queue route). */
@@ -204,6 +210,15 @@ export interface TaskTurnControllerDeps {
     session: ConversationSession,
     item: TaskFollowupItem,
   ) => Promise<TaskCommandResponse | undefined> | undefined;
+  /**
+   * #865 — `goal …` is the host's goal command on a task, as in a Slack thread
+   * (task-goal-commands.ts): the owner's (or an approved) word that matches is
+   * run here — at once, even while a turn runs — and never reaches the model.
+   */
+  goalCommands?: {
+    matches: (text: string) => boolean;
+    run: (request: TaskCommandRequest, session: ConversationSession) => Promise<TaskCommandResponse>;
+  };
 }
 
 /** #599 ⑤ — a dashboard answer to the task's open question, bound to its `askId`. */
@@ -389,7 +404,9 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     opts: { planning?: boolean } = {},
   ): TaskCommandResponse | null {
     if (!accepting) return refuse(503, 'the service is shutting down — try again shortly');
-    if (text !== undefined && isCommand(text.trim())) return refuse(400, COMMAND_REFUSED);
+    if (text !== undefined && isCommand(text.trim()) && !deps.goalCommands?.matches(text)) {
+      return refuse(400, COMMAND_REFUSED);
+    }
     const planning = opts.planning === true;
     if (!tree) return ownerAdmission(ownerId, now(), planning);
     // §2.1: the root of a running tree starts again only once its own chain ended (the start's 409).
@@ -414,21 +431,23 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     else if (ownerChain.get(chain.ownerId) === sessionKey) ownerChain.delete(chain.ownerId);
   }
 
-  function admit(
+  /**
+   * Who may send these words to this task at all — the part of the admission a
+   * goal command meets too (#865): a live dashboard task, a signed-in sender,
+   * no files, not a command (a goal command is let through), an epic tree's
+   * owner rule, not being closed. Slots, windows and a running chain are the
+   * start's alone ({@link admit}).
+   */
+  function gate(
     request: TaskCommandRequest,
-    opts: { answer?: boolean } = {},
+    opts: { answer?: boolean; goalCommand?: boolean } = {},
   ):
     | {
         ok: true;
         session: ConversationSession;
         ctx: ExecutionContext;
-        ownerId: string;
-        startedAt: number;
-        tree?: string;
-        /** A plan turn: admitted without a slot, and holds none while it runs. */
-        planning: boolean;
-        /** The window this start counted in (A0's or its tree's), by map and key — read again to refund. */
-        window: { map: Map<string, number[]>; key: string };
+        text: string;
+        tree: ReturnType<typeof treeOf>;
       }
     | { ok: false; response: TaskCommandResponse } {
     if (!accepting) return { ok: false, response: refuse(503, 'the service is shutting down — try again shortly') };
@@ -456,7 +475,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
           ),
         };
       }
-    } else if (isCommand(text)) {
+    } else if (!opts.goalCommand && isCommand(text)) {
       return { ok: false, response: refuse(400, COMMAND_REFUSED) };
     }
     let ctx: ExecutionContext;
@@ -475,12 +494,38 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     if (session.closing || (tree && tree.root !== request.sessionKey && deps.getSession(tree.root)?.closing)) {
       return { ok: false, response: refuse(409, 'the task is being closed') };
     }
+    return { ok: true, session, ctx, text, tree };
+  }
+
+  function admit(
+    request: TaskCommandRequest,
+    opts: { answer?: boolean } = {},
+  ):
+    | {
+        ok: true;
+        session: ConversationSession;
+        ctx: ExecutionContext;
+        ownerId: string;
+        startedAt: number;
+        tree?: string;
+        /** A plan turn: admitted without a slot, and holds none while it runs. */
+        planning: boolean;
+        /** The window this start counted in (A0's or its tree's), by map and key — read again to refund. */
+        window: { map: Map<string, number[]>; key: string };
+      }
+    | { ok: false; response: TaskCommandResponse } {
+    const gated = gate(request, opts);
+    if (!gated.ok) return gated;
+    const { session, ctx, text, tree } = gated;
     if (chains.has(request.sessionKey)) {
       // The dashboard's word waits for the chain's end; a host start and an answer are refused.
       if (request.queueWhileRunning && !opts.answer) {
         return {
           ok: false,
-          response: enqueue(session, request.sessionKey, text, request.actorUserId, request.approvedOnce === true),
+          response: enqueue(session, request.sessionKey, text, request.actorUserId, {
+            approvedOnce: request.approvedOnce === true,
+            goalOpening: request.goalOpening === true,
+          }),
         };
       }
       return { ok: false, response: refuse(409, 'a turn is already running on this task') };
@@ -514,6 +559,19 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
   }
 
   function start(request: TaskCommandRequest): Promise<TaskCommandResponse> {
+    const goals = deps.goalCommands;
+    // #865 — a person's `goal …` is the host's goal command (a goal's own opening and host starts never are).
+    if (
+      goals &&
+      request.initiator !== 'host' &&
+      request.goalContinuation !== true &&
+      request.goalOpening !== true &&
+      goals.matches(request.text)
+    ) {
+      const gated = gate(request, { goalCommand: true });
+      if (!gated.ok) return Promise.resolve(gated.response);
+      return goals.run({ ...request, text: gated.text }, gated.session);
+    }
     return startChain(request, {});
   }
 
@@ -887,7 +945,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     sessionKey: string,
     text: string,
     authorId: string,
-    approvedOnce: boolean,
+    flags: { approvedOnce: boolean; goalOpening: boolean },
   ): TaskCommandResponse {
     if (!text) return refuse(400, 'message is required');
     const queue = session.taskFollowups ?? [];
@@ -901,7 +959,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       enqueuedAt: now(),
       epoch: 0,
       state: 'queued',
-      ...(approvedOnce ? { approvedText: text } : {}),
+      ...(flags.approvedOnce ? { approvedText: text } : {}),
+      ...(flags.goalOpening ? { goalOpening: true as const } : {}),
     };
     session.taskFollowups = [...queue, item];
     followupsChanged(sessionKey);
@@ -1006,7 +1065,14 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
         settle(undefined); // in the owner's hands now (the approval store has it): nothing more is owed here
         return held;
       }
-      res = held ?? (await start({ sessionKey, text: item.text, actorUserId: item.authorId }));
+      res =
+        held ??
+        (await start({
+          sessionKey,
+          text: item.text,
+          actorUserId: item.authorId,
+          ...(item.goalOpening ? { goalOpening: true } : {}),
+        }));
     } catch (error) {
       // Never lost (review R1, grok/fable P2): back where it was, paused with why.
       res = refuse(500, `the task turn could not start: ${(error as Error)?.message ?? String(error)}`);
@@ -1051,9 +1117,10 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       if (!writer) return no(403, 'only the person who wrote it can edit it');
       const text = (request.text ?? '').trim();
       if (!text) return no(400, 'text is required');
-      if (isCommand(text)) return no(400, COMMAND_REFUSED);
+      if (isCommand(text) && !deps.goalCommands?.matches(text)) return no(400, COMMAND_REFUSED);
+      // Edited, a goal's opening is the writer's own words (a `goal …` among them runs as a goal command).
       session.taskFollowups = queue.map((entry) =>
-        entry === item ? { ...entry, text, epoch: entry.epoch + 1 } : entry,
+        entry === item ? { ...entry, text, epoch: entry.epoch + 1, goalOpening: undefined } : entry,
       );
       followupsChanged(sessionKey);
       return { ok: true };
