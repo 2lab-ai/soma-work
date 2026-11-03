@@ -542,6 +542,14 @@ export interface SummaryServiceOptions {
  *
  * Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S3 + S5
  */
+/** Apply `rewrite` to the parts of `line` outside inline code spans (`` `…` ``); code spans stay as written. */
+function outsideInlineCode(line: string, rewrite: (part: string) => string): string {
+  return line
+    .split(/(`[^`\n]*`)/)
+    .map((part, i) => (i % 2 === 1 ? part : rewrite(part)))
+    .join('');
+}
+
 export class SummaryService {
   private forkExecutor: ForkExecutor;
   private slackApi?: SummarySlackApi;
@@ -903,7 +911,7 @@ export class SummaryService {
    * no headings or fences, and `__x__` there is an identifier (`__init__`), not emphasis — the card shows the same.
    */
   static formatTldrLineForSlack(line: string): string {
-    return line.replace(/\*\*([^*]+)\*\*/g, '*$1*');
+    return outsideInlineCode(line, (part) => part.replace(/\*\*([^*]+)\*\*/g, '*$1*'));
   }
 
   static formatSummaryForSlack(text: string): string {
@@ -923,10 +931,12 @@ export class SummaryService {
         if (inFence) return line;
         // ATX headings: leading 1–6 `#` then space then content. The trailing
         // `#*` strips an optional closing-hash run so `## Foo ##` folds to `*Foo*`.
-        return line
-          .replace(/^(\s*)#{1,6}\s+(.+?)\s*#*\s*$/, (_m, indent: string, content: string) => `${indent}*${content}*`)
-          .replace(/\*\*([^*]+)\*\*/g, '*$1*')
-          .replace(/__([^_]+)__/g, '_$1_');
+        // Bold only. Double underscores stay as written: they belong to identifiers (`__init__`, `obj.__dict__`),
+        // as on the TL;DR line (#871); inline code is never rewritten (#881 B3).
+        return outsideInlineCode(
+          line.replace(/^(\s*)#{1,6}\s+(.+?)\s*#*\s*$/, (_m, indent: string, content: string) => `${indent}*${content}*`),
+          (part) => part.replace(/\*\*([^*]+)\*\*/g, '*$1*'),
+        );
       })
       .join('\n');
   }
