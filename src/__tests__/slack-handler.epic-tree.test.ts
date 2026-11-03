@@ -155,4 +155,25 @@ describe('SlackHandler — a new session’s place in an epic tree (#854)', () =
     await h.drainFollowups('C1:9.9', { outcome: { result: 'safe' }, canDrain: false });
     expect(heard).toHaveLength(1);
   });
+
+  it('T6 — a chain a click drained (Send now / Resume / Retry) is heard too (review #872 astra)', async () => {
+    const { handler } = harness({ ownerId: 'U1', systemPrompt: 'cached' });
+    const heard: Array<[string, unknown]> = [];
+    handler.setChainSettledListener((key, outcome) => heard.push([key, outcome]));
+    const h = handler as any;
+    const dispatcher = { isBusy: () => false };
+    h.followupDispatcher = dispatcher;
+    h.noteAutoCompactCut = vi.fn();
+    h.resumeIfAutoCompactStop = vi.fn();
+    h.releaseDeferredGoalDriver = vi.fn();
+    h.runFollowupDrainLoop = vi.fn(async () => ({ outcome: { result: 'safe' }, canDrain: true }));
+    const deps = h.buildFollowupActionDeps({} as any, dispatcher as any);
+    // Resume: the drain ran the child's queued word to a healthy end.
+    await deps.runDrain('C1:9.9');
+    expect(heard).toEqual([['C1:9.9', { result: 'safe' }]]);
+    // Send now with an empty queue: the click's own run is the chain's last.
+    h.runFollowupDrainLoop = vi.fn(async () => undefined);
+    await deps.runDrain('C1:9.9', { outcome: { result: 'error', reason: 'boom' }, canDrain: true });
+    expect(heard[1]).toEqual(['C1:9.9', { result: 'error', reason: 'boom' }]);
+  });
 });
