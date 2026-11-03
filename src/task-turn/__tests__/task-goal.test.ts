@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ConversationSession } from '../../types';
 import { createTaskGoalInjector, PLAN_GOAL_OBJECTIVE_MAX, planGoalObjective, settleTaskGoal } from '../task-goal';
 import type { TaskPlanDoc } from '../task-plan';
+import type { TaskCommandRequest } from '../task-turn-controller';
 
 const plan = (over: Partial<TaskPlanDoc> = {}): TaskPlanDoc =>
   ({
@@ -235,7 +236,7 @@ describe('G6 — the goal continuation for a task (createTaskGoalInjector)', () 
   });
 
   it('the first continuation of a task the restart cut carries the restart guidance, once (D10 — fable P2)', async () => {
-    const start = vi.fn(async () => ({ status: 202, body: {} }));
+    const start = vi.fn(async (_request: TaskCommandRequest) => ({ status: 202, body: {} }));
     const cut = new Set(['task:a']);
     const inject = createTaskGoalInjector({
       controller: { start },
