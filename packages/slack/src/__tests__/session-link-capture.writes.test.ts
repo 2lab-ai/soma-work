@@ -301,6 +301,29 @@ describe('githubEffectsOf — what is not a write', () => {
     ]);
   });
 
+  it('W3 — a regex after `;` and a newline is a regex, whatever follows it; a division with a call between runs (review round 6)', () => {
+    const view = '; gh pr view 12 --json url -q .url';
+    const url = 'https://github.com/a/b/pull/12';
+    const re = '/fetch("https:\\/\\/api.github.com\\/repos\\/a\\/b\\/pulls", {method:"POST"})/';
+    // `node` evaluates these regex literals and discards them: fetch is never called.
+    expect(
+      effectsOf(
+        bash(`node -e 'const s = 1;\n${re}+1'${view}`, url),
+        bash(`node -e 'const s = 1;\n${re} && s'${view}`, url),
+      ),
+    ).toEqual([]);
+    // JS reads these as divisions, so fetch runs: `(0) / fetch(…) / +0`, `x / fetch(…) / y`.
+    expect(
+      effectsOf(
+        bash(`node -e '(0)${re}+0'`, 'https://github.com/a/b/pull/77'),
+        bash(`node -e 'const x = 2, y = 1;\nx ${re} y'`, 'https://github.com/a/b/pull/78'),
+      ).map(short),
+    ).toEqual([
+      ['create', 'pr', 'https://github.com/a/b/pull/77'],
+      ['create', 'pr', 'https://github.com/a/b/pull/78'],
+    ]);
+  });
+
   it('W3 — pathological commands are read in linear time (review P1)', () => {
     const inputs = [
       `curl -X${' '.repeat(199_000)}x https://api.github.com/repos/a/b/pulls`,
