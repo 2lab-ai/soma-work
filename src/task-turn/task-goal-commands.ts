@@ -28,6 +28,7 @@ import {
   deleteCurrentGoal,
   deleteGoalById,
   enqueueOrActivateGoal,
+  findPendingGoalPosition,
   formatGoalObjectiveForSlack,
   formatResumedGoalLine,
   restoreGoalState,
@@ -69,6 +70,8 @@ export interface TaskGoalCommandDeps {
 export interface TaskGoalCommands {
   /** True when the words are a goal command (`goal …`, `/goal …`, `set goal auto|max|<N>`). */
   matches: (text: string) => boolean;
+  /** True when the goal command opens a goal (`goal <objective>`). */
+  opensGoal: (text: string) => boolean;
   /**
    * Run a goal command on a task. The caller has admitted the sender (signed
    * in, may instruct this task). Never throws: a failure is the response.
@@ -128,6 +131,22 @@ export function createTaskGoalCommands(deps: TaskGoalCommandDeps): TaskGoalComma
   /** Nothing applied (the words are wrong): 400, nothing recorded. */
   const invalid = (message: string): TaskCommandResponse => ({ status: 400, body: { error: message } });
 
+  /** Answered, nothing about this task changed (status, a per-user setting, a repeat): not recorded in its work log. */
+  const answered = (message: string): TaskCommandResponse => ({
+    status: 200,
+    body: { ok: true, goalCommand: true, message },
+  });
+
+  /** Where the same goal already waits, as words — or undefined when it does not. */
+  function alreadyThere(session: ConversationSession, objective: string): string | undefined {
+    const at = findPendingGoalPosition(session, objective);
+    if (at === undefined) return undefined;
+    if (at > 0) return `📋 Goal already queued at position ${at} — not added again: ${fmt(objective)}`;
+    return session.goal?.status === 'paused'
+      ? `🎯 Goal already set (paused — \`goal resume\` runs it) — not added again: ${fmt(objective)}`
+      : `🎯 Goal already set — not added again: ${fmt(objective)}`;
+  }
+
   /**
    * The goal state changed and a goal starts: its opening turn runs the
    * objective. A refused start puts the state back (`snapshot`) and answers
@@ -142,6 +161,13 @@ export function createTaskGoalCommands(deps: TaskGoalCommandDeps): TaskGoalComma
     undone: string,
   ): Promise<TaskCommandResponse> {
     const { sessionKey } = request;
+    // Its first turn is owed from here until its opening's chain starts (the controller clears it):
+    // the goal loop leaves it alone meanwhile, and only an owed opening runs (#876 R2).
+    const live = session.goal?.goalId === goal.goalId ? session.goal : undefined;
+    if (live) {
+      live.openingPending = true;
+      deps.saveSessions();
+    }
     let res: TaskCommandResponse;
     try {
       res = await deps.startOpening(sessionKey, goal.objective, goal.createdBy || request.actorUserId, {
@@ -175,6 +201,9 @@ export function createTaskGoalCommands(deps: TaskGoalCommandDeps): TaskGoalComma
     const objective = rawObjective.trim();
     const problem = validateSessionGoalObjective(objective);
     if (problem) return invalid(`⚠️ ${problem}.`);
+    // The same goal running or waiting is not set again (#876 R2, fable P3 — the de-aislop repeat).
+    const repeat = alreadyThere(session, objective);
+    if (repeat) return answered(repeat);
     const snapshot = snapshotGoalState(session);
     const result = enqueueOrActivateGoal(
       session,
@@ -216,8 +245,8 @@ export function createTaskGoalCommands(deps: TaskGoalCommandDeps): TaskGoalComma
     if (goal.status === 'complete') {
       return applied(sessionKey, session, '✅ The current goal is complete. Set a new goal to continue.');
     }
-    // A goal whose first turn never reached the model: resuming it starts it.
-    const needsOpening = goal.status === 'paused' && goal.openingPending === true;
+    // A goal whose first turn never started (cancelled, or waiting since a restart): resuming it starts it.
+    const needsOpening = goal.openingPending === true;
     const snapshot = snapshotGoalState(session);
     // Stopped on a repeated failure: the owner chose to go on — the stall ends, the budget comes back.
     const wasStalled = !!goal.stall;
@@ -227,7 +256,6 @@ export function createTaskGoalCommands(deps: TaskGoalCommandDeps): TaskGoalComma
     }
     goal.status = 'active';
     goal.updatedAt = Date.now();
-    if (needsOpening) goal.openingPending = undefined;
     persist(session);
     if (needsOpening) {
       return open(
@@ -338,9 +366,8 @@ export function createTaskGoalCommands(deps: TaskGoalCommandDeps): TaskGoalComma
         `🔢 Goal will now auto-continue up to ${value} turns (was the ${DEFAULT_GOAL_MAX_CONTINUATIONS} default). Applied to the current goal and saved as your default.`,
       );
     }
-    return applied(
-      sessionKey,
-      session,
+    // Only the sender's setting changed: answered, not this task's record (#876 R2, grok P2).
+    return answered(
       `🔢 New goals will auto-continue up to ${value} turns (default is ${DEFAULT_GOAL_MAX_CONTINUATIONS}).`,
     );
   }
@@ -357,9 +384,8 @@ export function createTaskGoalCommands(deps: TaskGoalCommandDeps): TaskGoalComma
       next = mode === 'on';
       deps.settings.setUserAutoGoalEnabled(actorUserId, next);
     }
-    return applied(
-      sessionKey,
-      session,
+    // A per-user setting: answered, not this task's record (#876 R2, grok P2).
+    return answered(
       next
         ? '🤖 Autogoal mode ON. When a session has no active goal, your next instruction becomes the goal automatically.'
         : '🤖 Autogoal mode OFF.',
@@ -374,7 +400,8 @@ export function createTaskGoalCommands(deps: TaskGoalCommandDeps): TaskGoalComma
         case 'status':
           return status(sessionKey, session);
         case 'invalid':
-          return { status: 200, body: { ok: true, goalCommand: true, message: USAGE } };
+          // Nothing applied — the words are wrong (#876 R2, fable P3): refused with the usage.
+          return invalid(USAGE);
         case 'set':
           return await setGoal(request, session, action.objective);
         case 'pause':
@@ -432,6 +459,8 @@ export function createTaskGoalCommands(deps: TaskGoalCommandDeps): TaskGoalComma
       const objective = action.objective.trim();
       const problem = validateSessionGoalObjective(objective);
       if (problem) throw new HostGoalActionError(400, problem);
+      const repeat = alreadyThere(session, objective);
+      if (repeat) throw new HostGoalActionError(409, repeat);
       const snapshot = snapshotGoalState(session);
       const result = enqueueOrActivateGoal(
         session,
@@ -509,22 +538,27 @@ export function createTaskGoalCommands(deps: TaskGoalCommandDeps): TaskGoalComma
     why: 'cancelled' | 'stale',
   ): void {
     const goal = session.goal;
-    // Its goal moved on (cleared, done, deleted, replaced): nothing is owed — the drop is the whole story.
-    if (!goal || goal.goalId !== goalId || goal.status === 'complete') return;
-    const wasActive = goal.status === 'active';
+    // A stale opening owes nothing: its goal moved on (cleared, done, deleted, replaced), is paused
+    // with its first turn still owed (`goal resume` starts it), or another opening already ran.
+    if (why === 'stale') return;
+    // Cancelled: only the owed first turn of the current goal pauses it.
+    if (!goal || goal.goalId !== goalId || goal.status === 'complete' || goal.openingPending !== true) return;
     goal.status = 'paused';
-    goal.openingPending = true;
     retireGoalCapDecision(goal);
     goal.updatedAt = Date.now();
     persist(session);
-    if (why === 'cancelled' || wasActive) {
-      note(
-        sessionKey,
-        session,
-        `⏸️ Goal paused — its first turn was ${why === 'cancelled' ? 'cancelled' : 'skipped'}: ${fmt(goal.objective)}\n\`goal resume\` starts it from its first turn; \`goal clear\` drops it.`,
-      );
-    }
+    note(
+      sessionKey,
+      session,
+      `⏸️ Goal paused — its first turn was cancelled: ${fmt(goal.objective)}\n\`goal resume\` starts it from its first turn; \`goal clear\` drops it.`,
+    );
   }
 
-  return { matches: (text) => CommandParser.isGoalCommand(text), run, hostAction, openingDropped };
+  return {
+    matches: (text) => CommandParser.isGoalCommand(text),
+    opensGoal: (text) => CommandParser.isGoalCommand(text) && CommandParser.parseGoalCommand(text).action === 'set',
+    run,
+    hostAction,
+    openingDropped,
+  };
 }

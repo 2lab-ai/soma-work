@@ -1428,7 +1428,12 @@ async function start() {
       holdQueued: (key, session, item) =>
         instructionApprovals.allows({ sessionKey: key, session, senderId: item.authorId })
           ? undefined
-          : holdTaskInstruction(key, item.authorId, { kind: 'task-command', text: item.text, at: Date.now() }),
+          : holdTaskInstruction(key, item.authorId, {
+              kind: 'task-command',
+              text: item.text,
+              at: Date.now(),
+              ...(item.goalOpeningId !== undefined ? { goalOpeningId: item.goalOpeningId } : {}),
+            }),
       // #865 — `goal …` on a task is the host's goal command, as in a Slack thread.
       goalCommands: {
         matches: (text) => taskGoalCommands?.matches(text) ?? false,
@@ -1436,6 +1441,7 @@ async function start() {
           taskGoalCommands
             ? taskGoalCommands.run(request, session)
             : Promise.resolve({ status: 503, body: { error: 'Task goal commands are not ready yet' } }),
+        opensGoal: (text) => taskGoalCommands?.opensGoal(text) ?? false,
         openingDropped: (key, session, goalId, why) => taskGoalCommands?.openingDropped(key, session, goalId, why),
       },
     });
@@ -1556,6 +1562,8 @@ async function start() {
                 // these very words, so the drain does not ask again unless they are edited.
                 queueWhileRunning: true,
                 approvedOnce: true,
+                // A goal's first turn stays one — and runs only if its goal still owes it (#876 R2, astra P2).
+                ...(held.goalOpeningId !== undefined ? { goalOpeningId: held.goalOpeningId } : {}),
               })
             : await taskController.answer({
                 sessionKey: request.sessionKey,

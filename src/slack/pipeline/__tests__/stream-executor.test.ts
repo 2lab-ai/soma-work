@@ -6423,8 +6423,12 @@ describe('SET_GOAL host-apply (#1082)', () => {
       const session = createSession();
       await apply(executor, session, turn());
       session.goal.status = 'paused';
-      await apply(executor, session, turn());
+      const context = turn();
+      await apply(executor, session, context);
       expect(session.goalQueue ?? []).toHaveLength(0);
+      // #876 R2 (fable P3): a paused goal is not running — the notice says how to run it.
+      const texts = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
+      expect(texts.some((t: string) => t.includes('paused — `goal resume` runs it'))).toBe(true);
     });
 
     it('a goal already queued: not queued again, the notice gives its position', async () => {

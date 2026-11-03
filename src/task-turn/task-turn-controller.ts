@@ -220,10 +220,12 @@ export interface TaskTurnControllerDeps {
   goalCommands?: {
     matches: (text: string) => boolean;
     run: (request: TaskCommandRequest, session: ConversationSession) => Promise<TaskCommandResponse>;
+    /** True when the goal command opens a goal (`goal <objective>`) — the only one a new task may start with. */
+    opensGoal: (text: string) => boolean;
     /**
      * A goal's queued opening will not run: `cancelled` from the queue, or found
-     * `stale` at the drain. Its goal, if still current, is paused with its first
-     * turn owed (`goal resume` starts it) — never left active with no first turn.
+     * `stale` at the drain. Its goal, if its first turn is still owed, is paused
+     * (`goal resume` starts it) — never left active with no first turn.
      */
     openingDropped: (
       sessionKey: string,
@@ -297,8 +299,14 @@ function isCommand(text: string): boolean {
 const CONTINUATION_REFUSED = 'continuation not supported on a dashboard task yet';
 /** #865 — a goal command applies at once; it never waits in the queue. */
 const GOAL_COMMAND_NOT_QUEUED = 'a goal command is not queued — send it as its own message (it applies at once)';
-/** #865 — a goal's queued opening whose goal moved on (cleared, paused, done, deleted). */
-const GOAL_OPENING_STALE = "this goal's first turn was skipped — the goal is no longer the active goal";
+/** #865 — a goal's queued opening whose goal moved on (cleared, paused, done, deleted, or already opened). */
+const GOAL_OPENING_STALE = "this goal's first turn was skipped — the goal no longer waits for it";
+/** #865 — a goal's queued first turn is its objective. */
+const GOAL_OPENING_NOT_EDITABLE =
+  "this is a goal's first turn (its objective) — cancel it to pause the goal, or `goal clear` and set the goal again";
+/** #865 — a new task's first word may open a goal, not act on one it does not have. */
+const GOAL_COMMAND_NEEDS_GOAL =
+  'a new task starts with an instruction or `goal <objective>` — it has no goal to act on yet';
 const BUDGET_SPENT = 're-entry limit reached';
 /** E2 ③ — the end of a chain whose `/compact` hop completed with no instruction re-run. */
 const COMPACT_NOT_RERUN = 'compacted, but the instruction was not re-run (압축 뒤 재실행 못 함)';
@@ -421,7 +429,10 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     opts: { planning?: boolean } = {},
   ): TaskCommandResponse | null {
     if (!accepting) return refuse(503, 'the service is shutting down — try again shortly');
-    if (text !== undefined && isCommand(text.trim()) && !deps.goalCommands?.matches(text)) {
+    if (text !== undefined && deps.goalCommands?.matches(text)) {
+      // #865 — a new task starts with work or a goal: a goal command with no goal to act on makes a dead task.
+      if (!deps.goalCommands.opensGoal(text)) return refuse(400, GOAL_COMMAND_NEEDS_GOAL);
+    } else if (text !== undefined && isCommand(text.trim())) {
       return refuse(400, COMMAND_REFUSED);
     }
     const planning = opts.planning === true;
@@ -576,6 +587,15 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
   }
 
   function start(request: TaskCommandRequest): Promise<TaskCommandResponse> {
+    // #865 — a goal's opening starts only while its goal's first turn is still owed: whatever path
+    // it came by (the drain, an approval released later), one cleared, paused, done or already
+    // opened meanwhile is refused here, never run as the user's words.
+    if (request.goalOpeningId !== undefined) {
+      const session = deps.getSession(request.sessionKey);
+      if (!session || !openingOwed(session, request.goalOpeningId)) {
+        return Promise.resolve(refuse(409, GOAL_OPENING_STALE));
+      }
+    }
     const goals = deps.goalCommands;
     // #865 — a person's `goal …` is the host's goal command (a goal's own opening and host starts never are).
     if (
@@ -601,7 +621,9 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     session.currentInitiatorId = ctx.userId;
     // A synthetic goal turn is not user input; a person's word (not a host start) is.
     const userInput = request.goalContinuation !== true;
-    if (userInput && request.initiator !== 'host') {
+    // A goal's opening is the user's objective, but not a new word to the goal it opens (#876 R2, grok P2):
+    // it does not reset that goal's count.
+    if (userInput && request.initiator !== 'host' && request.goalOpeningId === undefined) {
       try {
         deps.onUserInstruction?.(sessionKey, session);
       } catch (error) {
@@ -612,6 +634,12 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     // A new instruction supersedes an open question, as a new Slack message
     // does; the turn's saved start persists the cleared panel. A start that is
     // not saved puts it back — the 500 means nothing happened (grok #634 R1).
+    // #865 — a goal's opening starting: its goal's first turn is no longer owed (saved with the
+    // turn's start). A start that does not happen owes it again (below).
+    const openedGoal =
+      request.goalOpeningId !== undefined && session.goal?.goalId === request.goalOpeningId ? session.goal : undefined;
+    if (openedGoal) openedGoal.openingPending = undefined;
+
     const panel = session.actionPanel;
     const openQuestion = panel
       ? { pendingQuestion: panel.pendingQuestion, pendingChoice: panel.pendingChoice, waiting: panel.waitingForChoice }
@@ -712,6 +740,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     if (planned.gate !== planBefore && !progress.committedBeforeStart && session.taskPlan === planned.gate) {
       session.taskPlan = planBefore;
     }
+    if (openedGoal && session.goal === openedGoal && !progress.committedBeforeStart) openedGoal.openingPending = true;
     return refuse(500, 'the task turn could not start');
   }
 
@@ -1000,9 +1029,12 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     return res.status === 200 && (body.goalCommand === true || body.skipped === true);
   };
 
-  /** #865 — a goal's opening is owed while its goal is the current, active goal. */
+  /**
+   * #865 — a goal's opening is owed while its goal is the current, active goal whose first turn has
+   * not started (`openingPending`, set when the goal opens, cleared when its opening's chain starts).
+   */
   const openingOwed = (session: ConversationSession, goalId: string): boolean =>
-    session.goal?.goalId === goalId && session.goal.status === 'active';
+    session.goal?.goalId === goalId && session.goal.status === 'active' && session.goal.openingPending === true;
 
   const heldForOwner = (res: TaskCommandResponse): boolean =>
     res.status === 202 && (res.body as { pendingApproval?: unknown }).pendingApproval === true;
@@ -1154,6 +1186,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       if (!writer) return no(403, 'only the person who wrote it can edit it');
       const text = (request.text ?? '').trim();
       if (!text) return no(400, 'text is required');
+      // A goal's first turn is its objective (#876 R2, fable P2): cancel it instead — the goal pauses.
+      if (item.goalOpeningId !== undefined) return no(409, GOAL_OPENING_NOT_EDITABLE);
       if (isCommand(text)) return no(400, COMMAND_REFUSED);
       // A goal command is never queued: it applies at once (#865).
       if (deps.goalCommands?.matches(text)) return no(400, GOAL_COMMAND_NOT_QUEUED);
