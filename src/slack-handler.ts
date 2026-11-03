@@ -93,6 +93,7 @@ import {
   TodoDisplayManager,
   ToolEventProcessor,
   ToolTracker,
+  withoutHostOnlyFields,
 } from './slack';
 import {
   type CancelSteeredOutcome,
@@ -905,7 +906,8 @@ export class SlackHandler {
     app.assistant(
       createAssistantContainer({
         logger: this.logger,
-        handleMessage: this.handleMessage.bind(this),
+        // #854 — a door Slack events come in by besides EventRouter: the host-only fields are dropped here too.
+        handleMessage: (event, say) => this.handleMessage(withoutHostOnlyFields(event), say),
       }),
     );
 

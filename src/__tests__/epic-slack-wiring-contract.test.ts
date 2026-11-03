@@ -87,3 +87,11 @@ describe('#854 — a placed folder is checked again where it is used (review #87
     expect(handler).toMatch(/placedDirOf: \(user, dir\) => \{\s*try \{\s*return taskDirectoryFor\(user, dir\);/);
   });
 });
+
+describe('#854 — every door a Slack event comes in by drops the host-only fields (review #872 R2 fable)', () => {
+  it('W6 — the assistant-thread door (app.assistant → handleMessage) strips them as EventRouter does', () => {
+    const handler = fs.readFileSync(path.join(__dirname, '..', 'slack-handler.ts'), 'utf8');
+    const door = section('createAssistantContainer({', '}),', handler);
+    expect(door).toMatch(/handleMessage: \(event, say\) => this\.handleMessage\(withoutHostOnlyFields\(event\), say\)/);
+  });
+});
