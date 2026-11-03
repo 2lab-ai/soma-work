@@ -110,12 +110,15 @@ The dashboard's **New task** button (top bar on desktop, `N` shortcut; floating 
 
 ### 🧭 Plan mode
 
-Choosing "대시보드 작업" in the new-task composer shows a **작업 계획** (plan) switch, on by default. With it on, the task does not run straight away. It first fixes the instruction as given (SSOT), works out the intent (INTENT-FIRST) and writes a whole plan: the one-line conclusion and intent, a map of the phases, each phase's steps, and each step's detail — drawn by the server as HTML. This is for instructions that are expensive to misread, such as dictated or spoken ones and long epics.
+The new-task composer has a **작업 계획** (plan) switch, on by default, for a task in a Slack channel and for a dashboard task alike. With it on, the task does not run straight away, and autogoal and autoz are off for it. It first fixes the instruction as given (SSOT), works out the intent (INTENT-FIRST) and writes a whole plan: the one-line conclusion and intent, a map of the phases, each phase's steps, and each step's detail — drawn by the server as HTML. This is for instructions that are expensive to misread, such as dictated or spoken ones and long epics.
 
 - Opening the card shows the plan at once in the detail card's 입력 필요. The status bar at the top has **시작** (start) and **취소** (cancel); the bar above the composer at the bottom has **시작**, **취소** and **직접 입력** (direct input); the open task card has the same three. A card whose plan arrives opens by itself once.
 - **시작** starts only the revision you were looking at (a newer one meanwhile is refused with a note to look again); the plan goes in as the next instruction and the work begins. **취소** closes the plan; a new instruction plans again. **직접 입력** goes to the composer: what you send there makes the model revise and submit the next revision.
 - Until the plan is started the task has only the plan tool, never the epic's child tools. Full-page view: `/dashboard/plan/<session key>`.
+- In a Slack thread, the thread gets a note with the card's link when a plan is ready. **시작** sends the plan into the thread as your next instruction, as its own turn: if a turn is still running, the plan waits in the queue behind it. A message you write in the thread while the plan waits is direct input; `/compact` and the bot's own continuation turns are not, and leave the plan waiting.
 - A simple question (2–4 short choices — yes / no, start / cancel) shows its choices as buttons on the task card: one press answers it.
+- **시작** also sets a goal for the plan: finish every phase. The goal loop then keeps the task going turn after turn until the plan is done, and picks it up again after a restart. Your own instruction or answer resets its continuation budget.
+- A dashboard task that a restart cut mid-turn continues after boot, under its owner. The cut call is not replayed: before redoing any change, the model first checks what already happened. The conversation shows one line, `[재시작 후 자동 재개]`.
 
 ### 🗂️ A Slack instruction as a dashboard task
 
