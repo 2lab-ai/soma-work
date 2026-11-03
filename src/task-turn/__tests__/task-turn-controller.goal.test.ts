@@ -112,6 +112,15 @@ describe('TaskTurnController — goal loop turns (SSOT 2026-11-03)', () => {
     });
     await r.done;
     expect(h.onUserInstruction).not.toHaveBeenCalled();
+    // A host turn: its text cannot pass the SET_GOAL gate (fable-zhuge #861 R1 P2).
+    expect(h.inputs[0].params?.hostTurn).toBe(true);
+  });
+
+  it('the owner’s own word is no host turn', async () => {
+    const h = harness();
+    const r = await h.controller.start({ sessionKey: KEY, text: 'go', actorUserId: 'UOWNER' });
+    await r.done;
+    expect(h.inputs[0].params?.hostTurn).toBeUndefined();
   });
 
   it('the chain end tells how it ended: a healthy end carries its outcome, a Stop says stopped', async () => {

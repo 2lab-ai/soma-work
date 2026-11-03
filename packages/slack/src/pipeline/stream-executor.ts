@@ -2013,7 +2013,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // on synthetic/continuation turns (fail closed when text is absent).
         currentUserText: text,
         isCompactTurn: (isSlashCommand && trimmedText.startsWith('/compact')) || Boolean(session.fallbackCompactActive),
-        isUserInputTurn: params.isUserInput === true,
+        // A host turn (a Slack goal replay, a dashboard task's host start — an epic waking, a child
+        // instructed, the goal loop) is soma-work's words, never the person's: it cannot set a goal.
+        isUserInputTurn: params.isUserInput === true && params.hostTurn !== true,
         incidentAttempt,
         ...(session.conversationId ? { workLog: emitWorkLog } : {}),
         // The ASK_USER_QUESTION form is posted here, not by the processor

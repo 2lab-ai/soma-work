@@ -4470,6 +4470,24 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
     // Fail-closed contract: a synthetic turn must NEVER present as user input.
     expect(ctx.isUserInputTurn).not.toBe(true);
   });
+
+  // #861 R1 (fable-zhuge P2): a dashboard task's host start (an epic wake, a child instructed, the goal loop)
+  it('a host turn (hostTurn: true) is never user input, even with isUserInput: true', async () => {
+    const deps = createDepsForToolFlow();
+    const executor = new StreamExecutor(deps);
+    const spy = vi
+      .spyOn(executor as any, 'handleModelCommandToolResults')
+      .mockResolvedValue({ hasPendingChoice: false });
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    await executor.execute({
+      ...createToolFlowParams(say),
+      text: 'Epic wake: 1 events — n1:finished. Read details with child_status.',
+      isUserInput: true,
+      hostTurn: true,
+    });
+    expect(spy).toHaveBeenCalled();
+    expect((spy.mock.calls[0][2] as Record<string, unknown>).isUserInputTurn).not.toBe(true);
+  });
 });
 
 describe('stream-executor — B3 choice wiring', () => {
