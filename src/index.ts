@@ -84,6 +84,7 @@ import {
   setDashboardCommandHandler,
   setDashboardCronSource,
   setDashboardEffortHandler,
+  setDashboardEpicTasks,
   setDashboardFollowupHandler,
   setDashboardGoalDecisionHandler,
   setDashboardGoalHandler,
@@ -98,7 +99,6 @@ import {
   setDashboardStopHandler,
   setDashboardSubmitRecommendedHandler,
   setDashboardTaskAccessor,
-  setDashboardEpicTasks,
   setDashboardTaskPlanHandler,
   setDashboardTrashHandler,
   setOAuthDirectoryLookup,
@@ -1443,7 +1443,9 @@ async function start() {
         // Not awaited to its end: the turn runs on; a later held message queues behind it.
         void slackHandler
           .handleMessage(event as any, say)
-          .catch((error) => logger.error('Approved instruction failed to run', { requestId: request.requestId, error }));
+          .catch((error) =>
+            logger.error('Approved instruction failed to run', { requestId: request.requestId, error }),
+          );
       },
       broadcast: () => broadcastSessionUpdate(),
       links: (request) => ({
