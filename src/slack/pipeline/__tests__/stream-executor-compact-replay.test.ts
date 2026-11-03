@@ -850,6 +850,40 @@ describe('a /compact turn with a replay waiting is not the end of the work (#891
     expect(states[states.length - 1]).toBe('idle');
   });
 
+  it('leaves the replay turn its own end state — the handoff resolves only after that turn ended', async () => {
+    const rec = createDispatchRecorder();
+    let states: string[] = [];
+    // `dispatchPendingUserMessage` → `handleMessage` resolves after the replayed
+    // turn ran to its end (busy fence → `await processMessage`, or
+    // `await run.settled`): here it ended waiting on a question.
+    const dispatch = vi.fn(async (ctx: any, text: string, opts?: any) => {
+      states.push('working', 'waiting');
+      return rec.fn(ctx, text, opts);
+    });
+    const deps = createDeps(() => toAgentEvents(compactBoundarySdk()), dispatch);
+    states = trackActivity(deps);
+    deps.claudeHandler.getSessionRegistry().getActivityStateByKey = vi.fn(() => states[states.length - 1]);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await new StreamExecutor(deps).execute(executeParams(thresholdSession(), say, '/compact'));
+
+    expect(rec.delivered).toEqual([STASHED]);
+    expect(states[states.length - 1]).toBe('waiting');
+  });
+
+  it('goes idle when the handoff started no turn and nothing else runs', async () => {
+    const rec = createDispatchRecorder();
+    const deps = createDeps(() => toAgentEvents(compactBoundarySdk()), rec.fn);
+    const states = trackActivity(deps);
+    deps.claudeHandler.getSessionRegistry().getActivityStateByKey = vi.fn(() => states[states.length - 1]);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await new StreamExecutor(deps).execute(executeParams(thresholdSession(), say, '/compact'));
+
+    expect(rec.delivered).toEqual([STASHED]);
+    expect(states[states.length - 1]).toBe('idle');
+  });
+
   it('an ordinary turn still goes idle and starts the countdown', async () => {
     const deps = createDeps(() => toAgentEvents(successSdk()), createDispatchRecorder().fn);
     const states = trackActivity(deps);
