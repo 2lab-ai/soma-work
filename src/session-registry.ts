@@ -4,6 +4,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { atomicWriteJson } from '@soma/common/atomic-write';
 import {
   type ContextRewindRecord,
   decodeContextAnchor,
@@ -27,7 +28,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
 import { type HostReceipt, type HostWriteReceipt, hostReceiptPath } from 'somalib/model-commands/host-receipt';
-import { atomicWriteJson } from '@soma/common/atomic-write';
 import { DATA_DIR } from './env-paths';
 import { isPlaceholderSessionTitle, sanitizeSessionTitle } from './format/display-title';
 import { Logger } from './logger';
