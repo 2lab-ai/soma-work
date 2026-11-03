@@ -48,9 +48,10 @@ soma-work가 기본으로 싣는 Claude Code 플러그인 `zworkflow`는 [`src/l
 설치합니다. 설치·업데이트·훅, 그리고 플러그인 없이 `using-intentfirst`·`using-ssot` 스킬만 복사하는 경로는
 [zworkflow 플러그인 README](./src/local/README.ko.md)에 있습니다.
 
-zworkflow는 어디서든 쓸 수 있게 유지합니다: soma-work 전용 MCP를 부르는 내용이 없습니다. 그런 스킬(세션 작업 카드,
-NEEDS YOU 후속 작업)은 두 번째 플러그인 `local`([`src/local-harness/`](./src/local-harness/))에 있고, soma-work만
-기본으로 싣고 마켓플레이스에는 올리지 않습니다. 그중 `local:auto-es`가 soma-work 안의 Executive Summary입니다:
+zworkflow는 어디서든 쓸 수 있게 유지하는 것이 원칙입니다. 세션 작업 카드 호출(`GET_SESSION` / `UPDATE_SESSION`)과
+NEEDS YOU 후속 작업은 두 번째 플러그인 `local`([`src/local-harness/`](./src/local-harness/))에 있고, soma-work만
+기본으로 싣고 마켓플레이스에는 올리지 않습니다. zworkflow에 남은 다른 soma-work 전용 호출(`ASK_USER_QUESTION`,
+`CONTINUE_SESSION`, cron)은 #860에서 옮깁니다. 그중 `local:auto-es`가 soma-work 안의 Executive Summary입니다:
 `zworkflow:es`로 문서를 쓰고 작업 카드를 맞추며, 턴 종료 요약도 이 스킬의 턴 종료 규칙으로 돕니다.
 
 ---
