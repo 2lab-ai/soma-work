@@ -125,7 +125,7 @@ import {
   offeredNewTaskModels,
 } from './conversation/new-task-provider';
 import { setProjectRepoSource } from './conversation/project-memory-routes';
-import { createConversationDurable } from './conversation/recorder';
+import { createConversationDurable, getConversation } from './conversation/recorder';
 import { createSessionWorkLogAppender } from './conversation/session-work-log';
 import { setSettingsRegistry } from './conversation/settings-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
@@ -2435,6 +2435,12 @@ async function start() {
               getSession: (key) => taskRegistry.getSessionByKey(key),
               logger: new Logger('TaskRestartResume'),
               goalsResumed: () => goalsResumedAtBoot,
+              // A record saved before the turn's initiator was kept: the cut turn's author, from its conversation.
+              readCutTurnAuthor: async (session) => {
+                const record = session.conversationId ? await getConversation(session.conversationId) : null;
+                const lastUserTurn = record?.turns.filter((turn) => turn.role === 'user').slice(-1)[0];
+                return lastUserTurn?.userId || undefined;
+              },
             })
               .resume(cutTasks)
               .then((outcomes) => {

@@ -640,8 +640,8 @@ export interface CrashRecoveredSession {
 export interface RestartCutTask {
   sessionKey: string;
   ownerId: string;
-  /** Who started the cut turn: the resume runs as them. */
-  actorId: string;
+  /** Who started the cut turn: the resume runs as them. Absent on a record saved before it was kept. */
+  actorId?: string;
   /** The turn the restart cut (its `lastTurnOutcome`): a later turn means someone went on — no resume. */
   turnId: string;
 }
@@ -4530,9 +4530,10 @@ export class SessionRegistry {
               this._restartCutTasks.push({
                 sessionKey: derivedKey,
                 ownerId: session.ownerId,
-                // The cut turn's initiator (an approved writer is not lifted to the owner); a record from
-                // before it was kept: the owner, whose task it is.
-                actorId: typeof actor === 'string' && actor !== '' ? actor : session.ownerId,
+                // The cut turn's initiator (an approved writer is not lifted to the owner). A record from
+                // before it was kept has none: the resume reads the turn's author from its conversation
+                // instead — never the owner by default (trinity R4, astra P1).
+                ...(typeof actor === 'string' && actor !== '' ? { actorId: actor } : {}),
                 turnId,
               });
             }
