@@ -954,12 +954,16 @@ describe('P5 — 미니멀’s detail card: the chat is a tab view with the work
       return prevented;
     };
     // Every built-in has the 에이전트 tab (SSOT 2026-11-03): the strip stays in view while the card looks at a
-    // subagent, so its 열기 moves the card — a log-only agent too (the strip's 메인 tab is the way back).
+    // subagent, so its 열기 moves the card — for one of the strip's own tabs. A log-only agent is no tab: the strip
+    // would select none and its 메인 tab, already selected, would not lead back (review P2).
     for (const p of ['1', '2', '3']) {
       env.__set('_viewPlan', p);
       expect(open(), `minimal ${p}`).toBe(false);
     }
-    expect(open('A9')).toBe(false);
+    expect(open('A9')).toBe(true);
+    env.__set('_viewMode', 'advanced');
+    expect(open('A9')).toBe(true);
+    env.__set('_viewMode', 'minimal');
     // A layout without the tab: no strip — the 열기 does nothing (and says so to the element: no navigate sound).
     const detail = JSON.parse(JSON.stringify(B['1'].minimal.detail));
     detail.tabs = detail.tabs.map((t: { id: string; on: boolean }) => (t.id === 'agents' ? { ...t, on: false } : t));
@@ -967,6 +971,6 @@ describe('P5 — 미니멀’s detail card: the chat is a tab view with the work
     env.__set('_viewLayout', { v: 1, presets: { '1': { minimal: { detail } } } });
     expect(open()).toBe(true);
     expect(open('A9')).toBe(true);
-    expect(opened).toEqual(['A1', 'A1', 'A1', 'A9']);
+    expect(opened).toEqual(['A1', 'A1', 'A1']);
   });
 });

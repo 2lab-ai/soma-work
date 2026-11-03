@@ -256,6 +256,13 @@ export interface KanbanSession {
    * cost. While a turn runs, the calls it has made so far are folded in
    * (SSOT 2026-10-22 T1/T2), so the numbers grow during the turn.
    */
+  /**
+   * SSOT 2026-11-03 — the output tokens since the session's context last reset (/new, CONTINUE_SESSION:
+   * `resetSessionContext` clears `usage` and `activeAccumulatedMs` together), the running turn's calls
+   * included: the detail card's speed (tok/s) divides it by the active time — one span for both. The task
+   * total (`tokenUsage`) outlives those resets, so it cannot be the numerator.
+   */
+  sessionOutputTokens?: number;
   tokenUsage?: {
     totalInputTokens: number;
     totalOutputTokens: number;
@@ -2099,6 +2106,14 @@ function goalHistoryItem(g: any): KanbanGoalHistoryItem {
   return item;
 }
 
+/** The session's own output (SSOT 2026-11-03, KanbanSession.sessionOutputTokens): `usage` + the running turn. */
+export function sessionOutputTokensOf(s: any): number | undefined {
+  const base = s.usage?.totalOutputTokens;
+  const live = sumLiveUsage(s.liveUsage).outputTokens;
+  if (typeof base !== 'number' && !live) return undefined;
+  return (typeof base === 'number' && base > 0 ? base : 0) + live;
+}
+
 /**
  * The card's token totals — the TASK total (SSOT 2026-10-26 T3): the persisted
  * `taskUsage` (main agent + every subagent, across restarts and resets) plus
@@ -2453,6 +2468,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
         }
       : undefined,
     tokenUsage: tokenUsageOf(s),
+    sessionOutputTokens: sessionOutputTokensOf(s),
     doneAt: liveDoneAt(s),
     waitingSince: planAsks(s)
       ? (s.taskPlan?.updatedAt ?? liveWaitingSince(s, asks))
@@ -5655,7 +5671,6 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
 .slide-panel:not(.is-detail) .pa-bar,
 .slide-panel:not(.is-detail) .panel-agents.is-main { display: none !important; }
 .slide-panel:not(.is-detail) .panel-arts-hint { display: none; }
-.slide-panel:not(.is-detail) .panel-goal.is-empty { display: none !important; }
 .panel-tasks-header {
   font-size: 12px;
   font-weight: 600;
@@ -10785,10 +10800,15 @@ function panelTabsData(s, active, mainSt) {
   return { label: '에이전트', value: panelTabId(active || ''), tabs: tabs };
 }
 // Whether 열기 may move the detail card onto agent id: the strip has to show a way back. With the 에이전트 tab
-// (agenttabs) it does — the strip stays in view while the card looks at a subagent (data-agent-scoped). Without it,
-// never: the main agent is the only one shown.
+// (agenttabs) the strip stays in view while the card looks at a subagent (data-agent-scoped) — for one of its own
+// tabs, the session's agents: a log-only agent (panelLogOnlyAgents) is no tab, so the strip would select none and
+// its 메인 tab, already selected, would not lead back. Without the tab, never: the main agent is the only one shown.
 function panelAgentOpenable(id) {
-  return !!id && detailShows('agenttabs');
+  if (!id || !detailShows('agenttabs')) return false;
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var list = (s && s.agents) || [];
+  for (var i = 0; i < list.length; i++) if (list[i] && String(list[i].id) === id) return true;
+  return false;
 }
 // The strip follows the session (a live update with the same data writes nothing);
 // without one it keeps Main alone, so the panel under it stays slotted.
@@ -11544,8 +11564,8 @@ function panelHeadData(s, col) {
 // ── The title bar's items after the time (SSOT 2026-11-03, the layout's detail.head) ──
 // "● Opus 5.5 | $175 | 235.1M 토큰 | 97 tok/s": the model (its maker's colour and its name — the id in the tooltip),
 // the task's API-equivalent cost and its tokens (main + subagents — the old 세션 정보 line's numbers), the speed,
-// the context, the owner, the workflow — in the layout's order, each only when known. The speed is the task's pace:
-// its output tokens over its active time (every turn's, this one's so far; subagents and tool runs count), shown
+// the context, the owner, the workflow — in the layout's order, each only when known. The speed is the session's pace:
+// its output tokens over its active time (every turn's since /new, this one's so far; subagents and tool runs count), shown
 // once it has worked a minute; a turn counts up to the cap on one turn, as the session's active time does.
 var PS_SPEED_MIN_MS = 60000;
 // The open turn counts up to the server's cap on one turn (DASHBOARD_MAX_LEG_MS — the same cap the session's
@@ -11576,7 +11596,8 @@ function panelHeadMetricsOf(s, col, head, now) {
       if (t > 0) m = { id: id, text: formatTokens(t) + ' 토큰', title: '총 토큰 — 입력 · 출력 · 캐시 (작업 합계)' };
     } else if (id === 'speed') {
       var ms = panelActiveMs(s, col, now);
-      var outTok = u ? toNum(u.totalOutputTokens) : 0;
+      // The session's own output over the session's own active time: one span (both reset with /new).
+      var outTok = toNum(s.sessionOutputTokens);
       if (outTok > 0 && ms >= PS_SPEED_MIN_MS) {
         var r = outTok / (ms / 1000);
         m = { id: id, text: (r < 10 ? r.toFixed(1) : String(Math.round(r))) + ' tok/s', title: '속도 — 출력 토큰 ÷ 활성 시간 (서브에이전트 · 도구 실행 포함)' };
@@ -11692,7 +11713,7 @@ function panelMidTabsOf(s, tabs, c) {
       var done = 0;
       for (var k = 0; k < list.length; k++) if (list[k] && list[k].status === 'completed') done++;
       if (list.length) t.count = done + '/' + list.length;
-      t.empty = !list.length && !ctx.earlier;
+      t.empty = !list.length && !ctx.earlier && !ctx.outside;
       t.title = list.length ? '작업 — 완료 ' + done + ' / 전체 ' + list.length : t.empty ? '작업 없음' : '지금 작업 없음 — 이전 계획';
     } else if (id === 'agents') {
       var n = ((s && s.agents) || []).length;
@@ -11722,6 +11743,8 @@ function panelMidContext(s) {
     goalEditable: viewerCanManage(s) && col !== 'closed' && !s.terminated && !isSiblingSession(s),
     tasks: panelAgentTasks(),
     earlier: panelAgentEarlier().length,
+    // Work outside the list (tasksOutside) is drawn by the runs table only.
+    outside: viewSpec().detail.tasks === 'runs' && !!panelAgentOutside(),
     artifacts: arts + um,
   };
 }
@@ -16612,8 +16635,9 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
     _panelTaskOpen = Object.create(null);
   }
   // The tab bar (SSOT 2026-11-03): every tab closed on an opening — or its landing's tab open (a goal, a task, an
-  // agent); a re-landing on the session already open moves to its tab, a plain one keeps the reader's.
-  var midLand = _panelLand === 'goal' ? 'goal' : _panelLand === 'tasks' ? 'tasks' : _panelLand === 'agent' ? 'agents' : '';
+  // agent, the open card's 전체 N개 → the files); a re-landing on the session already open moves to its tab, a plain
+  // one keeps the reader's.
+  var midLand = _panelLand === 'goal' ? 'goal' : _panelLand === 'tasks' ? 'tasks' : _panelLand === 'agent' ? 'agents' : _panelLand === 'artifacts' ? 'artifacts' : '';
   if (midLand) _panelMid = midLand;
   else if (!sameSession) _panelMid = '';
 
@@ -18994,7 +19018,7 @@ function ensureUserMedia(cid) {
       var list = Array.isArray(data && data.media) ? data.media : [];
       list.forEach(function(a) { umRegister(cid, [a], null); });
       _umList[cid] = list;
-      if (panelOpen && panelConvId === cid) renderPanelArtifactsSection();
+      if (panelOpen && panelConvId === cid) { renderPanelArtifactsSection(); renderPanelMidbar(); }
     })
     .catch(function() {});
 }
@@ -19009,7 +19033,7 @@ function umOnTurn(cid, turn) {
     if (!list.some(function(x) { return x.id === a.id; })) list = list.concat([Object.assign({}, a, { turnId: turn.id, turnTs: turn.timestamp })]);
   });
   _umList[cid] = list;
-  if (panelOpen && panelConvId === cid) renderPanelArtifactsSection();
+  if (panelOpen && panelConvId === cid) { renderPanelArtifactsSection(); renderPanelMidbar(); }
 }
 
 // A file as @2lab.ai/ui <ui-file-card> (D2 I-01..I-03): the page renders the element keyed by data-art-cid /
@@ -19068,7 +19092,7 @@ function renderCardArtifacts(s) {
   var shown = list.slice(0, CARD_ART_TILES);
   return '<div class="card-artifacts"><div class="io-label art-section-label">산출물 <span class="art-count">' + total + '</span></div>'
     + '<div class="art-strip">' + shown.map(function(a) { return artTile(s.conversationId, a); }).join('') + '</div>'
-    + (total > shown.length ? '<button type="button" class="card-more-link" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',\\'\\',\\'\\',event.detail===0)">전체 ' + total + '개 &rarr;</button>' : '')
+    + (total > shown.length ? '<button type="button" class="card-more-link" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',\\'artifacts\\',\\'\\',event.detail===0)">전체 ' + total + '개 &rarr;</button>' : '')
     + '</div>';
 }
 

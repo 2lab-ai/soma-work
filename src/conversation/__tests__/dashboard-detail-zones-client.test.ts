@@ -63,6 +63,7 @@ const session = (over: Record<string, unknown> = {}) => ({
   activityState: 'working',
   activeAccumulatedMs: 60 * MIN,
   activeLegStartedAtMs: NOW - 17 * MIN,
+  sessionOutputTokens: 452_000,
   tokenUsage: {
     totalInputTokens: 1_000_000,
     totalOutputTokens: 452_000,
@@ -117,10 +118,37 @@ describe('Z1 — the title bar: the layout’s items after the time, in its orde
     // Idle: the open leg is not counted (the accumulated time is the whole run).
     expect(e.panelHeadMetricsOf(session({ activityState: 'idle' }), 'done', ['speed'], NOW)[0].text).toBe('126 tok/s');
     // Slow work keeps a decimal; under a minute of work there is no speed yet.
-    const slow = session({ tokenUsage: { ...session().tokenUsage, totalOutputTokens: 30_000 } });
+    const slow = session({ sessionOutputTokens: 30_000 });
     expect(e.panelHeadMetricsOf(slow, 'working', ['speed'], NOW)[0].text).toBe('6.5 tok/s');
     const fresh = session({ activeAccumulatedMs: 0, activeLegStartedAtMs: NOW - 30_000 });
     expect(e.panelHeadMetricsOf(fresh, 'working', ['speed'], NOW)).toEqual([]);
+  });
+
+  it('the speed is the session’s own output over the session’s own time — /new resets both; the task total is not it (review P2)', () => {
+    const e = env();
+    // After /new: 60 s of work and 6,000 new output tokens, while the task total still holds 100,000 older ones.
+    const renewed = session({
+      activeAccumulatedMs: 60_000,
+      activeLegStartedAtMs: undefined,
+      activityState: 'idle',
+      sessionOutputTokens: 6_000,
+      tokenUsage: { ...session().tokenUsage, totalOutputTokens: 106_000 },
+    });
+    expect(e.panelHeadMetricsOf(renewed, 'done', ['speed'], NOW)[0].text).toBe('100 tok/s');
+    // No session output known (an archived card): no speed.
+    expect(e.panelHeadMetricsOf(session({ sessionOutputTokens: undefined }), 'working', ['speed'], NOW)).toEqual([]);
+  });
+
+  it('the server sends the session’s output: its usage plus the running turn’s calls; nothing when neither is known', async () => {
+    const { sessionOutputTokensOf } = await import('../dashboard');
+    expect(sessionOutputTokensOf({ usage: { totalOutputTokens: 4_000 } })).toBe(4_000);
+    expect(
+      sessionOutputTokensOf({
+        usage: { totalOutputTokens: 4_000 },
+        liveUsage: { 'm:a': { inputTokens: 10, outputTokens: 500, cacheReadTokens: 0, cacheCreateTokens: 0 } },
+      }),
+    ).toBe(4_500);
+    expect(sessionOutputTokensOf({})).toBeUndefined();
   });
 
   it('the open turn counts up to the server’s cap on one turn — a turn whose end was never seen does not drag it down (review P1)', () => {
@@ -148,7 +176,13 @@ describe('Z1 — the title bar: the layout’s items after the time, in its orde
   it('an item turned off, or not known, is not there; small costs read <$0.01 and $6.20', () => {
     const e = env();
     expect(e.panelHeadMetricsOf(session(), 'working', [], NOW)).toEqual([]);
-    const none = session({ model: 'unknown', tokenUsage: undefined, ownerName: '', workflow: '' });
+    const none = session({
+      model: 'unknown',
+      tokenUsage: undefined,
+      sessionOutputTokens: undefined,
+      ownerName: '',
+      workflow: '',
+    });
     expect(
       e.panelHeadMetricsOf(none, 'working', ['model', 'cost', 'tokens', 'speed', 'ctx', 'owner', 'workflow'], NOW),
     ).toEqual([]);
@@ -237,8 +271,9 @@ describe('Z2 — the tab bar: the layout’s tabs with their counts', () => {
     ]);
     const editable = tabsOf({}, ['goal'], { goalEditable: true, tasks: [] });
     expect(editable[0]).toMatchObject({ empty: false, count: '', title: '목표 없음 — 눌러서 추가' });
-    // Only earlier plans: the 작업 tab still opens on them.
+    // Only earlier plans, or work outside the list (the runs table draws it): the 작업 tab still opens on them.
     expect(tabsOf({}, ['tasks'], { tasks: [], earlier: 2 })[0].empty).toBe(false);
+    expect(tabsOf({}, ['tasks'], { tasks: [], earlier: 0, outside: true })[0].empty).toBe(false);
     // An id the page does not know is no tab.
     expect(tabsOf({}, ['nope', 'info'], {}).map((x) => x.id)).toEqual(['info']);
   });
@@ -302,6 +337,7 @@ describe('Z3 — every tab starts closed; a press opens one, a second press clos
         isSiblingSession: () => false,
         panelAgentTasks: () => [{ id: 'T1', status: 'completed' }],
         panelAgentEarlier: () => [],
+        panelAgentOutside: () => null,
         writePanelPart: (el: Record<string, string>, html: string) => {
           el.innerHTML = html;
         },
@@ -403,11 +439,16 @@ describe('Z4 — an opening lands on its tab', () => {
   it('a goal → 목표, a task → 작업, an agent → 에이전트; a plain re-landing keeps the reader’s tab, a new opening closes it', () => {
     const open = clientFn('openPanel');
     expect(open).toContain(
-      "var midLand = _panelLand === 'goal' ? 'goal' : _panelLand === 'tasks' ? 'tasks' : _panelLand === 'agent' ? 'agents' : '';",
+      "var midLand = _panelLand === 'goal' ? 'goal' : _panelLand === 'tasks' ? 'tasks' : _panelLand === 'agent' ? 'agents' : _panelLand === 'artifacts' ? 'artifacts' : '';",
     );
     expect(open).toContain("if (midLand) _panelMid = midLand;\n  else if (!sameSession) _panelMid = '';");
     // Before the panel paints (repaintPanelSession → renderPanelMidbar draws the bar with it).
     expect(open.indexOf('var midLand')).toBeLessThan(open.indexOf('repaintPanelSession();'));
+    // The open card's 전체 N개 → lands on the 산출물 tab (review P2).
+    expect(open).toContain("_panelLand === 'artifacts' ? 'artifacts'");
+    expect(clientFn('renderCardArtifacts')).toContain(
+      ",\\'artifacts\\',\\'\\',event.detail===0)\">전체 ' + total + '개 &rarr;</button>'",
+    );
     expect(clientFn('repaintPanelSession')).toContain('renderPanelMidbar();');
   });
 });
@@ -428,6 +469,16 @@ describe('Z5 — the page: 입력 필요 → the tab bar → the tabs’ content
     expect(PAGE).toContain(
       '<div class="panel-midbar" id="panel-midbar" role="group" aria-label="작업 정보 탭" hidden></div>',
     );
+  });
+
+  it('the 목표 tab shows the empty goal editor (the tab is the way to add one — review P2)', () => {
+    expect(CSS).not.toContain('.panel-goal.is-empty { display: none');
+  });
+
+  it('a file attached to an instruction updates the 산출물 tab’s count (review P2)', () => {
+    for (const fn of ['ensureUserMedia', 'umOnTurn'])
+      expect(clientFn(fn), fn).toContain('{ renderPanelArtifactsSection(); renderPanelMidbar(); }');
+    expect(clientFn('artSettle')).toContain('{ renderPanelArtifactsSection(); renderPanelMidbar(); }');
   });
 
   it('what needs the user is never behind a tab (no data-midtab rule names it)', () => {
