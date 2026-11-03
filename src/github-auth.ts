@@ -83,7 +83,10 @@ class GitHubAppAuth {
         headers: { Authorization: `Bearer ${this.apiClient.getAppJWT()}`, Accept: 'application/vnd.github+json' },
         signal: AbortSignal.timeout(10_000),
       });
-      if (!res.ok) return undefined;
+      if (!res.ok) {
+        logger.warn('GET /app was refused; the App slug is unknown', { status: res.status });
+        return undefined;
+      }
       const body = (await res.json()) as { slug?: unknown };
       if (typeof body.slug === 'string' && /^[\w-]+$/.test(body.slug)) this.appSlug = body.slug;
       return this.appSlug;

@@ -44,7 +44,6 @@ import type { WebClient } from '@slack/web-api';
 import type { AgentTreeEvent } from '@soma/slack/agent-tree';
 import type { LiveUsageCall } from '@soma/slack/live-usage';
 import { runNewUserGate } from '@soma/slack/pipeline/session-initializer';
-import { canonicalLinkUrl } from '@soma/slack/session-link-capture';
 import { setWorkQueuesConfig } from '@soma/slack/work-queue';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
@@ -149,7 +148,7 @@ import { mcpCallTracker } from './mcp-call-tracker';
 import { McpManager } from './mcp-manager';
 import { startLinkLeakReport, startReportScheduler, stopLinkLeakReport, stopReportScheduler } from './metrics';
 import { MetricsEventStore } from './metrics/event-store';
-import { fetchBotItems } from './metrics/link-leak-report';
+import { creatorDays, creatorsOf, fetchBotItems } from './metrics/link-leak-report';
 import { calculateTokenCost, hasModelPricing } from './metrics/model-registry';
 import { ReportPublisher } from './metrics/report-publisher';
 import { clampEffortToModel } from './model-catalog';
@@ -1954,8 +1953,16 @@ async function start() {
               const auth = getGitHubAppAuth();
               if (!auth) return undefined;
               const botLogin = leakConfig.botLogin ?? (await auth.getAppSlug());
-              if (!botLogin) return undefined;
-              const token = await auth.getInstallationToken().catch(() => undefined);
+              if (!botLogin) {
+                logger.warn(
+                  'Link leak report: the App bot login is unknown (GET /app failed; SOMA_LINK_LEAK_BOT_LOGIN unset)',
+                );
+                return undefined;
+              }
+              const token = await auth.getInstallationToken().catch((error) => {
+                logger.warn('Link leak report: no installation token', { error: (error as Error)?.message });
+                return undefined;
+              });
               if (!token) return undefined;
               return fetchBotItems({ token, botLogin, sinceIso: new Date(sinceMs).toISOString() });
             },
@@ -1973,19 +1980,8 @@ async function start() {
               return [...live, ...archived];
             },
             collectCreators: async (sinceMs) => {
-              const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
-              const events = await new MetricsEventStore().readRange(
-                day(sinceMs - 24 * 60 * 60 * 1000),
-                day(Date.now()),
-              );
-              const creators = new Map<string, string>();
-              for (const e of events) {
-                const url = e.metadata?.prUrl;
-                if (e.eventType === 'pr_created' && typeof url === 'string' && e.sessionKey && e.timestamp >= sinceMs) {
-                  creators.set(canonicalLinkUrl(url), e.sessionKey);
-                }
-              }
-              return creators;
+              const [from, to] = creatorDays(sinceMs, Date.now());
+              return creatorsOf(await new MetricsEventStore().readRange(from, to), sinceMs);
             },
             publish: async (text, blocks) =>
               !!leakChannel && !!(await leakPublisher.publish(leakChannel, blocks, text)),
