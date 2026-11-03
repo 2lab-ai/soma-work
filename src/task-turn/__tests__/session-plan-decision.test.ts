@@ -150,3 +150,24 @@ describe('createSlackPlanDecider — 시작 opens the plan’s goal', () => {
     expect(broken.sendPlan).toHaveBeenCalled();
   });
 });
+
+describe('createSlackPlanDecider — no goal on a Slack epic (#854 × #840)', () => {
+  it('S9 — an epic session’s 시작 starts its plan without a goal: its children’s ends wake it, not the goal loop', async () => {
+    const openGoal = vi.fn(() => () => {});
+    const h = harness(
+      { openGoal },
+      {
+        ownerId: 'UOWNER',
+        channelId: 'C1',
+        threadTs: '1700000000.000100',
+        kind: 'epic',
+        taskId: 'e1',
+        taskPlan: awaiting(),
+      },
+    );
+    const r = await h.decide({ sessionKey: KEY, decision: 'start', revision: 2, actorUserId: 'UOWNER' });
+    expect(r.status).toBe(200);
+    expect(h.sendPlan).toHaveBeenCalled();
+    expect(openGoal).not.toHaveBeenCalled();
+  });
+});
