@@ -492,6 +492,24 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(taken).toHaveBeenCalledTimes(1);
     });
 
+    it('A6 — a message stashed for the replay after a compaction in progress is taken (review #858 R2)', async () => {
+      initialize.mockImplementationOnce(async () => ({
+        session: registrySession,
+        sessionKey: SESSION_KEY,
+        isNewSession: false,
+        userName: 'Owner',
+        workingDirectory: '/tmp/work',
+        abortController: new AbortController(),
+        halted: true,
+        stashed: true,
+      }));
+      const taken = vi.fn();
+      handler.onTurnAccepted(CHANNEL, '777.888', taken);
+      await handler.handleMessage(message({ ts: '777.888' }), say());
+      expect(startWithContinuation).not.toHaveBeenCalled();
+      expect(taken).toHaveBeenCalledTimes(1);
+    });
+
     it('A4 — the host’s verbatim message (a plan start) is never pushed into the running turn', async () => {
       const steerTurn = vi.fn();
       claudeHandler.steerTurn = steerTurn;

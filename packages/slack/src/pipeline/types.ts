@@ -249,6 +249,12 @@ export interface SessionInitResult {
   abortController: AbortController;
   /** Set to true when channel routing advisory was shown. Caller should halt. */
   halted?: boolean;
+  /**
+   * #853 — with `halted`: the message was not dropped but stashed for the replay after the
+   * compaction in progress (`shouldStashForCompaction`). It will run: a host waiting on it
+   * (`SlackHandler.onTurnAccepted`) hears it was taken.
+   */
+  stashed?: boolean;
 }
 
 export interface StreamExecuteResult {
