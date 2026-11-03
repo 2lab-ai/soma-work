@@ -1504,9 +1504,9 @@ async function start() {
             );
           return;
         }
-        const res = await withTaskUserTurn(request.sessionKey, () =>
+        const res = await withTaskUserTurn(request.sessionKey, async () =>
           held.kind === 'task-command'
-            ? taskController.start({
+            ? await taskController.start({
                 sessionKey: request.sessionKey,
                 text: held.text,
                 actorUserId: request.requesterId,
@@ -1515,7 +1515,7 @@ async function start() {
                 queueWhileRunning: true,
                 approvedOnce: true,
               })
-            : taskController.answer({
+            : await taskController.answer({
                 sessionKey: request.sessionKey,
                 askId: held.askId,
                 answer: held.answer,

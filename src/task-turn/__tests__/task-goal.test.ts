@@ -11,6 +11,7 @@
  *   G8 a word the owner queued while the goal's turn ran outranks the goal: its chain end settles it
  */
 import { describe, expect, it, vi } from 'vitest';
+import { RequestCoordinator } from '../../slack';
 import type { ConversationSession } from '../../types';
 import {
   createTaskGoalChainSettler,
@@ -331,8 +332,11 @@ describe('G8 — a queued word outranks the goal: its chain end settles the goal
     const sessions = new Map<string, ConversationSession>([[KEY, goalTask()]]);
     const queue = [...steps];
     const settled: string[] = [];
+    /** At each chain end: does the shared coordinator report the task busy (the goal loop's check)? */
+    const busyAtEnd: boolean[] = [];
+    const coordinator = new RequestCoordinator();
     let controller!: TaskTurnController;
-    const onChainEnd = createTaskGoalChainSettler({
+    const settler = createTaskGoalChainSettler({
       getSession: (k) => sessions.get(k),
       isRunning: (k) => controller.isRunning(k),
       readTurnText: async () => 'turn text',
@@ -342,6 +346,10 @@ describe('G8 — a queued word outranks the goal: its chain end settles the goal
       save: () => {},
       logger: { info: vi.fn(), warn: vi.fn() },
     });
+    const onChainEnd = (key: string, info: { started: boolean }) => {
+      busyAtEnd.push(coordinator.isRequestActive(key));
+      settler(key, info);
+    };
     controller = createTaskTurnController({
       runner: {
         runTaskTurn: vi.fn(async (input: RunTaskTurnInput) => {
@@ -356,16 +364,12 @@ describe('G8 — a queued word outranks the goal: its chain end settles the goal
         })),
       },
       getSession: (k) => sessions.get(k),
-      coordinator: {
-        setController: vi.fn(),
-        removeController: vi.fn(),
-        abortSession: vi.fn(() => false),
-      } as never,
+      coordinator,
       buildExecutionContext: vi.fn(() => ({ origin: 'task', userId: 'UOWNER', workingDirectory: '/w' }) as never),
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       onChainEnd,
     });
-    return { controller, settled, task: () => sessions.get(KEY)! };
+    return { controller, settled, busyAtEnd, task: () => sessions.get(KEY)! };
   }
 
   const endedTurn = (outcome: 'completed' | 'failed') =>
@@ -412,11 +416,16 @@ describe('G8 — a queued word outranks the goal: its chain end settles the goal
     // The drain took the task for the owner's word; the goal waits for it.
     expect(h.controller.isRunning(KEY)).toBe(true);
     expect(h.settled).toEqual([]);
+    // And an eval already in flight finds the task busy on the shared coordinator at once — the goal
+    // loop's last check before it injects (`isRequestActive`, goal-loop-controller.ts) defers to the
+    // word instead of starting a continuation into a 409 (trinity R3, grok P1).
+    expect(h.busyAtEnd).toEqual([true]);
 
     ownerTurn.release();
     for (let i = 0; i < 5; i++) await tick();
     expect(h.controller.isRunning(KEY)).toBe(false);
     expect(h.settled).toEqual([KEY]);
+    expect(h.busyAtEnd).toEqual([true, false]);
   });
 
   it('no queued word: the chain end settles the goal at once', async () => {
