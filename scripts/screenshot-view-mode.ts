@@ -287,6 +287,31 @@ function settingsSnapshot(store: Store) {
   return { userId: 'U001', isAdmin: false, accepted: true, groups: REAL_GROUPS, settings };
 }
 
+const WL_T0 = Date.UTC(2026, 10, 3, 6, 0, 0);
+const WORK_LOG = [
+  { seq: 1, ts: WL_T0, kind: 'instruction', text: '미니멀 모드 상세 카드 하단을 탭뷰로', by: 'user', turnId: 't1' },
+  {
+    seq: 2,
+    ts: WL_T0 + 4000,
+    kind: 'tool',
+    tool: 'Bash',
+    text: 'npx vitest run view-layout',
+    turnId: 't1',
+    toolUseId: 'u1',
+  },
+  {
+    seq: 3,
+    ts: WL_T0 + 9000,
+    kind: 'tool_result',
+    tool: 'Bash',
+    text: 'Tests 448 passed',
+    ok: true,
+    turnId: 't1',
+    toolUseId: 'u1',
+  },
+  { seq: 4, ts: WL_T0 + 12000, kind: 'final', text: '대화 · 작업 로그 탭을 추가했습니다.', turnId: 't1' },
+];
+
 async function installMocks(page: Page, board: unknown, store: Store) {
   await page.addInitScript({ content: PAGE_HELPERS });
   await page.addInitScript({
@@ -317,8 +342,9 @@ async function installMocks(page: Page, board: unknown, store: Store) {
     return r.fulfill({ json: { ok: true } });
   });
   await page.route(/\/api\/dashboard\/session\/[^/?]+\/artifacts/, (r) => r.fulfill({ json: { artifacts: [] } }));
+  // A work log with rows (SSOT 2026-11-03): the 대화 · 작업 로그 tab is checked against real entries.
   await page.route(/\/api\/dashboard\/session\/[^/?]+\/worklog/, (r) =>
-    r.fulfill({ json: { entries: [], hasMore: false } }),
+    r.fulfill({ json: { entries: WORK_LOG, hasMore: false } }),
   );
   await page.route(/\/api\/conversations\/[^/]+\/turns\/[^/]+\/raw/, (r) => r.fulfill({ json: { raw: ANSWER } }));
   await page.route(/\/api\/dashboard\/session\/[^/?]+(\?.*)?$/, (r) => {
@@ -600,6 +626,35 @@ async function scenario(
   );
   check(!l1.info && !l1.artifacts && !l1.titleSub, `${tag} M4 minimal hides 세션 정보 · 산출물 · 부제`, l1);
   await page.screenshot({ path: path.join(OUT, `${tag}-2-minimal-detail.png`) });
+
+  // M4b — the 작업 로그 tab works in minimal mode: a click shows the log's rows, 대화 brings the chat back.
+  // A real click on the strip's tab (<ui-tabs> renders role=tab in its open shadow root).
+  await page.locator('#panel-sections').getByRole('tab', { name: '작업 로그' }).click();
+  await sleep(600);
+  const wl = await page.evaluate(() => {
+    const box = document.getElementById('psec-log');
+    const conv = document.getElementById('psec-conv');
+    const el = document.getElementById('worklog-list') as any;
+    const tabs = document.getElementById('panel-sections') as any;
+    const r = box ? box.getBoundingClientRect() : null;
+    const txt = el ? (el.shadowRoot ? el.shadowRoot.textContent : el.textContent) || '' : '';
+    return {
+      selected: tabs && tabs.data ? tabs.data.value : null,
+      logVisible: !!r && r.height > 40 && getComputedStyle(box as Element).display !== 'none',
+      convHidden: !conv || conv.getBoundingClientRect().height === 0 || getComputedStyle(conv).display === 'none',
+      hasRows: /vitest|448/.test(txt),
+    };
+  });
+  check(
+    wl.selected === 'log' && wl.logVisible && wl.hasRows,
+    `${tag} M4b minimal: the 작업 로그 tab shows the work log's rows`,
+    wl,
+  );
+  await page.screenshot({ path: path.join(OUT, `${tag}-2b-minimal-detail-worklog.png`) });
+  await page.locator('#panel-sections').getByRole('tab', { name: '대화' }).click();
+  await sleep(300);
+  const back = await page.evaluate(() => (document.getElementById('panel-sections') as any)?.data?.value);
+  check(back === 'conv', `${tag} M4b minimal: 대화 brings the chat back`, back);
 
   // M5 — the waiting card answers in minimal mode too. (A phone's detail card is a full-screen sheet over the
   // board: ✕ folds the card first.)
