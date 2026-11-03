@@ -917,36 +917,53 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     session: ConversationSession,
     item: TaskFollowupItem,
   ): Promise<TaskCommandResponse> {
-    const before = session.taskFollowups ?? [];
-    const index = before.findIndex((entry) => entry.id === item.id);
-    session.taskFollowups = before.filter((entry) => entry.id !== item.id);
+    // In flight but still on record until its handoff is confirmed (review R2, astra P0): a restart
+    // now finds it `sending` and brings it back paused, saying it may have gone out — never lost.
+    const sending: TaskFollowupItem = { ...item, state: 'sending', stateReason: undefined, epoch: item.epoch + 1 };
+    replaceFollowup(session, item.id, sending);
     followupsChanged(sessionKey);
+    const settle = (next: TaskFollowupItem | undefined) => {
+      replaceFollowup(session, item.id, next);
+      followupsChanged(sessionKey);
+    };
     let res: TaskCommandResponse;
     try {
       // #767 backstop: words its one-time approval does not cover are the owner's to allow (review R1).
       const covered = item.approvedText !== undefined && item.approvedText === item.text;
       const gate = covered ? undefined : deps.holdQueued?.(sessionKey, session, item);
       const held = gate ? await gate : undefined;
-      if (held && held.status < 400) return held; // in the owner's hands now: nothing more is owed here
+      if (held && held.status < 400) {
+        settle(undefined); // in the owner's hands now (the approval store has it): nothing more is owed here
+        return held;
+      }
       res = held ?? (await start({ sessionKey, text: item.text, actorUserId: item.authorId }));
     } catch (error) {
       // Never lost (review R1, grok/fable P2): back where it was, paused with why.
       res = refuse(500, `the task turn could not start: ${(error as Error)?.message ?? String(error)}`);
     }
-    if (res.status === 202) return res;
+    // Started: its turn's start is saved, so it is the turn now.
+    if (res.status === 202) {
+      settle(undefined);
+      return res;
+    }
     if (session.closing || session.terminated) return res;
     const busy = res.status === 409 && chains.has(sessionKey);
     const why = String((res.body as { error?: unknown })?.error ?? `HTTP ${res.status}`);
     const back: TaskFollowupItem = busy
-      ? { ...item, state: 'queued', stateReason: undefined, epoch: item.epoch + 1 }
-      : { ...item, state: 'paused', stateReason: why, epoch: item.epoch + 1 };
+      ? { ...item, state: 'queued', stateReason: undefined, epoch: sending.epoch + 1 }
+      : { ...item, state: 'paused', stateReason: why, epoch: sending.epoch + 1 };
     // Refused (not merely beaten to the task): no chain end is coming for the words behind it (fable P2).
     if (!busy) pauseQueued(session, TASK_FOLLOWUP_PAUSED_BEHIND_REFUSED);
-    const rest = [...(session.taskFollowups ?? [])];
-    rest.splice(index < 0 ? 0 : Math.min(index, rest.length), 0, back);
-    session.taskFollowups = rest;
-    followupsChanged(sessionKey);
+    settle(back);
     return res;
+  }
+
+  /** Put `next` in the place of the word `id` (none: take it off). Its place in line is kept. */
+  function replaceFollowup(session: ConversationSession, id: string, next: TaskFollowupItem | undefined): void {
+    const queue = session.taskFollowups ?? [];
+    session.taskFollowups = next
+      ? queue.map((entry) => (entry.id === id ? next : entry))
+      : queue.filter((entry) => entry.id !== id);
   }
 
   async function actOnQueue(request: TaskQueueActRequest): Promise<TaskQueueActOutcome> {
@@ -958,6 +975,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     const item = queue.find((entry) => entry.id === request.itemId);
     if (!item) return no(404, 'this instruction is no longer waiting');
     if (item.epoch !== request.epoch) return no(409, 'this instruction has changed — reload');
+    if (item.state === 'sending') return no(409, 'this instruction is being sent — wait for it to settle');
     const writer = !!request.actorUserId && request.actorUserId === item.authorId;
     if (request.op === 'edit') {
       if (!writer) return no(403, 'only the person who wrote it can edit it');

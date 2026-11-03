@@ -22,7 +22,7 @@ vi.mock('../metrics/event-emitter', () => ({ getMetricsEmitter: () => emitter })
 
 import { __resetSessionLifecyclePolicyForTests } from '../session-lifecycle-policy';
 import { SessionRegistry } from '../session-registry';
-import { TASK_FOLLOWUP_PAUSED_BY_RESTART } from '../task-turn/task-followups';
+import { TASK_FOLLOWUP_PAUSED_BY_RESTART, TASK_FOLLOWUP_UNCERTAIN_AFTER_RESTART } from '../task-turn/task-followups';
 
 const SESSIONS_FILE = path.join(TEST_DATA_DIR, 'sessions.json');
 const BASE = { ownerId: 'U1', ownerName: 'User', workingDirectory: '/work/U1/session_1' };
@@ -81,6 +81,26 @@ describe('SessionRegistry — a task’s follow-up queue', () => {
         stateReason: '중지',
         // The words a one-time approval covered stay covered across the restart.
         approvedText: '그 다음',
+      },
+    ]);
+  });
+
+  it('a word a restart caught in flight comes back paused, saying it may have gone out (review R2)', () => {
+    const reg = new SessionRegistry();
+    const task = reg.createTask(BASE);
+    task.taskFollowups = [{ id: 'tq-s', text: '보내는 중', authorId: 'U1', enqueuedAt: 1, epoch: 4, state: 'sending' }];
+    reg.saveSessions();
+    const after = new SessionRegistry();
+    after.loadSessions();
+    expect(after.getSessionByTaskId(task.taskId!)?.taskFollowups).toEqual([
+      {
+        id: 'tq-s',
+        text: '보내는 중',
+        authorId: 'U1',
+        enqueuedAt: 1,
+        epoch: 5,
+        state: 'paused',
+        stateReason: TASK_FOLLOWUP_UNCERTAIN_AFTER_RESTART,
       },
     ]);
   });

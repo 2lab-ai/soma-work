@@ -1304,7 +1304,8 @@ export interface EpicEvent {
 /**
  * One word in a dashboard task's follow-up queue (`ConversationSession.taskFollowups`).
  * `queued` runs at the next chain end that ended well; `paused` (a chain that
- * did not end well, a refused start, a restart) runs only on Send now.
+ * did not end well, a refused start, a restart) runs only on Send now;
+ * `sending` is in flight and leaves the queue once its handoff is confirmed.
  */
 export interface TaskFollowupItem {
   id: string;
@@ -1315,7 +1316,8 @@ export interface TaskFollowupItem {
   enqueuedAt: number;
   /** The item's CAS generation: every change bumps it; a control sends back the one it showed. */
   epoch: number;
-  state: 'queued' | 'paused';
+  /** `sending`: being handed to a start or the owner's approval — still on record until that is confirmed. */
+  state: 'queued' | 'paused' | 'sending';
   /** Why it waits (a paused word always says). */
   stateReason?: string;
   /**

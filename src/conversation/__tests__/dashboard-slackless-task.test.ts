@@ -942,6 +942,7 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     task.taskFollowups = [
       { id: 'tq-a', text: 'goal 설정해줘', authorId: 'U1', enqueuedAt: 10, epoch: 0, state: 'queued' },
       { id: 'tq-b', text: '그 다음', authorId: 'U2', enqueuedAt: 11, epoch: 2, state: 'paused', stateReason: '중지됨' },
+      { id: 'tq-c', text: '가는 중', authorId: 'U1', enqueuedAt: 12, epoch: 1, state: 'sending' },
     ];
     setDashboardSessionAccessor(() => reg.getAllSessions());
     const key = `task:${task.taskId}`;
@@ -971,6 +972,17 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
           authorId: 'U2',
           author: 'U2',
           stateReason: '중지됨',
+        },
+        // In flight: the panel's "sending" row, nothing to edit (review R2).
+        {
+          id: 'tq-c',
+          text: '가는 중',
+          files: [],
+          enqueuedAt: 12,
+          state: 'dispatched',
+          epoch: 1,
+          editable: false,
+          authorId: 'U1',
         },
       ],
     });

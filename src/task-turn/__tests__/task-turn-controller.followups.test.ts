@@ -758,3 +758,71 @@ describe('R1 — no queued word is left with no chain end coming (review R1: gro
     ]);
   });
 });
+
+describe('R2 — a word in flight stays on record until its handoff is confirmed (review R2: astra P0)', () => {
+  it('while the owner’s approval is being asked, the saved queue still holds the word (sending); after, it is gone', async () => {
+    const one = held();
+    let answer!: (r: any) => void;
+    const pending = new Promise<any>((r) => {
+      answer = r;
+    });
+    const saved: any[][] = [];
+    const h = harness(
+      {
+        holdQueued: (_k: string, _s: any, item: any) => (item.authorId === 'UOTHER' ? pending : undefined),
+        onFollowupsChanged: () => saved.push(structuredClone(h.task().taskFollowups ?? [])),
+      },
+      [one.step],
+    );
+    const first = await h.controller.start(word('one'));
+    await h.controller.start(word('two', 'UOTHER'));
+    one.release();
+    await first.done;
+    await h.settle();
+    // What a save now would write: the word, marked as being sent — a crash here loses nothing.
+    expect(saved[saved.length - 1]).toEqual([expect.objectContaining({ text: 'two', state: 'sending' })]);
+    expect(h.task().taskFollowups).toEqual([expect.objectContaining({ text: 'two', state: 'sending' })]);
+    // Its controls wait until it is settled.
+    const id = h.task().taskFollowups[0].id;
+    expect(
+      await h.controller.actOnQueue({
+        sessionKey: KEY,
+        itemId: id,
+        op: 'cancel',
+        epoch: h.task().taskFollowups[0].epoch,
+        actorUserId: 'UOTHER',
+      }),
+    ).toMatchObject({ ok: false, status: 409 });
+    answer({ status: 202, body: { ok: true, pendingApproval: true } });
+    await h.settle();
+    expect(saved[saved.length - 1]).toEqual([]);
+    expect(h.inputs.map((i) => i.text)).toEqual(['one']);
+  });
+
+  it('a drained word stays on record (sending) until its turn’s start is saved, then leaves', async () => {
+    const one = held();
+    let begin!: () => void;
+    const gate = new Promise<void>((r) => {
+      begin = r;
+    });
+    const saved: any[][] = [];
+    const h = harness({ onFollowupsChanged: () => saved.push(structuredClone(h.task().taskFollowups ?? [])) }, [
+      one.step,
+      async (input) => {
+        await gate;
+        input.onStarted?.();
+        return ended('completed', 'b');
+      },
+    ]);
+    const first = await h.controller.start(word('one'));
+    await h.controller.start(word('two'));
+    one.release();
+    await first.done;
+    await h.settle();
+    expect(saved[saved.length - 1]).toEqual([expect.objectContaining({ text: 'two', state: 'sending' })]);
+    begin();
+    await h.settle();
+    await h.settle();
+    expect(saved[saved.length - 1]).toEqual([]);
+  });
+});
