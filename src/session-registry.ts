@@ -2514,16 +2514,18 @@ export class SessionRegistry {
       const type = raw?.type as SessionResourceType | undefined;
       const status = typeof raw?.status === 'string' ? raw.status.trim() : '';
       if (!raw?.url || !status || !type || !(type in HISTORY_KEY_BY_RESOURCE)) continue;
-      const canon = canonicalLinkUrl(raw.url);
+      // GitHub owner and repo names are case-insensitive: a pasted `2Lab-AI/…` is the PR a merge names in lower case.
+      const canon = canonicalLinkUrl(raw.url).toLowerCase();
+      const same = (url: string) => canonicalLinkUrl(url).toLowerCase() === canon;
       const history = session.linkHistory![HISTORY_KEY_BY_RESOURCE[type]]!;
-      const at = history.findIndex((l) => !!l?.url && canonicalLinkUrl(l.url) === canon);
+      const at = history.findIndex((l) => !!l?.url && same(l.url));
       if (at >= 0 && history[at].status !== status) {
         history[at] = { ...history[at], status };
         changed = true;
       }
       const activeKey = ACTIVE_KEY_BY_RESOURCE[type];
       const current = session.links![activeKey];
-      if (current?.url && canonicalLinkUrl(current.url) === canon && current.status !== status) {
+      if (current?.url && same(current.url) && current.status !== status) {
         session.links![activeKey] = { ...current, status };
         changed = true;
       }

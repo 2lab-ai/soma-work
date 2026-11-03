@@ -196,7 +196,13 @@ const HEREDOC = /<<-?\s*(['"]?)([A-Za-z_][\w-]*)\1/;
  * script stays one statement; `$(…)` nesting is not, which only ever merges statements (never invents a write: the
  * result must still prove it).
  */
-function shellStatements(command: string): string[] {
+interface Statement {
+  text: string;
+  /** A heredoc body an interpreter runs: code, whatever its first word. */
+  code: boolean;
+}
+
+function shellStatements(command: string): Statement[] {
   const lines = command.split('\n');
   const kept: string[] = [];
   const code: string[] = [];
@@ -216,7 +222,7 @@ function shellStatements(command: string): string[] {
     if (INTERPRETERS.test(head.trim())) code.push(body.filter((l) => !/^\s*(?:\/\/|#)/.test(l)).join('\n'));
     i = j;
   }
-  const out: string[] = [...code];
+  const out: Statement[] = code.map((text) => ({ text, code: true }));
   let cur = '';
   let quote: '"' | "'" | '' = '';
   const text = kept.join('\n');
@@ -249,14 +255,14 @@ function shellStatements(command: string): string[] {
     }
     const two = text.slice(i, i + 2);
     if (c === '\n' || c === ';' || two === '&&' || two === '||' || c === '|') {
-      if (cur.trim()) out.push(cur);
+      if (cur.trim()) out.push({ text: cur, code: false });
       cur = '';
       if (two === '&&' || two === '||') i++;
       continue;
     }
     cur += c;
   }
-  if (cur.trim()) out.push(cur);
+  if (cur.trim()) out.push({ text: cur, code: false });
   return out;
 }
 
@@ -265,7 +271,7 @@ function shellStatements(command: string): string[] {
 const ENDPOINT =
   /(?:api\.github\.com\/|(?<![\w./-]))\/?repos\/([\w.-]+)\/([\w.-]+)\/(pulls|issues)(?:\/(\d+)(?:\/(merge))?)?(?![\w/-])/g;
 const METHOD_TOKENS: RegExp[] = [
-  /(?:^|\s)(?:-X|--request|--method)(?:\s*=?\s*)['"]?(GET|POST|PUT|PATCH|DELETE)\b/gi,
+  /(?:^|\s)(?:-X|--request|--method)\s*(?:=\s*)?['"]?(GET|POST|PUT|PATCH|DELETE)\b/gi,
   /\bmethod\s*[:=]\s*['"`](GET|POST|PUT|PATCH|DELETE)['"`]/gi,
   /(?:^|[\s"'`])(GET|POST|PUT|PATCH|DELETE)\s+['"]?(?=\/?repos\/)/g,
   /\b(?:requests|axios|got|ky|httpx)\.(get|post|put|patch|delete)\s*\(/gi,
@@ -274,19 +280,31 @@ const CURL_DATA = /(?:^|\s)(?:-d|--data(?:-raw|-binary|-urlencode)?|--json|-F|--
 const GH_API_FIELDS = /(?:^|\s)(?:-f|-F|--field|--raw-field|--input)(?=\s|=)/;
 // `gh` as the statement's command (after env assignments, `$(`, or a wrapper), not a word in an echo.
 const GH_CLI =
-  /(?:^|\$\(|`)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:command|exec|env|nohup|time|timeout\s+\S+)\s+)*gh\s+(pr|issue)\s+(create|merge|close)\b([^\n]*)/;
+  /(?:^|\$\(|`)\s*(?:[A-Za-z_]\w*=[^\s$`]*\s+)*(?:(?:command|exec|env|nohup|time|timeout\s+\S+)\s+)*gh\s+(pr|issue)\s+(create|merge|close)\b([^\n]*)/;
 const REPO_FLAG =
   /(?:^|\s)(?:-R|--repo)(?:\s+|=)['"]?(?:https:\/\/)?(?:github\.com\/)?([\w.-]+\/[\w.-]+?)(?:\.git)?['"]?(?=\s|$)/;
 const ISSUE_OR_PR_URL = /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(pull|issues)\/(\d+)/;
 
-function verbOf(statement: string, at: number): string {
-  let best: { verb: string; dist: number } | undefined;
+interface MethodToken {
+  at: number;
+  verb: string;
+}
+
+/** Every method token of a statement, scanned once (not once per endpoint). */
+function methodTokens(statement: string): MethodToken[] {
+  const out: MethodToken[] = [];
   for (const re of METHOD_TOKENS) {
     re.lastIndex = 0;
-    for (const m of statement.matchAll(re)) {
-      const dist = Math.abs((m.index ?? 0) - at);
-      if (!best || dist < best.dist) best = { verb: m[1].toUpperCase(), dist };
-    }
+    for (const m of statement.matchAll(re)) out.push({ at: m.index ?? 0, verb: m[1].toUpperCase() });
+  }
+  return out;
+}
+
+function verbOf(statement: string, tokens: MethodToken[], at: number): string {
+  let best: { verb: string; dist: number } | undefined;
+  for (const t of tokens) {
+    const dist = Math.abs(t.at - at);
+    if (!best || dist < best.dist) best = { verb: t.verb, dist };
   }
   if (best) return best.verb;
   if (/\bcurl\b/.test(statement) && CURL_DATA.test(statement) && !/(?:^|\s)(?:-G|--get)\b/.test(statement)) {
@@ -317,41 +335,65 @@ function ghCliWrite(statement: string): GitHubWrite | undefined {
   return { op: action, kind, ...(repo ? { repo } : {}), ...(number ? { number } : {}) };
 }
 
-// Commands that only print or filter text: a request spelled in their arguments is not sent.
-const PRINTERS = new Set([
-  'echo',
-  'printf',
-  'cat',
-  'tee',
-  'grep',
-  'egrep',
-  'rg',
-  'sed',
-  'awk',
-  'head',
-  'tail',
-  'less',
-  'jq',
-  'true',
-  ':',
+// A request is sent only by an HTTP client, an interpreter, `gh api`, or a script — never by a command that prints,
+// filters, commits or edits text that merely spells one (`echo`, `git commit -m`, `gh pr edit --body`).
+const SENDERS = new Set([
+  'curl',
+  'wget',
+  'http',
+  'https',
+  'xh',
+  'node',
+  'nodejs',
+  'npx',
+  'tsx',
+  'ts-node',
+  'deno',
+  'bun',
+  'python',
+  'python3',
+  'ruby',
+  'perl',
+  'bash',
+  'sh',
+  'zsh',
 ]);
+const SCRIPT = /\.(?:[cm]?js|ts|py|rb|sh)$/;
+/** Longer statements are not read (a model-written statement is rarely over a few thousand characters). */
+const MAX_STATEMENT_LENGTH = 32_000;
 
-/** The statement's command word (after env assignments and `env`/`command`/`exec`/`time`/`nohup` wrappers). */
-function commandWord(statement: string): string | undefined {
+/**
+ * The statement's command and its first argument — after env assignments and `env`/`command`/`exec`/`time`/`nohup`
+ * wrappers. `X=$(curl …)` runs curl.
+ */
+function commandOf(statement: string): { word?: string; next?: string } {
   const words = statement.trim().split(/\s+/);
   let i = 0;
-  while (i < words.length && (/^[A-Za-z_]\w*=/.test(words[i]) || /^(?:env|command|exec|time|nohup)$/.test(words[i])))
-    i++;
-  return words[i]?.replace(/^[({]+/, '');
+  while (i < words.length) {
+    const sub = words[i].match(/^[A-Za-z_]\w*=(?:\$\(|`)(\S+)/);
+    if (sub) return { word: sub[1], next: words[i + 1] };
+    if (/^[A-Za-z_]\w*=/.test(words[i]) || /^(?:env|command|exec|time|nohup)$/.test(words[i])) i++;
+    else break;
+  }
+  return { word: words[i]?.replace(/^[({]+/, ''), next: words[i + 1] };
 }
 
-function apiWrites(statement: string): GitHubWrite[] {
-  const word = commandWord(statement);
-  if (word && PRINTERS.has(word)) return [];
+function sends(st: Statement): boolean {
+  if (st.code) return true;
+  const { word, next } = commandOf(st.text);
+  if (!word) return false;
+  if (word === 'gh') return next === 'api';
+  return SENDERS.has(word.split('/').pop() ?? word) || SCRIPT.test(word);
+}
+
+function apiWrites(st: Statement): GitHubWrite[] {
+  if (st.text.length > MAX_STATEMENT_LENGTH || !sends(st)) return [];
+  const statement = st.text;
+  const tokens = methodTokens(statement);
   const out: GitHubWrite[] = [];
   ENDPOINT.lastIndex = 0;
   for (const m of statement.matchAll(ENDPOINT)) {
-    const verb = verbOf(statement, m.index ?? 0);
+    const verb = verbOf(statement, tokens, m.index ?? 0);
     const repo = `${m[1]}/${m[2]}`.toLowerCase();
     const kind = m[3] === 'pulls' ? 'pr' : 'issue';
     const number = m[4] ? Number(m[4]) : undefined;
@@ -403,10 +445,11 @@ export function githubWritesOf(toolName: unknown, input: unknown): GitHubWrite[]
     return [];
   }
   const out: GitHubWrite[] = [];
-  for (const statement of shellStatements(fields.command)) {
-    const cli = ghCliWrite(statement);
+  for (const st of shellStatements(fields.command)) {
+    if (st.text.length > MAX_STATEMENT_LENGTH) continue;
+    const cli = st.code ? undefined : ghCliWrite(st.text);
     if (cli) out.push(cli);
-    out.push(...apiWrites(statement));
+    out.push(...apiWrites(st));
   }
   return out;
 }
