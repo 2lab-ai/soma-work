@@ -124,7 +124,7 @@ describe('link leak report (#835)', () => {
     expect(zeroStreak([day(1, 0), day(2, 1)])).toBe(0);
   });
 
-  it('K4 — a long list keeps whole lines and counts the rest (review P3)', () => {
+  it('K4 — a long list keeps whole lines, each block within Slack’s limit, and lists every item (review P3; round 3)', () => {
     const many = Array.from({ length: 200 }, (_, i) => pr('2lab-ai/soma-work', 1000 + i));
     const { blocks } = formatLinkLeakReport(computeLinkLeakReport(many, [], new Map()), {
       date: '2026-11-03',
@@ -132,10 +132,15 @@ describe('link leak report (#835)', () => {
       streak: 0,
       baselineDays: 1,
     });
-    const missed = blocks[1].text.text as string;
-    expect(missed.length).toBeLessThanOrEqual(3000);
-    expect(missed).toMatch(/… and \d+ more$/);
-    for (const line of missed.split('\n').slice(1, -1)) expect(line).toMatch(/^• <https:\/\/github\.com\/[^>]+>/);
+    const lists = blocks.slice(1).filter((b) => b.type === 'section');
+    expect(lists.length).toBeGreaterThan(1);
+    expect(blocks.length).toBeLessThanOrEqual(50);
+    const lines = lists.flatMap((b) => {
+      expect((b.text.text as string).length).toBeLessThanOrEqual(3000);
+      return (b.text.text as string).split('\n').filter((l) => l.startsWith('• '));
+    });
+    expect(lines).toHaveLength(200);
+    for (const line of lines) expect(line).toMatch(/^• <https:\/\/github\.com\/[^>]+>/);
   });
 
   it('K4 — the message names the figure, each item by number, the streak and the alert', () => {
@@ -253,7 +258,7 @@ describe('link leak report (#835)', () => {
       eventType: 'pr_created',
       sessionKey,
       timestamp: Date.parse(at),
-      metadata: { prUrl: url },
+      metadata: { prUrl: url, proven: true },
     });
     const creators = creatorsOf(
       [
@@ -275,7 +280,7 @@ describe('link leak report (#835)', () => {
     expect(to >= '2026-11-04').toBe(true);
   });
 
-  it('K5 — whole seconds in the query; one unreadable PR is skipped, not the day; an incomplete search fails (review P1-2, P2-3, P2-4, P2-5)', async () => {
+  it('K5 — whole seconds in the query; one unreadable PR does not void the day; an incomplete search fails (review P1-2, P2-3, P2-4, P2-5)', async () => {
     const calls: string[] = [];
     const fetchImpl = vi.fn(async (url: string) => {
       calls.push(url);
@@ -303,7 +308,8 @@ describe('link leak report (#835)', () => {
       fetchImpl: fetchImpl as never,
     });
     expect(decodeURIComponent(calls[0])).toContain('created:>=2026-11-02T03:00:00Z');
-    expect(items?.map((i) => i.number)).toEqual([9]);
+    // Round 3: the unreadable PR is counted and flagged (K8), not dropped.
+    expect(items?.map((i) => i.number)).toEqual([8, 9]);
     const incomplete = vi.fn(async () => ({
       ok: true,
       status: 200,
@@ -312,6 +318,143 @@ describe('link leak report (#835)', () => {
     expect(
       await fetchBotItems({ token: 't', botLogin: 'x', sinceIso: 'y', fetchImpl: incomplete as never }),
     ).toBeUndefined();
+  });
+
+  describe('K8 — review round 3 (astra-zhuge)', () => {
+    it('a PR whose details cannot be read is counted, flagged, and named in the post — never a clean day (P1)', async () => {
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (url.includes('/search/issues')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              total_count: 2,
+              items: [
+                { html_url: 'https://github.com/a/b/pull/8', created_at: '2026-11-03T01:00:00Z', pull_request: {} },
+                { html_url: 'https://github.com/a/b/pull/9', created_at: '2026-11-03T02:00:00Z', pull_request: {} },
+              ],
+            }),
+          };
+        }
+        return url.endsWith('/8')
+          ? { ok: false, status: 503, json: async () => ({ message: 'unavailable' }) }
+          : { ok: true, status: 200, json: async () => ({ base: { ref: 'main' }, head: { ref: 'feat/y' } }) };
+      });
+      const items = await fetchBotItems({ token: 't', botLogin: 'bot', sinceIso: 'x', fetchImpl: fetchImpl as never });
+      expect(items?.map((i) => [i.number, i.unverified ?? false])).toEqual([
+        [8, true],
+        [9, false],
+      ]);
+      const report = computeLinkLeakReport(items ?? [], [card('S1', ['https://github.com/a/b/pull/9'])], new Map());
+      expect([report.total, report.missed.length]).toEqual([2, 1]);
+      const text = formatLinkLeakReport(report, { date: '2026-11-03', alert: false, streak: 0, baselineDays: 7 })
+        .blocks.map((b) => b.text?.text ?? '')
+        .join('\n');
+      expect(text).toContain('could not be read');
+    });
+
+    it('only a proven create names the creator; an unproven pr_created leaves it unknown (P1)', () => {
+      const since = 0;
+      const ev = (sessionKey: string, proven: boolean, at: number) => ({
+        eventType: 'pr_created',
+        sessionKey,
+        timestamp: at,
+        metadata: { prUrl: 'https://github.com/a/b/pull/5', ...(proven ? { proven: true } : {}) },
+      });
+      // B only read the PR (an old-style pr_created with no proof), A created it.
+      expect([...creatorsOf([ev('B', false, 1), ev('A', true, 2)], since)]).toEqual([
+        ['https://github.com/a/b/pull/5', 'A'],
+      ]);
+      expect([...creatorsOf([ev('B', false, 1)], since)]).toEqual([]);
+    });
+
+    it('every missed item is listed, across as many blocks as it takes (P2)', () => {
+      const many = Array.from({ length: 40 }, (_, i) => ({ ...pr('a/b', 100 + i), title: 'x'.repeat(200) }));
+      const report = computeLinkLeakReport(many, [], new Map());
+      const text = formatLinkLeakReport(report, { date: '2026-11-03', alert: false, streak: 0, baselineDays: 7 })
+        .blocks.map((b) => b.text?.text ?? '')
+        .join('\n');
+      for (let i = 0; i < 40; i++) expect(text).toContain(`a/b#${100 + i}>`);
+      expect(text).not.toContain('more');
+    });
+
+    it('a search past GitHub’s 1,000-result ceiling fails instead of looking complete (P2)', async () => {
+      const full = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          total_count: 1001,
+          items: Array.from({ length: 100 }, (_, i) => ({
+            html_url: `https://github.com/a/b/issues/${i}`,
+            created_at: '2026-11-03T01:00:00Z',
+          })),
+        }),
+      }));
+      expect(
+        await fetchBotItems({ token: 't', botLogin: 'x', sinceIso: 'y', fetchImpl: full as never }),
+      ).toBeUndefined();
+    });
+
+    it('a GitHub title cannot mention anyone or add a link (P2)', () => {
+      const report = computeLinkLeakReport(
+        [{ ...pr('a/b', 7), title: '<!channel> <@U123> <https://evil|x> & co' }],
+        [],
+        new Map(),
+      );
+      const text = formatLinkLeakReport(report, { date: '2026-11-03', alert: false, streak: 0, baselineDays: 7 })
+        .blocks.map((b) => b.text?.text ?? '')
+        .join('\n');
+      expect(text).not.toContain('<!channel>');
+      expect(text).not.toContain('<@U123>');
+      expect(text).toContain('&lt;!channel&gt;');
+      expect(text).toContain('<https://github.com/a/b/pull/7|a/b#7>');
+    });
+
+    it('a day without a report breaks the streak; a measured day with no items does not (P2)', () => {
+      const d = (date: string, total: number, missed: number) => ({ date, total, missed, wrong: 0 });
+      expect(zeroStreak([d('2026-11-01', 3, 0), d('2026-11-02', 3, 0), d('2026-11-04', 3, 0)])).toBe(1);
+      expect(zeroStreak([d('2026-11-01', 3, 0), d('2026-11-02', 0, 0), d('2026-11-03', 3, 0)])).toBe(2);
+    });
+
+    it('the baseline median counts only days with bot items (fable P3)', () => {
+      const d = (n: number, total: number, missed: number) => ({
+        date: `2026-11-${String(n).padStart(2, '0')}`,
+        total,
+        missed,
+        wrong: 0,
+      });
+      const quiet = [d(1, 0, 0), d(2, 0, 0), d(3, 0, 0), d(4, 0, 0), d(5, 5, 2), d(6, 5, 2), d(7, 5, 2)];
+      // Only 3 measured days: not a baseline yet.
+      expect(shouldAlert(quiet, d(8, 5, 1))).toBe(false);
+    });
+  });
+
+  it('K6 — a live state older than its .bak is not trusted: the newer copy wins, no re-post (astra P2)', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-state-'));
+    try {
+      const statePath = path.join(dir, 'link-leak-report.json');
+      const day = (date: string) => ({ date, total: 1, missed: 0, wrong: 0 });
+      fs.writeFileSync(statePath, JSON.stringify({ lastRunDate: '2026-11-02', history: [day('2026-11-02')] }));
+      fs.writeFileSync(
+        `${statePath}.bak`,
+        JSON.stringify({ lastRunDate: '2026-11-03', history: [day('2026-11-02'), day('2026-11-03')] }),
+      );
+      const publish = vi.fn(async () => true);
+      const reporter = new LinkLeakReporter({
+        collectItems: vi.fn(async () => [pr('a/b', 1)]),
+        collectCards: () => [],
+        collectCreators: async () => new Map(),
+        publish,
+        statePath,
+        timezone: 'Asia/Seoul',
+        hour: 9,
+        now: () => Date.parse('2026-11-03T00:30:00Z'),
+      });
+      await reporter.tick();
+      expect(publish).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   describe('K6 — LinkLeakReporter', () => {
