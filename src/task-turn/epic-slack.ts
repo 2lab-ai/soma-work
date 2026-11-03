@@ -149,9 +149,19 @@ export interface SlackEpicHostDeps {
 
 export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
   const timeoutMs = deps.acceptTimeoutMs ?? 120_000;
+  /**
+   * Idle children an instruction is being handed to, per epic (review #872 R2 astra): from the
+   * hand-over until it is taken (the echo posting, the slot not held yet). They count as running —
+   * a parallel instruction or spawn sees their place and their folder taken.
+   */
+  const starting = new Map<string, Set<string>>();
+  const isStarting = (s: ConversationSession) =>
+    !!s.parentTaskId && !!s.taskId && !!starting.get(s.parentTaskId)?.has(s.taskId);
+  const startingIn = (epicTaskId: string | undefined, except?: string) =>
+    epicTaskId ? [...(starting.get(epicTaskId) ?? [])].filter((id) => id !== except).length : 0;
   const running = (s: ConversationSession) => {
     const key = deps.keyOf(s);
-    return !!key && deps.isRunning(key);
+    return (!!key && deps.isRunning(key)) || isStarting(s);
   };
   /**
    * The plan nodes whose child is being made, per epic, with the folder it is placed in (review #872):
@@ -243,8 +253,15 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
     readChildFinal: async (child) =>
       child.conversationId ? readLatestFinal(deps.readWorkLog, child.conversationId) : undefined,
     isRunning: running,
+    // A new child, or an idle one about to run, takes a running place: so do the children being made
+    // and the idle ones being started (the gate counts only the ones already running).
     admit: (epic, start) =>
-      deps.gate.refusal(epic, start.newChild ? { ...start, making: makingIn(epic.taskId) } : start),
+      start.newChild || (start.child && !running(start.child))
+        ? deps.gate.refusal(epic, {
+            ...start,
+            making: makingIn(epic.taskId) + startingIn(epic.taskId, start.child?.taskId),
+          })
+        : deps.gate.refusal(epic, start),
     ensureDirectory: (dir) => deps.ensureDirectory(dir),
 
     async spawnChild(epic, spec) {
@@ -285,11 +302,27 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
       const key = deps.keyOf(child);
       if (!key) return { taken: false, queued: false, reason: 'the child has no Slack thread' };
       const queued = deps.isRunning(key);
-      const result = await handOver(
-        (onAccepted) => deps.sendToThread(key, instruction, { onAccepted, label: '🧩 에픽의 지시' }),
-        timeoutMs,
-        deps.logger,
-      );
+      // An idle child is being started until its instruction is taken.
+      const epicTaskId = child.parentTaskId;
+      const childId = child.taskId;
+      const marks = !queued && epicTaskId && childId ? (starting.get(epicTaskId) ?? new Set<string>()) : undefined;
+      if (marks && epicTaskId && childId) {
+        marks.add(childId);
+        starting.set(epicTaskId, marks);
+      }
+      let result: Awaited<ReturnType<typeof handOver>>;
+      try {
+        result = await handOver(
+          (onAccepted) => deps.sendToThread(key, instruction, { onAccepted, label: '🧩 에픽의 지시' }),
+          timeoutMs,
+          deps.logger,
+        );
+      } finally {
+        if (marks && epicTaskId && childId) {
+          marks.delete(childId);
+          if (marks.size === 0 && starting.get(epicTaskId) === marks) starting.delete(epicTaskId);
+        }
+      }
       if (result === 'taken') {
         // A start in the tree's window, now or after the turn in flight (review #872 astra 7) — a queued
         // word takes no new running place, but it will start a turn.

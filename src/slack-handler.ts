@@ -1076,6 +1076,8 @@ export class SlackHandler {
           this.noteChainSettled(sessionKey, (last ?? settled)?.outcome);
         });
       },
+      // #854 — a click's run that opened no drain still ended its chain (review #872 R2 astra).
+      chainSettled: (sessionKey, settled) => this.noteChainSettled(sessionKey, settled.outcome),
       // The drain is gated on a safe outcome; the sweep is not. A `Send now`
       // whose turn ended aborted/blocked/parked left every row steered into
       // it with no settlement frame and no drain behind it to clear them.
@@ -2288,8 +2290,10 @@ export class SlackHandler {
         });
       }
 
+      // Only the user's own word completes the choice; a host turn (an epic's wake, a goal continuation)
+      // leaves the choice the owner has to make where it is (#854, review #872 R2 astra).
       const hasPendingChoice = sessionResult.session.actionPanel?.waitingForChoice === true;
-      if (hasPendingChoice) {
+      if (hasPendingChoice && userWord) {
         await this.threadPanel?.clearChoice(sessionResult.sessionKey);
         // Treat direct user message as completing manual input from choice UI.
         this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');

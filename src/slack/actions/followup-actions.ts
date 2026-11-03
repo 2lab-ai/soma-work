@@ -204,6 +204,11 @@ export interface FollowupActionsDeps {
    */
   runDrain(sessionKey: string, settled?: RunReport): void | Promise<void>;
   /**
+   * #854 — the run a `Send now` started ended without opening a drain (`canDrain` false): its chain
+   * is over all the same. The host hears it as a chain end (an epic's child tells its epic).
+   */
+  chainSettled?(sessionKey: string, settled: RunReport): void;
+  /**
    * The host's end-of-turn sweep of rows still sitting in `steered` — the one
    * state whose exit depends on a receipt no one can produce once the turn is
    * over (`slack-handler.ts sweepSteerBucketsIfIdle`).
@@ -476,6 +481,7 @@ export async function handleSendNow(
         // Only a `safe` outcome opens the next boundary — a blocked/failed turn
         // must not be followed by an automatic drain (A16).
         if (settled.canDrain) await deps.runDrain(sessionKey, settled);
+        else deps.chainSettled?.(sessionKey, settled);
       } finally {
         await safeRefresh(deps, sessionKey);
       }
