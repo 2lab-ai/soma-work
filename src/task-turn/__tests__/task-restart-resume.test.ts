@@ -666,6 +666,54 @@ describe('R11 — the words a task still waits with are sent after the restart (
     ]);
   });
 
+  it('a task the resumer waits on is checked once more after its tries are spent (review R1, astra P2)', () => {
+    const sessions = new Map<string, unknown>([['task:w', { slackless: true, taskFollowups: [queuedWord('go')] }]]);
+    const run = vi.fn((_key: string, _opts?: { lastTry?: boolean }) => 'sent' as const);
+    const scheduled: Array<{ fn: () => void; delayMs: number }> = [];
+    const sent = runRestoredFollowups(
+      {
+        controller: { runQueuedAfterRestart: run },
+        sessions: () => sessions as Map<string, ConversationSession>,
+        logger: { info: vi.fn() },
+        schedule: (fn, delayMs) => scheduled.push({ fn, delayMs }),
+        retryMs: 1000,
+        maxAttempts: 3,
+      },
+      new Map<string, RestartResumeOutcome>([['task:w', { status: 'waiting' }]]),
+    );
+    // Not now: the resumer is still trying for its slot.
+    expect(sent).toBe(0);
+    expect(run).not.toHaveBeenCalled();
+    expect(scheduled.map((s) => s.delayMs)).toEqual([4000]);
+    // After its tries: an idle task (resume refused at the end) sends the word, as a last try.
+    scheduled[0].fn();
+    expect(run.mock.calls).toEqual([['task:w', { lastTry: true }]]);
+  });
+
+  it('a goal task left to the goal loop is checked once more too — its goal may wait on a question (review R1, grok P2)', () => {
+    const sessions = new Map<string, unknown>([
+      ['task:goal', { slackless: true, taskFollowups: [queuedWord('go')], goal: { status: 'active' } }],
+    ]);
+    const run = vi.fn((_key: string, _opts?: { lastTry?: boolean }) => 'sent' as const);
+    const scheduled: Array<() => void> = [];
+    expect(
+      runRestoredFollowups(
+        {
+          controller: { runQueuedAfterRestart: run },
+          sessions: () => sessions as Map<string, ConversationSession>,
+          logger: { info: vi.fn() },
+          goalsResumed: () => true,
+          schedule: (fn) => scheduled.push(fn),
+        },
+        new Map(),
+      ),
+    ).toBe(0);
+    expect(run).not.toHaveBeenCalled();
+    expect(scheduled).toHaveLength(1);
+    scheduled[0]();
+    expect(run.mock.calls).toEqual([['task:goal', { lastTry: true }]]);
+  });
+
   it('the default bound is the resumer’s (TASK_GOAL_START_MAX_RETRIES)', () => {
     const sessions = new Map<string, unknown>([['task:a', { slackless: true, taskFollowups: [queuedWord('go')] }]]);
     const run = vi.fn((_key: string, _opts?: { lastTry?: boolean }) => 'slot-busy' as const);

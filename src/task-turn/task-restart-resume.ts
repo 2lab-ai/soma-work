@@ -244,8 +244,10 @@ export interface RestoredFollowupsDeps {
  * The load keeps them `queued` (`sanitizeTaskFollowups`); a chain the boot resumes runs them at its
  * healthy end, as any chain end does. This runs the oldest queued word of every other task, after
  * {@link createTaskRestartResumer}'s first round, given its outcomes:
- *   - left to the resumed chain: a task the resumer started, or waits to start (its slot was busy);
- *   - left to the goal loop: a task with an active goal, when the boot's goal resume ran (as the resumer);
+ *   - left to the resumed chain: a task the resumer started; one it waits to start (its slot was busy)
+ *     is checked once more after the resumer's tries are spent — an idle one is sent then;
+ *   - left to the goal loop: a task with an active goal, when the boot's goal resume ran (as the resumer)
+ *     — checked once more later as well, since a goal waiting on its question starts no chain;
  *   - the rest — no cut turn, a resume skipped or refused — are sent now, through the controller's
  *     `runQueuedAfterRestart` (an idle task only; a running chain's end drains its own queue).
  * A task whose owner's slot is busy is tried again, bounded like the resumer; the last try sends it
@@ -280,8 +282,19 @@ export function runRestoredFollowups(
     if (session.slackless !== true) continue;
     if (!session.taskFollowups?.some((item) => item.state === 'queued')) continue;
     const outcome = resumed.get(sessionKey)?.status;
-    if (outcome === 'started' || outcome === 'waiting') continue;
-    if (session.goal?.status === 'active' && goalsResumed) continue;
+    if (outcome === 'started') continue;
+    // Left to the resumer still trying for its slot, or to the goal loop — but neither is sure to
+    // start a chain (the slot never frees; the goal waits on its question). Once the resumer's tries
+    // are spent, an idle task's word is sent; a running chain's end drains it (#879 R1, astra/grok P2).
+    if (outcome === 'waiting' || (session.goal?.status === 'active' && goalsResumed)) {
+      schedule(
+        () => {
+          attempt(sessionKey, maxAttempts);
+        },
+        retryMs * (maxAttempts + 1),
+      );
+      continue;
+    }
     const run = attempt(sessionKey, 1);
     if (run === 'sent') sent++;
     else deps.logger.info('A restored task queue waits', { sessionKey, run });

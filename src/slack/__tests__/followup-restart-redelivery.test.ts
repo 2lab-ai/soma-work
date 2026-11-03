@@ -108,6 +108,14 @@ describe('restartCutVerdict', () => {
     ).toBe('unread');
   });
 
+  it('asks the transcript for a row an older build took out of steered on a crash (review R1, astra P1)', () => {
+    const legacy = row({ state: 'paused', stateReason: 'process restart — 모델이 읽었는지 미확인' });
+    expect(restartCutVerdict(legacy, () => TRANSCRIPT)).toBe('read');
+    expect(restartCutVerdict({ ...legacy, message: { ...legacy.message, text: '다른 말' } }, () => TRANSCRIPT)).toBe(
+      'unread',
+    );
+  });
+
   it('sends it when no transcript answers, and never asks for a row that only waited', () => {
     expect(restartCutVerdict(row(), () => undefined)).toBe('unread');
     let read = false;

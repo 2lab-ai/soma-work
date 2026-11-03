@@ -1977,6 +1977,23 @@ describe('FollowupQueue restart redelivery (SSOT 2026-11-03)', () => {
     expect(queue.claimNext(SESSION)).toEqual({ ok: false, reason: 'empty' });
   });
 
+  it("a person's stop claims a row a restart left parked; the shutdown's own stop does not (review R1, astra P1)", () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    steerFirst(queue, 'uuid-1');
+    queue.freeze(SESSION, SHUTDOWN);
+    queue.freeze(SESSION, '실행이 중단되었습니다 (shutdown)');
+    expect(queue.list(SESSION)[0].stateReason).toBe(SHUTDOWN);
+
+    queue.freeze(SESSION, '실행이 중단되었습니다 (user-stop)', { claimParked: true });
+
+    const row = queue.list(SESSION)[0];
+    expect(row.state).toBe('uncertain');
+    expect(row.stateReason).toBe('실행이 중단되었습니다 (user-stop)');
+    // History kept: the uuid still answers what the model read.
+    expect(row.cutSteerUuid).toBe('uuid-1');
+  });
+
   it('settleRestartCut refuses a row that is not parked, and a stale epoch', () => {
     const queue = new FollowupQueue();
     queue.enqueue(SESSION, event({ ts: '1.1' }));

@@ -6542,6 +6542,7 @@ describe('SlackHandler — follow-up queue host', () => {
         {
           followupQueueStore: { load: () => snapshot, save: () => undefined, recoveryWarning: undefined },
           followupTranscriptReader: () => transcript,
+          followupRestartSweepDelaysMs: [],
         },
       );
       const bootedAny = booted as any;
@@ -6820,6 +6821,26 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(rowOf(booted).state).toBe('resolved');
     });
 
+    it('hands such a row to the resumed turn itself when it can be steered — that turn re-reads the thread (review R1, fable P3)', async () => {
+      const snapshot = await interruptedByShutdown(false);
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      const { booted } = bootFrom(snapshot, workingAtShutdown());
+      expect(rowOf(booted).state).toBe('queued');
+
+      const resume = holdNextTurn(booted, true);
+      await booted.notifyCrashRecovery();
+      await resume.started;
+      for (let i = 0; i < 4; i++) await tick();
+
+      // Not a second turn after the resume: in it, as a message sent while a turn works.
+      expect(steerTurn).toHaveBeenCalledTimes(1);
+      expect(steerTurn.mock.calls[0][1].text).toBe(FOLLOWUP_TEXT);
+      expect(rowOf(booted).state).toBe('steered');
+      resume.release();
+      for (let i = 0; i < 6; i++) await tick();
+    });
+
     /**
      * Live report (work-m64 dev, 2026-11-03 16:39 KST): a message steered into the
      * running turn 4 s before a deploy stopped it was frozen `uncertain` with its
@@ -6912,6 +6933,50 @@ describe('SlackHandler — follow-up queue host', () => {
 
         expect(rowOf(booted).state).toBe('uncertain');
         expect(booted.drainRestartRequeuedFollowups()).toBe(0);
+      });
+
+      it('is left for its owner when a person stopped the session after a shutdown that did not go through (review R1, astra P1)', async () => {
+        const steerTurn = vi.fn().mockReturnValue(true);
+        claudeHandler.steerTurn = steerTurn;
+        const { settle } = await startBusyTurn();
+        await handler.handleMessage(message({ ts: FOLLOWUP_TS, text: STEER_TEXT }), say());
+        handler.prepareFollowupShutdown();
+        handler.cancelFollowupShutdownPreparation();
+        expect(items()[0].stateReason).toBe('실행이 중단되었습니다 (shutdown)');
+
+        // The person's Stop is the last word on the row the cancelled shutdown parked.
+        handlerAny.requestCoordinator.abortSession(SESSION_KEY, 'user-stop');
+        expect(items()[0].stateReason).toBe('실행이 중단되었습니다 (user-stop)');
+        const snapshot = JSON.parse(JSON.stringify(saved[saved.length - 1])) as FollowupQueueSnapshot;
+        await settle();
+
+        const { booted } = bootFrom(snapshot, []);
+        expect(rowOf(booted).state).toBe('uncertain');
+        expect(booted.drainRestartRequeuedFollowups()).toBe(0);
+        expect(booted.sweepRestartRequeuedFollowups()).toBe(0);
+      });
+
+      it('is sent by the later check when the resume never came — a goal waiting on its question (review R1, astra P1)', async () => {
+        const { snapshot } = await steeredThenShutdown();
+        registrySession.goal = { status: 'active', objective: 'x', goalId: 'g-1', epoch: 1 };
+        try {
+          const { booted } = bootFrom(snapshot, []);
+          expect(rowOf(booted).state).toBe('queued');
+          // An active goal resumes the session, so the boot leaves the row to it …
+          expect(booted.drainRestartRequeuedFollowups()).toBe(0);
+          // … but no turn came (the goal waits on its question): the later check sends it.
+          const redelivery = holdNextTurn(booted, true);
+          expect(booted.sweepRestartRequeuedFollowups()).toBe(1);
+          await redelivery.started;
+          expect(rowOf(booted).state).toBe('dispatched');
+          redelivery.release();
+          for (let i = 0; i < 6; i++) await tick();
+          expect(rowOf(booted).state).toBe('resolved');
+          // Nothing left waiting: the next check has nothing to do.
+          expect(booted.sweepRestartRequeuedFollowups()).toBe(0);
+        } finally {
+          registrySession.goal = undefined;
+        }
       });
 
       it('is left with its Retry when it is more than a day old', async () => {

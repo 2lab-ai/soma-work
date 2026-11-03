@@ -38,6 +38,12 @@ export const FOLLOWUP_REDELIVER_AFTER_RESTART_REASON = '재시작으로 전달�
  */
 export const FOLLOWUP_READ_BEFORE_RESTART_REASON = '재시작 전에 모델이 읽었습니다';
 
+/**
+ * The note a restart appends to the reason of a row it took out of `steered`
+ * (`RESTART_TRANSITIONS`): the model may have read it before the crash.
+ */
+export const FOLLOWUP_RESTART_STEERED_NOTE = '모델이 읽었는지 미확인';
+
 export type FollowupItemState =
   | 'queued'
   | 'steered'
@@ -309,7 +315,7 @@ const STOP_TRANSITIONS: FreezeTransitions = {
  */
 const RESTART_TRANSITIONS: FreezeTransitions = {
   queued: 'paused',
-  steered: { to: 'paused', note: '모델이 읽었는지 미확인' },
+  steered: { to: 'paused', note: FOLLOWUP_RESTART_STEERED_NOTE },
   reserved: 'paused',
   claimed: 'uncertain',
   dispatched: 'uncertain',
@@ -947,8 +953,8 @@ export class FollowupQueue {
    * pushed into its input channel — become `uncertain` (`ssot.md:128-129`,
    * A17/A31). See `STOP_TRANSITIONS`.
    */
-  freeze(sessionKey: string, reason: string): void {
-    this.freezeSessions(reason, (session) => session.sessionKey === sessionKey, STOP_TRANSITIONS);
+  freeze(sessionKey: string, reason: string, opts: { claimParked?: boolean } = {}): void {
+    this.freezeSessions(reason, (session) => session.sessionKey === sessionKey, STOP_TRANSITIONS, opts.claimParked);
   }
 
   /** The only way out of `paused` — explicit user action (A17). Queue history is untouched. */
@@ -1067,10 +1073,17 @@ export class FollowupQueue {
     session.freeze = undefined;
   }
 
+  /**
+   * `claimParked` — a person's stop: a row an earlier freeze (a restart) left
+   * parked takes this stop's reason too, so the next boot reads the person's
+   * decision off it instead of the restart's and does not send it again
+   * (SSOT 2026-11-03: "작업이 중단된거 아니면").
+   */
   private freezeSessions(
     reason: string,
     selector: (session: FollowupSessionSnapshot) => boolean,
     transitions: FreezeTransitions,
+    claimParked = false,
   ): void {
     const next = cloneJson(this.state);
     const targets = next.sessions.filter(selector);
@@ -1080,7 +1093,12 @@ export class FollowupQueue {
       session.freeze = { reason, at };
       for (const item of session.items) {
         const target = transitions[item.state];
-        if (!target) continue;
+        if (!target) {
+          if (claimParked && FREEZE_PARKED_STATES.includes(item.state) && item.stateReason !== reason) {
+            this.enter(item, item.state, reason);
+          }
+          continue;
+        }
         const cutSteerUuid = item.state === 'steered' ? item.steerUuid : undefined;
         if (typeof target === 'string') this.enter(item, target, reason);
         else this.enter(item, target.to, `${reason} — ${target.note}`);
