@@ -526,7 +526,7 @@ export async function fetchGitHubReceiptObject(
     if (!token) return undefined;
     const path = kind === 'pr' ? 'pulls' : 'issues';
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5_000);
+    const timer = setTimeout(() => controller.abort('timeout'), 5_000);
     try {
       const response = await fetch(
         `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${path}/${number}`,
