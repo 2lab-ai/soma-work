@@ -865,21 +865,35 @@ describe('GET_SESSION waits for the host ack', () => {
     expect(g.payload.hostWaitedMs).toBe(0);
   });
 
-  it('waits for the write it was asked about, not one made while waiting (fable R1 P3)', async () => {
+  it('a write made while it waits moves the wait; the answer is about that same write (astra R2 P2)', async () => {
     const { file, c } = setup();
     const first = buildModelCommandRunResponse(add, c) as any;
     fs.writeFileSync(file, JSON.stringify(receipt(3)));
+    let second: any;
     const k = clock((t) => {
-      // A second write lands while the first wait runs; the host then acks the first one.
-      if (t === 500) buildModelCommandRunResponse(add, c);
-      if (t >= 1_000) fs.writeFileSync(file, JSON.stringify(receipt(4, first.payload.receiptId)));
+      if (t === 500) second = buildModelCommandRunResponse(add, c);
+      // The host acks the first write, then (later) the second.
+      if (t === 1_000) fs.writeFileSync(file, JSON.stringify(receipt(4, first.payload.receiptId)));
+      if (t >= 2_000) {
+        const r = receipt(5, second.payload.receiptId);
+        fs.writeFileSync(
+          file,
+          JSON.stringify({
+            ...r,
+            acks: { ...r.acks, [first.payload.receiptId]: { receiptId: first.payload.receiptId, ok: true, at: 4 } },
+          }),
+        );
+      }
     });
     const g = (await runModelCommandAwaitingHost(
       { commandId: 'GET_SESSION', params: { waitForAckMs: 30_000 } },
       c,
       k,
     )) as any;
-    expect(g.payload.hostWaitedMs).toBe(1_000);
+    expect(g.payload.hostWaitedMs).toBe(2_000);
+    expect(g.payload.hostPending).toBe(false);
+    expect(g.payload.host.lastWrite.receiptId).toBe(second.payload.receiptId);
+    expect(c.session?.sequence).toBe(5);
   });
 
   it('other commands run as before', async () => {

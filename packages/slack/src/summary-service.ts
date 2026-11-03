@@ -544,7 +544,8 @@ export interface SummaryServiceOptions {
  */
 /**
  * Apply `rewrite` to `line` with its inline code spans (`` `…` ``) held out: each span is swapped for a placeholder,
- * so markup around a span still pairs up (`**run `x` now**`), and the span comes back exactly as written.
+ * so markup around a span still pairs up (`**run `x` now**`), and the span comes back exactly as written. The
+ * placeholder is NUL-delimited: model text carries no NUL, so it cannot collide with the summary itself.
  */
 function outsideInlineCode(line: string, rewrite: (part: string) => string): string {
   const spans: string[] = [];
