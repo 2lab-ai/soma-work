@@ -45,6 +45,11 @@ export interface ExecutionContext {
    * the turn plans instead of working (the `plan` server attaches; step 6c refuses the work).
    */
   readonly planPending?: true;
+  /**
+   * #854 — a Slack turn of an epic (not a child: depth 1): the epic's task id. The `epic`
+   * server attaches on it, and its tools act on this epic only — never on an argument.
+   */
+  readonly epicTaskId?: string;
 }
 
 /** A Slack-less task's context: its id and its validated directory are always there. */
@@ -92,12 +97,15 @@ export function executionContextFromSlack(input: {
   workingDirectory?: string;
   /** #853 — the session's plan is not started yet (`isPlanPending(session.taskPlan)`). */
   planPending?: boolean;
+  /** #854 — the session is an epic (not a child): its task id. */
+  epicTaskId?: string;
 }): ExecutionContext {
   if (!input.user) throw new ExecutionContextMissingError('Slack turn with no user');
   return Object.freeze({
     ...contextFor('slack', input.user, input.sessionKey),
     ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {}),
     ...(input.planPending === true ? { planPending: true as const } : {}),
+    ...(input.epicTaskId ? { epicTaskId: input.epicTaskId } : {}),
   }) as ExecutionContext;
 }
 

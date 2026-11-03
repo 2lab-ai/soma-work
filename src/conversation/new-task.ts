@@ -290,6 +290,12 @@ export interface NewTaskSubmission {
    * drive work the plan holds back).
    */
   plan?: true;
+  /**
+   * #854 — the epic switch (offered behind the owner's `epicTasks` flag; the route checks it): the
+   * session is an epic — it plans the work as a tree and drives children in their own threads.
+   * Present only when on; autogoal and autoz are then off (the epic's wakes drive it).
+   */
+  epic?: true;
 }
 
 export type NewTaskParseResult = { ok: true; value: NewTaskSubmission } | { ok: false; error: string };
@@ -437,11 +443,13 @@ export function parseNewTaskSubmission(body: unknown, ctx: NewTaskContext): NewT
   if (typeof b.channelId !== 'string' || !ctx.channels.some((c) => c.id === b.channelId)) {
     return { ok: false, error: 'channel is not one of the channels offered to you' };
   }
+  if (b.epic !== undefined && typeof b.epic !== 'boolean') return { ok: false, error: 'epic must be a boolean' };
   if (typeof b.autogoal !== 'boolean' || typeof b.autoz !== 'boolean') {
     return { ok: false, error: 'autogoal and autoz must be booleans' };
   }
   if (b.plan !== undefined && typeof b.plan !== 'boolean') return { ok: false, error: 'plan must be a boolean' };
   const plan = b.plan === true;
+  const epic = b.epic === true;
 
   const parsed = parseAttachments(b.attachments);
   if (!parsed.ok) return parsed;
@@ -458,10 +466,11 @@ export function parseNewTaskSubmission(body: unknown, ctx: NewTaskContext): NewT
       model: model.model,
       effort: b.effort,
       channelId: b.channelId,
-      autogoal: plan ? false : b.autogoal,
-      autoz: plan ? false : b.autoz,
+      autogoal: plan || epic ? false : b.autogoal,
+      autoz: plan || epic ? false : b.autoz,
       attachments,
       ...(plan ? { plan: true as const } : {}),
+      ...(epic ? { epic: true as const } : {}),
     },
   };
 }
@@ -492,6 +501,8 @@ export interface NewTaskRootMessageInput {
   autoz: boolean;
   /** #853 — the task plans first. */
   plan?: boolean;
+  /** #854 — the task is an epic. */
+  epic?: boolean;
   attachmentNames: string[];
 }
 
@@ -534,6 +545,7 @@ export function buildNewTaskRootMessage(input: NewTaskRootMessageInput): { text:
     `🎯 autogoal ${input.autogoal ? 'on' : 'off'}`,
     `⚡ autoz ${input.autoz ? 'on' : 'off'}`,
   ];
+  if (input.epic) parts.push('🧩 에픽');
   if (input.plan) parts.push('📋 작업 계획 먼저');
   if (input.attachmentNames.length) parts.push(`📎 ${input.attachmentNames.length}개 첨부`);
   blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: parts.join('  ·  ') }] });

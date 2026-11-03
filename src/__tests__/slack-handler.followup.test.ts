@@ -6220,6 +6220,18 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
     });
 
+    // #854 review #872 R2 (astra): an epic's wake is a host turn — it clears no choice the owner has to make.
+    it('T2 a host turn leaves a pending choice in place: no clearChoice, still waiting', async () => {
+      registrySession.actionPanel = { waitingForChoice: true, pendingQuestion: singleQuestion() };
+      handlerAny.threadPanel.clearChoice.mockClear();
+      await handler.handleMessage(
+        message({ ts: '333.447', text: 'Epic wake: 1 event — login:finished.', routeContext: { hostTurn: true } }),
+        say(),
+      );
+      expect(handlerAny.threadPanel.clearChoice).not.toHaveBeenCalled();
+      expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
+    });
+
     // astra review P1 (second round): one answer per question across Slack AND the dashboard.
     describe('one answer per question across Slack and the dashboard', () => {
       const QUESTION_TS = 'q-msg';

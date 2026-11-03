@@ -1281,7 +1281,8 @@ function requireInstructAccess(request: any, reply: any, sessionKey: string): bo
     reply.status(403).send({ error: 'Forbidden — sign in with Slack to instruct a task: it runs as you' });
     return false;
   }
-  const epicTree = task && (target?.kind === 'epic' || !!target?.parentTaskId);
+  // #854 — a Slack epic tree too: the epic's tools act as its owner.
+  const epicTree = target?.kind === 'epic' || !!target?.parentTaskId;
   if (epicTree && actor !== target?.ownerId && !_hasWriteAccess(request, target?.ownerId)) {
     reply.status(403).send({
       error: 'Forbidden — an epic and its children take instructions from their owner, or an admin in admin mode',
@@ -2690,17 +2691,18 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...esTldrOf(s),
     followups: followupsOf(key, s.ownerId),
     ...(s.slackless === true ? { slackless: true as const, ...noticeFailuresOf(key) } : {}),
-    ...(s.slackless === true && s.kind === 'epic' ? { kind: 'epic' as const, epic: epicBundle(s) } : {}),
+    // #854 — an epic and its children are Slack sessions too.
+    ...(s.kind === 'epic' ? { kind: 'epic' as const, epic: epicBundle(s) } : {}),
     // Plan mode — the gate (its plan is fetched).
     ...(s.taskPlan ? { taskPlan: taskPlanToKanban(s) } : {}),
-    ...(s.slackless === true && s.parentTaskId
+    ...(s.parentTaskId
       ? {
           parentTaskId: s.parentTaskId,
           planNodeId: s.planNodeId,
           ...(s.closedBy ? { closedBy: { by: s.closedBy.by, at: s.closedBy.at } } : {}),
         }
       : {}),
-    ...(s.slackless === true && s.lastTurnOutcome
+    ...((s.slackless === true || s.parentTaskId) && s.lastTurnOutcome
       ? {
           lastTurnOutcome: {
             outcome: s.lastTurnOutcome.outcome,
@@ -2798,8 +2800,8 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
     sessionState: archived.archiveReason === 'sleep_expired' ? 'SLEEPING' : 'TERMINATED',
     terminated: true,
     // E4 ⑧ — a closed epic or child keeps its relation: it stays in CLOSED, tagged (D1, D10 b).
-    ...(archived.slackless === true && archived.kind === 'epic' ? { kind: 'epic' as const } : {}),
-    ...(archived.slackless === true && archived.parentTaskId
+    ...(archived.kind === 'epic' ? { kind: 'epic' as const } : {}),
+    ...(archived.parentTaskId
       ? {
           parentTaskId: archived.parentTaskId,
           planNodeId: archived.planNodeId,
@@ -2945,7 +2947,6 @@ function bundledChildrenOf(epic: { taskId?: string; ownerId?: string }): Array<[
   const out: Array<[string, ConversationSession]> = [];
   for (const [key, s] of getAllSessions()) {
     if (
-      s.slackless === true &&
       s.parentTaskId === epic.taskId &&
       s.ownerId === epic.ownerId &&
       s.trashed !== true &&
@@ -2978,18 +2979,31 @@ function epicBundle(epic: ConversationSession): NonNullable<KanbanSession['epic'
 
 /** E4 ⑧ — the epic whose bundle carries this child's card, if any. */
 function bundlingEpicOf(child: ConversationSession): [string, ConversationSession] | undefined {
-  if (child.slackless !== true || !child.parentTaskId || child.trashed === true || child.terminated) return undefined;
-  let key: string;
-  try {
-    key = buildTaskSessionKey(child.parentTaskId);
-  } catch {
-    // A forged parent id (one with a key separator) names no epic: the child pushes its own card (fable #704 R2 P3-3).
-    return undefined;
+  if (!child.parentTaskId || child.trashed === true || child.terminated) return undefined;
+  let found: [string, ConversationSession] | undefined;
+  if (child.slackless === true) {
+    let key: string;
+    try {
+      key = buildTaskSessionKey(child.parentTaskId);
+    } catch {
+      // A forged parent id (one with a key separator) names no epic: the child pushes its own card (fable #704 R2 P3-3).
+      return undefined;
+    }
+    const byKey = getAllSessions().get(key);
+    if (byKey) found = [key, byKey];
+  } else {
+    // #854 — a Slack child's epic is a Slack session: found by its task id.
+    for (const [k, s] of getAllSessions()) {
+      if (s.taskId === child.parentTaskId && s.slackless !== true) {
+        found = [k, s];
+        break;
+      }
+    }
   }
-  const epic = getAllSessions().get(key);
+  const [key, epic] = found ?? ['', undefined];
   if (
     !epic ||
-    epic.slackless !== true ||
+    epic.slackless !== child.slackless ||
     epic.kind !== 'epic' ||
     epic.trashed === true ||
     epic.ownerId !== child.ownerId
@@ -3011,7 +3025,7 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
     if (userId && session.ownerId !== userId) continue;
     if (session.trashed === true) continue;
 
-    if (session.slackless === true && session.parentTaskId) {
+    if (session.parentTaskId) {
       children.push([key, session]);
       continue;
     }
@@ -4786,13 +4800,10 @@ export async function registerDashboardRoutes(
     }
     try {
       const context = await _newTaskProvider.context(userId);
-      // #600 ⑥ — with dashboard tasks wired, the folders a task may name (names only).
-      const taskFolders = _taskLauncher?.folders(userId).map((f) => ({ name: f.name }));
-      // E4 ⑨b — and whether this user may make an epic (their flag): the composer offers "에픽" then.
-      const epicTasks = taskFolders !== undefined && _taskLauncher?.epicTasks?.(userId) === true;
-      reply.send({
-        context: taskFolders ? { ...context, taskFolders, ...(epicTasks ? { epicTasks: true } : {}) } : context,
-      });
+      // #854 — one kind of work session: no dashboard-task destination (no task folders offered).
+      // E4 ⑨b — whether this user may make an epic (their flag): the composer offers "에픽" then.
+      const epicTasks = _taskLauncher?.epicTasks?.(userId) === true;
+      reply.send({ context: epicTasks ? { ...context, epicTasks: true } : context });
     } catch (error) {
       logger.error('Error building the new-task context', error);
       reply.status(500).send({ error: 'Internal Server Error' });
@@ -4814,40 +4825,10 @@ export async function registerDashboardRoutes(
         return;
       }
       const requestId = (request.body as { requestId?: unknown } | null)?.requestId;
-      // #600 ⑥ — a Slack-less dashboard task: no channel, no Slack provider.
+      // #854 — one kind of work session: every task is a Slack thread. A dashboard task (no Slack
+      // thread) is no longer made; an old client that asks for one is told so.
       if ((request.body as { destination?: unknown } | null)?.destination === 'task') {
-        const launcher = _taskLauncher;
-        if (!launcher) {
-          reply.status(501).send({ error: 'Dashboard tasks are not configured' });
-          return;
-        }
-        const parsed = parseDashboardTaskSubmission(request.body);
-        if (!parsed.ok) {
-          reply.status(400).send({ error: parsed.error });
-          return;
-        }
-        const ownerName = (request as { authContext?: { name?: string } }).authContext?.name || userId;
-        try {
-          const result = await _newTaskGate.run(userId, parsed.value.requestId, async () => {
-            const { requestId: _rid, ...rest } = parsed.value;
-            // The model nickname is resolved by the launcher from the model catalog —
-            // never through the Slack-dependent new-task context (#640 R2).
-            const outcome = await launcher.launch({ ownerId: userId, ownerName, ...rest });
-            // A refusal is not remembered by the gate, so the same request may be retried.
-            if (outcome.status >= 400) {
-              throw new NewTaskError(outcome.status, String(outcome.body.error ?? 'refused'));
-            }
-            return outcome.body;
-          });
-          reply.send({ ok: true, ...result });
-        } catch (error) {
-          if (error instanceof NewTaskError) {
-            reply.status(error.statusCode).send({ error: error.message });
-            return;
-          }
-          logger.error('Error starting a dashboard task', error);
-          reply.status(500).send({ error: 'Internal Server Error' });
-        }
+        reply.status(410).send({ error: '대시보드 작업은 없어졌습니다 — Slack 채널을 골라 작업을 시작하세요' });
         return;
       }
       const provider = _newTaskProvider;
@@ -4862,6 +4843,10 @@ export async function registerDashboardRoutes(
           const context = await provider.context(userId, { fresh: true });
           const parsed = parseNewTaskSubmission(request.body, context);
           if (!parsed.ok) throw new NewTaskError(400, parsed.error);
+          // #854 — an epic only behind the owner's flag (the composer offers it only then).
+          if (parsed.value.epic === true && _taskLauncher?.epicTasks?.(userId) !== true) {
+            throw new NewTaskError(403, '에픽은 꺼져 있습니다 — `/z epictasks on`으로 켜세요');
+          }
           return provider.start(userId, parsed.value);
         });
         // Its session is on the board from its creation, before its SDK session (SSOT 2026-11-02).
@@ -6887,7 +6872,7 @@ function viewerCanManage(s) {
 }
 function viewerCanInstruct(s) {
   if (!s) return false;
-  if (s.slackless && (s.kind === 'epic' || s.parentTaskId)) return !!_viewerUserId && viewerCanManage(s);
+  if (s.kind === 'epic' || s.parentTaskId) return !!_viewerUserId && viewerCanManage(s);
   if (!s.slackless && typeof s.channelId === 'string' && s.channelId.charAt(0) === 'D') return viewerCanManage(s);
   return !!_viewerUserId || (!s.slackless && viewerCanManage(s));
 }
@@ -19798,6 +19783,8 @@ function ntBuildPayload(state, attachments, requestId) {
     autogoal: planOn ? false : state.autogoal,
     autoz: planOn ? false : state.autoz,
     plan: planOn,
+    // #854 — an epic is a Slack thread too (offered behind the user's flag; the server checks it again).
+    ...(state.kind === 'epic' ? { epic: true } : {}),
     attachments: attachments.map(function (a) {
       return { name: a.name, mimetype: a.mimetype, data: a.data };
     }),
@@ -19964,8 +19951,8 @@ function ntReconcile(state, ctx) {
     return f.name === state.folder;
   });
   if (!hasFolder) state.folder = '';
-  // E4 ⑨b — an epic only while it is offered: a dashboard task with the user's flag (grok, fable #707 R1).
-  if (!ctx.epicTasks || state.destination !== 'task') state.kind = '';
+  // E4 ⑨b — an epic only while it is offered: the user's flag (grok, fable #707 R1); any destination (#854).
+  if (!ctx.epicTasks) state.kind = '';
 }
 
 function ntRender() {
@@ -19973,19 +19960,27 @@ function ntRender() {
   // #600 ⑥ — where the task goes: offered when the context lists task folders.
   var isTask = _ntState.destination === 'task';
   ntPaintPicker();
+  // The row also holds the plan switch and the epic chip (#854): it shows; only the destination chips
+  // wait for task folders, which are no longer offered (one kind of work session).
   var dest = ntEl('nt-dest');
-  if (dest) dest.hidden = !_ntCtx.taskFolders;
+  if (dest) dest.hidden = false;
   var dSlack = ntEl('nt-dest-slack');
   var dTask = ntEl('nt-dest-task');
-  if (dSlack) dSlack.setAttribute('aria-pressed', isTask ? 'false' : 'true');
-  if (dTask) dTask.setAttribute('aria-pressed', isTask ? 'true' : 'false');
+  if (dSlack) {
+    dSlack.hidden = !_ntCtx.taskFolders;
+    dSlack.setAttribute('aria-pressed', isTask ? 'false' : 'true');
+  }
+  if (dTask) {
+    dTask.hidden = !_ntCtx.taskFolders;
+    dTask.setAttribute('aria-pressed', isTask ? 'true' : 'false');
+  }
   var folderChip = ntEl('nt-folder-chip');
   if (folderChip) folderChip.hidden = !isTask;
-  // E4 ⑨b — "에픽" only for a dashboard task, and only when the user may make one.
+  // E4 ⑨b — "에픽" only when the user may make one; a Slack task too (#854).
   var epicChip = ntEl('nt-kind-epic');
   if (epicChip) {
-    epicChip.hidden = !(isTask && _ntCtx.epicTasks);
-    epicChip.setAttribute('aria-pressed', isTask && _ntCtx.epicTasks && _ntState.kind === 'epic' ? 'true' : 'false');
+    epicChip.hidden = !_ntCtx.epicTasks;
+    epicChip.setAttribute('aria-pressed', _ntCtx.epicTasks && _ntState.kind === 'epic' ? 'true' : 'false');
   }
   // Plan mode — the 작업 계획 switch, for every new task (on unless turned off; #853).
   var planWrap = ntEl('nt-plan-wrap');
@@ -20985,18 +20980,16 @@ function ntOnChannelChange() {
 }
 
 // #600 ⑥ — the destination: a Slack channel or a dashboard task (only when offered).
-// E4 ⑨b — the composer's "에픽": a dashboard task that writes a plan and drives children, offered when the
-// context says the user may make one (their epicTasks flag).
+// E4 ⑨b — the composer's "에픽": a task that writes a plan and drives children in their own threads,
+// offered when the context says the user may make one (their epicTasks flag) — a Slack task (#854).
 function ntToggleEpic() {
-  if (!_ntState || !_ntCtx || !_ntCtx.epicTasks || _ntState.destination !== 'task') return;
+  if (!_ntState || !_ntCtx || !_ntCtx.epicTasks) return;
   _ntState.kind = _ntState.kind === 'epic' ? '' : 'epic';
   ntRender();
 }
 function ntSetDestination(dest) {
   if (!_ntState || !_ntCtx) return;
   _ntState.destination = dest === 'task' && _ntCtx.taskFolders ? 'task' : 'slack';
-  // An epic is a dashboard task: leaving the task destination drops it.
-  if (_ntState.destination !== 'task') _ntState.kind = '';
   ntSetError(ntBlockedHint(_ntState, ntComposerFiles()));
   ntRender();
 }
@@ -21258,7 +21251,7 @@ function ntStateAfterLaunch(prev, data, ctx) {
     next.prompt = prev.prompt;
     next.folder = prev.folder;
     next.model = prev.model;
-    if (prev.kind === 'epic' && next.destination === 'task') next.kind = 'epic';
+    if (prev.kind === 'epic' && ctx.epicTasks) next.kind = 'epic';
   }
   return next;
 }

@@ -190,3 +190,50 @@ describe('E4 ⑦ — closing an epic or a child (D10 b · c)', () => {
     expect(slack.deps.markClosing).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * #854 — a Slack epic and its children (Slack sessions): closing the epic first marks each running
+ * child closed by its parent and stops its turn (the request coordinator's abort), then the epic is
+ * terminated; closing a child records its close on its epic. No task-path call is made for either.
+ */
+describe('dashboard close of a Slack epic or child (#854)', () => {
+  function slackRig(session: any, children: any[], running: string[]) {
+    const r = rig(session, false, children, []);
+    const aborted: string[] = [];
+    const deps: any = {
+      ...r.deps,
+      keyOf: (s: any) => `${s.channelId}-${s.threadTs}`,
+      isSlackRunning: vi.fn((key: string) => running.includes(key)),
+      abortSlack: vi.fn((key: string) => {
+        aborted.push(key);
+        r.order.push(`abort:${key}`);
+      }),
+    };
+    return { close: createDashboardCloseHandler(deps), deps, order: r.order, aborted };
+  }
+  const epic = { taskId: 'e1', kind: 'epic', channelId: 'C1', threadTs: '1.0', ownerId: 'U1' };
+  const kids = [
+    { taskId: 'c1', parentTaskId: 'e1', channelId: 'C1', threadTs: '2.0', ownerId: 'U1' },
+    { taskId: 'c2', parentTaskId: 'e1', channelId: 'C1', threadTs: '3.0', ownerId: 'U1' },
+  ];
+
+  it('S-E1 — closing a Slack epic marks and stops its running children first, then terminates it', async () => {
+    const r = slackRig(epic, kids, ['C1-2.0']);
+    await r.close('C1-1.0');
+    expect(r.order).toEqual(['closing:C1-1.0', 'mark:C1-2.0', 'abort:C1-2.0', 'terminate']);
+    expect(r.deps.closeTask).not.toHaveBeenCalled();
+  });
+
+  it('S-E2 — closing a Slack child records its close on its epic, then terminates it', async () => {
+    const r = slackRig(kids[0], [], []);
+    await r.close('C1-2.0');
+    expect(r.order).toEqual(['closing:C1-2.0', 'closed-event:C1-2.0', 'terminate']);
+    expect(r.deps.closeTask).not.toHaveBeenCalled();
+  });
+
+  it('S-E3 — an ordinary Slack session closes as before: terminated, nothing else', async () => {
+    const r = slackRig({ channelId: 'C1', threadTs: '9.0' }, [], []);
+    await r.close('C1-9.0');
+    expect(r.order).toEqual(['terminate']);
+  });
+});

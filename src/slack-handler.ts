@@ -29,6 +29,7 @@ import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { getWorkQueues, WorkQueueService } from '@soma/slack/work-queue';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
+import { taskDirectoryFor } from './agent-runtime/execution-context';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 import { isAwaitingUserChoice, TurnRunner, V1QueryAdapter } from './agent-session';
 import type { ClaudeHandler } from './claude-handler';
@@ -93,6 +94,7 @@ import {
   TodoDisplayManager,
   ToolEventProcessor,
   ToolTracker,
+  withoutHostOnlyFields,
 } from './slack';
 import {
   type CancelSteeredOutcome,
@@ -790,6 +792,14 @@ export class SlackHandler {
       assistantStatusManager: this.assistantStatusManager,
       threadPanel: this.threadPanel,
       workQueue: this.workQueue,
+      // #854 — an epic child's placed folder: only inside its owner's own root (the epic's check, again).
+      placedDirOf: (user, dir) => {
+        try {
+          return taskDirectoryFor(user, dir);
+        } catch {
+          return undefined;
+        }
+      },
     });
 
     // Wire turn completion notification channels. `slackBlockKitChannel`
@@ -941,7 +951,8 @@ export class SlackHandler {
     app.assistant(
       createAssistantContainer({
         logger: this.logger,
-        handleMessage: this.handleMessage.bind(this),
+        // #854 — a door Slack events come in by besides EventRouter: the host-only fields are dropped here too.
+        handleMessage: (event, say) => this.handleMessage(withoutHostOnlyFields(event), say),
       }),
     );
 
@@ -1115,8 +1126,12 @@ export class SlackHandler {
           // the §3.6 deferral it may just have cleared instead of waiting for
           // a turn end that a deferred loop would never produce.
           if (last) this.releaseDeferredGoalDriver(sessionKey, last);
+          // #854 — and a chain end: a child whose queue a click drained tells its epic (review #872).
+          this.noteChainSettled(sessionKey, (last ?? settled)?.outcome);
         });
       },
+      // #854 — a click's run that opened no drain still ended its chain (review #872 R2 astra).
+      chainSettled: (sessionKey, settled) => this.noteChainSettled(sessionKey, settled.outcome),
       // The drain is gated on a safe outcome; the sweep is not. A `Send now`
       // whose turn ended aborted/blocked/parked left every row steered into
       // it with no settlement frame and no drain behind it to clear them.
@@ -2293,6 +2308,16 @@ export class SlackHandler {
         return { result: 'blocked', reason: 'session initialization halted' };
       }
 
+      // #854 — a new session's place in an epic tree: an epic made with the dashboard's epic
+      // switch, or an epic's child in its own thread. Saved before its first turn runs.
+      if (sessionResult.isNewSession && (event.epicOverride === true || event.epicChild)) {
+        const placed = await this.placeInEpicTree(sessionResult.sessionKey, event, activeChannel, activeThreadTs);
+        if (!placed) {
+          await this.slackApi.removeReaction(channel, ts, 'eyes');
+          return { result: 'blocked', reason: 'epic child could not be bound' };
+        }
+      }
+
       // Goal ralph-loop reset on real user input. A user message
       // means the cap counter ("how many synthetic turns has the
       // model burned without the user weighing in?") must be
@@ -2570,8 +2595,10 @@ export class SlackHandler {
         });
       }
 
+      // Only the user's own word completes the choice; a host turn (an epic's wake, a goal continuation)
+      // leaves the choice the owner has to make where it is (#854, review #872 R2 astra).
       const hasPendingChoice = sessionResult.session.actionPanel?.waitingForChoice === true;
-      if (hasPendingChoice) {
+      if (hasPendingChoice && userWord) {
         await this.threadPanel?.clearChoice(sessionResult.sessionKey);
         // Treat direct user message as completing manual input from choice UI.
         this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');
@@ -3322,6 +3349,67 @@ export class SlackHandler {
 
   setFollowupChangeListener(fn: ((sessionKey: string) => void) | undefined): void {
     this.followupChangeListener = fn;
+  }
+
+  /**
+   * #854 — hear when a session's chain settled: its run, and every queued message the drain ran
+   * after it, are over and nothing of it is in flight (an epic's child reports its end to its
+   * epic; an epic may wake). `outcome` is the last run's. Never throws into the drain.
+   */
+  setChainSettledListener(fn: ((sessionKey: string, outcome: RunReport['outcome']) => void) | undefined): void {
+    this.chainSettledListener = fn;
+  }
+
+  private chainSettledListener?: (sessionKey: string, outcome: RunReport['outcome']) => void;
+
+  /**
+   * #854 — place a NEW session in its epic tree before its first turn: the epic switch makes it an
+   * epic; an epic's child takes the id its epic reserved, its parent and node. A child that cannot
+   * be bound does not run (false) — its epic's `spawn_child` hears it did not start. An epic that
+   * cannot be made goes on as an ordinary session, and says so.
+   */
+  private async placeInEpicTree(
+    sessionKey: string,
+    event: MessageEvent,
+    channel: string,
+    threadTs: string,
+  ): Promise<boolean> {
+    const registry = (this.claudeHandler as any)?.getSessionRegistry?.();
+    const child = event.epicChild;
+    try {
+      if (!registry) throw new Error('no session registry');
+      if (child) {
+        registry.bindEpicChild(sessionKey, {
+          taskId: child.taskId,
+          parentTaskId: child.parentTaskId,
+          planNodeId: child.planNodeId,
+        });
+        const session = this.claudeHandler.getSessionByKey?.(sessionKey);
+        if (session && child.title) {
+          session.title = child.title;
+          this.claudeHandler.saveSessions();
+        }
+      } else {
+        registry.makeEpic(sessionKey);
+      }
+      return true;
+    } catch (error) {
+      const detail = (error as Error)?.message ?? String(error);
+      this.logger.error(child ? 'Epic child not bound — its turn does not run' : 'Epic not made', {
+        sessionKey,
+        error: detail,
+      });
+      await this.slackApi
+        .postSystemMessage(
+          channel,
+          child
+            ? '⚠️ 에픽의 자식 작업으로 묶지 못해 이 지시를 실행하지 않았습니다. 에픽이 다시 시도합니다.'
+            : '⚠️ 에픽으로 만들지 못했습니다 — 일반 작업으로 진행합니다.',
+          { threadTs },
+        )
+        .catch(() => undefined);
+      return !child;
+    }
   }
 
   /**
@@ -5646,7 +5734,10 @@ export class SlackHandler {
     // they answer instead of starting a turn, so there is nothing to replay.
     let parked = false;
     let parkFailure: string | undefined;
-    if (this.isQueueableFollowup(event)) {
+    // #854 — not a new epic child's first instruction: no session would own it at the restart (it is
+    // bound before its first turn), so it would be dropped as an orphan. Refused instead — its epic
+    // hears it did not start and takes the reservation back (review #872 astra).
+    if (this.isQueueableFollowup(event) && !event.epicChild) {
       if (!queue || this.followupReadFailed || !sessionKey) {
         parkFailure = sessionKey
           ? (this.followupDegradedReason ?? 'follow-up queue unavailable')
@@ -5972,6 +6063,23 @@ export class SlackHandler {
     const final = last ?? report;
     this.resumeIfAutoCompactStop(sessionKey, final);
     this.releaseDeferredGoalDriver(sessionKey, final);
+    this.noteChainSettled(sessionKey, final.outcome);
+  }
+
+  /**
+   * #854 — a chain end, at either boundary a run settles into (`drainFollowups`, and the drain a
+   * `Send now` / Resume / Retry click runs): heard only when nothing of the chain is in flight.
+   */
+  private noteChainSettled(sessionKey: string, outcome: RunReport['outcome'] | undefined): void {
+    if (!outcome || !this.chainSettledListener || this.followupDispatcher?.isBusy(sessionKey)) return;
+    try {
+      this.chainSettledListener(sessionKey, outcome);
+    } catch (error) {
+      this.logger.warn('Chain-settled listener raised', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
   }
 
   /**
@@ -7125,6 +7233,9 @@ export class SlackHandler {
           error: (error as Error).message,
         });
         // Skip auto-resume if notification failed — channel is likely inaccessible
+        // #854 — a cut turn nobody resumes ends its chain here: an epic's child tells its epic
+        // (review #872 — on the task path the load recorded it interrupted).
+        if (isWorking) this.noteChainSettled(session.sessionKey, { result: 'interrupted', reason: 'shutdown' });
         if (i < recovered.length - 1) {
           await new Promise((resolve) => setTimeout(resolve, SlackHandler.CRASH_RECOVERY_DELAY_MS));
         }

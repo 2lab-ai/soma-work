@@ -439,6 +439,22 @@ export function releaseEpicEvents(events: EpicEvent[] | undefined, chainId: stri
   });
 }
 
+/** #854 — the `consumedBy` of a Slack epic's wake (`createSlackEpicWaker`: `wake:<at>`). */
+export const SLACK_WAKE_PREFIX = 'wake:';
+
+/**
+ * #854 — at load: the events a Slack epic's wake consumed and its chain never settled (the restart
+ * cut it) are pending again, so the boot scan delivers them once more (at least once, never lost).
+ */
+export function releaseCutEpicWakes(events: EpicEvent[] | undefined): EpicEvent[] | undefined {
+  if (!events?.some((e) => e.state === 'delivered' && e.consumedBy?.startsWith(SLACK_WAKE_PREFIX))) return events;
+  return events.map((e) => {
+    if (e.state !== 'delivered' || !e.consumedBy?.startsWith(SLACK_WAKE_PREFIX)) return e;
+    const { consumedBy: _cut, ...rest } = e;
+    return { ...rest, state: 'pending' };
+  });
+}
+
 /**
  * E4 ⑦ (D10 a) — the task ids of the epic trees not archived while asleep: an
  * epic not done yet, or with a child waiting, and its children. Over raw
@@ -457,8 +473,8 @@ export function exemptEpicTreeTaskIds(
 ): Set<string> {
   const exempt = new Set<string>();
   for (const epic of records) {
-    if (epic.slackless !== true || epic.kind !== 'epic' || typeof epic.taskId !== 'string') continue;
-    const children = records.filter((r) => r.slackless === true && r.parentTaskId === epic.taskId);
+    if (epic.kind !== 'epic' || typeof epic.taskId !== 'string') continue;
+    const children = records.filter((r) => r.parentTaskId === epic.taskId);
     // Only a waiting child is still at work after this load: one saved `working` lost its turn
     // with the process and is reconciled idle in the same load (grok #703 R1).
     const busy = children.some((c) => c.activityState === 'waiting');
