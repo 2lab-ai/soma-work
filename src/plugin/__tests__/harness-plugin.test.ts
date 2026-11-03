@@ -62,13 +62,19 @@ describe('T7 — the harness plugin', () => {
 
 describe('T8 — zworkflow stays harness-free', () => {
   it('no zworkflow skill teaches a session task card call (GET_SESSION / UPDATE_SESSION)', () => {
+    // The plugin root's maintainer notes state the boundary by naming the calls; nothing the plugin ships may.
+    const MAINTAINER_NOTES = new Set(['CLAUDE.md', 'README.md', 'README.ko.md'].map((f) => path.join('src/local', f)));
     const offenders: string[] = [];
     const walk = (dir: string) => {
       for (const d of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
         const rel = path.join(dir, d.name);
         if (d.isDirectory()) {
           if (d.name !== '__tests__') walk(rel);
-        } else if (d.name.endsWith('.md') && /\b(GET_SESSION|UPDATE_SESSION)\b/.test(read(rel))) {
+        } else if (
+          d.name.endsWith('.md') &&
+          !MAINTAINER_NOTES.has(rel) &&
+          /\b(GET_SESSION|UPDATE_SESSION)\b/.test(read(rel))
+        ) {
           offenders.push(rel);
         }
       }
