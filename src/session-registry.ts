@@ -413,6 +413,14 @@ export interface EpicRelation {
 }
 
 /**
+ * #854 — an epic's child working in a folder its epic placed it in: one below a session folder
+ * (`…/session_<…>/<sub>`), not a session folder of its own. The epic's, never the child's to delete.
+ */
+export function isPlacedChildFolder(parentTaskId: unknown, dir: string): boolean {
+  return typeof parentTaskId === 'string' && parentTaskId !== '' && /\/session_[^/]+\/./.test(dir);
+}
+
+/**
  * E4 ① — keep only a well-formed epic relation (on any session since #854: an
  * epic and its children are Slack sessions too). A child (`parentTaskId` +
  * `planNodeId`) is never an epic and has no children; a node id without a
@@ -2472,7 +2480,9 @@ export class SessionRegistry {
       // session's dir; the next turn recreates it. A dashboard task's folder is
       // the owner's (it may be one they named, #600 ⑥): never the registry's to
       // delete (#640 R3).
-      sourceWorkingDirs: slackless ? [] : [cwd],
+      // #854 — nor is a folder an epic placed its child in (inside the epic's own session folder):
+      // the epic's to keep, whoever revives the child (review #872 astra R5).
+      sourceWorkingDirs: slackless || isPlacedChildFolder(archived.parentTaskId, cwd) ? [] : [cwd],
       // Incident ownership comes back with it: the thread stays restricted.
       incidentRequest: archived.incidentRequest,
       incidentAttemptFinishedId: archived.incidentAttemptFinishedId,
@@ -3692,11 +3702,31 @@ export class SessionRegistry {
    */
   private cleanupSourceWorkingDirs(session: ConversationSession): void {
     if (!session.sourceWorkingDirs?.length) return;
-    const failed = session.sourceWorkingDirs.filter((dir) => !this.safeRemoveSourceDir(dir));
+    const failed = session.sourceWorkingDirs.filter((dir) => {
+      // #854 — never a folder another live session works in (an epic's child placed inside its
+      // epic's folder outlives the epic's close; review #872 astra R4). Left on disk, not retried.
+      const user = this.liveSessionWorkingIn(dir, session);
+      if (user) {
+        this.logger.info('Source working dir kept — a live session works in it', { dir, sessionKey: user });
+        return false;
+      }
+      return !this.safeRemoveSourceDir(dir);
+    });
     session.sourceWorkingDirs = failed;
     if (failed.length > 0) {
       this.logger.warn('Some source working dirs could not be cleaned up', { count: failed.length, dirs: failed });
     }
+  }
+
+  /** #854 — the key of a live session (not `except`) whose folder is `dir` or inside it, if any. */
+  private liveSessionWorkingIn(dir: string, except: ConversationSession): string | undefined {
+    const root = normalizeTmpPath(path.resolve(dir));
+    for (const [key, s] of this.sessions) {
+      if (s === except || s.terminated || !s.sessionWorkingDir) continue;
+      const theirs = normalizeTmpPath(path.resolve(s.sessionWorkingDir));
+      if (theirs === root || theirs.startsWith(`${root}${path.sep}`)) return key;
+    }
+    return undefined;
   }
 
   /**

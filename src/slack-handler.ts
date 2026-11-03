@@ -5474,7 +5474,10 @@ export class SlackHandler {
     // they answer instead of starting a turn, so there is nothing to replay.
     let parked = false;
     let parkFailure: string | undefined;
-    if (this.isQueueableFollowup(event)) {
+    // #854 — not a new epic child's first instruction: no session would own it at the restart (it is
+    // bound before its first turn), so it would be dropped as an orphan. Refused instead — its epic
+    // hears it did not start and takes the reservation back (review #872 astra).
+    if (this.isQueueableFollowup(event) && !event.epicChild) {
       if (!queue || this.followupReadFailed || !sessionKey) {
         parkFailure = sessionKey
           ? (this.followupDegradedReason ?? 'follow-up queue unavailable')
