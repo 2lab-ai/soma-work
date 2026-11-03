@@ -50,7 +50,11 @@ const KEPT = [
 ];
 
 /** Where the stored mark may still be read: the load-time detector, the record types, the archive readers. */
-const SLACKLESS_ALLOWED = new Set(['src/session-registry.ts', 'src/session-archive.ts', 'src/conversation/dashboard.ts']);
+const SLACKLESS_ALLOWED = new Set([
+  'src/session-registry.ts',
+  'src/session-archive.ts',
+  'src/conversation/dashboard.ts',
+]);
 
 const STACK_NAMES =
   /TaskTurn|executionContextForTask|taskEntry|slackTaskEntry|originThread|taskFollowups|beginTaskTurn|TaskLauncher|TaskExecutionContext|taskController|task-notice|task-approver|task-answer/;

@@ -305,7 +305,12 @@ describe('SessionRegistry — epic and child Slack sessions (E4 ①)', () => {
     const { key: childKey, childId } = childIn(reg, epic.taskId!);
     reg.terminateSession(childKey);
     const archived = archives().find((a) => a.taskId === childId)!;
-    expect(archived).toMatchObject({ channelId: 'C1', threadTs: CHILD_TS, parentTaskId: epic.taskId, planNodeId: 'login' });
+    expect(archived).toMatchObject({
+      channelId: 'C1',
+      threadTs: CHILD_TS,
+      parentTaskId: epic.taskId,
+      planNodeId: 'login',
+    });
     expect(reg.getChildTasks(epic.taskId!)).toEqual([]);
     // The parent still counts the closed child.
     expect(epic.childTaskIds).toEqual([childId]);
