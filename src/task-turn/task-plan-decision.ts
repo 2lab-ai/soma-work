@@ -201,7 +201,8 @@ export function createSlackPlanDecider(deps: SlackPlanDeciderDeps): TaskPlanDeci
     deps.setPlanGate(sessionKey, decided.gate);
     let undoGoal: (() => void) | undefined;
     try {
-      undoGoal = deps.openGoal?.(session, previous.plan, actorUserId);
+      // Not on an epic (#854): its children's ends wake it — a goal loop would talk over its wakes.
+      if (session.kind !== 'epic') undoGoal = deps.openGoal?.(session, previous.plan, actorUserId);
     } catch (error) {
       deps.logger.warn('The plan’s goal could not be opened — the plan starts without it', {
         sessionKey,
