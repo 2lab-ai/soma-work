@@ -32,6 +32,9 @@ describe('epic tree gate (#854)', () => {
     for (let i = 0; i < 29; i++) g.record(epic);
     expect(g.refusal(epic, { newChild: true })).toBeUndefined();
     expect(g.refusal(epic, { newChild: true, making: 1 })).toMatch(/too many starts/);
+    // Starts in flight that take no running place (a working child's queued word) count in the window only.
+    const running = kid('c1', true);
+    expect(g.refusal(epic, { child: running as any, pending: 1 })).toMatch(/too many starts/);
   });
 
   it('G4 — children still being made take their places too (review #872: parallel spawn_child)', () => {

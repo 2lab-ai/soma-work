@@ -167,6 +167,36 @@ describe('the epic host on the Slack path (#854)', () => {
     expect(w.deps.gate.refusal).toHaveBeenLastCalledWith(w.epic, { child: c2, making: 0 });
   });
 
+  it('H9 — an idle child in the folder a child being made takes is not started (review #872 R2 astra)', async () => {
+    const posts: Array<(v: { ts: string }) => void> = [];
+    const w = hostWorld({ postMessage: vi.fn(() => new Promise((r) => posts.push(r))) });
+    const making = w.host.spawnChild(w.epic, {
+      planNodeId: 'login',
+      instruction: 'go',
+      title: 't',
+      workingDirectory: '/tmp/U1/session_e/svc',
+    });
+    const idle = { ...w.child, sessionWorkingDir: '/tmp/U1/session_e/svc' };
+    expect(await w.host.instructChild(w.epic, idle, 'more')).toMatchObject({
+      taken: false,
+      reason: expect.stringMatching(/folder/),
+    });
+    expect(w.deps.sendToThread).not.toHaveBeenCalled();
+    // A child in another folder is not held back.
+    const other = { ...w.child, sessionWorkingDir: '/tmp/U1/session_e/web' };
+    expect(await w.host.instructChild(w.epic, other, 'more')).toMatchObject({ taken: true });
+    posts[0]({ ts: '9.9' });
+    await making;
+  });
+
+  it('H10 — a working child’s queued instruction still being handed over counts in the window (review #872 R2 astra)', async () => {
+    const w = hostWorld({ isRunning: vi.fn(() => true), sendToThread: vi.fn(() => new Promise(() => {})) });
+    void w.host.instructChild(w.epic, w.child, 'more');
+    // Another instruction to the same working child: no running place, but one start in flight.
+    w.host.admit(w.epic, { child: w.child });
+    expect(w.deps.gate.refusal).toHaveBeenLastCalledWith(w.epic, { child: w.child, pending: 1 });
+  });
+
   it('H2 — a thread that could not be made takes the reservation back', async () => {
     const w = hostWorld({ postMessage: vi.fn(async () => undefined) });
     const r = await w.host.spawnChild(w.epic, { planNodeId: 'login', instruction: 'go', title: 't' });
