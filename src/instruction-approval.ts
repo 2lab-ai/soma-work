@@ -3,8 +3,8 @@
  * thread owner's approval.
  *
  * "Someone else" is anyone who is not the session's owner. Their instruction
- * (a Slack thread reply, a dashboard instruction, a drained queue item, a
- * Slack-less task's command or answer) is HELD here instead of running. The
+ * (a Slack thread reply, a dashboard instruction, a drained queue item) is
+ * HELD here instead of running. The
  * owner is asked once per person and session — by Slack DM and on the
  * dashboard card — and answers one of four ways:
  *
@@ -42,7 +42,6 @@ import {
   isInstructionApprovalDecision,
   type SlackMessage,
 } from './slack/instruction-approval-blocks';
-import type { TaskAnswer } from './task-turn/task-answer';
 
 export type { InstructionApprovalDecision, InstructionApprovalSurface } from './slack/instruction-approval-blocks';
 export { INSTRUCTION_APPROVAL_DECISIONS, isInstructionApprovalDecision } from './slack/instruction-approval-blocks';
@@ -57,17 +56,12 @@ const ENDED_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_HELD_INSTRUCTIONS = 20;
 const PREVIEW_CHARS = 300;
 
-/** One held instruction, as it will run once approved. */
-export type HeldInstruction =
-  /** A Slack-thread message (a reply, a dashboard instruction echoed to the thread). `event` is the original MessageEvent. */
-  | { kind: 'message'; ts: string; text: string; at: number; event: Record<string, unknown> }
-  /**
-   * A Slack-less task's instruction (`POST …/command`). `goalOpeningId`: a goal's queued first turn
-   * handed to the owner at the drain (#876 R2) — released, it starts only while that goal still owes it.
-   */
-  | { kind: 'task-command'; text: string; at: number; goalOpeningId?: string }
-  /** A Slack-less task's answer to its open question. */
-  | { kind: 'task-answer'; askId: string; answer: TaskAnswer; at: number };
+/**
+ * One held instruction, as it will run once approved: a Slack-thread message (a reply, a
+ * dashboard instruction echoed to the thread). `event` is the original MessageEvent. (The
+ * dashboard task's own kinds were removed in #855; a stored request holding one is dropped on load.)
+ */
+export type HeldInstruction = { kind: 'message'; ts: string; text: string; at: number; event: Record<string, unknown> };
 
 export type InstructionApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired';
 
@@ -78,7 +72,7 @@ export interface InstructionApprovalRequest {
   ownerId: string;
   requesterId: string;
   requesterName?: string;
-  /** The session's Slack thread (none for a Slack-less task). */
+  /** The session's Slack thread. */
   channel?: string;
   threadTs?: string;
   sessionTitle?: string;
@@ -177,9 +171,8 @@ export interface HoldResult {
   created: boolean;
   /**
    * `full`: the request already holds {@link MAX_HELD_INSTRUCTIONS}; this one was not kept.
-   * `unsaved`: a strict hold could not be saved; nothing of it was kept and nobody was asked.
    */
-  refused?: 'full' | 'unsaved';
+  refused?: 'full';
 }
 
 interface StoreDoc {
@@ -193,6 +186,7 @@ function validateDoc(raw: unknown): StoreDoc {
     throw new Error('instruction approvals: not a store document');
   }
   const requests: Record<string, InstructionApprovalRequest> = {};
+  let dashboardTaskRequests = 0;
   for (const [id, r] of Object.entries(doc.requests)) {
     if (
       r &&
@@ -204,23 +198,26 @@ function validateDoc(raw: unknown): StoreDoc {
       Array.isArray(r.held) &&
       typeof r.status === 'string'
     ) {
+      // #855 — a dashboard task's instruction or answer (its stack was removed, its task archived):
+      // nothing is left to run it, so its request is dropped.
+      if ((r.held as Array<{ kind?: unknown }>).some((h) => h?.kind !== 'message')) {
+        dashboardTaskRequests++;
+        continue;
+      }
       requests[id] = r;
     }
+  }
+  if (dashboardTaskRequests > 0) {
+    logger.warn(
+      `Dropped ${dashboardTaskRequests} held dashboard-task instruction request(s) on load — dashboard tasks were removed (#855)`,
+    );
   }
   return { version: 1, requests };
 }
 
 /** What the owner reads of one held instruction. */
 function textOf(held: HeldInstruction): string {
-  if (held.kind !== 'task-answer') return held.text;
-  const a = held.answer;
-  if (a.kind === 'single') return `(질문에 답: ${a.choiceId})`;
-  if (a.kind === 'multi') {
-    return `(질문에 답: ${Object.values(a.selections)
-      .map((v) => v.label)
-      .join(', ')})`;
-  }
-  return '(질문에 추천 답으로 응답)';
+  return held.text;
 }
 
 /** A thread line with ⚠️ lines appended. */
@@ -372,13 +369,6 @@ export class InstructionApprovals {
     senderId: string;
     senderName?: string;
     instruction: HeldInstruction;
-    /**
-     * Saved or refused (#842 R3): a failed save takes the hold back — its words, and the
-     * request if this hold made it — and answers `refused: 'unsaved'` before anyone is asked,
-     * so a caller that still holds the words on record keeps them. Without it an unsaved
-     * hold stays in memory, as before.
-     */
-    strict?: boolean;
   }): Promise<HoldResult> {
     const { sessionKey, session, senderId, instruction } = input;
     const t = this.now();
@@ -410,30 +400,15 @@ export class InstructionApprovals {
       return { requestId: request.requestId, created: false, refused: 'full' };
     }
     request.held.push(instruction);
-    if (input.strict) {
-      try {
-        this.save();
-      } catch (error) {
-        request.held.pop();
-        if (created) this.requests.delete(request.requestId);
-        logger.error('Instruction approval store write failed (strict hold) — the hold was taken back', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return { requestId: request.requestId, created: false, refused: 'unsaved' };
-      }
-    } else {
-      // Held in memory either way: an unsaved hold is lost on a restart, never run.
-      this.saveQuietly('hold');
-    }
+    // Held in memory either way: an unsaved hold is lost on a restart, never run.
+    this.saveQuietly('hold');
 
-    if (instruction.kind === 'message') {
-      void this.bestEffort('react', () =>
-        this.deps.react?.(
-          { channel: String(instruction.event.channel ?? request.channel ?? ''), ts: instruction.ts },
-          'hourglass_flowing_sand',
-        ),
-      );
-    }
+    void this.bestEffort('react', () =>
+      this.deps.react?.(
+        { channel: String(instruction.event.channel ?? request.channel ?? ''), ts: instruction.ts },
+        'hourglass_flowing_sand',
+      ),
+    );
     if (created) {
       const thread = this.threadOf(request);
       if (thread) {

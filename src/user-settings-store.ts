@@ -463,13 +463,6 @@ export interface UserSettings {
    * Toggled via `goal auto` / `set goal auto`. Undefined ⇒ default `false`.
    */
   autoGoalEnabled?: boolean;
-  /**
-   * E2 ⑦ (.prd/18 D1) — a plain Slack instruction from this user becomes a
-   * dashboard task, and its thread gets only the link, results and input
-   * requests. Read only when a new task would be made. Undefined ⇒ `false`.
-   * Not toggled from Slack until the entry is live (⑧).
-   */
-  slackTaskEntry?: boolean;
   /** The web dashboard's view (SSOT 2026-11-01). Undefined (or unknown) ⇒ `minimal`. */
   dashboardMode?: DashboardMode;
   /**
@@ -1064,17 +1057,6 @@ export class UserSettingsStore {
   setUserDefaultEffort(userId: string, effort: EffortLevel): void {
     this.patchUserSettings(userId, { defaultEffort: effort });
     logger.info('Set user default effort', { userId, effort });
-  }
-
-  /** E2 ⑦ — a plain Slack instruction becomes a dashboard task (D1). Default `false`. */
-  getUserSlackTaskEntry(userId: string): boolean {
-    return this.settings[userId]?.slackTaskEntry ?? false;
-  }
-
-  /** E2 ⑦ — set the Slack-instruction → dashboard-task flag (saved atomically). */
-  setUserSlackTaskEntry(userId: string, enabled: boolean): void {
-    this.patchUserSettings(userId, { slackTaskEntry: enabled });
-    logger.info('Set user Slack task entry', { userId, enabled });
   }
 
   /** E4 ④a-2 — may this user make epic tasks. Default `false`. */

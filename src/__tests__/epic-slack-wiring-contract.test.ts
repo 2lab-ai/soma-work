@@ -53,13 +53,10 @@ describe('index.ts — epics as Slack sessions (#854)', () => {
     expect(waker).toMatch(/settle: \(key, keep\) => epicRegistry\.settleEpicWakes\(key, keep\)/);
   });
 
-  it('W3 — an event wakes the epic on its own path; the boot scan wakes a Slack epic', () => {
-    expect(source).toMatch(
-      /setEpicEventListener\(\(key\) =>\s*claudeHandler\.getSessionRegistry\(\)\.getSessionByKey\(key\)\?\.slackless === true\s*\?\s*epicWaker\.wake\(key\)\s*:\s*slackEpicWaker\.wake\(key\),?\s*\)/,
-    );
-    expect(source).toMatch(
-      /else if \(session\.kind === 'epic' && !session\.parentTaskId\) slackEpicWaker\.wake\(key\);/,
-    );
+  it('W3 — an event wakes the epic (the Slack path, the only one since #855); the boot scan wakes a Slack epic', () => {
+    expect(source).toMatch(/setEpicEventListener\(\(key\) => slackEpicWaker\.wake\(key\)\)/);
+    expect(source).not.toMatch(/createEpicWaker\(/);
+    expect(source).toMatch(/if \(session\.kind === 'epic' && !session\.parentTaskId\) slackEpicWaker\.wake\(key\);/);
   });
 
   it('W4 — a new child placed in its epic’s folder works there, not registered for cleanup', () => {

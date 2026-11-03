@@ -198,14 +198,12 @@ export function isEpicDone(plan: EpicPlan | undefined): boolean {
 /**
  * A node's status from the server's records only (D5): its live child's
  * state, or `closed` when every child it had is gone. A child that is not
- * running reads as its last chain result; a running one reads `needs-input`
- * while an approval it asked is open.
+ * running reads as its last chain result; a running one reads `running` (the
+ * board shows a running child that waits on a permission prompt as waiting).
  */
 export function epicNodeStatus(
   node: EpicPlanNode,
-  liveChildren: Array<
-    Pick<ConversationSession, 'taskId' | 'planNodeId' | 'activityState' | 'lastTurnOutcome' | 'openChain'>
-  >,
+  liveChildren: Array<Pick<ConversationSession, 'taskId' | 'planNodeId' | 'activityState' | 'lastTurnOutcome'>>,
   events: EpicEvent[],
 ): EpicNodeStatus {
   const mine = liveChildren.filter((c) => c.planNodeId === node.id);
@@ -216,19 +214,7 @@ export function epicNodeStatus(
     mine.find((c) => c.activityState === 'waiting') ??
     mine[mine.length - 1];
   if (!child) return (node.spawned?.length ?? 0) > 0 ? 'closed' : 'none';
-  if (child.activityState === 'working') {
-    const openApproval = events.some(
-      (e) =>
-        e.childTaskId === child.taskId &&
-        e.outcome === 'needs-input' &&
-        e.approvalId !== undefined &&
-        !e.resolvedAt &&
-        // An approval of an earlier chain (one a crash left open) is not this run's.
-        e.chainId !== undefined &&
-        e.chainId === child.openChain,
-    );
-    return openApproval ? 'needs-input' : 'running';
-  }
+  if (child.activityState === 'working') return 'running';
   // The chain's result as its end was recorded (D5): a `/compact` end with nothing re-run is
   // `failed` though its hop completed — the event of that same outcome says so (fable #701 R1).
   const last = child.lastTurnOutcome;
@@ -464,7 +450,6 @@ export function releaseCutEpicWakes(events: EpicEvent[] | undefined): EpicEvent[
 export function exemptEpicTreeTaskIds(
   records: ReadonlyArray<{
     taskId?: unknown;
-    slackless?: unknown;
     kind?: unknown;
     parentTaskId?: unknown;
     plan?: unknown;

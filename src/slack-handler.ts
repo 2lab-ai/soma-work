@@ -153,7 +153,6 @@ import {
 import { announceSessionNotice, recordSessionNotice } from './slack/session-notice';
 import { SummaryService } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
-import type { SlackTaskEntry } from './slack/task-entry';
 import { normalizeZInvocation, stripZPrefix } from './slack/z/normalize';
 import { DmZRespond } from './slack/z/respond';
 import { isDmAllowedForNonAdmin } from './slack/z/whitelist';
@@ -386,9 +385,6 @@ export class SlackHandler {
   // guarded so those paths keep their exact pre-queue behavior.
   private followupStore?: FollowupQueueStorePort;
   private followupQueue?: FollowupQueue;
-  private taskNoticeHandoff?: (sessionKey: string, session: ConversationSession) => void;
-  /** E2 ⑧ — the Slack entry: a plain instruction becomes a dashboard task (wired once the deliverer is up). */
-  private taskEntry?: SlackTaskEntry;
   /** #767 — the owner-approval gate for someone else's instruction (wired in index.ts). */
   private instructionApprovals?: InstructionApprovals;
   private followupDispatcher?: FollowupDispatcher;
@@ -882,9 +878,6 @@ export class SlackHandler {
       // the buttons go through.
       onReactionAdded: (reaction) => this.handleFollowupReactionControl(reaction),
       isFollowupControlReaction: (name) => this.followupReactions().isControlReaction(name),
-      // E2 ⑧ — a live task's instruction thread: answered here, nothing runs (D2 (2)).
-      guardInstructionThread: (event, say) =>
-        this.taskEntry ? this.taskEntry.guard(event, say) : Promise.resolve(false),
       // #767 — a non-owner's `/z …` mention goes to the message gate instead of ZRouter.
       holdsForOwnerApproval: (event) => this.ownerApprovalHold(event as MessageEvent) !== undefined,
     };
@@ -1182,9 +1175,7 @@ export class SlackHandler {
       | { setBeforeSessionDelete?: (cb: (key: string, session: ConversationSession, reason: string) => void) => void }
       | undefined;
     if (typeof registry?.setBeforeSessionDelete !== 'function') {
-      this.logger.warn(
-        'Follow-up cancellation and task notice handoff on session delete NOT wired — registry seam unavailable',
-      );
+      this.logger.warn('Follow-up cancellation on session delete NOT wired — registry seam unavailable');
       return;
     }
 
@@ -1192,9 +1183,6 @@ export class SlackHandler {
       // May throw (the queue store cannot save) — the registry then refuses
       // the deletion and keeps the session.
       this.cancelFollowupsOfDeletedSession(sessionKey, session, reason);
-      // E2 ⑤ — a task's notices still owed to its instruction thread go to the
-      // notice ledger; a write that fails throws, and the deletion is refused.
-      this.taskNoticeHandoff?.(sessionKey, session);
       // The background-task lifecycle tracker is process-wide and keyed by
       // session; this seam is the one teardown point both deletion paths share,
       // so it is where the session's live tasks and settled tombstones go.
@@ -1907,17 +1895,6 @@ export class SlackHandler {
       return { result: 'safe' };
     }
 
-    // E2 ⑧ (.prd/18 D2 (2)) — a live task's instruction thread runs nothing,
-    // whatever path the message took here: the router guards the live event,
-    // but a message queued before the task existed (a `!`, `%`, a command, a
-    // second mention) drains through here (grok #671 P1-2).
-    if (
-      this.taskEntry &&
-      (await this.taskEntry.guard({ channel, ts, thread_ts, files: (event as { files?: unknown[] }).files }, say))
-    ) {
-      return { result: 'safe' };
-    }
-
     // Immediately acknowledge the message with eyes emoji
     await this.slackApi.addReaction(channel, ts, 'eyes');
 
@@ -2156,34 +2133,6 @@ export class SlackHandler {
       await this.slackApi.removeReaction(channel, ts, 'eyes');
       await this.sendDmNonAdminRejection(event, 'unhandled-after-route');
       return { result: 'blocked', reason: 'dm rejected after routing' };
-    }
-
-    // E2 ⑧ (.prd/18 D2 (3)) — a plain instruction from a user who turned it on
-    // becomes a dashboard task, before the working folder or the thinking
-    // status: the host's own allow-list over the router's hint.
-    if (this.taskEntry) {
-      const entered = await this.taskEntry.run({
-        event: { user: event.user, channel, ts, thread_ts, text: event.text },
-        say,
-        allow: {
-          candidate: (event.routeContext as { taskEntryCandidate?: boolean } | undefined)?.taskEntryCandidate === true,
-          dm: channel.startsWith('D'),
-          hasSession: !!preRouteSession,
-          verbatim: verbatimPrompt || routedObjective === true,
-          goalOpening: event.routeContext?.goalOpeningId !== undefined,
-          steer: !verbatimPrompt && trimmedText.startsWith('!'),
-          inlineDirective: !!event.inlineDirectiveRawText,
-          handled: !!handled,
-          continueWithPrompt: continueWithPrompt !== undefined,
-          deferredSkillFire: !!deferredSkillFire,
-          forceWorkflow: !!forceWorkflow,
-          setGoalObjective: setGoalObjective !== undefined,
-          inlineModel: inlineModel !== undefined,
-          inlineNoGoal,
-          fileCount: processedFiles.length,
-        },
-      });
-      if (entered) return entered;
     }
 
     // If command returned a follow-up prompt (e.g., /new <prompt>), use that instead.
@@ -2492,7 +2441,7 @@ export class SlackHandler {
         !isLocalSlashCommand(effectiveText.trim()) &&
         // #853 — a session that plans is not a goal yet: the goal loop would drive work the plan holds back.
         !planning &&
-        // A dashboard task carries its composer toggle (SSOT 2026-10-23 T6):
+        // A task the dashboard started carries its composer toggle (SSOT 2026-10-23 T6):
         // per task, in both directions; otherwise the user's setting decides.
         (typeof event.autoGoalOverride === 'boolean'
           ? event.autoGoalOverride
@@ -2603,8 +2552,7 @@ export class SlackHandler {
         // Treat direct user message as completing manual input from choice UI.
         this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');
       }
-      // The user's own message answers the question the model asked, as a
-      // dashboard task's new instruction does (`task-turn-controller` startChain).
+      // The user's own message answers the question the model asked.
       // Left recorded, the question outlived its answer: the next goal cap
       // decision made the card read NEEDS YOU and showed it again (SSOT
       // 2026-11-02). Not every turn is the user's answer, and those leave the
@@ -3245,20 +3193,6 @@ export class SlackHandler {
    * the key of every session whose queue changed — an item's state, text or
    * generation, the turn generation, the freeze — after the write is committed.
    */
-  /**
-   * E2 ⑤ — the notice deliverer's handoff, run by the session-delete seam after
-   * the follow-up cancel and before the background drain (.prd/18 D6). It
-   * throws when the ledger cannot be written; the registry then keeps the session.
-   */
-  setTaskNoticeHandoff(fn: ((sessionKey: string, session: ConversationSession) => void) | undefined): void {
-    this.taskNoticeHandoff = fn;
-  }
-
-  /** E2 ⑧ — wire the Slack entry (index.ts, once the notice deliverer is up: the card link is its post). */
-  setTaskEntry(entry: SlackTaskEntry | undefined): void {
-    this.taskEntry = entry;
-  }
-
   /** #767 — wire the owner-approval gate for instructions from someone who is not the session's owner. */
   setInstructionApprovals(approvals: InstructionApprovals | undefined): void {
     this.instructionApprovals = approvals;
@@ -7363,11 +7297,7 @@ export class SlackHandler {
     let retriesClaimed = 0;
     let stallsEnded = 0;
     let refunded = 0;
-    // A task's cut turn is the load's record (no shutdown marker, not crash-recovered) — read once.
-    const cutTaskKeys: Set<string> = this.claudeHandler.takeRestartCutTaskKeys?.() ?? new Set<string>();
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
-      // A Slack-less task resumes too (SSOT 2026-11-03): it runs turns (#598), and its goal's next
-      // turn is a host start on the task controller (task-goal-loop.ts), not a thread message.
       // Repair a stranded queue (defense for the eval-complete crash window):
       // if the current goal is genuinely closed (completed) or absent but goals
       // are still queued, promote the next one so the queue can't be orphaned.
@@ -7386,9 +7316,6 @@ export class SlackHandler {
         }
       }
       if (session.goal?.status !== 'active') continue;
-      // #876 R2 (grok P1, fable P2) — a dashboard task's goal whose first turn never started: its opening
-      // waits in the task's queue (paused by the restart — Send now starts it). Nothing to continue yet.
-      if (session.slackless === true && session.goal.openingPending === true) continue;
       // A stall judged on no turn text is not a real stall: a turn the restart
       // cut short was taken for "the same failure" (2026-11-02, before the loop
       // stopped judging empty turns). End it — its question is withdrawn and
@@ -7426,7 +7353,7 @@ export class SlackHandler {
       // refund either way. An open cap decision is the owner's call, and a cut
       // user turn (count 0) spent nothing.
       const capDecisionOpen = isGoalCapDecisionPending(session.goal);
-      const cutTurn = this.restartCutSessionKeys.has(sessionKey) || cutTaskKeys.has(sessionKey) || falseStall;
+      const cutTurn = this.restartCutSessionKeys.has(sessionKey) || falseStall;
       if (cutTurn && session.goal.continuationCount > 0 && !capDecisionOpen) {
         session.goal.continuationCount -= 1;
         refunded++;
@@ -7498,8 +7425,6 @@ export class SlackHandler {
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       const dueAt = session.pendingRetryAt;
       if (dueAt === undefined) continue;
-      // A Slack-less task has no execution context yet (#597): never resumed (#612 R2).
-      if (session.slackless) continue;
       // Already armed in this process (e.g. a crash-recovery resume that failed
       // again and scheduled a fresh retry) — arming again would fire it twice.
       if (session.pendingRetryTimer) continue;
@@ -7824,7 +7749,7 @@ export class SlackHandler {
     const threadTs = session.threadRootTs || session.threadTs;
     const tell = async (text: string) => {
       recordSessionNotice(session, text, { sessionKey });
-      if (session.channelId && threadTs && session.slackless !== true) {
+      if (session.channelId && threadTs) {
         await this.slackApi.postSystemMessage(session.channelId, text, { threadTs }).catch(() => undefined);
       }
     };

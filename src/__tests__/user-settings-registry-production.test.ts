@@ -9,8 +9,8 @@ describe('production settings registry', () => {
     const registry = productionSettingsRegistry();
     userSettingsStore.ensureUserExists('UREGPROD1', 'Prod One');
     const snap = registry.read('UREGPROD1');
-    // 23: #777's trusted instructors (its branch counted 22) and #772's display language, both on main.
-    expect(snap.settings).toHaveLength(23);
+    // 22: #777's trusted instructors and #772's display language, both on main; #855 removed taskentry.
+    expect(snap.settings).toHaveLength(22);
     expect(snap.settings.find((s) => s.key === 'persona')!.options!.map((o) => o.value)).toContain('default');
 
     const row = await registry.write('UREGPROD1', 'defaultEffort', 'low');

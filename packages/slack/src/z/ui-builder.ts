@@ -75,7 +75,6 @@ export const DEFAULT_HELP_CATEGORIES: HelpCategory[] = [
       { id: 'goal', label: 'goal' },
       { id: 'queue', label: 'queue' },
       { id: 'session', label: 'session' },
-      { id: 'taskentry', label: 'taskentry' },
       { id: 'epictasks', label: 'epictasks' },
       { id: 'theme', label: 'theme' },
     ],

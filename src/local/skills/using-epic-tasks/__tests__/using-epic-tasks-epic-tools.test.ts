@@ -24,7 +24,8 @@ import { describe, expect, it } from 'vitest';
 const SKILL_MD = resolve(__dirname, '..', 'SKILL.md');
 const SRC = resolve(__dirname, '..', '..', '..', '..');
 const EPIC_SERVER = resolve(SRC, 'task-turn', 'epic-server.ts');
-const CONTROLLER = resolve(SRC, 'task-turn', 'task-turn-controller.ts');
+// #855 — the tree's limits live in the Slack epic's gate (the task-turn controller is gone).
+const TREE_GATE = resolve(SRC, 'task-turn', 'epic-tree-gate.ts');
 const NEW_TASK = resolve(SRC, 'conversation', 'new-task.ts');
 const TOOLS = ['plan_write', 'spawn_child', 'child_status', 'instruct_child'];
 
@@ -99,9 +100,7 @@ describe('using-epic-tasks — the dashboard epic task loop (E4 ⑩a, D13)', () 
 
     const text = flat(body);
     const childMax = Number(/EPIC_CHILD_MAX = (\d+);/.exec(server)?.[1]);
-    const running = Number(
-      /maxTreeChildren = deps\.maxTreeChildren \?\? (\d+);/.exec(readFileSync(CONTROLLER, 'utf8'))?.[1],
-    );
+    const running = Number(/EPIC_MAX_RUNNING_CHILDREN = (\d+);/.exec(readFileSync(TREE_GATE, 'utf8'))?.[1]);
     const chars = Number(/maxPromptChars: ([\d_]+),/.exec(readFileSync(NEW_TASK, 'utf8'))?.[1].replace(/_/g, ''));
     expect(childMax).toBeGreaterThan(0);
     expect(running).toBeGreaterThan(0);

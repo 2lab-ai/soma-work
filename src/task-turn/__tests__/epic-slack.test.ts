@@ -338,7 +338,6 @@ describe('the Slack epic waker (#854)', () => {
       [{ isBusy: vi.fn(() => true) }, {}],
       [{}, { plan: { nodes: [], done: { by: 'epic', at: 1 } } }],
       [{}, { epicEvents: [] }],
-      [{}, { slackless: true }],
       [{}, { closing: true }],
     ] as const) {
       const quiet = wakerWorld(over, epicOver);

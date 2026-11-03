@@ -728,7 +728,6 @@ describe('U8 — a card that newly needs a decision opens by itself, once, witho
         pendingQuestion: {
           type: 'user_choice',
           question: '?',
-          askId: 'x',
           choices: [
             { id: '1', label: '예' },
             { id: '2', label: '아니오' },
@@ -752,7 +751,7 @@ describe('U8 — a card that newly needs a decision opens by itself, once, witho
       },
     );
     expect(m.decisionSigOf(cache['task:a'])).toBe('plan|2');
-    expect(m.decisionSigOf(cache['task:b'])).toBe('ask|x');
+    expect(m.decisionSigOf(cache['task:b'])).toBe('ask|?');
     expect(m.decisionSigOf(cache['task:c'])).toBe('');
     m.autoOpenDecisions();
     expect(reveal).toHaveBeenCalledTimes(2);

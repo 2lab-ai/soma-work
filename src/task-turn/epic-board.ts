@@ -5,8 +5,8 @@
  *
  * The epic's own activity is `idle` while its children work, so its card reads
  * `epicState`:
- *   - `needs-input` — the epic or a child waits on its owner (a question), or a
- *     running child's approval is open (D5's `needs-input`);
+ *   - `needs-input` — the epic or a child waits on its owner (a question or a
+ *     permission prompt);
  *   - `running` — the epic or a child is working;
  *   - `done` — the plan is done (`isEpicDone`) and nothing above holds;
  *   - `idle` — none of these.
@@ -54,8 +54,8 @@ export function epicBoardView(
   const children = liveChildren.filter((c) => c.parentTaskId === epic.taskId && c.ownerId === epic.ownerId);
   const activity = (c: ConversationSession) => options.activityOf?.(c) ?? c.activityState;
   const events = epic.epicEvents ?? [];
-  // A running node whose child the board shows waiting (a permission prompt with no approval
-  // event on the epic) reads needs-input, as the epic's state does (fable #704 R2 P3-1).
+  // A running node whose child the board shows waiting (a permission prompt) reads needs-input,
+  // as the epic's state does (fable #704 R2 P3-1).
   const statusOf = (n: EpicPlanNode): EpicNodeStatus => {
     const status = epicNodeStatus(n, children, events);
     const prompted = children.some((c) => c.planNodeId === n.id && activity(c) === 'waiting');
