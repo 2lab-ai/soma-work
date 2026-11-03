@@ -31,10 +31,12 @@ export function clearAgentGhConfigDir(): void {
  */
 export async function writeAgentGhHosts(dir: string, token: string): Promise<void> {
   if (!/^[A-Za-z0-9_.-]+$/.test(token)) throw new Error('refusing to write a malformed GitHub token');
+  // Absolute: an agent shell resolves GH_CONFIG_DIR from its own cwd, not the daemon's (a relative SOMA_CONFIG_DIR).
+  const abs = path.resolve(dir);
   atomicWriteFile(
-    path.join(dir, 'hosts.yml'),
+    path.join(abs, 'hosts.yml'),
     `github.com:\n    oauth_token: ${token}\n    user: x-access-token\n    git_protocol: https\n`,
     { mode: 0o600, dirMode: 0o700 },
   );
-  served = dir;
+  served = abs;
 }

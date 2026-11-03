@@ -103,6 +103,12 @@ describe('agent gh config (#834)', () => {
     expect(fs.readdirSync(path.join(dir, 'elsewhere'))).toEqual([]);
   });
 
+  it('G1 — a relative dir is served as an absolute path: an agent shell resolves GH_CONFIG_DIR from its own cwd (review P2)', async () => {
+    await writeAgentGhHosts(path.relative(process.cwd(), dir), TOKEN);
+    expect(getAgentGhConfigDir()).toBe(path.resolve(dir));
+    expect(fs.readFileSync(path.join(dir, 'hosts.yml'), 'utf8')).toContain(`oauth_token: ${TOKEN}\n`);
+  });
+
   it('G2 — a token that is not one safe word is refused and nothing is served', async () => {
     await expect(writeAgentGhHosts(dir, 'abc\n    user: evil')).rejects.toThrow();
     await expect(writeAgentGhHosts(dir, '')).rejects.toThrow();
