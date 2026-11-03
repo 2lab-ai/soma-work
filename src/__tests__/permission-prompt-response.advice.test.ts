@@ -45,7 +45,6 @@ function sessions() {
     getSessionKey: vi.fn((channel: string, threadTs?: string) => `${channel}-${threadTs ?? ''}`),
     disableDangerousRules: vi.fn(),
     getSession: vi.fn((_channel: string, _threadTs?: string) => ({ conversationId: 'conv-1' })),
-    getSessionByKey: vi.fn((_key: string) => ({ activeTaskTurnId: 'turn-1', conversationId: 'conv-task' })),
   };
 }
 
@@ -177,14 +176,6 @@ describe('the answer in the work log (T1)', () => {
     const [, entry] = vi.mocked(recordConversationWorkLog).mock.calls[0];
     expect(entry).toMatchObject({ kind: 'permission', ok, permission: { decision } });
     expect(entry.text).toContain(word);
-  });
-
-  it("records a task prompt's answer in the task's work log, on the turn that asked", async () => {
-    const id = await seed({ channel: undefined, thread_ts: undefined, task_key: 'task-1', turn_id: 'turn-1' });
-    await answerPermissionPrompt({ approvalId: id, actor: 'U_REQ', decision: 'deny', sessions: sessions() });
-    const [conversationId, entry] = vi.mocked(recordConversationWorkLog).mock.calls[0];
-    expect(conversationId).toBe('conv-task');
-    expect(entry.turnId).toBe('turn-1');
   });
 
   it('records nothing for a refused answer', async () => {

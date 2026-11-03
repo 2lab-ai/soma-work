@@ -74,33 +74,6 @@ describe('setExecutiveSummary — the TL;DR and the follow-up on the card', () =
   });
 });
 
-describe('a Slack-less dashboard task (no channel, no thread) — by session key', () => {
-  it('setExecutiveSummaryByKey writes the TL;DR and the follow-up on the task', () => {
-    const reg = new SessionRegistry();
-    const task = reg.createTask({ ownerId: 'U1', ownerName: 'User', workingDirectory: '/work/U1/session_1' });
-    const key = `task:${task.taskId}`;
-    expect(reg.getSessionByKey(key)).toBe(task);
-    expect(reg.setExecutiveSummaryByKey(key, BLOCKED)).toBe(true);
-    expect(task.executiveSummary?.tldr).toEqual(BLOCKED);
-    expect(task.followUp?.reason).toContain('PR #12');
-  });
-
-  it('an unknown key: false, never a throw', () => {
-    expect(new SessionRegistry().setExecutiveSummaryByKey('task:nope', BLOCKED)).toBe(false);
-  });
-
-  it('fillPlaceholderSessionTitleByKey fills a task with no title and leaves a deliberate one', () => {
-    const reg = new SessionRegistry();
-    const task = reg.createTask({ ownerId: 'U1', ownerName: 'User', workingDirectory: '/work/U1/session_1' });
-    const key = `task:${task.taskId}`;
-    task.title = 'New Session';
-    expect(reg.fillPlaceholderSessionTitleByKey(key, 'Login fix')).toBe(true);
-    expect(task.title).toBe('Login fix');
-    expect(reg.fillPlaceholderSessionTitleByKey(key, 'Other')).toBe(false);
-    expect(task.title).toBe('Login fix');
-  });
-});
-
 describe('the follow-up survives a restart', () => {
   function restoreWith(followUp: unknown) {
     const writer = new SessionRegistry();

@@ -10,8 +10,8 @@
 
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { executionContextFromSlack } from '../agent-runtime/execution-context';
 import { ClaudeHandler } from '../claude-handler';
+import type { SlackContext } from '../mcp-config-builder';
 import { McpManager } from '../mcp-manager';
 import type { ConversationSession } from '../types';
 
@@ -30,12 +30,9 @@ const optedIn = process.env.SOMA_TEST_REAL_SDK === '1';
 
 const canRun = optedIn && !isNestedSession && !isCI;
 
-// A turn runs only under an execution context (#597), built by its factory.
-const INTEGRATION_CONTEXT = executionContextFromSlack({
-  user: 'U_INTEGRATION',
-  sessionKey: 'work:C_INTEGRATION:integration',
-  workingDirectory: '/tmp',
-});
+// A turn runs only under an execution context (#597): the Slack event's user.
+const INTEGRATION_SLACK = { user: 'U_INTEGRATION', channel: 'C_INTEGRATION', threadTs: 'integration' } as SlackContext;
+const INTEGRATION_KEY = 'work:C_INTEGRATION:integration';
 const describeWithCredentials = canRun ? describe : describe.skip;
 
 if (optedIn && isNestedSession) {
@@ -104,9 +101,8 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
       session,
       abortController,
       '/tmp',
-      undefined,
-      undefined,
-      INTEGRATION_CONTEXT,
+      INTEGRATION_SLACK,
+      INTEGRATION_KEY,
     );
 
     const result = await collectStream(stream);
@@ -127,9 +123,8 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
       session,
       abortController,
       '/tmp',
-      undefined,
-      undefined,
-      INTEGRATION_CONTEXT,
+      INTEGRATION_SLACK,
+      INTEGRATION_KEY,
     );
 
     const result = await collectStream(stream);
@@ -149,9 +144,8 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
       session,
       abortController,
       '/tmp',
-      undefined,
-      undefined,
-      INTEGRATION_CONTEXT,
+      INTEGRATION_SLACK,
+      INTEGRATION_KEY,
     );
 
     const result = await collectStream(stream);
@@ -175,9 +169,8 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
         session,
         abortController,
         '/tmp',
-        undefined,
-        undefined,
-        INTEGRATION_CONTEXT,
+        INTEGRATION_SLACK,
+        INTEGRATION_KEY,
       );
       await collectStream(stream);
     } catch (error: any) {
@@ -208,9 +201,8 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
       session,
       abortController,
       '/tmp',
-      undefined,
-      undefined,
-      INTEGRATION_CONTEXT,
+      INTEGRATION_SLACK,
+      INTEGRATION_KEY,
     );
 
     const result = await collectStream(stream);

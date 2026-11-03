@@ -37,7 +37,7 @@ vi.mock('../conversation/storage', () => ({
 
 import { __resetSessionLifecyclePolicyForTests } from '../session-lifecycle-policy';
 import { SessionRegistry } from '../session-registry';
-import type { EpicEvent, TaskTurnOutcomeRecord } from '../types';
+import type { EpicEvent, TurnOutcomeRecord } from '../types';
 
 const SESSIONS_FILE = path.join(TEST_DATA_DIR, 'sessions.json');
 const BASE = { ownerId: 'U1', ownerName: 'User', workingDirectory: '/work/U1/session_1' };
@@ -162,7 +162,7 @@ describe('SessionRegistry — waking an epic (E4 ⑥)', () => {
     reg.setEpicPlan(epic.taskId!, { nodes: [{ id: 'login', title: 'Fix login', kind: 'issue' }] }, 'epic');
     const child = reg.createTask({ ...BASE, parentTaskId: epic.taskId, planNodeId: 'login' });
     const childKey = `task:${child.taskId}`;
-    const done = (turnId: string): TaskTurnOutcomeRecord => ({
+    const done = (turnId: string): TurnOutcomeRecord => ({
       turnId,
       outcome: 'completed',
       category: 'WorkflowComplete',

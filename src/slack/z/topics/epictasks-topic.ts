@@ -3,8 +3,7 @@
  *
  * The per-user switch for making epic tasks: when it is on, the dashboard's
  * new-task API accepts `kind: 'epic'` from this user (an epic plans the work
- * and, from E4 ④b, runs child tasks). Off by default — the same pattern as
- * the Slack entry's `taskentry` (E2 ⑧).
+ * and, from E4 ④b, runs child tasks). Off by default.
  *
  * Only an accepted user can turn it on: the store's setters create a missing
  * record as accepted, so a write for an unknown user would skip the new-user
@@ -14,10 +13,17 @@
 import { userSettingsStore } from '../../../user-settings-store';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
 import { buildSettingCard } from '../ui-builder';
-import { parseTaskEntryValue } from './taskentry-topic';
 
 const ON_DESCRIPTION = '대시보드에서 에픽 작업을 만들 수 있습니다. 에픽은 계획을 세우고 하위 작업을 맡깁니다.';
 const OFF_DESCRIPTION = '대시보드 작업은 지금처럼 하나씩 만듭니다.';
+
+/** `on|off` and the usual aliases → the flag; anything else → null. */
+export function parseOnOffValue(value: string): boolean | null {
+  const v = value.trim().toLowerCase();
+  if (v === 'on' || v === 'true' || v === 'enable') return true;
+  if (v === 'off' || v === 'false' || v === 'disable') return false;
+  return null;
+}
 
 export async function renderEpicTasksCard(args: { userId: string; issuedAt: number }): Promise<RenderResult> {
   const on = userSettingsStore.getUserEpicTasks(args.userId);
@@ -41,7 +47,7 @@ export async function renderEpicTasksCard(args: { userId: string; issuedAt: numb
 }
 
 export async function applyEpicTasks(args: { userId: string; value: string }): Promise<ApplyResult> {
-  const enabled = parseTaskEntryValue(args.value);
+  const enabled = parseOnOffValue(args.value);
   if (enabled === null) {
     return { ok: false, summary: `❌ \`on\` 또는 \`off\`만 받습니다: \`${args.value}\`` };
   }
