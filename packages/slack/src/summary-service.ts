@@ -696,7 +696,7 @@ export class SummaryService {
    */
   buildTldrBlocks(tldr: string[]): any[] {
     const lines =
-      tldr.length > 0 ? tldr.map((line) => `• ${SummaryService.formatSummaryForSlack(line)}`) : [TLDR_MISSING_POINTER];
+      tldr.length > 0 ? tldr.map((line) => `• ${SummaryService.formatTldrLineForSlack(line)}`) : [TLDR_MISSING_POINTER];
     return [
       { type: 'divider' },
       {
@@ -878,6 +878,14 @@ export class SummaryService {
    * regex pass can't do safely. Leaving it alone keeps both meanings legible
    * (Slack renders `*x*` as bold either way).
    */
+  /**
+   * #846 — one TL;DR line for the Slack head: only the contract's bold (`**x**`) becomes Slack bold. A TL;DR has
+   * no headings or fences, and `__x__` there is an identifier (`__init__`), not emphasis — the card shows the same.
+   */
+  static formatTldrLineForSlack(line: string): string {
+    return line.replace(/\*\*([^*]+)\*\*/g, '*$1*');
+  }
+
   static formatSummaryForSlack(text: string): string {
     let inFence = false;
     return text

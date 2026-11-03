@@ -7639,7 +7639,7 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
     source: 'es',
   };
 
-  function run(opts: { esThisTurn: boolean; markerBefore?: boolean; steerAfterEs?: boolean; steerBeforeEs?: boolean }) {
+  function run(opts: { esThisTurn: boolean; markerBefore?: boolean; consumed?: string[]; discarded?: string[] }) {
     // The module mock above predates the threshold auto-compact getter; this turn reads it.
     (userSettingsStore as any).getUserCompactThreshold ??= vi.fn().mockReturnValue(undefined);
     vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
@@ -7659,14 +7659,20 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
       message: { content: [{ type: 'text', text }] },
     });
     async function* turn() {
-      // The opening message's first reply frame carries its send uuid.
+      // The opening message's first reply frame carries its send uuid (the SDK stamps it once per frame kind).
       yield reply('u-open', 'working on it');
-      if (opts.steerBeforeEs) yield reply('u-steer', 'also doing what you added');
       // The model's UPDATE_SESSION lands mid-turn (host apply → setExecutiveSummary).
       if (opts.esThisTurn) session.executiveSummary = { ...ES };
-      // A follow-up steered into this running turn: its first reply frame carries its uuid.
-      if (opts.steerAfterEs) yield reply('u-steer', 'on it — the thing you just added');
-      yield reply('u-open', 'still the opening message');
+      yield reply('u-open', 'done');
+      // The host's settlement just before the result: which steered sends this turn folded in (consumed) or not.
+      if (opts.consumed || opts.discarded) {
+        yield {
+          type: 'system',
+          subtype: 'steer_settlement',
+          consumed: opts.consumed ?? [],
+          discarded: opts.discarded ?? [],
+        };
+      }
       yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
     }
     const deps: any = {
@@ -7774,8 +7780,8 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
     expect(deps.threadPanel.updatePanel).toHaveBeenCalledWith(session, 'C7:t7');
   });
 
-  it('a message steered in after the es: the turn-end summary judges again (the TL;DR stays until then)', async () => {
-    const { deps, session, done } = run({ esThisTurn: true, steerAfterEs: true });
+  it('a steered message this turn consumed: the turn-end summary judges the whole turn again (the TL;DR stays until then)', async () => {
+    const { deps, session, done } = run({ esThisTurn: true, consumed: ['u-steer'] });
     expect((await done).success).toBe(true);
     expect(deps.summaryTimer.start).toHaveBeenCalledTimes(1);
     expect(deps.summaryService.displayEsTldrOnThread).not.toHaveBeenCalled();
@@ -7783,10 +7789,11 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
     expect(session.executiveSummary?.source).toBeUndefined();
   });
 
-  it('a message steered in before the es: the es covers it, no host summary', async () => {
-    const { deps, done } = run({ esThisTurn: true, steerBeforeEs: true });
+  it('a steered message the turn did not take (discarded, back to the queue): the es verdict stands', async () => {
+    const { deps, done } = run({ esThisTurn: true, discarded: ['u-steer'] });
     expect((await done).success).toBe(true);
     expect(deps.summaryTimer.start).not.toHaveBeenCalled();
+    expect(deps.summaryService.displayEsTldrOnThread).toHaveBeenCalled();
   });
 
   it('an earlier turn’s marker does not block this turn’s summary', async () => {
