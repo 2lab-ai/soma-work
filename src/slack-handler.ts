@@ -93,6 +93,7 @@ import {
   TodoDisplayManager,
   ToolEventProcessor,
   ToolTracker,
+  withoutHostOnlyFields,
 } from './slack';
 import {
   type CancelSteeredOutcome,
@@ -898,7 +899,8 @@ export class SlackHandler {
     app.assistant(
       createAssistantContainer({
         logger: this.logger,
-        handleMessage: this.handleMessage.bind(this),
+        // #854 — a door Slack events come in by besides EventRouter: the host-only fields are dropped here too.
+        handleMessage: (event, say) => this.handleMessage(withoutHostOnlyFields(event), say),
       }),
     );
 
@@ -1070,6 +1072,8 @@ export class SlackHandler {
           // the §3.6 deferral it may just have cleared instead of waiting for
           // a turn end that a deferred loop would never produce.
           if (last) this.releaseDeferredGoalDriver(sessionKey, last);
+          // #854 — and a chain end: a child whose queue a click drained tells its epic (review #872).
+          this.noteChainSettled(sessionKey, (last ?? settled)?.outcome);
         });
       },
       // The drain is gated on a safe outcome; the sweep is not. A `Send now`
@@ -5408,7 +5412,10 @@ export class SlackHandler {
     // they answer instead of starting a turn, so there is nothing to replay.
     let parked = false;
     let parkFailure: string | undefined;
-    if (this.isQueueableFollowup(event)) {
+    // #854 — not a new epic child's first instruction: no session would own it at the restart (it is
+    // bound before its first turn), so it would be dropped as an orphan. Refused instead — its epic
+    // hears it did not start and takes the reservation back (review #872 astra).
+    if (this.isQueueableFollowup(event) && !event.epicChild) {
       if (!queue || this.followupReadFailed || !sessionKey) {
         parkFailure = sessionKey
           ? (this.followupDegradedReason ?? 'follow-up queue unavailable')
@@ -5729,16 +5736,22 @@ export class SlackHandler {
     const final = last ?? report;
     this.resumeIfAutoCompactStop(sessionKey, final);
     this.releaseDeferredGoalDriver(sessionKey, final);
-    // #854 — the chain is over when nothing of it is in flight (a `Send now` may hold the slot).
-    if (this.chainSettledListener && !this.followupDispatcher?.isBusy(sessionKey)) {
-      try {
-        this.chainSettledListener(sessionKey, final.outcome);
-      } catch (error) {
-        this.logger.warn('Chain-settled listener raised', {
-          sessionKey,
-          error: (error as Error)?.message ?? String(error),
-        });
-      }
+    this.noteChainSettled(sessionKey, final.outcome);
+  }
+
+  /**
+   * #854 — a chain end, at either boundary a run settles into (`drainFollowups`, and the drain a
+   * `Send now` / Resume / Retry click runs): heard only when nothing of the chain is in flight.
+   */
+  private noteChainSettled(sessionKey: string, outcome: RunReport['outcome'] | undefined): void {
+    if (!outcome || !this.chainSettledListener || this.followupDispatcher?.isBusy(sessionKey)) return;
+    try {
+      this.chainSettledListener(sessionKey, outcome);
+    } catch (error) {
+      this.logger.warn('Chain-settled listener raised', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
     }
   }
 
@@ -6891,6 +6904,9 @@ export class SlackHandler {
           error: (error as Error).message,
         });
         // Skip auto-resume if notification failed — channel is likely inaccessible
+        // #854 — a cut turn nobody resumes ends its chain here: an epic's child tells its epic
+        // (review #872 — on the task path the load recorded it interrupted).
+        if (isWorking) this.noteChainSettled(session.sessionKey, { result: 'interrupted', reason: 'shutdown' });
         if (i < recovered.length - 1) {
           await new Promise((resolve) => setTimeout(resolve, SlackHandler.CRASH_RECOVERY_DELAY_MS));
         }

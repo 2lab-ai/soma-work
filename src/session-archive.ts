@@ -328,6 +328,11 @@ export class SessionArchiveStore {
       // Atomic write: tmp → rename
       fs.writeFileSync(tmpPath, data, 'utf-8');
       fs.renameSync(tmpPath, finalPath);
+      // The newest archive of its task id (#854): a child revived and closed again reads its new spend.
+      if (archived.taskId) {
+        this.noArchive.delete(archived.taskId);
+        this.byTaskId.set(archived.taskId, archived);
+      }
 
       logger.info('Session archived', { sessionKey, reason });
     } catch (err) {
@@ -399,21 +404,28 @@ export class SessionArchiveStore {
     return null;
   }
 
-  /** #854 — archives found by task id (an archive never changes once written). */
+  /** #854 — archives found by task id (an archive never changes once written; a newer one replaces it). */
   private readonly byTaskId = new Map<string, ArchivedSession>();
+  /** #854 — ids a scan found no archive for; cleared for an id when this store archives it. */
+  private readonly noArchive = new Set<string>();
 
   /**
    * #854 — the newest archive of the session that held this task id, or null. A Slack epic's
    * closed child is archived under its thread's key, which its epic does not keep: the epic's
-   * cost cap finds the child's spend by its id. Scans the archive folder once per id; a hit is
-   * kept (its spend no longer moves).
+   * cost cap finds the child's spend by its id. Scans the archive folder once per id — a hit or a
+   * miss is kept (the tree's gate asks on every spawn, instruction and wake; review #872 fable
+   * P2-3). Every archive is written by `archive()`, which keeps both current.
    */
   latestByTaskId(taskId: string): ArchivedSession | null {
     if (!taskId) return null;
     const known = this.byTaskId.get(taskId);
     if (known) return known;
+    if (this.noArchive.has(taskId)) return null;
     const found = this.listWithFilter((a) => a?.taskId === taskId);
-    if (found.length === 0) return null;
+    if (found.length === 0) {
+      this.noArchive.add(taskId);
+      return null;
+    }
     const newest = found.reduce((a, b) => ((b.archivedAt ?? 0) > (a.archivedAt ?? 0) ? b : a));
     this.byTaskId.set(taskId, newest);
     return newest;

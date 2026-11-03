@@ -155,4 +155,89 @@ describe('SlackHandler — a new session’s place in an epic tree (#854)', () =
     await h.drainFollowups('C1:9.9', { outcome: { result: 'safe' }, canDrain: false });
     expect(heard).toHaveLength(1);
   });
+
+  it('T8 — while shutdown is being prepared, a new child’s first instruction is not parked (no session would own it)', async () => {
+    const { handler } = harness({ ownerId: 'U1', systemPrompt: 'cached' });
+    const h = handler as any;
+    h.followupShutdownPreparing = true;
+    const enqueue = vi.fn(() => ({ status: 'queued' }));
+    h.followupQueue = { enqueue };
+    h.isQueueableFollowup = vi.fn(() => true);
+    h.captureFollowupContext = vi.fn(() => ({}));
+    h.resolveFollowupSessionKey = vi.fn(() => 'C1:9.9');
+    const accepted = vi.fn();
+    handler.onTurnAccepted('C1', '9.9', accepted);
+    await handler.handleMessage(
+      {
+        user: 'U1',
+        channel: 'C1',
+        thread_ts: '9.9',
+        ts: '9.9',
+        text: 'go',
+        epicChild: { taskId: 'child-1', parentTaskId: 'e1', planNodeId: 'login' },
+      } as any,
+      vi.fn() as any,
+    );
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(accepted).not.toHaveBeenCalled();
+  });
+
+  it('T7 — a cut turn the restart could not resume (its thread unreachable) ends its chain as interrupted', async () => {
+    const { handler } = harness({ ownerId: 'U1', systemPrompt: 'cached' });
+    const heard: Array<[string, unknown]> = [];
+    handler.setChainSettledListener((key, outcome) => heard.push([key, outcome]));
+    const h = handler as any;
+    h.followupDispatcher = { isBusy: () => false };
+    h.claudeHandler.getCrashRecoveredSessions = vi.fn(() => [
+      {
+        channelId: 'C1',
+        threadTs: '9.9',
+        ownerId: 'U1',
+        activityState: 'working',
+        sessionKey: 'C1:9.9',
+        shouldAutoResume: true,
+      },
+      {
+        channelId: 'C1',
+        threadTs: '8.8',
+        ownerId: 'U1',
+        activityState: 'idle',
+        sessionKey: 'C1:8.8',
+        shouldAutoResume: false,
+      },
+    ]);
+    h.claudeHandler.clearCrashRecoveredSessions = vi.fn();
+    h.slackApi.postMessage = vi.fn().mockRejectedValue(new Error('channel_not_found'));
+    h.pendingRetryNoticeMinutes = vi.fn(() => undefined);
+    vi.useFakeTimers();
+    try {
+      const done = handler.notifyCrashRecovery();
+      await vi.runAllTimersAsync();
+      await done;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(heard).toEqual([['C1:9.9', { result: 'interrupted', reason: 'shutdown' }]]);
+  });
+
+  it('T6 — a chain a click drained (Send now / Resume / Retry) is heard too (review #872 astra)', async () => {
+    const { handler } = harness({ ownerId: 'U1', systemPrompt: 'cached' });
+    const heard: Array<[string, unknown]> = [];
+    handler.setChainSettledListener((key, outcome) => heard.push([key, outcome]));
+    const h = handler as any;
+    const dispatcher = { isBusy: () => false };
+    h.followupDispatcher = dispatcher;
+    h.noteAutoCompactCut = vi.fn();
+    h.resumeIfAutoCompactStop = vi.fn();
+    h.releaseDeferredGoalDriver = vi.fn();
+    h.runFollowupDrainLoop = vi.fn(async () => ({ outcome: { result: 'safe' }, canDrain: true }));
+    const deps = h.buildFollowupActionDeps({} as any, dispatcher as any);
+    // Resume: the drain ran the child's queued word to a healthy end.
+    await deps.runDrain('C1:9.9');
+    expect(heard).toEqual([['C1:9.9', { result: 'safe' }]]);
+    // Send now with an empty queue: the click's own run is the chain's last.
+    h.runFollowupDrainLoop = vi.fn(async () => undefined);
+    await deps.runDrain('C1:9.9', { outcome: { result: 'error', reason: 'boom' }, canDrain: true });
+    expect(heard[1]).toEqual(['C1:9.9', { result: 'error', reason: 'boom' }]);
+  });
 });

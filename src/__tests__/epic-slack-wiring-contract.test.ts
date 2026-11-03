@@ -36,13 +36,21 @@ describe('index.ts — epics as Slack sessions (#854)', () => {
     expect(send).toMatch(
       /injectDashboardMessage\(key, text, undefined, \[\], undefined, undefined, \{[\s\S]*verbatim: true,[\s\S]*echoLabel: opts\.label/,
     );
+    // An epic's wake and its word to a child are host turns (review #872 astra): never the owner's answer.
+    expect(send).toMatch(/\.\.\.\(opts\.hostTurn \? \{ hostTurn: true as const \} : \{\}\)/);
+    expect(source).toMatch(
+      /routeContext: \{ verbatimPrompt: true, \.\.\.\(extra\.hostTurn \? \{ hostTurn: true \} : \{\}\) \}/,
+    );
   });
 
   it('W2 — a settled chain: a child records its end on its epic; an epic may wake', () => {
     const settled = section('slackHandler.setChainSettledListener((key, outcome) => {', '\n    });');
     expect(settled).toMatch(/const end = chainEndOf\(outcome\);/);
     expect(settled).toMatch(/epicRegistry\.recordSessionChainEnd\(key, end\)/);
-    expect(settled).toMatch(/if \(session\.kind === 'epic'\) slackEpicWaker\.wake\(key\);/);
+    // An epic's chain end settles the wakes it ran (never one still being sent), then it may wake again.
+    expect(settled).toMatch(/if \(session\.kind === 'epic'\) slackEpicWaker\.chainEnded\(key\);/);
+    const waker = section('const slackEpicWaker = createSlackEpicWaker({', '\n    });');
+    expect(waker).toMatch(/settle: \(key, keep\) => epicRegistry\.settleEpicWakes\(key, keep\)/);
   });
 
   it('W3 — an event wakes the epic on its own path; the boot scan wakes a Slack epic', () => {
@@ -77,5 +85,13 @@ describe('#854 — a placed folder is checked again where it is used (review #87
     );
     const handler = fs.readFileSync(path.join(__dirname, '..', 'slack-handler.ts'), 'utf8');
     expect(handler).toMatch(/placedDirOf: \(user, dir\) => \{\s*try \{\s*return taskDirectoryFor\(user, dir\);/);
+  });
+});
+
+describe('#854 — every door a Slack event comes in by drops the host-only fields (review #872 R2 fable)', () => {
+  it('W6 — the assistant-thread door (app.assistant → handleMessage) strips them as EventRouter does', () => {
+    const handler = fs.readFileSync(path.join(__dirname, '..', 'slack-handler.ts'), 'utf8');
+    const door = section('createAssistantContainer({', '}),', handler);
+    expect(door).toMatch(/handleMessage: \(event, say\) => this\.handleMessage\(withoutHostOnlyFields\(event\), say\)/);
   });
 });

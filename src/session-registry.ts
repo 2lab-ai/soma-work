@@ -55,7 +55,9 @@ import {
   exemptEpicTreeTaskIds,
   isEpicDone,
   type PlanWriteInput,
+  releaseCutEpicWakes,
   releaseEpicEvents,
+  SLACK_WAKE_PREFIX,
   sanitizeEpicEvents,
   sanitizeEpicPlan,
   withEpicEvent,
@@ -361,6 +363,14 @@ export interface EpicRelation {
   plan?: EpicPlan;
   epicEvents?: EpicEvent[];
   closedBy?: ClosedByParent;
+}
+
+/**
+ * #854 — an epic's child working in a folder its epic placed it in: one below a session folder
+ * (`…/session_<…>/<sub>`), not a session folder of its own. The epic's, never the child's to delete.
+ */
+export function isPlacedChildFolder(parentTaskId: unknown, dir: string): boolean {
+  return typeof parentTaskId === 'string' && parentTaskId !== '' && /\/session_[^/]+\/./.test(dir);
 }
 
 /**
@@ -1172,6 +1182,35 @@ export class SessionRegistry {
     });
   }
 
+  /**
+   * #854 — the epic's chain ended: the wakes it ran are done (their events stay delivered, no longer
+   * tied to a wake). A wake still tied to its events at a restart was cut before its chain ended, and
+   * the load delivers them again (`releaseCutEpicWakes`). Best effort: unsettled only means once more.
+   */
+  settleEpicWakes(epicKey: string, keep?: string): void {
+    const epic = this.sessions.get(normalizeSessionKey(epicKey));
+    if (!epic || epic.kind !== 'epic') return;
+    const before = epic.epicEvents;
+    // `keep`: a wake still being sent (not taken yet) is not one this chain ran (review #872 R2 grok).
+    const settles = (by: string | undefined) => !!by?.startsWith(SLACK_WAKE_PREFIX) && by !== keep;
+    if (!before?.some((e) => settles(e.consumedBy))) return;
+    epic.epicEvents = before.map((e) => {
+      if (!settles(e.consumedBy)) return e;
+      const { consumedBy: _done, ...rest } = e;
+      return rest;
+    });
+    try {
+      this.saveOrUndo(() => {
+        epic.epicEvents = before;
+      });
+    } catch (error) {
+      this.logger.warn('An epic’s finished wakes could not be marked done — a restart delivers them again', {
+        epicKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+  }
+
   /** #854 — a wake that was not sent: its events are pending again (they wake once more). Best effort. */
   releaseEpicWake(epicKey: string, by: string): void {
     const epic = this.sessions.get(normalizeSessionKey(epicKey));
@@ -1677,9 +1716,10 @@ export class SessionRegistry {
       compactionCount: typeof archived.compactionCount === 'number' ? archived.compactionCount : 0,
       activeAccumulatedMs: typeof archived.busyMs === 'number' ? archived.busyMs : 0,
       sessionWorkingDir: cwd,
-      // The session's own folder is registered for cleanup like a fresh
-      // session's dir; the next turn recreates it.
-      sourceWorkingDirs: [cwd],
+      // The session's own folder is registered for cleanup like a fresh session's dir; the next turn
+      // recreates it. #854 — not a folder an epic placed its child in (inside the epic's own session
+      // folder): the epic's to keep, whoever revives the child (review #872 astra R5).
+      sourceWorkingDirs: isPlacedChildFolder(archived.parentTaskId, cwd) ? [] : [cwd],
       // Incident ownership comes back with it: the thread stays restricted.
       incidentRequest: archived.incidentRequest,
       incidentAttemptFinishedId: archived.incidentAttemptFinishedId,
@@ -2845,11 +2885,31 @@ export class SessionRegistry {
    */
   private cleanupSourceWorkingDirs(session: ConversationSession): void {
     if (!session.sourceWorkingDirs?.length) return;
-    const failed = session.sourceWorkingDirs.filter((dir) => !this.safeRemoveSourceDir(dir));
+    const failed = session.sourceWorkingDirs.filter((dir) => {
+      // #854 — never a folder another live session works in (an epic's child placed inside its
+      // epic's folder outlives the epic's close; review #872 astra R4). Left on disk, not retried.
+      const user = this.liveSessionWorkingIn(dir, session);
+      if (user) {
+        this.logger.info('Source working dir kept — a live session works in it', { dir, sessionKey: user });
+        return false;
+      }
+      return !this.safeRemoveSourceDir(dir);
+    });
     session.sourceWorkingDirs = failed;
     if (failed.length > 0) {
       this.logger.warn('Some source working dirs could not be cleaned up', { count: failed.length, dirs: failed });
     }
+  }
+
+  /** #854 — the key of a live session (not `except`) whose folder is `dir` or inside it, if any. */
+  private liveSessionWorkingIn(dir: string, except: ConversationSession): string | undefined {
+    const root = normalizeTmpPath(path.resolve(dir));
+    for (const [key, s] of this.sessions) {
+      if (s === except || s.terminated || !s.sessionWorkingDir) continue;
+      const theirs = normalizeTmpPath(path.resolve(s.sessionWorkingDir));
+      if (theirs === root || theirs.startsWith(`${root}${path.sep}`)) return key;
+    }
+    return undefined;
   }
 
   /**
@@ -3738,6 +3798,8 @@ export class SessionRegistry {
           compactPendingDispatches: null,
           compactTurnActive: false,
         };
+        // #854 — a Slack epic's wake the restart cut (consumed, its chain never ended): delivered again.
+        if (session.kind === 'epic') session.epicEvents = releaseCutEpicWakes(session.epicEvents);
         // Auto fallback compact: a restart that lands mid-fallback (model
         // switched to the 1M compact model, boundary restore not yet fired)
         // aborts the emergency compact. Restore the original model so the

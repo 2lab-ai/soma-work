@@ -932,8 +932,10 @@ async function start() {
        * queued behind a running turn) — `handleMessage` resolves only after the whole run.
        * `verbatim`: the host's own words, dispatched as written (no command routing, no `!`
        * steer, never pushed into a running turn — its own turn, like a goal's opening).
+       * `hostTurn` (#854, with `verbatim`): soma-work's words, not the sender's — an epic's wake or its
+       * word to a child. It answers no open question, revises no waiting plan, and is recorded as soma-work's.
        */
-      extra: { onAccepted?: () => void; verbatim?: true; echoLabel?: string } = {},
+      extra: { onAccepted?: () => void; verbatim?: true; hostTurn?: true; echoLabel?: string } = {},
     ): Promise<{ channel: string; ts: string } | undefined> => {
       const session = claudeHandler.getSessionByKey(sessionKey);
       if (!session) {
@@ -1017,7 +1019,9 @@ async function start() {
             ts,
             ...(files ? { files } : {}),
             ...(clientRef ? { dashboardClientRef: clientRef } : {}),
-            ...(extra.verbatim ? { routeContext: { verbatimPrompt: true } } : {}),
+            ...(extra.verbatim
+              ? { routeContext: { verbatimPrompt: true, ...(extra.hostTurn ? { hostTurn: true } : {}) } }
+              : {}),
           } as any,
           dashboardSay,
         );
@@ -1317,10 +1321,13 @@ async function start() {
         }),
       costLimitUsd: (ownerId) => userSettingsStore.getUserEpicCostLimitUsd(ownerId),
     });
-    const sendAsOwner = (key: string, text: string, opts: { onAccepted: () => void; label: string }) =>
+    const sendAsOwner = (key: string, text: string, opts: { onAccepted: () => void; label: string; hostTurn?: true }) =>
       injectDashboardMessage(key, text, undefined, [], undefined, undefined, {
         onAccepted: opts.onAccepted,
         verbatim: true,
+        // An epic's wake is soma-work's word, not the owner's: it answers no question the epic asked
+        // (review #872 astra). Its word to a child is the owner's, delegated: it answers the child's.
+        ...(opts.hostTurn ? { hostTurn: true as const } : {}),
         echoLabel: opts.label,
       });
     setEpicHost(
@@ -1362,6 +1369,7 @@ async function start() {
       gate: epicTreeGate,
       consume: (key, ids, by) => epicRegistry.consumeEpicWake(key, ids, by),
       release: (key, by) => epicRegistry.releaseEpicWake(key, by),
+      settle: (key, keep) => epicRegistry.settleEpicWakes(key, keep),
       send: sendAsOwner,
       logger: new Logger('SlackEpicWaker'),
     });
@@ -1382,7 +1390,9 @@ async function start() {
           }
         }
       }
-      if (session.kind === 'epic') slackEpicWaker.wake(key);
+      // Its chain ended: the wakes it ran are done (a restart before this delivers them again; one still
+      // being sent is kept), then it may wake again.
+      if (session.kind === 'epic') slackEpicWaker.chainEnded(key);
     });
     // E4 ⑥ (.prd/19 D7) — an event on an epic: it wakes when it is idle (the Slack waker; also
     // after its own chain settles, above, and at boot, below). Never the cron path.
