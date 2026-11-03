@@ -136,8 +136,11 @@ export interface GoalLoopControllerDeps {
   requestCoordinator: GoalLoopRequestCoordinator;
   /** Runs the eval dispatch (production: `ClaudeHandler.dispatchOneShot`). */
   dispatcher: GoalEvalDispatcher;
-  /** Injects a synthetic continuation turn (production: handleMessage path). */
-  injectContinuation: (event: SyntheticMessageEvent) => Promise<void>;
+  /**
+   * Injects a synthetic continuation turn (production: handleMessage path for a Slack thread,
+   * the task controller for a dashboard task — the session key says which).
+   */
+  injectContinuation: (event: SyntheticMessageEvent, sessionKey: string) => Promise<void>;
   /** Posts an in-thread system notice. */
   postNotice: (channel: string, threadTs: string | undefined, text: string) => Promise<unknown>;
   /**
@@ -948,7 +951,7 @@ export class GoalLoopController {
     // Fire-and-forget. Injection is the only thing that drives the loop
     // forward on 'continue'; if it throws the loop silently stalls, so
     // escalate to error + an actionable notice.
-    this.deps.injectContinuation(syntheticEvent).catch(async (err: unknown) => {
+    this.deps.injectContinuation(syntheticEvent, sessionKey).catch(async (err: unknown) => {
       const injectErr = err instanceof Error ? err.message : String(err);
       this.deps.logger.error('Goal continuation injection failed — loop stalled', { sessionKey, error: injectErr });
       try {

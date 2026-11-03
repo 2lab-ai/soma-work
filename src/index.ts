@@ -179,11 +179,17 @@ import {
   retireGoalCapDecision,
   setGoalCapDecisionSurfaces,
 } from './slack/goal-cap-decision';
+import { GOAL_SUMMARY_PERSIST_MAX, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
 import { createPendingUserRequest, notifyAdminsNewUser } from './slack/new-user-decision';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
-import { setGoalCapDecisionRetirer } from './slack/session-goal';
+import {
+  enqueueOrActivateGoal,
+  restoreGoalState,
+  setGoalCapDecisionRetirer,
+  snapshotGoalState,
+} from './slack/session-goal';
 import { composeExecutiveSummaryMarkdown, parseExecutiveSummary } from './slack/summary-service';
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { createSlackTaskEntry } from './slack/task-entry';
@@ -200,6 +206,7 @@ import { createEpicWaker } from './task-turn/epic-wake';
 import { setPlanHost } from './task-turn/plan-server';
 import { composeTaskApprovalListeners } from './task-turn/task-approver';
 import { createDashboardCloseHandler } from './task-turn/task-close';
+import { planGoalObjective, settleTaskGoal } from './task-turn/task-goal';
 import { createTaskLauncher } from './task-turn/task-launcher';
 import {
   createTaskNoticeDeliverer,
@@ -872,6 +879,8 @@ async function start() {
     // #598 ④c — the caller of Slack-less tasks' turns, built below once the
     // work-log appender exists; Close and shutdown reach it through here.
     let taskTurnController: TaskTurnController | undefined;
+    /** 2026-11-03 — the goal loop's turn-settled trigger for a dashboard task (set once the loop is wired). */
+    let settleTaskGoalTurn: ((sessionKey: string) => void) | undefined;
     /** E2 ⑤ — the notice ledger could not be read: tasks that owe their thread are kept (D6). */
     let taskNoticeLedgerUnreadable = false;
 
@@ -1322,9 +1331,43 @@ async function start() {
       // (grok #702 R1); one that never started is the waker's own retry to make (fable #702 R2).
       onChainEnd: (key, { started }) => {
         if (started) epicWaker.wake(key);
+        // 2026-11-03 — a task chain ending is its turn settling: the goal loop judges it (a plan's goal).
+        if (started) void settleTaskGoalAfterChain(key);
       },
     });
     taskTurnController = taskController;
+    /**
+     * 2026-11-03 — the goal evidence of a task chain that ended: its last turn's final (the work
+     * log), then the goal loop. The task twin of SlackHandler.handleAssistantTurnCompleteForGoal.
+     */
+    const settleTaskGoalAfterChain = async (key: string): Promise<void> => {
+      try {
+        const registry = claudeHandler.getSessionRegistry();
+        const task = registry.getSessionByKey(key);
+        if (!task?.slackless || task.goal?.status !== 'active') return;
+        const turnId = task.lastTurnOutcome?.turnId;
+        const final =
+          task.conversationId && turnId ? await readTurnFinal(readWorkLog, task.conversationId, turnId) : undefined;
+        const live = registry.getSessionByKey(key);
+        if (!live) return;
+        settleTaskGoal({
+          session: live,
+          sessionKey: key,
+          turnText: final?.text ?? '',
+          shuttingDown: slackHandler.isShuttingDown(),
+          summaryMax: GOAL_SUMMARY_PERSIST_MAX,
+          settle: (k) => settleTaskGoalTurn?.(k),
+          save: () => registry.saveSessions(),
+        });
+      } catch (error) {
+        logger.warn('Settling a dashboard task goal failed', { sessionKey: key, error: (error as Error)?.message });
+      }
+    };
+    /** A real instruction or answer to a task resets its goal's continuation budget, as a Slack message does. */
+    const noteTaskUserTurn = (key: string): void => {
+      const task = claudeHandler.getSessionRegistry().getSessionByKey(key);
+      if (task?.goal) resetGoalContinuationOnUserMessage(task);
+    };
     // E4 ④a (.prd/19 D3) — the host the epic's tools call: registry reads, the plan writer,
     // a child's last final from its work log. Set here, not imported there (no cycle).
     setEpicHost({
@@ -1405,6 +1448,7 @@ async function start() {
             );
           return;
         }
+        noteTaskUserTurn(request.sessionKey);
         const res =
           held.kind === 'task-command'
             ? await taskController.start({
@@ -1476,6 +1520,7 @@ async function start() {
         });
         if (held) return held;
       }
+      noteTaskUserTurn(sessionKey);
       return taskController.start({ sessionKey, text: message, attachments, actorUserId });
     });
     // #599 ⑤ — an answer to a task's open question runs as its next instruction.
@@ -1486,7 +1531,9 @@ async function start() {
         answer,
         at: Date.now(),
       });
-      return held ?? taskController.answer({ sessionKey, askId, answer, actorUserId });
+      if (held) return held;
+      noteTaskUserTurn(sessionKey);
+      return taskController.answer({ sessionKey, askId, answer, actorUserId });
     });
     // Plan mode (SSOT 2026-11-02) — the `plan` tool saves through the registry; the dashboard's
     // 시작 / 취소 decide the revision the user saw (시작 starts the work with the plan).
@@ -1501,6 +1548,23 @@ async function start() {
         // #777 — 시작 · 취소 are the owner's call: someone the owner has not approved is refused, not held.
         mayDecide: (sessionKey, session, actorUserId) =>
           instructionApprovals.allows({ sessionKey, session, senderId: actorUserId }),
+        // 2026-11-03 — 시작 opens the plan's goal: the goal loop continues the task until the plan is
+        // done (and resumes it after a restart). The approved plan's turn is the goal's opening turn.
+        openGoal: (session, plan, actorUserId) => {
+          const registry = claudeHandler.getSessionRegistry();
+          const before = snapshotGoalState(session);
+          enqueueOrActivateGoal(
+            session,
+            planGoalObjective(plan),
+            actorUserId,
+            userSettingsStore.getUserGoalMaxContinuations(actorUserId),
+          );
+          registry.saveSessions();
+          return () => {
+            restoreGoalState(session, before);
+            registry.saveSessions();
+          };
+        },
         logger: new Logger('TaskPlanDecider'),
       }),
     );
@@ -1990,8 +2054,14 @@ async function start() {
       const registry = claudeHandler.getSessionRegistry();
       const requestCoordinator = slackHandler.getRequestCoordinator();
       const goalSlackApi = slackHandler.getSlackApi();
-      const postGoalNotice = (channel: string, threadTs: string | undefined, text: string): Promise<unknown> =>
-        goalSlackApi.postSystemMessage(channel, text, { threadTs });
+      const postGoalNotice = async (channel: string, threadTs: string | undefined, text: string): Promise<unknown> => {
+        // A dashboard task has no thread (2026-11-03): its card shows the goal's state; the notice is logged.
+        if (!channel) {
+          logger.info('Goal notice for a dashboard task (no Slack thread)', { text: text.slice(0, 300) });
+          return undefined;
+        }
+        return goalSlackApi.postSystemMessage(channel, text, { threadTs });
+      };
 
       // S3: DM the goal owner a "keep going?" decision when the
       // auto-continuation budget is exhausted (Continue/Cancel buttons).
@@ -2003,7 +2073,24 @@ async function start() {
       // Synthetic-turn injector for goal continuations — same surface as
       // the cron-scheduler injection path (chat.postMessage say-builder →
       // slackHandler.handleMessage).
-      const goalMessageInjector = async (event: SyntheticMessageEvent): Promise<void> => {
+      const goalMessageInjector = async (event: SyntheticMessageEvent, sessionKey?: string): Promise<void> => {
+        // 2026-11-03 — a dashboard task's continuation is its next turn, through the task controller
+        // (no Slack thread). A refusal (a turn running, the owner's slot) surfaces as the loop's
+        // injection failure; the next settled turn drives the loop again.
+        const target = sessionKey ? registry.getSessionByKey(sessionKey) : undefined;
+        if (sessionKey && target?.slackless) {
+          if (!taskTurnController) throw new Error('the task controller is not wired');
+          const res = await taskTurnController.start({
+            sessionKey,
+            text: event.text ?? '',
+            actorUserId: event.user,
+            initiator: 'host',
+          });
+          if (res.status !== 202) {
+            throw new Error(String((res.body as { error?: unknown })?.error ?? `HTTP ${res.status}`));
+          }
+          return;
+        }
         const say = async (args: any) => {
           const text = typeof args === 'string' ? args : args?.text;
           const result = await app.client.chat.postMessage({
@@ -2057,6 +2144,8 @@ async function start() {
       slackHandler.setGoalTurnSettledHandler((sessionKey: string, opts?: { cause?: 'turn' | 'kick' }) => {
         goalLoopController.onTurnSettled(sessionKey, opts);
       });
+      // 2026-11-03 — a dashboard task's ended chain wakes the same loop.
+      settleTaskGoalTurn = (sessionKey) => goalLoopController.onTurnSettled(sessionKey, { cause: 'turn' });
       // S1/S3: let goal action handlers (Delete-advance, owner-DM Continue)
       // kick the loop without holding a direct controller reference.
       // A kick: no turn ran, so an unchanged summary is not re-judged.
@@ -2118,6 +2207,13 @@ async function start() {
         // controller is wired above and after crash-recovery's no-double-resume
         // guard has skipped these sessions.
         try {
+          // A dashboard task the restart cut gets its goal continuation back too (registry reconciliation).
+          slackHandler.noteRestartCutSessionKeys(
+            claudeHandler
+              .getSessionRegistry()
+              .getRestartCutTasks()
+              .map((t) => t.sessionKey),
+          );
           const resumed = slackHandler.resumeActiveGoals();
           if (resumed > 0) timing(`Resumed ${resumed} active goal(s) after restart`);
         } catch (error) {
