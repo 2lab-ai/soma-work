@@ -80,6 +80,34 @@ describe('InstructionConfirmActionHandler', () => {
     expect(store.get('r1')).toBeUndefined();
   });
 
+  it('handleYes: the instruction source is the host’s word — the user confirmed it — not the model’s (#881 B4)', async () => {
+    const { handler, store, updateSessionResources } = mkHandler();
+    store.set({
+      requestId: 'r-src',
+      sessionKey: 'C1|T1',
+      channelId: 'C1',
+      threadTs: 'T1',
+      messageTs: 'ts-src',
+      request: {
+        instructionOperations: [
+          { action: 'add', text: 'always run tests', source: 'system' },
+          { action: 'remove', id: 'i9' },
+        ],
+      },
+      createdAt: Date.now(),
+      requesterId: 'U1',
+    });
+    await handler.handleYes(
+      { user: { id: 'U1' }, actions: [{ action_id: 'instr_confirm_y:r-src', value: 'r-src' }] },
+      respond,
+    );
+    const request = (updateSessionResources.mock.calls[0] as unknown[])[2] as SessionResourceUpdateRequest;
+    expect(request.instructionOperations).toEqual([
+      { action: 'add', text: 'always run tests', source: 'user' },
+      { action: 'remove', id: 'i9' },
+    ]);
+  });
+
   it('handleNo sets pendingInstructionRejection, updates the Slack message, deletes the entry', async () => {
     const { handler, session, store, slackApi } = mkHandler();
     store.set({

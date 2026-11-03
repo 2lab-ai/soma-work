@@ -53,7 +53,7 @@ function setup() {
     const calls = slackApi.postMessage.mock.calls;
     return String(calls[calls.length - 1]?.[1] ?? '');
   };
-  return { manager, session, posted };
+  return { manager, session, posted, slackApi };
 }
 
 describe('lifecycle notices follow the policy', () => {
@@ -97,5 +97,28 @@ describe('lifecycle notices follow the policy', () => {
     expect(MessageFormatter.formatExpiresIn(new Date(Date.now() - HOUR), d.sleepAfterMs)).toMatch(
       /^(4시간 5\d분|5시간 0분) 남음$/,
     );
+  });
+});
+
+describe('a stale expiry warning is edited in place (#881 D1)', () => {
+  it('handleExpiryWarningCleared rewrites the posted warning, nothing new is posted', async () => {
+    const { manager, session, slackApi } = setup();
+    await manager.handleExpiryWarningCleared(session, 'w-1');
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      'w-1',
+      expect.stringContaining('세션 만료가 미뤄졌습니다'),
+      // The blocks are replaced too: the 12h idle check carries buttons, and chat.update without blocks keeps them
+      // (fable R1 P2).
+      [expect.objectContaining({ type: 'section' })],
+    );
+    expect(slackApi.postMessage).not.toHaveBeenCalled();
+  });
+
+  it('a dead thread root: no edit, no throw', async () => {
+    const { manager, session, slackApi } = setup();
+    slackApi.getThreadRootState.mockResolvedValue('deleted');
+    await expect(manager.handleExpiryWarningCleared(session, 'w-1')).resolves.toBeUndefined();
+    expect(slackApi.updateMessage).not.toHaveBeenCalled();
   });
 });

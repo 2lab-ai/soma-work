@@ -1,4 +1,5 @@
 import { Logger } from '@soma/common/logger';
+import { EXPIRY_WARNING_CLEARED_TEXT } from './lifecycle-text';
 import { MessageFormatter } from './message-formatter';
 import type { ReactionManager } from './reaction-manager';
 import type { SlackApiHelper } from './slack-api-helper';
@@ -810,7 +811,8 @@ export class SessionUiManager {
       // The anchor is alive, so this ts is a reply beneath it: either posted by
       // an earlier gated call, or posted while the root was alive (a root cannot
       // come back once deleted, so a live root means this was never a leak).
-      await this.slackApi.updateMessage(channelId, existingMessageTs, text);
+      if (blocks) await this.slackApi.updateMessage(channelId, existingMessageTs, text, blocks);
+      else await this.slackApi.updateMessage(channelId, existingMessageTs, text);
       return existingMessageTs;
     }
 
@@ -886,6 +888,22 @@ export class SessionUiManager {
     } catch (error) {
       this.logger.error('Failed to send/update session warning message', error);
       return undefined;
+    }
+  }
+
+  /**
+   * #881 D1 — the idle clock restarted after an expiry warning was posted: that warning names an expiry that no
+   * longer holds. Edit it in place (same gate as the warning itself: only beneath a live thread root).
+   */
+  async handleExpiryWarningCleared(session: ConversationSession, warningMessageTs: string): Promise<void> {
+    try {
+      // Blocks too: the 12h idle check carries buttons, and chat.update without blocks would keep them.
+      await this.deliverSessionLifecycleNotice(session, EXPIRY_WARNING_CLEARED_TEXT, {
+        existingMessageTs: warningMessageTs,
+        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: EXPIRY_WARNING_CLEARED_TEXT } }],
+      });
+    } catch (error) {
+      this.logger.warn('Failed to edit a stale session expiry warning', error);
     }
   }
 

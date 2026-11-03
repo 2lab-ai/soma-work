@@ -573,10 +573,20 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
   const commands: ModelCommandDescriptor[] = [
     {
       id: 'GET_SESSION',
-      description: 'Read current session resources (issues/prs/docs + active + instructions + sequence)',
+      description:
+        'Read current session resources (issues/prs/docs + active + instructions + sequence) and the host receipt ' +
+        '(`host`, `hostPending`). After an UPDATE_SESSION pass `waitForAckMs` to wait for the host to handle it.',
       paramsSchema: {
         type: 'object',
-        properties: {},
+        properties: {
+          waitForAckMs: {
+            type: 'number',
+            minimum: 0,
+            maximum: 30_000,
+            description:
+              'Wait up to this many ms for the host to handle your last UPDATE_SESSION (hostWaitedMs says how long it waited).',
+          },
+        },
         additionalProperties: false,
       },
     },

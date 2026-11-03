@@ -32,6 +32,7 @@ import {
   type HostWriteReceipt,
   hostReceiptPath,
   readHostReceipt,
+  receiptIssuedAt,
   withAck,
 } from 'somalib/model-commands/host-receipt';
 import { DATA_DIR } from './env-paths';
@@ -166,14 +167,20 @@ const CARD_TLDR_MAX_LINES = 5;
 const CARD_TLDR_MAX_LINE_CHARS = 140;
 
 /** A stored Executive Summary TL;DR, or undefined when what was stored is not one (T7). */
-function restoreExecutiveSummary(v: unknown): { tldr: string[]; at: number; source?: 'es' } | undefined {
+function restoreExecutiveSummary(
+  v: unknown,
+): { tldr: string[]; at: number; source?: 'es'; issuedAt?: number } | undefined {
   if (!v || typeof v !== 'object') return undefined;
-  const { tldr, at, source } = v as { tldr?: unknown; at?: unknown; source?: unknown };
+  const { tldr, at, source, issuedAt } = v as { tldr?: unknown; at?: unknown; source?: unknown; issuedAt?: unknown };
   if (!Array.isArray(tldr) || typeof at !== 'number' || !Number.isFinite(at)) return undefined;
   const lines = tldr.filter((l): l is string => typeof l === 'string' && l.trim() !== '');
   if (lines.length === 0) return undefined;
   // #829 — the model-run es's mark (its TL;DR and verdict are one pair for that turn).
-  return source === 'es' ? { tldr: lines, at, source } : { tldr: lines, at };
+  // #881 B1 — and when the model issued it (the turn end compares steered sends with it).
+  if (source !== 'es') return { tldr: lines, at };
+  return typeof issuedAt === 'number' && Number.isFinite(issuedAt)
+    ? { tldr: lines, at, source, issuedAt }
+    : { tldr: lines, at, source };
 }
 
 interface SerializedSession {
@@ -263,7 +270,7 @@ interface SerializedSession {
   actionPanel?: ActionPanelState;
   // The Executive Summary's TL;DR on the dashboard card (SSOT 2026-11-02 T7) — kept across a
   // restart like the thread head that shows the same lines.
-  executiveSummary?: { tldr: string[]; at: number; source?: 'es' };
+  executiveSummary?: { tldr: string[]; at: number; source?: 'es'; issuedAt?: number };
   // #829 — the card's follow-up (NEEDS YOU) survives a restart too: a deploy must not drop it to DONE.
   followUp?: { reason: string; at: number };
   // Bot-initiated thread metadata
@@ -564,6 +571,11 @@ export interface SessionExpiryCallbacks {
   ) => Promise<string | undefined>;
   onSleep: (session: ConversationSession) => Promise<void>;
   onExpiry: (session: ConversationSession) => Promise<void>;
+  /**
+   * #881 D1 — the idle clock restarted after an expiry warning was posted (activity, unstar, /new, a new ⚠️
+   * follow-up): edit that message, it names an expiry that no longer holds. Fire-and-forget.
+   */
+  onWarningCleared?: (session: ConversationSession, warningMessageTs: string) => Promise<void>;
 }
 
 /**
@@ -2027,8 +2039,7 @@ export class SessionRegistry {
     session.sleepStartedAt = undefined;
     session.lastActivity = new Date();
     // Clear warning state
-    session.warningMessageTs = undefined;
-    session.lastWarningSentAt = undefined;
+    this.releaseExpiryWarning(session);
 
     this.logger.info('Session woken from sleep', {
       channelId,
@@ -2071,8 +2082,7 @@ export class SessionRegistry {
       session.starred = undefined;
       session.starClearedAt = Date.now();
     }
-    session.warningMessageTs = undefined;
-    session.lastWarningSentAt = undefined;
+    this.releaseExpiryWarning(session);
     this.logger.info(starred ? 'Session starred' : 'Session unstarred', {
       sessionKey: key,
       sessionId: session.sessionId,
@@ -2258,8 +2268,7 @@ export class SessionRegistry {
     session.state = 'MAIN';
     session.sleepStartedAt = undefined;
     session.lastActivity = new Date();
-    session.warningMessageTs = undefined;
-    session.lastWarningSentAt = undefined;
+    this.releaseExpiryWarning(session);
   }
 
   /**
@@ -2562,7 +2571,18 @@ export class SessionRegistry {
   ): boolean {
     if (!session || !Array.isArray(links) || links.length === 0) return false;
     this.ensureSessionLinkState(session);
-    if (mode === 'update') return this.updateNotedLinkStates(session, links);
+    const changed =
+      mode === 'update' ? this.updateNotedLinkStates(session, links) : this.noteNewLinks(session, links, mode);
+    // #881 C2 — the receipt is the host's state: a link the host noted itself reaches it now, not at the next write.
+    if (changed) this.writeModelCommandReceiptFor(this.keyOf(session), session, undefined);
+    return changed;
+  }
+
+  private noteNewLinks(
+    session: ConversationSession,
+    links: ReadonlyArray<SessionLink>,
+    mode: Exclude<NoteLinksMode, 'update'>,
+  ): boolean {
     let changed = false;
     const firstTaken = new Set<SessionResourceType>();
     for (const raw of links) {
@@ -2679,12 +2699,12 @@ export class SessionRegistry {
   /**
    * Refresh session activity by session key.
    */
-  refreshSessionActivityByKey(sessionKey: string): boolean {
+  /** `editWarning: false` — the caller rewrites the posted warning itself (the idle check's "keep" button). */
+  refreshSessionActivityByKey(sessionKey: string, opts: { editWarning?: boolean } = {}): boolean {
     const session = this.getSessionByKey(sessionKey);
     if (!session) return false;
     session.lastActivity = new Date();
-    session.lastWarningSentAt = undefined;
-    session.warningMessageTs = undefined;
+    this.releaseExpiryWarning(session, opts);
     this.saveSessions();
     return true;
   }
@@ -2711,16 +2731,29 @@ export class SessionRegistry {
    * the card in NEEDS YOU on the same signal. False when there is no session or no usable line — the card
    * then keeps what it had.
    */
-  setExecutiveSummary(channelId: string, threadTs: string | undefined, tldr: readonly string[]): boolean {
-    return this.setExecutiveSummaryOn(this.getSession(channelId, threadTs), tldr);
+  setExecutiveSummary(
+    channelId: string,
+    threadTs: string | undefined,
+    tldr: readonly string[],
+    receiptId?: string,
+  ): boolean {
+    return this.setExecutiveSummaryOn(this.getSession(channelId, threadTs), tldr, receiptId);
   }
 
   /** The same by session key — the only way to reach a Slack-less task (channel '' throws on lookup). */
-  setExecutiveSummaryByKey(sessionKey: string, tldr: readonly string[]): boolean {
-    return this.setExecutiveSummaryOn(this.getSessionByKey(sessionKey), tldr);
+  setExecutiveSummaryByKey(sessionKey: string, tldr: readonly string[], receiptId?: string): boolean {
+    return this.setExecutiveSummaryOn(this.getSessionByKey(sessionKey), tldr, receiptId);
   }
 
-  private setExecutiveSummaryOn(session: ConversationSession | undefined, tldr: readonly string[]): boolean {
+  /**
+   * `receiptId` (#881 B1) — the write's id from the model-command server; its time is when the model issued the
+   * write (`issuedAt`), which the turn end compares with the steered sends it folded in.
+   */
+  private setExecutiveSummaryOn(
+    session: ConversationSession | undefined,
+    tldr: readonly string[],
+    receiptId?: string,
+  ): boolean {
     if (!session) return false;
     const lines = tldr
       .filter((l): l is string => typeof l === 'string')
@@ -2740,8 +2773,10 @@ export class SessionRegistry {
     const at = Date.now();
     // `source: 'es'` — checked with tools by the model-run es: the same turn's host summary keeps this card
     // (TL;DR and verdict as one pair); the user's next input drops the TL;DR and with it the mark.
-    session.executiveSummary = { tldr: lines, at, source: 'es' };
-    applyFollowUp(session, lines, at);
+    const issuedAt = receiptIssuedAt(receiptId);
+    session.executiveSummary = { tldr: lines, at, source: 'es', ...(issuedAt !== undefined ? { issuedAt } : {}) };
+    const staleWarning = applyFollowUp(session, lines, at);
+    if (staleWarning) this.notifyWarningCleared(session, staleWarning);
     this.saveSessions();
     return true;
   }
@@ -2772,6 +2807,29 @@ export class SessionRegistry {
   /** The same by session key — the only way to reach a Slack-less task (channel '' throws on lookup). */
   writeModelCommandReceiptByKey(sessionKey: string, lastWrite?: HostWriteReceipt): void {
     this.writeModelCommandReceiptFor(sessionKey, this.getSessionByKey(sessionKey), lastWrite);
+  }
+
+  /**
+   * #881 D1 — the idle clock restarts: clear the expiry-warning state and edit the warning already posted (it names
+   * the old expiry). Not for sleep — onSleep turns that message into the sleep notice itself.
+   */
+  private releaseExpiryWarning(session: ConversationSession, opts: { editWarning?: boolean } = {}): void {
+    const posted = session.warningMessageTs;
+    session.warningMessageTs = undefined;
+    session.lastWarningSentAt = undefined;
+    if (posted && opts.editWarning !== false) this.notifyWarningCleared(session, posted);
+  }
+
+  private notifyWarningCleared(session: ConversationSession, warningMessageTs: string): void {
+    const edit = this.expiryCallbacks?.onWarningCleared;
+    if (!edit) return;
+    try {
+      edit(session, warningMessageTs).catch((error) =>
+        this.logger.warn('Stale expiry warning not edited', { error: (error as Error)?.message }),
+      );
+    } catch (error) {
+      this.logger.warn('Stale expiry warning not edited', { error: (error as Error)?.message });
+    }
   }
 
   private writeModelCommandReceiptFor(
@@ -3086,6 +3144,9 @@ export class SessionRegistry {
       session.currentInitiatorId = initiatorId;
       session.currentInitiatorName = initiatorName;
       session.lastActivity = new Date();
+      // #881 D1 — a new turn (a thread reply, or a host turn that already moved lastActivity here) restarts the clock:
+      // the posted warning is edited and the next cycle's warnings can be sent again (fable R1 P1 on #887).
+      this.releaseExpiryWarning(session);
     }
   }
 
@@ -3282,9 +3343,8 @@ export class SessionRegistry {
     session.currentInitiatorId = undefined;
     session.currentInitiatorName = undefined;
 
-    // Clear expiry warning state
-    session.warningMessageTs = undefined;
-    session.lastWarningSentAt = undefined;
+    // Clear expiry warning state (and edit the posted warning, #881 D1)
+    this.releaseExpiryWarning(session);
 
     // Clear usage data to reset context percentage
     session.usage = undefined;
@@ -3315,6 +3375,8 @@ export class SessionRegistry {
     // its own summary.
     session.followUp = undefined;
     session.executiveSummary = undefined;
+    // #881 C2 — and the receipt stops carrying them.
+    this.writeModelCommandReceiptFor(this.keyOf(session), session, undefined);
 
     // Reset activity state
     session.activityState = 'idle';

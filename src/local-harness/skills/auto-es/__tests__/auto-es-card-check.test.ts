@@ -52,7 +52,7 @@ describe('C1 — the card check', () => {
   });
 
   it('re-reads the card, knows a host-side rejection, writes one line, and keeps the report open on a gap', () => {
-    expect(check).toMatch(/`GET_SESSION`을 다시 읽어 확인/);
+    expect(check).toMatch(/`GET_SESSION`을 `\{ waitForAckMs: 30000 \}`으로 다시 읽어 확인/);
     expect(check).toContain('⚠️ Session update could not be applied on host');
     expect(check).toMatch(/빠진 것으로 센다/);
     expect(check).toContain('Card check: <카드에 있는 수>/<보고의 산출물 수> on the card');
@@ -142,7 +142,9 @@ describe('C3 — the harness prompts route to local:auto-es', () => {
 describe('C5 — the host receipt (#846 item 2)', () => {
   it('the check reads the host’s receipt: payload.host, hostPending, lastWrite', () => {
     expect(check).toContain('`payload.host`');
-    expect(check).toMatch(/`hostPending: true`[^\n]*다시 읽는다/);
+    // #881 A — the re-read waits for the host (it can apply a write ~20 s late), then reports, never loops.
+    expect(check).toMatch(/`GET_SESSION`을 `\{ waitForAckMs: 30000 \}`으로 다시 읽어/);
+    expect(check).toMatch(/기다린 뒤에도 `hostPending: true`[^\n]*미확인[^\n]*반복하지 않는다/);
     expect(check).toMatch(/`host\.lastWrite\.ok`[^\n]*카드는 바뀌지 않은 것이다/);
   });
 });

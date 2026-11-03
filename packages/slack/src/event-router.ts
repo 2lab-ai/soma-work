@@ -59,6 +59,8 @@ export interface SessionExpiryCallbacks {
   ) => Promise<string | undefined>;
   onSleep: (session: EventConversationSession) => Promise<void>;
   onExpiry: (session: EventConversationSession) => Promise<void>;
+  /** #881 D1 — edit a posted expiry warning the idle clock outlived. */
+  onWarningCleared?: (session: EventConversationSession, warningMessageTs: string) => Promise<void>;
 }
 
 export interface EventSessionLink {
@@ -193,6 +195,7 @@ export interface SessionUiEventManager {
   ): Promise<string | undefined>;
   handleSessionSleep(session: EventConversationSession): Promise<void>;
   handleSessionExpiry(session: EventConversationSession): Promise<void>;
+  handleExpiryWarningCleared?(session: EventConversationSession, warningMessageTs: string): Promise<void>;
 }
 
 export interface EventRouterProviders {
@@ -1588,6 +1591,9 @@ export class EventRouter {
       },
       onExpiry: (session) => {
         return this.deps.sessionManager.handleSessionExpiry(session);
+      },
+      onWarningCleared: async (session, warningMessageTs) => {
+        await this.deps.sessionManager.handleExpiryWarningCleared?.(session, warningMessageTs);
       },
     };
 

@@ -87,7 +87,7 @@ import {
   sayPostSwitches,
   type UsageData,
 } from '../stream-processor';
-import { esWroteCardThisTurn, releaseEsCard, type SummaryService } from '../summary-service';
+import { esWroteCardThisTurn, releaseEsCard, type SummaryService, steerAfterEs } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer';
 import { NO_POST_SLACK } from '../task-turn/no-post-slack';
 import { createTaskSay, type TaskTurnBinding, type TaskWorkLogWrite } from '../task-turn/task-say';
@@ -2134,7 +2134,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
       // Create stream callbacks
       // #846 — set when the host's settlement says this turn consumed a steered message.
-      let steerConsumedThisTurn = false;
+      // #846/#881 B1 — the steered sends this turn folded in (the host's settlement), judged at the turn end.
+      const consumedSteers: string[] = [];
       const streamCallbacks: StreamCallbacks = {
         // HEARTBEAT. The transport spoke — that is all this proves, so it
         // advances `lastSignalAt` and nothing else. Advancing the progress
@@ -2402,7 +2403,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           // #846 — this turn folded in a steered message (the host's settlement just before the result says so;
           // the SDK does not re-stamp a folded send on a typed turn). Noted here, applied at the turn end: a buffered
           // UPDATE_SESSION result can still land after this frame.
-          if (event.phase === 'completed') steerConsumedThisTurn = true;
+          if (event.phase === 'completed') consumedSteers.push(event.uuid);
           // Forward the backend's answer ("this turn consumed uuid X") to the
           // host queue, keyed by the session the follow-up was queued under.
           // `ctx.sessionKey` is the same value passed to `streamAgentEvents`
@@ -3469,7 +3470,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // #846 — a steered message this turn consumed is input its es may not cover: drop the es marker (every tool
       // result is applied by now) so the turn-end summary judges the whole turn again; the TL;DR stays until it does.
       // A steer folded before the es costs one extra summary, never a stale card.
-      if (steerConsumedThisTurn) releaseEsCard(session);
+      if (
+        steerAfterEs(
+          session,
+          consumedSteers.map((uuid) => this.deps.claudeHandler.steerPushedAt?.(uuid)),
+        )
+      )
+        releaseEsCard(session);
       // #846 — not when this turn's model-run es already wrote the card: the card would ignore the fork, and the
       // thread head would show a second TL;DR.
       if (
@@ -6611,9 +6618,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         const executiveSummary = payload.executiveSummary as { tldr?: unknown } | undefined;
         if (operationsOk && executiveSummary && Array.isArray(executiveSummary.tldr)) {
           const tldr = executiveSummary.tldr.filter((l): l is string => typeof l === 'string');
+          // The receiptId carries when the model issued this write (#881 B1).
+          const receiptId = typeof payload.receiptId === 'string' ? payload.receiptId : undefined;
           const applied = byKey
-            ? handler.setExecutiveSummaryByKey?.(context.sessionKey, tldr)
-            : handler.setExecutiveSummary?.(context.channel, context.threadTs, tldr);
+            ? handler.setExecutiveSummaryByKey?.(context.sessionKey, tldr, receiptId)
+            : handler.setExecutiveSummary?.(context.channel, context.threadTs, tldr, receiptId);
           tldrApplied = applied === true;
           this.logger.info('Applied card TL;DR from UPDATE_SESSION', {
             sessionKey: context.sessionKey,

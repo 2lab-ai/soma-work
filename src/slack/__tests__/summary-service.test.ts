@@ -237,19 +237,20 @@ describe('SummaryService', () => {
       expect(blocks[1].text.text).not.toContain('AAAA');
     });
 
-    // Regression: the LLM emits github-flavored markdown (`**bold**`, `## H2`,
-    // `__italic__`). Slack mrkdwn uses `*bold*`, `_italic_`, and has no native
+    // Regression: the LLM emits github-flavored markdown (`**bold**`, `## H2`).
+    // Slack mrkdwn uses `*bold*`, `_italic_`, and has no native
     // heading syntax. Without conversion, the thread surface renders the raw
     // `##` and `**` characters verbatim. Pinning the conversion here is the
     // smallest signal that prevents that regression from returning.
     describe('buildSummaryBlocks() — markdown → Slack mrkdwn conversion (full in-thread ES)', () => {
-      it('converts **bold** to *bold*', () => {
+      it('converts **bold** to *bold*; double underscores stay (identifiers, #881 B3)', () => {
         const service = new SummaryService();
-        const text = (service.buildSummaryBlocks('a **bold** word and __italic__ word')[1] as any).text.text as string;
+        const text = (service.buildSummaryBlocks('a **bold** word and the __init__ module')[1] as any).text
+          .text as string;
         expect(text).toContain('*bold*');
         expect(text).not.toContain('**bold**');
-        expect(text).toContain('_italic_');
-        expect(text).not.toContain('__italic__');
+        // `__x__` used to become `_x_`, which broke `__init__` / `obj.__dict__` (summary-mrkdwn-identifiers.test.ts).
+        expect(text).toContain('__init__');
       });
 
       it('converts ## / ### headers to *bold* lines (Slack has no native headings)', () => {

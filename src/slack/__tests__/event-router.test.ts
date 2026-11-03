@@ -31,6 +31,7 @@ const createMockSessionManager = () => ({
   handleSessionWarning: vi.fn().mockResolvedValue('123.456'),
   handleSessionSleep: vi.fn().mockResolvedValue(undefined),
   handleSessionExpiry: vi.fn().mockResolvedValue(undefined),
+  handleExpiryWarningCleared: vi.fn().mockResolvedValue(undefined),
 });
 
 const createMockActionHandlers = () => ({
@@ -530,6 +531,7 @@ describe('EventRouter', () => {
         onWarning: expect.any(Function),
         onSleep: expect.any(Function),
         onExpiry: expect.any(Function),
+        onWarningCleared: expect.any(Function),
       });
     });
 
@@ -553,6 +555,17 @@ describe('EventRouter', () => {
       await callbacks.onExpiry(session);
 
       expect(mockSessionManager.handleSessionExpiry).toHaveBeenCalledWith(session);
+    });
+
+    it('edits a stale expiry warning through the session manager (#881 D1)', async () => {
+      router.setup();
+
+      const callbacks = mockClaudeHandler.setExpiryCallbacks.mock.calls[0][0];
+      const session = createMockSession();
+
+      await callbacks.onWarningCleared(session, 'w-1');
+
+      expect(mockSessionManager.handleExpiryWarningCleared).toHaveBeenCalledWith(session, 'w-1');
     });
   });
 

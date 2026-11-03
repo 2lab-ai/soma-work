@@ -289,7 +289,20 @@ const SET_GOAL_HELP: CommandHelp = {
   ],
 };
 
+const GET_SESSION_HELP: CommandHelp = {
+  commandId: 'GET_SESSION',
+  summary:
+    'Read the session resources (issues/prs/docs + active + instructions + sequence) and the host receipt (`host`). ' +
+    'Optional `waitForAckMs` (0–30000): after an UPDATE_SESSION, wait up to that long for the host to handle it — ' +
+    'the host can apply a write ~20 s late. `hostPending: true` after the wait means it still has not.',
+  examples: [
+    { title: 'Plain read', params: {} },
+    { title: 'Verify your last write: wait for the host to handle it', params: { waitForAckMs: 30_000 } },
+  ],
+};
+
 const COMMAND_HELP: Partial<Record<ModelCommandId, CommandHelp>> = {
+  GET_SESSION: GET_SESSION_HELP,
   SAVE_MEMORY: SAVE_MEMORY_HELP,
   MEMORY: MEMORY_HELP,
   MANAGE_SKILL: MANAGE_SKILL_HELP,
@@ -298,11 +311,11 @@ const COMMAND_HELP: Partial<Record<ModelCommandId, CommandHelp>> = {
   SAVE_CONTEXT_RESULT: SAVE_CONTEXT_RESULT_HELP,
   ASK_USER_QUESTION: ASK_USER_QUESTION_HELP,
   SET_GOAL: SET_GOAL_HELP,
-  // GET_SESSION / GET_MEMORY / RATE take no params — nothing to guide.
+  // GET_MEMORY / RATE take no params — nothing to guide.
 };
 
 /**
- * Full help for a command, or `undefined` for no-arg commands (GET_SESSION,
+ * Full help for a command, or `undefined` for no-arg commands (
  * GET_MEMORY, RATE) and the synthetic 'UNKNOWN' id.
  */
 export function getCommandHelp(commandId: ModelCommandId): CommandHelp | undefined {

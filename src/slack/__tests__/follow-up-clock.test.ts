@@ -45,4 +45,10 @@ describe('applyFollowUp', () => {
     applyFollowUp(s, ['all merged', 'nothing left', 'done'], 9000);
     expect(s.followUp).toBeUndefined();
   });
+
+  it('returns the warning message it cleared, so the caller can edit it (#881 D1)', () => {
+    const s: any = { lastWarningSentAt: 600_000, warningMessageTs: 'w-9' };
+    expect(applyFollowUp(s, WARN('PR #3 open'), 1000)).toBe('w-9');
+    expect(applyFollowUp(s, WARN('PR #3 open'), 2000)).toBeUndefined();
+  });
 });

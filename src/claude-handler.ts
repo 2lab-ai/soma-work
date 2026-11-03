@@ -658,15 +658,20 @@ export class ClaudeHandler implements TurnSteeringPort {
   }
 
   /** #829 — the card TL;DR (and its ⚠️ follow-up) from the model-run es (UPDATE_SESSION `executiveSummary`). */
-  setExecutiveSummary(channelId: string, threadTs: string | undefined, tldr: readonly string[]): boolean {
-    return this.sessionRegistry.setExecutiveSummary(channelId, threadTs, tldr);
+  setExecutiveSummary(
+    channelId: string,
+    threadTs: string | undefined,
+    tldr: readonly string[],
+    receiptId?: string,
+  ): boolean {
+    return this.sessionRegistry.setExecutiveSummary(channelId, threadTs, tldr, receiptId);
   }
 
   /**
    * #829 review — UPDATE_SESSION writes for a Slack-less task, which has no channel/thread: by session key.
    */
-  setExecutiveSummaryByKey(sessionKey: string, tldr: readonly string[]): boolean {
-    return this.sessionRegistry.setExecutiveSummaryByKey(sessionKey, tldr);
+  setExecutiveSummaryByKey(sessionKey: string, tldr: readonly string[], receiptId?: string): boolean {
+    return this.sessionRegistry.setExecutiveSummaryByKey(sessionKey, tldr, receiptId);
   }
 
   /** #846 — the host receipt the model-command server answers GET_SESSION with (`host`). */
@@ -771,8 +776,8 @@ export class ClaudeHandler implements TurnSteeringPort {
     return this.sessionRegistry.updateSessionResources(channelId, threadTs, request);
   }
 
-  refreshSessionActivityByKey(sessionKey: string): boolean {
-    return this.sessionRegistry.refreshSessionActivityByKey(sessionKey);
+  refreshSessionActivityByKey(sessionKey: string, opts?: { editWarning?: boolean }): boolean {
+    return this.sessionRegistry.refreshSessionActivityByKey(sessionKey, opts);
   }
 
   // ===== Session State Machine =====
@@ -2260,7 +2265,29 @@ export class ClaudeHandler implements TurnSteeringPort {
   steerTurn(sessionKey: string, input: SteerInput): boolean {
     const entry = this.activeQueries.get(sessionKey);
     if (!entry) return false;
-    return entry.channel.push(buildSteerUserMessage(input));
+    const pushed = entry.channel.push(buildSteerUserMessage(input));
+    if (pushed) this.noteSteerPush(input.uuid);
+    return pushed;
+  }
+
+  /** #881 B1 — when each steered send was pushed into a running turn, by uuid (bounded; uuids are unique). */
+  private readonly steerPushTimes = new Map<string, number>();
+
+  private noteSteerPush(uuid: string): void {
+    this.steerPushTimes.set(uuid, Date.now());
+    while (this.steerPushTimes.size > 500) {
+      const oldest = this.steerPushTimes.keys().next().value;
+      if (oldest === undefined) break;
+      this.steerPushTimes.delete(oldest);
+    }
+  }
+
+  /**
+   * #881 B1 — when the steered send `uuid` was pushed into its turn, or undefined when this process did not push it.
+   * The turn end compares it with the es write: only a send pushed after the es could not have been in its verdict.
+   */
+  steerPushedAt(uuid: string): number | undefined {
+    return this.steerPushTimes.get(uuid);
   }
 
   /**

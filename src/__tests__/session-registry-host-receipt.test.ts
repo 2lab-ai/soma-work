@@ -172,4 +172,48 @@ describe('SessionRegistry — the model-command host receipt', () => {
     expect(() => reg.writeModelCommandReceipt('C1', '100.010', { receiptId: 'r_1', ok: true, at: 2 })).not.toThrow();
     expect(readHostReceipt(file)?.acks).toEqual({ r_1: { receiptId: 'r_1', ok: true, at: 2 } });
   });
+
+  it('a link the host notes itself reaches the receipt; the ack ledger stays (#881 C2)', () => {
+    const reg = new SessionRegistry();
+    reg.createSession('U1', 'User', 'C1', '100.011');
+    reg.writeModelCommandReceipt('C1', '100.011', { receiptId: 'r_a', ok: true, at: 1 });
+    const file = reg.modelCommandReceiptFile('C1', '100.011');
+    expect(readHostReceipt(file)?.session.prs).toEqual([]);
+    expect(
+      reg.noteSessionLinks(
+        'C1',
+        '100.011',
+        [{ url: 'https://github.com/o/r/pull/5', type: 'pr', provider: 'github' }],
+        'always',
+      ),
+    ).toBe(true);
+    const r = readHostReceipt(file);
+    expect(r?.session.prs.map((l) => l.url)).toEqual(['https://github.com/o/r/pull/5']);
+    expect(r?.acks?.r_a).toMatchObject({ ok: true });
+  });
+
+  it('/new rewrites the receipt without the old conversation’s verdict (#881 C2)', () => {
+    const reg = new SessionRegistry();
+    const s = reg.createSession('U1', 'User', 'C1', '100.012');
+    s.sessionId = 'sess-1';
+    reg.setExecutiveSummary('C1', '100.012', ['a', '⚠️ **PR #1 open**', 'b']);
+    reg.writeModelCommandReceipt('C1', '100.012');
+    const file = reg.modelCommandReceiptFile('C1', '100.012');
+    expect(readHostReceipt(file)?.followUp).toBe('PR #1 open');
+    expect(reg.resetSessionContext('C1', '100.012')).toBe(true);
+    const r = readHostReceipt(file);
+    expect(r?.followUp).toBeUndefined();
+    expect(r?.tldr).toBeUndefined();
+  });
+
+  it('the es TL;DR keeps when the model issued it — the time in its receiptId, not the late apply (#881 B1)', () => {
+    const reg = new SessionRegistry();
+    const s = reg.createSession('U1', 'User', 'C1', '100.013');
+    const t = 1_793_700_000_000;
+    reg.setExecutiveSummary('C1', '100.013', ['a', 'b', 'c'], `r_${t.toString(36)}_1_abcd1234`);
+    expect(s.executiveSummary?.issuedAt).toBe(t);
+    expect(s.executiveSummary?.source).toBe('es');
+    reg.setExecutiveSummary('C1', '100.013', ['a', 'b', 'c']);
+    expect(s.executiveSummary?.issuedAt).toBeUndefined();
+  });
 });

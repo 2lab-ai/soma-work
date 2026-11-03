@@ -214,6 +214,20 @@ export function esWroteCardThisTurn(session: object): boolean {
 }
 
 /**
+ * #881 B1 — did this turn fold in a steered send the es could not have had? Only a send pushed at or after the es
+ * write was issued (`executiveSummary.issuedAt`, from its receiptId) re-opens the verdict; one pushed before it was
+ * already in the turn the es judged. Unknown either way (no issue time, or a send this process did not push) →
+ * re-judge, as before #881.
+ */
+export function steerAfterEs(session: object, pushedAt: ReadonlyArray<number | undefined>): boolean {
+  if (pushedAt.length === 0) return false;
+  const es = (session as { executiveSummary?: { source?: unknown; issuedAt?: unknown } }).executiveSummary;
+  if (es?.source !== 'es' || typeof es.issuedAt !== 'number') return true;
+  const issuedAt = es.issuedAt;
+  return pushedAt.some((at) => at === undefined || at >= issuedAt);
+}
+
+/**
  * #846 — input reached the model after this turn's es wrote the card (a steered message): the es verdict no longer
  * covers the turn. Drops the marker only; the TL;DR stays until the turn-end summary decides again.
  */
@@ -254,7 +268,7 @@ export function followUpFromTldr(tldr: readonly string[]): { reason: string } | 
  * unfinished artifact cannot push sleep out forever); a new reason starts at `at` and clears the sleep warnings sent on
  * the old clock (they named the old expiry, and a sent warning is not sent again until cleared). No ⚠️ line clears it.
  */
-export function applyFollowUp(session: object, tldr: readonly string[], at: number): void {
+export function applyFollowUp(session: object, tldr: readonly string[], at: number): string | undefined {
   const s = session as {
     followUp?: { reason: string; at: number };
     lastWarningSentAt?: number;
@@ -263,12 +277,15 @@ export function applyFollowUp(session: object, tldr: readonly string[], at: numb
   const next = followUpFromTldr(tldr);
   if (!next) {
     s.followUp = undefined;
-    return;
+    return undefined;
   }
-  if (s.followUp?.reason === next.reason) return;
+  if (s.followUp?.reason === next.reason) return undefined;
   s.followUp = { reason: next.reason, at };
+  // #881 D1 — the warning already posted named the old expiry: hand it back so the caller edits it.
+  const posted = s.warningMessageTs;
   s.lastWarningSentAt = undefined;
   s.warningMessageTs = undefined;
+  return posted;
 }
 
 /**
@@ -433,6 +450,8 @@ export function selectExecutiveSummaryMode(session: SummarySessionInfo): Executi
  */
 export interface SummarySessionInfo {
   isActive: boolean;
+  /** #881 D1 — the thread's channel, to edit a stale expiry warning ('' for a Slack-less task). */
+  channelId?: string;
   model?: string;
   /**
    * The user's base working directory (e.g. `/tmp/{userId}`). NOT what the SDK
@@ -478,7 +497,7 @@ export interface SummarySessionInfo {
    * SSOT 2026-11-02 T7 — the TL;DR the thread head shows, for the dashboard's task card: set by
    * `displayOnThread` (only when the summary has one), cleared by `clearDisplay` on the next input.
    */
-  executiveSummary?: { tldr: string[]; at: number; source?: 'es' };
+  executiveSummary?: { tldr: string[]; at: number; source?: 'es'; issuedAt?: number };
   /**
    * #829 — the latest Executive Summary left an own issue/PR unfinished (its ⚠️ TL;DR line): the dashboard
    * keeps the task card in NEEDS YOU with this reason. Set and cleared only by an Executive Summary
@@ -529,6 +548,11 @@ export interface SummaryServiceOptions {
    * contract. soma-work reads it from the bundled harness plugin; without it the summary is the generic es one.
    */
   turnEndContract?: string;
+  /**
+   * #881 D1 — a new ⚠️ follow-up cleared an expiry warning already posted: the host edits it (behind the same
+   * live-root gate as every lifecycle notice). Fire-and-forget.
+   */
+  onWarningCleared?: (session: SummarySessionInfo, warningMessageTs: string) => void;
 }
 
 /**
@@ -542,6 +566,17 @@ export interface SummaryServiceOptions {
  *
  * Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S3 + S5
  */
+/**
+ * Apply `rewrite` to `line` with its inline code spans (`` `…` ``) held out: each span is swapped for a placeholder,
+ * so markup around a span still pairs up (`**run `x` now**`), and the span comes back exactly as written. The
+ * placeholder is NUL-delimited: model text carries no NUL, so it cannot collide with the summary itself.
+ */
+function outsideInlineCode(line: string, rewrite: (part: string) => string): string {
+  const spans: string[] = [];
+  const held = line.replace(/`[^`\n]*`/g, (span) => `\u0000${spans.push(span) - 1}\u0000`);
+  return rewrite(held).replace(/\u0000(\d+)\u0000/g, (_m, i: string) => spans[Number(i)] ?? '');
+}
+
 export class SummaryService {
   private forkExecutor: ForkExecutor;
   private slackApi?: SummarySlackApi;
@@ -554,10 +589,13 @@ export class SummaryService {
    *   when absent, `postInThread` becomes a no-op (tests and host-fork
    *   configurations without Slack credentials still work).
    */
+  private readonly onWarningCleared?: (session: SummarySessionInfo, warningMessageTs: string) => void;
+
   constructor(forkExecutor?: ForkExecutor, slackApi?: SummarySlackApi, options?: SummaryServiceOptions) {
     this.forkExecutor = forkExecutor ?? (async (prompt) => prompt);
     this.slackApi = slackApi;
     this.turnEndContract = options?.turnEndContract?.trim() || undefined;
+    this.onWarningCleared = options?.onWarningCleared;
   }
 
   /**
@@ -683,7 +721,17 @@ export class SummaryService {
       else session.executiveSummary = undefined;
       // #829 — a well-formed TL;DR decides whether the card waits on its user; a reply with none keeps the
       // previous verdict (a malformed summary is no evidence the work got finished).
-      if (tldr.length > 0) applyFollowUp(session, tldr, at);
+      if (tldr.length > 0) {
+        const staleWarning = applyFollowUp(session, tldr, at);
+        // #881 D1 — the host edits it, behind the same live-root gate as every lifecycle notice.
+        if (staleWarning) {
+          try {
+            this.onWarningCleared?.(session, staleWarning);
+          } catch (error) {
+            logger.warn('Stale expiry warning not edited', { error: (error as Error)?.message });
+          }
+        }
+      }
     }
 
     if (!session.actionPanel) {
@@ -853,9 +901,9 @@ export class SummaryService {
    * Convert summary text to Slack Block Kit blocks.
    * Long text is split across multiple section blocks to respect Slack's 3000-char limit.
    *
-   * The LLM emits github-flavored markdown (`**bold**`, `## H2`, `__italic__`,
-   * ```ts fenced blocks). Slack mrkdwn uses `*bold*`, `_italic_`, and has no
-   * native heading syntax, so we normalize before emitting the mrkdwn section.
+   * The LLM emits github-flavored markdown (`**bold**`, `## H2`, ```ts fenced
+   * blocks). Slack mrkdwn uses `*bold*` and has no native heading syntax, so we
+   * normalize before emitting the mrkdwn section.
    * See `formatSummaryForSlack` for the line-by-line, fence-aware rewrite.
    */
   buildSummaryBlocks(summaryText: string): any[] {
@@ -890,7 +938,8 @@ export class SummaryService {
    * fenced code blocks verbatim:
    * - Opening fence: strip the language tag (```ts → ```).
    * - Inside a fence: pass through unchanged.
-   * - Outside: ATX headings → `*…*`, `**bold**` → `*bold*`, `__italic__` → `_italic_`.
+   * - Outside: ATX headings → `*…*`, `**bold**` → `*bold*` (inline code held out); `__x__` stays — it is an
+   *   identifier (`__init__`), as on the TL;DR line (#881 B3).
    *
    * Single-`*` emphasis (`*x*`) is deliberately *not* rewritten — in Slack
    * mrkdwn `*x*` is bold, so converting GFM italic to Slack `_x_` would have
@@ -903,7 +952,7 @@ export class SummaryService {
    * no headings or fences, and `__x__` there is an identifier (`__init__`), not emphasis — the card shows the same.
    */
   static formatTldrLineForSlack(line: string): string {
-    return line.replace(/\*\*([^*]+)\*\*/g, '*$1*');
+    return outsideInlineCode(line, (part) => part.replace(/\*\*([^*]+)\*\*/g, '*$1*'));
   }
 
   static formatSummaryForSlack(text: string): string {
@@ -923,10 +972,15 @@ export class SummaryService {
         if (inFence) return line;
         // ATX headings: leading 1–6 `#` then space then content. The trailing
         // `#*` strips an optional closing-hash run so `## Foo ##` folds to `*Foo*`.
-        return line
-          .replace(/^(\s*)#{1,6}\s+(.+?)\s*#*\s*$/, (_m, indent: string, content: string) => `${indent}*${content}*`)
-          .replace(/\*\*([^*]+)\*\*/g, '*$1*')
-          .replace(/__([^_]+)__/g, '_$1_');
+        // Bold only. Double underscores stay as written: they belong to identifiers (`__init__`, `obj.__dict__`),
+        // as on the TL;DR line (#871); inline code is never rewritten (#881 B3).
+        return outsideInlineCode(
+          line.replace(
+            /^(\s*)#{1,6}\s+(.+?)\s*#*\s*$/,
+            (_m, indent: string, content: string) => `${indent}*${content}*`,
+          ),
+          (part) => part.replace(/\*\*([^*]+)\*\*/g, '*$1*'),
+        );
       })
       .join('\n');
   }

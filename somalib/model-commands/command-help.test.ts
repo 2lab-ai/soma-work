@@ -63,7 +63,7 @@ describe('getCommandHelp — static catalog', () => {
   }
 
   it('no-arg commands have no help (nothing to guide)', () => {
-    expect(getCommandHelp('GET_SESSION' as never)).toBeUndefined();
+    // GET_SESSION takes `waitForAckMs` since #881, so it has help (get-session-wait.test.ts).
     expect(getCommandHelp('GET_MEMORY' as never)).toBeUndefined();
     expect(getCommandHelp('RATE' as never)).toBeUndefined();
   });

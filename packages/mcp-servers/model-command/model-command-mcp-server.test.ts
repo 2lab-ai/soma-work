@@ -4,6 +4,7 @@ import {
   buildModelCommandListResponse,
   buildModelCommandRunResponse,
   parseModelCommandContext,
+  runModelCommandAwaitingHost,
 } from './model-command-mcp-server';
 
 describe('model-command MCP server helpers', () => {
@@ -753,5 +754,152 @@ describe('host-confirmed receipt', () => {
       JSON.stringify({ channel: 'C1', user: 'U1', receiptFile: path.join(dir, 'none.json') }),
     );
     expect((buildModelCommandRunResponse({ commandId: 'GET_SESSION' }, missing) as any).payload.host).toBeUndefined();
+  });
+});
+
+// #881 A — GET_SESSION { waitForAckMs } waits for the host's ack of this server's own last write.
+describe('GET_SESSION waits for the host ack', () => {
+  const fs = require('node:fs') as typeof import('node:fs');
+  const os = require('node:os') as typeof import('node:os');
+  const path = require('node:path') as typeof import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-wait-'));
+  let n = 0;
+  const setup = () => {
+    const file = path.join(dir, `r${++n}.json`);
+    const c = parseModelCommandContext(
+      JSON.stringify({ channel: 'C1', threadTs: '1.1', user: 'U1', receiptFile: file }),
+    );
+    return { file, c };
+  };
+  const add = {
+    commandId: 'UPDATE_SESSION',
+    params: { operations: [{ action: 'add', resourceType: 'pr', link: { url: 'https://github.com/o/r/pull/9' } }] },
+  };
+  const receipt = (sequence: number, ackId?: string) => ({
+    sequence,
+    session: {
+      issues: [],
+      prs: [{ url: 'https://github.com/o/r/pull/9', type: 'pr' }],
+      docs: [],
+      active: {},
+      instructions: [],
+      sequence,
+    },
+    ...(ackId ? { acks: { [ackId]: { receiptId: ackId, ok: true, at: 5 } } } : {}),
+    at: 1,
+  });
+  // A fake clock: each sleep advances time; `onSleep` lets the test play the host.
+  const clock = (onSleep?: (t: number) => void) => {
+    let t = 0;
+    return {
+      now: () => t,
+      sleep: async (ms: number) => {
+        t += ms;
+        onSleep?.(t);
+      },
+    };
+  };
+
+  it('waits until the host acks this server’s write, then answers caught up', async () => {
+    const { file, c } = setup();
+    const w = buildModelCommandRunResponse(add, c) as any;
+    fs.writeFileSync(file, JSON.stringify(receipt(3)));
+    const k = clock((t) => {
+      if (t >= 2_000) fs.writeFileSync(file, JSON.stringify(receipt(4, w.payload.receiptId)));
+    });
+    const g = (await runModelCommandAwaitingHost(
+      { commandId: 'GET_SESSION', params: { waitForAckMs: 30_000 } },
+      c,
+      k,
+    )) as any;
+    expect(g.ok).toBe(true);
+    expect(g.payload.hostPending).toBe(false);
+    expect(g.payload.host.lastWrite.receiptId).toBe(w.payload.receiptId);
+    expect(g.payload.hostWaitedMs).toBe(2_000);
+    expect(c.session?.sequence).toBe(4);
+  });
+
+  it('gives up at the bound: still pending, and says how long it waited', async () => {
+    const { file, c } = setup();
+    buildModelCommandRunResponse(add, c);
+    fs.writeFileSync(file, JSON.stringify(receipt(3)));
+    const k = clock();
+    const g = (await runModelCommandAwaitingHost(
+      { commandId: 'GET_SESSION', params: { waitForAckMs: 3_000 } },
+      c,
+      k,
+    )) as any;
+    expect(g.payload.hostPending).toBe(true);
+    expect(g.payload.hostWaitedMs).toBe(3_000);
+  });
+
+  it('does not wait when there is nothing of its own to wait for, or no wait was asked', async () => {
+    const { file, c } = setup();
+    fs.writeFileSync(file, JSON.stringify(receipt(3)));
+    const k = clock();
+    const noWrite = (await runModelCommandAwaitingHost(
+      { commandId: 'GET_SESSION', params: { waitForAckMs: 30_000 } },
+      c,
+      k,
+    )) as any;
+    expect(noWrite.payload.hostWaitedMs).toBeUndefined();
+    expect(k.now()).toBe(0);
+    buildModelCommandRunResponse(add, c);
+    const noAsk = (await runModelCommandAwaitingHost({ commandId: 'GET_SESSION' }, c, k)) as any;
+    expect(noAsk.payload.hostPending).toBe(true);
+    expect(noAsk.payload.hostWaitedMs).toBeUndefined();
+    expect(k.now()).toBe(0);
+  });
+
+  it('no receipt file on disk (the host could not write it): answers at once (fable R1 P2)', async () => {
+    const { c } = setup();
+    buildModelCommandRunResponse(add, c);
+    const k = clock();
+    const g = (await runModelCommandAwaitingHost(
+      { commandId: 'GET_SESSION', params: { waitForAckMs: 30_000 } },
+      c,
+      k,
+    )) as any;
+    expect(k.now()).toBe(0);
+    expect(g.payload.host).toBeUndefined();
+    expect(g.payload.hostWaitedMs).toBe(0);
+  });
+
+  it('a write made while it waits moves the wait; the answer is about that same write (astra R2 P2)', async () => {
+    const { file, c } = setup();
+    const first = buildModelCommandRunResponse(add, c) as any;
+    fs.writeFileSync(file, JSON.stringify(receipt(3)));
+    let second: any;
+    const k = clock((t) => {
+      if (t === 500) second = buildModelCommandRunResponse(add, c);
+      // The host acks the first write, then (later) the second.
+      if (t === 1_000) fs.writeFileSync(file, JSON.stringify(receipt(4, first.payload.receiptId)));
+      if (t >= 2_000) {
+        const r = receipt(5, second.payload.receiptId);
+        fs.writeFileSync(
+          file,
+          JSON.stringify({
+            ...r,
+            acks: { ...r.acks, [first.payload.receiptId]: { receiptId: first.payload.receiptId, ok: true, at: 4 } },
+          }),
+        );
+      }
+    });
+    const g = (await runModelCommandAwaitingHost(
+      { commandId: 'GET_SESSION', params: { waitForAckMs: 30_000 } },
+      c,
+      k,
+    )) as any;
+    expect(g.payload.hostWaitedMs).toBe(2_000);
+    expect(g.payload.hostPending).toBe(false);
+    expect(g.payload.host.lastWrite.receiptId).toBe(second.payload.receiptId);
+    expect(c.session?.sequence).toBe(5);
+  });
+
+  it('other commands run as before', async () => {
+    const { c } = setup();
+    const r = (await runModelCommandAwaitingHost(add, c, clock())) as any;
+    expect(r.ok).toBe(true);
+    expect(r.payload.receiptId).toMatch(/^r_/);
   });
 });

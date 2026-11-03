@@ -188,7 +188,8 @@ export class SessionActionHandler {
         await this.ctx.reactionManager?.clearSessionLifecycleEmojis(session.channelId, session.threadTs);
       }
 
-      const refreshed = this.ctx.claudeHandler.refreshSessionActivityByKey(sessionKey);
+      // The reply below replaces this very message (the idle check): the registry must not edit it too (#881 D1).
+      const refreshed = this.ctx.claudeHandler.refreshSessionActivityByKey(sessionKey, { editWarning: false });
       if (!refreshed) {
         await respond({
           text: '세션이 이미 종료되었습니다.',
