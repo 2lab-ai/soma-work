@@ -174,12 +174,13 @@ export async function runModelCommandAwaitingHost(
   const waitMs =
     validated.ok && validated.request.commandId === 'GET_SESSION' ? (validated.request.params?.waitForAckMs ?? 0) : 0;
   let waited: number | undefined;
-  // The write this read was asked about — a write made while it waits does not move the target (fable R1 P3).
+  // It waits for this server's LATEST write, read on every poll: the answer (`hostPending`, `host.lastWrite`, the
+  // resync) is about that same write, so a write made while it waits moves the wait with it instead of leaving the
+  // answer about a different write than the one waited for (astra R2 P2). The bound is still `waitMs` in total.
   const receiptFile = context.receiptFile;
-  const target = context.lastReceiptId;
-  if (waitMs > 0 && receiptFile && target) {
+  if (waitMs > 0 && receiptFile && context.lastReceiptId) {
     const started = clock.now();
-    while (!hostAckSettled(receiptFile, target)) {
+    while (!hostAckSettled(receiptFile, context.lastReceiptId)) {
       const left = waitMs - (clock.now() - started);
       if (left <= 0) break;
       await clock.sleep(Math.min(HOST_ACK_POLL_MS, left));
