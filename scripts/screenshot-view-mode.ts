@@ -362,6 +362,10 @@ function faceOf(page: Page, key: string) {
       cost: /\$\d/.test(face.innerText),
       ctx: /\d+%/.test(face.innerText),
       pr: /#700/.test(face.innerText),
+      // 작업 카드의 연결 (.prd/22): the face's link chips — since #776 the PR is here, not in the foot.
+      links: Array.from(face.querySelectorAll<HTMLElement>('.ib-links a.ib-link')).map(
+        (a) => (a.querySelector('.ib-link-text') as HTMLElement | null)?.innerText.trim() || '',
+      ),
       task: has('.ib-task'),
       // SSOT 2026-11-01 (second instruction): the foot's right end, the artifacts line, the star, the kind mark.
       foot: Array.from(face.querySelectorAll<HTMLElement>('.ib-foot .ib-metric.is-host')).map((m) => ({
@@ -386,13 +390,38 @@ function faceOf(page: Page, key: string) {
   }, key);
 }
 
-async function openCard(page: Page, key: string) {
-  // The title, not the face's middle: the face now carries artifact chips (buttons of their own).
-  await page.click(`li.ib-card[data-card="${key}"] .ib-face .ib-title`);
-  await page.waitForFunction(() => {
+/** The session the detail card shows now (the front of the deck), or '' when it is closed. */
+function frontKey(page: Page): Promise<string> {
+  return page.evaluate(() => {
     const p = document.getElementById('slide-panel') as any;
-    return !!p && (p.open === true || p.hasAttribute('open') || p.classList.contains('open'));
+    const open = !!p && (p.open === true || p.hasAttribute('open') || p.classList.contains('open'));
+    // The page's own state (a top-level binding of its script): which session the detail card is on.
+    return open ? String((0, eval)('panelSessionKey') || '') : '';
   });
+}
+
+/**
+ * Open a card's detail card: in front of the deck, showing that session (#812). The title, not the face's middle:
+ * the face carries artifact chips (buttons of their own). A card the page opened by itself — a waiting session's
+ * decision (autoOpenDecisions opens it on the board without its detail card) — is open already, so a click would
+ * fold it: fold it first, then open it, as a reader does. Done when the detail card is on this session, not when a
+ * detail card is open: with the deck (.prd/15) one may already be open on another card.
+ */
+async function openCard(page: Page, key: string) {
+  if ((await frontKey(page)) === key) return;
+  const title = `li.ib-card[data-card="${key}"] .ib-face .ib-title`;
+  const isOpen = (k: string) => page.evaluate((c) => !!(window as any).__card(c)?.classList.contains('is-open'), k);
+  if (await isOpen(key)) {
+    await page.click(title);
+    await page.waitForFunction((c) => !(window as any).__card(c)?.classList.contains('is-open'), key);
+    await sleep(400);
+  }
+  await page.click(title);
+  await page.waitForFunction((k) => {
+    const p = document.getElementById('slide-panel') as any;
+    const open = !!p && (p.open === true || p.hasAttribute('open') || p.classList.contains('open'));
+    return open && (0, eval)('panelSessionKey') === k;
+  }, key);
   await sleep(700);
 }
 
@@ -751,10 +780,14 @@ async function plansPass(browser: import('playwright').Browser, board: unknown) 
           `${t} P2 face: the task row and the artifacts line; no steps · tokens · agents`,
           f,
         );
+        // Since #776 the PR is in the 연결 row, not the foot (its chip is off in every preset — said once).
         check(
-          /#700/.test(f.foot[0]?.text) && f.foot[1]?.text === '$6.20' && /opus/i.test(f.foot[2]?.text || ''),
-          `${t} P2 foot: PR · cost · model`,
-          f.foot,
+          f.foot.length === 2 &&
+            f.foot[0]?.text === '$6.20' &&
+            /opus/i.test(f.foot[1]?.text || '') &&
+            f.links.includes('#700'),
+          `${t} P2 foot: cost · model; the PR in the 연결 row`,
+          { foot: f.foot, links: f.links },
         );
       } else if (mode === 'minimal' && plan === '2') {
         check(
@@ -782,9 +815,11 @@ async function plansPass(browser: import('playwright').Browser, board: unknown) 
         check(f.task && f.arts && f.tokens && agentsRow && steps && f.ctx, `${t} P2 face: everything`, f);
         check(!!f.lead && f.lead.label === '일반 작업', `${t} P2 a plain task's mark, not the ✦`, f.lead);
         check(
-          /opus/i.test(f.foot[f.foot.length - 1]?.text || '') && f.foot.some((m) => /#700/.test(m.text)),
-          `${t} P2 foot ends with the model`,
-          f.foot,
+          /opus/i.test(f.foot[f.foot.length - 1]?.text || '') &&
+            !f.foot.some((m) => /#700/.test(m.text)) &&
+            f.links.includes('#700'),
+          `${t} P2 foot ends with the model; the PR in the 연결 row`,
+          { foot: f.foot, links: f.links },
         );
       } else if (mode === 'advanced' && plan === '2') {
         check(f.task && f.arts && f.tokens && agentsRow && steps && f.ctx, `${t} P2 face: everything (원본)`, f);
@@ -799,9 +834,9 @@ async function plansPass(browser: import('playwright').Browser, board: unknown) 
           f.foot
             .map((m) => m.text)
             .join('|')
-            .match(/^2\/4\|64%\|2\|#700[^|]*\|\$6\.20\|.*opus/i) !== null,
-          `${t} P2 foot: steps · context · artifacts n · PR · cost · model`,
-          f.foot,
+            .match(/^2\/4\|64%\|2\|\$6\.20\|.*opus/i) !== null && f.links.includes('#700'),
+          `${t} P2 foot: steps · context · artifacts n · cost · model; the PR in the 연결 row`,
+          { foot: f.foot, links: f.links },
         );
       }
       await page.screenshot({ path: path.join(OUT, `plan-${mode}-${plan}-1-board.png`) });
@@ -814,10 +849,11 @@ async function plansPass(browser: import('playwright').Browser, board: unknown) 
       check(b.stop && b.slack, `${t} P3 the open card keeps Stop · Slack`, b);
       check(d.composer && d.status, `${t} P4 the detail card keeps the status bar and the composer`, d);
       if (mode === 'minimal' && plan === '1') {
+        // The links are said once (.prd/22 §4): on the face's 연결 row, so the open body adds no refs line.
         check(
-          !b.star && b.refs && b.model && !b.tasks && !b.tree,
-          `${t} P3 open card: links and the model switch; no ☆ · task window · tree`,
-          b,
+          !b.star && !b.refs && f.links.includes('#700') && b.model && !b.tasks && !b.tree,
+          `${t} P3 open card: the model switch (links on the face); no ☆ · task window · tree`,
+          { ...b, links: f.links },
         );
         check(
           d.checklist && !d.agentTabs && d.controls && !d.sections && !d.info && d.tasksShare <= 35,
@@ -847,20 +883,28 @@ async function plansPass(browser: import('playwright').Browser, board: unknown) 
         const d2 = await detailState(page);
         check(d2.line && d2.checklist, `${t} P4 a press on the task line opens the checklist`, d2);
       } else if (mode === 'advanced' && plan === '1') {
-        check(!b.star && b.tasks && b.tree && b.refs && b.model, `${t} P3 open card: the column's body, no ☆`, b);
+        check(
+          !b.star && b.tasks && b.tree && !b.refs && f.links.includes('#700') && b.model,
+          `${t} P3 open card: the column's body (links on the face), no ☆`,
+          { ...b, links: f.links },
+        );
         check(
           d.open && d.info && d.controls && d.sections && d.agentTabs && d.runs,
           `${t} P4 detail: everything, unfolded`,
           d,
         );
       } else if (mode === 'advanced' && plan === '2') {
-        check(b.star && b.tasks && b.tree && b.refs && b.model, `${t} P3 원본: the open card as it was, ☆ included`, b);
+        check(
+          b.star && b.tasks && b.tree && !b.refs && f.links.includes('#700') && b.model,
+          `${t} P3 원본: the open card as it was (links on the face), ☆ included`,
+          { ...b, links: f.links },
+        );
         check(d.open && d.info && d.controls && d.sections && d.agentTabs, `${t} P4 detail: everything, unfolded`, d);
       } else {
         check(
-          !b.star && !b.tasks && !b.tree && b.goal && b.refs && b.model,
-          `${t} P3 open card: goal · links · model only`,
-          b,
+          !b.star && !b.tasks && !b.tree && b.goal && !b.refs && f.links.includes('#700') && b.model,
+          `${t} P3 open card: goal · model only (links on the face)`,
+          { ...b, links: f.links },
         );
         check(
           !d.open && d.info && d.controls && d.sections && d.agentTabs,
