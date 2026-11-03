@@ -145,23 +145,28 @@ export function buildModelCommandRunResponse(args: unknown, context: ModelComman
 /** #881 A — how often a waiting GET_SESSION re-reads the receipt file. */
 const HOST_ACK_POLL_MS = 500;
 
-/** The host has written its ack of this server's last UPDATE_SESSION (or there is nothing of ours to ack). */
-function hostAckedOwnWrite(context: ModelCommandContext): boolean {
-  if (!context.receiptFile || !context.lastReceiptId) return true;
-  return readHostReceipt(context.receiptFile)?.acks?.[context.lastReceiptId] !== undefined;
+/**
+ * Whether to stop waiting for the host's ack of `receiptId`: it is there, or there is no receipt to read at all (the
+ * host could not write the file — waiting cannot change that; fable R1 P2).
+ */
+function hostAckSettled(receiptFile: string, receiptId: string): boolean {
+  const receipt = readHostReceipt(receiptFile);
+  return receipt === undefined || receipt.acks?.[receiptId] !== undefined;
 }
 
 /**
  * {@link buildModelCommandRunResponse}, except GET_SESSION `{ waitForAckMs }` first waits — up to that long — for the
  * host to handle this server's last UPDATE_SESSION (#881 A). The host applies a write about 20 s after the model got
  * its result when its stream is busy, so an immediate re-read reports an applied write as pending. It waits only for
- * its own write: no write yet, or no receipt file, answers at once. `hostWaitedMs` says how long it waited.
+ * its own write: no write yet, no receipt path, or no receipt file on disk answers at once. `hostWaitedMs` says how
+ * long it waited.
  */
 export async function runModelCommandAwaitingHost(
   args: unknown,
   context: ModelCommandContext,
+  // A monotonic clock: a wall-clock step back must not stretch the wait past its bound (astra · fable R1 P3).
   clock: { now: () => number; sleep: (ms: number) => Promise<void> } = {
-    now: () => Date.now(),
+    now: () => performance.now(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   },
 ): Promise<ModelCommandRunResponse> {
@@ -169,9 +174,12 @@ export async function runModelCommandAwaitingHost(
   const waitMs =
     validated.ok && validated.request.commandId === 'GET_SESSION' ? (validated.request.params?.waitForAckMs ?? 0) : 0;
   let waited: number | undefined;
-  if (waitMs > 0 && context.receiptFile && context.lastReceiptId) {
+  // The write this read was asked about — a write made while it waits does not move the target (fable R1 P3).
+  const receiptFile = context.receiptFile;
+  const target = context.lastReceiptId;
+  if (waitMs > 0 && receiptFile && target) {
     const started = clock.now();
-    while (!hostAckedOwnWrite(context)) {
+    while (!hostAckSettled(receiptFile, target)) {
       const left = waitMs - (clock.now() - started);
       if (left <= 0) break;
       await clock.sleep(Math.min(HOST_ACK_POLL_MS, left));

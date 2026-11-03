@@ -851,6 +851,37 @@ describe('GET_SESSION waits for the host ack', () => {
     expect(k.now()).toBe(0);
   });
 
+  it('no receipt file on disk (the host could not write it): answers at once (fable R1 P2)', async () => {
+    const { c } = setup();
+    buildModelCommandRunResponse(add, c);
+    const k = clock();
+    const g = (await runModelCommandAwaitingHost(
+      { commandId: 'GET_SESSION', params: { waitForAckMs: 30_000 } },
+      c,
+      k,
+    )) as any;
+    expect(k.now()).toBe(0);
+    expect(g.payload.host).toBeUndefined();
+    expect(g.payload.hostWaitedMs).toBe(0);
+  });
+
+  it('waits for the write it was asked about, not one made while waiting (fable R1 P3)', async () => {
+    const { file, c } = setup();
+    const first = buildModelCommandRunResponse(add, c) as any;
+    fs.writeFileSync(file, JSON.stringify(receipt(3)));
+    const k = clock((t) => {
+      // A second write lands while the first wait runs; the host then acks the first one.
+      if (t === 500) buildModelCommandRunResponse(add, c);
+      if (t >= 1_000) fs.writeFileSync(file, JSON.stringify(receipt(4, first.payload.receiptId)));
+    });
+    const g = (await runModelCommandAwaitingHost(
+      { commandId: 'GET_SESSION', params: { waitForAckMs: 30_000 } },
+      c,
+      k,
+    )) as any;
+    expect(g.payload.hostWaitedMs).toBe(1_000);
+  });
+
   it('other commands run as before', async () => {
     const { c } = setup();
     const r = (await runModelCommandAwaitingHost(add, c, clock())) as any;

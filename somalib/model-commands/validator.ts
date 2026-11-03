@@ -119,6 +119,10 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
 
   if (commandId === 'GET_SESSION') {
     // #881 A — the only param: how long to wait for the host's ack of this server's last write.
+    const unknown = isRecord(params) ? Object.keys(params).filter((k) => k !== 'waitForAckMs') : [];
+    if (unknown.length > 0) {
+      return withCommandHelp('GET_SESSION', invalidArgs(`GET_SESSION does not take: ${unknown.join(', ')}`));
+    }
     const wait = isRecord(params) ? params.waitForAckMs : undefined;
     if (wait === undefined) {
       return { ok: true, request: { commandId: 'GET_SESSION', params: undefined } };

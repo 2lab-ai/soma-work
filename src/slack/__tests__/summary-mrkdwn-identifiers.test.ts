@@ -19,6 +19,10 @@ describe('formatSummaryForSlack — identifiers and inline code', () => {
     expect(fmt(input)).toBe(out);
   });
 
+  it('bold around inline code still becomes *bold*; the code inside stays as written (astra R1 P2)', () => {
+    expect(fmt('**run `a**b` now** please')).toBe('*run `a**b` now* please');
+  });
+
   it('still turns **bold** into *bold* outside code, and headings into bold lines', () => {
     expect(fmt('a **bold** word, then `**raw**`')).toBe('a *bold* word, then `**raw**`');
     expect(fmt('## Status')).toBe('*Status*');
