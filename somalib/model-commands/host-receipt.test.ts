@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { getDefaultSessionSnapshot } from './catalog';
-import { type HostReceipt, hostReceiptPath, readHostReceipt, withAck } from './host-receipt';
+import { type HostReceipt, hostReceiptPath, readHostReceipt, receiptIssuedAt, withAck } from './host-receipt';
 
 /**
  * #846 item 2 — the host-confirmed card receipt.
@@ -121,5 +121,15 @@ describe('readHostReceipt', () => {
     const wrong = path.join(dir, 'wrong.json');
     fs.writeFileSync(wrong, JSON.stringify({ sequence: 'x', session: {} }));
     expect(readHostReceipt(wrong)).toBeUndefined();
+  });
+});
+
+describe('receiptIssuedAt (#881 B1)', () => {
+  it('reads when the model-command server issued the write from its receiptId', () => {
+    const t = 1_793_700_000_000;
+    expect(receiptIssuedAt(`r_${t.toString(36)}_1_abcd1234`)).toBe(t);
+  });
+  it('is undefined for anything else', () => {
+    for (const bad of [undefined, 7, '', 'r_', 'x_abc_1', 'r_!!_1']) expect(receiptIssuedAt(bad)).toBeUndefined();
   });
 });

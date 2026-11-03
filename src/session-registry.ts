@@ -32,6 +32,7 @@ import {
   type HostWriteReceipt,
   hostReceiptPath,
   readHostReceipt,
+  receiptIssuedAt,
   withAck,
 } from 'somalib/model-commands/host-receipt';
 import { DATA_DIR } from './env-paths';
@@ -2722,16 +2723,29 @@ export class SessionRegistry {
    * the card in NEEDS YOU on the same signal. False when there is no session or no usable line — the card
    * then keeps what it had.
    */
-  setExecutiveSummary(channelId: string, threadTs: string | undefined, tldr: readonly string[]): boolean {
-    return this.setExecutiveSummaryOn(this.getSession(channelId, threadTs), tldr);
+  setExecutiveSummary(
+    channelId: string,
+    threadTs: string | undefined,
+    tldr: readonly string[],
+    receiptId?: string,
+  ): boolean {
+    return this.setExecutiveSummaryOn(this.getSession(channelId, threadTs), tldr, receiptId);
   }
 
   /** The same by session key — the only way to reach a Slack-less task (channel '' throws on lookup). */
-  setExecutiveSummaryByKey(sessionKey: string, tldr: readonly string[]): boolean {
-    return this.setExecutiveSummaryOn(this.getSessionByKey(sessionKey), tldr);
+  setExecutiveSummaryByKey(sessionKey: string, tldr: readonly string[], receiptId?: string): boolean {
+    return this.setExecutiveSummaryOn(this.getSessionByKey(sessionKey), tldr, receiptId);
   }
 
-  private setExecutiveSummaryOn(session: ConversationSession | undefined, tldr: readonly string[]): boolean {
+  /**
+   * `receiptId` (#881 B1) — the write's id from the model-command server; its time is when the model issued the
+   * write (`issuedAt`), which the turn end compares with the steered sends it folded in.
+   */
+  private setExecutiveSummaryOn(
+    session: ConversationSession | undefined,
+    tldr: readonly string[],
+    receiptId?: string,
+  ): boolean {
     if (!session) return false;
     const lines = tldr
       .filter((l): l is string => typeof l === 'string')
@@ -2751,7 +2765,8 @@ export class SessionRegistry {
     const at = Date.now();
     // `source: 'es'` — checked with tools by the model-run es: the same turn's host summary keeps this card
     // (TL;DR and verdict as one pair); the user's next input drops the TL;DR and with it the mark.
-    session.executiveSummary = { tldr: lines, at, source: 'es' };
+    const issuedAt = receiptIssuedAt(receiptId);
+    session.executiveSummary = { tldr: lines, at, source: 'es', ...(issuedAt !== undefined ? { issuedAt } : {}) };
     applyFollowUp(session, lines, at);
     this.saveSessions();
     return true;
