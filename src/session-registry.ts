@@ -126,7 +126,7 @@ const WARNING_INTERVALS = [
 /** A session's history keeps at most this many links of each kind (세션 링크 자동 기록): the oldest go first. */
 export const MAX_NOTED_LINKS = 30;
 /** Which noted link becomes the current one: see SessionRegistry.noteSessionLinks. */
-export type NoteLinksMode = 'first' | 'always' | 'if-empty';
+export type NoteLinksMode = 'first' | 'always' | 'if-empty' | 'history' | 'update';
 
 const HISTORY_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinkHistory> = {
   issue: 'issues',
@@ -263,6 +263,8 @@ interface SerializedSession {
   threadRootTs?: string;
   // Onboarding flag
   isOnboarding?: boolean;
+  /** When the session was created (epoch ms) — the turn-end PR reconcile reads it (#833). */
+  startedAt?: number;
   // Source working directories tracked for cleanup
   sourceWorkingDirs?: string[];
   // Mid-thread source thread reference
@@ -691,6 +693,12 @@ export class SessionRegistry {
   /** E2 ⑤ — told after a save that added notices a task owes its instruction thread. */
   private taskNoticeListener?: (session: ConversationSession, sessionKey: string) => void;
   private _crashRecoveredSessions: CrashRecoveredSession[] = [];
+  /**
+   * Slack-less tasks whose turn the restart cut (reconciled `interrupted` on load). A task has no
+   * `wasWorkingAtShutdown` marker and is not crash-recovered, so this is the restart's record of it
+   * — read once by the goal resume, which gives the cut turn's continuation back (SSOT 2026-11-03).
+   */
+  private _restartCutTaskKeys = new Set<string>();
 
   /**
    * onIdle callback registry — fired when session transitions to idle.
@@ -1871,6 +1879,7 @@ export class SessionRegistry {
       taskId: randomUUID(),
       isActive: true,
       lastActivity: new Date(),
+      startedAt: Date.now(),
       model: sessionModel,
       logVerbosity: userSettingsStore.getUserLogVerbosityFlags(ownerId),
       effort: userSettingsStore.getUserDefaultEffort(ownerId),
@@ -2136,6 +2145,8 @@ export class SessionRegistry {
       activityStateChangedAt: doneAt,
       links: archived.links,
       linkHistory: archived.linkHistory,
+      // When the task started, as recorded (#833) — never the revive time, which would hide its earlier PRs.
+      startedAt: finiteStamp(archived.startedAt),
       instructions: Array.isArray(archived.instructions)
         ? archived.instructions.map((i) => ({ ...i, status: i.status ?? 'active' }))
         : [],
@@ -2466,7 +2477,11 @@ export class SessionRegistry {
    *   'first'    a user message: the first link of each kind (as the dispatch does with the first message);
    *   'always'   a PR or issue the session just created;
    *   'if-empty' an assistant reply: only when the kind has no current link, so a PR mentioned in passing does not
-   *              replace the one the session works on.
+   *              replace the one the session works on;
+   *   'history'  a PR GitHub says the session's branch has, older than the session or on a shared branch (#833): it
+   *              joins the history and never becomes current;
+   *   'update'   a PR or issue the session just merged or closed (#832): only a link already on the card changes — its
+   *              `status` — and nothing is added or made current.
    * Links compare by their canonical URL (`/pull/12/files?x` is `/pull/12`), so a link the dispatch or the model
    * already set is not recorded twice. A known link changes nothing. A recorded link is tagged `auto`; only those are
    * trimmed, to the newest {@link MAX_NOTED_LINKS} of a kind (the current one always stays). The sequence the model's
@@ -2494,6 +2509,7 @@ export class SessionRegistry {
   ): boolean {
     if (!session || !Array.isArray(links) || links.length === 0) return false;
     this.ensureSessionLinkState(session);
+    if (mode === 'update') return this.updateNotedLinkStates(session, links);
     let changed = false;
     const firstTaken = new Set<SessionResourceType>();
     for (const raw of links) {
@@ -2528,6 +2544,35 @@ export class SessionRegistry {
         if (drop < 0) break;
         history.splice(drop, 1);
         recorded--;
+      }
+    }
+    if (changed) this.saveSessions();
+    return changed;
+  }
+
+  /** {@link noteSessionLinks} 'update': the state of each link already on the card (history and current copy). */
+  private updateNotedLinkStates(session: ConversationSession, links: ReadonlyArray<SessionLink>): boolean {
+    let changed = false;
+    for (const raw of links) {
+      const type = raw?.type as SessionResourceType | undefined;
+      const status = typeof raw?.status === 'string' ? raw.status.trim() : '';
+      if (!raw?.url || !status || !type || !(type in HISTORY_KEY_BY_RESOURCE)) continue;
+      // GitHub owner and repo names are case-insensitive: a pasted `2Lab-AI/…` is the PR a merge names in lower case.
+      const canon = canonicalLinkUrl(raw.url).toLowerCase();
+      const same = (url: string) => canonicalLinkUrl(url).toLowerCase() === canon;
+      const history = session.linkHistory![HISTORY_KEY_BY_RESOURCE[type]]!;
+      const at = history.findIndex((l) => !!l?.url && same(l.url));
+      // Merged is final: a later close or PATCH of a merged PR never takes it back.
+      if (at >= 0 && history[at].status === 'merged') continue;
+      if (at >= 0 && history[at].status !== status) {
+        history[at] = { ...history[at], status };
+        changed = true;
+      }
+      const activeKey = ACTIVE_KEY_BY_RESOURCE[type];
+      const current = session.links![activeKey];
+      if (current?.url && same(current.url) && current.status !== status && current.status !== 'merged') {
+        session.links![activeKey] = { ...current, status };
+        changed = true;
       }
     }
     if (changed) this.saveSessions();
@@ -2597,6 +2642,11 @@ export class SessionRegistry {
   getSessionResourceSnapshot(channelId: string, threadTs?: string): SessionResourceSnapshot {
     const session = this.getSession(channelId, threadTs);
     return this.buildSessionResourceSnapshot(session);
+  }
+
+  /** The same by session key — the only way to reach a Slack-less task (channel '' throws on lookup). */
+  getSessionResourceSnapshotByKey(sessionKey: string): SessionResourceSnapshot {
+    return this.buildSessionResourceSnapshot(this.getSessionByKey(sessionKey));
   }
 
   /**
@@ -3576,6 +3626,13 @@ export class SessionRegistry {
     this._crashRecoveredSessions = [];
   }
 
+  /** The Slack-less tasks whose turn the restart cut — returned once, then cleared (a later read gets none). */
+  takeRestartCutTaskKeys(): Set<string> {
+    const keys = this._restartCutTaskKeys;
+    this._restartCutTaskKeys = new Set<string>();
+    return keys;
+  }
+
   /**
    * Save all sessions to file for persistence across restarts. A failure is
    * logged, not thrown — a caller that must know uses saveSessionsOrThrow.
@@ -3724,6 +3781,7 @@ export class SessionRegistry {
             threadRootTs: session.threadRootTs,
             isOnboarding: session.isOnboarding,
             sourceWorkingDirs: session.sourceWorkingDirs,
+            startedAt: session.startedAt,
             sourceThread: session.sourceThread,
             // Session workspace isolation (#77): persist session-unique cwd
             // so Claude SDK can find its conversation files after restart
@@ -3982,6 +4040,7 @@ export class SessionRegistry {
       // same registry is not a duplicate; a second record with one task id in one file is).
       const slacklessKeysThisLoad = new Set<string>();
       this._crashRecoveredSessions = [];
+      this._restartCutTaskKeys = new Set<string>();
 
       for (const serialized of sessionsArray) {
         const lastActivity = new Date(serialized.lastActivity);
@@ -4115,6 +4174,7 @@ export class SessionRegistry {
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
           sourceThread: serialized.sourceThread,
+          startedAt: typeof serialized.startedAt === 'number' ? serialized.startedAt : undefined,
           sourceWorkingDirs: (serialized.sourceWorkingDirs || []).filter((d: unknown) => {
             if (typeof d !== 'string') {
               this.logger.warn('Dropped non-string sourceWorkingDir during deserialization', {
@@ -4408,6 +4468,7 @@ export class SessionRegistry {
             session.activityState = 'idle';
             session.activityStateChangedAt = now;
             session.activeTaskTurnId = undefined;
+            this._restartCutTaskKeys.add(derivedKey);
             reconciledTaskTurnCount++;
           }
         } else if (serialized.shutdownNotificationSent) {

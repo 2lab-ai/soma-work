@@ -193,6 +193,15 @@ export class McpConfigBuilder {
 
     if (slackContext) {
       internalServers['model-command'] = this.buildModelCommandServer(slackContext, modelCommandContext);
+    } else if (executionContext?.origin === 'task') {
+      // A dashboard task gets it too: session links and title, memory, skills and SET_GOAL are not
+      // Slack features. Its user is the context's (server-built), and `surface: 'task'` hides the
+      // commands only a Slack thread can carry out (ASK_USER_QUESTION's form, CONTINUE_SESSION, renew).
+      internalServers['model-command'] = this.modelCommandServerFor({
+        ...(modelCommandContext ?? {}),
+        user: executionContext.userId,
+        surface: 'task',
+      });
     }
 
     // Add slack-mcp server only for mid-thread mentions (mentionTs !== threadTs)
@@ -305,6 +314,7 @@ export class McpConfigBuilder {
     // whether any MCP server happened to be registered (the retired `llm`
     // server used to make that condition unconditionally true).
     config.allowedTools = this.buildAllowedTools(slackContext, userBypass, contextUser, !!executionContext);
+    if (!slackContext && internalServers['model-command']) config.allowedTools.push('mcp__model-command');
     if (internalServers[EPIC_SERVER]) config.allowedTools.push(`mcp__${EPIC_SERVER}`);
     if (internalServers[PLAN_SERVER]) config.allowedTools.push(`mcp__${PLAN_SERVER}`);
 
@@ -392,13 +402,18 @@ export class McpConfigBuilder {
     slackContext: SlackContext,
     modelCommandContext?: ModelCommandContext,
   ): Record<string, any> {
-    const command = this.getInternalServerCommand('model-command');
-    const context: ModelCommandContext = modelCommandContext || {
-      channel: slackContext.channel,
-      threadTs: slackContext.threadTs,
-      user: slackContext.user,
-    };
+    return this.modelCommandServerFor(
+      modelCommandContext || {
+        channel: slackContext.channel,
+        threadTs: slackContext.threadTs,
+        user: slackContext.user,
+      },
+    );
+  }
 
+  /** The model-command server process for `context` (a Slack thread's, or a dashboard task's). */
+  private modelCommandServerFor(context: ModelCommandContext): Record<string, any> {
+    const command = this.getInternalServerCommand('model-command');
     return {
       command: command.command,
       args: command.args,

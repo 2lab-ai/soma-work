@@ -108,6 +108,8 @@ export interface BuildStreamOptionsDeps {
   buildModelCommandContext: (
     session: ConversationSession | undefined,
     slackContext: SlackContext | undefined,
+    /** A Slack-less task's context: its model-command context is built from it (by key). */
+    executionContext?: ExecutionContext,
   ) => ModelCommandContext | undefined;
   mcpConfigBuilder: {
     buildConfig(
@@ -328,7 +330,7 @@ export async function buildStreamOptions(
     options.permissionMode = 'default';
   } else {
     // Get MCP configuration
-    const modelCommandContext = deps.buildModelCommandContext(session, slackContext);
+    const modelCommandContext = deps.buildModelCommandContext(session, slackContext, execCtx);
     mcpConfig = await deps.mcpConfigBuilder.buildConfig(slackContext, modelCommandContext, execCtx);
     options.permissionMode = mcpConfig.permissionMode;
     if (mcpConfig.allowDangerouslySkipPermissions) {

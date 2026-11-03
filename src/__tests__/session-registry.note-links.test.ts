@@ -10,6 +10,10 @@
  *       a link the model or the user set is never trimmed
  *   N6  links compare by their canonical URL: the dispatch's `/pull/12/files?x` is the `/pull/12` a turn names
  *   N7  recording never moves the sequence the model's UPDATE_SESSION compares against
+ *   N8  'update' (a merge or close the session just made, #832): only a link already on the card changes — its state;
+ *       an unknown link is never added, and the current link does not move
+ *   N9  'history' (a PR GitHub says the session's branch has, but older than the session or on a shared branch, #833):
+ *       it joins the history and is never made current, even when the kind has no current link
  */
 import fs from 'fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -144,5 +148,51 @@ describe('noteSessionLinks', () => {
         operations: [{ action: 'add', resourceType: 'pr', link: PR(2) }],
       }).ok,
     ).toBe(true);
+  });
+
+  it('N8 — update: a merge or close changes the state of a link already on the card, and adds nothing', () => {
+    const { reg, s } = setup();
+    reg.noteSessionLinks('C1', '100.001', [PR(12), PR(13)], 'always');
+    expect(s.links?.pr?.url).toBe(PR(13).url);
+    // The merged PR is in the history, not current: its state changes, the current link stays.
+    expect(reg.noteSessionLinks('C1', '100.001', [{ ...PR(12), status: 'merged' }], 'update')).toBe(true);
+    expect(s.linkHistory?.prs?.find((l) => l.url === PR(12).url)?.status).toBe('merged');
+    expect(s.links?.pr?.url).toBe(PR(13).url);
+    // The current one's copy changes too (the card reads the current link first).
+    reg.noteSessionLinks('C1', '100.001', [{ ...PR(13), url: `${PR(13).url}/files`, status: 'closed' }], 'update');
+    expect(s.links?.pr?.status).toBe('closed');
+    expect(s.linkHistory?.prs?.find((l) => l.url === PR(13).url)?.status).toBe('closed');
+    // A PR the card does not know is not added; the same state again changes nothing.
+    expect(reg.noteSessionLinks('C1', '100.001', [{ ...PR(99), status: 'merged' }], 'update')).toBe(false);
+    expect(s.linkHistory?.prs?.map((l) => l.url)).toEqual([PR(12).url, PR(13).url]);
+    expect(reg.noteSessionLinks('C1', '100.001', [{ ...PR(12), status: 'merged' }], 'update')).toBe(false);
+    // Merged is final: a later close (a PATCH of a merged PR reads `closed`) never takes it back.
+    expect(reg.noteSessionLinks('C1', '100.001', [{ ...PR(12), status: 'closed' }], 'update')).toBe(false);
+    expect(s.linkHistory?.prs?.find((l) => l.url === PR(12).url)?.status).toBe('merged');
+    // GitHub names are case-insensitive: a pasted `A/B` link is the PR a merge names as `a/b`.
+    reg.noteSessionLinks('C1', '100.001', [{ ...PR(20), url: 'https://github.com/A/B/pull/20' }], 'first');
+    expect(reg.noteSessionLinks('C1', '100.001', [{ ...PR(20), status: 'merged' }], 'update')).toBe(true);
+    expect(s.linkHistory?.prs?.find((l) => l.url === 'https://github.com/A/B/pull/20')?.status).toBe('merged');
+  });
+
+  it('N9 — history: a PR joins the history and never becomes current', () => {
+    const { reg, s } = setup();
+    expect(reg.noteSessionLinks('C1', '100.001', [{ ...PR(7), status: 'merged' }], 'history')).toBe(true);
+    expect(s.links?.pr).toBeUndefined();
+    expect(s.linkHistory?.prs?.map((l) => [l.url, l.status, l.auto])).toEqual([[PR(7).url, 'merged', true]]);
+    reg.noteSessionLinks('C1', '100.001', [PR(8)], 'always');
+    reg.noteSessionLinks('C1', '100.001', [PR(9)], 'history');
+    expect(s.links?.pr?.url).toBe(PR(8).url);
+    expect(reg.noteSessionLinks('C1', '100.001', [PR(9)], 'history')).toBe(false);
+  });
+
+  it('N10 — a new session records when it started, and keeps it across a save and load (#833)', () => {
+    const before = Date.now();
+    const { reg, s } = setup();
+    expect(s.startedAt).toBeGreaterThanOrEqual(before);
+    reg.saveSessions();
+    const reloaded = new SessionRegistry();
+    reloaded.loadSessions();
+    expect(reloaded.getSession('C1', '100.001')?.startedAt).toBe(s.startedAt);
   });
 });

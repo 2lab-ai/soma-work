@@ -4470,6 +4470,36 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
     // Fail-closed contract: a synthetic turn must NEVER present as user input.
     expect(ctx.isUserInputTurn).not.toBe(true);
   });
+
+  it('a task turn carries its execution context’s user as turnUserId', async () => {
+    const deps = createDepsForToolFlow();
+    const executor = new StreamExecutor(deps);
+    const spy = vi
+      .spyOn(executor as any, 'handleModelCommandToolResults')
+      .mockResolvedValue({ hasPendingChoice: false });
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    await executor.execute({ ...createToolFlowParams(say), text: 'go', isUserInput: true });
+    // A Slack turn: no task user.
+    expect((spy.mock.calls[0][2] as Record<string, unknown>).turnUserId).toBeUndefined();
+  });
+
+  // #861 R1 (fable-zhuge P2): a dashboard task's host start (an epic wake, a child instructed, the goal loop)
+  it('a host turn (hostTurn: true) is never user input, even with isUserInput: true', async () => {
+    const deps = createDepsForToolFlow();
+    const executor = new StreamExecutor(deps);
+    const spy = vi
+      .spyOn(executor as any, 'handleModelCommandToolResults')
+      .mockResolvedValue({ hasPendingChoice: false });
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    await executor.execute({
+      ...createToolFlowParams(say),
+      text: 'Epic wake: 1 events — n1:finished. Read details with child_status.',
+      isUserInput: true,
+      hostTurn: true,
+    });
+    expect(spy).toHaveBeenCalled();
+    expect((spy.mock.calls[0][2] as Record<string, unknown>).isUserInputTurn).not.toBe(true);
+  });
 });
 
 describe('stream-executor — B3 choice wiring', () => {
@@ -6238,6 +6268,119 @@ describe('SET_GOAL host-apply (#1082)', () => {
     expect(notice).toBeDefined();
     expect(notice).toContain('ship the goal feature');
     expect(notice).toContain('goal로 잡아줘');
+  });
+
+  // SSOT 2026-11-03 — a dashboard task (channel '', no thread) now has the model-command
+  // server: its SET_GOAL is applied on the host like a Slack one, the 🎯 notice goes to the
+  // task's own `say` (its work log), and nothing calls Slack.
+  it('a dashboard task turn: applies the goal on the user’s word, the notice goes to the task, no Slack call', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = { ...createSession(), slackless: true, channelId: '', threadTs: undefined };
+    const context = makeContext({
+      channel: '',
+      threadTs: undefined,
+      sessionKey: 'task:11111111-2222-4333-8444-555555555555',
+      currentUserText: 'set goal 해줘: de-aislop #830 완료',
+      isUserInputTurn: true,
+    });
+
+    await (executor as any).handleModelCommandToolResults(
+      [makeSetGoalToolResult('de-aislop #830 완료', 'set goal 해줘')],
+      session,
+      context,
+    );
+
+    expect(session.goal).toMatchObject({ objective: 'de-aislop #830 완료', status: 'active', createdBy: 'U1' });
+    expect(deps.claudeHandler.saveSessions).toHaveBeenCalled();
+    const sayCalls = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
+    expect(sayCalls.some((t: string) => t.includes('🎯'))).toBe(true);
+    expect(deps.slackApi.updateMessage).not.toHaveBeenCalled();
+  });
+
+  // #861 R1 (astra-zhuge P1): a user who instructed someone else's task sets a goal that is theirs —
+  // the goal loop runs its next turns as the goal's owner, never as the task's owner.
+  it('a dashboard task turn: the goal belongs to the turn’s user, not the task owner', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = {
+      ...createSession(),
+      ownerId: 'U_ADMIN_OWNER',
+      slackless: true,
+      channelId: '',
+      threadTs: undefined,
+    };
+    const context = makeContext({
+      channel: '',
+      threadTs: undefined,
+      sessionKey: 'task:11111111-2222-4333-8444-555555555555',
+      currentUserText: 'set goal 해줘: ship it',
+      isUserInputTurn: true,
+      turnUserId: 'U_INSTRUCTOR',
+    });
+    await (executor as any).handleModelCommandToolResults(
+      [makeSetGoalToolResult('ship it', 'set goal 해줘')],
+      session,
+      context,
+    );
+    expect(session.goal).toMatchObject({ objective: 'ship it', createdBy: 'U_INSTRUCTOR' });
+  });
+
+  it('a dashboard task turn: a goal continuation (not user input) still cannot set a goal', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = { ...createSession(), slackless: true, channelId: '', threadTs: undefined };
+    const context = makeContext({
+      channel: '',
+      threadTs: undefined,
+      sessionKey: 'task:11111111-2222-4333-8444-555555555555',
+      currentUserText: '[goal-continuation] set goal 해줘',
+      isUserInputTurn: false,
+    });
+    await (executor as any).handleModelCommandToolResults(
+      [makeSetGoalToolResult('a new goal', 'set goal 해줘')],
+      session,
+      context,
+    );
+    expect(session.goal).toBeUndefined();
+  });
+
+  it('a dashboard task turn: instruction writes are refused visibly — no Slack y/n button', async () => {
+    const deps = createExecutorDeps();
+    const store = { set: vi.fn(), get: vi.fn(), delete: vi.fn() };
+    deps.pendingInstructionConfirmStore = store;
+    deps.slackApi.postMessage = vi.fn();
+    deps.claudeHandler.updateSessionResourcesByKey = vi.fn();
+    const executor = new StreamExecutor(deps);
+    const session = { ...createSession(), slackless: true, channelId: '', threadTs: undefined };
+    const context = makeContext({
+      channel: '',
+      threadTs: undefined,
+      sessionKey: 'task:11111111-2222-4333-8444-555555555555',
+    });
+    await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool_us_1',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'UPDATE_SESSION',
+            ok: true,
+            payload: {
+              session: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 0 },
+              request: { instructionOperations: [{ action: 'add', text: 'do X' }] },
+            },
+          }),
+        },
+      ],
+      session,
+      context,
+    );
+    expect(store.set).not.toHaveBeenCalled();
+    expect(deps.slackApi.postMessage).not.toHaveBeenCalled();
+    const sayCalls = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
+    expect(sayCalls.some((t: string) => t.includes('Instruction changes were not applied'))).toBe(true);
   });
 
   it('refuses on a synthetic/continuation turn (isUserInputTurn !== true) without mutating the session', async () => {

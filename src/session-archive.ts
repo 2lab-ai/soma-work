@@ -89,6 +89,11 @@ export interface ArchivedSession {
 
   // Timestamps
   lastActivity: string; // ISO date
+  /**
+   * When the session started (Unix ms, #833): the turn-end GitHub check counts only PRs created since. A revive keeps
+   * it. Absent in archives written before it existed (a revive then has none, rather than the revive time).
+   */
+  startedAt?: number;
 
   // Work artifacts
   links?: SessionLinks;
@@ -206,6 +211,7 @@ function sessionToArchive(
     workflow: session.workflow,
 
     lastActivity: session.lastActivity.toISOString(),
+    startedAt: session.startedAt,
 
     // Deep copy mutable objects to capture snapshot
     links: session.links ? JSON.parse(JSON.stringify(session.links)) : undefined,

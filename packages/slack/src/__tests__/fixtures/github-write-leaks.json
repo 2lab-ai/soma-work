@@ -1,0 +1,103 @@
+{
+ "source": "bot transcripts, sessions 1793464200130 and 1793667946797 (2026-11-02/03). Heredoc PR bodies are trimmed; every GitHub call line is verbatim.",
+ "leaks": [
+  {
+   "expect": "https://github.com/2lab-ai/ui/pull/14",
+   "toolName": "Bash",
+   "input": {
+    "command": "cd /private/tmp/U094E5L4A15/session_1793464200130_7902383d && T=$(cat scratch/.tok) && cd ui_lib && git add -A package.json package-lock.json src && GIT_COMMITTER_NAME='zhuge-liang-bot[bot]' GIT_COMMITTER_EMAIL='270551642+zhuge-liang-bot[bot]@users.noreply.github.com' GIT_AUTHOR_NAME='zhuge-liang-bot[bot]' GIT_AUTHOR_EMAIL='270551642+zhuge-liang-bot[bot]@users.noreply.github.com' git commit -q -m \"chore(release): 0.22.0 — the model chip ships as 0.22.0\n\n#13 published 0.21.0 first (Stageshow polish) while #12 (the model as icons,\n2lab-ai/soma-work#805) waited for CI; both carried 0.21.0. npm 0.21.0 has no\neffort gauge or model colour, so #12's API ships as 0.22.0 and its notes say so.\n\nCo-Authored-By: Zhuge <z@2lab.ai>\nCo-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>\" && git push -q \"https://x-access-token:$T@github.com/2lab-ai/ui.git\" release/0.22.0 2>&1 | sed -E 's/gh[sp]_[^ @]+/***/g'; cat > /tmp/U094E5L4A15/ui-rel-body.md <<'EOF'\n## Summary\n\n(… PR body trimmed for the fixture …)\nEOF\njq -n --rawfile b /tmp/U094E5L4A15/ui-rel-body.md '{title:\"chore(release): 0.22.0 — the model chip (#12) ships as 0.22.0\", head:\"release/0.22.0\", base:\"main\", body:$b}' | curl -s -X POST -H \"Authorization: Bearer $T\" -H \"Accept: application/vnd.github+json\" https://api.github.com/repos/2lab-ai/ui/pulls -d @- | jq '{number,html_url}'"
+   },
+   "result": "remote: \nremote: Create a pull request for 'release/0.22.0' on GitHub by visiting:        \nremote:      https://github.com/2lab-ai/ui/pull/new/release/0.22.0        \nremote: \n{\n  \"number\": 14,\n  \"html_url\": \"https://github.com/2lab-ai/ui/pull/14\"\n}"
+  },
+  {
+   "expect": "https://github.com/2lab-ai/soma-work/pull/814",
+   "toolName": "Bash",
+   "input": {
+    "command": "cd /private/tmp/U094E5L4A15/session_1793464200130_7902383d && cat > scratch/pr805-body.md <<'EOF'\n## Summary\n\n(… PR body trimmed for the fixture …)\nEOF\nT=$(cat scratch/.tok) && jq -n --rawfile b scratch/pr805-body.md '{title:\"feat(dashboard): the task card'\"'\"'s model as icons — maker'\"'\"'s mark and effort gauge; the detail card names it (#805)\", head:\"feat/model-chip-icons\", base:\"main\", body:$b}' | curl -s -X POST -H \"Authorization: Bearer $T\" -H \"Accept: application/vnd.github+json\" https://api.github.com/repos/2lab-ai/soma-work/pulls -d @- | jq '{number,html_url}'"
+   },
+   "result": "{\n  \"number\": 814,\n  \"html_url\": \"https://github.com/2lab-ai/soma-work/pull/814\"\n}"
+  },
+  {
+   "expect": "https://github.com/2lab-ai/ui/pull/15",
+   "toolName": "Bash",
+   "input": {
+    "command": "cd /private/tmp/U094E5L4A15/session_1793464200130_7902383d && T=$(cat scratch/.tok) && cat > scratch/ui-pr15.md <<'EOF'\n## Summary\n\n(… PR body trimmed for the fixture …)\nEOF\njq -n --rawfile b scratch/ui-pr15.md '{title:\"feat(ui): 0.23.0 — a model as its maker'\"'\"'s mark (model picker, agent tree, inbox)\", head:\"feat/model-marks\", base:\"main\", body:$b}' | curl -s -X POST -H \"Authorization: Bearer $T\" -H \"Accept: application/vnd.github+json\" https://api.github.com/repos/2lab-ai/ui/pulls -d @- | jq '{number,html_url}'; curl -s -H \"Authorization: Bearer $T\" https://api.github.com/repos/2lab-ai/soma-work/pulls/814 | jq '{mergeable_state,head:.head.sha[0:8]}'; curl -s -H \"Authorization: Bearer $T\" \"https://api.github.com/repos/2lab-ai/soma-work/commits/42712695ff45d32d44afb7f40b9fbc218f0e11f6/check-runs\" | jq -r '.check_runs[] | \"\\(.name) \\(.status) \\(.conclusion)\"'"
+   },
+   "result": "{\n  \"number\": 15,\n  \"html_url\": \"https://github.com/2lab-ai/ui/pull/15\"\n}\n{\n  \"mergeable_state\": \"unknown\",\n  \"head\": \"42712695\"\n}\nquality-gates in_progress null\nlean-verify completed success\nscan completed success"
+  },
+  {
+   "expect": "https://github.com/2lab-ai/soma-work/pull/819",
+   "toolName": "Bash",
+   "input": {
+    "command": "cat > scratch/pr813-body.md <<'EOF'\n## Summary\n\n(… PR body trimmed for the fixture …)\nEOF\nT=$(cat scratch/.tok) && jq -n --rawfile b scratch/pr813-body.md '{title:\"feat(dashboard): the model as its maker'\"'\"'s mark across the UI — model pickers, agent tree (#813)\", head:\"feat/model-marks\", base:\"feat/model-chip-icons\", body:$b}' | curl -s -X POST -H \"Authorization: Bearer $T\" -H \"Accept: application/vnd.github+json\" https://api.github.com/repos/2lab-ai/soma-work/pulls -d @- | jq '{number,html_url}'"
+   },
+   "result": "{\n  \"number\": 819,\n  \"html_url\": \"https://github.com/2lab-ai/soma-work/pull/819\"\n}"
+  },
+  {
+   "expect": "https://github.com/2lab-ai/soma-work/pull/821",
+   "toolName": "Bash",
+   "input": {
+    "command": "cd /private/tmp/U094E5L4A15/session_1793464200130_7902383d && cat > scratch/pr-ro.md <<'EOF'\n## Summary\n\n(… PR body trimmed for the fixture …)\nEOF\nT=$(cat scratch/.tok) && jq -n --rawfile b scratch/pr-ro.md '{title:\"fix(dashboard): a read-only viewer reads the model as the disabled picker — mark, name, level (#813)\", head:\"feat/model-readonly-mark\", base:\"main\", body:$b}' | curl -s -X POST -H \"Authorization: Bearer $T\" -H \"Accept: application/vnd.github+json\" https://api.github.com/repos/2lab-ai/soma-work/pulls -d @- | jq '{number,html_url}'"
+   },
+   "result": "{\n  \"number\": 821,\n  \"html_url\": \"https://github.com/2lab-ai/soma-work/pull/821\"\n}"
+  },
+  {
+   "expect": "https://github.com/2lab-ai/soma-work/pull/823",
+   "toolName": "Bash",
+   "input": {
+    "command": "cd /tmp/U094E5L4A15/session_1793667946797_d4227da9\ncat > scratch/prA-body.md <<'EOF'\n## Summary\n\n(… PR body trimmed for the fixture …)\nEOF\nT=$(cat scratch/.tok); cd soma-work_20261103100643_handoff-resume\ngit push -q https://x-access-token:$T@github.com/2lab-ai/soma-work.git fix/notion-wiki-chip-title 2>&1 | tail -2\nnode -e '\nconst fs=require(\"fs\");const body=fs.readFileSync(\"../scratch/prA-body.md\",\"utf8\");\nfetch(\"https://api.github.com/repos/2lab-ai/soma-work/pulls\",{method:\"POST\",headers:{Authorization:\"Bearer \"+fs.readFileSync(\"../scratch/.tok\",\"utf8\").trim(),Accept:\"application/vnd.github+json\"},body:JSON.stringify({title:\"fix(card-links): a Notion wiki chip is named by the title in its URL, not \\\"Notion\\\"\",head:\"fix/notion-wiki-chip-title\",base:\"main\",body})}).then(r=>r.json()).then(j=>console.log(j.html_url||JSON.stringify(j)))'"
+   },
+   "result": "remote:      https://github.com/2lab-ai/soma-work/pull/new/fix/notion-wiki-chip-title        \nremote: \nhttps://github.com/2lab-ai/soma-work/pull/823"
+  },
+  {
+   "expect": "https://github.com/2lab-ai/ui/pull/17",
+   "toolName": "Bash",
+   "input": {
+    "command": "cd /tmp/U094E5L4A15/session_1793667946797_d4227da9\ncat > scratch/ui-pr-body.md <<'EOF'\n## Summary\n\n(… PR body trimmed for the fixture …)\nEOF\nT=$(cat scratch/.tok); cd ui_20261103_handoff\ngit push -q https://x-access-token:$T@github.com/2lab-ai/ui.git feat/tabs-model-mark-readonly-label 2>&1 | grep -v \"^remote:\\s*$\" | tail -1\nnode -e '\nconst fs=require(\"fs\");const body=fs.readFileSync(\"../scratch/ui-pr-body.md\",\"utf8\");\nfetch(\"https://api.github.com/repos/2lab-ai/ui/pulls\",{method:\"POST\",headers:{Authorization:\"Bearer \"+fs.readFileSync(\"../scratch/.tok\",\"utf8\").trim(),Accept:\"application/vnd.github+json\"},body:JSON.stringify({title:\"feat(ui): 0.24.0 — a tab leads with its model'\"'\"'s mark; a read-only picker is not named as a change (#16)\",head:\"feat/tabs-model-mark-readonly-label\",base:\"main\",body})}).then(r=>r.json()).then(j=>console.log(j.html_url||JSON.stringify(j)))'"
+   },
+   "result": "remote:      https://github.com/2lab-ai/ui/pull/new/feat/tabs-model-mark-readonly-label        \nhttps://github.com/2lab-ai/ui/pull/17"
+  },
+  {
+   "expect": "https://github.com/2lab-ai/soma-work/pull/824",
+   "toolName": "Bash",
+   "input": {
+    "command": "cd /tmp/U094E5L4A15/session_1793667946797_d4227da9\ncat > scratch/prC-body.md <<'EOF'\n## Summary\n\n(… PR body trimmed for the fixture …)\nEOF\nnode -e '\nconst fs=require(\"fs\");const body=fs.readFileSync(\"scratch/prC-body.md\",\"utf8\");\nfetch(\"https://api.github.com/repos/2lab-ai/soma-work/pulls\",{method:\"POST\",headers:{Authorization:\"Bearer \"+fs.readFileSync(\"scratch/.tok\",\"utf8\").trim(),Accept:\"application/vnd.github+json\"},body:JSON.stringify({title:\"test(harness): screenshot-view-mode opens the card'\"'\"'s own detail card; plans pass reads the PR in the 연결 row (#812)\",head:\"fix/view-mode-harness-deck\",base:\"main\",body})}).then(r=>r.json()).then(j=>console.log(j.html_url||JSON.stringify(j)))'"
+   },
+   "result": "https://github.com/2lab-ai/soma-work/pull/824"
+  },
+  {
+   "expect": "https://github.com/2lab-ai/soma-work/pull/826",
+   "toolName": "Bash",
+   "input": {
+    "command": "cd /tmp/U094E5L4A15/session_1793667946797_d4227da9\ncat > scratch/prB-body.md <<'EOF'\n## Summary\n\n(… PR body trimmed for the fixture …)\nEOF\nnode -e '\nconst fs=require(\"fs\");const body=fs.readFileSync(\"scratch/prB-body.md\",\"utf8\");\nfetch(\"https://api.github.com/repos/2lab-ai/soma-work/pulls\",{method:\"POST\",headers:{Authorization:\"Bearer \"+fs.readFileSync(\"scratch/.tok\",\"utf8\").trim(),Accept:\"application/vnd.github+json\"},body:JSON.stringify({title:\"feat(dashboard): each agent tab leads with its model'\"'\"'s mark; Main names its model (#813) — ui 0.24.0\",head:\"feat/agent-tab-model-mark\",base:\"main\",body})}).then(r=>r.json()).then(j=>console.log(j.html_url||JSON.stringify(j)))'\n{ cat <<'EOF'\n# Code review brief — soma-work PR (feat/agent-tab-model-mark): agent tabs show the model's mark; ui 0.24.0\n\n(… PR body trimmed for the fixture …)\nEOF\ncat scratch/prB.diff; echo '```'; } > scratch/review-B.md; wc -c scratch/review-B.md"
+   },
+   "result": "https://github.com/2lab-ai/soma-work/pull/826\n   36116 scratch/review-B.md"
+  }
+ ],
+ "comments": [
+  {
+   "why": "comment on #814",
+   "toolName": "Bash",
+   "input": {
+    "command": "cd /private/tmp/U094E5L4A15/session_1793464200130_7902383d && T=$(cat scratch/.tok) && curl -s -X POST -H \"Authorization: Bearer $T\" -H \"Accept: application/vnd.github+json\" https://api.github.com/repos/2lab-ai/soma-work/issues/814/comments -d \"$(jq -n --arg b \"$(cat <<'EOF'\n**Review gate: fable-zhuge, round 1 on the merged branch. Verdict: APPROVE, nothing blocking.** Fixed in 2f6424c7, each with a test that failed first:\n\n(… PR body trimmed for the fixture …)\nEOF\n)\" '{body:$b}')\" | jq -r .html_url"
+   },
+   "result": "https://github.com/2lab-ai/soma-work/pull/814#issuecomment-6582838752"
+  },
+  {
+   "why": "comment on #819 (and check-runs GET)",
+   "toolName": "Bash",
+   "input": {
+    "command": "cd /private/tmp/U094E5L4A15/session_1793464200130_7902383d && T=$(cat scratch/.tok); curl -s -H \"Authorization: Bearer $T\" \"https://api.github.com/repos/2lab-ai/soma-work/commits/2f6424c71bbe88224977899ccc38879acc952238/check-runs\" | jq -r '.check_runs[] | \"#814 \\(.name) \\(.status) \\(.conclusion)\"'; curl -s -X POST -H \"Authorization: Bearer $T\" -H \"Accept: application/vnd.github+json\" https://api.github.com/repos/2lab-ai/soma-work/issues/819/comments -d \"$(jq -n --arg b '**Review gate (fable-zhuge, round 1): APPROVE, nothing blocking.** All three findings are fixed in 51b452a7, each with a test that failed first.\n\n- **P1:** a subagent whose calls all report zero usage got no model. A short llmux grok or gpt agent is the typical case. It now keeps the model its transcript names.\n- **P2:** spends sealed before #813 had no model, so a session'\"'\"'s tree mixed rows with and without marks. `SPEND_CALC_VERSION` is now 4, so a sealed spend is re-read once on restore.\n- **P2:** the board chip had its own maker classifier. Its `modelVendorOf` now uses the same rules as `@2lab.ai/ui` `modelVendor` (adding `chatgpt` and `xai`). A test runs both over the same ids, with the library version extracted from `dist/model-mark-*.js`.\n\nTests: `src/conversation`, `src/session` and `view-layout` pass 3,359/3,359. `tsc` and `biome` are clean.' '{body:$b}')\" | jq -r .html_url"
+   },
+   "result": "#814 quality-gates in_progress null\n#814 lean-verify completed success\n#814 scan completed success\nhttps://github.com/2lab-ai/soma-work/pull/819#issuecomment-6583196895"
+  },
+  {
+   "why": "commit, push, comment on #821",
+   "toolName": "Bash",
+   "input": {
+    "command": "git add -A src && GIT_COMMITTER_NAME='zhuge-liang-bot[bot]' GIT_COMMITTER_EMAIL='270551642+zhuge-liang-bot[bot]@users.noreply.github.com' GIT_AUTHOR_NAME='zhuge-liang-bot[bot]' GIT_AUTHOR_EMAIL='270551642+zhuge-liang-bot[bot]@users.noreply.github.com' git commit -q -F - <<'EOF'\nfix(review): a read-only viewer still sees a capped level — \"설정 매우 높음 → 실행 높음\" (#821)\n\n(… PR body trimmed for the fixture …)\nEOF\ngit push -q \"https://x-access-token:$(cat ../scratch/.tok)@github.com/2lab-ai/soma-work.git\" HEAD:refs/heads/feat/model-readonly-mark 2>&1 | sed -E 's/gh[sp]_[^ @]+/***/g' | grep -v \"^remote: *$\" | head -2; H=$(git rev-parse HEAD); echo $H; T=$(cat ../scratch/.tok); curl -s -X POST -H \"Authorization: Bearer $T\" -H \"Accept: application/vnd.github+json\" https://api.github.com/repos/2lab-ai/soma-work/issues/821/comments -d \"$(jq -n --arg b \"**Review gate (fable-zhuge, round 1): APPROVE, no P0 or P1.** The review confirmed that the library's \\`disabled\\` state blocks click, keyboard, \\`open\\` and every pick path, so \\`ui-change\\` cannot fire for a non-owner. It also confirmed that the cache key carries the read-only reason, so toggling ownership or admin mode re-renders the picker.\n\n- **P2 (fixed in ${H:0:8}):** a read-only viewer lost the capped level. The trigger shows only the level that actually runs, and the menu cannot open. \\`mpReadOnlyNote\\` now adds \\`· 설정 매우 높음 → 실행 높음\\` to the disabled reason, which is used as the tooltip and the screen-reader text. A test covers this.\n- **Library nit (follow-up in ui):** the disabled trigger's \\`aria-label\\` still ends in \\`— 바꾸기\\`.\n\nTests: \\`src/conversation\\` 3,068/3,068 passed, and \\`tsc\\` and \\`biome\\` are clean.\" '{body:$b}')\" | jq -r .html_url"
+   },
+   "result": "b08ea26e77ec00c0bc6dd43a6011db2262e64d09\nhttps://github.com/2lab-ai/soma-work/pull/821#issuecomment-6584401738"
+  }
+ ]
+}

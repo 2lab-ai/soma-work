@@ -22,10 +22,31 @@ export type ModelCommandId =
   | 'RATE'
   | 'SET_GOAL';
 
+/**
+ * Where the turn runs. `slack` (the default): a Slack thread. `task`: a
+ * Slack-less dashboard task — it has no thread, so the commands that only a
+ * thread can carry out ({@link TASK_UNAVAILABLE_COMMANDS}) are not offered.
+ */
+export type ModelCommandSurface = 'slack' | 'task';
+
+/**
+ * The commands a dashboard task does not have. ASK_USER_QUESTION renders a
+ * Slack form (a task asks with a JSON `user_choice` block in its answer);
+ * CONTINUE_SESSION is not resumed on a task (the runner ends the turn);
+ * SAVE_CONTEXT_RESULT belongs to the Slack `renew` flow.
+ */
+export const TASK_UNAVAILABLE_COMMANDS: readonly ModelCommandId[] = [
+  'ASK_USER_QUESTION',
+  'CONTINUE_SESSION',
+  'SAVE_CONTEXT_RESULT',
+];
+
 export interface ModelCommandContext {
   channel?: string;
   threadTs?: string;
   user?: string;
+  /** Unset reads as `slack`. */
+  surface?: ModelCommandSurface;
   workflow?: WorkflowType;
   renewState?: RenewState;
   session?: SessionResourceSnapshot;

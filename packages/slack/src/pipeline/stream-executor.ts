@@ -56,7 +56,14 @@ import {
   formatResumedGoalLine,
   type GoalQueueSession,
 } from '../session-goal';
-import { type CapturedLink, isCreateCommand, linksCreatedByTools, linksInText } from '../session-link-capture';
+import {
+  type CapturedLink,
+  type GitHubEffect,
+  type GitHubWrite,
+  githubEffectsOf,
+  githubWritesOf,
+  linksInText,
+} from '../session-link-capture';
 import {
   accumulateModelTotals,
   addSessionSpend,
@@ -295,12 +302,29 @@ export interface StreamExecutorProviders {
    */
   notifyLiveUsage?: (sessionKey: string, call?: LiveUsageCall) => void;
   /**
+   * #832 — GitHub as the receipt: of the writes the parser proposes, the ones GitHub confirms (created, merged or
+   * closed inside the call's window; a create also names its head branch or title in the call's input). Only those
+   * reach the card and the metrics. An array is applied at once; a promise when it settles. Must never throw.
+   * Default (no host): every proposal, at once.
+   */
+  confirmGithubEffects?: (args: {
+    effects: ReadonlyArray<GitHubEffect>;
+    startedAt: ReadonlyMap<string, number>;
+    inputs: ReadonlyMap<string, string>;
+    endedAt: number;
+  }) => ReadonlyArray<GitHubEffect> | Promise<ReadonlyArray<GitHubEffect>>;
+  /**
    * Spec 12 — one agent-tree event of this session's turn (a subagent
    * started, listed its tasks, returned, changed task state; the turn ended).
    * The host folds it into the session's agent registry. Must be cheap and
    * never throw. No-op by default.
    */
   recordAgentEvent?: (sessionKey: string, event: AgentTreeEvent) => void;
+  /**
+   * #833 — the turn ended: the host asks GitHub which PRs the session's own branches have and records them on the
+   * card, however they were made. Fire-and-forget; must never throw or block. No-op by default.
+   */
+  reconcileSessionPrs?: (args: { sessionKey: string; session: ConversationSession; workingDirectory: string }) => void;
   /** API-equivalent cost of calls folded from an interrupted turn. 0 by default. */
   priceLiveUsage?: (
     model: string | undefined,
@@ -365,6 +389,8 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   postCompactCompleteIfNeeded: async () => undefined,
   postCompactStartingIfNeeded: async () => undefined,
   notifyLiveUsage: () => {},
+  confirmGithubEffects: ({ effects }) => effects,
+  reconcileSessionPrs: () => {},
   priceLiveUsage: () => 0,
 };
 
@@ -1238,7 +1264,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    */
   /**
    * 세션 링크 자동 기록 (SSOT 2026-11-02): record links a turn names on its session (SessionRegistry.noteSessionLinks —
-   * 'first' a user message, 'always' a PR or issue just created, 'if-empty' a reply). Bookkeeping: never throws.
+   * 'first' a user message, 'always' a PR or issue just created, 'if-empty' a reply, 'update' the state of a PR or issue
+   * just merged or closed, #832). Bookkeeping: never throws.
    */
   private noteLinks(
     session: ConversationSession,
@@ -1246,7 +1273,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     channel: string,
     threadTs: string | undefined,
     links: CapturedLink[],
-    mode: 'first' | 'always' | 'if-empty',
+    mode: 'first' | 'always' | 'if-empty' | 'update',
   ): void {
     if (links.length === 0) return;
     try {
@@ -1264,6 +1291,52 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
     } catch (error) {
       this.logger.debug('Failed to record session links', { sessionKey, error: (error as Error)?.message });
+    }
+  }
+
+  /**
+   * #832 — asks the host which proposed writes GitHub confirms, then records them: the PR metrics always (the user did
+   * the work), the card only while the session is still the one registered under its key (a reset or a replacement
+   * session gets nothing). Once per batch. Bookkeeping: never throws, never blocks the turn.
+   */
+  private confirmAndApplyGithubEffects(
+    args: Parameters<NonNullable<StreamExecutorProviders['confirmGithubEffects']>>[0],
+    session: ConversationSession,
+    sessionKey: string,
+    recordMetrics: (confirmed: ReadonlyArray<GitHubEffect>) => void,
+    noteOnCard: (confirmed: ReadonlyArray<GitHubEffect>) => void,
+  ): void {
+    const settle = (confirmed: ReadonlyArray<GitHubEffect>, late: boolean) => {
+      try {
+        recordMetrics(confirmed);
+        if (late) {
+          const current = this.deps.claudeHandler.getSessionByKey?.(sessionKey);
+          if (current !== session || session.terminated) {
+            this.logger.debug('GitHub receipt arrived after the session changed; not on its card', { sessionKey });
+            return;
+          }
+        }
+        noteOnCard(confirmed);
+      } catch (error) {
+        this.logger.debug('Applying confirmed GitHub writes failed', { sessionKey, error: (error as Error)?.message });
+      }
+    };
+    try {
+      const answer = streamExecutorProviders.confirmGithubEffects(args);
+      if (Array.isArray(answer)) {
+        settle(answer, false);
+        return;
+      }
+      Promise.resolve(answer).then(
+        (confirmed) => settle(Array.isArray(confirmed) ? confirmed : [], true),
+        (error: unknown) => {
+          this.logger.debug('GitHub receipt failed', { sessionKey, error: (error as Error)?.message });
+          settle([], true);
+        },
+      );
+    } catch (error) {
+      this.logger.debug('GitHub receipt threw', { sessionKey, error: (error as Error)?.message });
+      settle([], false);
     }
   }
 
@@ -1859,8 +1932,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       if (session && text && params.isUserInput !== false && params.hostTurn !== true) {
         this.noteLinks(session, sessionKey, channel, threadTs, linksInText(text), followUpTurn ? 'first' : 'if-empty');
       }
-      // The Bash calls of this turn that create a PR or an issue (their results are recorded as the current link).
-      const createCalls = new Set<string>();
+      // The GitHub writes this turn's tool calls make, by tool-use id (#832): read from each call's input, proven by its
+      // result — a create becomes the current link, a merge or close updates a link already on the card.
+      const githubWrites = new Map<string, GitHubWrite[]>();
+      // …and, for GitHub's receipt (#832), a lower bound for when each such call started — this turn's start: the host
+      // reads the SDK's events in turn and can see a call long after it ran (review round 18) — and what its input said.
+      const githubTurnStartedAt = Date.now();
+      const githubWriteStarts = new Map<string, number>();
+      const githubWriteInputs = new Map<string, string>();
 
       this.logger.info('Sending query to Claude Code SDK', {
         prompt: finalPrompt.substring(0, 200) + (finalPrompt.length > 200 ? '...' : ''),
@@ -2013,7 +2092,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // on synthetic/continuation turns (fail closed when text is absent).
         currentUserText: text,
         isCompactTurn: (isSlashCommand && trimmedText.startsWith('/compact')) || Boolean(session.fallbackCompactActive),
-        isUserInputTurn: params.isUserInput === true,
+        // A host turn (a Slack goal replay, a dashboard task's host start — an epic waking, a child
+        // instructed, the goal loop) is soma-work's words, never the person's: it cannot set a goal.
+        isUserInputTurn: params.isUserInput === true && params.hostTurn !== true,
+        ...(taskTurn ? { turnUserId: (params.executionContext as { userId?: string } | undefined)?.userId } : {}),
         incidentAttempt,
         ...(session.conversationId ? { workLog: emitWorkLog } : {}),
         // The ASK_USER_QUESTION form is posted here, not by the processor
@@ -2090,10 +2172,22 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             abortController.abort('ghost-session' satisfies RequestAbortReason);
             return;
           }
-          for (const tu of allToolUses) {
-            if (tu.name === 'Bash' && isCreateCommand((tu.input as { command?: unknown } | undefined)?.command)) {
-              createCalls.add(tu.id);
+          // Bookkeeping (#832): a parser failure must never break the turn.
+          try {
+            for (const tu of allToolUses) {
+              const writes = githubWritesOf(tu.name, tu.input);
+              if (writes.length > 0) {
+                githubWrites.set(tu.id, writes);
+                githubWriteStarts.set(tu.id, githubTurnStartedAt);
+                const input = tu.input as Record<string, unknown> | undefined;
+                githubWriteInputs.set(
+                  tu.id,
+                  typeof input?.command === 'string' ? input.command : JSON.stringify(input ?? {}),
+                );
+              }
             }
+          } catch (error) {
+            this.logger.debug('githubWritesOf failed', { error: (error as Error)?.message });
           }
           // Spec 12 §2.2: what the main agent is doing — the thread header's
           // current tool, the Slack tool rows, the request's tool stats — is
@@ -2200,30 +2294,76 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               // so sink-side lookups stay on one B1 stream handle.
               turnId,
             });
-          // Metrics: detect git/gh commands in Bash output (fire-and-forget) — every agent's.
-          interceptToolResults(
-            allToolResults,
-            session.ownerId,
-            session.ownerName || 'unknown',
-            ctx.sessionKey,
-            // Callback to record merge stats into session
-            (_sessionKey: string, prNumber: number, linesAdded: number, linesDeleted: number) => {
-              if (session.slackless === true) {
-                this.deps.claudeHandler.addMergeStatsByKey(ctx.sessionKey, prNumber, linesAdded, linesDeleted);
-              } else {
-                this.deps.claudeHandler.addMergeStats(ctx.channel, ctx.threadTs, prNumber, linesAdded, linesDeleted);
-              }
-            },
-          );
-          // The PR or issue a `gh pr create` / `gh issue create` just made is the session's current one.
-          this.noteLinks(
-            session,
-            ctx.sessionKey,
-            ctx.channel,
-            ctx.threadTs,
-            linksCreatedByTools(allToolResults, createCalls),
-            'always',
-          );
+          // The GitHub writes these results propose (#832) — one parser for the card and the metrics.
+          let githubEffects: ReturnType<typeof githubEffectsOf> = [];
+          try {
+            githubEffects = githubEffectsOf(allToolResults, githubWrites);
+          } catch (error) {
+            this.logger.debug('githubEffectsOf failed', { error: (error as Error)?.message });
+          }
+          const startedAt = new Map<string, number>();
+          const inputs = new Map<string, string>();
+          for (const tr of allToolResults) {
+            const started = githubWriteStarts.get(tr.toolUseId);
+            const input = githubWriteInputs.get(tr.toolUseId);
+            if (started !== undefined) startedAt.set(tr.toolUseId, started);
+            if (input !== undefined) inputs.set(tr.toolUseId, input);
+            githubWrites.delete(tr.toolUseId);
+            githubWriteStarts.delete(tr.toolUseId);
+            githubWriteInputs.delete(tr.toolUseId);
+          }
+          // Metrics: the git commands in Bash output now (fire-and-forget) — every agent's; the PR effects (pr_created,
+          // pr_merged) when GitHub confirms them, like the card.
+          const recordMetrics = (results: typeof allToolResults, confirmed: ReadonlyArray<GitHubEffect>) => {
+            interceptToolResults(
+              results,
+              session.ownerId,
+              session.ownerName || 'unknown',
+              ctx.sessionKey,
+              // Callback to record merge stats into session
+              (_sessionKey: string, prNumber: number, linesAdded: number, linesDeleted: number) => {
+                if (session.slackless === true) {
+                  this.deps.claudeHandler.addMergeStatsByKey(ctx.sessionKey, prNumber, linesAdded, linesDeleted);
+                } else {
+                  this.deps.claudeHandler.addMergeStats(ctx.channel, ctx.threadTs, prNumber, linesAdded, linesDeleted);
+                }
+              },
+              confirmed,
+            );
+          };
+          recordMetrics(allToolResults, []);
+          const noteOnCard = (confirmed: ReadonlyArray<GitHubEffect>) => {
+            // A PR or issue the session just created is its current one; one it merged or closed shows that state.
+            // (A late answer can land during the next turn: a create then becomes current over that turn's link —
+            // as if the write had been seen then.)
+            this.noteLinks(
+              session,
+              ctx.sessionKey,
+              ctx.channel,
+              ctx.threadTs,
+              confirmed.filter((e) => e.op === 'create').map((e) => e.link),
+              'always',
+            );
+            this.noteLinks(
+              session,
+              ctx.sessionKey,
+              ctx.channel,
+              ctx.threadTs,
+              confirmed
+                .filter((e) => e.op !== 'create')
+                .map((e) => ({ ...e.link, status: e.op === 'merge' ? 'merged' : 'closed' })),
+              'update',
+            );
+          };
+          if (githubEffects.length > 0) {
+            this.confirmAndApplyGithubEffects(
+              { effects: githubEffects, startedAt, inputs, endedAt: Date.now() },
+              session,
+              ctx.sessionKey,
+              (confirmed) => recordMetrics([], confirmed),
+              noteOnCard,
+            );
+          }
           const commandResult = await this.handleModelCommandToolResults(allToolResults, session, ctx, turnEpochToken);
           if (commandResult.hasPendingChoice) {
             toolChoicePending = true;
@@ -3777,6 +3917,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           turnId,
           error: (err as Error)?.message ?? String(err),
         });
+      }
+      // #833 — the PRs GitHub says the session's branches have go on the card, however they were made (REST, the web
+      // UI). On every exit — a PR made before an error or an abort counts. Fire-and-forget; never breaks the turn.
+      if (!session.terminated) {
+        try {
+          streamExecutorProviders.reconcileSessionPrs?.({ sessionKey, session, workingDirectory });
+        } catch (err) {
+          this.logger.debug('stream-executor: reconcileSessionPrs threw', {
+            sessionKey,
+            error: (err as Error)?.message ?? String(err),
+          });
+        }
       }
       // A28: the LAST write this turn makes, and the one most likely to land
       // after `Send now` has already started a new turn — it carries the
@@ -6258,7 +6410,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // S4: honor the per-user max-continuation default on the SET_GOAL
         // host-apply surface too, so a model-set goal gets the same cap a typed
         // `goal max <N>` would apply to new goals.
-        const goalOwner = (session.ownerId as string) || (session.userId as string);
+        // A dashboard task's goal is the turn's user's (its execution context): the goal loop runs its next
+        // turns as the goal's owner, and a user who instructed someone else's task was never given the
+        // owner's identity (#861 R1, astra-zhuge P1). A Slack goal stays the session owner's.
+        const goalOwner =
+          (session.slackless === true && context.turnUserId) ||
+          (session.ownerId as string) ||
+          (session.userId as string);
         const applied = enqueueOrActivateGoal(
           session as unknown as GoalQueueSession,
           objective,
@@ -6344,7 +6502,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         }
 
-        if (hasInstructionOps) {
+        if (hasInstructionOps && byKey) {
+          // The y/n confirmation is a Slack button: a dashboard task has no thread to post it in.
+          // The write is refused visibly (never a Slack call from a task turn — T9).
+          await this.reportModelCommandOutcome(
+            {
+              kind: 'notice',
+              text: '⚠️ Instruction changes were not applied: their y/n confirmation needs a Slack thread, and a dashboard task has none.',
+            },
+            session,
+            context,
+            { alwaysPost: true },
+          );
+        } else if (hasInstructionOps) {
           await this.interceptInstructionOperationsForConfirm(request, session, context);
         }
 
