@@ -48,8 +48,13 @@ const RUN = `goal_${process.pid}_${Math.random().toString(36).slice(2, 8)}`;
 const made: string[] = [];
 afterAll(() => {
   for (const dir of made) fs.rmSync(dir, { recursive: true, force: true });
-  // The fake owner's root too (fable-zhuge #870 R1 P3) — a fake id, never a person's.
-  fs.rmSync(path.join('/tmp', OWNER), { recursive: true, force: true });
+  // The fake owner's root too (fable-zhuge #870 R1 P3) — only when empty: a concurrent run on the same
+  // host (the CI runner is this machine) keeps its own folders there (astra-zhuge #870 R2 P2).
+  try {
+    fs.rmdirSync(path.join('/tmp', OWNER));
+  } catch {
+    // Not empty, or already gone.
+  }
 });
 
 const OBJECTIVE = 'de-aislop #830 완료';
