@@ -66,7 +66,10 @@ export function createEpicTreeGate(deps: EpicTreeGateDeps): EpicTreeGate {
       if (deps.treeCostUsd(epic) >= limit) {
         return `this epic reached its cost limit ($${limit}) — an instruction from its owner still runs`;
       }
-      if (recent(treeId, now()).length >= maxStarts) return 'too many starts in this epic — try again shortly';
+      // Starts still being handed over (`making`) are not recorded yet, but they will be (review #872 R2).
+      if (recent(treeId, now()).length + (start.making ?? 0) >= maxStarts) {
+        return 'too many starts in this epic — try again shortly';
+      }
       if (start.newChild || (start.child && !deps.isRunning(start.child))) {
         const running = deps
           .getChildTasks(treeId)
