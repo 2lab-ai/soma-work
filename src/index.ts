@@ -1510,6 +1510,7 @@ async function start() {
       gate: epicTreeGate,
       consume: (key, ids, by) => epicRegistry.consumeEpicWake(key, ids, by),
       release: (key, by) => epicRegistry.releaseEpicWake(key, by),
+      settle: (key, keep) => epicRegistry.settleEpicWakes(key, keep),
       send: sendAsOwner,
       logger: new Logger('SlackEpicWaker'),
     });
@@ -1530,11 +1531,9 @@ async function start() {
           }
         }
       }
-      if (session.kind === 'epic') {
-        // Its chain ended: the wakes it ran are done (a restart before this delivers them again).
-        epicRegistry.settleEpicWakes(key);
-        slackEpicWaker.wake(key);
-      }
+      // Its chain ended: the wakes it ran are done (a restart before this delivers them again; one still
+      // being sent is kept), then it may wake again.
+      if (session.kind === 'epic') slackEpicWaker.chainEnded(key);
     });
     // E4 ⑥ (.prd/19 D7) — an epic with pending events wakes when it is idle: when a chain
     // of its ends (the controller's onChainEnd, above — the post-drain idle hook fires inside
