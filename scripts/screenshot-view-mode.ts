@@ -16,8 +16,9 @@
  *       artifacts · PR · media
  *   M4  minimal: the open detail card has no 자세히 chip; its top part
  *       (header + surface) is at most 20% of it; Tasks and Chat take the rest
- *       and the composer stays; the section tabs (작업 로그 · 에이전트 트리) and
- *       the agent tabs are hidden
+ *       and the composer stays; the chat is a tab view with the work log
+ *       (대화 · 작업 로그, SSOT 2026-11-03 — no 에이전트 트리); the agent tabs
+ *       are hidden
  *   M5  minimal: a waiting session's question card still answers
  *   M6  the toggle saves the choice per user (PATCH /api/settings/dashboardMode)
  *       and a reload keeps it; advanced shows everything the page showed
@@ -465,6 +466,11 @@ function panelLayout(page: Page) {
         const strip = t?.shadowRoot?.querySelector('[role="tablist"]') as HTMLElement | null;
         return !!strip && strip.checkVisibility();
       })(),
+      // The strip's tabs by id (<ui-tabs>' data-key): 미니멀 conv · log, 어드밴스드 conv · log · tree.
+      sectionTabs: Array.from(
+        document.getElementById('panel-sections')?.shadowRoot?.querySelectorAll('[role="tab"]') ?? [],
+        (b) => (b as HTMLElement).dataset.key ?? '',
+      ),
       controls: vis('panel-controls'),
       composer: vis('pc-composer'),
       titleSub: vis('panel-title-sub'),
@@ -581,7 +587,11 @@ async function scenario(
     `${tag} M4 Tasks and Chat take the body`,
     l1,
   );
-  check(!l1.sectionStrip && !l1.agentTabs, `${tag} M4 minimal hides the section tabs and the agent tabs`, l1);
+  check(
+    l1.sectionStrip && l1.sectionTabs.join() === 'conv,log' && !l1.agentTabs,
+    `${tag} M4 minimal: the chat is a tab view with the work log (대화 · 작업 로그); no agent tabs`,
+    l1,
+  );
   // #805 — the face shows the model as icons only, so the detail card names it: model · effort stay.
   check(
     l1.composer && l1.controls,
@@ -660,7 +670,11 @@ async function scenario(
   await openCard(page, KEY_A);
   const l2 = await panelLayout(page);
   check(!l2.detailChip, `${tag} M6 advanced has no 자세히 chip either (the mode is the switch)`, l2);
-  check(l2.sectionStrip && l2.controls && l2.info, `${tag} M6 advanced detail: section tabs · model · 세션 정보`, l2);
+  check(
+    l2.sectionStrip && l2.sectionTabs.join() === 'conv,log,tree' && l2.controls && l2.info,
+    `${tag} M6 advanced detail: section tabs (대화 · 작업 로그 · 에이전트 트리) · model · 세션 정보`,
+    l2,
+  );
   await page.screenshot({ path: path.join(OUT, `${tag}-5-advanced-detail.png`) });
 
   check(p0.overflow <= 0 && p1.overflow <= 0, `${tag} no horizontal overflow`, [p0.overflow, p1.overflow]);
@@ -712,6 +726,10 @@ function detailState(page: Page) {
       controls: vis('#panel-controls'),
       agentTabs: !!tabsList && tabsList.checkVisibility(),
       sections: !!secList && secList.checkVisibility(),
+      sectionTabs: Array.from(
+        document.querySelector('#panel-sections')?.shadowRoot?.querySelectorAll('[role="tab"]') ?? [],
+        (b) => (b as HTMLElement).dataset.key ?? '',
+      ).join(),
       checklist: vis('#panel-task-list'),
       line: vis('.ptl-line'),
       runs: vis('#panel-tasks .panel-tasks-header') && !vis('#panel-task-list') && !vis('.ptl-line'),
@@ -860,15 +878,21 @@ async function plansPass(browser: import('playwright').Browser, board: unknown) 
           { ...b, links: fo.links },
         );
         check(
-          d.checklist && !d.agentTabs && d.controls && !d.sections && !d.info && d.tasksShare <= 35,
-          `${t} P4 detail: the checklist (≤34%), the model line (#805); no tabs · info`,
+          d.checklist &&
+            !d.agentTabs &&
+            d.controls &&
+            d.sections &&
+            d.sectionTabs === 'conv,log' &&
+            !d.info &&
+            d.tasksShare <= 35,
+          `${t} P4 detail: the checklist (≤34%), the model line (#805), 대화 · 작업 로그; no agent tabs · info`,
           d,
         );
       } else if (mode === 'minimal' && plan === '2') {
         check(!b.star && b.tasks && !b.refs && !b.model, `${t} P3 open card: the task window; no ☆ · links · model`, b);
         check(
-          d.checklist && d.agentTabs && d.controls && !d.sections && !d.info,
-          `${t} P4 detail: the checklist, the agent tabs (subagents), model controls`,
+          d.checklist && d.agentTabs && d.controls && d.sections && d.sectionTabs === 'conv,log' && !d.info,
+          `${t} P4 detail: the checklist, the agent tabs (subagents), model controls, 대화 · 작업 로그`,
           d,
         );
       } else if (mode === 'minimal' && plan === '3') {
@@ -878,8 +902,8 @@ async function plansPass(browser: import('playwright').Browser, board: unknown) 
           b,
         );
         check(
-          d.line && !d.checklist && !d.agentTabs && d.controls,
-          `${t} P4 detail: the task line, folded; the model line (#805)`,
+          d.line && !d.checklist && !d.agentTabs && d.controls && d.sections && d.sectionTabs === 'conv,log',
+          `${t} P4 detail: the task line, folded; the model line (#805), 대화 · 작업 로그`,
           d,
         );
         await page.click('.ptl-line');
@@ -893,7 +917,7 @@ async function plansPass(browser: import('playwright').Browser, board: unknown) 
           { ...b, links: fo.links },
         );
         check(
-          d.open && d.info && d.controls && d.sections && d.agentTabs && d.runs,
+          d.open && d.info && d.controls && d.sections && d.sectionTabs === 'conv,log,tree' && d.agentTabs && d.runs,
           `${t} P4 detail: everything, unfolded`,
           d,
         );
