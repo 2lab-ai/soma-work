@@ -293,6 +293,12 @@ interface SessionInitializerDeps {
    * `handleConcurrency`: a full queue halts the turn before the model runs.
    */
   workQueue?: WorkQueueGate;
+  /**
+   * #854 — the folder a new session placed by its epic works in, checked where it is used: the
+   * resolved folder when it lies inside `user`'s own root, else undefined (the override is then
+   * ignored and the session gets a fresh folder). Absent → no override is ever taken.
+   */
+  placedDirOf?(user: string, dir: string): string | undefined;
 }
 
 /** What the session initializer needs from the work queue. */
@@ -481,7 +487,14 @@ export class SessionInitializer {
 
       // Create session-unique working directory for isolation
       // #854 — an epic's child the epic placed in its own folder works there (the epic's to keep).
-      const placedDir = event.workingDirectoryOverride;
+      const placedDir = event.workingDirectoryOverride
+        ? this.deps.placedDirOf?.(user, event.workingDirectoryOverride)
+        : undefined;
+      if (event.workingDirectoryOverride && !placedDir) {
+        this.logger.warn('A placed folder outside the owner’s root was ignored — a fresh folder instead', {
+          sessionKey,
+        });
+      }
       const sessionDir = placedDir ? undefined : this.deps.workingDirManager.createSessionBaseDir(user);
       if (placedDir) {
         session.sessionWorkingDir = placedDir;

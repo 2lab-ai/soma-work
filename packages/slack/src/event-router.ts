@@ -347,6 +347,27 @@ export function isTaskEntryCandidate(
   return true;
 }
 
+/**
+ * #854 — fields only the host sets on a message it hands to the pipeline itself (the dashboard's
+ * new-task launcher, an epic's tools): the plan and epic switches, an epic child's binding, a
+ * placed working folder. A Slack event never carries them, and one that did is not trusted: the
+ * router drops them before the pipeline sees the event.
+ */
+export const HOST_ONLY_EVENT_FIELDS = [
+  'planModeOverride',
+  'epicOverride',
+  'epicChild',
+  'workingDirectoryOverride',
+] as const;
+
+/** The event without the host-only fields (the same object when it has none). */
+export function withoutHostOnlyFields<T extends object>(event: T): T {
+  if (!event || !HOST_ONLY_EVENT_FIELDS.some((k) => k in event)) return event;
+  const copy = { ...event } as Record<string, unknown>;
+  for (const k of HOST_ONLY_EVENT_FIELDS) delete copy[k];
+  return copy as T;
+}
+
 export class EventRouter {
   private logger = new Logger('EventRouter');
   private cleanupIntervalId: NodeJS.Timeout | null = null;
@@ -360,6 +381,9 @@ export class EventRouter {
     private deps: EventRouterDeps,
     private messageHandler: MessageHandler,
   ) {
+    // #854 — the one door Slack events come in by: fields only the host sets are never taken from one.
+    const handle = messageHandler;
+    this.messageHandler = (event, say) => handle(withoutHostOnlyFields(event), say);
     if (deps.commandDeps) {
       this.commandRouter = eventRouterProviders.createLegacyCommandRouter(deps.commandDeps);
       this.zRouter = new ZRouter({ legacyRouter: this.commandRouter });

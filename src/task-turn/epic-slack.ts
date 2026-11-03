@@ -188,7 +188,6 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
           error: "the child's thread could not be made — nothing changed; try again",
         };
       }
-      deps.gate.record(epic);
       const event: Record<string, unknown> = {
         type: 'message',
         user: epic.ownerId,
@@ -212,6 +211,10 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
         timeoutMs,
         deps.logger,
       );
+      if (result === 'taken') deps.gate.record(epic);
+      // Not taken: no session took the id (a bind that failed after the thread was posted) — it is taken
+      // back, so it does not count against the epic's children (review #872). A timeout may still bind.
+      if (result === 'refused') deps.unreserveEpicChild(epic.taskId, childId);
       deps.logger.info('Epic child made in its own thread', {
         epicTaskId: epic.taskId,
         childId,
@@ -237,13 +240,16 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
       const key = deps.keyOf(child);
       if (!key) return { taken: false, queued: false, reason: 'the child has no Slack thread' };
       const queued = deps.isRunning(key);
-      if (!queued) deps.gate.record(epic);
       const result = await handOver(
         (onAccepted) => deps.sendToThread(key, instruction, { onAccepted, label: '🧩 에픽의 지시' }),
         timeoutMs,
         deps.logger,
       );
-      if (result === 'taken') return { taken: true, queued };
+      if (result === 'taken') {
+        // A start in the tree's window only when it runs now (a queued word takes no new place).
+        if (!queued) deps.gate.record(epic);
+        return { taken: true, queued };
+      }
       return {
         taken: false,
         queued: false,
