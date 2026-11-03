@@ -301,6 +301,10 @@ describe('SET_GOAL on a dashboard task — set, continued by the loop, completed
     await vi.waitFor(atRest, { timeout: 10_000 });
     expect(evals).toHaveLength(2);
     expect(prompts).toHaveLength(2);
+    // Each eval judged its own turn's answer (astra-zhuge #870 R1): the evidence is that chain's final.
+    expect(evals[0]).toContain('골을 설정했습니다');
+    expect(evals[1]).toContain('단계 2 완료');
+    expect(evals[1]).not.toContain('골을 설정했습니다');
 
     // The work log says it all — the owner's instruction, the 🎯 notice, the system's goal turn.
     const conversationId = registry.getSessionByKey(key)!.conversationId!;
