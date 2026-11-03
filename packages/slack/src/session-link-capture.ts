@@ -314,8 +314,8 @@ function commandAt(words: Word[]): number {
     }
     const takesValue = WRAPPERS.get(w);
     if (!takesValue) break;
-    // `command -v gh …` / `-V`: a lookup, nothing runs.
-    if (w === 'command' && /^-[vV]$/.test(words[i + 1]?.value ?? '')) return words.length;
+    // `command -v gh …`, `-pv`: a lookup — any option to `command` is not read.
+    if (w === 'command' && /^-/.test(words[i + 1]?.value ?? '')) return words.length;
     i++;
     while (i < words.length && /^-./.test(words[i].value)) i += takesValue.test(words[i].value) ? 2 : 1;
     if (w === 'timeout' && /^\d+(?:\.\d+)?[smhd]?$/.test(words[i]?.value ?? '')) i++;
@@ -355,17 +355,12 @@ function runOf(words: Word[], at: number): Run {
         .join(' '),
     };
   if (SHELLS.has(name)) {
-    for (let k = at + 1; k < words.length; k++) {
-      const v = words[k].value;
-      if (/^[-+]o$/.test(v)) k++;
-      else if (v.startsWith('--'))
-        return undefined; // `--help`, `--version`, `--noexec`…: not read
-      else if (/^-[A-Za-z]*n/.test(v))
-        return undefined; // `-n`: read, not run
-      else if (/^-[A-Za-z]*c[A-Za-z]*$/.test(v)) return { shell: words[k + 1]?.value ?? '' };
-      else if (!/^[-+]/.test(v)) return SEND; // a script file: what it sends is not visible, its arguments are
-    }
-    return undefined; // reads its script from stdin
+    // `-c` with only harmless letters (`-lc`, `-ec`, `-euxc`); any other option (`-n`, `-o noexec`, `--help`) is not
+    // read; a script file sends what is not visible (its arguments are not read); none reads its script from stdin.
+    const v = words[at + 1]?.value;
+    if (v === undefined) return undefined;
+    if (/^-[eluxa]*c[eluxa]*$/.test(v)) return { shell: words[at + 2]?.value ?? '' };
+    return /^[-+]/.test(v) ? undefined : SEND;
   }
   const lang = langOf(name);
   const inline =
@@ -400,8 +395,10 @@ function heredocKind(head: string): 'shell' | CodeLang | undefined {
   const words = wordsOf(last);
   const at = commandAt(words);
   const name = nameOf(words[at]?.value);
-  // Only a command that reads its program from stdin runs the body; `node render.cjs <<'EOF'` reads data.
-  if (runOf(words, at) !== undefined) return undefined;
+  // Only the interpreter alone (or with `-`) reads its program from the heredoc; with any option (`bash -n`,
+  // `node render.cjs`) the body is data.
+  const rest = words.slice(at + 1).map((w) => w.value);
+  if (rest.length > 1 || (rest.length === 1 && rest[0] !== '-')) return undefined;
   return SHELLS.has(name) ? 'shell' : langOf(name);
 }
 
@@ -414,19 +411,13 @@ function closingBacktick(text: string, from: number): number {
   return -1;
 }
 
-/** First words that only set up the shell: an `&&` after them is still certain to run what follows. */
-const BENIGN = new Set(['cd', 'pushd', 'popd', 'export', 'set', 'umask', 'source', '.', 'mkdir', 'true', ':', 'unset']);
+/** Words that make a shell level control flow: which of its statements run is not read. */
+const CONTROL_WORDS =
+  /^(?:if|then|else|elif|fi|while|until|for|do|done|case|esac|select|function|exit|return|exec|set|trap|break|continue|source|\.|coproc|!|\[\[)$/;
 
 function firstWordOf(text: string): string {
   // A bounded prefix: asked for a statement still being read, too (linear overall).
   return text.trimStart().slice(0, 64).split(/\s/)[0] ?? '';
-}
-
-/** A statement that only assigns variables or sets the shell up (`T=$(cat tok)`, `cd repo`). */
-function benign(text: string): boolean {
-  const words = text.trim().split(/\s+/);
-  const k = words.findIndex((w) => !/^[A-Za-z_]\w*=/.test(w));
-  return k < 0 || BENIGN.has(words[k]);
 }
 
 /**
@@ -445,7 +436,12 @@ function splitShell(
   depth: number,
   out: Statement[],
   inherited = false,
+  top = false,
 ): number {
+  const first = out.length;
+  // Control flow anywhere at this level — a keyword, `||`, `&`, a group, a function, exit / set — makes every statement
+  // at this level (and below) uncertain: which ones run is not read.
+  let complex = false;
   let cur = '';
   // The statement's first characters, kept apart: a substitution asks for its statement's first word while the
   // statement grows — reading `cur` itself each time would be quadratic.
@@ -459,63 +455,49 @@ function splitShell(
   // Inside `${…}`: a substitution there runs only if the expansion needs it (`${x:-$(cmd)}`) — uncertain.
   let braceParam = 0;
   // Inside a function definition's body: it runs only when called — uncertain.
-  let funcDepth = 0;
   let parens = 0;
   let backticks = true;
   let after: string | undefined;
-  let blocks = 0;
-  let dead = false;
-  let chainBenign = true;
-  let pipeUncertain = false;
   let pipeAnd = false;
   /** This level's statements, for the last-chain exemption. */
   const mine: Array<{ st: Statement; after: string | undefined; andOnly: boolean }> = [];
-  const contextOf = (t: string): { uncertain: boolean; andOnly: boolean } => {
-    if (after === '|') return { uncertain: pipeUncertain, andOnly: pipeAnd };
-    const w = firstWordOf(t);
-    const body = blocks > 0 || /^(?:then|do|else|elif)$/.test(w);
-    const hard = inherited || dead || body || funcDepth > 0 || after === '||';
-    const andOnly = !hard && after === '&&' && !chainBenign;
-    return { uncertain: hard || andOnly, andOnly };
+  const contextOf = (_t: string): { uncertain: boolean; andOnly: boolean } => {
+    // After `&&` a statement runs only if everything before it in the chain succeeded.
+    const andOnly = after === '|' ? pipeAnd : after === '&&';
+    return { uncertain: inherited || andOnly, andOnly };
   };
   const flush = (next: string | undefined) => {
     const t = cur;
     cur = '';
     head = '';
+    if (next === '||' || next === '&') complex = true;
     if (!t.trim()) {
-      after = next ?? after;
+      // `a &&\n b`: the newline continues the list — the pending operator stays.
+      if (after !== '&&' && after !== '||' && after !== '|') after = next ?? after;
       return;
     }
     const ctx = contextOf(t);
     const st: Statement = { text: t, depth, ...(ctx.uncertain ? { uncertain: true } : {}) };
     out.push(st);
     mine.push({ st, after, andOnly: ctx.andOnly });
-    const w = firstWordOf(t);
-    if (/^(?:if|while|until|for|case|select)$/.test(w)) blocks++;
-    if (/^(?:fi|done|esac)$/.test(w) || /(?:^|\s)(?:fi|done|esac)\s*$/.test(t)) blocks = Math.max(0, blocks - 1);
-    if (blocks === 0 && !ctx.uncertain && /^(?:exit|return|exec)$/.test(w)) dead = true;
-    // `set -n` / `set -o noexec`: nothing after it runs.
-    if (!ctx.uncertain && /^set\s+(?:-[A-Za-z]*n|-o\s+noexec)\b/.test(t.trim())) dead = true;
-    // A function definition: its body runs only when called.
-    if (/^\s*(?:function\s+[\w-]+(?:\s*\(\s*\))?|[\w-]+\s*\(\s*\))\s*\{?\s*$/.test(t)) funcDepth++;
-    else if (funcDepth > 0 && /^\s*\}\s*$/.test(t)) funcDepth--;
-    if (next !== '|') {
-      pipeUncertain = false;
-      pipeAnd = false;
-    } else if (after !== '|') {
-      pipeUncertain = ctx.uncertain;
-      pipeAnd = ctx.andOnly;
-    }
-    if (next === '&&') chainBenign = chainBenign && benign(t);
-    else if (next === '||') chainBenign = false;
-    else if (next !== '|') chainBenign = true;
+    // A group (`{ …; }`, `( … )`) runs what it holds; a branch, a loop, a function or a jump does not say what runs.
+    const w = firstWordOf(t.replace(/^[\s{(]+/, ''));
+    if (CONTROL_WORDS.test(w) || /^[\s{(]*[\w-]+\s*\(\s*\)/.test(t)) complex = true;
+    if (next !== '|') pipeAnd = false;
+    else if (after !== '|') pipeAnd = ctx.andOnly;
     after = next;
   };
   const finish = () => {
-    // The command's last `&&` chain: a successful result says it ran to the end, so its `&&` statements are certain.
+    if (complex) {
+      for (let k = first; k < out.length; k++) out[k].uncertain = true;
+      return;
+    }
+    // The top-level command's last `&&` chain: a successful tool result says it ran to the end. (A nested script's or
+    // a substitution's status is not the tool's, so it gets no such pass.)
+    if (!top) return;
     for (let k = mine.length - 1; k >= 0; k--) {
       const m = mine[k];
-      if (m.andOnly) delete m.st.uncertain;
+      if (m.andOnly && !inherited) delete m.st.uncertain;
       if (m.after !== '&&' && m.after !== '|') break;
     }
   };
@@ -639,6 +621,12 @@ function splitShell(
       parens++;
     }
     const two = text.slice(i, i + 2);
+    // A lone `&` (not `&&`, `>&`, `&>`, `<&`) runs the command in the background: a separator.
+    if (c === '&' && two !== '&&' && !/[<>&]/.test(text[i - 1] ?? '') && text[i + 1] !== '>') {
+      flush('&');
+      i++;
+      continue;
+    }
     if (c === '\n' || c === ';' || two === '&&' || two === '||' || c === '|') {
       flush(two === '&&' || two === '||' ? two : c === '|' ? '|' : ';');
       i += two === '&&' || two === '||' ? 2 : 1;
@@ -708,7 +696,7 @@ function shellStatements(command: string, depth: number, out: Statement[] = [], 
     i = j;
   }
   const split: Statement[] = [];
-  splitShell(kept.join('\n'), 0, false, depth, split, inherited);
+  splitShell(kept.join('\n'), 0, false, depth, split, inherited, depth === 0 && !inherited);
   const unsure = inherited || split.some((s) => s.uncertain);
   for (const b of bodies) out.push(unsure ? { ...b, uncertain: true } : b);
   out.push(...split);
@@ -777,7 +765,8 @@ const CLIENTS: Record<string, ClientSpec> = {
   curl: {
     short: {
       ...roles('flag', 's S L k i v f N q g Z 0 1 2 3 4 6 j J O R # l n B p'),
-      ...roles('value', 'H u A e b c o w T x K E r m y Y z C U Q t'),
+      ...roles('value', 'H u A e b c o w T x E r m y Y z C U Q t'),
+      K: 'bail',
       G: 'get',
       I: 'head',
       d: 'data',
@@ -792,7 +781,7 @@ const CLIENTS: Record<string, ClientSpec> = {
       ),
       ...roles(
         'value',
-        '--header --user --user-agent --referer --cookie --cookie-jar --output --write-out --upload-file --url-query --proxy --proxy-user --proxy-header --config --cert --key --cacert --capath --range --max-time --connect-timeout --retry --retry-delay --retry-max-time --oauth2-bearer --max-redirs --resolve --connect-to --interface --limit-rate --stderr --trace --trace-ascii --dump-header --etag-save --etag-compare --variable --max-filesize --speed-limit --speed-time --keepalive-time --dns-servers --proto --proto-redir --noproxy --unix-socket --aws-sigv4',
+        '--header --user --user-agent --referer --cookie --cookie-jar --output --write-out --upload-file --url-query --proxy --proxy-user --proxy-header --cert --key --cacert --capath --range --max-time --connect-timeout --retry --retry-delay --retry-max-time --oauth2-bearer --max-redirs --resolve --connect-to --interface --limit-rate --stderr --trace --trace-ascii --dump-header --etag-save --etag-compare --variable --max-filesize --speed-limit --speed-time --keepalive-time --dns-servers --proto --proto-redir --noproxy --unix-socket --aws-sigv4',
       ),
       ...roles('data', '--data --data-raw --data-binary --data-urlencode --data-ascii --json --form --form-string'),
       '--request': 'method',
@@ -800,6 +789,7 @@ const CLIENTS: Record<string, ClientSpec> = {
       '--head': 'head',
       '--url': 'url',
       '--next': 'bail',
+      '--config': 'bail',
     },
   },
   gh: {
@@ -1135,7 +1125,9 @@ const MAX_CALL_LENGTH = 8000;
  * spelled inside another URL's query, a template, or a longer path.
  */
 const DESTINATION =
-  /^(?:(?:https?:\/\/)?api\.github\.com)?\/?repos\/([\w.-]+)\/([\w.-]+)\/(pulls|issues)(?:\/(\d+)(?:\/(merge))?)?\/?(?:[?#][^\s]*)?$/;
+  /^(?:(?:https?:\/\/)?api\.github\.com\/|\/)?repos\/([\w.-]+)\/([\w.-]+)\/(pulls|issues)(?:\/(\d+)(?:\/(merge))?)?\/?(?:[?#][^\s]*)?$/;
+/** A code client's destination is an absolute URL: a bare path means another host (or the page's own). */
+const ABSOLUTE = /^https:\/\/api\.github\.com\//;
 
 /** One argument or one object property value, as the grammar reads it. */
 type Value =
@@ -1267,7 +1259,8 @@ function methodValue(v: Value | undefined): string | null | undefined {
 }
 
 /** The PR and issue write a whole destination names under a method. */
-function writeAt(dest: string | undefined, verb: string | null | undefined): GitHubWrite | undefined {
+function writeAt(dest: string | undefined, verb: string | null | undefined, absolute = false): GitHubWrite | undefined {
+  if (absolute && !ABSOLUTE.test(dest ?? '')) return undefined;
   const m = dest?.match(DESTINATION);
   if (!m) return undefined;
   const w = verb ? writeOf(m, verb) : undefined;
@@ -1288,7 +1281,14 @@ function fetchWrite(args: Arg[]): GitHubWrite | undefined {
   }
   if (init !== undefined && (init.kind !== 'object' || init.open)) return undefined;
   const method = init?.kind === 'object' ? methodValue(init.props.get('method')) : undefined;
-  return writeAt(str(target), method === undefined ? 'GET' : method);
+  return writeAt(str(target), method === undefined ? 'GET' : method, true);
+}
+
+/** Whether a `data` argument sends a body: given, and not `None` (unknown values are not read as a body). */
+function sendsData(v: Value | undefined): boolean | undefined {
+  if (v === undefined) return false;
+  if (v.kind === 'other') return v.text.trim() === 'None' ? false : undefined;
+  return true;
 }
 
 /** `urlopen(url[, data])` / `urlopen(Request(url, data=…, method=…))`: POST when data is given, unless a method is. */
@@ -1300,11 +1300,17 @@ function urlopenWrite(args: Arg[]): GitHubWrite | undefined {
     const inner = target.args;
     const url = str(positional(inner)[0]?.value ?? keyword(inner, 'url'));
     const method = methodValue(keyword(inner, 'method'));
-    const data = positional(inner).length > 1 || keyword(inner, 'data') !== undefined;
-    return writeAt(url, method === undefined ? (data ? 'POST' : 'GET') : method);
+    return writeAt(
+      url,
+      method === undefined
+        ? sendsData(positional(inner)[1]?.value ?? keyword(inner, 'data'))
+          ? 'POST'
+          : 'GET'
+        : method,
+      true,
+    );
   }
-  const data = args.length > 1;
-  return writeAt(str(target), data ? 'POST' : 'GET');
+  return writeAt(str(target), sendsData(positional(args)[1]?.value ?? keyword(args, 'data')) ? 'POST' : 'GET', true);
 }
 
 /** `requests.post(url, …)` / `requests.post(url=url, …)` / `requests.request("POST", url)` (also httpx). */
@@ -1312,23 +1318,23 @@ function requestsWrite(name: string, args: Arg[]): GitHubWrite | undefined {
   const pos = positional(args);
   if (name === 'request') {
     const method = methodValue(pos[0]?.value ?? keyword(args, 'method'));
-    return writeAt(str(pos[1]?.value ?? keyword(args, 'url')), method);
+    return writeAt(str(pos[1]?.value ?? keyword(args, 'url')), method, true);
   }
-  return writeAt(str(pos[0]?.value ?? keyword(args, 'url')), name.toUpperCase());
+  return writeAt(str(pos[0]?.value ?? keyword(args, 'url')), name.toUpperCase(), true);
 }
 
 /** `axios.post(url, …)`, `axios(config)`, `axios(url, config)`, `axios.request(config)`. */
 function axiosWrite(name: string, args: Arg[]): GitHubWrite | undefined {
   const pos = positional(args);
   if (pos.length !== args.length || pos.length === 0) return undefined;
-  if (name !== 'axios' && name !== 'request') return writeAt(str(pos[0].value), name.toUpperCase());
+  if (name !== 'axios' && name !== 'request') return writeAt(str(pos[0].value), name.toUpperCase(), true);
   const [a, b] = [pos[0].value, pos[1]?.value];
   const config = a.kind === 'object' ? a : b;
   if (config && (config.kind !== 'object' || config.open)) return undefined;
   if (a.kind === 'object' && pos.length > 1) return undefined;
   const url = a.kind === 'string' ? a.value : config?.kind === 'object' ? str(config.props.get('url')) : undefined;
   const method = config?.kind === 'object' ? methodValue(config.props.get('method')) : undefined;
-  return writeAt(url, method === undefined ? 'GET' : method);
+  return writeAt(url, method === undefined ? 'GET' : method, true);
 }
 
 /** `https.request({ hostname: "api.github.com", path, method }, …)` or `https.request(url, { method }, …)`. */
@@ -1342,8 +1348,14 @@ function nodeRequestWrite(args: Arg[]): GitHubWrite | undefined {
     return writeAt(str(a.props.get('path')), method === undefined ? 'GET' : method);
   }
   if (a?.kind === 'string' && (b === undefined || (b.kind === 'object' && !b.open))) {
+    if (
+      b?.kind === 'object' &&
+      ['host', 'hostname', 'path', 'port', 'protocol', 'socketPath'].some((k) => b.props.has(k))
+    ) {
+      return undefined;
+    }
     const method = b?.kind === 'object' ? methodValue(b.props.get('method')) : undefined;
-    return writeAt(a.value, method === undefined ? 'GET' : method);
+    return writeAt(a.value, method === undefined ? 'GET' : method, true);
   }
   return undefined;
 }
@@ -1392,10 +1404,14 @@ function certainCalls(masked: string, lang: CodeLang): (at: number) => boolean {
   depth[masked.length] = d;
   const js = /=>|&&|\|\||\?|\b(?:if|else|while|for|do|switch|case|function|return|catch|yield)\b/;
   const py = /\b(?:lambda|if|else|elif|and|or|while|for|def|class|return|yield|except|try)\b/;
+  // Code after an exit or a throw may never run.
+  const stop = masked.search(/\b(?:process\.exit|process\.kill|throw|sys\.exit|os\._exit|exit|quit)\b/);
   return (at: number) => {
-    if (depth[at] !== 0) return false;
+    if (depth[at] !== 0 || (stop >= 0 && stop < at)) return false;
+    // A JS statement runs to `;` or a brace (a condition on the line before still governs it); Python's to the line end.
+    const ends = lang === 'py' ? /[;\n]/ : /[;{}]/;
     let k = at - 1;
-    while (k >= 0 && !/[;\n{}]/.test(masked[k])) k--;
+    while (k >= 0 && !ends.test(masked[k])) k--;
     const prefix = masked.slice(k + 1, at);
     if (lang === 'py') {
       // An indented line is inside a block.
@@ -1435,6 +1451,12 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
       /^(?:execSync|exec|system|popen|getoutput|getstatusoutput|run|call|check_call|check_output|Popen)$/.test(name) ||
       /^(?:requests|httpx|axios|got|ky|superagent)\.$/.test(chain);
     if (!known || !certain(m.index ?? 0)) continue;
+    // A sender the code defines itself (`const fetch = …`, `requests = Mock()`, `import x as fetch`) is not the client.
+    const root = (chain.split('.')[0] || name).replace(/[^\w$]/g, '');
+    const defines = new RegExp(`\\b(?:function|const|let|var|class|def)\\s+${root}\\b|\\b${root}\\s*=(?!=)`);
+    const alias = new RegExp(`\\bas\\s+${root}\\b`);
+    const knownAlias = new RegExp(`\\bimport\\s+(?:urllib\\.request|requests|httpx|subprocess|os)\\s+as\\s+${root}\\b`);
+    if (defines.test(masked) || (alias.test(masked) && !knownAlias.test(masked))) continue;
     const args = argsOf(lexed, open);
     if (!args) continue;
     const dotted = (m.index ?? 0) > 0 && masked[(m.index ?? 0) - 1] === '.';
@@ -1454,7 +1476,7 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
     )
       w = axiosWrite(name, args);
     else if (/^(?:got|ky|superagent)\.$/.test(chain) && /^(?:get|post|put|patch|delete)$/.test(name))
-      w = writeAt(str(positional(args)[0]?.value), name.toUpperCase());
+      w = writeAt(str(positional(args)[0]?.value), name.toUpperCase(), true);
     else if ((chain === 'https.' || chain === 'http.') && name === 'request') w = nodeRequestWrite(args);
     else if (name === 'request') w = routeWrite(args);
     if (w) out.push(w);
@@ -1714,15 +1736,26 @@ function linkOf(repo: string, kind: 'pr' | 'issue', number: number): CapturedLin
  * create, a listing, a failed create — is ambiguous and proves none. gh's "already exists" (a failed create that
  * prints the existing PR's URL) proves none.
  */
+/** Whether two repos may be the same (an unnamed repo — `gh pr create` in a checkout — may be any). */
+const sameRepo = (a?: string, b?: string) => !a || !b || a === b;
+
+/**
+ * Whether another GitHub request in the same call — any kind, any op — may target `w`'s repo. Its response could be
+ * what the result shows (an issues GET returns PRs too), so `w` is not proven.
+ */
+function crowded(w: GitHubWrite, ws: ReadonlyArray<GitHubWrite>, alsoOk: (o: GitHubWrite) => boolean): boolean {
+  return ws.some((o) => o !== w && !alsoOk(o) && sameRepo(o.repo, w.repo));
+}
+
 function createEffects(ws: ReadonlyArray<GitHubWrite>, idx: ResultIndex): GitHubEffect[] {
-  if (/already exists/i.test(idx.text)) return [];
+  // gh's failed create prints the existing PR's URL after "already exists".
+  if (/^[^{"\n]*already exists/im.test(idx.text)) return [];
   const out: GitHubEffect[] = [];
   for (const kind of ['pr', 'issue'] as const) {
     const creates = ws.filter((w) => w.op === 'create' && w.kind === kind);
     if (creates.length === 0) continue;
-    // A read of the same kind and repo beside the creates: its object could be the one the result shows.
-    const near = (a?: string, b?: string) => !a || !b || a === b;
-    if (ws.some((r) => r.op === 'read' && r.kind === kind && creates.some((c) => near(c.repo, r.repo)))) continue;
+    // Only creates of this kind may share the call with them: any other request to the repo makes them ambiguous.
+    if (creates.some((c) => crowded(c, ws, (o) => o.op === 'create' && o.kind === kind))) continue;
     const seen = new Set<string>();
     const objects = idx.objects.filter((o) => {
       const key = o.url.toLowerCase();
@@ -1805,7 +1838,12 @@ export function githubEffectsOf(
     const idx = indexResult(text);
     for (const e of createEffects(ws, idx)) add(e);
     const merges = ws.filter((x) => x.op === 'merge').length;
-    for (const w of ws) if (w.op !== 'create') add(effectOf(w, idx, w.op === 'merge' ? merges : 0));
+    for (const w of ws) {
+      if (w.op === 'create' || w.op === 'read') continue;
+      // A merge, close or PATCH is proven only when it is the call's one request to its repo.
+      if (crowded(w, ws, () => false)) continue;
+      add(effectOf(w, idx, w.op === 'merge' ? merges : 0));
+    }
   }
   return out;
 }

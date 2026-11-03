@@ -451,10 +451,9 @@ describe('W6 — review round 7 (astra-zhuge)', () => {
           'X could not close a/b#30\n✓ Closed issue a/b#31 (y)',
         ),
       ).map(short),
-    ).toEqual([
-      ['merge', 'pr', 'https://github.com/a/b/pull/13'],
-      ['close', 'issue', 'https://github.com/a/b/issues/31'],
-    ]);
+      // Two merges (or closes) of one repo in one call: either output could be the other's — neither is proven (a
+      // miss, which the turn-end check backs). A single one is proven by its own line (W5).
+    ).toEqual([]);
     // Two REST merges, one `"merged": true`: which one is unknown, so neither is recorded.
     expect(
       effectsOf(
@@ -774,7 +773,8 @@ describe('W9 — the strict grammar (review round 10, astra-zhuge sweep)', () =>
           'X Pull request a/b#12 is not mergeable\n✓ Squashed and merged pull request a/b#13 (Fix incorrectly merged pull request a/b#12)',
         ),
       ).map(short),
-    ).toEqual([['merge', 'pr', 'https://github.com/a/b/pull/13']]);
+      // gh's line counts at a line start only — and with two merges of one repo in the call, not at all.
+    ).toEqual([]);
     expect(
       effectsOf(
         bash(
@@ -857,6 +857,83 @@ describe('W10 — review round 10, the rest of the sweep (astra-zhuge)', () => {
   });
 });
 
+describe('W11 — review round 11 (astra-zhuge, grok-elon)', () => {
+  const U = 'https://github.com/a/b/pull/12';
+  const P = 'https://api.github.com/repos/a/b/pulls';
+  const pr12 = '{"number":12,"html_url":"https://github.com/a/b/pull/12"}';
+
+  it('shell: one control-flow construct makes its level unread; && after a newline keeps its operator; nested levels get no last-chain pass', () => {
+    expect(
+      effectsOf(
+        bash(`false &&\n gh pr create -R a/b --fill\nprintf '%s\\n' ${U}`, U),
+        bash(`if false; then echo fi; gh pr create -R a/b --fill; fi; printf '%s\\n' ${U}`, U),
+        bash(`{ if false; then gh pr create -R a/b --fill; fi; }; printf '%s\\n' ${U}`, U),
+        bash(`f() { gh pr create -R a/b --fill; }; printf '%s\\n' ${U}`, U),
+        bash(`cd /nonexistent && gh pr create -R a/b --fill; printf '%s\\n' ${U}`, U),
+        bash(`bash -c 'false && gh pr create -R a/b --fill'; printf '%s\\n' ${U}`, U),
+        bash(`bash -n <<'EOF'\ngh pr create -R a/b --fill\nEOF\nprintf '%s\\n' ${U}`, U),
+        bash(`bash -o noexec -c 'gh pr create -R a/b --fill'; printf '%s\\n' ${U}`, U),
+        bash(`command -pv gh pr create -R a/b; printf '%s\\n' ${U}`, U),
+      ),
+    ).toEqual([]);
+  });
+
+  it('code: a condition on the line before, an exit before the call, a shadowed sender', () => {
+    expect(
+      effectsOf(
+        bash(`node -e 'if (false)\nfetch("${P}", {method:"POST"}); console.log("${U}")'`, U),
+        bash(`node -e 'false &&\nfetch("${P}", {method:"POST"}); console.log("${U}")'`, U),
+        bash(`node -e 'console.log("${U}"); process.exit(0); fetch("${P}", {method:"POST"})'`, U),
+        bash(`node -e 'const fetch = () => {}; fetch("${P}", {method:"POST"}); console.log("${U}")'`, U),
+        bash(`python3 -c 'requests = None; requests.post("${P}"); print("${U}")'`, U),
+      ),
+    ).toEqual([]);
+  });
+
+  it('clients: urlopen with a timeout or None sends no body; curl --config; https.request options override the URL; a destination needs its slash', () => {
+    const list = `[${pr12}]`;
+    expect(
+      effectsOf(
+        bash(`python3 -c 'from urllib.request import urlopen; r = urlopen("${P}", timeout=10); print(r.read())'`, list),
+        bash(`python3 -c 'from urllib.request import urlopen; r = urlopen("${P}", None); print(r.read())'`, list),
+        bash(`curl --config - -d x ${P}`, pr12),
+        bash(`node -e 'https.request("${P}", { hostname: "localhost", method: "POST" })'; printf '%s\\n' ${U}`, U),
+        bash(`curl -s -X POST https://api.github.comrepos/a/b/pulls -d @p`, pr12),
+        bash(`node -e 'fetch("/repos/a/b/pulls", {method:"POST"})'; printf '%s\\n' ${U}`, U),
+      ),
+    ).toEqual([]);
+  });
+
+  it('receipts: another request to the repo in the call — a PATCH, a read, an issues GET that returns a PR — proves nothing', () => {
+    expect(
+      effectsOf(
+        bash(
+          `curl -s -X POST ${P} -d @p; gh api -X PATCH repos/a/b/pulls/12 -f title=x`,
+          `{"message":"Validation Failed"}\n{"number":12,"html_url":"https://github.com/a/b/pull/12","state":"open"}`,
+        ),
+        bash(
+          'gh api repos/a/b/issues/30; gh api -X PATCH repos/a/b/issues/30 -f state=closed',
+          '{"number":30,"html_url":"https://github.com/a/b/issues/30","state":"closed"}\n{"message":"Not Found"}',
+        ),
+        bash(
+          'gh pr merge 12 -R a/b --squash; gh pr view 12 -R a/b --json body --jq .body',
+          'X Pull request a/b#12 is not mergeable\nMerged pull request a/b#12 (quoted in a body)',
+        ),
+        bash(`gh api repos/a/b/issues/12; curl -s -X POST ${P} -d @p`, `${pr12}\n{"message":"Validation Failed"}`),
+      ),
+    ).toEqual([]);
+    // A create whose title says "already exists" is still a create.
+    expect(
+      effectsOf(
+        bash(
+          `curl -s -X POST ${P} -d @p`,
+          '{"number":13,"title":"Warn when a branch already exists","html_url":"https://github.com/a/b/pull/13"}',
+        ),
+      ).map(short),
+    ).toEqual([['create', 'pr', 'https://github.com/a/b/pull/13']]);
+  });
+});
+
 describe('githubEffectsOf — every spelling of a create', () => {
   it('W4 — gh pr create and gh issue create (the output ends with the new URL)', () => {
     expect(
@@ -896,7 +973,7 @@ describe('githubEffectsOf — every spelling of a create', () => {
     expect(
       effectsOf(
         bash(
-          `bash -lc 'cd x && curl -s -X POST https://api.github.com/repos/a/b/pulls -d @p.json | jq -r .html_url'`,
+          `bash -lc 'curl -s -X POST https://api.github.com/repos/a/b/pulls -d @p.json | jq -r .html_url'`,
           'https://github.com/a/b/pull/50',
         ),
         bash('sh -c "gh pr create --fill"', 'https://github.com/a/b/pull/51\n'),
@@ -928,10 +1005,6 @@ describe('githubEffectsOf — every spelling of a create', () => {
           'eval "curl -s -X POST https://api.github.com/repos/a/b/pulls -d @p.json" | jq -r .html_url',
           'https://github.com/a/b/pull/58',
         ),
-        bash(
-          'if curl -sf -X POST https://api.github.com/repos/a/b/issues -d @i.json -o out.json; then jq -r .html_url out.json; fi',
-          'https://github.com/a/b/issues/59',
-        ),
       ).map(short),
     ).toEqual([
       ['create', 'pr', 'https://github.com/a/b/pull/50'],
@@ -943,7 +1016,6 @@ describe('githubEffectsOf — every spelling of a create', () => {
       ['create', 'issue', 'https://github.com/a/b/issues/56'],
       ['create', 'pr', 'https://github.com/a/b/pull/57'],
       ['create', 'pr', 'https://github.com/a/b/pull/58'],
-      ['create', 'issue', 'https://github.com/a/b/issues/59'],
     ]);
   });
 
