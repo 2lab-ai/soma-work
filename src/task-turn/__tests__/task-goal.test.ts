@@ -88,6 +88,25 @@ describe('G2–G5 — a task chain that ended settles its goal', () => {
     expect(settle).toHaveBeenCalledWith('task:a');
   });
 
+  it('G2b: a turn that left no text is stashed as none — the loop resumes the work instead of re-judging older text (as Slack)', () => {
+    const session = taskWithGoal({ goalLastTurnText: 'phase 1 done' });
+    (session.goal as { lastAssistantTurnSummary?: string }).lastAssistantTurnSummary = 'phase 1 done';
+    const settle = vi.fn();
+    settleTaskGoal({
+      session,
+      sessionKey: 'task:a',
+      turnText: '',
+      shuttingDown: false,
+      summaryMax: 99,
+      settle,
+      save: vi.fn(),
+    });
+    // The loop's "no turn text" path (#746) reads '' — the older text would be judged again and called a stall.
+    expect(session.goalLastTurnText).toBe('');
+    expect(session.goal?.lastAssistantTurnSummary).toBe('');
+    expect(settle).toHaveBeenCalledWith('task:a');
+  });
+
   it('G3: a turn another goal (or an older epoch) owned is not credited — the loop still wakes', () => {
     const session = taskWithGoal({ activeLegGoalEpoch: 2 });
     const settle = vi.fn();
