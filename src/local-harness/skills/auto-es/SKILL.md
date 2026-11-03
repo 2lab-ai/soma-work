@@ -113,4 +113,7 @@ summary fork's prompt after the es mode template. The fork writes the document w
 the card side itself — it puts the TL;DR on the card and derives the NEEDS YOU follow-up from the ⚠️ line. Links reach
 the card from the session's own capture, so the document must still carry full URLs.
 
-In a turn where Path A already wrote the card (§Card sync), that turn's host summary leaves the card as it is.
+In a turn where Path A already wrote the card (§Card sync), the host does not run its summary for that turn (#846):
+the card and the thread head keep the TL;DR this skill wrote. When the turn took in a message the user sent while it
+ran, the host summary runs after all and judges the whole turn. The next input clears the mark, so the next turn is
+summarized again.
