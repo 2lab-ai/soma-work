@@ -47,8 +47,15 @@ An **own artifact** is an issue, PR or document this session created (not one it
 | Kind | Complete | Unfinished (examples) |
 |---|---|---|
 | PR | **Merged**, or **Closed** on purpose with the reason stated (superseded by #N, dropped by decision) | Open, Draft, review requested, changes requested, approved-but-unmerged, CI failing/pending, merge conflict, blocked by branch protection |
-| Issue | **Closed** (completed, or not planned with the reason stated) | Open, waiting on QA / deploy / another PR / a decision |
+| Issue | **Closed** (completed, or not planned with the reason stated) — or a **hand-off issue** (below) once filed and linked | Open, waiting on QA / deploy / another PR / a decision the request needs |
 | Document | Published where the user reads it (uploaded, linked, merged) | Draft only on local disk, upload failed, link dead |
+
+Two things are never unfinished, so they never get a ⚠️ line or a follow-up block:
+
+- **A hand-off issue.** This is an issue the session filed to carry work outside the request it was asked to do, and the report names it as such ("follow-up", "후속"). For this session it is complete once it is filed and linked: its job here was to be recorded. List it in Status with the state you last saw (Open while it waits). There is no ⚠️ line and no follow-up block. If the user wants it done, they say so ("873 진행"), and that is a new request.
+- **What the user ended or declined.** The user may say "여기까지해", "stop here", "skip that" or "그건 생략". The step they declined, and anything that waits only on it, is not a blocker. Say it was skipped by the user's decision, on a plain line that quotes their words (skipped — user: "여기까지해"), so a reader can tell a real stop from a misread reply. Without this rule a finished session stays waiting (NEEDS YOU, 입력 대기) for work the user already let go.
+
+A hand-off issue is not a way out. The request's own deliverable stays unfinished until it is done, unless the user ended that very work: the PR that fixes what was asked, the issue it closes, the deploy it needs. An issue filed for the request's own remaining work is not a hand-off issue. It stays Open, it is unfinished, and it gets the ⚠️ line. Calling that work a follow-up does not complete it.
 
 When **any** own artifact is unfinished, three things are mandatory — in Path A and Path B alike:
 
