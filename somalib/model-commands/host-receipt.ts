@@ -73,6 +73,18 @@ export function withAck(
   return kept.length ? Object.fromEntries(kept) : undefined;
 }
 
+/**
+ * #881 B1 — when the model-command server issued a write: its `receiptId` is `r_<Date.now() base 36>_…`. The host
+ * applies a write late (~20 s when busy), so this — not the apply time — is when the model made it.
+ */
+export function receiptIssuedAt(receiptId: unknown): number | undefined {
+  if (typeof receiptId !== 'string') return undefined;
+  const m = /^r_([0-9a-z]+)_/.exec(receiptId);
+  if (!m) return undefined;
+  const t = Number.parseInt(m[1], 36);
+  return Number.isFinite(t) && t > 0 ? t : undefined;
+}
+
 /** The receipt file of a session: one per session key, a hash so any key is a safe file name. */
 export function hostReceiptPath(dataDir: string, sessionKey: string): string {
   const name = createHash('sha256').update(sessionKey).digest('hex').slice(0, 24);

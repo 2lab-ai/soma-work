@@ -214,6 +214,20 @@ export function esWroteCardThisTurn(session: object): boolean {
 }
 
 /**
+ * #881 B1 — did this turn fold in a steered send the es could not have had? Only a send pushed at or after the es
+ * write was issued (`executiveSummary.issuedAt`, from its receiptId) re-opens the verdict; one pushed before it was
+ * already in the turn the es judged. Unknown either way (no issue time, or a send this process did not push) →
+ * re-judge, as before #881.
+ */
+export function steerAfterEs(session: object, pushedAt: ReadonlyArray<number | undefined>): boolean {
+  if (pushedAt.length === 0) return false;
+  const es = (session as { executiveSummary?: { source?: unknown; issuedAt?: unknown } }).executiveSummary;
+  if (es?.source !== 'es' || typeof es.issuedAt !== 'number') return true;
+  const issuedAt = es.issuedAt;
+  return pushedAt.some((at) => at === undefined || at >= issuedAt);
+}
+
+/**
  * #846 — input reached the model after this turn's es wrote the card (a steered message): the es verdict no longer
  * covers the turn. Drops the marker only; the TL;DR stays until the turn-end summary decides again.
  */
