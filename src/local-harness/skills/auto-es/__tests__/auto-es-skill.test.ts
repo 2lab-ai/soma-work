@@ -127,3 +127,15 @@ describe('T9 — the turn-end summary runs this skill', () => {
     expect(turnEnd).not.toMatch(/\b(GET_SESSION|UPDATE_SESSION)\b/);
   });
 });
+
+describe('Card sync — the host receipt (#846 item 2)', () => {
+  const skill = readFileSync(resolve(__dirname, '..', 'SKILL.md'), 'utf8');
+  const sync = skill.slice(skill.indexOf('## Card sync'), skill.indexOf('## Card check'));
+  it('verifies against payload.host: TL;DR, follow-up, pending, failed write', () => {
+    expect(sync).toContain('`payload.host`');
+    expect(sync).toContain('`host.tldr`');
+    expect(sync).toContain('`host.followUp`');
+    expect(sync).toMatch(/`hostPending: true`/);
+    expect(sync).toMatch(/`host\.lastWrite\.ok === false`/);
+  });
+});

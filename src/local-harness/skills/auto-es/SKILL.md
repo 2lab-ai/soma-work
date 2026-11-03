@@ -84,13 +84,21 @@ same turn:
    - `title` — when the session still has a stand-in title or the work's subject changed (≤ 100 chars).
    - `executiveSummary: { tldr: [line1, line2, line3] }` — the same TL;DR lines the document opens with, ⚠️ line
      included. This is what puts the TL;DR on the card and what keeps the card in NEEDS YOU.
-3. `GET_SESSION` again — verify: every own artifact is listed with the state you wrote. `prs: []` after you created
-   a PR is an alarm: fix the write before you finish. Write full URLs in the document too (short refs like `#830` are
-   not captured).
-   - Limit: `GET_SESSION` answers from the model-command server's own copy, not the host's. A write the host could
-     not apply shows up in the thread as `⚠️ Session update could not be applied on host (<reason>)` — when you see
-     it, the card did not change: retry once without `expectedSequence`, then say in the document that the card is
-     stale. The TL;DR and follow-up are not in `GET_SESSION` at all; the dashboard card is their only receipt.
+3. `GET_SESSION` again — verify against `payload.host`, the host's receipt (#846): every own artifact is in
+   `host.session` with the state you wrote, `host.tldr` is your TL;DR, and `host.followUp` is your ⚠️ reason when
+   you wrote one. `prs: []` after you created a PR is an alarm: fix the write before you finish. Write full URLs in
+   the document too (short refs like `#830` are not captured).
+   - `host` is the host's state at the turn start and right after each of your writes. A link the host noted on its
+     own since then (a PR it saw you open) can be missing until your next write — that is not a failed write.
+   - `hostPending: true` — the host has not handled your last write yet: read once more. Still pending → say in the
+     document that the card is unconfirmed; do not loop.
+   - `host.lastWrite` is your own last write as the host handled it (looked up by its `receiptId`).
+     `host.lastWrite.ok === false` — the host could not apply it (`reason`, e.g. `SEQUENCE_MISMATCH`), so the card
+     did not change: retry once without `expectedSequence`, then say in the document that the card is stale.
+     `host.lastWrite.instructions` tells instruction writes apart: they wait for the user's y/n, or were refused.
+   - No `host` in the answer (an older host, or the host could not write its receipt): `payload.session` is the
+     model-command server's own copy, not the host's; the thread's `⚠️ Session update could not be applied on host
+     (<reason>)` is then the only sign of a failed write.
 
 A Slack-less dashboard task makes the same calls: the host writes them by the task's session key.
 
@@ -103,7 +111,7 @@ A Slack-less dashboard task makes the same calls: the host writes them by the ta
 - `GET_SESSION` — 카드가 기록한 링크를 읽는다 (`payload.session`의 `issues` · `prs` · `docs`, 그리고 `active`). 이때의 `active`를 기억해 둔다.
 - 보고가 이름 붙인 모든 PR · 이슈 · 문서를 URL로 대조한다(정규형 URL, 같은 링크는 한 번만 센다). 카드가 바뀌었는지가 아니라, 보고의 산출물이 카드에 있는지를 본다.
 - 빠진 것이 있으면 `UPDATE_SESSION` 한 번: 빠진 것마다 `{ action: "add", resourceType: "issue" | "pr" | "doc", link: { url, type, provider, label, title, status } }` (url은 정규형). `add`는 그 종류의 지금 링크도 옮기므로, 끝에 추가한 종류마다 처음 읽은 `active`로 되돌린다: `{ action: "set_active", resourceType, url }` — url은 `GET_SESSION`이 돌려준 문자열 그대로. 처음에 비어 있던 종류는 url 없이 `{ action: "set_active", resourceType }`로 비운다. 지금 다루는 산출물로 바꾸는 것이 의도일 때만 그 url을 쓴다.
-- `GET_SESSION`을 다시 읽어 확인한다. 한계: `GET_SESSION`은 호스트가 아니라 model-command 서버의 사본(쓰기를 바로 반영한 미리보기)으로 답하므로, 다시 읽은 결과는 호스트의 수락 증거가 아니다. 쓰기 뒤 스레드에 `⚠️ Session update could not be applied on host (<reason>)`가 보이면 카드는 바뀌지 않은 것이다 — `expectedSequence` 없이 한 번 다시 시도하고, 그래도 경고가 나오면 그 링크를 빠진 것으로 센다.
+- `GET_SESSION`을 다시 읽어 확인한다 — 호스트의 영수증 `payload.host`로 본다(#846). `hostPending: true`면 호스트가 아직 쓰기를 처리하지 않은 것이니 한 번 더 다시 읽는다(그래도 대기면 보고에 카드 미확인이라 적고 반복하지 않는다). `host.lastWrite.ok`가 false면 카드는 바뀌지 않은 것이다(`reason`) — `expectedSequence` 없이 한 번 다시 시도하고, 그래도 실패하면 그 링크를 빠진 것으로 센다. `host`가 없는 답(이전 호스트)의 `payload.session`은 model-command 서버의 사본(쓰기를 바로 반영한 미리보기)이라 호스트의 수락 증거가 아니다 — 그때는 스레드의 `⚠️ Session update could not be applied on host (<reason>)`가 유일한 실패 신호다.
 - 보고에 한 줄로 쓴다: `Card check: <카드에 있는 수>/<보고의 산출물 수> on the card`. 다시 시도해도 빠진 것이 있으면 그 URL을 적고, 보고를 완료로 닫지 않는다.
 
 ## Turn end
@@ -113,4 +121,7 @@ summary fork's prompt after the es mode template. The fork writes the document w
 the card side itself — it puts the TL;DR on the card and derives the NEEDS YOU follow-up from the ⚠️ line. Links reach
 the card from the session's own capture, so the document must still carry full URLs.
 
-In a turn where Path A already wrote the card (§Card sync), that turn's host summary leaves the card as it is.
+In a turn where Path A already wrote the card (§Card sync), the host does not run its summary for that turn (#846):
+the card and the thread head keep the TL;DR this skill wrote. When the turn took in a message the user sent while it
+ran, the host summary runs after all and judges the whole turn. The next input clears the mark, so the next turn is
+summarized again.

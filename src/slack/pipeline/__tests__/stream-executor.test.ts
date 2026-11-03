@@ -1554,6 +1554,98 @@ describe('model-command integration', () => {
     expect(deps.claudeHandler.setExecutiveSummary).not.toHaveBeenCalled();
   });
 
+  // #846 item 2 — after handling a model write the host writes its receipt (what it applied + how this write went),
+  // which the model-command server answers GET_SESSION with.
+  it('writes the host receipt after an UPDATE_SESSION: the receiptId, ok, the TL;DR applied', async () => {
+    const deps = createExecutorDeps();
+    deps.claudeHandler.setExecutiveSummary = vi.fn().mockReturnValue(true);
+    deps.claudeHandler.writeModelCommandReceipt = vi.fn();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({ executiveSummary: { tldr: ['a', '⚠️ **b**', 'c'] }, receiptId: 'r_42' }),
+      createSession(),
+      { channel: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100', say },
+    );
+
+    expect(deps.claudeHandler.writeModelCommandReceipt).toHaveBeenCalledWith(
+      'C1',
+      '171.100',
+      expect.objectContaining({ receiptId: 'r_42', ok: true, tldrApplied: true }),
+    );
+  });
+
+  it('a write the host could not apply is receipted as failed, with the reason', async () => {
+    const deps = createExecutorDeps();
+    deps.claudeHandler.writeModelCommandReceipt = vi.fn();
+    deps.claudeHandler.updateSessionResources = vi.fn().mockReturnValue({
+      ok: false,
+      reason: 'SEQUENCE_MISMATCH',
+      error: 'x',
+      snapshot: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 3 },
+    });
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({
+        operations: [{ action: 'add', resourceType: 'pr', link: { url: 'https://github.com/a/b/pull/1' } }],
+        receiptId: 'r_43',
+      }),
+      createSession(),
+      { channel: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100', say },
+    );
+
+    expect(deps.claudeHandler.writeModelCommandReceipt).toHaveBeenCalledWith(
+      'C1',
+      '171.100',
+      expect.objectContaining({ receiptId: 'r_43', ok: false, reason: 'SEQUENCE_MISMATCH' }),
+    );
+  });
+
+  it('instruction writes are receipted as waiting for the y/n (ok covers resource ops only)', async () => {
+    const deps = createExecutorDeps();
+    deps.claudeHandler.writeModelCommandReceipt = vi.fn();
+    const executor = new StreamExecutor(deps);
+    (executor as any).interceptInstructionOperationsForConfirm = vi.fn().mockResolvedValue(undefined);
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({ instructionOperations: [{ action: 'add', text: 'rule' }], receiptId: 'r_45' }),
+      createSession(),
+      { channel: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100', say: vi.fn() },
+    );
+
+    expect(deps.claudeHandler.writeModelCommandReceipt).toHaveBeenCalledWith(
+      'C1',
+      '171.100',
+      expect.objectContaining({ receiptId: 'r_45', ok: true, instructions: 'pending_confirmation' }),
+    );
+  });
+
+  it('a Slack-less task writes its receipt by key', async () => {
+    const deps = createExecutorDeps();
+    Object.assign(deps.claudeHandler, {
+      writeModelCommandReceipt: vi.fn(),
+      writeModelCommandReceiptByKey: vi.fn(),
+      setExecutiveSummaryByKey: vi.fn().mockReturnValue(true),
+    });
+    const executor = new StreamExecutor(deps);
+    const task = { ...createSession(), channelId: '', threadTs: undefined, slackless: true };
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({ executiveSummary: { tldr: ['a'] }, receiptId: 'r_44' }),
+      task,
+      { channel: '', threadTs: undefined, sessionKey: 'task:t-1', say: vi.fn() },
+    );
+
+    expect(deps.claudeHandler.writeModelCommandReceiptByKey).toHaveBeenCalledWith(
+      'task:t-1',
+      expect.objectContaining({ receiptId: 'r_44', ok: true, tldrApplied: true }),
+    );
+    expect(deps.claudeHandler.writeModelCommandReceipt).not.toHaveBeenCalled();
+  });
+
   it('does not write the card TL;DR when the resource ops in the same update failed', async () => {
     const deps = createExecutorDeps();
     deps.claudeHandler.setExecutiveSummary = vi.fn().mockReturnValue(true);
@@ -7624,5 +7716,243 @@ describe('session-title-pending notice (execute e2e)', () => {
     const prompt = await runTurn(session);
     expect(prompt).not.toContain('<session-title-pending>');
     expect(session.titleNoticeCount).toBe(3);
+  });
+});
+
+// ── #846 item 8 — no host summary in an es turn (execute e2e) ──
+//
+// The turn whose model-run es (`local:auto-es`) wrote the card (`executiveSummary.source === 'es'`) does not start
+// the host summary timer; the thread head shows that es TL;DR instead. The marker of an earlier turn never blocks
+// this turn's summary: the turn start clears it (`clearDisplay`).
+describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
+  const ES = {
+    tldr: ['PR #9 opened.', '⚠️ **PR #9 not merged — needs approval.**', 'Next: merge #9.'],
+    at: 1,
+    source: 'es',
+  };
+
+  function run(opts: {
+    esThisTurn: boolean;
+    markerBefore?: boolean;
+    consumed?: string[];
+    discarded?: string[];
+    esViaToolResult?: boolean;
+  }) {
+    // The module mock above predates the threshold auto-compact getter; this turn reads it.
+    (userSettingsStore as any).getUserCompactThreshold ??= vi.fn().mockReturnValue(undefined);
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+    const session: any = {
+      sessionId: 'sess_es',
+      ownerId: 'U_TEST',
+      logVerbosity: LOG_DETAIL,
+      usage: {},
+      terminated: false,
+      model: 'claude-opus-4-8',
+      actionPanel: {},
+      ...(opts.markerBefore ? { executiveSummary: { ...ES } } : {}),
+    };
+    const reply = (uuid: string, text: string) => ({
+      type: 'assistant',
+      user_message_uuid: uuid,
+      message: { content: [{ type: 'text', text }] },
+    });
+    async function* turn() {
+      // The opening message's first reply frame carries its send uuid (the SDK stamps it once per frame kind).
+      yield reply('u-open', 'working on it');
+      // The model's UPDATE_SESSION lands mid-turn (host apply → setExecutiveSummary).
+      if (opts.esThisTurn) session.executiveSummary = { ...ES };
+      if (opts.esViaToolResult) {
+        // The real path: the model calls UPDATE_SESSION; its tool_result is buffered by the processor and applied
+        // when the stream flushes — after a settlement frame that arrives with no reply text in between.
+        yield {
+          type: 'assistant',
+          user_message_uuid: 'u-open',
+          message: { content: [{ type: 'tool_use', id: 'tool_es', name: 'mcp__model-command__run', input: {} }] },
+        };
+        yield {
+          type: 'user',
+          message: {
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'tool_es',
+                content: JSON.stringify({
+                  type: 'model_command_result',
+                  commandId: 'UPDATE_SESSION',
+                  ok: true,
+                  payload: {
+                    session: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 1 },
+                    appliedOperations: 0,
+                    request: { operations: [], executiveSummary: { tldr: ES.tldr } },
+                    executiveSummary: { tldr: ES.tldr },
+                  },
+                }),
+              },
+            ],
+          },
+        };
+      } else {
+        yield reply('u-open', 'done');
+      }
+      // The host's settlement just before the result: which steered sends this turn folded in (consumed) or not.
+      if (opts.consumed || opts.discarded) {
+        yield {
+          type: 'system',
+          subtype: 'steer_settlement',
+          consumed: opts.consumed ?? [],
+          discarded: opts.discarded ?? [],
+        };
+      }
+      yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+    }
+    const deps: any = {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+        // The registry write UPDATE_SESSION { executiveSummary } lands in (marks the card as the es's).
+        setExecutiveSummary: vi.fn((_c: string, _t: string, tldr: string[]) => {
+          session.executiveSummary = { tldr, at: 2, source: 'es' };
+          return true;
+        }),
+        streamAgentEvents: vi.fn().mockImplementation(() => toAgentEvents(turn())),
+        getSessionRegistry: vi.fn().mockReturnValue({
+          beginTurn: vi.fn(),
+          endTurn: vi.fn(),
+          broadcastSessionUpdate: vi.fn(),
+          getActivityState: vi.fn().mockReturnValue('idle'),
+        }),
+      },
+      fileHandler: {
+        formatFilePrompt: vi.fn().mockResolvedValue(''),
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {
+        handleToolUse: vi.fn().mockResolvedValue(undefined),
+        // The real processor names a main-agent result from its tracker; here the one tool is the model command.
+        handleToolResult: vi.fn(async (results: Array<{ toolUseId: string; toolName?: string }>) => {
+          for (const r of results) if (r.toolUseId === 'tool_es') r.toolName ??= 'mcp__model-command__run';
+        }),
+        getLiveBackgroundWork: vi.fn().mockReturnValue({ count: 0, labels: [], signature: '' }),
+        cleanup: vi.fn(),
+      },
+      statusReporter: { getStatusEmoji: vi.fn().mockReturnValue('thinking_face') },
+      reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(50),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      toolTracker: { scheduleCleanup: vi.fn() },
+      todoDisplayManager: {
+        cleanupSession: vi.fn(),
+        cleanup: vi.fn(),
+        handleTodoUpdate: vi.fn().mockResolvedValue(undefined),
+      },
+      actionHandlers: {},
+      requestCoordinator: { removeController: vi.fn(), touchSession: vi.fn() },
+      slackApi: {
+        getUserProfile: vi.fn().mockResolvedValue({ email: 'user@example.com', displayName: 'User' }),
+        getClient: vi.fn().mockReturnValue({}),
+        getBotUserId: vi.fn().mockResolvedValue('U_BOT'),
+        deleteMessage: vi.fn().mockResolvedValue(undefined),
+        postSystemMessage: vi.fn().mockResolvedValue(undefined),
+        getPermalink: vi.fn().mockResolvedValue(undefined),
+      },
+      assistantStatusManager: {
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
+      // Every panel call is a no-op recorder (the panel itself is out of scope here).
+      threadPanel: new Proxy({} as Record<string, any>, {
+        get: (t, k: string) => {
+          if (k === 'then') return undefined;
+          t[k] ??= vi.fn().mockResolvedValue(undefined);
+          return t[k];
+        },
+      }),
+      turnNotifier: { notify: vi.fn().mockResolvedValue(undefined) },
+      summaryTimer: { start: vi.fn(), cancel: vi.fn() },
+      summaryService: {
+        clearDisplay: vi.fn((s: any) => {
+          s.executiveSummary = undefined;
+        }),
+        displayEsTldrOnThread: vi.fn(),
+      },
+      dispatchPendingUserMessage: vi.fn().mockResolvedValue(undefined),
+    };
+    const executor = new StreamExecutor(deps);
+    const done = executor.execute({
+      session,
+      sessionKey: 'C7:t7',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text: 'report',
+      channel: 'C7',
+      threadTs: 't7',
+      user: 'U_TEST',
+      say: vi.fn().mockResolvedValue({ ts: 'msg_ts' }),
+      isUserInput: true,
+    } as any);
+    return { deps, session, done };
+  }
+
+  it('a plain turn starts the host summary timer', async () => {
+    const { deps, done } = run({ esThisTurn: false });
+    expect((await done).success).toBe(true);
+    expect(deps.summaryTimer.start).toHaveBeenCalledTimes(1);
+    expect(deps.summaryService.displayEsTldrOnThread).not.toHaveBeenCalled();
+  });
+
+  it('an es turn does not; the thread head shows the es TL;DR', async () => {
+    const { deps, session, done } = run({ esThisTurn: true });
+    expect((await done).success).toBe(true);
+    expect(deps.summaryTimer.start).not.toHaveBeenCalled();
+    expect(deps.summaryService.displayEsTldrOnThread).toHaveBeenCalledWith(session);
+    expect(deps.threadPanel.updatePanel).toHaveBeenCalledWith(session, 'C7:t7');
+  });
+
+  it('a steered message this turn consumed: the turn-end summary judges the whole turn again (the TL;DR stays until then)', async () => {
+    const { deps, session, done } = run({ esThisTurn: true, consumed: ['u-steer'] });
+    expect((await done).success).toBe(true);
+    expect(deps.summaryTimer.start).toHaveBeenCalledTimes(1);
+    expect(deps.summaryService.displayEsTldrOnThread).not.toHaveBeenCalled();
+    expect(session.executiveSummary?.tldr).toEqual(ES.tldr);
+    expect(session.executiveSummary?.source).toBeUndefined();
+  });
+
+  it('a steered message the turn did not take (discarded, back to the queue): the es verdict stands', async () => {
+    const { deps, done } = run({ esThisTurn: true, discarded: ['u-steer'] });
+    expect((await done).success).toBe(true);
+    expect(deps.summaryTimer.start).not.toHaveBeenCalled();
+    expect(deps.summaryService.displayEsTldrOnThread).toHaveBeenCalled();
+  });
+
+  it('an es written through the buffered tool_result, then a consumed steer: the summary still runs', async () => {
+    const { deps, session, done } = run({ esThisTurn: false, esViaToolResult: true, consumed: ['u-steer'] });
+    expect((await done).success).toBe(true);
+    expect(deps.claudeHandler.setExecutiveSummary).toHaveBeenCalled();
+    expect(deps.summaryTimer.start).toHaveBeenCalledTimes(1);
+    expect(session.executiveSummary?.source).toBeUndefined();
+  });
+
+  it('an es written through the buffered tool_result, no steer: no host summary', async () => {
+    const { deps, done } = run({ esThisTurn: false, esViaToolResult: true });
+    expect((await done).success).toBe(true);
+    expect(deps.claudeHandler.setExecutiveSummary).toHaveBeenCalled();
+    expect(deps.summaryTimer.start).not.toHaveBeenCalled();
+  });
+
+  it('an earlier turn’s marker does not block this turn’s summary', async () => {
+    const { deps, done } = run({ esThisTurn: false, markerBefore: true });
+    expect((await done).success).toBe(true);
+    expect(deps.summaryService.clearDisplay).toHaveBeenCalled();
+    expect(deps.summaryTimer.start).toHaveBeenCalledTimes(1);
   });
 });
