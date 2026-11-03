@@ -1554,6 +1554,79 @@ describe('model-command integration', () => {
     expect(deps.claudeHandler.setExecutiveSummary).not.toHaveBeenCalled();
   });
 
+  // #846 item 2 — after handling a model write the host writes its receipt (what it applied + how this write went),
+  // which the model-command server answers GET_SESSION with.
+  it('writes the host receipt after an UPDATE_SESSION: the receiptId, ok, the TL;DR applied', async () => {
+    const deps = createExecutorDeps();
+    deps.claudeHandler.setExecutiveSummary = vi.fn().mockReturnValue(true);
+    deps.claudeHandler.writeModelCommandReceipt = vi.fn();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({ executiveSummary: { tldr: ['a', '⚠️ **b**', 'c'] }, receiptId: 'r_42' }),
+      createSession(),
+      { channel: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100', say },
+    );
+
+    expect(deps.claudeHandler.writeModelCommandReceipt).toHaveBeenCalledWith(
+      'C1',
+      '171.100',
+      expect.objectContaining({ receiptId: 'r_42', ok: true, tldrApplied: true }),
+    );
+  });
+
+  it('a write the host could not apply is receipted as failed, with the reason', async () => {
+    const deps = createExecutorDeps();
+    deps.claudeHandler.writeModelCommandReceipt = vi.fn();
+    deps.claudeHandler.updateSessionResources = vi.fn().mockReturnValue({
+      ok: false,
+      reason: 'SEQUENCE_MISMATCH',
+      error: 'x',
+      snapshot: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 3 },
+    });
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({
+        operations: [{ action: 'add', resourceType: 'pr', link: { url: 'https://github.com/a/b/pull/1' } }],
+        receiptId: 'r_43',
+      }),
+      createSession(),
+      { channel: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100', say },
+    );
+
+    expect(deps.claudeHandler.writeModelCommandReceipt).toHaveBeenCalledWith(
+      'C1',
+      '171.100',
+      expect.objectContaining({ receiptId: 'r_43', ok: false, reason: 'SEQUENCE_MISMATCH' }),
+    );
+  });
+
+  it('a Slack-less task writes its receipt by key', async () => {
+    const deps = createExecutorDeps();
+    Object.assign(deps.claudeHandler, {
+      writeModelCommandReceipt: vi.fn(),
+      writeModelCommandReceiptByKey: vi.fn(),
+      setExecutiveSummaryByKey: vi.fn().mockReturnValue(true),
+    });
+    const executor = new StreamExecutor(deps);
+    const task = { ...createSession(), channelId: '', threadTs: undefined, slackless: true };
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({ executiveSummary: { tldr: ['a'] }, receiptId: 'r_44' }),
+      task,
+      { channel: '', threadTs: undefined, sessionKey: 'task:t-1', say: vi.fn() },
+    );
+
+    expect(deps.claudeHandler.writeModelCommandReceiptByKey).toHaveBeenCalledWith(
+      'task:t-1',
+      expect.objectContaining({ receiptId: 'r_44', ok: true, tldrApplied: true }),
+    );
+    expect(deps.claudeHandler.writeModelCommandReceipt).not.toHaveBeenCalled();
+  });
+
   it('does not write the card TL;DR when the resource ops in the same update failed', async () => {
     const deps = createExecutorDeps();
     deps.claudeHandler.setExecutiveSummary = vi.fn().mockReturnValue(true);

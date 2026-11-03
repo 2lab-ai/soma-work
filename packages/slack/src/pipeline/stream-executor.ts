@@ -6484,6 +6484,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         const hasResourceOps = request.operations && request.operations.length > 0;
         const hasInstructionOps = request.instructionOperations && request.instructionOperations.length > 0;
         let operationsOk = true;
+        // #846 — how this write went, for the host receipt the model reads back.
+        let failReason: string | undefined;
+        let tldrApplied: boolean | undefined;
         // #829 review — a Slack-less task runs with channel '' and no thread: its session is reachable only by
         // key (a channel lookup with '' throws). Every write below goes by key there.
         const handler = this.deps.claudeHandler;
@@ -6505,6 +6508,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             : handler.updateSessionResources(context.channel, context.threadTs, resourceOnly);
           if (!updateResult.ok) {
             operationsOk = false;
+            failReason = updateResult.reason || 'UNKNOWN';
             this.logger.warn('Failed to apply UPDATE_SESSION resource ops on host', {
               sessionKey: context.sessionKey,
               reason: updateResult.reason,
@@ -6583,12 +6587,24 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           const applied = byKey
             ? handler.setExecutiveSummaryByKey?.(context.sessionKey, tldr)
             : handler.setExecutiveSummary?.(context.channel, context.threadTs, tldr);
+          tldrApplied = applied === true;
           this.logger.info('Applied card TL;DR from UPDATE_SESSION', {
             sessionKey: context.sessionKey,
             lines: tldr.length,
             applied: applied === true,
           });
         }
+
+        // #846 — the host's receipt: what it holds now and how it handled this write (GET_SESSION `host`).
+        const lastWrite = {
+          ...(typeof payload.receiptId === 'string' ? { receiptId: payload.receiptId } : {}),
+          ok: operationsOk,
+          ...(failReason ? { reason: failReason } : {}),
+          ...(tldrApplied !== undefined ? { tldrApplied } : {}),
+          at: Date.now(),
+        };
+        if (byKey) handler.writeModelCommandReceiptByKey?.(context.sessionKey, lastWrite);
+        else handler.writeModelCommandReceipt?.(context.channel, context.threadTs, lastWrite);
       }
     }
 

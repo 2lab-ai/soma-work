@@ -38,9 +38,9 @@ describe('idleSinceMs — the follow-up restarts the idle clock', () => {
     const now = Date.now();
     const lastActivity = new Date(now - 30 * HOUR);
     expect(idleSinceMs({ lastActivity, followUp: { reason: 'PR #1 open', at: now - HOUR } })).toBe(now - HOUR);
-    expect(idleSinceMs({ lastActivity, starClearedAt: now - 2 * HOUR, followUp: { reason: 'x', at: now - 5 * HOUR } })).toBe(
-      now - 2 * HOUR,
-    );
+    expect(
+      idleSinceMs({ lastActivity, starClearedAt: now - 2 * HOUR, followUp: { reason: 'x', at: now - 5 * HOUR } }),
+    ).toBe(now - 2 * HOUR);
     // An older follow-up does not pull the clock back.
     expect(idleSinceMs({ lastActivity, followUp: { reason: 'x', at: now - 40 * HOUR } })).toBe(lastActivity.getTime());
     // A malformed one is ignored.
@@ -117,7 +117,9 @@ describe('SessionRegistry — a follow-up session sleeps one period after its �
     const from = { ...getSessionLifecyclePolicy(), sleepAfterMs: 24 * HOUR };
     const to = { ...from, sleepAfterMs: 2 * HOUR };
     const view = { state: 'MAIN', activityState: 'idle', lastActivity: new Date(now - 5 * HOUR) };
-    expect(countLifecycleTransitions([{ ...view, followUp: { reason: 'x', at: now - HOUR } }], from, to, now).willSleep).toBe(0);
+    expect(
+      countLifecycleTransitions([{ ...view, followUp: { reason: 'x', at: now - HOUR } }], from, to, now).willSleep,
+    ).toBe(0);
     expect(countLifecycleTransitions([{ ...view }], from, to, now).willSleep).toBe(1);
   });
 });
