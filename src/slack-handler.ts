@@ -2027,6 +2027,8 @@ export class SlackHandler {
 
       // Channel routing check: if session was halted due to wrong channel, stop processing
       if (sessionResult.halted) {
+        // Stashed for the replay after a compaction in progress: it will run — taken (#853).
+        if (sessionResult.stashed === true) this.noteTurnAccepted(event.channel, event.ts);
         await this.slackApi.removeReaction(channel, ts, 'eyes');
         // Halted covers the acceptance gate too (`session-initializer.ts:403-440`)
         // — never a success, so the drain stays shut.
