@@ -5,14 +5,17 @@
  * 반드시 tl;dr에 포함되야 하고 그 내용은 강조해서 맨 밑에 어떻게 그 걸 처리해야하는지 방법을 자세히
  * 기술하도록 … 가능하면 그럴 경우에 작업 카드가 완료가 되면 안되고 유저의 후속 작업을 입력 대기로 표기해여함"
  *
- *  - the host prompt (Path B, no tools) carries the contract: ⚠️ bold reason line in the TL;DR, a final
- *    user follow-up section, own issues/PRs/documents marked in Status;
+ *  - the turn-end prompt (Path B, no tools) carries `local:auto-es`'s contract (#857): ⚠️ bold reason line in the
+ *    TL;DR, a final user follow-up section, own issues/PRs/documents marked in Status;
  *  - `followUpFromTldr` turns a ⚠️ line into the card's follow-up reason;
  *  - `displayOnThread` sets it, clears it when the new TL;DR has none, and keeps it when no TL;DR came;
  *  - `clearDisplay` (the next user input) does not clear it — only the next Executive Summary decides.
  */
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { AUTO_ES_TURN_END_FILE, loadAutoEsTurnEndContract } from '../../plugin/harness-skills';
 import {
   cleanTldrLine,
   followUpFromTldr,
@@ -48,38 +51,58 @@ function session(over: Partial<SummarySessionInfo> = {}): SummarySessionInfo {
   return { isActive: true, actionPanel: {}, ...over };
 }
 
-describe('host prompt — the follow-up contract (Path B)', () => {
-  it('asks for a bold ⚠️ reason line in the TL;DR when an own issue/PR is not complete', () => {
-    expect(SUMMARY_PROMPT).toContain('⚠️');
-    expect(SUMMARY_PROMPT).toMatch(/not complete/i);
-    expect(SUMMARY_PROMPT).toMatch(/why it cannot be completed/i);
-    expect(SUMMARY_PROMPT).toMatch(/\*\*/);
+// #857 — the turn-end summary runs `local:auto-es`: the host's tool-less fork is prompted with that skill's
+// turn-end contract, read from the harness plugin. SUMMARY_PROMPT stays the generic es contract.
+describe('turn end — the host runs local:auto-es (Path B)', () => {
+  const contract = loadAutoEsTurnEndContract();
+
+  it('loads the contract from the harness skill file', () => {
+    expect(AUTO_ES_TURN_END_FILE.split(path.sep).join('/')).toMatch(
+      /local-harness\/skills\/auto-es\/reference\/turn-end\.md$/,
+    );
+    expect(contract).toBe(readFileSync(AUTO_ES_TURN_END_FILE, 'utf8').trim());
   });
 
-  it('asks for a final user follow-up section with steps per item', () => {
-    expect(SUMMARY_PROMPT).toMatch(/User follow-up/);
-    expect(SUMMARY_PROMPT).toMatch(/very last section|last section/i);
-    expect(SUMMARY_PROMPT).toMatch(/step/i);
+  it('the contract asks for the bold ⚠️ reason line, the final follow-up section and the 🆕 marks', () => {
+    expect(contract).toContain('⚠️');
+    expect(contract).toMatch(/why it cannot be completed/i);
+    expect(contract).toMatch(/\*\*/);
+    expect(contract).toMatch(/User follow-up required/);
+    expect(contract).toMatch(/very last section/i);
+    expect(contract).toMatch(/step/i);
+    expect(contract).toMatch(/created this session/i);
+    expect(contract).toMatch(/reserved/i);
   });
 
-  it('asks Status to mark what this session created, documents included', () => {
-    expect(SUMMARY_PROMPT).toMatch(/created this session/i);
-    expect(SUMMARY_PROMPT).toMatch(/document/i);
-  });
-
-  it('reserves ⚠️ at the start of a TL;DR line for that signal only', () => {
-    expect(SUMMARY_PROMPT).toMatch(/only for|reserved/i);
-  });
-
-  it('every mode prompt carries it', () => {
-    const svc = new SummaryService();
+  it('every mode prompt carries SUMMARY_PROMPT and then the auto-es contract', () => {
+    const svc = new SummaryService(undefined, undefined, { turnEndContract: contract });
     for (const s of [
       session(),
       session({ links: { pr: { url: 'https://github.com/a/b/pull/1', type: 'pr', provider: 'github' } } }),
       session({ workflow: 'z-epic-update' as any }),
     ]) {
-      expect(svc.buildPrompt(s)).toContain(SUMMARY_PROMPT);
+      const prompt = svc.buildPrompt(s);
+      expect(prompt).toContain(SUMMARY_PROMPT);
+      expect(prompt).toContain(contract as string);
+      expect(prompt.indexOf(contract as string)).toBeGreaterThan(prompt.indexOf(SUMMARY_PROMPT));
     }
+  });
+
+  it('SUMMARY_PROMPT is the generic es contract — the harness rules live in the skill', () => {
+    expect(SUMMARY_PROMPT).not.toContain('⚠️');
+    expect(SUMMARY_PROMPT).not.toMatch(/created this session|User follow-up required/);
+    expect(new SummaryService().buildPrompt(session())).not.toContain('⚠️');
+  });
+
+  it('a missing file is undefined, never a throw', () => {
+    expect(loadAutoEsTurnEndContract('/nonexistent/turn-end.md')).toBeUndefined();
+  });
+
+  it('the service wiring hands the auto-es contract to the turn-end summary', () => {
+    const src = readFileSync(path.resolve(__dirname, '..', '..', 'slack-handler.ts'), 'utf8');
+    expect(src).toMatch(
+      /new SummaryService\(\s*forkExecutor,\s*this\.slackApi,\s*\{\s*turnEndContract: loadAutoEsTurnEndContract\(\),?\s*\}\s*\)/,
+    );
   });
 });
 

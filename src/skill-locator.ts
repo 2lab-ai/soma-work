@@ -35,6 +35,8 @@ const logger = new Logger('SkillLocator');
  * (The build step copies src/local → dist/local; see package.json `build`.)
  */
 const LOCAL_SKILLS_DIR = path.join(__dirname, 'local', 'skills');
+/** #857 — the soma-work harness plugin (`local`): its skills resolve under the same `local:` key, after zworkflow's. */
+const LOCAL_HARNESS_SKILLS_DIR = path.join(__dirname, 'local-harness', 'skills');
 
 /** Priority plugin slots, probed before the generic PLUGINS_DIR scan. */
 const PRIORITY_PLUGINS = ['stv', 'superpowers'] as const;
@@ -81,6 +83,7 @@ export function resolveAutoskillContent(name: string, userId?: string): Resolved
     candidates.push({ key: `user:${name}`, file: skillMdPath(userSkillsDir(userId), name) });
   }
   candidates.push({ key: `local:${name}`, file: skillMdPath(LOCAL_SKILLS_DIR, name) });
+  candidates.push({ key: `local:${name}`, file: skillMdPath(LOCAL_HARNESS_SKILLS_DIR, name) });
   for (const plugin of PRIORITY_PLUGINS) {
     candidates.push({ key: `${plugin}:${name}`, file: skillMdPath(path.join(PLUGINS_DIR, plugin, 'skills'), name) });
   }
@@ -135,6 +138,7 @@ export function listAvailableSkills(userId?: string): AvailableSkill[] {
   }
   // 2. local
   for (const name of listSkillDirsWithMd(LOCAL_SKILLS_DIR)) add(name, 'local');
+  for (const name of listSkillDirsWithMd(LOCAL_HARNESS_SKILLS_DIR)) add(name, 'local');
   // 3-4. priority plugins
   for (const plugin of PRIORITY_PLUGINS) {
     for (const name of listSkillDirsWithMd(path.join(PLUGINS_DIR, plugin, 'skills'))) add(name, plugin);
