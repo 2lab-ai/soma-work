@@ -206,7 +206,7 @@ import { createEpicWaker } from './task-turn/epic-wake';
 import { setPlanHost } from './task-turn/plan-server';
 import { composeTaskApprovalListeners } from './task-turn/task-approver';
 import { createDashboardCloseHandler } from './task-turn/task-close';
-import { createTaskGoalInjector, planGoalObjective, settleTaskGoal } from './task-turn/task-goal';
+import { createTaskGoalInjector, planGoalObjective, resetGoalForUserTurn, settleTaskGoal } from './task-turn/task-goal';
 import { createTaskLauncher } from './task-turn/task-launcher';
 import {
   createTaskNoticeDeliverer,
@@ -1367,10 +1367,13 @@ async function start() {
         logger.warn('Settling a dashboard task goal failed', { sessionKey: key, error: (error as Error)?.message });
       }
     };
+    /** Restart-cut tasks whose first goal continuation carries the restart guidance: key → the cut turn (filled at boot). */
+    const goalRestartCut = new Map<string, string>();
     /**
      * A real instruction or answer to a task resets its goal's continuation budget, as a Slack message
-     * does — before the turn starts (its leg must carry the new epoch), undone when the start is refused
-     * (a refused word neither refunds the budget nor drops an eval in flight — trinity R1, fable P2).
+     * does — before the turn starts (its leg must carry the new epoch). A refused start gives back only
+     * what the reset changed (epoch, budget): a whole-goal restore would re-install eval state the loop
+     * changed meanwhile (trinity R1, fable P2; R2, fable P2). The owner went on, so no restart guidance.
      */
     const withTaskUserTurn = async (
       key: string,
@@ -1379,28 +1382,34 @@ async function start() {
       const registry = claudeHandler.getSessionRegistry();
       const task = registry.getSessionByKey(key);
       if (!task?.goal) return run();
-      const before = snapshotGoalState(task);
-      resetGoalContinuationOnUserMessage(task);
+      const giveBack = resetGoalForUserTurn(task, resetGoalContinuationOnUserMessage);
       let res: TaskCommandResponse;
       try {
         res = await run();
       } catch (error) {
-        restoreGoalState(task, before);
+        giveBack();
         throw error;
       }
-      if (res.status !== 202) restoreGoalState(task, before);
+      if (res.status !== 202) giveBack();
+      else goalRestartCut.delete(key);
       // Persisted now: a restart before the turn's own save must not reload the spent budget (trinity R1, grok P2).
       registry.saveSessions();
       return res;
     };
-    /** Restart-cut tasks whose first goal continuation carries the restart guidance (filled at boot). */
-    const goalRestartCut = new Set<string>();
     /** The goal loop's continuation for a dashboard task — its next turn; a busy owner slot waits (429). */
     const taskGoalInjector = createTaskGoalInjector({
       controller: taskController,
       getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
       logger: new Logger('TaskGoalInjector'),
-      restartNotice: (key) => (goalRestartCut.delete(key) ? TASK_RESTART_NOTICE : undefined),
+      // Only while nothing ran since the cut turn (trinity R2, fable P3): a later continuation is not a resume.
+      restartNotice: (key) => {
+        const cutTurn = goalRestartCut.get(key);
+        if (cutTurn === undefined) return undefined;
+        goalRestartCut.delete(key);
+        return claudeHandler.getSessionRegistry().getSessionByKey(key)?.lastTurnOutcome?.turnId === cutTurn
+          ? TASK_RESTART_NOTICE
+          : undefined;
+      },
     });
     // E4 ④a (.prd/19 D3) — the host the epic's tools call: registry reads, the plan writer,
     // a child's last final from its work log. Set here, not imported there (no cycle).
@@ -2113,7 +2122,6 @@ async function start() {
         // wants it (createTaskGoalInjector); another refusal is the loop's injection failure.
         const target = sessionKey ? registry.getSessionByKey(sessionKey) : undefined;
         if (sessionKey && target?.slackless) {
-          if (!taskGoalInjector) throw new Error('the task controller is not wired');
           await taskGoalInjector(event, sessionKey);
           return;
         }
@@ -2235,12 +2243,9 @@ async function start() {
         try {
           // A dashboard task the restart cut gets its goal continuation back too (registry reconciliation),
           // and that continuation carries the restart guidance (D10 on the goal path — trinity R1, fable P2).
-          const cutKeys = claudeHandler
-            .getSessionRegistry()
-            .getRestartCutTasks()
-            .map((t) => t.sessionKey);
-          slackHandler.noteRestartCutSessionKeys(cutKeys);
-          for (const key of cutKeys) goalRestartCut.add(key);
+          const cutTasks = claudeHandler.getSessionRegistry().getRestartCutTasks();
+          slackHandler.noteRestartCutSessionKeys(cutTasks.map((t) => t.sessionKey));
+          for (const t of cutTasks) goalRestartCut.set(t.sessionKey, t.turnId);
           const resumed = slackHandler.resumeActiveGoals();
           if (resumed > 0) timing(`Resumed ${resumed} active goal(s) after restart`);
         } catch (error) {

@@ -178,3 +178,26 @@ export function createTaskGoalInjector(
     retry(2);
   };
 }
+
+/**
+ * A dashboard word to a task with a goal: reset the goal as a Slack message does (`reset` —
+ * production: `resetGoalContinuationOnUserMessage`), before the turn starts so its leg carries
+ * the new epoch. Returns the give-back for a start that is refused: only what the reset changed
+ * (the epoch, the budget). A whole-goal restore would re-install eval state the loop changed
+ * meanwhile — a cleared `pendingEval` coming back wedges the loop (trinity R2, fable P2). A goal
+ * replaced meanwhile is left alone.
+ */
+export function resetGoalForUserTurn(
+  session: ConversationSession,
+  reset: (session: ConversationSession) => void,
+): () => void {
+  const goal = session.goal;
+  if (!goal) return () => {};
+  const before = { epoch: goal.epoch, continuationCount: goal.continuationCount };
+  reset(session);
+  return () => {
+    if (session.goal !== goal) return;
+    goal.epoch = before.epoch;
+    goal.continuationCount = before.continuationCount;
+  };
+}

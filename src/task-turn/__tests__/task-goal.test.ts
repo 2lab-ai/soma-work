@@ -10,7 +10,13 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { ConversationSession } from '../../types';
-import { createTaskGoalInjector, PLAN_GOAL_OBJECTIVE_MAX, planGoalObjective, settleTaskGoal } from '../task-goal';
+import {
+  createTaskGoalInjector,
+  PLAN_GOAL_OBJECTIVE_MAX,
+  planGoalObjective,
+  resetGoalForUserTurn,
+  settleTaskGoal,
+} from '../task-goal';
 import type { TaskPlanDoc } from '../task-plan';
 import type { TaskCommandRequest } from '../task-turn-controller';
 
@@ -248,5 +254,33 @@ describe('G6 — the goal continuation for a task (createTaskGoalInjector)', () 
     await inject(event, 'task:a');
     expect(start.mock.calls[0][0]).toMatchObject({ promptNotice: '<task-restart-resume>…' });
     expect(start.mock.calls[1][0]).not.toHaveProperty('promptNotice');
+  });
+});
+
+describe('G7 — a dashboard word resets the goal; a refused start gives back only that (trinity R2, fable P2)', () => {
+  const reset = (s: ConversationSession) => {
+    s.goal!.continuationCount = 0;
+    s.goal!.epoch = (s.goal!.epoch ?? 0) + 1;
+  };
+  it('the give-back restores the epoch and the budget, and nothing the loop changed meanwhile', () => {
+    const session = taskWithGoal();
+    Object.assign(session.goal!, { continuationCount: 4, pendingEval: { startedAt: 1 } });
+    const giveBack = resetGoalForUserTurn(session, reset);
+    expect(session.goal).toMatchObject({ continuationCount: 0, epoch: 4 });
+    // The loop drops the verdict of the eval the epoch bump outdated and clears its lease meanwhile.
+    (session.goal as { pendingEval?: unknown }).pendingEval = undefined;
+    giveBack();
+    expect(session.goal).toMatchObject({ continuationCount: 4, epoch: 3 });
+    expect((session.goal as { pendingEval?: unknown }).pendingEval).toBeUndefined();
+  });
+  it('a goal replaced meanwhile is left alone; no goal is a no-op', () => {
+    const session = taskWithGoal();
+    const giveBack = resetGoalForUserTurn(session, reset);
+    const next = { goalId: 'g2', status: 'active', epoch: 9, continuationCount: 1 };
+    (session as { goal?: unknown }).goal = next;
+    giveBack();
+    expect(session.goal).toBe(next);
+    expect(session.goal).toMatchObject({ epoch: 9, continuationCount: 1 });
+    expect(() => resetGoalForUserTurn(taskWithGoal({ goal: undefined }), reset)()).not.toThrow();
   });
 });
