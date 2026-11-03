@@ -31,7 +31,11 @@ export function chainEndOf(
     case 'safe':
       return { outcome: 'completed' };
     case 'blocked':
-      return outcome.reason === 'awaiting user choice' ? { outcome: 'waiting' } : undefined;
+      if (outcome.reason === 'awaiting user choice') return { outcome: 'waiting' };
+      // The one block that comes after its turn ran: the handoff ceiling stopped the work (review #872 fable P2-1).
+      if (outcome.reason.startsWith('auto-handoff budget exhausted'))
+        return { outcome: 'failed', reason: outcome.reason };
+      return undefined;
     case 'error':
       return { outcome: 'failed', reason: outcome.reason };
     case 'interrupted':
@@ -200,8 +204,9 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
         autoGoalOverride: false,
         epicChild: { taskId: childId, parentTaskId: epic.taskId, planNodeId: spec.planNodeId, title: spec.title },
         ...(spec.workingDirectory ? { workingDirectoryOverride: spec.workingDirectory } : {}),
-        // The epic's words as written: no command routing, never pushed into another turn.
-        routeContext: { skipAutoBotThread: true, verbatimPrompt: true },
+        // The epic's words as written: no command routing, never pushed into another turn — and a
+        // host turn: soma-work's words, never the owner's answer to anything (review #872 astra).
+        routeContext: { skipAutoBotThread: true, verbatimPrompt: true, hostTurn: true },
       };
       const result = await handOver(
         (onAccepted) => {

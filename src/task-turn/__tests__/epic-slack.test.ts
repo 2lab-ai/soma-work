@@ -85,7 +85,9 @@ describe('the epic host on the Slack path (#854)', () => {
         autoGoalOverride: false,
         epicChild: { taskId: 'child-1', parentTaskId: 'e1', planNodeId: 'login', title: '로그인' },
         workingDirectoryOverride: '/tmp/U1/session_e/work',
-        routeContext: { skipAutoBotThread: true, verbatimPrompt: true },
+        // The epic's words, not the owner's (review #872 astra): a host turn — it answers no open
+        // question, revises no plan, and is recorded as soma-work's, as the task path's host start was.
+        routeContext: { skipAutoBotThread: true, verbatimPrompt: true, hostTurn: true },
       }),
     );
     // The reservation counted before the thread; the start counted in the tree's window.
@@ -179,6 +181,11 @@ describe('a chain end as its epic hears it (#854)', () => {
     });
     expect(chainEndOf({ result: 'interrupted', reason: 'auto-compact' })).toBeUndefined();
     expect(chainEndOf({ result: 'blocked', reason: 'directive-only message' })).toBeUndefined();
+    // Review #872 (fable P2-1): a turn that ran and then hit the handoff ceiling stopped — its epic hears it.
+    expect(chainEndOf({ result: 'blocked', reason: 'auto-handoff budget exhausted: limit 3' })).toEqual({
+      outcome: 'failed',
+      reason: 'auto-handoff budget exhausted: limit 3',
+    });
     expect(chainEndOf({ result: 'denied', reason: 'x' } as any)).toBeUndefined();
   });
 });

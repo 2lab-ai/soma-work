@@ -49,7 +49,10 @@ describe('index.ts — plan mode on every session (#853)', () => {
     expect(inject).toMatch(
       /const unwatch = extra\.onAccepted\s*\?\s*slackHandler\.onTurnAccepted\(session\.channelId, ts, extra\.onAccepted\)\s*:\s*undefined;/,
     );
-    expect(inject).toMatch(/\.\.\.\(extra\.verbatim \? \{ routeContext: \{ verbatimPrompt: true \} \} : \{\}\)/);
+    // Verbatim on request; a host turn too when the host says so (#854 — an epic's wake or instruction).
+    expect(inject).toMatch(
+      /\.\.\.\(extra\.verbatim\s*\?\s*\{ routeContext: \{ verbatimPrompt: true, \.\.\.\(extra\.hostTurn \? \{ hostTurn: true \} : \{\}\) \} \}\s*:\s*\{\}\)/,
+    );
     expect(inject).toMatch(/\} finally \{\s*unwatch\?\.\(\);\s*\}/);
   });
 });

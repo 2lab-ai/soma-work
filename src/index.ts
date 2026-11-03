@@ -985,8 +985,10 @@ async function start() {
        * queued behind a running turn) — `handleMessage` resolves only after the whole run.
        * `verbatim`: the host's own words, dispatched as written (no command routing, no `!`
        * steer, never pushed into a running turn — its own turn, like a goal's opening).
+       * `hostTurn` (#854, with `verbatim`): soma-work's words, not the sender's — an epic's wake or its
+       * word to a child. It answers no open question, revises no waiting plan, and is recorded as soma-work's.
        */
-      extra: { onAccepted?: () => void; verbatim?: true; echoLabel?: string } = {},
+      extra: { onAccepted?: () => void; verbatim?: true; hostTurn?: true; echoLabel?: string } = {},
     ): Promise<{ channel: string; ts: string } | undefined> => {
       const session = claudeHandler.getSessionByKey(sessionKey);
       if (!session) {
@@ -1070,7 +1072,9 @@ async function start() {
             ts,
             ...(files ? { files } : {}),
             ...(clientRef ? { dashboardClientRef: clientRef } : {}),
-            ...(extra.verbatim ? { routeContext: { verbatimPrompt: true } } : {}),
+            ...(extra.verbatim
+              ? { routeContext: { verbatimPrompt: true, ...(extra.hostTurn ? { hostTurn: true } : {}) } }
+              : {}),
           } as any,
           dashboardSay,
         );
@@ -1462,6 +1466,8 @@ async function start() {
       injectDashboardMessage(key, text, undefined, [], undefined, undefined, {
         onAccepted: opts.onAccepted,
         verbatim: true,
+        // The epic's words, not the owner's (review #872 astra) — as the task path's host start was.
+        hostTurn: true,
         echoLabel: opts.label,
       });
     setEpicHost(
