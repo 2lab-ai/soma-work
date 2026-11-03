@@ -725,7 +725,10 @@ describe('D8/D9 — the level against the auto-compact point (face and summary; 
     expect(CSS.match(/--cw-warn:/g)?.length).toBe(2);
     expect(CSS).toContain(':root { --cw-warn: var(--st-wait); }');
     expect(CSS).toContain('[data-theme="light"] { --cw-warn: var(--yellow); }');
-    expect(CSS).toContain('.pi-cs.ctx-warn { color: var(--cw-warn); }');
+    // The mono pair (soma-work 830): the amber word goes ink under --chroma 0; light / dark keep --cw-warn.
+    expect(CSS).toContain(
+      '.pi-cs.ctx-warn { color: color-mix(in srgb, var(--cw-warn) calc(100% * var(--chroma, 1)), var(--text)); }',
+    );
   });
 });
 

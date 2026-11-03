@@ -11,9 +11,9 @@
  * `soma-theme` keeps its old values, so a page that reads only it still gets the right light or dark.
  *
  * The script is a String.raw literal with no backticks and no `${…}`, so it reaches the browser byte for byte and the
- * tests run it as shipped. It goes first in <head>: the theme is on <html> before the first paint. On
- * DOMContentLoaded it answers the page's <ui-app-bar id="app-bar"> ui-theme-change and hands the bar the new theme;
- * the page's own bar data reads `somaThemeNow()`.
+ * tests run it as shipped. It goes first in <head>: the theme is on <html> before the first paint. It answers the
+ * page's <ui-app-bar id="app-bar"> ui-theme-change from the document (bound before the bar can be clicked) and hands
+ * the bar the new theme; the page's own bar data reads `somaThemeNow()`.
  */
 
 /** 'light' | 'dark' while it differs from the OS; absent = follow the OS. */
@@ -73,17 +73,14 @@ if (window.matchMedia) {
   if (_somaThemeMq.addEventListener) _somaThemeMq.addEventListener('change', _somaThemeOnOs);
   else if (_somaThemeMq.addListener) _somaThemeMq.addListener(_somaThemeOnOs);
 }
-// The bar's toggle asks for the next theme (its palette rides along — @2lab.ai/ui ≥ 0.25.0).
-function somaThemeBindBar(bar) {
-  if (!bar || bar._somaThemeBound) return;
-  bar._somaThemeBound = true;
-  bar.addEventListener('ui-theme-change', function (e) {
-    var d = (e && e.detail) || {};
-    somaThemeSet(d.theme, d.palette === undefined ? somaThemeNow().palette : d.palette);
-  });
-}
-document.addEventListener('DOMContentLoaded', function () {
-  somaThemeBindBar(document.getElementById('app-bar'));
+// The bar's toggle asks for the next theme (its palette rides along — @2lab.ai/ui ≥ 0.25.0). Listened for on the
+// document from here, before the bar exists: the event bubbles out of the bar, so a click can never land before
+// the listener (a bar defined by an early module while a later one still loads, DOMContentLoaded not yet fired).
+document.addEventListener('ui-theme-change', function (e) {
+  var t = e && e.target;
+  if (!t || t.id !== 'app-bar') return;
+  var d = (e && e.detail) || {};
+  somaThemeSet(d.theme, d.palette === undefined ? somaThemeNow().palette : d.palette);
 });
 `;
 

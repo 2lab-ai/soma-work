@@ -1291,7 +1291,7 @@ describe('Dashboard API', () => {
     expect(html).not.toContain('id="theme-toggle"');
     expect(html).not.toContain('#theme-toggle');
     // #830: the head's theme script (themeClientJs) binds the bar and walks the four themes it asks for.
-    expect(html).toContain("bar.addEventListener('ui-theme-change', function (e) {");
+    expect(html).toContain("document.addEventListener('ui-theme-change', function (e) {");
     expect(html).not.toContain('\\1F319');
   });
 
