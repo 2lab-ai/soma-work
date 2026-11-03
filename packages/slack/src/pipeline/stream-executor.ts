@@ -86,7 +86,7 @@ import {
   sayPostSwitches,
   type UsageData,
 } from '../stream-processor';
-import { esWroteCardThisTurn, type SummaryService } from '../summary-service';
+import { esWroteCardThisTurn, releaseEsCard, type SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer';
 import { NO_POST_SLACK } from '../task-turn/no-post-slack';
 import { createTaskSay, type TaskTurnBinding, type TaskWorkLogWrite } from '../task-turn/task-say';
@@ -2132,6 +2132,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       let reachedModel = isSlashCommand;
 
       // Create stream callbacks
+      // #846 — the sends this turn has started on (their first reply frame). The first is the turn's own message;
+      // any later one was steered in while the turn ran.
+      const startedSends = new Set<string>();
       const streamCallbacks: StreamCallbacks = {
         // HEARTBEAT. The transport spoke — that is all this proves, so it
         // advances `lastSignalAt` and nothing else. Advancing the progress
@@ -2396,6 +2399,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           this.deps.toolEventProcessor.handleAgentTaskLifecycle(event, ctx.sessionKey);
         },
         onSteerLifecycle: async (event, ctx) => {
+          // #846 — a steered message the model starts on after this turn's es wrote the card is input the es did
+          // not cover: drop the es marker so the turn-end summary judges again (the TL;DR stays until it does).
+          if (event.phase === 'started' && !startedSends.has(event.uuid)) {
+            if (startedSends.size > 0) releaseEsCard(session);
+            startedSends.add(event.uuid);
+          }
           // Forward the backend's answer ("this turn consumed uuid X") to the
           // host queue, keyed by the session the follow-up was queued under.
           // `ctx.sessionKey` is the same value passed to `streamAgentEvents`
@@ -3473,6 +3482,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           () => this.onSummaryTimerFire(session, sessionKey),
           (remainingMs) => this.onSummaryCountdownTick(session, sessionKey, remainingMs),
         );
+      }
+      // #846 — no host summary in an es turn: the thread head shows the TL;DR the es wrote to the card.
+      if (esWroteCardThisTurn(session) && this.deps.summaryService) {
+        this.deps.summaryService.displayEsTldrOnThread(session as any);
+        this.deps.threadPanel?.updatePanel(session, sessionKey)?.catch((err: any) => {
+          this.logger.warn('es TL;DR thread render failed', { sessionKey, error: err?.message });
+        });
       }
 
       // Completion message tracking moved to SlackBlockKitChannel.send()

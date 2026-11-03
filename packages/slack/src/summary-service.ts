@@ -213,6 +213,17 @@ export function esWroteCardThisTurn(session: object): boolean {
   return (session as { executiveSummary?: { source?: unknown } }).executiveSummary?.source === 'es';
 }
 
+/**
+ * #846 — input reached the model after this turn's es wrote the card (a steered message): the es verdict no longer
+ * covers the turn. Drops the marker only; the TL;DR stays until the turn-end summary decides again.
+ */
+export function releaseEsCard(session: object): void {
+  const s = session as { executiveSummary?: { tldr: string[]; at: number; source?: string } };
+  if (s.executiveSummary?.source !== 'es') return;
+  const { tldr, at } = s.executiveSummary;
+  s.executiveSummary = { tldr, at };
+}
+
 /** A TL;DR line that starts with ⚠️ (after any emphasis markers) — the unfinished-own-artifact signal (#829). */
 const FOLLOW_UP_LINE = /^[\s*_~]*\u26a0\ufe0f?/u;
 
@@ -730,6 +741,17 @@ export class SummaryService {
     session.actionPanel.summaryBlocks = blocks;
 
     logger.info('Countdown displayed on thread', { remainingMs, remainingText });
+  }
+
+  /**
+   * #846 — a turn whose model-run es wrote the card has no host summary (`esWroteCardThisTurn`). The thread head
+   * shows the TL;DR that es wrote instead, so Slack and the card say the same thing. No fork, no tool call.
+   */
+  displayEsTldrOnThread(session: SummarySessionInfo): void {
+    const tldr = session.executiveSummary?.tldr ?? [];
+    if (!session.actionPanel || tldr.length === 0) return;
+    session.actionPanel.summaryBlocks = this.buildTldrBlocks(tldr);
+    logger.info('es TL;DR displayed on thread surface', { tldrLines: tldr.length });
   }
 
   /**
