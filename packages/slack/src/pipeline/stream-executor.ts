@@ -52,6 +52,7 @@ import type { RequestAbortReason, RequestCoordinator } from '../request-coordina
 import {
   enqueueOrActivateGoal,
   findGoalById,
+  findPendingGoalPosition,
   formatGoalObjectiveForSlack,
   formatResumedGoalLine,
   type GoalQueueSession,
@@ -6448,6 +6449,32 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           (session.slackless === true && context.turnUserId) ||
           (session.ownerId as string) ||
           (session.userId as string);
+        // The same goal already running or waiting is not set again (#865): a model that reads the
+        // user's request again on a later turn calls SET_GOAL again, and the goal would queue behind
+        // itself. No state changes; the notice says where it already is.
+        const samePosition = findPendingGoalPosition(session as unknown as GoalQueueSession, objective);
+        if (samePosition !== undefined) {
+          this.logger.info('Skipped SET_GOAL — the same goal is already set', {
+            sessionKey: context.sessionKey,
+            position: samePosition,
+            objectivePreview: objective.slice(0, 120),
+          });
+          await this.reportModelCommandOutcome(
+            {
+              kind: 'notice',
+              text:
+                samePosition > 0
+                  ? `📋 Goal already queued at position ${samePosition} — not added again: ${formatGoalObjectiveForSlack(objective)}`
+                  : session.goal?.status === 'paused'
+                    ? `🎯 Goal already set (paused — \`goal resume\` runs it) — not added again: ${formatGoalObjectiveForSlack(objective)}`
+                    : `🎯 Goal already set — not added again: ${formatGoalObjectiveForSlack(objective)}`,
+            },
+            session,
+            context,
+            { flag: OutputFlag.STATUS_MESSAGE },
+          );
+          continue;
+        }
         const applied = enqueueOrActivateGoal(
           session as unknown as GoalQueueSession,
           objective,
