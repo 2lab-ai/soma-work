@@ -6457,6 +6457,11 @@ body.nt-open .new-task-fab { display: none !important; }
 .pp-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .pp-title { font-size: 13px; font-weight: 650; color: var(--ib-text); }
 .pp-note { font-size: 13px; color: var(--ib-muted); line-height: 1.5; }
+/* #846 — the follow-up row in 입력 필요 (read-only). */
+.pf-row { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--tint-wait-line); background: var(--tint-wait-soft); }
+.pf-head { font-size: 12px; font-weight: 600; color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text)); }
+.pf-reason { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.pf-hint { font-size: 12px; color: var(--ib-muted); }
 .pp-fold > summary { cursor: pointer; font-size: 12.5px; color: var(--ib-muted); margin-bottom: 8px; }
 .panel-plan-bar { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; padding: 8px 12px; margin-bottom: 8px; border-radius: 10px; background: var(--tint-wait-soft); border: 1px solid var(--tint-wait-line); }
 .ppb-label { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: var(--tint-wait-fg); }
@@ -7422,10 +7427,14 @@ function renderPanelPermission(s) {
     ids['i|' + ia[j].requestId] = true;
     if (seen && !seen['i|' + ia[j].requestId]) said.push('지시 승인 요청 — ' + (ia[j].requesterName || ia[j].requesterId || ''));
   }
+  if (panelFollowUpShown(s)) {
+    ids['f|' + (s.pendingFollowUp.at || 0)] = true;
+    if (seen && !seen['f|' + (s.pendingFollowUp.at || 0)]) said.push('후속 작업 필요 — ' + s.pendingFollowUp.reason.trim());
+  }
   container._seenKey = key;
   container._seen = ids;
   renderPanelNeedsHead(s);
-  var html = s ? acPermissionsHtml(s) + acGoalDecisionHtml(s) + acInstructionApprovalsHtml(s) : '';
+  var html = s ? acPermissionsHtml(s) + acGoalDecisionHtml(s) + acInstructionApprovalsHtml(s) + acFollowUpHtml(s) : '';
   var ae = document.activeElement;
   var had = !!(ae && container.contains(ae));
   if (!html) {
@@ -7462,10 +7471,24 @@ function panelQuestionShown(s) {
   if (!q || s.activityState !== 'waiting') return false;
   return (q.type === 'user_choice' && !!q.choices) || q.type === 'user_choices';
 }
+// #846 — the follow-up the last Executive Summary left (an own issue/PR/doc not complete). Not on a sleeping or
+// closed session: the server keeps sending pendingFollowUp there, and its card sits in closed.
+function panelFollowUpShown(s) {
+  var f = s && s.pendingFollowUp;
+  if (!f || typeof f.reason !== 'string' || !f.reason.trim()) return false;
+  return s.sessionState !== 'SLEEPING' && !s.terminated;
+}
+// One read-only row in 입력 필요: the user acts outside the panel; the steps are in the summary's last section.
+function acFollowUpHtml(s) {
+  if (!panelFollowUpShown(s)) return '';
+  return '<div class="pf-row" data-pf="followup" role="note"><span class="pf-head">' + '후속 작업 필요' + '</span>'
+    + '<span class="pf-reason">' + esc(s.pendingFollowUp.reason.trim()) + '</span>'
+    + '<span class="pf-hint">' + '처리 방법은 Executive Summary 맨 아래 ⚠️ 섹션에 있어요' + '</span></div>';
+}
 function renderPanelNeedsHead(s) {
   var head = document.getElementById('panel-needs-head');
   if (!head) return;
-  var n = s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (s.pendingInstructionApprovals || []).length + (panelQuestionShown(s) ? 1 : 0) + (s.taskPlan && s.taskPlan.state === 'awaiting' ? 1 : 0)) : 0;
+  var n = s ? ((s.pendingPermissions || []).length + (s.pendingGoalDecision ? 1 : 0) + (s.pendingInstructionApprovals || []).length + (panelQuestionShown(s) ? 1 : 0) + (s.taskPlan && s.taskPlan.state === 'awaiting' ? 1 : 0) + (panelFollowUpShown(s) ? 1 : 0)) : 0;
   head.hidden = n === 0;
   var count = document.getElementById('panel-needs-count');
   if (count && count.textContent !== String(n)) count.textContent = String(n);

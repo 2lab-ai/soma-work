@@ -196,11 +196,32 @@ function cleanTldrLines(lines: string[]): string[] {
 }
 
 /**
- * #829 — a TL;DR line as plain text: markdown bold (`**x**`, `__x__`) unwrapped. The Slack surface renders the
+ * #829 — a TL;DR line as plain text: the contract's bold (`**x**`) unwrapped. The Slack surface renders the
  * bold; the dashboard card draws text as is, so it shows this form (and the follow-up reason is built from it).
+ * #846 — double underscores are not unwrapped: in a TL;DR they are identifiers (`__init__`), not emphasis.
  */
 export function plainTldrLine(line: string): string {
-  return line.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/__([^_]+)__/g, '$1');
+  return line.replace(/\*\*([^*]+)\*\*/g, '$1');
+}
+
+/**
+ * #846 — this turn's model-run es (`local:auto-es`) wrote the card (`executiveSummary.source === 'es'`). The host
+ * fork of the same turn would be ignored by the card, so the turn end does not start it. The next input clears the
+ * marker (`clearDisplay`).
+ */
+export function esWroteCardThisTurn(session: object): boolean {
+  return (session as { executiveSummary?: { source?: unknown } }).executiveSummary?.source === 'es';
+}
+
+/**
+ * #846 — input reached the model after this turn's es wrote the card (a steered message): the es verdict no longer
+ * covers the turn. Drops the marker only; the TL;DR stays until the turn-end summary decides again.
+ */
+export function releaseEsCard(session: object): void {
+  const s = session as { executiveSummary?: { tldr: string[]; at: number; source?: string } };
+  if (s.executiveSummary?.source !== 'es') return;
+  const { tldr, at } = s.executiveSummary;
+  s.executiveSummary = { tldr, at };
 }
 
 /** A TL;DR line that starts with ⚠️ (after any emphasis markers) — the unfinished-own-artifact signal (#829). */
@@ -218,12 +239,36 @@ export function followUpFromTldr(tldr: readonly string[]): { reason: string } | 
     .filter((line) => FOLLOW_UP_LINE.test(line))
     .map((line) =>
       plainTldrLine(line.replace(FOLLOW_UP_LINE, ''))
-        .replace(/\*\*|__/g, '')
-        .replace(/^[\s*_~:—-]+|[\s*_~]+$/g, '')
+        .replace(/\*\*/g, '')
+        // #846 — strip leftover bold/strike markers and the separator, never an identifier's underscores.
+        .replace(/^[\s*~:—-]+|[\s*~]+$/g, '')
         .trim(),
     )
     .filter((reason) => reason.length > 0);
   return reasons.length > 0 ? { reason: reasons.join(' · ') } : undefined;
+}
+
+/**
+ * #846 — the follow-up a TL;DR leaves, set on the session. It is one fact with one start time: the same ⚠️ reason again
+ * keeps its time (the idle clock it floors and the panel's announcement do not restart, so re-running es on an
+ * unfinished artifact cannot push sleep out forever); a new reason starts at `at` and clears the sleep warnings sent on
+ * the old clock (they named the old expiry, and a sent warning is not sent again until cleared). No ⚠️ line clears it.
+ */
+export function applyFollowUp(session: object, tldr: readonly string[], at: number): void {
+  const s = session as {
+    followUp?: { reason: string; at: number };
+    lastWarningSentAt?: number;
+    warningMessageTs?: string;
+  };
+  const next = followUpFromTldr(tldr);
+  if (!next) {
+    s.followUp = undefined;
+    return;
+  }
+  if (s.followUp?.reason === next.reason) return;
+  s.followUp = { reason: next.reason, at };
+  s.lastWarningSentAt = undefined;
+  s.warningMessageTs = undefined;
 }
 
 /**
@@ -638,10 +683,7 @@ export class SummaryService {
       else session.executiveSummary = undefined;
       // #829 — a well-formed TL;DR decides whether the card waits on its user; a reply with none keeps the
       // previous verdict (a malformed summary is no evidence the work got finished).
-      if (tldr.length > 0) {
-        const followUp = followUpFromTldr(tldr);
-        session.followUp = followUp ? { reason: followUp.reason, at } : undefined;
-      }
+      if (tldr.length > 0) applyFollowUp(session, tldr, at);
     }
 
     if (!session.actionPanel) {
@@ -674,7 +716,7 @@ export class SummaryService {
    */
   buildTldrBlocks(tldr: string[]): any[] {
     const lines =
-      tldr.length > 0 ? tldr.map((line) => `• ${SummaryService.formatSummaryForSlack(line)}`) : [TLDR_MISSING_POINTER];
+      tldr.length > 0 ? tldr.map((line) => `• ${SummaryService.formatTldrLineForSlack(line)}`) : [TLDR_MISSING_POINTER];
     return [
       { type: 'divider' },
       {
@@ -719,6 +761,17 @@ export class SummaryService {
     session.actionPanel.summaryBlocks = blocks;
 
     logger.info('Countdown displayed on thread', { remainingMs, remainingText });
+  }
+
+  /**
+   * #846 — a turn whose model-run es wrote the card has no host summary (`esWroteCardThisTurn`). The thread head
+   * shows the TL;DR that es wrote instead, so Slack and the card say the same thing. No fork, no tool call.
+   */
+  displayEsTldrOnThread(session: SummarySessionInfo): void {
+    const tldr = session.executiveSummary?.tldr ?? [];
+    if (!session.actionPanel || tldr.length === 0) return;
+    session.actionPanel.summaryBlocks = this.buildTldrBlocks(tldr);
+    logger.info('es TL;DR displayed on thread surface', { tldrLines: tldr.length });
   }
 
   /**
@@ -845,6 +898,14 @@ export class SummaryService {
    * regex pass can't do safely. Leaving it alone keeps both meanings legible
    * (Slack renders `*x*` as bold either way).
    */
+  /**
+   * #846 — one TL;DR line for the Slack head: only the contract's bold (`**x**`) becomes Slack bold. A TL;DR has
+   * no headings or fences, and `__x__` there is an identifier (`__init__`), not emphasis — the card shows the same.
+   */
+  static formatTldrLineForSlack(line: string): string {
+    return line.replace(/\*\*([^*]+)\*\*/g, '*$1*');
+  }
+
   static formatSummaryForSlack(text: string): string {
     let inFence = false;
     return text

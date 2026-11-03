@@ -21,6 +21,7 @@ import {
 import { consumePendingRewind, resetChainTracking, trackChainPoint } from '@soma/slack/context-anchor';
 import { adoptSdkSessionId } from '@soma/slack/session-usage-math';
 import * as fs from 'fs';
+import type { HostWriteReceipt } from 'somalib/model-commands/host-receipt';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
 import { sharedStore } from 'somalib/permission/shared-store';
 import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShotText } from './agent-runtime';
@@ -666,6 +667,16 @@ export class ClaudeHandler implements TurnSteeringPort {
    */
   setExecutiveSummaryByKey(sessionKey: string, tldr: readonly string[]): boolean {
     return this.sessionRegistry.setExecutiveSummaryByKey(sessionKey, tldr);
+  }
+
+  /** #846 — the host receipt the model-command server answers GET_SESSION with (`host`). */
+  writeModelCommandReceipt(channelId: string, threadTs: string | undefined, lastWrite?: HostWriteReceipt): void {
+    this.sessionRegistry.writeModelCommandReceipt(channelId, threadTs, lastWrite);
+  }
+
+  /** The same by session key — a Slack-less task. */
+  writeModelCommandReceiptByKey(sessionKey: string, lastWrite?: HostWriteReceipt): void {
+    this.sessionRegistry.writeModelCommandReceiptByKey(sessionKey, lastWrite);
   }
 
   updateSessionResourcesByKey(sessionKey: string, request: SessionResourceUpdateRequest): SessionResourceUpdateResult {
@@ -2357,6 +2368,8 @@ export class ClaudeHandler implements TurnSteeringPort {
     if (!slackContext) {
       // A Slack-less dashboard task: reached by its key; the user is the turn's (the context's).
       if (executionContext?.origin !== 'task') return undefined;
+      // #846 — this turn's server reads back what the host holds; write it now so a re-read at once has it.
+      this.sessionRegistry.writeModelCommandReceiptByKey(executionContext.sessionKey);
       return {
         user: executionContext.userId,
         surface: 'task',
@@ -2364,9 +2377,11 @@ export class ClaudeHandler implements TurnSteeringPort {
         renewState: null,
         session: this.sessionRegistry.getSessionResourceSnapshotByKey(executionContext.sessionKey),
         sessionTitle: session?.title,
+        receiptFile: this.sessionRegistry.modelCommandReceiptFileByKey(executionContext.sessionKey),
       };
     }
 
+    this.sessionRegistry.writeModelCommandReceipt(slackContext.channel, slackContext.threadTs);
     return {
       channel: slackContext.channel,
       threadTs: slackContext.threadTs,
@@ -2375,6 +2390,7 @@ export class ClaudeHandler implements TurnSteeringPort {
       renewState: session?.renewState ?? null,
       session: this.sessionRegistry.getSessionResourceSnapshot(slackContext.channel, slackContext.threadTs),
       sessionTitle: session?.title,
+      receiptFile: this.sessionRegistry.modelCommandReceiptFile(slackContext.channel, slackContext.threadTs),
     };
   }
 }

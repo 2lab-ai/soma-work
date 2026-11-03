@@ -142,6 +142,7 @@ describe('server — the follow-up projects an idle card to NEEDS YOU', () => {
     expect(b.working[0].pendingFollowUp).toBeUndefined();
   });
 
+  // #846 item 7 — `**x**` is the contract's bold and is unwrapped; `__x__` is an identifier and stays.
   it('the card TL;DR box shows the ⚠️ line without the markdown bold markers', async () => {
     const b = await board(
       new Map([
@@ -150,14 +151,18 @@ describe('server — the follow-up projects an idle card to NEEDS YOU', () => {
           session({
             followUp: FOLLOW_UP,
             executiveSummary: {
-              tldr: ['PR #12 opened.', `⚠️ **${FOLLOW_UP.reason}**`, 'Next: __merge__ #12.'],
+              tldr: ['PR #12 opened.', `⚠️ **${FOLLOW_UP.reason}**`, 'Next: **merge** #12, then fix __init__.'],
               at: FOLLOW_UP.at,
             },
           }),
         ],
       ]),
     );
-    expect(b.waiting[0].esTldr.lines).toEqual(['PR #12 opened.', `⚠️ ${FOLLOW_UP.reason}`, 'Next: merge #12.']);
+    expect(b.waiting[0].esTldr.lines).toEqual([
+      'PR #12 opened.',
+      `⚠️ ${FOLLOW_UP.reason}`,
+      'Next: merge #12, then fix __init__.',
+    ]);
   });
 
   it('no follow-up (or an empty reason) → DONE as before', async () => {

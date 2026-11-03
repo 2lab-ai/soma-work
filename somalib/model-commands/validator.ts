@@ -2,6 +2,7 @@ import { attachCommandHelp } from './command-help';
 import { expectedHandoffKind, extractSentinelType, isZHandoffWorkflow } from './handoff-parser';
 import type {
   SaveContextResultPayload,
+  SessionInstructionOperation,
   SessionLink,
   SessionResourceOperation,
   SessionResourceType,
@@ -497,9 +498,23 @@ function parseUpdateSessionRequest(
     executiveSummary = { tldr };
   }
 
-  // Must have at least one of operations, title or executiveSummary
-  if (operations.length === 0 && !title && !executiveSummary) {
-    return invalidArgs('UPDATE_SESSION requires operations or title (or executiveSummary)');
+  // #846 — instruction writes ride along to the host, which gates them for the user's y/n.
+  let instructionOperations: SessionInstructionOperation[] | undefined;
+  if (raw.instructionOperations !== undefined) {
+    if (!Array.isArray(raw.instructionOperations)) {
+      return invalidArgs('UPDATE_SESSION instructionOperations must be an array');
+    }
+    instructionOperations = [];
+    for (const entry of raw.instructionOperations) {
+      const parsed = parseInstructionOperation(entry);
+      if (!parsed.ok) return parsed;
+      instructionOperations.push(parsed.value);
+    }
+  }
+
+  // Must have at least one of operations, title, executiveSummary or instructionOperations
+  if (operations.length === 0 && !title && !executiveSummary && !instructionOperations?.length) {
+    return invalidArgs('UPDATE_SESSION requires operations or title (or executiveSummary / instructionOperations)');
   }
 
   const expectedSequence = raw.expectedSequence;
@@ -515,8 +530,51 @@ function parseUpdateSessionRequest(
       ...(title ? { title } : {}),
       ...(title && titleFillOnly === true ? { titleFillOnly: true } : {}),
       ...(executiveSummary ? { executiveSummary } : {}),
+      ...(instructionOperations?.length ? { instructionOperations } : {}),
     },
   };
+}
+
+const INSTRUCTION_STATUSES = ['active', 'todo', 'completed'] as const;
+
+/** One instruction write, shaped like the catalog schema advertises it (#846). */
+function parseInstructionOperation(
+  raw: unknown,
+): { ok: true; value: SessionInstructionOperation } | { ok: false; error: ModelCommandError } {
+  if (!isRecord(raw)) return invalidArgs('UPDATE_SESSION instructionOperations entries must be objects');
+  const nonEmpty = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined;
+  const id = nonEmpty(raw.id);
+  switch (raw.action) {
+    case 'add': {
+      const text = nonEmpty(raw.text);
+      if (!text) return invalidArgs('UPDATE_SESSION instruction add requires text');
+      const source = nonEmpty(raw.source);
+      return { ok: true, value: { action: 'add', text, ...(source ? { source } : {}) } };
+    }
+    case 'remove':
+      if (!id) return invalidArgs('UPDATE_SESSION instruction remove requires id');
+      return { ok: true, value: { action: 'remove', id } };
+    case 'clear':
+      return { ok: true, value: { action: 'clear' } };
+    case 'complete': {
+      const evidence = nonEmpty(raw.evidence);
+      if (!id || !evidence) return invalidArgs('UPDATE_SESSION instruction complete requires id and evidence');
+      return { ok: true, value: { action: 'complete', id, evidence } };
+    }
+    case 'setStatus': {
+      const status = raw.status;
+      if (!id || !INSTRUCTION_STATUSES.includes(status as (typeof INSTRUCTION_STATUSES)[number])) {
+        return invalidArgs('UPDATE_SESSION instruction setStatus requires id and status (active | todo | completed)');
+      }
+      return {
+        ok: true,
+        value: { action: 'setStatus', id, status: status as (typeof INSTRUCTION_STATUSES)[number] },
+      };
+    }
+    default:
+      return invalidArgs(`Unsupported instruction action: ${String(raw.action)}`);
+  }
 }
 
 function parseSessionOperation(

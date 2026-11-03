@@ -3167,6 +3167,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'acPermissionsHtml',
         'acGoalDecisionHtml',
         'acInstructionApprovalsHtml',
+        'acFollowUpHtml',
+        'panelFollowUpShown',
         'acSlotHtml',
         'acQuestionId',
         'acQuestionHtml',

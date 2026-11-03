@@ -138,3 +138,11 @@ describe('C3 — the harness prompts route to local:auto-es', () => {
     expect(defaultPrompt).not.toMatch(/`local:es` renders/);
   });
 });
+
+describe('C5 — the host receipt (#846 item 2)', () => {
+  it('the check reads the host’s receipt: payload.host, hostPending, lastWrite', () => {
+    expect(check).toContain('`payload.host`');
+    expect(check).toMatch(/`hostPending: true`[^\n]*다시 읽는다/);
+    expect(check).toMatch(/`host\.lastWrite\.ok`[^\n]*카드는 바뀌지 않은 것이다/);
+  });
+});

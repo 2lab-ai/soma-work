@@ -1235,5 +1235,8 @@
   "🔴 AI 권고: 실행하지 마세요": "🔴 AI advice: do not run this",
   "🚫 거절": "🚫 Decline",
   "🛑 취소": "🛑 Cancel",
-  "🟢 AI 추천: 승인해도 됩니다": "🟢 AI advice: safe to approve"
+  "🟢 AI 추천: 승인해도 됩니다": "🟢 AI advice: safe to approve",
+  "후속 작업 필요": "Follow-up needed",
+  "후속 작업 필요 — ": "Follow-up needed — ",
+  "처리 방법은 Executive Summary 맨 아래 ⚠️ 섹션에 있어요": "The steps are in the ⚠️ section at the end of the Executive Summary"
 }

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
@@ -17,6 +18,7 @@ import {
   surfaceRefusal,
 } from '@soma/process-shared/model-commands/catalog.js';
 import { HierarchicalMemoryFileStore } from '@soma/process-shared/model-commands/hierarchical-memory-store.js';
+import { readHostReceipt } from '@soma/process-shared/model-commands/host-receipt.js';
 import { MemoryFileStore } from '@soma/process-shared/model-commands/memory-file-store.js';
 import { SkillFileStore } from '@soma/process-shared/model-commands/skill-file-store.js';
 import type {
@@ -57,6 +59,7 @@ export function parseModelCommandContext(rawContext: string | undefined): ModelC
       renewState:
         parsed.renewState === 'pending_save' || parsed.renewState === 'pending_load' ? parsed.renewState : null,
       session: normalizeSessionSnapshot(isRecord(parsed.session) ? (parsed.session as any) : undefined),
+      ...(typeof parsed.receiptFile === 'string' && parsed.receiptFile ? { receiptFile: parsed.receiptFile } : {}),
     };
   } catch (error) {
     logger.warn('Failed to parse SOMA_COMMAND_CONTEXT, using default context', {
@@ -72,6 +75,8 @@ export function buildModelCommandListResponse(context: ModelCommandContext): Mod
     commands: listModelCommands(context),
   };
 }
+
+let receiptCounter = 0;
 
 export function buildModelCommandRunResponse(args: unknown, context: ModelCommandContext): ModelCommandRunResponse {
   const validated = validateModelCommandRunArgs(args);
@@ -104,6 +109,32 @@ export function buildModelCommandRunResponse(args: unknown, context: ModelComman
   const result = runModelCommand(validated.request, context);
   if (result.ok && result.commandId === 'UPDATE_SESSION') {
     context.session = result.payload.session;
+    // #846 — name the write so GET_SESSION can tell whether the host has handled it.
+    // Unique across servers (each turn spawns its own process): time, a counter and a random tail.
+    const receiptId = `r_${Date.now().toString(36)}_${(++receiptCounter).toString(36)}_${randomBytes(4).toString('hex')}`;
+    context.lastReceiptId = receiptId;
+    result.payload.receiptId = receiptId;
+  }
+  if (result.ok && result.commandId === 'GET_SESSION' && context.receiptFile) {
+    // #846 — the host's word, not this server's copy: what it applied, the card TL;DR and NEEDS YOU reason.
+    const host = readHostReceipt(context.receiptFile);
+    if (host) {
+      // This server's own write, from the per-write ledger (never the single latest `lastWrite`, which another
+      // server's write or a superseded turn's late callback can replace).
+      const own = context.lastReceiptId ? host.acks?.[context.lastReceiptId] : undefined;
+      const caughtUp = own !== undefined;
+      // `lastWrite` is only ever this server's own write — the file's latest may be another turn's.
+      const { acks: _acks, lastWrite: _latest, ...hostView } = host;
+      result.payload.host = own ? { ...hostView, lastWrite: own } : hostView;
+      result.payload.hostPending = !!context.lastReceiptId && !caughtUp;
+      if (caughtUp) {
+        // The host handled THIS server's last write: its snapshot is the truth, and later writes lock against its
+        // sequence. A receipt for no write of ours (turn start, another turn) stays advisory — the spawned snapshot
+        // remains the lock.
+        context.session = normalizeSessionSnapshot(host.session);
+        result.payload.session = context.session;
+      }
+    }
   }
   if (result.ok && result.commandId === 'SAVE_CONTEXT_RESULT') {
     context.renewState = 'pending_load';
