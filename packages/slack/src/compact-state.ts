@@ -176,6 +176,17 @@ export function stashUserMessageDuringCompaction(
  * died without ANY END signal, so the intercepted message can never be
  * silently overwritten by the next auto-compact interception.
  */
+/**
+ * A message the compaction intercepted still waits for its replay — not yet
+ * promoted (`pendingUserText`) or already queued (`compactPendingDispatches`).
+ */
+export function hasCompactReplayWaiting(session: CompactStateSession): boolean {
+  return (
+    Boolean(session.pendingUserText && session.pendingEventContext) ||
+    (session.compactPendingDispatches?.length ?? 0) > 0
+  );
+}
+
 export function promotePendingToDispatchQueue(session: CompactStateSession): void {
   if (!session.pendingUserText || !session.pendingEventContext) return;
   const payload: CompactDispatchPayload = {

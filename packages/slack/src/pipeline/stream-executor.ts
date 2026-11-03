@@ -15,6 +15,7 @@ import type { AgentTreeEvent } from '../agent-tree';
 import type { AssistantStatusManager } from '../assistant-status-manager';
 import {
   type CompactStateSession,
+  hasCompactReplayWaiting,
   isAutoCompactPaused,
   pauseAutoCompactAfterFailure,
   promotePendingToDispatchQueue,
@@ -1554,6 +1555,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // compacted. Declared outside the try so `finally` can see all three.
     let compactBoundarySeen = false;
     let compactFailureHandled = false;
+    // #891 — this `/compact` turn ended with its intercepted message still
+    // waiting for the replay `finally` dispatches: it stays working until then.
+    let workingForCompactReplay = false;
     // The occupancy this turn started from (the last turn's reading). A turn
     // that starts over the auto-compact trigger is armed, never stopped —
     // see `onArmed` below.
@@ -3016,7 +3020,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Transition activity state
       // Issue #391: Skip idle transition when continuation exists — next turn starts immediately,
       // so transitioning to idle would cause dashboard to briefly flicker to "대기" column.
-      const hasContinuation = Boolean(toolContinuation);
+      // #891 — so does a `/compact` turn whose intercepted message waits for the
+      // replay this turn's `finally` dispatches: the compaction is a step inside
+      // the user's turn, not its end, so it must not read as "완료" meanwhile.
+      workingForCompactReplay =
+        session.compactTurnActive === true && hasCompactReplayWaiting(session as CompactStateSession);
+      const hasContinuation = Boolean(toolContinuation) || workingForCompactReplay;
       if (!hasContinuation) {
         this.setActivity(session, sessionKey, channel, threadTs, hasPendingChoice ? 'waiting' : 'idle');
         await this.updateRuntimeStatus(
@@ -3308,7 +3317,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         this.deps.summaryTimer &&
         category !== 'Exception' &&
         category !== 'Stalled' &&
-        !esWroteCardThisTurn(session)
+        !esWroteCardThisTurn(session) &&
+        // #891 — the replayed message is the turn that ends the work.
+        !workingForCompactReplay
       ) {
         this.deps.summaryTimer.start(
           sessionKey,
@@ -3806,13 +3817,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Runs on every exit path (success, error, abort); skipped only when
       // the session was explicitly terminated mid-turn.
       const queue = session.compactPendingDispatches;
+      // #891 — whether a turn now owns the session's activity (the replay, or
+      // the newer / outer turn the queue is left parked for).
+      let replayTookOver = false;
       if (queue && queue.length > 0 && !session.terminated) {
         if (this.deps.requestCoordinator.isRequestActive(sessionKey)) {
+          replayTookOver = true;
           this.logger.info('Deferred post-compact dispatch left parked — a newer turn is active', {
             sessionKey,
             queued: queue.length,
           });
         } else if (session.compactDispatchInFlight) {
+          replayTookOver = true;
           // Re-entrant turn: outer drain owns the queue; this finally is nested
           // inside the in-flight dispatch chain. Leave the queue parked.
           this.logger.debug('Deferred post-compact dispatch left parked — drain already in flight', {
@@ -3835,6 +3851,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             while (queue.length > 0) {
               const payload = queue[0];
               await dispatch(payload.ctx, payload.text, { compactRedispatch: true });
+              replayTookOver = true;
               queue.shift();
             }
             session.compactPendingDispatches = null;
@@ -3852,6 +3869,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             sessionKey,
           });
         }
+      }
+      // #891 — the replay this turn stayed working for never took over (the
+      // handoff failed, nothing is wired, the session ended), or it was handed
+      // off but started no turn (the pipeline halted it) and nothing else runs:
+      // go idle now, so the session never shows "working" with nothing running.
+      if (
+        workingForCompactReplay &&
+        (!replayTookOver ||
+          (!this.deps.requestCoordinator.isRequestActive(sessionKey) &&
+            this.deps.claudeHandler.getSessionRegistry?.().getActivityStateByKey?.(sessionKey) === 'working'))
+      ) {
+        this.setActivity(session, sessionKey, channel, threadTs, 'idle');
       }
     }
   }
