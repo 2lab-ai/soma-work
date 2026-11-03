@@ -1154,6 +1154,44 @@ describe('W15 — review round 15 (astra-zhuge)', () => {
   });
 });
 
+describe('W16 — review round 16 (astra-zhuge)', () => {
+  const U = 'https://github.com/a/b/pull/12';
+  const P = 'https://api.github.com/repos/a/b/pulls';
+  const made = '{"number":12,"html_url":"https://github.com/a/b/pull/12"}';
+
+  it('an unquoted $VAR value, `time ( … )`, a Python `\\` continuation, a require continued on the next line: not read', () => {
+    expect(
+      effectsOf(
+        // `$HDR` splits into words: `-H a:b -XGET` turns the request into a GET.
+        bash(`HDR='a:b -XGET'\ncurl -sS -X POST ${P} -H $HDR | jq '.[0]'`, made),
+        bash(`curl -sS -X POST ${P} -d @p $(printf -- -XGET) | jq '.[0]'`, made),
+        bash(`time (false || exit 1; gh pr create -R a/b --fill)\nprintf '%s\\n' ${U}`, U),
+        bash(`! (set -e; false; gh pr create -R a/b --fill)\nprintf '%s\\n' ${U}`, U),
+        bash(`python3 -c 'import requests\nrequests.post("${P}") \\\nif False else None\nprint("${U}")'`, U),
+        bash(`python3 -c 'import requests\nx = 1 if False \\\nelse requests.post("${P}")\nprint("${U}")'`, U),
+        bash(
+          `node -e 'const execSync = require("child_process")\n.spawnSync;\nexecSync("curl -s -X POST ${P} -d @p");\nconsole.log(${JSON.stringify(made)})'`,
+          made,
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it('a quoted variable, a $(…) inside quotes and a require on its own line still read', () => {
+    const made2 = (n: number) => `{"number":${n},"html_url":"https://github.com/a/b/pull/${n}"}`;
+    expect(
+      effectsOf(
+        bash(`curl -s -X POST ${P} -H "Authorization: Bearer $T" -d @p.json`, made2(41)),
+        bash(`curl -s -X POST ${P} -H "Authorization: Bearer $(cat t.txt)" -d @p.json`, made2(42)),
+        bash(
+          `node -e 'const { execSync } = require("child_process");\nexecSync("gh pr create -R a/b --fill", { stdio: "inherit" })'`,
+          'https://github.com/a/b/pull/43\n',
+        ),
+      ).map(short),
+    ).toEqual([41, 42, 43].map((n) => ['create', 'pr', `https://github.com/a/b/pull/${n}`]));
+  });
+});
+
 describe('githubEffectsOf — every spelling of a create', () => {
   it('W4 — gh pr create and gh issue create (the output ends with the new URL)', () => {
     expect(

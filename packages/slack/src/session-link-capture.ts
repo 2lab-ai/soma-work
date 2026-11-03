@@ -499,8 +499,6 @@ function splitShell(
     // 3. `exit 256` wraps to 0: a failing status is 1–255.
     const code = t.match(/^\s*exit(?:\s+(\d+))?\s*$/);
     const failExit = top && after === '||' && !!code && (code[1] === undefined || Number(code[1]) % 256 !== 0);
-    // A `( … )` subshell: an exit or `set` inside it stops only the subshell, which the level's status does not show.
-    if (/^\s*\(/.test(t)) complex = true;
     if ((CONTROL_WORDS.test(w) && !failExit) || /^[\s{(]*[\w-]+\s*\(\s*\)/.test(t)) complex = true;
     if (next !== '|') {
       pipeAnd = false;
@@ -636,6 +634,13 @@ function splitShell(
     if (c === '#' && (head === '' || /\s/.test(text[i - 1] ?? ''))) {
       while (i < text.length && text[i] !== '\n') i++;
       continue;
+    }
+    // A `( … )` subshell where a word starts (`( … )`, `time ( … )`, `! ( … )`): an exit or `set` inside it stops only
+    // the subshell, which the level's status does not show. Not `$(`, `<(`, `>(`, `=(` (read above), not `f ()`.
+    if (c === '(' && /^$|[\s;&|!]$/.test(tail.slice(-1))) {
+      let j = i + 1;
+      while (text[j] === ' ' || text[j] === '\t') j++;
+      if (text[j] !== ')') complex = true;
     }
     if (inSub && c === ')') {
       if (parens === 0) {
@@ -947,6 +952,26 @@ function readHttpie(words: Word[], at: number): ClientRequest | undefined {
 }
 
 /** The PR and issue writes a shell request names. */
+/**
+ * Whether a command holds an unquoted `$` expansion (`-H $HEADER`, `$(…)`): the shell splits it into words — options,
+ * values, destinations — the parser cannot see, so a client command with one is not read. `"$T"` stays one word.
+ */
+function unquotedExpansion(text: string): boolean {
+  let quote: '"' | "'" | '' = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote === "'") {
+      if (c === "'") quote = '';
+    } else if (quote === '"') {
+      if (c === '\\') i++;
+      else if (c === '"') quote = '';
+    } else if (c === '\\') i++;
+    else if (c === "'" || c === '"') quote = c;
+    else if (c === '$' || c === '`') return true;
+  }
+  return false;
+}
+
 function apiWrites(words: Word[], at: number): GitHubWrite[] {
   const name = nameOf(words[at]?.value);
   const requests =
@@ -1500,20 +1525,24 @@ function certainCalls(masked: string, lang: CodeLang): (at: number) => boolean {
   const stop = masked.search(/\b(?:process\.exit|process\.kill|throw|sys\.exit|os\._exit|exit|quit)\b/);
   return (at: number) => {
     if (depth[at] !== 0 || (stop >= 0 && stop < at)) return false;
-    // A JS statement runs to `;` or a brace (a condition on the line before still governs it); Python's to the line end.
-    const ends = lang === 'py' ? /\n/ : /[;{}]/;
+    // A JS statement runs to `;` or a brace (a condition on the line before still governs it); Python's to the end of
+    // its logical line (a trailing `\` or an open bracket joins the next physical line).
     let k = at - 1;
-    while (k >= 0 && !ends.test(masked[k])) k--;
+    if (lang === 'py') {
+      while (k >= 0 && !(masked[k] === '\n' && masked[k - 1] !== '\\' && pdepth[k] === 0)) k--;
+    } else {
+      while (k >= 0 && !/[;{}]/.test(masked[k])) k--;
+    }
     const prefix = masked.slice(k + 1, at);
     if (lang === 'py') {
-      // An indented line is inside a block.
-      let line = at;
-      while (line > 0 && masked[line - 1] !== '\n') line--;
+      // An indented logical line is inside a block.
+      const line = k + 1;
       if (/[ \t]/.test(masked[line] ?? '')) return false;
-      // A ternary (`x if c else y`), a comprehension or a generator (`(post(u) for u in [])`) anywhere on the line —
-      // or anywhere in the bracketed expression that holds the call, across lines.
-      const end = masked.indexOf('\n', at);
-      if (/\b(?:if|else|for|lambda|while)\b/.test(masked.slice(line, end < 0 ? masked.length : end))) return false;
+      // A ternary (`x if c else y`), a comprehension or a generator (`(post(u) for u in [])`) anywhere on the logical
+      // line — or anywhere in the bracketed expression that holds the call.
+      let end = at;
+      while (end < masked.length && !(masked[end] === '\n' && masked[end - 1] !== '\\' && pdepth[end] === 0)) end++;
+      if (/\b(?:if|else|for|lambda|while)\b/.test(masked.slice(line, end))) return false;
       if (pdepth[at] > 0) {
         let open = at - 1;
         while (open >= 0 && pdepth[open] > 0) open--;
@@ -1563,7 +1592,7 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
     // `require("axios")`, `require("axios").default`, `require("child_process").execSync` for `execSync`.
     const ownModule = clientModule
       ? new RegExp(
-          `^\\s*(?:require|await\\s+import)\\s*\\(\\s*["'\`](?:node:)?${clientModule}["'\`]\\s*\\)(?:\\.default|\\.${root})?\\s*(?:[;\\n]|$)`,
+          `^\\s*(?:require|await\\s+import)\\s*\\(\\s*["'\`](?:node:)?${clientModule}["'\`]\\s*\\)(?:\\.default|\\.${root})?(?:\\s*;|\\s*$|[ \\t]*\\n(?![ \\t]*[.([\`+\\-*/?]))`,
         )
       : undefined;
     const rebinds = [...masked.matchAll(new RegExp(`\\b${root}\\s*=(?!=)`, 'g'))].some(
@@ -1640,7 +1669,7 @@ function shellWrites(command: string, depth: number, out: GitHubWrite[]): void {
     if (cli) out.push(cli);
     const run = runOf(words, at);
     if (!run) continue;
-    if ('send' in run) out.push(...apiWrites(words, at));
+    if ('send' in run) out.push(...(unquotedExpansion(st.text.slice(words[at].start)) ? [] : apiWrites(words, at)));
     else if (st.depth < MAX_NESTING) {
       if ('shell' in run) shellWrites(run.shell, st.depth + 1, out);
       else codeWrites(run.code, run.lang, st.depth + 1, out);
