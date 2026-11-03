@@ -69,6 +69,9 @@ describe('SET_GOAL on a dashboard task — set, continued by the loop, completed
 
   afterEach(async () => {
     await stopWebServer?.();
+    // The appender this file installs (as src/index.ts does) must not outlive it in a shared worker.
+    const { setStreamExecutorProviders } = await import('@soma/slack/pipeline/stream-executor');
+    setStreamExecutorProviders({ appendWorkLog: () => {} });
   });
 
   async function signIn(slackUserId: string) {
@@ -247,11 +250,12 @@ describe('SET_GOAL on a dashboard task — set, continued by the loop, completed
         },
       }),
     );
-    return { registry, prompts, evals, slackNotices, executor, readWorkLog };
+    return { registry, prompts, evals, slackNotices, executor, readWorkLog, controller, goalLoop, coordinator };
   }
 
   it('the owner asks a dashboard task to set a goal: it is set, the loop runs the next turn, the goal completes', async () => {
-    const { registry, prompts, evals, slackNotices, executor, readWorkLog } = await wire();
+    const { registry, prompts, evals, slackNotices, executor, readWorkLog, controller, goalLoop, coordinator } =
+      await wire();
     const owner = await signIn(OWNER);
 
     const created = await injectWebServer({
@@ -284,7 +288,17 @@ describe('SET_GOAL on a dashboard task — set, continued by the loop, completed
       },
       { timeout: 10_000 },
     );
-    await new Promise((r) => setTimeout(r, 200));
+    // "No third turn" is the loop at rest, not silence for a while (grok-elon #870 R1): no chain runs, no
+    // request holds the task, the loop's queue is drained — checked twice across a settle, so a start or an
+    // eval scheduled by the last one has had its chance to show.
+    const atRest = async () => {
+      await goalLoop.settled(key);
+      expect(controller.isRunning(key)).toBe(false);
+      expect(coordinator.isRequestActive(key)).toBe(false);
+    };
+    await vi.waitFor(atRest, { timeout: 10_000 });
+    await new Promise((r) => setImmediate(r));
+    await vi.waitFor(atRest, { timeout: 10_000 });
     expect(evals).toHaveLength(2);
     expect(prompts).toHaveLength(2);
 
