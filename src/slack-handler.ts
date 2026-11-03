@@ -6908,15 +6908,6 @@ export class SlackHandler {
    * controller is wired (`setGoalTurnSettledHandler`). Returns the count
    * resumed.
    */
-  /**
-   * Dashboard tasks whose turn the last restart cut (the registry's reconciliation, not a
-   * shutdown notice): their goal gets the continuation back, as a cut Slack turn does.
-   * Call before {@link resumeActiveGoals}, which reads the set once.
-   */
-  noteRestartCutSessionKeys(keys: Iterable<string>): void {
-    for (const key of keys) this.restartCutSessionKeys.add(key);
-  }
-
   resumeActiveGoals(): number {
     const handler = this.goalTurnSettledHandler;
     if (!handler) {
@@ -6929,11 +6920,11 @@ export class SlackHandler {
     let retriesClaimed = 0;
     let stallsEnded = 0;
     let refunded = 0;
+    // A task's cut turn is the load's record (no shutdown marker, not crash-recovered) — read once.
+    const cutTaskKeys: Set<string> = this.claudeHandler.takeRestartCutTaskKeys?.() ?? new Set<string>();
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
-      // A Slack-less task's goal resumes too (2026-11-03): its continuation runs as the task's
-      // next turn (the host's task injector), as a plan-mode task's goal drives its plan. Not an
-      // epic's: its waker drives it (trinity R1, fable P1-2).
-      if (session.slackless && session.kind === 'epic') continue;
+      // A Slack-less task resumes too (SSOT 2026-11-03): it runs turns (#598), and its goal's next
+      // turn is a host start on the task controller (task-goal-loop.ts), not a thread message.
       // Repair a stranded queue (defense for the eval-complete crash window):
       // if the current goal is genuinely closed (completed) or absent but goals
       // are still queued, promote the next one so the queue can't be orphaned.
@@ -6989,7 +6980,7 @@ export class SlackHandler {
       // refund either way. An open cap decision is the owner's call, and a cut
       // user turn (count 0) spent nothing.
       const capDecisionOpen = isGoalCapDecisionPending(session.goal);
-      const cutTurn = this.restartCutSessionKeys.has(sessionKey) || falseStall;
+      const cutTurn = this.restartCutSessionKeys.has(sessionKey) || cutTaskKeys.has(sessionKey) || falseStall;
       if (cutTurn && session.goal.continuationCount > 0 && !capDecisionOpen) {
         session.goal.continuationCount -= 1;
         refunded++;

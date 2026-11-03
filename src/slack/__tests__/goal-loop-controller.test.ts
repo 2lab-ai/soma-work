@@ -56,8 +56,6 @@ interface Harness {
   session: ConversationSession;
   goal: SessionGoal;
   injected: SyntheticMessageEvent[];
-  /** The session key each continuation was injected for (a dashboard task's goes to its controller). */
-  injectedKeys: string[];
   notices: string[];
   scheduledRetries: Array<{ fn: () => void; delayMs: number }>;
   saveCount: () => number;
@@ -74,7 +72,6 @@ function makeHarness(opts: {
   const goal = makeGoal(opts.goal);
   const session = makeSession(goal);
   const injected: SyntheticMessageEvent[] = [];
-  const injectedKeys: string[] = [];
   const notices: string[] = [];
   const scheduledRetries: Array<{ fn: () => void; delayMs: number }> = [];
   let saves = 0;
@@ -96,9 +93,8 @@ function makeHarness(opts: {
       isRequestActive: () => requestActive,
     },
     dispatcher,
-    injectContinuation: async (event, sessionKey) => {
+    injectContinuation: async (event) => {
       injected.push(event);
-      injectedKeys.push(sessionKey);
     },
     postNotice: async (_channel, _threadTs, text) => {
       notices.push(text);
@@ -117,7 +113,6 @@ function makeHarness(opts: {
     session,
     goal,
     injected,
-    injectedKeys,
     notices,
     scheduledRetries,
     saveCount: () => saves,
@@ -175,8 +170,6 @@ describe('GoalLoopController', () => {
     // M2: the injected event must carry the never-supersede marker so
     // session-initializer drops it (never aborts a live user turn).
     expect(h.injected[0].routeContext?.goalContinuation).toBe(true);
-    // 2026-11-03: the injector is told whose continuation it is — a dashboard task's runs through its controller.
-    expect(h.injectedKeys).toEqual([SESSION_KEY]);
     expect(h.notices.some((n) => n.includes('🔄 Goal not yet complete'))).toBe(true);
   });
 

@@ -326,6 +326,29 @@ describe('SessionRegistry — task id across restart and revive (T3)', () => {
     expect(revived!.conversationId).toBe('conv-305');
   });
 
+  it('T3.4b — a revive keeps when the task started; an archive from before the field gets none, not a new one (#833 review)', () => {
+    const reg = new SessionRegistry();
+    const session = ranSession(reg, 'C1', '300.008');
+    session.sessionWorkingDir = '/tmp/U1/my-named-folder';
+    session.startedAt = 1793000000000;
+    const key = reg.getSessionKey('C1', '300.008');
+    reg.terminateSession(key);
+    const archived = getArchiveStore()
+      .listRecent(DAY)
+      .find((a) => a.sessionKey === key);
+    expect(archived?.startedAt).toBe(1793000000000);
+
+    expect(reg.restoreArchivedSession(archived!, '/tmp/U1/my-named-folder')).toMatchObject({ ok: true });
+    expect(reg.getSession('C1', '300.008')?.startedAt).toBe(1793000000000);
+
+    // An archive written before startedAt existed: the revive does not invent a start (it would be the revive time).
+    const { startedAt: _dropped, ...old } = { ...archived!, sessionKey: 'work:C1:300.009', threadTs: '300.009' };
+    expect(reg.restoreArchivedSession({ ...old, taskId: undefined }, '/tmp/U1/my-named-folder')).toMatchObject({
+      ok: true,
+    });
+    expect(reg.getSession('C1', '300.009')?.startedAt).toBeUndefined();
+  });
+
   it('T3.5 — a revive whose task id is already live gets a fresh id instead of stealing it', () => {
     const reg = new SessionRegistry();
     const live = ranSession(reg, 'C1', '300.006');

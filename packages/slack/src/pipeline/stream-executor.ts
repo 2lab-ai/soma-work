@@ -320,6 +320,11 @@ export interface StreamExecutorProviders {
    * never throw. No-op by default.
    */
   recordAgentEvent?: (sessionKey: string, event: AgentTreeEvent) => void;
+  /**
+   * #833 — the turn ended: the host asks GitHub which PRs the session's own branches have and records them on the
+   * card, however they were made. Fire-and-forget; must never throw or block. No-op by default.
+   */
+  reconcileSessionPrs?: (args: { sessionKey: string; session: ConversationSession; workingDirectory: string }) => void;
   /** API-equivalent cost of calls folded from an interrupted turn. 0 by default. */
   priceLiveUsage?: (
     model: string | undefined,
@@ -385,6 +390,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   postCompactStartingIfNeeded: async () => undefined,
   notifyLiveUsage: () => {},
   confirmGithubEffects: ({ effects }) => effects,
+  reconcileSessionPrs: () => {},
   priceLiveUsage: () => 0,
 };
 
@@ -2086,7 +2092,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // on synthetic/continuation turns (fail closed when text is absent).
         currentUserText: text,
         isCompactTurn: (isSlashCommand && trimmedText.startsWith('/compact')) || Boolean(session.fallbackCompactActive),
-        isUserInputTurn: params.isUserInput === true,
+        // A host turn (a Slack goal replay, a dashboard task's host start — an epic waking, a child
+        // instructed, the goal loop) is soma-work's words, never the person's: it cannot set a goal.
+        isUserInputTurn: params.isUserInput === true && params.hostTurn !== true,
+        ...(taskTurn ? { turnUserId: (params.executionContext as { userId?: string } | undefined)?.userId } : {}),
         incidentAttempt,
         ...(session.conversationId ? { workLog: emitWorkLog } : {}),
         // The ASK_USER_QUESTION form is posted here, not by the processor
@@ -3908,6 +3917,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           turnId,
           error: (err as Error)?.message ?? String(err),
         });
+      }
+      // #833 — the PRs GitHub says the session's branches have go on the card, however they were made (REST, the web
+      // UI). On every exit — a PR made before an error or an abort counts. Fire-and-forget; never breaks the turn.
+      if (!session.terminated) {
+        try {
+          streamExecutorProviders.reconcileSessionPrs?.({ sessionKey, session, workingDirectory });
+        } catch (err) {
+          this.logger.debug('stream-executor: reconcileSessionPrs threw', {
+            sessionKey,
+            error: (err as Error)?.message ?? String(err),
+          });
+        }
       }
       // A28: the LAST write this turn makes, and the one most likely to land
       // after `Send now` has already started a new turn — it carries the
@@ -6389,7 +6410,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // S4: honor the per-user max-continuation default on the SET_GOAL
         // host-apply surface too, so a model-set goal gets the same cap a typed
         // `goal max <N>` would apply to new goals.
-        const goalOwner = (session.ownerId as string) || (session.userId as string);
+        // A dashboard task's goal is the turn's user's (its execution context): the goal loop runs its next
+        // turns as the goal's owner, and a user who instructed someone else's task was never given the
+        // owner's identity (#861 R1, astra-zhuge P1). A Slack goal stays the session owner's.
+        const goalOwner =
+          (session.slackless === true && context.turnUserId) ||
+          (session.ownerId as string) ||
+          (session.userId as string);
         const applied = enqueueOrActivateGoal(
           session as unknown as GoalQueueSession,
           objective,
@@ -6475,7 +6502,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         }
 
-        if (hasInstructionOps) {
+        if (hasInstructionOps && byKey) {
+          // The y/n confirmation is a Slack button: a dashboard task has no thread to post it in.
+          // The write is refused visibly (never a Slack call from a task turn — T9).
+          await this.reportModelCommandOutcome(
+            {
+              kind: 'notice',
+              text: '⚠️ Instruction changes were not applied: their y/n confirmation needs a Slack thread, and a dashboard task has none.',
+            },
+            session,
+            context,
+            { alwaysPost: true },
+          );
+        } else if (hasInstructionOps) {
           await this.interceptInstructionOperationsForConfirm(request, session, context);
         }
 
