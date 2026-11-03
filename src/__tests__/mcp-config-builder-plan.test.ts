@@ -3,7 +3,8 @@
  *
  *   B1 a task turn whose plan is not started gets the `plan` server, allowed (a legacy turn never asks).
  *   B2 while a plan is not started an epic gets no `epic` server — no child before the owner starts it.
- *   B3 a started plan's turn, an ordinary task and a Slack turn get no `plan` server.
+ *   B3 a started plan's turn, an ordinary task and a Slack turn without plan mode get no `plan` server;
+ *      a Slack turn in plan mode gets it (#853).
  */
 import { describe, expect, it, vi } from 'vitest';
 
@@ -66,19 +67,25 @@ describe('McpConfigBuilder — the plan server (plan mode)', () => {
     expect(started.mcpServers ?? {}).not.toHaveProperty('plan');
   });
 
+  const slackCtx = (planPending?: true) =>
+    ({
+      origin: 'slack',
+      userId: 'U1',
+      isAdmin: false,
+      permissionMode: 'legacy',
+      sessionKey: 'work:C1:1.1',
+      ...(planPending ? { planPending } : {}),
+    }) as unknown as ExecutionContext;
+
+  it('B3 — #853: a Slack turn in plan mode gets the plan server, allowed', async () => {
+    const config = await build(slackCtx(true));
+    expect(config.mcpServers ?? {}).toHaveProperty('plan');
+    expect(config.allowedTools ?? []).toContain('mcp__plan');
+  });
+
   it.each([
     ['an ordinary task', taskCtx()],
-    [
-      'a Slack turn',
-      {
-        origin: 'slack',
-        userId: 'U1',
-        isAdmin: false,
-        permissionMode: 'legacy',
-        sessionKey: 'work:C1:1.1',
-        planPending: true,
-      } as unknown as ExecutionContext,
-    ],
+    ['a Slack turn without plan mode', slackCtx()],
   ])('B3 — %s gets no plan server', async (_label, ctx) => {
     const config = await build(ctx);
     expect(config.mcpServers ?? {}).not.toHaveProperty('plan');

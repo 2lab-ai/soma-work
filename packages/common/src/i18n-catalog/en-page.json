@@ -202,6 +202,7 @@
   "<div class=\"pv-sub\">모델 · 시작한 사람 · 도구 호출 · 활성 시간 · 누적 토큰 …</div>": "<div class=\"pv-sub\">Model · Started by · Tool calls · Active time · Cumulative tokens …</div>",
   "<div class=\"pv-sub\">새 디자인 적용 · 폼 검증</div>": "<div class=\"pv-sub\">Applying new design · Form validation</div>",
   "<div class=\"pv-sub\">이 세션 · Opus 5.5 · 높음 ▾</div>": "<div class=\"pv-sub\">This session · Opus 5.5 · High ▾</div>",
+  "<div class=\"pv-tabs\"><span>대화</span><span>작업 로그</span></div>": "<div class=\"pv-tabs\"><span>Conversation</span><span>Work log</span></div>",
   "<div class=\"pv-tabs\"><span>대화</span><span>작업 로그</span><span>에이전트 트리</span></div>": "<div class=\"pv-tabs\"><span>Conversation</span><span>Work log</span><span>Agent tree</span></div>",
   "<div class=\"pv-tabs\"><span>메인</span><span>A1 Explore</span><span>A2 general-purpose</span></div>": "<div class=\"pv-tabs\"><span>Main</span><span>A1 Explore</span><span>A2 general-purpose</span></div>",
   "<div class=\"rb-empty\">되돌릴 수 있는 지점이 없습니다</div>": "<div class=\"rb-empty\">No point to roll back to</div>",

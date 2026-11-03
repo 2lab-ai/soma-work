@@ -155,6 +155,7 @@ import {
 } from './permission-prompts';
 import { getConversation, resummarizeTurn } from './recorder';
 import { soundClientJs } from './sound-client';
+import { themeClientJs } from './theme-client';
 import { renderTaskPlanHtml, renderTaskPlanPage, TASK_PLAN_CSS, TASK_PLAN_PAGE_CSP } from './task-plan-html';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
 import {
@@ -2476,9 +2477,9 @@ export interface KanbanTaskPlan {
   decidedBy?: string;
 }
 
-/** Plan mode — a Slack-less task's gate for its card; undefined for any other session. */
-export function taskPlanToKanban(s: { slackless?: boolean; taskPlan?: TaskPlanGate }): KanbanTaskPlan | undefined {
-  const gate = s.slackless === true ? s.taskPlan : undefined;
+/** Plan mode — a session's plan gate for its card (a task or a Slack thread — #853); none without plan mode. */
+export function taskPlanToKanban(s: { taskPlan?: TaskPlanGate }): KanbanTaskPlan | undefined {
+  const gate = s.taskPlan;
   if (!gate) return undefined;
   const plan = gate.plan;
   return {
@@ -2513,9 +2514,9 @@ function followUpOf(s: {
   return { reason: f.reason.trim(), at: finiteNumber(f.at) ?? 0 };
 }
 
-/** Plan mode — an idle task whose plan waits for its owner asks for them (NEEDS YOU). */
-function planAsks(s: { slackless?: boolean; taskPlan?: TaskPlanGate; activityState?: string }): boolean {
-  return s.slackless === true && s.taskPlan?.state === 'awaiting' && (s.activityState || 'idle') === 'idle';
+/** Plan mode — an idle session whose plan waits for its owner asks for them (NEEDS YOU), Slack thread or task (#853). */
+function planAsks(s: { taskPlan?: TaskPlanGate; activityState?: string }): boolean {
+  return s.taskPlan?.state === 'awaiting' && (s.activityState || 'idle') === 'idle';
 }
 
 /**
@@ -2690,7 +2691,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...(s.slackless === true ? { slackless: true as const, ...noticeFailuresOf(key) } : {}),
     ...(s.slackless === true && s.kind === 'epic' ? { kind: 'epic' as const, epic: epicBundle(s) } : {}),
     // Plan mode — the gate (its plan is fetched).
-    ...(s.slackless === true && s.taskPlan ? { taskPlan: taskPlanToKanban(s) } : {}),
+    ...(s.taskPlan ? { taskPlan: taskPlanToKanban(s) } : {}),
     ...(s.slackless === true && s.parentTaskId
       ? {
           parentTaskId: s.parentTaskId,
@@ -4401,12 +4402,12 @@ export async function registerDashboardRoutes(
 
   // ── Plan mode (SSOT 2026-11-02): a task's plan, its full page, and 시작 / 취소 ──
 
-  /** A plan-mode task's live record for a read of its plan (any signed-in viewer of the board). */
+  /** A plan-mode session's live record for a read of its plan (any signed-in viewer of the board) — a task or a Slack thread (#853). */
   const planTaskOf = (wireKey: string, reply: any): { key: string; session: any } | null => {
     const key = resolveSelfActionKey(wireKey, reply);
     if (key === null) return null;
     const session = _getSessionsFn?.()?.get(key);
-    if (!session || session.slackless !== true || !session.taskPlan) {
+    if (!session || !session.taskPlan) {
       reply.status(404).send({ error: 'no plan for this task' });
       return null;
     }
@@ -5374,10 +5375,8 @@ window.uiPeek = { html: peekHtml, kind: fileItemKind };
 <script type="module" src="/dashboard/ui/elapsed.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/meter.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/media-grid.js?v=${UI_LIB_VERSION}"></script>
-<script data-fouc>
-// FOUC prevention — apply theme before CSS paints
-(function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
-</script>
+<!-- The theme (soma-work 830): light · dark · light·mono · dark·mono on <html> before CSS paints, and the bar's toggle. -->
+<script data-fouc>${themeClientJs()}</script>
 <!-- Interface sound (@2lab.ai/ui/sound, sound-cuelume): off until the speaker beside the theme switch turns it on. -->
 <script data-sound>${soundClientJs(UI_LIB_VERSION)}</script>
 <!-- @2lab.ai/ui kit (ui-kit.css): the light-DOM button, icon button, chip, status, kbd … classes on the
@@ -5397,20 +5396,22 @@ ${TASK_PLAN_CSS}
 :root {
   /* Dashboard-only (no library counterpart). Motion is the contract's alone: --dur-press / -fade /
      -expand / -move with --ease-out / --ease-in-out; colour and border changes are 150ms ease. */
-  /* Status tints — the library recipe (agent-inbox / context-window styles): a 14% wash of the status
+  /* Mono pair (soma-work 830, @2lab.ai/ui ≥ 0.25.0): --chroma is 1 in light / dark and 0 under data-palette="mono", so every
+     wash and text tint below is the plain surface / ink in mono, and only the -line borders keep the status colour.
+     Status tints — the library recipe (agent-inbox / context-window styles): a 14% wash of the status
      into the surface, the word 70% of the status toward the ink. Every pair is ≥ 4.5:1 in light and
      dark (numbers in the P5 commit). Derived here once so no rule below hard-codes a colour. */
-  --tint-wait-bg: color-mix(in srgb, var(--st-wait) 14%, var(--surface));
-  --tint-wait-soft: color-mix(in srgb, var(--st-wait) 8%, var(--surface));
+  --tint-wait-bg: color-mix(in srgb, var(--st-wait) calc(14% * var(--chroma, 1)), var(--surface));
+  --tint-wait-soft: color-mix(in srgb, var(--st-wait) calc(8% * var(--chroma, 1)), var(--surface));
   --tint-wait-line: color-mix(in srgb, var(--st-wait) 40%, var(--border));
-  --tint-wait-fg: color-mix(in srgb, var(--st-wait) 70%, var(--text));
-  --tint-done-soft: color-mix(in srgb, var(--st-done) 8%, var(--surface));
+  --tint-wait-fg: color-mix(in srgb, var(--st-wait) calc(70% * var(--chroma, 1)), var(--text));
+  --tint-done-soft: color-mix(in srgb, var(--st-done) calc(8% * var(--chroma, 1)), var(--surface));
   --tint-done-line: color-mix(in srgb, var(--st-done) 40%, var(--border));
-  --tint-done-fg: color-mix(in srgb, var(--st-done) 70%, var(--text));
-  --tint-fail-bg: color-mix(in srgb, var(--st-fail) 14%, var(--surface));
-  --tint-fail-bg-2: color-mix(in srgb, var(--st-fail) 22%, var(--surface));
+  --tint-done-fg: color-mix(in srgb, var(--st-done) calc(70% * var(--chroma, 1)), var(--text));
+  --tint-fail-bg: color-mix(in srgb, var(--st-fail) calc(14% * var(--chroma, 1)), var(--surface));
+  --tint-fail-bg-2: color-mix(in srgb, var(--st-fail) calc(22% * var(--chroma, 1)), var(--surface));
   --tint-fail-line: color-mix(in srgb, var(--st-fail) 55%, var(--border));
-  --tint-fail-fg: color-mix(in srgb, var(--st-fail-text) 70%, var(--text));
+  --tint-fail-fg: color-mix(in srgb, var(--st-fail-text) calc(70% * var(--chroma, 1)), var(--text));
   --tint-accent-soft: color-mix(in srgb, var(--accent) 8%, var(--surface));
   --tint-accent-fg: color-mix(in srgb, var(--accent) 70%, var(--text));
   /* Scrim under overlays and dialogs (@2lab.ai/ui 0.5 --scrim; the installed 0.4.4 lacks it — once
@@ -5602,7 +5603,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .ag-id { flex-shrink: 0; font-size: 11.5px; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
 .ag-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .ag-model { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ib-text-2); }
-.ag-st { color: var(--ag-c); font-weight: 600; }
+.ag-st { color: color-mix(in srgb, var(--ag-c) calc(100% * var(--chroma, 1)), var(--text)); font-weight: 600; }
 .ag-more { margin: 4px 2px 0; font-size: 12px; color: var(--ib-muted); }
 /* Armed automatic resume (turn retry / goal re-check): the open card's resume row is the kit's notice in the
    "waiting" tone (.ui-notice[data-tone="wait"], D7 D-10), not the run hue. */
@@ -5669,10 +5670,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-body .card-refs .ref-sep { color: var(--ib-muted); opacity: 0.6; }
 /* 작업 카드의 연결: a linked page's state after its reference, in its tone. */
 .card-body .card-refs .card-ref-st { color: var(--ib-text-2, var(--text-secondary)); font-weight: 400; }
-.card-body .card-refs .card-ref-st[data-tone="run"] { color: var(--ib-run-fg, var(--ui-st-run)); }
-.card-body .card-refs .card-ref-st[data-tone="done"] { color: var(--ib-done-fg, var(--ui-st-done)); }
-.card-body .card-refs .card-ref-st[data-tone="fail"] { color: var(--ib-fail-fg, var(--ui-st-fail)); }
-.card-body .card-refs .card-ref-st[data-tone="wait"] { color: var(--ib-wait-fg, var(--ui-st-wait)); }
+.card-body .card-refs .card-ref-st[data-tone="run"] { color: color-mix(in srgb, var(--ib-run-fg, var(--ui-st-run)) calc(100% * var(--chroma, 1)), var(--ib-text-2, var(--text-secondary))); }
+.card-body .card-refs .card-ref-st[data-tone="done"] { color: color-mix(in srgb, var(--ib-done-fg, var(--ui-st-done)) calc(100% * var(--chroma, 1)), var(--ib-text-2, var(--text-secondary))); }
+.card-body .card-refs .card-ref-st[data-tone="fail"] { color: color-mix(in srgb, var(--ib-fail-fg, var(--ui-st-fail)) calc(100% * var(--chroma, 1)), var(--ib-text-2, var(--text-secondary))); }
+.card-body .card-refs .card-ref-st[data-tone="wait"] { color: color-mix(in srgb, var(--ib-wait-fg, var(--ui-st-wait)) calc(100% * var(--chroma, 1)), var(--ib-text-2, var(--text-secondary))); }
 
 /* ── ENV BADGE — multi-instance origin tag (#814): the kit's toned chip (.ui-chip.is-toned.is-sm, D8b D-15) — its
    --ui-tone set inline from getEnvBadgeColor() (ENV_BADGE_PALETTE); the kit draws the 14% tint, the word 70%
@@ -5702,8 +5703,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* ── ACTION BUTTONS — secondary outline + one solid primary (reference "Approve") ── */
 .card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; justify-content: flex-end; }
 /* SSOT 2026-10-30 — ★ Star (pressed = amber) and 살리기 (the run tint), on the kit button. */
-.ui-btn[data-action="star"][aria-pressed="true"] { color: var(--st-wait); border-color: var(--st-wait); }
-.ui-btn[data-action="revive"] { color: var(--st-run); }
+.ui-btn[data-action="star"][aria-pressed="true"] { color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text)); border-color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text)); }
+.ui-btn[data-action="revive"] { color: color-mix(in srgb, var(--st-run) calc(100% * var(--chroma, 1)), var(--text)); }
 
 /* ── PENDING QUESTION (dashboard choice buttons) ── */
 .card-question {
@@ -5767,14 +5768,14 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* SSOT 2026-11-02 T2–T4 — a permission prompt's AI advice, in the page's status colours (red = the AI says do not
    run, green = it recommends). The card takes the colour through its own tokens (its Approve turns red or green);
    the box under it says what the call does and why it is risky. */
-ui-approval-card[data-ai="deny"] { --ac-primary: var(--st-fail); --ac-primary-hover: color-mix(in srgb, var(--st-fail) 86%, var(--text)); --ac-line: color-mix(in srgb, var(--st-fail) 45%, var(--border)); }
-ui-approval-card[data-ai="approve"] { --ac-primary: var(--st-done); --ac-primary-hover: color-mix(in srgb, var(--st-done) 86%, var(--text)); --ac-line: color-mix(in srgb, var(--st-done) 45%, var(--border)); }
+ui-approval-card[data-ai="deny"] { --ac-primary: color-mix(in srgb, var(--st-fail) calc(100% * var(--chroma, 1)), var(--text)); --ac-primary-hover: color-mix(in srgb, var(--st-fail) calc(86% * var(--chroma, 1)), var(--text)); --ac-line: color-mix(in srgb, var(--st-fail) 45%, var(--border)); }
+ui-approval-card[data-ai="approve"] { --ac-primary: color-mix(in srgb, var(--st-done) calc(100% * var(--chroma, 1)), var(--text)); --ac-primary-hover: color-mix(in srgb, var(--st-done) calc(86% * var(--chroma, 1)), var(--text)); --ac-line: color-mix(in srgb, var(--st-done) 45%, var(--border)); }
 .ac-advice { margin-top: 6px; padding: 9px 12px; border-left: 4px solid transparent; border-radius: 10px; font-size: 13px; line-height: 19px; overflow-wrap: anywhere; }
-.ac-advice[data-ai="deny"] { border-left-color: var(--st-fail); background: color-mix(in srgb, var(--st-fail) 9%, var(--surface)); }
-.ac-advice[data-ai="approve"] { border-left-color: var(--st-done); background: color-mix(in srgb, var(--st-done) 9%, var(--surface)); }
+.ac-advice[data-ai="deny"] { border-left-color: var(--st-fail); background: color-mix(in srgb, var(--st-fail) calc(9% * var(--chroma, 1)), var(--surface)); }
+.ac-advice[data-ai="approve"] { border-left-color: var(--st-done); background: color-mix(in srgb, var(--st-done) calc(9% * var(--chroma, 1)), var(--surface)); }
 .ac-advice-head { font-weight: 650; }
 .ac-advice[data-ai="deny"] .ac-advice-head, .ac-advice[data-ai="deny"] .ac-advice-note { color: var(--st-fail-text); }
-.ac-advice[data-ai="approve"] .ac-advice-head { color: var(--st-done); }
+.ac-advice[data-ai="approve"] .ac-advice-head { color: color-mix(in srgb, var(--st-done) calc(100% * var(--chroma, 1)), var(--text)); }
 .ac-advice-row { color: var(--text-secondary); }
 .ac-advice-row b { margin-right: 4px; color: var(--text); font-weight: 600; }
 .ac-advice-note { margin-top: 2px; font-weight: 600; }
@@ -5992,10 +5993,11 @@ body:not([data-detail~="artifacts"]) #panel-artifacts,
 body:not([data-detail~="agenthead"]) #panel-agents,
 body:not([data-detail~="controls"]) #panel-controls { display: none !important; }
 /* The agent strip: always (agenttabs), only with a subagent (subtabs — the panel's data-subagents), or none — one
-   agent, the main one. The section strip (sections) or one section, the chat. */
+   agent, the main one. The section strip: all three (sections), 대화 · 작업 로그 (logtab — renderPanelSections
+   gives it those tabs), or none — one section, the chat. */
 body:not([data-detail~="agenttabs"]):not([data-detail~="subtabs"]) .panel-tabs::part(list),
 body[data-detail~="subtabs"] .slide-panel:not([data-subagents]) .panel-tabs::part(list),
-body:not([data-detail~="sections"]) .panel-sections::part(list) { display: none; }
+body:not([data-detail~="sections"]):not([data-detail~="logtab"]) .panel-sections::part(list) { display: none; }
 /* The checklist (list) and the task line (line): the whole current list, up to the plan's share of the body
    (--ptl-max), then it scrolls in its own box. */
 body:not([data-tasks="runs"]) .panel-tasks { max-height: var(--ptl-max, 34cqh); overflow-y: auto; overscroll-behavior: contain; padding: 8px 16px 6px; }
@@ -6036,8 +6038,8 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 /* ── SESSION HEAD — the panel head (spec 13, D3 E-08): <ui-status-bar> draws status · time · Slack · actions
    (44px targets on coarse pointers, reduced motion); the page adds only an armed resume in its slot. ── */
 .panel-status { flex-basis: 100%; min-width: 0; }
-.ps-resume { min-width: 0; font-size: 12px; color: var(--st-wait); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ps-resume > svg { width: 12px; height: 12px; margin-right: 4px; vertical-align: -2px; }
+.ps-resume { min-width: 0; font-size: 12px; color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text-secondary)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-resume > svg { width: 12px; height: 12px; margin-right: 4px; vertical-align: -2px; color: color-mix(in srgb, currentColor calc(100% * var(--chroma, 1)), var(--st-wait)); }
 /* ── 세션 정보 — one summary line + the links; opened, every number (spec 13) ── */
 .panel-info { padding: 6px 16px 8px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); }
 .panel-info:empty { display: none; }
@@ -6055,9 +6057,9 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 /* 세부 (re-agent-run D19): label left, value right. */
 /* 세부 and the token rows are the kit's fact list (.ui-dl, D3 E-10 — the disclosure itself stays: see D3-GAPS G6-2). */
 .pi-thread { font-variant-numeric: tabular-nums; }
-.pi-resume { color: var(--st-wait); overflow-wrap: anywhere; }
+.pi-resume { color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text-secondary)); overflow-wrap: anywhere; }
 /* The summary line's ctx % carries the context level (re-context-window D16). */
-.pi-cs.ctx-warn { color: var(--cw-warn); }
+.pi-cs.ctx-warn { color: color-mix(in srgb, var(--cw-warn) calc(100% * var(--chroma, 1)), var(--text)); }
 .pi-cs.ctx-danger { color: var(--st-fail-text); font-weight: 600; }
 /* The summary's ctx % in amber: the light theme's darker yellow keeps it at 4.5:1. */
 :root { --cw-warn: var(--st-wait); }
@@ -6909,7 +6911,9 @@ function paintAppBar() {
     navLabel: '주 메뉴',
     toolbarAt: APP_BAR_TOOLBAR_AT,
     status: _appBarStatus,
-    theme: document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
+    // The theme and its palette (soma-work 830): the head script's (themeClientJs), which also answers the toggle.
+    theme: somaThemeNow().theme,
+    palette: somaThemeNow().palette,
     // The speaker before the theme toggle (interface sound, #614): the head script's choice; its
     // ui-sound-change is answered there (somaSoundBindBar), which also re-hands the bar its state.
     sound: typeof _somaOn !== 'undefined' && !!_somaOn,
@@ -6917,45 +6921,9 @@ function paintAppBar() {
   if (_appBarAccount) data.account = _appBarAccount;
   bar.data = data;
 }
-// ── Theme — the bar's sun / moon; stored only while it differs from the OS ──
-function getPreferredTheme() {
-  var saved = localStorage.getItem('soma-theme');
-  if (saved) return saved;
-  return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-}
-function applyTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme);
-  paintAppBar();
-}
-function setTheme(next) {
-  var osTheme = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-  if (next === osTheme) {
-    localStorage.removeItem('soma-theme');
-  } else {
-    localStorage.setItem('soma-theme', next);
-  }
-  applyTheme(next);
-}
-function toggleTheme() {
-  var current = document.documentElement.getAttribute('data-theme') || 'dark';
-  setTheme(current === 'dark' ? 'light' : 'dark');
-}
-// Sync the bar on load
-applyTheme(getPreferredTheme());
-// Listen for OS theme changes (if user hasn't manually chosen)
-window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function(e) {
-  if (!localStorage.getItem('soma-theme')) {
-    applyTheme(e.matches ? 'light' : 'dark');
-  }
-});
-(function initAppBar() {
-  var bar = document.getElementById('app-bar');
-  if (!bar) return;
-  bar.addEventListener('ui-theme-change', function(e) {
-    var t = e.detail && e.detail.theme;
-    if (t === 'light' || t === 'dark') setTheme(t);
-  });
-})();
+// ── Theme — the head script owns it (themeClientJs, soma-work 830): <html>'s data-theme / data-palette, this browser's
+// choice, the OS follow and the bar's ui-theme-change. The bar's first data comes from paintAppBar. ──
+paintAppBar();
 // ── Panel width — the docked drawer's inner edge (SSOT 2026-10-24, D4 E-01) ──
 // The drag and the handle's arrow keys are <ui-drawer resizable>'s: it clamps the width to
 // [min-width, min(max-width, viewport − 48)] and says ui-resize. The page keeps the saved
@@ -10882,13 +10850,17 @@ async function saveViewMode() {
   if (why) dashToast({ title: '화면 모드를 저장하지 못했어요', description: '이 기기에서만 바뀌었습니다 — ' + why, tone: 'error' });
 }
 // What a switch (of the mode or the plan) redraws: the cards (their face and open bodies) and the open detail
-// card. A plan without the agent strip shows one agent (the main one); one without the section strip, the chat.
+// card. A plan without the agent strip shows one agent (the main one); a section its strip leaves out (the tree in
+// 미니멀's 대화 · 작업 로그) gives way to the chat, and a section it keeps stays, on the plan's strip.
 function rerenderForViewMode() {
   renderBoardForLayout();
   resetPanelSections();
   if (!panelSessionKey) return;
+  // The section first: going back to the main agent re-selects the current section, which must be one the
+  // new strip shows (else it paints the tree into a box the strip has no slot for).
+  if (psecShown().indexOf(_psec) < 0) selectPanelSection('conv');
+  else renderPanelSections();
   if (!detailShows('agenttabs') && !detailShows('subtabs') && _panelAgent) selectPanelAgent('');
-  if (!detailShows('sections') && _psec !== 'conv') selectPanelSection('conv');
   repaintPanelSession();
   repaintPanelTasks();
   sizePanelSections();
@@ -11029,6 +11001,18 @@ function panelTabsData(s, active, mainSt) {
     tabs.push(tab(panelTabId(String(a.id)), agentStatusOf(a), 'A' + toNum(a.n), a.type || '', false, am, am ? modelLabelOf(am) : ''));
   }
   return { label: '에이전트', value: panelTabId(active || ''), tabs: tabs };
+}
+// Whether 열기 may move the detail card onto agent id: the strip has to show a way back. Always on (agenttabs):
+// yes. Only beside a subagent (subtabs, 미니멀 2안): only for one of the strip's own tabs — the session's agents; a
+// log-only agent (panelLogOnlyAgents) is no tab, so the strip would hide and strand the reader on it. No strip
+// (미니멀 1안 · 3안): never — the main agent is the only one shown.
+function panelAgentOpenable(id) {
+  if (detailShows('agenttabs')) return true;
+  if (!detailShows('subtabs')) return false;
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var list = (s && s.agents) || [];
+  for (var i = 0; i < list.length; i++) if (list[i] && String(list[i].id) === id) return true;
+  return false;
 }
 // The strip follows the session (a live update with the same data writes nothing);
 // without one it keeps Main alone, so the panel under it stays slotted.
@@ -11251,9 +11235,16 @@ var _treeMaxN = null; // the newest spawn number the tree showed (null: not pain
 function psecForLanding(land) {
   return land === 'worklog' ? 'log' : land === 'agent' ? 'tree' : 'conv';
 }
-// 미니멀 (SSOT 2026-11-01) has one section, the chat: every landing opens it.
+// The sections the detail card's strip shows: 어드밴스드's whole strip (sections) all three; 미니멀's (logtab, SSOT
+// 2026-11-03) the chat and the work log; a layout with neither, the chat alone (SSOT 2026-11-01).
+function psecShown() {
+  if (detailShows('sections')) return PSEC_ORDER;
+  return detailShows('logtab') ? ['conv', 'log'] : ['conv'];
+}
+// The section an opening lands on: the landing's, when the strip shows it — else the chat (미니멀's default too).
 function psecForMode(land) {
-  return detailShows('sections') ? psecForLanding(land) : 'conv';
+  var sec = psecForLanding(land);
+  return psecShown().indexOf(sec) >= 0 ? sec : 'conv';
 }
 // The section strip's tabs (D4 E-24): Chat · 작업 로그 at the start, 에이전트 트리 at the
 // far end (TabItem.end) with the tree glyph; each one's panel is the box slotted by its id.
@@ -11316,12 +11307,17 @@ function psecBox(sec) {
   return document.getElementById('psec-' + (sec || _psec));
 }
 // The tab strip and the panels — <ui-tabs>: the selected tab, the one tab stop, the
-// one panel shown are its own from the data; the same section writes nothing.
+// one panel shown are its own from the data (a tab the plan leaves out has no panel
+// slot either); the same section on the same strip writes nothing.
 function renderPanelSections() {
   var el = document.getElementById('panel-sections');
-  if (!el || el._sec === _psec) return;
-  el._sec = _psec;
-  el.data = { label: '섹션', value: _psec, tabs: PSEC_TABS };
+  if (!el) return;
+  var shown = psecShown();
+  var key = _psec + ' ' + shown.join(' ');
+  if (el._sec === key) return;
+  el._sec = key;
+  var tabs = PSEC_TABS.filter(function(t) { return shown.indexOf(t.id) >= 0; });
+  el.data = { label: '섹션', value: _psec, tabs: tabs };
 }
 // A section not shown holds no nodes: its DOM goes, its data stays.
 function psecClear(sec) {
@@ -16510,8 +16506,11 @@ function wlIsCard(el) {
   });
   el.addEventListener('ui-open', function(e) {
     if (e.target !== el) return;
+    // A subagent's 열기 lands only where a tab can bring the reader back (panelAgentOpenable); anywhere else it
+    // stays put (and the element plays no navigate sound).
     var id = e.detail && e.detail.id;
-    if (id) selectPanelAgent(String(id));
+    if (!id || !panelAgentOpenable(String(id))) { e.preventDefault(); return; }
+    selectPanelAgent(String(id));
   });
   el.addEventListener('ui-load-older', function(e) {
     var st = _wl;
@@ -17044,7 +17043,8 @@ async function loadMorePanelTurns() {
 // dashboard-system-turns-client.test.ts. A turn a person sent (origin.by
 // 'user') is never read as one of the injected kinds; a command they may type
 // themselves (/compact, /renew) is classified whoever sent it.
-var SYS_RESTART_HEADS = ['The service was restarted and the previous task was interrupted.', '서비스가 재시작되어 이전 작업이 중단되었다.'];
+// The third: a dashboard task's restart resume (TASK_RESTART_TEXT, task-restart-resume.ts).
+var SYS_RESTART_HEADS = ['The service was restarted and the previous task was interrupted.', '서비스가 재시작되어 이전 작업이 중단되었다.', '[재시작 후 자동 재개]'];
 var SYS_RESUME_CONTEXT = '--- 중단 시점 컨텍스트 ---';
 var SYS_RETRY_MARK = '⚠️ 이전 시도 중 오류 발생:';
 var CP_DEFAULT_EST_MS = 150000; // a /compact runs 2–3 min (compact-state.ts) — the estimate until the conversation has one of its own
@@ -19732,14 +19732,18 @@ function ntBuildPayload(state, attachments, requestId) {
     body.plan = state.plan !== false;
     return body;
   }
+  // #853 — the 작업 계획 switch rides a Slack task too (always sent: off is a choice too). While it
+  // plans, autogoal and autoz are off — a goal or a forced skill would drive work the plan holds back.
+  var planOn = state.plan !== false;
   return {
     requestId: requestId,
     prompt: state.prompt,
     model: state.model,
     effort: state.effort,
     channelId: state.channelId,
-    autogoal: state.autogoal,
-    autoz: state.autoz,
+    autogoal: planOn ? false : state.autogoal,
+    autoz: planOn ? false : state.autoz,
+    plan: planOn,
     attachments: attachments.map(function (a) {
       return { name: a.name, mimetype: a.mimetype, data: a.data };
     }),
@@ -19929,10 +19933,10 @@ function ntRender() {
     epicChip.hidden = !(isTask && _ntCtx.epicTasks);
     epicChip.setAttribute('aria-pressed', isTask && _ntCtx.epicTasks && _ntState.kind === 'epic' ? 'true' : 'false');
   }
-  // Plan mode — the 작업 계획 switch, for a dashboard task (on unless turned off).
+  // Plan mode — the 작업 계획 switch, for every new task (on unless turned off; #853).
   var planWrap = ntEl('nt-plan-wrap');
   if (planWrap) {
-    planWrap.hidden = !isTask;
+    planWrap.hidden = false;
     ntEl('nt-plan').checked = _ntState.plan !== false;
   }
   var folderSel = ntEl('nt-folder');
@@ -19974,8 +19978,16 @@ function ntRender() {
         : '작업을 올릴 수 있는 채널이 없습니다 — repo가 연결된 Slack 채널에 참여해 주세요',
     );
   }
-  ntEl('nt-autogoal').checked = !!_ntState.autogoal;
-  ntEl('nt-autoz').checked = !!_ntState.autoz;
+  // #853 — while the task plans first, autogoal and autoz do not apply: shown off and locked (the server agrees).
+  var planning = _ntState.plan !== false;
+  ['autogoal', 'autoz'].forEach(function (k) {
+    var sw = ntEl('nt-' + k);
+    if (!sw) return;
+    sw.checked = !planning && !!_ntState[k];
+    sw.disabled = planning;
+    var wrap = sw.closest ? sw.closest('label') : null;
+    if (wrap) wrap.classList.toggle('is-off-by-plan', planning);
+  });
   ntRenderBattery();
   paintNtComposer();
 }
@@ -20966,6 +20978,8 @@ function ntToggle(which) {
   if (!_ntState) return;
   var sw = ntEl('nt-' + which);
   _ntState[which] = !!(sw && sw.checked);
+  // #853 — the plan switch locks or frees autogoal / autoz.
+  if (which === 'plan') ntRender();
   if (navigator.vibrate) {
     try {
       navigator.vibrate(8);

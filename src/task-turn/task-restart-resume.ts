@@ -19,7 +19,7 @@
  * of the same owner waits for the slot (429) and is retried.
  */
 import type { ConversationSession } from '../types';
-import type { TaskCommandResponse, TaskTurnController } from './task-turn-controller';
+import type { TaskCommandRequest, TaskCommandResponse, TaskTurnController } from './task-turn-controller';
 
 /** What the conversation records as the resumed turn's instruction. */
 export const TASK_RESTART_TEXT = '[재시작 후 자동 재개] 서비스가 재시작되어 중단된 작업을 이어서 진행합니다.';
@@ -134,5 +134,36 @@ export function createTaskRestartResumer(deps: TaskRestartResumerDeps): TaskRest
       for (const task of tasks) outcomes.set(task.sessionKey, await attempt(task, 1));
       return outcomes;
     },
+  };
+}
+
+export interface RestartNoticeStartDeps {
+  /** The task controller's `start`. */
+  start(request: TaskCommandRequest): Promise<TaskCommandResponse>;
+  getSession(sessionKey: string): ConversationSession | undefined;
+  /** Tasks the restart cut whose goal resumes: key → the cut turn (filled at boot). */
+  cut: Map<string, string>;
+}
+
+/**
+ * The goal loop's start for a dashboard task, with D10 on the goal path: a cut task with a goal is
+ * resumed by the goal resume, not by {@link createTaskRestartResumer} — so its first goal continuation
+ * carries the same restart guidance (check the state before redoing an outside change). Only while
+ * nothing ran since the cut turn, and handed out with the turn that is taken: a refusal the loop
+ * waits out (429) retries with the guidance still on (trinity R4, grok P1).
+ */
+export function createRestartNoticeStart(
+  deps: RestartNoticeStartDeps,
+): (request: TaskCommandRequest) => Promise<TaskCommandResponse> {
+  return async (request) => {
+    const cutTurn = deps.cut.get(request.sessionKey);
+    if (cutTurn === undefined || request.goalContinuation !== true) return deps.start(request);
+    if (deps.getSession(request.sessionKey)?.lastTurnOutcome?.turnId !== cutTurn) {
+      deps.cut.delete(request.sessionKey);
+      return deps.start(request);
+    }
+    const response = await deps.start({ ...request, promptNotice: TASK_RESTART_NOTICE });
+    if (response.status >= 200 && response.status < 300) deps.cut.delete(request.sessionKey);
+    return response;
   };
 }

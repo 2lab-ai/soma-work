@@ -12,7 +12,7 @@
  */
 import { createSdkMcpServer, type McpSdkServerConfigWithInstance, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import type { ExecutionContext, TaskExecutionContext } from '../agent-runtime/execution-context';
+import type { ExecutionContext } from '../agent-runtime/execution-context';
 import { TaskPlanError, type TaskPlanGate } from './task-plan';
 
 /** The server key and name: its tool is `mcp__plan__plan_submit`. */
@@ -20,8 +20,11 @@ export const PLAN_SERVER = 'plan';
 
 /** What the plan tool needs from the host process. */
 export interface PlanHost {
-  /** The registry's strict submit: checked, the next revision, saved — or a throw that changed nothing. */
-  submitTaskPlan(taskId: string, input: unknown): TaskPlanGate;
+  /**
+   * The registry's strict submit by session key (a task's or a Slack thread's — #853): checked, the
+   * next revision, saved — or a throw that changed nothing.
+   */
+  submitPlan(sessionKey: string, input: unknown): TaskPlanGate;
 }
 
 let host: PlanHost | undefined;
@@ -31,10 +34,9 @@ export function setPlanHost(next: PlanHost | undefined): void {
   host = next;
 }
 
-/** The plan server rides a task turn whose plan is not started yet (the context's `planPending`). */
-export function attachesPlanServer(ctx: ExecutionContext | undefined): ctx is TaskExecutionContext {
-  if (!ctx || ctx.origin !== 'task') return false;
-  return (ctx as TaskExecutionContext).planPending === true;
+/** The plan server rides any turn whose plan is not started yet (the context's `planPending`) — a task or a Slack session (#853). */
+export function attachesPlanServer(ctx: ExecutionContext | undefined): ctx is ExecutionContext {
+  return !!ctx && ctx.planPending === true;
 }
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
@@ -51,9 +53,9 @@ const step = z.object({
 });
 const phase = z.object({ title: text, goal: z.string().optional(), steps: z.array(step) });
 
-/** The plan tool for one task turn. `ctx` is the turn's own context: the task id comes from it. */
-export function planTools(ctx: TaskExecutionContext) {
-  const taskId = ctx.taskId;
+/** The plan tool for one turn. `ctx` is the turn's own context: the session key comes from it. */
+export function planTools(ctx: ExecutionContext) {
+  const sessionKey = ctx.sessionKey;
   const submit = tool(
     'plan_submit',
     [
@@ -78,16 +80,16 @@ export function planTools(ctx: TaskExecutionContext) {
     async (args) => {
       if (!host) return refuse('not-ready', 'the plan tool is not ready yet — try again');
       try {
-        const gate = host.submitTaskPlan(taskId, args);
+        const gate = host.submitPlan(sessionKey, args);
         return reply({
           ok: true,
           state: gate.state,
           revision: gate.revision,
-          next: `계획 v${gate.revision}을 제출했다. 한두 줄로 요약하고 이 턴을 끝낸다 — 유저가 대시보드에서 시작 · 취소 · 직접 입력 중 하나를 고른다. 시작 전에는 작업하지 않는다.`,
+          next: `계획 v${gate.revision}을 제출했다. 한두 줄로 요약하고 이 턴을 끝낸다 — 유저가 대시보드에서 시작 · 취소를 고르거나 직접 입력으로 고칠 것을 보낸다. 시작 전에는 작업하지 않는다.`,
         });
       } catch (error) {
         if (error instanceof TaskPlanError) return refuse(error.code, error.message);
-        if (/not a plan-mode task/.test((error as Error)?.message ?? '')) {
+        if (/not a plan-mode (task|session)/.test((error as Error)?.message ?? '')) {
           return refuse('not-a-plan-task', 'this task has no plan waiting to be written');
         }
         return refuse('not-saved', 'the plan could not be saved — nothing changed; try again');
@@ -97,7 +99,7 @@ export function planTools(ctx: TaskExecutionContext) {
   return [submit] as const;
 }
 
-/** The `plan` server for one task turn (its tool: `planTools`). */
-export function buildPlanServer(ctx: TaskExecutionContext): McpSdkServerConfigWithInstance {
+/** The `plan` server for one turn (its tool: `planTools`). */
+export function buildPlanServer(ctx: ExecutionContext): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({ name: PLAN_SERVER, tools: [...planTools(ctx)] });
 }
