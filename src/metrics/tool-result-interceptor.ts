@@ -2,9 +2,13 @@
  * ToolResultInterceptor — Detects git/gh commands in Bash tool results
  * and emits corresponding metrics events.
  *
+ * PR creates and merges are not parsed here: they come from the GitHub write effects the card uses too
+ * (`githubEffectsOf`, #832) — one parser, and a PR URL in a read's output is no longer a created PR.
+ *
  * Trace: docs/archive/features/daily-weekly-report/trace.md, Scenario 3
  */
 
+import type { GitHubEffect } from '@soma/slack/session-link-capture';
 import { Logger } from '../logger';
 import { getMetricsEmitter } from './event-emitter';
 
@@ -37,34 +41,6 @@ export function parseGitCommitResult(
   const linesDeleted = delMatch ? parseInt(delMatch[1], 10) : 0;
 
   return { sha, linesAdded, linesDeleted };
-}
-
-/**
- * Parse PR creation from gh pr create output.
- * Example: "https://github.com/org/repo/pull/123"
- */
-export function parseGhPrCreateResult(output: string): { prUrl?: string; prNumber?: number } | null {
-  const match = output.match(/(https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/(\d+))/);
-  if (!match) return null;
-  return { prUrl: match[1], prNumber: parseInt(match[2], 10) };
-}
-
-/**
- * Parse PR merge from gh pr merge output.
- * Example: "✓ Merged pull request #123" or "Merged" or merge URL
- */
-export function parseGhPrMergeResult(output: string): { prNumber?: number } | null {
-  // "✓ Merged pull request #123"
-  const match = output.match(/[Mm]erged\s+pull\s+request\s+#(\d+)/);
-  if (match) return { prNumber: parseInt(match[1], 10) };
-
-  // Just "Merged" with a PR number somewhere
-  const numMatch = output.match(/#(\d+)/);
-  if (output.toLowerCase().includes('merged') && numMatch) {
-    return { prNumber: parseInt(numMatch[1], 10) };
-  }
-
-  return null;
 }
 
 /**
@@ -106,6 +82,8 @@ export type MergeStatsCallback = (
  * @param userName Slack display name
  * @param sessionKey Session key for context
  * @param onMergeStats Optional callback to record merge line stats into session
+ * @param githubEffects The PR creates and merges this batch proved (`githubEffectsOf`) — the only source of
+ *   `pr_created` / `pr_merged`
  */
 export function interceptToolResults(
   toolResults: ToolResultLike[],
@@ -113,7 +91,9 @@ export function interceptToolResults(
   userName: string,
   sessionKey: string,
   onMergeStats?: MergeStatsCallback,
+  githubEffects?: ReadonlyArray<GitHubEffect>,
 ): void {
+  emitPrEffects(githubEffects, userId, userName, sessionKey);
   for (const tr of toolResults) {
     // Only inspect Bash tool results that succeeded
     if (tr.toolName !== 'Bash' || tr.isError) continue;
@@ -148,31 +128,6 @@ export function interceptToolResults(
         logger.debug(`Detected git commit: ${commitInfo.sha}, +${commitInfo.linesAdded}/-${commitInfo.linesDeleted}`);
       }
 
-      // Detect gh pr create
-      const prCreateInfo = parseGhPrCreateResult(output);
-      if (prCreateInfo) {
-        emitter
-          .emitGitHubEvent('pr_created', userId, userName, sessionKey, {
-            prUrl: prCreateInfo.prUrl,
-            prNumber: prCreateInfo.prNumber,
-          })
-          .catch((err) => logger.error('Failed to emit pr_created', err));
-
-        logger.debug(`Detected PR create: ${prCreateInfo.prUrl}`);
-      }
-
-      // Detect gh pr merge
-      const mergeInfo = parseGhPrMergeResult(output);
-      if (mergeInfo) {
-        emitter
-          .emitGitHubEvent('pr_merged', userId, userName, sessionKey, {
-            prNumber: mergeInfo.prNumber,
-          })
-          .catch((err) => logger.error('Failed to emit pr_merged', err));
-
-        logger.debug(`Detected PR merge: #${mergeInfo.prNumber}`);
-      }
-
       // Detect gh pr view --json additions,deletions (for merge stats)
       const prViewStats = parseGhPrViewStats(output);
       if (prViewStats && onMergeStats) {
@@ -201,6 +156,35 @@ export function interceptToolResults(
     } catch (error) {
       // Fire-and-forget: never block
       logger.error('Failed to intercept tool result', error);
+    }
+  }
+}
+
+/** `pr_created` / `pr_merged` for the PRs a batch's writes created or merged (fire-and-forget). */
+function emitPrEffects(
+  effects: ReadonlyArray<GitHubEffect> | undefined,
+  userId: string,
+  userName: string,
+  sessionKey: string,
+): void {
+  for (const e of effects ?? []) {
+    if (e.link.type !== 'pr' || (e.op !== 'create' && e.op !== 'merge')) continue;
+    const prNumber = Number(e.link.url.match(/\/pull\/(\d+)/)?.[1]);
+    if (!prNumber) continue;
+    try {
+      const emitter = getMetricsEmitter();
+      if (e.op === 'create') {
+        emitter
+          // `proven`: this create was proven by its own result (#832) — the leak report (#835) trusts only these.
+          .emitGitHubEvent('pr_created', userId, userName, sessionKey, { prUrl: e.link.url, prNumber, proven: true })
+          .catch((err) => logger.error('Failed to emit pr_created', err));
+      } else {
+        emitter
+          .emitGitHubEvent('pr_merged', userId, userName, sessionKey, { prNumber })
+          .catch((err) => logger.error('Failed to emit pr_merged', err));
+      }
+    } catch (error) {
+      logger.error('Error emitting PR effect metrics', error);
     }
   }
 }

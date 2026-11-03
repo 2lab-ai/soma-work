@@ -25,7 +25,7 @@ This rule fires only when **you modified source code in this session** and the t
 4. If it fails for any reason (non-zero exit, timeout, no network, sandbox denial), it is not a blocker. Say `calldiff unavailable: <reason>` in one line and report the file-level summary. Never let it stall or block the report.
 5. Skip it, silently, when the edits touch no source files at all (docs, config, prompts). No source functions, no call flow, nothing to report.
 
-This feeds the completion report — it does not replace it. When `local:es` renders the terminal report, the call-flow delta is one section of it, not a second competing summary.
+This feeds the completion report — it does not replace it. When `local:auto-es` renders the terminal report, the call-flow delta is one section of it, not a second competing summary.
 
 ## On Pull Request Creation
 

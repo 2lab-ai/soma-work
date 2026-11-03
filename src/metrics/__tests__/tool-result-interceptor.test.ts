@@ -1,10 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  interceptToolResults,
-  parseGhPrCreateResult,
-  parseGhPrMergeResult,
-  parseGitCommitResult,
-} from '../tool-result-interceptor';
+import { interceptToolResults, parseGitCommitResult } from '../tool-result-interceptor';
 
 // Contract tests — Scenario 3 (extended): ToolResultInterceptor
 // Trace: docs/archive/features/daily-weekly-report/trace.md
@@ -58,45 +53,6 @@ describe('ToolResultInterceptor', () => {
     });
   });
 
-  describe('parseGhPrCreateResult', () => {
-    it('parses gh pr create URL output', () => {
-      const output = 'https://github.com/2lab-ai/soma-work/pull/82';
-      const result = parseGhPrCreateResult(output);
-      expect(result).toEqual({ prUrl: 'https://github.com/2lab-ai/soma-work/pull/82', prNumber: 82 });
-    });
-
-    it('extracts URL from surrounding text', () => {
-      const output = `Creating pull request...
-https://github.com/org/repo/pull/123
-Done!`;
-      const result = parseGhPrCreateResult(output);
-      expect(result).toEqual({ prUrl: 'https://github.com/org/repo/pull/123', prNumber: 123 });
-    });
-
-    it('returns null for non-PR output', () => {
-      expect(parseGhPrCreateResult('error: failed')).toBeNull();
-    });
-  });
-
-  describe('parseGhPrMergeResult', () => {
-    it('parses "Merged pull request #N"', () => {
-      const output = '✓ Merged pull request #123 (fix: update scheduler)';
-      const result = parseGhPrMergeResult(output);
-      expect(result).toEqual({ prNumber: 123 });
-    });
-
-    it('parses merged with # number', () => {
-      const output = 'Pull request #456 has been merged successfully.';
-      const result = parseGhPrMergeResult(output);
-      expect(result).toEqual({ prNumber: 456 });
-    });
-
-    it('returns null for non-merge output', () => {
-      expect(parseGhPrMergeResult('Created PR #123')).toBeNull();
-      expect(parseGhPrMergeResult('nothing happened')).toBeNull();
-    });
-  });
-
   describe('interceptToolResults', () => {
     it('emits commit_created and code_lines_added on git commit', () => {
       const toolResults = [
@@ -120,24 +76,41 @@ Done!`;
       expect(mockEmitter.emitGitHubEvent.mock.calls[1][0]).toBe('code_lines_added');
     });
 
-    it('emits pr_merged on gh pr merge output', () => {
-      const toolResults = [
+    it('emits pr_created and pr_merged from the write effects (#832), for any tool', () => {
+      const pr = (n: number) => ({
+        url: `https://github.com/a/b/pull/${n}`,
+        type: 'pr' as const,
+        provider: 'github' as const,
+        label: `PR #${n}`,
+      });
+      interceptToolResults([], 'U123', 'TestUser', 'session-key', undefined, [
+        { op: 'create', link: pr(81) },
+        { op: 'merge', link: pr(82) },
+        // A close and an issue are not PR metrics.
+        { op: 'close', link: pr(83) },
         {
-          toolName: 'Bash',
-          toolUseId: 'tu-2',
-          result: '✓ Merged pull request #82 (feat: daily report)',
+          op: 'create',
+          link: { url: 'https://github.com/a/b/issues/9', type: 'issue', provider: 'github', label: '#9' },
         },
-      ];
+      ]);
+      expect(mockEmitter.emitGitHubEvent.mock.calls.map((c: unknown[]) => [c[0], c[4]])).toEqual([
+        // `proven`: the leak report (#835) names a creator only from these.
+        ['pr_created', { prUrl: 'https://github.com/a/b/pull/81', prNumber: 81, proven: true }],
+        ['pr_merged', { prNumber: 82 }],
+      ]);
+    });
 
-      interceptToolResults(toolResults, 'U123', 'TestUser', 'session-key');
-
-      expect(mockEmitter.emitGitHubEvent).toHaveBeenCalledWith(
-        'pr_merged',
+    it('a PR URL or a merge line in plain output is not a metric without its write effect', () => {
+      interceptToolResults(
+        [
+          { toolName: 'Bash', toolUseId: 'v', result: 'https://github.com/a/b/pull/40' },
+          { toolName: 'Bash', toolUseId: 'm', result: '✓ Merged pull request #82 (feat: daily report)' },
+        ],
         'U123',
         'TestUser',
         'session-key',
-        expect.objectContaining({ prNumber: 82 }),
       );
+      expect(mockEmitter.emitGitHubEvent).not.toHaveBeenCalled();
     });
 
     it('skips non-Bash tool results', () => {

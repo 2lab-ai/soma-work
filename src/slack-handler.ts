@@ -48,6 +48,7 @@ import { SlackBlockKitChannel } from './notification-channels/slack-block-kit-ch
 import { SlackDmChannel } from './notification-channels/slack-dm-channel';
 import { TelegramChannel } from './notification-channels/telegram-channel';
 import { WebhookChannel } from './notification-channels/webhook-channel';
+import { loadAutoEsTurnEndContract } from './plugin/harness-skills';
 import { validateSessionGoalObjective } from './prompt/session-goal-block';
 import { routeReleaseNotes } from './release-notes-routes';
 import { retryReasonLine } from './retry-reason';
@@ -762,7 +763,10 @@ export class SlackHandler {
     const forkExecutor = createForkExecutor(this.claudeHandler);
     // Inject slackApi so SummaryService can post the summary as a permanent
     // in-thread message (in addition to editing the volatile surface header).
-    const summaryService = new SummaryService(forkExecutor, this.slackApi);
+    // #857 — the turn-end summary runs `local:auto-es`: its turn-end contract is read from the harness plugin.
+    const summaryService = new SummaryService(forkExecutor, this.slackApi, {
+      turnEndContract: loadAutoEsTurnEndContract(),
+    });
 
     this.streamExecutor = new StreamExecutor({
       claudeHandler: this.claudeHandler,

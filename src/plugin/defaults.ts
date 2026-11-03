@@ -29,6 +29,9 @@ export const DEFAULT_PLUGINS: string[] = [
   'superpowers@claude-plugins-official',
   'stv@oh-my-claude',
   'zworkflow@soma-work',
+  // #857 — the soma-work harness plugin (src/local-harness). Bundled only: resolution short-circuits to the local
+  // dir, so its absence from the soma-work marketplace never matters here.
+  'local@soma-work',
 ];
 
 /** Check if a plugin ref is a default (protected from removal). */
