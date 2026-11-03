@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { getDefaultSessionSnapshot, runModelCommand } from 'somalib/model-commands/catalog';
+import type { SessionResourceSnapshot } from 'somalib/model-commands/session-types';
+import { validateModelCommandRunArgs } from 'somalib/model-commands/validator';
 import { describe, expect, it } from 'vitest';
-import { getDefaultSessionSnapshot, runModelCommand } from '../../../../../somalib/model-commands/catalog';
-import type { SessionResourceSnapshot } from '../../../../../somalib/model-commands/session-types';
-import { validateModelCommandRunArgs } from '../../../../../somalib/model-commands/validator';
 
 /**
  * #836 (epic #831, L3) — the closing contract: before a final report, the model checks that every PR, issue and
