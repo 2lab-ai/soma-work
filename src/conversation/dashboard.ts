@@ -1596,14 +1596,16 @@ function taskFollowupsOf(
   return {
     turnEpoch: 0,
     items: items.map((item) => {
+      // In flight (being started or handed to the owner): the panel's "sending" row.
+      const sending = item.state === 'sending';
       const out: DashboardFollowupItem = {
         id: item.id,
         text: item.text,
         files: [],
         enqueuedAt: item.enqueuedAt,
-        state: item.state,
+        state: item.state === 'sending' ? 'dispatched' : item.state,
         epoch: item.epoch,
-        editable: true,
+        editable: !sending,
         authorId: item.authorId,
       };
       if (item.authorId !== ownerId) out.author = nameOf(item.authorId);
