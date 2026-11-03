@@ -217,15 +217,19 @@ describe('G5 — TokenRefreshScheduler retries a failed refresh', () => {
     const updateCredentials = vi
       .fn()
       .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error('could not lock config file'));
+      .mockRejectedValueOnce(new Error('could not lock config file'))
+      .mockResolvedValue(undefined);
     const scheduler = new TokenRefreshScheduler({ getInstallationToken } as any, { updateCredentials } as any, 42);
     await scheduler.getToken();
     await vi.advanceTimersByTimeAsync(5 * MIN);
     expect(getInstallationToken).toHaveBeenCalledTimes(2);
     expect(updateCredentials).toHaveBeenCalledTimes(2);
-    // No re-mint within the next 10 minutes: the next refresh is scheduled for TWO's expiry.
+    // No re-mint within the next 10 minutes: the next refresh is scheduled for TWO's expiry. The failed write of TWO
+    // is retried in 2 minutes, so agent shells do not keep the old token until then (review).
     await vi.advanceTimersByTimeAsync(10 * MIN);
     expect(getInstallationToken).toHaveBeenCalledTimes(2);
+    expect(updateCredentials).toHaveBeenCalledTimes(3);
+    expect(updateCredentials).toHaveBeenLastCalledWith('ghs_TWO');
     expect(await scheduler.getToken()).toBe('ghs_TWO');
     // Stopped: the refresh at TWO's expiry fails, and nothing re-arms.
     scheduler.stopAutoRefresh();
