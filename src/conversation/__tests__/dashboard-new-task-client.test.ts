@@ -274,7 +274,9 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(css).not.toContain('.nt-switch');
     expect(css).not.toMatch(/^\.nt-toggle \{/m);
     expect(clientFn('ntToggle')).toContain('_ntState[which] = !!(sw && sw.checked);');
-    expect(script).toContain("ntEl('nt-autogoal').checked = !!_ntState.autogoal;");
+    // #853 — set from the draft, and shown off and locked while the task plans first.
+    expect(script).toContain('sw.checked = !planning && !!_ntState[k];');
+    expect(script).toContain('sw.disabled = planning;');
   });
 
   it('D2 (H-05..H-09) — the instruction, files, voice and 작업 시작 are one @2lab.ai/ui <ui-composer>', () => {
@@ -534,8 +536,18 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
     expect(s.model).toBe('opus[1m]');
   });
 
-  it('builds the request body the server validates', () => {
+  it('#853 — the plan switch (on by default) rides a Slack task too; autogoal / autoz are off while it plans', () => {
     const state = { ...fns.ntDefaultState(ctx, null), prompt: '개선해줘', autoz: true };
+    expect(fns.ntBuildPayload(state, [], 'req-0123456789')).toMatchObject({
+      channelId: 'C_ALPHA',
+      plan: true,
+      autogoal: false,
+      autoz: false,
+    });
+  });
+
+  it('builds the request body the server validates', () => {
+    const state = { ...fns.ntDefaultState(ctx, null), prompt: '개선해줘', autoz: true, plan: false };
     const body = fns.ntBuildPayload(
       state,
       [{ name: 'photo.jpg', mimetype: 'image/jpeg', data: 'AAAA', size: 3, kind: 'image' }],
@@ -549,6 +561,7 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
       channelId: 'C_ALPHA',
       autogoal: true,
       autoz: true,
+      plan: false,
       attachments: [{ name: 'photo.jpg', mimetype: 'image/jpeg', data: 'AAAA' }],
     });
   });

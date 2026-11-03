@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyPlanSubmission,
+  applySessionPlanTurn,
   checkPlanSubmission,
   decidePlan,
   isPlanPending,
@@ -215,5 +216,52 @@ describe('planApprovedText — the instruction 시작 sends (T4)', () => {
     );
     const plan = applyPlanSubmission(gate(), huge, NOW).plan!;
     expect(planApprovedText(plan, 'U1').length).toBeLessThanOrEqual(PLAN_APPROVED_TEXT_MAX);
+  });
+});
+
+describe('applySessionPlanTurn — a Slack session’s turn in plan mode (#853)', () => {
+  const awaiting = { state: 'awaiting' as const, revision: 2, updatedAt: 1, plan: { summary: 's' } as any };
+
+  it('a new task opened with the plan switch starts drafting, and its first turn plans', () => {
+    const session: any = {};
+    const r = applySessionPlanTurn(session, { planModeOverride: true, userInput: true, now: 5 });
+    expect(session.taskPlan).toEqual({ state: 'drafting', revision: 0, updatedAt: 5 });
+    expect(r.changed).toBe(true);
+    expect(r.notice).toMatch(/<task-plan-mode state="drafting" revision="0">/);
+  });
+
+  it('the switch never restarts a plan the session already has', () => {
+    const session: any = { taskPlan: { ...awaiting, state: 'approved' } };
+    const r = applySessionPlanTurn(session, { planModeOverride: true, userInput: true, now: 5 });
+    expect(session.taskPlan.state).toBe('approved');
+    expect(r).toEqual({ notice: undefined, changed: false });
+  });
+
+  it('the user’s word while a plan waits is direct input: back to drafting, the revision notice', () => {
+    const session: any = { taskPlan: awaiting };
+    const r = applySessionPlanTurn(session, { userInput: true, now: 9 });
+    expect(session.taskPlan).toMatchObject({ state: 'drafting', revision: 2, updatedAt: 9 });
+    expect(r.changed).toBe(true);
+    expect(r.notice).toMatch(/유저가 계획 v2에 대해 직접 입력했다/);
+  });
+
+  it('a host turn (goal, resume) while a plan waits keeps the gate and still plans', () => {
+    const session: any = { taskPlan: awaiting };
+    const r = applySessionPlanTurn(session, { userInput: false, now: 9 });
+    expect(session.taskPlan).toBe(awaiting);
+    expect(r.changed).toBe(false);
+    expect(r.notice).toMatch(/<task-plan-mode state="awaiting" revision="2">/);
+    expect(r.notice).not.toMatch(/유저가 계획 v\d+에 대해 직접 입력했다/);
+    expect(r.notice).toMatch(/시작을 기다리고 있다/);
+  });
+
+  it('a started plan, or none: no notice, nothing changed', () => {
+    expect(
+      applySessionPlanTurn({ taskPlan: { ...awaiting, state: 'approved' } } as any, { userInput: true, now: 1 }),
+    ).toEqual({
+      notice: undefined,
+      changed: false,
+    });
+    expect(applySessionPlanTurn({} as any, { userInput: true, now: 1 })).toEqual({ notice: undefined, changed: false });
   });
 });
