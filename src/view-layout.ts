@@ -77,7 +77,10 @@ export interface DetailLayout {
   tasksMax: number;
   agents: DetailAgents;
   agenthead: boolean;
+  /** The whole section strip: 대화 · 작업 로그 · 에이전트 트리. */
   sections: boolean;
+  /** Without the whole strip, the chat as a tab view with the work log: 대화 · 작업 로그 (미니멀, SSOT 2026-11-03). */
+  logtab: boolean;
   controls: boolean;
   subtitle: boolean;
   /** Sections open unfolded (the old 자세히). */
@@ -119,16 +122,19 @@ const DETAIL_ALL: Omit<DetailLayout, 'tasks' | 'tasksMax' | 'open'> = {
   agents: 'all',
   agenthead: true,
   sections: true,
+  logtab: false,
   controls: true,
   subtitle: true,
 };
 // The lean detail card still names the model (#805): the task card shows it as icons only, so the detail card is
-// where its name is — the model · effort line above the composer is on in every built-in.
+// where its name is — the model · effort line above the composer is on in every built-in. Its chat is a tab view
+// with the work log (대화 · 작업 로그, SSOT 2026-11-03); the agent tree stays 어드밴스드's.
 const DETAIL_LEAN = (agents: DetailAgents): Omit<DetailLayout, 'tasks' | 'tasksMax' | 'open'> => ({
   top: [it('info', false), it('goal', false), it('needs', true), it('artifacts', false)],
   agents,
   agenthead: false,
   sections: false,
+  logtab: true,
   controls: true,
   subtitle: false,
 });
@@ -467,6 +473,8 @@ export const LAYOUT_CATALOG = {
       { id: 'sections', label: '작업 로그 · 트리 탭', hint: '채팅 옆 탭' },
       { id: 'controls', label: '모델 · 추론 강도', hint: '입력창 위' },
       { id: 'open', label: '처음부터 펼침', hint: '세션 정보 · 작업 · 이전 계획을 펼쳐서 열기' },
+      // Last, so the switches before it keep their places (the editor reads them by index).
+      { id: 'logtab', label: '대화 · 작업 로그 탭', hint: '채팅 위 탭 — 트리 탭이 꺼져 있을 때' },
     ],
   },
   thread: {
@@ -580,6 +588,7 @@ export function normalizeDetail(input: unknown, fb: DetailLayout): DetailLayout 
     agents: oneOf(o.agents, ['all', 'sub', 'none'] as const, fb.agents),
     agenthead: bool(o.agenthead, fb.agenthead),
     sections: bool(o.sections, fb.sections),
+    logtab: bool(o.logtab, fb.logtab),
     controls: bool(o.controls, fb.controls),
     subtitle: bool(o.subtitle, fb.subtitle),
     open: bool(o.open, fb.open),

@@ -5992,10 +5992,11 @@ body:not([data-detail~="artifacts"]) #panel-artifacts,
 body:not([data-detail~="agenthead"]) #panel-agents,
 body:not([data-detail~="controls"]) #panel-controls { display: none !important; }
 /* The agent strip: always (agenttabs), only with a subagent (subtabs — the panel's data-subagents), or none — one
-   agent, the main one. The section strip (sections) or one section, the chat. */
+   agent, the main one. The section strip: all three (sections), 대화 · 작업 로그 (logtab — renderPanelSections
+   gives it those tabs), or none — one section, the chat. */
 body:not([data-detail~="agenttabs"]):not([data-detail~="subtabs"]) .panel-tabs::part(list),
 body[data-detail~="subtabs"] .slide-panel:not([data-subagents]) .panel-tabs::part(list),
-body:not([data-detail~="sections"]) .panel-sections::part(list) { display: none; }
+body:not([data-detail~="sections"]):not([data-detail~="logtab"]) .panel-sections::part(list) { display: none; }
 /* The checklist (list) and the task line (line): the whole current list, up to the plan's share of the body
    (--ptl-max), then it scrolls in its own box. */
 body:not([data-tasks="runs"]) .panel-tasks { max-height: var(--ptl-max, 34cqh); overflow-y: auto; overscroll-behavior: contain; padding: 8px 16px 6px; }
@@ -10882,13 +10883,17 @@ async function saveViewMode() {
   if (why) dashToast({ title: '화면 모드를 저장하지 못했어요', description: '이 기기에서만 바뀌었습니다 — ' + why, tone: 'error' });
 }
 // What a switch (of the mode or the plan) redraws: the cards (their face and open bodies) and the open detail
-// card. A plan without the agent strip shows one agent (the main one); one without the section strip, the chat.
+// card. A plan without the agent strip shows one agent (the main one); a section its strip leaves out (the tree in
+// 미니멀's 대화 · 작업 로그) gives way to the chat, and a section it keeps stays, on the plan's strip.
 function rerenderForViewMode() {
   renderBoardForLayout();
   resetPanelSections();
   if (!panelSessionKey) return;
+  // The section first: going back to the main agent re-selects the current section, which must be one the
+  // new strip shows (else it paints the tree into a box the strip has no slot for).
+  if (psecShown().indexOf(_psec) < 0) selectPanelSection('conv');
+  else renderPanelSections();
   if (!detailShows('agenttabs') && !detailShows('subtabs') && _panelAgent) selectPanelAgent('');
-  if (!detailShows('sections') && _psec !== 'conv') selectPanelSection('conv');
   repaintPanelSession();
   repaintPanelTasks();
   sizePanelSections();
@@ -11029,6 +11034,18 @@ function panelTabsData(s, active, mainSt) {
     tabs.push(tab(panelTabId(String(a.id)), agentStatusOf(a), 'A' + toNum(a.n), a.type || '', false, am, am ? modelLabelOf(am) : ''));
   }
   return { label: '에이전트', value: panelTabId(active || ''), tabs: tabs };
+}
+// Whether 열기 may move the detail card onto agent id: the strip has to show a way back. Always on (agenttabs):
+// yes. Only beside a subagent (subtabs, 미니멀 2안): only for one of the strip's own tabs — the session's agents; a
+// log-only agent (panelLogOnlyAgents) is no tab, so the strip would hide and strand the reader on it. No strip
+// (미니멀 1안 · 3안): never — the main agent is the only one shown.
+function panelAgentOpenable(id) {
+  if (detailShows('agenttabs')) return true;
+  if (!detailShows('subtabs')) return false;
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var list = (s && s.agents) || [];
+  for (var i = 0; i < list.length; i++) if (list[i] && String(list[i].id) === id) return true;
+  return false;
 }
 // The strip follows the session (a live update with the same data writes nothing);
 // without one it keeps Main alone, so the panel under it stays slotted.
@@ -11251,9 +11268,16 @@ var _treeMaxN = null; // the newest spawn number the tree showed (null: not pain
 function psecForLanding(land) {
   return land === 'worklog' ? 'log' : land === 'agent' ? 'tree' : 'conv';
 }
-// 미니멀 (SSOT 2026-11-01) has one section, the chat: every landing opens it.
+// The sections the detail card's strip shows: 어드밴스드's whole strip (sections) all three; 미니멀's (logtab, SSOT
+// 2026-11-03) the chat and the work log; a layout with neither, the chat alone (SSOT 2026-11-01).
+function psecShown() {
+  if (detailShows('sections')) return PSEC_ORDER;
+  return detailShows('logtab') ? ['conv', 'log'] : ['conv'];
+}
+// The section an opening lands on: the landing's, when the strip shows it — else the chat (미니멀's default too).
 function psecForMode(land) {
-  return detailShows('sections') ? psecForLanding(land) : 'conv';
+  var sec = psecForLanding(land);
+  return psecShown().indexOf(sec) >= 0 ? sec : 'conv';
 }
 // The section strip's tabs (D4 E-24): Chat · 작업 로그 at the start, 에이전트 트리 at the
 // far end (TabItem.end) with the tree glyph; each one's panel is the box slotted by its id.
@@ -11316,12 +11340,17 @@ function psecBox(sec) {
   return document.getElementById('psec-' + (sec || _psec));
 }
 // The tab strip and the panels — <ui-tabs>: the selected tab, the one tab stop, the
-// one panel shown are its own from the data; the same section writes nothing.
+// one panel shown are its own from the data (a tab the plan leaves out has no panel
+// slot either); the same section on the same strip writes nothing.
 function renderPanelSections() {
   var el = document.getElementById('panel-sections');
-  if (!el || el._sec === _psec) return;
-  el._sec = _psec;
-  el.data = { label: '섹션', value: _psec, tabs: PSEC_TABS };
+  if (!el) return;
+  var shown = psecShown();
+  var key = _psec + ' ' + shown.join(' ');
+  if (el._sec === key) return;
+  el._sec = key;
+  var tabs = PSEC_TABS.filter(function(t) { return shown.indexOf(t.id) >= 0; });
+  el.data = { label: '섹션', value: _psec, tabs: tabs };
 }
 // A section not shown holds no nodes: its DOM goes, its data stays.
 function psecClear(sec) {
@@ -16510,8 +16539,11 @@ function wlIsCard(el) {
   });
   el.addEventListener('ui-open', function(e) {
     if (e.target !== el) return;
+    // A subagent's 열기 lands only where a tab can bring the reader back (panelAgentOpenable); anywhere else it
+    // stays put (and the element plays no navigate sound).
     var id = e.detail && e.detail.id;
-    if (id) selectPanelAgent(String(id));
+    if (!id || !panelAgentOpenable(String(id))) { e.preventDefault(); return; }
+    selectPanelAgent(String(id));
   });
   el.addEventListener('ui-load-older', function(e) {
     var st = _wl;
