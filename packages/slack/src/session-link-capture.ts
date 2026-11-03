@@ -172,8 +172,12 @@ function resultText(result: unknown): string {
 
 /** What a tool call writes to GitHub, read from its input alone (onToolUse). */
 export interface GitHubWrite {
-  /** `patch` is a PATCH of a PR or issue: it is a close only when the result shows the state `closed`. */
-  op: 'create' | 'merge' | 'close' | 'patch';
+  /**
+   * `patch` is a PATCH of a PR or issue: it is a close only when the result shows the state `closed`. `read` is a
+   * request that writes nothing (a GET, `gh pr view`): it proves nothing, but makes a create beside it in the same call
+   * ambiguous — its object could be what the result shows.
+   */
+  op: 'create' | 'merge' | 'close' | 'patch' | 'read';
   kind: 'pr' | 'issue';
   /** `owner/repo`, lower case — undefined when the call does not name it (`gh pr create` in a checkout). */
   repo?: string;
@@ -201,6 +205,8 @@ interface Statement {
   code?: CodeLang;
   /** How deeply it was nested (substitution, `bash -c`, heredoc). */
   depth: number;
+  /** The command may not run it (a branch, the right of `||`, after `exit`): its writes are not read. */
+  uncertain?: true;
 }
 
 interface Word {
@@ -216,7 +222,9 @@ const MAX_NESTING = 4;
 const MAX_WRITES = 256;
 /** Longer statements are not read (a model-written statement is rarely over a few thousand characters). */
 const MAX_STATEMENT_LENGTH = 32_000;
-const HEREDOC = /<<-?\s*(['"]?)([A-Za-z_][\w-]*)\1/;
+const HEREDOC = /<<(-?)\s*\\?(['"]?)([A-Za-z_][\w-]*)\2/;
+/** Every `<<` on a line (not `<<<`). */
+const HEREDOC_OPS = /(?<!<)<<(?!<)/g;
 
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh']);
 const HTTP_CLIENTS = new Set(['curl', 'wget', 'http', 'https', 'xh']);
@@ -237,7 +245,6 @@ const WRAPPERS = new Map<string, RegExp>([
   ['nohup', /^$/],
   ['time', /^$/],
   ['stdbuf', /^$/],
-  ['xargs', /^-[InPLdaEs]$/],
 ]);
 
 /** A statement's words, unquoted, each with where it starts in the statement. */
@@ -245,12 +252,24 @@ function wordsOf(text: string): Word[] {
   const out: Word[] = [];
   let value = '';
   let start = -1;
-  let quote: '"' | "'" | '' = '';
+  let quote: '"' | "'" | 'a' | '' = '';
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
     if (quote === "'") {
       if (c === "'") quote = '';
       else value += c;
+      continue;
+    }
+    if (quote === 'a') {
+      if (c === '\\') value += text[++i] ?? '';
+      else if (c === "'") quote = '';
+      else value += c;
+      continue;
+    }
+    if (c === '$' && text[i + 1] === "'") {
+      if (start < 0) start = i;
+      quote = 'a';
+      i++;
       continue;
     }
     if (quote === '"') {
@@ -283,12 +302,20 @@ function commandAt(words: Word[]): number {
   let i = 0;
   while (i < words.length) {
     const w = words[i].value;
+    // `arr=( a b c )`: the array's words are data, up to its closing parenthesis.
+    if (/^[A-Za-z_]\w*\+?=\(/.test(w)) {
+      while (i < words.length && !words[i].value.includes(')')) i++;
+      i++;
+      continue;
+    }
     if (KEYWORDS.has(w) || /^[A-Za-z_]\w*=/.test(w)) {
       i++;
       continue;
     }
     const takesValue = WRAPPERS.get(w);
     if (!takesValue) break;
+    // `command -v gh …` / `-V`: a lookup, nothing runs.
+    if (w === 'command' && /^-[vV]$/.test(words[i + 1]?.value ?? '')) return words.length;
     i++;
     while (i < words.length && /^-./.test(words[i].value)) i += takesValue.test(words[i].value) ? 2 : 1;
     if (w === 'timeout' && /^\d+(?:\.\d+)?[smhd]?$/.test(words[i]?.value ?? '')) i++;
@@ -331,6 +358,10 @@ function runOf(words: Word[], at: number): Run {
     for (let k = at + 1; k < words.length; k++) {
       const v = words[k].value;
       if (/^[-+]o$/.test(v)) k++;
+      else if (v.startsWith('--'))
+        return undefined; // `--help`, `--version`, `--noexec`…: not read
+      else if (/^-[A-Za-z]*n/.test(v))
+        return undefined; // `-n`: read, not run
       else if (/^-[A-Za-z]*c[A-Za-z]*$/.test(v)) return { shell: words[k + 1]?.value ?? '' };
       else if (!/^[-+]/.test(v)) return SEND; // a script file: what it sends is not visible, its arguments are
     }
@@ -383,40 +414,176 @@ function closingBacktick(text: string, from: number): number {
   return -1;
 }
 
+/** First words that only set up the shell: an `&&` after them is still certain to run what follows. */
+const BENIGN = new Set(['cd', 'pushd', 'popd', 'export', 'set', 'umask', 'source', '.', 'mkdir', 'true', ':', 'unset']);
+
+function firstWordOf(text: string): string {
+  // A bounded prefix: asked for a statement still being read, too (linear overall).
+  return text.trimStart().slice(0, 64).split(/\s/)[0] ?? '';
+}
+
+/** A statement that only assigns variables or sets the shell up (`T=$(cat tok)`, `cd repo`). */
+function benign(text: string): boolean {
+  const words = text.trim().split(/\s+/);
+  const k = words.findIndex((w) => !/^[A-Za-z_]\w*=/.test(w));
+  return k < 0 || BENIGN.has(words[k]);
+}
+
 /**
  * Splits `text` from `from` into statements, appended to `out`. Inside a substitution (`inSub`) it stops at the
  * unmatched `)` and returns the index after it. Linear: every character is read once per level, and levels are capped.
+ *
+ * Each statement is marked `uncertain` when the command may not run it: a body of `if` / `while` / `for` / `case`
+ * (the condition of an `if` / `while` runs), the right side of `||`, anything after `exit` / `return` / `exec`, the
+ * right side of `&&` after a statement that can fail — unless that chain is the command's last, whose exit status the
+ * tool result reports. A substitution inherits its statement's mark. A write in an uncertain statement is not read.
  */
-function splitShell(text: string, from: number, inSub: boolean, depth: number, out: Statement[]): number {
+function splitShell(
+  text: string,
+  from: number,
+  inSub: boolean,
+  depth: number,
+  out: Statement[],
+  inherited = false,
+): number {
   let cur = '';
-  let quote: '"' | "'" | '' = '';
+  // The statement's first characters, kept apart: a substitution asks for its statement's first word while the
+  // statement grows — reading `cur` itself each time would be quadratic.
+  let head = '';
+  const add = (piece: string) => {
+    cur += piece;
+    if (head.length < 64) head += piece.slice(0, 64 - head.length);
+  };
+  // `a`: inside `$'…'` (ANSI-C quoting: backslash escapes, no expansion).
+  let quote: '"' | "'" | 'a' | '' = '';
+  // Inside `${…}`: a substitution there runs only if the expansion needs it (`${x:-$(cmd)}`) — uncertain.
+  let braceParam = 0;
+  // Inside a function definition's body: it runs only when called — uncertain.
+  let funcDepth = 0;
   let parens = 0;
   let backticks = true;
-  const flush = () => {
-    if (cur.trim()) out.push({ text: cur, depth });
+  let after: string | undefined;
+  let blocks = 0;
+  let dead = false;
+  let chainBenign = true;
+  let pipeUncertain = false;
+  let pipeAnd = false;
+  /** This level's statements, for the last-chain exemption. */
+  const mine: Array<{ st: Statement; after: string | undefined; andOnly: boolean }> = [];
+  const contextOf = (t: string): { uncertain: boolean; andOnly: boolean } => {
+    if (after === '|') return { uncertain: pipeUncertain, andOnly: pipeAnd };
+    const w = firstWordOf(t);
+    const body = blocks > 0 || /^(?:then|do|else|elif)$/.test(w);
+    const hard = inherited || dead || body || funcDepth > 0 || after === '||';
+    const andOnly = !hard && after === '&&' && !chainBenign;
+    return { uncertain: hard || andOnly, andOnly };
+  };
+  const flush = (next: string | undefined) => {
+    const t = cur;
     cur = '';
+    head = '';
+    if (!t.trim()) {
+      after = next ?? after;
+      return;
+    }
+    const ctx = contextOf(t);
+    const st: Statement = { text: t, depth, ...(ctx.uncertain ? { uncertain: true } : {}) };
+    out.push(st);
+    mine.push({ st, after, andOnly: ctx.andOnly });
+    const w = firstWordOf(t);
+    if (/^(?:if|while|until|for|case|select)$/.test(w)) blocks++;
+    if (/^(?:fi|done|esac)$/.test(w) || /(?:^|\s)(?:fi|done|esac)\s*$/.test(t)) blocks = Math.max(0, blocks - 1);
+    if (blocks === 0 && !ctx.uncertain && /^(?:exit|return|exec)$/.test(w)) dead = true;
+    // `set -n` / `set -o noexec`: nothing after it runs.
+    if (!ctx.uncertain && /^set\s+(?:-[A-Za-z]*n|-o\s+noexec)\b/.test(t.trim())) dead = true;
+    // A function definition: its body runs only when called.
+    if (/^\s*(?:function\s+[\w-]+(?:\s*\(\s*\))?|[\w-]+\s*\(\s*\))\s*\{?\s*$/.test(t)) funcDepth++;
+    else if (funcDepth > 0 && /^\s*\}\s*$/.test(t)) funcDepth--;
+    if (next !== '|') {
+      pipeUncertain = false;
+      pipeAnd = false;
+    } else if (after !== '|') {
+      pipeUncertain = ctx.uncertain;
+      pipeAnd = ctx.andOnly;
+    }
+    if (next === '&&') chainBenign = chainBenign && benign(t);
+    else if (next === '||') chainBenign = false;
+    else if (next !== '|') chainBenign = true;
+    after = next;
+  };
+  const finish = () => {
+    // The command's last `&&` chain: a successful result says it ran to the end, so its `&&` statements are certain.
+    for (let k = mine.length - 1; k >= 0; k--) {
+      const m = mine[k];
+      if (m.andOnly) delete m.st.uncertain;
+      if (m.after !== '&&' && m.after !== '|') break;
+    }
   };
   let i = from;
   while (i < text.length) {
     const c = text[i];
     if (quote === "'") {
       if (c === "'") quote = '';
-      cur += c;
+      add(c);
       i++;
       continue;
     }
+    if (quote === 'a') {
+      if (c === '\\') {
+        add(c + (text[i + 1] ?? ''));
+        i += 2;
+        continue;
+      }
+      if (c === "'") quote = '';
+      add(c);
+      i++;
+      continue;
+    }
+    if (c === '$' && text[i + 1] === "'" && quote === '') {
+      quote = 'a';
+      add("$'");
+      i += 2;
+      continue;
+    }
+    if (c === '$' && text[i + 1] === '{') {
+      braceParam++;
+      add('${');
+      i += 2;
+      continue;
+    }
+    if (c === '}' && braceParam > 0) {
+      braceParam--;
+      add(c);
+      i++;
+      continue;
+    }
+    // An array assignment `name=( … )` holds words, not commands, across lines too.
+    if (c === '(' && quote === '' && /[A-Za-z_]\w*\+?=$/.test(cur)) {
+      const close = text.indexOf(')', i);
+      const stop = close < 0 ? text.length : close + 1;
+      add(text.slice(i, stop));
+      i = stop;
+      continue;
+    }
     if (c === '\\') {
-      cur += c + (text[i + 1] ?? '');
+      add(c + (text[i + 1] ?? ''));
       i += 2;
       continue;
     }
     // A command substitution runs its command, inside double quotes too: it is read as statements of its own.
     if (c === '$' && text[i + 1] === '(') {
       if (depth < MAX_NESTING) {
-        i = splitShell(text, i + 2, true, depth + 1, out);
-        cur += '$(…)';
+        i = splitShell(
+          text,
+          i + 2,
+          true,
+          depth + 1,
+          out,
+          inherited || braceParam > 0 || contextOf(head || 'x').uncertain,
+        );
+        add('$(…)');
       } else {
-        cur += '$(';
+        add('$(');
         parens++;
         i += 2;
       }
@@ -426,35 +593,45 @@ function splitShell(text: string, from: number, inSub: boolean, depth: number, o
       const end = closingBacktick(text, i + 1);
       if (end < 0) {
         backticks = false;
-        cur += c;
+        add(c);
         i++;
         continue;
       }
-      if (depth < MAX_NESTING) splitShell(text.slice(i + 1, end), 0, false, depth + 1, out);
-      cur += '`…`';
+      if (depth < MAX_NESTING) {
+        splitShell(
+          text.slice(i + 1, end),
+          0,
+          false,
+          depth + 1,
+          out,
+          inherited || braceParam > 0 || contextOf(head || 'x').uncertain,
+        );
+      }
+      add('`…`');
       i = end + 1;
       continue;
     }
     if (quote === '"') {
       if (c === '"') quote = '';
-      cur += c;
+      add(c);
       i++;
       continue;
     }
     if (c === '"' || c === "'") {
       quote = c;
-      cur += c;
+      add(c);
       i++;
       continue;
     }
     // A comment runs to the end of the line: what it says is not run.
-    if (c === '#' && (cur === '' || /\s/.test(text[i - 1] ?? ''))) {
+    if (c === '#' && (head === '' || /\s/.test(text[i - 1] ?? ''))) {
       while (i < text.length && text[i] !== '\n') i++;
       continue;
     }
     if (inSub && c === ')') {
       if (parens === 0) {
-        flush();
+        flush(undefined);
+        finish();
         return i + 1;
       }
       parens--;
@@ -463,83 +640,96 @@ function splitShell(text: string, from: number, inSub: boolean, depth: number, o
     }
     const two = text.slice(i, i + 2);
     if (c === '\n' || c === ';' || two === '&&' || two === '||' || c === '|') {
-      flush();
+      flush(two === '&&' || two === '||' ? two : c === '|' ? '|' : ';');
       i += two === '&&' || two === '||' ? 2 : 1;
       continue;
     }
-    cur += c;
+    add(c);
     i++;
   }
-  flush();
+  flush(undefined);
+  finish();
   return i;
 }
 
-/** The statements of a shell command; a heredoc's body is read as shell, code or data by the command reading it. */
-function shellStatements(command: string, depth: number, out: Statement[] = []): Statement[] {
+/**
+ * The statements of a shell command; a heredoc's body is read as shell, code or data by the command reading it. A
+ * heredoc body is uncertain when any statement of the command is (its head's own context is not tracked).
+ */
+function shellStatements(command: string, depth: number, out: Statement[] = [], inherited = false): Statement[] {
   const lines = command.split('\n');
   const kept: string[] = [];
+  const bodies: Statement[] = [];
+  // The quote state at each line's start, carried across lines (a quoted commit message spans several).
+  let quote: '"' | "'" | '' = '';
+  /** Where in `line` the unquoted `<<` operators are; the quote state after the line. */
+  const unquotedOps = (line: string): number[] => {
+    const at: number[] = [];
+    for (let k = 0; k < line.length; k++) {
+      const c = line[k];
+      if (quote === "'") {
+        if (c === "'") quote = '';
+      } else if (quote === '"') {
+        if (c === '\\') k++;
+        else if (c === '"') quote = '';
+      } else if (c === '\\') k++;
+      else if (c === "'" || c === '"') quote = c;
+      else if (c === '<' && line[k + 1] === '<' && line[k - 1] !== '<' && line[k + 2] !== '<') {
+        at.push(k);
+        k++;
+      }
+    }
+    return at;
+  };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     kept.push(line);
+    HEREDOC_OPS.lastIndex = 0;
+    const any = HEREDOC_OPS.test(line);
+    const ops = unquotedOps(line);
+    if (!any) continue;
+    if (ops.length === 0) continue; // every `<<` on the line is inside quotes: data
     const m = line.match(HEREDOC);
-    if (!m || line.includes('<<<')) continue;
+    // A heredoc the line grammar cannot place — two on a line, or a delimiter it does not read (`<<'END HERE'`) —
+    // leaves the whole command unread.
+    if (!m || ops.length !== 1 || m.index !== ops[0]) return out;
+    const before = line.slice(0, m.index);
+    const strip = m[1] === '-';
     const body: string[] = [];
     let j = i + 1;
-    while (j < lines.length && lines[j].trim() !== m[2]) body.push(lines[j++]);
-    const kind = heredocKind(line.slice(0, m.index));
+    while (j < lines.length && (strip ? lines[j].replace(/^\t+/, '') : lines[j]) !== m[3]) body.push(lines[j++]);
+    // Another redirection on the head line replaces the heredoc as the program's input: its body is data.
+    const rest = line.slice((m.index ?? 0) + m[0].length);
+    const redirected = /(?<![<>])<(?!<)|<\(/.test(before.replace(/<<.*/, '')) || /(?<![<>])<(?!<)/.test(rest);
+    const kind = redirected ? undefined : heredocKind(before);
     if (kind === 'shell') {
-      if (depth < MAX_NESTING) shellStatements(body.join('\n'), depth + 1, out);
-    } else if (kind) out.push({ text: body.join('\n'), code: kind, depth: depth + 1 });
+      if (depth < MAX_NESTING) shellStatements(body.join('\n'), depth + 1, bodies, inherited);
+    } else if (kind) bodies.push({ text: body.join('\n'), code: kind, depth: depth + 1 });
     i = j;
   }
-  splitShell(kept.join('\n'), 0, false, depth, out);
+  const split: Statement[] = [];
+  splitShell(kept.join('\n'), 0, false, depth, split, inherited);
+  const unsure = inherited || split.some((s) => s.uncertain);
+  for (const b of bodies) out.push(unsure ? { ...b, uncertain: true } : b);
+  out.push(...split);
   return out;
 }
 
 // ── Reading a request ────────────────────────────────────────────────────────────────────────────────────────────────
 
-// `repos/{owner}/{repo}/pulls|issues[/{n}[/merge]]` — as an api.github.com URL or a bare path (`gh api repos/…`, a
-// `POST /repos/…` helper). Any other suffix (`/comments`, `/reviews`, `/labels`, `/files`) is not a target.
-const ENDPOINT =
-  /(?:api\.github\.com\/|(?<![\w./-]))\/?repos\/([\w.-]+)\/([\w.-]+)\/(pulls|issues)(?:\/(\d+)(?:\/(merge))?)?(?![\w/-])/g;
-/** How a shell command names its method: a curl / gh flag, a `METHOD /repos` helper argument. */
-const METHOD_TOKENS: RegExp[] = [
-  /(?:^|\s)(?:-X|--request|--method)\s*(?:=\s*)?['"]?(GET|POST|PUT|PATCH|DELETE)\b/gi,
-  /\bmethod\s*[:=]\s*['"`](GET|POST|PUT|PATCH|DELETE)['"`]/gi,
-  /(?:^|[\s"'`])(GET|POST|PUT|PATCH|DELETE)\s+['"]?(?=\/?repos\/)/g,
-];
 const GH_CLI = /^[({]*(?:[^\s/]*\/)*gh\s+(pr|issue)\s+(create|merge|close)\b([^\n]*)/;
 const REPO_FLAG =
   /(?:^|\s)(?:-R|--repo)(?:\s+|=)['"]?(?:https:\/\/)?(?:github\.com\/)?([\w.-]+\/[\w.-]+?)(?:\.git)?['"]?(?=\s|$)/;
 const ISSUE_OR_PR_URL = /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(pull|issues)\/(\d+)/;
 
-interface MethodToken {
-  at: number;
-  verb: string;
-  /** A bare `POST /repos/…` argument (a helper script's), not a flag or a `method:` key. */
-  bare?: boolean;
-}
+const GH_CLI_READ = /^[({]*(?:[^\s/]*\/)*gh\s+(pr|issue)\s+([a-z-]+)\b([^\n]*)/;
 
-/** Every method token of a statement, scanned once (not once per endpoint). */
-function methodTokens(statement: string): MethodToken[] {
-  const out: MethodToken[] = [];
-  for (const re of METHOD_TOKENS) {
-    re.lastIndex = 0;
-    for (const m of statement.matchAll(re)) {
-      out.push({ at: m.index ?? 0, verb: m[1].toUpperCase(), ...(re === METHOD_TOKENS[2] ? { bare: true } : {}) });
-    }
-  }
-  return out;
-}
-
-/** The method nearest the endpoint; else the client's implied one (`POST` when it sends data); else GET. */
-function verbOf(tokens: MethodToken[], at: number, implied: string | undefined): string {
-  let best: { verb: string; dist: number } | undefined;
-  for (const t of tokens) {
-    const dist = Math.abs(t.at - at);
-    if (!best || dist < best.dist) best = { verb: t.verb, dist };
-  }
-  return best?.verb ?? implied ?? 'GET';
+/** `gh pr view` / `list` / `checks` / …: a read of that kind, in the repo `-R` names (any repo when none). */
+function ghCliRead(command: string): GitHubWrite | undefined {
+  const m = command.match(GH_CLI_READ);
+  if (!m || /^(?:create|merge|close)$/.test(m[2])) return undefined;
+  const repo = (m[3] ?? '').match(REPO_FLAG)?.[1]?.toLowerCase();
+  return { op: 'read', kind: m[1] === 'pr' ? 'pr' : 'issue', ...(repo ? { repo } : {}) };
 }
 
 /** `gh pr|issue create|merge|close …`, read from the command word on. */
@@ -564,187 +754,185 @@ function ghCliWrite(command: string): GitHubWrite | undefined {
   return { op: action, kind, ...(repo ? { repo } : {}), ...(number ? { number } : {}) };
 }
 
-/** Options whose value is data, a header, a file or a setting — never the request's destination. */
-const VALUE_OPTIONS: Record<string, { long: Set<string>; short: string; flags: string }> = {
+/**
+ * What a known HTTP client's options mean, as far as a write goes. Anything not listed — an option the grammar does
+ * not know — makes the whole command unread: a miss, never a guess. `bail` marks options that make the command
+ * several requests (`--next`).
+ */
+type OptionRole = 'flag' | 'value' | 'data' | 'method' | 'get' | 'head' | 'url' | 'host' | 'bail';
+interface ClientSpec {
+  short: Record<string, OptionRole>;
+  long: Record<string, OptionRole>;
+}
+
+const roles = (role: OptionRole, names: string): Record<string, OptionRole> =>
+  Object.fromEntries(
+    names
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((n) => [n, role]),
+  );
+
+const CLIENTS: Record<string, ClientSpec> = {
   curl: {
-    long: new Set([
-      '--data',
-      '--data-raw',
-      '--data-binary',
-      '--data-urlencode',
-      '--data-ascii',
-      '--json',
-      '--form',
-      '--form-string',
-      '--header',
-      '--user',
-      '--user-agent',
-      '--referer',
-      '--cookie',
-      '--cookie-jar',
-      '--output',
-      '--write-out',
-      '--upload-file',
-      '--url-query',
-      '--proxy',
-      '--config',
-      '--cert',
-      '--key',
-      '--cacert',
-      '--range',
-      '--max-time',
-      '--connect-timeout',
-      '--retry',
-      '--request',
-      '--oauth2-bearer',
-    ]),
-    short: 'dFHuAebcowTXxKErmyYzC',
-    flags: 'sSLkivfGINjqgZ0123456#l',
+    short: {
+      ...roles('flag', 's S L k i v f N q g Z 0 1 2 3 4 6 j J O R # l n B p'),
+      ...roles('value', 'H u A e b c o w T x K E r m y Y z C U Q t'),
+      G: 'get',
+      I: 'head',
+      d: 'data',
+      F: 'data',
+      X: 'method',
+      ':': 'bail',
+    },
+    long: {
+      ...roles(
+        'flag',
+        '--silent --show-error --location --location-trusted --insecure --include --verbose --fail --fail-with-body --fail-early --compressed --http1.0 --http1.1 --http2 --http2-prior-knowledge --http3 --globoff --no-progress-meter --progress-bar --no-buffer --raw --remote-name --remote-header-name --create-dirs --no-keepalive --tcp-nodelay --ipv4 --ipv6 --disable --path-as-is --no-sessionid --ssl --ssl-reqd --tlsv1.2 --tlsv1.3 --netrc --netrc-optional --no-alpn --no-npn --styled-output --no-styled-output --trace-time --junk-session-cookies --remote-time --anyauth --basic --digest --ntlm --negotiate',
+      ),
+      ...roles(
+        'value',
+        '--header --user --user-agent --referer --cookie --cookie-jar --output --write-out --upload-file --url-query --proxy --proxy-user --proxy-header --config --cert --key --cacert --capath --range --max-time --connect-timeout --retry --retry-delay --retry-max-time --oauth2-bearer --max-redirs --resolve --connect-to --interface --limit-rate --stderr --trace --trace-ascii --dump-header --etag-save --etag-compare --variable --max-filesize --speed-limit --speed-time --keepalive-time --dns-servers --proto --proto-redir --noproxy --unix-socket --aws-sigv4',
+      ),
+      ...roles('data', '--data --data-raw --data-binary --data-urlencode --data-ascii --json --form --form-string'),
+      '--request': 'method',
+      '--get': 'get',
+      '--head': 'head',
+      '--url': 'url',
+      '--next': 'bail',
+    },
   },
   gh: {
-    long: new Set([
-      '--field',
-      '--raw-field',
-      '--input',
-      '--header',
-      '--jq',
-      '--template',
-      '--cache',
-      '--method',
-      '--preview',
-      '--hostname',
-    ]),
-    short: 'fFHqtXp',
-    flags: 'i',
+    short: { i: 'flag', H: 'value', q: 'value', t: 'value', p: 'value', f: 'data', F: 'data', X: 'method' },
+    long: {
+      ...roles('flag', '--include --paginate --silent --verbose --slurp'),
+      ...roles('value', '--header --jq --template --cache --preview'),
+      '--hostname': 'host',
+      ...roles('data', '--field --raw-field --input'),
+      '--method': 'method',
+    },
   },
   wget: {
-    long: new Set(['--post-data', '--body-data', '--header', '--output-document', '--method', '--user-agent']),
-    short: 'OUoaePtT',
-    flags: 'qcvN',
+    // wget's `-X` excludes directories; its method is only `--method`.
+    short: { ...roles('flag', 'q c v N S'), ...roles('value', 'O o a U t T P X D I e') },
+    long: {
+      ...roles(
+        'flag',
+        '--quiet --verbose --no-verbose --continue --timestamping --server-response --no-check-certificate --content-on-error',
+      ),
+      ...roles('value', '--header --user-agent --output-document --output-file --tries --timeout --directory-prefix'),
+      ...roles('data', '--post-data --post-file --body-data --body-file'),
+      '--method': 'method',
+    },
   },
 };
 
-/** The words that can be a request's destination: positional arguments, not option values or httpie data items. */
-function destinationWords(words: Word[], at: number, name: string): Word[] {
-  const opts = VALUE_OPTIONS[name];
-  const httpie = name === 'http' || name === 'https' || name === 'xh';
-  const out: Word[] = [];
-  for (let k = at + 1; k < words.length; k++) {
-    const v = words[k].value;
-    if (v.startsWith('--')) {
-      if (opts?.long.has(v)) k++;
-      continue;
-    }
-    if (/^-[^-]/.test(v)) {
-      // `-d` takes the next word; so does a bundle of flags ending in one (`-sd`); `-dfoo` carries its own value.
-      const letters = v.slice(1);
-      const last = letters[letters.length - 1];
-      const bundle = [...letters.slice(0, -1)].every((c) => opts?.flags.includes(c));
-      if (opts && bundle && opts.short.includes(last)) k++;
-      continue;
-    }
-    if (httpie && /^[\w-]+(?::=|==|=|@|:(?!\/\/))/.test(v)) continue; // a data or header item, not a URL
-    out.push(words[k]);
-  }
-  return out;
-}
-
-/** Whether a curl command is a GET despite its data: `-G` / `--get`, also inside a flag bundle (`-sG`). */
-function curlGet(words: Word[], at: number): boolean {
-  const flags = VALUE_OPTIONS.curl.flags;
-  return words
-    .slice(at + 1)
-    .some(
-      (w) =>
-        w.value === '--get' ||
-        (/^-[A-Za-z0-9#]+$/.test(w.value) &&
-          w.value.includes('G') &&
-          [...w.value.slice(1)].every((c) => flags.includes(c))),
-    );
+/** What a client command asks, read by its options: its destinations and its method — or unread. */
+interface ClientRequest {
+  destinations: Word[];
+  method: string;
 }
 
 /**
- * The method a known client names with its own options — `-X POST`, `-XPOST`, `--request=POST`, `--method POST`, or
- * httpie's positional `POST` — never a word inside data. Undefined when it names none.
+ * Reads a curl / gh api / wget command the way the client's own option parser does: a short option bundle is read
+ * letter by letter (`-sGd x`: flags, then GET, then a data option taking the next word or the rest of the bundle), a
+ * long option takes `=value` or the next word, and every option's value is consumed — so a `-X POST` or `-d` spelled
+ * inside a header or another option's value is that value, not an option. The method is the last one given; else HEAD
+ * for `-I` / `--head`, GET for `-G` / `--get`, POST when data is sent, GET otherwise. Unknown options, `--next`, and a
+ * method word that is not a method leave the command unread.
  */
-function clientMethod(words: Word[], at: number, name: string): MethodToken | undefined {
-  const httpie = name === 'http' || name === 'https' || name === 'xh';
-  const opts = VALUE_OPTIONS[name];
-  // curl and gh use the last method option given: `-X POST -X GET` is a GET.
-  let found: MethodToken | undefined;
-  const take = (k: number, raw: string | undefined) => {
-    const verb = (raw ?? '').toUpperCase();
-    found = VERBS.test(verb) ? { at: words[k].start, verb } : undefined;
+function readClient(words: Word[], at: number, name: string): ClientRequest | undefined {
+  const spec = CLIENTS[name];
+  if (!spec) return undefined;
+  const destinations: Word[] = [];
+  let method: string | undefined;
+  let get = false;
+  let head = false;
+  let data = false;
+  const take = (role: OptionRole, value: string | undefined, word: Word | undefined): boolean => {
+    if (role === 'bail') return false;
+    if (role === 'get') get = true;
+    else if (role === 'head') head = true;
+    else if (role === 'data') data = true;
+    else if (role === 'method') {
+      if (value === undefined || !METHOD_WORD.test(value)) return false;
+      method = value.toUpperCase();
+    } else if (role === 'url' && word) destinations.push(word);
+    else if (role === 'host') return value === 'github.com';
+    return true;
   };
-  for (let k = at + 1; k < words.length; k++) {
-    const v = words[k].value;
-    const long = v.match(/^--(?:request|method)(?:=(.*))?$/);
-    if (long) {
-      take(k, long[1] ?? words[k + 1]?.value);
-      if (long[1] === undefined) k++;
-      continue;
-    }
-    // `-X POST`, `-XPOST`, and a flag bundle ending in it: `-sX POST`, `-sXPOST`.
-    const short = v.match(/^-([A-Za-z0-9#]*?)X([A-Za-z]*)$/);
-    if (short && [...short[1]].every((c) => opts?.flags.includes(c))) {
-      take(k, short[2] || words[k + 1]?.value);
-      if (!short[2]) k++;
-      continue;
-    }
-    if (httpie && !v.startsWith('-')) return VERBS.test(v) ? { at: words[k].start, verb: v.toUpperCase() } : found;
-    // The value of a data / header option is skipped whole: a `-X POST` spelled inside it is not the method.
-    if (opts && (opts.long.has(v) || (/^-[^-]$/.test(v) && opts.short.includes(v[1])))) k++;
+  const takesValue = (role: OptionRole) =>
+    role === 'value' || role === 'data' || role === 'method' || role === 'url' || role === 'host';
+  // gh: `gh api <endpoint>` — the subcommand is not a destination.
+  let k = at + 1;
+  if (name === 'gh') {
+    if (words[k]?.value !== 'api') return undefined;
+    k++;
   }
-  return found;
-}
-
-/**
- * Whether a known client sends data — which makes curl's and `gh api`'s request a POST (wget's `--post-data` too) —
- * read from its parsed options: a data option, attached (`--data=x`, `-dx`) or ending a flag bundle (`-sd x`). A
- * flag spelled inside a header or another option's value does not count.
- */
-const DATA_OPTIONS: Record<string, { long: RegExp; short: string }> = {
-  curl: { long: /^--(?:data(?:-raw|-binary|-urlencode|-ascii)?|json|form|form-string)(?:=|$)/, short: 'dF' },
-  gh: { long: /^--(?:field|raw-field|input)(?:=|$)/, short: 'fF' },
-  wget: { long: /^--(?:post-data|post-file)(?:=|$)/, short: '' },
-};
-
-function sendsData(words: Word[], at: number, name: string): boolean {
-  const opts = VALUE_OPTIONS[name];
-  const data = DATA_OPTIONS[name];
-  if (!opts || !data) return false;
-  for (let k = at + 1; k < words.length; k++) {
+  for (; k < words.length; k++) {
     const v = words[k].value;
+    if (v === '--') {
+      destinations.push(...words.slice(k + 1));
+      break;
+    }
     if (v.startsWith('--')) {
-      if (data.long.test(v)) return true;
-      if (opts.long.has(v)) k++;
+      const eq = v.indexOf('=');
+      const opt = eq < 0 ? v : v.slice(0, eq);
+      const role = spec.long[opt];
+      if (!role) return undefined;
+      if (!takesValue(role)) {
+        if (eq >= 0 || !take(role, undefined, undefined)) return undefined;
+        continue;
+      }
+      const value = eq >= 0 ? v.slice(eq + 1) : words[++k]?.value;
+      const word = eq >= 0 ? { value: v.slice(eq + 1), start: words[k].start + eq + 1 } : words[k];
+      if (!take(role, value, word)) return undefined;
       continue;
     }
-    if (!/^-[^-]/.test(v)) continue;
-    const letters = v.slice(1);
-    // `-d x` / `-sd x`: a bundle of flags ending in a data letter; `-dx`: a data letter carrying its value.
-    const bundleEnd = [...letters.slice(0, -1)].every((c) => opts.flags.includes(c));
-    if (bundleEnd && data.short.includes(letters[letters.length - 1])) return true;
-    if (data.short.includes(letters[0])) return true;
-    if (bundleEnd && opts.short.includes(letters[letters.length - 1])) k++;
+    if (v.startsWith('-') && v.length > 1) {
+      // A bundle, letter by letter: an option taking a value takes the rest of the bundle, or the next word.
+      for (let c = 1; c < v.length; c++) {
+        const role = spec.short[v[c]];
+        if (!role) return undefined;
+        if (!takesValue(role)) {
+          if (!take(role, undefined, undefined)) return undefined;
+          continue;
+        }
+        const rest = v.slice(c + 1);
+        const value = rest || words[++k]?.value;
+        if (!take(role, value, rest ? undefined : words[k])) return undefined;
+        break;
+      }
+      continue;
+    }
+    destinations.push(words[k]);
   }
-  return false;
+  return { destinations, method: method ?? (head ? 'HEAD' : get ? 'GET' : data ? 'POST' : 'GET') };
 }
 
-/** The PR and issue writes a shell request names: its destination and the method nearest to it. */
-function apiWrites(statement: string, words: Word[], at: number): GitHubWrite[] {
+/** httpie (`http`, `https`, `xh`): an explicit method, then the URL. Options or an implied method leave it unread. */
+function readHttpie(words: Word[], at: number): ClientRequest | undefined {
+  const rest = words.slice(at + 1);
+  if (rest.some((w) => w.value.startsWith('-'))) return undefined;
+  const [verb, url] = rest;
+  if (!verb || !url || !METHOD_WORD.test(verb.value) || !VERBS.test(verb.value)) return undefined;
+  return { destinations: [url], method: verb.value.toUpperCase() };
+}
+
+/** The PR and issue writes a shell request names. */
+function apiWrites(words: Word[], at: number): GitHubWrite[] {
   const name = nameOf(words[at]?.value);
-  const get = name === 'curl' && curlGet(words, at);
-  const client = name in VALUE_OPTIONS || name === 'http' || name === 'https' || name === 'xh';
-  // A known client's method comes from its options alone; a script's from a bare `POST /repos/…` argument.
-  const own = client ? clientMethod(words, at, name) : undefined;
-  const tokens = client ? (own ? [own] : []) : methodTokens(statement).filter((t) => t.bare);
-  const implied = !get && sendsData(words, at, name) ? 'POST' : undefined;
+  const requests =
+    name in CLIENTS
+      ? [readClient(words, at, name)]
+      : name === 'http' || name === 'https' || name === 'xh'
+        ? [readHttpie(words, at)]
+        : []; // a script: what it sends is not visible, and its arguments prove nothing
   const out: GitHubWrite[] = [];
-  for (const d of destinationWords(words, at, name)) {
-    ENDPOINT.lastIndex = 0;
-    for (const m of d.value.matchAll(ENDPOINT)) {
-      const w = writeOf(m, verbOf(tokens, d.start + (m.index ?? 0), implied));
+  for (const r of requests) {
+    if (!r) continue;
+    for (const d of r.destinations) {
+      const w = writeAt(d.value, r.method);
       if (w) out.push(w);
     }
   }
@@ -755,12 +943,8 @@ function apiWrites(statement: string, words: Word[], at: number): GitHubWrite[] 
 //
 // Code sends only through a call, so only a call counts — never data that spells a request: `{ method: "POST", url }`,
 // `const method = "POST"`, or a string that prints one (`console.log('fetch(…, { method: "POST" })')`). The code is
-// lexed for its language — strings, comments and regex literals are masked — and a request is read from the direct
-// arguments (not a nested call, array or callback) of a sending call found in the code itself: `fetch(…)`,
-// `request(…)` (`octokit.request("POST /repos/…")`, `https.request({ path, method })`), `urlopen(…)` /
-// `Request(…, method=…)`, `requests.post(…)`, `axios(…)`. A shell command the code runs as its first argument
-// (`execSync("curl …")`, `os.system(…)`, `subprocess.run("gh …", shell=True)`) is read as shell. A URL held in a
-// variable is not followed (a miss, which the turn-end GitHub check backs).
+// lexed for its language — strings, comments and regex literals are masked — and read by a fixed grammar of calls
+// (codeWrites). Precision first: a request outside it is a miss, which the turn-end GitHub check (#833) backs.
 
 interface CodeString {
   start: number;
@@ -799,40 +983,44 @@ const BEFORE_REGEX = new Set([
   'not',
 ]);
 
-/** Longer `/…/` runs are not read as a regex literal (they are rare; the bound keeps the lexer linear). */
-const MAX_REGEX_LENGTH = 256;
+/**
+ * Regex scanning per line is bounded: past it, the rest of the line is masked — a miss, never a guess — so a long or
+ * pathological line stays linear and a long regex literal is never read as code.
+ */
+const REGEX_BUDGET = 4096;
 
-/** The end (exclusive) of a regex literal whose opening `/` is at `at`, or -1 when it is not one (a newline first). */
-function regexEnd(code: string, at: number): number {
+/**
+ * Where a regex literal opening at `at` ends (exclusive, flags included), scanning to `limit`: `end` -1 when none on
+ * the line; `cut` when the scan stopped at the budget, not at the line's end.
+ */
+function regexScan(code: string, at: number, limit: number): { end: number; scanned: number; cut: boolean } {
   let inClass = false;
-  const limit = Math.min(code.length, at + MAX_REGEX_LENGTH);
   for (let j = at + 1; j < limit; j++) {
     const c = code[j];
-    if (c === '\n') return -1;
+    if (c === '\n') return { end: -1, scanned: j - at, cut: false };
     if (c === '\\') j++;
     else if (c === '[') inClass = true;
     else if (c === ']') inClass = false;
     else if (c === '/' && !inClass) {
       let end = j + 1;
       while (end < code.length && /[A-Za-z]/.test(code[end])) end++;
-      return end;
+      return { end, scanned: j - at, cut: false };
     }
   }
-  return -1;
+  return { end: -1, scanned: limit - at, cut: limit < code.length && code[limit] !== '\n' };
 }
 
 /**
- * Whether the `/` at `at` opens a regex literal, given the last code character and word before it. After an operator,
- * an opening bracket, a keyword or at the start, JS reads a regex. After an operand (a name, a number, `)`, `]`, a
- * string — on the same line or the line before) JS reads a division, so it is masked only when a division could not
- * compile: no space after the `/`, and the would-be closing `/` (and flags) followed by `.name`, `)`, `,`, `;`, `]`,
- * `}` or the end. `x /re/ y` and `(0)/re/+0` divide — a call between the slashes runs.
+ * Whether the `/` at `at` opens a regex literal (ending at `end`, -1 when none), given the last code character and
+ * word before it. After an operator, an opening bracket, a keyword or at the start, JS reads a regex. After an operand
+ * (a name, a number, `)`, `]`, a string — on the same line or the line before) JS reads a division, so it is masked
+ * only when a division could not compile: no space after the `/`, and the would-be closing `/` (and flags) followed by
+ * `.name`, `)`, `,`, `;`, `]`, `}` or the end. `x /re/ y` and `(0)/re/+0` divide — a call between the slashes runs.
  */
-function isRegexAt(code: string, at: number, last: string, word: string): boolean {
+function isRegexAt(code: string, at: number, last: string, word: string, end: number): boolean {
+  if (end < 0) return false;
   if (last === '' || /[(,=:[!&|?{};+\-*/%<>~^]/.test(last) || BEFORE_REGEX.has(word)) return true;
   if (/\s/.test(code[at + 1] ?? ' ')) return false;
-  const end = regexEnd(code, at);
-  if (end < 0) return false;
   let j = end;
   while (j < code.length && /\s/.test(code[j])) j++;
   return j >= code.length || /[),;\]}]/.test(code[j]) || (code[j] === '.' && /[A-Za-z_$]/.test(code[j + 1] ?? ''));
@@ -846,6 +1034,8 @@ function lexCode(code: string, lang: CodeLang): Lexed {
   let last = '';
   let word = '';
   let i = 0;
+  let lineEnd = -1;
+  let budget = REGEX_BUDGET;
   const blank = (stop: number) => {
     for (; i < stop; i++) masked.push(code[i] === '\n' ? '\n' : ' ');
   };
@@ -863,9 +1053,20 @@ function lexCode(code: string, lang: CodeLang): Lexed {
       continue;
     }
     // A regex literal (JS, Ruby) — where JS reads one, or where a division could not compile (see isRegexAt).
-    if (c === '/' && lang !== 'py' && isRegexAt(code, i, last, word)) {
-      const end = regexEnd(code, i);
-      if (end > 0) {
+    if (c === '/' && lang !== 'py') {
+      if (i >= lineEnd) {
+        const nl = code.indexOf('\n', i);
+        lineEnd = nl < 0 ? n : nl;
+        budget = REGEX_BUDGET;
+      }
+      const scan = regexScan(code, i, Math.min(lineEnd, i + budget));
+      budget -= scan.scanned;
+      if (scan.cut) {
+        blank(lineEnd);
+        continue;
+      }
+      const end = scan.end;
+      if (isRegexAt(code, i, last, word, end)) {
         masked.push('/');
         i++;
         blank(end - 1);
@@ -922,74 +1123,342 @@ function firstStringFrom(strings: CodeString[], at: number): number {
 }
 
 const VERBS = /^(GET|POST|PUT|PATCH|DELETE)$/i;
-/**
- * A sending call, found in masked code (so never inside a string, a comment or a regex literal): an HTTP call, or a
- * call that runs a shell command — `execSync` / `exec` (bare or on `child_process`), `os.system`, `subprocess.run`.
- */
-const SENDING_CALL =
-  /(?:(child_process|cp|subprocess|os)\.|(\.)|(?<![\w$]))(execSync|execFileSync|spawnSync|exec|system|popen|run|call|check_output|check_call|getoutput|Popen)\s*\(|\b(fetch|request|urlopen|Request|axios|(?:requests|axios|got|ky|httpx|superagent)\.(?:get|post|put|patch|delete|request))\s*\(/g;
-const MAX_CALLS = 64;
+/** Any HTTP method token: an explicit method outside VERBS (HEAD, OPTIONS) is a request that writes nothing. */
+const METHOD_WORD = /^[A-Za-z]+$/;
+/** Every call in masked code, with its receiver chain: `child_process.execSync(`, `requests.post(`, `fetch(`. */
+const CALL = /(?<![\w$])((?:[A-Za-z_$][\w$]*\.)*)([A-Za-z_$][\w$]*)\s*\(/g;
+const MAX_CALLS = 512;
 const MAX_CALL_LENGTH = 8000;
 
 /**
- * Whether a shell-running call is the real one: `execSync` on anything (`require("child_process").execSync`), `exec`
- * bare or on `child_process`, `os.system`, `subprocess.run` — not `re.exec(…)` or a bare `run(…)`.
+ * The whole of a destination: an api.github.com URL or a bare `/repos/…` path, from its start — never an endpoint
+ * spelled inside another URL's query, a template, or a longer path.
  */
-function runsShell(receiver: string | undefined, dotted: boolean, name: string): boolean {
-  if (/^(?:execSync|execFileSync|spawnSync)$/.test(name)) return true;
-  if (name === 'exec') return receiver ? /^(?:child_process|cp)$/.test(receiver) : !dotted;
-  if (/^(?:system|popen)$/.test(name)) return receiver === 'os';
-  return receiver === 'subprocess';
+const DESTINATION =
+  /^(?:(?:https?:\/\/)?api\.github\.com)?\/?repos\/([\w.-]+)\/([\w.-]+)\/(pulls|issues)(?:\/(\d+)(?:\/(merge))?)?\/?(?:[?#][^\s]*)?$/;
+
+/** One argument or one object property value, as the grammar reads it. */
+type Value =
+  | { kind: 'string'; value: string }
+  | { kind: 'object'; props: Map<string, Value>; open: boolean }
+  | { kind: 'request'; args: Arg[] }
+  | { kind: 'other'; text: string };
+
+interface Arg {
+  /** A Python keyword argument's name (`url=`, `method=`, `shell=`). */
+  kw?: string;
+  value: Value;
 }
 
-interface CallArg extends CodeString {
-  /** Directly in the call's argument list (or its options object) — not inside a nested call, array or object. */
-  direct: boolean;
-  /** Inside an object literal argument (brace depth 1), not in the argument list itself. */
-  inObject: boolean;
+/** The literal at exactly [from, to) of masked code: a whole string (Python prefixes allowed), else undefined. */
+function stringAt(lexed: Lexed, from: number, to: number): string | undefined {
+  const k = firstStringFrom(lexed.strings, from);
+  const s = lexed.strings[k];
+  if (!s) return undefined;
+  if (!/^[frbuFRBU]{0,2}$/.test(lexed.masked.slice(from, s.start).trim())) return undefined;
+  if (lexed.masked.slice(s.end, to).trim() !== '') return undefined;
+  // A template with an interpolation is not a literal.
+  if (lexed.masked[s.start] === '`' && s.value.includes('${')) return undefined;
+  return s.value;
 }
 
 /**
- * The string arguments of the call opened at `open`, in order, and where it ends — one bounded walk of the masked
- * code, tracking nesting so a string inside a nested call (`JSON.stringify({…})`) or a callback is not direct.
+ * The top-level pieces of masked code between `from` and `to`, split at commas outside brackets and strings (the
+ * lexer blanked string contents, so their commas are gone).
  */
-function callArgs(lexed: Lexed, open: number): { args: CallArg[]; end: number } {
-  const { masked, strings } = lexed;
-  const args: CallArg[] = [];
-  let k = firstStringFrom(strings, open);
-  let parens = 0;
-  let braces = 0;
-  let brackets = 0;
-  const limit = Math.min(masked.length, open + MAX_CALL_LENGTH);
-  for (let j = open; j < limit; j++) {
-    if (k < strings.length && strings[k].start === j) {
-      args.push({ ...strings[k], direct: parens === 1 && braces <= 1 && brackets === 0, inObject: braces === 1 });
-      j = strings[k].end - 1;
-      k++;
-      continue;
-    }
+function piecesOf(masked: string, from: number, to: number): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  let depth = 0;
+  let start = from;
+  for (let j = from; j < to; j++) {
     const c = masked[j];
-    if (c === '(') parens++;
-    else if (c === ')' && --parens === 0) return { args, end: j };
-    else if (c === '{') braces++;
-    else if (c === '}') braces--;
-    else if (c === '[') brackets++;
-    else if (c === ']') brackets--;
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (c === ',' && depth === 0) {
+      out.push([start, j]);
+      start = j + 1;
+    }
   }
-  return { args, end: limit };
+  if (masked.slice(start, to).trim() !== '') out.push([start, to]);
+  return out;
 }
 
-/** The method a call names directly: `method: "POST"`, `method="POST"`, `"method": "POST"`. */
-function methodOf(masked: string, args: CallArg[], open: number): string | undefined {
-  for (let k = 0; k < args.length; k++) {
-    const s = args[k];
-    if (!s.direct || !VERBS.test(s.value)) continue;
-    const keyed = /\bmethod\s*[:=]\s*$/.test(masked.slice(Math.max(open, s.start - 40), s.start));
-    const quotedKey =
-      k > 0 && args[k - 1].value === 'method' && /^\s*:\s*$/.test(masked.slice(args[k - 1].end, s.start));
-    if (keyed || quotedKey) return s.value.toUpperCase();
+/** The index of the bracket closing the one at `open`, in masked code (bounded); -1 when not found. */
+function closing(masked: string, open: number): number {
+  let depth = 0;
+  const limit = Math.min(masked.length, open + MAX_CALL_LENGTH);
+  for (let j = open; j < limit; j++) {
+    const c = masked[j];
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if ((c === ')' || c === ']' || c === '}') && --depth === 0) return j;
+  }
+  return -1;
+}
+
+function trimmed(masked: string, from: number, to: number): [number, number] {
+  while (from < to && /\s/.test(masked[from])) from++;
+  while (to > from && /\s/.test(masked[to - 1])) to--;
+  return [from, to];
+}
+
+/** What a piece of code is, as far as a request goes: a string literal, an object literal, a `Request(…)`, or other. */
+function valueAt(lexed: Lexed, from: number, to: number, depth = 0): Value {
+  const { masked } = lexed;
+  [from, to] = trimmed(masked, from, to);
+  const str = stringAt(lexed, from, to);
+  if (str !== undefined) return { kind: 'string', value: str };
+  if (depth < 3 && masked[from] === '{' && closing(masked, from) === to - 1) {
+    const props = new Map<string, Value>();
+    let open = false;
+    for (const [a, b] of piecesOf(masked, from + 1, to - 1)) {
+      const [x, y] = trimmed(masked, a, b);
+      const piece = masked.slice(x, y);
+      // A spread, a computed key or a shorthand property makes the object's contents unknown.
+      if (piece.startsWith('...') || piece.startsWith('[')) {
+        open = true;
+        continue;
+      }
+      const colon = piece.search(/:/);
+      if (colon < 0) {
+        open = true;
+        continue;
+      }
+      const rawKey = piece.slice(0, colon).trim();
+      const key = /^[A-Za-z_$][\w$]*$/.test(rawKey) ? rawKey : stringAt(lexed, x, x + colon);
+      if (key === undefined) {
+        open = true;
+        continue;
+      }
+      // A key given twice: which one wins is the language's business — unknown here.
+      if (props.has(key)) open = true;
+      props.set(key, valueAt(lexed, x + colon + 1, y, depth + 1));
+    }
+    return { kind: 'object', props, open };
+  }
+  const req = masked.slice(from, to).match(/^(?:new\s+)?(?:[A-Za-z_$][\w$]*\.)*Request\s*\(/);
+  if (depth < 3 && req) {
+    const open = from + req[0].length - 1;
+    if (closing(masked, open) === to - 1) return { kind: 'request', args: argsOf(lexed, open, depth + 1) ?? [] };
+  }
+  return { kind: 'other', text: masked.slice(from, to) };
+}
+
+/** The arguments of the call whose `(` is at `open`; undefined when the call does not close within the bound. */
+function argsOf(lexed: Lexed, open: number, depth = 0): Arg[] | undefined {
+  const end = closing(lexed.masked, open);
+  if (end < 0) return undefined;
+  return piecesOf(lexed.masked, open + 1, end).map(([a, b]) => {
+    const kw = lexed.masked.slice(a, b).match(/^\s*([A-Za-z_]\w*)\s*=(?!=)/);
+    return kw
+      ? { kw: kw[1], value: valueAt(lexed, a + kw[0].length, b, depth) }
+      : { value: valueAt(lexed, a, b, depth) };
+  });
+}
+
+const positional = (args: Arg[]) => args.filter((a) => !a.kw);
+const keyword = (args: Arg[], name: string) => args.find((a) => a.kw === name)?.value;
+const str = (v: Value | undefined) => (v?.kind === 'string' ? v.value : undefined);
+
+/** A method value: a literal verb; `null` when given but not a literal (unknown); undefined when not given. */
+function methodValue(v: Value | undefined): string | null | undefined {
+  if (v === undefined) return undefined;
+  const s = str(v);
+  return s !== undefined && METHOD_WORD.test(s) ? s.toUpperCase() : null;
+}
+
+/** The PR and issue write a whole destination names under a method. */
+function writeAt(dest: string | undefined, verb: string | null | undefined): GitHubWrite | undefined {
+  const m = dest?.match(DESTINATION);
+  if (!m) return undefined;
+  const w = verb ? writeOf(m, verb) : undefined;
+  return w ?? { op: 'read', kind: m[3] === 'pulls' ? 'pr' : 'issue', repo: `${m[1]}/${m[2]}`.toLowerCase() };
+}
+
+/** `fetch(url[, init])` / `fetch(new Request(url[, init]))`: the init object's single literal `method`, else GET. */
+function fetchWrite(args: Arg[]): GitHubWrite | undefined {
+  const pos = positional(args);
+  if (pos.length === 0 || pos.length > 2 || pos.length !== args.length) return undefined;
+  let [target, init] = [pos[0].value, pos[1]?.value];
+  if (target.kind === 'request') {
+    // The sender's own init overrides the Request's: read a Request only as fetch's sole argument.
+    if (init !== undefined) return undefined;
+    const inner = positional(target.args);
+    if (inner.length === 0 || inner.length > 2) return undefined;
+    [target, init] = [inner[0].value, inner[1]?.value];
+  }
+  if (init !== undefined && (init.kind !== 'object' || init.open)) return undefined;
+  const method = init?.kind === 'object' ? methodValue(init.props.get('method')) : undefined;
+  return writeAt(str(target), method === undefined ? 'GET' : method);
+}
+
+/** `urlopen(url[, data])` / `urlopen(Request(url, data=…, method=…))`: POST when data is given, unless a method is. */
+function urlopenWrite(args: Arg[]): GitHubWrite | undefined {
+  const target = args[0]?.value;
+  if (!target || args[0].kw) return undefined;
+  if (target.kind === 'request') {
+    if (args.length > 1) return undefined;
+    const inner = target.args;
+    const url = str(positional(inner)[0]?.value ?? keyword(inner, 'url'));
+    const method = methodValue(keyword(inner, 'method'));
+    const data = positional(inner).length > 1 || keyword(inner, 'data') !== undefined;
+    return writeAt(url, method === undefined ? (data ? 'POST' : 'GET') : method);
+  }
+  const data = args.length > 1;
+  return writeAt(str(target), data ? 'POST' : 'GET');
+}
+
+/** `requests.post(url, …)` / `requests.post(url=url, …)` / `requests.request("POST", url)` (also httpx). */
+function requestsWrite(name: string, args: Arg[]): GitHubWrite | undefined {
+  const pos = positional(args);
+  if (name === 'request') {
+    const method = methodValue(pos[0]?.value ?? keyword(args, 'method'));
+    return writeAt(str(pos[1]?.value ?? keyword(args, 'url')), method);
+  }
+  return writeAt(str(pos[0]?.value ?? keyword(args, 'url')), name.toUpperCase());
+}
+
+/** `axios.post(url, …)`, `axios(config)`, `axios(url, config)`, `axios.request(config)`. */
+function axiosWrite(name: string, args: Arg[]): GitHubWrite | undefined {
+  const pos = positional(args);
+  if (pos.length !== args.length || pos.length === 0) return undefined;
+  if (name !== 'axios' && name !== 'request') return writeAt(str(pos[0].value), name.toUpperCase());
+  const [a, b] = [pos[0].value, pos[1]?.value];
+  const config = a.kind === 'object' ? a : b;
+  if (config && (config.kind !== 'object' || config.open)) return undefined;
+  if (a.kind === 'object' && pos.length > 1) return undefined;
+  const url = a.kind === 'string' ? a.value : config?.kind === 'object' ? str(config.props.get('url')) : undefined;
+  const method = config?.kind === 'object' ? methodValue(config.props.get('method')) : undefined;
+  return writeAt(url, method === undefined ? 'GET' : method);
+}
+
+/** `https.request({ hostname: "api.github.com", path, method }, …)` or `https.request(url, { method }, …)`. */
+function nodeRequestWrite(args: Arg[]): GitHubWrite | undefined {
+  const [a, b] = [args[0]?.value, args[1]?.value];
+  if (a?.kind === 'object') {
+    if (a.open) return undefined;
+    const host = str(a.props.get('hostname') ?? a.props.get('host'));
+    if (host !== 'api.github.com') return undefined;
+    const method = methodValue(a.props.get('method'));
+    return writeAt(str(a.props.get('path')), method === undefined ? 'GET' : method);
+  }
+  if (a?.kind === 'string' && (b === undefined || (b.kind === 'object' && !b.open))) {
+    const method = b?.kind === 'object' ? methodValue(b.props.get('method')) : undefined;
+    return writeAt(a.value, method === undefined ? 'GET' : method);
   }
   return undefined;
+}
+
+/** `octokit.request("POST /repos/…", …)`: the route string names both. */
+function routeWrite(args: Arg[]): GitHubWrite | undefined {
+  const m = str(args[0]?.value)?.match(/^([A-Za-z]+)\s+(\S+)$/);
+  return m ? writeAt(m[2], m[1].toUpperCase()) : undefined;
+}
+
+/**
+ * The shell command a call runs, when it runs one through a shell: `execSync(cmd)` / `exec(cmd)` (child_process),
+ * `os.system(cmd)` / `os.popen(cmd)`, `subprocess.getoutput(cmd)`, and `subprocess.run(cmd, shell=True)` and kin.
+ * `execFileSync` / `spawnSync` / a `subprocess` call without `shell=True` run a program, not a shell line.
+ */
+function shellLineOf(chain: string, name: string, args: Arg[], dotted: boolean): string | undefined {
+  const first = args[0] && !args[0].kw ? str(args[0].value) : undefined;
+  if (first === undefined) return undefined;
+  // `execSync` is child_process's by name, on any receiver (`require("child_process").execSync`); `exec` only bare or
+  // on child_process (`re.exec(…)` is a regex).
+  if (name === 'execSync') return first;
+  if (name === 'exec' && ((!dotted && chain === '') || /^(?:child_process|cp)\.$/.test(chain))) return first;
+  if (chain === 'os.' && (name === 'system' || name === 'popen')) return first;
+  if (chain === 'subprocess.' && (name === 'getoutput' || name === 'getstatusoutput')) return first;
+  if (chain === 'subprocess.' && /^(?:run|call|check_call|check_output|Popen)$/.test(name)) {
+    const shell = args.find((a) => a.kw === 'shell')?.value;
+    return shell?.kind === 'other' && shell.text.trim() === 'True' ? first : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Whether a call at a position of masked code certainly runs when the program runs: at the top level — not inside a
+ * function, a block, another call's arguments, an arrow function, a condition (`if`, `&&`, `||`, `?`), a lambda, or
+ * an indented Python block. Anything else may never run: not read.
+ */
+function certainCalls(masked: string, lang: CodeLang): (at: number) => boolean {
+  const depth = new Int32Array(masked.length + 1);
+  let d = 0;
+  for (let j = 0; j < masked.length; j++) {
+    depth[j] = d;
+    const c = masked[j];
+    if (c === '(' || c === '[' || c === '{') d++;
+    else if ((c === ')' || c === ']' || c === '}') && d > 0) d--;
+  }
+  depth[masked.length] = d;
+  const js = /=>|&&|\|\||\?|\b(?:if|else|while|for|do|switch|case|function|return|catch|yield)\b/;
+  const py = /\b(?:lambda|if|else|elif|and|or|while|for|def|class|return|yield|except|try)\b/;
+  return (at: number) => {
+    if (depth[at] !== 0) return false;
+    let k = at - 1;
+    while (k >= 0 && !/[;\n{}]/.test(masked[k])) k--;
+    const prefix = masked.slice(k + 1, at);
+    if (lang === 'py') {
+      // An indented line is inside a block.
+      let line = at;
+      while (line > 0 && masked[line - 1] !== '\n') line--;
+      if (/[ \t]/.test(masked[line] ?? '')) return false;
+      return !py.test(prefix);
+    }
+    return !js.test(prefix);
+  };
+}
+
+/**
+ * The writes of code — only through calls in a fixed grammar, each with a literal destination that is a whole
+ * argument (or a whole property): `fetch`, `urlopen`, `requests` / `httpx`, `axios`, `got` / `ky` / `superagent`,
+ * `https.request`, an Octokit route, and the shell lines a call runs. Anything outside it — a destination or method in
+ * a variable, a template, a concatenation, a spread — is not read: a miss, which the turn-end GitHub check backs.
+ */
+function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrite[]): void {
+  // Ruby and Perl quote in ways the lexer does not know (`%q{…}`, `q{…}`): their code is not read.
+  if (code.length > MAX_STATEMENT_LENGTH || lang === 'rb') return;
+  const lexed = lexCode(code, lang);
+  const { masked } = lexed;
+  const certain = certainCalls(masked, lang);
+  let calls = 0;
+  CALL.lastIndex = 0;
+  for (const m of masked.matchAll(CALL)) {
+    if (++calls > MAX_CALLS) break;
+    const chain = m[1];
+    const name = m[2];
+    const open = (m.index ?? 0) + m[0].length - 1;
+    const known =
+      name === 'fetch' ||
+      name === 'urlopen' ||
+      name === 'axios' ||
+      name === 'request' ||
+      /^(?:execSync|exec|system|popen|getoutput|getstatusoutput|run|call|check_call|check_output|Popen)$/.test(name) ||
+      /^(?:requests|httpx|axios|got|ky|superagent)\.$/.test(chain);
+    if (!known || !certain(m.index ?? 0)) continue;
+    const args = argsOf(lexed, open);
+    if (!args) continue;
+    const dotted = (m.index ?? 0) > 0 && masked[(m.index ?? 0) - 1] === '.';
+    const line = shellLineOf(chain, name, args, dotted);
+    if (line !== undefined) {
+      if (depth < MAX_NESTING) shellWrites(line, depth + 1, out);
+      continue;
+    }
+    let w: GitHubWrite | undefined;
+    if (name === 'fetch' && /^(?:|window\.|globalThis\.|self\.)$/.test(chain)) w = fetchWrite(args);
+    else if (name === 'urlopen') w = urlopenWrite(args);
+    else if (/^(?:requests|httpx)\.$/.test(chain) && /^(?:get|post|put|patch|delete|request)$/.test(name))
+      w = requestsWrite(name, args);
+    else if (
+      (chain === '' && name === 'axios') ||
+      (chain === 'axios.' && /^(?:get|post|put|patch|delete|request)$/.test(name))
+    )
+      w = axiosWrite(name, args);
+    else if (/^(?:got|ky|superagent)\.$/.test(chain) && /^(?:get|post|put|patch|delete)$/.test(name))
+      w = writeAt(str(positional(args)[0]?.value), name.toUpperCase());
+    else if ((chain === 'https.' || chain === 'http.') && name === 'request') w = nodeRequestWrite(args);
+    else if (name === 'request') w = routeWrite(args);
+    if (w) out.push(w);
+  }
 }
 
 /** The PR and issue write an endpoint names under a method. */
@@ -1003,85 +1472,10 @@ function writeOf(m: RegExpMatchArray, verb: string): GitHubWrite | undefined {
   return undefined;
 }
 
-/** The writes of code: the requests its sending calls make, and the shell commands it runs. */
-function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrite[]): void {
-  if (code.length > MAX_STATEMENT_LENGTH) return;
-  const lexed = lexCode(code, lang);
-  const { masked } = lexed;
-  let calls = 0;
-  SENDING_CALL.lastIndex = 0;
-  for (const m of masked.matchAll(SENDING_CALL)) {
-    if (++calls > MAX_CALLS) break;
-    const open = (m.index ?? 0) + m[0].length - 1;
-    const { args } = callArgs(lexed, open);
-    const first = args[0];
-    const leadsWithString = first !== undefined && /^\(\s*[frbuFRBU]{0,2}$/.test(masked.slice(open, first.start));
-    if (m[3]) {
-      // A shell command the code runs: its first argument, a string.
-      if (runsShell(m[1], m[2] === '.', m[3]) && leadsWithString && depth < MAX_NESTING) {
-        shellWrites(first.value, depth + 1, out);
-      }
-      continue;
-    }
-    const name = m[4];
-    // Constructing a Request sends nothing: it counts only as the argument of the fetch / urlopen that sends it
-    // (`fetch(new Request(…))`, `urlopen(urllib.request.Request(…))`). A Request held in a variable is not followed.
-    if (
-      name === 'Request' &&
-      !/(?:fetch|urlopen)\s*\(\s*(?:new\s+)?(?:[\w$]+\.)*$/.test(
-        masked.slice(Math.max(0, (m.index ?? 0) - 120), m.index ?? 0),
-      )
-    ) {
-      continue;
-    }
-    // `fetch(new Request(…), init)`: the sender's own options override the Request's — not read.
-    if (
-      name === 'Request' &&
-      !/^\s*\)/.test(masked.slice(callArgs(lexed, open).end + 1, callArgs(lexed, open).end + 64))
-    ) {
-      continue;
-    }
-    // `octokit.request("POST /repos/…")`, `requests.request("POST", url)`
-    const leading = leadsWithString ? first.value.match(/^(GET|POST|PUT|PATCH|DELETE)(?:\s+\/?repos\/|$)/i) : null;
-    const named = name.match(/\.(get|post|put|patch|delete)$/)?.[1];
-    const verb = (named ?? leading?.[1] ?? methodOf(masked, args, open) ?? 'GET').toUpperCase();
-    for (const s of destinationArgs(masked, args, leadsWithString, open)) {
-      ENDPOINT.lastIndex = 0;
-      for (const e of s.value.matchAll(ENDPOINT)) {
-        const w = writeOf(e, verb);
-        if (w) out.push(w);
-      }
-    }
-  }
-}
-
-/**
- * Where a call sends: its leading string argument; or a Python `url=` keyword in its argument list; or, when its first
- * argument is an options object (`axios({ url })`, `https.request({ path })`), that object's `url` / `path` / `uri`.
- * A destination held in a variable leaves the call unread: a `url` in its body never stands in for it.
- */
-function destinationArgs(masked: string, args: CallArg[], leadsWithString: boolean, open: number): CallArg[] {
-  if (leadsWithString) return [args[0]];
-  const optionsFirst = /^\(\s*\{/.test(masked.slice(open, open + 64));
-  const out: CallArg[] = [];
-  for (let k = 0; k < args.length; k++) {
-    const s = args[k];
-    if (!s.direct) continue;
-    const before = masked.slice(Math.max(0, s.start - 40), s.start);
-    const kwarg = !s.inObject && /\b(?:url|uri)\s*=\s*$/.test(before);
-    const key =
-      /\b(?:url|path|uri|baseURL|endpoint)\s*:\s*$/.test(before) ||
-      (k > 0 &&
-        /^(?:url|path|uri|baseURL|endpoint)$/.test(args[k - 1].value) &&
-        /^\s*:\s*$/.test(masked.slice(args[k - 1].end, s.start)));
-    if (kwarg || (optionsFirst && s.inObject && key)) out.push(s);
-  }
-  return out;
-}
-
 /** The writes of a shell command, statement by statement; nested shell and code are read the same way. */
 function shellWrites(command: string, depth: number, out: GitHubWrite[]): void {
   for (const st of shellStatements(command, depth)) {
+    if (st.uncertain) continue;
     if (st.text.length > MAX_STATEMENT_LENGTH) {
       // Too long to read whole (an inline PR body): `gh pr create` is still read from its head.
       if (!st.code) {
@@ -1100,11 +1494,11 @@ function shellWrites(command: string, depth: number, out: GitHubWrite[]): void {
     const words = wordsOf(st.text);
     const at = commandAt(words);
     if (at >= words.length) continue;
-    const cli = ghCliWrite(st.text.slice(words[at].start));
+    const cli = ghCliWrite(st.text.slice(words[at].start)) ?? ghCliRead(st.text.slice(words[at].start));
     if (cli) out.push(cli);
     const run = runOf(words, at);
     if (!run) continue;
-    if ('send' in run) out.push(...apiWrites(st.text, words, at));
+    if ('send' in run) out.push(...apiWrites(words, at));
     else if (st.depth < MAX_NESTING) {
       if ('shell' in run) shellWrites(run.shell, st.depth + 1, out);
       else codeWrites(run.code, run.lang, st.depth + 1, out);
@@ -1164,34 +1558,13 @@ interface FoundObject {
   url: string;
 }
 
-const JSON_HTML_URL = /"html_url"\s*:\s*"(https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(pull|issues)\/(\d+))"/g;
+const ISSUE_OR_PR_HTML = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(pull|issues)\/(\d+)$/;
 const LONE_URL = /^[ \t]*(https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(pull|issues)\/(\d+))\/?[ \t]*$/gm;
-
-/** The PRs and issues a result holds as objects: a JSON `html_url` with its `"number"`, or a URL alone on a line. */
-const JSON_NUMBER = /"number"\s*:\s*(\d+)(?!\d)/g;
-
-function objectsIn(text: string): FoundObject[] {
-  const found: Array<FoundObject & { at: number }> = [];
-  const numbers = new Set([...text.matchAll(JSON_NUMBER)].map((m) => Number(m[1])));
-  for (const re of [JSON_HTML_URL, LONE_URL]) {
-    re.lastIndex = 0;
-    for (const m of text.matchAll(re)) {
-      const number = Number(m[5]);
-      if (re === JSON_HTML_URL && !numbers.has(number)) continue;
-      found.push({
-        at: m.index ?? 0,
-        repo: `${m[2]}/${m[3]}`.toLowerCase(),
-        kind: m[4] === 'pull' ? 'pr' : 'issue',
-        number,
-        url: m[1],
-      });
-    }
-  }
-  return found.sort((a, b) => a.at - b.at);
-}
-
-const MERGED_TEXT = /\bmerged\s+pull\s+request\s+(?:([\w.-]+\/[\w.-]+))?#(\d+)/gi;
-const CLOSED_TEXT = /\bclosed\s+(pull\s+request|issue)\s+(?:([\w.-]+\/[\w.-]+))?#(\d+)/gi;
+/** gh's own success lines, read only at the start of a line — never inside a title or a JSON body. */
+const MERGED_LINE =
+  /^[ \t]*(?:✓[ \t]+)?(?:(?:squashed|rebased)[ \t]+and[ \t]+)?merged[ \t]+pull[ \t]+request[ \t]+(?:([\w.-]+\/[\w.-]+))?#(\d+)/gim;
+const CLOSED_LINE = /^[ \t]*(?:✓[ \t]+)?closed[ \t]+(pull[ \t]+request|issue)[ \t]+(?:([\w.-]+\/[\w.-]+))?#(\d+)/gim;
+const MAX_DOCUMENTS = 512;
 
 interface Said {
   repo?: string;
@@ -1199,69 +1572,126 @@ interface Said {
   kind: 'pr' | 'issue';
 }
 
-/** One result, read once: its objects, the merges and closes it says happened, and (lazily) its JSON documents. */
+/**
+ * One result, read once: the top-level JSON objects it prints (each a whole document — a line or a pretty-printed
+ * block — never an object nested in another or an array element), the PR and issue objects among them and the URLs
+ * alone on a line (in order), and the merges and closes gh's own lines say happened.
+ */
 interface ResultIndex {
   text: string;
+  docs: Array<Record<string, unknown>>;
   objects: FoundObject[];
   merged: Said[];
   closed: Said[];
-  /** Per `kind repo`, where the next create may be found (objects before it are taken or another target's). */
-  cursor: Map<string, number>;
-  docs?: Array<Record<string, unknown>>;
+}
+
+/** The end (exclusive) of the JSON value opening at `from`, by bracket count outside strings; -1 when unclosed. */
+function jsonEnd(text: string, from: number): number {
+  let depth = 0;
+  let inString = false;
+  for (let j = from; j < text.length; j++) {
+    const c = text[j];
+    if (inString) {
+      if (c === '\\') j++;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === '{' || c === '[') depth++;
+    else if ((c === '}' || c === ']') && --depth === 0) return j + 1;
+  }
+  return -1;
+}
+
+/** The top-level JSON documents of a result that start a line, and where each starts. Linear: each is read once. */
+function documentsIn(text: string): Array<{ at: number; value: unknown }> {
+  const out: Array<{ at: number; value: unknown }> = [];
+  let i = 0;
+  while (i < text.length && out.length < MAX_DOCUMENTS) {
+    const nl = text.indexOf('\n', i);
+    const lineEnd = nl < 0 ? text.length : nl;
+    let s = i;
+    while (s < lineEnd && (text[s] === ' ' || text[s] === '\t')) s++;
+    if (text[s] === '{' || text[s] === '[') {
+      const end = jsonEnd(text, s);
+      if (end > 0) {
+        try {
+          out.push({ at: s, value: JSON.parse(text.slice(s, end)) });
+          i = end;
+          continue;
+        } catch {
+          // not a document
+        }
+      }
+    }
+    i = lineEnd + 1;
+  }
+  return out;
 }
 
 function indexResult(text: string): ResultIndex {
-  MERGED_TEXT.lastIndex = 0;
-  CLOSED_TEXT.lastIndex = 0;
+  const docs: Array<Record<string, unknown>> = [];
+  const found: Array<FoundObject & { at: number }> = [];
+  for (const d of documentsIn(text)) {
+    // An array is a listing, never the object a write returns: its elements prove nothing.
+    if (!d.value || typeof d.value !== 'object' || Array.isArray(d.value)) continue;
+    const o = d.value as Record<string, unknown>;
+    docs.push(o);
+    const m = typeof o.html_url === 'string' ? o.html_url.match(ISSUE_OR_PR_HTML) : null;
+    // The object's own number and URL agree: one object, not a URL and a number from different places.
+    if (m && o.number === Number(m[4])) {
+      found.push({
+        at: d.at,
+        repo: `${m[1]}/${m[2]}`.toLowerCase(),
+        kind: m[3] === 'pull' ? 'pr' : 'issue',
+        number: Number(m[4]),
+        url: o.html_url as string,
+      });
+    }
+  }
+  LONE_URL.lastIndex = 0;
+  for (const m of text.matchAll(LONE_URL)) {
+    found.push({
+      at: m.index ?? 0,
+      repo: `${m[2]}/${m[3]}`.toLowerCase(),
+      kind: m[4] === 'pull' ? 'pr' : 'issue',
+      number: Number(m[5]),
+      url: m[1],
+    });
+  }
+  MERGED_LINE.lastIndex = 0;
+  CLOSED_LINE.lastIndex = 0;
   return {
     text,
-    objects: objectsIn(text),
-    merged: [...text.matchAll(MERGED_TEXT)].map((m) => ({
+    docs,
+    objects: found.sort((a, b) => a.at - b.at),
+    merged: [...text.matchAll(MERGED_LINE)].map((m) => ({
       repo: m[1]?.toLowerCase(),
       number: Number(m[2]),
       kind: 'pr',
     })),
-    closed: [...text.matchAll(CLOSED_TEXT)].map((m) => ({
+    closed: [...text.matchAll(CLOSED_LINE)].map((m) => ({
       repo: m[2]?.toLowerCase(),
       number: Number(m[3]),
       kind: /pull/i.test(m[1]) ? 'pr' : 'issue',
     })),
-    cursor: new Map(),
   };
 }
 
-/** The top-level JSON objects of a result (the whole text, else each line that is a document) — not nested ones. */
-function documentsOf(idx: ResultIndex): Array<Record<string, unknown>> {
-  if (idx.docs) return idx.docs;
-  const docs: Array<Record<string, unknown>> = [];
-  const add = (v: unknown) => {
-    for (const o of Array.isArray(v) ? v : [v]) if (o && typeof o === 'object' && !Array.isArray(o)) docs.push(o);
-  };
-  try {
-    add(JSON.parse(idx.text));
-  } catch {
-    for (const line of idx.text.split('\n')) {
-      const t = line.trim();
-      if (!t.startsWith('{') && !t.startsWith('[')) continue;
-      try {
-        add(JSON.parse(t));
-      } catch {
-        // not a document
-      }
-    }
-  }
-  idx.docs = docs;
-  return docs;
-}
-
-/** The state of the PR or issue object itself (its own `html_url` and `state`, not a nested milestone's). */
+/**
+ * The state the result gives the PR or issue object itself — every top-level object with its `html_url` agreeing.
+ * Two documents that disagree (a GET and a PATCH) give no state. A merged PR is never `closed` here.
+ */
 function stateOf(idx: ResultIndex, repo: string, kind: 'pr' | 'issue', number: number): string | undefined {
   const url = linkOf(repo, kind, number)?.url.toLowerCase();
-  for (const d of documentsOf(idx)) {
-    if (typeof d.html_url === 'string' && d.html_url.toLowerCase() === url && typeof d.state === 'string')
-      return d.state;
+  const states = new Set<string>();
+  for (const d of idx.docs) {
+    if (typeof d.html_url !== 'string' || d.html_url.toLowerCase() !== url || typeof d.state !== 'string') continue;
+    states.add(
+      kind === 'pr' && (d.merged === true || (typeof d.merged_at === 'string' && d.merged_at)) ? 'merged' : d.state,
+    );
   }
-  return undefined;
+  return states.size === 1 ? [...states][0] : undefined;
 }
 
 /** The said merge or close this write is: the one naming its number (and repo), or — when it names none — the first. */
@@ -1278,31 +1708,55 @@ function linkOf(repo: string, kind: 'pr' | 'issue', number: number): CapturedLin
   return classifyLinkUrl(`https://github.com/${repo}/${kind === 'pr' ? 'pull' : 'issues'}/${number}`);
 }
 
-function effectOf(w: GitHubWrite, idx: ResultIndex, taken: Set<string>, sameOp: number): GitHubEffect | undefined {
-  if (w.op === 'create') {
-    const key = `${w.kind} ${w.repo ?? ''}`;
-    for (let i = idx.cursor.get(key) ?? 0; i < idx.objects.length; i++) {
-      const o = idx.objects[i];
-      if (o.kind !== w.kind || (w.repo && o.repo !== w.repo) || taken.has(o.url.toLowerCase())) continue;
-      idx.cursor.set(key, i + 1);
-      taken.add(o.url.toLowerCase());
+/**
+ * The creates of one call, proven together: per kind, the PR or issue objects the result holds (in order) must be
+ * exactly as many as the creates, and pair with them repo for repo. Any other count — a read of the same repo beside a
+ * create, a listing, a failed create — is ambiguous and proves none. gh's "already exists" (a failed create that
+ * prints the existing PR's URL) proves none.
+ */
+function createEffects(ws: ReadonlyArray<GitHubWrite>, idx: ResultIndex): GitHubEffect[] {
+  if (/already exists/i.test(idx.text)) return [];
+  const out: GitHubEffect[] = [];
+  for (const kind of ['pr', 'issue'] as const) {
+    const creates = ws.filter((w) => w.op === 'create' && w.kind === kind);
+    if (creates.length === 0) continue;
+    // A read of the same kind and repo beside the creates: its object could be the one the result shows.
+    const near = (a?: string, b?: string) => !a || !b || a === b;
+    if (ws.some((r) => r.op === 'read' && r.kind === kind && creates.some((c) => near(c.repo, r.repo)))) continue;
+    const seen = new Set<string>();
+    const objects = idx.objects.filter((o) => {
+      const key = o.url.toLowerCase();
+      if (o.kind !== kind || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (objects.length !== creates.length) continue;
+    if (creates.some((w, i) => w.repo && w.repo !== objects[i].repo)) continue;
+    for (const o of objects) {
       const link = classifyLinkUrl(o.url);
-      return link ? { op: 'create', link } : undefined;
+      if (link) out.push({ op: 'create', link });
     }
-    idx.cursor.set(key, idx.objects.length);
-    return undefined;
   }
+  return out;
+}
+
+function effectOf(w: GitHubWrite, idx: ResultIndex, sameOp: number): GitHubEffect | undefined {
   if (w.op === 'merge') {
-    // gh's line names the PR: it proves only that one. A REST `"merged": true` names none: it proves the write only
-    // when the call made a single merge.
+    // gh's line names the PR: it proves only that one. A REST merge response — `{ sha, merged: true, message:
+    // "Pull Request successfully merged" }`, no PR identity of its own — proves the write only when the call made a
+    // single merge and printed a single such response.
     const said = idx.merged.length > 0 ? saidFor(w, idx.merged) : undefined;
     if (idx.merged.length > 0 && !said) return undefined;
-    // A merge response is `{ sha, merged: true, message }` — not a PR object (which has its own `html_url`) that a
-    // read of another, already merged PR returns.
-    const mergeResponse = documentsOf(idx).some(
-      (d) => d.merged === true && typeof d.sha === 'string' && d.html_url === undefined,
+    const responses = idx.docs.filter(
+      (d) =>
+        d.merged === true &&
+        typeof d.sha === 'string' &&
+        typeof d.message === 'string' &&
+        /successfully merged/i.test(d.message) &&
+        d.html_url === undefined &&
+        d.number === undefined,
     );
-    if (!said && !(sameOp === 1 && w.repo && w.number && mergeResponse)) return undefined;
+    if (!said && !(sameOp === 1 && w.repo && w.number && responses.length === 1)) return undefined;
     const repo = w.repo ?? said?.repo;
     const number = w.number ?? said?.number;
     const link = repo && number ? linkOf(repo, 'pr', number) : undefined;
@@ -1313,6 +1767,7 @@ function effectOf(w: GitHubWrite, idx: ResultIndex, taken: Set<string>, sameOp: 
     const link = linkOf(w.repo, w.kind, w.number);
     return link ? { op: 'close', link } : undefined;
   }
+  if (w.op !== 'close') return undefined;
   // close: gh's own line (`✓ Closed issue a/b#30 (…)`) naming this target, or an MCP update's object, closed.
   const said = saidFor(w, idx.closed);
   const byObject = !said && !!w.repo && !!w.number && stateOf(idx, w.repo, w.kind, w.number) === 'closed';
@@ -1334,24 +1789,23 @@ export function githubEffectsOf(
 ): GitHubEffect[] {
   const out: GitHubEffect[] = [];
   const seen = new Set<string>();
+  const add = (effect: GitHubEffect | undefined) => {
+    if (!effect) return;
+    const key = `${effect.op} ${effect.link.url}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(effect);
+  };
   for (const r of results ?? []) {
     if (!r || r.isError || !r.toolUseId) continue;
     const ws = writes.get(r.toolUseId);
     if (!ws || ws.length === 0) continue;
     const text = resultText(r.result);
     if (!text) continue;
-    const taken = new Set<string>();
     const idx = indexResult(text);
-    const count = (op: GitHubWrite['op']) => ws.filter((x) => x.op === op).length;
-    const merges = count('merge');
-    for (const w of ws) {
-      const effect = effectOf(w, idx, taken, w.op === 'merge' ? merges : 0);
-      if (!effect) continue;
-      const key = `${effect.op} ${effect.link.url}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(effect);
-    }
+    for (const e of createEffects(ws, idx)) add(e);
+    const merges = ws.filter((x) => x.op === 'merge').length;
+    for (const w of ws) if (w.op !== 'create') add(effectOf(w, idx, w.op === 'merge' ? merges : 0));
   }
   return out;
 }

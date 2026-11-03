@@ -164,6 +164,9 @@ describe('noteSessionLinks', () => {
     expect(reg.noteSessionLinks('C1', '100.001', [{ ...PR(99), status: 'merged' }], 'update')).toBe(false);
     expect(s.linkHistory?.prs?.map((l) => l.url)).toEqual([PR(12).url, PR(13).url]);
     expect(reg.noteSessionLinks('C1', '100.001', [{ ...PR(12), status: 'merged' }], 'update')).toBe(false);
+    // Merged is final: a later close (a PATCH of a merged PR reads `closed`) never takes it back.
+    expect(reg.noteSessionLinks('C1', '100.001', [{ ...PR(12), status: 'closed' }], 'update')).toBe(false);
+    expect(s.linkHistory?.prs?.find((l) => l.url === PR(12).url)?.status).toBe('merged');
     // GitHub names are case-insensitive: a pasted `A/B` link is the PR a merge names as `a/b`.
     reg.noteSessionLinks('C1', '100.001', [{ ...PR(20), url: 'https://github.com/A/B/pull/20' }], 'first');
     expect(reg.noteSessionLinks('C1', '100.001', [{ ...PR(20), status: 'merged' }], 'update')).toBe(true);

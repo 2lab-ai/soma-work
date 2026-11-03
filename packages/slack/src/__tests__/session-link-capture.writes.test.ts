@@ -347,19 +347,19 @@ describe('githubEffectsOf — what is not a write', () => {
     }
   });
 
-  it('W3 — a large result is read in linear time (2,000 objects)', () => {
+  it('W3 — a large result is read in linear time (2,000 objects); a listing proves no create', () => {
     const many = Array.from(
       { length: 2000 },
       (_, i) => `{"number":${i},"html_url":"https://github.com/a/b/pull/${i}"}`,
     );
     const started = Date.now();
-    const effects = effectsOf(bash('gh api -X POST repos/a/b/pulls -f head=x', `[${many.join(',')}]`));
-    expect(effects.map(short)).toEqual([['create', 'pr', 'https://github.com/a/b/pull/0']]);
+    expect(effectsOf(bash('gh api -X POST repos/a/b/pulls -f head=x', `[${many.join(',')}]`))).toEqual([]);
     expect(Date.now() - started).toBeLessThan(500);
   });
 
   it('W3 — githubWritesOf reads only the call, never prose', () => {
-    expect(githubWritesOf('Bash', { command: 'gh pr list' })).toEqual([]);
+    // A read is marked (it makes a create beside it ambiguous) but is not a write.
+    expect(githubWritesOf('Bash', { command: 'gh pr list' }).filter((w) => w.op !== 'read')).toEqual([]);
     expect(githubWritesOf('Bash', { command: 'echo "gh pr create"' })).toEqual([]);
     expect(githubWritesOf('Bash', undefined)).toEqual([]);
     expect(githubWritesOf('Read', { file_path: 'x' })).toEqual([]);
@@ -443,11 +443,11 @@ describe('W6 — review round 7 (astra-zhuge)', () => {
     expect(
       effectsOf(
         bash(
-          'gh pr merge 12 -R a/b --squash || gh pr merge 13 -R a/b --squash',
+          'gh pr merge 12 -R a/b --squash; gh pr merge 13 -R a/b --squash',
           'X Pull request a/b#12 is not mergeable\n✓ Squashed and merged pull request a/b#13 (x)',
         ),
         bash(
-          'gh issue close 30 -R a/b || gh issue close 31 -R a/b',
+          'gh issue close 30 -R a/b; gh issue close 31 -R a/b',
           'X could not close a/b#30\n✓ Closed issue a/b#31 (y)',
         ),
       ).map(short),
@@ -510,7 +510,7 @@ describe('W7 — review round 8 (astra-zhuge)', () => {
     expect(
       effectsOf(
         bash(
-          `python3 -c 'import urllib.request as u; print(u.urlopen(u.Request("https://api.github.com/repos/a/b/issues", data=b"{}", method="POST")).read())'`,
+          `python3 -c 'import urllib.request as u; r = u.urlopen(u.Request("https://api.github.com/repos/a/b/issues", data=b"{}", method="POST")); print(r.read())'`,
           '{"number":90,"html_url":"https://github.com/a/b/issues/90"}',
         ),
       ).map(short),
@@ -647,6 +647,216 @@ describe('W8 — review round 9 (astra-zhuge)', () => {
   });
 });
 
+describe('W9 — the strict grammar (review round 10, astra-zhuge sweep)', () => {
+  const url = 'https://github.com/a/b/pull/12';
+  const pr12 = '{"number":12,"html_url":"https://github.com/a/b/pull/12"}';
+  const view = '; gh pr view 12 -R a/b --json url -q .url';
+
+  it('a destination is a whole api.github.com URL or /repos path — never one inside another URL or a template', () => {
+    expect(
+      effectsOf(
+        bash(`curl -s -X POST 'https://example.com/r?u=https://api.github.com/repos/a/b/pulls' -d @p${view}`, url),
+        bash(
+          `node -e 'https.request({ hostname: "example.com", path: "/repos/a/b/pulls", method: "POST" })'${view}`,
+          url,
+        ),
+        bash(`node -e 'fetch("https://api.github.com/repos/a/b/pulls" + "/12/reviews", {method:"POST"})'${view}`, url),
+        bash(`node -e 'fetch(\`https://api.github.com/repos/\${o}/b/pulls\`, {method:"POST"})'${view}`, url),
+      ),
+    ).toEqual([]);
+  });
+
+  it('a method must be one literal: an expression, a duplicate, a spread or a third fetch argument is not read', () => {
+    expect(
+      effectsOf(
+        bash(
+          `node -e 'fetch("https://api.github.com/repos/a/b/pulls", {method: "POST".replace("POST","GET")})'${view}`,
+          url,
+        ),
+        bash(`node -e 'fetch("https://api.github.com/repos/a/b/pulls", {method:"POST", method:"GET"})'${view}`, url),
+        bash(`node -e 'fetch("https://api.github.com/repos/a/b/pulls", {method:"POST", ...o})'${view}`, url),
+        bash(`node -e 'fetch("https://api.github.com/repos/a/b/pulls", {}, {method:"POST"})'${view}`, url),
+        bash(`node -e 'fetch("https://api.github.com/repos/a/b/pulls", {[k]:"POST"})'${view}`, url),
+        bash(
+          `python3 -c 'import requests; requests.get("https://api.github.com/repos/a/b/pulls", json={"method": "POST"})'${view}`,
+          url,
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it('curl options are read the way curl reads them; an unknown option or --next leaves the command unread', () => {
+    const list = `[${pr12}]`;
+    expect(
+      effectsOf(
+        bash('curl -sGd q=x https://api.github.com/repos/a/b/pulls', list),
+        bash('curl -sH --request=POST https://api.github.com/repos/a/b/pulls', list),
+        bash('curl --proxy-header --data=x https://api.github.com/repos/a/b/pulls', list),
+        bash('curl -d q=x -X HEAD https://api.github.com/repos/a/b/pulls', list),
+        bash('curl -X POST https://example.com/x --next https://api.github.com/repos/a/b/pulls', pr12),
+        bash('curl --some-new-option -d x https://api.github.com/repos/a/b/pulls', pr12),
+        bash('wget -X POST https://api.github.com/repos/a/b/pulls', pr12),
+      ),
+    ).toEqual([]);
+  });
+
+  it('a subprocess string runs only through a shell; execFileSync / spawnSync / subprocess without shell=True do not', () => {
+    expect(
+      effectsOf(
+        bash(
+          `node -e 'require("child_process").spawnSync("curl -X POST https://api.github.com/repos/a/b/pulls -d @p")'${view}`,
+          url,
+        ),
+        bash(
+          `python3 -c 'import subprocess; subprocess.run("curl -X POST https://api.github.com/repos/a/b/pulls -d @p")'${view}`,
+          url,
+        ),
+      ),
+    ).toEqual([]);
+    expect(
+      effectsOf(
+        bash(
+          `python3 -c 'import subprocess; subprocess.run("curl -s -X POST https://api.github.com/repos/a/b/issues -d @i", shell=True)'`,
+          '{"number":97,"html_url":"https://github.com/a/b/issues/97"}',
+        ),
+      ).map(short),
+    ).toEqual([['create', 'issue', 'https://github.com/a/b/issues/97']]);
+  });
+
+  it('a write the command may not run is not read: a branch, the right of ||, after exit, bash -n', () => {
+    expect(
+      effectsOf(
+        bash(`if false; then gh pr create -R a/b --fill; fi; printf '%s\\n' ${url}`, url),
+        bash(`false && gh pr create -R a/b --fill; printf '%s\\n' ${url}`, url),
+        bash(`true || gh pr create -R a/b --fill; printf '%s\\n' ${url}`, url),
+        bash(`bash -n -c 'gh pr create -R a/b --fill'; printf '%s\\n' ${url}`, url),
+        bash(`bash -c 'exit 0; gh pr create -R a/b --fill'; printf '%s\\n' ${url}`, url),
+      ),
+    ).toEqual([]);
+    // A setup step before && is certain to have run; so is the command's last && chain.
+    expect(
+      effectsOf(
+        bash('cd repo && T=$(cat tok) && gh pr create --fill', 'https://github.com/a/b/pull/98\n'),
+        bash('git push -q && gh pr create --fill', 'https://github.com/a/b/pull/99\n'),
+      ).map(short),
+    ).toEqual([
+      ['create', 'pr', 'https://github.com/a/b/pull/98'],
+      ['create', 'pr', 'https://github.com/a/b/pull/99'],
+    ]);
+  });
+
+  it('evidence: creates match the result objects one to one; a read beside a create, a listing, "already exists" prove none', () => {
+    expect(
+      effectsOf(
+        bash(
+          'gh api repos/a/b/pulls/12; curl -s -X POST https://api.github.com/repos/a/b/pulls -d @p',
+          `${pr12}\n{"message":"Validation Failed"}`,
+        ),
+        bash(
+          'gh pr create -R a/b --fill || true',
+          'a pull request for branch "x" into branch "main" already exists:\nhttps://github.com/a/b/pull/12',
+        ),
+        bash('gh api -X POST repos/a/b/pulls -f head=x', `[${pr12}]`),
+        // A URL and a number from different documents are not one object.
+        bash(
+          'curl -s -X POST https://api.github.com/repos/a/b/pulls -d @p',
+          '{"number":12}\n{"html_url":"https://github.com/a/b/pull/12"}',
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it('evidence: gh lines count only at a line start; documents that disagree give no state; merged is never closed', () => {
+    expect(
+      effectsOf(
+        bash(
+          'gh pr merge 12 -R a/b --squash; gh pr merge 13 -R a/b --squash',
+          'X Pull request a/b#12 is not mergeable\n✓ Squashed and merged pull request a/b#13 (Fix incorrectly merged pull request a/b#12)',
+        ),
+      ).map(short),
+    ).toEqual([['merge', 'pr', 'https://github.com/a/b/pull/13']]);
+    expect(
+      effectsOf(
+        bash(
+          'gh api repos/a/b/issues/31; gh api -X PATCH repos/a/b/issues/31 -f state=open',
+          '{"number":31,"html_url":"https://github.com/a/b/issues/31","state":"closed"}\n{"number":31,"html_url":"https://github.com/a/b/issues/31","state":"open"}',
+        ),
+        bash(
+          'gh api -X PATCH repos/a/b/pulls/12 -f title=x',
+          '{"number":12,"html_url":"https://github.com/a/b/pull/12","state":"closed","merged":true}',
+        ),
+        bash(
+          'curl -s -X PUT https://api.github.com/repos/a/b/pulls/12/merge; gh api repos/a/b/pulls/13 --jq "{sha: .merge_commit_sha, merged: .merged}"',
+          '{"message":"Pull Request is not mergeable"}\n{"sha":"abc","merged":true}',
+        ),
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('W10 — review round 10, the rest of the sweep (astra-zhuge)', () => {
+  const U = 'https://github.com/a/b/pull/12';
+  const P = 'https://api.github.com/repos/a/b/pulls';
+  const pr12 = '{"number":12,"html_url":"https://github.com/a/b/pull/12"}';
+
+  it('code that may not run, or a method that is not the HTTP sender, is not read', () => {
+    expect(
+      effectsOf(
+        bash(`node -e 'const deferred = () => fetch("${P}", {method:"POST"}); console.log("${U}")'`, U),
+        bash(`node -e 'function later() { fetch("${P}", {method:"POST"}) } console.log("${U}")'`, U),
+        bash(`node -e 'if (false) fetch("${P}", {method:"POST"}); console.log("${U}")'`, U),
+        bash(`node -e 'ok && fetch("${P}", {method:"POST"}); console.log("${U}")'`, U),
+        bash(`node -e 'const obj = {fetch:()=>{}}; obj.fetch("${P}", {method:"POST"}); console.log("${U}")'`, U),
+        bash(`python3 -c 'f = lambda: __import__("requests").post("${P}")\nprint("${U}")'`, U),
+        bash(`python3 - <<'EOF'\nimport requests\nif False:\n    requests.post("${P}")\nprint("${U}")\nEOF`, U),
+      ),
+    ).toEqual([]);
+  });
+
+  it('an unknown script, Ruby or Perl code, and quoting the shell grammar does not read are not read', () => {
+    expect(
+      effectsOf(
+        bash(`bash /dev/null POST /repos/a/b/pulls; printf '%s\\n' ${U}`, U),
+        bash(`node scratch/gh-app.cjs POST /repos/a/b/pulls body.json`, U),
+        bash(`ruby -e 'text = %q{fetch("${P}",{method:"POST"})}; puts "${U}"'`, U),
+        bash(`printf '%s\\n' $'example\\'; gh pr create -R a/b --fill;\\n${U}\\n'`, U),
+      ),
+    ).toEqual([]);
+  });
+
+  it('shell structure: a background job, a process substitution, a lazy expansion, an array, a function body, set -n', () => {
+    expect(
+      effectsOf(
+        bash(
+          `curl -s file:///dev/null &\nprintf '%s\\n' -X PUT https://api.github.com/repos/a/b/pulls/12/merge '{"sha":"abc","merged":true,"message":"Pull Request successfully merged"}'\nwait`,
+          '{"sha":"abc","merged":true,"message":"Pull Request successfully merged"}',
+        ),
+        bash(`curl file:///dev/null <(printf '%s' -X POST ${P}); printf '%s\\n' ${U}`, U),
+        bash(`x=already\n: "\${x:-$(gh pr create -R a/b --fill)}"\nprintf '%s\\n' ${U}`, U),
+        bash(`arr=(\n  gh pr create -R a/b --fill\n)\nprintf '%s\\n' ${U}`, U),
+        bash(`f() {\n  gh pr create -R a/b --fill\n}\nprintf '%s\\n' ${U}`, U),
+        bash(`set -n\ngh pr create -R a/b --fill\nprintf '%s\\n' ${U}`, U),
+      ),
+    ).toEqual([]);
+  });
+
+  it('wrappers that do not run their command, and heredocs the line grammar cannot place, are not read', () => {
+    expect(
+      effectsOf(
+        bash(`command -v gh pr create -R a/b; printf '%s\\n' ${U}`, U),
+        bash(`env -S 'echo gh pr create -R a/b --fill'; printf '%s\\n' ${U}`, U),
+        bash(`printf '' | xargs -I{} gh pr create -R a/b --fill; printf '%s\\n' ${U}`, U),
+        bash(`cat <<'FIRST' <<'SECOND'\ndiscarded\nFIRST\ngh pr create -R a/b --fill\n${U}\nSECOND`, U),
+        bash(`printf '%s\\n' 'bash <<EOF' 'gh pr create -R a/b --fill' 'EOF'; printf '%s\\n' ${U}`, U),
+        bash(`cat <<\\EOF\ngh pr create -R a/b --fill\n${U}\nEOF`, U),
+        bash(`cat <<'END HERE'\ngh pr create -R a/b --fill\n${U}\nEND HERE`, U),
+        bash(`bash <<'EOF' </dev/null\ngh pr create -R a/b --fill\nEOF\nprintf '%s\\n' ${U}`, U),
+        bash(`gh api --hostname github.example.com -X POST repos/a/b/pulls -f head=x`, pr12),
+      ),
+    ).toEqual([]);
+  });
+});
+
 describe('githubEffectsOf — every spelling of a create', () => {
   it('W4 — gh pr create and gh issue create (the output ends with the new URL)', () => {
     expect(
@@ -663,17 +873,13 @@ describe('githubEffectsOf — every spelling of a create', () => {
     ]);
   });
 
-  it('W4 — gh api with an explicit or an implied POST, a METHOD /repos helper, curl --request', () => {
+  it('W4 — gh api with an explicit or an implied POST, curl --request (the arguments of a helper script are not read: W10)', () => {
     const issue = '{"number":5,"html_url":"https://github.com/a/b/issues/5","title":"x"}';
     const pr = '{"number":7,"html_url":"https://github.com/a/b/pull/7","user":{"html_url":"https://github.com/bot"}}';
     expect(
       effectsOf(
         bash('gh api -X POST repos/a/b/pulls -f title=x -f head=feat/x -f base=main', pr),
         bash('gh api repos/a/b/issues -f title=x -f body=y --jq "{number, html_url}"', issue),
-        bash(
-          'node scratch/gh-app.cjs POST /repos/a/b/pulls scratch/pr.json',
-          '{"number":8,"html_url":"https://github.com/a/b/pull/8"}',
-        ),
         bash(
           'curl -sS --request POST "https://api.github.com/repos/a/b/issues" --data @issue.json | jq -r .html_url',
           'https://github.com/a/b/issues/6',
@@ -682,7 +888,6 @@ describe('githubEffectsOf — every spelling of a create', () => {
     ).toEqual([
       ['create', 'pr', 'https://github.com/a/b/pull/7'],
       ['create', 'issue', 'https://github.com/a/b/issues/5'],
-      ['create', 'pr', 'https://github.com/a/b/pull/8'],
       ['create', 'issue', 'https://github.com/a/b/issues/6'],
     ]);
   });
@@ -742,7 +947,7 @@ describe('githubEffectsOf — every spelling of a create', () => {
     ]);
   });
 
-  it('W4 — the sending calls of code: octokit, https.request, urllib, a quoted method key; and xargs (review round 3)', () => {
+  it('W4 — the sending calls of code: octokit, https.request, urllib, a quoted method key (review round 3; xargs is not read: W10)', () => {
     const heredoc = (lang: string, ...lines: string[]) => [`${lang} <<'EOF'`, ...lines, 'EOF'].join('\n');
     expect(
       effectsOf(
@@ -776,17 +981,12 @@ describe('githubEffectsOf — every spelling of a create', () => {
           `node -e 'fetch("https://api.github.com/repos/a/b/pulls", {"method": "POST", body: "{}"}).then((r) => r.json()).then((j) => console.log(j.html_url))'`,
           'https://github.com/a/b/pull/63',
         ),
-        bash(
-          'echo @p.json | xargs -I{} curl -s -X POST https://api.github.com/repos/a/b/pulls -d {} | jq -r .html_url',
-          'https://github.com/a/b/pull/64',
-        ),
       ).map(short),
     ).toEqual([
       ['create', 'issue', 'https://github.com/a/b/issues/60'],
       ['create', 'pr', 'https://github.com/a/b/pull/61'],
       ['create', 'issue', 'https://github.com/a/b/issues/62'],
       ['create', 'pr', 'https://github.com/a/b/pull/63'],
-      ['create', 'pr', 'https://github.com/a/b/pull/64'],
     ]);
   });
 
