@@ -1462,12 +1462,13 @@ async function start() {
         }),
       costLimitUsd: (ownerId) => userSettingsStore.getUserEpicCostLimitUsd(ownerId),
     });
-    const sendAsOwner = (key: string, text: string, opts: { onAccepted: () => void; label: string }) =>
+    const sendAsOwner = (key: string, text: string, opts: { onAccepted: () => void; label: string; hostTurn?: true }) =>
       injectDashboardMessage(key, text, undefined, [], undefined, undefined, {
         onAccepted: opts.onAccepted,
         verbatim: true,
-        // The epic's words, not the owner's (review #872 astra) — as the task path's host start was.
-        hostTurn: true,
+        // An epic's wake is soma-work's word, not the owner's: it answers no question the epic asked
+        // (review #872 astra). Its word to a child is the owner's, delegated: it answers the child's.
+        ...(opts.hostTurn ? { hostTurn: true as const } : {}),
         echoLabel: opts.label,
       });
     setEpicHost(
