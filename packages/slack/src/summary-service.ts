@@ -196,11 +196,21 @@ function cleanTldrLines(lines: string[]): string[] {
 }
 
 /**
- * #829 — a TL;DR line as plain text: markdown bold (`**x**`, `__x__`) unwrapped. The Slack surface renders the
+ * #829 — a TL;DR line as plain text: the contract's bold (`**x**`) unwrapped. The Slack surface renders the
  * bold; the dashboard card draws text as is, so it shows this form (and the follow-up reason is built from it).
+ * #846 — double underscores are not unwrapped: in a TL;DR they are identifiers (`__init__`), not emphasis.
  */
 export function plainTldrLine(line: string): string {
-  return line.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/__([^_]+)__/g, '$1');
+  return line.replace(/\*\*([^*]+)\*\*/g, '$1');
+}
+
+/**
+ * #846 — this turn's model-run es (`local:auto-es`) wrote the card (`executiveSummary.source === 'es'`). The host
+ * fork of the same turn would be ignored by the card, so the turn end does not start it. The next input clears the
+ * marker (`clearDisplay`).
+ */
+export function esWroteCardThisTurn(session: object): boolean {
+  return (session as { executiveSummary?: { source?: unknown } }).executiveSummary?.source === 'es';
 }
 
 /** A TL;DR line that starts with ⚠️ (after any emphasis markers) — the unfinished-own-artifact signal (#829). */
@@ -218,8 +228,9 @@ export function followUpFromTldr(tldr: readonly string[]): { reason: string } | 
     .filter((line) => FOLLOW_UP_LINE.test(line))
     .map((line) =>
       plainTldrLine(line.replace(FOLLOW_UP_LINE, ''))
-        .replace(/\*\*|__/g, '')
-        .replace(/^[\s*_~:—-]+|[\s*_~]+$/g, '')
+        .replace(/\*\*/g, '')
+        // #846 — strip leftover bold/strike markers and the separator, never an identifier's underscores.
+        .replace(/^[\s*~:—-]+|[\s*~]+$/g, '')
         .trim(),
     )
     .filter((reason) => reason.length > 0);
