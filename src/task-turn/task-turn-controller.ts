@@ -576,6 +576,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       consume,
       planned.notice,
       userInput,
+      request.initiator === 'host',
     );
     const chain: Chain = { ownerId, id: chainId, abort, done, planning, ...(tree !== undefined ? { tree } : {}) };
     chains.set(sessionKey, chain);
@@ -645,6 +646,11 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     planNotice?: string,
     /** False for a synthetic goal turn — its `/compact` replay stays synthetic too. */
     userInput = true,
+    /**
+     * A host start (an epic's wake or instruction, the goal loop): every hop is a host turn — its
+     * words are soma-work's, recorded as `system`, and they can never set a goal (SET_GOAL gate).
+     */
+    hostStart = false,
   ): Promise<void> {
     let text = instruction;
     let compactHop = false;
@@ -717,6 +723,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
               workingDirectory: ctx.workingDirectory,
               processedFiles: [],
               isUserInput,
+              ...(hostStart ? { hostTurn: true } : {}),
               say: async () => ({}),
               // Plan mode — the first hop carries the notice its start decided (before the
               // gate went back to drafting); a later hop reads the task as it is now.
