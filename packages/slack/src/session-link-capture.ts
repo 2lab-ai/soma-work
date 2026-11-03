@@ -197,8 +197,8 @@ export interface GitHubEffect {
 
 interface Statement {
   text: string;
-  /** Code an interpreter runs (JavaScript, Python, Ruby, Perl), not shell. */
-  code: boolean;
+  /** Code an interpreter runs, by language — undefined for shell. */
+  code?: CodeLang;
   /** How deeply it was nested (substitution, `bash -c`, heredoc). */
   depth: number;
 }
@@ -207,6 +207,9 @@ interface Word {
   value: string;
   start: number;
 }
+
+/** The language of code an interpreter runs: JavaScript (node, deno, bun), Python, or Ruby / Perl (`#` comments). */
+type CodeLang = 'js' | 'py' | 'rb';
 
 const MAX_NESTING = 4;
 /** Longer statements are not read (a model-written statement is rarely over a few thousand characters). */
@@ -232,6 +235,7 @@ const WRAPPERS = new Map<string, RegExp>([
   ['nohup', /^$/],
   ['time', /^$/],
   ['stdbuf', /^$/],
+  ['xargs', /^-[InPLdaEs]$/],
 ]);
 
 /** A statement's words, unquoted, each with where it starts in the statement. */
@@ -299,8 +303,15 @@ function nameOf(word: string | undefined): string {
   );
 }
 
+function langOf(name: string): CodeLang | undefined {
+  if (NODE_LIKE.has(name) || name === 'deno') return 'js';
+  if (PYTHONS.has(name)) return 'py';
+  if (PERL_LIKE.has(name)) return 'rb';
+  return undefined;
+}
+
 /** What a statement's command runs: a request (`send`), shell (`bash -c`, `eval`), or code (`node -e`). */
-type Run = { send: true } | { shell: string } | { code: string } | undefined;
+type Run = { send: true } | { shell: string } | { code: string; lang: CodeLang } | undefined;
 const SEND: Run = { send: true };
 
 function runOf(words: Word[], at: number): Run {
@@ -323,19 +334,21 @@ function runOf(words: Word[], at: number): Run {
     }
     return undefined; // reads its script from stdin
   }
-  const inline = NODE_LIKE.has(name)
-    ? /^(?:-e|--eval|-p|--print)$/
-    : PYTHONS.has(name)
-      ? /^-[A-Za-z]*c$/
-      : PERL_LIKE.has(name)
-        ? /^-[A-Za-z]*[eE]$/
-        : name === 'deno'
-          ? /^eval$/
-          : undefined;
-  if (inline) {
+  const lang = langOf(name);
+  const inline =
+    name === 'deno'
+      ? /^eval$/
+      : lang === 'js'
+        ? /^(?:-e|--eval|-p|--print)$/
+        : lang === 'py'
+          ? /^-[A-Za-z]*c$/
+          : lang === 'rb'
+            ? /^-[A-Za-z]*[eE]$/
+            : undefined;
+  if (lang && inline) {
     for (let k = at + 1; k < words.length; k++) {
       const v = words[k].value;
-      if (inline.test(v)) return { code: words[k + 1]?.value ?? '' };
+      if (inline.test(v)) return { code: words[k + 1]?.value ?? '', lang };
       if (!v.startsWith('-')) return SEND; // a script or a module
     }
     return undefined; // reads its program from stdin
@@ -344,7 +357,7 @@ function runOf(words: Word[], at: number): Run {
 }
 
 /** How a heredoc's body is read, from the command that reads it: shell, code, or data (undefined). */
-function heredocKind(head: string): 'shell' | 'code' | undefined {
+function heredocKind(head: string): 'shell' | CodeLang | undefined {
   const sub = Math.max(head.lastIndexOf('$(') >= 0 ? head.lastIndexOf('$(') + 2 : 0, head.lastIndexOf('`') + 1);
   const last =
     head
@@ -356,16 +369,7 @@ function heredocKind(head: string): 'shell' | 'code' | undefined {
   const name = nameOf(words[at]?.value);
   // Only a command that reads its program from stdin runs the body; `node render.cjs <<'EOF'` reads data.
   if (runOf(words, at) !== undefined) return undefined;
-  if (SHELLS.has(name)) return 'shell';
-  if (NODE_LIKE.has(name) || PYTHONS.has(name) || PERL_LIKE.has(name) || name === 'deno') return 'code';
-  return undefined;
-}
-
-function withoutCommentLines(code: string): string {
-  return code
-    .split('\n')
-    .filter((l) => !/^\s*(?:\/\/|#)/.test(l))
-    .join('\n');
+  return SHELLS.has(name) ? 'shell' : langOf(name);
 }
 
 /** The closing backtick of a substitution opened before `from`, or -1. */
@@ -387,7 +391,7 @@ function splitShell(text: string, from: number, inSub: boolean, depth: number, o
   let parens = 0;
   let backticks = true;
   const flush = () => {
-    if (cur.trim()) out.push({ text: cur, code: false, depth });
+    if (cur.trim()) out.push({ text: cur, depth });
     cur = '';
   };
   let i = from;
@@ -481,8 +485,9 @@ function shellStatements(command: string, depth: number, out: Statement[] = []):
     let j = i + 1;
     while (j < lines.length && lines[j].trim() !== m[2]) body.push(lines[j++]);
     const kind = heredocKind(line.slice(0, m.index));
-    if (kind === 'code') out.push({ text: withoutCommentLines(body.join('\n')), code: true, depth: depth + 1 });
-    else if (kind === 'shell' && depth < MAX_NESTING) shellStatements(body.join('\n'), depth + 1, out);
+    if (kind === 'shell') {
+      if (depth < MAX_NESTING) shellStatements(body.join('\n'), depth + 1, out);
+    } else if (kind) out.push({ text: body.join('\n'), code: kind, depth: depth + 1 });
     i = j;
   }
   splitShell(kept.join('\n'), 0, false, depth, out);
@@ -496,25 +501,11 @@ function shellStatements(command: string, depth: number, out: Statement[] = []):
 const ENDPOINT =
   /(?:api\.github\.com\/|(?<![\w./-]))\/?repos\/([\w.-]+)\/([\w.-]+)\/(pulls|issues)(?:\/(\d+)(?:\/(merge))?)?(?![\w/-])/g;
 /** How a shell command names its method: a curl / gh flag, a `METHOD /repos` helper argument. */
-const SHELL_METHODS: RegExp[] = [
+const METHOD_TOKENS: RegExp[] = [
   /(?:^|\s)(?:-X|--request|--method)\s*(?:=\s*)?['"]?(GET|POST|PUT|PATCH|DELETE)\b/gi,
   /\bmethod\s*[:=]\s*['"`](GET|POST|PUT|PATCH|DELETE)['"`]/gi,
   /(?:^|[\s"'`])(GET|POST|PUT|PATCH|DELETE)\s+['"]?(?=\/?repos\/)/g,
 ];
-/**
- * How code names its method — only in the shape of a call, never a curl flag or a bare `POST /repos` in a string:
- * `print("curl -X POST …")` prints. (`octokit.request("POST /repos/…")` is a call.)
- */
-const CODE_METHODS: RegExp[] = [
-  /\bmethod\s*[:=]\s*['"`](GET|POST|PUT|PATCH|DELETE)['"`]/gi,
-  /\b(?:requests|axios|got|ky|httpx|superagent)\.(get|post|put|patch|delete)\s*\(/gi,
-  /\brequest\s*\(\s*['"`](GET|POST|PUT|PATCH|DELETE)\s+(?=\/?repos\/)/g,
-];
-/** A program running a shell command it spells as a string: `execSync("curl …")`, `subprocess.run("gh …", shell=True)`. */
-const EXEC_CALL =
-  /\b(?:execSync|exec|spawnSync|system|popen|check_output|check_call|getoutput|run)\s*\(\s*(?:f|r)?(['"`])/g;
-const MAX_EXEC_STRING = 4000;
-const MAX_EXEC_CALLS = 32;
 const CURL_DATA = /(?:^|\s)(?:-d|--data(?:-raw|-binary|-urlencode)?|--json|-F|--form)(?=\s|=|$|@)/;
 const GH_API_FIELDS = /(?:^|\s)(?:-f|-F|--field|--raw-field|--input)(?=\s|=)/;
 const GH_CLI = /^[({]*gh\s+(pr|issue)\s+(create|merge|close)\b([^\n]*)/;
@@ -528,23 +519,22 @@ interface MethodToken {
 }
 
 /** Every method token of a statement, scanned once (not once per endpoint). */
-function methodTokens(statement: string, shapes: RegExp[]): MethodToken[] {
+function methodTokens(statement: string): MethodToken[] {
   const out: MethodToken[] = [];
-  for (const re of shapes) {
+  for (const re of METHOD_TOKENS) {
     re.lastIndex = 0;
     for (const m of statement.matchAll(re)) out.push({ at: m.index ?? 0, verb: m[1].toUpperCase() });
   }
   return out;
 }
 
-function verbOf(statement: string, tokens: MethodToken[], at: number, code: boolean): string {
+function verbOf(statement: string, tokens: MethodToken[], at: number): string {
   let best: { verb: string; dist: number } | undefined;
   for (const t of tokens) {
     const dist = Math.abs(t.at - at);
     if (!best || dist < best.dist) best = { verb: t.verb, dist };
   }
   if (best) return best.verb;
-  if (code) return 'GET';
   if (/\bcurl\b/.test(statement) && CURL_DATA.test(statement) && !/(?:^|\s)(?:-G|--get)\b/.test(statement)) {
     return 'POST';
   }
@@ -574,48 +564,186 @@ function ghCliWrite(command: string): GitHubWrite | undefined {
   return { op: action, kind, ...(repo ? { repo } : {}), ...(number ? { number } : {}) };
 }
 
-/** The PR and issue writes a request names: an endpoint and the method nearest to it. */
-function apiWrites(statement: string, code: boolean): GitHubWrite[] {
-  const tokens = methodTokens(statement, code ? CODE_METHODS : SHELL_METHODS);
+/** The PR and issue writes a shell request names: an endpoint and the method nearest to it. */
+function apiWrites(statement: string): GitHubWrite[] {
+  const tokens = methodTokens(statement);
   const out: GitHubWrite[] = [];
   ENDPOINT.lastIndex = 0;
   for (const m of statement.matchAll(ENDPOINT)) {
-    const verb = verbOf(statement, tokens, m.index ?? 0, code);
-    const repo = `${m[1]}/${m[2]}`.toLowerCase();
-    const kind = m[3] === 'pulls' ? 'pr' : 'issue';
-    const number = m[4] ? Number(m[4]) : undefined;
-    if (!number && verb === 'POST') out.push({ op: 'create', kind, repo });
-    else if (number && m[5] === 'merge' && kind === 'pr' && verb === 'PUT')
-      out.push({ op: 'merge', kind, repo, number });
-    else if (number && !m[5] && verb === 'PATCH') out.push({ op: 'patch', kind, repo, number });
+    const w = writeOf(m, verbOf(statement, tokens, m.index ?? 0));
+    if (w) out.push(w);
   }
   return out;
 }
 
-/** The writes of code: its own requests, and the shell commands it runs as strings. */
-function codeWrites(code: string, depth: number, out: GitHubWrite[]): void {
-  if (code.length > MAX_STATEMENT_LENGTH) return;
-  const text = withoutCommentLines(code);
-  out.push(...apiWrites(text, true));
-  if (depth >= MAX_NESTING) return;
-  let calls = 0;
-  EXEC_CALL.lastIndex = 0;
-  for (let m = EXEC_CALL.exec(text); m && calls < MAX_EXEC_CALLS; m = EXEC_CALL.exec(text)) {
-    const quote = m[1];
-    const from = m.index + m[0].length;
-    let value = '';
-    let end = -1;
-    for (let j = from; j < text.length && j - from < MAX_EXEC_STRING; j++) {
-      if (text[j] === '\\') value += text[++j] ?? '';
-      else if (text[j] === quote) {
-        end = j;
-        break;
-      } else value += text[j];
+// ── Reading code ─────────────────────────────────────────────────────────────────────────────────────────────────────
+//
+// Code sends only through a call, so only a call counts — never data that spells a request: `{ method: "POST", url }`,
+// `const method = "POST"`, or a string that prints one (`console.log('fetch(…, { method: "POST" })')`). The code is
+// lexed for its language — strings and comments are masked — and a request is read inside the argument list of a
+// sending call found in the code itself: `fetch(…)`, `request(…)` (`octokit.request("POST /repos/…")`,
+// `https.request({ path, method })`), `urlopen(…)` / `Request(…, method=…)`, `requests.post(…)`, `axios(…)`. A
+// shell command the code runs as its first argument (`execSync("curl …")`, `subprocess.run("gh …", shell=True)`) is
+// read as shell. A URL held in a variable is not followed (a miss, which the turn-end GitHub check backs).
+
+interface CodeString {
+  start: number;
+  end: number;
+  value: string;
+}
+
+interface Lexed {
+  /** The code with every string's content and every comment blanked; same length, same positions. */
+  masked: string;
+  /** The string literals, in order. */
+  strings: CodeString[];
+}
+
+function lexCode(code: string, lang: CodeLang): Lexed {
+  const masked: string[] = [];
+  const strings: CodeString[] = [];
+  const n = code.length;
+  let i = 0;
+  while (i < n) {
+    const c = code[i];
+    const lineComment = lang === 'js' ? c === '/' && code[i + 1] === '/' : c === '#';
+    if (lineComment) {
+      while (i < n && code[i] !== '\n') {
+        masked.push(' ');
+        i++;
+      }
+      continue;
     }
-    if (end < 0) continue;
-    calls++;
-    EXEC_CALL.lastIndex = end + 1;
-    shellWrites(value, depth + 1, out);
+    if (lang === 'js' && c === '/' && code[i + 1] === '*') {
+      const close = code.indexOf('*/', i + 2);
+      const stop = close < 0 ? n : close + 2;
+      for (; i < stop; i++) masked.push(code[i] === '\n' ? '\n' : ' ');
+      continue;
+    }
+    if (c === '"' || c === "'" || (lang === 'js' && c === '`')) {
+      const close = lang === 'py' && code.startsWith(c.repeat(3), i) ? c.repeat(3) : c;
+      let j = i + close.length;
+      let value = '';
+      while (j < n && !code.startsWith(close, j)) {
+        if (code[j] === '\\') {
+          value += code[j + 1] ?? '';
+          j += 2;
+        } else {
+          value += code[j];
+          j++;
+        }
+      }
+      const stop = Math.min(n, j + close.length);
+      strings.push({ start: i, end: stop, value });
+      masked.push(c);
+      for (let k = i + 1; k < stop - 1; k++) masked.push(' ');
+      if (stop - i > 1) masked.push(c);
+      i = stop;
+      continue;
+    }
+    masked.push(c);
+    i++;
+  }
+  return { masked: masked.join(''), strings };
+}
+
+/** The first string literal starting at or after `at`, by binary search. */
+function firstStringFrom(strings: CodeString[], at: number): number {
+  let lo = 0;
+  let hi = strings.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (strings[mid].start < at) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+const VERBS = /^(GET|POST|PUT|PATCH|DELETE)$/i;
+/** A sending call, found in masked code (so never inside a string or a comment). */
+const SENDING_CALL =
+  /\b(fetch|request|urlopen|Request|axios|(?:requests|axios|got|ky|httpx|superagent)\.(?:get|post|put|patch|delete|request)|execSync|exec|spawnSync|system|popen|check_output|check_call|getoutput|run)\s*\(/g;
+const EXEC_CALLS = new Set([
+  'execSync',
+  'exec',
+  'spawnSync',
+  'system',
+  'popen',
+  'check_output',
+  'check_call',
+  'getoutput',
+  'run',
+]);
+const MAX_CALLS = 64;
+const MAX_CALL_LENGTH = 8000;
+
+/** The index of the `)` closing the call opened at `open`, in masked code (or where the bounded scan stopped). */
+function callEnd(masked: string, open: number): number {
+  let depth = 0;
+  const limit = Math.min(masked.length, open + MAX_CALL_LENGTH);
+  for (let j = open; j < limit; j++) {
+    if (masked[j] === '(') depth++;
+    else if (masked[j] === ')' && --depth === 0) return j;
+  }
+  return limit;
+}
+
+/** The method a call's arguments name: `method: "POST"`, `method="POST"`, `"method": "POST"`. */
+function methodIn(lexed: Lexed, open: number, end: number, first: number): string | undefined {
+  const { masked, strings } = lexed;
+  for (let k = first; k < strings.length && strings[k].start < end; k++) {
+    const s = strings[k];
+    if (!VERBS.test(s.value)) continue;
+    const before = masked.slice(Math.max(open, s.start - 40), s.start);
+    const quotedKey =
+      k > first && strings[k - 1].value === 'method' && /^\s*:\s*$/.test(masked.slice(strings[k - 1].end, s.start));
+    if (/\bmethod\s*[:=]\s*$/.test(before) || quotedKey) return s.value.toUpperCase();
+  }
+  return undefined;
+}
+
+/** The PR and issue write an endpoint names under a method. */
+function writeOf(m: RegExpMatchArray, verb: string): GitHubWrite | undefined {
+  const repo = `${m[1]}/${m[2]}`.toLowerCase();
+  const kind = m[3] === 'pulls' ? 'pr' : 'issue';
+  const number = m[4] ? Number(m[4]) : undefined;
+  if (!number && verb === 'POST') return { op: 'create', kind, repo };
+  if (number && m[5] === 'merge' && kind === 'pr' && verb === 'PUT') return { op: 'merge', kind, repo, number };
+  if (number && !m[5] && verb === 'PATCH') return { op: 'patch', kind, repo, number };
+  return undefined;
+}
+
+/** The writes of code: the requests its sending calls make, and the shell commands it runs. */
+function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrite[]): void {
+  if (code.length > MAX_STATEMENT_LENGTH) return;
+  const lexed = lexCode(code, lang);
+  const { masked, strings } = lexed;
+  let calls = 0;
+  SENDING_CALL.lastIndex = 0;
+  for (const m of masked.matchAll(SENDING_CALL)) {
+    if (++calls > MAX_CALLS) break;
+    const name = m[1];
+    const open = (m.index ?? 0) + m[0].length - 1;
+    const end = callEnd(masked, open);
+    const first = firstStringFrom(strings, open);
+    const firstArg = strings[first];
+    const leadsWithString = firstArg !== undefined && /^\(\s*[frbuFRBU]{0,2}$/.test(masked.slice(open, firstArg.start));
+    if (EXEC_CALLS.has(name)) {
+      // A shell command the code runs: its first argument, a string.
+      if (leadsWithString && depth < MAX_NESTING) shellWrites(firstArg.value, depth + 1, out);
+      continue;
+    }
+    // `octokit.request("POST /repos/…")`, `requests.request("POST", url)`
+    const leading = leadsWithString ? firstArg.value.match(/^(GET|POST|PUT|PATCH|DELETE)(?:\s+\/?repos\/|$)/i) : null;
+    const named = name.match(/\.(get|post|put|patch|delete)$/)?.[1];
+    const verb = (named ?? leading?.[1] ?? methodIn(lexed, open, end, first) ?? 'GET').toUpperCase();
+    for (let k = first; k < strings.length && strings[k].start < end; k++) {
+      ENDPOINT.lastIndex = 0;
+      for (const e of strings[k].value.matchAll(ENDPOINT)) {
+        const w = writeOf(e, verb);
+        if (w) out.push(w);
+      }
+    }
   }
 }
 
@@ -624,7 +752,7 @@ function shellWrites(command: string, depth: number, out: GitHubWrite[]): void {
   for (const st of shellStatements(command, depth)) {
     if (st.text.length > MAX_STATEMENT_LENGTH) continue;
     if (st.code) {
-      codeWrites(st.text, st.depth, out);
+      codeWrites(st.text, st.code, st.depth, out);
       continue;
     }
     const words = wordsOf(st.text);
@@ -634,10 +762,10 @@ function shellWrites(command: string, depth: number, out: GitHubWrite[]): void {
     if (cli) out.push(cli);
     const run = runOf(words, at);
     if (!run) continue;
-    if ('send' in run) out.push(...apiWrites(st.text, false));
+    if ('send' in run) out.push(...apiWrites(st.text));
     else if (st.depth < MAX_NESTING) {
       if ('shell' in run) shellWrites(run.shell, st.depth + 1, out);
-      else codeWrites(run.code, st.depth + 1, out);
+      else codeWrites(run.code, run.lang, st.depth + 1, out);
     }
   }
 }

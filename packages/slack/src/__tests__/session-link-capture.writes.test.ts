@@ -192,6 +192,32 @@ describe('githubEffectsOf — what is not a write', () => {
     ).toEqual([]);
   });
 
+  it('W3 — in code only a call sends: data, a printed call or a comment that spells a request is not a write (review round 3, P1)', () => {
+    const view = ' && gh pr view 12 --json url -q .url';
+    const url = 'https://github.com/a/b/pull/12';
+    expect(
+      effectsOf(
+        bash(`node -e 'const spec = { method: "POST", url: "https://api.github.com/repos/a/b/pulls" }'${view}`, url),
+        bash(
+          `node -e 'console.log(\`fetch("https://api.github.com/repos/a/b/pulls", { method: "POST" })\`)'${view}`,
+          url,
+        ),
+        bash(
+          `node -e 'const method = "POST"; const url = "https://api.github.com/repos/a/b/pulls"; console.log(method, url)'${view}`,
+          url,
+        ),
+        bash(`node -e 'const x = 1; // octokit.request("POST /repos/a/b/pulls")'${view}`, url),
+        bash(
+          `node -e 'const x = 1; /* fetch("https://api.github.com/repos/a/b/pulls", {method: "POST"}) */'${view}`,
+          url,
+        ),
+        bash(`python3 -c 'print("requests.post(\\"https://api.github.com/repos/a/b/pulls\\")")'${view}`, url),
+        bash(`python3 -c 'x = 1  # requests.post("https://api.github.com/repos/a/b/pulls")'${view}`, url),
+        bash(`python3 -c 'print("""fetch("https://api.github.com/repos/a/b/pulls", method="POST")""")'${view}`, url),
+      ),
+    ).toEqual([]);
+  });
+
   it('W3 — pathological commands are read in linear time (review P1)', () => {
     const inputs = [
       `curl -X${' '.repeat(199_000)}x https://api.github.com/repos/a/b/pulls`,
@@ -202,6 +228,9 @@ describe('githubEffectsOf — what is not a write', () => {
       `${"bash -c '".repeat(20_000)} github`,
       `${'echo `x` '.repeat(19_000)} github`,
       `node -e '${'run("'.repeat(6000)}' github`,
+      `node -e '${'fetch('.repeat(5000)}' github`,
+      `node -e '${'fetch("https://api.github.com/repos/a/b/pulls", {method: "POST"}, '.repeat(400)}'`,
+      `python3 -c '${'"""'.repeat(9000)} github'`,
     ];
     for (const command of inputs) {
       const started = Date.now();
@@ -321,6 +350,54 @@ describe('githubEffectsOf — every spelling of a create', () => {
       ['create', 'pr', 'https://github.com/a/b/pull/57'],
       ['create', 'pr', 'https://github.com/a/b/pull/58'],
       ['create', 'issue', 'https://github.com/a/b/issues/59'],
+    ]);
+  });
+
+  it('W4 — the sending calls of code: octokit, https.request, urllib, a quoted method key; and xargs (review round 3)', () => {
+    const heredoc = (lang: string, ...lines: string[]) => [`${lang} <<'EOF'`, ...lines, 'EOF'].join('\n');
+    expect(
+      effectsOf(
+        bash(
+          heredoc(
+            'node',
+            'const r = await octokit.request("POST /repos/a/b/issues", { title: "x" });',
+            'console.log(r.data.html_url);',
+          ),
+          'https://github.com/a/b/issues/60',
+        ),
+        bash(
+          heredoc(
+            'node',
+            'const req = https.request({ hostname: "api.github.com", path: "/repos/a/b/pulls", method: "POST" }, (res) => {',
+            '  res.pipe(process.stdout);',
+            '});',
+          ),
+          '{"number":61,"html_url":"https://github.com/a/b/pull/61"}',
+        ),
+        bash(
+          heredoc(
+            'python3',
+            'import urllib.request',
+            'req = urllib.request.Request("https://api.github.com/repos/a/b/issues", data=b"{}", method="POST")',
+            'print(json.load(urllib.request.urlopen(req))["html_url"])',
+          ),
+          'https://github.com/a/b/issues/62',
+        ),
+        bash(
+          `node -e 'fetch("https://api.github.com/repos/a/b/pulls", {"method": "POST", body: "{}"}).then((r) => r.json()).then((j) => console.log(j.html_url))'`,
+          'https://github.com/a/b/pull/63',
+        ),
+        bash(
+          'echo @p.json | xargs -I{} curl -s -X POST https://api.github.com/repos/a/b/pulls -d {} | jq -r .html_url',
+          'https://github.com/a/b/pull/64',
+        ),
+      ).map(short),
+    ).toEqual([
+      ['create', 'issue', 'https://github.com/a/b/issues/60'],
+      ['create', 'pr', 'https://github.com/a/b/pull/61'],
+      ['create', 'issue', 'https://github.com/a/b/issues/62'],
+      ['create', 'pr', 'https://github.com/a/b/pull/63'],
+      ['create', 'pr', 'https://github.com/a/b/pull/64'],
     ]);
   });
 
