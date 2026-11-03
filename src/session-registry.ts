@@ -606,6 +606,14 @@ export interface CrashRecoveredSession {
   shouldAutoResume: boolean;
 }
 
+/** A Slack-less task the last restart cut mid-turn — its turn reconciled `interrupted` on load. */
+export interface RestartCutTask {
+  sessionKey: string;
+  ownerId: string;
+  /** The turn the restart cut (its `lastTurnOutcome`): a later turn means someone went on — no resume. */
+  turnId: string;
+}
+
 /**
  * A persisted `pendingRetryDetail` back as the session carries it — finite
  * counts and a string reason only; anything else is dropped (disk JSON is
@@ -669,6 +677,12 @@ export class SessionRegistry {
   /** E2 ⑤ — told after a save that added notices a task owes its instruction thread. */
   private taskNoticeListener?: (session: ConversationSession, sessionKey: string) => void;
   private _crashRecoveredSessions: CrashRecoveredSession[] = [];
+  /**
+   * Slack-less tasks whose turn the last restart cut (saved `working`, reconciled `interrupted`
+   * on load): the host resumes each one after boot (`task-restart-resume.ts`), as
+   * `notifyCrashRecovery` does for a Slack thread. Populated by loadSessions(), cleared after.
+   */
+  private _restartCutTasks: RestartCutTask[] = [];
 
   /**
    * onIdle callback registry — fired when session transitions to idle.
@@ -3500,6 +3514,15 @@ export class SessionRegistry {
     this._crashRecoveredSessions = [];
   }
 
+  /** Slack-less tasks the last restart cut mid-turn (loadSessions), for the host's resume after boot. */
+  getRestartCutTasks(): RestartCutTask[] {
+    return this._restartCutTasks;
+  }
+
+  clearRestartCutTasks(): void {
+    this._restartCutTasks = [];
+  }
+
   /**
    * Save all sessions to file for persistence across restarts. A failure is
    * logged, not thrown — a caller that must know uses saveSessionsOrThrow.
@@ -4327,6 +4350,12 @@ export class SessionRegistry {
             session.activityStateChangedAt = now;
             session.activeTaskTurnId = undefined;
             reconciledTaskTurnCount++;
+            // The host resumes it after boot, as a Slack thread is (notifyCrashRecovery). Not an
+            // epic (its released events wake it) or an epic's child (its epic hears `interrupted`
+            // and decides), not one that slept while the process was down, not a closed one.
+            if (!sleptOnLoad && session.kind !== 'epic' && !session.parentTaskId && !session.terminated) {
+              this._restartCutTasks.push({ sessionKey: derivedKey, ownerId: session.ownerId, turnId });
+            }
           }
         } else if (serialized.shutdownNotificationSent) {
           this._crashRecoveredSessions.push({
