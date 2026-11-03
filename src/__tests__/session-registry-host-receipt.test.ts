@@ -1,7 +1,7 @@
 /**
  * #846 item 2 — the host writes what it applied to the session's receipt file; the model-command server reads it
- * back on GET_SESSION (`host`). Written by the same session lookup as the card TL;DR (channel + thread, or the key of
- * a Slack-less task), so the path the context hands the server is the path the host writes.
+ * back on GET_SESSION (`host`). Written by the same session lookup as the card TL;DR (channel + thread), so the path
+ * the context hands the server is the path the host writes.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -33,7 +33,6 @@ describe('SessionRegistry — the model-command host receipt', () => {
     expect(reg.modelCommandReceiptFile('C1', '100.001')).toBe(
       hostReceiptPath(TEST_DATA_DIR, reg.getSessionKey('C1', '100.001')),
     );
-    expect(reg.modelCommandReceiptFileByKey('task:k1')).toBe(hostReceiptPath(TEST_DATA_DIR, 'task:k1'));
   });
 
   it('writes the links, sequence, card TL;DR, follow-up and the last write as the host handled them', () => {
@@ -70,14 +69,13 @@ describe('SessionRegistry — the model-command host receipt', () => {
     expect(r?.followUp).toBeUndefined();
   });
 
-  it('a Slack-less task is written by its key; an unknown session writes nothing', () => {
+  it('a turn-start write has no last write; an unknown session writes nothing', () => {
     const reg = new SessionRegistry();
     reg.createSession('U1', 'User', 'C1', '100.004');
-    const key = reg.getSessionKey('C1', '100.004');
-    reg.writeModelCommandReceiptByKey(key);
-    expect(readHostReceipt(reg.modelCommandReceiptFileByKey(key))?.lastWrite).toBeUndefined();
-    reg.writeModelCommandReceiptByKey('task:nope');
-    expect(fs.existsSync(reg.modelCommandReceiptFileByKey('task:nope'))).toBe(false);
+    reg.writeModelCommandReceipt('C1', '100.004');
+    expect(readHostReceipt(reg.modelCommandReceiptFile('C1', '100.004'))?.lastWrite).toBeUndefined();
+    reg.writeModelCommandReceipt('C9', '9.999');
+    expect(fs.existsSync(reg.modelCommandReceiptFile('C9', '9.999'))).toBe(false);
   });
 
   it('the receipt goes with the session', () => {

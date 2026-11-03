@@ -2234,11 +2234,6 @@ export class SessionRegistry {
     return hostReceiptPath(DATA_DIR, this.getSessionKey(channelId, threadTs));
   }
 
-  /** The same by session key — a Slack-less task. */
-  modelCommandReceiptFileByKey(sessionKey: string): string {
-    return hostReceiptPath(DATA_DIR, sessionKey);
-  }
-
   /**
    * #846 — write what the host holds for this session (links, sequence, card TL;DR, NEEDS YOU reason) and, after a
    * model write, how the host handled it. The model-command server answers GET_SESSION with it, so the model reads
@@ -2250,11 +2245,6 @@ export class SessionRegistry {
       this.getSession(channelId, threadTs),
       lastWrite,
     );
-  }
-
-  /** The same by session key — the only way to reach a Slack-less task (channel '' throws on lookup). */
-  writeModelCommandReceiptByKey(sessionKey: string, lastWrite?: HostWriteReceipt): void {
-    this.writeModelCommandReceiptFor(sessionKey, this.getSessionByKey(sessionKey), lastWrite);
   }
 
   private writeModelCommandReceiptFor(

@@ -1583,29 +1583,6 @@ describe('model-command integration', () => {
     );
   });
 
-  it('a Slack-less task writes its receipt by key', async () => {
-    const deps = createExecutorDeps();
-    Object.assign(deps.claudeHandler, {
-      writeModelCommandReceipt: vi.fn(),
-      writeModelCommandReceiptByKey: vi.fn(),
-      setExecutiveSummaryByKey: vi.fn().mockReturnValue(true),
-    });
-    const executor = new StreamExecutor(deps);
-    const task = { ...createSession(), channelId: '', threadTs: undefined, slackless: true };
-
-    await (executor as any).handleModelCommandToolResults(
-      titleOnlyUpdateResult({ executiveSummary: { tldr: ['a'] }, receiptId: 'r_44' }),
-      task,
-      { channel: '', threadTs: undefined, sessionKey: 'task:t-1', say: vi.fn() },
-    );
-
-    expect(deps.claudeHandler.writeModelCommandReceiptByKey).toHaveBeenCalledWith(
-      'task:t-1',
-      expect.objectContaining({ receiptId: 'r_44', ok: true, tldrApplied: true }),
-    );
-    expect(deps.claudeHandler.writeModelCommandReceipt).not.toHaveBeenCalled();
-  });
-
   it('does not write the card TL;DR when the resource ops in the same update failed', async () => {
     const deps = createExecutorDeps();
     deps.claudeHandler.setExecutiveSummary = vi.fn().mockReturnValue(true);
