@@ -1043,6 +1043,17 @@ describe('onItemProcessed', () => {
     expect(onItemProcessed).toHaveBeenCalledWith(SESSION_KEY, `${SESSION_KEY}#1`);
   });
 
+  it('#854 — a Send now whose run did not end healthy is still a chain end the host hears (no drain)', async () => {
+    const chainSettled = vi.fn();
+    const h = harness({ chainSettled });
+    const report = { outcome: { result: 'error', reason: 'boom' }, itemDisposition: 'none', canDrain: false } as const;
+    h.dispatcher.sendNow.mockResolvedValue(dispatchedRun(report));
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick(5);
+    expect(chainSettled).toHaveBeenCalledWith(SESSION_KEY, expect.objectContaining({ canDrain: false }));
+    expect(h.deps.runDrain).not.toHaveBeenCalled();
+  });
+
   it('reports it even when the turn did not end safely — the host decides, not the outcome', async () => {
     // A blocked turn may have left the item back in `queued`; the host re-reads
     // the queue and keeps the message. Withholding the signal here would instead
