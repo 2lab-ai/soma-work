@@ -100,6 +100,7 @@ import {
   setDashboardTaskCommandHandler,
   setDashboardTaskLauncher,
   setDashboardTaskPlanHandler,
+  setDashboardTaskQueueHandler,
   setDashboardTrashHandler,
   setOAuthDirectoryLookup,
   setOAuthUserLookup,
@@ -1322,8 +1323,15 @@ async function start() {
       onChainEnd: (key, { started }) => {
         if (started) epicWaker.wake(key);
       },
+      // A task's follow-up queue (2026-11-03): saved with the task, pushed to the open panels.
+      onFollowupsChanged: (key) => {
+        claudeHandler.saveSessions();
+        scheduleLiveSessionUpdate(key);
+      },
     });
     taskTurnController = taskController;
+    // The panel's Send now / Cancel / Edit on a task's queued word.
+    setDashboardTaskQueueHandler((request) => taskController.actOnQueue(request));
     // E4 ④a (.prd/19 D3) — the host the epic's tools call: registry reads, the plan writer,
     // a child's last final from its work log. Set here, not imported there (no cycle).
     setEpicHost({
@@ -1410,6 +1418,8 @@ async function start() {
                 sessionKey: request.sessionKey,
                 text: held.text,
                 actorUserId: request.requesterId,
+                // Approved while the task works: it waits for the chain's end, like the owner's own word.
+                queueWhileRunning: true,
               })
             : await taskController.answer({
                 sessionKey: request.sessionKey,
@@ -1475,7 +1485,8 @@ async function start() {
         });
         if (held) return held;
       }
-      return taskController.start({ sessionKey, text: message, attachments, actorUserId });
+      // While the task's chain runs the word waits in its follow-up queue (202 queued), not a 409.
+      return taskController.start({ sessionKey, text: message, attachments, actorUserId, queueWhileRunning: true });
     });
     // #599 ⑤ — an answer to a task's open question runs as its next instruction.
     setDashboardTaskAnswerHandler(async (sessionKey, askId, answer, actorUserId) => {

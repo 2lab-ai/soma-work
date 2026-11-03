@@ -554,6 +554,13 @@ export interface ConversationSession {
    * Delivery state lives in the notification ledger, not here.
    */
   notices?: TaskNoticeIntent[];
+  /**
+   * A dashboard task's follow-up queue (2026-11-03): words sent while its chain
+   * runs, waiting for its next step (the oldest runs when a chain ends well).
+   * Written only by the task turn controller; saved with the session and
+   * validated on load, where every word is paused (no chain is left to end).
+   */
+  taskFollowups?: TaskFollowupItem[];
   sessionId?: string;
   isActive: boolean;
   lastActivity: Date;
@@ -1292,6 +1299,25 @@ export interface EpicEvent {
   consumedBy?: string;
   /** An approval request that was answered. */
   resolvedAt?: number;
+}
+
+/**
+ * One word in a dashboard task's follow-up queue (`ConversationSession.taskFollowups`).
+ * `queued` runs at the next chain end that ended well; `paused` (a chain that
+ * did not end well, a refused start, a restart) runs only on Send now.
+ */
+export interface TaskFollowupItem {
+  id: string;
+  /** The instruction as it will run (an edit replaces it). */
+  text: string;
+  /** Who wrote it: the turn it becomes runs as them, and only they edit it. */
+  authorId: string;
+  enqueuedAt: number;
+  /** The item's CAS generation: every change bumps it; a control sends back the one it showed. */
+  epoch: number;
+  state: 'queued' | 'paused';
+  /** Why it waits (a paused word always says). */
+  stateReason?: string;
 }
 
 export interface TaskTurnOutcomeRecord {

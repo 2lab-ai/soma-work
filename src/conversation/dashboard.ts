@@ -1489,6 +1489,17 @@ let _followupHandler: DashboardFollowupHandler | null = null;
 export function setDashboardFollowupHandler(handler: DashboardFollowupHandler | null): void {
   _followupHandler = handler;
 }
+/**
+ * A dashboard task's follow-up queue (2026-11-03) — Send now / Cancel / Edit on
+ * a word in `taskFollowups` (wired in src/index.ts to the task turn
+ * controller's `actOnQueue`). A task's queue is read from the session itself
+ * (`followupsOf`); the Slack queue never sees a task.
+ */
+type TaskQueueHandler = (request: DashboardFollowupRequest) => Promise<DashboardFollowupOutcome>;
+let _taskQueueHandlerFn: TaskQueueHandler | null = null;
+export function setDashboardTaskQueueHandler(fn: TaskQueueHandler | null): void {
+  _taskQueueHandlerFn = fn;
+}
 
 /** States a note still has a control in; `failed` keeps Retry / Cancel until one is used. */
 const FOLLOWUP_SHOWN_STATES: readonly FollowupItemState[] = [
@@ -1524,6 +1535,8 @@ function noticeFailuresOf(sessionKey: string): { noticeFailures?: Array<{ kind: 
 
 /** The session payload's queue: what the panel lists, oldest first (the queue's arrival order). */
 export function followupsOf(sessionKey: string, ownerId: string | undefined): DashboardFollowups | undefined {
+  const task = _getSessionsFn?.()?.get(sessionKey);
+  if (task?.slackless === true) return taskFollowupsOf(task.taskFollowups, ownerId);
   const view = _followupHandler?.view(sessionKey);
   if (!view) return undefined;
   const failed = view.items.filter((item) => item.state === 'failed').slice(-FOLLOWUP_SHOWN_FAILED);
@@ -1555,6 +1568,46 @@ export function followupsOf(sessionKey: string, ownerId: string | undefined): Da
       };
       if (author && author !== ownerId) out.author = nameOf(author);
       if (item.stateReason && !FOLLOWUP_STATE_ECHO.has(item.stateReason)) out.stateReason = item.stateReason;
+      return out;
+    }),
+  };
+}
+
+/**
+ * A dashboard task's queue on its card (2026-11-03): every word it holds, in
+ * order — `queued` runs at the next chain end that ended well, `paused` waits
+ * for Send now (the panel reads both as waiting). The writer edits their own;
+ * the task's queue has no turn generation of its own (Send now on a busy task
+ * puts the word first in line), so `turnEpoch` is 0.
+ */
+function taskFollowupsOf(
+  items: ConversationSession['taskFollowups'],
+  ownerId: string | undefined,
+): DashboardFollowups | undefined {
+  if (!Array.isArray(items) || items.length === 0) return undefined;
+  let names: Map<string, string> | undefined;
+  const nameOf = (userId: string): string => {
+    if (!names) {
+      names = new Map();
+      for (const [, s] of getAllSessions()) if (s?.ownerId && s.ownerName) names.set(s.ownerId, s.ownerName);
+    }
+    return names.get(userId) ?? userId;
+  };
+  return {
+    turnEpoch: 0,
+    items: items.map((item) => {
+      const out: DashboardFollowupItem = {
+        id: item.id,
+        text: item.text,
+        files: [],
+        enqueuedAt: item.enqueuedAt,
+        state: item.state,
+        epoch: item.epoch,
+        editable: true,
+        authorId: item.authorId,
+      };
+      if (item.authorId !== ownerId) out.author = nameOf(item.authorId);
+      if (item.stateReason) out.stateReason = item.stateReason;
       return out;
     }),
   };
@@ -4129,17 +4182,21 @@ export async function registerDashboardRoutes(
         }
         text = body.text.trim();
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { instruct: true });
+      // A dashboard task's queue (2026-11-03) is the task turn controller's, not the Slack queue's.
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { instruct: true, allowSlackless: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       const actorUserId = signedInUserId(request);
-      const manages = _hasWriteAccess(request, _getSessionsFn?.()?.get(originalKey)?.ownerId);
-      if (!_followupHandler) {
+      const target = _getSessionsFn?.()?.get(originalKey);
+      const manages = _hasWriteAccess(request, target?.ownerId);
+      const act =
+        target?.slackless === true ? _taskQueueHandlerFn : _followupHandler ? _followupHandler.act.bind(_followupHandler) : null;
+      if (!act) {
         reply.status(501).send({ error: 'Follow-up queue handler not configured' });
         return;
       }
       try {
-        const outcome = await _followupHandler.act({
+        const outcome = await act({
           sessionKey: originalKey,
           itemId,
           op,
