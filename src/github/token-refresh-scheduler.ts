@@ -47,8 +47,8 @@ export class TokenRefreshScheduler {
     // Schedule automatic refresh before expiry
     this.scheduleRefresh();
 
-    // Update git credentials with new token
-    await this.credentialsManager.updateCredentials(tokenInfo.token);
+    // Write it to git, the env and the agents' gh hosts.yml. A failed write is retried; the token is valid either way.
+    await this.writeCredentials(tokenInfo.token);
 
     return tokenInfo.token;
   }
@@ -121,17 +121,17 @@ export class TokenRefreshScheduler {
   }
 
   /**
-   * Write the token to git, the env and the agents' gh hosts.yml. A failed write (a git config lock, a refused
-   * hosts.yml) does not re-mint: it retries the write of the same token in 2 minutes, so agent shells do not read the
-   * old token until the next refresh (#834 review).
+   * Write the token to git, the env and the agents' gh hosts.yml — on the first mint and on every refresh. A failed
+   * write (a git config lock, a refused hosts.yml) does not re-mint: it retries the write of the same token in 2
+   * minutes, so agent shells do not read a stale token until the next refresh (#834 review).
    */
   private async writeCredentials(token: string): Promise<void> {
     this.clearWriteRetryTimer();
     try {
       await this.credentialsManager.updateCredentials(token);
-      logger.debug('GitHub App installation token refreshed successfully in background');
+      logger.debug('GitHub App installation token written to git, the env and the agent gh hosts.yml');
     } catch (error) {
-      logger.error('GitHub App token refreshed, but writing the credentials failed:', error);
+      logger.error('GitHub App token minted, but writing the credentials failed; retrying in 2 minutes:', error);
       if (this.stopped) return;
       this.writeRetryTimer = setTimeout(
         () => {

@@ -14,6 +14,8 @@
  *   G5  TokenRefreshScheduler: a failed background refresh keeps retrying (2, 4, 8, then every 10 minutes) — also
  *       after the old token expired — and does not throw away the still-valid cached token while it retries
  *   G6  the token never follows a symlink: a planted link at hosts.yml (or its dir) is refused, its target untouched
+ *   G7  a failed hosts.yml write is retried: the real manager under the scheduler — the first mint and a refresh —
+ *       re-writes hosts.yml 2 minutes later and serves the dir again; getToken still returns the valid token
  */
 import fs from 'fs';
 import os from 'os';
@@ -34,7 +36,8 @@ vi.mock('child_process', async (importOriginal) => {
     const child = new EventEmitter() as any;
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
-    setTimeout(() => child.emit('close', 0), 0);
+    // A microtask, not a timer: the scheduler tests fake timers, and git must still answer.
+    queueMicrotask(() => child.emit('close', 0));
     return child;
   };
   return { ...real, default: { ...real, spawn }, spawn };
@@ -43,7 +46,7 @@ vi.mock('child_process', async (importOriginal) => {
 import { buildQueryEnv, setQueryEnvAdditional } from '../../auth/query-env-builder';
 import type { SlotAuthLease } from '../../credentials-manager';
 import { clearAgentGhConfigDir, getAgentGhConfigDir, writeAgentGhHosts } from '../agent-gh-config';
-import { GitCredentialsManager } from '../git-credentials-manager';
+import { GhHostsWriteError, GitCredentialsManager } from '../git-credentials-manager';
 import { TokenRefreshScheduler } from '../token-refresh-scheduler';
 
 const TOKEN = 'ghs_TESTTOKEN0000000000000000000000000000';
@@ -116,11 +119,14 @@ describe('agent gh config (#834)', () => {
     expect(fs.readFileSync(path.join(HOME, '.git-credentials'), 'utf8')).toBe(
       `https://x-access-token:${TOKEN}@github.com\n`,
     );
-    // The next write fails (the dir is now a file): gh must not keep reading a token that will expire.
+    // The next write fails (the dir is now a file): gh must not keep reading a token that will expire, so the dir is
+    // no longer served and new turns fall back to the token just minted in the env — and the failure is reported, so
+    // the scheduler retries the write (review round 2).
     fs.rmSync(ghDir, { recursive: true });
     fs.writeFileSync(ghDir, 'not a dir');
-    await manager.updateCredentials(`${TOKEN}3`);
+    await expect(manager.updateCredentials(`${TOKEN}3`)).rejects.toBeInstanceOf(GhHostsWriteError);
     expect(getAgentGhConfigDir()).toBeUndefined();
+    expect(process.env.GITHUB_TOKEN).toBe(`${TOKEN}3`);
     // Without a gh dir (a PAT setup), nothing is served.
     await new GitCredentialsManager().updateCredentials(TOKEN);
     expect(getAgentGhConfigDir()).toBeUndefined();
@@ -235,6 +241,52 @@ describe('G5 — TokenRefreshScheduler retries a failed refresh', () => {
     scheduler.stopAutoRefresh();
     await vi.advanceTimersByTimeAsync(120 * MIN);
     expect(getInstallationToken).toHaveBeenCalledTimes(2);
+    scheduler.stopAutoRefresh();
+  });
+});
+
+describe('G7 — a failed hosts.yml write is retried (review round 2)', () => {
+  const savedToken = process.env.GITHUB_TOKEN;
+  afterEach(() => {
+    vi.useRealTimers();
+    process.env.GITHUB_TOKEN = savedToken;
+  });
+
+  it('the first mint and a refresh: hosts.yml is re-written 2 minutes later and the dir is served again', async () => {
+    vi.useFakeTimers();
+    const MIN = 60_000;
+    const now = Date.now();
+    const ghDir = path.join(dir, 'gh');
+    const getInstallationToken = vi
+      .fn()
+      .mockResolvedValueOnce({ token: 'ghs_ONE', expiresAt: new Date(now + 30 * MIN) })
+      .mockResolvedValueOnce({ token: 'ghs_TWO', expiresAt: new Date(now + 90 * MIN) });
+    const scheduler = new TokenRefreshScheduler({ getInstallationToken } as any, new GitCredentialsManager(ghDir), 42);
+
+    // The first mint: hosts.yml cannot be written (its dir is a file). The token is still returned.
+    fs.writeFileSync(ghDir, 'not a dir');
+    expect(await scheduler.getToken()).toBe('ghs_ONE');
+    expect(getAgentGhConfigDir()).toBeUndefined();
+    expect(process.env.GITHUB_TOKEN).toBe('ghs_ONE');
+    // The cause is gone; 2 minutes later the write of the same token is retried, with no new mint. (The write does
+    // real file I/O, so each step waits for its outcome.)
+    fs.rmSync(ghDir);
+    await vi.advanceTimersByTimeAsync(2 * MIN);
+    await vi.waitFor(() => expect(getAgentGhConfigDir()).toBe(ghDir));
+    expect(getInstallationToken).toHaveBeenCalledTimes(1);
+    expect(fs.readFileSync(path.join(ghDir, 'hosts.yml'), 'utf8')).toContain('oauth_token: ghs_ONE\n');
+
+    // A refresh (at 25 minutes) whose hosts.yml write fails: the dir stops being served, then the retry restores it.
+    fs.rmSync(ghDir, { recursive: true });
+    fs.writeFileSync(ghDir, 'not a dir');
+    await vi.advanceTimersByTimeAsync(23 * MIN);
+    await vi.waitFor(() => expect(getAgentGhConfigDir()).toBeUndefined());
+    expect(getInstallationToken).toHaveBeenCalledTimes(2);
+    expect(process.env.GITHUB_TOKEN).toBe('ghs_TWO');
+    fs.rmSync(ghDir);
+    await vi.advanceTimersByTimeAsync(2 * MIN);
+    await vi.waitFor(() => expect(getAgentGhConfigDir()).toBe(ghDir));
+    expect(fs.readFileSync(path.join(ghDir, 'hosts.yml'), 'utf8')).toContain('oauth_token: ghs_TWO\n');
     scheduler.stopAutoRefresh();
   });
 });
