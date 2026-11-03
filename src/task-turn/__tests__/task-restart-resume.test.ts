@@ -200,6 +200,33 @@ describe('R8 — a cut turn an approved writer started resumes as them, not as t
   });
 });
 
+describe('R9 — a record saved before the initiator was kept: the cut turn’s author, never the owner by default (trinity R4, astra P1)', () => {
+  const session = { slackless: true, activityState: 'idle', lastTurnOutcome: { turnId: 't1', outcome: 'interrupted' } };
+  const legacy: RestartCutTaskRef = { sessionKey: 'task:a', ownerId: OWNER, turnId: 't1' };
+  const resumer = (author: string | undefined, start = vi.fn(async () => ({ status: 202, body: {} }))) => ({
+    start,
+    resumer: createTaskRestartResumer({
+      controller: { start },
+      getSession: () => session as unknown as ConversationSession,
+      logger: { info: vi.fn(), warn: vi.fn() },
+      schedule: () => {},
+      readCutTurnAuthor: async () => author,
+    }),
+  });
+
+  it('resumes as the author of the cut turn’s instruction (its conversation)', async () => {
+    const h = resumer('U0APPROVEDWRITER');
+    expect((await h.resumer.resume([legacy])).get('task:a')).toEqual({ status: 'started' });
+    expect(h.start).toHaveBeenCalledWith(expect.objectContaining({ actorUserId: 'U0APPROVEDWRITER' }));
+  });
+
+  it('no author on record: not resumed — the owner decides', async () => {
+    const h = resumer(undefined);
+    expect((await h.resumer.resume([legacy])).get('task:a')).toMatchObject({ status: 'skipped' });
+    expect(h.start).not.toHaveBeenCalled();
+  });
+});
+
 describe('R2 — the resumer starts the cut task’s next turn (end to end)', () => {
   it('as its owner; the conversation records the short line, the model reads the restart guidance first', async () => {
     const before = processOver(new SessionRegistry());
@@ -260,7 +287,7 @@ describe('R3 — the owner’s slot is busy: retried', () => {
       logger: { info: vi.fn(), warn: vi.fn() },
       schedule: (fn) => scheduled.push(fn),
     });
-    const task: RestartCutTaskRef = { sessionKey: 'task:a', ownerId: OWNER, turnId: 't1' };
+    const task: RestartCutTaskRef = { sessionKey: 'task:a', ownerId: OWNER, actorId: OWNER, turnId: 't1' };
     expect((await resumer.resume([task])).get('task:a')).toEqual({ status: 'waiting' });
     expect(scheduled).toHaveLength(1);
     scheduled[0]();
@@ -289,14 +316,14 @@ describe('R3 — the owner’s slot is busy: retried', () => {
       logger: { info: vi.fn(), warn: vi.fn() },
       schedule: (fn) => scheduled.push(fn),
     });
-    const out = await resumer.resume([{ sessionKey: 'task:a', ownerId: OWNER, turnId: 't1' }]);
+    const out = await resumer.resume([{ sessionKey: 'task:a', ownerId: OWNER, actorId: OWNER, turnId: 't1' }]);
     expect(out.get('task:a')).toMatchObject({ status: 'refused', code: 409 });
     expect(scheduled).toHaveLength(0);
   });
 });
 
 describe('R4 — skipped when resuming it would be wrong', () => {
-  const cut: RestartCutTaskRef = { sessionKey: 'task:a', ownerId: OWNER, turnId: 't1' };
+  const cut: RestartCutTaskRef = { sessionKey: 'task:a', ownerId: OWNER, actorId: OWNER, turnId: 't1' };
   const base = { slackless: true, activityState: 'idle', lastTurnOutcome: { turnId: 't1', outcome: 'interrupted' } };
   it.each([
     ['gone', undefined, /gone/],
@@ -338,7 +365,7 @@ describe('R7 — the wait for a busy slot is bounded like the goal loop’s (tri
       logger: { info: vi.fn(), warn: vi.fn() },
       schedule: (fn) => scheduled.push(fn),
     });
-    await resumer.resume([{ sessionKey: 'task:a', ownerId: OWNER, turnId: 't1' }]);
+    await resumer.resume([{ sessionKey: 'task:a', ownerId: OWNER, actorId: OWNER, turnId: 't1' }]);
     while (scheduled.length) {
       scheduled.shift()!();
       await new Promise((r) => setTimeout(r, 0));

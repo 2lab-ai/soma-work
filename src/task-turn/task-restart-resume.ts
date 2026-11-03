@@ -65,6 +65,12 @@ export interface TaskRestartResumerDeps {
    * to neither (trinity R4, fable P2). Default: it ran.
    */
   goalsResumed?: () => boolean;
+  /**
+   * A cut task saved before its turn's initiator was kept (no `actorId`): who wrote the cut turn's
+   * instruction, from the task's conversation (its last user turn's `userId`). Unknown: not resumed —
+   * the owner's identity is never assumed for someone else's words (trinity R4, astra P1). Unset: none.
+   */
+  readCutTurnAuthor?: (session: ConversationSession) => Promise<string | undefined>;
 }
 
 export type RestartResumeOutcome =
@@ -117,13 +123,26 @@ export function createTaskRestartResumer(deps: TaskRestartResumerDeps): TaskRest
       deps.logger.info('Restart resume skipped', { sessionKey: task.sessionKey, reason: skip });
       return { status: 'skipped', reason: skip };
     }
+    let actor = task.actorId;
+    if (!actor) {
+      const session = deps.getSession(task.sessionKey);
+      actor = session ? await deps.readCutTurnAuthor?.(session).catch(() => undefined) : undefined;
+      if (!actor) {
+        deps.logger.info('Restart resume skipped', {
+          sessionKey: task.sessionKey,
+          reason: 'who started the cut turn is not recorded — the owner resumes it',
+        });
+        return { status: 'skipped', reason: 'who started the cut turn is not recorded' };
+      }
+      task = { ...task, actorId: actor };
+    }
     let response: TaskCommandResponse;
     try {
       response = await deps.controller.start({
         sessionKey: task.sessionKey,
         text: TASK_RESTART_TEXT,
         // As the person who started the cut turn — never lifted to the owner's identity (trinity R4, astra P1).
-        actorUserId: task.actorId ?? task.ownerId,
+        actorUserId: actor,
         initiator: 'host',
         promptNotice: TASK_RESTART_NOTICE,
       });
