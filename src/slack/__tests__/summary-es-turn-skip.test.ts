@@ -1,7 +1,5 @@
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { esWroteCardThisTurn } from '../summary-service';
+import { describe, expect, it, vi } from 'vitest';
+import { esWroteCardThisTurn, SummaryService } from '../summary-service';
 
 /**
  * #846 item 8 — a turn whose model-run es (`local:auto-es`) already wrote the card does not fork a host summary.
@@ -20,27 +18,25 @@ describe('esWroteCardThisTurn', () => {
   });
 });
 
-describe('turn end — the host summary timer', () => {
-  const src = readFileSync(
-    path.resolve(__dirname, '..', '..', '..', 'packages', 'slack', 'src', 'pipeline', 'stream-executor.ts'),
-    'utf8',
-  );
-  const start = src.indexOf('this.deps.summaryTimer.start(');
-  const guard = src.slice(Math.max(0, start - 600), start);
+describe('displayEsTldrOnThread — the thread head shows the es TL;DR', () => {
+  const service = () => new SummaryService(vi.fn() as never, undefined as never);
 
-  it('does not start when the es of this turn wrote the card', () => {
-    expect(start).toBeGreaterThan(0);
-    expect(guard).toMatch(/!esWroteCardThisTurn\(session\)/);
+  it('puts the es TL;DR on the thread surface, no fork', () => {
+    const session: any = { actionPanel: {}, executiveSummary: { tldr: ['a', '⚠️ **b**', 'c'], at: 1, source: 'es' } };
+    service().displayEsTldrOnThread(session);
+    const text = JSON.stringify(session.actionPanel.summaryBlocks);
+    expect(text).toContain('a');
+    expect(text).toContain('⚠️');
+    expect(text).toContain('c');
   });
 
-  it('the next input still clears the marker before its turn ends', () => {
-    const clear = src.indexOf('this.deps.summaryService.clearDisplay(session as any)');
-    expect(clear).toBeGreaterThan(0);
-    const summary = readFileSync(
-      path.resolve(__dirname, '..', '..', '..', 'packages', 'slack', 'src', 'summary-service.ts'),
-      'utf8',
-    );
-    const body = summary.slice(summary.indexOf('clearDisplay(session: SummarySessionInfo): void {'));
-    expect(body.slice(0, 400)).toContain('session.executiveSummary = undefined;');
+  it('leaves the surface alone without a TL;DR or a panel', () => {
+    const noTldr: any = { actionPanel: {}, executiveSummary: undefined };
+    service().displayEsTldrOnThread(noTldr);
+    expect(noTldr.actionPanel.summaryBlocks).toBeUndefined();
+    expect(() => service().displayEsTldrOnThread({ executiveSummary: { tldr: ['a'], at: 1 } } as any)).not.toThrow();
   });
 });
+
+// The turn-end behaviour itself (no timer in an es turn, the head shows the es TL;DR, an earlier marker never blocks
+// a summary) runs through the real StreamExecutor.execute in src/slack/pipeline/__tests__/stream-executor.test.ts.

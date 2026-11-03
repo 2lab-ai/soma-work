@@ -7626,3 +7626,173 @@ describe('session-title-pending notice (execute e2e)', () => {
     expect(session.titleNoticeCount).toBe(3);
   });
 });
+
+// ── #846 item 8 — no host summary in an es turn (execute e2e) ──
+//
+// The turn whose model-run es (`local:auto-es`) wrote the card (`executiveSummary.source === 'es'`) does not start
+// the host summary timer; the thread head shows that es TL;DR instead. The marker of an earlier turn never blocks
+// this turn's summary: the turn start clears it (`clearDisplay`).
+describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
+  const ES = {
+    tldr: ['PR #9 opened.', '⚠️ **PR #9 not merged — needs approval.**', 'Next: merge #9.'],
+    at: 1,
+    source: 'es',
+  };
+
+  function run(opts: { esThisTurn: boolean; markerBefore?: boolean; steerAfterEs?: boolean; steerBeforeEs?: boolean }) {
+    // The module mock above predates the threshold auto-compact getter; this turn reads it.
+    (userSettingsStore as any).getUserCompactThreshold ??= vi.fn().mockReturnValue(undefined);
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+    const session: any = {
+      sessionId: 'sess_es',
+      ownerId: 'U_TEST',
+      logVerbosity: LOG_DETAIL,
+      usage: {},
+      terminated: false,
+      model: 'claude-opus-4-8',
+      actionPanel: {},
+      ...(opts.markerBefore ? { executiveSummary: { ...ES } } : {}),
+    };
+    const reply = (uuid: string, text: string) => ({
+      type: 'assistant',
+      user_message_uuid: uuid,
+      message: { content: [{ type: 'text', text }] },
+    });
+    async function* turn() {
+      // The opening message's first reply frame carries its send uuid.
+      yield reply('u-open', 'working on it');
+      if (opts.steerBeforeEs) yield reply('u-steer', 'also doing what you added');
+      // The model's UPDATE_SESSION lands mid-turn (host apply → setExecutiveSummary).
+      if (opts.esThisTurn) session.executiveSummary = { ...ES };
+      // A follow-up steered into this running turn: its first reply frame carries its uuid.
+      if (opts.steerAfterEs) yield reply('u-steer', 'on it — the thing you just added');
+      yield reply('u-open', 'still the opening message');
+      yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+    }
+    const deps: any = {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+        streamAgentEvents: vi.fn().mockImplementation(() => toAgentEvents(turn())),
+        getSessionRegistry: vi.fn().mockReturnValue({
+          beginTurn: vi.fn(),
+          endTurn: vi.fn(),
+          broadcastSessionUpdate: vi.fn(),
+          getActivityState: vi.fn().mockReturnValue('idle'),
+        }),
+      },
+      fileHandler: {
+        formatFilePrompt: vi.fn().mockResolvedValue(''),
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {
+        handleToolUse: vi.fn().mockResolvedValue(undefined),
+        handleToolResult: vi.fn().mockResolvedValue(undefined),
+        getLiveBackgroundWork: vi.fn().mockReturnValue({ count: 0, labels: [], signature: '' }),
+        cleanup: vi.fn(),
+      },
+      statusReporter: { getStatusEmoji: vi.fn().mockReturnValue('thinking_face') },
+      reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(50),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      toolTracker: { scheduleCleanup: vi.fn() },
+      todoDisplayManager: {
+        cleanupSession: vi.fn(),
+        cleanup: vi.fn(),
+        handleTodoUpdate: vi.fn().mockResolvedValue(undefined),
+      },
+      actionHandlers: {},
+      requestCoordinator: { removeController: vi.fn(), touchSession: vi.fn() },
+      slackApi: {
+        getUserProfile: vi.fn().mockResolvedValue({ email: 'user@example.com', displayName: 'User' }),
+        getClient: vi.fn().mockReturnValue({}),
+        getBotUserId: vi.fn().mockResolvedValue('U_BOT'),
+        deleteMessage: vi.fn().mockResolvedValue(undefined),
+        postSystemMessage: vi.fn().mockResolvedValue(undefined),
+        getPermalink: vi.fn().mockResolvedValue(undefined),
+      },
+      assistantStatusManager: {
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
+      // Every panel call is a no-op recorder (the panel itself is out of scope here).
+      threadPanel: new Proxy({} as Record<string, any>, {
+        get: (t, k: string) => {
+          if (k === 'then') return undefined;
+          t[k] ??= vi.fn().mockResolvedValue(undefined);
+          return t[k];
+        },
+      }),
+      turnNotifier: { notify: vi.fn().mockResolvedValue(undefined) },
+      summaryTimer: { start: vi.fn(), cancel: vi.fn() },
+      summaryService: {
+        clearDisplay: vi.fn((s: any) => {
+          s.executiveSummary = undefined;
+        }),
+        displayEsTldrOnThread: vi.fn(),
+      },
+      dispatchPendingUserMessage: vi.fn().mockResolvedValue(undefined),
+    };
+    const executor = new StreamExecutor(deps);
+    const done = executor.execute({
+      session,
+      sessionKey: 'C7:t7',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text: 'report',
+      channel: 'C7',
+      threadTs: 't7',
+      user: 'U_TEST',
+      say: vi.fn().mockResolvedValue({ ts: 'msg_ts' }),
+      isUserInput: true,
+    } as any);
+    return { deps, session, done };
+  }
+
+  it('a plain turn starts the host summary timer', async () => {
+    const { deps, done } = run({ esThisTurn: false });
+    expect((await done).success).toBe(true);
+    expect(deps.summaryTimer.start).toHaveBeenCalledTimes(1);
+    expect(deps.summaryService.displayEsTldrOnThread).not.toHaveBeenCalled();
+  });
+
+  it('an es turn does not; the thread head shows the es TL;DR', async () => {
+    const { deps, session, done } = run({ esThisTurn: true });
+    expect((await done).success).toBe(true);
+    expect(deps.summaryTimer.start).not.toHaveBeenCalled();
+    expect(deps.summaryService.displayEsTldrOnThread).toHaveBeenCalledWith(session);
+    expect(deps.threadPanel.updatePanel).toHaveBeenCalledWith(session, 'C7:t7');
+  });
+
+  it('a message steered in after the es: the turn-end summary judges again (the TL;DR stays until then)', async () => {
+    const { deps, session, done } = run({ esThisTurn: true, steerAfterEs: true });
+    expect((await done).success).toBe(true);
+    expect(deps.summaryTimer.start).toHaveBeenCalledTimes(1);
+    expect(deps.summaryService.displayEsTldrOnThread).not.toHaveBeenCalled();
+    expect(session.executiveSummary?.tldr).toEqual(ES.tldr);
+    expect(session.executiveSummary?.source).toBeUndefined();
+  });
+
+  it('a message steered in before the es: the es covers it, no host summary', async () => {
+    const { deps, done } = run({ esThisTurn: true, steerBeforeEs: true });
+    expect((await done).success).toBe(true);
+    expect(deps.summaryTimer.start).not.toHaveBeenCalled();
+  });
+
+  it('an earlier turn’s marker does not block this turn’s summary', async () => {
+    const { deps, done } = run({ esThisTurn: false, markerBefore: true });
+    expect((await done).success).toBe(true);
+    expect(deps.summaryService.clearDisplay).toHaveBeenCalled();
+    expect(deps.summaryTimer.start).toHaveBeenCalledTimes(1);
+  });
+});
