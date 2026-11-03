@@ -740,6 +740,8 @@ export interface ConversationSession {
   isOnboarding?: boolean;
   // Session-unique base working directory (auto-created on new session, cleaned up on end)
   sessionWorkingDir?: string;
+  /** When the session was created (epoch ms). A PR on its branch created after this is its own (#833). */
+  startedAt?: number;
   /**
    * The cron job whose fire CREATED this session (SSOT 2026-10-23 T1/T3).
    * Stamped once by `SessionInitializer`'s dispatch-bypass branch; a fire

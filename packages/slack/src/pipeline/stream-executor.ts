@@ -320,6 +320,11 @@ export interface StreamExecutorProviders {
    * never throw. No-op by default.
    */
   recordAgentEvent?: (sessionKey: string, event: AgentTreeEvent) => void;
+  /**
+   * #833 — the turn ended: the host asks GitHub which PRs the session's own branches have and records them on the
+   * card, however they were made. Fire-and-forget; must never throw or block. No-op by default.
+   */
+  reconcileSessionPrs?: (args: { sessionKey: string; session: ConversationSession; workingDirectory: string }) => void;
   /** API-equivalent cost of calls folded from an interrupted turn. 0 by default. */
   priceLiveUsage?: (
     model: string | undefined,
@@ -385,6 +390,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   postCompactStartingIfNeeded: async () => undefined,
   notifyLiveUsage: () => {},
   confirmGithubEffects: ({ effects }) => effects,
+  reconcileSessionPrs: () => {},
   priceLiveUsage: () => 0,
 };
 
@@ -3911,6 +3917,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           turnId,
           error: (err as Error)?.message ?? String(err),
         });
+      }
+      // #833 — the PRs GitHub says the session's branches have go on the card, however they were made (REST, the web
+      // UI). On every exit — a PR made before an error or an abort counts. Fire-and-forget; never breaks the turn.
+      if (!session.terminated) {
+        try {
+          streamExecutorProviders.reconcileSessionPrs?.({ sessionKey, session, workingDirectory });
+        } catch (err) {
+          this.logger.debug('stream-executor: reconcileSessionPrs threw', {
+            sessionKey,
+            error: (err as Error)?.message ?? String(err),
+          });
+        }
       }
       // A28: the LAST write this turn makes, and the one most likely to land
       // after `Send now` has already started a new turn — it carries the
