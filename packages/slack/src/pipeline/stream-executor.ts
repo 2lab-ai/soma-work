@@ -6601,6 +6601,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           ok: operationsOk,
           ...(failReason ? { reason: failReason } : {}),
           ...(tldrApplied !== undefined ? { tldrApplied } : {}),
+          ...(hasInstructionOps
+            ? { instructions: byKey ? ('refused' as const) : ('pending_confirmation' as const) }
+            : {}),
           at: Date.now(),
         };
         if (byKey) handler.writeModelCommandReceiptByKey?.(context.sessionKey, lastWrite);

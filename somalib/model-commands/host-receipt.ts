@@ -19,8 +19,14 @@ export interface HostReceipt {
   tldr?: string[];
   /** The reason the card waits in NEEDS YOU (the ⚠️ line), when it does. */
   followUp?: string;
-  /** The model's last `UPDATE_SESSION` as the host handled it. */
+  /** The model's last `UPDATE_SESSION` as the host handled it (whichever turn or server sent it). */
   lastWrite?: HostWriteReceipt;
+  /**
+   * How the host handled each recent write, by `receiptId` (the most recent {@link HOST_RECEIPT_MAX_ACKS}). Each
+   * model-command server checks its own write here — never the single `lastWrite`, which another server's write or a
+   * superseded turn's late callback can replace.
+   */
+  acks?: Record<string, HostWriteReceipt>;
   /** When the host wrote this (epoch ms). */
   at: number;
 }
@@ -34,10 +40,31 @@ export interface HostWriteReceipt {
   reason?: string;
   /** The write's TL;DR reached the card. */
   tldrApplied?: boolean;
+  /**
+   * The write's instruction operations: waiting for the user's y/n in Slack, or refused (a dashboard task has no
+   * thread to ask in). `ok` covers the resource operations only.
+   */
+  instructions?: 'pending_confirmation' | 'refused';
   at: number;
 }
 
 export const HOST_RECEIPT_DIR = 'model-command-receipts';
+
+/** How many write acks a receipt keeps. */
+export const HOST_RECEIPT_MAX_ACKS = 20;
+
+/** The ack ledger after `write`: the previous acks plus this one, the most recent {@link HOST_RECEIPT_MAX_ACKS}. */
+export function withAck(
+  acks: Record<string, HostWriteReceipt> | undefined,
+  write: HostWriteReceipt | undefined,
+): Record<string, HostWriteReceipt> | undefined {
+  const all = { ...(acks ?? {}) };
+  if (write?.receiptId) all[write.receiptId] = write;
+  const kept = Object.entries(all)
+    .sort(([, a], [, b]) => (b.at ?? 0) - (a.at ?? 0))
+    .slice(0, HOST_RECEIPT_MAX_ACKS);
+  return kept.length ? Object.fromEntries(kept) : undefined;
+}
 
 /** The receipt file of a session: one per session key, a hash so any key is a safe file name. */
 export function hostReceiptPath(dataDir: string, sessionKey: string): string {

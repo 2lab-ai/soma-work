@@ -1604,6 +1604,25 @@ describe('model-command integration', () => {
     );
   });
 
+  it('instruction writes are receipted as waiting for the y/n (ok covers resource ops only)', async () => {
+    const deps = createExecutorDeps();
+    deps.claudeHandler.writeModelCommandReceipt = vi.fn();
+    const executor = new StreamExecutor(deps);
+    (executor as any).interceptInstructionOperationsForConfirm = vi.fn().mockResolvedValue(undefined);
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({ instructionOperations: [{ action: 'add', text: 'rule' }], receiptId: 'r_45' }),
+      createSession(),
+      { channel: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100', say: vi.fn() },
+    );
+
+    expect(deps.claudeHandler.writeModelCommandReceipt).toHaveBeenCalledWith(
+      'C1',
+      '171.100',
+      expect.objectContaining({ receiptId: 'r_45', ok: true, instructions: 'pending_confirmation' }),
+    );
+  });
+
   it('a Slack-less task writes its receipt by key', async () => {
     const deps = createExecutorDeps();
     Object.assign(deps.claudeHandler, {

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
@@ -109,7 +110,8 @@ export function buildModelCommandRunResponse(args: unknown, context: ModelComman
   if (result.ok && result.commandId === 'UPDATE_SESSION') {
     context.session = result.payload.session;
     // #846 — name the write so GET_SESSION can tell whether the host has handled it.
-    const receiptId = `r_${Date.now().toString(36)}_${(++receiptCounter).toString(36)}`;
+    // Unique across servers (each turn spawns its own process): time, a counter and a random tail.
+    const receiptId = `r_${Date.now().toString(36)}_${(++receiptCounter).toString(36)}_${randomBytes(4).toString('hex')}`;
     context.lastReceiptId = receiptId;
     result.payload.receiptId = receiptId;
   }
@@ -117,11 +119,17 @@ export function buildModelCommandRunResponse(args: unknown, context: ModelComman
     // #846 — the host's word, not this server's copy: what it applied, the card TL;DR and NEEDS YOU reason.
     const host = readHostReceipt(context.receiptFile);
     if (host) {
-      const hostPending = !!context.lastReceiptId && host.lastWrite?.receiptId !== context.lastReceiptId;
-      result.payload.host = host;
-      result.payload.hostPending = hostPending;
-      if (!hostPending) {
-        // The host has caught up: its snapshot is the truth, and later writes lock against its sequence.
+      // This server's own write, from the per-write ledger (never the single latest `lastWrite`, which another
+      // server's write or a superseded turn's late callback can replace).
+      const own = context.lastReceiptId ? host.acks?.[context.lastReceiptId] : undefined;
+      const caughtUp = own !== undefined;
+      const { acks: _acks, ...hostView } = host;
+      result.payload.host = context.lastReceiptId ? { ...hostView, lastWrite: own } : hostView;
+      result.payload.hostPending = !!context.lastReceiptId && !caughtUp;
+      if (caughtUp) {
+        // The host handled THIS server's last write: its snapshot is the truth, and later writes lock against its
+        // sequence. A receipt for no write of ours (turn start, another turn) stays advisory — the spawned snapshot
+        // remains the lock.
         context.session = normalizeSessionSnapshot(host.session);
         result.payload.session = context.session;
       }

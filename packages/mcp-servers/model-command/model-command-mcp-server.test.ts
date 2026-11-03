@@ -633,7 +633,13 @@ describe('host-confirmed receipt', () => {
     },
     tldr: ['a', '⚠️ **PR #9 open**', 'b'],
     followUp: 'PR #9 open',
-    ...(receiptId ? { lastWrite: { receiptId, ok: true, tldrApplied: true, at: 1 } } : {}),
+    // What the host writes: the last write, and the same write in the per-write ledger.
+    ...(receiptId
+      ? {
+          lastWrite: { receiptId, ok: true, tldrApplied: true, at: 1 },
+          acks: { [receiptId]: { receiptId, ok: true, tldrApplied: true, at: 1 } },
+        }
+      : {}),
     at: 2,
   });
 
@@ -666,6 +672,55 @@ describe('host-confirmed receipt', () => {
     expect(g2.payload.session.sequence).toBe(7);
     // …and later writes use the host's sequence.
     expect(c.session?.sequence).toBe(7);
+  });
+
+  it('a receipt this server did not ask for is advisory: the spawned snapshot stays the lock (grok R1 P1)', () => {
+    const c = parseModelCommandContext(
+      JSON.stringify({
+        channel: 'C1',
+        threadTs: '1.1',
+        user: 'U1',
+        receiptFile: file,
+        session: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 11 },
+      }),
+    );
+    fs.writeFileSync(file, JSON.stringify(hostReceipt(undefined, 3)));
+    const g = buildModelCommandRunResponse({ commandId: 'GET_SESSION' }, c) as any;
+    expect(g.payload.host.sequence).toBe(3);
+    expect(g.payload.hostPending).toBe(false);
+    expect(g.payload.session.sequence).toBe(11);
+    expect(c.session?.sequence).toBe(11);
+    // A receipt for another server's write (a previous turn) is not this server's either.
+    fs.writeFileSync(file, JSON.stringify(hostReceipt('r_from_another_turn', 3)));
+    expect((buildModelCommandRunResponse({ commandId: 'GET_SESSION' }, c) as any).payload.session.sequence).toBe(11);
+  });
+
+  it('per-write acks (astra R1 P1): two servers, both writes handled — each sees its own; a late ack keeps the other', () => {
+    const ctxOf = () =>
+      parseModelCommandContext(JSON.stringify({ channel: 'C1', threadTs: '1.1', user: 'U1', receiptFile: file }));
+    const a = ctxOf();
+    const b = ctxOf();
+    const wa = buildModelCommandRunResponse(add, a) as any;
+    const wb = buildModelCommandRunResponse(add, b) as any;
+    expect(wa.payload.receiptId).not.toBe(wb.payload.receiptId);
+    const ack = (receiptId: string, ok: boolean) => ({ receiptId, ok, at: 1 });
+    // The host handled B's write last; A's ack is still in the ledger.
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        ...hostReceipt(wb.payload.receiptId, 8),
+        acks: {
+          [wa.payload.receiptId]: ack(wa.payload.receiptId, true),
+          [wb.payload.receiptId]: ack(wb.payload.receiptId, false),
+        },
+      }),
+    );
+    const ga = buildModelCommandRunResponse({ commandId: 'GET_SESSION' }, a) as any;
+    expect(ga.payload.hostPending).toBe(false);
+    expect(ga.payload.host.lastWrite).toMatchObject({ receiptId: wa.payload.receiptId, ok: true });
+    const gb = buildModelCommandRunResponse({ commandId: 'GET_SESSION' }, b) as any;
+    expect(gb.payload.hostPending).toBe(false);
+    expect(gb.payload.host.lastWrite).toMatchObject({ receiptId: wb.payload.receiptId, ok: false });
   });
 
   it('no receipt file (or none yet): GET_SESSION is the server copy as before', () => {
