@@ -85,6 +85,7 @@ describe('the epic host on the Slack path (#854)', () => {
         autoGoalOverride: false,
         epicChild: { taskId: 'child-1', parentTaskId: 'e1', planNodeId: 'login', title: '로그인' },
         workingDirectoryOverride: '/tmp/U1/session_e/work',
+        // The owner's word, delegated (as instruct_child's): only the epic's own wake is a host turn.
         routeContext: { skipAutoBotThread: true, verbatimPrompt: true },
       }),
     );
@@ -93,6 +94,56 @@ describe('the epic host on the Slack path (#854)', () => {
       w.deps.postMessage.mock.invocationCallOrder[0],
     );
     expect(w.deps.gate.record).toHaveBeenCalledWith(w.epic);
+  });
+
+  it('H6 — parallel spawns (review #872): one child per node while it is made; the ones being made take places', async () => {
+    let post!: (v: { ts: string }) => void;
+    const w = hostWorld({ postMessage: vi.fn(() => new Promise((r) => (post = r))) });
+    const first = w.host.spawnChild(w.epic, { planNodeId: 'login', instruction: 'go', title: 't' });
+    // The same node again while its thread is being made: refused, nothing reserved twice.
+    expect(await w.host.spawnChild(w.epic, { planNodeId: 'login', instruction: 'go', title: 't' })).toMatchObject({
+      ok: false,
+      code: 'spawn-in-flight',
+    });
+    expect(w.deps.reserveEpicChild).toHaveBeenCalledTimes(1);
+    // Another node's admission counts the child being made.
+    w.host.admit(w.epic, { newChild: true });
+    expect(w.deps.gate.refusal).toHaveBeenLastCalledWith(w.epic, { newChild: true, making: 1 });
+    post({ ts: '9.9' });
+    await first;
+    w.host.admit(w.epic, { newChild: true });
+    expect(w.deps.gate.refusal).toHaveBeenLastCalledWith(w.epic, { newChild: true, making: 0 });
+  });
+
+  it('H7 — parallel spawns into one folder (review #872 astra 6): the second is refused while the first is made', async () => {
+    const posts: Array<(v: { ts: string }) => void> = [];
+    const w = hostWorld({ postMessage: vi.fn(() => new Promise((r) => posts.push(r))) });
+    const first = w.host.spawnChild(w.epic, {
+      planNodeId: 'login',
+      instruction: 'go',
+      title: 't',
+      workingDirectory: '/tmp/U1/session_e/work',
+    });
+    expect(
+      await w.host.spawnChild(w.epic, {
+        planNodeId: 'signup',
+        instruction: 'go',
+        title: 't',
+        workingDirectory: '/tmp/U1/session_e/work/sub',
+      }),
+    ).toMatchObject({ ok: false, code: 'folder-overlap' });
+    // Another folder is fine.
+    const other = w.host.spawnChild(w.epic, {
+      planNodeId: 'billing',
+      instruction: 'go',
+      title: 't',
+      workingDirectory: '/tmp/U1/session_e/billing',
+    });
+    expect(posts).toHaveLength(2);
+    posts[0]({ ts: '9.9' });
+    posts[1]({ ts: '9.8' });
+    expect(await first).toMatchObject({ ok: true });
+    expect(await other).toMatchObject({ ok: true });
   });
 
   it('H2 — a thread that could not be made takes the reservation back', async () => {
@@ -137,12 +188,14 @@ describe('the epic host on the Slack path (#854)', () => {
       '테스트 추가',
       expect.objectContaining({ label: '🧩 에픽의 지시' }),
     );
+    // The epic's word to its child answers the child's open question (the tool says so): the owner's word.
+    expect(idle.deps.sendToThread.mock.calls[0][2].hostTurn).toBeUndefined();
     expect(idle.deps.gate.record).toHaveBeenCalledTimes(1);
 
     const busy = hostWorld({ isRunning: vi.fn(() => true) });
     expect(await busy.host.instructChild(busy.epic, busy.child, '이것도')).toEqual({ taken: true, queued: true });
-    // Queued behind the turn in flight: no new start in the tree's window.
-    expect(busy.deps.gate.record).not.toHaveBeenCalled();
+    // Queued behind the turn in flight: it will start a turn — counted in the tree's window too (review #872 astra 7).
+    expect(busy.deps.gate.record).toHaveBeenCalledTimes(1);
 
     const lost = hostWorld({ sendToThread: vi.fn(async () => undefined) });
     expect(await lost.host.instructChild(lost.epic, lost.child, 'go')).toMatchObject({ taken: false });
@@ -179,6 +232,11 @@ describe('a chain end as its epic hears it (#854)', () => {
     });
     expect(chainEndOf({ result: 'interrupted', reason: 'auto-compact' })).toBeUndefined();
     expect(chainEndOf({ result: 'blocked', reason: 'directive-only message' })).toBeUndefined();
+    // Review #872 (fable P2-1): a turn that ran and then hit the handoff ceiling stopped — its epic hears it.
+    expect(chainEndOf({ result: 'blocked', reason: 'auto-handoff budget exhausted: limit 3' })).toEqual({
+      outcome: 'failed',
+      reason: 'auto-handoff budget exhausted: limit 3',
+    });
     expect(chainEndOf({ result: 'denied', reason: 'x' } as any)).toBeUndefined();
   });
 });
@@ -221,7 +279,8 @@ describe('the Slack epic waker (#854)', () => {
     expect(w.deps.send).toHaveBeenCalledWith(
       'C1-1.0',
       'Epic wake: 1 event — login:finished. Read details with child_status.',
-      expect.objectContaining({ label: '🧩 자식 작업 소식' }),
+      // The epic's own wake is soma-work's word: it answers no question the epic asked its owner (review #872).
+      expect.objectContaining({ label: '🧩 자식 작업 소식', hostTurn: true }),
     );
     expect(w.deps.consume.mock.invocationCallOrder[0]).toBeLessThan(w.deps.send.mock.invocationCallOrder[0]);
     for (const [over, epicOver] of [
@@ -236,6 +295,24 @@ describe('the Slack epic waker (#854)', () => {
       await tick();
       expect(quiet.deps.send).not.toHaveBeenCalled();
     }
+  });
+
+  it('W4 — the epic’s chain end settles its wakes, keeping one still being sent (review #872 R2 grok)', async () => {
+    const settle = vi.fn();
+    const w = wakerWorld({
+      settle,
+      // The echo is posting: not taken yet.
+      send: vi.fn(() => new Promise(() => {})),
+    });
+    w.waker.wake('C1-1.0');
+    await tick();
+    expect(w.deps.consume).toHaveBeenCalledWith('C1-1.0', ['c1:a'], 'wake:42');
+    w.waker.chainEnded('C1-1.0');
+    expect(settle).toHaveBeenCalledWith('C1-1.0', 'wake:42');
+    // With nothing being sent, every wake that ran is settled.
+    const idle = wakerWorld({ settle: vi.fn(), epicEvents: [] } as any);
+    idle.waker.chainEnded('C1-1.0');
+    expect(idle.deps.settle).toHaveBeenCalledWith('C1-1.0', undefined);
   });
 
   it('W2 — a wake that was not taken puts the events back and retries once', async () => {

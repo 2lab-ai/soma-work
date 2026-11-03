@@ -14,7 +14,7 @@
 import type { RunReport } from '@soma/slack/followup-dispatcher';
 import type { WorkLogEntry, WorkLogPage } from '../conversation/work-log';
 import type { ConversationSession, EpicPlan, TurnOutcomeRecord } from '../types';
-import { epicWakeText, isEpicDone, type PlanWriteInput, wakeableEpicEvents } from './epic-plan';
+import { epicWakeText, isEpicDone, type PlanWriteInput, SLACK_WAKE_PREFIX, wakeableEpicEvents } from './epic-plan';
 import type { EpicChildSpec, EpicHost } from './epic-server';
 import type { EpicTreeGate } from './epic-tree-gate';
 
@@ -31,7 +31,11 @@ export function chainEndOf(
     case 'safe':
       return { outcome: 'completed' };
     case 'blocked':
-      return outcome.reason === 'awaiting user choice' ? { outcome: 'waiting' } : undefined;
+      if (outcome.reason === 'awaiting user choice') return { outcome: 'waiting' };
+      // The one block that comes after its turn ran: the handoff ceiling stopped the work (review #872 fable P2-1).
+      if (outcome.reason.startsWith('auto-handoff budget exhausted'))
+        return { outcome: 'failed', reason: outcome.reason };
+      return undefined;
     case 'error':
       return { outcome: 'failed', reason: outcome.reason };
     case 'interrupted':
@@ -149,6 +153,89 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
     const key = deps.keyOf(s);
     return !!key && deps.isRunning(key);
   };
+  /**
+   * The plan nodes whose child is being made, per epic, with the folder it is placed in (review #872):
+   * from its reservation until its first instruction is handed over. Parallel `spawn_child` calls see
+   * it — one child per node, no two in one folder, and each child being made takes a running place
+   * before it is a session.
+   */
+  const making = new Map<string, Map<string, string | undefined>>();
+  const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+  const makingIn = (epicTaskId: string | undefined) => (epicTaskId ? (making.get(epicTaskId)?.size ?? 0) : 0);
+  /** The child's thread and its first instruction, once its id is reserved (`spawnChild`). */
+  const makeChild = async (
+    epic: ConversationSession,
+    epicTaskId: string,
+    spec: Parameters<EpicHost['spawnChild']>[1],
+    channel: string,
+    childId: string,
+  ): ReturnType<EpicHost['spawnChild']> => {
+    const root = buildEpicChildRootMessage(epic, spec);
+    let rootTs: string | undefined;
+    try {
+      rootTs = (await deps.postMessage(channel, root.text, root.blocks))?.ts;
+    } catch (error) {
+      deps.logger.warn('Epic child: its thread could not be made', {
+        epicTaskId: epicTaskId,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+    if (!rootTs) {
+      deps.unreserveEpicChild(epicTaskId, childId);
+      return {
+        ok: false,
+        code: 'no-thread',
+        error: "the child's thread could not be made — nothing changed; try again",
+      };
+    }
+    const event: Record<string, unknown> = {
+      type: 'message',
+      user: epic.ownerId,
+      channel,
+      thread_ts: rootTs,
+      ts: rootTs,
+      text: spec.instruction,
+      ...(epic.model ? { modelOverride: epic.model } : {}),
+      // A child works its instruction; it is not a goal of its own unless its epic says so.
+      autoGoalOverride: false,
+      epicChild: { taskId: childId, parentTaskId: epicTaskId, planNodeId: spec.planNodeId, title: spec.title },
+      ...(spec.workingDirectory ? { workingDirectoryOverride: spec.workingDirectory } : {}),
+      // The epic's words as written: no command routing, never pushed into another turn. The owner's
+      // word, delegated — as every later instruction to the child (only the epic's own wake is a host turn).
+      routeContext: { skipAutoBotThread: true, verbatimPrompt: true },
+    };
+    const result = await handOver(
+      (onAccepted) => {
+        const unwatch = deps.onTurnAccepted(channel, rootTs as string, onAccepted);
+        return deps.handleMessage(event).finally(unwatch);
+      },
+      timeoutMs,
+      deps.logger,
+    );
+    if (result === 'taken') deps.gate.record(epic);
+    // Not taken: no session took the id (a bind that failed after the thread was posted) — it is taken
+    // back, so it does not count against the epic's children (review #872). A timeout may still bind.
+    if (result === 'refused') deps.unreserveEpicChild(epicTaskId, childId);
+    deps.logger.info('Epic child made in its own thread', {
+      epicTaskId: epicTaskId,
+      childId,
+      planNodeId: spec.planNodeId,
+      result,
+    });
+    return {
+      ok: true,
+      childId,
+      started: result === 'taken',
+      ...(result === 'taken'
+        ? {}
+        : {
+            reason:
+              result === 'timeout'
+                ? 'no answer from its thread yet — read child_status before sending more'
+                : 'its first instruction did not start — see its thread',
+          }),
+    };
+  };
   return {
     getTask: (taskId) => deps.getSessionByTaskId(taskId),
     getChildTasks: (parentTaskId) => deps.getChildTasks(parentTaskId),
@@ -156,7 +243,8 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
     readChildFinal: async (child) =>
       child.conversationId ? readLatestFinal(deps.readWorkLog, child.conversationId) : undefined,
     isRunning: running,
-    admit: (epic, start) => deps.gate.refusal(epic, start),
+    admit: (epic, start) =>
+      deps.gate.refusal(epic, start.newChild ? { ...start, making: makingIn(epic.taskId) } : start),
     ensureDirectory: (dir) => deps.ensureDirectory(dir),
 
     async spawnChild(epic, spec) {
@@ -164,76 +252,33 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
       if (!channel || !epic.taskId) {
         return { ok: false, code: 'no-thread', error: 'the epic has no Slack thread to make a child next to' };
       }
+      const epicTaskId = epic.taskId;
+      const nodes = making.get(epicTaskId) ?? new Map<string, string | undefined>();
+      if (nodes.has(spec.planNodeId)) {
+        return {
+          ok: false,
+          code: 'spawn-in-flight',
+          error: 'a child for this node is being made right now — look for it with child_status in a moment',
+        };
+      }
+      const dir = spec.workingDirectory;
+      if (dir && [...nodes.values()].some((other) => other && overlaps(other, dir))) {
+        return { ok: false, code: 'folder-overlap', error: 'a child being made right now works in that folder' };
+      }
       let childId: string;
       try {
-        childId = deps.reserveEpicChild(epic.taskId, spec.planNodeId);
+        childId = deps.reserveEpicChild(epicTaskId, spec.planNodeId);
       } catch {
         return { ok: false, code: 'not-saved', error: 'the child could not be made — nothing changed; try again' };
       }
-      const root = buildEpicChildRootMessage(epic, spec);
-      let rootTs: string | undefined;
+      nodes.set(spec.planNodeId, dir);
+      making.set(epicTaskId, nodes);
       try {
-        rootTs = (await deps.postMessage(channel, root.text, root.blocks))?.ts;
-      } catch (error) {
-        deps.logger.warn('Epic child: its thread could not be made', {
-          epicTaskId: epic.taskId,
-          error: (error as Error)?.message ?? String(error),
-        });
+        return await makeChild(epic, epicTaskId, spec, channel, childId);
+      } finally {
+        nodes.delete(spec.planNodeId);
+        if (nodes.size === 0 && making.get(epicTaskId) === nodes) making.delete(epicTaskId);
       }
-      if (!rootTs) {
-        deps.unreserveEpicChild(epic.taskId, childId);
-        return {
-          ok: false,
-          code: 'no-thread',
-          error: "the child's thread could not be made — nothing changed; try again",
-        };
-      }
-      const event: Record<string, unknown> = {
-        type: 'message',
-        user: epic.ownerId,
-        channel,
-        thread_ts: rootTs,
-        ts: rootTs,
-        text: spec.instruction,
-        ...(epic.model ? { modelOverride: epic.model } : {}),
-        // A child works its instruction; it is not a goal of its own unless its epic says so.
-        autoGoalOverride: false,
-        epicChild: { taskId: childId, parentTaskId: epic.taskId, planNodeId: spec.planNodeId, title: spec.title },
-        ...(spec.workingDirectory ? { workingDirectoryOverride: spec.workingDirectory } : {}),
-        // The epic's words as written: no command routing, never pushed into another turn.
-        routeContext: { skipAutoBotThread: true, verbatimPrompt: true },
-      };
-      const result = await handOver(
-        (onAccepted) => {
-          const unwatch = deps.onTurnAccepted(channel, rootTs as string, onAccepted);
-          return deps.handleMessage(event).finally(unwatch);
-        },
-        timeoutMs,
-        deps.logger,
-      );
-      if (result === 'taken') deps.gate.record(epic);
-      // Not taken: no session took the id (a bind that failed after the thread was posted) — it is taken
-      // back, so it does not count against the epic's children (review #872). A timeout may still bind.
-      if (result === 'refused') deps.unreserveEpicChild(epic.taskId, childId);
-      deps.logger.info('Epic child made in its own thread', {
-        epicTaskId: epic.taskId,
-        childId,
-        planNodeId: spec.planNodeId,
-        result,
-      });
-      return {
-        ok: true,
-        childId,
-        started: result === 'taken',
-        ...(result === 'taken'
-          ? {}
-          : {
-              reason:
-                result === 'timeout'
-                  ? 'no answer from its thread yet — read child_status before sending more'
-                  : 'its first instruction did not start — see its thread',
-            }),
-      };
     },
 
     async instructChild(epic, child, instruction) {
@@ -246,8 +291,9 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
         deps.logger,
       );
       if (result === 'taken') {
-        // A start in the tree's window only when it runs now (a queued word takes no new place).
-        if (!queued) deps.gate.record(epic);
+        // A start in the tree's window, now or after the turn in flight (review #872 astra 7) — a queued
+        // word takes no new running place, but it will start a turn.
+        deps.gate.record(epic);
         return { taken: true, queued };
       }
       return {
@@ -272,17 +318,29 @@ export interface SlackEpicWakerDeps {
   /** A wake that was not sent: its events are pending again. */
   release(sessionKey: string, by: string): void;
   /** Send the wake into the epic's thread (its owner's, labelled); `onAccepted` once taken. */
-  send(sessionKey: string, text: string, opts: { onAccepted: () => void; label: string }): Promise<unknown>;
+  /** `hostTurn`: the wake is soma-work's word — it answers no question the epic asked its owner. */
+  send(
+    sessionKey: string,
+    text: string,
+    opts: { onAccepted: () => void; label: string; hostTurn: true },
+  ): Promise<unknown>;
   logger: Logger;
   /** The delay of the one retry after a refusal (default one minute). */
   retryMs?: number;
   now?: () => number;
   acceptTimeoutMs?: number;
+  /** Mark the wakes the epic's ended chain ran done — all but `keep` (`SessionRegistry.settleEpicWakes`). */
+  settle?(sessionKey: string, keep: string | undefined): void;
 }
 
 export interface SlackEpicWaker {
   /** Wake this session if it is a live, idle Slack epic, not done, with pending events. Never throws. */
   wake(sessionKey: string): void;
+  /**
+   * The epic's chain ended: the wakes it ran are settled (`deps.settle`) — never the one still being
+   * sent (consumed, not taken yet: a restart before it is taken must deliver it again) — and it may wake.
+   */
+  chainEnded(sessionKey: string): void;
 }
 
 /**
@@ -296,8 +354,8 @@ export function createSlackEpicWaker(deps: SlackEpicWakerDeps): SlackEpicWaker {
   const now = deps.now ?? Date.now;
   const retries = new Map<string, ReturnType<typeof setTimeout>>();
   const spent = new Set<string>();
-  /** Epics a wake is being sent to now: one at a time. */
-  const sending = new Set<string>();
+  /** Epics a wake is being sent to now (one at a time), with that wake's id until it is taken. */
+  const sending = new Map<string, string | undefined>();
 
   function retryLater(sessionKey: string): void {
     if (retries.has(sessionKey) || spent.has(sessionKey)) return;
@@ -328,22 +386,25 @@ export function createSlackEpicWaker(deps: SlackEpicWakerDeps): SlackEpicWaker {
       retryLater(sessionKey);
       return;
     }
-    const by = `wake:${now()}`;
+    const by = `${SLACK_WAKE_PREFIX}${now()}`;
     deps.consume(
       sessionKey,
       events.map((e) => e.id),
       by,
     );
     deps.gate.record(epic);
-    sending.add(sessionKey);
+    sending.set(sessionKey, by);
     try {
       const result = await handOver(
-        (onAccepted) => deps.send(sessionKey, epicWakeText(events), { onAccepted, label: '🧩 자식 작업 소식' }),
+        (onAccepted) =>
+          deps.send(sessionKey, epicWakeText(events), { onAccepted, label: '🧩 자식 작업 소식', hostTurn: true }),
         deps.acceptTimeoutMs ?? 120_000,
         deps.logger,
       );
       if (result === 'taken') {
         spent.delete(sessionKey);
+        // Taken (running, or stored in its queue): no longer one being sent.
+        sending.set(sessionKey, undefined);
         return;
       }
       deps.release(sessionKey, by);
@@ -365,5 +426,17 @@ export function createSlackEpicWaker(deps: SlackEpicWakerDeps): SlackEpicWaker {
     });
   }
 
-  return { wake };
+  function chainEnded(sessionKey: string): void {
+    try {
+      deps.settle?.(sessionKey, sending.get(sessionKey));
+    } catch (error) {
+      deps.logger.warn('Epic wakes could not be settled — a restart delivers them again', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+    wake(sessionKey);
+  }
+
+  return { wake, chainEnded };
 }

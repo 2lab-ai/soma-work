@@ -223,11 +223,24 @@ describe('epic children on the Slack path (E4 ④b, #854)', () => {
     await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {});
     w.running.add('c1');
     (w.host.admit as any).mockClear();
-    // Even a tree at its limit does not refuse it: queueing takes no new place.
-    (w.host.admit as any).mockReturnValue('at most 3 children of an epic run at once — wait for one to finish');
+    // Queueing takes no new place (the gate does not count the running child against itself, G1) —
+    // but it is a start of the tree's work, so the tree's spend and window still answer (review #872 astra R6).
     const r = parse(await w.instruct.handler({ childId: 'c1', instruction: '이것도' } as any, {}));
     expect(r).toEqual({ ok: true, childId: 'c1', started: false, queued: true });
-    expect(w.host.admit).not.toHaveBeenCalled();
+    expect(w.host.admit).toHaveBeenCalledWith(w.epic, { child: w.children[0] });
+  });
+
+  it('I6 — a tree past its cost cap queues nothing either: the working child’s instruction is refused, nothing sent', async () => {
+    const w = world();
+    await w.spawn.handler({ planNodeId: 'login', instruction: 'go' } as any, {});
+    w.running.add('c1');
+    (w.host.instructChild as any).mockClear();
+    (w.host.admit as any).mockReturnValue(
+      'this epic reached its cost limit ($50) — an instruction from its owner still runs',
+    );
+    const r = parse(await w.instruct.handler({ childId: 'c1', instruction: '이것도' } as any, {}));
+    expect(r).toMatchObject({ ok: false, code: 'start-429' });
+    expect(w.host.instructChild).not.toHaveBeenCalled();
   });
 
   it('I3 — only this epic’s live children: a stranger is refused, nothing is sent', async () => {
