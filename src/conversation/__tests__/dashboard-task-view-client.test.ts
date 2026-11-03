@@ -569,7 +569,9 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
   it('T1.2 · the tab list sticks while the conversation scrolls, Main sticks at its left (the element’s pinned tab)', () => {
     expect(CSS).toMatch(/\.panel-tabs::part\(list\) \{[^}]*position: sticky;[^}]*top: 0;/);
     expect(CSS).not.toMatch(/\.panel-tab\.is-main/);
-    expect(clientFn('panelTabsData')).toContain("var tabs = [tab(PT_MAIN, st0, '메인', model ? modelLabelOf(model) : '', true, model, '')];");
+    expect(clientFn('panelTabsData')).toContain(
+      "var tabs = [tab(PT_MAIN, st0, '메인', model ? modelLabelOf(model) : '', true, model, '')];",
+    );
   });
 
   it('T1.6 · minimal by default: the agent path only with 자세히; the subtree is the 에이전트 트리 tab', () => {
@@ -584,12 +586,19 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
 // D4 E-19: the strip is <ui-tabs shared-panel>; the page hands it the tabs as data (TabItem: label, meta, tone,
 // pinned, title) and reads its choice back from ui-change (panelTabAgent).
 describe('T1.2 · the agent tabs', () => {
-  type Tab = { id: string; label: string; meta?: string; model?: string; tone: string; pinned?: boolean; title: string };
+  type Tab = {
+    id: string;
+    label: string;
+    meta?: string;
+    model?: string;
+    tone: string;
+    pinned?: boolean;
+    title: string;
+  };
   // The page's own model name (view-layout client: REPRESENTATIVE_MODELS' label, else the id without "claude-").
-  const modelLabelOf = new Function(
-    'REPRESENTATIVE_MODELS',
-    `${VIEW_LAYOUT_CLIENT_JS}\nreturn modelLabelOf;`,
-  )([{ model: 'claude-opus-5-5[1m]', label: 'Opus 5.5 (1M)' }]) as (m: unknown) => string;
+  const modelLabelOf = new Function('REPRESENTATIVE_MODELS', `${VIEW_LAYOUT_CLIENT_JS}\nreturn modelLabelOf;`)([
+    { model: 'claude-opus-5-5[1m]', label: 'Opus 5.5 (1M)' },
+  ]) as (m: unknown) => string;
   const env = load<{
     panelTabsData(s: unknown, active: string, mainSt?: string): { label: string; value: string; tabs: Tab[] };
     panelTabId(agentId: string): string;
@@ -654,7 +663,13 @@ describe('T1.2 · the agent tabs', () => {
       {
         model: 'claude-opus-5-5[1m]',
         agents: [
-          { id: 'g', n: 1, type: 'zworkflow:grok-elon', status: 'completed', spend: { model: 'grok-4', inputTokens: 9 } },
+          {
+            id: 'g',
+            n: 1,
+            type: 'zworkflow:grok-elon',
+            status: 'completed',
+            spend: { model: 'grok-4', inputTokens: 9 },
+          },
           { id: 'f', n: 2, type: 'zworkflow:fable-zhuge', status: 'running', spend: { model: 'claude-fable-5' } },
           { id: 'l', n: 3, type: 'log-only', status: 'completed' },
           { id: 'z', n: 4, type: 'Explore', status: 'completed', spend: { model: '' } },
@@ -663,7 +678,13 @@ describe('T1.2 · the agent tabs', () => {
       '',
     );
     // The element draws the mark from \`model\`; the raw id never shows as text.
-    expect(d.tabs.map((t) => t.model)).toEqual(['claude-opus-5-5[1m]', 'grok-4', 'claude-fable-5', undefined, undefined]);
+    expect(d.tabs.map((t) => t.model)).toEqual([
+      'claude-opus-5-5[1m]',
+      'grok-4',
+      'claude-fable-5',
+      undefined,
+      undefined,
+    ]);
     expect(d.tabs[0].meta).toBe('Opus 5.5 (1M)');
     expect(d.tabs[0].title).toBe('메인 Opus 5.5 (1M) — 대기');
     // A subagent's muted label stays its type; its model joins the title (the mark is drawn, not read).
