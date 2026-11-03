@@ -3,13 +3,13 @@
  * the links on every task card (live sessions and archives). On 3 November 2026 the figure was 9 of 15.
  *
  * Per item: on a card, missed (on none), or on the wrong card (on cards, but not on the card of the session that wrote
- * it — known from the `pr_created` metric, which comes from the same write effects as the card since #832). The report
+ * it — known from the `pr_created` metric, which comes from the same write effects as the card since #832; so a wrong
+ * card is judged for PRs only, an issue's creator is not recorded). The report
  * posts every day; it alerts only after a baseline week, and only above that week's median, so PRs that are meant to
  * have no card (cron, manual runs) do not page anyone. The run of zero-miss days is the epic's done signal.
  */
-import { atomicWriteJson } from '@soma/common/atomic-write';
+import { atomicWriteJson, loadJsonWithBackup } from '@soma/common/atomic-write';
 import { canonicalLinkUrl } from '@soma/slack/session-link-capture';
-import fs from 'fs';
 import { Logger } from '../logger';
 
 const logger = new Logger('LinkLeakReport');
@@ -132,6 +132,22 @@ function ref(item: BotItem): string {
   return `<${item.url}|${item.repo}#${item.number}>`;
 }
 
+/** Lines under a heading, whole lines only, within Slack's 3,000-character section limit; the rest are counted. */
+function listSection(heading: string, lines: string[]): string {
+  const budget = 2800;
+  const out = [`*${heading}*`];
+  let used = out[0].length;
+  let shown = 0;
+  for (const line of lines) {
+    if (used + line.length + 1 > budget) break;
+    out.push(line);
+    used += line.length + 1;
+    shown++;
+  }
+  if (shown < lines.length) out.push(`… and ${lines.length - shown} more`);
+  return out.join('\n');
+}
+
 export function formatLinkLeakReport(
   report: LeakReport,
   opts: { date: string; alert: boolean; streak: number; baselineDays: number },
@@ -143,7 +159,7 @@ export function formatLinkLeakReport(
   lines.push(
     `*${missedCount} of ${report.total}* bot-authored, non-deploy PRs and issues opened in the last 24 hours are on no task card.`,
   );
-  lines.push(`On a card: ${report.onCard}. On the wrong session's card: ${report.wrongCard.length}.`);
+  lines.push(`On a card: ${report.onCard}. On the wrong session's card (PRs): ${report.wrongCard.length}.`);
   lines.push(`Days in a row with nothing missed: ${opts.streak}.`);
   if (opts.baselineDays < BASELINE_DAYS)
     lines.push(`Baseline: day ${opts.baselineDays} of ${BASELINE_DAYS}, no alerts yet.`);
@@ -153,7 +169,10 @@ export function formatLinkLeakReport(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*Missed*\n${report.missed.map((i) => `• ${ref(i)} ${i.title ?? ''}`.trim()).join('\n')}`.slice(0, 2900),
+        text: listSection(
+          'Missed',
+          report.missed.map((i) => `• ${ref(i)} ${i.title ?? ''}`.trim()),
+        ),
       },
     });
   }
@@ -162,9 +181,9 @@ export function formatLinkLeakReport(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*On the wrong card*\n${report.wrongCard.map((w) => `• ${ref(w.item)} made by \`${w.creator}\`, on \`${w.cards.join('`, `')}\``).join('\n')}`.slice(
-          0,
-          2900,
+        text: listSection(
+          'On the wrong card',
+          report.wrongCard.map((w) => `• ${ref(w.item)} made by \`${w.creator}\`, on \`${w.cards.join('`, `')}\``),
         ),
       },
     });
@@ -175,10 +194,10 @@ export function formatLinkLeakReport(
       elements: [
         {
           type: 'mrkdwn',
-          text: report.bySession
-            .map((r) => `\`${r.sessionKey}\`: ${r.missed} missed, ${r.wrong} wrong card`)
-            .join(' · ')
-            .slice(0, 2900),
+          text: listSection(
+            'Per session',
+            report.bySession.map((r) => `\`${r.sessionKey}\`: ${r.missed} missed, ${r.wrong} wrong card`),
+          ),
         },
       ],
     });
@@ -208,15 +227,22 @@ export async function fetchBotItems(args: {
   };
   try {
     const q = encodeURIComponent(`author:app/${args.botLogin} created:>=${args.sinceIso}`);
-    const res = await doFetch(`https://api.github.com/search/issues?q=${q}&per_page=100&sort=created&order=asc`, {
-      headers,
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) return undefined;
-    const body = await res.json();
-    if (!body || !Array.isArray(body.items)) return undefined;
+    // Every page (search returns at most 1,000 results, 100 a page).
+    const found: any[] = [];
+    for (let page = 1; page <= 10; page++) {
+      const res = await doFetch(
+        `https://api.github.com/search/issues?q=${q}&per_page=100&page=${page}&sort=created&order=asc`,
+        { headers, signal: AbortSignal.timeout(15_000) },
+      );
+      if (!res.ok) return undefined;
+      const body = await res.json();
+      if (!body || !Array.isArray(body.items)) return undefined;
+      found.push(...body.items);
+      const total = typeof body.total_count === 'number' ? body.total_count : found.length;
+      if (body.items.length < 100 || found.length >= total) break;
+    }
     const out: BotItem[] = [];
-    for (const it of body.items) {
+    for (const it of found) {
       const m =
         typeof it?.html_url === 'string'
           ? it.html_url.match(/^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(pull|issues)\/(\d+)$/)
@@ -271,10 +297,13 @@ interface LeakState {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_HISTORY = 60;
+/** After a failed run (GitHub unreadable, the post refused), wait this long before trying again. */
+const RETRY_MS = 15 * 60 * 1000;
 
 export class LinkLeakReporter {
   private timer?: NodeJS.Timeout;
   private running = false;
+  private retryAt = 0;
 
   constructor(private readonly deps: LinkLeakReporterDeps) {}
 
@@ -295,11 +324,18 @@ export class LinkLeakReporter {
     return { date: `${get('year')}-${get('month')}-${get('day')}`, hour: Number(get('hour')) };
   }
 
+  /** The state file, or its `.bak` when it is unusable (atomic-write WARNs); a fresh state when neither exists. */
   private readState(): LeakState {
     try {
-      const raw = JSON.parse(fs.readFileSync(this.deps.statePath, 'utf8'));
-      return { lastRunDate: raw?.lastRunDate, history: Array.isArray(raw?.history) ? raw.history : [] };
-    } catch {
+      return (
+        loadJsonWithBackup<LeakState>(this.deps.statePath, (raw) => {
+          const v = raw as Partial<LeakState> | null;
+          if (!v || typeof v !== 'object' || !Array.isArray(v.history)) throw new Error('not a link leak state');
+          return { lastRunDate: typeof v.lastRunDate === 'string' ? v.lastRunDate : undefined, history: v.history };
+        }) ?? { history: [] }
+      );
+    } catch (error) {
+      logger.error('Link leak report state is unusable; starting a new baseline', { error: (error as Error)?.message });
       return { history: [] };
     }
   }
@@ -330,9 +366,11 @@ export class LinkLeakReporter {
     this.running = true;
     try {
       const { date, hour } = this.clock();
-      if (hour !== this.deps.hour) return;
+      if (hour !== this.deps.hour || this.now() < this.retryAt) return;
       const state = this.readState();
       if (state.lastRunDate === date) return;
+      // A failed attempt waits before the next one, so an outage costs a few queries, not one a minute.
+      this.retryAt = this.now() + RETRY_MS;
       const report = await this.compute();
       if (!report) return;
       const today: LeakHistoryEntry = {
@@ -349,7 +387,11 @@ export class LinkLeakReporter {
         baselineDays: history.length,
       });
       if (!(await this.deps.publish(formatted.text, formatted.blocks))) return;
-      atomicWriteJson(this.deps.statePath, { lastRunDate: date, history });
+      // The .bak holds the same good state, so a damaged live file never resets the baseline or re-posts the day.
+      const next: LeakState = { lastRunDate: date, history };
+      atomicWriteJson(`${this.deps.statePath}.bak`, next);
+      atomicWriteJson(this.deps.statePath, next);
+      this.retryAt = 0;
     } catch (error) {
       logger.warn('Link leak report failed', { error: (error as Error)?.message });
     } finally {
