@@ -1327,6 +1327,7 @@
   "승인": "Approve",
   "승인 · 질문 — 항상": "Approval · question — always",
   "승인 대기": "Awaiting approval",
+  "승인 요청을 저장하지 못했습니다 — 잠시 뒤 다시 보내세요": "Could not save the approval request — send it again shortly",
   "승인 요청을 찾을 수 없습니다": "Approval request not found",
   "승인을 기다리는 지시가 너무 많습니다 — 소유자가 응답한 뒤 다시 보내세요": "Too many instructions are waiting for approval — send again after the owner responds",
   "승인하면 <@{0}>님의 권한으로 실행됩니다. 대시보드에서도 응답할 수 있고, 24시간 안에 답하지 않으면 요청이 끝납니다.": "If approved, it runs with <@{0}>'s permissions. You can also respond on the dashboard; the request ends if you don't answer within 24 hours.",

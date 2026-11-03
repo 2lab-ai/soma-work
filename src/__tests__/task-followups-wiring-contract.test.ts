@@ -52,6 +52,12 @@ describe('index.ts — a dashboard task’s follow-up queue is wired', () => {
     );
   });
 
+  it('a task’s held instruction is saved or refused — never kept only in memory (review R3)', () => {
+    const hold = section('const holdTaskInstruction = async (', 'setDashboardTaskCommandHandler(');
+    expect(hold).toMatch(/instructionApprovals\.hold\(\{[^}]*strict: true/);
+    expect(hold).toMatch(/held\.refused === 'unsaved'/);
+  });
+
   it('the panel’s queue controls on a task go to the controller', () => {
     expect(source).toMatch(/setDashboardTaskQueueHandler\(\(request\) => taskController\.actOnQueue\(request\)\)/);
   });
