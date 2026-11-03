@@ -205,4 +205,15 @@ describe('SessionRegistry — the model-command host receipt', () => {
     expect(r?.followUp).toBeUndefined();
     expect(r?.tldr).toBeUndefined();
   });
+
+  it('the es TL;DR keeps when the model issued it — the time in its receiptId, not the late apply (#881 B1)', () => {
+    const reg = new SessionRegistry();
+    const s = reg.createSession('U1', 'User', 'C1', '100.013');
+    const t = 1_793_700_000_000;
+    reg.setExecutiveSummary('C1', '100.013', ['a', 'b', 'c'], `r_${t.toString(36)}_1_abcd1234`);
+    expect(s.executiveSummary?.issuedAt).toBe(t);
+    expect(s.executiveSummary?.source).toBe('es');
+    reg.setExecutiveSummary('C1', '100.013', ['a', 'b', 'c']);
+    expect(s.executiveSummary?.issuedAt).toBeUndefined();
+  });
 });
