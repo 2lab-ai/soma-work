@@ -646,6 +646,14 @@ function regexEnd(code: string, at: number): number {
   return -1;
 }
 
+/** Whether the `/` at `at` opens a regex literal, given the last code character and word before it. */
+function isRegexAt(code: string, at: number, last: string, word: string): boolean {
+  if (last === '' || /[(,=:[!&|?{};+\-*\/%<>~^]/.test(last) || BEFORE_REGEX.has(word)) return true;
+  if (/\s/.test(code[at + 1] ?? ' ')) return false;
+  const end = regexEnd(code, at);
+  return end > 0 && (end >= code.length || /[.),;\]}\s]/.test(code[end]));
+}
+
 function lexCode(code: string, lang: CodeLang): Lexed {
   const masked: string[] = [];
   const strings: CodeString[] = [];
@@ -670,12 +678,11 @@ function lexCode(code: string, lang: CodeLang): Lexed {
       blank(close < 0 ? n : close + 2);
       continue;
     }
-    // A regex literal (JS, Ruby): after an operator, an opening bracket, a keyword, or at the start.
-    if (
-      c === '/' &&
-      lang !== 'py' &&
-      (last === '' || /[(,=:[!&|?{};+\-*\/%<>~^]/.test(last) || BEFORE_REGEX.has(word))
-    ) {
+    // A regex literal (JS, Ruby). Masking only ever hides code, so a doubtful `/` leans to a regex: after an
+    // operator, an opening bracket, a keyword or at the start it is one; anywhere else (an operand, `)`, `]`, the
+    // start of a line) when it looks like one — no space after the opening `/`, and the closing `/` and its flags
+    // followed by `.`, `)`, `,`, `;`, `]`, `}`, a space or the end (`(s) /re/.test(s)`, a line that starts `/re/`).
+    if (c === '/' && lang !== 'py' && isRegexAt(code, i, last, word)) {
       const end = regexEnd(code, i);
       if (end > 0) {
         masked.push('/');
@@ -713,6 +720,11 @@ function lexCode(code: string, lang: CodeLang): Lexed {
     }
     masked.push(c);
     i++;
+    if (c === '\n') {
+      last = '\n';
+      word = '';
+      continue;
+    }
     if (/\s/.test(c)) continue;
     if (/[\w$]/.test(c)) word = /[\w$]/.test(last) ? word + c : c;
     else word = '';
