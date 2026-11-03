@@ -314,6 +314,10 @@ describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
 
     expect(fake.inputEnded).toBe(true);
     expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-2', text: 'too late' })).toBe(false);
+    // #881 B1 — the push time of a send outlives its turn (the turn end reads it after the stream closes); a refused
+    // push records nothing.
+    expect(typeof handler.steerPushedAt('u-1')).toBe('number');
+    expect(handler.steerPushedAt('u-2')).toBeUndefined();
     expect(await handler.interruptTurn(SESSION_KEY)).toBeUndefined();
     expect(releaseMock).toHaveBeenCalled();
   });

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { esWroteCardThisTurn, SummaryService } from '../summary-service';
+import { esWroteCardThisTurn, SummaryService, steerAfterEs } from '../summary-service';
 
 /**
  * #846 item 8 — a turn whose model-run es (`local:auto-es`) already wrote the card does not fork a host summary.
@@ -48,3 +48,20 @@ describe('displayEsTldrOnThread — the thread head shows the es TL;DR', () => {
 
 // The turn-end behaviour itself (no timer in an es turn, the head shows the es TL;DR, an earlier marker never blocks
 // a summary) runs through the real StreamExecutor.execute in src/slack/pipeline/__tests__/stream-executor.test.ts.
+
+describe('steerAfterEs (#881 B1)', () => {
+  const es = { executiveSummary: { tldr: ['a'], at: 9, source: 'es', issuedAt: 1_000 } };
+  it('no consumed steer: nothing to re-judge', () => {
+    expect(steerAfterEs(es, [])).toBe(false);
+  });
+  it('a steer pushed before the es write was already in the verdict', () => {
+    expect(steerAfterEs(es, [400, 999])).toBe(false);
+  });
+  it('a steer pushed at or after the es write re-opens it', () => {
+    expect(steerAfterEs(es, [400, 1_000])).toBe(true);
+  });
+  it('unknown push time, or an es without an issue time: re-judge (as before)', () => {
+    expect(steerAfterEs(es, [undefined])).toBe(true);
+    expect(steerAfterEs({ executiveSummary: { tldr: ['a'], at: 9, source: 'es' } }, [1])).toBe(true);
+  });
+});

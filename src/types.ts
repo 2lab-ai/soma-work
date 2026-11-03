@@ -475,7 +475,12 @@ export interface ConversationSession {
    * SSOT 2026-11-02 T7 — the TL;DR of the Executive Summary the thread head shows, for the
    * dashboard's task card (SummaryService sets it, the next input clears it).
    */
-  executiveSummary?: { tldr: string[]; at: number; source?: 'es' };
+  executiveSummary?: {
+    tldr: string[];
+    at: number;
+    source?: 'es' /** #881 B1 — when the model issued it. */;
+    issuedAt?: number;
+  };
   /**
    * #829 — the latest Executive Summary left an issue/PR this session created unfinished (its ⚠️ TL;DR
    * line): the dashboard keeps the idle card in NEEDS YOU with this reason. Set and cleared by an Executive
