@@ -30,14 +30,14 @@ MCP: github → create_branch
 ## 2. gh CLI (GitHub CLI)
 
 ### 인증 방식
-- `gh auth login`으로 설정된 OAuth 토큰 또는 PAT
-- `~/.config/gh/hosts.yml`에 저장됨
+- **봇 세션(에이전트 셸)**: GitHub App 설치 토큰. 데몬이 토큰을 갱신할 때마다 봇 전용 `$DATA_DIR/gh/hosts.yml`을 다시 쓰고, 에이전트 셸은 그 디렉터리를 `GH_CONFIG_DIR`로 받는다(`GITHUB_TOKEN`은 받지 않는다 — env 토큰이 있으면 gh가 그것을 먼저 쓰는데, 턴 시작 때 복사된 값이라 한 시간 뒤 만료된다, #834). App 토큰은 `.github/workflows/*`를 바꿀 수 없다.
+- **사람이 직접 쓰는 터미널**: `gh auth login`으로 설정된 OAuth 토큰 또는 PAT (`~/.config/gh/hosts.yml`)
 
 ### 용도
 - PR 생성/관리 (`gh pr create`, `gh pr merge`)
 - Issue 관리 (`gh issue create`)
 - API 직접 호출 (`gh api`)
-- **workflow 파일이 포함된 PR 생성 가능** (PAT에 `workflow` scope가 있는 경우)
+- **workflow 파일이 포함된 PR 생성 가능** (사람의 PAT에 `workflow` scope가 있는 경우만 — 봇 세션의 App 토큰은 불가)
 
 ### 확인 방법
 ```bash
