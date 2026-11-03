@@ -71,7 +71,11 @@ describe('resumeActiveGoals (T1)', () => {
   });
 
   it('a task turn the restart cut gives its continuation back, once (no shutdown marker for a task)', () => {
-    const task = activeGoalSession({ channelId: '', threadTs: undefined, slackless: true } as Partial<ConversationSession>);
+    const task = activeGoalSession({
+      channelId: '',
+      threadTs: undefined,
+      slackless: true,
+    } as Partial<ConversationSession>);
     task.goal!.continuationCount = 10;
     const untouched = activeGoalSession({
       channelId: '',
@@ -84,7 +88,10 @@ describe('resumeActiveGoals (T1)', () => {
       ['task:idle', untouched],
     ]);
     const { handler, claudeHandler } = createHandler(sessions);
-    claudeHandler.takeRestartCutTaskKeys = vi.fn().mockReturnValueOnce(new Set(['task:cut'])).mockReturnValue(new Set());
+    claudeHandler.takeRestartCutTaskKeys = vi
+      .fn()
+      .mockReturnValueOnce(new Set(['task:cut']))
+      .mockReturnValue(new Set());
     handler.setGoalTurnSettledHandler(vi.fn());
     expect(handler.resumeActiveGoals()).toBe(2);
     expect(task.goal!.continuationCount).toBe(9);
