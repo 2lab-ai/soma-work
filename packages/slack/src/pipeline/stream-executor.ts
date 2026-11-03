@@ -86,7 +86,7 @@ import {
   sayPostSwitches,
   type UsageData,
 } from '../stream-processor';
-import type { SummaryService } from '../summary-service';
+import { esWroteCardThisTurn, type SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer';
 import { NO_POST_SLACK } from '../task-turn/no-post-slack';
 import { createTaskSay, type TaskTurnBinding, type TaskWorkLogWrite } from '../task-turn/task-say';
@@ -3459,7 +3459,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // so the user can see the wait window expire instead of guessing why
       // a summary suddenly appeared after silence.
       // Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S1
-      if (this.deps.turnNotifier && this.deps.summaryTimer && category !== 'Exception' && category !== 'Stalled') {
+      // #846 — not when this turn's model-run es already wrote the card: the card would ignore the fork, and the
+      // thread head would show a second TL;DR.
+      if (
+        this.deps.turnNotifier &&
+        this.deps.summaryTimer &&
+        category !== 'Exception' &&
+        category !== 'Stalled' &&
+        !esWroteCardThisTurn(session)
+      ) {
         this.deps.summaryTimer.start(
           sessionKey,
           () => this.onSummaryTimerFire(session, sessionKey),
