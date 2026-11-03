@@ -38,9 +38,13 @@ export interface EpicTreeGate {
   /**
    * Why a host start in this epic's tree may not happen now, or undefined. `child`: the child a
    * turn would start in (instructing one); `newChild`: a child about to be made; neither: the
-   * epic's own wake.
+   * epic's own wake. `making`: children of this tree whose threads are being made right now — not
+   * sessions yet, but each takes a running place (parallel `spawn_child` calls, review #872).
    */
-  refusal(epic: ConversationSession, start: { child?: ConversationSession; newChild?: true }): string | undefined;
+  refusal(
+    epic: ConversationSession,
+    start: { child?: ConversationSession; newChild?: true; making?: number },
+  ): string | undefined;
   /** Count a start in the tree's window. */
   record(epic: ConversationSession): void;
 }
@@ -67,7 +71,7 @@ export function createEpicTreeGate(deps: EpicTreeGateDeps): EpicTreeGate {
         const running = deps
           .getChildTasks(treeId)
           .filter((c) => c !== start.child && c.taskId !== start.child?.taskId && deps.isRunning(c)).length;
-        if (running >= maxRunning) {
+        if (running + (start.making ?? 0) >= maxRunning) {
           return `at most ${maxRunning} children of an epic run at once — wait for one to finish`;
         }
       }

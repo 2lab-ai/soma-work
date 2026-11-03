@@ -97,6 +97,25 @@ describe('the epic host on the Slack path (#854)', () => {
     expect(w.deps.gate.record).toHaveBeenCalledWith(w.epic);
   });
 
+  it('H6 — parallel spawns (review #872): one child per node while it is made; the ones being made take places', async () => {
+    let post!: (v: { ts: string }) => void;
+    const w = hostWorld({ postMessage: vi.fn(() => new Promise((r) => (post = r))) });
+    const first = w.host.spawnChild(w.epic, { planNodeId: 'login', instruction: 'go', title: 't' });
+    // The same node again while its thread is being made: refused, nothing reserved twice.
+    expect(await w.host.spawnChild(w.epic, { planNodeId: 'login', instruction: 'go', title: 't' })).toMatchObject({
+      ok: false,
+      code: 'spawn-in-flight',
+    });
+    expect(w.deps.reserveEpicChild).toHaveBeenCalledTimes(1);
+    // Another node's admission counts the child being made.
+    w.host.admit(w.epic, { newChild: true });
+    expect(w.deps.gate.refusal).toHaveBeenLastCalledWith(w.epic, { newChild: true, making: 1 });
+    post({ ts: '9.9' });
+    await first;
+    w.host.admit(w.epic, { newChild: true });
+    expect(w.deps.gate.refusal).toHaveBeenLastCalledWith(w.epic, { newChild: true, making: 0 });
+  });
+
   it('H2 — a thread that could not be made takes the reservation back', async () => {
     const w = hostWorld({ postMessage: vi.fn(async () => undefined) });
     const r = await w.host.spawnChild(w.epic, { planNodeId: 'login', instruction: 'go', title: 't' });
