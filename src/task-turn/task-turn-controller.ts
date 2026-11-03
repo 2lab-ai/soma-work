@@ -30,6 +30,7 @@ import {
   TASK_FOLLOWUP_CANCELLED,
   TASK_FOLLOWUP_CAPACITY,
   TASK_FOLLOWUP_FIRST_IN_LINE,
+  TASK_FOLLOWUP_PAUSED_BEHIND_REFUSED,
   TASK_FOLLOWUP_PAUSED_BY_STOP,
   TASK_FOLLOWUP_PAUSED_BY_UNHEALTHY_END,
 } from './task-followups';
@@ -62,6 +63,11 @@ export interface TaskCommandRequest {
    * start makes. A host start (spawn, instruct, wake) leaves it off and keeps the 409.
    */
   queueWhileRunning?: boolean;
+  /**
+   * #767 — these very words were released by the owner's one-time approval:
+   * queued, they run without asking again while unedited (`approvedText`).
+   */
+  approvedOnce?: boolean;
 }
 
 /** A control on a word in a task's follow-up queue (the dashboard's queue route). */
@@ -156,6 +162,19 @@ export interface TaskTurnControllerDeps {
   onFollowupsChanged?: (sessionKey: string) => void;
   /** Words one task's queue holds at most. Default {@link TASK_FOLLOWUP_CAPACITY}. */
   maxQueuedFollowups?: number;
+  /**
+   * #767 — the backstop of the instruction gate when a queued word is about to
+   * run (the drain, Send now), as a drained Slack follow-up is gated again: a
+   * word not covered by its one-time approval whose writer may not instruct
+   * the task on their own (the owner, approved for the session, trusted) goes
+   * to the owner instead. Answers `undefined` at once when it may run, else
+   * the hold's answer (202 `pendingApproval`, or a refusal).
+   */
+  holdQueued?: (
+    sessionKey: string,
+    session: ConversationSession,
+    item: TaskFollowupItem,
+  ) => Promise<TaskCommandResponse | undefined> | undefined;
 }
 
 /** #599 ⑤ — a dashboard answer to the task's open question, bound to its `askId`. */
@@ -430,7 +449,10 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     if (chains.has(request.sessionKey)) {
       // The dashboard's word waits for the chain's end; a host start and an answer are refused.
       if (request.queueWhileRunning && !opts.answer) {
-        return { ok: false, response: enqueue(session, request.sessionKey, text, request.actorUserId) };
+        return {
+          ok: false,
+          response: enqueue(session, request.sessionKey, text, request.actorUserId, request.approvedOnce === true),
+        };
       }
       return { ok: false, response: refuse(409, 'a turn is already running on this task') };
     }
@@ -681,6 +703,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
               hopStarted = true;
               // The new hop's saved start took the task from the pending turn.
               pendingTurnId = null;
+              // The chain's end is this hop's to decide now, not an earlier hop's (review R1, astra P1).
+              progress.lastOutcome = undefined;
               markStarted();
             },
           });
@@ -717,6 +741,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       }
     } catch (error) {
       deps.logger.error('Task turn chain ended by a throw', { sessionKey, error: (error as Error)?.message });
+      // A throw is no healthy end, whatever an earlier hop committed (review R1, astra P1).
+      progress.lastOutcome = undefined;
       // A hop that never started leaves the pending turn owning the task: end it.
       if (!hopStarted) {
         await endPending({
@@ -782,12 +808,16 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     }
   }
 
+  /** Tasks whose chain ended while shutting down with words still queued: a refused shutdown pauses them. */
+  const heldByShutdown = new Set<string>();
+
   /** A word admitted like a start, while the task's chain runs: it waits for the chain's end. */
   function enqueue(
     session: ConversationSession,
     sessionKey: string,
     text: string,
     authorId: string,
+    approvedOnce: boolean,
   ): TaskCommandResponse {
     if (!text) return refuse(400, 'message is required');
     const queue = session.taskFollowups ?? [];
@@ -801,6 +831,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       enqueuedAt: now(),
       epoch: 0,
       state: 'queued',
+      ...(approvedOnce ? { approvedText: text } : {}),
     };
     session.taskFollowups = [...queue, item];
     followupsChanged(sessionKey);
@@ -817,6 +848,9 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     return true;
   }
 
+  const heldForOwner = (res: TaskCommandResponse): boolean =>
+    res.status === 202 && (res.body as { pendingApproval?: unknown }).pendingApproval === true;
+
   /**
    * A chain ended (the task is free again): a chain that ended well — its last
    * turn completed, or asked a question — runs the oldest queued word; one that
@@ -832,24 +866,43 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     try {
       const session = deps.getSession(sessionKey);
       if (!session?.taskFollowups?.length) return;
-      if (!accepting || session.closing || session.terminated || chains.has(sessionKey)) return;
+      if (!accepting) {
+        // A real restart pauses them on load; a refused one does in `resumeAccepting` (review R1, grok P1).
+        if (session.taskFollowups.some((item) => item.state === 'queued')) heldByShutdown.add(sessionKey);
+        return;
+      }
+      if (session.closing || session.terminated || chains.has(sessionKey)) return;
       const healthy = end.started && !end.stopped && (end.outcome === 'completed' || end.outcome === 'waiting');
       if (!healthy) {
         const reason = end.stopped ? TASK_FOLLOWUP_PAUSED_BY_STOP : TASK_FOLLOWUP_PAUSED_BY_UNHEALTHY_END;
         if (pauseQueued(session, reason)) followupsChanged(sessionKey);
         return;
       }
-      const next = session.taskFollowups.find((item) => item.state === 'queued');
-      if (!next) return;
-      void runQueued(sessionKey, session, next).catch((error) =>
+      runNextQueued(sessionKey, session);
+    } catch (error) {
+      deps.logger.warn('The task follow-up drain raised', { sessionKey, error: (error as Error)?.message });
+    }
+  }
+
+  /**
+   * Run the oldest queued word. One the owner must approve first leaves the
+   * queue for the owner's hands and starts nothing — the next word runs then.
+   */
+  function runNextQueued(sessionKey: string, session: ConversationSession): void {
+    const next = session.taskFollowups?.find((item) => item.state === 'queued');
+    if (!next) return;
+    void runQueued(sessionKey, session, next).then(
+      (res) => {
+        if (!heldForOwner(res) || !accepting || session.closing || session.terminated) return;
+        if (chains.has(sessionKey) || deps.getSession(sessionKey) !== session) return;
+        runNextQueued(sessionKey, session);
+      },
+      (error) =>
         deps.logger.error('A queued task instruction could not be started', {
           sessionKey,
           error: (error as Error)?.message,
         }),
-      );
-    } catch (error) {
-      deps.logger.warn('The task follow-up drain raised', { sessionKey, error: (error as Error)?.message });
-    }
+    );
   }
 
   /**
@@ -868,7 +921,18 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     const index = before.findIndex((entry) => entry.id === item.id);
     session.taskFollowups = before.filter((entry) => entry.id !== item.id);
     followupsChanged(sessionKey);
-    const res = await start({ sessionKey, text: item.text, actorUserId: item.authorId });
+    let res: TaskCommandResponse;
+    try {
+      // #767 backstop: words its one-time approval does not cover are the owner's to allow (review R1).
+      const covered = item.approvedText !== undefined && item.approvedText === item.text;
+      const gate = covered ? undefined : deps.holdQueued?.(sessionKey, session, item);
+      const held = gate ? await gate : undefined;
+      if (held && held.status < 400) return held; // in the owner's hands now: nothing more is owed here
+      res = held ?? (await start({ sessionKey, text: item.text, actorUserId: item.authorId }));
+    } catch (error) {
+      // Never lost (review R1, grok/fable P2): back where it was, paused with why.
+      res = refuse(500, `the task turn could not start: ${(error as Error)?.message ?? String(error)}`);
+    }
     if (res.status === 202) return res;
     if (session.closing || session.terminated) return res;
     const busy = res.status === 409 && chains.has(sessionKey);
@@ -876,6 +940,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     const back: TaskFollowupItem = busy
       ? { ...item, state: 'queued', stateReason: undefined, epoch: item.epoch + 1 }
       : { ...item, state: 'paused', stateReason: why, epoch: item.epoch + 1 };
+    // Refused (not merely beaten to the task): no chain end is coming for the words behind it (fable P2).
+    if (!busy) pauseQueued(session, TASK_FOLLOWUP_PAUSED_BEHIND_REFUSED);
     const rest = [...(session.taskFollowups ?? [])];
     rest.splice(index < 0 ? 0 : Math.min(index, rest.length), 0, back);
     session.taskFollowups = rest;
@@ -922,6 +988,10 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       return { ok: true, message: TASK_FOLLOWUP_FIRST_IN_LINE };
     }
     const res = await runQueued(sessionKey, session, item);
+    if (heldForOwner(res)) {
+      const said = (res.body as { message?: unknown }).message;
+      return typeof said === 'string' && said ? { ok: true, message: said } : { ok: true };
+    }
     if (res.status === 202) return { ok: true };
     return no(res.status, String((res.body as { error?: unknown })?.error ?? `HTTP ${res.status}`));
   }
@@ -1011,6 +1081,13 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       for (const [sessionKey, { turnId, chainId }] of shutdownStranded) {
         shutdownStranded.delete(sessionKey);
         endStranded(sessionKey, turnId, chainId);
+      }
+      // Words a shutdown's abort left queued: their chain was cut, and none will end to run them (review R1, grok P1).
+      for (const sessionKey of heldByShutdown) {
+        heldByShutdown.delete(sessionKey);
+        const session = deps.getSession(sessionKey);
+        if (!session || session.closing || session.terminated || chains.has(sessionKey)) continue;
+        if (pauseQueued(session, TASK_FOLLOWUP_PAUSED_BY_UNHEALTHY_END)) followupsChanged(sessionKey);
       }
     },
     isRunning: (sessionKey) => chains.has(sessionKey),

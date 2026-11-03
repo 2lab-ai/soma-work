@@ -45,7 +45,16 @@ describe('SessionRegistry — a task’s follow-up queue', () => {
     const task = reg.createTask(BASE);
     task.taskFollowups = [
       { id: 'tq-1', text: 'goal 설정해줘', authorId: 'U1', enqueuedAt: 10, epoch: 0, state: 'queued' },
-      { id: 'tq-2', text: '그 다음', authorId: 'U2', enqueuedAt: 11, epoch: 3, state: 'paused', stateReason: '중지' },
+      {
+        id: 'tq-2',
+        text: '그 다음',
+        authorId: 'U2',
+        enqueuedAt: 11,
+        epoch: 3,
+        state: 'paused',
+        stateReason: '중지',
+        approvedText: '그 다음',
+      },
     ];
     reg.saveSessions();
     expect(savedOf(task.taskId!)?.taskFollowups).toHaveLength(2);
@@ -62,7 +71,17 @@ describe('SessionRegistry — a task’s follow-up queue', () => {
         state: 'paused',
         stateReason: TASK_FOLLOWUP_PAUSED_BY_RESTART,
       },
-      { id: 'tq-2', text: '그 다음', authorId: 'U2', enqueuedAt: 11, epoch: 3, state: 'paused', stateReason: '중지' },
+      {
+        id: 'tq-2',
+        text: '그 다음',
+        authorId: 'U2',
+        enqueuedAt: 11,
+        epoch: 3,
+        state: 'paused',
+        stateReason: '중지',
+        // The words a one-time approval covered stay covered across the restart.
+        approvedText: '그 다음',
+      },
     ]);
   });
 

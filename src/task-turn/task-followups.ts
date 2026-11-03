@@ -21,6 +21,7 @@ export const TASK_FOLLOWUP_PAUSED_BY_STOP = '중지되어 멈췄어요 — 지�
 export const TASK_FOLLOWUP_PAUSED_BY_UNHEALTHY_END =
   '직전 작업이 제대로 끝나지 않아 멈췄어요 — 지금 보내기로 보낼 수 있어요';
 export const TASK_FOLLOWUP_PAUSED_BY_RESTART = '재시작으로 멈췄어요 — 지금 보내기로 보낼 수 있어요';
+export const TASK_FOLLOWUP_PAUSED_BEHIND_REFUSED = '앞 지시가 시작되지 못해 멈췄어요 — 지금 보내기로 보낼 수 있어요';
 export const TASK_FOLLOWUP_CANCELLED = '취소했습니다';
 export const TASK_FOLLOWUP_FIRST_IN_LINE = '지금 작업이 끝나면 가장 먼저 보냅니다';
 
@@ -52,6 +53,9 @@ export function sanitizeTaskFollowups(raw: unknown): TaskFollowupItem[] | undefi
       epoch: wasPaused ? epoch : epoch + 1,
       state: 'paused',
       stateReason: wasPaused ? (e.stateReason as string) : TASK_FOLLOWUP_PAUSED_BY_RESTART,
+      ...(typeof e.approvedText === 'string' && e.approvedText.length <= MAX_TEXT
+        ? { approvedText: e.approvedText }
+        : {}),
     });
   }
   return out.length > 0 ? out : undefined;

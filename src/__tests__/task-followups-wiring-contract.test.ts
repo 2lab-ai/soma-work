@@ -30,9 +30,18 @@ describe('index.ts — a dashboard task’s follow-up queue is wired', () => {
     expect(handler).toMatch(/taskController\.start\(\{[^}]*queueWhileRunning: true[^}]*\}\)/);
   });
 
-  it('an approved task instruction queues too (it may land while the task works)', () => {
+  it('an approved task instruction queues too, marked as the words the owner approved', () => {
     const release = section("held.kind === 'task-command'", ': await taskController.answer(');
     expect(release).toMatch(/queueWhileRunning: true/);
+    expect(release).toMatch(/approvedOnce: true/);
+  });
+
+  it('#767 backstop: a queued word is gated again when it is about to run (review R1)', () => {
+    const controller = section('createTaskTurnController({', '\n    });');
+    const hold = controller.slice(controller.indexOf('holdQueued:'));
+    expect(hold).toMatch(
+      /^holdQueued: \(key, session, item\) =>\s*instructionApprovals\.allows\(\{ sessionKey: key, session, senderId: item\.authorId \}\)\s*\?\s*undefined\s*:\s*holdTaskInstruction\(key, item\.authorId, \{ kind: 'task-command', text: item\.text, at: Date\.now\(\) \}\)/,
+    );
   });
 
   it('the controller saves and pushes every queue change', () => {

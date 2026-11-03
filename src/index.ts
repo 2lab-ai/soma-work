@@ -1328,6 +1328,12 @@ async function start() {
         claudeHandler.saveSessions();
         scheduleLiveSessionUpdate(key);
       },
+      // #767 backstop: a queued word about to run is gated again — edited words, or a writer
+      // no longer allowed on their own, go to the owner (as a drained Slack follow-up does).
+      holdQueued: (key, session, item) =>
+        instructionApprovals.allows({ sessionKey: key, session, senderId: item.authorId })
+          ? undefined
+          : holdTaskInstruction(key, item.authorId, { kind: 'task-command', text: item.text, at: Date.now() }),
     });
     taskTurnController = taskController;
     // The panel's Send now / Cancel / Edit on a task's queued word.
@@ -1418,8 +1424,10 @@ async function start() {
                 sessionKey: request.sessionKey,
                 text: held.text,
                 actorUserId: request.requesterId,
-                // Approved while the task works: it waits for the chain's end, like the owner's own word.
+                // Approved while the task works: it waits for the chain's end, like the owner's own word —
+                // these very words, so the drain does not ask again unless they are edited.
                 queueWhileRunning: true,
+                approvedOnce: true,
               })
             : await taskController.answer({
                 sessionKey: request.sessionKey,

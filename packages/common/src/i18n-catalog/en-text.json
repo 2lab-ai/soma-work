@@ -1357,6 +1357,7 @@
   "알림": "Notifications",
   "알림·웹훅·이메일·작업 디렉토리·리포트": "Notifications, webhooks, email, working directory, reports",
   "압축": "Condensed",
+  "앞 지시가 시작되지 못해 멈췄어요 — 지금 보내기로 보낼 수 있어요": "Paused because the instruction ahead could not start — press Send now to send it",
   "액션 · 입력 필요": "Actions · Needs input",
   "야행성 모드: 심야 활동 {0}건": "Night owl mode: {0} late-night events",
   "양호": "Good",

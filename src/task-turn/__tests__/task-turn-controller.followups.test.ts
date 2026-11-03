@@ -12,6 +12,7 @@
  *   Q7 the queue is bounded.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { TASK_FOLLOWUP_PAUSED_BEHIND_REFUSED, TASK_FOLLOWUP_PAUSED_BY_UNHEALTHY_END } from '../task-followups';
 import { createTaskTurnController, type TaskTurnControllerDeps } from '../task-turn-controller';
 import type { RunTaskTurnInput, RunTaskTurnResult } from '../task-turn-runner';
 
@@ -341,7 +342,8 @@ describe('Q5 — a drained word the start refuses goes back, paused', () => {
     expect(h.inputs).toHaveLength(1);
     expect(h.task().taskFollowups).toEqual([
       expect.objectContaining({ text: 'two', state: 'paused', stateReason: expect.stringMatching(/too many/) }),
-      expect.objectContaining({ text: 'three', state: 'queued' }),
+      // No chain end is coming for the words behind it: they pause too (review R1, fable P2).
+      expect.objectContaining({ text: 'three', state: 'paused', stateReason: TASK_FOLLOWUP_PAUSED_BEHIND_REFUSED }),
     ]);
   });
 });
@@ -552,5 +554,207 @@ describe('Q7 — the queue is bounded', () => {
     expect(h.task().taskFollowups).toHaveLength(2);
     one.release();
     await first.done;
+  });
+});
+
+describe('R1 — the #767 approval backstop at the drain (review R1: astra P0, fable P1)', () => {
+  const heldAnswer = {
+    status: 202,
+    body: { ok: true, pendingApproval: true, requestId: 'r1', message: '작업 소유자의 승인을 기다립니다' },
+  };
+
+  it('a one-time approved word, unedited, runs without asking again', async () => {
+    const one = held();
+    const holdQueued = vi.fn(() => Promise.resolve(heldAnswer));
+    const h = harness({ holdQueued }, [one.step]);
+    const first = await h.controller.start(word('one'));
+    await h.controller.start({ ...word('approved words', 'UOTHER'), approvedOnce: true });
+    one.release();
+    await first.done;
+    await h.settle();
+    expect(holdQueued).not.toHaveBeenCalled();
+    expect(h.inputs.map((i) => i.text)).toEqual(['one', 'approved words']);
+  });
+
+  it('a one-time approved word edited by its writer goes back to the owner — the next word runs', async () => {
+    const one = held();
+    // The owner may always instruct; UOTHER only through the one-time approval of the words the owner saw.
+    const holdQueued = vi.fn((_k: string, _s: any, item: any) =>
+      item.authorId === 'UOTHER' ? Promise.resolve(heldAnswer) : undefined,
+    );
+    const h = harness({ holdQueued }, [one.step]);
+    const first = await h.controller.start(word('one'));
+    const q = await h.controller.start({ ...word('approved words', 'UOTHER'), approvedOnce: true });
+    await h.controller.start(word('owner next'));
+    expect(
+      await h.controller.actOnQueue({
+        sessionKey: KEY,
+        itemId: String(q.body.itemId),
+        op: 'edit',
+        epoch: 0,
+        text: 'rm -rf everything',
+        actorUserId: 'UOTHER',
+      }),
+    ).toMatchObject({ ok: true });
+    one.release();
+    await first.done;
+    await h.settle();
+    await h.settle();
+    expect(holdQueued).toHaveBeenCalledWith(
+      KEY,
+      h.task(),
+      expect.objectContaining({ text: 'rm -rf everything', authorId: 'UOTHER' }),
+    );
+    // Never run as UOTHER's unapproved words; it left the queue for the owner's approval.
+    expect(h.inputs.map((i) => i.text)).toEqual(['one', 'owner next']);
+    expect(h.task().taskFollowups ?? []).toEqual([]);
+  });
+
+  it('a word whose writer may no longer instruct on their own is held, not run', async () => {
+    const one = held();
+    const holdQueued = vi.fn((_k: string, _s: any, item: any) =>
+      item.authorId === 'UOTHER' ? Promise.resolve(heldAnswer) : undefined,
+    );
+    const h = harness({ holdQueued }, [one.step]);
+    const first = await h.controller.start(word('one'));
+    await h.controller.start(word('trusted once', 'UOTHER'));
+    one.release();
+    await first.done;
+    await h.settle();
+    expect(h.inputs.map((i) => i.text)).toEqual(['one']);
+    expect(h.task().taskFollowups ?? []).toEqual([]);
+  });
+
+  it('an allowed writer is decided at once: the drained word still outranks the epic wake', async () => {
+    const one = held();
+    const order: string[] = [];
+    const holdQueued = vi.fn(() => undefined);
+    const h = harness(
+      {
+        holdQueued,
+        onChainEnd: () => {
+          order.push(`end:${h.controller.isRunning(KEY) ? 'busy' : 'idle'}`);
+        },
+      },
+      [one.step],
+    );
+    const first = await h.controller.start(word('one'));
+    await h.controller.start(word('two'));
+    one.release();
+    await first.done;
+    expect(order[0]).toBe('end:busy');
+  });
+
+  it('a hold refused (too many waiting) puts the word back, paused with the reason', async () => {
+    const one = held();
+    const holdQueued = vi.fn(() =>
+      Promise.resolve({ status: 429, body: { error: '승인을 기다리는 지시가 너무 많습니다' } }),
+    );
+    const h = harness({ holdQueued }, [one.step]);
+    const first = await h.controller.start(word('one'));
+    await h.controller.start(word('two', 'UOTHER'));
+    one.release();
+    await first.done;
+    await h.settle();
+    expect(h.task().taskFollowups).toEqual([
+      expect.objectContaining({ text: 'two', state: 'paused', stateReason: '승인을 기다리는 지시가 너무 많습니다' }),
+    ]);
+  });
+
+  it('send now on a word that must be approved says it waits for the owner', async () => {
+    const one = held(ended('failed'));
+    const holdQueued = vi.fn(() => Promise.resolve(heldAnswer));
+    const h = harness({ holdQueued }, [one.step]);
+    const first = await h.controller.start(word('one'));
+    const q = await h.controller.start(word('two', 'UOTHER'));
+    one.release();
+    await first.done;
+    await h.settle();
+    const r = await h.controller.actOnQueue({
+      sessionKey: KEY,
+      itemId: String(q.body.itemId),
+      op: 'promote',
+      epoch: 1,
+      actorUserId: 'UOWNER',
+      manages: true,
+    });
+    expect(r).toEqual({ ok: true, message: '작업 소유자의 승인을 기다립니다' });
+    expect(h.inputs).toHaveLength(1);
+    expect(h.task().taskFollowups ?? []).toEqual([]);
+  });
+});
+
+describe('R1 — a chain’s end is judged by its own last hop (review R1: astra P1)', () => {
+  it('a compaction that completed, then a re-run that threw: the queue pauses, nothing runs', async () => {
+    const h = harness({}, [
+      async (input) => {
+        input.onStarted?.();
+        h.task().fallbackCompactPendingUserText = 'original';
+        return { turnId: 'a', outcome: null, nonTerminal: 'fallbackCompact' } as any;
+      },
+      async (input) => {
+        h.task().fallbackCompactPendingUserText = null;
+        input.onStarted?.();
+        // Queued while the compaction runs.
+        await h.controller.start(word('queued after original'));
+        return ended('completed', 'c');
+      },
+      async (input) => {
+        input.onStarted?.();
+        throw new Error('execute failed');
+      },
+    ]);
+    const r = await h.controller.start(word('original'));
+    await r.done;
+    await h.settle();
+    expect(h.inputs.map((i) => i.text)).toEqual(['original', '/compact', 'original']);
+    expect(h.task().taskFollowups).toEqual([
+      expect.objectContaining({
+        text: 'queued after original',
+        state: 'paused',
+        stateReason: TASK_FOLLOWUP_PAUSED_BY_UNHEALTHY_END,
+      }),
+    ]);
+  });
+});
+
+describe('R1 — no queued word is left with no chain end coming (review R1: grok P1, fable P2)', () => {
+  it('a refused shutdown pauses the words its abort left queued', async () => {
+    const h = harness({}, [
+      async (input) => {
+        input.onStarted?.();
+        await new Promise<void>((resolve) =>
+          (input.params as any).abortController.signal.addEventListener('abort', () => resolve()),
+        );
+        return { turnId: 't', outcome: null, nonTerminal: 'shutdown' } as any;
+      },
+    ]);
+    const first = await h.controller.start(word('one'));
+    await h.controller.start(word('two'));
+    h.controller.stopAccepting();
+    h.coordinator.abortSession(KEY, 'shutdown');
+    await first.done;
+    expect(h.task().taskFollowups).toEqual([expect.objectContaining({ text: 'two', state: 'queued' })]);
+    h.controller.resumeAccepting();
+    expect(h.task().taskFollowups).toEqual([
+      expect.objectContaining({ text: 'two', state: 'paused', stateReason: TASK_FOLLOWUP_PAUSED_BY_UNHEALTHY_END }),
+    ]);
+  });
+
+  it('a start that throws puts the word back, paused — it is never lost', async () => {
+    const one = held();
+    const h = harness({}, [one.step]);
+    const first = await h.controller.start(word('one'));
+    await h.controller.start(word('two'));
+    // The next start's controller registration throws (after admission).
+    h.coordinator.setController.mockImplementationOnce(() => {
+      throw new Error('coordinator down');
+    });
+    one.release();
+    await first.done;
+    await h.settle();
+    expect(h.task().taskFollowups).toEqual([
+      expect.objectContaining({ text: 'two', state: 'paused', stateReason: expect.stringMatching(/coordinator down/) }),
+    ]);
   });
 });
