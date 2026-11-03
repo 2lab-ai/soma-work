@@ -17,10 +17,7 @@ import {
   recordCompactResult,
   recordUserTurn,
 } from '../../conversation';
-import {
-  scheduleLinkDerivedTitleRefresh,
-  scheduleLinkDerivedTitleRefreshByKey,
-} from '../../conversation/link-derived-title';
+import { scheduleLinkDerivedTitleRefresh } from '../../conversation/link-derived-title';
 import { Logger } from '../../logger';
 import { isMidThreadMention } from '../../mcp-config-builder';
 import { captureTurnEpisodic } from '../../memory-auto-capture';
@@ -62,7 +59,6 @@ setStreamExecutorProviders({
   captureUserMedia,
   captureMemoryTurn: captureTurnEpisodic,
   scheduleLinkDerivedTitleRefresh,
-  scheduleLinkDerivedTitleRefreshByKey,
   isMidThreadMention,
   getMetricsEmitter: () => getMetricsEmitter() as any,
   classifyOneMUnavailable,

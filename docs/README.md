@@ -42,7 +42,6 @@
 운영자가 절차대로 실행하는 배포, 롤백, 장애 대응 문서.
 
 - [runbook/](./runbook/) — deployment, rollback, operational fix procedures
-- [Slack instruction → dashboard task (E2)](./runbook/e2-slack-task-entry.md) — per-user switch, state files and logs, 3-tier rollback, ledger recovery, dev measurement checklist
 - [Epic sessions on the dashboard (E4)](./runbook/e4-epic-sessions.md) — per-user switch, the epic's tools and limits, state files and logs, 3-tier rollback, dev measurement checklist and `scripts/e4-epic-measure.mjs`
 - [Eagle-eye incident receiver](./runbook/eagle-incident-receiver.md) — config env, 기본 비활성 게이트, read-only 시도 표면, rollout/rollback
 - [Dashboard on your own domain](./runbook/dashboard-custom-domain.md) — `CONVERSATION_VIEWER_URL`, auth prerequisite, DNS, reverse proxy + DNS-01 certificate, cross-host tunnel

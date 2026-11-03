@@ -204,7 +204,6 @@ describe('the epic loop on the Slack path (#854)', () => {
       expect(c.channelId).toBe(CHANNEL);
       expect(c.threadTs).not.toBe(EPIC_TS);
       expect(c.ownerId).toBe(OWNER);
-      expect(c.slackless).toBeUndefined();
     }
     expect(new Set(children.map((c) => c.threadTs)).size).toBe(3);
     expect(isEpicDone(epic.plan)).toBe(true);

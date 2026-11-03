@@ -8,26 +8,15 @@ import {
 } from './model-command-mcp-server';
 
 describe('model-command MCP server helpers', () => {
-  it('reads a dashboard task’s surface from SOMA_COMMAND_CONTEXT, and nothing else as one', () => {
-    expect(parseModelCommandContext(JSON.stringify({ user: 'U1', surface: 'task' })).surface).toBe('task');
-    expect(parseModelCommandContext(JSON.stringify({ user: 'U1', surface: 'slack' })).surface).toBeUndefined();
-    expect(parseModelCommandContext(JSON.stringify({ channel: 'C1', user: 'U1' })).surface).toBeUndefined();
-  });
-
-  it('a dashboard task: CONTINUE_SESSION is refused as unavailable, SET_GOAL runs', () => {
+  it('#855 — an old `surface: task` in SOMA_COMMAND_CONTEXT is ignored: every command a Slack thread has is offered', () => {
     const context = parseModelCommandContext(JSON.stringify({ user: 'U1', surface: 'task' }));
-    const refused = buildModelCommandRunResponse(
+    expect(context).not.toHaveProperty('surface');
+    const continued = buildModelCommandRunResponse(
       { commandId: 'CONTINUE_SESSION', params: { prompt: 'x', resetSession: true } },
       context,
     );
-    expect(refused.ok).toBe(false);
-    if (!refused.ok) expect(refused.error.message).toMatch(/not available on a dashboard task/);
-    const goal = buildModelCommandRunResponse(
-      { commandId: 'SET_GOAL', params: { objective: 'ship it', userRequestEvidence: 'set goal 해줘' } },
-      context,
-    );
-    expect(goal.ok).toBe(true);
-    expect(buildModelCommandListResponse(context).commands.map((c) => c.id)).not.toContain('ASK_USER_QUESTION');
+    expect(continued.ok).toBe(true);
+    expect(buildModelCommandListResponse(context).commands.map((c) => c.id)).toContain('ASK_USER_QUESTION');
   });
 
   it('returns safe defaults when SOMA_COMMAND_CONTEXT is invalid', () => {

@@ -2,20 +2,17 @@
  * SSOT 2026-11-02 T2 — the escalation hands the guardian's advice to the prompt.
  *
  * A Slack turn's `classify → ask` leaves the advice on the board for the
- * permission prompt of the same session, tool and input. A Slack-less task's
- * escalation passes it to the dashboard approval. A guardian with no advice
- * leaves that fact (null), so the prompt does not ask the guardian again.
+ * permission prompt of the same session, tool and input. A guardian with no
+ * advice leaves that fact (null), so the prompt does not ask the guardian again.
  */
 import * as fs from 'node:fs';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import type { ConversationSession } from '../../types';
 import { type BuildStreamOptionsDeps, buildStreamOptions } from '../claude-code/build-stream-options';
-import { executionContextForTask } from '../execution-context';
 import { permissionAdviceBoard } from '../policy/permission-advice';
 
 const USER = 'U0ADVICE01';
-const TASK_ID = '22222222-3333-4444-8555-666666666666';
 const WORK_DIR = `/tmp/${USER}/session_permission_advice_test`;
 const SESSION_KEY = 'work:C777:1700000000.0007';
 fs.mkdirSync(WORK_DIR, { recursive: true });
@@ -110,23 +107,5 @@ describe('the escalation leaves the advice for the prompt', () => {
     await hook(call('rm -rf /opt'), 'toolu_1', { signal: ac.signal });
     expect(classify.mock.calls[0][0].signal).toBe(ac.signal);
     permissionAdviceBoard.take(SESSION_KEY, 'Bash', { command: 'rm -rf /opt' });
-  });
-
-  it('task turn: the dashboard approval request carries the advice', async () => {
-    const classify = vi.fn(async () => ({ verdict: 'ask' as const, reason: 'broad', advice: DENY }));
-    const request = vi.fn(async (_req: unknown) => ({ behavior: 'deny' as const }));
-    const ctx = executionContextForTask({
-      ownerId: USER,
-      slackless: true,
-      taskId: TASK_ID,
-      channelId: '',
-      workingDirectory: WORK_DIR,
-    } as ConversationSession);
-    const { options } = await buildStreamOptions(
-      { queryEnv: {}, workingDirectory: WORK_DIR, executionContext: ctx },
-      makeDeps({ safetyClassifier: { classify }, taskApprover: { request } }),
-    );
-    await hookOf(options)(call('rm -rf /'));
-    expect(request).toHaveBeenCalledWith(expect.objectContaining({ advice: DENY }));
   });
 });

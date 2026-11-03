@@ -1514,46 +1514,6 @@ describe('model-command integration', () => {
 
   // #829 review P1 — a Slack-less dashboard task runs with channel '' and no thread; its session is only
   // reachable by key (task:<id>). Every UPDATE_SESSION write — links, title, card TL;DR — goes by key there.
-  it('a Slack-less task routes links, title and the card TL;DR by session key', async () => {
-    const deps = createExecutorDeps();
-    const ok = { ok: true, snapshot: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 1 } };
-    Object.assign(deps.claudeHandler, {
-      updateSessionResourcesByKey: vi.fn().mockReturnValue(ok),
-      updateSessionTitleByKey: vi.fn(),
-      fillPlaceholderSessionTitleByKey: vi.fn().mockReturnValue(true),
-      setExecutiveSummary: vi.fn(),
-      setExecutiveSummaryByKey: vi.fn().mockReturnValue(true),
-    });
-    const executor = new StreamExecutor(deps);
-    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
-    const task = { ...createSession(), channelId: '', threadTs: undefined, slackless: true };
-    const ctx = { channel: '', threadTs: undefined, sessionKey: 'task:t-1', say };
-    const tldr = ['PR #12 opened.', '⚠️ **PR #12 not merged — needs approval.**', 'Next: merge #12.'];
-    const ops = [{ action: 'add', resourceType: 'pr', link: { url: 'https://github.com/a/b/pull/12' } }];
-
-    await (executor as any).handleModelCommandToolResults(
-      titleOnlyUpdateResult({ operations: ops, title: 'Login fix', executiveSummary: { tldr } }),
-      task,
-      ctx,
-    );
-    await (executor as any).handleModelCommandToolResults(
-      titleOnlyUpdateResult({ title: 'Intent title', titleFillOnly: true }),
-      task,
-      ctx,
-    );
-
-    expect(deps.claudeHandler.updateSessionResourcesByKey).toHaveBeenCalledWith(
-      'task:t-1',
-      expect.objectContaining({ operations: ops }),
-    );
-    expect(deps.claudeHandler.updateSessionTitleByKey).toHaveBeenCalledWith('task:t-1', 'Login fix');
-    expect(deps.claudeHandler.fillPlaceholderSessionTitleByKey).toHaveBeenCalledWith('task:t-1', 'Intent title');
-    expect(deps.claudeHandler.setExecutiveSummaryByKey).toHaveBeenCalledWith('task:t-1', tldr, undefined);
-    expect(deps.claudeHandler.updateSessionResources).not.toHaveBeenCalled();
-    expect(deps.claudeHandler.updateSessionTitle).not.toHaveBeenCalled();
-    expect(deps.claudeHandler.fillPlaceholderSessionTitle).not.toHaveBeenCalled();
-    expect(deps.claudeHandler.setExecutiveSummary).not.toHaveBeenCalled();
-  });
 
   // #846 item 2 — after handling a model write the host writes its receipt (what it applied + how this write went),
   // which the model-command server answers GET_SESSION with.
@@ -1622,29 +1582,6 @@ describe('model-command integration', () => {
       '171.100',
       expect.objectContaining({ receiptId: 'r_45', ok: true, instructions: 'pending_confirmation' }),
     );
-  });
-
-  it('a Slack-less task writes its receipt by key', async () => {
-    const deps = createExecutorDeps();
-    Object.assign(deps.claudeHandler, {
-      writeModelCommandReceipt: vi.fn(),
-      writeModelCommandReceiptByKey: vi.fn(),
-      setExecutiveSummaryByKey: vi.fn().mockReturnValue(true),
-    });
-    const executor = new StreamExecutor(deps);
-    const task = { ...createSession(), channelId: '', threadTs: undefined, slackless: true };
-
-    await (executor as any).handleModelCommandToolResults(
-      titleOnlyUpdateResult({ executiveSummary: { tldr: ['a'] }, receiptId: 'r_44' }),
-      task,
-      { channel: '', threadTs: undefined, sessionKey: 'task:t-1', say: vi.fn() },
-    );
-
-    expect(deps.claudeHandler.writeModelCommandReceiptByKey).toHaveBeenCalledWith(
-      'task:t-1',
-      expect.objectContaining({ receiptId: 'r_44', ok: true, tldrApplied: true }),
-    );
-    expect(deps.claudeHandler.writeModelCommandReceipt).not.toHaveBeenCalled();
   });
 
   it('does not write the card TL;DR when the resource ops in the same update failed', async () => {
@@ -6461,31 +6398,6 @@ describe('SET_GOAL host-apply (#1082)', () => {
 
   // #861 R1 (astra-zhuge P1): a user who instructed someone else's task sets a goal that is theirs —
   // the goal loop runs its next turns as the goal's owner, never as the task's owner.
-  it('a dashboard task turn: the goal belongs to the turn’s user, not the task owner', async () => {
-    const deps = createExecutorDeps();
-    const executor = new StreamExecutor(deps);
-    const session = {
-      ...createSession(),
-      ownerId: 'U_ADMIN_OWNER',
-      slackless: true,
-      channelId: '',
-      threadTs: undefined,
-    };
-    const context = makeContext({
-      channel: '',
-      threadTs: undefined,
-      sessionKey: 'task:11111111-2222-4333-8444-555555555555',
-      currentUserText: 'set goal 해줘: ship it',
-      isUserInputTurn: true,
-      turnUserId: 'U_INSTRUCTOR',
-    });
-    await (executor as any).handleModelCommandToolResults(
-      [makeSetGoalToolResult('ship it', 'set goal 해줘')],
-      session,
-      context,
-    );
-    expect(session.goal).toMatchObject({ objective: 'ship it', createdBy: 'U_INSTRUCTOR' });
-  });
 
   it('a dashboard task turn: a goal continuation (not user input) still cannot set a goal', async () => {
     const deps = createExecutorDeps();
@@ -6504,44 +6416,6 @@ describe('SET_GOAL host-apply (#1082)', () => {
       context,
     );
     expect(session.goal).toBeUndefined();
-  });
-
-  it('a dashboard task turn: instruction writes are refused visibly — no Slack y/n button', async () => {
-    const deps = createExecutorDeps();
-    const store = { set: vi.fn(), get: vi.fn(), delete: vi.fn() };
-    deps.pendingInstructionConfirmStore = store;
-    deps.slackApi.postMessage = vi.fn();
-    deps.claudeHandler.updateSessionResourcesByKey = vi.fn();
-    const executor = new StreamExecutor(deps);
-    const session = { ...createSession(), slackless: true, channelId: '', threadTs: undefined };
-    const context = makeContext({
-      channel: '',
-      threadTs: undefined,
-      sessionKey: 'task:11111111-2222-4333-8444-555555555555',
-    });
-    await (executor as any).handleModelCommandToolResults(
-      [
-        {
-          toolUseId: 'tool_us_1',
-          toolName: 'mcp__model-command__run',
-          result: JSON.stringify({
-            type: 'model_command_result',
-            commandId: 'UPDATE_SESSION',
-            ok: true,
-            payload: {
-              session: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 0 },
-              request: { instructionOperations: [{ action: 'add', text: 'do X' }] },
-            },
-          }),
-        },
-      ],
-      session,
-      context,
-    );
-    expect(store.set).not.toHaveBeenCalled();
-    expect(deps.slackApi.postMessage).not.toHaveBeenCalled();
-    const sayCalls = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
-    expect(sayCalls.some((t: string) => t.includes('Instruction changes were not applied'))).toBe(true);
   });
 
   it('refuses on a synthetic/continuation turn (isUserInputTurn !== true) without mutating the session', async () => {

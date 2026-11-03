@@ -205,7 +205,7 @@ describe('the epic server (E4 ④a, D3 · D8)', () => {
     expect(parse(await childStatus.handler({ childId: 'c1' } as any, {})).child.final).toBeUndefined();
   });
 
-  it('S4b — a running child with an open approval of its chain reads needs-input; another owner’s “child” does not count', async () => {
+  it('S4b — a running child reads running (#855: no task approvals); another owner’s “child” does not count', async () => {
     const { childStatus } = tools();
     const { host, epic, children } = fakeHost();
     setEpicHost(host);
@@ -219,20 +219,8 @@ describe('the epic server (E4 ④a, D3 · D8)', () => {
       },
     );
     epic.childTaskIds = ['c1', 'cx'];
-    children.push({ taskId: 'c1', ownerId: 'U1', planNodeId: 'login', activityState: 'working', openChain: 'ch1' });
-    epic.epicEvents = [
-      {
-        id: 'e1',
-        childTaskId: 'c1',
-        planNodeId: 'login',
-        outcome: 'needs-input',
-        approvalId: 'p',
-        chainId: 'ch1',
-        at: 1,
-        state: 'pending',
-      },
-    ];
-    expect(parse(await childStatus.handler({} as any, {})).nodes[0].status).toBe('needs-input');
+    children.push({ taskId: 'c1', ownerId: 'U1', planNodeId: 'login', activityState: 'working' });
+    expect(parse(await childStatus.handler({} as any, {})).nodes[0].status).toBe('running');
     // A record under this epic that belongs to someone else is not its live child.
     children.push({ taskId: 'cx', ownerId: 'U2', planNodeId: 'login', activityState: 'working' });
     const tree = parse(await childStatus.handler({} as any, {}));
@@ -271,10 +259,6 @@ describe('the epic server (E4 ④a, D3 · D8)', () => {
     expect(host.setEpicPlan).not.toHaveBeenCalled();
     epic.closing = undefined;
     epic.kind = undefined;
-    expect(parse(await childStatus.handler({} as any, {}))).toMatchObject({ code: 'not-an-epic' });
-    // A dashboard task's epic is not served on this path (#854: it is archived with its stack).
-    epic.kind = 'epic';
-    epic.slackless = true;
     expect(parse(await childStatus.handler({} as any, {}))).toMatchObject({ code: 'not-an-epic' });
   });
 });
