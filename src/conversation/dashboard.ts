@@ -35,6 +35,7 @@ import type { FollowupItem, FollowupItemState } from '@soma/slack/followup-queue
 import type { FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { sumLiveUsage } from '@soma/slack/live-usage';
 import { livePendingModelSwitch } from '@soma/slack/model-switch';
+import { plainTldrLine } from '@soma/slack/summary-service';
 import type { FastifyInstance } from 'fastify';
 import { SDK_EFFORT_LEVELS } from 'soma-lib';
 import type { CronExecutionRecord, CronJob } from 'somalib/cron/cron-storage';
@@ -2341,7 +2342,13 @@ export function liveWaitingSince(
 /** SSOT 2026-11-02 T7 — the card's TL;DR: the session's Executive Summary lines, at most five. */
 function esTldrOf(s: ConversationSession): { esTldr?: { lines: string[]; at: number } } {
   const es = s.executiveSummary;
-  const lines = Array.isArray(es?.tldr) ? es.tldr.filter((l) => typeof l === 'string' && l.trim()).slice(0, 5) : [];
+  // #829 — the box draws plain text: the ⚠️ line's markdown bold (Slack renders it) would show as `**`.
+  const lines = Array.isArray(es?.tldr)
+    ? es.tldr
+        .filter((l) => typeof l === 'string' && l.trim())
+        .slice(0, 5)
+        .map(plainTldrLine)
+    : [];
   return es && lines.length ? { esTldr: { lines, at: Number(es.at) || 0 } } : {};
 }
 

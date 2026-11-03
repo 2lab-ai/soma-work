@@ -22,7 +22,7 @@ import {
   type TaskUsage,
   toPersistedSessionUsage,
 } from '@soma/slack/session-usage-math';
-import { followUpFromTldr } from '@soma/slack/summary-service';
+import { cleanTldrLine, followUpFromTldr } from '@soma/slack/summary-service';
 import * as fs from 'fs';
 import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
@@ -142,21 +142,21 @@ const ACTIVE_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinks> = 
 /**
  * Serialized session for file persistence
  */
-/** A stored Executive Summary TL;DR, or undefined when what was stored is not one (T7). */
 /** #829 — the card's follow-up comes back only when it is still one (a reason and a time). */
-function restoreFollowUp(v: unknown): { reason: string; at: number } | undefined {
+function restoreFollowUp(v: unknown): { reason: string; at: number; source?: 'es' } | undefined {
   if (!v || typeof v !== 'object') return undefined;
-  const { reason, at } = v as { reason?: unknown; at?: unknown };
+  const { reason, at, source } = v as { reason?: unknown; at?: unknown; source?: unknown };
   if (typeof reason !== 'string' || reason.trim() === '' || typeof at !== 'number' || !Number.isFinite(at)) {
     return undefined;
   }
-  return { reason, at };
+  return source === 'es' ? { reason, at, source } : { reason, at };
 }
 
 /** #829 — UPDATE_SESSION `executiveSummary`: at most this many TL;DR lines, each capped like the host's own. */
 const CARD_TLDR_MAX_LINES = 5;
 const CARD_TLDR_MAX_LINE_CHARS = 140;
 
+/** A stored Executive Summary TL;DR, or undefined when what was stored is not one (T7). */
 function restoreExecutiveSummary(v: unknown): { tldr: string[]; at: number } | undefined {
   if (!v || typeof v !== 'object') return undefined;
   const { tldr, at } = v as { tldr?: unknown; at?: unknown };
@@ -254,7 +254,7 @@ interface SerializedSession {
   // restart like the thread head that shows the same lines.
   executiveSummary?: { tldr: string[]; at: number };
   // #829 — the card's follow-up (NEEDS YOU) survives a restart too: a deploy must not drop it to DONE.
-  followUp?: { reason: string; at: number };
+  followUp?: { reason: string; at: number; source?: 'es' };
   // Bot-initiated thread metadata
   threadModel?: 'user-initiated' | 'bot-initiated';
   threadRootTs?: string;
@@ -2380,7 +2380,15 @@ export class SessionRegistry {
    * title was written.
    */
   fillPlaceholderSessionTitle(channelId: string, threadTs: string | undefined, title: string): boolean {
-    const session = this.getSession(channelId, threadTs);
+    return this.fillPlaceholderSessionTitleOn(this.getSession(channelId, threadTs), title);
+  }
+
+  /** The same by session key — a Slack-less task has no channel/thread to look it up by (#829 review). */
+  fillPlaceholderSessionTitleByKey(sessionKey: string, title: string): boolean {
+    return this.fillPlaceholderSessionTitleOn(this.getSessionByKey(sessionKey), title);
+  }
+
+  private fillPlaceholderSessionTitleOn(session: ConversationSession | undefined, title: string): boolean {
     const clean = sanitizeSessionTitle(title);
     if (!session || !clean) return false;
     // Host stand-in ("New Session" and friends) or a provisional cron job name.
@@ -2596,11 +2604,19 @@ export class SessionRegistry {
    * then keeps what it had.
    */
   setExecutiveSummary(channelId: string, threadTs: string | undefined, tldr: readonly string[]): boolean {
-    const session = this.getSession(channelId, threadTs);
+    return this.setExecutiveSummaryOn(this.getSession(channelId, threadTs), tldr);
+  }
+
+  /** The same by session key — the only way to reach a Slack-less task (channel '' throws on lookup). */
+  setExecutiveSummaryByKey(sessionKey: string, tldr: readonly string[]): boolean {
+    return this.setExecutiveSummaryOn(this.getSessionByKey(sessionKey), tldr);
+  }
+
+  private setExecutiveSummaryOn(session: ConversationSession | undefined, tldr: readonly string[]): boolean {
     if (!session) return false;
     const lines = tldr
       .filter((l): l is string => typeof l === 'string')
-      .map((l) => l.trim())
+      .map(cleanTldrLine)
       .filter((l) => l.length > 0)
       .slice(0, CARD_TLDR_MAX_LINES)
       .map((l) => {
@@ -2616,7 +2632,8 @@ export class SessionRegistry {
     const at = Date.now();
     session.executiveSummary = { tldr: lines, at };
     const followUp = followUpFromTldr(lines);
-    session.followUp = followUp ? { reason: followUp.reason, at } : undefined;
+    // `source: 'es'` — checked with tools by the model-run es: the same turn's host summary does not overrule it.
+    session.followUp = followUp ? { reason: followUp.reason, at, source: 'es' } : undefined;
     this.saveSessions();
     return true;
   }
@@ -3129,8 +3146,10 @@ export class SessionRegistry {
     // decision, stall) end with it.
     endGoalCapDecision(session.goal);
     session.goal = undefined;
-    // #829 — the follow-up was the old conversation's verdict; the new one is decided by its own summary.
+    // #829 — the follow-up and the card TL;DR were the old conversation's verdict; the new one is decided by
+    // its own summary.
     session.followUp = undefined;
+    session.executiveSummary = undefined;
 
     // Reset activity state
     session.activityState = 'idle';
@@ -3694,7 +3713,7 @@ export class SessionRegistry {
             executiveSummary: session.executiveSummary
               ? { tldr: [...session.executiveSummary.tldr], at: session.executiveSummary.at }
               : undefined,
-            followUp: session.followUp ? { reason: session.followUp.reason, at: session.followUp.at } : undefined,
+            followUp: session.followUp ? { ...session.followUp } : undefined,
             threadModel: session.threadModel,
             threadRootTs: session.threadRootTs,
             isOnboarding: session.isOnboarding,

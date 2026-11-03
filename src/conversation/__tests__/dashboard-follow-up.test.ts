@@ -98,6 +98,24 @@ describe('server — the follow-up projects an idle card to NEEDS YOU', () => {
     expect(live.activityState).toBe('idle');
   });
 
+  it('a Slack-less dashboard task (no channel, no thread) waits the same way', async () => {
+    const task = {
+      sessionId: 'sid9',
+      ownerId: 'U1',
+      slackless: true,
+      taskId: 't-9',
+      channelId: '',
+      threadTs: undefined,
+      activityState: 'idle',
+      state: 'MAIN',
+      lastActivity: new Date('2026-11-03T02:00:00Z'),
+      followUp: { ...FOLLOW_UP, source: 'es' },
+    };
+    const b = await board(new Map([['task:t-9', task]]));
+    expect(b.waiting).toHaveLength(1);
+    expect(b.waiting[0].pendingFollowUp).toEqual(FOLLOW_UP);
+  });
+
   it('a running turn stays RUNNING (the user is already acting)', async () => {
     const b = await board(new Map([['C1:t1', session({ activityState: 'working', followUp: FOLLOW_UP })]]));
     expect(b.working).toHaveLength(1);
@@ -122,6 +140,24 @@ describe('server — the follow-up projects an idle card to NEEDS YOU', () => {
     expect(b.working).toHaveLength(1);
     expect(b.waiting).toHaveLength(0);
     expect(b.working[0].pendingFollowUp).toBeUndefined();
+  });
+
+  it('the card TL;DR box shows the ⚠️ line without the markdown bold markers', async () => {
+    const b = await board(
+      new Map([
+        [
+          'C1:t1',
+          session({
+            followUp: FOLLOW_UP,
+            executiveSummary: {
+              tldr: ['PR #12 opened.', `⚠️ **${FOLLOW_UP.reason}**`, 'Next: __merge__ #12.'],
+              at: FOLLOW_UP.at,
+            },
+          }),
+        ],
+      ]),
+    );
+    expect(b.waiting[0].esTldr.lines).toEqual(['PR #12 opened.', `⚠️ ${FOLLOW_UP.reason}`, 'Next: merge #12.']);
   });
 
   it('no follow-up (or an empty reason) → DONE as before', async () => {

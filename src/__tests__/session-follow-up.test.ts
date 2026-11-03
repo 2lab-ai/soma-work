@@ -39,6 +39,16 @@ describe('setExecutiveSummary — the TL;DR and the follow-up on the card', () =
     expect(s.executiveSummary?.tldr).toEqual(BLOCKED);
     expect(s.followUp?.reason).toBe('PR #12 not merged — needs a maintainer approval.');
     expect(s.followUp?.at).toBe(s.executiveSummary?.at);
+    // the model-run es checked with tools: the same turn's host summary must not overrule it
+    expect(s.followUp?.source).toBe('es');
+  });
+
+  it('a list marker before the ⚠️ line still counts', () => {
+    const reg = new SessionRegistry();
+    const s = reg.createSession('U1', 'Tester', 'C1', '171.001');
+    reg.setExecutiveSummary('C1', '171.001', ['done', '- ⚠️ **PR #3 is a draft**', 'next']);
+    expect(s.executiveSummary?.tldr[1]).toBe('⚠️ **PR #3 is a draft**');
+    expect(s.followUp?.reason).toBe('PR #3 is a draft');
   });
 
   it('a TL;DR without a ⚠️ line clears a previous follow-up', () => {
@@ -63,6 +73,33 @@ describe('setExecutiveSummary — the TL;DR and the follow-up on the card', () =
   });
 });
 
+describe('a Slack-less dashboard task (no channel, no thread) — by session key', () => {
+  it('setExecutiveSummaryByKey writes the TL;DR and the follow-up on the task', () => {
+    const reg = new SessionRegistry();
+    const task = reg.createTask({ ownerId: 'U1', ownerName: 'User', workingDirectory: '/work/U1/session_1' });
+    const key = `task:${task.taskId}`;
+    expect(reg.getSessionByKey(key)).toBe(task);
+    expect(reg.setExecutiveSummaryByKey(key, BLOCKED)).toBe(true);
+    expect(task.executiveSummary?.tldr).toEqual(BLOCKED);
+    expect(task.followUp?.reason).toContain('PR #12');
+  });
+
+  it('an unknown key: false, never a throw', () => {
+    expect(new SessionRegistry().setExecutiveSummaryByKey('task:nope', BLOCKED)).toBe(false);
+  });
+
+  it('fillPlaceholderSessionTitleByKey fills a task with no title and leaves a deliberate one', () => {
+    const reg = new SessionRegistry();
+    const task = reg.createTask({ ownerId: 'U1', ownerName: 'User', workingDirectory: '/work/U1/session_1' });
+    const key = `task:${task.taskId}`;
+    task.title = 'New Session';
+    expect(reg.fillPlaceholderSessionTitleByKey(key, 'Login fix')).toBe(true);
+    expect(task.title).toBe('Login fix');
+    expect(reg.fillPlaceholderSessionTitleByKey(key, 'Other')).toBe(false);
+    expect(task.title).toBe('Login fix');
+  });
+});
+
 describe('the follow-up survives a restart', () => {
   function restoreWith(followUp: unknown) {
     const writer = new SessionRegistry();
@@ -74,6 +111,11 @@ describe('the follow-up survives a restart', () => {
     reader.loadSessions();
     return reader.getSession('C1', '171.001');
   }
+
+  it('keeps the es source across a restart', () => {
+    expect(restoreWith({ reason: 'r', at: 5, source: 'es' })?.followUp).toEqual({ reason: 'r', at: 5, source: 'es' });
+    expect(restoreWith({ reason: 'r', at: 5, source: 'other' })?.followUp).toEqual({ reason: 'r', at: 5 });
+  });
 
   it('round-trips the reason and its time', () => {
     expect(restoreWith({ reason: 'PR #12 not merged', at: 1_793_600_000_000 })?.followUp).toEqual({
@@ -98,5 +140,6 @@ describe('/new clears it', () => {
     reg.setExecutiveSummary('C1', '171.001', BLOCKED);
     expect(reg.resetSessionContext('C1', '171.001')).toBe(true);
     expect(s.followUp).toBeUndefined();
+    expect(s.executiveSummary).toBeUndefined();
   });
 });

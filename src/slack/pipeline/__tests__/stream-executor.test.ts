@@ -1511,6 +1511,49 @@ describe('model-command integration', () => {
     expect(deps.claudeHandler.updateSessionTitle).not.toHaveBeenCalled();
   });
 
+  // #829 review P1 — a Slack-less dashboard task runs with channel '' and no thread; its session is only
+  // reachable by key (task:<id>). Every UPDATE_SESSION write — links, title, card TL;DR — goes by key there.
+  it('a Slack-less task routes links, title and the card TL;DR by session key', async () => {
+    const deps = createExecutorDeps();
+    const ok = { ok: true, snapshot: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 1 } };
+    Object.assign(deps.claudeHandler, {
+      updateSessionResourcesByKey: vi.fn().mockReturnValue(ok),
+      updateSessionTitleByKey: vi.fn(),
+      fillPlaceholderSessionTitleByKey: vi.fn().mockReturnValue(true),
+      setExecutiveSummary: vi.fn(),
+      setExecutiveSummaryByKey: vi.fn().mockReturnValue(true),
+    });
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const task = { ...createSession(), channelId: '', threadTs: undefined, slackless: true };
+    const ctx = { channel: '', threadTs: undefined, sessionKey: 'task:t-1', say };
+    const tldr = ['PR #12 opened.', '⚠️ **PR #12 not merged — needs approval.**', 'Next: merge #12.'];
+    const ops = [{ action: 'add', resourceType: 'pr', link: { url: 'https://github.com/a/b/pull/12' } }];
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({ operations: ops, title: 'Login fix', executiveSummary: { tldr } }),
+      task,
+      ctx,
+    );
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({ title: 'Intent title', titleFillOnly: true }),
+      task,
+      ctx,
+    );
+
+    expect(deps.claudeHandler.updateSessionResourcesByKey).toHaveBeenCalledWith(
+      'task:t-1',
+      expect.objectContaining({ operations: ops }),
+    );
+    expect(deps.claudeHandler.updateSessionTitleByKey).toHaveBeenCalledWith('task:t-1', 'Login fix');
+    expect(deps.claudeHandler.fillPlaceholderSessionTitleByKey).toHaveBeenCalledWith('task:t-1', 'Intent title');
+    expect(deps.claudeHandler.setExecutiveSummaryByKey).toHaveBeenCalledWith('task:t-1', tldr);
+    expect(deps.claudeHandler.updateSessionResources).not.toHaveBeenCalled();
+    expect(deps.claudeHandler.updateSessionTitle).not.toHaveBeenCalled();
+    expect(deps.claudeHandler.fillPlaceholderSessionTitle).not.toHaveBeenCalled();
+    expect(deps.claudeHandler.setExecutiveSummary).not.toHaveBeenCalled();
+  });
+
   it('does not write the card TL;DR when the resource ops in the same update failed', async () => {
     const deps = createExecutorDeps();
     deps.claudeHandler.setExecutiveSummary = vi.fn().mockReturnValue(true);

@@ -481,7 +481,7 @@ export interface ConversationSession {
    * line): the dashboard keeps the idle card in NEEDS YOU with this reason. Set and cleared by an Executive
    * Summary only (SummaryService, or UPDATE_SESSION `executiveSummary` from the model-run es) and by `/new`.
    */
-  followUp?: { reason: string; at: number };
+  followUp?: { reason: string; at: number; source?: 'es' };
   ownerId: string; // User who started the session
   ownerName?: string; // Display name of owner
   currentInitiatorId?: string; // User who triggered the current response

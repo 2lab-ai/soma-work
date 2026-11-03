@@ -102,6 +102,7 @@ The session's task card (dashboard) shows the session title, the issue/PR/docume
    - `title` — when the session still has a stand-in title or the work's subject changed (≤ 100 chars).
    - `executiveSummary: { tldr: [line1, line2, line3] }` — the same TL;DR lines the document opens with, ⚠️ line included. This is what puts the TL;DR on the card and what keeps the card in NEEDS YOU.
 3. `GET_SESSION` again — verify: every own artifact is listed with the state you wrote. `prs: []` after you created a PR is an alarm: fix the write before you finish. Write full URLs in the document too (short refs like `#830` are not captured).
+   - Limit: `GET_SESSION` answers from the model-command server's own copy, not the host's. A write the host could not apply shows up in the thread as `⚠️ Session update could not be applied on host (<reason>)` — when you see it, the card did not change: retry once without `expectedSequence`, then say in the document that the card is stale. The TL;DR and follow-up are not in `GET_SESSION` at all; the dashboard card is their only receipt.
 
 **Path B (host-run, no tools)** — do not attempt any tool call. The host parses the `<tldr>` block: it puts the lines on the card and derives the NEEDS YOU follow-up from the ⚠️ line. Links reach the card from the session's own capture; the document must still carry full URLs.
 
