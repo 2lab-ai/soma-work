@@ -182,6 +182,8 @@ export interface GitHubWrite {
   /** `owner/repo`, lower case — undefined when the call does not name it (`gh pr create` in a checkout). */
   repo?: string;
   number?: number;
+  /** `cli`: written by `gh pr|issue create|merge|close`, whose output is gh's own line or URL — never a projection. */
+  via?: 'cli';
 }
 
 /** What a write did, proven by its result (onToolResult). */
@@ -491,9 +493,10 @@ function splitShell(
     out.push(st);
     mine.push({ st, after, andOnly: ctx.andOnly });
     // A group (`{ …; }`, `( … )`) runs what it holds; a branch, a loop, a function or a jump does not say what runs.
-    // `… || exit 1` is the one jump that is plain: it runs only when the left failed, and then the command fails.
+    // `… || exit 1` at the top level is the one jump that is plain: it runs only when the left failed, and then the tool
+    // result fails too. Not `exit 0` (a success that skips the rest), not inside a nested script (the outer status masks it).
     const w = firstWordOf(t.replace(/^[\s{(]+/, ''));
-    const failExit = after === '||' && /^\s*(?:exit|return)(?:\s+\d+)?\s*$/.test(t);
+    const failExit = top && after === '||' && /^\s*exit(?:\s+0*[1-9]\d*)?\s*$/.test(t);
     if ((CONTROL_WORDS.test(w) && !failExit) || /^[\s{(]*[\w-]+\s*\(\s*\)/.test(t)) complex = true;
     if (next !== '|') {
       pipeAnd = false;
@@ -503,7 +506,8 @@ function splitShell(
       pipeOr = after === '||';
     }
     // `set -n` / `set -o noexec` stops execution; other `set` options (`-e`, `-u`, `-x`, `-o pipefail`) do not.
-    if (w === 'set' && /(?:^|\s)(?:-[A-Za-z]*n[A-Za-z]*|-o\s+noexec|\+[A-Za-z]+)(?:\s|$)/.test(t)) complex = true;
+    if (w === 'set' && (!top || /(?:^|\s)(?:-[A-Za-z]*n[A-Za-z]*|-o\s+noexec|\+[A-Za-z]+)(?:\s|$)/.test(t)))
+      complex = true;
     after = next;
   };
   const finish = () => {
@@ -760,7 +764,7 @@ function ghCliWrite(command: string): GitHubWrite | undefined {
       number = Number(first.replace('#', ''));
     }
   }
-  return { op: action, kind, ...(repo ? { repo } : {}), ...(number ? { number } : {}) };
+  return { op: action, kind, ...(repo ? { repo } : {}), ...(number ? { number } : {}), via: 'cli' };
 }
 
 /**
@@ -916,6 +920,14 @@ function readClient(words: Word[], at: number, name: string): ClientRequest | un
       }
       continue;
     }
+    // A redirection (`2>&1`, `> out.json`, `< p.json`, `<<'EOF'`, `<<<`) is the shell's: skip it and a detached target.
+    const redirect = v.match(/^[0-9]*(?:<<<|<<-?|<>|>>|>\||&>>|&>|>&|<&|[<>])(.*)$/);
+    if (redirect) {
+      if (redirect[1] === '') k++;
+      continue;
+    }
+    // A bare variable (`"$EXTRA"`) is unknown: neither a destination nor another request.
+    if (/^\$/.test(v)) continue;
     destinations.push(words[k]);
   }
   return { destinations, method: method ?? (head ? 'HEAD' : get ? 'GET' : data ? 'POST' : 'GET') };
@@ -1147,6 +1159,17 @@ const METHOD_WORD = /^[A-Za-z]+$/;
 /** Every call in masked code, with its receiver chain: `child_process.execSync(`, `requests.post(`, `fetch(`. */
 const CALL = /(?<![\w$])((?:[A-Za-z_$][\w$]*\.)*)([A-Za-z_$][\w$]*)\s*\(/g;
 const MAX_CALLS = 512;
+/** The module a client name is bound from when the code imports it with `require` / `import()`. */
+const CLIENT_MODULES: Record<string, string> = {
+  axios: 'axios',
+  got: 'got',
+  ky: 'ky',
+  superagent: 'superagent',
+  https: 'https',
+  http: 'http',
+  child_process: 'child_process',
+  cp: 'child_process',
+};
 const MAX_CALL_LENGTH = 8000;
 
 /**
@@ -1471,6 +1494,9 @@ function certainCalls(masked: string, lang: CodeLang): (at: number) => boolean {
       let line = at;
       while (line > 0 && masked[line - 1] !== '\n') line--;
       if (/[ \t]/.test(masked[line] ?? '')) return false;
+      // A ternary (`x if c else y`), a comprehension or a generator (`(post(u) for u in [])`) anywhere on the line.
+      const end = masked.indexOf('\n', at);
+      if (/\b(?:if|else|for|lambda|while)\b/.test(masked.slice(line, end < 0 ? masked.length : end))) return false;
       return !py.test(prefix);
     }
     return !js.test(prefix);
@@ -1506,13 +1532,20 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
     if (!known || !certain(m.index ?? 0)) continue;
     // A sender the code defines itself (`const fetch = …`, `requests = Mock()`, `import x as fetch`) is not the client.
     const root = (chain.split('.')[0] || name).replace(/[^\w$]/g, '');
-    // `const axios = require("axios")` / `= await import(…)` binds the client itself; any other binding shadows it.
-    const defines = new RegExp(
-      `\\b(?:function|class|def)\\s+${root}\\b|\\b${root}\\s*=(?!=)(?!\\s*(?:await\\s+import\\s*\\(|require\\s*\\())`,
+    // `const axios = require("axios")` / `= await import("axios")` binds the client itself — only that module, nothing
+    // chained after it; any other binding shadows it.
+    const module = CLIENT_MODULES[root];
+    // (The module name is a string — blanked in masked code — so it is read from the code at the same position.)
+    const ownModule = module
+      ? new RegExp(`^\\s*(?:require|await\\s+import)\\s*\\(\\s*["'\`](?:node:)?${module}["'\`]\\s*\\)\\s*(?:[;\\n]|$)`)
+      : undefined;
+    const rebinds = [...masked.matchAll(new RegExp(`\\b${root}\\s*=(?!=)`, 'g'))].some(
+      (b) => !ownModule?.test(code.slice((b.index ?? 0) + b[0].length)),
     );
+    const defines = new RegExp(`\\b(?:function|class|def)\\s+${root}\\b`).test(masked) || rebinds;
     const alias = new RegExp(`\\bas\\s+${root}\\b`);
     const knownAlias = new RegExp(`\\bimport\\s+(?:urllib\\.request|requests|httpx|subprocess|os)\\s+as\\s+${root}\\b`);
-    if (defines.test(masked) || (alias.test(masked) && !knownAlias.test(masked))) continue;
+    if (defines || (alias.test(masked) && !knownAlias.test(masked))) continue;
     const args = argsOf(lexed, open);
     if (!args) continue;
     const dotted = (m.index ?? 0) > 0 && masked[(m.index ?? 0) - 1] === '.';
@@ -1822,7 +1855,7 @@ function createEffects(ws: ReadonlyArray<GitHubWrite>, idx: ResultIndex): GitHub
     // Only creates of this kind may share the call with them: any other request to the repo makes them ambiguous.
     // Any other request in the call — a read or a PATCH, of any repo — could have printed the object (a body, a --jq
     // projection): only creates and gh merges / closes may share the call with them.
-    if (ws.some((o) => o.op !== 'create' && o.op !== 'merge' && o.op !== 'close')) continue;
+    if (ws.some((o) => o.op !== 'create' && !((o.op === 'merge' || o.op === 'close') && o.via === 'cli'))) continue;
     const seen = new Set<string>();
     const objects = idx.objects.filter((o) => {
       const key = o.url.toLowerCase();
@@ -1910,7 +1943,7 @@ export function githubEffectsOf(
       // A merge, close or PATCH is proven only when it is the call's only request: gh's lines and a merge response
       // carry no identity another request's output (any repo — a quoted body, a projection) could not imitate.
       const onlyCreates = ws.every((o) => o === w || o.op === 'create');
-      if (ws.some((o) => o !== w) && !(onlyCreates && w.op !== 'patch' && gh(w, idx))) continue;
+      if (ws.some((o) => o !== w) && !(onlyCreates && w.via === 'cli' && gh(w, idx))) continue;
       add(effectOf(w, idx, w.op === 'merge' ? merges : 0));
     }
   }

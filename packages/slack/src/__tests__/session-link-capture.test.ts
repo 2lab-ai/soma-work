@@ -96,9 +96,11 @@ describe('githubEffectsOf — gh create', () => {
     ]);
     expect(githubEffectsOf(undefined, writes)).toEqual([]);
     expect(githubWritesOf('Bash', { command: 'cd x && gh pr create --fill --base main' })).toEqual([
-      { op: 'create', kind: 'pr' },
+      { op: 'create', kind: 'pr', via: 'cli' },
     ]);
-    expect(githubWritesOf('Bash', { command: 'gh issue create -t t -b b' })).toEqual([{ op: 'create', kind: 'issue' }]);
+    expect(githubWritesOf('Bash', { command: 'gh issue create -t t -b b' })).toEqual([
+      { op: 'create', kind: 'issue', via: 'cli' },
+    ]);
     // A view or an edit is a read: marked (a create beside it is ambiguous), never a write.
     expect(githubWritesOf('Bash', { command: 'gh pr view 40 --json url -q .url' })).toEqual([
       { op: 'read', kind: 'pr' },
