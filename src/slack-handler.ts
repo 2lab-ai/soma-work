@@ -1077,6 +1077,8 @@ export class SlackHandler {
           // the §3.6 deferral it may just have cleared instead of waiting for
           // a turn end that a deferred loop would never produce.
           if (last) this.releaseDeferredGoalDriver(sessionKey, last);
+          // #854 — and a chain end: a child whose queue a click drained tells its epic (review #872).
+          this.noteChainSettled(sessionKey, (last ?? settled)?.outcome);
         });
       },
       // The drain is gated on a safe outcome; the sweep is not. A `Send now`
@@ -5793,16 +5795,22 @@ export class SlackHandler {
     const final = last ?? report;
     this.resumeIfAutoCompactStop(sessionKey, final);
     this.releaseDeferredGoalDriver(sessionKey, final);
-    // #854 — the chain is over when nothing of it is in flight (a `Send now` may hold the slot).
-    if (this.chainSettledListener && !this.followupDispatcher?.isBusy(sessionKey)) {
-      try {
-        this.chainSettledListener(sessionKey, final.outcome);
-      } catch (error) {
-        this.logger.warn('Chain-settled listener raised', {
-          sessionKey,
-          error: (error as Error)?.message ?? String(error),
-        });
-      }
+    this.noteChainSettled(sessionKey, final.outcome);
+  }
+
+  /**
+   * #854 — a chain end, at either boundary a run settles into (`drainFollowups`, and the drain a
+   * `Send now` / Resume / Retry click runs): heard only when nothing of the chain is in flight.
+   */
+  private noteChainSettled(sessionKey: string, outcome: RunReport['outcome'] | undefined): void {
+    if (!outcome || !this.chainSettledListener || this.followupDispatcher?.isBusy(sessionKey)) return;
+    try {
+      this.chainSettledListener(sessionKey, outcome);
+    } catch (error) {
+      this.logger.warn('Chain-settled listener raised', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
     }
   }
 
