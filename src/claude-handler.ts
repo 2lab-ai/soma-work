@@ -12,9 +12,17 @@ import {
   query,
   type SDKMessage,
 } from '@anthropic-ai/claude-agent-sdk';
+import {
+  boundRateLimitDelayMs,
+  parseRetryAfterMs,
+  textIndicatesRetryableRateLimit,
+  textIndicatesUsageLimit,
+} from '@soma/common/rate-limit';
 import { consumePendingRewind, resetChainTracking, trackChainPoint } from '@soma/slack/context-anchor';
 import { adoptSdkSessionId } from '@soma/slack/session-usage-math';
 import * as fs from 'fs';
+import type { ModelCommandContext } from 'somalib/model-commands/types';
+import { sharedStore } from 'somalib/permission/shared-store';
 import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShotText } from './agent-runtime';
 import { liveAgentIds } from './agent-runtime/background-keepalive';
 import {
@@ -38,58 +46,7 @@ import {
 import { classifyTurnResult, isTurnProgressFrame } from './agent-runtime/turn-result-attribution';
 import { ensureTenantKey } from './auth/llmux-tenant-keys';
 import { buildQueryEnv } from './auth/query-env-builder';
-import { getIncidentEvidenceConfig } from './config';
-import { envSkillRegistry } from './env-skill-registry';
-import {
-  createIncidentEvidenceRegistry,
-  type IncidentEvidenceRegistry,
-  screenIncidentStream,
-} from './incident/attempt-output';
-import type { IncidentEvidence } from './incident/evidence';
-import { INCIDENT_MAX_WALL_CLOCK_MS, type IncidentRequestLike } from './incident/sdk-options';
-import { Logger } from './logger';
-import type { McpManager } from './mcp-manager';
-import { mcpToolGrantStore } from './mcp-tool-grant-store';
-import {
-  getRequiredLevel,
-  levelSatisfies,
-  type loadMcpToolPermissions,
-  resolveGatedTool,
-} from './mcp-tool-permission-config';
-import { hostPricing } from './metrics/host-pricing-catalog';
-import {
-  hasOneMSuffix,
-  isOneMContextUnavailableSignal,
-  ONE_M_CONTEXT_UNAVAILABLE_CODE,
-} from './metrics/model-registry';
-import { BUNDLED_PLUGINS_DIR } from './plugin/bundled';
-import type { SdkPluginPath } from './plugin/types';
-import { createTaskApprover, type TaskApprovalEvent, type TaskApproverWithState } from './task-turn/task-approver';
-import type {
-  ActivityState,
-  ConversationSession,
-  SessionIncidentRequest,
-  SessionLink,
-  SessionLinks,
-  SessionResourceUpdateRequest,
-  SessionResourceUpdateResult,
-  WorkflowType,
-} from './types';
-
-// Bundled local plugins directory (the first-party `zworkflow` plugin = src/local).
-// Used as a fallback when no PluginManager is configured, and as the canonical
-// path the bundled `zworkflow@soma-work` default resolves to (see plugin/bundled.ts).
-const LOCAL_PLUGINS_DIR = BUNDLED_PLUGINS_DIR;
-
-import {
-  boundRateLimitDelayMs,
-  parseRetryAfterMs,
-  textIndicatesRetryableRateLimit,
-  textIndicatesUsageLimit,
-} from '@soma/common/rate-limit';
-import type { ModelCommandContext } from 'somalib/model-commands/types';
-import { sharedStore } from 'somalib/permission/shared-store';
-import { getBgKeepaliveMaxMs } from './config';
+import { getBgKeepaliveMaxMs, getIncidentEvidenceConfig } from './config';
 import { sendCredentialAlert } from './credential-alert';
 import {
   ensureActiveSlotAuth,
@@ -105,7 +62,32 @@ import {
   sleepWithAbort,
   textIndicatesPromptTooLongContent,
 } from './dispatch-recovery';
+import { envSkillRegistry } from './env-skill-registry';
+import {
+  createIncidentEvidenceRegistry,
+  type IncidentEvidenceRegistry,
+  screenIncidentStream,
+} from './incident/attempt-output';
+import type { IncidentEvidence } from './incident/evidence';
+import { INCIDENT_MAX_WALL_CLOCK_MS, type IncidentRequestLike } from './incident/sdk-options';
+import { Logger } from './logger';
 import { McpConfigBuilder, type SlackContext } from './mcp-config-builder';
+import type { McpManager } from './mcp-manager';
+import { mcpToolGrantStore } from './mcp-tool-grant-store';
+import {
+  getRequiredLevel,
+  levelSatisfies,
+  type loadMcpToolPermissions,
+  resolveGatedTool,
+} from './mcp-tool-permission-config';
+import { hostPricing } from './metrics/host-pricing-catalog';
+import {
+  hasOneMSuffix,
+  isOneMContextUnavailableSignal,
+  ONE_M_CONTEXT_UNAVAILABLE_CODE,
+} from './metrics/model-registry';
+import { withBundledPlugins } from './plugin/bundled';
+import type { SdkPluginPath } from './plugin/types';
 import { getAvailablePersonas, PromptBuilder } from './prompt-builder';
 import {
   type CrashRecoveredSession,
@@ -114,7 +96,18 @@ import {
   SessionExpiryCallbacks,
   SessionRegistry,
 } from './session-registry';
+import { createTaskApprover, type TaskApprovalEvent, type TaskApproverWithState } from './task-turn/task-approver';
 import { getTokenManager } from './token-manager';
+import type {
+  ActivityState,
+  ConversationSession,
+  SessionIncidentRequest,
+  SessionLink,
+  SessionLinks,
+  SessionResourceUpdateRequest,
+  SessionResourceUpdateResult,
+  WorkflowType,
+} from './types';
 import { DEFAULT_SHOW_THINKING, type EffortLevel, userSettingsStore } from './user-settings-store';
 
 /** Heartbeat interval for long-running Claude CLI calls. */
@@ -568,20 +561,8 @@ export class ClaudeHandler implements TurnSteeringPort {
    */
   private getEffectivePluginPaths(): SdkPluginPath[] {
     const pm = this.mcpManager.getPluginManager();
-    const paths = pm?.getPluginPaths() ?? [];
-    // Guarantee the bundled local plugin (zworkflow) is present. When the
-    // PluginManager already resolved it (its bundled path == LOCAL_PLUGINS_DIR),
-    // the de-dup below keeps it single; otherwise we prepend it.
-    const hasLocal = paths.some((p) => p.path === LOCAL_PLUGINS_DIR);
-    const merged = hasLocal ? [...paths] : [{ type: 'local' as const, path: LOCAL_PLUGINS_DIR }, ...paths];
-    // De-dup by path so the same plugin directory never loads twice (which would
-    // register duplicate skill names and break the session).
-    const seen = new Set<string>();
-    return merged.filter((p) => {
-      if (seen.has(p.path)) return false;
-      seen.add(p.path);
-      return true;
-    });
+    // Guarantee every bundled plugin (zworkflow and the soma-work harness plugin `local`, #857) is present, once.
+    return withBundledPlugins(pm?.getPluginPaths() ?? []);
   }
 
   /**
@@ -673,6 +654,30 @@ export class ClaudeHandler implements TurnSteeringPort {
   /** Write `title` only if the session still has a host stand-in title. */
   fillPlaceholderSessionTitle(channelId: string, threadTs: string | undefined, title: string): boolean {
     return this.sessionRegistry.fillPlaceholderSessionTitle(channelId, threadTs, title);
+  }
+
+  /** #829 — the card TL;DR (and its ⚠️ follow-up) from the model-run es (UPDATE_SESSION `executiveSummary`). */
+  setExecutiveSummary(channelId: string, threadTs: string | undefined, tldr: readonly string[]): boolean {
+    return this.sessionRegistry.setExecutiveSummary(channelId, threadTs, tldr);
+  }
+
+  /**
+   * #829 review — UPDATE_SESSION writes for a Slack-less task, which has no channel/thread: by session key.
+   */
+  setExecutiveSummaryByKey(sessionKey: string, tldr: readonly string[]): boolean {
+    return this.sessionRegistry.setExecutiveSummaryByKey(sessionKey, tldr);
+  }
+
+  updateSessionResourcesByKey(sessionKey: string, request: SessionResourceUpdateRequest): SessionResourceUpdateResult {
+    return this.sessionRegistry.updateSessionResourcesByKey(sessionKey, request);
+  }
+
+  updateSessionTitleByKey(sessionKey: string, title: string): void {
+    this.sessionRegistry.updateSessionTitleByKey(sessionKey, title);
+  }
+
+  fillPlaceholderSessionTitleByKey(sessionKey: string, title: string): boolean {
+    return this.sessionRegistry.fillPlaceholderSessionTitleByKey(sessionKey, title);
   }
 
   /**

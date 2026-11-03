@@ -46,6 +46,11 @@ export interface SettleTaskGoalInput {
   turnText: string;
   /** The host is stopping: evidence is kept, the loop is not run (the restart resumes the goal, #788). */
   shuttingDown: boolean;
+  /**
+   * A word the owner queued took the task at this chain's end: evidence is kept, the loop waits for
+   * that word's chain end (the follow-up queue outranks the goal, as Slack's `shouldDeferGoalDriver`).
+   */
+  deferred?: boolean;
   /** Bounded mirror length for the persisted summary (`GOAL_SUMMARY_PERSIST_MAX`). */
   summaryMax: number;
   /** Wake the goal loop (`GoalLoopController.onTurnSettled(key, { cause: 'turn' })`). */
@@ -53,14 +58,14 @@ export interface SettleTaskGoalInput {
   save: () => void;
 }
 
-export type SettleTaskGoalResult = 'no-goal' | 'held' | 'settled';
+export type SettleTaskGoalResult = 'no-goal' | 'held' | 'deferred' | 'settled';
 
 /**
  * A task chain ended: stash its last turn's text as the goal's evidence and wake the
  * loop. The evidence is credited only when the live goal is the one that owned the
  * turn (`activeLegGoalId` / `activeLegGoalEpoch`, captured by `beginTurn` on task
  * turns too) — a goal changed mid-turn gets a fresh judgement from the loop's own
- * epoch guard instead. Slack's follow-up-queue deferral has no task counterpart.
+ * epoch guard instead. A queued word that took the task defers the loop to its own chain end.
  */
 export function settleTaskGoal(input: SettleTaskGoalInput): SettleTaskGoalResult {
   const { session, sessionKey } = input;
@@ -75,8 +80,75 @@ export function settleTaskGoal(input: SettleTaskGoalInput): SettleTaskGoalResult
     input.save();
   }
   if (input.shuttingDown) return 'held';
+  if (input.deferred) return 'deferred';
   input.settle(sessionKey);
   return 'settled';
+}
+
+export interface TaskGoalChainSettlerDeps {
+  getSession(sessionKey: string): ConversationSession | undefined;
+  /** The task's chain runs (`TaskTurnController.isRunning`). */
+  isRunning(sessionKey: string): boolean;
+  /** The task's last turn's final text ('' when none) — production: `readTurnFinal` over the work log. */
+  readTurnText(task: ConversationSession): Promise<string>;
+  shuttingDown(): boolean;
+  summaryMax: number;
+  settle(sessionKey: string): void;
+  save(): void;
+  logger: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void };
+}
+
+/**
+ * The task controller's `onChainEnd` for goals: a task chain ending is its turn settling.
+ *
+ * The controller drains the task's follow-up queue before `onChainEnd`, and a drained word's start
+ * takes the task synchronously. So a task that runs again at `onChainEnd` yielded to the owner's
+ * queued word: the goal is deferred to that word's chain end (it outranks the goal — Slack's
+ * `shouldDeferGoalDriver`), and the deferral is kept until a chain end settles it, one that never
+ * started included, so a word whose chain failed to start strands nothing. Never throws.
+ */
+export function createTaskGoalChainSettler(
+  deps: TaskGoalChainSettlerDeps,
+): (sessionKey: string, info: { started: boolean }) => void {
+  const deferred = new Set<string>();
+  return (sessionKey, { started }) => {
+    try {
+      if (!started && !deferred.has(sessionKey)) return;
+      const task = deps.getSession(sessionKey);
+      // Not an epic: its waker drives it (trinity R1, fable P1-2).
+      if (!task?.slackless || task.kind === 'epic' || task.goal?.status !== 'active') {
+        deferred.delete(sessionKey);
+        return;
+      }
+      // Read now, before any await: the drain's start is admitted synchronously.
+      const yielded = deps.isRunning(sessionKey);
+      if (yielded) deferred.add(sessionKey);
+      else deferred.delete(sessionKey);
+      void deps
+        .readTurnText(task)
+        .then((turnText) => {
+          const live = deps.getSession(sessionKey);
+          if (!live) return;
+          const out = settleTaskGoal({
+            session: live,
+            sessionKey,
+            turnText,
+            shuttingDown: deps.shuttingDown(),
+            deferred: yielded,
+            summaryMax: deps.summaryMax,
+            settle: deps.settle,
+            save: deps.save,
+          });
+          if (out === 'deferred')
+            deps.logger.info('Goal deferred — the owner’s queued word runs first', { sessionKey });
+        })
+        .catch((error) =>
+          deps.logger.warn('Settling a dashboard task goal failed', { sessionKey, error: (error as Error)?.message }),
+        );
+    } catch (error) {
+      deps.logger.warn('Settling a dashboard task goal failed', { sessionKey, error: (error as Error)?.message });
+    }
+  };
 }
 
 export interface TaskGoalInjectorDeps {

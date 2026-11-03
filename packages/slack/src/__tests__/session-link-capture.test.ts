@@ -12,8 +12,8 @@ import { describe, expect, it } from 'vitest';
 import {
   canonicalLinkUrl,
   classifyLinkUrl,
-  isCreateCommand,
-  linksCreatedByTools,
+  githubEffectsOf,
+  githubWritesOf,
   linksInText,
   MAX_LINKS_PER_TEXT,
 } from '../session-link-capture';
@@ -70,34 +70,42 @@ describe('linksInText', () => {
   });
 });
 
-describe('linksCreatedByTools', () => {
-  it('A4 — only a create call counts: the last line of its output is the new URL', () => {
-    const results = [
-      {
-        toolUseId: 'c1',
-        toolName: 'Bash',
-        result: 'Creating pull request for feat/x into main in a/b\n\nhttps://github.com/a/b/pull/12\n',
-      },
-      { toolUseId: 'c2', toolName: 'Bash', result: [{ type: 'text', text: 'https://github.com/a/b/issues/34' }] },
+describe('githubEffectsOf — gh create', () => {
+  it('A4 — only a create call counts: the new URL in its output; a view, a listing, an error, a Read do not', () => {
+    const calls: Array<[string, string, unknown, boolean?]> = [
+      [
+        'c1',
+        'gh pr create --fill',
+        'Creating pull request for feat/x into main in a/b\n\nhttps://github.com/a/b/pull/12\n',
+      ],
+      ['c2', 'gh issue create -t t -b b', [{ type: 'text', text: 'https://github.com/a/b/issues/34' }]],
       // gh pr view --json url -q .url / gh pr edit print a lone URL too — not a creation.
-      { toolUseId: 'v1', toolName: 'Bash', result: 'https://github.com/a/b/pull/40' },
-      // A listing names PRs but ends with something else.
-      { toolUseId: 'c3', toolName: 'Bash', result: '#1 https://github.com/a/b/pull/1\nshowing 1' },
-      { toolUseId: 'c4', toolName: 'Bash', result: 'https://github.com/a/b/pull/99', isError: true },
-      { toolUseId: 'c5', toolName: 'Read', result: 'https://github.com/a/b/pull/98' },
-      { toolUseId: 'c6', toolName: 'Bash', result: 'https://github.com/a/b/pull/12' },
+      ['v1', 'gh pr view 40 --json url -q .url', 'https://github.com/a/b/pull/40'],
+      ['v2', 'gh pr edit 40 --add-label x', 'https://github.com/a/b/pull/40'],
+      // A listing names PRs but none alone on a line.
+      ['l1', 'gh pr list', '#1 https://github.com/a/b/pull/1\nshowing 1'],
+      ['c4', 'gh pr create --fill', 'https://github.com/a/b/pull/99', true],
+      ['c6', 'gh pr create --fill', 'https://github.com/a/b/pull/12'],
     ];
-    const creates = new Set(['c1', 'c2', 'c3', 'c4', 'c5', 'c6']);
-    expect(linksCreatedByTools(results, creates).map((l) => [l.type, l.url])).toEqual([
-      ['pr', 'https://github.com/a/b/pull/12'],
-      ['issue', 'https://github.com/a/b/issues/34'],
+    const writes = new Map(calls.map(([id, command]) => [id, githubWritesOf('Bash', { command })] as const));
+    const results = calls.map(([id, , result, isError]) => ({ toolUseId: id, toolName: 'Bash', result, isError }));
+    results.push({ toolUseId: 'r1', toolName: 'Read', result: 'https://github.com/a/b/pull/98', isError: undefined });
+    expect(githubEffectsOf(results, writes).map((e) => [e.op, e.link.type, e.link.url])).toEqual([
+      ['create', 'pr', 'https://github.com/a/b/pull/12'],
+      ['create', 'issue', 'https://github.com/a/b/issues/34'],
     ]);
-    expect(linksCreatedByTools(undefined, creates)).toEqual([]);
-    expect(isCreateCommand('cd x && gh pr create --fill --base main')).toBe(true);
-    expect(isCreateCommand('gh issue create -t t -b b')).toBe(true);
-    expect(isCreateCommand('gh pr view 40 --json url -q .url')).toBe(false);
-    expect(isCreateCommand('gh pr edit 40 --add-label x')).toBe(false);
-    expect(isCreateCommand(undefined)).toBe(false);
+    expect(githubEffectsOf(undefined, writes)).toEqual([]);
+    expect(githubWritesOf('Bash', { command: 'cd x && gh pr create --fill --base main' })).toEqual([
+      { op: 'create', kind: 'pr', via: 'cli' },
+    ]);
+    expect(githubWritesOf('Bash', { command: 'gh issue create -t t -b b' })).toEqual([
+      { op: 'create', kind: 'issue', via: 'cli' },
+    ]);
+    // A view or an edit is a read: marked (a create beside it is ambiguous), never a write.
+    expect(githubWritesOf('Bash', { command: 'gh pr view 40 --json url -q .url' })).toEqual([
+      { op: 'read', kind: 'pr' },
+    ]);
+    expect(githubWritesOf('Bash', { command: 'gh pr edit 40 --add-label x' })).toEqual([{ op: 'read', kind: 'pr' }]);
   });
 });
 

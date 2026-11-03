@@ -445,6 +445,9 @@ function buildSaveContextFallbackParams(args: Record<string, unknown>): Record<s
   return Object.keys(fallback).length > 0 ? fallback : undefined;
 }
 
+/** #829 — the card shows at most 5 TL;DR lines (the summary itself writes 3). */
+const MAX_CARD_TLDR_LINES = 5;
+
 function parseUpdateSessionRequest(
   raw: unknown,
 ): { ok: true; value: SessionResourceUpdateRequest } | { ok: false; error: ModelCommandError } {
@@ -477,9 +480,26 @@ function parseUpdateSessionRequest(
     }
   }
 
-  // Must have at least one of operations or title
-  if (operations.length === 0 && !title) {
-    return invalidArgs('UPDATE_SESSION requires operations or title');
+  // #829 — the card TL;DR: 1–5 lines of text, trimmed, blank ones dropped.
+  let executiveSummary: { tldr: string[] } | undefined;
+  if (raw.executiveSummary !== undefined) {
+    const es = raw.executiveSummary;
+    if (!isRecord(es) || !Array.isArray(es.tldr)) {
+      return invalidArgs('UPDATE_SESSION executiveSummary must be { tldr: string[] }');
+    }
+    if (es.tldr.some((line) => typeof line !== 'string')) {
+      return invalidArgs('UPDATE_SESSION executiveSummary.tldr lines must be strings');
+    }
+    const tldr = (es.tldr as string[]).map((line) => line.trim()).filter((line) => line.length > 0);
+    if (tldr.length === 0 || tldr.length > MAX_CARD_TLDR_LINES) {
+      return invalidArgs(`UPDATE_SESSION executiveSummary.tldr needs 1–${MAX_CARD_TLDR_LINES} non-empty lines`);
+    }
+    executiveSummary = { tldr };
+  }
+
+  // Must have at least one of operations, title or executiveSummary
+  if (operations.length === 0 && !title && !executiveSummary) {
+    return invalidArgs('UPDATE_SESSION requires operations or title (or executiveSummary)');
   }
 
   const expectedSequence = raw.expectedSequence;
@@ -494,6 +514,7 @@ function parseUpdateSessionRequest(
       operations,
       ...(title ? { title } : {}),
       ...(title && titleFillOnly === true ? { titleFillOnly: true } : {}),
+      ...(executiveSummary ? { executiveSummary } : {}),
     },
   };
 }

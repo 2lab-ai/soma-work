@@ -100,6 +100,7 @@ import {
   setDashboardTaskCommandHandler,
   setDashboardTaskLauncher,
   setDashboardTaskPlanHandler,
+  setDashboardTaskQueueHandler,
   setDashboardTrashHandler,
   setOAuthDirectoryLookup,
   setOAuthUserLookup,
@@ -133,7 +134,9 @@ import { migrateThreadHeaderDashboardLinkOnce } from './deploy/migrate-threadhea
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
+import { createGithubReceiptChecker } from './github-receipt';
 import { type HeldInstruction, InstructionApprovals, setInstructionApprovals } from './instruction-approval';
+import { fetchGitHubReceiptObject } from './link-metadata-fetcher';
 import { Logger } from './logger';
 import { mcpCallTracker } from './mcp-call-tracker';
 import { McpManager } from './mcp-manager';
@@ -206,7 +209,12 @@ import { createEpicWaker } from './task-turn/epic-wake';
 import { setPlanHost } from './task-turn/plan-server';
 import { composeTaskApprovalListeners } from './task-turn/task-approver';
 import { createDashboardCloseHandler } from './task-turn/task-close';
-import { createTaskGoalInjector, planGoalObjective, resetGoalForUserTurn, settleTaskGoal } from './task-turn/task-goal';
+import {
+  createTaskGoalChainSettler,
+  createTaskGoalInjector,
+  planGoalObjective,
+  resetGoalForUserTurn,
+} from './task-turn/task-goal';
 import { createTaskLauncher } from './task-turn/task-launcher';
 import {
   createTaskNoticeDeliverer,
@@ -1331,42 +1339,45 @@ async function start() {
       // (grok #702 R1); one that never started is the waker's own retry to make (fable #702 R2).
       onChainEnd: (key, { started }) => {
         if (started) epicWaker.wake(key);
-        // 2026-11-03 — a task chain ending is its turn settling: the goal loop judges it (a plan's goal).
-        if (started) void settleTaskGoalAfterChain(key);
+        // 2026-11-03 — a task chain ending is its turn settling: the goal loop judges it (a plan's goal);
+        // a word the owner queued that took the task at this end goes first (it settles at its own end).
+        settleTaskGoalAfterChain(key, { started });
       },
+      // A task's follow-up queue (2026-11-03): saved with the task, pushed to the open panels.
+      onFollowupsChanged: (key) => {
+        claudeHandler.saveSessions();
+        scheduleLiveSessionUpdate(key);
+      },
+      // #767 backstop: a queued word about to run is gated again — edited words, or a writer
+      // no longer allowed on their own, go to the owner (as a drained Slack follow-up does).
+      holdQueued: (key, session, item) =>
+        instructionApprovals.allows({ sessionKey: key, session, senderId: item.authorId })
+          ? undefined
+          : holdTaskInstruction(key, item.authorId, { kind: 'task-command', text: item.text, at: Date.now() }),
     });
     taskTurnController = taskController;
     /**
      * 2026-11-03 — the goal evidence of a task chain that ended: its last turn's final (the work
      * log), then the goal loop. The task twin of SlackHandler.handleAssistantTurnCompleteForGoal.
      */
-    const settleTaskGoalAfterChain = async (key: string): Promise<void> => {
-      try {
-        const registry = claudeHandler.getSessionRegistry();
-        const task = registry.getSessionByKey(key);
-        // Not an epic: its waker drives it (trinity R1, fable P1-2).
-        if (!task?.slackless || task.kind === 'epic' || task.goal?.status !== 'active') return;
+    const settleTaskGoalAfterChain = createTaskGoalChainSettler({
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      isRunning: (key) => taskController.isRunning(key),
+      readTurnText: async (task) => {
         const turnId = task.lastTurnOutcome?.turnId;
         const final =
           task.conversationId && turnId ? await readTurnFinal(readWorkLog, task.conversationId, turnId) : undefined;
-        const live = registry.getSessionByKey(key);
-        if (!live) return;
-        settleTaskGoal({
-          session: live,
-          sessionKey: key,
-          turnText: final?.text ?? '',
-          shuttingDown: slackHandler.isShuttingDown(),
-          summaryMax: GOAL_SUMMARY_PERSIST_MAX,
-          settle: (k) => {
-            if (settleTaskGoalTurn) settleTaskGoalTurn(k);
-            else logger.warn('A dashboard task goal settled before the goal loop was wired', { sessionKey: k });
-          },
-          save: () => registry.saveSessions(),
-        });
-      } catch (error) {
-        logger.warn('Settling a dashboard task goal failed', { sessionKey: key, error: (error as Error)?.message });
-      }
-    };
+        return final?.text ?? '';
+      },
+      shuttingDown: () => slackHandler.isShuttingDown(),
+      summaryMax: GOAL_SUMMARY_PERSIST_MAX,
+      settle: (k) => {
+        if (settleTaskGoalTurn) settleTaskGoalTurn(k);
+        else logger.warn('A dashboard task goal settled before the goal loop was wired', { sessionKey: k });
+      },
+      save: () => claudeHandler.getSessionRegistry().saveSessions(),
+      logger: new Logger('TaskGoalSettler'),
+    });
     /** Restart-cut tasks whose first goal continuation carries the restart guidance: key → the cut turn (filled at boot). */
     const goalRestartCut = new Map<string, string>();
     /**
@@ -1411,6 +1422,8 @@ async function start() {
           : undefined;
       },
     });
+    // The panel's Send now / Cancel / Edit on a task's queued word.
+    setDashboardTaskQueueHandler((request) => taskController.actOnQueue(request));
     // E4 ④a (.prd/19 D3) — the host the epic's tools call: registry reads, the plan writer,
     // a child's last final from its work log. Set here, not imported there (no cycle).
     setEpicHost({
@@ -1497,6 +1510,10 @@ async function start() {
                 sessionKey: request.sessionKey,
                 text: held.text,
                 actorUserId: request.requesterId,
+                // Approved while the task works: it waits for the chain's end, like the owner's own word —
+                // these very words, so the drain does not ask again unless they are edited.
+                queueWhileRunning: true,
+                approvedOnce: true,
               })
             : taskController.answer({
                 sessionKey: request.sessionKey,
@@ -1536,7 +1553,12 @@ async function start() {
         senderId: actorUserId,
         senderName,
         instruction,
+        // Saved or refused (#842 R3): a queued word leaves the task's queue only once the owner's store has it.
+        strict: true,
       });
+      if (held.refused === 'unsaved') {
+        return { status: 503, body: { error: '승인 요청을 저장하지 못했습니다 — 잠시 뒤 다시 보내세요' } };
+      }
       if (held.refused === 'full') {
         return {
           status: 429,
@@ -1563,8 +1585,9 @@ async function start() {
         });
         if (held) return held;
       }
+      // While the task's chain runs the word waits in its follow-up queue (202 queued), not a 409.
       return withTaskUserTurn(sessionKey, () =>
-        taskController.start({ sessionKey, text: message, attachments, actorUserId }),
+        taskController.start({ sessionKey, text: message, attachments, actorUserId, queueWhileRunning: true }),
       );
     });
     // #599 ⑤ — an answer to a task's open question runs as its next instruction.
@@ -1753,6 +1776,9 @@ async function start() {
           );
         }
         scheduleLiveSessionUpdate(sessionKey);
+        // #829 — the summary may have moved the card between DONE and NEEDS YOU (its ⚠️ follow-up): a card
+        // patch keeps the card in its column, so the board is pushed too.
+        broadcastSessionUpdate();
       },
       // SSOT 2026-10-22 T1/T2 — a running turn made another API call: push the
       // card (≤ 1/s per session) so its token / cost totals grow live.
@@ -1803,6 +1829,8 @@ async function start() {
         }
       },
     };
+    // #832 — GitHub is the receipt for a write the parser proposes: only a confirmed one reaches the card and metrics.
+    workLogProviders.confirmGithubEffects = createGithubReceiptChecker({ fetchObject: fetchGitHubReceiptObject });
     setStreamExecutorProviders(workLogProviders);
     // SSOT 2026-10-26 T2 — subagents that ended before this process started
     // fire no more events: read the loaded sessions' spend once, in the

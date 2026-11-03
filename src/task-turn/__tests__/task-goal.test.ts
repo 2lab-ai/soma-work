@@ -7,10 +7,13 @@
  *   G3 evidence from a turn another goal owned is not credited (the loop's epoch guard re-judges)
  *   G4 the host is stopping: evidence kept, the loop not run (the restart resumes the goal)
  *   G5 no active goal: nothing
+ *   G6 the continuation (injector) · G7 a dashboard word resets the goal
+ *   G8 a word the owner queued while the goal's turn ran outranks the goal: its chain end settles it
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { ConversationSession } from '../../types';
 import {
+  createTaskGoalChainSettler,
   createTaskGoalInjector,
   PLAN_GOAL_OBJECTIVE_MAX,
   planGoalObjective,
@@ -18,7 +21,8 @@ import {
   settleTaskGoal,
 } from '../task-goal';
 import type { TaskPlanDoc } from '../task-plan';
-import type { TaskCommandRequest } from '../task-turn-controller';
+import { createTaskTurnController, type TaskCommandRequest, type TaskTurnController } from '../task-turn-controller';
+import type { RunTaskTurnInput, RunTaskTurnResult } from '../task-turn-runner';
 
 const plan = (over: Partial<TaskPlanDoc> = {}): TaskPlanDoc =>
   ({
@@ -282,5 +286,179 @@ describe('G7 — a dashboard word resets the goal; a refused start gives back on
     expect(session.goal).toBe(next);
     expect(session.goal).toMatchObject({ epoch: 9, continuationCount: 1 });
     expect(() => resetGoalForUserTurn(taskWithGoal({ goal: undefined }), reset)()).not.toThrow();
+  });
+});
+
+/**
+ * G8 — a word the owner queued while the goal's turn ran outranks the goal (merge with #842's task
+ * follow-up queue): the controller's drain starts it before `onChainEnd`, so the chain end that
+ * yielded settles nothing — the queued word's own chain end does. As a Slack session's goal driver
+ * is deferred while its follow-up queue holds work (`shouldDeferGoalDriver`).
+ */
+describe('G8 — a queued word outranks the goal: its chain end settles the goal', () => {
+  const KEY = 'task:11111111-2222-4333-8444-555555555555';
+
+  it('settleTaskGoal deferred: the evidence is kept, the loop is not woken', () => {
+    const session = taskWithGoal();
+    const settle = vi.fn();
+    const out = settleTaskGoal({
+      session,
+      sessionKey: KEY,
+      turnText: 'phase 1 done',
+      shuttingDown: false,
+      deferred: true,
+      summaryMax: 99,
+      settle,
+      save: vi.fn(),
+    });
+    expect(out).toBe('deferred');
+    expect(session.goalLastTurnText).toBe('phase 1 done');
+    expect(settle).not.toHaveBeenCalled();
+  });
+
+  function goalTask() {
+    return {
+      slackless: true,
+      ownerId: 'UOWNER',
+      ownerName: 'Owner',
+      taskId: 'a',
+      conversationId: 'c1',
+      goal: { goalId: 'g1', status: 'active', epoch: 1 },
+    } as unknown as ConversationSession;
+  }
+
+  function wired(steps: Array<(input: RunTaskTurnInput) => Promise<RunTaskTurnResult>>) {
+    const sessions = new Map<string, ConversationSession>([[KEY, goalTask()]]);
+    const queue = [...steps];
+    const settled: string[] = [];
+    let controller!: TaskTurnController;
+    const onChainEnd = createTaskGoalChainSettler({
+      getSession: (k) => sessions.get(k),
+      isRunning: (k) => controller.isRunning(k),
+      readTurnText: async () => 'turn text',
+      shuttingDown: () => false,
+      summaryMax: 99,
+      settle: (k) => settled.push(k),
+      save: () => {},
+      logger: { info: vi.fn(), warn: vi.fn() },
+    });
+    controller = createTaskTurnController({
+      runner: {
+        runTaskTurn: vi.fn(async (input: RunTaskTurnInput) => {
+          const next = queue.shift();
+          if (next) return next(input);
+          input.onStarted?.();
+          return endedTurn('completed');
+        }),
+        abandonTurn: vi.fn(async (_k: string, turnId: string, decided: any) => ({
+          turnId,
+          outcome: { ...decided, turnId, at: 1 },
+        })),
+      },
+      getSession: (k) => sessions.get(k),
+      coordinator: {
+        setController: vi.fn(),
+        removeController: vi.fn(),
+        abortSession: vi.fn(() => false),
+      } as never,
+      buildExecutionContext: vi.fn(() => ({ origin: 'task', userId: 'UOWNER', workingDirectory: '/w' }) as never),
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      onChainEnd,
+    });
+    return { controller, settled, task: () => sessions.get(KEY)! };
+  }
+
+  const endedTurn = (outcome: 'completed' | 'failed') =>
+    ({
+      turnId: 't',
+      outcome: { turnId: 't', outcome, category: outcome === 'completed' ? 'WorkflowComplete' : 'Exception', at: 1 },
+    }) as RunTaskTurnResult;
+
+  const heldTurn = () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    return {
+      step: async (input: RunTaskTurnInput) => {
+        input.onStarted?.();
+        await gate;
+        return endedTurn('completed');
+      },
+      release: () => release(),
+    };
+  };
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const word = (text: string) => ({ sessionKey: KEY, text, actorUserId: 'UOWNER', queueWhileRunning: true });
+
+  it('the goal’s turn ends with the owner’s word queued: the word runs, the goal settles once, at its end', async () => {
+    const goalTurn = heldTurn();
+    const ownerTurn = heldTurn();
+    const h = wired([goalTurn.step, ownerTurn.step]);
+    expect(
+      (
+        await h.controller.start({
+          sessionKey: KEY,
+          text: '[goal-continuation] go',
+          actorUserId: 'UOWNER',
+          initiator: 'host',
+        })
+      ).status,
+    ).toBe(202);
+    expect((await h.controller.start(word('also fix the footer'))).body).toMatchObject({ queued: true });
+
+    goalTurn.release();
+    for (let i = 0; i < 5; i++) await tick();
+    // The drain took the task for the owner's word; the goal waits for it.
+    expect(h.controller.isRunning(KEY)).toBe(true);
+    expect(h.settled).toEqual([]);
+
+    ownerTurn.release();
+    for (let i = 0; i < 5; i++) await tick();
+    expect(h.controller.isRunning(KEY)).toBe(false);
+    expect(h.settled).toEqual([KEY]);
+  });
+
+  it('no queued word: the chain end settles the goal at once', async () => {
+    const h = wired([]);
+    await h.controller.start({
+      sessionKey: KEY,
+      text: '[goal-continuation] go',
+      actorUserId: 'UOWNER',
+      initiator: 'host',
+    });
+    for (let i = 0; i < 5; i++) await tick();
+    expect(h.settled).toEqual([KEY]);
+  });
+
+  it('the queued word’s chain never starts: the goal still settles (a deferral is never stranded)', async () => {
+    const goalTurn = heldTurn();
+    const h = wired([
+      goalTurn.step,
+      async () => {
+        throw new Error('the conversation could not be created');
+      },
+    ]);
+    await h.controller.start({
+      sessionKey: KEY,
+      text: '[goal-continuation] go',
+      actorUserId: 'UOWNER',
+      initiator: 'host',
+    });
+    await h.controller.start(word('also fix the footer'));
+    goalTurn.release();
+    for (let i = 0; i < 10; i++) await tick();
+    expect(h.controller.isRunning(KEY)).toBe(false);
+    expect(h.settled).toEqual([KEY]);
+  });
+
+  it('an epic, or a task with no active goal: nothing settles', async () => {
+    for (const over of [{ kind: 'epic' }, { goal: { goalId: 'g1', status: 'paused', epoch: 1 } }]) {
+      const h = wired([]);
+      Object.assign(h.task(), over);
+      await h.controller.start({ sessionKey: KEY, text: 'x', actorUserId: 'UOWNER', initiator: 'host', newTask: true });
+      for (let i = 0; i < 5; i++) await tick();
+      expect(h.settled).toEqual([]);
+    }
   });
 });

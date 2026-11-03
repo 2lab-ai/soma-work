@@ -22,6 +22,7 @@ import {
   type TaskUsage,
   toPersistedSessionUsage,
 } from '@soma/slack/session-usage-math';
+import { cleanTldrLine, followUpFromTldr } from '@soma/slack/summary-service';
 import * as fs from 'fs';
 import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
@@ -65,6 +66,7 @@ import {
   sanitizeEpicPlan,
   withEpicEvent,
 } from './task-turn/epic-plan';
+import { sanitizeTaskFollowups } from './task-turn/task-followups';
 import {
   applyPlanSubmission,
   checkPlanSubmission,
@@ -124,7 +126,7 @@ const WARNING_INTERVALS = [
 /** A session's history keeps at most this many links of each kind (세션 링크 자동 기록): the oldest go first. */
 export const MAX_NOTED_LINKS = 30;
 /** Which noted link becomes the current one: see SessionRegistry.noteSessionLinks. */
-export type NoteLinksMode = 'first' | 'always' | 'if-empty';
+export type NoteLinksMode = 'first' | 'always' | 'if-empty' | 'update';
 
 const HISTORY_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinkHistory> = {
   issue: 'issues',
@@ -141,13 +143,29 @@ const ACTIVE_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinks> = 
 /**
  * Serialized session for file persistence
  */
-/** A stored Executive Summary TL;DR, or undefined when what was stored is not one (T7). */
-function restoreExecutiveSummary(v: unknown): { tldr: string[]; at: number } | undefined {
+/** #829 — the card's follow-up comes back only when it is still one (a reason and a time). */
+function restoreFollowUp(v: unknown): { reason: string; at: number } | undefined {
   if (!v || typeof v !== 'object') return undefined;
-  const { tldr, at } = v as { tldr?: unknown; at?: unknown };
+  const { reason, at } = v as { reason?: unknown; at?: unknown };
+  if (typeof reason !== 'string' || reason.trim() === '' || typeof at !== 'number' || !Number.isFinite(at)) {
+    return undefined;
+  }
+  return { reason, at };
+}
+
+/** #829 — UPDATE_SESSION `executiveSummary`: at most this many TL;DR lines, each capped like the host's own. */
+const CARD_TLDR_MAX_LINES = 5;
+const CARD_TLDR_MAX_LINE_CHARS = 140;
+
+/** A stored Executive Summary TL;DR, or undefined when what was stored is not one (T7). */
+function restoreExecutiveSummary(v: unknown): { tldr: string[]; at: number; source?: 'es' } | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const { tldr, at, source } = v as { tldr?: unknown; at?: unknown; source?: unknown };
   if (!Array.isArray(tldr) || typeof at !== 'number' || !Number.isFinite(at)) return undefined;
   const lines = tldr.filter((l): l is string => typeof l === 'string' && l.trim() !== '');
-  return lines.length > 0 ? { tldr: lines, at } : undefined;
+  if (lines.length === 0) return undefined;
+  // #829 — the model-run es's mark (its TL;DR and verdict are one pair for that turn).
+  return source === 'es' ? { tldr: lines, at, source } : { tldr: lines, at };
 }
 
 interface SerializedSession {
@@ -237,7 +255,9 @@ interface SerializedSession {
   actionPanel?: ActionPanelState;
   // The Executive Summary's TL;DR on the dashboard card (SSOT 2026-11-02 T7) — kept across a
   // restart like the thread head that shows the same lines.
-  executiveSummary?: { tldr: string[]; at: number };
+  executiveSummary?: { tldr: string[]; at: number; source?: 'es' };
+  // #829 — the card's follow-up (NEEDS YOU) survives a restart too: a deploy must not drop it to DONE.
+  followUp?: { reason: string; at: number };
   // Bot-initiated thread metadata
   threadModel?: 'user-initiated' | 'bot-initiated';
   threadRootTs?: string;
@@ -273,6 +293,8 @@ interface SerializedSession {
   /** E2 ③ — the open chain and owed notices of a Slack-less task; validated on load. */
   openChain?: unknown;
   notices?: unknown;
+  /** A Slack-less task's follow-up queue; validated (and paused) on load (`sanitizeTaskFollowups`). */
+  taskFollowups?: unknown;
   // Merge code change stats
   mergeStats?: {
     totalLinesAdded: number;
@@ -2377,7 +2399,15 @@ export class SessionRegistry {
    * title was written.
    */
   fillPlaceholderSessionTitle(channelId: string, threadTs: string | undefined, title: string): boolean {
-    const session = this.getSession(channelId, threadTs);
+    return this.fillPlaceholderSessionTitleOn(this.getSession(channelId, threadTs), title);
+  }
+
+  /** The same by session key — a Slack-less task has no channel/thread to look it up by (#829 review). */
+  fillPlaceholderSessionTitleByKey(sessionKey: string, title: string): boolean {
+    return this.fillPlaceholderSessionTitleOn(this.getSessionByKey(sessionKey), title);
+  }
+
+  private fillPlaceholderSessionTitleOn(session: ConversationSession | undefined, title: string): boolean {
     const clean = sanitizeSessionTitle(title);
     if (!session || !clean) return false;
     // Host stand-in ("New Session" and friends) or a provisional cron job name.
@@ -2450,7 +2480,9 @@ export class SessionRegistry {
    *   'first'    a user message: the first link of each kind (as the dispatch does with the first message);
    *   'always'   a PR or issue the session just created;
    *   'if-empty' an assistant reply: only when the kind has no current link, so a PR mentioned in passing does not
-   *              replace the one the session works on.
+   *              replace the one the session works on;
+   *   'update'   a PR or issue the session just merged or closed (#832): only a link already on the card changes — its
+   *              `status` — and nothing is added or made current.
    * Links compare by their canonical URL (`/pull/12/files?x` is `/pull/12`), so a link the dispatch or the model
    * already set is not recorded twice. A known link changes nothing. A recorded link is tagged `auto`; only those are
    * trimmed, to the newest {@link MAX_NOTED_LINKS} of a kind (the current one always stays). The sequence the model's
@@ -2478,6 +2510,7 @@ export class SessionRegistry {
   ): boolean {
     if (!session || !Array.isArray(links) || links.length === 0) return false;
     this.ensureSessionLinkState(session);
+    if (mode === 'update') return this.updateNotedLinkStates(session, links);
     let changed = false;
     const firstTaken = new Set<SessionResourceType>();
     for (const raw of links) {
@@ -2512,6 +2545,35 @@ export class SessionRegistry {
         if (drop < 0) break;
         history.splice(drop, 1);
         recorded--;
+      }
+    }
+    if (changed) this.saveSessions();
+    return changed;
+  }
+
+  /** {@link noteSessionLinks} 'update': the state of each link already on the card (history and current copy). */
+  private updateNotedLinkStates(session: ConversationSession, links: ReadonlyArray<SessionLink>): boolean {
+    let changed = false;
+    for (const raw of links) {
+      const type = raw?.type as SessionResourceType | undefined;
+      const status = typeof raw?.status === 'string' ? raw.status.trim() : '';
+      if (!raw?.url || !status || !type || !(type in HISTORY_KEY_BY_RESOURCE)) continue;
+      // GitHub owner and repo names are case-insensitive: a pasted `2Lab-AI/…` is the PR a merge names in lower case.
+      const canon = canonicalLinkUrl(raw.url).toLowerCase();
+      const same = (url: string) => canonicalLinkUrl(url).toLowerCase() === canon;
+      const history = session.linkHistory![HISTORY_KEY_BY_RESOURCE[type]]!;
+      const at = history.findIndex((l) => !!l?.url && same(l.url));
+      // Merged is final: a later close or PATCH of a merged PR never takes it back.
+      if (at >= 0 && history[at].status === 'merged') continue;
+      if (at >= 0 && history[at].status !== status) {
+        history[at] = { ...history[at], status };
+        changed = true;
+      }
+      const activeKey = ACTIVE_KEY_BY_RESOURCE[type];
+      const current = session.links![activeKey];
+      if (current?.url && same(current.url) && current.status !== status && current.status !== 'merged') {
+        session.links![activeKey] = { ...current, status };
+        changed = true;
       }
     }
     if (changed) this.saveSessions();
@@ -2586,6 +2648,48 @@ export class SessionRegistry {
   /**
    * Update session resources (issues/prs/docs + active links) with optimistic locking.
    */
+  /**
+   * #829 — the model-run es (UPDATE_SESSION `executiveSummary`) puts its TL;DR on the task card. The follow-up
+   * is derived from the same lines (their ⚠️ line) exactly as the host-run summary does, so both paths keep
+   * the card in NEEDS YOU on the same signal. False when there is no session or no usable line — the card
+   * then keeps what it had.
+   */
+  setExecutiveSummary(channelId: string, threadTs: string | undefined, tldr: readonly string[]): boolean {
+    return this.setExecutiveSummaryOn(this.getSession(channelId, threadTs), tldr);
+  }
+
+  /** The same by session key — the only way to reach a Slack-less task (channel '' throws on lookup). */
+  setExecutiveSummaryByKey(sessionKey: string, tldr: readonly string[]): boolean {
+    return this.setExecutiveSummaryOn(this.getSessionByKey(sessionKey), tldr);
+  }
+
+  private setExecutiveSummaryOn(session: ConversationSession | undefined, tldr: readonly string[]): boolean {
+    if (!session) return false;
+    const lines = tldr
+      .filter((l): l is string => typeof l === 'string')
+      .map(cleanTldrLine)
+      .filter((l) => l.length > 0)
+      .slice(0, CARD_TLDR_MAX_LINES)
+      .map((l) => {
+        const chars = Array.from(l);
+        return chars.length <= CARD_TLDR_MAX_LINE_CHARS
+          ? l
+          : `${chars
+              .slice(0, CARD_TLDR_MAX_LINE_CHARS - 1)
+              .join('')
+              .trimEnd()}…`;
+      });
+    if (lines.length === 0) return false;
+    const at = Date.now();
+    // `source: 'es'` — checked with tools by the model-run es: the same turn's host summary keeps this card
+    // (TL;DR and verdict as one pair); the user's next input drops the TL;DR and with it the mark.
+    session.executiveSummary = { tldr: lines, at, source: 'es' };
+    const followUp = followUpFromTldr(lines);
+    session.followUp = followUp ? { reason: followUp.reason, at } : undefined;
+    this.saveSessions();
+    return true;
+  }
+
   updateSessionResources(
     channelId: string,
     threadTs: string | undefined,
@@ -3094,6 +3198,10 @@ export class SessionRegistry {
     // decision, stall) end with it.
     endGoalCapDecision(session.goal);
     session.goal = undefined;
+    // #829 — the follow-up and the card TL;DR were the old conversation's verdict; the new one is decided by
+    // its own summary.
+    session.followUp = undefined;
+    session.executiveSummary = undefined;
 
     // Reset activity state
     session.activityState = 'idle';
@@ -3664,8 +3772,9 @@ export class SessionRegistry {
             showThinking: session.showThinking,
             actionPanel: session.actionPanel ? { ...session.actionPanel } : undefined,
             executiveSummary: session.executiveSummary
-              ? { tldr: [...session.executiveSummary.tldr], at: session.executiveSummary.at }
+              ? { ...session.executiveSummary, tldr: [...session.executiveSummary.tldr] }
               : undefined,
+            followUp: session.followUp ? { ...session.followUp } : undefined,
             threadModel: session.threadModel,
             threadRootTs: session.threadRootTs,
             isOnboarding: session.isOnboarding,
@@ -3689,6 +3798,8 @@ export class SessionRegistry {
             plan: session.plan,
             epicEvents: session.epicEvents,
             taskPlan: session.slackless === true ? session.taskPlan : undefined,
+            taskFollowups:
+              session.slackless === true && session.taskFollowups?.length ? session.taskFollowups : undefined,
             closedBy: session.closedBy,
             // Merge code change stats
             mergeStats: session.mergeStats,
@@ -4054,6 +4165,7 @@ export class SessionRegistry {
               }
             : undefined,
           executiveSummary: restoreExecutiveSummary(serialized.executiveSummary),
+          followUp: restoreFollowUp(serialized.followUp),
           threadModel: serialized.threadModel,
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
@@ -4088,6 +4200,8 @@ export class SessionRegistry {
           inputContext: sanitizeTaskInputContext(serialized.inputContext),
           ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, slackless),
           taskPlan: slackless ? sanitizeTaskPlanGate(serialized.taskPlan) : undefined,
+          // Paused on load: the chain each word waited for did not survive the restart.
+          taskFollowups: slackless ? sanitizeTaskFollowups(serialized.taskFollowups) : undefined,
           openChain:
             slackless && typeof serialized.openChain === 'string' && serialized.openChain !== ''
               ? serialized.openChain
