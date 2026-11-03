@@ -366,6 +366,134 @@ describe('githubEffectsOf — what is not a write', () => {
   });
 });
 
+describe('W6 — review round 7 (astra-zhuge)', () => {
+  const view = '; gh pr view 12 -R a/b --json url -q .url';
+  const url = 'https://github.com/a/b/pull/12';
+
+  it('a bundled -G makes curl a GET: a listing is not a create (P1)', () => {
+    expect(
+      effectsOf(
+        bash(
+          "curl -sG --data-urlencode 'state=open' https://api.github.com/repos/a/b/pulls",
+          '[{"number":12,"html_url":"https://github.com/a/b/pull/12"}]',
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it('an endpoint inside a body, a header or an option value is not the destination (P1)', () => {
+    expect(
+      effectsOf(
+        bash(
+          `curl -s -X POST https://hooks.example.com/x -d '{"see":"https://api.github.com/repos/a/b/pulls"}'${view}`,
+          url,
+        ),
+        bash(
+          `curl -s -X POST -H "Link: <https://api.github.com/repos/a/b/pulls>" https://example.com/x -d @b${view}`,
+          url,
+        ),
+        bash(
+          `node -e 'fetch("https://example.com/hook", {method:"POST",body:"https://api.github.com/repos/a/b/pulls"})'${view}`,
+          url,
+        ),
+        bash(
+          `python3 -c 'import requests; requests.post("https://example.com/hook", json={"u": "https://api.github.com/repos/a/b/pulls"})'${view}`,
+          url,
+        ),
+      ),
+    ).toEqual([]);
+    // The destination still counts, as an argument or an options `url` / `path`.
+    expect(
+      effectsOf(
+        bash(
+          'curl -s -H "Accept: application/json" -d @p.json https://api.github.com/repos/a/b/pulls',
+          '{"number":80,"html_url":"https://github.com/a/b/pull/80"}',
+        ),
+        bash(
+          `node -e 'axios({ method: "post", url: "https://api.github.com/repos/a/b/issues", data: {} })'`,
+          '{"number":81,"html_url":"https://github.com/a/b/issues/81"}',
+        ),
+      ).map(short),
+    ).toEqual([
+      ['create', 'pr', 'https://github.com/a/b/pull/80'],
+      ['create', 'issue', 'https://github.com/a/b/issues/81'],
+    ]);
+  });
+
+  it('constructing a Request sends nothing; a Request handed to urlopen or fetch does (P1)', () => {
+    expect(
+      effectsOf(
+        bash(
+          `node -e 'new Request("https://api.github.com/repos/a/b/pulls", {method:"POST"}); console.log("${url}")'`,
+          url,
+        ),
+      ),
+    ).toEqual([]);
+    expect(
+      effectsOf(
+        bash(
+          `node -e 'const r = new Request("https://api.github.com/repos/a/b/pulls", {method:"POST"}); fetch(r)'`,
+          '{"number":82,"html_url":"https://github.com/a/b/pull/82"}',
+        ),
+      ).map(short),
+    ).toEqual([['create', 'pr', 'https://github.com/a/b/pull/82']]);
+  });
+
+  it('a merge or close line proves only the PR or issue it names (P1)', () => {
+    expect(
+      effectsOf(
+        bash(
+          'gh pr merge 12 -R a/b --squash || gh pr merge 13 -R a/b --squash',
+          'X Pull request a/b#12 is not mergeable\n✓ Squashed and merged pull request a/b#13 (x)',
+        ),
+        bash(
+          'gh issue close 30 -R a/b || gh issue close 31 -R a/b',
+          'X could not close a/b#30\n✓ Closed issue a/b#31 (y)',
+        ),
+      ).map(short),
+    ).toEqual([
+      ['merge', 'pr', 'https://github.com/a/b/pull/13'],
+      ['close', 'issue', 'https://github.com/a/b/issues/31'],
+    ]);
+    // Two REST merges, one `"merged": true`: which one is unknown, so neither is recorded.
+    expect(
+      effectsOf(
+        bash(
+          'curl -s -X PUT https://api.github.com/repos/a/b/pulls/12/merge; curl -s -X PUT https://api.github.com/repos/a/b/pulls/13/merge',
+          '{"message":"Pull Request is not mergeable"}\n{"sha":"abc","merged":true,"message":"Pull Request successfully merged"}',
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it('the state of a nested object (a milestone) is not the PR’s state (P1)', () => {
+    expect(
+      effectsOf(
+        bash(
+          'gh api -X PATCH repos/a/b/pulls/12 -f title=x',
+          '{"number":12,"html_url":"https://github.com/a/b/pull/12","state":"open","milestone":{"state":"closed"}}',
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it('many writes with many result objects are read in linear time (P2)', () => {
+    // Under the 200,000-character command cap: 3,000 creates, and a result with 3,000 PR objects.
+    const n = 3000;
+    const command = Array.from({ length: n }, () => 'curl -X POST https://api.github.com/repos/a/b/pulls -d @p').join(
+      '\n',
+    );
+    expect(command.length).toBeLessThan(200_000);
+    const result = Array.from(
+      { length: n },
+      (_, i) => `{"number":${i},"html_url":"https://github.com/a/b/pull/${i}"}`,
+    ).join('\n');
+    const started = Date.now();
+    effectsOf(bash(command, result));
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+});
+
 describe('githubEffectsOf — every spelling of a create', () => {
   it('W4 — gh pr create and gh issue create (the output ends with the new URL)', () => {
     expect(

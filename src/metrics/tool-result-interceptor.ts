@@ -175,7 +175,8 @@ function emitPrEffects(
       const emitter = getMetricsEmitter();
       if (e.op === 'create') {
         emitter
-          .emitGitHubEvent('pr_created', userId, userName, sessionKey, { prUrl: e.link.url, prNumber })
+          // `proven`: this create was proven by its own result (#832) — the leak report (#835) trusts only these.
+          .emitGitHubEvent('pr_created', userId, userName, sessionKey, { prUrl: e.link.url, prNumber, proven: true })
           .catch((err) => logger.error('Failed to emit pr_created', err));
       } else {
         emitter
