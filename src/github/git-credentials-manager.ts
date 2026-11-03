@@ -3,14 +3,32 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { Logger } from '../logger';
+import { clearAgentGhConfigDir, writeAgentGhHosts } from './agent-gh-config';
 
 const logger = new Logger('GitCredentialsManager');
+
+/**
+ * git's credentials were written, the agents' gh `hosts.yml` was not: agent shells read the env token until a retry
+ * writes it (#834 review).
+ */
+export class GhHostsWriteError extends Error {
+  constructor(readonly reason: unknown) {
+    super(`Failed to write the agent gh hosts.yml: ${(reason as Error)?.message ?? String(reason)}`);
+    this.name = 'GhHostsWriteError';
+  }
+}
 
 /**
  * Manages local git credentials and configuration
  * Handles .git-credentials file and git config updates
  */
 export class GitCredentialsManager {
+  /**
+   * @param ghConfigDir a bot-owned gh config dir: every refresh writes the token's `hosts.yml` there and agent shells
+   *   get it as `GH_CONFIG_DIR` (#834). Unset (a PAT setup), gh keeps reading the env.
+   */
+  constructor(private readonly ghConfigDir?: string) {}
+
   /**
    * Update .git-credentials file and git config with new token
    */
@@ -39,10 +57,27 @@ export class GitCredentialsManager {
       // Update environment variable for immediate use
       process.env.GITHUB_TOKEN = cleanToken;
 
+      await this.updateGhHosts(cleanToken);
+
       logger.debug('Git credentials updated successfully with refreshed GitHub App token');
     } catch (error) {
       logger.error('Failed to update Git credentials:', error);
       throw error;
+    }
+  }
+
+  /**
+   * gh's credential for agent shells (#834): re-read by gh on every call, so it outlives the turn's env copy. A failed
+   * write stops serving the dir — gh must not keep reading a token that will expire; new turns fall back to the token
+   * just put in the env — and is thrown as {@link GhHostsWriteError}, so the refresh scheduler retries the write.
+   */
+  private async updateGhHosts(token: string): Promise<void> {
+    if (!this.ghConfigDir) return;
+    try {
+      await writeAgentGhHosts(this.ghConfigDir, token);
+    } catch (error) {
+      clearAgentGhConfigDir();
+      throw new GhHostsWriteError(error);
     }
   }
 

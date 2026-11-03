@@ -100,6 +100,7 @@ import {
   setDashboardTaskCommandHandler,
   setDashboardTaskLauncher,
   setDashboardTaskPlanHandler,
+  setDashboardTaskQueueHandler,
   setDashboardTrashHandler,
   setOAuthDirectoryLookup,
   setOAuthUserLookup,
@@ -1322,8 +1323,21 @@ async function start() {
       onChainEnd: (key, { started }) => {
         if (started) epicWaker.wake(key);
       },
+      // A task's follow-up queue (2026-11-03): saved with the task, pushed to the open panels.
+      onFollowupsChanged: (key) => {
+        claudeHandler.saveSessions();
+        scheduleLiveSessionUpdate(key);
+      },
+      // #767 backstop: a queued word about to run is gated again — edited words, or a writer
+      // no longer allowed on their own, go to the owner (as a drained Slack follow-up does).
+      holdQueued: (key, session, item) =>
+        instructionApprovals.allows({ sessionKey: key, session, senderId: item.authorId })
+          ? undefined
+          : holdTaskInstruction(key, item.authorId, { kind: 'task-command', text: item.text, at: Date.now() }),
     });
     taskTurnController = taskController;
+    // The panel's Send now / Cancel / Edit on a task's queued word.
+    setDashboardTaskQueueHandler((request) => taskController.actOnQueue(request));
     // E4 ④a (.prd/19 D3) — the host the epic's tools call: registry reads, the plan writer,
     // a child's last final from its work log. Set here, not imported there (no cycle).
     setEpicHost({
@@ -1410,6 +1424,10 @@ async function start() {
                 sessionKey: request.sessionKey,
                 text: held.text,
                 actorUserId: request.requesterId,
+                // Approved while the task works: it waits for the chain's end, like the owner's own word —
+                // these very words, so the drain does not ask again unless they are edited.
+                queueWhileRunning: true,
+                approvedOnce: true,
               })
             : await taskController.answer({
                 sessionKey: request.sessionKey,
@@ -1448,7 +1466,12 @@ async function start() {
         senderId: actorUserId,
         senderName,
         instruction,
+        // Saved or refused (#842 R3): a queued word leaves the task's queue only once the owner's store has it.
+        strict: true,
       });
+      if (held.refused === 'unsaved') {
+        return { status: 503, body: { error: '승인 요청을 저장하지 못했습니다 — 잠시 뒤 다시 보내세요' } };
+      }
       if (held.refused === 'full') {
         return {
           status: 429,
@@ -1475,7 +1498,8 @@ async function start() {
         });
         if (held) return held;
       }
-      return taskController.start({ sessionKey, text: message, attachments, actorUserId });
+      // While the task's chain runs the word waits in its follow-up queue (202 queued), not a 409.
+      return taskController.start({ sessionKey, text: message, attachments, actorUserId, queueWhileRunning: true });
     });
     // #599 ⑤ — an answer to a task's open question runs as its next instruction.
     setDashboardTaskAnswerHandler(async (sessionKey, askId, answer, actorUserId) => {
@@ -1645,6 +1669,9 @@ async function start() {
           );
         }
         scheduleLiveSessionUpdate(sessionKey);
+        // #829 — the summary may have moved the card between DONE and NEEDS YOU (its ⚠️ follow-up): a card
+        // patch keeps the card in its column, so the board is pushed too.
+        broadcastSessionUpdate();
       },
       // SSOT 2026-10-22 T1/T2 — a running turn made another API call: push the
       // card (≤ 1/s per session) so its token / cost totals grow live.

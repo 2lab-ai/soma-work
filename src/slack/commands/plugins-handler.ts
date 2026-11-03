@@ -103,13 +103,13 @@ export class PluginsHandler implements CommandHandler {
     const lines: string[] = [
       '\ud83d\udd0c *Installed Plugins*',
       '',
-      '\ud83d\udd12 *local* (built-in) \u2014 Always loaded',
+      '\ud83d\udd12 *zworkflow* (built-in) \u2014 Always loaded',
     ];
 
     // Show default plugins as locked. Skip any whose localPath is the bundled
-    // directory — that is the built-in `local` plugin already shown above
-    // (it ships as the bundled `zworkflow` default), so we avoid listing the
-    // same physical directory twice.
+    // zworkflow directory — already shown above as built-in — so the same
+    // physical directory is not listed twice. The harness plugin `local`
+    // (src/local-harness, #857) is listed here as `local@soma-work`.
     for (const r of resolved) {
       if (r.source === 'default' && r.localPath !== BUNDLED_PLUGINS_DIR) {
         lines.push(`\ud83d\udd12 *${r.name}* (default) \u2014 Always loaded`);

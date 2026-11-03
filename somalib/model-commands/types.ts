@@ -201,6 +201,8 @@ export interface ModelCommandPayloadMap {
     title?: string;
     /** Host applies `title` only while the session has a stand-in title. */
     titleFillOnly?: true;
+    /** #829 — the card TL;DR for the host to apply (its ⚠️ line keeps the card waiting for the user). */
+    executiveSummary?: { tldr: string[] };
   };
   ASK_USER_QUESTION: {
     question: UserChoice | UserChoices;

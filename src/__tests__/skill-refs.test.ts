@@ -24,9 +24,15 @@ const srcPrompt = path.join(repoRoot, 'src', 'prompt');
  */
 
 function listSkillNames(): Set<string> {
-  const skillsDir = path.join(srcLocal, 'skills');
   const names = new Set<string>();
-  if (!fs.existsSync(skillsDir)) return names;
+  // #857 — `local:` resolves zworkflow (src/local) and the soma-work harness plugin (src/local-harness).
+  for (const root of [srcLocal, path.join(repoRoot, 'src', 'local-harness')])
+    addSkillNames(path.join(root, 'skills'), names);
+  return names;
+}
+
+function addSkillNames(skillsDir: string, names: Set<string>): void {
+  if (!fs.existsSync(skillsDir)) return;
   for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     names.add(entry.name);
@@ -42,7 +48,6 @@ function listSkillNames(): Set<string> {
       }
     }
   }
-  return names;
 }
 
 function listMarkdownBasenames(dir: string): Set<string> {

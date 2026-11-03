@@ -118,6 +118,8 @@ z-계열 스킬은 아래 4개 지점에서 이 문서의 규율을 호출한다
 3. **Bottom level — ssot-subtask 디테일** (필요할 때만)
    - 보고 대상이 디테일을 원할 때만 펼친다. 기본은 접어둔다.
 4. **Verification (required).** 보고된 mapping은 `local:ztrace` **단일 pass** 결과로 뒷받침해야 한다 — ztrace에 SSOT-TASK-TREE 전체를 scenario 입력으로 던지고, ztrace가 내뱉는 scenario ID를 ssot-task ID에 다시 매핑한다. ssot-task 마다 별도 ztrace 호출 금지(N회 폭주 방지). 매핑되지 않은 ssot-task가 한 개라도 있으면 보고 미완 — 완료 보고를 닫지 않는다. tier ≤ `small`로 ztrace가 과한 경우, RED→GREEN 테스트 출력으로 대체 가능하되 같은 1:N 매핑 규율은 유지.
+5. **Card check.** 하네스가 이 세션의 작업 카드를 두면, 보고를 닫기 전에 하네스의 카드 확인을 한다 — soma-work에서는 `local:auto-es` §Card check (#836, #857). 작업 카드가 없는 환경에서는 건너뛴다.
+6. **Leftovers.** 보고 전에 이 세션이 남긴 것을 정리하거나 넘긴다. 만든 worktree와 임시 체크아웃은 깨끗하고(커밋하지 않은 변경 없음) 그 커밋이 원격에 올라갔거나 머지된 것만 지운다. 커밋하지 않은 변경, 올리지 않은 커밋, 아직 전달하지 않은 산출물(보고서 · 파일)이 남아 있으면 지우지 않고 경로와 상태를 보고에 적어 넘긴다. 아직 도는 subagent · background job(모니터, 배포 감시 등)은 멈추거나, 계속 돌아야 하면 무엇이 언제 끝나는지 보고에 적는다.
 
 ## Output format
 

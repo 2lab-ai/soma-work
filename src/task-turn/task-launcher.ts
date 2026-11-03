@@ -151,9 +151,14 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
       if (epic && deps.epicTasksEnabled?.(ownerId) !== true) {
         return launchRefusal(403, 'epic tasks are off for you — turn them on with `/z epictasks on`');
       }
-      const refused = epic
-        ? deps.controller.canStart(ownerId, request.prompt, { role: 'root' })
-        : deps.controller.canStart(ownerId, request.prompt);
+      // A task made in plan mode starts with a plan turn: it waits for no slot (2026-11-03).
+      const tree = epic ? { role: 'root' as const } : undefined;
+      const refused =
+        request.plan === true
+          ? deps.controller.canStart(ownerId, request.prompt, tree, { planning: true })
+          : tree
+            ? deps.controller.canStart(ownerId, request.prompt, tree)
+            : deps.controller.canStart(ownerId, request.prompt);
       if (refused) return refused;
       // The model is one the dialog offers, by nickname — never an id from the body (#640 R1).
       let model: string | undefined;

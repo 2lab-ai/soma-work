@@ -16,6 +16,12 @@ export interface TokenCache {
 export class TokenRefreshScheduler {
   private refreshTimer?: NodeJS.Timeout;
   private tokenCache: TokenCache | null = null;
+  /** Consecutive failed background refreshes — the retry delay doubles from 2 to at most 10 minutes. */
+  private failedRefreshes = 0;
+  /** Set by stopAutoRefresh: a refresh still in flight does not re-arm. */
+  private stopped = false;
+  /** Re-writes the current token after a failed credentials write. */
+  private writeRetryTimer?: NodeJS.Timeout;
 
   constructor(
     private apiClient: GitHubApiClient,
@@ -41,8 +47,8 @@ export class TokenRefreshScheduler {
     // Schedule automatic refresh before expiry
     this.scheduleRefresh();
 
-    // Update git credentials with new token
-    await this.credentialsManager.updateCredentials(tokenInfo.token);
+    // Write it to git, the env and the agents' gh hosts.yml. A failed write is retried; the token is valid either way.
+    await this.writeCredentials(tokenInfo.token);
 
     return tokenInfo.token;
   }
@@ -82,33 +88,65 @@ export class TokenRefreshScheduler {
   }
 
   /**
-   * Refresh token in background
+   * Refresh token in background. The cached token stays served until a new one arrives (it is still valid while this
+   * retries), and a failed refresh retries — 2, 4, 8, then every 10 minutes — until one succeeds, also after the old
+   * token expired:
+   * otherwise the daemon env, git config and the agents' gh hosts.yml would sit on a dead token (#834).
    */
   private async refreshInBackground(): Promise<void> {
+    if (this.stopped) return;
+    let tokenInfo: { token: string; expiresAt: Date };
     try {
       logger.debug('Background refresh of GitHub App installation token starting');
-
-      // Clear the cache to force a fresh token
-      this.tokenCache = null;
-
-      // Get a new token
-      const newToken = await this.getToken();
-
-      logger.debug('GitHub App installation token refreshed successfully in background');
-
-      // Update environment variable for child processes
-      process.env.GITHUB_TOKEN = newToken;
+      tokenInfo = await this.apiClient.getInstallationToken(this.installationId);
     } catch (error) {
       logger.error('Failed to refresh GitHub App installation token in background:', error);
+      if (this.stopped) return;
+      const retryIn = Math.min(2 * 60 * 1000 * 2 ** this.failedRefreshes, 10 * 60 * 1000);
+      this.failedRefreshes++;
+      logger.debug(`Retrying token refresh in ${retryIn / 1000} seconds`);
+      this.clearRefreshTimer();
+      this.refreshTimer = setTimeout(() => {
+        void this.refreshInBackground();
+      }, retryIn);
+      // A retry alone must not keep the process alive at shutdown.
+      this.refreshTimer.unref?.();
+      return;
+    }
+    if (this.stopped) return;
+    this.tokenCache = { token: tokenInfo.token, expiresAt: tokenInfo.expiresAt };
+    this.failedRefreshes = 0;
+    this.scheduleRefresh();
+    await this.writeCredentials(tokenInfo.token);
+  }
 
-      // If refresh fails but we still have some time on the old token, schedule a retry
-      if (this.tokenCache && this.tokenCache.expiresAt > new Date()) {
-        const retryIn = 2 * 60 * 1000; // Retry in 2 minutes
-        logger.debug(`Retrying token refresh in ${retryIn / 1000} seconds`);
-        this.refreshTimer = setTimeout(() => {
-          this.refreshInBackground();
-        }, retryIn);
-      }
+  /**
+   * Write the token to git, the env and the agents' gh hosts.yml — on the first mint and on every refresh. A failed
+   * write (a git config lock, a refused hosts.yml) does not re-mint: it retries the write of the same token in 2
+   * minutes, so agent shells do not read a stale token until the next refresh (#834 review).
+   */
+  private async writeCredentials(token: string): Promise<void> {
+    this.clearWriteRetryTimer();
+    try {
+      await this.credentialsManager.updateCredentials(token);
+      logger.debug('GitHub App installation token written to git, the env and the agent gh hosts.yml');
+    } catch (error) {
+      logger.error('GitHub App token minted, but writing the credentials failed; retrying in 2 minutes:', error);
+      if (this.stopped) return;
+      this.writeRetryTimer = setTimeout(
+        () => {
+          if (!this.stopped && this.tokenCache?.token === token) void this.writeCredentials(token);
+        },
+        2 * 60 * 1000,
+      );
+      this.writeRetryTimer.unref?.();
+    }
+  }
+
+  private clearWriteRetryTimer(): void {
+    if (this.writeRetryTimer) {
+      clearTimeout(this.writeRetryTimer);
+      this.writeRetryTimer = undefined;
     }
   }
 
@@ -149,7 +187,9 @@ export class TokenRefreshScheduler {
    * Stop auto-refresh
    */
   stopAutoRefresh(): void {
+    this.stopped = true;
     this.clearRefreshTimer();
+    this.clearWriteRetryTimer();
     logger.debug('GitHub App auto-refresh stopped');
   }
 }

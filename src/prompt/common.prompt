@@ -22,6 +22,10 @@ Available subordinate subagents:
 - `zworkflow:fable-zhuge` (model: fable) — anthropic-engine strategist, tiebreaker
 - Consensus on a brief → `local:trinity` (runs all three until unanimous)
 
+## Task card
+A PR, issue or document you create, merge or close belongs on this session's task card. Before your final report, run the card check in `local:auto-es` §Card check. Write the full URL of every PR and issue, not a short ref like `#123`.
+Executive Summary: run `local:auto-es` instead of `es` wherever a skill or rule asks for one (`local:es`, `zworkflow:es`, `$es`, z phase5, the autoz terminal report) — it runs es, then syncs this card.
+
 ## Slack Output Formatting
 Your replies are rendered as Slack messages (streamed `markdown_text`, or Block Kit on fallback). Slack's renderer is NOT full GitHub Markdown — write so it renders cleanly:
 - Headings: use `#` or `##` only for section titles. `###` and deeper do NOT become headers — they collapse into plain text. Keep heading text short (<150 chars). For minor emphasis use `**bold**` lead-ins instead.

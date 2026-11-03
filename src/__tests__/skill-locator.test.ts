@@ -45,6 +45,18 @@ describe('resolveAutoskillContent — fallback order', () => {
     });
   });
 
+  // #857 — `local:` also covers the soma-work harness plugin (src/local-harness, plugin `local`).
+  it('resolves a harness-plugin skill under the local key', () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => String(p).includes('local-harness/skills/auto-es/'));
+    vi.mocked(fs.readFileSync).mockReturnValue('HARNESS BODY' as any);
+    const r = resolveAutoskillContent('auto-es', 'U1');
+    expect(r).toEqual({
+      key: 'local:auto-es',
+      content: 'HARNESS BODY',
+      file: expect.stringMatching(/\/local-harness\/skills\/auto-es\/SKILL\.md$/),
+    });
+  });
+
   it('falls back to a priority plugin (stv)', () => {
     vi.mocked(fs.existsSync).mockImplementation((p: any) => String(p).includes('/plugins/stv/skills/new-task/'));
     vi.mocked(fs.readFileSync).mockReturnValue('STV BODY' as any);

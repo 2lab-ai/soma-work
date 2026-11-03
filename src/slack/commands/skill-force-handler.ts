@@ -22,6 +22,8 @@ import { resolveUserIdentifier, type UserResolver } from './user-identity-resolv
  * __dirname at runtime = dist/slack/commands/ → ../../local/skills
  */
 const LOCAL_SKILLS_DIR = path.resolve(__dirname, '..', '..', 'local', 'skills');
+/** #857 — the soma-work harness plugin (`local`): `$local:<skill>` falls back here when zworkflow has no such skill. */
+const LOCAL_HARNESS_SKILLS_DIR = path.resolve(__dirname, '..', '..', 'local-harness', 'skills');
 
 /** Max recursion depth to prevent infinite loops in skill references. */
 const MAX_DEPTH = 10;
@@ -227,7 +229,7 @@ type BareResolution =
  *
  * Examples:
  *   $z               → first slot of user/local/stv/superpowers/other-plugins owning "z"
- *   $local:z         → reads local/skills/z/SKILL.md (qualified, no fallback)
+ *   $local:z         → reads local/skills/z/SKILL.md, else local-harness/skills/z/SKILL.md (#857 — both are `local:`)
  *   $user:my-deploy  → reads DATA_DIR/{userId}/skills/my-deploy/SKILL.md
  *   $stv:new-task    → reads plugins/stv/skills/new-task/SKILL.md
  *
@@ -689,7 +691,7 @@ export class SkillForceHandler implements CommandHandler {
   /**
    * Resolve the filesystem path for a skill based on its plugin.
    *
-   * - `local` → `LOCAL_SKILLS_DIR/{skill}/SKILL.md`
+   * - `local` → `LOCAL_SKILLS_DIR/{skill}/SKILL.md`, else `LOCAL_HARNESS_SKILLS_DIR/{skill}/SKILL.md` (#857)
    * - `user`  → `DATA_DIR/{userId}/skills/{skill}/SKILL.md` (requires safe userId+skill)
    * - others  → `{PLUGINS_DIR}/{plugin}/skills/{skill}/SKILL.md`
    *
@@ -703,7 +705,10 @@ export class SkillForceHandler implements CommandHandler {
    */
   private resolveSkillPath(ref: SkillRef, userId?: string): string {
     if (ref.plugin === 'local') {
-      return path.join(LOCAL_SKILLS_DIR, ref.skill, 'SKILL.md');
+      const portable = path.join(LOCAL_SKILLS_DIR, ref.skill, 'SKILL.md');
+      if (fs.existsSync(portable)) return portable;
+      const harness = path.join(LOCAL_HARNESS_SKILLS_DIR, ref.skill, 'SKILL.md');
+      return fs.existsSync(harness) ? harness : portable;
     }
     // Cross-user ref (S3): the explicit owner uid on the ref overrides the
     // threaded owner-context userId. Lives in the owner's skills dir.

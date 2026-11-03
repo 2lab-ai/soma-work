@@ -48,6 +48,12 @@ soma-work가 기본으로 싣는 Claude Code 플러그인 `zworkflow`는 [`src/l
 설치합니다. 설치·업데이트·훅, 그리고 플러그인 없이 `using-intentfirst`·`using-ssot` 스킬만 복사하는 경로는
 [zworkflow 플러그인 README](./src/local/README.ko.md)에 있습니다.
 
+zworkflow는 어디서든 쓸 수 있게 유지하는 것이 원칙입니다. 세션 작업 카드 호출(`GET_SESSION` / `UPDATE_SESSION`)과
+NEEDS YOU 후속 작업은 두 번째 플러그인 `local`([`src/local-harness/`](./src/local-harness/))에 있고, soma-work만
+기본으로 싣고 마켓플레이스에는 올리지 않습니다. zworkflow에 남은 다른 soma-work 전용 호출(`ASK_USER_QUESTION`,
+`CONTINUE_SESSION`, cron)은 #860에서 옮깁니다. 그중 `local:auto-es`가 soma-work 안의 Executive Summary입니다:
+`zworkflow:es`로 문서를 쓰고 작업 카드를 맞추며, 턴 종료 요약도 이 스킬의 턴 종료 규칙으로 돕니다.
+
 ---
 
 ## ✨ 주요 기능
@@ -115,13 +121,15 @@ Slack 네이티브 버튼/폼 UX로 권한 승인, 선택지, 세션 관리를 �
 
 `/z taskentry on`으로 켭니다(유저 단위, 기본 꺼짐). 그러면 채널에서 봇에게 보낸 평범한 지시가 대시보드 작업이 됩니다. 스레드에는 카드 링크가 먼저 오고, 그 뒤로는 결과, 답이 필요한 질문, 승인 요청, 실패만 옵니다. 진행은 카드에서 보고 지시합니다. 그 스레드에서는 다른 실행이 열리지 않고, 다시 멘션하면 카드 링크 안내 1건이 옵니다.
 
+대시보드 작업이 일하는 중에 보낸 지시는 그 작업의 대기열(입력창 위, 최대 10개)에 들어가고, 지금 단계가 잘 끝나면 쓴 사람의 이름으로 실행됩니다. 단계가 중지되거나 제대로 끝나지 않으면 대기열이 멈추고, 기다리던 지시는 **지금 보내기**를 눌러야 실행됩니다. 지시마다 취소할 수 있고, 쓴 사람은 고칠 수 있습니다. 작업 중에 지금 보내기를 누르면 그 지시가 맨 앞으로 갑니다. 대기열은 재시작해도 남고, 멈춘 상태로 돌아옵니다. 작업 턴은 아직 단계 중간에 지시를 받지 않습니다.
+
 DM, 파일, 명령, `!`·`%`, 이미 슬랙 세션이 있는 스레드는 지금처럼 슬랙 세션으로 진행합니다. 대시보드가 꺼져 있으면 그렇다고 알리고 슬랙 세션으로 진행합니다. 연결 구조: [architecture](./docs/misc/reference/architecture.md) (E2 ⑧).
 
 ### 🖼️ 대시보드 산출물
 
 모델이 Slack으로 보낸 파일(HTML 리포트, PNG, WAV·음성, 영상, PDF, 텍스트)이 웹 대시보드에 최신순으로 보인다: 세션 카드의 칩, 펼친 카드의 썸네일 스트립, 세션 패널 공통 서피스의 스트립과 답변마다 그 턴의 파일. 마크다운 답변은 채팅에 나오고 산출물 목록에는 들어가지 않는다. 마우스를 올리면 미니맵 미리보기, 누르면 파일에 맞춘 뷰어(HTML 페이지·이미지·영상·PDF는 화면을 가득 채우고, 문서는 높이를 가득 쓰고, 오디오는 작은 창 — HTML은 샌드박스에서 실행, 오디오는 카드에서 바로 재생). 뷰어 아래 ‹ n / m ›를 누르면 세션의 모든 파일 목록에서 골라 연다. 기능 도입 전 업로드는 세션 작업 로그에서 백필한다. 시각화(`local:html`, `local:dimensional-drawing`)는 HTML만 올린다 — PNG는 로컬 검수용 스냅샷이다.
 
-턴의 Executive Summary가 나오면(작업이 끝나고 5분쯤 뒤 — Slack 스레드 헤드의 TL;DR) 대시보드에도 보인다: 세션 패널 Chat에 요약 전문이 답변으로, 태스크 카드에 TL;DR 상자로. 상자는 다음 지시가 오면 사라지고, 휴면·보관 카드에는 보이지 않으며, 우상단 ×를 누르면 이 브라우저에서 그 카드의 상자를 지운다.
+턴의 Executive Summary가 나오면(작업이 끝나고 5분쯤 뒤 — Slack 스레드 헤드의 TL;DR) 대시보드에도 보인다: 세션 패널 Chat에 요약 전문이 답변으로, 태스크 카드에 TL;DR 상자로. 상자는 다음 지시가 오면 사라지고, 휴면·보관 카드에는 보이지 않으며, 우상단 ×를 누르면 이 브라우저에서 그 카드의 상자를 지운다. 세션이 만든 이슈나 PR이 아직 완료가 아니면(열림·드래프트·미머지·배포 대기) 요약은 TL;DR의 굵은 ⚠️ 줄에 그 이유를 쓰고, 맨 아래 ⚠️ User follow-up required 섹션에 무엇이 막혔는지·누가 해야 하는지·단계·확인 방법·처리 후 보낼 답을 쓴다. 그 ⚠️ 줄이 있으면 카드는 DONE이 아니라 NEEDS YOU("후속 작업 필요: …")에 머물고, 이후 요약에 ⚠️ 줄이 없거나 `/new`를 하면 빠진다. 이 요약은 soma-work 하네스 스킬 `local:auto-es`다: 턴 종료 요약은 그 턴 종료 규칙으로 돌고, 모델이 (`es` 대신) 실행하면 같은 TL;DR을 카드에 직접 쓴다(`UPDATE_SESSION { executiveSummary: { tldr } }`, 이슈·PR·문서 링크와 상태도 함께).
 
 ### 📎 대시보드의 지시 첨부
 
@@ -493,6 +501,8 @@ npm run smoke:setup-package       # setup/런타임 계약, 외부 소비자 관
 
 GitHub App이 설정되어 있으면 우선 사용됩니다. 없으면 PAT으로 자동 폴백.
 
+App을 쓰면 토큰을 갱신할 때마다 봇 전용 `gh` 설정(`$DATA_DIR/gh/hosts.yml`, 권한 0600)도 다시 씁니다. 그 파일이 쓰여 있는 동안 에이전트 셸은 그 디렉터리를 `GH_CONFIG_DIR`로 받고 `GITHUB_TOKEN`은 받지 않습니다(쓰기에 실패하면 env로 돌아갑니다). 그래서 `gh`는 긴 턴의 한 시간 뒤 만료되는 복사본이 아니라 매번 살아 있는 토큰을 읽습니다. `git`은 이미 갱신마다 다시 쓰는 자기 설정을 매번 읽습니다. 그래서 에이전트의 `gh`는 운영자의 `~/.config/gh`(별칭, 다른 호스트)를 보지 않습니다.
+
 ---
 
 ## 프로젝트 구조
@@ -523,7 +533,8 @@ src/                                # TypeScript 소스
 ├── sandbox/                        # 실행 샌드박스 게이트
 ├── metrics/                        # 토큰/비용 텔레메트리
 ├── notification-channels/          # Slack · DM · Telegram · Webhook 라우팅
-└── local/                          # Claude Code SDK 확장 (skills/, agents/, hooks/)
+├── local-harness/                  # soma-work 전용 플러그인 `local` (하네스 스킬: auto-es)
+└── local/                          # Claude Code SDK 확장 (플러그인 `zworkflow`, 범용 — skills/, agents/, hooks/)
 
 packages/                           # 워크스페이스 패키지
 ├── mcp-servers/                    # 내장 MCP 서버 (agent, cron, model-command, devops-tools, ...)

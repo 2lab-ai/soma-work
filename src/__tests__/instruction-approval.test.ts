@@ -323,6 +323,49 @@ describe('InstructionApprovals (#767)', () => {
     });
   });
 
+  describe('#842 R3 — a strict hold is saved or refused (a dashboard task’s word must not end up nowhere)', () => {
+    it('a strict hold whose save fails keeps nothing, asks nobody and says so', async () => {
+      const approvals = new InstructionApprovals(deps());
+      // The store cannot be written: its path is a directory.
+      fs.mkdirSync(storeFile);
+      const r = await approvals.hold({
+        sessionKey: KEY,
+        session: sessions.get(KEY),
+        senderId: OTHER,
+        instruction: { kind: 'task-command', text: '배포해줘', at: 1 },
+        strict: true,
+      });
+      expect(r.refused).toBe('unsaved');
+      expect(approvals.pendingFor(KEY)).toEqual([]);
+      expect(dms).toEqual([]);
+      expect(notices).toEqual([]);
+    });
+
+    it('a strict hold joining a pending request takes back only its own words when the save fails', async () => {
+      const approvals = new InstructionApprovals(deps());
+      const first = await holdOne(approvals, '101.000', '먼저');
+      fs.rmSync(storeFile);
+      fs.mkdirSync(storeFile);
+      const r = await approvals.hold({
+        sessionKey: KEY,
+        session: sessions.get(KEY),
+        senderId: OTHER,
+        instruction: { kind: 'task-command', text: '나중', at: 2 },
+        strict: true,
+      });
+      expect(r).toMatchObject({ requestId: first.requestId, refused: 'unsaved' });
+      expect(approvals.pendingFor(KEY)[0].count).toBe(1);
+    });
+
+    it('a hold that is not strict keeps its in-memory hold as before', async () => {
+      const approvals = new InstructionApprovals(deps());
+      fs.mkdirSync(storeFile);
+      const r = await holdOne(approvals);
+      expect(r.refused).toBeUndefined();
+      expect(approvals.pendingFor(KEY)).toHaveLength(1);
+    });
+  });
+
   describe('T3 — the four answers', () => {
     it('승인 — runs every held instruction once, in order, and tells the thread and the DM', async () => {
       const approvals = new InstructionApprovals(deps());

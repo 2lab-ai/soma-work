@@ -934,4 +934,113 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
       dashboard.setDashboardTaskCommandHandler(null);
     }
   });
+  it('2026-11-03 — a task’s card lists its follow-up queue; a Slack-less queue control goes to the task queue handler', async () => {
+    const dashboard = await import('../dashboard');
+    const reg = new SessionRegistry();
+    const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
+    task.activityState = 'working';
+    task.taskFollowups = [
+      { id: 'tq-a', text: 'goal 설정해줘', authorId: 'U1', enqueuedAt: 10, epoch: 0, state: 'queued' },
+      { id: 'tq-b', text: '그 다음', authorId: 'U2', enqueuedAt: 11, epoch: 2, state: 'paused', stateReason: '중지됨' },
+      { id: 'tq-c', text: '가는 중', authorId: 'U1', enqueuedAt: 12, epoch: 1, state: 'sending' },
+    ];
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const key = `task:${task.taskId}`;
+    const b = await board();
+    const card = [...b.working, ...b.waiting, ...b.idle].find((c) => c.key === key) as any;
+    expect(card?.followups).toEqual({
+      turnEpoch: 0,
+      items: [
+        {
+          id: 'tq-a',
+          text: 'goal 설정해줘',
+          files: [],
+          enqueuedAt: 10,
+          state: 'queued',
+          epoch: 0,
+          editable: true,
+          authorId: 'U1',
+        },
+        {
+          id: 'tq-b',
+          text: '그 다음',
+          files: [],
+          enqueuedAt: 11,
+          state: 'paused',
+          epoch: 2,
+          editable: true,
+          authorId: 'U2',
+          author: 'U2',
+          stateReason: '중지됨',
+        },
+        // In flight: the panel's "sending" row, nothing to edit (review R2).
+        {
+          id: 'tq-c',
+          text: '가는 중',
+          files: [],
+          enqueuedAt: 12,
+          state: 'dispatched',
+          epoch: 1,
+          editable: false,
+          authorId: 'U1',
+        },
+      ],
+    });
+
+    const url = (op: string) => `/api/dashboard/session/${encodeURIComponent(key)}/queue/tq-a/${op}`;
+    const owner = await signIn('U1');
+    // Unwired: 501, never the Slack queue's refusal.
+    const unwired = await injectWebServer({
+      method: 'POST',
+      url: url('cancel'),
+      headers: owner,
+      payload: JSON.stringify({ epoch: 0, turnEpoch: 0 }),
+    });
+    expect(unwired.statusCode).toBe(501);
+
+    const taskQueue = vi.fn(async () => ({ ok: true as const, message: '취소했습니다' }));
+    const slackQueue = { view: vi.fn(() => undefined), act: vi.fn(async () => ({ ok: true as const })) };
+    dashboard.setDashboardTaskQueueHandler(taskQueue);
+    dashboard.setDashboardFollowupHandler(slackQueue);
+    try {
+      const cancelled = await injectWebServer({
+        method: 'POST',
+        url: url('cancel'),
+        headers: owner,
+        payload: JSON.stringify({ epoch: 0, turnEpoch: 0 }),
+      });
+      expect(cancelled.statusCode).toBe(200);
+      expect(JSON.parse(cancelled.body)).toEqual({ ok: true, message: '취소했습니다' });
+      expect(taskQueue).toHaveBeenLastCalledWith({
+        sessionKey: key,
+        itemId: 'tq-a',
+        op: 'cancel',
+        epoch: 0,
+        turnEpoch: 0,
+        actorUserId: 'U1',
+        manages: true,
+      });
+      expect(slackQueue.act).not.toHaveBeenCalled();
+
+      taskQueue.mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        message: 'only the person who wrote it can edit it',
+      } as any);
+      const refused = await injectWebServer({
+        method: 'POST',
+        url: url('edit'),
+        headers: await signIn('U2'),
+        payload: JSON.stringify({ epoch: 0, turnEpoch: 0, text: '바꿔' }),
+      });
+      expect(refused.statusCode).toBe(403);
+      expect(JSON.parse(refused.body).error).toMatch(/only the person/);
+      expect(taskQueue).toHaveBeenLastCalledWith(
+        expect.objectContaining({ op: 'edit', text: '바꿔', actorUserId: 'U2', manages: false }),
+      );
+    } finally {
+      dashboard.setDashboardTaskQueueHandler(null);
+      dashboard.setDashboardFollowupHandler(null);
+    }
+  });
 });

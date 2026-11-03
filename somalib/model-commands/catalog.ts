@@ -260,8 +260,26 @@ const UPDATE_SESSION_SCHEMA = {
         required: ['action'],
       },
     },
+    executiveSummary: {
+      type: 'object',
+      description:
+        "Put the Executive Summary's TL;DR on the session's task card (the es skill does this after writing " +
+        'its summary). Send the same 3 lines the summary opens with. A line that starts with ⚠️ (an issue/PR ' +
+        'this session created is not complete, and why) keeps the card in NEEDS YOU — waiting for the user — ' +
+        'until a later summary has no such line.',
+      properties: {
+        tldr: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 5,
+          items: { type: 'string' },
+          description: 'TL;DR lines, one sentence each',
+        },
+      },
+      required: ['tldr'],
+    },
   },
-  // operations OR title OR instructionOperations must be present
+  // operations OR title OR instructionOperations OR executiveSummary must be present
   additionalProperties: false,
 };
 
@@ -830,6 +848,8 @@ export function runModelCommand(
         // title is passed through for host to apply
         ...(request.params.title ? { title: request.params.title } : {}),
         ...(request.params.title && request.params.titleFillOnly === true ? { titleFillOnly: true } : {}),
+        // #829 — the card TL;DR (and its ⚠️ follow-up) is the host's to apply too
+        ...(request.params.executiveSummary ? { executiveSummary: request.params.executiveSummary } : {}),
       },
     };
   }

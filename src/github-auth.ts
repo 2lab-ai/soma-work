@@ -1,5 +1,8 @@
+import path from 'path';
 import { config } from './config.js';
+import { DATA_DIR } from './env-paths.js';
 import {
+  GhHostsWriteError,
   GitCredentialsManager,
   GitHubApiClient,
   type GitHubAppConfig,
@@ -25,7 +28,8 @@ class GitHubAppAuth {
 
   constructor(private appConfig: GitHubAppConfig) {
     this.apiClient = new GitHubApiClient(appConfig);
-    this.credentialsManager = new GitCredentialsManager();
+    // Agent shells' gh reads the App token from here (#834): rewritten on every refresh, so it never goes stale.
+    this.credentialsManager = new GitCredentialsManager(path.join(DATA_DIR, 'gh'));
 
     if (appConfig.installationId) {
       this.installationId = parseInt(appConfig.installationId, 10);
@@ -52,7 +56,13 @@ class GitHubAppAuth {
 
     // Otherwise, get token directly from API
     const tokenInfo = await this.apiClient.getInstallationToken(targetInstallationId);
-    await this.credentialsManager.updateCredentials(tokenInfo.token);
+    try {
+      await this.credentialsManager.updateCredentials(tokenInfo.token);
+    } catch (error) {
+      // git's credentials are written; only the agents' gh hosts.yml is not (no scheduler retries a one-off token).
+      if (!(error instanceof GhHostsWriteError)) throw error;
+      logger.warn(error.message);
+    }
     return tokenInfo.token;
   }
 

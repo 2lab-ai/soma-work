@@ -172,8 +172,11 @@ export interface HoldResult {
   requestId: string;
   /** A new request (the owner was asked) — false when the words joined a pending one. */
   created: boolean;
-  /** `full`: the request already holds {@link MAX_HELD_INSTRUCTIONS}; this one was not kept. */
-  refused?: 'full';
+  /**
+   * `full`: the request already holds {@link MAX_HELD_INSTRUCTIONS}; this one was not kept.
+   * `unsaved`: a strict hold could not be saved; nothing of it was kept and nobody was asked.
+   */
+  refused?: 'full' | 'unsaved';
 }
 
 interface StoreDoc {
@@ -366,6 +369,13 @@ export class InstructionApprovals {
     senderId: string;
     senderName?: string;
     instruction: HeldInstruction;
+    /**
+     * Saved or refused (#842 R3): a failed save takes the hold back — its words, and the
+     * request if this hold made it — and answers `refused: 'unsaved'` before anyone is asked,
+     * so a caller that still holds the words on record keeps them. Without it an unsaved
+     * hold stays in memory, as before.
+     */
+    strict?: boolean;
   }): Promise<HoldResult> {
     const { sessionKey, session, senderId, instruction } = input;
     const t = this.now();
@@ -397,8 +407,21 @@ export class InstructionApprovals {
       return { requestId: request.requestId, created: false, refused: 'full' };
     }
     request.held.push(instruction);
-    // Held in memory either way: an unsaved hold is lost on a restart, never run.
-    this.saveQuietly('hold');
+    if (input.strict) {
+      try {
+        this.save();
+      } catch (error) {
+        request.held.pop();
+        if (created) this.requests.delete(request.requestId);
+        logger.error('Instruction approval store write failed (strict hold) — the hold was taken back', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return { requestId: request.requestId, created: false, refused: 'unsaved' };
+      }
+    } else {
+      // Held in memory either way: an unsaved hold is lost on a restart, never run.
+      this.saveQuietly('hold');
+    }
 
     if (instruction.kind === 'message') {
       void this.bestEffort('react', () =>

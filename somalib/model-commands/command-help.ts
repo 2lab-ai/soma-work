@@ -159,7 +159,8 @@ const UPDATE_SESSION_HELP: CommandHelp = {
   commandId: 'UPDATE_SESSION',
   summary:
     'Update session resources and/or title. Provide at least one of: operations (add/remove/set_active on ' +
-    'issue/pr/doc), instructionOperations (user SSOT, y/n gated), or title.',
+    'issue/pr/doc), instructionOperations (user SSOT, y/n gated), title, or executiveSummary (the task ' +
+    "card's TL;DR; a line starting with ⚠️ keeps the card waiting for the user).",
   examples: [
     {
       title: 'Link a PR and make it active',
@@ -175,6 +176,18 @@ const UPDATE_SESSION_HELP: CommandHelp = {
     {
       title: 'Add a user instruction (queued for y/n confirmation)',
       params: { instructionOperations: [{ action: 'add', text: 'Always run tests before PR' }] },
+    },
+    {
+      title: 'Put the Executive Summary TL;DR on the task card (⚠️ line = the card waits for the user)',
+      params: {
+        executiveSummary: {
+          tldr: [
+            'PR #12 opened: login error fixed, CI green.',
+            '⚠️ **PR #12 not merged — merging needs a maintainer approval.**',
+            'Next: approve and merge PR #12, then reply "merged".',
+          ],
+        },
+      },
     },
   ],
 };

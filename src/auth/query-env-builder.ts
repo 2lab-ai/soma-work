@@ -1,4 +1,5 @@
 import type { SlotAuthLease } from '../credentials-manager';
+import { getAgentGhConfigDir } from '../github/agent-gh-config';
 import { getAuthMode, getLlmuxSettings } from './auth-runtime';
 import type { TenantKeyLease } from './llmux-tenant-keys';
 
@@ -184,6 +185,18 @@ export function buildQueryEnv(lease: SlotAuthLease, opts?: QueryEnvOptions): Que
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (typeof value === 'string') env[key] = value;
+  }
+
+  // Layer 1b — the GitHub CLI credential (#834). This env is a copy taken once per turn, and the App installation token
+  // lives an hour: a `gh` reading GITHUB_TOKEN from the copy fails with 401 once it expires (git does not — it re-reads
+  // its config, which every refresh rewrites). While a bot-owned hosts.yml holds the live token, agent shells get its
+  // dir instead of the frozen token — gh re-reads hosts.yml on every call. The operator's claude.env (layer 2) still
+  // wins. Without one (a PAT setup), the env passes through.
+  const ghConfigDir = getAgentGhConfigDir();
+  if (ghConfigDir) {
+    env.GH_CONFIG_DIR = ghConfigDir;
+    delete env.GITHUB_TOKEN;
+    delete env.GH_TOKEN;
   }
 
   // Layer 2 — operator-controlled additional env. Already validated +

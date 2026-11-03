@@ -76,7 +76,8 @@ src/
 │   ├── service.ts   # launchd user agent 설치/기동
 │   ├── production-seams.ts  # 실제 배선 + 패키징된 asset 경로 상수
 │   └── setup/       # 온보딩 state machine (orchestrator, materialize, slack-*, llmux)
-└── local/           # Claude Code SDK 로컬 플러그인 (skills/, agents/, hooks/)
+├── local-harness/   # soma-work 전용 플러그인 `local` — 하네스 MCP(작업 카드)를 부르는 스킬 (auto-es). 마켓플레이스에 없음
+└── local/           # Claude Code SDK 로컬 플러그인 `zworkflow` (skills/, agents/, hooks/) — 범용, 하네스 호출 금지
 
 packages/            # 워크스페이스 패키지
 ├── mcp-servers/     # 내장 MCP 서버 (agent, cron, model-command, permission, devops-tools, ...)
@@ -190,7 +191,7 @@ gh workflow run deploy --ref main -f confirm=deploy
 
 - **듀얼 인스턴스 금지**: 같은 Slack 토큰으로 여러 인스턴스 실행 시 메시지 중복/충돌. 개발은 `npm start`만 사용.
 - **고정 작업 디렉토리**: 각 유저별 `{BASE_DIRECTORY}/{userId}/` 고정. 유저가 직접 설정 불가 (보안 격리).
-- **Git push = 봇 identity만**: 봇 세션은 세션의 `GITHUB_TOKEN`(봇 자신의 GitHub App 토큰)으로 push한다. 사람 gh 계정의 토큰을 꺼내 쓰지 마라 — `devops-secret-guard`가 `gh auth token` · `gh auth status --show-token` · `gh auth git-credential` · 키체인 덤프를 모든 봇·모든 권한 모드·admin까지 거부한다.
+- **Git push = 봇 identity만**: 봇 세션은 봇 자신의 GitHub App 토큰으로 push한다. `git`은 갱신마다 다시 쓰이는 gitconfig를, `gh`는 `GH_CONFIG_DIR`(`$DATA_DIR/gh/hosts.yml`, 갱신마다 다시 씀)를 읽는다 — 그 hosts.yml이 쓰여 있는 동안 에이전트 env에 `GITHUB_TOKEN`은 없다(쓰기에 실패하면 env로 돌아간다. 턴 시작 때 복사된 토큰은 한 시간 뒤 만료되어 `gh`가 401을 냈다, #834). 사람 gh 계정의 토큰을 꺼내 쓰지 마라 — `devops-secret-guard`가 `gh auth token` · `gh auth status --show-token` · `gh auth git-credential` · 키체인 덤프를 모든 봇·모든 권한 모드·admin까지 거부한다.
   계정별 gh 작업은 `devops-tools` MCP(`gh_read`, `gh_write` — 쓰기는 브로커 Slack 카드에 admin ✅ 필요)로 한다. 그 배포에 devops-tools가 없거나 거부되면 유저에게 알린다.
   App identity로 push가 안 되면(그 repo에 앱 미설치, workflow 파일 변경 등) 우회하지 말고 멈춰서 유저에게 알린다.
 - **Permission MCP Server**: `mcp-config-builder.ts`에서 `__filename` 기반 동적 확장자 사용 (.ts dev / .js prod). 하드코딩 금지.

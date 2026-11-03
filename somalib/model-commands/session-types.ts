@@ -276,6 +276,12 @@ export interface SessionResourceUpdateRequest {
    * voice / image-only sessions so a deliberate title is never overwritten.
    */
   titleFillOnly?: boolean;
+  /**
+   * #829 — the Executive Summary's TL;DR for the session's task card (1–5 lines). A line that starts with ⚠️
+   * (an issue/PR this session created is not complete, and why) keeps the card in NEEDS YOU until the next
+   * summary has none. Applied by the host only — the snapshot carries no TL;DR.
+   */
+  executiveSummary?: { tldr: string[] };
 }
 
 export interface SessionResourceUpdateResult {

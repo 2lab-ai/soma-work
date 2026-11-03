@@ -5027,6 +5027,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       const summaryText = outcome.value;
       if (summaryText) {
         summaryService.displayOnThread(session as any, summaryText);
+        // #829 — the card's TL;DR and follow-up verdict survive a crash before the next save point. A failed
+        // save never costs the summary its display.
+        try {
+          this.deps.claudeHandler?.saveSessions?.();
+        } catch (err: any) {
+          this.logger.warn('saveSessions after the summary failed', { sessionKey, error: err?.message });
+        }
         // The dashboard: the whole summary in its chat, the TL;DR on the task card (T7). Before the
         // Slack calls, so a failed thread update never keeps it from the dashboard.
         try {
@@ -6288,6 +6295,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         const hasResourceOps = request.operations && request.operations.length > 0;
         const hasInstructionOps = request.instructionOperations && request.instructionOperations.length > 0;
         let operationsOk = true;
+        // #829 review — a Slack-less task runs with channel '' and no thread: its session is reachable only by
+        // key (a channel lookup with '' throws). Every write below goes by key there.
+        const handler = this.deps.claudeHandler;
+        const byKey = (session as { slackless?: boolean } | undefined)?.slackless === true || !context.channel;
 
         // Resource operations (issues/prs/docs) apply immediately. Instruction
         // operations are GATED — see PLAN §7 — the user must click y/n
@@ -6300,11 +6311,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             operations: request.operations,
             // Deliberately OMIT instructionOperations.
           };
-          const updateResult = this.deps.claudeHandler.updateSessionResources(
-            context.channel,
-            context.threadTs,
-            resourceOnly,
-          );
+          const updateResult = byKey
+            ? handler.updateSessionResourcesByKey(context.sessionKey, resourceOnly)
+            : handler.updateSessionResources(context.channel, context.threadTs, resourceOnly);
           if (!updateResult.ok) {
             operationsOk = false;
             this.logger.warn('Failed to apply UPDATE_SESSION resource ops on host', {
@@ -6347,23 +6356,37 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         const titleUpdate = payload.title as string | undefined;
         if (titleUpdate && operationsOk) {
           if (payload.titleFillOnly === true) {
-            const applied = this.deps.claudeHandler.fillPlaceholderSessionTitle(
-              context.channel,
-              context.threadTs,
-              titleUpdate,
-            );
+            const applied = byKey
+              ? handler.fillPlaceholderSessionTitleByKey(context.sessionKey, titleUpdate)
+              : handler.fillPlaceholderSessionTitle(context.channel, context.threadTs, titleUpdate);
             this.logger.info('Fill-only session title from UPDATE_SESSION', {
               sessionKey: context.sessionKey,
               title: titleUpdate,
               applied,
             });
           } else {
-            this.deps.claudeHandler.updateSessionTitle(context.channel, context.threadTs, titleUpdate);
+            if (byKey) handler.updateSessionTitleByKey(context.sessionKey, titleUpdate);
+            else handler.updateSessionTitle(context.channel, context.threadTs, titleUpdate);
             this.logger.info('Applied session title update from UPDATE_SESSION', {
               sessionKey: context.sessionKey,
               title: titleUpdate,
             });
           }
+        }
+
+        // #829 — the model-run es puts its TL;DR on the task card; its ⚠️ line keeps the card waiting for
+        // the user. Same guard as the title: not when this update's resource ops failed on the host.
+        const executiveSummary = payload.executiveSummary as { tldr?: unknown } | undefined;
+        if (operationsOk && executiveSummary && Array.isArray(executiveSummary.tldr)) {
+          const tldr = executiveSummary.tldr.filter((l): l is string => typeof l === 'string');
+          const applied = byKey
+            ? handler.setExecutiveSummaryByKey?.(context.sessionKey, tldr)
+            : handler.setExecutiveSummary?.(context.channel, context.threadTs, tldr);
+          this.logger.info('Applied card TL;DR from UPDATE_SESSION', {
+            sessionKey: context.sessionKey,
+            lines: tldr.length,
+            applied: applied === true,
+          });
         }
       }
     }

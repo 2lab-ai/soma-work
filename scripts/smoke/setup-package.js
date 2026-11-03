@@ -92,6 +92,14 @@ const A2T_WORKER = 'services/a2t/worker.py';
  */
 const A2T_REQUIREMENTS = 'services/a2t/requirements.txt';
 
+/**
+ * #857 — the soma-work harness plugin (`local`, src/local-harness). The daemon loads it as a bundled default and
+ * reads `local:auto-es`'s turn-end contract from it; a build that forgot to copy it would run every turn-end summary
+ * without that contract (the card would never wait in NEEDS YOU) while every other check stays green.
+ */
+const HARNESS_PLUGIN_MANIFEST = 'dist/local-harness/.claude-plugin/plugin.json';
+const HARNESS_TURN_END_CONTRACT = 'dist/local-harness/skills/auto-es/reference/turn-end.md';
+
 /** Files whose absence makes the staged tree unusable as a somawork runtime. */
 const REQUIRED_FILES = [
   'package.json',
@@ -103,6 +111,8 @@ const REQUIRED_FILES = [
   MANIFEST_ASSET,
   A2T_WORKER,
   A2T_REQUIREMENTS,
+  HARNESS_PLUGIN_MANIFEST,
+  HARNESS_TURN_END_CONTRACT,
 ];
 
 /** The three assets `somawork setup` re-reads on every run. */
