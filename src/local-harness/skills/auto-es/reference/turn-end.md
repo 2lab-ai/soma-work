@@ -1,4 +1,4 @@
-soma-work turn-end summary — `local:auto-es` (Path B). These rules come on top of the es mode template and the rules above; the host acts on them, so follow them exactly.
+soma-work turn-end summary — `local:auto-es` (Path B). These rules override the TL;DR line rule (line 2 may be the ⚠️ line below, with bold on that line only) and the mode template's section order (the ⚠️ User follow-up required section comes after Next Actions, as the very last section) above; everything else above still applies. The host acts on these rules, so follow them exactly.
 
 Own artifacts:
 - An own artifact is an issue, PR or document this session created. Status marks each one with `🆕 created this session` and its current state; documents (HTML artifacts, uploaded reports, spec pages) count.
