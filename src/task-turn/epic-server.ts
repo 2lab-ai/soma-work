@@ -335,9 +335,11 @@ export function epicTools(ctx: EpicExecutionContext) {
         const theirs = folderOf(child);
         const sibling = theirs ? overlappingSibling(h, epic, theirs, child.taskId) : undefined;
         if (sibling) return refuse('folder-overlap', `a running child (${sibling.taskId}) works in its folder`);
-        const refused = h.admit(epic, { child });
-        if (refused) return refuse('start-429', refused);
       }
+      // Queued or not, it is the tree's work: its spend and its window answer (a working child's
+      // word takes no new running place — the gate does not count the child against itself).
+      const refused = h.admit(epic, { child });
+      if (refused) return refuse('start-429', refused);
       const sent = await h.instructChild(epic, child, args.instruction);
       if (!sent.taken) return refuse('not-sent', sent.reason ?? 'the instruction could not be sent — try again');
       return reply({ ok: true, childId: args.childId, started: !sent.queued, queued: sent.queued });
