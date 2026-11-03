@@ -826,6 +826,52 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(goalDriver).toHaveBeenCalledTimes(1);
     });
 
+    it('fires once the slot is free whatever the outcome — a handled error is not a strand', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const { settle } = await startBusyTurn();
+
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+      handlerAny.releaseDeferredGoalDriver(SESSION_KEY, { canDrain: false, outcome: { result: 'error', reason: 'x' } });
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+      await settle();
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fire for a turn a stop cut — the last word is the stop', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const { settle } = await startBusyTurn();
+
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+      handlerAny.releaseDeferredGoalDriver(SESSION_KEY, {
+        canDrain: false,
+        outcome: { result: 'interrupted', reason: 'user-stop' },
+      });
+      expect(goalDriver).not.toHaveBeenCalled();
+      await settle();
+      expect(goalDriver).not.toHaveBeenCalled();
+    });
+
+    it('lets queued follow-ups run first (§3.6), then fires once', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const order: string[] = [];
+      handler.setGoalTurnSettledHandler(() => order.push('goal-driver'));
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 해줘' }), say());
+      startWithContinuation.mockImplementationOnce(async () => {
+        order.push('follow-up');
+        return { hasPendingChoice: false };
+      });
+
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+      await settle();
+
+      expect(order).toEqual(['follow-up', 'goal-driver']);
+    });
+
     it('still drives the loop at once for a turn that left text (the eval outlasts the teardown)', async () => {
       registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
       const goalDriver = vi.fn();
@@ -2578,6 +2624,42 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(steerTurn.mock.calls[0][1].text).toBe('이 로그 봐줘\n\nUploaded files:\n/tmp/log.txt');
       // Still on disk: the model reads the paths at the next tool boundary.
       expect(cleanupTempFiles).not.toHaveBeenCalled();
+      await settle();
+    });
+
+    /**
+     * #891 — the compaction can begin while the attachments download (a
+     * prompt-too-long fallback `/compact` re-enters under the same slot): the
+     * check is read after those awaits, right before the synchronous push.
+     */
+    it('queues a follow-up whose files were still downloading when a /compact turn began', async () => {
+      const steerTurn = withLiveTurn();
+      const processed = [{ name: 'log.txt', path: '/tmp/log.txt', isImage: false }];
+      processFiles.mockImplementation(async () => {
+        registrySession.compactTurnActive = true;
+        return { files: processed, shouldContinue: true };
+      });
+      const cleanupTempFiles = vi.fn().mockResolvedValue(undefined);
+      handlerAny.fileHandler = {
+        formatFilePrompt: vi.fn().mockResolvedValue('이 로그 봐줘\n\nUploaded files:\n/tmp/log.txt'),
+        cleanupTempFiles,
+      };
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(
+        message({
+          ts: '333.444',
+          text: '이 로그 봐줘',
+          files: [{ id: 'F1', name: 'log.txt', mimetype: 'text/plain', filetype: 'text', url_private: 'https://x/1' }],
+        }),
+        say(),
+      );
+
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(items()[0].state).toBe('queued');
+      expect(cleanupTempFiles).toHaveBeenCalledWith(processed);
+      registrySession.compactTurnActive = false;
+      processFiles.mockResolvedValue({ files: [], shouldContinue: true });
       await settle();
     });
 

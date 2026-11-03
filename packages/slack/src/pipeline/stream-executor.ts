@@ -3024,7 +3024,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // replay this turn's `finally` dispatches: the compaction is a step inside
       // the user's turn, not its end, so it must not read as "완료" meanwhile.
       workingForCompactReplay =
-        !taskTurn && session.compactTurnActive === true && hasCompactReplayWaiting(session as CompactStateSession);
+        session.compactTurnActive === true && hasCompactReplayWaiting(session as CompactStateSession);
       const hasContinuation = Boolean(toolContinuation) || workingForCompactReplay;
       if (!hasContinuation) {
         this.setActivity(session, sessionKey, channel, threadTs, hasPendingChoice ? 'waiting' : 'idle');
