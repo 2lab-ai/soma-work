@@ -2132,6 +2132,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       let reachedModel = isSlashCommand;
 
       // Create stream callbacks
+      // #846 — set when the host's settlement says this turn consumed a steered message.
+      let steerConsumedThisTurn = false;
       const streamCallbacks: StreamCallbacks = {
         // HEARTBEAT. The transport spoke — that is all this proves, so it
         // advances `lastSignalAt` and nothing else. Advancing the progress
@@ -2397,10 +2399,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         },
         onSteerLifecycle: async (event, ctx) => {
           // #846 — this turn folded in a steered message (the host's settlement just before the result says so;
-          // the SDK does not re-stamp a folded send on a typed turn). The es of this turn may not cover it: drop the
-          // es marker so the turn-end summary judges the whole turn again; the TL;DR stays until it does. A steer
-          // folded before the es costs one extra summary, never a stale card.
-          if (event.phase === 'completed') releaseEsCard(session);
+          // the SDK does not re-stamp a folded send on a typed turn). Noted here, applied at the turn end: a buffered
+          // UPDATE_SESSION result can still land after this frame.
+          if (event.phase === 'completed') steerConsumedThisTurn = true;
           // Forward the backend's answer ("this turn consumed uuid X") to the
           // host queue, keyed by the session the follow-up was queued under.
           // `ctx.sessionKey` is the same value passed to `streamAgentEvents`
@@ -3464,6 +3465,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // so the user can see the wait window expire instead of guessing why
       // a summary suddenly appeared after silence.
       // Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S1
+      // #846 — a steered message this turn consumed is input its es may not cover: drop the es marker (every tool
+      // result is applied by now) so the turn-end summary judges the whole turn again; the TL;DR stays until it does.
+      // A steer folded before the es costs one extra summary, never a stale card.
+      if (steerConsumedThisTurn) releaseEsCard(session);
       // #846 — not when this turn's model-run es already wrote the card: the card would ignore the fork, and the
       // thread head would show a second TL;DR.
       if (

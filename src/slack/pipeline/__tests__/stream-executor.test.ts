@@ -7639,7 +7639,13 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
     source: 'es',
   };
 
-  function run(opts: { esThisTurn: boolean; markerBefore?: boolean; consumed?: string[]; discarded?: string[] }) {
+  function run(opts: {
+    esThisTurn: boolean;
+    markerBefore?: boolean;
+    consumed?: string[];
+    discarded?: string[];
+    esViaToolResult?: boolean;
+  }) {
     // The module mock above predates the threshold auto-compact getter; this turn reads it.
     (userSettingsStore as any).getUserCompactThreshold ??= vi.fn().mockReturnValue(undefined);
     vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
@@ -7663,7 +7669,39 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
       yield reply('u-open', 'working on it');
       // The model's UPDATE_SESSION lands mid-turn (host apply → setExecutiveSummary).
       if (opts.esThisTurn) session.executiveSummary = { ...ES };
-      yield reply('u-open', 'done');
+      if (opts.esViaToolResult) {
+        // The real path: the model calls UPDATE_SESSION; its tool_result is buffered by the processor and applied
+        // when the stream flushes — after a settlement frame that arrives with no reply text in between.
+        yield {
+          type: 'assistant',
+          user_message_uuid: 'u-open',
+          message: { content: [{ type: 'tool_use', id: 'tool_es', name: 'mcp__model-command__run', input: {} }] },
+        };
+        yield {
+          type: 'user',
+          message: {
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'tool_es',
+                content: JSON.stringify({
+                  type: 'model_command_result',
+                  commandId: 'UPDATE_SESSION',
+                  ok: true,
+                  payload: {
+                    session: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 1 },
+                    appliedOperations: 0,
+                    request: { operations: [], executiveSummary: { tldr: ES.tldr } },
+                    executiveSummary: { tldr: ES.tldr },
+                  },
+                }),
+              },
+            ],
+          },
+        };
+      } else {
+        yield reply('u-open', 'done');
+      }
       // The host's settlement just before the result: which steered sends this turn folded in (consumed) or not.
       if (opts.consumed || opts.discarded) {
         yield {
@@ -7679,6 +7717,11 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
       claudeHandler: {
         setActivityState: vi.fn(),
         clearSessionId: vi.fn(),
+        // The registry write UPDATE_SESSION { executiveSummary } lands in (marks the card as the es's).
+        setExecutiveSummary: vi.fn((_c: string, _t: string, tldr: string[]) => {
+          session.executiveSummary = { tldr, at: 2, source: 'es' };
+          return true;
+        }),
         streamAgentEvents: vi.fn().mockImplementation(() => toAgentEvents(turn())),
         getSessionRegistry: vi.fn().mockReturnValue({
           beginTurn: vi.fn(),
@@ -7693,7 +7736,10 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
       },
       toolEventProcessor: {
         handleToolUse: vi.fn().mockResolvedValue(undefined),
-        handleToolResult: vi.fn().mockResolvedValue(undefined),
+        // The real processor names a main-agent result from its tracker; here the one tool is the model command.
+        handleToolResult: vi.fn(async (results: Array<{ toolUseId: string; toolName?: string }>) => {
+          for (const r of results) if (r.toolUseId === 'tool_es') r.toolName ??= 'mcp__model-command__run';
+        }),
         getLiveBackgroundWork: vi.fn().mockReturnValue({ count: 0, labels: [], signature: '' }),
         cleanup: vi.fn(),
       },
@@ -7794,6 +7840,21 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
     expect((await done).success).toBe(true);
     expect(deps.summaryTimer.start).not.toHaveBeenCalled();
     expect(deps.summaryService.displayEsTldrOnThread).toHaveBeenCalled();
+  });
+
+  it('an es written through the buffered tool_result, then a consumed steer: the summary still runs', async () => {
+    const { deps, session, done } = run({ esThisTurn: false, esViaToolResult: true, consumed: ['u-steer'] });
+    expect((await done).success).toBe(true);
+    expect(deps.claudeHandler.setExecutiveSummary).toHaveBeenCalled();
+    expect(deps.summaryTimer.start).toHaveBeenCalledTimes(1);
+    expect(session.executiveSummary?.source).toBeUndefined();
+  });
+
+  it('an es written through the buffered tool_result, no steer: no host summary', async () => {
+    const { deps, done } = run({ esThisTurn: false, esViaToolResult: true });
+    expect((await done).success).toBe(true);
+    expect(deps.claudeHandler.setExecutiveSummary).toHaveBeenCalled();
+    expect(deps.summaryTimer.start).not.toHaveBeenCalled();
   });
 
   it('an earlier turn’s marker does not block this turn’s summary', async () => {
