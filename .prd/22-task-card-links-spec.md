@@ -43,6 +43,7 @@
 
 - 보드 JSON의 카드마다 `cardLinks: CardLink[]`가 붙는다(`KanbanSession.cardLinks`). `CardLink = { kind: 'issue' | 'pr' | 'wiki', url, text, title?, status?, tone? }`.
 - 출처는 세션의 `links`(`issue` · `pr` · `doc`)와 `linkHistory`(`issues` · `prs` · `docs`)다. 문서 링크(`doc`: Confluence, Notion 등)가 위키다.
+- 위키 칩의 글자는 제목(가져온 것, 기록된 것) → URL 안의 제목(Confluence `/pages/<id>/<제목>`, Notion `/<제목>-<32자리 id>`) → 라벨 순이다. 메시지에 붙인 Notion 링크는 라벨이 "Notion"뿐이라, URL 안의 제목이 없으면 칩이 어느 페이지인지 말하지 못한다. id만 있는 Notion URL은 라벨을 쓴다.
 - 상태는 기다리지 않고 지금 가진 것 중 가장 새것을 쓴다.
   - PR: 슬랙 스레드의 실시간 확인(`actionPanel.prStatus`. 그 URL을 확인했고 그 뒤로 링크가 다시 기록되지 않은 경우, `ActionPanelBuilder.livePrStatus`와 같은 검사) → 링크 메타데이터 캐시(`peekLinkMetadata`) → 링크에 기록된 상태. 머지는 되돌아가지 않으므로, 셋 중 하나라도 머지면 머지됨이다. 그래서 세션이 쉬는 사이 머지된 PR도 예전 "열림" 확인에 가려지지 않는다.
   - 이슈: 캐시 → 기록된 상태.
@@ -54,7 +55,7 @@
 ## 4. 화면
 
 - **카드 면** — `@2lab.ai/ui` 0.19.0 `<ui-agent-inbox>`의 `card.links`가 그린다(`INBOX_ROWS`: summary · task · links · agents · usage · artifacts). 칩을 누르면 `ui-link { cardId, href, kind }` 이벤트가 나고, 카드는 토글되지 않는다. 대시보드는 `cardLinksFace(s)`로 `cardLinks`를 칩으로 바꾼다. 툴팁은 `종류 참조 — 제목 · 상태`다.
-- **펼친 카드** — 이슈 · PR 링크 부분(`refs`)이 같은 링크를 상태와 함께 보여 준다(`card-ref`). `cardLinks`가 없는 예전 보드에서는 예전처럼 이슈 · PR 짧은 참조를 쓴다.
+- **펼친 카드** — 한 번만 말한다(#809). 면의 연결 줄이 링크를 보여 주면(모든 기본 레이아웃), 이슈 · PR 링크 부분(`refs`)은 면이 "+N"으로 접은 링크만 상태와 함께 보여 준다(`card-ref`, `faceShowsLinks`). 연결 줄을 끈 레이아웃에서는 모든 링크를 보여 준다. `cardLinks`가 없는 예전 보드에서는 예전처럼 이슈 · PR 짧은 참조를 쓴다.
 - **편집기** — 본문 줄에 "연결 — 이슈 · PR · 위키"가 있다. 미리보기 카드에 견본 연결(PAY-12 In Progress, #700 열림, 위키)이 있어서 켜고 끄는 결과가 바로 보인다.
 - **스레드 카드(슬랙)** — "태스크 카드 따라감"일 때, 연결 줄이나 PR 칩 중 하나라도 켜져 있으면 링크 줄에 링크 기록(`linkhistory`)이 켜진다. 서버(`followThreadLayout`)와 편집기 미리보기가 같은 결과를 낸다.
 
@@ -90,7 +91,7 @@
   - L2–L3: 기본 카드 면에 `PAY-12 In Progress`, `#733 열림`, `결제 폼 설계`, `#41 닫힘`, `#700 머지됨`이 이 순서로 뜬다.
   - L4: 칩은 새 탭 링크이고, 눌러도 카드가 열리지 않는다.
   - L5: 연결이 없는 카드에는 줄이 없다. PR이 두 번 나오지 않는다.
-  - L6: 펼친 카드의 refs에 같은 링크와 상태가 있다.
+  - L6: 면의 연결 줄이 링크를 보여 주면 펼친 카드의 refs는 그 링크를 되풀이하지 않는다(#809).
   - L7: PR이 머지되면(스레드의 실시간 확인) 다음 보드에 `#733 머지됨`이 뜬다.
   - L8: 390px에서 옆으로 스크롤되지 않는다.
 
