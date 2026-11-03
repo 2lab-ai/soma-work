@@ -342,4 +342,80 @@ describe('StreamExecutor — the links a turn names are recorded on its session'
       ['update', [`${created} merged`]],
     ]);
   });
+  it('E6 — only what GitHub confirms reaches the card, when it answers; a late answer for a replaced session is dropped (#832 r17)', async () => {
+    const created = 'https://github.com/2lab-ai/soma-work/pull/823';
+    streamEvents = () => [
+      {
+        type: 'tool_call',
+        toolCallId: 'r1',
+        name: 'Bash',
+        input: {
+          command:
+            'jq -n \'{title:"x",head:"fix/x",base:"main"}\' | curl -s -X POST https://api.github.com/repos/2lab-ai/soma-work/pulls -d @- | jq \'{number,html_url}\'',
+        },
+      },
+      {
+        type: 'tool_result',
+        toolCallId: 'r1',
+        name: 'Bash',
+        content: [{ type: 'text', text: `{\n  "number": 823,\n  "html_url": "${created}"\n}` }],
+      },
+      { type: 'assistant_delta', text: '끝.' },
+      { type: 'result', stopReason: 'end_turn', finalText: '끝.' },
+    ];
+    let release: (v: ReadonlyArray<unknown>) => void = () => {};
+    const asked: unknown[] = [];
+    setStreamExecutorProviders({
+      confirmGithubEffects: (args) => {
+        asked.push(args);
+        return new Promise((resolve) => {
+          release = resolve as typeof release;
+        });
+      },
+    });
+    try {
+      // 1. GitHub confirms after the turn: recorded then, with the call's start and input.
+      const deps = createDeps('끝.');
+      const session = createSession();
+      deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+      await new StreamExecutor(deps).execute({ ...createParams(session), isUserInput: false });
+      await settle();
+      expect(deps.claudeHandler.noteSessionLinks).not.toHaveBeenCalled();
+      const a = asked[0] as {
+        effects: Array<{ op: string; toolUseId: string }>;
+        startedAt: Map<string, number>;
+        inputs: Map<string, string>;
+      };
+      expect(a.effects.map((e) => [e.op, e.toolUseId])).toEqual([['create', 'r1']]);
+      expect(typeof a.startedAt.get('r1')).toBe('number');
+      expect(a.inputs.get('r1')).toContain('head:"fix/x"');
+      release(a.effects);
+      await settle();
+      expect(
+        deps.claudeHandler.noteSessionLinks.mock.calls.map((c: any[]) => [c[3], c[2].map((l: any) => l.url)]),
+      ).toEqual([['always', [created]]]);
+
+      // 2. GitHub does not confirm it: nothing.
+      const deps2 = createDeps('끝.');
+      const session2 = createSession();
+      deps2.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session2);
+      await new StreamExecutor(deps2).execute({ ...createParams(session2), isUserInput: false });
+      await settle();
+      release([]);
+      await settle();
+      expect(deps2.claudeHandler.noteSessionLinks).not.toHaveBeenCalled();
+
+      // 3. The session was replaced before GitHub answered: nothing lands on the new one.
+      const deps3 = createDeps('끝.');
+      const session3 = createSession();
+      deps3.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(createSession({ sessionId: 'sess_new' }));
+      await new StreamExecutor(deps3).execute({ ...createParams(session3), isUserInput: false });
+      await settle();
+      release((asked[2] as { effects: ReadonlyArray<unknown> }).effects);
+      await settle();
+      expect(deps3.claudeHandler.noteSessionLinks).not.toHaveBeenCalled();
+    } finally {
+      setStreamExecutorProviders({ confirmGithubEffects: ({ effects }) => effects });
+    }
+  });
 });

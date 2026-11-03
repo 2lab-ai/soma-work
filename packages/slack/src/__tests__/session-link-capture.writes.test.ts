@@ -1192,6 +1192,64 @@ describe('W16 — review round 16 (astra-zhuge)', () => {
   });
 });
 
+describe('W17 — review round 17 (fable-zhuge, astra-zhuge)', () => {
+  const U = 'https://github.com/a/b/pull/12';
+  const P = 'https://api.github.com/repos/a/b/pulls';
+  const made = '{"number":12,"html_url":"https://github.com/a/b/pull/12"}';
+
+  it('a require continued after a blank line or by an operator, a `{`-joined Python suite, a for-header body, gh --dry-run / --web, a quoted array splice: not read', () => {
+    expect(
+      effectsOf(
+        bash(
+          `node -e 'const execSync = require("child_process")\n\n.spawnSync;\nexecSync("curl -s -X POST ${P} -d @p");\nconsole.log(${JSON.stringify(made)})'`,
+          made,
+        ),
+        bash(
+          `node -e 'const execSync = require("child_process")\n&& ((c) => console.log(${JSON.stringify(made)}));\nexecSync("curl -s -X POST ${P} -d @p")'`,
+          made,
+        ),
+        bash(
+          `python3 -c 'import requests\nif False: d = {\n}; requests.post("${P}")\nprint(${JSON.stringify(made)})'`,
+          made,
+        ),
+        bash(
+          `python3 -c 'import requests\nif False:\n    d = {\n}; requests.post("${P}")\nprint(${JSON.stringify(made)})'`,
+          made,
+        ),
+        bash(
+          `python3 -c 'import requests\nfor _ in []: d = {\n}; requests.post("${P}")\nprint(${JSON.stringify(made)})'`,
+          made,
+        ),
+        bash(
+          `node -e 'for (let i = 0; i < 0; i++) fetch("${P}", {method: "POST"});\nconsole.log(${JSON.stringify(made)})'`,
+          made,
+        ),
+        bash(
+          'gh pr create -R a/b --title t --body-file body.md --dry-run',
+          `Would have created a Pull Request with:\ntitle:\tt\nbody:\nSee also\n${U}\n`,
+        ),
+        bash('gh pr create --web --fill', `Opening ${U} in your browser.\n`),
+        bash(`curl -X POST ${P} -H "\${H[@]}" -d @p`, made),
+        bash(`curl -X POST ${P} -H "$@" -d @p`, made),
+      ),
+    ).toEqual([]);
+  });
+
+  it('a require on its own line still binds; a GitHub MCP number that is not a primitive does not throw', () => {
+    expect(
+      effectsOf(
+        bash(
+          `node -e 'const { execSync } = require("child_process");\nexecSync("gh pr create -R a/b --fill", { stdio: "inherit" })'`,
+          `${U}\n`,
+        ),
+      ).map(short),
+    ).toEqual([['create', 'pr', U]]);
+    expect(() =>
+      githubWritesOf('mcp__github__create_issue', { owner: 'a', repo: 'b', number: { toString: 0 } }),
+    ).not.toThrow();
+  });
+});
+
 describe('githubEffectsOf — every spelling of a create', () => {
   it('W4 — gh pr create and gh issue create (the output ends with the new URL)', () => {
     expect(
