@@ -198,8 +198,9 @@ import {
   retireGoalCapDecision,
   setGoalCapDecisionSurfaces,
 } from './slack/goal-cap-decision';
+import { HostGoalActionError } from './slack/goal-host-actions';
 import { GoalLoopController } from './slack/goal-loop-controller';
-import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
+import { resumeGoalLoop, setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
 import { createPendingUserRequest, notifyAdminsNewUser } from './slack/new-user-decision';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
 import {
@@ -225,6 +226,7 @@ import { setPlanHost } from './task-turn/plan-server';
 import { composeTaskApprovalListeners } from './task-turn/task-approver';
 import { createDashboardCloseHandler } from './task-turn/task-close';
 import { planGoalObjective } from './task-turn/task-goal';
+import { createTaskGoalCommands, type TaskGoalCommands } from './task-turn/task-goal-commands';
 import { createTaskGoalLoop, type TaskGoalLoop } from './task-turn/task-goal-loop';
 import { createTaskLauncher } from './task-turn/task-launcher';
 import {
@@ -905,6 +907,8 @@ async function start() {
     // #598 ④c — the caller of Slack-less tasks' turns, built below once the
     // work-log appender exists; Close and shutdown reach it through here.
     let taskTurnController: TaskTurnController | undefined;
+    /** #865 — a task's `goal …` and its goal list (wired with the task controller, below). */
+    let taskGoalCommands: TaskGoalCommands | undefined;
     /** E2 ⑤ — the notice ledger could not be read: tasks that owe their thread are kept (D6). */
     let taskNoticeLedgerUnreadable = false;
 
@@ -1156,9 +1160,16 @@ async function start() {
 
     // Connect dashboard: goal list on the work item (SSOT 2026-10-21 T3) —
     // add / delete-current (promotes the next goal) / delete-queued.
-    setDashboardGoalHandler((sessionKey, action, actorUserId) =>
-      slackHandler.handleHostGoalAction(sessionKey, action, actorUserId),
-    );
+    // A Slack-less task has no thread for the host's goal path: its goal list goes through the
+    // task's own goal commands (#865) — same rules, its notices in the work log.
+    setDashboardGoalHandler(async (sessionKey, action, actorUserId) => {
+      const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
+      if (session?.slackless === true) {
+        if (!taskGoalCommands) throw new HostGoalActionError(503, 'Task goal commands are not ready yet');
+        return taskGoalCommands.hostAction(sessionKey, action, actorUserId || session.ownerId || '');
+      }
+      return slackHandler.handleHostGoalAction(sessionKey, action, actorUserId);
+    });
 
     // Connect dashboard: choice answer handler (dashboard button click → same path as Slack button)
     setDashboardChoiceAnswerHandler(async (sessionKey, choiceId, label, question, actorUserId) => {
@@ -1417,9 +1428,48 @@ async function start() {
       holdQueued: (key, session, item) =>
         instructionApprovals.allows({ sessionKey: key, session, senderId: item.authorId })
           ? undefined
-          : holdTaskInstruction(key, item.authorId, { kind: 'task-command', text: item.text, at: Date.now() }),
+          : holdTaskInstruction(key, item.authorId, {
+              kind: 'task-command',
+              text: item.text,
+              at: Date.now(),
+              ...(item.goalOpeningId !== undefined ? { goalOpeningId: item.goalOpeningId } : {}),
+            }),
+      // #865 — `goal …` on a task is the host's goal command, as in a Slack thread.
+      goalCommands: {
+        matches: (text) => taskGoalCommands?.matches(text) ?? false,
+        run: (request, session) =>
+          taskGoalCommands
+            ? taskGoalCommands.run(request, session)
+            : Promise.resolve({ status: 503, body: { error: 'Task goal commands are not ready yet' } }),
+        opensGoal: (text) => taskGoalCommands?.opensGoal(text) ?? false,
+        openingDropped: (key, session, goalId, why) => taskGoalCommands?.openingDropped(key, session, goalId, why),
+      },
     });
     taskTurnController = taskController;
+    taskGoalCommands = createTaskGoalCommands({
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      saveSessions: () => claudeHandler.saveSessions(),
+      broadcast: () => broadcastSessionUpdate(),
+      // Same kick a Slack `goal resume` gives (setGoalLoopResumeHandler → onTurnSettled, cause kick).
+      kickLoop: (key) => resumeGoalLoop(key),
+      // A goal's opening: the objective as the user's words, waiting behind a running turn.
+      startOpening: (key, prompt, actorUserId, carry) =>
+        taskController.start({
+          sessionKey: key,
+          text: prompt,
+          actorUserId,
+          queueWhileRunning: true,
+          goalOpeningId: carry.goalId,
+          ...(carry.approvedOnce ? { approvedOnce: true } : {}),
+          ...(carry.newTask ? { newTask: true } : {}),
+        }),
+      settings: {
+        getUserGoalMaxContinuations: (userId) => userSettingsStore.getUserGoalMaxContinuations(userId),
+        setUserGoalMaxContinuations: (userId, value) => userSettingsStore.setUserGoalMaxContinuations(userId, value),
+        toggleUserAutoGoalEnabled: (userId) => userSettingsStore.toggleUserAutoGoalEnabled(userId),
+        setUserAutoGoalEnabled: (userId, enabled) => userSettingsStore.setUserAutoGoalEnabled(userId, enabled),
+      },
+    });
     // The panel's Send now / Cancel / Edit on a task's queued word.
     setDashboardTaskQueueHandler((request) => taskController.actOnQueue(request));
     // E4 ④a (.prd/19 D3) — the host the epic's tools call: registry reads, the plan writer,
@@ -1512,6 +1562,8 @@ async function start() {
                 // these very words, so the drain does not ask again unless they are edited.
                 queueWhileRunning: true,
                 approvedOnce: true,
+                // A goal's first turn stays one — and runs only if its goal still owes it (#876 R2, astra P2).
+                ...(held.goalOpeningId !== undefined ? { goalOpeningId: held.goalOpeningId } : {}),
               })
             : await taskController.answer({
                 sessionKey: request.sessionKey,

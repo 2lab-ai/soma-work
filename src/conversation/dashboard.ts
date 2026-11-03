@@ -931,8 +931,8 @@ function resolveSelfActionKeyAndOwner(
   }
   // Fail closed (#612 review): a Slack-less task takes only the routes that opt in —
   // stop / close / trash, and `command`, which hands it to the task turn
-  // controller (#598 ④c). Goal, model, effort, the queue and answers are not
-  // supported on a task yet (answers: ⑤ #599).
+  // controller (#598 ④c), and the goal list (#865, the task's goal commands).
+  // Routes that do not opt in answer 409 for a task.
   if (!opts.allowSlackless && _getSessionsFn?.()?.get(originalKey)?.slackless === true) {
     reply.status(409).send({ error: 'not supported on a dashboard task yet' });
     return null;
@@ -1613,7 +1613,8 @@ function taskFollowupsOf(
         enqueuedAt: item.enqueuedAt,
         state: item.state === 'sending' ? 'dispatched' : item.state,
         epoch: item.epoch,
-        editable: !sending,
+        // A goal's first turn is its objective: it is not edited (#865 — cancel it, the goal pauses).
+        editable: !sending && item.goalOpeningId === undefined,
         authorId: item.authorId,
       };
       if (item.authorId !== ownerId) out.author = nameOf(item.authorId);
@@ -4289,7 +4290,8 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: "action must be 'add' or 'delete'" });
         return;
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      // #865 — a task's goal list too: the handler routes it to the task's goal commands.
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       if (!_goalActionHandlerFn) {
@@ -18081,6 +18083,7 @@ async function sendCommand(text, ref, files) {
 
   var why = '';
   var awaitsOwner = false;
+  var goalSaid = ''; // #865 — a task's goal command: the host's answer, no turn of its own
   _pcInFlight++; // until the server answered: a reload now would drop a note the composer no longer holds
   try {
     const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
@@ -18090,12 +18093,22 @@ async function sendCommand(text, ref, files) {
     if (!res.ok) why = ((data && data.error) || '') + ' (HTTP ' + res.status + ')';
     // #767 — someone else's task: the words wait for its owner's approval.
     else if (data && data.pendingApproval) awaitsOwner = true;
+    else if (data && data.goalCommand) goalSaid = String(data.message || '');
   } catch (e) {
     why = (e && e.message) || '네트워크 오류';
   } finally {
     _pcInFlight--;
   }
   if (awaitsOwner) dashToast({ title: '작업 소유자의 승인을 기다려요', description: '소유자가 승인하면 실행됩니다 — 소유자에게 DM과 대시보드로 요청했어요', tone: 'wait' });
+  // A goal command is the host's, not a turn: its words leave the transcript (the work log has the notice);
+  // a goal it started brings its own turn — the objective — when that turn is recorded.
+  if (goalSaid) {
+    if (optimisticId && panelSessionKey === sendingSessionKey) dropTurnFromPanel(optimisticId);
+    // Sent while a turn ran: the steering row it made waits for a queue entry that never comes
+    // (the command applied at once) — unless a goal it started queued its first turn there.
+    if (ref && !(data && data.queued)) el.setItemState(ref, 'cancelled');
+    dashToast({ title: '목표', description: goalSaid, tone: 'success' });
+  }
   // Sent: its files went with it. Failed: they stay kept by ref for the Retry.
   if (!why && ref) {
     delete _pcNoteFiles[ref];

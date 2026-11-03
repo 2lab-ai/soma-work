@@ -7014,6 +7014,9 @@ export class SlackHandler {
         }
       }
       if (session.goal?.status !== 'active') continue;
+      // #876 R2 (grok P1, fable P2) — a dashboard task's goal whose first turn never started: its opening
+      // waits in the task's queue (paused by the restart — Send now starts it). Nothing to continue yet.
+      if (session.slackless === true && session.goal.openingPending === true) continue;
       // A stall judged on no turn text is not a real stall: a turn the restart
       // cut short was taken for "the same failure" (2026-11-02, before the loop
       // stopped judging empty turns). End it — its question is withdrawn and

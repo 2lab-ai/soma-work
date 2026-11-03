@@ -82,6 +82,7 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
   let stopWebServer: () => Promise<void>;
   let injectWebServer: (opts: Record<string, unknown>) => Promise<{ statusCode: number; body: string }>;
   let setDashboardSessionAccessor: (fn: () => Map<string, unknown>) => void;
+  let setDashboardGoalHandler: typeof import('../dashboard').setDashboardGoalHandler;
   let SessionRegistry: typeof import('../../session-registry').SessionRegistry;
 
   beforeAll(async () => {
@@ -90,6 +91,7 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     injectWebServer = webServer.injectWebServer as typeof injectWebServer;
     const dashboard = await import('../dashboard');
     setDashboardSessionAccessor = dashboard.setDashboardSessionAccessor as typeof setDashboardSessionAccessor;
+    setDashboardGoalHandler = dashboard.setDashboardGoalHandler;
     SessionRegistry = (await import('../../session-registry')).SessionRegistry;
     await webServer.startWebServer({ listen: false });
     // The first cold import of the web server transforms the whole dashboard (slow on a busy machine).
@@ -166,20 +168,26 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     expect(cardB?.threadTotalActiveMs).toBe(2_000);
   });
 
-  it('#612 R1 / #598 ④c — routes not yet supported on a task refuse with 409; command goes to the task handler (501 unwired); close is allowed', async () => {
+  it('#612 R1 / #598 ④c / #865 — routes not yet supported on a task refuse with 409; command and the goal list go to their handlers; close is allowed', async () => {
     const reg = new SessionRegistry();
     const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
     setDashboardSessionAccessor(() => reg.getAllSessions());
     const key = encodeURIComponent(`task:${task.taskId}`);
     const headers = { ...AUTH_HEADER, 'X-Admin-Mode': 'on', 'content-type': 'application/json' };
+    // #865 — the goal list on a task reaches the goal handler (production routes it to the task's goal commands).
+    const goalCalls: Array<[string, unknown]> = [];
+    setDashboardGoalHandler(async (sessionKey, action) => {
+      goalCalls.push([sessionKey, action]);
+      return { outcome: 'queued', goalId: 'g1', position: 1 };
+    });
     const goal = await injectWebServer({
       method: 'POST',
       url: `/api/dashboard/session/${key}/goal`,
       headers,
       payload: JSON.stringify({ action: 'add', objective: 'do it' }),
     });
-    expect(goal.statusCode).toBe(409);
-    expect(JSON.parse(goal.body).error).toBe('not supported on a dashboard task yet');
+    expect(goal.statusCode).toBe(200);
+    expect(goalCalls).toEqual([[`task:${task.taskId}`, { action: 'add', objective: 'do it' }]]);
     const command = await injectWebServer({
       method: 'POST',
       url: `/api/dashboard/session/${key}/command`,
@@ -271,13 +279,15 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
       expect(back?.slackless).toBe(true);
       expect(back?.channelId).toBe('');
 
-      const goal = await injectWebServer({
+      // Still a task: a route tasks do not take yet refuses it (the goal list takes tasks since #865).
+      const model = await injectWebServer({
         method: 'POST',
-        url: `/api/dashboard/session/${encodeURIComponent(`task:${taskId}`)}/goal`,
+        url: `/api/dashboard/session/${encodeURIComponent(`task:${taskId}`)}/model`,
         headers,
-        payload: JSON.stringify({ action: 'add', objective: 'do it' }),
+        payload: JSON.stringify({ model: 'opus' }),
       });
-      expect(goal.statusCode).toBe(409);
+      expect(model.statusCode).toBe(409);
+      expect(JSON.parse(model.body).error).toBe('not supported on a dashboard task yet');
     } finally {
       dashboard.setDashboardLifecycleHandler(null);
     }

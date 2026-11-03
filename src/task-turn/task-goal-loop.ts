@@ -89,6 +89,9 @@ export function createTaskGoalLoop(deps: TaskGoalLoopDeps): TaskGoalLoop {
     const session = deps.getSession(sessionKey);
     const goal = session?.goal;
     if (!session || session.slackless !== true || !goal || goal.status !== 'active') return;
+    // #876 R2 (grok P1) — a goal whose first turn has not started (its opening waits in the queue):
+    // the turn that just ended was not its work, and its opening's own end runs the loop.
+    if (goal.openingPending === true) return;
     // The fence (#861 R1, astra-zhuge P1): this end speaks for its own turn only. Pinned before the
     // read and checked after it — a newer instruction (epoch), a newer turn, a running chain or a
     // Stop own the loop then, and this late end neither writes evidence nor wakes the loop.

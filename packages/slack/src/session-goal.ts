@@ -236,6 +236,24 @@ function isGoalInFlight(goal: SessionGoalState | undefined): boolean {
   return !!goal && (goal.status === 'active' || goal.status === 'paused');
 }
 
+const sameObjective = (a: string, b: string): boolean =>
+  a.trim().replace(/\s+/g, ' ') === b.trim().replace(/\s+/g, ' ');
+
+/**
+ * Where a goal with this objective already waits: `0` — it is the goal in
+ * flight (active or paused); `n` — position `n` of the queue. `undefined` when
+ * none does. Whitespace differences do not make a different goal.
+ *
+ * The SET_GOAL host-apply asks it first: a model that reads the user's
+ * request again on a later turn calls SET_GOAL again, and the same goal would
+ * queue behind itself (#865, live on dev 2026-11-03).
+ */
+export function findPendingGoalPosition(session: GoalQueueSession, objective: string): number | undefined {
+  if (isGoalInFlight(session.goal) && sameObjective(session.goal?.objective ?? '', objective)) return 0;
+  const at = session.goalQueue?.findIndex((g) => sameObjective(g.objective, objective)) ?? -1;
+  return at >= 0 ? at + 1 : undefined;
+}
+
 /**
  * Resolve a goal by `goalId` across the active goal, the pending queue, and
  * the completed history. Used by per-goal accounting so a turn's spend is

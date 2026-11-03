@@ -70,6 +70,24 @@ describe('resumeActiveGoals (T1)', () => {
     expect(settled).toHaveBeenCalledWith('task:t1', expect.anything());
   });
 
+  // #876 R2 (grok P1, fable P2) — a task's goal whose first turn never started: its opening waits in the
+  // task's queue (paused by the restart; Send now starts it). The loop does not "continue" work never begun.
+  it('leaves a Slack-less task’s goal whose first turn never started (opening still queued)', () => {
+    const owed = activeGoalSession({
+      channelId: '',
+      threadTs: undefined,
+      slackless: true,
+    } as Partial<ConversationSession>);
+    (owed.goal as { openingPending?: boolean }).openingPending = true;
+    const sessions = new Map<string, ConversationSession>([['task:t1', owed]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+    expect(handler.resumeActiveGoals()).toBe(0);
+    expect(settled).not.toHaveBeenCalled();
+    expect(owed.goal?.status).toBe('active');
+  });
+
   it('a task turn the restart cut gives its continuation back, once (no shutdown marker for a task)', () => {
     const task = activeGoalSession({
       channelId: '',

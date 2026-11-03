@@ -107,6 +107,15 @@ describe('task goal loop — the chain end wakes the loop', () => {
     expect(h.settle).not.toHaveBeenCalled();
   });
 
+  // #876 R2 (grok P1) — the turn that ended was not the work of a goal whose first turn never started.
+  it('a goal whose first turn has not started (its opening waits) is left alone', async () => {
+    const s = taskSession(goal({ openingPending: true }));
+    const h = harness(s);
+    await h.loop.onChainEnd(KEY, { started: true, outcome: 'completed' });
+    expect(h.settle).not.toHaveBeenCalled();
+    expect(s.goalLastTurnText).toBeUndefined();
+  });
+
   it('Stop, a failure or an interruption does not run the loop (Slack runs it only on a normal finish)', async () => {
     for (const info of [
       { started: true, stopped: true, outcome: 'cancelled' },

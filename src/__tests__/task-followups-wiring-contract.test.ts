@@ -34,13 +34,19 @@ describe('index.ts — a dashboard task’s follow-up queue is wired', () => {
     const release = section("held.kind === 'task-command'", ': await taskController.answer(');
     expect(release).toMatch(/queueWhileRunning: true/);
     expect(release).toMatch(/approvedOnce: true/);
+    expect(release).toMatch(/held\.goalOpeningId !== undefined \? \{ goalOpeningId: held\.goalOpeningId \} : \{\}/);
   });
 
   it('#767 backstop: a queued word is gated again when it is about to run (review R1)', () => {
     const controller = section('createTaskTurnController({', '\n    });');
     const hold = controller.slice(controller.indexOf('holdQueued:'));
     expect(hold).toMatch(
-      /^holdQueued: \(key, session, item\) =>\s*instructionApprovals\.allows\(\{ sessionKey: key, session, senderId: item\.authorId \}\)\s*\?\s*undefined\s*:\s*holdTaskInstruction\(key, item\.authorId, \{ kind: 'task-command', text: item\.text, at: Date\.now\(\) \}\)/,
+      /^holdQueued: \(key, session, item\) =>\s*instructionApprovals\.allows\(\{ sessionKey: key, session, senderId: item\.authorId \}\)\s*\?\s*undefined\s*:\s*holdTaskInstruction\(key, item\.authorId, \{\s*kind: 'task-command',\s*text: item\.text,\s*at: Date\.now\(\),/,
+    );
+    // #876 R2 (astra P2): a goal's queued first turn handed to the owner keeps its goal id — released, it
+    // starts only while that goal still owes it, never as the user's words or a goal command.
+    expect(hold).toMatch(
+      /\.\.\.\(item\.goalOpeningId !== undefined \? \{ goalOpeningId: item\.goalOpeningId \} : \{\}\)/,
     );
   });
 

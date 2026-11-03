@@ -6390,6 +6390,74 @@ describe('SET_GOAL host-apply (#1082)', () => {
     expect(deps.slackApi.updateMessage).not.toHaveBeenCalled();
   });
 
+  // #865 (live on dev 2026-11-03): the model read the user's request again on its next turn and
+  // called SET_GOAL again — the same goal queued behind itself. The same goal is not set twice.
+  describe('the same goal again (#865)', () => {
+    const turn = () => makeContext({ currentUserText: 'goal로 잡아줘: ship the goal feature', isUserInputTurn: true });
+    const apply = (executor: any, session: any, context: any, objective = 'ship the goal feature') =>
+      executor.handleModelCommandToolResults(
+        [makeSetGoalToolResult(objective, 'goal로 잡아줘: ship the goal feature')],
+        session,
+        context,
+      );
+
+    it('the goal in flight: nothing is queued, the goal is untouched, the notice says it is set', async () => {
+      const deps = createExecutorDeps();
+      const executor = new StreamExecutor(deps);
+      const session = createSession();
+      await apply(executor, session, turn());
+      const goal = session.goal;
+      const epoch = goal.epoch;
+      const context = turn();
+      await apply(executor, session, context, '  ship   the goal feature ');
+      expect(session.goal).toBe(goal);
+      expect(goal.epoch).toBe(epoch);
+      expect(session.goalQueue ?? []).toHaveLength(0);
+      const texts = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
+      expect(texts.some((t: string) => t.includes('Goal already set — not added again'))).toBe(true);
+    });
+
+    it('a paused goal in flight is the same goal too', async () => {
+      const deps = createExecutorDeps();
+      const executor = new StreamExecutor(deps);
+      const session = createSession();
+      await apply(executor, session, turn());
+      session.goal.status = 'paused';
+      const context = turn();
+      await apply(executor, session, context);
+      expect(session.goalQueue ?? []).toHaveLength(0);
+      // #876 R2 (fable P3): a paused goal is not running — the notice says how to run it.
+      const texts = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
+      expect(texts.some((t: string) => t.includes('paused — `goal resume` runs it'))).toBe(true);
+    });
+
+    it('a goal already queued: not queued again, the notice gives its position', async () => {
+      const deps = createExecutorDeps();
+      const executor = new StreamExecutor(deps);
+      const session = createSession();
+      await apply(executor, session, turn(), 'the first goal');
+      await apply(executor, session, turn());
+      expect(session.goalQueue.map((g: any) => g.objective)).toEqual(['ship the goal feature']);
+      const context = turn();
+      await apply(executor, session, context);
+      expect(session.goalQueue).toHaveLength(1);
+      const texts = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
+      expect(texts.some((t: string) => t.includes('Goal already queued at position 1 — not added again'))).toBe(true);
+    });
+
+    it('a completed goal with the same objective is no obstacle — it starts again', async () => {
+      const deps = createExecutorDeps();
+      const executor = new StreamExecutor(deps);
+      const session = createSession();
+      await apply(executor, session, turn());
+      const first = session.goal;
+      first.status = 'complete';
+      await apply(executor, session, turn());
+      expect(session.goal).not.toBe(first);
+      expect(session.goal).toMatchObject({ objective: 'ship the goal feature', status: 'active' });
+    });
+  });
+
   // #861 R1 (astra-zhuge P1): a user who instructed someone else's task sets a goal that is theirs —
   // the goal loop runs its next turns as the goal's owner, never as the task's owner.
   it('a dashboard task turn: the goal belongs to the turn’s user, not the task owner', async () => {
