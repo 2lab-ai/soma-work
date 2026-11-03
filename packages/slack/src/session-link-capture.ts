@@ -496,7 +496,11 @@ function splitShell(
     // `… || exit 1` at the top level is the one jump that is plain: it runs only when the left failed, and then the tool
     // result fails too. Not `exit 0` (a success that skips the rest), not inside a nested script (the outer status masks it).
     const w = firstWordOf(t.replace(/^[\s{(]+/, ''));
-    const failExit = top && after === '||' && /^\s*exit(?:\s+0*[1-9]\d*)?\s*$/.test(t);
+    // 3. `exit 256` wraps to 0: a failing status is 1–255.
+    const code = t.match(/^\s*exit(?:\s+(\d+))?\s*$/);
+    const failExit = top && after === '||' && !!code && (code[1] === undefined || Number(code[1]) % 256 !== 0);
+    // A `( … )` subshell: an exit or `set` inside it stops only the subshell, which the level's status does not show.
+    if (/^\s*\(/.test(t)) complex = true;
     if ((CONTROL_WORDS.test(w) && !failExit) || /^[\s{(]*[\w-]+\s*\(\s*\)/.test(t)) complex = true;
     if (next !== '|') {
       pipeAnd = false;
@@ -926,8 +930,8 @@ function readClient(words: Word[], at: number, name: string): ClientRequest | un
       if (redirect[1] === '') k++;
       continue;
     }
-    // A bare variable (`"$EXTRA"`) is unknown: neither a destination nor another request.
-    if (/^\$/.test(v)) continue;
+    // A bare variable (`"$EXTRA"`) may expand to options (`-XGET`) or a destination: the command is unread.
+    if (v.includes('$')) return undefined;
     destinations.push(words[k]);
   }
   return { destinations, method: method ?? (head ? 'HEAD' : get ? 'GET' : data ? 'POST' : 'GET') };
@@ -1169,6 +1173,8 @@ const CLIENT_MODULES: Record<string, string> = {
   http: 'http',
   child_process: 'child_process',
   cp: 'child_process',
+  execSync: 'child_process',
+  exec: 'child_process',
 };
 const MAX_CALL_LENGTH = 8000;
 
@@ -1478,6 +1484,16 @@ function certainCalls(masked: string, lang: CodeLang): (at: number) => boolean {
     else if (c === '}' && d > 0) d--;
   }
   depth[masked.length] = d;
+  // Python: parenthesis / bracket depth, to find the expression a call sits in.
+  const pdepth = new Int32Array(masked.length + 1);
+  let q = 0;
+  for (let j = 0; j < masked.length; j++) {
+    pdepth[j] = q;
+    const c = masked[j];
+    if (c === '(' || c === '[') q++;
+    else if ((c === ')' || c === ']') && q > 0) q--;
+  }
+  pdepth[masked.length] = q;
   const js = /=>|&&|\|\||\?|\b(?:if|else|while|for|do|switch|case|function|return|catch|yield)\b/;
   const py = /\b(?:lambda|if|else|elif|and|or|while|for|def|class|return|yield|except|try)\b/;
   // Code after an exit or a throw may never run.
@@ -1494,9 +1510,17 @@ function certainCalls(masked: string, lang: CodeLang): (at: number) => boolean {
       let line = at;
       while (line > 0 && masked[line - 1] !== '\n') line--;
       if (/[ \t]/.test(masked[line] ?? '')) return false;
-      // A ternary (`x if c else y`), a comprehension or a generator (`(post(u) for u in [])`) anywhere on the line.
+      // A ternary (`x if c else y`), a comprehension or a generator (`(post(u) for u in [])`) anywhere on the line —
+      // or anywhere in the bracketed expression that holds the call, across lines.
       const end = masked.indexOf('\n', at);
       if (/\b(?:if|else|for|lambda|while)\b/.test(masked.slice(line, end < 0 ? masked.length : end))) return false;
+      if (pdepth[at] > 0) {
+        let open = at - 1;
+        while (open >= 0 && pdepth[open] > 0) open--;
+        const close = open >= 0 ? closing(masked, open) : -1;
+        const span = masked.slice(Math.max(0, open), close < 0 ? masked.length : close + 1);
+        if (/\b(?:if|else|for|lambda|while|async)\b/.test(span)) return false;
+      }
       return !py.test(prefix);
     }
     return !js.test(prefix);
@@ -1534,10 +1558,13 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
     const root = (chain.split('.')[0] || name).replace(/[^\w$]/g, '');
     // `const axios = require("axios")` / `= await import("axios")` binds the client itself — only that module, nothing
     // chained after it; any other binding shadows it.
-    const module = CLIENT_MODULES[root];
+    const clientModule = CLIENT_MODULES[root];
     // (The module name is a string — blanked in masked code — so it is read from the code at the same position.)
-    const ownModule = module
-      ? new RegExp(`^\\s*(?:require|await\\s+import)\\s*\\(\\s*["'\`](?:node:)?${module}["'\`]\\s*\\)\\s*(?:[;\\n]|$)`)
+    // `require("axios")`, `require("axios").default`, `require("child_process").execSync` for `execSync`.
+    const ownModule = clientModule
+      ? new RegExp(
+          `^\\s*(?:require|await\\s+import)\\s*\\(\\s*["'\`](?:node:)?${clientModule}["'\`]\\s*\\)(?:\\.default|\\.${root})?\\s*(?:[;\\n]|$)`,
+        )
       : undefined;
     const rebinds = [...masked.matchAll(new RegExp(`\\b${root}\\s*=(?!=)`, 'g'))].some(
       (b) => !ownModule?.test(code.slice((b.index ?? 0) + b[0].length)),

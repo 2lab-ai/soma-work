@@ -1122,9 +1122,35 @@ describe('W14 — review round 14 (astra-zhuge, fable-zhuge)', () => {
         bash(`curl -s -X POST ${P} -d @- < p.json`, made(31)),
         bash(`curl -s -X POST ${P} -d @- <<'EOF'\n{"title":"x"}\nEOF`, made(32)),
         bash(`gh api -X POST repos/a/b/pulls -f head=x -f base=main 2>/dev/null`, made(33)),
-        bash(`curl -s -X POST ${P} -d @p.json "$EXTRA"`, made(34)),
       ).map(short),
-    ).toEqual([30, 31, 32, 33, 34].map((n) => ['create', 'pr', `https://github.com/a/b/pull/${n}`]));
+    ).toEqual([30, 31, 32, 33].map((n) => ['create', 'pr', `https://github.com/a/b/pull/${n}`]));
+    // A bare variable may expand to options (`EXTRA=-XGET`): the command is unread (round 15).
+    expect(effectsOf(bash(`curl -s -X POST ${P} -d @p.json "$EXTRA"`, made(34)))).toEqual([]);
+  });
+});
+
+describe('W15 — review round 15 (astra-zhuge)', () => {
+  const U = 'https://github.com/a/b/pull/12';
+  const P = 'https://api.github.com/repos/a/b/pulls';
+
+  it('a variable on a client line, a ( … ) subshell, exit 256, a multi-line comprehension or generator: not read', () => {
+    expect(
+      effectsOf(
+        bash(
+          `EXTRA=-XGET\ncurl -sS -X POST ${P} "$EXTRA" | jq '.[0]'`,
+          '{"number":12,"html_url":"https://github.com/a/b/pull/12"}',
+        ),
+        bash(`(false || exit 1; gh pr create -R a/b --fill)\nprintf '%s\\n' ${U}`, U),
+        bash(`(set -e; false; gh pr create -R a/b --fill)\nprintf '%s\\n' ${U}`, U),
+        bash(`printf '%s\\n' ${U}\nfalse || exit 256\ngh pr create -R a/b --fill`, U),
+        bash(`python3 -c 'import requests\nx = [requests.post("${P}")\nfor x in []]\nprint("${U}")'`, U),
+        bash(`python3 -c 'import requests\ng = (requests.post("${P}")\nfor x in [])\nprint("${U}")'`, U),
+      ),
+    ).toEqual([]);
+    // `|| exit 1` at the top level still lets the rest be read.
+    expect(
+      effectsOf(bash('cd repo || exit 1\ngh pr create -R a/b --fill', 'https://github.com/a/b/pull/40\n')).map(short),
+    ).toEqual([['create', 'pr', 'https://github.com/a/b/pull/40']]);
   });
 });
 
