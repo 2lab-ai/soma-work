@@ -26,7 +26,7 @@ import { buildTaskSessionKey } from '../session-identity';
 import type { ConversationSession, TaskTurnOutcomeRecord } from '../types';
 import { wakeableEpicEvents } from './epic-plan';
 import { buildTaskAnswerText, type TaskAnswer } from './task-answer';
-import { planGateTurn } from './task-plan';
+import { isPlanPending, planGateTurn } from './task-plan';
 import type { RunTaskTurnInput, RunTaskTurnResult, TaskTurnNonTerminal } from './task-turn-runner';
 
 export interface TaskCommandRequest {
@@ -148,8 +148,9 @@ export interface TaskTurnController {
    * first instruction, it also refuses a command the start would refuse (#640 R1),
    * so a task is never created that its own first instruction cannot start.
    * With a tree (E4 ③), it is the tree's admission instead of A0's slot.
+   * `planning` — the start is a plan turn (a task made in plan mode): no slot, only the window.
    */
-  canStart(ownerId: string, text?: string, tree?: TreeStart): TaskCommandResponse | null;
+  canStart(ownerId: string, text?: string, tree?: TreeStart, opts?: { planning?: boolean }): TaskCommandResponse | null;
   /** Abort the task's chain with `session-close` and wait (bounded) for it to end. */
   close(sessionKey: string): Promise<void>;
   /** Shutdown: refuse new starts (503). Running chains end through the coordinator's `shutdown` abort. */
@@ -189,6 +190,8 @@ interface Chain {
   done: Promise<void>;
   /** E4 ③ — the epic tree it runs in (its root's key), or none for an ordinary task. */
   tree?: string;
+  /** A plan turn (the task's plan not started): it holds no slot — neither A0's nor its tree's. */
+  planning: boolean;
 }
 
 /** E4 ③ — the epic tree of a task: the epic itself, or its parent's. An ordinary task has none. */
@@ -236,9 +239,15 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
 
   const refuse = (status: number, error: string): TaskCommandResponse => ({ status, body: { error } });
 
-  /** The owner-level part of admission (D9): no side effect. */
-  function ownerAdmission(ownerId: string, t: number): TaskCommandResponse | null {
-    if (ownerChain.has(ownerId)) return refuse(429, 'one dashboard task runs at a time — wait for it to finish');
+  /**
+   * The owner-level part of admission (D9): no side effect. A plan turn skips
+   * the slot (2026-11-03): it only researches (step 6c, `plan-pending-guard.ts`),
+   * so revising one plan never waits for another task — the window still counts it.
+   */
+  function ownerAdmission(ownerId: string, t: number, planning = false): TaskCommandResponse | null {
+    if (!planning && ownerChain.has(ownerId)) {
+      return refuse(429, 'one dashboard task runs at a time — wait for it to finish');
+    }
     const recent = (starts.get(ownerId) ?? []).filter((at) => t - at < windowMs);
     if (recent.length >= maxStarts) return refuse(429, 'too many dashboard task starts — try again shortly');
     return null;
@@ -248,10 +257,17 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
    * E4 ③ — the tree's admission (§2.1), instead of A0's slot: one tree per
    * owner, at most `maxTreeChildren` children running, a host start refused
    * over the cost limit, and the tree's own window (a new epic's first start
-   * is A0's window). No side effect.
+   * is A0's window). No side effect. A plan turn skips the slot (one tree,
+   * its running children), as `ownerAdmission` does; the cost limit and the window still apply.
    */
-  function treeAdmission(ownerId: string, tree: TreeStart, t: number, newTask: boolean): TaskCommandResponse | null {
-    const held = ownerTree.get(ownerId);
+  function treeAdmission(
+    ownerId: string,
+    tree: TreeStart,
+    t: number,
+    newTask: boolean,
+    planning = false,
+  ): TaskCommandResponse | null {
+    const held = planning ? undefined : ownerTree.get(ownerId);
     if (held && held.root !== tree.root) return refuse(429, 'one epic runs at a time — wait for its tree to finish');
     if (tree.role === 'child' && held) {
       let children = 0;
@@ -276,15 +292,21 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     return null;
   }
 
-  function canStart(ownerId: string, text?: string, tree?: TreeStart): TaskCommandResponse | null {
+  function canStart(
+    ownerId: string,
+    text?: string,
+    tree?: TreeStart,
+    opts: { planning?: boolean } = {},
+  ): TaskCommandResponse | null {
     if (!accepting) return refuse(503, 'the service is shutting down — try again shortly');
     if (text !== undefined && isCommand(text.trim())) return refuse(400, COMMAND_REFUSED);
-    if (!tree) return ownerAdmission(ownerId, now());
+    const planning = opts.planning === true;
+    if (!tree) return ownerAdmission(ownerId, now(), planning);
     // §2.1: the root of a running tree starts again only once its own chain ended (the start's 409).
     if (tree.role === 'root' && tree.root !== undefined && chains.has(tree.root)) {
       return refuse(409, 'a turn is already running on this task');
     }
-    return treeAdmission(ownerId, tree, now(), tree.root === undefined);
+    return treeAdmission(ownerId, tree, now(), tree.root === undefined, planning);
   }
 
   /** E4 ③ — free a tree member's place only while this chain holds it; the tree goes when it is empty. */
@@ -297,6 +319,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
 
   /** Release the slot a chain holds: A0's for an ordinary task, its tree member's for an epic or child. */
   function releaseSlot(chain: Chain, sessionKey: string): void {
+    if (chain.planning) return;
     if (chain.tree !== undefined) releaseTree(chain, sessionKey);
     else if (ownerChain.get(chain.ownerId) === sessionKey) ownerChain.delete(chain.ownerId);
   }
@@ -312,6 +335,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
         ownerId: string;
         startedAt: number;
         tree?: string;
+        /** A plan turn: admitted without a slot, and holds none while it runs. */
+        planning: boolean;
         /** The window this start counted in (A0's or its tree's), by map and key — read again to refund. */
         window: { map: Map<string, number[]>; key: string };
       }
@@ -367,9 +392,11 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     const ownerId = session.ownerId as string;
     const t = now();
     const newTask = request.newTask === true;
+    // A plan turn (the plan not started yet) only researches: no slot (2026-11-03).
+    const planning = isPlanPending(session.taskPlan);
     const refusal = tree
-      ? treeAdmission(ownerId, { ...tree, initiator: request.initiator }, t, newTask)
-      : ownerAdmission(ownerId, t);
+      ? treeAdmission(ownerId, { ...tree, initiator: request.initiator }, t, newTask, planning)
+      : ownerAdmission(ownerId, t, planning);
     if (refusal) return { ok: false, response: refusal };
     // The window this start counts in: A0's per owner, or the tree's (a new epic's first start is A0's).
     const [windows, windowKey] =
@@ -384,6 +411,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       ownerId,
       startedAt: t,
       tree: tree?.root,
+      planning,
       window: { map: windows, key: windowKey },
     };
   }
@@ -395,7 +423,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
   async function startChain(request: TaskCommandRequest, opts: { answer?: boolean }): Promise<TaskCommandResponse> {
     const admitted = admit(request, opts);
     if (!admitted.ok) return admitted.response;
-    const { session, ctx, ownerId, startedAt, tree, window } = admitted;
+    const { session, ctx, ownerId, startedAt, tree, planning, window } = admitted;
     const { sessionKey } = request;
     // Who instructs it now (SSOT 2026-11-02): the dashboard sends them the turn's live updates.
     session.currentInitiatorId = ctx.userId;
@@ -448,11 +476,12 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       consume,
       planned.notice,
     );
-    const chain: Chain = { ownerId, id: chainId, abort, done, ...(tree !== undefined ? { tree } : {}) };
+    const chain: Chain = { ownerId, id: chainId, abort, done, planning, ...(tree !== undefined ? { tree } : {}) };
     chains.set(sessionKey, chain);
-    if (tree === undefined) {
+    // A plan turn holds no slot: the owner's work, or another plan, starts beside it.
+    if (!planning && tree === undefined) {
       ownerChain.set(ownerId, sessionKey);
-    } else {
+    } else if (!planning && tree !== undefined) {
       // E4 ③ — the tree's slot: made by its first running member, kept while any runs.
       let held = ownerTree.get(ownerId);
       if (!held) {
