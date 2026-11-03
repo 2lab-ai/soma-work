@@ -518,6 +518,8 @@ const ISSUE_OR_PR_URL = /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(pull|issu
 interface MethodToken {
   at: number;
   verb: string;
+  /** A bare `POST /repos/…` argument (a helper script's), not a flag or a `method:` key. */
+  bare?: boolean;
 }
 
 /** Every method token of a statement, scanned once (not once per endpoint). */
@@ -525,7 +527,9 @@ function methodTokens(statement: string): MethodToken[] {
   const out: MethodToken[] = [];
   for (const re of METHOD_TOKENS) {
     re.lastIndex = 0;
-    for (const m of statement.matchAll(re)) out.push({ at: m.index ?? 0, verb: m[1].toUpperCase() });
+    for (const m of statement.matchAll(re)) {
+      out.push({ at: m.index ?? 0, verb: m[1].toUpperCase(), ...(re === METHOD_TOKENS[2] ? { bare: true } : {}) });
+    }
   }
   return out;
 }
@@ -643,7 +647,7 @@ function destinationWords(words: Word[], at: number, name: string): Word[] {
       if (opts && bundle && opts.short.includes(last)) k++;
       continue;
     }
-    if (httpie && /^[\w-]+(?::=|==|=|:|@)/.test(v)) continue;
+    if (httpie && /^[\w-]+(?::=|==|=|@|:(?!\/\/))/.test(v)) continue; // a data or header item, not a URL
     out.push(words[k]);
   }
   return out;
@@ -663,11 +667,41 @@ function curlGet(words: Word[], at: number): boolean {
     );
 }
 
+/**
+ * The method a known client names with its own options — `-X POST`, `-XPOST`, `--request=POST`, `--method POST`, or
+ * httpie's positional `POST` — never a word inside data. Undefined when it names none.
+ */
+function clientMethod(words: Word[], at: number, name: string): MethodToken | undefined {
+  const httpie = name === 'http' || name === 'https' || name === 'xh';
+  for (let k = at + 1; k < words.length; k++) {
+    const v = words[k].value;
+    const long = v.match(/^--(?:request|method)(?:=(.*))?$/);
+    if (long) {
+      const verb = (long[1] ?? words[k + 1]?.value ?? '').toUpperCase();
+      return VERBS.test(verb) ? { at: words[k].start, verb } : undefined;
+    }
+    if (v === '-X') {
+      const verb = (words[k + 1]?.value ?? '').toUpperCase();
+      return VERBS.test(verb) ? { at: words[k].start, verb } : undefined;
+    }
+    if (/^-X[A-Za-z]+$/.test(v) && VERBS.test(v.slice(2)))
+      return { at: words[k].start, verb: v.slice(2).toUpperCase() };
+    if (httpie && !v.startsWith('-')) return VERBS.test(v) ? { at: words[k].start, verb: v.toUpperCase() } : undefined;
+    // The value of a data / header option is skipped whole: a `-X POST` spelled inside it is not the method.
+    const opts = VALUE_OPTIONS[name];
+    if (opts && (opts.long.has(v) || (/^-[^-]$/.test(v) && opts.short.includes(v[1])))) k++;
+  }
+  return undefined;
+}
+
 /** The PR and issue writes a shell request names: its destination and the method nearest to it. */
 function apiWrites(statement: string, words: Word[], at: number): GitHubWrite[] {
   const name = nameOf(words[at]?.value);
   const get = name === 'curl' && curlGet(words, at);
-  const tokens = methodTokens(statement);
+  const client = name in VALUE_OPTIONS || name === 'http' || name === 'https' || name === 'xh';
+  // A known client's method comes from its options alone; a script's from a bare `POST /repos/…` argument.
+  const own = client ? clientMethod(words, at, name) : undefined;
+  const tokens = client ? (own ? [own] : []) : methodTokens(statement).filter((t) => t.bare);
   const out: GitHubWrite[] = [];
   for (const d of destinationWords(words, at, name)) {
     ENDPOINT.lastIndex = 0;
@@ -934,7 +968,6 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
   if (code.length > MAX_STATEMENT_LENGTH) return;
   const lexed = lexCode(code, lang);
   const { masked } = lexed;
-  const sends = /\b(?:fetch|urlopen)\s*\(/.test(masked);
   let calls = 0;
   SENDING_CALL.lastIndex = 0;
   for (const m of masked.matchAll(SENDING_CALL)) {
@@ -951,8 +984,16 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
       continue;
     }
     const name = m[4];
-    // Constructing a Request sends nothing; count it only when the code hands requests to fetch / urlopen.
-    if (name === 'Request' && !sends) continue;
+    // Constructing a Request sends nothing: it counts only as the argument of the fetch / urlopen that sends it
+    // (`fetch(new Request(…))`, `urlopen(urllib.request.Request(…))`). A Request held in a variable is not followed.
+    if (
+      name === 'Request' &&
+      !/(?:fetch|urlopen)\s*\(\s*(?:new\s+)?(?:[\w$]+\.)*$/.test(
+        masked.slice(Math.max(0, (m.index ?? 0) - 120), m.index ?? 0),
+      )
+    ) {
+      continue;
+    }
     // `octokit.request("POST /repos/…")`, `requests.request("POST", url)`
     const leading = leadsWithString ? first.value.match(/^(GET|POST|PUT|PATCH|DELETE)(?:\s+\/?repos\/|$)/i) : null;
     const named = name.match(/\.(get|post|put|patch|delete)$/)?.[1];
@@ -967,12 +1008,16 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
   }
 }
 
-/** Where a call sends: its leading string argument, or a direct `url` / `path` / `uri` option — never a body. */
+/**
+ * Where a call sends: its leading string argument; or, when it has none (`axios({ url })`, `https.request({ path })`),
+ * a direct `url` / `path` / `uri` option. A `url` inside a body (`axios.post(host, { url })`, `json={"url": …}`) is not.
+ */
 function destinationArgs(masked: string, args: CallArg[], leadsWithString: boolean): CallArg[] {
-  const out: CallArg[] = leadsWithString ? [args[0]] : [];
+  if (leadsWithString) return [args[0]];
+  const out: CallArg[] = [];
   for (let k = 0; k < args.length; k++) {
     const s = args[k];
-    if (!s.direct || (leadsWithString && k === 0)) continue;
+    if (!s.direct) continue;
     const keyed = /\b(?:url|path|uri|baseURL|endpoint)\s*[:=]\s*$/.test(
       masked.slice(Math.max(0, s.start - 40), s.start),
     );
@@ -1203,7 +1248,12 @@ function effectOf(w: GitHubWrite, idx: ResultIndex, taken: Set<string>, sameOp: 
     // when the call made a single merge.
     const said = idx.merged.length > 0 ? saidFor(w, idx.merged) : undefined;
     if (idx.merged.length > 0 && !said) return undefined;
-    if (!said && !(sameOp === 1 && w.repo && w.number && /"merged"\s*:\s*true\b/.test(idx.text))) return undefined;
+    // A merge response is `{ sha, merged: true, message }` — not a PR object (which has its own `html_url`) that a
+    // read of another, already merged PR returns.
+    const mergeResponse = documentsOf(idx).some(
+      (d) => d.merged === true && typeof d.sha === 'string' && d.html_url === undefined,
+    );
+    if (!said && !(sameOp === 1 && w.repo && w.number && mergeResponse)) return undefined;
     const repo = w.repo ?? said?.repo;
     const number = w.number ?? said?.number;
     const link = repo && number ? linkOf(repo, 'pr', number) : undefined;
