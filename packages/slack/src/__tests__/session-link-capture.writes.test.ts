@@ -1089,6 +1089,45 @@ describe('W13 — review round 13 (fable-zhuge, astra-zhuge)', () => {
   });
 });
 
+describe('W14 — review round 14 (astra-zhuge, fable-zhuge)', () => {
+  const U = 'https://github.com/a/b/pull/12';
+  const P = 'https://api.github.com/repos/a/b/pulls';
+
+  it('the restored spellings do not reopen false writes (astra)', () => {
+    expect(
+      effectsOf(
+        bash(`printf '%s\\n' ${U}; false || exit 0; gh pr create -R a/b --fill`, U),
+        bash(`printf '%s\\n' ${U}; bash -c 'false || exit 1; gh pr create -R a/b --fill'`, U),
+        bash(`printf '%s\\n' ${U}; bash -c 'set -e; false; gh pr create -R a/b --fill'`, U),
+        bash(`python3 -c 'import requests; g = (requests.post("${P}") for x in []); print("${U}")'`, U),
+        bash(`python3 -c 'import requests; [requests.post("${P}") for x in []]; print("${U}")'`, U),
+        bash(`python3 -c 'import requests; requests.post("${P}") if False else None; print("${U}")'`, U),
+        bash(
+          `node -e 'const axios = require("node:util").debuglog("noop"); axios.post("${P}", {}); console.log("${U}")'`,
+          U,
+        ),
+        bash(
+          `curl -s -X POST ${P} -d @p; gh api -X PUT repos/a/b/pulls/12/merge --jq '{number:12,html_url:"${U}"}'`,
+          `{"message":"Validation Failed"}\n{"number":12,"html_url":"${U}"}`,
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it('a redirection, a heredoc operator or a bare variable on the client line is not another request (fable P2)', () => {
+    const made = (n: number) => `{"number":${n},"html_url":"https://github.com/a/b/pull/${n}"}`;
+    expect(
+      effectsOf(
+        bash(`curl -s -X POST ${P} -d @p.json 2>&1 | jq -c .`, made(30)),
+        bash(`curl -s -X POST ${P} -d @- < p.json`, made(31)),
+        bash(`curl -s -X POST ${P} -d @- <<'EOF'\n{"title":"x"}\nEOF`, made(32)),
+        bash(`gh api -X POST repos/a/b/pulls -f head=x -f base=main 2>/dev/null`, made(33)),
+        bash(`curl -s -X POST ${P} -d @p.json "$EXTRA"`, made(34)),
+      ).map(short),
+    ).toEqual([30, 31, 32, 33, 34].map((n) => ['create', 'pr', `https://github.com/a/b/pull/${n}`]));
+  });
+});
+
 describe('githubEffectsOf — every spelling of a create', () => {
   it('W4 — gh pr create and gh issue create (the output ends with the new URL)', () => {
     expect(
