@@ -407,6 +407,8 @@ export class SlackHandler {
   private followupInitialError?: Map<string, unknown>;
   /** Sessions whose goal driver was suppressed because follow-up work outranks autogoal (§3.6). */
   private followupDeferredGoalSessions?: Set<string>;
+  /** #891 — sessions whose goal driver waits for the run that holds its slot (a turn that left no text). */
+  private followupSlotHeldGoalSessions?: Set<string>;
   /**
    * Files downloaded for a message that was STEERED into a running turn, keyed
    * by the uuid it was pushed under (06 §3.2/D2). They must survive until the
@@ -1117,14 +1119,23 @@ export class SlackHandler {
           this.resumeIfAutoCompactStop(sessionKey, last ?? settled);
           // A human-driven drain (Resume / Retry) is a boundary too: release
           // the §3.6 deferral it may just have cleared instead of waiting for
-          // a turn end that a deferred loop would never produce.
-          if (last) this.releaseDeferredGoalDriver(sessionKey, last);
+          // a turn end that a deferred loop would never produce. With nothing
+          // drained, the click's own run is the boundary: a driver it held for
+          // its slot (a run that left no text, #891) fires here.
+          const final = last ?? settled;
+          if (final) this.releaseDeferredGoalDriver(sessionKey, final);
           // #854 — and a chain end: a child whose queue a click drained tells its epic (review #872).
-          this.noteChainSettled(sessionKey, (last ?? settled)?.outcome);
+          this.noteChainSettled(sessionKey, final?.outcome);
         });
       },
       // #854 — a click's run that opened no drain still ended its chain (review #872 R2 astra).
-      chainSettled: (sessionKey, settled) => this.noteChainSettled(sessionKey, settled.outcome),
+      chainSettled: (sessionKey, settled) => {
+        this.noteChainSettled(sessionKey, settled.outcome);
+        // #891 — the click's run is over, so a driver it held for its slot (a
+        // turn that left no text) is released here too: an error or a stall
+        // opens no drain, but it must not leave the goal held (astra R2 on #892).
+        this.releaseDeferredGoalDriver(sessionKey, settled);
+      },
       // The drain is gated on a safe outcome; the sweep is not. A `Send now`
       // whose turn ended aborted/blocked/parked left every row steered into
       // it with no settlement frame and no drain behind it to clear them.
@@ -2278,8 +2289,11 @@ export class SlackHandler {
       // `docs/goal-command/spec.md` §Auto-Continuation Loop.
       // Skip for synthetic events — those ARE the ralph-loop
       // turns and self-incrementing the counter inside the
-      // continuation driver is the source of truth.
-      if (!event.synthetic) {
+      // continuation driver is the source of truth. A host turn replayed
+      // after `/compact` (`routeContext.hostTurn`: a goal continuation the
+      // compaction intercepted) is not a person's words either — reset by it,
+      // every compaction would erase the cap (#891, fable R1 on #892).
+      if (!event.synthetic && event.routeContext?.hostTurn !== true) {
         // Optional chain: many slack-handler unit tests pass a bare
         // `{}` for claudeHandler, so this method may be missing in
         // mocks. Real ClaudeHandler always exports it (claude-handler.ts:374).
@@ -3057,6 +3071,18 @@ export class SlackHandler {
       this.logger.info('Goal driver held — the host is shutting down; the restart resumes the goal', { sessionKey });
       return;
     }
+    // #891 — a turn that left no text skips the eval (#788), so the driver
+    // injects its continuation within a second: while THIS turn's own run still
+    // holds the dispatch slot. The ingress fence drops a synthetic turn on a
+    // held slot, so the continuation was lost and the goal sat idle until a
+    // person wrote — an auto-compact stop always ends this way (dev, 15 of 15).
+    // Held for this run's drain boundary instead, where `releaseDeferredGoalDriver`
+    // fires it with the slot free (an auto-compact stop is drainable).
+    if (!assistantMessages.join('').trim() && this.isFollowupSlotHeld(sessionKey)) {
+      (this.followupSlotHeldGoalSessions ??= new Set<string>()).add(sessionKey);
+      this.logger.info('Goal driver deferred — the turn left no text; its run releases the slot first', { sessionKey });
+      return;
+    }
     // §3.6 priority: a human follow-up goes before the next autogoal turn. The
     // evidence stash above still happens — only the DRIVER is held back — so a
     // deferred eval later runs on the real turn text, not on nothing. Released
@@ -3073,6 +3099,7 @@ export class SlackHandler {
     // `drainFollowups` epilogue would find the stale entry and fire the driver
     // a second time, racing the continuation this fire is about to inject.
     this.followupDeferredGoalSessions?.delete(sessionKey);
+    this.followupSlotHeldGoalSessions?.delete(sessionKey);
     this.goalTurnSettledHandler?.(sessionKey);
   }
 
@@ -3913,6 +3940,19 @@ export class SlackHandler {
   }
 
   /** Follow-up states that are still user work waiting to run (`shouldDeferGoalDriver`). */
+  /**
+   * #891 — abort reasons after which a driver held for its run's slot does not
+   * fire: a person or the host stopped the session (theirs is the last word), or
+   * a newer turn replaced this one (its own end drives the loop).
+   */
+  private static readonly GOAL_LAST_WORD_ABORT_REASONS: ReadonlySet<string> = new Set([
+    'user-stop',
+    'session-close',
+    'shutdown',
+    'supersede',
+    'user-interrupted',
+  ]);
+
   private static readonly OUTSTANDING_FOLLOWUP_STATES: ReadonlySet<string> = new Set([
     'queued',
     'steered',
@@ -4800,6 +4840,18 @@ export class SlackHandler {
         text = (await this.fileHandler.formatFilePrompt(files, text))?.trim() ?? '';
       }
       if (!text) {
+        await this.cleanupSteerFiles(files);
+        return 'queued';
+      }
+
+      // #891 — never into a dedicated `/compact` turn. Its query ends at the
+      // compaction's result: a pushed message was started by the CLI and cut
+      // off with that query, its row already consumed. Queued, it runs at the
+      // drain — the rule the initializer's compaction stash already keeps.
+      // Read here, after the awaits above and with only synchronous code left
+      // before the push: a fallback `/compact` can start while files download.
+      if (this.claudeHandler.getSessionByKey?.(this.canonicalFollowupKey(sessionKey))?.compactTurnActive === true) {
+        this.logger.debug('Follow-up not steered — a /compact turn is running', { sessionKey, itemId: item.id });
         await this.cleanupSteerFiles(files);
         return 'queued';
       }
@@ -6293,6 +6345,14 @@ export class SlackHandler {
    * goal loop deferred for the rest of the session with no door out; with
    * items still outstanding the halt is already covered by the item clause.
    */
+  /** Does a dispatcher run hold this session's slot — under its key or the source key it migrated from? */
+  private isFollowupSlotHeld(sessionKey: string): boolean {
+    const dispatcher = this.followupDispatcher;
+    if (!dispatcher) return false;
+    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
+    return dispatcher.isBusy(sessionKey) || (slotKey !== undefined && dispatcher.isBusy(slotKey));
+  }
+
   private shouldDeferGoalDriver(sessionKey: string): boolean {
     const queue = this.followupQueue;
     const dispatcher = this.followupDispatcher;
@@ -6311,6 +6371,27 @@ export class SlackHandler {
    * forbids.
    */
   private releaseDeferredGoalDriver(sessionKey: string, report: RunReport): void {
+    // #891 — a driver held only for its run's slot. The run has settled, so
+    // the slot is free whatever its outcome: fire — unless follow-ups are
+    // outstanding (§3.6 holds it below, as for any turn) or a person or the
+    // host cut the turn (a stop, a supersede, a shutdown): that is the last
+    // word, as for an auto-compact stop's resume. An auto-compact stop fires.
+    if (this.followupSlotHeldGoalSessions?.delete(sessionKey)) {
+      const cut =
+        report.outcome?.result === 'interrupted' &&
+        SlackHandler.GOAL_LAST_WORD_ABORT_REASONS.has(report.outcome.reason ?? '');
+      if (this.shouldDeferGoalDriver(sessionKey)) {
+        (this.followupDeferredGoalSessions ??= new Set<string>()).add(sessionKey);
+      } else if (cut) {
+        this.logger.info('Goal driver not fired — the turn that left no text was cut by a stop', { sessionKey });
+        return;
+      } else {
+        this.followupDeferredGoalSessions?.delete(sessionKey);
+        this.logger.info('Goal driver fired — the run that held its slot has settled', { sessionKey });
+        this.goalTurnSettledHandler?.(sessionKey);
+        return;
+      }
+    }
     if (!this.followupDeferredGoalSessions?.has(sessionKey)) return;
     if (!report.canDrain) return;
     if (this.shouldDeferGoalDriver(sessionKey)) return;
