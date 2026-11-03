@@ -278,6 +278,11 @@ export function runRestoredFollowups(
   };
 
   const attempt = (sessionKey: string, tries: number): RestoredQueueRun => {
+    // Every later try — a busy slot's retry or the resumer's spent tries — yields to a person's Stop.
+    if (tries > 1 && stoppedSince(sessionKey)) {
+      deps.logger.info('A restored task queue stays — the task was stopped since the restart', { sessionKey });
+      return 'none';
+    }
     const run = deps.controller.runQueuedAfterRestart(sessionKey, { lastTry: tries >= maxAttempts });
     if (run === 'slot-busy' && tries < maxAttempts) {
       schedule(() => {
@@ -299,10 +304,6 @@ export function runRestoredFollowups(
     if (outcome === 'waiting' || (session.goal?.status === 'active' && goalsResumed)) {
       schedule(
         () => {
-          if (stoppedSince(sessionKey)) {
-            deps.logger.info('A restored task queue stays — the task was stopped since the restart', { sessionKey });
-            return;
-          }
           attempt(sessionKey, maxAttempts);
         },
         retryMs * (maxAttempts + 1),

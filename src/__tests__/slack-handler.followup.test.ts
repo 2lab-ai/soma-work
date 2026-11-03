@@ -7015,6 +7015,25 @@ describe('SlackHandler — follow-up queue host', () => {
         expect(rowOf(booted).state).toBe('resolved');
       });
 
+      it('the last check reopens an error-halted lane once for these rows, never a refusal (review R3, astra P1)', async () => {
+        const { snapshot } = await steeredThenShutdown();
+        const { booted } = bootFrom(snapshot, []);
+        const halts = (booted as any).followupDispatcher.halts as Map<string, unknown>;
+
+        halts.set(SESSION_KEY, { reason: 'authorization', detail: 'denied' });
+        expect(booted.sweepRestartRequeuedFollowups({ lastCheck: true })).toBe(0);
+        expect(rowOf(booted).state).toBe('queued');
+
+        halts.set(SESSION_KEY, { reason: 'error', detail: 'resume failed before the model' });
+        expect(booted.sweepRestartRequeuedFollowups()).toBe(0); // not before the last check
+        const redelivery = holdNextTurn(booted, true);
+        expect(booted.sweepRestartRequeuedFollowups({ lastCheck: true })).toBe(1);
+        await redelivery.started;
+        redelivery.release();
+        for (let i = 0; i < 6; i++) await tick();
+        expect(rowOf(booted).state).toBe('resolved');
+      });
+
       it('is left with its Retry when it is more than a day old', async () => {
         const { snapshot } = await steeredThenShutdown();
         snapshot.sessions[0].items[0].enqueuedAt -= 25 * 60 * 60_000;

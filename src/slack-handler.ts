@@ -1399,10 +1399,12 @@ export class SlackHandler {
     const started = this.drainIdleRestartRequeued(this.followupRestartKick);
     this.followupRestartKick.clear();
     if (started > 0) this.logger.info('Sending follow-ups the restart kept from running', { sessions: started });
-    for (const delayMs of this.followupRestartSweepDelaysMs) {
-      const timer = setTimeout(() => this.sweepRestartRequeuedFollowups(), delayMs);
+    const delays = this.followupRestartSweepDelaysMs;
+    delays.forEach((delayMs, i) => {
+      const lastCheck = i === delays.length - 1;
+      const timer = setTimeout(() => this.sweepRestartRequeuedFollowups({ lastCheck }), delayMs);
       timer.unref?.();
-    }
+    });
     return started;
   }
 
@@ -1412,14 +1414,29 @@ export class SlackHandler {
    * end drains the queue; a session with nothing left waiting is forgotten.
    * Returns how many sessions started draining.
    */
-  sweepRestartRequeuedFollowups(): number {
+  sweepRestartRequeuedFollowups(opts: { lastCheck?: boolean } = {}): number {
     const queue = this.followupQueue;
     if (!queue) return 0;
+    const dispatcher = this.followupDispatcher;
     for (const sessionKey of [...this.followupRestartRequeued]) {
       const waiting = queue
         .list(sessionKey)
         .some((item) => item.state === 'queued' && item.stateReason === FOLLOWUP_REDELIVER_AFTER_RESTART_REASON);
-      if (!waiting) this.followupRestartRequeued.delete(sessionKey);
+      if (!waiting) {
+        this.followupRestartRequeued.delete(sessionKey);
+        continue;
+      }
+      // The last check: a lane an error halted (a resume that failed before the model, with no
+      // retry of its own) is reopened once for the rows the restart kept from running. Never a
+      // person's refusal — `authorization` / `blocked` halts stay theirs (#879 R3, astra P1).
+      const halt = dispatcher?.drainHalt(sessionKey);
+      if (opts.lastCheck && halt?.reason === 'error') {
+        this.logger.warn('Reopening a lane an error halted, once, for follow-ups a restart kept from running', {
+          sessionKey,
+          detail: halt.detail,
+        });
+        dispatcher?.clearDrainHalt(sessionKey, 'retry');
+      }
     }
     const started = this.drainIdleRestartRequeued(this.followupRestartRequeued);
     if (started > 0)

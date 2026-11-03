@@ -734,6 +734,28 @@ describe('R11 — the words a task still waits with are sent after the restart (
     expect(run).not.toHaveBeenCalled();
   });
 
+  it('a busy slot’s retry yields to a Stop pressed meanwhile too (review R3, astra P1)', () => {
+    const session: Record<string, unknown> = { slackless: true, taskFollowups: [queuedWord('go')] };
+    const sessions = new Map<string, unknown>([['task:a', session]]);
+    const run = vi.fn((_key: string, _opts?: { lastTry?: boolean }) => 'slot-busy' as 'slot-busy' | 'sent');
+    const scheduled: Array<() => void> = [];
+    runRestoredFollowups(
+      {
+        controller: { runQueuedAfterRestart: run },
+        sessions: () => sessions as Map<string, ConversationSession>,
+        logger: { info: vi.fn() },
+        schedule: (fn) => scheduled.push(fn),
+        now: () => 1_000,
+        maxAttempts: 3,
+      },
+      new Map(),
+    );
+    expect(run).toHaveBeenCalledTimes(1);
+    session.lastStopAtMs = 2_000;
+    while (scheduled.length) scheduled.shift()!();
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it('the default bound is the resumer’s (TASK_GOAL_START_MAX_RETRIES)', () => {
     const sessions = new Map<string, unknown>([['task:a', { slackless: true, taskFollowups: [queuedWord('go')] }]]);
     const run = vi.fn((_key: string, _opts?: { lastTry?: boolean }) => 'slot-busy' as const);
