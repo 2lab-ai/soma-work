@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import { themeClientJs } from '../theme-client';
 import { UI_LIB_VERSION } from '../ui-lib';
 import {
   renderConversationListPage,
@@ -105,7 +106,7 @@ describe('viewer pages — the shell (M-07)', () => {
       expect(html).toContain('<header class="vw-top"><ui-app-bar id="app-bar" lang="ko"></ui-app-bar></header>');
       expect(html).toContain(`<script type="module" src="/dashboard/ui/app-bar.js?v=${UI_LIB_VERSION}"></script>`);
       expect(html).toContain(`<script type="module" src="/dashboard/ui/elapsed.js?v=${UI_LIB_VERSION}"></script>`);
-      expect(html).toContain("localStorage.getItem('soma-theme')"); // the dashboard's theme, before paint
+      expect(html).toContain(`<script data-fouc>${themeClientJs()}</script>`); // the dashboard's theme, before paint
     }
     expect(VIEWER_CSS).not.toMatch(/#[0-9a-f]{3,8}\b/i);
     expect(VIEWER_CSS).not.toMatch(/\brgba?\(/);
@@ -120,28 +121,19 @@ describe('viewer pages — the shell (M-07)', () => {
     }
   });
 
-  it('the app bar is the same nav as the settings page with 대화 current, the theme from <html>, the account once /auth/me answers', () => {
-    const attrs: Record<string, string> = { 'data-theme': 'light' };
-    const html = {
-      getAttribute: (k: string) => attrs[k] ?? null,
-      setAttribute: (k: string, v: string) => (attrs[k] = v),
-    };
+  it('the app bar is the same nav as the settings page with 대화 current, the theme + palette of the head script, the account once /auth/me answers', () => {
     const bar: Record<string, unknown> = {};
-    const stored: Record<string, string> = {};
-    const api = load<{ paintAppBar: () => void; setTheme: (t: string) => void; currentTheme: () => string }>(
-      VIEWER_SHELL_JS,
-      ['currentTheme', 'paintAppBar', 'setTheme'],
-      {
-        document: { documentElement: html, getElementById: (id: string) => (id === 'app-bar' ? bar : null) },
-        localStorage: { setItem: (k: string, v: string) => (stored[k] = v) },
-        APP_BAR_NAV: [
-          { id: 'dashboard', label: '대시보드', href: '/dashboard', icon: 'board' },
-          { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat', current: true },
-          { id: 'settings', label: '설정', href: '/dashboard/settings', icon: 'gear' },
-        ],
-        _appBarAccount: { name: 'Zhuge Hyuk', href: '/login', role: '관리자' },
-      },
-    );
+    const api = load<{ paintAppBar: () => void }>(VIEWER_SHELL_JS, ['paintAppBar'], {
+      document: { getElementById: (id: string) => (id === 'app-bar' ? bar : null) },
+      // The theme and its palette are the head script's (themeClientJs, soma-work 830).
+      somaThemeNow: () => ({ theme: 'light', palette: 'mono' }),
+      APP_BAR_NAV: [
+        { id: 'dashboard', label: '대시보드', href: '/dashboard', icon: 'board' },
+        { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat', current: true },
+        { id: 'settings', label: '설정', href: '/dashboard/settings', icon: 'gear' },
+      ],
+      _appBarAccount: { name: 'Zhuge Hyuk', href: '/login', role: '관리자' },
+    });
     api.paintAppBar();
     const data = bar.data as Record<string, any>;
     expect(data.brand).toEqual({ label: 'soma-work', mark: true, href: '/dashboard' });
@@ -151,12 +143,10 @@ describe('viewer pages — the shell (M-07)', () => {
       ['settings', '/dashboard/settings', false],
     ]);
     expect(data.theme).toBe('light');
+    expect(data.palette).toBe('mono');
     expect(data.account).toEqual({ name: 'Zhuge Hyuk', href: '/login', role: '관리자' });
-    api.setTheme('dark');
-    expect(html.getAttribute('data-theme')).toBe('dark');
-    expect(stored['soma-theme']).toBe('dark');
-    expect((bar.data as any).theme).toBe('dark');
-    expect(VIEWER_SHELL_JS).toContain("'ui-theme-change'");
+    // The toggle is the head script's (it binds the bar): the shell keeps no theme code of its own.
+    expect(VIEWER_SHELL_JS).not.toMatch(/'ui-theme-change'|soma-theme|function (setTheme|currentTheme)\(/);
     expect(VIEWER_SHELL_JS).toContain(
       "{ id: 'conversations', label: '대화', href: '/conversations', icon: 'chat', current: true }",
     );

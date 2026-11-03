@@ -15,6 +15,8 @@
  * Tokens and kit classes are the library's own sheets (tokens.css, ui-kit.css) — no palette here.
  * Client scripts: String.raw, no `${…}` and no backticks (they ship byte for byte); the page data is JSON.
  */
+
+import { themeClientJs } from './theme-client';
 import type { ConversationMeta, ConversationRecord, ConversationTurn } from './types';
 import { UI_LIB_VERSION, uiIcon, uiLibKitCss, uiLibTokensCss } from './ui-lib';
 
@@ -117,7 +119,7 @@ a.att:focus-visible { outline: 2px solid var(--ui-border-focus); outline-offset:
 }
 `;
 
-/** The app bar, the theme (the dashboard's soma-theme) and the signed-in account, on both pages. */
+/** The app bar and the signed-in account, on both pages; the theme is the head's theme script (themeClientJs, soma-work 830). */
 export const VIEWER_SHELL_JS = String.raw`
 var APP_BAR_NAV = [
   { id: 'dashboard', label: '대시보드', href: '/dashboard', icon: 'board' },
@@ -126,20 +128,12 @@ var APP_BAR_NAV = [
 ];
 var _appBarAccount = null; // { name, href, role? } once /auth/me answers
 var _csrfToken = '';
-function currentTheme() {
-  return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
-}
 function paintAppBar() {
   var bar = document.getElementById('app-bar');
   if (!bar) return;
-  var data = { brand: { label: 'soma-work', mark: true, href: '/dashboard' }, nav: APP_BAR_NAV, navLabel: '주 메뉴', theme: currentTheme() };
+  var data = { brand: { label: 'soma-work', mark: true, href: '/dashboard' }, nav: APP_BAR_NAV, navLabel: '주 메뉴', theme: somaThemeNow().theme, palette: somaThemeNow().palette };
   if (_appBarAccount) data.account = _appBarAccount;
   bar.data = data;
-}
-function setTheme(next) {
-  document.documentElement.setAttribute('data-theme', next);
-  try { localStorage.setItem('soma-theme', next); } catch (_e) {}
-  paintAppBar();
 }
 async function refreshCsrfToken() {
   try {
@@ -156,11 +150,6 @@ async function refreshCsrfToken() {
   } catch (_e) {}
 }
 (function () {
-  var bar = document.getElementById('app-bar');
-  if (bar) bar.addEventListener('ui-theme-change', function (e) {
-    var t = e.detail && e.detail.theme;
-    if (t === 'light' || t === 'dark') setTheme(t);
-  });
   paintAppBar();
   refreshCsrfToken();
 })();
@@ -173,9 +162,8 @@ function page(opts: { title: string; view: 'list' | 'detail'; solo?: boolean; bo
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${escapeHtml(opts.title)}</title>
-<script data-fouc>
-(function(){var t=null;try{t=localStorage.getItem('soma-theme')}catch(_e){}if(t!=='light'&&t!=='dark'){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
-</script>
+<!-- The theme (soma-work 830): light · dark · light·mono · dark·mono on <html> before CSS paints, and the bar's toggle. -->
+<script data-fouc>${themeClientJs()}</script>
 <!-- @2lab.ai/ui: the kit classes (.ui-row, .ui-btn, .ui-empty …) and the tokens (--ui-* on :root and [data-theme]). -->
 <style id="ui-kit">
 ${uiLibKitCss()}
