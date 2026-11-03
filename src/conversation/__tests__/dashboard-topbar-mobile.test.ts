@@ -78,6 +78,7 @@ type BarData = {
   status?: { tone: string; label: string; live?: boolean; description?: string };
   account?: { name: string; href?: string };
   theme?: string;
+  palette?: string;
 };
 
 describe('the top bar is <ui-app-bar> (A-03..A-14)', () => {
@@ -167,7 +168,7 @@ describe('paintAppBar — the data the page hands the bar', () => {
     const { paintAppBar } = load<{ paintAppBar(): void }>(
       ['paintAppBar'],
       ['APP_BAR_NAV', 'APP_BAR_TOOLBAR_AT', '_appBarStatus', '_appBarAccount'],
-      { document: h.document, STRINGS },
+      { document: h.document, STRINGS, somaThemeNow: () => ({ theme: 'light', palette: 'mono' }) },
     );
     paintAppBar();
     const d = h.bar.data as BarData;
@@ -194,7 +195,9 @@ describe('paintAppBar — the data the page hands the bar', () => {
     // The scope group takes the bar's row under it below a 1280px bar (as the page's own row did).
     expect(d.toolbarAt).toBe(1280);
     expect(d.status).toEqual({ tone: 'run', label: '연결 중…', live: true, description: '실시간 업데이트' });
+    // The theme and its palette are the head script's (themeClientJs, #830): light·mono here.
     expect(d.theme).toBe('light');
+    expect(d.palette).toBe('mono');
     expect('account' in d).toBe(false);
   });
 
@@ -212,6 +215,7 @@ describe('paintAppBar — the data the page hands the bar', () => {
         // View mode (SSOT 2026-11-01): learning the viewer re-says whose board this is (none in this harness).
         syncBoardScope: () => {},
         autoOpenDecisions: () => {},
+        somaThemeNow: () => ({ theme: 'dark', palette: 'color' }),
       },
       ['function account() { return _appBarAccount; }'],
     );
@@ -264,58 +268,23 @@ describe('paintAppBar — the data the page hands the bar', () => {
   });
 });
 
-describe('theme — the bar asks, the page applies and stores', () => {
-  function env(os: 'light' | 'dark') {
-    const store = new Map<string, string>();
-    const attrs: Record<string, string> = {};
-    const painted: string[] = [];
-    const inject = {
-      localStorage: {
-        getItem: (k: string) => store.get(k) ?? null,
-        setItem: (k: string, v: string) => store.set(k, v),
-        removeItem: (k: string) => store.delete(k),
-      },
-      window: { matchMedia: (q: string) => ({ matches: q.includes('light') ? os === 'light' : os === 'dark' }) },
-      document: {
-        documentElement: {
-          setAttribute: (k: string, v: string) => {
-            attrs[k] = v;
-          },
-          getAttribute: (k: string) => attrs[k] ?? null,
-        },
-      },
-      paintAppBar: () => painted.push(attrs['data-theme']),
-    };
-    const m = load<{ setTheme(t: string): void; toggleTheme(): void }>(
-      ['setTheme', 'toggleTheme', 'applyTheme'],
-      [],
-      inject,
-    );
-    return { m, store, attrs, painted };
-  }
-
-  it('the chosen theme is stored only while it differs from the OS; the bar is repainted with it', () => {
-    const e = env('dark');
-    e.m.setTheme('light');
-    expect(e.attrs['data-theme']).toBe('light');
-    expect(e.store.get('soma-theme')).toBe('light');
-    expect(e.painted).toEqual(['light']);
-    e.m.toggleTheme();
-    expect(e.attrs['data-theme']).toBe('dark');
-    expect(e.store.has('soma-theme')).toBe(false);
-    expect(e.painted).toEqual(['light', 'dark']);
+describe('theme — the head script owns it (themeClientJs, #830); the page only hands the bar its state', () => {
+  it('the head runs the theme script before the sheets paint; the page keeps no theme code of its own', () => {
+    const head = TEMPLATE.slice(TEMPLATE.indexOf('<head>'), TEMPLATE.indexOf('</head>'));
+    expect(head).toContain('<script data-fouc>${themeClientJs()}</script>');
+    expect(head.indexOf('<script data-fouc>')).toBeLessThan(head.indexOf('<style'));
+    expect(DASHBOARD_TS).toContain("import { themeClientJs } from './theme-client';");
+    // The theme's storage, the OS follow and the bar's ui-theme-change are the head script's (theme-client tests).
+    for (const gone of [
+      /function (getPreferredTheme|applyTheme|setTheme|toggleTheme)\(/,
+      /'ui-theme-change'/,
+      /soma-theme/,
+    ])
+      expect(TEMPLATE, String(gone)).not.toMatch(gone);
   });
 
-  it('ui-theme-change from the bar applies the theme it asks for (not cancelled: the toggle shows it at once)', () => {
-    const init = TEMPLATE.slice(
-      TEMPLATE.indexOf('(function initAppBar() {'),
-      TEMPLATE.indexOf('})();', TEMPLATE.indexOf('(function initAppBar() {')),
-    );
-    expect(init).toContain("bar.addEventListener('ui-theme-change', function(e) {");
-    expect(init).toMatch(/if \(t === 'light' \|\| t === 'dark'\) setTheme\(t\);/);
-    expect(init).not.toContain('preventDefault');
-    // The OS listener and the first paint go through applyTheme (which repaints the bar).
-    expect(clientFn('applyTheme')).toMatch(/setAttribute\('data-theme', theme\);\n\s*paintAppBar\(\);/);
+  it('paintAppBar hands the bar the theme and palette the head script shows (the four-theme toggle)', () => {
+    expect(clientFn('paintAppBar')).toMatch(/theme: somaThemeNow\(\)\.theme,\n\s*palette: somaThemeNow\(\)\.palette,/);
   });
 });
 
