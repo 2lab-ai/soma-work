@@ -91,6 +91,26 @@ describe('K1 · K2 — every linked page, in order, with a short reference', () 
     expect(linear[0].text).toBe('ENG-42');
   });
 
+  it('a Notion page pasted in a message is named by the title in its URL, not "Notion"', () => {
+    const ID = '0123456789abcdef0123456789abcdef';
+    const wiki = (url: string) => cardLinksOf({ links: { doc: { url, type: 'doc', label: 'Notion' } } })[0];
+    expect(wiki(`https://www.notion.so/acme/Payment-Form-Design-${ID}`)).toMatchObject({
+      kind: 'wiki',
+      text: 'Payment Form Design',
+    });
+    expect(wiki(`https://notion.so/Payment-Form-Design-${ID}`).text).toBe('Payment Form Design');
+    expect(wiki(`https://acme.notion.site/Payment-Form-Design-${ID}`).text).toBe('Payment Form Design');
+    expect(wiki(`https://www.notion.so/acme/%EA%B2%B0%EC%A0%9C-%ED%8F%BC-%EC%84%A4%EA%B3%84-${ID}`).text).toBe(
+      '결제 폼 설계',
+    );
+    // A page URL that carries only the id has no title in it: the label stays.
+    expect(wiki(`https://www.notion.so/acme/${ID}`).text).toBe('Notion');
+    expect(wiki(`https://www.notion.so/${ID.toUpperCase()}`).text).toBe('Notion');
+    // A trailing slash still names the page; a slug of only separators says nothing, so the label stays.
+    expect(wiki(`https://www.notion.so/acme/Payment-Form-Design-${ID}/`).text).toBe('Payment Form Design');
+    expect(wiki(`https://www.notion.so/acme/---${ID}`).text).toBe('Notion');
+  });
+
   it('no links, nothing; a link without an http(s) URL is skipped', () => {
     expect(cardLinksOf({})).toEqual([]);
     expect(cardLinksOf({ links: { issue: { url: 'javascript:alert(1)', type: 'issue' } } })).toEqual([]);

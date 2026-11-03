@@ -21,6 +21,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { VIEW_LAYOUT_CLIENT_JS } from '../view-layout-client';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -568,7 +569,9 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
   it('T1.2 · the tab list sticks while the conversation scrolls, Main sticks at its left (the element’s pinned tab)', () => {
     expect(CSS).toMatch(/\.panel-tabs::part\(list\) \{[^}]*position: sticky;[^}]*top: 0;/);
     expect(CSS).not.toMatch(/\.panel-tab\.is-main/);
-    expect(clientFn('panelTabsData')).toContain("var tabs = [tab(PT_MAIN, st0, '메인', model, true)];");
+    expect(clientFn('panelTabsData')).toContain(
+      "var tabs = [tab(PT_MAIN, st0, '메인', model ? modelLabelOf(model) : '', true, model, '')];",
+    );
   });
 
   it('T1.6 · minimal by default: the agent path only with 자세히; the subtree is the 에이전트 트리 tab', () => {
@@ -583,7 +586,19 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
 // D4 E-19: the strip is <ui-tabs shared-panel>; the page hands it the tabs as data (TabItem: label, meta, tone,
 // pinned, title) and reads its choice back from ui-change (panelTabAgent).
 describe('T1.2 · the agent tabs', () => {
-  type Tab = { id: string; label: string; meta?: string; tone: string; pinned?: boolean; title: string };
+  type Tab = {
+    id: string;
+    label: string;
+    meta?: string;
+    model?: string;
+    tone: string;
+    pinned?: boolean;
+    title: string;
+  };
+  // The page's own model name (view-layout client: REPRESENTATIVE_MODELS' label, else the id without "claude-").
+  const modelLabelOf = new Function('REPRESENTATIVE_MODELS', `${VIEW_LAYOUT_CLIENT_JS}\nreturn modelLabelOf;`)([
+    { model: 'claude-opus-5-5[1m]', label: 'Opus 5.5 (1M)' },
+  ]) as (m: unknown) => string;
   const env = load<{
     panelTabsData(s: unknown, active: string, mainSt?: string): { label: string; value: string; tabs: Tab[] };
     panelTabId(agentId: string): string;
@@ -591,6 +606,7 @@ describe('T1.2 · the agent tabs', () => {
   }>(
     [...BASE_FNS, 'agentStatusOf', 'agentName', 'panelTabId', 'panelTabAgent', 'panelTabsData'],
     [...BASE_VARS, 'PT_MAIN', 'AGENT_TAB_TONE'],
+    { modelLabelOf },
   );
   const s = {
     model: 'claude-opus-5-5',
@@ -640,6 +656,46 @@ describe('T1.2 · the agent tabs', () => {
       ],
     };
     expect(env.panelTabsData(states, '', 'idle').tabs.map((t) => t.tone)).toEqual(['rest', 'fail', 'wait', 'rest']);
+  });
+
+  it('#813 · each tab leads with its model’s mark: Main the session’s model, a subagent the one it ran — named, not the raw id', () => {
+    const d = env.panelTabsData(
+      {
+        model: 'claude-opus-5-5[1m]',
+        agents: [
+          {
+            id: 'g',
+            n: 1,
+            type: 'zworkflow:grok-elon',
+            status: 'completed',
+            spend: { model: 'grok-4', inputTokens: 9 },
+          },
+          { id: 'f', n: 2, type: 'zworkflow:fable-zhuge', status: 'running', spend: { model: 'claude-fable-5' } },
+          { id: 'l', n: 3, type: 'log-only', status: 'completed' },
+          { id: 'z', n: 4, type: 'Explore', status: 'completed', spend: { model: '' } },
+        ],
+      },
+      '',
+    );
+    // The element draws the mark from \`model\`; the raw id never shows as text.
+    expect(d.tabs.map((t) => t.model)).toEqual([
+      'claude-opus-5-5[1m]',
+      'grok-4',
+      'claude-fable-5',
+      undefined,
+      undefined,
+    ]);
+    expect(d.tabs[0].meta).toBe('Opus 5.5 (1M)');
+    expect(d.tabs[0].title).toBe('메인 Opus 5.5 (1M) — 대기');
+    // A subagent's muted label stays its type; its model joins the title (the mark is drawn, not read).
+    expect(d.tabs[1].meta).toBe('zworkflow:grok-elon');
+    expect(d.tabs[1].title).toBe('A1 zworkflow:grok-elon · grok-4 — 완료');
+    // No model known, no mark and no guess.
+    expect(d.tabs[3].title).toBe('A3 log-only — 완료');
+    // The session's 'unknown' placeholder is not a model.
+    const unknown = env.panelTabsData({ model: 'unknown' }, '');
+    expect(unknown.tabs[0].model).toBeUndefined();
+    expect(unknown.tabs[0].meta).toBeUndefined();
   });
 
   it('the strip is handed its data once per change, and its choice is selectPanelAgent', () => {

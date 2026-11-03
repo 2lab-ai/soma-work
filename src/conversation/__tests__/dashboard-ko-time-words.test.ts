@@ -207,7 +207,9 @@ describe('T3 — the chrome is Korean', () => {
       expect(TEMPLATE, en).not.toContain(en);
   });
   it('tabs 메인 · 대화; the Tasks head 작업; breadcrumb and section 에이전트 인박스; 목표 regions and badges', () => {
-    expect(TEMPLATE).toContain("var tabs = [tab(PT_MAIN, st0, '메인', model, true)];");
+    expect(TEMPLATE).toContain(
+      "var tabs = [tab(PT_MAIN, st0, '메인', model ? modelLabelOf(model) : '', true, model, '')];",
+    );
     expect(TEMPLATE).toContain("{ id: 'conv', label: '대화', title: '지시와 답변' },");
     expect(TEMPLATE).toContain("var title = '작업' + (scopeLabel ?");
     expect(TEMPLATE).toContain('<section class="inbox ui-tok" id="inbox" aria-label="에이전트 인박스">');
