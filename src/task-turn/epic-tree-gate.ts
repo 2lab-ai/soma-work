@@ -43,7 +43,7 @@ export interface EpicTreeGate {
    */
   refusal(
     epic: ConversationSession,
-    start: { child?: ConversationSession; newChild?: true; making?: number },
+    start: { child?: ConversationSession; newChild?: true; making?: number; pending?: number },
   ): string | undefined;
   /** Count a start in the tree's window. */
   record(epic: ConversationSession): void;
@@ -67,7 +67,9 @@ export function createEpicTreeGate(deps: EpicTreeGateDeps): EpicTreeGate {
         return `this epic reached its cost limit ($${limit}) — an instruction from its owner still runs`;
       }
       // Starts still being handed over (`making`) are not recorded yet, but they will be (review #872 R2).
-      if (recent(treeId, now()).length + (start.making ?? 0) >= maxStarts) {
+      // Starts in flight not recorded yet: the ones taking a running place (`making`) and the ones
+      // that do not (`pending` — a working child's queued word); `pending` includes `making` when given.
+      if (recent(treeId, now()).length + (start.pending ?? start.making ?? 0) >= maxStarts) {
         return 'too many starts in this epic — try again shortly';
       }
       if (start.newChild || (start.child && !deps.isRunning(start.child))) {
