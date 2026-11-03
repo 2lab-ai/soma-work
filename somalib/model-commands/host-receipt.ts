@@ -50,6 +50,12 @@ export interface HostWriteReceipt {
 
 export const HOST_RECEIPT_DIR = 'model-command-receipts';
 
+/**
+ * #881 A — the longest GET_SESSION `waitForAckMs`. The host applies a write about 20 s after the model got its result
+ * when its stream is busy; 30 s covers that and still answers well inside an MCP call's time.
+ */
+export const GET_SESSION_MAX_WAIT_MS = 30_000;
+
 /** How many write acks a receipt keeps. */
 export const HOST_RECEIPT_MAX_ACKS = 20;
 
@@ -65,6 +71,18 @@ export function withAck(
     .sort(([, a], [, b]) => (b.at ?? 0) - (a.at ?? 0))
     .slice(0, HOST_RECEIPT_MAX_ACKS);
   return kept.length ? Object.fromEntries(kept) : undefined;
+}
+
+/**
+ * #881 B1 — when the model-command server issued a write: its `receiptId` is `r_<Date.now() base 36>_…`. The host
+ * applies a write late (~20 s when busy), so this — not the apply time — is when the model made it.
+ */
+export function receiptIssuedAt(receiptId: unknown): number | undefined {
+  if (typeof receiptId !== 'string') return undefined;
+  const m = /^r_([0-9a-z]+)_/.exec(receiptId);
+  if (!m) return undefined;
+  const t = Number.parseInt(m[1], 36);
+  return Number.isFinite(t) && t > 0 ? t : undefined;
 }
 
 /** The receipt file of a session: one per session key, a hash so any key is a safe file name. */
@@ -94,14 +112,33 @@ export function readHostReceipt(file: string): HostReceipt | undefined {
   const s = r.session as Partial<SessionResourceSnapshot> | undefined;
   // Every link is checked: GET_SESSION resyncs onto this snapshot, and one bad element would throw there.
   if (!s || !isLinkList(s.issues) || !isLinkList(s.prs) || !isLinkList(s.docs)) return undefined;
-  const { acks: rawAcks, lastWrite, tldr, followUp, title, ...rest } = r;
+  const { acks: rawAcks, lastWrite, tldr, followUp, title } = r;
   const acks: Record<string, HostWriteReceipt> = {};
   if (rawAcks && typeof rawAcks === 'object' && !Array.isArray(rawAcks)) {
     for (const [id, ack] of Object.entries(rawAcks)) if (isAck(ack)) acks[id] = ack;
   }
-  // The optional fields reach the model as the host's word: a malformed one is dropped, never passed on.
+  // Only the fields the host writes reach the model, each as the host's word: anything else in the file is dropped,
+  // and a malformed optional field is dropped rather than passed on (#881 C1).
+  const active = (s.active ?? {}) as Record<string, unknown>;
+  const activeLinks: SessionResourceSnapshot['active'] = {};
+  for (const kind of ['issue', 'pr', 'doc'] as const) {
+    if (isLink(active[kind])) activeLinks[kind] = active[kind] as SessionResourceSnapshot['active'][typeof kind];
+  }
   return {
-    ...(rest as HostReceipt),
+    sequence: r.sequence,
+    at: r.at,
+    session: {
+      issues: s.issues as SessionResourceSnapshot['issues'],
+      prs: s.prs as SessionResourceSnapshot['prs'],
+      docs: s.docs as SessionResourceSnapshot['docs'],
+      active: activeLinks,
+      instructions: Array.isArray(s.instructions)
+        ? s.instructions.filter(
+            (i) => !!i && typeof i === 'object' && typeof (i as { text?: unknown }).text === 'string',
+          )
+        : [],
+      sequence: typeof s.sequence === 'number' && Number.isFinite(s.sequence) ? s.sequence : r.sequence,
+    },
     ...(typeof title === 'string' ? { title } : {}),
     ...(Array.isArray(tldr) && tldr.every((l) => typeof l === 'string') ? { tldr } : {}),
     ...(typeof followUp === 'string' ? { followUp } : {}),
@@ -110,9 +147,12 @@ export function readHostReceipt(file: string): HostReceipt | undefined {
   };
 }
 
+/** A snapshot link as the host writes it: an object with a string `url`. */
+function isLink(v: unknown): boolean {
+  return !!v && typeof v === 'object' && typeof (v as { url?: unknown }).url === 'string';
+}
+
 /** A snapshot link list as the host writes it: objects with a string `url`. */
 function isLinkList(v: unknown): boolean {
-  return (
-    Array.isArray(v) && v.every((l) => !!l && typeof l === 'object' && typeof (l as { url?: unknown }).url === 'string')
-  );
+  return Array.isArray(v) && v.every(isLink);
 }
