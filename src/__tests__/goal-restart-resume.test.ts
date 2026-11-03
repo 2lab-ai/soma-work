@@ -72,6 +72,25 @@ describe('resumeActiveGoals (T1)', () => {
     expect(settled).toHaveBeenCalledWith('task:t1', { cause: 'kick' });
   });
 
+  it('not an epic’s goal: its waker drives it (trinity R1, fable P1-2)', () => {
+    const sessions = new Map<string, ConversationSession>([
+      [
+        'task:epic',
+        activeGoalSession({
+          channelId: '',
+          threadTs: undefined,
+          slackless: true,
+          kind: 'epic',
+        } as Partial<ConversationSession>),
+      ],
+    ]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+    expect(handler.resumeActiveGoals()).toBe(0);
+    expect(settled).not.toHaveBeenCalled();
+  });
+
   it('a dashboard task the restart cut gets the continuation back (the registry’s reconciliation, not a notice)', () => {
     const task = activeGoalSession({
       channelId: '',

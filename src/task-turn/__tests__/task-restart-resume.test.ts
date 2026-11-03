@@ -284,3 +284,23 @@ describe('R4 — skipped when resuming it would be wrong', () => {
     expect(restartResumeSkip(base as unknown as ConversationSession, cut)).toBeNull();
   });
 });
+
+describe('R5 — one task never runs two chains at once (trinity R1, grok P1 regression)', () => {
+  it('two starts in the same tick (the resumer and a goal continuation): one runs, the other is refused', async () => {
+    const p = processOver(new SessionRegistry());
+    const task = p.registry.createTask({ ownerId: OWNER, ownerName: 'R', workingDirectory: DIR, title: 'race' });
+    const key = `task:${task.taskId}`;
+    const held = heldStream();
+    p.useStream(held.stream);
+    const [a, b] = await Promise.all([
+      p.controller.start({ actorUserId: OWNER, sessionKey: key, text: TASK_RESTART_TEXT, initiator: 'host' }),
+      p.controller.start({ actorUserId: OWNER, sessionKey: key, text: '[goal-continuation] go', initiator: 'host' }),
+    ]);
+    expect([a.status, b.status].sort()).toEqual([202, 409]);
+    await until(() => p.claudeHandler.streamAgentEvents.mock.calls.length >= 1);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(p.claudeHandler.streamAgentEvents).toHaveBeenCalledTimes(1);
+    held.release();
+    await (a.status === 202 ? a.done : b.done);
+  });
+});

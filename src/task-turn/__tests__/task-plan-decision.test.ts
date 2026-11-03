@@ -179,3 +179,27 @@ describe('createTaskPlanDecider — 시작 opens the plan’s goal (2026-11-03)'
     expect(task.taskPlan?.state).toBe('approved');
   });
 });
+
+describe('createTaskPlanDecider — no goal on an epic (trinity R1, fable P1-2)', () => {
+  it('an epic’s 시작 starts its plan without a goal: its children’s events drive it, not the goal loop', async () => {
+    const task = awaitingTask();
+    (task as { kind?: string }).kind = 'epic';
+    const openGoal = vi.fn(() => () => {});
+    const decide = createTaskPlanDecider({
+      getSession: (k) => (k === KEY ? task : undefined),
+      setTaskPlanGate: (_id, gate) => {
+        task.taskPlan = gate;
+      },
+      controller: {
+        canStart: () => null,
+        isRunning: () => false,
+        start: vi.fn(async () => ({ status: 202, body: {} })) as never,
+      },
+      now: () => NOW + 1,
+      openGoal,
+      logger: { info: () => {}, warn: () => {} },
+    });
+    expect((await decide({ sessionKey: KEY, decision: 'start', revision: 1, actorUserId: 'U1' })).status).toBe(200);
+    expect(openGoal).not.toHaveBeenCalled();
+  });
+});

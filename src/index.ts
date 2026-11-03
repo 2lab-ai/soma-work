@@ -206,7 +206,7 @@ import { createEpicWaker } from './task-turn/epic-wake';
 import { setPlanHost } from './task-turn/plan-server';
 import { composeTaskApprovalListeners } from './task-turn/task-approver';
 import { createDashboardCloseHandler } from './task-turn/task-close';
-import { planGoalObjective, settleTaskGoal } from './task-turn/task-goal';
+import { createTaskGoalInjector, planGoalObjective, settleTaskGoal } from './task-turn/task-goal';
 import { createTaskLauncher } from './task-turn/task-launcher';
 import {
   createTaskNoticeDeliverer,
@@ -215,7 +215,7 @@ import {
 } from './task-turn/task-notice-deliverer';
 import { TASK_NOTIFICATION_LEDGER_FILENAME, TaskNotificationLedger } from './task-turn/task-notification-ledger';
 import { createTaskPlanDecider } from './task-turn/task-plan-decision';
-import { createTaskRestartResumer } from './task-turn/task-restart-resume';
+import { createTaskRestartResumer, TASK_RESTART_NOTICE } from './task-turn/task-restart-resume';
 import {
   createTaskTurnController,
   type TaskCommandResponse,
@@ -1344,7 +1344,8 @@ async function start() {
       try {
         const registry = claudeHandler.getSessionRegistry();
         const task = registry.getSessionByKey(key);
-        if (!task?.slackless || task.goal?.status !== 'active') return;
+        // Not an epic: its waker drives it (trinity R1, fable P1-2).
+        if (!task?.slackless || task.kind === 'epic' || task.goal?.status !== 'active') return;
         const turnId = task.lastTurnOutcome?.turnId;
         const final =
           task.conversationId && turnId ? await readTurnFinal(readWorkLog, task.conversationId, turnId) : undefined;
@@ -1356,18 +1357,51 @@ async function start() {
           turnText: final?.text ?? '',
           shuttingDown: slackHandler.isShuttingDown(),
           summaryMax: GOAL_SUMMARY_PERSIST_MAX,
-          settle: (k) => settleTaskGoalTurn?.(k),
+          settle: (k) => {
+            if (settleTaskGoalTurn) settleTaskGoalTurn(k);
+            else logger.warn('A dashboard task goal settled before the goal loop was wired', { sessionKey: k });
+          },
           save: () => registry.saveSessions(),
         });
       } catch (error) {
         logger.warn('Settling a dashboard task goal failed', { sessionKey: key, error: (error as Error)?.message });
       }
     };
-    /** A real instruction or answer to a task resets its goal's continuation budget, as a Slack message does. */
-    const noteTaskUserTurn = (key: string): void => {
-      const task = claudeHandler.getSessionRegistry().getSessionByKey(key);
-      if (task?.goal) resetGoalContinuationOnUserMessage(task);
+    /**
+     * A real instruction or answer to a task resets its goal's continuation budget, as a Slack message
+     * does — before the turn starts (its leg must carry the new epoch), undone when the start is refused
+     * (a refused word neither refunds the budget nor drops an eval in flight — trinity R1, fable P2).
+     */
+    const withTaskUserTurn = async (
+      key: string,
+      run: () => Promise<TaskCommandResponse>,
+    ): Promise<TaskCommandResponse> => {
+      const registry = claudeHandler.getSessionRegistry();
+      const task = registry.getSessionByKey(key);
+      if (!task?.goal) return run();
+      const before = snapshotGoalState(task);
+      resetGoalContinuationOnUserMessage(task);
+      let res: TaskCommandResponse;
+      try {
+        res = await run();
+      } catch (error) {
+        restoreGoalState(task, before);
+        throw error;
+      }
+      if (res.status !== 202) restoreGoalState(task, before);
+      // Persisted now: a restart before the turn's own save must not reload the spent budget (trinity R1, grok P2).
+      registry.saveSessions();
+      return res;
     };
+    /** Restart-cut tasks whose first goal continuation carries the restart guidance (filled at boot). */
+    const goalRestartCut = new Set<string>();
+    /** The goal loop's continuation for a dashboard task — its next turn; a busy owner slot waits (429). */
+    const taskGoalInjector = createTaskGoalInjector({
+      controller: taskController,
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      logger: new Logger('TaskGoalInjector'),
+      restartNotice: (key) => (goalRestartCut.delete(key) ? TASK_RESTART_NOTICE : undefined),
+    });
     // E4 ④a (.prd/19 D3) — the host the epic's tools call: registry reads, the plan writer,
     // a child's last final from its work log. Set here, not imported there (no cycle).
     setEpicHost({
@@ -1448,20 +1482,20 @@ async function start() {
             );
           return;
         }
-        noteTaskUserTurn(request.sessionKey);
-        const res =
+        const res = await withTaskUserTurn(request.sessionKey, () =>
           held.kind === 'task-command'
-            ? await taskController.start({
+            ? taskController.start({
                 sessionKey: request.sessionKey,
                 text: held.text,
                 actorUserId: request.requesterId,
               })
-            : await taskController.answer({
+            : taskController.answer({
                 sessionKey: request.sessionKey,
                 askId: held.askId,
                 answer: held.answer,
                 actorUserId: request.requesterId,
-              });
+              }),
+        );
         if (res.status >= 400) {
           return { ok: false, reason: String((res.body as { error?: unknown })?.error ?? `HTTP ${res.status}`) };
         }
@@ -1520,8 +1554,9 @@ async function start() {
         });
         if (held) return held;
       }
-      noteTaskUserTurn(sessionKey);
-      return taskController.start({ sessionKey, text: message, attachments, actorUserId });
+      return withTaskUserTurn(sessionKey, () =>
+        taskController.start({ sessionKey, text: message, attachments, actorUserId }),
+      );
     });
     // #599 ⑤ — an answer to a task's open question runs as its next instruction.
     setDashboardTaskAnswerHandler(async (sessionKey, askId, answer, actorUserId) => {
@@ -1532,8 +1567,7 @@ async function start() {
         at: Date.now(),
       });
       if (held) return held;
-      noteTaskUserTurn(sessionKey);
-      return taskController.answer({ sessionKey, askId, answer, actorUserId });
+      return withTaskUserTurn(sessionKey, () => taskController.answer({ sessionKey, askId, answer, actorUserId }));
     });
     // Plan mode (SSOT 2026-11-02) — the `plan` tool saves through the registry; the dashboard's
     // 시작 / 취소 decide the revision the user saw (시작 starts the work with the plan).
@@ -2075,20 +2109,12 @@ async function start() {
       // slackHandler.handleMessage).
       const goalMessageInjector = async (event: SyntheticMessageEvent, sessionKey?: string): Promise<void> => {
         // 2026-11-03 — a dashboard task's continuation is its next turn, through the task controller
-        // (no Slack thread). A refusal (a turn running, the owner's slot) surfaces as the loop's
-        // injection failure; the next settled turn drives the loop again.
+        // (no Slack thread). The owner's slot taken (429) waits and tries again while the same goal
+        // wants it (createTaskGoalInjector); another refusal is the loop's injection failure.
         const target = sessionKey ? registry.getSessionByKey(sessionKey) : undefined;
         if (sessionKey && target?.slackless) {
-          if (!taskTurnController) throw new Error('the task controller is not wired');
-          const res = await taskTurnController.start({
-            sessionKey,
-            text: event.text ?? '',
-            actorUserId: event.user,
-            initiator: 'host',
-          });
-          if (res.status !== 202) {
-            throw new Error(String((res.body as { error?: unknown })?.error ?? `HTTP ${res.status}`));
-          }
+          if (!taskGoalInjector) throw new Error('the task controller is not wired');
+          await taskGoalInjector(event, sessionKey);
           return;
         }
         const say = async (args: any) => {
@@ -2207,13 +2233,14 @@ async function start() {
         // controller is wired above and after crash-recovery's no-double-resume
         // guard has skipped these sessions.
         try {
-          // A dashboard task the restart cut gets its goal continuation back too (registry reconciliation).
-          slackHandler.noteRestartCutSessionKeys(
-            claudeHandler
-              .getSessionRegistry()
-              .getRestartCutTasks()
-              .map((t) => t.sessionKey),
-          );
+          // A dashboard task the restart cut gets its goal continuation back too (registry reconciliation),
+          // and that continuation carries the restart guidance (D10 on the goal path — trinity R1, fable P2).
+          const cutKeys = claudeHandler
+            .getSessionRegistry()
+            .getRestartCutTasks()
+            .map((t) => t.sessionKey);
+          slackHandler.noteRestartCutSessionKeys(cutKeys);
+          for (const key of cutKeys) goalRestartCut.add(key);
           const resumed = slackHandler.resumeActiveGoals();
           if (resumed > 0) timing(`Resumed ${resumed} active goal(s) after restart`);
         } catch (error) {
@@ -2228,6 +2255,12 @@ async function start() {
         } catch (error) {
           logger.warn('Re-arming pending error auto-retries failed (non-critical)', error);
         }
+      })
+      .catch((error) => {
+        logger.warn('Crash recovery notifications failed (non-critical)', error);
+      })
+      .finally(() => {
+        // Not tied to the Slack notices' outcome (trinity R1, fable P3): a dashboard task has no thread.
         // 2026-11-03 — a dashboard task whose turn the restart cut resumes too, as a Slack
         // thread does above (it was only recorded `interrupted`). After the goal resume, so a
         // task with an active goal is the goal loop's; the resumer skips it.
@@ -2252,9 +2285,6 @@ async function start() {
         } catch (error) {
           logger.warn('Resuming dashboard tasks after restart failed (non-critical)', error);
         }
-      })
-      .catch((error) => {
-        logger.warn('Crash recovery notifications failed (non-critical)', error);
       });
 
     // Scan channels the bot is a member of (non-blocking)
