@@ -141,21 +141,35 @@ describe('createGithubReceiptChecker — GitHub confirms what a call wrote', () 
     expect(await open).toEqual([]);
   });
 
-  it('R7 — an issue create is the call’s when its title survives the shell quoting in the input', async () => {
-    const title = "fix(card-links): the task card's model as icons";
-    const input = `jq -n '{title:"fix(card-links): the task card'"'"'s model as icons"}' | curl -s -X POST https://api.github.com/repos/a/b/issues -d @-`;
+  it('R7 — an issue title the input names as a complete literal must be the issue’s; a quote-spliced one names nothing', async () => {
+    const title = 'fix(card-links): a Notion chip is named by its title';
+    const named = `jq -n '{title:"${title}"}' | curl -s -X POST https://api.github.com/repos/a/b/issues -d @-`;
     const { result } = check(
       [effect('create', ISSUE)],
       { 'a/b issue 30': { createdAt: iso(T0 + 500), title, state: 'open' } },
-      { input },
+      { input: named },
     );
     expect(short(await result)).toEqual([`create ${ISSUE}`]);
     const { result: other } = check(
       [effect('create', ISSUE)],
       { 'a/b issue 30': { createdAt: iso(T0 + 500), title: 'another session’s issue title', state: 'open' } },
-      { input },
+      { input: named },
     );
     expect(await other).toEqual([]);
+    // The shell's `'"'"'` splice breaks the literal: it names nothing, and the window decides.
+    const spliced = `jq -n '{title:"fix(card-links): the task card'"'"'s model as icons"}' | curl -s -X POST https://api.github.com/repos/a/b/issues -d @-`;
+    const { result: s2 } = check(
+      [effect('create', ISSUE)],
+      {
+        'a/b issue 30': {
+          createdAt: iso(T0 + 500),
+          title: "fix(card-links): the task card's model as icons",
+          state: 'open',
+        },
+      },
+      { input: spliced },
+    );
+    expect(short(await s2)).toEqual([`create ${ISSUE}`]);
   });
 
   it('R8 — GitHub could not be asked (failure, a throw, a malformed date): nothing, and no throw', async () => {
@@ -241,6 +255,35 @@ describe('createGithubReceiptChecker — GitHub confirms what a call wrote', () 
       endedAt: T0 + 3_000,
     });
     expect(short(out)).toEqual(['merge https://github.com/a/b/pull/13']);
+  });
+
+  it('R14 — a variable, a concatenation or a quoted flag word names nothing: the real create is kept (fable-zhuge, round 19)', async () => {
+    const issue = { 'a/b issue 30': { createdAt: iso(T0 + 1_000), title: 'Crash on start', state: 'open' } };
+    for (const input of [
+      'gh issue create -R a/b --title "$T" --body-file b.md',
+      'gh issue create -R a/b -t "fix: $WHAT" -b x',
+      `jq -n '{title:"'"$T"'"}' | curl -s -X POST https://api.github.com/repos/a/b/issues -d @-`,
+    ]) {
+      expect(short(await check([effect('create', ISSUE)], issue, { input }).result), input).toEqual([
+        `create ${ISSUE}`,
+      ]);
+    }
+    const pr = { 'a/b pr 12': { createdAt: iso(T0 + 1_000), headRef: 'feat/x', state: 'open' } };
+    for (const input of [
+      'node -e \'fetch(u, {method: "POST", body: JSON.stringify({title: "t", head: "feat/" + process.env.BR, base: "main"})})\'',
+      'node -e \'fetch(u, {method: "POST", body: JSON.stringify({head: "zhuge:" + b, base: "main"})})\'',
+      'gh pr create -R a/b --title "x -H y" --fill',
+    ]) {
+      expect(short(await check([effect('create', PR)], pr, { input }).result), input).toEqual([`create ${PR}`]);
+    }
+    // A complete literal that differs still rejects: --head outside quotes, -f 'title=…'.
+    expect(
+      await check([effect('create', PR)], pr, { input: 'gh pr create -R a/b --head other/y --fill' }).result,
+    ).toEqual([]);
+    expect(
+      await check([effect('create', ISSUE)], issue, { input: "gh api -X POST repos/a/b/issues -f 'title=Other bug'" })
+        .result,
+    ).toEqual([]);
   });
 
   it('R9 — at most MAX_CHECKS GETs per batch', async () => {
