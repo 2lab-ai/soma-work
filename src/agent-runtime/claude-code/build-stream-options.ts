@@ -98,11 +98,18 @@ function needsStreamedCallUsage(model: string): boolean {
  * Structural logger surface used by the builder. The concrete `Logger`
  * (`src/logger.ts`) satisfies this; kept local to avoid a hard dependency.
  */
-/** #854 — the task id of a Slack session that is an epic (a live root, not a child), else undefined. */
+/**
+ * #854 — the task id of a Slack session that is an epic (a live root, not a child), when its owner
+ * speaks; else undefined. The epic's tools act as its owner (its children start as the owner), so
+ * they ride the owner's turns and the epic's wakes (sent as the owner) only — another user's word
+ * in the thread runs as them, without them: the dashboard's rule for an epic tree (review #872).
+ */
 function slackEpicTaskId(
-  session: { kind?: string; parentTaskId?: string; slackless?: boolean; taskId?: string } | undefined,
+  session: { kind?: string; parentTaskId?: string; slackless?: boolean; taskId?: string; ownerId?: string } | undefined,
+  speaker: string,
 ): string | undefined {
   if (!session || session.kind !== 'epic' || session.parentTaskId || session.slackless === true) return undefined;
+  if (!session.ownerId || session.ownerId !== speaker) return undefined;
   return session.taskId || undefined;
 }
 
@@ -331,7 +338,7 @@ export async function buildStreamOptions(
           // #853 — plan mode on a Slack session too.
           planPending: isPlanPending(input.session?.taskPlan),
           // #854 — an epic's own turn (never a child's): the epic's tools ride it.
-          epicTaskId: slackEpicTaskId(input.session),
+          epicTaskId: slackEpicTaskId(input.session, slackContext.user),
         })
       : undefined);
   const contextUser = execCtx?.userId;

@@ -646,3 +646,33 @@ describe('#853 — a Slack session in plan mode researches, like a task', () => 
     ).toBeUndefined();
   });
 });
+
+describe('#854 — an epic’s tools ride its owner’s turns only (review #872 astra)', () => {
+  const epicSession = { ownerId: USER, workflow: 'default', kind: 'epic', taskId: 'e1' } as ConversationSession;
+  const ctxOf = async (session: ConversationSession, speaker: string) => {
+    const deps = makeDeps();
+    await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: WORK_DIR, session, slackContext: { ...slackContext, user: speaker } },
+      deps,
+    );
+    return (deps.mcpConfigBuilder.buildConfig as ReturnType<typeof vi.fn>).mock.calls[0][2] as ExecutionContext & {
+      epicTaskId?: string;
+    };
+  };
+
+  it('E1 — the owner’s turn (and the epic’s wake, sent as the owner) carries the epic', async () => {
+    expect((await ctxOf(epicSession, USER)).epicTaskId).toBe('e1');
+  });
+
+  it('E2 — another user’s word in the epic’s thread runs as them, without the epic’s owner-powered tools', async () => {
+    const ctx = await ctxOf(epicSession, OTHER);
+    expect(ctx.userId).toBe(OTHER);
+    expect(ctx.epicTaskId).toBeUndefined();
+  });
+
+  it('E3 — a child’s turn never carries an epic', async () => {
+    expect(
+      (await ctxOf({ ...epicSession, kind: undefined, parentTaskId: 'e0' } as ConversationSession, USER)).epicTaskId,
+    ).toBeUndefined();
+  });
+});
