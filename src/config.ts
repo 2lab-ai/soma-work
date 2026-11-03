@@ -316,6 +316,14 @@ export function getIncidentEvidenceConfig(): IncidentEvidenceConfig | null {
  * file). Malformed entries are dropped individually and logged here; the
  * poster also reports them in the deploy thread.
  */
+export function getReleaseNotesChannels(): ReleaseNotesChannelsConfig {
+  const parsed = parseReleaseNotesChannels(process.env.SOMA_RELEASE_NOTES_CHANNELS);
+  if (parsed.invalid.length > 0) {
+    logger.warn('SOMA_RELEASE_NOTES_CHANNELS has malformed entries — they are ignored', { invalid: parsed.invalid });
+  }
+  return parsed;
+}
+
 /** The daily task-card link leak report (#835): off when no channel is set. */
 export interface LinkLeakReportConfig {
   channelId?: string;
@@ -340,14 +348,6 @@ export function getLinkLeakReportConfig(): LinkLeakReportConfig {
     timezone: process.env.REPORT_TIMEZONE || 'Asia/Seoul',
     ...(botLogin ? { botLogin } : {}),
   };
-}
-
-export function getReleaseNotesChannels(): ReleaseNotesChannelsConfig {
-  const parsed = parseReleaseNotesChannels(process.env.SOMA_RELEASE_NOTES_CHANNELS);
-  if (parsed.invalid.length > 0) {
-    logger.warn('SOMA_RELEASE_NOTES_CHANNELS has malformed entries — they are ignored', { invalid: parsed.invalid });
-  }
-  return parsed;
 }
 
 /**

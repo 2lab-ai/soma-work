@@ -3,8 +3,10 @@
  * the links on every task card (live sessions and archives). On 3 November 2026 the figure was 9 of 15.
  *
  * Per item: on a card, missed (on none), or on the wrong card (on cards, but not on the card of the session that wrote
- * it — known from the `pr_created` metric, which comes from the same write effects as the card since #832; so a wrong
- * card is judged for PRs only, an issue's creator is not recorded). The report
+ * it). The writer is the first session that recorded the PR in the `pr_created` metric. Once #832 (#844) is deployed
+ * that metric fires only for a proven create; before, it fired for any PR URL in a tool result, which is why the first
+ * session wins, never a later one that only read the PR. A wrong card is judged for PRs only (an issue's creator is
+ * not recorded). The report
  * posts every day; it alerts only after a baseline week, and only above that week's median, so PRs that are meant to
  * have no card (cron, manual runs) do not page anyone. The run of zero-miss days is the epic's done signal.
  */
@@ -121,11 +123,51 @@ export function shouldAlert(history: LeakHistoryEntry[], today: LeakHistoryEntry
   return today.missed > median(history.slice(-BASELINE_DAYS).map((h) => h.missed));
 }
 
-/** The run of most recent days with no missed item. */
+/**
+ * The run of most recent days with bot items and none missed. A day with no bot item is no evidence: it neither counts
+ * nor breaks the run (so a quiet weekend is not "3 days in a row").
+ */
 export function zeroStreak(history: LeakHistoryEntry[]): number {
   let n = 0;
-  for (let i = history.length - 1; i >= 0 && history[i].missed === 0; i--) n++;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].total === 0) continue;
+    if (history[i].missed !== 0) break;
+    n++;
+  }
   return n;
+}
+
+/** A metrics event, as far as the creator lookup reads it. */
+export interface CreatorEvent {
+  eventType: string;
+  sessionKey?: string;
+  timestamp: number;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Canonical PR URL → the session that wrote it: the first `pr_created` at or after `sinceMs` (events in time order).
+ * A later session that only read the PR (`gh pr view` before #844) never takes it over.
+ */
+export function creatorsOf(events: Iterable<CreatorEvent>, sinceMs: number): Map<string, string> {
+  const sorted = [...events].sort((a, b) => a.timestamp - b.timestamp);
+  const creators = new Map<string, string>();
+  for (const e of sorted) {
+    const url = e.metadata?.prUrl;
+    if (e.eventType !== 'pr_created' || typeof url !== 'string' || !e.sessionKey || e.timestamp < sinceMs) continue;
+    const key = canonicalLinkUrl(url);
+    if (!creators.has(key)) creators.set(key, e.sessionKey);
+  }
+  return creators;
+}
+
+/**
+ * The metrics days (`YYYY-MM-DD`) to read for a window: one day of margin on each side, so the store's own partition
+ * (by REPORT_TIMEZONE, up to a day off UTC) is always covered.
+ */
+export function creatorDays(sinceMs: number, nowMs: number): [string, string] {
+  const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  return [day(sinceMs - DAY_MS), day(nowMs + DAY_MS)];
 }
 
 function ref(item: BotItem): string {
@@ -207,11 +249,26 @@ export function formatLinkLeakReport(
 
 // ── GitHub source ───────────────────────────────────────────────────────────────────────────────────────────────────
 
-type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{ ok: boolean; json: () => Promise<any> }>;
+type FetchLike = (
+  url: string,
+  init?: Record<string, unknown>,
+) => Promise<{ ok: boolean; status?: number; json: () => Promise<any> }>;
+
+/** What GitHub said when it refused, for the log: the status and the start of its message. */
+async function refusal(res: { status?: number; json: () => Promise<any> }): Promise<Record<string, unknown>> {
+  let message: unknown;
+  try {
+    message = (await res.json())?.message;
+  } catch {
+    message = undefined;
+  }
+  return { status: res.status, ...(typeof message === 'string' ? { message: message.slice(0, 200) } : {}) };
+}
 
 /**
  * The PRs and issues the App opened since `sinceIso`, across the repos its installation can see (GitHub search,
- * `author:app/<login>`). Deploy PRs — base or head `deploy/*` — are dropped. Undefined when a query failed.
+ * `author:app/<login>`). Deploy PRs — base or head `deploy/*` — are dropped. Undefined when the search failed (logged
+ * with GitHub's status); a PR whose details cannot be read is skipped and logged, not the whole day.
  */
 export async function fetchBotItems(args: {
   token: string;
@@ -226,7 +283,9 @@ export async function fetchBotItems(args: {
     'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
   };
   try {
-    const q = encodeURIComponent(`author:app/${args.botLogin} created:>=${args.sinceIso}`);
+    // GitHub documents whole seconds for a `created:` qualifier.
+    const since = args.sinceIso.replace(/\.\d+Z$/, 'Z');
+    const q = encodeURIComponent(`author:app/${args.botLogin} created:>=${since}`);
     // Every page (search returns at most 1,000 results, 100 a page).
     const found: any[] = [];
     for (let page = 1; page <= 10; page++) {
@@ -234,9 +293,18 @@ export async function fetchBotItems(args: {
         `https://api.github.com/search/issues?q=${q}&per_page=100&page=${page}&sort=created&order=asc`,
         { headers, signal: AbortSignal.timeout(15_000) },
       );
-      if (!res.ok) return undefined;
+      if (!res.ok) {
+        logger.warn('GitHub search for the bot items was refused', { page, ...(await refusal(res)) });
+        return undefined;
+      }
       const body = await res.json();
-      if (!body || !Array.isArray(body.items)) return undefined;
+      if (!body || !Array.isArray(body.items) || body.incomplete_results === true) {
+        logger.warn('GitHub search for the bot items came back incomplete', {
+          page,
+          incomplete: body?.incomplete_results === true,
+        });
+        return undefined;
+      }
       found.push(...body.items);
       const total = typeof body.total_count === 'number' ? body.total_count : found.length;
       if (body.items.length < 100 || found.length >= total) break;
@@ -254,7 +322,13 @@ export async function fetchBotItems(args: {
           headers,
           signal: AbortSignal.timeout(15_000),
         });
-        if (!pr.ok) return undefined;
+        if (!pr.ok) {
+          logger.warn('Could not read a bot PR; it is left out of the report', {
+            pr: it.html_url,
+            ...(await refusal(pr)),
+          });
+          continue;
+        }
         const detail = await pr.json();
         const refs = [detail?.base?.ref, detail?.head?.ref].filter((r): r is string => typeof r === 'string');
         if (refs.some((r) => r.startsWith('deploy/'))) continue;
@@ -372,7 +446,10 @@ export class LinkLeakReporter {
       // A failed attempt waits before the next one, so an outage costs a few queries, not one a minute.
       this.retryAt = this.now() + RETRY_MS;
       const report = await this.compute();
-      if (!report) return;
+      if (!report) {
+        logger.warn('Link leak report: GitHub could not be read; trying again in 15 minutes');
+        return;
+      }
       const today: LeakHistoryEntry = {
         date,
         total: report.total,

@@ -12,6 +12,8 @@
  *       a failed query is undefined
  *   K6  LinkLeakReporter: once a day at the configured hour, records the day's figures (atomic state) and posts;
  *       a failed post is retried next minute; runNow reports without recording
+ *   K7  creatorsOf / creatorDays: the creator is the first session that recorded a PR; the metrics days read cover
+ *       the window whatever the report timezone
  */
 import fs from 'fs';
 import os from 'os';
@@ -21,6 +23,8 @@ import {
   type BotItem,
   cardUrlsOf,
   computeLinkLeakReport,
+  creatorDays,
+  creatorsOf,
   fetchBotItems,
   formatLinkLeakReport,
   LinkLeakReporter,
@@ -229,6 +233,84 @@ describe('link leak report (#835)', () => {
     const failing = vi.fn(async () => ({ ok: false, json: async () => ({}) }));
     expect(
       await fetchBotItems({ token: 't', botLogin: 'x', sinceIso: 'y', fetchImpl: failing as never }),
+    ).toBeUndefined();
+  });
+
+  it('K3 — a day with no bot item is no evidence: it neither counts toward nor breaks the streak (review P2-1)', () => {
+    const day = (d: number, total: number, missed: number) => ({
+      date: `2026-11-${String(d).padStart(2, '0')}`,
+      total,
+      missed,
+      wrong: 0,
+    });
+    expect(zeroStreak([day(1, 0, 0), day(2, 0, 0), day(3, 0, 0)])).toBe(0);
+    expect(zeroStreak([day(1, 5, 1), day(2, 4, 0), day(3, 0, 0), day(4, 6, 0)])).toBe(2);
+  });
+
+  it('K7 — the creator is the first session that recorded the PR, not a later one that read it (review P1-1)', () => {
+    const since = Date.parse('2026-11-02T00:00:00Z');
+    const ev = (sessionKey: string, url: string, at: string) => ({
+      eventType: 'pr_created',
+      sessionKey,
+      timestamp: Date.parse(at),
+      metadata: { prUrl: url },
+    });
+    const creators = creatorsOf(
+      [
+        ev('S0', 'https://github.com/a/b/pull/1', '2026-11-01T23:00:00Z'), // before the window
+        ev('S1', 'https://github.com/a/b/pull/824', '2026-11-02T01:00:00Z'),
+        ev('S2', 'https://github.com/a/b/pull/824/files', '2026-11-02T03:00:00Z'),
+        { eventType: 'pr_merged', sessionKey: 'S3', timestamp: Date.parse('2026-11-02T00:30:00Z'), metadata: {} },
+      ],
+      since,
+    );
+    expect([...creators]).toEqual([['https://github.com/a/b/pull/824', 'S1']]);
+  });
+
+  it('K7 — the metrics days read cover the report window in any timezone (review P2-2)', () => {
+    // 02:30 in Seoul on 4 November is 17:30 UTC on 3 November: the Seoul partition 2026-11-04 must be read.
+    const now = Date.parse('2026-11-03T17:30:00Z');
+    const [from, to] = creatorDays(now - 24 * 60 * 60 * 1000, now);
+    expect(from <= '2026-11-01').toBe(true);
+    expect(to >= '2026-11-04').toBe(true);
+  });
+
+  it('K5 — whole seconds in the query; one unreadable PR is skipped, not the day; an incomplete search fails (review P1-2, P2-3, P2-4, P2-5)', async () => {
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (url: string) => {
+      calls.push(url);
+      if (url.includes('/search/issues')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            total_count: 2,
+            items: [
+              { html_url: 'https://github.com/a/b/pull/8', created_at: '2026-11-03T01:00:00Z', pull_request: {} },
+              { html_url: 'https://github.com/a/b/pull/9', created_at: '2026-11-03T02:00:00Z', pull_request: {} },
+            ],
+          }),
+        };
+      }
+      return url.endsWith('/8')
+        ? { ok: false, status: 404, json: async () => ({ message: 'Not Found' }) }
+        : { ok: true, status: 200, json: async () => ({ base: { ref: 'main' }, head: { ref: 'feat/y' } }) };
+    });
+    const items = await fetchBotItems({
+      token: 't',
+      botLogin: 'bot',
+      sinceIso: '2026-11-02T03:00:00.123Z',
+      fetchImpl: fetchImpl as never,
+    });
+    expect(decodeURIComponent(calls[0])).toContain('created:>=2026-11-02T03:00:00Z');
+    expect(items?.map((i) => i.number)).toEqual([9]);
+    const incomplete = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ incomplete_results: true, total_count: 1, items: [] }),
+    }));
+    expect(
+      await fetchBotItems({ token: 't', botLogin: 'x', sinceIso: 'y', fetchImpl: incomplete as never }),
     ).toBeUndefined();
   });
 
