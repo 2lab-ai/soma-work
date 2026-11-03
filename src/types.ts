@@ -1318,6 +1318,12 @@ export interface TaskFollowupItem {
   state: 'queued' | 'paused';
   /** Why it waits (a paused word always says). */
   stateReason?: string;
+  /**
+   * #767 — the words a one-time owner approval released into the queue. While
+   * `text` is still exactly these, the word runs without asking again; an edit
+   * makes it new words, asked again at the drain.
+   */
+  approvedText?: string;
 }
 
 export interface TaskTurnOutcomeRecord {
