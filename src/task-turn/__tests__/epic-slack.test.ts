@@ -115,6 +115,37 @@ describe('the epic host on the Slack path (#854)', () => {
     expect(w.deps.gate.refusal).toHaveBeenLastCalledWith(w.epic, { newChild: true, making: 0 });
   });
 
+  it('H7 — parallel spawns into one folder (review #872 astra 6): the second is refused while the first is made', async () => {
+    const posts: Array<(v: { ts: string }) => void> = [];
+    const w = hostWorld({ postMessage: vi.fn(() => new Promise((r) => posts.push(r))) });
+    const first = w.host.spawnChild(w.epic, {
+      planNodeId: 'login',
+      instruction: 'go',
+      title: 't',
+      workingDirectory: '/tmp/U1/session_e/work',
+    });
+    expect(
+      await w.host.spawnChild(w.epic, {
+        planNodeId: 'signup',
+        instruction: 'go',
+        title: 't',
+        workingDirectory: '/tmp/U1/session_e/work/sub',
+      }),
+    ).toMatchObject({ ok: false, code: 'folder-overlap' });
+    // Another folder is fine.
+    const other = w.host.spawnChild(w.epic, {
+      planNodeId: 'billing',
+      instruction: 'go',
+      title: 't',
+      workingDirectory: '/tmp/U1/session_e/billing',
+    });
+    expect(posts).toHaveLength(2);
+    posts[0]({ ts: '9.9' });
+    posts[1]({ ts: '9.8' });
+    expect(await first).toMatchObject({ ok: true });
+    expect(await other).toMatchObject({ ok: true });
+  });
+
   it('H2 — a thread that could not be made takes the reservation back', async () => {
     const w = hostWorld({ postMessage: vi.fn(async () => undefined) });
     const r = await w.host.spawnChild(w.epic, { planNodeId: 'login', instruction: 'go', title: 't' });
@@ -163,8 +194,8 @@ describe('the epic host on the Slack path (#854)', () => {
 
     const busy = hostWorld({ isRunning: vi.fn(() => true) });
     expect(await busy.host.instructChild(busy.epic, busy.child, '이것도')).toEqual({ taken: true, queued: true });
-    // Queued behind the turn in flight: no new start in the tree's window.
-    expect(busy.deps.gate.record).not.toHaveBeenCalled();
+    // Queued behind the turn in flight: it will start a turn — counted in the tree's window too (review #872 astra 7).
+    expect(busy.deps.gate.record).toHaveBeenCalledTimes(1);
 
     const lost = hostWorld({ sendToThread: vi.fn(async () => undefined) });
     expect(await lost.host.instructChild(lost.epic, lost.child, 'go')).toMatchObject({ taken: false });
