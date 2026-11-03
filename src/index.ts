@@ -1337,11 +1337,12 @@ async function start() {
       epicCostLimitUsd: (ownerId) => userSettingsStore.getUserEpicCostLimitUsd(ownerId),
       // E4 ⑥ — once a chain that started has ended, an epic left with pending events may wake
       // (grok #702 R1); one that never started is the waker's own retry to make (fable #702 R2).
-      onChainEnd: (key, { started }) => {
-        if (started) epicWaker.wake(key);
+      onChainEnd: (key, info) => {
+        if (info.started) epicWaker.wake(key);
         // 2026-11-03 — a task chain ending is its turn settling: the goal loop judges it (a plan's goal);
-        // a word the owner queued that took the task at this end goes first (it settles at its own end).
-        settleTaskGoalAfterChain(key, { started });
+        // a word the owner queued that took the task at this end goes first (it settles at its own end);
+        // the owner's Stop, or a word of theirs that did not run, leaves the goal waiting for them.
+        settleTaskGoalAfterChain(key, info);
       },
       // A task's follow-up queue (2026-11-03): saved with the task, pushed to the open panels.
       onFollowupsChanged: (key) => {
@@ -2301,6 +2302,7 @@ async function start() {
           const taskRegistry = claudeHandler.getSessionRegistry();
           const cutTasks = taskRegistry.getRestartCutTasks().slice();
           taskRegistry.clearRestartCutTasks();
+          if (cutTasks.length === 0) timing('No dashboard task was cut by the restart');
           if (cutTasks.length > 0 && taskTurnController) {
             createTaskRestartResumer({
               controller: taskTurnController,
