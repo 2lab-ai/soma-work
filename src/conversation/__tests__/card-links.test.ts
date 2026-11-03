@@ -106,6 +106,9 @@ describe('K1 · K2 — every linked page, in order, with a short reference', () 
     // A page URL that carries only the id has no title in it: the label stays.
     expect(wiki(`https://www.notion.so/acme/${ID}`).text).toBe('Notion');
     expect(wiki(`https://www.notion.so/${ID.toUpperCase()}`).text).toBe('Notion');
+    // A trailing slash still names the page; a slug of only separators says nothing, so the label stays.
+    expect(wiki(`https://www.notion.so/acme/Payment-Form-Design-${ID}/`).text).toBe('Payment Form Design');
+    expect(wiki(`https://www.notion.so/acme/---${ID}`).text).toBe('Notion');
   });
 
   it('no links, nothing; a link without an http(s) URL is skipped', () => {
