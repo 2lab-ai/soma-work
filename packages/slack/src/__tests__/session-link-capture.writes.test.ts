@@ -45,8 +45,16 @@ const bash = (command: string, result: unknown, isError?: boolean): Call => ({
 const short = (e: GitHubEffect) => [e.op, e.link.type, e.link.url];
 
 describe('githubEffectsOf — the 9 REST creates that leaked (#831)', () => {
-  it.each(fixtures.leaks.map((l) => [l.expect, l] as const))('W1 — %s is recorded as created', (_url, leak) => {
+  // One leak made its PR and read two PRs of another repo in the same command: the reads' output could have held the
+  // object (a body, a projection), so the write is not proven here — the turn-end GitHub check (#833) records it.
+  const sharedCall = new Set(['https://github.com/2lab-ai/ui/pull/15']);
+
+  it.each(fixtures.leaks.map((l) => [l.expect, l] as const))('W1 — %s is recorded', (_url, leak) => {
     const effects = effectsOf({ toolName: leak.toolName, input: leak.input, result: leak.result });
+    if (sharedCall.has(leak.expect)) {
+      expect(effects).toEqual([]);
+      return;
+    }
     expect(effects.map(short)).toEqual([['create', 'pr', leak.expect]]);
     expect(effects[0].link.provider).toBe('github');
   });
@@ -998,6 +1006,83 @@ describe('W12 — review round 12 (astra-zhuge)', () => {
         bash(
           'curl -s -X PUT https://api.github.com/repos/a/b/pulls/12/merge; gh api repos/c/d/pulls/13 --jq "{sha: .merge_commit_sha, merged: .merged, message: \\"Pull Request successfully merged\\"}"',
           '{"message":"Pull Request is not mergeable"}\n{"sha":"abc","merged":true,"message":"Pull Request successfully merged"}',
+        ),
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('W13 — review round 13 (fable-zhuge, astra-zhuge)', () => {
+  const U = 'https://github.com/a/b/pull/12';
+  const P = 'https://api.github.com/repos/a/b/pulls';
+
+  it('linear time: 100k unquoted parentheses and 100k unclosed JSON lines (fable P1)', () => {
+    for (const command of [`${'( '.repeat(99_000)} github`, `${'a('.repeat(66_000)} github`]) {
+      const started = Date.now();
+      githubWritesOf('Bash', { command });
+      expect(Date.now() - started).toBeLessThan(500);
+    }
+    const started = Date.now();
+    effectsOf(bash(`curl -s -X POST ${P} -d @p`, '{\n'.repeat(100_000)));
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  it('common spellings read again: set -euo pipefail, `|| exit 1`, a test `[[ … ]]`, require(), a call in arguments, create + gh merge (fable P2)', () => {
+    const pr = (n: number) => `https://github.com/a/b/pull/${n}\n`;
+    expect(
+      effectsOf(
+        bash('set -euo pipefail\ngh pr create -R a/b --fill', pr(20)),
+        bash('cd repo || exit 1\ngh pr create -R a/b --fill', pr(21)),
+        bash(
+          `node -e 'const axios = require("axios"); axios.post("${P}", {})'`,
+          '{"number":22,"html_url":"https://github.com/a/b/pull/22"}',
+        ),
+        bash(
+          `python3 -c 'import requests; print(requests.post("${P}", json={}).json())'`,
+          '{"number":23,"html_url":"https://github.com/a/b/pull/23"}',
+        ),
+      ).map(short),
+    ).toEqual([
+      ['create', 'pr', 'https://github.com/a/b/pull/20'],
+      ['create', 'pr', 'https://github.com/a/b/pull/21'],
+      ['create', 'pr', 'https://github.com/a/b/pull/22'],
+      ['create', 'pr', 'https://github.com/a/b/pull/23'],
+    ]);
+    expect(
+      effectsOf(
+        bash(
+          'gh pr create -R a/b --fill && gh pr merge 24 -R a/b --squash',
+          'https://github.com/a/b/pull/24\n✓ Squashed and merged pull request a/b#24 (x)',
+        ),
+      ).map(short),
+    ).toEqual([
+      ['create', 'pr', 'https://github.com/a/b/pull/24'],
+      ['merge', 'pr', 'https://github.com/a/b/pull/24'],
+    ]);
+    // `set -n` still stops execution; the right of `||` is still never read.
+    expect(
+      effectsOf(
+        bash(`set -n\ngh pr create -R a/b --fill\nprintf '%s\\n' ${U}`, U),
+        bash(`true || gh pr create -R a/b --fill; printf '%s\\n' ${U}`, U),
+      ),
+    ).toEqual([]);
+  });
+
+  it('a Node request ended only in a branch, a callback or after destroy sends nothing; another repo’s body URL proves no create (astra)', () => {
+    expect(
+      effectsOf(
+        bash(`node -e 'const r = https.request("${P}", {method:"POST"}); if (false) r.end(); console.log("${U}")'`, U),
+        bash(
+          `node -e 'const r = https.request("${P}", {method:"POST"}); const later = () => r.end(); console.log("${U}")'`,
+          U,
+        ),
+        bash(
+          `node -e 'const r = https.request("${P}", {method:"POST"}); r.destroy(); r.end(); console.log("${U}")'`,
+          U,
+        ),
+        bash(
+          `curl -s -X POST ${P} -d @p; gh pr view 13 -R c/d --json body --jq .body`,
+          `{"message":"Validation Failed"}\n${U}`,
         ),
       ),
     ).toEqual([]);

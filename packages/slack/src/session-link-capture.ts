@@ -416,7 +416,7 @@ function closingBacktick(text: string, from: number): number {
 
 /** Words that make a shell level control flow: which of its statements run is not read. */
 const CONTROL_WORDS =
-  /^(?:if|then|else|elif|fi|while|until|for|do|done|case|esac|select|function|exit|return|exec|set|trap|break|continue|source|\.|coproc|!|\[\[)$/;
+  /^(?:if|then|else|elif|fi|while|until|for|do|done|case|esac|select|function|exit|return|exec|trap|break|continue|source|\.|coproc|!)$/;
 
 function firstWordOf(text: string): string {
   // A bounded prefix: asked for a statement still being read, too (linear overall).
@@ -449,9 +449,12 @@ function splitShell(
   // The statement's first characters, kept apart: a substitution asks for its statement's first word while the
   // statement grows — reading `cur` itself each time would be quadratic.
   let head = '';
+  // …and its last characters, for the same reason (the array check at every `(`).
+  let tail = '';
   const add = (piece: string) => {
     cur += piece;
     if (head.length < 64) head += piece.slice(0, 64 - head.length);
+    tail = (tail + piece.slice(-64)).slice(-64);
   };
   // `a`: inside `$'…'` (ANSI-C quoting: backslash escapes, no expansion).
   let quote: '"' | "'" | 'a' | '' = '';
@@ -462,18 +465,22 @@ function splitShell(
   let backticks = true;
   let after: string | undefined;
   let pipeAnd = false;
+  let pipeOr = false;
   /** This level's statements, for the last-chain exemption. */
   const mine: Array<{ st: Statement; after: string | undefined; andOnly: boolean }> = [];
   const contextOf = (_t: string): { uncertain: boolean; andOnly: boolean } => {
     // After `&&` a statement runs only if everything before it in the chain succeeded.
     const andOnly = after === '|' ? pipeAnd : after === '&&';
-    return { uncertain: inherited || andOnly, andOnly };
+    // The right of `||` runs only if the left failed: never read (and a pipeline it starts shares that).
+    const orRight = after === '|' ? pipeOr : after === '||';
+    return { uncertain: inherited || andOnly || orRight, andOnly: andOnly && !orRight };
   };
   const flush = (next: string | undefined) => {
     const t = cur;
     cur = '';
     head = '';
-    if (next === '||' || next === '&') complex = true;
+    tail = '';
+    if (next === '&') complex = true;
     if (!t.trim()) {
       // `a &&\n b`: the newline continues the list — the pending operator stays.
       if (after !== '&&' && after !== '||' && after !== '|') after = next ?? after;
@@ -484,10 +491,19 @@ function splitShell(
     out.push(st);
     mine.push({ st, after, andOnly: ctx.andOnly });
     // A group (`{ …; }`, `( … )`) runs what it holds; a branch, a loop, a function or a jump does not say what runs.
+    // `… || exit 1` is the one jump that is plain: it runs only when the left failed, and then the command fails.
     const w = firstWordOf(t.replace(/^[\s{(]+/, ''));
-    if (CONTROL_WORDS.test(w) || /^[\s{(]*[\w-]+\s*\(\s*\)/.test(t)) complex = true;
-    if (next !== '|') pipeAnd = false;
-    else if (after !== '|') pipeAnd = ctx.andOnly;
+    const failExit = after === '||' && /^\s*(?:exit|return)(?:\s+\d+)?\s*$/.test(t);
+    if ((CONTROL_WORDS.test(w) && !failExit) || /^[\s{(]*[\w-]+\s*\(\s*\)/.test(t)) complex = true;
+    if (next !== '|') {
+      pipeAnd = false;
+      pipeOr = false;
+    } else if (after !== '|') {
+      pipeAnd = ctx.andOnly;
+      pipeOr = after === '||';
+    }
+    // `set -n` / `set -o noexec` stops execution; other `set` options (`-e`, `-u`, `-x`, `-o pipefail`) do not.
+    if (w === 'set' && /(?:^|\s)(?:-[A-Za-z]*n[A-Za-z]*|-o\s+noexec|\+[A-Za-z]+)(?:\s|$)/.test(t)) complex = true;
     after = next;
   };
   const finish = () => {
@@ -543,7 +559,7 @@ function splitShell(
       continue;
     }
     // An array assignment `name=( … )` holds words, not commands, across lines too.
-    if (c === '(' && quote === '' && /[A-Za-z_]\w*\+?=$/.test(cur)) {
+    if (c === '(' && quote === '' && /[A-Za-z_]\w*\+?=$/.test(tail)) {
       const close = text.indexOf(')', i);
       const stop = close < 0 ? text.length : close + 1;
       add(text.slice(i, stop));
@@ -1405,12 +1421,21 @@ function shellLineOf(chain: string, name: string, args: Arg[], dotted: boolean):
  * or through the variable it is assigned to (`const r = https.request(…); … r.end()`). Created and never ended (or
  * destroyed), it sends nothing.
  */
-function endsRequest(masked: string, at: number, open: number): boolean {
+function endsRequest(masked: string, at: number, open: number, certain: (at: number) => boolean): boolean {
   const close = closing(masked, open);
   if (close < 0) return false;
   if (/^\s*\.end\s*\(/.test(masked.slice(close + 1, close + 64))) return true;
   const bound = masked.slice(Math.max(0, at - 80), at).match(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*$/);
-  return !!bound && new RegExp(`\\b${bound[1]}\\.end\\s*\\(`).test(masked.slice(close));
+  if (!bound) return false;
+  const v = bound[1];
+  // Destroyed or aborted anywhere, or re-bound to something else: what it sends is not certain.
+  if (new RegExp(`\\b${v}\\.(?:destroy|abort)\\s*\\(`).test(masked)) return false;
+  if ((masked.match(new RegExp(`(?<![.\\w$])${v}\\s*=(?!=)`, 'g')) ?? []).length > 1) return false;
+  // An `r.end(…)` that itself certainly runs (not in a branch, a callback or after an exit).
+  for (const m of masked.slice(close).matchAll(new RegExp(`\\b${v}\\.end\\s*\\(`, 'g'))) {
+    if (certain(close + (m.index ?? 0))) return true;
+  }
+  return false;
 }
 
 /**
@@ -1419,13 +1444,15 @@ function endsRequest(masked: string, at: number, open: number): boolean {
  * an indented Python block. Anything else may never run: not read.
  */
 function certainCalls(masked: string, lang: CodeLang): (at: number) => boolean {
+  // Brace depth only: a call in another call's arguments or in a list runs (arguments are evaluated first); a call in
+  // a block or an object does not certainly run. Conditions inside parentheses are caught by the prefix.
   const depth = new Int32Array(masked.length + 1);
   let d = 0;
   for (let j = 0; j < masked.length; j++) {
     depth[j] = d;
     const c = masked[j];
-    if (c === '(' || c === '[' || c === '{') d++;
-    else if ((c === ')' || c === ']' || c === '}') && d > 0) d--;
+    if (c === '{') d++;
+    else if (c === '}' && d > 0) d--;
   }
   depth[masked.length] = d;
   const js = /=>|&&|\|\||\?|\b(?:if|else|while|for|do|switch|case|function|return|catch|yield)\b/;
@@ -1479,7 +1506,10 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
     if (!known || !certain(m.index ?? 0)) continue;
     // A sender the code defines itself (`const fetch = …`, `requests = Mock()`, `import x as fetch`) is not the client.
     const root = (chain.split('.')[0] || name).replace(/[^\w$]/g, '');
-    const defines = new RegExp(`\\b(?:function|const|let|var|class|def)\\s+${root}\\b|\\b${root}\\s*=(?!=)`);
+    // `const axios = require("axios")` / `= await import(…)` binds the client itself; any other binding shadows it.
+    const defines = new RegExp(
+      `\\b(?:function|class|def)\\s+${root}\\b|\\b${root}\\s*=(?!=)(?!\\s*(?:await\\s+import\\s*\\(|require\\s*\\())`,
+    );
     const alias = new RegExp(`\\bas\\s+${root}\\b`);
     const knownAlias = new RegExp(`\\bimport\\s+(?:urllib\\.request|requests|httpx|subprocess|os)\\s+as\\s+${root}\\b`);
     if (defines.test(masked) || (alias.test(masked) && !knownAlias.test(masked))) continue;
@@ -1505,7 +1535,7 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
       w = writeAt(str(positional(args)[0]?.value), name.toUpperCase(), true);
     else if ((chain === 'https.' || chain === 'http.') && name === 'request')
       // A Node request is sent when it is ended (`.end()`): without one, nothing goes out.
-      w = endsRequest(masked, m.index ?? 0, open) ? nodeRequestWrite(args) : { op: 'read', kind: 'pr' };
+      w = endsRequest(masked, m.index ?? 0, open, certain) ? nodeRequestWrite(args) : { op: 'read', kind: 'pr' };
     else if (name === 'request') w = routeWrite(args);
     // A request the grammar does not read as a GitHub write still printed something: mark it, so a receipt in the
     // same call is not taken from its output.
@@ -1608,6 +1638,8 @@ interface FoundObject {
   kind: 'pr' | 'issue';
   number: number;
   url: string;
+  /** `json`: a top-level document with its own number; `line`: a URL alone on a line (any output's text could hold it). */
+  source: 'json' | 'line';
 }
 
 const ISSUE_OR_PR_HTML = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(pull|issues)\/(\d+)$/;
@@ -1700,6 +1732,7 @@ function indexResult(text: string): ResultIndex {
         kind: m[3] === 'pull' ? 'pr' : 'issue',
         number: Number(m[4]),
         url: o.html_url as string,
+        source: 'json',
       });
     }
   }
@@ -1715,6 +1748,7 @@ function indexResult(text: string): ResultIndex {
       kind: m[4] === 'pull' ? 'pr' : 'issue',
       number: Number(m[5]),
       url: m[1],
+      source: 'line',
     });
   }
   MERGED_LINE.lastIndex = 0;
@@ -1772,26 +1806,23 @@ function linkOf(repo: string, kind: 'pr' | 'issue', number: number): CapturedLin
  * create, a listing, a failed create — is ambiguous and proves none. gh's "already exists" (a failed create that
  * prints the existing PR's URL) proves none.
  */
-/** Whether two repos may be the same (an unnamed repo — `gh pr create` in a checkout — may be any). */
-const sameRepo = (a?: string, b?: string) => !a || !b || a === b;
-
-/**
- * Whether another GitHub request in the same call — any kind, any op — may target `w`'s repo. Its response could be
- * what the result shows (an issues GET returns PRs too), so `w` is not proven.
- */
-function crowded(w: GitHubWrite, ws: ReadonlyArray<GitHubWrite>, alsoOk: (o: GitHubWrite) => boolean): boolean {
-  return ws.some((o) => o !== w && !alsoOk(o) && sameRepo(o.repo, w.repo));
+/** Whether a merge or close is proven by gh's own line naming it (not by a REST response document). */
+function gh(w: GitHubWrite, idx: ResultIndex): boolean {
+  return !!saidFor(w, w.op === 'merge' ? idx.merged : idx.closed);
 }
 
 function createEffects(ws: ReadonlyArray<GitHubWrite>, idx: ResultIndex): GitHubEffect[] {
   // gh's failed create prints the existing PR's URL after "already exists".
-  if (/^[^{"\n]*already exists/im.test(idx.text)) return [];
+  if (/^(?![ \t]*[{"[])[^\n]*already exists/im.test(idx.text)) return [];
+
   const out: GitHubEffect[] = [];
   for (const kind of ['pr', 'issue'] as const) {
     const creates = ws.filter((w) => w.op === 'create' && w.kind === kind);
     if (creates.length === 0) continue;
     // Only creates of this kind may share the call with them: any other request to the repo makes them ambiguous.
-    if (creates.some((c) => crowded(c, ws, (o) => o.op === 'create' && o.kind === kind))) continue;
+    // Any other request in the call — a read or a PATCH, of any repo — could have printed the object (a body, a --jq
+    // projection): only creates and gh merges / closes may share the call with them.
+    if (ws.some((o) => o.op !== 'create' && o.op !== 'merge' && o.op !== 'close')) continue;
     const seen = new Set<string>();
     const objects = idx.objects.filter((o) => {
       const key = o.url.toLowerCase();
@@ -1878,7 +1909,8 @@ export function githubEffectsOf(
       if (w.op === 'create' || w.op === 'read') continue;
       // A merge, close or PATCH is proven only when it is the call's only request: gh's lines and a merge response
       // carry no identity another request's output (any repo — a quoted body, a projection) could not imitate.
-      if (ws.some((o) => o !== w)) continue;
+      const onlyCreates = ws.every((o) => o === w || o.op === 'create');
+      if (ws.some((o) => o !== w) && !(onlyCreates && w.op !== 'patch' && gh(w, idx))) continue;
       add(effectOf(w, idx, w.op === 'merge' ? merges : 0));
     }
   }
