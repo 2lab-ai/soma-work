@@ -88,10 +88,10 @@ function processOver(registry: SessionRegistry) {
     runner: executor,
     getSession: (k) => registry.getSessionByKey(k),
     coordinator,
-    buildExecutionContext: (session) =>
+    buildExecutionContext: (session, actor) =>
       ({
         origin: 'task',
-        userId: session.ownerId,
+        userId: actor ?? session.ownerId,
         isAdmin: false,
         permissionMode: 'auto',
         sessionKey: `task:${session.taskId}`,
@@ -161,13 +161,42 @@ describe('R1 — the reload lists the task the restart cut', () => {
     const restarted = new SessionRegistry();
     restarted.loadSessions();
     const listed = restarted.getRestartCutTasks();
-    expect(listed).toContainEqual({ sessionKey: key, ownerId: OWNER, turnId: cutTurn });
+    expect(listed).toContainEqual({ sessionKey: key, ownerId: OWNER, actorId: OWNER, turnId: cutTurn });
     expect(listed.map((t) => t.sessionKey)).not.toContain(`task:${epic.taskId}`);
     expect(restarted.getSessionByKey(key)?.lastTurnOutcome).toMatchObject({ turnId: cutTurn, outcome: 'interrupted' });
 
     held.release();
     await r.done;
     await r2.done;
+  });
+});
+
+describe('R8 — a cut turn an approved writer started resumes as them, not as the owner (trinity R4, astra P1)', () => {
+  it('the turn’s initiator is saved with its start, listed on reload, and the resume runs as them', async () => {
+    const before = processOver(new SessionRegistry());
+    const task = before.registry.createTask({ ownerId: OWNER, ownerName: 'R', workingDirectory: DIR, title: 'shared' });
+    const key = `task:${task.taskId}`;
+    const held = heldStream();
+    before.useStream(held.stream);
+    const writer = 'U0APPROVEDWRITER';
+    expect((await before.controller.start({ actorUserId: writer, sessionKey: key, text: 'their step' })).status).toBe(
+      202,
+    );
+
+    const restarted = new SessionRegistry();
+    restarted.loadSessions();
+    const listed = restarted.getRestartCutTasks().find((t) => t.sessionKey === key);
+    expect(listed).toMatchObject({ ownerId: OWNER, actorId: writer });
+    const start = vi.fn(async () => ({ status: 202, body: {} }));
+    await createTaskRestartResumer({
+      controller: { start },
+      getSession: (k) => restarted.getSessionByKey(k),
+      logger: { info: vi.fn(), warn: vi.fn() },
+      schedule: () => {},
+    }).resume([listed!]);
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ actorUserId: writer }));
+
+    held.release();
   });
 });
 
@@ -278,6 +307,8 @@ describe('R4 — skipped when resuming it would be wrong', () => {
     ],
     ['an active goal (the goal loop resumes it)', { ...base, goal: { status: 'active' } }, /goal/],
     ['closed', { ...base, terminated: true }, /closed/],
+    ['a submitted plan (the owner decides)', { ...base, taskPlan: { state: 'awaiting', revision: 1 } }, /awaiting/],
+    ['a cancelled plan', { ...base, taskPlan: { state: 'cancelled', revision: 1 } }, /cancelled/],
     ['busy', { ...base, activityState: 'working' }, /not idle/],
   ])('%s', (_name, session, reason) => {
     expect(restartResumeSkip(session as unknown as ConversationSession, cut)).toMatch(reason);

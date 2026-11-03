@@ -40,6 +40,8 @@ export const TASK_RESTART_NOTICE = [
 export interface RestartCutTaskRef {
   sessionKey: string;
   ownerId: string;
+  /** Who started the cut turn (the registry's record): the resume runs as them. Unset: the owner. */
+  actorId?: string;
   turnId: string;
 }
 
@@ -81,6 +83,11 @@ export function restartResumeSkip(
   if (session.slackless !== true) return 'not a dashboard task';
   if (session.terminated || session.closing) return 'closed';
   if (session.goal?.status === 'active' && opts.goalsResumed !== false) return 'active goal — the goal loop resumes it';
+  // A plan the owner must decide (submitted, or cancelled): theirs, not a resume's — a host start would
+  // read as their direct input and send the plan back to drafting (trinity R4, astra P2).
+  if (session.taskPlan?.state === 'awaiting' || session.taskPlan?.state === 'cancelled') {
+    return `the plan is ${session.taskPlan.state} — the owner decides`;
+  }
   const last = session.lastTurnOutcome;
   if (!last || last.turnId !== task.turnId || last.outcome !== 'interrupted') return 'went on since the restart';
   if (session.activityState && session.activityState !== 'idle') return `not idle (${session.activityState})`;
@@ -115,7 +122,8 @@ export function createTaskRestartResumer(deps: TaskRestartResumerDeps): TaskRest
       response = await deps.controller.start({
         sessionKey: task.sessionKey,
         text: TASK_RESTART_TEXT,
-        actorUserId: task.ownerId,
+        // As the person who started the cut turn — never lifted to the owner's identity (trinity R4, astra P1).
+        actorUserId: task.actorId ?? task.ownerId,
         initiator: 'host',
         promptNotice: TASK_RESTART_NOTICE,
       });

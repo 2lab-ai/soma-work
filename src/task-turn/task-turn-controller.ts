@@ -583,6 +583,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       [planned.notice, request.promptNotice].filter((n): n is string => !!n).join('\n\n') || undefined,
       userInput,
       request.initiator === 'host',
+      request.promptNotice,
     );
     const chain: Chain = { ownerId, id: chainId, abort, done, planning, ...(tree !== undefined ? { tree } : {}) };
     chains.set(sessionKey, chain);
@@ -657,11 +658,19 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
      * words are soma-work's, recorded as `system`, and they can never set a goal (SET_GOAL gate).
      */
     hostStart = false,
+    /**
+     * The start's host notice (`promptNotice`): on the first hop with the plan notice, and again on the
+     * hop that re-runs the instruction after a fallback `/compact` — the compaction left the model
+     * without it, and the instruction is the same (trinity R4, astra P1).
+     */
+    hostNotice?: string,
   ): Promise<void> {
     let text = instruction;
     let compactHop = false;
     let isUserInput = userInput;
     let replay: string | null = null;
+    /** The next hop re-runs the stashed instruction after a fallback `/compact`. */
+    let replaying = false;
     /** A turn that returned non-terminal for a re-entry not yet started: it owns the task (#634 R1). */
     let pendingTurnId: string | null = null;
     let hopStarted = false;
@@ -733,7 +742,13 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
               say: async () => ({}),
               // Plan mode — the first hop carries the notice its start decided (before the
               // gate went back to drafting); a later hop reads the task as it is now.
-              ...noticeParam(dispatch === 1 ? planNotice : planGateTurn(session.taskPlan, now()).notice),
+              ...noticeParam(
+                dispatch === 1
+                  ? planNotice
+                  : [planGateTurn(session.taskPlan, now()).notice, replaying ? hostNotice : undefined]
+                      .filter((n): n is string => !!n)
+                      .join('\n\n') || undefined,
+              ),
             },
             resumable: last ? ['shutdown'] : ['fallbackCompact', 'shutdown'],
             notResumedReasons: {
@@ -777,6 +792,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
             replay = null;
             compactHop = false;
             isUserInput = userInput;
+            replaying = true;
             continue;
           }
           return;
@@ -790,6 +806,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
         text = COMPACT;
         compactHop = true;
         isUserInput = false;
+        // The `/compact` hop is a bare command: no notice on it (the re-run after it gets the host notice).
+        replaying = false;
       }
     } catch (error) {
       deps.logger.error('Task turn chain ended by a throw', { sessionKey, error: (error as Error)?.message });

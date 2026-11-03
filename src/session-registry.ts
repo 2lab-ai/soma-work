@@ -297,6 +297,12 @@ interface SerializedSession {
   notices?: unknown;
   /** A Slack-less task's follow-up queue; validated (and paused) on load (`sanitizeTaskFollowups`). */
   taskFollowups?: unknown;
+  /**
+   * A Slack-less task's turn's initiator (`currentInitiatorId`), saved with the turn's start: the
+   * restart resume continues a cut turn as the person who started it (never more privileged —
+   * trinity R4, astra P1). Read only by the load's reconciliation; not restored into the session.
+   */
+  taskTurnActorId?: unknown;
   // Merge code change stats
   mergeStats?: {
     totalLinesAdded: number;
@@ -634,6 +640,8 @@ export interface CrashRecoveredSession {
 export interface RestartCutTask {
   sessionKey: string;
   ownerId: string;
+  /** Who started the cut turn: the resume runs as them. */
+  actorId: string;
   /** The turn the restart cut (its `lastTurnOutcome`): a later turn means someone went on — no resume. */
   turnId: string;
 }
@@ -3846,6 +3854,7 @@ export class SessionRegistry {
             taskPlan: session.taskPlan,
             taskFollowups:
               session.slackless === true && session.taskFollowups?.length ? session.taskFollowups : undefined,
+            taskTurnActorId: session.slackless === true ? session.currentInitiatorId : undefined,
             closedBy: session.closedBy,
             // Merge code change stats
             mergeStats: session.mergeStats,
@@ -4517,7 +4526,15 @@ export class SessionRegistry {
             // epic (its released events wake it) or an epic's child (its epic hears `interrupted`
             // and decides), not one that slept while the process was down, not a closed one.
             if (!sleptOnLoad && session.kind !== 'epic' && !session.parentTaskId && !session.terminated) {
-              this._restartCutTasks.push({ sessionKey: derivedKey, ownerId: session.ownerId, turnId });
+              const actor = serialized.taskTurnActorId;
+              this._restartCutTasks.push({
+                sessionKey: derivedKey,
+                ownerId: session.ownerId,
+                // The cut turn's initiator (an approved writer is not lifted to the owner); a record from
+                // before it was kept: the owner, whose task it is.
+                actorId: typeof actor === 'string' && actor !== '' ? actor : session.ownerId,
+                turnId,
+              });
             }
           }
         } else if (serialized.shutdownNotificationSent) {
