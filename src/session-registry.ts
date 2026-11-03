@@ -23,11 +23,17 @@ import {
   type TaskUsage,
   toPersistedSessionUsage,
 } from '@soma/slack/session-usage-math';
-import { cleanTldrLine, followUpFromTldr } from '@soma/slack/summary-service';
+import { applyFollowUp, cleanTldrLine, followUpFromTldr } from '@soma/slack/summary-service';
 import * as fs from 'fs';
 import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
-import { type HostReceipt, type HostWriteReceipt, hostReceiptPath } from 'somalib/model-commands/host-receipt';
+import {
+  type HostReceipt,
+  type HostWriteReceipt,
+  hostReceiptPath,
+  readHostReceipt,
+  withAck,
+} from 'somalib/model-commands/host-receipt';
 import { DATA_DIR } from './env-paths';
 import { isPlaceholderSessionTitle, sanitizeSessionTitle } from './format/display-title';
 import { Logger } from './logger';
@@ -2713,8 +2719,7 @@ export class SessionRegistry {
     // `source: 'es'` — checked with tools by the model-run es: the same turn's host summary keeps this card
     // (TL;DR and verdict as one pair); the user's next input drops the TL;DR and with it the mark.
     session.executiveSummary = { tldr: lines, at, source: 'es' };
-    const followUp = followUpFromTldr(lines);
-    session.followUp = followUp ? { reason: followUp.reason, at } : undefined;
+    applyFollowUp(session, lines, at);
     this.saveSessions();
     return true;
   }
@@ -2753,6 +2758,10 @@ export class SessionRegistry {
     lastWrite: HostWriteReceipt | undefined,
   ): void {
     if (!session) return;
+    const file = hostReceiptPath(DATA_DIR, key);
+    // The ack ledger survives every rewrite (turn start, another server's write, a late callback): each write keeps
+    // its own ack, so no server's check depends on being the last writer.
+    const acks = withAck(readHostReceipt(file)?.acks, lastWrite);
     const receipt: HostReceipt = {
       sequence: session.linkSequence ?? 0,
       session: this.buildSessionResourceSnapshot(session),
@@ -2760,9 +2769,9 @@ export class SessionRegistry {
       ...(session.executiveSummary?.tldr?.length ? { tldr: [...session.executiveSummary.tldr] } : {}),
       ...(session.followUp?.reason ? { followUp: session.followUp.reason } : {}),
       ...(lastWrite ? { lastWrite } : {}),
+      ...(acks ? { acks } : {}),
       at: Date.now(),
     };
-    const file = hostReceiptPath(DATA_DIR, key);
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       atomicWriteJson(file, receipt);
@@ -4014,6 +4023,12 @@ export class SessionRegistry {
     lastActivity: Date,
     reason: 'terminated' | 'sleep_expired',
   ): void {
+    // #846 — an ended session's model-command receipt goes with it (removeSession is not on this path).
+    try {
+      fs.unlinkSync(hostReceiptPath(DATA_DIR, serialized.key));
+    } catch {
+      // none written, or already gone
+    }
     try {
       // Skip if already archived (prevents duplicates on repeated restarts)
       if (getArchiveStore().exists(serialized.key)) return;

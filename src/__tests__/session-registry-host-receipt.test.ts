@@ -90,4 +90,73 @@ describe('SessionRegistry — the model-command host receipt', () => {
     expect(fs.existsSync(file)).toBe(false);
     expect(path.dirname(file)).toBe(path.join(TEST_DATA_DIR, 'model-command-receipts'));
   });
+
+  it('an ended session archived on load takes its receipt with it', () => {
+    const now = Date.now();
+    const key = new SessionRegistry().getSessionKey('C1', '100.006');
+    const saved = [
+      {
+        key,
+        ownerId: 'U1',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: '100.006',
+        sessionId: 's-ended',
+        isActive: false,
+        // Asleep past the (default 7-day) sleep time: the loader archives it.
+        state: 'SLEEPING',
+        sleepStartedAt: new Date(now - 8 * 24 * 3600_000).toISOString(),
+        lastActivity: new Date(now - 9 * 24 * 3600_000).toISOString(),
+      },
+    ];
+    fs.writeFileSync(path.join(TEST_DATA_DIR, 'sessions.json'), JSON.stringify(saved));
+    const probe = new SessionRegistry();
+    const file = probe.modelCommandReceiptFile('C1', '100.006');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '{}');
+    const reg = new SessionRegistry();
+    reg.loadSessions();
+    expect(reg.getSession('C1', '100.006')).toBeUndefined();
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it('a repeated ⚠️ reason keeps the follow-up time (the idle clock does not restart)', () => {
+    const reg = new SessionRegistry();
+    const s = reg.createSession('U1', 'User', 'C1', '100.007');
+    reg.setExecutiveSummary('C1', '100.007', ['a', '⚠️ **PR #1 open**', 'b']);
+    const first = s.followUp?.at;
+    s.lastWarningSentAt = 600_000;
+    reg.setExecutiveSummary('C1', '100.007', ['a2', '⚠️ **PR #1 open**', 'b2']);
+    expect(s.followUp?.at).toBe(first);
+    expect(s.lastWarningSentAt).toBe(600_000);
+  });
+
+  it('keeps an ack per write (astra R1 P1): a later write or a late callback never erases another write’s ack', () => {
+    const reg = new SessionRegistry();
+    reg.createSession('U1', 'User', 'C1', '100.008');
+    reg.writeModelCommandReceipt('C1', '100.008', { receiptId: 'r_new', ok: true, at: 2 });
+    // A superseded turn's callback lands late with its own write.
+    reg.writeModelCommandReceipt('C1', '100.008', {
+      receiptId: 'r_old',
+      ok: false,
+      reason: 'SEQUENCE_MISMATCH',
+      at: 1,
+    });
+    // The next turn start writes with no write of its own.
+    reg.writeModelCommandReceipt('C1', '100.008');
+    const r = readHostReceipt(reg.modelCommandReceiptFile('C1', '100.008'));
+    expect(r?.acks?.r_new).toMatchObject({ ok: true });
+    expect(r?.acks?.r_old).toMatchObject({ ok: false, reason: 'SEQUENCE_MISMATCH' });
+  });
+
+  it('the ack ledger is bounded (the most recent 20)', () => {
+    const reg = new SessionRegistry();
+    reg.createSession('U1', 'User', 'C1', '100.009');
+    for (let i = 0; i < 25; i++)
+      reg.writeModelCommandReceipt('C1', '100.009', { receiptId: `r_${i}`, ok: true, at: i });
+    const acks = readHostReceipt(reg.modelCommandReceiptFile('C1', '100.009'))?.acks ?? {};
+    expect(Object.keys(acks)).toHaveLength(20);
+    expect(acks.r_24).toBeDefined();
+    expect(acks.r_0).toBeUndefined();
+  });
 });
