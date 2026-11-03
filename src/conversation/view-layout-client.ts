@@ -18,8 +18,22 @@ function layoutPreset(doc, surface, plan) {
 function layoutOf(doc, builtins, preset, mode, surface) {
   var p = doc && doc.presets ? doc.presets[preset] : null;
   var m = p ? p[mode] : null;
-  if (m && m[surface]) return m[surface];
-  return builtins[preset][mode === 'advanced' ? 'advanced' : 'minimal'][surface];
+  var b = builtins[preset][mode === 'advanced' ? 'advanced' : 'minimal'][surface];
+  if (m && m[surface]) return surface === 'detail' ? detailWithZones(m[surface], b) : m[surface];
+  return b;
+}
+// A detail card saved before its zones (SSOT 2026-11-03 — a device copy older than the server's answer): the
+// preset's title bar and tab bar, a hidden task list as the 작업 tab off — view-layout.ts normalizeDetail's rule.
+function detailWithZones(d, b) {
+  if (!d || typeof d !== 'object' || (Array.isArray(d.head) && Array.isArray(d.tabs))) return d;
+  var out = {};
+  for (var k in d) if (Object.prototype.hasOwnProperty.call(d, k)) out[k] = d[k];
+  if (!Array.isArray(d.head)) out.head = b.head;
+  if (!Array.isArray(d.tabs)) {
+    out.tabs = [];
+    for (var i = 0; i < b.tabs.length; i++) out.tabs.push(d.tasks === 'none' && b.tabs[i].id === 'tasks' ? { id: 'tasks', on: false } : b.tabs[i]);
+  }
+  return out;
 }
 // What a mode draws: the task card (face + open card) from its preset, the detail card from its own.
 function layoutsFor(doc, builtins, mode, plan) {
@@ -218,31 +232,38 @@ function followThreadLayout(face) {
     nav: [{ id: 'dashboardLink', on: true }, { id: 'linkhistory', on: pr }, { id: 'links', on: false }, { id: 'status', on: true }],
   };
 }
-// The detail card a layout makes, as the page's switches: the sections it shows (body[data-detail]), how its
-// tasks read (data-tasks), the list's share (--ptl-max), whether its sections open unfolded, its top order.
+// The detail card a layout makes, as the page's switches (SSOT 2026-11-03 — three zones): the title bar's items
+// after the time (head), the tab bar's tabs in order (tabs — each closed until pressed), the switches the page's CSS
+// reads (body[data-detail]), how the 작업 tab reads (data-tasks; none without the tab), its share (--ptl-max), and
+// whether a tab opens unfolded. A layout saved before the tab bar (a device copy older than the server's) has no
+// head or tabs: it gets the lean built-in's.
+var DETAIL_HEAD_LEAN = ['model', 'cost', 'tokens', 'speed'];
+var DETAIL_TABS_LEAN = ['goal', 'tasks', 'agents', 'artifacts'];
+function detailOnIds(list, lean) {
+  if (!list || !list.length) return lean.slice();
+  var out = [];
+  for (var i = 0; i < list.length; i++) if (list[i] && list[i].on && out.indexOf(list[i].id) < 0) out.push(list[i].id);
+  return out;
+}
 function detailSpecOf(d) {
   var show = [];
-  var top = (d && d.top) || [];
-  var order = [];
-  for (var i = 0; i < top.length; i++) {
-    if (!top[i]) continue;
-    order.push(top[i].id);
-    if (top[i].on && top[i].id !== 'needs') show.push(top[i].id);
-  }
+  var head = detailOnIds(d && d.head, DETAIL_HEAD_LEAN);
+  var tabs = detailOnIds(d && d.tabs, DETAIL_TABS_LEAN);
   if (d && d.subtitle) show.push('subtitle');
   if (d && d.agenthead) show.push('agenthead');
-  if (d && d.agents === 'all') show.push('agenttabs');
-  else if (d && d.agents === 'sub') show.push('subtabs');
+  if (tabs.indexOf('agents') >= 0) show.push('agenttabs');
   if (d && d.sections) show.push('sections');
   if (d && d.logtab) show.push('logtab');
   if (d && d.controls) show.push('controls');
-  var tasks = d && (d.tasks === 'list' || d.tasks === 'line' || d.tasks === 'none') ? d.tasks : 'runs';
+  var style = d && (d.tasks === 'list' || d.tasks === 'line') ? d.tasks : 'runs';
+  var tasks = tabs.indexOf('tasks') >= 0 ? style : 'none';
   return {
     show: show,
+    head: head,
+    tabs: tabs,
     tasks: tasks,
     tasksMax: tasks === 'list' || tasks === 'line' ? Number(d.tasksMax) || 34 : 0,
     open: !!(d && d.open),
-    order: order,
   };
 }
 `;

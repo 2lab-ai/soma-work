@@ -11,6 +11,9 @@
  *   L7  미니멀 상세 카드: the chat is a tab view with the work log (대화 · 작업 로그) — on in every minimal preset,
  *       off in advanced (which has the whole strip); a detail card saved before the switch existed takes its
  *       preset's state
+ *   L8  상세 카드 세 구역 (SSOT 2026-11-03): the title bar's metrics after the time (model · cost · tokens · tok/s …,
+ *       each on/off), 입력 필요 fixed right under it, the tab bar (목표 · 작업 · 에이전트 …, closed until pressed, its
+ *       tabs on/off and in order), the bottom (대화 · 작업 로그); a card saved before the tab bar takes its preset's
  */
 
 import { describe, expect, it } from 'vitest';
@@ -19,7 +22,8 @@ import {
   CARD_CHIPS,
   CARD_ROWS,
   type DashboardLayoutDoc,
-  DETAIL_TOP,
+  DETAIL_HEAD,
+  DETAIL_TABS,
   followThreadLayout,
   LAYOUT_CATALOG,
   LayoutError,
@@ -44,8 +48,8 @@ describe('L1 — built-in presets', () => {
         expect(ids(l.card.rows), `${p} ${m} rows`).toEqual([...CARD_ROWS].sort());
         expect(ids(l.card.foot), `${p} ${m} foot`).toEqual([...CARD_CHIPS].sort());
         expect(ids(l.open.parts), `${p} ${m} open`).toEqual([...OPEN_PARTS].sort());
-        expect(ids(l.detail.top), `${p} ${m} detail`).toEqual([...DETAIL_TOP].sort());
-        expect(l.detail.top.find((x) => x.id === 'needs')!.on).toBe(true);
+        expect(ids(l.detail.head), `${p} ${m} detail head`).toEqual([...DETAIL_HEAD].sort());
+        expect(ids(l.detail.tabs), `${p} ${m} detail tabs`).toEqual([...DETAIL_TABS].sort());
       }
   });
 
@@ -57,19 +61,9 @@ describe('L1 — built-in presets', () => {
     expect(shown(m1.card.foot)).toEqual(['cost', 'model']);
     expect(shown(m1.open.parts)).toEqual(['refs', 'model']);
     expect(m1.open.star).toBe(false);
-    expect([m1.detail.tasks, m1.detail.tasksMax, m1.detail.agents, m1.detail.open]).toEqual([
-      'list',
-      34,
-      'none',
-      false,
-    ]);
+    expect([m1.detail.tasks, m1.detail.tasksMax, m1.detail.open]).toEqual(['list', 34, false]);
     expect(shown(BUILTIN_PRESETS['2'].minimal.card.foot)).toEqual(['steps', 'arts', 'cost', 'model']);
-    expect(BUILTIN_PRESETS['2'].minimal.detail).toMatchObject({
-      tasks: 'list',
-      tasksMax: 50,
-      agents: 'sub',
-      controls: true,
-    });
+    expect(BUILTIN_PRESETS['2'].minimal.detail).toMatchObject({ tasks: 'list', tasksMax: 50, controls: true });
     expect(shown(BUILTIN_PRESETS['3'].minimal.card.foot)).toEqual(['cost', 'model']);
     expect(BUILTIN_PRESETS['3'].minimal.detail.tasks).toBe('line');
     // advanced 2안 원본: the ✦, no model, the ☆ button, every section unfolded.
@@ -87,7 +81,8 @@ describe('L1 — built-in presets', () => {
     expect(LAYOUT_CATALOG.card.rows.map((x) => x.id)).toEqual([...CARD_ROWS]);
     expect(LAYOUT_CATALOG.card.foot.map((x) => x.id)).toEqual([...CARD_CHIPS]);
     expect(LAYOUT_CATALOG.open.parts.map((x) => x.id)).toEqual([...OPEN_PARTS]);
-    expect(LAYOUT_CATALOG.detail.top.map((x) => x.id)).toEqual([...DETAIL_TOP]);
+    expect(LAYOUT_CATALOG.detail.head.map((x) => x.id)).toEqual([...DETAIL_HEAD]);
+    expect(LAYOUT_CATALOG.detail.tabs.map((x) => x.id)).toEqual([...DETAIL_TABS]);
     expect(LAYOUT_CATALOG.thread.info.map((x) => x.id)).toEqual([...THREAD_INFO]);
     expect(LAYOUT_CATALOG.thread.nav.map((x) => x.id)).toEqual([...THREAD_NAV]);
     for (const e of [...LAYOUT_CATALOG.card.rows, ...LAYOUT_CATALOG.card.foot]) expect(e.label).toBeTruthy();
@@ -164,19 +159,19 @@ describe('L2 — a saved document is checked', () => {
     expect(Object.keys(doc.presets!['2']!.minimal!)).toEqual(['card']);
   });
 
-  it('the detail card: 입력 필요 is never hidden; the list height is clamped; an edited open card loses the per-column order', () => {
+  it('the detail card: the list height is clamped; an edited open card loses the per-column order', () => {
     const doc = normalizeLayoutDoc({
       presets: {
         '1': {
           advanced: {
-            detail: { top: [{ id: 'needs', on: false }], tasks: 'line', tasksMax: 999 },
+            detail: { tabs: [{ id: 'tasks', on: true }], tasks: 'line', tasksMax: 999 },
             open: { parts: [{ id: 'model', on: true }] },
           },
         },
       },
     });
     const d = doc.presets!['1']!.advanced!.detail!;
-    expect(d.top.find((x) => x.id === 'needs')!.on).toBe(true);
+    expect(d.tabs.map((x) => x.id)).toEqual([...DETAIL_TABS]);
     expect(d.tasks).toBe('line');
     expect(d.tasksMax).toBe(70);
     const o = doc.presets!['1']!.advanced!.open!;
@@ -374,5 +369,131 @@ describe('L5 — the client’s thread card mapping is the server’s (view-layo
     faces.push({ ...base, owner: false, rows: [...base.rows].reverse(), foot: [...base.foot].reverse() });
     faces.push({ ...base, foot: base.foot.map((c) => ({ ...c, on: !c.on })) });
     for (const f of faces) expect(client(f)).toEqual(followThreadLayout(f));
+  });
+});
+
+describe('L8 — 상세 카드 세 구역: title bar · 입력 필요 · tab bar · 대화 | 작업 로그 (SSOT 2026-11-03)', () => {
+  it('the title bar shows the model, the cost, the tokens and the speed after the time in every built-in', () => {
+    for (const p of PRESET_IDS) {
+      expect(shown(BUILTIN_PRESETS[p].minimal.detail.head), `${p} minimal`).toEqual([
+        'model',
+        'cost',
+        'tokens',
+        'speed',
+      ]);
+      // 어드밴스드 carries the rest of the old 세션 정보 line there too.
+      expect(shown(BUILTIN_PRESETS[p].advanced.detail.head), `${p} advanced`).toEqual([...DETAIL_HEAD]);
+    }
+  });
+
+  it('the tab bar: 목표 · 작업 · 에이전트 · 산출물 in every built-in, 세부 (the full record) in advanced', () => {
+    for (const p of PRESET_IDS) {
+      expect(shown(BUILTIN_PRESETS[p].minimal.detail.tabs), `${p} minimal`).toEqual([
+        'goal',
+        'tasks',
+        'agents',
+        'artifacts',
+      ]);
+      expect(shown(BUILTIN_PRESETS[p].advanced.detail.tabs), `${p} advanced`).toEqual([...DETAIL_TABS]);
+    }
+  });
+
+  it('the user orders and switches the title bar’s items and the tabs; unknown ids drop, missing ones take the preset', () => {
+    const doc = normalizeLayoutDoc({
+      v: 1,
+      presets: {
+        '1': {
+          minimal: {
+            detail: {
+              head: [
+                { id: 'tokens', on: true },
+                { id: 'model', on: false },
+                { id: 'nope', on: true },
+              ],
+              tabs: [
+                { id: 'agents', on: true },
+                { id: 'goal', on: false },
+              ],
+            },
+          },
+        },
+      },
+    });
+    const d = doc.presets!['1']!.minimal!.detail!;
+    const at = (id: string) => d.head.findIndex((x) => x.id === id);
+    // The saved order holds (a missing item goes after its preset neighbour — .prd/22 §5).
+    expect(at('tokens')).toBeLessThan(at('model'));
+    expect(d.head.find((x) => x.id === 'model')!.on).toBe(false);
+    expect(d.head.map((x) => x.id).sort()).toEqual([...DETAIL_HEAD].sort());
+    expect(d.head.find((x) => x.id === 'cost')!.on).toBe(true);
+    expect(d.tabs.findIndex((x) => x.id === 'agents')).toBeLessThan(d.tabs.findIndex((x) => x.id === 'goal'));
+    expect(d.tabs.find((x) => x.id === 'goal')!.on).toBe(false);
+    expect(shown(d.tabs).sort()).toEqual(['agents', 'artifacts', 'tasks']);
+  });
+
+  it('a detail card saved before the tab bar gets its preset’s title bar and tabs; a hidden task list is the 작업 tab off', () => {
+    const legacy = {
+      top: [
+        { id: 'info', on: false },
+        { id: 'goal', on: false },
+        { id: 'needs', on: true },
+        { id: 'artifacts', on: false },
+      ],
+      tasks: 'none',
+      tasksMax: 50,
+      agents: 'none',
+      agenthead: false,
+      sections: false,
+      logtab: true,
+      controls: false,
+      subtitle: false,
+      open: false,
+    };
+    const d = normalizeLayoutDoc({ v: 1, presets: { '2': { minimal: { detail: legacy } } } }).presets!['2']!.minimal!
+      .detail!;
+    expect(d.head).toEqual(BUILTIN_PRESETS['2'].minimal.detail.head);
+    expect(shown(d.tabs)).toEqual(['goal', 'agents', 'artifacts']);
+    expect(d.tasks).toBe('list');
+    expect(d.tasksMax).toBe(50);
+    expect(d.controls).toBe(false);
+    expect(Object.keys(d).sort()).toEqual(
+      ['head', 'tabs', 'tasks', 'tasksMax', 'agenthead', 'sections', 'logtab', 'controls', 'subtitle', 'open'].sort(),
+    );
+  });
+
+  it('the editor names the fixed parts: the head, the chat, the composer, and 입력 필요 under the head', () => {
+    expect(LAYOUT_CATALOG.detail.fixed.map((x) => x.id)).toEqual(['head', 'chat', 'composer', 'needs']);
+    expect(LAYOUT_CATALOG.detail.fixed.every((x) => x.locked)).toBe(true);
+    expect(LAYOUT_CATALOG.detail.tasks.map((x) => x.value)).toEqual(['runs', 'list', 'line']);
+  });
+});
+
+describe('L9 — a device copy saved before the zones reads as the server migrates it (view-layout-client.ts parity, review P2)', () => {
+  it('layoutOf gives a legacy detail card its preset’s title bar and tab bar; a hidden task list is the 작업 tab off', async () => {
+    const { VIEW_LAYOUT_CLIENT_JS } = await import('../conversation/view-layout-client');
+    const client = new Function(`${VIEW_LAYOUT_CLIENT_JS}\nreturn { layoutOf, detailSpecOf };`)() as {
+      layoutOf(doc: unknown, b: unknown, p: string, m: string, s: string): unknown;
+      detailSpecOf(d: unknown): unknown;
+    };
+    const legacy = (tasks: string) => ({
+      top: [{ id: 'info', on: true }],
+      tasks,
+      tasksMax: 50,
+      agents: 'all',
+      agenthead: true,
+      sections: true,
+      logtab: false,
+      controls: true,
+      subtitle: false,
+      open: true,
+    });
+    for (const p of PRESET_IDS)
+      for (const m of VIEW_MODES)
+        for (const tasks of ['none', 'list', 'runs']) {
+          const doc = { v: 1, presets: { [p]: { [m]: { detail: legacy(tasks) } } } };
+          const server = normalizeLayoutDoc(doc).presets![p]![m]!.detail;
+          const local = client.layoutOf(doc, BUILTIN_PRESETS, p, m, 'detail');
+          expect(client.detailSpecOf(local), `${p} ${m} ${tasks}`).toEqual(client.detailSpecOf(server));
+        }
   });
 });

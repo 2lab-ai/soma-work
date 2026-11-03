@@ -256,6 +256,13 @@ export interface KanbanSession {
    * cost. While a turn runs, the calls it has made so far are folded in
    * (SSOT 2026-10-22 T1/T2), so the numbers grow during the turn.
    */
+  /**
+   * SSOT 2026-11-03 — the output tokens since the session's context last reset (/new, CONTINUE_SESSION:
+   * `resetSessionContext` clears `usage` and `activeAccumulatedMs` together), the running turn's calls
+   * included: the detail card's speed (tok/s) divides it by the active time — one span for both. The task
+   * total (`tokenUsage`) outlives those resets, so it cannot be the numerator.
+   */
+  sessionOutputTokens?: number;
   tokenUsage?: {
     totalInputTokens: number;
     totalOutputTokens: number;
@@ -2099,6 +2106,14 @@ function goalHistoryItem(g: any): KanbanGoalHistoryItem {
   return item;
 }
 
+/** The session's own output (SSOT 2026-11-03, KanbanSession.sessionOutputTokens): `usage` + the running turn. */
+export function sessionOutputTokensOf(s: any): number | undefined {
+  const base = s.usage?.totalOutputTokens;
+  const live = sumLiveUsage(s.liveUsage).outputTokens;
+  if (typeof base !== 'number' && !live) return undefined;
+  return (typeof base === 'number' && base > 0 ? base : 0) + live;
+}
+
 /**
  * The card's token totals — the TASK total (SSOT 2026-10-26 T3): the persisted
  * `taskUsage` (main agent + every subagent, across restarts and resets) plus
@@ -2453,6 +2468,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
         }
       : undefined,
     tokenUsage: tokenUsageOf(s),
+    sessionOutputTokens: sessionOutputTokensOf(s),
     doneAt: liveDoneAt(s),
     waitingSince: planAsks(s)
       ? (s.taskPlan?.updatedAt ?? liveWaitingSince(s, asks))
@@ -5655,7 +5671,6 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
 .slide-panel:not(.is-detail) .pa-bar,
 .slide-panel:not(.is-detail) .panel-agents.is-main { display: none !important; }
 .slide-panel:not(.is-detail) .panel-arts-hint { display: none; }
-.slide-panel:not(.is-detail) .panel-goal.is-empty { display: none !important; }
 .panel-tasks-header {
   font-size: 12px;
   font-weight: 600;
@@ -5751,33 +5766,52 @@ body[data-view-mode="minimal"] #cron-lane,
 body[data-view-mode="minimal"] #topbar-defaults,
 body[data-view-mode="minimal"][data-board-mine] #user-select,
 body[data-view-mode="minimal"] #lifecycle-btn { display: none !important; }
-/* ── VIEW PLANS (SSOT 2026-11-01 ④, .prd/20 §5) — the detail card's sections are the plan's: body[data-detail]
-   lists the ones it shows (the layout's detail card, detailSpecOf → applyViewMode), and every other one steps aside here. What
-   needs the user — the status bar, the approvals, the question, the composer — is in no list: never hidden. ── */
+/* ── VIEW PLANS (SSOT 2026-11-01 ④, .prd/20 §5) — the detail card's switches are the layout's: body[data-detail]
+   lists the ones it shows (detailSpecOf → applyViewMode), and every other one steps aside here. What needs the user
+   — the status bar, the approvals, the question, the composer — is in no list: never hidden. ── */
 body:not([data-detail~="subtitle"]) #panel-title-sub,
-body:not([data-detail~="info"]) #panel-info,
-body:not([data-detail~="goal"]) #panel-goal,
-body:not([data-detail~="artifacts"]) #panel-artifacts,
-body:not([data-detail~="agenthead"]) #panel-agents,
 body:not([data-detail~="controls"]) #panel-controls { display: none !important; }
-/* The agent strip: always (agenttabs), only with a subagent (subtabs — the panel's data-subagents), or none — one
-   agent, the main one. The section strip: all three (sections), 대화 · 작업 로그 (logtab — renderPanelSections
-   gives it those tabs), or none — one section, the chat. */
-body:not([data-detail~="agenttabs"]):not([data-detail~="subtabs"]) .panel-tabs::part(list),
-body[data-detail~="subtabs"] .slide-panel:not([data-subagents]) .panel-tabs::part(list),
+/* ── THE TAB BAR (SSOT 2026-11-03) — under 입력 필요: 목표 · 작업 · 에이전트 · 산출물 · 세부, each closed at first. A
+   tab's content shows only while it is pressed (.slide-panel[data-midtab], selectPanelMid); the agent strip and the
+   agent's head are the 에이전트 tab's — and stay while the card looks at a subagent (data-agent-scoped), so the reader
+   always sees whose chat and log these are. The section strip under it: all three (sections), 대화 · 작업 로그
+   (logtab — renderPanelSections gives it those tabs), or none — one section, the chat. ── */
+.slide-panel:not([data-midtab="goal"]) #panel-goal,
+.slide-panel:not([data-midtab="artifacts"]) #panel-artifacts,
+.slide-panel:not([data-midtab="info"]) #panel-info,
+.slide-panel:not([data-midtab="tasks"]) #panel-tasks,
+.slide-panel:not([data-midtab="agents"]):not([data-agent-scoped]) #panel-agents,
+body:not([data-detail~="agenthead"]) #panel-agents { display: none !important; }
+.slide-panel:not([data-midtab="agents"]):not([data-agent-scoped]) .panel-tabs::part(list),
+body:not([data-detail~="agenttabs"]) .panel-tabs::part(list),
 body:not([data-detail~="sections"]):not([data-detail~="logtab"]) .panel-sections::part(list) { display: none; }
+.panel-midbar { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0 2px; padding: 0 10px; min-height: 36px; }
+.panel-midbar[hidden] { display: none; }
+.pm-tab { display: inline-flex; align-items: center; gap: 5px; min-height: 36px; padding: 0 8px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-secondary); font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+.pm-tab:hover:not(:disabled) { color: var(--text); }
+.pm-tab[aria-expanded="true"] { color: var(--text); font-weight: 600; border-bottom-color: var(--text); }
+.pm-tab:disabled { cursor: default; opacity: .45; }
+.pm-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
+.pm-count { font-variant-numeric: tabular-nums; color: var(--text-tertiary); font-weight: 500; }
+.pm-tab[aria-expanded="true"] .pm-count { color: var(--text-secondary); }
+.pm-caret { flex: none; transition: transform 120ms ease; opacity: .6; }
+.pm-tab[aria-expanded="true"] .pm-caret { transform: rotate(180deg); }
+@media (prefers-reduced-motion: reduce) { .pm-caret { transition: none; } }
+/* The title bar's items after the time (detail.head — panelHeadMetricsHtml), one row with the status bar's own. */
+.ps-metrics { display: inline-flex; flex-wrap: wrap; align-items: center; min-width: 0; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.ps-m { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.ps-m + .ps-m::before { content: ''; width: 1px; height: 11px; margin: 0 7px; background: var(--border); }
+.ps-mk { width: 8px; height: 8px; border-radius: 50%; background: var(--mk, var(--text-tertiary)); flex: none; }
+.ps-m.is-warn { color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text)); }
+.ps-m.is-danger { color: color-mix(in srgb, var(--st-fail) calc(100% * var(--chroma, 1)), var(--text)); }
 /* The checklist (list) and the task line (line): the whole current list, up to the plan's share of the body
    (--ptl-max), then it scrolls in its own box. */
 body:not([data-tasks="runs"]) .panel-tasks { max-height: var(--ptl-max, 34cqh); overflow-y: auto; overscroll-behavior: contain; padding: 8px 16px 6px; }
 .ptl-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
 /* A layout without the task list (.prd/21 detail.tasks = none). */
 body[data-tasks="none"] #panel-tasks { display: none !important; }
-/* The detail card's top sections in the layout's order (applyViewMode sets --o-<id>); 입력 필요 moves as one. */
+/* The surface reads top to bottom as written: 입력 필요, the tab bar, the open tab's content. */
 .panel-surface { display: flex; flex-direction: column; }
-.panel-surface > #panel-info { order: var(--o-info, 1); }
-.panel-surface > #panel-goal { order: var(--o-goal, 2); }
-.panel-surface > #panel-needs-head, .panel-surface > #panel-permission, .panel-surface > #panel-question, .panel-surface > #panel-plan, .panel-surface > #panel-needs-status { order: var(--o-needs, 3); }
-.panel-surface > #panel-artifacts { order: var(--o-artifacts, 4); }
 /* 3안's task line: one row — how far, the running task — a press opens the checklist under it. */
 .ptl-line { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 4px 0; border: 0; background: var(--surface); color: inherit; font: inherit; text-align: left; cursor: pointer; position: sticky; top: -8px; z-index: 1; }
 .ptl-line .ptl-now { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 12px; }
@@ -6410,21 +6444,27 @@ ${pageTokenAliases()}
     <div class="panel-body" id="panel-body">
     <div class="panel-scroll" id="panel-scroll">
       <section class="panel-surface" id="panel-surface" aria-label="작업 정보">
-        <!-- 세션 정보 (spec 13): one summary line + the links, the complete numbers on demand (or with 자세히) — live. -->
-        <div class="panel-info" id="panel-info"></div>
-        <!-- Goal (spec 13): the editor's home — current, queue, add / delete, completed goals. -->
-        <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="목표" style="display:none"></div>
-        <!-- 입력 필요 (re-agent-run D8–D17): a head with the count (kit section head + count, D3 E-13), approval cards for the
-             permission prompts and the question; one polite status line says arrivals and
-             answers (the cards themselves are not a live region — their expiry clock ticks). -->
+        <!-- 입력 필요 (re-agent-run D8–D17; SSOT 2026-11-03: its own zone, right under the title bar — never in a tab): a
+             head with the count (kit section head + count, D3 E-13), approval cards for the permission prompts and the
+             question; one polite status line says arrivals and answers (the cards themselves are not a live region —
+             their expiry clock ticks). -->
         <div class="ui-section-head panel-needs-head" id="panel-needs-head" tabindex="-1" hidden><h4>입력 필요</h4><span class="ui-count" id="panel-needs-count" data-tone="wait" data-pop></span></div>
         <div class="panel-permission" id="panel-permission" style="display:none"></div>
         <div class="panel-question" id="panel-question" style="display:none"></div>
         <!-- 작업 계획 (plan mode, SSOT 2026-11-02): the task's plan, drawn by the server — high level to detail — at once when the card opens. -->
         <div class="panel-plan" id="panel-plan" role="region" aria-label="작업 계획" hidden></div>
         <p class="ui-sr-only" id="panel-needs-status" role="status" aria-live="polite"></p>
-        <!-- 산출물 (SSOT 2026-10-23 T6): what the task produced, and the files the user attached. -->
+        <!-- The tab bar (SSOT 2026-11-03): 목표 2/5 · 작업 1/7 · 에이전트 5 … — the layout's tabs (detail.tabs), every one
+             closed at first; a press opens that tab's content under the bar (and a second press closes it). Each tab
+             is a disclosure button (aria-expanded · aria-controls) in one group: renderPanelMidbar · selectPanelMid. -->
+        <div class="panel-midbar" id="panel-midbar" role="group" aria-label="작업 정보 탭" hidden></div>
+        <!-- Goal (spec 13): the editor's home — current, queue, add / delete, completed goals. The 목표 tab. -->
+        <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="목표" style="display:none"></div>
+        <!-- 산출물 (SSOT 2026-10-23 T6): what the task produced, and the files the user attached. The 산출물 tab. -->
         <div class="panel-artifacts" id="panel-artifacts" style="display:none"></div>
+        <!-- 세션 정보 (spec 13): the summary line + the links, every number of the session, the context — live. The 세부 tab
+             (its summary line's numbers are the title bar's now). -->
+        <div class="panel-info" id="panel-info"></div>
       </section>
       <!-- Agent tabs (task view T1.2, D4 E-19): @2lab.ai/ui <ui-tabs shared-panel> — Main always first and pinned at the
            left (TabItem.pinned), then every subagent in spawn order (renderPanelTabs: label · type as meta · status as the
@@ -10538,33 +10578,6 @@ function viewModeOfSettings(snapshot) {
   for (var i = 0; i < rows.length; i++) if (rows[i] && rows[i].key === 'dashboardMode') return viewModeFrom(rows[i].value);
   return null;
 }
-// The detail card's top sections, moved in the DOM too, so the separator rule (a border on a section that follows
-// another) draws between the sections as they read, not as they were written. Nothing moves when already in order.
-var PANEL_SURFACE_PARTS = {
-  info: ['panel-info'],
-  goal: ['panel-goal'],
-  needs: ['panel-needs-head', 'panel-permission', 'panel-question', 'panel-plan', 'panel-needs-status'],
-  artifacts: ['panel-artifacts'],
-};
-function orderPanelSurface(order) {
-  var surf = document.getElementById('panel-surface');
-  if (!surf || !surf.children || !surf.appendChild) return;
-  var want = [];
-  for (var i = 0; i < order.length; i++) {
-    var ids = PANEL_SURFACE_PARTS[order[i]] || [];
-    for (var k = 0; k < ids.length; k++) {
-      var el = document.getElementById(ids[k]);
-      if (el && el.parentNode === surf) want.push(el);
-    }
-  }
-  var now = [];
-  for (var c = 0; c < surf.children.length; c++) if (want.indexOf(surf.children[c]) >= 0) now.push(surf.children[c]);
-  var same = now.length === want.length;
-  for (var j = 0; same && j < want.length; j++) if (now[j] !== want[j]) same = false;
-  if (same) return;
-  for (var m = 0; m < want.length; m++) surf.appendChild(want[m]);
-}
-
 // The mode and its plan on the page: <body data-view-mode · data-view-plan>, the detail card's sections and how its
 // tasks read (data-detail · data-tasks · --ptl-max, the CSS of VIEW PLANS), and whether its sections open unfolded.
 function applyViewMode() {
@@ -10576,10 +10589,6 @@ function applyViewMode() {
   b.setAttribute('data-tasks', spec.detail.tasks);
   if (spec.detail.tasksMax) b.style.setProperty('--ptl-max', spec.detail.tasksMax + 'cqh');
   else b.style.removeProperty('--ptl-max');
-  // The detail card's top sections in the layout's order (CSS order on .panel-surface's children).
-  var order = spec.detail.order || [];
-  for (var o = 0; o < order.length; o++) b.style.setProperty('--o-' + order[o], String(o + 1));
-  orderPanelSurface(order);
   var btn = document.getElementById('view-mode-toggle');
   if (btn) btn.setAttribute('aria-pressed', _viewMode === 'advanced' ? 'true' : 'false');
   _panelDetail = !!spec.detail.open;
@@ -10637,8 +10646,9 @@ async function saveViewMode() {
   if (why) dashToast({ title: '화면 모드를 저장하지 못했어요', description: '이 기기에서만 바뀌었습니다 — ' + why, tone: 'error' });
 }
 // What a switch (of the mode or the plan) redraws: the cards (their face and open bodies) and the open detail
-// card. A plan without the agent strip shows one agent (the main one); a section its strip leaves out (the tree in
-// 미니멀's 대화 · 작업 로그) gives way to the chat, and a section it keeps stays, on the plan's strip.
+// card. A layout without the 에이전트 tab shows one agent (the main one); a section its strip leaves out (the tree in
+// 미니멀's 대화 · 작업 로그) gives way to the chat, and a section it keeps stays, on the plan's strip; an open tab the
+// new tab bar leaves out closes (renderPanelMidbar, through repaintPanelSession).
 function rerenderForViewMode() {
   renderBoardForLayout();
   resetPanelSections();
@@ -10647,7 +10657,7 @@ function rerenderForViewMode() {
   // new strip shows (else it paints the tree into a box the strip has no slot for).
   if (psecShown().indexOf(_psec) < 0) selectPanelSection('conv');
   else renderPanelSections();
-  if (!detailShows('agenttabs') && !detailShows('subtabs') && _panelAgent) selectPanelAgent('');
+  if (!detailShows('agenttabs') && _panelAgent) selectPanelAgent('');
   repaintPanelSession();
   repaintPanelTasks();
   sizePanelSections();
@@ -10789,13 +10799,12 @@ function panelTabsData(s, active, mainSt) {
   }
   return { label: '에이전트', value: panelTabId(active || ''), tabs: tabs };
 }
-// Whether 열기 may move the detail card onto agent id: the strip has to show a way back. Always on (agenttabs):
-// yes. Only beside a subagent (subtabs, 미니멀 2안): only for one of the strip's own tabs — the session's agents; a
-// log-only agent (panelLogOnlyAgents) is no tab, so the strip would hide and strand the reader on it. No strip
-// (미니멀 1안 · 3안): never — the main agent is the only one shown.
+// Whether 열기 may move the detail card onto agent id: the strip has to show a way back. With the 에이전트 tab
+// (agenttabs) the strip stays in view while the card looks at a subagent (data-agent-scoped) — for one of its own
+// tabs, the session's agents: a log-only agent (panelLogOnlyAgents) is no tab, so the strip would select none and
+// its 메인 tab, already selected, would not lead back. Without the tab, never: the main agent is the only one shown.
 function panelAgentOpenable(id) {
-  if (detailShows('agenttabs')) return true;
-  if (!detailShows('subtabs')) return false;
+  if (!id || !detailShows('agenttabs')) return false;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var list = (s && s.agents) || [];
   for (var i = 0; i < list.length; i++) if (list[i] && String(list[i].id) === id) return true;
@@ -10808,9 +10817,9 @@ function renderPanelTabs() {
   if (!el) return;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var d = s ? panelTabsData(s, _panelAgent, rootStatusOf(s, sessionColOf(panelSessionKey))) : panelTabsData(null, '', '');
-  // A layout that shows the strip only with a subagent (detail agents = sub → subtabs) reads this.
+  // Looking at a subagent: its strip stays in view with the 에이전트 tab closed — whose chat and log these are.
   var panel = document.getElementById('slide-panel');
-  if (panel) panel.toggleAttribute('data-subagents', d.tabs.length > 1);
+  if (panel) panel.toggleAttribute('data-agent-scoped', !!_panelAgent);
   var sig = JSON.stringify(d);
   if (el._sig === sig) return;
   el._sig = sig;
@@ -11402,6 +11411,7 @@ function repaintPanelSession() {
   if (!s) return;
   var anchor = panelLiveAnchor();
   renderPanelHead();
+  renderPanelMidbar();
   renderPanelInfo();
   renderPanelGoal();
   renderPanelControls(s);
@@ -11551,8 +11561,78 @@ function panelHeadData(s, col) {
   }));
   return d;
 }
-// The bar's slot: an armed resume (what starts the session again, when, which attempt; why on hover).
+// ── The title bar's items after the time (SSOT 2026-11-03, the layout's detail.head) ──
+// "● Opus 5.5 | $175 | 235.1M 토큰 | 97 tok/s": the model (its maker's colour and its name — the id in the tooltip),
+// the task's API-equivalent cost and its tokens (main + subagents — the old 세션 정보 line's numbers), the speed,
+// the context, the owner, the workflow — in the layout's order, each only when known. The speed is the session's pace:
+// its output tokens over its active time (every turn's since /new, this one's so far; subagents and tool runs count), shown
+// once it has worked a minute; a turn counts up to the cap on one turn, as the session's active time does.
+var PS_SPEED_MIN_MS = 60000;
+// The open turn counts up to the server's cap on one turn (DASHBOARD_MAX_LEG_MS — the same cap the session's
+// active time folds a turn with), so a turn whose end was never seen does not drag the speed toward zero.
+var PS_MAX_LEG_MS = ${DASHBOARD_MAX_LEG_MS};
+function panelActiveMs(s, col, now) {
+  var st = rootStatusOf(s, col);
+  var leg = st === 'running' || st === 'waiting' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
+  return toNum(s.activeAccumulatedMs) + (leg ? Math.min(Math.max(0, now - leg), PS_MAX_LEG_MS) : 0);
+}
+function panelHeadMetricsOf(s, col, head, now) {
+  var out = [];
+  var u = s.tokenUsage || null;
+  for (var i = 0; i < (head || []).length; i++) {
+    var id = head[i];
+    var m = null;
+    if (id === 'model') {
+      var md = typeof s.model === 'string' && s.model && s.model !== 'unknown' ? s.model : '';
+      if (md) {
+        var name = modelLabelOf(md);
+        m = { id: id, text: name, mark: modelColorOf(md), title: name + (name !== md ? '\\n' + md : '') };
+      }
+    } else if (id === 'cost') {
+      var cost = u ? toNum(u.totalCostUsd) : 0;
+      if (cost > 0) m = { id: id, text: cost < 0.01 ? '<$0.01' : '$' + (cost >= 100 ? cost.toFixed(0) : cost.toFixed(2)), title: 'API 환산 비용 (작업 합계)' };
+    } else if (id === 'tokens') {
+      var t = cardTotalTokens(u);
+      if (t > 0) m = { id: id, text: formatTokens(t) + ' 토큰', title: '총 토큰 — 입력 · 출력 · 캐시 (작업 합계)' };
+    } else if (id === 'speed') {
+      var ms = panelActiveMs(s, col, now);
+      // The session's own output over the session's own active time: one span (both reset with /new).
+      var outTok = toNum(s.sessionOutputTokens);
+      if (outTok > 0 && ms >= PS_SPEED_MIN_MS) {
+        var r = outTok / (ms / 1000);
+        m = { id: id, text: (r < 10 ? r.toFixed(1) : String(Math.round(r))) + ' tok/s', title: '속도 — 출력 토큰 ÷ 활성 시간 (서브에이전트 · 도구 실행 포함)' };
+      }
+    } else if (id === 'ctx') {
+      var pct = u ? toNum(u.contextUsagePercent) : 0;
+      if (pct > 0) {
+        var lv = ctxLevel(pct, s.contextTokens, s.autoCompactTokens, s.compactPending);
+        m = { id: id, text: '컨텍스트 ' + ctxPercent(pct) + '%', title: '컨텍스트 윈도우 사용량' };
+        if (lv) m.tone = lv === 'ctx-danger' ? 'danger' : 'warn';
+      }
+    } else if (id === 'owner') {
+      if (s.ownerName) m = { id: id, text: String(s.ownerName), title: '시작한 사람' };
+    } else if (id === 'workflow') {
+      if (s.workflow) m = { id: id, text: String(s.workflow), title: '워크플로' };
+    }
+    if (m) out.push(m);
+  }
+  return out;
+}
+function panelHeadMetricsHtml(list) {
+  if (!list || !list.length) return '';
+  var html = '';
+  for (var i = 0; i < list.length; i++) {
+    var m = list[i];
+    // The mark's colour is this page's own constant (MODEL_MAKER_COLOR), never session text.
+    var mark = m.id === 'model' ? '<span class="ps-mk" aria-hidden="true"' + (m.mark ? ' style="--mk:' + m.mark + '"' : '') + '></span>' : '';
+    html += '<span class="ps-m ps-m-' + m.id + (m.tone ? ' is-' + m.tone : '') + '" title="' + escAttr(m.title) + '">' + mark + esc(m.text) + '</span>';
+  }
+  return '<span class="ps-metrics">' + html + '</span>';
+}
+// The bar's slot: the layout's items after the time, then an armed resume (what starts the session again, when,
+// which attempt; why on hover) and a rollback's note.
 function panelHeadNoteHtml(s, col) {
+  var metrics = panelHeadMetricsHtml(panelHeadMetricsOf(s, col, viewSpec().detail.head, Date.now()));
   var resume = pendingAutoResume(s, col);
   // A rollback waits for the next instruction; the mode says what to do (or why it cannot).
   var rewind = s.pendingRewind ? '<span class="ps-resume" title="' + escAttr(s.pendingRewind.label || '') + '">' + '<i data-ui-icon="undo"></i>' + '되돌림 — 다음 지시부터 적용</span>' : '';
@@ -11560,7 +11640,7 @@ function panelHeadNoteHtml(s, col) {
     var mode = _rb.loading ? '불러오는 중…' : _rb.error ? _rb.error : _rb.view && _rb.view.refusal ? (_rb.view.refusalText || '') : '되돌아갈 지시나 작업 로그 항목의 버튼을 누르세요';
     rewind += '<span class="ps-resume">' + '<i data-ui-icon="undo"></i>' + '되돌리기 모드 — ' + esc(mode) + '</span>';
   }
-  return (resume ? '<span class="ps-resume" title="' + escAttr(resume.reason || '') + '">' + esc(autoResumeLabel(resume)) + '</span>' : '') + rewind;
+  return metrics + (resume ? '<span class="ps-resume" title="' + escAttr(resume.reason || '') + '">' + esc(autoResumeLabel(resume)) + '</span>' : '') + rewind;
 }
 function renderPanelHead() {
   var el = document.getElementById('panel-status');
@@ -11596,6 +11676,126 @@ function onPanelHeadAction(e) {
   else if (id === 'rollback') rbToggle(key);
   else if (id === 'redo') rbRedo(key);
   else if (id === 'stop' || id === 'close' || id === 'trash') doAction(key, id);
+}
+
+// ── The tab bar (SSOT 2026-11-03) — 목표 2/5 · 작업 1/7 · 에이전트 5 · 산출물 3 · 세부 ──
+// The layout's tabs (detail.tabs) in its order, under 입력 필요. Every opening starts with them closed — or on its
+// landing's tab (a goal → 목표, a task → 작업, an agent → 에이전트); a press opens that tab's content under the bar,
+// one at a time, and a second press closes it (.slide-panel[data-midtab] — the CSS of THE TAB BAR). A tab with
+// nothing in it yet is disabled (out of the Tab order too); the open one never is (its content says it is empty).
+var _panelMid = ''; // the open tab ('' = none)
+var MID_TAB_LABEL = { goal: '목표', tasks: '작업', agents: '에이전트', artifacts: '산출물', info: '세부' };
+var MID_TAB_PANEL = { goal: 'panel-goal', tasks: 'panel-tasks', agents: 'panel-tabs', artifacts: 'panel-artifacts', info: 'panel-info' };
+// Pure: the bar's tabs — { id, label, count, title, empty } — from the session and what only the page knows (c: the
+// goal editor's right, the focused agent's tasks and earlier plans, the files).
+function panelMidTabsOf(s, tabs, c) {
+  var out = [];
+  var ctx = c || {};
+  for (var i = 0; i < (tabs || []).length; i++) {
+    var id = tabs[i];
+    if (!MID_TAB_LABEL[id]) continue;
+    var t = { id: id, label: MID_TAB_LABEL[id], count: '', title: '', empty: false };
+    if (id === 'goal') {
+      var g = (s && s.goal) || {};
+      var past = (g.history || []).length;
+      var cur = g.current ? 1 : 0;
+      var q = (g.queue || []).length;
+      var all = past + cur + q;
+      if (all) {
+        t.count = (cur ? past + 1 : past) + '/' + all;
+        t.title = '목표 — 지난 ' + past + ' · 지금 ' + cur + ' · 대기 ' + q;
+      } else {
+        t.empty = !ctx.goalEditable;
+        t.title = t.empty ? '목표 없음' : '목표 없음 — 눌러서 추가';
+      }
+    } else if (id === 'tasks') {
+      var list = ctx.tasks || [];
+      var done = 0;
+      for (var k = 0; k < list.length; k++) if (list[k] && list[k].status === 'completed') done++;
+      if (list.length) t.count = done + '/' + list.length;
+      t.empty = !list.length && !ctx.earlier && !ctx.outside;
+      t.title = list.length ? '작업 — 완료 ' + done + ' / 전체 ' + list.length : t.empty ? '작업 없음' : '지금 작업 없음 — 이전 계획';
+    } else if (id === 'agents') {
+      var n = ((s && s.agents) || []).length;
+      t.count = String(n);
+      t.empty = n === 0;
+      t.title = n ? '서브에이전트 ' + n + '개 — 볼 에이전트 고르기' : '서브에이전트 없음';
+    } else if (id === 'artifacts') {
+      var a = toNum(ctx.artifacts);
+      if (a) t.count = String(a);
+      t.empty = !a;
+      t.title = a ? '산출물 · 지시 첨부 ' + a + '개' : '산출물 없음';
+    } else {
+      t.title = '세션 정보 전체 — 토큰 내역 · 링크 · 컨텍스트';
+    }
+    out.push(t);
+  }
+  return out;
+}
+function panelMidContext(s) {
+  var col = sessionColOf(panelSessionKey);
+  var cid = panelConvId;
+  var c = cid ? _artCache[cid] : null;
+  var recent = (s.artifacts && s.artifacts.recent) || [];
+  var arts = c && c.list ? c.list.length : Math.max(toNum(s.artifacts && s.artifacts.count), recent.length);
+  var um = cid && _umList[cid] ? _umList[cid].length : 0;
+  return {
+    goalEditable: viewerCanManage(s) && col !== 'closed' && !s.terminated && !isSiblingSession(s),
+    tasks: panelAgentTasks(),
+    earlier: panelAgentEarlier().length,
+    // Work outside the list (tasksOutside) is drawn by the runs table only.
+    outside: viewSpec().detail.tasks === 'runs' && !!panelAgentOutside(),
+    artifacts: arts + um,
+  };
+}
+function renderPanelMidbar() {
+  var bar = document.getElementById('panel-midbar');
+  if (!bar) return;
+  if (!bar._wired) {
+    bar._wired = true;
+    bar.addEventListener('click', function(e) {
+      var b = e.target && e.target.closest ? e.target.closest('.pm-tab') : null;
+      if (!b || b.disabled) return;
+      selectPanelMid(b.getAttribute('data-mid'));
+    });
+  }
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var tabs = s ? panelMidTabsOf(s, viewSpec().detail.tabs, panelMidContext(s)) : [];
+  // An open tab the layout no longer has closes.
+  var kept = false;
+  for (var i = 0; i < tabs.length; i++) if (tabs[i].id === _panelMid) kept = true;
+  if (!kept) _panelMid = '';
+  var panel = document.getElementById('slide-panel');
+  if (panel) panel.setAttribute('data-midtab', _panelMid);
+  bar.hidden = !tabs.length;
+  var html = '';
+  for (var j = 0; j < tabs.length; j++) {
+    var t = tabs[j];
+    var on = t.id === _panelMid;
+    html += '<button type="button" class="pm-tab" data-mid="' + t.id + '" aria-expanded="' + (on ? 'true' : 'false') + '" aria-controls="' + MID_TAB_PANEL[t.id] + '"'
+      + (t.empty && !on ? ' disabled' : '') + (t.title ? ' title="' + escAttr(t.title) + '"' : '') + '>'
+      + '<span class="pm-label">' + esc(t.label) + '</span>' + (t.count ? '<span class="pm-count">' + esc(t.count) + '</span>' : '')
+      + '<i class="pm-caret" data-ui-icon="chevron-down"></i></button>';
+  }
+  writePanelPart(bar, html);
+}
+// A press on a tab: it opens (the one open before closes), or closes when it was open. What it shows is painted
+// now — 세부 the full record, 작업 the list unfolded, 에이전트 the strip — and the section boxes below are sized again.
+function selectPanelMid(id) {
+  _panelMid = _panelMid === id || !MID_TAB_LABEL[id] ? '' : id;
+  if (_panelMid === 'info') _panelInfoOpen = true;
+  if (_panelMid === 'tasks') {
+    _panelTasksOpen = true;
+    _panelTasksExpanded = true;
+    _panelTaskLineOpen = true;
+  }
+  renderPanelMidbar();
+  if (_panelMid === 'info') renderPanelInfo();
+  else if (_panelMid === 'goal') renderPanelGoal();
+  else if (_panelMid === 'tasks') repaintPanelTasks();
+  else if (_panelMid === 'artifacts') renderPanelArtifactsSection();
+  else if (_panelMid === 'agents') { renderPanelTabs(); renderPanelAgents(); }
+  sizePanelSections();
 }
 
 // 세션 정보: a <ui-disclosure> (D4 K-06) whose row is the one-line summary (owner ·
@@ -11987,6 +12187,7 @@ function selectPanelAgent(agentId) {
   renderPanelTabs();
   renderPanelAgents();
   repaintPanelTasks();
+  renderPanelMidbar();
   selectPanelSection(_psec);
   // A keyboard choice (a list row, 서브에이전트 열기) went with the list it was
   // in: focus lands on the agent now shown, not on <body>.
@@ -16417,9 +16618,9 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   if (opener && opener !== document.body && !(opener.closest && opener.closest('#slide-panel'))) _panelReturnFocus = document.activeElement;
   // Spec 12 §4.3: the agent whose tasks and work log the panel shows ('' = main).
   _panelAgent = agentId ? String(agentId) : '';
-  // 미니멀 (SSOT 2026-11-01) shows one agent, the main one — it has no tab strip to lead back from another (a deep
-  // link or a tree that named a subagent opens the session on the main agent's chat).
-  if (!detailShows('agenttabs') && !detailShows('subtabs')) _panelAgent = '';
+  // A layout without the 에이전트 tab shows one agent, the main one — it has no strip to lead back from another (a
+  // deep link or a tree that named a subagent opens the session on the main agent's chat).
+  if (!detailShows('agenttabs')) _panelAgent = '';
 
   // A card switch starts the composer clean: a fresh <ui-agent-steering> with a
   // fresh composer (the old one's text, files, notes in flight and failed sends
@@ -16433,6 +16634,12 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
     // Another session's task ids (T1 …) are other tasks: no run's detail carries over.
     _panelTaskOpen = Object.create(null);
   }
+  // The tab bar (SSOT 2026-11-03): every tab closed on an opening — or its landing's tab open (a goal, a task, an
+  // agent, the open card's 전체 N개 → the files); a re-landing on the session already open moves to its tab, a plain
+  // one keeps the reader's.
+  var midLand = _panelLand === 'goal' ? 'goal' : _panelLand === 'tasks' ? 'tasks' : _panelLand === 'agent' ? 'agents' : _panelLand === 'artifacts' ? 'artifacts' : '';
+  if (midLand) _panelMid = midLand;
+  else if (!sameSession) _panelMid = '';
 
   // Reset pagination state before loading this session's turns. A new panel
   // generation makes every request of the previous one stale — including a
@@ -18811,7 +19018,7 @@ function ensureUserMedia(cid) {
       var list = Array.isArray(data && data.media) ? data.media : [];
       list.forEach(function(a) { umRegister(cid, [a], null); });
       _umList[cid] = list;
-      if (panelOpen && panelConvId === cid) renderPanelArtifactsSection();
+      if (panelOpen && panelConvId === cid) { renderPanelArtifactsSection(); renderPanelMidbar(); }
     })
     .catch(function() {});
 }
@@ -18826,7 +19033,7 @@ function umOnTurn(cid, turn) {
     if (!list.some(function(x) { return x.id === a.id; })) list = list.concat([Object.assign({}, a, { turnId: turn.id, turnTs: turn.timestamp })]);
   });
   _umList[cid] = list;
-  if (panelOpen && panelConvId === cid) renderPanelArtifactsSection();
+  if (panelOpen && panelConvId === cid) { renderPanelArtifactsSection(); renderPanelMidbar(); }
 }
 
 // A file as @2lab.ai/ui <ui-file-card> (D2 I-01..I-03): the page renders the element keyed by data-art-cid /
@@ -18885,7 +19092,7 @@ function renderCardArtifacts(s) {
   var shown = list.slice(0, CARD_ART_TILES);
   return '<div class="card-artifacts"><div class="io-label art-section-label">산출물 <span class="art-count">' + total + '</span></div>'
     + '<div class="art-strip">' + shown.map(function(a) { return artTile(s.conversationId, a); }).join('') + '</div>'
-    + (total > shown.length ? '<button type="button" class="card-more-link" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',\\'\\',\\'\\',event.detail===0)">전체 ' + total + '개 &rarr;</button>' : '')
+    + (total > shown.length ? '<button type="button" class="card-more-link" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',\\'artifacts\\',\\'\\',event.detail===0)">전체 ' + total + '개 &rarr;</button>' : '')
     + '</div>';
 }
 
@@ -18977,7 +19184,7 @@ function artSettle(cid) {
     var s = _sessionCache[key];
     if (s && s.conversationId === cid) refreshCard(key);
   });
-  if (panelOpen && panelConvId === cid) renderPanelArtifactsSection();
+  if (panelOpen && panelConvId === cid) { renderPanelArtifactsSection(); renderPanelMidbar(); }
   // The open viewer pages through the conversation's files: the new list is handed over (the element keeps showing
   // the same file wherever it moved). An instruction's attachments (umSiblings) are not this list.
   if (_artViewer.cid === cid && _artViewer.scope === 'conversation' && artViewerIsOpen()) {
