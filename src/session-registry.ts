@@ -2562,7 +2562,18 @@ export class SessionRegistry {
   ): boolean {
     if (!session || !Array.isArray(links) || links.length === 0) return false;
     this.ensureSessionLinkState(session);
-    if (mode === 'update') return this.updateNotedLinkStates(session, links);
+    const changed =
+      mode === 'update' ? this.updateNotedLinkStates(session, links) : this.noteNewLinks(session, links, mode);
+    // #881 C2 — the receipt is the host's state: a link the host noted itself reaches it now, not at the next write.
+    if (changed) this.writeModelCommandReceiptFor(this.keyOf(session), session, undefined);
+    return changed;
+  }
+
+  private noteNewLinks(
+    session: ConversationSession,
+    links: ReadonlyArray<SessionLink>,
+    mode: Exclude<NoteLinksMode, 'update'>,
+  ): boolean {
     let changed = false;
     const firstTaken = new Set<SessionResourceType>();
     for (const raw of links) {
@@ -3315,6 +3326,8 @@ export class SessionRegistry {
     // its own summary.
     session.followUp = undefined;
     session.executiveSummary = undefined;
+    // #881 C2 — and the receipt stops carrying them.
+    this.writeModelCommandReceiptFor(this.keyOf(session), session, undefined);
 
     // Reset activity state
     session.activityState = 'idle';
