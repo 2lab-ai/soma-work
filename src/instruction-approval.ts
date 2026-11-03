@@ -61,8 +61,11 @@ const PREVIEW_CHARS = 300;
 export type HeldInstruction =
   /** A Slack-thread message (a reply, a dashboard instruction echoed to the thread). `event` is the original MessageEvent. */
   | { kind: 'message'; ts: string; text: string; at: number; event: Record<string, unknown> }
-  /** A Slack-less task's instruction (`POST …/command`). */
-  | { kind: 'task-command'; text: string; at: number }
+  /**
+   * A Slack-less task's instruction (`POST …/command`). `goalOpeningId`: a goal's queued first turn
+   * handed to the owner at the drain (#876 R2) — released, it starts only while that goal still owes it.
+   */
+  | { kind: 'task-command'; text: string; at: number; goalOpeningId?: string }
   /** A Slack-less task's answer to its open question. */
   | { kind: 'task-answer'; askId: string; answer: TaskAnswer; at: number };
 
