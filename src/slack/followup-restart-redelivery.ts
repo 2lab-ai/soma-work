@@ -16,7 +16,7 @@
  * Pure: the caller reads the transcript and owns every queue write.
  */
 import type { FollowupItem } from '@soma/slack/followup-queue';
-import { isFollowupDelivered } from '@soma/slack/followup-queue';
+import { FOLLOWUP_RESTART_STEERED_NOTE, isFollowupDelivered } from '@soma/slack/followup-queue';
 import { FOLLOWUP_RESTART_FREEZE_REASON } from '@soma/slack/followup-queue-blocks';
 
 /**
@@ -117,7 +117,11 @@ export function transcriptShowsRead(
  * read, and the transcript is not read for it (`readTranscript` is lazy).
  */
 export function restartCutVerdict(item: FollowupItem, readTranscript: () => string | undefined): 'read' | 'unread' {
-  const pushed = item.cutSteerUuid !== undefined || item.state === 'uncertain';
+  // A row a restart took out of `steered` before it kept the uuid says so in its reason (older builds).
+  const pushed =
+    item.cutSteerUuid !== undefined ||
+    item.state === 'uncertain' ||
+    (item.stateReason ?? '').endsWith(FOLLOWUP_RESTART_STEERED_NOTE);
   if (!pushed) return 'unread';
   const transcript = readTranscript();
   if (transcript === undefined) return 'unread';
