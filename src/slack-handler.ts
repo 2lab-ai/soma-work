@@ -28,6 +28,7 @@ import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { getWorkQueues, WorkQueueService } from '@soma/slack/work-queue';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
+import { taskDirectoryFor } from './agent-runtime/execution-context';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 import { isAwaitingUserChoice, TurnRunner, V1QueryAdapter } from './agent-session';
 import type { ClaudeHandler } from './claude-handler';
@@ -749,6 +750,14 @@ export class SlackHandler {
       assistantStatusManager: this.assistantStatusManager,
       threadPanel: this.threadPanel,
       workQueue: this.workQueue,
+      // #854 — an epic child's placed folder: only inside its owner's own root (the epic's check, again).
+      placedDirOf: (user, dir) => {
+        try {
+          return taskDirectoryFor(user, dir);
+        } catch {
+          return undefined;
+        }
+      },
     });
 
     // Wire turn completion notification channels. `slackBlockKitChannel`

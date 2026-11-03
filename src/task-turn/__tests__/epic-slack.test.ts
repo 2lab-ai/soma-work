@@ -124,6 +124,9 @@ describe('the epic host on the Slack path (#854)', () => {
       started: false,
       reason: expect.stringMatching(/did not start/),
     });
+    // Review #872 (grok P1): a bind that failed after the thread was posted would leak the id and eat the 7-child cap.
+    expect(w.deps.unreserveEpicChild).toHaveBeenCalledWith('e1', 'child-1');
+    expect(w.deps.gate.record).not.toHaveBeenCalled();
   });
 
   it('H4 — instruct: into the child’s thread as the owner’s; a working child’s word is queued, a taken one is not refused', async () => {
@@ -143,6 +146,8 @@ describe('the epic host on the Slack path (#854)', () => {
 
     const lost = hostWorld({ sendToThread: vi.fn(async () => undefined) });
     expect(await lost.host.instructChild(lost.epic, lost.child, 'go')).toMatchObject({ taken: false });
+    // Nothing ran: no start counted in the tree's window.
+    expect(lost.deps.gate.record).not.toHaveBeenCalled();
   });
 
   it('H5 — a child’s last answer is its work log’s last main-agent final', async () => {

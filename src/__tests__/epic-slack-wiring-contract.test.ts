@@ -59,9 +59,23 @@ describe('index.ts — epics as Slack sessions (#854)', () => {
       path.join(__dirname, '..', '..', 'packages', 'slack', 'src', 'pipeline', 'session-initializer.ts'),
       'utf8',
     );
-    const block = section('const placedDir = event.workingDirectoryOverride;', '} else if (sessionDir) {', init);
+    const block = section('const placedDir = event.workingDirectoryOverride', '} else if (sessionDir) {', init);
     expect(block).toMatch(/createSessionBaseDir\(user\)/);
     expect(block).toMatch(/if \(placedDir\) \{\s*session\.sessionWorkingDir = placedDir;/);
     expect(block).not.toMatch(/addSourceWorkingDir/);
+  });
+});
+
+describe('#854 — a placed folder is checked again where it is used (review #872 grok P0)', () => {
+  it('W5 — the initializer takes the override only through the host’s validator; the handler wires the owner-root check', () => {
+    const init = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'packages', 'slack', 'src', 'pipeline', 'session-initializer.ts'),
+      'utf8',
+    );
+    expect(init).toMatch(
+      /const placedDir = event\.workingDirectoryOverride\s*\?\s*this\.deps\.placedDirOf\?\.\(user, event\.workingDirectoryOverride\)\s*:\s*undefined;/,
+    );
+    const handler = fs.readFileSync(path.join(__dirname, '..', 'slack-handler.ts'), 'utf8');
+    expect(handler).toMatch(/placedDirOf: \(user, dir\) => \{\s*try \{\s*return taskDirectoryFor\(user, dir\);/);
   });
 });
