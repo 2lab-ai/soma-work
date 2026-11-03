@@ -190,6 +190,23 @@ describe('SkillForceHandler', () => {
   });
 
   describe('execute()', () => {
+    // #857 — the `local` namespace also holds the soma-work harness plugin (src/local-harness, plugin `local`):
+    // a name zworkflow does not have resolves there.
+    it('$local:auto-es reads the harness plugin when zworkflow has no such skill', async () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => String(p).includes('local-harness/skills/auto-es/SKILL.md'));
+      vi.mocked(fs.readFileSync).mockImplementation((p) => {
+        if (String(p).includes('local-harness/skills/auto-es/SKILL.md')) return '# auto-es';
+        throw new Error(`unexpected read ${String(p)}`);
+      });
+
+      const result = await handler.execute(makeCtx('$local:auto-es'));
+
+      expect(result.handled).toBe(true);
+      expect(result.continueWithPrompt).toContain('<local:auto-es>');
+      expect(result.continueWithPrompt).toContain('# auto-es');
+      expect(result.continueWithPrompt).toMatch(/local-harness[\\/]skills[\\/]auto-es/);
+    });
+
     it('embeds single local skill content via continueWithPrompt', async () => {
       const skillContent = '# Z Skill\nDo the thing.';
       vi.mocked(fs.existsSync).mockReturnValue(true);

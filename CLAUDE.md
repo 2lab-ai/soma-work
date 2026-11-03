@@ -76,7 +76,8 @@ src/
 │   ├── service.ts   # launchd user agent 설치/기동
 │   ├── production-seams.ts  # 실제 배선 + 패키징된 asset 경로 상수
 │   └── setup/       # 온보딩 state machine (orchestrator, materialize, slack-*, llmux)
-└── local/           # Claude Code SDK 로컬 플러그인 (skills/, agents/, hooks/)
+├── local-harness/   # soma-work 전용 플러그인 `local` — 하네스 MCP(작업 카드)를 부르는 스킬 (auto-es). 마켓플레이스에 없음
+└── local/           # Claude Code SDK 로컬 플러그인 `zworkflow` (skills/, agents/, hooks/) — 범용, 하네스 호출 금지
 
 packages/            # 워크스페이스 패키지
 ├── mcp-servers/     # 내장 MCP 서버 (agent, cron, model-command, permission, devops-tools, ...)

@@ -48,6 +48,11 @@ soma-work가 기본으로 싣는 Claude Code 플러그인 `zworkflow`는 [`src/l
 설치합니다. 설치·업데이트·훅, 그리고 플러그인 없이 `using-intentfirst`·`using-ssot` 스킬만 복사하는 경로는
 [zworkflow 플러그인 README](./src/local/README.ko.md)에 있습니다.
 
+zworkflow는 어디서든 쓸 수 있게 유지합니다: soma-work 전용 MCP를 부르는 내용이 없습니다. 그런 스킬(세션 작업 카드,
+NEEDS YOU 후속 작업)은 두 번째 플러그인 `local`([`src/local-harness/`](./src/local-harness/))에 있고, soma-work만
+기본으로 싣고 마켓플레이스에는 올리지 않습니다. 그중 `local:auto-es`가 soma-work 안의 Executive Summary입니다:
+`zworkflow:es`로 문서를 쓰고 작업 카드를 맞추며, 턴 종료 요약도 이 스킬의 턴 종료 규칙으로 돕니다.
+
 ---
 
 ## ✨ 주요 기능
@@ -123,7 +128,7 @@ DM, 파일, 명령, `!`·`%`, 이미 슬랙 세션이 있는 스레드는 지금
 
 모델이 Slack으로 보낸 파일(HTML 리포트, PNG, WAV·음성, 영상, PDF, 텍스트)이 웹 대시보드에 최신순으로 보인다: 세션 카드의 칩, 펼친 카드의 썸네일 스트립, 세션 패널 공통 서피스의 스트립과 답변마다 그 턴의 파일. 마크다운 답변은 채팅에 나오고 산출물 목록에는 들어가지 않는다. 마우스를 올리면 미니맵 미리보기, 누르면 파일에 맞춘 뷰어(HTML 페이지·이미지·영상·PDF는 화면을 가득 채우고, 문서는 높이를 가득 쓰고, 오디오는 작은 창 — HTML은 샌드박스에서 실행, 오디오는 카드에서 바로 재생). 뷰어 아래 ‹ n / m ›를 누르면 세션의 모든 파일 목록에서 골라 연다. 기능 도입 전 업로드는 세션 작업 로그에서 백필한다. 시각화(`local:html`, `local:dimensional-drawing`)는 HTML만 올린다 — PNG는 로컬 검수용 스냅샷이다.
 
-턴의 Executive Summary가 나오면(작업이 끝나고 5분쯤 뒤 — Slack 스레드 헤드의 TL;DR) 대시보드에도 보인다: 세션 패널 Chat에 요약 전문이 답변으로, 태스크 카드에 TL;DR 상자로. 상자는 다음 지시가 오면 사라지고, 휴면·보관 카드에는 보이지 않으며, 우상단 ×를 누르면 이 브라우저에서 그 카드의 상자를 지운다. 세션이 만든 이슈나 PR이 아직 완료가 아니면(열림·드래프트·미머지·배포 대기) 요약은 TL;DR의 굵은 ⚠️ 줄에 그 이유를 쓰고, 맨 아래 ⚠️ User follow-up required 섹션에 무엇이 막혔는지·누가 해야 하는지·단계·확인 방법·처리 후 보낼 답을 쓴다. 그 ⚠️ 줄이 있으면 카드는 DONE이 아니라 NEEDS YOU("후속 작업 필요: …")에 머물고, 이후 요약에 ⚠️ 줄이 없거나 `/new`를 하면 빠진다. 모델이 직접 실행하는 `es` 스킬은 같은 TL;DR을 카드에 직접 쓴다(`UPDATE_SESSION { executiveSummary: { tldr } }`, 이슈·PR·문서 링크와 상태도 함께).
+턴의 Executive Summary가 나오면(작업이 끝나고 5분쯤 뒤 — Slack 스레드 헤드의 TL;DR) 대시보드에도 보인다: 세션 패널 Chat에 요약 전문이 답변으로, 태스크 카드에 TL;DR 상자로. 상자는 다음 지시가 오면 사라지고, 휴면·보관 카드에는 보이지 않으며, 우상단 ×를 누르면 이 브라우저에서 그 카드의 상자를 지운다. 세션이 만든 이슈나 PR이 아직 완료가 아니면(열림·드래프트·미머지·배포 대기) 요약은 TL;DR의 굵은 ⚠️ 줄에 그 이유를 쓰고, 맨 아래 ⚠️ User follow-up required 섹션에 무엇이 막혔는지·누가 해야 하는지·단계·확인 방법·처리 후 보낼 답을 쓴다. 그 ⚠️ 줄이 있으면 카드는 DONE이 아니라 NEEDS YOU("후속 작업 필요: …")에 머물고, 이후 요약에 ⚠️ 줄이 없거나 `/new`를 하면 빠진다. 이 요약은 soma-work 하네스 스킬 `local:auto-es`다: 턴 종료 요약은 그 턴 종료 규칙으로 돌고, 모델이 (`es` 대신) 실행하면 같은 TL;DR을 카드에 직접 쓴다(`UPDATE_SESSION { executiveSummary: { tldr } }`, 이슈·PR·문서 링크와 상태도 함께).
 
 ### 📎 대시보드의 지시 첨부
 
@@ -527,7 +532,8 @@ src/                                # TypeScript 소스
 ├── sandbox/                        # 실행 샌드박스 게이트
 ├── metrics/                        # 토큰/비용 텔레메트리
 ├── notification-channels/          # Slack · DM · Telegram · Webhook 라우팅
-└── local/                          # Claude Code SDK 확장 (skills/, agents/, hooks/)
+├── local-harness/                  # soma-work 전용 플러그인 `local` (하네스 스킬: auto-es)
+└── local/                          # Claude Code SDK 확장 (플러그인 `zworkflow`, 범용 — skills/, agents/, hooks/)
 
 packages/                           # 워크스페이스 패키지
 ├── mcp-servers/                    # 내장 MCP 서버 (agent, cron, model-command, devops-tools, ...)

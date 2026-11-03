@@ -24,6 +24,13 @@ import * as path from 'node:path';
 export const BUNDLED_PLUGINS_DIR = path.join(__dirname, '..', 'local');
 
 /**
+ * #857 — the soma-work harness plugin (`local`): skills that call soma-work's own MCP (the session task card) and so
+ * run only here. Bundled and loaded like zworkflow, but absent from `.claude-plugin/marketplace.json` — external
+ * installs never get it. Copied to dist/local-harness by the build.
+ */
+export const BUNDLED_HARNESS_PLUGIN_DIR = path.join(__dirname, '..', 'local-harness');
+
+/**
  * Map of bundled plugin name → absolute local path.
  *
  * Consumed by PluginManager: any plugin ref whose name is a key here is
@@ -31,4 +38,5 @@ export const BUNDLED_PLUGINS_DIR = path.join(__dirname, '..', 'local');
  */
 export const BUNDLED_PLUGINS: Record<string, string> = {
   zworkflow: BUNDLED_PLUGINS_DIR,
+  local: BUNDLED_HARNESS_PLUGIN_DIR,
 };
