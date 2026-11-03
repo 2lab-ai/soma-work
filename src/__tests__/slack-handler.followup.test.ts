@@ -872,6 +872,52 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(order).toEqual(['follow-up', 'goal-driver']);
     });
 
+    /**
+     * fable R1 on #892 — with the continuation no longer dropped, a goal
+     * session's auto-compact stop runs: continuation → intercepted into
+     * `/compact` → replayed after it. The replay is a host turn, not a
+     * person's words: it must not reset the loop's counter (or the cap could
+     * never be reached on a long goal).
+     */
+    it('keeps the continuation count when a goal continuation is replayed after /compact', async () => {
+      registrySession.goal = {
+        goalId: 'g1',
+        status: 'active',
+        objective: '릴리즈',
+        epoch: 2,
+        continuationCount: 4,
+      };
+
+      await handler.handleMessage(
+        message({
+          ts: '444.555',
+          text: '[goal-continuation] Continue working toward the active session goal.',
+          routeContext: { compactRedispatch: true, hostTurn: true },
+        }),
+        say(),
+      );
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(registrySession.goal).toMatchObject({ continuationCount: 4, epoch: 2 });
+    });
+
+    it("still resets it for a person's message replayed after /compact", async () => {
+      registrySession.goal = {
+        goalId: 'g1',
+        status: 'active',
+        objective: '릴리즈',
+        epoch: 2,
+        continuationCount: 4,
+      };
+
+      await handler.handleMessage(
+        message({ ts: '444.555', text: '이거 먼저 해줘', routeContext: { compactRedispatch: true } }),
+        say(),
+      );
+
+      expect(registrySession.goal).toMatchObject({ continuationCount: 0 });
+    });
+
     it('still drives the loop at once for a turn that left text (the eval outlasts the teardown)', async () => {
       registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
       const goalDriver = vi.fn();
