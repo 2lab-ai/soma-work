@@ -1,4 +1,6 @@
+import path from 'path';
 import { config } from './config.js';
+import { DATA_DIR } from './env-paths.js';
 import {
   GitCredentialsManager,
   GitHubApiClient,
@@ -25,7 +27,8 @@ class GitHubAppAuth {
 
   constructor(private appConfig: GitHubAppConfig) {
     this.apiClient = new GitHubApiClient(appConfig);
-    this.credentialsManager = new GitCredentialsManager();
+    // Agent shells' gh reads the App token from here (#834): rewritten on every refresh, so it never goes stale.
+    this.credentialsManager = new GitCredentialsManager(path.join(DATA_DIR, 'gh'));
 
     if (appConfig.installationId) {
       this.installationId = parseInt(appConfig.installationId, 10);
