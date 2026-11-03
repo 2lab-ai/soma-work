@@ -105,6 +105,7 @@
 |---|---|---|
 | 유저 메시지(매 턴, 호스트 턴 제외) | 메시지의 이슈 · PR · 위키 URL | 후속 메시지: 종류마다 첫 번째(`first`). 첫 메시지: 디스패치가 이미 고른 지금 링크를 그대로 두고 나머지만 기록(`if-empty`) |
 | GitHub 쓰기 도구 호출(#832): 호출 입력이 쓰기를 말하고(POST · PUT · PATCH, `gh pr\|issue create\|merge\|close`, GitHub MCP 생성 · 머지 · 수정 도구) 대상이 `repos/{owner}/{repo}/pulls\|issues[/{n}[/merge]]`이며, 결과가 그 저장소 · 종류의 객체(JSON `html_url` + `"number"`, 또는 한 줄에 URL만)로 증명한 것 | 세션이 방금 만든 PR · 이슈 | 만든 것은 지금 링크(`always`). 머지 · 닫기는 카드에 이미 있는 링크의 상태만 바꾼다(`update`). 댓글 · 리뷰 · 라벨 · 읽기 · 오류는 기록하지 않는다. 어떤 도구든(서브에이전트 포함), `curl` · `fetch` · `gh api`로 만들어도 같다 |
+| 턴 끝의 GitHub 대조(#833): 세션 디렉터리 아래 git 체크아웃마다 현재 브랜치 → `GET /repos/{o}/{r}/pulls?head={o}:{branch}&state=all` | 그 브랜치의 PR과, PR 본문이 닫는 이슈(`Closes #12`) | 세션 시작 뒤 만든 PR이고 카드에 아직 없으면 지금 링크(`always`). 더 오래된 PR, 시작을 모르는 세션, 다른 세션도 체크아웃한 브랜치(모호)는 기록만(`history`). 닫는 이슈도 기록만 |
 | 봇 답변 | 답변이 이름 붙인 URL | 그 종류에 지금 링크가 없을 때만(`if-empty`). 지나가며 언급한 옛 PR이 지금 PR을 덮지 않는다 |
 
 - 알아보는 URL: GitHub PR · 이슈, GitLab MR, Jira 이슈(`/browse/KEY-1`), Linear 이슈, Confluence 페이지, Notion 페이지. 저장소, 커밋, 파일, 검색 URL은 링크가 아니다. Slack(`<url|label>`)과 Markdown 래퍼, 끝의 구두점은 URL에 넣지 않는다. 2048자가 넘는 URL은 건너뛴다. 한 텍스트에서 최대 10개를 받는다.
@@ -117,6 +118,8 @@
 - 테스트:
   - `session-link-capture.test.ts` A1–A5: 생성 명령 검사, 코드와 인용 제외, 정규형, 긴 입력에서도 선형.
   - `session-link-capture.writes.test.ts` W1–W5(#832): 실제로 새어 나간 REST 생성 9건 재생(`fixtures/github-write-leaks.json`), 같은 세션의 댓글 POST 3건은 기록 안 함, 읽기 · 오류 · 다른 저장소 · 리뷰 · 라벨 제외, 모든 생성 표기, 머지 · 닫기.
-  - `session-registry.note-links.test.ts` N1–N8: 모드, 정규형 중복, 순서 번호 유지, 명시 링크는 줄이지 않음, `update`는 아는 링크의 상태만.
+  - `session-registry.note-links.test.ts` N1–N9: 모드, 정규형 중복, 순서 번호 유지, 명시 링크는 줄이지 않음, `update`는 아는 링크의 상태만, `history`는 지금 링크로 만들지 않음.
+  - `session-pr-reconciler.test.ts` R1–R8(#833): 새 PR은 지금 링크, 오래된 · 모호한 브랜치는 기록만, 빈 답은 다음 턴에 다시, 같은 sha의 찾은 답은 재사용, 실패는 기록 없음, 닫는 이슈, 세션당 하나 · 최소 간격 · 던지지 않음, 실제 git 체크아웃 탐색(토큰이 든 원격 URL도 새지 않음).
+  - 연결부(#833): `stream-executor`의 턴 `finally`가 `reconcileSessionPrs` 프로바이더를 부르고(종료된 세션 제외, 예외는 삼킴), 호스트(`src/index.ts`)가 `createSessionPrReconciler`를 키 기준 기록 + 카드 푸시로 배선한다. 조회는 `fetchGitHubPullsForHead`(App 토큰, 10초 제한)이며 답이 메타데이터 캐시를 채워 칩 상태가 바로 보인다.
   - `stream-processor.links-mentioned.test.ts` P1–P3: 코드와 `release_notes` 제외.
   - `stream-executor.session-links.test.ts`: 첫 메시지 `if-empty`, 후속 `first`, `gh pr view`는 기록 안 함, 호스트 턴은 기록 안 함.

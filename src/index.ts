@@ -135,7 +135,7 @@ import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
 import { createGithubReceiptChecker } from './github-receipt';
 import { type HeldInstruction, InstructionApprovals, setInstructionApprovals } from './instruction-approval';
-import { fetchGitHubReceiptObject } from './link-metadata-fetcher';
+import { fetchGitHubPullsForHead, fetchGitHubReceiptObject } from './link-metadata-fetcher';
 import { Logger } from './logger';
 import { mcpCallTracker } from './mcp-call-tracker';
 import { McpManager } from './mcp-manager';
@@ -169,6 +169,7 @@ import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './
 import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from './session/task-usage-reconcile';
 import { getArchiveStore, resolveArchivedResume } from './session-archive';
 import { buildTaskSessionKey } from './session-identity';
+import { createSessionPrReconciler, findGitCheckouts } from './session-pr-reconciler';
 import { applySummaryTitle } from './session-title-policy';
 import {
   displayLangMiddleware,
@@ -1700,6 +1701,18 @@ async function start() {
     // #832 — GitHub is the receipt for a write the parser proposes: only a confirmed one reaches the card and metrics.
     workLogProviders.confirmGithubEffects = createGithubReceiptChecker({ fetchObject: fetchGitHubReceiptObject });
     setStreamExecutorProviders(workLogProviders);
+    // #833 (epic #831) — turn end: the PRs GitHub says the session's own branches have go on its card, however they
+    // were made (REST, the web UI). Recorded by key (Slack sessions and tasks alike), then the card is pushed.
+    setStreamExecutorProviders({
+      reconcileSessionPrs: createSessionPrReconciler({
+        findCheckouts: findGitCheckouts,
+        fetchPulls: fetchGitHubPullsForHead,
+        noteLinks: (sessionKey, links, mode) =>
+          claudeHandler.getSessionRegistry().noteSessionLinksByKey(sessionKey, links, mode),
+        pushCard: (sessionKey) => scheduleLiveSessionUpdate(sessionKey),
+        logger,
+      }),
+    });
     // SSOT 2026-10-26 T2 — subagents that ended before this process started
     // fire no more events: read the loaded sessions' spend once, in the
     // background, so every card shows its subagents' spend after a restart.

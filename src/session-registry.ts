@@ -124,7 +124,7 @@ const WARNING_INTERVALS = [
 /** A session's history keeps at most this many links of each kind (세션 링크 자동 기록): the oldest go first. */
 export const MAX_NOTED_LINKS = 30;
 /** Which noted link becomes the current one: see SessionRegistry.noteSessionLinks. */
-export type NoteLinksMode = 'first' | 'always' | 'if-empty' | 'update';
+export type NoteLinksMode = 'first' | 'always' | 'if-empty' | 'history' | 'update';
 
 const HISTORY_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinkHistory> = {
   issue: 'issues',
@@ -2437,6 +2437,8 @@ export class SessionRegistry {
    *   'always'   a PR or issue the session just created;
    *   'if-empty' an assistant reply: only when the kind has no current link, so a PR mentioned in passing does not
    *              replace the one the session works on;
+   *   'history'  a PR GitHub says the session's branch has, older than the session or on a shared branch (#833): it
+   *              joins the history and never becomes current;
    *   'update'   a PR or issue the session just merged or closed (#832): only a link already on the card changes — its
    *              `status` — and nothing is added or made current.
    * Links compare by their canonical URL (`/pull/12/files?x` is `/pull/12`), so a link the dispatch or the model
