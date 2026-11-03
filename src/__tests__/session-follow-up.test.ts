@@ -39,8 +39,9 @@ describe('setExecutiveSummary — the TL;DR and the follow-up on the card', () =
     expect(s.executiveSummary?.tldr).toEqual(BLOCKED);
     expect(s.followUp?.reason).toBe('PR #12 not merged — needs a maintainer approval.');
     expect(s.followUp?.at).toBe(s.executiveSummary?.at);
-    // the model-run es checked with tools: the same turn's host summary must not overrule it
-    expect(s.followUp?.source).toBe('es');
+    // the model-run es checked with tools: its card (TL;DR + verdict) is marked so the same turn's host summary
+    // keeps the pair
+    expect(s.executiveSummary?.source).toBe('es');
   });
 
   it('a list marker before the ⚠️ line still counts', () => {
@@ -112,9 +113,20 @@ describe('the follow-up survives a restart', () => {
     return reader.getSession('C1', '171.001');
   }
 
-  it('keeps the es source across a restart', () => {
-    expect(restoreWith({ reason: 'r', at: 5, source: 'es' })?.followUp).toEqual({ reason: 'r', at: 5, source: 'es' });
-    expect(restoreWith({ reason: 'r', at: 5, source: 'other' })?.followUp).toEqual({ reason: 'r', at: 5 });
+  it('the es mark rides on the card TL;DR across a restart; the follow-up itself carries only reason and time', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U1', 'Tester', 'C1', '171.002');
+    session.sessionId = 'sess-2';
+    writer.setExecutiveSummary('C1', '171.002', BLOCKED);
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const back = reader.getSession('C1', '171.002');
+    expect(back?.executiveSummary?.source).toBe('es');
+    expect(back?.followUp).toEqual({
+      reason: 'PR #12 not merged — needs a maintainer approval.',
+      at: back?.executiveSummary?.at,
+    });
+    expect(restoreWith({ reason: 'r', at: 5, source: 'es' })?.followUp).toEqual({ reason: 'r', at: 5 });
   });
 
   it('round-trips the reason and its time', () => {

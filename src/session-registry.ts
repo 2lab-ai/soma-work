@@ -143,13 +143,13 @@ const ACTIVE_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinks> = 
  * Serialized session for file persistence
  */
 /** #829 — the card's follow-up comes back only when it is still one (a reason and a time). */
-function restoreFollowUp(v: unknown): { reason: string; at: number; source?: 'es' } | undefined {
+function restoreFollowUp(v: unknown): { reason: string; at: number } | undefined {
   if (!v || typeof v !== 'object') return undefined;
-  const { reason, at, source } = v as { reason?: unknown; at?: unknown; source?: unknown };
+  const { reason, at } = v as { reason?: unknown; at?: unknown };
   if (typeof reason !== 'string' || reason.trim() === '' || typeof at !== 'number' || !Number.isFinite(at)) {
     return undefined;
   }
-  return source === 'es' ? { reason, at, source } : { reason, at };
+  return { reason, at };
 }
 
 /** #829 — UPDATE_SESSION `executiveSummary`: at most this many TL;DR lines, each capped like the host's own. */
@@ -157,12 +157,14 @@ const CARD_TLDR_MAX_LINES = 5;
 const CARD_TLDR_MAX_LINE_CHARS = 140;
 
 /** A stored Executive Summary TL;DR, or undefined when what was stored is not one (T7). */
-function restoreExecutiveSummary(v: unknown): { tldr: string[]; at: number } | undefined {
+function restoreExecutiveSummary(v: unknown): { tldr: string[]; at: number; source?: 'es' } | undefined {
   if (!v || typeof v !== 'object') return undefined;
-  const { tldr, at } = v as { tldr?: unknown; at?: unknown };
+  const { tldr, at, source } = v as { tldr?: unknown; at?: unknown; source?: unknown };
   if (!Array.isArray(tldr) || typeof at !== 'number' || !Number.isFinite(at)) return undefined;
   const lines = tldr.filter((l): l is string => typeof l === 'string' && l.trim() !== '');
-  return lines.length > 0 ? { tldr: lines, at } : undefined;
+  if (lines.length === 0) return undefined;
+  // #829 — the model-run es's mark (its TL;DR and verdict are one pair for that turn).
+  return source === 'es' ? { tldr: lines, at, source } : { tldr: lines, at };
 }
 
 interface SerializedSession {
@@ -252,9 +254,9 @@ interface SerializedSession {
   actionPanel?: ActionPanelState;
   // The Executive Summary's TL;DR on the dashboard card (SSOT 2026-11-02 T7) — kept across a
   // restart like the thread head that shows the same lines.
-  executiveSummary?: { tldr: string[]; at: number };
+  executiveSummary?: { tldr: string[]; at: number; source?: 'es' };
   // #829 — the card's follow-up (NEEDS YOU) survives a restart too: a deploy must not drop it to DONE.
-  followUp?: { reason: string; at: number; source?: 'es' };
+  followUp?: { reason: string; at: number };
   // Bot-initiated thread metadata
   threadModel?: 'user-initiated' | 'bot-initiated';
   threadRootTs?: string;
@@ -2630,10 +2632,11 @@ export class SessionRegistry {
       });
     if (lines.length === 0) return false;
     const at = Date.now();
-    session.executiveSummary = { tldr: lines, at };
+    // `source: 'es'` — checked with tools by the model-run es: the same turn's host summary keeps this card
+    // (TL;DR and verdict as one pair); the user's next input drops the TL;DR and with it the mark.
+    session.executiveSummary = { tldr: lines, at, source: 'es' };
     const followUp = followUpFromTldr(lines);
-    // `source: 'es'` — checked with tools by the model-run es: the same turn's host summary does not overrule it.
-    session.followUp = followUp ? { reason: followUp.reason, at, source: 'es' } : undefined;
+    session.followUp = followUp ? { reason: followUp.reason, at } : undefined;
     this.saveSessions();
     return true;
   }
@@ -3711,7 +3714,7 @@ export class SessionRegistry {
             showThinking: session.showThinking,
             actionPanel: session.actionPanel ? { ...session.actionPanel } : undefined,
             executiveSummary: session.executiveSummary
-              ? { tldr: [...session.executiveSummary.tldr], at: session.executiveSummary.at }
+              ? { ...session.executiveSummary, tldr: [...session.executiveSummary.tldr] }
               : undefined,
             followUp: session.followUp ? { ...session.followUp } : undefined,
             threadModel: session.threadModel,

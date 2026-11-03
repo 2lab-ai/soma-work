@@ -109,7 +109,7 @@ describe('server — the follow-up projects an idle card to NEEDS YOU', () => {
       activityState: 'idle',
       state: 'MAIN',
       lastActivity: new Date('2026-11-03T02:00:00Z'),
-      followUp: { ...FOLLOW_UP, source: 'es' },
+      followUp: FOLLOW_UP,
     };
     const b = await board(new Map([['task:t-9', task]]));
     expect(b.waiting).toHaveLength(1);
