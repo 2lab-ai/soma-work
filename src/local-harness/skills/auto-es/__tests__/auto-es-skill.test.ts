@@ -128,6 +128,47 @@ describe('T9 — the turn-end summary runs this skill', () => {
   });
 });
 
+/**
+ * T10 (Z, 2026-11-03): "지금 이 세션 완료라고 했는데 입력 대기로 남는데 왜그런지 루크코즈 조사하고 픽스해줘"
+ *
+ * The session filed #873 to hand off the work outside its request, then the user ended it ("여기까지해").
+ * The rule counted that open hand-off issue as an unfinished own artifact, so the TL;DR got a ⚠️ line, the host
+ * saved it as the session's follow-up, and the finished session stayed in NEEDS YOU (입력 대기) for good.
+ * A hand-off issue is complete once filed and linked; what the user ended or declined is no blocker.
+ */
+describe('T10 — a hand-off issue or what the user ended does not keep a finished session waiting', () => {
+  const handOff = /hand-off issue/i;
+  it('SKILL.md: a hand-off issue is complete once filed and linked — no ⚠️ line, no follow-up block', () => {
+    const rule = section('Unfinished own artifacts');
+    expect(rule).toMatch(handOff);
+    expect(rule).toMatch(/complete once (it is )?filed/i);
+    expect(rule).toMatch(/no ⚠️/);
+  });
+  it('SKILL.md: what the user ended or declined is not a blocker', () => {
+    const rule = section('Unfinished own artifacts');
+    expect(rule).toMatch(/user (ended|declined|stopped)/i);
+    expect(rule).toMatch(/not a blocker|is no blocker/i);
+  });
+  it('a hand-off issue is not a way out: the request’s own deliverable stays unfinished until done', () => {
+    const rule = section('Unfinished own artifacts');
+    expect(rule).toMatch(/own deliverable|the request (asked|needs)/i);
+  });
+  it('turn-end.md (the host’s turn-end summary) carries the same two rules', () => {
+    expect(turnEnd).toMatch(handOff);
+    expect(turnEnd).toMatch(/complete once (it is )?filed/i);
+    expect(turnEnd).toMatch(/user (ended|declined|stopped)/i);
+  });
+  it('both paths say the same: what waits only on the ended step, the quoted words, the own remaining work (trinity #878)', () => {
+    const rule = section('Unfinished own artifacts');
+    for (const text of [rule, turnEnd]) {
+      expect(text).toMatch(/waits only on it/i);
+      expect(text).toMatch(/quot(es|ing) their words/i);
+      expect(text).toMatch(/own remaining work is not a hand-off issue/i);
+      expect(text).toMatch(/state (you )?last s(aw|een)/i);
+    }
+  });
+});
+
 describe('Card sync — the host receipt (#846 item 2)', () => {
   const skill = readFileSync(resolve(__dirname, '..', 'SKILL.md'), 'utf8');
   const sync = skill.slice(skill.indexOf('## Card sync'), skill.indexOf('## Card check'));
