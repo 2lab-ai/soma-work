@@ -72,7 +72,8 @@ describe('Dashboard — one kind of work session (#854)', () => {
     dashboard.setDashboardNewTaskProvider(slackProvider);
     launcher = vi.fn();
     epicTasks = vi.fn((userId: string) => userId === 'U_EPIC');
-    dashboard.setDashboardTaskLauncher({ launch: launcher, folders: vi.fn(() => [{ name: 'repo-a' }]), epicTasks });
+    // #855 — the epic flag's own provider (the dashboard-task launcher is gone).
+    dashboard.setDashboardEpicTasks(epicTasks);
     await webServer.startWebServer({ listen: false });
   }, 30_000);
 
