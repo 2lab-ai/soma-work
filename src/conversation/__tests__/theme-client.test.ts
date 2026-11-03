@@ -7,22 +7,11 @@ import { PALETTE_STORAGE_KEY, THEME_STORAGE_KEY, themeClientJs } from '../theme-
 
 type Listener = (e: unknown) => void;
 interface FakeBar {
+  id: string;
   data?: Record<string, unknown>;
-  on: Map<string, Listener[]>;
-  addEventListener(type: string, fn: Listener): void;
-  fire(type: string, detail: unknown): void;
 }
 function fakeBar(data: Record<string, unknown> = { brand: { label: 'soma-work' }, theme: 'dark', palette: 'color' }) {
-  const bar: FakeBar = {
-    data,
-    on: new Map(),
-    addEventListener(type, fn) {
-      this.on.set(type, [...(this.on.get(type) ?? []), fn]);
-    },
-    fire(type, detail) {
-      for (const fn of this.on.get(type) ?? []) fn({ detail });
-    },
-  };
+  const bar: FakeBar = { id: 'app-bar', data };
   return bar;
 }
 
@@ -30,6 +19,8 @@ interface Page {
   attrs: Record<string, string>;
   store: Map<string, string>;
   bar: FakeBar | null;
+  /** The bar's toggle: a bubbling ui-theme-change from `target` (default: the bar) reaches the document. */
+  toggle(detail: unknown, target?: { id: string }): void;
   /** The OS switches its scheme (fires the media listener). */
   os(scheme: 'light' | 'dark'): void;
   /** DOMContentLoaded. */
@@ -51,6 +42,7 @@ function page(opts: {
   let scheme = opts.os;
   let onOs: Listener | null = null;
   const ready: Array<() => void> = [];
+  const onDoc = new Map<string, Listener[]>();
   const bar = opts.bar === undefined ? fakeBar() : opts.bar;
   const deny = () => {
     if (opts.storageThrows) throw new Error('SecurityError');
@@ -81,8 +73,9 @@ function page(opts: {
       },
     },
     getElementById: (id: string) => (id === 'app-bar' ? bar : null),
-    addEventListener: (type: string, fn: () => void) => {
-      if (type === 'DOMContentLoaded') ready.push(fn);
+    addEventListener: (type: string, fn: Listener) => {
+      if (type === 'DOMContentLoaded') ready.push(fn as () => void);
+      else onDoc.set(type, [...(onDoc.get(type) ?? []), fn]);
     },
   };
   const api = new Function(
@@ -96,6 +89,9 @@ function page(opts: {
     store,
     bar,
     api,
+    toggle(detail, target) {
+      for (const fn of onDoc.get('ui-theme-change') ?? []) fn({ detail, target: target ?? bar });
+    },
     os(next) {
       scheme = next;
       onOs?.({ matches: next === 'light' });
@@ -163,8 +159,6 @@ describe('theme client — the head script (soma-work 830)', () => {
 
   it("the bar's toggle walks the four themes: each ui-theme-change applies, stores and hands the bar its state", () => {
     const p = page({ os: 'light' });
-    p.ready();
-    expect(p.bar!.on.get('ui-theme-change')).toHaveLength(1);
     const steps: Array<{ theme: string; palette: string }> = [
       { theme: 'dark', palette: 'color' },
       { theme: 'light', palette: 'mono' },
@@ -173,7 +167,7 @@ describe('theme client — the head script (soma-work 830)', () => {
     ];
     const seen: unknown[] = [];
     for (const step of steps) {
-      p.bar!.fire('ui-theme-change', step);
+      p.toggle(step);
       seen.push([p.attrs['data-theme'], p.attrs['data-palette'] ?? 'color', p.bar!.data!.theme, p.bar!.data!.palette]);
     }
     expect(seen).toEqual(steps.map((s) => [s.theme, s.palette, s.theme, s.palette]));
@@ -184,18 +178,27 @@ describe('theme client — the head script (soma-work 830)', () => {
 
   it('a bar without palettes (@2lab.ai/ui before 0.25.0) toggles light / dark and keeps the palette', () => {
     const p = page({ os: 'light', saved: { 'soma-palette': 'mono' } });
-    p.ready();
-    p.bar!.fire('ui-theme-change', { theme: 'dark' });
+    p.toggle({ theme: 'dark' });
     expect(p.attrs).toEqual({ 'data-theme': 'dark', 'data-palette': 'mono' });
   });
 
-  it('binds the bar once, and a page with no bar (the sign-in pages) is fine', () => {
+  it('answers a toggle before DOMContentLoaded (the bar can be clicked while a later module still loads)', () => {
     const p = page({ os: 'light' });
-    p.ready();
-    p.ready();
-    expect(p.bar!.on.get('ui-theme-change')).toHaveLength(1);
+    // No ready(): the listener is the document's, bound by the head script itself.
+    p.toggle({ theme: 'dark', palette: 'mono' });
+    expect(p.attrs).toEqual({ 'data-theme': 'dark', 'data-palette': 'mono' });
+    expect(p.bar!.data).toMatchObject({ theme: 'dark', palette: 'mono' });
+    expect(Object.fromEntries(p.store)).toEqual({ 'soma-theme': 'dark', 'soma-palette': 'mono' });
+  });
+
+  it('answers only the page bar (#app-bar); a page with no bar (the sign-in pages) is fine', () => {
+    const p = page({ os: 'light' });
+    p.toggle({ theme: 'dark' }, { id: 'demo-bar' });
+    expect(p.attrs).toEqual({ 'data-theme': 'light' });
     const none = page({ os: 'light', bar: null });
     expect(() => none.ready()).not.toThrow();
+    none.toggle({ theme: 'dark' }, { id: 'app-bar' });
+    expect(none.attrs).toEqual({ 'data-theme': 'dark' });
   });
 
   it('the OS switching light / dark is followed while nothing is pinned, the palette kept; a pinned theme stays', () => {

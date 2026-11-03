@@ -10,18 +10,32 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const SRC = (f: string) => readFileSync(join(__dirname, '..', f), 'utf8');
-const PAGES = ['dashboard.ts', 'settings-page.ts', 'task-plan-html.ts', 'viewer.ts'];
+const PAGES = [
+  'dashboard.ts',
+  'settings-page.ts',
+  'settings-dictation-tab.ts',
+  'settings-layout-tab.ts',
+  'settings-memory-tab.ts',
+  'settings-project-tab.ts',
+  'task-plan-html.ts',
+  'viewer.ts',
+];
 
-const STATE_MIX = /color-mix\(in srgb, var\(--st-(?:wait|run|done|fail|fail-text)\)(?:, [^)]*)? \d+(?:\.\d+)?%/;
-const STATE_TEXT = /^var\(--st-(?:wait|run|done)\)$/;
+// A state colour by any of its names: the page's (--st-*), the library's (--ui-st-*), and the page aliases of one
+// (--cw-warn, the task plan's --tp-warn) — wherever it sits in a var() fallback chain.
+const STATE = /--(?:ui-)?(?:st-(?:wait|run|done|fail|fail-text)|cw-warn|tp-warn)\b/;
+// As text: the same minus st-fail-text, which the mono pair itself turns to ink.
+const STATE_TEXT = /--(?:ui-)?(?:st-(?:wait|run|done|fail)(?!-text)|cw-warn|tp-warn)\b/;
+// A colour-mix's first operand (a var(), fallbacks included) and its fixed percentage.
+const MIX = /color-mix\(in srgb, (var\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)) (\d+(?:\.\d+)?%)/g;
 const LINE = /^(border|border-[a-z-]+|box-shadow|outline|outline-color|stroke|--[a-z0-9-]*(line|ring|border|edge))$/;
 const MARK = /svg|icon|mark|spark|spin|glyph|dot|tick/;
 
 function offences(source: string): string[] {
   const css = source.replace(/\/\*[\s\S]*?\*\//g, '');
   const bad: string[] = [];
-  for (const rule of css.split('}')) {
-    const [selector = '', body = ''] = rule.split('{');
+  // Innermost blocks: a rule inside @media / @supports is read like any other.
+  for (const [, selector, body] of css.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
     for (const decl of body.split(';')) {
       const at = decl.indexOf(':');
       if (at < 0) continue;
@@ -29,9 +43,10 @@ function offences(source: string): string[] {
       const value = decl.slice(at + 1).trim();
       if (!/^(--)?[a-z][a-z0-9-]*$/.test(prop) || LINE.test(prop)) continue;
       const where = selector.trim().split('\n').pop()?.slice(0, 80);
-      if (STATE_MIX.test(decl)) bad.push(`${where} { ${prop}: ${value.slice(0, 90)} }`);
-      else if (prop === 'color' && STATE_TEXT.test(value) && !MARK.test(selector))
-        bad.push(`${where} { color: ${value} } — text in a state colour`);
+      const fixedMix = [...value.matchAll(MIX)].some(([, operand]) => STATE.test(operand));
+      if (fixedMix) bad.push(`${where} { ${prop}: ${value.slice(0, 90)} }`);
+      else if (prop === 'color' && STATE_TEXT.test(value) && !value.includes('calc(') && !MARK.test(selector))
+        bad.push(`${where} { color: ${value.slice(0, 90)} } — text in a state colour`);
     }
   }
   return bad;
@@ -44,6 +59,23 @@ describe('mono pair — the pages keep state colour on marks only (soma-work 830
     ).toHaveLength(1);
     expect(offences('.a { color: color-mix(in srgb, var(--st-done) 70%, var(--text)); }')).toHaveLength(1);
     expect(offences('.a-word { color: var(--st-run); }')).toHaveLength(1);
+    expect(offences('.a { background: color-mix(in srgb, var(--ui-st-wait) 18%, transparent); }')).toHaveLength(1);
+    expect(offences('.a { color: var(--cw-warn); }')).toHaveLength(1);
+    // Inside @media, through a fallback chain, through a page alias (the review's three blind spots).
+    expect(
+      offences('@media (x) { .a { color: color-mix(in srgb, var(--tp-warn) 75%, var(--tp-text)); } }'),
+    ).toHaveLength(1);
+    expect(offences('.a { color: var(--ib-run-fg, var(--ui-st-run)); }')).toHaveLength(1);
+    expect(
+      offences('.a { background: color-mix(in srgb, var(--ib-x, var(--ui-st-wait)) 12%, transparent); }'),
+    ).toHaveLength(1);
+    // Error text is the mono ink token itself; a --chroma form passes.
+    expect(offences('.a { color: var(--st-fail-text); }')).toEqual([]);
+    expect(
+      offences(
+        '.a { color: color-mix(in srgb, var(--ib-run-fg, var(--ui-st-run)) calc(100% * var(--chroma, 1)), var(--text)); }',
+      ),
+    ).toEqual([]);
     expect(offences('.a { border: 1px solid color-mix(in srgb, var(--st-wait) 40%, var(--border)); }')).toEqual([]);
     expect(offences('.a-icon { color: var(--st-run); }')).toEqual([]);
     expect(

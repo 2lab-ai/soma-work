@@ -144,7 +144,7 @@ export const TASK_PLAN_CSS = `
 .tp-questions { border-color: color-mix(in srgb, var(--tp-accent) 40%, var(--tp-line)); }
 .tp-questions h5 { color: color-mix(in srgb, var(--tp-accent) 75%, var(--tp-text)); }
 .tp-risks { border-color: color-mix(in srgb, var(--tp-warn) 45%, var(--tp-line)); }
-.tp-risks h5 { color: color-mix(in srgb, var(--tp-warn) 75%, var(--tp-text)); }
+.tp-risks h5 { color: color-mix(in srgb, var(--tp-warn) calc(75% * var(--chroma, 1)), var(--tp-text)); }
 `;
 
 /**

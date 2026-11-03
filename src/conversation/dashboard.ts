@@ -5670,10 +5670,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-body .card-refs .ref-sep { color: var(--ib-muted); opacity: 0.6; }
 /* 작업 카드의 연결: a linked page's state after its reference, in its tone. */
 .card-body .card-refs .card-ref-st { color: var(--ib-text-2, var(--text-secondary)); font-weight: 400; }
-.card-body .card-refs .card-ref-st[data-tone="run"] { color: var(--ib-run-fg, var(--ui-st-run)); }
-.card-body .card-refs .card-ref-st[data-tone="done"] { color: var(--ib-done-fg, var(--ui-st-done)); }
-.card-body .card-refs .card-ref-st[data-tone="fail"] { color: var(--ib-fail-fg, var(--ui-st-fail)); }
-.card-body .card-refs .card-ref-st[data-tone="wait"] { color: var(--ib-wait-fg, var(--ui-st-wait)); }
+.card-body .card-refs .card-ref-st[data-tone="run"] { color: color-mix(in srgb, var(--ib-run-fg, var(--ui-st-run)) calc(100% * var(--chroma, 1)), var(--ib-text-2, var(--text-secondary))); }
+.card-body .card-refs .card-ref-st[data-tone="done"] { color: color-mix(in srgb, var(--ib-done-fg, var(--ui-st-done)) calc(100% * var(--chroma, 1)), var(--ib-text-2, var(--text-secondary))); }
+.card-body .card-refs .card-ref-st[data-tone="fail"] { color: color-mix(in srgb, var(--ib-fail-fg, var(--ui-st-fail)) calc(100% * var(--chroma, 1)), var(--ib-text-2, var(--text-secondary))); }
+.card-body .card-refs .card-ref-st[data-tone="wait"] { color: color-mix(in srgb, var(--ib-wait-fg, var(--ui-st-wait)) calc(100% * var(--chroma, 1)), var(--ib-text-2, var(--text-secondary))); }
 
 /* ── ENV BADGE — multi-instance origin tag (#814): the kit's toned chip (.ui-chip.is-toned.is-sm, D8b D-15) — its
    --ui-tone set inline from getEnvBadgeColor() (ENV_BADGE_PALETTE); the kit draws the 14% tint, the word 70%
@@ -6038,7 +6038,7 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
    (44px targets on coarse pointers, reduced motion); the page adds only an armed resume in its slot. ── */
 .panel-status { flex-basis: 100%; min-width: 0; }
 .ps-resume { min-width: 0; font-size: 12px; color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text-secondary)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ps-resume > svg { width: 12px; height: 12px; margin-right: 4px; vertical-align: -2px; }
+.ps-resume > svg { width: 12px; height: 12px; margin-right: 4px; vertical-align: -2px; color: color-mix(in srgb, currentColor calc(100% * var(--chroma, 1)), var(--st-wait)); }
 /* ── 세션 정보 — one summary line + the links; opened, every number (spec 13) ── */
 .panel-info { padding: 6px 16px 8px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); }
 .panel-info:empty { display: none; }
@@ -6058,7 +6058,7 @@ body[data-tasks="none"] #panel-tasks { display: none !important; }
 .pi-thread { font-variant-numeric: tabular-nums; }
 .pi-resume { color: color-mix(in srgb, var(--st-wait) calc(100% * var(--chroma, 1)), var(--text-secondary)); overflow-wrap: anywhere; }
 /* The summary line's ctx % carries the context level (re-context-window D16). */
-.pi-cs.ctx-warn { color: var(--cw-warn); }
+.pi-cs.ctx-warn { color: color-mix(in srgb, var(--cw-warn) calc(100% * var(--chroma, 1)), var(--text)); }
 .pi-cs.ctx-danger { color: var(--st-fail-text); font-weight: 600; }
 /* The summary's ctx % in amber: the light theme's darker yellow keeps it at 4.5:1. */
 :root { --cw-warn: var(--st-wait); }
