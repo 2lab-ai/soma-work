@@ -16,6 +16,10 @@ export interface TokenCache {
 export class TokenRefreshScheduler {
   private refreshTimer?: NodeJS.Timeout;
   private tokenCache: TokenCache | null = null;
+  /** Consecutive failed background refreshes — the retry delay doubles from 2 to at most 10 minutes. */
+  private failedRefreshes = 0;
+  /** Set by stopAutoRefresh: a refresh still in flight does not re-arm. */
+  private stopped = false;
 
   constructor(
     private apiClient: GitHubApiClient,
@@ -83,25 +87,40 @@ export class TokenRefreshScheduler {
 
   /**
    * Refresh token in background. The cached token stays served until a new one arrives (it is still valid while this
-   * retries), and a failed refresh retries every 2 minutes until one succeeds — also after the old token expired:
+   * retries), and a failed refresh retries — 2, 4, 8, then every 10 minutes — until one succeeds, also after the old
+   * token expired:
    * otherwise the daemon env, git config and the agents' gh hosts.yml would sit on a dead token (#834).
    */
   private async refreshInBackground(): Promise<void> {
+    if (this.stopped) return;
+    let tokenInfo: { token: string; expiresAt: Date };
     try {
       logger.debug('Background refresh of GitHub App installation token starting');
-      const tokenInfo = await this.apiClient.getInstallationToken(this.installationId);
-      this.tokenCache = { token: tokenInfo.token, expiresAt: tokenInfo.expiresAt };
-      this.scheduleRefresh();
-      await this.credentialsManager.updateCredentials(tokenInfo.token);
-      logger.debug('GitHub App installation token refreshed successfully in background');
+      tokenInfo = await this.apiClient.getInstallationToken(this.installationId);
     } catch (error) {
       logger.error('Failed to refresh GitHub App installation token in background:', error);
-      const retryIn = 2 * 60 * 1000;
+      if (this.stopped) return;
+      const retryIn = Math.min(2 * 60 * 1000 * 2 ** this.failedRefreshes, 10 * 60 * 1000);
+      this.failedRefreshes++;
       logger.debug(`Retrying token refresh in ${retryIn / 1000} seconds`);
       this.clearRefreshTimer();
       this.refreshTimer = setTimeout(() => {
         void this.refreshInBackground();
       }, retryIn);
+      // A retry alone must not keep the process alive at shutdown.
+      this.refreshTimer.unref?.();
+      return;
+    }
+    if (this.stopped) return;
+    this.tokenCache = { token: tokenInfo.token, expiresAt: tokenInfo.expiresAt };
+    this.failedRefreshes = 0;
+    this.scheduleRefresh();
+    // A failed write (a git config lock, a refused hosts.yml) does not re-mint: the next scheduled refresh rewrites.
+    try {
+      await this.credentialsManager.updateCredentials(tokenInfo.token);
+      logger.debug('GitHub App installation token refreshed successfully in background');
+    } catch (error) {
+      logger.error('GitHub App token refreshed, but writing the credentials failed:', error);
     }
   }
 
@@ -142,6 +161,7 @@ export class TokenRefreshScheduler {
    * Stop auto-refresh
    */
   stopAutoRefresh(): void {
+    this.stopped = true;
     this.clearRefreshTimer();
     logger.debug('GitHub App auto-refresh stopped');
   }

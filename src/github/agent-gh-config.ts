@@ -8,7 +8,8 @@
  *
  * Pure: no work at module load (src/auth imports it).
  */
-import fs from 'fs/promises';
+
+import { atomicWriteFile } from '@soma/common/atomic-write';
 import path from 'path';
 
 let served: string | undefined;
@@ -24,27 +25,16 @@ export function clearAgentGhConfigDir(): void {
 }
 
 /**
- * Write `<dir>/hosts.yml` for the App installation token — atomically (temp file → rename), readable by its owner only
- * — and serve `dir`. A token that is not one safe word is refused: it is written into YAML.
+ * Write `<dir>/hosts.yml` for the App installation token — through the symlink-hardened atomic writer (unique temp file
+ * opened `O_EXCL|O_NOFOLLOW`, no symlink at the file or its ancestors, owner-only modes) — and serve `dir`. A token that
+ * is not one safe word is refused: it is written into YAML.
  */
 export async function writeAgentGhHosts(dir: string, token: string): Promise<void> {
   if (!/^[A-Za-z0-9_.-]+$/.test(token)) throw new Error('refusing to write a malformed GitHub token');
-  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-  await fs.chmod(dir, 0o700);
-  const file = path.join(dir, 'hosts.yml');
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    await fs.writeFile(
-      tmp,
-      `github.com:\n    oauth_token: ${token}\n    user: x-access-token\n    git_protocol: https\n`,
-      {
-        mode: 0o600,
-      },
-    );
-    await fs.rename(tmp, file);
-  } catch (error) {
-    await fs.rm(tmp, { force: true });
-    throw error;
-  }
+  atomicWriteFile(
+    path.join(dir, 'hosts.yml'),
+    `github.com:\n    oauth_token: ${token}\n    user: x-access-token\n    git_protocol: https\n`,
+    { mode: 0o600, dirMode: 0o700 },
+  );
   served = dir;
 }

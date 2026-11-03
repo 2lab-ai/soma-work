@@ -11,8 +11,9 @@
  *   G3  GitCredentialsManager writes hosts.yml next to git's credentials; a failed write stops serving the old one
  *   G4  buildQueryEnv: with a served dir, agent shells get GH_CONFIG_DIR and no frozen GITHUB_TOKEN / GH_TOKEN;
  *       the operator's own claude.env still wins; with none (a PAT setup) the env passes through
- *   G5  TokenRefreshScheduler: a failed background refresh keeps retrying — also after the old token expired — and
- *       does not throw away the still-valid cached token while it retries
+ *   G5  TokenRefreshScheduler: a failed background refresh keeps retrying (2, 4, 8, then every 10 minutes) — also
+ *       after the old token expired — and does not throw away the still-valid cached token while it retries
+ *   G6  the token never follows a symlink: a planted link at hosts.yml (or its dir) is refused, its target untouched
  */
 import fs from 'fs';
 import os from 'os';
@@ -81,6 +82,22 @@ describe('agent gh config (#834)', () => {
     await writeAgentGhHosts(ghDir, `${TOKEN}2`);
     expect(fs.readFileSync(file, 'utf8')).toContain(`oauth_token: ${TOKEN}2\n`);
     expect(fs.readdirSync(ghDir)).toEqual(['hosts.yml']);
+  });
+
+  it('G6 — a symlink at hosts.yml or at the dir is refused; the link target is untouched (review P1)', async () => {
+    const loot = path.join(dir, 'loot');
+    fs.writeFileSync(loot, 'before');
+    const ghDir = path.join(dir, 'gh');
+    fs.mkdirSync(ghDir);
+    fs.symlinkSync(loot, path.join(ghDir, 'hosts.yml'));
+    await expect(writeAgentGhHosts(ghDir, TOKEN)).rejects.toThrow(/symlink/);
+    expect(fs.readFileSync(loot, 'utf8')).toBe('before');
+    expect(getAgentGhConfigDir()).toBeUndefined();
+    const linkedDir = path.join(dir, 'gh-link');
+    fs.mkdirSync(path.join(dir, 'elsewhere'));
+    fs.symlinkSync(path.join(dir, 'elsewhere'), linkedDir);
+    await expect(writeAgentGhHosts(linkedDir, TOKEN)).rejects.toThrow(/symlink/);
+    expect(fs.readdirSync(path.join(dir, 'elsewhere'))).toEqual([]);
   });
 
   it('G2 — a token that is not one safe word is refused and nothing is served', async () => {
@@ -158,12 +175,12 @@ describe('G5 — TokenRefreshScheduler retries a failed refresh', () => {
     const getInstallationToken = vi
       .fn()
       .mockResolvedValueOnce({ token: 'ghs_ONE', expiresAt: new Date(now + 10 * MIN) })
-      // Fails at +5, +7, +9 and +11 minutes (the token expired at +10), then succeeds at +13.
+      // Fails at +5, +7, +11 and +19 minutes (the token expired at +10), then succeeds at +29.
       .mockRejectedValueOnce(new Error('github down'))
       .mockRejectedValueOnce(new Error('github down'))
       .mockRejectedValueOnce(new Error('github down'))
       .mockRejectedValueOnce(new Error('github down'))
-      .mockResolvedValueOnce({ token: 'ghs_TWO', expiresAt: new Date(now + 70 * MIN) });
+      .mockResolvedValueOnce({ token: 'ghs_TWO', expiresAt: new Date(now + 90 * MIN) });
     const updateCredentials = vi.fn().mockResolvedValue(undefined);
     const scheduler = new TokenRefreshScheduler({ getInstallationToken } as any, { updateCredentials } as any, 42);
     expect(await scheduler.getToken()).toBe('ghs_ONE');
@@ -175,13 +192,45 @@ describe('G5 — TokenRefreshScheduler retries a failed refresh', () => {
     expect(await scheduler.getToken()).toBe('ghs_ONE');
     expect(getInstallationToken).toHaveBeenCalledTimes(2);
 
-    // It keeps retrying every 2 minutes, also after the old token expired at +10.
-    await vi.advanceTimersByTimeAsync(6 * MIN);
+    // Retries back off: +7 (2 min), +11 (4 min) — the last one after the token expired at +10.
+    await vi.advanceTimersByTimeAsync(7 * MIN);
+    expect(getInstallationToken).toHaveBeenCalledTimes(4);
+    // +19 (8 min), then +29 (capped at 10 min) succeeds.
+    await vi.advanceTimersByTimeAsync(8 * MIN);
     expect(getInstallationToken).toHaveBeenCalledTimes(5);
     expect(updateCredentials).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(4 * MIN);
+    await vi.advanceTimersByTimeAsync(10 * MIN);
     expect(getInstallationToken).toHaveBeenCalledTimes(6);
     expect(updateCredentials).toHaveBeenLastCalledWith('ghs_TWO');
+    scheduler.stopAutoRefresh();
+  });
+
+  it('a failed credentials write does not re-mint; a stopped scheduler does not re-arm (review P3)', async () => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    const MIN = 60_000;
+    const getInstallationToken = vi
+      .fn()
+      .mockResolvedValueOnce({ token: 'ghs_ONE', expiresAt: new Date(now + 10 * MIN) })
+      .mockResolvedValueOnce({ token: 'ghs_TWO', expiresAt: new Date(now + 70 * MIN) })
+      .mockRejectedValue(new Error('github down'));
+    const updateCredentials = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('could not lock config file'));
+    const scheduler = new TokenRefreshScheduler({ getInstallationToken } as any, { updateCredentials } as any, 42);
+    await scheduler.getToken();
+    await vi.advanceTimersByTimeAsync(5 * MIN);
+    expect(getInstallationToken).toHaveBeenCalledTimes(2);
+    expect(updateCredentials).toHaveBeenCalledTimes(2);
+    // No re-mint within the next 10 minutes: the next refresh is scheduled for TWO's expiry.
+    await vi.advanceTimersByTimeAsync(10 * MIN);
+    expect(getInstallationToken).toHaveBeenCalledTimes(2);
+    expect(await scheduler.getToken()).toBe('ghs_TWO');
+    // Stopped: the refresh at TWO's expiry fails, and nothing re-arms.
+    scheduler.stopAutoRefresh();
+    await vi.advanceTimersByTimeAsync(120 * MIN);
+    expect(getInstallationToken).toHaveBeenCalledTimes(2);
     scheduler.stopAutoRefresh();
   });
 });
