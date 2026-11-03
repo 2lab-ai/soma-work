@@ -755,6 +755,7 @@ describe('ntComposerData — a dashboard task takes no files (#640 R2)', () => {
         'ntDictationChoice',
         'ntDictationUsable',
         'ntDictationTool',
+        'ntSendNarrow',
       ],
       {
         _ntValue: '',
