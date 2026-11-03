@@ -11737,7 +11737,8 @@ function steeringData(s, mode) {
     var state = f && STEER_STATE[f.state];
     if (!state || !f.id) continue;
     // Edit: the writer's own words only (SSOT 2026-11-02 — any viewer may write here now).
-    var it = { id: String(f.id), text: String(f.text || ''), state: state, canEdit: !!f.editable && !!f.authorId && f.authorId === _viewerUserId };
+    // The stored text is Slack's (a quoted line is &gt; …): shown as written.
+    var it = { id: String(f.id), text: decodeSlackEntities(String(f.text || '')), state: state, canEdit: !!f.editable && !!f.authorId && f.authorId === _viewerUserId };
     if (f.enqueuedAt) it.at = Number(f.enqueuedAt);
     if (f.author) it.author = String(f.author);
     if (f.stateReason) it.reason = String(f.stateReason);
@@ -16092,17 +16093,26 @@ function wlGroupOf(e) {
   return e && typeof e.taskId === 'string' && e.taskId ? e.taskId : '';
 }
 // SSOT 2026-10-22 T10 — an entry made while a task was in progress carries
-// that task (taskId / taskTitle): one group per task, at the place of its
-// first entry, titled by the ledger (else its latest entry's title) with the
+// that task (taskId / taskTitle): a task's consecutive entries are one group,
+// titled by the ledger (else the task's latest entry's title) with the
 // ledger's meta under it; the entries outside a task (the instruction that
 // starts a turn, the response that ends it) in runs, each a headless group in
-// line — no head, always shown (D3-GAPS G2-2, 0.12.0). A folded task group is
+// line — no head, always shown (D3-GAPS G2-2, 0.12.0). A task that runs across
+// turns is cut by what comes between: where it resumes after an instruction,
+// an answer or another task, a new group of the same task opens (same #id,
+// title and meta), so the rows always follow the entries' order (2026-11-03 —
+// one group at the task's first entry pulled its later entries above the goal
+// instructions made before them). Ids stay put across repaints: the first
+// segment is task:<id>, a later one task:<id>:<seq of its first entry>; the
+// newest segment is the one open at first sight. A folded task group is
 // handed its count, not its entries: a long log's DOM stays the size of what
 // is open — and the element's scroller never holds the reader's place on rows
 // clipped inside a folded group (D3-GAPS G2-1).
 function wlGroupsOf(st, entries) {
   var rows = [];
-  var byTask = Object.create(null);
+  var titles = Object.create(null);
+  var seen = Object.create(null);
+  var grp = null;
   var run = null;
   var newest = '';
   for (var i = 0; i < entries.length; i++) {
@@ -16110,16 +16120,17 @@ function wlGroupsOf(st, entries) {
     var g = wlGroupOf(e);
     if (g) {
       run = null;
-      var grp = byTask[g];
-      if (!grp) {
-        grp = byTask[g] = { id: 'task:' + g, taskId: g, title: '', at: e.ts, list: [] };
+      if (!grp || grp.taskId !== g) {
+        grp = { id: 'task:' + g + (seen[g] ? ':' + Math.floor(Number(e.seq) || 0) : ''), taskId: g, at: e.ts, list: [] };
+        seen[g] = true;
         rows.push(grp);
       }
       grp.list.push(e);
-      if (e.taskTitle) grp.title = String(e.taskTitle);
+      if (e.taskTitle) titles[g] = String(e.taskTitle);
       newest = grp.id;
       continue;
     }
+    grp = null;
     if (!run) {
       run = { id: 'run:' + Math.floor(Number(e.seq) || 0), at: e.ts, list: [] };
       rows.push(run);
@@ -16136,7 +16147,7 @@ function wlGroupsOf(st, entries) {
     }
     var task = wlTaskInfo(r.taskId);
     out.ref = '#' + r.taskId;
-    out.title = (task && task.content) || r.title || '';
+    out.title = (task && task.content) || titles[r.taskId] || '';
     if (task) out.meta = wlTaskMeta(task);
     out.open = wlGroupOpen(st, r.id, r.id === newest);
     out.count = r.list.length;
@@ -17138,10 +17149,17 @@ function sysTurnInfo(t) {
   if (g) {
     var n = /Auto-continuation (\\d+)\\/(\\d+)/.exec(head);
     var reason = sysBetween(raw, '<previous-eval-reason>', '</previous-eval-reason>');
+    // A reused verdict (goal-loop-controller: the cut turn left no text, or nothing
+    // changed): its second line says no evaluation ran — the gap is the previous
+    // one (session-goal-block.ts GOAL_NO_NEW_EVAL_MARK, 2026-11-03).
+    var second = head.split('\\n')[1] || '';
+    var reusedLine = second.indexOf('No new evaluation: ') !== 0 ? ''
+      : second.indexOf('No new evaluation: the last turn was cut short') === 0 ? '끊긴 턴 이어서 — 새 평가 없음' : '바뀐 것 없음 — 새 평가 없음';
     var gf = [];
     if (n) gf.push(['회차', n[1] + ' / ' + n[2]]);
+    if (reusedLine) gf.push(['평가', '새 평가 없음 — 직전 평가를 그대로 씀']);
     if (reason) gf.push(['직전 평가에서 남은 일', reason]);
-    return { kind: 'goal', label: n ? '목표 #' + n[1] + '/' + n[2] : '목표', line: reason ? '직전 평가: ' + sysOneLine(reason, 90) : '목표 자동 계속', raw: raw, facts: gf };
+    return { kind: 'goal', label: n ? '목표 #' + n[1] + '/' + n[2] : '목표', line: reusedLine || (reason ? '직전 평가: ' + sysOneLine(reason, 90) : '목표 자동 계속'), raw: raw, facts: gf };
   }
   // The host prompt that keeps a turn going while background work still runs
   // (packages/slack/src/pipeline/background-wait.ts buildBackgroundWaitPrompt).

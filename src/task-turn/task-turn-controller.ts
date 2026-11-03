@@ -279,7 +279,25 @@ export interface TaskTurnController {
    * a chain runs — a task turn takes no word mid-turn yet.
    */
   actOnQueue(request: TaskQueueActRequest): Promise<TaskQueueActOutcome>;
+  /**
+   * After a restart (owner directive 2026-11-03): run the oldest queued word of
+   * a task no chain end will come to — one the boot did not resume. Never throws.
+   *   'sent'      — handed to `start` as its writer, through the same admission
+   *                 as a chain end's drain (a refusal pauses it with why; the
+   *                 rest follow at its chain's healthy end).
+   *   'busy'      — a chain runs (its end drains the queue), the task is being
+   *                 closed, or the service takes no start: nothing changed.
+   *   'slot-busy' — the owner's slot (its tree's, or the start window) is taken:
+   *                 nothing changed, try again later. `lastTry` sends it anyway,
+   *                 so the refusal pauses the words with why — never left waiting
+   *                 for a run that will not come.
+   *   'none'      — no dashboard task, or no queued word.
+   */
+  runQueuedAfterRestart(sessionKey: string, opts?: { lastTry?: boolean }): RestoredQueueRun;
 }
+
+/** What {@link TaskTurnController.runQueuedAfterRestart} did. */
+export type RestoredQueueRun = 'sent' | 'busy' | 'slot-busy' | 'none';
 
 const COMPACT = '/compact';
 /**
@@ -1044,8 +1062,9 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
    * turn completed, or asked a question — runs the oldest queued word; one that
    * did not (a Stop, a failure, an interruption, a start that never happened)
    * pauses the queue, as a Slack session's queue drains only after a healthy
-   * turn. A shutdown leaves the queue as it is (saved; the restart pauses it);
-   * a task being closed takes it with it. Never throws.
+   * turn. A shutdown leaves the queue as it is (saved; after the restart the
+   * boot sends it — `runQueuedAfterRestart`); a task being closed takes it with
+   * it. Never throws.
    */
   function drainFollowups(
     sessionKey: string,
@@ -1055,7 +1074,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       const session = deps.getSession(sessionKey);
       if (!session?.taskFollowups?.length) return;
       if (!accepting) {
-        // A real restart pauses them on load; a refused one does in `resumeAccepting` (review R1, grok P1).
+        // A real restart keeps them queued and the boot sends them (2026-11-03); a refused one pauses
+        // them in `resumeAccepting` (review R1, grok P1).
         if (session.taskFollowups.some((item) => item.state === 'queued')) heldByShutdown.add(sessionKey);
         return;
       }
@@ -1169,6 +1189,30 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     session.taskFollowups = next
       ? queue.map((entry) => (entry.id === id ? next : entry))
       : queue.filter((entry) => entry.id !== id);
+  }
+
+  function runQueuedAfterRestart(sessionKey: string, opts: { lastTry?: boolean } = {}): RestoredQueueRun {
+    try {
+      const session = deps.getSession(sessionKey);
+      if (!session || session.slackless !== true) return 'none';
+      if (!session.taskFollowups?.some((item) => item.state === 'queued')) return 'none';
+      if (!accepting || session.closing || session.terminated || chains.has(sessionKey)) return 'busy';
+      if (opts.lastTry !== true) {
+        // The admission's slot check, with no side effect: a busy slot frees, and a refusal now would pause the words.
+        const tree = treeOf(session, sessionKey);
+        const planning = isPlanPending(session.taskPlan);
+        const ownerId = session.ownerId as string;
+        const refusal = tree
+          ? treeAdmission(ownerId, tree, now(), false, planning)
+          : ownerAdmission(ownerId, now(), planning);
+        if (refusal?.status === 429) return 'slot-busy';
+      }
+      runNextQueued(sessionKey, session);
+      return 'sent';
+    } catch (error) {
+      deps.logger.warn('A restored task queue could not be run', { sessionKey, error: (error as Error)?.message });
+      return 'none';
+    }
   }
 
   async function actOnQueue(request: TaskQueueActRequest): Promise<TaskQueueActOutcome> {
@@ -1324,6 +1368,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     isRunning: (sessionKey) => chains.has(sessionKey),
     runningChain: (sessionKey) => chains.get(sessionKey)?.id,
     actOnQueue,
+    runQueuedAfterRestart,
   };
 }
 
