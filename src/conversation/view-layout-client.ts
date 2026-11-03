@@ -234,6 +234,7 @@ function detailSpecOf(d) {
   if (d && d.agents === 'all') show.push('agenttabs');
   else if (d && d.agents === 'sub') show.push('subtabs');
   if (d && d.sections) show.push('sections');
+  if (d && d.logtab) show.push('logtab');
   if (d && d.controls) show.push('controls');
   var tasks = d && (d.tasks === 'list' || d.tasks === 'line' || d.tasks === 'none') ? d.tasks : 'runs';
   return {
