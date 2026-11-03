@@ -52,5 +52,4 @@ describe('index.ts — plan mode on every session (#853)', () => {
     expect(inject).toMatch(/\.\.\.\(extra\.verbatim \? \{ routeContext: \{ verbatimPrompt: true \} \} : \{\}\)/);
     expect(inject).toMatch(/\} finally \{\s*unwatch\?\.\(\);\s*\}/);
   });
-
 });
