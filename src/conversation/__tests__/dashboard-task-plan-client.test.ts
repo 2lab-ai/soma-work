@@ -73,21 +73,27 @@ describe('U1 — the composer’s 작업 계획 switch (T1)', () => {
     'ntBuildPayload',
   ]);
   const ctx = { defaultModel: 'opus', defaultEffort: 'high', defaultChannelId: 'C1', autogoalDefault: false };
-  it('is on by default and rides a dashboard task’s body; off is sent as off; a Slack launch never carries it', () => {
+  it('is on by default and rides every new task’s body — a Slack launch too (#853); off is sent as off', () => {
     const state = m.ntDefaultState(ctx, null);
     expect(state.plan).toBe(true);
     const task = { ...state, destination: 'task', prompt: '대시보드 개선해줘' };
     expect(m.ntBuildPayload(task, [], 'req-1')).toMatchObject({ destination: 'task', plan: true });
     expect(m.ntBuildPayload({ ...task, plan: false }, [], 'req-1')).toMatchObject({ plan: false });
-    expect(m.ntBuildPayload({ ...task, destination: 'slack' }, [], 'req-1')).not.toHaveProperty('plan');
+    expect(m.ntBuildPayload({ ...task, destination: 'slack', autogoal: true }, [], 'req-1')).toMatchObject({
+      plan: true,
+      autogoal: false,
+    });
+    expect(m.ntBuildPayload({ ...task, destination: 'slack', plan: false }, [], 'req-1')).toMatchObject({
+      plan: false,
+    });
   });
-  it('sits in the destination row (shown for a dashboard task), checked from the state', () => {
+  it('sits in the destination row (shown for every destination since #853), checked from the state', () => {
     const row = PAGE.slice(PAGE.indexOf('id="nt-dest"'), PAGE.indexOf('</div>', PAGE.indexOf('id="nt-dest"')));
     expect(row).toMatch(/<label class="ui-switch nt-plan-switch" id="nt-plan-wrap"[^>]*hidden/);
     expect(row).toContain('<input type="checkbox" role="switch" id="nt-plan" onchange="ntToggle(\'plan\')"');
     expect(row).toContain('작업 계획');
     const render = clientFn('ntRender');
-    expect(render).toContain('planWrap.hidden = !isTask;');
+    expect(render).toContain('planWrap.hidden = false;');
     expect(render).toContain("ntEl('nt-plan').checked = _ntState.plan !== false;");
   });
 });
