@@ -108,6 +108,9 @@ describe('a stale expiry warning is edited in place (#881 D1)', () => {
       'C1',
       'w-1',
       expect.stringContaining('세션 만료가 미뤄졌습니다'),
+      // The blocks are replaced too: the 12h idle check carries buttons, and chat.update without blocks keeps them
+      // (fable R1 P2).
+      [expect.objectContaining({ type: 'section' })],
     );
     expect(slackApi.postMessage).not.toHaveBeenCalled();
   });
