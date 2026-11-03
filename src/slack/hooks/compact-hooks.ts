@@ -128,12 +128,7 @@ const completionNoticed = new WeakSet<object>();
  * No conversation, nothing recorded. `recordConversationWorkLog` swallows a
  * throwing store.
  */
-function recordCompactNotice(session: ConversationSession, text: string, sink?: (text: string) => void): void {
-  // A Slack-less task's turn hands its own writer (its receipts see a failure, #629 R1).
-  if (sink) {
-    sink(text);
-    return;
-  }
+function recordCompactNotice(session: ConversationSession, text: string): void {
   if (!session.conversationId) return;
   recordConversationWorkLog(session.conversationId, { kind: 'notice', text });
 }
@@ -197,8 +192,6 @@ export interface CompactHookDeps {
    * stream-executor at the /compact turn's stream end.
    */
   eventRouter?: EventRouter;
-  /** #629 R1 — a task turn's own work-log writer for the compaction notices (else the conversation's). */
-  recordNotice?: (text: string) => void;
 }
 
 export interface CompactHookSet {
@@ -429,7 +422,7 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
   // only correct position — setting it after the Slack round-trip leaves a
   // race window where a parallel caller passes the guard and double-posts.
   marker.pre = true;
-  recordCompactNotice(session, 'Compaction starting', deps.recordNotice);
+  recordCompactNotice(session, 'Compaction starting');
 
   // Snapshot usage% at pre-compact for the "was ~X%" end-of-cycle message,
   // then INVALIDATE the heuristic so we never present it as "now ~X%".
@@ -617,7 +610,7 @@ export async function postCompactCompleteIfNeeded(
           // so two racing ENDs cannot both record it.
           if (!completionNoticed.has(marker)) {
             completionNoticed.add(marker);
-            recordCompactNotice(session, describeCompactionComplete(session), deps.recordNotice);
+            recordCompactNotice(session, describeCompactionComplete(session));
             recordCompactOnTurn(session);
           }
           const text = buildCompactCompleteMessage(session);

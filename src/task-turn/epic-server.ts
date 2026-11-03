@@ -25,7 +25,18 @@ import { NEW_TASK_LIMITS } from '../conversation/new-task';
 import type { ConversationSession, EpicPlan } from '../types';
 import { ChildFolderError, foldersOverlap, removeMadeFolders, resolveChildFolder } from './epic-child-folder';
 import { EpicPlanError, epicNodeStatus, isEpicDone, type PlanWriteInput } from './epic-plan';
-import { taskTitleOf } from './task-launcher';
+
+/** A child's card title: the first non-empty line, cut at this many characters. */
+const CHILD_TITLE_MAX = 80;
+
+/** A child's card title: the given text's first non-empty line, cut at {@link CHILD_TITLE_MAX}. */
+function childTitleOf(text: string): string {
+  const line = text
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  return (line ?? '').slice(0, CHILD_TITLE_MAX);
+}
 
 /** D9 a — an epic makes at most this many children (closed and archived ones count). */
 export const EPIC_CHILD_MAX = 7;
@@ -100,7 +111,7 @@ const refuse = (code: string, error: string): ToolResult => ({ ...reply({ ok: fa
 function liveEpic(taskId: string): { host: EpicHost; epic: ConversationSession } | ToolResult {
   if (!host) return refuse('not-ready', 'the epic tools are not ready yet — try again');
   const epic = host.getTask(taskId);
-  if (!epic || epic.slackless === true || epic.kind !== 'epic' || epic.terminated || epic.closing) {
+  if (!epic || epic.kind !== 'epic' || epic.terminated || epic.closing) {
     return refuse('not-an-epic', 'this session is no longer a live epic');
   }
   return { host, epic };
@@ -295,7 +306,7 @@ export function epicTools(ctx: EpicExecutionContext) {
         planNodeId: args.planNodeId,
         instruction: args.instruction,
         // The card's title rule (the launcher's): the first non-empty line, 80 characters.
-        title: taskTitleOf(args.title ?? '') || taskTitleOf(node.title),
+        title: childTitleOf(args.title ?? '') || childTitleOf(node.title),
         ...(dir ? { workingDirectory: dir } : {}),
       });
       if (!spawned.ok) {

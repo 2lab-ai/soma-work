@@ -139,7 +139,6 @@ describe('ActionHandlers', () => {
           'notify',
           'persona',
           'sandbox',
-          'taskentry',
           'theme',
           'usage',
           'verbosity',

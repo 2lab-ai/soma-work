@@ -1,11 +1,11 @@
 /**
- * A plan-mode task's goal (2026-11-03): 시작 on a plan opens a goal for it.
+ * A plan-mode session's goal (2026-11-03): 시작 on a plan opens a goal for it.
  *
- * A plan-mode task ran one turn on 시작 and stopped when that turn ended — a long
+ * A plan-mode session ran one turn on 시작 and stopped when that turn ended — a long
  * plan needed someone to say "continue" each time, and a restart left it stopped.
  * Now 시작 opens a goal whose objective is the approved plan (`planGoalObjective`,
- * opened by `task-plan-decision.ts`), and the dashboard task's goal loop
- * (`task-goal-loop.ts`, #861) drives the task until the plan is done.
+ * opened by the Slack plan decider in `task-plan-decision.ts`), and the session's goal
+ * loop drives it until the plan is done.
  */
 import type { TaskPlanDoc } from './task-plan';
 

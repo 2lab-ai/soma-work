@@ -448,21 +448,17 @@ describe('UserSettingsStore.getUserCompactThreshold / clearUserCompactThreshold 
   });
 });
 
-describe('Slack instruction → dashboard task flag (E2 ⑦, D1)', () => {
-  it('is off by default, per user, and set values are read back', () => {
-    const store = makeStore();
-    expect(store.getUserSlackTaskEntry('U1')).toBe(false);
-    store.setUserSlackTaskEntry('U1', true);
-    expect(store.getUserSlackTaskEntry('U1')).toBe(true);
-    expect(store.getUserSlackTaskEntry('U2')).toBe(false);
-    store.setUserSlackTaskEntry('U1', false);
-    expect(store.getUserSlackTaskEntry('U1')).toBe(false);
-  });
-
-  it('survives a reload from disk', () => {
+describe('the removed Slack-instruction → dashboard-task flag (#855)', () => {
+  it('an old settings file that still has it loads, and the rest of the user is read as before', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uss-task-entry-'));
-    new UserSettingsStore(dir).setUserSlackTaskEntry('U1', true);
-    expect(new UserSettingsStore(dir).getUserSlackTaskEntry('U1')).toBe(true);
+    fs.writeFileSync(
+      path.join(dir, 'user-settings.json'),
+      JSON.stringify({ U1: { userId: 'U1', accepted: true, slackTaskEntry: true, epicTasks: true } }),
+    );
+    const store = new UserSettingsStore(dir);
+    expect(store.getUserSettings('U1')?.accepted).toBe(true);
+    expect(store.getUserEpicTasks('U1')).toBe(true);
+    expect((store as unknown as Record<string, unknown>).getUserSlackTaskEntry).toBeUndefined();
   });
 });
 
@@ -517,7 +513,7 @@ describe('dashboard view mode (SSOT 2026-11-01)', () => {
   it('a view switch drops no cached system prompt — the dashboard view feeds no prompt', async () => {
     const { setSettingsPromptInvalidationHook } = await import('../user-settings-store');
     const store = makeStore();
-    store.setUserSlackTaskEntry('U1', false); // the record exists (an accepted user)
+    store.setUserEpicTasks('U1', false); // the record exists (an accepted user)
     const hook = vi.fn();
     setSettingsPromptInvalidationHook(hook);
     try {

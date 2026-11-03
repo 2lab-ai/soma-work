@@ -27,7 +27,6 @@ import type {
   EpicEvent,
   EpicPlan,
   HandoffContext,
-  OriginThread,
   SessionCronJob,
   SessionGoal,
   SessionIncidentRequest,
@@ -36,7 +35,6 @@ import type {
   SessionLinks,
   SessionState,
   SessionUsage,
-  TaskInputContext,
   WorkflowType,
 } from './types';
 
@@ -57,12 +55,11 @@ export interface ArchivedSession {
   conversationId?: string; // → conversations/{id}.json
   /** Task id (#595) — a revive brings it back. Absent in archives written before it existed. */
   taskId?: string;
-  /** A Slack-less task (#596): no channel/thread to revive into — keyed `task:<taskId>`. */
+  /**
+   * A dashboard task of the stack removed in #855 (no Slack thread), keyed `task:<taskId>`:
+   * the board's closed column shows it, read-only — there is no thread to revive it into.
+   */
   slackless?: true;
-  /** E2 ① — the instruction thread of a Slack-less task; a revive brings it back while it is free. */
-  originThread?: OriginThread;
-  /** E2 ② — a Slack-instructed task's channel context. */
-  inputContext?: TaskInputContext;
   /** E4 ① — the epic relation (validated on revive). */
   kind?: 'epic';
   parentTaskId?: string;
@@ -175,10 +172,16 @@ function archiveDoneAt(session: ConversationSession, now: number): number | unde
   return typeof changed === 'number' && Number.isFinite(changed) ? changed : undefined;
 }
 
+/** What only the load-time archive of an old record knows (#855): its dashboard-task mark. */
+export interface ArchiveMarks {
+  slackless?: true;
+}
+
 function sessionToArchive(
   session: ConversationSession,
   sessionKey: string,
   reason: 'terminated' | 'sleep_expired',
+  marks?: ArchiveMarks,
 ): ArchivedSession {
   const now = Date.now();
   return {
@@ -189,9 +192,7 @@ function sessionToArchive(
     sessionId: session.sessionId,
     conversationId: session.conversationId,
     taskId: session.taskId,
-    slackless: session.slackless === true ? true : undefined,
-    originThread: session.originThread,
-    inputContext: session.inputContext,
+    slackless: marks?.slackless === true ? true : undefined,
     kind: session.kind,
     parentTaskId: session.parentTaskId,
     planNodeId: session.planNodeId,
@@ -311,10 +312,15 @@ export class SessionArchiveStore {
    *
    * Trace: Scenario 1 Section 3b, Scenario 2 Section 3a
    */
-  archive(session: ConversationSession, sessionKey: string, reason: 'terminated' | 'sleep_expired'): void {
+  archive(
+    session: ConversationSession,
+    sessionKey: string,
+    reason: 'terminated' | 'sleep_expired',
+    marks?: ArchiveMarks,
+  ): void {
     try {
       this.ensureDir();
-      const archived = sessionToArchive(session, sessionKey, reason);
+      const archived = sessionToArchive(session, sessionKey, reason, marks);
       const data = JSON.stringify(archived, null, 2);
       const finalPath = this.filePath(sessionKey, archived.archivedAt);
       const tmpPath = `${finalPath}.tmp`;

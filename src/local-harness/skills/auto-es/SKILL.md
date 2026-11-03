@@ -92,8 +92,6 @@ same turn:
      it, the card did not change: retry once without `expectedSequence`, then say in the document that the card is
      stale. The TL;DR and follow-up are not in `GET_SESSION` at all; the dashboard card is their only receipt.
 
-A Slack-less dashboard task makes the same calls: the host writes them by the task's session key.
-
 **Path B (host-run, no tools)** — §Turn end.
 
 ## Card check

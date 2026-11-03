@@ -13,7 +13,7 @@
  */
 import type { RunReport } from '@soma/slack/followup-dispatcher';
 import type { WorkLogEntry, WorkLogPage } from '../conversation/work-log';
-import type { ConversationSession, EpicPlan, TaskTurnOutcomeRecord } from '../types';
+import type { ConversationSession, EpicPlan, TurnOutcomeRecord } from '../types';
 import { epicWakeText, isEpicDone, type PlanWriteInput, wakeableEpicEvents } from './epic-plan';
 import type { EpicChildSpec, EpicHost } from './epic-server';
 import type { EpicTreeGate } from './epic-tree-gate';
@@ -26,7 +26,7 @@ type Logger = { info(msg: string, meta?: object): void; warn(msg: string, meta?:
  */
 export function chainEndOf(
   outcome: RunReport['outcome'],
-): { outcome: TaskTurnOutcomeRecord['outcome']; reason?: string } | undefined {
+): { outcome: TurnOutcomeRecord['outcome']; reason?: string } | undefined {
   switch (outcome.result) {
     case 'safe':
       return { outcome: 'completed' };
@@ -312,7 +312,7 @@ export function createSlackEpicWaker(deps: SlackEpicWakerDeps): SlackEpicWaker {
 
   async function drain(sessionKey: string): Promise<void> {
     const epic = deps.getSession(sessionKey);
-    if (!epic || epic.slackless === true || epic.kind !== 'epic' || epic.terminated || epic.closing) {
+    if (!epic || epic.kind !== 'epic' || epic.terminated || epic.closing) {
       spent.delete(sessionKey);
       return;
     }
