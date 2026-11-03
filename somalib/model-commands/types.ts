@@ -189,8 +189,14 @@ export interface SetGoalParams {
   userRequestEvidence: string;
 }
 
+/** #881 A — GET_SESSION params. */
+export interface GetSessionParams {
+  /** Wait up to this many ms (≤ 30 000) for the host's ack of this server's last UPDATE_SESSION before answering. */
+  waitForAckMs?: number;
+}
+
 export interface ModelCommandParamsMap {
-  GET_SESSION: undefined;
+  GET_SESSION: GetSessionParams | undefined;
   UPDATE_SESSION: SessionResourceUpdateRequest;
   ASK_USER_QUESTION: AskUserQuestionParams;
   CONTINUE_SESSION: ContinueSessionParams;
@@ -211,6 +217,8 @@ export interface ModelCommandPayloadMap {
     host?: HostReceipt;
     /** #846 — the host has not handled this server's last UPDATE_SESSION yet: read again before trusting `host`. */
     hostPending?: boolean;
+    /** #881 A — how long this answer waited for the host's ack (`waitForAckMs`); absent when it did not wait. */
+    hostWaitedMs?: number;
   };
   UPDATE_SESSION: {
     session: SessionResourceSnapshot;

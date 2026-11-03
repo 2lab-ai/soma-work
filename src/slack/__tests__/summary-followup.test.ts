@@ -121,8 +121,10 @@ describe('turn end — the host runs local:auto-es (Path B)', () => {
   it('the service wiring hands the auto-es contract to the turn-end summary', () => {
     const src = readFileSync(path.resolve(__dirname, '..', '..', 'slack-handler.ts'), 'utf8');
     expect(src).toMatch(
-      /new SummaryService\(\s*forkExecutor,\s*this\.slackApi,\s*\{\s*turnEndContract: loadAutoEsTurnEndContract\(\),?\s*\}\s*\)/,
+      /new SummaryService\(\s*forkExecutor,\s*this\.slackApi,\s*\{\s*turnEndContract: loadAutoEsTurnEndContract\(\),/,
     );
+    // #881 D1 — and a stale expiry warning goes to the live-root gated editor.
+    expect(src).toMatch(/onWarningCleared:[\s\S]{0,240}sessionUiManager\.handleExpiryWarningCleared\(/);
   });
 });
 

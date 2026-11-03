@@ -2,6 +2,7 @@
  * StreamExecutor tests - focusing on continuation pattern
  */
 
+import { receiptIssuedAt } from 'somalib/model-commands/host-receipt';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runAgentStreamFromSdk } from '../../../agent-runtime/claude-code/stream-runner';
 
@@ -1507,7 +1508,7 @@ describe('model-command integration', () => {
       { channel: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100', say },
     );
 
-    expect(deps.claudeHandler.setExecutiveSummary).toHaveBeenCalledWith('C1', '171.100', tldr);
+    expect(deps.claudeHandler.setExecutiveSummary).toHaveBeenCalledWith('C1', '171.100', tldr, undefined);
     expect(deps.claudeHandler.updateSessionTitle).not.toHaveBeenCalled();
   });
 
@@ -1547,7 +1548,7 @@ describe('model-command integration', () => {
     );
     expect(deps.claudeHandler.updateSessionTitleByKey).toHaveBeenCalledWith('task:t-1', 'Login fix');
     expect(deps.claudeHandler.fillPlaceholderSessionTitleByKey).toHaveBeenCalledWith('task:t-1', 'Intent title');
-    expect(deps.claudeHandler.setExecutiveSummaryByKey).toHaveBeenCalledWith('task:t-1', tldr);
+    expect(deps.claudeHandler.setExecutiveSummaryByKey).toHaveBeenCalledWith('task:t-1', tldr, undefined);
     expect(deps.claudeHandler.updateSessionResources).not.toHaveBeenCalled();
     expect(deps.claudeHandler.updateSessionTitle).not.toHaveBeenCalled();
     expect(deps.claudeHandler.fillPlaceholderSessionTitle).not.toHaveBeenCalled();
@@ -7805,6 +7806,9 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
     consumed?: string[];
     discarded?: string[];
     esViaToolResult?: boolean;
+    /** #881 B1 — the es write's receiptId (its issue time) and when each steered send was pushed. */
+    receiptId?: string;
+    steerPushedAt?: Record<string, number>;
   }) {
     // The module mock above predates the threshold auto-compact getter; this turn reads it.
     (userSettingsStore as any).getUserCompactThreshold ??= vi.fn().mockReturnValue(undefined);
@@ -7853,6 +7857,7 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
                     appliedOperations: 0,
                     request: { operations: [], executiveSummary: { tldr: ES.tldr } },
                     executiveSummary: { tldr: ES.tldr },
+                    ...(opts.receiptId ? { receiptId: opts.receiptId } : {}),
                   },
                 }),
               },
@@ -7878,10 +7883,13 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
         setActivityState: vi.fn(),
         clearSessionId: vi.fn(),
         // The registry write UPDATE_SESSION { executiveSummary } lands in (marks the card as the es's).
-        setExecutiveSummary: vi.fn((_c: string, _t: string, tldr: string[]) => {
-          session.executiveSummary = { tldr, at: 2, source: 'es' };
+        setExecutiveSummary: vi.fn((_c: string, _t: string, tldr: string[], receiptId?: string) => {
+          // As the registry does: the write's issue time comes from its receiptId (#881 B1).
+          const issuedAt = receiptIssuedAt(receiptId);
+          session.executiveSummary = { tldr, at: 2, source: 'es', ...(issuedAt !== undefined ? { issuedAt } : {}) };
           return true;
         }),
+        ...(opts.steerPushedAt ? { steerPushedAt: vi.fn((uuid: string) => opts.steerPushedAt?.[uuid]) } : {}),
         streamAgentEvents: vi.fn().mockImplementation(() => toAgentEvents(turn())),
         getSessionRegistry: vi.fn().mockReturnValue({
           beginTurn: vi.fn(),
@@ -8015,6 +8023,50 @@ describe('#846 — the turn-end summary in an es turn (execute e2e)', () => {
     expect((await done).success).toBe(true);
     expect(deps.claudeHandler.setExecutiveSummary).toHaveBeenCalled();
     expect(deps.summaryTimer.start).not.toHaveBeenCalled();
+  });
+
+  // #881 B1 — only a steer pushed after the es write re-opens the verdict; one the es already had stays judged.
+  const ES_AT = 1_793_700_000_000;
+  const receiptAt = (t: number) => `r_${t.toString(36)}_1_abcd1234`;
+
+  it('a consumed steer pushed before the es write: the es verdict stands (#881 B1)', async () => {
+    const { deps, session, done } = run({
+      esThisTurn: false,
+      esViaToolResult: true,
+      receiptId: receiptAt(ES_AT),
+      consumed: ['u-early'],
+      steerPushedAt: { 'u-early': ES_AT - 60_000 },
+    });
+    expect((await done).success).toBe(true);
+    expect(deps.claudeHandler.setExecutiveSummary).toHaveBeenCalledWith('C7', 't7', ES.tldr, receiptAt(ES_AT));
+    expect(deps.summaryTimer.start).not.toHaveBeenCalled();
+    expect(deps.summaryService.displayEsTldrOnThread).toHaveBeenCalledWith(session);
+    expect(session.executiveSummary?.source).toBe('es');
+  });
+
+  it('a consumed steer pushed after the es write: the turn-end summary judges again (#881 B1)', async () => {
+    const { deps, session, done } = run({
+      esThisTurn: false,
+      esViaToolResult: true,
+      receiptId: receiptAt(ES_AT),
+      consumed: ['u-early', 'u-late'],
+      steerPushedAt: { 'u-early': ES_AT - 60_000, 'u-late': ES_AT + 5_000 },
+    });
+    expect((await done).success).toBe(true);
+    expect(deps.summaryTimer.start).toHaveBeenCalledTimes(1);
+    expect(session.executiveSummary?.source).toBeUndefined();
+  });
+
+  it('a consumed steer whose push time is unknown: judged again, as before (#881 B1)', async () => {
+    const { deps, done } = run({
+      esThisTurn: false,
+      esViaToolResult: true,
+      receiptId: receiptAt(ES_AT),
+      consumed: ['u-unknown'],
+      steerPushedAt: {},
+    });
+    expect((await done).success).toBe(true);
+    expect(deps.summaryTimer.start).toHaveBeenCalledTimes(1);
   });
 
   it('an earlier turn’s marker does not block this turn’s summary', async () => {
