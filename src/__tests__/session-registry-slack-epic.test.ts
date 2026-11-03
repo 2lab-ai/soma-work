@@ -197,6 +197,43 @@ describe('SessionRegistry — epics as Slack sessions (#854)', () => {
     expect(later.getSessionByKey(epicKey)?.epicEvents?.map((e) => e.state)).toEqual(['delivered']);
   });
 
+  describe('folders (review #872 astra R4/R5)', () => {
+    const ROOT = `/tmp/soma-epic-folders-${process.pid}`;
+    beforeEach(() => fs.mkdirSync(ROOT, { recursive: true }));
+    afterEach(() => fs.rmSync(ROOT, { recursive: true, force: true }));
+
+    it('SE9 — closing an epic keeps its folder while a live child works inside it', () => {
+      const reg = new SessionRegistry();
+      const { epic, key: epicKey } = epicIn(reg);
+      const { child } = childIn(reg, epic.taskId as string);
+      const epicDir = path.join(ROOT, 'session_epic');
+      const childDir = path.join(epicDir, 'feature');
+      fs.mkdirSync(childDir, { recursive: true });
+      fs.writeFileSync(path.join(childDir, 'uncommitted.txt'), 'work');
+      epic.sessionWorkingDir = epicDir;
+      expect(reg.addSourceWorkingDirByKey(epicKey, epicDir)).toBe(true);
+      child.sessionWorkingDir = childDir;
+      reg.terminateSession(epicKey);
+      expect(fs.existsSync(path.join(childDir, 'uncommitted.txt'))).toBe(true);
+    });
+
+    it('SE10 — a child placed in its epic’s folder, revived and closed again, never deletes it', () => {
+      const reg = new SessionRegistry();
+      const { epic } = epicIn(reg);
+      const { child, key } = childIn(reg, epic.taskId as string);
+      const dir = path.join(ROOT, 'session_epic', 'feature');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'uncommitted.txt'), 'work');
+      child.sessionWorkingDir = dir;
+      const archived = { ...child, sessionKey: key, archivedAt: Date.now(), archiveReason: 'terminated' };
+      reg.terminateSession(key);
+      expect(reg.restoreArchivedSession(archived as any, dir).ok).toBe(true);
+      expect(reg.getSessionByKey(key)?.sourceWorkingDirs ?? []).toEqual([]);
+      reg.terminateSession(key);
+      expect(fs.existsSync(path.join(dir, 'uncommitted.txt'))).toBe(true);
+    });
+  });
+
   it('SE6 — the plan writer and the sleep exemption treat a Slack epic as an epic', () => {
     const reg = new SessionRegistry();
     const { epic } = epicIn(reg);

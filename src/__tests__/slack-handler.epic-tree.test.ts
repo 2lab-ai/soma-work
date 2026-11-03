@@ -156,6 +156,32 @@ describe('SlackHandler — a new session’s place in an epic tree (#854)', () =
     expect(heard).toHaveLength(1);
   });
 
+  it('T8 — while shutdown is being prepared, a new child’s first instruction is not parked (no session would own it)', async () => {
+    const { handler } = harness({ ownerId: 'U1', systemPrompt: 'cached' });
+    const h = handler as any;
+    h.followupShutdownPreparing = true;
+    const enqueue = vi.fn(() => ({ status: 'queued' }));
+    h.followupQueue = { enqueue };
+    h.isQueueableFollowup = vi.fn(() => true);
+    h.captureFollowupContext = vi.fn(() => ({}));
+    h.resolveFollowupSessionKey = vi.fn(() => 'C1:9.9');
+    const accepted = vi.fn();
+    handler.onTurnAccepted('C1', '9.9', accepted);
+    await handler.handleMessage(
+      {
+        user: 'U1',
+        channel: 'C1',
+        thread_ts: '9.9',
+        ts: '9.9',
+        text: 'go',
+        epicChild: { taskId: 'child-1', parentTaskId: 'e1', planNodeId: 'login' },
+      } as any,
+      vi.fn() as any,
+    );
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(accepted).not.toHaveBeenCalled();
+  });
+
   it('T7 — a cut turn the restart could not resume (its thread unreachable) ends its chain as interrupted', async () => {
     const { handler } = harness({ ownerId: 'U1', systemPrompt: 'cached' });
     const heard: Array<[string, unknown]> = [];
