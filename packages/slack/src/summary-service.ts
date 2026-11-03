@@ -249,6 +249,29 @@ export function followUpFromTldr(tldr: readonly string[]): { reason: string } | 
 }
 
 /**
+ * #846 — the follow-up a TL;DR leaves, set on the session. It is one fact with one start time: the same ⚠️ reason again
+ * keeps its time (the idle clock it floors and the panel's announcement do not restart, so re-running es on an
+ * unfinished artifact cannot push sleep out forever); a new reason starts at `at` and clears the sleep warnings sent on
+ * the old clock (they named the old expiry, and a sent warning is not sent again until cleared). No ⚠️ line clears it.
+ */
+export function applyFollowUp(session: object, tldr: readonly string[], at: number): void {
+  const s = session as {
+    followUp?: { reason: string; at: number };
+    lastWarningSentAt?: number;
+    warningMessageTs?: string;
+  };
+  const next = followUpFromTldr(tldr);
+  if (!next) {
+    s.followUp = undefined;
+    return;
+  }
+  if (s.followUp?.reason === next.reason) return;
+  s.followUp = { reason: next.reason, at };
+  s.lastWarningSentAt = undefined;
+  s.warningMessageTs = undefined;
+}
+
+/**
  * Split a raw Executive Summary response into the TL;DR envelope and the
  * full document.
  *
@@ -660,10 +683,7 @@ export class SummaryService {
       else session.executiveSummary = undefined;
       // #829 — a well-formed TL;DR decides whether the card waits on its user; a reply with none keeps the
       // previous verdict (a malformed summary is no evidence the work got finished).
-      if (tldr.length > 0) {
-        const followUp = followUpFromTldr(tldr);
-        session.followUp = followUp ? { reason: followUp.reason, at } : undefined;
-      }
+      if (tldr.length > 0) applyFollowUp(session, tldr, at);
     }
 
     if (!session.actionPanel) {
