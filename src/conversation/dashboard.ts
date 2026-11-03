@@ -17028,7 +17028,8 @@ async function loadMorePanelTurns() {
 // dashboard-system-turns-client.test.ts. A turn a person sent (origin.by
 // 'user') is never read as one of the injected kinds; a command they may type
 // themselves (/compact, /renew) is classified whoever sent it.
-var SYS_RESTART_HEADS = ['The service was restarted and the previous task was interrupted.', '서비스가 재시작되어 이전 작업이 중단되었다.'];
+// The third: a dashboard task's restart resume (TASK_RESTART_TEXT, task-restart-resume.ts).
+var SYS_RESTART_HEADS = ['The service was restarted and the previous task was interrupted.', '서비스가 재시작되어 이전 작업이 중단되었다.', '[재시작 후 자동 재개]'];
 var SYS_RESUME_CONTEXT = '--- 중단 시점 컨텍스트 ---';
 var SYS_RETRY_MARK = '⚠️ 이전 시도 중 오류 발생:';
 var CP_DEFAULT_EST_MS = 150000; // a /compact runs 2–3 min (compact-state.ts) — the estimate until the conversation has one of its own
