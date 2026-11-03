@@ -84,7 +84,12 @@ import {
 import { withBundledPlugins } from './plugin/bundled';
 import type { SdkPluginPath } from './plugin/types';
 import { getAvailablePersonas, PromptBuilder } from './prompt-builder';
-import { type CrashRecoveredSession, type NoteLinksMode, SessionExpiryCallbacks, SessionRegistry } from './session-registry';
+import {
+  type CrashRecoveredSession,
+  type NoteLinksMode,
+  SessionExpiryCallbacks,
+  SessionRegistry,
+} from './session-registry';
 import { getTokenManager } from './token-manager';
 import type {
   ActivityState,
