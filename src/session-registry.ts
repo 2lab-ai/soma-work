@@ -3144,8 +3144,8 @@ export class SessionRegistry {
       session.currentInitiatorId = initiatorId;
       session.currentInitiatorName = initiatorName;
       session.lastActivity = new Date();
-      // #881 D1 — a thread reply is the activity the expiry warning asks for: the clock restarts, so the posted
-      // warning is edited and the next cycle's warnings can be sent again (fable R1 P1 on #887).
+      // #881 D1 — a new turn (a thread reply, or a host turn that already moved lastActivity here) restarts the clock:
+      // the posted warning is edited and the next cycle's warnings can be sent again (fable R1 P1 on #887).
       this.releaseExpiryWarning(session);
     }
   }
