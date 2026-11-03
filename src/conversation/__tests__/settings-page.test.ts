@@ -4,10 +4,12 @@
  * that reaches the browser unchanged) with stubbed fetch / DOM.
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { renderSettingsPage, SETTINGS_CLIENT_JS } from '../settings-page';
+
+const SETTINGS_SRC = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf8');
 
 function clientFn(name: string): string {
   const plain = SETTINGS_CLIENT_JS.indexOf(`\nfunction ${name}(`);
@@ -87,41 +89,35 @@ describe('settings page shell', () => {
     expect(html).not.toMatch(/class="(back|theme|who|tabs|brand-mark)"/);
   });
 
-  it('the app bar gets brand, links (설정 current), account, theme and the sound choice; ui-theme-change sets and stores the theme', () => {
-    const set = vi.fn();
-    const html = {
-      attr: 'dark',
-      getAttribute: () => html.attr,
-      setAttribute: (_n: string, v: string) => (html.attr = v),
-    };
+  it('the app bar gets brand, links (설정 current), account, theme + palette and the sound choice (the head script owns the theme)', () => {
     const bar: { data?: Record<string, unknown> } = {};
-    const document = { documentElement: html, getElementById: (id: string) => (id === 'app-bar' ? bar : null) };
-    const api = load<{ paintAppBar: () => void; setTheme: (t: string) => void; toggleTheme: () => void }>(
-      ['currentTheme', 'paintAppBar', 'setTheme', 'toggleTheme'],
-      {
-        document,
-        localStorage: { setItem: set },
-        APP_BAR_NAV: [{ id: 'settings', label: '설정', href: '/dashboard/settings', current: true }],
-        _appBarAccount: { name: '민아', href: '/login', role: '관리자' },
-      },
-    );
+    const document = { getElementById: (id: string) => (id === 'app-bar' ? bar : null) };
+    // The theme and its palette are the head script's (themeClientJs, soma-work 830), which also answers the toggle.
+    const now = { theme: 'dark', palette: 'mono' };
+    const api = load<{ paintAppBar: () => void }>(['paintAppBar'], {
+      document,
+      somaThemeNow: () => now,
+      APP_BAR_NAV: [{ id: 'settings', label: '설정', href: '/dashboard/settings', current: true }],
+      _appBarAccount: { name: '민아', href: '/login', role: '관리자' },
+    });
     api.paintAppBar();
     expect(bar.data).toEqual({
       brand: { label: 'soma-work', mark: true, href: '/dashboard' },
       nav: [{ id: 'settings', label: '설정', href: '/dashboard/settings', current: true }],
       navLabel: '주 메뉴',
       theme: 'dark',
+      palette: 'mono',
       // The speaker (interface sound, #614) is the bar's own: without the head's sound script, off.
       sound: false,
       account: { name: '민아', href: '/login', role: '관리자' },
     });
-    api.toggleTheme();
-    expect(html.attr).toBe('light');
-    expect(set).toHaveBeenCalledWith('soma-theme', 'light');
-    expect(bar.data?.theme).toBe('light');
+    // No theme code of the page's own: the head's theme script binds the bar (theme-client tests).
+    expect(SETTINGS_SRC).not.toMatch(/function (currentTheme|setTheme|toggleTheme)\(|'ui-theme-change'|soma-theme'/);
+    expect(SETTINGS_SRC).toContain('<script data-fouc>${themeClientJs()}</script>');
     // The head script's choice (_somaOn, read from soma-sound before paint) is handed to the bar: pressed while on.
-    const withSound = load<{ paintAppBar: () => void }>(['currentTheme', 'paintAppBar'], {
+    const withSound = load<{ paintAppBar: () => void }>(['paintAppBar'], {
       document,
+      somaThemeNow: () => now,
       APP_BAR_NAV: [],
       _appBarAccount: null,
       _somaOn: true,

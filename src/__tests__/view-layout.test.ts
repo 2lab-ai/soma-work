@@ -8,6 +8,9 @@
  *       preset and mode; the PR chip it covers is off; a saved card without it gets it
  *   L3  each surface resolves to its preset — the user's default per surface, else the quick switch, else 1
  *   L4  the thread card follows the task card by default; theme keeps the server's Slack theme; custom is its own
+ *   L7  미니멀 상세 카드: the chat is a tab view with the work log (대화 · 작업 로그) — on in every minimal preset,
+ *       off in advanced (which has the whole strip); a detail card saved before the switch existed takes its
+ *       preset's state
  */
 
 import { describe, expect, it } from 'vitest';
@@ -314,6 +317,50 @@ describe('L6 — 작업 카드의 연결: issues · PRs · wikis on every card b
     expect(followThreadLayout(face).nav.find((x) => x.id === 'linkhistory')?.on).toBe(true);
     const off = { ...face, rows: face.rows.map((r) => (r.id === 'links' ? { ...r, on: false } : r)) };
     expect(followThreadLayout(off).nav.find((x) => x.id === 'linkhistory')?.on).toBe(false);
+  });
+});
+
+describe('L7 — 미니멀 상세 카드: the chat is a tab view with the work log (대화 · 작업 로그)', () => {
+  it('every minimal preset has the 대화 · 작업 로그 tabs; advanced keeps the full strip (대화 · 작업 로그 · 에이전트 트리)', () => {
+    for (const p of PRESET_IDS) {
+      expect(BUILTIN_PRESETS[p].minimal.detail.logtab, `${p} minimal`).toBe(true);
+      expect(BUILTIN_PRESETS[p].minimal.detail.sections, `${p} minimal`).toBe(false);
+      expect(BUILTIN_PRESETS[p].advanced.detail.logtab, `${p} advanced`).toBe(false);
+      expect(BUILTIN_PRESETS[p].advanced.detail.sections, `${p} advanced`).toBe(true);
+    }
+  });
+
+  it('a detail card saved before the switch existed gets its preset’s state: on in minimal, off in advanced', () => {
+    const saved = (d: Record<string, unknown>) => {
+      const { logtab: _drop, ...rest } = d;
+      return JSON.parse(JSON.stringify(rest));
+    };
+    const doc = normalizeLayoutDoc({
+      v: 1,
+      presets: {
+        '1': { minimal: { detail: saved(BUILTIN_PRESETS['1'].minimal.detail as unknown as Record<string, unknown>) } },
+        '3': {
+          advanced: { detail: saved(BUILTIN_PRESETS['3'].advanced.detail as unknown as Record<string, unknown>) },
+        },
+      },
+    });
+    expect(doc.presets!['1']!.minimal!.detail!.logtab).toBe(true);
+    expect(doc.presets!['3']!.advanced!.detail!.logtab).toBe(false);
+    // The user's own choice is kept.
+    const off = normalizeLayoutDoc({ v: 1, presets: { '2': { minimal: { detail: { logtab: false } } } } });
+    expect(off.presets!['2']!.minimal!.detail!.logtab).toBe(false);
+  });
+
+  it('the editor’s switch comes last, so the switches before it keep their places', () => {
+    expect(LAYOUT_CATALOG.detail.toggles.map((t) => t.id)).toEqual([
+      'subtitle',
+      'agenthead',
+      'sections',
+      'controls',
+      'open',
+      'logtab',
+    ]);
+    expect(LAYOUT_CATALOG.detail.toggles[5].label).toBe('대화 · 작업 로그 탭');
   });
 });
 

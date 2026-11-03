@@ -22,13 +22,14 @@ import { RequestCoordinator } from '../../slack';
 import { TodoManager } from '../../todo-manager';
 import type { ConversationSession } from '../../types';
 import {
+  createRestartNoticeStart,
   createTaskRestartResumer,
   type RestartCutTaskRef,
   restartResumeSkip,
   TASK_RESTART_NOTICE,
   TASK_RESTART_TEXT,
 } from '../task-restart-resume';
-import { createTaskTurnController } from '../task-turn-controller';
+import { createTaskTurnController, type TaskCommandRequest, type TaskCommandResponse } from '../task-turn-controller';
 import { createTaskTurnExecutor } from '../task-turn-executor';
 
 const OWNER = 'U0RESUMEOWNER';
@@ -302,5 +303,48 @@ describe('R5 — one task never runs two chains at once (trinity R1, grok P1 reg
     expect(p.claudeHandler.streamAgentEvents).toHaveBeenCalledTimes(1);
     held.release();
     await (a.status === 202 ? a.done : b.done);
+  });
+});
+
+describe('R6 — the first goal continuation of a cut task carries the restart guidance (D10 on the goal path)', () => {
+  const KEY = 'task:cut';
+  const session = (turnId: string) => ({ lastTurnOutcome: { turnId, outcome: 'interrupted' } }) as never;
+  const goalTurn = {
+    sessionKey: KEY,
+    text: '[goal-continuation] go',
+    actorUserId: OWNER,
+    initiator: 'host' as const,
+    goalContinuation: true,
+  };
+
+  it('kept while the start is refused (429) and handed out with the turn that is taken — once (trinity R4, grok P1)', async () => {
+    const replies = [
+      { status: 429, body: { error: 'one dashboard task runs at a time' } },
+      { status: 202, body: {} },
+      { status: 202, body: {} },
+    ];
+    const start = vi.fn(async (_r: TaskCommandRequest) => replies.shift()!);
+    const cut = new Map([[KEY, 't-cut']]);
+    const startGoalTurn = createRestartNoticeStart({ start, getSession: () => session('t-cut'), cut });
+    await startGoalTurn(goalTurn);
+    await startGoalTurn(goalTurn);
+    await startGoalTurn(goalTurn);
+    expect(start.mock.calls.map((c) => c[0].promptNotice)).toEqual([
+      TASK_RESTART_NOTICE,
+      TASK_RESTART_NOTICE,
+      undefined,
+    ]);
+    expect(cut.has(KEY)).toBe(false);
+  });
+
+  it('not for a turn that is no goal continuation, nor once a turn ran since the cut', async () => {
+    const start = vi.fn(async (_r: TaskCommandRequest): Promise<TaskCommandResponse> => ({ status: 202, body: {} }));
+    const cut = new Map([[KEY, 't-cut']]);
+    const startGoalTurn = createRestartNoticeStart({ start, getSession: () => session('t-later'), cut });
+    await startGoalTurn({ ...goalTurn, goalContinuation: undefined });
+    expect(cut.has(KEY)).toBe(true);
+    await startGoalTurn(goalTurn);
+    expect(start.mock.calls.every((c) => c[0].promptNotice === undefined)).toBe(true);
+    expect(cut.has(KEY)).toBe(false);
   });
 });
