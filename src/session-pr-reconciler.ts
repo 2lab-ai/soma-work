@@ -5,8 +5,10 @@
  *
  * For each git checkout under the session's directories: its current branch → `GET /repos/{o}/{r}/pulls?head=…`.
  *   - a PR created after the session started becomes the current link ('always'), unless the card already has it;
- *   - an older PR (an inherited branch), any PR when the start is unknown, and any PR on a branch another session also
- *     checks out (ambiguous) go to history only ('history');
+ *   - the current link only for this checkout's own PR: created after the session started, its head commit in the
+ *     checkout, and the branch checked out by no other session (asked at decision time, so it holds across restarts);
+ *     of several, the newest open one;
+ *   - every other PR goes to history only ('history');
  *   - the PR's closing issues (`Closes #12`) go to history.
  * Budget: at most one query per branch per reconcile; a found answer is reused while the head sha is the same; an empty
  * answer is asked again next time (a PR can be opened without a new commit). One reconcile per session at a time, and a
@@ -36,12 +38,17 @@ export interface PullSummary {
   merged_at?: string | null;
   created_at?: string;
   body?: string | null;
+  head_sha?: string;
 }
 
 export interface ReconcilerDeps {
   findCheckouts: (dirs: string[]) => Promise<Checkout[]>;
   /** The PRs whose head is `owner:branch`; undefined when the query failed (nothing is cached then). */
   fetchPulls: (owner: string, name: string, branch: string) => Promise<PullSummary[] | undefined>;
+  /** Whether the checkout's HEAD contains the commit (the PR's head is this checkout's work). */
+  containsCommit: (dir: string, sha: string) => Promise<boolean>;
+  /** Whether another, not terminated session has a checkout on `owner/name#branch` (the branch is then ambiguous). */
+  checkedOutElsewhere: (sessionKey: string, owner: string, name: string, branch: string) => Promise<boolean>;
   noteLinks: (sessionKey: string, links: SessionLink[], mode: 'always' | 'history') => boolean;
   pushCard: (sessionKey: string) => void;
   now?: () => number;
@@ -51,6 +58,7 @@ export interface ReconcilerDeps {
 }
 
 interface SessionLike {
+  startedAt?: unknown;
   sessionWorkingDir?: unknown;
   workingDirectory?: unknown;
   sourceWorkingDirs?: unknown;
@@ -69,12 +77,12 @@ export type SessionPrReconciler = ((args: ReconcileArgs) => void) & {
   idle: () => Promise<void>;
 };
 
-const AMBIGUOUS_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_CLOSING_ISSUES = 5;
 const CLOSING = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(?:([\w.-]+)\/([\w.-]+))?#(\d+)\b/gi;
 
-/** When the session started: the epoch in its directory's name (`session_<ms>_<id>`), else unknown. */
+/** When the session started: its recorded `startedAt`, else the epoch in its directory's name (`session_<ms>_<id>`). */
 export function sessionStartMs(session: SessionLike): number | undefined {
+  if (typeof session.startedAt === 'number' && Number.isFinite(session.startedAt)) return session.startedAt;
   for (const dir of [session.sessionWorkingDir, session.workingDirectory]) {
     const m = typeof dir === 'string' ? path.basename(dir).match(/^session_(\d{13})_/) : null;
     if (m) return Number(m[1]);
@@ -114,8 +122,6 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
   const lastRun = new Map<string, number>();
   /** `owner/name#branch` → the head sha and PRs of a found answer. */
   const found = new Map<string, { sha: string; pulls: PullSummary[] }>();
-  /** `owner/name#branch` → the sessions that checked it out, and when. */
-  const seenBy = new Map<string, Map<string, number>>();
 
   async function reconcileOne(sessionKey: string, session: SessionLike, workingDirectory: string): Promise<void> {
     const dirs = [session.sessionWorkingDir, workingDirectory, session.workingDirectory]
@@ -127,10 +133,8 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
     const asked = new Set<string>();
     let changed = false;
     for (const c of checkouts) {
-      const key = `${c.owner}/${c.name}#${c.branch}`.toLowerCase();
-      const observers = seenBy.get(key) ?? new Map<string, number>();
-      observers.set(sessionKey, now());
-      seenBy.set(key, observers);
+      // Owner and repo are case-insensitive on GitHub; a branch is not.
+      const key = `${c.owner.toLowerCase()}/${c.name.toLowerCase()}#${c.branch}`;
       if (asked.has(key)) continue;
       asked.add(key);
       let pulls = found.get(key)?.sha === c.sha ? found.get(key)!.pulls : undefined;
@@ -141,19 +145,30 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
         else found.delete(key);
         pulls = answer;
       }
-      const ambiguous = [...observers].some(([other, at]) => other !== sessionKey && now() - at < AMBIGUOUS_WINDOW_MS);
-      const current: SessionLink[] = [];
+      const candidates: Array<{ link: SessionLink; open: boolean; created: number }> = [];
       const history: SessionLink[] = [];
       const issues: SessionLink[] = [];
       for (const p of pulls) {
         const base = classifyLinkUrl(p.html_url);
         if (!base || base.type !== 'pr') continue;
         const link: SessionLink = { ...base, status: pullStatus(p), ...(p.title ? { title: p.title } : {}) };
+        issues.push(...closingIssues(p, c.owner, c.name));
         const created = p.created_at ? Date.parse(p.created_at) : Number.NaN;
         const isNew = start !== undefined && Number.isFinite(created) && created >= start;
-        (isNew && !ambiguous && !onCard(session, link.url) ? current : history).push(link);
-        issues.push(...closingIssues(p, c.owner, c.name));
+        // A candidate for the current link: this checkout's own PR — made after the session started, its head commit in
+        // this checkout (a PR someone opened from a branch of the same name is not), and not yet on the card.
+        if (isNew && !onCard(session, link.url) && !!p.head_sha && (await deps.containsCommit(c.dir, p.head_sha))) {
+          candidates.push({ link, open: link.status !== 'closed' && link.status !== 'merged', created });
+        } else {
+          history.push(link);
+        }
       }
+      // Of several, the newest open one is current; and none when another session also checks the branch out.
+      candidates.sort((a, b) => Number(b.open) - Number(a.open) || b.created - a.created);
+      const ambiguous =
+        candidates.length > 0 && (await deps.checkedOutElsewhere(sessionKey, c.owner, c.name, c.branch));
+      const current = ambiguous ? [] : candidates.slice(0, 1).map((x) => x.link);
+      history.push(...(ambiguous ? candidates : candidates.slice(1)).map((x) => x.link));
       if (current.length > 0 && deps.noteLinks(sessionKey, current, 'always')) changed = true;
       if (history.length > 0 && deps.noteLinks(sessionKey, history, 'history')) changed = true;
       if (issues.length > 0 && deps.noteLinks(sessionKey, issues, 'history')) changed = true;
@@ -190,15 +205,28 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
 const MAX_CHECKOUTS = 20;
 const MAX_CHILDREN = 200;
 
+// Only what git needs: no tokens from the host env, no global or system config (its token rewrite, credential helpers).
+const GIT_ENV = {
+  PATH: process.env.PATH ?? '/usr/bin:/bin',
+  HOME: process.env.HOME ?? '/tmp',
+  LC_ALL: 'C',
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_NOSYSTEM: '1',
+};
+
 function git(dir: string, args: string[]): Promise<string | undefined> {
   return new Promise((resolve) => {
-    execFile(
-      'git',
-      ['-C', dir, ...args],
-      { timeout: 5000, env: { ...process.env, LC_ALL: 'C', GIT_TERMINAL_PROMPT: '0' } },
-      (error, stdout) => resolve(error ? undefined : String(stdout).trim()),
+    execFile('git', ['-C', dir, ...args], { timeout: 5000, env: GIT_ENV }, (error, stdout) =>
+      resolve(error ? undefined : String(stdout).trim()),
     );
   });
+}
+
+/** Whether the checkout's HEAD contains `sha` (`git merge-base --is-ancestor`); false when the commit is unknown. */
+export async function gitContainsCommit(dir: string, sha: string): Promise<boolean> {
+  if (!/^[0-9a-f]{7,64}$/i.test(sha)) return false;
+  return (await git(dir, ['merge-base', '--is-ancestor', sha, 'HEAD'])) !== undefined;
 }
 
 async function isCheckout(dir: string): Promise<boolean> {
@@ -219,7 +247,7 @@ const GITHUB_REMOTE =
  * The git checkouts in `dirs` and their immediate children whose current branch is a work branch (not main, master,
  * deploy/*, or a detached HEAD) on a GitHub remote. At most {@link MAX_CHECKOUTS}.
  */
-export async function findGitCheckouts(dirs: string[]): Promise<Checkout[]> {
+export async function findGitCheckouts(dirs: string[], max = MAX_CHECKOUTS): Promise<Checkout[]> {
   const candidates: string[] = [];
   for (const root of [...new Set(dirs)]) {
     if (await isCheckout(root)) candidates.push(root);
@@ -235,7 +263,7 @@ export async function findGitCheckouts(dirs: string[]): Promise<Checkout[]> {
     for (const child of entries) if (await isCheckout(child)) candidates.push(child);
   }
   const out: Checkout[] = [];
-  for (const dir of [...new Set(candidates)].slice(0, MAX_CHECKOUTS)) {
+  for (const dir of [...new Set(candidates)].slice(0, max)) {
     const branch = await git(dir, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
     if (!branch || /^(?:main|master)$/.test(branch) || branch.startsWith('deploy/')) continue;
     const remote = await git(dir, ['config', '--get', 'remote.origin.url']);

@@ -185,4 +185,14 @@ describe('noteSessionLinks', () => {
     expect(s.links?.pr?.url).toBe(PR(8).url);
     expect(reg.noteSessionLinks('C1', '100.001', [PR(9)], 'history')).toBe(false);
   });
+
+  it('N10 — a new session records when it started, and keeps it across a save and load (#833)', () => {
+    const before = Date.now();
+    const { reg, s } = setup();
+    expect(s.startedAt).toBeGreaterThanOrEqual(before);
+    reg.saveSessions();
+    const reloaded = new SessionRegistry();
+    reloaded.loadSessions();
+    expect(reloaded.getSession('C1', '100.001')?.startedAt).toBe(s.startedAt);
+  });
 });

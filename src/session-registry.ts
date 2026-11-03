@@ -243,6 +243,8 @@ interface SerializedSession {
   threadRootTs?: string;
   // Onboarding flag
   isOnboarding?: boolean;
+  /** When the session was created (epoch ms) — the turn-end PR reconcile reads it (#833). */
+  startedAt?: number;
   // Source working directories tracked for cleanup
   sourceWorkingDirs?: string[];
   // Mid-thread source thread reference
@@ -1849,6 +1851,7 @@ export class SessionRegistry {
       taskId: randomUUID(),
       isActive: true,
       lastActivity: new Date(),
+      startedAt: Date.now(),
       model: sessionModel,
       logVerbosity: userSettingsStore.getUserLogVerbosityFlags(ownerId),
       effort: userSettingsStore.getUserDefaultEffort(ownerId),
@@ -3681,6 +3684,7 @@ export class SessionRegistry {
             threadRootTs: session.threadRootTs,
             isOnboarding: session.isOnboarding,
             sourceWorkingDirs: session.sourceWorkingDirs,
+            startedAt: session.startedAt,
             sourceThread: session.sourceThread,
             // Session workspace isolation (#77): persist session-unique cwd
             // so Claude SDK can find its conversation files after restart
@@ -4069,6 +4073,7 @@ export class SessionRegistry {
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
           sourceThread: serialized.sourceThread,
+          startedAt: typeof serialized.startedAt === 'number' ? serialized.startedAt : undefined,
           sourceWorkingDirs: (serialized.sourceWorkingDirs || []).filter((d: unknown) => {
             if (typeof d !== 'string') {
               this.logger.warn('Dropped non-string sourceWorkingDir during deserialization', {

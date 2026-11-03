@@ -3,9 +3,12 @@
  * card. How the PR was made does not matter (REST, the web UI, another machine): this is the one layer that does not
  * depend on how a command was spelled.
  *
- *   R1  a PR on a checkout's branch, created after the session started, becomes the current link ('always')
- *   R2  an older PR (an inherited branch) goes to history only; so does any PR when the session's start is unknown
- *   R3  a branch two sessions both check out is ambiguous: history only, for both
+ *   R1  a PR on a checkout's branch, created after the session started, whose head commit is in the checkout, becomes
+ *       the current link ('always'); the recorded startedAt wins over the directory name (a task has none)
+ *   R2  an older PR (an inherited branch), any PR when the start is unknown, and a PR whose head commit is not in the
+ *       checkout (someone else's PR from a branch of the same name) go to history only
+ *   R3  a branch another session also checks out (asked at decision time) is ambiguous: history only; of several new
+ *       PRs, the newest open one is current and the rest go to history
  *   R4  an empty answer is asked again next turn; a found answer for the same head sha is not re-asked
  *   R5  a failed query records nothing and is asked again; a PR already on the card is never made current again
  *   R6  the PR's closing issues ("Closes #12", "fixes owner/repo#3") go to history
@@ -22,6 +25,7 @@ import {
   type Checkout,
   createSessionPrReconciler,
   findGitCheckouts,
+  gitContainsCommit,
   type PullSummary,
   type ReconcilerDeps,
 } from '../session-pr-reconciler';
@@ -46,6 +50,7 @@ const pull = (n: number, over: Partial<PullSummary> = {}): PullSummary => ({
   merged_at: null,
   created_at: '2026-11-03T03:00:00Z',
   body: '',
+  head_sha: 'sha1',
   ...over,
 });
 
@@ -56,6 +61,8 @@ function harness(over: Partial<ReconcilerDeps> = {}) {
   const deps: ReconcilerDeps = {
     findCheckouts: vi.fn(async () => [checkout()]),
     fetchPulls: vi.fn(async () => [pull(12)]),
+    containsCommit: vi.fn(async () => true),
+    checkedOutElsewhere: vi.fn(async () => false),
     noteLinks: vi.fn((key, links, mode) => {
       noted.push([key, mode, links.map((l: SessionLink) => (l.status ? `${l.url} ${l.status}` : l.url))]);
       return true;
@@ -93,20 +100,50 @@ describe('createSessionPrReconciler (#833)', () => {
     const h2 = harness();
     await h2.run('S2', { workingDirectory: '/tmp/U1/somewhere' });
     expect(h2.noted).toEqual([['S2', 'history', ['https://github.com/a/b/pull/12 open']]]);
+    // Someone else's PR from a branch of the same name: its head commit is not in this checkout.
+    const h3 = harness({ containsCommit: vi.fn(async () => false) });
+    await h3.run('S3');
+    expect(h3.noted).toEqual([['S3', 'history', ['https://github.com/a/b/pull/12 open']]]);
+    expect(h3.deps.containsCommit).toHaveBeenCalledWith(`${SESSION_DIR}/app`, 'sha1');
   });
 
-  it('R3 — a branch two sessions check out is ambiguous: history only', async () => {
+  it('R1 — a task (no session_<ms> directory) uses its recorded startedAt', async () => {
     const h = harness();
+    await h.run('T1', { workingDirectory: '/tmp/U1/my-folder', startedAt: START });
+    expect(h.noted).toEqual([['T1', 'always', ['https://github.com/a/b/pull/12 open']]]);
+    // startedAt wins over the directory name.
+    const late = harness();
+    await late.run('T2', { sessionWorkingDir: SESSION_DIR, startedAt: Date.parse('2026-11-03T04:00:00Z') });
+    expect(late.noted[0][1]).toBe('history');
+  });
+
+  it('R3 — a branch another session checks out is ambiguous: history only', async () => {
+    const h = harness({ checkedOutElsewhere: vi.fn(async () => true) });
     await h.run('S1');
-    await h.run('S2', { sessionWorkingDir: `/tmp/U2/session_${START}_ffff0000` });
-    expect(h.noted.map(([k, m]) => [k, m])).toEqual([
-      ['S1', 'always'],
-      ['S2', 'history'],
+    expect(h.noted).toEqual([['S1', 'history', ['https://github.com/a/b/pull/12 open']]]);
+    expect(h.deps.checkedOutElsewhere).toHaveBeenCalledWith('S1', 'a', 'b', 'feat/x');
+    // Not asked when nothing would become current.
+    const old = harness({
+      checkedOutElsewhere: vi.fn(async () => true),
+      fetchPulls: vi.fn(async () => [pull(7, { created_at: '2026-11-01T00:00:00Z' })]),
+    });
+    await old.run('S2');
+    expect(old.deps.checkedOutElsewhere).not.toHaveBeenCalled();
+  });
+
+  it('R3 — of several new PRs, the newest open one is current (review P2)', async () => {
+    const h = harness({
+      fetchPulls: vi.fn(async () => [
+        pull(121, { created_at: '2026-11-03T03:30:00Z' }),
+        pull(120, { created_at: '2026-11-03T03:10:00Z', state: 'closed' }),
+        pull(119, { created_at: '2026-11-03T03:00:00Z' }),
+      ]),
+    });
+    await h.run('S1');
+    expect(h.noted).toEqual([
+      ['S1', 'always', ['https://github.com/a/b/pull/121 open']],
+      ['S1', 'history', ['https://github.com/a/b/pull/119 open', 'https://github.com/a/b/pull/120 closed']],
     ]);
-    // S1's next turn now sees the branch as ambiguous too.
-    h.tick(60_000);
-    await h.run('S1', { sessionWorkingDir: SESSION_DIR, links: {} });
-    expect(h.noted[h.noted.length - 1]?.slice(0, 2)).toEqual(['S1', 'history']);
   });
 
   it('R4 — an empty answer is asked again next turn; a found answer for the same sha is not', async () => {
@@ -233,5 +270,9 @@ describe('findGitCheckouts — the real git reader (#833 R8)', () => {
     expect(JSON.stringify(found)).not.toContain('SECRET');
     // The root itself as a checkout.
     expect((await findGitCheckouts([a])).map((c) => c.dir)).toEqual([a]);
-  });
+    // HEAD contains its own commit; not an unknown or a malformed one.
+    expect(await gitContainsCommit(a, sha)).toBe(true);
+    expect(await gitContainsCommit(a, '0123456789abcdef0123456789abcdef01234567')).toBe(false);
+    expect(await gitContainsCommit(a, '-x')).toBe(false);
+  }, 30_000);
 });
