@@ -66,10 +66,19 @@ const item = (over: Record<string, unknown> = {}) => ({
 describe('steeringData — the session payload as the element’s data', () => {
   // The viewer U1 (SSOT 2026-11-02 — Edit is the writer's own: the item's authorId is the viewer).
   const data = load<{ steeringData(s: unknown, mode: string): Record<string, any> }>(
-    ['steeringData'],
+    ['decodeSlackEntities', 'steeringData'],
     ['STEER_STATE'],
     { _viewerUserId: 'U1' },
   ).steeringData;
+
+  // 2026-11-03: a quoted Slack message read `&gt; 미확정 후보를…` in the queue.
+  it('a note’s text is shown as written — the Slack entities of its stored text decoded', () => {
+    const s = {
+      activityState: 'working',
+      followups: { items: [item({ text: '&gt; 미확정 후보를 &lt;확인&gt; &amp; 정리' })] },
+    };
+    expect(data(s, 'open').items[0].text).toBe('> 미확정 후보를 <확인> & 정리');
+  });
 
   it('the queue’s ten states fold to the element’s five; history and id-less rows are not shown', () => {
     const states = [
