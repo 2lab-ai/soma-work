@@ -476,6 +476,12 @@ export interface ConversationSession {
    * dashboard's task card (SummaryService sets it, the next input clears it).
    */
   executiveSummary?: { tldr: string[]; at: number };
+  /**
+   * #829 — the latest Executive Summary left an issue/PR this session created unfinished (its ⚠️ TL;DR
+   * line): the dashboard keeps the idle card in NEEDS YOU with this reason. Set and cleared by an Executive
+   * Summary only (SummaryService, or UPDATE_SESSION `executiveSummary` from the model-run es) and by `/new`.
+   */
+  followUp?: { reason: string; at: number };
   ownerId: string; // User who started the session
   ownerName?: string; // Display name of owner
   currentInitiatorId?: string; // User who triggered the current response

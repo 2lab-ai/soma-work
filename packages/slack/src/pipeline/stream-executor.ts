@@ -6365,6 +6365,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             });
           }
         }
+
+        // #829 — the model-run es puts its TL;DR on the task card; its ⚠️ line keeps the card waiting for
+        // the user. Same guard as the title: not when this update's resource ops failed on the host.
+        const executiveSummary = payload.executiveSummary as { tldr?: unknown } | undefined;
+        if (operationsOk && executiveSummary && Array.isArray(executiveSummary.tldr)) {
+          const tldr = executiveSummary.tldr.filter((l): l is string => typeof l === 'string');
+          const applied = this.deps.claudeHandler.setExecutiveSummary?.(context.channel, context.threadTs, tldr);
+          this.logger.info('Applied card TL;DR from UPDATE_SESSION', {
+            sessionKey: context.sessionKey,
+            lines: tldr.length,
+            applied: applied === true,
+          });
+        }
       }
     }
 

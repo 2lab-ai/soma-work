@@ -1645,6 +1645,9 @@ async function start() {
           );
         }
         scheduleLiveSessionUpdate(sessionKey);
+        // #829 — the summary may have moved the card between DONE and NEEDS YOU (its ⚠️ follow-up): a card
+        // patch keeps the card in its column, so the board is pushed too.
+        broadcastSessionUpdate();
       },
       // SSOT 2026-10-22 T1/T2 — a running turn made another API call: push the
       // card (≤ 1/s per session) so its token / cost totals grow live.
