@@ -934,6 +934,51 @@ describe('W11 — review round 11 (astra-zhuge, grok-elon)', () => {
   });
 });
 
+describe('W12 — review round 12 (astra-zhuge)', () => {
+  const U = 'https://github.com/a/b/pull/12';
+  const P = 'https://api.github.com/repos/a/b/pulls';
+
+  it('env -S, gh --help, a Python one-line suite, a Node request never ended: nothing is written', () => {
+    expect(
+      effectsOf(
+        bash(`env -S true gh pr create -R a/b --fill; printf '%s\\n' ${U}`, U),
+        bash(`gh pr create -R a/b --help; printf '%s\\n' ${U}`, U),
+        bash(`python3 -c 'import requests\nif False: print(); requests.post("${P}")\nprint("${U}")'`, U),
+        bash(
+          `node -e 'https.request({ hostname: "api.github.com", path: "/repos/a/b/pulls", method: "POST" }).destroy(); console.log("${U}")'`,
+          U,
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it('an unclosed JSON listing: its elements, one per line, are not objects of the call', () => {
+    expect(
+      effectsOf(
+        bash(
+          `curl -s -X POST ${P} -d @p | head -c 200`,
+          '[\n  {"number":12,"html_url":"https://github.com/a/b/pull/12"},\n  {"numb',
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it('a merge or close is proven only as the call’s only request — another repo’s quoted body or projection does not count', () => {
+    expect(
+      effectsOf(
+        bash(
+          'gh pr merge 12 -R a/b --squash; gh pr view 13 -R c/d --json body --jq .body',
+          'X Pull request a/b#12 is not mergeable\nMerged pull request a/b#12 (quoted)',
+        ),
+        bash(
+          'curl -s -X PUT https://api.github.com/repos/a/b/pulls/12/merge; gh api repos/c/d/pulls/13 --jq "{sha: .merge_commit_sha, merged: .merged, message: \\"Pull Request successfully merged\\"}"',
+          '{"message":"Pull Request is not mergeable"}\n{"sha":"abc","merged":true,"message":"Pull Request successfully merged"}',
+        ),
+      ),
+    ).toEqual([]);
+  });
+});
+
 describe('githubEffectsOf — every spelling of a create', () => {
   it('W4 — gh pr create and gh issue create (the output ends with the new URL)', () => {
     expect(
@@ -1037,6 +1082,7 @@ describe('githubEffectsOf — every spelling of a create', () => {
             'const req = https.request({ hostname: "api.github.com", path: "/repos/a/b/pulls", method: "POST" }, (res) => {',
             '  res.pipe(process.stdout);',
             '});',
+            'req.end();',
           ),
           '{"number":61,"html_url":"https://github.com/a/b/pull/61"}',
         ),

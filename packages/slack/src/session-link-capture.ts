@@ -314,6 +314,9 @@ function commandAt(words: Word[]): number {
     }
     const takesValue = WRAPPERS.get(w);
     if (!takesValue) break;
+    // `env -S 'cmd …'` splits a string into a command line the words do not show: not read.
+    if (w === 'env' && words.slice(i + 1).some((x) => /^-[A-Za-z]*S|^--split-string/.test(x.value)))
+      return words.length;
     // `command -v gh …`, `-pv`: a lookup — any option to `command` is not read.
     if (w === 'command' && /^-/.test(words[i + 1]?.value ?? '')) return words.length;
     i++;
@@ -724,6 +727,8 @@ function ghCliRead(command: string): GitHubWrite | undefined {
 function ghCliWrite(command: string): GitHubWrite | undefined {
   const m = command.match(GH_CLI);
   if (!m) return undefined;
+  // `--help` / `-h` prints help; nothing is written.
+  if (/(?:^|\s)(?:--help|-h)(?=\s|$)/.test(m[3] ?? '')) return { op: 'read', kind: m[1] === 'pr' ? 'pr' : 'issue' };
   const kind = m[1] === 'pr' ? 'pr' : 'issue';
   const action = m[2] as 'create' | 'merge' | 'close';
   const args = m[3] ?? '';
@@ -922,8 +927,16 @@ function apiWrites(words: Word[], at: number): GitHubWrite[] {
   for (const r of requests) {
     if (!r) continue;
     for (const d of r.destinations) {
-      const w = writeAt(d.value, r.method);
-      if (w) out.push(w);
+      // Any other destination is still a request whose output is in the result: marked as a read of its repo (any
+      // repo when the URL names none).
+      const repo = d.value.match(/^(?:(?:https?:\/\/)?api\.github\.com\/|\/)?repos\/([\w.-]+)\/([\w.-]+)(?:[/?#]|$)/);
+      out.push(
+        writeAt(d.value, r.method) ?? {
+          op: 'read',
+          kind: 'pr',
+          ...(repo ? { repo: `${repo[1]}/${repo[2]}`.toLowerCase() } : {}),
+        },
+      );
     }
   }
   return out;
@@ -1409,7 +1422,7 @@ function certainCalls(masked: string, lang: CodeLang): (at: number) => boolean {
   return (at: number) => {
     if (depth[at] !== 0 || (stop >= 0 && stop < at)) return false;
     // A JS statement runs to `;` or a brace (a condition on the line before still governs it); Python's to the line end.
-    const ends = lang === 'py' ? /[;\n]/ : /[;{}]/;
+    const ends = lang === 'py' ? /\n/ : /[;{}]/;
     let k = at - 1;
     while (k >= 0 && !ends.test(masked[k])) k--;
     const prefix = masked.slice(k + 1, at);
@@ -1477,9 +1490,13 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
       w = axiosWrite(name, args);
     else if (/^(?:got|ky|superagent)\.$/.test(chain) && /^(?:get|post|put|patch|delete)$/.test(name))
       w = writeAt(str(positional(args)[0]?.value), name.toUpperCase(), true);
-    else if ((chain === 'https.' || chain === 'http.') && name === 'request') w = nodeRequestWrite(args);
+    else if ((chain === 'https.' || chain === 'http.') && name === 'request')
+      // A Node request is sent when it is ended (`.end()`): without one, nothing goes out.
+      w = /\.end\s*\(/.test(masked.slice(open)) ? nodeRequestWrite(args) : { op: 'read', kind: 'pr' };
     else if (name === 'request') w = routeWrite(args);
-    if (w) out.push(w);
+    // A request the grammar does not read as a GitHub write still printed something: mark it, so a receipt in the
+    // same call is not taken from its output.
+    out.push(w ?? { op: 'read', kind: 'pr' });
   }
 }
 
@@ -1626,7 +1643,7 @@ function jsonEnd(text: string, from: number): number {
 }
 
 /** The top-level JSON documents of a result that start a line, and where each starts. Linear: each is read once. */
-function documentsIn(text: string): Array<{ at: number; value: unknown }> {
+function documentsIn(text: string): { docs: Array<{ at: number; value: unknown }>; complete: boolean } {
   const out: Array<{ at: number; value: unknown }> = [];
   let i = 0;
   while (i < text.length && out.length < MAX_DOCUMENTS) {
@@ -1636,25 +1653,27 @@ function documentsIn(text: string): Array<{ at: number; value: unknown }> {
     while (s < lineEnd && (text[s] === ' ' || text[s] === '\t')) s++;
     if (text[s] === '{' || text[s] === '[') {
       const end = jsonEnd(text, s);
-      if (end > 0) {
-        try {
-          out.push({ at: s, value: JSON.parse(text.slice(s, end)) });
-          i = end;
-          continue;
-        } catch {
-          // not a document
-        }
+      // Unclosed: what follows may be inside it (a truncated listing's elements) — no document after it is read.
+      if (end < 0) return { docs: out, complete: false };
+      try {
+        out.push({ at: s, value: JSON.parse(text.slice(s, end)) });
+        i = end;
+        continue;
+      } catch {
+        // Not JSON as a whole: its lines may still be inside it — stop here too.
+        return { docs: out, complete: false };
       }
     }
     i = lineEnd + 1;
   }
-  return out;
+  return { docs: out, complete: i >= text.length };
 }
 
 function indexResult(text: string): ResultIndex {
   const docs: Array<Record<string, unknown>> = [];
   const found: Array<FoundObject & { at: number }> = [];
-  for (const d of documentsIn(text)) {
+  const read = documentsIn(text);
+  for (const d of read.docs) {
     // An array is a listing, never the object a write returns: its elements prove nothing.
     if (!d.value || typeof d.value !== 'object' || Array.isArray(d.value)) continue;
     const o = d.value as Record<string, unknown>;
@@ -1670,6 +1689,10 @@ function indexResult(text: string): ResultIndex {
         url: o.html_url as string,
       });
     }
+  }
+  if (!read.complete) {
+    docs.length = 0;
+    found.length = 0;
   }
   LONE_URL.lastIndex = 0;
   for (const m of text.matchAll(LONE_URL)) {
@@ -1840,8 +1863,9 @@ export function githubEffectsOf(
     const merges = ws.filter((x) => x.op === 'merge').length;
     for (const w of ws) {
       if (w.op === 'create' || w.op === 'read') continue;
-      // A merge, close or PATCH is proven only when it is the call's one request to its repo.
-      if (crowded(w, ws, () => false)) continue;
+      // A merge, close or PATCH is proven only when it is the call's only request: gh's lines and a merge response
+      // carry no identity another request's output (any repo — a quoted body, a projection) could not imitate.
+      if (ws.some((o) => o !== w)) continue;
       add(effectOf(w, idx, w.op === 'merge' ? merges : 0));
     }
   }
