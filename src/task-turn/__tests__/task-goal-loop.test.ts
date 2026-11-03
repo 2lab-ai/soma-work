@@ -61,6 +61,7 @@ function harness(
     }),
     readLastFinal: vi.fn(async () => 'the turn shipped PR #1'),
     saveSessions,
+    isRunning: () => false,
     settle,
     logger: { info: vi.fn(), warn: vi.fn() },
     retryDelayMs: 5,
@@ -117,6 +118,50 @@ describe('task goal loop — the chain end wakes the loop', () => {
       await h.loop.onChainEnd(KEY, info);
       expect(h.settle).not.toHaveBeenCalled();
     }
+  });
+
+  // #861 R1 (astra-zhuge P1): a late evidence read speaks for its own turn only.
+  it('a late read after the owner wrote (epoch moved) writes no evidence and wakes nothing', async () => {
+    const g = goal();
+    const s = taskSession(g);
+    let release!: (t: string) => void;
+    const h = harness(s, [], {
+      readLastFinal: () =>
+        new Promise<string>((r) => {
+          release = r;
+        }),
+    });
+    const ended = h.loop.onChainEnd(KEY, { started: true, outcome: 'completed' });
+    g.epoch = 5; // the owner's next instruction
+    s.goalLastTurnText = 'turn B — newer';
+    release('turn A — stale');
+    await ended;
+    expect(s.goalLastTurnText).toBe('turn B — newer');
+    expect(h.settle).not.toHaveBeenCalled();
+  });
+
+  it('a late read after a newer turn ended (or was stopped) wakes nothing', async () => {
+    const s = taskSession(goal());
+    let release!: (t: string) => void;
+    const h = harness(s, [], {
+      readLastFinal: () =>
+        new Promise<string>((r) => {
+          release = r;
+        }),
+    });
+    const ended = h.loop.onChainEnd(KEY, { started: true, outcome: 'completed' });
+    s.lastTurnOutcome = { turnId: 'turn-10', outcome: 'cancelled', category: 'Exception', at: 2 };
+    release('turn 9 text');
+    await ended;
+    expect(h.settle).not.toHaveBeenCalled();
+    expect(s.goalLastTurnText).toBeUndefined();
+  });
+
+  it('a late read while a newer chain runs wakes nothing (that chain’s end will)', async () => {
+    const s = taskSession(goal());
+    const h = harness(s, [], { isRunning: () => true });
+    await h.loop.onChainEnd(KEY, { started: true, outcome: 'completed' });
+    expect(h.settle).not.toHaveBeenCalled();
   });
 
   it('a goal changed under the turn gets no evidence from it, but the loop still runs', async () => {

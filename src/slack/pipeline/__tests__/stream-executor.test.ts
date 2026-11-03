@@ -4471,6 +4471,18 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
     expect(ctx.isUserInputTurn).not.toBe(true);
   });
 
+  it('a task turn carries its execution context’s user as turnUserId', async () => {
+    const deps = createDepsForToolFlow();
+    const executor = new StreamExecutor(deps);
+    const spy = vi
+      .spyOn(executor as any, 'handleModelCommandToolResults')
+      .mockResolvedValue({ hasPendingChoice: false });
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    await executor.execute({ ...createToolFlowParams(say), text: 'go', isUserInput: true });
+    // A Slack turn: no task user.
+    expect((spy.mock.calls[0][2] as Record<string, unknown>).turnUserId).toBeUndefined();
+  });
+
   // #861 R1 (fable-zhuge P2): a dashboard task's host start (an epic wake, a child instructed, the goal loop)
   it('a host turn (hostTurn: true) is never user input, even with isUserInput: true', async () => {
     const deps = createDepsForToolFlow();
@@ -6284,6 +6296,34 @@ describe('SET_GOAL host-apply (#1082)', () => {
     const sayCalls = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
     expect(sayCalls.some((t: string) => t.includes('🎯'))).toBe(true);
     expect(deps.slackApi.updateMessage).not.toHaveBeenCalled();
+  });
+
+  // #861 R1 (astra-zhuge P1): a user who instructed someone else's task sets a goal that is theirs —
+  // the goal loop runs its next turns as the goal's owner, never as the task's owner.
+  it('a dashboard task turn: the goal belongs to the turn’s user, not the task owner', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = {
+      ...createSession(),
+      ownerId: 'U_ADMIN_OWNER',
+      slackless: true,
+      channelId: '',
+      threadTs: undefined,
+    };
+    const context = makeContext({
+      channel: '',
+      threadTs: undefined,
+      sessionKey: 'task:11111111-2222-4333-8444-555555555555',
+      currentUserText: 'set goal 해줘: ship it',
+      isUserInputTurn: true,
+      turnUserId: 'U_INSTRUCTOR',
+    });
+    await (executor as any).handleModelCommandToolResults(
+      [makeSetGoalToolResult('ship it', 'set goal 해줘')],
+      session,
+      context,
+    );
+    expect(session.goal).toMatchObject({ objective: 'ship it', createdBy: 'U_INSTRUCTOR' });
   });
 
   it('a dashboard task turn: a goal continuation (not user input) still cannot set a goal', async () => {
