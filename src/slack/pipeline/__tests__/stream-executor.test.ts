@@ -1508,7 +1508,7 @@ describe('model-command integration', () => {
       { channel: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100', say },
     );
 
-    expect(deps.claudeHandler.setExecutiveSummary).toHaveBeenCalledWith('C1', '171.100', tldr);
+    expect(deps.claudeHandler.setExecutiveSummary).toHaveBeenCalledWith('C1', '171.100', tldr, undefined);
     expect(deps.claudeHandler.updateSessionTitle).not.toHaveBeenCalled();
   });
 
@@ -1548,7 +1548,7 @@ describe('model-command integration', () => {
     );
     expect(deps.claudeHandler.updateSessionTitleByKey).toHaveBeenCalledWith('task:t-1', 'Login fix');
     expect(deps.claudeHandler.fillPlaceholderSessionTitleByKey).toHaveBeenCalledWith('task:t-1', 'Intent title');
-    expect(deps.claudeHandler.setExecutiveSummaryByKey).toHaveBeenCalledWith('task:t-1', tldr);
+    expect(deps.claudeHandler.setExecutiveSummaryByKey).toHaveBeenCalledWith('task:t-1', tldr, undefined);
     expect(deps.claudeHandler.updateSessionResources).not.toHaveBeenCalled();
     expect(deps.claudeHandler.updateSessionTitle).not.toHaveBeenCalled();
     expect(deps.claudeHandler.fillPlaceholderSessionTitle).not.toHaveBeenCalled();
