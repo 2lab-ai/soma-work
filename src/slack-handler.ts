@@ -6916,6 +6916,8 @@ export class SlackHandler {
     let retriesClaimed = 0;
     let stallsEnded = 0;
     let refunded = 0;
+    // A task's cut turn is the load's record (no shutdown marker, not crash-recovered) — read once.
+    const cutTaskKeys: Set<string> = this.claudeHandler.takeRestartCutTaskKeys?.() ?? new Set<string>();
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       // A Slack-less task resumes too (SSOT 2026-11-03): it runs turns (#598), and its goal's next
       // turn is a host start on the task controller (task-goal-loop.ts), not a thread message.
@@ -6974,7 +6976,7 @@ export class SlackHandler {
       // refund either way. An open cap decision is the owner's call, and a cut
       // user turn (count 0) spent nothing.
       const capDecisionOpen = isGoalCapDecisionPending(session.goal);
-      const cutTurn = this.restartCutSessionKeys.has(sessionKey) || falseStall;
+      const cutTurn = this.restartCutSessionKeys.has(sessionKey) || cutTaskKeys.has(sessionKey) || falseStall;
       if (cutTurn && session.goal.continuationCount > 0 && !capDecisionOpen) {
         session.goal.continuationCount -= 1;
         refunded++;
