@@ -113,3 +113,81 @@ export function createTaskPlanDecider(deps: TaskPlanDeciderDeps): TaskPlanDecide
     return started;
   };
 }
+
+/** #853 — what 시작 / 취소 on a Slack session needs from the host. */
+export interface SlackPlanDeciderDeps {
+  getSession(sessionKey: string): ConversationSession | undefined;
+  /** The registry's strict write (`setSessionPlanGate`): a failed save puts the gate back and throws. */
+  setPlanGate(sessionKey: string, gate: TaskPlanGate): void;
+  /** A turn is in flight on the session (the request coordinator's slot): it is still writing the plan. */
+  isBusy(sessionKey: string): boolean;
+  /**
+   * Send the approved plan into the session's thread as `actorUserId`'s instruction — the
+   * normal Slack path (queue, steering, goals). True once it went in; false when it could not.
+   */
+  sendPlan(sessionKey: string, text: string, actorUserId: string): Promise<boolean>;
+  /** As for a task (#777): someone the owner has not approved does not decide the owner's plan. */
+  mayDecide?: (sessionKey: string, session: ConversationSession, actorUserId: string) => boolean;
+  now?: () => number;
+  logger: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void };
+}
+
+/**
+ * #853 — 시작 / 취소 on a Slack session in plan mode (the same rules as a task's, on the
+ * Slack path). 시작 saves the gate approved first — so the instruction's turn is not a planning
+ * turn — then sends the plan into the thread as the decider's own instruction. A plan that
+ * could not be sent puts the waiting plan back, so 시작 can be pressed again. 취소 is saved;
+ * nothing is sent. Every refusal changes nothing.
+ */
+export function createSlackPlanDecider(deps: SlackPlanDeciderDeps): TaskPlanDecider {
+  const now = deps.now ?? Date.now;
+  return async ({ sessionKey, decision, revision, actorUserId }) => {
+    const session = deps.getSession(sessionKey);
+    if (!session) return refuse(409, 'no such session');
+    if (!session.taskPlan) return refuse(409, 'this task was not made in plan mode');
+    if (!actorUserId) return refuse(403, 'sign in to start or cancel a plan');
+    if (deps.mayDecide && !deps.mayDecide(sessionKey, session, actorUserId)) {
+      return refuse(403, "the plan is the task owner's to start or cancel — send your changes as an instruction");
+    }
+    if (session.terminated || session.closing) return refuse(409, 'the task is closed');
+    if (deps.isBusy(sessionKey)) {
+      return refuse(409, 'the task is still working on its plan — wait for it, or stop it first');
+    }
+    const previous = session.taskPlan;
+    const decided = decidePlan(previous, decision, revision, actorUserId, now());
+    if (!decided.ok) return refuse(decided.status, decided.error);
+
+    if (decision === 'cancel') {
+      deps.setPlanGate(sessionKey, decided.gate);
+      deps.logger.info('Session plan cancelled from the dashboard', { sessionKey, revision, by: actorUserId });
+      return { status: 200, body: { ok: true, state: 'cancelled', revision: decided.gate.revision } };
+    }
+
+    if (!previous.plan) return refuse(409, 'no plan is waiting to start');
+    const text = planApprovedText(previous.plan, actorUserId);
+    deps.setPlanGate(sessionKey, decided.gate);
+    const putBack = () => {
+      try {
+        if (deps.getSession(sessionKey)?.taskPlan === decided.gate) deps.setPlanGate(sessionKey, previous);
+      } catch (error) {
+        deps.logger.warn('A plan start that did not happen could not be put back', {
+          sessionKey,
+          error: (error as Error)?.message,
+        });
+      }
+    };
+    let sent: boolean;
+    try {
+      sent = await deps.sendPlan(sessionKey, text, actorUserId);
+    } catch (error) {
+      putBack();
+      throw error;
+    }
+    if (!sent) {
+      putBack();
+      return refuse(502, 'the plan could not be sent into the thread — try again');
+    }
+    deps.logger.info('Session plan started from the dashboard', { sessionKey, revision, by: actorUserId });
+    return { status: 200, body: { ok: true, state: 'approved', revision: decided.gate.revision, started: true } };
+  };
+}
