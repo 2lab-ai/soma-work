@@ -13,6 +13,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import type { SyntheticMessageEvent } from '../../cron-scheduler';
+import { GOAL_NO_NEW_EVAL_MARK } from '../../prompt/session-goal-block';
 import type { ConversationSession, SessionGoal } from '../../types';
 import {
   buildGoalEvalUserPrompt,
@@ -500,6 +501,13 @@ describe('restart and interrupted turns never stall (2026-11-02 incident)', () =
     // The real gap stays the one the next turn is asked to close.
     expect(h.goal.lastEvalReason).toBe('PR #489 is not merged');
     expect(h.goal.lastEvalRemaining).toEqual(['merge it']);
+    // 2026-11-03: the continuation says no evaluation ran — the gap is the old one.
+    expect(h.injected[0].text).toContain(
+      `${GOAL_NO_NEW_EVAL_MARK} the last turn was cut short before it reported anything`,
+    );
+    expect(h.injected[0].text).toContain('PR #489 is not merged');
+    // …and the thread notice does not claim an eval-model verdict or repeat the stale gap.
+    expect(h.notices).toEqual(['🔄 Goal continues — no new evaluation (the last turn was cut short).']);
   });
 
   it('an interrupted turn (no text) is not judged and does not stall', async () => {

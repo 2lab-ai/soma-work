@@ -52,6 +52,7 @@ import type { RequestAbortReason, RequestCoordinator } from '../request-coordina
 import {
   enqueueOrActivateGoal,
   findGoalById,
+  findPendingGoalPosition,
   formatGoalObjectiveForSlack,
   formatResumedGoalLine,
   type GoalQueueSession,
@@ -86,7 +87,7 @@ import {
   sayPostSwitches,
   type UsageData,
 } from '../stream-processor';
-import type { SummaryService } from '../summary-service';
+import { esWroteCardThisTurn, releaseEsCard, type SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer';
 import type { TurnAddress, TurnContext, TurnEndReason } from '../thread-panel';
 import type { TodoDisplayManager } from '../todo-display-manager';
@@ -2018,6 +2019,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       let reachedModel = isSlashCommand;
 
       // Create stream callbacks
+      // #846 — set when the host's settlement says this turn consumed a steered message.
+      let steerConsumedThisTurn = false;
       const streamCallbacks: StreamCallbacks = {
         // HEARTBEAT. The transport spoke — that is all this proves, so it
         // advances `lastSignalAt` and nothing else. Advancing the progress
@@ -2278,6 +2281,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           this.deps.toolEventProcessor.handleAgentTaskLifecycle(event, ctx.sessionKey);
         },
         onSteerLifecycle: async (event, ctx) => {
+          // #846 — this turn folded in a steered message (the host's settlement just before the result says so;
+          // the SDK does not re-stamp a folded send on a typed turn). Noted here, applied at the turn end: a buffered
+          // UPDATE_SESSION result can still land after this frame.
+          if (event.phase === 'completed') steerConsumedThisTurn = true;
           // Forward the backend's answer ("this turn consumed uuid X") to the
           // host queue, keyed by the session the follow-up was queued under.
           // `ctx.sessionKey` is the same value passed to `streamAgentEvents`
@@ -3283,12 +3290,37 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // so the user can see the wait window expire instead of guessing why
       // a summary suddenly appeared after silence.
       // Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S1
-      if (this.deps.turnNotifier && this.deps.summaryTimer && category !== 'Exception' && category !== 'Stalled') {
+      // #846 — a steered message this turn consumed is input its es may not cover: drop the es marker (every tool
+      // result is applied by now) so the turn-end summary judges the whole turn again; the TL;DR stays until it does.
+      // A steer folded before the es costs one extra summary, never a stale card.
+      if (steerConsumedThisTurn) releaseEsCard(session);
+      // #846 — not when this turn's model-run es already wrote the card: the card would ignore the fork, and the
+      // thread head would show a second TL;DR.
+      if (
+        this.deps.turnNotifier &&
+        this.deps.summaryTimer &&
+        category !== 'Exception' &&
+        category !== 'Stalled' &&
+        !esWroteCardThisTurn(session)
+      ) {
         this.deps.summaryTimer.start(
           sessionKey,
           () => this.onSummaryTimerFire(session, sessionKey),
           (remainingMs) => this.onSummaryCountdownTick(session, sessionKey, remainingMs),
         );
+      }
+      // #846 — no host summary in an es turn: the thread head shows the TL;DR the es wrote to the card (same
+      // categories as the timer — an errored turn gets neither).
+      if (
+        esWroteCardThisTurn(session) &&
+        this.deps.summaryService &&
+        category !== 'Exception' &&
+        category !== 'Stalled'
+      ) {
+        this.deps.summaryService.displayEsTldrOnThread(session as any);
+        this.deps.threadPanel?.updatePanel(session, sessionKey)?.catch((err: any) => {
+          this.logger.warn('es TL;DR thread render failed', { sessionKey, error: err?.message });
+        });
       }
 
       // Completion message tracking moved to SlackBlockKitChannel.send()
@@ -6184,6 +6216,32 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // `goal max <N>` would apply to new goals.
         // A goal stays the session owner's.
         const goalOwner = (session.ownerId as string) || (session.userId as string);
+        // The same goal already running or waiting is not set again (#865): a model that reads the
+        // user's request again on a later turn calls SET_GOAL again, and the goal would queue behind
+        // itself. No state changes; the notice says where it already is.
+        const samePosition = findPendingGoalPosition(session as unknown as GoalQueueSession, objective);
+        if (samePosition !== undefined) {
+          this.logger.info('Skipped SET_GOAL — the same goal is already set', {
+            sessionKey: context.sessionKey,
+            position: samePosition,
+            objectivePreview: objective.slice(0, 120),
+          });
+          await this.reportModelCommandOutcome(
+            {
+              kind: 'notice',
+              text:
+                samePosition > 0
+                  ? `📋 Goal already queued at position ${samePosition} — not added again: ${formatGoalObjectiveForSlack(objective)}`
+                  : session.goal?.status === 'paused'
+                    ? `🎯 Goal already set (paused — \`goal resume\` runs it) — not added again: ${formatGoalObjectiveForSlack(objective)}`
+                    : `🎯 Goal already set — not added again: ${formatGoalObjectiveForSlack(objective)}`,
+            },
+            session,
+            context,
+            { flag: OutputFlag.STATUS_MESSAGE },
+          );
+          continue;
+        }
         const applied = enqueueOrActivateGoal(
           session as unknown as GoalQueueSession,
           objective,
@@ -6220,6 +6278,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         const hasResourceOps = request.operations && request.operations.length > 0;
         const hasInstructionOps = request.instructionOperations && request.instructionOperations.length > 0;
         let operationsOk = true;
+        // #846 — how this write went, for the host receipt the model reads back.
+        let failReason: string | undefined;
+        let tldrApplied: boolean | undefined;
         const handler = this.deps.claudeHandler;
 
         // Resource operations (issues/prs/docs) apply immediately. Instruction
@@ -6236,6 +6297,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           const updateResult = handler.updateSessionResources(context.channel, context.threadTs, resourceOnly);
           if (!updateResult.ok) {
             operationsOk = false;
+            failReason = updateResult.reason || 'UNKNOWN';
             this.logger.warn('Failed to apply UPDATE_SESSION resource ops on host', {
               sessionKey: context.sessionKey,
               reason: updateResult.reason,
@@ -6297,12 +6359,24 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         if (operationsOk && executiveSummary && Array.isArray(executiveSummary.tldr)) {
           const tldr = executiveSummary.tldr.filter((l): l is string => typeof l === 'string');
           const applied = handler.setExecutiveSummary?.(context.channel, context.threadTs, tldr);
+          tldrApplied = applied === true;
           this.logger.info('Applied card TL;DR from UPDATE_SESSION', {
             sessionKey: context.sessionKey,
             lines: tldr.length,
             applied: applied === true,
           });
         }
+
+        // #846 — the host's receipt: what it holds now and how it handled this write (GET_SESSION `host`).
+        const lastWrite = {
+          ...(typeof payload.receiptId === 'string' ? { receiptId: payload.receiptId } : {}),
+          ok: operationsOk,
+          ...(failReason ? { reason: failReason } : {}),
+          ...(tldrApplied !== undefined ? { tldrApplied } : {}),
+          ...(hasInstructionOps ? { instructions: 'pending_confirmation' as const } : {}),
+          at: Date.now(),
+        };
+        handler.writeModelCommandReceipt?.(context.channel, context.threadTs, lastWrite);
       }
     }
 

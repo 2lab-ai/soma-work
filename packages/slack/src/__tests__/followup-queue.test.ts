@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   FOLLOWUP_CANCEL_DEFAULT_REASON,
   FOLLOWUP_QUEUE_DEFAULT_CAPACITY,
+  FOLLOWUP_READ_BEFORE_RESTART_REASON,
+  FOLLOWUP_REDELIVER_AFTER_RESTART_REASON,
   type FollowupItem,
   FollowupQueue,
   type FollowupQueueSnapshot,
@@ -1897,5 +1899,115 @@ describe('FollowupQueue delivery evidence and the restart takeover', () => {
     expect(queue.retry(SESSION, parked.id, parked.epoch).ok).toBe(true);
     expect(queue.get(SESSION, parked.id)?.state).toBe('queued');
     expect(queue.get(SESSION, parked.id)?.deliveredAt).toBeUndefined();
+  });
+});
+
+/**
+ * Owner directive (2026-11-03, work-m64 dev): "서비스 재부팅하면 자동으로 처리되지 않은
+ * 메세지는 그 이후에 반드시 보내야함 작업이 중단된거 아니면". A message steered into a
+ * turn 4 s before a deploy stopped it was frozen `uncertain` with its uuid wiped, so
+ * the next boot could not ask the transcript whether the model had read it, and the
+ * row sat at 보내지 못했습니다 through every later restart.
+ */
+describe('FollowupQueue restart redelivery (SSOT 2026-11-03)', () => {
+  const SHUTDOWN = '실행이 중단되었습니다 (shutdown)';
+
+  it('a stop keeps the uuid a steered row was pushed under as history, not as a live handle', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    const steered = steerFirst(queue, 'uuid-1');
+
+    queue.freeze(SESSION, SHUTDOWN);
+
+    const cut = queue.get(SESSION, steered.id);
+    expect(cut?.state).toBe('uncertain');
+    expect(cut?.steerUuid).toBeUndefined();
+    expect(cut?.cutSteerUuid).toBe('uuid-1');
+    // Still no live handle: a late receipt cannot settle the row.
+    expect(queue.markConsumed(SESSION, 'uuid-1')).toEqual({ ok: false, reason: 'not-found' });
+  });
+
+  it('a crash restart keeps it too, on the row it parks', () => {
+    const source = new FollowupQueue();
+    source.enqueue(SESSION, event({ ts: '1.1' }));
+    steerFirst(source, 'uuid-9');
+
+    const restarted = new FollowupQueue({ snapshot: source.snapshot() });
+    restarted.recover('process restart');
+
+    const row = restarted.list(SESSION)[0];
+    expect(row.state).toBe('paused');
+    expect(row.cutSteerUuid).toBe('uuid-9');
+  });
+
+  it("settleRestartCut 'unread' puts the row back in line at its seq and lifts the freeze", () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.enqueue(SESSION, event({ ts: '1.2' }));
+    steerFirst(queue, 'uuid-1');
+    queue.freeze(SESSION, SHUTDOWN);
+    const [cut, waiting] = queue.list(SESSION);
+    expect([cut.state, waiting.state]).toEqual(['uncertain', 'paused']);
+
+    expect(queue.settleRestartCut(SESSION, cut.id, cut.epoch, 'unread').ok).toBe(true);
+    expect(queue.settleRestartCut(SESSION, waiting.id, waiting.epoch, 'unread').ok).toBe(true);
+
+    const [a, b] = queue.list(SESSION);
+    expect([a.state, b.state]).toEqual(['queued', 'queued']);
+    expect(a.cutSteerUuid).toBeUndefined();
+    expect(a.stateReason).toBe(FOLLOWUP_REDELIVER_AFTER_RESTART_REASON);
+    expect(queue.freezeReason(SESSION)).toBeUndefined();
+    const claimed = queue.claimNext(SESSION);
+    expect(claimed.ok && claimed.item.message.ts).toBe('1.1');
+  });
+
+  it("settleRestartCut 'read' closes the row as consumed before the restart", () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    steerFirst(queue, 'uuid-1');
+    queue.freeze(SESSION, SHUTDOWN);
+    const cut = queue.list(SESSION)[0];
+
+    expect(queue.settleRestartCut(SESSION, cut.id, cut.epoch, 'read').ok).toBe(true);
+
+    const row = queue.get(SESSION, cut.id);
+    expect(row?.state).toBe('resolved');
+    expect(row?.stateReason).toBe(FOLLOWUP_READ_BEFORE_RESTART_REASON);
+    expect(queue.freezeReason(SESSION)).toBeUndefined();
+    expect(queue.claimNext(SESSION)).toEqual({ ok: false, reason: 'empty' });
+  });
+
+  it("a person's stop claims a row a restart left parked; the shutdown's own stop does not (review R1, astra P1)", () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    steerFirst(queue, 'uuid-1');
+    queue.freeze(SESSION, SHUTDOWN);
+    queue.freeze(SESSION, '실행이 중단되었습니다 (shutdown)');
+    expect(queue.list(SESSION)[0].stateReason).toBe(SHUTDOWN);
+
+    queue.freeze(SESSION, '실행이 중단되었습니다 (user-stop)', { claimParked: true });
+
+    const row = queue.list(SESSION)[0];
+    expect(row.state).toBe('uncertain');
+    expect(row.stateReason).toBe('실행이 중단되었습니다 (user-stop)');
+    // History kept: the uuid still answers what the model read.
+    expect(row.cutSteerUuid).toBe('uuid-1');
+  });
+
+  it('settleRestartCut refuses a row that is not parked, and a stale epoch', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    const queued = queue.list(SESSION)[0];
+    expect(queue.settleRestartCut(SESSION, queued.id, queued.epoch, 'unread')).toEqual({
+      ok: false,
+      reason: 'invalid-state',
+    });
+
+    queue.freeze(SESSION, SHUTDOWN);
+    const parked = queue.list(SESSION)[0];
+    expect(queue.settleRestartCut(SESSION, parked.id, parked.epoch - 1, 'unread')).toEqual({
+      ok: false,
+      reason: 'stale-epoch',
+    });
   });
 });
