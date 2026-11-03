@@ -30,6 +30,14 @@ describe('displayEsTldrOnThread — the thread head shows the es TL;DR', () => {
     expect(text).toContain('c');
   });
 
+  it('the head keeps identifiers: only the contract bold becomes Slack bold', () => {
+    const blocks = service().buildTldrBlocks(['fix the __init__ import and obj.__dict__', '⚠️ **PR #3 open**']);
+    const text = JSON.stringify(blocks);
+    expect(text).toContain('__init__');
+    expect(text).toContain('obj.__dict__');
+    expect(text).toContain('⚠️ *PR #3 open*');
+  });
+
   it('leaves the surface alone without a TL;DR or a panel', () => {
     const noTldr: any = { actionPanel: {}, executiveSummary: undefined };
     service().displayEsTldrOnThread(noTldr);
