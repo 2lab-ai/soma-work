@@ -103,6 +103,53 @@ describe('githubEffectsOf — what is not a write', () => {
     expect(effectsOf(bash(command, PR_OBJECT))).toEqual([]);
   });
 
+  it('W3 — a request that is only printed, or commented out, is not a write (review P1)', () => {
+    expect(
+      effectsOf(
+        bash(
+          `echo 'fetch("https://api.github.com/repos/a/b/pulls", {method: "POST"})' && gh pr view 12 --json url -q .url`,
+          'https://github.com/a/b/pull/12',
+        ),
+        bash(
+          'printf "%s" "curl -X POST https://api.github.com/repos/a/b/pulls" | cat',
+          'https://github.com/a/b/pull/12',
+        ),
+        bash(
+          '# curl -X POST https://api.github.com/repos/a/b/pulls -d @p\ngh pr view 12 --json url -q .url',
+          'https://github.com/a/b/pull/12',
+        ),
+        bash(
+          '# gh api -X PATCH repos/a/b/issues/31 -f state=closed\ngh api repos/a/b/issues/31',
+          '{"number":31,"html_url":"https://github.com/a/b/issues/31","state":"closed"}',
+        ),
+        bash(
+          "node <<'EOF'\n// await fetch('https://api.github.com/repos/a/b/pulls', { method: 'POST' })\nconsole.log('https://github.com/a/b/pull/12')\nEOF",
+          'https://github.com/a/b/pull/12',
+        ),
+      ),
+    ).toEqual([]);
+    // A `#` inside a word or a quote is not a comment.
+    expect(
+      effectsOf(
+        bash(
+          'curl -s -X POST "https://api.github.com/repos/a/b/issues" -d \'{"title":"fix #12"}\' | jq -r .html_url',
+          'https://github.com/a/b/issues/40',
+        ),
+      ).map(short),
+    ).toEqual([['create', 'issue', 'https://github.com/a/b/issues/40']]);
+  });
+
+  it('W3 — a large result is read in linear time (2,000 objects)', () => {
+    const many = Array.from(
+      { length: 2000 },
+      (_, i) => `{"number":${i},"html_url":"https://github.com/a/b/pull/${i}"}`,
+    );
+    const started = Date.now();
+    const effects = effectsOf(bash('gh api -X POST repos/a/b/pulls -f head=x', `[${many.join(',')}]`));
+    expect(effects.map(short)).toEqual([['create', 'pr', 'https://github.com/a/b/pull/0']]);
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
   it('W3 — githubWritesOf reads only the call, never prose', () => {
     expect(githubWritesOf('Bash', { command: 'gh pr list' })).toEqual([]);
     expect(githubWritesOf('Bash', { command: 'echo "gh pr create"' })).toEqual([]);

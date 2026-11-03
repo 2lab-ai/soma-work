@@ -2098,9 +2098,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             abortController.abort('ghost-session' satisfies RequestAbortReason);
             return;
           }
-          for (const tu of allToolUses) {
-            const writes = githubWritesOf(tu.name, tu.input);
-            if (writes.length > 0) githubWrites.set(tu.id, writes);
+          // Bookkeeping (#832): a parser failure must never break the turn.
+          try {
+            for (const tu of allToolUses) {
+              const writes = githubWritesOf(tu.name, tu.input);
+              if (writes.length > 0) githubWrites.set(tu.id, writes);
+            }
+          } catch (error) {
+            this.logger.debug('githubWritesOf failed', { error: (error as Error)?.message });
           }
           // Spec 12 §2.2: what the main agent is doing — the thread header's
           // current tool, the Slack tool rows, the request's tool stats — is
@@ -2208,7 +2213,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               turnId,
             });
           // The GitHub writes these results prove (#832) — one parser for the card and the metrics.
-          const githubEffects = githubEffectsOf(allToolResults, githubWrites);
+          let githubEffects: ReturnType<typeof githubEffectsOf> = [];
+          try {
+            githubEffects = githubEffectsOf(allToolResults, githubWrites);
+          } catch (error) {
+            this.logger.debug('githubEffectsOf failed', { error: (error as Error)?.message });
+          }
           for (const tr of allToolResults) githubWrites.delete(tr.toolUseId);
           // Metrics: detect git/gh commands in Bash output (fire-and-forget) — every agent's.
           interceptToolResults(
