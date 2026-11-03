@@ -236,6 +236,8 @@ export interface RestoredFollowupsDeps {
   retryMs?: number;
   /** Tries per task; the last one sends the word even into a busy slot. Default: the resumer's bound. */
   maxAttempts?: number;
+  /** Clock (tests). */
+  now?: () => number;
 }
 
 /**
@@ -266,6 +268,14 @@ export function runRestoredFollowups(
       timer.unref?.();
     });
   const goalsResumed = deps.goalsResumed?.() ?? true;
+  const since = (deps.now ?? Date.now)();
+  /** A person's Stop since this sweep began: theirs is the last word (#879 R2, astra P1). */
+  const stoppedSince = (sessionKey: string): boolean => {
+    for (const [key, session] of deps.sessions()) {
+      if (key === sessionKey) return (session.lastStopAtMs ?? 0) >= since;
+    }
+    return false;
+  };
 
   const attempt = (sessionKey: string, tries: number): RestoredQueueRun => {
     const run = deps.controller.runQueuedAfterRestart(sessionKey, { lastTry: tries >= maxAttempts });
@@ -289,6 +299,10 @@ export function runRestoredFollowups(
     if (outcome === 'waiting' || (session.goal?.status === 'active' && goalsResumed)) {
       schedule(
         () => {
+          if (stoppedSince(sessionKey)) {
+            deps.logger.info('A restored task queue stays — the task was stopped since the restart', { sessionKey });
+            return;
+          }
           attempt(sessionKey, maxAttempts);
         },
         retryMs * (maxAttempts + 1),
