@@ -51,6 +51,11 @@ export interface ReconcilerDeps {
   checkedOutElsewhere: (sessionKey: string, owner: string, name: string, branch: string) => Promise<boolean>;
   noteLinks: (sessionKey: string, links: SessionLink[], mode: 'always' | 'history') => boolean;
   pushCard: (sessionKey: string) => void;
+  /**
+   * Whether `sessionKey` still names this session, not terminated — asked before every write. A reconcile can end after
+   * the user closed the session and started another in the same thread: its PRs must not land on the new card.
+   */
+  isCurrent: (sessionKey: string, session: object) => boolean;
   now?: () => number;
   /** Minimum time between two reconciles of one session (a turn's continuations end several times). */
   minIntervalMs?: number;
@@ -79,6 +84,15 @@ export type SessionPrReconciler = ((args: ReconcileArgs) => void) & {
 
 const MAX_CLOSING_ISSUES = 5;
 const CLOSING = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(?:([\w.-]+)\/([\w.-]+))?#(\d+)\b/gi;
+
+/** The directories a session works in: its own folder, the turn's and the session's cwd, and its source checkouts. */
+export function sessionDirs(session: SessionLike | Record<string, unknown>, workingDirectory?: string): string[] {
+  const s = session as SessionLike;
+  const dirs = [s.sessionWorkingDir, workingDirectory, s.workingDirectory]
+    .concat(Array.isArray(s.sourceWorkingDirs) ? s.sourceWorkingDirs : [])
+    .filter((d): d is string => typeof d === 'string' && d.length > 0);
+  return [...new Set(dirs)];
+}
 
 /** When the session started: its recorded `startedAt`, else the epoch in its directory's name (`session_<ms>_<id>`). */
 export function sessionStartMs(session: SessionLike): number | undefined {
@@ -120,16 +134,17 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
   const minInterval = deps.minIntervalMs ?? 20_000;
   const inFlight = new Map<string, Promise<void>>();
   const lastRun = new Map<string, number>();
+  /** A trigger that came while one ran or within the interval: run once, later, with its latest arguments. */
+  const pending = new Map<string, ReconcileArgs>();
+  const timers = new Map<string, NodeJS.Timeout>();
   /** `owner/name#branch` → the head sha and PRs of a found answer. */
   const found = new Map<string, { sha: string; pulls: PullSummary[] }>();
 
   async function reconcileOne(sessionKey: string, session: SessionLike, workingDirectory: string): Promise<void> {
-    const dirs = [session.sessionWorkingDir, workingDirectory, session.workingDirectory]
-      .concat(Array.isArray(session.sourceWorkingDirs) ? session.sourceWorkingDirs : [])
-      .filter((d): d is string => typeof d === 'string' && d.length > 0);
+    const dirs = sessionDirs(session, workingDirectory);
     if (dirs.length === 0) return;
     const start = sessionStartMs(session);
-    const checkouts = await deps.findCheckouts([...new Set(dirs)]);
+    const checkouts = await deps.findCheckouts(dirs);
     const asked = new Set<string>();
     let changed = false;
     for (const c of checkouts) {
@@ -169,27 +184,58 @@ export function createSessionPrReconciler(deps: ReconcilerDeps): SessionPrReconc
         candidates.length > 0 && (await deps.checkedOutElsewhere(sessionKey, c.owner, c.name, c.branch));
       const current = ambiguous ? [] : candidates.slice(0, 1).map((x) => x.link);
       history.push(...(ambiguous ? candidates : candidates.slice(1)).map((x) => x.link));
+      // The awaits above can outlast the session: write only while the key still names it.
+      if (!deps.isCurrent(sessionKey, session)) return;
       if (current.length > 0 && deps.noteLinks(sessionKey, current, 'always')) changed = true;
       if (history.length > 0 && deps.noteLinks(sessionKey, history, 'history')) changed = true;
       if (issues.length > 0 && deps.noteLinks(sessionKey, issues, 'history')) changed = true;
     }
-    if (changed) deps.pushCard(sessionKey);
+    if (changed && deps.isCurrent(sessionKey, session)) deps.pushCard(sessionKey);
+  }
+
+  function later(sessionKey: string, waitMs: number): void {
+    if (timers.has(sessionKey)) return;
+    const t = setTimeout(() => {
+      timers.delete(sessionKey);
+      const next = pending.get(sessionKey);
+      pending.delete(sessionKey);
+      if (next) trigger(next);
+    }, waitMs);
+    t.unref?.();
+    timers.set(sessionKey, t);
+  }
+
+  function trigger(args: ReconcileArgs): void {
+    const { sessionKey, session, workingDirectory } = args;
+    if (inFlight.has(sessionKey)) {
+      pending.set(sessionKey, args);
+      return;
+    }
+    const wait = (lastRun.get(sessionKey) ?? Number.NEGATIVE_INFINITY) + minInterval - now();
+    if (wait > 0) {
+      pending.set(sessionKey, args);
+      later(sessionKey, wait);
+      return;
+    }
+    lastRun.set(sessionKey, now());
+    const run = reconcileOne(sessionKey, session as SessionLike, workingDirectory)
+      .catch((error) => {
+        deps.logger?.debug('session PR reconcile failed', { sessionKey, error: (error as Error)?.message });
+      })
+      .finally(() => {
+        inFlight.delete(sessionKey);
+        // A trigger that came meanwhile runs once, after the interval.
+        if (pending.has(sessionKey))
+          later(sessionKey, Math.max(0, (lastRun.get(sessionKey) ?? 0) + minInterval - now()));
+      });
+    inFlight.set(sessionKey, run);
   }
 
   const reconcile = ((args: ReconcileArgs) => {
     try {
-      const { sessionKey, session, workingDirectory } = args ?? ({} as ReconcileArgs);
+      const { sessionKey, session } = args ?? ({} as ReconcileArgs);
       if (!sessionKey || !session || typeof session !== 'object') return;
-      if (inFlight.has(sessionKey)) return;
-      const at = now();
-      if (at - (lastRun.get(sessionKey) ?? Number.NEGATIVE_INFINITY) < minInterval) return;
-      lastRun.set(sessionKey, at);
-      const run = reconcileOne(sessionKey, session as SessionLike, workingDirectory)
-        .catch((error) => {
-          deps.logger?.debug('session PR reconcile failed', { sessionKey, error: (error as Error)?.message });
-        })
-        .finally(() => inFlight.delete(sessionKey));
-      inFlight.set(sessionKey, run);
+      trigger(args);
     } catch (error) {
       deps.logger?.debug('session PR reconcile threw', { error: (error as Error)?.message });
     }
@@ -244,12 +290,19 @@ const GITHUB_REMOTE =
   /^(?:https:\/\/(?:[^@/\s]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/;
 
 /**
- * The git checkouts in `dirs` and their immediate children whose current branch is a work branch (not main, master,
- * deploy/*, or a detached HEAD) on a GitHub remote. At most {@link MAX_CHECKOUTS}.
+ * The git checkouts in `dirs`, their immediate children, and the worktrees those repositories list under `dirs`
+ * (`.claude/worktrees/…`), whose current branch is a work branch (not main, master, deploy/*, or a detached HEAD) on a
+ * GitHub remote. At most `max` directories are read; `complete` says whether every candidate was. `stop` ends the scan
+ * at the first checkout it accepts.
  */
-export async function findGitCheckouts(dirs: string[], max = MAX_CHECKOUTS): Promise<Checkout[]> {
+export async function scanGitCheckouts(
+  dirs: string[],
+  max = MAX_CHECKOUTS,
+  stop?: (c: Checkout) => boolean,
+): Promise<{ checkouts: Checkout[]; complete: boolean }> {
+  const roots = [...new Set(dirs)].map((d) => path.resolve(d));
   const candidates: string[] = [];
-  for (const root of [...new Set(dirs)]) {
+  for (const root of roots) {
     if (await isCheckout(root)) candidates.push(root);
     let entries: string[] = [];
     try {
@@ -262,8 +315,23 @@ export async function findGitCheckouts(dirs: string[], max = MAX_CHECKOUTS): Pro
     }
     for (const child of entries) if (await isCheckout(child)) candidates.push(child);
   }
+  // The worktrees a found repository lists (`git worktree list`), when they sit under one of the dirs.
+  // git reports real paths (`/private/var/…` on macOS): compare against the dirs as given and as resolved.
+  const bases = [...roots, ...(await Promise.all(roots.map((r) => fs.realpath(r).catch(() => r))))];
+  const under = (p: string) => bases.some((r) => p === r || p.startsWith(`${r}${path.sep}`));
+  const seen = new Set(await Promise.all(candidates.map((c) => fs.realpath(c).catch(() => c))));
+  for (const repo of [...new Set(candidates)].slice(0, max)) {
+    const list = await git(repo, ['worktree', 'list', '--porcelain']);
+    for (const line of (list ?? '').split('\n')) {
+      const wt = line.startsWith('worktree ') ? path.resolve(line.slice('worktree '.length)) : undefined;
+      if (!wt || seen.has(wt) || !under(wt)) continue;
+      seen.add(wt);
+      candidates.push(wt);
+    }
+  }
+  const unique = [...new Set(candidates)];
   const out: Checkout[] = [];
-  for (const dir of [...new Set(candidates)].slice(0, max)) {
+  for (const dir of unique.slice(0, max)) {
     const branch = await git(dir, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
     if (!branch || /^(?:main|master)$/.test(branch) || branch.startsWith('deploy/')) continue;
     const remote = await git(dir, ['config', '--get', 'remote.origin.url']);
@@ -271,7 +339,14 @@ export async function findGitCheckouts(dirs: string[], max = MAX_CHECKOUTS): Pro
     if (!m) continue;
     const sha = await git(dir, ['rev-parse', 'HEAD']);
     if (!sha) continue;
-    out.push({ dir, owner: m[1], name: m[2], branch, sha });
+    const c = { dir, owner: m[1], name: m[2], branch, sha };
+    out.push(c);
+    if (stop?.(c)) return { checkouts: out, complete: true };
   }
-  return out;
+  return { checkouts: out, complete: unique.length <= max };
+}
+
+/** The work-branch checkouts under `dirs` (see {@link scanGitCheckouts}). */
+export async function findGitCheckouts(dirs: string[], max = MAX_CHECKOUTS): Promise<Checkout[]> {
+  return (await scanGitCheckouts(dirs, max)).checkouts;
 }

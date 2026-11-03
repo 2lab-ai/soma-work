@@ -28,6 +28,7 @@ import {
   gitContainsCommit,
   type PullSummary,
   type ReconcilerDeps,
+  scanGitCheckouts,
 } from '../session-pr-reconciler';
 import type { SessionLink } from '../types';
 
@@ -68,6 +69,7 @@ function harness(over: Partial<ReconcilerDeps> = {}) {
       return true;
     }),
     pushCard: vi.fn((key) => pushed.push(key)),
+    isCurrent: vi.fn(() => true),
     now: () => clock,
     minIntervalMs: 0,
     ...over,
@@ -192,7 +194,54 @@ describe('createSessionPrReconciler (#833)', () => {
     ]);
   });
 
-  it('R7 — one at a time per session, a minimum interval, and it never throws', async () => {
+  it('R9 — a reconcile that ends after its session was replaced writes nothing (review round 3, astra P1)', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let current = true;
+    const h = harness({
+      checkedOutElsewhere: vi.fn(async () => {
+        await gate;
+        return false;
+      }),
+      isCurrent: vi.fn(() => current),
+    });
+    const reconcile = createSessionPrReconciler(h.deps);
+    reconcile({ sessionKey: 'S1', session: { sessionWorkingDir: SESSION_DIR }, workingDirectory: SESSION_DIR });
+    // The user closes S1 and starts another session in the same thread while the check is pending.
+    current = false;
+    release();
+    await reconcile.idle();
+    expect(h.noted).toEqual([]);
+    expect(h.pushed).toEqual([]);
+  });
+
+  it('R10 — a trigger inside the interval or during a run is not dropped: it runs once, after the interval (astra P2)', async () => {
+    vi.useFakeTimers();
+    try {
+      const findCheckouts = vi.fn(async () => [checkout()]);
+      const h = harness({ findCheckouts, minIntervalMs: 20_000, now: () => Date.now() });
+      const reconcile = createSessionPrReconciler(h.deps);
+      const go = () =>
+        reconcile({ sessionKey: 'S1', session: { sessionWorkingDir: SESSION_DIR }, workingDirectory: SESSION_DIR });
+      go();
+      await reconcile.idle();
+      expect(findCheckouts).toHaveBeenCalledTimes(1);
+      go();
+      go();
+      await reconcile.idle();
+      expect(findCheckouts).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(20_000);
+      await reconcile.idle();
+      // The two late triggers coalesce into one trailing run.
+      expect(findCheckouts).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(findCheckouts).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('R7 — one at a time per session, and it never throws', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     const findCheckouts = vi.fn(async () => {
@@ -206,10 +255,7 @@ describe('createSessionPrReconciler (#833)', () => {
     release();
     await reconcile.idle();
     expect(findCheckouts).toHaveBeenCalledTimes(1);
-    // Within the interval: skipped.
-    reconcile({ sessionKey: 'S1', session: { sessionWorkingDir: SESSION_DIR }, workingDirectory: SESSION_DIR });
-    await reconcile.idle();
-    expect(findCheckouts).toHaveBeenCalledTimes(1);
+    // (A trigger inside the interval runs once, later: R10.)
 
     const boom = createSessionPrReconciler({
       ...h.deps,
@@ -274,5 +320,27 @@ describe('findGitCheckouts — the real git reader (#833 R8)', () => {
     expect(await gitContainsCommit(a, sha)).toBe(true);
     expect(await gitContainsCommit(a, '0123456789abcdef0123456789abcdef01234567')).toBe(false);
     expect(await gitContainsCommit(a, '-x')).toBe(false);
+  }, 30_000);
+
+  it('R11 — a worktree a repository lists under the session dir is found; the parent on main is not (astra P2)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'r11-'));
+    roots.push(root);
+    const parent = repo(root, 'app', 'https://github.com/acme/app.git', 'main');
+    const wt = path.join(parent, '.claude', 'worktrees', 'feat');
+    git(parent, 'worktree', 'add', '-q', '-b', 'feat/w', wt);
+    const found = await findGitCheckouts([root]);
+    expect(found.map((c) => [fs.realpathSync(c.dir), c.branch])).toEqual([[fs.realpathSync(wt), 'feat/w']]);
+  }, 30_000);
+
+  it('R12 — a scan cut short by its bound says so; a scan that stops at a match is complete (astra/grok P2)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'r12-'));
+    roots.push(root);
+    repo(root, 'a1', 'https://github.com/acme/a1.git', 'feat/1');
+    repo(root, 'a2', 'https://github.com/acme/a2.git', 'feat/2');
+    repo(root, 'a3', 'https://github.com/acme/a3.git', 'feat/3');
+    expect((await scanGitCheckouts([root], 2)).complete).toBe(false);
+    expect((await scanGitCheckouts([root], 10)).complete).toBe(true);
+    const first = await scanGitCheckouts([root], 2, () => true);
+    expect([first.complete, first.checkouts.length]).toEqual([true, 1]);
   }, 30_000);
 });

@@ -169,7 +169,13 @@ import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './
 import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from './session/task-usage-reconcile';
 import { getArchiveStore, resolveArchivedResume } from './session-archive';
 import { buildTaskSessionKey } from './session-identity';
-import { createSessionPrReconciler, findGitCheckouts, gitContainsCommit } from './session-pr-reconciler';
+import {
+  createSessionPrReconciler,
+  findGitCheckouts,
+  gitContainsCommit,
+  scanGitCheckouts,
+  sessionDirs,
+} from './session-pr-reconciler';
 import { applySummaryTitle } from './session-title-policy';
 import {
   displayLangMiddleware,
@@ -1708,22 +1714,27 @@ async function start() {
         findCheckouts: findGitCheckouts,
         fetchPulls: fetchGitHubPullsForHead,
         containsCommit: gitContainsCommit,
-        // Asked only when a new PR would become current: does another session check the same branch out?
+        // Asked only when a new PR would become current: does another session check the same branch out? Read with the
+        // same directories the session's own scan uses; a scan that could not read them all counts as shared.
         checkedOutElsewhere: async (sessionKey, owner, name, branch) => {
           const dirs: string[] = [];
           for (const [key, other] of claudeHandler.getSessionRegistry().getAllSessions()) {
             if (key === sessionKey || other.terminated) continue;
-            for (const d of [other.sessionWorkingDir, other.workingDirectory])
-              if (typeof d === 'string' && d) dirs.push(d);
+            dirs.push(...sessionDirs(other));
           }
           const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-          return (await findGitCheckouts(dirs, 100)).some(
-            (c) => same(c.owner, owner) && same(c.name, name) && c.branch === branch,
-          );
+          const match = (c: { owner: string; name: string; branch: string }) =>
+            same(c.owner, owner) && same(c.name, name) && c.branch === branch;
+          const scan = await scanGitCheckouts(dirs, 100, match);
+          return !scan.complete || scan.checkouts.some(match);
         },
         noteLinks: (sessionKey, links, mode) =>
           claudeHandler.getSessionRegistry().noteSessionLinksByKey(sessionKey, links, mode),
         pushCard: (sessionKey) => scheduleLiveSessionUpdate(sessionKey),
+        isCurrent: (sessionKey, session) => {
+          const live = claudeHandler.getSessionRegistry().getAllSessions().get(sessionKey);
+          return live === session && !live.terminated;
+        },
         logger,
       }),
     });
