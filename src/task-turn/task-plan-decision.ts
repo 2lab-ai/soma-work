@@ -14,7 +14,7 @@
  * plan waits is direct input (the controller's `planGateTurn`).
  */
 import type { ConversationSession } from '../types';
-import { decidePlan, type PlanDecision, planApprovedText, type TaskPlanGate } from './task-plan';
+import { decidePlan, type PlanDecision, planApprovedText, type TaskPlanDoc, type TaskPlanGate } from './task-plan';
 import type { TaskCommandResponse, TaskTurnController } from './task-turn-controller';
 
 export interface TaskPlanDeciderDeps {
@@ -28,6 +28,13 @@ export interface TaskPlanDeciderDeps {
    * gate, so it is refused (403) — the owner decides. Unset: whoever the route lets through.
    */
   mayDecide?: (sessionKey: string, session: ConversationSession, actorUserId: string) => boolean;
+  /**
+   * 시작 opens the plan's goal (2026-11-03): the goal loop then continues the task turn after
+   * turn until the plan is done, and resumes it after a restart. Called once the gate is saved
+   * `approved`, before the start; returns the undo a start that does not happen runs (the plan
+   * waits again, and so does no goal). Unset: no goal (the host has no goal loop).
+   */
+  openGoal?: (session: ConversationSession, plan: TaskPlanDoc, actorUserId: string) => () => void;
   now?: () => number;
   logger: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void };
 }
@@ -82,9 +89,28 @@ export function createTaskPlanDecider(deps: TaskPlanDeciderDeps): TaskPlanDecide
         : deps.controller.canStart(task.ownerId, text);
     if (refused) return refused;
     deps.setTaskPlanGate(taskId, decided.gate);
+    // The plan's goal: the approved plan's turn is its opening turn.
+    let undoGoal: (() => void) | undefined;
+    try {
+      undoGoal = deps.openGoal?.(task, previous.plan, actorUserId);
+    } catch (error) {
+      // No goal is no worse than before plan goals: the plan still starts, one turn at a time.
+      deps.logger.warn('The plan’s goal could not be opened — the plan starts without it', {
+        sessionKey,
+        error: (error as Error)?.message,
+      });
+    }
     // Not started: the plan waits again, as it was — 시작 can be pressed again (a start that
     // throws, too: an approved gate with no turn would leave nothing to press — review R1, fable P3).
     const putBack = () => {
+      try {
+        undoGoal?.();
+      } catch (error) {
+        deps.logger.warn('A plan goal that did not start could not be undone', {
+          sessionKey,
+          error: (error as Error)?.message,
+        });
+      }
       try {
         if (deps.getSession(sessionKey)?.taskPlan === decided.gate) deps.setTaskPlanGate(taskId, previous);
       } catch (error) {

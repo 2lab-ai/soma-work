@@ -6904,6 +6904,15 @@ export class SlackHandler {
    * controller is wired (`setGoalTurnSettledHandler`). Returns the count
    * resumed.
    */
+  /**
+   * Dashboard tasks whose turn the last restart cut (the registry's reconciliation, not a
+   * shutdown notice): their goal gets the continuation back, as a cut Slack turn does.
+   * Call before {@link resumeActiveGoals}, which reads the set once.
+   */
+  noteRestartCutSessionKeys(keys: Iterable<string>): void {
+    for (const key of keys) this.restartCutSessionKeys.add(key);
+  }
+
   resumeActiveGoals(): number {
     const handler = this.goalTurnSettledHandler;
     if (!handler) {
@@ -6917,8 +6926,8 @@ export class SlackHandler {
     let stallsEnded = 0;
     let refunded = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
-      // A Slack-less task cannot run a turn yet (#597/#598) — never re-arm its goal (#612 review).
-      if (session.slackless) continue;
+      // A Slack-less task's goal resumes too (2026-11-03): its continuation runs as the task's
+      // next turn (the host's task injector), as a plan-mode task's goal drives its plan.
       // Repair a stranded queue (defense for the eval-complete crash window):
       // if the current goal is genuinely closed (completed) or absent but goals
       // are still queued, promote the next one so the queue can't be orphaned.

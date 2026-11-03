@@ -56,7 +56,9 @@ function createHandler(sessions: Map<string, ConversationSession>) {
 describe('resumeActiveGoals (T1)', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('skips a Slack-less task (#612 R1): it is not runnable before the execution context exists', () => {
+  // 2026-11-03 — a dashboard task's goal (a started plan's) resumes too: its continuation runs as the
+  // task's next turn through the task controller (#612 R1 skipped it while a task could not run a turn).
+  it('resumes a dashboard task’s active goal after a restart (its continuation is the task’s next turn)', () => {
     const sessions = new Map<string, ConversationSession>([
       [
         'task:t1',
@@ -66,8 +68,33 @@ describe('resumeActiveGoals (T1)', () => {
     const { handler } = createHandler(sessions);
     const settled = vi.fn();
     handler.setGoalTurnSettledHandler(settled);
-    expect(handler.resumeActiveGoals()).toBe(0);
-    expect(settled).not.toHaveBeenCalled();
+    expect(handler.resumeActiveGoals()).toBe(1);
+    expect(settled).toHaveBeenCalledWith('task:t1', { cause: 'kick' });
+  });
+
+  it('a dashboard task the restart cut gets the continuation back (the registry’s reconciliation, not a notice)', () => {
+    const task = activeGoalSession({
+      channelId: '',
+      threadTs: undefined,
+      slackless: true,
+    } as Partial<ConversationSession>);
+    task.goal!.continuationCount = 3;
+    const untouched = activeGoalSession({
+      channelId: '',
+      threadTs: undefined,
+      slackless: true,
+    } as Partial<ConversationSession>);
+    untouched.goal!.continuationCount = 3;
+    const sessions = new Map<string, ConversationSession>([
+      ['task:cut', task],
+      ['task:other', untouched],
+    ]);
+    const { handler } = createHandler(sessions);
+    handler.setGoalTurnSettledHandler(vi.fn());
+    handler.noteRestartCutSessionKeys(['task:cut']);
+    handler.resumeActiveGoals();
+    expect(task.goal!.continuationCount).toBe(2);
+    expect(untouched.goal!.continuationCount).toBe(3);
   });
 
   it('triggers the goal loop for each active-goal session', () => {
