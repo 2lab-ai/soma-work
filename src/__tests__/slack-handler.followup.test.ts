@@ -771,6 +771,183 @@ describe('SlackHandler — follow-up queue host', () => {
   });
 
   /**
+   * #891 T1 — a goal turn that ends with NO text (an auto-compact stop, any cut
+   * turn) skips the eval (#788) and injects its continuation within a second —
+   * while its OWN run still holds the dispatch slot. The ingress fence dropped
+   * that continuation (`Synthetic turn blocked`) and the goal sat idle until a
+   * person wrote (two dev hosts, 2026-11-02/03: 15 of 15 such turns).
+   */
+  describe('goal continuation after a turn that left no text (#891)', () => {
+    const goalContinuation = () =>
+      message({
+        ts: '',
+        text: '[goal-continuation] Continue working toward the active session goal.',
+        synthetic: true,
+        skipDispatch: true,
+        routeContext: { skipAutoBotThread: true, goalContinuation: true },
+      });
+
+    it('runs the continuation once its own run has released the slot — never dropped by that run', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      // The goal loop's no-eval short-circuit: decide and inject at once.
+      const injected: Promise<void>[] = [];
+      const busyAtFire: boolean[] = [];
+      handler.setGoalTurnSettledHandler(() => {
+        busyAtFire.push(handlerAny.followupDispatcher.isBusy(SESSION_KEY));
+        injected.push(handler.handleMessage(goalContinuation(), say()));
+      });
+      const { settle } = await startBusyTurn();
+
+      // The cut turn settles inside its run (TurnRunner.finish), with no text.
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+      await settle();
+      await Promise.all(injected);
+
+      expect(busyAtFire).toEqual([false]);
+      // The first turn, then the goal's continuation — it was not dropped.
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    });
+
+    it('releases the held driver at an auto-compact stop boundary (drainable)', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const { settle } = await startBusyTurn();
+
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['', '  ']);
+      expect(goalDriver).not.toHaveBeenCalled();
+      handlerAny.releaseDeferredGoalDriver(SESSION_KEY, {
+        canDrain: true,
+        outcome: { result: 'interrupted', reason: 'auto-compact' },
+      });
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+      await settle();
+      // Released once: the run's own drain epilogue does not fire it again.
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+    });
+
+    it('fires once the slot is free whatever the outcome — a handled error is not a strand', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const { settle } = await startBusyTurn();
+
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+      handlerAny.releaseDeferredGoalDriver(SESSION_KEY, { canDrain: false, outcome: { result: 'error', reason: 'x' } });
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+      await settle();
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+    });
+
+    it("releases it when a `Send now` run ends with no drain (an error) — the click's settle is the boundary", async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const { settle } = await startBusyTurn();
+
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+      handlerAny.followupActionDeps.chainSettled(SESSION_KEY, {
+        canDrain: false,
+        outcome: { result: 'error', reason: 'x' },
+      });
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+      await settle();
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fire for a turn a stop cut — the last word is the stop', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const { settle } = await startBusyTurn();
+
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+      handlerAny.releaseDeferredGoalDriver(SESSION_KEY, {
+        canDrain: false,
+        outcome: { result: 'interrupted', reason: 'user-stop' },
+      });
+      expect(goalDriver).not.toHaveBeenCalled();
+      await settle();
+      expect(goalDriver).not.toHaveBeenCalled();
+    });
+
+    it('lets queued follow-ups run first (§3.6), then fires once', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const order: string[] = [];
+      handler.setGoalTurnSettledHandler(() => order.push('goal-driver'));
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 해줘' }), say());
+      startWithContinuation.mockImplementationOnce(async () => {
+        order.push('follow-up');
+        return { hasPendingChoice: false };
+      });
+
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, []);
+      await settle();
+
+      expect(order).toEqual(['follow-up', 'goal-driver']);
+    });
+
+    /**
+     * fable R1 on #892 — with the continuation no longer dropped, a goal
+     * session's auto-compact stop runs: continuation → intercepted into
+     * `/compact` → replayed after it. The replay is a host turn, not a
+     * person's words: it must not reset the loop's counter (or the cap could
+     * never be reached on a long goal).
+     */
+    it('keeps the continuation count when a goal continuation is replayed after /compact', async () => {
+      registrySession.goal = {
+        goalId: 'g1',
+        status: 'active',
+        objective: '릴리즈',
+        epoch: 2,
+        continuationCount: 4,
+      };
+
+      await handler.handleMessage(
+        message({
+          ts: '444.555',
+          text: '[goal-continuation] Continue working toward the active session goal.',
+          routeContext: { compactRedispatch: true, hostTurn: true },
+        }),
+        say(),
+      );
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(registrySession.goal).toMatchObject({ continuationCount: 4, epoch: 2 });
+    });
+
+    it("still resets it for a person's message replayed after /compact", async () => {
+      registrySession.goal = {
+        goalId: 'g1',
+        status: 'active',
+        objective: '릴리즈',
+        epoch: 2,
+        continuationCount: 4,
+      };
+
+      await handler.handleMessage(
+        message({ ts: '444.555', text: '이거 먼저 해줘', routeContext: { compactRedispatch: true } }),
+        say(),
+      );
+
+      expect(registrySession.goal).toMatchObject({ continuationCount: 0 });
+    });
+
+    it('still drives the loop at once for a turn that left text (the eval outlasts the teardown)', async () => {
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const { settle } = await startBusyTurn();
+
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['turn text']);
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+      await settle();
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  /**
    * A cross-user `$skill` parked behind its owner's permission is neither
    * answered nor dropped — it stays `blocked` so a drained copy is `uncertain`
    * (Retry re-sends it once the grant lands), never `resolved`.
@@ -2512,6 +2689,42 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    /**
+     * #891 — the compaction can begin while the attachments download (a
+     * prompt-too-long fallback `/compact` re-enters under the same slot): the
+     * check is read after those awaits, right before the synchronous push.
+     */
+    it('queues a follow-up whose files were still downloading when a /compact turn began', async () => {
+      const steerTurn = withLiveTurn();
+      const processed = [{ name: 'log.txt', path: '/tmp/log.txt', isImage: false }];
+      processFiles.mockImplementation(async () => {
+        registrySession.compactTurnActive = true;
+        return { files: processed, shouldContinue: true };
+      });
+      const cleanupTempFiles = vi.fn().mockResolvedValue(undefined);
+      handlerAny.fileHandler = {
+        formatFilePrompt: vi.fn().mockResolvedValue('이 로그 봐줘\n\nUploaded files:\n/tmp/log.txt'),
+        cleanupTempFiles,
+      };
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(
+        message({
+          ts: '333.444',
+          text: '이 로그 봐줘',
+          files: [{ id: 'F1', name: 'log.txt', mimetype: 'text/plain', filetype: 'text', url_private: 'https://x/1' }],
+        }),
+        say(),
+      );
+
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(items()[0].state).toBe('queued');
+      expect(cleanupTempFiles).toHaveBeenCalledWith(processed);
+      registrySession.compactTurnActive = false;
+      processFiles.mockResolvedValue({ files: [], shouldContinue: true });
+      await settle();
+    });
+
     it('keeps the plain receipt and the queued item when no live turn takes the push', async () => {
       withLiveTurn(false);
       const { settle } = await startBusyTurn();
@@ -2613,6 +2826,32 @@ describe('SlackHandler — follow-up queue host', () => {
         await settle();
       });
     }
+
+    /**
+     * #891 T2 — a dedicated `/compact` turn ends at the compaction's result. A
+     * message pushed into it was run by the CLI after compacting, then cut off
+     * when the host closed that query (dev 2026-11-03 12:42–12:44Z: one
+     * tool call, no answer, and the row was marked consumed). It waits for the
+     * drain instead, like a message the session initializer stashes during
+     * compaction.
+     */
+    it('queues a follow-up instead of steering it into a /compact turn', async () => {
+      const steerTurn = withLiveTurn();
+      const { settle } = await startBusyTurn();
+      registrySession.compactTurnActive = true;
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'PR 이것도 하고 그 다음 것도 해줘' }), say());
+
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(items()).toHaveLength(1);
+      expect(items()[0].state).toBe('queued');
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
+
+      registrySession.compactTurnActive = false;
+      await settle();
+      // Drained after the compaction turn: it ran as a turn of its own.
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    });
 
     /**
      * `/z <instruction>` is the SAME turn with a routing prefix the dispatch
@@ -4142,56 +4381,6 @@ describe('SlackHandler — follow-up queue host', () => {
 
       expect(() => beforeDelete?.(SESSION_KEY, registrySession, 'expired')).toThrow('disk full');
       expect(tracker.getLiveBackgroundWork(SESSION_KEY).count, 'live tasks of a session that was NOT deleted').toBe(1);
-    });
-
-    /**
-     * E2 ⑤ — the same seam hands a task's owed thread notices to the notice
-     * ledger (.prd/18 D6): after the follow-up cancel, before the background
-     * drain, so a handoff that cannot be written refuses the deletion with the
-     * session's tasks still tracked.
-     */
-    it('hands a deleted task’s notices over between the follow-up cancel and the drain', async () => {
-      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
-      claudeHandler.getSessionRegistry = () => ({
-        setBeforeSessionDelete: (cb: any) => {
-          beforeDelete = cb;
-        },
-      });
-      const { spawned, spawnedAny } = spawnHandler({ client: {}, assistant: vi.fn() } as any);
-      const order: string[] = [];
-      const queue = spawnedAny.getFollowupQueue();
-      vi.spyOn(queue, 'list').mockImplementation(() => {
-        order.push('cancel');
-        return [];
-      });
-      const handoff = vi.fn(() => void order.push('handoff'));
-      spawned.setTaskNoticeHandoff(handoff);
-      const tracker = spawnedAny.toolEventProcessor;
-      vi.spyOn(tracker, 'clearBackgroundResume').mockImplementation(() => void order.push('drain'));
-
-      beforeDelete?.(SESSION_KEY, registrySession, 'terminated');
-      expect(handoff).toHaveBeenCalledWith(SESSION_KEY, registrySession);
-      expect(order).toEqual(['cancel', 'handoff', 'drain']);
-    });
-
-    it('a handoff the ledger cannot write refuses the deletion, background tasks still tracked', async () => {
-      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
-      claudeHandler.getSessionRegistry = () => ({
-        setBeforeSessionDelete: (cb: any) => {
-          beforeDelete = cb;
-        },
-      });
-      const { spawned, spawnedAny } = spawnHandler({ client: {}, assistant: vi.fn() } as any);
-      const tracker = spawnedAny.toolEventProcessor;
-      tracker.handleAgentTaskLifecycle(
-        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'bg-live' },
-        SESSION_KEY,
-      );
-      spawned.setTaskNoticeHandoff(() => {
-        throw new Error('ledger EROFS');
-      });
-      expect(() => beforeDelete?.(SESSION_KEY, registrySession, 'terminated')).toThrow('ledger EROFS');
-      expect(tracker.getLiveBackgroundWork(SESSION_KEY).count).toBe(1);
     });
 
     /**
@@ -6217,6 +6406,18 @@ describe('SlackHandler — follow-up queue host', () => {
       await handler.handleMessage(message({ ts: '333.446', ...overrides }), say());
 
       expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
+    });
+
+    // #854 review #872 R2 (astra): an epic's wake is a host turn — it clears no choice the owner has to make.
+    it('T2 a host turn leaves a pending choice in place: no clearChoice, still waiting', async () => {
+      registrySession.actionPanel = { waitingForChoice: true, pendingQuestion: singleQuestion() };
+      handlerAny.threadPanel.clearChoice.mockClear();
+      await handler.handleMessage(
+        message({ ts: '333.447', text: 'Epic wake: 1 event — login:finished.', routeContext: { hostTurn: true } }),
+        say(),
+      );
+      expect(handlerAny.threadPanel.clearChoice).not.toHaveBeenCalled();
       expect(registrySession.actionPanel.pendingQuestion).toEqual(singleQuestion());
     });
 

@@ -48,12 +48,7 @@ import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
 import { sanitizeCronJob } from './session/cron-job';
 import { closeTaskList, sanitizeTaskLedger } from './session/task-ledger';
 import { type ArchivedSession, getArchiveStore, type SessionLifecycleOutcome } from './session-archive';
-import {
-  buildLegacySessionKey,
-  buildTaskSessionKey,
-  buildWorkSessionKey,
-  normalizeSessionKey,
-} from './session-identity';
+import { buildLegacySessionKey, buildWorkSessionKey, normalizeSessionKey } from './session-identity';
 import { getSessionLifecyclePolicy, idleSinceMs, isSessionLifecyclePolicyDegraded } from './session-lifecycle-policy';
 import { DEFAULT_AUTO_HANDOFF_BUDGET } from './slack/handoff-budget';
 import {
@@ -69,17 +64,16 @@ import {
   exemptEpicTreeTaskIds,
   isEpicDone,
   type PlanWriteInput,
+  releaseCutEpicWakes,
   releaseEpicEvents,
-  resolveEpicApprovals,
+  SLACK_WAKE_PREFIX,
   sanitizeEpicEvents,
   sanitizeEpicPlan,
   withEpicEvent,
 } from './task-turn/epic-plan';
-import { sanitizeTaskFollowups } from './task-turn/task-followups';
 import {
   applyPlanSubmission,
   checkPlanSubmission,
-  newPlanGate,
   sanitizeTaskPlanGate,
   type TaskPlanGate,
 } from './task-turn/task-plan';
@@ -91,7 +85,6 @@ import type {
   EpicEvent,
   EpicPlan,
   HandoffContext,
-  OriginThread,
   SessionCronJob,
   SessionGoal,
   SessionIncidentRequest,
@@ -105,11 +98,7 @@ import type {
   SessionResourceUpdateRequest,
   SessionResourceUpdateResult,
   SessionState,
-  TaskChainSettle,
-  TaskInputContext,
-  TaskNoticeIntent,
-  TaskNoticeKind,
-  TaskTurnOutcomeRecord,
+  TurnOutcomeRecord,
   WorkflowType,
 } from './types';
 import { coerceToAvailableModel, type EffortLevel, userSettingsStore } from './user-settings-store';
@@ -196,10 +185,8 @@ interface SerializedSession {
   /** SSOT 2026-10-30 — the dashboard star (kept alive) and when it was last removed. */
   starred?: boolean;
   starClearedAt?: number;
-  /** #598 ④b — a Slack-less task's latest turn outcome; validated on load. */
+  /** #854 — an epic child's last chain outcome; validated on load. */
   lastTurnOutcome?: unknown;
-  /** #598 ④c — the turn a Slack-less task was running when saved. */
-  activeTaskTurnId?: unknown;
   /**
    * Incident ownership survives restarts: dropping it would silently promote a
    * restricted session back to an ordinary one.
@@ -290,12 +277,11 @@ interface SerializedSession {
   conversationId?: string;
   // Task id (#595) — absent in files written before it existed
   taskId?: string;
-  // Slack-less task (#596): keyed by taskId on load, not by channelId/threadTs
+  /**
+   * A record of the dashboard-task stack removed in #855 (a task with no Slack thread): the
+   * load archives it (its card stays readable in CLOSED) and never loads it.
+   */
   slackless?: boolean;
-  /** E2 ① — a Slack-less task's instruction thread; validated on load. */
-  originThread?: unknown;
-  /** E2 ② — a Slack-instructed task's channel context; validated on load. */
-  inputContext?: unknown;
   /** E4 ① — the epic relation; validated on load (`sanitizeEpicRelation`). */
   kind?: unknown;
   parentTaskId?: unknown;
@@ -307,17 +293,6 @@ interface SerializedSession {
   closedBy?: unknown;
   /** Plan mode — a plan-mode task's gate; validated on load (`sanitizeTaskPlanGate`). */
   taskPlan?: unknown;
-  /** E2 ③ — the open chain and owed notices of a Slack-less task; validated on load. */
-  openChain?: unknown;
-  notices?: unknown;
-  /** A Slack-less task's follow-up queue; validated on load — queued words stay queued (`sanitizeTaskFollowups`). */
-  taskFollowups?: unknown;
-  /**
-   * A Slack-less task's turn's initiator (`currentInitiatorId`), saved with the turn's start: the
-   * restart resume continues a cut turn as the person who started it (never more privileged —
-   * trinity R4, astra P1). Read only by the load's reconciliation; not restored into the session.
-   */
-  taskTurnActorId?: unknown;
   // Merge code change stats
   mergeStats?: {
     totalLinesAdded: number;
@@ -391,26 +366,6 @@ interface SerializedSession {
   autoCompactTokens?: number | null;
 }
 
-/** What `createTask` needs (#596). The working directory is stored as given — its caller validates it. */
-export interface CreateTaskInput {
-  ownerId: string;
-  ownerName: string;
-  workingDirectory: string;
-  title?: string;
-  model?: string;
-  /** E2 ① — the Slack thread the task was instructed from; saved with the task's first strict save. */
-  originThread?: OriginThread;
-  /** E2 ② — the channel's description, repos and wiki at creation; copied, not referenced. */
-  inputContext?: TaskInputContext;
-  /** E4 ① — an epic task. Host only: never from model input or a request body as given. */
-  kind?: 'epic';
-  /** E4 ① — a child task: its live epic (same owner) and the plan node it was made for. */
-  parentTaskId?: string;
-  planNodeId?: string;
-  /** Plan mode — the dashboard's plan toggle: the task plans first and works only once its owner starts it. */
-  planMode?: boolean;
-}
-
 /** E4 ① — a plan node id: a short slug, unique within its epic (one rule with the plan's, E4 ②). */
 export const PLAN_NODE_ID = EPIC_NODE_ID;
 
@@ -426,14 +381,22 @@ export interface EpicRelation {
 }
 
 /**
- * E4 ① — keep only a well-formed epic relation, on a Slack-less record only.
- * A child (`parentTaskId` + `planNodeId`) is never an epic and has no
- * children; a node id without a parent is dropped; `childTaskIds` is kept on
- * an epic only, de-duplicated, non-empty strings. Every field it drops is
- * dropped on its own — a bad `kind` does not cost the record its parent.
+ * #854 — an epic's child working in a folder its epic placed it in: one below a session folder
+ * (`…/session_<…>/<sub>`), not a session folder of its own. The epic's, never the child's to delete.
  */
-export function sanitizeEpicRelation(value: Record<string, unknown>, slackless: boolean): EpicRelation {
-  if (!slackless) return {};
+export function isPlacedChildFolder(parentTaskId: unknown, dir: string): boolean {
+  return typeof parentTaskId === 'string' && parentTaskId !== '' && /\/session_[^/]+\/./.test(dir);
+}
+
+/**
+ * E4 ① — keep only a well-formed epic relation (on any session since #854: an
+ * epic and its children are Slack sessions too). A child (`parentTaskId` +
+ * `planNodeId`) is never an epic and has no children; a node id without a
+ * parent is dropped; `childTaskIds` is kept on an epic only, de-duplicated,
+ * non-empty strings. Every field it drops is dropped on its own — a bad `kind`
+ * does not cost the record its parent.
+ */
+export function sanitizeEpicRelation(value: Record<string, unknown>): EpicRelation {
   // An id is a non-blank string other than the record's own (a task is not its own parent or child).
   const nonEmpty = (x: unknown): x is string => typeof x === 'string' && x.trim() !== '' && x !== value.taskId;
   // A child: a parent and a well-formed node, nothing else.
@@ -460,104 +423,6 @@ export function sanitizeEpicRelation(value: Record<string, unknown>, slackless: 
     ...(plan ? { plan } : {}),
     ...(epicEvents ? { epicEvents } : {}),
   };
-}
-
-/** E2 ① — `createTask` refused: a live task already holds this instruction thread. */
-export class OriginThreadTakenError extends Error {
-  readonly holderTaskId: string | undefined;
-  constructor(origin: OriginThread, holderTaskId: string | undefined) {
-    super(`A live task already holds the instruction thread ${origin.channel}:${origin.threadTs}`);
-    this.name = 'OriginThreadTakenError';
-    this.holderTaskId = holderTaskId;
-  }
-}
-
-/**
- * E2 ① — a stored instruction thread, or undefined: non-empty string channel,
- * thread and message, and an optional non-empty string agent. Nothing else is
- * kept, so a record never carries more than this shape.
- */
-export function sanitizeOriginThread(value: unknown): OriginThread | undefined {
-  if (typeof value !== 'object' || value === null) return undefined;
-  const v = value as Record<string, unknown>;
-  const nonEmpty = (x: unknown): x is string => typeof x === 'string' && x !== '';
-  if (!nonEmpty(v.channel) || !nonEmpty(v.threadTs) || !nonEmpty(v.messageTs)) return undefined;
-  if (v.agent !== undefined && !nonEmpty(v.agent)) return undefined;
-  return {
-    channel: v.channel,
-    threadTs: v.threadTs,
-    messageTs: v.messageTs,
-    ...(v.agent !== undefined ? { agent: v.agent as string } : {}),
-  };
-}
-
-/**
- * E2 ② — a stored task input context, or undefined: only its non-empty string
- * fields and the non-empty strings of `repos` are kept (a fresh copy); nothing
- * left means none.
- */
-export function sanitizeTaskInputContext(value: unknown): TaskInputContext | undefined {
-  if (typeof value !== 'object' || value === null) return undefined;
-  const v = value as Record<string, unknown>;
-  const out: TaskInputContext = {};
-  for (const field of ['channelName', 'channelDescription', 'confluenceUrl'] as const) {
-    const x = v[field];
-    if (typeof x === 'string' && x !== '') out[field] = x;
-  }
-  if (Array.isArray(v.repos)) {
-    const repos = v.repos.filter((r): r is string => typeof r === 'string' && r !== '');
-    if (repos.length > 0) out.repos = repos;
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
-}
-
-const NOTICE_KINDS: readonly TaskNoticeKind[] = ['link', 'result', 'question', 'failure', 'interrupted'];
-const NOTICE_OUTCOMES: readonly TaskTurnOutcomeRecord['outcome'][] = [
-  'completed',
-  'failed',
-  'cancelled',
-  'waiting',
-  'interrupted',
-];
-
-/** E2 ③ — stored notice intents: well-formed entries only; none left means none. */
-export function sanitizeTaskNotices(value: unknown): TaskNoticeIntent[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const out: TaskNoticeIntent[] = [];
-  for (const raw of value) {
-    if (typeof raw !== 'object' || raw === null) continue;
-    const v = raw as Record<string, unknown>;
-    if (typeof v.id !== 'string' || v.id === '') continue;
-    if (!NOTICE_KINDS.includes(v.kind as TaskNoticeKind)) continue;
-    if (typeof v.at !== 'number' || !Number.isFinite(v.at)) continue;
-    const intent: TaskNoticeIntent = { id: v.id, kind: v.kind as TaskNoticeKind, at: v.at };
-    for (const field of ['chainId', 'turnId', 'askId', 'reason'] as const) {
-      if (typeof v[field] === 'string' && v[field] !== '') intent[field] = v[field] as string;
-    }
-    if (NOTICE_OUTCOMES.includes(v.outcome as TaskTurnOutcomeRecord['outcome'])) {
-      intent.outcome = v.outcome as TaskTurnOutcomeRecord['outcome'];
-    }
-    out.push(intent);
-  }
-  return out.length > 0 ? out : undefined;
-}
-
-/** E2 ③ — the notice a chain's last outcome owes the instruction thread. */
-function noticeKindFor(outcome: TaskTurnOutcomeRecord['outcome']): TaskNoticeKind {
-  switch (outcome) {
-    case 'completed':
-      return 'result';
-    case 'waiting':
-      return 'question';
-    case 'interrupted':
-      return 'interrupted';
-    default:
-      return 'failure';
-  }
-}
-
-function originThreadKey(origin: OriginThread): string {
-  return `${origin.channel}:${origin.threadTs}`;
 }
 
 /**
@@ -656,16 +521,6 @@ export interface CrashRecoveredSession {
   shouldAutoResume: boolean;
 }
 
-/** A Slack-less task the last restart cut mid-turn — its turn reconciled `interrupted` on load. */
-export interface RestartCutTask {
-  sessionKey: string;
-  ownerId: string;
-  /** Who started the cut turn: the resume runs as them. Absent on a record saved before it was kept. */
-  actorId?: string;
-  /** The turn the restart cut (its `lastTurnOutcome`): a later turn means someone went on — no resume. */
-  turnId: string;
-}
-
 /**
  * A persisted `pendingRetryDetail` back as the session carries it — finite
  * counts and a string reason only; anything else is dropped (disk JSON is
@@ -697,14 +552,13 @@ function sanitizeApprovedInstructors(v: unknown): string[] | undefined {
 /** E4 ⑤ (D6) — a child's chain end as its epic's event: ids and the outcome enum only, never its text. */
 function chainEndEvent(
   child: ConversationSession,
-  end: { key: string; chainId?: string; outcome: EpicEvent['outcome']; turnId: string; at: number },
+  end: { key: string; outcome: EpicEvent['outcome']; turnId: string; at: number },
 ): EpicEvent {
   return {
     id: `${child.taskId}:${end.key}`,
     childTaskId: child.taskId as string,
     planNodeId: child.planNodeId as string,
     outcome: end.outcome,
-    ...(end.chainId ? { chainId: end.chainId } : {}),
     turnId: end.turnId,
     at: end.at,
     state: 'pending',
@@ -719,28 +573,12 @@ export class SessionRegistry {
    * disagree. See `getSessionByTaskId` for the id lifecycle contract.
    */
   private sessionsByTaskId: Map<string, ConversationSession> = new Map();
-  /** E2 ① — live Slack-less tasks by instruction thread (`channel:threadTs`); rebuilt from the records on load. */
-  private tasksByOriginThread: Map<string, ConversationSession> = new Map();
   /** E4 ① — live child tasks by their epic's task id; rebuilt from the records on load. */
   private childrenByParent: Map<string, Set<ConversationSession>> = new Map();
   private logger = new Logger('SessionRegistry');
   private expiryCallbacks?: SessionExpiryCallbacks;
   private beforeSessionDelete?: BeforeSessionDeleteCallback;
-  /** E2 ⑤ — told after a save that added notices a task owes its instruction thread. */
-  private taskNoticeListener?: (session: ConversationSession, sessionKey: string) => void;
   private _crashRecoveredSessions: CrashRecoveredSession[] = [];
-  /**
-   * Slack-less tasks whose turn the last restart cut (saved `working`, reconciled `interrupted`
-   * on load): the host resumes each one after boot (`task-restart-resume.ts`), as
-   * `notifyCrashRecovery` does for a Slack thread. Populated by loadSessions(), cleared after.
-   */
-  private _restartCutTasks: RestartCutTask[] = [];
-  /**
-   * Slack-less tasks whose turn the restart cut (reconciled `interrupted` on load). A task has no
-   * `wasWorkingAtShutdown` marker and is not crash-recovered, so this is the restart's record of it
-   * — read once by the goal resume, which gives the cut turn's continuation back (SSOT 2026-11-03).
-   */
-  private _restartCutTaskKeys = new Set<string>();
 
   /**
    * onIdle callback registry — fired when session transitions to idle.
@@ -751,9 +589,8 @@ export class SessionRegistry {
   /**
    * Optional single-slot hook fired after `drainOnIdleCallbacks` for a session
    * that just transitioned to idle — synchronously, inside that session's own
-   * commit. No production caller holds it: E4 ⑥ wakes an epic from the task
-   * controller's `onChainEnd` instead, after the chain is released (a wake from
-   * here would meet the epic's still-running chain — fable #702 R1).
+   * commit. No production caller holds it: an epic wakes after its chain settles
+   * (#854, the Slack epic waker), not from inside a commit (fable #702 R1).
    * Kept out of cron-scheduler state (`registerOnIdle`).
    */
   private onIdleAfterDrainHook?: (sessionKey: string) => void;
@@ -821,41 +658,6 @@ export class SessionRegistry {
   }
 
   /**
-   * E2 ⑤ — the notice deliverer's listener: called after a strict save that
-   * added notices to a task with an instruction thread (its creation, its
-   * chain's end). Never for an outcome held in memory: those notices wait for
-   * a save, or for restart reconciliation.
-   */
-  setTaskNoticeListener(listener: (session: ConversationSession, sessionKey: string) => void): void {
-    this.taskNoticeListener = listener;
-  }
-
-  private fireTaskNotices(sessionKey: string, session: ConversationSession): void {
-    if (!this.taskNoticeListener) return;
-    try {
-      this.taskNoticeListener(session, sessionKey);
-    } catch (error) {
-      // The notices are saved: the boot scan or the next save's listener delivers them.
-      this.logger.warn('Task notice listener raised', {
-        sessionKey,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  /**
-   * E2 ⑤ — a notice reached its thread (or was closed): drop its intent from
-   * the live task record. Not saved here; the next save carries it. A crash
-   * first re-registers it, and the ledger, which has it posted, sends nothing.
-   */
-  pruneTaskNotice(taskId: string, noticeId: string): void {
-    const session = this.sessionsByTaskId.get(taskId);
-    if (!session?.notices) return;
-    const kept = session.notices.filter((n) => n.id !== noticeId);
-    session.notices = kept.length > 0 ? kept : undefined;
-  }
-
-  /**
    * Run the deletion observer. Throws `SessionDeleteRefusedError` when the
    * observer refused (threw), in which case the caller MUST leave the session
    * untouched — the host's durable state for this session could not be settled,
@@ -900,177 +702,18 @@ export class SessionRegistry {
   }
 
   /**
-   * Persist all sessions to disk AND push a dashboard update.
-   *
-   * Use this after mutating session state that the dashboard consumes
-   * (pendingQuestion, pendingChoice, waitingForChoice, etc.) OUTSIDE of an
-   * activity-state transition. `setActivityState` only persists on transition
-   * to 'idle' and broadcasts only on state change, so holding state in 'waiting'
-   * while mutating pending fields would otherwise leave disk and dashboard stale.
-   *
-   * Cost: one disk write + one websocket push per call. Keep call sites bounded
-   * to real state transitions (set/clear of pendingChoice/pendingQuestion) —
-   * not every render.
-   *
-   * `sessionKey` parameter is currently advisory (for logging / future
-   * targeted broadcasts). The underlying broadcast API is global today.
-   */
-  /**
-   * #598 ④b — commit a Slack-less task turn's outcome and its end activity in
-   * one strict save. Both are set in memory, written through
-   * `saveSessionsOrThrow()`; a failed write restores both and rethrows (the
-   * caller sees it, nothing is broadcast, no idle hook runs). Only after the
-   * write landed: the dashboard is told, and on a move to `idle` the idle
-   * callbacks and the post-drain hook run — so they read the new outcome, and a
-   * restart finds the same outcome and activity the dashboard showed.
-   */
-  public commitTaskTurnOutcome(
-    sessionKey: string,
-    outcome: TaskTurnOutcomeRecord,
-    activity: 'waiting' | 'idle',
-    settle?: TaskChainSettle,
-  ): void {
-    this.applyTaskTurnOutcome('commitTaskTurnOutcome', sessionKey, outcome, activity, true, settle);
-  }
-
-  /**
-   * #598 ④c — every strict save of a turn's outcome failed (the runner retried
-   * the save only). Apply it in memory: the dashboard shows the turn ended and
-   * its `recordFailure`, idle hooks run. Disk still holds `working` and the
-   * turn id, so a restart records the turn `interrupted` — the outcome was
-   * never durable. Any later successful save writes the held outcome.
-   */
-  public holdUnsavedTaskTurnOutcome(
-    sessionKey: string,
-    outcome: TaskTurnOutcomeRecord,
-    activity: 'waiting' | 'idle',
-    settle?: TaskChainSettle,
-  ): void {
-    this.applyTaskTurnOutcome('holdUnsavedTaskTurnOutcome', sessionKey, outcome, activity, false, settle);
-  }
-
-  /**
-   * E2 ③ — add a notice intent to a task with an instruction thread (no-op
-   * otherwise, or when its id is already there). Not saved here: the caller's
-   * strict save carries it with the state it describes.
-   */
-  private addTaskNotice(session: ConversationSession, intent: TaskNoticeIntent): void {
-    if (session.slackless !== true || !session.originThread) return;
-    const notices = session.notices ?? [];
-    if (notices.some((n) => n.id === intent.id)) return;
-    session.notices = [...notices, intent];
-  }
-
-  private applyTaskTurnOutcome(
-    caller: string,
-    sessionKey: string,
-    outcome: TaskTurnOutcomeRecord,
-    activity: 'waiting' | 'idle',
-    durable: boolean,
-    settle?: TaskChainSettle,
-  ): void {
-    const key = normalizeSessionKey(sessionKey);
-    const session = this.getSessionByKey(key);
-    if (!session) throw new Error(`${caller}: session not found (${key})`);
-    const previous = {
-      outcome: session.lastTurnOutcome,
-      activity: session.activityState,
-      changedAt: session.activityStateChangedAt,
-      activeTurnId: session.activeTaskTurnId,
-      openChain: session.openChain,
-      notices: session.notices,
-    };
-    const changed = session.activityState !== activity;
-    session.lastTurnOutcome = outcome;
-    session.activityState = activity;
-    session.activeTaskTurnId = undefined;
-    if (changed) session.activityStateChangedAt = Date.now();
-    // E2 ③ — the chain's last outcome closes it and owes the thread a notice,
-    // in this same write; a hop the chain re-runs after keeps it open, silent.
-    const noticesBefore = session.notices;
-    let epicChange: { epic: ConversationSession; before: EpicEvent[] | undefined } | undefined;
-    if (settle?.ends) {
-      session.openChain = undefined;
-      // E4 ⑤ (D6) — and owes its epic an event, in this same change: saved, put back or held with it.
-      epicChange = this.addChainEndEvent(session, {
-        key: settle.chainId,
-        chainId: settle.chainId,
-        outcome: settle.notice?.kind === 'failure' ? 'failed' : outcome.outcome,
-        turnId: outcome.turnId,
-        at: outcome.at,
-      });
-      const kind = settle.notice?.kind ?? noticeKindFor(outcome.outcome);
-      const reason = settle.notice?.reason ?? outcome.reason;
-      const askId =
-        kind === 'question'
-          ? (session.actionPanel?.pendingQuestion as { askId?: unknown } | undefined)?.askId
-          : undefined;
-      const ask = typeof askId === 'string' && askId !== '' ? askId : undefined;
-      this.addTaskNotice(session, {
-        id: `${session.taskId}:${settle.chainId}:${kind}${ask ? `:${ask}` : ''}`,
-        kind,
-        chainId: settle.chainId,
-        turnId: outcome.turnId,
-        ...(ask ? { askId: ask } : {}),
-        outcome: outcome.outcome,
-        ...(reason ? { reason } : {}),
-        at: outcome.at,
-      });
-    }
-    if (durable) {
-      try {
-        this.saveSessionsOrThrow();
-      } catch (error) {
-        session.lastTurnOutcome = previous.outcome;
-        session.activityState = previous.activity;
-        session.activityStateChangedAt = previous.changedAt;
-        session.activeTaskTurnId = previous.activeTurnId;
-        session.openChain = previous.openChain;
-        session.notices = previous.notices;
-        if (epicChange) epicChange.epic.epicEvents = epicChange.before;
-        throw error;
-      }
-      if (session.notices !== noticesBefore) this.fireTaskNotices(key, session);
-    }
-    // E4 ⑥ — saved or held, the epic may wake for it (D7); the listener defers the wake.
-    if (epicChange?.epic.taskId) {
-      try {
-        this.epicEventListener?.(buildTaskSessionKey(epicChange.epic.taskId));
-      } catch (err) {
-        this.logger.warn(`${caller}: epic event listener raised`, {
-          sessionKey: key,
-          error: (err as Error)?.message ?? String(err),
-        });
-      }
-    }
-    try {
-      this.onActivityStateChangeCallback?.();
-    } catch (err) {
-      this.logger.warn(`${caller}: broadcast callback raised`, {
-        sessionKey: key,
-        error: (err as Error)?.message ?? String(err),
-      });
-    }
-    if (activity === 'idle' && changed) {
-      this.drainOnIdleCallbacks(key);
-      this.fireOnIdleAfterDrainHook(key);
-    }
-  }
-
-  /**
    * E4 ⑦ (D10 a) — a live epic not done yet, or with a child running or
    * waiting, keeps itself and its children from being archived while asleep.
    * After `done` (and once the epic is closed) the tree follows the normal clock.
    */
   private epicTreeExempt(session: ConversationSession): boolean {
-    if (session.slackless !== true) return false;
     const epic =
       session.kind === 'epic'
         ? session
         : session.parentTaskId
           ? this.sessionsByTaskId.get(session.parentTaskId)
           : undefined;
-    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated || epic.closing || !epic.taskId) {
+    if (!epic || epic.kind !== 'epic' || epic.terminated || epic.closing || !epic.taskId) {
       return false;
     }
     if (!isEpicDone(epic.plan)) return true;
@@ -1080,17 +723,15 @@ export class SessionRegistry {
   /**
    * E4 ⑦ (D10 b) — its epic is closing while this child runs: say so on the
    * child (`closedBy: parent`), saved strictly now, before its chain is
-   * cancelled (session-close — the outcome stays `cancelled`). `chain` is the
-   * chain the close cancels (the controller's id). A failed save is put back
-   * and rethrown.
+   * stopped. A failed save is put back and rethrown.
    */
-  markClosedByParent(sessionKey: string, at: number = Date.now(), chain?: string): void {
+  markClosedByParent(sessionKey: string, at: number = Date.now()): void {
     const child = this.getSessionByKey(normalizeSessionKey(sessionKey));
-    if (!child || child.slackless !== true || !child.parentTaskId) {
+    if (!child || !child.parentTaskId) {
       throw new Error(`markClosedByParent: ${sessionKey} is not a child task`);
     }
     const before = child.closedBy;
-    child.closedBy = { by: 'parent', at, ...(chain ? { chain } : {}) };
+    child.closedBy = { by: 'parent', at };
     try {
       this.saveSessionsOrThrow();
     } catch (error) {
@@ -1152,7 +793,7 @@ export class SessionRegistry {
   private epicToReport(child: ConversationSession, what: string): ConversationSession | undefined {
     if (!child.parentTaskId || !child.planNodeId || !child.taskId) return undefined;
     const epic = this.sessionsByTaskId.get(child.parentTaskId);
-    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated || epic.closing) {
+    if (!epic || epic.kind !== 'epic' || epic.terminated || epic.closing) {
       // A closing epic drops its children's events by design (D6 d); a gone one is worth a warning.
       const closing = epic?.closing === true && !epic.terminated;
       this.logger[closing ? 'info' : 'warn'](`Epic event dropped — the epic is ${closing ? 'closing' : 'gone'}`, {
@@ -1167,147 +808,38 @@ export class SessionRegistry {
 
   /**
    * E4 ⑤ (D6) — a child's chain ended: one event on its epic (id: the child's
-   * task id + the chain's id, or the lost turn's), and the approvals that chain
-   * asked are closed. Not saved here — the caller's save carries it with the
-   * child's outcome; returns what to put back if that save fails.
+   * task id + the chain's end). Not saved here — the caller's save carries it with
+   * the child's outcome; returns what to put back if that save fails.
    */
   private addChainEndEvent(
     child: ConversationSession,
-    end: { key: string; chainId?: string; outcome: EpicEvent['outcome']; turnId: string; at: number },
+    end: { key: string; outcome: EpicEvent['outcome']; turnId: string; at: number },
   ): { epic: ConversationSession; before: EpicEvent[] | undefined } | undefined {
     const epic = this.epicToReport(child, 'chain end');
     if (!epic) return undefined;
     const before = epic.epicEvents;
-    const childTaskId = child.taskId as string;
-    const closed = end.chainId
-      ? resolveEpicApprovals(before, (e) => e.childTaskId === childTaskId && e.chainId === end.chainId, end.at)
-      : before;
     // A child its owner is closing owes no wake: its end is recorded, delivered (fable #703 R1).
     const event = chainEndEvent(child, end);
-    epic.epicEvents = withEpicEvent(closed, child.closing ? { ...event, state: 'delivered' } : event);
+    epic.epicEvents = withEpicEvent(before, child.closing ? { ...event, state: 'delivered' } : event);
     return { epic, before };
   }
 
   /**
-   * E4 ⑤ (D6 c) — a child's approval request is a `needs-input` event on its
-   * epic (id: the child's task id + the approval id); its answer closes it.
-   * Saved strictly; a failed save is put back and logged — the approval goes
-   * on either way. It never wakes the epic: only the progress shows it.
+   * Persist all sessions to disk AND push a dashboard update.
+   *
+   * Use this after mutating session state that the dashboard consumes
+   * (pendingQuestion, pendingChoice, waitingForChoice, etc.) OUTSIDE of an
+   * activity-state transition. `setActivityState` only persists on transition
+   * to 'idle' and broadcasts only on state change, so holding state in 'waiting'
+   * while mutating pending fields would otherwise leave disk and dashboard stale.
+   *
+   * Cost: one disk write + one websocket push per call. Keep call sites bounded
+   * to real state transitions (set/clear of pendingChoice/pendingQuestion) —
+   * not every render.
+   *
+   * `sessionKey` parameter is currently advisory (for logging / future
+   * targeted broadcasts). The underlying broadcast API is global today.
    */
-  recordEpicApproval(
-    event: { type: 'requested' | 'resolved'; approvalId: string; sessionKey: string; turnId?: string },
-    at: number = Date.now(),
-  ): void {
-    const child = this.getSessionByKey(normalizeSessionKey(event.sessionKey));
-    if (!child?.parentTaskId) return;
-    const epic = this.epicToReport(child, `approval ${event.type}`);
-    if (!epic) return;
-    const before = epic.epicEvents;
-    const id = `${child.taskId}:${event.approvalId}`;
-    epic.epicEvents =
-      event.type === 'requested'
-        ? withEpicEvent(before, {
-            id,
-            childTaskId: child.taskId as string,
-            planNodeId: child.planNodeId as string,
-            outcome: 'needs-input',
-            approvalId: event.approvalId,
-            ...(child.openChain ? { chainId: child.openChain } : {}),
-            ...(event.turnId ? { turnId: event.turnId } : {}),
-            at,
-            state: 'pending',
-          })
-        : resolveEpicApprovals(before, (e) => e.id === id, at);
-    if (epic.epicEvents === before) return;
-    try {
-      this.saveSessionsOrThrow();
-    } catch (error) {
-      epic.epicEvents = before;
-      this.logger.warn('Epic approval event not saved — put back; the approval goes on', {
-        childTaskId: child.taskId,
-        approvalId: event.approvalId,
-        error: (error as Error)?.message ?? String(error),
-      });
-      return;
-    }
-    try {
-      this.onActivityStateChangeCallback?.();
-    } catch (err) {
-      this.logger.warn('recordEpicApproval: broadcast callback raised', {
-        error: (err as Error)?.message ?? String(err),
-      });
-    }
-  }
-
-  /**
-   * #598 ④c — a Slack-less task's turn starts: `working` and the turn's id are
-   * saved strictly, so a process that dies before the outcome's commit leaves
-   * the lost turn on disk for restart reconciliation (design 598c §6). A failed
-   * write restores both and throws — the turn does not run.
-   */
-  public beginTaskTurn(sessionKey: string, turnId: string, chainId?: string, consume?: readonly string[]): void {
-    const key = normalizeSessionKey(sessionKey);
-    const session = this.getSessionByKey(key);
-    if (!session) throw new Error(`beginTaskTurn: session not found (${key})`);
-    if (session.slackless !== true) throw new Error(`beginTaskTurn: ${key} is not a Slack-less task`);
-    const previous = {
-      activity: session.activityState,
-      changedAt: session.activityStateChangedAt,
-      activeTurnId: session.activeTaskTurnId,
-      state: session.state,
-      sleepStartedAt: session.sleepStartedAt,
-      lastActivity: session.lastActivity,
-      warningMessageTs: session.warningMessageTs,
-      lastWarningSentAt: session.lastWarningSentAt,
-      openChain: session.openChain,
-      epicEvents: session.epicEvents,
-      closedBy: session.closedBy,
-    };
-    // E4 ⑦ — another chain on a child its parent's close cancelled: no longer "closed by its parent".
-    // A `/compact` hop of the chain being closed keeps the mark, and so does the first hop of the
-    // chain the mark names — a close that lands before that hop is saved (fable #703 R2 P3-1). The
-    // chain is the witness, not a clock: a chain may end in the very millisecond of the close (grok #709 R1).
-    const mark = session.closedBy;
-    if (mark && (!chainId || chainId !== session.openChain) && (mark.chain === undefined || mark.chain !== chainId)) {
-      session.closedBy = undefined;
-    }
-    // E2 ③ — the chain is open from its first start until its last commit.
-    if (chainId) session.openChain = chainId;
-    // E4 ⑥ (D7) — the events this chain was started for are consumed in this same save.
-    if (chainId && consume?.length) session.epicEvents = consumeEpicEvents(session.epicEvents, consume, chainId);
-    // An instruction wakes a sleeping task, as a Slack message wakes its thread,
-    // so the inactivity sweep cannot archive it mid-turn (#634 R1).
-    if (session.state === 'SLEEPING') this.wakeSession(session);
-    else session.lastActivity = new Date();
-    if (session.activityState !== 'working') session.activityStateChangedAt = Date.now();
-    session.activityState = 'working';
-    session.activeTaskTurnId = turnId;
-    try {
-      this.saveSessionsOrThrow();
-    } catch (error) {
-      session.activityState = previous.activity;
-      session.activityStateChangedAt = previous.changedAt;
-      session.activeTaskTurnId = previous.activeTurnId;
-      session.state = previous.state;
-      session.sleepStartedAt = previous.sleepStartedAt;
-      session.lastActivity = previous.lastActivity;
-      session.warningMessageTs = previous.warningMessageTs;
-      session.lastWarningSentAt = previous.lastWarningSentAt;
-      session.openChain = previous.openChain;
-      session.epicEvents = previous.epicEvents;
-      session.closedBy = previous.closedBy;
-      throw error;
-    }
-    try {
-      this.onActivityStateChangeCallback?.();
-    } catch (err) {
-      this.logger.warn('beginTaskTurn: broadcast callback raised', {
-        sessionKey: key,
-        error: (err as Error)?.message ?? String(err),
-      });
-    }
-  }
-
   public persistAndBroadcast(sessionKey: string): void {
     this.saveSessions();
     try {
@@ -1360,10 +892,7 @@ export class SessionRegistry {
    *   takes it over via `adoptTaskId` only after the original is terminated;
    *   a refused termination leaves it on the original) or an archive revive
    *   (restoreArchivedSession). At most one live session holds a task id: a
-   *   duplicate met on load or revive gets a fresh id instead. A Slack-less
-   *   task (`task:<taskId>` key) never lets the two split: on load its key
-   *   follows a fresh id (a duplicate inside one file is quarantined); on
-   *   revive a taken id is refused rather than replaced. A session
+   *   duplicate met on load or revive gets a fresh id instead. A session
    *   saved before task ids existed gets one on its first load, written back
    *   at once so the next restart keeps it.
    * - `sessionId` (SDK run session): set by the first SDK turn; cleared by
@@ -1382,60 +911,20 @@ export class SessionRegistry {
     return this.sessionsByTaskId.get(taskId);
   }
 
-  /**
-   * E2 ① — the live Slack-less task instructed from this Slack thread (its
-   * root `thread_ts`), if any. An archived task is not found: one live task
-   * per instruction thread. A sleeping task is live — it still holds its
-   * thread until it is archived.
-   */
-  getTaskByOriginThread(channel: string, threadTs: string): ConversationSession | undefined {
-    return this.tasksByOriginThread.get(`${channel}:${threadTs}`);
-  }
-
-  /**
-   * Insert under `key`; a different session already there loses its task-id
-   * entry. A Slack-less task's instruction thread is indexed while it is free;
-   * one another live task holds is dropped from this session (the holder keeps it).
-   */
+  /** Insert under `key`; a different session already there loses its task-id entry. */
   private putSession(key: string, session: ConversationSession): void {
     const previous = this.sessions.get(key);
     if (previous && previous !== session) this.unindexTask(previous);
     this.sessions.set(key, session);
     if (session.taskId) this.sessionsByTaskId.set(session.taskId, session);
-    // E2 ② — only a Slack-less task carries an input context.
-    if (session.inputContext && session.slackless !== true) session.inputContext = undefined;
-    // E4 ① — only a Slack-less task carries the epic relation.
-    if (session.slackless !== true) {
-      session.kind = undefined;
-      session.parentTaskId = undefined;
-      session.planNodeId = undefined;
-      session.childTaskIds = undefined;
-      session.plan = undefined;
-      session.epicEvents = undefined;
-      session.closedBy = undefined;
-    } else if (session.parentTaskId) {
+    // E4 ① — a child is found from its epic (any session since #854).
+    if (session.parentTaskId) {
       let siblings = this.childrenByParent.get(session.parentTaskId);
       if (!siblings) {
         siblings = new Set();
         this.childrenByParent.set(session.parentTaskId, siblings);
       }
       siblings.add(session);
-    }
-    if (session.originThread) {
-      const originKey = originThreadKey(session.originThread);
-      const holder = this.tasksByOriginThread.get(originKey);
-      if (session.slackless !== true) {
-        session.originThread = undefined;
-      } else if (holder && holder !== session) {
-        this.logger.warn('Instruction thread already held by a live task; dropped from this one', {
-          taskId: session.taskId,
-          holderTaskId: holder.taskId,
-          originThread: originKey,
-        });
-        session.originThread = undefined;
-      } else {
-        this.tasksByOriginThread.set(originKey, session);
-      }
     }
   }
 
@@ -1451,14 +940,10 @@ export class SessionRegistry {
     }
   }
 
-  /** Drop the task-id and instruction-thread entries only while they still name this session — an inheritor keeps its own. */
+  /** Drop the task-id entry only while it still names this session — an inheritor keeps its own. */
   private unindexTask(session: ConversationSession): void {
     if (session.taskId && this.sessionsByTaskId.get(session.taskId) === session) {
       this.sessionsByTaskId.delete(session.taskId);
-    }
-    if (session.originThread) {
-      const originKey = originThreadKey(session.originThread);
-      if (this.tasksByOriginThread.get(originKey) === session) this.tasksByOriginThread.delete(originKey);
     }
     if (session.parentTaskId) {
       const siblings = this.childrenByParent.get(session.parentTaskId);
@@ -1479,7 +964,7 @@ export class SessionRegistry {
   setEpicPlan(taskId: string, input: PlanWriteInput, by: 'epic' | 'owner'): EpicPlan {
     const epic = this.sessionsByTaskId.get(taskId);
     // A closing epic (flagged while its close is awaited) takes no new plan (grok #697 R1).
-    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated || epic.closing)
+    if (!epic || epic.kind !== 'epic' || epic.terminated || epic.closing)
       throw new Error(`setEpicPlan: ${taskId} is not a live epic`);
     const children = this.getChildTasks(taskId).map((c) => ({
       planNodeId: c.planNodeId,
@@ -1497,11 +982,284 @@ export class SessionRegistry {
     return next;
   }
 
+  /** The registry key a session lives under: its Slack thread's key. */
+  private keyOfSession(session: ConversationSession): string | undefined {
+    if (!session.channelId) return undefined;
+    try {
+      return this.getSessionKey(session.channelId, session.threadTs);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** A failed strict save puts every change back (`undo`) and rethrows. */
+  private saveOrUndo(undo: () => void): void {
+    try {
+      this.saveSessionsOrThrow();
+    } catch (error) {
+      undo();
+      throw error;
+    }
+  }
+
+  /**
+   * #854 — the live epic with this task id (any session), or a throw naming `caller`.
+   * A closing epic takes nothing new.
+   */
+  private liveEpicByTaskId(caller: string, taskId: string): ConversationSession {
+    const epic = this.sessionsByTaskId.get(taskId);
+    if (!epic || epic.kind !== 'epic' || epic.terminated || epic.closing) {
+      throw new Error(`${caller}: ${taskId} is not a live epic`);
+    }
+    return epic;
+  }
+
+  /**
+   * #854 — a Slack session made from the dashboard with the epic switch becomes an epic:
+   * its turns get the epic's tools. Saved strictly (a failed save puts it back and throws).
+   * Never a child's (depth 1).
+   */
+  makeEpic(sessionKey: string): ConversationSession {
+    const session = this.sessions.get(normalizeSessionKey(sessionKey));
+    if (!session) throw new Error(`makeEpic: no session ${sessionKey}`);
+    if (session.parentTaskId || session.terminated) {
+      throw new Error(`makeEpic: ${sessionKey} cannot be an epic`);
+    }
+    if (session.kind === 'epic') return session;
+    session.kind = 'epic';
+    this.saveOrUndo(() => {
+      session.kind = undefined;
+    });
+    this.logger.info('Session made an epic', { sessionKey, taskId: session.taskId });
+    return session;
+  }
+
+  /**
+   * #854 — a child of a Slack epic is counted before its thread exists: a fresh task id on the
+   * epic's `childTaskIds` and on its node's `spawned`, in one strict save (the epic's
+   * "at most N children" counts it, and the node can no longer be removed). Returns the id the
+   * child's session takes (`bindEpicChild`). Refused (throws, nothing changed): no live epic,
+   * no such node.
+   */
+  reserveEpicChild(epicTaskId: string, planNodeId: string): string {
+    const epic = this.liveEpicByTaskId('reserveEpicChild', epicTaskId);
+    if (!epic.plan?.nodes.some((n) => n.id === planNodeId)) {
+      throw new Error(`reserveEpicChild: the plan has no node ${planNodeId}`);
+    }
+    const childId = randomUUID();
+    const before = { childTaskIds: epic.childTaskIds, plan: epic.plan };
+    epic.childTaskIds = [...(epic.childTaskIds ?? []), childId];
+    epic.plan = {
+      ...epic.plan,
+      nodes: epic.plan.nodes.map((n) => (n.id === planNodeId ? { ...n, spawned: [...(n.spawned ?? []), childId] } : n)),
+    };
+    this.saveOrUndo(() => {
+      epic.childTaskIds = before.childTaskIds;
+      epic.plan = before.plan;
+    });
+    return childId;
+  }
+
+  /**
+   * #854 — take back a reservation no session took (its thread could not be made): the
+   * "nothing changed" of a refused spawn. Only while no session holds the id. Best effort:
+   * a failed save is logged and the id stays counted (a closed child).
+   */
+  unreserveEpicChild(epicTaskId: string, childId: string): void {
+    const epic = this.sessionsByTaskId.get(epicTaskId);
+    if (!epic || epic.kind !== 'epic' || this.sessionsByTaskId.has(childId)) return;
+    if (!epic.childTaskIds?.includes(childId)) return;
+    const before = { childTaskIds: epic.childTaskIds, plan: epic.plan };
+    const left = epic.childTaskIds.filter((id) => id !== childId);
+    epic.childTaskIds = left.length ? left : undefined;
+    if (epic.plan) {
+      epic.plan = {
+        ...epic.plan,
+        nodes: epic.plan.nodes.map((n) => {
+          if (!n.spawned?.includes(childId)) return n;
+          const spawned = n.spawned.filter((id) => id !== childId);
+          const { spawned: _gone, ...rest } = n;
+          return spawned.length ? { ...rest, spawned } : rest;
+        }),
+      };
+    }
+    try {
+      this.saveOrUndo(() => {
+        epic.childTaskIds = before.childTaskIds;
+        epic.plan = before.plan;
+      });
+    } catch (error) {
+      this.logger.warn('An epic child reservation could not be taken back — it stays counted', {
+        epicTaskId,
+        childId,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+  }
+
+  /**
+   * #854 — the new Slack session in a child's own thread takes the id its epic reserved
+   * (`reserveEpicChild`) and the relation: its epic and its plan node. Saved strictly; a
+   * failed save puts everything back and throws. Refused (throws, nothing changed): the epic
+   * did not reserve that id, another session holds it, the session already has a relation,
+   * the epic is another owner's.
+   */
+  bindEpicChild(sessionKey: string, relation: { taskId: string; parentTaskId: string; planNodeId: string }): void {
+    const key = normalizeSessionKey(sessionKey);
+    const session = this.sessions.get(key);
+    if (!session) throw new Error(`bindEpicChild: no session ${sessionKey}`);
+    if (session.kind === 'epic' || session.parentTaskId) {
+      throw new Error(`bindEpicChild: ${sessionKey} already has its own place`);
+    }
+    if (!PLAN_NODE_ID.test(relation.planNodeId)) throw new Error('bindEpicChild: a bad plan node id');
+    const epic = this.liveEpicByTaskId('bindEpicChild', relation.parentTaskId);
+    if (!epic.childTaskIds?.includes(relation.taskId)) {
+      throw new Error(`bindEpicChild: ${relation.taskId} is not reserved by its epic`);
+    }
+    if (epic.ownerId !== session.ownerId) throw new Error("bindEpicChild: a child is owned by its epic's owner");
+    const holder = this.sessionsByTaskId.get(relation.taskId);
+    if (holder && holder !== session) throw new Error(`bindEpicChild: ${relation.taskId} is held by another session`);
+    const previousTaskId = session.taskId;
+    this.unindexTask(session);
+    session.taskId = relation.taskId;
+    session.parentTaskId = relation.parentTaskId;
+    session.planNodeId = relation.planNodeId;
+    this.putSession(key, session);
+    this.saveOrUndo(() => {
+      this.unindexTask(session);
+      session.taskId = previousTaskId;
+      session.parentTaskId = undefined;
+      session.planNodeId = undefined;
+      this.putSession(key, session);
+    });
+    this.logger.info('Slack session bound as an epic child', {
+      sessionKey: key,
+      taskId: relation.taskId,
+      parentTaskId: relation.parentTaskId,
+      planNodeId: relation.planNodeId,
+    });
+  }
+
+  /**
+   * #854 — a Slack child's chain ended (its run and every queued message after it): its last
+   * outcome, and one pending event on its epic (`addChainEndEvent`), in one strict save — a
+   * failed save puts both back and throws. The epic's listener then hears the epic's own key.
+   * A session that is no child records nothing.
+   */
+  recordSessionChainEnd(
+    sessionKey: string,
+    end: { outcome: TurnOutcomeRecord['outcome']; reason?: string; at?: number },
+  ): void {
+    const session = this.sessions.get(normalizeSessionKey(sessionKey));
+    if (!session || !session.parentTaskId || !session.taskId) return;
+    const at = end.at ?? Date.now();
+    const turnId = `chain:${at}`;
+    const category: TurnOutcomeRecord['category'] =
+      end.outcome === 'completed'
+        ? 'WorkflowComplete'
+        : end.outcome === 'waiting'
+          ? 'UIUserAskQuestion'
+          : end.outcome === 'failed'
+            ? 'Exception'
+            : 'Stalled';
+    const previous = session.lastTurnOutcome;
+    session.lastTurnOutcome = {
+      turnId,
+      outcome: end.outcome,
+      category,
+      ...(end.reason ? { reason: end.reason } : {}),
+      at,
+    };
+    const epicChange = this.addChainEndEvent(session, { key: turnId, outcome: end.outcome, turnId, at });
+    this.saveOrUndo(() => {
+      session.lastTurnOutcome = previous;
+      if (epicChange) epicChange.epic.epicEvents = epicChange.before;
+    });
+    const epicKey = epicChange ? this.keyOfSession(epicChange.epic) : undefined;
+    if (epicKey) {
+      try {
+        this.epicEventListener?.(epicKey);
+      } catch (err) {
+        this.logger.warn('recordSessionChainEnd: epic event listener raised', {
+          sessionKey,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+    }
+    try {
+      this.onActivityStateChangeCallback?.();
+    } catch {
+      /* the board catches up on its next push */
+    }
+  }
+
+  /**
+   * #854 — a Slack epic's wake: the events it is started for are delivered to it (`by`, the
+   * wake's id), in one strict save before the wake is sent. A failed save throws (nothing sent).
+   */
+  consumeEpicWake(epicKey: string, ids: readonly string[], by: string): void {
+    const epic = this.sessions.get(normalizeSessionKey(epicKey));
+    if (!epic || epic.kind !== 'epic') throw new Error(`consumeEpicWake: ${epicKey} is not an epic`);
+    const before = epic.epicEvents;
+    epic.epicEvents = consumeEpicEvents(before, ids, by);
+    if (epic.epicEvents === before) return;
+    this.saveOrUndo(() => {
+      epic.epicEvents = before;
+    });
+  }
+
+  /**
+   * #854 — the epic's chain ended: the wakes it ran are done (their events stay delivered, no longer
+   * tied to a wake). A wake still tied to its events at a restart was cut before its chain ended, and
+   * the load delivers them again (`releaseCutEpicWakes`). Best effort: unsettled only means once more.
+   */
+  settleEpicWakes(epicKey: string, keep?: string): void {
+    const epic = this.sessions.get(normalizeSessionKey(epicKey));
+    if (!epic || epic.kind !== 'epic') return;
+    const before = epic.epicEvents;
+    // `keep`: a wake still being sent (not taken yet) is not one this chain ran (review #872 R2 grok).
+    const settles = (by: string | undefined) => !!by?.startsWith(SLACK_WAKE_PREFIX) && by !== keep;
+    if (!before?.some((e) => settles(e.consumedBy))) return;
+    epic.epicEvents = before.map((e) => {
+      if (!settles(e.consumedBy)) return e;
+      const { consumedBy: _done, ...rest } = e;
+      return rest;
+    });
+    try {
+      this.saveOrUndo(() => {
+        epic.epicEvents = before;
+      });
+    } catch (error) {
+      this.logger.warn('An epic’s finished wakes could not be marked done — a restart delivers them again', {
+        epicKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+  }
+
+  /** #854 — a wake that was not sent: its events are pending again (they wake once more). Best effort. */
+  releaseEpicWake(epicKey: string, by: string): void {
+    const epic = this.sessions.get(normalizeSessionKey(epicKey));
+    if (!epic || epic.kind !== 'epic') return;
+    const before = epic.epicEvents;
+    epic.epicEvents = releaseEpicEvents(before, by);
+    if (epic.epicEvents === before) return;
+    try {
+      this.saveOrUndo(() => {
+        epic.epicEvents = before;
+      });
+    } catch (error) {
+      this.logger.warn('An epic wake that did not happen could not put its events back', {
+        epicKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+  }
+
   /**
    * Plan mode — the plan the model submitted (`plan_submit`), checked
    * (`checkPlanSubmission`) and saved strictly as the next revision awaiting
-   * its owner. Any session in plan mode — a task or a Slack thread (#853) — by
-   * its registry key. A refusal (`TaskPlanError`, a session that is not in plan
+   * its owner. Any session in plan mode (#853), by its registry key. A refusal (`TaskPlanError`, a session that is not in plan
    * mode) or a failed save leaves the gate as it was. Returns the gate now saved.
    */
   submitSessionPlan(sessionKey: string, input: unknown): TaskPlanGate {
@@ -1534,110 +1292,6 @@ export class SessionRegistry {
     }
   }
 
-  /** {@link submitSessionPlan} by a task's id (the task turn path). */
-  submitTaskPlan(taskId: string, input: unknown): TaskPlanGate {
-    return this.submitSessionPlan(this.taskKeyOf(taskId, 'submitTaskPlan'), input);
-  }
-
-  /** {@link setSessionPlanGate} by a task's id (the task turn path). */
-  setTaskPlanGate(taskId: string, next: TaskPlanGate): void {
-    this.setSessionPlanGate(this.taskKeyOf(taskId, 'setTaskPlanGate'), next);
-  }
-
-  /** A live task's registry key, or the plan-mode refusal. */
-  private taskKeyOf(taskId: string, op: string): string {
-    const task = this.sessionsByTaskId.get(taskId);
-    if (!task) throw new Error(`${op}: ${taskId} is not a plan-mode session`);
-    for (const [key, s] of this.sessions) if (s === task) return key;
-    throw new Error(`${op}: ${taskId} is not a plan-mode session`);
-  }
-
-  /**
-   * E4 ① — load gave a Slack-less task a new id because a Slack session held
-   * the one it claimed. The relation follows the new id: a re-minted epic's
-   * children point at it, and a re-minted child is named by its new id in its
-   * epic's list (the cap counts that list). The claimed id now belongs to a
-   * Slack session, which never carries the relation, so these links are the
-   * re-minted task's alone. A relative archived in the same load (`archiving`,
-   * not yet written — an archived record is never re-minted) is patched the
-   * same way before its archive is written. Returns how many links moved.
-   */
-  private relinkRemintedEpicIds(
-    reminted: Array<{ session: ConversationSession; claimed: string }>,
-    archiving: SerializedSession[] = [],
-  ): number {
-    let moved = 0;
-    for (const { session: epic, claimed } of reminted) {
-      if (epic.kind !== 'epic' || !epic.taskId) continue;
-      const children = this.childrenByParent.get(claimed) ?? new Set<ConversationSession>();
-      const archivedChildren = archiving.filter((r) => r.parentTaskId === claimed);
-      if (children.size === 0 && archivedChildren.length === 0) continue;
-      this.childrenByParent.delete(claimed);
-      const siblings = this.childrenByParent.get(epic.taskId) ?? new Set<ConversationSession>();
-      for (const child of children) {
-        child.parentTaskId = epic.taskId;
-        siblings.add(child);
-      }
-      if (siblings.size > 0) this.childrenByParent.set(epic.taskId, siblings);
-      for (const record of archivedChildren) record.parentTaskId = epic.taskId;
-      moved += children.size + archivedChildren.length;
-      this.logger.warn('Epic task id re-minted on load; its children now point at the new id', {
-        claimed,
-        taskId: epic.taskId,
-        children: children.size + archivedChildren.length,
-      });
-    }
-    for (const { session: child, claimed } of reminted) {
-      if (!child.taskId || !child.parentTaskId) continue;
-      const live = this.sessionsByTaskId.get(child.parentTaskId);
-      const epic: { childTaskIds?: unknown; taskId?: unknown; plan?: unknown; epicEvents?: unknown } | undefined =
-        live && live.slackless === true && live.kind === 'epic'
-          ? live
-          : archiving.find((r) => r.taskId === child.parentTaskId && r.kind === 'epic');
-      if (!epic) continue;
-      const list = Array.isArray(epic.childTaskIds) ? (epic.childTaskIds as unknown[]) : [];
-      const taskId = child.taskId;
-      // Renamed in place; appended if the list lacks it (a damaged list heals here only for a
-      // re-minted child — elsewhere the list is append-only through createTask).
-      epic.childTaskIds = list.includes(claimed) ? list.map((id) => (id === claimed ? taskId : id)) : [...list, taskId];
-      // E4 ② — and so does the plan node it was made for. Only `spawned` changes: the plan is
-      // otherwise left as it was (an archiving record's raw plan is sanitized when archived).
-      const plan = epic.plan as { nodes?: unknown } | undefined;
-      if (plan && typeof plan === 'object' && Array.isArray(plan.nodes)) {
-        epic.plan = {
-          ...plan,
-          nodes: plan.nodes.map((n: { spawned?: unknown }) =>
-            n && typeof n === 'object' && Array.isArray(n.spawned) && n.spawned.includes(claimed)
-              ? { ...n, spawned: n.spawned.map((id) => (id === claimed ? taskId : id)) }
-              : n,
-          ),
-        };
-      }
-      // Its events name it by id too.
-      if (Array.isArray(epic.epicEvents)) {
-        epic.epicEvents = epic.epicEvents.map((e: { childTaskId?: unknown; id?: unknown }) =>
-          e && typeof e === 'object' && e.childTaskId === claimed
-            ? {
-                ...e,
-                childTaskId: taskId,
-                // The id keeps its `<child>:<…>` shape (fable #701 R1).
-                ...(typeof e.id === 'string' && e.id.startsWith(`${claimed}:`)
-                  ? { id: `${taskId}${e.id.slice(claimed.length)}` }
-                  : {}),
-              }
-            : e,
-        );
-      }
-      moved++;
-      this.logger.warn("Child task id re-minted on load; its epic's list names the new id", {
-        claimed,
-        taskId,
-        parentTaskId: epic.taskId,
-      });
-    }
-    return moved;
-  }
-
   /**
    * Move a task id onto the live session at `sessionKey` — the same task now
    * lives in that session (bot-thread migration, after the original is gone).
@@ -1648,9 +1302,6 @@ export class SessionRegistry {
   adoptTaskId(sessionKey: string, taskId: string): boolean {
     const session = this.sessions.get(normalizeSessionKey(sessionKey));
     if (!session || !taskId) return false;
-    // A Slack-less task is keyed by its task id — moving the id would leave the
-    // key behind (#612 review). Only bot-thread migration adopts, onto a Slack session.
-    if (session.slackless) return false;
     const holder = this.sessionsByTaskId.get(taskId);
     if (holder && holder !== session) return false;
     if (session.taskId === taskId) return true;
@@ -1809,119 +1460,6 @@ export class SessionRegistry {
       .catch((err) => this.logger.debug('metrics emit failed', err));
 
     return session;
-  }
-
-  /**
-   * Create a task with no Slack channel/thread and no SDK session (#596).
-   * It lives under `task:<taskId>` beside the Slack keys (`getSession(channel,
-   * threadTs)` never reaches it; `getSessionByTaskId` does), carries its own
-   * working directory, and is saved from creation on — never-run included.
-   *
-   * Returns only after sessions.json holds it. A failed save throws and
-   * removes it again, so a caller never gets a task that would vanish on
-   * restart (no false success).
-   */
-  createTask(input: CreateTaskInput): ConversationSession {
-    if (!input.ownerId) throw new Error('createTask: ownerId is required');
-    if (!input.workingDirectory) throw new Error('createTask: workingDirectory is required');
-    // E4 ① — the relation is checked before anything exists or is saved.
-    const parent = this.checkEpicRelation(input);
-    let originThread: OriginThread | undefined;
-    if (input.originThread !== undefined) {
-      originThread = sanitizeOriginThread(input.originThread);
-      if (!originThread) throw new Error('createTask: originThread needs a channel, a thread and a message');
-      // One live task per instruction thread (E2 ①) — refused before anything is saved.
-      const holder = this.tasksByOriginThread.get(originThreadKey(originThread));
-      if (holder) throw new OriginThreadTakenError(originThread, holder.taskId);
-    }
-    // No Slack binding: an empty channel and no thread, never invented ones.
-    const session = this.newSession(input.ownerId, input.ownerName, '', undefined, input.model);
-    session.slackless = true;
-    session.workingDirectory = input.workingDirectory;
-    if (input.title) session.title = input.title;
-    if (originThread) {
-      session.originThread = originThread;
-      // The thread is owed the card's link, in this first strict save (D6).
-      this.addTaskNotice(session, { id: `${session.taskId}:create:link`, kind: 'link', at: Date.now() });
-    }
-    if (input.kind === 'epic') session.kind = 'epic';
-    // Plan mode — the task plans first (drafting), in this first strict save.
-    if (input.planMode === true) session.taskPlan = newPlanGate(Date.now());
-    if (parent) {
-      session.parentTaskId = parent.taskId;
-      session.planNodeId = input.planNodeId;
-    }
-    const inputContext = sanitizeTaskInputContext(input.inputContext);
-    if (inputContext) session.inputContext = inputContext;
-    // A caller passed a context and nothing usable was left: the task runs
-    // without its channel's repos — say so rather than drop it silently.
-    else if (input.inputContext !== undefined) {
-      this.logger.warn('createTask: the input context had no usable field; the task has none', {
-        taskId: session.taskId,
-      });
-    }
-
-    const key = buildTaskSessionKey(session.taskId);
-    // E4 ① — the parent counts the child in the same save that creates it.
-    const parentChildren = parent?.childTaskIds;
-    const parentPlan = parent?.plan;
-    if (parent) {
-      parent.childTaskIds = [...(parentChildren ?? []), session.taskId];
-      // E4 ② — the node records the child it was made for (it can no longer be removed).
-      if (parentPlan?.nodes.some((n) => n.id === input.planNodeId)) {
-        parent.plan = {
-          ...parentPlan,
-          nodes: parentPlan.nodes.map((n) =>
-            n.id === input.planNodeId ? { ...n, spawned: [...(n.spawned ?? []), session.taskId] } : n,
-          ),
-        };
-      }
-    }
-    this.putSession(key, session);
-    try {
-      this.saveSessionsOrThrow();
-    } catch (error) {
-      this.removeSession(key);
-      if (parent) {
-        parent.childTaskIds = parentChildren;
-        parent.plan = parentPlan;
-      }
-      this.logger.error('Task not created: saving it failed', { taskId: session.taskId });
-      throw error;
-    }
-    this.logger.info('Slack-less task created', {
-      taskId: session.taskId,
-      ownerId: session.ownerId,
-      ...(session.kind ? { kind: session.kind } : {}),
-      ...(session.parentTaskId ? { parentTaskId: session.parentTaskId, planNodeId: session.planNodeId } : {}),
-    });
-    if (session.notices) this.fireTaskNotices(key, session);
-    return session;
-  }
-
-  /**
-   * E4 ① — the epic relation a `createTask` asks for, checked before anything
-   * is made: only `'epic'` is a kind; an epic has no parent (depth 1); a child
-   * needs a plan node id and a live epic of the same owner; a node id needs a
-   * parent. Returns the parent of a child.
-   */
-  private checkEpicRelation(input: CreateTaskInput): ConversationSession | undefined {
-    if (input.kind !== undefined && input.kind !== 'epic')
-      throw new Error(`createTask: unknown kind ${String(input.kind)}`);
-    if (input.parentTaskId === undefined) {
-      if (input.planNodeId !== undefined) throw new Error('createTask: a plan node needs a parent epic');
-      return undefined;
-    }
-    if (input.kind === 'epic') throw new Error('createTask: an epic cannot have a parent (depth 1)');
-    if (typeof input.planNodeId !== 'string' || !PLAN_NODE_ID.test(input.planNodeId)) {
-      throw new Error('createTask: a child needs a plan node id (a short lowercase slug)');
-    }
-    const parent = this.sessionsByTaskId.get(input.parentTaskId);
-    if (!parent || parent.slackless !== true || parent.kind !== 'epic' || parent.terminated) {
-      throw new Error(`createTask: parent ${input.parentTaskId} is not a live epic`);
-    }
-    if (parent.ownerId !== input.ownerId) throw new Error("createTask: a child is owned by its epic's owner");
-    return parent;
   }
 
   /** A fresh session object with every default a new session starts with (not yet registered). */
@@ -2126,23 +1664,11 @@ export class SessionRegistry {
    * The lookup and the insert run with no await between them.
    */
   restoreArchivedSession(archived: ArchivedSession, cwd: string): SessionLifecycleOutcome {
-    // A Slack-less task lives under `task:<taskId>` only — never a Slack key —
-    // and must come back still marked, or the run guards (dashboard 409, goal
-    // resume skip) stop covering it (#612 R2). A record that is not a clean
-    // Slack-less archive is refused, not reshaped.
-    const slackless = archived.slackless === true;
-    const unrestorable = { ok: false, code: 'conflict', message: '이 태스크 기록은 되살릴 수 없어요' } as const;
-    let key: string;
-    if (slackless) {
-      if (archived.channelId || archived.threadTs || typeof archived.taskId !== 'string') return unrestorable;
-      try {
-        key = buildTaskSessionKey(archived.taskId);
-      } catch {
-        return unrestorable;
-      }
-    } else {
-      key = this.getSessionKey(archived.channelId, archived.threadTs);
+    // A dashboard task (removed in #855) has no Slack thread to come back into: its archive is read-only.
+    if (archived.slackless === true) {
+      return { ok: false, code: 'conflict', message: '이 태스크 기록은 되살릴 수 없어요' };
     }
+    const key = this.getSessionKey(archived.channelId, archived.threadTs);
     const existing = this.sessions.get(key);
     if (existing) {
       if (existing.terminated) return { ok: false, code: 'terminated', message: '종료 중인 세션이에요' };
@@ -2159,10 +1685,6 @@ export class SessionRegistry {
     }
 
     const restoredTask = this.restoredTaskId(archived.taskId);
-    // Its key is its task id: a fresh id would split the two.
-    if (slackless && restoredTask.minted) {
-      return { ok: false, code: 'conflict', message: '이 태스크 ID는 다른 세션이 쓰고 있어요' };
-    }
     const model = archived.model === undefined ? undefined : coerceToAvailableModel(archived.model);
     const doneAt = finiteStamp(archived.doneAt);
     // The restored goal is a new generation: an evaluation, retry or
@@ -2178,16 +1700,10 @@ export class SessionRegistry {
       ownerId: archived.ownerId,
       ownerName: archived.ownerName,
       userId: archived.ownerId, // Legacy field
-      channelId: slackless ? '' : archived.channelId,
-      threadTs: slackless ? undefined : archived.threadTs,
-      slackless: slackless ? true : undefined,
-      // E2 ① — back while it is free; `putSession` drops it if a live task holds the thread now.
-      originThread: sanitizeOriginThread(archived.originThread),
-      inputContext: sanitizeTaskInputContext(archived.inputContext),
-      ...sanitizeEpicRelation(archived as unknown as Record<string, unknown>, slackless),
+      channelId: archived.channelId,
+      threadTs: archived.threadTs,
+      ...sanitizeEpicRelation(archived as unknown as Record<string, unknown>),
       taskPlan: sanitizeTaskPlanGate(archived.taskPlan),
-      // A task runs in its own directory: the one its transcript proves it ran in (#612 R4).
-      ...(slackless ? { workingDirectory: cwd } : {}),
       sessionId: archived.sessionId,
       // A revived session's history already has the tag if it had an SDK session (#810).
       displayLangTold: !!archived.sessionId,
@@ -2224,11 +1740,10 @@ export class SessionRegistry {
       compactionCount: typeof archived.compactionCount === 'number' ? archived.compactionCount : 0,
       activeAccumulatedMs: typeof archived.busyMs === 'number' ? archived.busyMs : 0,
       sessionWorkingDir: cwd,
-      // A Slack session's own folder is registered for cleanup like a fresh
-      // session's dir; the next turn recreates it. A dashboard task's folder is
-      // the owner's (it may be one they named, #600 ⑥): never the registry's to
-      // delete (#640 R3).
-      sourceWorkingDirs: slackless ? [] : [cwd],
+      // The session's own folder is registered for cleanup like a fresh session's dir; the next turn
+      // recreates it. #854 — not a folder an epic placed its child in (inside the epic's own session
+      // folder): the epic's to keep, whoever revives the child (review #872 astra R5).
+      sourceWorkingDirs: isPlacedChildFolder(archived.parentTaskId, cwd) ? [] : [cwd],
       // Incident ownership comes back with it: the thread stays restricted.
       incidentRequest: archived.incidentRequest,
       incidentAttemptFinishedId: archived.incidentAttemptFinishedId,
@@ -2411,11 +1926,6 @@ export class SessionRegistry {
     this.setSessionTitleOn(this.getSession(channelId, threadTs), title);
   }
 
-  /** The same by session key (#598 ④a). */
-  setSessionTitleByKey(sessionKey: string, title: string): void {
-    this.setSessionTitleOn(this.getSessionByKey(sessionKey), title);
-  }
-
   private setSessionTitleOn(session: ConversationSession | undefined, title: string): void {
     const clean = sanitizeSessionTitle(title);
     // A provisional title (a cron job name, SSOT 2026-10-23 T2) is a
@@ -2461,11 +1971,6 @@ export class SessionRegistry {
     return this.fillPlaceholderSessionTitleOn(this.getSession(channelId, threadTs), title);
   }
 
-  /** The same by session key — a Slack-less task has no channel/thread to look it up by (#829 review). */
-  fillPlaceholderSessionTitleByKey(sessionKey: string, title: string): boolean {
-    return this.fillPlaceholderSessionTitleOn(this.getSessionByKey(sessionKey), title);
-  }
-
   private fillPlaceholderSessionTitleOn(session: ConversationSession | undefined, title: string): boolean {
     const clean = sanitizeSessionTitle(title);
     if (!session || !clean) return false;
@@ -2488,11 +1993,6 @@ export class SessionRegistry {
     linesDeleted: number,
   ): void {
     this.addMergeStatsOn(this.getSession(channelId, threadTs), prNumber, linesAdded, linesDeleted);
-  }
-
-  /** The same by session key (#598 ④a). */
-  addMergeStatsByKey(sessionKey: string, prNumber: number, linesAdded: number, linesDeleted: number): void {
-    this.addMergeStatsOn(this.getSessionByKey(sessionKey), prNumber, linesAdded, linesDeleted);
   }
 
   private addMergeStatsOn(
@@ -2559,7 +2059,7 @@ export class SessionRegistry {
     return this.noteSessionLinksOn(this.getSession(channelId, threadTs), links, mode);
   }
 
-  /** {@link noteSessionLinks} for a session by its key (a Slack-less task). */
+  /** {@link noteSessionLinks} for a session by its registry key. */
   noteSessionLinksByKey(sessionKey: string, links: ReadonlyArray<SessionLink>, mode: NoteLinksMode): boolean {
     return this.noteSessionLinksOn(this.getSessionByKey(sessionKey), links, mode);
   }
@@ -2661,13 +2161,6 @@ export class SessionRegistry {
     this.updateSessionResources(channelId, threadTs, { operations });
   }
 
-  /** The same by session key (#598 ④a). */
-  setSessionLinksByKey(sessionKey: string, links: SessionLinks): void {
-    const operations = this.sessionLinkOperations(links);
-    if (operations.length === 0) return;
-    this.updateSessionResourcesByKey(sessionKey, { operations });
-  }
-
   private sessionLinkOperations(links: SessionLinks): SessionResourceOperation[] {
     const operations: SessionResourceOperation[] = [];
 
@@ -2717,11 +2210,6 @@ export class SessionRegistry {
     return this.buildSessionResourceSnapshot(session);
   }
 
-  /** The same by session key — the only way to reach a Slack-less task (channel '' throws on lookup). */
-  getSessionResourceSnapshotByKey(sessionKey: string): SessionResourceSnapshot {
-    return this.buildSessionResourceSnapshot(this.getSessionByKey(sessionKey));
-  }
-
   /**
    * Update session resources (issues/prs/docs + active links) with optimistic locking.
    */
@@ -2738,11 +2226,6 @@ export class SessionRegistry {
     receiptId?: string,
   ): boolean {
     return this.setExecutiveSummaryOn(this.getSession(channelId, threadTs), tldr, receiptId);
-  }
-
-  /** The same by session key — the only way to reach a Slack-less task (channel '' throws on lookup). */
-  setExecutiveSummaryByKey(sessionKey: string, tldr: readonly string[], receiptId?: string): boolean {
-    return this.setExecutiveSummaryOn(this.getSessionByKey(sessionKey), tldr, receiptId);
   }
 
   /**
@@ -2786,11 +2269,6 @@ export class SessionRegistry {
     return hostReceiptPath(DATA_DIR, this.getSessionKey(channelId, threadTs));
   }
 
-  /** The same by session key — a Slack-less task. */
-  modelCommandReceiptFileByKey(sessionKey: string): string {
-    return hostReceiptPath(DATA_DIR, sessionKey);
-  }
-
   /**
    * #846 — write what the host holds for this session (links, sequence, card TL;DR, NEEDS YOU reason) and, after a
    * model write, how the host handled it. The model-command server answers GET_SESSION with it, so the model reads
@@ -2802,11 +2280,6 @@ export class SessionRegistry {
       this.getSession(channelId, threadTs),
       lastWrite,
     );
-  }
-
-  /** The same by session key — the only way to reach a Slack-less task (channel '' throws on lookup). */
-  writeModelCommandReceiptByKey(sessionKey: string, lastWrite?: HostWriteReceipt): void {
-    this.writeModelCommandReceiptFor(sessionKey, this.getSessionByKey(sessionKey), lastWrite);
   }
 
   /**
@@ -2867,11 +2340,6 @@ export class SessionRegistry {
     request: SessionResourceUpdateRequest,
   ): SessionResourceUpdateResult {
     return this.updateSessionResourcesOn(this.getSession(channelId, threadTs), request);
-  }
-
-  /** The same by session key (#598 ④a). */
-  updateSessionResourcesByKey(sessionKey: string, request: SessionResourceUpdateRequest): SessionResourceUpdateResult {
-    return this.updateSessionResourcesOn(this.getSessionByKey(sessionKey), request);
   }
 
   private updateSessionResourcesOn(
@@ -3034,11 +2502,9 @@ export class SessionRegistry {
     }
   }
 
-  /** A session's registry key: its task key for a Slack-less task, its Slack key otherwise (#598 ④a). */
+  /** A session's registry key: its Slack thread's key. */
   private keyOf(session: ConversationSession): string {
-    return session.slackless === true && session.taskId
-      ? buildTaskSessionKey(session.taskId)
-      : this.getSessionKey(session.channelId, session.threadTs);
+    return this.getSessionKey(session.channelId, session.threadTs);
   }
 
   private applySessionResourceOperations(
@@ -3223,11 +2689,6 @@ export class SessionRegistry {
    */
   clearSessionId(channelId: string, threadTs: string | undefined): void {
     this.clearSessionIdOn(this.getSession(channelId, threadTs), { channelId, threadTs });
-  }
-
-  /** The same by session key — a Slack-less task has no channel/thread (#598 ④a). */
-  clearSessionIdByKey(sessionKey: string): void {
-    this.clearSessionIdOn(this.getSessionByKey(sessionKey), { sessionKey });
   }
 
   private clearSessionIdOn(session: ConversationSession | undefined, where: Record<string, unknown>): void {
@@ -3489,7 +2950,7 @@ export class SessionRegistry {
     return this.addSourceWorkingDirByKey(this.getSessionKey(channel, threadTs), dirPath);
   }
 
-  /** The same by session key (#598 ④a). */
+  /** The same by session key. */
   addSourceWorkingDirByKey(sessionKey: string, dirPath: string): boolean {
     const key = normalizeSessionKey(sessionKey);
     const session = this.sessions.get(key);
@@ -3521,16 +2982,6 @@ export class SessionRegistry {
       this.logger.warn('Resolved path escapes /tmp/', { dirPath, resolvedPath });
       return false;
     }
-    // A dashboard task's own folder is the owner's — cleaning it on close would
-    // delete their work (#640 R3). It sits directly in the owner's root, so no
-    // valid source dir holds it. A clone inside it is registered as on Slack.
-    if (session.slackless && session.workingDirectory) {
-      if (normalizeTmpPath(path.resolve(session.workingDirectory)) === resolvedPath) {
-        this.logger.warn('Rejected a task folder as a source working dir', { key, dirPath: resolvedPath });
-        return false;
-      }
-    }
-
     session.sourceWorkingDirs ??= [];
     const MAX_SOURCE_WORKING_DIRS = 50;
     if (session.sourceWorkingDirs.length >= MAX_SOURCE_WORKING_DIRS) {
@@ -3556,11 +3007,31 @@ export class SessionRegistry {
    */
   private cleanupSourceWorkingDirs(session: ConversationSession): void {
     if (!session.sourceWorkingDirs?.length) return;
-    const failed = session.sourceWorkingDirs.filter((dir) => !this.safeRemoveSourceDir(dir));
+    const failed = session.sourceWorkingDirs.filter((dir) => {
+      // #854 — never a folder another live session works in (an epic's child placed inside its
+      // epic's folder outlives the epic's close; review #872 astra R4). Left on disk, not retried.
+      const user = this.liveSessionWorkingIn(dir, session);
+      if (user) {
+        this.logger.info('Source working dir kept — a live session works in it', { dir, sessionKey: user });
+        return false;
+      }
+      return !this.safeRemoveSourceDir(dir);
+    });
     session.sourceWorkingDirs = failed;
     if (failed.length > 0) {
       this.logger.warn('Some source working dirs could not be cleaned up', { count: failed.length, dirs: failed });
     }
+  }
+
+  /** #854 — the key of a live session (not `except`) whose folder is `dir` or inside it, if any. */
+  private liveSessionWorkingIn(dir: string, except: ConversationSession): string | undefined {
+    const root = normalizeTmpPath(path.resolve(dir));
+    for (const [key, s] of this.sessions) {
+      if (s === except || s.terminated || !s.sessionWorkingDir) continue;
+      const theirs = normalizeTmpPath(path.resolve(s.sessionWorkingDir));
+      if (theirs === root || theirs.startsWith(`${root}${path.sep}`)) return key;
+    }
+    return undefined;
   }
 
   /**
@@ -3637,9 +3108,7 @@ export class SessionRegistry {
       // A starred session is kept alive (SSOT 2026-10-30 T3): never put to
       // sleep, never archived, and never warned that it is about to be.
       if (session.starred === true) continue;
-      // The expiry callbacks are Slack thread notices: a Slack-less task (#596)
-      // has no thread, so it sleeps and ends without them.
-      const notices = session.slackless ? undefined : this.expiryCallbacks;
+      const notices = this.expiryCallbacks;
 
       // Stage 1: SLEEPING sessions - check if sleep duration exceeded (policy archiveAfterMs)
       if (session.state === 'SLEEPING') {
@@ -3797,22 +3266,6 @@ export class SessionRegistry {
     this._crashRecoveredSessions = [];
   }
 
-  /** Slack-less tasks the last restart cut mid-turn (loadSessions), for the host's resume after boot. */
-  getRestartCutTasks(): RestartCutTask[] {
-    return this._restartCutTasks;
-  }
-
-  clearRestartCutTasks(): void {
-    this._restartCutTasks = [];
-  }
-
-  /** The Slack-less tasks whose turn the restart cut — returned once, then cleared (a later read gets none). */
-  takeRestartCutTaskKeys(): Set<string> {
-    const keys = this._restartCutTaskKeys;
-    this._restartCutTaskKeys = new Set<string>();
-    return keys;
-  }
-
   /**
    * Save all sessions to file for persistence across restarts. A failure is
    * logged, not thrown — a caller that must know uses saveSessionsOrThrow.
@@ -3847,7 +3300,8 @@ export class SessionRegistry {
         fs.mkdirSync(DATA_DIR, { recursive: true });
       }
 
-      const sessionsArray: SerializedSession[] = [];
+      // #855 — a dashboard task the load could not archive stays, as it was, for the next load.
+      const sessionsArray: SerializedSession[] = [...this.unarchivedDashboardTasks];
       for (const session of this.sessions.values()) {
         // Save sessions that have conversation history (sessionId) OR a pending
         // handoff context (AD-12, issue #695). The handoffContext branch covers
@@ -3880,23 +3334,19 @@ export class SessionRegistry {
           session.approvedInstructors?.length ||
           // #853 — a plan gate (the plan switch, a plan waiting for its start) is the owner's choice too.
           session.taskPlan ||
-          // A Slack-less task is saved from creation, never-run included (#596):
-          // createTask reported it created only because it was saved.
-          session.slackless
+          // #854 — an epic and its children: the tree is saved from the moment it exists.
+          session.kind === 'epic' ||
+          session.parentTaskId
         ) {
           // Rollback compatibility: persist the LEGACY key form. The
           // running (post-4d) loader ignores this field and re-derives the
           // canonical key from channelId/threadTs; a pre-4d binary loads it
           // verbatim and derives legacy keys for lookup — so this exact
           // form is what keeps sessions.json loadable after an emergency
-          // rollback. See buildLegacySessionKey. A Slack-less task has no
-          // channel/thread: its key is the task key (#596).
+          // rollback. See buildLegacySessionKey.
           let persistedKey: string;
           try {
-            persistedKey =
-              session.slackless && session.taskId
-                ? buildTaskSessionKey(session.taskId)
-                : buildLegacySessionKey(session.channelId, session.threadTs);
+            persistedKey = buildLegacySessionKey(session.channelId, session.threadTs);
           } catch (keyError) {
             // One record whose key cannot be built is left out — it must not
             // take every other session's save down with it (#612 R2).
@@ -3971,11 +3421,6 @@ export class SessionRegistry {
             // Conversation record ID
             conversationId: session.conversationId,
             taskId: session.taskId,
-            slackless: session.slackless === true ? true : undefined,
-            originThread: session.originThread,
-            inputContext: session.inputContext,
-            openChain: session.openChain,
-            notices: session.notices,
             kind: session.kind,
             parentTaskId: session.parentTaskId,
             planNodeId: session.planNodeId,
@@ -3984,9 +3429,6 @@ export class SessionRegistry {
             epicEvents: session.epicEvents,
             // Plan mode — any session (#853).
             taskPlan: session.taskPlan,
-            taskFollowups:
-              session.slackless === true && session.taskFollowups?.length ? session.taskFollowups : undefined,
-            taskTurnActorId: session.slackless === true ? session.currentInitiatorId : undefined,
             closedBy: session.closedBy,
             // Merge code change stats
             mergeStats: session.mergeStats,
@@ -4041,7 +3483,6 @@ export class SessionRegistry {
             starred: session.starred === true ? true : undefined,
             starClearedAt: session.starClearedAt,
             lastTurnOutcome: session.lastTurnOutcome,
-            activeTaskTurnId: session.activeTaskTurnId,
             incidentAttemptFinishedId: session.incidentAttemptFinishedId,
             // Session-scoped `/autocompact` token override (persisted verbatim).
             autoCompactTokens: session.autoCompactTokens,
@@ -4084,6 +3525,12 @@ export class SessionRegistry {
   }
 
   /**
+   * #855 — dashboard tasks the load could not archive: written back to sessions.json as they were
+   * (never loaded), so the next load archives them instead of losing them.
+   */
+  private unarchivedDashboardTasks: SerializedSession[] = [];
+
+  /**
    * A save that died between its temp write and its rename leaves
    * `sessions.json.<pid>.<uuid>.tmp` behind (megabytes each). Nothing is
    * saving while the registry loads, so every such file is an orphan (#612 R5).
@@ -4111,26 +3558,39 @@ export class SessionRegistry {
   /**
    * Archive a serialized session during loadSessions() when it's being discarded (#401).
    * Creates a minimal ConversationSession from serialized data to pass to the archive store.
+   * A dashboard task's record (#855) keeps its mark in the archive: the board's closed column
+   * shows it, and no revive brings it back. True when the record has an archive that holds it.
    */
   private archiveSerializedOnLoad(
     serialized: SerializedSession,
     lastActivity: Date,
     reason: 'terminated' | 'sleep_expired',
-  ): void {
+  ): boolean {
+    const dashboardTask = serialized.slackless === true;
+    const key =
+      typeof serialized.key === 'string' && serialized.key !== ''
+        ? serialized.key
+        : dashboardTask && typeof serialized.taskId === 'string'
+          ? `task:${serialized.taskId}`
+          : serialized.key;
     // #846 — an ended session's model-command receipt goes with it (removeSession is not on this path). The receipt
-    // is named by the live key the loader derives, not the persisted `key` field (kept in the legacy form).
+    // is named by the live key the loader derives, not the persisted `key` field (kept in the legacy form); a
+    // dashboard task's (#855) by its own key.
     try {
-      const liveKey =
-        serialized.slackless === true
-          ? buildTaskSessionKey(serialized.taskId ?? '')
-          : this.getSessionKey(serialized.channelId, serialized.threadTs);
+      const liveKey = dashboardTask ? key : this.getSessionKey(serialized.channelId, serialized.threadTs);
       fs.unlinkSync(hostReceiptPath(DATA_DIR, liveKey));
     } catch {
       // none written, already gone, or no derivable key
     }
     try {
-      // Skip if already archived (prevents duplicates on repeated restarts)
-      if (getArchiveStore().exists(serialized.key)) return;
+      // Skip if already archived (prevents duplicates on repeated restarts). A dashboard task
+      // archived once, revived and worked on since, is archived again: this record is its only
+      // copy of the work after that archive (#855, review #885 astra).
+      if (dashboardTask) {
+        const latest = getArchiveStore().latest(key);
+        const changedAt = Math.max(lastActivity.getTime() || 0, finiteStamp(serialized.activityStateChangedAt) ?? 0);
+        if (latest && latest.archivedAt >= changedAt) return true;
+      } else if (getArchiveStore().exists(key)) return true;
 
       // Coerce serialized model string against AVAILABLE_MODELS. Known-legacy
       // ids pass through unchanged; unknown or case-drifted values normalize
@@ -4143,12 +3603,9 @@ export class SessionRegistry {
         userId: serialized.userId,
         channelId: serialized.channelId,
         threadTs: serialized.threadTs,
-        slackless: serialized.slackless === true ? true : undefined,
-        originThread: sanitizeOriginThread(serialized.originThread),
-        inputContext: sanitizeTaskInputContext(serialized.inputContext),
-        ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, serialized.slackless === true),
+        ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>),
         taskPlan: sanitizeTaskPlanGate(serialized.taskPlan),
-        lastTurnOutcome: sanitizeTaskTurnOutcome(serialized.lastTurnOutcome),
+        lastTurnOutcome: sanitizeTurnOutcome(serialized.lastTurnOutcome),
         sessionId: serialized.sessionId,
         isActive: false,
         lastActivity,
@@ -4191,9 +3648,11 @@ export class SessionRegistry {
         incidentAttemptFinishedId:
           typeof serialized.incidentAttemptFinishedId === 'string' ? serialized.incidentAttemptFinishedId : undefined,
       };
-      getArchiveStore().archive(session, serialized.key, reason);
+      return getArchiveStore().archive(session, key, reason, dashboardTask ? { slackless: true } : undefined) !== false;
     } catch (err) {
-      this.logger.debug('Failed to archive session during load', { key: serialized.key, error: err });
+      // #855 — a dashboard task's archive is its only copy once the load drops it: say so.
+      this.logger[dashboardTask ? 'warn' : 'debug']('Failed to archive session during load', { key, error: err });
+      return false;
     }
   }
 
@@ -4218,35 +3677,31 @@ export class SessionRegistry {
       const applyLifecycle = !isSessionLifecyclePolicyDegraded();
       let sleptOnLoadCount = 0;
       let mintedTaskIdCount = 0;
-      const remintedSlackless: Array<{ session: ConversationSession; claimed: string }> = [];
-      const archivedRelatives: Array<{ serialized: SerializedSession; lastActivity: Date }> = [];
+      /** #855 — dashboard tasks (Slack-less records) archived by this load. */
+      let archivedDashboardTasks = 0;
+      this.unarchivedDashboardTasks = [];
       /** E4 ⑦ (D10 a) — epic trees kept from the load-time archive (decided over the whole file). */
       const epicTreeExempt = exemptEpicTreeTaskIds(Array.isArray(sessionsArray) ? sessionsArray : []);
-      let reconciledTaskTurnCount = 0;
-      /** E4 ⑤ — children whose lost turn was recorded here: their epics hear it after the loop. */
-      const reconciledChildren: Array<{
-        session: ConversationSession;
-        key: string;
-        chainId?: string;
-        turnId: string;
-        at: number;
-      }> = [];
-      // Task keys taken by a Slack-less record earlier in THIS load pass (a reload of the
-      // same registry is not a duplicate; a second record with one task id in one file is).
-      const slacklessKeysThisLoad = new Set<string>();
       this._crashRecoveredSessions = [];
-      this._restartCutTaskKeys = new Set<string>();
 
       for (const serialized of sessionsArray) {
         const lastActivity = new Date(serialized.lastActivity);
+        // #855 — one kind of work session: a dashboard task (a record with no Slack thread) is
+        // archived at load — its card stays readable in CLOSED — and never loaded. Its folder is
+        // the owner's: nothing on disk is removed.
+        if (serialized.slackless === true) {
+          if (this.archiveSerializedOnLoad(serialized, lastActivity, 'terminated')) archivedDashboardTasks++;
+          // Not archived (the disk said no): the record stays in the file as it was, and the next
+          // load tries again — a dashboard task is never dropped without its archive (review #885 astra).
+          else this.unarchivedDashboardTasks.push(serialized);
+          continue;
+        }
         let sleepStartedAt = serialized.sleepStartedAt ? new Date(serialized.sleepStartedAt) : undefined;
         // Set when an active session went idle past the policy limit while the
         // process was down: it loads asleep, as the sweep would leave it.
         let sleptOnLoad = false;
         // A starred session is kept alive across restarts too (SSOT 2026-10-30 T3).
         const starred = serialized.starred === true;
-        // A Slack-less task (#596) has no channel/thread to derive its key from.
-        const slackless = serialized.slackless === true;
 
         // For SLEEPING sessions: check against the policy sleep time
         if (starred) {
@@ -4257,13 +3712,7 @@ export class SessionRegistry {
           const treeExempt = typeof serialized.taskId === 'string' && epicTreeExempt.has(serialized.taskId);
           if (sleepAge >= archiveAfterMs && !treeExempt) {
             // Archive expired session before discarding (#401)
-            // E4 ① — an epic or child is archived after the relink below, so a
-            // re-minted relative's new id reaches its archive too.
-            if (Object.keys(sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, slackless)).length) {
-              archivedRelatives.push({ serialized, lastActivity });
-            } else {
-              this.archiveSerializedOnLoad(serialized, lastActivity, 'sleep_expired');
-            }
+            this.archiveSerializedOnLoad(serialized, lastActivity, 'sleep_expired');
             serialized.sourceWorkingDirs?.forEach((dir) => this.safeRemoveSourceDir(dir));
             continue;
           }
@@ -4400,19 +3849,8 @@ export class SessionRegistry {
               : undefined,
           // Conversation record ID
           conversationId: serialized.conversationId,
-          slackless: slackless ? true : undefined,
-          // E2 ① — a malformed instruction thread is dropped; `putSession` drops one on a Slack session.
-          originThread: sanitizeOriginThread(serialized.originThread),
-          inputContext: sanitizeTaskInputContext(serialized.inputContext),
-          ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, slackless),
+          ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>),
           taskPlan: sanitizeTaskPlanGate(serialized.taskPlan),
-          // Queued words stay queued: the boot sends them (owner directive 2026-11-03); a word caught sending pauses.
-          taskFollowups: slackless ? sanitizeTaskFollowups(serialized.taskFollowups) : undefined,
-          openChain:
-            slackless && typeof serialized.openChain === 'string' && serialized.openChain !== ''
-              ? serialized.openChain
-              : undefined,
-          notices: slackless ? sanitizeTaskNotices(serialized.notices) : undefined,
           // Incident ownership is restored verbatim and never repaired: any
           // present value keeps the session restricted (fail closed).
           incidentRequest:
@@ -4432,11 +3870,7 @@ export class SessionRegistry {
           approvedInstructors: sanitizeApprovedInstructors(serialized.approvedInstructors),
           starred: starred ? true : undefined,
           starClearedAt: finiteStamp(serialized.starClearedAt),
-          lastTurnOutcome: sanitizeTaskTurnOutcome(serialized.lastTurnOutcome),
-          activeTaskTurnId:
-            typeof serialized.activeTaskTurnId === 'string' && serialized.activeTaskTurnId
-              ? serialized.activeTaskTurnId
-              : undefined,
+          lastTurnOutcome: sanitizeTurnOutcome(serialized.lastTurnOutcome),
           // Merge code change stats
           mergeStats: serialized.mergeStats,
           // User SSOT instructions (restored from disk).
@@ -4519,6 +3953,8 @@ export class SessionRegistry {
           compactPendingDispatches: null,
           compactTurnActive: false,
         };
+        // #854 — a Slack epic's wake the restart cut (consumed, its chain never ended): delivered again.
+        if (session.kind === 'epic') session.epicEvents = releaseCutEpicWakes(session.epicEvents);
         // Auto fallback compact: a restart that lands mid-fallback (model
         // switched to the 1M compact model, boundary restore not yet fired)
         // aborts the emergency compact. Restore the original model so the
@@ -4566,21 +4002,7 @@ export class SessionRegistry {
         // (the enclosing catch spans the whole loop).
         let derivedKey: string;
         try {
-          // A Slack-less task (#596) is keyed by its task id — only when the
-          // record says so: an unmarked record with no channel stays quarantined,
-          // and so does a Slack-less one with no task id.
-          if (slackless) {
-            // A Slack-less record has no Slack binding at all — anything else is corrupt.
-            if (serialized.channelId || serialized.threadTs) {
-              throw new Error('Slack-less record with a channel or thread');
-            }
-            derivedKey = buildTaskSessionKey(serialized.taskId ?? '');
-            if (slacklessKeysThisLoad.has(derivedKey)) {
-              throw new Error('duplicate Slack-less task id in this file');
-            }
-          } else {
-            derivedKey = this.getSessionKey(serialized.channelId, serialized.threadTs);
-          }
+          derivedKey = this.getSessionKey(serialized.channelId, serialized.threadTs);
         } catch (keyError) {
           this.logger.warn('Skipped session with underivable key on load', {
             key: serialized.key,
@@ -4592,19 +4014,7 @@ export class SessionRegistry {
         }
         const restored = this.restoredTaskId(serialized.taskId, this.sessions.get(derivedKey));
         session.taskId = restored.taskId;
-        // Its id was taken by another live session and re-minted: the task key follows the id.
-        // Both the id it claimed and the one it got are taken for the rest of this load, so a
-        // second record claiming the same id is a duplicate even after a re-mint (#612 R4).
-        if (slackless) {
-          slacklessKeysThisLoad.add(derivedKey);
-          derivedKey = buildTaskSessionKey(restored.taskId);
-          slacklessKeysThisLoad.add(derivedKey);
-        }
         if (restored.minted) mintedTaskIdCount++;
-        // E4 ① — a Slack-less task that lost its claimed id takes its epic links along (after the loop).
-        if (slackless && restored.minted && typeof serialized.taskId === 'string' && serialized.taskId !== '') {
-          remintedSlackless.push({ session, claimed: serialized.taskId });
-        }
         this.putSession(derivedKey, session);
         loaded++;
 
@@ -4625,69 +4035,7 @@ export class SessionRegistry {
         //   actively processing and the user is still waiting for output.
         // A session that went to sleep while the process was down is not resumed:
         // it still gets the restart notice it was promised (symmetry), never an auto-resume.
-        if (slackless) {
-          // No Slack thread to resume or notify. A task saved `working` lost its
-          // turn with the process: record that turn `interrupted` and never re-run
-          // it (#598 ④c, D10). A `waiting` task keeps its question.
-          // E2 ③ — so did a chain still open: a `/compact` hop committed
-          // `completed` and the process died before the re-run's start. A task
-          // saved `waiting` keeps its question even then (grok #666).
-          if (serialized.activityState === 'working' || (session.openChain && serialized.activityState !== 'waiting')) {
-            const now = Date.now();
-            const turnId = session.activeTaskTurnId ?? `restart:${now}`;
-            session.lastTurnOutcome = {
-              turnId,
-              outcome: 'interrupted',
-              category: 'Exception',
-              reason: 'process ended before the outcome was recorded',
-              at: now,
-            };
-            // One notice per lost chain, keyed by the chain (or the turn), so a
-            // reconciliation repeated after an unsaved load adds nothing.
-            const chainId = session.openChain;
-            // E4 ⑥ (D7) — an epic's lost wake: the events it consumed are pending again, to wake once more.
-            if (chainId && session.kind === 'epic') session.epicEvents = releaseEpicEvents(session.epicEvents, chainId);
-            this.addTaskNotice(session, {
-              id: `${session.taskId}:${chainId ?? turnId}:interrupted`,
-              kind: 'interrupted',
-              ...(chainId ? { chainId } : {}),
-              turnId,
-              outcome: 'interrupted',
-              reason: 'process ended before the outcome was recorded',
-              at: now,
-            });
-            if (session.parentTaskId) {
-              reconciledChildren.push({
-                session,
-                key: chainId ?? turnId,
-                ...(chainId ? { chainId } : {}),
-                turnId,
-                at: now,
-              });
-            }
-            session.openChain = undefined;
-            session.activityState = 'idle';
-            session.activityStateChangedAt = now;
-            session.activeTaskTurnId = undefined;
-            this._restartCutTaskKeys.add(derivedKey);
-            reconciledTaskTurnCount++;
-            // The host resumes it after boot, as a Slack thread is (notifyCrashRecovery). Not an
-            // epic (its released events wake it) or an epic's child (its epic hears `interrupted`
-            // and decides), not one that slept while the process was down, not a closed one.
-            if (!sleptOnLoad && session.kind !== 'epic' && !session.parentTaskId && !session.terminated) {
-              const actor = serialized.taskTurnActorId;
-              this._restartCutTasks.push({
-                sessionKey: derivedKey,
-                ownerId: session.ownerId,
-                // The cut turn's initiator (an approved writer is not lifted to the owner). A record from
-                // before it was kept has none: the resume reads the turn's author from its conversation
-                // instead — never the owner by default (trinity R4, astra P1).
-                ...(typeof actor === 'string' && actor !== '' ? { actorId: actor } : {}),
-                turnId,
-              });
-            }
-          }
-        } else if (serialized.shutdownNotificationSent) {
+        if (serialized.shutdownNotificationSent) {
           this._crashRecoveredSessions.push({
             channelId: serialized.channelId,
             threadTs: serialized.threadTs,
@@ -4720,42 +4068,23 @@ export class SessionRegistry {
       if (sleptOnLoadCount > 0) {
         this.logger.info(`Put ${sleptOnLoadCount} stale session(s) to sleep on load`);
       }
-      // E4 ① — the epic links of a re-minted task follow its new id; the write-back below saves them.
-      this.relinkRemintedEpicIds(
-        remintedSlackless,
-        archivedRelatives.map((a) => a.serialized),
-      );
-      // E4 ⑤ (D6 a) — a second pass, after every record is in and relinked: a child
-      // can come before its epic in the file. The write-back below saves the events;
-      // an epic archived in this same load carries its event into the archive (grok #701 R1).
-      for (const { session, ...end } of reconciledChildren) {
-        const archiving = archivedRelatives.find(
-          (a) =>
-            a.serialized.slackless === true &&
-            a.serialized.kind === 'epic' &&
-            a.serialized.taskId === session.parentTaskId,
-        );
-        if (archiving && session.taskId && session.planNodeId) {
-          archiving.serialized.epicEvents = withEpicEvent(
-            sanitizeEpicEvents(archiving.serialized.epicEvents),
-            chainEndEvent(session, { ...end, outcome: 'interrupted' }),
-          );
-          continue;
-        }
-        this.addChainEndEvent(session, { ...end, outcome: 'interrupted' });
-      }
-      for (const { serialized, lastActivity } of archivedRelatives) {
-        this.archiveSerializedOnLoad(serialized, lastActivity, 'sleep_expired');
-      }
       // A task id minted here (a file from before task ids, or a duplicate)
       // is written back now: the next restart must find the same task.
       if (mintedTaskIdCount > 0) {
         this.logger.info(`Assigned task ids to ${mintedTaskIdCount} loaded session(s)`);
       }
-      if (reconciledTaskTurnCount > 0) {
-        this.logger.warn(`Recorded ${reconciledTaskTurnCount} lost task turn(s) as interrupted on load`);
+      if (archivedDashboardTasks > 0) {
+        this.logger.warn(
+          `Archived ${archivedDashboardTasks} dashboard task(s) on load — the dashboard-task stack was removed (#855)`,
+        );
       }
-      if (sleptOnLoadCount > 0 || mintedTaskIdCount > 0 || reconciledTaskTurnCount > 0) {
+      if (this.unarchivedDashboardTasks.length > 0) {
+        this.logger.error(
+          `Could not archive ${this.unarchivedDashboardTasks.length} dashboard task(s) on load — kept in sessions.json for the next load (#855)`,
+          { keys: this.unarchivedDashboardTasks.map((r) => r.key) },
+        );
+      }
+      if (sleptOnLoadCount > 0 || mintedTaskIdCount > 0 || archivedDashboardTasks > 0) {
         this.saveSessions();
       }
 
@@ -4828,21 +4157,21 @@ function restoredOverAutoCompact(session: ConversationSession): boolean {
  * not > 0 is re-sized from the session model; with no model the usage is
  * dropped rather than given a guessed window.
  */
-const TASK_TURN_OUTCOMES = new Set(['completed', 'failed', 'cancelled', 'waiting', 'interrupted']);
+const TURN_OUTCOMES = new Set(['completed', 'failed', 'cancelled', 'waiting', 'interrupted']);
 const TURN_CATEGORIES = new Set(['UIUserAskQuestion', 'WorkflowComplete', 'Exception', 'Stalled']);
 
 /** #598 ④b — a saved turn outcome is kept only when every field has its shape. */
-function sanitizeTaskTurnOutcome(raw: unknown): TaskTurnOutcomeRecord | undefined {
+function sanitizeTurnOutcome(raw: unknown): TurnOutcomeRecord | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const r = raw as Record<string, unknown>;
   if (typeof r.turnId !== 'string' || !r.turnId) return undefined;
-  if (typeof r.outcome !== 'string' || !TASK_TURN_OUTCOMES.has(r.outcome)) return undefined;
+  if (typeof r.outcome !== 'string' || !TURN_OUTCOMES.has(r.outcome)) return undefined;
   if (typeof r.category !== 'string' || !TURN_CATEGORIES.has(r.category)) return undefined;
   if (typeof r.at !== 'number' || !Number.isFinite(r.at)) return undefined;
   return {
     turnId: r.turnId,
-    outcome: r.outcome as TaskTurnOutcomeRecord['outcome'],
-    category: r.category as TaskTurnOutcomeRecord['category'],
+    outcome: r.outcome as TurnOutcomeRecord['outcome'],
+    category: r.category as TurnOutcomeRecord['category'],
     at: r.at,
     ...(typeof r.reason === 'string' ? { reason: r.reason } : {}),
     ...(r.retryable === true ? { retryable: true } : {}),

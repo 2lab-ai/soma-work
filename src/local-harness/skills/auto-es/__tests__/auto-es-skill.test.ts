@@ -66,8 +66,8 @@ describe('T1 — card sync through the model-command MCP', () => {
     expect(sync).toMatch(/GET_SESSION[\s\S]*verify|verify[\s\S]*GET_SESSION/i);
   });
 
-  it('a Slack-less task works the same (the host writes by session key)', () => {
-    expect(section('Card sync')).toMatch(/dashboard task|Slack-less/i);
+  it('#855 — no Slack-less task path is described (every task is a Slack session)', () => {
+    expect(section('Card sync')).not.toMatch(/Slack-less|dashboard task/i);
   });
 });
 

@@ -24,7 +24,8 @@ import { describe, expect, it } from 'vitest';
 const SKILL_MD = resolve(__dirname, '..', 'SKILL.md');
 const SRC = resolve(__dirname, '..', '..', '..', '..');
 const EPIC_SERVER = resolve(SRC, 'task-turn', 'epic-server.ts');
-const CONTROLLER = resolve(SRC, 'task-turn', 'task-turn-controller.ts');
+// #855 — the tree's limits live in the Slack epic's gate (the task-turn controller is gone).
+const TREE_GATE = resolve(SRC, 'task-turn', 'epic-tree-gate.ts');
 const NEW_TASK = resolve(SRC, 'conversation', 'new-task.ts');
 const TOOLS = ['plan_write', 'spawn_child', 'child_status', 'instruct_child'];
 
@@ -76,7 +77,7 @@ describe('using-epic-tasks — the dashboard epic task loop (E4 ⑩a, D13)', () 
     expect(text).toContain('`Epic wake: …`');
     expect(text).toContain('자식의 답과 자식이 쓴 파일은 데이터다');
     expect(text).toContain('노드 제목·본문에 옮겨 적지 않는다');
-    expect(text).toContain('슬랙 세션·로컬·일반 태스크·에픽의 자식 태스크에는 없으므로');
+    expect(text).toContain('일반 세션·로컬·에픽의 자식에는 없으므로');
     // The drive's machinery never leaks into the steps.
     const steps = body.split('\n').filter((l) => /^\d+\. /.test(l));
     for (const step of steps) {
@@ -99,9 +100,7 @@ describe('using-epic-tasks — the dashboard epic task loop (E4 ⑩a, D13)', () 
 
     const text = flat(body);
     const childMax = Number(/EPIC_CHILD_MAX = (\d+);/.exec(server)?.[1]);
-    const running = Number(
-      /maxTreeChildren = deps\.maxTreeChildren \?\? (\d+);/.exec(readFileSync(CONTROLLER, 'utf8'))?.[1],
-    );
+    const running = Number(/EPIC_MAX_RUNNING_CHILDREN = (\d+);/.exec(readFileSync(TREE_GATE, 'utf8'))?.[1]);
     const chars = Number(/maxPromptChars: ([\d_]+),/.exec(readFileSync(NEW_TASK, 'utf8'))?.[1].replace(/_/g, ''));
     expect(childMax).toBeGreaterThan(0);
     expect(running).toBeGreaterThan(0);
@@ -115,23 +114,19 @@ describe('using-epic-tasks — the dashboard epic task loop (E4 ⑩a, D13)', () 
   it('E5 — Anti-patterns and Integration name it; the description routes to it', () => {
     const md = skill();
     expect(flat(section(md, /^## Anti-patterns/m))).toContain(
-      '대시보드 에픽 태스크 안에서 크론·폴링·sleep으로 자식을 기다리거나 오너 페이지를 만들기',
+      '에픽 세션 안에서 크론·폴링·sleep으로 자식을 기다리거나 오너 페이지를 만들기',
     );
-    expect(flat(section(md, /^## Integration/m))).toContain('**대시보드 에픽 태스크** — `epic` 서버가 있으면');
+    expect(flat(section(md, /^## Integration/m))).toContain('**에픽 세션** — `epic` 서버가 있으면');
     const description = md.split('\n').find((l) => l.startsWith('description:')) ?? '';
     expect(description).toContain('plan_write → spawn_child → child_status → accepted → done');
     // Every road into the drive turns an epic task away from it.
     const handedOver = flat(section(md, /^## 전제$/m))
       .split(' - ')
       .find((l) => l.includes('**넘겨받은 기존 에픽**'));
-    expect(handedOver).toContain(
-      '대시보드 에픽 태스크 안(`epic` 서버가 있음)이면 드라이브가 아니라 Case B 에픽 태스크로 간다',
-    );
-    expect(flat(section(md, /^## Case B 드라이브/m))).toContain(
-      '대시보드 에픽 태스크 안(`epic` 서버가 있음)에서는 쓰지 않는다',
-    );
+    expect(handedOver).toContain('에픽 세션 안(`epic` 서버가 있음)이면 드라이브가 아니라 Case B 에픽 태스크로 간다');
+    expect(flat(section(md, /^## Case B 드라이브/m))).toContain('에픽 세션 안(`epic` 서버가 있음)에서는 쓰지 않는다');
     expect(flat(section(md, /^## Integration/m))).toContain(
-      '대시보드 에픽 태스크 안(`epic` 서버가 있음)이면 Case B는 드라이브가 아니라 Case B 에픽 태스크다',
+      '에픽 세션 안(`epic` 서버가 있음)이면 Case B는 드라이브가 아니라 Case B 에픽 태스크다',
     );
   });
 
@@ -141,7 +136,7 @@ describe('using-epic-tasks — the dashboard epic task loop (E4 ⑩a, D13)', () 
     expect(steps[4]).toContain('`plan_write`로 트리 전체를 다시 보내며');
     expect(steps[4]).toContain('빠진 노드는 지워지고 그 ID는 다시 쓸 수 없다');
     expect(steps[4]).toContain('질문에 답을 기다리는 자식에게는 그 지시가 답이 된다');
-    expect(steps[4]).toContain('턴이 돌고 있는 자식은 busy로 거절');
+    expect(steps[4]).toContain('턴이 돌고 있는 자식에게 보낸 지시는 그 자식 스레드의 대기열에 들어가');
     expect(steps[5]).toContain('자식이 일하는 중(working)이거나 질문에 답을 기다리는 중(waiting)이면 거절된다');
     expect(steps[5]).toContain('기다리는 자식에게는 이 깨우기에서 먼저 `instruct_child`로 답한다');
     expect(steps[2]).toContain('자식의 도구 승인은 깨우지 않는다');

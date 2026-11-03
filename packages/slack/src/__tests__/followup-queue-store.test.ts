@@ -222,15 +222,11 @@ describe('FollowupQueueStore', () => {
       ).toThrow(/routeContext\.hostTurn/);
     });
 
-    it('round-trips a task entry candidate (routeContext.taskEntryCandidate, E2 ⑦) and rejects a non-boolean marker', () => {
-      const original = snapshot([item({ message: message({ routeContext: { taskEntryCandidate: true } }) })]);
+    it('#855 — a queued item saved with the removed task-entry marker still loads', () => {
+      const legacy = { taskEntryCandidate: true } as Record<string, unknown>;
+      const original = snapshot([item({ message: message({ routeContext: legacy as never }) })]);
       store().save(original);
       expect(store().load()).toEqual(original);
-      expect(() =>
-        parseFollowupQueueSnapshot(
-          snapshot([item({ message: message({ routeContext: { taskEntryCandidate: 'yes' as never } }) })]),
-        ),
-      ).toThrow(/routeContext\.taskEntryCandidate/);
     });
 
     it('rejects a steerUuid that is not a string rather than dropping it', () => {

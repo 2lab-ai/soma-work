@@ -473,8 +473,6 @@ describe('P3 — the open card follows the plan', () => {
       'cardSummary',
       'cardCurrentTask',
       'renderCardResume',
-      'taskOutcomeHtml',
-      'taskNoticeFailHtml',
       'taskPlanCardHtml',
       'quickChoicesOf',
       'isBusy',

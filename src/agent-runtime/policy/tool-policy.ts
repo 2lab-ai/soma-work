@@ -122,7 +122,7 @@ export interface ToolPolicyContext {
    */
   incidentReadOnly?: IncidentReadOnlyContext;
   /**
-   * Plan mode (SSOT 2026-11-02, step 6c): set on a dashboard task turn whose plan is not
+   * Plan mode (SSOT 2026-11-02, step 6c): set on a turn whose plan is not
    * started (`planPending`) — `checkPlanPendingCall` (`plan-pending-guard.ts`). A reason denies
    * the call in every mode, for admins too: the turn researches, the work starts on 시작.
    * **Absent → no plan gate.**

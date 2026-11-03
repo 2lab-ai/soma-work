@@ -169,7 +169,6 @@ import type {
   ModelCommandRunResponse,
   SaveMemoryParams,
 } from './types';
-import { TASK_UNAVAILABLE_COMMANDS } from './types';
 import { checkAskUserQuestionQuality } from './validator';
 
 const HISTORY_KEY_BY_RESOURCE: Record<SessionResourceType, 'issues' | 'prs' | 'docs'> = {
@@ -694,32 +693,7 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
     });
   }
 
-  if (context.surface === 'task') {
-    return commands.filter((command) => !TASK_UNAVAILABLE_COMMANDS.includes(command.id));
-  }
   return commands;
-}
-
-/**
- * The refusal of a command the turn's surface does not have (a dashboard task
- * has no Slack thread), or `undefined` when it may run. Says what to do instead.
- */
-export function surfaceRefusal(
-  commandId: ModelCommandRunRequest['commandId'],
-  context: ModelCommandContext,
-): ModelCommandRunResponse | undefined {
-  if (context.surface !== 'task' || !TASK_UNAVAILABLE_COMMANDS.includes(commandId)) return undefined;
-  const instead =
-    commandId === 'ASK_USER_QUESTION'
-      ? 'ask in your answer with a fenced JSON `user_choice` block — the dashboard shows it as the question'
-      : commandId === 'CONTINUE_SESSION'
-        ? 'finish the work in this task; a handoff to a new session is not resumed here'
-        : 'the renew flow runs only in a Slack thread';
-  return toRunError(commandId, {
-    code: 'CONTEXT_ERROR',
-    message: `${commandId} is not available on a dashboard task: ${instead}.`,
-    details: { surface: 'task' },
-  });
 }
 
 /** Compact human-readable rendering of a semantic page for page_get. */
@@ -841,8 +815,6 @@ export function runModelCommand(
   request: ModelCommandRunRequest,
   context: ModelCommandContext,
 ): ModelCommandRunResponse {
-  const refused = surfaceRefusal(request.commandId, context);
-  if (refused) return refused;
   const session = normalizeSessionSnapshot(context.session);
 
   if (request.commandId === 'GET_SESSION') {

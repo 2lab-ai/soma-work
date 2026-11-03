@@ -1317,8 +1317,6 @@ export class CommandParser {
     // Display language (#772)
     'lang',
     'language',
-    // Slack instructions → dashboard tasks (E2 ⑧)
-    'taskentry',
     // Epic tasks on the dashboard (E4 ④a-2)
     'epictasks',
     // Report
@@ -1451,9 +1449,7 @@ export class CommandParser {
       '• `lang` - Show your display language (dashboard, thread, answers)',
       '• `lang ko|en` - Switch it (Korean by default)',
       '',
-      '*Dashboard Tasks:*',
-      '• `taskentry` - Show whether your channel instructions become dashboard tasks',
-      '• `taskentry on|off` - Turn it on/off (per user, off by default)',
+      '*Epic Tasks:*',
       '• `epictasks on|off` - Allow making epic tasks on the dashboard (per user, off by default)',
       '',
       '*MCP Servers:*',

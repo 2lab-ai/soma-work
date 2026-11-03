@@ -299,17 +299,6 @@ export interface EventRouterDeps {
    */
   isFollowupControlReaction?: (name: string) => boolean;
   /**
-   * E2 ⑧ (.prd/18 D2 (2)) — the host's instruction-thread guard. Asked before
-   * a mention (after any `/z` command ZRouter finished on the spot) or a
-   * mentioned file upload could open a Slack run. True: the host answered it
-   * (a card-link notice, or silence for a redelivery) and nothing runs. Absent
-   * or false: today's behavior.
-   */
-  guardInstructionThread?: (
-    event: { channel: string; ts: string; thread_ts?: string; user?: string; files?: unknown[] },
-    say: SayFn,
-  ) => Promise<boolean>;
-  /**
    * #767 — would the host hold this message for the session owner's approval
    * (someone who is not the owner, in a thread with a session)? Asked before a
    * mention's `/z …` runs through ZRouter, which would otherwise act on the
@@ -323,31 +312,24 @@ export interface EventRouterDeps {
  * Slack 이벤트 라우팅 및 등록을 담당하는 클래스
  */
 /**
- * E2 ⑦ — a mention that may become a dashboard task (.prd/18 D2 (1)): a plain
- * instruction with words, as the user wrote it. Not a candidate: a synthetic
- * event, a DM, a mention whose `app_mention` payload carries files, a `/`
- * command (the `/z` surface included), a `%` directive, a `!` steer,
- * `new <text>`. The incident ingress and the file_share path never reach the
- * marking.
- *
- * A hint, not a verdict: Slack often sends a mention with attachments as an
- * `app_mention` WITHOUT `files` (the files come later on `file_share`), so
- * such a mention can be a candidate here; naked commands (`persona …`,
- * `$skill`) are candidates too. The host re-checks its own allow-list — files,
- * handled commands, a forced skill — before acting on it (⑧).
+ * #854 — fields only the host sets on a message it hands to the pipeline itself (the dashboard's
+ * new-task launcher, an epic's tools): the plan and epic switches, an epic child's binding, a
+ * placed working folder. A Slack event never carries them, and one that did is not trusted: the
+ * router drops them before the pipeline sees the event.
  */
-export function isTaskEntryCandidate(
-  event: { channel?: string; channel_type?: string; synthetic?: boolean; files?: unknown[] },
-  text: string,
-): boolean {
-  const words = text.trim();
-  if (!words) return false;
-  if (event.synthetic) return false;
-  if ((event.files?.length ?? 0) > 0) return false;
-  if (event.channel_type === 'im' || event.channel?.startsWith('D')) return false;
-  if (/^[/%!]/.test(words)) return false;
-  if (CommandParser.isNewCommand(words)) return false;
-  return true;
+export const HOST_ONLY_EVENT_FIELDS = [
+  'planModeOverride',
+  'epicOverride',
+  'epicChild',
+  'workingDirectoryOverride',
+] as const;
+
+/** The event without the host-only fields (the same object when it has none). */
+export function withoutHostOnlyFields<T extends object>(event: T): T {
+  if (!event || !HOST_ONLY_EVENT_FIELDS.some((k) => k in event)) return event;
+  const copy = { ...event } as Record<string, unknown>;
+  for (const k of HOST_ONLY_EVENT_FIELDS) delete copy[k];
+  return copy as T;
 }
 
 export class EventRouter {
@@ -363,6 +345,9 @@ export class EventRouter {
     private deps: EventRouterDeps,
     private messageHandler: MessageHandler,
   ) {
+    // #854 — the one door Slack events come in by: fields only the host sets are never taken from one.
+    const handle = messageHandler;
+    this.messageHandler = (event, say) => handle(withoutHostOnlyFields(event), say);
     if (deps.commandDeps) {
       this.commandRouter = eventRouterProviders.createLegacyCommandRouter(deps.commandDeps);
       this.zRouter = new ZRouter({ legacyRouter: this.commandRouter });
@@ -824,11 +809,6 @@ export class EventRouter {
       if (routedViaZ.terminal) {
         return;
       }
-      // E2 ⑧ — a live task's instruction thread: anything that would run here
-      // (an instruction, `!`, `%`, a `/z` continuation) is answered by the host.
-      if (await this.deps.guardInstructionThread?.(event as MessageEvent, say)) {
-        return;
-      }
       let nextText = text;
       if (routedViaZ.continueWithPrompt !== undefined) {
         // ZRouter captured a follow-up prompt; continue legacy pipeline with it.
@@ -836,18 +816,9 @@ export class EventRouter {
       }
       // `/z goal <objective>`: the objective is the user's words — mark it so
       // the pipeline never parses it as a command again.
-      const baseRouteContext = routedViaZ.verbatimPrompt
+      const routeContext = routedViaZ.verbatimPrompt
         ? { ...(event as MessageEvent).routeContext, verbatimPrompt: true }
         : (event as MessageEvent).routeContext;
-      // E2 ⑦ — decided on the original mention's words (before any rewrite):
-      // a plain instruction may become a dashboard task (⑧ reads it).
-      // No bot id: the mention could not be stripped, so the words are a guess — no marker.
-      const routeContext =
-        botId !== undefined &&
-        routedViaZ.continueWithPrompt === undefined &&
-        isTaskEntryCandidate(event as MessageEvent, text)
-          ? { ...baseRouteContext, taskEntryCandidate: true }
-          : baseRouteContext;
 
       // Source thread re-mention: if mentioned in a thread that has a linked bot session,
       // respond with that session's status instead of creating a new session.
@@ -1368,8 +1339,6 @@ export class EventRouter {
     const text: string = messageEvent.text || '';
     const botId = await this.deps.slackApi.getBotUserId();
     if (botId && text.includes(`<@${botId}>`)) {
-      // E2 ⑧ — not a new Slack session in a live task's instruction thread.
-      if (await this.deps.guardInstructionThread?.(messageEvent, say)) return;
       this.logger.info('Handling file upload with bot mention as new session initiation', {
         channel,
         user: messageEvent.user,
