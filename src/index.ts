@@ -235,7 +235,13 @@ import {
 import { TASK_NOTIFICATION_LEDGER_FILENAME, TaskNotificationLedger } from './task-turn/task-notification-ledger';
 import type { TaskPlanDoc } from './task-turn/task-plan';
 import { createSlackPlanDecider, createTaskPlanDecider } from './task-turn/task-plan-decision';
-import { createRestartNoticeStart, createTaskRestartResumer, cutTurnAuthor } from './task-turn/task-restart-resume';
+import {
+  createRestartNoticeStart,
+  createTaskRestartResumer,
+  cutTurnAuthor,
+  type RestartResumeOutcome,
+  runRestoredFollowups,
+} from './task-turn/task-restart-resume';
 import {
   createTaskTurnController,
   type TaskCommandRequest,
@@ -2437,26 +2443,53 @@ async function start() {
           const cutTasks = taskRegistry.getRestartCutTasks().slice();
           taskRegistry.clearRestartCutTasks();
           if (cutTasks.length === 0) timing('No dashboard task was cut by the restart');
-          if (cutTasks.length > 0 && taskTurnController) {
-            createTaskRestartResumer({
-              controller: taskTurnController,
-              getSession: (key) => taskRegistry.getSessionByKey(key),
-              logger: new Logger('TaskRestartResume'),
-              goalsResumed: () => goalsResumedAtBoot,
-              // A record saved before the turn's initiator was kept: the cut turn's author, from its conversation.
-              readCutTurnAuthor: async (session, cutTurnId) => {
-                const record = session.conversationId ? await getConversation(session.conversationId) : null;
-                return record ? cutTurnAuthor(record.turns, cutTurnId) : undefined;
-              },
+          const resumed: Promise<Map<string, RestartResumeOutcome>> =
+            cutTasks.length > 0 && taskTurnController
+              ? createTaskRestartResumer({
+                  controller: taskTurnController,
+                  getSession: (key) => taskRegistry.getSessionByKey(key),
+                  logger: new Logger('TaskRestartResume'),
+                  goalsResumed: () => goalsResumedAtBoot,
+                  // A record saved before the turn's initiator was kept: the cut turn's author, from its conversation.
+                  readCutTurnAuthor: async (session, cutTurnId) => {
+                    const record = session.conversationId ? await getConversation(session.conversationId) : null;
+                    return record ? cutTurnAuthor(record.turns, cutTurnId) : undefined;
+                  },
+                })
+                  .resume(cutTasks)
+                  .then((outcomes) => {
+                    const started = [...outcomes.values()].filter((o) => o.status === 'started').length;
+                    const waiting = [...outcomes.values()].filter((o) => o.status === 'waiting').length;
+                    timing(
+                      `Resumed ${started}/${cutTasks.length} dashboard task(s) the restart cut (${waiting} waiting)`,
+                    );
+                    return outcomes;
+                  })
+                  .catch((error) => {
+                    logger.warn('Resuming dashboard tasks after restart failed (non-critical)', error);
+                    return new Map<string, RestartResumeOutcome>();
+                  })
+              : Promise.resolve(new Map<string, RestartResumeOutcome>());
+          // Owner directive 2026-11-03 — the words a task still waits with are sent after the restart,
+          // unless a person stopped the work (the load keeps them queued). A resumed chain (started, or
+          // waiting for its slot) and the goal loop drain their own at a healthy end; this sends the rest.
+          void resumed
+            .then((outcomes) => {
+              if (!taskTurnController) return;
+              const sent = runRestoredFollowups(
+                {
+                  controller: taskTurnController,
+                  sessions: () => taskRegistry.getAllSessions(),
+                  logger: new Logger('TaskRestoredFollowups'),
+                  goalsResumed: () => goalsResumedAtBoot,
+                },
+                outcomes,
+              );
+              timing(`Sent the queued instruction of ${sent} dashboard task(s) the restart left waiting`);
             })
-              .resume(cutTasks)
-              .then((outcomes) => {
-                const started = [...outcomes.values()].filter((o) => o.status === 'started').length;
-                const waiting = [...outcomes.values()].filter((o) => o.status === 'waiting').length;
-                timing(`Resumed ${started}/${cutTasks.length} dashboard task(s) the restart cut (${waiting} waiting)`);
-              })
-              .catch((error) => logger.warn('Resuming dashboard tasks after restart failed (non-critical)', error));
-          }
+            .catch((error) =>
+              logger.warn('Sending dashboard tasks’ queued instructions after restart failed (non-critical)', error),
+            );
         } catch (error) {
           logger.warn('Resuming dashboard tasks after restart failed (non-critical)', error);
         }

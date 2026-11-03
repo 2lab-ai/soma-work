@@ -20,7 +20,12 @@
  */
 import type { ConversationSession } from '../types';
 import { TASK_GOAL_START_MAX_RETRIES, TASK_GOAL_START_RETRY_MS } from './task-goal-loop';
-import type { TaskCommandRequest, TaskCommandResponse, TaskTurnController } from './task-turn-controller';
+import type {
+  RestoredQueueRun,
+  TaskCommandRequest,
+  TaskCommandResponse,
+  TaskTurnController,
+} from './task-turn-controller';
 
 /** What the conversation records as the resumed turn's instruction. */
 export const TASK_RESTART_TEXT = '[재시작 후 자동 재개] 서비스가 재시작되어 중단된 작업을 이어서 진행합니다.';
@@ -216,6 +221,72 @@ export function createTaskRestartResumer(deps: TaskRestartResumerDeps): TaskRest
       return outcomes;
     },
   };
+}
+
+export interface RestoredFollowupsDeps {
+  controller: Pick<TaskTurnController, 'runQueuedAfterRestart'>;
+  /** Every live session by key (the registry's). */
+  sessions(): Iterable<[string, ConversationSession]>;
+  logger: { info(msg: string, meta?: unknown): void };
+  /** Did the boot's goal resume run? Then a task with an active goal is the goal loop's. Default: it ran. */
+  goalsResumed?: () => boolean;
+  /** Schedules a retry (production: an unref'd setTimeout). */
+  schedule?: (fn: () => void, delayMs: number) => void;
+  /** Between tries of a task whose owner's slot is busy. Default: the resumer's ({@link TASK_GOAL_START_RETRY_MS}). */
+  retryMs?: number;
+  /** Tries per task; the last one sends the word even into a busy slot. Default: the resumer's bound. */
+  maxAttempts?: number;
+}
+
+/**
+ * The words a dashboard task still waits with after a restart are sent (owner directive 2026-11-03:
+ * "서비스 재부팅하면 자동으로 처리되지 않은 메세지는 그 이후에 반드시 보내야함 작업이 중단된거 아니면").
+ * The load keeps them `queued` (`sanitizeTaskFollowups`); a chain the boot resumes runs them at its
+ * healthy end, as any chain end does. This runs the oldest queued word of every other task, after
+ * {@link createTaskRestartResumer}'s first round, given its outcomes:
+ *   - left to the resumed chain: a task the resumer started, or waits to start (its slot was busy);
+ *   - left to the goal loop: a task with an active goal, when the boot's goal resume ran (as the resumer);
+ *   - the rest — no cut turn, a resume skipped or refused — are sent now, through the controller's
+ *     `runQueuedAfterRestart` (an idle task only; a running chain's end drains its own queue).
+ * A task whose owner's slot is busy is tried again, bounded like the resumer; the last try sends it
+ * anyway, so a refusal pauses the words with why. Returns how many tasks it sent a word for now.
+ */
+export function runRestoredFollowups(
+  deps: RestoredFollowupsDeps,
+  resumed: ReadonlyMap<string, RestartResumeOutcome>,
+): number {
+  const retryMs = deps.retryMs ?? TASK_GOAL_START_RETRY_MS;
+  const maxAttempts = deps.maxAttempts ?? TASK_GOAL_START_MAX_RETRIES;
+  const schedule =
+    deps.schedule ??
+    ((fn: () => void, delayMs: number) => {
+      const timer = setTimeout(fn, delayMs);
+      timer.unref?.();
+    });
+  const goalsResumed = deps.goalsResumed?.() ?? true;
+
+  const attempt = (sessionKey: string, tries: number): RestoredQueueRun => {
+    const run = deps.controller.runQueuedAfterRestart(sessionKey, { lastTry: tries >= maxAttempts });
+    if (run === 'slot-busy' && tries < maxAttempts) {
+      schedule(() => {
+        attempt(sessionKey, tries + 1);
+      }, retryMs);
+    }
+    return run;
+  };
+
+  let sent = 0;
+  for (const [sessionKey, session] of deps.sessions()) {
+    if (session.slackless !== true) continue;
+    if (!session.taskFollowups?.some((item) => item.state === 'queued')) continue;
+    const outcome = resumed.get(sessionKey)?.status;
+    if (outcome === 'started' || outcome === 'waiting') continue;
+    if (session.goal?.status === 'active' && goalsResumed) continue;
+    const run = attempt(sessionKey, 1);
+    if (run === 'sent') sent++;
+    else deps.logger.info('A restored task queue waits', { sessionKey, run });
+  }
+  return sent;
 }
 
 export interface RestartNoticeStartDeps {
