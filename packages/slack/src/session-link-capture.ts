@@ -212,6 +212,8 @@ interface Word {
 type CodeLang = 'js' | 'py' | 'rb';
 
 const MAX_NESTING = 4;
+/** At most this many writes are read from one tool call. */
+const MAX_WRITES = 256;
 /** Longer statements are not read (a model-written statement is rarely over a few thousand characters). */
 const MAX_STATEMENT_LENGTH = 32_000;
 const HEREDOC = /<<-?\s*(['"]?)([A-Za-z_][\w-]*)\1/;
@@ -528,16 +530,14 @@ function methodTokens(statement: string): MethodToken[] {
   return out;
 }
 
-function verbOf(statement: string, tokens: MethodToken[], at: number): string {
+function verbOf(statement: string, tokens: MethodToken[], at: number, curlGet: boolean): string {
   let best: { verb: string; dist: number } | undefined;
   for (const t of tokens) {
     const dist = Math.abs(t.at - at);
     if (!best || dist < best.dist) best = { verb: t.verb, dist };
   }
   if (best) return best.verb;
-  if (/\bcurl\b/.test(statement) && CURL_DATA.test(statement) && !/(?:^|\s)(?:-G|--get)\b/.test(statement)) {
-    return 'POST';
-  }
+  if (/\bcurl\b/.test(statement) && CURL_DATA.test(statement) && !curlGet) return 'POST';
   if (/\bgh\s+api\b/.test(statement) && GH_API_FIELDS.test(statement)) return 'POST';
   return 'GET';
 }
@@ -564,14 +564,117 @@ function ghCliWrite(command: string): GitHubWrite | undefined {
   return { op: action, kind, ...(repo ? { repo } : {}), ...(number ? { number } : {}) };
 }
 
-/** The PR and issue writes a shell request names: an endpoint and the method nearest to it. */
-function apiWrites(statement: string): GitHubWrite[] {
+/** Options whose value is data, a header, a file or a setting — never the request's destination. */
+const VALUE_OPTIONS: Record<string, { long: Set<string>; short: string; flags: string }> = {
+  curl: {
+    long: new Set([
+      '--data',
+      '--data-raw',
+      '--data-binary',
+      '--data-urlencode',
+      '--data-ascii',
+      '--json',
+      '--form',
+      '--form-string',
+      '--header',
+      '--user',
+      '--user-agent',
+      '--referer',
+      '--cookie',
+      '--cookie-jar',
+      '--output',
+      '--write-out',
+      '--upload-file',
+      '--url-query',
+      '--proxy',
+      '--config',
+      '--cert',
+      '--key',
+      '--cacert',
+      '--range',
+      '--max-time',
+      '--connect-timeout',
+      '--retry',
+      '--request',
+      '--oauth2-bearer',
+    ]),
+    short: 'dFHuAebcowTXxKErmyYzC',
+    flags: 'sSLkivfGINjqgZ0123456#l',
+  },
+  gh: {
+    long: new Set([
+      '--field',
+      '--raw-field',
+      '--input',
+      '--header',
+      '--jq',
+      '--template',
+      '--cache',
+      '--method',
+      '--preview',
+      '--hostname',
+    ]),
+    short: 'fFHqtXp',
+    flags: 'i',
+  },
+  wget: {
+    long: new Set(['--post-data', '--body-data', '--header', '--output-document', '--method', '--user-agent']),
+    short: 'OUoaePtT',
+    flags: 'qcvN',
+  },
+};
+
+/** The words that can be a request's destination: positional arguments, not option values or httpie data items. */
+function destinationWords(words: Word[], at: number, name: string): Word[] {
+  const opts = VALUE_OPTIONS[name];
+  const httpie = name === 'http' || name === 'https' || name === 'xh';
+  const out: Word[] = [];
+  for (let k = at + 1; k < words.length; k++) {
+    const v = words[k].value;
+    if (v.startsWith('--')) {
+      if (opts?.long.has(v)) k++;
+      continue;
+    }
+    if (/^-[^-]/.test(v)) {
+      // `-d` takes the next word; so does a bundle of flags ending in one (`-sd`); `-dfoo` carries its own value.
+      const letters = v.slice(1);
+      const last = letters[letters.length - 1];
+      const bundle = [...letters.slice(0, -1)].every((c) => opts?.flags.includes(c));
+      if (opts && bundle && opts.short.includes(last)) k++;
+      continue;
+    }
+    if (httpie && /^[\w-]+(?::=|==|=|:|@)/.test(v)) continue;
+    out.push(words[k]);
+  }
+  return out;
+}
+
+/** Whether a curl command is a GET despite its data: `-G` / `--get`, also inside a flag bundle (`-sG`). */
+function curlGet(words: Word[], at: number): boolean {
+  const flags = VALUE_OPTIONS.curl.flags;
+  return words
+    .slice(at + 1)
+    .some(
+      (w) =>
+        w.value === '--get' ||
+        (/^-[A-Za-z0-9#]+$/.test(w.value) &&
+          w.value.includes('G') &&
+          [...w.value.slice(1)].every((c) => flags.includes(c))),
+    );
+}
+
+/** The PR and issue writes a shell request names: its destination and the method nearest to it. */
+function apiWrites(statement: string, words: Word[], at: number): GitHubWrite[] {
+  const name = nameOf(words[at]?.value);
+  const get = name === 'curl' && curlGet(words, at);
   const tokens = methodTokens(statement);
   const out: GitHubWrite[] = [];
-  ENDPOINT.lastIndex = 0;
-  for (const m of statement.matchAll(ENDPOINT)) {
-    const w = writeOf(m, verbOf(statement, tokens, m.index ?? 0));
-    if (w) out.push(w);
+  for (const d of destinationWords(words, at, name)) {
+    ENDPOINT.lastIndex = 0;
+    for (const m of d.value.matchAll(ENDPOINT)) {
+      const w = writeOf(m, verbOf(statement, tokens, d.start + (m.index ?? 0), get));
+      if (w) out.push(w);
+    }
   }
   return out;
 }
@@ -831,6 +934,7 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
   if (code.length > MAX_STATEMENT_LENGTH) return;
   const lexed = lexCode(code, lang);
   const { masked } = lexed;
+  const sends = /\b(?:fetch|urlopen)\s*\(/.test(masked);
   let calls = 0;
   SENDING_CALL.lastIndex = 0;
   for (const m of masked.matchAll(SENDING_CALL)) {
@@ -847,12 +951,13 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
       continue;
     }
     const name = m[4];
+    // Constructing a Request sends nothing; count it only when the code hands requests to fetch / urlopen.
+    if (name === 'Request' && !sends) continue;
     // `octokit.request("POST /repos/…")`, `requests.request("POST", url)`
     const leading = leadsWithString ? first.value.match(/^(GET|POST|PUT|PATCH|DELETE)(?:\s+\/?repos\/|$)/i) : null;
     const named = name.match(/\.(get|post|put|patch|delete)$/)?.[1];
     const verb = (named ?? leading?.[1] ?? methodOf(masked, args, open) ?? 'GET').toUpperCase();
-    for (const s of args) {
-      if (!s.direct) continue;
+    for (const s of destinationArgs(masked, args, leadsWithString)) {
       ENDPOINT.lastIndex = 0;
       for (const e of s.value.matchAll(ENDPOINT)) {
         const w = writeOf(e, verb);
@@ -860,6 +965,24 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
       }
     }
   }
+}
+
+/** Where a call sends: its leading string argument, or a direct `url` / `path` / `uri` option — never a body. */
+function destinationArgs(masked: string, args: CallArg[], leadsWithString: boolean): CallArg[] {
+  const out: CallArg[] = leadsWithString ? [args[0]] : [];
+  for (let k = 0; k < args.length; k++) {
+    const s = args[k];
+    if (!s.direct || (leadsWithString && k === 0)) continue;
+    const keyed = /\b(?:url|path|uri|baseURL|endpoint)\s*[:=]\s*$/.test(
+      masked.slice(Math.max(0, s.start - 40), s.start),
+    );
+    const quotedKey =
+      k > 0 &&
+      /^(?:url|path|uri|baseURL|endpoint)$/.test(args[k - 1].value) &&
+      /^\s*:\s*$/.test(masked.slice(args[k - 1].end, s.start));
+    if (keyed || quotedKey) out.push(s);
+  }
+  return out;
 }
 
 /** The writes of a shell command, statement by statement; nested shell and code are read the same way. */
@@ -887,7 +1010,7 @@ function shellWrites(command: string, depth: number, out: GitHubWrite[]): void {
     if (cli) out.push(cli);
     const run = runOf(words, at);
     if (!run) continue;
-    if ('send' in run) out.push(...apiWrites(st.text));
+    if ('send' in run) out.push(...apiWrites(st.text, words, at));
     else if (st.depth < MAX_NESTING) {
       if ('shell' in run) shellWrites(run.shell, st.depth + 1, out);
       else codeWrites(run.code, run.lang, st.depth + 1, out);
@@ -936,7 +1059,8 @@ export function githubWritesOf(toolName: unknown, input: unknown): GitHubWrite[]
   }
   const out: GitHubWrite[] = [];
   shellWrites(fields.command, 0, out);
-  return out;
+  // A model-written command makes a handful; a bound keeps one pathological call cheap to prove.
+  return out.slice(0, MAX_WRITES);
 }
 
 interface FoundObject {
@@ -972,45 +1096,130 @@ function objectsIn(text: string): FoundObject[] {
   return found.sort((a, b) => a.at - b.at);
 }
 
-const MERGED_TEXT = /\bmerged\s+pull\s+request\s+(?:([\w.-]+\/[\w.-]+))?#(\d+)/i;
-const CLOSED_TEXT = /\bclosed\s+(pull\s+request|issue)\s+(?:([\w.-]+\/[\w.-]+))?#(\d+)/i;
+const MERGED_TEXT = /\bmerged\s+pull\s+request\s+(?:([\w.-]+\/[\w.-]+))?#(\d+)/gi;
+const CLOSED_TEXT = /\bclosed\s+(pull\s+request|issue)\s+(?:([\w.-]+\/[\w.-]+))?#(\d+)/gi;
+
+interface Said {
+  repo?: string;
+  number: number;
+  kind: 'pr' | 'issue';
+}
+
+/** One result, read once: its objects, the merges and closes it says happened, and (lazily) its JSON documents. */
+interface ResultIndex {
+  text: string;
+  objects: FoundObject[];
+  merged: Said[];
+  closed: Said[];
+  /** Per `kind repo`, where the next create may be found (objects before it are taken or another target's). */
+  cursor: Map<string, number>;
+  docs?: Array<Record<string, unknown>>;
+}
+
+function indexResult(text: string): ResultIndex {
+  MERGED_TEXT.lastIndex = 0;
+  CLOSED_TEXT.lastIndex = 0;
+  return {
+    text,
+    objects: objectsIn(text),
+    merged: [...text.matchAll(MERGED_TEXT)].map((m) => ({
+      repo: m[1]?.toLowerCase(),
+      number: Number(m[2]),
+      kind: 'pr',
+    })),
+    closed: [...text.matchAll(CLOSED_TEXT)].map((m) => ({
+      repo: m[2]?.toLowerCase(),
+      number: Number(m[3]),
+      kind: /pull/i.test(m[1]) ? 'pr' : 'issue',
+    })),
+    cursor: new Map(),
+  };
+}
+
+/** The top-level JSON objects of a result (the whole text, else each line that is a document) — not nested ones. */
+function documentsOf(idx: ResultIndex): Array<Record<string, unknown>> {
+  if (idx.docs) return idx.docs;
+  const docs: Array<Record<string, unknown>> = [];
+  const add = (v: unknown) => {
+    for (const o of Array.isArray(v) ? v : [v]) if (o && typeof o === 'object' && !Array.isArray(o)) docs.push(o);
+  };
+  try {
+    add(JSON.parse(idx.text));
+  } catch {
+    for (const line of idx.text.split('\n')) {
+      const t = line.trim();
+      if (!t.startsWith('{') && !t.startsWith('[')) continue;
+      try {
+        add(JSON.parse(t));
+      } catch {
+        // not a document
+      }
+    }
+  }
+  idx.docs = docs;
+  return docs;
+}
+
+/** The state of the PR or issue object itself (its own `html_url` and `state`, not a nested milestone's). */
+function stateOf(idx: ResultIndex, repo: string, kind: 'pr' | 'issue', number: number): string | undefined {
+  const url = linkOf(repo, kind, number)?.url.toLowerCase();
+  for (const d of documentsOf(idx)) {
+    if (typeof d.html_url === 'string' && d.html_url.toLowerCase() === url && typeof d.state === 'string')
+      return d.state;
+  }
+  return undefined;
+}
+
+/** The said merge or close this write is: the one naming its number (and repo), or — when it names none — the first. */
+function saidFor(w: GitHubWrite, said: Said[]): Said | undefined {
+  return said.find(
+    (x) =>
+      x.kind === w.kind &&
+      (w.number === undefined || x.number === w.number) &&
+      (!w.repo || !x.repo || x.repo === w.repo),
+  );
+}
 
 function linkOf(repo: string, kind: 'pr' | 'issue', number: number): CapturedLink | undefined {
   return classifyLinkUrl(`https://github.com/${repo}/${kind === 'pr' ? 'pull' : 'issues'}/${number}`);
 }
 
-function effectOf(w: GitHubWrite, text: string, taken: Set<string>): GitHubEffect | undefined {
+function effectOf(w: GitHubWrite, idx: ResultIndex, taken: Set<string>, sameOp: number): GitHubEffect | undefined {
   if (w.op === 'create') {
-    const hit = objectsIn(text).find(
-      (o) => o.kind === w.kind && (!w.repo || o.repo === w.repo) && !taken.has(o.url.toLowerCase()),
-    );
-    if (!hit) return undefined;
-    taken.add(hit.url.toLowerCase());
-    const link = classifyLinkUrl(hit.url);
-    return link ? { op: 'create', link } : undefined;
+    const key = `${w.kind} ${w.repo ?? ''}`;
+    for (let i = idx.cursor.get(key) ?? 0; i < idx.objects.length; i++) {
+      const o = idx.objects[i];
+      if (o.kind !== w.kind || (w.repo && o.repo !== w.repo) || taken.has(o.url.toLowerCase())) continue;
+      idx.cursor.set(key, i + 1);
+      taken.add(o.url.toLowerCase());
+      const link = classifyLinkUrl(o.url);
+      return link ? { op: 'create', link } : undefined;
+    }
+    idx.cursor.set(key, idx.objects.length);
+    return undefined;
   }
   if (w.op === 'merge') {
-    const said = text.match(MERGED_TEXT);
-    if (!said && !/"merged"\s*:\s*true\b/.test(text)) return undefined;
-    const repo = w.repo ?? said?.[1]?.toLowerCase();
-    const number = w.number ?? (said ? Number(said[2]) : undefined);
+    // gh's line names the PR: it proves only that one. A REST `"merged": true` names none: it proves the write only
+    // when the call made a single merge.
+    const said = idx.merged.length > 0 ? saidFor(w, idx.merged) : undefined;
+    if (idx.merged.length > 0 && !said) return undefined;
+    if (!said && !(sameOp === 1 && w.repo && w.number && /"merged"\s*:\s*true\b/.test(idx.text))) return undefined;
+    const repo = w.repo ?? said?.repo;
+    const number = w.number ?? said?.number;
     const link = repo && number ? linkOf(repo, 'pr', number) : undefined;
     return link ? { op: 'merge', link } : undefined;
   }
   if (w.op === 'patch') {
-    if (!/"state"\s*:\s*"closed"/.test(text) || !w.repo || !w.number) return undefined;
-    const proven = objectsIn(text).some((o) => o.repo === w.repo && o.number === w.number && o.kind === w.kind);
-    const link = proven ? linkOf(w.repo, w.kind, w.number) : undefined;
+    if (!w.repo || !w.number || stateOf(idx, w.repo, w.kind, w.number) !== 'closed') return undefined;
+    const link = linkOf(w.repo, w.kind, w.number);
     return link ? { op: 'close', link } : undefined;
   }
-  // close: gh's own line (`✓ Closed issue a/b#30 (…)`), or an MCP update's object with the state `closed`.
-  const said = text.match(CLOSED_TEXT);
-  const saidKind = said ? (/pull/i.test(said[1]) ? 'pr' : 'issue') : undefined;
-  const byText = said && saidKind === w.kind;
-  const byObject = /"state"\s*:\s*"closed"/.test(text);
-  if (!byText && !byObject) return undefined;
-  const repo = w.repo ?? (byText ? said?.[2]?.toLowerCase() : undefined);
-  const number = w.number ?? (byText ? Number(said?.[3]) : undefined);
+  // close: gh's own line (`✓ Closed issue a/b#30 (…)`) naming this target, or an MCP update's object, closed.
+  const said = saidFor(w, idx.closed);
+  const byObject = !said && !!w.repo && !!w.number && stateOf(idx, w.repo, w.kind, w.number) === 'closed';
+  if (!said && !byObject) return undefined;
+  const repo = w.repo ?? said?.repo;
+  const number = w.number ?? said?.number;
   const link = repo && number ? linkOf(repo, w.kind, number) : undefined;
   return link ? { op: 'close', link } : undefined;
 }
@@ -1033,8 +1242,11 @@ export function githubEffectsOf(
     const text = resultText(r.result);
     if (!text) continue;
     const taken = new Set<string>();
+    const idx = indexResult(text);
+    const count = (op: GitHubWrite['op']) => ws.filter((x) => x.op === op).length;
+    const merges = count('merge');
     for (const w of ws) {
-      const effect = effectOf(w, text, taken);
+      const effect = effectOf(w, idx, taken, w.op === 'merge' ? merges : 0);
       if (!effect) continue;
       const key = `${effect.op} ${effect.link.url}`;
       if (seen.has(key)) continue;

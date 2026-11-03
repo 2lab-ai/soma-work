@@ -94,7 +94,8 @@ describe('ToolResultInterceptor', () => {
         },
       ]);
       expect(mockEmitter.emitGitHubEvent.mock.calls.map((c: unknown[]) => [c[0], c[4]])).toEqual([
-        ['pr_created', { prUrl: 'https://github.com/a/b/pull/81', prNumber: 81 }],
+        // `proven`: the leak report (#835) names a creator only from these.
+        ['pr_created', { prUrl: 'https://github.com/a/b/pull/81', prNumber: 81, proven: true }],
         ['pr_merged', { prNumber: 82 }],
       ]);
     });
