@@ -6963,6 +6963,9 @@ export class SlackHandler {
           error: (error as Error).message,
         });
         // Skip auto-resume if notification failed — channel is likely inaccessible
+        // #854 — a cut turn nobody resumes ends its chain here: an epic's child tells its epic
+        // (review #872 — on the task path the load recorded it interrupted).
+        if (isWorking) this.noteChainSettled(session.sessionKey, { result: 'interrupted', reason: 'shutdown' });
         if (i < recovered.length - 1) {
           await new Promise((resolve) => setTimeout(resolve, SlackHandler.CRASH_RECOVERY_DELAY_MS));
         }

@@ -1529,7 +1529,11 @@ async function start() {
           }
         }
       }
-      if (session.kind === 'epic') slackEpicWaker.wake(key);
+      if (session.kind === 'epic') {
+        // Its chain ended: the wakes it ran are done (a restart before this delivers them again).
+        epicRegistry.settleEpicWakes(key);
+        slackEpicWaker.wake(key);
+      }
     });
     // E4 ⑥ (.prd/19 D7) — an epic with pending events wakes when it is idle: when a chain
     // of its ends (the controller's onChainEnd, above — the post-drain idle hook fires inside

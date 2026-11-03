@@ -47,7 +47,10 @@ describe('index.ts — epics as Slack sessions (#854)', () => {
     const settled = section('slackHandler.setChainSettledListener((key, outcome) => {', '\n    });');
     expect(settled).toMatch(/const end = chainEndOf\(outcome\);/);
     expect(settled).toMatch(/epicRegistry\.recordSessionChainEnd\(key, end\)/);
-    expect(settled).toMatch(/if \(session\.kind === 'epic'\) slackEpicWaker\.wake\(key\);/);
+    // An epic's chain end settles the wakes it ran, then it may wake again (review #872: at least once).
+    expect(settled).toMatch(
+      /if \(session\.kind === 'epic'\) \{[\s\S]*epicRegistry\.settleEpicWakes\(key\);\s*slackEpicWaker\.wake\(key\);/,
+    );
   });
 
   it('W3 — an event wakes the epic on its own path; the boot scan wakes a Slack epic', () => {

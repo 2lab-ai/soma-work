@@ -173,6 +173,30 @@ describe('SessionRegistry — epics as Slack sessions (#854)', () => {
     expect(epic.epicEvents?.every((e) => e.state === 'pending')).toBe(true);
   });
 
+  it('SE8 — a wake the restart cut is delivered again; one its chain finished is not (review #872)', () => {
+    const reg = new SessionRegistry();
+    const { epic, key: epicKey } = epicIn(reg);
+    const { key } = childIn(reg, epic.taskId as string);
+    reg.recordSessionChainEnd(key, { outcome: 'completed', at: 1000 });
+    reg.consumeEpicWake(
+      epicKey,
+      (epic.epicEvents ?? []).map((e) => e.id),
+      'wake:1',
+    );
+    // The process dies after the wake was consumed, before its chain ended.
+    const after = new SessionRegistry();
+    after.loadSessions();
+    const reloaded = after.getSessionByKey(epicKey);
+    expect(reloaded?.epicEvents?.map((e) => [e.state, e.consumedBy])).toEqual([['pending', undefined]]);
+
+    // A wake whose chain ended (the epic's chain-settled hook settles it) stays delivered.
+    reg.settleEpicWakes(epicKey);
+    expect(epic.epicEvents?.map((e) => [e.state, e.consumedBy])).toEqual([['delivered', undefined]]);
+    const later = new SessionRegistry();
+    later.loadSessions();
+    expect(later.getSessionByKey(epicKey)?.epicEvents?.map((e) => e.state)).toEqual(['delivered']);
+  });
+
   it('SE6 — the plan writer and the sleep exemption treat a Slack epic as an epic', () => {
     const reg = new SessionRegistry();
     const { epic } = epicIn(reg);
