@@ -88,6 +88,26 @@ describe('turn end — the host runs local:auto-es (Path B)', () => {
     }
   });
 
+  // trinity R1 (grok P1): appended after SUMMARY_PROMPT and the mode template, the contract must say it overrides
+  // their TL;DR line rule and section order — otherwise the prompt forbids the very ⚠️ line the card waits on.
+  it('the contract states it overrides the TL;DR line rule and the section order before it', () => {
+    const head = (contract as string).split('\n')[0];
+    expect(head).toMatch(/override/i);
+    expect(head).toMatch(/TL;DR/);
+    expect(head).toMatch(/section order|last section/i);
+    expect(head).toMatch(/mode template/i);
+  });
+
+  it('the composed turn-end prompt asks for the ⚠️ line and the final section without leaving the conflict open', () => {
+    const prompt = new SummaryService(undefined, undefined, { turnEndContract: contract }).buildPrompt(
+      session({ links: { pr: { url: 'https://github.com/a/b/pull/1', type: 'pr', provider: 'github' } } }),
+    );
+    const override = prompt.search(/override/i);
+    expect(override).toBeGreaterThan(prompt.indexOf(SUMMARY_PROMPT));
+    expect(prompt.indexOf('⚠️ **')).toBeGreaterThan(override);
+    expect(prompt.indexOf('User follow-up required')).toBeGreaterThan(override);
+  });
+
   it('SUMMARY_PROMPT is the generic es contract — the harness rules live in the skill', () => {
     expect(SUMMARY_PROMPT).not.toContain('⚠️');
     expect(SUMMARY_PROMPT).not.toMatch(/created this session|User follow-up required/);
