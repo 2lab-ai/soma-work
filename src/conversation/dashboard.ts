@@ -1613,7 +1613,8 @@ function taskFollowupsOf(
         enqueuedAt: item.enqueuedAt,
         state: item.state === 'sending' ? 'dispatched' : item.state,
         epoch: item.epoch,
-        editable: !sending,
+        // A goal's first turn is its objective: it is not edited (#865 — cancel it, the goal pauses).
+        editable: !sending && item.goalOpeningId === undefined,
         authorId: item.authorId,
       };
       if (item.authorId !== ownerId) out.author = nameOf(item.authorId);
@@ -18103,6 +18104,9 @@ async function sendCommand(text, ref, files) {
   // a goal it started brings its own turn — the objective — when that turn is recorded.
   if (goalSaid) {
     if (optimisticId && panelSessionKey === sendingSessionKey) dropTurnFromPanel(optimisticId);
+    // Sent while a turn ran: the steering row it made waits for a queue entry that never comes
+    // (the command applied at once) — unless a goal it started queued its first turn there.
+    if (ref && !(data && data.queued)) el.setItemState(ref, 'cancelled');
     dashToast({ title: '목표', description: goalSaid, tone: 'success' });
   }
   // Sent: its files went with it. Failed: they stay kept by ref for the Retry.

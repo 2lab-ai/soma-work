@@ -141,6 +141,7 @@ describe('TaskTurnController — goal loop turns (SSOT 2026-11-03)', () => {
           ran.push({ text: request.text, actor: request.actorUserId });
           return { status: 200, body: { ok: true, goalCommand: true, message: 'done' } };
         }),
+        opensGoal: vi.fn((text: string) => !/^\/?goal\s*(clear|pause|resume|done|max.*|auto.*)?$/i.test(text.trim())),
         openingDropped: vi.fn(),
       };
       const h = harness({ goalCommands }, steps);
@@ -237,6 +238,7 @@ describe('TaskTurnController — goal loop turns (SSOT 2026-11-03)', () => {
 
     it('a goal’s opening, a goal continuation and a host start are turns, never goal commands', async () => {
       const h = goalHarness();
+      h.session.goal = { goalId: 'g1', status: 'active', openingPending: true };
       for (const extra of [
         { goalOpeningId: 'g1' },
         { goalContinuation: true, initiator: 'host' as const },
@@ -252,7 +254,7 @@ describe('TaskTurnController — goal loop turns (SSOT 2026-11-03)', () => {
 
     it('a goal’s opening queued behind a running turn keeps its goal id, and drains as the opening', async () => {
       const h = goalHarness();
-      h.session.goal = { goalId: 'g1', status: 'active' };
+      h.session.goal = { goalId: 'g1', status: 'active', openingPending: true };
       const b = blocking(h);
       const first = await b.controller.start({ sessionKey: KEY, text: 'work', actorUserId: 'UOWNER' });
       const opening = await b.controller.start({
@@ -274,7 +276,7 @@ describe('TaskTurnController — goal loop turns (SSOT 2026-11-03)', () => {
     // astra-zhuge #876 R1 P1 — `goal clear` while the opening waited: the objective must not run.
     it('a queued opening whose goal moved on is skipped at the drain; the next word runs', async () => {
       const h = goalHarness();
-      h.session.goal = { goalId: 'g1', status: 'active' };
+      h.session.goal = { goalId: 'g1', status: 'active', openingPending: true };
       const b = blocking(h);
       const first = await b.controller.start({ sessionKey: KEY, text: 'work', actorUserId: 'UOWNER' });
       await b.controller.start({
@@ -296,7 +298,7 @@ describe('TaskTurnController — goal loop turns (SSOT 2026-11-03)', () => {
 
     it('cancelling a queued opening tells the goal commands (its goal pauses, first turn owed)', async () => {
       const h = goalHarness();
-      h.session.goal = { goalId: 'g1', status: 'active' };
+      h.session.goal = { goalId: 'g1', status: 'active', openingPending: true };
       const b = blocking(h);
       const first = await b.controller.start({ sessionKey: KEY, text: 'work', actorUserId: 'UOWNER' });
       await b.controller.start({
@@ -336,6 +338,87 @@ describe('TaskTurnController — goal loop turns (SSOT 2026-11-03)', () => {
       expect(b.inputs[1].text).toBe('next word');
       // Both left the queue: the answered command and the word that became the turn (never paused).
       await vi.waitFor(() => expect(h.session.taskFollowups ?? []).toHaveLength(0));
+    });
+
+    // #876 R2 — the opening starts only while its goal's first turn is owed, by whatever path.
+    it('a goal’s opening starts only while owed: it clears the debt when its chain starts; a stale one is refused (409)', async () => {
+      const h = goalHarness();
+      h.session.goal = { goalId: 'g1', status: 'active', openingPending: true };
+      const r = await h.controller.start({
+        sessionKey: KEY,
+        text: 'ship it',
+        actorUserId: 'UOWNER',
+        goalOpeningId: 'g1',
+      });
+      expect(r.status).toBe(202);
+      await r.done;
+      expect(h.session.goal.openingPending).toBeUndefined();
+      // The same opening again (an approval released after the goal opened, cleared or moved on): refused.
+      const again = await h.controller.start({
+        sessionKey: KEY,
+        text: 'ship it',
+        actorUserId: 'UOWNER',
+        goalOpeningId: 'g1',
+      });
+      expect(again.status).toBe(409);
+      h.session.goal = undefined;
+      const cleared = await h.controller.start({
+        sessionKey: KEY,
+        text: 'ship it',
+        actorUserId: 'UOWNER',
+        goalOpeningId: 'g1',
+      });
+      expect(cleared.status).toBe(409);
+      expect(h.inputs).toHaveLength(1);
+    });
+
+    it('a goal’s opening is not a new word to its goal: the user hook is not told (grok P2)', async () => {
+      const h = goalHarness();
+      h.session.goal = { goalId: 'g1', status: 'active', openingPending: true };
+      const r = await h.controller.start({
+        sessionKey: KEY,
+        text: 'ship it',
+        actorUserId: 'UOWNER',
+        goalOpeningId: 'g1',
+      });
+      await r.done;
+      expect(h.onUserInstruction).not.toHaveBeenCalled();
+      expect(h.inputs[0].params?.isUserInput).toBe(true);
+    });
+
+    it('a goal’s queued first turn is not edited (fable P2): 409', async () => {
+      const h = goalHarness();
+      h.session.goal = { goalId: 'g1', status: 'active', openingPending: true };
+      const b = blocking(h);
+      const first = await b.controller.start({ sessionKey: KEY, text: 'work', actorUserId: 'UOWNER' });
+      await b.controller.start({
+        sessionKey: KEY,
+        text: 'objective',
+        actorUserId: 'UOWNER',
+        queueWhileRunning: true,
+        goalOpeningId: 'g1',
+      });
+      const item = h.session.taskFollowups[0];
+      const res = await b.controller.actOnQueue({
+        sessionKey: KEY,
+        itemId: item.id,
+        epoch: item.epoch,
+        op: 'edit',
+        text: 'something else',
+        actorUserId: 'UOWNER',
+      });
+      expect(res).toMatchObject({ ok: false, status: 409 });
+      b.release();
+      await first.done;
+    });
+
+    it('a new task may start with `goal <objective>`, not with a goal command that has no goal to act on (fable P2)', () => {
+      const h = goalHarness();
+      expect(h.controller.canStart('UOWNER', 'goal ship it')).toBeNull();
+      expect(h.controller.canStart('UOWNER', '/goal ship it')).toBeNull();
+      for (const text of ['goal clear', 'goal', 'goal pause', 'goal max 5']) {
+        expect(h.controller.canStart('UOWNER', text)?.status).toBe(400);
+      }
     });
 
     it('a queued word cannot be edited into a goal command (it applies at once — send it)', async () => {

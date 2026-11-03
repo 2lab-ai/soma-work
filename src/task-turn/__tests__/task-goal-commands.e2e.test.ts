@@ -191,6 +191,7 @@ describe('goal commands on a dashboard task — the de-aislop live test, replaye
       goalCommands: {
         matches: (text) => goalCommands?.matches(text) ?? false,
         run: (request, session) => (goalCommands as NonNullable<typeof goalCommands>).run(request, session),
+        opensGoal: (text) => goalCommands?.opensGoal(text) ?? false,
         openingDropped: (k, s, id, why) => goalCommands?.openingDropped(k, s, id, why),
       },
     });

@@ -49,6 +49,7 @@ const notices = () => recorded.filter(([id]) => id === 'conv-task').map(([, e]) 
 
 function harness(session: ConversationSession, opening: TaskCommandResponse = { status: 202, body: { ok: true } }) {
   const openings: Array<{ prompt: string; actor: string }> = [];
+  const owedAtStart: Array<boolean | undefined> = [];
   const settings = {
     max: undefined as number | undefined,
     auto: false,
@@ -58,8 +59,13 @@ function harness(session: ConversationSession, opening: TaskCommandResponse = { 
     saveSessions: vi.fn(),
     broadcast: vi.fn(),
     kickLoop: vi.fn(),
-    startOpening: vi.fn(async (_key, prompt, actor) => {
+    // As the controller does: an opening that starts clears its goal's owed first turn.
+    startOpening: vi.fn(async (_key, prompt, actor, carry) => {
       openings.push({ prompt, actor });
+      owedAtStart.push(session.goal?.goalId === carry.goalId ? session.goal?.openingPending : undefined);
+      const queued = (opening.body as { queued?: unknown }).queued === true;
+      const live = session.goal;
+      if (live && opening.status === 202 && !queued && live.goalId === carry.goalId) live.openingPending = undefined;
       return opening;
     }),
     settings: {
@@ -78,7 +84,7 @@ function harness(session: ConversationSession, opening: TaskCommandResponse = { 
   };
   const commands = createTaskGoalCommands(deps);
   const run = (text: string, actorUserId = 'UOWNER') => commands.run({ sessionKey: KEY, text, actorUserId }, session);
-  return { commands, run, deps, openings, settings };
+  return { commands, run, deps, openings, settings, owedAtStart };
 }
 
 const message = (res: TaskCommandResponse) => String((res.body as { message?: unknown }).message ?? '');
@@ -159,6 +165,9 @@ describe('task goal commands (#865)', () => {
       createdBy: 'UINSTRUCTOR',
     });
     expect(h.openings).toEqual([{ prompt: 'ship the release notes', actor: 'UINSTRUCTOR' }]);
+    // Its first turn was owed when the opening started (the loop leaves it alone until then).
+    expect(h.owedAtStart).toEqual([true]);
+    expect(session.goal?.openingPending).toBeUndefined();
     expect(message(res)).toMatch(/^🎯 Goal set: `ship the release notes`\nIts first turn is running\./);
     expect(notices()).toHaveLength(1);
   });
@@ -169,6 +178,7 @@ describe('task goal commands (#865)', () => {
     expect(res.status).toBe(202);
     expect((res.body as { queued?: unknown }).queued).toBe(true);
     expect(message(res)).toMatch(/starts as soon as the current turn ends/);
+    expect(h.owedAtStart).toEqual([true]);
   });
 
   it('an opening the task refuses: the goal is not left set — state put back, the refusal is the answer', async () => {
@@ -342,7 +352,7 @@ describe('a goal’s opening across a restart (#865, astra-zhuge #876 R1 P2)', (
   });
 });
 
-describe('a goal’s opening that will not run (astra-zhuge #876 R1 P1)', () => {
+describe('a goal’s opening that will not run (astra-zhuge #876 R1 P1, R2)', () => {
   beforeEach(() => {
     recorded.length = 0;
     setStreamExecutorProviders({ appendWorkLog: (id, entry) => recorded.push([id, entry]) });
@@ -351,8 +361,8 @@ describe('a goal’s opening that will not run (astra-zhuge #876 R1 P1)', () => 
     setStreamExecutorProviders({ appendWorkLog: () => {} });
   });
 
-  it('cancelled: its goal pauses with the first turn owed; `goal resume` starts it from that turn', async () => {
-    const g = goal({ objective: 'ship it', continuationCount: 0 });
+  it('cancelled while owed: its goal pauses; `goal resume` starts it from its first turn', async () => {
+    const g = goal({ objective: 'ship it', continuationCount: 0, openingPending: true });
     const session = taskSession({ goal: g });
     const h = harness(session);
     h.commands.openingDropped(KEY, session, 'g1', 'cancelled');
@@ -367,26 +377,94 @@ describe('a goal’s opening that will not run (astra-zhuge #876 R1 P1)', () => 
     expect(h.openings).toEqual([{ prompt: 'ship it', actor: 'UOWNER' }]);
   });
 
-  it('stale because its goal moved on (cleared, replaced, done): nothing changes', () => {
-    const other = goal({ goalId: 'g2' });
-    const session = taskSession({ goal: other });
-    const h = harness(session);
-    h.commands.openingDropped(KEY, session, 'g1', 'stale');
-    expect(other.status).toBe('active');
-    expect(other.openingPending).toBeUndefined();
-    expect(h.deps.saveSessions).not.toHaveBeenCalled();
-    const cleared = taskSession();
-    harness(cleared).commands.openingDropped(KEY, cleared, 'g1', 'stale');
-    expect(cleared.goal).toBeUndefined();
-  });
-
-  it('stale because its goal was paused: still paused, its first turn owed for `goal resume`', () => {
-    const g = goal({ status: 'paused' });
+  it('cancelled after its goal already opened (not owed): nothing changes', () => {
+    const g = goal();
     const session = taskSession({ goal: g });
     const h = harness(session);
-    h.commands.openingDropped(KEY, session, 'g1', 'stale');
-    expect(g.status).toBe('paused');
-    expect(g.openingPending).toBe(true);
+    h.commands.openingDropped(KEY, session, 'g1', 'cancelled');
+    expect(g.status).toBe('active');
+    expect(h.deps.saveSessions).not.toHaveBeenCalled();
+  });
+
+  it('stale owes nothing — whatever the goal is now, the drop is the whole story', () => {
+    for (const g of [goal({ goalId: 'g2' }), goal({ status: 'paused', openingPending: true }), undefined]) {
+      const session = taskSession(g ? { goal: g } : {});
+      const before = g ? { ...g } : undefined;
+      const h = harness(session);
+      h.commands.openingDropped(KEY, session, 'g1', 'stale');
+      if (g) expect({ ...g }).toEqual(before);
+      expect(h.deps.saveSessions).not.toHaveBeenCalled();
+    }
     expect(notices()).toEqual([]);
+  });
+
+  it('after a restart the goal is active with its first turn owed: `goal resume` starts it', async () => {
+    const g = goal({ objective: 'ship it', continuationCount: 0, openingPending: true });
+    const session = taskSession({ goal: g });
+    const h = harness(session);
+    const res = await h.run('goal resume');
+    expect(res.status).toBe(202);
+    expect(h.openings).toEqual([{ prompt: 'ship it', actor: 'UOWNER' }]);
+  });
+});
+
+describe('#876 R2 — repeats, settings and wrong words', () => {
+  beforeEach(() => {
+    recorded.length = 0;
+    setStreamExecutorProviders({ appendWorkLog: (id, entry) => recorded.push([id, entry]) });
+  });
+  afterEach(() => {
+    setStreamExecutorProviders({ appendWorkLog: () => {} });
+  });
+
+  it('the same `goal X` twice: set once, the repeat is answered — never queued behind itself (fable P3)', async () => {
+    const session = taskSession();
+    const h = harness(session);
+    await h.run('goal ship it');
+    const again = await h.run('goal  ship   it ');
+    expect(again.status).toBe(200);
+    expect(message(again)).toMatch(/^🎯 Goal already set — not added again/);
+    expect(session.goalQueue ?? []).toEqual([]);
+    expect(h.openings).toHaveLength(1);
+  });
+
+  it('a repeat of a paused goal says how to run it', async () => {
+    const session = taskSession({ goal: goal({ objective: 'ship it', status: 'paused' }) });
+    const res = await harness(session).run('goal ship it');
+    expect(message(res)).toMatch(/paused — `goal resume` runs it/);
+  });
+
+  it('the goal list refuses a repeat with 409', async () => {
+    const session = taskSession({
+      goal: goal({ objective: 'first' }),
+      goalQueue: [goal({ goalId: 'g2', objective: 'second', status: 'queued' })],
+    });
+    await expect(
+      harness(session).commands.hostAction(KEY, { action: 'add', objective: 'second' }, 'UOWNER'),
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(session.goalQueue).toHaveLength(1);
+  });
+
+  it('`goal auto` and `goal max` with no goal change only the sender’s settings: answered, not in the task’s work log (grok P2)', async () => {
+    const h = harness(taskSession());
+    expect((await h.run('goal auto on')).status).toBe(200);
+    expect((await h.run('goal max 20')).status).toBe(200);
+    expect(h.settings).toMatchObject({ auto: true, max: 20 });
+    expect(notices()).toEqual([]);
+  });
+
+  it('wrong words are refused with the usage (nothing applied)', async () => {
+    const res = await harness(taskSession()).run('goal max x');
+    expect(res.status).toBe(400);
+    expect(String((res.body as { error?: unknown }).error)).toMatch(/^Goal command usage/);
+  });
+
+  it('opensGoal: only `goal <objective>` opens a goal', () => {
+    const { commands } = harness(taskSession());
+    expect(commands.opensGoal('goal ship it')).toBe(true);
+    expect(commands.opensGoal('goal set ship it')).toBe(true);
+    for (const t of ['goal', 'goal clear', 'goal pause', 'goal max 5', 'goal auto', 'ship it']) {
+      expect(commands.opensGoal(t)).toBe(false);
+    }
   });
 });

@@ -28,11 +28,19 @@ const SEND = (() => {
 
 type Toast = { title: string; description?: string; tone: string };
 
-async function send(text: string, answer: { status: number; body: Record<string, unknown> }) {
+async function send(
+  text: string,
+  answer: { status: number; body: Record<string, unknown> },
+  opts: { running?: boolean; ref?: string } = {},
+) {
   const toasts: Toast[] = [];
   const appended: string[] = [];
   const dropped: string[] = [];
-  const el = { data: { running: false }, setItemState: () => {} };
+  const rows: Array<[string, string]> = [];
+  const el = {
+    data: { running: opts.running === true },
+    setItemState: (ref: string, state: string) => rows.push([ref, state]),
+  };
   const stubs: Record<string, unknown> = {
     document: { getElementById: (id: string) => (id === 'cmd-steer' ? el : null) },
     pcCanSend: () => true,
@@ -58,8 +66,8 @@ async function send(text: string, answer: { status: number; body: Record<string,
     ref?: string,
     files?: unknown[],
   ) => Promise<void>;
-  await sendCommand(text, undefined, []);
-  return { toasts, appended, dropped };
+  await sendCommand(text, opts.ref, []);
+  return { toasts, appended, dropped, rows };
 }
 
 describe('#865 · a task’s goal command sent from the card', () => {
@@ -80,6 +88,27 @@ describe('#865 · a task’s goal command sent from the card', () => {
     expect(r.appended).toHaveLength(1);
     expect(r.dropped).toEqual([]);
     expect(r.toasts).toEqual([]);
+  });
+
+  // #876 R2 (fable P1) — sent while a turn ran: the steering row made for it is not left "sending".
+  it('sent while a turn runs: its steering row goes (the command applied at once), the answer is a toast', async () => {
+    const r = await send(
+      'goal pause',
+      { status: 200, body: { ok: true, goalCommand: true, message: '⏸️ Goal paused.' } },
+      { running: true, ref: 'as-1' },
+    );
+    expect(r.appended).toEqual([]);
+    expect(r.rows).toEqual([['as-1', 'cancelled']]);
+    expect(r.toasts.map((t) => t.tone)).toEqual(['success']);
+  });
+
+  it('a goal it started queued its first turn: that row is the host queue’s, left alone', async () => {
+    const r = await send(
+      'goal ship it',
+      { status: 202, body: { ok: true, queued: true, itemId: 'tq-1', goalCommand: true, message: '🎯 Goal set' } },
+      { running: true, ref: 'as-2' },
+    );
+    expect(r.rows).toEqual([]);
   });
 
   it('a refused goal command fails like any send (the error toast, the turn dropped)', async () => {
