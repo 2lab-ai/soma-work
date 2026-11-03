@@ -142,6 +142,47 @@ export function buildModelCommandRunResponse(args: unknown, context: ModelComman
   return result;
 }
 
+/** #881 A — how often a waiting GET_SESSION re-reads the receipt file. */
+const HOST_ACK_POLL_MS = 500;
+
+/** The host has written its ack of this server's last UPDATE_SESSION (or there is nothing of ours to ack). */
+function hostAckedOwnWrite(context: ModelCommandContext): boolean {
+  if (!context.receiptFile || !context.lastReceiptId) return true;
+  return readHostReceipt(context.receiptFile)?.acks?.[context.lastReceiptId] !== undefined;
+}
+
+/**
+ * {@link buildModelCommandRunResponse}, except GET_SESSION `{ waitForAckMs }` first waits — up to that long — for the
+ * host to handle this server's last UPDATE_SESSION (#881 A). The host applies a write about 20 s after the model got
+ * its result when its stream is busy, so an immediate re-read reports an applied write as pending. It waits only for
+ * its own write: no write yet, or no receipt file, answers at once. `hostWaitedMs` says how long it waited.
+ */
+export async function runModelCommandAwaitingHost(
+  args: unknown,
+  context: ModelCommandContext,
+  clock: { now: () => number; sleep: (ms: number) => Promise<void> } = {
+    now: () => Date.now(),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  },
+): Promise<ModelCommandRunResponse> {
+  const validated = validateModelCommandRunArgs(args);
+  const waitMs =
+    validated.ok && validated.request.commandId === 'GET_SESSION' ? (validated.request.params?.waitForAckMs ?? 0) : 0;
+  let waited: number | undefined;
+  if (waitMs > 0 && context.receiptFile && context.lastReceiptId) {
+    const started = clock.now();
+    while (!hostAckedOwnWrite(context)) {
+      const left = waitMs - (clock.now() - started);
+      if (left <= 0) break;
+      await clock.sleep(Math.min(HOST_ACK_POLL_MS, left));
+    }
+    waited = clock.now() - started;
+  }
+  const result = buildModelCommandRunResponse(args, context);
+  if (waited !== undefined && result.ok && result.commandId === 'GET_SESSION') result.payload.hostWaitedMs = waited;
+  return result;
+}
+
 class ModelCommandMcpServer extends BaseMcpServer {
   private context: ModelCommandContext;
 
@@ -217,7 +258,7 @@ class ModelCommandMcpServer extends BaseMcpServer {
     }
 
     if (name === 'run') {
-      const payload = buildModelCommandRunResponse(args, this.context);
+      const payload = await runModelCommandAwaitingHost(args, this.context);
       return {
         content: [{ type: 'text', text: JSON.stringify(payload) }],
         isError: !payload.ok,

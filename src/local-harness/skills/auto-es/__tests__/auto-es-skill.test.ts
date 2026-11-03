@@ -176,7 +176,9 @@ describe('Card sync — the host receipt (#846 item 2)', () => {
     expect(sync).toContain('`payload.host`');
     expect(sync).toContain('`host.tldr`');
     expect(sync).toContain('`host.followUp`');
-    expect(sync).toMatch(/`hostPending: true`/);
+    expect(sync).toMatch(/`hostPending: true` after the wait/);
+    // #881 A — the verify read waits for the host's ack instead of racing it.
+    expect(sync).toContain('`GET_SESSION` again with `{ waitForAckMs: 30000 }`');
     expect(sync).toMatch(/`host\.lastWrite\.ok === false`/);
   });
 });

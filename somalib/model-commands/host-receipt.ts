@@ -50,6 +50,12 @@ export interface HostWriteReceipt {
 
 export const HOST_RECEIPT_DIR = 'model-command-receipts';
 
+/**
+ * #881 A — the longest GET_SESSION `waitForAckMs`. The host applies a write about 20 s after the model got its result
+ * when its stream is busy; 30 s covers that and still answers well inside an MCP call's time.
+ */
+export const GET_SESSION_MAX_WAIT_MS = 30_000;
+
 /** How many write acks a receipt keeps. */
 export const HOST_RECEIPT_MAX_ACKS = 20;
 
