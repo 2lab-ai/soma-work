@@ -7,6 +7,10 @@
  *   A2 an epic of dashboard tasks and its child are archived together — their relation kept in
  *      the archive (the closed column reads it) — and a second restart archives nothing again.
  *   A3 an archived dashboard task is never brought back into the registry (it has no thread).
+ *   A4 a dashboard task archived once and worked on since (revived) is archived again with its
+ *      latest state; one not changed since its archive is not archived twice (review #885 astra).
+ *   A5 a dashboard task the disk would not archive stays in sessions.json, as it was, and the
+ *      next load archives it (review #885 astra).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -154,6 +158,59 @@ describe('SessionRegistry — dashboard tasks are archived at load (#855)', () =
     expect(again.loadSessions()).toBe(1);
     expect(archives()).toHaveLength(2);
     expect([...again.getAllSessions().keys()]).toEqual(['work:C1:100.001']);
+  });
+
+  it('A4 — worked on since its archive: archived again with its latest state; unchanged: not twice', async () => {
+    const t0 = new Date(Date.now() - 60_000).toISOString();
+    // Archived when it last closed …
+    fs.writeFileSync(
+      SESSIONS_FILE,
+      JSON.stringify([dashboardTask('task-c', { lastActivity: t0, title: 'old title' })]),
+    );
+    expect(new SessionRegistry().loadSessions()).toBe(0);
+    expect(archives()).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 5));
+    // … revived and worked on since: the record changed after that archive.
+    fs.writeFileSync(
+      SESSIONS_FILE,
+      JSON.stringify([
+        dashboardTask('task-c', { lastActivity: t0, activityStateChangedAt: Date.now() + 1, title: 'new title' }),
+      ]),
+    );
+    expect(new SessionRegistry().loadSessions()).toBe(0);
+    expect(getArchiveStore().latest('task:task-c')).toMatchObject({ title: 'new title', slackless: true });
+    expect(archives()).toHaveLength(2);
+
+    // A record no newer than its archive (a crash before the save): not archived twice.
+    await new Promise((r) => setTimeout(r, 5));
+    fs.writeFileSync(
+      SESSIONS_FILE,
+      JSON.stringify([dashboardTask('task-c', { lastActivity: t0, title: 'old title' })]),
+    );
+    expect(new SessionRegistry().loadSessions()).toBe(0);
+    expect(archives()).toHaveLength(2);
+  });
+
+  it('A5 — not archived (the disk said no): kept in sessions.json as it was; the next load archives it', () => {
+    const record = dashboardTask('task-d');
+    fs.writeFileSync(SESSIONS_FILE, JSON.stringify([record, SLACK_RECORD]));
+    // The archive folder cannot be written: a file stands where it should be.
+    fs.rmSync(ARCHIVE_DIR, { recursive: true });
+    fs.writeFileSync(ARCHIVE_DIR, 'not a folder');
+    const reg = new SessionRegistry();
+    expect(reg.loadSessions()).toBe(1);
+    expect(reg.getSessionByTaskId('task-d')).toBeUndefined();
+    // Written back verbatim, beside the Slack session — and again on every save until a load archives it.
+    expect(readSaved().find((r) => r.taskId === 'task-d')).toEqual(record);
+    reg.saveSessions();
+    expect(readSaved().find((r) => r.taskId === 'task-d')).toEqual(record);
+
+    fs.rmSync(ARCHIVE_DIR);
+    fs.mkdirSync(ARCHIVE_DIR);
+    const next = new SessionRegistry();
+    expect(next.loadSessions()).toBe(1);
+    expect(getArchiveStore().latest('task:task-d')).toMatchObject({ taskId: 'task-d', slackless: true });
+    expect(readSaved().map((r) => r.taskId)).toEqual(['slack-task-id']);
   });
 
   it('A3 — an archived dashboard task is not restored into the registry', () => {
