@@ -63,6 +63,25 @@ describe('readHostReceipt', () => {
     expect(readHostReceipt(file)?.acks).toBeUndefined();
   });
 
+  it('a snapshot with a malformed link is not a receipt (astra R3 P2) — GET_SESSION would resync onto it', () => {
+    const file = path.join(dir, 'links.json');
+    const base = receipt();
+    fs.writeFileSync(file, JSON.stringify({ ...base, session: { ...base.session, prs: [null] } }));
+    expect(readHostReceipt(file)).toBeUndefined();
+    fs.writeFileSync(file, JSON.stringify({ ...base, session: { ...base.session, issues: [{ url: 3 }] } }));
+    expect(readHostReceipt(file)).toBeUndefined();
+  });
+
+  it('drops a malformed lastWrite / tldr / followUp instead of passing it on (fable R3 P3)', () => {
+    const file = path.join(dir, 'fields.json');
+    fs.writeFileSync(file, JSON.stringify({ ...receipt(), lastWrite: { ok: 'yes' }, tldr: [1, 2], followUp: 7 }));
+    const r = readHostReceipt(file);
+    expect(r?.sequence).toBe(4);
+    expect(r?.lastWrite).toBeUndefined();
+    expect(r?.tldr).toBeUndefined();
+    expect(r?.followUp).toBeUndefined();
+  });
+
   it('withAck tolerates a broken ledger', () => {
     expect(withAck({ r_x: null } as never, { receiptId: 'r_y', ok: true, at: 1 })).toEqual({
       r_y: { receiptId: 'r_y', ok: true, at: 1 },

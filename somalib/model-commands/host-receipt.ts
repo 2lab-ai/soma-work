@@ -92,11 +92,27 @@ export function readHostReceipt(file: string): HostReceipt | undefined {
   const r = raw as Partial<HostReceipt>;
   if (typeof r.sequence !== 'number' || typeof r.at !== 'number') return undefined;
   const s = r.session as Partial<SessionResourceSnapshot> | undefined;
-  if (!s || !Array.isArray(s.issues) || !Array.isArray(s.prs) || !Array.isArray(s.docs)) return undefined;
-  const { acks: rawAcks, ...rest } = r;
+  // Every link is checked: GET_SESSION resyncs onto this snapshot, and one bad element would throw there.
+  if (!s || !isLinkList(s.issues) || !isLinkList(s.prs) || !isLinkList(s.docs)) return undefined;
+  const { acks: rawAcks, lastWrite, tldr, followUp, title, ...rest } = r;
   const acks: Record<string, HostWriteReceipt> = {};
   if (rawAcks && typeof rawAcks === 'object' && !Array.isArray(rawAcks)) {
     for (const [id, ack] of Object.entries(rawAcks)) if (isAck(ack)) acks[id] = ack;
   }
-  return { ...(rest as HostReceipt), ...(Object.keys(acks).length ? { acks } : {}) };
+  // The optional fields reach the model as the host's word: a malformed one is dropped, never passed on.
+  return {
+    ...(rest as HostReceipt),
+    ...(typeof title === 'string' ? { title } : {}),
+    ...(Array.isArray(tldr) && tldr.every((l) => typeof l === 'string') ? { tldr } : {}),
+    ...(typeof followUp === 'string' ? { followUp } : {}),
+    ...(isAck(lastWrite) ? { lastWrite } : {}),
+    ...(Object.keys(acks).length ? { acks } : {}),
+  };
+}
+
+/** A snapshot link list as the host writes it: objects with a string `url`. */
+function isLinkList(v: unknown): boolean {
+  return (
+    Array.isArray(v) && v.every((l) => !!l && typeof l === 'object' && typeof (l as { url?: unknown }).url === 'string')
+  );
 }
