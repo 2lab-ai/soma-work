@@ -967,14 +967,22 @@ describe('P5 — 미니멀’s detail card: the chat is a tab view with the work
     const log = { addEventListener: (type: string, fn: (e: unknown) => void) => (listeners[type] = fn) };
     const opened: string[] = [];
     const env = load<{ __set(n: string, v: unknown): void }>(
-      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'detailShows'],
+      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'detailShows', 'panelAgentOpenable'],
       ['_viewMode', '_viewPlan', '_viewLayout'],
-      { wlEl: () => log, window: {}, _wl: null, selectPanelAgent: (id: string) => opened.push(id) },
+      {
+        wlEl: () => log,
+        window: {},
+        _wl: null,
+        selectPanelAgent: (id: string) => opened.push(id),
+        panelSessionKey: 'k1',
+        // A1 is a tab of the agent strip; A9 is in the work log only (panelLogOnlyAgents).
+        _sessionCache: { k1: { agents: [{ id: 'A1', n: 1 }] } },
+      },
       ['initWorkLog'],
     );
-    const open = () => {
+    const open = (id = 'A1') => {
       let prevented = false;
-      listeners['ui-open']({ target: log, detail: { id: 'A1' }, preventDefault: () => (prevented = true) });
+      listeners['ui-open']({ target: log, detail: { id }, preventDefault: () => (prevented = true) });
       return prevented;
     };
     // 1안 · 3안: no agent strip — the 열기 does nothing (and says so to the element: no navigate sound).
@@ -986,9 +994,13 @@ describe('P5 — 미니멀’s detail card: the chat is a tab view with the work
     // 2안 shows the strip with a subagent; advanced always.
     env.__set('_viewPlan', '2');
     expect(open()).toBe(false);
+    // 2안, a log-only agent: no tab of the strip — opening it would hide the strip and strand the reader.
+    expect(open('A9')).toBe(true);
     env.__set('_viewMode', 'advanced');
     env.__set('_viewPlan', '1');
     expect(open()).toBe(false);
-    expect(opened).toEqual(['A1', 'A1']);
+    // Advanced: the strip is always there (its main tab is the way back), a log-only agent opens too.
+    expect(open('A9')).toBe(false);
+    expect(opened).toEqual(['A1', 'A1', 'A9']);
   });
 });

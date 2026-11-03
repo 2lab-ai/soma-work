@@ -10889,9 +10889,11 @@ function rerenderForViewMode() {
   renderBoardForLayout();
   resetPanelSections();
   if (!panelSessionKey) return;
-  if (!detailShows('agenttabs') && !detailShows('subtabs') && _panelAgent) selectPanelAgent('');
+  // The section first: going back to the main agent re-selects the current section, which must be one the
+  // new strip shows (else it paints the tree into a box the strip has no slot for).
   if (psecShown().indexOf(_psec) < 0) selectPanelSection('conv');
   else renderPanelSections();
+  if (!detailShows('agenttabs') && !detailShows('subtabs') && _panelAgent) selectPanelAgent('');
   repaintPanelSession();
   repaintPanelTasks();
   sizePanelSections();
@@ -11032,6 +11034,18 @@ function panelTabsData(s, active, mainSt) {
     tabs.push(tab(panelTabId(String(a.id)), agentStatusOf(a), 'A' + toNum(a.n), a.type || '', false, am, am ? modelLabelOf(am) : ''));
   }
   return { label: '에이전트', value: panelTabId(active || ''), tabs: tabs };
+}
+// Whether 열기 may move the detail card onto agent id: the strip has to show a way back. Always on (agenttabs):
+// yes. Only beside a subagent (subtabs, 미니멀 2안): only for one of the strip's own tabs — the session's agents; a
+// log-only agent (panelLogOnlyAgents) is no tab, so the strip would hide and strand the reader on it. No strip
+// (미니멀 1안 · 3안): never — the main agent is the only one shown.
+function panelAgentOpenable(id) {
+  if (detailShows('agenttabs')) return true;
+  if (!detailShows('subtabs')) return false;
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var list = (s && s.agents) || [];
+  for (var i = 0; i < list.length; i++) if (list[i] && String(list[i].id) === id) return true;
+  return false;
 }
 // The strip follows the session (a live update with the same data writes nothing);
 // without one it keeps Main alone, so the panel under it stays slotted.
@@ -16525,11 +16539,11 @@ function wlIsCard(el) {
   });
   el.addEventListener('ui-open', function(e) {
     if (e.target !== el) return;
-    // A layout without the agent strip (미니멀 1안 · 3안) shows the main agent only: a subagent's 열기 would leave
-    // the reader on it with no tab to come back by, so it stays put (and the element plays no navigate sound).
-    if (!detailShows('agenttabs') && !detailShows('subtabs')) { e.preventDefault(); return; }
+    // A subagent's 열기 lands only where a tab can bring the reader back (panelAgentOpenable); anywhere else it
+    // stays put (and the element plays no navigate sound).
     var id = e.detail && e.detail.id;
-    if (id) selectPanelAgent(String(id));
+    if (!id || !panelAgentOpenable(String(id))) { e.preventDefault(); return; }
+    selectPanelAgent(String(id));
   });
   el.addEventListener('ui-load-older', function(e) {
     var st = _wl;
