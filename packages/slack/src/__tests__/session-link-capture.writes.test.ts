@@ -263,6 +263,44 @@ describe('githubEffectsOf — what is not a write', () => {
     ]);
   });
 
+  it('W3 — a regex literal at the start of a line, after `)`, `]` or an operand is masked too (review round 5)', () => {
+    const view = '; gh pr view 12 --json url -q .url';
+    const url = 'https://github.com/a/b/pull/12';
+    // A valid regex literal that spells a fetch call (its group is the call's parentheses).
+    const re = '/fetch("https:\\/\\/api.github.com\\/repos\\/a\\/b\\/pulls", {method:"POST"})/';
+    expect(
+      effectsOf(
+        bash(`node -e 'const s = "x"\n${re}.test(s)'${view}`, url),
+        bash(`node -e '(s) ${re}.test(s)'${view}`, url),
+        bash(`node -e 'a[0] ${re}'${view}`, url),
+        bash(`node -e 'x ${re}.test(s)'${view}`, url),
+      ),
+    ).toEqual([]);
+    // A division is still a division: the fetch after it counts. That includes a line that starts with `/`
+    // after an operand — JS reads it as a division, so `s = 8\n/fetch(…) / 1` calls fetch (and the same line with
+    // unescaped slashes ending in `/.test(s)` is a syntax error: nothing runs, but only a parser could tell).
+    expect(
+      effectsOf(
+        bash(
+          `node -e 'const s = 8\n/fetch("https://api.github.com/repos/a/b/pulls", {method:"POST"}) / 1'`,
+          'https://github.com/a/b/pull/76',
+        ),
+        bash(
+          `node -e 'const half = total / 2; const r = (a + b) / 2; fetch("https://api.github.com/repos/a/b/pulls", { method: "POST" })'`,
+          'https://github.com/a/b/pull/74',
+        ),
+        bash(
+          `node -e 'const q = a/b; fetch("https://api.github.com/repos/a/b/issues", { method: "POST" })'`,
+          'https://github.com/a/b/issues/75',
+        ),
+      ).map(short),
+    ).toEqual([
+      ['create', 'pr', 'https://github.com/a/b/pull/76'],
+      ['create', 'pr', 'https://github.com/a/b/pull/74'],
+      ['create', 'issue', 'https://github.com/a/b/issues/75'],
+    ]);
+  });
+
   it('W3 — pathological commands are read in linear time (review P1)', () => {
     const inputs = [
       `curl -X${' '.repeat(199_000)}x https://api.github.com/repos/a/b/pulls`,
