@@ -1,4 +1,5 @@
 import { Logger } from '@soma/common/logger';
+import { EXPIRY_WARNING_CLEARED_TEXT } from './lifecycle-text';
 import { MessageFormatter } from './message-formatter';
 import type { ReactionManager } from './reaction-manager';
 import type { SlackApiHelper } from './slack-api-helper';
@@ -886,6 +887,20 @@ export class SessionUiManager {
     } catch (error) {
       this.logger.error('Failed to send/update session warning message', error);
       return undefined;
+    }
+  }
+
+  /**
+   * #881 D1 — the idle clock restarted after an expiry warning was posted: that warning names an expiry that no
+   * longer holds. Edit it in place (same gate as the warning itself: only beneath a live thread root).
+   */
+  async handleExpiryWarningCleared(session: ConversationSession, warningMessageTs: string): Promise<void> {
+    try {
+      await this.deliverSessionLifecycleNotice(session, EXPIRY_WARNING_CLEARED_TEXT, {
+        existingMessageTs: warningMessageTs,
+      });
+    } catch (error) {
+      this.logger.warn('Failed to edit a stale session expiry warning', error);
     }
   }
 

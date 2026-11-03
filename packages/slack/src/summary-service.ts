@@ -1,6 +1,7 @@
 import { Logger } from '@soma/common/logger';
 import type { SessionLink, SessionLinks } from './directives/session-link-directive';
 import type { HandoffContext, WorkflowType } from './handoff-budget';
+import { EXPIRY_WARNING_CLEARED_TEXT } from './lifecycle-text';
 
 export interface SessionLinkHistory {
   issues: SessionLink[];
@@ -268,7 +269,7 @@ export function followUpFromTldr(tldr: readonly string[]): { reason: string } | 
  * unfinished artifact cannot push sleep out forever); a new reason starts at `at` and clears the sleep warnings sent on
  * the old clock (they named the old expiry, and a sent warning is not sent again until cleared). No ⚠️ line clears it.
  */
-export function applyFollowUp(session: object, tldr: readonly string[], at: number): void {
+export function applyFollowUp(session: object, tldr: readonly string[], at: number): string | undefined {
   const s = session as {
     followUp?: { reason: string; at: number };
     lastWarningSentAt?: number;
@@ -277,12 +278,15 @@ export function applyFollowUp(session: object, tldr: readonly string[], at: numb
   const next = followUpFromTldr(tldr);
   if (!next) {
     s.followUp = undefined;
-    return;
+    return undefined;
   }
-  if (s.followUp?.reason === next.reason) return;
+  if (s.followUp?.reason === next.reason) return undefined;
   s.followUp = { reason: next.reason, at };
+  // #881 D1 — the warning already posted named the old expiry: hand it back so the caller edits it.
+  const posted = s.warningMessageTs;
   s.lastWarningSentAt = undefined;
   s.warningMessageTs = undefined;
+  return posted;
 }
 
 /**
@@ -447,6 +451,8 @@ export function selectExecutiveSummaryMode(session: SummarySessionInfo): Executi
  */
 export interface SummarySessionInfo {
   isActive: boolean;
+  /** #881 D1 — the thread's channel, to edit a stale expiry warning ('' for a Slack-less task). */
+  channelId?: string;
   model?: string;
   /**
    * The user's base working directory (e.g. `/tmp/{userId}`). NOT what the SDK
@@ -492,7 +498,7 @@ export interface SummarySessionInfo {
    * SSOT 2026-11-02 T7 — the TL;DR the thread head shows, for the dashboard's task card: set by
    * `displayOnThread` (only when the summary has one), cleared by `clearDisplay` on the next input.
    */
-  executiveSummary?: { tldr: string[]; at: number; source?: 'es' };
+  executiveSummary?: { tldr: string[]; at: number; source?: 'es'; issuedAt?: number };
   /**
    * #829 — the latest Executive Summary left an own issue/PR unfinished (its ⚠️ TL;DR line): the dashboard
    * keeps the task card in NEEDS YOU with this reason. Set and cleared only by an Executive Summary
@@ -534,6 +540,8 @@ export interface SummarySlackApi {
     text: string,
     options?: { threadTs?: string; blocks?: any[]; [key: string]: any },
   ) => Promise<any>;
+  /** #881 D1 — edits the expiry warning a new follow-up made stale. */
+  updateMessage?: (channel: string, ts: string, text: string, blocks?: any[]) => Promise<unknown>;
 }
 
 /** Construction options for {@link SummaryService}. */
@@ -708,7 +716,14 @@ export class SummaryService {
       else session.executiveSummary = undefined;
       // #829 — a well-formed TL;DR decides whether the card waits on its user; a reply with none keeps the
       // previous verdict (a malformed summary is no evidence the work got finished).
-      if (tldr.length > 0) applyFollowUp(session, tldr, at);
+      if (tldr.length > 0) {
+        const staleWarning = applyFollowUp(session, tldr, at);
+        if (staleWarning && session.channelId) {
+          this.slackApi
+            ?.updateMessage?.(session.channelId, staleWarning, EXPIRY_WARNING_CLEARED_TEXT)
+            .catch((error) => logger.warn('Stale expiry warning not edited', { error: (error as Error).message }));
+        }
+      }
     }
 
     if (!session.actionPanel) {
