@@ -508,7 +508,7 @@ const METHOD_TOKENS: RegExp[] = [
 ];
 const CURL_DATA = /(?:^|\s)(?:-d|--data(?:-raw|-binary|-urlencode)?|--json|-F|--form)(?=\s|=|$|@)/;
 const GH_API_FIELDS = /(?:^|\s)(?:-f|-F|--field|--raw-field|--input)(?=\s|=)/;
-const GH_CLI = /^[({]*gh\s+(pr|issue)\s+(create|merge|close)\b([^\n]*)/;
+const GH_CLI = /^[({]*(?:[^\s/]*\/)*gh\s+(pr|issue)\s+(create|merge|close)\b([^\n]*)/;
 const REPO_FLAG =
   /(?:^|\s)(?:-R|--repo)(?:\s+|=)['"]?(?:https:\/\/)?(?:github\.com\/)?([\w.-]+\/[\w.-]+?)(?:\.git)?['"]?(?=\s|$)/;
 const ISSUE_OR_PR_URL = /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(pull|issues)\/(\d+)/;
@@ -580,11 +580,12 @@ function apiWrites(statement: string): GitHubWrite[] {
 //
 // Code sends only through a call, so only a call counts — never data that spells a request: `{ method: "POST", url }`,
 // `const method = "POST"`, or a string that prints one (`console.log('fetch(…, { method: "POST" })')`). The code is
-// lexed for its language — strings and comments are masked — and a request is read inside the argument list of a
-// sending call found in the code itself: `fetch(…)`, `request(…)` (`octokit.request("POST /repos/…")`,
-// `https.request({ path, method })`), `urlopen(…)` / `Request(…, method=…)`, `requests.post(…)`, `axios(…)`. A
-// shell command the code runs as its first argument (`execSync("curl …")`, `subprocess.run("gh …", shell=True)`) is
-// read as shell. A URL held in a variable is not followed (a miss, which the turn-end GitHub check backs).
+// lexed for its language — strings, comments and regex literals are masked — and a request is read from the direct
+// arguments (not a nested call, array or callback) of a sending call found in the code itself: `fetch(…)`,
+// `request(…)` (`octokit.request("POST /repos/…")`, `https.request({ path, method })`), `urlopen(…)` /
+// `Request(…, method=…)`, `requests.post(…)`, `axios(…)`. A shell command the code runs as its first argument
+// (`execSync("curl …")`, `os.system(…)`, `subprocess.run("gh …", shell=True)`) is read as shell. A URL held in a
+// variable is not followed (a miss, which the turn-end GitHub check backs).
 
 interface CodeString {
   start: number;
@@ -599,26 +600,93 @@ interface Lexed {
   strings: CodeString[];
 }
 
+/** Words after which a `/` starts a regex literal, not a division. */
+const BEFORE_REGEX = new Set([
+  'return',
+  'typeof',
+  'instanceof',
+  'in',
+  'of',
+  'new',
+  'delete',
+  'void',
+  'throw',
+  'case',
+  'do',
+  'else',
+  'yield',
+  'await',
+  'if',
+  'unless',
+  'when',
+  'and',
+  'or',
+  'not',
+]);
+
+/** Longer `/…/` runs are not read as a regex literal (they are rare; the bound keeps the lexer linear). */
+const MAX_REGEX_LENGTH = 256;
+
+/** The end (exclusive) of a regex literal whose opening `/` is at `at`, or -1 when it is not one (a newline first). */
+function regexEnd(code: string, at: number): number {
+  let inClass = false;
+  const limit = Math.min(code.length, at + MAX_REGEX_LENGTH);
+  for (let j = at + 1; j < limit; j++) {
+    const c = code[j];
+    if (c === '\n') return -1;
+    if (c === '\\') j++;
+    else if (c === '[') inClass = true;
+    else if (c === ']') inClass = false;
+    else if (c === '/' && !inClass) {
+      let end = j + 1;
+      while (end < code.length && /[A-Za-z]/.test(code[end])) end++;
+      return end;
+    }
+  }
+  return -1;
+}
+
 function lexCode(code: string, lang: CodeLang): Lexed {
   const masked: string[] = [];
   const strings: CodeString[] = [];
   const n = code.length;
+  // What came last in code (not a string, a comment or space): decides whether a `/` divides or opens a regex.
+  let last = '';
+  let word = '';
   let i = 0;
+  const blank = (stop: number) => {
+    for (; i < stop; i++) masked.push(code[i] === '\n' ? '\n' : ' ');
+  };
   while (i < n) {
     const c = code[i];
     const lineComment = lang === 'js' ? c === '/' && code[i + 1] === '/' : c === '#';
     if (lineComment) {
-      while (i < n && code[i] !== '\n') {
-        masked.push(' ');
-        i++;
-      }
+      const nl = code.indexOf('\n', i);
+      blank(nl < 0 ? n : nl);
       continue;
     }
     if (lang === 'js' && c === '/' && code[i + 1] === '*') {
       const close = code.indexOf('*/', i + 2);
-      const stop = close < 0 ? n : close + 2;
-      for (; i < stop; i++) masked.push(code[i] === '\n' ? '\n' : ' ');
+      blank(close < 0 ? n : close + 2);
       continue;
+    }
+    // A regex literal (JS, Ruby): after an operator, an opening bracket, a keyword, or at the start.
+    if (
+      c === '/' &&
+      lang !== 'py' &&
+      (last === '' || /[(,=:[!&|?{};+\-*\/%<>~^]/.test(last) || BEFORE_REGEX.has(word))
+    ) {
+      const end = regexEnd(code, i);
+      if (end > 0) {
+        masked.push('/');
+        i++;
+        blank(end - 1);
+        masked.push(' ');
+        i = end;
+        last = ')';
+        word = '';
+        continue;
+      }
     }
     if (c === '"' || c === "'" || (lang === 'js' && c === '`')) {
       const close = lang === 'py' && code.startsWith(c.repeat(3), i) ? c.repeat(3) : c;
@@ -639,10 +707,16 @@ function lexCode(code: string, lang: CodeLang): Lexed {
       for (let k = i + 1; k < stop - 1; k++) masked.push(' ');
       if (stop - i > 1) masked.push(c);
       i = stop;
+      last = ')';
+      word = '';
       continue;
     }
     masked.push(c);
     i++;
+    if (/\s/.test(c)) continue;
+    if (/[\w$]/.test(c)) word = /[\w$]/.test(last) ? word + c : c;
+    else word = '';
+    last = c;
   }
   return { masked: masked.join(''), strings };
 }
@@ -660,44 +734,70 @@ function firstStringFrom(strings: CodeString[], at: number): number {
 }
 
 const VERBS = /^(GET|POST|PUT|PATCH|DELETE)$/i;
-/** A sending call, found in masked code (so never inside a string or a comment). */
+/**
+ * A sending call, found in masked code (so never inside a string, a comment or a regex literal): an HTTP call, or a
+ * call that runs a shell command — `execSync` / `exec` (bare or on `child_process`), `os.system`, `subprocess.run`.
+ */
 const SENDING_CALL =
-  /\b(fetch|request|urlopen|Request|axios|(?:requests|axios|got|ky|httpx|superagent)\.(?:get|post|put|patch|delete|request)|execSync|exec|spawnSync|system|popen|check_output|check_call|getoutput|run)\s*\(/g;
-const EXEC_CALLS = new Set([
-  'execSync',
-  'exec',
-  'spawnSync',
-  'system',
-  'popen',
-  'check_output',
-  'check_call',
-  'getoutput',
-  'run',
-]);
+  /(?:(child_process|cp|subprocess|os)\.|(\.)|(?<![\w$]))(execSync|execFileSync|spawnSync|exec|system|popen|run|call|check_output|check_call|getoutput|Popen)\s*\(|\b(fetch|request|urlopen|Request|axios|(?:requests|axios|got|ky|httpx|superagent)\.(?:get|post|put|patch|delete|request))\s*\(/g;
 const MAX_CALLS = 64;
 const MAX_CALL_LENGTH = 8000;
 
-/** The index of the `)` closing the call opened at `open`, in masked code (or where the bounded scan stopped). */
-function callEnd(masked: string, open: number): number {
-  let depth = 0;
-  const limit = Math.min(masked.length, open + MAX_CALL_LENGTH);
-  for (let j = open; j < limit; j++) {
-    if (masked[j] === '(') depth++;
-    else if (masked[j] === ')' && --depth === 0) return j;
-  }
-  return limit;
+/**
+ * Whether a shell-running call is the real one: `execSync` on anything (`require("child_process").execSync`), `exec`
+ * bare or on `child_process`, `os.system`, `subprocess.run` — not `re.exec(…)` or a bare `run(…)`.
+ */
+function runsShell(receiver: string | undefined, dotted: boolean, name: string): boolean {
+  if (/^(?:execSync|execFileSync|spawnSync)$/.test(name)) return true;
+  if (name === 'exec') return receiver ? /^(?:child_process|cp)$/.test(receiver) : !dotted;
+  if (/^(?:system|popen)$/.test(name)) return receiver === 'os';
+  return receiver === 'subprocess';
 }
 
-/** The method a call's arguments name: `method: "POST"`, `method="POST"`, `"method": "POST"`. */
-function methodIn(lexed: Lexed, open: number, end: number, first: number): string | undefined {
+interface CallArg extends CodeString {
+  /** Directly in the call's argument list (or its options object) — not inside a nested call, array or object. */
+  direct: boolean;
+}
+
+/**
+ * The string arguments of the call opened at `open`, in order, and where it ends — one bounded walk of the masked
+ * code, tracking nesting so a string inside a nested call (`JSON.stringify({…})`) or a callback is not direct.
+ */
+function callArgs(lexed: Lexed, open: number): { args: CallArg[]; end: number } {
   const { masked, strings } = lexed;
-  for (let k = first; k < strings.length && strings[k].start < end; k++) {
-    const s = strings[k];
-    if (!VERBS.test(s.value)) continue;
-    const before = masked.slice(Math.max(open, s.start - 40), s.start);
+  const args: CallArg[] = [];
+  let k = firstStringFrom(strings, open);
+  let parens = 0;
+  let braces = 0;
+  let brackets = 0;
+  const limit = Math.min(masked.length, open + MAX_CALL_LENGTH);
+  for (let j = open; j < limit; j++) {
+    if (k < strings.length && strings[k].start === j) {
+      args.push({ ...strings[k], direct: parens === 1 && braces <= 1 && brackets === 0 });
+      j = strings[k].end - 1;
+      k++;
+      continue;
+    }
+    const c = masked[j];
+    if (c === '(') parens++;
+    else if (c === ')' && --parens === 0) return { args, end: j };
+    else if (c === '{') braces++;
+    else if (c === '}') braces--;
+    else if (c === '[') brackets++;
+    else if (c === ']') brackets--;
+  }
+  return { args, end: limit };
+}
+
+/** The method a call names directly: `method: "POST"`, `method="POST"`, `"method": "POST"`. */
+function methodOf(masked: string, args: CallArg[], open: number): string | undefined {
+  for (let k = 0; k < args.length; k++) {
+    const s = args[k];
+    if (!s.direct || !VERBS.test(s.value)) continue;
+    const keyed = /\bmethod\s*[:=]\s*$/.test(masked.slice(Math.max(open, s.start - 40), s.start));
     const quotedKey =
-      k > first && strings[k - 1].value === 'method' && /^\s*:\s*$/.test(masked.slice(strings[k - 1].end, s.start));
-    if (/\bmethod\s*[:=]\s*$/.test(before) || quotedKey) return s.value.toUpperCase();
+      k > 0 && args[k - 1].value === 'method' && /^\s*:\s*$/.test(masked.slice(args[k - 1].end, s.start));
+    if (keyed || quotedKey) return s.value.toUpperCase();
   }
   return undefined;
 }
@@ -717,29 +817,31 @@ function writeOf(m: RegExpMatchArray, verb: string): GitHubWrite | undefined {
 function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrite[]): void {
   if (code.length > MAX_STATEMENT_LENGTH) return;
   const lexed = lexCode(code, lang);
-  const { masked, strings } = lexed;
+  const { masked } = lexed;
   let calls = 0;
   SENDING_CALL.lastIndex = 0;
   for (const m of masked.matchAll(SENDING_CALL)) {
     if (++calls > MAX_CALLS) break;
-    const name = m[1];
     const open = (m.index ?? 0) + m[0].length - 1;
-    const end = callEnd(masked, open);
-    const first = firstStringFrom(strings, open);
-    const firstArg = strings[first];
-    const leadsWithString = firstArg !== undefined && /^\(\s*[frbuFRBU]{0,2}$/.test(masked.slice(open, firstArg.start));
-    if (EXEC_CALLS.has(name)) {
+    const { args } = callArgs(lexed, open);
+    const first = args[0];
+    const leadsWithString = first !== undefined && /^\(\s*[frbuFRBU]{0,2}$/.test(masked.slice(open, first.start));
+    if (m[3]) {
       // A shell command the code runs: its first argument, a string.
-      if (leadsWithString && depth < MAX_NESTING) shellWrites(firstArg.value, depth + 1, out);
+      if (runsShell(m[1], m[2] === '.', m[3]) && leadsWithString && depth < MAX_NESTING) {
+        shellWrites(first.value, depth + 1, out);
+      }
       continue;
     }
+    const name = m[4];
     // `octokit.request("POST /repos/…")`, `requests.request("POST", url)`
-    const leading = leadsWithString ? firstArg.value.match(/^(GET|POST|PUT|PATCH|DELETE)(?:\s+\/?repos\/|$)/i) : null;
+    const leading = leadsWithString ? first.value.match(/^(GET|POST|PUT|PATCH|DELETE)(?:\s+\/?repos\/|$)/i) : null;
     const named = name.match(/\.(get|post|put|patch|delete)$/)?.[1];
-    const verb = (named ?? leading?.[1] ?? methodIn(lexed, open, end, first) ?? 'GET').toUpperCase();
-    for (let k = first; k < strings.length && strings[k].start < end; k++) {
+    const verb = (named ?? leading?.[1] ?? methodOf(masked, args, open) ?? 'GET').toUpperCase();
+    for (const s of args) {
+      if (!s.direct) continue;
       ENDPOINT.lastIndex = 0;
-      for (const e of strings[k].value.matchAll(ENDPOINT)) {
+      for (const e of s.value.matchAll(ENDPOINT)) {
         const w = writeOf(e, verb);
         if (w) out.push(w);
       }
@@ -750,7 +852,17 @@ function codeWrites(code: string, lang: CodeLang, depth: number, out: GitHubWrit
 /** The writes of a shell command, statement by statement; nested shell and code are read the same way. */
 function shellWrites(command: string, depth: number, out: GitHubWrite[]): void {
   for (const st of shellStatements(command, depth)) {
-    if (st.text.length > MAX_STATEMENT_LENGTH) continue;
+    if (st.text.length > MAX_STATEMENT_LENGTH) {
+      // Too long to read whole (an inline PR body): `gh pr create` is still read from its head.
+      if (!st.code) {
+        const head = st.text.slice(0, 2000);
+        const words = wordsOf(head);
+        const at = commandAt(words);
+        const cli = at < words.length ? ghCliWrite(head.slice(words[at].start)) : undefined;
+        if (cli) out.push(cli);
+      }
+      continue;
+    }
     if (st.code) {
       codeWrites(st.text, st.code, st.depth, out);
       continue;
