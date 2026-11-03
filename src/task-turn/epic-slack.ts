@@ -154,11 +154,13 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
     return !!key && deps.isRunning(key);
   };
   /**
-   * The plan nodes whose child is being made, per epic (review #872): from its reservation until its
-   * first instruction is handed over. Parallel `spawn_child` calls see it — one child per node, and
-   * each child being made takes a running place before it is a session.
+   * The plan nodes whose child is being made, per epic, with the folder it is placed in (review #872):
+   * from its reservation until its first instruction is handed over. Parallel `spawn_child` calls see
+   * it — one child per node, no two in one folder, and each child being made takes a running place
+   * before it is a session.
    */
-  const making = new Map<string, Set<string>>();
+  const making = new Map<string, Map<string, string | undefined>>();
+  const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
   const makingIn = (epicTaskId: string | undefined) => (epicTaskId ? (making.get(epicTaskId)?.size ?? 0) : 0);
   /** The child's thread and its first instruction, once its id is reserved (`spawnChild`). */
   const makeChild = async (
@@ -251,7 +253,7 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
         return { ok: false, code: 'no-thread', error: 'the epic has no Slack thread to make a child next to' };
       }
       const epicTaskId = epic.taskId;
-      const nodes = making.get(epicTaskId) ?? new Set<string>();
+      const nodes = making.get(epicTaskId) ?? new Map<string, string | undefined>();
       if (nodes.has(spec.planNodeId)) {
         return {
           ok: false,
@@ -259,13 +261,17 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
           error: 'a child for this node is being made right now — look for it with child_status in a moment',
         };
       }
+      const dir = spec.workingDirectory;
+      if (dir && [...nodes.values()].some((other) => other && overlaps(other, dir))) {
+        return { ok: false, code: 'folder-overlap', error: 'a child being made right now works in that folder' };
+      }
       let childId: string;
       try {
         childId = deps.reserveEpicChild(epicTaskId, spec.planNodeId);
       } catch {
         return { ok: false, code: 'not-saved', error: 'the child could not be made — nothing changed; try again' };
       }
-      nodes.add(spec.planNodeId);
+      nodes.set(spec.planNodeId, dir);
       making.set(epicTaskId, nodes);
       try {
         return await makeChild(epic, epicTaskId, spec, channel, childId);
@@ -285,8 +291,9 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
         deps.logger,
       );
       if (result === 'taken') {
-        // A start in the tree's window only when it runs now (a queued word takes no new place).
-        if (!queued) deps.gate.record(epic);
+        // A start in the tree's window, now or after the turn in flight (review #872 astra 7) — a queued
+        // word takes no new running place, but it will start a turn.
+        deps.gate.record(epic);
         return { taken: true, queued };
       }
       return {
