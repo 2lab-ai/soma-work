@@ -728,7 +728,8 @@ describe('U8 — a card that newly needs a decision opens by itself, once, witho
         pendingQuestion: {
           type: 'user_choice',
           question: '?',
-          askId: 'x',
+          // A Slack question's own id (the turn that asked it): the same words asked again are a new decision.
+          hostTurnId: 'x',
           choices: [
             { id: '1', label: '예' },
             { id: '2', label: '아니오' },

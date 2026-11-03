@@ -12862,7 +12862,7 @@ function decisionSigOf(s) {
   var tp = s.taskPlan;
   if (tp && tp.state === 'awaiting') return 'plan|' + tp.revision;
   var q = s.pendingQuestion;
-  if (s.activityState === 'waiting' && q && quickChoicesOf(q)) return 'ask|' + (q.question || '');
+  if (s.activityState === 'waiting' && q && quickChoicesOf(q)) return 'ask|' + (q.hostTurnId || q.question || '');
   return '';
 }
 // A card of the viewer's that newly asks for one opens on the board by itself, once per decision — its buttons in
