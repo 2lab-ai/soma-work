@@ -815,6 +815,8 @@ not merely that the source checkout happens to contain the files.
 
 GitHub App takes priority when configured. Falls back to PAT automatically.
 
+With the App, every token refresh also rewrites a bot-owned `gh` config (`$DATA_DIR/gh/hosts.yml`, mode 0600). Agent shells get it as `GH_CONFIG_DIR` and no `GITHUB_TOKEN`, so `gh` reads the live token on every call instead of a copy that expires an hour into a long turn. `git` already re-reads its config, which every refresh rewrites.
+
 ---
 
 ## Project Structure

@@ -82,33 +82,26 @@ export class TokenRefreshScheduler {
   }
 
   /**
-   * Refresh token in background
+   * Refresh token in background. The cached token stays served until a new one arrives (it is still valid while this
+   * retries), and a failed refresh retries every 2 minutes until one succeeds — also after the old token expired:
+   * otherwise the daemon env, git config and the agents' gh hosts.yml would sit on a dead token (#834).
    */
   private async refreshInBackground(): Promise<void> {
     try {
       logger.debug('Background refresh of GitHub App installation token starting');
-
-      // Clear the cache to force a fresh token
-      this.tokenCache = null;
-
-      // Get a new token
-      const newToken = await this.getToken();
-
+      const tokenInfo = await this.apiClient.getInstallationToken(this.installationId);
+      this.tokenCache = { token: tokenInfo.token, expiresAt: tokenInfo.expiresAt };
+      this.scheduleRefresh();
+      await this.credentialsManager.updateCredentials(tokenInfo.token);
       logger.debug('GitHub App installation token refreshed successfully in background');
-
-      // Update environment variable for child processes
-      process.env.GITHUB_TOKEN = newToken;
     } catch (error) {
       logger.error('Failed to refresh GitHub App installation token in background:', error);
-
-      // If refresh fails but we still have some time on the old token, schedule a retry
-      if (this.tokenCache && this.tokenCache.expiresAt > new Date()) {
-        const retryIn = 2 * 60 * 1000; // Retry in 2 minutes
-        logger.debug(`Retrying token refresh in ${retryIn / 1000} seconds`);
-        this.refreshTimer = setTimeout(() => {
-          this.refreshInBackground();
-        }, retryIn);
-      }
+      const retryIn = 2 * 60 * 1000;
+      logger.debug(`Retrying token refresh in ${retryIn / 1000} seconds`);
+      this.clearRefreshTimer();
+      this.refreshTimer = setTimeout(() => {
+        void this.refreshInBackground();
+      }, retryIn);
     }
   }
 
