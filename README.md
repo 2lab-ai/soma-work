@@ -110,6 +110,8 @@ Choosing "대시보드 작업" in the new-task composer shows a **작업 계획*
 - **시작** starts only the revision you were looking at (a newer one meanwhile is refused with a note to look again); the plan goes in as the next instruction and the work begins. **취소** closes the plan; a new instruction plans again. **직접 입력** goes to the composer: what you send there makes the model revise and submit the next revision.
 - Until the plan is started the task has only the plan tool, never the epic's child tools. Full-page view: `/dashboard/plan/<session key>`.
 - A simple question (2–4 short choices — yes / no, start / cancel) shows its choices as buttons on the task card: one press answers it.
+- **시작** also sets a goal for the plan: finish every phase. The goal loop then keeps the task going turn after turn until the plan is done, and picks it up again after a restart. Your own instruction or answer resets its continuation budget.
+- A dashboard task that a restart cut mid-turn continues after boot, under its owner. The cut call is not replayed: before redoing any change, the model first checks what already happened. The conversation shows one line, `[재시작 후 자동 재개]`.
 
 ### 🗂️ A Slack instruction as a dashboard task
 
