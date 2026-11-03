@@ -360,7 +360,12 @@ describe('claude.autoFallbackCompactModel (auto fallback compact)', () => {
 });
 
 describe('getLinkLeakReportConfig (#835)', () => {
-  const keys = ['SOMA_LINK_LEAK_REPORT_CHANNEL', 'SOMA_LINK_LEAK_REPORT_HOUR', 'SOMA_LINK_LEAK_BOT_LOGIN', 'REPORT_TIMEZONE'];
+  const keys = [
+    'SOMA_LINK_LEAK_REPORT_CHANNEL',
+    'SOMA_LINK_LEAK_REPORT_HOUR',
+    'SOMA_LINK_LEAK_BOT_LOGIN',
+    'REPORT_TIMEZONE',
+  ];
   const saved: Record<string, string | undefined> = {};
   beforeEach(() => {
     for (const k of keys) {

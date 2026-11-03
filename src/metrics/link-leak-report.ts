@@ -3,15 +3,18 @@
  * the links on every task card (live sessions and archives). On 3 November 2026 the figure was 9 of 15.
  *
  * Per item: on a card, missed (on none), or on the wrong card (on cards, but not on the card of the session that wrote
- * it). The writer is the first session that recorded the PR in the `pr_created` metric. Once #832 (#844) is deployed
- * that metric fires only for a proven create; before, it fired for any PR URL in a tool result, which is why the first
- * session wins, never a later one that only read the PR. A wrong card is judged for PRs only (an issue's creator is
- * not recorded). The report
+ * it). The writer is the first session whose `pr_created` metric carries `proven: true` — emitted only for a write
+ * whose result proved the create (#832, #844). An older `pr_created` fired for any PR URL in a tool result, so it names
+ * no creator: the item counts under `unknown`. A wrong card is judged for PRs only (an issue's creator is not
+ * recorded). The report
  * posts every day; it alerts only after a baseline week, and only above that week's median, so PRs that are meant to
  * have no card (cron, manual runs) do not page anyone. The run of zero-miss days is the epic's done signal.
  */
-import { atomicWriteJson, loadJsonWithBackup } from '@soma/common/atomic-write';
+
+import { atomicWriteJson } from '@soma/common/atomic-write';
+import { escapeSlackMrkdwn } from '@soma/slack/mrkdwn-escape';
 import { canonicalLinkUrl } from '@soma/slack/session-link-capture';
+import fs from 'fs';
 import { Logger } from '../logger';
 
 const logger = new Logger('LinkLeakReport');
@@ -24,6 +27,8 @@ export interface BotItem {
   number: number;
   title?: string;
   createdAt: string;
+  /** A PR whose details GitHub would not give: counted (it may be a deploy PR), and named in the post. */
+  unverified?: true;
 }
 
 interface LinkLike {
@@ -42,6 +47,8 @@ export interface LeakReport {
   missed: BotItem[];
   wrongCard: Array<{ item: BotItem; creator: string; cards: string[] }>;
   bySession: Array<{ sessionKey: string; missed: number; wrong: number }>;
+  /** PRs counted although GitHub would not give their details. */
+  unverified?: number;
 }
 
 export interface LeakHistoryEntry {
@@ -106,7 +113,8 @@ export function computeLinkLeakReport(
     .sort((a, b) =>
       a.sessionKey === 'unknown' ? 1 : b.sessionKey === 'unknown' ? -1 : a.sessionKey.localeCompare(b.sessionKey),
     );
-  return { total: items.length, onCard, missed, wrongCard, bySession };
+  const unverified = items.filter((i) => i.unverified).length;
+  return { total: items.length, onCard, missed, wrongCard, bySession, ...(unverified ? { unverified } : {}) };
 }
 
 const BASELINE_DAYS = 7;
@@ -117,19 +125,28 @@ function median(values: number[]): number {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-/** Alert only after a baseline week of reports, and only when today's misses are above that week's median. */
+/**
+ * Alert only after a baseline week of days with bot items, and only when today's misses are above that week's median.
+ * A day with no bot item says nothing about the leak, so it is not part of the baseline.
+ */
 export function shouldAlert(history: LeakHistoryEntry[], today: LeakHistoryEntry): boolean {
-  if (history.length < BASELINE_DAYS) return false;
-  return today.missed > median(history.slice(-BASELINE_DAYS).map((h) => h.missed));
+  const measured = history.filter((h) => h.total > 0);
+  if (measured.length < BASELINE_DAYS) return false;
+  return today.missed > median(measured.slice(-BASELINE_DAYS).map((h) => h.missed));
 }
 
 /**
- * The run of most recent days with bot items and none missed. A day with no bot item is no evidence: it neither counts
- * nor breaks the run (so a quiet weekend is not "3 days in a row").
+ * The run of most recent days with bot items and none missed. A measured day with no bot item is no evidence: it
+ * neither counts nor breaks the run (so a quiet weekend is not "3 days in a row"). A day with no report at all breaks
+ * it: the days must follow one another on the calendar.
  */
 export function zeroStreak(history: LeakHistoryEntry[]): number {
   let n = 0;
+  let next: number | undefined;
   for (let i = history.length - 1; i >= 0; i--) {
+    const at = Date.parse(`${history[i].date}T00:00:00Z`);
+    if (next !== undefined && next - at !== DAY_MS) break;
+    next = at;
     if (history[i].total === 0) continue;
     if (history[i].missed !== 0) break;
     n++;
@@ -146,15 +163,16 @@ export interface CreatorEvent {
 }
 
 /**
- * Canonical PR URL → the session that wrote it: the first `pr_created` at or after `sinceMs` (events in time order).
- * A later session that only read the PR (`gh pr view` before #844) never takes it over.
+ * Canonical PR URL → the session that wrote it: the first proven `pr_created` (`metadata.proven === true`, #844) at or
+ * after `sinceMs`, events in time order. An unproven one — a session that only read the PR — names no one.
  */
 export function creatorsOf(events: Iterable<CreatorEvent>, sinceMs: number): Map<string, string> {
   const sorted = [...events].sort((a, b) => a.timestamp - b.timestamp);
   const creators = new Map<string, string>();
   for (const e of sorted) {
     const url = e.metadata?.prUrl;
-    if (e.eventType !== 'pr_created' || typeof url !== 'string' || !e.sessionKey || e.timestamp < sinceMs) continue;
+    if (e.eventType !== 'pr_created' || e.metadata?.proven !== true) continue;
+    if (typeof url !== 'string' || !e.sessionKey || e.timestamp < sinceMs) continue;
     const key = canonicalLinkUrl(url);
     if (!creators.has(key)) creators.set(key, e.sessionKey);
   }
@@ -174,21 +192,42 @@ function ref(item: BotItem): string {
   return `<${item.url}|${item.repo}#${item.number}>`;
 }
 
-/** Lines under a heading, whole lines only, within Slack's 3,000-character section limit; the rest are counted. */
-function listSection(heading: string, lines: string[]): string {
+/** A title from GitHub, as plain text: it cannot mention anyone or add a link. */
+function plain(title: string | undefined): string {
+  return title ? escapeSlackMrkdwn(title) : '';
+}
+
+/** Slack takes 50 blocks a message; the summary and per-session context keep a few. */
+const MAX_LIST_BLOCKS = 40;
+
+/**
+ * Every line under a heading, whole lines only, as many mrkdwn texts as it takes (each within Slack's 3,000-character
+ * limit). Only past MAX_LIST_BLOCKS texts would the rest be counted instead of listed.
+ */
+function listTexts(heading: string, lines: string[], maxTexts = MAX_LIST_BLOCKS): string[] {
   const budget = 2800;
-  const out = [`*${heading}*`];
-  let used = out[0].length;
+  const texts: string[] = [];
+  let cur = [`*${heading}*`];
+  let used = cur[0].length;
   let shown = 0;
   for (const line of lines) {
-    if (used + line.length + 1 > budget) break;
-    out.push(line);
-    used += line.length + 1;
+    const clipped = line.length > budget - 40 ? `${line.slice(0, budget - 41)}…` : line;
+    if (used + clipped.length + 1 > budget) {
+      if (texts.length + 1 >= maxTexts) break;
+      texts.push(cur.join('\n'));
+      cur = [];
+      used = 0;
+    }
+    cur.push(clipped);
+    used += clipped.length + 1;
     shown++;
   }
-  if (shown < lines.length) out.push(`… and ${lines.length - shown} more`);
-  return out.join('\n');
+  if (shown < lines.length) cur.push(`… and ${lines.length - shown} more`);
+  texts.push(cur.join('\n'));
+  return texts;
 }
+
+const section = (text: string) => ({ type: 'section', text: { type: 'mrkdwn', text } });
 
 export function formatLinkLeakReport(
   report: LeakReport,
@@ -202,44 +241,43 @@ export function formatLinkLeakReport(
     `*${missedCount} of ${report.total}* bot-authored, non-deploy PRs and issues opened in the last 24 hours are on no task card.`,
   );
   lines.push(`On a card: ${report.onCard}. On the wrong session's card (PRs): ${report.wrongCard.length}.`);
+  const unread = report.unverified ?? 0;
+  if (unread > 0) {
+    lines.push(
+      `${unread} PR${unread === 1 ? '' : 's'} could not be read on GitHub and ${unread === 1 ? 'is' : 'are'} counted as found (one of them may be a deploy PR).`,
+    );
+  }
   lines.push(`Days in a row with nothing missed: ${opts.streak}.`);
   if (opts.baselineDays < BASELINE_DAYS)
     lines.push(`Baseline: day ${opts.baselineDays} of ${BASELINE_DAYS}, no alerts yet.`);
-  const blocks: any[] = [{ type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } }];
-  if (missedCount > 0) {
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: listSection(
+  const blocks: any[] = [section(lines.join('\n'))];
+  const missedTexts =
+    missedCount > 0
+      ? listTexts(
           'Missed',
-          report.missed.map((i) => `• ${ref(i)} ${i.title ?? ''}`.trim()),
-        ),
-      },
-    });
-  }
-  if (report.wrongCard.length > 0) {
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: listSection(
+          report.missed.map((i) => `• ${ref(i)}${i.unverified ? ' (not read)' : ''} ${plain(i.title)}`.trim()),
+        )
+      : [];
+  const wrongTexts =
+    report.wrongCard.length > 0
+      ? listTexts(
           'On the wrong card',
           report.wrongCard.map((w) => `• ${ref(w.item)} made by \`${w.creator}\`, on \`${w.cards.join('`, `')}\``),
-        ),
-      },
-    });
-  }
+          MAX_LIST_BLOCKS - missedTexts.length,
+        )
+      : [];
+  for (const text of [...missedTexts, ...wrongTexts]) blocks.push(section(text));
   if (report.bySession.length > 0) {
     blocks.push({
       type: 'context',
       elements: [
         {
           type: 'mrkdwn',
-          text: listSection(
+          text: listTexts(
             'Per session',
             report.bySession.map((r) => `\`${r.sessionKey}\`: ${r.missed} missed, ${r.wrong} wrong card`),
-          ),
+            1,
+          )[0],
         },
       ],
     });
@@ -288,6 +326,7 @@ export async function fetchBotItems(args: {
     const q = encodeURIComponent(`author:app/${args.botLogin} created:>=${since}`);
     // Every page (search returns at most 1,000 results, 100 a page).
     const found: any[] = [];
+    let total = 0;
     for (let page = 1; page <= 10; page++) {
       const res = await doFetch(
         `https://api.github.com/search/issues?q=${q}&per_page=100&page=${page}&sort=created&order=asc`,
@@ -306,8 +345,16 @@ export async function fetchBotItems(args: {
         return undefined;
       }
       found.push(...body.items);
-      const total = typeof body.total_count === 'number' ? body.total_count : found.length;
+      total = typeof body.total_count === 'number' ? body.total_count : found.length;
       if (body.items.length < 100 || found.length >= total) break;
+    }
+    // Search returns at most 1,000 results: a day past it cannot be told complete.
+    if (found.length < total) {
+      logger.warn('GitHub search returned fewer bot items than it counted; the day is not reported', {
+        found: found.length,
+        total,
+      });
+      return undefined;
     }
     const out: BotItem[] = [];
     for (const it of found) {
@@ -323,30 +370,36 @@ export async function fetchBotItems(args: {
           signal: AbortSignal.timeout(15_000),
         });
         if (!pr.ok) {
-          logger.warn('Could not read a bot PR; it is left out of the report', {
+          // Counted, flagged and named: leaving it out could turn a leak into a clean day.
+          logger.warn('Could not read a bot PR; it is counted and flagged', {
             pr: it.html_url,
             ...(await refusal(pr)),
           });
+          out.push({ ...itemOf(it, m, kind), unverified: true });
           continue;
         }
         const detail = await pr.json();
         const refs = [detail?.base?.ref, detail?.head?.ref].filter((r): r is string => typeof r === 'string');
         if (refs.some((r) => r.startsWith('deploy/'))) continue;
       }
-      out.push({
-        url: it.html_url,
-        kind,
-        repo: m[1],
-        number: Number(m[3]),
-        ...(typeof it.title === 'string' ? { title: it.title.slice(0, 200) } : {}),
-        createdAt: String(it.created_at ?? ''),
-      });
+      out.push(itemOf(it, m, kind));
     }
     return out;
   } catch (error) {
     logger.warn('Failed to list the bot items on GitHub', { error: (error as Error)?.message });
     return undefined;
   }
+}
+
+function itemOf(it: any, m: RegExpMatchArray, kind: 'pr' | 'issue'): BotItem {
+  return {
+    url: it.html_url,
+    kind,
+    repo: m[1],
+    number: Number(m[3]),
+    ...(typeof it.title === 'string' ? { title: it.title.slice(0, 200) } : {}),
+    createdAt: String(it.created_at ?? ''),
+  };
 }
 
 // ── The daily run ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -398,20 +451,27 @@ export class LinkLeakReporter {
     return { date: `${get('year')}-${get('month')}-${get('day')}`, hour: Number(get('hour')) };
   }
 
-  /** The state file, or its `.bak` when it is unusable (atomic-write WARNs); a fresh state when neither exists. */
+  /**
+   * The newer usable copy of the state: the live file or its `.bak` (written first on success). A live file that is
+   * damaged, or older than the `.bak` because its own write failed, does not reset the baseline or re-post the day.
+   */
   private readState(): LeakState {
-    try {
-      return (
-        loadJsonWithBackup<LeakState>(this.deps.statePath, (raw) => {
-          const v = raw as Partial<LeakState> | null;
-          if (!v || typeof v !== 'object' || !Array.isArray(v.history)) throw new Error('not a link leak state');
-          return { lastRunDate: typeof v.lastRunDate === 'string' ? v.lastRunDate : undefined, history: v.history };
-        }) ?? { history: [] }
-      );
-    } catch (error) {
-      logger.error('Link leak report state is unusable; starting a new baseline', { error: (error as Error)?.message });
-      return { history: [] };
-    }
+    const read = (file: string): LeakState | undefined => {
+      try {
+        const v = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<LeakState> | null;
+        if (!v || typeof v !== 'object' || !Array.isArray(v.history)) throw new Error('not a link leak state');
+        return { lastRunDate: typeof v.lastRunDate === 'string' ? v.lastRunDate : undefined, history: v.history };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+          logger.warn('Link leak report state copy is unusable', { file, error: (error as Error)?.message });
+        }
+        return undefined;
+      }
+    };
+    const live = read(this.deps.statePath);
+    const bak = read(`${this.deps.statePath}.bak`);
+    if (live && bak) return (bak.lastRunDate ?? '') > (live.lastRunDate ?? '') ? bak : live;
+    return live ?? bak ?? { history: [] };
   }
 
   private async compute(): Promise<LeakReport | undefined> {
