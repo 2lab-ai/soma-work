@@ -186,26 +186,292 @@ export interface GitHubEffect {
   link: CapturedLink;
 }
 
-const INTERPRETERS = /^(?:[A-Za-z_]\w*=\S*\s+)*(?:node|nodejs|python3?|bash|sh|zsh|deno|bun|ruby|perl)\b/;
-const HEREDOC = /<<-?\s*(['"]?)([A-Za-z_][\w-]*)\1/;
+// ── Reading a shell command ──────────────────────────────────────────────────────────────────────────────────────────
+//
+// A command is read as the shell runs it: statements split at unquoted newlines, `;`, `&&`, `||` and `|`; a command
+// substitution (`$(…)`, `` `…` ``) is a statement of its own; what `bash -c`, `sh -c` or `eval` is given is read as
+// shell again; what `node -e`, `python3 -c`, `ruby -e`, `perl -e` or `deno eval` is given — or an interpreter reads
+// from a heredoc — is code. A heredoc any other command reads is data (`cat > body.md <<'EOF'`) and is dropped: a PR
+// body that describes a POST is not a POST. Nesting is read to MAX_NESTING levels; deeper text is not read, which
+// only ever loses a write (the turn-end GitHub check, #833, still finds a PR).
 
-/**
- * The shell statements of a command, split at unquoted newlines, `;`, `&&`, `||` and `|`. A heredoc's body is code
- * when an interpreter reads it (`node <<'EOF'`) — then it is one statement of its own — and data otherwise (`cat >
- * body.md <<'EOF'`), dropped: a PR body that describes a POST is not a POST. Quotes are tracked so a `node -e '…'`
- * script stays one statement; `$(…)` nesting is not, which only ever merges statements (never invents a write: the
- * result must still prove it).
- */
 interface Statement {
   text: string;
-  /** A heredoc body an interpreter runs: code, whatever its first word. */
+  /** Code an interpreter runs (JavaScript, Python, Ruby, Perl), not shell. */
   code: boolean;
+  /** How deeply it was nested (substitution, `bash -c`, heredoc). */
+  depth: number;
 }
 
-function shellStatements(command: string): Statement[] {
+interface Word {
+  value: string;
+  start: number;
+}
+
+const MAX_NESTING = 4;
+/** Longer statements are not read (a model-written statement is rarely over a few thousand characters). */
+const MAX_STATEMENT_LENGTH = 32_000;
+const HEREDOC = /<<-?\s*(['"]?)([A-Za-z_][\w-]*)\1/;
+
+const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh']);
+const HTTP_CLIENTS = new Set(['curl', 'wget', 'http', 'https', 'xh']);
+const NODE_LIKE = new Set(['node', 'nodejs', 'bun', 'tsx', 'ts-node']);
+const PYTHONS = new Set(['python', 'python3']);
+const PERL_LIKE = new Set(['ruby', 'perl']);
+const SCRIPT = /\.(?:[cm]?js|ts|py|rb|sh)$/;
+/** Words before the command that do not run anything themselves. */
+const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', '{', '(']);
+/** Commands that run the command after them, and which of their options take a value. */
+const WRAPPERS = new Map<string, RegExp>([
+  ['env', /^-[uSC]$/],
+  ['sudo', /^-[ugpCDhrtUT]$/],
+  ['nice', /^-n$/],
+  ['timeout', /^-[sk]$/],
+  ['exec', /^-a$/],
+  ['command', /^$/],
+  ['nohup', /^$/],
+  ['time', /^$/],
+  ['stdbuf', /^$/],
+]);
+
+/** A statement's words, unquoted, each with where it starts in the statement. */
+function wordsOf(text: string): Word[] {
+  const out: Word[] = [];
+  let value = '';
+  let start = -1;
+  let quote: '"' | "'" | '' = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote === "'") {
+      if (c === "'") quote = '';
+      else value += c;
+      continue;
+    }
+    if (quote === '"') {
+      if (c === '"') quote = '';
+      else if (c === '\\' && /["\\$`]/.test(text[i + 1] ?? '')) value += text[++i];
+      else value += c;
+      continue;
+    }
+    if (c === '\\' && text[i + 1] === '\n') {
+      i++;
+      continue;
+    }
+    if (/\s/.test(c)) {
+      if (start >= 0) out.push({ value, start });
+      value = '';
+      start = -1;
+      continue;
+    }
+    if (start < 0) start = i;
+    if (c === "'" || c === '"') quote = c;
+    else if (c === '\\') value += text[++i] ?? '';
+    else value += c;
+  }
+  if (start >= 0) out.push({ value, start });
+  return out;
+}
+
+/** Where the command is among a statement's words: after env assignments, keywords and wrappers (`sudo -E`, `timeout 30s`). */
+function commandAt(words: Word[]): number {
+  let i = 0;
+  while (i < words.length) {
+    const w = words[i].value;
+    if (KEYWORDS.has(w) || /^[A-Za-z_]\w*=/.test(w)) {
+      i++;
+      continue;
+    }
+    const takesValue = WRAPPERS.get(w);
+    if (!takesValue) break;
+    i++;
+    while (i < words.length && /^-./.test(words[i].value)) i += takesValue.test(words[i].value) ? 2 : 1;
+    if (w === 'timeout' && /^\d+(?:\.\d+)?[smhd]?$/.test(words[i]?.value ?? '')) i++;
+  }
+  return i;
+}
+
+function nameOf(word: string | undefined): string {
+  return (
+    (word ?? '')
+      .replace(/^[({]+/, '')
+      .split('/')
+      .pop() ?? ''
+  );
+}
+
+/** What a statement's command runs: a request (`send`), shell (`bash -c`, `eval`), or code (`node -e`). */
+type Run = { send: true } | { shell: string } | { code: string } | undefined;
+const SEND: Run = { send: true };
+
+function runOf(words: Word[], at: number): Run {
+  const name = nameOf(words[at]?.value);
+  if (name === 'gh') return words[at + 1]?.value === 'api' ? SEND : undefined;
+  if (HTTP_CLIENTS.has(name) || name === 'npx') return SEND;
+  if (name === 'eval')
+    return {
+      shell: words
+        .slice(at + 1)
+        .map((w) => w.value)
+        .join(' '),
+    };
+  if (SHELLS.has(name)) {
+    for (let k = at + 1; k < words.length; k++) {
+      const v = words[k].value;
+      if (/^[-+]o$/.test(v)) k++;
+      else if (/^-[A-Za-z]*c[A-Za-z]*$/.test(v)) return { shell: words[k + 1]?.value ?? '' };
+      else if (!/^[-+]/.test(v)) return SEND; // a script file: what it sends is not visible, its arguments are
+    }
+    return undefined; // reads its script from stdin
+  }
+  const inline = NODE_LIKE.has(name)
+    ? /^(?:-e|--eval|-p|--print)$/
+    : PYTHONS.has(name)
+      ? /^-[A-Za-z]*c$/
+      : PERL_LIKE.has(name)
+        ? /^-[A-Za-z]*[eE]$/
+        : name === 'deno'
+          ? /^eval$/
+          : undefined;
+  if (inline) {
+    for (let k = at + 1; k < words.length; k++) {
+      const v = words[k].value;
+      if (inline.test(v)) return { code: words[k + 1]?.value ?? '' };
+      if (!v.startsWith('-')) return SEND; // a script or a module
+    }
+    return undefined; // reads its program from stdin
+  }
+  return SCRIPT.test(name) ? SEND : undefined;
+}
+
+/** How a heredoc's body is read, from the command that reads it: shell, code, or data (undefined). */
+function heredocKind(head: string): 'shell' | 'code' | undefined {
+  const sub = Math.max(head.lastIndexOf('$(') >= 0 ? head.lastIndexOf('$(') + 2 : 0, head.lastIndexOf('`') + 1);
+  const last =
+    head
+      .slice(sub)
+      .split(/&&|\|\||[;|]/)
+      .pop() ?? '';
+  const words = wordsOf(last);
+  const at = commandAt(words);
+  const name = nameOf(words[at]?.value);
+  // Only a command that reads its program from stdin runs the body; `node render.cjs <<'EOF'` reads data.
+  if (runOf(words, at) !== undefined) return undefined;
+  if (SHELLS.has(name)) return 'shell';
+  if (NODE_LIKE.has(name) || PYTHONS.has(name) || PERL_LIKE.has(name) || name === 'deno') return 'code';
+  return undefined;
+}
+
+function withoutCommentLines(code: string): string {
+  return code
+    .split('\n')
+    .filter((l) => !/^\s*(?:\/\/|#)/.test(l))
+    .join('\n');
+}
+
+/** The closing backtick of a substitution opened before `from`, or -1. */
+function closingBacktick(text: string, from: number): number {
+  for (let j = from; j < text.length; j++) {
+    if (text[j] === '\\') j++;
+    else if (text[j] === '`') return j;
+  }
+  return -1;
+}
+
+/**
+ * Splits `text` from `from` into statements, appended to `out`. Inside a substitution (`inSub`) it stops at the
+ * unmatched `)` and returns the index after it. Linear: every character is read once per level, and levels are capped.
+ */
+function splitShell(text: string, from: number, inSub: boolean, depth: number, out: Statement[]): number {
+  let cur = '';
+  let quote: '"' | "'" | '' = '';
+  let parens = 0;
+  let backticks = true;
+  const flush = () => {
+    if (cur.trim()) out.push({ text: cur, code: false, depth });
+    cur = '';
+  };
+  let i = from;
+  while (i < text.length) {
+    const c = text[i];
+    if (quote === "'") {
+      if (c === "'") quote = '';
+      cur += c;
+      i++;
+      continue;
+    }
+    if (c === '\\') {
+      cur += c + (text[i + 1] ?? '');
+      i += 2;
+      continue;
+    }
+    // A command substitution runs its command, inside double quotes too: it is read as statements of its own.
+    if (c === '$' && text[i + 1] === '(') {
+      if (depth < MAX_NESTING) {
+        i = splitShell(text, i + 2, true, depth + 1, out);
+        cur += '$(…)';
+      } else {
+        cur += '$(';
+        parens++;
+        i += 2;
+      }
+      continue;
+    }
+    if (c === '`' && backticks) {
+      const end = closingBacktick(text, i + 1);
+      if (end < 0) {
+        backticks = false;
+        cur += c;
+        i++;
+        continue;
+      }
+      if (depth < MAX_NESTING) splitShell(text.slice(i + 1, end), 0, false, depth + 1, out);
+      cur += '`…`';
+      i = end + 1;
+      continue;
+    }
+    if (quote === '"') {
+      if (c === '"') quote = '';
+      cur += c;
+      i++;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      cur += c;
+      i++;
+      continue;
+    }
+    // A comment runs to the end of the line: what it says is not run.
+    if (c === '#' && (cur === '' || /\s/.test(text[i - 1] ?? ''))) {
+      while (i < text.length && text[i] !== '\n') i++;
+      continue;
+    }
+    if (inSub && c === ')') {
+      if (parens === 0) {
+        flush();
+        return i + 1;
+      }
+      parens--;
+    } else if (inSub && c === '(') {
+      parens++;
+    }
+    const two = text.slice(i, i + 2);
+    if (c === '\n' || c === ';' || two === '&&' || two === '||' || c === '|') {
+      flush();
+      i += two === '&&' || two === '||' ? 2 : 1;
+      continue;
+    }
+    cur += c;
+    i++;
+  }
+  flush();
+  return i;
+}
+
+/** The statements of a shell command; a heredoc's body is read as shell, code or data by the command reading it. */
+function shellStatements(command: string, depth: number, out: Statement[] = []): Statement[] {
   const lines = command.split('\n');
   const kept: string[] = [];
-  const code: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     kept.push(line);
@@ -214,73 +480,44 @@ function shellStatements(command: string): Statement[] {
     const body: string[] = [];
     let j = i + 1;
     while (j < lines.length && lines[j].trim() !== m[2]) body.push(lines[j++]);
-    const head =
-      line
-        .slice(0, m.index)
-        .split(/&&|\|\||[;|]/)
-        .pop() ?? '';
-    if (INTERPRETERS.test(head.trim())) code.push(body.filter((l) => !/^\s*(?:\/\/|#)/.test(l)).join('\n'));
+    const kind = heredocKind(line.slice(0, m.index));
+    if (kind === 'code') out.push({ text: withoutCommentLines(body.join('\n')), code: true, depth: depth + 1 });
+    else if (kind === 'shell' && depth < MAX_NESTING) shellStatements(body.join('\n'), depth + 1, out);
     i = j;
   }
-  const out: Statement[] = code.map((text) => ({ text, code: true }));
-  let cur = '';
-  let quote: '"' | "'" | '' = '';
-  const text = kept.join('\n');
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (quote) {
-      if (c === '\\' && quote === '"') {
-        cur += c + (text[i + 1] ?? '');
-        i++;
-        continue;
-      }
-      if (c === quote) quote = '';
-      cur += c;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      quote = c;
-      cur += c;
-      continue;
-    }
-    if (c === '\\') {
-      cur += c + (text[i + 1] ?? '');
-      i++;
-      continue;
-    }
-    // A comment runs to the end of the line: what it says is not run.
-    if (c === '#' && (cur === '' || /\s/.test(text[i - 1] ?? ''))) {
-      while (i + 1 < text.length && text[i + 1] !== '\n') i++;
-      continue;
-    }
-    const two = text.slice(i, i + 2);
-    if (c === '\n' || c === ';' || two === '&&' || two === '||' || c === '|') {
-      if (cur.trim()) out.push({ text: cur, code: false });
-      cur = '';
-      if (two === '&&' || two === '||') i++;
-      continue;
-    }
-    cur += c;
-  }
-  if (cur.trim()) out.push({ text: cur, code: false });
+  splitShell(kept.join('\n'), 0, false, depth, out);
   return out;
 }
+
+// ── Reading a request ────────────────────────────────────────────────────────────────────────────────────────────────
 
 // `repos/{owner}/{repo}/pulls|issues[/{n}[/merge]]` — as an api.github.com URL or a bare path (`gh api repos/…`, a
 // `POST /repos/…` helper). Any other suffix (`/comments`, `/reviews`, `/labels`, `/files`) is not a target.
 const ENDPOINT =
   /(?:api\.github\.com\/|(?<![\w./-]))\/?repos\/([\w.-]+)\/([\w.-]+)\/(pulls|issues)(?:\/(\d+)(?:\/(merge))?)?(?![\w/-])/g;
-const METHOD_TOKENS: RegExp[] = [
+/** How a shell command names its method: a curl / gh flag, a `METHOD /repos` helper argument. */
+const SHELL_METHODS: RegExp[] = [
   /(?:^|\s)(?:-X|--request|--method)\s*(?:=\s*)?['"]?(GET|POST|PUT|PATCH|DELETE)\b/gi,
   /\bmethod\s*[:=]\s*['"`](GET|POST|PUT|PATCH|DELETE)['"`]/gi,
   /(?:^|[\s"'`])(GET|POST|PUT|PATCH|DELETE)\s+['"]?(?=\/?repos\/)/g,
-  /\b(?:requests|axios|got|ky|httpx)\.(get|post|put|patch|delete)\s*\(/gi,
 ];
+/**
+ * How code names its method — only in the shape of a call, never a curl flag or a bare `POST /repos` in a string:
+ * `print("curl -X POST …")` prints. (`octokit.request("POST /repos/…")` is a call.)
+ */
+const CODE_METHODS: RegExp[] = [
+  /\bmethod\s*[:=]\s*['"`](GET|POST|PUT|PATCH|DELETE)['"`]/gi,
+  /\b(?:requests|axios|got|ky|httpx|superagent)\.(get|post|put|patch|delete)\s*\(/gi,
+  /\brequest\s*\(\s*['"`](GET|POST|PUT|PATCH|DELETE)\s+(?=\/?repos\/)/g,
+];
+/** A program running a shell command it spells as a string: `execSync("curl …")`, `subprocess.run("gh …", shell=True)`. */
+const EXEC_CALL =
+  /\b(?:execSync|exec|spawnSync|system|popen|check_output|check_call|getoutput|run)\s*\(\s*(?:f|r)?(['"`])/g;
+const MAX_EXEC_STRING = 4000;
+const MAX_EXEC_CALLS = 32;
 const CURL_DATA = /(?:^|\s)(?:-d|--data(?:-raw|-binary|-urlencode)?|--json|-F|--form)(?=\s|=|$|@)/;
 const GH_API_FIELDS = /(?:^|\s)(?:-f|-F|--field|--raw-field|--input)(?=\s|=)/;
-// `gh` as the statement's command (after env assignments, `$(`, or a wrapper), not a word in an echo.
-const GH_CLI =
-  /(?:^|\$\(|`)\s*(?:[A-Za-z_]\w*=[^\s$`]*\s+)*(?:(?:command|exec|env|nohup|time|timeout\s+\S+)\s+)*gh\s+(pr|issue)\s+(create|merge|close)\b([^\n]*)/;
+const GH_CLI = /^[({]*gh\s+(pr|issue)\s+(create|merge|close)\b([^\n]*)/;
 const REPO_FLAG =
   /(?:^|\s)(?:-R|--repo)(?:\s+|=)['"]?(?:https:\/\/)?(?:github\.com\/)?([\w.-]+\/[\w.-]+?)(?:\.git)?['"]?(?=\s|$)/;
 const ISSUE_OR_PR_URL = /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(pull|issues)\/(\d+)/;
@@ -291,22 +528,23 @@ interface MethodToken {
 }
 
 /** Every method token of a statement, scanned once (not once per endpoint). */
-function methodTokens(statement: string): MethodToken[] {
+function methodTokens(statement: string, shapes: RegExp[]): MethodToken[] {
   const out: MethodToken[] = [];
-  for (const re of METHOD_TOKENS) {
+  for (const re of shapes) {
     re.lastIndex = 0;
     for (const m of statement.matchAll(re)) out.push({ at: m.index ?? 0, verb: m[1].toUpperCase() });
   }
   return out;
 }
 
-function verbOf(statement: string, tokens: MethodToken[], at: number): string {
+function verbOf(statement: string, tokens: MethodToken[], at: number, code: boolean): string {
   let best: { verb: string; dist: number } | undefined;
   for (const t of tokens) {
     const dist = Math.abs(t.at - at);
     if (!best || dist < best.dist) best = { verb: t.verb, dist };
   }
   if (best) return best.verb;
+  if (code) return 'GET';
   if (/\bcurl\b/.test(statement) && CURL_DATA.test(statement) && !/(?:^|\s)(?:-G|--get)\b/.test(statement)) {
     return 'POST';
   }
@@ -314,8 +552,9 @@ function verbOf(statement: string, tokens: MethodToken[], at: number): string {
   return 'GET';
 }
 
-function ghCliWrite(statement: string): GitHubWrite | undefined {
-  const m = statement.match(GH_CLI);
+/** `gh pr|issue create|merge|close …`, read from the command word on. */
+function ghCliWrite(command: string): GitHubWrite | undefined {
+  const m = command.match(GH_CLI);
   if (!m) return undefined;
   const kind = m[1] === 'pr' ? 'pr' : 'issue';
   const action = m[2] as 'create' | 'merge' | 'close';
@@ -335,65 +574,13 @@ function ghCliWrite(statement: string): GitHubWrite | undefined {
   return { op: action, kind, ...(repo ? { repo } : {}), ...(number ? { number } : {}) };
 }
 
-// A request is sent only by an HTTP client, an interpreter, `gh api`, or a script — never by a command that prints,
-// filters, commits or edits text that merely spells one (`echo`, `git commit -m`, `gh pr edit --body`).
-const SENDERS = new Set([
-  'curl',
-  'wget',
-  'http',
-  'https',
-  'xh',
-  'node',
-  'nodejs',
-  'npx',
-  'tsx',
-  'ts-node',
-  'deno',
-  'bun',
-  'python',
-  'python3',
-  'ruby',
-  'perl',
-  'bash',
-  'sh',
-  'zsh',
-]);
-const SCRIPT = /\.(?:[cm]?js|ts|py|rb|sh)$/;
-/** Longer statements are not read (a model-written statement is rarely over a few thousand characters). */
-const MAX_STATEMENT_LENGTH = 32_000;
-
-/**
- * The statement's command and its first argument — after env assignments and `env`/`command`/`exec`/`time`/`nohup`
- * wrappers. `X=$(curl …)` runs curl.
- */
-function commandOf(statement: string): { word?: string; next?: string } {
-  const words = statement.trim().split(/\s+/);
-  let i = 0;
-  while (i < words.length) {
-    const sub = words[i].match(/^[A-Za-z_]\w*=(?:\$\(|`)(\S+)/);
-    if (sub) return { word: sub[1], next: words[i + 1] };
-    if (/^[A-Za-z_]\w*=/.test(words[i]) || /^(?:env|command|exec|time|nohup)$/.test(words[i])) i++;
-    else break;
-  }
-  return { word: words[i]?.replace(/^[({]+/, ''), next: words[i + 1] };
-}
-
-function sends(st: Statement): boolean {
-  if (st.code) return true;
-  const { word, next } = commandOf(st.text);
-  if (!word) return false;
-  if (word === 'gh') return next === 'api';
-  return SENDERS.has(word.split('/').pop() ?? word) || SCRIPT.test(word);
-}
-
-function apiWrites(st: Statement): GitHubWrite[] {
-  if (st.text.length > MAX_STATEMENT_LENGTH || !sends(st)) return [];
-  const statement = st.text;
-  const tokens = methodTokens(statement);
+/** The PR and issue writes a request names: an endpoint and the method nearest to it. */
+function apiWrites(statement: string, code: boolean): GitHubWrite[] {
+  const tokens = methodTokens(statement, code ? CODE_METHODS : SHELL_METHODS);
   const out: GitHubWrite[] = [];
   ENDPOINT.lastIndex = 0;
   for (const m of statement.matchAll(ENDPOINT)) {
-    const verb = verbOf(statement, tokens, m.index ?? 0);
+    const verb = verbOf(statement, tokens, m.index ?? 0, code);
     const repo = `${m[1]}/${m[2]}`.toLowerCase();
     const kind = m[3] === 'pulls' ? 'pr' : 'issue';
     const number = m[4] ? Number(m[4]) : undefined;
@@ -403,6 +590,56 @@ function apiWrites(st: Statement): GitHubWrite[] {
     else if (number && !m[5] && verb === 'PATCH') out.push({ op: 'patch', kind, repo, number });
   }
   return out;
+}
+
+/** The writes of code: its own requests, and the shell commands it runs as strings. */
+function codeWrites(code: string, depth: number, out: GitHubWrite[]): void {
+  if (code.length > MAX_STATEMENT_LENGTH) return;
+  const text = withoutCommentLines(code);
+  out.push(...apiWrites(text, true));
+  if (depth >= MAX_NESTING) return;
+  let calls = 0;
+  EXEC_CALL.lastIndex = 0;
+  for (let m = EXEC_CALL.exec(text); m && calls < MAX_EXEC_CALLS; m = EXEC_CALL.exec(text)) {
+    const quote = m[1];
+    const from = m.index + m[0].length;
+    let value = '';
+    let end = -1;
+    for (let j = from; j < text.length && j - from < MAX_EXEC_STRING; j++) {
+      if (text[j] === '\\') value += text[++j] ?? '';
+      else if (text[j] === quote) {
+        end = j;
+        break;
+      } else value += text[j];
+    }
+    if (end < 0) continue;
+    calls++;
+    EXEC_CALL.lastIndex = end + 1;
+    shellWrites(value, depth + 1, out);
+  }
+}
+
+/** The writes of a shell command, statement by statement; nested shell and code are read the same way. */
+function shellWrites(command: string, depth: number, out: GitHubWrite[]): void {
+  for (const st of shellStatements(command, depth)) {
+    if (st.text.length > MAX_STATEMENT_LENGTH) continue;
+    if (st.code) {
+      codeWrites(st.text, st.depth, out);
+      continue;
+    }
+    const words = wordsOf(st.text);
+    const at = commandAt(words);
+    if (at >= words.length) continue;
+    const cli = ghCliWrite(st.text.slice(words[at].start));
+    if (cli) out.push(cli);
+    const run = runOf(words, at);
+    if (!run) continue;
+    if ('send' in run) out.push(...apiWrites(st.text, false));
+    else if (st.depth < MAX_NESTING) {
+      if ('shell' in run) shellWrites(run.shell, st.depth + 1, out);
+      else codeWrites(run.code, st.depth + 1, out);
+    }
+  }
 }
 
 // GitHub MCP tools (`mcp__github__…`, or a plugin's `…__github__…`).
@@ -445,12 +682,7 @@ export function githubWritesOf(toolName: unknown, input: unknown): GitHubWrite[]
     return [];
   }
   const out: GitHubWrite[] = [];
-  for (const st of shellStatements(fields.command)) {
-    if (st.text.length > MAX_STATEMENT_LENGTH) continue;
-    const cli = st.code ? undefined : ghCliWrite(st.text);
-    if (cli) out.push(cli);
-    out.push(...apiWrites(st));
-  }
+  shellWrites(fields.command, 0, out);
   return out;
 }
 
