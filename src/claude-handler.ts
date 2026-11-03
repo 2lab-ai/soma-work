@@ -675,6 +675,11 @@ export class ClaudeHandler implements TurnSteeringPort {
     return this.sessionRegistry.fillPlaceholderSessionTitle(channelId, threadTs, title);
   }
 
+  /** #829 — the card TL;DR (and its ⚠️ follow-up) from the model-run es (UPDATE_SESSION `executiveSummary`). */
+  setExecutiveSummary(channelId: string, threadTs: string | undefined, tldr: readonly string[]): boolean {
+    return this.sessionRegistry.setExecutiveSummary(channelId, threadTs, tldr);
+  }
+
   /**
    * Record merge code change stats for a PR in this session.
    */

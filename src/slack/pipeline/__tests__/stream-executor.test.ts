@@ -1492,6 +1492,49 @@ describe('model-command integration', () => {
     expect(deps.claudeHandler.fillPlaceholderSessionTitle).not.toHaveBeenCalled();
   });
 
+  // #829 T1/T5 — the model-run es puts its TL;DR on the task card; the host writes it (and the ⚠️
+  // follow-up derived from it) through the registry.
+  it('routes UPDATE_SESSION { executiveSummary } to the card TL;DR write', async () => {
+    const deps = createExecutorDeps();
+    deps.claudeHandler.setExecutiveSummary = vi.fn().mockReturnValue(true);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const tldr = ['PR #12 opened.', '⚠️ **PR #12 not merged — needs approval.**', 'Next: merge #12.'];
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({ executiveSummary: { tldr } }),
+      createSession(),
+      { channel: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100', say },
+    );
+
+    expect(deps.claudeHandler.setExecutiveSummary).toHaveBeenCalledWith('C1', '171.100', tldr);
+    expect(deps.claudeHandler.updateSessionTitle).not.toHaveBeenCalled();
+  });
+
+  it('does not write the card TL;DR when the resource ops in the same update failed', async () => {
+    const deps = createExecutorDeps();
+    deps.claudeHandler.setExecutiveSummary = vi.fn().mockReturnValue(true);
+    deps.claudeHandler.updateSessionResources = vi.fn().mockReturnValue({
+      ok: false,
+      reason: 'INVALID_OPERATION',
+      error: 'x',
+      snapshot: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 0 },
+    });
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({
+        operations: [{ action: 'add', resourceType: 'pr', link: { url: 'https://github.com/a/b/pull/1' } }],
+        executiveSummary: { tldr: ['a'] },
+      }),
+      createSession(),
+      { channel: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100', say },
+    );
+
+    expect(deps.claudeHandler.setExecutiveSummary).not.toHaveBeenCalled();
+  });
+
   it('renders ASK_USER_QUESTION from command tool and marks waiting state', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);

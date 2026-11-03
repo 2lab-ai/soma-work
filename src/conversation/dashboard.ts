@@ -465,6 +465,12 @@ export interface KanbanSession {
    * While any is pending the card reads `activityState: 'waiting'`.
    */
   pendingInstructionApprovals?: DashboardInstructionApproval[];
+  /**
+   * #829 — the session's last Executive Summary left an issue/PR it created unfinished (its ⚠️ TL;DR line):
+   * what the user must do next. While the session is idle the card reads `activityState: 'waiting'`
+   * (NEEDS YOU) instead of DONE.
+   */
+  pendingFollowUp?: { reason: string; at: number };
   /** #600 ⑥ — a Slack-less dashboard task (the client gates task-only UI on it). Absent for Slack sessions. */
   slackless?: true;
   /** E4 ① (.prd/19 D1) — an epic task. Absent otherwise. */
@@ -2430,6 +2436,21 @@ export function taskPlanToKanban(s: { slackless?: boolean; taskPlan?: TaskPlanGa
   };
 }
 
+/**
+ * #829 — an idle session whose last Executive Summary left an own issue/PR unfinished waits for its user's
+ * follow-up (NEEDS YOU). A running turn is the user already acting: it stays RUNNING.
+ */
+function followUpOf(s: {
+  followUp?: { reason?: unknown; at?: unknown };
+  activityState?: string;
+}): { reason: string; at: number } | undefined {
+  const f = s.followUp;
+  if ((s.activityState || 'idle') !== 'idle' || !f || typeof f.reason !== 'string' || !f.reason.trim()) {
+    return undefined;
+  }
+  return { reason: f.reason.trim(), at: finiteNumber(f.at) ?? 0 };
+}
+
 /** Plan mode — an idle task whose plan waits for its owner asks for them (NEEDS YOU). */
 function planAsks(s: { slackless?: boolean; taskPlan?: TaskPlanGate; activityState?: string }): boolean {
   return s.slackless === true && s.taskPlan?.state === 'awaiting' && (s.activityState || 'idle') === 'idle';
@@ -2489,6 +2510,9 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...(goalDecision ? [{ createdAt: goalDecision.askedAt }] : []),
     ...instructionApprovals,
   ];
+  // #829 — and the follow-up its last Executive Summary left (an own issue/PR not complete). An armed
+  // automatic resume is the agent about to act again: that card stays RUNNING.
+  const followUp = autoResume ? undefined : followUpOf(s);
   return {
     // #814 Wire-format key includes the local instance prefix so sibling
     // instances can never collide on the client cache.
@@ -2509,7 +2533,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     // A turn blocked on a permission prompt waits for its user (projection
     // only — the session's own activityState is untouched).
     // A plan waiting for its owner (plan mode) waits too.
-    activityState: asks.length > 0 || planAsks(s) ? 'waiting' : s.activityState || 'idle',
+    activityState: asks.length > 0 || planAsks(s) || followUp ? 'waiting' : s.activityState || 'idle',
     sessionState: s.state || 'MAIN',
     terminated: s.terminated === true,
     trashed: s.trashed === true,
@@ -2519,6 +2543,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...(permissions.length > 0 ? { pendingPermissions: permissions } : {}),
     ...(goalDecision ? { pendingGoalDecision: goalDecision } : {}),
     ...(instructionApprovals.length > 0 ? { pendingInstructionApprovals: instructionApprovals } : {}),
+    ...(followUp ? { pendingFollowUp: followUp } : {}),
     issueUrl: s.links?.issue?.url,
     issueLabel: s.links?.issue?.label,
     issueTitle: s.links?.issue?.title,
@@ -2535,7 +2560,9 @@ function sessionToKanban(key: string, s: any): KanbanSession {
       : undefined,
     tokenUsage: tokenUsageOf(s),
     doneAt: liveDoneAt(s),
-    waitingSince: planAsks(s) ? (s.taskPlan?.updatedAt ?? liveWaitingSince(s, asks)) : liveWaitingSince(s, asks),
+    waitingSince: planAsks(s)
+      ? (s.taskPlan?.updatedAt ?? liveWaitingSince(s, asks))
+      : (liveWaitingSince(s, asks) ?? (followUp?.at || undefined)),
     finishedAt: liveFinishedAt(s),
     ...modelFields(s),
     ...contextFields(s),
@@ -9581,6 +9608,9 @@ function cardSummary(s, col, headline) {
   if (col !== 'closed' && tp && tp.state === 'awaiting') return '작업 계획 v' + tp.revision + ' — 시작할까요?' + (tp.summary ? ' · ' + tp.summary : '');
   var ia = col === 'closed' ? [] : s.pendingInstructionApprovals || [];
   if (ia.length) return (ia[0].requesterName || ia[0].requesterId || '') + '님의 지시 승인 대기' + (ia.length > 1 ? ' 외 ' + (ia.length - 1) + '건' : '');
+  // #829 — an own issue/PR the last summary left unfinished: what the user has to do next.
+  var fu = col === 'closed' ? null : s.pendingFollowUp;
+  if (fu && fu.reason) return '후속 작업 필요: ' + fu.reason;
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return q.question || q.title;
   // Waiting out a retry: the error behind it is what this card is "doing".
@@ -9934,6 +9964,7 @@ function cardAsks(s, col) {
   if (col !== 'closed' && s.pendingGoalDecision) return true;
   if (col !== 'closed' && s.taskPlan && s.taskPlan.state === 'awaiting') return true;
   if (col !== 'closed' && s.pendingInstructionApprovals && s.pendingInstructionApprovals.length) return true;
+  if (col !== 'closed' && s.pendingFollowUp && s.pendingFollowUp.reason) return true;
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return true;
   var r = pendingAutoResume(s, col);

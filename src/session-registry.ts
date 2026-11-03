@@ -22,6 +22,7 @@ import {
   type TaskUsage,
   toPersistedSessionUsage,
 } from '@soma/slack/session-usage-math';
+import { followUpFromTldr } from '@soma/slack/summary-service';
 import * as fs from 'fs';
 import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
@@ -142,6 +143,20 @@ const ACTIVE_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinks> = 
  * Serialized session for file persistence
  */
 /** A stored Executive Summary TL;DR, or undefined when what was stored is not one (T7). */
+/** #829 — the card's follow-up comes back only when it is still one (a reason and a time). */
+function restoreFollowUp(v: unknown): { reason: string; at: number } | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const { reason, at } = v as { reason?: unknown; at?: unknown };
+  if (typeof reason !== 'string' || reason.trim() === '' || typeof at !== 'number' || !Number.isFinite(at)) {
+    return undefined;
+  }
+  return { reason, at };
+}
+
+/** #829 — UPDATE_SESSION `executiveSummary`: at most this many TL;DR lines, each capped like the host's own. */
+const CARD_TLDR_MAX_LINES = 5;
+const CARD_TLDR_MAX_LINE_CHARS = 140;
+
 function restoreExecutiveSummary(v: unknown): { tldr: string[]; at: number } | undefined {
   if (!v || typeof v !== 'object') return undefined;
   const { tldr, at } = v as { tldr?: unknown; at?: unknown };
@@ -238,6 +253,8 @@ interface SerializedSession {
   // The Executive Summary's TL;DR on the dashboard card (SSOT 2026-11-02 T7) — kept across a
   // restart like the thread head that shows the same lines.
   executiveSummary?: { tldr: string[]; at: number };
+  // #829 — the card's follow-up (NEEDS YOU) survives a restart too: a deploy must not drop it to DONE.
+  followUp?: { reason: string; at: number };
   // Bot-initiated thread metadata
   threadModel?: 'user-initiated' | 'bot-initiated';
   threadRootTs?: string;
@@ -2572,6 +2589,38 @@ export class SessionRegistry {
   /**
    * Update session resources (issues/prs/docs + active links) with optimistic locking.
    */
+  /**
+   * #829 — the model-run es (UPDATE_SESSION `executiveSummary`) puts its TL;DR on the task card. The follow-up
+   * is derived from the same lines (their ⚠️ line) exactly as the host-run summary does, so both paths keep
+   * the card in NEEDS YOU on the same signal. False when there is no session or no usable line — the card
+   * then keeps what it had.
+   */
+  setExecutiveSummary(channelId: string, threadTs: string | undefined, tldr: readonly string[]): boolean {
+    const session = this.getSession(channelId, threadTs);
+    if (!session) return false;
+    const lines = tldr
+      .filter((l): l is string => typeof l === 'string')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0)
+      .slice(0, CARD_TLDR_MAX_LINES)
+      .map((l) => {
+        const chars = Array.from(l);
+        return chars.length <= CARD_TLDR_MAX_LINE_CHARS
+          ? l
+          : `${chars
+              .slice(0, CARD_TLDR_MAX_LINE_CHARS - 1)
+              .join('')
+              .trimEnd()}…`;
+      });
+    if (lines.length === 0) return false;
+    const at = Date.now();
+    session.executiveSummary = { tldr: lines, at };
+    const followUp = followUpFromTldr(lines);
+    session.followUp = followUp ? { reason: followUp.reason, at } : undefined;
+    this.saveSessions();
+    return true;
+  }
+
   updateSessionResources(
     channelId: string,
     threadTs: string | undefined,
@@ -3080,6 +3129,8 @@ export class SessionRegistry {
     // decision, stall) end with it.
     endGoalCapDecision(session.goal);
     session.goal = undefined;
+    // #829 — the follow-up was the old conversation's verdict; the new one is decided by its own summary.
+    session.followUp = undefined;
 
     // Reset activity state
     session.activityState = 'idle';
@@ -3643,6 +3694,7 @@ export class SessionRegistry {
             executiveSummary: session.executiveSummary
               ? { tldr: [...session.executiveSummary.tldr], at: session.executiveSummary.at }
               : undefined,
+            followUp: session.followUp ? { reason: session.followUp.reason, at: session.followUp.at } : undefined,
             threadModel: session.threadModel,
             threadRootTs: session.threadRootTs,
             isOnboarding: session.isOnboarding,
@@ -4031,6 +4083,7 @@ export class SessionRegistry {
               }
             : undefined,
           executiveSummary: restoreExecutiveSummary(serialized.executiveSummary),
+          followUp: restoreFollowUp(serialized.followUp),
           threadModel: serialized.threadModel,
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
