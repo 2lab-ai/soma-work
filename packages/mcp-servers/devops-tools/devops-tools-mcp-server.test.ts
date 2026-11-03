@@ -219,7 +219,7 @@ describe('tool table', () => {
     const description = (name: string) => DEVOPS_TOOL_DEFINITIONS.find((tool) => tool.name === name)?.description ?? '';
     for (const name of ['gh_write', 'gh_org_member', 'gh_repo_access', 'cf_lease_request']) {
       expect(description(name), name).toContain('✅');
-      expect(description(name), name).toContain('5 minutes');
+      expect(description(name), name).toContain('10 minutes');
     }
     for (const name of ['list', 'gh_read', 'cf_api', 'cf_lease_revoke'])
       expect(description(name), name).not.toContain('✅');
@@ -626,7 +626,9 @@ describe('malformed broker output', () => {
 // ── Default wait bounds (fake clock; the socket stays real) ─
 
 describe('default wait bounds', () => {
-  const SDK_CALL_TIMEOUT_MS = 360_000;
+  const SDK_CALL_TIMEOUT_MS = 660_000;
+  /** The broker's approval card ceiling (policy MAX_APPROVAL_TIMEOUT_SECONDS). */
+  const CARD_MAX_MS = 600_000;
   /** What the broker does: it answers `still-executing` this long after the card expires. */
   const BROKER_ANSWER_AFTER_EXPIRY_MS = 25_000;
 
@@ -671,15 +673,17 @@ describe('default wait bounds', () => {
   }
 
   it('stays just under the SDK per-call timeout, with a 30 s grace after the card expires', () => {
-    expect(MAX_WAIT_MS).toBe(355_000);
+    expect(MAX_WAIT_MS).toBe(655_000);
     expect(MAX_WAIT_MS).toBeLessThan(SDK_CALL_TIMEOUT_MS);
     expect(PENDING_GRACE_MS).toBe(30_000);
+    // A 10-minute card answered at expiry + 25 s still reaches the model, with 30 s for posting the card.
+    expect(MAX_WAIT_MS).toBeGreaterThanOrEqual(CARD_MAX_MS + BROKER_ANSWER_AFTER_EXPIRY_MS + 30_000);
   });
 
-  it('delivers still-executing sent at expiry + 25 s when posting the card pushed expiry past start + 300 s', async () => {
-    // Slack posting took 20 s: the card expires 320 s after the call started.
-    const call = await startPending(320_000);
-    await call.advanceTo(320_000 + BROKER_ANSWER_AFTER_EXPIRY_MS);
+  it('delivers still-executing sent at expiry + 25 s when posting the card pushed expiry past start + 600 s', async () => {
+    // The broker opened the card 20 s after the call started (E = start + 620 s): the answer at E + 25 s still lands.
+    const call = await startPending(620_000);
+    await call.advanceTo(620_000 + BROKER_ANSWER_AFTER_EXPIRY_MS);
     expect(call.isSettled()).toBe(false);
     call.answer(error('x', 'still-executing', 'approved and running'));
     const out = await call.out;
@@ -687,7 +691,7 @@ describe('default wait bounds', () => {
     expect(textOf(out)).toBe('error still-executing: approved and running');
   });
 
-  it('after pending, stops at the 355 s ceiling as unconfirmed (never "승인되지 않음") even if the card expires later', async () => {
+  it('after pending, stops at the 655 s ceiling as unconfirmed (never "승인되지 않음") even if the card expires later', async () => {
     const call = await startPending(3_600_000);
     await call.advanceTo(MAX_WAIT_MS - 1);
     expect(call.isSettled()).toBe(false);
@@ -699,20 +703,20 @@ describe('default wait bounds', () => {
   });
 
   it('after pending, stops 30 s after the card expires when that comes first, as unconfirmed', async () => {
-    const call = await startPending(300_000);
-    await call.advanceTo(300_000 + PENDING_GRACE_MS - 1);
+    const call = await startPending(600_000);
+    await call.advanceTo(600_000 + PENDING_GRACE_MS - 1);
     expect(call.isSettled()).toBe(false);
-    await call.advanceTo(300_000 + PENDING_GRACE_MS);
+    await call.advanceTo(600_000 + PENDING_GRACE_MS);
     expectUnconfirmedAfterPending(textOf(await call.out));
   });
 
-  it('without pending, gives up at the same 355 s ceiling and calls the outcome unknown', async () => {
+  it('without pending, gives up at the same 655 s ceiling and calls the outcome unknown', async () => {
     const call = await startPending(null);
     await call.advanceTo(MAX_WAIT_MS - 1);
     expect(call.isSettled()).toBe(false);
     await call.advanceTo(MAX_WAIT_MS);
     const text = textOf(await call.out);
-    expect(text).toContain('did not answer within 355 s');
+    expect(text).toContain('did not answer within 655 s');
     expect(text).toContain('outcome is unknown');
     for (const word of RETRY_WORDS) expect(text).not.toContain(word);
     await call.broker.peerClosed;

@@ -192,7 +192,7 @@ run. Add one `cloudflare` entry per environment, with names of 1–16 characters
       "ipCondition": false
     }
   },
-  "approvalTimeout": "5m"
+  "approvalTimeout": "10m"
 }
 ```
 <!-- policy-template:end -->
@@ -224,6 +224,11 @@ the cards carry no buttons and ✅ / ❌ reactions decide, as before; reactions 
 Build the new version (see "Before you start") and run `install.sh` again. The installer keeps `policy.json` and
 every secret, swaps in the new code, and starts the daemon again only if the checklist is clean and `check-policy`
 passes against the new code. Otherwise the daemon stays stopped and the output says why.
+
+The kept `policy.json` keeps its own `approvalTimeout`. A policy written before the 10-minute change says `"5m"`,
+so cards stay at 5 minutes until you change it: deploy the bot first (it waits up to 655 s per call), then edit the
+value to `"10m"` with `sudo`, keep the file `root:wheel 0644`, and run `install.sh` again. In the other order the old
+bot stops waiting at 355 s and reports the outcome as unknown.
 
 ## Uninstall
 

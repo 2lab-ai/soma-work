@@ -1,7 +1,9 @@
 // The approval card an admin reads before reacting (.prd/16-devops-tools-architecture.md §5.2). Pure.
-// Every argument value is shown whole, as a JSON string inside a code area, with nothing that can close the
-// code area, start a new line, reorder text, or mention anyone. A card that does not fit Slack's limits is
-// refused, never shortened: what the admin approves is exactly what runs.
+// What the admin decides on comes first: the kind of request, the broker's sentence, the warnings, the exact
+// command, the details; the requester claim, approval id and digest go in small type below. Every argument
+// value is shown whole inside a code area — bare when it is plain text, otherwise as a JSON string — with
+// nothing that can close the code area, start a new line, reorder text, or mention anyone. A card that does
+// not fit Slack's limits is refused, never shortened: what the admin approves is exactly what runs.
 
 import type { DevopsTool, UnverifiedRequesterClaim } from '@soma/process-shared/devops/protocol.js';
 
@@ -11,7 +13,7 @@ export interface ApprovalRequest {
   title: string;
   /** e.g. 계정, 환경, 존, 권한, 수명, 사유 — values (free text included) are shown inside a code area. */
   details: { label: string; value: string }[];
-  /** gh argv (without `gh`), shown in full, one JSON-escaped element per line. */
+  /** gh argv (without `gh`), shown in full and in order as one `gh …` command. */
   argv?: readonly string[];
   /** e.g. CI 코드 실행 가능 / 리뷰 규칙 충족에 쓰일 수 있음 — written by the broker. */
   warnings: string[];
@@ -60,6 +62,7 @@ export interface SlackButton {
 export type SlackBlock =
   | { type: 'header'; text: SlackTextObject }
   | { type: 'section'; block_id?: string; text: SlackTextObject }
+  | { type: 'context'; elements: SlackTextObject[] }
   | { type: 'actions'; block_id: string; elements: SlackButton[] };
 
 export interface SlackCard {
@@ -70,8 +73,9 @@ export interface SlackCard {
 
 /**
  * Slack allows 50 blocks and 3,000 characters per section; the total keeps a card readable. A value whose
- * escaped form is longer than `longValueChars` is listed after the short arguments, so it cannot push a flag
- * below Slack's "show more" fold.
+ * shown form is longer than `longValueChars` is listed after the short arguments, so it cannot push a flag
+ * below Slack's "show more" fold. A context block takes at most 10 elements; `contextChars` is this card's
+ * own, tighter cap per element (Slack's text object cap is 3,000).
  */
 export const CARD_LIMITS = {
   totalChars: 12_000,
@@ -79,8 +83,12 @@ export const CARD_LIMITS = {
   sectionChars: 3_000,
   headerChars: 150,
   longValueChars: 200,
+  contextElements: 10,
+  contextChars: 2_000,
+  commandLineChars: 100,
 } as const;
 
+/** Used when the card has no buttons (no Socket Mode connection): reactions decide. */
 export const APPROVAL_INSTRUCTION = '승인 = :white_check_mark: 리액션 · 거부 = :x: 리액션 (어드민 본인 리액션만 유효)';
 
 /** Used when the card carries buttons (the broker has a Socket Mode connection); reactions still count. */
@@ -91,10 +99,18 @@ export const APPROVAL_INSTRUCTION_BUTTONS =
 export const APPROVE_ACTION_ID = 'devops_approval_approve';
 export const DENY_ACTION_ID = 'devops_approval_deny';
 
+/** Listed among the warnings of a Cloudflare lease card. */
 export const LEASE_BEARER_NOTE =
-  ':warning: 승인하면 이 범위·기간 동안 이 봇의 세션이 사용할 수 있습니다 — lease ID를 가진 세션이면 요청한 세션이 아니어도 씁니다.';
+  '승인하면 이 범위·기간 동안 이 봇의 세션이 사용할 수 있습니다 — lease ID를 가진 세션이면 요청한 세션이 아니어도 씁니다.';
 
-const HEADER = 'devops 확인 요청';
+/** The header names the kind of request; a tool without its own line (or a card rebuilt after a restart) gets the general one. */
+const HEADER = 'devops 승인 요청';
+const TOOL_HEADERS: Partial<Record<DevopsTool, string>> = {
+  gh_write: 'GitHub 쓰기 승인 요청',
+  gh_org_member: 'GitHub 조직 멤버 변경 승인 요청',
+  gh_repo_access: 'GitHub 레포 권한 변경 승인 요청',
+  cf_lease_request: 'Cloudflare 단기 키 승인 요청',
+};
 const INSTRUCTION_BLOCK_ID = 'approval-instruction';
 const STATUS_BLOCK_ID = 'approval-status';
 const ACTIONS_BLOCK_ID = 'approval-actions';
@@ -110,6 +126,13 @@ const CODE_UNSAFE_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}`]/gu;
 const MARK_RUN_RE = /\p{M}{3,}/gu;
 const LINE_BREAKING_RE = /[\p{Cc}\p{Zl}\p{Zp}]/gu;
 const FORMAT_RE = /\p{Cf}/gu;
+/**
+ * A gh argument shown without quotes: ASCII, no space, quote, backslash, backtick, bracket, colon or `<>&`, so
+ * it can neither merge with its neighbours nor pass for a JSON string or a long-value marker.
+ */
+const BARE_TOKEN_RE = /^[A-Za-z0-9_./=+,#@%-]+$/;
+/** A detail value shown without quotes: the token characters, parentheses and Hangul syllables, single-spaced. */
+const BARE_VALUE_RE = /^[A-Za-z0-9_./=+,#@%()\uAC00-\uD7A3-]+(?: [A-Za-z0-9_./=+,#@%()\uAC00-\uD7A3-]+)*$/;
 
 function unicodeEscape(char: string): string {
   let out = '';
@@ -147,12 +170,12 @@ function mention(userId: string): string {
   return SLACK_USER_RE.test(userId) ? `<@${userId}>` : `ID 형식 오류 ${codeValue(userId)}`;
 }
 
+function mrkdwnText(text: string): SlackTextObject {
+  return { type: 'mrkdwn', text, verbatim: true };
+}
+
 function mrkdwn(text: string, blockId?: string): SlackBlock {
-  return {
-    type: 'section',
-    ...(blockId === undefined ? {} : { block_id: blockId }),
-    text: { type: 'mrkdwn', text, verbatim: true },
-  };
+  return { type: 'section', ...(blockId === undefined ? {} : { block_id: blockId }), text: mrkdwnText(text) };
 }
 
 function tooLong(): never {
@@ -189,6 +212,14 @@ function checkLimits(card: SlackCard): SlackCard {
       if (block.elements.some((button) => button.value.length > BUTTON_VALUE_CHARS)) tooLong();
       continue;
     }
+    if (block.type === 'context') {
+      if (block.elements.length > CARD_LIMITS.contextElements) tooLong();
+      for (const element of block.elements) {
+        if (element.text.length > CARD_LIMITS.contextChars) tooLong();
+        total += element.text.length;
+      }
+      continue;
+    }
     const max = block.type === 'header' ? CARD_LIMITS.headerChars : CARD_LIMITS.sectionChars;
     if (block.text.text.length > max) tooLong();
     total += block.text.text.length;
@@ -200,6 +231,37 @@ function checkLimits(card: SlackCard): SlackCard {
 export function formatKst(ms: number): string {
   const shifted = new Date(ms + 9 * 3600 * 1000).toISOString();
   return `${shifted.slice(0, 10)} ${shifted.slice(11, 19)} KST`;
+}
+
+/** Slack shows the reader's local date and time; a client that cannot (a notification) shows the KST fallback. */
+function slackDate(ms: number): string {
+  return `<!date^${Math.floor(ms / 1000)}^{date_short_pretty} {time}|${formatKst(ms)}>`;
+}
+
+/**
+ * The argv as one `gh …` command in its original order. Plain tokens run on together; a quoted value or a
+ * long-value marker stands alone on its line, so its boundaries are plain to see. Lines break only for length
+ * or around such a value — a line break never says which flag a value belongs to.
+ */
+function commandLines(shown: readonly { text: string; alone: boolean }[]): string[] {
+  const lines: string[] = [];
+  let line: string | null = 'gh';
+  for (const { text, alone } of shown) {
+    if (alone) {
+      if (line !== null) lines.push(line);
+      lines.push(`  ${text}`);
+      line = null;
+    } else if (line === null) {
+      line = `  ${text}`;
+    } else if (line.length + 1 + text.length > CARD_LIMITS.commandLineChars) {
+      lines.push(line);
+      line = `  ${text}`;
+    } else {
+      line = `${line} ${text}`;
+    }
+  }
+  if (line !== null) lines.push(line);
+  return lines;
 }
 
 function approvalButtons(approvalId: string): SlackBlock {
@@ -223,54 +285,62 @@ export function renderApprovalCard(
   meta: { approvalId: string; digest: string; expiresAtMs: number },
   opts: { buttons?: boolean } = {},
 ): SlackCard {
+  const header = TOOL_HEADERS[req.tool] ?? HEADER;
   const blocks: SlackBlock[] = [
-    { type: 'header', text: { type: 'plain_text', text: HEADER, emoji: false } },
+    { type: 'header', text: { type: 'plain_text', text: header, emoji: false } },
     { type: 'section', text: { type: 'plain_text', text: plain(req.title), emoji: false } },
-    mrkdwn(
-      `요청자(자칭·미검증): ${mention(req.claimedRequester.slackUserId)}\n` +
-        `만료: ${formatKst(meta.expiresAtMs)} (${new Date(meta.expiresAtMs).toISOString()})`,
-    ),
   ];
-  // Long values are listed last; their place holds an unquoted marker no real (quoted) value can look like.
+  const warnings = req.tool === 'cf_lease_request' ? [...req.warnings, LEASE_BEARER_NOTE] : req.warnings;
+  if (warnings.length > 0) {
+    blocks.push(mrkdwn(`:warning: *주의*\n${warnings.map((warning) => `• ${prose(warning)}`).join('\n')}`));
+  }
+  // Long values are listed last; their place holds an unquoted marker no shown value can look like.
   const longLines: string[] = [];
-  const shortOrMarker = (value: string): string => {
-    const rendered = codeValue(value);
-    if (rendered.length <= CARD_LIMITS.longValueChars) return rendered;
-    longLines.push(`[긴 값 ${longLines.length + 1}] ${rendered}`);
-    return `[긴 값 ${longLines.length} → 아래]`;
+  const shortOrMarker = (value: string, bare: RegExp): { text: string; alone: boolean } => {
+    const isBare = bare.test(value);
+    const shown = isBare ? value : codeValue(value);
+    if (shown.length <= CARD_LIMITS.longValueChars) return { text: shown, alone: !isBare };
+    longLines.push(`[긴 값 ${longLines.length + 1}] ${codeValue(value)}`);
+    return { text: `[긴 값 ${longLines.length} → 아래]`, alone: true };
   };
-  const detailLines = req.details.map(
-    ({ label, value }) => `${codeValue(label).slice(1, -1)}: ${shortOrMarker(value)}`,
-  );
-  detailLines.push(`세션(자칭): ${shortOrMarker(req.claimedRequester.sessionKey)}`);
-  blocks.push(...codeSections('*요청 내용*', detailLines));
   if (req.argv !== undefined && req.argv.length > 0) {
     blocks.push(
       ...codeSections(
-        `*gh 명령 전문* — gh 뒤 인자 ${req.argv.length}개, 한 줄에 하나 (JSON 문자열)`,
-        req.argv.map(shortOrMarker),
+        `*실행할 명령* — gh 뒤 인자 ${req.argv.length}개 · 따옴표 값은 JSON 문자열`,
+        commandLines(req.argv.map((token) => shortOrMarker(token, BARE_TOKEN_RE))),
       ),
     );
   }
-  if (req.tool === 'cf_lease_request') blocks.push(mrkdwn(LEASE_BEARER_NOTE));
-  if (req.warnings.length > 0) {
-    blocks.push(mrkdwn(`:warning: *주의*\n${req.warnings.map((warning) => `• ${prose(warning)}`).join('\n')}`));
-  }
-  blocks.push(
-    ...codeSections('*확인 정보*', [
-      `승인 ID: ${codeValue(meta.approvalId)}`,
-      `digest(앞 12자): ${codeValue(meta.digest.slice(0, 12))}`,
-    ]),
+  const detailLines = req.details.map(
+    ({ label, value }) => `${codeValue(label).slice(1, -1)}: ${shortOrMarker(value, BARE_VALUE_RE).text}`,
   );
+  detailLines.push(`세션(자칭): ${shortOrMarker(req.claimedRequester.sessionKey, BARE_VALUE_RE).text}`);
+  blocks.push(...codeSections('*요청 내용*', detailLines));
   if (longLines.length > 0) {
     blocks.push(...codeSections('*긴 값* — 위에서 [긴 값 N → 아래]로 표시한 값의 전문 (JSON 문자열)', longLines));
   }
+  blocks.push({
+    type: 'context',
+    elements: [
+      mrkdwnText(`요청자(자칭·미검증) ${mention(req.claimedRequester.slackUserId)}`),
+      // Plain text: a base64url id's `_` must not turn into italics.
+      {
+        type: 'plain_text',
+        text: plain(`승인 ID ${meta.approvalId} · digest ${meta.digest.slice(0, 12)}`),
+        emoji: false,
+      },
+    ],
+  });
+  const deadline = `:hourglass_flowing_sand: ${slackDate(meta.expiresAtMs)}까지 응답`;
   if (opts.buttons === true) {
-    blocks.push(mrkdwn(APPROVAL_INSTRUCTION_BUTTONS, INSTRUCTION_BLOCK_ID), approvalButtons(meta.approvalId));
+    blocks.push(
+      mrkdwn(`${deadline} · ${APPROVAL_INSTRUCTION_BUTTONS}`, INSTRUCTION_BLOCK_ID),
+      approvalButtons(meta.approvalId),
+    );
   } else {
-    blocks.push(mrkdwn(APPROVAL_INSTRUCTION, INSTRUCTION_BLOCK_ID));
+    blocks.push(mrkdwn(`${deadline} · ${APPROVAL_INSTRUCTION}`, INSTRUCTION_BLOCK_ID));
   }
-  return checkLimits({ text: `${HEADER}: ${prose(req.title)}`, blocks });
+  return checkLimits({ text: `${header}: ${prose(req.title)}`, blocks });
 }
 
 export type CardStatus =
@@ -292,20 +362,21 @@ const STATUS_LABEL: Record<CardStatus['kind'], string> = {
   cancelled: '취소됨',
 };
 
-const NO_LONGER = '이 카드의 버튼·리액션은 더 이상 반영되지 않습니다.';
+const NO_LONGER = '이후 버튼·리액션은 반영되지 않음';
 
+/** "실행 안 함" only where the broker handed no approval out (denied, expired, cancelled). */
 function statusText(status: CardStatus): string {
   switch (status.kind) {
     case 'approved':
-      return `:white_check_mark: *승인됨* — ${mention(status.by)} · 실행 중. ${NO_LONGER}`;
+      return `:white_check_mark: *승인됨* — ${mention(status.by)} · 실행 중 · ${NO_LONGER}`;
     case 'done':
       return `:checkered_flag: *실행 종료* — 결과:\n\`\`\`\n${codeValue(capLine(status.line))}\n\`\`\``;
     case 'denied':
-      return `:x: *거부됨* — ${mention(status.by)}. 실행하지 않았습니다. ${NO_LONGER}`;
+      return `:x: *거부됨* — ${mention(status.by)} · 실행 안 함 · ${NO_LONGER}`;
     case 'expired':
-      return `:hourglass: *만료됨* — 시간 안에 승인되지 않아 실행하지 않았습니다. ${NO_LONGER}`;
+      return `:hourglass: *만료됨* — 기한 안에 응답 없음 · 실행 안 함 · ${NO_LONGER}`;
     case 'cancelled':
-      return `:no_entry_sign: *취소됨* — 요청이 취소되어 실행하지 않았습니다. ${NO_LONGER}`;
+      return `:no_entry_sign: *취소됨* — 요청이 취소됨 · 실행 안 함 · ${NO_LONGER}`;
   }
 }
 

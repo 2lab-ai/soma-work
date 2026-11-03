@@ -663,7 +663,8 @@ describe('gh_write', () => {
     expect(card.title).toContain('example-org/app');
     expect(card.title).toBe('member 계정이 example-org/app에 gh pr comment 실행');
     expect(card.argv).toEqual(PR_COMMENT);
-    expect(card.details.map((d) => d.label)).toEqual(expect.arrayContaining(['계정', '레포', '명령']));
+    // The command itself is the card's 실행할 명령 section (argv) and its title; no third copy in the details.
+    expect(card.details.map((d) => d.label)).toEqual(['계정', '레포']);
     expect(card.claimedRequester).toEqual({ slackUserId: 'U000ALICE', sessionKey: 'session-1' });
     expect(card.warnings).toEqual([]);
     expect(card.canonical).toMatchObject({ tool: 'gh_write', account: 'member', args: PR_COMMENT });

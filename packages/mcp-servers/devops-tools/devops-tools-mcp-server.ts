@@ -38,10 +38,11 @@ import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 // ── Constants ─────────────────────────────────────────────
 
 /**
- * Total wait ceiling for one call, before and after `pending`: just under the 360 s per-call timeout
- * the bot gives this server, so the call ends here with a clear message rather than being killed.
+ * Total wait ceiling for one call, before and after `pending`: just under the 660 s per-call timeout
+ * the bot gives this server, so the call ends here with a clear message rather than being killed. It
+ * covers a 10-minute card answered at expiry + 25 s with 30 s to spare for the broker opening the card.
  */
-export const MAX_WAIT_MS = 355_000;
+export const MAX_WAIT_MS = 655_000;
 
 /**
  * After `pending`, how long past the card's expiresAt the broker has to send its terminal message
@@ -59,7 +60,7 @@ const VERSION_HINT =
 // ── Tool table ────────────────────────────────────────────
 
 const NO_TOKENS = 'Never ask users for tokens; the broker holds every credential.';
-const NEEDS_APPROVAL = 'Needs an admin ✅ on a Slack approval card; the call may wait up to 5 minutes for it.';
+const NEEDS_APPROVAL = 'Needs an admin ✅ on a Slack approval card; the call may wait up to 10 minutes for it.';
 const STRUCTURED_GH = 'For org membership or repo collaborator changes use gh_org_member / gh_repo_access, not gh api.';
 
 const ghArgsSchema = {

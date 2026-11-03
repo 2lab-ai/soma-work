@@ -79,16 +79,40 @@ DashboardLayoutDoc {
 | | 맨 아래 오른쪽 | 진행 n/m, 컨텍스트 %, 지시 첨부 수, PR(기본 꺼짐 — 연결 줄이 PR을 보여 준다), 산출물 수, 비용, 토큰, 모델 |
 | 카드 (펼침) | 항상 맨 위 | 액션 · 입력 필요(항상), ☆ 즐겨찾기 버튼 |
 | | 그 아래 | 작업 창, 에이전트 트리, 최근 지시와 답변, 산출물, 목표 줄, 이슈 · PR 링크, 모델 · 추론 강도 |
-| 디테일 카드 | 머리 | 머리 · 상태 바(항상), 부제 |
-| | 위쪽 | 세션 정보, 목표, 입력 필요(옮길 수 있지만 항상 보임), 산출물 |
-| | 본문 | 작업 목록(실행 표 · 체크리스트 · 한 줄 · 숨김), 작업 목록 높이(⅓ · ½ · ⅔), 에이전트 탭(항상 · 서브에이전트 있을 때 · 숨김), 채팅(항상), 에이전트 머리 · 경로, 작업 로그 · 트리 탭, 처음부터 펼침, 대화 · 작업 로그 탭(트리 탭이 꺼져 있을 때 채팅 위의 두 탭 — 미니멀 기본 켬, SSOT 2026-11-03) |
-| | 아래 | 입력창(항상), 모델 · 추론 강도 |
+| 디테일 카드 (§3.1) | 타이틀 바 | 제목 · 상태 · 시간(항상), 부제, 그 오른쪽 `head`: 모델, 비용, 토큰, 속도 tok/s, 컨텍스트 %, 소유자, 워크플로 |
+| | 입력 필요 | 승인 · 질문 · 작업 계획(항상, 타이틀 바 바로 아래 — 탭에 넣지 않음) |
+| | 탭 바 | `tabs`: 목표, 작업, 에이전트, 산출물, 세부 — 처음엔 모두 닫힘. 작업 탭 보기(실행 표 · 체크리스트 · 한 줄), 작업 탭 높이(⅓ · ½ · ⅔), 에이전트 머리 · 경로, 처음부터 펼침 |
+| | 아래 | 채팅 · 입력창(항상), 대화 · 작업 로그 탭, 대화 · 작업 로그 · 에이전트 트리 탭, 모델 · 추론 강도 |
 | 스레드 카드 | 머리 줄 | 제목(항상) |
 | | 정보 줄 | 소유자, 워크플로, 모델, 컨텍스트, 비용, 토큰, 현재 작업, 진행 n/m |
 | | 링크 · 상태 | 대시보드 링크, 링크 기록, 현재 링크, 종료 표시 |
 
 - 카드 면의 줄 순서는 `@2lab.ai/ui`의 `card.rows`가 그린다(0.17.0부터, 연결 줄 `card.links`는 0.19.0부터). 맨 아래 칩은 전부 호스트 칩(진행 · 컨텍스트도)이라 순서를 자유롭게 바꿀 수 있다.
-- 디테일 카드의 위쪽 순서는 CSS `order`(`--o-<id>`, `applyViewMode`)로 정한다. 작업 목록과 채팅의 상하 순서는 바꾸지 않는다. 채팅 높이 계산(`sizePanelSections`)이 작업 목록 아래를 전제로 한다.
+- 디테일 카드의 순서는 고정이다: 타이틀 바 → 입력 필요 → 탭 바와 열린 탭의 내용 → 대화 · 작업 로그. 고칠 수 있는 순서는 타이틀 바 항목(`head`)과 탭(`tabs`)의 순서다.
+
+### 3.1 디테일 카드 세 구역 (SSOT 2026-11-03)
+
+원문:
+
+> 디테일 작업 카드 개선 — 최상단 타이틀 바 - 설정 지금 좋음. 여기에 실행중 시작 시간 표시 오른편에 모델이랑 사용 토큰, 사용 api 환산 비용도 출력 설정에서 on/off 할 수 있도록 추가 — 중단을 이렇게 해줘 여기에 디폴트로 탭바인데 내용물은 해당 탭을 클릭해야만 나오도록해주고 이 탭바에 뭘 출력할지를 설정하게 해줘. … 세션 정보는 타이틀 화면쪽 설정으로 해주고 이렇게 3개로 디테일 뷰 설정해줘
+>
+> 아 맞다 입력 필요도 별도임 — 타이틀 / 입력 필요 / 목표 | 작업 | 에이전트 | ... / 대화 | 작업 로그
+
+```
+┌ 타이틀 바   [BE] 패스키 간편 로그인
+│             [실행 중] 🕐 시작 23:31 · 17분 | ● Opus 5.5 (1M) | $175 | 235.1M 토큰 | 98 tok/s   ☆ 되돌리기 중지
+├ 입력 필요    승인 · 질문 · 작업 계획 — 있을 때만, 항상 여기
+├ 탭 바       목표 2/5 · 작업 1/7 · 에이전트 5 · 산출물 3 · 세부      ← 누른 탭의 내용만 열림, 다시 누르면 닫힘
+│             (목표 탭을 누르면) 목표 진행 중 · 펼치기 · 이어하기 0/1000 · 삭제 · 남은 것 · 다음 목표 …
+└ 아래        대화 · 작업 로그 (+ 에이전트 트리) · 모델 · 추론 강도 · 입력창
+```
+
+- 타이틀 바(`detail.head`): 상태 바(`<ui-status-bar>`)의 시간 다음 슬롯에 그린다(`panelHeadMetricsOf` → `panelHeadNoteHtml`). 기본은 모든 안에서 모델 · 비용 · 토큰 · 속도. 어드밴스드는 예전 세션 정보 줄의 컨텍스트 · 소유자 · 워크플로도 켠다. 비용과 토큰은 작업 합계(메인 + 서브에이전트)다.
+- 속도(tok/s)는 세션의 출력 토큰(`sessionOutputTokens` — `usage` + 실행 중인 턴) ÷ 세션의 활성 시간이다. 둘 다 `/new` · CONTINUE_SESSION(`resetSessionContext`)에서 함께 초기화되므로 같은 구간을 센다(작업 합계 토큰은 초기화되지 않아 분자로 쓰지 않는다). 활성 시간에는 지금 실행 중인 턴도 들어간다. 서브에이전트와 도구 실행 시간도 포함하므로 모델 한 번의 생성 속도가 아니라 작업의 속도다. 일한 시간이 1분이 안 되면 보이지 않는다. 열린 턴은 서버가 한 턴에 두는 상한(`MAX_LEG_MS`, 기본 30분)까지만 센다 — 세션의 활성 시간이 턴을 접을 때와 같은 기준이라, 끝을 놓친 턴이 속도를 0으로 끌어내리지 않는다. 서버는 API 시간을 따로 저장하지 않으므로 이 계산을 쓴다.
+- 탭 바(`detail.tabs`): `.slide-panel[data-midtab]`가 열린 탭이고, CSS가 나머지 탭의 내용을 숨긴다. 카드를 열 때마다 모두 닫힌다. 랜딩이 있으면 그 탭이 열린다: 목표 → 목표, 작업 → 작업, 에이전트 → 에이전트, 펼친 카드의 "전체 N개 →" → 산출물. 목록 밖 작업(`tasksOutside`)만 있어도 실행 표에서는 작업 탭이 열린다. 빈 목표 탭은 목표 추가 편집기를 보인다. 같은 카드로 다시 랜딩하면 읽던 탭을 둔다. 내용이 없는 탭은 `disabled`(누를 수 없고 Tab 순서에서도 빠짐)이고, 목표는 추가할 수 있는 사람에게 열린다. 에이전트 탭의 `aria-controls`는 에이전트 스트립(`#panel-tabs`)이다. 기기에 남은 예전 레이아웃 사본도 서버와 같은 규칙으로 읽는다(`detailWithZones`). 숫자: 목표는 지금 목표의 순번 / 전체(지난 + 지금 + 대기), 작업은 완료 / 전체(보고 있는 에이전트의 목록), 에이전트는 서브에이전트 수, 산출물은 파일 + 지시 첨부 수.
+- 에이전트 스트립은 에이전트 탭의 것이다. 서브에이전트를 보고 있으면(`data-agent-scoped`) 탭을 닫아도 스트립이 남아 메인으로 돌아갈 길을 보인다. 에이전트 탭이 꺼진 레이아웃은 메인 에이전트만 보인다. 작업 로그의 "열기"는 스트립에 탭이 있는 에이전트(세션의 서브에이전트)로만 옮긴다 — 로그에만 있는 에이전트는 돌아올 탭이 없다.
+- 세션 정보 전체 기록(토큰 내역 · 세부 · 컨텍스트 · 링크)은 세부 탭이다. 기본은 어드밴스드에서 켜고 미니멀에서 끈다.
+- 예전에 저장한 디테일 카드(`top` · `agents` · `tasks: 'none'`)는 그 안의 기본 타이틀 바와 탭 바를 받고 나머지 선택은 그대로 둔다. 숨긴 작업 목록(`tasks: 'none'`)만 작업 탭 꺼짐으로 옮긴다. 기본 안은 작업 목록을 숨긴 적이 없으므로 유저가 고른 것이다.
 
 ## 4. 편집기 화면 (`src/conversation/settings-layout-tab.ts`)
 
@@ -135,7 +159,7 @@ DashboardLayoutDoc {
 | `src/view-layout.ts` | 타입, 카탈로그, 기본 프리셋(`.prd/20`), 검사 · 정규화, 해석, 스레드 카드 변환 |
 | `src/conversation/view-layout-client.ts` | 대시보드와 편집기 미리보기가 함께 쓰는 클라이언트 스크립트(`faceOf`, `openPartsOf`, `detailSpecOf`, `followThreadLayout`) |
 | `src/conversation/settings-layout-tab.ts` | 편집기 탭(HTML · CSS · 스크립트) |
-| `src/conversation/dashboard.ts` | `VIEW_BUILTINS` + 공용 스크립트 주입, `viewSpec`이 유저 레이아웃을 해석, `loadViewLayout`, 디테일 순서 CSS |
+| `src/conversation/dashboard.ts` | `VIEW_BUILTINS` + 공용 스크립트 주입, `viewSpec`이 유저 레이아웃을 해석, `loadViewLayout`, 디테일 카드의 타이틀 바 항목(`panelHeadMetricsOf`)과 탭 바(`renderPanelMidbar` · `selectPanelMid`, CSS `data-midtab`) |
 | `src/user-settings-store.ts` · `src/user-settings-registry.ts` · `src/conversation/settings-routes.ts` | 저장, `readLayout` · `writeLayout`(관리자 승인), `GET/PUT /api/settings/dashboard-layout`(CSRF) |
 | `packages/slack/src/thread-header-builder.ts` · `surface-config.ts` | 스레드 카드 필드와 provider |
 | `src/slack/thread-card-data.ts` · `src/index.ts` | 호스트 쪽 데이터와 줄 |
@@ -147,6 +171,7 @@ DashboardLayoutDoc {
   - `src/__tests__/view-layout.test.ts`: 모델과 클라이언트 parity
   - `src/conversation/__tests__/settings-layout-tab.test.ts`: 편집기
   - `src/conversation/__tests__/dashboard-view-plan-client.test.ts`: 대시보드 해석
+  - `src/conversation/__tests__/dashboard-detail-zones-client.test.ts`: 디테일 카드 세 구역(타이틀 바 항목, 탭 바, 랜딩, 입력 필요 위치)
   - `packages/slack/src/__tests__/thread-header-card.test.ts`, `src/slack/__tests__/thread-card-data.test.ts`: 슬랙
   - 레지스트리 · 저장소 · 라우트 테스트
 - 브라우저: `scripts/screenshot-layout-editor.ts` — 실서버 1280 · 390에서 R1–R10(38개)을 확인한다.

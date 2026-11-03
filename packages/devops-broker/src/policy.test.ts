@@ -88,7 +88,7 @@ describe('parsePolicy: accepts', () => {
     });
   });
 
-  it('defaults: allowedOwners = [org], ttl 1h/71h, ipCondition false, approval 5m, 3 pending', () => {
+  it('defaults: allowedOwners = [org], ttl 1h/71h, ipCondition false, approval 10m, 3 pending', () => {
     const input = example();
     const cf = (input.cloudflare as Json).dev2 as Json;
     delete cf.defaultTtl;
@@ -104,14 +104,14 @@ describe('parsePolicy: accepts', () => {
       maxTtlSeconds: 71 * 3600,
       ipCondition: false,
     });
-    expect(policy.approvalTimeoutSeconds).toBe(300);
+    expect(policy.approvalTimeoutSeconds).toBe(600);
     expect(policy.maxPendingApprovals).toBe(3);
   });
 
-  it('caps approvalTimeout at 5 minutes, the same ceiling as a permission request', () => {
-    expect(MAX_APPROVAL_TIMEOUT_SECONDS).toBe(300);
-    expect(rejection(changed(['approvalTimeout'], '301m')).message).toBe(
-      'policy.approvalTimeout: must be "<n>m" or "<n>h", at most 5m',
+  it('caps approvalTimeout at 10 minutes, under the MCP wait (655 s) and the SDK call (660 s)', () => {
+    expect(MAX_APPROVAL_TIMEOUT_SECONDS).toBe(600);
+    expect(rejection(changed(['approvalTimeout'], '601m')).message).toBe(
+      'policy.approvalTimeout: must be "<n>m" or "<n>h", at most 10m',
     );
   });
 
@@ -126,7 +126,8 @@ describe('parsePolicy: accepts', () => {
     ['a single account', ['gh', 'accounts'], { member: { login: 'alice', class: 'member' } }],
     ['maxPendingApprovals', ['maxPendingApprovals'], 5],
     ['a shorter approvalTimeout', ['approvalTimeout'], '2m'],
-    ['approvalTimeout exactly 5m', ['approvalTimeout'], '5m'],
+    ['approvalTimeout of 5m', ['approvalTimeout'], '5m'],
+    ['approvalTimeout exactly 10m', ['approvalTimeout'], '10m'],
   ])('%s', (_name, keys, value) => {
     expect(() => parsePolicy(changed(keys as string[], value))).not.toThrow();
   });
@@ -234,8 +235,8 @@ describe('parsePolicy: rejects, naming the JSON path', () => {
     ['a numeric TTL', changed(['cloudflare', 'dev2', 'defaultTtl'], 3600), 'policy.cloudflare.dev2.defaultTtl'],
     ['ipCondition true', changed(['cloudflare', 'dev2', 'ipCondition'], true), 'policy.cloudflare.dev2.ipCondition'],
     ['a malformed approvalTimeout', changed(['approvalTimeout'], '300'), 'policy.approvalTimeout'],
-    // The MCP client gives up at expiry + 30 s and its call dies at 360 s; a longer card outlives both.
-    ['an approvalTimeout of 6m', changed(['approvalTimeout'], '6m'), 'policy.approvalTimeout'],
+    // The MCP client gives up at expiry + 30 s and its call dies at 660 s; a longer card outlives both.
+    ['an approvalTimeout of 11m', changed(['approvalTimeout'], '11m'), 'policy.approvalTimeout'],
     ['an approvalTimeout in hours', changed(['approvalTimeout'], '1h'), 'policy.approvalTimeout'],
     ['zero pending approvals', changed(['maxPendingApprovals'], 0), 'policy.maxPendingApprovals'],
     ['fractional pending approvals', changed(['maxPendingApprovals'], 1.5), 'policy.maxPendingApprovals'],

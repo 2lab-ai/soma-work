@@ -441,18 +441,15 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
     expect(env.psecForMode('worklog')).toBe('log');
     expect(env.psecForMode('agent')).toBe('tree');
     expect(clientFn('openPanel')).toContain('_psec = psecForMode(_panelLand);');
-    // …and on the main agent: minimal has no agent tab strip to lead back from a subagent (review R1, grok P1).
+    // …and on the main agent when the layout has no 에이전트 tab — no strip to lead back from a subagent (review R1,
+    // grok P1; SSOT 2026-11-03: the strip is the 에이전트 tab's).
     const open = clientFn('openPanel');
     const agentAt = open.indexOf("_panelAgent = agentId ? String(agentId) : '';");
     expect(agentAt).toBeGreaterThan(-1);
-    expect(open.indexOf("if (!detailShows('agenttabs') && !detailShows('subtabs')) _panelAgent = '';")).toBeGreaterThan(
-      agentAt,
-    );
-    // Switching to minimal with a subagent or the tree shown brings the main agent's chat back.
+    expect(open.indexOf("if (!detailShows('agenttabs')) _panelAgent = '';")).toBeGreaterThan(agentAt);
+    // Switching to a layout without the tab while a subagent or the tree is shown brings the main agent's chat back.
     const re = clientFn('rerenderForViewMode');
-    expect(re).toContain(
-      "if (!detailShows('agenttabs') && !detailShows('subtabs') && _panelAgent) selectPanelAgent('');",
-    );
+    expect(re).toContain("if (!detailShows('agenttabs') && _panelAgent) selectPanelAgent('');");
     expect(re).toContain("if (psecShown().indexOf(_psec) < 0) selectPanelSection('conv');");
     expect(re).toContain('renderBoardForLayout();');
   });
@@ -465,24 +462,31 @@ describe('T4 — minimal: the detail card is the task list and the chat', () => 
       expect(CSS, sel).toMatch(minimalRule(sel));
   });
 
-  it('the detail card’s top keeps the header and what needs the user; info · goal · artifacts · agent tabs go, the model stays (1안, #805)', () => {
-    // The layout says which sections show (detailSpecOf → body[data-detail]); minimal 1안 shows the model · effort
+  it('the detail card’s top keeps the header and what needs the user; info · goal · artifacts · agents are closed tabs, the model stays (1안, #805)', () => {
+    // The layout says which switches show (detailSpecOf → body[data-detail]); minimal 1안 shows the model · effort
     // line — the task card shows the model as icons only, so the detail card is where its name is (#805) — and the
-    // 대화 · 작업 로그 tabs over the chat (logtab, SSOT 2026-11-03).
+    // 대화 · 작업 로그 tabs over the chat (logtab). SSOT 2026-11-03: 목표 · 작업 · 에이전트 · 산출물 are the tab
+    // bar's tabs, closed until pressed; the model, the cost, the tokens and the speed are the title bar's.
     const env = load<{ viewSpec(): any }>(
       ['viewModeFrom', 'viewPlanFrom', 'viewSpec'],
       ['_viewMode', '_viewPlan', '_viewLayout'],
     );
-    expect(env.viewSpec().detail.show).toEqual(['logtab', 'controls']);
+    expect(env.viewSpec().detail.show).toEqual(['agenttabs', 'logtab', 'controls']);
+    expect(env.viewSpec().detail.tabs).toEqual(['goal', 'tasks', 'agents', 'artifacts']);
+    expect(env.viewSpec().detail.head).toEqual(['model', 'cost', 'tokens', 'speed']);
     for (const [tok, sel] of [
       ['subtitle', '#panel-title-sub'],
-      ['info', '#panel-info'],
-      ['goal', '#panel-goal'],
-      ['artifacts', '#panel-artifacts'],
       ['agenthead', '#panel-agents'],
       ['controls', '#panel-controls'],
     ])
       expect(CSS, sel).toContain(`body:not([data-detail~="${tok}"]) ${sel}`);
+    for (const [tab, sel] of [
+      ['goal', '#panel-goal'],
+      ['artifacts', '#panel-artifacts'],
+      ['info', '#panel-info'],
+      ['tasks', '#panel-tasks'],
+    ])
+      expect(CSS, sel).toContain(`.slide-panel:not([data-midtab="${tab}"]) ${sel}`);
     expect(CSS).toContain('.panel-tabs::part(list)');
     expect(CSS).toContain(
       'body:not([data-detail~="sections"]):not([data-detail~="logtab"]) .panel-sections::part(list)',
