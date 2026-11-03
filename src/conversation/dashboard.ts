@@ -10898,6 +10898,9 @@ function resetPanelSections() {
 // always, pinned at the strip's left (the element's sticky tab, its fade once the
 // others scroll under it), then each subagent in spawn order; the type is the
 // muted second label (meta), the status the tone dot with its word in the title.
+// #813: each tab leads with its model's maker's mark (TabItem.model, ui 0.24.0) —
+// Main the session's model, named (modelLabelOf) instead of the raw id; a subagent
+// the model it ran (spend.model), in its title. No model known, no mark.
 // Every tab controls the one panel below the strip (Tasks, the work log, 지시와
 // 답변), scoped to its agent; the element's arrows / Home / End move and select
 // (automatic activation) and its ui-change is selectPanelAgent.
@@ -10912,19 +10915,21 @@ function panelTabAgent(tabId) {
 // Pure: the strip's data — the tabs, the selected one ('' = Main), the list's name.
 function panelTabsData(s, active, mainSt) {
   var st0 = mainSt || (s && s.activityState === 'working' ? 'running' : s && s.activityState === 'waiting' ? 'waiting' : 'idle');
-  var tab = function(id, st, name, type, pinned) {
-    var t = { id: id, label: name, tone: AGENT_TAB_TONE[st] || 'rest', title: name + (type ? ' ' + type : '') + ' — ' + (AGENT_STATUS_LABEL[st] || '') };
+  var tab = function(id, st, name, type, pinned, model, said) {
+    var t = { id: id, label: name, tone: AGENT_TAB_TONE[st] || 'rest', title: name + (type ? ' ' + type : '') + (said ? ' · ' + said : '') + ' — ' + (AGENT_STATUS_LABEL[st] || '') };
     if (type) t.meta = type;
+    if (model) t.model = model;
     if (pinned) t.pinned = true;
     return t;
   };
-  var model = s && s.model ? String(s.model).replace(/^claude-/, '') : '';
-  var tabs = [tab(PT_MAIN, st0, '메인', model, true)];
+  var model = s && typeof s.model === 'string' && s.model && s.model !== 'unknown' ? s.model : '';
+  var tabs = [tab(PT_MAIN, st0, '메인', model ? modelLabelOf(model) : '', true, model, '')];
   var list = ((s && s.agents) || []).slice().sort(function(a, b) { return toNum(a.n) - toNum(b.n); });
   for (var i = 0; i < list.length; i++) {
     var a = list[i];
     if (!a || !a.id) continue;
-    tabs.push(tab(panelTabId(String(a.id)), agentStatusOf(a), 'A' + toNum(a.n), a.type || '', false));
+    var am = a.spend && typeof a.spend.model === 'string' ? a.spend.model : '';
+    tabs.push(tab(panelTabId(String(a.id)), agentStatusOf(a), 'A' + toNum(a.n), a.type || '', false, am, am ? modelLabelOf(am) : ''));
   }
   return { label: '에이전트', value: panelTabId(active || ''), tabs: tabs };
 }
