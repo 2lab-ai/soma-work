@@ -218,6 +218,51 @@ describe('githubEffectsOf — what is not a write', () => {
     ).toEqual([]);
   });
 
+  it('W3 — a regex literal, a callback, a nested body or a plain run() is not a sending call (review round 4)', () => {
+    const view = ' && gh pr view 12 --json url -q .url';
+    const url = 'https://github.com/a/b/pull/12';
+    expect(
+      effectsOf(
+        // A division, then a regex literal that spells a fetch.
+        bash(
+          `node -e 'const x = 4 / /fetch("https:\\/\\/api.github.com\\/repos\\/a\\/b\\/pulls", {method:"POST"})/.test(s)'${view}`,
+          url,
+        ),
+        bash(`node -e 'if (/fetch\\("https:\\/\\/api.github.com\\/repos\\/a\\/b\\/pulls"/.test(s)) {}'${view}`, url),
+        // A GET whose callback names a method.
+        bash(`node -e 'fetch("https://api.github.com/repos/a/b/pulls", () => ({ method: "POST" }))'${view}`, url),
+        // A GET elsewhere whose body mentions the endpoint.
+        bash(
+          `node -e 'fetch("https://example.com/hook", { method: "POST", body: JSON.stringify({ see: "https://api.github.com/repos/a/b/pulls" }) })'${view}`,
+          url,
+        ),
+        // `run` and `.exec` that are not a shell.
+        bash(`node -e 'run("curl -X POST https://api.github.com/repos/a/b/pulls -d @p")'${view}`, url),
+        bash(`node -e '/x/.exec("curl -X POST https://api.github.com/repos/a/b/pulls -d @p")'${view}`, url),
+      ),
+    ).toEqual([]);
+    // The real ones still count — also gh by its path, and a gh pr create with a very long inline body.
+    expect(
+      effectsOf(
+        bash('/opt/homebrew/bin/gh pr create --fill', 'https://github.com/a/b/pull/72\n'),
+        bash(`gh pr create --title x --body "${'y'.repeat(40_000)}"`, 'https://github.com/a/b/pull/73\n'),
+        bash(
+          `node -e 'const x = 4 / 2; fetch("https://api.github.com/repos/a/b/pulls", { method: "POST" })'`,
+          'https://github.com/a/b/pull/70',
+        ),
+        bash(
+          `python3 -c 'import os; os.system("curl -s -X POST https://api.github.com/repos/a/b/issues -d @i.json | jq -r .html_url")'`,
+          'https://github.com/a/b/issues/71',
+        ),
+      ).map(short),
+    ).toEqual([
+      ['create', 'pr', 'https://github.com/a/b/pull/72'],
+      ['create', 'pr', 'https://github.com/a/b/pull/73'],
+      ['create', 'pr', 'https://github.com/a/b/pull/70'],
+      ['create', 'issue', 'https://github.com/a/b/issues/71'],
+    ]);
+  });
+
   it('W3 — pathological commands are read in linear time (review P1)', () => {
     const inputs = [
       `curl -X${' '.repeat(199_000)}x https://api.github.com/repos/a/b/pulls`,
@@ -231,6 +276,8 @@ describe('githubEffectsOf — what is not a write', () => {
       `node -e '${'fetch('.repeat(5000)}' github`,
       `node -e '${'fetch("https://api.github.com/repos/a/b/pulls", {method: "POST"}, '.repeat(400)}'`,
       `python3 -c '${'"""'.repeat(9000)} github'`,
+      `node -e '${'(/['.repeat(10_000)}' github`,
+      `ruby -e '${'= /'.repeat(10_000)}' github`,
     ];
     for (const command of inputs) {
       const started = Date.now();
