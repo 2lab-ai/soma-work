@@ -198,9 +198,9 @@ export function createSlackEpicHost(deps: SlackEpicHostDeps): EpicHost {
       autoGoalOverride: false,
       epicChild: { taskId: childId, parentTaskId: epicTaskId, planNodeId: spec.planNodeId, title: spec.title },
       ...(spec.workingDirectory ? { workingDirectoryOverride: spec.workingDirectory } : {}),
-      // The epic's words as written: no command routing, never pushed into another turn — and a
-      // host turn: soma-work's words, never the owner's answer to anything (review #872 astra).
-      routeContext: { skipAutoBotThread: true, verbatimPrompt: true, hostTurn: true },
+      // The epic's words as written: no command routing, never pushed into another turn. The owner's
+      // word, delegated — as every later instruction to the child (only the epic's own wake is a host turn).
+      routeContext: { skipAutoBotThread: true, verbatimPrompt: true },
     };
     const result = await handOver(
       (onAccepted) => {
@@ -311,7 +311,12 @@ export interface SlackEpicWakerDeps {
   /** A wake that was not sent: its events are pending again. */
   release(sessionKey: string, by: string): void;
   /** Send the wake into the epic's thread (its owner's, labelled); `onAccepted` once taken. */
-  send(sessionKey: string, text: string, opts: { onAccepted: () => void; label: string }): Promise<unknown>;
+  /** `hostTurn`: the wake is soma-work's word — it answers no question the epic asked its owner. */
+  send(
+    sessionKey: string,
+    text: string,
+    opts: { onAccepted: () => void; label: string; hostTurn: true },
+  ): Promise<unknown>;
   logger: Logger;
   /** The delay of the one retry after a refusal (default one minute). */
   retryMs?: number;
@@ -377,7 +382,8 @@ export function createSlackEpicWaker(deps: SlackEpicWakerDeps): SlackEpicWaker {
     sending.add(sessionKey);
     try {
       const result = await handOver(
-        (onAccepted) => deps.send(sessionKey, epicWakeText(events), { onAccepted, label: '🧩 자식 작업 소식' }),
+        (onAccepted) =>
+          deps.send(sessionKey, epicWakeText(events), { onAccepted, label: '🧩 자식 작업 소식', hostTurn: true }),
         deps.acceptTimeoutMs ?? 120_000,
         deps.logger,
       );

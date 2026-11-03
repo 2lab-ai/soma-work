@@ -85,9 +85,8 @@ describe('the epic host on the Slack path (#854)', () => {
         autoGoalOverride: false,
         epicChild: { taskId: 'child-1', parentTaskId: 'e1', planNodeId: 'login', title: '로그인' },
         workingDirectoryOverride: '/tmp/U1/session_e/work',
-        // The epic's words, not the owner's (review #872 astra): a host turn — it answers no open
-        // question, revises no plan, and is recorded as soma-work's, as the task path's host start was.
-        routeContext: { skipAutoBotThread: true, verbatimPrompt: true, hostTurn: true },
+        // The owner's word, delegated (as instruct_child's): only the epic's own wake is a host turn.
+        routeContext: { skipAutoBotThread: true, verbatimPrompt: true },
       }),
     );
     // The reservation counted before the thread; the start counted in the tree's window.
@@ -158,6 +157,8 @@ describe('the epic host on the Slack path (#854)', () => {
       '테스트 추가',
       expect.objectContaining({ label: '🧩 에픽의 지시' }),
     );
+    // The epic's word to its child answers the child's open question (the tool says so): the owner's word.
+    expect(idle.deps.sendToThread.mock.calls[0][2].hostTurn).toBeUndefined();
     expect(idle.deps.gate.record).toHaveBeenCalledTimes(1);
 
     const busy = hostWorld({ isRunning: vi.fn(() => true) });
@@ -247,7 +248,8 @@ describe('the Slack epic waker (#854)', () => {
     expect(w.deps.send).toHaveBeenCalledWith(
       'C1-1.0',
       'Epic wake: 1 event — login:finished. Read details with child_status.',
-      expect.objectContaining({ label: '🧩 자식 작업 소식' }),
+      // The epic's own wake is soma-work's word: it answers no question the epic asked its owner (review #872).
+      expect.objectContaining({ label: '🧩 자식 작업 소식', hostTurn: true }),
     );
     expect(w.deps.consume.mock.invocationCallOrder[0]).toBeLessThan(w.deps.send.mock.invocationCallOrder[0]);
     for (const [over, epicOver] of [

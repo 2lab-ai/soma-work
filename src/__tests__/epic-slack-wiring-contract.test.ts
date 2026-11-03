@@ -37,7 +37,7 @@ describe('index.ts — epics as Slack sessions (#854)', () => {
       /injectDashboardMessage\(key, text, undefined, \[\], undefined, undefined, \{[\s\S]*verbatim: true,[\s\S]*echoLabel: opts\.label/,
     );
     // An epic's wake and its word to a child are host turns (review #872 astra): never the owner's answer.
-    expect(send).toMatch(/hostTurn: true/);
+    expect(send).toMatch(/\.\.\.\(opts\.hostTurn \? \{ hostTurn: true as const \} : \{\}\)/);
     expect(source).toMatch(
       /routeContext: \{ verbatimPrompt: true, \.\.\.\(extra\.hostTurn \? \{ hostTurn: true \} : \{\}\) \}/,
     );
