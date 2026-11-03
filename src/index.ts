@@ -61,7 +61,13 @@ import { setQueryEnvAdditional } from './auth/query-env-builder';
 import { getChannelDescription } from './channel-description-cache';
 import { getAllChannels, getChannel, scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
-import { config, getIncidentTrustedSource, runPreflightChecks, validateConfig } from './config';
+import {
+  config,
+  getIncidentTrustedSource,
+  getLinkLeakReportConfig,
+  runPreflightChecks,
+  validateConfig,
+} from './config';
 import { loadConfig } from './config-loader';
 import {
   broadcastArtifactUpdate,
@@ -134,12 +140,17 @@ import { migrateThreadHeaderDashboardLinkOnce } from './deploy/migrate-threadhea
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
+import { createGithubReceiptChecker } from './github-receipt';
 import { type HeldInstruction, InstructionApprovals, setInstructionApprovals } from './instruction-approval';
+import { fetchGitHubPullsForHead, fetchGitHubReceiptObject } from './link-metadata-fetcher';
 import { Logger } from './logger';
 import { mcpCallTracker } from './mcp-call-tracker';
 import { McpManager } from './mcp-manager';
-import { startReportScheduler, stopReportScheduler } from './metrics';
+import { startLinkLeakReport, startReportScheduler, stopLinkLeakReport, stopReportScheduler } from './metrics';
+import { MetricsEventStore } from './metrics/event-store';
+import { creatorDays, creatorsOf, fetchBotItems } from './metrics/link-leak-report';
 import { calculateTokenCost, hasModelPricing } from './metrics/model-registry';
+import { ReportPublisher } from './metrics/report-publisher';
 import { clampEffortToModel } from './model-catalog';
 import { bootModelCatalog } from './model-catalog-boot';
 import {
@@ -168,6 +179,13 @@ import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './
 import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from './session/task-usage-reconcile';
 import { getArchiveStore, resolveArchivedResume } from './session-archive';
 import { buildTaskSessionKey } from './session-identity';
+import {
+  createSessionPrReconciler,
+  findGitCheckouts,
+  gitContainsCommit,
+  scanGitCheckouts,
+  sessionDirs,
+} from './session-pr-reconciler';
 import { applySummaryTitle } from './session-title-policy';
 import {
   displayLangMiddleware,
@@ -201,6 +219,7 @@ import { createEpicWaker } from './task-turn/epic-wake';
 import { setPlanHost } from './task-turn/plan-server';
 import { composeTaskApprovalListeners } from './task-turn/task-approver';
 import { createDashboardCloseHandler } from './task-turn/task-close';
+import { createTaskGoalLoop, type TaskGoalLoop } from './task-turn/task-goal-loop';
 import { createTaskLauncher } from './task-turn/task-launcher';
 import {
   createTaskNoticeDeliverer,
@@ -1299,6 +1318,23 @@ async function start() {
       appendSessionWorkLog,
       createConversation: (s) => createConversationDurable('', '', s.ownerId, s.ownerName ?? '', s.title),
     });
+    // SSOT 2026-11-03 — the goal loop on a dashboard task: the chain's end wakes it (with the
+    // chain's last answer as evidence), its next turn is a host start here, and a person's
+    // instruction resets its count. The loop itself (GoalLoopController) is built further down.
+    let settleTaskGoal: ((key: string) => void) | undefined;
+    const taskGoalLoop: TaskGoalLoop = createTaskGoalLoop({
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      start: (request) => taskController.start(request),
+      readLastFinal: async (session) => {
+        const turnId = session.lastTurnOutcome?.turnId;
+        if (!session.conversationId || !turnId) return undefined;
+        return (await readTurnFinal(readWorkLog, session.conversationId, turnId))?.text;
+      },
+      saveSessions: () => claudeHandler.saveSessions(),
+      isRunning: (key) => taskController.isRunning(key),
+      settle: (key) => settleTaskGoal?.(key),
+      logger: new Logger('TaskGoalLoop'),
+    });
     const taskController = createTaskTurnController({
       runner: taskTurnExecutor,
       getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
@@ -1320,9 +1356,16 @@ async function start() {
       epicCostLimitUsd: (ownerId) => userSettingsStore.getUserEpicCostLimitUsd(ownerId),
       // E4 ⑥ — once a chain that started has ended, an epic left with pending events may wake
       // (grok #702 R1); one that never started is the waker's own retry to make (fable #702 R2).
-      onChainEnd: (key, { started }) => {
-        if (started) epicWaker.wake(key);
+      onChainEnd: (key, info) => {
+        if (info.started) epicWaker.wake(key);
+        void taskGoalLoop
+          .onChainEnd(key, info)
+          .catch((error) =>
+            logger.warn('Task goal loop trigger failed', { sessionKey: key, error: (error as Error)?.message }),
+          );
       },
+      // A person's word to the task resets its goal's continuation count (as a Slack message does).
+      onUserInstruction: (key, session) => taskGoalLoop.onUserInstruction(key, session),
       // A task's follow-up queue (2026-11-03): saved with the task, pushed to the open panels.
       onFollowupsChanged: (key) => {
         claudeHandler.saveSessions();
@@ -1722,7 +1765,40 @@ async function start() {
         }
       },
     };
+    // #832 — GitHub is the receipt for a write the parser proposes: only a confirmed one reaches the card and metrics.
+    workLogProviders.confirmGithubEffects = createGithubReceiptChecker({ fetchObject: fetchGitHubReceiptObject });
     setStreamExecutorProviders(workLogProviders);
+    // #833 (epic #831) — turn end: the PRs GitHub says the session's own branches have go on its card, however they
+    // were made (REST, the web UI). Recorded by key (Slack sessions and tasks alike), then the card is pushed.
+    setStreamExecutorProviders({
+      reconcileSessionPrs: createSessionPrReconciler({
+        findCheckouts: findGitCheckouts,
+        fetchPulls: fetchGitHubPullsForHead,
+        containsCommit: gitContainsCommit,
+        // Asked only when a new PR would become current: does another session check the same branch out? Read with the
+        // same directories the session's own scan uses; a scan that could not read them all counts as shared.
+        checkedOutElsewhere: async (sessionKey, owner, name, branch) => {
+          const dirs: string[] = [];
+          for (const [key, other] of claudeHandler.getSessionRegistry().getAllSessions()) {
+            if (key === sessionKey || other.terminated) continue;
+            dirs.push(...sessionDirs(other));
+          }
+          const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+          const match = (c: { owner: string; name: string; branch: string }) =>
+            same(c.owner, owner) && same(c.name, name) && c.branch === branch;
+          const scan = await scanGitCheckouts(dirs, 100, match);
+          return !scan.complete || scan.checkouts.some(match);
+        },
+        noteLinks: (sessionKey, links, mode) =>
+          claudeHandler.getSessionRegistry().noteSessionLinksByKey(sessionKey, links, mode),
+        pushCard: (sessionKey) => scheduleLiveSessionUpdate(sessionKey),
+        isCurrent: (sessionKey, session) => {
+          const live = claudeHandler.getSessionRegistry().getAllSessions().get(sessionKey);
+          return live === session && !live.terminated;
+        },
+        logger,
+      }),
+    });
     // SSOT 2026-10-26 T2 — subagents that ended before this process started
     // fire no more events: read the loaded sessions' spend once, in the
     // background, so every card shows its subagents' spend after a restart.
@@ -1926,6 +2002,57 @@ async function start() {
       };
       startReportScheduler(slackApiForReports);
       timing('Report scheduler initialized');
+      // #835 (epic #831) — the daily task-card link leak report: bot PRs and issues against every card's links.
+      const leakConfig = getLinkLeakReportConfig();
+      if (isGitHubAppConfigured()) {
+        const leakChannel = leakConfig.channelId;
+        const leakPublisher = new ReportPublisher(slackApiForReports);
+        startLinkLeakReport(
+          {
+            hour: leakConfig.hour,
+            timezone: leakConfig.timezone,
+            statePath: path.join(DATA_DIR, 'link-leak-report.json'),
+            collectItems: async (sinceMs) => {
+              const auth = getGitHubAppAuth();
+              if (!auth) return undefined;
+              const botLogin = leakConfig.botLogin ?? (await auth.getAppSlug());
+              if (!botLogin) {
+                logger.warn(
+                  'Link leak report: the App bot login is unknown (GET /app failed; SOMA_LINK_LEAK_BOT_LOGIN unset)',
+                );
+                return undefined;
+              }
+              const token = await auth.getInstallationToken().catch((error) => {
+                logger.warn('Link leak report: no installation token', { error: (error as Error)?.message });
+                return undefined;
+              });
+              if (!token) return undefined;
+              return fetchBotItems({ token, botLogin, sinceIso: new Date(sinceMs).toISOString() });
+            },
+            collectCards: () => {
+              const live = [...claudeHandler.getSessionRegistry().getAllSessions()].map(([sessionKey, s]) => ({
+                sessionKey,
+                title: s.title,
+                links: s.links,
+                linkHistory: s.linkHistory,
+              }));
+              // Every archive snapshot of the last 3 days: a session archived twice keeps the links of both.
+              const archived = getArchiveStore()
+                .listRecent(3 * 24 * 60 * 60 * 1000)
+                .map((a) => ({ sessionKey: a.sessionKey, links: a.links, linkHistory: a.linkHistory }));
+              return [...live, ...archived];
+            },
+            collectCreators: async (sinceMs) => {
+              const [from, to] = creatorDays(sinceMs, Date.now());
+              return creatorsOf(await new MetricsEventStore().readRange(from, to), sinceMs);
+            },
+            publish: async (text, blocks) =>
+              !!leakChannel && !!(await leakPublisher.publish(leakChannel, blocks, text)),
+          },
+          !!leakChannel,
+        );
+        timing('Link leak report initialized');
+      }
     } catch (error) {
       logger.warn('Failed to start report scheduler (non-critical)', error);
     }
@@ -2062,7 +2189,11 @@ async function start() {
         },
         dispatcher: ({ systemPrompt, userPrompt, model, effort, abortController, cwd }) =>
           claudeHandler.dispatchOneShot(userPrompt, systemPrompt, model, abortController, undefined, cwd, effort),
-        injectContinuation: goalMessageInjector,
+        // A dashboard task has no thread: its next goal turn starts on the task controller.
+        injectContinuation: (event, target) =>
+          target.session.slackless === true
+            ? taskGoalLoop.injectContinuation(event, target)
+            : goalMessageInjector(event),
         postNotice: postGoalNotice,
         postOwnerDm: postGoalOwnerDm,
         // Same failure twice → ask the owner (thread form + dashboard card).
@@ -2083,6 +2214,8 @@ async function start() {
       slackHandler.setGoalTurnSettledHandler((sessionKey: string, opts?: { cause?: 'turn' | 'kick' }) => {
         goalLoopController.onTurnSettled(sessionKey, opts);
       });
+      // A dashboard task's chain end (taskGoalLoop.onChainEnd, above) settles the same loop.
+      settleTaskGoal = (sessionKey) => goalLoopController.onTurnSettled(sessionKey, { cause: 'turn' });
       // S1/S3: let goal action handlers (Delete-advance, owner-DM Continue)
       // kick the loop without holding a direct controller reference.
       // A kick: no turn ran, so an unchanged summary is not re-judged.
@@ -2250,6 +2383,7 @@ async function start() {
 
       try {
         stopReportScheduler();
+        stopLinkLeakReport();
 
         // Stop cron scheduler
         if (cronScheduler) {

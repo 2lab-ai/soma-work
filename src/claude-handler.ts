@@ -840,6 +840,11 @@ export class ClaudeHandler implements TurnSteeringPort {
     return this.sessionRegistry.getCrashRecoveredSessions();
   }
 
+  /** The Slack-less tasks whose turn the restart cut — returned once (goal resume refunds their continuation). */
+  takeRestartCutTaskKeys(): Set<string> {
+    return this.sessionRegistry.takeRestartCutTaskKeys();
+  }
+
   clearCrashRecoveredSessions(): void {
     this.sessionRegistry.clearCrashRecoveredSessions();
   }
@@ -1374,7 +1379,7 @@ export class ClaudeHandler implements TurnSteeringPort {
         {
           logger: this.logger,
           getEffectivePluginPaths: () => this.getEffectivePluginPaths(),
-          buildModelCommandContext: (s, sc) => this.buildModelCommandContext(s, sc),
+          buildModelCommandContext: (s, sc, ec) => this.buildModelCommandContext(s, sc, ec),
           mcpConfigBuilder: this.mcpConfigBuilder,
           compactHookBuilder: this.compactHookBuilder,
           promptBuilder: this.promptBuilder,
@@ -2347,9 +2352,19 @@ export class ClaudeHandler implements TurnSteeringPort {
   private buildModelCommandContext(
     session: ConversationSession | undefined,
     slackContext: SlackContext | undefined,
+    executionContext?: ExecutionContext,
   ): ModelCommandContext | undefined {
     if (!slackContext) {
-      return undefined;
+      // A Slack-less dashboard task: reached by its key; the user is the turn's (the context's).
+      if (executionContext?.origin !== 'task') return undefined;
+      return {
+        user: executionContext.userId,
+        surface: 'task',
+        workflow: session?.workflow,
+        renewState: null,
+        session: this.sessionRegistry.getSessionResourceSnapshotByKey(executionContext.sessionKey),
+        sessionTitle: session?.title,
+      };
     }
 
     return {

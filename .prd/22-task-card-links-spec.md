@@ -104,7 +104,8 @@
 | 출처 | 무엇을 | 지금 링크 |
 |---|---|---|
 | 유저 메시지(매 턴, 호스트 턴 제외) | 메시지의 이슈 · PR · 위키 URL | 후속 메시지: 종류마다 첫 번째(`first`). 첫 메시지: 디스패치가 이미 고른 지금 링크를 그대로 두고 나머지만 기록(`if-empty`) |
-| 명령이 `gh pr create` · `gh issue create`이고 출력의 마지막 줄이 GitHub PR · 이슈 URL인 Bash | 세션이 방금 만든 PR · 이슈 | 그것(`always`). `gh pr view` · `edit`도 URL을 내지만 만든 것이 아니다 |
+| GitHub 쓰기 도구 호출(#832): 호출 입력이 쓰기를 말하고(POST · PUT · PATCH, `gh pr\|issue create\|merge\|close`, GitHub MCP 생성 · 머지 · 수정 도구) 대상이 `repos/{owner}/{repo}/pulls\|issues[/{n}[/merge]]`이며, 결과가 그 저장소 · 종류의 객체(JSON `html_url` + `"number"`, 또는 한 줄에 URL만)로 증명한 것 | 세션이 방금 만든 PR · 이슈 | 만든 것은 지금 링크(`always`). 머지 · 닫기는 카드에 이미 있는 링크의 상태만 바꾼다(`update`). 댓글 · 리뷰 · 라벨 · 읽기 · 오류는 기록하지 않는다. 어떤 도구든(서브에이전트 포함), `curl` · `fetch` · `gh api`로 만들어도 같다 |
+| 턴 끝의 GitHub 대조(#833): 세션 디렉터리 아래 git 체크아웃마다 현재 브랜치 → `GET /repos/{o}/{r}/pulls?head={o}:{branch}&state=all` | 그 브랜치의 PR과, PR 본문이 닫는 이슈(`Closes #12`) | 세션 시작 뒤 만든 PR이고 카드에 아직 없으면 지금 링크(`always`). 더 오래된 PR, 시작을 모르는 세션, 다른 세션도 체크아웃한 브랜치(모호)는 기록만(`history`). 닫는 이슈도 기록만 |
 | 봇 답변 | 답변이 이름 붙인 URL | 그 종류에 지금 링크가 없을 때만(`if-empty`). 지나가며 언급한 옛 PR이 지금 PR을 덮지 않는다 |
 
 - 알아보는 URL: GitHub PR · 이슈, GitLab MR, Jira 이슈(`/browse/KEY-1`), Linear 이슈, Confluence 페이지, Notion 페이지. 저장소, 커밋, 파일, 검색 URL은 링크가 아니다. Slack(`<url|label>`)과 Markdown 래퍼, 끝의 구두점은 URL에 넣지 않는다. 2048자가 넘는 URL은 건너뛴다. 한 텍스트에서 최대 10개를 받는다.
@@ -113,9 +114,12 @@
 - 자동 기록은 모델의 `UPDATE_SESSION`이 비교하는 순서 번호(`linkSequence`)를 올리지 않는다. 이 부수 작업 때문에 모델의 갱신이 `SEQUENCE_MISMATCH`로 실패하면 안 된다.
 - 자동 기록한 링크에는 `auto: true`가 붙는다. 상한(종류마다 30개)은 이것들만 줄이고, 모델이나 유저가 넣은 링크와 지금 링크는 지우지 않는다.
 - 목록 출력(`gh pr list`)처럼 PR을 이름만 대는 도구 결과는 기록하지 않는다.
-- 연결부: `stream-executor`가 유저 메시지와 생성 명령의 결과를 기록한다(`onToolUse`에서 생성 명령의 호출 id를 모아 둔다). `stream-processor`의 새 콜백 `onLinksMentioned`는 지시문을 뺀 답변 텍스트의 링크를 넘기고, 실행기가 `if-empty`로 기록한다. 기록은 부수 작업이라 실패해도 턴을 깨지 않는다.
+- 연결부: `stream-executor`가 유저 메시지와 GitHub 쓰기의 결과를 기록한다(`onToolUse`에서 `githubWritesOf`로 호출마다 쓰기를 읽어 두고, `onToolResult`에서 `githubEffectsOf`가 결과로 후보를 고른다). 후보는 GitHub가 확인해야 기록된다(`src/github-receipt.ts`, #832 리뷰 17차): PR · 이슈를 한 번 GET 해서(8초 상한, 병렬) 만든 것은 창(그 턴의 시작 − 5초 … 호출 결과 + 5초, GitHub `Date` 헤더로 시계 차이 보정) 안에 만들어졌어야 하고, 호출 입력이 head 브랜치(`head:"…"` · `-f head=` · `gh pr create --head`)나 이슈 제목을 완전한 리터럴로 적었다면 그것이 그 PR · 이슈의 것이어야 한다(변수 · 이어 붙인 값 · 따옴표 안의 플래그 단어는 적은 것이 아니다, 리뷰 19차)(같은 App의 다른 세션이 같은 순간에 만든 PR을 거른다; 적지 않았으면 — `gh pr create --fill`, 파일 본문 — 창만으로 받는다). 머지는 `merged_at`, 닫기는 머지되지 않은 채 `closed_at`이 그 안에 있어야 한다. 창의 하한이 호출을 본 시각이 아니라 턴 시작인 것은, 호스트가 SDK 이벤트를 차례로 읽어 호출을 실행보다 한참 뒤에 볼 수 있어서다(리뷰 18차). 메트릭은 git 명령 결과를 즉시, PR 효과(`pr_created` · `pr_merged`)만 확인 뒤에 기록한다. 확인 못 한 후보는 기록하지 않는다(턴 끝 GitHub 대조 #833이 실제 PR을 찾는다). 늦게 온 확인은 세션이 바뀌었으면 버린다. 구문으로는 '실행됐다'를 증명할 수 없어서다 — 16차까지 리뷰마다 실행되지 않은 호출의 새 변형이 나왔다. 메트릭의 `pr_created` · `pr_merged`도 같은 효과에서 나온다(파서 하나). `stream-processor`의 새 콜백 `onLinksMentioned`는 지시문을 뺀 답변 텍스트의 링크를 넘기고, 실행기가 `if-empty`로 기록한다. 기록은 부수 작업이라 실패해도 턴을 깨지 않는다.
 - 테스트:
   - `session-link-capture.test.ts` A1–A5: 생성 명령 검사, 코드와 인용 제외, 정규형, 긴 입력에서도 선형.
-  - `session-registry.note-links.test.ts` N1–N7: 모드, 정규형 중복, 순서 번호 유지, 명시 링크는 줄이지 않음.
+  - `session-link-capture.writes.test.ts` W1–W5(#832): 실제로 새어 나간 REST 생성 9건 재생(`fixtures/github-write-leaks.json`), 같은 세션의 댓글 POST 3건은 기록 안 함, 읽기 · 오류 · 다른 저장소 · 리뷰 · 라벨 제외, 모든 생성 표기, 머지 · 닫기.
+  - `session-registry.note-links.test.ts` N1–N9: 모드, 정규형 중복, 순서 번호 유지, 명시 링크는 줄이지 않음, `update`는 아는 링크의 상태만, `history`는 지금 링크로 만들지 않음.
+  - `session-pr-reconciler.test.ts` R1–R8(#833): 새 PR은 지금 링크, 오래된 · 모호한 브랜치는 기록만, 빈 답은 다음 턴에 다시, 같은 sha의 찾은 답은 재사용, 실패는 기록 없음, 닫는 이슈, 세션당 하나 · 최소 간격 · 던지지 않음, 실제 git 체크아웃 탐색(토큰이 든 원격 URL도 새지 않음).
+  - 연결부(#833): `stream-executor`의 턴 `finally`가 `reconcileSessionPrs` 프로바이더를 부르고(종료된 세션 제외, 예외는 삼킴), 호스트(`src/index.ts`)가 `createSessionPrReconciler`를 키 기준 기록 + 카드 푸시로 배선한다. 조회는 `fetchGitHubPullsForHead`(App 토큰, 10초 제한)이며 답이 메타데이터 캐시를 채워 칩 상태가 바로 보인다.
   - `stream-processor.links-mentioned.test.ts` P1–P3: 코드와 `release_notes` 제외.
   - `stream-executor.session-links.test.ts`: 첫 메시지 `if-empty`, 후속 `first`, `gh pr view`는 기록 안 함, 호스트 턴은 기록 안 함.

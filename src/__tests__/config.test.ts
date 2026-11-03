@@ -358,3 +358,44 @@ describe('claude.autoFallbackCompactModel (auto fallback compact)', () => {
     expect(resolveContextWindow(resolved)).toBe(1_000_000);
   });
 });
+
+describe('getLinkLeakReportConfig (#835)', () => {
+  const keys = [
+    'SOMA_LINK_LEAK_REPORT_CHANNEL',
+    'SOMA_LINK_LEAK_REPORT_HOUR',
+    'SOMA_LINK_LEAK_BOT_LOGIN',
+    'REPORT_TIMEZONE',
+  ];
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const k of keys) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+  afterEach(() => {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it('is off without a valid channel; reads the hour, timezone and bot login', async () => {
+    const { getLinkLeakReportConfig } = await import('../config');
+    expect(getLinkLeakReportConfig()).toEqual({ hour: 9, timezone: 'Asia/Seoul' });
+    process.env.SOMA_LINK_LEAK_REPORT_CHANNEL = 'not-a-channel';
+    expect(getLinkLeakReportConfig().channelId).toBeUndefined();
+    process.env.SOMA_LINK_LEAK_REPORT_CHANNEL = 'C0AKY7W2UGZ';
+    process.env.SOMA_LINK_LEAK_REPORT_HOUR = '18';
+    process.env.SOMA_LINK_LEAK_BOT_LOGIN = 'zhuge-liang-bot[bot]';
+    process.env.REPORT_TIMEZONE = 'UTC';
+    expect(getLinkLeakReportConfig()).toEqual({
+      channelId: 'C0AKY7W2UGZ',
+      hour: 18,
+      timezone: 'UTC',
+      botLogin: 'zhuge-liang-bot',
+    });
+    process.env.SOMA_LINK_LEAK_REPORT_HOUR = '25';
+    expect(getLinkLeakReportConfig().hour).toBe(9);
+  });
+});

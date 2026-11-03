@@ -5,6 +5,7 @@
 
 import { config } from './config';
 import { getGitHubAppAuth } from './github-auth';
+import type { GitHubReceiptObject } from './github-receipt';
 import { Logger } from './logger';
 import type { SessionLink } from './types';
 
@@ -278,6 +279,72 @@ async function fetchGitHubMetadata(link: SessionLink): Promise<{ title?: string;
   return { title: data.title, status };
 }
 
+/** A PR as `GET /repos/{o}/{r}/pulls` lists it — the fields the turn-end reconcile reads (#833). */
+export interface GitHubPullSummary {
+  html_url: string;
+  number: number;
+  title?: string;
+  state?: string;
+  draft?: boolean;
+  merged_at?: string | null;
+  created_at?: string;
+  body?: string | null;
+  /** The PR's head commit. */
+  head_sha?: string;
+}
+
+/**
+ * The PRs whose head is `owner:branch` (any state, newest first, at most 30) — undefined when the query failed. Each
+ * answer also fills the metadata cache, so the card's chip shows the PR's state at once (#833).
+ */
+export async function fetchGitHubPullsForHead(
+  owner: string,
+  repo: string,
+  branch: string,
+): Promise<GitHubPullSummary[] | undefined> {
+  const token = await getGitHubToken();
+  if (!token) return undefined;
+  try {
+    const head = encodeURIComponent(`${owner}:${branch}`);
+    const response = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?head=${head}&state=all&sort=created&direction=desc&per_page=30`,
+      {
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+          'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+        },
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    if (!response.ok) return undefined;
+    const data = (await response.json()) as unknown;
+    if (!Array.isArray(data)) return undefined;
+    const pulls: GitHubPullSummary[] = [];
+    for (const p of data) {
+      if (!p || typeof p.html_url !== 'string' || typeof p.number !== 'number') continue;
+      const title = typeof p.title === 'string' ? p.title.slice(0, MAX_CACHED_TITLE_LENGTH) : undefined;
+      pulls.push({
+        html_url: p.html_url,
+        number: p.number,
+        title,
+        state: typeof p.state === 'string' ? p.state : undefined,
+        draft: p.draft === true,
+        merged_at: typeof p.merged_at === 'string' ? p.merged_at : null,
+        created_at: typeof p.created_at === 'string' ? p.created_at : undefined,
+        body: typeof p.body === 'string' ? p.body.slice(0, 4000) : null,
+        ...(typeof p.head?.sha === 'string' ? { head_sha: p.head.sha } : {}),
+      });
+      const status = p.merged_at ? 'merged' : p.draft && p.state !== 'closed' ? 'draft' : p.state;
+      metadataCache.set(p.html_url, { title, status, fetchedAt: Date.now() });
+    }
+    return pulls;
+  } catch (error) {
+    logger.debug('Failed to list PRs for a branch', { owner, repo, error: (error as Error).message });
+    return undefined;
+  }
+}
+
 /**
  * Fetch Jira issue metadata (title + status) from REST API.
  */
@@ -505,6 +572,67 @@ export async function fetchGitHubPRReviewStatus(
     return 'pending';
   } catch (error) {
     logger.warn('Failed to fetch GitHub PR review status', { url: link.url, error: (error as Error).message });
+    return undefined;
+  }
+}
+
+/**
+ * #832 — what GitHub says about one PR or issue, for the write receipt (`github-receipt.ts`): when it was created,
+ * merged and closed, its head branch and title, and GitHub's clock (`Date`). Undefined on any failure; never throws.
+ * A 5-second cap: the receipt runs after the tool result and must not pile up.
+ */
+export async function fetchGitHubReceiptObject(
+  owner: string,
+  repo: string,
+  kind: 'pr' | 'issue',
+  number: number,
+): Promise<GitHubReceiptObject | undefined> {
+  try {
+    const token = await getGitHubToken();
+    if (!token) return undefined;
+    const path = kind === 'pr' ? 'pulls' : 'issues';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort('timeout'), 5_000);
+    try {
+      const response = await fetch(
+        `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${path}/${number}`,
+        {
+          headers: {
+            Authorization: `token ${token}`,
+            Accept: 'application/vnd.github.v3+json',
+            'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+          },
+          signal: controller.signal,
+        },
+      );
+      if (!response.ok) return undefined;
+      const date = Date.parse(response.headers.get('date') ?? '');
+      const data = (await response.json()) as {
+        created_at?: unknown;
+        merged_at?: unknown;
+        closed_at?: unknown;
+        state?: unknown;
+        title?: unknown;
+        head?: { ref?: unknown };
+        pull_request?: unknown;
+      };
+      // The issues endpoint also answers for a PR number: an issue receipt is not a PR's.
+      if (kind === 'issue' && data.pull_request) return undefined;
+      const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+      return {
+        createdAt: str(data.created_at),
+        mergedAt: str(data.merged_at) ?? null,
+        closedAt: str(data.closed_at) ?? null,
+        state: str(data.state),
+        headRef: str(data.head?.ref),
+        title: str(data.title),
+        ...(Number.isFinite(date) ? { serverNowMs: date } : {}),
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (error) {
+    logger.debug('Failed to fetch the GitHub write receipt', { owner, repo, number, error: (error as Error).message });
     return undefined;
   }
 }
