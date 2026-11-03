@@ -2270,7 +2270,25 @@ export class SlackHandler {
 
       // #854 — a new session's place in an epic tree: an epic made with the dashboard's epic
       // switch, or an epic's child in its own thread. Saved before its first turn runs.
-      if (sessionResult.isNewSession && (event.epicOverride === true || event.epicChild)) {
+      // The epic switch is leave to make an epic, not an order: work the dispatcher estimates at one
+      // task or less (about 10 minutes) runs as an ordinary session, and the thread says why.
+      if (
+        sessionResult.isNewSession &&
+        event.epicOverride === true &&
+        !event.epicChild &&
+        sessionResult.workSize === 'small'
+      ) {
+        this.logger.info('Epic switch on, but the work is small — an ordinary session', {
+          sessionKey: sessionResult.sessionKey,
+        });
+        await this.slackApi
+          .postSystemMessage(
+            activeChannel,
+            '🧩 작업량이 태스크 하나 이하(약 10분)로 보여 에픽 대신 일반 작업으로 진행합니다.',
+            { threadTs: activeThreadTs },
+          )
+          .catch(() => undefined);
+      } else if (sessionResult.isNewSession && (event.epicOverride === true || event.epicChild)) {
         const placed = await this.placeInEpicTree(sessionResult.sessionKey, event, activeChannel, activeThreadTs);
         if (!placed) {
           await this.slackApi.removeReaction(channel, ts, 'eyes');

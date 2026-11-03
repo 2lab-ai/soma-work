@@ -23,11 +23,26 @@ const FALLBACK_DISPATCH_MODEL = 'claude-haiku-4-5-20251001';
 const DISPATCH_PROMPT_PATH = path.join(__dirname, 'prompt', 'dispatch.prompt');
 
 /**
+ * The dispatcher's estimate of how much work the first input asks for: `small` is one task or less
+ * (about 10 minutes), `large` is more. The dashboard's epic switch makes an epic only for `large`.
+ */
+export type DispatchWorkSize = 'small' | 'large';
+
+/** The size field of a dispatch answer, or undefined when it is missing or not one of the two. */
+export function parseDispatchWorkSize(raw: unknown): DispatchWorkSize | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const size = raw.trim().toLowerCase();
+  return size === 'small' || size === 'large' ? size : undefined;
+}
+
+/**
  * Result of dispatch classification
  */
 export interface DispatchResult {
   workflow: WorkflowType;
   title: string;
+  /** The work size estimate; missing when the model gave none (or the dispatch fell back). */
+  size?: DispatchWorkSize;
   links?: SessionLinks;
   /** Complexity analysis of the input message (score, tier, signals) */
   complexity?: ComplexityResult;
@@ -178,10 +193,11 @@ class DispatchService {
 
       // Workflow dispatch log
       this.logger.info(
-        `📍 DISPATCH → [${result.workflow}] "${result.title}" (${elapsed}ms) complexity=${complexity.score}/${complexity.tier}`,
+        `📍 DISPATCH → [${result.workflow}] "${result.title}" (${elapsed}ms) size=${result.size ?? '?'} complexity=${complexity.score}/${complexity.tier}`,
         {
           workflow: result.workflow,
           title: result.title,
+          size: result.size,
           complexity: { score: complexity.score, tier: complexity.tier },
           rawResponse: responseText.substring(0, 200),
         },
@@ -273,6 +289,7 @@ class DispatchService {
         // Merge links from dispatch response with extracted links
         const dispatchLinks = this.parseDispatchLinks(parsed.links);
         const links = this.mergeLinks(extractedLinks, dispatchLinks);
+        const size = parseDispatchWorkSize(parsed.size);
 
         return {
           workflow: this.validateWorkflow(parsed.workflow),
@@ -280,6 +297,7 @@ class DispatchService {
             typeof parsed.title === 'string'
               ? this.sanitizeTitle(parsed.title)
               : this.generateFallbackTitle(userMessage),
+          ...(size ? { size } : {}),
           links: Object.keys(links).length > 0 ? links : undefined,
         };
       } catch (jsonError) {

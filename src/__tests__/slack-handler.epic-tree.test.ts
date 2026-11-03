@@ -9,11 +9,21 @@
  *   T4 placement is for a new session only: a later message in the thread never re-binds.
  *   T5 a chain that settled with nothing in flight is heard (`setChainSettledListener`) with the
  *      last run's outcome.
+ *   T9 the epic switch is leave, not an order: work the dispatcher sizes `small` (one task or less,
+ *      about 10 minutes) runs as an ordinary session and the thread says so; `large` or no estimate
+ *      makes the epic; an epic's child is bound whatever its size.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { SlackHandler } from '../slack-handler';
 
-function harness(fullSession: any, isNewSession = true, registryOver: Record<string, any> = {}) {
+function harness(
+  fullSession: any,
+  isNewSession = true,
+  registryOver: Record<string, any> = {},
+  initOver: Record<string, any> = {},
+) {
   const app = { client: {}, assistant: vi.fn() } as any;
   const registry = { makeEpic: vi.fn(), bindEpicChild: vi.fn(), ...registryOver };
   const claudeHandler: any = {
@@ -45,6 +55,7 @@ function harness(fullSession: any, isNewSession = true, registryOver: Record<str
       workingDirectory: '/tmp',
       abortController: new AbortController(),
       halted: false,
+      ...initOver,
     }),
   };
   const execute = vi.fn().mockResolvedValue({ success: true, messageCount: 1 });
@@ -117,6 +128,54 @@ describe('SlackHandler — a new session’s place in an epic tree (#854)', () =
       expect.stringContaining('에픽으로 만들지 못했습니다'),
       expect.anything(),
     );
+  });
+
+  it('T9 — the epic switch on small work: an ordinary session that says why; large or unknown makes the epic', async () => {
+    const small = harness({ ownerId: 'U1', systemPrompt: 'cached' }, true, {}, { workSize: 'small' });
+    await small.handler.handleMessage(
+      { user: 'U1', channel: 'C1', ts: '9.9', text: '버튼 오타 고쳐줘', epicOverride: true } as any,
+      say(),
+    );
+    expect(small.registry.makeEpic).not.toHaveBeenCalled();
+    expect(small.execute).toHaveBeenCalledTimes(1);
+    expect(small.slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('에픽 대신 일반 작업으로 진행합니다'),
+      expect.objectContaining({ threadTs: expect.any(String) }),
+    );
+    expect(small.slackApi.postSystemMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      small.execute.mock.invocationCallOrder[0],
+    );
+    // An en user reads it in English: the whole notice is a key of the text catalog.
+    const notice = small.slackApi.postSystemMessage.mock.calls[0][1] as string;
+    const enText = JSON.parse(
+      readFileSync(join(__dirname, '..', '..', 'packages', 'common', 'src', 'i18n-catalog', 'en-text.json'), 'utf8'),
+    );
+    expect(enText[notice]).toMatch(/ordinary task, not an epic/);
+
+    for (const workSize of ['large', undefined]) {
+      const big = harness({ ownerId: 'U1', systemPrompt: 'cached' }, true, {}, { workSize });
+      await big.handler.handleMessage(
+        { user: 'U1', channel: 'C1', ts: '9.9', text: '결제 시스템 전부', epicOverride: true } as any,
+        say(),
+      );
+      expect(big.registry.makeEpic).toHaveBeenCalledWith('C1:9.9');
+      expect(big.slackApi.postSystemMessage).not.toHaveBeenCalled();
+    }
+
+    // A small instruction without the switch: nothing to say, nothing made.
+    const plain = harness({ ownerId: 'U1', systemPrompt: 'cached' }, true, {}, { workSize: 'small' });
+    await plain.handler.handleMessage({ user: 'U1', channel: 'C1', ts: '9.9', text: 'hi' } as any, say());
+    expect(plain.registry.makeEpic).not.toHaveBeenCalled();
+    expect(plain.slackApi.postSystemMessage).not.toHaveBeenCalled();
+
+    // An epic's child is bound whatever its size.
+    const kid = harness({ ownerId: 'U1', systemPrompt: 'cached' }, true, {}, { workSize: 'small' });
+    await kid.handler.handleMessage(
+      { user: 'U1', channel: 'C1', ts: '9.9', thread_ts: '9.9', text: 'go', epicChild: child } as any,
+      say(),
+    );
+    expect(kid.registry.bindEpicChild).toHaveBeenCalledTimes(1);
   });
 
   it('T4 — a later message in the thread never re-binds or re-makes', async () => {

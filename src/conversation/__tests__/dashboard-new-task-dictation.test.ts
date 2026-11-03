@@ -182,7 +182,7 @@ function page(
       'ntDictationUsable',
       'ntDictateStartWhisper',
       'ntDictationWide',
-      'ntDictationNarrow',
+      'ntSendNarrow',
       'ntDictationTool',
       'ntDictationText',
       'ntJoinSpoken',
@@ -379,7 +379,7 @@ describe('SSOT_3 — 받아쓰기 is added beside the voice note, which stays ("
     expect(tool(false)).toEqual({ id: 'dictate', label: '받아쓰기', icon: 'edit', pressed: false });
     expect(tool(undefined)).toEqual({ id: 'dictate', label: '받아쓰기', icon: 'edit', pressed: false });
   });
-  it('on a phone the counter gives way to the tool row (the limit is checked on send); on a wide screen it stays', () => {
+  it('on a phone the counter gives way to the tool row and the 작업 계획 switch (the limit is checked on send); on a wide screen it stays', () => {
     const lim = { maxPromptChars: 12000, maxFiles: 10, maxFileBytes: 1, maxTotalBytes: 2 };
     const data = (wide: boolean, engine: unknown) =>
       loadWith<{ ntComposerData(): Record<string, any> }>(
@@ -392,7 +392,7 @@ describe('SSOT_3 — 받아쓰기 is added beside the voice note, which stays ("
           'ntDictateStartWhisper',
           'ntDictationTool',
           'ntDictationWide',
-          'ntDictationNarrow',
+          'ntSendNarrow',
           'ntDictating',
         ],
         {
@@ -413,13 +413,16 @@ describe('SSOT_3 — 받아쓰기 is added beside the voice note, which stays ("
       ).ntComposerData();
     expect(data(false, recClass(null))).not.toHaveProperty('maxLength');
     expect(data(true, recClass(null)).maxLength).toBe(12000);
-    expect(data(false, undefined).maxLength).toBe(12000); // no 받아쓰기, room as before
+    // No 받아쓰기: one tool fewer, but the switch beside the send takes that room (measured: the counter covered the
+    // voice note up to 412px) — a phone has no counter either way.
+    expect(data(false, undefined)).not.toHaveProperty('maxLength');
+    expect(data(true, undefined).maxLength).toBe(12000);
     expect(clientFn('submitNewTask')).toContain('ntTooLong(_ntState.prompt)');
     const tooLong = new Function('_ntCtx', `${clientFn('ntTooLong')}; return ntTooLong;`)({ limits: lim });
     expect(tooLong('가'.repeat(12000))).toBe('');
     expect(tooLong('가'.repeat(12001))).toContain('12,000');
   });
-  it('under 360px (an older or zoomed-in phone) the send keeps only its arrow, so it does not cover 받아쓰기', () => {
+  it('under 375px (an SE, a mini, a zoomed-in phone) the send keeps only its arrow — the 작업 계획 switch beside it takes the room — so it does not cover 받아쓰기', () => {
     const at = (width: number, engine: unknown) =>
       loadWith<{ ntComposerData(): Record<string, any> }>(
         [
@@ -431,7 +434,7 @@ describe('SSOT_3 — 받아쓰기 is added beside the voice note, which stays ("
           'ntDictateStartWhisper',
           'ntDictationTool',
           'ntDictationWide',
-          'ntDictationNarrow',
+          'ntSendNarrow',
           'ntDictating',
         ],
         {
@@ -455,10 +458,31 @@ describe('SSOT_3 — 받아쓰기 is added beside the voice note, which stays ("
         },
       ).ntComposerData();
     expect(at(320, recClass(null)).submitLabel).toBe('');
-    expect(at(359, recClass(null)).submitLabel).toBe('');
-    expect(at(360, recClass(null)).submitLabel).toBe('작업 시작');
+    expect(at(374, recClass(null)).submitLabel).toBe('');
+    expect(at(374, recClass(null)).mode.submitLabel).toBe(''); // night or day, the arrow alone
+    expect(at(375, recClass(null)).submitLabel).toBe('작업 시작');
+    expect(at(375, recClass(null)).mode.submitLabel).toBe('계획 시작');
     expect(at(412, recClass(null)).submitLabel).toBe('작업 시작');
-    expect(at(320, undefined).submitLabel).toBe('작업 시작'); // no 받아쓰기: room as before
+    // No 받아쓰기: one tool fewer, but the switch takes that room — the same width rule.
+    expect(at(320, undefined).submitLabel).toBe('');
+    expect(at(375, undefined).submitLabel).toBe('작업 시작');
+  });
+  it('an English page needs 390px for the worded send (Start plan is wider than 계획 시작 — measured 11px over at 375)', () => {
+    const narrow = (width: number, lang: 'en' | 'ko' | undefined) =>
+      new Function('window', 'pageDisplayLang', `${clientFn('ntSendNarrow')}; return ntSendNarrow();`)(
+        {
+          matchMedia: (q: string) => {
+            const max = /max-width: (\d+)px/.exec(q);
+            return { matches: max ? width <= Number(max[1]) : false };
+          },
+        },
+        lang === undefined ? undefined : () => lang,
+      );
+    expect(narrow(374, 'ko')).toBe(true);
+    expect(narrow(375, 'ko')).toBe(false);
+    expect(narrow(389, 'en')).toBe(true);
+    expect(narrow(390, 'en')).toBe(false);
+    expect(narrow(380, undefined)).toBe(false); // no page language helper: Korean
   });
   it('a dashboard task (no attachments, so no voice note) still gets 받아쓰기: it is text', () => {
     const { api } = page({ engine: recClass(null), destination: 'task' });
@@ -1566,9 +1590,9 @@ describe('SSOT_4 — with speech recognition on this device the new task opens l
     api.ntDictateAuto();
     expect(FakeRec.made).toHaveLength(1);
   });
-  it('the dialog repaints both composers when the width crosses 360px or 640px (rotation, a Fold opening)', () => {
+  it('the dialog repaints both composers when the width crosses 375px, 390px or 640px (rotation, a Fold opening)', () => {
     const init = clientFn('ntInit');
-    expect(init).toContain("['(max-width: 359px)', '(min-width: 640px)'].forEach(");
+    expect(init).toContain("['(max-width: 374px)', '(max-width: 389px)', '(min-width: 640px)'].forEach(");
     expect(init).toMatch(
       /addEventListener\('change', function \(\) \{\n\s+paintNtComposer\(\);\n\s+pcPaintComposer\(\);/,
     );

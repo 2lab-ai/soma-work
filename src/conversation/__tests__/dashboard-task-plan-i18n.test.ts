@@ -67,10 +67,17 @@ describe('plan mode — every Korean string has its English (#773)', () => {
     expect(untranslated(script)).toEqual([]);
   });
 
-  it('the markup: the 작업 계획 switch and the detail card plan regions', () => {
-    const markup = ['nt-plan-wrap', 'panel-plan', 'panel-plan-bar'].map(element).join('\n');
+  it('the markup: the detail card plan regions', () => {
+    const markup = ['panel-plan', 'panel-plan-bar'].map(element).join('\n');
     expect(markup).toContain('작업 계획');
     expect(untranslated(markup)).toEqual([]);
+  });
+
+  it('the composer’s 작업 계획 switch (ui 0.26.0 data.mode): its name, its word and 계획 시작', () => {
+    const script = `<script>\n${['ntComposerData', 'ntOnPlanMode'].map(clientFn).join('\n')}\n</script>`;
+    expect(script).toContain("submitLabel: '계획 시작'");
+    expect(untranslated(script)).toEqual([]);
+    expect(pageText('계획 시작')).toBe('Start plan');
   });
 
   it('the face asks in English: Task plan vN — start it?', () => {

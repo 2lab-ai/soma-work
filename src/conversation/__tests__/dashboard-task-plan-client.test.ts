@@ -2,7 +2,8 @@
  * Plan mode on the dashboard (SSOT 2026-11-02, T1 · T5 · T6 · T7) — the shipped client code cut out of
  * renderDashboardPage()'s template, with fakes — no DOM.
  *
- *   U1 (T1) the composer's 작업 계획 switch: on by default, sent as `plan` on a dashboard task only.
+ *   U1 (T1) the composer's 작업 계획 switch: on by default, sent as `plan`; since ui 0.26.0 it is the composer's
+ *      own day / night switch beside the send button, which reads 계획 시작 while it is on.
  *   U2 (T6) the task card (open body): the plan's state and summary, 시작 · 취소 · 직접 입력 as buttons.
  *   U3 (T6) the face says a plan waits; the card asks.
  *   U4 (T6) the detail card's top (status bar): 시작 (primary) · 취소 first while a plan waits.
@@ -87,14 +88,52 @@ describe('U1 — the composer’s 작업 계획 switch (T1)', () => {
       plan: false,
     });
   });
-  it('sits in the destination row (shown for every destination since #853), checked from the state', () => {
+  it('is the composer’s own day / night switch beside 작업 시작 (ui 0.26.0 data.mode), not a row above it', () => {
+    // The destination row no longer holds it; nothing else draws a second 작업 계획 switch.
     const row = PAGE.slice(PAGE.indexOf('id="nt-dest"'), PAGE.indexOf('</div>', PAGE.indexOf('id="nt-dest"')));
-    expect(row).toMatch(/<label class="ui-switch nt-plan-switch" id="nt-plan-wrap"[^>]*hidden/);
-    expect(row).toContain('<input type="checkbox" role="switch" id="nt-plan" onchange="ntToggle(\'plan\')"');
-    expect(row).toContain('작업 계획');
-    const render = clientFn('ntRender');
-    expect(render).toContain('planWrap.hidden = false;');
-    expect(render).toContain("ntEl('nt-plan').checked = _ntState.plan !== false;");
+    expect(row).not.toContain('nt-plan');
+    expect(PAGE).not.toContain('id="nt-plan-wrap"');
+    expect(PAGE).not.toContain('id="nt-plan"');
+    expect(clientFn('ntRender')).not.toContain('planWrap');
+    // On: the send button reads 계획 시작 (night); off: 작업 시작 (day).
+    const data = (state: unknown) =>
+      load<{ ntComposerData(): any }>(['ntComposerData'], {
+        _ntState: state,
+        _ntCtx: null,
+        _ntValue: '',
+        ntReadDraft: () => null,
+        NT_NO_FILES: '',
+        ntDictationUsable: () => false,
+        ntSendNarrow: () => false,
+        window: {},
+      }).ntComposerData();
+    const on = data({ plan: true });
+    expect(on.submitLabel).toBe('작업 시작');
+    expect(on.mode).toEqual({
+      id: 'plan',
+      label:
+        '계획 먼저 — 전체 작업 계획(SSOT · 의도 → 단계 → 작업 → 디테일)을 세워 보여 주고, 시작을 눌러야 작업합니다',
+      text: '계획',
+      on: true,
+      submitLabel: '계획 시작',
+    });
+    expect(data({ plan: false }).mode.on).toBe(false);
+    expect(data({}).mode.on).toBe(true); // on unless turned off (#853)
+  });
+  it('a press on the switch (ui-mode) is the plan state; the page repaints so autogoal / autoz lock with it', () => {
+    const ntRender = vi.fn();
+    const st: any = { plan: true };
+    const h = load<{ ntOnPlanMode(e: any): void }>(['ntOnPlanMode'], { ntRender, navigator: {}, _ntState: st });
+    h.ntOnPlanMode({ detail: { id: 'plan', on: false } });
+    expect(st.plan).toBe(false);
+    expect(ntRender).toHaveBeenCalledTimes(1);
+    h.ntOnPlanMode({ detail: { id: 'plan', on: true } });
+    expect(st.plan).toBe(true);
+    h.ntOnPlanMode({ detail: { id: 'other', on: false } });
+    expect(st.plan).toBe(true);
+    expect(ntRender).toHaveBeenCalledTimes(2);
+    // Wired on the dialog's composer.
+    expect(TEMPLATE).toContain("composer.addEventListener('ui-mode', ntOnPlanMode);");
   });
 });
 

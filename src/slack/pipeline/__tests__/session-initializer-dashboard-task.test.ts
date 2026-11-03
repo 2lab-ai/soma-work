@@ -36,9 +36,10 @@ vi.mock('../../../channel-registry', () => ({
   getAllChannels: vi.fn().mockReturnValue([]),
 }));
 
+const dispatchMock = vi.hoisted(() => ({ result: { workflow: 'default', title: 'Test' } as Record<string, unknown> }));
 vi.mock('../../../dispatch-service', () => ({
   getDispatchService: vi.fn().mockReturnValue({
-    dispatch: vi.fn().mockResolvedValue({ workflow: 'default', title: 'Test' }),
+    dispatch: vi.fn(async () => dispatchMock.result),
     getModel: vi.fn().mockReturnValue('test-model'),
     isReady: vi.fn().mockReturnValue(true),
   }),
@@ -238,5 +239,36 @@ describe('dashboard task session (per-task overrides)', () => {
     await sessionInitializer.initialize(dashboardTaskEvent() as any, '/test/dir');
     const rootPosts = mockSlackApi.postMessage.mock.calls.filter((call: any[]) => !call[2]?.threadTs);
     expect(rootPosts).toEqual([]);
+  });
+});
+
+describe('the dispatcher’s work size reaches the caller (the epic switch reads it)', () => {
+  beforeEach(() => {
+    createdSession.threadTs = ROOT_TS;
+  });
+  afterEach(() => {
+    dispatchMock.result = { workflow: 'default', title: 'Test' };
+  });
+
+  it('a new session that ran the dispatch returns its size; none when the model gave none', async () => {
+    dispatchMock.result = { workflow: 'default', title: '오타', size: 'small' };
+    const small = await sessionInitializer.initialize(dashboardTaskEvent({ epicOverride: true }) as any, '/test/dir');
+    expect(small.halted).toBeFalsy();
+    expect(small.workSize).toBe('small');
+
+    dispatchMock.result = { workflow: 'default', title: '전부', size: 'large' };
+    const large = await sessionInitializer.initialize(dashboardTaskEvent({ epicOverride: true }) as any, '/test/dir');
+    expect(large.workSize).toBe('large');
+
+    dispatchMock.result = { workflow: 'default', title: 'Test' };
+    const none = await sessionInitializer.initialize(dashboardTaskEvent({ epicOverride: true }) as any, '/test/dir');
+    expect('workSize' in none).toBe(false);
+  });
+
+  it('no dispatch this call (the session is past it): no size', async () => {
+    mockClaudeHandler.needsDispatch.mockReturnValue(false);
+    dispatchMock.result = { workflow: 'default', title: '오타', size: 'small' };
+    const r = await sessionInitializer.initialize(dashboardTaskEvent() as any, '/test/dir');
+    expect('workSize' in r).toBe(false);
   });
 });

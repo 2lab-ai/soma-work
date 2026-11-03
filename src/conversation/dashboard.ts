@@ -6541,7 +6541,7 @@ ${pageTokenAliases()}
           <button type="button" class="ui-chip" id="nt-dest-slack" aria-pressed="true" onclick="ntSetDestination('slack')"><span>Slack 채널</span></button>
           <button type="button" class="ui-chip" id="nt-dest-task" aria-pressed="false" title="슬랙 스레드 없이 대시보드에서만 진행하는 작업" onclick="ntSetDestination('task')"><span>대시보드 작업</span></button>
           <button type="button" class="ui-chip" id="nt-kind-epic" aria-pressed="false" hidden title="계획을 쓰고 자식 작업을 만들어 끝까지 모는 에픽" onclick="ntToggleEpic()"><span>에픽</span></button>
-          <label class="ui-switch nt-plan-switch" id="nt-plan-wrap" title="켜면 먼저 전체 작업 계획(SSOT · 의도 → 단계 → 작업 → 디테일)을 세워 보여 주고, 시작을 눌러야 작업합니다" hidden><input type="checkbox" role="switch" id="nt-plan" onchange="ntToggle('plan')"><span>작업 계획</span></label>
+          <!-- 작업 계획 is the composer's own day / night switch beside 작업 시작 (ui 0.26.0 data.mode — ntComposerData). -->
         </div>
         <div class="nt-config" role="group" aria-label="작업 설정">
           <!-- The task's model and effort: @2lab.ai/ui <ui-model-picker> (the session menu's element) — one trigger, one menu
@@ -19876,8 +19876,8 @@ function ntRender() {
   // #600 ⑥ — where the task goes: offered when the context lists task folders.
   var isTask = _ntState.destination === 'task';
   ntPaintPicker();
-  // The row also holds the plan switch and the epic chip (#854): it shows; only the destination chips
-  // wait for task folders, which are no longer offered (one kind of work session).
+  // The row also holds the epic chip (#854): it shows; only the destination chips wait for task folders,
+  // which are no longer offered (one kind of work session).
   var dest = ntEl('nt-dest');
   if (dest) dest.hidden = false;
   var dSlack = ntEl('nt-dest-slack');
@@ -19897,12 +19897,6 @@ function ntRender() {
   if (epicChip) {
     epicChip.hidden = !_ntCtx.epicTasks;
     epicChip.setAttribute('aria-pressed', _ntCtx.epicTasks && _ntState.kind === 'epic' ? 'true' : 'false');
-  }
-  // Plan mode — the 작업 계획 switch, for every new task (on unless turned off; #853).
-  var planWrap = ntEl('nt-plan-wrap');
-  if (planWrap) {
-    planWrap.hidden = false;
-    ntEl('nt-plan').checked = _ntState.plan !== false;
   }
   var folderSel = ntEl('nt-folder');
   if (folderSel && isTask) {
@@ -19973,6 +19967,15 @@ function ntComposerData() {
     value: _ntValue,
     image: false,
     submitLabel: '작업 시작',
+    // Plan mode (#853) — the 작업 계획 switch is the composer's own (ui 0.26.0 data.mode), right beside the send:
+    // night (on, the default) plans first and the send reads 계획 시작; day starts the work at once (ntOnPlanMode).
+    mode: {
+      id: 'plan',
+      label: '계획 먼저 — 전체 작업 계획(SSOT · 의도 → 단계 → 작업 → 디테일)을 세워 보여 주고, 시작을 눌러야 작업합니다',
+      text: '계획',
+      on: !_ntState || _ntState.plan !== false,
+      submitLabel: '계획 시작',
+    },
     // No busy state: a launch leaves the dialog at once (SSOT 2026-11-02 T1) — the composer is the next task's.
     minRows: 6,
     maxRows: 14,
@@ -19993,14 +19996,18 @@ function ntComposerData() {
   // no other engine chosen: none.
   if (ntDictationUsable(typeof window !== 'undefined' ? window : null)) {
     d.tools = [ntDictationTool(ntDictating('nt'))];
-    // A screen under 360px wide (an older phone, or one with a large display zoom): four tools and the worded
-    // 작업 시작 overlap — the send keeps its arrow (named by the composer's own 보내기).
-    if (ntDictationNarrow()) d.submitLabel = '';
+  }
+  // A screen under 375px wide (an SE, a mini, a large display zoom): the tools, the 작업 계획 switch and the worded
+  // send overlap — the send keeps its arrow (named by the composer's own 보내기), day or night.
+  if (ntSendNarrow()) {
+    d.submitLabel = '';
+    d.mode.submitLabel = '';
   }
   var lim = _ntCtx && _ntCtx.limits;
   if (lim) {
-    // A phone's tool row with 받아쓰기 has no room for the counter: it gives way, and the limit is checked on send.
-    if (!d.tools || ntDictationWide()) d.maxLength = lim.maxPromptChars;
+    // A phone's row has no room for the counter beside the tools and the 작업 계획 switch: it gives way, and the
+    // limit is checked on send.
+    if (ntDictationWide()) d.maxLength = lim.maxPromptChars;
     d.maxFiles = lim.maxFiles;
     d.maxFileSize = lim.maxFileBytes;
     d.maxTotalBytes = lim.maxTotalBytes;
@@ -20076,10 +20083,12 @@ function ntDictationWide() {
   return !!(w && w.matchMedia && w.matchMedia('(min-width: 640px)').matches);
 }
 
-// A phone narrower than 360px: no room for the worded send beside four tools.
-function ntDictationNarrow() {
+// A phone too narrow for the worded send beside the tools and the 작업 계획 switch: under 375px, or 390px on an
+// English page (Start plan is wider than 계획 시작 — measured).
+function ntSendNarrow() {
   var w = typeof window !== 'undefined' ? window : null;
-  return !!(w && w.matchMedia && w.matchMedia('(max-width: 359px)').matches);
+  var en = typeof pageDisplayLang === 'function' && pageDisplayLang() === 'en';
+  return !!(w && w.matchMedia && w.matchMedia(en ? '(max-width: 389px)' : '(max-width: 374px)').matches);
 }
 
 // Is a dictation listening in this composer ('nt' — the new task, 'pc' — the session panel)?
@@ -20941,12 +20950,23 @@ function ntToggle(which) {
   if (!_ntState) return;
   var sw = ntEl('nt-' + which);
   _ntState[which] = !!(sw && sw.checked);
-  // #853 — the plan switch locks or frees autogoal / autoz.
-  if (which === 'plan') ntRender();
   if (navigator.vibrate) {
     try {
       navigator.vibrate(8);
     } catch (e) {}
+  }
+}
+
+// The composer's 작업 계획 switch (ui-mode, ui 0.26.0): its press is the plan state. The repaint answers with a new
+// data.mode (the element's own flip already showed it) and locks or frees autogoal / autoz (#853).
+function ntOnPlanMode(e) {
+  if (!_ntState || !e || !e.detail || e.detail.id !== 'plan') return;
+  _ntState.plan = e.detail.on === true;
+  ntRender();
+  if (navigator.vibrate) {
+    try {
+      navigator.vibrate(8);
+    } catch (err) {}
   }
 }
 
@@ -21592,9 +21612,9 @@ function ntOpenArrivals() {
 function ntInit() {
   var dlg = ntEl('nt-dialog');
   if (!dlg) return;
-  // The tool's word (640px) and the send's word (360px) follow the width: a rotation, a Fold opening repaints both
-  // composers.
-  ['(max-width: 359px)', '(min-width: 640px)'].forEach(function (q) {
+  // The tool's word (640px) and the send's word (375px; 390px in English) follow the width: a rotation, a Fold opening
+  // repaints both composers.
+  ['(max-width: 374px)', '(max-width: 389px)', '(min-width: 640px)'].forEach(function (q) {
     var mq = window.matchMedia && window.matchMedia(q);
     if (mq && mq.addEventListener)
       mq.addEventListener('change', function () {
@@ -21630,6 +21650,8 @@ function ntInit() {
   });
   // 받아쓰기 (live dictation): its press starts and stops it; typing, sending and closing stop it hard.
   composer.addEventListener('ui-tool', ntOnComposerTool);
+  // 작업 계획 — the day / night switch beside 작업 시작.
+  composer.addEventListener('ui-mode', ntOnPlanMode);
   // A file the task composer refused (no type matches): why, not only "unsupported type".
   composer.addEventListener('ui-reject', ntOnReject);
   // A file added or removed while a dashboard task is chosen: the reason it cannot start, or none (#640 R2).
