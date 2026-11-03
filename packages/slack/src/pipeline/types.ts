@@ -256,6 +256,12 @@ export interface SessionInitResult {
   abortController: AbortController;
   /** Set to true when channel routing advisory was shown. Caller should halt. */
   halted?: boolean;
+  /**
+   * The dispatcher's work size estimate for this new session's first input (`small` = one task or
+   * less, about 10 minutes). Present only when this call ran the dispatch and the model gave one.
+   * The dashboard's epic switch makes an epic only when it is not `small`.
+   */
+  workSize?: 'small' | 'large';
 }
 
 export interface StreamExecuteResult {

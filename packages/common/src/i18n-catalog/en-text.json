@@ -646,6 +646,7 @@
   "⚠️ 어드민에게 삭제 요청을 보내지 못했습니다.": "⚠️ Couldn't send the delete request to an admin.",
   "⚠️ 어드민이 설정되어 있지 않아 삭제 요청을 보낼 수 없습니다.": "⚠️ No admin is configured, so the delete request can't be sent.",
   "⚠️ 에픽으로 만들지 못했습니다 — 일반 작업으로 진행합니다.": "⚠️ This could not be made an epic — it goes on as an ordinary task.",
+  "🧩 작업량이 태스크 하나 이하(약 10분)로 보여 에픽 대신 일반 작업으로 진행합니다.": "🧩 This looks like one task or less (about 10 minutes), so it goes on as an ordinary task, not an epic.",
   "⚠️ 에픽의 자식 작업으로 묶지 못해 이 지시를 실행하지 않았습니다. 에픽이 다시 시도합니다.": "⚠️ This could not be bound as the epic’s child task, so the instruction did not run. The epic will try again.",
   "⚠️ 요청한 사람만 선택할 수 있습니다.": "⚠️ Only the person who made the request can choose.",
   "⚠️ 요청한 사용자만 이 버튼을 사용할 수 있습니다.": "⚠️ Only the user who made the request can use this button.",
