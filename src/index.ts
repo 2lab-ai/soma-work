@@ -61,7 +61,13 @@ import { setQueryEnvAdditional } from './auth/query-env-builder';
 import { getChannelDescription } from './channel-description-cache';
 import { getAllChannels, getChannel, scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
-import { config, getIncidentTrustedSource, runPreflightChecks, validateConfig } from './config';
+import {
+  config,
+  getIncidentTrustedSource,
+  getLinkLeakReportConfig,
+  runPreflightChecks,
+  validateConfig,
+} from './config';
 import { loadConfig } from './config-loader';
 import {
   broadcastArtifactUpdate,
@@ -140,8 +146,11 @@ import { fetchGitHubReceiptObject } from './link-metadata-fetcher';
 import { Logger } from './logger';
 import { mcpCallTracker } from './mcp-call-tracker';
 import { McpManager } from './mcp-manager';
-import { startReportScheduler, stopReportScheduler } from './metrics';
+import { startLinkLeakReport, startReportScheduler, stopLinkLeakReport, stopReportScheduler } from './metrics';
+import { MetricsEventStore } from './metrics/event-store';
+import { creatorDays, creatorsOf, fetchBotItems } from './metrics/link-leak-report';
 import { calculateTokenCost, hasModelPricing } from './metrics/model-registry';
+import { ReportPublisher } from './metrics/report-publisher';
 import { clampEffortToModel } from './model-catalog';
 import { bootModelCatalog } from './model-catalog-boot';
 import {
@@ -1930,6 +1939,57 @@ async function start() {
       };
       startReportScheduler(slackApiForReports);
       timing('Report scheduler initialized');
+      // #835 (epic #831) — the daily task-card link leak report: bot PRs and issues against every card's links.
+      const leakConfig = getLinkLeakReportConfig();
+      if (isGitHubAppConfigured()) {
+        const leakChannel = leakConfig.channelId;
+        const leakPublisher = new ReportPublisher(slackApiForReports);
+        startLinkLeakReport(
+          {
+            hour: leakConfig.hour,
+            timezone: leakConfig.timezone,
+            statePath: path.join(DATA_DIR, 'link-leak-report.json'),
+            collectItems: async (sinceMs) => {
+              const auth = getGitHubAppAuth();
+              if (!auth) return undefined;
+              const botLogin = leakConfig.botLogin ?? (await auth.getAppSlug());
+              if (!botLogin) {
+                logger.warn(
+                  'Link leak report: the App bot login is unknown (GET /app failed; SOMA_LINK_LEAK_BOT_LOGIN unset)',
+                );
+                return undefined;
+              }
+              const token = await auth.getInstallationToken().catch((error) => {
+                logger.warn('Link leak report: no installation token', { error: (error as Error)?.message });
+                return undefined;
+              });
+              if (!token) return undefined;
+              return fetchBotItems({ token, botLogin, sinceIso: new Date(sinceMs).toISOString() });
+            },
+            collectCards: () => {
+              const live = [...claudeHandler.getSessionRegistry().getAllSessions()].map(([sessionKey, s]) => ({
+                sessionKey,
+                title: s.title,
+                links: s.links,
+                linkHistory: s.linkHistory,
+              }));
+              // Every archive snapshot of the last 3 days: a session archived twice keeps the links of both.
+              const archived = getArchiveStore()
+                .listRecent(3 * 24 * 60 * 60 * 1000)
+                .map((a) => ({ sessionKey: a.sessionKey, links: a.links, linkHistory: a.linkHistory }));
+              return [...live, ...archived];
+            },
+            collectCreators: async (sinceMs) => {
+              const [from, to] = creatorDays(sinceMs, Date.now());
+              return creatorsOf(await new MetricsEventStore().readRange(from, to), sinceMs);
+            },
+            publish: async (text, blocks) =>
+              !!leakChannel && !!(await leakPublisher.publish(leakChannel, blocks, text)),
+          },
+          !!leakChannel,
+        );
+        timing('Link leak report initialized');
+      }
     } catch (error) {
       logger.warn('Failed to start report scheduler (non-critical)', error);
     }
@@ -2254,6 +2314,7 @@ async function start() {
 
       try {
         stopReportScheduler();
+        stopLinkLeakReport();
 
         // Stop cron scheduler
         if (cronScheduler) {

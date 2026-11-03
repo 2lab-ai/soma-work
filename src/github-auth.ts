@@ -73,6 +73,29 @@ class GitHubAppAuth {
     return this.apiClient.listInstallations();
   }
 
+  private appSlug?: string;
+
+  /** The App's slug (`<slug>[bot]` is its login), from `GET /app` — cached. Undefined when GitHub cannot be read. */
+  async getAppSlug(): Promise<string | undefined> {
+    if (this.appSlug) return this.appSlug;
+    try {
+      const res = await fetch('https://api.github.com/app', {
+        headers: { Authorization: `Bearer ${this.apiClient.getAppJWT()}`, Accept: 'application/vnd.github+json' },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) {
+        logger.warn('GET /app was refused; the App slug is unknown', { status: res.status });
+        return undefined;
+      }
+      const body = (await res.json()) as { slug?: unknown };
+      if (typeof body.slug === 'string' && /^[\w-]+$/.test(body.slug)) this.appSlug = body.slug;
+      return this.appSlug;
+    } catch (error) {
+      logger.warn('Failed to read the GitHub App slug', { error: (error as Error)?.message });
+      return undefined;
+    }
+  }
+
   /**
    * Start automatic token refresh
    */
