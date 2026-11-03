@@ -212,6 +212,7 @@ import { createEpicWaker } from './task-turn/epic-wake';
 import { setPlanHost } from './task-turn/plan-server';
 import { composeTaskApprovalListeners } from './task-turn/task-approver';
 import { createDashboardCloseHandler } from './task-turn/task-close';
+import { createTaskGoalLoop, type TaskGoalLoop } from './task-turn/task-goal-loop';
 import { createTaskLauncher } from './task-turn/task-launcher';
 import {
   createTaskNoticeDeliverer,
@@ -1310,6 +1311,23 @@ async function start() {
       appendSessionWorkLog,
       createConversation: (s) => createConversationDurable('', '', s.ownerId, s.ownerName ?? '', s.title),
     });
+    // SSOT 2026-11-03 — the goal loop on a dashboard task: the chain's end wakes it (with the
+    // chain's last answer as evidence), its next turn is a host start here, and a person's
+    // instruction resets its count. The loop itself (GoalLoopController) is built further down.
+    let settleTaskGoal: ((key: string) => void) | undefined;
+    const taskGoalLoop: TaskGoalLoop = createTaskGoalLoop({
+      getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+      start: (request) => taskController.start(request),
+      readLastFinal: async (session) => {
+        const turnId = session.lastTurnOutcome?.turnId;
+        if (!session.conversationId || !turnId) return undefined;
+        return (await readTurnFinal(readWorkLog, session.conversationId, turnId))?.text;
+      },
+      saveSessions: () => claudeHandler.saveSessions(),
+      isRunning: (key) => taskController.isRunning(key),
+      settle: (key) => settleTaskGoal?.(key),
+      logger: new Logger('TaskGoalLoop'),
+    });
     const taskController = createTaskTurnController({
       runner: taskTurnExecutor,
       getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
@@ -1331,9 +1349,16 @@ async function start() {
       epicCostLimitUsd: (ownerId) => userSettingsStore.getUserEpicCostLimitUsd(ownerId),
       // E4 ⑥ — once a chain that started has ended, an epic left with pending events may wake
       // (grok #702 R1); one that never started is the waker's own retry to make (fable #702 R2).
-      onChainEnd: (key, { started }) => {
-        if (started) epicWaker.wake(key);
+      onChainEnd: (key, info) => {
+        if (info.started) epicWaker.wake(key);
+        void taskGoalLoop
+          .onChainEnd(key, info)
+          .catch((error) =>
+            logger.warn('Task goal loop trigger failed', { sessionKey: key, error: (error as Error)?.message }),
+          );
       },
+      // A person's word to the task resets its goal's continuation count (as a Slack message does).
+      onUserInstruction: (key, session) => taskGoalLoop.onUserInstruction(key, session),
       // A task's follow-up queue (2026-11-03): saved with the task, pushed to the open panels.
       onFollowupsChanged: (key) => {
         claudeHandler.saveSessions();
@@ -2126,7 +2151,11 @@ async function start() {
         },
         dispatcher: ({ systemPrompt, userPrompt, model, effort, abortController, cwd }) =>
           claudeHandler.dispatchOneShot(userPrompt, systemPrompt, model, abortController, undefined, cwd, effort),
-        injectContinuation: goalMessageInjector,
+        // A dashboard task has no thread: its next goal turn starts on the task controller.
+        injectContinuation: (event, target) =>
+          target.session.slackless === true
+            ? taskGoalLoop.injectContinuation(event, target)
+            : goalMessageInjector(event),
         postNotice: postGoalNotice,
         postOwnerDm: postGoalOwnerDm,
         // Same failure twice → ask the owner (thread form + dashboard card).
@@ -2147,6 +2176,8 @@ async function start() {
       slackHandler.setGoalTurnSettledHandler((sessionKey: string, opts?: { cause?: 'turn' | 'kick' }) => {
         goalLoopController.onTurnSettled(sessionKey, opts);
       });
+      // A dashboard task's chain end (taskGoalLoop.onChainEnd, above) settles the same loop.
+      settleTaskGoal = (sessionKey) => goalLoopController.onTurnSettled(sessionKey, { cause: 'turn' });
       // S1/S3: let goal action handlers (Delete-advance, owner-DM Continue)
       // kick the loop without holding a direct controller reference.
       // A kick: no turn ran, so an unchanged summary is not re-judged.

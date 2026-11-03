@@ -136,9 +136,20 @@ export interface GoalLoopControllerDeps {
   requestCoordinator: GoalLoopRequestCoordinator;
   /** Runs the eval dispatch (production: `ClaudeHandler.dispatchOneShot`). */
   dispatcher: GoalEvalDispatcher;
-  /** Injects a synthetic continuation turn (production: handleMessage path). */
-  injectContinuation: (event: SyntheticMessageEvent) => Promise<void>;
-  /** Posts an in-thread system notice. */
+  /**
+   * Injects a synthetic continuation turn (production: the Slack handleMessage
+   * path, or — for a Slack-less dashboard task, which has no thread — the task
+   * controller's host start). `target` names the session the event is for: a
+   * task's event carries no channel to find it by.
+   */
+  injectContinuation: (
+    event: SyntheticMessageEvent,
+    target: { sessionKey: string; session: ConversationSession },
+  ) => Promise<void>;
+  /**
+   * Posts an in-thread system notice. Never called for a Slack-less dashboard
+   * task: its notices go to its work log only (the dashboard shows them).
+   */
   postNotice: (channel: string, threadTs: string | undefined, text: string) => Promise<unknown>;
   /**
    * DMs the goal owner a Block Kit message (S3). Used when the
@@ -672,7 +683,9 @@ export class GoalLoopController {
         error: err instanceof Error ? err.message : String(err),
       });
     }
-    if (!this.deps.askStallQuestion) return;
+    // A dashboard task has no thread form: the notice above (in its work log) lists the
+    // next instructions, and any instruction from the owner continues the goal.
+    if (!this.deps.askStallQuestion || session.slackless === true) return;
     try {
       await this.deps.askStallQuestion({
         sessionKey,
@@ -698,9 +711,29 @@ export class GoalLoopController {
    * Recorded in the conversation work log at every level.
    */
   private postStatusNotice(session: ConversationSession, text: string): Promise<void> {
-    return announceSessionNotice(session, OutputFlag.STATUS_MESSAGE, text, () =>
-      this.deps.postNotice(session.channelId, session.threadTs, text),
-    );
+    return announceSessionNotice(session, OutputFlag.STATUS_MESSAGE, text, () => this.threadPost(session, text));
+  }
+
+  /**
+   * The thread half of a notice. A Slack-less dashboard task has no thread:
+   * nothing is posted — its callers already recorded the notice in the work
+   * log, which is where the dashboard shows it.
+   */
+  private threadPost(session: ConversationSession, text: string): Promise<unknown> {
+    if (session.slackless === true) return Promise.resolve(undefined);
+    return this.deps.postNotice(session.channelId, session.threadTs, text);
+  }
+
+  /**
+   * A notice no other path records (eval failure / retry, injection failure):
+   * a Slack session's goes to its thread as before; a task's to its work log.
+   */
+  private postLooseNotice(session: ConversationSession, text: string): Promise<unknown> {
+    if (session.slackless === true) {
+      recordSessionNotice(session, text);
+      return Promise.resolve(undefined);
+    }
+    return this.deps.postNotice(session.channelId, session.threadTs, text);
   }
 
   /**
@@ -710,7 +743,7 @@ export class GoalLoopController {
    */
   private async postResultNotice(session: ConversationSession, text: string): Promise<void> {
     recordSessionNotice(session, text);
-    await this.deps.postNotice(session.channelId, session.threadTs, text);
+    await this.threadPost(session, text);
   }
 
   /**
@@ -851,14 +884,11 @@ export class GoalLoopController {
           maxRetries: GOAL_EVAL_DISPATCH_MAX_RETRIES,
           delayMs,
         });
-        void this.deps
-          .postNotice(
-            session.channelId,
-            session.threadTs,
-            `⏳ Goal completion evaluation hit a transient API error — retrying in ${Math.round(delayMs / 1000)}s ` +
-              `(attempt ${live.evalDispatchRetryCount}/${GOAL_EVAL_DISPATCH_MAX_RETRIES}).\n*Error:* ${message}`,
-          )
-          .catch(() => undefined);
+        void this.postLooseNotice(
+          session,
+          `⏳ Goal completion evaluation hit a transient API error — retrying in ${Math.round(delayMs / 1000)}s ` +
+            `(attempt ${live.evalDispatchRetryCount}/${GOAL_EVAL_DISPATCH_MAX_RETRIES}).\n*Error:* ${message}`,
+        ).catch(() => undefined);
         this.armEvalRetry(sessionKey, snapshot, delayMs, cause);
         return;
       }
@@ -869,13 +899,10 @@ export class GoalLoopController {
       this.persist();
     }
 
-    void this.deps
-      .postNotice(
-        session.channelId,
-        session.threadTs,
-        `⚠️ Goal completion evaluation failed: ${message}. Run \`goal done\` to force completion or \`goal pause\` / \`goal clear\` to stop the loop.`,
-      )
-      .catch(() => undefined);
+    void this.postLooseNotice(
+      session,
+      `⚠️ Goal completion evaluation failed: ${message}. Run \`goal done\` to force completion or \`goal pause\` / \`goal clear\` to stop the loop.`,
+    ).catch(() => undefined);
   }
 
   /**
@@ -948,14 +975,15 @@ export class GoalLoopController {
     // Fire-and-forget. Injection is the only thing that drives the loop
     // forward on 'continue'; if it throws the loop silently stalls, so
     // escalate to error + an actionable notice.
-    this.deps.injectContinuation(syntheticEvent).catch(async (err: unknown) => {
+    this.deps.injectContinuation(syntheticEvent, { sessionKey, session }).catch(async (err: unknown) => {
       const injectErr = err instanceof Error ? err.message : String(err);
       this.deps.logger.error('Goal continuation injection failed — loop stalled', { sessionKey, error: injectErr });
       try {
-        await this.deps.postNotice(
-          session.channelId,
-          session.threadTs,
-          `⚠️ Goal continuation failed to start: ${injectErr}. The loop is paused — send a message in this thread to resume, or use \`goal pause\` / \`goal clear\`.`,
+        await this.postLooseNotice(
+          session,
+          `⚠️ Goal continuation failed to start: ${injectErr}. The loop is paused — ${
+            session.slackless === true ? 'send the task an instruction' : 'send a message in this thread'
+          } to resume, or use \`goal pause\` / \`goal clear\`.`,
         );
       } catch (noticeErr: unknown) {
         this.deps.logger.error('Failed to post goal continuation-failure notice', {

@@ -68,6 +68,13 @@ export interface TaskCommandRequest {
    * queued, they run without asking again while unedited (`approvedText`).
    */
   approvedOnce?: boolean;
+  /**
+   * The goal loop's next turn (host code only, with `initiator: 'host'`): it
+   * runs as a synthetic turn — not user input, so it cannot set a goal and
+   * does not reset the goal's continuation count. Like every host start it is
+   * refused while the task runs (it never supersedes a turn).
+   */
+  goalContinuation?: boolean;
 }
 
 /** A control on a word in a task's follow-up queue (the dashboard's queue route). */
@@ -157,9 +164,25 @@ export interface TaskTurnControllerDeps {
    * never started is not a cause to wake again (that would loop on a start
    * that keeps failing — fable #702 R2). Never throws into the chain.
    */
-  onChainEnd?: (sessionKey: string, info: { started: boolean }) => void;
+  onChainEnd?: (
+    sessionKey: string,
+    info: {
+      started: boolean;
+      /** Stop, shutdown or close aborted it. */
+      stopped?: boolean;
+      /** Its last outcome (none when it threw) — the goal loop runs only after a healthy end. */
+      outcome?: TaskTurnOutcomeRecord['outcome'];
+    },
+  ) => void;
   /** The task's follow-up queue changed (a word queued, run, paused, edited or cancelled): save and show it. Never throws into the caller. */
   onFollowupsChanged?: (sessionKey: string) => void;
+  /**
+   * A person's instruction or answer starts a turn (not a host start): the
+   * user weighed in, as a Slack message does — the goal's continuation count
+   * resets and an in-flight completion eval is discarded. Called before the
+   * chain runs; never throws into the start.
+   */
+  onUserInstruction?: (sessionKey: string, session: ConversationSession) => void;
   /** Words one task's queue holds at most. Default {@link TASK_FOLLOWUP_CAPACITY}. */
   maxQueuedFollowups?: number;
   /**
@@ -495,6 +518,15 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     const { sessionKey } = request;
     // Who instructs it now (SSOT 2026-11-02): the dashboard sends them the turn's live updates.
     session.currentInitiatorId = ctx.userId;
+    // A synthetic goal turn is not user input; a person's word (not a host start) is.
+    const userInput = request.goalContinuation !== true;
+    if (userInput && request.initiator !== 'host') {
+      try {
+        deps.onUserInstruction?.(sessionKey, session);
+      } catch (error) {
+        deps.logger.warn('onUserInstruction raised', { sessionKey, error: (error as Error)?.message });
+      }
+    }
 
     // A new instruction supersedes an open question, as a new Slack message
     // does; the turn's saved start persists the cleared panel. A start that is
@@ -543,6 +575,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       chainId,
       consume,
       planned.notice,
+      userInput,
+      request.initiator === 'host',
     );
     const chain: Chain = { ownerId, id: chainId, abort, done, planning, ...(tree !== undefined ? { tree } : {}) };
     chains.set(sessionKey, chain);
@@ -569,7 +603,11 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
         outcome: progress.lastOutcome,
       });
       try {
-        deps.onChainEnd?.(sessionKey, { started: chainStarted });
+        deps.onChainEnd?.(sessionKey, {
+          started: chainStarted,
+          stopped: abort.signal.aborted,
+          ...(progress.lastOutcome ? { outcome: progress.lastOutcome } : {}),
+        });
       } catch (error) {
         deps.logger.warn('onChainEnd raised', { sessionKey, error: (error as Error)?.message });
       }
@@ -606,10 +644,17 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     chainId: string,
     consume: readonly string[] = [],
     planNotice?: string,
+    /** False for a synthetic goal turn — its `/compact` replay stays synthetic too. */
+    userInput = true,
+    /**
+     * A host start (an epic's wake or instruction, the goal loop): every hop is a host turn — its
+     * words are soma-work's, recorded as `system`, and they can never set a goal (SET_GOAL gate).
+     */
+    hostStart = false,
   ): Promise<void> {
     let text = instruction;
     let compactHop = false;
-    let isUserInput = true;
+    let isUserInput = userInput;
     let replay: string | null = null;
     /** A turn that returned non-terminal for a re-entry not yet started: it owns the task (#634 R1). */
     let pendingTurnId: string | null = null;
@@ -678,6 +723,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
               workingDirectory: ctx.workingDirectory,
               processedFiles: [],
               isUserInput,
+              ...(hostStart ? { hostTurn: true } : {}),
               say: async () => ({}),
               // Plan mode — the first hop carries the notice its start decided (before the
               // gate went back to drafting); a later hop reads the task as it is now.
@@ -724,7 +770,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
             text = replay;
             replay = null;
             compactHop = false;
-            isUserInput = true;
+            isUserInput = userInput;
             continue;
           }
           return;

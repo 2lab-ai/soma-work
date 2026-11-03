@@ -14,6 +14,7 @@ import {
   registerRatingStore,
   registerSkillStore,
   runModelCommand,
+  surfaceRefusal,
 } from '@soma/process-shared/model-commands/catalog.js';
 import { HierarchicalMemoryFileStore } from '@soma/process-shared/model-commands/hierarchical-memory-store.js';
 import { MemoryFileStore } from '@soma/process-shared/model-commands/memory-file-store.js';
@@ -50,6 +51,8 @@ export function parseModelCommandContext(rawContext: string | undefined): ModelC
       channel: typeof parsed.channel === 'string' ? parsed.channel : undefined,
       threadTs: typeof parsed.threadTs === 'string' ? parsed.threadTs : undefined,
       user: typeof parsed.user === 'string' ? parsed.user : undefined,
+      // A dashboard task (no Slack thread) — anything else reads as Slack.
+      ...(parsed.surface === 'task' ? { surface: 'task' as const } : {}),
       workflow: parseWorkflowType(parsed.workflow),
       renewState:
         parsed.renewState === 'pending_save' || parsed.renewState === 'pending_load' ? parsed.renewState : null,
@@ -80,6 +83,10 @@ export function buildModelCommandRunResponse(args: unknown, context: ModelComman
       error: validated.error,
     };
   }
+
+  // A dashboard task has no Slack thread: say so before any thread-only check.
+  const refused = surfaceRefusal(validated.request.commandId, context);
+  if (refused) return refused;
 
   if (validated.request.commandId === 'SAVE_CONTEXT_RESULT' && context.renewState !== 'pending_save') {
     return {
