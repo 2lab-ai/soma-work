@@ -134,7 +134,9 @@ import { migrateThreadHeaderDashboardLinkOnce } from './deploy/migrate-threadhea
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
+import { createGithubReceiptChecker } from './github-receipt';
 import { type HeldInstruction, InstructionApprovals, setInstructionApprovals } from './instruction-approval';
+import { fetchGitHubReceiptObject } from './link-metadata-fetcher';
 import { Logger } from './logger';
 import { mcpCallTracker } from './mcp-call-tracker';
 import { McpManager } from './mcp-manager';
@@ -1722,6 +1724,8 @@ async function start() {
         }
       },
     };
+    // #832 — GitHub is the receipt for a write the parser proposes: only a confirmed one reaches the card and metrics.
+    workLogProviders.confirmGithubEffects = createGithubReceiptChecker({ fetchObject: fetchGitHubReceiptObject });
     setStreamExecutorProviders(workLogProviders);
     // SSOT 2026-10-26 T2 — subagents that ended before this process started
     // fire no more events: read the loaded sessions' spend once, in the
