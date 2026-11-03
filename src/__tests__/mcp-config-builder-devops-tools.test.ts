@@ -102,8 +102,9 @@ describe('McpConfigBuilder devops-tools registration', () => {
     expect(path.basename(server.args[server.args.length - 1])).toMatch(/^devops-tools-mcp-server\.(ts|js)$/);
     expect(server.env).toEqual({ SLACK_CONTEXT: JSON.stringify(SLACK) });
     expect(server.env).not.toHaveProperty('SLACK_BOT_TOKEN');
-    // Outlasts the MCP server's 5 min approval wait + 30 s grace (SDK per-server stdio `timeout`).
-    expect(server.timeout).toBe(360_000);
+    // Outlasts the MCP server's 655 s wait ceiling (10 min card + 25 s broker answer + 30 s posting), as the
+    // SDK per-server stdio `timeout`; the MCP test pins MAX_WAIT_MS = 655_000 < 660_000.
+    expect(server.timeout).toBe(660_000);
     expect(JSON.stringify(server)).not.toContain('xoxb-placeholder-must-not-leak');
   });
 

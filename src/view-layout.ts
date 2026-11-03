@@ -28,14 +28,18 @@ export const VIEW_MODES: readonly ViewMode[] = ['minimal', 'advanced'];
 export const CARD_ROWS = ['summary', 'task', 'links', 'agents', 'usage', 'arts'] as const;
 export const CARD_CHIPS = ['steps', 'ctx', 'media', 'pr', 'arts', 'cost', 'tokens', 'model'] as const;
 export const OPEN_PARTS = ['tasks', 'agents', 'io', 'arts', 'goal', 'refs', 'model'] as const;
-export const DETAIL_TOP = ['info', 'goal', 'needs', 'artifacts'] as const;
+/** The detail card's title bar: what follows the status and the time, in order (SSOT 2026-11-03). */
+export const DETAIL_HEAD = ['model', 'cost', 'tokens', 'speed', 'ctx', 'owner', 'workflow'] as const;
+/** The detail card's tab bar under 입력 필요: a tab's content shows only while it is pressed (SSOT 2026-11-03). */
+export const DETAIL_TABS = ['goal', 'tasks', 'agents', 'artifacts', 'info'] as const;
 export const THREAD_INFO = ['owner', 'workflow', 'model', 'ctx', 'cost', 'tokens', 'task', 'steps'] as const;
 export const THREAD_NAV = ['dashboardLink', 'linkhistory', 'links', 'status'] as const;
 
 export type CardRowId = (typeof CARD_ROWS)[number];
 export type CardChipId = (typeof CARD_CHIPS)[number];
 export type OpenPartId = (typeof OPEN_PARTS)[number];
-export type DetailTopId = (typeof DETAIL_TOP)[number];
+export type DetailHeadId = (typeof DETAIL_HEAD)[number];
+export type DetailTabId = (typeof DETAIL_TABS)[number];
 export type ThreadInfoId = (typeof THREAD_INFO)[number];
 export type ThreadNavId = (typeof THREAD_NAV)[number];
 
@@ -66,24 +70,30 @@ export interface OpenLayout {
   byCol?: Partial<Record<'work' | 'wait' | 'done', OpenPartId[]>>;
 }
 
-export type DetailTasks = 'runs' | 'list' | 'line' | 'none';
-export type DetailAgents = 'all' | 'sub' | 'none';
+/** How the 작업 tab reads: the runs table, the checklist, or one line that opens the checklist. */
+export type DetailTasks = 'runs' | 'list' | 'line';
 
-/** The detail card: its top sections in order, its tasks, its strips and controls. Chat and composer always show. */
+/**
+ * The detail card in three zones (SSOT 2026-11-03): the title bar (the title, status · time, then `head` in order,
+ * then Slack · ☆ · the actions), 입력 필요 right under it (always — approvals, the question, a plan), the tab bar
+ * (`tabs` in order — 목표 2/5 · 작업 1/7 · 에이전트 5 …; every tab starts closed and its content shows only while it
+ * is pressed), then the bottom: the chat with the work log (대화 · 작업 로그) and the composer.
+ */
 export interface DetailLayout {
-  top: LayoutItem<DetailTopId>[];
+  head: LayoutItem<DetailHeadId>[];
+  tabs: LayoutItem<DetailTabId>[];
   tasks: DetailTasks;
-  /** The checklist's share of the card (cqh), for `list` and `line`. */
+  /** The 작업 tab's share of the card (cqh), for `list` and `line`. */
   tasksMax: number;
-  agents: DetailAgents;
+  /** The 에이전트 tab's head: the agent being looked at and its path. */
   agenthead: boolean;
-  /** The whole section strip: 대화 · 작업 로그 · 에이전트 트리. */
+  /** The bottom's whole strip: 대화 · 작업 로그 · 에이전트 트리. */
   sections: boolean;
-  /** Without the whole strip, the chat as a tab view with the work log: 대화 · 작업 로그 (미니멀, SSOT 2026-11-03). */
+  /** Without the whole strip, the chat as a tab view with the work log: 대화 · 작업 로그 (SSOT 2026-11-03). */
   logtab: boolean;
   controls: boolean;
   subtitle: boolean;
-  /** Sections open unfolded (the old 자세히). */
+  /** A tab opens unfolded (the old 자세히): the full record, every run, the earlier plans. */
   open: boolean;
 }
 
@@ -117,9 +127,28 @@ export interface DashboardLayoutDoc {
 const it = <T extends string>(id: T, on: boolean, opt?: string): LayoutItem<T> =>
   opt === undefined ? { id, on } : { id, on, opt };
 
+// The title bar after the time: the model, the cost, the tokens and the speed in every built-in (SSOT 2026-11-03,
+// "[*] Opus 5.5 | $175 | 235m tok | 97 tok/s"); 어드밴스드 adds the rest of the old 세션 정보 line.
+const DETAIL_HEAD_OF = (all: boolean): LayoutItem<DetailHeadId>[] => [
+  it('model', true),
+  it('cost', true),
+  it('tokens', true),
+  it('speed', true),
+  it('ctx', all),
+  it('owner', all),
+  it('workflow', all),
+];
+// The tab bar: 목표 · 작업 · 에이전트 · 산출물 everywhere (a closed tab costs one word); 어드밴스드 adds 세부.
+const DETAIL_TABS_OF = (all: boolean): LayoutItem<DetailTabId>[] => [
+  it('goal', true),
+  it('tasks', true),
+  it('agents', true),
+  it('artifacts', true),
+  it('info', all),
+];
 const DETAIL_ALL: Omit<DetailLayout, 'tasks' | 'tasksMax' | 'open'> = {
-  top: [it('info', true), it('goal', true), it('needs', true), it('artifacts', true)],
-  agents: 'all',
+  head: DETAIL_HEAD_OF(true),
+  tabs: DETAIL_TABS_OF(true),
   agenthead: true,
   sections: true,
   logtab: false,
@@ -127,17 +156,17 @@ const DETAIL_ALL: Omit<DetailLayout, 'tasks' | 'tasksMax' | 'open'> = {
   subtitle: true,
 };
 // The lean detail card still names the model (#805): the task card shows it as icons only, so the detail card is
-// where its name is — the model · effort line above the composer is on in every built-in. Its chat is a tab view
+// where its name is — in the title bar and on the model · effort line above the composer. Its chat is a tab view
 // with the work log (대화 · 작업 로그, SSOT 2026-11-03); the agent tree stays 어드밴스드's.
-const DETAIL_LEAN = (agents: DetailAgents): Omit<DetailLayout, 'tasks' | 'tasksMax' | 'open'> => ({
-  top: [it('info', false), it('goal', false), it('needs', true), it('artifacts', false)],
-  agents,
+const DETAIL_LEAN: Omit<DetailLayout, 'tasks' | 'tasksMax' | 'open'> = {
+  head: DETAIL_HEAD_OF(false),
+  tabs: DETAIL_TABS_OF(false),
   agenthead: false,
   sections: false,
   logtab: true,
   controls: true,
   subtitle: false,
-});
+};
 const ADV_OPEN_BY_COL: OpenLayout['byCol'] = {
   work: ['tasks', 'agents', 'io', 'goal', 'refs', 'model'],
   wait: ['io', 'arts', 'tasks', 'agents', 'goal', 'refs', 'model'],
@@ -201,7 +230,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('goal', false),
         ],
       },
-      detail: { ...DETAIL_LEAN('none'), tasks: 'list', tasksMax: 34, open: false },
+      detail: { ...DETAIL_LEAN, tasks: 'list', tasksMax: 34, open: false },
     },
     advanced: {
       card: {
@@ -263,7 +292,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
         ],
         byCol: { work: ['tasks'], wait: ['tasks'], done: [] },
       },
-      detail: { ...DETAIL_LEAN('sub'), tasks: 'list', tasksMax: 50, open: false },
+      detail: { ...DETAIL_LEAN, tasks: 'list', tasksMax: 50, open: false },
     },
     advanced: {
       card: {
@@ -324,7 +353,7 @@ export const BUILTIN_PRESETS: Record<PresetId, PresetLayouts> = {
           it('model', false),
         ],
       },
-      detail: { ...DETAIL_LEAN('none'), tasks: 'line', tasksMax: 34, open: false },
+      detail: { ...DETAIL_LEAN, tasks: 'line', tasksMax: 34, open: false },
     },
     advanced: {
       card: {
@@ -446,33 +475,38 @@ export const LAYOUT_CATALOG = {
   },
   detail: {
     fixed: [
-      { id: 'head', label: '머리 · 상태 바', hint: '제목 · 상태 · Slack · 별 · 중지 — 항상', locked: true },
+      { id: 'head', label: '제목 · 상태', hint: '제목 · 상태 · 시간 · Slack · 별 · 중지 — 항상', locked: true },
       { id: 'chat', label: '채팅', hint: '지시와 답변 — 항상', locked: true },
       { id: 'composer', label: '입력창', hint: '항상', locked: true },
+      { id: 'needs', label: '입력 필요', hint: '승인 · 질문 · 작업 계획 — 제목 바로 아래, 항상', locked: true },
     ],
-    top: [
-      { id: 'info', label: '세션 정보', hint: '소유자 · 토큰 · 비용 · 링크' },
-      { id: 'goal', label: '목표', hint: '편집 · 대기열' },
-      { id: 'needs', label: '입력 필요', hint: '승인 · 질문 — 항상', locked: true },
+    head: [
+      { id: 'model', label: '모델', hint: '회사 색 점과 이름' },
+      { id: 'cost', label: '비용', hint: 'API 환산 비용' },
+      { id: 'tokens', label: '토큰', hint: '총 토큰' },
+      { id: 'speed', label: '속도 (tok/s)', hint: '출력 토큰 ÷ 활성 시간' },
+      { id: 'ctx', label: '컨텍스트 %', hint: '60% 넘으면 노랑, 80% 넘으면 빨강' },
+      { id: 'owner', label: '소유자', hint: '작업을 시작한 사람' },
+      { id: 'workflow', label: '워크플로', hint: '`zwork` 같은 이름' },
+    ],
+    tabs: [
+      { id: 'goal', label: '목표', hint: '지금 목표 / 전체 — 편집 · 대기열' },
+      { id: 'tasks', label: '작업', hint: '완료 / 전체 — 작업 목록' },
+      { id: 'agents', label: '에이전트', hint: '서브에이전트 수 — 볼 에이전트 고르기' },
       { id: 'artifacts', label: '산출물', hint: '만든 파일 · 지시 첨부' },
+      { id: 'info', label: '세부', hint: '세션 정보 전체 — 토큰 내역 · 링크 · 컨텍스트' },
     ],
     tasks: [
       { value: 'runs', label: '실행 표 (전부)' },
       { value: 'list', label: '체크리스트' },
       { value: 'line', label: '한 줄 (누르면 펼침)' },
-      { value: 'none', label: '숨김' },
-    ],
-    agents: [
-      { value: 'all', label: '항상' },
-      { value: 'sub', label: '서브에이전트 있을 때' },
-      { value: 'none', label: '숨김' },
     ],
     toggles: [
       { id: 'subtitle', label: '부제', hint: '제목 아래 한 줄' },
-      { id: 'agenthead', label: '에이전트 머리 · 경로', hint: '보고 있는 에이전트' },
-      { id: 'sections', label: '작업 로그 · 트리 탭', hint: '채팅 옆 탭' },
+      { id: 'agenthead', label: '에이전트 머리 · 경로', hint: '에이전트 탭에서 보고 있는 에이전트' },
+      { id: 'sections', label: '대화 · 작업 로그 · 에이전트 트리 탭', hint: '채팅 위 탭 셋' },
       { id: 'controls', label: '모델 · 추론 강도', hint: '입력창 위' },
-      { id: 'open', label: '처음부터 펼침', hint: '세션 정보 · 작업 · 이전 계획을 펼쳐서 열기' },
+      { id: 'open', label: '처음부터 펼침', hint: '탭을 열면 세부 · 작업 · 이전 계획을 펼쳐서 보여 줌' },
       // Last, so the switches before it keep their places (the editor reads them by index).
       { id: 'logtab', label: '대화 · 작업 로그 탭', hint: '채팅 위 탭 — 트리 탭이 꺼져 있을 때' },
     ],
@@ -577,15 +611,23 @@ export function normalizeOpen(input: unknown, fb: OpenLayout): OpenLayout {
   return { star: bool(input.star, fb.star), parts: items(input.parts, OPEN_PARTS, fb.parts) };
 }
 
+/**
+ * A saved detail card, checked. One saved before the tab bar (SSOT 2026-11-03) had stacked top sections (`top`) and an
+ * agent strip (`agents`) whose built-in states said nothing about a tab that starts closed: it takes its preset's
+ * title bar and tab bar and keeps its other choices. Only a hidden task list (`tasks: 'none'` — no built-in ever hid
+ * it, so the user did) carries over, as the 작업 tab off.
+ */
 export function normalizeDetail(input: unknown, fb: DetailLayout): DetailLayout {
   const o = isObj(input) ? input : {};
-  const top = items(o.top, DETAIL_TOP, fb.top).map((x) => (x.id === 'needs' ? { ...x, on: true } : x));
   const max = typeof o.tasksMax === 'number' && Number.isFinite(o.tasksMax) ? Math.round(o.tasksMax) : fb.tasksMax;
+  let tabs = items(o.tabs, DETAIL_TABS, fb.tabs);
+  if (!Array.isArray(o.tabs) && o.tasks === 'none')
+    tabs = tabs.map((t) => (t.id === 'tasks' ? { ...t, on: false } : t));
   return {
-    top,
-    tasks: oneOf(o.tasks, ['runs', 'list', 'line', 'none'] as const, fb.tasks),
+    head: items(o.head, DETAIL_HEAD, fb.head),
+    tabs,
+    tasks: oneOf(o.tasks, ['runs', 'list', 'line'] as const, fb.tasks),
     tasksMax: Math.min(70, Math.max(20, max)),
-    agents: oneOf(o.agents, ['all', 'sub', 'none'] as const, fb.agents),
     agenthead: bool(o.agenthead, fb.agenthead),
     sections: bool(o.sections, fb.sections),
     logtab: bool(o.logtab, fb.logtab),

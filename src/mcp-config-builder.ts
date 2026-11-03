@@ -51,10 +51,10 @@ const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion'];
 const NATIVE_CRON_TOOLS = ['CronCreate', 'CronDelete', 'CronList'];
 
 /**
- * devops-tools calls can wait on an admin approval card: the MCP server stops waiting at 355 s at the
- * latest, so the SDK's per-call wall clock must stay above that.
+ * devops-tools calls can wait on an admin approval card (10 minutes): the MCP server stops waiting at
+ * 655 s at the latest (MAX_WAIT_MS), so the SDK's per-call wall clock must stay above that.
  */
-const DEVOPS_TOOLS_CALL_TIMEOUT_MS = 360_000;
+const DEVOPS_TOOLS_CALL_TIMEOUT_MS = 660_000;
 
 /** True when the bot was mentioned inside an existing thread (not at the root). */
 export function isMidThreadMention(ctx?: { mentionTs?: string; threadTs?: string } | null): boolean {

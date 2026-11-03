@@ -799,7 +799,6 @@ export function createBroker(deps: BrokerDeps): Broker {
       details: [
         { label: '계정', value: `${args.account} (${account.login})` },
         c.repo !== null ? { label: '레포', value: c.repo } : { label: '조직', value: target },
-        { label: '명령', value: `gh ${ghLabel(c)}` },
       ],
       argv: [...args.args],
       warnings: ghWarnings(c, args.args),

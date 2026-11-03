@@ -8,6 +8,8 @@
  *   E4  defaults per surface, the quick switch, the thread card's modes; 되돌리기 and 기본값으로
  *   E5  the preview is the dashboard's own face of the sample card in the layout's order
  *   E6  미니멀 상세 카드: the 대화 · 작업 로그 tab switch (on in minimal) and its preview row
+ *   E7  상세 카드 세 구역 (SSOT 2026-11-03): 타이틀 바 · 입력 필요 · 탭 바 · 아래 — the title bar's items and the tabs
+ *       switch and move; the preview's tabs open and close as the card's do
  */
 
 import { describe, expect, it } from 'vitest';
@@ -119,7 +121,7 @@ function editor(answer: Record<string, unknown> = {}, opts: { gate?: boolean } =
     ...names,
     `${VIEW_LAYOUT_CLIENT_JS}\n${LAYOUT_CLIENT_JS}\nreturn {
       loadLayout, layMove, layToggle, layOpt, layFlag, laySelect, layDefault, layQuick, layThreadSet, layUndo, layReset,
-      layOnDrop, layOnDragStart, layOnChange, layPaint,
+      layOnDrop, layOnDragStart, layOnChange, layOnClick, layPaint,
       get: function(n) { return eval(n); }, set: function(n, v) { eval(n + ' = v'); },
     };`,
   )(...names.map((n) => (inject as Record<string, unknown>)[n]));
@@ -168,17 +170,18 @@ describe('E2 — every item, locks and moves', () => {
     expect(html()).toMatch(/data-lay="down" data-zone="rows" data-id="[^"]+" data-idx="5"[^>]*disabled/);
     for (const [surface, cat] of [
       ['open', LAYOUT_CATALOG.open.parts],
-      ['detail', LAYOUT_CATALOG.detail.top],
+      ['detail', [...LAYOUT_CATALOG.detail.head, ...LAYOUT_CATALOG.detail.tabs]],
       ['thread', LAYOUT_CATALOG.thread.info],
     ] as const) {
       api.set('_laySurface', surface);
       api.layPaint();
       for (const e of cat) expect(html(), `${surface} ${e.label}`).toContain(e.label);
     }
-    // 입력 필요 in the detail card moves but never hides.
+    // 입력 필요 in the detail card is its own zone, locked: never a switch, never in a tab.
     api.set('_laySurface', 'detail');
     api.layPaint();
-    expect(html()).not.toContain('data-lay="toggle" data-zone="top" data-id="needs"');
+    expect(html()).toContain('<span class="lay-name">입력 필요</span>');
+    expect(html()).not.toContain('data-id="needs"');
   });
 });
 
@@ -396,7 +399,9 @@ describe('E5 — the preview is the dashboard’s face', () => {
     expect(open.children.at(-1).innerHTML).toContain('<b>링크</b>');
     api.set('_laySurface', 'detail');
     api.layPaint();
-    expect(els['lay-preview'].innerHTML).toContain('작업 목록');
+    // The tab bar, every tab closed: the 작업 tab's count, not its list.
+    expect(els['lay-preview'].innerHTML).toContain('data-v="tasks" aria-pressed="false">작업<span>2/4</span></button>');
+    expect(els['lay-preview'].innerHTML).not.toContain('작업 목록');
     api.set('_laySurface', 'thread');
     api.layPaint();
     expect(els['lay-preview'].innerHTML).toContain('▶ 카드 폼 검증 추가');
@@ -428,5 +433,92 @@ describe('E6 — 미니멀 상세 카드의 대화 · 작업 로그 탭 (SSOT 20
     expect(controls()).not.toContain('data-lay="flag" data-key="logtab" checked');
     expect(preview()).toContain(ALL);
     expect(preview()).not.toContain(TWO);
+  });
+});
+
+describe('E7 — 상세 카드 세 구역: 타이틀 바 · 입력 필요 · 탭 바 · 아래 (SSOT 2026-11-03)', () => {
+  const zones = (html: string) =>
+    [...html.matchAll(/<section class="lay-zone"><header><h3>([^<]+)<\/h3>/g)].map((m) => m[1]);
+
+  it('the detail card is edited as it reads: 타이틀 바, 입력 필요, 탭 바, 아래', async () => {
+    const { api, els } = editor();
+    await api.loadLayout();
+    api.set('_laySurface', 'detail');
+    api.layPaint();
+    const html = els['lay-controls'].innerHTML as string;
+    expect(zones(html)).toEqual(['타이틀 바', '입력 필요', '탭 바', '아래']);
+    // The title bar's items and the tabs are lists: switches and ↑ ↓.
+    for (const id of ['model', 'cost', 'tokens', 'speed', 'ctx', 'owner', 'workflow'])
+      expect(html, id).toContain(`data-lay="toggle" data-zone="head" data-id="${id}"`);
+    for (const id of ['goal', 'tasks', 'agents', 'artifacts', 'info'])
+      expect(html, id).toContain(`data-lay="toggle" data-zone="tabs" data-id="${id}"`);
+    expect(html).toContain('data-lay="toggle" data-zone="head" data-id="speed" checked');
+    expect(html).not.toContain('data-lay="toggle" data-zone="head" data-id="owner" checked');
+    // The tab bar's own switches come after its tabs.
+    const tabs = html.slice(html.indexOf('<h3>탭 바</h3>'), html.indexOf('<h3>아래</h3>'));
+    expect(tabs.indexOf('data-zone="tabs" data-id="info"')).toBeLessThan(tabs.indexOf('data-key="agenthead"'));
+    expect(tabs).toContain('<span>작업 탭 보기</span>');
+  });
+
+  it('a switch and a move edit this preset’s title bar and tabs; the preview follows', async () => {
+    const { api, els, puts, flush } = editor();
+    await api.loadLayout();
+    api.set('_laySurface', 'detail');
+    api.layToggle('head', 'cost', false);
+    api.layToggle('head', 'owner', true);
+    api.layMove('tabs', 2, 0);
+    api.layToggle('tabs', 'artifacts', false);
+    const d = api.get('_layDoc').presets['1'].minimal.detail;
+    expect(d.head.filter((x: { on: boolean }) => x.on).map((x: { id: string }) => x.id)).toEqual([
+      'model',
+      'tokens',
+      'speed',
+      'owner',
+    ]);
+    expect(d.tabs.filter((x: { on: boolean }) => x.on).map((x: { id: string }) => x.id)).toEqual([
+      'agents',
+      'goal',
+      'tasks',
+    ]);
+    const pv = els['lay-preview'].innerHTML as string;
+    expect(pv).toContain(
+      '<span class="pv-m">● Opus 5.5</span><span class="pv-m">6.4M 토큰</span><span class="pv-m">97 tok/s</span><span class="pv-m">Zhuge</span>',
+    );
+    expect(pv).not.toContain('$6.20');
+    expect(pv.indexOf('data-v="agents"')).toBeLessThan(pv.indexOf('data-v="goal"'));
+    expect(pv).not.toContain('data-v="artifacts"');
+    await flush();
+    // Saved (this harness's clearTimeout keeps every debounce, so each edit is a PUT): the last one is the document.
+    const last = puts[puts.length - 1] as { body: { doc: { presets: Record<string, any> } } };
+    expect(last.body.doc.presets['1'].minimal.detail.tabs).toEqual(d.tabs);
+  });
+
+  it('the preview’s tabs start closed; a press opens one tab’s content, a second press closes it', async () => {
+    const { api, els } = editor();
+    await api.loadLayout();
+    api.set('_laySurface', 'detail');
+    api.layPaint();
+    const pv = () => els['lay-preview'].innerHTML as string;
+    expect(pv()).not.toContain('pv-tabbody');
+    const press = (v: string) => {
+      const btn = {
+        getAttribute: (k: string) => (k === 'data-lay' ? 'pvtab' : k === 'data-v' ? v : null),
+        tagName: 'BUTTON',
+      };
+      api.layOnClick({ target: { closest: () => btn } });
+    };
+    press('goal');
+    expect(pv()).toContain('data-v="goal" aria-pressed="true"');
+    expect(pv()).toContain('<div class="pv-tabbody"><div><b>목표</b>');
+    press('tasks');
+    expect(pv()).toContain('<div class="pv-tabbody"><div><b>작업 목록</b>');
+    expect(pv()).toContain('data-v="goal" aria-pressed="false"');
+    press('tasks');
+    expect(pv()).not.toContain('pv-tabbody');
+    // 입력 필요 sits between the title bar and the tab bar (the 질문 대기 sample).
+    api.set('_laySample', 'wait');
+    api.layPaint();
+    expect(pv().indexOf('<b>입력 필요</b>')).toBeGreaterThan(pv().indexOf('pv-bar'));
+    expect(pv().indexOf('<b>입력 필요</b>')).toBeLessThan(pv().indexOf('pv-midbar'));
   });
 });

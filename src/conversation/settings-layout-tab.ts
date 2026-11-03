@@ -12,7 +12,9 @@
  *     handle or with ↑ ↓ (WCAG 2.5.7: dragging is never the only way); each move is announced and keeps focus;
  *   - what always shows (title, status, actions, approvals, the composer) is listed with a lock, never a switch;
  *   - changes save at once (debounced PUT of the whole document) with 되돌리기 (and ⌘/Ctrl+Z) — no Save bar;
- *   - the thread card follows the task card by default; "따로 설정" starts from what it shows now.
+ *   - the thread card follows the task card by default; "따로 설정" starts from what it shows now;
+ *   - the detail card is edited as it reads (SSOT 2026-11-03): 타이틀 바 (what follows the time), 입력 필요 (fixed),
+ *     탭 바 (its tabs, closed until pressed — the preview's tabs open and close as the card's do), 아래 (대화 · 작업 로그).
  *
  * Client script: String.raw, no `${…}` and no backticks (ships byte for byte). It runs after the shared layout
  * script (VIEW_LAYOUT_CLIENT_JS) and uses its layoutOf · layoutPreset · layoutsFor · faceOf · openPartsOf ·
@@ -122,6 +124,15 @@ export const LAYOUT_TAB_CSS = String.raw`
 .lay-panel .pv-task i { width: 12px; height: 12px; border-radius: 50%; border: 1px solid var(--text-tertiary); display: inline-block; }
 .lay-panel .pv-task.is-done i { background: var(--text-tertiary); }
 .lay-panel .pv-task.is-run i { border-color: var(--text); border-width: 2px; }
+.lay-panel .pv-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 4px; color: var(--text-secondary); font-size: 11.5px; }
+.lay-panel .pv-m + .pv-m::before { content: '|'; margin-right: 8px; color: var(--border); }
+.lay-panel .pv-act { margin-left: auto; }
+.lay-panel .pv-midbar { display: flex; flex-wrap: wrap; gap: 2px; padding: 0 8px; }
+.lay-panel .pv-mt { border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-secondary); font: inherit; font-size: 12px; padding: 7px 6px; cursor: pointer; }
+.lay-panel .pv-mt span { color: var(--text-tertiary); margin-left: 3px; }
+.lay-panel .pv-mt[aria-pressed="true"] { color: var(--text); font-weight: 600; border-bottom-color: var(--text); }
+.lay-panel .pv-mt:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.lay-panel .pv-tabbody { background: color-mix(in srgb, var(--ib-seg) 60%, transparent); }
 .lay-slack { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--surface); font-size: 13px; }
 .lay-slack .sk-head { font-size: 15px; font-weight: 650; margin-bottom: 6px; }
 .lay-slack .sk-ctx { font-size: 12px; color: var(--text-secondary); margin: 4px 0; display: flex; flex-wrap: wrap; gap: 4px 10px; }
@@ -142,6 +153,7 @@ var _layPreset = '1';
 var _layMode = 'minimal';
 var _laySurface = 'card';   // card · open · detail · thread
 var _laySample = 'run';     // run · wait · done
+var _layPvTab = '';         // the detail preview's open tab ('' = all closed, as the card opens)
 var _laySaveTimer = 0;
 var _laySaving = false;
 var _layResave = false;
@@ -292,16 +304,18 @@ function layZones(l) {
     { title: '항상 맨 위', fixed: cat.open.fixed, flags: [{ key: 'star', entry: cat.open.star }] },
     { key: 'parts', title: '그 아래', note: l.byCol ? '이 안은 칸마다 순서가 다릅니다 — 바꾸면 모든 칸이 이 순서를 씁니다' : '위에서 아래로', items: l.parts, cat: cat.open.parts },
   ];
+  // The detail card as it reads (SSOT 2026-11-03): the title bar, 입력 필요 under it, the tab bar, the bottom.
   if (_laySurface === 'detail') return [
-    { title: '머리', fixed: [cat.detail.fixed[0]], flags: [{ key: 'subtitle', entry: cat.detail.toggles[0] }] },
-    { key: 'top', title: '위쪽', note: '위에서 아래로 — 입력 필요는 숨길 수 없습니다', items: l.top, cat: cat.detail.top },
-    { title: '본문', selects: [
-      { key: 'tasks', label: '작업 목록', opts: cat.detail.tasks, value: l.tasks },
-      { key: 'tasksMax', label: '작업 목록 높이', opts: [{ value: '34', label: '3분의 1' }, { value: '50', label: '절반' }, { value: '70', label: '3분의 2' }], value: String(l.tasksMax), off: l.tasks !== 'list' && l.tasks !== 'line' },
-      { key: 'agents', label: '에이전트 탭', opts: cat.detail.agents, value: l.agents }],
-      flags: [{ key: 'agenthead', entry: cat.detail.toggles[1] }, { key: 'sections', entry: cat.detail.toggles[2] }, { key: 'logtab', entry: cat.detail.toggles[5] }, { key: 'open', entry: cat.detail.toggles[4] }],
-      fixed: [cat.detail.fixed[1]] },
-    { title: '아래', fixed: [cat.detail.fixed[2]], flags: [{ key: 'controls', entry: cat.detail.toggles[3] }] },
+    { key: 'head', title: '타이틀 바', note: '제목 · 상태 · 시간 다음에, 왼쪽에서 오른쪽으로', fixed: [cat.detail.fixed[0]],
+      flags: [{ key: 'subtitle', entry: cat.detail.toggles[0] }], items: l.head, cat: cat.detail.head },
+    { title: '입력 필요', note: '타이틀 바 바로 아래 — 탭에 넣지 않고 항상 보입니다', fixed: [cat.detail.fixed[3]] },
+    { key: 'tabs', title: '탭 바', note: '처음엔 모두 닫혀 있고, 누른 탭의 내용만 열립니다 — 왼쪽에서 오른쪽으로', items: l.tabs, cat: cat.detail.tabs,
+      selects: [
+        { key: 'tasks', label: '작업 탭 보기', opts: cat.detail.tasks, value: l.tasks },
+        { key: 'tasksMax', label: '작업 탭 높이', opts: [{ value: '34', label: '3분의 1' }, { value: '50', label: '절반' }, { value: '70', label: '3분의 2' }], value: String(l.tasksMax), off: l.tasks !== 'list' && l.tasks !== 'line' }],
+      flagsLast: true, flags: [{ key: 'agenthead', entry: cat.detail.toggles[1] }, { key: 'open', entry: cat.detail.toggles[4] }] },
+    { title: '아래', note: '대화 · 작업 로그와 입력창', fixed: [cat.detail.fixed[1], cat.detail.fixed[2]],
+      flags: [{ key: 'logtab', entry: cat.detail.toggles[5] }, { key: 'sections', entry: cat.detail.toggles[2] }, { key: 'controls', entry: cat.detail.toggles[3] }] },
   ];
   var follow = layThreadMode() !== 'custom';
   return [
@@ -365,10 +379,12 @@ function layControlsHtml(l) {
     html += '<ol class="lay-list"' + (zone.key ? ' data-zone="' + zone.key + '" aria-label="' + layEsc(zone.title) + '"' : '') + '>';
     var fixed = zone.fixed || [];
     for (var f = 0; f < fixed.length; f++) html += layFixedHtml(fixed[f]);
-    var flags = zone.flags || [];
-    for (var g = 0; g < flags.length; g++) html += layFlagHtml(flags[g].key, flags[g].entry, !!l[flags[g].key]);
+    var flags = '';
+    for (var g = 0; g < (zone.flags || []).length; g++) flags += layFlagHtml(zone.flags[g].key, zone.flags[g].entry, !!l[zone.flags[g].key]);
+    if (!zone.flagsLast) html += flags;
     var items = zone.items || [];
     for (var i = 0; i < items.length; i++) html += layItemHtml(zone.key, items[i], i, items.length, layCatEntry(zone.cat, items[i].id));
+    if (zone.flagsLast) html += flags;
     html += '</ol></section>';
   }
   return html;
@@ -525,25 +541,47 @@ function layOpenBody(open) {
   for (var i = 0; i < parts.length; i++) html += layPartHtml(parts[i]);
   return html + '</div>';
 }
+// The detail card's sample: its title bar's items, its tabs' counts and what each tab opens.
+var LAY_DETAIL_HEAD = { model: '● Opus 5.5', cost: '$6.20', tokens: '6.4M 토큰', speed: '97 tok/s', ctx: '컨텍스트 64%', owner: 'Zhuge', workflow: 'zwork' };
+var LAY_DETAIL_TABS = { goal: ['목표', '2/3'], tasks: ['작업', '2/4'], agents: ['에이전트', '2'], artifacts: ['산출물', '3'], info: ['세부', ''] };
+function layDetailTabBody(id, spec) {
+  if (id === 'goal') return '<div><b>목표</b> 결제 페이지 리뉴얼 끝내기 · 진행 중<div class="pv-sub">펼치기 · 이어하기 2/10 · 삭제 — 남은 것: 폼 검증 테스트</div></div>';
+  if (id === 'tasks') {
+    if (spec.tasks === 'list') return '<div><b>작업 목록</b> 2 / 4 완료<div class="pv-task is-done"><i></i>요구 정리</div><div class="pv-task is-done"><i></i>화면 설계</div><div class="pv-task is-run"><i></i>카드 폼 검증 추가</div><div class="pv-task"><i></i>확인</div></div>';
+    if (spec.tasks === 'line') return '<div><b>작업 2 / 4</b> 지금: 카드 폼 검증 추가 ▾</div>';
+    return '<div><b>작업</b> 실행 표 — T1 요구 정리 8분 · T2 화면 설계 12분 · T3 카드 폼 검증 추가 5분…' + (spec.open ? ' · 남은 계획 1 · 이전 계획' : '') + '</div>';
+  }
+  if (id === 'agents') return '<div class="pv-tabs"><span>메인</span><span>A1 Explore</span><span>A2 general-purpose</span></div>'
+    + (spec.show.indexOf('agenthead') >= 0 ? '<div class="pv-sub">메인 에이전트 · opus-5-5</div>' : '');
+  if (id === 'artifacts') return '<div><b>산출물</b> analysis.html · board.png · notes.md</div>';
+  if (id === 'info') return '<div><b>세션 정보</b> 누적 입력 · 출력 · 캐시 · 서브에이전트 · 활성 시간 · 컨텍스트 · 전체 대화</div>';
+  return '';
+}
 function layDetailHtml(d) {
   var spec = detailSpecOf(d);
   var has = function(t) { return spec.show.indexOf(t) >= 0; };
   var html = '<div class="lay-panel" aria-label="디테일 카드 미리보기">';
-  html += '<div class="pv-head"><b>결제 페이지 리뉴얼</b>' + (has('subtitle') ? '<div class="pv-sub">새 디자인 적용 · 폼 검증</div>' : '') + '<div class="pv-sub">● ' + (_laySample === 'run' ? '실행 중 · 20분' : _laySample === 'wait' ? '입력 대기 · 3분' : '완료 · 32분') + ' · Slack · ☆ · ' + (_laySample === 'run' ? '중지' : '닫기') + '</div></div>';
-  var top = spec.order;
-  for (var i = 0; i < top.length; i++) {
-    var id = top[i];
-    if (id === 'needs') { if (_laySample === 'wait') html += '<div class="lay-pv-ask"><b>입력 필요</b> dev에 먼저 배포할까요?</div>'; continue; }
-    if (!has(id)) continue;
-    if (id === 'info') html += '<div><b>세션 정보</b> Zhuge · zwork · 6.4M 토큰 · $6.20 · 컨텍스트 64%' + (spec.open ? '<div class="pv-sub">모델 · 시작한 사람 · 도구 호출 · 활성 시간 · 누적 토큰 …</div>' : '') + '</div>';
-    if (id === 'goal') html += '<div><b>목표</b> 결제 페이지 리뉴얼 끝내기 · 진행 중</div>';
-    if (id === 'artifacts') html += '<div><b>산출물</b> analysis.html · board.png · notes.md</div>';
+  // 타이틀 바: the title, the status and the time, the layout's items, then Slack · ☆ · the action.
+  var metrics = '';
+  for (var h = 0; h < spec.head.length; h++) if (LAY_DETAIL_HEAD[spec.head[h]]) metrics += '<span class="pv-m">' + layEsc(LAY_DETAIL_HEAD[spec.head[h]]) + '</span>';
+  var st = _laySample === 'run' ? '● 실행 중 · 20분' : _laySample === 'wait' ? '● 입력 대기 · 3분' : '● 완료 · 32분';
+  html += '<div class="pv-head"><b>결제 페이지 리뉴얼</b>' + (has('subtitle') ? '<div class="pv-sub">새 디자인 적용 · 폼 검증</div>' : '')
+    + '<div class="pv-bar"><span>' + st + '</span>' + metrics + '<span class="pv-act">Slack · ☆ · ' + (_laySample === 'run' ? '중지' : '닫기') + '</span></div></div>';
+  // 입력 필요: its own zone, right under the title bar.
+  if (_laySample === 'wait') html += '<div class="lay-pv-ask"><b>입력 필요</b> dev에 먼저 배포할까요?</div>';
+  // 탭 바: every tab closed until pressed — the preview's open and close as the card's do.
+  if (spec.tabs.length) {
+    html += '<div class="pv-midbar" role="group" aria-label="탭 바 미리보기">';
+    for (var t = 0; t < spec.tabs.length; t++) {
+      var tab = LAY_DETAIL_TABS[spec.tabs[t]];
+      if (!tab) continue;
+      html += '<button type="button" class="pv-mt" data-lay="pvtab" data-v="' + spec.tabs[t] + '" aria-pressed="' + (_layPvTab === spec.tabs[t] ? 'true' : 'false') + '">'
+        + layEsc(tab[0]) + (tab[1] ? '<span>' + layEsc(tab[1]) + '</span>' : '') + '</button>';
+    }
+    html += '</div>';
+    if (spec.tabs.indexOf(_layPvTab) >= 0) html += '<div class="pv-tabbody">' + layDetailTabBody(_layPvTab, spec) + '</div>';
   }
-  if (has('agenttabs') || has('subtabs')) html += '<div class="pv-tabs"><span>메인</span><span>A1 Explore</span><span>A2 general-purpose</span></div>';
-  if (has('agenthead')) html += '<div class="pv-sub">메인 에이전트 · opus-5-5</div>';
-  if (spec.tasks === 'list') html += '<div><b>작업 목록</b> 2 / 4 완료<div class="pv-task is-done"><i></i>요구 정리</div><div class="pv-task is-done"><i></i>화면 설계</div><div class="pv-task is-run"><i></i>카드 폼 검증 추가</div><div class="pv-task"><i></i>확인</div></div>';
-  else if (spec.tasks === 'line') html += '<div><b>작업 2 / 4</b> 지금: 카드 폼 검증 추가 ▾</div>';
-  else if (spec.tasks === 'runs') html += '<div><b>작업</b> ' + (spec.open ? '실행 표 — T1 요구 정리 8분 · T2 화면 설계 12분 · T3 카드 폼 검증 추가 5분… · 남은 계획 1 · 이전 계획' : '카드 폼 검증 추가 · 실행 3 · 완료 2 · 남은 1 ▸') + '</div>';
+  // 아래: 대화 · 작업 로그 (+ 에이전트 트리), the chat, the model line, the composer.
   if (has('sections')) html += '<div class="pv-tabs"><span>대화</span><span>작업 로그</span><span>에이전트 트리</span></div>';
   else if (has('logtab')) html += '<div class="pv-tabs"><span>대화</span><span>작업 로그</span></div>';
   html += '<div class="pv-chat"><div class="pv-msg">폼 검증도 넣어 줘</div><div class="pv-msg is-bot">검증 규칙 4개를 추가했습니다. 카드 번호 · 만료일 · CVC · 이름…</div></div>';
@@ -583,7 +621,7 @@ function layPreview(l) {
   var mode = _layMode;
   if (_laySurface === 'detail') {
     box.innerHTML = layDetailHtml(l);
-    if (note) note.textContent = '디테일 카드의 배치입니다. 실제 화면은 대시보드에서 카드를 열면 오른쪽(휴대폰은 아래)에 열립니다.';
+    if (note) note.textContent = '디테일 카드의 배치입니다 — 탭을 눌러 보세요. 실제 화면은 대시보드에서 카드를 열면 오른쪽(휴대폰은 아래)에 열립니다.';
     return;
   }
   if (_laySurface === 'thread') {
@@ -632,7 +670,8 @@ function layZoneCat(zone) {
   if (zone === 'rows') return c.card.rows;
   if (zone === 'foot') return c.card.foot;
   if (zone === 'parts') return c.open.parts;
-  if (zone === 'top') return c.detail.top;
+  if (zone === 'head') return c.detail.head;
+  if (zone === 'tabs') return c.detail.tabs;
   if (zone === 'info') return c.thread.info;
   if (zone === 'nav') return c.thread.nav;
   return [];
@@ -732,6 +771,7 @@ function layOnClick(e) {
   if (act === 'undo') return layUndo();
   if (act === 'reset') return layReset();
   if (act === 'quick') return layQuick(t.getAttribute('data-v'));
+  if (act === 'pvtab') { var v = t.getAttribute('data-v'); _layPvTab = _layPvTab === v ? '' : v; return layPaint(); }
 }
 // Drag by the handle (the row is draggable; the drop goes before or after the row under the pointer, in its list).
 function layOnDragStart(e) {
