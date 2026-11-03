@@ -119,6 +119,12 @@ function shortText(kind: CardLinkKind, link: LinkLike, title: string | undefined
   if (nonBlank(title)) return clip(title.trim());
   const page = url.match(/\/pages\/\d+\/([^/?#]+)/);
   if (page) return clip(decodeSlug(page[1]));
+  // A Notion page URL ends in `<Title-words>-<32-hex id>`; a URL with only the id has no title in it.
+  if (/^https?:\/\/(?:[\w-]+\.)?notion\.(?:so|site)\//i.test(url)) {
+    const notion = (url.split(/[?#]/)[0].replace(/\/+$/, '').split('/').pop() ?? '').match(/^(.+)-[0-9a-f]{32}$/i);
+    const words = notion ? decodeSlug(notion[1]) : '';
+    if (nonBlank(words)) return clip(words);
+  }
   return clip(nonBlank(link.label) ? link.label.trim() : 'Wiki');
 }
 
