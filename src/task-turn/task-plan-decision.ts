@@ -119,11 +119,11 @@ export interface SlackPlanDeciderDeps {
   getSession(sessionKey: string): ConversationSession | undefined;
   /** The registry's strict write (`setSessionPlanGate`): a failed save puts the gate back and throws. */
   setPlanGate(sessionKey: string, gate: TaskPlanGate): void;
-  /** A turn is in flight on the session (the request coordinator's slot): it is still writing the plan. */
-  isBusy(sessionKey: string): boolean;
   /**
    * Send the approved plan into the session's thread as `actorUserId`'s instruction — the
-   * normal Slack path (queue, steering, goals). True once it went in; false when it could not.
+   * normal Slack path. True once it is taken: its turn runs, or it waits in the follow-up queue
+   * behind a turn in flight (as its own turn — never pushed into a running one). False when it
+   * was not taken (the thread could not be reached, the pipeline refused or halted it).
    */
   sendPlan(sessionKey: string, text: string, actorUserId: string): Promise<boolean>;
   /** As for a task (#777): someone the owner has not approved does not decide the owner's plan. */
@@ -135,9 +135,10 @@ export interface SlackPlanDeciderDeps {
 /**
  * #853 — 시작 / 취소 on a Slack session in plan mode (the same rules as a task's, on the
  * Slack path). 시작 saves the gate approved first — so the instruction's turn is not a planning
- * turn — then sends the plan into the thread as the decider's own instruction. A plan that
- * could not be sent puts the waiting plan back, so 시작 can be pressed again. 취소 is saved;
- * nothing is sent. Every refusal changes nothing.
+ * turn — then sends the plan into the thread as the decider's own instruction, and answers once
+ * it is taken (it runs, or waits in the queue behind a turn in flight). A plan that was not taken
+ * puts the waiting plan back, so 시작 can be pressed again; one taken and then failing is the
+ * work's failure — the start stands. 취소 is saved; nothing is sent. Every refusal changes nothing.
  */
 export function createSlackPlanDecider(deps: SlackPlanDeciderDeps): TaskPlanDecider {
   const now = deps.now ?? Date.now;
@@ -150,9 +151,7 @@ export function createSlackPlanDecider(deps: SlackPlanDeciderDeps): TaskPlanDeci
       return refuse(403, "the plan is the task owner's to start or cancel — send your changes as an instruction");
     }
     if (session.terminated || session.closing) return refuse(409, 'the task is closed');
-    if (deps.isBusy(sessionKey)) {
-      return refuse(409, 'the task is still working on its plan — wait for it, or stop it first');
-    }
+    // No "busy" refusal: a turn in flight (the plan turn still wrapping up) only queues the plan.
     const previous = session.taskPlan;
     const decided = decidePlan(previous, decision, revision, actorUserId, now());
     if (!decided.ok) return refuse(decided.status, decided.error);

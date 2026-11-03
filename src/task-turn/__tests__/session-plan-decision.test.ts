@@ -6,7 +6,9 @@
  *   S2 a plan that could not be sent puts the waiting plan back; 시작 can be pressed again.
  *   S3 취소: saved cancelled, nothing is sent.
  *   S4 refusals change nothing: no plan mode, nobody signed in, someone the owner
- *      has not approved, a closed session, a turn still writing the plan, a stale revision.
+ *      has not approved, a closed session, a stale revision.
+ *   S5 a turn in flight refuses nothing: the plan is handed over and waits in the queue behind
+ *      it as its own turn (review #858 — the busy check was the task path's, which had no queue).
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { TaskPlanGate } from '../task-plan';
@@ -32,7 +34,6 @@ function harness(
   const decide = createSlackPlanDecider({
     getSession: (k: string) => (k === KEY ? session : undefined),
     setPlanGate,
-    isBusy: () => false,
     sendPlan,
     now: () => 50,
     logger: { info: vi.fn(), warn: vi.fn() },
@@ -83,7 +84,6 @@ describe('createSlackPlanDecider (#853)', () => {
     ['nobody signed in', { actorUserId: '' }, {}, undefined, 403],
     ['someone the owner has not approved', { actorUserId: 'UOTHER' }, { mayDecide: () => false }, undefined, 403],
     ['a closed session', {}, {}, { ownerId: 'UOWNER', terminated: true, taskPlan: awaiting() }, 409],
-    ['a turn still writing the plan', {}, { isBusy: () => true }, undefined, 409],
     ['a stale revision', { revision: 1 }, {}, undefined, 409],
   ])('S4 — refuses %s and changes nothing', async (_name, req, over, session, status) => {
     const h = session ? harness(over, session) : harness(over);
@@ -99,5 +99,12 @@ describe('createSlackPlanDecider (#853)', () => {
     expect(h.session.taskPlan).toBe(before);
     expect(h.setPlanGate).not.toHaveBeenCalled();
     expect(h.sendPlan).not.toHaveBeenCalled();
+  });
+
+  it('S5 — a turn in flight does not refuse 시작: the plan is handed over (it queues behind it)', async () => {
+    const h = harness({ isBusy: () => true });
+    const r = await h.decide({ sessionKey: KEY, decision: 'start', revision: 2, actorUserId: 'UOWNER' });
+    expect(r).toEqual({ status: 200, body: { ok: true, state: 'approved', revision: 2, started: true } });
+    expect(h.sendPlan).toHaveBeenCalledTimes(1);
   });
 });

@@ -109,7 +109,7 @@ The new-task composer has a **작업 계획** (plan) switch, on by default, for 
 - Opening the card shows the plan at once in the detail card's 입력 필요. The status bar at the top has **시작** (start) and **취소** (cancel); the bar above the composer at the bottom has **시작**, **취소** and **직접 입력** (direct input); the open task card has the same three. A card whose plan arrives opens by itself once.
 - **시작** starts only the revision you were looking at (a newer one meanwhile is refused with a note to look again); the plan goes in as the next instruction and the work begins. **취소** closes the plan; a new instruction plans again. **직접 입력** goes to the composer: what you send there makes the model revise and submit the next revision.
 - Until the plan is started the task has only the plan tool, never the epic's child tools. Full-page view: `/dashboard/plan/<session key>`.
-- In a Slack thread, the thread gets a note with the card's link when a plan is ready. **시작** sends the plan into the thread as your next instruction. A message you write in the thread while the plan waits is direct input.
+- In a Slack thread, the thread gets a note with the card's link when a plan is ready. **시작** sends the plan into the thread as your next instruction, as its own turn: if a turn is still running, the plan waits in the queue behind it. A message you write in the thread while the plan waits is direct input; `/compact` and the bot's own continuation turns are not, and leave the plan waiting.
 - A simple question (2–4 short choices — yes / no, start / cancel) shows its choices as buttons on the task card: one press answers it.
 
 ### 🗂️ A Slack instruction as a dashboard task

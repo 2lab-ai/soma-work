@@ -943,6 +943,13 @@ async function start() {
       actorUserId?: string,
       /** #785 — the ref the panel gave its pending copy; recorded on the turn this send becomes. */
       clientRef?: string,
+      /**
+       * #853 — `onAccepted`: called once the message is taken (its turn reaches the model, or it is
+       * queued behind a running turn) — `handleMessage` resolves only after the whole run.
+       * `verbatim`: the host's own words, dispatched as written (no command routing, no `!`
+       * steer, never pushed into a running turn — its own turn, like a goal's opening).
+       */
+      extra: { onAccepted?: () => void; verbatim?: true } = {},
     ): Promise<{ channel: string; ts: string } | undefined> => {
       const session = claudeHandler.getSessionByKey(sessionKey);
       if (!session) {
@@ -1012,19 +1019,27 @@ async function start() {
       }
       const ts = echoTs || String(Date.now() / 1000);
       onSent?.({ channel: session.channelId, ts });
-      await slackHandler.handleMessage(
-        {
-          type: 'message',
-          channel: session.channelId,
-          thread_ts: session.threadTs,
-          text: message,
-          user: sender,
-          ts,
-          ...(files ? { files } : {}),
-          ...(clientRef ? { dashboardClientRef: clientRef } : {}),
-        } as any,
-        dashboardSay,
-      );
+      const unwatch = extra.onAccepted
+        ? slackHandler.onTurnAccepted(session.channelId, ts, extra.onAccepted)
+        : undefined;
+      try {
+        await slackHandler.handleMessage(
+          {
+            type: 'message',
+            channel: session.channelId,
+            thread_ts: session.threadTs,
+            text: message,
+            user: sender,
+            ts,
+            ...(files ? { files } : {}),
+            ...(clientRef ? { dashboardClientRef: clientRef } : {}),
+            ...(extra.verbatim ? { routeContext: { verbatimPrompt: true } } : {}),
+          } as any,
+          dashboardSay,
+        );
+      } finally {
+        unwatch?.();
+      }
       logger.info('Dashboard: command sent to session', {
         sessionKey,
         messageLength: message.length,
@@ -1550,9 +1565,24 @@ async function start() {
     const slackPlanDecider = createSlackPlanDecider({
       getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
       setPlanGate: (key, gate) => claudeHandler.getSessionRegistry().setSessionPlanGate(key, gate),
-      isBusy: (key) => slackHandler.getRequestCoordinator().isRequestActive(key),
-      sendPlan: async (key, text, actorUserId) =>
-        (await injectDashboardMessage(key, text, undefined, [], actorUserId)) !== undefined,
+      // Taken (its turn runs, or it waits in the queue behind a running one) — not the whole run:
+      // a turn that fails after it started is the work's failure, not a start that did not happen.
+      sendPlan: (key, text, actorUserId) =>
+        new Promise<boolean>((resolve) => {
+          injectDashboardMessage(key, text, undefined, [], actorUserId, undefined, {
+            onAccepted: () => resolve(true),
+            verbatim: true,
+          }).then(
+            () => resolve(false),
+            (error) => {
+              logger.warn('Plan start: the plan could not be sent into the thread', {
+                sessionKey: key,
+                error: (error as Error)?.message ?? String(error),
+              });
+              resolve(false);
+            },
+          );
+        }),
       mayDecide: (sessionKey, session, actorUserId) =>
         instructionApprovals.allows({ sessionKey, session, senderId: actorUserId }),
       logger: new Logger('SlackPlanDecider'),
