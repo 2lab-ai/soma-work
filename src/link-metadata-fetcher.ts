@@ -289,10 +289,12 @@ export interface GitHubPullSummary {
   merged_at?: string | null;
   created_at?: string;
   body?: string | null;
+  /** The PR's head commit. */
+  head_sha?: string;
 }
 
 /**
- * The PRs whose head is `owner:branch` (any state, newest first, at most 10) — undefined when the query failed. Each
+ * The PRs whose head is `owner:branch` (any state, newest first, at most 30) — undefined when the query failed. Each
  * answer also fills the metadata cache, so the card's chip shows the PR's state at once (#833).
  */
 export async function fetchGitHubPullsForHead(
@@ -305,7 +307,7 @@ export async function fetchGitHubPullsForHead(
   try {
     const head = encodeURIComponent(`${owner}:${branch}`);
     const response = await fetch(
-      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?head=${head}&state=all&per_page=10`,
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?head=${head}&state=all&sort=created&direction=desc&per_page=30`,
       {
         headers: {
           Authorization: `token ${token}`,
@@ -331,6 +333,7 @@ export async function fetchGitHubPullsForHead(
         merged_at: typeof p.merged_at === 'string' ? p.merged_at : null,
         created_at: typeof p.created_at === 'string' ? p.created_at : undefined,
         body: typeof p.body === 'string' ? p.body.slice(0, 4000) : null,
+        ...(typeof p.head?.sha === 'string' ? { head_sha: p.head.sha } : {}),
       });
       const status = p.merged_at ? 'merged' : p.draft && p.state !== 'closed' ? 'draft' : p.state;
       metadataCache.set(p.html_url, { title, status, fetchedAt: Date.now() });

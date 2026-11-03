@@ -36,6 +36,7 @@ describe('fetchGitHubPullsForHead (#833)', () => {
           merged_at: '2026-11-03T03:00:00Z',
           created_at: '2026-11-03T02:30:00Z',
           body: 'Closes #832',
+          head: { sha: 'abc123' },
         },
         { nope: true },
       ],
@@ -43,7 +44,7 @@ describe('fetchGitHubPullsForHead (#833)', () => {
     vi.stubGlobal('fetch', fetchMock);
     const pulls = await fetchGitHubPullsForHead('a', 'b', 'feat/x');
     expect(fetchMock.mock.calls[0][0]).toBe(
-      'https://api.github.com/repos/a/b/pulls?head=a%3Afeat%2Fx&state=all&per_page=10',
+      'https://api.github.com/repos/a/b/pulls?head=a%3Afeat%2Fx&state=all&sort=created&direction=desc&per_page=30',
     );
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('token fake-token');
     expect(pulls).toEqual([
@@ -56,6 +57,7 @@ describe('fetchGitHubPullsForHead (#833)', () => {
         merged_at: '2026-11-03T03:00:00Z',
         created_at: '2026-11-03T02:30:00Z',
         body: 'Closes #832',
+        head_sha: 'abc123',
       },
     ]);
     expect(peekLinkMetadata('https://github.com/a/b/pull/12')).toEqual({ title: 'feat: x', status: 'merged' });
