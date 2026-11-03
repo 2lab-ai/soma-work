@@ -329,11 +329,18 @@ export interface SlackEpicWakerDeps {
   retryMs?: number;
   now?: () => number;
   acceptTimeoutMs?: number;
+  /** Mark the wakes the epic's ended chain ran done — all but `keep` (`SessionRegistry.settleEpicWakes`). */
+  settle?(sessionKey: string, keep: string | undefined): void;
 }
 
 export interface SlackEpicWaker {
   /** Wake this session if it is a live, idle Slack epic, not done, with pending events. Never throws. */
   wake(sessionKey: string): void;
+  /**
+   * The epic's chain ended: the wakes it ran are settled (`deps.settle`) — never the one still being
+   * sent (consumed, not taken yet: a restart before it is taken must deliver it again) — and it may wake.
+   */
+  chainEnded(sessionKey: string): void;
 }
 
 /**
@@ -347,8 +354,8 @@ export function createSlackEpicWaker(deps: SlackEpicWakerDeps): SlackEpicWaker {
   const now = deps.now ?? Date.now;
   const retries = new Map<string, ReturnType<typeof setTimeout>>();
   const spent = new Set<string>();
-  /** Epics a wake is being sent to now: one at a time. */
-  const sending = new Set<string>();
+  /** Epics a wake is being sent to now (one at a time), with that wake's id until it is taken. */
+  const sending = new Map<string, string | undefined>();
 
   function retryLater(sessionKey: string): void {
     if (retries.has(sessionKey) || spent.has(sessionKey)) return;
@@ -386,7 +393,7 @@ export function createSlackEpicWaker(deps: SlackEpicWakerDeps): SlackEpicWaker {
       by,
     );
     deps.gate.record(epic);
-    sending.add(sessionKey);
+    sending.set(sessionKey, by);
     try {
       const result = await handOver(
         (onAccepted) =>
@@ -396,6 +403,8 @@ export function createSlackEpicWaker(deps: SlackEpicWakerDeps): SlackEpicWaker {
       );
       if (result === 'taken') {
         spent.delete(sessionKey);
+        // Taken (running, or stored in its queue): no longer one being sent.
+        sending.set(sessionKey, undefined);
         return;
       }
       deps.release(sessionKey, by);
@@ -417,5 +426,17 @@ export function createSlackEpicWaker(deps: SlackEpicWakerDeps): SlackEpicWaker {
     });
   }
 
-  return { wake };
+  function chainEnded(sessionKey: string): void {
+    try {
+      deps.settle?.(sessionKey, sending.get(sessionKey));
+    } catch (error) {
+      deps.logger.warn('Epic wakes could not be settled — a restart delivers them again', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+    wake(sessionKey);
+  }
+
+  return { wake, chainEnded };
 }

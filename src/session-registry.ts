@@ -1705,13 +1705,15 @@ export class SessionRegistry {
    * tied to a wake). A wake still tied to its events at a restart was cut before its chain ended, and
    * the load delivers them again (`releaseCutEpicWakes`). Best effort: unsettled only means once more.
    */
-  settleEpicWakes(epicKey: string): void {
+  settleEpicWakes(epicKey: string, keep?: string): void {
     const epic = this.sessions.get(normalizeSessionKey(epicKey));
     if (!epic || epic.kind !== 'epic' || epic.slackless === true) return;
     const before = epic.epicEvents;
-    if (!before?.some((e) => e.consumedBy?.startsWith(SLACK_WAKE_PREFIX))) return;
+    // `keep`: a wake still being sent (not taken yet) is not one this chain ran (review #872 R2 grok).
+    const settles = (by: string | undefined) => !!by?.startsWith(SLACK_WAKE_PREFIX) && by !== keep;
+    if (!before?.some((e) => settles(e.consumedBy))) return;
     epic.epicEvents = before.map((e) => {
-      if (!e.consumedBy?.startsWith(SLACK_WAKE_PREFIX)) return e;
+      if (!settles(e.consumedBy)) return e;
       const { consumedBy: _done, ...rest } = e;
       return rest;
     });

@@ -197,6 +197,29 @@ describe('SessionRegistry — epics as Slack sessions (#854)', () => {
     expect(later.getSessionByKey(epicKey)?.epicEvents?.map((e) => e.state)).toEqual(['delivered']);
   });
 
+  it('SE11 — a chain end settles the wakes that ran, never one still being sent (review #872 R2 grok)', () => {
+    const reg = new SessionRegistry();
+    const { epic, key: epicKey } = epicIn(reg);
+    const { key: a } = childIn(reg, epic.taskId as string);
+    reg.recordSessionChainEnd(a, { outcome: 'completed', at: 1000 });
+    reg.consumeEpicWake(
+      epicKey,
+      (epic.epicEvents ?? []).map((e) => e.id),
+      'wake:1',
+    );
+    const { key: b } = childIn(reg, epic.taskId as string, '1700000002.000100');
+    reg.recordSessionChainEnd(b, { outcome: 'failed', at: 2000 });
+    const second = (epic.epicEvents ?? []).filter((e) => e.state === 'pending').map((e) => e.id);
+    reg.consumeEpicWake(epicKey, second, 'wake:2');
+    // The epic's chain ends while wake:2 is being sent (not taken yet): wake:1 is done, wake:2 is kept.
+    reg.settleEpicWakes(epicKey, 'wake:2');
+    expect((epic.epicEvents ?? []).map((e) => e.consumedBy)).toEqual([undefined, 'wake:2']);
+    // The process dies before wake:2 is taken: the load delivers its event again.
+    const after = new SessionRegistry();
+    after.loadSessions();
+    expect(after.getSessionByKey(epicKey)?.epicEvents?.map((e) => e.state)).toEqual(['delivered', 'pending']);
+  });
+
   describe('folders (review #872 astra R4/R5)', () => {
     const ROOT = `/tmp/soma-epic-folders-${process.pid}`;
     beforeEach(() => fs.mkdirSync(ROOT, { recursive: true }));

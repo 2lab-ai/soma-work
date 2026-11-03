@@ -297,6 +297,24 @@ describe('the Slack epic waker (#854)', () => {
     }
   });
 
+  it('W4 — the epic’s chain end settles its wakes, keeping one still being sent (review #872 R2 grok)', async () => {
+    const settle = vi.fn();
+    const w = wakerWorld({
+      settle,
+      // The echo is posting: not taken yet.
+      send: vi.fn(() => new Promise(() => {})),
+    });
+    w.waker.wake('C1-1.0');
+    await tick();
+    expect(w.deps.consume).toHaveBeenCalledWith('C1-1.0', ['c1:a'], 'wake:42');
+    w.waker.chainEnded('C1-1.0');
+    expect(settle).toHaveBeenCalledWith('C1-1.0', 'wake:42');
+    // With nothing being sent, every wake that ran is settled.
+    const idle = wakerWorld({ settle: vi.fn(), epicEvents: [] } as any);
+    idle.waker.chainEnded('C1-1.0');
+    expect(idle.deps.settle).toHaveBeenCalledWith('C1-1.0', undefined);
+  });
+
   it('W2 — a wake that was not taken puts the events back and retries once', async () => {
     const send = vi.fn(async () => undefined);
     const w = wakerWorld({ send });
