@@ -1466,7 +1466,12 @@ async function start() {
         senderId: actorUserId,
         senderName,
         instruction,
+        // Saved or refused (#842 R3): a queued word leaves the task's queue only once the owner's store has it.
+        strict: true,
       });
+      if (held.refused === 'unsaved') {
+        return { status: 503, body: { error: '승인 요청을 저장하지 못했습니다 — 잠시 뒤 다시 보내세요' } };
+      }
       if (held.refused === 'full') {
         return {
           status: 429,
