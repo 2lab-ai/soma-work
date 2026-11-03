@@ -303,7 +303,7 @@ interface SerializedSession {
   /** E2 ③ — the open chain and owed notices of a Slack-less task; validated on load. */
   openChain?: unknown;
   notices?: unknown;
-  /** A Slack-less task's follow-up queue; validated (and paused) on load (`sanitizeTaskFollowups`). */
+  /** A Slack-less task's follow-up queue; validated on load — queued words stay queued (`sanitizeTaskFollowups`). */
   taskFollowups?: unknown;
   /**
    * A Slack-less task's turn's initiator (`currentInitiatorId`), saved with the turn's start: the
@@ -4344,7 +4344,7 @@ export class SessionRegistry {
           inputContext: sanitizeTaskInputContext(serialized.inputContext),
           ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, slackless),
           taskPlan: sanitizeTaskPlanGate(serialized.taskPlan),
-          // Paused on load: the chain each word waited for did not survive the restart.
+          // Queued words stay queued: the boot sends them (owner directive 2026-11-03); a word caught sending pauses.
           taskFollowups: slackless ? sanitizeTaskFollowups(serialized.taskFollowups) : undefined,
           openChain:
             slackless && typeof serialized.openChain === 'string' && serialized.openChain !== ''

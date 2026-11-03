@@ -2042,5 +2042,7 @@
   "🧹 텔레그램 해제 완료": "🧹 Telegram disconnected",
   "🪄 개선": "🪄 Improve",
   "🪄 전체 메모리 개선": "🪄 Improve all memory",
-  "🪄 전체 프로필 개선": "🪄 Improve all profile"
+  "🪄 전체 프로필 개선": "🪄 Improve all profile",
+  "재시작으로 전달되지 못해 다시 보냅니다": "Not delivered because of a restart — sending it again",
+  "재시작 전에 모델이 읽었습니다": "The model read it before the restart"
 }
