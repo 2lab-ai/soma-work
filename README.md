@@ -48,6 +48,12 @@ You can install it in your own Claude Code with `/plugin marketplace add 2lab-ai
 `/plugin install zworkflow@soma-work`. Install, update, hooks, and a path that copies only the
 `using-intentfirst` and `using-ssot` skills are in the [zworkflow plugin README](./src/local/README.md).
 
+zworkflow is meant to stay portable. The session task card calls (`GET_SESSION` / `UPDATE_SESSION`) and the NEEDS YOU
+follow-up live in a second plugin, `local` ([`src/local-harness/`](./src/local-harness/)), which soma-work bundles and
+loads by default and the marketplace never publishes; the other soma-work-only calls still in zworkflow
+(`ASK_USER_QUESTION`, `CONTINUE_SESSION`, cron) move there in #860. Its `local:auto-es` is the Executive Summary inside
+soma-work: it runs `zworkflow:es`, then syncs the task card, and the turn-end summary runs its turn-end contract.
+
 ---
 
 ## ✨ Key Features
@@ -115,13 +121,15 @@ Choosing "대시보드 작업" in the new-task composer shows a **작업 계획*
 
 Turn it on with `/z taskentry on` (per user, off by default). A plain instruction to the bot in a channel then becomes a dashboard task. The thread gets the card link, then only what matters: the result, questions that need you, approval requests and failures. You follow and steer the work on the card. In that thread nothing else runs: another mention gets one notice with the card link.
 
+An instruction sent to a dashboard task while it works waits in the task's queue (shown above the message box, up to 10) and runs when the current step ends well, as the person who wrote it. A step that is stopped or does not end well pauses the queue: each waiting instruction then runs only when you press 지금 보내기 (send now). Each instruction can be cancelled, and edited by the person who wrote it. Pressing 지금 보내기 while the task works moves that instruction to the front. The queue is kept across a restart, paused. A task's turn does not yet take an instruction in the middle of a step.
+
 When it does not apply, the Slack session path runs as before: DMs, files, commands, `!`/`%`, and threads that already have a Slack session. When the dashboard is not running, you are told and the work runs as a Slack session. Wiring: [architecture](./docs/misc/reference/architecture.md) (E2 ⑧).
 
 ### 🖼️ Dashboard Artifacts
 
 Every file the model sends to Slack (HTML reports, PNG, WAV/voice, video, PDF, text) shows up in the web dashboard, newest first: as chips on the session card, a thumbnail strip in the opened card, and a strip in the session panel's common surface with each answer's own files under it. A markdown answer is the chat's — it is never listed as an artifact. Hover for a minimap preview, click for a viewer that fits the file (an HTML page, picture, video or PDF fills the screen; a document takes the full height; audio is a small dialog — HTML runs sandboxed; audio plays straight from the card). Press ‹ n / m › at its foot to pick any file of the session from a list. Uploads made before the feature are backfilled from the session's work log. Visualizations (`local:html`, `local:dimensional-drawing`) upload the HTML only — their PNG is a local QA snapshot.
 
-When a turn's Executive Summary lands (about five minutes after the work finishes — the TL;DR the Slack thread head shows), the dashboard shows it too: the whole summary as an answer in the session panel's Chat, and the TL;DR in a box on the task card. The box goes with the next instruction, never shows on a sleeping or archived card, and its × hides it from that card in your browser.
+When a turn's Executive Summary lands (about five minutes after the work finishes — the TL;DR the Slack thread head shows), the dashboard shows it too: the whole summary as an answer in the session panel's Chat, and the TL;DR in a box on the task card. The box goes with the next instruction, never shows on a sleeping or archived card, and its × hides it from that card in your browser. When an issue or PR the session created is still not complete (open, draft, unmerged, waiting on a deploy), the summary says why in a bold ⚠️ TL;DR line and ends with a ⚠️ User follow-up required section — what is blocked, who must act, the steps, how to check, what to reply. That ⚠️ line keeps the card in NEEDS YOU ("후속 작업 필요: …") instead of DONE until a later summary has none, or `/new`. The summary is the soma-work harness skill `local:auto-es`: the turn-end summary runs its turn-end contract, and when the model runs it (in place of `es`) it writes the same TL;DR to the card itself (`UPDATE_SESSION { executiveSummary: { tldr } }`, together with the issue/PR/document links and their state).
 
 ### 📎 Instruction attachments in the dashboard
 
@@ -482,7 +490,7 @@ Forces the bot to read a skill's `SKILL.md` and follow it. Emits a red RPG banne
 | Syntax | Resolves to |
 |--------|-------------|
 | `$<skill>` | `src/local/skills/<skill>/SKILL.md` (bare shorthand for local skills) |
-| `$local:<skill>` | Same as above, explicit form |
+| `$local:<skill>` | Same as above, explicit form; a name zworkflow lacks falls back to `src/local-harness/skills/<skill>/SKILL.md` (soma-work harness plugin, e.g. `$local:auto-es`) |
 | `$user:<skill>` | `DATA_DIR/{userId}/skills/<skill>/SKILL.md` (per-user skills) |
 | `$<plugin>:<skill>` | `plugins/<plugin>/skills/<skill>/SKILL.md` |
 
@@ -815,6 +823,8 @@ not merely that the source checkout happens to contain the files.
 
 GitHub App takes priority when configured. Falls back to PAT automatically.
 
+With the App, every token refresh also rewrites a bot-owned `gh` config (`$DATA_DIR/gh/hosts.yml`, mode 0600). While that file is written, agent shells get it as `GH_CONFIG_DIR` and no `GITHUB_TOKEN` (a failed write falls back to the env), so `gh` reads the live token on every call instead of a copy that expires an hour into a long turn. `git` already re-reads its config, which every refresh rewrites. Agent `gh` therefore does not see the operator's own `~/.config/gh` (aliases, other hosts).
+
 ---
 
 ## Project Structure
@@ -848,7 +858,8 @@ src/                                # TypeScript source
 ├── sandbox/                        # Execution sandbox gate
 ├── metrics/                        # Token/cost telemetry
 ├── notification-channels/          # Slack · DM · Telegram · Webhook routing
-└── local/                          # Claude Code SDK extensions
+├── local-harness/                  # soma-work-only plugin `local` (harness skills: auto-es)
+└── local/                          # Claude Code SDK extensions (plugin `zworkflow`, portable)
     ├── agents/                     # Agent definitions
     ├── skills/                     # Skill implementations
     ├── hooks/                      # Git/build hooks

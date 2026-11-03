@@ -436,4 +436,17 @@ describe('createTaskLauncher — plan mode (SSOT 2026-11-02, T1)', () => {
     await h.launcher.launch({ ...REQ, kind: 'epic', plan: true });
     expect(h.created[0]).toMatchObject({ kind: 'epic', planMode: true });
   });
+
+  it('the dry run of a plan-mode task asks as planning — its first turn takes no slot (2026-11-03)', async () => {
+    const plain = harness();
+    await plain.launcher.launch({ ...REQ, plan: true });
+    expect(plain.controller.canStart).toHaveBeenCalledWith(OWNER, REQ.prompt, undefined, { planning: true });
+    const epic = harness({ epicTasks: true });
+    await epic.launcher.launch({ ...REQ, kind: 'epic', plan: true });
+    expect(epic.controller.canStart).toHaveBeenCalledWith(OWNER, REQ.prompt, { role: 'root' }, { planning: true });
+    // Without the toggle, the dry run is the work's own (the slot).
+    const work = harness();
+    await work.launcher.launch(REQ);
+    expect(work.controller.canStart).toHaveBeenCalledWith(OWNER, REQ.prompt);
+  });
 });

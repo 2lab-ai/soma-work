@@ -35,6 +35,7 @@ import type { FollowupItem, FollowupItemState } from '@soma/slack/followup-queue
 import type { FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { sumLiveUsage } from '@soma/slack/live-usage';
 import { livePendingModelSwitch } from '@soma/slack/model-switch';
+import { plainTldrLine } from '@soma/slack/summary-service';
 import type { FastifyInstance } from 'fastify';
 import { SDK_EFFORT_LEVELS } from 'soma-lib';
 import type { CronExecutionRecord, CronJob } from 'somalib/cron/cron-storage';
@@ -465,6 +466,12 @@ export interface KanbanSession {
    * While any is pending the card reads `activityState: 'waiting'`.
    */
   pendingInstructionApprovals?: DashboardInstructionApproval[];
+  /**
+   * #829 — the session's last Executive Summary left an issue/PR it created unfinished (its ⚠️ TL;DR line):
+   * what the user must do next. While the session is idle the card reads `activityState: 'waiting'`
+   * (NEEDS YOU) instead of DONE.
+   */
+  pendingFollowUp?: { reason: string; at: number };
   /** #600 ⑥ — a Slack-less dashboard task (the client gates task-only UI on it). Absent for Slack sessions. */
   slackless?: true;
   /** E4 ① (.prd/19 D1) — an epic task. Absent otherwise. */
@@ -1489,6 +1496,17 @@ let _followupHandler: DashboardFollowupHandler | null = null;
 export function setDashboardFollowupHandler(handler: DashboardFollowupHandler | null): void {
   _followupHandler = handler;
 }
+/**
+ * A dashboard task's follow-up queue (2026-11-03) — Send now / Cancel / Edit on
+ * a word in `taskFollowups` (wired in src/index.ts to the task turn
+ * controller's `actOnQueue`). A task's queue is read from the session itself
+ * (`followupsOf`); the Slack queue never sees a task.
+ */
+type TaskQueueHandler = (request: DashboardFollowupRequest) => Promise<DashboardFollowupOutcome>;
+let _taskQueueHandlerFn: TaskQueueHandler | null = null;
+export function setDashboardTaskQueueHandler(fn: TaskQueueHandler | null): void {
+  _taskQueueHandlerFn = fn;
+}
 
 /** States a note still has a control in; `failed` keeps Retry / Cancel until one is used. */
 const FOLLOWUP_SHOWN_STATES: readonly FollowupItemState[] = [
@@ -1524,6 +1542,8 @@ function noticeFailuresOf(sessionKey: string): { noticeFailures?: Array<{ kind: 
 
 /** The session payload's queue: what the panel lists, oldest first (the queue's arrival order). */
 export function followupsOf(sessionKey: string, ownerId: string | undefined): DashboardFollowups | undefined {
+  const task = _getSessionsFn?.()?.get(sessionKey);
+  if (task?.slackless === true) return taskFollowupsOf(task.taskFollowups, ownerId);
   const view = _followupHandler?.view(sessionKey);
   if (!view) return undefined;
   const failed = view.items.filter((item) => item.state === 'failed').slice(-FOLLOWUP_SHOWN_FAILED);
@@ -1555,6 +1575,48 @@ export function followupsOf(sessionKey: string, ownerId: string | undefined): Da
       };
       if (author && author !== ownerId) out.author = nameOf(author);
       if (item.stateReason && !FOLLOWUP_STATE_ECHO.has(item.stateReason)) out.stateReason = item.stateReason;
+      return out;
+    }),
+  };
+}
+
+/**
+ * A dashboard task's queue on its card (2026-11-03): every word it holds, in
+ * order — `queued` runs at the next chain end that ended well, `paused` waits
+ * for Send now (the panel reads both as waiting). The writer edits their own;
+ * the task's queue has no turn generation of its own (Send now on a busy task
+ * puts the word first in line), so `turnEpoch` is 0.
+ */
+function taskFollowupsOf(
+  items: ConversationSession['taskFollowups'],
+  ownerId: string | undefined,
+): DashboardFollowups | undefined {
+  if (!Array.isArray(items) || items.length === 0) return undefined;
+  let names: Map<string, string> | undefined;
+  const nameOf = (userId: string): string => {
+    if (!names) {
+      names = new Map();
+      for (const [, s] of getAllSessions()) if (s?.ownerId && s.ownerName) names.set(s.ownerId, s.ownerName);
+    }
+    return names.get(userId) ?? userId;
+  };
+  return {
+    turnEpoch: 0,
+    items: items.map((item) => {
+      // In flight (being started or handed to the owner): the panel's "sending" row.
+      const sending = item.state === 'sending';
+      const out: DashboardFollowupItem = {
+        id: item.id,
+        text: item.text,
+        files: [],
+        enqueuedAt: item.enqueuedAt,
+        state: item.state === 'sending' ? 'dispatched' : item.state,
+        epoch: item.epoch,
+        editable: !sending,
+        authorId: item.authorId,
+      };
+      if (item.authorId !== ownerId) out.author = nameOf(item.authorId);
+      if (item.stateReason) out.stateReason = item.stateReason;
       return out;
     }),
   };
@@ -2335,7 +2397,13 @@ export function liveWaitingSince(
 /** SSOT 2026-11-02 T7 — the card's TL;DR: the session's Executive Summary lines, at most five. */
 function esTldrOf(s: ConversationSession): { esTldr?: { lines: string[]; at: number } } {
   const es = s.executiveSummary;
-  const lines = Array.isArray(es?.tldr) ? es.tldr.filter((l) => typeof l === 'string' && l.trim()).slice(0, 5) : [];
+  // #829 — the box draws plain text: the ⚠️ line's markdown bold (Slack renders it) would show as `**`.
+  const lines = Array.isArray(es?.tldr)
+    ? es.tldr
+        .filter((l) => typeof l === 'string' && l.trim())
+        .slice(0, 5)
+        .map(plainTldrLine)
+    : [];
   return es && lines.length ? { esTldr: { lines, at: Number(es.at) || 0 } } : {};
 }
 
@@ -2430,6 +2498,21 @@ export function taskPlanToKanban(s: { slackless?: boolean; taskPlan?: TaskPlanGa
   };
 }
 
+/**
+ * #829 — an idle session whose last Executive Summary left an own issue/PR unfinished waits for its user's
+ * follow-up (NEEDS YOU). A running turn is the user already acting: it stays RUNNING.
+ */
+function followUpOf(s: {
+  followUp?: { reason?: unknown; at?: unknown };
+  activityState?: string;
+}): { reason: string; at: number } | undefined {
+  const f = s.followUp;
+  if ((s.activityState || 'idle') !== 'idle' || !f || typeof f.reason !== 'string' || !f.reason.trim()) {
+    return undefined;
+  }
+  return { reason: f.reason.trim(), at: finiteNumber(f.at) ?? 0 };
+}
+
 /** Plan mode — an idle task whose plan waits for its owner asks for them (NEEDS YOU). */
 function planAsks(s: { slackless?: boolean; taskPlan?: TaskPlanGate; activityState?: string }): boolean {
   return s.slackless === true && s.taskPlan?.state === 'awaiting' && (s.activityState || 'idle') === 'idle';
@@ -2489,6 +2572,9 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...(goalDecision ? [{ createdAt: goalDecision.askedAt }] : []),
     ...instructionApprovals,
   ];
+  // #829 — and the follow-up its last Executive Summary left (an own issue/PR not complete). An armed
+  // automatic resume is the agent about to act again: that card stays RUNNING.
+  const followUp = autoResume ? undefined : followUpOf(s);
   return {
     // #814 Wire-format key includes the local instance prefix so sibling
     // instances can never collide on the client cache.
@@ -2509,7 +2595,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     // A turn blocked on a permission prompt waits for its user (projection
     // only — the session's own activityState is untouched).
     // A plan waiting for its owner (plan mode) waits too.
-    activityState: asks.length > 0 || planAsks(s) ? 'waiting' : s.activityState || 'idle',
+    activityState: asks.length > 0 || planAsks(s) || followUp ? 'waiting' : s.activityState || 'idle',
     sessionState: s.state || 'MAIN',
     terminated: s.terminated === true,
     trashed: s.trashed === true,
@@ -2519,6 +2605,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...(permissions.length > 0 ? { pendingPermissions: permissions } : {}),
     ...(goalDecision ? { pendingGoalDecision: goalDecision } : {}),
     ...(instructionApprovals.length > 0 ? { pendingInstructionApprovals: instructionApprovals } : {}),
+    ...(followUp ? { pendingFollowUp: followUp } : {}),
     issueUrl: s.links?.issue?.url,
     issueLabel: s.links?.issue?.label,
     issueTitle: s.links?.issue?.title,
@@ -2535,7 +2622,9 @@ function sessionToKanban(key: string, s: any): KanbanSession {
       : undefined,
     tokenUsage: tokenUsageOf(s),
     doneAt: liveDoneAt(s),
-    waitingSince: planAsks(s) ? (s.taskPlan?.updatedAt ?? liveWaitingSince(s, asks)) : liveWaitingSince(s, asks),
+    waitingSince: planAsks(s)
+      ? (s.taskPlan?.updatedAt ?? liveWaitingSince(s, asks))
+      : (liveWaitingSince(s, asks) ?? (followUp?.at || undefined)),
     finishedAt: liveFinishedAt(s),
     ...modelFields(s),
     ...contextFields(s),
@@ -4129,17 +4218,21 @@ export async function registerDashboardRoutes(
         }
         text = body.text.trim();
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply, { instruct: true });
+      // A dashboard task's queue (2026-11-03) is the task turn controller's, not the Slack queue's.
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { instruct: true, allowSlackless: true });
       if (!resolved) return;
       const { originalKey } = resolved;
       const actorUserId = signedInUserId(request);
-      const manages = _hasWriteAccess(request, _getSessionsFn?.()?.get(originalKey)?.ownerId);
-      if (!_followupHandler) {
+      const target = _getSessionsFn?.()?.get(originalKey);
+      const manages = _hasWriteAccess(request, target?.ownerId);
+      const act =
+        target?.slackless === true ? _taskQueueHandlerFn : _followupHandler ? _followupHandler.act.bind(_followupHandler) : null;
+      if (!act) {
         reply.status(501).send({ error: 'Follow-up queue handler not configured' });
         return;
       }
       try {
-        const outcome = await _followupHandler.act({
+        const outcome = await act({
           sessionKey: originalKey,
           itemId,
           op,
@@ -9581,6 +9674,9 @@ function cardSummary(s, col, headline) {
   if (col !== 'closed' && tp && tp.state === 'awaiting') return '작업 계획 v' + tp.revision + ' — 시작할까요?' + (tp.summary ? ' · ' + tp.summary : '');
   var ia = col === 'closed' ? [] : s.pendingInstructionApprovals || [];
   if (ia.length) return (ia[0].requesterName || ia[0].requesterId || '') + '님의 지시 승인 대기' + (ia.length > 1 ? ' 외 ' + (ia.length - 1) + '건' : '');
+  // #829 — an own issue/PR the last summary left unfinished: what the user has to do next.
+  var fu = col === 'closed' ? null : s.pendingFollowUp;
+  if (fu && fu.reason) return '후속 작업 필요: ' + fu.reason;
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return q.question || q.title;
   // Waiting out a retry: the error behind it is what this card is "doing".
@@ -9934,6 +10030,7 @@ function cardAsks(s, col) {
   if (col !== 'closed' && s.pendingGoalDecision) return true;
   if (col !== 'closed' && s.taskPlan && s.taskPlan.state === 'awaiting') return true;
   if (col !== 'closed' && s.pendingInstructionApprovals && s.pendingInstructionApprovals.length) return true;
+  if (col !== 'closed' && s.pendingFollowUp && s.pendingFollowUp.reason) return true;
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return true;
   var r = pendingAutoResume(s, col);

@@ -146,7 +146,8 @@ describe('PluginsHandler', () => {
   // =========================================================================
 
   describe('list', () => {
-    it('should always show built-in local plugin', async () => {
+    // #857 — the built-in directory (src/local) is the zworkflow plugin; `local` is now the harness plugin's name.
+    it('should always show the built-in zworkflow plugin', async () => {
       const { ctx, say } = createContext('plugins');
       const result = await handler.execute(ctx);
 
@@ -154,8 +155,7 @@ describe('PluginsHandler', () => {
       expect(say).toHaveBeenCalledTimes(1);
 
       const message = say.mock.calls[0][0].text;
-      expect(message).toContain('local');
-      expect(message).toContain('built-in');
+      expect(message).toContain('*zworkflow* (built-in)');
     });
 
     it('should show marketplace plugins when installed', async () => {

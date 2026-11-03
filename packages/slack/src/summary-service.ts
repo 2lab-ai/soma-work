@@ -24,7 +24,9 @@ const MAX_PROMPT_HISTORY_ENTRIES = 10;
 /**
  * Executive-summary mode (host-selected from session state).
  *
- * Design: `src/local/skills/es/SKILL.md`. The three modes mirror
+ * Design: `src/local/skills/es/SKILL.md` (zworkflow es). soma-work's turn-end summary is `local:auto-es` run
+ * without tools: the es contract below plus the skill's turn-end contract, which soma-work reads from
+ * `src/local-harness/skills/auto-es/reference/turn-end.md` and hands in as `turnEndContract` (#857). The three modes mirror
  * `using-epic-tasks` Case A/B/C but for the *report* layer — the legacy fixed
  * 8-section format becomes the `epic` tier, and the previous lighter
  * "What was done / Decisions / Open threads / Next actions" recap is the
@@ -180,12 +182,48 @@ function capTldrLine(line: string): string {
     .trimEnd()}…`;
 }
 
+/** One TL;DR line, trimmed and without a list marker — the one normalization both es paths share (#829). */
+export function cleanTldrLine(line: string): string {
+  return line.trim().replace(LIST_MARKER, '').trim();
+}
+
 function cleanTldrLines(lines: string[]): string[] {
   return lines
-    .map((line) => line.trim().replace(LIST_MARKER, '').trim())
+    .map(cleanTldrLine)
     .filter((line) => line.length > 0)
     .slice(0, TLDR_MAX_LINES)
     .map(capTldrLine);
+}
+
+/**
+ * #829 — a TL;DR line as plain text: markdown bold (`**x**`, `__x__`) unwrapped. The Slack surface renders the
+ * bold; the dashboard card draws text as is, so it shows this form (and the follow-up reason is built from it).
+ */
+export function plainTldrLine(line: string): string {
+  return line.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/__([^_]+)__/g, '$1');
+}
+
+/** A TL;DR line that starts with ⚠️ (after any emphasis markers) — the unfinished-own-artifact signal (#829). */
+const FOLLOW_UP_LINE = /^[\s*_~]*\u26a0\ufe0f?/u;
+
+/**
+ * #829 — what the task card waits on the user for: the TL;DR's ⚠️ lines, markup stripped, joined.
+ *
+ * The `local:auto-es` contract (#857) reserves a leading ⚠️ in a TL;DR line for "an issue/PR this session created is not
+ * complete, and why". The same line the reader sees emphasized is the host's signal — one source, so the card
+ * cannot say "waiting" while the summary says "done", or the reverse. Undefined when no line carries it.
+ */
+export function followUpFromTldr(tldr: readonly string[]): { reason: string } | undefined {
+  const reasons = tldr
+    .filter((line) => FOLLOW_UP_LINE.test(line))
+    .map((line) =>
+      plainTldrLine(line.replace(FOLLOW_UP_LINE, ''))
+        .replace(/\*\*|__/g, '')
+        .replace(/^[\s*_~:—-]+|[\s*_~]+$/g, '')
+        .trim(),
+    )
+    .filter((reason) => reason.length > 0);
+  return reasons.length > 0 ? { reason: reasons.join(' · ') } : undefined;
 }
 
 /**
@@ -395,7 +433,13 @@ export interface SummarySessionInfo {
    * SSOT 2026-11-02 T7 — the TL;DR the thread head shows, for the dashboard's task card: set by
    * `displayOnThread` (only when the summary has one), cleared by `clearDisplay` on the next input.
    */
-  executiveSummary?: { tldr: string[]; at: number };
+  executiveSummary?: { tldr: string[]; at: number; source?: 'es' };
+  /**
+   * #829 — the latest Executive Summary left an own issue/PR unfinished (its ⚠️ TL;DR line): the dashboard
+   * keeps the task card in NEEDS YOU with this reason. Set and cleared only by an Executive Summary
+   * (`displayOnThread`, or the model-run es through UPDATE_SESSION) — the next user input does not clear it.
+   */
+  followUp?: { reason: string; at: number };
   actionPanel?: {
     summaryBlocks?: any[];
     [key: string]: any;
@@ -433,6 +477,15 @@ export interface SummarySlackApi {
   ) => Promise<any>;
 }
 
+/** Construction options for {@link SummaryService}. */
+export interface SummaryServiceOptions {
+  /**
+   * #857 — the harness skill's turn-end contract (`local:auto-es`, reference/turn-end.md), appended after the es
+   * contract. soma-work reads it from the bundled harness plugin; without it the summary is the generic es one.
+   */
+  turnEndContract?: string;
+}
+
 /**
  * Handles executive summary generation and display.
  *
@@ -447,6 +500,7 @@ export interface SummarySlackApi {
 export class SummaryService {
   private forkExecutor: ForkExecutor;
   private slackApi?: SummarySlackApi;
+  private turnEndContract?: string;
 
   /**
    * @param forkExecutor - Injected function that executes prompt via forked session.
@@ -455,15 +509,17 @@ export class SummaryService {
    *   when absent, `postInThread` becomes a no-op (tests and host-fork
    *   configurations without Slack credentials still work).
    */
-  constructor(forkExecutor?: ForkExecutor, slackApi?: SummarySlackApi) {
+  constructor(forkExecutor?: ForkExecutor, slackApi?: SummarySlackApi, options?: SummaryServiceOptions) {
     this.forkExecutor = forkExecutor ?? (async (prompt) => prompt);
     this.slackApi = slackApi;
+    this.turnEndContract = options?.turnEndContract?.trim() || undefined;
   }
 
   /**
    * Build the full summary prompt from session context + tier template + global rules.
    *
-   * Composition: `<Session Context with mode header>\n\n<MODE_TEMPLATES[mode]>\n\n<SUMMARY_PROMPT>`.
+   * Composition: `<Session Context with mode header>\n\n<MODE_TEMPLATES[mode]>\n\n<SUMMARY_PROMPT>`, then the
+   * `local:auto-es` turn-end contract when one was handed in (#857).
    * The host computes the mode; the LLM is told not to reclassify because a
    * one-shot, no-tools forked summary cannot reliably count artifacts from
    * transcript noise.
@@ -494,7 +550,9 @@ export class SummaryService {
       contextParts.push(`- Parent epic: ${session.handoffContext.parentEpicUrl}`);
     }
 
-    return `${contextParts.join('\n')}\n\n${MODE_TEMPLATES[mode]}\n\n${SUMMARY_PROMPT}`;
+    const base = `${contextParts.join('\n')}\n\n${MODE_TEMPLATES[mode]}\n\n${SUMMARY_PROMPT}`;
+    // #857 — soma-work's turn end runs `local:auto-es`: its harness rules come last, on top of the es contract.
+    return this.turnEndContract ? `${base}\n\n${this.turnEndContract}` : base;
   }
 
   /**
@@ -569,10 +627,22 @@ export class SummaryService {
     // The surface is the channel-visible thread root, so it carries only the
     // TL;DR. The full ES goes inside the thread via `postInThread`.
     const { tldr, tldrSource } = parseExecutiveSummary(summaryText);
-    // The dashboard's task card shows the same lines (SSOT 2026-11-02 T7) — a task with no
-    // Slack thread (a dashboard task) included, so this comes before the thread-head guard.
-    if (tldr.length > 0) session.executiveSummary = { tldr, at: Date.now() };
-    else session.executiveSummary = undefined;
+    // #829 — the model-run es wrote this turn's card with tools (`executiveSummary.source: 'es'`): the tool-less
+    // host fork of the same turn leaves the card alone, TL;DR and verdict as one pair. The user's next input
+    // (`clearDisplay`) drops that TL;DR, so the next summary decides again.
+    if (session.executiveSummary?.source !== 'es') {
+      // The dashboard's task card shows the same lines (SSOT 2026-11-02 T7) — a task with no
+      // Slack thread (a dashboard task) included, so this comes before the thread-head guard.
+      const at = Date.now();
+      if (tldr.length > 0) session.executiveSummary = { tldr, at };
+      else session.executiveSummary = undefined;
+      // #829 — a well-formed TL;DR decides whether the card waits on its user; a reply with none keeps the
+      // previous verdict (a malformed summary is no evidence the work got finished).
+      if (tldr.length > 0) {
+        const followUp = followUpFromTldr(tldr);
+        session.followUp = followUp ? { reason: followUp.reason, at } : undefined;
+      }
+    }
 
     if (!session.actionPanel) {
       logger.warn('Cannot display summary — no actionPanel on session');
@@ -658,6 +728,7 @@ export class SummaryService {
   clearDisplay(session: SummarySessionInfo): void {
     // The dashboard card's TL;DR goes with the thread head's — even where there is no head to clear.
     session.executiveSummary = undefined;
+    // #829 — the follow-up stays: the card keeps waiting until a summary judges the work again.
     if (!session.actionPanel) return;
     if (!session.actionPanel.summaryBlocks) return;
 
