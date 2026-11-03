@@ -26,6 +26,18 @@ export const FOLLOWUP_QUEUE_DEFAULT_CAPACITY = 100;
 /** Stored as the `stateReason` of an item the user cancelled from the Queue panel. */
 export const FOLLOWUP_CANCEL_DEFAULT_REASON = '사용자가 취소했습니다';
 
+/**
+ * `stateReason` of a row a restart cut before the model read it, put back in
+ * line by the next boot (`settleRestartCut`, SSOT 2026-11-03).
+ */
+export const FOLLOWUP_REDELIVER_AFTER_RESTART_REASON = '재시작으로 전달되지 못해 다시 보냅니다';
+
+/**
+ * `stateReason` of a row a restart cut after the model had already read it —
+ * the session's transcript says so — closed by the next boot (`settleRestartCut`).
+ */
+export const FOLLOWUP_READ_BEFORE_RESTART_REASON = '재시작 전에 모델이 읽었습니다';
+
 export type FollowupItemState =
   | 'queued'
   | 'steered'
@@ -103,6 +115,16 @@ export interface FollowupItem {
    * the conservative answer.
    */
   deliveredAt?: number;
+  /**
+   * The `steerUuid` this row carried when a stop or a restart took it out of
+   * `steered` (`freezeSessions`). History only — never a live handle: settlement
+   * receipts look rows up by `steerUuid`, which the freeze cleared. The next
+   * boot reads it to ask the session's transcript whether the model read the
+   * message before the process went away (SSOT 2026-11-03). Cleared when the row
+   * goes back to `queued`. Advisory like `deliveredAt`: the loader does not
+   * validate it, and an older build ignores it.
+   */
+  cutSteerUuid?: string;
 }
 
 /** Did this item's own turn reach the model? See `FollowupItem.deliveredAt`. */
@@ -657,6 +679,38 @@ export class FollowupQueue {
   }
 
   /**
+   * The next boot's verdict on a row a restart cut (SSOT 2026-11-03: a message
+   * a restart kept from being processed is sent afterwards, unless a person
+   * stopped the work):
+   *
+   * - `unread` — the model never read it (it was waiting, or its turn never got
+   *   that far, or the transcript does not hold it): back to `queued` at its
+   *   original seq, so the ordinary drain — or a steer into the resuming turn —
+   *   delivers it. Not a blind replay: the caller only says `unread` with that
+   *   evidence in hand.
+   * - `read` — the session's transcript holds it: the model read it before the
+   *   process went away, and the resumed conversation carries it. `resolved`.
+   *
+   * `paused`/`uncertain` only — the states a freeze parks. Which rows a restart
+   * cut, and which ones a person stopped, is the caller's question; this only
+   * checks what the queue itself knows. Lifts a freeze left with nothing to hold.
+   */
+  settleRestartCut(
+    sessionKey: string,
+    itemId: string,
+    expectedEpoch: number,
+    verdict: 'unread' | 'read',
+  ): FollowupOpResult {
+    return this.mutate(sessionKey, itemId, expectedEpoch, (item, session) => {
+      if (!FREEZE_PARKED_STATES.includes(item.state)) return 'invalid-state';
+      if (verdict === 'read') this.enter(item, 'resolved', FOLLOWUP_READ_BEFORE_RESTART_REASON);
+      else this.enter(item, 'queued', FOLLOWUP_REDELIVER_AFTER_RESTART_REASON);
+      this.settleFreeze(session);
+      return undefined;
+    });
+  }
+
+  /**
    * Record a CONFIRMED outcome. `uncertain` is accepted on purpose: an item
    * parked as `uncertain` by a stop or a restart is only ever pinned to
    * `resolved`/`failed` once the result is actually known (`ssot.md:129`).
@@ -1027,8 +1081,11 @@ export class FollowupQueue {
       for (const item of session.items) {
         const target = transitions[item.state];
         if (!target) continue;
+        const cutSteerUuid = item.state === 'steered' ? item.steerUuid : undefined;
         if (typeof target === 'string') this.enter(item, target, reason);
         else this.enter(item, target.to, `${reason} — ${target.note}`);
+        // The live handle is gone (`enter`); the uuid stays as the record the next boot checks.
+        if (cutSteerUuid) item.cutSteerUuid = cutSteerUuid;
       }
     }
     this.commit(next);
@@ -1097,8 +1154,11 @@ export class FollowupQueue {
     item.stateReason = reason;
     item.steerUuid = undefined;
     // Back in line means a new run will carry it: that run earns its own
-    // delivery evidence (`FollowupItem.deliveredAt`).
-    if (state === 'queued') item.deliveredAt = undefined;
+    // delivery evidence (`FollowupItem.deliveredAt`), and a new steer its own uuid.
+    if (state === 'queued') {
+      item.deliveredAt = undefined;
+      item.cutSteerUuid = undefined;
+    }
     item.epoch += 1;
     item.updatedAt = Date.now();
   }

@@ -5,7 +5,11 @@ vi.mock('../slack/autoskill-fire', () => ({
   buildAutoskillFire: vi.fn(() => null),
 }));
 
-import type { FollowupQueueSnapshot } from '@soma/slack/followup-queue';
+import {
+  FOLLOWUP_READ_BEFORE_RESTART_REASON,
+  FOLLOWUP_REDELIVER_AFTER_RESTART_REASON,
+  type FollowupQueueSnapshot,
+} from '@soma/slack/followup-queue';
 import {
   buildFollowupItemMessage,
   FOLLOWUP_CANCEL_ACTION_ID,
@@ -6518,7 +6522,11 @@ describe('SlackHandler — follow-up queue host', () => {
     }
 
     /** The next process: same registry session, the queue restored from `snapshot`. */
-    function bootFrom(snapshot: FollowupQueueSnapshot, recovered: any[]): { booted: SlackHandler; postMessage: any } {
+    function bootFrom(
+      snapshot: FollowupQueueSnapshot,
+      recovered: any[],
+      transcript?: string,
+    ): { booted: SlackHandler; postMessage: any } {
       const postMessage = vi.fn().mockResolvedValue({ ts: '999.000' });
       const registryHandler = {
         ...claudeHandler,
@@ -6531,7 +6539,10 @@ describe('SlackHandler — follow-up queue host', () => {
         { client: { chat: { postMessage } }, assistant: vi.fn() } as any,
         registryHandler as any,
         {} as any,
-        { followupQueueStore: { load: () => snapshot, save: () => undefined, recoveryWarning: undefined } },
+        {
+          followupQueueStore: { load: () => snapshot, save: () => undefined, recoveryWarning: undefined },
+          followupTranscriptReader: () => transcript,
+        },
       );
       const bootedAny = booted as any;
       bootedAny.slackApi = handlerAny.slackApi;
@@ -6787,17 +6798,130 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(rowOf(booted).state).toBe('uncertain');
     });
 
-    it('leaves a row whose turn never reached the model uncertain — its words may never have been read', async () => {
+    it('sends a row whose turn never reached the model again, after the resume turn — SSOT 2026-11-03', async () => {
       const snapshot = await interruptedByShutdown(false);
       const { booted } = bootFrom(snapshot, workingAtShutdown());
+      // Its words never reached the model and no transcript says otherwise: back in
+      // line, not 보내지 못했습니다 with a Retry.
+      expect(rowOf(booted).state).toBe('queued');
+      expect(rowOf(booted).stateReason).toBe(FOLLOWUP_REDELIVER_AFTER_RESTART_REASON);
 
       const resume = holdNextTurn(booted, true);
+      const redelivery = holdNextTurn(booted, true);
       await booted.notifyCrashRecovery();
       await resume.started;
+      // It was its own turn, not a steer: it waits for the resume turn to end.
+      expect(rowOf(booted).state).toBe('queued');
       resume.release();
+      await redelivery.started;
+      expect(rowOf(booted).state).toBe('dispatched');
+      redelivery.release();
       for (let i = 0; i < 6; i++) await tick();
+      expect(rowOf(booted).state).toBe('resolved');
+    });
 
-      expect(rowOf(booted).state).toBe('uncertain');
+    /**
+     * Live report (work-m64 dev, 2026-11-03 16:39 KST): a message steered into the
+     * running turn 4 s before a deploy stopped it was frozen `uncertain` with its
+     * uuid wiped. The transcript showed the model never read it; another one, cut at
+     * 17:28, had been read at 08:25:37Z. Both read 보내지 못했습니다 through every later
+     * restart.
+     */
+    describe('a steered row the restart cut', () => {
+      const STEER_TEXT = '이거 처리중인거 보여줘야함. 이거 포함해서 픽스해줘.';
+
+      /** Steered into the running turn, then the deploy's shutdown stop. Returns the snapshot and the push uuid. */
+      async function steeredThenShutdown(): Promise<{ snapshot: FollowupQueueSnapshot; uuid: string }> {
+        const steerTurn = vi.fn().mockReturnValue(true);
+        claudeHandler.steerTurn = steerTurn;
+        const { settle } = await startBusyTurn();
+        await handler.handleMessage(message({ ts: FOLLOWUP_TS, text: STEER_TEXT }), say());
+        expect(items()[0].state).toBe('steered');
+        const uuid = steerTurn.mock.calls[0][1].uuid as string;
+
+        handler.prepareFollowupShutdown();
+        expect(items()[0].state).toBe('uncertain');
+        const snapshot = JSON.parse(JSON.stringify(saved[saved.length - 1])) as FollowupQueueSnapshot;
+        await settle();
+        return { snapshot, uuid };
+      }
+
+      const transcriptLine = (entry: Record<string, unknown>) => `${JSON.stringify(entry)}\n`;
+
+      it('is closed, not sent twice, when the transcript shows the model read it', async () => {
+        const { snapshot, uuid } = await steeredThenShutdown();
+        const transcript = transcriptLine({
+          type: 'attachment',
+          attachment: { type: 'queued_command', prompt: [{ type: 'text', text: STEER_TEXT }], source_uuid: uuid },
+          timestamp: new Date().toISOString(),
+        });
+
+        const { booted } = bootFrom(snapshot, workingAtShutdown(), transcript);
+
+        expect(rowOf(booted).state).toBe('resolved');
+        expect(rowOf(booted).stateReason).toBe(FOLLOWUP_READ_BEFORE_RESTART_REASON);
+        expect((booted as any).getFollowupQueue().freezeReason(SESSION_KEY)).toBeUndefined();
+      });
+
+      it('goes back in line and is steered into the resumed turn when the model never read it', async () => {
+        const { snapshot } = await steeredThenShutdown();
+        const steerTurn = vi.fn().mockReturnValue(true);
+        claudeHandler.steerTurn = steerTurn;
+        // An unrelated earlier line with the same words but before the enqueue must not count.
+        const transcript = transcriptLine({
+          type: 'user',
+          message: { role: 'user', content: STEER_TEXT },
+          timestamp: new Date(Date.now() - 60 * 60_000).toISOString(),
+        });
+
+        const { booted } = bootFrom(snapshot, workingAtShutdown(), transcript);
+        expect(rowOf(booted).state).toBe('queued');
+
+        const resume = holdNextTurn(booted, true);
+        await booted.notifyCrashRecovery();
+        await resume.started;
+        for (let i = 0; i < 4; i++) await tick();
+
+        // Handed to the resumed turn as it was handed to the cut one.
+        expect(steerTurn).toHaveBeenCalledTimes(1);
+        expect(steerTurn.mock.calls[0][1].text).toBe(STEER_TEXT);
+        expect(rowOf(booted).state).toBe('steered');
+        resume.release();
+        for (let i = 0; i < 6; i++) await tick();
+      });
+
+      it('is sent at boot when nothing resumes the session', async () => {
+        const { snapshot } = await steeredThenShutdown();
+        const { booted } = bootFrom(snapshot, []);
+        expect(rowOf(booted).state).toBe('queued');
+
+        const redelivery = holdNextTurn(booted, true);
+        expect(booted.drainRestartRequeuedFollowups()).toBe(1);
+        await redelivery.started;
+        expect(rowOf(booted).state).toBe('dispatched');
+        redelivery.release();
+        for (let i = 0; i < 6; i++) await tick();
+        expect(rowOf(booted).state).toBe('resolved');
+      });
+
+      it('is left for its owner when a person stopped the work', async () => {
+        const { snapshot } = await steeredThenShutdown();
+        snapshot.sessions[0].items[0].stateReason = '실행이 중단되었습니다 (stop)';
+
+        const { booted } = bootFrom(snapshot, []);
+
+        expect(rowOf(booted).state).toBe('uncertain');
+        expect(booted.drainRestartRequeuedFollowups()).toBe(0);
+      });
+
+      it('is left with its Retry when it is more than a day old', async () => {
+        const { snapshot } = await steeredThenShutdown();
+        snapshot.sessions[0].items[0].enqueuedAt -= 25 * 60 * 60_000;
+
+        const { booted } = bootFrom(snapshot, []);
+
+        expect(rowOf(booted).state).toBe('uncertain');
+      });
     });
 
     it('does not let the first turn after the restart take it over when that turn is the user’s own message', async () => {

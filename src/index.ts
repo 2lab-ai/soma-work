@@ -2415,6 +2415,14 @@ async function start() {
         } catch (error) {
           logger.warn('Re-arming pending error auto-retries failed (non-critical)', error);
         }
+        // SSOT 2026-11-03 — a message the restart kept from running is sent now, in a
+        // session nothing above resumes (a resumed one sends it at its resume turn).
+        try {
+          const drained = slackHandler.drainRestartRequeuedFollowups();
+          if (drained > 0) timing(`Sending follow-ups the restart kept from running (${drained} session(s))`);
+        } catch (error) {
+          logger.warn('Sending restart-cut follow-ups failed (non-critical)', error);
+        }
       })
       .catch((error) => {
         logger.warn('Crash recovery notifications failed (non-critical)', error);
