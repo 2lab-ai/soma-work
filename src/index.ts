@@ -1436,6 +1436,7 @@ async function start() {
           taskGoalCommands
             ? taskGoalCommands.run(request, session)
             : Promise.resolve({ status: 503, body: { error: 'Task goal commands are not ready yet' } }),
+        openingDropped: (key, session, goalId, why) => taskGoalCommands?.openingDropped(key, session, goalId, why),
       },
     });
     taskTurnController = taskController;
@@ -1452,7 +1453,7 @@ async function start() {
           text: prompt,
           actorUserId,
           queueWhileRunning: true,
-          goalOpening: true,
+          goalOpeningId: carry.goalId,
           ...(carry.approvedOnce ? { approvedOnce: true } : {}),
           ...(carry.newTask ? { newTask: true } : {}),
         }),

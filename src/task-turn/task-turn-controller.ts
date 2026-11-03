@@ -82,11 +82,13 @@ export interface TaskCommandRequest {
    */
   goalContinuation?: boolean;
   /**
-   * #865 — a goal's opening turn (host code only): `text` is the goal's
-   * objective, run as the user's words — never read as a goal command again,
-   * even when the objective itself begins with `goal`.
+   * #865 — a goal's opening turn (host code only): the id of the goal it opens.
+   * `text` is the goal's objective, run as the user's words — never read as a
+   * goal command again, even when the objective itself begins with `goal`.
+   * Queued, it keeps the id, and runs only while that goal is still the active
+   * goal (a `goal clear`, `pause`, `done` or delete meanwhile makes it stale).
    */
-  goalOpening?: boolean;
+  goalOpeningId?: string;
 }
 
 /** A control on a word in a task's follow-up queue (the dashboard's queue route). */
@@ -218,6 +220,17 @@ export interface TaskTurnControllerDeps {
   goalCommands?: {
     matches: (text: string) => boolean;
     run: (request: TaskCommandRequest, session: ConversationSession) => Promise<TaskCommandResponse>;
+    /**
+     * A goal's queued opening will not run: `cancelled` from the queue, or found
+     * `stale` at the drain. Its goal, if still current, is paused with its first
+     * turn owed (`goal resume` starts it) — never left active with no first turn.
+     */
+    openingDropped: (
+      sessionKey: string,
+      session: ConversationSession,
+      goalId: string,
+      why: 'cancelled' | 'stale',
+    ) => void;
   };
 }
 
@@ -282,6 +295,10 @@ function isCommand(text: string): boolean {
   return SLASH_COMMAND.test(text) || SESSION_COMMAND.test(text);
 }
 const CONTINUATION_REFUSED = 'continuation not supported on a dashboard task yet';
+/** #865 — a goal command applies at once; it never waits in the queue. */
+const GOAL_COMMAND_NOT_QUEUED = 'a goal command is not queued — send it as its own message (it applies at once)';
+/** #865 — a goal's queued opening whose goal moved on (cleared, paused, done, deleted). */
+const GOAL_OPENING_STALE = "this goal's first turn was skipped — the goal is no longer the active goal";
 const BUDGET_SPENT = 're-entry limit reached';
 /** E2 ③ — the end of a chain whose `/compact` hop completed with no instruction re-run. */
 const COMPACT_NOT_RERUN = 'compacted, but the instruction was not re-run (압축 뒤 재실행 못 함)';
@@ -524,7 +541,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
           ok: false,
           response: enqueue(session, request.sessionKey, text, request.actorUserId, {
             approvedOnce: request.approvedOnce === true,
-            goalOpening: request.goalOpening === true,
+            goalOpeningId: request.goalOpeningId,
           }),
         };
       }
@@ -565,7 +582,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       goals &&
       request.initiator !== 'host' &&
       request.goalContinuation !== true &&
-      request.goalOpening !== true &&
+      request.goalOpeningId === undefined &&
       goals.matches(request.text)
     ) {
       const gated = gate(request, { goalCommand: true });
@@ -945,7 +962,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     sessionKey: string,
     text: string,
     authorId: string,
-    flags: { approvedOnce: boolean; goalOpening: boolean },
+    flags: { approvedOnce: boolean; goalOpeningId?: string },
   ): TaskCommandResponse {
     if (!text) return refuse(400, 'message is required');
     const queue = session.taskFollowups ?? [];
@@ -960,7 +977,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       epoch: 0,
       state: 'queued',
       ...(flags.approvedOnce ? { approvedText: text } : {}),
-      ...(flags.goalOpening ? { goalOpening: true as const } : {}),
+      ...(flags.goalOpeningId !== undefined ? { goalOpeningId: flags.goalOpeningId } : {}),
     };
     session.taskFollowups = [...queue, item];
     followupsChanged(sessionKey);
@@ -976,6 +993,16 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     );
     return true;
   }
+
+  /** #865 — answered by the host with no turn of its own: a goal command, or a goal's stale opening skipped. */
+  const answeredWithoutTurn = (res: TaskCommandResponse): boolean => {
+    const body = res.body as { goalCommand?: unknown; skipped?: unknown };
+    return res.status === 200 && (body.goalCommand === true || body.skipped === true);
+  };
+
+  /** #865 — a goal's opening is owed while its goal is the current, active goal. */
+  const openingOwed = (session: ConversationSession, goalId: string): boolean =>
+    session.goal?.goalId === goalId && session.goal.status === 'active';
 
   const heldForOwner = (res: TaskCommandResponse): boolean =>
     res.status === 202 && (res.body as { pendingApproval?: unknown }).pendingApproval === true;
@@ -1022,7 +1049,10 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     if (!next) return;
     void runQueued(sessionKey, session, next).then(
       (res) => {
-        if (!heldForOwner(res) || !accepting || session.closing || session.terminated) return;
+        // Nothing started (in the owner's hands, or answered without a turn): the next word runs now.
+        if (!(heldForOwner(res) || answeredWithoutTurn(res)) || !accepting || session.closing || session.terminated) {
+          return;
+        }
         if (chains.has(sessionKey) || deps.getSession(sessionKey) !== session) return;
         runNextQueued(sessionKey, session);
       },
@@ -1055,6 +1085,12 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       replaceFollowup(session, item.id, next);
       followupsChanged(sessionKey);
     };
+    // #865 — a goal's opening runs only while its goal is still the active goal.
+    if (item.goalOpeningId !== undefined && !openingOwed(session, item.goalOpeningId)) {
+      settle(undefined);
+      deps.goalCommands?.openingDropped(sessionKey, session, item.goalOpeningId, 'stale');
+      return { status: 200, body: { ok: true, skipped: true, message: GOAL_OPENING_STALE } };
+    }
     let res: TaskCommandResponse;
     try {
       // #767 backstop: words its one-time approval does not cover are the owner's to allow (review R1).
@@ -1071,14 +1107,15 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
           sessionKey,
           text: item.text,
           actorUserId: item.authorId,
-          ...(item.goalOpening ? { goalOpening: true } : {}),
+          ...(item.goalOpeningId !== undefined ? { goalOpeningId: item.goalOpeningId } : {}),
         }));
     } catch (error) {
       // Never lost (review R1, grok/fable P2): back where it was, paused with why.
       res = refuse(500, `the task turn could not start: ${(error as Error)?.message ?? String(error)}`);
     }
-    // Started: its turn's start is saved, so it is the turn now.
-    if (res.status === 202) {
+    // Started: its turn's start is saved, so it is the turn now. A goal command
+    // answered without a turn (#865) is done with too — never put back as refused.
+    if (res.status === 202 || answeredWithoutTurn(res)) {
       settle(undefined);
       return res;
     }
@@ -1117,10 +1154,11 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       if (!writer) return no(403, 'only the person who wrote it can edit it');
       const text = (request.text ?? '').trim();
       if (!text) return no(400, 'text is required');
-      if (isCommand(text) && !deps.goalCommands?.matches(text)) return no(400, COMMAND_REFUSED);
-      // Edited, a goal's opening is the writer's own words (a `goal …` among them runs as a goal command).
+      if (isCommand(text)) return no(400, COMMAND_REFUSED);
+      // A goal command is never queued: it applies at once (#865).
+      if (deps.goalCommands?.matches(text)) return no(400, GOAL_COMMAND_NOT_QUEUED);
       session.taskFollowups = queue.map((entry) =>
-        entry === item ? { ...entry, text, epoch: entry.epoch + 1, goalOpening: undefined } : entry,
+        entry === item ? { ...entry, text, epoch: entry.epoch + 1 } : entry,
       );
       followupsChanged(sessionKey);
       return { ok: true };
@@ -1131,6 +1169,10 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     if (request.op === 'cancel') {
       session.taskFollowups = queue.filter((entry) => entry !== item);
       followupsChanged(sessionKey);
+      // #865 — a goal's first turn cancelled: the goal does not stay active with no first turn.
+      if (item.goalOpeningId !== undefined) {
+        deps.goalCommands?.openingDropped(sessionKey, session, item.goalOpeningId, 'cancelled');
+      }
       return { ok: true, message: TASK_FOLLOWUP_CANCELLED };
     }
     // Send now.
@@ -1143,7 +1185,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       return { ok: true, message: TASK_FOLLOWUP_FIRST_IN_LINE };
     }
     const res = await runQueued(sessionKey, session, item);
-    if (heldForOwner(res)) {
+    if (heldForOwner(res) || answeredWithoutTurn(res)) {
       const said = (res.body as { message?: unknown }).message;
       return typeof said === 'string' && said ? { ok: true, message: said } : { ok: true };
     }

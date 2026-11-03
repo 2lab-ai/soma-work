@@ -49,13 +49,14 @@ export interface TaskGoalCommandDeps {
   /**
    * Start a goal's opening turn: `prompt` as the turn's words, as `actorUserId`,
    * queued behind a running turn (production: the task controller's `start` with
-   * `goalOpening: true`, so the words are never read as a goal command again).
+   * `goalOpeningId` — the words are never read as a goal command again, and a
+   * queued opening runs only while its goal is still the active goal).
    */
   startOpening: (
     sessionKey: string,
     prompt: string,
     actorUserId: string,
-    carry: Pick<TaskCommandRequest, 'approvedOnce' | 'newTask'>,
+    carry: Pick<TaskCommandRequest, 'approvedOnce' | 'newTask'> & { goalId: string },
   ) => Promise<TaskCommandResponse>;
   settings: {
     getUserGoalMaxContinuations: (userId: string) => number | undefined;
@@ -75,6 +76,18 @@ export interface TaskGoalCommands {
   run: (request: TaskCommandRequest, session: ConversationSession) => Promise<TaskCommandResponse>;
   /** The dashboard goal list's add / delete on a task. Throws {@link HostGoalActionError}. */
   hostAction: (sessionKey: string, action: HostGoalAction, actorUserId: string) => Promise<HostGoalActionResult>;
+  /**
+   * A goal's queued opening will not run (cancelled from the queue, or stale at
+   * the drain). If its goal is still the current, unfinished goal it is paused
+   * with its first turn owed — `goal resume` starts it from that turn — so it is
+   * never left active with no first turn, judged on whatever turn ends next.
+   */
+  openingDropped: (
+    sessionKey: string,
+    session: ConversationSession,
+    goalId: string,
+    why: 'cancelled' | 'stale',
+  ) => void;
 }
 
 const STATUS_LIST_LIMIT = 10;
@@ -123,7 +136,7 @@ export function createTaskGoalCommands(deps: TaskGoalCommandDeps): TaskGoalComma
   async function open(
     request: TaskCommandRequest,
     session: ConversationSession,
-    goal: { objective: string; createdBy?: string },
+    goal: { goalId: string; objective: string; createdBy?: string },
     snapshot: ReturnType<typeof snapshotGoalState>,
     done: string,
     undone: string,
@@ -134,6 +147,7 @@ export function createTaskGoalCommands(deps: TaskGoalCommandDeps): TaskGoalComma
       res = await deps.startOpening(sessionKey, goal.objective, goal.createdBy || request.actorUserId, {
         approvedOnce: request.approvedOnce,
         newTask: request.newTask,
+        goalId: goal.goalId,
       });
     } catch (error) {
       res = { status: 500, body: { error: (error as Error)?.message ?? String(error) } };
@@ -488,5 +502,29 @@ export function createTaskGoalCommands(deps: TaskGoalCommandDeps): TaskGoalComma
     return { outcome: 'deleted', goalId, promoted: { goalId: promoted.goalId, objective: promoted.objective } };
   }
 
-  return { matches: (text) => CommandParser.isGoalCommand(text), run, hostAction };
+  function openingDropped(
+    sessionKey: string,
+    session: ConversationSession,
+    goalId: string,
+    why: 'cancelled' | 'stale',
+  ): void {
+    const goal = session.goal;
+    // Its goal moved on (cleared, done, deleted, replaced): nothing is owed — the drop is the whole story.
+    if (!goal || goal.goalId !== goalId || goal.status === 'complete') return;
+    const wasActive = goal.status === 'active';
+    goal.status = 'paused';
+    goal.openingPending = true;
+    retireGoalCapDecision(goal);
+    goal.updatedAt = Date.now();
+    persist(session);
+    if (why === 'cancelled' || wasActive) {
+      note(
+        sessionKey,
+        session,
+        `⏸️ Goal paused — its first turn was ${why === 'cancelled' ? 'cancelled' : 'skipped'}: ${fmt(goal.objective)}\n\`goal resume\` starts it from its first turn; \`goal clear\` drops it.`,
+      );
+    }
+  }
+
+  return { matches: (text) => CommandParser.isGoalCommand(text), run, hostAction, openingDropped };
 }
