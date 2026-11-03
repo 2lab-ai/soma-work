@@ -2562,7 +2562,17 @@ export class SessionRegistry {
   ): boolean {
     if (!session || !Array.isArray(links) || links.length === 0) return false;
     this.ensureSessionLinkState(session);
-    if (mode === 'update') return this.updateNotedLinkStates(session, links);
+    const changed = mode === 'update' ? this.updateNotedLinkStates(session, links) : this.noteNewLinks(session, links, mode);
+    // #881 C2 — the receipt is the host's state: a link the host noted itself reaches it now, not at the next write.
+    if (changed) this.writeModelCommandReceiptFor(this.receiptKeyOf(session), session, undefined);
+    return changed;
+  }
+
+  private noteNewLinks(
+    session: ConversationSession,
+    links: ReadonlyArray<SessionLink>,
+    mode: Exclude<NoteLinksMode, 'update'>,
+  ): boolean {
     let changed = false;
     const firstTaken = new Set<SessionResourceType>();
     for (const raw of links) {
@@ -2772,6 +2782,13 @@ export class SessionRegistry {
   /** The same by session key — the only way to reach a Slack-less task (channel '' throws on lookup). */
   writeModelCommandReceiptByKey(sessionKey: string, lastWrite?: HostWriteReceipt): void {
     this.writeModelCommandReceiptFor(sessionKey, this.getSessionByKey(sessionKey), lastWrite);
+  }
+
+  /** The registry key a session's receipt is written under: the task key of a Slack-less task, else channel + thread. */
+  private receiptKeyOf(session: ConversationSession): string {
+    return session.slackless && session.taskId
+      ? buildTaskSessionKey(session.taskId)
+      : this.getSessionKey(session.channelId, session.threadTs);
   }
 
   private writeModelCommandReceiptFor(
@@ -3315,6 +3332,8 @@ export class SessionRegistry {
     // its own summary.
     session.followUp = undefined;
     session.executiveSummary = undefined;
+    // #881 C2 — and the receipt stops carrying them.
+    this.writeModelCommandReceiptFor(this.receiptKeyOf(session), session, undefined);
 
     // Reset activity state
     session.activityState = 'idle';
