@@ -45,7 +45,9 @@ describe('index.ts — a dashboard task’s follow-up queue is wired', () => {
     );
     // #876 R2 (astra P2): a goal's queued first turn handed to the owner keeps its goal id — released, it
     // starts only while that goal still owes it, never as the user's words or a goal command.
-    expect(hold).toMatch(/\.\.\.\(item\.goalOpeningId !== undefined \? \{ goalOpeningId: item\.goalOpeningId \} : \{\}\)/);
+    expect(hold).toMatch(
+      /\.\.\.\(item\.goalOpeningId !== undefined \? \{ goalOpeningId: item\.goalOpeningId \} : \{\}\)/,
+    );
   });
 
   it('the controller saves and pushes every queue change', () => {
