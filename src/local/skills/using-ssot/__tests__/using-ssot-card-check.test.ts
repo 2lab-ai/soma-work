@@ -40,8 +40,17 @@ describe('C1 — Hook 4 card check', () => {
     expect(es).toContain('{ action: "set_active", resourceType, url }');
   });
 
-  it('re-reads the card, writes one line, and keeps the report open on a gap', () => {
+  it('the add object is the one es sends, field for field (only the example label differs)', () => {
+    const esAdd = es.match(/\{ action: "add", resourceType: [^\n]*?status \} \}/)?.[0];
+    expect(esAdd).toBeDefined();
+    expect(hook4).toContain((esAdd ?? '').replace(/label: "[^"]*"/, 'label'));
+  });
+
+  it('re-reads the card, knows a host-side rejection, writes one line, and keeps the report open on a gap', () => {
     expect(hook4).toMatch(/`GET_SESSION`을 다시 읽어 확인/);
+    // GET_SESSION answers from the model-command copy: a write the host refused is visible only in the thread.
+    expect(hook4).toContain('⚠️ Session update could not be applied on host');
+    expect(hook4).toMatch(/빠진 것으로 센다/);
     expect(hook4).toContain('Card check: <카드에 있는 수>/<보고의 산출물 수> on the card');
     expect(hook4).toMatch(/보고를 완료로 닫지 않는다/);
   });

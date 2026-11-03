@@ -122,7 +122,7 @@ z-계열 스킬은 아래 4개 지점에서 이 문서의 규율을 호출한다
    - `GET_SESSION` — 카드가 기록한 링크를 읽는다 (`payload.session`의 `issues` · `prs` · `docs`, 그리고 `active`).
    - 보고가 이름 붙인 모든 PR · 이슈 · 문서를 URL로 대조한다(정규형 URL, 같은 링크는 한 번만 센다). 카드가 바뀌었는지가 아니라, 보고의 산출물이 카드에 있는지를 본다.
    - 빠진 것이 있으면 `UPDATE_SESSION` 한 번: 빠진 것마다 `{ action: "add", resourceType: "issue" | "pr" | "doc", link: { url, type, provider, label, title, status } }`. `add`는 그 종류의 지금 링크도 옮기므로, 끝에 지금 다루는 산출물로 `{ action: "set_active", resourceType, url }`을 붙인다.
-   - `GET_SESSION`을 다시 읽어 확인한다.
+   - `GET_SESSION`을 다시 읽어 확인한다. 한계: `GET_SESSION`은 호스트가 아니라 model-command 서버의 사본으로 답한다. 스레드에 `⚠️ Session update could not be applied on host (<reason>)`가 보이면 카드는 바뀌지 않은 것이다 — `expectedSequence` 없이 한 번 다시 시도하고, 그래도 안 되면 그 링크를 빠진 것으로 센다.
    - 보고에 한 줄로 쓴다: `Card check: <카드에 있는 수>/<보고의 산출물 수> on the card`. 다시 시도해도 빠진 것이 있으면 그 URL을 적고, 보고를 완료로 닫지 않는다.
 6. **Leftovers.** 보고 전에 이 세션이 남긴 것을 정리하거나 넘긴다: 만든 worktree와 임시 체크아웃은 지우고, 아직 도는 subagent · background job(모니터, 배포 감시 등)은 멈추거나, 계속 돌아야 하면 무엇이 언제 끝나는지 보고에 적는다.
 
