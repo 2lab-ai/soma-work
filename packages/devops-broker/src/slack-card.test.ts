@@ -149,9 +149,10 @@ describe('renderApprovalCard', () => {
     expect(fine).toContain('<@U000ALICE>');
     expect(fine).toContain(META.approvalId);
     expect(fine).toContain('0123456789ab');
-    for (const element of blocks[5].elements as TextObject[]) {
-      expect(element).toMatchObject({ type: 'mrkdwn', verbatim: true });
-    }
+    const [requester, ids] = blocks[5].elements as TextObject[];
+    expect(requester).toMatchObject({ type: 'mrkdwn', verbatim: true });
+    // Ids are plain text: Slack applies no formatting to them.
+    expect(ids).toMatchObject({ type: 'plain_text', emoji: false });
     expect(blocks[6].block_id).toBe('approval-instruction');
     expect(card.text).toBe('GitHub 쓰기 승인 요청: member 계정으로 example-org/repo PR 12에 댓글을 단다');
   });
@@ -269,6 +270,8 @@ describe('renderApprovalCard', () => {
           .join(''),
       );
     for (const text of outside) expect(text).not.toContain('`');
+    // A label is broker text, but an odd character in it is shown escaped (visible), not dropped.
+    expect(codeLines(card)).toContain('lab\\u0060el\\n: v');
     const warning = texts(card).find((t) => t.text.includes('second'));
     // The warning's own line break is gone: "second" stays on the bullet line.
     expect(warning?.text.split('\n').find((line) => line.includes('second'))).toMatch(/^• warn /);
@@ -464,6 +467,12 @@ describe('the command and detail values', () => {
       'a:b',
       '-f',
       '한글',
+      '-f',
+      '<@U000ADMIN>',
+      '-f',
+      'a&b',
+      '-f',
+      'back\\slash',
     ]);
     expect(lines).toEqual([
       'gh api repos/example-org/app/labels -X POST -f name=bug -f color=ff0000 -f',
@@ -476,6 +485,12 @@ describe('the command and detail values', () => {
       '  "a:b"',
       '  -f',
       '  "한글"',
+      '  -f',
+      '  "&lt;@U000ADMIN&gt;"',
+      '  -f',
+      '  "a&amp;b"',
+      '  -f',
+      '  "back\\\\slash"',
     ]);
   });
 
@@ -520,14 +535,23 @@ describe('fine print and limits', () => {
     cardTooLong(() => renderApprovalCard(ghWrite(), { ...META, approvalId: 'A'.repeat(CARD_LIMITS.contextChars + 1) }));
   });
 
-  it('shows a malformed approval id or digest as an escaped value', () => {
-    const card = renderApprovalCard(ghWrite(), { ...META, approvalId: '<!here> *x*', digest: '`'.repeat(64) });
-    const fine = texts(card)
-      .filter((t) => t.type === 'mrkdwn' && !t.text.includes('```'))
-      .map((t) => t.text)
-      .join('\n');
-    expect(fine).not.toContain('<!here>');
-    expect(fine).not.toContain('`');
+  it('shows the approval id and digest as plain text, so an id with underscores stays as it is', () => {
+    const card = renderApprovalCard(ghWrite(), { ...META, approvalId: '_AbCdEf_-hIjKlMnOpQrSw' });
+    const context = card.blocks.find((b) => b.type === 'context') as Block;
+    const ids = (context.elements as TextObject[])[1];
+    expect(ids).toEqual({
+      type: 'plain_text',
+      text: '승인 ID _AbCdEf_-hIjKlMnOpQrSw · digest 0123456789ab',
+      emoji: false,
+    });
+  });
+
+  it('keeps a malformed approval id or digest on one line, with no backtick', () => {
+    const card = renderApprovalCard(ghWrite(), { ...META, approvalId: '<!here>\n*x*', digest: '`'.repeat(64) });
+    const context = card.blocks.find((b) => b.type === 'context') as Block;
+    const ids = (context.elements as TextObject[])[1];
+    expect(ids.type).toBe('plain_text');
+    expect(ids.text).not.toMatch(/[\n`]/);
   });
 });
 

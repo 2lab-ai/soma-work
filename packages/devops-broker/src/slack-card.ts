@@ -117,8 +117,6 @@ const ACTIONS_BLOCK_ID = 'approval-actions';
 /** Slack's limit on a button value; an approval id is 22 characters. */
 const BUTTON_VALUE_CHARS = 2_000;
 const SLACK_USER_RE = /^[UW][A-Z0-9]{2,20}$/;
-/** An approval id (base64url) and a digest prefix (hex) as the broker makes them; anything else is escaped. */
-const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 /** Longest result line kept (before escaping, which can grow it six-fold). */
 const RESULT_LINE_CHARS = 400;
 
@@ -178,10 +176,6 @@ function mrkdwnText(text: string): SlackTextObject {
 
 function mrkdwn(text: string, blockId?: string): SlackBlock {
   return { type: 'section', ...(blockId === undefined ? {} : { block_id: blockId }), text: mrkdwnText(text) };
-}
-
-function idValue(value: string): string {
-  return ID_RE.test(value) ? value : codeValue(value);
 }
 
 function tooLong(): never {
@@ -329,7 +323,12 @@ export function renderApprovalCard(
     type: 'context',
     elements: [
       mrkdwnText(`요청자(자칭·미검증) ${mention(req.claimedRequester.slackUserId)}`),
-      mrkdwnText(`승인 ID ${idValue(meta.approvalId)} · digest ${idValue(meta.digest.slice(0, 12))}`),
+      // Plain text: a base64url id's `_` must not turn into italics.
+      {
+        type: 'plain_text',
+        text: plain(`승인 ID ${meta.approvalId} · digest ${meta.digest.slice(0, 12)}`),
+        emoji: false,
+      },
     ],
   });
   const deadline = `:hourglass_flowing_sand: ${slackDate(meta.expiresAtMs)}까지 응답`;
