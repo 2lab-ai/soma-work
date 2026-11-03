@@ -6927,7 +6927,9 @@ export class SlackHandler {
     let refunded = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       // A Slack-less task's goal resumes too (2026-11-03): its continuation runs as the task's
-      // next turn (the host's task injector), as a plan-mode task's goal drives its plan.
+      // next turn (the host's task injector), as a plan-mode task's goal drives its plan. Not an
+      // epic's: its waker drives it (trinity R1, fable P1-2).
+      if (session.slackless && session.kind === 'epic') continue;
       // Repair a stranded queue (defense for the eval-complete crash window):
       // if the current goal is genuinely closed (completed) or absent but goals
       // are still queued, promote the next one so the queue can't be orphaned.

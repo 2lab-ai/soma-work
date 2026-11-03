@@ -10,7 +10,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { ConversationSession } from '../../types';
-import { PLAN_GOAL_OBJECTIVE_MAX, planGoalObjective, settleTaskGoal } from '../task-goal';
+import { createTaskGoalInjector, PLAN_GOAL_OBJECTIVE_MAX, planGoalObjective, settleTaskGoal } from '../task-goal';
 import type { TaskPlanDoc } from '../task-plan';
 
 const plan = (over: Partial<TaskPlanDoc> = {}): TaskPlanDoc =>
@@ -125,5 +125,127 @@ describe('G2–G5 — a task chain that ended settles its goal', () => {
       ).toBe('no-goal');
       expect(settle).not.toHaveBeenCalled();
     }
+  });
+});
+
+describe('G1b — the completion rule survives the bound (trinity R1, grok P3)', () => {
+  it('a plan far over the bound still says how many phases and that every one must be done', () => {
+    const huge = plan({
+      summary: '요'.repeat(3000),
+      intent: '의'.repeat(5000),
+      phases: Array.from({ length: 10 }, (_, i) => ({ title: `단계 ${i} ${'x'.repeat(900)}`, steps: [] })),
+    } as Partial<TaskPlanDoc>);
+    const objective = planGoalObjective(huge);
+    expect(objective.length).toBeLessThanOrEqual(PLAN_GOAL_OBJECTIVE_MAX);
+    expect(objective).toContain('완료 조건: 아래 10개 단계 전부');
+    expect(objective).toContain('10. 단계 9');
+  });
+});
+
+describe('G6 — the goal continuation for a task (createTaskGoalInjector)', () => {
+  const idleTask = (over: Record<string, unknown> = {}) =>
+    ({
+      slackless: true,
+      activityState: 'idle',
+      goal: { goalId: 'g1', status: 'active', epoch: 1 },
+      lastTurnOutcome: { turnId: 't1', outcome: 'completed' },
+      taskPlan: { state: 'approved', revision: 1 },
+      ...over,
+    }) as unknown as ConversationSession;
+  const event = { text: '[goal-continuation] keep going', user: 'U1' };
+
+  it('starts the task’s next turn as the goal’s owner (a host start)', async () => {
+    const start = vi.fn(async () => ({ status: 202, body: {} }));
+    const inject = createTaskGoalInjector({
+      controller: { start },
+      getSession: () => idleTask(),
+      logger: { info: vi.fn(), warn: vi.fn() },
+    });
+    await inject(event, 'task:a');
+    expect(start).toHaveBeenCalledWith({
+      sessionKey: 'task:a',
+      text: event.text,
+      actorUserId: 'U1',
+      initiator: 'host',
+    });
+  });
+
+  it('the owner’s slot busy (429): it waits and starts once the slot frees — not a stalled loop (grok P2 / fable P1-1)', async () => {
+    const replies = [
+      { status: 429, body: { error: 'one dashboard task runs at a time' } },
+      { status: 202, body: {} },
+    ];
+    const start = vi.fn(async () => replies.shift()!);
+    const scheduled: Array<() => void> = [];
+    const inject = createTaskGoalInjector({
+      controller: { start },
+      getSession: () => idleTask(),
+      logger: { info: vi.fn(), warn: vi.fn() },
+      schedule: (fn) => scheduled.push(fn),
+    });
+    await expect(inject(event, 'task:a')).resolves.toBeUndefined();
+    expect(scheduled).toHaveLength(1);
+    scheduled[0]();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(start).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['the owner wrote since (epoch moved)', { goal: { goalId: 'g1', status: 'active', epoch: 2 } }],
+    ['another goal', { goal: { goalId: 'g2', status: 'active', epoch: 1 } }],
+    ['a turn ran since', { lastTurnOutcome: { turnId: 't2', outcome: 'completed' } }],
+    ['not idle', { activityState: 'working' }],
+  ])('a waiting retry is dropped when %s', async (_name, later) => {
+    let live = idleTask();
+    const start = vi.fn(async () => ({ status: 429, body: { error: 'busy' } }));
+    const scheduled: Array<() => void> = [];
+    const inject = createTaskGoalInjector({
+      controller: { start },
+      getSession: () => live,
+      logger: { info: vi.fn(), warn: vi.fn() },
+      schedule: (fn) => scheduled.push(fn),
+    });
+    await inject(event, 'task:a');
+    live = idleTask(later);
+    scheduled[0]();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it('another refusal is the loop’s injection failure (it throws)', async () => {
+    const inject = createTaskGoalInjector({
+      controller: { start: vi.fn(async () => ({ status: 409, body: { error: 'the task is being closed' } })) },
+      getSession: () => idleTask(),
+      logger: { info: vi.fn(), warn: vi.fn() },
+    });
+    await expect(inject(event, 'task:a')).rejects.toThrow('the task is being closed');
+  });
+
+  it('never while the plan waits for its owner, never on an epic', async () => {
+    const start = vi.fn(async () => ({ status: 202, body: {} }));
+    for (const over of [{ taskPlan: { state: 'awaiting', revision: 2 } }, { kind: 'epic' }]) {
+      const inject = createTaskGoalInjector({
+        controller: { start },
+        getSession: () => idleTask(over),
+        logger: { info: vi.fn(), warn: vi.fn() },
+      });
+      await expect(inject(event, 'task:a')).rejects.toThrow();
+    }
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('the first continuation of a task the restart cut carries the restart guidance, once (D10 — fable P2)', async () => {
+    const start = vi.fn(async () => ({ status: 202, body: {} }));
+    const cut = new Set(['task:a']);
+    const inject = createTaskGoalInjector({
+      controller: { start },
+      getSession: () => idleTask(),
+      logger: { info: vi.fn(), warn: vi.fn() },
+      restartNotice: (k) => (cut.delete(k) ? '<task-restart-resume>…' : undefined),
+    });
+    await inject(event, 'task:a');
+    await inject(event, 'task:a');
+    expect(start.mock.calls[0][0]).toMatchObject({ promptNotice: '<task-restart-resume>…' });
+    expect(start.mock.calls[1][0]).not.toHaveProperty('promptNotice');
   });
 });

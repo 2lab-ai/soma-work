@@ -92,7 +92,9 @@ export function createTaskPlanDecider(deps: TaskPlanDeciderDeps): TaskPlanDecide
     // The plan's goal: the approved plan's turn is its opening turn.
     let undoGoal: (() => void) | undefined;
     try {
-      undoGoal = deps.openGoal?.(task, previous.plan, actorUserId);
+      // Not an epic: its children's events drive it (the epic waker); a goal loop beside the waker would
+      // start the root again while its children run (trinity R1, fable P1-2).
+      if (task.kind !== 'epic') undoGoal = deps.openGoal?.(task, previous.plan, actorUserId);
     } catch (error) {
       // No goal is no worse than before plan goals: the plan still starts, one turn at a time.
       deps.logger.warn('The plan’s goal could not be opened — the plan starts without it', {
