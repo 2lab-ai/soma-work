@@ -649,6 +649,10 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
         // 되돌리기 모드: off (covered in dashboard-rollback-client.test.ts).
         _rb: null,
         rbOn: () => false,
+        // The title bar's items after the time are dashboard-detail-zones-client.test.ts's; none here.
+        viewSpec: () => ({ detail: { head: [] } }),
+        panelHeadMetricsOf: () => [],
+        panelHeadMetricsHtml: () => '',
         ...inject,
       },
     );
@@ -910,15 +914,17 @@ describe('one live path for the whole panel', () => {
     expect(clientFn('renderPanelComposer')).not.toMatch(/morphInnerHtml|innerHTML/);
   });
 
-  it('the page: chip in the header; 세션 정보 → goal → permission → question → agents → section tabs (트리 · 작업 로그 · 지시와 답변) in the scroll area', () => {
+  it('the page: chip in the header; permission → question → the tab bar → goal → 세부 → agents → section tabs (트리 · 작업 로그 · 지시와 답변) in the scroll area', () => {
     const header = PAGE.slice(PAGE.indexOf('<div class="panel-header">'), PAGE.indexOf('<div class="panel-body"'));
     expect(header).toContain('id="panel-status"');
     const scroll = PAGE.slice(PAGE.indexOf('<div class="panel-scroll" id="panel-scroll">'));
+    // SSOT 2026-11-03: 입력 필요 first, then the tab bar and its tabs' content (목표 · 산출물 · 세부), then the agents.
     const ids = [
-      'panel-info',
-      'panel-goal',
       'panel-permission',
       'panel-question',
+      'panel-midbar',
+      'panel-goal',
+      'panel-info',
       'panel-agents',
       'panel-sections',
       'psec-tree',
