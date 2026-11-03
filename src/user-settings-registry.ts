@@ -267,7 +267,11 @@ const DISPLAY_LANGUAGE_OPTIONS: SettingOption[] = [
   { value: 'en', label: 'English', description: 'Dashboard, Slack thread and answers in English.' },
 ];
 const DASHBOARD_MODE_OPTIONS: SettingOption[] = [
-  { value: 'minimal', label: '미니멀', description: '보드와, 상세 카드의 작업 목록과 채팅만 보여 줍니다.' },
+  {
+    value: 'minimal',
+    label: '미니멀',
+    description: '보드와, 상세 카드의 작업 목록과 대화 · 작업 로그 탭만 보여 줍니다.',
+  },
   { value: 'advanced', label: '어드밴스드', description: '통계, 토큰, 에이전트 트리, 작업 로그까지 모두 보여 줍니다.' },
 ];
 // The three layouts of .prd/20 §5 — one number for both modes; each option says what it is in each.
