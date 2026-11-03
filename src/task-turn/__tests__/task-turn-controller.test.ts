@@ -449,6 +449,36 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
     expect(h.inputs[2].params?.isUserInput).toBe(true);
   });
 
+  it('a host notice rides the first hop and the re-run after a fallback /compact — never the bare /compact (trinity R4, astra P1)', async () => {
+    const h = harness({}, [
+      async (input) => {
+        input.onStarted?.();
+        h.sessions.get(KEY).fallbackCompactPendingUserText = '[재시작 후 자동 재개] …';
+        return { turnId: 'a', outcome: null, nonTerminal: 'fallbackCompact' };
+      },
+      async (input) => {
+        h.sessions.get(KEY).fallbackCompactPendingUserText = null;
+        input.onStarted?.();
+        return completed('c');
+      },
+      completed('d'),
+    ]);
+    const r = await h.controller.start({
+      actorUserId: 'UOWNER',
+      sessionKey: KEY,
+      text: '[재시작 후 자동 재개] …',
+      initiator: 'host',
+      promptNotice: '<task-restart-resume>check first</task-restart-resume>',
+    });
+    await r.done;
+    expect(h.inputs.map((i) => i.text)).toEqual(['[재시작 후 자동 재개] …', '/compact', '[재시작 후 자동 재개] …']);
+    expect(h.inputs.map((i) => i.params?.promptNotice)).toEqual([
+      '<task-restart-resume>check first</task-restart-resume>',
+      undefined,
+      '<task-restart-resume>check first</task-restart-resume>',
+    ]);
+  });
+
   it('the stashed instruction is not re-run when the compaction did not complete', async () => {
     const h = harness({}, [
       async (input) => {

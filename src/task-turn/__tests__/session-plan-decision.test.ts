@@ -108,3 +108,45 @@ describe('createSlackPlanDecider (#853)', () => {
     expect(h.sendPlan).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * 2026-11-03 — 시작 on a Slack session's plan opens the plan's goal too (the user's word: "작업 계획으로
+ * 진행될 때 자동으로 goal을 설정"), as a task's does: the thread's own goal loop drives it to the plan's end.
+ */
+describe('createSlackPlanDecider — 시작 opens the plan’s goal', () => {
+  it('S6 — opened before the plan is sent (its turn is the goal’s opening turn), as the user who pressed 시작', async () => {
+    const undo = vi.fn();
+    const openGoal = vi.fn(() => undo);
+    const h = harness({ openGoal });
+    const r = await h.decide({ sessionKey: KEY, decision: 'start', revision: 2, actorUserId: 'UOWNER' });
+    expect(r.status).toBe(200);
+    expect(openGoal).toHaveBeenCalledWith(h.session, expect.objectContaining({ revision: 2 }), 'UOWNER');
+    expect(openGoal.mock.invocationCallOrder[0]).toBeLessThan(h.sendPlan.mock.invocationCallOrder[0]);
+    expect(undo).not.toHaveBeenCalled();
+  });
+
+  it('S7 — a plan that was not taken takes its goal back with it', async () => {
+    const undo = vi.fn();
+    const h = harness({ openGoal: vi.fn(() => undo), sendPlan: vi.fn(async () => false) });
+    expect((await h.decide({ sessionKey: KEY, decision: 'start', revision: 2, actorUserId: 'UOWNER' })).status).toBe(
+      502,
+    );
+    expect(undo).toHaveBeenCalledTimes(1);
+  });
+
+  it('S8 — 취소 opens none; a goal that cannot open is logged and the plan still starts', async () => {
+    const openGoal = vi.fn(() => () => {});
+    const h = harness({ openGoal });
+    await h.decide({ sessionKey: KEY, decision: 'cancel', revision: 2, actorUserId: 'UOWNER' });
+    expect(openGoal).not.toHaveBeenCalled();
+
+    const broken = harness({
+      openGoal: vi.fn(() => {
+        throw new Error('goal store down');
+      }),
+    });
+    const r = await broken.decide({ sessionKey: KEY, decision: 'start', revision: 2, actorUserId: 'UOWNER' });
+    expect(r.status).toBe(200);
+    expect(broken.sendPlan).toHaveBeenCalled();
+  });
+});
