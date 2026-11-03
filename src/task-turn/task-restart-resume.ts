@@ -19,6 +19,7 @@
  * of the same owner waits for the slot (429) and is retried.
  */
 import type { ConversationSession } from '../types';
+import { TASK_GOAL_START_MAX_RETRIES, TASK_GOAL_START_RETRY_MS } from './task-goal-loop';
 import type { TaskCommandRequest, TaskCommandResponse, TaskTurnController } from './task-turn-controller';
 
 /** What the conversation records as the resumed turn's instruction. */
@@ -48,10 +49,20 @@ export interface TaskRestartResumerDeps {
   logger: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void };
   /** Schedules a retry (production: an unref'd setTimeout). */
   schedule?: (fn: () => void, delayMs: number) => void;
-  /** Between tries of a task whose owner's slot is busy. Default 30 s. */
+  /** Between tries of a task whose owner's slot is busy. Default: the goal loop's ({@link TASK_GOAL_START_RETRY_MS}). */
   retryMs?: number;
-  /** Tries per task before giving up. Default 240 (two hours at the default pace). */
+  /**
+   * Tries per task before giving up. Default: the goal loop's bound ({@link TASK_GOAL_START_MAX_RETRIES},
+   * 10 minutes at the default pace) — an owner who went on to other work is not surprised by a cut
+   * task starting hours later (trinity R4, fable P2).
+   */
   maxAttempts?: number;
+  /**
+   * Did the boot's goal resume run? A cut task with an active goal is the goal resume's — unless it
+   * did not run (the Slack notices before it threw): then this resume takes it, so it is not left
+   * to neither (trinity R4, fable P2). Default: it ran.
+   */
+  goalsResumed?: () => boolean;
 }
 
 export type RestartResumeOutcome =
@@ -61,11 +72,15 @@ export type RestartResumeOutcome =
   | { status: 'refused'; code: number; error: string };
 
 /** Why a cut task is no longer resumed, or null while it still is. */
-export function restartResumeSkip(session: ConversationSession | undefined, task: RestartCutTaskRef): string | null {
+export function restartResumeSkip(
+  session: ConversationSession | undefined,
+  task: RestartCutTaskRef,
+  opts: { goalsResumed?: boolean } = {},
+): string | null {
   if (!session) return 'gone';
   if (session.slackless !== true) return 'not a dashboard task';
   if (session.terminated || session.closing) return 'closed';
-  if (session.goal?.status === 'active') return 'active goal — the goal loop resumes it';
+  if (session.goal?.status === 'active' && opts.goalsResumed !== false) return 'active goal — the goal loop resumes it';
   const last = session.lastTurnOutcome;
   if (!last || last.turnId !== task.turnId || last.outcome !== 'interrupted') return 'went on since the restart';
   if (session.activityState && session.activityState !== 'idle') return `not idle (${session.activityState})`;
@@ -78,8 +93,8 @@ export interface TaskRestartResumer {
 }
 
 export function createTaskRestartResumer(deps: TaskRestartResumerDeps): TaskRestartResumer {
-  const retryMs = deps.retryMs ?? 30_000;
-  const maxAttempts = deps.maxAttempts ?? 240;
+  const retryMs = deps.retryMs ?? TASK_GOAL_START_RETRY_MS;
+  const maxAttempts = deps.maxAttempts ?? TASK_GOAL_START_MAX_RETRIES;
   const schedule =
     deps.schedule ??
     ((fn: () => void, delayMs: number) => {
@@ -88,7 +103,9 @@ export function createTaskRestartResumer(deps: TaskRestartResumerDeps): TaskRest
     });
 
   async function attempt(task: RestartCutTaskRef, tries: number): Promise<RestartResumeOutcome> {
-    const skip = restartResumeSkip(deps.getSession(task.sessionKey), task);
+    const skip = restartResumeSkip(deps.getSession(task.sessionKey), task, {
+      goalsResumed: deps.goalsResumed?.() ?? true,
+    });
     if (skip) {
       deps.logger.info('Restart resume skipped', { sessionKey: task.sessionKey, reason: skip });
       return { status: 'skipped', reason: skip };

@@ -2379,6 +2379,9 @@ async function start() {
       logger.warn('Failed to install goal turn-settled driver (non-critical)', error);
     }
 
+    // Did the goal resume below run? The dashboard-task resume in `.finally` takes a cut task with an
+    // active goal itself when it did not (trinity R4, fable P2).
+    let goalsResumedAtBoot = false;
     // Notify users whose sessions were interrupted by crash (non-blocking)
     slackHandler
       .notifyCrashRecovery()
@@ -2398,6 +2401,7 @@ async function start() {
             goalRestartCut.set(t.sessionKey, t.turnId);
           }
           const resumed = slackHandler.resumeActiveGoals();
+          goalsResumedAtBoot = true;
           if (resumed > 0) timing(`Resumed ${resumed} active goal(s) after restart`);
         } catch (error) {
           logger.warn('Resuming active goals after restart failed (non-critical)', error);
@@ -2430,6 +2434,7 @@ async function start() {
               controller: taskTurnController,
               getSession: (key) => taskRegistry.getSessionByKey(key),
               logger: new Logger('TaskRestartResume'),
+              goalsResumed: () => goalsResumedAtBoot,
             })
               .resume(cutTasks)
               .then((outcomes) => {
