@@ -115,6 +115,8 @@ Choosing "대시보드 작업" in the new-task composer shows a **작업 계획*
 
 Turn it on with `/z taskentry on` (per user, off by default). A plain instruction to the bot in a channel then becomes a dashboard task. The thread gets the card link, then only what matters: the result, questions that need you, approval requests and failures. You follow and steer the work on the card. In that thread nothing else runs: another mention gets one notice with the card link.
 
+An instruction sent to a dashboard task while it works waits in the task's queue (shown above the message box, up to 10) and runs when the current step ends well, as the person who wrote it. A step that is stopped or does not end well pauses the queue: each waiting instruction then runs only when you press 지금 보내기 (send now). Each instruction can be cancelled, and edited by the person who wrote it. Pressing 지금 보내기 while the task works moves that instruction to the front. The queue is kept across a restart, paused. A task's turn does not yet take an instruction in the middle of a step.
+
 When it does not apply, the Slack session path runs as before: DMs, files, commands, `!`/`%`, and threads that already have a Slack session. When the dashboard is not running, you are told and the work runs as a Slack session. Wiring: [architecture](./docs/misc/reference/architecture.md) (E2 ⑧).
 
 ### 🖼️ Dashboard Artifacts

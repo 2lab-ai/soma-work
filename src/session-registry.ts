@@ -65,6 +65,7 @@ import {
   sanitizeEpicPlan,
   withEpicEvent,
 } from './task-turn/epic-plan';
+import { sanitizeTaskFollowups } from './task-turn/task-followups';
 import {
   applyPlanSubmission,
   checkPlanSubmission,
@@ -273,6 +274,8 @@ interface SerializedSession {
   /** E2 ③ — the open chain and owed notices of a Slack-less task; validated on load. */
   openChain?: unknown;
   notices?: unknown;
+  /** A Slack-less task's follow-up queue; validated (and paused) on load (`sanitizeTaskFollowups`). */
+  taskFollowups?: unknown;
   // Merge code change stats
   mergeStats?: {
     totalLinesAdded: number;
@@ -3666,6 +3669,8 @@ export class SessionRegistry {
             plan: session.plan,
             epicEvents: session.epicEvents,
             taskPlan: session.slackless === true ? session.taskPlan : undefined,
+            taskFollowups:
+              session.slackless === true && session.taskFollowups?.length ? session.taskFollowups : undefined,
             closedBy: session.closedBy,
             // Merge code change stats
             mergeStats: session.mergeStats,
@@ -4065,6 +4070,8 @@ export class SessionRegistry {
           inputContext: sanitizeTaskInputContext(serialized.inputContext),
           ...sanitizeEpicRelation(serialized as unknown as Record<string, unknown>, slackless),
           taskPlan: slackless ? sanitizeTaskPlanGate(serialized.taskPlan) : undefined,
+          // Paused on load: the chain each word waited for did not survive the restart.
+          taskFollowups: slackless ? sanitizeTaskFollowups(serialized.taskFollowups) : undefined,
           openChain:
             slackless && typeof serialized.openChain === 'string' && serialized.openChain !== ''
               ? serialized.openChain
