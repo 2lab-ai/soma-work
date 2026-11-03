@@ -542,12 +542,14 @@ export interface SummaryServiceOptions {
  *
  * Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S3 + S5
  */
-/** Apply `rewrite` to the parts of `line` outside inline code spans (`` `…` ``); code spans stay as written. */
+/**
+ * Apply `rewrite` to `line` with its inline code spans (`` `…` ``) held out: each span is swapped for a placeholder,
+ * so markup around a span still pairs up (`**run `x` now**`), and the span comes back exactly as written.
+ */
 function outsideInlineCode(line: string, rewrite: (part: string) => string): string {
-  return line
-    .split(/(`[^`\n]*`)/)
-    .map((part, i) => (i % 2 === 1 ? part : rewrite(part)))
-    .join('');
+  const spans: string[] = [];
+  const held = line.replace(/`[^`\n]*`/g, (span) => `\u0000${spans.push(span) - 1}\u0000`);
+  return rewrite(held).replace(/\u0000(\d+)\u0000/g, (_m, i: string) => spans[Number(i)] ?? '');
 }
 
 export class SummaryService {
@@ -861,9 +863,9 @@ export class SummaryService {
    * Convert summary text to Slack Block Kit blocks.
    * Long text is split across multiple section blocks to respect Slack's 3000-char limit.
    *
-   * The LLM emits github-flavored markdown (`**bold**`, `## H2`, `__italic__`,
-   * ```ts fenced blocks). Slack mrkdwn uses `*bold*`, `_italic_`, and has no
-   * native heading syntax, so we normalize before emitting the mrkdwn section.
+   * The LLM emits github-flavored markdown (`**bold**`, `## H2`, ```ts fenced
+   * blocks). Slack mrkdwn uses `*bold*` and has no native heading syntax, so we
+   * normalize before emitting the mrkdwn section.
    * See `formatSummaryForSlack` for the line-by-line, fence-aware rewrite.
    */
   buildSummaryBlocks(summaryText: string): any[] {
@@ -898,7 +900,8 @@ export class SummaryService {
    * fenced code blocks verbatim:
    * - Opening fence: strip the language tag (```ts → ```).
    * - Inside a fence: pass through unchanged.
-   * - Outside: ATX headings → `*…*`, `**bold**` → `*bold*`, `__italic__` → `_italic_`.
+   * - Outside: ATX headings → `*…*`, `**bold**` → `*bold*` (inline code held out); `__x__` stays — it is an
+   *   identifier (`__init__`), as on the TL;DR line (#881 B3).
    *
    * Single-`*` emphasis (`*x*`) is deliberately *not* rewritten — in Slack
    * mrkdwn `*x*` is bold, so converting GFM italic to Slack `_x_` would have

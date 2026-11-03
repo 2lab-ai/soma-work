@@ -11,9 +11,18 @@ import { validateModelCommandRunArgs } from './validator';
 describe('GET_SESSION waitForAckMs', () => {
   const run = (params: unknown) => validateModelCommandRunArgs({ commandId: 'GET_SESSION', params });
 
-  it('no params is still a plain read', () => {
-    const r = run(undefined);
-    expect(r.ok && r.request.commandId === 'GET_SESSION' && r.request.params).toBeFalsy();
+  it('no params, or empty params, is still a plain read', () => {
+    for (const params of [undefined, {}]) {
+      const r = run(params);
+      expect(r.ok).toBe(true);
+      expect(r.ok && r.request.commandId === 'GET_SESSION' ? r.request.params : 'x').toBeUndefined();
+    }
+  });
+
+  it('refuses keys it does not know, as its schema says (fable · grok R1 P3)', () => {
+    const r = run({ waitForAckMs: 1_000, foo: 1 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toMatch(/foo/);
   });
 
   it('takes a wait in milliseconds, capped at the maximum', () => {
