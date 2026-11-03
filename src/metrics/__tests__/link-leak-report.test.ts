@@ -120,6 +120,20 @@ describe('link leak report (#835)', () => {
     expect(zeroStreak([day(1, 0), day(2, 1)])).toBe(0);
   });
 
+  it('K4 — a long list keeps whole lines and counts the rest (review P3)', () => {
+    const many = Array.from({ length: 200 }, (_, i) => pr('2lab-ai/soma-work', 1000 + i));
+    const { blocks } = formatLinkLeakReport(computeLinkLeakReport(many, [], new Map()), {
+      date: '2026-11-03',
+      alert: false,
+      streak: 0,
+      baselineDays: 1,
+    });
+    const missed = blocks[1].text.text as string;
+    expect(missed.length).toBeLessThanOrEqual(3000);
+    expect(missed).toMatch(/… and \d+ more$/);
+    for (const line of missed.split('\n').slice(1, -1)) expect(line).toMatch(/^• <https:\/\/github\.com\/[^>]+>/);
+  });
+
   it('K4 — the message names the figure, each item by number, the streak and the alert', () => {
     const r = computeLinkLeakReport(
       [pr('2lab-ai/soma-work', 823), pr('2lab-ai/ui', 17)],
@@ -196,6 +210,22 @@ describe('link leak report (#835)', () => {
       ['pr', 'a/b', 5],
       ['issue', 'a/b', 7],
     ]);
+    // Every page is read.
+    const pages = vi.fn(async (url: string) => {
+      if (url.includes('/search/issues')) {
+        const page = Number(new URL(url).searchParams.get('page'));
+        const items = Array.from({ length: page === 1 ? 100 : 30 }, (_, i) => ({
+          html_url: `https://github.com/a/b/issues/${page * 1000 + i}`,
+          number: page * 1000 + i,
+          created_at: '2026-11-03T01:00:00Z',
+        }));
+        return { ok: true, json: async () => ({ total_count: 130, items }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    const all = await fetchBotItems({ token: 't', botLogin: 'x', sinceIso: 'y', fetchImpl: pages as never });
+    expect(all).toHaveLength(130);
+    expect(pages).toHaveBeenCalledTimes(2);
     const failing = vi.fn(async () => ({ ok: false, json: async () => ({}) }));
     expect(
       await fetchBotItems({ token: 't', botLogin: 'x', sinceIso: 'y', fetchImpl: failing as never }),
@@ -235,14 +265,19 @@ describe('link leak report (#835)', () => {
       const s = setup({ publish });
       await s.reporter.tick();
       expect(publish).toHaveBeenCalledTimes(1);
-      // The failed post is not recorded: the next minute retries.
+      // The failed post is not recorded; the retry waits 15 minutes.
       expect(fs.existsSync(s.deps.statePath)).toBe(false);
+      await s.reporter.tick();
+      expect(publish).toHaveBeenCalledTimes(1);
+      s.setNow(Date.parse('2026-11-03T00:15:00Z'));
       await s.reporter.tick();
       expect(publish).toHaveBeenCalledTimes(2);
       const state = JSON.parse(fs.readFileSync(s.deps.statePath, 'utf8'));
       expect(state.lastRunDate).toBe('2026-11-03');
       expect(state.history).toEqual([{ date: '2026-11-03', total: 2, missed: 1, wrong: 0 }]);
-      // Same day: nothing more.
+      // Same day: nothing more. A broken state file falls back to its .bak (review P2).
+      await s.reporter.tick();
+      fs.writeFileSync(s.deps.statePath, '{broken');
       await s.reporter.tick();
       expect(publish).toHaveBeenCalledTimes(2);
       // Another hour of the next day: not yet.
@@ -255,6 +290,12 @@ describe('link leak report (#835)', () => {
       const s = setup({ collectItems: vi.fn(async () => undefined) });
       await s.reporter.tick();
       expect(s.deps.publish).not.toHaveBeenCalled();
+      // The next try waits 15 minutes, not one (review P1).
+      await s.reporter.tick();
+      expect(s.deps.collectItems).toHaveBeenCalledTimes(1);
+      s.setNow(Date.parse('2026-11-03T00:16:00Z'));
+      await s.reporter.tick();
+      expect(s.deps.collectItems).toHaveBeenCalledTimes(2);
       const s2 = setup();
       const now = await s2.reporter.runNow();
       expect(now?.text).toContain('1 of 2');

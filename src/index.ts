@@ -1966,21 +1966,11 @@ async function start() {
                 links: s.links,
                 linkHistory: s.linkHistory,
               }));
-              const liveKeys = new Set(live.map((c) => c.sessionKey));
-              // The newest archive of each session that is not live any more (PRs of the last day sit on recent cards).
-              const archived = new Map<string, { sessionKey: string; at: number; links?: any; linkHistory?: any }>();
-              for (const a of getArchiveStore().listRecent(3 * 24 * 60 * 60 * 1000)) {
-                if (liveKeys.has(a.sessionKey)) continue;
-                const prev = archived.get(a.sessionKey);
-                if (!prev || a.archivedAt > prev.at)
-                  archived.set(a.sessionKey, {
-                    sessionKey: a.sessionKey,
-                    at: a.archivedAt,
-                    links: a.links,
-                    linkHistory: a.linkHistory,
-                  });
-              }
-              return [...live, ...archived.values()];
+              // Every archive snapshot of the last 3 days: a session archived twice keeps the links of both.
+              const archived = getArchiveStore()
+                .listRecent(3 * 24 * 60 * 60 * 1000)
+                .map((a) => ({ sessionKey: a.sessionKey, links: a.links, linkHistory: a.linkHistory }));
+              return [...live, ...archived];
             },
             collectCreators: async (sinceMs) => {
               const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);

@@ -331,7 +331,7 @@ export function getLinkLeakReportConfig(): LinkLeakReportConfig {
   if (channel && !SLACK_CHANNEL_ID_PATTERN.test(channel)) {
     logger.warn('SOMA_LINK_LEAK_REPORT_CHANNEL is not a Slack channel id — the link leak report is off', { channel });
   }
-  const rawHour = process.env.SOMA_LINK_LEAK_REPORT_HOUR;
+  const rawHour = process.env.SOMA_LINK_LEAK_REPORT_HOUR?.trim();
   const hour = rawHour !== undefined && /^\d{1,2}$/.test(rawHour) && Number(rawHour) < 24 ? Number(rawHour) : 9;
   const botLogin = process.env.SOMA_LINK_LEAK_BOT_LOGIN?.trim().replace(/\[bot\]$/, '');
   return {
