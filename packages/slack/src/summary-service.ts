@@ -542,6 +542,17 @@ export interface SummaryServiceOptions {
  *
  * Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S3 + S5
  */
+/**
+ * Apply `rewrite` to `line` with its inline code spans (`` `…` ``) held out: each span is swapped for a placeholder,
+ * so markup around a span still pairs up (`**run `x` now**`), and the span comes back exactly as written. The
+ * placeholder is NUL-delimited: model text carries no NUL, so it cannot collide with the summary itself.
+ */
+function outsideInlineCode(line: string, rewrite: (part: string) => string): string {
+  const spans: string[] = [];
+  const held = line.replace(/`[^`\n]*`/g, (span) => `\u0000${spans.push(span) - 1}\u0000`);
+  return rewrite(held).replace(/\u0000(\d+)\u0000/g, (_m, i: string) => spans[Number(i)] ?? '');
+}
+
 export class SummaryService {
   private forkExecutor: ForkExecutor;
   private slackApi?: SummarySlackApi;
@@ -853,9 +864,9 @@ export class SummaryService {
    * Convert summary text to Slack Block Kit blocks.
    * Long text is split across multiple section blocks to respect Slack's 3000-char limit.
    *
-   * The LLM emits github-flavored markdown (`**bold**`, `## H2`, `__italic__`,
-   * ```ts fenced blocks). Slack mrkdwn uses `*bold*`, `_italic_`, and has no
-   * native heading syntax, so we normalize before emitting the mrkdwn section.
+   * The LLM emits github-flavored markdown (`**bold**`, `## H2`, ```ts fenced
+   * blocks). Slack mrkdwn uses `*bold*` and has no native heading syntax, so we
+   * normalize before emitting the mrkdwn section.
    * See `formatSummaryForSlack` for the line-by-line, fence-aware rewrite.
    */
   buildSummaryBlocks(summaryText: string): any[] {
@@ -890,7 +901,8 @@ export class SummaryService {
    * fenced code blocks verbatim:
    * - Opening fence: strip the language tag (```ts → ```).
    * - Inside a fence: pass through unchanged.
-   * - Outside: ATX headings → `*…*`, `**bold**` → `*bold*`, `__italic__` → `_italic_`.
+   * - Outside: ATX headings → `*…*`, `**bold**` → `*bold*` (inline code held out); `__x__` stays — it is an
+   *   identifier (`__init__`), as on the TL;DR line (#881 B3).
    *
    * Single-`*` emphasis (`*x*`) is deliberately *not* rewritten — in Slack
    * mrkdwn `*x*` is bold, so converting GFM italic to Slack `_x_` would have
@@ -903,7 +915,7 @@ export class SummaryService {
    * no headings or fences, and `__x__` there is an identifier (`__init__`), not emphasis — the card shows the same.
    */
   static formatTldrLineForSlack(line: string): string {
-    return line.replace(/\*\*([^*]+)\*\*/g, '*$1*');
+    return outsideInlineCode(line, (part) => part.replace(/\*\*([^*]+)\*\*/g, '*$1*'));
   }
 
   static formatSummaryForSlack(text: string): string {
@@ -923,10 +935,15 @@ export class SummaryService {
         if (inFence) return line;
         // ATX headings: leading 1–6 `#` then space then content. The trailing
         // `#*` strips an optional closing-hash run so `## Foo ##` folds to `*Foo*`.
-        return line
-          .replace(/^(\s*)#{1,6}\s+(.+?)\s*#*\s*$/, (_m, indent: string, content: string) => `${indent}*${content}*`)
-          .replace(/\*\*([^*]+)\*\*/g, '*$1*')
-          .replace(/__([^_]+)__/g, '_$1_');
+        // Bold only. Double underscores stay as written: they belong to identifiers (`__init__`, `obj.__dict__`),
+        // as on the TL;DR line (#871); inline code is never rewritten (#881 B3).
+        return outsideInlineCode(
+          line.replace(
+            /^(\s*)#{1,6}\s+(.+?)\s*#*\s*$/,
+            (_m, indent: string, content: string) => `${indent}*${content}*`,
+          ),
+          (part) => part.replace(/\*\*([^*]+)\*\*/g, '*$1*'),
+        );
       })
       .join('\n');
   }
