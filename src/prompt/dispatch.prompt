@@ -26,6 +26,15 @@ If multiple patterns overlap, match in **top-to-bottom order of the table**.
 - Maximum 50 characters
 - Korean or English (matching the input language)
 
+## Work Size Estimate
+
+Estimate how much work the input asks for:
+
+- `small` — one task or less: a single fix, change, answer, lookup, review or command that one person finishes in about 10 minutes, with nothing to plan across separate pieces of work.
+- `large` — more than one task: several separate requests, a feature or project with parts, research and then building, or anything that needs a plan or takes well over 10 minutes.
+
+Judge the work, not the length of the message: a long message about one small fix is `small`; a short "rebuild the billing system" is `large`. When unsure, choose `large`.
+
 ## Output Format
 
 **You must output only JSON. No other text, only a JSON object.**
@@ -34,6 +43,7 @@ If multiple patterns overlap, match in **top-to-bottom order of the table**.
 {
   "workflow": "workflow_id",
   "title": "session title",
+  "size": "small | large",
   "links": {
     "issue": "issue_URL (if present)",
     "pr": "PR_URL (if present)",
@@ -45,41 +55,48 @@ If multiple patterns overlap, match in **top-to-bottom order of the table**.
 }
 ```
 
+- `size` is always included.
 - `links` is included only when URLs are detected. Omit if none.
 
 Examples:
 - Input: "https://xxx.atlassian.net/jira/software/projects/ABC/boards/123"
-  Output: {"workflow": "jira-executive-summary", "title": "ABC Sprint Status"}
+  Output: {"workflow": "jira-executive-summary", "title": "ABC Sprint Status", "size": "small"}
 
 - Input: "https://github.com/org/repo/pull/456"
-  Output: {"workflow": "pr-review", "title": "PR #456 Review", "links": {"pr": "https://github.com/org/repo/pull/456"}}
+  Output: {"workflow": "pr-review", "title": "PR #456 Review", "size": "small", "links": {"pr": "https://github.com/org/repo/pull/456"}}
 
 - Input: "https://github.com/org/repo/issues/456"
-  Output: {"workflow": "jira-brainstorming", "title": "Issue #456 Brainstorming", "links": {"issue": "https://github.com/org/repo/issues/456"}}
+  Output: {"workflow": "jira-brainstorming", "title": "Issue #456 Brainstorming", "size": "large", "links": {"issue": "https://github.com/org/repo/issues/456"}}
 
 - Input: "https://linear.app/team/issue/ABC-123/fix-login-timeout"
-  Output: {"workflow": "jira-brainstorming", "title": "ABC-123 Brainstorming", "links": {"issue": "https://linear.app/team/issue/ABC-123/fix-login-timeout"}}
+  Output: {"workflow": "jira-brainstorming", "title": "ABC-123 Brainstorming", "size": "large", "links": {"issue": "https://linear.app/team/issue/ABC-123/fix-login-timeout"}}
 
 - Input: "fix https://xxx.atlassian.net/browse/ABC-789"
-  Output: {"workflow": "jira-create-pr", "title": "ABC-789 Implementation", "links": {"issue": "https://xxx.atlassian.net/browse/ABC-789"}}
+  Output: {"workflow": "jira-create-pr", "title": "ABC-789 Implementation", "size": "large", "links": {"issue": "https://xxx.atlassian.net/browse/ABC-789"}}
 
 - Input: "https://xxx.atlassian.net/wiki/spaces/TEAM/pages/123/ChangeLogs https://github.com/org/repo/pull/456"
-  Output: {"workflow": "pr-docs-confluence", "title": "PR #456 Confluence Documentation", "links": {"pr": "https://github.com/org/repo/pull/456", "doc": "https://xxx.atlassian.net/wiki/spaces/TEAM/pages/123/ChangeLogs"}}
+  Output: {"workflow": "pr-docs-confluence", "title": "PR #456 Confluence Documentation", "size": "small", "links": {"pr": "https://github.com/org/repo/pull/456", "doc": "https://xxx.atlassian.net/wiki/spaces/TEAM/pages/123/ChangeLogs"}}
 
 - Input: "Tell me how to implement Redis caching"
-  Output: {"workflow": "default", "title": "Redis Cache Implementation"}
+  Output: {"workflow": "default", "title": "Redis Cache Implementation", "size": "small"}
 
 - Input: "z fix login timeout bug"
-  Output: {"workflow": "zwork", "title": "Fix Login Timeout Bug"}
+  Output: {"workflow": "zwork", "title": "Fix Login Timeout Bug", "size": "small"}
 
 - Input: "z https://github.com/org/repo/issues/123"
-  Output: {"workflow": "zwork", "title": "Issue #123 Work", "links": {"issue": "https://github.com/org/repo/issues/123"}}
+  Output: {"workflow": "zwork", "title": "Issue #123 Work", "size": "large", "links": {"issue": "https://github.com/org/repo/issues/123"}}
 
 - Input: "z https://github.com/org/repo/pull/456"
-  Output: {"workflow": "zwork", "title": "PR #456 Work", "links": {"pr": "https://github.com/org/repo/pull/456"}}
+  Output: {"workflow": "zwork", "title": "PR #456 Work", "size": "small", "links": {"pr": "https://github.com/org/repo/pull/456"}}
 
 - Input: "projalpha develop -> dev2"
-  Output: {"workflow": "deploy", "title": "projalpha develop -> dev2 Deploy"}
+  Output: {"workflow": "deploy", "title": "projalpha develop -> dev2 Deploy", "size": "small"}
 
 - Input: "deploy projalpha,projbeta main -> prod"
-  Output: {"workflow": "deploy", "title": "projalpha,projbeta main -> prod Deploy"}
+  Output: {"workflow": "deploy", "title": "projalpha,projbeta main -> prod Deploy", "size": "small"}
+
+- Input: "로그인 화면 버튼 문구 오타 고쳐줘"
+  Output: {"workflow": "default", "title": "로그인 버튼 문구 오타 수정", "size": "small"}
+
+- Input: "새작업 개선: 1. 작은 작업은 에픽 대신 일반으로 2. 계획 토글을 시작 버튼 옆으로 옮기고 애니메이션 3. 계획 품질 리서치하고 후속 작업 제안"
+  Output: {"workflow": "default", "title": "새작업 개선 — 에픽 판정, 계획 토글, 계획 리서치", "size": "large"}
