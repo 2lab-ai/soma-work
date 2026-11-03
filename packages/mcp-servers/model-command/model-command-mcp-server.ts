@@ -17,6 +17,7 @@ import {
   surfaceRefusal,
 } from '@soma/process-shared/model-commands/catalog.js';
 import { HierarchicalMemoryFileStore } from '@soma/process-shared/model-commands/hierarchical-memory-store.js';
+import { readHostReceipt } from '@soma/process-shared/model-commands/host-receipt.js';
 import { MemoryFileStore } from '@soma/process-shared/model-commands/memory-file-store.js';
 import { SkillFileStore } from '@soma/process-shared/model-commands/skill-file-store.js';
 import type {
@@ -57,6 +58,7 @@ export function parseModelCommandContext(rawContext: string | undefined): ModelC
       renewState:
         parsed.renewState === 'pending_save' || parsed.renewState === 'pending_load' ? parsed.renewState : null,
       session: normalizeSessionSnapshot(isRecord(parsed.session) ? (parsed.session as any) : undefined),
+      ...(typeof parsed.receiptFile === 'string' && parsed.receiptFile ? { receiptFile: parsed.receiptFile } : {}),
     };
   } catch (error) {
     logger.warn('Failed to parse SOMA_COMMAND_CONTEXT, using default context', {
@@ -72,6 +74,8 @@ export function buildModelCommandListResponse(context: ModelCommandContext): Mod
     commands: listModelCommands(context),
   };
 }
+
+let receiptCounter = 0;
 
 export function buildModelCommandRunResponse(args: unknown, context: ModelCommandContext): ModelCommandRunResponse {
   const validated = validateModelCommandRunArgs(args);
@@ -104,6 +108,24 @@ export function buildModelCommandRunResponse(args: unknown, context: ModelComman
   const result = runModelCommand(validated.request, context);
   if (result.ok && result.commandId === 'UPDATE_SESSION') {
     context.session = result.payload.session;
+    // #846 — name the write so GET_SESSION can tell whether the host has handled it.
+    const receiptId = `r_${Date.now().toString(36)}_${(++receiptCounter).toString(36)}`;
+    context.lastReceiptId = receiptId;
+    result.payload.receiptId = receiptId;
+  }
+  if (result.ok && result.commandId === 'GET_SESSION' && context.receiptFile) {
+    // #846 — the host's word, not this server's copy: what it applied, the card TL;DR and NEEDS YOU reason.
+    const host = readHostReceipt(context.receiptFile);
+    if (host) {
+      const hostPending = !!context.lastReceiptId && host.lastWrite?.receiptId !== context.lastReceiptId;
+      result.payload.host = host;
+      result.payload.hostPending = hostPending;
+      if (!hostPending) {
+        // The host has caught up: its snapshot is the truth, and later writes lock against its sequence.
+        context.session = normalizeSessionSnapshot(host.session);
+        result.payload.session = context.session;
+      }
+    }
   }
   if (result.ok && result.commandId === 'SAVE_CONTEXT_RESULT') {
     context.renewState = 'pending_load';

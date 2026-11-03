@@ -89,7 +89,10 @@ describe('panel — the 입력 필요 head counts it', () => {
 describe('panel — English page', () => {
   it('translates the new strings', () => {
     const en = JSON.parse(
-      readFileSync(join(__dirname, '..', '..', '..', 'packages', 'common', 'src', 'i18n-catalog', 'en-page.json'), 'utf-8'),
+      readFileSync(
+        join(__dirname, '..', '..', '..', 'packages', 'common', 'src', 'i18n-catalog', 'en-page.json'),
+        'utf-8',
+      ),
     );
     expect(en['후속 작업 필요']).toBe('Follow-up needed');
     expect(en['후속 작업 필요 — ']).toBe('Follow-up needed — ');

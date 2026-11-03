@@ -606,3 +606,77 @@ describe('SET_GOAL — MCP server wire-up (#1082)', () => {
     expect(help?.commandId).toBe('SET_GOAL');
   });
 });
+
+// #846 item 2 — the host-confirmed receipt: UPDATE_SESSION names its write, GET_SESSION reads back what the host
+// applied (`host`) and says whether the host has handled the last write yet (`hostPending`).
+describe('host-confirmed receipt', () => {
+  const fs = require('node:fs') as typeof import('node:fs');
+  const os = require('node:os') as typeof import('node:os');
+  const path = require('node:path') as typeof import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-receipt-'));
+  const file = path.join(dir, 'r.json');
+  const ctx = () =>
+    parseModelCommandContext(JSON.stringify({ channel: 'C1', threadTs: '1.1', user: 'U1', receiptFile: file }));
+  const add = {
+    commandId: 'UPDATE_SESSION',
+    params: { operations: [{ action: 'add', resourceType: 'pr', link: { url: 'https://github.com/o/r/pull/9' } }] },
+  };
+  const hostReceipt = (receiptId: string | undefined, sequence: number) => ({
+    sequence,
+    session: {
+      issues: [],
+      prs: [{ url: 'https://github.com/o/r/pull/9', type: 'pr' }],
+      docs: [],
+      active: {},
+      instructions: [],
+      sequence,
+    },
+    tldr: ['a', '⚠️ **PR #9 open**', 'b'],
+    followUp: 'PR #9 open',
+    ...(receiptId ? { lastWrite: { receiptId, ok: true, tldrApplied: true, at: 1 } } : {}),
+    at: 2,
+  });
+
+  it('reads the receipt file path from SOMA_COMMAND_CONTEXT', () => {
+    expect(ctx().receiptFile).toBe(file);
+    expect(parseModelCommandContext(JSON.stringify({ receiptFile: 3 })).receiptFile).toBeUndefined();
+  });
+
+  it('UPDATE_SESSION answers with a receiptId', () => {
+    const c = ctx();
+    const r = buildModelCommandRunResponse(add, c) as any;
+    expect(r.ok).toBe(true);
+    expect(r.payload.receiptId).toMatch(/^r_/);
+    expect(c.lastReceiptId).toBe(r.payload.receiptId);
+  });
+
+  it('GET_SESSION: hostPending while the host has not handled the last write', () => {
+    const c = ctx();
+    const w = buildModelCommandRunResponse(add, c) as any;
+    fs.writeFileSync(file, JSON.stringify(hostReceipt('r_older', 3)));
+    const g = buildModelCommandRunResponse({ commandId: 'GET_SESSION' }, c) as any;
+    expect(g.payload.host.sequence).toBe(3);
+    expect(g.payload.hostPending).toBe(true);
+    // Once the host wrote the receipt for this write, it is the truth: TL;DR, follow-up, sequence.
+    fs.writeFileSync(file, JSON.stringify(hostReceipt(w.payload.receiptId, 7)));
+    const g2 = buildModelCommandRunResponse({ commandId: 'GET_SESSION' }, c) as any;
+    expect(g2.payload.hostPending).toBe(false);
+    expect(g2.payload.host.followUp).toBe('PR #9 open');
+    expect(g2.payload.host.lastWrite.ok).toBe(true);
+    expect(g2.payload.session.sequence).toBe(7);
+    // …and later writes use the host's sequence.
+    expect(c.session?.sequence).toBe(7);
+  });
+
+  it('no receipt file (or none yet): GET_SESSION is the server copy as before', () => {
+    const c = parseModelCommandContext(JSON.stringify({ channel: 'C1', threadTs: '1.1', user: 'U1' }));
+    const g = buildModelCommandRunResponse({ commandId: 'GET_SESSION' }, c) as any;
+    expect(g.ok).toBe(true);
+    expect(g.payload.host).toBeUndefined();
+    expect(g.payload.hostPending).toBeUndefined();
+    const missing = parseModelCommandContext(
+      JSON.stringify({ channel: 'C1', user: 'U1', receiptFile: path.join(dir, 'none.json') }),
+    );
+    expect((buildModelCommandRunResponse({ commandId: 'GET_SESSION' }, missing) as any).payload.host).toBeUndefined();
+  });
+});
