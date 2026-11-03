@@ -8,6 +8,17 @@ import { clearAgentGhConfigDir, writeAgentGhHosts } from './agent-gh-config';
 const logger = new Logger('GitCredentialsManager');
 
 /**
+ * git's credentials were written, the agents' gh `hosts.yml` was not: agent shells read the env token until a retry
+ * writes it (#834 review).
+ */
+export class GhHostsWriteError extends Error {
+  constructor(readonly reason: unknown) {
+    super(`Failed to write the agent gh hosts.yml: ${(reason as Error)?.message ?? String(reason)}`);
+    this.name = 'GhHostsWriteError';
+  }
+}
+
+/**
  * Manages local git credentials and configuration
  * Handles .git-credentials file and git config updates
  */
@@ -57,7 +68,8 @@ export class GitCredentialsManager {
 
   /**
    * gh's credential for agent shells (#834): re-read by gh on every call, so it outlives the turn's env copy. A failed
-   * write stops serving the dir — gh must not keep reading a token that will expire; it falls back to the env.
+   * write stops serving the dir — gh must not keep reading a token that will expire; new turns fall back to the token
+   * just put in the env — and is thrown as {@link GhHostsWriteError}, so the refresh scheduler retries the write.
    */
   private async updateGhHosts(token: string): Promise<void> {
     if (!this.ghConfigDir) return;
@@ -65,9 +77,7 @@ export class GitCredentialsManager {
       await writeAgentGhHosts(this.ghConfigDir, token);
     } catch (error) {
       clearAgentGhConfigDir();
-      logger.warn('Failed to write the agent gh hosts.yml; agent shells fall back to GITHUB_TOKEN', {
-        error: (error as Error)?.message,
-      });
+      throw new GhHostsWriteError(error);
     }
   }
 
