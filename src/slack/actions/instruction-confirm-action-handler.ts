@@ -14,6 +14,7 @@
 
 import type { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
+import type { SessionResourceUpdateRequest } from '../../types';
 import {
   buildInstructionAppliedBlocks,
   buildInstructionRejectedBlocks,
@@ -88,7 +89,11 @@ export class InstructionConfirmActionHandler {
       return;
     }
 
-    const result = this.ctx.claudeHandler.updateSessionResources(session.channelId, session.threadTs, entry.request);
+    const result = this.ctx.claudeHandler.updateSessionResources(
+      session.channelId,
+      session.threadTs,
+      withConfirmedSource(entry.request),
+    );
     if (!result.ok) {
       this.logger.warn('instr_confirm_y: updateSessionResources failed', {
         requestId,
@@ -174,4 +179,18 @@ export class InstructionConfirmActionHandler {
   /** Action ID prefixes — exposed for the ActionRouter. */
   static readonly ACTION_ID_YES_PREFIX = `${INSTRUCTION_CONFIRM_YES_ACTION}:`;
   static readonly ACTION_ID_NO_PREFIX = `${INSTRUCTION_CONFIRM_NO_ACTION}:`;
+}
+
+/**
+ * #881 B4 — an instruction's `source` is the host's word, not the model's: the model proposed it and the user
+ * confirmed it with `y`, so an added instruction is the user's. Whatever `source` the model sent is replaced.
+ */
+function withConfirmedSource(request: SessionResourceUpdateRequest): SessionResourceUpdateRequest {
+  if (!request.instructionOperations?.length) return request;
+  return {
+    ...request,
+    instructionOperations: request.instructionOperations.map((op) =>
+      op.action === 'add' ? { ...op, source: 'user' } : op,
+    ),
+  };
 }

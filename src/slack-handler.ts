@@ -808,6 +808,10 @@ export class SlackHandler {
     // #857 — the turn-end summary runs `local:auto-es`: its turn-end contract is read from the harness plugin.
     const summaryService = new SummaryService(forkExecutor, this.slackApi, {
       turnEndContract: loadAutoEsTurnEndContract(),
+      // #881 D1 — a new ⚠️ follow-up from the host summary edits the stale expiry warning (live-root gated).
+      onWarningCleared: (session, warningMessageTs) => {
+        void this.sessionUiManager.handleExpiryWarningCleared(session as ConversationSession, warningMessageTs);
+      },
     });
 
     this.streamExecutor = new StreamExecutor({

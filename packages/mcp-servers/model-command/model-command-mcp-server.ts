@@ -142,6 +142,56 @@ export function buildModelCommandRunResponse(args: unknown, context: ModelComman
   return result;
 }
 
+/** #881 A — how often a waiting GET_SESSION re-reads the receipt file. */
+const HOST_ACK_POLL_MS = 500;
+
+/**
+ * Whether to stop waiting for the host's ack of `receiptId`: it is there, or there is no receipt to read at all (the
+ * host could not write the file — waiting cannot change that; fable R1 P2).
+ */
+function hostAckSettled(receiptFile: string, receiptId: string): boolean {
+  const receipt = readHostReceipt(receiptFile);
+  return receipt === undefined || receipt.acks?.[receiptId] !== undefined;
+}
+
+/**
+ * {@link buildModelCommandRunResponse}, except GET_SESSION `{ waitForAckMs }` first waits — up to that long — for the
+ * host to handle this server's last UPDATE_SESSION (#881 A). The host applies a write about 20 s after the model got
+ * its result when its stream is busy, so an immediate re-read reports an applied write as pending. It waits only for
+ * its own write: no write yet, no receipt path, or no receipt file on disk answers at once. `hostWaitedMs` says how
+ * long it waited.
+ */
+export async function runModelCommandAwaitingHost(
+  args: unknown,
+  context: ModelCommandContext,
+  // A monotonic clock: a wall-clock step back must not stretch the wait past its bound (astra · fable R1 P3).
+  clock: { now: () => number; sleep: (ms: number) => Promise<void> } = {
+    now: () => performance.now(),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  },
+): Promise<ModelCommandRunResponse> {
+  const validated = validateModelCommandRunArgs(args);
+  const waitMs =
+    validated.ok && validated.request.commandId === 'GET_SESSION' ? (validated.request.params?.waitForAckMs ?? 0) : 0;
+  let waited: number | undefined;
+  // It waits for this server's LATEST write, read on every poll: the answer (`hostPending`, `host.lastWrite`, the
+  // resync) is about that same write, so a write made while it waits moves the wait with it instead of leaving the
+  // answer about a different write than the one waited for (astra R2 P2). The bound is still `waitMs` in total.
+  const receiptFile = context.receiptFile;
+  if (waitMs > 0 && receiptFile && context.lastReceiptId) {
+    const started = clock.now();
+    while (!hostAckSettled(receiptFile, context.lastReceiptId)) {
+      const left = waitMs - (clock.now() - started);
+      if (left <= 0) break;
+      await clock.sleep(Math.min(HOST_ACK_POLL_MS, left));
+    }
+    waited = clock.now() - started;
+  }
+  const result = buildModelCommandRunResponse(args, context);
+  if (waited !== undefined && result.ok && result.commandId === 'GET_SESSION') result.payload.hostWaitedMs = waited;
+  return result;
+}
+
 class ModelCommandMcpServer extends BaseMcpServer {
   private context: ModelCommandContext;
 
@@ -217,7 +267,7 @@ class ModelCommandMcpServer extends BaseMcpServer {
     }
 
     if (name === 'run') {
-      const payload = buildModelCommandRunResponse(args, this.context);
+      const payload = await runModelCommandAwaitingHost(args, this.context);
       return {
         content: [{ type: 'text', text: JSON.stringify(payload) }],
         isError: !payload.ok,

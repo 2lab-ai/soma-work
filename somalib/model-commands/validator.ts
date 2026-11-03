@@ -1,5 +1,6 @@
 import { attachCommandHelp } from './command-help';
 import { expectedHandoffKind, extractSentinelType, isZHandoffWorkflow } from './handoff-parser';
+import { GET_SESSION_MAX_WAIT_MS } from './host-receipt';
 import type {
   SaveContextResultPayload,
   SessionInstructionOperation,
@@ -117,11 +118,26 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
   const params = args.params;
 
   if (commandId === 'GET_SESSION') {
+    // #881 A — the only param: how long to wait for the host's ack of this server's last write.
+    const unknown = isRecord(params) ? Object.keys(params).filter((k) => k !== 'waitForAckMs') : [];
+    if (unknown.length > 0) {
+      return withCommandHelp('GET_SESSION', invalidArgs(`GET_SESSION does not take: ${unknown.join(', ')}`));
+    }
+    const wait = isRecord(params) ? params.waitForAckMs : undefined;
+    if (wait === undefined) {
+      return { ok: true, request: { commandId: 'GET_SESSION', params: undefined } };
+    }
+    if (typeof wait !== 'number' || !Number.isFinite(wait) || wait < 0) {
+      return withCommandHelp(
+        'GET_SESSION',
+        invalidArgs(`GET_SESSION waitForAckMs must be a number of milliseconds (0–${GET_SESSION_MAX_WAIT_MS})`),
+      );
+    }
     return {
       ok: true,
       request: {
         commandId: 'GET_SESSION',
-        params: undefined,
+        params: { waitForAckMs: Math.min(Math.floor(wait), GET_SESSION_MAX_WAIT_MS) },
       },
     };
   }
