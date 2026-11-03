@@ -3506,7 +3506,8 @@ export class SessionRegistry {
       };
       getArchiveStore().archive(session, key, reason, dashboardTask ? { slackless: true } : undefined);
     } catch (err) {
-      this.logger.debug('Failed to archive session during load', { key, error: err });
+      // #855 — a dashboard task's archive is its only copy once the load drops it: say so.
+      this.logger[dashboardTask ? 'warn' : 'debug']('Failed to archive session during load', { key, error: err });
     }
   }
 
