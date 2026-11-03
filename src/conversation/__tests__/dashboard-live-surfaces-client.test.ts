@@ -850,7 +850,7 @@ describe('work log folds under the task each entry was made in (T10; <ui-work-lo
     ...(taskId ? { taskId, taskTitle } : {}),
   });
 
-  it('entries of one task gather under it, at its first entry; entries outside any task are headless runs in line (D3-GAPS G2-2)', () => {
+  it('consecutive entries of one task gather under it; entries outside any task are headless runs in line (D3-GAPS G2-2)', () => {
     const g = groupsOf(
       [
         E(1, undefined, undefined, 'instruction'),
@@ -863,16 +863,19 @@ describe('work log folds under the task each entry was made in (T10; <ui-work-lo
       {},
       { groupOpen: { 'task:T1': true } },
     );
+    // 2026-11-03: T1 again after T2 and an answer opens a second T1 segment where it happened.
     expect(g.map((x) => `${x.id}:${x.entries.map((e) => e.id).join(',')}`)).toEqual([
       'run:1:1',
-      'task:T1:2,3,6',
+      'task:T1:2,3',
       'task:T2:',
       'run:5:5',
+      'task:T1:6:6',
     ]);
-    // The group is titled by its latest entry (no ledger task, so no meta); the newest task is open at first sight.
-    expect(g[1]).toMatchObject({ ref: '#T1', title: 'Explore again', count: 3, open: true });
+    // Titled by the task's latest entry (no ledger task, so no meta) on every segment; the newest segment is open at first sight.
+    expect(g[1]).toMatchObject({ ref: '#T1', title: 'Explore again', count: 2, open: true });
     expect(g[1].meta).toBeUndefined();
     expect(g[2]).toMatchObject({ ref: '#T2', title: 'Build', count: 1, open: false });
+    expect(g[4]).toMatchObject({ ref: '#T1', title: 'Explore again', count: 1, open: true });
     // A run outside any task: no head (nothing to title, count, fold or open) — its entries always in line.
     expect(g[0]).toEqual({
       id: 'run:1',
@@ -898,6 +901,53 @@ describe('work log folds under the task each entry was made in (T10; <ui-work-lo
     });
     const open = groupsOf([E(2, 'T1', 'Explore'), E(3, 'T1', 'Explore')], tasks, { groupOpen: { 'task:T1': true } });
     expect(open[0].entries.map((e) => e.id)).toEqual(['2', '3']);
+  });
+
+  // 2026-11-03 (dev bot): T18 ran across several goal turns; its one group sat at
+  // its first entry and pulled the later T18 entries up with it, so the goal
+  // instructions between them showed AFTER entries made later (17:45 under 18:22).
+  it('a task cut by an instruction or an answer opens a new segment where it resumes — rows strictly in entry order', () => {
+    const tasks = { T18: { id: 'T18', content: 'Ship the fix (ledger)', status: 'in_progress', toolCalls: 4 } };
+    const g = groupsOf(
+      [
+        E(10, 'T18', 'Ship the fix'),
+        E(11, 'T18', 'Ship the fix'),
+        E(12, undefined, undefined, 'instruction'),
+        E(13, 'T18', 'Ship the fix'),
+        E(14, undefined, undefined, 'instruction'),
+        E(15, 'T18', 'Ship the fix'),
+      ],
+      tasks,
+    );
+    expect(g.map((x) => x.id)).toEqual(['task:T18', 'run:12', 'task:T18:13', 'run:14', 'task:T18:15']);
+    const seqs = g.flatMap((x) => (x.headless ? x.entries.map((e) => e.id) : [x.id]));
+    expect(seqs).toEqual(['task:T18', '12', 'task:T18:13', '14', 'task:T18:15']);
+    // Every segment is the same task's head: #ref, the ledger title and meta; only its own entries counted.
+    for (const i of [0, 2, 4]) {
+      expect(g[i]).toMatchObject({
+        ref: '#T18',
+        title: 'Ship the fix (ledger)',
+        meta: [{ label: '툴', value: '4회' }],
+      });
+    }
+    expect([g[0].count, g[2].count, g[4].count]).toEqual([2, 1, 1]);
+    // Only the newest segment starts open.
+    expect([g[0].open, g[2].open, g[4].open]).toEqual([false, false, true]);
+    expect(g[4].entries.map((e) => e.id)).toEqual(['15']);
+  });
+
+  it('segment ids stay put across repaints — a later entry neither renames a segment nor moves the reader’s open choice', () => {
+    const st = { groupOpen: { 'task:T18:13': true } as Record<string, boolean> };
+    const first = [E(10, 'T18', 'a'), E(12, undefined, undefined, 'instruction'), E(13, 'T18', 'a')];
+    const before = groupsOf(first, {}, st);
+    const after = groupsOf(
+      [...first, E(14, 'T18', 'a'), E(15, undefined, undefined, 'final'), E(16, 'T18', 'a')],
+      {},
+      st,
+    );
+    expect(before.map((x) => x.id)).toEqual(['task:T18', 'run:12', 'task:T18:13']);
+    expect(after.map((x) => x.id)).toEqual(['task:T18', 'run:12', 'task:T18:13', 'run:15', 'task:T18:16']);
+    expect(after[2]).toMatchObject({ open: true, count: 2 });
   });
 
   it('task ids and titles are data (the element escapes them)', () => {

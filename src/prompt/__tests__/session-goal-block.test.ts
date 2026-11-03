@@ -5,6 +5,7 @@ import {
   buildSessionGoalBlock,
   countGoalObjectiveChars,
   escapeSessionGoalText,
+  GOAL_NO_NEW_EVAL_MARK,
   MAX_SESSION_GOAL_OBJECTIVE_CHARS,
   validateSessionGoalObjective,
 } from '../session-goal-block';
@@ -222,5 +223,28 @@ describe('session-goal-block / buildGoalContinuationPrompt', () => {
   it('does NOT include the previous-eval-gap section when lastEvalReason is absent', () => {
     const prompt = buildGoalContinuationPrompt(goal);
     expect(prompt).not.toContain('Previous evaluation gap');
+  });
+
+  // 2026-11-03 (dev bot, 7 deploy restarts): a reused verdict resent the same
+  // gap after every restart and read like a fresh evaluation each time.
+  it('a reused verdict says on its second line that no new evaluation ran — the first line stays verbatim', () => {
+    const g = { ...goal, continuationCount: 1, lastEvalReason: 'PR not merged yet.' };
+    const fresh = buildGoalContinuationPrompt(g);
+    const cut = buildGoalContinuationPrompt(g, { reused: 'interrupted' });
+    const same = buildGoalContinuationPrompt(g, { reused: 'unchanged' });
+    expect(GOAL_NO_NEW_EVAL_MARK).toBe('No new evaluation:');
+    // memory-auto-capture.ts keys on the first sentence: byte-identical.
+    expect(cut.split('\n')[0]).toBe(fresh.split('\n')[0]);
+    expect(same.split('\n')[0]).toBe(fresh.split('\n')[0]);
+    expect(cut.split('\n')[1]).toBe(
+      "No new evaluation: the last turn was cut short before it reported anything, so the gap below is the previous evaluation's.",
+    );
+    expect(same.split('\n')[1]).toBe(
+      "No new evaluation: nothing changed since the last evaluation, so the gap below is the previous evaluation's.",
+    );
+    // The gap itself is still the one the turn is asked to close.
+    for (const p of [cut, same])
+      expect(p).toContain('<previous-eval-reason>\nPR not merged yet.\n</previous-eval-reason>');
+    expect(fresh).not.toContain(GOAL_NO_NEW_EVAL_MARK);
   });
 });

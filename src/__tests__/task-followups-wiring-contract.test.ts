@@ -67,4 +67,17 @@ describe('index.ts — a dashboard task’s follow-up queue is wired', () => {
   it('the panel’s queue controls on a task go to the controller', () => {
     expect(source).toMatch(/setDashboardTaskQueueHandler\(\(request\) => taskController\.actOnQueue\(request\)\)/);
   });
+
+  it('after a restart the boot sends the words a task still waits with — after the cut-task resume, and with no cut task (owner directive 2026-11-03)', () => {
+    const boot = section('const cutTasks = taskRegistry.getRestartCutTasks()', 'scanChannels(app.client)');
+    expect(boot).toMatch(/\.resume\(cutTasks\)/);
+    // After the resume settles, with its outcomes: a task it started (or waits to start) is its chain's to drain.
+    expect(boot.indexOf('runRestoredFollowups(')).toBeGreaterThan(boot.indexOf('.resume(cutTasks)'));
+    expect(boot).toMatch(/runRestoredFollowups\(\s*\{[\s\S]*?\},\s*outcomes,?\s*\)/);
+    // No cut task: the sweep still runs, over an empty outcome map.
+    expect(boot).toMatch(/:\s*Promise\.resolve\(new Map<string, RestartResumeOutcome>\(\)\)/);
+    // Every task session the registry holds; the goal loop's own (when it ran at boot) are left to it.
+    expect(boot).toMatch(/sessions: \(\) => taskRegistry\.getAllSessions\(\)/);
+    expect(boot.match(/goalsResumed: \(\) => goalsResumedAtBoot/g)).toHaveLength(2);
+  });
 });

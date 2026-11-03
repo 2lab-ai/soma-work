@@ -171,12 +171,15 @@ const SYSTEM = { origin: { by: 'system' } };
 const PERSON = { origin: { by: 'user' } };
 
 const RESTART_PROMPT = read('src/prompt/restart.prompt').trimEnd();
-const goalPrompt = (n: number, max: number, reason?: string) =>
-  `${GOAL_CONTINUATION_TEXT_PREFIX} ${buildGoalContinuationPrompt({
-    continuationCount: n,
-    maxContinuations: max,
-    lastEvalReason: reason,
-  } as unknown as SessionGoal)}`;
+const goalPrompt = (n: number, max: number, reason?: string, reused?: 'interrupted' | 'unchanged') =>
+  `${GOAL_CONTINUATION_TEXT_PREFIX} ${buildGoalContinuationPrompt(
+    {
+      continuationCount: n,
+      maxContinuations: max,
+      lastEvalReason: reason,
+    } as unknown as SessionGoal,
+    reused ? { reused } : undefined,
+  )}`;
 
 describe('C1 — what soma-work injected, by its own wording', () => {
   it('/compact: 자동 압축 when soma-work sent it, 압축 when a person did or nobody recorded who', () => {
@@ -250,6 +253,30 @@ describe('C1 — what soma-work injected, by its own wording', () => {
     expect(withGap?.line).toBe(`직전 평가: ${gap}`);
     expect(withGap?.facts).toEqual([
       ['회차', '3 / 10'],
+      ['직전 평가에서 남은 일', gap],
+    ]);
+  });
+
+  // 2026-11-03 (dev bot, 7 deploy restarts): the same 직전 평가 line came back
+  // after every restart as if an evaluation had run. A reused verdict says so.
+  it('goal continuation over a reused verdict — no new evaluation, the previous gap kept as its fact', () => {
+    const { sysTurnInfo } = api();
+    const gap = 'This turn made real progress: fable approved, <PR> open';
+    const cut = sysTurnInfo(user(goalPrompt(1, 10, gap, 'interrupted'), SYSTEM));
+    expect(cut).toMatchObject({ kind: 'goal', label: '목표 #1/10', line: '끊긴 턴 이어서 — 새 평가 없음' });
+    expect(cut?.facts).toEqual([
+      ['회차', '1 / 10'],
+      ['평가', '새 평가 없음 — 직전 평가를 그대로 씀'],
+      ['직전 평가에서 남은 일', gap],
+    ]);
+    const same = sysTurnInfo(user(goalPrompt(4, 10, gap, 'unchanged')));
+    expect(same).toMatchObject({ kind: 'goal', label: '목표 #4/10', line: '바뀐 것 없음 — 새 평가 없음' });
+    expect(same?.facts).toContainEqual(['평가', '새 평가 없음 — 직전 평가를 그대로 씀']);
+    // A fresh one reads as before.
+    const fresh = sysTurnInfo(user(goalPrompt(4, 10, gap), SYSTEM));
+    expect(fresh?.line).toBe(`직전 평가: ${gap}`);
+    expect(fresh?.facts).toEqual([
+      ['회차', '4 / 10'],
       ['직전 평가에서 남은 일', gap],
     ]);
   });

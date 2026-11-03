@@ -346,7 +346,8 @@ describe('a goal’s opening across a restart (#865, astra-zhuge #876 R1 P2)', (
       },
     ];
     const loaded = sanitizeTaskFollowups(JSON.parse(JSON.stringify(saved)));
-    expect(loaded?.[0]).toMatchObject({ id: 'tq-1', goalOpeningId: 'g1', state: 'paused' });
+    // Queued words stay queued across a restart (owner directive 2026-11-03, #877) — and keep their goal id.
+    expect(loaded?.[0]).toMatchObject({ id: 'tq-1', goalOpeningId: 'g1', state: 'queued' });
     // Only a goal id marks an opening — anything else is an ordinary word.
     expect(loaded?.[1]).not.toHaveProperty('goalOpeningId');
   });

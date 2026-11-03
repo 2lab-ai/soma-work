@@ -10,9 +10,14 @@
  *   Q5 a drained word the start refuses goes back to the head, paused with the refusal.
  *   Q6 the queue's controls: cancel, edit (the writer's), send now — idle starts it, running puts it first.
  *   Q7 the queue is bounded.
+ *   Q8 after a restart, an idle task no chain will end for sends its oldest queued word (owner directive 2026-11-03).
  */
 import { describe, expect, it, vi } from 'vitest';
-import { TASK_FOLLOWUP_PAUSED_BEHIND_REFUSED, TASK_FOLLOWUP_PAUSED_BY_UNHEALTHY_END } from '../task-followups';
+import {
+  TASK_FOLLOWUP_PAUSED_BEHIND_REFUSED,
+  TASK_FOLLOWUP_PAUSED_BY_STOP,
+  TASK_FOLLOWUP_PAUSED_BY_UNHEALTHY_END,
+} from '../task-followups';
 import { createTaskTurnController, type TaskTurnControllerDeps } from '../task-turn-controller';
 import type { RunTaskTurnInput, RunTaskTurnResult } from '../task-turn-runner';
 
@@ -824,5 +829,101 @@ describe('R2 — a word in flight stays on record until its handoff is confirmed
     await h.settle();
     await h.settle();
     expect(saved[saved.length - 1]).toEqual([]);
+  });
+});
+
+describe('Q8 — after a restart, an idle task sends its queued words (owner directive 2026-11-03)', () => {
+  const restored = (id: string, text: string, authorId = 'UOWNER', state: 'queued' | 'paused' = 'queued') => ({
+    id,
+    text,
+    authorId,
+    enqueuedAt: 1,
+    epoch: 1,
+    state,
+    ...(state === 'paused' ? { stateReason: TASK_FOLLOWUP_PAUSED_BY_STOP } : {}),
+  });
+
+  it('starts the oldest queued word as its writer; the rest follow at its chain’s healthy end; a stopped word stays', async () => {
+    const h = harness();
+    h.task().taskFollowups = [
+      restored('p', 'stopped', 'UOWNER', 'paused'),
+      restored('a', 'first', 'UOTHER'),
+      restored('b', 'second'),
+    ];
+    expect(h.controller.runQueuedAfterRestart(KEY)).toBe('sent');
+    await h.settle();
+    await h.settle();
+    await h.settle();
+    expect(h.inputs.map((i) => i.text)).toEqual(['first', 'second']);
+    expect(h.inputs[0].executionContext.userId).toBe('UOTHER');
+    expect(h.task().taskFollowups).toEqual([expect.objectContaining({ id: 'p', state: 'paused' })]);
+  });
+
+  it('a running task sends nothing now — its chain’s end runs the word', async () => {
+    const turn = held();
+    const h = harness({}, [turn.step]);
+    const first = await h.controller.start(word('one'));
+    await h.controller.start(word('two'));
+    expect(h.controller.runQueuedAfterRestart(KEY)).toBe('busy');
+    expect(h.inputs).toHaveLength(1);
+    expect(h.task().taskFollowups).toEqual([expect.objectContaining({ text: 'two', state: 'queued', epoch: 0 })]);
+    turn.release();
+    await first.done;
+    await h.settle();
+    expect(h.inputs.map((i) => i.text)).toEqual(['one', 'two']);
+  });
+
+  it.each([
+    ['being closed', (t: any) => (t.closing = true)],
+    ['terminated', (t: any) => (t.terminated = true)],
+  ])('a task %s sends nothing and keeps its words', async (_name, mark) => {
+    const h = harness();
+    h.task().taskFollowups = [restored('a', 'first')];
+    mark(h.task());
+    expect(h.controller.runQueuedAfterRestart(KEY)).toBe('busy');
+    await h.settle();
+    expect(h.runTaskTurn).not.toHaveBeenCalled();
+    expect(h.task().taskFollowups).toEqual([restored('a', 'first')]);
+  });
+
+  it('a service that is not accepting starts sends nothing', async () => {
+    const h = harness();
+    h.task().taskFollowups = [restored('a', 'first')];
+    h.controller.stopAccepting();
+    expect(h.controller.runQueuedAfterRestart(KEY)).toBe('busy');
+    await h.settle();
+    expect(h.runTaskTurn).not.toHaveBeenCalled();
+  });
+
+  it('nothing queued (only paused words), or no dashboard task: none', () => {
+    const h = harness();
+    h.task().taskFollowups = [restored('p', 'stopped', 'UOWNER', 'paused')];
+    expect(h.controller.runQueuedAfterRestart(KEY)).toBe('none');
+    expect(h.controller.runQueuedAfterRestart('task:missing')).toBe('none');
+    h.sessions.set('slack', { ownerId: 'UOWNER', taskFollowups: [restored('a', 'first')] });
+    expect(h.controller.runQueuedAfterRestart('slack')).toBe('none');
+    expect(h.runTaskTurn).not.toHaveBeenCalled();
+  });
+
+  it('the owner’s slot is taken: nothing changes (try again later); the last try starts it, and its refusal pauses it with why', async () => {
+    const turn = held();
+    const h = harness({}, [turn.step]);
+    const OTHER = 'task:99999999-2222-4333-8444-555555555555';
+    h.sessions.set(OTHER, { slackless: true, ownerId: 'UOWNER', ownerName: 'Owner', taskId: 'b' });
+    const busy = await h.controller.start({ sessionKey: OTHER, text: 'other work', actorUserId: 'UOWNER' });
+    expect(busy.status).toBe(202);
+    h.task().taskFollowups = [restored('a', 'first'), restored('b', 'second')];
+    expect(h.controller.runQueuedAfterRestart(KEY)).toBe('slot-busy');
+    expect(h.task().taskFollowups).toEqual([restored('a', 'first'), restored('b', 'second')]);
+    expect(h.changed).not.toHaveBeenCalledWith(KEY);
+
+    expect(h.controller.runQueuedAfterRestart(KEY, { lastTry: true })).toBe('sent');
+    await h.settle();
+    expect(h.task().taskFollowups).toEqual([
+      expect.objectContaining({ id: 'a', state: 'paused', stateReason: expect.stringMatching(/one dashboard task/) }),
+      expect.objectContaining({ id: 'b', state: 'paused', stateReason: TASK_FOLLOWUP_PAUSED_BEHIND_REFUSED }),
+    ]);
+    turn.release();
+    await busy.done;
   });
 });

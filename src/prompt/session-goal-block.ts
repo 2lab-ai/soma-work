@@ -55,6 +55,25 @@ export function buildSessionGoalBlock(session?: ConversationSession): string {
 }
 
 /**
+ * Why a continuation carries the previous verdict instead of a new one
+ * (GoalLoopController's reuse branch): the turn was cut short before it left
+ * any text, or nothing changed since the text was judged (a kick, S9).
+ */
+export type GoalVerdictReuse = 'interrupted' | 'unchanged';
+
+/**
+ * Opens the line a continuation over a reused verdict carries. The dashboard
+ * reads it (sysTurnInfo) so the row says no evaluation ran — after seven
+ * deploy restarts the same "직전 평가" read like seven fresh ones (2026-11-03).
+ */
+export const GOAL_NO_NEW_EVAL_MARK = 'No new evaluation:';
+
+const GOAL_REUSE_WHY: Record<GoalVerdictReuse, string> = {
+  interrupted: 'the last turn was cut short before it reported anything',
+  unchanged: 'nothing changed since the last evaluation',
+};
+
+/**
  * Text of the synthetic turn GoalLoopController injects after the host
  * evaluator judged the goal unfinished (prefixed with `[goal-continuation]`
  * by the caller). One line: the objective and the rules already sit in the
@@ -63,14 +82,19 @@ export function buildSessionGoalBlock(session?: ConversationSession): string {
  * (`memory-auto-capture.ts`) — keep it verbatim.
  *
  * When the evaluator left a gap reason, it is appended so the next turn
- * targets that specific gap instead of repeating the same claim.
+ * targets that specific gap instead of repeating the same claim. A reused
+ * verdict (`opts.reused`) says so on the second line: the gap is the previous
+ * evaluation's, not a new one.
  */
-export function buildGoalContinuationPrompt(goal: SessionGoal): string {
+export function buildGoalContinuationPrompt(goal: SessionGoal, opts: { reused?: GoalVerdictReuse } = {}): string {
   const line = `Continue working toward the active session goal (objective in <session-goal>). Auto-continuation ${goal.continuationCount}/${goal.maxContinuations}.`;
   const reason = goal.lastEvalReason?.trim();
   if (!reason) return line;
   return [
     line,
+    ...(opts.reused
+      ? [`${GOAL_NO_NEW_EVAL_MARK} ${GOAL_REUSE_WHY[opts.reused]}, so the gap below is the previous evaluation's.`]
+      : []),
     '',
     'Previous evaluation gap — close this before claiming completion:',
     '<previous-eval-reason>',

@@ -11,6 +11,8 @@
  *      the conversation records the short line, the model reads the restart guidance first
  *   R3 the owner's slot is busy (429): retried, and started once it frees
  *   R4 skipped: someone went on since (a newer turn), an active goal (the goal loop resumes it), closed
+ *   R11 the words a task still waits with are sent after the restart (owner directive 2026-11-03): the
+ *       resumed chain's end sends them; a task nothing resumes is swept at boot
  */
 import { describe, expect, it, vi } from 'vitest';
 import { createConversationDurable } from '../../conversation/recorder';
@@ -27,7 +29,9 @@ import {
   createTaskRestartResumer,
   cutTurnAuthor,
   type RestartCutTaskRef,
+  type RestartResumeOutcome,
   restartResumeSkip,
+  runRestoredFollowups,
   TASK_RESTART_NOTICE,
   TASK_RESTART_TEXT,
   taskTurnStartedAt,
@@ -480,5 +484,292 @@ describe('R6 — the first goal continuation of a cut task carries the restart g
     await startGoalTurn(goalTurn);
     expect(start.mock.calls.every((c) => c[0].promptNotice === undefined)).toBe(true);
     expect(cut.has(KEY)).toBe(false);
+  });
+});
+
+describe('R11 — the words a task still waits with are sent after the restart (owner directive 2026-11-03)', () => {
+  const queuedWord = (text: string) => ({
+    id: `q-${text}`,
+    text,
+    authorId: OWNER,
+    enqueuedAt: Date.now(),
+    epoch: 0,
+    state: 'queued' as const,
+  });
+
+  it('a word queued while the cut task worked: the resumed chain’s healthy end sends it (end to end)', async () => {
+    const before = processOver(new SessionRegistry());
+    const task = before.registry.createTask({ ownerId: OWNER, ownerName: 'R', workingDirectory: DIR, title: 'q' });
+    const key = `task:${task.taskId}`;
+    const held = heldStream();
+    before.useStream(held.stream);
+    const r = await before.controller.start({ actorUserId: OWNER, sessionKey: key, text: 'long job' });
+    expect(r.status).toBe(202);
+    const queued = await before.controller.start({
+      actorUserId: OWNER,
+      sessionKey: key,
+      text: 'and then this',
+      queueWhileRunning: true,
+    });
+    expect(queued.body).toMatchObject({ queued: true });
+    before.registry.saveSessions();
+    // The old process is going down: it drains nothing more.
+    before.controller.stopAccepting();
+
+    const restarted = new SessionRegistry();
+    restarted.loadSessions();
+    expect(restarted.getSessionByKey(key)?.taskFollowups).toEqual([
+      expect.objectContaining({ text: 'and then this', state: 'queued' }),
+    ]);
+    const after = processOver(restarted);
+    const outcomes = await createTaskRestartResumer({
+      controller: after.controller,
+      getSession: (k) => restarted.getSessionByKey(k),
+      logger: { info: vi.fn(), warn: vi.fn() },
+      schedule: () => {},
+    }).resume(restarted.getRestartCutTasks());
+    expect(outcomes.get(key)).toEqual({ status: 'started' });
+    // The sweep leaves it to the resumed chain.
+    const run = vi.fn(after.controller.runQueuedAfterRestart);
+    expect(
+      runRestoredFollowups(
+        {
+          controller: { runQueuedAfterRestart: run },
+          sessions: () => restarted.getAllSessions(),
+          logger: { info: vi.fn() },
+        },
+        outcomes,
+      ),
+    ).toBe(0);
+    expect(run).not.toHaveBeenCalled();
+
+    await until(
+      () =>
+        after.claudeHandler.streamAgentEvents.mock.calls.length === 2 &&
+        !restarted.getSessionByKey(key)?.taskFollowups?.length &&
+        !after.controller.isRunning(key),
+    );
+    expect(String(after.claudeHandler.streamAgentEvents.mock.calls[1]?.[0] ?? '')).toContain('and then this');
+
+    held.release();
+    await r.done;
+  });
+
+  it('a task nothing resumes (no cut turn) sends its queued word at boot (end to end)', async () => {
+    // Its own owner: what other tests left on disk never holds this owner's slot.
+    const owner = `${OWNER}IDLE`;
+    const before = processOver(new SessionRegistry());
+    const task = before.registry.createTask({ ownerId: owner, ownerName: 'R', workingDirectory: DIR, title: 'idle' });
+    const key = `task:${task.taskId}`;
+    before.registry.getSessionByKey(key)!.taskFollowups = [{ ...queuedWord('left waiting'), authorId: owner }];
+    before.registry.saveSessions();
+
+    const restarted = new SessionRegistry();
+    restarted.loadSessions();
+    expect(restarted.getRestartCutTasks().map((t) => t.sessionKey)).not.toContain(key);
+    const after = processOver(restarted);
+    const run = vi.fn(after.controller.runQueuedAfterRestart);
+    runRestoredFollowups(
+      {
+        controller: { runQueuedAfterRestart: run },
+        sessions: () => restarted.getAllSessions(),
+        logger: { info: vi.fn() },
+        schedule: () => {},
+      },
+      new Map(),
+    );
+    expect(run).toHaveBeenCalledWith(key, { lastTry: false });
+    expect(run.mock.results[run.mock.calls.findIndex((c) => c[0] === key)]?.value).toBe('sent');
+    await until(
+      () =>
+        !restarted.getSessionByKey(key)?.taskFollowups?.length &&
+        restarted.getSessionByKey(key)?.lastTurnOutcome?.outcome === 'completed',
+    );
+    const prompts = after.claudeHandler.streamAgentEvents.mock.calls.map((c) => String(c[0] ?? ''));
+    expect(prompts.some((p) => p.includes('left waiting'))).toBe(true);
+  });
+
+  it('every task holding a queued word, but those a resumed chain or the goal loop will drain', () => {
+    const queued = [queuedWord('go')];
+    const sessions = new Map<string, unknown>([
+      ['task:idle', { slackless: true, taskFollowups: queued }],
+      ['task:started', { slackless: true, taskFollowups: queued }],
+      ['task:waiting', { slackless: true, taskFollowups: queued }],
+      ['task:skipped', { slackless: true, taskFollowups: queued }],
+      ['task:refused', { slackless: true, taskFollowups: queued }],
+      ['task:goal', { slackless: true, taskFollowups: queued, goal: { status: 'active' } }],
+      ['task:paused-goal', { slackless: true, taskFollowups: queued, goal: { status: 'paused' } }],
+      ['task:paused', { slackless: true, taskFollowups: [{ ...queued[0], state: 'paused', stateReason: 'x' }] }],
+      ['task:none', { slackless: true }],
+      ['slack', { taskFollowups: queued }],
+    ]);
+    const outcomes = new Map<string, RestartResumeOutcome>([
+      ['task:started', { status: 'started' }],
+      ['task:waiting', { status: 'waiting' }],
+      ['task:skipped', { status: 'skipped', reason: 'went on since the restart' }],
+      ['task:refused', { status: 'refused', code: 409, error: 'x' }],
+    ]);
+    const run = vi.fn((key: string) => (key === 'task:refused' ? ('busy' as const) : ('sent' as const)));
+    const sent = runRestoredFollowups(
+      {
+        controller: { runQueuedAfterRestart: run },
+        sessions: () => sessions as Map<string, ConversationSession>,
+        logger: { info: vi.fn() },
+        schedule: () => {},
+      },
+      outcomes,
+    );
+    expect(run.mock.calls.map((c) => c[0]).sort()).toEqual([
+      'task:idle',
+      'task:paused-goal',
+      'task:refused',
+      'task:skipped',
+    ]);
+    expect(sent).toBe(3);
+  });
+
+  it('an active goal’s task is swept here when the goal resume did not run at boot (as the resumer does)', () => {
+    const sessions = new Map<string, unknown>([
+      ['task:goal', { slackless: true, taskFollowups: [queuedWord('go')], goal: { status: 'active' } }],
+    ]);
+    const run = vi.fn(() => 'sent' as const);
+    const deps = {
+      controller: { runQueuedAfterRestart: run },
+      sessions: () => sessions as Map<string, ConversationSession>,
+      logger: { info: vi.fn() },
+    };
+    expect(runRestoredFollowups({ ...deps, goalsResumed: () => true }, new Map())).toBe(0);
+    expect(runRestoredFollowups({ ...deps, goalsResumed: () => false }, new Map())).toBe(1);
+  });
+
+  it('the owner’s slot is busy: tried again, bounded like the resumer; the last try sends it even then', async () => {
+    const sessions = new Map<string, unknown>([['task:a', { slackless: true, taskFollowups: [queuedWord('go')] }]]);
+    const run = vi.fn((_key: string, _opts?: { lastTry?: boolean }) => 'slot-busy' as 'slot-busy' | 'sent');
+    const scheduled: Array<() => void> = [];
+    expect(
+      runRestoredFollowups(
+        {
+          controller: { runQueuedAfterRestart: run },
+          sessions: () => sessions as Map<string, ConversationSession>,
+          logger: { info: vi.fn() },
+          schedule: (fn) => scheduled.push(fn),
+          maxAttempts: 3,
+        },
+        new Map(),
+      ),
+    ).toBe(0);
+    while (scheduled.length) scheduled.shift()!();
+    expect(run.mock.calls).toEqual([
+      ['task:a', { lastTry: false }],
+      ['task:a', { lastTry: false }],
+      ['task:a', { lastTry: true }],
+    ]);
+  });
+
+  it('a task the resumer waits on is checked once more after its tries are spent (review R1, astra P2)', () => {
+    const sessions = new Map<string, unknown>([['task:w', { slackless: true, taskFollowups: [queuedWord('go')] }]]);
+    const run = vi.fn((_key: string, _opts?: { lastTry?: boolean }) => 'sent' as const);
+    const scheduled: Array<{ fn: () => void; delayMs: number }> = [];
+    const sent = runRestoredFollowups(
+      {
+        controller: { runQueuedAfterRestart: run },
+        sessions: () => sessions as Map<string, ConversationSession>,
+        logger: { info: vi.fn() },
+        schedule: (fn, delayMs) => scheduled.push({ fn, delayMs }),
+        retryMs: 1000,
+        maxAttempts: 3,
+      },
+      new Map<string, RestartResumeOutcome>([['task:w', { status: 'waiting' }]]),
+    );
+    // Not now: the resumer is still trying for its slot.
+    expect(sent).toBe(0);
+    expect(run).not.toHaveBeenCalled();
+    expect(scheduled.map((s) => s.delayMs)).toEqual([4000]);
+    // After its tries: an idle task (resume refused at the end) sends the word, as a last try.
+    scheduled[0].fn();
+    expect(run.mock.calls).toEqual([['task:w', { lastTry: true }]]);
+  });
+
+  it('a goal task left to the goal loop is checked once more too — its goal may wait on a question (review R1, grok P2)', () => {
+    const sessions = new Map<string, unknown>([
+      ['task:goal', { slackless: true, taskFollowups: [queuedWord('go')], goal: { status: 'active' } }],
+    ]);
+    const run = vi.fn((_key: string, _opts?: { lastTry?: boolean }) => 'sent' as const);
+    const scheduled: Array<() => void> = [];
+    expect(
+      runRestoredFollowups(
+        {
+          controller: { runQueuedAfterRestart: run },
+          sessions: () => sessions as Map<string, ConversationSession>,
+          logger: { info: vi.fn() },
+          goalsResumed: () => true,
+          schedule: (fn) => scheduled.push(fn),
+        },
+        new Map(),
+      ),
+    ).toBe(0);
+    expect(run).not.toHaveBeenCalled();
+    expect(scheduled).toHaveLength(1);
+    scheduled[0]();
+    expect(run.mock.calls).toEqual([['task:goal', { lastTry: true }]]);
+  });
+
+  it('a person who stops the task before the later check has the last word (review R2, astra P1)', () => {
+    const session: Record<string, unknown> = { slackless: true, taskFollowups: [queuedWord('go')] };
+    const sessions = new Map<string, unknown>([['task:w', session]]);
+    const run = vi.fn((_key: string, _opts?: { lastTry?: boolean }) => 'sent' as const);
+    const scheduled: Array<() => void> = [];
+    runRestoredFollowups(
+      {
+        controller: { runQueuedAfterRestart: run },
+        sessions: () => sessions as Map<string, ConversationSession>,
+        logger: { info: vi.fn() },
+        schedule: (fn) => scheduled.push(fn),
+        now: () => 1_000,
+      },
+      new Map<string, RestartResumeOutcome>([['task:w', { status: 'waiting' }]]),
+    );
+    session.lastStopAtMs = 2_000; // the Stop, while the resumer still waited for the slot
+    scheduled[0]();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('a busy slot’s retry yields to a Stop pressed meanwhile too (review R3, astra P1)', () => {
+    const session: Record<string, unknown> = { slackless: true, taskFollowups: [queuedWord('go')] };
+    const sessions = new Map<string, unknown>([['task:a', session]]);
+    const run = vi.fn((_key: string, _opts?: { lastTry?: boolean }) => 'slot-busy' as 'slot-busy' | 'sent');
+    const scheduled: Array<() => void> = [];
+    runRestoredFollowups(
+      {
+        controller: { runQueuedAfterRestart: run },
+        sessions: () => sessions as Map<string, ConversationSession>,
+        logger: { info: vi.fn() },
+        schedule: (fn) => scheduled.push(fn),
+        now: () => 1_000,
+        maxAttempts: 3,
+      },
+      new Map(),
+    );
+    expect(run).toHaveBeenCalledTimes(1);
+    session.lastStopAtMs = 2_000;
+    while (scheduled.length) scheduled.shift()!();
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('the default bound is the resumer’s (TASK_GOAL_START_MAX_RETRIES)', () => {
+    const sessions = new Map<string, unknown>([['task:a', { slackless: true, taskFollowups: [queuedWord('go')] }]]);
+    const run = vi.fn((_key: string, _opts?: { lastTry?: boolean }) => 'slot-busy' as const);
+    const scheduled: Array<() => void> = [];
+    runRestoredFollowups(
+      {
+        controller: { runQueuedAfterRestart: run },
+        sessions: () => sessions as Map<string, ConversationSession>,
+        logger: { info: vi.fn() },
+        schedule: (fn) => scheduled.push(fn),
+      },
+      new Map(),
+    );
+    while (scheduled.length) scheduled.shift()!();
+    expect(run).toHaveBeenCalledTimes(TASK_GOAL_START_MAX_RETRIES);
   });
 });

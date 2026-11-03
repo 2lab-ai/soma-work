@@ -12,6 +12,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import type { SyntheticMessageEvent } from '../../cron-scheduler';
+import { GOAL_NO_NEW_EVAL_MARK } from '../../prompt/session-goal-block';
 import type { ConversationSession, SessionGoal } from '../../types';
 import type { GoalEvalVerdict } from '../goal-completion-evaluator';
 import {
@@ -314,6 +315,25 @@ describe('GoalLoopController', () => {
     await h.controller.settled(SESSION_KEY);
     expect(dispatchCount).toBe(2);
     expect(h.injected).toHaveLength(0);
+  });
+
+  it('S9: a kick over text already judged says so — no new evaluation, no stale "eval-model verdict" notice (2026-11-03)', async () => {
+    const h = makeHarness({ verdict: { completed: false, reason: 'missing tests', remaining: ['add tests'] } });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    // A fresh verdict keeps today's notice and today's continuation text.
+    expect(h.notices).toEqual([
+      '🔄 Goal not yet complete (eval-model verdict).\n*Reason:* missing tests\n*Remaining:*\n• add tests',
+    ]);
+    expect(h.injected[0].text).not.toContain(GOAL_NO_NEW_EVAL_MARK);
+
+    h.controller.onTurnSettled(SESSION_KEY, { cause: 'kick' });
+    await h.controller.settled(SESSION_KEY);
+    expect(h.injected).toHaveLength(2);
+    expect(h.injected[1].text).toContain(`${GOAL_NO_NEW_EVAL_MARK} nothing changed since the last evaluation`);
+    expect(h.injected[1].text).toContain('missing tests');
+    expect(h.notices[1]).toBe('🔄 Goal continues — no new evaluation (nothing changed since the last evaluation).');
+    expect(h.notices[1]).not.toContain('eval-model verdict');
   });
 
   it('S9: after a restart the persisted (16k-bounded) summary still matches its hash — a kick does not re-judge it', async () => {

@@ -39,7 +39,7 @@ import { createHash } from 'node:crypto';
 import { boundRateLimitDelayMs, parseRetryAfterMs, textIndicatesRetryableRateLimit } from '@soma/common/rate-limit';
 import { OutputFlag } from '@soma/slack/output-flags';
 import type { SyntheticMessageEvent } from '../cron-scheduler';
-import { buildGoalContinuationPrompt } from '../prompt/session-goal-block';
+import { buildGoalContinuationPrompt, type GoalVerdictReuse } from '../prompt/session-goal-block';
 import { retryReasonLine } from '../retry-reason';
 import type { ConversationSession, SessionGoal } from '../types';
 import type { EffortLevel } from '../user-settings-store';
@@ -395,7 +395,8 @@ export class GoalLoopController {
           remaining: activeGoal.lastEvalRemaining ?? [],
         },
         summaryHash,
-        { reused: true },
+        // The next turn and the thread are told no evaluation ran (2026-11-03).
+        { reused: noTurnText ? 'interrupted' : 'unchanged' },
       );
       return;
     }
@@ -482,6 +483,7 @@ export class GoalLoopController {
    * Apply a verdict: mutate goal state, post the Slack notice, and on a
    * `continue` outcome inject the next continuation (never superseding a live
    * turn). Shared by the real-eval path and the S9 short-circuit path.
+   * `opts.reused` = no eval ran (the last verdict is reapplied) and why.
    */
   private async handleVerdict(
     sessionKey: string,
@@ -489,7 +491,7 @@ export class GoalLoopController {
     activeGoal: SessionGoal,
     verdict: GoalEvalVerdict,
     summaryHash: string,
-    opts: { reused?: boolean; stallAllowed?: boolean } = {},
+    opts: { reused?: GoalVerdictReuse; stallAllowed?: boolean } = {},
   ): Promise<void> {
     const { requestCoordinator, logger } = this.deps;
     // #745: where the current failure started — a reused verdict judged no new turn.
@@ -624,9 +626,15 @@ export class GoalLoopController {
       return;
     }
 
+    // A reused verdict is no verdict: say so, and do not post the old gap again
+    // as if the evaluator had just written it (2026-11-03, seven restarts).
     await this.postStatusNotice(
       session,
-      `🔄 Goal not yet complete (eval-model verdict).\n*Reason:* ${verdict.reason}\n*Remaining:*\n${remaining}`,
+      opts.reused
+        ? `🔄 Goal continues — no new evaluation (${
+            opts.reused === 'interrupted' ? 'the last turn was cut short' : 'nothing changed since the last evaluation'
+          }).`
+        : `🔄 Goal not yet complete (eval-model verdict).\n*Reason:* ${verdict.reason}\n*Remaining:*\n${remaining}`,
     );
 
     // Never supersede a turn that started during the eval. A live request
@@ -637,7 +645,7 @@ export class GoalLoopController {
       return;
     }
 
-    this.injectContinuationTurn(sessionKey, session, activeGoal);
+    this.injectContinuationTurn(sessionKey, session, activeGoal, { reused: opts.reused });
   }
 
   /**
@@ -951,14 +959,19 @@ export class GoalLoopController {
     }, delayMs);
   }
 
-  private injectContinuationTurn(sessionKey: string, session: ConversationSession, activeGoal: SessionGoal): void {
+  private injectContinuationTurn(
+    sessionKey: string,
+    session: ConversationSession,
+    activeGoal: SessionGoal,
+    opts: { reused?: GoalVerdictReuse } = {},
+  ): void {
     const now = this.now();
     const syntheticEvent: SyntheticMessageEvent = {
       user: activeGoal.createdBy,
       channel: session.channelId,
       thread_ts: session.threadTs,
       ts: `${now / 1000}`,
-      text: `${GOAL_CONTINUATION_TEXT_PREFIX} ${buildGoalContinuationPrompt(activeGoal)}`,
+      text: `${GOAL_CONTINUATION_TEXT_PREFIX} ${buildGoalContinuationPrompt(activeGoal, opts)}`,
       synthetic: true,
       skipDispatch: true,
       // `goalContinuation` makes session-initializer DROP this turn (never
