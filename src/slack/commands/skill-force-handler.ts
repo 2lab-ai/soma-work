@@ -229,7 +229,7 @@ type BareResolution =
  *
  * Examples:
  *   $z               → first slot of user/local/stv/superpowers/other-plugins owning "z"
- *   $local:z         → reads local/skills/z/SKILL.md (qualified, no fallback)
+ *   $local:z         → reads local/skills/z/SKILL.md, else local-harness/skills/z/SKILL.md (#857 — both are `local:`)
  *   $user:my-deploy  → reads DATA_DIR/{userId}/skills/my-deploy/SKILL.md
  *   $stv:new-task    → reads plugins/stv/skills/new-task/SKILL.md
  *

@@ -12,7 +12,8 @@ NEEDS YOU column. The harness prompt routes every es request here (`src/prompt/c
 ## Procedure
 
 1. Run `zworkflow:es` — its mode resolution (Path A discovery, or the host's mode header) and its mode template give
-   the document.
+   the document. This is the one place es runs directly: the harness rule "run `local:auto-es` instead of es" does
+   not send this step back here.
 2. Apply §Harness additions to that document while you write it.
 3. §Card sync — put the links, their state, the title and the TL;DR on this session's task card.
 4. §Card check — close the report with its one line.
