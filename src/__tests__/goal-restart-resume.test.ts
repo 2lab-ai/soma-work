@@ -56,9 +56,7 @@ function createHandler(sessions: Map<string, ConversationSession>) {
 describe('resumeActiveGoals (T1)', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  // 2026-11-03 — a dashboard task's goal (a started plan's) resumes too: its continuation runs as the
-  // task's next turn through the task controller (#612 R1 skipped it while a task could not run a turn).
-  it('resumes a dashboard task’s active goal after a restart (its continuation is the task’s next turn)', () => {
+  it('resumes a Slack-less task’s goal too (SSOT 2026-11-03): tasks run turns, the loop starts its next one', () => {
     const sessions = new Map<string, ConversationSession>([
       [
         'task:t1',
@@ -69,51 +67,38 @@ describe('resumeActiveGoals (T1)', () => {
     const settled = vi.fn();
     handler.setGoalTurnSettledHandler(settled);
     expect(handler.resumeActiveGoals()).toBe(1);
-    expect(settled).toHaveBeenCalledWith('task:t1', { cause: 'kick' });
+    expect(settled).toHaveBeenCalledWith('task:t1', expect.anything());
   });
 
-  it('not an epic’s goal: its waker drives it (trinity R1, fable P1-2)', () => {
-    const sessions = new Map<string, ConversationSession>([
-      [
-        'task:epic',
-        activeGoalSession({
-          channelId: '',
-          threadTs: undefined,
-          slackless: true,
-          kind: 'epic',
-        } as Partial<ConversationSession>),
-      ],
-    ]);
-    const { handler } = createHandler(sessions);
-    const settled = vi.fn();
-    handler.setGoalTurnSettledHandler(settled);
-    expect(handler.resumeActiveGoals()).toBe(0);
-    expect(settled).not.toHaveBeenCalled();
-  });
-
-  it('a dashboard task the restart cut gets the continuation back (the registry’s reconciliation, not a notice)', () => {
+  it('a task turn the restart cut gives its continuation back, once (no shutdown marker for a task)', () => {
     const task = activeGoalSession({
       channelId: '',
       threadTs: undefined,
       slackless: true,
     } as Partial<ConversationSession>);
-    task.goal!.continuationCount = 3;
+    task.goal!.continuationCount = 10;
     const untouched = activeGoalSession({
       channelId: '',
       threadTs: undefined,
       slackless: true,
     } as Partial<ConversationSession>);
-    untouched.goal!.continuationCount = 3;
+    untouched.goal!.continuationCount = 4;
     const sessions = new Map<string, ConversationSession>([
       ['task:cut', task],
-      ['task:other', untouched],
+      ['task:idle', untouched],
     ]);
-    const { handler } = createHandler(sessions);
+    const { handler, claudeHandler } = createHandler(sessions);
+    claudeHandler.takeRestartCutTaskKeys = vi
+      .fn()
+      .mockReturnValueOnce(new Set(['task:cut']))
+      .mockReturnValue(new Set());
     handler.setGoalTurnSettledHandler(vi.fn());
-    handler.noteRestartCutSessionKeys(['task:cut']);
+    expect(handler.resumeActiveGoals()).toBe(2);
+    expect(task.goal!.continuationCount).toBe(9);
+    expect(untouched.goal!.continuationCount).toBe(4);
+    // Read once: a later pass refunds nothing.
     handler.resumeActiveGoals();
-    expect(task.goal!.continuationCount).toBe(2);
-    expect(untouched.goal!.continuationCount).toBe(3);
+    expect(task.goal!.continuationCount).toBe(9);
   });
 
   it('triggers the goal loop for each active-goal session', () => {

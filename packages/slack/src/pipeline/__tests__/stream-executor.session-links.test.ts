@@ -10,6 +10,8 @@
  *   E4  a host turn (not the user's words) records nothing from its text
  *   E5  a REST write (#832): a `curl -X POST …/pulls` is recorded as created ('always'), a merge updates the PR's state
  *       ('update'), a comment POST records nothing — every agent's calls, a subagent's included
+ *   E6  turn end (#833): the host is asked to reconcile the session's PRs with GitHub — once, after the turn, with
+ *       its key, session and working directory; a throwing reconciler never breaks the turn
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -436,6 +438,36 @@ describe('StreamExecutor — the links a turn names are recorded on its session'
       expect(deps3.claudeHandler.noteSessionLinks).not.toHaveBeenCalled();
     } finally {
       setStreamExecutorProviders({ confirmGithubEffects: ({ effects }) => effects, interceptToolResults: () => {} });
+    }
+  });
+
+  it('E7 — turn end asks the host to reconcile the session with GitHub; a throw never breaks the turn (#833)', async () => {
+    streamEvents = (t) => [
+      { type: 'assistant_delta', text: t },
+      { type: 'result', stopReason: 'end_turn', finalText: t },
+    ];
+    const reconcileSessionPrs = vi.fn(() => {
+      throw new Error('boom');
+    });
+    setStreamExecutorProviders({ reconcileSessionPrs });
+    try {
+      const deps = createDeps('끝.');
+      const session = createSession();
+      const result = await new StreamExecutor(deps).execute(createParams(session));
+      await settle();
+      expect(result.success).toBe(true);
+      expect(reconcileSessionPrs).toHaveBeenCalledTimes(1);
+      expect(reconcileSessionPrs).toHaveBeenCalledWith({
+        sessionKey: SESSION_KEY,
+        session,
+        workingDirectory: '/tmp/test',
+      });
+      // A terminated session is not reconciled.
+      reconcileSessionPrs.mockClear();
+      await new StreamExecutor(createDeps('끝.')).execute(createParams(createSession({ terminated: true })));
+      expect(reconcileSessionPrs).not.toHaveBeenCalled();
+    } finally {
+      setStreamExecutorProviders({ reconcileSessionPrs: () => {} });
     }
   });
 });

@@ -12,6 +12,8 @@
  *   N7  recording never moves the sequence the model's UPDATE_SESSION compares against
  *   N8  'update' (a merge or close the session just made, #832): only a link already on the card changes — its state;
  *       an unknown link is never added, and the current link does not move
+ *   N9  'history' (a PR GitHub says the session's branch has, but older than the session or on a shared branch, #833):
+ *       it joins the history and is never made current, even when the kind has no current link
  */
 import fs from 'fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -171,5 +173,26 @@ describe('noteSessionLinks', () => {
     reg.noteSessionLinks('C1', '100.001', [{ ...PR(20), url: 'https://github.com/A/B/pull/20' }], 'first');
     expect(reg.noteSessionLinks('C1', '100.001', [{ ...PR(20), status: 'merged' }], 'update')).toBe(true);
     expect(s.linkHistory?.prs?.find((l) => l.url === 'https://github.com/A/B/pull/20')?.status).toBe('merged');
+  });
+
+  it('N9 — history: a PR joins the history and never becomes current', () => {
+    const { reg, s } = setup();
+    expect(reg.noteSessionLinks('C1', '100.001', [{ ...PR(7), status: 'merged' }], 'history')).toBe(true);
+    expect(s.links?.pr).toBeUndefined();
+    expect(s.linkHistory?.prs?.map((l) => [l.url, l.status, l.auto])).toEqual([[PR(7).url, 'merged', true]]);
+    reg.noteSessionLinks('C1', '100.001', [PR(8)], 'always');
+    reg.noteSessionLinks('C1', '100.001', [PR(9)], 'history');
+    expect(s.links?.pr?.url).toBe(PR(8).url);
+    expect(reg.noteSessionLinks('C1', '100.001', [PR(9)], 'history')).toBe(false);
+  });
+
+  it('N10 — a new session records when it started, and keeps it across a save and load (#833)', () => {
+    const before = Date.now();
+    const { reg, s } = setup();
+    expect(s.startedAt).toBeGreaterThanOrEqual(before);
+    reg.saveSessions();
+    const reloaded = new SessionRegistry();
+    reloaded.loadSessions();
+    expect(reloaded.getSession('C1', '100.001')?.startedAt).toBe(s.startedAt);
   });
 });

@@ -279,6 +279,72 @@ async function fetchGitHubMetadata(link: SessionLink): Promise<{ title?: string;
   return { title: data.title, status };
 }
 
+/** A PR as `GET /repos/{o}/{r}/pulls` lists it — the fields the turn-end reconcile reads (#833). */
+export interface GitHubPullSummary {
+  html_url: string;
+  number: number;
+  title?: string;
+  state?: string;
+  draft?: boolean;
+  merged_at?: string | null;
+  created_at?: string;
+  body?: string | null;
+  /** The PR's head commit. */
+  head_sha?: string;
+}
+
+/**
+ * The PRs whose head is `owner:branch` (any state, newest first, at most 30) — undefined when the query failed. Each
+ * answer also fills the metadata cache, so the card's chip shows the PR's state at once (#833).
+ */
+export async function fetchGitHubPullsForHead(
+  owner: string,
+  repo: string,
+  branch: string,
+): Promise<GitHubPullSummary[] | undefined> {
+  const token = await getGitHubToken();
+  if (!token) return undefined;
+  try {
+    const head = encodeURIComponent(`${owner}:${branch}`);
+    const response = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?head=${head}&state=all&sort=created&direction=desc&per_page=30`,
+      {
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+          'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+        },
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    if (!response.ok) return undefined;
+    const data = (await response.json()) as unknown;
+    if (!Array.isArray(data)) return undefined;
+    const pulls: GitHubPullSummary[] = [];
+    for (const p of data) {
+      if (!p || typeof p.html_url !== 'string' || typeof p.number !== 'number') continue;
+      const title = typeof p.title === 'string' ? p.title.slice(0, MAX_CACHED_TITLE_LENGTH) : undefined;
+      pulls.push({
+        html_url: p.html_url,
+        number: p.number,
+        title,
+        state: typeof p.state === 'string' ? p.state : undefined,
+        draft: p.draft === true,
+        merged_at: typeof p.merged_at === 'string' ? p.merged_at : null,
+        created_at: typeof p.created_at === 'string' ? p.created_at : undefined,
+        body: typeof p.body === 'string' ? p.body.slice(0, 4000) : null,
+        ...(typeof p.head?.sha === 'string' ? { head_sha: p.head.sha } : {}),
+      });
+      const status = p.merged_at ? 'merged' : p.draft && p.state !== 'closed' ? 'draft' : p.state;
+      metadataCache.set(p.html_url, { title, status, fetchedAt: Date.now() });
+    }
+    return pulls;
+  } catch (error) {
+    logger.debug('Failed to list PRs for a branch', { owner, repo, error: (error as Error).message });
+    return undefined;
+  }
+}
+
 /**
  * Fetch Jira issue metadata (title + status) from REST API.
  */

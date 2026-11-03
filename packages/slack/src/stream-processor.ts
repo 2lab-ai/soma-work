@@ -72,6 +72,13 @@ export interface StreamContext {
    * user message. Absent on turns with no prompt text — SET_GOAL fails closed.
    */
   currentUserText?: string;
+  /**
+   * A Slack-less task's turn: the user it runs as (its server-built execution
+   * context — the owner, or another user who instructed it). A goal this turn
+   * sets is theirs, so the goal loop's next turns run as them too, never as an
+   * owner whose identity they were not given (#861 R1). Unset on Slack turns.
+   */
+  turnUserId?: string;
   /** Allows long compact diagnostics to be withheld for terminal error formatting. */
   isCompactTurn?: boolean;
   /**

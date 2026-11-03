@@ -5,6 +5,7 @@
  * `report today`  — 오늘 실시간 리포트
  * `report daily`  — 전일 일간 리포트
  * `report weekly` — 전주 주간 리포트 (사용자별 랭킹 포함)
+ * `report leaks`  — 지난 24시간 작업 카드 링크 누락 리포트 (#835, GitHub App이 설정된 경우)
  *
  * `/z` refactor (#506): `report help` removed — use `/z help` instead.
  *
@@ -34,12 +35,14 @@ interface FormatterLike {
 interface ReportDeps {
   aggregator: AggregatorLike;
   formatter: FormatterLike;
+  /** The daily link leak report, run now (#835); undefined result when it is off or GitHub could not be read. */
+  linkLeak?: { runNow(): Promise<{ text: string; blocks: any[] } | undefined> };
 }
 
 // `/z` refactor (#506): `report help` is removed — users should call
 // `/z help` for the unified command list. `report` alone still shows the
 // today snapshot.
-const REPORT_COMMAND_REGEX = /^report(?:\s+(today|daily|weekly))?$/i;
+const REPORT_COMMAND_REGEX = /^report(?:\s+(today|daily|weekly|leaks))?$/i;
 
 const REPORT_TIMEZONE = process.env.REPORT_TIMEZONE || 'Asia/Seoul';
 
@@ -103,6 +106,18 @@ export class ReportHandler implements CommandHandler {
 
     try {
       let formatted: { blocks: any[]; text: string };
+
+      if (subcommand === 'leaks') {
+        const leak = await this.deps.linkLeak?.runNow();
+        await say({
+          text:
+            leak?.text ??
+            ':information_source: 링크 누락 리포트를 만들 수 없습니다 — GitHub App이 설정되지 않았거나 GitHub를 읽지 못했습니다. (매일 게시는 SOMA_LINK_LEAK_REPORT_CHANNEL로 켭니다.)',
+          ...(leak ? { blocks: leak.blocks } : {}),
+          thread_ts: threadTs,
+        });
+        return { handled: true };
+      }
 
       const useEnriched = !!this.deps.aggregator.aggregateEnrichedDaily && !!this.deps.formatter.formatEnrichedDaily;
 

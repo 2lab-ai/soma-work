@@ -126,7 +126,7 @@ const WARNING_INTERVALS = [
 /** A session's history keeps at most this many links of each kind (세션 링크 자동 기록): the oldest go first. */
 export const MAX_NOTED_LINKS = 30;
 /** Which noted link becomes the current one: see SessionRegistry.noteSessionLinks. */
-export type NoteLinksMode = 'first' | 'always' | 'if-empty' | 'update';
+export type NoteLinksMode = 'first' | 'always' | 'if-empty' | 'history' | 'update';
 
 const HISTORY_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinkHistory> = {
   issue: 'issues',
@@ -263,6 +263,8 @@ interface SerializedSession {
   threadRootTs?: string;
   // Onboarding flag
   isOnboarding?: boolean;
+  /** When the session was created (epoch ms) — the turn-end PR reconcile reads it (#833). */
+  startedAt?: number;
   // Source working directories tracked for cleanup
   sourceWorkingDirs?: string[];
   // Mid-thread source thread reference
@@ -705,6 +707,12 @@ export class SessionRegistry {
    * `notifyCrashRecovery` does for a Slack thread. Populated by loadSessions(), cleared after.
    */
   private _restartCutTasks: RestartCutTask[] = [];
+  /**
+   * Slack-less tasks whose turn the restart cut (reconciled `interrupted` on load). A task has no
+   * `wasWorkingAtShutdown` marker and is not crash-recovered, so this is the restart's record of it
+   * — read once by the goal resume, which gives the cut turn's continuation back (SSOT 2026-11-03).
+   */
+  private _restartCutTaskKeys = new Set<string>();
 
   /**
    * onIdle callback registry — fired when session transitions to idle.
@@ -1885,6 +1893,7 @@ export class SessionRegistry {
       taskId: randomUUID(),
       isActive: true,
       lastActivity: new Date(),
+      startedAt: Date.now(),
       model: sessionModel,
       logVerbosity: userSettingsStore.getUserLogVerbosityFlags(ownerId),
       effort: userSettingsStore.getUserDefaultEffort(ownerId),
@@ -2150,6 +2159,8 @@ export class SessionRegistry {
       activityStateChangedAt: doneAt,
       links: archived.links,
       linkHistory: archived.linkHistory,
+      // When the task started, as recorded (#833) — never the revive time, which would hide its earlier PRs.
+      startedAt: finiteStamp(archived.startedAt),
       instructions: Array.isArray(archived.instructions)
         ? archived.instructions.map((i) => ({ ...i, status: i.status ?? 'active' }))
         : [],
@@ -2481,6 +2492,8 @@ export class SessionRegistry {
    *   'always'   a PR or issue the session just created;
    *   'if-empty' an assistant reply: only when the kind has no current link, so a PR mentioned in passing does not
    *              replace the one the session works on;
+   *   'history'  a PR GitHub says the session's branch has, older than the session or on a shared branch (#833): it
+   *              joins the history and never becomes current;
    *   'update'   a PR or issue the session just merged or closed (#832): only a link already on the card changes — its
    *              `status` — and nothing is added or made current.
    * Links compare by their canonical URL (`/pull/12/files?x` is `/pull/12`), so a link the dispatch or the model
@@ -2643,6 +2656,11 @@ export class SessionRegistry {
   getSessionResourceSnapshot(channelId: string, threadTs?: string): SessionResourceSnapshot {
     const session = this.getSession(channelId, threadTs);
     return this.buildSessionResourceSnapshot(session);
+  }
+
+  /** The same by session key — the only way to reach a Slack-less task (channel '' throws on lookup). */
+  getSessionResourceSnapshotByKey(sessionKey: string): SessionResourceSnapshot {
+    return this.buildSessionResourceSnapshot(this.getSessionByKey(sessionKey));
   }
 
   /**
@@ -3631,6 +3649,13 @@ export class SessionRegistry {
     this._restartCutTasks = [];
   }
 
+  /** The Slack-less tasks whose turn the restart cut — returned once, then cleared (a later read gets none). */
+  takeRestartCutTaskKeys(): Set<string> {
+    const keys = this._restartCutTaskKeys;
+    this._restartCutTaskKeys = new Set<string>();
+    return keys;
+  }
+
   /**
    * Save all sessions to file for persistence across restarts. A failure is
    * logged, not thrown — a caller that must know uses saveSessionsOrThrow.
@@ -3779,6 +3804,7 @@ export class SessionRegistry {
             threadRootTs: session.threadRootTs,
             isOnboarding: session.isOnboarding,
             sourceWorkingDirs: session.sourceWorkingDirs,
+            startedAt: session.startedAt,
             sourceThread: session.sourceThread,
             // Session workspace isolation (#77): persist session-unique cwd
             // so Claude SDK can find its conversation files after restart
@@ -4037,6 +4063,7 @@ export class SessionRegistry {
       // same registry is not a duplicate; a second record with one task id in one file is).
       const slacklessKeysThisLoad = new Set<string>();
       this._crashRecoveredSessions = [];
+      this._restartCutTaskKeys = new Set<string>();
 
       for (const serialized of sessionsArray) {
         const lastActivity = new Date(serialized.lastActivity);
@@ -4170,6 +4197,7 @@ export class SessionRegistry {
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
           sourceThread: serialized.sourceThread,
+          startedAt: typeof serialized.startedAt === 'number' ? serialized.startedAt : undefined,
           sourceWorkingDirs: (serialized.sourceWorkingDirs || []).filter((d: unknown) => {
             if (typeof d !== 'string') {
               this.logger.warn('Dropped non-string sourceWorkingDir during deserialization', {
@@ -4463,6 +4491,7 @@ export class SessionRegistry {
             session.activityState = 'idle';
             session.activityStateChangedAt = now;
             session.activeTaskTurnId = undefined;
+            this._restartCutTaskKeys.add(derivedKey);
             reconciledTaskTurnCount++;
             // The host resumes it after boot, as a Slack thread is (notifyCrashRecovery). Not an
             // epic (its released events wake it) or an epic's child (its epic hears `interrupted`

@@ -24,6 +24,7 @@ export type {
 
 import { Logger } from '../logger';
 import { MetricsEventStore } from './event-store';
+import { LinkLeakReporter, type LinkLeakReporterDeps } from './link-leak-report';
 import { ReportAggregator } from './report-aggregator';
 import { ReportFormatter } from './report-formatter';
 import { ReportPublisher } from './report-publisher';
@@ -36,17 +37,48 @@ const logger = new Logger('Metrics');
  * Create a report deps object for use by ReportHandler.
  * Lazy-initialized singleton.
  */
-let _reportDeps: { aggregator: ReportAggregator; formatter: ReportFormatter } | null = null;
+let _reportDeps: {
+  aggregator: ReportAggregator;
+  formatter: ReportFormatter;
+  linkLeak: { runNow(): Promise<{ text: string; blocks: any[] } | undefined> };
+} | null = null;
 
-export function getReportDeps(): { aggregator: ReportAggregator; formatter: ReportFormatter } {
+export function getReportDeps(): {
+  aggregator: ReportAggregator;
+  formatter: ReportFormatter;
+  linkLeak: { runNow(): Promise<{ text: string; blocks: any[] } | undefined> };
+} {
   if (!_reportDeps) {
     const store = new MetricsEventStore();
     _reportDeps = {
       aggregator: new ReportAggregator(store),
       formatter: new ReportFormatter(),
+      // `report leaks` (#835): the reporter exists only when its channel is configured.
+      linkLeak: { runNow: async () => _linkLeak?.runNow() },
     };
   }
   return _reportDeps;
+}
+
+let _linkLeak: LinkLeakReporter | null = null;
+
+/**
+ * The task-card link leak report (#835). The caller wires the data sources. `report leaks` works whenever it exists;
+ * the daily post runs only when `schedule` is true (a channel is configured).
+ */
+export function startLinkLeakReport(deps: LinkLeakReporterDeps, schedule: boolean): LinkLeakReporter {
+  stopLinkLeakReport();
+  _linkLeak = new LinkLeakReporter(deps);
+  if (schedule) {
+    _linkLeak.start();
+    logger.info('Link leak report scheduled', { hour: deps.hour, timezone: deps.timezone });
+  }
+  return _linkLeak;
+}
+
+export function stopLinkLeakReport(): void {
+  _linkLeak?.stop();
+  _linkLeak = null;
 }
 
 /**
