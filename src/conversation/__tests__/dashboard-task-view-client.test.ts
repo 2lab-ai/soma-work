@@ -509,14 +509,16 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
     expect(head).not.toContain('자세히');
   });
 
-  it('T1.1 · the surface holds 세션 정보 · 입력 필요 · 산출물, above the tabs', () => {
+  it('T1.1 · the surface holds 입력 필요, then the tab bar and its tabs (목표 · 산출물 · 세부), above the agent tabs (SSOT 2026-11-03)', () => {
     const surface = at('<section class="panel-surface" id="panel-surface"');
-    expect(at('id="panel-info"')).toBeGreaterThan(surface);
-    expect(at('id="panel-needs-head"')).toBeGreaterThan(at('id="panel-info"'));
+    expect(at('id="panel-needs-head"')).toBeGreaterThan(surface);
     expect(at('id="panel-permission"')).toBeGreaterThan(at('id="panel-needs-head"'));
     expect(at('id="panel-question"')).toBeGreaterThan(at('id="panel-permission"'));
-    expect(at('id="panel-artifacts"')).toBeGreaterThan(at('id="panel-question"'));
-    expect(at('id="panel-tabs"')).toBeGreaterThan(at('id="panel-artifacts"'));
+    expect(at('id="panel-midbar"')).toBeGreaterThan(at('id="panel-question"'));
+    expect(at('id="panel-goal"')).toBeGreaterThan(at('id="panel-midbar"'));
+    expect(at('id="panel-artifacts"')).toBeGreaterThan(at('id="panel-goal"'));
+    expect(at('id="panel-info"')).toBeGreaterThan(at('id="panel-artifacts"'));
+    expect(at('id="panel-tabs"')).toBeGreaterThan(at('id="panel-info"'));
   });
 
   it('T1.2/T1.3 · the tab list, then one tab panel: Tasks, then the section tabs Chat · 작업 로그 · 에이전트 트리 (SSOT 2026-10-29 T6; D4 E-19 / E-24: both <ui-tabs>)', () => {

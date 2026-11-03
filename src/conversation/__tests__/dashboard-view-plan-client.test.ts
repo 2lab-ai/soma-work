@@ -10,6 +10,7 @@
  *   P4  the detail card follows the plan (data-detail · data-tasks · the task line)
  *   P5  미니멀's detail card: the chat is a tab view with the work log (대화 · 작업 로그, SSOT 2026-11-03);
  *       어드밴스드 keeps the whole strip (대화 · 작업 로그 · 에이전트 트리)
+ *   (the detail card's three zones — title bar, tab bar, bottom — are dashboard-detail-zones-client.test.ts)
  */
 
 import { readFileSync } from 'node:fs';
@@ -82,7 +83,7 @@ type Spec = {
   name: string;
   face: { rows: Array<{ id: string; on: boolean }>; foot: Array<{ id: string; on: boolean }>; kind: boolean };
   body: { star: boolean; work: string[]; wait: string[]; done: string[] };
-  detail: { show: string[]; tasks: string; tasksMax?: number; open: boolean; order: string[] };
+  detail: { show: string[]; head: string[]; tabs: string[]; tasks: string; tasksMax?: number; open: boolean };
 };
 const B = BUILTIN_PRESETS as unknown as Record<string, Record<string, any>>;
 const plansEnv = () =>
@@ -154,9 +155,9 @@ describe('P1 — the plan table: two modes × three plans; the user’s dashboar
     expect(env.viewSpec().name).toBe('원본');
     env.__set('_viewPlan', '1');
     expect(env.viewSpec().name).toBe('정리');
-    expect(env.detailShows('info')).toBe(true);
+    expect(env.viewSpec().detail.tabs).toContain('info');
     env.__set('_viewMode', 'minimal');
-    expect(env.detailShows('info')).toBe(false);
+    expect(env.viewSpec().detail.tabs).not.toContain('info');
     expect(PAGE).toMatch(/<body[^>]*data-view-plan="1"/);
   });
 
@@ -624,11 +625,11 @@ describe('P4 — the detail card follows the plan', () => {
     };
   };
 
-  it('the body says which sections the plan shows and how the tasks read; 자세히 opens with the plan', () => {
+  it('the body says which switches the plan shows and how the 작업 tab reads; 자세히 opens with the plan', () => {
     const b = fakeBody();
     const env = load<{ applyViewMode(): void; __set(n: string, v: unknown): void; __get(n: string): any }>(
-      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'orderPanelSurface', 'applyViewMode'],
-      ['_viewMode', '_viewPlan', '_viewLayout', '_panelDetail', 'PANEL_SURFACE_PARTS'],
+      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'applyViewMode'],
+      ['_viewMode', '_viewPlan', '_viewLayout', '_panelDetail'],
       { document: { body: b, getElementById: () => null }, applyPanelDetail: () => {} },
     );
     env.applyViewMode();
@@ -636,17 +637,18 @@ describe('P4 — the detail card follows the plan', () => {
     expect(b.attrs['data-view-plan']).toBe('1');
     // #805 — the detail card names the model (the task card shows it as icons only): its model · effort line stays.
     // SSOT 2026-11-03: the chat is a tab view with the work log (logtab — 대화 · 작업 로그).
-    expect(b.attrs['data-detail'].split(' ').sort()).toEqual(['controls', 'logtab']);
+    // SSOT 2026-11-03: the agent strip is the 에이전트 tab's (agenttabs) in every built-in.
+    expect(b.attrs['data-detail'].split(' ').sort()).toEqual(['agenttabs', 'controls', 'logtab']);
     expect(b.attrs['data-tasks']).toBe('list');
     expect(b.props['--ptl-max']).toBe('34cqh');
     expect(env.__get('_panelDetail')).toBe(false);
     env.__set('_viewPlan', '2');
     env.applyViewMode();
-    expect(b.attrs['data-detail'].split(' ').sort()).toEqual(['controls', 'logtab', 'subtabs']);
+    expect(b.attrs['data-detail'].split(' ').sort()).toEqual(['agenttabs', 'controls', 'logtab']);
     expect(b.props['--ptl-max']).toBe('50cqh');
     env.__set('_viewPlan', '3');
     env.applyViewMode();
-    expect(b.attrs['data-detail'].split(' ').sort()).toEqual(['controls', 'logtab']);
+    expect(b.attrs['data-detail'].split(' ').sort()).toEqual(['agenttabs', 'controls', 'logtab']);
     expect(b.attrs['data-tasks']).toBe('line');
     // The task line's checklist opens up to the same share.
     expect(b.props['--ptl-max']).toBe('34cqh');
@@ -654,57 +656,21 @@ describe('P4 — the detail card follows the plan', () => {
     env.__set('_viewPlan', '1');
     env.applyViewMode();
     expect(b.attrs['data-detail'].split(' ').sort()).toEqual(
-      ['agenthead', 'agenttabs', 'artifacts', 'controls', 'goal', 'info', 'sections', 'subtitle'].sort(),
+      ['agenthead', 'agenttabs', 'controls', 'sections', 'subtitle'].sort(),
     );
     expect(b.attrs['data-tasks']).toBe('runs');
+    // A layout without the 작업 tab: no task list at all (data-tasks="none").
+    const detail = JSON.parse(JSON.stringify(B['1'].advanced.detail));
+    detail.tabs = detail.tabs.map((t: { id: string; on: boolean }) => (t.id === 'tasks' ? { ...t, on: false } : t));
+    env.__set('_viewLayout', { v: 1, presets: { '1': { advanced: { detail } } } });
+    env.applyViewMode();
+    expect(b.attrs['data-tasks']).toBe('none');
+    env.__set('_viewLayout', { v: 1 });
     expect(env.__get('_panelDetail')).toBe(true);
     env.__set('_viewPlan', '3');
     env.applyViewMode();
     // 3안 압축: everything is there, folded at first (the old 자세히 off).
     expect(env.__get('_panelDetail')).toBe(false);
-  });
-
-  it('the detail card’s top sections move in the DOM too, so the separators fall between them as they read (review P3)', () => {
-    const b = fakeBody();
-    const ids = [
-      'panel-info',
-      'panel-goal',
-      'panel-needs-head',
-      'panel-permission',
-      'panel-question',
-      'panel-needs-status',
-      'panel-artifacts',
-    ];
-    let moves = 0;
-    const surf: { children: any[]; appendChild(el: any): void } = {
-      children: [],
-      appendChild(el: any) {
-        moves++;
-        this.children.splice(this.children.indexOf(el), 1);
-        this.children.push(el);
-      },
-    };
-    const els: Record<string, any> = { 'panel-surface': surf };
-    for (const id of ids) surf.children.push((els[id] = { id, parentNode: surf }));
-    const env = load<{ applyViewMode(): void; __set(n: string, v: unknown): void }>(
-      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'orderPanelSurface', 'applyViewMode'],
-      ['_viewMode', '_viewPlan', '_viewLayout', '_panelDetail', 'PANEL_SURFACE_PARTS'],
-      { document: { body: b, getElementById: (id: string) => els[id] ?? null }, applyPanelDetail: () => {} },
-    );
-    env.applyViewMode();
-    // Already in order: nothing moves (a focused field inside keeps its focus).
-    expect(moves).toBe(0);
-    const detail = JSON.parse(JSON.stringify(B['1'].minimal.detail));
-    const at = (id: string) => detail.top.findIndex((x: { id: string }) => x.id === id);
-    const [artifacts] = detail.top.splice(at('artifacts'), 1);
-    detail.top.unshift(artifacts);
-    env.__set('_viewLayout', { v: 1, presets: { '1': { minimal: { detail } } } });
-    env.applyViewMode();
-    expect(surf.children.map((e) => e.id)).toEqual([
-      'panel-artifacts',
-      ...ids.filter((id) => id !== 'panel-artifacts'),
-    ]);
-    expect(b.props['--o-artifacts']).toBe('1');
   });
 
   const hides = (tok: string, sel: string) => {
@@ -714,22 +680,28 @@ describe('P4 — the detail card follows the plan', () => {
     return re.test(CSS);
   };
 
-  it('CSS hides the sections the plan leaves out; what needs the user is never in the list', () => {
+  it('CSS hides the switches the plan leaves out and every closed tab’s content; what needs the user is never in the list', () => {
     for (const [tok, sel] of [
       ['subtitle', '#panel-title-sub'],
-      ['info', '#panel-info'],
-      ['goal', '#panel-goal'],
-      ['artifacts', '#panel-artifacts'],
       ['agenthead', '#panel-agents'],
       ['controls', '#panel-controls'],
     ])
       expect(hides(tok, sel), `${tok} ${sel}`).toBe(true);
+    // SSOT 2026-11-03: a tab's content shows only while the tab is pressed (.slide-panel[data-midtab]).
+    for (const [tab, sel] of [
+      ['goal', '#panel-goal'],
+      ['artifacts', '#panel-artifacts'],
+      ['info', '#panel-info'],
+      ['tasks', '#panel-tasks'],
+    ])
+      expect(CSS, sel).toContain(`.slide-panel:not([data-midtab="${tab}"]) ${sel},`);
     // The section strip hides only when the card shows neither the whole strip nor 미니멀's 대화 · 작업 로그.
     expect(CSS).toContain(
       'body:not([data-detail~="sections"]):not([data-detail~="logtab"]) .panel-sections::part(list)',
     );
-    expect(CSS).toContain('body:not([data-detail~="agenttabs"]):not([data-detail~="subtabs"]) .panel-tabs::part(list)');
-    expect(CSS).toContain('body[data-detail~="subtabs"] .slide-panel:not([data-subagents]) .panel-tabs::part(list)');
+    // The agent strip: the 에이전트 tab's — open, or the card looking at a subagent — and never without the tab.
+    expect(CSS).toContain('.slide-panel:not([data-midtab="agents"]):not([data-agent-scoped]) .panel-tabs::part(list),');
+    expect(CSS).toContain('body:not([data-detail~="agenttabs"]) .panel-tabs::part(list),');
     expect(CSS).toContain('body:not([data-tasks="runs"]) .panel-tasks { max-height: var(--ptl-max, 34cqh);');
     for (const sel of ['#panel-permission', '#panel-question', '#panel-needs-head', '#panel-status', '#panel-command'])
       expect(CSS, sel).not.toMatch(new RegExp(`data-detail[^{]*${sel}[,\\s{]`));
@@ -807,17 +779,13 @@ describe('P4 — the detail card follows the plan', () => {
     env.__set('_viewMode', 'advanced');
     expect(env.psecForMode('worklog')).toBe('log');
     expect(env.psecForMode('agent')).toBe('tree');
-    expect(clientFn('openPanel')).toContain(
-      "if (!detailShows('agenttabs') && !detailShows('subtabs')) _panelAgent = '';",
-    );
+    expect(clientFn('openPanel')).toContain("if (!detailShows('agenttabs')) _panelAgent = '';");
     const re = clientFn('rerenderForViewMode');
-    expect(re).toContain(
-      "if (!detailShows('agenttabs') && !detailShows('subtabs') && _panelAgent) selectPanelAgent('');",
-    );
+    expect(re).toContain("if (!detailShows('agenttabs') && _panelAgent) selectPanelAgent('');");
     expect(re).toContain("if (psecShown().indexOf(_psec) < 0) selectPanelSection('conv');");
     expect(re).toContain('else renderPanelSections();');
-    // 2안's strip shows only with a subagent: the panel says when it has one.
-    expect(clientFn('renderPanelTabs')).toContain("panel.toggleAttribute('data-subagents', d.tabs.length > 1);");
+    // The strip stays in view while the card looks at a subagent: the panel says when it does.
+    expect(clientFn('renderPanelTabs')).toContain("panel.toggleAttribute('data-agent-scoped', !!_panelAgent);");
   });
 });
 
@@ -876,8 +844,8 @@ describe('P5 — 미니멀’s detail card: the chat is a tab view with the work
       style: { setProperty() {}, removeProperty() {} },
     };
     const env = load<Env>(
-      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'orderPanelSurface', 'applyViewMode'],
-      ['_viewMode', '_viewPlan', '_viewLayout', '_panelDetail', 'PANEL_SURFACE_PARTS'],
+      ['viewModeFrom', 'viewPlanFrom', 'viewSpec', 'applyViewMode'],
+      ['_viewMode', '_viewPlan', '_viewLayout', '_panelDetail'],
       { document: { body, getElementById: () => null }, applyPanelDetail: () => {} },
     );
     for (const p of PLANS) {
@@ -962,7 +930,7 @@ describe('P5 — 미니멀’s detail card: the chat is a tab view with the work
     expect(ids(el.data)).toEqual(['conv', 'log', 'tree']);
   });
 
-  it('a subagent’s 열기 in the work log stays put without an agent strip (no way back to the main agent)', () => {
+  it('a subagent’s 열기 in the work log moves the card only with the 에이전트 tab (its strip is the way back)', () => {
     const listeners: Record<string, (e: unknown) => void> = {};
     const log = { addEventListener: (type: string, fn: (e: unknown) => void) => (listeners[type] = fn) };
     const opened: string[] = [];
@@ -985,22 +953,24 @@ describe('P5 — 미니멀’s detail card: the chat is a tab view with the work
       listeners['ui-open']({ target: log, detail: { id }, preventDefault: () => (prevented = true) });
       return prevented;
     };
-    // 1안 · 3안: no agent strip — the 열기 does nothing (and says so to the element: no navigate sound).
-    for (const p of ['1', '3']) {
+    // Every built-in has the 에이전트 tab (SSOT 2026-11-03): the strip stays in view while the card looks at a
+    // subagent, so its 열기 moves the card — for one of the strip's own tabs. A log-only agent is no tab: the strip
+    // would select none and its 메인 tab, already selected, would not lead back (review P2).
+    for (const p of ['1', '2', '3']) {
       env.__set('_viewPlan', p);
-      expect(open(), `minimal ${p}`).toBe(true);
+      expect(open(), `minimal ${p}`).toBe(false);
     }
-    expect(opened).toEqual([]);
-    // 2안 shows the strip with a subagent; advanced always.
-    env.__set('_viewPlan', '2');
-    expect(open()).toBe(false);
-    // 2안, a log-only agent: no tab of the strip — opening it would hide the strip and strand the reader.
     expect(open('A9')).toBe(true);
     env.__set('_viewMode', 'advanced');
+    expect(open('A9')).toBe(true);
+    env.__set('_viewMode', 'minimal');
+    // A layout without the tab: no strip — the 열기 does nothing (and says so to the element: no navigate sound).
+    const detail = JSON.parse(JSON.stringify(B['1'].minimal.detail));
+    detail.tabs = detail.tabs.map((t: { id: string; on: boolean }) => (t.id === 'agents' ? { ...t, on: false } : t));
     env.__set('_viewPlan', '1');
-    expect(open()).toBe(false);
-    // Advanced: the strip is always there (its main tab is the way back), a log-only agent opens too.
-    expect(open('A9')).toBe(false);
-    expect(opened).toEqual(['A1', 'A1', 'A9']);
+    env.__set('_viewLayout', { v: 1, presets: { '1': { minimal: { detail } } } });
+    expect(open()).toBe(true);
+    expect(open('A9')).toBe(true);
+    expect(opened).toEqual(['A1', 'A1', 'A1']);
   });
 });
