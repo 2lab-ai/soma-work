@@ -5407,6 +5407,9 @@ export class SlackHandler {
         channel: event.channel,
         ts: event.ts,
       });
+      // Stored in the queue: taken, as a queued message is (#853 — a plan's 시작 must not be put
+      // back while its words wait in the queue for the restart's Resume).
+      this.noteTurnAccepted(event.channel, event.ts);
     } else {
       this.logger.warn('Message refused — shutdown preparation in progress', {
         channel: event.channel,

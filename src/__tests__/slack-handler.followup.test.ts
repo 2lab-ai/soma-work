@@ -482,6 +482,16 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(taken).not.toHaveBeenCalled();
     });
 
+    it('A5 — a message parked while the host prepares to shut down is taken: it waits in the queue (review #858 R2)', async () => {
+      handler.prepareFollowupShutdown();
+      const taken = vi.fn();
+      handler.onTurnAccepted(CHANNEL, '666.777', taken);
+      await handler.handleMessage(message({ ts: '666.777', text: '# 작업 계획 v2 — 시작' }), say());
+      expect(startWithContinuation).not.toHaveBeenCalled();
+      expect(items().map((i: any) => i.message.ts)).toEqual(['666.777']);
+      expect(taken).toHaveBeenCalledTimes(1);
+    });
+
     it('A4 — the host’s verbatim message (a plan start) is never pushed into the running turn', async () => {
       const steerTurn = vi.fn();
       claudeHandler.steerTurn = steerTurn;
